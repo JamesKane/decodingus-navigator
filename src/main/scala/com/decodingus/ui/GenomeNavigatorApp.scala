@@ -1,20 +1,33 @@
 package com.decodingus.ui
 
 import com.decodingus.analysis.{CallableLociProcessor, CallableLociResult, LibraryStatsProcessor}
-import com.decodingus.model.{CoverageSummary, LibraryStats}
+import com.decodingus.model.{ContigSummary, CoverageSummary, LibraryStats}
 import com.decodingus.pds.PdsClient
 import javafx.concurrent as jfxc
 import scalafx.Includes.*
 import scalafx.application.JFXApp3.PrimaryStage
 import scalafx.application.{JFXApp3, Platform}
+import scalafx.collections.ObservableBuffer
 import scalafx.geometry.{Insets, Pos}
 import scalafx.scene.Scene
 import scalafx.scene.control.*
+import scalafx.scene.control.TableColumn.sfxTableColumn2jfx
 import scalafx.scene.input.{DragEvent, TransferMode}
 import scalafx.scene.layout.{GridPane, HBox, StackPane, VBox}
 import scalafx.scene.text.{Text, TextAlignment}
+import scalafx.scene.web.WebView
 
 import scala.concurrent.ExecutionContext.Implicits.global
+
+case class ContigAnalysisRow(
+  contig: String,
+  callableBases: Long,
+  noCoverage: Long,
+  lowCoverage: Long,
+  poorMq: Long,
+  refN: Long,
+  svgFile: String
+)
 
 object GenomeNavigatorApp extends JFXApp3 {
   private val mainLayout = new StackPane()
@@ -22,7 +35,7 @@ object GenomeNavigatorApp extends JFXApp3 {
   override def start(): Unit = {
     stage = new PrimaryStage {
       title = "Decoding-Us Navigator"
-      scene = new Scene(800, 600) {
+      scene = new Scene(800, 800) { // Increased height for the table and SVG
         root = mainLayout
         stylesheets.add(getClass.getResource("/style.css").toExternalForm)
       }
@@ -96,6 +109,13 @@ object GenomeNavigatorApp extends JFXApp3 {
     }
     val progressIndicator = new ProgressIndicator
 
+    val intermediateSummaryBox = new VBox(10) {
+      alignment = Pos.Center
+      visible = false
+      padding = Insets(20)
+      style = "-fx-border-color: #555; -fx-border-width: 1; -fx-background-color: #333;"
+    }
+
     val progressScreen = new VBox(20) {
       alignment = Pos.Center
       styleClass.add("root-pane")
@@ -104,14 +124,15 @@ object GenomeNavigatorApp extends JFXApp3 {
         new HBox(20) {
           alignment = Pos.Center
           children = Seq(progressBar, progressIndicator)
-        }
+        },
+        intermediateSummaryBox
       )
     }
 
     mainLayout.children = progressScreen
 
-    val jfxTask = new jfxc.Task[(LibraryStats, CallableLociResult)]() {
-      override def call(): (LibraryStats, CallableLociResult) = {
+    val jfxTask = new jfxc.Task[(CoverageSummary, List[String])]() {
+      override def call(): (CoverageSummary, List[String]) = {
         try {
           val libraryStatsProcessor = new LibraryStatsProcessor()
           val callableLociProcessor = new CallableLociProcessor()
@@ -123,13 +144,29 @@ object GenomeNavigatorApp extends JFXApp3 {
             updateProgress(current, total * 2) // 0-50%
           })
 
+          val platform = libraryStats.platformCounts.toSeq.sortBy(-_._2).headOption.map(_._1).getOrElse("Unknown")
+          Platform.runLater {
+            intermediateSummaryBox.children = Seq(
+              new Label(s"Sample: ${libraryStats.sampleName}") { styleClass.add("info-label") },
+              new Label(s"Reference: ${libraryStats.referenceBuild}") { styleClass.add("info-label") },
+              new Label(s"Platform: $platform") { styleClass.add("info-label") }
+            )
+            intermediateSummaryBox.visible = true
+          }
+
           // Phase 2: Callable Loci Analysis
-          val (callableLociResult, _) = callableLociProcessor.process(filePath, referencePath, (message, current, total) => {
+          val (callableLociResult, svgStrings) = callableLociProcessor.process(filePath, referencePath, (message, current, total) => {
             Platform.runLater { progressLabel.text = s"Callable Loci: $message" }
             updateProgress(total + current, total * 2) // 50-100%
           })
 
-          (libraryStats, callableLociResult)
+          val coverageSummary = CoverageSummary(
+            pdsUserId = "60820188481374", // placeholder
+            libraryStats = libraryStats,
+            callableBases = callableLociResult.callableBases,
+            contigAnalysis = callableLociResult.contigAnalysis
+          )
+          (coverageSummary, svgStrings)
         } catch {
           case e: Exception =>
             e.printStackTrace()
@@ -143,14 +180,8 @@ object GenomeNavigatorApp extends JFXApp3 {
     progressIndicator.progress <== jfxTask.progressProperty
 
     jfxTask.setOnSucceeded(_ => {
-      val (libraryStats, callableLociResult) = jfxTask.getValue
-      val coverageSummary = CoverageSummary(
-        pdsUserId = "60820188481374", // placeholder
-        libraryStats = libraryStats,
-        callableBases = callableLociResult.callableBases,
-        contigAnalysis = callableLociResult.contigAnalysis
-      )
-      showResults(coverageSummary)
+      val (summary, svgStrings) = jfxTask.getValue
+      showResults(summary, svgStrings)
     })
 
     jfxTask.setOnFailed(_ => {
@@ -175,7 +206,7 @@ object GenomeNavigatorApp extends JFXApp3 {
     new Thread(jfxTask).start()
   }
 
-  private def showResults(summary: CoverageSummary): Unit = {
+  private def showResults(summary: CoverageSummary, svgStrings: List[String]): Unit = {
     val resultsTitle = new Label("Analysis Results") {
       styleClass.add("title-label")
     }
@@ -203,22 +234,55 @@ object GenomeNavigatorApp extends JFXApp3 {
     addStat("Callable Percentage:", f"$callablePercent%.2f%%", 7)
     addStat("Average Depth:", f"${summary.libraryStats.averageDepth}%.2fx", 8)
 
-    val optInCheck = new CheckBox("I agree to upload my anonymized summary data.") {
-      selected = true
-      style = "-fx-text-fill: #E0E0E0; -fx-font-size: 14px;"
+    val contigBreakdownTitle = new Label("🧬 Contig Breakdown") {
+      styleClass.add("title-label")
+      padding = Insets(20, 0, 10, 0)
     }
 
-    val uploadButton = new Button("Upload to PDS") {
-      styleClass.add("button-upload")
-      disable <== !optInCheck.selected
-      onAction = _ => {
-        PdsClient.uploadSummary(summary).foreach { _ =>
-          Platform.runLater {
-            text = "Upload Complete!"
-            styleClass.remove("button-upload")
-            styleClass.add("button-success")
-            disable = true
-          }
+    val contigData = ObservableBuffer.from(summary.contigAnalysis.map { contig =>
+      ContigAnalysisRow(
+        contig.contigName,
+        contig.callable,
+        contig.noCoverage,
+        contig.lowCoverage,
+        contig.poorMappingQuality,
+        contig.refN,
+        s"${contig.contigName}.callable.svg"
+      )
+    })
+
+    val contigTable = new TableView[ContigAnalysisRow](contigData) {
+      columns ++= Seq(
+        new TableColumn[ContigAnalysisRow, String]("Contig") {
+          cellValueFactory = c => new scalafx.beans.property.StringProperty(c.value.contig)
+        },
+        new TableColumn[ContigAnalysisRow, String]("Callable Bases") {
+          cellValueFactory = c => new scalafx.beans.property.StringProperty(f"${c.value.callableBases}%,d")
+        },
+        new TableColumn[ContigAnalysisRow, String]("No Coverage") {
+          cellValueFactory = c => new scalafx.beans.property.StringProperty(f"${c.value.noCoverage}%,d")
+        },
+        new TableColumn[ContigAnalysisRow, String]("Low Coverage") {
+          cellValueFactory = c => new scalafx.beans.property.StringProperty(f"${c.value.lowCoverage}%,d")
+        },
+        new TableColumn[ContigAnalysisRow, String]("Poor MQ") {
+          cellValueFactory = c => new scalafx.beans.property.StringProperty(f"${c.value.poorMq}%,d")
+        },
+        new TableColumn[ContigAnalysisRow, String]("REF N") {
+          cellValueFactory = c => new scalafx.beans.property.StringProperty(f"${c.value.refN}%,d")
+        }
+      )
+    }
+
+    val webView = new WebView {
+      prefHeight = 400
+    }
+
+    contigTable.selectionModel.value.selectedItem.onChange { (_, _, newValue) =>
+      if (newValue != null) {
+        val index = contigTable.items.value.indexOf(newValue)
+        if (index >= 0 && index < svgStrings.length) {
+          webView.engine.loadContent(svgStrings(index))
         }
       }
     }
@@ -232,16 +296,34 @@ object GenomeNavigatorApp extends JFXApp3 {
           textAlignment = TextAlignment.Center
           styleClass.add("info-label")
         },
-        optInCheck,
-        uploadButton
+        new CheckBox("I agree to upload my anonymized summary data.") {
+          selected = true
+          style = "-fx-text-fill: #E0E0E0; -fx-font-size: 14px;"
+        },
+        new Button("Upload to PDS") {
+          styleClass.add("button-upload")
+          onAction = _ => {
+            PdsClient.uploadSummary(summary).foreach { _ =>
+              Platform.runLater {
+                text = "Upload Complete!"
+                styleClass.remove("button-upload")
+                styleClass.add("button-success")
+                disable = true
+              }
+            }
+          }
+        }
       )
     }
 
-    val resultsScreen = new VBox(20) {
-      alignment = Pos.Center
-      styleClass.add("root-pane")
-      padding = Insets(20)
-      children = Seq(resultsTitle, statsGrid, new Separator(), pdsBox)
+    val resultsScreen = new ScrollPane {
+      content = new VBox(20) {
+        alignment = Pos.Center
+        styleClass.add("root-pane")
+        padding = Insets(20)
+        children = Seq(resultsTitle, statsGrid, new Separator(), contigBreakdownTitle, contigTable, webView, new Separator(), pdsBox)
+      }
+      fitToWidth = true
     }
 
     mainLayout.children = resultsScreen
