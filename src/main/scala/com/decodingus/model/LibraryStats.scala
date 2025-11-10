@@ -12,8 +12,10 @@ case class LibraryStats(
   insertSizeDistribution: mutable.Map[Long, Int] = mutable.Map(),
   aligner: String = "Unknown",
   referenceBuild: String = "Unknown",
+  sampleName: String = "Unknown",
   flowCells: mutable.Map[String, Int] = mutable.Map(),
   instruments: mutable.Map[String, Int] = mutable.Map(),
+  mostFrequentInstrument: String = "Unknown",
   platformCounts: mutable.Map[String, Int] = mutable.Map(),
   genomeSize: Long = 0,
   averageDepth: Double = 0.0

@@ -193,13 +193,15 @@ object GenomeNavigatorApp extends JFXApp3 {
     }
 
     addStat("PDS User ID:", summary.pdsUserId, 0)
-    addStat("Aligner:", summary.libraryStats.aligner, 1)
-    addStat("Reference:", summary.libraryStats.referenceBuild, 2)
-    addStat("Genome Size:", f"${summary.libraryStats.genomeSize}%,d", 3)
-    addStat("Callable Bases:", f"${summary.callableBases}%,d", 4)
+    addStat("Sample Name:", summary.libraryStats.sampleName, 1)
+    addStat("Aligner:", summary.libraryStats.aligner, 2)
+    addStat("Instrument:", summary.libraryStats.mostFrequentInstrument, 3)
+    addStat("Reference:", summary.libraryStats.referenceBuild, 4)
+    addStat("Genome Size:", f"${summary.libraryStats.genomeSize}%,d", 5)
+    addStat("Callable Bases:", f"${summary.callableBases}%,d", 6)
     val callablePercent = if (summary.libraryStats.genomeSize > 0) (summary.callableBases.toDouble / summary.libraryStats.genomeSize * 100) else 0.0
-    addStat("Callable Percentage:", f"$callablePercent%.2f%%", 5)
-    addStat("Average Depth:", f"${summary.libraryStats.averageDepth}%.2fx", 6)
+    addStat("Callable Percentage:", f"$callablePercent%.2f%%", 7)
+    addStat("Average Depth:", f"${summary.libraryStats.averageDepth}%.2fx", 8)
 
     val optInCheck = new CheckBox("I agree to upload my anonymized summary data.") {
       selected = true
