@@ -1,0 +1,32 @@
+package com.decodingus.model
+
+case class WgsMetrics(
+  genomeTerritory: Long = 0,
+  meanCoverage: Double = 0.0,
+  sdCoverage: Double = 0.0,
+  medianCoverage: Double = 0.0,
+  madCoverage: Double = 0.0,
+  pctExcMapq: Double = 0.0,
+  pctExcDupe: Double = 0.0,
+  pctExcUnpaired: Double = 0.0,
+  pctExcBaseq: Double = 0.0,
+  pctExcOverlap: Double = 0.0,
+  pctExcCapped: Double = 0.0,
+  pctExcTotal: Double = 0.0,
+  pct1x: Double = 0.0,
+  pct5x: Double = 0.0,
+  pct10x: Double = 0.0,
+  pct15x: Double = 0.0,
+  pct20x: Double = 0.0,
+  pct25x: Double = 0.0,
+  pct30x: Double = 0.0,
+  pct40x: Double = 0.0,
+  pct50x: Double = 0.0,
+  pct60x: Double = 0.0,
+  pct70x: Double = 0.0,
+  pct80x: Double = 0.0,
+  pct90x: Double = 0.0,
+  pct100x: Double = 0.0,
+  hetSnpSensitivity: Double = 0.0,
+  hetSnpQ: Double = 0.0
+)

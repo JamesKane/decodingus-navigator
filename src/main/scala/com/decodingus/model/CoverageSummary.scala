@@ -26,12 +26,14 @@ case class ContigSummary(
  *
  * @param pdsUserId The user's Personal Data Store ID.
  * @param libraryStats The statistics gathered from the BAM/CRAM library.
+ * @param wgsMetrics The whole genome sequencing metrics from GATK.
  * @param callableBases The total number of callable bases across all contigs.
  * @param contigAnalysis A list of summaries for each processed contig.
  */
 case class CoverageSummary(
   pdsUserId: String,
   libraryStats: LibraryStats,
+  wgsMetrics: WgsMetrics,
   callableBases: Long,
   contigAnalysis: List[ContigSummary]
 )

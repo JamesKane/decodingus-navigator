@@ -1,7 +1,7 @@
 package com.decodingus.ui
 
-import com.decodingus.analysis.{CallableLociProcessor, CallableLociResult, LibraryStatsProcessor}
-import com.decodingus.model.{ContigSummary, CoverageSummary, LibraryStats}
+import com.decodingus.analysis.{CallableLociProcessor, CallableLociResult, LibraryStatsProcessor, WgsMetricsProcessor}
+import com.decodingus.model.{ContigSummary, CoverageSummary, LibraryStats, WgsMetrics}
 import com.decodingus.pds.PdsClient
 import javafx.concurrent as jfxc
 import scalafx.Includes.*
@@ -35,7 +35,7 @@ object GenomeNavigatorApp extends JFXApp3 {
   override def start(): Unit = {
     stage = new PrimaryStage {
       title = "Decoding-Us Navigator"
-      scene = new Scene(800, 800) { // Increased height for the table and SVG
+      scene = new Scene(800, 800) {
         root = mainLayout
         stylesheets.add(getClass.getResource("/style.css").toExternalForm)
       }
@@ -135,34 +135,41 @@ object GenomeNavigatorApp extends JFXApp3 {
       override def call(): (CoverageSummary, List[String]) = {
         try {
           val libraryStatsProcessor = new LibraryStatsProcessor()
+          val wgsMetricsProcessor = new WgsMetricsProcessor()
           val callableLociProcessor = new CallableLociProcessor()
           val referencePath = "/Library/Genomics/Reference/chm13v2.0/chm13v2.0.fa.gz"
 
-          // Phase 1: Library Stats
+          // Phase 1: Library Stats (quick scan)
           val libraryStats = libraryStatsProcessor.process(filePath, (message, current, total) => {
             Platform.runLater { progressLabel.text = s"Library Stats: $message" }
-            updateProgress(current, total * 2) // 0-50%
+            updateProgress(current, total * 3) // 0-33%
           })
 
-          val platform = libraryStats.platformCounts.toSeq.sortBy(-_._2).headOption.map(_._1).getOrElse("Unknown")
           Platform.runLater {
             intermediateSummaryBox.children = Seq(
               new Label(s"Sample: ${libraryStats.sampleName}") { styleClass.add("info-label") },
               new Label(s"Reference: ${libraryStats.referenceBuild}") { styleClass.add("info-label") },
-              new Label(s"Platform: $platform") { styleClass.add("info-label") }
+              new Label(s"Platform: ${libraryStats.inferredPlatform}") { styleClass.add("info-label") }
             )
             intermediateSummaryBox.visible = true
           }
 
-          // Phase 2: Callable Loci Analysis
+          // Phase 2: WGS Metrics
+          val wgsMetrics = wgsMetricsProcessor.process(filePath, referencePath, (message, current, total) => {
+            Platform.runLater { progressLabel.text = message }
+            updateProgress(total + current, total * 3) // 33-66%
+          })
+
+          // Phase 3: Callable Loci Analysis
           val (callableLociResult, svgStrings) = callableLociProcessor.process(filePath, referencePath, (message, current, total) => {
             Platform.runLater { progressLabel.text = s"Callable Loci: $message" }
-            updateProgress(total + current, total * 2) // 50-100%
+            updateProgress(total * 2 + current, total * 3) // 66-100%
           })
 
           val coverageSummary = CoverageSummary(
             pdsUserId = "60820188481374", // placeholder
             libraryStats = libraryStats,
+            wgsMetrics = wgsMetrics,
             callableBases = callableLociResult.callableBases,
             contigAnalysis = callableLociResult.contigAnalysis
           )
@@ -226,13 +233,14 @@ object GenomeNavigatorApp extends JFXApp3 {
     addStat("PDS User ID:", summary.pdsUserId, 0)
     addStat("Sample Name:", summary.libraryStats.sampleName, 1)
     addStat("Aligner:", summary.libraryStats.aligner, 2)
-    addStat("Instrument:", summary.libraryStats.mostFrequentInstrument, 3)
-    addStat("Reference:", summary.libraryStats.referenceBuild, 4)
-    addStat("Genome Size:", f"${summary.libraryStats.genomeSize}%,d", 5)
-    addStat("Callable Bases:", f"${summary.callableBases}%,d", 6)
-    val callablePercent = if (summary.libraryStats.genomeSize > 0) (summary.callableBases.toDouble / summary.libraryStats.genomeSize * 100) else 0.0
-    addStat("Callable Percentage:", f"$callablePercent%.2f%%", 7)
-    addStat("Average Depth:", f"${summary.libraryStats.averageDepth}%.2fx", 8)
+    addStat("Platform:", summary.libraryStats.inferredPlatform, 3)
+    addStat("Instrument:", summary.libraryStats.mostFrequentInstrument, 4)
+    addStat("Reference:", summary.libraryStats.referenceBuild, 5)
+    addStat("Genome Size:", f"${summary.wgsMetrics.genomeTerritory}%,d", 6)
+    addStat("Mean Coverage:", f"${summary.wgsMetrics.meanCoverage}%.2fx", 7)
+    addStat("Callable Bases:", f"${summary.callableBases}%,d", 8)
+    val callablePercent = if (summary.wgsMetrics.genomeTerritory > 0) (summary.callableBases.toDouble / summary.wgsMetrics.genomeTerritory * 100) else 0.0
+    addStat("Callable Percentage:", f"$callablePercent%.2f%%", 9)
 
     val contigBreakdownTitle = new Label("🧬 Contig Breakdown") {
       styleClass.add("title-label")

@@ -6,8 +6,12 @@ import htsjdk.samtools.{SAMProgramRecord, SamReaderFactory, ValidationStringency
 import java.io.File
 import scala.collection.mutable
 import scala.jdk.CollectionConverters.*
+import scala.util.boundary
+import scala.util.boundary.break
 
 class LibraryStatsProcessor {
+
+  private val MAX_SAMPLES = 10000
 
   def process(bamPath: String, onProgress: (String, Long, Long) => Unit): LibraryStats = {
     val samReader = SamReaderFactory.makeDefault().validationStringency(ValidationStringency.SILENT).open(new File(bamPath))
@@ -15,14 +19,10 @@ class LibraryStatsProcessor {
 
     val aligner = detectAligner(header.getProgramRecords.asScala.toList)
     val referenceBuild = header.getSequenceDictionary.getSequences.asScala.headOption.map(_.getSequenceName).getOrElse("Unknown")
-    val genomeSize = header.getSequenceDictionary.getReferenceLength
     val sampleName = header.getReadGroups.asScala.headOption.map(_.getSample).getOrElse("Unknown")
 
     var readCount = 0
-    var totalReadLength = 0L
     var pairedReads = 0
-    var totalInsertSize = 0L
-    var pairedCount = 0
     val lengthDistribution = mutable.Map[Int, Int]()
     val insertSizeDistribution = mutable.Map[Long, Int]()
     val platformCounts = mutable.Map[String, Int]()
@@ -30,55 +30,58 @@ class LibraryStatsProcessor {
     val flowCells = mutable.Map[String, Int]()
 
     val recordIterator = samReader.iterator().asScala
-    var processedRecords = 0L
-    val totalRecordsProxy = 100000000L // A large number for progress reporting
+    var processedRecords = 0
 
-    for (record <- recordIterator) {
-      processedRecords += 1
-      if (!record.isSecondaryOrSupplementary) {
-        readCount += 1
-        val seqLen = record.getReadLength
-        totalReadLength += seqLen
-        lengthDistribution(seqLen) = lengthDistribution.getOrElse(seqLen, 0) + 1
-
-        val qname = record.getReadName
-        val platform = detectPlatformFromQname(qname)
-        platformCounts(platform) = platformCounts.getOrElse(platform, 0) + 1
-
-        parseInstrumentAndFlowcell(qname, platform).foreach { case (instrument, flowcell) =>
-          instrument.foreach(i => instruments(i) = instruments.getOrElse(i, 0) + 1)
-          flowcell.foreach(f => flowCells(f) = flowCells.getOrElse(f, 0) + 1)
+    boundary {
+      for (record <- recordIterator) {
+        if (processedRecords >= MAX_SAMPLES) {
+          break(buildLibraryStats(readCount, pairedReads, lengthDistribution, insertSizeDistribution, aligner, referenceBuild, sampleName, flowCells, instruments, platformCounts))
         }
 
-        if (record.getReadPairedFlag) {
-          pairedReads += 1
-          if (record.getProperPairFlag && record.getFirstOfPairFlag) {
-            val insertSize = record.getInferredInsertSize.abs
-            if (insertSize > 0) {
-              insertSizeDistribution(insertSize) = insertSizeDistribution.getOrElse(insertSize, 0) + 1
-              totalInsertSize += insertSize
-              pairedCount += 1
+        processedRecords += 1
+        if (!record.isSecondaryOrSupplementary) {
+          readCount += 1
+          val seqLen = record.getReadLength
+          lengthDistribution(seqLen) = lengthDistribution.getOrElse(seqLen, 0) + 1
+
+          val qname = record.getReadName
+          val platform = detectPlatformFromQname(qname)
+          platformCounts(platform) = platformCounts.getOrElse(platform, 0) + 1
+
+          parseInstrumentAndFlowcell(qname, platform).foreach { case (instrument, flowcell) =>
+            instrument.foreach(i => instruments(i) = instruments.getOrElse(i, 0) + 1)
+            flowcell.foreach(f => flowCells(f) = flowCells.getOrElse(f, 0) + 1)
+          }
+
+          if (record.getReadPairedFlag) {
+            pairedReads += 1
+            if (record.getProperPairFlag && record.getFirstOfPairFlag) {
+              val insertSize = record.getInferredInsertSize.abs
+              if (insertSize > 0) {
+                insertSizeDistribution(insertSize) = insertSizeDistribution.getOrElse(insertSize, 0) + 1
+              }
             }
           }
         }
-      }
 
-      if (processedRecords % 100000 == 0) {
-        onProgress(s"Processed $processedRecords reads...", processedRecords, totalRecordsProxy)
+        if (processedRecords % 1000 == 0) {
+          onProgress(s"Scanned $processedRecords reads...", processedRecords, MAX_SAMPLES)
+        }
       }
     }
 
     samReader.close()
+    buildLibraryStats(readCount, pairedReads, lengthDistribution, insertSizeDistribution, aligner, referenceBuild, sampleName, flowCells, instruments, platformCounts)
+  }
 
-    val averageDepth = if (genomeSize > 0) totalReadLength.toDouble / genomeSize else 0.0
+  private def buildLibraryStats(readCount: Int, pairedReads: Int, lengthDistribution: mutable.Map[Int, Int], insertSizeDistribution: mutable.Map[Long, Int], aligner: String, referenceBuild: String, sampleName: String, flowCells: mutable.Map[String, Int], instruments: mutable.Map[String, Int], platformCounts: mutable.Map[String, Int]): LibraryStats = {
     val mostFrequentInstrument = instruments.toSeq.sortBy(-_._2).headOption.map(_._1).getOrElse("Unknown")
+    val primaryPlatform = platformCounts.toSeq.sortBy(-_._2).headOption.map(_._1).getOrElse("Unknown")
+    val inferredPlatform = inferPlatform(primaryPlatform, mostFrequentInstrument)
 
     LibraryStats(
       readCount = readCount,
-      totalReadLength = totalReadLength,
       pairedReads = pairedReads,
-      totalInsertSize = totalInsertSize,
-      pairedCount = pairedCount,
       lengthDistribution = lengthDistribution,
       insertSizeDistribution = insertSizeDistribution,
       aligner = aligner,
@@ -87,10 +90,41 @@ class LibraryStatsProcessor {
       flowCells = flowCells,
       instruments = instruments,
       mostFrequentInstrument = mostFrequentInstrument,
-      platformCounts = platformCounts,
-      genomeSize = genomeSize,
-      averageDepth = averageDepth
+      inferredPlatform = inferredPlatform,
+      platformCounts = platformCounts
     )
+  }
+
+  private def inferPlatform(platform: String, instrumentId: String): String = {
+    platform match {
+      case "Illumina" =>
+        instrumentId.headOption match {
+          case Some('A' | 'a') => "NovaSeq"
+          case Some('D' | 'd') => "HiSeq 2500"
+          case Some('J' | 'j') => "HiSeq 3000"
+          case Some('K' | 'k') => "HiSeq 4000"
+          case Some('E' | 'e') => "HiSeq X"
+          case Some('N' | 'n') => "NextSeq"
+          case Some('M' | 'm') => "MiSeq"
+          case Some('V' | 'v') => "NovaSeq X"
+          case Some('F' | 'f') => "iSeq"
+          case _ => "Unknown Illumina"
+        }
+      case "PacBio" =>
+        if (instrumentId.startsWith("m84")) "PacBio Revio"
+        else if (instrumentId.startsWith("m64")) "PacBio Sequel II/IIe"
+        else if (instrumentId.startsWith("m54")) "PacBio Sequel"
+        else "PacBio"
+      case "MGI" =>
+        if (instrumentId.startsWith("V300")) "MGI DNBSEQ/MGISEQ-2000"
+        else if (instrumentId.startsWith("E100")) "MGI MGISEQ-200"
+        else if (instrumentId.startsWith("CL100")) "MGI MGISEQ-T7"
+        else if (instrumentId.startsWith("G400")) "MGI DNBSEQ-G400"
+        else if (instrumentId.startsWith("G99")) "MGI MGISEQ-T1"
+        else "MGI DNBseq"
+      case "Nanopore" => "Oxford Nanopore"
+      case _ => "Unknown"
+    }
   }
 
   private def detectAligner(programRecords: List[SAMProgramRecord]): String = {
