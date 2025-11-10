@@ -1,0 +1,39 @@
+# IntelliJ IDEA
+.idea/
+*.iml
+*.ipr
+*.iws
+out/
+
+# SBT
+.bsp/
+target/
+project/target/
+project/project/
+.sbt/
+.scala_dependencies/
+
+# Scala
+.metals/
+.bloop/
+
+# Build artifacts
+*.jar
+*.war
+*.zip
+*.tar.gz
+*.class
+
+# Logs
+*.log
+
+# OS-specific
+.DS_Store
+Thumbs.db
+
+# gemini.cli temporary directory
+.gemini/
+
+# Other common exclusions
+tmp/
+temp/
