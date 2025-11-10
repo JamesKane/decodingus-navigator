@@ -1,7 +1,7 @@
 package com.decodingus.analysis
 
 import com.decodingus.model.LibraryStats
-import htsjdk.samtools.{SAMProgramRecord, SamReaderFactory, ValidationStringency}
+import htsjdk.samtools.{SAMFileHeader, SAMProgramRecord, SamReaderFactory, ValidationStringency}
 
 import java.io.File
 import scala.collection.mutable
@@ -17,8 +17,8 @@ class LibraryStatsProcessor {
     val samReader = SamReaderFactory.makeDefault().validationStringency(ValidationStringency.SILENT).open(new File(bamPath))
     val header = samReader.getFileHeader
 
-    val aligner = detectAligner(header.getProgramRecords.asScala.toList)
-    val referenceBuild = header.getSequenceDictionary.getSequences.asScala.headOption.map(_.getSequenceName).getOrElse("Unknown")
+    val aligner = detectAligner(header)
+    val referenceBuild = detectReferenceBuild(header)
     val sampleName = header.getReadGroups.asScala.headOption.map(_.getSample).getOrElse("Unknown")
 
     var readCount = 0
@@ -127,8 +127,42 @@ class LibraryStatsProcessor {
     }
   }
 
-  private def detectAligner(programRecords: List[SAMProgramRecord]): String = {
-    programRecords.headOption.map(_.getProgramName).getOrElse("Unknown")
+  private def detectAligner(header: SAMFileHeader): String = {
+    val headerText = header.getTextHeader.toLowerCase
+    if (headerText.contains("@pg\tid:bwa")) "BWA"
+    else if (headerText.contains("@pg\tid:minimap2")) "minimap2"
+    else if (headerText.contains("@pg\tid:bowtie2")) "Bowtie2"
+    else if (headerText.contains("@pg\tid:star")) "STAR"
+    else if (headerText.contains("bwa")) "BWA"
+    else if (headerText.contains("minimap2")) "minimap2"
+    else if (headerText.contains("bowtie2")) "Bowtie2"
+    else if (headerText.contains("star")) "STAR"
+    else "Unknown"
+  }
+
+  private def detectReferenceBuild(header: SAMFileHeader): String = {
+    val headerText = header.getTextHeader
+    if (headerText.contains("AS:GRCh38") || headerText.contains("GCA_000001405.15")) {
+      "GRCh38"
+    } else if (headerText.contains("AS:GRCh37") || headerText.contains("GCA_000001405.1")) {
+      "GRCh37"
+    } else if (headerText.contains("AS:CHM13") || headerText.contains("GCA_009914755.4")) {
+      "CHM13v2"
+    } else if (headerText.contains("chm13") || headerText.contains("CHM13") || headerText.contains("t2t") || headerText.contains("T2T")) {
+      "CHM13v2"
+    } else if (headerText.contains("SN:chr1") && headerText.contains("LN:248387328")) {
+      if (headerText.contains("M5:e469247288ceb332aee524caec92bb22")) {
+        "CHM13v2"
+      } else {
+        "Unknown"
+      }
+    } else if (headerText.contains("SN:chr1") && headerText.contains("LN:248956422")) {
+      "GRCh38"
+    } else if (headerText.contains("SN:1") && headerText.contains("LN:249250621")) {
+      "GRCh37"
+    } else {
+      "Unknown"
+    }
   }
 
   private def detectPlatformFromQname(qname: String): String = {
