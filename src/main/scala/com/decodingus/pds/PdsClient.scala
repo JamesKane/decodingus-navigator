@@ -1,6 +1,7 @@
 package com.decodingus.pds
 
 import com.decodingus.model.CoverageSummary
+
 import scala.concurrent.{ExecutionContext, Future}
 
 object PdsClient {
