@@ -1,7 +1,7 @@
 package com.decodingus.ui
 
-import com.decodingus.analysis.CallableLociProcessor
-import com.decodingus.model.CoverageSummary
+import com.decodingus.analysis.{CallableLociProcessor, CallableLociResult, LibraryStatsProcessor}
+import com.decodingus.model.{CoverageSummary, LibraryStats}
 import com.decodingus.pds.PdsClient
 import javafx.concurrent as jfxc
 import scalafx.Includes.*
@@ -110,23 +110,26 @@ object GenomeNavigatorApp extends JFXApp3 {
 
     mainLayout.children = progressScreen
 
-    val jfxTask = new jfxc.Task[CoverageSummary]() {
-      override def call(): CoverageSummary = {
+    val jfxTask = new jfxc.Task[(LibraryStats, CallableLociResult)]() {
+      override def call(): (LibraryStats, CallableLociResult) = {
         try {
-          val processor = new CallableLociProcessor()
+          val libraryStatsProcessor = new LibraryStatsProcessor()
+          val callableLociProcessor = new CallableLociProcessor()
           val referencePath = "/Library/Genomics/Reference/chm13v2.0/chm13v2.0.fa.gz"
 
-          val (summary, _) = processor.process(filePath, referencePath, (message, current, total) => {
-            Platform.runLater {
-              progressLabel.text = message
-            }
-            updateProgress(current, total)
+          // Phase 1: Library Stats
+          val libraryStats = libraryStatsProcessor.process(filePath, (message, current, total) => {
+            Platform.runLater { progressLabel.text = s"Library Stats: $message" }
+            updateProgress(current, total * 2) // 0-50%
           })
 
-          Platform.runLater {
-            progressLabel.text = "Analysis complete."
-          }
-          summary
+          // Phase 2: Callable Loci Analysis
+          val (callableLociResult, _) = callableLociProcessor.process(filePath, referencePath, (message, current, total) => {
+            Platform.runLater { progressLabel.text = s"Callable Loci: $message" }
+            updateProgress(total + current, total * 2) // 50-100%
+          })
+
+          (libraryStats, callableLociResult)
         } catch {
           case e: Exception =>
             e.printStackTrace()
@@ -140,8 +143,14 @@ object GenomeNavigatorApp extends JFXApp3 {
     progressIndicator.progress <== jfxTask.progressProperty
 
     jfxTask.setOnSucceeded(_ => {
-      val results = jfxTask.getValue
-      showResults(results)
+      val (libraryStats, callableLociResult) = jfxTask.getValue
+      val coverageSummary = CoverageSummary(
+        pdsUserId = "60820188481374", // placeholder
+        libraryStats = libraryStats,
+        callableBases = callableLociResult.callableBases,
+        contigAnalysis = callableLociResult.contigAnalysis
+      )
+      showResults(coverageSummary)
     })
 
     jfxTask.setOnFailed(_ => {
@@ -184,13 +193,13 @@ object GenomeNavigatorApp extends JFXApp3 {
     }
 
     addStat("PDS User ID:", summary.pdsUserId, 0)
-    addStat("Platform Source:", summary.platformSource, 1)
-    addStat("Reference:", summary.reference, 2)
-    addStat("Total Bases:", f"${summary.totalBases}%,d", 3)
+    addStat("Aligner:", summary.libraryStats.aligner, 1)
+    addStat("Reference:", summary.libraryStats.referenceBuild, 2)
+    addStat("Genome Size:", f"${summary.libraryStats.genomeSize}%,d", 3)
     addStat("Callable Bases:", f"${summary.callableBases}%,d", 4)
-    val callablePercent = if (summary.totalBases > 0) (summary.callableBases.toDouble / summary.totalBases * 100) else 0.0
+    val callablePercent = if (summary.libraryStats.genomeSize > 0) (summary.callableBases.toDouble / summary.libraryStats.genomeSize * 100) else 0.0
     addStat("Callable Percentage:", f"$callablePercent%.2f%%", 5)
-    addStat("Average Depth:", f"${summary.averageDepth}%.2fx", 6)
+    addStat("Average Depth:", f"${summary.libraryStats.averageDepth}%.2fx", 6)
 
     val optInCheck = new CheckBox("I agree to upload my anonymized summary data.") {
       selected = true

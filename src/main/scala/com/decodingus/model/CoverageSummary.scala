@@ -25,23 +25,13 @@ case class ContigSummary(
  * Represents the final JSON report for the callable loci analysis.
  *
  * @param pdsUserId The user's Personal Data Store ID.
- * @param platformSource The sequencing platform source (e.g., "bwa-mem2").
- * @param reference The reference genome used (e.g., "T2T-CHM13v2.0").
- * @param totalReads The total number of reads in the input file.
- * @param readLength The average read length.
- * @param totalBases The total number of bases analyzed across all contigs.
+ * @param libraryStats The statistics gathered from the BAM/CRAM library.
  * @param callableBases The total number of callable bases across all contigs.
- * @param averageDepth The estimated average sequencing depth.
  * @param contigAnalysis A list of summaries for each processed contig.
  */
 case class CoverageSummary(
   pdsUserId: String,
-  platformSource: String,
-  reference: String,
-  totalReads: Long,
-  readLength: Int,
-  totalBases: Long,
+  libraryStats: LibraryStats,
   callableBases: Long,
-  averageDepth: Double,
   contigAnalysis: List[ContigSummary]
 )

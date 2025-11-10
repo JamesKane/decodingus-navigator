@@ -1,0 +1,75 @@
+.root-pane {
+    -fx-background-color: #282828;
+}
+
+.title-label {
+    -fx-font-size: 24px;
+    -fx-font-weight: bold;
+    -fx-text-fill: #E0E0E0;
+}
+
+.info-label {
+    -fx-font-size: 14px;
+    -fx-text-fill: #B0B0B0;
+}
+
+.progress-label {
+    -fx-font-size: 20px;
+    -fx-font-weight: bold;
+    -fx-text-fill: #E0E0E0;
+}
+
+.drag-drop-area {
+    -fx-border-color: #606060;
+    -fx-border-width: 2;
+    -fx-border-style: dashed;
+    -fx-background-color: #303030;
+}
+
+.drag-drop-text {
+    -fx-font-size: 18px;
+    -fx-text-fill: #909090;
+}
+
+.button-select {
+    -fx-background-color: #4CAF50;
+    -fx-text-fill: white;
+    -fx-font-size: 16px;
+    -fx-padding: 10 20;
+}
+
+.button-upload {
+    -fx-background-color: #2196F3;
+    -fx-text-fill: white;
+    -fx-font-size: 16px;
+    -fx-padding: 10 20;
+}
+
+.button-success {
+    -fx-background-color: #4CAF50;
+    -fx-text-fill: white;
+    -fx-font-size: 16px;
+    -fx-padding: 10 20;
+}
+
+.stats-grid {
+    -fx-background-color: #383838;
+    -fx-background-radius: 10;
+}
+
+.stat-name {
+    -fx-fill: #B0B0B0;
+    -fx-font-size: 14px;
+}
+
+.stat-value {
+    -fx-fill: #FFFFFF;
+    -fx-font-size: 14px;
+    -fx-font-weight: bold;
+}
+
+.error-label {
+    -fx-font-size: 20px;
+    -fx-font-weight: bold;
+    -fx-text-fill: #FF5252;
+}

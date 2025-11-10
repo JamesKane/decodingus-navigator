@@ -1,6 +1,6 @@
 package com.decodingus.analysis
 
-import com.decodingus.model.{ContigSummary, CoverageSummary}
+import com.decodingus.model.{ContigSummary, CoverageSummary, LibraryStats}
 import htsjdk.samtools.reference.ReferenceSequenceFileFactory
 import org.broadinstitute.hellbender.Main
 
@@ -9,6 +9,11 @@ import java.nio.file.Files
 import scala.collection.mutable.ListBuffer
 import scala.io.Source
 import scala.util.Using
+
+case class CallableLociResult(
+  callableBases: Long,
+  contigAnalysis: List[ContigSummary]
+)
 
 class CallableLociProcessor {
 
@@ -32,7 +37,7 @@ class CallableLociProcessor {
   private val AXIS_COLOR = "#CCCCCC"
   private val TICK_COLOR = "#FFFF00"
 
-  def process(bamPath: String, referencePath: String, onProgress: (String, Int, Int) => Unit): (CoverageSummary, List[String]) = {
+  def process(bamPath: String, referencePath: String, onProgress: (String, Int, Int) => Unit): (CallableLociResult, List[String]) = {
     val referenceFile = new File(referencePath)
     val dictionary = ReferenceSequenceFileFactory.getReferenceSequenceFile(referenceFile).getSequenceDictionary
     val contigs = dictionary.getSequences.toArray.map(_.asInstanceOf[htsjdk.samtools.SAMSequenceRecord])
@@ -75,22 +80,14 @@ class CallableLociProcessor {
       allContigSummaries += contigSummary
     }
 
-    val totalBases = allContigSummaries.map(s => s.callable + s.noCoverage + s.lowCoverage + s.excessiveCoverage + s.poorMappingQuality + s.refN).sum
     val callableBases = allContigSummaries.map(_.callable).sum
 
-    val coverageSummary = CoverageSummary(
-      pdsUserId = "60820188481374",
-      platformSource = "bwa-mem2",
-      reference = "T2T-CHM13v2.0",
-      totalReads = 21206068,
-      readLength = 147,
-      totalBases = totalBases,
+    val result = CallableLociResult(
       callableBases = callableBases,
-      averageDepth = if (totalBases > 0) (21206068L * 147) / totalBases.toDouble else 0.0,
       contigAnalysis = allContigSummaries.toList
     )
 
-    (coverageSummary, allSvgStrings.toList)
+    (result, allSvgStrings.toList)
   }
 
   private def binIntervals(bedPath: String, contigName: String, contigLength: Int): Array[Array[Int]] = {
