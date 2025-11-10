@@ -12,7 +12,7 @@ import scala.util.Using
 
 class CallableLociProcessor {
 
-  // Constants from the Ruby script
+  // Constants
   private val MAX_SVG_WIDTH = 2000
   private val SVG_HEIGHT_PER_CONTIG = 50
   private val BAR_HEIGHT = 200
@@ -32,10 +32,12 @@ class CallableLociProcessor {
   private val AXIS_COLOR = "#CCCCCC"
   private val TICK_COLOR = "#FFFF00"
 
-  def process(bamPath: String, referencePath: String): (CoverageSummary, List[String]) = {
+  def process(bamPath: String, referencePath: String, onProgress: (String, Int, Int) => Unit): (CoverageSummary, List[String]) = {
     val referenceFile = new File(referencePath)
     val dictionary = ReferenceSequenceFileFactory.getReferenceSequenceFile(referenceFile).getSequenceDictionary
-    val contigLengths = dictionary.getSequences.toArray.map(s => s.asInstanceOf[htsjdk.samtools.SAMSequenceRecord].getSequenceName -> s.asInstanceOf[htsjdk.samtools.SAMSequenceRecord].getSequenceLength).toMap
+    val contigs = dictionary.getSequences.toArray.map(_.asInstanceOf[htsjdk.samtools.SAMSequenceRecord])
+    val totalContigs = contigs.length
+    val contigLengths = contigs.map(s => s.getSequenceName -> s.getSequenceLength).toMap
     val maxGenomeLength = if (contigLengths.values.isEmpty) 0 else contigLengths.values.max
 
     val outputDir = new File(OUTPUT_DIR_NAME)
@@ -46,14 +48,15 @@ class CallableLociProcessor {
     val allSvgStrings = ListBuffer[String]()
     val allContigSummaries = ListBuffer[ContigSummary]()
 
-    for (contig <- dictionary.getSequences.toArray.map(_.asInstanceOf[htsjdk.samtools.SAMSequenceRecord])) {
+    for ((contig, index) <- contigs.zipWithIndex) {
       val contigName = contig.getSequenceName
       val contigLength = contig.getSequenceLength
+
+      onProgress(s"Analyzing contig: $contigName (${index + 1} of $totalContigs)", index + 1, totalContigs)
 
       val bedFile = new File(outputDir, s"$contigName.callable.bed")
       val summaryFile = new File(outputDir, s"$contigName.table.txt")
 
-      println(s"Running CallableLoci for contig: $contigName")
       val args = Array(
         "CallableLoci",
         "-I", bamPath,

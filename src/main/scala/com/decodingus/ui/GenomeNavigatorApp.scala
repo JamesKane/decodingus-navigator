@@ -116,17 +116,16 @@ object GenomeNavigatorApp extends JFXApp3 {
           val processor = new CallableLociProcessor()
           val referencePath = "/Library/Genomics/Reference/chm13v2.0/chm13v2.0.fa.gz"
 
-          Platform.runLater {
-            progressLabel.text = "Running analysis..."
-          }
-          updateProgress(1, 2)
-
-          val (summary, _) = processor.process(filePath, referencePath)
+          val (summary, _) = processor.process(filePath, referencePath, (message, current, total) => {
+            Platform.runLater {
+              progressLabel.text = message
+            }
+            updateProgress(current, total)
+          })
 
           Platform.runLater {
             progressLabel.text = "Analysis complete."
           }
-          updateProgress(2, 2)
           summary
         } catch {
           case e: Exception =>
