@@ -1,6 +1,7 @@
 package com.decodingus.ui
 
 import com.decodingus.analysis.{CallableLociProcessor, CallableLociResult, LibraryStatsProcessor, WgsMetricsProcessor}
+import com.decodingus.config.FeatureToggles
 import com.decodingus.model.{ContigSummary, CoverageSummary, LibraryStats, WgsMetrics}
 import com.decodingus.pds.PdsClient
 import javafx.concurrent as jfxc
@@ -295,42 +296,47 @@ object GenomeNavigatorApp extends JFXApp3 {
       }
     }
 
-    val pdsBox = new VBox(15) {
+    val resultsVBox = new VBox(20) {
       alignment = Pos.Center
+      styleClass.add("root-pane")
       padding = Insets(20)
-      children = Seq(
-        new Label("Help advance research by securely contributing your anonymized summary data to your Personal Data Store.") {
-          wrapText = true
-          textAlignment = TextAlignment.Center
-          styleClass.add("info-label")
-        },
-        new CheckBox("I agree to upload my anonymized summary data.") {
-          selected = true
-          style = "-fx-text-fill: #E0E0E0; -fx-font-size: 14px;"
-        },
-        new Button("Upload to PDS") {
-          styleClass.add("button-upload")
-          onAction = _ => {
-            PdsClient.uploadSummary(summary).foreach { _ =>
-              Platform.runLater {
-                text = "Upload Complete!"
-                styleClass.remove("button-upload")
-                styleClass.add("button-success")
-                disable = true
+      children = Seq(resultsTitle, statsGrid, new Separator(), contigBreakdownTitle, contigTable, webView)
+    }
+
+    if (FeatureToggles.pdsSubmissionEnabled) {
+      val pdsBox = new VBox(15) {
+        alignment = Pos.Center
+        padding = Insets(20)
+        children = Seq(
+          new Label("Help advance research by securely contributing your anonymized summary data to your Personal Data Store.") {
+            wrapText = true
+            textAlignment = TextAlignment.Center
+            styleClass.add("info-label")
+          },
+          new CheckBox("I agree to upload my anonymized summary data.") {
+            selected = true
+            style = "-fx-text-fill: #E0E0E0; -fx-font-size: 14px;"
+          },
+          new Button("Upload to PDS") {
+            styleClass.add("button-upload")
+            onAction = _ => {
+              PdsClient.uploadSummary(summary).foreach { _ =>
+                Platform.runLater {
+                  text = "Upload Complete!"
+                  styleClass.remove("button-upload")
+                  styleClass.add("button-success")
+                  disable = true
+                }
               }
             }
           }
-        }
-      )
+        )
+      }
+      resultsVBox.children.addAll(new Separator(), pdsBox)
     }
 
     val resultsScreen = new ScrollPane {
-      content = new VBox(20) {
-        alignment = Pos.Center
-        styleClass.add("root-pane")
-        padding = Insets(20)
-        children = Seq(resultsTitle, statsGrid, new Separator(), contigBreakdownTitle, contigTable, webView, new Separator(), pdsBox)
-      }
+      content = resultsVBox
       fitToWidth = true
     }
 

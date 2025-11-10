@@ -31,7 +31,8 @@ lazy val root = (project in file("."))
         "io.circe" %% "circe-core" % "0.14.6",
         "io.circe" %% "circe-generic" % "0.14.6",
         "io.circe" %% "circe-parser" % "0.14.6",
-        "org.scalafx" %% "scalafx" % "21.0.0-R32"
+        "org.scalafx" %% "scalafx" % "21.0.0-R32",
+        "com.typesafe" % "config" % "1.4.3"
       )
     }
   )
