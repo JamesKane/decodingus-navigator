@@ -1,6 +1,6 @@
 package com.decodingus.analysis
 
-import com.decodingus.model.{ContigSummary, CoverageSummary, LibraryStats}
+import com.decodingus.model.ContigSummary
 import htsjdk.samtools.reference.ReferenceSequenceFileFactory
 import org.broadinstitute.hellbender.Main
 

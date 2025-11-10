@@ -1,10 +1,11 @@
 package com.decodingus.analysis
 
 import com.decodingus.model.LibraryStats
-import htsjdk.samtools.{SamReaderFactory, SAMRecord, SAMProgramRecord, ValidationStringency}
+import htsjdk.samtools.{SAMProgramRecord, SamReaderFactory, ValidationStringency}
+
 import java.io.File
-import scala.jdk.CollectionConverters._
 import scala.collection.mutable
+import scala.jdk.CollectionConverters.*
 
 class LibraryStatsProcessor {
 
