@@ -2,10 +2,12 @@ package com.decodingus.analysis
 
 import com.decodingus.model.{ContigSummary, CoverageSummary}
 import htsjdk.samtools.reference.ReferenceSequenceFileFactory
-import htsjdk.samtools.SAMSequenceDictionary
+import org.broadinstitute.hellbender.Main
+
 import java.io.File
-import scala.io.Source
+import java.nio.file.Files
 import scala.collection.mutable.ListBuffer
+import scala.io.Source
 import scala.util.Using
 
 class CallableLociProcessor {
@@ -20,6 +22,7 @@ class CallableLociProcessor {
   private val MARGIN_RIGHT = 30
   private val TOTAL_FIXED_HEIGHT = BAR_HEIGHT + SVG_HEIGHT_PER_CONTIG + MARGIN_BOTTOM
   private val STRIDE_LEN = 10000
+  private val OUTPUT_DIR_NAME = "callable_loci"
 
   // Colors
   private val COLOR_GREEN = "#007700"
@@ -35,6 +38,11 @@ class CallableLociProcessor {
     val contigLengths = dictionary.getSequences.toArray.map(s => s.asInstanceOf[htsjdk.samtools.SAMSequenceRecord].getSequenceName -> s.asInstanceOf[htsjdk.samtools.SAMSequenceRecord].getSequenceLength).toMap
     val maxGenomeLength = if (contigLengths.values.isEmpty) 0 else contigLengths.values.max
 
+    val outputDir = new File(OUTPUT_DIR_NAME)
+    if (!outputDir.exists()) {
+      Files.createDirectories(outputDir.toPath)
+    }
+
     val allSvgStrings = ListBuffer[String]()
     val allContigSummaries = ListBuffer[ContigSummary]()
 
@@ -42,14 +50,25 @@ class CallableLociProcessor {
       val contigName = contig.getSequenceName
       val contigLength = contig.getSequenceLength
 
-      val bedPath = s"callable_loci/$contigName.callable.bed"
-      val summaryPath = s"callable_loci/$contigName.table.txt"
+      val bedFile = new File(outputDir, s"$contigName.callable.bed")
+      val summaryFile = new File(outputDir, s"$contigName.table.txt")
 
-      val binData = binIntervals(bedPath, contigName, contigLength)
+      println(s"Running CallableLoci for contig: $contigName")
+      val args = Array(
+        "CallableLoci",
+        "-I", bamPath,
+        "-R", referencePath,
+        "-O", bedFile.getAbsolutePath,
+        "--summary", summaryFile.getAbsolutePath,
+        "-L", contigName
+      )
+      Main.main(args)
+
+      val binData = binIntervals(bedFile.getAbsolutePath, contigName, contigLength)
       val svgString = generateSvg(contigName, contigLength, maxGenomeLength, binData)
       allSvgStrings += svgString
 
-      val contigSummary = parseSummary(summaryPath, contigName)
+      val contigSummary = parseSummary(summaryFile.getAbsolutePath, contigName)
       allContigSummaries += contigSummary
     }
 
@@ -110,9 +129,10 @@ class CallableLociProcessor {
     val pixelsPerBin = drawableWidth / maxBin
 
     val svg = new StringBuilder
-    svg.append(s"""<svg width="${currentSvgWidth.round}" height="$TOTAL_FIXED_HEIGHT" viewBox="0 0 ${currentSvgWidth.round} $TOTAL_FIXED_HEIGHT" xmlns="http://www.w3.org/2000/svg" font-family="Arial, sans-serif">""")
-    svg.append(s"""  <rect x="0" y="0" width="${currentSvgWidth.round}" height="$TOTAL_FIXED_HEIGHT" fill="$BG_COLOR" />""")
-    svg.append(s"""  <text x="${currentSvgWidth / 2}" y="${MARGIN_TOP + 15}" text-anchor="middle" font-size="20" fill="$TEXT_COLOR">$contigName (Stride: ${STRIDE_LEN / 1000}kb)</text>""")
+    svg.append(s"""<svg width="${currentSvgWidth.round}" height="$TOTAL_FIXED_HEIGHT" viewBox="0 0 ${currentSvgWidth.round} $TOTAL_FIXED_HEIGHT" xmlns="http://www.w3.org/2000/svg" font-family="Arial, sans-serif">
+    <rect x="0" y="0" width="${currentSvgWidth.round}" height="$TOTAL_FIXED_HEIGHT" fill="$BG_COLOR" />
+    <text x="${currentSvgWidth / 2}" y="${MARGIN_TOP + 15}" text-anchor="middle" font-size="20" fill="$TEXT_COLOR">$contigName (Stride: ${STRIDE_LEN / 1000}kb)</text>
+  """)
 
     val drawYOffset = MARGIN_TOP + SVG_HEIGHT_PER_CONTIG
 
@@ -126,21 +146,21 @@ class CallableLociProcessor {
       if (callableDepth > 0) {
         val heightPx = (callableDepth * BAR_HEIGHT).round.toInt
         yPos -= heightPx
-        svg.append(s"""  <rect x="$binXStart" y="$yPos" width="$pixelsPerBin" height="$heightPx" fill="$COLOR_GREEN" />""")
+        svg.append(s"  <rect x=\"$binXStart\" y=\"$yPos\" width=\"$pixelsPerBin\" height=\"$heightPx\" fill=\"$COLOR_GREEN\" />")
       }
       if (poorQualDepth > 0) {
         val heightPx = (poorQualDepth * BAR_HEIGHT).round.toInt
         yPos -= heightPx
-        svg.append(s"""  <rect x="$binXStart" y="$yPos" width="$pixelsPerBin" height="$heightPx" fill="$COLOR_RED" />""")
+        svg.append(s"  <rect x=\"$binXStart\" y=\"$yPos\" width=\"$pixelsPerBin\" height=\"$heightPx\" fill=\"$COLOR_RED\" />")
       }
       if (otherDepth > 0) {
         val heightPx = (otherDepth * BAR_HEIGHT).round.toInt
         yPos -= heightPx
-        svg.append(s"""  <rect x="$binXStart" y="$yPos" width="$pixelsPerBin" height="$heightPx" fill="#AAAAAA" />""")
+        svg.append(s"  <rect x=\"$binXStart\" y=\"$yPos\" width=\"$pixelsPerBin\" height=\"$heightPx\" fill=\"#AAAAAA\" />")
       }
     }
 
-    svg.append(s"""  <line x1="$MARGIN_LEFT" y1="${drawYOffset + BAR_HEIGHT}" x2="${MARGIN_LEFT + drawableWidth}" y2="${drawYOffset + BAR_HEIGHT}" stroke="$AXIS_COLOR" stroke-width="1" />""")
+    svg.append(s"  <line x1=\"$MARGIN_LEFT\" y1=\"${drawYOffset + BAR_HEIGHT}\" x2=\"${MARGIN_LEFT + drawableWidth}\" y2=\"${drawYOffset + BAR_HEIGHT}\" stroke=\"$AXIS_COLOR\" stroke-width=\"1\" />")
 
     val textY = drawYOffset + BAR_HEIGHT + 15
     val tickYTop = drawYOffset + BAR_HEIGHT - 2
@@ -149,8 +169,8 @@ class CallableLociProcessor {
     (10000000 to contigLength by 10000000).foreach {
       mbMark =>
         val markX = MARGIN_LEFT + (mbMark.toDouble / contigLength * drawableWidth)
-        svg.append(s"""  <line x1="$markX" y1="$tickYTop" x2="$markX" y2="$tickYBottom" stroke="$TICK_COLOR" stroke-width="2" />""")
-        svg.append(s"""  <text x="$markX" y="$textY" text-anchor="middle" font-size="12" fill="$TICK_COLOR">${mbMark / 1000000}Mb</text>""")
+        svg.append(s"  <line x1=\"$markX\" y1=\"$tickYTop\" x2=\"$markX\" y2=\"$tickYBottom\" stroke=\"$TICK_COLOR\" stroke-width=\"2\" />")
+        svg.append(s"  <text x=\"$markX\" y=\"$textY\" text-anchor=\"middle\" font-size=\"12\" fill=\"$TICK_COLOR\">${mbMark / 1000000}Mb</text>")
     }
 
     svg.append("</svg>")
