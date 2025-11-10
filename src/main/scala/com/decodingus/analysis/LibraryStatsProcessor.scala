@@ -1,7 +1,7 @@
 package com.decodingus.analysis
 
 import com.decodingus.model.LibraryStats
-import htsjdk.samtools.{SAMFileHeader, SamReaderFactory, ValidationStringency}
+import htsjdk.samtools.{SAMFileHeader, SAMProgramRecord, SamReaderFactory, ValidationStringency}
 
 import java.io.File
 import scala.collection.mutable
@@ -13,8 +13,15 @@ class LibraryStatsProcessor {
 
   private val MAX_SAMPLES = 10000
 
-  def process(bamPath: String, onProgress: (String, Long, Long) => Unit): LibraryStats = {
-    val samReader = SamReaderFactory.makeDefault().validationStringency(ValidationStringency.SILENT).open(new File(bamPath))
+  def process(bamPath: String, referencePath: String, onProgress: (String, Long, Long) => Unit): LibraryStats = {
+    val samReaderFactory = SamReaderFactory.makeDefault().validationStringency(ValidationStringency.SILENT)
+
+    val samReader = if (bamPath.endsWith(".cram")) {
+      samReaderFactory.referenceSequence(new File(referencePath)).open(new File(bamPath))
+    } else {
+      samReaderFactory.open(new File(bamPath))
+    }
+      
     val header = samReader.getFileHeader
 
     val aligner = detectAligner(header)
@@ -128,40 +135,49 @@ class LibraryStatsProcessor {
   }
 
   private def detectAligner(header: SAMFileHeader): String = {
-    val headerText = header.getTextHeader.toLowerCase
-    if (headerText.contains("@pg\tid:bwa")) "BWA"
-    else if (headerText.contains("@pg\tid:minimap2")) "minimap2"
-    else if (headerText.contains("@pg\tid:bowtie2")) "Bowtie2"
-    else if (headerText.contains("@pg\tid:star")) "STAR"
-    else if (headerText.contains("bwa")) "BWA"
-    else if (headerText.contains("minimap2")) "minimap2"
-    else if (headerText.contains("bowtie2")) "Bowtie2"
-    else if (headerText.contains("star")) "STAR"
-    else "Unknown"
+    Option(header.getSAMString) match {
+      case Some(headerText) =>
+        val lowerHeaderText = headerText.toLowerCase
+        if (lowerHeaderText.contains("@pg\tid:bwa")) "BWA"
+        else if (lowerHeaderText.contains("@pg\tid:minimap2")) "minimap2"
+        else if (lowerHeaderText.contains("@pg\tid:bowtie2")) "Bowtie2"
+        else if (lowerHeaderText.contains("@pg\tid:star")) "STAR"
+        else if (lowerHeaderText.contains("bwa")) "BWA"
+        else if (lowerHeaderText.contains("minimap2")) "minimap2"
+        else if (lowerHeaderText.contains("bowtie2")) "Bowtie2"
+        else if (lowerHeaderText.contains("star")) "STAR"
+        else "Unknown"
+      case None =>
+        throw new IllegalStateException("BAM/SAM header text is null. The file may be corrupted or in an unsupported format.")
+    }
   }
 
   private def detectReferenceBuild(header: SAMFileHeader): String = {
-    val headerText = header.getTextHeader
-    if (headerText.contains("AS:GRCh38") || headerText.contains("GCA_000001405.15")) {
-      "GRCh38"
-    } else if (headerText.contains("AS:GRCh37") || headerText.contains("GCA_000001405.1")) {
-      "GRCh37"
-    } else if (headerText.contains("AS:CHM13") || headerText.contains("GCA_009914755.4")) {
-      "CHM13v2"
-    } else if (headerText.contains("chm13") || headerText.contains("CHM13") || headerText.contains("t2t") || headerText.contains("T2T")) {
-      "CHM13v2"
-    } else if (headerText.contains("SN:chr1") && headerText.contains("LN:248387328")) {
-      if (headerText.contains("M5:e469247288ceb332aee524caec92bb22")) {
-        "CHM13v2"
-      } else {
-        "Unknown"
-      }
-    } else if (headerText.contains("SN:chr1") && headerText.contains("LN:248956422")) {
-      "GRCh38"
-    } else if (headerText.contains("SN:1") && headerText.contains("LN:249250621")) {
-      "GRCh37"
-    } else {
-      "Unknown"
+    Option(header.getSAMString) match {
+      case Some(headerText) =>
+        if (headerText.contains("AS:GRCh38") || headerText.contains("GCA_000001405.15")) {
+          "GRCh38"
+        } else if (headerText.contains("AS:GRCh37") || headerText.contains("GCA_000001405.1")) {
+          "GRCh37"
+        } else if (headerText.contains("AS:CHM13") || headerText.contains("GCA_009914755.4")) {
+          "CHM13v2"
+        } else if (headerText.contains("chm13") || headerText.contains("CHM13") || headerText.contains("t2t") || headerText.contains("T2T")) {
+          "CHM13v2"
+        } else if (headerText.contains("SN:chr1") && headerText.contains("LN:248387328")) {
+          if (headerText.contains("M5:e469247288ceb332aee524caec92bb22")) {
+            "CHM13v2"
+          } else {
+            "Unknown"
+          }
+        } else if (headerText.contains("SN:chr1") && headerText.contains("LN:248956422")) {
+          "GRCh38"
+        } else if (headerText.contains("SN:1") && headerText.contains("LN:249250621")) {
+          "GRCh37"
+        } else {
+          "Unknown"
+        }
+      case None =>
+        throw new IllegalStateException("BAM/SAM header text is null. The file may be corrupted or in an unsupported format.")
     }
   }
 

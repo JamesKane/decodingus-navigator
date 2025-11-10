@@ -145,7 +145,7 @@ object GenomeNavigatorApp extends JFXApp3 {
           val referencePath = "/Library/Genomics/Reference/chm13v2.0/chm13v2.0.fa.gz"
 
           // Phase 1: Library Stats (quick scan)
-          val libraryStats = libraryStatsProcessor.process(filePath, (message, current, total) => {
+          val libraryStats = libraryStatsProcessor.process(filePath, referencePath, (message, current, total) => {
             Platform.runLater { progressLabel.text = s"Library Stats: $message" }
             updateProgress(current, total * 3) // 0-33%
           })
