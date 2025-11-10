@@ -32,7 +32,9 @@ lazy val root = (project in file("."))
         "io.circe" %% "circe-generic" % "0.14.6",
         "io.circe" %% "circe-parser" % "0.14.6",
         "org.scalafx" %% "scalafx" % "21.0.0-R32",
-        "com.typesafe" % "config" % "1.4.3"
+        "com.typesafe" % "config" % "1.4.3",
+        "com.softwaremill.sttp.client3" %% "core" % "3.9.7",
+        "com.softwaremill.sttp.client3" %% "circe" % "3.9.7"
       )
     }
   )

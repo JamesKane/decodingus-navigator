@@ -1,8 +1,9 @@
 package com.decodingus.ui
 
-import com.decodingus.analysis.{CallableLociProcessor, CallableLociResult, LibraryStatsProcessor, WgsMetricsProcessor}
+import com.decodingus.analysis._
 import com.decodingus.config.FeatureToggles
-import com.decodingus.model.{ContigSummary, CoverageSummary, LibraryStats, WgsMetrics}
+import com.decodingus.haplogroup.tree.{TreeProviderType, TreeType}
+import com.decodingus.model._
 import com.decodingus.pds.PdsClient
 import javafx.concurrent as jfxc
 import scalafx.Includes.*
@@ -11,6 +12,7 @@ import scalafx.application.{JFXApp3, Platform}
 import scalafx.collections.ObservableBuffer
 import scalafx.geometry.{Insets, Pos}
 import scalafx.scene.Scene
+import scalafx.scene.control.Alert.AlertType
 import scalafx.scene.control.*
 import scalafx.scene.control.TableColumn.sfxTableColumn2jfx
 import scalafx.scene.input.{DragEvent, TransferMode}
@@ -32,6 +34,7 @@ case class ContigAnalysisRow(
 
 object GenomeNavigatorApp extends JFXApp3 {
   private val mainLayout = new StackPane()
+  private var currentFilePath: String = ""
 
   override def start(): Unit = {
     stage = new PrimaryStage {
@@ -102,6 +105,7 @@ object GenomeNavigatorApp extends JFXApp3 {
   }
 
   private def startAnalysis(filePath: String): Unit = {
+    currentFilePath = filePath
     val progressLabel = new Label("Analysis in progress...") {
       styleClass.add("progress-label")
     }
@@ -296,11 +300,15 @@ object GenomeNavigatorApp extends JFXApp3 {
       }
     }
 
+    val haplogroupButton = new Button("Analyze Y-DNA Haplogroup") {
+      onAction = _ => startHaplogroupAnalysis()
+    }
+
     val resultsVBox = new VBox(20) {
       alignment = Pos.Center
       styleClass.add("root-pane")
       padding = Insets(20)
-      children = Seq(resultsTitle, statsGrid, new Separator(), contigBreakdownTitle, contigTable, webView)
+      children = Seq(resultsTitle, statsGrid, new Separator(), contigBreakdownTitle, contigTable, webView, new Separator(), haplogroupButton)
     }
 
     if (FeatureToggles.pdsSubmissionEnabled) {
@@ -341,5 +349,57 @@ object GenomeNavigatorApp extends JFXApp3 {
     }
 
     mainLayout.children = resultsScreen
+  }
+
+  private def startHaplogroupAnalysis(): Unit = {
+    val progressDialog = new Dialog[Unit]() {
+      initOwner(stage)
+      title = "Haplogroup Analysis"
+      headerText = "Running Y-DNA haplogroup analysis..."
+      dialogPane().content = new ProgressIndicator()
+    }
+
+    val haplogroupTask = new jfxc.Task[Either[String, List[com.decodingus.haplogroup.model.HaplogroupResult]]]() {
+      override def call(): Either[String, List[com.decodingus.haplogroup.model.HaplogroupResult]] = {
+        val processor = new HaplogroupProcessor()
+        processor.analyze(currentFilePath, "/Library/Genomics/Reference/chm13v2.0/chm13v2.0.fa.gz", TreeType.YDNA, TreeProviderType.FTDNA, (message, current, total) => {
+          // Could update a progress bar here if needed
+        })
+      }
+    }
+
+    haplogroupTask.setOnSucceeded(_ => {
+      progressDialog.close()
+      haplogroupTask.getValue match {
+        case Right(results) =>
+          val topResult = results.headOption.map(_.name).getOrElse("Not found")
+          new Alert(AlertType.Information) {
+            initOwner(stage)
+            title = "Haplogroup Analysis Complete"
+            headerText = "Top Y-DNA Haplogroup Result:"
+            contentText = topResult
+          }.showAndWait()
+        case Left(error) =>
+          new Alert(AlertType.Error) {
+            initOwner(stage)
+            title = "Haplogroup Analysis Failed"
+            headerText = "An error occurred during haplogroup analysis."
+            contentText = error
+          }.showAndWait()
+      }
+    })
+
+    haplogroupTask.setOnFailed(_ => {
+      progressDialog.close()
+      new Alert(AlertType.Error) {
+        initOwner(stage)
+        title = "Haplogroup Analysis Failed"
+        headerText = "A critical error occurred during haplogroup analysis."
+        contentText = haplogroupTask.getException.getMessage
+      }.showAndWait()
+    })
+
+    progressDialog.show()
+    new Thread(haplogroupTask).start()
   }
 }
