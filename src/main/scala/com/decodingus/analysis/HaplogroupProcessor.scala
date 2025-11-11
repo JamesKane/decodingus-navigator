@@ -133,7 +133,7 @@ class HaplogroupProcessor {
               ("", "")
             }
 
-            if (ref.nonEmpty) {
+            if (ref.nonEmpty && alt.nonEmpty) {
               writer.println(s"${locus.contig}\t${locus.position}\t.\t$ref\t$alt\t.\t.\t.")
             }
         }
