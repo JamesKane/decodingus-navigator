@@ -21,7 +21,7 @@ class LibraryStatsProcessor {
     } else {
       samReaderFactory.open(new File(bamPath))
     }
-      
+
     val header = samReader.getFileHeader
 
     val aligner = detectAligner(header)

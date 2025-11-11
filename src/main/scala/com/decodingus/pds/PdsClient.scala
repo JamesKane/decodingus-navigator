@@ -11,7 +11,7 @@ object PdsClient {
    * In a real implementation, this would involve HTTPS, authentication, and encryption.
    *
    * @param summary The CoverageSummary to upload.
-   * @param ec The execution context for the future.
+   * @param ec      The execution context for the future.
    * @return A Future that completes when the upload is finished.
    */
   def uploadSummary(summary: CoverageSummary)(implicit ec: ExecutionContext): Future[Unit] = {

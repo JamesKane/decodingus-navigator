@@ -1,44 +1,36 @@
 package com.decodingus.haplogroup.scoring
 
-import com.decodingus.haplogroup.model.{Haplogroup, HaplogroupResult, HaplogroupScore}
+import com.decodingus.haplogroup.model.{Haplogroup, HaplogroupResult, HaplogroupScore, Locus}
 
 import scala.collection.mutable
 
 class HaplogroupScorer {
 
-  def calculateScores(
-    haplogroup: Haplogroup,
-    snpCalls: Map[Long, String],
-    buildId: String
-  ): List[HaplogroupResult] = {
+  def score(tree: List[Haplogroup], snpCalls: Map[Long, String]): List[HaplogroupResult] = {
     val scores = mutable.ListBuffer[HaplogroupResult]()
-    calculateHaplogroupScore(haplogroup, snpCalls, scores, None, 0, buildId)
-    scores.toList
+    tree.foreach(rootNode => calculateHaplogroupScore(rootNode, snpCalls, scores, None, 0))
+    scores.toList.sortBy(-_.score)
   }
 
   private def calculateHaplogroupScore(
-    haplogroup: Haplogroup,
-    snpCalls: Map[Long, String],
-    scores: mutable.ListBuffer[HaplogroupResult],
-    parentScore: Option[HaplogroupScore],
-    depth: Int,
-    buildId: String
-  ): HaplogroupScore = {
+                                        haplogroup: Haplogroup,
+                                        snpCalls: Map[Long, String],
+                                        scores: mutable.ListBuffer[HaplogroupResult],
+                                        parentScore: Option[HaplogroupScore],
+                                        depth: Int
+                                      ): HaplogroupScore = {
     var currentScore = parentScore.getOrElse(HaplogroupScore())
-
-    val definingLoci = haplogroup.loci.filter(_.coordinates.contains(buildId))
 
     var branchDerived = 0
     var branchAncestral = 0
     var branchNoCalls = 0
 
-    for (locus <- definingLoci) {
-      val coord = locus.coordinates(buildId)
-      snpCalls.get(coord.position) match {
+    for (locus <- haplogroup.loci) {
+      snpCalls.get(locus.position) match {
         case Some(calledBase) =>
-          if (calledBase == coord.derived) {
+          if (calledBase == locus.alt) {
             branchDerived += 1
-          } else if (calledBase == coord.ancestral) {
+          } else if (calledBase == locus.ref) {
             branchAncestral += 1
           }
         case None =>
@@ -50,7 +42,7 @@ class HaplogroupScorer {
       matches = currentScore.matches + branchDerived,
       ancestralMatches = currentScore.ancestralMatches + branchAncestral,
       noCalls = currentScore.noCalls + branchNoCalls,
-      totalSnps = currentScore.totalSnps + definingLoci.length
+      totalSnps = currentScore.totalSnps + haplogroup.loci.length
     )
 
     val scoreValue = (branchDerived + 1).toDouble / (branchAncestral + 1).toDouble
@@ -63,13 +55,13 @@ class HaplogroupScorer {
       mismatchingSnps = 0, // Mismatch logic not in scoring.rs, seems to be part of low quality
       ancestralMatches = currentScore.ancestralMatches,
       noCalls = currentScore.noCalls,
-      totalSnps = currentScore.totalSnps,
-      cumulativeSnps = currentScore.totalSnps, // Placeholder
+      totalSnps = haplogroup.loci.length,
+      cumulativeSnps = currentScore.totalSnps,
       depth = depth
     )
 
     for (child <- haplogroup.children) {
-      calculateHaplogroupScore(child, snpCalls, scores, Some(currentScore), depth + 1, buildId)
+      calculateHaplogroupScore(child, snpCalls, scores, Some(currentScore), depth + 1)
     }
 
     currentScore

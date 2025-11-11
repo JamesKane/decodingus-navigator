@@ -11,9 +11,9 @@ import scala.io.Source
 import scala.util.Using
 
 case class CallableLociResult(
-  callableBases: Long,
-  contigAnalysis: List[ContigSummary]
-)
+                               callableBases: Long,
+                               contigAnalysis: List[ContigSummary]
+                             )
 
 class CallableLociProcessor {
 
@@ -133,7 +133,8 @@ class CallableLociProcessor {
     val pixelsPerBin = drawableWidth / maxBin
 
     val svg = new StringBuilder
-    svg.append(s"""<svg width="${currentSvgWidth.round}" height="$TOTAL_FIXED_HEIGHT" viewBox="0 0 ${currentSvgWidth.round} $TOTAL_FIXED_HEIGHT" xmlns="http://www.w3.org/2000/svg" font-family="Arial, sans-serif">
+    svg.append(
+      s"""<svg width="${currentSvgWidth.round}" height="$TOTAL_FIXED_HEIGHT" viewBox="0 0 ${currentSvgWidth.round} $TOTAL_FIXED_HEIGHT" xmlns="http://www.w3.org/2000/svg" font-family="Arial, sans-serif">
     <rect x="0" y="0" width="${currentSvgWidth.round}" height="$TOTAL_FIXED_HEIGHT" fill="$BG_COLOR" />
     <text x="${currentSvgWidth / 2}" y="${MARGIN_TOP + 15}" text-anchor="middle" font-size="20" fill="$TEXT_COLOR">$contigName (Stride: ${STRIDE_LEN / 1000}kb)</text>
   """)

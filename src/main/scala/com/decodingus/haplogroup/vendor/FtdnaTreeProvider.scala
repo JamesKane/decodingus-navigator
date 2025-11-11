@@ -1,37 +1,37 @@
 package com.decodingus.haplogroup.vendor
 
-import com.decodingus.haplogroup.model._
+import com.decodingus.haplogroup.model.*
 import com.decodingus.haplogroup.tree.{TreeProvider, TreeType}
-import io.circe.generic.auto._
+import io.circe.generic.auto.*
 import io.circe.parser.decode
 
 import scala.collection.mutable
 
 case class FtdnaVariant(
-  variant: String,
-  position: Option[Int],
-  ancestral: String,
-  derived: String,
-  region: String,
-  id: Option[Long]
-)
+                         variant: String,
+                         position: Option[Int],
+                         ancestral: String,
+                         derived: String,
+                         region: String,
+                         id: Option[Long]
+                       )
 
 case class FtdnaNode(
-  haplogroupId: Long,
-  parentId: Long,
-  name: String,
-  isRoot: Boolean,
-  root: String,
-  kitsCount: Int,
-  subBranches: Int,
-  bigYCount: Int,
-  variants: List[FtdnaVariant],
-  children: List[Long]
-)
+                      haplogroupId: Long,
+                      parentId: Long,
+                      name: String,
+                      isRoot: Boolean,
+                      root: String,
+                      kitsCount: Int,
+                      subBranches: Int,
+                      bigYCount: Int,
+                      variants: List[FtdnaVariant],
+                      children: List[Long]
+                    )
 
 case class FtdnaTreeJson(
-  allNodes: Map[String, FtdnaNode]
-)
+                          allNodes: Map[String, FtdnaNode]
+                        )
 
 class FtdnaTreeProvider extends TreeProvider {
   override def url(treeType: TreeType): String = treeType match {
@@ -49,14 +49,13 @@ class FtdnaTreeProvider extends TreeProvider {
     case TreeType.MTDNA => "Downloading FTDNA MT-DNA tree..."
   }
 
-  override def parseTree(data: String): Either[io.circe.Error, HaplogroupTree] = {
-    decode[FtdnaTreeJson](data).map { ftdnaTree =>
+  override def parseTree(data: String, targetBuild: String): Either[String, HaplogroupTree] = {
+    decode[FtdnaTreeJson](data).left.map(_.toString).map { ftdnaTree =>
       val allNodes = ftdnaTree.allNodes.map { case (id, node) =>
-        val loci = node.variants.map { v =>
-          val coordinates = v.position.map { pos =>
-            "GRCh38" -> LociCoordinate(pos.toLong, "chrY", v.ancestral, v.derived)
-          }.toMap
-          Locus(v.variant, LociType.SNP, coordinates)
+        val loci = node.variants.flatMap { v =>
+          v.position.map { pos =>
+            Locus(v.variant, pos.toLong, v.ancestral, v.derived)
+          }
         }
         id -> HaplogroupNode(node.haplogroupId, node.parentId, node.name, node.isRoot, loci, node.children)
       }
@@ -64,14 +63,18 @@ class FtdnaTreeProvider extends TreeProvider {
     }
   }
 
-  override def buildTree(tree: HaplogroupTree, nodeId: Long, treeType: TreeType): Option[Haplogroup] = {
-    val nodeStr = nodeId.toString
-    tree.allNodes.get(nodeStr).map { node =>
-      val children = node.children.flatMap(childId => buildTree(tree, childId, treeType))
-      val parentName = if (node.parent_id == 0) None else tree.allNodes.get(node.parent_id.toString).map(_.name)
-      Haplogroup(node.name, parentName, node.loci, children)
-    }
+  override def buildTree(tree: HaplogroupTree): List[Haplogroup] = {
+    val rootNodes = tree.allNodes.values.filter(_.is_root).toList
+    rootNodes.map(root => buildSubTree(root.haplogroup_id, tree, None))
+  }
+
+  private def buildSubTree(nodeId: Long, tree: HaplogroupTree, parentName: Option[String]): Haplogroup = {
+    val node = tree.allNodes(nodeId.toString)
+    val children = node.children.map(childId => buildSubTree(childId, tree, Some(node.name)))
+    Haplogroup(node.name, parentName, node.loci, children)
   }
 
   override def supportedBuilds: List[String] = List("GRCh38", "rCRS")
+
+  override def sourceBuild: String = "GRCh38"
 }

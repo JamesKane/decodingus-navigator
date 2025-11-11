@@ -1,32 +1,32 @@
 package com.decodingus.haplogroup.vendor
 
-import com.decodingus.haplogroup.model._
+import com.decodingus.haplogroup.model.*
 import com.decodingus.haplogroup.tree.{TreeProvider, TreeType}
-import io.circe.generic.auto._
+import io.circe.generic.auto.*
 import io.circe.parser.decode
 
 import scala.collection.mutable
 
 case class ApiCoordinate(
-  start: Long,
-  stop: Long,
-  anc: String,
-  der: String
-)
+                          start: Long,
+                          stop: Long,
+                          anc: String,
+                          der: String
+                        )
 
 case class ApiVariant(
-  name: String,
-  coordinates: Map[String, ApiCoordinate],
-  variantType: String
-)
+                       name: String,
+                       coordinates: Map[String, ApiCoordinate],
+                       variantType: String
+                     )
 
 case class ApiNode(
-  name: String,
-  parentName: Option[String],
-  variants: List[ApiVariant],
-  lastUpdated: String,
-  isBackbone: Boolean
-)
+                    name: String,
+                    parentName: Option[String],
+                    variants: List[ApiVariant],
+                    lastUpdated: String,
+                    isBackbone: Boolean
+                  )
 
 class DecodingUsTreeProvider extends TreeProvider {
   override def url(treeType: TreeType): String = treeType match {
@@ -44,28 +44,33 @@ class DecodingUsTreeProvider extends TreeProvider {
     case TreeType.MTDNA => throw new UnsupportedOperationException("MT-DNA tree not yet supported by DecodingUs")
   }
 
-  override def parseTree(data: String): Either[io.circe.Error, HaplogroupTree] = {
-    decode[List[ApiNode]](data).map { apiNodes =>
+  override def parseTree(data: String, targetBuild: String): Either[String, HaplogroupTree] = {
+    val buildMap = Map(
+      "CM000686.2" -> "GRCh38",
+      "CM000686.1" -> "GRCh37",
+      "CP086569.2" -> "CHM13v2"
+    )
+
+    decode[List[ApiNode]](data).left.map(_.toString).map { apiNodes =>
       val nameToId = apiNodes.zipWithIndex.map { case (node, i) => node.name -> i.toLong }.toMap
       val rootId = apiNodes.zipWithIndex.find(_._1.parentName.isEmpty).map(_._2.toLong).getOrElse(0L)
 
       val allNodes = apiNodes.zipWithIndex.map { case (node, i) =>
         val haplogroupId = i.toLong
         val parentId = node.parentName.flatMap(nameToId.get).getOrElse(if (haplogroupId == rootId) 0L else rootId)
-        val loci = node.variants.map { v =>
-          val lociType = if (v.variantType == "SNP") LociType.SNP else LociType.INDEL
-          val coordinates = v.coordinates.map { case (build, coord) =>
-            val buildId = build match {
-              case "CM000686.2" | "NC_000024.10" => "GRCh38"
-              case "NC_060948.1" | "CP086569.2" => "T2T-CHM13v2.0"
-              case "CM000686.1" => "GRCh37"
-              case _ => build
+
+        val loci = node.variants.flatMap { v =>
+          v.coordinates.headOption.flatMap { case (apiBuild, coord) =>
+            buildMap.get(apiBuild).flatMap { internalBuild =>
+              if (internalBuild == targetBuild) {
+                Some(Locus(v.name, coord.start, coord.anc, coord.der))
+              } else {
+                None
+              }
             }
-            val chromosome = if (buildId == "GRCh37") "Y" else "chrY"
-            buildId -> LociCoordinate(coord.start, chromosome, coord.anc, coord.der)
           }
-          Locus(v.name, lociType, coordinates)
         }
+
         haplogroupId.toString -> HaplogroupNode(haplogroupId, parentId, node.name, haplogroupId == rootId, loci, List())
       }.toMap
 
@@ -84,14 +89,18 @@ class DecodingUsTreeProvider extends TreeProvider {
     }
   }
 
-  override def buildTree(tree: HaplogroupTree, nodeId: Long, treeType: TreeType): Option[Haplogroup] = {
-    val nodeStr = nodeId.toString
-    tree.allNodes.get(nodeStr).map { node =>
-      val children = node.children.flatMap(childId => buildTree(tree, childId, treeType))
-      val parentName = if (node.parent_id == 0) None else tree.allNodes.get(node.parent_id.toString).map(_.name)
-      Haplogroup(node.name, parentName, node.loci, children)
-    }
+  override def buildTree(tree: HaplogroupTree): List[Haplogroup] = {
+    val rootNodes = tree.allNodes.values.filter(_.is_root).toList
+    rootNodes.map(root => buildSubTree(root.haplogroup_id, tree, None))
   }
 
-  override def supportedBuilds: List[String] = List("GRCh38", "GRCh37", "T2T-CHM13v2.0")
+  private def buildSubTree(nodeId: Long, tree: HaplogroupTree, parentName: Option[String]): Haplogroup = {
+    val node = tree.allNodes(nodeId.toString)
+    val children = node.children.map(childId => buildSubTree(childId, tree, Some(node.name)))
+    Haplogroup(node.name, parentName, node.loci, children)
+  }
+
+  override def supportedBuilds: List[String] = List("GRCh38", "GRCh37", "CHM13v2")
+
+  override def sourceBuild: String = "GRCh38"
 }

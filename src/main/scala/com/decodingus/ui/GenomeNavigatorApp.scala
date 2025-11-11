@@ -1,9 +1,9 @@
 package com.decodingus.ui
 
-import com.decodingus.analysis._
+import com.decodingus.analysis.*
 import com.decodingus.config.FeatureToggles
 import com.decodingus.haplogroup.tree.{TreeProviderType, TreeType}
-import com.decodingus.model._
+import com.decodingus.model.*
 import com.decodingus.pds.PdsClient
 import com.decodingus.refgenome.ReferenceGateway
 import htsjdk.samtools.SamReaderFactory
@@ -14,8 +14,8 @@ import scalafx.application.{JFXApp3, Platform}
 import scalafx.collections.ObservableBuffer
 import scalafx.geometry.{Insets, Pos}
 import scalafx.scene.Scene
-import scalafx.scene.control.Alert.AlertType
 import scalafx.scene.control.*
+import scalafx.scene.control.Alert.AlertType
 import scalafx.scene.control.TableColumn.sfxTableColumn2jfx
 import scalafx.scene.input.{DragEvent, TransferMode}
 import scalafx.scene.layout.{GridPane, HBox, StackPane, VBox}
@@ -26,18 +26,19 @@ import java.io.File
 import scala.concurrent.ExecutionContext.Implicits.global
 
 case class ContigAnalysisRow(
-  contig: String,
-  callableBases: Long,
-  noCoverage: Long,
-  lowCoverage: Long,
-  poorMq: Long,
-  refN: Long,
-  svgFile: String
-)
+                              contig: String,
+                              callableBases: Long,
+                              noCoverage: Long,
+                              lowCoverage: Long,
+                              poorMq: Long,
+                              refN: Long,
+                              svgFile: String
+                            )
 
 object GenomeNavigatorApp extends JFXApp3 {
   private val mainLayout = new StackPane()
   private var currentFilePath: String = ""
+  private var coverageSummary: Option[CoverageSummary] = None
 
   override def start(): Unit = {
     stage = new PrimaryStage {
@@ -143,7 +144,9 @@ object GenomeNavigatorApp extends JFXApp3 {
       override def call(): (CoverageSummary, List[String]) = {
         try {
           // Step 1: Detect Reference Build
-          Platform.runLater { progressLabel.text = "Detecting reference build..." }
+          Platform.runLater {
+            progressLabel.text = "Detecting reference build..."
+          }
           val header = SamReaderFactory.makeDefault().open(new File(filePath)).getFileHeader
           val libraryStatsProcessor = new LibraryStatsProcessor()
           val referenceBuild = libraryStatsProcessor.detectReferenceBuild(header)
@@ -152,7 +155,9 @@ object GenomeNavigatorApp extends JFXApp3 {
           }
 
           // Step 2: Resolve Reference Path
-          Platform.runLater { progressLabel.text = s"Resolving reference: $referenceBuild" }
+          Platform.runLater {
+            progressLabel.text = s"Resolving reference: $referenceBuild"
+          }
           val referenceGateway = new ReferenceGateway((done, total) => {
             Platform.runLater {
               progressLabel.text = s"Downloading reference: $done / $total bytes"
@@ -170,39 +175,52 @@ object GenomeNavigatorApp extends JFXApp3 {
 
           // Phase 1: Library Stats (quick scan)
           val libraryStats = libraryStatsProcessor.process(filePath, referencePath, (message, current, total) => {
-            Platform.runLater { progressLabel.text = s"Library Stats: $message" }
+            Platform.runLater {
+              progressLabel.text = s"Library Stats: $message"
+            }
             updateProgress(current, total * 3) // 0-33%
           })
 
           Platform.runLater {
             intermediateSummaryBox.children = Seq(
-              new Label(s"Sample: ${libraryStats.sampleName}") { styleClass.add("info-label") },
-              new Label(s"Reference: ${libraryStats.referenceBuild}") { styleClass.add("info-label") },
-              new Label(s"Platform: ${libraryStats.inferredPlatform}") { styleClass.add("info-label") }
+              new Label(s"Sample: ${libraryStats.sampleName}") {
+                styleClass.add("info-label")
+              },
+              new Label(s"Reference: ${libraryStats.referenceBuild}") {
+                styleClass.add("info-label")
+              },
+              new Label(s"Platform: ${libraryStats.inferredPlatform}") {
+                styleClass.add("info-label")
+              }
             )
             intermediateSummaryBox.visible = true
           }
 
           // Phase 2: WGS Metrics
           val wgsMetrics = wgsMetricsProcessor.process(filePath, referencePath, (message, current, total) => {
-            Platform.runLater { progressLabel.text = message }
+            Platform.runLater {
+              progressLabel.text = message
+            }
             updateProgress(total + current, total * 3) // 33-66%
           })
 
           // Phase 3: Callable Loci Analysis
           val (callableLociResult, svgStrings) = callableLociProcessor.process(filePath, referencePath, (message, current, total) => {
-            Platform.runLater { progressLabel.text = s"Callable Loci: $message" }
+            Platform.runLater {
+              progressLabel.text = s"Callable Loci: $message"
+            }
             updateProgress(total * 2 + current, total * 3) // 66-100%
           })
 
-          val coverageSummary = CoverageSummary(
+          val summary = CoverageSummary(
             pdsUserId = "60820188481374", // placeholder
             libraryStats = libraryStats,
             wgsMetrics = wgsMetrics,
             callableBases = callableLociResult.callableBases,
             contigAnalysis = callableLociResult.contigAnalysis
           )
-          (coverageSummary, svgStrings)
+          coverageSummary = Some(summary)
+          (summary, svgStrings)
         } catch {
           case e: Exception =>
             e.printStackTrace()
@@ -255,8 +273,12 @@ object GenomeNavigatorApp extends JFXApp3 {
     }
 
     def addStat(name: String, value: String, row: Int): Unit = {
-      statsGrid.add(new Text(name) { styleClass.add("stat-name") }, 0, row)
-      statsGrid.add(new Text(value) { styleClass.add("stat-value") }, 1, row)
+      statsGrid.add(new Text(name) {
+        styleClass.add("stat-name")
+      }, 0, row)
+      statsGrid.add(new Text(value) {
+        styleClass.add("stat-value")
+      }, 1, row)
     }
 
     addStat("PDS User ID:", summary.pdsUserId, 0)
@@ -376,56 +398,58 @@ object GenomeNavigatorApp extends JFXApp3 {
   }
 
   private def startHaplogroupAnalysis(): Unit = {
-    val progressDialog = new Dialog[Unit]() {
-      initOwner(stage)
-      title = "Haplogroup Analysis"
-      headerText = "Running Y-DNA haplogroup analysis..."
-      dialogPane().content = new ProgressIndicator()
-    }
-
-    val haplogroupTask = new jfxc.Task[Either[String, List[com.decodingus.haplogroup.model.HaplogroupResult]]]() {
-      override def call(): Either[String, List[com.decodingus.haplogroup.model.HaplogroupResult]] = {
-        val processor = new HaplogroupProcessor()
-        // This needs the resolved reference path
-        val referencePath = "/Library/Genomics/Reference/chm13v2.0/chm13v2.0.fa.gz" // Placeholder
-        processor.analyze(currentFilePath, referencePath, TreeType.YDNA, TreeProviderType.FTDNA, (message, current, total) => {
-          // Could update a progress bar here if needed
-        })
-      }
-    }
-
-    haplogroupTask.setOnSucceeded(_ => {
-      progressDialog.close()
-      haplogroupTask.getValue match {
-        case Right(results) =>
-          val topResult = results.headOption.map(_.name).getOrElse("Not found")
-          new Alert(AlertType.Information) {
-            initOwner(stage)
-            title = "Haplogroup Analysis Complete"
-            headerText = "Top Y-DNA Haplogroup Result:"
-            contentText = topResult
-          }.showAndWait()
-        case Left(error) =>
-          new Alert(AlertType.Error) {
-            initOwner(stage)
-            title = "Haplogroup Analysis Failed"
-            headerText = "An error occurred during haplogroup analysis."
-            contentText = error
-          }.showAndWait()
-      }
-    })
-
-    haplogroupTask.setOnFailed(_ => {
-      progressDialog.close()
-      new Alert(AlertType.Error) {
+    coverageSummary.foreach { summary =>
+      val progressDialog = new Dialog[Unit]() {
         initOwner(stage)
-        title = "Haplogroup Analysis Failed"
-        headerText = "A critical error occurred during haplogroup analysis."
-        contentText = haplogroupTask.getException.getMessage
-      }.showAndWait()
-    })
+        title = "Haplogroup Analysis"
+        headerText = "Running Y-DNA haplogroup analysis..."
+        dialogPane().content = new ProgressIndicator()
+      }
 
-    progressDialog.show()
-    new Thread(haplogroupTask).start()
+      val haplogroupTask = new jfxc.Task[Either[String, List[com.decodingus.haplogroup.model.HaplogroupResult]]]() {
+        override def call(): Either[String, List[com.decodingus.haplogroup.model.HaplogroupResult]] = {
+          val processor = new HaplogroupProcessor()
+          processor.analyze(currentFilePath, summary.libraryStats, TreeType.YDNA, TreeProviderType.FTDNA, (message, current, total) => {
+            Platform.runLater {
+              progressDialog.headerText = message
+            }
+          })
+        }
+      }
+
+      haplogroupTask.setOnSucceeded(_ => {
+        progressDialog.close()
+        haplogroupTask.getValue match {
+          case Right(results) =>
+            val topResult = results.headOption.map(_.name).getOrElse("Not found")
+            new Alert(AlertType.Information) {
+              initOwner(stage)
+              title = "Haplogroup Analysis Complete"
+              headerText = "Top Y-DNA Haplogroup Result:"
+              contentText = topResult
+            }.showAndWait()
+          case Left(error) =>
+            new Alert(AlertType.Error) {
+              initOwner(stage)
+              title = "Haplogroup Analysis Failed"
+              headerText = "An error occurred during haplogroup analysis."
+              contentText = error
+            }.showAndWait()
+        }
+      })
+
+      haplogroupTask.setOnFailed(_ => {
+        progressDialog.close()
+        new Alert(AlertType.Error) {
+          initOwner(stage)
+          title = "Haplogroup Analysis Failed"
+          headerText = "A critical error occurred during haplogroup analysis."
+          contentText = haplogroupTask.getException.getMessage
+        }.showAndWait()
+      })
+
+      progressDialog.show()
+      new Thread(haplogroupTask).start()
+    }
   }
 }

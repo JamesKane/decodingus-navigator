@@ -1,6 +1,7 @@
 package com.decodingus.refgenome
 
-import sttp.client3._
+import sttp.client3.*
+
 import java.nio.file.{Files, Path}
 
 class ReferenceGateway(onProgress: (Long, Long) => Unit) {
@@ -8,6 +9,7 @@ class ReferenceGateway(onProgress: (Long, Long) => Unit) {
 
   private val referenceUrls: Map[String, String] = Map(
     "GRCh38" -> "https://storage.googleapis.com/genomics-public-data/references/hg38/v0/Homo_sapiens_assembly38.fasta.gz",
+    "GRCh37" -> "https://storage.googleapis.com/genomics-public-data/references/hg19/v0/Homo_sapiens_assembly19.fasta.gz",
     "CHM13v2" -> "https://s3-us-west-2.amazonaws.com/human-pangenomics/T2T/CHM13/assemblies/analysis_set/chm13v2.0.fa.gz"
     // Add other references here
   )
@@ -30,7 +32,7 @@ class ReferenceGateway(onProgress: (Long, Long) => Unit) {
     val tempFile = Files.createTempFile(s"ref-$referenceBuild", ".fa.gz")
 
     val request = basicRequest.get(uri"$url").response(asFile(tempFile.toFile))
-    
+
     val backend = HttpURLConnectionBackend()
     val response = request.send(backend)
 
