@@ -32,19 +32,48 @@ class ReferenceGateway(onProgress: (Long, Long) => Unit) {
 
   private def downloadReference(referenceBuild: String, url: String): Either[String, Path] = {
     println(s"Downloading reference $referenceBuild from $url")
-    val tempFile = Files.createTempFile(s"ref-$referenceBuild", ".fa.gz")
+    val tempFileRaw = Files.createTempFile(s"ref-$referenceBuild", ".tmp")
+    val tempFileGzipped = Files.createTempFile(s"ref-$referenceBuild", ".fa.gz")
+    Files.deleteIfExists(tempFileGzipped) // Delete the empty .fa.gz file created by createTempFile
 
-    val request = basicRequest.get(uri"$url").response(asFile(tempFile.toFile))
+    val request = basicRequest.get(uri"$url").response(asFile(tempFileRaw.toFile))
 
     val backend = HttpURLConnectionBackend()
     val response = request.send(backend)
 
     response.body match {
       case Right(file) =>
-        println("Download complete. Caching reference.")
-        val finalPath = cache.put(referenceBuild, file.toPath)
+        println("Download complete.")
+        val sourcePathForCache = if (url.endsWith(".gz")) {
+          // Already gzipped, just move the raw downloaded file to the .fa.gz temp path
+          Files.move(file.toPath, tempFileGzipped)
+          tempFileGzipped
+        } else {
+          // Not gzipped, apply bgzip
+          println(s"Compressing $file with bgzip...")
+          val command = s"bgzip -c ${file.toPath} > ${tempFileGzipped}"
+          try {
+            val exitCode = command.!
+            if (exitCode != 0) {
+              Files.deleteIfExists(file.toPath)
+              Files.deleteIfExists(tempFileGzipped)
+              return Left(s"Failed to bgzip $file. Exit code: $exitCode")
+            }
+            Files.deleteIfExists(file.toPath) // Delete the original uncompressed temp file
+            tempFileGzipped
+          } catch {
+            case e: IOException =>
+              Files.deleteIfExists(file.toPath)
+              Files.deleteIfExists(tempFileGzipped)
+              return Left(s"Failed to execute bgzip for $file: ${e.getMessage}")
+          }
+        }
+        println("Caching reference.")
+        val finalPath = cache.put(referenceBuild, sourcePathForCache)
         Right(finalPath)
       case Left(error) =>
+        Files.deleteIfExists(tempFileRaw)
+        Files.deleteIfExists(tempFileGzipped)
         Left(s"Failed to download reference: $error")
     }
   }
