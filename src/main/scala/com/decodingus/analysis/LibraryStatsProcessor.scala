@@ -82,9 +82,9 @@ class LibraryStatsProcessor {
   }
 
   private def buildLibraryStats(readCount: Int, pairedReads: Int, lengthDistribution: mutable.Map[Int, Int], insertSizeDistribution: mutable.Map[Long, Int], aligner: String, referenceBuild: String, sampleName: String, flowCells: mutable.Map[String, Int], instruments: mutable.Map[String, Int], platformCounts: mutable.Map[String, Int]): LibraryStats = {
-    val mostFrequentInstrument = instruments.toSeq.sortBy(-_._2).headOption.map(_._1).getOrElse("Unknown")
+    val mostFrequentInstrumentId = instruments.toSeq.sortBy(-_._2).headOption.map(_._1).getOrElse("Unknown")
     val primaryPlatform = platformCounts.toSeq.sortBy(-_._2).headOption.map(_._1).getOrElse("Unknown")
-    val inferredPlatform = inferPlatform(primaryPlatform, mostFrequentInstrument)
+    val specificInstrumentModel = inferPlatform(primaryPlatform, mostFrequentInstrumentId)
 
     LibraryStats(
       readCount = readCount,
@@ -96,8 +96,8 @@ class LibraryStatsProcessor {
       sampleName = sampleName,
       flowCells = flowCells,
       instruments = instruments,
-      mostFrequentInstrument = mostFrequentInstrument,
-      inferredPlatform = inferredPlatform,
+      mostFrequentInstrument = specificInstrumentModel,
+      inferredPlatform = primaryPlatform,
       platformCounts = platformCounts
     )
   }
