@@ -35,7 +35,11 @@ class HaplogroupProcessor {
       val contig = if (treeType == TreeType.YDNA) "chrY" else "chrM"
 
       val referenceBuild = libraryStats.referenceBuild
-      val treeSourceBuild = treeProvider.sourceBuild
+      val treeSourceBuild = if (treeProvider.supportedBuilds.contains(referenceBuild)) {
+        referenceBuild
+      } else {
+        treeProvider.sourceBuild
+      }
 
       val referenceGateway = new ReferenceGateway((_, _) => {})
 
