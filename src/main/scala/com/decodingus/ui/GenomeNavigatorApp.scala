@@ -220,24 +220,35 @@ object GenomeNavigatorApp extends JFXApp3 {
       styleClass.add("title-label")
     }
 
-    val statsGrid = new GridPane {
-      hgap = 20
-      vgap = 10
+    val resultsVBox = new VBox(5) { // Use VBox to stack lines, with a small vertical gap
       padding = Insets(20)
-      styleClass.add("stats-grid")
+      styleClass.add("stats-container") // Add a style class for potential styling
+      children = Seq(
+        new HBox(5) { // HBox for the first line
+          children = Seq(
+            new Text("Sample Name:") { styleClass.add("stat-name") },
+            new Text(libraryStats.sampleName) { styleClass.add("stat-value") },
+            new Text(s"(${f"${libraryStats.readCount}%,d"} reads sampled)") { styleClass.add("stat-value") }
+          )
+        },
+        new HBox(20) { // HBox for the second line, with more horizontal gap
+          children = Seq(
+            new Text("Platform:") { styleClass.add("stat-name") },
+            new Text(libraryStats.inferredPlatform) { styleClass.add("stat-value") },
+            new Text("Instrument Type:") { styleClass.add("stat-name") },
+            new Text(libraryStats.mostFrequentInstrument) { styleClass.add("stat-value") }
+          )
+        },
+        new HBox(20) { // HBox for the third line, with more horizontal gap
+          children = Seq(
+            new Text("Aligner:") { styleClass.add("stat-name") },
+            new Text(libraryStats.aligner) { styleClass.add("stat-value") },
+            new Text("Reference:") { styleClass.add("stat-name") },
+            new Text(libraryStats.referenceBuild) { styleClass.add("stat-value") }
+          )
+        }
+      )
     }
-
-    def addStat(name: String, value: String, row: Int): Unit = {
-      statsGrid.add(new Text(name) { styleClass.add("stat-name") }, 0, row)
-      statsGrid.add(new Text(value) { styleClass.add("stat-value") }, 1, row)
-    }
-
-    addStat("Sample Name:", libraryStats.sampleName, 0)
-    addStat("Aligner:", libraryStats.aligner, 1)
-    addStat("Platform:", libraryStats.inferredPlatform, 2)
-    addStat("Instrument:", libraryStats.mostFrequentInstrument, 3)
-    addStat("Reference:", libraryStats.referenceBuild, 4)
-    addStat("Reads Scanned:", f"${libraryStats.readCount}%,d", 5)
 
     val deepAnalysisHelpText = new Text("Performs a comprehensive WGS (Whole Genome Sequencing) analysis, including detailed coverage metrics and callable loci, generating plots and tables for visual inspection. This can take significant time for large genomes.") {
       wrappingWidth = 400
@@ -316,7 +327,7 @@ object GenomeNavigatorApp extends JFXApp3 {
       alignment = Pos.TopCenter
       styleClass.add("root-pane")
       padding = Insets(20)
-      children = Seq(resultsTitle, statsGrid, new Separator(), choicesBox)
+      children = Seq(resultsTitle, resultsVBox, new Separator(), choicesBox)
     }
 
     mainLayout.children = initialResultsScreen
