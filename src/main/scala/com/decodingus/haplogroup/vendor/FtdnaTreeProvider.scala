@@ -26,7 +26,7 @@ case class FtdnaNode(
                       subBranches: Int,
                       bigYCount: Int,
                       variants: List[FtdnaVariant],
-                      children: List[Long]
+                      children: Option[List[Long]]
                     )
 
 case class FtdnaTreeJson(
@@ -62,7 +62,7 @@ class FtdnaTreeProvider(treeType: TreeType) extends TreeProvider(treeType) {
             Locus(v.variant, contigName, pos.toLong, v.ancestral.getOrElse(""), v.derived.getOrElse(""))
           }
         }
-        id -> HaplogroupNode(node.haplogroupId, node.parentId, node.name, node.isRoot, loci, node.children)
+        id -> HaplogroupNode(node.haplogroupId, node.parentId, node.name, node.isRoot, loci, node.children.getOrElse(List.empty))
       }
       HaplogroupTree(allNodes)
     }
