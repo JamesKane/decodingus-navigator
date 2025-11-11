@@ -50,11 +50,16 @@ class FtdnaTreeProvider(treeType: TreeType) extends TreeProvider(treeType) {
   }
 
   override def parseTree(data: String, targetBuild: String): Either[String, HaplogroupTree] = {
+    val contigName = treeType match {
+      case TreeType.YDNA => "chrY"
+      case TreeType.MTDNA => "chrM"
+    }
+
     decode[FtdnaTreeJson](data).left.map(_.toString).map { ftdnaTree =>
       val allNodes = ftdnaTree.allNodes.map { case (id, node) =>
         val loci = node.variants.flatMap { v =>
           v.position.map { pos =>
-            Locus(v.variant, v.region.getOrElse(""), pos.toLong, v.ancestral.getOrElse(""), v.derived.getOrElse(""))
+            Locus(v.variant, contigName, pos.toLong, v.ancestral.getOrElse(""), v.derived.getOrElse(""))
           }
         }
         id -> HaplogroupNode(node.haplogroupId, node.parentId, node.name, node.isRoot, loci, node.children)
