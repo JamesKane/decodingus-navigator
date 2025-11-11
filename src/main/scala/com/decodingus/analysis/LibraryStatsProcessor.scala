@@ -1,7 +1,7 @@
 package com.decodingus.analysis
 
 import com.decodingus.model.LibraryStats
-import htsjdk.samtools.{SAMFileHeader, SAMProgramRecord, SamReaderFactory, ValidationStringency}
+import htsjdk.samtools.{SAMFileHeader, SamReaderFactory, ValidationStringency}
 
 import java.io.File
 import scala.collection.mutable

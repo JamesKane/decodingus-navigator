@@ -5,7 +5,7 @@ import htsjdk.samtools.reference.ReferenceSequenceFileFactory
 import org.broadinstitute.hellbender.Main
 
 import java.io.File
-import java.nio.file.{Files, Paths}
+import java.nio.file.Files
 import scala.collection.mutable.ListBuffer
 import scala.io.Source
 import scala.util.Using
