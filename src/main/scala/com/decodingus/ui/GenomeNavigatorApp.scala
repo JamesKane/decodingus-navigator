@@ -20,7 +20,7 @@ import scalafx.scene.control.Alert.AlertType
 import scalafx.scene.control.*
 import scalafx.scene.control.TableColumn.sfxTableColumn2jfx
 import scalafx.scene.input.{DragEvent, TransferMode}
-import scalafx.scene.layout.{GridPane, HBox, StackPane, VBox}
+import scalafx.scene.layout.{GridPane, HBox, StackPane, VBox, Region}
 import scalafx.scene.text.{Text, TextAlignment}
 import scalafx.scene.web.WebView
 
@@ -41,10 +41,13 @@ case class ContigAnalysisRow(
 object GenomeNavigatorApp extends JFXApp3 {
   private val mainLayout = new StackPane()
   private var currentFilePath: String = ""
-  private var coverageSummary: Option[CoverageSummary] = None
+  private var currentLibraryStats: Option[LibraryStats] = None // Store initial library stats
+  private var currentReferencePath: Option[String] = None     // Store resolved reference path
+  private var coverageSummary: Option[CoverageSummary] = None // This will be set after deep analysis
   private var haplogroupTree: Option[List[Haplogroup]] = None
   private var bestHaplogroup: Option[com.decodingus.haplogroup.model.HaplogroupResult] = None
   private var treeProviderInstance: Option[TreeProvider] = None
+  private var analyzedHaplogroupType: Option[TreeType] = None // To store the type of haplogroup that was analyzed
 
   override def start(): Unit = {
     stage = new PrimaryStage {
@@ -93,7 +96,7 @@ object GenomeNavigatorApp extends JFXApp3 {
               db.files.headOption.foreach { file =>
                 val filePath = file.getAbsolutePath
                 println(s"Dropped file: $filePath")
-                startAnalysis(filePath)
+                startInitialAnalysis(filePath) // Renamed
                 success = true
               }
             }
@@ -111,25 +114,18 @@ object GenomeNavigatorApp extends JFXApp3 {
 
   private def selectFile(): Unit = {
     println("File selection dialog would open here.")
-    startAnalysis("path/to/mock/file.bam")
+    startInitialAnalysis("path/to/mock/file.bam") // Renamed
   }
 
-  private def startAnalysis(filePath: String): Unit = {
+  private def startInitialAnalysis(filePath: String): Unit = {
     currentFilePath = filePath
-    val progressLabel = new Label("Analysis in progress...") {
+    val progressLabel = new Label("Initializing analysis...") {
       styleClass.add("progress-label")
     }
     val progressBar = new ProgressBar {
       prefWidth = 400
     }
     val progressIndicator = new ProgressIndicator
-
-    val intermediateSummaryBox = new VBox(10) {
-      alignment = Pos.Center
-      visible = false
-      padding = Insets(20)
-      style = "-fx-border-color: #555; -fx-border-width: 1; -fx-background-color: #333;"
-    }
 
     val progressScreen = new VBox(20) {
       alignment = Pos.Center
@@ -139,18 +135,17 @@ object GenomeNavigatorApp extends JFXApp3 {
         new HBox(20) {
           alignment = Pos.Center
           children = Seq(progressBar, progressIndicator)
-        },
-        intermediateSummaryBox
+        }
       )
     }
 
     mainLayout.children = progressScreen
 
-    val jfxTask = new jfxc.Task[(CoverageSummary, List[String])]() {
-      override def call(): (CoverageSummary, List[String]) = {
+    val jfxTask = new jfxc.Task[(LibraryStats, String)]() { // Now returns LibraryStats and referencePath
+      override def call(): (LibraryStats, String) = {
         try {
           // Step 1: Detect Reference Build
-          Platform.runLater { progressLabel.text = "Detecting reference build..." }
+          Platform.runLater { progressLabel.text = "Detecting reference build from BAM/CRAM header..." }
           val header = SamReaderFactory.makeDefault().open(new File(filePath)).getFileHeader
           val libraryStatsProcessor = new LibraryStatsProcessor()
           val referenceBuild = libraryStatsProcessor.detectReferenceBuild(header)
@@ -171,35 +166,201 @@ object GenomeNavigatorApp extends JFXApp3 {
             case Left(error) => throw new Exception(error)
           }
 
-          // Step 3: Run Full Analysis
-          val wgsMetricsProcessor = new WgsMetricsProcessor()
-          val callableLociProcessor = new CallableLociProcessor()
-
           // Phase 1: Library Stats (quick scan)
           val libraryStats = libraryStatsProcessor.process(filePath, referencePath, (message, current, total) => {
             Platform.runLater { progressLabel.text = s"Library Stats: $message" }
-            updateProgress(current, total * 3) // 0-33%
+            updateProgress(current, total)
           })
+          
+          (libraryStats, referencePath) // Return only library stats and reference path
+        } catch {
+          case e: Exception =>
+            e.printStackTrace()
+            cancel()
+            throw e
+        }
+      }
+    }
 
-          Platform.runLater {
-            intermediateSummaryBox.children = Seq(
-              new Label(s"Sample: ${libraryStats.sampleName}") { styleClass.add("info-label") },
-              new Label(s"Reference: ${libraryStats.referenceBuild}") { styleClass.add("info-label") },
-              new Label(s"Platform: ${libraryStats.inferredPlatform}") { styleClass.add("info-label") }
-            )
-            intermediateSummaryBox.visible = true
+    progressBar.progress <== jfxTask.progressProperty
+    progressIndicator.progress <== jfxTask.progressProperty
+
+    jfxTask.setOnSucceeded(_ => {
+      val (libraryStats, referencePath) = jfxTask.getValue
+      currentLibraryStats = Some(libraryStats)
+      currentReferencePath = Some(referencePath)
+      showInitialResultsAndChoices(libraryStats, referencePath) // Call new method with initial results
+    })
+
+    jfxTask.setOnFailed(_ => {
+      val errorScreen = new VBox(20) {
+        alignment = Pos.Center
+        styleClass.add("root-pane")
+        children = Seq(
+          new Label("Analysis Failed!") {
+            styleClass.add("error-label")
+          },
+          new Label("Please check the console for more details and ensure the reference and input files are correct.") {
+            styleClass.add("info-label")
+          },
+          new Button("Back to Welcome") {
+            onAction = _ => mainLayout.children = createWelcomeScreen()
           }
+        )
+      }
+      mainLayout.children = errorScreen
+    })
+
+    new Thread(jfxTask).start()
+  }
+
+  // New method to show initial results and choices
+  private def showInitialResultsAndChoices(libraryStats: LibraryStats, referencePath: String): Unit = {
+    val resultsTitle = new Label("Initial Analysis Results") {
+      styleClass.add("title-label")
+    }
+
+    val statsGrid = new GridPane {
+      hgap = 20
+      vgap = 10
+      padding = Insets(20)
+      styleClass.add("stats-grid")
+    }
+
+    def addStat(name: String, value: String, row: Int): Unit = {
+      statsGrid.add(new Text(name) { styleClass.add("stat-name") }, 0, row)
+      statsGrid.add(new Text(value) { styleClass.add("stat-value") }, 1, row)
+    }
+
+    addStat("Sample Name:", libraryStats.sampleName, 0)
+    addStat("Aligner:", libraryStats.aligner, 1)
+    addStat("Platform:", libraryStats.inferredPlatform, 2)
+    addStat("Instrument:", libraryStats.mostFrequentInstrument, 3)
+    addStat("Reference:", libraryStats.referenceBuild, 4)
+    addStat("Reads Scanned:", f"${libraryStats.readCount}%,d", 5)
+
+    val deepAnalysisHelpText = new Text("Performs a comprehensive WGS (Whole Genome Sequencing) analysis, including detailed coverage metrics and callable loci, generating plots and tables for visual inspection. This can take significant time for large genomes.") {
+      wrappingWidth = 400
+      styleClass.add("info-label")
+    }
+
+    val deepAnalysisButton = new Button("Perform Deep Coverage Analysis") {
+      onAction = _ => startDeepCoverageAnalysis(currentFilePath, libraryStats, referencePath) // Calls the renamed method
+    }
+
+    val haplogroupProviderChoice = new ChoiceBox[TreeProviderType] {
+      items = ObservableBuffer(TreeProviderType.FTDNA, TreeProviderType.DECODINGUS)
+      value = TreeProviderType.DECODINGUS // Default to DecodingUs
+    }
+
+    val haplogroupTypeChoice = new ChoiceBox[TreeType] {
+      items = ObservableBuffer(TreeType.YDNA, TreeType.MTDNA)
+      value = TreeType.YDNA // Default to YDNA
+    }
+
+    val analyzeHaplogroupBtn = new Button("Analyze Haplogroup") {
+      onAction = _ => startHaplogroupAnalysis(haplogroupTypeChoice.value(), haplogroupProviderChoice.value())
+    }
+
+    val privateSnpButton = new Button("Find Private SNPs") {
+      id = "privateSnpButton"
+      onAction = _ => startPrivateSnpAnalysis(analyzedHaplogroupType.getOrElse(TreeType.YDNA)) // Use the type of the analyzed haplogroup
+      disable = true // Disabled until haplogroup is determined and is YDNA
+    }
+
+    // Logic to disable DecodingUs mtDNA
+    haplogroupProviderChoice.value.onChange { (_, _, newProvider) =>
+      if (newProvider == TreeProviderType.DECODINGUS) {
+        haplogroupTypeChoice.items.value.clear()
+        haplogroupTypeChoice.items.value.add(TreeType.YDNA)
+        haplogroupTypeChoice.value = TreeType.YDNA // Ensure YDNA is selected
+      } else {
+        haplogroupTypeChoice.items.value.clear()
+        haplogroupTypeChoice.items.value.add(TreeType.YDNA)
+        haplogroupTypeChoice.items.value.add(TreeType.MTDNA)
+        haplogroupTypeChoice.value = TreeType.YDNA // Default to YDNA
+      }
+    }
+
+    // Logic to enable/disable private SNP button - this will be called from startHaplogroupAnalysis
+    // when a haplogroup analysis completes.
+    // Initial state is disable, and is updated on a successful haplogroup analysis.
+
+    val haplogroupControls = new HBox(10) {
+      alignment = Pos.CenterLeft
+      padding = Insets(10, 0, 10, 0)
+      children = Seq(
+        new Label("Provider:"),
+        haplogroupProviderChoice,
+        new Label("Type:"),
+        haplogroupTypeChoice,
+        analyzeHaplogroupBtn,
+        privateSnpButton
+      )
+    }
+
+    val choicesBox = new VBox(10) {
+      alignment = Pos.CenterLeft
+      padding = Insets(20)
+      children = Seq(
+        new Label("Select an analysis to perform:") { styleClass.add("sub-title-label") },
+        deepAnalysisHelpText,
+        deepAnalysisButton,
+        new Separator(),
+        new Label("Haplogroup Analysis:") { styleClass.add("sub-title-label") },
+        haplogroupControls
+      )
+    }
+
+    val initialResultsScreen = new VBox(20) {
+      alignment = Pos.TopCenter
+      styleClass.add("root-pane")
+      padding = Insets(20)
+      children = Seq(resultsTitle, statsGrid, new Separator(), choicesBox)
+    }
+
+    mainLayout.children = initialResultsScreen
+  }
+
+  private def startDeepCoverageAnalysis(filePath: String, libraryStats: LibraryStats, referencePath: String): Unit = {
+    val progressLabel = new Label("Deep analysis in progress...") {
+      styleClass.add("progress-label")
+    }
+    val progressBar = new ProgressBar {
+      prefWidth = 400
+    }
+    val progressIndicator = new ProgressIndicator
+
+    val progressScreen = new VBox(20) {
+      alignment = Pos.Center
+      styleClass.add("root-pane")
+      children = Seq(
+        progressLabel,
+        new HBox(20) {
+          alignment = Pos.Center
+          children = Seq(progressBar, progressIndicator)
+        }
+      )
+    }
+
+    mainLayout.children = progressScreen
+
+    val jfxTask = new jfxc.Task[(CoverageSummary, List[String])]() { // Returns CoverageSummary and svgStrings
+      override def call(): (CoverageSummary, List[String]) = {
+        try {
+          val wgsMetricsProcessor = new WgsMetricsProcessor()
+          val callableLociProcessor = new CallableLociProcessor()
 
           // Phase 2: WGS Metrics
           val wgsMetrics = wgsMetricsProcessor.process(filePath, referencePath, (message, current, total) => {
             Platform.runLater { progressLabel.text = message }
-            updateProgress(total + current, total * 3) // 33-66%
+            updateProgress(current, total * 2) // 0-50%
           })
 
           // Phase 3: Callable Loci Analysis
           val (callableLociResult, svgStrings) = callableLociProcessor.process(filePath, referencePath, (message, current, total) => {
             Platform.runLater { progressLabel.text = s"Callable Loci: $message" }
-            updateProgress(total * 2 + current, total * 3) // 66-100%
+            updateProgress(total + current, total * 2) // 50-100%
           })
 
           val summary = CoverageSummary(
@@ -225,7 +386,7 @@ object GenomeNavigatorApp extends JFXApp3 {
 
     jfxTask.setOnSucceeded(_ => {
       val (summary, svgStrings) = jfxTask.getValue
-      showResults(summary, svgStrings)
+      showResults(summary, svgStrings) // Show detailed results after deep analysis
     })
 
     jfxTask.setOnFailed(_ => {
@@ -233,14 +394,14 @@ object GenomeNavigatorApp extends JFXApp3 {
         alignment = Pos.Center
         styleClass.add("root-pane")
         children = Seq(
-          new Label("Analysis Failed!") {
+          new Label("Deep Analysis Failed!") {
             styleClass.add("error-label")
           },
-          new Label("Please check the console for more details and ensure the reference and input files are correct.") {
+          new Label("Please check the console for more details.") {
             styleClass.add("info-label")
           },
-          new Button("Back to Welcome") {
-            onAction = _ => mainLayout.children = createWelcomeScreen()
+          new Button("Back to Choices") {
+            onAction = _ => showInitialResultsAndChoices(libraryStats, referencePath) // Go back to choices
           }
         )
       }
@@ -251,7 +412,7 @@ object GenomeNavigatorApp extends JFXApp3 {
   }
 
   private def showResults(summary: CoverageSummary, svgStrings: List[String]): Unit = {
-    val resultsTitle = new Label("Analysis Results") {
+    val resultsTitle = new Label("Deep Coverage Analysis Results") { // Updated title
       styleClass.add("title-label")
     }
 
@@ -305,7 +466,7 @@ object GenomeNavigatorApp extends JFXApp3 {
           cellValueFactory = c => new scalafx.beans.property.StringProperty(f"${c.value.callableBases}%,d")
         },
         new TableColumn[ContigAnalysisRow, String]("No Coverage") {
-          cellValueFactory = c => new scalafx.beans.property.StringProperty(f"${c.value.noCoverage}%,d")
+          cellValueFactory = c => new scalafx.beans.property.StringProperty(f"${c.value.callableBases}%,d")
         },
         new TableColumn[ContigAnalysisRow, String]("Low Coverage") {
           cellValueFactory = c => new scalafx.beans.property.StringProperty(f"${c.value.lowCoverage}%,d")
@@ -332,21 +493,63 @@ object GenomeNavigatorApp extends JFXApp3 {
       }
     }
 
-    val haplogroupButton = new Button("Analyze Y-DNA Haplogroup") {
-      onAction = _ => startHaplogroupAnalysis(TreeType.YDNA)
+    // Haplogroup Analysis Controls
+    val haplogroupProviderChoice = new ChoiceBox[TreeProviderType] {
+      items = ObservableBuffer(TreeProviderType.FTDNA, TreeProviderType.DECODINGUS)
+      value = TreeProviderType.DECODINGUS // Default to DecodingUs
     }
-    
-    val privateSnpButton = new Button("Find Private Y-DNA SNPs") {
+
+    val haplogroupTypeChoice = new ChoiceBox[TreeType] {
+      items = ObservableBuffer(TreeType.YDNA, TreeType.MTDNA)
+      value = TreeType.YDNA // Default to YDNA
+    }
+
+    val analyzeHaplogroupBtn = new Button("Analyze Haplogroup") {
+      onAction = _ => startHaplogroupAnalysis(haplogroupTypeChoice.value(), haplogroupProviderChoice.value())
+    }
+
+    val privateSnpButton = new Button("Find Private SNPs") {
       id = "privateSnpButton"
-      onAction = _ => startPrivateSnpAnalysis(TreeType.YDNA)
-      disable = true // Disabled until haplogroup is determined
+      onAction = _ => startPrivateSnpAnalysis(analyzedHaplogroupType.getOrElse(TreeType.YDNA)) // Use the type of the analyzed haplogroup
+      disable = true // Disabled until haplogroup is determined and is YDNA
+    }
+
+    // Logic to disable DecodingUs mtDNA
+    haplogroupProviderChoice.value.onChange { (_, _, newProvider) =>
+      if (newProvider == TreeProviderType.DECODINGUS) {
+        haplogroupTypeChoice.items.value.clear()
+        haplogroupTypeChoice.items.value.add(TreeType.YDNA)
+        haplogroupTypeChoice.value = TreeType.YDNA // Ensure YDNA is selected
+      } else {
+        haplogroupTypeChoice.items.value.clear()
+        haplogroupTypeChoice.items.value.add(TreeType.YDNA)
+        haplogroupTypeChoice.items.value.add(TreeType.MTDNA)
+        haplogroupTypeChoice.value = TreeType.YDNA // Default to YDNA
+      }
+    }
+
+    // Logic to enable/disable private SNP button - this will be called from startHaplogroupAnalysis
+    // when a haplogroup analysis completes.
+    // Initial state is disable, and is updated on a successful haplogroup analysis.
+
+    val haplogroupControls = new HBox(10) {
+      alignment = Pos.CenterLeft
+      padding = Insets(10, 0, 10, 0)
+      children = Seq(
+        new Label("Provider:"),
+        haplogroupProviderChoice,
+        new Label("Type:"),
+        haplogroupTypeChoice,
+        analyzeHaplogroupBtn,
+        privateSnpButton
+      )
     }
 
     val resultsVBox = new VBox(20) {
       alignment = Pos.Center
       styleClass.add("root-pane")
       padding = Insets(20)
-      children = Seq(resultsTitle, statsGrid, new Separator(), contigBreakdownTitle, contigTable, webView, new Separator(), new HBox(20, haplogroupButton, privateSnpButton))
+      children = Seq(resultsTitle, statsGrid, new Separator(), contigBreakdownTitle, contigTable, webView, new Separator(), haplogroupControls)
     }
 
     if (FeatureToggles.pdsSubmissionEnabled) {
@@ -389,8 +592,12 @@ object GenomeNavigatorApp extends JFXApp3 {
     mainLayout.children = resultsScreen
   }
 
-  private def startHaplogroupAnalysis(treeType: TreeType): Unit = {
-    coverageSummary.foreach { summary =>
+  private def startHaplogroupAnalysis(treeType: TreeType, providerType: TreeProviderType): Unit = {
+    // Ensure currentLibraryStats and currentReferencePath are available
+    for {
+      summary <- currentLibraryStats
+      referencePath <- currentReferencePath
+    } {
       val progressDialog = new Dialog[Unit]() {
         initOwner(stage)
         title = "Haplogroup Analysis"
@@ -400,12 +607,16 @@ object GenomeNavigatorApp extends JFXApp3 {
 
       val haplogroupTask = new jfxc.Task[Either[String, List[com.decodingus.haplogroup.model.HaplogroupResult]]]() {
         override def call(): Either[String, List[com.decodingus.haplogroup.model.HaplogroupResult]] = {
-          val treeProvider: TreeProvider = new FtdnaTreeProvider() // Or let user choose
+          val treeProvider: TreeProvider = providerType match {
+            case TreeProviderType.FTDNA => new FtdnaTreeProvider()
+            case TreeProviderType.DECODINGUS => new DecodingUsTreeProvider()
+          }
           treeProviderInstance = Some(treeProvider) // Store the instance
-          haplogroupTree = treeProvider.loadTree(treeType, summary.libraryStats.referenceBuild).toOption
+          
+          haplogroupTree = treeProvider.loadTree(treeType, summary.referenceBuild).toOption
           
           val processor = new HaplogroupProcessor()
-          processor.analyze(currentFilePath, summary.libraryStats, treeType, TreeProviderType.FTDNA, (message, current, total) => {
+          processor.analyze(currentFilePath, summary, treeType, providerType, (message, current, total) => {
             Platform.runLater {
               progressDialog.headerText = message
             }
@@ -418,6 +629,7 @@ object GenomeNavigatorApp extends JFXApp3 {
         haplogroupTask.getValue match {
           case Right(results) =>
             bestHaplogroup = results.headOption
+            analyzedHaplogroupType = Some(treeType) // Store the analyzed tree type
             val topResult = bestHaplogroup.map(_.name).getOrElse("Not found")
             new Alert(AlertType.Information) {
               initOwner(stage)
@@ -425,8 +637,8 @@ object GenomeNavigatorApp extends JFXApp3 {
               headerText = "Top Haplogroup Result:"
               contentText = topResult
             }.showAndWait()
-            // Enable private SNP button
-            mainLayout.scene().lookup("#privateSnpButton").setDisable(false)
+            // Enable private SNP button only if YDNA was analyzed
+            mainLayout.scene().lookup("#privateSnpButton").setDisable(analyzedHaplogroupType != Some(TreeType.YDNA))
           case Left(error) =>
             new Alert(AlertType.Error) {
               initOwner(stage)
@@ -454,10 +666,12 @@ object GenomeNavigatorApp extends JFXApp3 {
 
   private def startPrivateSnpAnalysis(treeType: TreeType): Unit = {
     for {
-      summary <- coverageSummary
+      libraryStats <- currentLibraryStats // Use currentLibraryStats
       tree <- haplogroupTree
       bestHg <- bestHaplogroup
       tpInstance <- treeProviderInstance // Get the stored TreeProvider instance
+      // Ensure private SNP analysis is only run for YDNA
+      if treeType == TreeType.YDNA
     } {
       val progressDialog = new Dialog[Unit]() {
         initOwner(stage)
@@ -469,7 +683,7 @@ object GenomeNavigatorApp extends JFXApp3 {
       val privateSnpTask = new jfxc.Task[File]() {
         override def call(): File = {
           val referenceGateway = new ReferenceGateway((_, _) => {})
-          val referencePath = referenceGateway.resolve(summary.libraryStats.referenceBuild).toOption.get.toString
+          val referencePath = referenceGateway.resolve(libraryStats.referenceBuild).toOption.get.toString
 
           val nameToHaplogroup = tree.flatMap(root => {
             def flatten(h: Haplogroup): List[(String, Haplogroup)] = (h.name -> h) :: h.children.flatMap(flatten)
@@ -499,7 +713,7 @@ object GenomeNavigatorApp extends JFXApp3 {
             contig,
             knownLoci,
             tpInstance.sourceBuild, // Pass treeSourceBuild
-            summary.libraryStats.referenceBuild, // Pass referenceBuild
+            libraryStats.referenceBuild, // Pass referenceBuild
             (message, _, _) => {
               Platform.runLater {
                 progressDialog.headerText = message
@@ -507,7 +721,7 @@ object GenomeNavigatorApp extends JFXApp3 {
             }
           )
 
-          val reportFile = new File(s"private_snps_${summary.libraryStats.sampleName}.txt")
+          val reportFile = new File(s"private_snps_${libraryStats.sampleName}.txt")
           processor.writeReport(privateSnps, reportFile)
           reportFile
         }

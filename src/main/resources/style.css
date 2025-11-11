@@ -5,12 +5,19 @@
 .title-label {
     -fx-font-size: 24px;
     -fx-font-weight: bold;
-    -fx-text-fill: #E0E0E0;
+    -fx-text-fill: #E0E0E0; /* Keep slightly off-white for title */
+}
+
+.sub-title-label {
+    -fx-font-size: 20px; /* Increased font size */
+    -fx-font-weight: bold;
+    -fx-text-fill: #FFFFFF; /* Pure white for maximum contrast */
 }
 
 .info-label {
-    -fx-font-size: 14px;
-    -fx-text-fill: #B0B0B0;
+    -fx-font-size: 18px; /* Increased font size */
+    -fx-text-fill: #FFFFFF; /* Pure white for maximum contrast (for Labels) */
+    -fx-fill: #FFFFFF;      /* Pure white for maximum contrast (for Text nodes) */
 }
 
 .progress-label {
@@ -28,7 +35,7 @@
 
 .drag-drop-text {
     -fx-font-size: 18px;
-    -fx-text-fill: #909090;
+    -fx-text-fill: #FFFFFF; /* Pure white for maximum contrast */
 }
 
 .button-select {
@@ -58,13 +65,13 @@
 }
 
 .stat-name {
-    -fx-fill: #B0B0B0;
-    -fx-font-size: 14px;
+    -fx-fill: #FFFFFF; /* Pure white for maximum contrast */
+    -fx-font-size: 18px; /* Increased font size */
 }
 
 .stat-value {
-    -fx-fill: #FFFFFF;
-    -fx-font-size: 14px;
+    -fx-fill: #FFFFFF; /* Pure white for maximum contrast */
+    -fx-font-size: 18px; /* Increased font size */
     -fx-font-weight: bold;
 }
 
