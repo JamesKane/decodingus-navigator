@@ -16,14 +16,20 @@ class GatkHaplotypeCallerProcessor {
     val vcfFile = File.createTempFile("haplotypes", ".vcf")
     vcfFile.deleteOnExit()
 
+    // Index the allelesVcf file (assuming it's sorted by the caller)
+    val indexArgs = Array(
+      "IndexFeatureFile",
+      "-I", allelesVcf.getAbsolutePath
+    )
+    Main.main(indexArgs)
+
     val args = Array(
       "HaplotypeCaller",
       "-I", bamPath,
       "-R", referencePath,
       "-O", vcfFile.getAbsolutePath,
       "-L", allelesVcf.getAbsolutePath,
-      "--alleles", allelesVcf.getAbsolutePath,
-      "--genotyping-mode", "GENOTYPE_GIVEN_ALLELES"
+      "--alleles", allelesVcf.getAbsolutePath
     )
     Main.main(args)
 

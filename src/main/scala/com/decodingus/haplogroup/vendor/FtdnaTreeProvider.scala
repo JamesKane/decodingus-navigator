@@ -33,18 +33,18 @@ case class FtdnaTreeJson(
                           allNodes: Map[String, FtdnaNode]
                         )
 
-class FtdnaTreeProvider extends TreeProvider {
-  override def url(treeType: TreeType): String = treeType match {
+class FtdnaTreeProvider(treeType: TreeType) extends TreeProvider(treeType) {
+  override def url: String = treeType match {
     case TreeType.YDNA => "https://www.familytreedna.com/public/y-dna-haplotree/get"
     case TreeType.MTDNA => "https://www.familytreedna.com/public/mt-dna-haplotree/get"
   }
 
-  override def cachePrefix(treeType: TreeType): String = treeType match {
+  override def cachePrefix: String = treeType match {
     case TreeType.YDNA => "ftdna-ytree"
     case TreeType.MTDNA => "ftdna-mttree"
   }
 
-  override def progressMessage(treeType: TreeType): String = treeType match {
+  override def progressMessage: String = treeType match {
     case TreeType.YDNA => "Downloading FTDNA Y-DNA tree..."
     case TreeType.MTDNA => "Downloading FTDNA MT-DNA tree..."
   }
@@ -54,7 +54,7 @@ class FtdnaTreeProvider extends TreeProvider {
       val allNodes = ftdnaTree.allNodes.map { case (id, node) =>
         val loci = node.variants.flatMap { v =>
           v.position.map { pos =>
-            Locus(v.variant, pos.toLong, v.ancestral, v.derived)
+            Locus(v.variant, v.region, pos.toLong, v.ancestral, v.derived)
           }
         }
         id -> HaplogroupNode(node.haplogroupId, node.parentId, node.name, node.isRoot, loci, node.children)

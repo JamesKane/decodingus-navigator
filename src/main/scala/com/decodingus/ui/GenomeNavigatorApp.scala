@@ -619,12 +619,12 @@ object GenomeNavigatorApp extends JFXApp3 {
       val haplogroupTask = new jfxc.Task[Either[String, List[com.decodingus.haplogroup.model.HaplogroupResult]]]() {
         override def call(): Either[String, List[com.decodingus.haplogroup.model.HaplogroupResult]] = {
           val treeProvider: TreeProvider = providerType match {
-            case TreeProviderType.FTDNA => new FtdnaTreeProvider()
-            case TreeProviderType.DECODINGUS => new DecodingUsTreeProvider()
+            case TreeProviderType.FTDNA => new FtdnaTreeProvider(treeType)
+            case TreeProviderType.DECODINGUS => new DecodingUsTreeProvider(treeType)
           }
           treeProviderInstance = Some(treeProvider) // Store the instance
           
-          haplogroupTree = treeProvider.loadTree(treeType, summary.referenceBuild).toOption
+          haplogroupTree = treeProvider.loadTree(summary.referenceBuild).toOption
           
           val processor = new HaplogroupProcessor()
           processor.analyze(currentFilePath, summary, treeType, providerType, (message, current, total) => {

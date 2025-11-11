@@ -3,12 +3,12 @@ package com.decodingus.haplogroup.tree
 import com.decodingus.haplogroup.model.{Haplogroup, HaplogroupTree}
 import sttp.client3.{HttpURLConnectionBackend, basicRequest}
 
-trait TreeProvider {
-  def url(treeType: TreeType): String
+abstract class TreeProvider(val treeType: TreeType) {
+  def url: String
 
-  def cachePrefix(treeType: TreeType): String
+  def cachePrefix: String
 
-  def progressMessage(treeType: TreeType): String
+  def progressMessage: String
 
   def parseTree(data: String, targetBuild: String): Either[String, HaplogroupTree]
 
@@ -18,19 +18,19 @@ trait TreeProvider {
 
   def sourceBuild: String // This is the native build of the tree data
 
-  def loadTree(treeType: TreeType, targetBuild: String): Either[String, List[Haplogroup]] = {
+  def loadTree(targetBuild: String): Either[String, List[Haplogroup]] = {
     val cache = new TreeCache()
-    cache.get(cachePrefix(treeType)) match {
+    cache.get(cachePrefix) match {
       case Some(data) =>
-        println(s"Found ${cachePrefix(treeType)} in cache.")
+        println(s"Found ${cachePrefix} in cache.")
         parseTree(data, targetBuild).map(buildTree)
       case None =>
-        println(s"Downloading ${cachePrefix(treeType)}...")
+        println(s"Downloading ${cachePrefix}...")
         val backend = HttpURLConnectionBackend()
-        val response = basicRequest.get(sttp.model.Uri.unsafeParse(url(treeType))).send(backend)
+        val response = basicRequest.get(sttp.model.Uri.unsafeParse(url)).send(backend)
         response.body.flatMap { data =>
           println("Download complete. Caching tree.")
-          cache.put(cachePrefix(treeType), data)
+          cache.put(cachePrefix, data)
           parseTree(data, targetBuild).map(buildTree)
         }
     }

@@ -28,18 +28,18 @@ case class ApiNode(
                     isBackbone: Boolean
                   )
 
-class DecodingUsTreeProvider extends TreeProvider {
-  override def url(treeType: TreeType): String = treeType match {
+class DecodingUsTreeProvider(treeType: TreeType) extends TreeProvider(treeType) {
+  override def url: String = treeType match {
     case TreeType.YDNA => "https://decoding-us.com/api/v1/y-tree"
     case TreeType.MTDNA => throw new UnsupportedOperationException("MT-DNA tree not yet supported by DecodingUs")
   }
 
-  override def cachePrefix(treeType: TreeType): String = treeType match {
+  override def cachePrefix: String = treeType match {
     case TreeType.YDNA => "decodingus-ytree"
     case TreeType.MTDNA => throw new UnsupportedOperationException("MT-DNA tree not yet supported by DecodingUs")
   }
 
-  override def progressMessage(treeType: TreeType): String = treeType match {
+  override def progressMessage: String = treeType match {
     case TreeType.YDNA => "Downloading DecodingUs Y-DNA tree..."
     case TreeType.MTDNA => throw new UnsupportedOperationException("MT-DNA tree not yet supported by DecodingUs")
   }
@@ -63,7 +63,7 @@ class DecodingUsTreeProvider extends TreeProvider {
           v.coordinates.headOption.flatMap { case (apiBuild, coord) =>
             buildMap.get(apiBuild).flatMap { internalBuild =>
               if (internalBuild == targetBuild) {
-                Some(Locus(v.name, coord.start, coord.anc, coord.der))
+                Some(Locus(v.name, getContigName(treeType, internalBuild), coord.start, coord.anc, coord.der))
               } else {
                 None
               }
@@ -73,7 +73,7 @@ class DecodingUsTreeProvider extends TreeProvider {
 
         haplogroupId.toString -> HaplogroupNode(haplogroupId, parentId, node.name, haplogroupId == rootId, loci, List())
       }.toMap
-
+      
       val childrenMap = mutable.Map[Long, List[Long]]()
       allNodes.values.foreach { node =>
         if (node.parent_id != 0) {
@@ -92,6 +92,21 @@ class DecodingUsTreeProvider extends TreeProvider {
   override def buildTree(tree: HaplogroupTree): List[Haplogroup] = {
     val rootNodes = tree.allNodes.values.filter(_.is_root).toList
     rootNodes.map(root => buildSubTree(root.haplogroup_id, tree, None))
+  }
+
+  private def getContigName(treeType: TreeType, build: String): String = {
+    treeType match {
+      case TreeType.YDNA =>
+        build match {
+          case "GRCh37" => "Y"
+          case _ => "chrY"
+        }
+      case TreeType.MTDNA =>
+        build match {
+          case "GRCh37" => "M" // Assuming M for GRCh37 MT-DNA, confirm if needed
+          case _ => "chrM"
+        }
+    }
   }
 
   private def buildSubTree(nodeId: Long, tree: HaplogroupTree, parentName: Option[String]): Haplogroup = {
