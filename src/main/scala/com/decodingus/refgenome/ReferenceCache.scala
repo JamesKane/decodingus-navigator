@@ -19,7 +19,7 @@ class ReferenceCache {
 
   def getPath(referenceBuild: String): Option[Path] = {
     val refPath = cacheDir.resolve(s"$referenceBuild.fa.gz")
-    Some(refPath).filter(Files.exists)
+    if (Files.exists(refPath)) Some(refPath) else None
   }
 
   def put(referenceBuild: String, file: Path): Path = {
