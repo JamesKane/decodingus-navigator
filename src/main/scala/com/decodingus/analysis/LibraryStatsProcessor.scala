@@ -134,7 +134,7 @@ class LibraryStatsProcessor {
     }
   }
 
-  private def detectAligner(header: SAMFileHeader): String = {
+  def detectAligner(header: SAMFileHeader): String = {
     Option(header.getSAMString) match {
       case Some(headerText) =>
         val lowerHeaderText = headerText.toLowerCase
@@ -152,7 +152,7 @@ class LibraryStatsProcessor {
     }
   }
 
-  private def detectReferenceBuild(header: SAMFileHeader): String = {
+  def detectReferenceBuild(header: SAMFileHeader): String = {
     Option(header.getSAMString) match {
       case Some(headerText) =>
         if (headerText.contains("AS:GRCh38") || headerText.contains("GCA_000001405.15")) {

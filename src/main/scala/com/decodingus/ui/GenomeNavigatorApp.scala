@@ -5,6 +5,8 @@ import com.decodingus.config.FeatureToggles
 import com.decodingus.haplogroup.tree.{TreeProviderType, TreeType}
 import com.decodingus.model._
 import com.decodingus.pds.PdsClient
+import com.decodingus.refgenome.ReferenceGateway
+import htsjdk.samtools.SamReaderFactory
 import javafx.concurrent as jfxc
 import scalafx.Includes.*
 import scalafx.application.JFXApp3.PrimaryStage
@@ -20,6 +22,7 @@ import scalafx.scene.layout.{GridPane, HBox, StackPane, VBox}
 import scalafx.scene.text.{Text, TextAlignment}
 import scalafx.scene.web.WebView
 
+import java.io.File
 import scala.concurrent.ExecutionContext.Implicits.global
 
 case class ContigAnalysisRow(
@@ -139,10 +142,31 @@ object GenomeNavigatorApp extends JFXApp3 {
     val jfxTask = new jfxc.Task[(CoverageSummary, List[String])]() {
       override def call(): (CoverageSummary, List[String]) = {
         try {
+          // Step 1: Detect Reference Build
+          Platform.runLater { progressLabel.text = "Detecting reference build..." }
+          val header = SamReaderFactory.makeDefault().open(new File(filePath)).getFileHeader
           val libraryStatsProcessor = new LibraryStatsProcessor()
+          val referenceBuild = libraryStatsProcessor.detectReferenceBuild(header)
+          if (referenceBuild == "Unknown") {
+            throw new IllegalStateException("Could not determine reference build from BAM/CRAM header.")
+          }
+
+          // Step 2: Resolve Reference Path
+          Platform.runLater { progressLabel.text = s"Resolving reference: $referenceBuild" }
+          val referenceGateway = new ReferenceGateway((done, total) => {
+            Platform.runLater {
+              progressLabel.text = s"Downloading reference: $done / $total bytes"
+              updateProgress(done, total)
+            }
+          })
+          val referencePath = referenceGateway.resolve(referenceBuild) match {
+            case Right(path) => path.toString
+            case Left(error) => throw new Exception(error)
+          }
+
+          // Step 3: Run Full Analysis
           val wgsMetricsProcessor = new WgsMetricsProcessor()
           val callableLociProcessor = new CallableLociProcessor()
-          val referencePath = "/Library/Genomics/Reference/chm13v2.0/chm13v2.0.fa.gz"
 
           // Phase 1: Library Stats (quick scan)
           val libraryStats = libraryStatsProcessor.process(filePath, referencePath, (message, current, total) => {
@@ -362,7 +386,9 @@ object GenomeNavigatorApp extends JFXApp3 {
     val haplogroupTask = new jfxc.Task[Either[String, List[com.decodingus.haplogroup.model.HaplogroupResult]]]() {
       override def call(): Either[String, List[com.decodingus.haplogroup.model.HaplogroupResult]] = {
         val processor = new HaplogroupProcessor()
-        processor.analyze(currentFilePath, "/Library/Genomics/Reference/chm13v2.0/chm13v2.0.fa.gz", TreeType.YDNA, TreeProviderType.FTDNA, (message, current, total) => {
+        // This needs the resolved reference path
+        val referencePath = "/Library/Genomics/Reference/chm13v2.0/chm13v2.0.fa.gz" // Placeholder
+        processor.analyze(currentFilePath, referencePath, TreeType.YDNA, TreeProviderType.FTDNA, (message, current, total) => {
           // Could update a progress bar here if needed
         })
       }
