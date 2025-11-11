@@ -2,7 +2,9 @@ package com.decodingus.refgenome
 
 import sttp.client3.*
 
-import java.nio.file.{Files, Path}
+import java.io.IOException
+import java.nio.file.{Files, Path, Paths}
+import sys.process._
 
 class ReferenceGateway(onProgress: (Long, Long) => Unit) {
   private val cache = new ReferenceCache
@@ -18,10 +20,11 @@ class ReferenceGateway(onProgress: (Long, Long) => Unit) {
     cache.getPath(referenceBuild) match {
       case Some(path) =>
         println(s"Found reference $referenceBuild in cache: $path")
-        Right(path)
+        validateAndCreateReferenceFiles(path)
       case None =>
         referenceUrls.get(referenceBuild) match {
-          case Some(url) => downloadReference(referenceBuild, url)
+          case Some(url) =>
+            downloadReference(referenceBuild, url).flatMap(validateAndCreateReferenceFiles)
           case None => Left(s"Unknown reference build: $referenceBuild")
         }
     }
@@ -44,5 +47,41 @@ class ReferenceGateway(onProgress: (Long, Long) => Unit) {
       case Left(error) =>
         Left(s"Failed to download reference: $error")
     }
+  }
+
+  private def validateAndCreateReferenceFiles(referencePath: Path): Either[String, Path] = {
+    val faiPath = Paths.get(referencePath.toString + ".fai")
+    val dictPath = Paths.get(referencePath.getParent.toString, referencePath.getFileName.toString.replace(".fa.gz", ".dict"))
+
+    // Check and create .fai index
+    if (!Files.exists(faiPath)) {
+      println(s"Creating FASTA index for $referencePath...")
+      val command = s"samtools faidx $referencePath"
+      try {
+        val exitCode = command.!
+        if (exitCode != 0) {
+          return Left(s"Failed to create FASTA index for $referencePath. Exit code: $exitCode")
+        }
+      } catch {
+        case e: IOException =>
+          return Left(s"Failed to execute samtools faidx for $referencePath: ${e.getMessage}")
+      }
+    }
+
+    // Check and create .dict dictionary
+    if (!Files.exists(dictPath)) {
+      println(s"Creating sequence dictionary for $referencePath...")
+      val command = s"gatk CreateSequenceDictionary -R $referencePath -O $dictPath"
+      try {
+        val exitCode = command.!
+        if (exitCode != 0) {
+          return Left(s"Failed to create sequence dictionary for $referencePath. Exit code: $exitCode")
+        }
+      } catch {
+        case e: IOException =>
+          return Left(s"Failed to execute gatk CreateSequenceDictionary for $referencePath: ${e.getMessage}")
+      }
+    }
+    Right(referencePath)
   }
 }
