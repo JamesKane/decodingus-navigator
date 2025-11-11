@@ -44,6 +44,7 @@ object GenomeNavigatorApp extends JFXApp3 {
   private var coverageSummary: Option[CoverageSummary] = None
   private var haplogroupTree: Option[List[Haplogroup]] = None
   private var bestHaplogroup: Option[com.decodingus.haplogroup.model.HaplogroupResult] = None
+  private var treeProviderInstance: Option[TreeProvider] = None
 
   override def start(): Unit = {
     stage = new PrimaryStage {
@@ -400,6 +401,7 @@ object GenomeNavigatorApp extends JFXApp3 {
       val haplogroupTask = new jfxc.Task[Either[String, List[com.decodingus.haplogroup.model.HaplogroupResult]]]() {
         override def call(): Either[String, List[com.decodingus.haplogroup.model.HaplogroupResult]] = {
           val treeProvider: TreeProvider = new FtdnaTreeProvider() // Or let user choose
+          treeProviderInstance = Some(treeProvider) // Store the instance
           haplogroupTree = treeProvider.loadTree(treeType, summary.libraryStats.referenceBuild).toOption
           
           val processor = new HaplogroupProcessor()
@@ -455,6 +457,7 @@ object GenomeNavigatorApp extends JFXApp3 {
       summary <- coverageSummary
       tree <- haplogroupTree
       bestHg <- bestHaplogroup
+      tpInstance <- treeProviderInstance // Get the stored TreeProvider instance
     } {
       val progressDialog = new Dialog[Unit]() {
         initOwner(stage)
@@ -490,11 +493,19 @@ object GenomeNavigatorApp extends JFXApp3 {
 
           val processor = new PrivateSnpProcessor()
           val contig = if (treeType == TreeType.YDNA) "chrY" else "chrM"
-          val privateSnps = processor.findPrivateSnps(currentFilePath, referencePath, contig, knownLoci, (message, _, _) => {
-            Platform.runLater {
-              progressDialog.headerText = message
+          val privateSnps = processor.findPrivateSnps(
+            currentFilePath,
+            referencePath,
+            contig,
+            knownLoci,
+            tpInstance.sourceBuild, // Pass treeSourceBuild
+            summary.libraryStats.referenceBuild, // Pass referenceBuild
+            (message, _, _) => {
+              Platform.runLater {
+                progressDialog.headerText = message
+              }
             }
-          })
+          )
 
           val reportFile = new File(s"private_snps_${summary.libraryStats.sampleName}.txt")
           processor.writeReport(privateSnps, reportFile)
