@@ -10,9 +10,9 @@ import scala.collection.mutable
 case class FtdnaVariant(
                          variant: String,
                          position: Option[Int],
-                         ancestral: String,
-                         derived: String,
-                         region: String,
+                         ancestral: Option[String],
+                         derived: Option[String],
+                         region: Option[String],
                          id: Option[Long]
                        )
 
@@ -54,7 +54,7 @@ class FtdnaTreeProvider(treeType: TreeType) extends TreeProvider(treeType) {
       val allNodes = ftdnaTree.allNodes.map { case (id, node) =>
         val loci = node.variants.flatMap { v =>
           v.position.map { pos =>
-            Locus(v.variant, v.region, pos.toLong, v.ancestral, v.derived)
+            Locus(v.variant, v.region.getOrElse(""), pos.toLong, v.ancestral.getOrElse(""), v.derived.getOrElse(""))
           }
         }
         id -> HaplogroupNode(node.haplogroupId, node.parentId, node.name, node.isRoot, loci, node.children)
