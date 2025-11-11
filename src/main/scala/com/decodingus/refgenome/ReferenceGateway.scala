@@ -5,6 +5,7 @@ import sttp.client3.*
 import java.io.IOException
 import java.nio.file.{Files, Path, Paths}
 import sys.process._
+import org.broadinstitute.hellbender.Main
 
 class ReferenceGateway(onProgress: (Long, Long) => Unit) {
   private val cache = new ReferenceCache
@@ -99,16 +100,17 @@ class ReferenceGateway(onProgress: (Long, Long) => Unit) {
 
     // Check and create .dict dictionary
     if (!Files.exists(dictPath)) {
-      println(s"Creating sequence dictionary for $referencePath...")
-      val command = s"gatk CreateSequenceDictionary -R $referencePath -O $dictPath"
+      println(s"Creating sequence dictionary for $referencePath using GATK library...")
+      val args = Array(
+        "CreateSequenceDictionary",
+        "-R", referencePath.toAbsolutePath.toString,
+        "-O", dictPath.toAbsolutePath.toString
+      )
       try {
-        val exitCode = command.!
-        if (exitCode != 0) {
-          return Left(s"Failed to create sequence dictionary for $referencePath. Exit code: $exitCode")
-        }
+        Main.main(args)
       } catch {
-        case e: IOException =>
-          return Left(s"Failed to execute gatk CreateSequenceDictionary for $referencePath: ${e.getMessage}")
+        case e: Exception =>
+          return Left(s"Failed to create sequence dictionary for $referencePath using GATK library: ${e.getMessage}")
       }
     }
     Right(referencePath)
