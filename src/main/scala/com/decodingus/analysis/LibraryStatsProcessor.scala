@@ -89,16 +89,16 @@ class LibraryStatsProcessor {
     LibraryStats(
       readCount = readCount,
       pairedReads = pairedReads,
-      lengthDistribution = lengthDistribution,
-      insertSizeDistribution = insertSizeDistribution,
+      lengthDistribution = lengthDistribution.toMap,
+      insertSizeDistribution = insertSizeDistribution.toMap,
       aligner = aligner,
       referenceBuild = referenceBuild,
       sampleName = sampleName,
-      flowCells = flowCells,
-      instruments = instruments,
+      flowCells = flowCells.toMap,
+      instruments = instruments.toMap,
       mostFrequentInstrument = specificInstrumentModel,
       inferredPlatform = primaryPlatform,
-      platformCounts = platformCounts
+      platformCounts = platformCounts.toMap
     )
   }
 

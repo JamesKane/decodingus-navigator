@@ -1,6 +1,7 @@
 package com.decodingus.ui
 
 import com.decodingus.analysis._
+import com.decodingus.auth._
 import com.decodingus.config.FeatureToggles
 import com.decodingus.haplogroup.model.Haplogroup
 import com.decodingus.haplogroup.tree.{TreeProvider, TreeProviderType, TreeType}
@@ -8,6 +9,7 @@ import com.decodingus.haplogroup.vendor.{DecodingUsTreeProvider, FtdnaTreeProvid
 import com.decodingus.model._
 import com.decodingus.pds.PdsClient
 import com.decodingus.refgenome.ReferenceGateway
+import com.decodingus.ui.components._
 import htsjdk.samtools.SamReaderFactory
 import javafx.concurrent as jfxc
 import scalafx.Includes.*
@@ -20,7 +22,7 @@ import scalafx.scene.control.Alert.AlertType
 import scalafx.scene.control.*
 import scalafx.scene.control.TableColumn.sfxTableColumn2jfx
 import scalafx.scene.input.{DragEvent, TransferMode}
-import scalafx.scene.layout.{GridPane, HBox, StackPane, VBox, Region}
+import scalafx.scene.layout.{BorderPane, GridPane, HBox, Priority, Region, StackPane, VBox}
 import scalafx.scene.text.{Text, TextAlignment}
 import scalafx.scene.web.WebView
 
@@ -40,6 +42,7 @@ case class ContigAnalysisRow(
 
 object GenomeNavigatorApp extends JFXApp3 {
   private val mainLayout = new StackPane()
+
   private var currentFilePath: String = ""
   private var currentLibraryStats: Option[LibraryStats] = None // Store initial library stats
   private var currentReferencePath: Option[String] = None     // Store resolved reference path
@@ -49,67 +52,43 @@ object GenomeNavigatorApp extends JFXApp3 {
   private var treeProviderInstance: Option[TreeProvider] = None
   private var analyzedHaplogroupType: Option[TreeType] = None // To store the type of haplogroup that was analyzed
 
+  private var currentSha256: Option[String] = None
+  private var currentUser: Option[User] = None
+
+  private lazy val topBar: TopBar = new TopBar(
+    onLogin = () => {
+      LoginDialog.show(stage).foreach { user =>
+        currentUser = Some(user)
+        topBar.update(currentUser)
+      }
+    },
+    onLogout = () => {
+      currentUser = None
+      topBar.update(currentUser)
+    }
+  )
+
   override def start(): Unit = {
     stage = new PrimaryStage {
       title = "Decoding-Us Navigator"
-      scene = new Scene(800, 800) {
-        root = mainLayout
+      scene = new Scene(800, 850) {
+        root = new BorderPane {
+          top = topBar
+          center = mainLayout
+        }
         stylesheets.add(getClass.getResource("/style.css").toExternalForm)
       }
     }
 
-    val welcomeScreen = createWelcomeScreen()
+    topBar.update(currentUser)
+    val welcomeScreen = new WelcomeScreen(
+      onFileSelected = filePath => {
+        println(s"Dropped file: $filePath")
+        startInitialAnalysis(filePath)
+      },
+      onSelectFileClicked = () => selectFile()
+    )
     mainLayout.children = welcomeScreen
-  }
-
-  private def createWelcomeScreen(): VBox = {
-    new VBox(20) {
-      alignment = Pos.Center
-      styleClass.add("root-pane")
-      children = Seq(
-        new Label("Welcome to Decoding-Us Navigator") {
-          styleClass.add("title-label")
-        },
-        new Label("Drag and drop your BAM/CRAM file here, or click to select.") {
-          styleClass.add("info-label")
-          textAlignment = TextAlignment.Center
-        },
-        new StackPane {
-          prefWidth = 400
-          prefHeight = 200
-          styleClass.add("drag-drop-area")
-          children = new Label("Drop File Here") {
-            styleClass.add("drag-drop-text")
-          }
-
-          onDragOver = (event: DragEvent) => {
-            if (event.gestureSource != this && event.dragboard.hasFiles) {
-              event.acceptTransferModes(TransferMode.Copy, TransferMode.Move)
-            }
-            event.consume()
-          }
-
-          onDragDropped = (event: DragEvent) => {
-            val db = event.dragboard
-            var success = false
-            if (db.hasFiles) {
-              db.files.headOption.foreach { file =>
-                val filePath = file.getAbsolutePath
-                println(s"Dropped file: $filePath")
-                startInitialAnalysis(filePath) // Renamed
-                success = true
-              }
-            }
-            event.dropCompleted = success
-            event.consume()
-          }
-        },
-        new Button("Select BAM/CRAM File") {
-          styleClass.add("button-select")
-          onAction = _ => selectFile()
-        }
-      )
-    }
   }
 
   private def selectFile(): Unit = {
@@ -122,6 +101,9 @@ object GenomeNavigatorApp extends JFXApp3 {
     val progressLabel = new Label("Initializing analysis...") {
       styleClass.add("progress-label")
     }
+    val shaLabel = new Label("Calculating file signature...") {
+      styleClass.add("info-label")
+    }
     val progressBar = new ProgressBar {
       prefWidth = 400
     }
@@ -132,6 +114,7 @@ object GenomeNavigatorApp extends JFXApp3 {
       styleClass.add("root-pane")
       children = Seq(
         progressLabel,
+        shaLabel,
         new HBox(20) {
           alignment = Pos.Center
           children = Seq(progressBar, progressIndicator)
@@ -140,6 +123,27 @@ object GenomeNavigatorApp extends JFXApp3 {
     }
 
     mainLayout.children = progressScreen
+
+    // Background Task for SHA-256
+    val shaTask = new jfxc.Task[String]() {
+      override def call(): String = {
+        AnalysisCache.calculateSha256(new File(filePath))
+      }
+    }
+
+    shaTask.setOnSucceeded(_ => {
+      currentSha256 = Some(shaTask.getValue)
+      Platform.runLater {
+        shaLabel.text = s"File Signature: ${shaTask.getValue.take(8)}..."
+        // If we are still on the progress screen, this will just update the label
+        // The check for cache existence happens in showInitialResultsAndChoices
+        // However, if the main analysis finishes first, we need to update the choices screen dynamically.
+        // We'll handle this by checking currentSha256 in showInitialResultsAndChoices
+      }
+    })
+
+    new Thread(shaTask).start()
+
 
     val jfxTask = new jfxc.Task[(LibraryStats, String)]() { // Now returns LibraryStats and referencePath
       override def call(): (LibraryStats, String) = {
@@ -189,7 +193,9 @@ object GenomeNavigatorApp extends JFXApp3 {
       val (libraryStats, referencePath) = jfxTask.getValue
       currentLibraryStats = Some(libraryStats)
       currentReferencePath = Some(referencePath)
-      showInitialResultsAndChoices(libraryStats, referencePath) // Call new method with initial results
+      // Wait for SHA if it's not done? Or just proceed and update later?
+      // Let's proceed, and in showInitialResultsAndChoices we can add a listener or check
+      showInitialResultsAndChoices(libraryStats, referencePath)
     })
 
     jfxTask.setOnFailed(_ => {
@@ -204,7 +210,10 @@ object GenomeNavigatorApp extends JFXApp3 {
             styleClass.add("info-label")
           },
           new Button("Back to Welcome") {
-            onAction = _ => mainLayout.children = createWelcomeScreen()
+            onAction = _ => mainLayout.children = new WelcomeScreen(
+              onFileSelected = filePath => startInitialAnalysis(filePath),
+              onSelectFileClicked = () => selectFile()
+            )
           }
         )
       }
@@ -258,6 +267,51 @@ object GenomeNavigatorApp extends JFXApp3 {
     val deepAnalysisButton = new Button("Perform Deep Coverage Analysis") {
       onAction = _ => startDeepCoverageAnalysis(currentFilePath, libraryStats, referencePath) // Calls the renamed method
     }
+
+    val loadCacheButton = new Button("Load Cached Analysis") {
+      styleClass.add("button-success")
+      visible = false
+      managed = false // Don't take up space if not visible
+      onAction = _ => {
+        currentSha256.flatMap(AnalysisCache.load).foreach { cachedSummary =>
+          coverageSummary = Some(cachedSummary)
+          // We don't have the SVG strings stored in the summary object, which is a limitation of the current cache.
+          // For now, we will pass an empty list for SVGs or handle it gracefully.
+          // Ideally, we should cache SVGs too or regenerate them (fast) or store them in the summary.
+          showResults(cachedSummary, List.empty) 
+        }
+      }
+    }
+
+    // Check cache availability
+    def updateCacheButton(): Unit = {
+      currentSha256.foreach { sha =>
+        if (AnalysisCache.exists(sha)) {
+          loadCacheButton.visible = true
+          loadCacheButton.managed = true
+          loadCacheButton.text = s"Load Cached Analysis (${sha.take(8)}...)"
+        }
+      }
+    }
+    
+    // Initial check
+    updateCacheButton()
+    
+    // Poll for SHA completion if not yet done (simple hack since we don't have a bound property easily here)
+    if (currentSha256.isEmpty) {
+      val timer = new java.util.Timer()
+      timer.schedule(new java.util.TimerTask {
+        override def run(): Unit = {
+          Platform.runLater {
+            if (currentSha256.isDefined) {
+              updateCacheButton()
+              timer.cancel()
+            }
+          }
+        }
+      }, 1000, 1000)
+    }
+
 
     val haplogroupProviderChoice = new ChoiceBox[TreeProviderType] {
       items = ObservableBuffer(TreeProviderType.FTDNA, TreeProviderType.DECODINGUS)
@@ -315,6 +369,7 @@ object GenomeNavigatorApp extends JFXApp3 {
       padding = Insets(20)
       children = Seq(
         new Label("Select an analysis to perform:") { styleClass.add("sub-title-label") },
+        loadCacheButton, // Add the cache button here
         deepAnalysisHelpText,
         deepAnalysisButton,
         new Separator(),
@@ -375,12 +430,22 @@ object GenomeNavigatorApp extends JFXApp3 {
           })
 
           val summary = CoverageSummary(
-            pdsUserId = "60820188481374", // placeholder
+            pdsUserId = currentUser.map(_.id).getOrElse("Anonymous"),
             libraryStats = libraryStats,
             wgsMetrics = wgsMetrics,
             callableBases = callableLociResult.callableBases,
             contigAnalysis = callableLociResult.contigAnalysis
           )
+          
+          // Save to cache if SHA is available
+          // Note: We access currentSha256 from the main thread usually, but here we are in background.
+          // However, currentSha256 is a simple var. If it's set (which it should be by now for a large file analysis), we use it.
+          // If the analysis was faster than the SHA calculation (unlikely for deep analysis), we might miss it.
+          // Ideally we should wait for it, but for MVP this is acceptable best-effort.
+          if (currentSha256.isDefined) {
+             AnalysisCache.save(currentSha256.get, summary)
+          }
+          
           coverageSummary = Some(summary)
           (summary, svgStrings)
         } catch {
@@ -580,13 +645,26 @@ object GenomeNavigatorApp extends JFXApp3 {
           new Button("Upload to PDS") {
             styleClass.add("button-upload")
             onAction = _ => {
-              PdsClient.uploadSummary(summary).foreach { _ =>
-                Platform.runLater {
-                  text = "Upload Complete!"
-                  styleClass.remove("button-upload")
-                  styleClass.add("button-success")
-                  disable = true
-                }
+              text = "Uploading..."
+              disable = true
+              PdsClient.uploadSummary(summary).onComplete {
+                case scala.util.Success(_) =>
+                  Platform.runLater {
+                    text = "Upload Complete!"
+                    styleClass.remove("button-upload")
+                    styleClass.add("button-success")
+                  }
+                case scala.util.Failure(ex) =>
+                  Platform.runLater {
+                    text = "Upload to PDS" // Reset text
+                    disable = false
+                    new Alert(AlertType.Error) {
+                      initOwner(stage)
+                      title = "Upload Failed"
+                      headerText = "Could not upload to PDS"
+                      contentText = ex.getMessage
+                    }.showAndWait()
+                  }
               }
             }
           }
