@@ -1,7 +1,8 @@
 package com.decodingus.ui.components
 
+import scalafx.Includes._
 import scalafx.scene.layout.{VBox, HBox, Priority, StackPane, BorderPane, Region}
-import scalafx.scene.control.{Label, Button, ListView, SplitPane, Alert, ListCell, Tooltip}
+import scalafx.scene.control.{Label, Button, ListView, SplitPane, Alert, ListCell, Tooltip, TextField}
 import scalafx.geometry.{Insets, Pos}
 import scalafx.collections.ObservableBuffer
 import com.decodingus.workspace.model.{Workspace, Project, Biosample, SyncStatus}
@@ -14,9 +15,9 @@ import scalafx.scene.control.ButtonType
 class WorkbenchView(val viewModel: WorkbenchViewModel) extends SplitPane {
   println(s"[DEBUG] WorkbenchView: Initializing WorkbenchView. ViewModel Projects: ${viewModel.projects.size}, ViewModel Samples: ${viewModel.samples.size}")
 
-  // Observable buffers for UI lists - now directly from ViewModel
-  private val projectBuffer: ObservableBuffer[Project] = viewModel.projects
-  private val sampleBuffer: ObservableBuffer[Biosample] = viewModel.samples
+  // Observable buffers for UI lists - now using filtered versions from ViewModel
+  private val projectBuffer: ObservableBuffer[Project] = viewModel.filteredProjects
+  private val sampleBuffer: ObservableBuffer[Biosample] = viewModel.filteredSamples
 
   println(s"[DEBUG] WorkbenchView: After binding buffers. projectBuffer size: ${projectBuffer.size}, sampleBuffer size: ${sampleBuffer.size}")
 
@@ -251,12 +252,45 @@ class WorkbenchView(val viewModel: WorkbenchViewModel) extends SplitPane {
   /** Renders the detail view for a selected project */
   private def renderProjectDetail(project: Project): Unit = {
     detailView.children.clear()
-    detailView.children.addAll(
-      new Label(s"Project: ${project.projectName}") { style = "-fx-font-size: 20px; -fx-font-weight: bold;" },
-      new Label(s"Description: ${project.description.getOrElse("N/A")}"),
-      new Label(s"Administrator: ${project.administrator}"),
-      new Label(s"Members: ${project.members.size} subjects")
+    val projectDetailView = new ProjectDetailView(
+      viewModel = viewModel,
+      project = project,
+      onEdit = handleEditProject,
+      onDelete = handleDeleteProject
     )
+    VBox.setVgrow(projectDetailView, Priority.Always)
+    detailView.children.add(projectDetailView)
+  }
+
+  /** Handles the Edit Project action */
+  private def handleEditProject(project: Project): Unit = {
+    val dialog = new EditProjectDialog(project)
+    val result = dialog.showAndWait().asInstanceOf[Option[Option[Project]]]
+
+    result match {
+      case Some(Some(updatedProject)) =>
+        viewModel.updateProject(updatedProject)
+        // Refresh the detail view with updated project
+        viewModel.findProject(updatedProject.projectName).foreach(renderProjectDetail)
+      case _ => // User cancelled
+    }
+  }
+
+  /** Handles the Delete Project action with confirmation */
+  private def handleDeleteProject(project: Project): Unit = {
+    val confirmDialog = new Alert(AlertType.Confirmation) {
+      title = "Delete Project"
+      headerText = s"Delete ${project.projectName}?"
+      contentText = "This action cannot be undone. The project will be removed but subjects will remain in the workspace."
+    }
+
+    val result = confirmDialog.showAndWait()
+    result match {
+      case Some(ButtonType.OK) =>
+        viewModel.deleteProject(project.projectName)
+        renderEmptyDetail("Select an item to view details")
+      case _ => // User cancelled
+    }
   }
 
   /** Renders the empty state when nothing is selected */
@@ -393,14 +427,29 @@ class WorkbenchView(val viewModel: WorkbenchViewModel) extends SplitPane {
 
   private val newProjectButton = new Button("New Project") {
     onAction = _ => {
-      // Placeholder for new project dialog
-      new Alert(AlertType.Information) {
-        title = "New Project"
-        headerText = "New Project functionality not yet implemented."
-        contentText = "Stay tuned for project creation!"
-      }.showAndWait()
+      val dialog = new AddProjectDialog()
+      val result = dialog.showAndWait().asInstanceOf[Option[Option[Project]]]
+
+      result match {
+        case Some(Some(newProject)) =>
+          viewModel.addProject(newProject)
+        case _ => // User cancelled
+      }
     }
   }
+
+  // Filter controls
+  private val projectFilterField = new TextField() {
+    promptText = "Filter projects..."
+    prefWidth = 150
+  }
+  projectFilterField.text.bindBidirectional(viewModel.projectFilter)
+
+  private val subjectFilterField = new TextField() {
+    promptText = "Filter subjects..."
+    prefWidth = 150
+  }
+  subjectFilterField.text.bindBidirectional(viewModel.subjectFilter)
 
   private val addSampleButton = new Button("Add Subject") {
     onAction = _ => {
@@ -473,10 +522,24 @@ class WorkbenchView(val viewModel: WorkbenchViewModel) extends SplitPane {
   private val leftPanel = new VBox(10) {
     padding = Insets(10)
     children = Seq(
-      new Label("Projects:") { style = "-fx-font-weight: bold;" },
+      new HBox(10) {
+        alignment = Pos.CenterLeft
+        children = Seq(
+          new Label("Projects:") { style = "-fx-font-weight: bold;" },
+          new Region { HBox.setHgrow(this, Priority.Always) },
+          projectFilterField
+        )
+      },
       projectList,
       newProjectButton,
-      new Label("Subjects:") { style = "-fx-font-weight: bold;" },
+      new HBox(10) {
+        alignment = Pos.CenterLeft
+        children = Seq(
+          new Label("Subjects:") { style = "-fx-font-weight: bold;" },
+          new Region { HBox.setHgrow(this, Priority.Always) },
+          subjectFilterField
+        )
+      },
       sampleList,
       addSampleButton,
       new HBox(10) {

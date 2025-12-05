@@ -51,6 +51,50 @@ class WorkbenchViewModel(val workspaceService: WorkspaceService) {
   val selectedProject: ObjectProperty[Option[Project]] = ObjectProperty(None)
   val selectedSubject: ObjectProperty[Option[Biosample]] = ObjectProperty(None)
 
+  // --- Filtering ---
+  // Filter text for projects and subjects lists
+  val projectFilter: StringProperty = StringProperty("")
+  val subjectFilter: StringProperty = StringProperty("")
+
+  // Filtered observable collections (updated when filter or source data changes)
+  val filteredProjects: ObservableBuffer[Project] = ObservableBuffer[Project]()
+  val filteredSamples: ObservableBuffer[Biosample] = ObservableBuffer[Biosample]()
+
+  // Apply filters when filter text changes
+  projectFilter.onChange { (_, _, _) => applyFilters() }
+  subjectFilter.onChange { (_, _, _) => applyFilters() }
+
+  /** Applies current filter text to projects and samples */
+  private def applyFilters(): Unit = {
+    val projectQuery = projectFilter.value.toLowerCase.trim
+    val subjectQuery = subjectFilter.value.toLowerCase.trim
+
+    // Filter projects
+    filteredProjects.clear()
+    if (projectQuery.isEmpty) {
+      filteredProjects ++= projects
+    } else {
+      filteredProjects ++= projects.filter { p =>
+        p.projectName.toLowerCase.contains(projectQuery) ||
+        p.description.exists(_.toLowerCase.contains(projectQuery)) ||
+        p.administrator.toLowerCase.contains(projectQuery)
+      }
+    }
+
+    // Filter subjects
+    filteredSamples.clear()
+    if (subjectQuery.isEmpty) {
+      filteredSamples ++= samples
+    } else {
+      filteredSamples ++= samples.filter { s =>
+        s.donorIdentifier.toLowerCase.contains(subjectQuery) ||
+        s.sampleAccession.toLowerCase.contains(subjectQuery) ||
+        s.description.exists(_.toLowerCase.contains(subjectQuery)) ||
+        s.centerName.exists(_.toLowerCase.contains(subjectQuery))
+      }
+    }
+  }
+
   // Listen to changes in the internal _workspace and update observable buffers
   // NOTE: This listener MUST be registered BEFORE loadWorkspace() is called,
   // otherwise the initial load won't trigger the buffer updates.
@@ -70,6 +114,8 @@ class WorkbenchViewModel(val workspaceService: WorkspaceService) {
     projects ++= workspace.main.projects
     samples.clear()
     samples ++= workspace.main.samples
+    // Also refresh filtered lists
+    applyFilters()
     println(s"[DEBUG] WorkbenchViewModel: Buffers synced. Projects: ${projects.size}, Samples: ${samples.size}")
   }
 
@@ -254,6 +300,94 @@ class WorkbenchViewModel(val workspaceService: WorkspaceService) {
     selectedProject.value = Some(newProject)
 
     saveWorkspace()
+  }
+
+  /** Updates an existing project identified by projectName */
+  def updateProject(updatedProject: Project): Unit = {
+    val updatedProjects = _workspace.value.main.projects.map { project =>
+      if (project.projectName == updatedProject.projectName) updatedProject
+      else project
+    }
+    _workspace.value = _workspace.value.copy(main = _workspace.value.main.copy(projects = updatedProjects))
+
+    selectedProject.value = Some(updatedProject)
+
+    saveWorkspace()
+  }
+
+  /** Deletes a project by projectName */
+  def deleteProject(projectName: String): Unit = {
+    val updatedProjects = _workspace.value.main.projects.filterNot(_.projectName == projectName)
+    _workspace.value = _workspace.value.copy(main = _workspace.value.main.copy(projects = updatedProjects))
+
+    selectedProject.value match {
+      case Some(selected) if selected.projectName == projectName =>
+        selectedProject.value = None
+      case _ =>
+    }
+
+    saveWorkspace()
+  }
+
+  /** Finds a project by projectName */
+  def findProject(projectName: String): Option[Project] = {
+    _workspace.value.main.projects.find(_.projectName == projectName)
+  }
+
+  /** Adds a subject (by accession) to a project's members list */
+  def addSubjectToProject(projectName: String, sampleAccession: String): Boolean = {
+    findProject(projectName) match {
+      case Some(project) =>
+        if (project.members.contains(sampleAccession)) {
+          println(s"[ViewModel] Subject $sampleAccession already in project $projectName")
+          false
+        } else {
+          val updatedProject = project.copy(members = project.members :+ sampleAccession)
+          updateProject(updatedProject)
+          true
+        }
+      case None =>
+        println(s"[ViewModel] Project $projectName not found")
+        false
+    }
+  }
+
+  /** Removes a subject (by accession) from a project's members list */
+  def removeSubjectFromProject(projectName: String, sampleAccession: String): Boolean = {
+    findProject(projectName) match {
+      case Some(project) =>
+        if (!project.members.contains(sampleAccession)) {
+          println(s"[ViewModel] Subject $sampleAccession not in project $projectName")
+          false
+        } else {
+          val updatedProject = project.copy(members = project.members.filterNot(_ == sampleAccession))
+          updateProject(updatedProject)
+          true
+        }
+      case None =>
+        println(s"[ViewModel] Project $projectName not found")
+        false
+    }
+  }
+
+  /** Gets subjects that are members of a project */
+  def getProjectMembers(projectName: String): List[Biosample] = {
+    findProject(projectName) match {
+      case Some(project) =>
+        project.members.flatMap(accession => findSubject(accession))
+      case None =>
+        List.empty
+    }
+  }
+
+  /** Gets subjects that are NOT members of a project (for adding) */
+  def getNonProjectMembers(projectName: String): List[Biosample] = {
+    findProject(projectName) match {
+      case Some(project) =>
+        _workspace.value.main.samples.filterNot(s => project.members.contains(s.sampleAccession))
+      case None =>
+        _workspace.value.main.samples
+    }
   }
 
   // --- SequenceData CRUD Operations (nested within a Biosample) ---
