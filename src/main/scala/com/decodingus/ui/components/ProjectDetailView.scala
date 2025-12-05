@@ -1,21 +1,24 @@
 package com.decodingus.ui.components
 
 import scalafx.Includes._
-import scalafx.scene.layout.{VBox, HBox, Priority, Region}
-import scalafx.scene.control.{Label, Button, ListView, ListCell, Alert, ButtonType}
-import scalafx.scene.control.Alert.AlertType
+import scalafx.scene.layout.{VBox, HBox, Priority}
+import scalafx.scene.control.{Label, Button, ListView, ListCell}
 import scalafx.scene.input.{DragEvent, TransferMode, ClipboardContent, DataFormat}
 import scalafx.geometry.{Insets, Pos}
 import scalafx.collections.ObservableBuffer
-import scalafx.application.Platform
 import com.decodingus.workspace.model.{Project, Biosample}
 import com.decodingus.workspace.WorkbenchViewModel
+
+/** Companion object for shared constants */
+object ProjectDetailView {
+  // DataFormat must be a singleton - JavaFX throws if created multiple times
+  val biosampleFormat: DataFormat = DataFormat("application/x-biosample-accession")
+}
 
 /**
  * Detail view for a selected Project showing:
  * - Project metadata with Edit/Delete actions
- * - Member list (drag-drop target for adding subjects)
- * - Available subjects list (drag source for adding to project)
+ * - Member list (drag-drop target for adding subjects from left panel)
  */
 class ProjectDetailView(
   viewModel: WorkbenchViewModel,
@@ -26,15 +29,12 @@ class ProjectDetailView(
 
   padding = Insets(10)
 
-  // Data format for drag-drop
-  private val biosampleFormat = DataFormat("application/x-biosample-accession")
+  // Import the shared DataFormat from companion object
+  import ProjectDetailView.biosampleFormat
 
-  // Observable buffers for the lists
+  // Observable buffer for project members
   private val memberBuffer: ObservableBuffer[Biosample] = ObservableBuffer.from(
     viewModel.getProjectMembers(project.projectName)
-  )
-  private val availableBuffer: ObservableBuffer[Biosample] = ObservableBuffer.from(
-    viewModel.getNonProjectMembers(project.projectName)
   )
 
   // Header with project name and action buttons
@@ -83,22 +83,10 @@ class ProjectDetailView(
             graphic = null
           }
         }
-
-        // Drag source - drag from members list to remove
-        onDragDetected = (event) => {
-          Option(item.value).foreach { biosample =>
-            val db = startDragAndDrop(TransferMode.Move)
-            val content = new ClipboardContent()
-            content.put(biosampleFormat, biosample.sampleAccession)
-            content.putString(biosample.sampleAccession)
-            db.setContent(content)
-            event.consume()
-          }
-        }
       }
     }
 
-    // Drag over - accept drops from available list
+    // Drag over - accept drops from the main subjects list
     onDragOver = (event: DragEvent) => {
       if (event.gestureSource != this && event.dragboard.hasString) {
         event.acceptTransferModes(TransferMode.Move)
@@ -110,10 +98,12 @@ class ProjectDetailView(
     onDragDropped = (event: DragEvent) => {
       val success = if (event.dragboard.hasString) {
         val accession = event.dragboard.getString
-        // Only accept if it's from the available list (not already a member)
-        if (availableBuffer.exists(_.sampleAccession == accession)) {
+        // Accept if subject exists and is not already a member
+        val isAlreadyMember = memberBuffer.exists(_.sampleAccession == accession)
+        val subjectExists = viewModel.findSubject(accession).isDefined
+        if (subjectExists && !isAlreadyMember) {
           viewModel.addSubjectToProject(project.projectName, accession)
-          refreshLists()
+          refreshMembers()
           true
         } else false
       } else false
@@ -135,7 +125,7 @@ class ProjectDetailView(
     onAction = _ => {
       Option(membersListView.selectionModel().getSelectedItem).foreach { biosample =>
         viewModel.removeSubjectFromProject(project.projectName, biosample.sampleAccession)
-        refreshLists()
+        refreshMembers()
       }
     }
   }
@@ -144,107 +134,19 @@ class ProjectDetailView(
     removeFromProjectButton.disable = selected == null
   }
 
-  // Available subjects list (not in project)
-  private val availableLabel = new Label("Available Subjects:") {
-    style = "-fx-font-weight: bold; -fx-padding: 15 0 0 0;"
-  }
-
-  private val availableHint = new Label("Drag subjects to the members list above to add them") {
-    style = "-fx-font-size: 11px; -fx-text-fill: #888888;"
-  }
-
-  private val availableListView = new ListView[Biosample](availableBuffer) {
-    prefHeight = 150
-    placeholder = new Label("All subjects are in this project") {
-      style = "-fx-text-fill: #888888;"
-    }
-
-    cellFactory = { (v: ListView[Biosample]) =>
-      new ListCell[Biosample] {
-        item.onChange { (_, _, biosample) =>
-          if (biosample != null) {
-            text = s"${biosample.donorIdentifier} (${biosample.sampleAccession.take(8)}...)"
-            graphic = null
-          } else {
-            text = null
-            graphic = null
-          }
-        }
-
-        // Drag source - drag from available to add
-        onDragDetected = (event) => {
-          Option(item.value).foreach { biosample =>
-            val db = startDragAndDrop(TransferMode.Move)
-            val content = new ClipboardContent()
-            content.put(biosampleFormat, biosample.sampleAccession)
-            content.putString(biosample.sampleAccession)
-            db.setContent(content)
-            event.consume()
-          }
-        }
-      }
-    }
-
-    // Drag over - accept drops from members list (for removal)
-    onDragOver = (event: DragEvent) => {
-      if (event.gestureSource != this && event.dragboard.hasString) {
-        event.acceptTransferModes(TransferMode.Move)
-      }
-      event.consume()
-    }
-
-    // Drag dropped - remove subject from project
-    onDragDropped = (event: DragEvent) => {
-      val success = if (event.dragboard.hasString) {
-        val accession = event.dragboard.getString
-        // Only accept if it's from the members list
-        if (memberBuffer.exists(_.sampleAccession == accession)) {
-          viewModel.removeSubjectFromProject(project.projectName, accession)
-          refreshLists()
-          true
-        } else false
-      } else false
-      event.dropCompleted = success
-      event.consume()
-    }
-
-    onDragEntered = (_: DragEvent) => {
-      style = "-fx-background-color: #fff3e0;"
-    }
-
-    onDragExited = (_: DragEvent) => {
-      style = ""
-    }
-  }
-
-  private val addToProjectButton = new Button("Add Selected") {
-    disable = true
-    onAction = _ => {
-      Option(availableListView.selectionModel().getSelectedItem).foreach { biosample =>
-        viewModel.addSubjectToProject(project.projectName, biosample.sampleAccession)
-        refreshLists()
-      }
-    }
-  }
-
-  availableListView.selectionModel().selectedItem.onChange { (_, _, selected) =>
-    addToProjectButton.disable = selected == null
-  }
-
-  // Refresh lists after add/remove operations
-  private def refreshLists(): Unit = {
-    // Re-fetch from ViewModel to get updated state
+  // Refresh members list after add/remove operations
+  private def refreshMembers(): Unit = {
     viewModel.findProject(project.projectName) match {
       case Some(updatedProject) =>
         memberBuffer.clear()
         memberBuffer ++= viewModel.getProjectMembers(updatedProject.projectName)
-        availableBuffer.clear()
-        availableBuffer ++= viewModel.getNonProjectMembers(updatedProject.projectName)
       case None =>
-        // Project was deleted
         memberBuffer.clear()
-        availableBuffer.clear()
     }
+  }
+
+  private val dragHint = new Label("Drag subjects from the list on the left to add them") {
+    style = "-fx-font-size: 11px; -fx-text-fill: #888888; -fx-padding: 5 0 0 0;"
   }
 
   // Layout
@@ -258,15 +160,8 @@ class ProjectDetailView(
       alignment = Pos.CenterLeft
       children = Seq(removeFromProjectButton)
     },
-    availableLabel,
-    availableHint,
-    availableListView,
-    new HBox(10) {
-      alignment = Pos.CenterLeft
-      children = Seq(addToProjectButton)
-    }
+    dragHint
   )
 
-  VBox.setVgrow(membersListView, Priority.Sometimes)
-  VBox.setVgrow(availableListView, Priority.Sometimes)
+  VBox.setVgrow(membersListView, Priority.Always)
 }

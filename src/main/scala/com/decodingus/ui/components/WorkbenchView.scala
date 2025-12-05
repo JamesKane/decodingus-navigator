@@ -11,9 +11,21 @@ import scalafx.scene.control.Alert.AlertType
 import scalafx.application.Platform
 import scalafx.scene.control.ControlIncludes._
 import scalafx.scene.control.ButtonType
+import scalafx.scene.input.{MouseEvent, DragEvent, TransferMode, ClipboardContent}
+import java.util.{Timer, TimerTask}
 
 class WorkbenchView(val viewModel: WorkbenchViewModel) extends SplitPane {
   println(s"[DEBUG] WorkbenchView: Initializing WorkbenchView. ViewModel Projects: ${viewModel.projects.size}, ViewModel Samples: ${viewModel.samples.size}")
+
+  // Track drag state to prevent click-on-drag from triggering navigation
+  private var dragInProgress = false
+  // Timer for delayed selection check
+  private val selectionTimer = new Timer("SelectionTimer", true) // daemon thread
+  private var pendingSelectionTask: Option[TimerTask] = None
+  private val clickDelayMs = 150 // milliseconds to wait before applying selection
+
+  // Use the shared DataFormat from ProjectDetailView companion object
+  private val biosampleFormat = ProjectDetailView.biosampleFormat
 
   // Observable buffers for UI lists - now using filtered versions from ViewModel
   private val projectBuffer: ObservableBuffer[Project] = viewModel.filteredProjects
@@ -329,32 +341,30 @@ class WorkbenchView(val viewModel: WorkbenchViewModel) extends SplitPane {
     }
   }
 
-  // Listen to ViewModel's selectedSubject changes to update detailView
-  viewModel.selectedSubject.onChange { (_, _, newSubjectOpt) =>
+  // Unified detail view rendering based on selection state
+  // This prevents race conditions between project and subject selection
+  private def updateDetailView(): Unit = {
     Platform.runLater {
-      newSubjectOpt match {
-        case Some(subject) => renderSubjectDetail(subject)
-        case None =>
-          // Only show empty state if no project is selected either
-          if (viewModel.selectedProject.value.isEmpty) {
-            renderEmptyDetail("Select an item to view details")
-          }
+      (viewModel.selectedProject.value, viewModel.selectedSubject.value) match {
+        case (Some(project), _) =>
+          // Project takes precedence when selected
+          renderProjectDetail(project)
+        case (None, Some(subject)) =>
+          renderSubjectDetail(subject)
+        case (None, None) =>
+          renderEmptyDetail("Select an item to view details")
       }
     }
   }
 
+  // Listen to ViewModel's selectedSubject changes to update detailView
+  viewModel.selectedSubject.onChange { (_, _, _) =>
+    updateDetailView()
+  }
+
   // Listen to ViewModel's selectedProject changes to update detailView
-  viewModel.selectedProject.onChange { (_, _, newProjectOpt) =>
-    Platform.runLater {
-      newProjectOpt match {
-        case Some(project) => renderProjectDetail(project)
-        case None =>
-          // Only show empty state if no subject is selected either
-          if (viewModel.selectedSubject.value.isEmpty) {
-            renderEmptyDetail("Select an item to view details")
-          }
-      }
-    }
+  viewModel.selectedProject.onChange { (_, _, _) =>
+    updateDetailView()
   }
 
   // Left Panel - Navigation
@@ -373,11 +383,13 @@ class WorkbenchView(val viewModel: WorkbenchViewModel) extends SplitPane {
   // UI to ViewModel sync
   projectList.selectionModel().selectedItem.onChange { (_, _, newProject) =>
     if (newProject != null) {
-      viewModel.selectedProject.value = Some(newProject)
-      // Clear subject selection when a project is selected
+      // Clear subject selection first (both UI and ViewModel) to avoid race conditions
       if (viewModel.selectedSubject.value.isDefined) {
         viewModel.selectedSubject.value = None
       }
+      sampleList.selectionModel().clearSelection()
+      // Then set project selection
+      viewModel.selectedProject.value = Some(newProject)
     } else if (viewModel.selectedProject.value.isDefined && projectList.selectionModel().getSelectedItem == null) {
       // Clear ViewModel selection if UI selection is cleared manually
       viewModel.selectedProject.value = None
@@ -400,19 +412,64 @@ class WorkbenchView(val viewModel: WorkbenchViewModel) extends SplitPane {
         item.onChange { (_, _, newBiosample) =>
           text = if (newBiosample != null) s"${newBiosample.donorIdentifier} (${newBiosample.sampleAccession.take(8)}...)" else null
         }
+
+        // On mouse press, schedule delayed selection check
+        onMousePressed = (_: MouseEvent) => {
+          dragInProgress = false
+          // Cancel any existing pending task
+          pendingSelectionTask.foreach(_.cancel())
+
+          Option(item.value).foreach { biosample =>
+            val task = new TimerTask {
+              override def run(): Unit = {
+                // Check if drag started during the delay
+                if (!dragInProgress) {
+                  Platform.runLater {
+                    // Clear project selection first
+                    if (viewModel.selectedProject.value.isDefined) {
+                      viewModel.selectedProject.value = None
+                    }
+                    projectList.selectionModel().clearSelection()
+                    // Then set subject selection
+                    viewModel.selectedSubject.value = Some(biosample)
+                  }
+                }
+                pendingSelectionTask = None
+              }
+            }
+            pendingSelectionTask = Some(task)
+            selectionTimer.schedule(task, clickDelayMs)
+          }
+        }
+
+        // Drag source - enable dragging subjects to project members lists
+        onDragDetected = (event: MouseEvent) => {
+          Option(item.value).foreach { biosample =>
+            dragInProgress = true
+            // Cancel pending selection
+            pendingSelectionTask.foreach(_.cancel())
+            pendingSelectionTask = None
+
+            val db = startDragAndDrop(TransferMode.Move)
+            val content = new ClipboardContent()
+            content.put(biosampleFormat, biosample.sampleAccession)
+            content.putString(biosample.sampleAccession)
+            db.setContent(content)
+            event.consume()
+          }
+        }
+
+        // Reset drag flag when drag completes
+        onDragDone = (_: DragEvent) => {
+          dragInProgress = false
+        }
       }
     }
   }
-  // UI to ViewModel sync
+  // UI to ViewModel sync - only handle deselection
   sampleList.selectionModel().selectedItem.onChange { (_, _, newBiosample) =>
-    if (newBiosample != null) {
-      viewModel.selectedSubject.value = Some(newBiosample)
-      // Clear project selection when a subject is selected
-      if (viewModel.selectedProject.value.isDefined) {
-        viewModel.selectedProject.value = None
-      }
-    } else if (viewModel.selectedSubject.value.isDefined && sampleList.selectionModel().getSelectedItem == null) {
-      // Clear ViewModel selection if UI selection is cleared manually
+    if (newBiosample == null && viewModel.selectedSubject.value.isDefined) {
+      // Clear ViewModel selection if UI selection is cleared
       viewModel.selectedSubject.value = None
     }
   }

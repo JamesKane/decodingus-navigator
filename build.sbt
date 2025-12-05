@@ -2,9 +2,34 @@ ThisBuild / version := "0.1.0-SNAPSHOT"
 
 ThisBuild / scalaVersion := "3.3.1"
 
+// Require Java 17 LTS
+ThisBuild / javacOptions ++= Seq("-source", "17", "-target", "17")
+
 lazy val root = (project in file("."))
+  .enablePlugins(JlinkPlugin)
   .settings(
     name := "DUNavigator",
+    maintainer := "decodingus",
+
+    // Main class for the application
+    Compile / mainClass := Some("com.decodingus.ui.GenomeNavigatorApp"),
+
+    // Assembly settings for fat JAR
+    assembly / assemblyJarName := s"DUNavigator-assembly-${version.value}.jar",
+    assembly / mainClass := Some("com.decodingus.ui.GenomeNavigatorApp"),
+    assembly / assemblyMergeStrategy := {
+      case PathList("META-INF", "MANIFEST.MF") => MergeStrategy.discard
+      case PathList("META-INF", "services", _*) => MergeStrategy.concat
+      case PathList("META-INF", _*) => MergeStrategy.discard
+      case "reference.conf" => MergeStrategy.concat
+      case "module-info.class" => MergeStrategy.discard
+      case x if x.endsWith(".proto") => MergeStrategy.first
+      case x if x.endsWith(".class") => MergeStrategy.first
+      case x =>
+        val oldStrategy = (assembly / assemblyMergeStrategy).value
+        oldStrategy(x)
+    },
+
     resolvers += "Broad Institute" at "https://broadinstitute.jfrog.io/broadinstitute/libs-release/",
     libraryDependencySchemes ++= Seq(
       "org.typelevel" %% "cats-kernel" % VersionScheme.Always,

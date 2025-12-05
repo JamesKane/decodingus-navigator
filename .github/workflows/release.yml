@@ -1,0 +1,228 @@
+name: Build Release Packages
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            platform: linux
+            artifact: DUNavigator-linux
+          - os: macos-latest
+            platform: macos
+            artifact: DUNavigator-macos
+          - os: windows-latest
+            platform: windows
+            artifact: DUNavigator-windows
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+          cache: 'sbt'
+
+      - name: Set up sbt
+        uses: sbt/setup-sbt@v1
+
+      - name: Get version from tag
+        id: version
+        shell: bash
+        run: echo "VERSION=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
+
+      - name: Build application JAR
+        shell: bash
+        run: sbt assembly
+
+      # Linux packaging with jpackage
+      - name: Package for Linux
+        if: matrix.platform == 'linux'
+        shell: bash
+        run: |
+          # Get the assembled JAR
+          JAR_FILE=$(find target -name "*.jar" -path "*/scala-*/DUNavigator-assembly*.jar" | head -1)
+
+          # Create package with jpackage
+          jpackage \
+            --input target/scala-3.3.1 \
+            --main-jar $(basename $JAR_FILE) \
+            --main-class com.decodingus.ui.GenomeNavigatorApp \
+            --name DUNavigator \
+            --app-version ${{ steps.version.outputs.VERSION }} \
+            --vendor "Decoding Us" \
+            --description "Genome Navigator Application" \
+            --type deb \
+            --dest target/package \
+            --java-options '-Xmx4g' \
+            --linux-shortcut
+
+          # Also create a tar.gz with the runtime image
+          jpackage \
+            --input target/scala-3.3.1 \
+            --main-jar $(basename $JAR_FILE) \
+            --main-class com.decodingus.ui.GenomeNavigatorApp \
+            --name DUNavigator \
+            --app-version ${{ steps.version.outputs.VERSION }} \
+            --vendor "Decoding Us" \
+            --description "Genome Navigator Application" \
+            --type app-image \
+            --dest target/package \
+            --java-options '-Xmx4g'
+
+          # Create tar.gz from app-image
+          cd target/package
+          tar -czvf DUNavigator-${{ steps.version.outputs.VERSION }}-linux.tar.gz DUNavigator
+
+      # macOS packaging with jpackage
+      - name: Package for macOS
+        if: matrix.platform == 'macos'
+        shell: bash
+        run: |
+          JAR_FILE=$(find target -name "*.jar" -path "*/scala-*/DUNavigator-assembly*.jar" | head -1)
+
+          # Create .app bundle
+          jpackage \
+            --input target/scala-3.3.1 \
+            --main-jar $(basename $JAR_FILE) \
+            --main-class com.decodingus.ui.GenomeNavigatorApp \
+            --name DUNavigator \
+            --app-version ${{ steps.version.outputs.VERSION }} \
+            --vendor "Decoding Us" \
+            --description "Genome Navigator Application" \
+            --type app-image \
+            --dest target/package \
+            --java-options '-Xmx4g' \
+            --mac-package-name "DUNavigator"
+
+          # Create DMG
+          jpackage \
+            --input target/scala-3.3.1 \
+            --main-jar $(basename $JAR_FILE) \
+            --main-class com.decodingus.ui.GenomeNavigatorApp \
+            --name DUNavigator \
+            --app-version ${{ steps.version.outputs.VERSION }} \
+            --vendor "Decoding Us" \
+            --description "Genome Navigator Application" \
+            --type dmg \
+            --dest target/package \
+            --java-options '-Xmx4g' \
+            --mac-package-name "DUNavigator"
+
+          # Create zip from .app for portable distribution
+          cd target/package
+          zip -r DUNavigator-${{ steps.version.outputs.VERSION }}-macos.zip DUNavigator.app
+
+      # Windows packaging with jpackage
+      - name: Package for Windows
+        if: matrix.platform == 'windows'
+        shell: bash
+        run: |
+          JAR_FILE=$(find target -name "*.jar" -path "*/scala-*/DUNavigator-assembly*.jar" | head -1)
+
+          # Create app-image first
+          jpackage \
+            --input target/scala-3.3.1 \
+            --main-jar $(basename $JAR_FILE) \
+            --main-class com.decodingus.ui.GenomeNavigatorApp \
+            --name DUNavigator \
+            --app-version ${{ steps.version.outputs.VERSION }} \
+            --vendor "Decoding Us" \
+            --description "Genome Navigator Application" \
+            --type app-image \
+            --dest target/package \
+            --java-options '-Xmx4g' \
+            --win-console
+
+          # Create MSI installer
+          jpackage \
+            --input target/scala-3.3.1 \
+            --main-jar $(basename $JAR_FILE) \
+            --main-class com.decodingus.ui.GenomeNavigatorApp \
+            --name DUNavigator \
+            --app-version ${{ steps.version.outputs.VERSION }} \
+            --vendor "Decoding Us" \
+            --description "Genome Navigator Application" \
+            --type msi \
+            --dest target/package \
+            --java-options '-Xmx4g' \
+            --win-dir-chooser \
+            --win-menu \
+            --win-shortcut
+
+      # Create portable zip for Windows
+      - name: Create Windows portable zip
+        if: matrix.platform == 'windows'
+        shell: pwsh
+        run: |
+          Compress-Archive -Path target/package/DUNavigator -DestinationPath "target/package/DUNavigator-${{ steps.version.outputs.VERSION }}-windows.zip"
+
+      - name: Upload Linux artifacts
+        if: matrix.platform == 'linux'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: |
+            target/package/*.deb
+            target/package/*.tar.gz
+
+      - name: Upload macOS artifacts
+        if: matrix.platform == 'macos'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: |
+            target/package/*.dmg
+            target/package/*.zip
+
+      - name: Upload Windows artifacts
+        if: matrix.platform == 'windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: |
+            target/package/*.msi
+            target/package/*.zip
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Get version from tag
+        id: version
+        run: echo "VERSION=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        with:
+          name: DUNavigator v${{ steps.version.outputs.VERSION }}
+          draft: false
+          prerelease: ${{ contains(github.ref, 'alpha') || contains(github.ref, 'beta') || contains(github.ref, 'rc') }}
+          generate_release_notes: true
+          files: |
+            artifacts/**/*.deb
+            artifacts/**/*.tar.gz
+            artifacts/**/*.dmg
+            artifacts/**/*.zip
+            artifacts/**/*.msi
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
