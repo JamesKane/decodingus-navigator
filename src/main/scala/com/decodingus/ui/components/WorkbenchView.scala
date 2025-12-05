@@ -9,6 +9,7 @@ import com.decodingus.workspace.WorkbenchViewModel
 import scalafx.scene.control.Alert.AlertType
 import scalafx.application.Platform
 import scalafx.scene.control.ControlIncludes._
+import scalafx.scene.control.ButtonType
 
 class WorkbenchView(val viewModel: WorkbenchViewModel) extends SplitPane {
   println(s"[DEBUG] WorkbenchView: Initializing WorkbenchView. ViewModel Projects: ${viewModel.projects.size}, ViewModel Samples: ${viewModel.samples.size}")
@@ -28,24 +29,94 @@ class WorkbenchView(val viewModel: WorkbenchViewModel) extends SplitPane {
   }
   VBox.setVgrow(detailView, Priority.Always)
 
+  /** Renders the detail view for a selected subject with Edit/Delete actions */
+  private def renderSubjectDetail(subject: Biosample): Unit = {
+    detailView.children.clear()
+
+    val editButton = new Button("Edit") {
+      onAction = _ => handleEditSubject(subject)
+    }
+
+    val deleteButton = new Button("Delete") {
+      style = "-fx-text-fill: #D32F2F;"
+      onAction = _ => handleDeleteSubject(subject)
+    }
+
+    val actionButtons = new HBox(10) {
+      padding = Insets(10, 0, 10, 0)
+      children = Seq(editButton, deleteButton)
+    }
+
+    detailView.children.addAll(
+      new Label(s"Subject: ${subject.donorIdentifier}") { style = "-fx-font-size: 20px; -fx-font-weight: bold;" },
+      actionButtons,
+      new Label(s"Accession: ${subject.sampleAccession}"),
+      new Label(s"Sex: ${subject.sex.getOrElse("N/A")}"),
+      new Label(s"Center: ${subject.centerName.getOrElse("N/A")}"),
+      new Label(s"Description: ${subject.description.getOrElse("N/A")}"),
+      new Label(s"Created At: ${subject.createdAt.map(_.toLocalDate.toString).getOrElse("N/A")}"),
+      new Label(s"Sequence Data: ${subject.sequenceData.size} file(s)") { style = "-fx-padding: 10 0 0 0;" },
+      new Label(s"Haplogroups: ${subject.haplogroups.map(h => s"Y: ${h.yDna.getOrElse("—")}, MT: ${h.mtDna.getOrElse("—")}").getOrElse("Not analyzed")}")
+    )
+  }
+
+  /** Renders the detail view for a selected project */
+  private def renderProjectDetail(project: Project): Unit = {
+    detailView.children.clear()
+    detailView.children.addAll(
+      new Label(s"Project: ${project.projectName}") { style = "-fx-font-size: 20px; -fx-font-weight: bold;" },
+      new Label(s"Description: ${project.description.getOrElse("N/A")}"),
+      new Label(s"Administrator: ${project.administrator}"),
+      new Label(s"Members: ${project.members.size} subjects")
+    )
+  }
+
+  /** Renders the empty state when nothing is selected */
+  private def renderEmptyDetail(message: String): Unit = {
+    detailView.children.clear()
+    detailView.children.add(
+      new Label(message) { style = "-fx-font-size: 18px; -fx-font-weight: bold;" }
+    )
+  }
+
+  /** Handles the Edit Subject action */
+  private def handleEditSubject(subject: Biosample): Unit = {
+    val dialog = new EditSubjectDialog(subject)
+    val result = dialog.showAndWait().asInstanceOf[Option[Option[Biosample]]]
+
+    result match {
+      case Some(Some(updatedBiosample)) =>
+        viewModel.updateSubject(updatedBiosample)
+      case _ => // User cancelled
+    }
+  }
+
+  /** Handles the Delete Subject action with confirmation */
+  private def handleDeleteSubject(subject: Biosample): Unit = {
+    val confirmDialog = new Alert(AlertType.Confirmation) {
+      title = "Delete Subject"
+      headerText = s"Delete ${subject.donorIdentifier}?"
+      contentText = "This action cannot be undone. All associated sequence data and analysis results will be removed."
+    }
+
+    val result = confirmDialog.showAndWait()
+    result match {
+      case Some(ButtonType.OK) =>
+        viewModel.deleteSubject(subject.sampleAccession)
+      case _ => // User cancelled
+    }
+  }
+
   // Listen to ViewModel's selectedSubject changes to update detailView
   viewModel.selectedSubject.onChange { (_, _, newSubjectOpt) =>
     Platform.runLater {
-      detailView.children.clear()
       newSubjectOpt match {
-        case Some(subject) =>
-          detailView.children.addAll(
-            new Label(s"Subject: ${subject.donorIdentifier}") { style = "-fx-font-size: 20px; -fx-font-weight: bold;" },
-            new Label(s"Accession: ${subject.sampleAccession}"),
-            new Label(s"Sex: ${subject.sex.getOrElse("N/A")}"),
-            new Label(s"Description: ${subject.description.getOrElse("N/A")}"),
-            new Label(s"Created At: ${subject.createdAt.map(_.toLocalDate.toString).getOrElse("N/A")}")
-            // Add more details as needed, e.g., sequenceData summary, haplogroups
-          )
+        case Some(subject) => renderSubjectDetail(subject)
         case None =>
-          detailView.children.add(
-            new Label("No subject selected.") { style = "-fx-font-size: 18px; -fx-font-weight: bold;" }
-          )
+          // Only show empty state if no project is selected either
+          if (viewModel.selectedProject.value.isEmpty) {
+            renderEmptyDetail("Select an item to view details")
+          }
       }
     }
   }
@@ -53,20 +124,13 @@ class WorkbenchView(val viewModel: WorkbenchViewModel) extends SplitPane {
   // Listen to ViewModel's selectedProject changes to update detailView
   viewModel.selectedProject.onChange { (_, _, newProjectOpt) =>
     Platform.runLater {
-      detailView.children.clear()
       newProjectOpt match {
-        case Some(project) =>
-          detailView.children.addAll(
-            new Label(s"Project: ${project.projectName}") { style = "-fx-font-size: 20px; -fx-font-weight: bold;" },
-            new Label(s"Description: ${project.description.getOrElse("N/A")}"),
-            new Label(s"Administrator: ${project.administrator}"),
-            new Label(s"Members: ${project.members.size} subjects")
-            // Optionally list member biosamples
-          )
+        case Some(project) => renderProjectDetail(project)
         case None =>
-          detailView.children.add(
-            new Label("No project selected.") { style = "-fx-font-size: 18px; -fx-font-weight: bold;" }
-          )
+          // Only show empty state if no subject is selected either
+          if (viewModel.selectedSubject.value.isEmpty) {
+            renderEmptyDetail("Select an item to view details")
+          }
       }
     }
   }

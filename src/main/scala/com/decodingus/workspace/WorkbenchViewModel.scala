@@ -192,24 +192,61 @@ class WorkbenchViewModel(val workspaceService: WorkspaceService) {
     main = WorkspaceContent(samples = List.empty, projects = List.empty)
   )
 
+  // --- Subject CRUD Operations ---
+
+  /** Creates a new subject and adds it to the workspace */
   def addSubject(newBiosample: Biosample): Unit = {
-    // Update the internal workspace object
     val updatedSamples = _workspace.value.main.samples :+ newBiosample
     _workspace.value = _workspace.value.copy(main = _workspace.value.main.copy(samples = updatedSamples))
-    
-    // Select the newly added subject (this will trigger UI binding)
+
+    // Select the newly added subject
     selectedSubject.value = Some(newBiosample)
-    
-    // Save changes
+
     saveWorkspace()
   }
+
+  /** Updates an existing subject identified by sampleAccession */
+  def updateSubject(updatedBiosample: Biosample): Unit = {
+    val updatedSamples = _workspace.value.main.samples.map { sample =>
+      if (sample.sampleAccession == updatedBiosample.sampleAccession) updatedBiosample
+      else sample
+    }
+    _workspace.value = _workspace.value.copy(main = _workspace.value.main.copy(samples = updatedSamples))
+
+    // Update selection to reflect changes
+    selectedSubject.value = Some(updatedBiosample)
+
+    saveWorkspace()
+  }
+
+  /** Deletes a subject identified by sampleAccession */
+  def deleteSubject(sampleAccession: String): Unit = {
+    val updatedSamples = _workspace.value.main.samples.filterNot(_.sampleAccession == sampleAccession)
+    _workspace.value = _workspace.value.copy(main = _workspace.value.main.copy(samples = updatedSamples))
+
+    // Clear selection if the deleted subject was selected
+    selectedSubject.value match {
+      case Some(selected) if selected.sampleAccession == sampleAccession =>
+        selectedSubject.value = None
+      case _ => // Keep current selection
+    }
+
+    saveWorkspace()
+  }
+
+  /** Finds a subject by sampleAccession */
+  def findSubject(sampleAccession: String): Option[Biosample] = {
+    _workspace.value.main.samples.find(_.sampleAccession == sampleAccession)
+  }
+
+  // --- Project CRUD Operations ---
 
   def addProject(newProject: Project): Unit = {
     val updatedProjects = _workspace.value.main.projects :+ newProject
     _workspace.value = _workspace.value.copy(main = _workspace.value.main.copy(projects = updatedProjects))
-    
+
     selectedProject.value = Some(newProject)
-    
+
     saveWorkspace()
   }
 
