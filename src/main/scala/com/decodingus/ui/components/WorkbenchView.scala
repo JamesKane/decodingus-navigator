@@ -8,6 +8,7 @@ import com.decodingus.workspace.model.{Workspace, Project, Biosample}
 import com.decodingus.workspace.{WorkspaceService, LiveWorkspaceService}
 import scalafx.scene.control.Alert.AlertType
 import scalafx.application.Platform
+import scalafx.scene.control.ControlIncludes._ // Import for SelectionModel implicit conversions
 
 class WorkbenchView(
   var workspace: Workspace, // Mutable var for now, will be updated by UI actions
@@ -17,6 +18,44 @@ class WorkbenchView(
   // Observable buffers for UI lists
   private val projectBuffer: ObservableBuffer[Project] = ObservableBuffer(workspace.projects*)
   private val sampleBuffer: ObservableBuffer[Biosample] = ObservableBuffer(workspace.samples*)
+
+  // Detail view for right panel
+  private val detailView = new VBox(10) {
+    padding = Insets(10)
+    children = Seq(
+      new Label("Select an item to view details") { style = "-fx-font-size: 18px; -fx-font-weight: bold;" }
+    )
+  }
+  VBox.setVgrow(detailView, Priority.Always)
+
+  // Method to display subject details
+  private def showSubjectDetails(subject: Biosample): Unit = {
+    Platform.runLater {
+      detailView.children.clear()
+      detailView.children.addAll(
+        new Label(s"Subject: ${subject.donorIdentifier}") { style = "-fx-font-size: 20px; -fx-font-weight: bold;" },
+        new Label(s"Accession: ${subject.sampleAccession}"),
+        new Label(s"Sex: ${subject.sex.getOrElse("N/A")}"),
+        new Label(s"Description: ${subject.description.getOrElse("N/A")}"),
+        new Label(s"Created At: ${subject.createdAt.map(_.toLocalDate.toString).getOrElse("N/A")}")
+        // Add more details as needed, e.g., sequenceData summary, haplogroups
+      )
+    }
+  }
+
+  // Method to display project details
+  private def showProjectDetails(project: Project): Unit = {
+    Platform.runLater {
+      detailView.children.clear()
+      detailView.children.addAll(
+        new Label(s"Project: ${project.projectName}") { style = "-fx-font-size: 20px; -fx-font-weight: bold;" },
+        new Label(s"Description: ${project.description.getOrElse("N/A")}"),
+        new Label(s"Administrator: ${project.administrator}"),
+        new Label(s"Members: ${project.members.size} subjects")
+        // Optionally list member biosamples
+      )
+    }
+  }
 
   // Left Panel - Navigation
   private val projectList = new ListView[Project](projectBuffer) {
@@ -42,6 +81,21 @@ class WorkbenchView(
     }
   }
 
+  // --- Assign listeners AFTER both lists are defined ---
+  projectList.selectionModel().selectedItem.onChange { (_, _, newProject) =>
+    if (newProject != null) {
+      showProjectDetails(newProject)
+      sampleList.selectionModel().clearSelection() // Clear other selection
+    }
+  }
+
+  sampleList.selectionModel().selectedItem.onChange { (_, _, newBiosample) =>
+    if (newBiosample != null) {
+      showSubjectDetails(newBiosample)
+      projectList.selectionModel().clearSelection() // Clear other selection
+    }
+  }
+
   private val newProjectButton = new Button("New Project") {
     onAction = _ => {
       // Placeholder for new project dialog
@@ -53,14 +107,25 @@ class WorkbenchView(
     }
   }
 
-  private val addSampleButton = new Button("Add Sample") {
+  private val addSampleButton = new Button("Add Subject") { // Renamed to Add Subject
     onAction = _ => {
-      // Placeholder for adding sample (e.g., via file dialog or manual entry)
-      new Alert(AlertType.Information) {
-        title = "Add Sample"
-        headerText = "Add Sample functionality not yet implemented."
-        contentText = "Stay tuned for sample addition!"
-      }.showAndWait()
+      val dialog = new AddSubjectDialog()
+      val result = dialog.showAndWait().asInstanceOf[Option[Option[Biosample]]]
+
+      result match {
+        case Some(Some(newBiosample)) =>
+          // Add the new biosample to the workspace
+          val updatedSamples: List[Biosample] = workspace.samples :+ newBiosample
+          val updatedWorkspace = workspace.copy(samples = updatedSamples)
+          
+          // Update UI and Persist
+          updateWorkspace(updatedWorkspace)
+          saveWorkspace()
+          // Programmatically select the newly added subject
+          sampleList.selectionModel().select(newBiosample)
+          
+        case _ => // User cancelled or closed dialog
+      }
     }
   }
 
@@ -75,7 +140,7 @@ class WorkbenchView(
       new Label("Projects:") { style = "-fx-font-weight: bold;" },
       projectList,
       newProjectButton,
-      new Label("Samples:") { style = "-fx-font-weight: bold;" },
+      new Label("Subjects:") { style = "-fx-font-weight: bold;" },
       sampleList,
       addSampleButton,
       new HBox(10) {
@@ -90,10 +155,7 @@ class WorkbenchView(
   // Right Panel - Details/Content Area
   private val rightPanel = new VBox(10) {
     padding = Insets(10)
-    children = Seq(
-      new Label("Details Panel") { style = "-fx-font-size: 18px; -fx-font-weight: bold;" },
-      new Label("Select a project or sample to view its details here.")
-    )
+    children = Seq(detailView) // rightPanel now contains the dynamic detailView
   }
   VBox.setVgrow(rightPanel, Priority.Always) // Allow right panel to grow vertically
 
