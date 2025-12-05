@@ -47,17 +47,70 @@ class WorkbenchView(val viewModel: WorkbenchViewModel) extends SplitPane {
       children = Seq(editButton, deleteButton)
     }
 
+    // Subject info section
+    val infoSection = new VBox(5) {
+      children = Seq(
+        new Label(s"Accession: ${subject.sampleAccession}"),
+        new Label(s"Sex: ${subject.sex.getOrElse("N/A")}"),
+        new Label(s"Center: ${subject.centerName.getOrElse("N/A")}"),
+        new Label(s"Description: ${subject.description.getOrElse("N/A")}"),
+        new Label(s"Created At: ${subject.createdAt.map(_.toLocalDate.toString).getOrElse("N/A")}")
+      )
+    }
+
+    // Haplogroup summary
+    val haplogroupLabel = new Label(
+      s"Haplogroups: ${subject.haplogroups.map(h => s"Y: ${h.yDna.getOrElse("—")}, MT: ${h.mtDna.getOrElse("—")}").getOrElse("Not analyzed")}"
+    ) {
+      style = "-fx-padding: 10 0 0 0;"
+    }
+
+    // Sequence data table with callbacks
+    val sequenceTable = new SequenceDataTable(
+      viewModel = viewModel,
+      subject = subject,
+      onAnalyze = (index: Int) => handleAnalyzeSequenceData(subject.sampleAccession, index),
+      onRemove = (index: Int) => handleRemoveSequenceData(subject.sampleAccession, index)
+    )
+    VBox.setVgrow(sequenceTable, Priority.Always)
+
     detailView.children.addAll(
       new Label(s"Subject: ${subject.donorIdentifier}") { style = "-fx-font-size: 20px; -fx-font-weight: bold;" },
       actionButtons,
-      new Label(s"Accession: ${subject.sampleAccession}"),
-      new Label(s"Sex: ${subject.sex.getOrElse("N/A")}"),
-      new Label(s"Center: ${subject.centerName.getOrElse("N/A")}"),
-      new Label(s"Description: ${subject.description.getOrElse("N/A")}"),
-      new Label(s"Created At: ${subject.createdAt.map(_.toLocalDate.toString).getOrElse("N/A")}"),
-      new Label(s"Sequence Data: ${subject.sequenceData.size} file(s)") { style = "-fx-padding: 10 0 0 0;" },
-      new Label(s"Haplogroups: ${subject.haplogroups.map(h => s"Y: ${h.yDna.getOrElse("—")}, MT: ${h.mtDna.getOrElse("—")}").getOrElse("Not analyzed")}")
+      infoSection,
+      haplogroupLabel,
+      sequenceTable
     )
+  }
+
+  /** Handles triggering analysis for a sequence data entry */
+  private def handleAnalyzeSequenceData(sampleAccession: String, index: Int): Unit = {
+    viewModel.findSubject(sampleAccession).flatMap(_.sequenceData.lift(index)) match {
+      case Some(seqData) =>
+        seqData.files.headOption match {
+          case Some(fileInfo) =>
+            // For now, show a placeholder - this will be wired to actual analysis
+            new Alert(AlertType.Information) {
+              title = "Analysis"
+              headerText = s"Starting analysis for ${fileInfo.fileName}"
+              contentText = s"Platform: ${seqData.platformName}\nTest Type: ${seqData.testType}\n\nAnalysis functionality will be implemented next."
+            }.showAndWait()
+            // TODO: Call viewModel.analyzeLibraryStats or viewModel.analyzeDeepCoverage
+          case None =>
+            new Alert(AlertType.Warning) {
+              title = "No File"
+              headerText = "No alignment file associated"
+              contentText = "Please add a BAM/CRAM file to this sequencing run."
+            }.showAndWait()
+        }
+      case None =>
+        println(s"[View] Sequence data not found at index $index")
+    }
+  }
+
+  /** Handles removing a sequence data entry */
+  private def handleRemoveSequenceData(sampleAccession: String, index: Int): Unit = {
+    viewModel.removeSequenceData(sampleAccession, index)
   }
 
   /** Renders the detail view for a selected project */

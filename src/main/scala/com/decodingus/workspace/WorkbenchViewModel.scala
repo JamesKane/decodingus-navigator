@@ -3,7 +3,7 @@ package com.decodingus.workspace
 import com.decodingus.auth.User
 import com.decodingus.config.FeatureToggles
 import com.decodingus.pds.PdsClient
-import com.decodingus.workspace.model.{Workspace, Project, Biosample, WorkspaceContent, SyncStatus}
+import com.decodingus.workspace.model.{Workspace, Project, Biosample, WorkspaceContent, SyncStatus, SequenceData}
 import scalafx.beans.property.{ObjectProperty, ReadOnlyObjectProperty, StringProperty}
 import scalafx.collections.ObservableBuffer
 import scalafx.application.Platform
@@ -250,14 +250,108 @@ class WorkbenchViewModel(val workspaceService: WorkspaceService) {
     saveWorkspace()
   }
 
-  // --- Other Business Logic (e.g., Analysis) ---
-  // These will be fleshed out later and likely operate on selectedSubject/selectedProject
-  def performInitialAnalysis(filePath: String): Unit = {
-    println(s"Performing initial analysis on $filePath (logic to be implemented in ViewModel).")
-    // This will involve calling analysis processors and updating the selectedSubject's sequenceData
+  // --- SequenceData CRUD Operations (nested within a Biosample) ---
+
+  /** Adds sequencing data to the currently selected subject */
+  def addSequenceData(sequenceData: SequenceData): Unit = {
+    selectedSubject.value match {
+      case Some(subject) =>
+        val updatedSubject = subject.copy(
+          sequenceData = subject.sequenceData :+ sequenceData
+        )
+        updateSubject(updatedSubject)
+      case None =>
+        println("[ViewModel] Cannot add sequence data: no subject selected")
+    }
   }
 
-  def performDeepCoverageAnalysis(biosample: Biosample): Unit = {
-    println(s"Performing deep coverage analysis for ${biosample.donorIdentifier} (logic to be implemented in ViewModel).")
+  /** Adds sequencing data to a specific subject by accession */
+  def addSequenceDataToSubject(sampleAccession: String, sequenceData: SequenceData): Unit = {
+    findSubject(sampleAccession) match {
+      case Some(subject) =>
+        val updatedSubject = subject.copy(
+          sequenceData = subject.sequenceData :+ sequenceData
+        )
+        updateSubject(updatedSubject)
+      case None =>
+        println(s"[ViewModel] Cannot add sequence data: subject $sampleAccession not found")
+    }
+  }
+
+  /** Removes sequencing data from a subject by index */
+  def removeSequenceData(sampleAccession: String, index: Int): Unit = {
+    findSubject(sampleAccession) match {
+      case Some(subject) if index >= 0 && index < subject.sequenceData.size =>
+        val updatedSeqData = subject.sequenceData.zipWithIndex.filterNot(_._2 == index).map(_._1)
+        val updatedSubject = subject.copy(sequenceData = updatedSeqData)
+        updateSubject(updatedSubject)
+      case Some(_) =>
+        println(s"[ViewModel] Cannot remove sequence data: index $index out of bounds")
+      case None =>
+        println(s"[ViewModel] Cannot remove sequence data: subject $sampleAccession not found")
+    }
+  }
+
+  /** Updates sequencing data at a specific index for a subject */
+  def updateSequenceData(sampleAccession: String, index: Int, updatedData: SequenceData): Unit = {
+    findSubject(sampleAccession) match {
+      case Some(subject) if index >= 0 && index < subject.sequenceData.size =>
+        val updatedSeqData = subject.sequenceData.updated(index, updatedData)
+        val updatedSubject = subject.copy(sequenceData = updatedSeqData)
+        updateSubject(updatedSubject)
+      case Some(_) =>
+        println(s"[ViewModel] Cannot update sequence data: index $index out of bounds")
+      case None =>
+        println(s"[ViewModel] Cannot update sequence data: subject $sampleAccession not found")
+    }
+  }
+
+  // --- Analysis State ---
+  // Observable properties for tracking analysis progress
+  val analysisInProgress: ObjectProperty[Boolean] = ObjectProperty(false)
+  val analysisProgress: StringProperty = StringProperty("")
+  val analysisProgressPercent: ObjectProperty[Double] = ObjectProperty(0.0)
+
+  // --- Analysis Operations ---
+  // These will be fleshed out to call the actual analysis processors
+
+  /** Initiates library stats analysis for a sequence data entry */
+  def analyzeLibraryStats(sampleAccession: String, sequenceDataIndex: Int): Unit = {
+    findSubject(sampleAccession).flatMap { subject =>
+      subject.sequenceData.lift(sequenceDataIndex)
+    } match {
+      case Some(seqData) =>
+        seqData.files.headOption match {
+          case Some(fileInfo) =>
+            println(s"[ViewModel] Starting library stats analysis for ${fileInfo.fileName}")
+            analysisInProgress.value = true
+            analysisProgress.value = "Initializing analysis..."
+            // TODO: Implement actual analysis call in background thread
+          case None =>
+            println("[ViewModel] No file associated with sequence data")
+        }
+      case None =>
+        println(s"[ViewModel] Sequence data not found at index $sequenceDataIndex for subject $sampleAccession")
+    }
+  }
+
+  /** Initiates deep coverage analysis (WGS metrics) for a sequence data entry */
+  def analyzeDeepCoverage(sampleAccession: String, sequenceDataIndex: Int): Unit = {
+    findSubject(sampleAccession).flatMap { subject =>
+      subject.sequenceData.lift(sequenceDataIndex)
+    } match {
+      case Some(seqData) =>
+        seqData.files.headOption match {
+          case Some(fileInfo) =>
+            println(s"[ViewModel] Starting deep coverage analysis for ${fileInfo.fileName}")
+            analysisInProgress.value = true
+            analysisProgress.value = "Starting WGS metrics analysis..."
+            // TODO: Implement actual analysis call in background thread
+          case None =>
+            println("[ViewModel] No file associated with sequence data")
+        }
+      case None =>
+        println(s"[ViewModel] Sequence data not found at index $sequenceDataIndex for subject $sampleAccession")
+    }
   }
 }
