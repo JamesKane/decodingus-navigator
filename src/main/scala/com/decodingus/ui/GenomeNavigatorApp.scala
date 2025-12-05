@@ -30,7 +30,7 @@ import scalafx.scene.text.{Text, TextAlignment}
 import scalafx.scene.web.WebView
 
 import com.decodingus.workspace.model.{Workspace, Biosample, Project, SequenceData, AlignmentData, AlignmentMetrics, ContigMetrics, HaplogroupResult, HaplogroupAssignments, FileInfo} // Explicitly import all workspace models
-import com.decodingus.workspace.{WorkspaceService, LiveWorkspaceService} // Import the workspace service trait and its live implementation
+import com.decodingus.workspace.{WorkspaceService, LiveWorkspaceService, WorkbenchViewModel} // Import the workspace service trait and its live implementation, and the ViewModel
 import com.decodingus.ui.components.WorkbenchView // Import the new WorkbenchView
 
 import java.io.File
@@ -59,16 +59,22 @@ object GenomeNavigatorApp extends JFXApp3 {
   private val mainLayout = new StackPane()
 
   // Removed old state variables, now managing a single Workspace object
-  private var currentWorkspace: Workspace = Workspace(List.empty, List.empty)
+  // private var currentWorkspace: Workspace = Workspace(List.empty, List.empty) // ViewModel now owns this
 
   private var currentUser: Option[User] = None // Keep currentUser for login
+
+  // ViewModel is created early so topBar can reference it
+  private lazy val viewModel = new WorkbenchViewModel(LiveWorkspaceService)
 
   private lazy val topBar: TopBar = new TopBar(
     onLogin = () => {
       LoginDialog.show(stage).foreach { user =>
         currentUser = Some(user)
         topBar.update(currentUser)
-        
+
+        // Update ViewModel with the logged-in user
+        viewModel.currentUser.value = Some(user)
+
         if (FeatureToggles.atProtocolEnabled) {
            // Register PDS with the main server asynchronously if AT Protocol is enabled
            DecodingUsClient.registerPds(user.did, user.token, user.pdsUrl).failed.foreach { e =>
@@ -81,48 +87,38 @@ object GenomeNavigatorApp extends JFXApp3 {
                 }.showAndWait()
               }
            }
+
+           // Trigger PDS sync now that user is logged in
+           viewModel.syncFromPdsIfAvailable()
         }
       }
     },
     onLogout = () => {
       currentUser = None
       topBar.update(currentUser)
+
+      // Clear user from ViewModel
+      viewModel.currentUser.value = None
     }
   )
 
   override def start(): Unit = {
-    // Load workspace on startup
-    LiveWorkspaceService.load().fold( // Use LiveWorkspaceService
-      error => {
-        new Alert(AlertType.Error) {
-          initOwner(stage)
-          title = "Workspace Load Error"
-          headerText = "Could not load local workspace"
-          contentText = s"Reason: $error\nStarting with an empty workspace."
-        }.showAndWait()
-        currentWorkspace = Workspace(List.empty, List.empty) // Initialize empty on error
-      },
-      workspace => {
-        currentWorkspace = workspace
-      }
-    )
-
-    val borderPaneRoot = new BorderPane { // Declare BorderPane outside the scene block
+    val borderPaneRoot = new BorderPane {
       top = topBar
     }
 
     stage = new PrimaryStage {
-      title = "Decoding-Us Navigator - Workbench" // Updated title
-      scene = new Scene(1200, 850) { // Increased size for workbench
-        root = borderPaneRoot // Assign the already created rootPane
+      title = "Decoding-Us Navigator - Workbench"
+      scene = new Scene(1200, 850) {
+        root = borderPaneRoot
         stylesheets.add(getClass.getResource("/style.css").toExternalForm)
       }
     }
 
     topBar.update(currentUser)
-    // Instantiate the WorkbenchView
-    val workbenchView = new WorkbenchView(currentWorkspace, LiveWorkspaceService) // Pass LiveWorkspaceService
-    borderPaneRoot.center = workbenchView // Directly set center of the ScalaFX rootPane
+    // Instantiate the WorkbenchView with the ViewModel
+    val workbenchView = new WorkbenchView(viewModel)
+    borderPaneRoot.center = workbenchView
   }
 
   // --- Commenting out old analysis methods for refactoring into WorkbenchView ---

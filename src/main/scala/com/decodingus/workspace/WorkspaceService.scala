@@ -35,6 +35,7 @@ object LiveWorkspaceService extends WorkspaceService {
   implicit val haplogroupAssignmentsCodec: Codec[HaplogroupAssignments] = deriveCodec
   implicit val biosampleCodec: Codec[Biosample] = deriveCodec
   implicit val projectCodec: Codec[Project] = deriveCodec
+  implicit val workspaceContentCodec: Codec[WorkspaceContent] = deriveCodec // New codec for WorkspaceContent
   implicit val workspaceCodec: Codec[Workspace] = deriveCodec
   // --- End Circe Codecs ---
 
@@ -48,18 +49,27 @@ object LiveWorkspaceService extends WorkspaceService {
    * @return Either an error message or the loaded Workspace.
    */
   override def load(filePath: String = WORKSPACE_FILE_NAME): Either[String, Workspace] = {
+    println(s"[DEBUG] Attempting to load workspace from: $filePath")
     val path = Paths.get(filePath)
     if (!Files.exists(path)) {
-      println(s"Workspace file not found at $filePath. Initializing with empty workspace.")
-      Right(Workspace(samples = List.empty, projects = List.empty))
+      println(s"[DEBUG] Workspace file not found at $filePath. Initializing with empty workspace.")
+      // Initialize an empty Workspace with the correct new structure
+      Right(Workspace(lexicon = 1, id = "com.decodingus.atmosphere.workspace", main = WorkspaceContent(samples = List.empty, projects = List.empty)))
     } else {
       Try(Files.readString(path)) match {
         case Success(jsonString) =>
+          println(s"[DEBUG] File content read. Length: ${jsonString.length}. Attempting to parse JSON.")
           parse(jsonString).flatMap(_.as[Workspace]) match {
-            case Right(workspace) => Right(workspace)
-            case Left(error) => Left(s"Failed to parse workspace JSON: ${error.getMessage()}")
+            case Right(workspace) =>
+              println(s"[DEBUG] Successfully parsed workspace: ${workspace.main.samples.size} samples, ${workspace.main.projects.size} projects.")
+              Right(workspace)
+            case Left(error) =>
+              println(s"[DEBUG] Failed to parse workspace JSON from $filePath: ${error.getMessage()}. Content: ${jsonString.take(200)}...")
+              Left(s"Failed to parse workspace JSON: ${error.getMessage()}")
           }
-        case Failure(exception) => Left(s"Failed to read workspace file: ${exception.getMessage}")
+        case Failure(exception) =>
+          println(s"[DEBUG] Failed to read workspace file $filePath: ${exception.getMessage}")
+          Left(s"Failed to read workspace file: ${exception.getMessage}")
       }
     }
   }

@@ -1,23 +1,23 @@
 package com.decodingus.ui.components
 
-import scalafx.scene.layout.{VBox, HBox, Priority, StackPane, BorderPane}
-import scalafx.scene.control.{Label, Button, ListView, SplitPane, Alert, ListCell}
+import scalafx.scene.layout.{VBox, HBox, Priority, StackPane, BorderPane, Region}
+import scalafx.scene.control.{Label, Button, ListView, SplitPane, Alert, ListCell, Tooltip}
 import scalafx.geometry.{Insets, Pos}
 import scalafx.collections.ObservableBuffer
-import com.decodingus.workspace.model.{Workspace, Project, Biosample}
-import com.decodingus.workspace.{WorkspaceService, LiveWorkspaceService}
+import com.decodingus.workspace.model.{Workspace, Project, Biosample, SyncStatus}
+import com.decodingus.workspace.WorkbenchViewModel
 import scalafx.scene.control.Alert.AlertType
 import scalafx.application.Platform
-import scalafx.scene.control.ControlIncludes._ // Import for SelectionModel implicit conversions
+import scalafx.scene.control.ControlIncludes._
 
-class WorkbenchView(
-  var workspace: Workspace, // Mutable var for now, will be updated by UI actions
-  workspaceService: WorkspaceService // Now accepts the trait
-) extends SplitPane { // Change to SplitPane
+class WorkbenchView(val viewModel: WorkbenchViewModel) extends SplitPane {
+  println(s"[DEBUG] WorkbenchView: Initializing WorkbenchView. ViewModel Projects: ${viewModel.projects.size}, ViewModel Samples: ${viewModel.samples.size}")
 
-  // Observable buffers for UI lists
-  private val projectBuffer: ObservableBuffer[Project] = ObservableBuffer(workspace.projects*)
-  private val sampleBuffer: ObservableBuffer[Biosample] = ObservableBuffer(workspace.samples*)
+  // Observable buffers for UI lists - now directly from ViewModel
+  private val projectBuffer: ObservableBuffer[Project] = viewModel.projects
+  private val sampleBuffer: ObservableBuffer[Biosample] = viewModel.samples
+
+  println(s"[DEBUG] WorkbenchView: After binding buffers. projectBuffer size: ${projectBuffer.size}, sampleBuffer size: ${sampleBuffer.size}")
 
   // Detail view for right panel
   private val detailView = new VBox(10) {
@@ -28,37 +28,52 @@ class WorkbenchView(
   }
   VBox.setVgrow(detailView, Priority.Always)
 
-  // Method to display subject details
-  private def showSubjectDetails(subject: Biosample): Unit = {
+  // Listen to ViewModel's selectedSubject changes to update detailView
+  viewModel.selectedSubject.onChange { (_, _, newSubjectOpt) =>
     Platform.runLater {
       detailView.children.clear()
-      detailView.children.addAll(
-        new Label(s"Subject: ${subject.donorIdentifier}") { style = "-fx-font-size: 20px; -fx-font-weight: bold;" },
-        new Label(s"Accession: ${subject.sampleAccession}"),
-        new Label(s"Sex: ${subject.sex.getOrElse("N/A")}"),
-        new Label(s"Description: ${subject.description.getOrElse("N/A")}"),
-        new Label(s"Created At: ${subject.createdAt.map(_.toLocalDate.toString).getOrElse("N/A")}")
-        // Add more details as needed, e.g., sequenceData summary, haplogroups
-      )
+      newSubjectOpt match {
+        case Some(subject) =>
+          detailView.children.addAll(
+            new Label(s"Subject: ${subject.donorIdentifier}") { style = "-fx-font-size: 20px; -fx-font-weight: bold;" },
+            new Label(s"Accession: ${subject.sampleAccession}"),
+            new Label(s"Sex: ${subject.sex.getOrElse("N/A")}"),
+            new Label(s"Description: ${subject.description.getOrElse("N/A")}"),
+            new Label(s"Created At: ${subject.createdAt.map(_.toLocalDate.toString).getOrElse("N/A")}")
+            // Add more details as needed, e.g., sequenceData summary, haplogroups
+          )
+        case None =>
+          detailView.children.add(
+            new Label("No subject selected.") { style = "-fx-font-size: 18px; -fx-font-weight: bold;" }
+          )
+      }
     }
   }
 
-  // Method to display project details
-  private def showProjectDetails(project: Project): Unit = {
+  // Listen to ViewModel's selectedProject changes to update detailView
+  viewModel.selectedProject.onChange { (_, _, newProjectOpt) =>
     Platform.runLater {
       detailView.children.clear()
-      detailView.children.addAll(
-        new Label(s"Project: ${project.projectName}") { style = "-fx-font-size: 20px; -fx-font-weight: bold;" },
-        new Label(s"Description: ${project.description.getOrElse("N/A")}"),
-        new Label(s"Administrator: ${project.administrator}"),
-        new Label(s"Members: ${project.members.size} subjects")
-        // Optionally list member biosamples
-      )
+      newProjectOpt match {
+        case Some(project) =>
+          detailView.children.addAll(
+            new Label(s"Project: ${project.projectName}") { style = "-fx-font-size: 20px; -fx-font-weight: bold;" },
+            new Label(s"Description: ${project.description.getOrElse("N/A")}"),
+            new Label(s"Administrator: ${project.administrator}"),
+            new Label(s"Members: ${project.members.size} subjects")
+            // Optionally list member biosamples
+          )
+        case None =>
+          detailView.children.add(
+            new Label("No project selected.") { style = "-fx-font-size: 18px; -fx-font-weight: bold;" }
+          )
+      }
     }
   }
 
   // Left Panel - Navigation
-  private val projectList = new ListView[Project](projectBuffer) {
+  private val projectList = new ListView[Project]() {
+    items = projectBuffer // Explicitly set items
     vgrow = Priority.Always
     prefHeight = 200 // Initial height for projects
     cellFactory = { (v: ListView[Project]) =>
@@ -69,8 +84,30 @@ class WorkbenchView(
       }
     }
   }
+  // UI to ViewModel sync
+  projectList.selectionModel().selectedItem.onChange { (_, _, newProject) =>
+    if (newProject != null) {
+      viewModel.selectedProject.value = Some(newProject)
+      // Clear subject selection when a project is selected
+      if (viewModel.selectedSubject.value.isDefined) {
+        viewModel.selectedSubject.value = None
+      }
+    } else if (viewModel.selectedProject.value.isDefined && projectList.selectionModel().getSelectedItem == null) {
+      // Clear ViewModel selection if UI selection is cleared manually
+      viewModel.selectedProject.value = None
+    }
+  }
+  // ViewModel to UI sync
+  viewModel.selectedProject.onChange { (_, _, newViewModelProjectOpt) =>
+    if (newViewModelProjectOpt.isDefined && projectList.selectionModel().getSelectedItem != newViewModelProjectOpt.getOrElse(null)) {
+      projectList.selectionModel().select(newViewModelProjectOpt.get)
+    } else if (newViewModelProjectOpt.isEmpty && projectList.selectionModel().getSelectedItem != null) {
+      projectList.selectionModel().clearSelection()
+    }
+  }
 
-  private val sampleList = new ListView[Biosample](sampleBuffer) {
+  private val sampleList = new ListView[Biosample]() {
+    items = sampleBuffer // Explicitly set items
     vgrow = Priority.Always
     cellFactory = { (v: ListView[Biosample]) =>
       new ListCell[Biosample] {
@@ -80,19 +117,25 @@ class WorkbenchView(
       }
     }
   }
-
-  // --- Assign listeners AFTER both lists are defined ---
-  projectList.selectionModel().selectedItem.onChange { (_, _, newProject) =>
-    if (newProject != null) {
-      showProjectDetails(newProject)
-      sampleList.selectionModel().clearSelection() // Clear other selection
-    }
-  }
-
+  // UI to ViewModel sync
   sampleList.selectionModel().selectedItem.onChange { (_, _, newBiosample) =>
     if (newBiosample != null) {
-      showSubjectDetails(newBiosample)
-      projectList.selectionModel().clearSelection() // Clear other selection
+      viewModel.selectedSubject.value = Some(newBiosample)
+      // Clear project selection when a subject is selected
+      if (viewModel.selectedProject.value.isDefined) {
+        viewModel.selectedProject.value = None
+      }
+    } else if (viewModel.selectedSubject.value.isDefined && sampleList.selectionModel().getSelectedItem == null) {
+      // Clear ViewModel selection if UI selection is cleared manually
+      viewModel.selectedSubject.value = None
+    }
+  }
+  // ViewModel to UI sync
+  viewModel.selectedSubject.onChange { (_, _, newViewModelSubjectOpt) =>
+    if (newViewModelSubjectOpt.isDefined && sampleList.selectionModel().getSelectedItem != newViewModelSubjectOpt.getOrElse(null)) {
+      sampleList.selectionModel().select(newViewModelSubjectOpt.get)
+    } else if (newViewModelSubjectOpt.isEmpty && sampleList.selectionModel().getSelectedItem != null) {
+      sampleList.selectionModel().clearSelection()
     }
   }
 
@@ -107,23 +150,14 @@ class WorkbenchView(
     }
   }
 
-  private val addSampleButton = new Button("Add Subject") { // Renamed to Add Subject
+  private val addSampleButton = new Button("Add Subject") {
     onAction = _ => {
       val dialog = new AddSubjectDialog()
       val result = dialog.showAndWait().asInstanceOf[Option[Option[Biosample]]]
 
       result match {
         case Some(Some(newBiosample)) =>
-          // Add the new biosample to the workspace
-          val updatedSamples: List[Biosample] = workspace.samples :+ newBiosample
-          val updatedWorkspace = workspace.copy(samples = updatedSamples)
-          
-          // Update UI and Persist
-          updateWorkspace(updatedWorkspace)
-          saveWorkspace()
-          // Programmatically select the newly added subject
-          sampleList.selectionModel().select(newBiosample)
-          
+          viewModel.addSubject(newBiosample) // Delegate to ViewModel
         case _ => // User cancelled or closed dialog
       }
     }
@@ -131,8 +165,58 @@ class WorkbenchView(
 
   private val saveButton = new Button("Save Workspace") {
     styleClass.add("button-primary")
-    onAction = _ => saveWorkspace()
+    onAction = _ => viewModel.saveWorkspace() // Delegate to ViewModel
   }
+
+  // Sync status indicator - initialize with default values directly
+  private val syncStatusLabel = new Label("○ Local Only") {
+    style = "-fx-font-size: 12px; -fx-padding: 2 6 2 6; -fx-text-fill: #9E9E9E;"
+    tooltip = Tooltip("Using local storage only (not logged in)")
+  }
+
+  private def updateSyncStatus(status: SyncStatus): Unit = {
+    status match {
+      case SyncStatus.Synced =>
+        syncStatusLabel.text = "✓ Synced"
+        syncStatusLabel.style = "-fx-font-size: 12px; -fx-padding: 2 6 2 6; -fx-text-fill: #4CAF50;"
+        syncStatusLabel.tooltip = Tooltip("Workspace is synced")
+      case SyncStatus.Syncing =>
+        syncStatusLabel.text = "↻ Syncing..."
+        syncStatusLabel.style = "-fx-font-size: 12px; -fx-padding: 2 6 2 6; -fx-text-fill: #2196F3;"
+        syncStatusLabel.tooltip = Tooltip("Syncing with PDS...")
+      case SyncStatus.Pending =>
+        syncStatusLabel.text = "● Pending"
+        syncStatusLabel.style = "-fx-font-size: 12px; -fx-padding: 2 6 2 6; -fx-text-fill: #FF9800;"
+        syncStatusLabel.tooltip = Tooltip("Changes pending sync")
+      case SyncStatus.Error =>
+        syncStatusLabel.text = "⚠ Sync Error"
+        syncStatusLabel.style = "-fx-font-size: 12px; -fx-padding: 2 6 2 6; -fx-text-fill: #F44336;"
+        syncStatusLabel.tooltip = Tooltip(s"Sync failed: ${viewModel.lastSyncError.value}")
+      case SyncStatus.Offline =>
+        syncStatusLabel.text = "○ Local Only"
+        syncStatusLabel.style = "-fx-font-size: 12px; -fx-padding: 2 6 2 6; -fx-text-fill: #9E9E9E;"
+        syncStatusLabel.tooltip = Tooltip("Using local storage only (not logged in)")
+    }
+  }
+
+  // Listen to sync status changes
+  viewModel.syncStatus.onChange { (_, _, newStatus) =>
+    Platform.runLater {
+      updateSyncStatus(newStatus)
+    }
+  }
+
+  // Update tooltip when error message changes
+  viewModel.lastSyncError.onChange { (_, _, newError) =>
+    Platform.runLater {
+      if (viewModel.syncStatus.value == SyncStatus.Error && newError.nonEmpty) {
+        syncStatusLabel.tooltip = Tooltip(s"Sync failed: $newError")
+      }
+    }
+  }
+
+  // Apply initial status after label is constructed
+  updateSyncStatus(viewModel.syncStatus.value)
 
   private val leftPanel = new VBox(10) {
     padding = Insets(10)
@@ -144,9 +228,12 @@ class WorkbenchView(
       sampleList,
       addSampleButton,
       new HBox(10) {
-        alignment = Pos.BottomRight
-        children = Seq(saveButton)
-        HBox.setHgrow(saveButton, Priority.Always)
+        alignment = Pos.CenterLeft
+        children = Seq(
+          syncStatusLabel,
+          new Region { HBox.setHgrow(this, Priority.Always) }, // Spacer
+          saveButton
+        )
       }
     )
   }
@@ -162,35 +249,4 @@ class WorkbenchView(
   // Set the items of the SplitPane
   items.addAll(leftPanel, rightPanel)
   dividerPositions = 0.25 // Initial divider position
-
-  // Method to update the status (used by GenomeNavigatorApp) - now updates lists
-  def updateWorkspace(newWorkspace: Workspace): Unit = {
-    workspace = newWorkspace
-    Platform.runLater {
-      projectBuffer.clear()
-      projectBuffer ++= workspace.projects
-      sampleBuffer.clear()
-      sampleBuffer ++= workspace.samples
-    }
-  }
-
-  // Method to save the current workspace
-  private def saveWorkspace(): Unit = {
-    workspaceService.save(workspace).fold(
-      error => {
-        new Alert(AlertType.Error) {
-          title = "Save Error"
-          headerText = "Could not save workspace"
-          contentText = s"Reason: $error"
-        }.showAndWait()
-      },
-      _ => {
-        new Alert(AlertType.Information) {
-          title = "Workspace Saved"
-          headerText = "Workspace saved successfully!"
-          contentText = "Your projects and samples have been saved to workspace.json."
-        }.showAndWait()
-      }
-    )
-  }
 }
