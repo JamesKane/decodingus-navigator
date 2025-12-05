@@ -8,9 +8,12 @@ import com.decodingus.haplogroup.tree.{TreeProvider, TreeProviderType, TreeType}
 import com.decodingus.haplogroup.vendor.{DecodingUsTreeProvider, FtdnaTreeProvider}
 import com.decodingus.model._
 import com.decodingus.pds.PdsClient
+import com.decodingus.client.DecodingUsClient
 import com.decodingus.refgenome.ReferenceGateway
 import com.decodingus.ui.components._
 import htsjdk.samtools.SamReaderFactory
+import io.circe.syntax._
+import com.decodingus.analysis.AnalysisCache.{coverageSummaryEncoder, libraryStatsEncoder, wgsMetricsEncoder, contigSummaryEncoder} // Import implicits
 import javafx.concurrent as jfxc
 import scalafx.Includes.*
 import scalafx.application.JFXApp3.PrimaryStage
@@ -27,8 +30,16 @@ import scalafx.scene.text.{Text, TextAlignment}
 import scalafx.scene.web.WebView
 
 import java.io.File
+import java.nio.file.Files
+import java.nio.file.Paths
+import java.time.LocalDateTime
+import java.time.format.DateTimeFormatter
+import javafx.stage.FileChooser
 import scala.collection.mutable
 import scala.concurrent.ExecutionContext.Implicits.global
+import scala.concurrent.Await
+import scala.concurrent.duration._
+
 
 case class ContigAnalysisRow(
   contig: String,
@@ -60,6 +71,20 @@ object GenomeNavigatorApp extends JFXApp3 {
       LoginDialog.show(stage).foreach { user =>
         currentUser = Some(user)
         topBar.update(currentUser)
+        
+        if (FeatureToggles.atProtocolEnabled) {
+           // Register PDS with the main server asynchronously if AT Protocol is enabled
+           DecodingUsClient.registerPds(user.did, user.token, user.pdsUrl).failed.foreach { e =>
+              Platform.runLater {
+                new Alert(AlertType.Error) {
+                  initOwner(stage)
+                  title = "PDS Registration Failed"
+                  headerText = "Could not register PDS with DecodingUs"
+                  contentText = e.getMessage
+                }.showAndWait()
+              }
+           }
+        }
       }
     },
     onLogout = () => {
@@ -199,15 +224,18 @@ object GenomeNavigatorApp extends JFXApp3 {
     })
 
     jfxTask.setOnFailed(_ => {
+      val errorMessage = Option(jfxTask.getException).map(_.getMessage).getOrElse("Unknown error during initial analysis.")
       val errorScreen = new VBox(20) {
         alignment = Pos.Center
         styleClass.add("root-pane")
         children = Seq(
-          new Label("Analysis Failed!") {
+          new Label("Initial Analysis Failed!") { // Changed title for clarity
             styleClass.add("error-label")
           },
-          new Label("Please check the console for more details and ensure the reference and input files are correct.") {
+          new Label(s"Reason: $errorMessage") { // Display the specific error message
             styleClass.add("info-label")
+            wrapText = true
+            textAlignment = TextAlignment.Center
           },
           new Button("Back to Welcome") {
             onAction = _ => mainLayout.children = new WelcomeScreen(
@@ -413,50 +441,62 @@ object GenomeNavigatorApp extends JFXApp3 {
 
     val jfxTask = new jfxc.Task[(CoverageSummary, List[String])]() { // Returns CoverageSummary and svgStrings
       override def call(): (CoverageSummary, List[String]) = {
-        try {
-          val wgsMetricsProcessor = new WgsMetricsProcessor()
-          val callableLociProcessor = new CallableLociProcessor()
+        val wgsMetricsProcessorInstance = new WgsMetricsProcessor()
+        val callableLociProcessorInstance = new CallableLociProcessor()
 
+        val result: Either[Throwable, (CoverageSummary, List[String])] = for {
           // Phase 2: WGS Metrics
-          val wgsMetrics = wgsMetricsProcessor.process(filePath, referencePath, (message, current, total) => {
+          wgsMetrics <- wgsMetricsProcessorInstance.process(filePath, referencePath, (message, current, total) => {
             Platform.runLater { progressLabel.text = message }
             updateProgress(current, total * 2) // 0-50%
-          })
+          }).left.map(e => new RuntimeException(s"WGS Metrics analysis failed: ${e.getMessage}", e))
 
           // Phase 3: Callable Loci Analysis
-          val (callableLociResult, svgStrings) = callableLociProcessor.process(filePath, referencePath, (message, current, total) => {
+          callableLociResultWithSvgs <- callableLociProcessorInstance.process(filePath, referencePath, (message, current, total) => {
             Platform.runLater { progressLabel.text = s"Callable Loci: $message" }
             updateProgress(total + current, total * 2) // 50-100%
-          })
+          }).left.map(e => new RuntimeException(s"Callable Loci analysis failed: ${e.getMessage}", e))
+        } yield {
+          val (callableLociResult, svgStrings) = callableLociResultWithSvgs
+
+          val userId = currentUser.map(_.id).getOrElse("Anonymous")
+
+          // Resolve Biosample ID
+          Platform.runLater { progressLabel.text = "Resolving Biosample ID..." }
+          val biosampleId = try {
+            Await.result(DecodingUsClient.resolveBiosampleId(userId, libraryStats), 10.seconds)
+          } catch {
+            case e: Exception =>
+              println(s"Failed to resolve biosample ID: ${e.getMessage}")
+              s"unknown-biosample-${java.util.UUID.randomUUID()}"
+          }
 
           val summary = CoverageSummary(
-            pdsUserId = currentUser.map(_.id).getOrElse("Anonymous"),
+            pdsUserId = userId,
+            biosampleId = biosampleId,
             libraryStats = libraryStats,
             wgsMetrics = wgsMetrics,
             callableBases = callableLociResult.callableBases,
             contigAnalysis = callableLociResult.contigAnalysis
           )
-          
+
           // Save to cache if SHA is available
-          // Note: We access currentSha256 from the main thread usually, but here we are in background.
-          // However, currentSha256 is a simple var. If it's set (which it should be by now for a large file analysis), we use it.
-          // If the analysis was faster than the SHA calculation (unlikely for deep analysis), we might miss it.
-          // Ideally we should wait for it, but for MVP this is acceptable best-effort.
           if (currentSha256.isDefined) {
-             AnalysisCache.save(currentSha256.get, summary)
+            AnalysisCache.save(currentSha256.get, summary)
           }
-          
+
           coverageSummary = Some(summary)
           (summary, svgStrings)
-        } catch {
-          case e: Exception =>
-            e.printStackTrace()
+        }
+
+        result match {
+          case Right(value) => value
+          case Left(exception) =>
             cancel()
-            throw e
+            throw exception // Re-throw to propagate to setOnFailed
         }
       }
     }
-
     progressBar.progress <== jfxTask.progressProperty
     progressIndicator.progress <== jfxTask.progressProperty
 
@@ -466,6 +506,7 @@ object GenomeNavigatorApp extends JFXApp3 {
     })
 
     jfxTask.setOnFailed(_ => {
+      val errorMessage = Option(jfxTask.getException).map(_.getMessage).getOrElse("Unknown error during deep analysis.")
       val errorScreen = new VBox(20) {
         alignment = Pos.Center
         styleClass.add("root-pane")
@@ -473,8 +514,10 @@ object GenomeNavigatorApp extends JFXApp3 {
           new Label("Deep Analysis Failed!") {
             styleClass.add("error-label")
           },
-          new Label("Please check the console for more details.") {
+          new Label(s"Reason: $errorMessage") { // Display the specific error message
             styleClass.add("info-label")
+            wrapText = true
+            textAlignment = TextAlignment.Center
           },
           new Button("Back to Choices") {
             onAction = _ => showInitialResultsAndChoices(libraryStats, referencePath) // Go back to choices
@@ -505,16 +548,17 @@ object GenomeNavigatorApp extends JFXApp3 {
     }
 
     addStat("PDS User ID:", summary.pdsUserId, 0)
-    addStat("Sample Name:", summary.libraryStats.sampleName, 1)
-    addStat("Aligner:", summary.libraryStats.aligner, 2)
-    addStat("Platform:", summary.libraryStats.inferredPlatform, 3)
-    addStat("Instrument:", summary.libraryStats.mostFrequentInstrument, 4)
-    addStat("Reference:", summary.libraryStats.referenceBuild, 5)
-    addStat("Genome Size:", f"${summary.wgsMetrics.genomeTerritory}%,d", 6)
-    addStat("Mean Coverage:", f"${summary.wgsMetrics.meanCoverage}%.2fx", 7)
-    addStat("Callable Bases:", f"${summary.callableBases}%,d", 8)
+    addStat("Biosample ID:", summary.biosampleId, 1)
+    addStat("Sample Name:", summary.libraryStats.sampleName, 2)
+    addStat("Aligner:", summary.libraryStats.aligner, 3)
+    addStat("Platform:", summary.libraryStats.inferredPlatform, 4)
+    addStat("Instrument:", summary.libraryStats.mostFrequentInstrument, 5)
+    addStat("Reference:", summary.libraryStats.referenceBuild, 6)
+    addStat("Genome Size:", f"${summary.wgsMetrics.genomeTerritory}%,d", 7)
+    addStat("Mean Coverage:", f"${summary.wgsMetrics.meanCoverage}%.2fx", 8)
+    addStat("Callable Bases:", f"${summary.callableBases}%,d", 9)
     val callablePercent = if (summary.wgsMetrics.genomeTerritory > 0) (summary.callableBases.toDouble / summary.wgsMetrics.genomeTerritory * 100) else 0.0
-    addStat("Callable Percentage:", f"$callablePercent%.2f%%", 9)
+    addStat("Callable Percentage:", f"$callablePercent%.2f%%", 10)
 
     val contigBreakdownTitle = new Label("🧬 Contig Breakdown") {
       styleClass.add("title-label")
@@ -645,32 +689,119 @@ object GenomeNavigatorApp extends JFXApp3 {
           new Button("Upload to PDS") {
             styleClass.add("button-upload")
             onAction = _ => {
-              text = "Uploading..."
-              disable = true
-              PdsClient.uploadSummary(summary).onComplete {
-                case scala.util.Success(_) =>
-                  Platform.runLater {
-                    text = "Upload Complete!"
-                    styleClass.remove("button-upload")
-                    styleClass.add("button-success")
+              // If AT Protocol enabled, ensure login flow handles registration
+              val userToUse = if (FeatureToggles.atProtocolEnabled) {
+                 currentUser.orElse {
+                    val loggedIn = LoginDialog.show(stage)
+                    loggedIn.foreach { u =>
+                      currentUser = Some(u)
+                      topBar.update(currentUser)
+                      DecodingUsClient.registerPds(u.did, u.token, u.pdsUrl)
+                    }
+                    loggedIn
+                 }
+              } else {
+                // Legacy: Login is optional for upload context locally but PDS ID needed? 
+                // Actually legacy upload used summary.pdsUserId. 
+                // We'll assume current logic is sufficient or prompts login.
+                // But let's stick to the pattern: ensure user is logged in.
+                currentUser.orElse {
+                    val loggedIn = LoginDialog.show(stage)
+                    loggedIn.foreach { u =>
+                      currentUser = Some(u)
+                      topBar.update(currentUser)
+                    }
+                    loggedIn
+                 }
+              }
+
+              userToUse match {
+                case Some(user) =>
+                  text = "Uploading..."
+                  disable = true
+                  
+                  val uploadFuture = if (FeatureToggles.atProtocolEnabled) {
+                    PdsClient.uploadSummaryAtProto(user, summary)
+                  } else {
+                    PdsClient.uploadSummary(summary)
                   }
-                case scala.util.Failure(ex) =>
-                  Platform.runLater {
-                    text = "Upload to PDS" // Reset text
-                    disable = false
-                    new Alert(AlertType.Error) {
-                      initOwner(stage)
-                      title = "Upload Failed"
-                      headerText = "Could not upload to PDS"
-                      contentText = ex.getMessage
-                    }.showAndWait()
+
+                  uploadFuture.onComplete {
+                    case scala.util.Success(_) =>
+                      Platform.runLater {
+                        text = "Upload Complete!"
+                        styleClass.remove("button-upload")
+                        styleClass.add("button-success")
+                      }
+                    case scala.util.Failure(ex) =>
+                      Platform.runLater {
+                        text = "Upload to PDS" // Reset text
+                        disable = false
+                        new Alert(AlertType.Error) {
+                          initOwner(stage)
+                          title = "Upload Failed"
+                          headerText = "Could not upload to PDS"
+                          contentText = ex.getMessage
+                        }.showAndWait()
+                      }
                   }
+                case None =>
+                // User cancelled login
               }
             }
           }
         )
       }
       resultsVBox.children.addAll(new Separator(), pdsBox)
+    }
+
+    // Developer features section
+    if (FeatureToggles.developerFeatures.saveJsonEnabled) {
+      val saveJsonButton = new Button("Save Analysis JSON") {
+        styleClass.add("button-select")
+        onAction = _ => {
+          import io.circe.syntax._
+          import io.circe.generic.semiauto._ // Needed for implicit Encoder.
+          import java.time.LocalDateTime
+          import java.time.format.DateTimeFormatter
+          import javafx.stage.FileChooser
+          import java.nio.file.Files
+          import java.nio.file.Paths
+
+          // Ensure implicit encoders are available for Summary components if not already globally present
+          val jsonString = summary.asJson.spaces2
+
+          val now = LocalDateTime.now()
+          val formatter = DateTimeFormatter.ofPattern("yyyyMMdd_HHmmss")
+          val defaultFileName = s"coverage_summary_${now.format(formatter)}.json"
+
+          val fileChooser = new FileChooser()
+          fileChooser.title = "Save Analysis Summary JSON"
+          fileChooser.initialFileName = defaultFileName
+          fileChooser.extensionFilters.add(new FileChooser.ExtensionFilter("JSON files (*.json)", "*.json"))
+
+          Option(fileChooser.showSaveDialog(stage)).foreach { file =>
+            try {
+              Files.write(file.toPath, jsonString.getBytes)
+              new Alert(AlertType.Information) {
+                initOwner(stage)
+                title = "JSON Saved"
+                headerText = "Analysis summary saved successfully."
+                contentText = s"File: ${file.getAbsolutePath}"
+              }.showAndWait()
+            } catch {
+              case e: Exception =>
+                new Alert(AlertType.Error) {
+                  initOwner(stage)
+                  title = "Save Failed"
+                  headerText = "Could not save analysis summary JSON."
+                  contentText = e.getMessage
+                }.showAndWait()
+            }
+          }
+        }
+      }
+      resultsVBox.children.addAll(new Separator(), saveJsonButton)
     }
 
     val resultsScreen = new ScrollPane {

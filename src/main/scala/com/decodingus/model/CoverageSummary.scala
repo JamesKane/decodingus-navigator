@@ -32,6 +32,7 @@ case class ContigSummary(
  */
 case class CoverageSummary(
                             pdsUserId: String,
+                            biosampleId: String,
                             libraryStats: LibraryStats,
                             wgsMetrics: WgsMetrics,
                             callableBases: Long,

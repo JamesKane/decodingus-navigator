@@ -5,11 +5,11 @@ import org.broadinstitute.hellbender.Main
 
 import java.io.File
 import scala.io.Source
-import scala.util.Using
+import scala.util.{Either, Left, Right, Using, Try}
 
 class WgsMetricsProcessor {
 
-  def process(bamPath: String, referencePath: String, onProgress: (String, Double, Double) => Unit): WgsMetrics = {
+  def process(bamPath: String, referencePath: String, onProgress: (String, Double, Double) => Unit): Either[Throwable, WgsMetrics] = {
     onProgress("Running GATK CollectWgsMetrics...", 0.0, 1.0)
 
     val outputFile = File.createTempFile("wgs_metrics", ".txt")
@@ -20,14 +20,24 @@ class WgsMetricsProcessor {
       "-I", bamPath,
       "-R", referencePath,
       "-O", outputFile.getAbsolutePath,
-      "--USE_FAST_ALGORITHM", "true"
+      "--USE_FAST_ALGORITHM", "true",
+      "--READ_LENGTH", "4000000" // Support ultra-long reads up to 4Mb
     )
-    Main.main(args)
 
-    onProgress("Parsing GATK CollectWgsMetrics output...", 0.9, 1.0)
-    val metrics = parse(outputFile.getAbsolutePath)
-    onProgress("GATK CollectWgsMetrics complete.", 1.0, 1.0)
-    metrics
+    // Execute GATK Main and capture any exceptions
+    val gatkResult = Try {
+      Main.main(args)
+    }
+
+    gatkResult match {
+      case scala.util.Success(_) =>
+        onProgress("Parsing GATK CollectWgsMetrics output...", 0.9, 1.0)
+        val metrics = parse(outputFile.getAbsolutePath)
+        onProgress("GATK CollectWgsMetrics complete.", 1.0, 1.0)
+        Right(metrics)
+      case scala.util.Failure(exception) =>
+        Left(new RuntimeException(s"GATK CollectWgsMetrics failed: ${exception.getMessage}", exception))
+    }
   }
 
   private def parse(filePath: String): WgsMetrics = {

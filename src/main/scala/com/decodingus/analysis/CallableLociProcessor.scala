@@ -8,7 +8,7 @@ import java.io.File
 import java.nio.file.Files
 import scala.collection.mutable.ListBuffer
 import scala.io.Source
-import scala.util.Using
+import scala.util.{Either, Left, Right, Try, Using, boundary}
 
 case class CallableLociResult(
                                callableBases: Long,
@@ -37,7 +37,7 @@ class CallableLociProcessor {
   private val AXIS_COLOR = "#CCCCCC"
   private val TICK_COLOR = "#FFFF00"
 
-  def process(bamPath: String, referencePath: String, onProgress: (String, Int, Int) => Unit): (CallableLociResult, List[String]) = {
+  def process(bamPath: String, referencePath: String, onProgress: (String, Int, Int) => Unit): Either[Throwable, (CallableLociResult, List[String])] = {
     val referenceFile = new File(referencePath)
     val dictionary = ReferenceSequenceFileFactory.getReferenceSequenceFile(referenceFile).getSequenceDictionary
     val contigs = dictionary.getSequences.toArray.map(_.asInstanceOf[htsjdk.samtools.SAMSequenceRecord])
@@ -53,45 +53,55 @@ class CallableLociProcessor {
     val allSvgStrings = ListBuffer[String]()
     val allContigSummaries = ListBuffer[ContigSummary]()
 
-    for ((contig, index) <- contigs.zipWithIndex) {
-      val contigName = contig.getSequenceName
-      val contigLength = contig.getSequenceLength
+    boundary[Either[Throwable, (CallableLociResult, List[String])]] {
+      for ((contig, index) <- contigs.zipWithIndex) {
+        val contigName = contig.getSequenceName
+        val contigLength = contig.getSequenceLength
 
-      onProgress(s"Analyzing contig: $contigName (${index + 1} of $totalContigs)", index + 1, totalContigs)
+        onProgress(s"Analyzing contig: $contigName (${index + 1} of $totalContigs)", index + 1, totalContigs)
 
-      val bedFile = new File(outputDir, s"$contigName.callable.bed")
-      val summaryFile = new File(outputDir, s"$contigName.table.txt")
+        val bedFile = new File(outputDir, s"$contigName.callable.bed")
+        val summaryFile = new File(outputDir, s"$contigName.table.txt")
 
-      val args = Array(
-        "CallableLoci",
-        "-I", bamPath,
-        "-R", referencePath,
-        "-O", bedFile.getAbsolutePath,
-        "--summary", summaryFile.getAbsolutePath,
-        "-L", contigName
+        val args = Array(
+          "CallableLoci",
+          "-I", bamPath,
+          "-R", referencePath,
+          "-O", bedFile.getAbsolutePath,
+          "--summary", summaryFile.getAbsolutePath,
+          "-L", contigName
+        )
+
+        val gatkResult = Try {
+          Main.main(args)
+        }
+
+        gatkResult match {
+          case scala.util.Success(_) =>
+            val binData = binIntervals(bedFile.getAbsolutePath, contigName, contigLength)
+            val svgString = generateSvg(contigName, contigLength, maxGenomeLength, binData)
+            allSvgStrings += svgString
+
+            // Write SVG to file
+            val svgFile = new File(outputDir, s"$contigName.callable.svg")
+            Files.writeString(svgFile.toPath, svgString)
+
+            val contigSummary = parseSummary(summaryFile.getAbsolutePath, contigName)
+            allContigSummaries += contigSummary
+          case scala.util.Failure(exception) =>
+            boundary.break(Left(new RuntimeException(s"GATK CallableLoci failed for contig $contigName: ${exception.getMessage}", exception)))
+        }
+      }
+
+      val callableBases = allContigSummaries.map(_.callable).sum
+
+      val result = CallableLociResult(
+        callableBases = callableBases,
+        contigAnalysis = allContigSummaries.toList
       )
-      Main.main(args)
 
-      val binData = binIntervals(bedFile.getAbsolutePath, contigName, contigLength)
-      val svgString = generateSvg(contigName, contigLength, maxGenomeLength, binData)
-      allSvgStrings += svgString
-
-      // Write SVG to file
-      val svgFile = new File(outputDir, s"$contigName.callable.svg")
-      Files.writeString(svgFile.toPath, svgString)
-
-      val contigSummary = parseSummary(summaryFile.getAbsolutePath, contigName)
-      allContigSummaries += contigSummary
+      Right((result, allSvgStrings.toList))
     }
-
-    val callableBases = allContigSummaries.map(_.callable).sum
-
-    val result = CallableLociResult(
-      callableBases = callableBases,
-      contigAnalysis = allContigSummaries.toList
-    )
-
-    (result, allSvgStrings.toList)
   }
 
   private def binIntervals(bedPath: String, contigName: String, contigLength: Int): Array[Array[Int]] = {
