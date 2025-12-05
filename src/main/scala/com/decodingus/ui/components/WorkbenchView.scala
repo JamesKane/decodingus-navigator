@@ -564,4 +564,27 @@ class WorkbenchView(val viewModel: WorkbenchViewModel) extends SplitPane {
   // Set the items of the SplitPane
   items.addAll(leftPanel, rightPanel)
   dividerPositions = 0.25 // Initial divider position
+
+  // Listen for reference download prompts from the ViewModel
+  viewModel.pendingReferenceDownload.onChange { (_, _, request) =>
+    request match {
+      case viewModel.PendingDownload(build, url, sizeMB, onConfirm, onCancel) =>
+        Platform.runLater {
+          val dialog = new ReferenceDownloadPromptDialog(build, url, sizeMB)
+          dialog.showAndWait() match {
+            case Some(ReferenceDownloadPromptDialog.Result.Download) =>
+              onConfirm()
+            case Some(ReferenceDownloadPromptDialog.Result.Configure) =>
+              // Open settings dialog
+              val configDialog = new ReferenceConfigDialog()
+              configDialog.showAndWait()
+              onCancel() // Cancel the current operation - user can retry after configuring
+            case _ =>
+              onCancel()
+          }
+        }
+      case viewModel.NoDownloadPending =>
+        // Nothing to do
+    }
+  }
 }

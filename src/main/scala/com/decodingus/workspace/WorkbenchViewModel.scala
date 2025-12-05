@@ -1,12 +1,15 @@
 package com.decodingus.workspace
 
-import com.decodingus.analysis.{LibraryStatsProcessor, WgsMetricsProcessor}
+import com.decodingus.analysis.{HaplogroupProcessor, LibraryStatsProcessor, WgsMetricsProcessor}
+import com.decodingus.haplogroup.tree.{TreeType, TreeProviderType}
 import com.decodingus.auth.User
 import com.decodingus.config.FeatureToggles
 import com.decodingus.model.{LibraryStats, WgsMetrics}
 import com.decodingus.pds.PdsClient
-import com.decodingus.refgenome.ReferenceGateway
-import com.decodingus.workspace.model.{Workspace, Project, Biosample, WorkspaceContent, SyncStatus, SequenceData, AlignmentData, AlignmentMetrics, FileInfo}
+import com.decodingus.config.ReferenceConfigService
+import com.decodingus.refgenome.{ReferenceGateway, ReferenceResolveResult}
+import com.decodingus.workspace.model.{Workspace, Project, Biosample, WorkspaceContent, SyncStatus, SequenceData, AlignmentData, AlignmentMetrics, FileInfo, HaplogroupAssignments, HaplogroupResult => WorkspaceHaplogroupResult}
+import com.decodingus.haplogroup.model.{HaplogroupResult => AnalysisHaplogroupResult}
 import htsjdk.samtools.SamReaderFactory
 import scalafx.beans.property.{ObjectProperty, ReadOnlyObjectProperty, StringProperty, BooleanProperty, DoubleProperty}
 import scalafx.collections.ObservableBuffer
@@ -663,6 +666,79 @@ class WorkbenchViewModel(val workspaceService: WorkspaceService) {
   val lastLibraryStats: ObjectProperty[Option[LibraryStats]] = ObjectProperty(None)
   val lastWgsMetrics: ObjectProperty[Option[WgsMetrics]] = ObjectProperty(None)
 
+  // --- Reference Download State ---
+  // These properties allow the UI to show a prompt when a reference download is needed
+  sealed trait ReferenceDownloadRequest
+  case class PendingDownload(build: String, url: String, sizeMB: Int, onConfirm: () => Unit, onCancel: () => Unit) extends ReferenceDownloadRequest
+  case object NoDownloadPending extends ReferenceDownloadRequest
+
+  val pendingReferenceDownload: ObjectProperty[ReferenceDownloadRequest] = ObjectProperty(NoDownloadPending)
+
+  /**
+   * Checks if a reference is available and resolves it.
+   * If prompting is enabled and download is required, sets pendingReferenceDownload for UI to handle.
+   *
+   * @param referenceBuild The build to resolve (e.g., "GRCh38")
+   * @param onProgress Progress callback for download
+   * @param onResolved Called with the resolved path when available
+   * @param onError Called if resolution fails or is cancelled
+   */
+  def resolveReferenceWithPrompt(
+    referenceBuild: String,
+    onProgress: (Long, Long) => Unit,
+    onResolved: String => Unit,
+    onError: String => Unit
+  ): Unit = {
+    val config = ReferenceConfigService.load()
+    val referenceGateway = new ReferenceGateway(onProgress)
+
+    referenceGateway.checkAvailability(referenceBuild) match {
+      case ReferenceResolveResult.Available(path) =>
+        onResolved(path.toString)
+
+      case ReferenceResolveResult.DownloadRequired(build, url, sizeMB) =>
+        if (config.promptBeforeDownload) {
+          // Set pending download for UI to handle
+          Platform.runLater {
+            pendingReferenceDownload.value = PendingDownload(
+              build = build,
+              url = url,
+              sizeMB = sizeMB,
+              onConfirm = () => {
+                pendingReferenceDownload.value = NoDownloadPending
+                // User confirmed - proceed with download in background
+                Future {
+                  referenceGateway.downloadAndResolve(build) match {
+                    case Right(path) =>
+                      Platform.runLater { onResolved(path.toString) }
+                    case Left(error) =>
+                      Platform.runLater { onError(error) }
+                  }
+                }
+              },
+              onCancel = () => {
+                pendingReferenceDownload.value = NoDownloadPending
+                onError(s"Reference download cancelled. Configure a local path in Settings or enable auto-download.")
+              }
+            )
+          }
+        } else {
+          // Auto-download enabled - proceed without prompting
+          Future {
+            referenceGateway.downloadAndResolve(build) match {
+              case Right(path) =>
+                Platform.runLater { onResolved(path.toString) }
+              case Left(error) =>
+                Platform.runLater { onError(error) }
+            }
+          }
+        }
+
+      case ReferenceResolveResult.Error(message) =>
+        onError(message)
+    }
+  }
+
   // --- Analysis Operations ---
 
   /**
@@ -881,5 +957,152 @@ class WorkbenchViewModel(val workspaceService: WorkspaceService) {
       analysisProgress.value = message
       analysisProgressPercent.value = percent
     }
+  }
+
+  // --- Haplogroup Analysis ---
+
+  // Store last haplogroup analysis result
+  val lastHaplogroupResult: ObjectProperty[Option[AnalysisHaplogroupResult]] = ObjectProperty(None)
+
+  /**
+   * Runs haplogroup analysis for a subject using the specified tree type.
+   * Uses FTDNA tree provider for both Y-DNA and MT-DNA.
+   *
+   * @param sampleAccession The subject's accession ID
+   * @param sequenceDataIndex The index of the sequence data entry to analyze
+   * @param treeType The type of haplogroup tree (YDNA or MTDNA)
+   * @param onComplete Callback when analysis completes
+   */
+  def runHaplogroupAnalysis(
+    sampleAccession: String,
+    sequenceDataIndex: Int,
+    treeType: TreeType,
+    onComplete: Either[String, AnalysisHaplogroupResult] => Unit
+  ): Unit = {
+    findSubject(sampleAccession).flatMap { subject =>
+      subject.sequenceData.lift(sequenceDataIndex).map((subject, _))
+    } match {
+      case Some((subject, seqData)) =>
+        // Need alignment data with reference build for haplogroup analysis
+        seqData.alignments.headOption match {
+          case Some(alignmentData) =>
+            seqData.files.headOption match {
+              case Some(fileInfo) =>
+                val bamPath = fileInfo.location
+                println(s"[ViewModel] Starting ${treeType} haplogroup analysis for ${fileInfo.fileName}")
+
+                analysisInProgress.value = true
+                analysisError.value = ""
+                analysisProgress.value = "Starting haplogroup analysis..."
+                analysisProgressPercent.value = 0.0
+
+                Future {
+                  try {
+                    // Build LibraryStats from existing data for the processor
+                    val libraryStats = LibraryStats(
+                      readCount = seqData.totalReads.map(_.toInt).getOrElse(0),
+                      pairedReads = 0,
+                      lengthDistribution = Map.empty,
+                      insertSizeDistribution = Map.empty,
+                      aligner = alignmentData.aligner,
+                      referenceBuild = alignmentData.referenceBuild,
+                      sampleName = subject.donorIdentifier,
+                      flowCells = Map.empty,
+                      instruments = Map.empty,
+                      mostFrequentInstrument = seqData.instrumentModel.getOrElse("Unknown"),
+                      inferredPlatform = seqData.platformName,
+                      platformCounts = Map.empty
+                    )
+
+                    updateProgress("Loading haplogroup tree...", 0.1)
+
+                    val processor = new HaplogroupProcessor()
+                    val result = processor.analyze(
+                      bamPath,
+                      libraryStats,
+                      treeType,
+                      TreeProviderType.FTDNA, // Using FTDNA for POC
+                      (message, current, total) => {
+                        val pct = if (total > 0) current / total else 0.0
+                        updateProgress(message, pct)
+                      }
+                    )
+
+                    result match {
+                      case Right(results) if results.nonEmpty =>
+                        val topResult = results.head
+                        Platform.runLater {
+                          // Convert analysis result to workspace model and save
+                          val workspaceResult = WorkspaceHaplogroupResult(
+                            haplogroupName = topResult.name,
+                            score = topResult.score,
+                            matchingSnps = Some(topResult.matchingSnps),
+                            mismatchingSnps = Some(topResult.mismatchingSnps),
+                            ancestralMatches = Some(topResult.ancestralMatches),
+                            treeDepth = Some(topResult.depth),
+                            lineagePath = None // Could be populated if needed
+                          )
+
+                          // Update subject's haplogroup assignments
+                          val currentAssignments = subject.haplogroups.getOrElse(HaplogroupAssignments(None, None))
+                          val updatedAssignments = treeType match {
+                            case TreeType.YDNA => currentAssignments.copy(yDna = Some(workspaceResult))
+                            case TreeType.MTDNA => currentAssignments.copy(mtDna = Some(workspaceResult))
+                          }
+                          val updatedSubject = subject.copy(haplogroups = Some(updatedAssignments))
+                          updateSubject(updatedSubject)
+
+                          lastHaplogroupResult.value = Some(topResult)
+                          analysisInProgress.value = false
+                          analysisProgress.value = "Haplogroup analysis complete"
+                          analysisProgressPercent.value = 1.0
+                          onComplete(Right(topResult))
+                        }
+
+                      case Right(_) =>
+                        Platform.runLater {
+                          analysisInProgress.value = false
+                          analysisError.value = "No haplogroup matches found"
+                          analysisProgress.value = "Analysis complete - no matches"
+                          onComplete(Left("No haplogroup matches found"))
+                        }
+
+                      case Left(error) =>
+                        Platform.runLater {
+                          analysisInProgress.value = false
+                          analysisError.value = error
+                          analysisProgress.value = s"Analysis failed: $error"
+                          onComplete(Left(error))
+                        }
+                    }
+                  } catch {
+                    case e: Exception =>
+                      Platform.runLater {
+                        analysisInProgress.value = false
+                        analysisError.value = e.getMessage
+                        analysisProgress.value = s"Analysis failed: ${e.getMessage}"
+                        onComplete(Left(e.getMessage))
+                      }
+                  }
+                }
+
+              case None =>
+                onComplete(Left("No alignment file associated with this sequence data"))
+            }
+
+          case None =>
+            onComplete(Left("Please run initial analysis first to detect reference build"))
+        }
+
+      case None =>
+        onComplete(Left(s"Sequence data not found at index $sequenceDataIndex for subject $sampleAccession"))
+    }
+  }
+
+  /**
+   * Gets the current haplogroup assignments for a subject.
+   */
+  def getHaplogroupAssignments(sampleAccession: String): Option[HaplogroupAssignments] = {
+    findSubject(sampleAccession).flatMap(_.haplogroups)
   }
 }

@@ -10,6 +10,7 @@ import scalafx.beans.property.StringProperty
 import scalafx.application.Platform
 import com.decodingus.workspace.model.{Biosample, SequenceData, AlignmentMetrics}
 import com.decodingus.workspace.WorkbenchViewModel
+import com.decodingus.haplogroup.tree.TreeType
 
 /**
  * Table component displaying sequencing runs for a subject.
@@ -107,6 +108,13 @@ class SequenceDataTable(
             }
           }
         },
+        new MenuItem("Haplogroup Analysis") {
+          onAction = _ => {
+            Option(row.getItem).foreach { item =>
+              handleHaplogroupAnalysis(item.index)
+            }
+          }
+        },
         new MenuItem("Remove") {
           onAction = _ => {
             Option(row.getItem).foreach { item =>
@@ -125,6 +133,70 @@ class SequenceDataTable(
       )
       row.contextMenu = contextMenu
       row
+    }
+  }
+
+  /** Handles launching haplogroup analysis for a sequence data entry */
+  private def handleHaplogroupAnalysis(index: Int): Unit = {
+    // Check if initial analysis has been run (need reference build info)
+    val seqData = subject.sequenceData.lift(index)
+    val hasAlignments = seqData.exists(_.alignments.nonEmpty)
+
+    if (!hasAlignments) {
+      new Alert(AlertType.Warning) {
+        title = "Analysis Required"
+        headerText = "Initial analysis required"
+        contentText = "Please run the initial analysis first to detect the reference build before running haplogroup analysis."
+      }.showAndWait()
+      return
+    }
+
+    // Show dialog to select tree type
+    val dialog = new HaplogroupAnalysisDialog()
+    val result = dialog.showAndWait().asInstanceOf[Option[Option[TreeType]]]
+
+    result match {
+      case Some(Some(treeType)) =>
+        // Show progress dialog
+        val progressDialog = new AnalysisProgressDialog(
+          s"${if (treeType == TreeType.YDNA) "Y-DNA" else "MT-DNA"} Haplogroup Analysis",
+          viewModel.analysisProgress,
+          viewModel.analysisProgressPercent,
+          viewModel.analysisInProgress
+        )
+
+        viewModel.runHaplogroupAnalysis(
+          subject.sampleAccession,
+          index,
+          treeType,
+          onComplete = {
+            case Right(haplogroupResult) =>
+              Platform.runLater {
+                // Show results dialog
+                new HaplogroupResultDialog(
+                  treeType = treeType,
+                  haplogroupName = haplogroupResult.name,
+                  score = haplogroupResult.score,
+                  matchingSnps = haplogroupResult.matchingSnps,
+                  mismatchingSnps = haplogroupResult.mismatchingSnps,
+                  ancestralMatches = haplogroupResult.ancestralMatches,
+                  depth = haplogroupResult.depth
+                ).showAndWait()
+              }
+            case Left(error) =>
+              Platform.runLater {
+                new Alert(AlertType.Error) {
+                  title = "Haplogroup Analysis Failed"
+                  headerText = "Could not complete haplogroup analysis"
+                  contentText = error
+                }.showAndWait()
+              }
+          }
+        )
+
+        progressDialog.show()
+
+      case _ => // User cancelled
     }
   }
 
@@ -198,14 +270,25 @@ class SequenceDataTable(
     }
   }
 
-  // Enable/disable analyze button based on selection
+  private val haplogroupButton = new Button("Haplogroup") {
+    disable = true
+    tooltip = Tooltip("Run haplogroup analysis (Y-DNA or MT-DNA)")
+    onAction = _ => {
+      Option(table.selectionModel().getSelectedItem).foreach { row =>
+        handleHaplogroupAnalysis(row.index)
+      }
+    }
+  }
+
+  // Enable/disable buttons based on selection
   table.selectionModel().selectedItem.onChange { (_, _, selected) =>
     analyzeSelectedButton.disable = selected == null
+    haplogroupButton.disable = selected == null
   }
 
   private val buttonBar = new HBox(10) {
     alignment = Pos.CenterLeft
-    children = Seq(addButton, analyzeSelectedButton)
+    children = Seq(addButton, analyzeSelectedButton, haplogroupButton)
   }
 
   children = Seq(

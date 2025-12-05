@@ -1,11 +1,13 @@
 package com.decodingus.refgenome
 
+import com.decodingus.config.ReferenceConfigService
+
 import java.io.IOException
 import java.nio.file.{Files, Path, Paths}
 
 class ReferenceCache {
-  private val cacheDir: Path = {
-    val dir = Paths.get(System.getProperty("user.home"), ".cache", "decodingus-tools", "references")
+  private def cacheDir: Path = {
+    val dir = ReferenceConfigService.getCacheDir
     try {
       Files.createDirectories(dir)
     } catch {
@@ -17,14 +19,28 @@ class ReferenceCache {
     dir
   }
 
+  /**
+   * Gets the path for a reference build.
+   * Checks in order:
+   * 1. User-specified local path from config
+   * 2. Default cache directory
+   */
   def getPath(referenceBuild: String): Option[Path] = {
-    val refPath = cacheDir.resolve(s"$referenceBuild.fa.gz")
-    if (Files.exists(refPath)) Some(refPath) else None
+    // Use the config service which checks user paths first, then cache
+    ReferenceConfigService.getReferencePath(referenceBuild)
   }
 
+  /**
+   * Stores a reference file in the cache directory.
+   */
   def put(referenceBuild: String, file: Path): Path = {
     val targetPath = cacheDir.resolve(s"$referenceBuild.fa.gz")
     Files.move(file, targetPath)
     targetPath
   }
+
+  /**
+   * Gets the cache directory path (for UI display).
+   */
+  def getCacheDirectory: Path = cacheDir
 }

@@ -1,5 +1,6 @@
 package com.decodingus.refgenome
 
+import com.decodingus.config.{ReferenceConfig, ReferenceConfigService}
 import sttp.client3.*
 
 import java.io.IOException
@@ -7,29 +8,101 @@ import java.nio.file.{Files, Path, Paths}
 import sys.process._
 import org.broadinstitute.hellbender.Main
 
+/**
+ * Result type for reference resolution when user confirmation is needed.
+ */
+sealed trait ReferenceResolveResult
+object ReferenceResolveResult {
+  /** Reference was found locally and is ready to use */
+  case class Available(path: Path) extends ReferenceResolveResult
+  /** Reference not found, download is required - includes estimated size info */
+  case class DownloadRequired(build: String, url: String, estimatedSizeMB: Int) extends ReferenceResolveResult
+  /** Error occurred */
+  case class Error(message: String) extends ReferenceResolveResult
+}
+
 class ReferenceGateway(onProgress: (Long, Long) => Unit) {
   private val cache = new ReferenceCache
 
-  private val referenceUrls: Map[String, String] = Map(
-    "GRCh38" -> "https://storage.googleapis.com/genomics-public-data/resources/broad/hg38/v0/Homo_sapiens_assembly38.fasta",
-    "GRCh37" -> "https://storage.googleapis.com/genomics-public-data/references/hg19/v0/Homo_sapiens_assembly19.fasta.gz",
-    "CHM13v2" -> "https://s3-us-west-2.amazonaws.com/human-pangenomics/T2T/CHM13/assemblies/analysis_set/chm13v2.0.fa.gz"
-    // Add other references here
+  private val referenceUrls: Map[String, String] = ReferenceConfig.knownBuilds
+
+  // Estimated download sizes in MB for user information
+  private val estimatedSizes: Map[String, Int] = Map(
+    "GRCh38" -> 3100,  // ~3.1 GB uncompressed, downloads as uncompressed
+    "GRCh37" -> 900,   // ~900 MB compressed
+    "CHM13v2" -> 900   // ~900 MB compressed
   )
 
+  /**
+   * Resolves a reference, automatically downloading if config allows.
+   * This is the original behavior for backward compatibility.
+   */
   def resolve(referenceBuild: String): Either[String, Path] = {
     cache.getPath(referenceBuild) match {
       case Some(path) =>
         println(s"Found reference $referenceBuild in cache: $path")
         validateAndCreateReferenceFiles(path)
       case None =>
-        referenceUrls.get(referenceBuild) match {
-          case Some(url) =>
-            downloadReference(referenceBuild, url).flatMap(validateAndCreateReferenceFiles)
-          case None => Left(s"Unknown reference build: $referenceBuild")
+        val config = ReferenceConfigService.load()
+        val buildConfig = config.getOrDefault(referenceBuild)
+
+        // Check if auto-download is enabled for this build
+        if (buildConfig.autoDownload || !config.promptBeforeDownload) {
+          referenceUrls.get(referenceBuild) match {
+            case Some(url) =>
+              downloadReference(referenceBuild, url).flatMap(validateAndCreateReferenceFiles)
+            case None => Left(s"Unknown reference build: $referenceBuild")
+          }
+        } else {
+          Left(s"Reference $referenceBuild not found locally. Configure a local path or enable download in Settings.")
         }
     }
   }
+
+  /**
+   * Checks if a reference is available without downloading.
+   * Returns a result indicating availability or download requirement.
+   */
+  def checkAvailability(referenceBuild: String): ReferenceResolveResult = {
+    cache.getPath(referenceBuild) match {
+      case Some(path) =>
+        validateAndCreateReferenceFiles(path) match {
+          case Right(validPath) => ReferenceResolveResult.Available(validPath)
+          case Left(error) => ReferenceResolveResult.Error(error)
+        }
+      case None =>
+        referenceUrls.get(referenceBuild) match {
+          case Some(url) =>
+            val sizeMB = estimatedSizes.getOrElse(referenceBuild, 1000)
+            ReferenceResolveResult.DownloadRequired(referenceBuild, url, sizeMB)
+          case None =>
+            ReferenceResolveResult.Error(s"Unknown reference build: $referenceBuild")
+        }
+    }
+  }
+
+  /**
+   * Downloads a reference after user confirmation.
+   * Call this after checkAvailability returns DownloadRequired and user approves.
+   */
+  def downloadAndResolve(referenceBuild: String): Either[String, Path] = {
+    referenceUrls.get(referenceBuild) match {
+      case Some(url) =>
+        downloadReference(referenceBuild, url).flatMap(validateAndCreateReferenceFiles)
+      case None =>
+        Left(s"Unknown reference build: $referenceBuild")
+    }
+  }
+
+  /**
+   * Gets the URL for a reference build (for display to user).
+   */
+  def getDownloadUrl(referenceBuild: String): Option[String] = referenceUrls.get(referenceBuild)
+
+  /**
+   * Gets the estimated download size in MB.
+   */
+  def getEstimatedSizeMB(referenceBuild: String): Int = estimatedSizes.getOrElse(referenceBuild, 1000)
 
   private def downloadReference(referenceBuild: String, url: String): Either[String, Path] = {
     println(s"Downloading reference $referenceBuild from $url")
