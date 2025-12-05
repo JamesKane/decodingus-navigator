@@ -7,6 +7,7 @@ import scalafx.scene.layout.{VBox, HBox, Priority}
 import scalafx.geometry.{Insets, Pos}
 import scalafx.collections.ObservableBuffer
 import scalafx.beans.property.StringProperty
+import scalafx.application.Platform
 import com.decodingus.workspace.model.{Biosample, SequenceData, AlignmentMetrics}
 import com.decodingus.workspace.WorkbenchViewModel
 
@@ -130,12 +131,59 @@ class SequenceDataTable(
   // Action buttons
   private val addButton = new Button("Add Sequencing Run") {
     onAction = _ => {
-      val dialog = new AddSequenceDataDialog()
-      val result = dialog.showAndWait().asInstanceOf[Option[Option[SequenceData]]]
+      val existingChecksums = viewModel.getExistingChecksums(subject.sampleAccession)
+      val dialog = new AddSequenceDataDialog(existingChecksums)
+      val result = dialog.showAndWait().asInstanceOf[Option[Option[SequenceDataInput]]]
 
       result match {
-        case Some(Some(newSeqData)) =>
-          viewModel.addSequenceDataToSubject(subject.sampleAccession, newSeqData)
+        case Some(Some(input)) =>
+          // Show progress dialog and run add+analyze pipeline
+          val progressDialog = new AnalysisProgressDialog(
+            "Adding Sequencing Data",
+            viewModel.analysisProgress,
+            viewModel.analysisProgressPercent,
+            viewModel.analysisInProgress
+          )
+
+          viewModel.addFileAndAnalyze(
+            subject.sampleAccession,
+            input.fileInfo,
+            onProgress = (message, _) => {
+              // Progress is already bound via observable properties
+            },
+            onComplete = {
+              case Right((index, libraryStats)) =>
+                Platform.runLater {
+                  new Alert(Alert.AlertType.Information) {
+                    title = "Sequencing Data Added"
+                    headerText = s"Successfully analyzed ${input.fileInfo.fileName}"
+                    contentText = s"""Platform: ${libraryStats.inferredPlatform}
+                                     |Instrument: ${libraryStats.mostFrequentInstrument}
+                                     |Reference: ${libraryStats.referenceBuild}
+                                     |Sample: ${libraryStats.sampleName}
+                                     |Reads: ${libraryStats.readCount}""".stripMargin
+                  }.showAndWait()
+                }
+              case Left(error) =>
+                Platform.runLater {
+                  if (error.contains("Duplicate")) {
+                    new Alert(Alert.AlertType.Warning) {
+                      title = "Duplicate File"
+                      headerText = "This file has already been added"
+                      contentText = error
+                    }.showAndWait()
+                  } else {
+                    new Alert(Alert.AlertType.Error) {
+                      title = "Analysis Failed"
+                      headerText = "Could not analyze the file"
+                      contentText = error
+                    }.showAndWait()
+                  }
+                }
+            }
+          )
+
+          progressDialog.show()
         case _ => // User cancelled
       }
     }

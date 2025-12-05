@@ -89,13 +89,20 @@ class WorkbenchView(val viewModel: WorkbenchViewModel) extends SplitPane {
       case Some(seqData) =>
         seqData.files.headOption match {
           case Some(fileInfo) =>
-            // For now, show a placeholder - this will be wired to actual analysis
-            new Alert(AlertType.Information) {
-              title = "Analysis"
-              headerText = s"Starting analysis for ${fileInfo.fileName}"
-              contentText = s"Platform: ${seqData.platformName}\nTest Type: ${seqData.testType}\n\nAnalysis functionality will be implemented next."
-            }.showAndWait()
-            // TODO: Call viewModel.analyzeLibraryStats or viewModel.analyzeDeepCoverage
+            // Check if initial analysis has been run (has alignments)
+            val hasAlignments = seqData.alignments.nonEmpty
+            val hasMetrics = seqData.alignments.exists(_.metrics.isDefined)
+
+            if (!hasAlignments) {
+              // Run initial analysis
+              showAnalysisChoiceDialog(sampleAccession, index, fileInfo.fileName, "initial")
+            } else if (!hasMetrics) {
+              // Offer to run deep coverage analysis
+              showAnalysisChoiceDialog(sampleAccession, index, fileInfo.fileName, "wgs")
+            } else {
+              // Both analyses complete - offer to re-run
+              showAnalysisChoiceDialog(sampleAccession, index, fileInfo.fileName, "both_complete")
+            }
           case None =>
             new Alert(AlertType.Warning) {
               title = "No File"
@@ -106,6 +113,134 @@ class WorkbenchView(val viewModel: WorkbenchViewModel) extends SplitPane {
       case None =>
         println(s"[View] Sequence data not found at index $index")
     }
+  }
+
+  /** Shows a dialog to choose which analysis to run */
+  private def showAnalysisChoiceDialog(sampleAccession: String, index: Int, fileName: String, state: String): Unit = {
+    val (dialogHeader, dialogContent, options) = state match {
+      case "initial" =>
+        ("Run Initial Analysis",
+         s"Analyze $fileName to detect platform, reference build, and collect library statistics.",
+         Seq(("Run Initial Analysis", () => runInitialAnalysis(sampleAccession, index))))
+      case "wgs" =>
+        ("Run Deep Coverage Analysis",
+         s"Initial analysis complete. Would you like to run WGS metrics analysis?\n\nThis will calculate detailed coverage statistics using GATK and may take several minutes for large genomes.",
+         Seq(
+           ("Run WGS Metrics", () => runWgsMetricsAnalysis(sampleAccession, index)),
+           ("Re-run Initial Analysis", () => runInitialAnalysis(sampleAccession, index))
+         ))
+      case "both_complete" =>
+        ("Analysis Complete",
+         s"Both initial and WGS metrics analysis have been completed for $fileName.\n\nWould you like to re-run any analysis?",
+         Seq(
+           ("Re-run WGS Metrics", () => runWgsMetricsAnalysis(sampleAccession, index)),
+           ("Re-run Initial Analysis", () => runInitialAnalysis(sampleAccession, index))
+         ))
+      case _ =>
+        ("Analysis", "Choose an analysis to run.", Seq.empty)
+    }
+
+    if (options.size == 1) {
+      // Single option - just confirm
+      val confirm = new Alert(AlertType.Confirmation) {
+        title = "Analysis"
+        headerText = dialogHeader
+        contentText = dialogContent
+      }
+      confirm.showAndWait() match {
+        case Some(ButtonType.OK) => options.head._2()
+        case _ =>
+      }
+    } else if (options.nonEmpty) {
+      // Multiple options - use custom buttons
+      val alert = new Alert(AlertType.Confirmation) {
+        title = "Analysis Options"
+        headerText = dialogHeader
+        contentText = dialogContent
+        buttonTypes = options.map(o => new ButtonType(o._1)) :+ ButtonType.Cancel
+      }
+      val result = alert.showAndWait()
+      result.foreach { btn =>
+        options.find(_._1 == btn.text).foreach(_._2())
+      }
+    }
+  }
+
+  /** Runs initial analysis with progress dialog */
+  private def runInitialAnalysis(sampleAccession: String, index: Int): Unit = {
+    val progressDialog = new AnalysisProgressDialog(
+      "Initial Analysis",
+      viewModel.analysisProgress,
+      viewModel.analysisProgressPercent,
+      viewModel.analysisInProgress
+    )
+
+    viewModel.runInitialAnalysis(sampleAccession, index, {
+      case Right(libraryStats) =>
+        Platform.runLater {
+          new Alert(AlertType.Information) {
+            title = "Analysis Complete"
+            headerText = "Initial Analysis Results"
+            contentText = s"""Sample: ${libraryStats.sampleName}
+                             |Platform: ${libraryStats.inferredPlatform}
+                             |Instrument: ${libraryStats.mostFrequentInstrument}
+                             |Reference: ${libraryStats.referenceBuild}
+                             |Aligner: ${libraryStats.aligner}
+                             |Reads Sampled: ${libraryStats.readCount}""".stripMargin
+          }.showAndWait()
+          // Refresh the detail view
+          viewModel.selectedSubject.value.foreach(renderSubjectDetail)
+        }
+      case Left(error) =>
+        Platform.runLater {
+          new Alert(AlertType.Error) {
+            title = "Analysis Failed"
+            headerText = "Initial analysis encountered an error"
+            contentText = error
+          }.showAndWait()
+        }
+    })
+
+    progressDialog.show()
+  }
+
+  /** Runs WGS metrics analysis with progress dialog */
+  private def runWgsMetricsAnalysis(sampleAccession: String, index: Int): Unit = {
+    val progressDialog = new AnalysisProgressDialog(
+      "WGS Metrics Analysis",
+      viewModel.analysisProgress,
+      viewModel.analysisProgressPercent,
+      viewModel.analysisInProgress
+    )
+
+    viewModel.runWgsMetricsAnalysis(sampleAccession, index, {
+      case Right(wgsMetrics) =>
+        Platform.runLater {
+          new Alert(AlertType.Information) {
+            title = "Analysis Complete"
+            headerText = "WGS Metrics Results"
+            contentText = f"""Mean Coverage: ${wgsMetrics.meanCoverage}%.1fx
+                             |Median Coverage: ${wgsMetrics.medianCoverage}%.1fx
+                             |SD Coverage: ${wgsMetrics.sdCoverage}%.2f
+                             |PCT 10x: ${wgsMetrics.pct10x * 100}%.1f%%
+                             |PCT 20x: ${wgsMetrics.pct20x * 100}%.1f%%
+                             |PCT 30x: ${wgsMetrics.pct30x * 100}%.1f%%
+                             |Het SNP Sensitivity: ${wgsMetrics.hetSnpSensitivity}%.4f""".stripMargin
+          }.showAndWait()
+          // Refresh the detail view
+          viewModel.selectedSubject.value.foreach(renderSubjectDetail)
+        }
+      case Left(error) =>
+        Platform.runLater {
+          new Alert(AlertType.Error) {
+            title = "Analysis Failed"
+            headerText = "WGS metrics analysis encountered an error"
+            contentText = error
+          }.showAndWait()
+        }
+    })
+
+    progressDialog.show()
   }
 
   /** Handles removing a sequence data entry */

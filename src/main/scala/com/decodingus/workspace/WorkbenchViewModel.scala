@@ -1,16 +1,22 @@
 package com.decodingus.workspace
 
+import com.decodingus.analysis.{LibraryStatsProcessor, WgsMetricsProcessor}
 import com.decodingus.auth.User
 import com.decodingus.config.FeatureToggles
+import com.decodingus.model.{LibraryStats, WgsMetrics}
 import com.decodingus.pds.PdsClient
-import com.decodingus.workspace.model.{Workspace, Project, Biosample, WorkspaceContent, SyncStatus, SequenceData}
-import scalafx.beans.property.{ObjectProperty, ReadOnlyObjectProperty, StringProperty}
+import com.decodingus.refgenome.ReferenceGateway
+import com.decodingus.workspace.model.{Workspace, Project, Biosample, WorkspaceContent, SyncStatus, SequenceData, AlignmentData, AlignmentMetrics, FileInfo}
+import htsjdk.samtools.SamReaderFactory
+import scalafx.beans.property.{ObjectProperty, ReadOnlyObjectProperty, StringProperty, BooleanProperty, DoubleProperty}
 import scalafx.collections.ObservableBuffer
 import scalafx.application.Platform
 
+import java.io.File
 import java.time.LocalDateTime
+import scala.concurrent.{ExecutionContext, Future}
 import scala.concurrent.ExecutionContext.Implicits.global
-import scala.util.{Success, Failure}
+import scala.util.{Success, Failure, Try}
 
 class WorkbenchViewModel(val workspaceService: WorkspaceService) {
 
@@ -252,6 +258,212 @@ class WorkbenchViewModel(val workspaceService: WorkspaceService) {
 
   // --- SequenceData CRUD Operations (nested within a Biosample) ---
 
+  /**
+   * Creates a new SequenceData entry from just a FileInfo.
+   * All metadata (platform, reads, etc.) will be populated during analysis.
+   * Returns the index of the new entry, or -1 if duplicate/error.
+   */
+  def addSequenceDataFromFile(sampleAccession: String, fileInfo: FileInfo): Int = {
+    findSubject(sampleAccession) match {
+      case Some(subject) =>
+        // Check for duplicate by checksum
+        val existingChecksums = subject.sequenceData.flatMap(_.files.flatMap(_.checksum)).toSet
+        if (fileInfo.checksum.exists(existingChecksums.contains)) {
+          println(s"[ViewModel] Duplicate file detected: ${fileInfo.fileName}")
+          return -1
+        }
+
+        val newSequenceData = SequenceData(
+          platformName = "Unknown", // Will be inferred during analysis
+          instrumentModel = None,
+          testType = "Unknown",
+          libraryLayout = None,
+          totalReads = None,
+          readLength = None,
+          meanInsertSize = None,
+          files = List(fileInfo),
+          alignments = List.empty
+        )
+
+        val newIndex = subject.sequenceData.size
+        val updatedSubject = subject.copy(
+          sequenceData = subject.sequenceData :+ newSequenceData
+        )
+        updateSubject(updatedSubject)
+        newIndex
+
+      case None =>
+        println(s"[ViewModel] Cannot add sequence data: subject $sampleAccession not found")
+        -1
+    }
+  }
+
+  /**
+   * Adds a file and immediately runs library stats analysis.
+   * This is the primary flow for adding new sequencing data.
+   *
+   * Pipeline:
+   * 1. Add file to subject (creates SequenceData entry)
+   * 2. Detect reference build from BAM/CRAM header
+   * 3. Resolve reference genome
+   * 4. Run library stats analysis
+   * 5. Update SequenceData with inferred metadata
+   *
+   * @param sampleAccession The subject's accession ID
+   * @param fileInfo The file information
+   * @param onProgress Progress callback (message, percent)
+   * @param onComplete Completion callback with result
+   */
+  def addFileAndAnalyze(
+    sampleAccession: String,
+    fileInfo: FileInfo,
+    onProgress: (String, Double) => Unit,
+    onComplete: Either[String, (Int, LibraryStats)] => Unit
+  ): Unit = {
+    // Step 1: Add the file
+    onProgress("Adding file...", 0.05)
+    val index = addSequenceDataFromFile(sampleAccession, fileInfo)
+
+    if (index < 0) {
+      onComplete(Left("Duplicate file - this file has already been added"))
+      return
+    }
+
+    val bamPath = fileInfo.location
+    println(s"[ViewModel] Starting add+analyze pipeline for ${fileInfo.fileName}")
+
+    analysisInProgress.value = true
+    analysisError.value = ""
+    analysisProgress.value = "Initializing analysis..."
+    analysisProgressPercent.value = 0.1
+
+    // Run analysis in background
+    Future {
+      try {
+        // Step 2: Detect reference build from header
+        onProgress("Reading BAM/CRAM header...", 0.15)
+        updateProgress("Reading BAM/CRAM header...", 0.15)
+
+        val header = SamReaderFactory.makeDefault().open(new File(bamPath)).getFileHeader
+        val libraryStatsProcessor = new LibraryStatsProcessor()
+        val referenceBuild = libraryStatsProcessor.detectReferenceBuild(header)
+
+        if (referenceBuild == "Unknown") {
+          throw new IllegalStateException("Could not determine reference build from BAM/CRAM header.")
+        }
+
+        // Step 3: Resolve reference genome
+        onProgress(s"Resolving reference: $referenceBuild", 0.25)
+        updateProgress(s"Resolving reference: $referenceBuild", 0.25)
+
+        val referenceGateway = new ReferenceGateway((done, total) => {
+          val pct = if (total > 0) 0.25 + (done.toDouble / total) * 0.25 else 0.25
+          onProgress(s"Downloading reference: ${done / 1024 / 1024}MB", pct)
+          updateProgress(s"Downloading reference: ${done / 1024 / 1024}MB", pct)
+        })
+
+        val referencePath = referenceGateway.resolve(referenceBuild) match {
+          case Right(path) => path.toString
+          case Left(error) => throw new Exception(s"Failed to resolve reference: $error")
+        }
+
+        // Step 4: Collect library stats
+        onProgress("Analyzing library statistics...", 0.55)
+        updateProgress("Analyzing library statistics...", 0.55)
+
+        val libraryStats = libraryStatsProcessor.process(bamPath, referencePath, (message, current, total) => {
+          val pct = 0.55 + (current.toDouble / total) * 0.35
+          onProgress(s"Library Stats: $message", pct)
+          updateProgress(s"Library Stats: $message", pct)
+        })
+
+        // Step 5: Update the SequenceData with results
+        onProgress("Saving results...", 0.95)
+        updateProgress("Saving results...", 0.95)
+
+        Platform.runLater {
+          // Get the current sequence data (it may have been updated)
+          findSubject(sampleAccession).flatMap(_.sequenceData.lift(index)) match {
+            case Some(seqData) =>
+              val updatedSeqData = seqData.copy(
+                platformName = libraryStats.inferredPlatform,
+                instrumentModel = Some(libraryStats.mostFrequentInstrument),
+                testType = inferTestType(libraryStats),
+                libraryLayout = Some(if (libraryStats.pairedReads > libraryStats.readCount / 2) "Paired-End" else "Single-End"),
+                totalReads = Some(libraryStats.readCount.toLong),
+                readLength = libraryStats.lengthDistribution.keys.maxOption,
+                meanInsertSize = calculateMeanInsertSize(libraryStats.insertSizeDistribution),
+                alignments = List(AlignmentData(
+                  referenceBuild = libraryStats.referenceBuild,
+                  aligner = libraryStats.aligner,
+                  files = seqData.files,
+                  metrics = None
+                ))
+              )
+              updateSequenceData(sampleAccession, index, updatedSeqData)
+
+              lastLibraryStats.value = Some(libraryStats)
+              analysisInProgress.value = false
+              analysisProgress.value = "Analysis complete"
+              analysisProgressPercent.value = 1.0
+              onProgress("Complete", 1.0)
+              onComplete(Right((index, libraryStats)))
+
+            case None =>
+              analysisInProgress.value = false
+              onComplete(Left("Sequence data entry was removed during analysis"))
+          }
+        }
+
+        libraryStats
+      } catch {
+        case e: Exception =>
+          Platform.runLater {
+            analysisInProgress.value = false
+            analysisError.value = e.getMessage
+            analysisProgress.value = s"Analysis failed: ${e.getMessage}"
+            onComplete(Left(e.getMessage))
+          }
+          throw e
+      }
+    }
+  }
+
+  /** Infer test type from library stats */
+  private def inferTestType(stats: LibraryStats): String = {
+    // HiFi reads are typically very long (>10kb average)
+    val avgReadLength = if (stats.lengthDistribution.nonEmpty) {
+      val total = stats.lengthDistribution.map { case (len, count) => len.toLong * count }.sum
+      val count = stats.lengthDistribution.values.sum
+      if (count > 0) total / count else 0
+    } else 0
+
+    if (stats.inferredPlatform == "PacBio" && avgReadLength > 10000) "HiFi"
+    else if (stats.inferredPlatform == "PacBio") "CLR"
+    else if (stats.inferredPlatform == "Oxford Nanopore") "Nanopore"
+    else "WGS" // Default assumption for Illumina/MGI
+  }
+
+  /** Calculate mean insert size from distribution */
+  private def calculateMeanInsertSize(distribution: Map[Long, Int]): Option[Double] = {
+    if (distribution.isEmpty) None
+    else {
+      val total = distribution.map { case (size, count) => size * count }.sum
+      val count = distribution.values.sum
+      if (count > 0) Some(total.toDouble / count) else None
+    }
+  }
+
+  /** Gets all checksums for a subject's sequence data files */
+  def getExistingChecksums(sampleAccession: String): Set[String] = {
+    findSubject(sampleAccession) match {
+      case Some(subject) =>
+        subject.sequenceData.flatMap(_.files.flatMap(_.checksum)).toSet
+      case None =>
+        Set.empty
+    }
+  }
+
   /** Adds sequencing data to the currently selected subject */
   def addSequenceData(sequenceData: SequenceData): Unit = {
     selectedSubject.value match {
@@ -308,50 +520,232 @@ class WorkbenchViewModel(val workspaceService: WorkspaceService) {
 
   // --- Analysis State ---
   // Observable properties for tracking analysis progress
-  val analysisInProgress: ObjectProperty[Boolean] = ObjectProperty(false)
+  val analysisInProgress: BooleanProperty = BooleanProperty(false)
   val analysisProgress: StringProperty = StringProperty("")
-  val analysisProgressPercent: ObjectProperty[Double] = ObjectProperty(0.0)
+  val analysisProgressPercent: DoubleProperty = DoubleProperty(0.0)
+  val analysisError: StringProperty = StringProperty("")
+
+  // Store analysis results for UI access
+  val lastLibraryStats: ObjectProperty[Option[LibraryStats]] = ObjectProperty(None)
+  val lastWgsMetrics: ObjectProperty[Option[WgsMetrics]] = ObjectProperty(None)
 
   // --- Analysis Operations ---
-  // These will be fleshed out to call the actual analysis processors
 
-  /** Initiates library stats analysis for a sequence data entry */
-  def analyzeLibraryStats(sampleAccession: String, sequenceDataIndex: Int): Unit = {
+  /**
+   * Runs the full initial analysis pipeline for a sequencing run:
+   * 1. Detects reference build from BAM/CRAM header
+   * 2. Resolves/downloads reference genome if needed
+   * 3. Collects library statistics
+   * 4. Updates the SequenceData with results
+   *
+   * @param sampleAccession The subject's accession ID
+   * @param sequenceDataIndex The index of the sequence data entry to analyze
+   * @param onComplete Callback when analysis completes (success or failure)
+   */
+  def runInitialAnalysis(
+    sampleAccession: String,
+    sequenceDataIndex: Int,
+    onComplete: Either[String, LibraryStats] => Unit
+  ): Unit = {
     findSubject(sampleAccession).flatMap { subject =>
-      subject.sequenceData.lift(sequenceDataIndex)
+      subject.sequenceData.lift(sequenceDataIndex).map((subject, _))
     } match {
-      case Some(seqData) =>
+      case Some((subject, seqData)) =>
         seqData.files.headOption match {
           case Some(fileInfo) =>
-            println(s"[ViewModel] Starting library stats analysis for ${fileInfo.fileName}")
+            val bamPath = fileInfo.location
+            println(s"[ViewModel] Starting initial analysis for ${fileInfo.fileName}")
+
             analysisInProgress.value = true
+            analysisError.value = ""
             analysisProgress.value = "Initializing analysis..."
-            // TODO: Implement actual analysis call in background thread
+            analysisProgressPercent.value = 0.0
+
+            // Run analysis in background thread
+            Future {
+              try {
+                // Step 1: Detect reference build from header
+                updateProgress("Reading BAM/CRAM header...", 0.1)
+                val header = SamReaderFactory.makeDefault().open(new File(bamPath)).getFileHeader
+                val libraryStatsProcessor = new LibraryStatsProcessor()
+                val referenceBuild = libraryStatsProcessor.detectReferenceBuild(header)
+
+                if (referenceBuild == "Unknown") {
+                  throw new IllegalStateException("Could not determine reference build from BAM/CRAM header.")
+                }
+
+                // Step 2: Resolve reference genome
+                updateProgress(s"Resolving reference: $referenceBuild", 0.2)
+                val referenceGateway = new ReferenceGateway((done, total) => {
+                  val pct = if (total > 0) 0.2 + (done.toDouble / total) * 0.3 else 0.2
+                  updateProgress(s"Downloading reference: ${done / 1024 / 1024}MB", pct)
+                })
+
+                val referencePath = referenceGateway.resolve(referenceBuild) match {
+                  case Right(path) => path.toString
+                  case Left(error) => throw new Exception(s"Failed to resolve reference: $error")
+                }
+
+                // Step 3: Collect library stats
+                updateProgress("Analyzing library statistics...", 0.5)
+                val libraryStats = libraryStatsProcessor.process(bamPath, referencePath, (message, current, total) => {
+                  val pct = 0.5 + (current.toDouble / total) * 0.4
+                  updateProgress(s"Library Stats: $message", pct)
+                })
+
+                // Step 4: Update the SequenceData with results
+                updateProgress("Saving results...", 0.95)
+                Platform.runLater {
+                  val updatedSeqData = seqData.copy(
+                    platformName = if (seqData.platformName == "Other") libraryStats.inferredPlatform else seqData.platformName,
+                    instrumentModel = seqData.instrumentModel.orElse(Some(libraryStats.mostFrequentInstrument)),
+                    totalReads = Some(libraryStats.readCount.toLong),
+                    alignments = List(AlignmentData(
+                      referenceBuild = libraryStats.referenceBuild,
+                      aligner = libraryStats.aligner,
+                      files = seqData.files,
+                      metrics = None // Will be filled by WGS metrics analysis
+                    ))
+                  )
+                  updateSequenceData(sampleAccession, sequenceDataIndex, updatedSeqData)
+                  lastLibraryStats.value = Some(libraryStats)
+                  analysisInProgress.value = false
+                  analysisProgress.value = "Analysis complete"
+                  analysisProgressPercent.value = 1.0
+                  onComplete(Right(libraryStats))
+                }
+
+                libraryStats
+              } catch {
+                case e: Exception =>
+                  Platform.runLater {
+                    analysisInProgress.value = false
+                    analysisError.value = e.getMessage
+                    analysisProgress.value = s"Analysis failed: ${e.getMessage}"
+                    onComplete(Left(e.getMessage))
+                  }
+                  throw e
+              }
+            }
+
           case None =>
-            println("[ViewModel] No file associated with sequence data")
+            onComplete(Left("No alignment file associated with this sequence data"))
         }
+
       case None =>
-        println(s"[ViewModel] Sequence data not found at index $sequenceDataIndex for subject $sampleAccession")
+        onComplete(Left(s"Sequence data not found at index $sequenceDataIndex for subject $sampleAccession"))
     }
   }
 
-  /** Initiates deep coverage analysis (WGS metrics) for a sequence data entry */
-  def analyzeDeepCoverage(sampleAccession: String, sequenceDataIndex: Int): Unit = {
+  /**
+   * Runs WGS metrics analysis (deep coverage) for a sequencing run.
+   * Requires that initial analysis has already been run.
+   *
+   * @param sampleAccession The subject's accession ID
+   * @param sequenceDataIndex The index of the sequence data entry to analyze
+   * @param onComplete Callback when analysis completes
+   */
+  def runWgsMetricsAnalysis(
+    sampleAccession: String,
+    sequenceDataIndex: Int,
+    onComplete: Either[String, WgsMetrics] => Unit
+  ): Unit = {
     findSubject(sampleAccession).flatMap { subject =>
-      subject.sequenceData.lift(sequenceDataIndex)
+      subject.sequenceData.lift(sequenceDataIndex).map((subject, _))
     } match {
-      case Some(seqData) =>
-        seqData.files.headOption match {
-          case Some(fileInfo) =>
-            println(s"[ViewModel] Starting deep coverage analysis for ${fileInfo.fileName}")
-            analysisInProgress.value = true
-            analysisProgress.value = "Starting WGS metrics analysis..."
-            // TODO: Implement actual analysis call in background thread
+      case Some((subject, seqData)) =>
+        // Need alignment data with reference build
+        seqData.alignments.headOption match {
+          case Some(alignmentData) =>
+            seqData.files.headOption match {
+              case Some(fileInfo) =>
+                val bamPath = fileInfo.location
+                println(s"[ViewModel] Starting WGS metrics analysis for ${fileInfo.fileName}")
+
+                analysisInProgress.value = true
+                analysisError.value = ""
+                analysisProgress.value = "Starting WGS metrics analysis..."
+                analysisProgressPercent.value = 0.0
+
+                Future {
+                  try {
+                    // Resolve reference
+                    updateProgress("Resolving reference genome...", 0.1)
+                    val referenceGateway = new ReferenceGateway((_, _) => {})
+                    val referencePath = referenceGateway.resolve(alignmentData.referenceBuild) match {
+                      case Right(path) => path.toString
+                      case Left(error) => throw new Exception(s"Failed to resolve reference: $error")
+                    }
+
+                    // Run GATK CollectWgsMetrics
+                    updateProgress("Running GATK CollectWgsMetrics (this may take a while)...", 0.2)
+                    val wgsProcessor = new WgsMetricsProcessor()
+                    val wgsMetrics = wgsProcessor.process(bamPath, referencePath, (message, current, total) => {
+                      val pct = 0.2 + (current / total) * 0.7
+                      updateProgress(message, pct)
+                    }) match {
+                      case Right(metrics) => metrics
+                      case Left(error) => throw error
+                    }
+
+                    // Update alignment metrics
+                    updateProgress("Saving results...", 0.95)
+                    Platform.runLater {
+                      val updatedMetrics = AlignmentMetrics(
+                        genomeTerritory = Some(wgsMetrics.genomeTerritory),
+                        meanCoverage = Some(wgsMetrics.meanCoverage),
+                        medianCoverage = Some(wgsMetrics.medianCoverage),
+                        sdCoverage = Some(wgsMetrics.sdCoverage),
+                        pctExcDupe = Some(wgsMetrics.pctExcDupe),
+                        pctExcMapq = Some(wgsMetrics.pctExcMapq),
+                        pct10x = Some(wgsMetrics.pct10x),
+                        pct20x = Some(wgsMetrics.pct20x),
+                        pct30x = Some(wgsMetrics.pct30x),
+                        hetSnpSensitivity = Some(wgsMetrics.hetSnpSensitivity),
+                        contigs = List.empty // TODO: Add per-contig metrics if needed
+                      )
+                      val updatedAlignment = alignmentData.copy(metrics = Some(updatedMetrics))
+                      val updatedSeqData = seqData.copy(alignments = List(updatedAlignment))
+                      updateSequenceData(sampleAccession, sequenceDataIndex, updatedSeqData)
+
+                      lastWgsMetrics.value = Some(wgsMetrics)
+                      analysisInProgress.value = false
+                      analysisProgress.value = "WGS metrics analysis complete"
+                      analysisProgressPercent.value = 1.0
+                      onComplete(Right(wgsMetrics))
+                    }
+
+                    wgsMetrics
+                  } catch {
+                    case e: Exception =>
+                      Platform.runLater {
+                        analysisInProgress.value = false
+                        analysisError.value = e.getMessage
+                        analysisProgress.value = s"Analysis failed: ${e.getMessage}"
+                        onComplete(Left(e.getMessage))
+                      }
+                      throw e
+                  }
+                }
+
+              case None =>
+                onComplete(Left("No alignment file associated with this sequence data"))
+            }
+
           case None =>
-            println("[ViewModel] No file associated with sequence data")
+            onComplete(Left("Please run initial analysis first to detect reference build"))
         }
+
       case None =>
-        println(s"[ViewModel] Sequence data not found at index $sequenceDataIndex for subject $sampleAccession")
+        onComplete(Left(s"Sequence data not found at index $sequenceDataIndex for subject $sampleAccession"))
+    }
+  }
+
+  /** Helper to update progress on the JavaFX thread */
+  private def updateProgress(message: String, percent: Double): Unit = {
+    Platform.runLater {
+      analysisProgress.value = message
+      analysisProgressPercent.value = percent
     }
   }
 }
