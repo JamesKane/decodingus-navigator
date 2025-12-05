@@ -26,7 +26,10 @@ class LiftoverProcessor {
       "-O", liftedVcfFile.getAbsolutePath,
       "-C", chainFile.toString,
       "-R", targetReference.toString,
-      "--REJECT", rejectFile.getAbsolutePath
+      "--REJECT", rejectFile.getAbsolutePath,
+      // Relax reference validation - allows GRCh38 with/without alts, etc.
+      "--VALIDATION_STRINGENCY", "LENIENT",
+      "--disable-sequence-dictionary-validation", "true"
     )
 
     try {

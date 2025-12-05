@@ -21,7 +21,10 @@ class WgsMetricsProcessor {
       "-R", referencePath,
       "-O", outputFile.getAbsolutePath,
       "--USE_FAST_ALGORITHM", "true",
-      "--READ_LENGTH", "4000000" // Support ultra-long reads up to 4Mb
+      "--READ_LENGTH", "4000000", // Support ultra-long reads up to 4Mb
+      // Relax reference validation - allows GRCh38 with/without alts, etc.
+      "--VALIDATION_STRINGENCY", "LENIENT",
+      "--disable-sequence-dictionary-validation", "true"
     )
 
     // Execute GATK Main and capture any exceptions

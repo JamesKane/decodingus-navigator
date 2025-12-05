@@ -37,10 +37,19 @@ class CallableLociProcessor {
   private val AXIS_COLOR = "#CCCCCC"
   private val TICK_COLOR = "#FFFF00"
 
+  // Main assembly contigs only - excludes alts, decoys, HLA, etc.
+  private val mainAssemblyPattern = "^(chr)?([1-9]|1[0-9]|2[0-2]|X|Y|M|MT)$".r
+
+  private def isMainAssemblyContig(name: String): Boolean = {
+    mainAssemblyPattern.findFirstIn(name).isDefined
+  }
+
   def process(bamPath: String, referencePath: String, onProgress: (String, Int, Int) => Unit): Either[Throwable, (CallableLociResult, List[String])] = {
     val referenceFile = new File(referencePath)
     val dictionary = ReferenceSequenceFileFactory.getReferenceSequenceFile(referenceFile).getSequenceDictionary
-    val contigs = dictionary.getSequences.toArray.map(_.asInstanceOf[htsjdk.samtools.SAMSequenceRecord])
+    val allContigs = dictionary.getSequences.toArray.map(_.asInstanceOf[htsjdk.samtools.SAMSequenceRecord])
+    // Filter to main assembly contigs only (chr1-22, X, Y, M/MT)
+    val contigs = allContigs.filter(c => isMainAssemblyContig(c.getSequenceName))
     val totalContigs = contigs.length
     val contigLengths = contigs.map(s => s.getSequenceName -> s.getSequenceLength).toMap
     val maxGenomeLength = if (contigLengths.values.isEmpty) 0 else contigLengths.values.max
@@ -69,7 +78,9 @@ class CallableLociProcessor {
           "-R", referencePath,
           "-O", bedFile.getAbsolutePath,
           "--summary", summaryFile.getAbsolutePath,
-          "-L", contigName
+          "-L", contigName,
+          // Relax reference validation - allows GRCh38 with/without alts, etc.
+          "--disable-sequence-dictionary-validation", "true"
         )
 
         val gatkResult = Try {

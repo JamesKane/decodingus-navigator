@@ -29,7 +29,9 @@ class GatkHaplotypeCallerProcessor {
       "-R", referencePath,
       "-O", vcfFile.getAbsolutePath,
       "-L", allelesVcf.getAbsolutePath,
-      "--alleles", allelesVcf.getAbsolutePath
+      "--alleles", allelesVcf.getAbsolutePath,
+      // Relax reference validation - allows GRCh38 with/without alts, etc.
+      "--disable-sequence-dictionary-validation", "true"
     )
     Main.main(args)
 
@@ -53,7 +55,9 @@ class GatkHaplotypeCallerProcessor {
       "-I", bamPath,
       "-R", referencePath,
       "-O", vcfFile.getAbsolutePath,
-      "-L", contig
+      "-L", contig,
+      // Relax reference validation - allows GRCh38 with/without alts, etc.
+      "--disable-sequence-dictionary-validation", "true"
     )
     Main.main(args)
 
