@@ -1,6 +1,7 @@
 package com.decodingus.ui.components
 
 import com.decodingus.auth.User
+import com.decodingus.config.FeatureToggles
 import scalafx.geometry.{Insets, Pos}
 import scalafx.scene.control.{Button, Label}
 import scalafx.scene.layout.HBox
@@ -24,11 +25,13 @@ class TopBar(onLogin: () => Unit, onLogout: () => Unit) extends HBox {
         }
         children.addAll(userLabel, logoutBtn)
       case None =>
-        val loginBtn = new Button("Login") {
-          styleClass.add("button-select")
-          onAction = _ => onLogin()
+        if (FeatureToggles.authEnabled) {
+          val loginBtn = new Button("Login") {
+            styleClass.add("button-select")
+            onAction = _ => onLogin()
+          }
+          children.add(loginBtn)
         }
-        children.add(loginBtn)
     }
   }
 }
