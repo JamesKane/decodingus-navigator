@@ -1,0 +1,196 @@
+package com.decodingus.ui.components
+
+import scalafx.Includes._
+import scalafx.scene.control.{ButtonType, Dialog, Label, TextField, ComboBox, ButtonBar}
+import scalafx.scene.layout.{GridPane, VBox}
+import scalafx.geometry.Insets
+import scalafx.collections.ObservableBuffer
+import com.decodingus.workspace.model.SequenceData
+
+/**
+ * Dialog for editing sequencing run metadata.
+ * Allows users to correct or customize auto-detected values.
+ */
+class EditSequenceDataDialog(existingData: SequenceData) extends Dialog[Option[SequenceData]] {
+  title = "Edit Sequencing Run"
+  headerText = "Edit sequencing run metadata"
+
+  val saveButtonType = new ButtonType("Save", ButtonBar.ButtonData.OKDone)
+  dialogPane().buttonTypes = Seq(saveButtonType, ButtonType.Cancel)
+
+  // Platform selection
+  private val platformCombo = new ComboBox[String] {
+    items = ObservableBuffer(
+      "Illumina",
+      "PacBio",
+      "Oxford Nanopore",
+      "MGI",
+      "Ion Torrent",
+      "Complete Genomics",
+      "Other"
+    )
+    value = existingData.platformName
+    editable = true
+    prefWidth = 200
+  }
+
+  // Test type selection
+  private val testTypeCombo = new ComboBox[String] {
+    items = ObservableBuffer(
+      "WGS",
+      "WES",
+      "HiFi",
+      "CLR",
+      "Nanopore",
+      "Targeted Panel",
+      "RNA-Seq",
+      "Other"
+    )
+    value = existingData.testType
+    editable = true
+    prefWidth = 200
+  }
+
+  // Instrument model
+  private val instrumentField = new TextField() {
+    text = existingData.instrumentModel.getOrElse("")
+    promptText = "e.g., NovaSeq 6000, Sequel II"
+    prefWidth = 200
+  }
+
+  // Library layout selection
+  private val layoutCombo = new ComboBox[String] {
+    items = ObservableBuffer("Paired-End", "Single-End", "Unknown")
+    value = existingData.libraryLayout.getOrElse("Unknown")
+    prefWidth = 200
+  }
+
+  // Read statistics (read-only display with option to clear)
+  private val totalReadsField = new TextField() {
+    text = existingData.totalReads.map(_.toString).getOrElse("")
+    promptText = "Total number of reads"
+    prefWidth = 200
+  }
+
+  private val readLengthField = new TextField() {
+    text = existingData.readLength.map(_.toString).getOrElse("")
+    promptText = "Read length (bp)"
+    prefWidth = 200
+  }
+
+  private val insertSizeField = new TextField() {
+    text = existingData.meanInsertSize.map(d => f"$d%.1f").getOrElse("")
+    promptText = "Mean insert size (bp)"
+    prefWidth = 200
+  }
+
+  // File info (read-only)
+  private val fileNameLabel = new Label(
+    existingData.files.headOption.map(_.fileName).getOrElse("No file")
+  ) {
+    style = "-fx-font-style: italic;"
+  }
+
+  // Alignment info (read-only)
+  private val referenceLabel = new Label(
+    existingData.alignments.headOption.map(_.referenceBuild).getOrElse("Not analyzed")
+  ) {
+    style = "-fx-font-style: italic;"
+  }
+
+  private val alignerLabel = new Label(
+    existingData.alignments.headOption.map(_.aligner).getOrElse("Unknown")
+  ) {
+    style = "-fx-font-style: italic;"
+  }
+
+  private val grid = new GridPane() {
+    hgap = 10
+    vgap = 10
+    padding = Insets(20)
+
+    // Editable fields
+    add(new Label("Platform:"), 0, 0)
+    add(platformCombo, 1, 0)
+
+    add(new Label("Test Type:"), 0, 1)
+    add(testTypeCombo, 1, 1)
+
+    add(new Label("Instrument:"), 0, 2)
+    add(instrumentField, 1, 2)
+
+    add(new Label("Library Layout:"), 0, 3)
+    add(layoutCombo, 1, 3)
+
+    // Statistics (editable)
+    add(new Label("Total Reads:"), 0, 4)
+    add(totalReadsField, 1, 4)
+
+    add(new Label("Read Length:"), 0, 5)
+    add(readLengthField, 1, 5)
+
+    add(new Label("Insert Size:"), 0, 6)
+    add(insertSizeField, 1, 6)
+
+    // Read-only info
+    add(new Label("") { prefHeight = 10 }, 0, 7) // Spacer
+
+    add(new Label("File:") { style = "-fx-text-fill: #888888;" }, 0, 8)
+    add(fileNameLabel, 1, 8)
+
+    add(new Label("Reference:") { style = "-fx-text-fill: #888888;" }, 0, 9)
+    add(referenceLabel, 1, 9)
+
+    add(new Label("Aligner:") { style = "-fx-text-fill: #888888;" }, 0, 10)
+    add(alignerLabel, 1, 10)
+  }
+
+  private val content = new VBox(10) {
+    children = Seq(
+      grid,
+      new Label("Note: File, reference, and aligner are determined by analysis and cannot be edited here.") {
+        style = "-fx-text-fill: #888888; -fx-font-size: 11px; -fx-font-style: italic;"
+        wrapText = true
+        maxWidth = 350
+      }
+    )
+  }
+
+  dialogPane().content = content
+
+  // Focus on platform field
+  javafx.application.Platform.runLater(() => platformCombo.requestFocus())
+
+  resultConverter = dialogButton => {
+    if (dialogButton == saveButtonType) {
+      // Parse numeric fields
+      val totalReads = Option(totalReadsField.text.value)
+        .filter(_.nonEmpty)
+        .flatMap(s => scala.util.Try(s.toLong).toOption)
+
+      val readLength = Option(readLengthField.text.value)
+        .filter(_.nonEmpty)
+        .flatMap(s => scala.util.Try(s.toInt).toOption)
+
+      val insertSize = Option(insertSizeField.text.value)
+        .filter(_.nonEmpty)
+        .flatMap(s => scala.util.Try(s.toDouble).toOption)
+
+      val layoutValue = layoutCombo.value.value
+      val libraryLayout = if (layoutValue == "Unknown") None else Some(layoutValue)
+
+      Some(existingData.copy(
+        platformName = platformCombo.value.value,
+        testType = testTypeCombo.value.value,
+        instrumentModel = Option(instrumentField.text.value).filter(_.nonEmpty),
+        libraryLayout = libraryLayout,
+        totalReads = totalReads,
+        readLength = readLength,
+        meanInsertSize = insertSize
+        // files and alignments are preserved from existingData
+      ))
+    } else {
+      None
+    }
+  }
+}

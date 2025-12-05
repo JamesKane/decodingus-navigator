@@ -36,18 +36,36 @@ class SequenceDataTable(
     prefHeight = 200
     columnResizePolicy = TableView.ConstrainedResizePolicy
 
-    // Platform column
+    // Platform + Instrument column (e.g., "Illumina NovaSeq")
     columns += new TableColumn[SequenceDataRow, String] {
       text = "Platform"
-      cellValueFactory = { row => StringProperty(row.value.data.platformName) }
-      prefWidth = 100
+      cellValueFactory = { row =>
+        val platform = row.value.data.platformName
+        val instrument = row.value.data.instrumentModel.getOrElse("")
+        val display = if (instrument.nonEmpty) s"$platform $instrument" else platform
+        StringProperty(display)
+      }
+      prefWidth = 140
     }
 
-    // Test Type column
+    // Test Type + Read Length + Library Layout (e.g., "WGS - 150bp PE")
     columns += new TableColumn[SequenceDataRow, String] {
       text = "Test"
-      cellValueFactory = { row => StringProperty(row.value.data.testType) }
-      prefWidth = 80
+      cellValueFactory = { row =>
+        val data = row.value.data
+        val testType = data.testType
+        val readLen = data.readLength.map(r => s"${r}bp").getOrElse("")
+        val layout = data.libraryLayout.map {
+          case "Paired-End" => "PE"
+          case "Single-End" => "SE"
+          case other => other
+        }.getOrElse("")
+
+        val details = Seq(readLen, layout).filter(_.nonEmpty).mkString(" ")
+        val display = if (details.nonEmpty) s"$testType - $details" else testType
+        StringProperty(display)
+      }
+      prefWidth = 120
     }
 
     // File column
@@ -57,12 +75,12 @@ class SequenceDataTable(
         val fileName = row.value.data.files.headOption.map(_.fileName).getOrElse("No file")
         StringProperty(fileName)
       }
-      prefWidth = 200
+      prefWidth = 180
     }
 
     // Coverage column (from alignment metrics if available)
     columns += new TableColumn[SequenceDataRow, String] {
-      text = "Mean Cov."
+      text = "Coverage"
       cellValueFactory = { row =>
         val coverage = row.value.data.alignments.headOption
           .flatMap(_.metrics)
@@ -71,7 +89,7 @@ class SequenceDataTable(
           .getOrElse("—")
         StringProperty(coverage)
       }
-      prefWidth = 80
+      prefWidth = 70
     }
 
     // Reference column
@@ -94,13 +112,20 @@ class SequenceDataTable(
         val status = if (hasMetrics) "Analyzed" else "Pending"
         StringProperty(status)
       }
-      prefWidth = 80
+      prefWidth = 70
     }
 
     // Context menu for row actions
     rowFactory = { _ =>
       val row = new javafx.scene.control.TableRow[SequenceDataRow]()
       val contextMenu = new ContextMenu(
+        new MenuItem("Edit") {
+          onAction = _ => {
+            Option(row.getItem).foreach { item =>
+              handleEditSequenceData(item.index, item.data)
+            }
+          }
+        },
         new MenuItem("Analyze") {
           onAction = _ => {
             Option(row.getItem).foreach { item =>
@@ -133,6 +158,20 @@ class SequenceDataTable(
       )
       row.contextMenu = contextMenu
       row
+    }
+  }
+
+  /** Handles editing sequence data metadata */
+  private def handleEditSequenceData(index: Int, data: SequenceData): Unit = {
+    val dialog = new EditSequenceDataDialog(data)
+    val result = dialog.showAndWait().asInstanceOf[Option[Option[SequenceData]]]
+
+    result match {
+      case Some(Some(updatedData)) =>
+        viewModel.updateSequenceData(subject.sampleAccession, index, updatedData)
+        // Update local table data
+        tableData.update(index, SequenceDataRow(index, updatedData))
+      case _ => // User cancelled
     }
   }
 
@@ -261,7 +300,17 @@ class SequenceDataTable(
     }
   }
 
-  private val analyzeSelectedButton = new Button("Analyze Selected") {
+  private val editButton = new Button("Edit") {
+    disable = true
+    tooltip = Tooltip("Edit sequencing run metadata")
+    onAction = _ => {
+      Option(table.selectionModel().getSelectedItem).foreach { row =>
+        handleEditSequenceData(row.index, row.data)
+      }
+    }
+  }
+
+  private val analyzeSelectedButton = new Button("Analyze") {
     disable = true
     onAction = _ => {
       Option(table.selectionModel().getSelectedItem).foreach { row =>
@@ -282,13 +331,15 @@ class SequenceDataTable(
 
   // Enable/disable buttons based on selection
   table.selectionModel().selectedItem.onChange { (_, _, selected) =>
-    analyzeSelectedButton.disable = selected == null
-    haplogroupButton.disable = selected == null
+    val hasSelection = selected != null
+    editButton.disable = !hasSelection
+    analyzeSelectedButton.disable = !hasSelection
+    haplogroupButton.disable = !hasSelection
   }
 
   private val buttonBar = new HBox(10) {
     alignment = Pos.CenterLeft
-    children = Seq(addButton, analyzeSelectedButton, haplogroupButton)
+    children = Seq(addButton, editButton, analyzeSelectedButton, haplogroupButton)
   }
 
   children = Seq(
