@@ -1,11 +1,10 @@
 package com.decodingus.analysis
 
 import com.decodingus.model.WgsMetrics
-import org.broadinstitute.hellbender.Main
 
 import java.io.File
 import scala.io.Source
-import scala.util.{Either, Left, Right, Using, Try}
+import scala.util.{Either, Left, Right, Using}
 
 class WgsMetricsProcessor {
 
@@ -22,24 +21,18 @@ class WgsMetricsProcessor {
       "-O", outputFile.getAbsolutePath,
       "--USE_FAST_ALGORITHM", "true",
       "--READ_LENGTH", "4000000", // Support ultra-long reads up to 4Mb
-      // Relax reference validation - allows GRCh38 with/without alts, etc.
-      "--VALIDATION_STRINGENCY", "LENIENT",
-      "--disable-sequence-dictionary-validation", "true"
+      // Relax validation - allows minor reference mismatches
+      "--VALIDATION_STRINGENCY", "SILENT"
     )
 
-    // Execute GATK Main and capture any exceptions
-    val gatkResult = Try {
-      Main.main(args)
-    }
-
-    gatkResult match {
-      case scala.util.Success(_) =>
+    GatkRunner.run(args) match {
+      case Right(_) =>
         onProgress("Parsing GATK CollectWgsMetrics output...", 0.9, 1.0)
         val metrics = parse(outputFile.getAbsolutePath)
         onProgress("GATK CollectWgsMetrics complete.", 1.0, 1.0)
         Right(metrics)
-      case scala.util.Failure(exception) =>
-        Left(new RuntimeException(s"GATK CollectWgsMetrics failed: ${exception.getMessage}", exception))
+      case Left(error) =>
+        Left(new RuntimeException(error))
     }
   }
 

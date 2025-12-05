@@ -65,23 +65,23 @@ class HaplogroupProcessor {
         allelesForCalling.flatMap { vcf =>
           referenceGateway.resolve(referenceBuild).flatMap { referencePath =>
             val caller = new GatkHaplotypeCallerProcessor()
-            val calledVcf = caller.callSnps(bamPath, referencePath.toString, vcf, (msg, done, total) => onProgress(msg, 0.4 + (done * 0.4), 1.0))
+            caller.callSnps(bamPath, referencePath.toString, vcf, (msg, done, total) => onProgress(msg, 0.4 + (done * 0.4), 1.0)).flatMap { calledVcf =>
+              val finalVcf = if (performReverseLiftover) {
+                onProgress("Performing reverse liftover on results...", 0.8, 1.0)
+                // Note: The contig parameter here for liftover still refers to the primary contig for the tree type.
+                performLiftover(calledVcf, primaryContig, referenceBuild, treeSourceBuild, onProgress)
+              } else {
+                Right(calledVcf)
+              }
 
-            val finalVcf = if (performReverseLiftover) {
-              onProgress("Performing reverse liftover on results...", 0.8, 1.0)
-              // Note: The contig parameter here for liftover still refers to the primary contig for the tree type.
-              performLiftover(calledVcf, primaryContig, referenceBuild, treeSourceBuild, onProgress)
-            } else {
-              Right(calledVcf)
-            }
-
-            finalVcf.flatMap { scoredVcf =>
-              onProgress("Scoring haplogroups...", 0.9, 1.0)
-              val snpCalls = parseVcf(scoredVcf)
-              val scorer = new HaplogroupScorer()
-              val results = scorer.score(tree, snpCalls)
-              onProgress("Analysis complete.", 1.0, 1.0)
-              Right(results)
+              finalVcf.flatMap { scoredVcf =>
+                onProgress("Scoring haplogroups...", 0.9, 1.0)
+                val snpCalls = parseVcf(scoredVcf)
+                val scorer = new HaplogroupScorer()
+                val results = scorer.score(tree, snpCalls)
+                onProgress("Analysis complete.", 1.0, 1.0)
+                Right(results)
+              }
             }
           }
         }

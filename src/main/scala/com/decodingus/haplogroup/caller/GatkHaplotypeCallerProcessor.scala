@@ -1,6 +1,6 @@
 package com.decodingus.haplogroup.caller
 
-import org.broadinstitute.hellbender.Main
+import com.decodingus.analysis.GatkRunner
 import java.io.File
 
 class GatkHaplotypeCallerProcessor {
@@ -10,7 +10,7 @@ class GatkHaplotypeCallerProcessor {
     referencePath: String,
     allelesVcf: File,
     onProgress: (String, Double, Double) => Unit
-  ): File = {
+  ): Either[String, File] = {
     onProgress("Calling SNPs with GATK HaplotypeCaller...", 0.0, 1.0)
 
     val vcfFile = File.createTempFile("haplotypes", ".vcf")
@@ -21,7 +21,11 @@ class GatkHaplotypeCallerProcessor {
       "IndexFeatureFile",
       "-I", allelesVcf.getAbsolutePath
     )
-    Main.main(indexArgs)
+
+    GatkRunner.run(indexArgs) match {
+      case Left(error) => return Left(s"Failed to index alleles VCF: $error")
+      case Right(_) => // continue
+    }
 
     val args = Array(
       "HaplotypeCaller",
@@ -33,10 +37,13 @@ class GatkHaplotypeCallerProcessor {
       // Relax reference validation - allows GRCh38 with/without alts, etc.
       "--disable-sequence-dictionary-validation", "true"
     )
-    Main.main(args)
 
-    onProgress("SNP calling complete.", 1.0, 1.0)
-    vcfFile
+    GatkRunner.run(args) match {
+      case Left(error) => Left(s"HaplotypeCaller failed: $error")
+      case Right(_) =>
+        onProgress("SNP calling complete.", 1.0, 1.0)
+        Right(vcfFile)
+    }
   }
 
   def callAllVariantsInContig(
@@ -44,7 +51,7 @@ class GatkHaplotypeCallerProcessor {
     referencePath: String,
     contig: String,
     onProgress: (String, Double, Double) => Unit
-  ): File = {
+  ): Either[String, File] = {
     onProgress(s"Calling all variants in $contig with GATK HaplotypeCaller...", 0.0, 1.0)
 
     val vcfFile = File.createTempFile(s"variants-$contig", ".vcf")
@@ -59,9 +66,12 @@ class GatkHaplotypeCallerProcessor {
       // Relax reference validation - allows GRCh38 with/without alts, etc.
       "--disable-sequence-dictionary-validation", "true"
     )
-    Main.main(args)
 
-    onProgress(s"Variant calling for $contig complete.", 1.0, 1.0)
-    vcfFile
+    GatkRunner.run(args) match {
+      case Left(error) => Left(s"HaplotypeCaller failed for $contig: $error")
+      case Right(_) =>
+        onProgress(s"Variant calling for $contig complete.", 1.0, 1.0)
+        Right(vcfFile)
+    }
   }
 }

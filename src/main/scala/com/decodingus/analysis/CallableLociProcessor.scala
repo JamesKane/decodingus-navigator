@@ -2,13 +2,12 @@ package com.decodingus.analysis
 
 import com.decodingus.model.ContigSummary
 import htsjdk.samtools.reference.ReferenceSequenceFileFactory
-import org.broadinstitute.hellbender.Main
 
 import java.io.File
 import java.nio.file.Files
 import scala.collection.mutable.ListBuffer
 import scala.io.Source
-import scala.util.{Either, Left, Right, Try, Using, boundary}
+import scala.util.{Either, Left, Right, Using, boundary}
 
 case class CallableLociResult(
                                callableBases: Long,
@@ -83,12 +82,8 @@ class CallableLociProcessor {
           "--disable-sequence-dictionary-validation", "true"
         )
 
-        val gatkResult = Try {
-          Main.main(args)
-        }
-
-        gatkResult match {
-          case scala.util.Success(_) =>
+        GatkRunner.run(args) match {
+          case Right(_) =>
             val binData = binIntervals(bedFile.getAbsolutePath, contigName, contigLength)
             val svgString = generateSvg(contigName, contigLength, maxGenomeLength, binData)
             allSvgStrings += svgString
@@ -99,8 +94,8 @@ class CallableLociProcessor {
 
             val contigSummary = parseSummary(summaryFile.getAbsolutePath, contigName)
             allContigSummaries += contigSummary
-          case scala.util.Failure(exception) =>
-            boundary.break(Left(new RuntimeException(s"GATK CallableLoci failed for contig $contigName: ${exception.getMessage}", exception)))
+          case Left(error) =>
+            boundary.break(Left(new RuntimeException(s"GATK CallableLoci failed for contig $contigName: $error")))
         }
       }
 

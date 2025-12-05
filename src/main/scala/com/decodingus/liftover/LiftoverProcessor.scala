@@ -1,6 +1,6 @@
 package com.decodingus.liftover
 
-import org.broadinstitute.hellbender.Main
+import com.decodingus.analysis.GatkRunner
 
 import java.io.File
 import java.nio.file.Path
@@ -27,19 +27,17 @@ class LiftoverProcessor {
       "-C", chainFile.toString,
       "-R", targetReference.toString,
       "--REJECT", rejectFile.getAbsolutePath,
-      // Relax reference validation - allows GRCh38 with/without alts, etc.
-      "--VALIDATION_STRINGENCY", "LENIENT",
-      "--disable-sequence-dictionary-validation", "true"
+      // Relax validation - allows minor reference mismatches
+      "--VALIDATION_STRINGENCY", "SILENT",
+      "--WARN_ON_MISSING_CONTIG", "true"
     )
 
-    try {
-      Main.main(args)
-      onProgress("VCF liftover complete.", 1.0, 1.0)
-      Right(liftedVcfFile)
-    } catch {
-      case e: Exception =>
-        e.printStackTrace()
-        Left(s"GATK LiftoverVcf failed: ${e.getMessage}")
+    GatkRunner.run(args) match {
+      case Right(_) =>
+        onProgress("VCF liftover complete.", 1.0, 1.0)
+        Right(liftedVcfFile)
+      case Left(error) =>
+        Left(s"LiftoverVcf failed: $error")
     }
   }
 }

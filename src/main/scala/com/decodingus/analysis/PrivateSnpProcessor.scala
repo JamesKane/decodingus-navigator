@@ -51,19 +51,22 @@ class PrivateSnpProcessor {
     }
 
     val caller = new GatkHaplotypeCallerProcessor()
-    val allVariantsVcf = caller.callAllVariantsInContig(bamPath, referencePath, contig, onProgress)
+    caller.callAllVariantsInContig(bamPath, referencePath, contig, onProgress) match {
+      case Right(allVariantsVcf) =>
+        onProgress("Filtering for private SNPs...", 0.8, 1.0)
+        val reader = new VCFFileReader(allVariantsVcf, false)
 
-    onProgress("Filtering for private SNPs...", 0.8, 1.0)
-    val reader = new VCFFileReader(allVariantsVcf, false)
-    
-    val privateVariants = reader.iterator().asScala.filterNot {
-      vc =>
-      knownPositionsInReferenceBuild.contains(vc.getStart.toLong)
-    }.toList
+        val privateVariants = reader.iterator().asScala.filterNot {
+          vc =>
+            knownPositionsInReferenceBuild.contains(vc.getStart.toLong)
+        }.toList
 
-    reader.close()
-    onProgress("Private SNP analysis complete.", 1.0, 1.0)
-    privateVariants
+        reader.close()
+        onProgress("Private SNP analysis complete.", 1.0, 1.0)
+        privateVariants
+      case Left(error) =>
+        throw new RuntimeException(s"Failed to call variants in $contig: $error")
+    }
   }
 
   private def createVcfFromLoci(loci: List[Locus], contig: String, referenceBuild: String): File = {
