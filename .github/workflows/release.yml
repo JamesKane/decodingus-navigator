@@ -46,7 +46,25 @@ jobs:
 
       - name: Build application JAR
         shell: bash
-        run: sbt assembly
+        run: sbt -J-Xmx4G assembly
+
+      # Java options for ScalaFX (JavaFX is bundled in fat JAR, not as modules)
+      - name: Set Java options
+        id: java-opts
+        shell: bash
+        run: |
+          JAVA_OPTS="--enable-native-access=ALL-UNNAMED"
+          JAVA_OPTS="$JAVA_OPTS --add-opens=javafx.base/com.sun.javafx.runtime=ALL-UNNAMED"
+          JAVA_OPTS="$JAVA_OPTS --add-opens=javafx.controls/com.sun.javafx.scene.control.behavior=ALL-UNNAMED"
+          JAVA_OPTS="$JAVA_OPTS --add-opens=javafx.controls/com.sun.javafx.scene.control=ALL-UNNAMED"
+          JAVA_OPTS="$JAVA_OPTS --add-opens=javafx.base/com.sun.javafx.binding=ALL-UNNAMED"
+          JAVA_OPTS="$JAVA_OPTS --add-opens=javafx.base/com.sun.javafx.event=ALL-UNNAMED"
+          JAVA_OPTS="$JAVA_OPTS --add-opens=javafx.graphics/com.sun.javafx.stage=ALL-UNNAMED"
+          JAVA_OPTS="$JAVA_OPTS --add-opens=javafx.graphics/com.sun.javafx.event=ALL-UNNAMED"
+          JAVA_OPTS="$JAVA_OPTS --add-opens=javafx.graphics/com.sun.javafx.scene=ALL-UNNAMED"
+          JAVA_OPTS="$JAVA_OPTS --add-opens=javafx.graphics/com.sun.javafx.sg.prism=ALL-UNNAMED"
+          JAVA_OPTS="$JAVA_OPTS -Xmx4g"
+          echo "JAVA_OPTS=$JAVA_OPTS" >> $GITHUB_OUTPUT
 
       # Linux packaging with jpackage
       - name: Package for Linux
@@ -55,6 +73,7 @@ jobs:
         run: |
           # Get the assembled JAR
           JAR_FILE=$(find target -name "*.jar" -path "*/scala-*/DUNavigator-assembly*.jar" | head -1)
+          JAVA_OPTS="${{ steps.java-opts.outputs.JAVA_OPTS }}"
 
           # Create package with jpackage
           jpackage \
@@ -67,7 +86,7 @@ jobs:
             --description "Genome Navigator Application" \
             --type deb \
             --dest target/package \
-            --java-options '-Xmx4g' \
+            --java-options "$JAVA_OPTS" \
             --linux-shortcut
 
           # Also create a tar.gz with the runtime image
@@ -81,7 +100,7 @@ jobs:
             --description "Genome Navigator Application" \
             --type app-image \
             --dest target/package \
-            --java-options '-Xmx4g'
+            --java-options "$JAVA_OPTS"
 
           # Create tar.gz from app-image
           cd target/package
@@ -93,6 +112,7 @@ jobs:
         shell: bash
         run: |
           JAR_FILE=$(find target -name "*.jar" -path "*/scala-*/DUNavigator-assembly*.jar" | head -1)
+          JAVA_OPTS="${{ steps.java-opts.outputs.JAVA_OPTS }}"
 
           # Create .app bundle
           jpackage \
@@ -105,7 +125,7 @@ jobs:
             --description "Genome Navigator Application" \
             --type app-image \
             --dest target/package \
-            --java-options '-Xmx4g' \
+            --java-options "$JAVA_OPTS" \
             --mac-package-name "DUNavigator"
 
           # Create DMG
@@ -119,7 +139,7 @@ jobs:
             --description "Genome Navigator Application" \
             --type dmg \
             --dest target/package \
-            --java-options '-Xmx4g' \
+            --java-options "$JAVA_OPTS" \
             --mac-package-name "DUNavigator"
 
           # Create zip from .app for portable distribution
@@ -132,6 +152,7 @@ jobs:
         shell: bash
         run: |
           JAR_FILE=$(find target -name "*.jar" -path "*/scala-*/DUNavigator-assembly*.jar" | head -1)
+          JAVA_OPTS="${{ steps.java-opts.outputs.JAVA_OPTS }}"
 
           # Create app-image first
           jpackage \
@@ -144,7 +165,7 @@ jobs:
             --description "Genome Navigator Application" \
             --type app-image \
             --dest target/package \
-            --java-options '-Xmx4g' \
+            --java-options "$JAVA_OPTS" \
             --win-console
 
           # Create MSI installer
@@ -158,7 +179,7 @@ jobs:
             --description "Genome Navigator Application" \
             --type msi \
             --dest target/package \
-            --java-options '-Xmx4g' \
+            --java-options "$JAVA_OPTS" \
             --win-dir-chooser \
             --win-menu \
             --win-shortcut

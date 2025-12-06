@@ -7,17 +7,27 @@ import io.circe.parser._
 import io.circe.syntax._
 
 import java.io.File
-import java.nio.file.{Files, Paths, StandardOpenOption}
+import java.nio.file.{Files, Path, Paths, StandardOpenOption}
 import scala.util.{Try, Success, Failure}
 import java.time.LocalDateTime
 import java.time.format.DateTimeFormatter
 
 trait WorkspaceService {
-  def load(filePath: String = "workspace.json"): Either[String, Workspace]
-  def save(workspace: Workspace, filePath: String = "workspace.json"): Either[String, Unit]
+  def load(): Either[String, Workspace]
+  def save(workspace: Workspace): Either[String, Unit]
 }
 
 object LiveWorkspaceService extends WorkspaceService {
+
+  private val CONFIG_DIR: Path = Paths.get(System.getProperty("user.home"), ".config", "decodingus-tools")
+  private val WORKSPACE_FILE: Path = CONFIG_DIR.resolve("workspace.json")
+
+  // Ensure config directory exists
+  private def ensureConfigDir(): Unit = {
+    if (!Files.exists(CONFIG_DIR)) {
+      Files.createDirectories(CONFIG_DIR)
+    }
+  }
 
   // --- Circe Codecs for WorkspaceModels ---
   // Custom LocalDateTime encoder/decoder
@@ -39,24 +49,19 @@ object LiveWorkspaceService extends WorkspaceService {
   implicit val workspaceCodec: Codec[Workspace] = deriveCodec
   // --- End Circe Codecs ---
 
-  private val WORKSPACE_FILE_NAME = "workspace.json"
-
   /**
-   * Loads the Workspace from a local JSON file.
+   * Loads the Workspace from ~/.config/decodingus-tools/workspace.json.
    * If the file does not exist, returns an empty Workspace.
    *
-   * @param filePath The path to the workspace JSON file.
    * @return Either an error message or the loaded Workspace.
    */
-  override def load(filePath: String = WORKSPACE_FILE_NAME): Either[String, Workspace] = {
-    println(s"[DEBUG] Attempting to load workspace from: $filePath")
-    val path = Paths.get(filePath)
-    if (!Files.exists(path)) {
-      println(s"[DEBUG] Workspace file not found at $filePath. Initializing with empty workspace.")
-      // Initialize an empty Workspace with the correct new structure
+  override def load(): Either[String, Workspace] = {
+    println(s"[DEBUG] Attempting to load workspace from: $WORKSPACE_FILE")
+    if (!Files.exists(WORKSPACE_FILE)) {
+      println(s"[DEBUG] Workspace file not found at $WORKSPACE_FILE. Initializing with empty workspace.")
       Right(Workspace(lexicon = 1, id = "com.decodingus.atmosphere.workspace", main = WorkspaceContent(samples = List.empty, projects = List.empty)))
     } else {
-      Try(Files.readString(path)) match {
+      Try(Files.readString(WORKSPACE_FILE)) match {
         case Success(jsonString) =>
           println(s"[DEBUG] File content read. Length: ${jsonString.length}. Attempting to parse JSON.")
           parse(jsonString).flatMap(_.as[Workspace]) match {
@@ -64,27 +69,29 @@ object LiveWorkspaceService extends WorkspaceService {
               println(s"[DEBUG] Successfully parsed workspace: ${workspace.main.samples.size} samples, ${workspace.main.projects.size} projects.")
               Right(workspace)
             case Left(error) =>
-              println(s"[DEBUG] Failed to parse workspace JSON from $filePath: ${error.getMessage()}. Content: ${jsonString.take(200)}...")
+              println(s"[DEBUG] Failed to parse workspace JSON: ${error.getMessage()}. Content: ${jsonString.take(200)}...")
               Left(s"Failed to parse workspace JSON: ${error.getMessage()}")
           }
         case Failure(exception) =>
-          println(s"[DEBUG] Failed to read workspace file $filePath: ${exception.getMessage}")
+          println(s"[DEBUG] Failed to read workspace file: ${exception.getMessage}")
           Left(s"Failed to read workspace file: ${exception.getMessage}")
       }
     }
   }
 
   /**
-   * Saves the given Workspace to a local JSON file.
+   * Saves the given Workspace to ~/.config/decodingus-tools/workspace.json.
    *
    * @param workspace The Workspace object to save.
-   * @param filePath The path to save the workspace JSON file.
    * @return Either an error message or Unit on success.
    */
-  override def save(workspace: Workspace, filePath: String = WORKSPACE_FILE_NAME): Either[String, Unit] = {
-    val jsonString = workspace.asJson.spaces2 // Use spaces2 for pretty printing
-    Try(Files.writeString(Paths.get(filePath), jsonString, StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING)) match {
-      case Success(_) => Right(())
+  override def save(workspace: Workspace): Either[String, Unit] = {
+    ensureConfigDir()
+    val jsonString = workspace.asJson.spaces2
+    Try(Files.writeString(WORKSPACE_FILE, jsonString, StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING)) match {
+      case Success(_) =>
+        println(s"[DEBUG] Workspace saved to $WORKSPACE_FILE")
+        Right(())
       case Failure(exception) => Left(s"Failed to write workspace to file: ${exception.getMessage}")
     }
   }

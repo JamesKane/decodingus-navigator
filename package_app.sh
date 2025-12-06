@@ -10,10 +10,9 @@ MAIN_CLASS="com.decodingus.ui.GenomeNavigatorApp"
 INPUT_DIR="target/scala-3.3.1"
 OUTPUT_DIR="target/installer"
 
-# JavaFX and Native Access Options
+# JavaFX and Native Access Options (JavaFX is bundled in fat JAR, not as modules)
 JAVA_OPTIONS=(
   "--enable-native-access=ALL-UNNAMED"
-  "--add-modules=javafx.controls,javafx.fxml,javafx.graphics,javafx.media,javafx.web"
   "--add-opens=javafx.base/com.sun.javafx.runtime=ALL-UNNAMED"
   "--add-opens=javafx.controls/com.sun.javafx.scene.control.behavior=ALL-UNNAMED"
   "--add-opens=javafx.controls/com.sun.javafx.scene.control=ALL-UNNAMED"
@@ -23,6 +22,7 @@ JAVA_OPTIONS=(
   "--add-opens=javafx.graphics/com.sun.javafx.event=ALL-UNNAMED"
   "--add-opens=javafx.graphics/com.sun.javafx.scene=ALL-UNNAMED"
   "--add-opens=javafx.graphics/com.sun.javafx.sg.prism=ALL-UNNAMED"
+  "-Xmx4g"
 )
 
 # Construct the java-options string for jpackage

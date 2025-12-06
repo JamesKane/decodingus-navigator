@@ -55,6 +55,12 @@ lazy val root = (project in file("."))
     fork := true,
     libraryDependencies ++= {
       val jacksonVersion = "2.15.2"
+      val javaFXVersion = "21.0.2"
+      val osName = System.getProperty("os.name").toLowerCase match {
+        case n if n.contains("mac") => "mac"
+        case n if n.contains("win") => "win"
+        case _ => "linux"
+      }
 
       Seq(
         ("org.broadinstitute" % "gatk" % "4.6.2.0")
@@ -74,6 +80,12 @@ lazy val root = (project in file("."))
         "io.circe" %% "circe-generic" % "0.14.6",
         "io.circe" %% "circe-parser" % "0.14.6",
         "org.scalafx" %% "scalafx" % "21.0.0-R32",
+        "org.openjfx" % "javafx-base" % javaFXVersion classifier osName,
+        "org.openjfx" % "javafx-controls" % javaFXVersion classifier osName,
+        "org.openjfx" % "javafx-fxml" % javaFXVersion classifier osName,
+        "org.openjfx" % "javafx-graphics" % javaFXVersion classifier osName,
+        "org.openjfx" % "javafx-media" % javaFXVersion classifier osName,
+        "org.openjfx" % "javafx-web" % javaFXVersion classifier osName,
         "com.typesafe" % "config" % "1.4.3",
         "com.softwaremill.sttp.client3" %% "core" % "3.9.7",
         "com.softwaremill.sttp.client3" %% "circe" % "3.9.7"
