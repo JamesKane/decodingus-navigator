@@ -1,27 +1,79 @@
 # Decoding-Us Navigator
 
-'Decoding-Us Navigator' is an Edge-computing companion application to [https://decoding.us.com](https://decoding.us.com). It leverages the Genome Analysis Toolkit (GATK) to analyze BAM/CRAM files directly on a user's local machine, empowering citizen scientists with advanced bioinformatics capabilities while preserving privacy.
+Decoding-Us Navigator is an edge-computing companion application to [decoding.us](https://decoding.us). It leverages the Genome Analysis Toolkit (GATK) to analyze BAM/CRAM files directly on your local machine, empowering citizen scientists with advanced bioinformatics capabilities while preserving privacy.
 
 ## Privacy-Preserving Analysis
 
-The application ensures user privacy by performing local analysis. Only anonymized summary information is shared, including:
+The application ensures user privacy by performing all analysis locally. Only anonymized summary information is optionally shared, including:
 - Haplogroup assignments
-- Autosomal DNA matches with other researchers in the Federation (feature coming soon)
-- General coverage statistics for shared quality control using the AT Protocol PDS
+- General coverage statistics for quality control
+- Autosomal DNA matches with other researchers in the Federation (coming soon)
+
+Data sharing uses the AT Protocol Personal Data Store (PDS) for user-controlled data ownership.
 
 ## Goal
 
-The primary goal of Decoding-Us Navigator is to simplify complex bioinformatics command-line tools by wrapping them in an intuitive and user-friendly interface. It is specifically designed for hobbyists, making advanced genetic analysis accessible to a broader audience.
+Decoding-Us Navigator simplifies complex bioinformatics command-line tools by wrapping them in an intuitive interface. It is designed for hobbyists and citizen scientists, making advanced genetic analysis accessible without requiring programming expertise.
 
 ## Cross-Platform Compatibility
 
-Developed on the Java Virtual Machine (JVM), Decoding-Us Navigator offers easy migration to various operating systems, ensuring a consistent user experience across different platforms.
+Built on the Java Virtual Machine (JVM) with ScalaFX, Decoding-Us Navigator runs on macOS, Windows, and Linux with a consistent user experience.
 
-## Current Features
+## Features
 
-- **Haplogroup Analysis:** Determine your haplogroup from BAM/CRAM files.
-- **WGS Metrics:** Generate whole-genome sequencing metrics for quality control.
-- **Library Statistics:** Obtain detailed statistics about your sequencing libraries.
-- **Private SNP Processing:** Analyze private SNPs within your genome.
-- **Callable Loci Processing:** Identify callable loci in your sequencing data.
-- **Liftover:** Convert genomic coordinates between different reference genome assemblies.
+### Workspace Management
+- Create and manage multiple projects and biosamples
+- Drag-and-drop project membership management
+- Persistent workspace saved locally
+- Search and filter across projects and subjects
+
+### Sequencing Data Management
+- Import BAM/CRAM files via file picker or drag-and-drop
+- Support for local files and cloud URLs (HTTP/S3)
+- Automatic SHA-256 checksum calculation
+- Platform detection (Illumina, PacBio, Oxford Nanopore, MGI, Ion Torrent, Complete Genomics)
+- Test type classification (WGS, WES, HiFi, CLR, Nanopore, Targeted Panel)
+
+### Analysis Capabilities
+- **Library Statistics**: Rapid BAM/CRAM scanning for sample metadata, reference build detection, read length distribution, and insert size metrics
+- **WGS Metrics**: Comprehensive coverage analysis including mean coverage, coverage distribution, and depth thresholds (1x-100x)
+- **Callable Loci**: Per-contig analysis identifying callable bases, coverage gaps, and mapping quality issues with SVG visualizations
+- **Haplogroup Determination**: Y-DNA and MT-DNA haplogroup analysis with multiple tree providers (FTDNA, DecodingUs)
+- **Private SNP Detection**: Identify novel SNPs unique to an individual after haplogroup determination
+- **Liftover**: Automatic coordinate conversion between reference builds (GRCh38, GRCh37, CHM13v2)
+
+### Reference Genome Management
+- Automatic reference genome download and caching
+- Support for GRCh38, GRCh37, and CHM13v2
+- Configurable local paths and cache directory
+- Download prompts with size estimates
+
+### Analysis Caching
+- SHA-256 based result caching to prevent redundant analysis
+- Cached results for coverage, WGS metrics, library stats, and contig summaries
+
+### Optional Cloud Integration
+- AT Protocol authentication and PDS integration
+- Workspace sync from personal data store
+- Optional upload of summary data with user consent
+
+## Requirements
+
+- Java 17 or later
+- 4GB RAM minimum (8GB recommended for large BAM files)
+
+## Building
+
+```bash
+# Compile
+sbt compile
+
+# Run
+sbt run
+
+# Create fat JAR
+sbt assembly
+
+# Run tests
+sbt test
+```
