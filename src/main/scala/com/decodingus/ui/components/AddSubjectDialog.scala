@@ -62,6 +62,7 @@ class AddSubjectDialog extends Dialog[Option[Biosample]] {
       val newBiosample = Biosample(
         sampleAccession = accessionField.text.value,
         donorIdentifier = donorIdField.text.value,
+        atUri = None,
         description = Option(descriptionField.text.value).filter(_.nonEmpty),
         centerName = Option(centerNameField.text.value).filter(_.nonEmpty),
         sex = Option(sexChoiceBox.value.value),

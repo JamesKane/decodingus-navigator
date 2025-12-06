@@ -5,6 +5,7 @@ import java.time.LocalDateTime
 case class Biosample(
   sampleAccession: String,
   donorIdentifier: String,
+  atUri: Option[String],
   description: Option[String],
   centerName: Option[String],
   sex: Option[String],

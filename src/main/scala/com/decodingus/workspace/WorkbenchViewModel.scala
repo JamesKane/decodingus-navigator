@@ -30,6 +30,11 @@ class WorkbenchViewModel(val workspaceService: WorkspaceService) {
   // Current authenticated user (set from GenomeNavigatorApp when user logs in)
   val currentUser: ObjectProperty[Option[User]] = ObjectProperty(None)
 
+  // When user logs in, backfill atUri for any samples/projects created while logged out
+  currentUser.onChange { (_, _, newUser) =>
+    newUser.foreach(user => backfillAtUris(user.did))
+  }
+
   // --- Model State ---
   private val _workspace = ObjectProperty(
     Workspace(
@@ -251,11 +256,20 @@ class WorkbenchViewModel(val workspaceService: WorkspaceService) {
 
   /** Creates a new subject and adds it to the workspace */
   def addSubject(newBiosample: Biosample): Unit = {
-    val updatedSamples = _workspace.value.main.samples :+ newBiosample
+    // Generate atUri from current user's DID
+    val enrichedBiosample = currentUser.value match {
+      case Some(user) =>
+        val atUri = s"at://${user.did}/com.decodingus.atmosphere.biosample/${newBiosample.sampleAccession}"
+        newBiosample.copy(atUri = Some(atUri))
+      case None =>
+        newBiosample // Keep as-is if no user logged in
+    }
+
+    val updatedSamples = _workspace.value.main.samples :+ enrichedBiosample
     _workspace.value = _workspace.value.copy(main = _workspace.value.main.copy(samples = updatedSamples))
 
     // Select the newly added subject
-    selectedSubject.value = Some(newBiosample)
+    selectedSubject.value = Some(enrichedBiosample)
 
     saveWorkspace()
   }
@@ -297,10 +311,20 @@ class WorkbenchViewModel(val workspaceService: WorkspaceService) {
   // --- Project CRUD Operations ---
 
   def addProject(newProject: Project): Unit = {
-    val updatedProjects = _workspace.value.main.projects :+ newProject
+    // Generate atUri for the project using current user's DID
+    val enrichedProject = currentUser.value match {
+      case Some(user) =>
+        val rkey = java.util.UUID.randomUUID().toString
+        val atUri = s"at://${user.did}/com.decodingus.atmosphere.project/$rkey"
+        newProject.copy(atUri = Some(atUri))
+      case None =>
+        newProject // Keep as-is if no user logged in
+    }
+
+    val updatedProjects = _workspace.value.main.projects :+ enrichedProject
     _workspace.value = _workspace.value.copy(main = _workspace.value.main.copy(projects = updatedProjects))
 
-    selectedProject.value = Some(newProject)
+    selectedProject.value = Some(enrichedProject)
 
     saveWorkspace()
   }
@@ -335,6 +359,39 @@ class WorkbenchViewModel(val workspaceService: WorkspaceService) {
   /** Finds a project by projectName */
   def findProject(projectName: String): Option[Project] = {
     _workspace.value.main.projects.find(_.projectName == projectName)
+  }
+
+  /** Backfills atUri for any samples/projects that were created while logged out */
+  private def backfillAtUris(did: String): Unit = {
+    val currentWorkspace = _workspace.value
+    var updated = false
+
+    // Backfill samples missing atUri
+    val updatedSamples = currentWorkspace.main.samples.map { sample =>
+      if (sample.atUri.isEmpty) {
+        updated = true
+        val atUri = s"at://$did/com.decodingus.atmosphere.biosample/${sample.sampleAccession}"
+        sample.copy(atUri = Some(atUri))
+      } else sample
+    }
+
+    // Backfill projects missing atUri
+    val updatedProjects = currentWorkspace.main.projects.map { project =>
+      if (project.atUri.isEmpty) {
+        updated = true
+        val rkey = java.util.UUID.randomUUID().toString
+        val atUri = s"at://$did/com.decodingus.atmosphere.project/$rkey"
+        project.copy(atUri = Some(atUri))
+      } else project
+    }
+
+    if (updated) {
+      _workspace.value = currentWorkspace.copy(
+        main = currentWorkspace.main.copy(samples = updatedSamples, projects = updatedProjects)
+      )
+      saveWorkspace()
+      println(s"[ViewModel] Backfilled atUri for samples/projects after login")
+    }
   }
 
   /** Adds a subject (by accession) to a project's members list */

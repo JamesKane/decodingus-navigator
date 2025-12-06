@@ -63,6 +63,7 @@ class AddProjectDialog(defaultAdministrator: String = "Local User") extends Dial
     if (dialogButton == createButtonType) {
       Some(Project(
         projectName = nameField.text.value.trim,
+        atUri = None,
         description = Option(descriptionField.text.value).map(_.trim).filter(_.nonEmpty),
         administrator = adminField.text.value.trim,
         members = List.empty
