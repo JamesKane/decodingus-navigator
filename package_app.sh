@@ -4,10 +4,10 @@
 # Prerequisite: JDK 14+ (with jpackage) installed and sbt.
 
 APP_NAME="DUNavigator"
-APP_VERSION="0.1.0"
-MAIN_JAR="dunavigator.dunavigator-1.0.0-SNAPSHOT.jar"
+APP_VERSION="1.0.0"
+MAIN_JAR="DUNavigator-assembly-0.1.0-SNAPSHOT.jar"
 MAIN_CLASS="com.decodingus.ui.GenomeNavigatorApp"
-INPUT_DIR="target/universal/stage/lib"
+INPUT_DIR="target/scala-3.3.1"
 OUTPUT_DIR="target/installer"
 
 # JavaFX and Native Access Options
@@ -37,8 +37,8 @@ echo "Cleaning previous build..."
 rm -rf "$OUTPUT_DIR"
 mkdir -p "$OUTPUT_DIR"
 
-echo "Running sbt stage to prepare libraries..."
-sbt stage
+echo "Running sbt assembly to build fat JAR..."
+sbt assembly
 
 if [ ! -f "$INPUT_DIR/$MAIN_JAR" ]; then
     echo "Error: Main JAR not found at $INPUT_DIR/$MAIN_JAR"

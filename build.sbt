@@ -20,14 +20,31 @@ lazy val root = (project in file("."))
     assembly / assemblyMergeStrategy := {
       case PathList("META-INF", "MANIFEST.MF") => MergeStrategy.discard
       case PathList("META-INF", "services", _*) => MergeStrategy.concat
+      case PathList("META-INF", "native-image", _*) => MergeStrategy.discard
+      case PathList("META-INF", "versions", _*) => MergeStrategy.first
+      case PathList("META-INF", "LICENSE") => MergeStrategy.discard
+      case PathList("META-INF", "LICENSE.txt") => MergeStrategy.discard
+      case PathList("META-INF", "LICENSE.md") => MergeStrategy.discard
+      case PathList("META-INF", "NOTICE") => MergeStrategy.discard
+      case PathList("META-INF", "NOTICE.txt") => MergeStrategy.discard
+      case PathList("META-INF", "NOTICE.md") => MergeStrategy.discard
+      case PathList("META-INF", "DEPENDENCIES") => MergeStrategy.discard
       case PathList("META-INF", _*) => MergeStrategy.discard
       case "reference.conf" => MergeStrategy.concat
+      case "application.conf" => MergeStrategy.concat
       case "module-info.class" => MergeStrategy.discard
       case x if x.endsWith(".proto") => MergeStrategy.first
       case x if x.endsWith(".class") => MergeStrategy.first
-      case x =>
-        val oldStrategy = (assembly / assemblyMergeStrategy).value
-        oldStrategy(x)
+      case x if x.endsWith(".properties") => MergeStrategy.first
+      case x if x.endsWith(".xml") => MergeStrategy.first
+      case x if x.endsWith(".dtd") => MergeStrategy.first
+      case x if x.endsWith(".xsd") => MergeStrategy.first
+      case x if x.endsWith(".html") => MergeStrategy.first
+      case x if x.endsWith(".txt") => MergeStrategy.first
+      case x if x.contains("LICENSE") => MergeStrategy.discard
+      case x if x.contains("NOTICE") => MergeStrategy.discard
+      case x if x.contains("about.html") => MergeStrategy.discard
+      case _ => MergeStrategy.first
     },
 
     resolvers += "Broad Institute" at "https://broadinstitute.jfrog.io/broadinstitute/libs-release/",
