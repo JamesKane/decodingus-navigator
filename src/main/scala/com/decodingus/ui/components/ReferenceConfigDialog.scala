@@ -32,7 +32,7 @@ class ReferenceConfigDialog extends Dialog[Unit] {
   resizable = true
 
   dialogPane().buttonTypes = Seq(ButtonType.OK, ButtonType.Cancel)
-  dialogPane().setPrefSize(700, 500)
+  dialogPane().setPrefSize(700, 700)
 
   // Load current config
   private val config = ReferenceConfigService.load()
@@ -86,7 +86,7 @@ class ReferenceConfigDialog extends Dialog[Unit] {
 
   // Table for reference configurations
   private val table = new TableView[ReferenceRow](rowData) {
-    prefHeight = 200
+    prefHeight = 400
     columnResizePolicy = TableView.ConstrainedResizePolicy
 
     // Build column
