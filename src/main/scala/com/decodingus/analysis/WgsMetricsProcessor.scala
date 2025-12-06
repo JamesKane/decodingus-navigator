@@ -20,8 +20,6 @@ class WgsMetricsProcessor {
       "-R", referencePath,
       "-O", outputFile.getAbsolutePath,
       "--USE_FAST_ALGORITHM", "true",
-      "--READ_LENGTH", "4000000", // Support ultra-long reads up to 4Mb
-      // Relax validation - allows minor reference mismatches
       "--VALIDATION_STRINGENCY", "SILENT"
     )
 
