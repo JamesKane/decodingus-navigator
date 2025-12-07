@@ -282,7 +282,7 @@ class SequenceDataTable(
                                      |Instrument: ${libraryStats.mostFrequentInstrument}
                                      |Reference: ${libraryStats.referenceBuild}
                                      |Sample: ${libraryStats.sampleName}
-                                     |Reads: ${libraryStats.readCount}""".stripMargin
+                                     """.stripMargin
                   }.showAndWait()
                 }
               case Left(error) =>
