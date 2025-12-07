@@ -4,7 +4,7 @@ import com.decodingus.model.ContigSummary
 import htsjdk.samtools.reference.ReferenceSequenceFileFactory
 
 import java.io.File
-import java.nio.file.Files
+import java.nio.file.{Files, Path}
 import scala.collection.mutable.ListBuffer
 import scala.io.Source
 import scala.util.{Either, Left, Right, Using, boundary}
@@ -26,7 +26,7 @@ class CallableLociProcessor {
   private val MARGIN_RIGHT = 30
   private val TOTAL_FIXED_HEIGHT = BAR_HEIGHT + SVG_HEIGHT_PER_CONTIG + MARGIN_BOTTOM
   private val STRIDE_LEN = 10000
-  private val OUTPUT_DIR_NAME = "callable_loci"
+  private val ARTIFACT_SUBDIR_NAME = "callable_loci"
 
   // Colors
   private val COLOR_GREEN = "#007700"
@@ -43,7 +43,20 @@ class CallableLociProcessor {
     mainAssemblyPattern.findFirstIn(name).isDefined
   }
 
-  def process(bamPath: String, referencePath: String, onProgress: (String, Int, Int) => Unit): Either[Throwable, (CallableLociResult, List[String])] = {
+  /**
+   * Process a BAM/CRAM file to compute callable loci.
+   *
+   * @param bamPath Path to the BAM/CRAM file
+   * @param referencePath Path to the reference genome
+   * @param onProgress Progress callback
+   * @param artifactContext Optional context for organizing output artifacts by subject/run/alignment
+   */
+  def process(
+    bamPath: String,
+    referencePath: String,
+    onProgress: (String, Int, Int) => Unit,
+    artifactContext: Option[ArtifactContext] = None
+  ): Either[Throwable, (CallableLociResult, List[String])] = {
     val referenceFile = new File(referencePath)
     val dictionary = ReferenceSequenceFileFactory.getReferenceSequenceFile(referenceFile).getSequenceDictionary
     val allContigs = dictionary.getSequences.toArray.map(_.asInstanceOf[htsjdk.samtools.SAMSequenceRecord])
@@ -53,9 +66,13 @@ class CallableLociProcessor {
     val contigLengths = contigs.map(s => s.getSequenceName -> s.getSequenceLength).toMap
     val maxGenomeLength = if (contigLengths.values.isEmpty) 0 else contigLengths.values.max
 
-    val outputDir = new File(OUTPUT_DIR_NAME)
-    if (!outputDir.exists()) {
-      Files.createDirectories(outputDir.toPath)
+    // Use artifact cache directory if context provided, otherwise use local directory
+    val outputDir: File = artifactContext match {
+      case Some(ctx) => ctx.getSubdir(ARTIFACT_SUBDIR_NAME).toFile
+      case None =>
+        val dir = new File(ARTIFACT_SUBDIR_NAME)
+        if (!dir.exists()) Files.createDirectories(dir.toPath)
+        dir
     }
 
     val allSvgStrings = ListBuffer[String]()

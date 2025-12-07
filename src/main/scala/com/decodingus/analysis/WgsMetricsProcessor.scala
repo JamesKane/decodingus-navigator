@@ -3,8 +3,28 @@ package com.decodingus.analysis
 import com.decodingus.model.WgsMetrics
 
 import java.io.File
+import java.nio.file.Path
 import scala.io.Source
 import scala.util.{Either, Left, Right, Using}
+
+/**
+ * Context for organizing analysis artifacts by subject/run/alignment.
+ */
+case class ArtifactContext(
+  sampleAccession: String,
+  sequenceRunUri: Option[String],
+  alignmentUri: Option[String]
+) {
+  /** Gets the artifact directory for this context */
+  def getArtifactDir: Path = SubjectArtifactCache.getAlignmentDirFromUris(sampleAccession, sequenceRunUri, alignmentUri)
+
+  /** Gets a subdirectory for a specific artifact type */
+  def getSubdir(name: String): Path = {
+    val runId = sequenceRunUri.map(SubjectArtifactCache.extractIdFromUri).getOrElse("unknown-run")
+    val alignId = alignmentUri.map(SubjectArtifactCache.extractIdFromUri).getOrElse("unknown-alignment")
+    SubjectArtifactCache.getArtifactSubdir(sampleAccession, runId, alignId, name)
+  }
+}
 
 class WgsMetricsProcessor {
 
@@ -15,17 +35,27 @@ class WgsMetricsProcessor {
    * @param referencePath Path to the reference genome
    * @param onProgress Progress callback
    * @param readLength Optional read length - if > 150bp, passed to GATK to avoid crashes with long reads (e.g., PacBio HiFi)
+   * @param artifactContext Optional context for organizing output artifacts by subject/run/alignment
    */
   def process(
     bamPath: String,
     referencePath: String,
     onProgress: (String, Double, Double) => Unit,
-    readLength: Option[Int] = None
+    readLength: Option[Int] = None,
+    artifactContext: Option[ArtifactContext] = None
   ): Either[Throwable, WgsMetrics] = {
     onProgress("Running GATK CollectWgsMetrics...", 0.0, 1.0)
 
-    val outputFile = File.createTempFile("wgs_metrics", ".txt")
-    outputFile.deleteOnExit()
+    // Use artifact cache directory if context provided, otherwise use temp file
+    val outputFile = artifactContext match {
+      case Some(ctx) =>
+        val dir = ctx.getArtifactDir
+        dir.resolve("wgs_metrics.txt").toFile
+      case None =>
+        val tempFile = File.createTempFile("wgs_metrics", ".txt")
+        tempFile.deleteOnExit()
+        tempFile
+    }
 
     // Base arguments
     val baseArgs = Array(

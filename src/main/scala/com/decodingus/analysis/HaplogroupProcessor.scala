@@ -11,6 +11,7 @@ import com.decodingus.refgenome.{LiftoverGateway, ReferenceGateway, ReferenceQue
 import htsjdk.variant.vcf.VCFFileReader
 
 import java.io.{File, PrintWriter}
+import java.nio.file.Path
 import scala.jdk.CollectionConverters.*
 import scala.util.Using
 
@@ -19,12 +20,25 @@ class HaplogroupProcessor {
   private val standardContigOrder: Map[String, Int] = (1 to 22).map(i => s"chr$i" -> i).toMap ++
     Map("chrX" -> 23, "chrY" -> 24, "chrM" -> 25)
 
+  private val ARTIFACT_SUBDIR_NAME = "haplogroup"
+
+  /**
+   * Analyze a BAM/CRAM file for haplogroup assignment.
+   *
+   * @param bamPath Path to the BAM/CRAM file
+   * @param libraryStats Library statistics from initial analysis
+   * @param treeType Y-DNA or MT-DNA tree type
+   * @param treeProviderType Tree data provider (FTDNA or DecodingUs)
+   * @param onProgress Progress callback
+   * @param artifactContext Optional context for organizing output artifacts by subject/run/alignment
+   */
   def analyze(
                bamPath: String,
                libraryStats: LibraryStats,
                treeType: TreeType,
                treeProviderType: TreeProviderType,
-               onProgress: (String, Double, Double) => Unit
+               onProgress: (String, Double, Double) => Unit,
+               artifactContext: Option[ArtifactContext] = None
              ): Either[String, List[HaplogroupResult]] = {
 
     onProgress("Loading haplogroup tree...", 0.0, 1.0)
@@ -50,7 +64,7 @@ class HaplogroupProcessor {
       val referenceGateway = new ReferenceGateway((_, _) => {})
 
       referenceGateway.resolve(treeSourceBuild).flatMap { treeRefPath =>
-        val initialAllelesVcf = createVcfAllelesFile(allLoci, treeRefPath.toString)
+        val initialAllelesVcf = createVcfAllelesFile(allLoci, treeRefPath.toString, treeType, artifactContext)
 
         val (allelesForCalling, performReverseLiftover) = if (referenceBuild == treeSourceBuild) {
           onProgress("Reference builds match.", 0.1, 1.0)
@@ -106,9 +120,23 @@ class HaplogroupProcessor {
     } yield liftedVcf
   }
 
-  private def createVcfAllelesFile(loci: List[Locus], referencePath: String): File = {
-    val vcfFile = File.createTempFile("alleles", ".vcf")
-    vcfFile.deleteOnExit()
+  private def createVcfAllelesFile(
+    loci: List[Locus],
+    referencePath: String,
+    treeType: TreeType,
+    artifactContext: Option[ArtifactContext]
+  ): File = {
+    // Use artifact cache directory if context provided, otherwise use temp file
+    val vcfFile = artifactContext match {
+      case Some(ctx) =>
+        val dir = ctx.getSubdir(ARTIFACT_SUBDIR_NAME)
+        val prefix = if (treeType == TreeType.YDNA) "ydna" else "mtdna"
+        dir.resolve(s"${prefix}_alleles.vcf").toFile
+      case None =>
+        val tempFile = File.createTempFile("alleles", ".vcf")
+        tempFile.deleteOnExit()
+        tempFile
+    }
 
     Using.resource(new PrintWriter(vcfFile)) { writer =>
       writer.println("##fileformat=VCFv4.2")

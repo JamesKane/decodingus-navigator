@@ -1,6 +1,6 @@
 package com.decodingus.workspace
 
-import com.decodingus.analysis.{HaplogroupProcessor, LibraryStatsProcessor, WgsMetricsProcessor}
+import com.decodingus.analysis.{ArtifactContext, HaplogroupProcessor, LibraryStatsProcessor, WgsMetricsProcessor}
 import com.decodingus.haplogroup.tree.{TreeType, TreeProviderType}
 import com.decodingus.auth.User
 import com.decodingus.config.FeatureToggles
@@ -1071,6 +1071,11 @@ class WorkbenchViewModel(val workspaceService: WorkspaceService) {
                         // Run GATK CollectWgsMetrics
                         updateProgress("Running GATK CollectWgsMetrics (this may take a while)...", 0.2)
                         val wgsProcessor = new WgsMetricsProcessor()
+                        val artifactCtx = ArtifactContext(
+                          sampleAccession = sampleAccession,
+                          sequenceRunUri = seqRun.atUri,
+                          alignmentUri = alignment.atUri
+                        )
                         val wgsMetrics = wgsProcessor.process(
                           bamPath,
                           referencePath,
@@ -1078,7 +1083,8 @@ class WorkbenchViewModel(val workspaceService: WorkspaceService) {
                             val pct = 0.2 + (current / total) * 0.7
                             updateProgress(message, pct)
                           },
-                          seqRun.readLength // Pass read length to handle long reads (e.g., PacBio HiFi)
+                          seqRun.readLength, // Pass read length to handle long reads (e.g., PacBio HiFi)
+                          Some(artifactCtx)
                         ) match {
                           case Right(metrics) => metrics
                           case Left(error) => throw error
@@ -1218,6 +1224,11 @@ class WorkbenchViewModel(val workspaceService: WorkspaceService) {
                         updateProgress("Loading haplogroup tree...", 0.1)
 
                         val processor = new HaplogroupProcessor()
+                        val artifactCtx = ArtifactContext(
+                          sampleAccession = sampleAccession,
+                          sequenceRunUri = seqRun.atUri,
+                          alignmentUri = alignment.atUri
+                        )
                         val result = processor.analyze(
                           bamPath,
                           libraryStats,
@@ -1226,7 +1237,8 @@ class WorkbenchViewModel(val workspaceService: WorkspaceService) {
                           (message, current, total) => {
                             val pct = if (total > 0) current / total else 0.0
                             updateProgress(message, pct)
-                          }
+                          },
+                          Some(artifactCtx)
                         )
 
                         result match {
