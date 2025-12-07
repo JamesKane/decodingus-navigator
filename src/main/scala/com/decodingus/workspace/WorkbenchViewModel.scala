@@ -264,14 +264,28 @@ class WorkbenchViewModel(val workspaceService: WorkspaceService) {
   /** Updates an existing subject identified by sampleAccession */
   def updateSubject(updatedBiosample: Biosample): Unit = {
     val updatedSamples = _workspace.value.main.samples.map { sample =>
+      if (sample.sampleAccession == updatedBiosample.sampleAccession) {
+        // Update meta to track the edit
+        updatedBiosample.copy(meta = sample.meta.updated("edit"))
+      } else sample
+    }
+    _workspace.value = _workspace.value.copy(main = _workspace.value.main.copy(samples = updatedSamples))
+
+    // Update selection to reflect changes (with updated meta)
+    val finalUpdated = updatedSamples.find(_.sampleAccession == updatedBiosample.sampleAccession)
+    selectedSubject.value = finalUpdated
+
+    saveWorkspace()
+  }
+
+  /** Internal: Updates a subject without modifying meta (used when meta is already updated) */
+  private def updateSubjectDirect(updatedBiosample: Biosample): Unit = {
+    val updatedSamples = _workspace.value.main.samples.map { sample =>
       if (sample.sampleAccession == updatedBiosample.sampleAccession) updatedBiosample
       else sample
     }
     _workspace.value = _workspace.value.copy(main = _workspace.value.main.copy(samples = updatedSamples))
-
-    // Update selection to reflect changes
     selectedSubject.value = Some(updatedBiosample)
-
     saveWorkspace()
   }
 
@@ -319,12 +333,16 @@ class WorkbenchViewModel(val workspaceService: WorkspaceService) {
   /** Updates an existing project identified by projectName */
   def updateProject(updatedProject: Project): Unit = {
     val updatedProjects = _workspace.value.main.projects.map { project =>
-      if (project.projectName == updatedProject.projectName) updatedProject
-      else project
+      if (project.projectName == updatedProject.projectName) {
+        // Update meta to track the edit
+        updatedProject.copy(meta = project.meta.updated("edit"))
+      } else project
     }
     _workspace.value = _workspace.value.copy(main = _workspace.value.main.copy(projects = updatedProjects))
 
-    selectedProject.value = Some(updatedProject)
+    // Update selection to reflect changes (with updated meta)
+    val finalUpdated = updatedProjects.find(_.projectName == updatedProject.projectName)
+    selectedProject.value = finalUpdated
 
     saveWorkspace()
   }
@@ -389,8 +407,11 @@ class WorkbenchViewModel(val workspaceService: WorkspaceService) {
           println(s"[ViewModel] Subject $sampleAccession already in project $projectName")
           false
         } else {
-          val updatedProject = project.copy(memberRefs = project.memberRefs :+ sampleAccession)
-          updateProject(updatedProject)
+          val updatedProject = project.copy(
+            memberRefs = project.memberRefs :+ sampleAccession,
+            meta = project.meta.updated("memberRefs")
+          )
+          updateProjectDirect(updatedProject)
           true
         }
       case None =>
@@ -407,14 +428,28 @@ class WorkbenchViewModel(val workspaceService: WorkspaceService) {
           println(s"[ViewModel] Subject $sampleAccession not in project $projectName")
           false
         } else {
-          val updatedProject = project.copy(memberRefs = project.memberRefs.filterNot(_ == sampleAccession))
-          updateProject(updatedProject)
+          val updatedProject = project.copy(
+            memberRefs = project.memberRefs.filterNot(_ == sampleAccession),
+            meta = project.meta.updated("memberRefs")
+          )
+          updateProjectDirect(updatedProject)
           true
         }
       case None =>
         println(s"[ViewModel] Project $projectName not found")
         false
     }
+  }
+
+  /** Internal: Updates a project without modifying meta (used when meta is already updated) */
+  private def updateProjectDirect(updatedProject: Project): Unit = {
+    val updatedProjects = _workspace.value.main.projects.map { project =>
+      if (project.projectName == updatedProject.projectName) updatedProject
+      else project
+    }
+    _workspace.value = _workspace.value.copy(main = _workspace.value.main.copy(projects = updatedProjects))
+    selectedProject.value = Some(updatedProject)
+    saveWorkspace()
   }
 
   /** Gets subjects that are members of a project */
@@ -478,7 +513,8 @@ class WorkbenchViewModel(val workspaceService: WorkspaceService) {
         // Update workspace with new sequence run and update biosample refs
         val updatedSequenceRuns = _workspace.value.main.sequenceRuns :+ newSequenceRun
         val updatedSubject = subject.copy(
-          sequenceRunRefs = subject.sequenceRunRefs :+ seqRunUri
+          sequenceRunRefs = subject.sequenceRunRefs :+ seqRunUri,
+          meta = subject.meta.updated("sequenceRunRefs")
         )
         val updatedSamples = _workspace.value.main.samples.map { s =>
           if (s.sampleAccession == sampleAccession) updatedSubject else s
@@ -714,7 +750,8 @@ class WorkbenchViewModel(val workspaceService: WorkspaceService) {
 
           // Update subject's sequenceRunRefs
           val updatedSubject = subject.copy(
-            sequenceRunRefs = subject.sequenceRunRefs.filterNot(ref => seqRunToRemove.atUri.contains(ref))
+            sequenceRunRefs = subject.sequenceRunRefs.filterNot(ref => seqRunToRemove.atUri.contains(ref)),
+            meta = subject.meta.updated("sequenceRunRefs")
           )
           val updatedSamples = _workspace.value.main.samples.map { s =>
             if (s.sampleAccession == sampleAccession) updatedSubject else s
@@ -1213,8 +1250,11 @@ class WorkbenchViewModel(val workspaceService: WorkspaceService) {
                                 case TreeType.YDNA => currentAssignments.copy(yDna = Some(workspaceResult))
                                 case TreeType.MTDNA => currentAssignments.copy(mtDna = Some(workspaceResult))
                               }
-                              val updatedSubject = subject.copy(haplogroups = Some(updatedAssignments))
-                              updateSubject(updatedSubject)
+                              val updatedSubject = subject.copy(
+                                haplogroups = Some(updatedAssignments),
+                                meta = subject.meta.updated("haplogroups")
+                              )
+                              updateSubjectDirect(updatedSubject)
 
                               lastHaplogroupResult.value = Some(topResult)
                               analysisInProgress.value = false
