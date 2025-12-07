@@ -50,12 +50,6 @@ object PdsClient {
   implicit val haplogroupAssignmentsEncoder: Encoder[HaplogroupAssignments] = deriveEncoder
   implicit val haplogroupAssignmentsDecoder: Decoder[HaplogroupAssignments] = deriveDecoder
 
-  // Legacy data codecs (deprecated but still needed)
-  implicit val alignmentDataEncoder: Encoder[AlignmentData] = deriveEncoder
-  implicit val alignmentDataDecoder: Decoder[AlignmentData] = deriveDecoder
-  implicit val sequenceDataEncoder: Encoder[SequenceData] = deriveEncoder
-  implicit val sequenceDataDecoder: Decoder[SequenceData] = deriveDecoder
-
   // First-class record codecs
   implicit val sequenceRunEncoder: Encoder[SequenceRun] = deriveEncoder
   implicit val sequenceRunDecoder: Decoder[SequenceRun] = deriveDecoder
@@ -283,11 +277,7 @@ object PdsClient {
           // 400 with RecordNotFound is expected for new users
           if (response.code.code == 400 && error.contains("RecordNotFound")) {
             println(s"[PDS] No workspace found for user (new user), returning empty workspace")
-            Future.successful(Workspace(
-              lexicon = 1,
-              id = WorkspaceCollection,
-              main = WorkspaceContent(samples = List.empty, projects = List.empty)
-            ))
+            Future.successful(Workspace.empty)
           } else {
             println(s"[PDS] Failed to load workspace. Status: ${response.code}, Error: $error")
             Future.failed(new RuntimeException(s"PDS load failed with status ${response.code}: $error"))

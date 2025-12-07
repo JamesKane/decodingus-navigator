@@ -48,20 +48,6 @@ case class WorkspaceContent(
   }
 
   /**
-   * Returns legacy SequenceData view for a biosample.
-   * This provides backward compatibility for UI components that expect embedded data.
-   *
-   * @deprecated Use getSequenceRunsForBiosample with the new model instead
-   */
-  @deprecated("Use getSequenceRunsForBiosample instead", "2.0")
-  def getLegacySequenceData(biosample: Biosample): List[SequenceData] = {
-    getSequenceRunsForBiosample(biosample).map { run =>
-      val runAlignments = getAlignmentsForSequenceRun(run)
-      SequenceData.fromSequenceRun(run, runAlignments)
-    }
-  }
-
-  /**
    * Finds a biosample by sample accession.
    */
   def findBiosample(sampleAccession: String): Option[Biosample] = {

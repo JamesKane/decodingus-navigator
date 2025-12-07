@@ -67,7 +67,7 @@ class WorkbenchView(val viewModel: WorkbenchViewModel) extends SplitPane {
         new Label(s"Sex: ${subject.sex.getOrElse("N/A")}"),
         new Label(s"Center: ${subject.centerName.getOrElse("N/A")}"),
         new Label(s"Description: ${subject.description.getOrElse("N/A")}"),
-        new Label(s"Created At: ${subject.createdAt.map(_.toLocalDate.toString).getOrElse("N/A")}")
+        new Label(s"Created At: ${subject.meta.createdAt.toLocalDate.toString}")
       )
     }
 
@@ -79,9 +79,15 @@ class WorkbenchView(val viewModel: WorkbenchViewModel) extends SplitPane {
     }
 
     // Sequence data table with callbacks
+    // Get sequence runs and alignments for this subject from the workspace
+    val sequenceRuns = viewModel.workspace.value.main.getSequenceRunsForBiosample(subject)
+    val allAlignments = viewModel.workspace.value.main.alignments
+
     val sequenceTable = new SequenceDataTable(
       viewModel = viewModel,
       subject = subject,
+      sequenceRuns = sequenceRuns,
+      alignments = allAlignments,
       onAnalyze = (index: Int) => handleAnalyzeSequenceData(subject.sampleAccession, index),
       onRemove = (index: Int) => handleRemoveSequenceData(subject.sampleAccession, index)
     )
@@ -96,35 +102,42 @@ class WorkbenchView(val viewModel: WorkbenchViewModel) extends SplitPane {
     )
   }
 
-  /** Handles triggering analysis for a sequence data entry */
+  /** Handles triggering analysis for a sequence run */
   private def handleAnalyzeSequenceData(sampleAccession: String, index: Int): Unit = {
-    viewModel.findSubject(sampleAccession).flatMap(_.sequenceData.lift(index)) match {
-      case Some(seqData) =>
-        seqData.files.headOption match {
-          case Some(fileInfo) =>
-            // Check if initial analysis has been run (has alignments)
-            val hasAlignments = seqData.alignments.nonEmpty
-            val hasMetrics = seqData.alignments.exists(_.metrics.isDefined)
+    viewModel.findSubject(sampleAccession) match {
+      case Some(subject) =>
+        val sequenceRuns = viewModel.workspace.value.main.getSequenceRunsForBiosample(subject)
+        sequenceRuns.lift(index) match {
+          case Some(sequenceRun) =>
+            sequenceRun.files.headOption match {
+              case Some(fileInfo) =>
+                // Check if initial analysis has been run (has alignments)
+                val runAlignments = viewModel.workspace.value.main.getAlignmentsForSequenceRun(sequenceRun)
+                val hasAlignments = runAlignments.nonEmpty
+                val hasMetrics = runAlignments.exists(_.metrics.isDefined)
 
-            if (!hasAlignments) {
-              // Run initial analysis
-              showAnalysisChoiceDialog(sampleAccession, index, fileInfo.fileName, "initial")
-            } else if (!hasMetrics) {
-              // Offer to run deep coverage analysis
-              showAnalysisChoiceDialog(sampleAccession, index, fileInfo.fileName, "wgs")
-            } else {
-              // Both analyses complete - offer to re-run
-              showAnalysisChoiceDialog(sampleAccession, index, fileInfo.fileName, "both_complete")
+                if (!hasAlignments) {
+                  // Run initial analysis
+                  showAnalysisChoiceDialog(sampleAccession, index, fileInfo.fileName, "initial")
+                } else if (!hasMetrics) {
+                  // Offer to run deep coverage analysis
+                  showAnalysisChoiceDialog(sampleAccession, index, fileInfo.fileName, "wgs")
+                } else {
+                  // Both analyses complete - offer to re-run
+                  showAnalysisChoiceDialog(sampleAccession, index, fileInfo.fileName, "both_complete")
+                }
+              case None =>
+                new Alert(AlertType.Warning) {
+                  title = "No File"
+                  headerText = "No alignment file associated"
+                  contentText = "Please add a BAM/CRAM file to this sequencing run."
+                }.showAndWait()
             }
           case None =>
-            new Alert(AlertType.Warning) {
-              title = "No File"
-              headerText = "No alignment file associated"
-              contentText = "Please add a BAM/CRAM file to this sequencing run."
-            }.showAndWait()
+            println(s"[View] Sequence run not found at index $index")
         }
       case None =>
-        println(s"[View] Sequence data not found at index $index")
+        println(s"[View] Subject not found: $sampleAccession")
     }
   }
 

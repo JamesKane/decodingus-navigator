@@ -7,7 +7,7 @@ import scalafx.scene.input.{DragEvent, TransferMode}
 import scalafx.geometry.{Insets, Pos}
 import scalafx.stage.FileChooser
 import scalafx.application.Platform
-import com.decodingus.workspace.model.{SequenceData, FileInfo}
+import com.decodingus.workspace.model.FileInfo
 import com.decodingus.analysis.AnalysisCache
 
 import java.io.File

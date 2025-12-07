@@ -8,13 +8,27 @@ import scala.util.{Either, Left, Right, Using}
 
 class WgsMetricsProcessor {
 
-  def process(bamPath: String, referencePath: String, onProgress: (String, Double, Double) => Unit): Either[Throwable, WgsMetrics] = {
+  /**
+   * Process a BAM/CRAM file to collect WGS metrics using GATK.
+   *
+   * @param bamPath Path to the BAM/CRAM file
+   * @param referencePath Path to the reference genome
+   * @param onProgress Progress callback
+   * @param readLength Optional read length - if > 150bp, passed to GATK to avoid crashes with long reads (e.g., PacBio HiFi)
+   */
+  def process(
+    bamPath: String,
+    referencePath: String,
+    onProgress: (String, Double, Double) => Unit,
+    readLength: Option[Int] = None
+  ): Either[Throwable, WgsMetrics] = {
     onProgress("Running GATK CollectWgsMetrics...", 0.0, 1.0)
 
     val outputFile = File.createTempFile("wgs_metrics", ".txt")
     outputFile.deleteOnExit()
 
-    val args = Array(
+    // Base arguments
+    val baseArgs = Array(
       "CollectWgsMetrics",
       "-I", bamPath,
       "-R", referencePath,
@@ -22,6 +36,12 @@ class WgsMetricsProcessor {
       "--USE_FAST_ALGORITHM", "true",
       "--VALIDATION_STRINGENCY", "SILENT"
     )
+
+    // Add READ_LENGTH if reads are longer than the default 150bp
+    val args = readLength match {
+      case Some(len) if len > 150 => baseArgs ++ Array("--READ_LENGTH", len.toString)
+      case _ => baseArgs
+    }
 
     GatkRunner.run(args) match {
       case Right(_) =>

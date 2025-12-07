@@ -29,7 +29,7 @@ import scalafx.scene.layout.{BorderPane, GridPane, HBox, Priority, Region, Stack
 import scalafx.scene.text.{Text, TextAlignment}
 import scalafx.scene.web.WebView
 
-import com.decodingus.workspace.model.{Workspace, Biosample, Project, SequenceData, AlignmentData, AlignmentMetrics, ContigMetrics, HaplogroupResult, HaplogroupAssignments, FileInfo} // Explicitly import all workspace models
+import com.decodingus.workspace.model.{Workspace, Biosample, Project, SequenceRun, Alignment, AlignmentMetrics, ContigMetrics, HaplogroupResult, HaplogroupAssignments, FileInfo, RecordMeta} // Explicitly import all workspace models
 import com.decodingus.workspace.{WorkspaceService, LiveWorkspaceService, WorkbenchViewModel} // Import the workspace service trait and its live implementation, and the ViewModel
 import com.decodingus.ui.components.WorkbenchView // Import the new WorkbenchView
 

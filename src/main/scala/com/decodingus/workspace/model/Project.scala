@@ -17,8 +17,5 @@ case class Project(
   projectName: String,
   description: Option[String] = None,
   administrator: String,
-  memberRefs: List[String] = List.empty,
-  // DEPRECATED: Legacy members field - use memberRefs instead
-  @deprecated("Use memberRefs instead", "2.0")
-  members: List[String] = List.empty
+  memberRefs: List[String] = List.empty
 )

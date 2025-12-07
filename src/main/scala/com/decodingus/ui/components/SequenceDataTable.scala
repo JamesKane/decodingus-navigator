@@ -8,7 +8,7 @@ import scalafx.geometry.{Insets, Pos}
 import scalafx.collections.ObservableBuffer
 import scalafx.beans.property.StringProperty
 import scalafx.application.Platform
-import com.decodingus.workspace.model.{Biosample, SequenceData, AlignmentMetrics}
+import com.decodingus.workspace.model.{Biosample, SequenceRun, Alignment, AlignmentMetrics}
 import com.decodingus.workspace.WorkbenchViewModel
 import com.decodingus.haplogroup.tree.TreeType
 
@@ -19,29 +19,40 @@ import com.decodingus.haplogroup.tree.TreeType
 class SequenceDataTable(
   viewModel: WorkbenchViewModel,
   subject: Biosample,
+  sequenceRuns: List[SequenceRun],
+  alignments: List[Alignment],
   onAnalyze: (Int) => Unit,  // Callback when analyze is clicked, passes index
   onRemove: (Int) => Unit    // Callback when remove is clicked, passes index
 ) extends VBox(10) {
 
   padding = Insets(10, 0, 0, 0)
 
-  // Convert the subject's sequence data to an observable buffer with index
-  case class SequenceDataRow(index: Int, data: SequenceData)
+  // Helper to get alignments for a sequence run
+  private def getAlignmentsForRun(run: SequenceRun): List[Alignment] = {
+    run.alignmentRefs.flatMap { ref =>
+      alignments.find(_.atUri.contains(ref))
+    }
+  }
 
-  private val tableData: ObservableBuffer[SequenceDataRow] = ObservableBuffer.from(
-    subject.sequenceData.zipWithIndex.map { case (sd, idx) => SequenceDataRow(idx, sd) }
+  // Convert the sequence runs to an observable buffer with index
+  case class SequenceRunRow(index: Int, run: SequenceRun, runAlignments: List[Alignment])
+
+  private val tableData: ObservableBuffer[SequenceRunRow] = ObservableBuffer.from(
+    sequenceRuns.zipWithIndex.map { case (run, idx) =>
+      SequenceRunRow(idx, run, getAlignmentsForRun(run))
+    }
   )
 
-  private val table = new TableView[SequenceDataRow](tableData) {
+  private val table = new TableView[SequenceRunRow](tableData) {
     prefHeight = 200
     columnResizePolicy = TableView.ConstrainedResizePolicy
 
     // Platform + Instrument column (e.g., "Illumina NovaSeq")
-    columns += new TableColumn[SequenceDataRow, String] {
+    columns += new TableColumn[SequenceRunRow, String] {
       text = "Platform"
       cellValueFactory = { row =>
-        val platform = row.value.data.platformName
-        val instrument = row.value.data.instrumentModel.getOrElse("")
+        val platform = row.value.run.platformName
+        val instrument = row.value.run.instrumentModel.getOrElse("")
         val display = if (instrument.nonEmpty) s"$platform $instrument" else platform
         StringProperty(display)
       }
@@ -49,13 +60,13 @@ class SequenceDataTable(
     }
 
     // Test Type + Read Length + Library Layout (e.g., "WGS - 150bp PE")
-    columns += new TableColumn[SequenceDataRow, String] {
+    columns += new TableColumn[SequenceRunRow, String] {
       text = "Test"
       cellValueFactory = { row =>
-        val data = row.value.data
-        val testType = data.testType
-        val readLen = data.readLength.map(r => s"${r}bp").getOrElse("")
-        val layout = data.libraryLayout.map {
+        val run = row.value.run
+        val testType = run.testType
+        val readLen = run.readLength.map(r => s"${r}bp").getOrElse("")
+        val layout = run.libraryLayout.map {
           case "Paired-End" => "PE"
           case "Single-End" => "SE"
           case other => other
@@ -69,20 +80,20 @@ class SequenceDataTable(
     }
 
     // File column
-    columns += new TableColumn[SequenceDataRow, String] {
+    columns += new TableColumn[SequenceRunRow, String] {
       text = "File"
       cellValueFactory = { row =>
-        val fileName = row.value.data.files.headOption.map(_.fileName).getOrElse("No file")
+        val fileName = row.value.run.files.headOption.map(_.fileName).getOrElse("No file")
         StringProperty(fileName)
       }
       prefWidth = 180
     }
 
     // Coverage column (from alignment metrics if available)
-    columns += new TableColumn[SequenceDataRow, String] {
+    columns += new TableColumn[SequenceRunRow, String] {
       text = "Coverage"
       cellValueFactory = { row =>
-        val coverage = row.value.data.alignments.headOption
+        val coverage = row.value.runAlignments.headOption
           .flatMap(_.metrics)
           .flatMap(_.meanCoverage)
           .map(c => f"$c%.1fx")
@@ -93,10 +104,10 @@ class SequenceDataTable(
     }
 
     // Reference column
-    columns += new TableColumn[SequenceDataRow, String] {
+    columns += new TableColumn[SequenceRunRow, String] {
       text = "Reference"
       cellValueFactory = { row =>
-        val ref = row.value.data.alignments.headOption
+        val ref = row.value.runAlignments.headOption
           .map(_.referenceBuild)
           .getOrElse("—")
         StringProperty(ref)
@@ -105,10 +116,10 @@ class SequenceDataTable(
     }
 
     // Status column
-    columns += new TableColumn[SequenceDataRow, String] {
+    columns += new TableColumn[SequenceRunRow, String] {
       text = "Status"
       cellValueFactory = { row =>
-        val hasMetrics = row.value.data.alignments.exists(_.metrics.isDefined)
+        val hasMetrics = row.value.runAlignments.exists(_.metrics.isDefined)
         val status = if (hasMetrics) "Analyzed" else "Pending"
         StringProperty(status)
       }
@@ -117,12 +128,12 @@ class SequenceDataTable(
 
     // Context menu for row actions
     rowFactory = { _ =>
-      val row = new javafx.scene.control.TableRow[SequenceDataRow]()
+      val row = new javafx.scene.control.TableRow[SequenceRunRow]()
       val contextMenu = new ContextMenu(
         new MenuItem("Edit") {
           onAction = _ => {
             Option(row.getItem).foreach { item =>
-              handleEditSequenceData(item.index, item.data)
+              handleEditSequenceRun(item.index, item.run, item.runAlignments)
             }
           }
         },
@@ -136,7 +147,7 @@ class SequenceDataTable(
         new MenuItem("Haplogroup Analysis") {
           onAction = _ => {
             Option(row.getItem).foreach { item =>
-              handleHaplogroupAnalysis(item.index)
+              handleHaplogroupAnalysis(item.index, item.runAlignments)
             }
           }
         },
@@ -146,7 +157,7 @@ class SequenceDataTable(
               val confirm = new Alert(AlertType.Confirmation) {
                 title = "Remove Sequencing Data"
                 headerText = s"Remove this sequencing run?"
-                contentText = s"Platform: ${item.data.platformName}, Test: ${item.data.testType}"
+                contentText = s"Platform: ${item.run.platformName}, Test: ${item.run.testType}"
               }
               confirm.showAndWait() match {
                 case Some(ButtonType.OK) => onRemove(item.index)
@@ -161,25 +172,24 @@ class SequenceDataTable(
     }
   }
 
-  /** Handles editing sequence data metadata */
-  private def handleEditSequenceData(index: Int, data: SequenceData): Unit = {
-    val dialog = new EditSequenceDataDialog(data)
-    val result = dialog.showAndWait().asInstanceOf[Option[Option[SequenceData]]]
+  /** Handles editing sequence run metadata */
+  private def handleEditSequenceRun(index: Int, run: SequenceRun, runAlignments: List[Alignment]): Unit = {
+    val dialog = new EditSequenceDataDialog(run, runAlignments)
+    val result = dialog.showAndWait().asInstanceOf[Option[Option[SequenceRun]]]
 
     result match {
-      case Some(Some(updatedData)) =>
-        viewModel.updateSequenceData(subject.sampleAccession, index, updatedData)
+      case Some(Some(updatedRun)) =>
+        viewModel.updateSequenceRun(subject.sampleAccession, index, updatedRun)
         // Update local table data
-        tableData.update(index, SequenceDataRow(index, updatedData))
+        tableData.update(index, SequenceRunRow(index, updatedRun, runAlignments))
       case _ => // User cancelled
     }
   }
 
-  /** Handles launching haplogroup analysis for a sequence data entry */
-  private def handleHaplogroupAnalysis(index: Int): Unit = {
+  /** Handles launching haplogroup analysis for a sequence run */
+  private def handleHaplogroupAnalysis(index: Int, runAlignments: List[Alignment]): Unit = {
     // Check if initial analysis has been run (need reference build info)
-    val seqData = subject.sequenceData.lift(index)
-    val hasAlignments = seqData.exists(_.alignments.nonEmpty)
+    val hasAlignments = runAlignments.nonEmpty
 
     if (!hasAlignments) {
       new Alert(AlertType.Warning) {
@@ -305,7 +315,7 @@ class SequenceDataTable(
     tooltip = Tooltip("Edit sequencing run metadata")
     onAction = _ => {
       Option(table.selectionModel().getSelectedItem).foreach { row =>
-        handleEditSequenceData(row.index, row.data)
+        handleEditSequenceRun(row.index, row.run, row.runAlignments)
       }
     }
   }
@@ -324,7 +334,7 @@ class SequenceDataTable(
     tooltip = Tooltip("Run haplogroup analysis (Y-DNA or MT-DNA)")
     onAction = _ => {
       Option(table.selectionModel().getSelectedItem).foreach { row =>
-        handleHaplogroupAnalysis(row.index)
+        handleHaplogroupAnalysis(row.index, row.runAlignments)
       }
     }
   }

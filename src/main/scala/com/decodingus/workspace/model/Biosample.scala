@@ -34,51 +34,10 @@ case class Biosample(
   sequenceRunRefs: List[String] = List.empty,
   genotypeRefs: List[String] = List.empty,
   populationBreakdownRef: Option[String] = None,
-  strProfileRef: Option[String] = None,
-  // DEPRECATED: Legacy embedded sequence data for backward compatibility with UI
-  // New code should use sequenceRunRefs with first-class SequenceRun records
-  @deprecated("Use sequenceRunRefs with first-class records", "2.0")
-  sequenceData: List[SequenceData] = List.empty,
-  // DEPRECATED: Legacy createdAt field - now in meta.createdAt
-  @deprecated("Use meta.createdAt instead", "2.0")
-  createdAt: Option[java.time.LocalDateTime] = None
+  strProfileRef: Option[String] = None
 )
 
 object Biosample {
   /** Known sex values */
   val KnownSexValues: Set[String] = Set("Male", "Female", "Other", "Unknown")
-
-  /**
-   * Creates a Biosample with legacy embedded sequence data.
-   * This is a compatibility method for existing code that uses the old model.
-   *
-   * @deprecated Use the new constructor with sequenceRunRefs instead
-   */
-  @deprecated("Use new model with sequenceRunRefs", "2.0")
-  def withSequenceData(
-    sampleAccession: String,
-    donorIdentifier: String,
-    atUri: Option[String] = None,
-    description: Option[String] = None,
-    centerName: Option[String] = None,
-    sex: Option[String] = None,
-    sequenceData: List[SequenceData] = List.empty,
-    haplogroups: Option[HaplogroupAssignments] = None,
-    createdAt: Option[java.time.LocalDateTime] = None
-  ): Biosample = {
-    Biosample(
-      atUri = atUri,
-      meta = RecordMeta(
-        version = 1,
-        createdAt = createdAt.getOrElse(java.time.LocalDateTime.now())
-      ),
-      sampleAccession = sampleAccession,
-      donorIdentifier = donorIdentifier,
-      description = description,
-      centerName = centerName,
-      sex = sex,
-      haplogroups = haplogroups
-      // Note: sequenceData is not stored - need to convert separately
-    )
-  }
 }

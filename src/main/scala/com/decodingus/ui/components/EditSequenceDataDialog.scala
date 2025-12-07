@@ -5,13 +5,16 @@ import scalafx.scene.control.{ButtonType, Dialog, Label, TextField, ComboBox, Bu
 import scalafx.scene.layout.{GridPane, VBox}
 import scalafx.geometry.Insets
 import scalafx.collections.ObservableBuffer
-import com.decodingus.workspace.model.SequenceData
+import com.decodingus.workspace.model.{SequenceRun, Alignment}
 
 /**
  * Dialog for editing sequencing run metadata.
  * Allows users to correct or customize auto-detected values.
  */
-class EditSequenceDataDialog(existingData: SequenceData) extends Dialog[Option[SequenceData]] {
+class EditSequenceDataDialog(
+  existingRun: SequenceRun,
+  alignments: List[Alignment] = List.empty
+) extends Dialog[Option[SequenceRun]] {
   title = "Edit Sequencing Run"
   headerText = "Edit sequencing run metadata"
 
@@ -29,7 +32,7 @@ class EditSequenceDataDialog(existingData: SequenceData) extends Dialog[Option[S
       "Complete Genomics",
       "Other"
     )
-    value = existingData.platformName
+    value = existingRun.platformName
     editable = true
     prefWidth = 200
   }
@@ -46,14 +49,14 @@ class EditSequenceDataDialog(existingData: SequenceData) extends Dialog[Option[S
       "RNA-Seq",
       "Other"
     )
-    value = existingData.testType
+    value = existingRun.testType
     editable = true
     prefWidth = 200
   }
 
   // Instrument model
   private val instrumentField = new TextField() {
-    text = existingData.instrumentModel.getOrElse("")
+    text = existingRun.instrumentModel.getOrElse("")
     promptText = "e.g., NovaSeq 6000, Sequel II"
     prefWidth = 200
   }
@@ -61,45 +64,45 @@ class EditSequenceDataDialog(existingData: SequenceData) extends Dialog[Option[S
   // Library layout selection
   private val layoutCombo = new ComboBox[String] {
     items = ObservableBuffer("Paired-End", "Single-End", "Unknown")
-    value = existingData.libraryLayout.getOrElse("Unknown")
+    value = existingRun.libraryLayout.getOrElse("Unknown")
     prefWidth = 200
   }
 
-  // Read statistics (read-only display with option to clear)
+  // Read statistics (editable)
   private val totalReadsField = new TextField() {
-    text = existingData.totalReads.map(_.toString).getOrElse("")
+    text = existingRun.totalReads.map(_.toString).getOrElse("")
     promptText = "Total number of reads"
     prefWidth = 200
   }
 
   private val readLengthField = new TextField() {
-    text = existingData.readLength.map(_.toString).getOrElse("")
+    text = existingRun.readLength.map(_.toString).getOrElse("")
     promptText = "Read length (bp)"
     prefWidth = 200
   }
 
   private val insertSizeField = new TextField() {
-    text = existingData.meanInsertSize.map(d => f"$d%.1f").getOrElse("")
+    text = existingRun.meanInsertSize.map(d => f"$d%.1f").getOrElse("")
     promptText = "Mean insert size (bp)"
     prefWidth = 200
   }
 
   // File info (read-only)
   private val fileNameLabel = new Label(
-    existingData.files.headOption.map(_.fileName).getOrElse("No file")
+    existingRun.files.headOption.map(_.fileName).getOrElse("No file")
   ) {
     style = "-fx-font-style: italic;"
   }
 
-  // Alignment info (read-only)
+  // Alignment info (read-only) - from the alignments list
   private val referenceLabel = new Label(
-    existingData.alignments.headOption.map(_.referenceBuild).getOrElse("Not analyzed")
+    alignments.headOption.map(_.referenceBuild).getOrElse("Not analyzed")
   ) {
     style = "-fx-font-style: italic;"
   }
 
   private val alignerLabel = new Label(
-    existingData.alignments.headOption.map(_.aligner).getOrElse("Unknown")
+    alignments.headOption.map(_.aligner).getOrElse("Unknown")
   ) {
     style = "-fx-font-style: italic;"
   }
@@ -179,7 +182,7 @@ class EditSequenceDataDialog(existingData: SequenceData) extends Dialog[Option[S
       val layoutValue = layoutCombo.value.value
       val libraryLayout = if (layoutValue == "Unknown") None else Some(layoutValue)
 
-      Some(existingData.copy(
+      Some(existingRun.copy(
         platformName = platformCombo.value.value,
         testType = testTypeCombo.value.value,
         instrumentModel = Option(instrumentField.text.value).filter(_.nonEmpty),
@@ -187,7 +190,7 @@ class EditSequenceDataDialog(existingData: SequenceData) extends Dialog[Option[S
         totalReads = totalReads,
         readLength = readLength,
         meanInsertSize = insertSize
-        // files and alignments are preserved from existingData
+        // files and alignmentRefs are preserved from existingRun
       ))
     } else {
       None
