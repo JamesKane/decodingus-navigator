@@ -4,7 +4,7 @@ import scalafx.Includes._
 import scalafx.scene.control.{ButtonType, Dialog, Label, TextField, TextArea, ButtonBar}
 import scalafx.scene.layout.{GridPane, VBox, Priority}
 import scalafx.geometry.Insets
-import com.decodingus.workspace.model.Project
+import com.decodingus.workspace.model.{Project, RecordMeta}
 
 /**
  * Dialog for creating a new Project.
@@ -62,11 +62,12 @@ class AddProjectDialog(defaultAdministrator: String = "Local User") extends Dial
   resultConverter = dialogButton => {
     if (dialogButton == createButtonType) {
       Some(Project(
-        projectName = nameField.text.value.trim,
         atUri = None,
+        meta = RecordMeta.initial,
+        projectName = nameField.text.value.trim,
         description = Option(descriptionField.text.value).map(_.trim).filter(_.nonEmpty),
         administrator = adminField.text.value.trim,
-        members = List.empty
+        memberRefs = List.empty
       ))
     } else {
       None

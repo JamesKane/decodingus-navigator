@@ -28,20 +28,84 @@ object PdsClient {
     Try(LocalDateTime.parse(str, DateTimeFormatter.ISO_LOCAL_DATE_TIME)).toEither.left.map(t => s"LocalDateTime: $t")
   }
 
+  // Basic type codecs (order matters for derivation - leaf types first)
   implicit val fileInfoEncoder: Encoder[FileInfo] = deriveEncoder
   implicit val fileInfoDecoder: Decoder[FileInfo] = deriveDecoder
+  implicit val recordMetaEncoder: Encoder[RecordMeta] = deriveEncoder
+  implicit val recordMetaDecoder: Decoder[RecordMeta] = deriveDecoder
   implicit val contigMetricsEncoder: Encoder[ContigMetrics] = deriveEncoder
   implicit val contigMetricsDecoder: Decoder[ContigMetrics] = deriveDecoder
   implicit val alignmentMetricsEncoder: Encoder[AlignmentMetrics] = deriveEncoder
   implicit val alignmentMetricsDecoder: Decoder[AlignmentMetrics] = deriveDecoder
-  implicit val alignmentDataEncoder: Encoder[AlignmentData] = deriveEncoder
-  implicit val alignmentDataDecoder: Decoder[AlignmentData] = deriveDecoder
-  implicit val sequenceDataEncoder: Encoder[SequenceData] = deriveEncoder
-  implicit val sequenceDataDecoder: Decoder[SequenceData] = deriveDecoder
+
+  // Variant call codecs (needed before HaplogroupResult)
+  implicit val variantCallEncoder: Encoder[VariantCall] = deriveEncoder
+  implicit val variantCallDecoder: Decoder[VariantCall] = deriveDecoder
+  implicit val privateVariantDataEncoder: Encoder[PrivateVariantData] = deriveEncoder
+  implicit val privateVariantDataDecoder: Decoder[PrivateVariantData] = deriveDecoder
+
+  // Haplogroup codecs (after variant call types)
   implicit val haplogroupResultEncoder: Encoder[HaplogroupResult] = deriveEncoder
   implicit val haplogroupResultDecoder: Decoder[HaplogroupResult] = deriveDecoder
   implicit val haplogroupAssignmentsEncoder: Encoder[HaplogroupAssignments] = deriveEncoder
   implicit val haplogroupAssignmentsDecoder: Decoder[HaplogroupAssignments] = deriveDecoder
+
+  // Legacy data codecs (deprecated but still needed)
+  implicit val alignmentDataEncoder: Encoder[AlignmentData] = deriveEncoder
+  implicit val alignmentDataDecoder: Decoder[AlignmentData] = deriveDecoder
+  implicit val sequenceDataEncoder: Encoder[SequenceData] = deriveEncoder
+  implicit val sequenceDataDecoder: Decoder[SequenceData] = deriveDecoder
+
+  // First-class record codecs
+  implicit val sequenceRunEncoder: Encoder[SequenceRun] = deriveEncoder
+  implicit val sequenceRunDecoder: Decoder[SequenceRun] = deriveDecoder
+  implicit val alignmentEncoder: Encoder[Alignment] = deriveEncoder
+  implicit val alignmentDecoder: Decoder[Alignment] = deriveDecoder
+
+  // STR profile codecs
+  implicit val strAlleleEncoder: Encoder[StrAllele] = deriveEncoder
+  implicit val strAlleleDecoder: Decoder[StrAllele] = deriveDecoder
+
+  implicit val encodeStrValue: Encoder[StrValue] = Encoder.instance {
+    case SimpleStrValue(repeats) =>
+      Json.obj("type" -> Json.fromString("simple"), "repeats" -> Json.fromInt(repeats))
+    case MultiCopyStrValue(copies) =>
+      Json.obj("type" -> Json.fromString("multiCopy"), "copies" -> Json.arr(copies.map(Json.fromInt): _*))
+    case ComplexStrValue(alleles, rawNotation) =>
+      val base = Json.obj(
+        "type" -> Json.fromString("complex"),
+        "alleles" -> alleles.asJson
+      )
+      rawNotation match {
+        case Some(rn) => base.deepMerge(Json.obj("rawNotation" -> Json.fromString(rn)))
+        case None => base
+      }
+  }
+
+  implicit val decodeStrValue: Decoder[StrValue] = Decoder.instance { cursor =>
+    cursor.downField("type").as[String].flatMap {
+      case "simple" =>
+        cursor.downField("repeats").as[Int].map(SimpleStrValue.apply)
+      case "multiCopy" =>
+        cursor.downField("copies").as[List[Int]].map(MultiCopyStrValue.apply)
+      case "complex" =>
+        for {
+          alleles <- cursor.downField("alleles").as[List[StrAllele]]
+          rawNotation <- cursor.downField("rawNotation").as[Option[String]]
+        } yield ComplexStrValue(alleles, rawNotation)
+      case other =>
+        Left(io.circe.DecodingFailure(s"Unknown StrValue type: $other", cursor.history))
+    }
+  }
+
+  implicit val strMarkerValueEncoder: Encoder[StrMarkerValue] = deriveEncoder
+  implicit val strMarkerValueDecoder: Decoder[StrMarkerValue] = deriveDecoder
+  implicit val strPanelEncoder: Encoder[StrPanel] = deriveEncoder
+  implicit val strPanelDecoder: Decoder[StrPanel] = deriveDecoder
+  implicit val strProfileEncoder: Encoder[StrProfile] = deriveEncoder
+  implicit val strProfileDecoder: Decoder[StrProfile] = deriveDecoder
+
+  // Main entity codecs
   implicit val biosampleEncoder: Encoder[Biosample] = deriveEncoder
   implicit val biosampleDecoder: Decoder[Biosample] = deriveDecoder
   implicit val projectEncoder: Encoder[Project] = deriveEncoder

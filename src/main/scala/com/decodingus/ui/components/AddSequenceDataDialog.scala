@@ -265,7 +265,8 @@ class AddSequenceDataDialog(
             fileSizeBytes = Some(file.length()),
             fileFormat = fileFormat,
             checksum = computedSha256,
-            location = file.getAbsolutePath
+            checksumAlgorithm = computedSha256.map(_ => "SHA-256"),
+            location = Some(file.getAbsolutePath)
           )
           SequenceDataInput(fileInfo, computedSha256)
         }
@@ -279,7 +280,8 @@ class AddSequenceDataDialog(
             fileSizeBytes = None, // Unknown for remote files
             fileFormat = fileFormat,
             checksum = None, // Will be computed during analysis
-            location = url
+            checksumAlgorithm = None,
+            location = Some(url)
           )
           Some(SequenceDataInput(fileInfo, None))
         } else {

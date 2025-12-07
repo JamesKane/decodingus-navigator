@@ -5,7 +5,7 @@ import scalafx.scene.control.{ButtonType, Dialog, Label, TextField, ChoiceBox, B
 import scalafx.scene.layout.{GridPane, Priority}
 import scalafx.geometry.Insets
 import scalafx.collections.ObservableBuffer
-import com.decodingus.workspace.model.{Biosample, HaplogroupAssignments, SequenceData}
+import com.decodingus.workspace.model.{Biosample, HaplogroupAssignments, RecordMeta}
 import java.time.LocalDateTime
 import java.util.UUID
 
@@ -60,15 +60,15 @@ class AddSubjectDialog extends Dialog[Option[Biosample]] {
   resultConverter = dialogButton => {
     if (dialogButton == saveButtonType) {
       val newBiosample = Biosample(
+        atUri = None,
+        meta = RecordMeta.initial,
         sampleAccession = accessionField.text.value,
         donorIdentifier = donorIdField.text.value,
-        atUri = None,
         description = Option(descriptionField.text.value).filter(_.nonEmpty),
         centerName = Option(centerNameField.text.value).filter(_.nonEmpty),
         sex = Option(sexChoiceBox.value.value),
-        sequenceData = List.empty, // Empty sequence data initially
         haplogroups = None,
-        createdAt = Some(LocalDateTime.now())
+        sequenceRunRefs = List.empty // No sequence runs initially
       )
       Some(newBiosample)
     } else {

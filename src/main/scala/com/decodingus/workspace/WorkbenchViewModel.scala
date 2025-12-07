@@ -36,16 +36,7 @@ class WorkbenchViewModel(val workspaceService: WorkspaceService) {
   }
 
   // --- Model State ---
-  private val _workspace = ObjectProperty(
-    Workspace(
-      lexicon = 1,
-      id = "com.decodingus.atmosphere.workspace",
-      main = WorkspaceContent(
-        samples = List.empty,
-        projects = List.empty
-      )
-    )
-  )
+  private val _workspace = ObjectProperty(Workspace.empty)
   // Exposed as ReadOnlyProperty for external observation, preventing direct modification
   val workspace: ReadOnlyObjectProperty[Workspace] = _workspace
 
@@ -246,11 +237,7 @@ class WorkbenchViewModel(val workspaceService: WorkspaceService) {
     }
   }
 
-  private def emptyWorkspace: Workspace = Workspace(
-    lexicon = 1,
-    id = "com.decodingus.atmosphere.workspace",
-    main = WorkspaceContent(samples = List.empty, projects = List.empty)
-  )
+  private def emptyWorkspace: Workspace = Workspace.empty
 
   // --- Subject CRUD Operations ---
 
@@ -398,11 +385,11 @@ class WorkbenchViewModel(val workspaceService: WorkspaceService) {
   def addSubjectToProject(projectName: String, sampleAccession: String): Boolean = {
     findProject(projectName) match {
       case Some(project) =>
-        if (project.members.contains(sampleAccession)) {
+        if (project.memberRefs.contains(sampleAccession)) {
           println(s"[ViewModel] Subject $sampleAccession already in project $projectName")
           false
         } else {
-          val updatedProject = project.copy(members = project.members :+ sampleAccession)
+          val updatedProject = project.copy(memberRefs = project.memberRefs :+ sampleAccession)
           updateProject(updatedProject)
           true
         }
@@ -416,11 +403,11 @@ class WorkbenchViewModel(val workspaceService: WorkspaceService) {
   def removeSubjectFromProject(projectName: String, sampleAccession: String): Boolean = {
     findProject(projectName) match {
       case Some(project) =>
-        if (!project.members.contains(sampleAccession)) {
+        if (!project.memberRefs.contains(sampleAccession)) {
           println(s"[ViewModel] Subject $sampleAccession not in project $projectName")
           false
         } else {
-          val updatedProject = project.copy(members = project.members.filterNot(_ == sampleAccession))
+          val updatedProject = project.copy(memberRefs = project.memberRefs.filterNot(_ == sampleAccession))
           updateProject(updatedProject)
           true
         }
@@ -434,7 +421,7 @@ class WorkbenchViewModel(val workspaceService: WorkspaceService) {
   def getProjectMembers(projectName: String): List[Biosample] = {
     findProject(projectName) match {
       case Some(project) =>
-        project.members.flatMap(accession => findSubject(accession))
+        project.memberRefs.flatMap(accession => findSubject(accession))
       case None =>
         List.empty
     }
@@ -444,7 +431,7 @@ class WorkbenchViewModel(val workspaceService: WorkspaceService) {
   def getNonProjectMembers(projectName: String): List[Biosample] = {
     findProject(projectName) match {
       case Some(project) =>
-        _workspace.value.main.samples.filterNot(s => project.members.contains(s.sampleAccession))
+        _workspace.value.main.samples.filterNot(s => project.memberRefs.contains(s.sampleAccession))
       case None =>
         _workspace.value.main.samples
     }
@@ -523,7 +510,7 @@ class WorkbenchViewModel(val workspaceService: WorkspaceService) {
       return
     }
 
-    val bamPath = fileInfo.location
+    val bamPath = fileInfo.location.getOrElse("")
     println(s"[ViewModel] Starting add+analyze pipeline for ${fileInfo.fileName}")
 
     analysisInProgress.value = true
@@ -820,7 +807,7 @@ class WorkbenchViewModel(val workspaceService: WorkspaceService) {
       case Some((subject, seqData)) =>
         seqData.files.headOption match {
           case Some(fileInfo) =>
-            val bamPath = fileInfo.location
+            val bamPath = fileInfo.location.getOrElse("")
             println(s"[ViewModel] Starting initial analysis for ${fileInfo.fileName}")
 
             analysisInProgress.value = true
@@ -926,7 +913,7 @@ class WorkbenchViewModel(val workspaceService: WorkspaceService) {
           case Some(alignmentData) =>
             seqData.files.headOption match {
               case Some(fileInfo) =>
-                val bamPath = fileInfo.location
+                val bamPath = fileInfo.location.getOrElse("")
                 println(s"[ViewModel] Starting WGS metrics analysis for ${fileInfo.fileName}")
 
                 analysisInProgress.value = true
@@ -1045,7 +1032,7 @@ class WorkbenchViewModel(val workspaceService: WorkspaceService) {
           case Some(alignmentData) =>
             seqData.files.headOption match {
               case Some(fileInfo) =>
-                val bamPath = fileInfo.location
+                val bamPath = fileInfo.location.getOrElse("")
                 println(s"[ViewModel] Starting ${treeType} haplogroup analysis for ${fileInfo.fileName}")
 
                 analysisInProgress.value = true

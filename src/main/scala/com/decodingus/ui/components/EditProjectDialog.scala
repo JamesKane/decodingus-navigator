@@ -48,7 +48,7 @@ class EditProjectDialog(existingProject: Project) extends Dialog[Option[Project]
     add(new Label("Administrator:"), 0, 2)
     add(adminField, 1, 2)
     add(new Label("Members:"), 0, 3)
-    add(new Label(s"${existingProject.members.size} subject(s) - manage in project view") {
+    add(new Label(s"${existingProject.memberRefs.size} subject(s) - manage in project view") {
       style = "-fx-text-fill: #888888; -fx-font-style: italic;"
     }, 1, 3)
   }
