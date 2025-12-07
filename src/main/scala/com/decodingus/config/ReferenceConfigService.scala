@@ -8,11 +8,11 @@ import scala.util.{Try, Success, Failure}
 
 /**
  * Service for loading and saving reference genome configuration.
- * Stores config in ~/.config/decodingus-tools/reference_config.json
+ * Stores config in ~/.decodingus/config/reference_config.json
  */
 object ReferenceConfigService {
 
-  private val CONFIG_DIR = Paths.get(System.getProperty("user.home"), ".config", "decodingus-tools")
+  private val CONFIG_DIR = Paths.get(System.getProperty("user.home"), ".decodingus", "config")
   private val CONFIG_FILE = "reference_config.json"
 
   private def configFilePath: Path = CONFIG_DIR.resolve(CONFIG_FILE)

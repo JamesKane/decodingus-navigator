@@ -5,7 +5,7 @@ import java.nio.file.{Files, Path, Paths, StandardCopyOption}
 
 class LiftoverCache {
   private val cacheDir: Path = {
-    val dir = Paths.get(System.getProperty("user.home"), ".cache", "decodingus-tools", "liftover")
+    val dir = Paths.get(System.getProperty("user.home"), ".decodingus", "cache", "liftover")
     try {
       Files.createDirectories(dir)
     } catch {

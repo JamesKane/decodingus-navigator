@@ -80,7 +80,7 @@ class ReferenceConfigDialog extends Dialog[Unit] {
 
   private val resetCacheDirButton = new Button("Reset to Default") {
     onAction = _ => {
-      cacheDirField.text = System.getProperty("user.home") + "/.cache/decodingus-tools/references"
+      cacheDirField.text = System.getProperty("user.home") + "/.decodingus/cache/references"
     }
   }
 
@@ -252,7 +252,7 @@ class ReferenceConfigDialog extends Dialog[Unit] {
     }.toMap
 
     val defaultCacheDir = {
-      val defaultPath = System.getProperty("user.home") + "/.cache/decodingus-tools/references"
+      val defaultPath = System.getProperty("user.home") + "/.decodingus/cache/references"
       if (cacheDirField.text.value == defaultPath) None
       else Some(cacheDirField.text.value)
     }

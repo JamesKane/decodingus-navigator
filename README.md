@@ -51,6 +51,36 @@ Built on the Java Virtual Machine (JVM) with ScalaFX, Decoding-Us Navigator runs
 ### Analysis Caching
 - SHA-256 based result caching to prevent redundant analysis
 - Cached results for coverage, WGS metrics, library stats, and contig summaries
+- Subject-organized artifact storage for intermediate analysis files
+
+### Data Storage Structure
+
+All application data is stored under `~/.decodingus/`:
+
+```
+~/.decodingus/
+├── config/
+│   ├── workspace.json              # Workspace state (projects, samples)
+│   └── reference_config.json       # Reference genome configuration
+│
+└── cache/
+    ├── references/                 # Downloaded reference genomes (.fa.gz)
+    ├── liftover/                   # Liftover chain files
+    ├── trees/                      # Haplogroup tree data
+    ├── {sha256}.json              # Analysis results cache (by file hash)
+    └── subjects/                   # Subject-specific analysis artifacts
+        └── {sampleAccession}/
+            └── runs/{runId}/
+                └── alignments/{alignmentId}/
+                    ├── wgs_metrics.txt
+                    ├── callable_loci/
+                    │   ├── chr*.callable.bed
+                    │   ├── chr*.table.txt
+                    │   └── chr*.callable.svg
+                    └── haplogroup/
+                        ├── ydna_alleles.vcf
+                        └── mtdna_alleles.vcf
+```
 
 ### Optional Cloud Integration
 - AT Protocol authentication and PDS integration

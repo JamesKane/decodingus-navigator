@@ -40,7 +40,7 @@ object ReferenceGenomeConfig {
  *
  * @param references Map of build name to reference config
  * @param promptBeforeDownload Whether to prompt the user before downloading references
- * @param defaultCacheDir Optional custom cache directory (defaults to ~/.cache/decodingus-tools/references)
+ * @param defaultCacheDir Optional custom cache directory (defaults to ~/.decodingus/cache/references)
  */
 case class ReferenceConfig(
   references: Map[String, ReferenceGenomeConfig] = Map.empty,
@@ -60,7 +60,7 @@ case class ReferenceConfig(
   /** Gets the cache directory as a Path */
   def getCacheDir: Path = {
     defaultCacheDir.map(Paths.get(_)).getOrElse(
-      Paths.get(System.getProperty("user.home"), ".cache", "decodingus-tools", "references")
+      Paths.get(System.getProperty("user.home"), ".decodingus", "cache", "references")
     )
   }
 }

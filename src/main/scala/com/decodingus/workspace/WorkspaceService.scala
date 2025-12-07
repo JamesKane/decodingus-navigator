@@ -18,7 +18,7 @@ trait WorkspaceService {
 
 object LiveWorkspaceService extends WorkspaceService {
 
-  private val CONFIG_DIR: Path = Paths.get(System.getProperty("user.home"), ".config", "decodingus-tools")
+  private val CONFIG_DIR: Path = Paths.get(System.getProperty("user.home"), ".decodingus", "config")
   private val WORKSPACE_FILE: Path = CONFIG_DIR.resolve("workspace.json")
 
   // Ensure config directory exists
@@ -100,7 +100,7 @@ object LiveWorkspaceService extends WorkspaceService {
   // --- End Circe Codecs ---
 
   /**
-   * Loads the Workspace from ~/.config/decodingus-tools/workspace.json.
+   * Loads the Workspace from ~/.decodingus/config/workspace.json.
    * If the file does not exist, returns an empty Workspace.
    *
    * @return Either an error message or the loaded Workspace.
@@ -130,7 +130,7 @@ object LiveWorkspaceService extends WorkspaceService {
   }
 
   /**
-   * Saves the given Workspace to ~/.config/decodingus-tools/workspace.json.
+   * Saves the given Workspace to ~/.decodingus/config/workspace.json.
    *
    * @param workspace The Workspace object to save.
    * @return Either an error message or Unit on success.

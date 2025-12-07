@@ -6,7 +6,7 @@ import scala.io.Source
 
 class TreeCache {
   private val cacheDir: Path = {
-    val dir = Paths.get(System.getProperty("user.home"), ".cache", "decodingus-tools", "trees")
+    val dir = Paths.get(System.getProperty("user.home"), ".decodingus", "cache", "trees")
     try {
       Files.createDirectories(dir)
     } catch {
