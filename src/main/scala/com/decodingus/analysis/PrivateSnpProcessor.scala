@@ -52,9 +52,9 @@ class PrivateSnpProcessor {
 
     val caller = new GatkHaplotypeCallerProcessor()
     caller.callAllVariantsInContig(bamPath, referencePath, contig, onProgress) match {
-      case Right(allVariantsVcf) =>
+      case Right(callerResult) =>
         onProgress("Filtering for private SNPs...", 0.8, 1.0)
-        val reader = new VCFFileReader(allVariantsVcf, false)
+        val reader = new VCFFileReader(callerResult.vcfFile, false)
 
         val privateVariants = reader.iterator().asScala.filterNot {
           vc =>

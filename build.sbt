@@ -108,7 +108,9 @@ lazy val root = (project in file("."))
         "org.openjfx" % "javafx-web" % javaFXVersion classifier osName,
         "com.typesafe" % "config" % "1.4.3",
         "com.softwaremill.sttp.client3" %% "core" % "3.9.7",
-        "com.softwaremill.sttp.client3" %% "circe" % "3.9.7"
+        "com.softwaremill.sttp.client3" %% "circe" % "3.9.7",
+        "org.scalameta" %% "munit" % "1.0.0" % Test
       )
-    }
+    },
+    testFrameworks += new TestFramework("munit.Framework")
   )

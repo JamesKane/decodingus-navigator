@@ -17,7 +17,8 @@ import java.time.LocalDateTime
  * @param testType        Type of test (WGS, EXOME, TARGETED, RNA_SEQ, AMPLICON)
  * @param libraryLayout   Paired-end or Single-end (PAIRED, SINGLE)
  * @param totalReads      Total number of reads
- * @param readLength      Average read length
+ * @param readLength      Mean read length
+ * @param maxReadLength   Maximum read length (used for GATK --READ_LENGTH parameter)
  * @param meanInsertSize  Mean insert size of the library
  * @param flowcellId      Flowcell identifier if available from headers
  * @param runDate         Date of the sequencing run if extractable
@@ -35,6 +36,7 @@ case class SequenceRun(
   libraryLayout: Option[String] = None,
   totalReads: Option[Long] = None,
   readLength: Option[Int] = None,
+  maxReadLength: Option[Int] = None,
   meanInsertSize: Option[Double] = None,
   flowcellId: Option[String] = None,
   runDate: Option[LocalDateTime] = None,

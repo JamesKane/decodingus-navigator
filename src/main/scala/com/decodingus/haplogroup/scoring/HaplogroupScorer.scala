@@ -4,22 +4,50 @@ import com.decodingus.haplogroup.model.{Haplogroup, HaplogroupResult, Haplogroup
 
 import scala.collection.mutable
 
+/**
+ * Scores haplogroups by comparing sample SNP calls against the haplogroup tree.
+ *
+ * Scoring rules:
+ * - Derived state (sample matches tree's derived/ALT allele) = +1 to score
+ * - Ancestral state (sample matches tree's ancestral/REF allele) = -1 penalty
+ * - No call (position not in VCF) = neutral, no effect on score
+ * - Stop descent if two consecutive branches have all available calls as ancestral
+ */
 class HaplogroupScorer {
 
   def score(tree: List[Haplogroup], snpCalls: Map[Long, String]): List[HaplogroupResult] = {
     val scores = mutable.ListBuffer[HaplogroupResult]()
-    tree.foreach(rootNode => calculateHaplogroupScore(rootNode, snpCalls, scores, None, 0))
-    scores.toList.sortBy(-_.score)
+    tree.foreach(rootNode => calculateHaplogroupScore(
+      rootNode,
+      snpCalls,
+      scores,
+      cumulativeDerived = 0,
+      cumulativeAncestral = 0,
+      cumulativeNoCalls = 0,
+      cumulativeSnps = 0,
+      depth = 0,
+      consecutiveAncestralBranches = 0
+    ))
+    scores.toList.sortBy(r => (-r.score, -r.depth))
   }
 
+  /**
+   * Recursively calculate haplogroup scores, descending through the tree.
+   *
+   * @param consecutiveAncestralBranches Number of consecutive branches where all calls were ancestral.
+   *                                     Stop descent when this reaches 2.
+   */
   private def calculateHaplogroupScore(
                                         haplogroup: Haplogroup,
                                         snpCalls: Map[Long, String],
                                         scores: mutable.ListBuffer[HaplogroupResult],
-                                        parentScore: Option[HaplogroupScore],
-                                        depth: Int
-                                      ): HaplogroupScore = {
-    var currentScore = parentScore.getOrElse(HaplogroupScore())
+                                        cumulativeDerived: Int,
+                                        cumulativeAncestral: Int,
+                                        cumulativeNoCalls: Int,
+                                        cumulativeSnps: Int,
+                                        depth: Int,
+                                        consecutiveAncestralBranches: Int
+                                      ): Unit = {
 
     var branchDerived = 0
     var branchAncestral = 0
@@ -28,42 +56,71 @@ class HaplogroupScorer {
     for (locus <- haplogroup.loci) {
       snpCalls.get(locus.position) match {
         case Some(calledBase) =>
-          if (calledBase == locus.alt) {
+          // Use case-insensitive comparison - FTDNA tree and VCF can have mixed case bases
+          if (calledBase.equalsIgnoreCase(locus.alt)) {
             branchDerived += 1
-          } else if (calledBase == locus.ref) {
+          } else if (calledBase.equalsIgnoreCase(locus.ref)) {
             branchAncestral += 1
           }
+          // If calledBase doesn't match either ref or alt, treat as no-call
         case None =>
           branchNoCalls += 1
       }
     }
 
-    currentScore = currentScore.copy(
-      matches = currentScore.matches + branchDerived,
-      ancestralMatches = currentScore.ancestralMatches + branchAncestral,
-      noCalls = currentScore.noCalls + branchNoCalls,
-      totalSnps = currentScore.totalSnps + haplogroup.loci.length
-    )
+    // Update cumulative counts
+    val newCumulativeDerived = cumulativeDerived + branchDerived
+    val newCumulativeAncestral = cumulativeAncestral + branchAncestral
+    val newCumulativeNoCalls = cumulativeNoCalls + branchNoCalls
+    val newCumulativeSnps = cumulativeSnps + haplogroup.loci.length
 
-    val scoreValue = (branchDerived + 1).toDouble / (branchAncestral + 1).toDouble
-    currentScore = currentScore.copy(score = scoreValue)
+    // Calculate score: derived adds points, ancestral subtracts points, no-calls are neutral
+    val scoreValue = newCumulativeDerived.toDouble - newCumulativeAncestral.toDouble
 
     scores += HaplogroupResult(
       name = haplogroup.name,
-      score = currentScore.score,
-      matchingSnps = currentScore.matches,
-      mismatchingSnps = 0, // Mismatch logic not in scoring.rs, seems to be part of low quality
-      ancestralMatches = currentScore.ancestralMatches,
-      noCalls = currentScore.noCalls,
+      score = scoreValue,
+      matchingSnps = newCumulativeDerived,
+      mismatchingSnps = 0,
+      ancestralMatches = newCumulativeAncestral,
+      noCalls = newCumulativeNoCalls,
       totalSnps = haplogroup.loci.length,
-      cumulativeSnps = currentScore.totalSnps,
+      cumulativeSnps = newCumulativeSnps,
       depth = depth
     )
 
-    for (child <- haplogroup.children) {
-      calculateHaplogroupScore(child, snpCalls, scores, Some(currentScore), depth + 1)
+    // Determine if this branch was "all ancestral" (has calls but all were ancestral)
+    val branchHasCalls = branchDerived > 0 || branchAncestral > 0
+    val branchAllAncestral = branchHasCalls && branchDerived == 0 && branchAncestral > 0
+
+    val newConsecutiveAncestral = if (branchAllAncestral) {
+      consecutiveAncestralBranches + 1
+    } else if (branchDerived > 0) {
+      // Reset counter if we found any derived calls
+      0
+    } else {
+      // No calls at all - keep the counter as is
+      consecutiveAncestralBranches
     }
 
-    currentScore
+    // Stop descent if we have two consecutive branches with all ancestral calls
+    if (newConsecutiveAncestral >= 2) {
+      return
+    }
+
+    // Continue descent to children
+    for (child <- haplogroup.children) {
+      calculateHaplogroupScore(
+        child,
+        snpCalls,
+        scores,
+        newCumulativeDerived,
+        newCumulativeAncestral,
+        newCumulativeNoCalls,
+        newCumulativeSnps,
+        depth + 1,
+        newConsecutiveAncestral
+      )
+    }
   }
 }

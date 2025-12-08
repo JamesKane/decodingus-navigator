@@ -214,6 +214,20 @@ class WorkbenchView(val viewModel: WorkbenchViewModel) extends SplitPane {
     viewModel.runInitialAnalysis(sampleAccession, index, {
       case Right(libraryStats) =>
         Platform.runLater {
+          // Calculate mean read length from distribution
+          val meanReadLength = if (libraryStats.lengthDistribution.nonEmpty) {
+            val totalReads = libraryStats.lengthDistribution.values.sum.toDouble
+            val weightedSum = libraryStats.lengthDistribution.map { case (len, count) => len.toLong * count }.sum
+            f"${weightedSum / totalReads}%.1f bp"
+          } else "N/A"
+
+          // Calculate mean insert size from distribution
+          val meanInsertSize = if (libraryStats.insertSizeDistribution.nonEmpty) {
+            val totalPairs = libraryStats.insertSizeDistribution.values.sum.toDouble
+            val weightedSum = libraryStats.insertSizeDistribution.map { case (size, count) => size * count }.sum
+            f"${weightedSum / totalPairs}%.1f bp"
+          } else "N/A"
+
           new Alert(AlertType.Information) {
             title = "Analysis Complete"
             headerText = "Initial Analysis Results"
@@ -222,7 +236,8 @@ class WorkbenchView(val viewModel: WorkbenchViewModel) extends SplitPane {
                              |Instrument: ${libraryStats.mostFrequentInstrument}
                              |Reference: ${libraryStats.referenceBuild}
                              |Aligner: ${libraryStats.aligner}
-                             |Reads Sampled: ${libraryStats.readCount}""".stripMargin
+                             |Mean Read Length: $meanReadLength
+                             |Mean Insert Size: $meanInsertSize""".stripMargin
           }.showAndWait()
           // Refresh the detail view
           viewModel.selectedSubject.value.foreach(renderSubjectDetail)

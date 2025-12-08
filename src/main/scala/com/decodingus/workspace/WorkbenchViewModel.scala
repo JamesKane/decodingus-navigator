@@ -645,17 +645,21 @@ class WorkbenchViewModel(val workspaceService: WorkspaceService) {
               val sequenceRuns = _workspace.value.main.getSequenceRunsForBiosample(subject)
               sequenceRuns.lift(index) match {
                 case Some(seqRun) =>
-                  // Create a new Alignment record
-                  val alignUri = s"local:alignment:${subject.sampleAccession}:${java.util.UUID.randomUUID().toString.take(8)}"
+                  // Check for existing alignment or create new one
+                  val alignUri = seqRun.alignmentRefs.headOption.getOrElse(
+                    s"local:alignment:${subject.sampleAccession}:${java.util.UUID.randomUUID().toString.take(8)}"
+                  )
+                  val existingAlignment = _workspace.value.main.alignments.find(_.atUri.contains(alignUri))
+
                   val newAlignment = Alignment(
                     atUri = Some(alignUri),
-                    meta = RecordMeta.initial,
+                    meta = existingAlignment.map(_.meta.updated("analysis")).getOrElse(RecordMeta.initial),
                     sequenceRunRef = seqRun.atUri.getOrElse(""),
                     biosampleRef = Some(subject.atUri.getOrElse(s"local:biosample:${subject.sampleAccession}")),
                     referenceBuild = libraryStats.referenceBuild,
                     aligner = libraryStats.aligner,
                     files = seqRun.files,
-                    metrics = None
+                    metrics = existingAlignment.flatMap(_.metrics) // Preserve existing metrics on re-run
                   )
 
                   // Update the SequenceRun with inferred metadata
@@ -666,16 +670,23 @@ class WorkbenchViewModel(val workspaceService: WorkspaceService) {
                     testType = inferTestType(libraryStats),
                     libraryLayout = Some(if (libraryStats.pairedReads > libraryStats.readCount / 2) "Paired-End" else "Single-End"),
                     totalReads = Some(libraryStats.readCount.toLong),
-                    readLength = libraryStats.lengthDistribution.keys.maxOption,
+                    readLength = calculateMeanReadLength(libraryStats.lengthDistribution),
+                    maxReadLength = libraryStats.lengthDistribution.keys.maxOption,
                     meanInsertSize = calculateMeanInsertSize(libraryStats.insertSizeDistribution),
-                    alignmentRefs = seqRun.alignmentRefs :+ alignUri
+                    alignmentRefs = if (seqRun.alignmentRefs.contains(alignUri)) seqRun.alignmentRefs else seqRun.alignmentRefs :+ alignUri
                   )
 
-                  // Update workspace with both the sequence run and new alignment
+                  // Update workspace - update existing alignment or add new one
                   val updatedSequenceRuns = _workspace.value.main.sequenceRuns.map { sr =>
                     if (sr.atUri == seqRun.atUri) updatedSeqRun else sr
                   }
-                  val updatedAlignments = _workspace.value.main.alignments :+ newAlignment
+                  val updatedAlignments = if (existingAlignment.isDefined) {
+                    _workspace.value.main.alignments.map { a =>
+                      if (a.atUri.contains(alignUri)) newAlignment else a
+                    }
+                  } else {
+                    _workspace.value.main.alignments :+ newAlignment
+                  }
                   val updatedContent = _workspace.value.main.copy(
                     sequenceRuns = updatedSequenceRuns,
                     alignments = updatedAlignments
@@ -730,6 +741,15 @@ class WorkbenchViewModel(val workspaceService: WorkspaceService) {
   }
 
   /** Calculate mean insert size from distribution */
+  private def calculateMeanReadLength(distribution: Map[Int, Int]): Option[Int] = {
+    if (distribution.isEmpty) None
+    else {
+      val totalReads = distribution.values.sum.toDouble
+      val weightedSum = distribution.map { case (len, count) => len.toLong * count }.sum
+      if (totalReads > 0) Some((weightedSum / totalReads).round.toInt) else None
+    }
+  }
+
   private def calculateMeanInsertSize(distribution: Map[Long, Int]): Option[Double] = {
     if (distribution.isEmpty) None
     else {
@@ -990,6 +1010,9 @@ class WorkbenchViewModel(val workspaceService: WorkspaceService) {
                         platformName = if (seqRun.platformName == "Unknown" || seqRun.platformName == "Other") libraryStats.inferredPlatform else seqRun.platformName,
                         instrumentModel = seqRun.instrumentModel.orElse(Some(libraryStats.mostFrequentInstrument)),
                         totalReads = Some(libraryStats.readCount.toLong),
+                        readLength = calculateMeanReadLength(libraryStats.lengthDistribution).orElse(seqRun.readLength),
+                        maxReadLength = libraryStats.lengthDistribution.keys.maxOption.orElse(seqRun.maxReadLength),
+                        meanInsertSize = calculateMeanInsertSize(libraryStats.insertSizeDistribution).orElse(seqRun.meanInsertSize),
                         alignmentRefs = if (seqRun.alignmentRefs.contains(alignUri)) seqRun.alignmentRefs else seqRun.alignmentRefs :+ alignUri
                       )
 
@@ -1101,7 +1124,7 @@ class WorkbenchViewModel(val workspaceService: WorkspaceService) {
                             val pct = 0.2 + (current / total) * 0.7
                             updateProgress(message, pct)
                           },
-                          seqRun.readLength, // Pass read length to handle long reads (e.g., PacBio HiFi)
+                          seqRun.maxReadLength, // Pass max read length to handle long reads (e.g., PacBio HiFi, NovaSeq 151bp)
                           Some(artifactCtx)
                         ) match {
                           case Right(metrics) => metrics

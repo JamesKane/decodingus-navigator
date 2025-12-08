@@ -59,24 +59,138 @@ object StrCsvParser {
   }
 
   private def parseLines(lines: List[String], fileName: String, biosampleRef: String): Either[String, ParseResult] = {
-    val (format, headerIdx) = detectFormat(lines)
-    format match {
+    val formatInfo = detectFormatWithLayout(lines)
+    formatInfo.format match {
       case VendorFormat.Unknown =>
         Left("Could not detect CSV format. Expected FTDNA, YSEQ, or a two-column Marker,Value format.")
       case _ =>
-        parseWithFormat(lines, headerIdx, format, fileName, biosampleRef)
+        formatInfo.layout match {
+          case CsvLayout.Horizontal =>
+            parseHorizontalFormat(lines, formatInfo.format, fileName, biosampleRef)
+          case CsvLayout.Vertical =>
+            parseWithFormat(lines, formatInfo.headerIdx, formatInfo.format, fileName, biosampleRef)
+        }
     }
   }
 
   /**
+   * Parses horizontal format CSV where markers are column headers and values are in the row(s) below.
+   * This is common for FTDNA and YSEQ exports.
+   */
+  private def parseHorizontalFormat(
+    lines: List[String],
+    format: VendorFormat,
+    fileName: String,
+    biosampleRef: String
+  ): Either[String, ParseResult] = {
+    if (lines.size < 2) {
+      return Left("Horizontal format requires at least 2 rows (headers and values)")
+    }
+
+    val headers = splitCsvLine(lines.head).map(_.trim)
+    val values = splitCsvLine(lines(1)).map(_.trim)
+    var warnings = List.empty[String]
+    var markers = List.empty[StrMarkerValue]
+
+    headers.zip(values).foreach { case (markerName, valueStr) =>
+      if (looksLikeMarkerName(markerName) && valueStr.nonEmpty && valueStr != "-" && valueStr.toLowerCase != "null") {
+        parseStrValue(markerName, valueStr) match {
+          case Right(value) =>
+            val panel = inferMarkerPanel(markerName)
+            markers = markers :+ StrMarkerValue(
+              marker = normalizeMarkerName(markerName),
+              value = value,
+              panel = panel,
+              quality = None,
+              readDepth = None
+            )
+          case Left(err) =>
+            warnings = warnings :+ s"Warning: Could not parse marker $markerName='$valueStr': $err"
+        }
+      }
+    }
+
+    if (markers.isEmpty) {
+      Left("No valid STR markers found in the file")
+    } else {
+      // Infer provider from filename or markers
+      val allMarkerNames = headers.filter(looksLikeMarkerName).map(normalizeMarkerName).toList
+      val provider = inferProviderFromContextWithAllMarkers(fileName, markers, allMarkerNames)
+      val detectedFormat = provider match {
+        case Some("FTDNA") => VendorFormat.FTDNA
+        case Some("YSEQ") => VendorFormat.YSEQ
+        case _ => format
+      }
+
+      // Simple panel - just store what we have, server can define panel metadata later
+      val strPanels = List(StrPanel(
+        panelName = provider.getOrElse("CUSTOM"),
+        markerCount = markers.size,
+        provider = provider,
+        testDate = Some(LocalDateTime.now())
+      ))
+
+      val fileInfo = FileInfo(
+        fileName = fileName,
+        fileSizeBytes = None,
+        fileFormat = "CSV",
+        checksum = None,
+        checksumAlgorithm = None,
+        location = None
+      )
+
+      val profile = StrProfile(
+        atUri = None,
+        meta = RecordMeta.initial,
+        biosampleRef = biosampleRef,
+        sequenceRunRef = None,
+        panels = strPanels,
+        markers = markers,
+        totalMarkers = Some(markers.size),
+        source = Some("IMPORTED"),
+        importedFrom = provider,
+        derivationMethod = None,
+        files = List(fileInfo)
+      )
+
+      Right(ParseResult(profile, detectedFormat, warnings))
+    }
+  }
+
+  /** Represents the layout of the CSV file */
+  sealed trait CsvLayout
+  object CsvLayout {
+    case object Vertical extends CsvLayout   // Marker in col 1, value in col 2 (rows = markers)
+    case object Horizontal extends CsvLayout // Markers as column headers, values in row below
+  }
+
+  case class FormatInfo(format: VendorFormat, headerIdx: Int, layout: CsvLayout)
+
+  /**
    * Detects the vendor format from CSV headers.
-   * Returns the format and the index of the header row.
+   * Returns the format, the index of the header row, and the layout type.
    */
   private def detectFormat(lines: List[String]): (VendorFormat, Int) = {
-    // FTDNA format typically has: "Marker Name" or "DYS#" in first column, "Allele" or value in second
-    // Sometimes has a kit number header row first
-    // YSEQ format: might have "Marker", "Value" or similar headers
+    detectFormatWithLayout(lines) match {
+      case FormatInfo(format, idx, _) => (format, idx)
+    }
+  }
 
+  private def detectFormatWithLayout(lines: List[String]): FormatInfo = {
+    if (lines.isEmpty) return FormatInfo(VendorFormat.Unknown, -1, CsvLayout.Vertical)
+
+    // First, check for horizontal format (many DYS markers as column headers)
+    val firstLineCols = splitCsvLine(lines.head)
+    val dysMarkerCount = firstLineCols.count(c => looksLikeMarkerName(c.trim))
+
+    // If most columns look like marker names, it's horizontal format
+    if (dysMarkerCount > 10 && dysMarkerCount.toDouble / firstLineCols.length > 0.8) {
+      // Horizontal format - markers are column headers
+      // Provider will be inferred later from filename/marker count
+      return FormatInfo(VendorFormat.Generic, 0, CsvLayout.Horizontal)
+    }
+
+    // Otherwise, check for vertical format
     val detected = lines.zipWithIndex.collectFirst {
       case (line, idx) =>
         val lower = line.toLowerCase.trim
@@ -84,23 +198,23 @@ object StrCsvParser {
 
         // FTDNA format detection
         if (lower.contains("marker name") && lower.contains("allele")) {
-          Some((VendorFormat.FTDNA, idx))
+          Some(FormatInfo(VendorFormat.FTDNA, idx, CsvLayout.Vertical))
         } else if (cols.headOption.exists(c => c == "marker name" || c == "marker") &&
                    cols.lift(1).exists(c => c == "allele" || c == "value" || c == "alleles")) {
           // Check if it looks like FTDNA based on other columns
           if (cols.exists(c => c.contains("ftdna") || c.contains("ystr"))) {
-            Some((VendorFormat.FTDNA, idx))
+            Some(FormatInfo(VendorFormat.FTDNA, idx, CsvLayout.Vertical))
           } else {
-            Some((VendorFormat.Generic, idx))
+            Some(FormatInfo(VendorFormat.Generic, idx, CsvLayout.Vertical))
           }
         } else if (lower.contains("yseq") || cols.exists(_.contains("yseq"))) {
           // YSEQ format detection - often has specific headers
-          Some((VendorFormat.YSEQ, idx))
+          Some(FormatInfo(VendorFormat.YSEQ, idx, CsvLayout.Vertical))
         } else if (cols.size >= 2 && idx < 3) {
           // Check for two-column format (Marker, Value)
           val firstCol = cols.head
           if (firstCol.startsWith("dys") || firstCol.startsWith("marker") || firstCol == "name") {
-            Some((VendorFormat.Generic, idx))
+            Some(FormatInfo(VendorFormat.Generic, idx, CsvLayout.Vertical))
           } else {
             None
           }
@@ -114,12 +228,12 @@ object StrCsvParser {
       if (lines.nonEmpty) {
         val firstLine = splitCsvLine(lines.head)
         if (firstLine.size >= 2 && firstLine.head.toUpperCase.startsWith("DYS")) {
-          (VendorFormat.Generic, -1) // No header, data starts at 0
+          FormatInfo(VendorFormat.Generic, -1, CsvLayout.Vertical) // No header, data starts at 0
         } else {
-          (VendorFormat.Unknown, -1)
+          FormatInfo(VendorFormat.Unknown, -1, CsvLayout.Vertical)
         }
       } else {
-        (VendorFormat.Unknown, -1)
+        FormatInfo(VendorFormat.Unknown, -1, CsvLayout.Vertical)
       }
     }
   }
@@ -153,18 +267,16 @@ object StrCsvParser {
     if (markers.isEmpty) {
       Left("No valid STR markers found in the file")
     } else {
-      // Detect provider from format
+      // Detect provider from format or filename
       val provider = format match {
         case VendorFormat.FTDNA => Some("FTDNA")
         case VendorFormat.YSEQ => Some("YSEQ")
-        case VendorFormat.Generic => None
-        case VendorFormat.Unknown => None
+        case _ => inferProviderFromContext(fileName, markers)
       }
 
-      // Infer panel from marker count
-      val inferredPanel = inferPanel(markers.size, provider)
+      // Simple panel - just store provider name, server can define panel metadata later
       val strPanels = List(StrPanel(
-        panelName = inferredPanel,
+        panelName = provider.getOrElse("CUSTOM"),
         markerCount = markers.size,
         provider = provider,
         testDate = Some(LocalDateTime.now())
@@ -310,8 +422,11 @@ object StrCsvParser {
     val upper = name.toUpperCase.trim
     upper.startsWith("DYS") ||
     upper.startsWith("DYF") ||
+    upper.startsWith("DYR") ||
+    upper.startsWith("FTY") ||  // YSEQ markers
     upper.startsWith("GATA") ||
     upper.startsWith("Y-GATA") ||
+    upper.startsWith("Y-GGAAT") ||
     upper.startsWith("YCAII") ||
     upper.startsWith("CDY") ||
     upper == "H4" ||
@@ -327,8 +442,11 @@ object StrCsvParser {
     cleaned.toUpperCase match {
       case n if n.startsWith("DYS") => n
       case n if n.startsWith("DYF") => n
+      case n if n.startsWith("DYR") => n
+      case n if n.startsWith("FTY") => n  // YSEQ markers
       case n if n.startsWith("GATA") => n
       case n if n.startsWith("Y-GATA") => n.replace("Y-GATA", "YGATA")
+      case n if n.startsWith("Y-GGAAT") => n.replace("Y-GGAAT", "YGGAAT")
       case n if n.startsWith("YCAII") => n
       case n if n.startsWith("CDY") => n
       case n => n
@@ -351,23 +469,62 @@ object StrCsvParser {
     }
   }
 
-  /** Infers the panel name from marker count and provider */
-  private def inferPanel(markerCount: Int, provider: Option[String]): String = {
-    provider match {
-      case Some("FTDNA") =>
-        markerCount match {
-          case n if n <= 12 => "Y12"
-          case n if n <= 25 => "Y25"
-          case n if n <= 37 => "Y37"
-          case n if n <= 67 => "Y67"
-          case n if n <= 111 => "Y111"
-          case n if n <= 500 => "Y500"
-          case _ => "Y700"
-        }
-      case Some("YSEQ") =>
-        if (markerCount > 400) "YSEQ_ALPHA" else "CUSTOM"
-      case _ =>
-        s"CUSTOM_$markerCount"
+  // YSEQ-exclusive markers (not in FTDNA panels)
+  private val yseqExclusiveMarkers = Set(
+    // YSEQ Exclusive Markers Set 1
+    "DYS728", "DYS723", "DYR112", "DYS711", "DYR76", "DYR33", "DYS727", "DYR157", "DYS713",
+    // YSEQ Exclusive Markers Set 2
+    "DYS518", "DYS614", "DYS626", "DYS644", "DYS684", "DYF397", "DYF399X", "DYS464X", "DYF408"
+  )
+
+  /**
+   * Infers the provider (FTDNA, YSEQ) from filename and marker content.
+   * FTDNA filenames typically contain "YDNA" or kit numbers like "B5163"
+   * YSEQ may have "yseq" in filename or contain YSEQ-exclusive markers
+   */
+  private def inferProviderFromContext(fileName: String, markers: List[StrMarkerValue]): Option[String] = {
+    val markerNames = markers.map(_.marker.toUpperCase).toSet
+    inferProviderFromContextWithAllMarkers(fileName, markers, markerNames.toList)
+  }
+
+  /**
+   * Infers the provider using all marker names (including those without values).
+   * This is important for YSEQ files which often have sparse data.
+   */
+  private def inferProviderFromContextWithAllMarkers(
+    fileName: String,
+    markers: List[StrMarkerValue],
+    allMarkerNames: List[String]
+  ): Option[String] = {
+    val lowerFileName = fileName.toLowerCase
+    val markerNamesSet = allMarkerNames.map(_.toUpperCase).toSet
+
+    // Check filename hints first
+    if (lowerFileName.contains("yseq")) {
+      return Some("YSEQ")
+    }
+    if (lowerFileName.contains("ftdna") || lowerFileName.contains("ydna") ||
+        lowerFileName.matches(".*[bB]\\d{4,}.*")) {
+      return Some("FTDNA")
+    }
+
+    // Check for YSEQ-exclusive markers (these are NOT in FTDNA panels)
+    val hasYseqExclusiveMarkers = markerNamesSet.intersect(yseqExclusiveMarkers).nonEmpty
+    if (hasYseqExclusiveMarkers) {
+      return Some("YSEQ")
+    }
+
+    // Check marker count - FTDNA has standard panel sizes
+    // Note: FTY markers appear in both FTDNA Big Y-700 and YSEQ panels
+    val ftdnaPanelSizes = Set(12, 25, 37, 67, 111, 500, 700)
+    val markerCount = markers.size
+
+    // If marker count matches a standard FTDNA panel size (with tolerance), likely FTDNA
+    if (ftdnaPanelSizes.exists(size => math.abs(markerCount - size) <= 5)) {
+      Some("FTDNA")
+    } else {
+      // Non-standard count - could be either vendor or custom panel
+      None
     }
   }
 

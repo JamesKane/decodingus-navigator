@@ -1,9 +1,10 @@
 package com.decodingus.analysis
 
 import com.decodingus.haplogroup.caller.GatkHaplotypeCallerProcessor
-import com.decodingus.haplogroup.model.{HaplogroupResult, Locus}
+import com.decodingus.haplogroup.model.{Haplogroup, HaplogroupResult, Locus}
+import com.decodingus.haplogroup.report.HaplogroupReportWriter
 import com.decodingus.haplogroup.scoring.HaplogroupScorer
-import com.decodingus.haplogroup.tree.{TreeProvider, TreeProviderType, TreeType}
+import com.decodingus.haplogroup.tree.{TreeCache, TreeProvider, TreeProviderType, TreeType}
 import com.decodingus.haplogroup.vendor.{DecodingUsTreeProvider, FtdnaTreeProvider}
 import com.decodingus.liftover.LiftoverProcessor
 import com.decodingus.model.LibraryStats
@@ -11,7 +12,7 @@ import com.decodingus.refgenome.{LiftoverGateway, ReferenceGateway, ReferenceQue
 import htsjdk.variant.vcf.VCFFileReader
 
 import java.io.{File, PrintWriter}
-import java.nio.file.Path
+import java.nio.file.{Files, Path}
 import scala.jdk.CollectionConverters.*
 import scala.util.Using
 
@@ -46,6 +47,7 @@ class HaplogroupProcessor {
       case TreeProviderType.FTDNA => new FtdnaTreeProvider(treeType)
       case TreeProviderType.DECODINGUS => new DecodingUsTreeProvider(treeType)
     }
+    val treeCache = new TreeCache()
 
     treeProvider.loadTree(libraryStats.referenceBuild).flatMap { tree =>
       val allLoci = tree.flatMap(h => h.loci).distinct
@@ -53,6 +55,7 @@ class HaplogroupProcessor {
       // as Locus objects now carry their own contig information.
       // However, it's still used for liftover and other contig-specific operations.
       val primaryContig = if (treeType == TreeType.YDNA) "chrY" else "chrM"
+      val outputPrefix = if (treeType == TreeType.YDNA) "ydna" else "mtdna"
 
       val referenceBuild = libraryStats.referenceBuild
       val treeSourceBuild = if (treeProvider.supportedBuilds.contains(referenceBuild)) {
@@ -64,7 +67,15 @@ class HaplogroupProcessor {
       val referenceGateway = new ReferenceGateway((_, _) => {})
 
       referenceGateway.resolve(treeSourceBuild).flatMap { treeRefPath =>
-        val initialAllelesVcf = createVcfAllelesFile(allLoci, treeRefPath.toString, treeType, artifactContext)
+        // Check if cached sites VCF exists and is valid
+        val cachedSitesVcf = treeCache.getSitesVcfPath(treeProvider.cachePrefix, treeSourceBuild)
+        val initialAllelesVcf = if (treeCache.isSitesVcfValid(treeProvider.cachePrefix, treeSourceBuild)) {
+          onProgress("Using cached sites VCF...", 0.05, 1.0)
+          cachedSitesVcf
+        } else {
+          onProgress("Creating sites VCF...", 0.05, 1.0)
+          createVcfAllelesFile(allLoci, treeRefPath.toString, treeType, Some(cachedSitesVcf))
+        }
 
         val (allelesForCalling, performReverseLiftover) = if (referenceBuild == treeSourceBuild) {
           onProgress("Reference builds match.", 0.1, 1.0)
@@ -79,13 +90,22 @@ class HaplogroupProcessor {
         allelesForCalling.flatMap { vcf =>
           referenceGateway.resolve(referenceBuild).flatMap { referencePath =>
             val caller = new GatkHaplotypeCallerProcessor()
-            caller.callSnps(bamPath, referencePath.toString, vcf, (msg, done, total) => onProgress(msg, 0.4 + (done * 0.4), 1.0)).flatMap { calledVcf =>
+            // Pass artifact directory for called VCF and logs
+            val artifactDir = artifactContext.map(_.getSubdir(ARTIFACT_SUBDIR_NAME))
+            caller.callSnps(
+              bamPath,
+              referencePath.toString,
+              vcf,
+              (msg, done, total) => onProgress(msg, 0.4 + (done * 0.4), 1.0),
+              artifactDir,
+              Some(outputPrefix)
+            ).flatMap { callerResult =>
               val finalVcf = if (performReverseLiftover) {
                 onProgress("Performing reverse liftover on results...", 0.8, 1.0)
                 // Note: The contig parameter here for liftover still refers to the primary contig for the tree type.
-                performLiftover(calledVcf, primaryContig, referenceBuild, treeSourceBuild, onProgress)
+                performLiftover(callerResult.vcfFile, primaryContig, referenceBuild, treeSourceBuild, onProgress)
               } else {
-                Right(calledVcf)
+                Right(callerResult.vcfFile)
               }
 
               finalVcf.flatMap { scoredVcf =>
@@ -93,6 +113,20 @@ class HaplogroupProcessor {
                 val snpCalls = parseVcf(scoredVcf)
                 val scorer = new HaplogroupScorer()
                 val results = scorer.score(tree, snpCalls)
+
+                // Write report to artifact directory if available
+                artifactDir.foreach { dir =>
+                  onProgress("Writing haplogroup report...", 0.95, 1.0)
+                  HaplogroupReportWriter.writeReport(
+                    outputDir = dir.toFile,
+                    treeType = treeType,
+                    results = results,
+                    tree = tree,
+                    snpCalls = snpCalls,
+                    sampleName = None
+                  )
+                }
+
                 onProgress("Analysis complete.", 1.0, 1.0)
                 Right(results)
               }
@@ -124,14 +158,14 @@ class HaplogroupProcessor {
     loci: List[Locus],
     referencePath: String,
     treeType: TreeType,
-    artifactContext: Option[ArtifactContext]
+    outputFile: Option[File]
   ): File = {
-    // Use artifact cache directory if context provided, otherwise use temp file
-    val vcfFile = artifactContext match {
-      case Some(ctx) =>
-        val dir = ctx.getSubdir(ARTIFACT_SUBDIR_NAME)
-        val prefix = if (treeType == TreeType.YDNA) "ydna" else "mtdna"
-        dir.resolve(s"${prefix}_alleles.vcf").toFile
+    // Use provided output file or create temp file
+    val vcfFile = outputFile match {
+      case Some(file) =>
+        // Ensure parent directory exists
+        Option(file.getParentFile).foreach(_.mkdirs())
+        file
       case None =>
         val tempFile = File.createTempFile("alleles", ".vcf")
         tempFile.deleteOnExit()
