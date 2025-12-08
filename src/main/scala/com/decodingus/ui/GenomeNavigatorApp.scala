@@ -56,6 +56,12 @@ case class ContigAnalysisRow(
 )
 
 object GenomeNavigatorApp extends JFXApp3 {
+  // Initialize Log4j workaround for GATK compatibility with Java 17+
+  // This MUST be done before any GATK classes are loaded to avoid
+  // "No class provided" errors from Log4j's stack-based caller lookup
+  System.setProperty("log4j2.loggerContextFactory", "org.apache.logging.log4j.simple.SimpleLoggerContextFactory")
+  System.setProperty("log4j2.disable.jmx", "true")
+
   private val mainLayout = new StackPane()
 
   // Removed old state variables, now managing a single Workspace object

@@ -4,7 +4,7 @@ import io.circe.Codec
 
 case class HaplogroupNode(
                            haplogroup_id: Long,
-                           parent_id: Long,
+                           parent_id: Option[Long],
                            name: String,
                            is_root: Boolean,
                            loci: List[Locus],

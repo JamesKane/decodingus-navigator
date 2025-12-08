@@ -19,7 +19,8 @@ package com.decodingus.workspace.model
  * @param sequenceRunRefs         AT URIs of sequence run records associated with this biosample
  * @param genotypeRefs            AT URIs of genotype data records (chip/array data) associated with this biosample
  * @param populationBreakdownRef  AT URI of the population/ancestry breakdown for this biosample
- * @param strProfileRef           AT URI of the Y-STR profile for this biosample
+ * @param strProfileRef           AT URI of the Y-STR profile for this biosample (deprecated, use strProfileRefs)
+ * @param strProfileRefs          AT URIs of Y-STR profile records for this biosample (supports multiple vendors)
  */
 case class Biosample(
   atUri: Option[String],
@@ -34,7 +35,8 @@ case class Biosample(
   sequenceRunRefs: List[String] = List.empty,
   genotypeRefs: List[String] = List.empty,
   populationBreakdownRef: Option[String] = None,
-  strProfileRef: Option[String] = None
+  strProfileRef: Option[String] = None,
+  strProfileRefs: List[String] = List.empty
 )
 
 object Biosample {

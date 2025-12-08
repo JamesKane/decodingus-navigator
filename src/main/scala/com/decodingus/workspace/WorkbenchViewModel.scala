@@ -8,7 +8,7 @@ import com.decodingus.model.{LibraryStats, WgsMetrics}
 import com.decodingus.pds.PdsClient
 import com.decodingus.config.ReferenceConfigService
 import com.decodingus.refgenome.{ReferenceGateway, ReferenceResolveResult}
-import com.decodingus.workspace.model.{Workspace, Project, Biosample, WorkspaceContent, SyncStatus, SequenceRun, Alignment, AlignmentMetrics, FileInfo, HaplogroupAssignments, HaplogroupResult => WorkspaceHaplogroupResult, RecordMeta}
+import com.decodingus.workspace.model.{Workspace, Project, Biosample, WorkspaceContent, SyncStatus, SequenceRun, Alignment, AlignmentMetrics, FileInfo, HaplogroupAssignments, HaplogroupResult => WorkspaceHaplogroupResult, RecordMeta, StrProfile}
 import com.decodingus.haplogroup.model.{HaplogroupResult => AnalysisHaplogroupResult}
 import htsjdk.samtools.SamReaderFactory
 import scalafx.beans.property.{ObjectProperty, ReadOnlyObjectProperty, StringProperty, BooleanProperty, DoubleProperty}
@@ -109,12 +109,30 @@ class WorkbenchViewModel(val workspaceService: WorkspaceService) {
   /** Synchronizes the observable buffers with the workspace state */
   private def syncBuffers(workspace: Workspace): Unit = {
     println(s"[DEBUG] WorkbenchViewModel: Syncing buffers with workspace...")
+
+    // Preserve current selection identifiers before clearing
+    val selectedProjectName = selectedProject.value.map(_.projectName)
+    val selectedSampleAccession = selectedSubject.value.map(_.sampleAccession)
+
     projects.clear()
     projects ++= workspace.main.projects
     samples.clear()
     samples ++= workspace.main.samples
     // Also refresh filtered lists
     applyFilters()
+
+    // Restore selection by finding the updated objects with the same identifiers
+    selectedProjectName.foreach { name =>
+      workspace.main.projects.find(_.projectName == name).foreach { project =>
+        selectedProject.value = Some(project)
+      }
+    }
+    selectedSampleAccession.foreach { accession =>
+      workspace.main.samples.find(_.sampleAccession == accession).foreach { sample =>
+        selectedSubject.value = Some(sample)
+      }
+    }
+
     println(s"[DEBUG] WorkbenchViewModel: Buffers synced. Projects: ${projects.size}, Samples: ${samples.size}")
   }
 
@@ -1324,5 +1342,136 @@ class WorkbenchViewModel(val workspaceService: WorkspaceService) {
    */
   def getHaplogroupAssignments(sampleAccession: String): Option[HaplogroupAssignments] = {
     findSubject(sampleAccession).flatMap(_.haplogroups)
+  }
+
+  // --- STR Profile CRUD Operations ---
+
+  /**
+   * Adds a new STR profile for a biosample.
+   * Supports multiple profiles per subject (e.g., from different vendors like FTDNA and YSEQ).
+   * Returns the URI of the new profile, or an error message.
+   */
+  def addStrProfile(sampleAccession: String, profile: StrProfile): Either[String, String] = {
+    findSubject(sampleAccession) match {
+      case Some(subject) =>
+        // Generate a unique URI for this STR profile
+        val strProfileUri = s"local:strprofile:${subject.sampleAccession}:${java.util.UUID.randomUUID().toString.take(8)}"
+
+        val enrichedProfile = profile.copy(
+          atUri = Some(strProfileUri),
+          biosampleRef = subject.atUri.getOrElse(s"local:biosample:${subject.sampleAccession}")
+        )
+
+        // Update workspace with new STR profile
+        val updatedStrProfiles = _workspace.value.main.strProfiles :+ enrichedProfile
+
+        // Update subject's strProfileRefs list (supports multiple profiles)
+        val updatedSubject = subject.copy(
+          strProfileRefs = subject.strProfileRefs :+ strProfileUri,
+          meta = subject.meta.updated("strProfileRefs")
+        )
+        val updatedSamples = _workspace.value.main.samples.map { s =>
+          if (s.sampleAccession == sampleAccession) updatedSubject else s
+        }
+
+        val updatedContent = _workspace.value.main.copy(
+          samples = updatedSamples,
+          strProfiles = updatedStrProfiles
+        )
+        _workspace.value = _workspace.value.copy(main = updatedContent)
+        saveWorkspace()
+
+        println(s"[ViewModel] Added STR profile with ${enrichedProfile.markers.size} markers for $sampleAccession (provider: ${enrichedProfile.importedFrom.getOrElse("unknown")})")
+        Right(strProfileUri)
+
+      case None =>
+        Left(s"Subject not found: $sampleAccession")
+    }
+  }
+
+  /**
+   * Gets all STR profiles for a biosample.
+   * Returns profiles from all vendors (FTDNA, YSEQ, WGS-derived, etc.)
+   */
+  def getStrProfilesForBiosample(sampleAccession: String): List[StrProfile] = {
+    findSubject(sampleAccession) match {
+      case Some(subject) =>
+        // Get profiles by refs list (preferred) or by biosampleRef matching
+        val byRefs = subject.strProfileRefs.flatMap { ref =>
+          _workspace.value.main.strProfiles.find(_.atUri.contains(ref))
+        }
+        if (byRefs.nonEmpty) byRefs
+        else {
+          // Fallback: find by biosampleRef for legacy data
+          val biosampleUri = subject.atUri.getOrElse(s"local:biosample:$sampleAccession")
+          _workspace.value.main.strProfiles.filter(_.biosampleRef == biosampleUri)
+        }
+      case None =>
+        List.empty
+    }
+  }
+
+  /**
+   * Gets all STR profiles in the workspace.
+   */
+  def getAllStrProfiles: List[StrProfile] = {
+    _workspace.value.main.strProfiles
+  }
+
+  /**
+   * Updates an existing STR profile.
+   */
+  def updateStrProfile(profileUri: String, updatedProfile: StrProfile): Either[String, Unit] = {
+    _workspace.value.main.strProfiles.find(_.atUri.contains(profileUri)) match {
+      case Some(existing) =>
+        val withUpdatedMeta = updatedProfile.copy(
+          atUri = existing.atUri,
+          meta = existing.meta.updated("edit")
+        )
+
+        val updatedStrProfiles = _workspace.value.main.strProfiles.map { p =>
+          if (p.atUri.contains(profileUri)) withUpdatedMeta else p
+        }
+        val updatedContent = _workspace.value.main.copy(strProfiles = updatedStrProfiles)
+        _workspace.value = _workspace.value.copy(main = updatedContent)
+        saveWorkspace()
+        Right(())
+
+      case None =>
+        Left(s"STR profile not found: $profileUri")
+    }
+  }
+
+  /**
+   * Deletes an STR profile.
+   */
+  def deleteStrProfile(sampleAccession: String, profileUri: String): Either[String, Unit] = {
+    findSubject(sampleAccession) match {
+      case Some(subject) =>
+        // Remove the profile from workspace
+        val updatedStrProfiles = _workspace.value.main.strProfiles.filterNot(_.atUri.contains(profileUri))
+
+        // Remove from subject's strProfileRefs list
+        val updatedSubject = subject.copy(
+          strProfileRefs = subject.strProfileRefs.filterNot(_ == profileUri),
+          meta = subject.meta.updated("strProfileRefs")
+        )
+        val updatedSamples = _workspace.value.main.samples.map { s =>
+          if (s.sampleAccession == sampleAccession) updatedSubject else s
+        }
+
+        val updatedContent = _workspace.value.main.copy(
+          samples = updatedSamples,
+          strProfiles = updatedStrProfiles
+        )
+        _workspace.value = _workspace.value.copy(main = updatedContent)
+        saveWorkspace()
+
+        println(s"[ViewModel] Deleted STR profile $profileUri for $sampleAccession")
+        Right(())
+
+      case None =>
+        Left(s"Subject not found: $sampleAccession")
+    }
   }
 }

@@ -18,7 +18,7 @@ case class FtdnaVariant(
 
 case class FtdnaNode(
                       haplogroupId: Long,
-                      parentId: Long,
+                      parentId: Option[Long],
                       name: String,
                       isRoot: Boolean,
                       root: String,
@@ -59,7 +59,8 @@ class FtdnaTreeProvider(treeType: TreeType) extends TreeProvider(treeType) {
       val allNodes = ftdnaTree.allNodes.map { case (id, node) =>
         val loci = node.variants.flatMap { v =>
           v.position.map { pos =>
-            Locus(v.variant, contigName, pos.toLong, v.ancestral.getOrElse(""), v.derived.getOrElse(""))
+            // Take absolute value - FTDNA tree has some negative positions (data quality issue)
+            Locus(v.variant, contigName, math.abs(pos.toLong), v.ancestral.getOrElse(""), v.derived.getOrElse(""))
           }
         }
         id -> HaplogroupNode(node.haplogroupId, node.parentId, node.name, node.isRoot, loci, node.children.getOrElse(List.empty))

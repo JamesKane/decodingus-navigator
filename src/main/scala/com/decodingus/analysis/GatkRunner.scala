@@ -12,6 +12,16 @@ object GatkRunner {
 
   case class GatkResult(exitCode: Int, stdout: String, stderr: String)
 
+  // Initialize Log4j workaround for Java 17+ compatibility
+  // This must be done before any GATK classes are loaded
+  private val log4jInitialized: Boolean = {
+    // Disable Log4j's stack-based caller lookup which fails on modern JVMs
+    // This prevents the "No class provided" error from LogManager.callerClass()
+    System.setProperty("log4j2.loggerContextFactory", "org.apache.logging.log4j.simple.SimpleLoggerContextFactory")
+    System.setProperty("log4j2.disable.jmx", "true")
+    true
+  }
+
   /**
    * Runs a GATK tool with the given arguments.
    * Uses instanceMain() to avoid System.exit() calls.
@@ -20,6 +30,9 @@ object GatkRunner {
    * @return Either an error message (Left) or success (Right with exit code 0)
    */
   def run(args: Array[String]): Either[String, GatkResult] = {
+    // Ensure log4j properties are set (accessing the val triggers initialization)
+    val _ = log4jInitialized
+
     val originalOut = System.out
     val originalErr = System.err
 

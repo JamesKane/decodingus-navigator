@@ -57,7 +57,8 @@ class DecodingUsTreeProvider(treeType: TreeType) extends TreeProvider(treeType) 
 
       val allNodes = apiNodes.zipWithIndex.map { case (node, i) =>
         val haplogroupId = i.toLong
-        val parentId = node.parentName.flatMap(nameToId.get).getOrElse(if (haplogroupId == rootId) 0L else rootId)
+        val parentId: Option[Long] = if (haplogroupId == rootId) None
+                                     else node.parentName.flatMap(nameToId.get).orElse(Some(rootId))
 
         val loci = node.variants.flatMap { v =>
           v.coordinates.headOption.flatMap { case (apiBuild, coord) =>
@@ -73,11 +74,11 @@ class DecodingUsTreeProvider(treeType: TreeType) extends TreeProvider(treeType) 
 
         haplogroupId.toString -> HaplogroupNode(haplogroupId, parentId, node.name, haplogroupId == rootId, loci, List())
       }.toMap
-      
+
       val childrenMap = mutable.Map[Long, List[Long]]()
       allNodes.values.foreach { node =>
-        if (node.parent_id != 0) {
-          childrenMap(node.parent_id) = node.haplogroup_id :: childrenMap.getOrElse(node.parent_id, List())
+        node.parent_id.foreach { pid =>
+          childrenMap(pid) = node.haplogroup_id :: childrenMap.getOrElse(pid, List())
         }
       }
 

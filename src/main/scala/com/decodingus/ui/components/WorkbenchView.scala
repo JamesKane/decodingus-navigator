@@ -5,7 +5,7 @@ import scalafx.scene.layout.{VBox, HBox, Priority, StackPane, BorderPane, Region
 import scalafx.scene.control.{Label, Button, ListView, SplitPane, Alert, ListCell, Tooltip, TextField}
 import scalafx.geometry.{Insets, Pos}
 import scalafx.collections.ObservableBuffer
-import com.decodingus.workspace.model.{Workspace, Project, Biosample, SyncStatus}
+import com.decodingus.workspace.model.{Workspace, Project, Biosample, SyncStatus, StrProfile}
 import com.decodingus.workspace.WorkbenchViewModel
 import scalafx.scene.control.Alert.AlertType
 import scalafx.application.Platform
@@ -93,12 +93,22 @@ class WorkbenchView(val viewModel: WorkbenchViewModel) extends SplitPane {
     )
     VBox.setVgrow(sequenceTable, Priority.Always)
 
+    // STR profile table
+    val strProfiles = viewModel.getStrProfilesForBiosample(subject.sampleAccession)
+    val strTable = new StrProfileTable(
+      viewModel = viewModel,
+      subject = subject,
+      strProfiles = strProfiles,
+      onRemove = (uri: String) => handleRemoveStrProfile(subject.sampleAccession, uri)
+    )
+
     detailView.children.addAll(
       new Label(s"Subject: ${subject.donorIdentifier}") { style = "-fx-font-size: 20px; -fx-font-weight: bold;" },
       actionButtons,
       infoSection,
       haplogroupLabel,
-      sequenceTable
+      sequenceTable,
+      strTable
     )
   }
 
@@ -272,6 +282,21 @@ class WorkbenchView(val viewModel: WorkbenchViewModel) extends SplitPane {
   /** Handles removing a sequence data entry */
   private def handleRemoveSequenceData(sampleAccession: String, index: Int): Unit = {
     viewModel.removeSequenceData(sampleAccession, index)
+  }
+
+  /** Handles removing an STR profile */
+  private def handleRemoveStrProfile(sampleAccession: String, profileUri: String): Unit = {
+    viewModel.deleteStrProfile(sampleAccession, profileUri) match {
+      case Right(_) =>
+        // Refresh the detail view
+        viewModel.selectedSubject.value.foreach(renderSubjectDetail)
+      case Left(error) =>
+        new Alert(AlertType.Error) {
+          title = "Error"
+          headerText = "Could not remove STR profile"
+          contentText = error
+        }.showAndWait()
+    }
   }
 
   /** Renders the detail view for a selected project */
