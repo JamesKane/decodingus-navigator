@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Configuration status="WARN">
+    <Appenders>
+        <Console name="Console" target="SYSTEM_ERR">
+            <PatternLayout pattern="%d{HH:mm:ss.SSS} [%t] %-5level %logger{36} - %msg%n"/>
+        </Console>
+    </Appenders>
+    <Loggers>
+        <!-- Suppress verbose GATK/htsjdk logging -->
+        <Logger name="org.broadinstitute" level="WARN"/>
+        <Logger name="htsjdk" level="WARN"/>
+        <Logger name="org.apache.spark" level="ERROR"/>
+        <Logger name="com.intel" level="ERROR"/>
+
+        <Root level="INFO">
+            <AppenderRef ref="Console"/>
+        </Root>
+    </Loggers>
+</Configuration>

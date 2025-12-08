@@ -57,6 +57,13 @@ class CallableLociProcessor {
     onProgress: (String, Int, Int) => Unit,
     artifactContext: Option[ArtifactContext] = None
   ): Either[Throwable, (CallableLociResult, List[String])] = {
+    // Ensure BAM index exists
+    onProgress("Checking BAM index...", 0, 1)
+    GatkRunner.ensureIndex(bamPath) match {
+      case Left(error) => return Left(new RuntimeException(error))
+      case Right(_) => // index exists or was created
+    }
+
     val referenceFile = new File(referencePath)
     val dictionary = ReferenceSequenceFileFactory.getReferenceSequenceFile(referenceFile).getSequenceDictionary
     val allContigs = dictionary.getSequences.toArray.map(_.asInstanceOf[htsjdk.samtools.SAMSequenceRecord])

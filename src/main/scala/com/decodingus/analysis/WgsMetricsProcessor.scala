@@ -42,9 +42,17 @@ class WgsMetricsProcessor {
     referencePath: String,
     onProgress: (String, Double, Double) => Unit,
     readLength: Option[Int] = None,
-    artifactContext: Option[ArtifactContext] = None
+    artifactContext: Option[ArtifactContext] = None,
+    totalReads: Option[Long] = None
   ): Either[Throwable, WgsMetrics] = {
-    onProgress("Running GATK CollectWgsMetrics...", 0.0, 1.0)
+    // Ensure BAM index exists
+    onProgress("Checking BAM index...", 0.0, 1.0)
+    GatkRunner.ensureIndex(bamPath) match {
+      case Left(error) => return Left(new RuntimeException(error))
+      case Right(_) => // index exists or was created
+    }
+
+    onProgress("Running GATK CollectWgsMetrics...", 0.05, 1.0)
 
     // Use artifact cache directory if context provided, otherwise use temp file
     val outputFile = artifactContext match {
@@ -73,9 +81,15 @@ class WgsMetricsProcessor {
       case _ => baseArgs
     }
 
-    GatkRunner.run(args) match {
+    // Progress callback that maps GATK progress (0-1) to our range (0.05-0.95)
+    val gatkProgress: (String, Double) => Unit = (msg, fraction) => {
+      val mappedProgress = 0.05 + (fraction * 0.9)
+      onProgress(msg, mappedProgress, 1.0)
+    }
+
+    GatkRunner.runWithProgress(args, Some(gatkProgress), totalReads, None) match {
       case Right(_) =>
-        onProgress("Parsing GATK CollectWgsMetrics output...", 0.9, 1.0)
+        onProgress("Parsing GATK CollectWgsMetrics output...", 0.95, 1.0)
         val metrics = parse(outputFile.getAbsolutePath)
         onProgress("GATK CollectWgsMetrics complete.", 1.0, 1.0)
         Right(metrics)

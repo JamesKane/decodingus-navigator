@@ -17,6 +17,8 @@ lazy val root = (project in file("."))
     // Assembly settings for fat JAR
     assembly / assemblyJarName := s"DUNavigator-assembly-${version.value}.jar",
     assembly / mainClass := Some("com.decodingus.ui.GenomeNavigatorApp"),
+    // Enable Multi-Release JAR for Log4j2 compatibility with Java 9+
+    assembly / packageOptions += Package.ManifestAttributes("Multi-Release" -> "true"),
     assembly / assemblyMergeStrategy := {
       case PathList("META-INF", "MANIFEST.MF") => MergeStrategy.discard
       case PathList("META-INF", "services", _*) => MergeStrategy.concat
@@ -53,6 +55,21 @@ lazy val root = (project in file("."))
       "org.typelevel" %% "cats-core" % VersionScheme.Always
     ),
     fork := true,
+
+    // JVM options for forked process
+    javaOptions ++= Seq(
+      // Explicitly specify log4j config location to ensure ours is used
+      "-Dlog4j.configurationFile=log4j2.xml",
+      "-Dlog4j2.disable.jmx=true",
+      // Open modules required by GATK/Spark reflection
+      "--add-opens", "java.base/java.lang=ALL-UNNAMED",
+      "--add-opens", "java.base/java.lang.invoke=ALL-UNNAMED",
+      "--add-opens", "java.base/java.lang.reflect=ALL-UNNAMED",
+      "--add-opens", "java.base/java.util=ALL-UNNAMED",
+      "--add-opens", "java.base/java.io=ALL-UNNAMED",
+      "--add-opens", "java.base/java.nio=ALL-UNNAMED",
+      "--add-opens", "java.base/sun.nio.ch=ALL-UNNAMED"
+    ),
 
     // Increase inline limit for Circe deriveCodec macros with deeply nested types
     scalacOptions += "-Xmax-inlines:128",

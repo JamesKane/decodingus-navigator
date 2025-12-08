@@ -11,7 +11,14 @@ class GatkHaplotypeCallerProcessor {
     allelesVcf: File,
     onProgress: (String, Double, Double) => Unit
   ): Either[String, File] = {
-    onProgress("Calling SNPs with GATK HaplotypeCaller...", 0.0, 1.0)
+    // Ensure BAM index exists
+    onProgress("Checking BAM index...", 0.0, 1.0)
+    GatkRunner.ensureIndex(bamPath) match {
+      case Left(error) => return Left(error)
+      case Right(_) => // index exists or was created
+    }
+
+    onProgress("Calling SNPs with GATK HaplotypeCaller...", 0.1, 1.0)
 
     val vcfFile = File.createTempFile("haplotypes", ".vcf")
     vcfFile.deleteOnExit()
@@ -52,7 +59,14 @@ class GatkHaplotypeCallerProcessor {
     contig: String,
     onProgress: (String, Double, Double) => Unit
   ): Either[String, File] = {
-    onProgress(s"Calling all variants in $contig with GATK HaplotypeCaller...", 0.0, 1.0)
+    // Ensure BAM index exists
+    onProgress("Checking BAM index...", 0.0, 1.0)
+    GatkRunner.ensureIndex(bamPath) match {
+      case Left(error) => return Left(error)
+      case Right(_) => // index exists or was created
+    }
+
+    onProgress(s"Calling all variants in $contig with GATK HaplotypeCaller...", 0.1, 1.0)
 
     val vcfFile = File.createTempFile(s"variants-$contig", ".vcf")
     vcfFile.deleteOnExit()

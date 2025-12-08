@@ -1,12 +1,15 @@
 package com.decodingus.refgenome
 
 import com.decodingus.config.{ReferenceConfig, ReferenceConfigService}
+import com.decodingus.analysis.GatkRunner
 import sttp.client3.*
 
 import java.io.IOException
 import java.nio.file.{Files, Path, Paths}
 import sys.process._
-import org.broadinstitute.hellbender.Main
+
+// NOTE: Do NOT import org.broadinstitute.hellbender.Main here!
+// Use GatkRunner which handles Log4j initialization properly.
 
 /**
  * Result type for reference resolution when user confirmation is needed.
@@ -173,17 +176,16 @@ class ReferenceGateway(onProgress: (Long, Long) => Unit) {
 
     // Check and create .dict dictionary
     if (!Files.exists(dictPath)) {
-      println(s"Creating sequence dictionary for $referencePath using GATK library...")
+      println(s"Creating sequence dictionary for $referencePath using GATK...")
       val args = Array(
         "CreateSequenceDictionary",
         "-R", referencePath.toAbsolutePath.toString,
         "-O", dictPath.toAbsolutePath.toString
       )
-      try {
-        Main.main(args)
-      } catch {
-        case e: Exception =>
-          return Left(s"Failed to create sequence dictionary for $referencePath using GATK library: ${e.getMessage}")
+      GatkRunner.run(args) match {
+        case Right(_) => // Success
+        case Left(error) =>
+          return Left(s"Failed to create sequence dictionary for $referencePath: $error")
       }
     }
     Right(referencePath)
