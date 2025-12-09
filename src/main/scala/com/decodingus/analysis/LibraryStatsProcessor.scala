@@ -146,10 +146,14 @@ class LibraryStatsProcessor {
     Option(header.getSAMString) match {
       case Some(headerText) =>
         val lowerHeaderText = headerText.toLowerCase
+        // Check @PG ID tags first (most reliable)
         if (lowerHeaderText.contains("@pg\tid:bwa")) "BWA"
         else if (lowerHeaderText.contains("@pg\tid:minimap2")) "minimap2"
+        else if (lowerHeaderText.contains("@pg\tid:pbmm2")) "pbmm2"
         else if (lowerHeaderText.contains("@pg\tid:bowtie2")) "Bowtie2"
         else if (lowerHeaderText.contains("@pg\tid:star")) "STAR"
+        // Fallback to checking for aligner name anywhere in header
+        else if (lowerHeaderText.contains("pbmm2")) "pbmm2"
         else if (lowerHeaderText.contains("bwa")) "BWA"
         else if (lowerHeaderText.contains("minimap2")) "minimap2"
         else if (lowerHeaderText.contains("bowtie2")) "Bowtie2"
@@ -163,25 +167,38 @@ class LibraryStatsProcessor {
   def detectReferenceBuild(header: SAMFileHeader): String = {
     Option(header.getSAMString) match {
       case Some(headerText) =>
+        val lowerHeaderText = headerText.toLowerCase
+
+        // Check explicit assembly tags first
         if (headerText.contains("AS:GRCh38") || headerText.contains("GCA_000001405.15")) {
           "GRCh38"
         } else if (headerText.contains("AS:GRCh37") || headerText.contains("GCA_000001405.1")) {
           "GRCh37"
         } else if (headerText.contains("AS:CHM13") || headerText.contains("GCA_009914755.4")) {
           "CHM13v2"
-        } else if (headerText.contains("chm13") || headerText.contains("CHM13") || headerText.contains("t2t") || headerText.contains("T2T")) {
+        }
+        // Check @PG command lines for reference path hints (e.g., pbmm2, minimap2)
+        else if (lowerHeaderText.contains("chm13") || lowerHeaderText.contains("t2t-chm13") || lowerHeaderText.contains("hs1")) {
           "CHM13v2"
-        } else if (headerText.contains("SN:chr1") && headerText.contains("LN:248387328")) {
-          if (headerText.contains("M5:e469247288ceb332aee524caec92bb22")) {
-            "CHM13v2"
-          } else {
-            "Unknown"
-          }
-        } else if (headerText.contains("SN:chr1") && headerText.contains("LN:248956422")) {
+        }
+        // Check chromosome lengths - these are unique to each assembly
+        // CHM13v2 chr1: 248,387,328 (unique - GRCh38 is 248,956,422)
+        else if (headerText.contains("SN:chr1") && headerText.contains("LN:248387328")) {
+          "CHM13v2"
+        }
+        // GRCh38 chr1: 248,956,422
+        else if (headerText.contains("SN:chr1") && headerText.contains("LN:248956422")) {
           "GRCh38"
-        } else if (headerText.contains("SN:1") && headerText.contains("LN:249250621")) {
+        }
+        // GRCh37 uses "1" not "chr1" and has different length
+        else if (headerText.contains("SN:1\t") && headerText.contains("LN:249250621")) {
           "GRCh37"
-        } else {
+        }
+        // GRCh37 with chr prefix (some builds)
+        else if (headerText.contains("SN:chr1") && headerText.contains("LN:249250621")) {
+          "GRCh37"
+        }
+        else {
           "Unknown"
         }
       case None =>
