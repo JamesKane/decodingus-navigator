@@ -19,7 +19,7 @@ To support the "Atmosphere" integration within the AT Protocol (Bluesky) ecosyst
 | Private Y-DNA/mtDNA SNPs | Branch discovery consensus | `privateVariants` array |
 | STR marker values | Ancestral reconstruction & TMRCA | `strProfile.markers` |
 | Coverage/quality metrics | Sample characterization | `alignmentMetrics` summary |
-| Ancestry percentages | Population context | `populationBreakdown.components` |
+| Ancestry percentages | Population context & IBD match introductions | `populationBreakdown.components` (33 sub-continental populations), `superPopulationSummary` (9 continental groups), `pcaCoordinates` |
 | File metadata | Provenance tracking | `fileInfo` (name, checksum, size - NOT content) |
 
 ### What NEVER Flows to DecodingUs
@@ -316,16 +316,21 @@ Shared type definitions used across multiple record types.
     },
     "populationComponent": {
       "type": "object",
-      "description": "A single ancestry component in a population breakdown.",
+      "description": "A single ancestry component in a population breakdown. Sub-continental granularity (~33 populations from 1000 Genomes + HGDP/SGDP).",
       "required": ["populationCode", "percentage"],
       "properties": {
         "populationCode": {
           "type": "string",
-          "description": "Standardized population code (e.g., 'EUR', 'EAS', 'AFR')."
+          "description": "Standardized population code from reference panel (e.g., 'CEU', 'YRI', 'CHB', 'GIH')."
         },
         "populationName": {
           "type": "string",
-          "description": "Human-readable population name."
+          "description": "Human-readable population name (e.g., 'Northwestern European', 'Yoruba', 'Han Chinese')."
+        },
+        "superPopulation": {
+          "type": "string",
+          "description": "Continental-level grouping for this population.",
+          "knownValues": ["European", "African", "East Asian", "South Asian", "Americas", "West Asian", "Oceanian", "Central Asian", "Native American"]
         },
         "percentage": {
           "type": "float",
@@ -333,10 +338,62 @@ Shared type definitions used across multiple record types.
         },
         "confidenceInterval": {
           "type": "object",
+          "description": "95% confidence interval for the percentage estimate.",
           "properties": {
             "lower": { "type": "float" },
             "upper": { "type": "float" }
           }
+        },
+        "rank": {
+          "type": "integer",
+          "description": "Rank by percentage (1 = highest). Useful for sorting display."
+        }
+      }
+    },
+    "superPopulationSummary": {
+      "type": "object",
+      "description": "Aggregated ancestry percentage at the continental/super-population level.",
+      "required": ["superPopulation", "percentage"],
+      "properties": {
+        "superPopulation": {
+          "type": "string",
+          "description": "Continental-level population grouping.",
+          "knownValues": ["European", "African", "East Asian", "South Asian", "Americas", "West Asian", "Oceanian", "Central Asian", "Native American"]
+        },
+        "percentage": {
+          "type": "float",
+          "description": "Combined percentage from all sub-populations in this group (0.0-100.0)."
+        },
+        "populations": {
+          "type": "array",
+          "description": "List of population codes contributing to this super-population.",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "ancestryPanel": {
+      "type": "object",
+      "description": "Description of the SNP panel used for ancestry analysis.",
+      "required": ["panelType", "snpCount"],
+      "properties": {
+        "panelType": {
+          "type": "string",
+          "description": "Type of ancestry panel used.",
+          "knownValues": ["aims", "genome-wide"]
+        },
+        "snpCount": {
+          "type": "integer",
+          "description": "Number of SNPs in the panel (aims: ~5,000; genome-wide: ~500,000)."
+        },
+        "description": {
+          "type": "string",
+          "description": "Human-readable description of the panel."
+        },
+        "referenceVersion": {
+          "type": "string",
+          "description": "Version of the reference panel data (e.g., 'v1')."
         }
       }
     },
@@ -1379,11 +1436,28 @@ This record defines a research project that aggregates multiple biosamples withi
 
 ### 8. Population Breakdown Record (`com.decodingus.atmosphere.populationBreakdown`)
 
-This record contains ancestry composition analysis results.
+This record contains ancestry composition analysis results using PCA projection onto reference populations from 1000 Genomes and HGDP/SGDP. Provides ADMIXTURE-style ancestry breakdowns at sub-continental granularity (~33 populations organized into 9 super-populations).
 
 **NSID:** `com.decodingus.atmosphere.populationBreakdown`
 
-**Status:** 🔮 Future Scope (IBD Matching System)
+**Status:** 🚧 In Development (Navigator Desktop Implementation)
+
+**Algorithm**: PCA Projection + Gaussian Mixture Model
+- Projects sample genotypes onto pre-computed PCA space from reference populations
+- Calculates Mahalanobis distance to population centroids
+- Converts distances to probabilities via multivariate Gaussian PDF
+- Supports two panel types: AIMs (~5k SNPs, ~2-5 min) and genome-wide (~500k SNPs, ~20-30 min)
+
+**Reference Populations (33 total)**:
+- **European (5)**: CEU, FIN, GBR, IBS, TSI
+- **African (5)**: YRI, LWK, ESN, MSL, GWD
+- **East Asian (5)**: CHB, JPT, KHV, CHS, CDX
+- **South Asian (5)**: GIH, PJL, BEB, STU, ITU
+- **Americas (4)**: MXL, PUR, PEL, CLM
+- **West Asian (3)**: Druze, Palestinian, Bedouin (HGDP)
+- **Oceanian (2)**: Papuan, Melanesian (HGDP)
+- **Central Asian (1)**: Yakut (HGDP)
+- **Native American (3)**: Maya, Pima, Karitiana (HGDP)
 
 ```json
 {
@@ -1392,11 +1466,11 @@ This record contains ancestry composition analysis results.
   "defs": {
     "main": {
       "type": "record",
-      "description": "Ancestry composition analysis showing population percentages.",
+      "description": "Ancestry composition analysis showing population percentages from atDNA analysis.",
       "key": "tid",
       "record": {
         "type": "object",
-        "required": ["meta", "atUri", "biosampleRef", "analysisMethod", "components"],
+        "required": ["meta", "atUri", "biosampleRef", "analysisMethod", "panelType", "components"],
         "properties": {
           "atUri": {
             "type": "string",
@@ -1413,23 +1487,57 @@ This record contains ancestry composition analysis results.
           "analysisMethod": {
             "type": "string",
             "description": "The analysis method/algorithm used.",
-            "knownValues": ["ADMIXTURE", "FASTSTRUCTURE", "PCA_PROJECTION", "SUPERVISED_ML", "CUSTOM"]
+            "knownValues": ["PCA_PROJECTION_GMM", "ADMIXTURE", "FASTSTRUCTURE", "SUPERVISED_ML", "CUSTOM"]
+          },
+          "panelType": {
+            "type": "string",
+            "description": "SNP panel used for analysis.",
+            "knownValues": ["aims", "genome-wide"]
           },
           "referencePopulations": {
             "type": "string",
-            "description": "Reference population dataset used (e.g., '1000G', 'HGDP', 'Custom')."
+            "description": "Reference population dataset used.",
+            "knownValues": ["1000G_HGDP_v1", "1000G", "HGDP", "Custom"]
           },
-          "kValue": {
+          "snpsAnalyzed": {
             "type": "integer",
-            "description": "Number of ancestral populations (K) in the model."
+            "description": "Total number of SNPs in the analysis panel."
+          },
+          "snpsWithGenotype": {
+            "type": "integer",
+            "description": "Number of SNPs with valid genotype calls from the sample."
+          },
+          "snpsMissing": {
+            "type": "integer",
+            "description": "Number of SNPs with no call or missing data."
+          },
+          "confidenceLevel": {
+            "type": "float",
+            "description": "Overall confidence score (0.0-1.0) based on data quality and completeness."
           },
           "components": {
             "type": "array",
-            "description": "List of population components with percentages.",
+            "description": "List of sub-continental population components with percentages.",
             "items": {
               "type": "ref",
               "ref": "com.decodingus.atmosphere.defs#populationComponent"
             }
+          },
+          "superPopulationSummary": {
+            "type": "array",
+            "description": "Aggregated percentages at the continental level.",
+            "items": {
+              "type": "ref",
+              "ref": "com.decodingus.atmosphere.defs#superPopulationSummary"
+            }
+          },
+          "pcaCoordinates": {
+            "type": "array",
+            "description": "First 3 principal component coordinates for visualization.",
+            "items": {
+              "type": "float"
+            },
+            "maxItems": 3
           },
           "analysisDate": {
             "type": "string",
@@ -1438,7 +1546,11 @@ This record contains ancestry composition analysis results.
           },
           "pipelineVersion": {
             "type": "string",
-            "description": "Version of the analysis pipeline."
+            "description": "Version of the analysis pipeline (e.g., '1.0.0')."
+          },
+          "referenceVersion": {
+            "type": "string",
+            "description": "Version of the reference panel data (e.g., 'v1')."
           }
         }
       }
@@ -1446,6 +1558,12 @@ This record contains ancestry composition analysis results.
   }
 }
 ```
+
+**IBD Matching Integration**: Population breakdown data enables:
+- **Match contextualization**: Understand shared ancestry context for IBD matches
+- **Endogamy detection**: Identify populations with higher background relatedness
+- **Geographic correlation**: Map genetic ancestry to geographic origins
+- **Match introduction text**: Generate meaningful connection descriptions (e.g., "You share 45cM with this person who has similar Northwestern European ancestry")
 
 ---
 
@@ -2655,7 +2773,7 @@ When processing firehose events:
 }
 ```
 
-### Population Breakdown Record (Future)
+### Population Breakdown Record (In Development)
 
 ```json
 {
@@ -2663,34 +2781,74 @@ When processing firehose events:
   "atUri": "at://did:plc:alice123/com.decodingus.atmosphere.populationBreakdown/3jui7q2m1",
   "meta": {
     "version": 1,
-    "createdAt": "2025-12-05T16:00:00Z"
+    "createdAt": "2025-12-08T16:00:00Z"
   },
   "biosampleRef": "at://did:plc:alice123/com.decodingus.atmosphere.biosample/3jui7q2lx",
-  "analysisMethod": "ADMIXTURE",
-  "referencePopulations": "1000G_PHASE3",
-  "kValue": 8,
+  "analysisMethod": "PCA_PROJECTION_GMM",
+  "panelType": "aims",
+  "referencePopulations": "1000G_HGDP_v1",
+  "snpsAnalyzed": 5000,
+  "snpsWithGenotype": 4823,
+  "snpsMissing": 177,
+  "confidenceLevel": 0.92,
   "components": [
     {
-      "populationCode": "EUR_NW",
+      "populationCode": "CEU",
       "populationName": "Northwestern European",
-      "percentage": 65.2,
-      "confidenceInterval": { "lower": 62.1, "upper": 68.3 }
+      "superPopulation": "European",
+      "percentage": 48.2,
+      "confidenceInterval": { "lower": 45.1, "upper": 51.3 },
+      "rank": 1
     },
     {
-      "populationCode": "EUR_S",
-      "populationName": "Southern European",
+      "populationCode": "GBR",
+      "populationName": "British",
+      "superPopulation": "European",
       "percentage": 22.5,
-      "confidenceInterval": { "lower": 19.8, "upper": 25.2 }
+      "confidenceInterval": { "lower": 19.8, "upper": 25.2 },
+      "rank": 2
     },
     {
-      "populationCode": "EUR_E",
-      "populationName": "Eastern European",
-      "percentage": 12.3,
-      "confidenceInterval": { "lower": 10.1, "upper": 14.5 }
+      "populationCode": "IBS",
+      "populationName": "Iberian",
+      "superPopulation": "European",
+      "percentage": 15.3,
+      "confidenceInterval": { "lower": 12.1, "upper": 18.5 },
+      "rank": 3
+    },
+    {
+      "populationCode": "FIN",
+      "populationName": "Finnish",
+      "superPopulation": "European",
+      "percentage": 8.7,
+      "confidenceInterval": { "lower": 6.2, "upper": 11.2 },
+      "rank": 4
+    },
+    {
+      "populationCode": "YRI",
+      "populationName": "Yoruba",
+      "superPopulation": "African",
+      "percentage": 3.2,
+      "confidenceInterval": { "lower": 1.5, "upper": 4.9 },
+      "rank": 5
     }
   ],
-  "analysisDate": "2025-12-05T16:00:00Z",
-  "pipelineVersion": "decodingus-ancestry-2.1.0"
+  "superPopulationSummary": [
+    {
+      "superPopulation": "European",
+      "percentage": 94.7,
+      "populations": ["CEU", "GBR", "IBS", "FIN", "TSI"]
+    },
+    {
+      "superPopulation": "African",
+      "percentage": 3.2,
+      "populations": ["YRI", "LWK", "ESN", "MSL", "GWD"]
+    }
+  ],
+  "pcaCoordinates": [0.0234, -0.0156, 0.0089],
+  "analysisDate": "2025-12-08T16:00:00Z",
+  "pipelineVersion": "1.0.0",
+  "referenceVersion": "v1"
 }
 ```
 
@@ -2969,7 +3127,7 @@ When processing firehose events:
 |:---|:---|:---|
 | `genotype` | multi-test-type-roadmap.md | Chip/array data support |
 | `imputation` | multi-test-type-roadmap.md | Imputed genotype results |
-| `populationBreakdown` | ibd-matching-system.md | Ancestry composition |
+| `populationBreakdown` | ibd-matching-system.md, AncestryAnalysis.md | Ancestry composition (🚧 In Development) |
 | `matchConsent` | ibd-matching-system.md | IBD matching opt-in |
 | `matchList` | ibd-matching-system.md | IBD match results |
 | `matchRequest` | ibd-matching-system.md | Match contact requests |
@@ -2998,3 +3156,4 @@ When processing firehose events:
 | 1.3 | 2025-12-07 | Added backfeed record types for AppView-to-PDS updates |
 | 1.4 | 2025-12-07 | Edge computing compliance: Clarified all `files` fields store metadata only, updated CRUD examples to reflect local analysis model |
 | 1.5 | 2025-12-08 | Added multi-run reconciliation support: `haplogroupReconciliation` record, reconciliation definitions (reconciliationStatus, runHaplogroupCall, snpConflict, heteroplasmyObservation, identityVerification), updated biosample with reconciliation refs. Added `strHaplogroupPrediction` definition for STR-based haplogroup prediction with support for Nevgen, Hapest, YHaplo, SAPP algorithms |
+| 1.6 | 2025-12-08 | Enhanced ancestry analysis support: Updated `populationBreakdown` record with PCA projection algorithm details, two-tier panel support (AIMs/genome-wide), 33 reference populations from 1000G + HGDP/SGDP organized into 9 super-populations. Added new definitions: `superPopulationSummary`, `ancestryPanel`. Enhanced `populationComponent` with `superPopulation` and `rank` fields. Added IBD matching integration guidance. Status changed from Future Scope to In Development. |

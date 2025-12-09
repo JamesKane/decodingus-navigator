@@ -32,6 +32,41 @@ object FeatureToggles {
   }
 
   /**
+   * Ancestry analysis configuration for population percentage estimation.
+   */
+  object ancestryAnalysis {
+    private val ancestryConfig = if (config.hasPath("ancestry-analysis")) {
+      config.getConfig("ancestry-analysis")
+    } else {
+      ConfigFactory.empty()
+    }
+
+    /** Whether ancestry analysis is enabled */
+    val enabled: Boolean =
+      if (ancestryConfig.hasPath("enabled")) ancestryConfig.getBoolean("enabled") else true
+
+    /** Default panel type: "aims" or "genome-wide" */
+    val defaultPanel: String =
+      if (ancestryConfig.hasPath("default-panel")) ancestryConfig.getString("default-panel") else "aims"
+
+    /** Minimum SNPs required for AIMs panel analysis */
+    val minSnpsAims: Int =
+      if (ancestryConfig.hasPath("min-snps-aims")) ancestryConfig.getInt("min-snps-aims") else 3000
+
+    /** Minimum SNPs required for genome-wide analysis */
+    val minSnpsGenomeWide: Int =
+      if (ancestryConfig.hasPath("min-snps-genome-wide")) ancestryConfig.getInt("min-snps-genome-wide") else 100000
+
+    /** Minimum percentage to display in results */
+    val displayThreshold: Double =
+      if (ancestryConfig.hasPath("display-threshold")) ancestryConfig.getDouble("display-threshold") else 0.5
+
+    /** Reference data version */
+    val referenceVersion: String =
+      if (ancestryConfig.hasPath("reference-version")) ancestryConfig.getString("reference-version") else "v1"
+  }
+
+  /**
    * Reference genome haplogroup mappings for Y-DNA calling optimization.
    * Maps reference build names to their known Y-DNA haplogroup name variants.
    * Multiple name variants are supported for compatibility with different tree providers.

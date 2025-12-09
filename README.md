@@ -66,8 +66,13 @@ All application data is stored under `~/.decodingus/`:
 └── cache/
     ├── references/                 # Downloaded reference genomes (.fa.gz)
     ├── liftover/                   # Liftover chain files
-    ├── trees/                      # Haplogroup tree data
-    ├── {sha256}.json              # Analysis results cache (by file hash)
+    ├── trees/                      # Haplogroup tree data and sites VCFs
+    │   ├── ftdna-ytree.json        # FTDNA Y-DNA tree cache
+    │   ├── ftdna-mttree.json       # FTDNA MT-DNA tree cache
+    │   ├── decodingus-ytree.json   # Decoding-Us Y-DNA tree cache
+    │   ├── *-GRCh38-sites.vcf      # Full tree sites VCF (all positions)
+    │   └── *-path-R1b-U152-*.vcf   # Path-optimized sites VCF (reference haplogroup path only)
+    ├── {sha256}.json               # Analysis results cache (by file hash)
     └── subjects/                   # Subject-specific analysis artifacts
         └── {sampleAccession}/
             └── runs/{runId}/
@@ -78,8 +83,12 @@ All application data is stored under `~/.decodingus/`:
                     │   ├── chr*.table.txt
                     │   └── chr*.callable.svg
                     └── haplogroup/
-                        ├── ydna_alleles.vcf
-                        └── mtdna_alleles.vcf
+                        ├── ydna_tree_sites.vcf      # Called tree sites (pass 1)
+                        ├── ydna_private_variants.vcf # Private variants (pass 2)
+                        ├── ydna_report.txt          # Haplogroup report
+                        ├── mtdna_tree_sites.vcf
+                        ├── mtdna_private_variants.vcf
+                        └── mtdna_report.txt
 ```
 
 ### Optional Cloud Integration
