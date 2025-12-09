@@ -32,7 +32,7 @@ class StrProfileTable(
   )
 
   private val table = new TableView[StrProfileRow](tableData) {
-    prefHeight = 150
+    prefHeight = 120
     columnResizePolicy = TableView.ConstrainedResizePolicy
 
     // Provider column

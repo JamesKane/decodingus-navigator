@@ -8,7 +8,7 @@ import com.decodingus.model.{LibraryStats, WgsMetrics}
 import com.decodingus.pds.PdsClient
 import com.decodingus.config.ReferenceConfigService
 import com.decodingus.refgenome.{ReferenceGateway, ReferenceResolveResult}
-import com.decodingus.workspace.model.{Workspace, Project, Biosample, WorkspaceContent, SyncStatus, SequenceRun, Alignment, AlignmentMetrics, FileInfo, HaplogroupAssignments, HaplogroupResult => WorkspaceHaplogroupResult, RecordMeta, StrProfile}
+import com.decodingus.workspace.model.{Workspace, Project, Biosample, WorkspaceContent, SyncStatus, SequenceRun, Alignment, AlignmentMetrics, FileInfo, HaplogroupAssignments, HaplogroupResult => WorkspaceHaplogroupResult, RecordMeta, StrProfile, ChipProfile}
 import com.decodingus.haplogroup.model.{HaplogroupResult => AnalysisHaplogroupResult}
 import htsjdk.samtools.SamReaderFactory
 import scalafx.beans.property.{ObjectProperty, ReadOnlyObjectProperty, StringProperty, BooleanProperty, DoubleProperty}
@@ -1502,6 +1502,209 @@ class WorkbenchViewModel(val workspaceService: WorkspaceService) {
         saveWorkspace()
 
         println(s"[ViewModel] Deleted STR profile $profileUri for $sampleAccession")
+        Right(())
+
+      case None =>
+        Left(s"Subject not found: $sampleAccession")
+    }
+  }
+
+  // --- Chip Profile CRUD Operations ---
+
+  /**
+   * Imports chip data from a file for a biosample.
+   * Parses the file, computes statistics, and creates a ChipProfile record.
+   *
+   * @param sampleAccession The subject's accession ID
+   * @param file The chip data file to import
+   * @param onComplete Callback when import completes
+   */
+  def importChipData(
+    sampleAccession: String,
+    file: File,
+    onComplete: Either[String, ChipProfile] => Unit
+  ): Unit = {
+    import com.decodingus.genotype.parser.ChipDataParser
+    import com.decodingus.genotype.model.GenotypingTestSummary
+    import java.security.MessageDigest
+
+    findSubject(sampleAccession) match {
+      case Some(subject) =>
+        analysisInProgress.value = true
+        analysisError.value = ""
+        analysisProgress.value = "Detecting chip format..."
+        analysisProgressPercent.value = 0.1
+
+        Future {
+          try {
+            // Step 1: Detect and parse the file
+            updateProgress("Parsing chip data file...", 0.2)
+
+            ChipDataParser.detectParser(file) match {
+              case Right((parser, detection)) =>
+                updateProgress(s"Detected ${parser.vendor} format...", 0.3)
+
+                parser.parse(file, (current, total) => {
+                  val pct = 0.3 + (current.toDouble / total) * 0.4
+                  updateProgress(s"Reading genotypes: ${current}/${total}", pct)
+                }) match {
+                  case Right(callsIterator) =>
+                    updateProgress("Computing statistics...", 0.75)
+
+                    val calls = callsIterator.toList
+                    val summary = GenotypingTestSummary.fromCalls(
+                      calls,
+                      detection.testType.getOrElse(com.decodingus.genotype.model.TestTypes.ARRAY_23ANDME_V5),
+                      detection.chipVersion,
+                      Some(computeFileHash(file))
+                    )
+
+                    // Create ChipProfile
+                    updateProgress("Creating chip profile...", 0.9)
+
+                    Platform.runLater {
+                      val chipProfileUri = s"local:chipprofile:${subject.sampleAccession}:${java.util.UUID.randomUUID().toString.take(8)}"
+
+                      val fileInfo = FileInfo(
+                        fileName = file.getName,
+                        fileSizeBytes = Some(file.length()),
+                        fileFormat = if (file.getName.endsWith(".csv")) "CSV" else "TXT",
+                        checksum = Some(computeFileHash(file)),
+                        checksumAlgorithm = Some("SHA-256"),
+                        location = Some(file.getAbsolutePath)
+                      )
+
+                      val chipProfile = ChipProfile(
+                        atUri = Some(chipProfileUri),
+                        meta = RecordMeta.initial,
+                        biosampleRef = subject.atUri.getOrElse(s"local:biosample:${subject.sampleAccession}"),
+                        vendor = parser.vendor,
+                        testTypeCode = detection.testType.map(_.code).getOrElse("UNKNOWN"),
+                        chipVersion = detection.chipVersion,
+                        totalMarkersCalled = summary.totalMarkersCalled,
+                        totalMarkersPossible = summary.totalMarkersPossible,
+                        noCallRate = summary.noCallRate,
+                        yMarkersCalled = summary.yMarkersCalled,
+                        mtMarkersCalled = summary.mtMarkersCalled,
+                        autosomalMarkersCalled = summary.autosomalMarkersCalled,
+                        hetRate = summary.hetRate,
+                        importDate = LocalDateTime.now(),
+                        sourceFileHash = Some(computeFileHash(file)),
+                        sourceFileName = Some(file.getName),
+                        files = List(fileInfo)
+                      )
+
+                      // Update workspace
+                      val updatedChipProfiles = _workspace.value.main.chipProfiles :+ chipProfile
+                      val updatedSubject = subject.copy(
+                        genotypeRefs = subject.genotypeRefs :+ chipProfileUri,
+                        meta = subject.meta.updated("genotypeRefs")
+                      )
+                      val updatedSamples = _workspace.value.main.samples.map { s =>
+                        if (s.sampleAccession == sampleAccession) updatedSubject else s
+                      }
+                      val updatedContent = _workspace.value.main.copy(
+                        samples = updatedSamples,
+                        chipProfiles = updatedChipProfiles
+                      )
+                      _workspace.value = _workspace.value.copy(main = updatedContent)
+                      saveWorkspace()
+
+                      analysisInProgress.value = false
+                      analysisProgress.value = "Import complete"
+                      analysisProgressPercent.value = 1.0
+
+                      println(s"[ViewModel] Imported chip data: ${parser.vendor}, ${summary.totalMarkersCalled} markers")
+                      onComplete(Right(chipProfile))
+                    }
+
+                  case Left(parseError) =>
+                    Platform.runLater {
+                      analysisInProgress.value = false
+                      analysisError.value = parseError
+                      onComplete(Left(parseError))
+                    }
+                }
+
+              case Left(detectError) =>
+                Platform.runLater {
+                  analysisInProgress.value = false
+                  analysisError.value = detectError
+                  onComplete(Left(detectError))
+                }
+            }
+
+          } catch {
+            case e: Exception =>
+              Platform.runLater {
+                analysisInProgress.value = false
+                analysisError.value = e.getMessage
+                onComplete(Left(e.getMessage))
+              }
+          }
+        }
+
+      case None =>
+        onComplete(Left(s"Subject not found: $sampleAccession"))
+    }
+  }
+
+  /** Compute SHA-256 hash of a file */
+  private def computeFileHash(file: File): String = {
+    import java.security.MessageDigest
+    import java.nio.file.Files
+    val bytes = Files.readAllBytes(file.toPath)
+    val digest = MessageDigest.getInstance("SHA-256").digest(bytes)
+    digest.map("%02x".format(_)).mkString
+  }
+
+  /**
+   * Gets all chip profiles for a biosample.
+   */
+  def getChipProfilesForBiosample(sampleAccession: String): List[ChipProfile] = {
+    findSubject(sampleAccession) match {
+      case Some(subject) =>
+        // Get profiles by genotypeRefs list or by biosampleRef matching
+        val byRefs = subject.genotypeRefs.flatMap { ref =>
+          _workspace.value.main.chipProfiles.find(_.atUri.contains(ref))
+        }
+        if (byRefs.nonEmpty) byRefs
+        else {
+          // Fallback: find by biosampleRef for legacy data
+          val biosampleUri = subject.atUri.getOrElse(s"local:biosample:$sampleAccession")
+          _workspace.value.main.chipProfiles.filter(_.biosampleRef == biosampleUri)
+        }
+      case None =>
+        List.empty
+    }
+  }
+
+  /**
+   * Deletes a chip profile.
+   */
+  def deleteChipProfile(sampleAccession: String, profileUri: String): Either[String, Unit] = {
+    findSubject(sampleAccession) match {
+      case Some(subject) =>
+        // Remove the profile from workspace
+        val updatedChipProfiles = _workspace.value.main.chipProfiles.filterNot(_.atUri.contains(profileUri))
+
+        // Remove from subject's genotypeRefs list
+        val updatedSubject = subject.copy(
+          genotypeRefs = subject.genotypeRefs.filterNot(_ == profileUri),
+          meta = subject.meta.updated("genotypeRefs")
+        )
+        val updatedSamples = _workspace.value.main.samples.map { s =>
+          if (s.sampleAccession == sampleAccession) updatedSubject else s
+        }
+
+        val updatedContent = _workspace.value.main.copy(
+          samples = updatedSamples,
+          chipProfiles = updatedChipProfiles
+        )
+        _workspace.value = _workspace.value.copy(main = updatedContent)
+        saveWorkspace()
+
+        println(s"[ViewModel] Deleted chip profile $profileUri for $sampleAccession")
         Right(())
 
       case None =>

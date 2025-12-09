@@ -21,6 +21,7 @@ package com.decodingus.workspace.model
  * @param populationBreakdownRef  AT URI of the population/ancestry breakdown for this biosample
  * @param strProfileRef           AT URI of the Y-STR profile for this biosample (deprecated, use strProfileRefs)
  * @param strProfileRefs          AT URIs of Y-STR profile records for this biosample (supports multiple vendors)
+ * @param ySnpPanelRefs           AT URIs of Y-DNA SNP panel result records (SNP packs, YSEQ panels, etc.)
  */
 case class Biosample(
   atUri: Option[String],
@@ -36,7 +37,8 @@ case class Biosample(
   genotypeRefs: List[String] = List.empty,
   populationBreakdownRef: Option[String] = None,
   strProfileRef: Option[String] = None,
-  strProfileRefs: List[String] = List.empty
+  strProfileRefs: List[String] = List.empty,
+  ySnpPanelRefs: List[String] = List.empty
 )
 
 object Biosample {

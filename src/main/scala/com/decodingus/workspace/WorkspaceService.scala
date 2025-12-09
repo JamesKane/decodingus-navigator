@@ -88,6 +88,23 @@ object LiveWorkspaceService extends WorkspaceService {
   implicit val strPanelCodec: Codec[StrPanel] = deriveCodec
   implicit val strProfileCodec: Codec[StrProfile] = deriveCodec
 
+  // Chip profile codec
+  implicit val chipProfileCodec: Codec[ChipProfile] = deriveCodec
+
+  // Y-DNA SNP panel codecs
+  import com.decodingus.genotype.model.{YSnpResult, YDnaSnpCall, YDnaSnpPanelResult}
+  implicit val ySnpResultCodec: Codec[YSnpResult] = Codec.from(
+    Decoder.decodeString.emap {
+      case "Positive" => Right(YSnpResult.Positive)
+      case "Negative" => Right(YSnpResult.Negative)
+      case "NoCall" => Right(YSnpResult.NoCall)
+      case other => Left(s"Unknown YSnpResult: $other")
+    },
+    Encoder.encodeString.contramap(_.toString)
+  )
+  implicit val yDnaSnpCallCodec: Codec[YDnaSnpCall] = deriveCodec
+  implicit val yDnaSnpPanelResultCodec: Codec[YDnaSnpPanelResult] = deriveCodec
+
   // First-class record codecs
   implicit val sequenceRunCodec: Codec[SequenceRun] = deriveCodec
   implicit val alignmentCodec: Codec[Alignment] = deriveCodec

@@ -67,6 +67,44 @@ object FeatureToggles {
   }
 
   /**
+   * Chip/Array genotype data configuration.
+   */
+  object chipData {
+    private val chipConfig = if (config.hasPath("chip-data")) {
+      config.getConfig("chip-data")
+    } else {
+      ConfigFactory.empty()
+    }
+
+    /** Whether chip data import is enabled */
+    val enabled: Boolean =
+      if (chipConfig.hasPath("enabled")) chipConfig.getBoolean("enabled") else true
+
+    /** Minimum marker count to accept a chip file */
+    val minMarkerCount: Int =
+      if (chipConfig.hasPath("min-marker-count")) chipConfig.getInt("min-marker-count") else 100000
+
+    /** Maximum acceptable no-call rate (0.05 = 5%) */
+    val maxNoCallRate: Double =
+      if (chipConfig.hasPath("max-no-call-rate")) chipConfig.getDouble("max-no-call-rate") else 0.05
+
+    /** Minimum Y-DNA markers for haplogroup estimation */
+    val minYMarkers: Int =
+      if (chipConfig.hasPath("min-y-markers")) chipConfig.getInt("min-y-markers") else 50
+
+    /** Minimum mtDNA markers for haplogroup estimation */
+    val minMtMarkers: Int =
+      if (chipConfig.hasPath("min-mt-markers")) chipConfig.getInt("min-mt-markers") else 20
+
+    /** Supported vendors list */
+    val supportedVendors: List[String] =
+      if (chipConfig.hasPath("supported-vendors"))
+        chipConfig.getStringList("supported-vendors").asScala.toList
+      else
+        List("23andMe", "AncestryDNA", "FamilyTreeDNA", "MyHeritage", "LivingDNA")
+  }
+
+  /**
    * Reference genome haplogroup mappings for Y-DNA calling optimization.
    * Maps reference build names to their known Y-DNA haplogroup name variants.
    * Multiple name variants are supported for compatibility with different tree providers.

@@ -99,6 +99,24 @@ object PdsClient {
   implicit val strProfileEncoder: Encoder[StrProfile] = deriveEncoder
   implicit val strProfileDecoder: Decoder[StrProfile] = deriveDecoder
 
+  // Chip profile codecs
+  implicit val chipProfileEncoder: Encoder[ChipProfile] = deriveEncoder
+  implicit val chipProfileDecoder: Decoder[ChipProfile] = deriveDecoder
+
+  // Y-DNA SNP panel codecs
+  import com.decodingus.genotype.model.{YSnpResult, YDnaSnpCall, YDnaSnpPanelResult}
+  implicit val ySnpResultEncoder: Encoder[YSnpResult] = Encoder.encodeString.contramap(_.toString)
+  implicit val ySnpResultDecoder: Decoder[YSnpResult] = Decoder.decodeString.emap {
+    case "Positive" => Right(YSnpResult.Positive)
+    case "Negative" => Right(YSnpResult.Negative)
+    case "NoCall" => Right(YSnpResult.NoCall)
+    case other => Left(s"Unknown YSnpResult: $other")
+  }
+  implicit val yDnaSnpCallEncoder: Encoder[YDnaSnpCall] = deriveEncoder
+  implicit val yDnaSnpCallDecoder: Decoder[YDnaSnpCall] = deriveDecoder
+  implicit val yDnaSnpPanelResultEncoder: Encoder[YDnaSnpPanelResult] = deriveEncoder
+  implicit val yDnaSnpPanelResultDecoder: Decoder[YDnaSnpPanelResult] = deriveDecoder
+
   // Main entity codecs
   implicit val biosampleEncoder: Encoder[Biosample] = deriveEncoder
   implicit val biosampleDecoder: Decoder[Biosample] = deriveDecoder

@@ -16,6 +16,8 @@ package com.decodingus.workspace.model
  * @param sequenceRuns  Denormalized sequence run records for local access
  * @param alignments    Denormalized alignment records for local access
  * @param strProfiles   Denormalized STR profile records for local access
+ * @param chipProfiles  Denormalized chip/array genotype profiles for local access
+ * @param ySnpPanels    Denormalized Y-DNA SNP panel results for local access
  */
 case class WorkspaceContent(
   meta: Option[RecordMeta] = None,
@@ -25,7 +27,9 @@ case class WorkspaceContent(
   projects: List[Project] = List.empty,
   sequenceRuns: List[SequenceRun] = List.empty,
   alignments: List[Alignment] = List.empty,
-  strProfiles: List[StrProfile] = List.empty
+  strProfiles: List[StrProfile] = List.empty,
+  chipProfiles: List[ChipProfile] = List.empty,
+  ySnpPanels: List[com.decodingus.genotype.model.YDnaSnpPanelResult] = List.empty
 ) {
   /**
    * Returns sequence runs for a given biosample.
@@ -59,6 +63,26 @@ case class WorkspaceContent(
    */
   def findProject(projectName: String): Option[Project] = {
     projects.find(_.projectName == projectName)
+  }
+
+  /**
+   * Returns chip profiles for a given biosample.
+   * Resolves genotypeRefs to actual ChipProfile records.
+   */
+  def getChipProfilesForBiosample(biosample: Biosample): List[ChipProfile] = {
+    biosample.genotypeRefs.flatMap { ref =>
+      chipProfiles.find(_.atUri.contains(ref))
+    }
+  }
+
+  /**
+   * Returns Y-DNA SNP panel results for a given biosample.
+   * Resolves ySnpPanelRefs to actual YDnaSnpPanelResult records.
+   */
+  def getYSnpPanelsForBiosample(biosample: Biosample): List[com.decodingus.genotype.model.YDnaSnpPanelResult] = {
+    biosample.ySnpPanelRefs.flatMap { ref =>
+      ySnpPanels.find(_.atUri.contains(ref))
+    }
   }
 }
 

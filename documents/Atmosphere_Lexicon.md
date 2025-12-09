@@ -1221,11 +1221,21 @@ This record represents a single alignment of sequence data to a reference genome
 
 ### 5. Genotype Record (`com.decodingus.atmosphere.genotype`)
 
-This record represents genotyping array/chip data (e.g., 23andMe, AncestryDNA, FTDNA). It is a first-class record separate from sequencing data.
+This record represents genotyping array/chip data (e.g., 23andMe, AncestryDNA, FTDNA). It is a first-class record separate from sequencing data. Raw genotype calls remain local on the Edge App; only metadata and derived results (haplogroups, ancestry percentages) flow to DecodingUs.
 
 **NSID:** `com.decodingus.atmosphere.genotype`
 
-**Status:** 🔮 Future Scope (Multi-Test Type Support)
+**Status:** 🚧 In Development (Navigator Desktop Implementation)
+
+**Supported Vendors**: 23andMe, AncestryDNA, FamilyTreeDNA, MyHeritage, LivingDNA
+
+**Test Type Codes** (per multi-test-type-roadmap.md):
+- `ARRAY_23ANDME_V5` - 23andMe v5 chip (~640K markers)
+- `ARRAY_23ANDME_V4` - 23andMe v4 chip (~570K markers)
+- `ARRAY_ANCESTRY_V2` - AncestryDNA v2 (~700K markers)
+- `ARRAY_FTDNA_FF` - FTDNA Family Finder (~700K markers)
+- `ARRAY_MYHERITAGE` - MyHeritage DNA (~700K markers)
+- `ARRAY_LIVINGDNA` - LivingDNA (~630K markers)
 
 ```json
 {
@@ -1234,11 +1244,11 @@ This record represents genotyping array/chip data (e.g., 23andMe, AncestryDNA, F
   "defs": {
     "main": {
       "type": "record",
-      "description": "Genotyping array/chip data from DTC providers or research arrays.",
+      "description": "Genotyping array/chip data from DTC providers. Raw genotypes stay local; only metadata flows to DecodingUs.",
       "key": "tid",
       "record": {
         "type": "object",
-        "required": ["meta", "atUri", "biosampleRef", "chipType", "provider"],
+        "required": ["meta", "atUri", "biosampleRef", "testTypeCode", "provider"],
         "properties": {
           "atUri": {
             "type": "string",
@@ -1252,37 +1262,74 @@ This record represents genotyping array/chip data (e.g., 23andMe, AncestryDNA, F
             "type": "string",
             "description": "AT URI of the parent biosample record."
           },
+          "testTypeCode": {
+            "type": "string",
+            "description": "Test type code from the taxonomy.",
+            "knownValues": ["ARRAY_23ANDME_V5", "ARRAY_23ANDME_V4", "ARRAY_ANCESTRY_V2", "ARRAY_FTDNA_FF", "ARRAY_MYHERITAGE", "ARRAY_LIVINGDNA", "ARRAY_CUSTOM"]
+          },
           "provider": {
             "type": "string",
             "description": "The genotyping provider or company.",
-            "knownValues": ["23ANDME", "ANCESTRY", "FTDNA", "MYHERITAGE", "LIVINGDNA", "NEBULA", "CUSTOM"]
-          },
-          "chipType": {
-            "type": "string",
-            "description": "The array/chip version used.",
-            "knownValues": ["GSA_V3", "GSA_V2", "OMNI_EXPRESS", "ILLUMINA_CORE", "CUSTOM"]
+            "knownValues": ["23andMe", "AncestryDNA", "FamilyTreeDNA", "MyHeritage", "LivingDNA", "Nebula", "Custom"]
           },
           "chipVersion": {
             "type": "string",
-            "description": "Specific version identifier (e.g., 'v5.2', '2024Q1')."
+            "description": "Specific chip version identifier (e.g., 'v5', 'v2')."
           },
-          "snpCount": {
+          "totalMarkersCalled": {
             "type": "integer",
-            "description": "Total number of SNPs genotyped."
+            "description": "Number of markers with valid genotype calls."
           },
-          "callRate": {
+          "totalMarkersPossible": {
+            "type": "integer",
+            "description": "Total markers on the chip/array."
+          },
+          "noCallRate": {
             "type": "float",
-            "description": "Percentage of SNPs successfully called (0.0-1.0)."
+            "description": "Percentage of markers with no call (0.0-1.0)."
+          },
+          "yMarkersCalled": {
+            "type": "integer",
+            "description": "Number of Y-DNA markers with calls (for haplogroup confidence)."
+          },
+          "yMarkersTotal": {
+            "type": "integer",
+            "description": "Total Y-DNA markers on chip."
+          },
+          "mtMarkersCalled": {
+            "type": "integer",
+            "description": "Number of mtDNA markers with calls."
+          },
+          "mtMarkersTotal": {
+            "type": "integer",
+            "description": "Total mtDNA markers on chip."
+          },
+          "autosomalMarkersCalled": {
+            "type": "integer",
+            "description": "Number of autosomal markers with calls (for ancestry/IBD)."
+          },
+          "hetRate": {
+            "type": "float",
+            "description": "Heterozygosity rate across autosomal markers (quality check)."
           },
           "testDate": {
             "type": "string",
             "format": "datetime",
             "description": "Date the genotyping was performed."
           },
+          "processedAt": {
+            "type": "string",
+            "format": "datetime",
+            "description": "When the file was processed by Navigator."
+          },
           "buildVersion": {
             "type": "string",
             "description": "Reference genome build for coordinates.",
-            "knownValues": ["GRCh37", "GRCh38", "hg19", "hg38"]
+            "knownValues": ["GRCh37", "GRCh38"]
+          },
+          "sourceFileHash": {
+            "type": "string",
+            "description": "SHA-256 hash of source file for deduplication."
           },
           "files": {
             "type": "array",
@@ -1291,6 +1338,15 @@ This record represents genotyping array/chip data (e.g., 23andMe, AncestryDNA, F
               "type": "ref",
               "ref": "com.decodingus.atmosphere.defs#fileInfo"
             }
+          },
+          "derivedHaplogroups": {
+            "type": "ref",
+            "ref": "com.decodingus.atmosphere.defs#haplogroupAssignments",
+            "description": "Haplogroups derived from chip Y/mtDNA markers."
+          },
+          "populationBreakdownRef": {
+            "type": "string",
+            "description": "AT URI of the population breakdown derived from this genotype data."
           },
           "imputationRef": {
             "type": "string",
@@ -1302,6 +1358,14 @@ This record represents genotyping array/chip data (e.g., 23andMe, AncestryDNA, F
   }
 }
 ```
+
+**Edge App Processing**: Navigator Desktop processes chip files locally:
+1. Auto-detects vendor format from file header
+2. Parses genotype calls (stays local, never uploaded)
+3. Computes summary statistics (marker counts, call rates)
+4. Extracts Y/mtDNA markers for haplogroup analysis
+5. Runs ancestry analysis using autosomal markers
+6. Syncs metadata and derived results to PDS
 
 ---
 
@@ -2663,7 +2727,7 @@ When processing firehose events:
 }
 ```
 
-### Genotype Record (Future)
+### Genotype Record (In Development)
 
 ```json
 {
@@ -2671,26 +2735,54 @@ When processing firehose events:
   "atUri": "at://did:plc:alice123/com.decodingus.atmosphere.genotype/3jui7q3aa",
   "meta": {
     "version": 1,
-    "createdAt": "2025-12-01T10:00:00Z"
+    "createdAt": "2025-12-08T10:00:00Z"
   },
   "biosampleRef": "at://did:plc:alice123/com.decodingus.atmosphere.biosample/3jui7q2lx",
-  "provider": "23ANDME",
-  "chipType": "GSA_V3",
-  "chipVersion": "v5.2",
-  "snpCount": 654321,
-  "callRate": 0.98,
-  "testDate": "2023-06-15T00:00:00Z",
+  "testTypeCode": "ARRAY_23ANDME_V5",
+  "provider": "23andMe",
+  "chipVersion": "v5",
+  "totalMarkersCalled": 638542,
+  "totalMarkersPossible": 640000,
+  "noCallRate": 0.0023,
+  "yMarkersCalled": 1847,
+  "yMarkersTotal": 2000,
+  "mtMarkersCalled": 2891,
+  "mtMarkersTotal": 3000,
+  "autosomalMarkersCalled": 612453,
+  "hetRate": 0.31,
+  "testDate": "2024-06-15T00:00:00Z",
+  "processedAt": "2025-12-08T10:00:00Z",
   "buildVersion": "GRCh37",
+  "sourceFileHash": "sha256-e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
   "files": [
     {
       "fileName": "23andme_raw_data.txt",
       "fileSizeBytes": 25000000,
       "fileFormat": "23ANDME",
-      "checksum": "sha256-abcd1234...",
+      "checksum": "sha256-e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
       "checksumAlgorithm": "SHA-256",
-      "location": "ipfs://Qm..."
+      "location": "file:///Users/alice/Downloads/23andme_raw_data.txt"
     }
-  ]
+  ],
+  "derivedHaplogroups": {
+    "yDna": {
+      "haplogroupName": "R-M269",
+      "score": 0.85,
+      "matchingSnps": 45,
+      "mismatchingSnps": 2,
+      "treeDepth": 8,
+      "lineagePath": ["R", "R1", "R1b", "R-M269"]
+    },
+    "mtDna": {
+      "haplogroupName": "H1a",
+      "score": 0.92,
+      "matchingSnps": 28,
+      "mismatchingSnps": 0,
+      "treeDepth": 4,
+      "lineagePath": ["H", "H1", "H1a"]
+    }
+  },
+  "populationBreakdownRef": "at://did:plc:alice123/com.decodingus.atmosphere.populationBreakdown/3jui7q2m1"
 }
 ```
 
@@ -3125,7 +3217,7 @@ When processing firehose events:
 
 | Record Type | Planning Document | Purpose |
 |:---|:---|:---|
-| `genotype` | multi-test-type-roadmap.md | Chip/array data support |
+| `genotype` | multi-test-type-roadmap.md | Chip/array data support (🚧 In Development) |
 | `imputation` | multi-test-type-roadmap.md | Imputed genotype results |
 | `populationBreakdown` | ibd-matching-system.md, AncestryAnalysis.md | Ancestry composition (🚧 In Development) |
 | `matchConsent` | ibd-matching-system.md | IBD matching opt-in |
@@ -3157,3 +3249,4 @@ When processing firehose events:
 | 1.4 | 2025-12-07 | Edge computing compliance: Clarified all `files` fields store metadata only, updated CRUD examples to reflect local analysis model |
 | 1.5 | 2025-12-08 | Added multi-run reconciliation support: `haplogroupReconciliation` record, reconciliation definitions (reconciliationStatus, runHaplogroupCall, snpConflict, heteroplasmyObservation, identityVerification), updated biosample with reconciliation refs. Added `strHaplogroupPrediction` definition for STR-based haplogroup prediction with support for Nevgen, Hapest, YHaplo, SAPP algorithms |
 | 1.6 | 2025-12-08 | Enhanced ancestry analysis support: Updated `populationBreakdown` record with PCA projection algorithm details, two-tier panel support (AIMs/genome-wide), 33 reference populations from 1000G + HGDP/SGDP organized into 9 super-populations. Added new definitions: `superPopulationSummary`, `ancestryPanel`. Enhanced `populationComponent` with `superPopulation` and `rank` fields. Added IBD matching integration guidance. Status changed from Future Scope to In Development. |
+| 1.7 | 2025-12-08 | Multi-test-type support (Phase 1): Enhanced `genotype` record with test type taxonomy codes (ARRAY_23ANDME_V5, etc.), detailed marker statistics (Y/mtDNA/autosomal counts), and derived haplogroup support. Added Edge App processing documentation. Navigator Desktop now supports parsing 23andMe, AncestryDNA, FTDNA, MyHeritage, and LivingDNA raw data exports. Status changed from Future Scope to In Development. |

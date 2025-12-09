@@ -44,7 +44,7 @@ class SequenceDataTable(
   )
 
   private val table = new TableView[SequenceRunRow](tableData) {
-    prefHeight = 200
+    prefHeight = 150
     columnResizePolicy = TableView.ConstrainedResizePolicy
 
     // Platform + Instrument column (e.g., "Illumina NovaSeq")
@@ -64,7 +64,27 @@ class SequenceDataTable(
       text = "Test"
       cellValueFactory = { row =>
         val run = row.value.run
-        val testType = run.testType
+        // Use display name from TestTypes if available, otherwise raw code
+        val testTypeDisplay = SequenceRun.testTypeDisplayName(run.testType) match {
+          case name if name == run.testType => run.testType // No mapping found, use code
+          case name =>
+            // For long names, use abbreviated form
+            name match {
+              case "Whole Genome Sequencing" => "WGS"
+              case "Whole Exome Sequencing" => "WES"
+              case "Low-Pass WGS" => "WGS-LP"
+              case "PacBio HiFi WGS" => "HiFi WGS"
+              case "Nanopore WGS" => "ONT WGS"
+              case "PacBio CLR WGS" => "CLR WGS"
+              case n if n.startsWith("FTDNA Big Y") => run.testType
+              case n if n.contains("Y Elite") => "Y Elite"
+              case n if n.contains("Y-Prime") => "Y-Prime"
+              case n if n.contains("mtDNA Full") => "MT Full"
+              case n if n.contains("mtDNA Plus") => "MT Plus"
+              case n if n.contains("Control Region") => "MT HVR"
+              case _ => run.testType
+            }
+        }
         val readLen = run.readLength.map(r => s"${r}bp").getOrElse("")
         val layout = run.libraryLayout.map {
           case "Paired-End" => "PE"
@@ -73,10 +93,10 @@ class SequenceDataTable(
         }.getOrElse("")
 
         val details = Seq(readLen, layout).filter(_.nonEmpty).mkString(" ")
-        val display = if (details.nonEmpty) s"$testType - $details" else testType
+        val display = if (details.nonEmpty) s"$testTypeDisplay - $details" else testTypeDisplay
         StringProperty(display)
       }
-      prefWidth = 120
+      prefWidth = 130
     }
 
     // File column
@@ -200,53 +220,81 @@ class SequenceDataTable(
       return
     }
 
-    // Show dialog to select tree type
+    // Get the test type capabilities
+    val row = table.selectionModel().getSelectedItem
+    val testType = row.run.testType
+    val supportsY = SequenceRun.supportsYDna(testType)
+    val supportsMt = SequenceRun.supportsMtDna(testType)
+
+    // For targeted tests, auto-select the appropriate tree type
+    if (supportsY && !supportsMt) {
+      // Y-DNA only test (Big Y, Y Elite, etc.) - go straight to Y analysis
+      runHaplogroupAnalysisForType(index, runAlignments, TreeType.YDNA)
+      return
+    } else if (supportsMt && !supportsY) {
+      // mtDNA only test - go straight to MT analysis
+      runHaplogroupAnalysisForType(index, runAlignments, TreeType.MTDNA)
+      return
+    } else if (!supportsY && !supportsMt) {
+      // Neither supported (WES, etc.)
+      new Alert(AlertType.Information) {
+        title = "Haplogroup Analysis Unavailable"
+        headerText = s"${SequenceRun.testTypeDisplayName(testType)} does not support haplogroup analysis"
+        contentText = "This test type does not include sufficient Y-DNA or mtDNA coverage for haplogroup determination."
+      }.showAndWait()
+      return
+    }
+
+    // Show dialog to select tree type (for WGS and similar)
     val dialog = new HaplogroupAnalysisDialog()
     val result = dialog.showAndWait().asInstanceOf[Option[Option[TreeType]]]
 
     result match {
       case Some(Some(treeType)) =>
-        // Show progress dialog
-        val progressDialog = new AnalysisProgressDialog(
-          s"${if (treeType == TreeType.YDNA) "Y-DNA" else "MT-DNA"} Haplogroup Analysis",
-          viewModel.analysisProgress,
-          viewModel.analysisProgressPercent,
-          viewModel.analysisInProgress
-        )
-
-        viewModel.runHaplogroupAnalysis(
-          subject.sampleAccession,
-          index,
-          treeType,
-          onComplete = {
-            case Right(haplogroupResult) =>
-              Platform.runLater {
-                // Show results dialog
-                new HaplogroupResultDialog(
-                  treeType = treeType,
-                  haplogroupName = haplogroupResult.name,
-                  score = haplogroupResult.score,
-                  matchingSnps = haplogroupResult.matchingSnps,
-                  mismatchingSnps = haplogroupResult.mismatchingSnps,
-                  ancestralMatches = haplogroupResult.ancestralMatches,
-                  depth = haplogroupResult.depth
-                ).showAndWait()
-              }
-            case Left(error) =>
-              Platform.runLater {
-                new Alert(AlertType.Error) {
-                  title = "Haplogroup Analysis Failed"
-                  headerText = "Could not complete haplogroup analysis"
-                  contentText = error
-                }.showAndWait()
-              }
-          }
-        )
-
-        progressDialog.show()
-
+        runHaplogroupAnalysisForType(index, runAlignments, treeType)
       case _ => // User cancelled
     }
+  }
+
+  /** Runs haplogroup analysis for a specific tree type */
+  private def runHaplogroupAnalysisForType(index: Int, runAlignments: List[Alignment], treeType: TreeType): Unit = {
+    val progressDialog = new AnalysisProgressDialog(
+      s"${if (treeType == TreeType.YDNA) "Y-DNA" else "MT-DNA"} Haplogroup Analysis",
+      viewModel.analysisProgress,
+      viewModel.analysisProgressPercent,
+      viewModel.analysisInProgress
+    )
+
+    viewModel.runHaplogroupAnalysis(
+      subject.sampleAccession,
+      index,
+      treeType,
+      onComplete = {
+        case Right(haplogroupResult) =>
+          Platform.runLater {
+            // Show results dialog
+            new HaplogroupResultDialog(
+              treeType = treeType,
+              haplogroupName = haplogroupResult.name,
+              score = haplogroupResult.score,
+              matchingSnps = haplogroupResult.matchingSnps,
+              mismatchingSnps = haplogroupResult.mismatchingSnps,
+              ancestralMatches = haplogroupResult.ancestralMatches,
+              depth = haplogroupResult.depth
+            ).showAndWait()
+          }
+        case Left(error) =>
+          Platform.runLater {
+            new Alert(AlertType.Error) {
+              title = "Haplogroup Analysis Failed"
+              headerText = "Could not complete haplogroup analysis"
+              contentText = error
+            }.showAndWait()
+          }
+      }
+    )
+
+    progressDialog.show()
   }
 
   // Action buttons

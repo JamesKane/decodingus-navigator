@@ -110,6 +110,15 @@ class WorkbenchView(val viewModel: WorkbenchViewModel) extends SplitPane {
     )
     VBox.setVgrow(sequenceTable, Priority.Always)
 
+    // Chip/Array data table
+    val chipProfiles = viewModel.getChipProfilesForBiosample(subject.sampleAccession)
+    val chipTable = new ChipDataTable(
+      viewModel = viewModel,
+      subject = subject,
+      chipProfiles = chipProfiles,
+      onRemove = (uri: String) => handleRemoveChipProfile(subject.sampleAccession, uri)
+    )
+
     // STR profile table
     val strProfiles = viewModel.getStrProfilesForBiosample(subject.sampleAccession)
     val strTable = new StrProfileTable(
@@ -125,6 +134,7 @@ class WorkbenchView(val viewModel: WorkbenchViewModel) extends SplitPane {
       infoSection,
       haplogroupLabel,
       sequenceTable,
+      chipTable,
       strTable
     )
   }
@@ -326,6 +336,21 @@ class WorkbenchView(val viewModel: WorkbenchViewModel) extends SplitPane {
         new Alert(AlertType.Error) {
           title = "Error"
           headerText = "Could not remove STR profile"
+          contentText = error
+        }.showAndWait()
+    }
+  }
+
+  /** Handles removing a chip profile */
+  private def handleRemoveChipProfile(sampleAccession: String, profileUri: String): Unit = {
+    viewModel.deleteChipProfile(sampleAccession, profileUri) match {
+      case Right(_) =>
+        // Refresh the detail view
+        viewModel.selectedSubject.value.foreach(renderSubjectDetail)
+      case Left(error) =>
+        new Alert(AlertType.Error) {
+          title = "Error"
+          headerText = "Could not remove chip profile"
           contentText = error
         }.showAndWait()
     }

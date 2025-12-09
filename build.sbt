@@ -72,7 +72,7 @@ lazy val root = (project in file("."))
     ),
 
     // Increase inline limit for Circe deriveCodec macros with deeply nested types
-    scalacOptions += "-Xmax-inlines:128",
+    scalacOptions += "-Xmax-inlines:256",
     libraryDependencies ++= {
       val jacksonVersion = "2.15.2"
       val javaFXVersion = "21.0.2"

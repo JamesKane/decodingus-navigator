@@ -50,11 +50,57 @@ object SequenceRun {
     "ILLUMINA", "PACBIO", "NANOPORE", "ION_TORRENT", "BGI", "ELEMENT", "ULTIMA"
   )
 
-  /** Known test type values */
+  /**
+   * Known test type codes (aligned with TestTypes).
+   * Use TestTypes.byCode() to get full TestTypeDefinition.
+   */
   val KnownTestTypes: Set[String] = Set(
-    "WGS", "EXOME", "TARGETED", "RNA_SEQ", "AMPLICON"
+    // Whole genome - short read
+    "WGS", "WGS_LOW_PASS",
+    // Whole genome - long read
+    "WGS_HIFI", "WGS_NANOPORE", "WGS_CLR",
+    // Exome
+    "WES",
+    // Targeted Y-DNA
+    "BIG_Y_500", "BIG_Y_700", "Y_ELITE", "Y_PRIME",
+    // Targeted mtDNA
+    "MT_FULL_SEQUENCE", "MT_PLUS", "MT_CR_ONLY",
+    // Legacy compatibility
+    "EXOME", "TARGETED", "RNA_SEQ", "AMPLICON", "Unknown"
   )
 
   /** Known library layout values */
   val KnownLibraryLayouts: Set[String] = Set("PAIRED", "SINGLE")
+
+  /**
+   * Get display name for a test type code.
+   */
+  def testTypeDisplayName(code: String): String = {
+    import com.decodingus.genotype.model.TestTypes
+    TestTypes.byCode(code).map(_.displayName).getOrElse(code)
+  }
+
+  /**
+   * Check if test type supports Y-DNA haplogroup analysis.
+   */
+  def supportsYDna(testTypeCode: String): Boolean = {
+    import com.decodingus.genotype.model.TestTypes
+    TestTypes.byCode(testTypeCode).exists(_.supportsHaplogroupY)
+  }
+
+  /**
+   * Check if test type supports mtDNA haplogroup analysis.
+   */
+  def supportsMtDna(testTypeCode: String): Boolean = {
+    import com.decodingus.genotype.model.TestTypes
+    TestTypes.byCode(testTypeCode).exists(_.supportsHaplogroupMt)
+  }
+
+  /**
+   * Check if test type supports ancestry analysis.
+   */
+  def supportsAncestry(testTypeCode: String): Boolean = {
+    import com.decodingus.genotype.model.TestTypes
+    TestTypes.byCode(testTypeCode).exists(_.supportsAncestry)
+  }
 }
