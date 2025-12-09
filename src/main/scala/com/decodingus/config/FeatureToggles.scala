@@ -16,6 +16,10 @@ object FeatureToggles {
 
   /**
    * Tree provider configuration for Y-DNA and MT-DNA analysis.
+   *
+   * @deprecated Use UserPreferencesService instead. Tree provider selection
+   *             has been moved to user preferences (Settings > Tree Providers).
+   *             This config is kept as a fallback for default values only.
    */
   object treeProviders {
     private val treeConfig = if (config.hasPath("tree-providers")) {

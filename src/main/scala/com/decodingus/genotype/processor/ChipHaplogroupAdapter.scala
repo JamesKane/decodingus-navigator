@@ -1,6 +1,6 @@
 package com.decodingus.genotype.processor
 
-import com.decodingus.config.FeatureToggles
+import com.decodingus.config.{FeatureToggles, UserPreferencesService}
 import com.decodingus.haplogroup.model.{Haplogroup, HaplogroupResult}
 import com.decodingus.haplogroup.scoring.HaplogroupScorer
 import com.decodingus.haplogroup.tree.{TreeProvider, TreeProviderType, TreeType}
@@ -76,13 +76,13 @@ class ChipHaplogroupAdapter {
       return Left(s"No $typeName markers found in chip data")
     }
 
-    // Get tree provider from config
+    // Get tree provider from user preferences
     val providerType = treeType match {
       case TreeType.YDNA =>
-        if (FeatureToggles.treeProviders.ydna == "decodingus") TreeProviderType.DECODINGUS
+        if (UserPreferencesService.getYdnaTreeProvider.equalsIgnoreCase("decodingus")) TreeProviderType.DECODINGUS
         else TreeProviderType.FTDNA
       case TreeType.MTDNA =>
-        if (FeatureToggles.treeProviders.mtdna == "decodingus") TreeProviderType.DECODINGUS
+        if (UserPreferencesService.getMtdnaTreeProvider.equalsIgnoreCase("decodingus")) TreeProviderType.DECODINGUS
         else TreeProviderType.FTDNA
     }
 

@@ -4,7 +4,7 @@ import com.decodingus.analysis.{ArtifactContext, CallableLociProcessor, Callable
 import com.decodingus.client.DecodingUsClient
 import com.decodingus.haplogroup.tree.{TreeType, TreeProviderType}
 import com.decodingus.auth.User
-import com.decodingus.config.FeatureToggles
+import com.decodingus.config.{FeatureToggles, UserPreferencesService}
 import com.decodingus.model.{LibraryStats, WgsMetrics}
 import com.decodingus.pds.PdsClient
 import com.decodingus.config.ReferenceConfigService
@@ -1677,14 +1677,14 @@ class WorkbenchViewModel(val workspaceService: WorkspaceService) {
                           sequenceRunUri = seqRun.atUri,
                           alignmentUri = alignment.atUri
                         )
-                        // Select tree provider based on configuration
+                        // Select tree provider based on user preferences
                         val treeProviderType = treeType match {
                           case TreeType.YDNA =>
-                            if (FeatureToggles.treeProviders.ydna.equalsIgnoreCase("decodingus"))
+                            if (UserPreferencesService.getYdnaTreeProvider.equalsIgnoreCase("decodingus"))
                               TreeProviderType.DECODINGUS
                             else TreeProviderType.FTDNA
                           case TreeType.MTDNA =>
-                            if (FeatureToggles.treeProviders.mtdna.equalsIgnoreCase("decodingus"))
+                            if (UserPreferencesService.getMtdnaTreeProvider.equalsIgnoreCase("decodingus"))
                               TreeProviderType.DECODINGUS
                             else TreeProviderType.FTDNA
                         }

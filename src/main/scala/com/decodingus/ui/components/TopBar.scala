@@ -16,7 +16,7 @@ class TopBar(onLogin: () => Unit, onLogout: () => Unit) extends HBox {
   private val settingsButton = new Button("Settings") {
     styleClass.add("button-select")
     onAction = _ => {
-      val dialog = new ReferenceConfigDialog()
+      val dialog = new SettingsDialog()
       dialog.showAndWait()
     }
   }
