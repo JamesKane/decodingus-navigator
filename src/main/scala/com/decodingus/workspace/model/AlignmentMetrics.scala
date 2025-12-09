@@ -1,15 +1,16 @@
 package com.decodingus.workspace.model
 
 case class AlignmentMetrics(
-  genomeTerritory: Option[Long],
-  meanCoverage: Option[Double],
-  medianCoverage: Option[Double],
-  sdCoverage: Option[Double],
-  pctExcDupe: Option[Double],
-  pctExcMapq: Option[Double],
-  pct10x: Option[Double],
-  pct20x: Option[Double],
-  pct30x: Option[Double],
-  hetSnpSensitivity: Option[Double],
-  contigs: List[ContigMetrics]
+  genomeTerritory: Option[Long] = None,
+  meanCoverage: Option[Double] = None,
+  medianCoverage: Option[Double] = None,
+  sdCoverage: Option[Double] = None,
+  pctExcDupe: Option[Double] = None,
+  pctExcMapq: Option[Double] = None,
+  pct10x: Option[Double] = None,
+  pct20x: Option[Double] = None,
+  pct30x: Option[Double] = None,
+  hetSnpSensitivity: Option[Double] = None,
+  callableBases: Option[Long] = None,
+  contigs: List[ContigMetrics] = List.empty
 )

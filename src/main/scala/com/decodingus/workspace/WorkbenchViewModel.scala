@@ -1,6 +1,6 @@
 package com.decodingus.workspace
 
-import com.decodingus.analysis.{ArtifactContext, HaplogroupProcessor, LibraryStatsProcessor, WgsMetricsProcessor}
+import com.decodingus.analysis.{ArtifactContext, CallableLociProcessor, CallableLociResult, HaplogroupProcessor, LibraryStatsProcessor, WgsMetricsProcessor}
 import com.decodingus.haplogroup.tree.{TreeType, TreeProviderType}
 import com.decodingus.auth.User
 import com.decodingus.config.FeatureToggles
@@ -8,7 +8,7 @@ import com.decodingus.model.{LibraryStats, WgsMetrics}
 import com.decodingus.pds.PdsClient
 import com.decodingus.config.ReferenceConfigService
 import com.decodingus.refgenome.{ReferenceGateway, ReferenceResolveResult}
-import com.decodingus.workspace.model.{Workspace, Project, Biosample, WorkspaceContent, SyncStatus, SequenceRun, Alignment, AlignmentMetrics, FileInfo, HaplogroupAssignments, HaplogroupResult => WorkspaceHaplogroupResult, RecordMeta, StrProfile, ChipProfile}
+import com.decodingus.workspace.model.{Workspace, Project, Biosample, WorkspaceContent, SyncStatus, SequenceRun, Alignment, AlignmentMetrics, ContigMetrics, FileInfo, HaplogroupAssignments, HaplogroupResult => WorkspaceHaplogroupResult, RecordMeta, StrProfile, ChipProfile}
 import com.decodingus.haplogroup.model.{HaplogroupResult => AnalysisHaplogroupResult}
 import htsjdk.samtools.SamReaderFactory
 import scalafx.beans.property.{ObjectProperty, ReadOnlyObjectProperty, StringProperty, BooleanProperty, DoubleProperty}
@@ -1202,6 +1202,143 @@ class WorkbenchViewModel(val workspaceService: WorkspaceService) {
     Platform.runLater {
       analysisProgress.value = message
       analysisProgressPercent.value = percent
+    }
+  }
+
+  // --- Callable Loci Analysis ---
+
+  // Store last callable loci result
+  val lastCallableLociResult: ObjectProperty[Option[CallableLociResult]] = ObjectProperty(None)
+
+  /**
+   * Runs callable loci analysis for a sequencing run.
+   * Analyzes each contig to determine callable vs non-callable regions.
+   * Requires that initial analysis has already been run.
+   *
+   * @param sampleAccession The subject's accession ID
+   * @param sequenceRunIndex The index of the sequence run to analyze
+   * @param onComplete Callback when analysis completes, returns result and artifact directory path
+   */
+  def runCallableLociAnalysis(
+    sampleAccession: String,
+    sequenceRunIndex: Int,
+    onComplete: Either[String, (CallableLociResult, java.nio.file.Path)] => Unit
+  ): Unit = {
+    findSubject(sampleAccession) match {
+      case Some(subject) =>
+        val sequenceRuns = _workspace.value.main.getSequenceRunsForBiosample(subject)
+        sequenceRuns.lift(sequenceRunIndex) match {
+          case Some(seqRun) =>
+            // Need alignment with reference build
+            val alignments = _workspace.value.main.getAlignmentsForSequenceRun(seqRun)
+            alignments.headOption match {
+              case Some(alignment) =>
+                seqRun.files.headOption match {
+                  case Some(fileInfo) =>
+                    val bamPath = fileInfo.location.getOrElse("")
+                    println(s"[ViewModel] Starting callable loci analysis for ${fileInfo.fileName}")
+
+                    analysisInProgress.value = true
+                    analysisError.value = ""
+                    analysisProgress.value = "Starting callable loci analysis..."
+                    analysisProgressPercent.value = 0.0
+
+                    Future {
+                      try {
+                        // Resolve reference
+                        updateProgress("Resolving reference genome...", 0.05)
+                        val referenceGateway = new ReferenceGateway((_, _) => {})
+                        val referencePath = referenceGateway.resolve(alignment.referenceBuild) match {
+                          case Right(path) => path.toString
+                          case Left(error) => throw new Exception(s"Failed to resolve reference: $error")
+                        }
+
+                        // Run GATK CallableLoci
+                        updateProgress("Running GATK CallableLoci (analyzing contigs)...", 0.1)
+                        val callableLociProcessor = new CallableLociProcessor()
+                        val artifactCtx = ArtifactContext(
+                          sampleAccession = sampleAccession,
+                          sequenceRunUri = seqRun.atUri,
+                          alignmentUri = alignment.atUri
+                        )
+                        val artifactDir = artifactCtx.getArtifactDir
+                        val (result, svgStrings) = callableLociProcessor.process(
+                          bamPath,
+                          referencePath,
+                          (message, current, total) => {
+                            val pct = 0.1 + (current.toDouble / total.toDouble) * 0.85
+                            updateProgress(message, pct)
+                          },
+                          Some(artifactCtx)
+                        ) match {
+                          case Right(r) => r
+                          case Left(error) => throw error
+                        }
+
+                        // Update alignment metrics with callable bases count
+                        updateProgress("Saving results...", 0.98)
+                        Platform.runLater {
+                          val existingMetrics = alignment.metrics.getOrElse(AlignmentMetrics())
+                          val updatedMetrics = existingMetrics.copy(
+                            callableBases = Some(result.callableBases),
+                            contigs = result.contigAnalysis.map { cs =>
+                              ContigMetrics(
+                                contigName = cs.contigName,
+                                callable = cs.callable,
+                                noCoverage = cs.noCoverage,
+                                lowCoverage = cs.lowCoverage,
+                                excessiveCoverage = cs.excessiveCoverage,
+                                poorMappingQuality = cs.poorMappingQuality
+                              )
+                            }
+                          )
+                          val updatedAlignment = alignment.copy(
+                            meta = alignment.meta.updated("callableLoci"),
+                            metrics = Some(updatedMetrics)
+                          )
+
+                          // Update workspace
+                          val updatedAlignments = _workspace.value.main.alignments.map { a =>
+                            if (a.atUri == alignment.atUri) updatedAlignment else a
+                          }
+                          val updatedContent = _workspace.value.main.copy(alignments = updatedAlignments)
+                          _workspace.value = _workspace.value.copy(main = updatedContent)
+                          saveWorkspace()
+
+                          lastCallableLociResult.value = Some(result)
+                          analysisInProgress.value = false
+                          analysisProgress.value = "Callable loci analysis complete"
+                          analysisProgressPercent.value = 1.0
+                          onComplete(Right((result, artifactDir)))
+                        }
+
+                        result
+                      } catch {
+                        case e: Exception =>
+                          Platform.runLater {
+                            analysisInProgress.value = false
+                            analysisError.value = e.getMessage
+                            analysisProgress.value = s"Analysis failed: ${e.getMessage}"
+                            onComplete(Left(e.getMessage))
+                          }
+                          throw e
+                      }
+                    }
+
+                  case None =>
+                    onComplete(Left("No alignment file associated with this sequence run"))
+                }
+
+              case None =>
+                onComplete(Left("Please run initial analysis first to detect reference build"))
+            }
+
+          case None =>
+            onComplete(Left(s"Sequence run not found at index $sequenceRunIndex for subject $sampleAccession"))
+        }
+
+      case None =>
+        onComplete(Left(s"Subject not found: $sampleAccession"))
     }
   }
 

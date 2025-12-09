@@ -8,6 +8,7 @@ import scalafx.geometry.{Insets, Pos}
 import scalafx.collections.ObservableBuffer
 import scalafx.beans.property.StringProperty
 import scalafx.application.Platform
+import com.decodingus.analysis.CallableLociResult
 import com.decodingus.workspace.model.{Biosample, SequenceRun, Alignment, AlignmentMetrics}
 import com.decodingus.workspace.WorkbenchViewModel
 import com.decodingus.haplogroup.tree.TreeType
@@ -171,6 +172,13 @@ class SequenceDataTable(
             }
           }
         },
+        new MenuItem("Callable Loci") {
+          onAction = _ => {
+            Option(row.getItem).foreach { item =>
+              handleCallableLociAnalysis(item.index, item.runAlignments)
+            }
+          }
+        },
         new MenuItem("Remove") {
           onAction = _ => {
             Option(row.getItem).foreach { item =>
@@ -288,6 +296,50 @@ class SequenceDataTable(
             new Alert(AlertType.Error) {
               title = "Haplogroup Analysis Failed"
               headerText = "Could not complete haplogroup analysis"
+              contentText = error
+            }.showAndWait()
+          }
+      }
+    )
+
+    progressDialog.show()
+  }
+
+  /** Handles launching callable loci analysis for a sequence run */
+  private def handleCallableLociAnalysis(index: Int, runAlignments: List[Alignment]): Unit = {
+    // Check if initial analysis has been run (need reference build info)
+    val hasAlignments = runAlignments.nonEmpty
+
+    if (!hasAlignments) {
+      new Alert(AlertType.Warning) {
+        title = "Analysis Required"
+        headerText = "Initial analysis required"
+        contentText = "Please run the initial analysis first to detect the reference build before running callable loci analysis."
+      }.showAndWait()
+      return
+    }
+
+    val progressDialog = new AnalysisProgressDialog(
+      "Callable Loci Analysis",
+      viewModel.analysisProgress,
+      viewModel.analysisProgressPercent,
+      viewModel.analysisInProgress
+    )
+
+    viewModel.runCallableLociAnalysis(
+      subject.sampleAccession,
+      index,
+      onComplete = {
+        case Right((result, artifactDir)) =>
+          Platform.runLater {
+            // Show results dialog with artifact path for SVG viewing
+            new CallableLociResultDialog(result, Some(artifactDir)).showAndWait()
+          }
+        case Left(error) =>
+          Platform.runLater {
+            new Alert(AlertType.Error) {
+              title = "Callable Loci Analysis Failed"
+              headerText = "Could not complete callable loci analysis"
               contentText = error
             }.showAndWait()
           }
