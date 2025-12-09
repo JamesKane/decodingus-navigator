@@ -9,7 +9,7 @@ import com.decodingus.haplogroup.tree.{TreeCache, TreeProvider, TreeProviderType
 import com.decodingus.haplogroup.vendor.{DecodingUsTreeProvider, FtdnaTreeProvider}
 import com.decodingus.liftover.LiftoverProcessor
 import com.decodingus.model.LibraryStats
-import com.decodingus.refgenome.{LiftoverGateway, MultiContigReferenceQuerier, ReferenceGateway, ReferenceQuerier}
+import com.decodingus.refgenome.{LiftoverGateway, MultiContigReferenceQuerier, ReferenceGateway, ReferenceQuerier, StrAnnotator}
 import htsjdk.variant.vcf.VCFFileReader
 
 import java.io.{File, PrintWriter}
@@ -162,6 +162,7 @@ class HaplogroupProcessor {
               artifactDir,
               Some(outputPrefix)
             ).flatMap { twoPassResult =>
+              val postGatkStart = System.currentTimeMillis()
               // Handle reverse liftover for tree sites VCF if needed
               val finalTreeVcf = if (performReverseLiftover) {
                 onProgress("Performing reverse liftover on tree sites...", 0.72, 1.0)
@@ -172,18 +173,23 @@ class HaplogroupProcessor {
 
               finalTreeVcf.flatMap { scoredVcf =>
                 onProgress("Scoring haplogroups...", 0.8, 1.0)
+                val scoringStart = System.currentTimeMillis()
                 // Merge calls from both VCFs:
                 // 1. Tree sites VCF (pass 1) - forced calls at reference-path positions
                 // 2. Private variants VCF (pass 2) - variant calls across full chromosome
                 // Pass 2 may contain calls at tree positions not in pass 1 (e.g., other branches)
                 val allTreePositions = allLoci.map(_.position).toSet
                 val treeSiteCalls = parseVcf(scoredVcf)
+                println(s"[HaplogroupProcessor] Parsed tree sites VCF: ${treeSiteCalls.size} calls in ${System.currentTimeMillis() - scoringStart}ms")
                 val additionalTreeCalls = parseVcfAtPositions(twoPassResult.privateVariantsVcf, allTreePositions)
+                println(s"[HaplogroupProcessor] Parsed additional calls in ${System.currentTimeMillis() - scoringStart}ms")
                 // Merge: pass 1 calls take precedence (they're force-called at exact positions)
                 val snpCalls = additionalTreeCalls ++ treeSiteCalls
 
                 val scorer = new HaplogroupScorer()
+                val scoreStart = System.currentTimeMillis()
                 val results = scorer.score(tree, snpCalls)
+                println(s"[HaplogroupProcessor] Scored ${results.size} haplogroups in ${System.currentTimeMillis() - scoreStart}ms")
 
                 // Identify private variants - only exclude positions on path to terminal haplogroup
                 // Positions on other branches could be legitimate private variants for undiscovered sub-clades
@@ -191,6 +197,17 @@ class HaplogroupProcessor {
                 val terminalHaplogroup = results.headOption.map(_.name).getOrElse("")
                 val pathPositions = collectPathPositions(tree, terminalHaplogroup)
                 val privateVariants = parsePrivateVariants(twoPassResult.privateVariantsVcf, pathPositions)
+                println(s"[HaplogroupProcessor] Post-GATK processing completed in ${System.currentTimeMillis() - postGatkStart}ms")
+
+                // Load STR annotator for indel annotation (optional - don't fail if unavailable)
+                val strAnnotator = StrAnnotator.forBuild(referenceBuild) match {
+                  case Right(annotator) =>
+                    println(s"[HaplogroupProcessor] Loaded STR reference with ${annotator.regionCount} regions")
+                    Some(annotator)
+                  case Left(error) =>
+                    println(s"[HaplogroupProcessor] STR annotation unavailable: $error")
+                    None
+                }
 
                 // Write report to artifact directory if available
                 artifactDir.foreach { dir =>
@@ -203,7 +220,8 @@ class HaplogroupProcessor {
                     snpCalls = snpCalls,
                     sampleName = None,
                     privateVariants = Some(privateVariants),
-                    treeProvider = Some(treeProviderType)
+                    treeProvider = Some(treeProviderType),
+                    strAnnotator = strAnnotator
                   )
                 }
 

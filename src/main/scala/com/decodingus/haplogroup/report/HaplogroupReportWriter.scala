@@ -3,6 +3,7 @@ package com.decodingus.haplogroup.report
 import com.decodingus.analysis.PrivateVariant
 import com.decodingus.haplogroup.model.{Haplogroup, HaplogroupResult, Locus}
 import com.decodingus.haplogroup.tree.{TreeProviderType, TreeType}
+import com.decodingus.refgenome.StrAnnotator
 
 import java.io.{File, PrintWriter}
 import java.time.LocalDateTime
@@ -25,6 +26,7 @@ object HaplogroupReportWriter {
    * @param sampleName Optional sample name
    * @param privateVariants Optional list of private/novel variants
    * @param treeProvider Optional tree provider used for analysis
+   * @param strAnnotator Optional STR annotator for indel classification
    */
   def writeReport(
                    outputDir: File,
@@ -34,7 +36,8 @@ object HaplogroupReportWriter {
                    snpCalls: Map[Long, String],
                    sampleName: Option[String] = None,
                    privateVariants: Option[List[PrivateVariant]] = None,
-                   treeProvider: Option[TreeProviderType] = None
+                   treeProvider: Option[TreeProviderType] = None,
+                   strAnnotator: Option[StrAnnotator] = None
                  ): File = {
     outputDir.mkdirs()
 
@@ -135,21 +138,85 @@ object HaplogroupReportWriter {
         writer.println()
       }
 
-      // Private/Novel Variants section
+      // Novel/Unplaced Variants section - separated into SNPs and Indels
       privateVariants.foreach { variants =>
+        // Separate SNPs from indels (potential STRs)
+        val (snpVariants, indelVariants) = variants.partition { v =>
+          v.ref.length == 1 && v.alt.length == 1
+        }
+
+        // SNPs section
         writer.println("-" * 80)
-        writer.println("PRIVATE/NOVEL VARIANTS")
+        writer.println("NOVEL/UNPLACED SNPs")
         writer.println("-" * 80)
-        if (variants.isEmpty) {
-          writer.println("  No private variants discovered.")
+        if (snpVariants.isEmpty) {
+          writer.println("  No novel SNPs discovered.")
         } else {
-          writer.println(s"  Total private variants: ${variants.size}")
+          writer.println(s"  Total novel/unplaced SNPs: ${snpVariants.size}")
           writer.println()
           writer.println(f"${"Position"}%12s  ${"Ref"}%6s  ${"Alt"}%6s  ${"Quality"}%10s")
           writer.println("-" * 80)
-          variants.sortBy(_.position).foreach { v =>
+          snpVariants.sortBy(_.position).foreach { v =>
             val qualStr = v.quality.map(q => f"$q%.1f").getOrElse("-")
             writer.println(f"${v.position}%12d  ${v.ref}%6s  ${v.alt}%6s  $qualStr%10s")
+          }
+        }
+        writer.println()
+
+        // Indels section (potential STRs) - annotate with HipSTR if available
+        writer.println("-" * 80)
+        writer.println("NOVEL/UNPLACED INDELS")
+        writer.println("-" * 80)
+        if (indelVariants.isEmpty) {
+          writer.println("  No novel indels discovered.")
+        } else {
+          // Separate into known STRs and other indels
+          val (strIndels, otherIndels) = strAnnotator match {
+            case Some(annotator) =>
+              indelVariants.partition { v =>
+                annotator.findOverlapping(v.contig, v.position).isDefined
+              }
+            case None =>
+              (List.empty[PrivateVariant], indelVariants)
+          }
+
+          writer.println(s"  Total novel/unplaced indels: ${indelVariants.size}")
+          if (strAnnotator.isDefined) {
+            writer.println(s"    - In known STR regions: ${strIndels.size}")
+            writer.println(s"    - Other indels: ${otherIndels.size}")
+          }
+          writer.println()
+
+          // STR indels with annotation
+          if (strIndels.nonEmpty) {
+            writer.println("  Known STR Regions:")
+            writer.println(f"${"Position"}%12s  ${"Ref"}%-12s  ${"Alt"}%-12s  ${"Qual"}%8s  ${"STR Type"}%-25s")
+            writer.println("-" * 80)
+            strIndels.sortBy(_.position).foreach { v =>
+              val qualStr = v.quality.map(q => f"$q%.1f").getOrElse("-")
+              val refDisplay = if (v.ref.length > 10) v.ref.take(8) + ".." else v.ref
+              val altDisplay = if (v.alt.length > 10) v.alt.take(8) + ".." else v.alt
+              val strInfo = strAnnotator.flatMap(_.findOverlapping(v.contig, v.position))
+                .map(r => strAnnotator.get.formatAnnotation(r))
+                .getOrElse("-")
+              writer.println(f"${v.position}%12d  $refDisplay%-12s  $altDisplay%-12s  $qualStr%8s  $strInfo%-25s")
+            }
+            writer.println()
+          }
+
+          // Other indels
+          if (otherIndels.nonEmpty) {
+            if (strIndels.nonEmpty) {
+              writer.println("  Other Indels:")
+            }
+            writer.println(f"${"Position"}%12s  ${"Ref"}%-15s  ${"Alt"}%-15s  ${"Quality"}%10s")
+            writer.println("-" * 80)
+            otherIndels.sortBy(_.position).foreach { v =>
+              val qualStr = v.quality.map(q => f"$q%.1f").getOrElse("-")
+              val refDisplay = if (v.ref.length > 12) v.ref.take(10) + ".." else v.ref
+              val altDisplay = if (v.alt.length > 12) v.alt.take(10) + ".." else v.alt
+              writer.println(f"${v.position}%12d  $refDisplay%-15s  $altDisplay%-15s  $qualStr%10s")
+            }
           }
         }
         writer.println()
@@ -167,7 +234,9 @@ object HaplogroupReportWriter {
         writer.println(s"  SNPs on predicted path: $pathLociCount")
       }
       privateVariants.foreach { variants =>
-        writer.println(s"  Private variants discovered: ${variants.size}")
+        val (snps, indels) = variants.partition(v => v.ref.length == 1 && v.alt.length == 1)
+        writer.println(s"  Novel/unplaced SNPs: ${snps.size}")
+        writer.println(s"  Novel/unplaced indels: ${indels.size}")
       }
       writer.println()
       writer.println("=" * 80)

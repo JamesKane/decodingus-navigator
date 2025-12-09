@@ -164,7 +164,7 @@ class GatkHaplotypeCallerProcessor {
       case Right(_) => // index exists or was created
     }
 
-    onProgress(s"Discovering private variants in $contig...", 0.1, 1.0)
+    onProgress(s"Calling variants in $contig...", 0.1, 1.0)
 
     // Determine output file location
     val (vcfFile, logFile) = outputDir match {
@@ -215,7 +215,7 @@ class GatkHaplotypeCallerProcessor {
             writer.println(result.stderr)
           }
         }
-        onProgress(s"Private variant discovery for $contig complete.", 1.0, 1.0)
+        onProgress(s"Variant calling for $contig complete.", 1.0, 1.0)
         Right(CallerResult(vcfFile, logFile))
     }
   }
@@ -248,6 +248,7 @@ class GatkHaplotypeCallerProcessor {
 
   /**
    * Two-pass calling using HaplotypeCaller (for Y-DNA).
+   * Checks for cached VCF files and skips GATK if they exist.
    */
   private def callTwoPassHaplotypeCaller(
     bamPath: String,
@@ -258,31 +259,52 @@ class GatkHaplotypeCallerProcessor {
     outputDir: Option[Path],
     outputPrefix: Option[String]
   ): Either[String, TwoPassCallerResult] = {
-    // Pass 1: Tree sites for haplogroup assignment
-    onProgress(s"Pass 1: Calling tree sites for haplogroup assignment...", 0.0, 1.0)
+    // Check for cached results
+    outputDir match {
+      case Some(dir) =>
+        val prefix = outputPrefix.getOrElse("called")
+        val cachedTreeSites = dir.resolve(s"${prefix}_calls.vcf").toFile
+        val cachedPrivateVariants = dir.resolve(s"${prefix}_private_variants.vcf").toFile
+
+        if (cachedTreeSites.exists() && cachedPrivateVariants.exists() &&
+            cachedTreeSites.length() > 0 && cachedPrivateVariants.length() > 0) {
+          println(s"[GatkHaplotypeCallerProcessor] Using cached VCFs (Y-DNA): ${cachedTreeSites.getName}, ${cachedPrivateVariants.getName}")
+          onProgress("Using cached VCF files from previous analysis...", 1.0, 1.0)
+          return Right(TwoPassCallerResult(
+            treeSitesVcf = cachedTreeSites,
+            privateVariantsVcf = cachedPrivateVariants,
+            treeSitesLog = Some(dir.resolve(s"${prefix}_haplotypecaller.log").toFile).filter(_.exists()),
+            privateVariantsLog = Some(dir.resolve(s"${prefix}_private_variants.log").toFile).filter(_.exists())
+          ))
+        }
+      case None => // No output dir, can't cache
+    }
+
+    // Phase 1: Resolve overlapping reference reversed SNPs (tree sites for haplogroup assignment)
+    onProgress(s"Phase 1: Resolving reference reversed SNPs...", 0.0, 1.0)
     callSnps(
       bamPath,
       referencePath,
       allelesVcf,
-      (msg, done, total) => onProgress(s"Pass 1: $msg", done * 0.4, 1.0),
+      (msg, done, total) => onProgress(s"Phase 1: $msg", done * 0.4, 1.0),
       outputDir,
       outputPrefix
     ) match {
-      case Left(error) => Left(s"Pass 1 failed: $error")
+      case Left(error) => Left(s"Phase 1 failed: $error")
       case Right(treeSitesResult) =>
-        // Pass 2: Full contig for private variant discovery
-        onProgress(s"Pass 2: Discovering private variants in $contig...", 0.4, 1.0)
+        // Phase 2: Resolve remaining callable SNPs (private variant discovery)
+        onProgress(s"Phase 2: Resolving remaining callable SNPs...", 0.4, 1.0)
         callPrivateVariants(
           bamPath,
           referencePath,
           contig,
-          (msg, done, total) => onProgress(s"Pass 2: $msg", 0.4 + done * 0.6, 1.0),
+          (msg, done, total) => onProgress(s"Phase 2: $msg", 0.4 + done * 0.6, 1.0),
           outputDir,
           outputPrefix
         ) match {
-          case Left(error) => Left(s"Pass 2 failed: $error")
+          case Left(error) => Left(s"Phase 2 failed: $error")
           case Right(privateResult) =>
-            onProgress("Two-pass calling complete.", 1.0, 1.0)
+            onProgress("SNP resolution complete.", 1.0, 1.0)
             Right(TwoPassCallerResult(
               treeSitesVcf = treeSitesResult.vcfFile,
               privateVariantsVcf = privateResult.vcfFile,
@@ -392,7 +414,7 @@ class GatkHaplotypeCallerProcessor {
     outputDir: Option[Path],
     outputPrefix: Option[String]
   ): Either[String, CallerResult] = {
-    onProgress(s"Discovering private variants in $contig (Mutect2)...", 0.1, 1.0)
+    onProgress(s"Calling variants in $contig...", 0.1, 1.0)
 
     val (vcfFile, logFile) = outputDir match {
       case Some(dir) =>
@@ -437,7 +459,7 @@ class GatkHaplotypeCallerProcessor {
             writer.println(result.stderr)
           }
         }
-        onProgress(s"mtDNA private variant discovery complete.", 1.0, 1.0)
+        onProgress(s"Variant calling for $contig complete.", 1.0, 1.0)
         Right(CallerResult(vcfFile, logFile))
     }
   }
@@ -445,6 +467,7 @@ class GatkHaplotypeCallerProcessor {
   /**
    * Two-pass calling using Mutect2 mitochondria mode (for mtDNA).
    * Significantly faster than HaplotypeCaller for dense mtDNA positions.
+   * Checks for cached VCF files and skips GATK if they exist.
    */
   private def callTwoPassMutect2(
     bamPath: String,
@@ -455,6 +478,27 @@ class GatkHaplotypeCallerProcessor {
     outputDir: Option[Path],
     outputPrefix: Option[String]
   ): Either[String, TwoPassCallerResult] = {
+    // Check for cached results
+    outputDir match {
+      case Some(dir) =>
+        val prefix = outputPrefix.getOrElse("mtdna")
+        val cachedTreeSites = dir.resolve(s"${prefix}_calls.vcf").toFile
+        val cachedPrivateVariants = dir.resolve(s"${prefix}_private_variants.vcf").toFile
+
+        if (cachedTreeSites.exists() && cachedPrivateVariants.exists() &&
+            cachedTreeSites.length() > 0 && cachedPrivateVariants.length() > 0) {
+          println(s"[GatkHaplotypeCallerProcessor] Using cached VCFs (mtDNA): ${cachedTreeSites.getName}, ${cachedPrivateVariants.getName}")
+          onProgress("Using cached VCF files from previous analysis...", 1.0, 1.0)
+          return Right(TwoPassCallerResult(
+            treeSitesVcf = cachedTreeSites,
+            privateVariantsVcf = cachedPrivateVariants,
+            treeSitesLog = Some(dir.resolve(s"${prefix}_mutect2.log").toFile).filter(_.exists()),
+            privateVariantsLog = Some(dir.resolve(s"${prefix}_private_variants.log").toFile).filter(_.exists())
+          ))
+        }
+      case None => // No output dir, can't cache
+    }
+
     // Ensure BAM index exists
     onProgress("Checking BAM index...", 0.0, 1.0)
     GatkRunner.ensureIndex(bamPath) match {
@@ -462,31 +506,31 @@ class GatkHaplotypeCallerProcessor {
       case Right(_) => // continue
     }
 
-    // Pass 1: Tree sites for haplogroup assignment
-    onProgress(s"Pass 1: Calling mtDNA tree sites (Mutect2)...", 0.0, 1.0)
+    // Phase 1: Resolve overlapping reference reversed SNPs (mtDNA tree sites)
+    onProgress(s"Phase 1: Resolving overlapping reference reversed SNPs...", 0.0, 1.0)
     callSnpsMutect2(
       bamPath,
       referencePath,
       allelesVcf,
-      (msg, done, total) => onProgress(s"Pass 1: $msg", done * 0.4, 1.0),
+      (msg, done, total) => onProgress(s"Phase 1: $msg", done * 0.4, 1.0),
       outputDir,
       outputPrefix
     ) match {
-      case Left(error) => Left(s"Pass 1 failed: $error")
+      case Left(error) => Left(s"Phase 1 failed: $error")
       case Right(treeSitesResult) =>
-        // Pass 2: Full chrM for private variant discovery
-        onProgress(s"Pass 2: Discovering private variants in $contig...", 0.4, 1.0)
+        // Phase 2: Resolve remaining callable SNPs (private variant discovery)
+        onProgress(s"Phase 2: Resolving remaining callable SNPs...", 0.4, 1.0)
         callPrivateVariantsMutect2(
           bamPath,
           referencePath,
           contig,
-          (msg, done, total) => onProgress(s"Pass 2: $msg", 0.4 + done * 0.6, 1.0),
+          (msg, done, total) => onProgress(s"Phase 2: $msg", 0.4 + done * 0.6, 1.0),
           outputDir,
           outputPrefix
         ) match {
-          case Left(error) => Left(s"Pass 2 failed: $error")
+          case Left(error) => Left(s"Phase 2 failed: $error")
           case Right(privateResult) =>
-            onProgress("mtDNA two-pass calling complete.", 1.0, 1.0)
+            onProgress("SNP resolution complete.", 1.0, 1.0)
             Right(TwoPassCallerResult(
               treeSitesVcf = treeSitesResult.vcfFile,
               privateVariantsVcf = privateResult.vcfFile,
