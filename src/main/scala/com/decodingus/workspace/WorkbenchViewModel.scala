@@ -692,7 +692,9 @@ class WorkbenchViewModel(val workspaceService: WorkspaceService) {
                           onComplete(Left("Failed to create sequence run entry"))
                           None
                         } else {
-                          val sequenceRuns = _workspace.value.main.getSequenceRunsForBiosample(subject)
+                          // Re-fetch updated subject to get correct sequence run refs
+                          val updatedSubject = findSubject(sampleAccession).getOrElse(subject)
+                          val sequenceRuns = _workspace.value.main.getSequenceRunsForBiosample(updatedSubject)
                           Some((newIndex, sequenceRuns(newIndex), true))
                         }
                       case None =>
@@ -715,7 +717,9 @@ class WorkbenchViewModel(val workspaceService: WorkspaceService) {
                     onComplete(Left("Failed to create sequence run entry"))
                     None
                   } else {
-                    val sequenceRuns = _workspace.value.main.getSequenceRunsForBiosample(subject)
+                    // Re-fetch updated subject to get correct sequence run refs
+                    val updatedSubject = findSubject(sampleAccession).getOrElse(subject)
+                    val sequenceRuns = _workspace.value.main.getSequenceRunsForBiosample(updatedSubject)
                     Some((newIndex, sequenceRuns(newIndex), true))
                   }
               }
