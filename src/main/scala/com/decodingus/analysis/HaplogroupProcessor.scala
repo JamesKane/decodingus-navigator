@@ -127,10 +127,12 @@ class HaplogroupProcessor {
                 val scorer = new HaplogroupScorer()
                 val results = scorer.score(tree, snpCalls)
 
-                // Identify private variants (not in tree)
+                // Identify private variants - only exclude positions on path to terminal haplogroup
+                // Positions on other branches could be legitimate private variants for undiscovered sub-clades
                 onProgress("Identifying private variants...", 0.85, 1.0)
-                val treePositions = allLoci.map(_.position).toSet
-                val privateVariants = parsePrivateVariants(twoPassResult.privateVariantsVcf, treePositions)
+                val terminalHaplogroup = results.headOption.map(_.name).getOrElse("")
+                val pathPositions = collectPathPositions(tree, terminalHaplogroup)
+                val privateVariants = parsePrivateVariants(twoPassResult.privateVariantsVcf, pathPositions)
 
                 // Write report to artifact directory if available
                 artifactDir.foreach { dir =>
@@ -294,6 +296,23 @@ class HaplogroupProcessor {
 
   private def collectLociFromHaplogroup(haplogroup: Haplogroup): List[Locus] = {
     haplogroup.loci ++ haplogroup.children.flatMap(collectLociFromHaplogroup)
+  }
+
+  /**
+   * Collect all positions along the path from root to the specified terminal haplogroup.
+   * Only these positions should be excluded from private variant detection.
+   */
+  private def collectPathPositions(tree: List[Haplogroup], terminalName: String): Set[Long] = {
+    def findPath(haplogroup: Haplogroup): Option[List[Haplogroup]] = {
+      if (haplogroup.name == terminalName) {
+        Some(List(haplogroup))
+      } else {
+        haplogroup.children.flatMap(findPath).headOption.map(path => haplogroup :: path)
+      }
+    }
+
+    val path = tree.flatMap(findPath).headOption.getOrElse(List.empty)
+    path.flatMap(_.loci.map(_.position)).toSet
   }
 
   private def parseVcf(vcfFile: File): Map[Long, String] = {
