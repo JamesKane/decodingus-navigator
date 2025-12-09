@@ -1965,4 +1965,141 @@ class WorkbenchViewModel(val workspaceService: WorkspaceService) {
         onComplete(Left(s"Subject not found: $sampleAccession"))
     }
   }
+
+  /**
+   * Runs haplogroup analysis on chip/array data for a biosample.
+   *
+   * This uses the ChipHaplogroupAdapter to score chip genotypes against the
+   * haplogroup tree (Y-DNA or mtDNA). Unlike WGS-based analysis, chip data
+   * has limited coverage of tree positions (typically 10-30%), so results
+   * may be less precise.
+   *
+   * @param sampleAccession The subject's accession ID
+   * @param profileUri The AT URI of the chip profile to analyze
+   * @param treeType Y-DNA or MT-DNA tree type
+   * @param onComplete Callback when analysis completes
+   */
+  def runChipHaplogroupAnalysis(
+    sampleAccession: String,
+    profileUri: String,
+    treeType: com.decodingus.haplogroup.tree.TreeType,
+    onComplete: Either[String, com.decodingus.genotype.processor.ChipHaplogroupResult] => Unit
+  ): Unit = {
+    import com.decodingus.genotype.processor.{ChipDataProcessor, ChipHaplogroupAdapter}
+
+    val treeLabel = if (treeType == com.decodingus.haplogroup.tree.TreeType.YDNA) "Y-DNA" else "mtDNA"
+
+    findSubject(sampleAccession) match {
+      case Some(subject) =>
+        // Find the chip profile
+        _workspace.value.main.chipProfiles.find(_.atUri.contains(profileUri)) match {
+          case Some(profile) =>
+            // Need the source file to re-parse genotypes
+            profile.files.headOption.flatMap(_.location) match {
+              case Some(filePath) =>
+                val file = new File(filePath)
+                if (!file.exists()) {
+                  onComplete(Left(s"Source file not found: $filePath"))
+                } else {
+                  analysisInProgress.value = true
+                  analysisError.value = ""
+                  analysisProgress.value = s"Loading chip data for $treeLabel analysis..."
+                  analysisProgressPercent.value = 0.1
+
+                  Future {
+                    try {
+                      // Re-parse the chip data to get genotypes
+                      val processor = new ChipDataProcessor()
+
+                      processor.process(file, (msg, done, total) => {
+                        updateProgress(msg, done * 0.3)
+                      }) match {
+                        case Right(chipResult) =>
+                          updateProgress(s"Running $treeLabel haplogroup analysis...", 0.3)
+
+                          // Run haplogroup analysis
+                          val adapter = new ChipHaplogroupAdapter()
+                          adapter.analyze(chipResult, treeType, (msg, done, total) => {
+                            updateProgress(msg, 0.3 + done * 0.6)
+                          }) match {
+                            case Right(haplogroupResult) =>
+                              Platform.runLater {
+                                updateProgress(s"$treeLabel haplogroup analysis complete.", 1.0)
+                                analysisInProgress.value = false
+
+                                // Update subject with haplogroup result
+                                val currentHaplogroups = subject.haplogroups.getOrElse(
+                                  com.decodingus.workspace.model.HaplogroupAssignments(None, None)
+                                )
+
+                                val newHaplogroupResult = com.decodingus.workspace.model.HaplogroupResult(
+                                  haplogroupName = haplogroupResult.topHaplogroup,
+                                  score = haplogroupResult.results.headOption.map(_.score).getOrElse(0.0),
+                                  matchingSnps = Some(haplogroupResult.snpsMatched),
+                                  treeDepth = haplogroupResult.results.headOption.map(_.depth),
+                                  source = Some("chip")
+                                )
+
+                                val updatedHaplogroups = treeType match {
+                                  case com.decodingus.haplogroup.tree.TreeType.YDNA =>
+                                    currentHaplogroups.copy(yDna = Some(newHaplogroupResult))
+                                  case com.decodingus.haplogroup.tree.TreeType.MTDNA =>
+                                    currentHaplogroups.copy(mtDna = Some(newHaplogroupResult))
+                                }
+
+                                val updatedSubject = subject.copy(
+                                  haplogroups = Some(updatedHaplogroups),
+                                  meta = subject.meta.updated("haplogroups")
+                                )
+                                val updatedSamples = _workspace.value.main.samples.map { s =>
+                                  if (s.sampleAccession == sampleAccession) updatedSubject else s
+                                }
+                                val updatedContent = _workspace.value.main.copy(samples = updatedSamples)
+                                _workspace.value = _workspace.value.copy(main = updatedContent)
+                                saveWorkspace()
+
+                                println(s"[ViewModel] $treeLabel haplogroup analysis complete for $sampleAccession: " +
+                                  s"${haplogroupResult.topHaplogroup} (${haplogroupResult.snpsMatched}/${haplogroupResult.snpsTotal} SNPs)")
+                                onComplete(Right(haplogroupResult))
+                              }
+
+                            case Left(analysisErr) =>
+                              Platform.runLater {
+                                this.analysisInProgress.value = false
+                                this.analysisError.value = analysisErr
+                                onComplete(Left(analysisErr))
+                              }
+                          }
+
+                        case Left(parseError) =>
+                          Platform.runLater {
+                            analysisInProgress.value = false
+                            analysisError.value = parseError
+                            onComplete(Left(parseError))
+                          }
+                      }
+
+                    } catch {
+                      case e: Exception =>
+                        Platform.runLater {
+                          analysisInProgress.value = false
+                          analysisError.value = e.getMessage
+                          onComplete(Left(e.getMessage))
+                        }
+                    }
+                  }
+                }
+
+              case None =>
+                onComplete(Left("Chip profile has no source file location. Re-import the chip data."))
+            }
+
+          case None =>
+            onComplete(Left(s"Chip profile not found: $profileUri"))
+        }
+
+      case None =>
+        onComplete(Left(s"Subject not found: $sampleAccession"))
+    }
+  }
 }

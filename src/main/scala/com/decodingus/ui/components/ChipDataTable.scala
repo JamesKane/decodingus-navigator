@@ -9,6 +9,8 @@ import scalafx.collections.ObservableBuffer
 import scalafx.beans.property.StringProperty
 import scalafx.application.Platform
 import scalafx.stage.FileChooser
+import com.decodingus.config.FeatureToggles
+import com.decodingus.haplogroup.tree.TreeType
 import com.decodingus.workspace.model.{Biosample, ChipProfile}
 import com.decodingus.workspace.WorkbenchViewModel
 
@@ -128,6 +130,38 @@ class ChipDataTable(
                   contentText = s"Call rate: ${f"${item.profile.callRate * 100}%.1f"}%, " +
                     s"Autosomal markers: ${item.profile.autosomalMarkersCalled}. " +
                     "Ancestry analysis requires >95% call rate and >100k autosomal markers."
+                }.showAndWait()
+              }
+            }
+          }
+        },
+        new MenuItem("Y-DNA Haplogroup") {
+          onAction = _ => {
+            Option(row.getItem).foreach { item =>
+              val yMarkers = item.profile.yMarkersCalled.getOrElse(0)
+              if (yMarkers >= FeatureToggles.chipData.minYMarkers) {
+                handleHaplogroupAnalysis(item.profile, TreeType.YDNA)
+              } else {
+                new Alert(AlertType.Warning) {
+                  title = "Insufficient Y-DNA Markers"
+                  headerText = "Not enough Y-DNA markers for haplogroup analysis"
+                  contentText = s"Found $yMarkers Y-DNA markers, minimum ${FeatureToggles.chipData.minYMarkers} required."
+                }.showAndWait()
+              }
+            }
+          }
+        },
+        new MenuItem("mtDNA Haplogroup") {
+          onAction = _ => {
+            Option(row.getItem).foreach { item =>
+              val mtMarkers = item.profile.mtMarkersCalled.getOrElse(0)
+              if (mtMarkers >= FeatureToggles.chipData.minMtMarkers) {
+                handleHaplogroupAnalysis(item.profile, TreeType.MTDNA)
+              } else {
+                new Alert(AlertType.Warning) {
+                  title = "Insufficient mtDNA Markers"
+                  headerText = "Not enough mtDNA markers for haplogroup analysis"
+                  contentText = s"Found $mtMarkers mtDNA markers, minimum ${FeatureToggles.chipData.minMtMarkers} required."
                 }.showAndWait()
               }
             }
@@ -258,6 +292,84 @@ Note: Reference data download may be required on first run."""
                     new Alert(AlertType.Error) {
                       title = "Ancestry Analysis Failed"
                       headerText = "Could not complete ancestry analysis"
+                      contentText = error
+                    }.showAndWait()
+                  }
+              }
+            )
+
+            progressDialog.show()
+
+          case None =>
+            new Alert(AlertType.Error) {
+              title = "Error"
+              headerText = "Invalid chip profile"
+              contentText = "Profile has no AT URI."
+            }.showAndWait()
+        }
+      case _ => // User cancelled
+    }
+  }
+
+  /** Handles launching haplogroup analysis (Y-DNA or mtDNA) */
+  private def handleHaplogroupAnalysis(profile: ChipProfile, treeType: TreeType): Unit = {
+    import com.decodingus.genotype.processor.ChipHaplogroupAdapter
+
+    val typeName = if (treeType == TreeType.YDNA) "Y-DNA" else "mtDNA"
+    val markerCount = treeType match {
+      case TreeType.YDNA => profile.yMarkersCalled.getOrElse(0)
+      case TreeType.MTDNA => profile.mtMarkersCalled.getOrElse(0)
+    }
+
+    // Confirm with user
+    val confirm = new Alert(AlertType.Confirmation) {
+      title = s"Run $typeName Haplogroup Analysis"
+      headerText = s"Analyze ${profile.vendor} chip data for $typeName haplogroup"
+      contentText = s"""This will score chip genotypes against the $typeName haplogroup tree.
+
+$typeName Markers: $markerCount
+
+Note: Chip-based haplogroup estimation has limited resolution compared to WGS.
+The terminal haplogroup may be upstream of the true assignment."""
+    }
+
+    confirm.showAndWait() match {
+      case Some(ButtonType.OK) =>
+        profile.atUri match {
+          case Some(profileUri) =>
+            // Show progress dialog
+            val progressDialog = new AnalysisProgressDialog(
+              s"$typeName Haplogroup Analysis",
+              viewModel.analysisProgress,
+              viewModel.analysisProgressPercent,
+              viewModel.analysisInProgress
+            )
+
+            viewModel.runChipHaplogroupAnalysis(
+              subject.sampleAccession,
+              profileUri,
+              treeType,
+              onComplete = {
+                case Right(haplogroupResult) =>
+                  Platform.runLater {
+                    // Show results dialog
+                    val confidenceDesc = ChipHaplogroupAdapter.confidenceDescription(haplogroupResult.confidence)
+                    new Alert(AlertType.Information) {
+                      title = s"$typeName Haplogroup Result"
+                      headerText = s"$typeName: ${haplogroupResult.topHaplogroup}"
+                      contentText = s"""Confidence: $confidenceDesc (${f"${haplogroupResult.confidence * 100}%.0f"}%)
+SNPs Matched: ${haplogroupResult.snpsMatched} / ${haplogroupResult.snpsTotal}
+Tree Depth: ${haplogroupResult.results.headOption.map(_.depth).getOrElse(0)}
+
+Note: Chip data covers ~${f"${haplogroupResult.snpsMatched.toDouble / haplogroupResult.snpsTotal * 100}%.0f"}% of tree positions.
+For higher resolution, consider WGS analysis."""
+                    }.showAndWait()
+                  }
+                case Left(error) =>
+                  Platform.runLater {
+                    new Alert(AlertType.Error) {
+                      title = s"$typeName Haplogroup Analysis Failed"
+                      headerText = "Could not complete haplogroup analysis"
                       contentText = error
                     }.showAndWait()
                   }

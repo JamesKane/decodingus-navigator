@@ -12,6 +12,7 @@ package com.decodingus.workspace.model
  * @param treeDepth        The depth of the assigned node in the phylogenetic tree
  * @param lineagePath      The path from root to the assigned haplogroup (e.g., A -> ... -> R -> ... -> R-M269)
  * @param privateVariants  Detailed private variant calls for haplogroup discovery (optional)
+ * @param source           Data source: "wgs" for whole genome sequencing, "chip" for SNP array/chip data
  */
 case class HaplogroupResult(
   haplogroupName: String,
@@ -21,5 +22,6 @@ case class HaplogroupResult(
   ancestralMatches: Option[Int] = None,
   treeDepth: Option[Int] = None,
   lineagePath: Option[List[String]] = None,
-  privateVariants: Option[PrivateVariantData] = None
+  privateVariants: Option[PrivateVariantData] = None,
+  source: Option[String] = None
 )
