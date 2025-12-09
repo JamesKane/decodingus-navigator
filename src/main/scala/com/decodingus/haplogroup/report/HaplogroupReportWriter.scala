@@ -27,6 +27,8 @@ object HaplogroupReportWriter {
    * @param privateVariants Optional list of private/novel variants
    * @param treeProvider Optional tree provider used for analysis
    * @param strAnnotator Optional STR annotator for indel classification
+   * @param sampleBuild Optional reference build of the sample BAM/CRAM
+   * @param treeBuild Optional reference build of the tree coordinates
    */
   def writeReport(
                    outputDir: File,
@@ -37,7 +39,9 @@ object HaplogroupReportWriter {
                    sampleName: Option[String] = None,
                    privateVariants: Option[List[PrivateVariant]] = None,
                    treeProvider: Option[TreeProviderType] = None,
-                   strAnnotator: Option[StrAnnotator] = None
+                   strAnnotator: Option[StrAnnotator] = None,
+                   sampleBuild: Option[String] = None,
+                   treeBuild: Option[String] = None
                  ): File = {
     outputDir.mkdirs()
 
@@ -66,6 +70,17 @@ object HaplogroupReportWriter {
       writer.println()
       writer.println(s"Generated: $timestamp")
       writer.println(s"Tree Provider: $treeProviderName")
+      treeBuild.foreach(build => writer.println(s"Tree Build: $build"))
+      sampleBuild.foreach(build => writer.println(s"Sample Build: $build"))
+      // Show liftover status
+      (sampleBuild, treeBuild) match {
+        case (Some(sample), Some(tree)) if sample != tree =>
+          writer.println(s"Liftover: Yes ($tree → $sample for calling, $sample → $tree for scoring)")
+        case (Some(sample), Some(tree)) =>
+          writer.println(s"Liftover: No (native $sample coordinates)")
+        case _ =>
+          // Don't show liftover status if builds are unknown
+      }
       sampleName.foreach(name => writer.println(s"Sample: $name"))
       writer.println()
 

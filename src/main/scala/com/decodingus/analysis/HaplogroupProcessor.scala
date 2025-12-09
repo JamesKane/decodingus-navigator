@@ -275,7 +275,9 @@ class HaplogroupProcessor {
                       sampleName = None,
                       privateVariants = Some(privateVariants),
                       treeProvider = Some(treeProviderType),
-                      strAnnotator = strAnnotator
+                      strAnnotator = strAnnotator,
+                      sampleBuild = Some(referenceBuild),
+                      treeBuild = Some(treeSourceBuild)
                     )
                   }
 
