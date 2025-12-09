@@ -179,6 +179,13 @@ class SequenceDataTable(
             }
           }
         },
+        new MenuItem("Read/Insert Metrics") {
+          onAction = _ => {
+            Option(row.getItem).foreach { item =>
+              handleMultipleMetricsAnalysis(item.index, item.runAlignments)
+            }
+          }
+        },
         new MenuItem("Remove") {
           onAction = _ => {
             Option(row.getItem).foreach { item =>
@@ -341,6 +348,75 @@ class SequenceDataTable(
               title = "Callable Loci Analysis Failed"
               headerText = "Could not complete callable loci analysis"
               contentText = error
+            }.showAndWait()
+          }
+      }
+    )
+
+    progressDialog.show()
+  }
+
+  /** Handles running CollectMultipleMetrics (read counts, insert sizes) for a sequence run */
+  private def handleMultipleMetricsAnalysis(index: Int, runAlignments: List[Alignment]): Unit = {
+    // Check if initial analysis has been run (need reference build info)
+    val hasAlignments = runAlignments.nonEmpty
+
+    if (!hasAlignments) {
+      new Alert(AlertType.Warning) {
+        title = "Analysis Required"
+        headerText = "Initial analysis required"
+        contentText = "Please run the initial analysis first to detect the reference build before collecting read metrics."
+      }.showAndWait()
+      return
+    }
+
+    val progressDialog = new AnalysisProgressDialog(
+      "Collecting Read/Insert Metrics",
+      viewModel.analysisProgress,
+      viewModel.analysisProgressPercent,
+      viewModel.analysisInProgress
+    )
+
+    viewModel.runMultipleMetricsAnalysis(
+      subject.sampleAccession,
+      index,
+      onComplete = {
+        case Right(metricsResult) =>
+          Platform.runLater {
+            // Format numbers nicely
+            def fmt(n: Long): String = f"$n%,d"
+            def pct(d: Double): String = f"${d * 100}%.1f%%"
+
+            val summaryText = s"""Total Reads: ${fmt(metricsResult.totalReads)}
+PF Reads: ${fmt(metricsResult.pfReads)}
+Aligned: ${fmt(metricsResult.pfReadsAligned)} (${pct(metricsResult.pctPfReadsAligned)})
+Paired: ${fmt(metricsResult.readsPaired)} (${pct(metricsResult.pctReadsPaired)})
+Proper Pairs: ${pct(metricsResult.pctProperPairs)}
+Mean Read Length: ${metricsResult.meanReadLength.toInt} bp
+
+Insert Size:
+  Median: ${metricsResult.medianInsertSize.toInt} bp
+  Mean: ${f"${metricsResult.meanInsertSize}%.1f"} bp
+  Std Dev: ${f"${metricsResult.stdInsertSize}%.1f"} bp
+  Orientation: ${metricsResult.pairOrientation}"""
+
+            new Alert(AlertType.Information) {
+              title = "Read/Insert Metrics Complete"
+              headerText = "CollectMultipleMetrics Results"
+              contentText = summaryText
+            }.showAndWait()
+
+            // Refresh the table data with updated sequence run from workspace
+            viewModel.getSequenceRun(subject.sampleAccession, index).foreach { updatedRun =>
+              tableData.update(index, tableData(index).copy(run = updatedRun))
+            }
+          }
+        case Left(metricsError) =>
+          Platform.runLater {
+            new Alert(AlertType.Error) {
+              title = "Metrics Collection Failed"
+              headerText = "Could not complete metrics collection"
+              contentText = metricsError
             }.showAndWait()
           }
       }

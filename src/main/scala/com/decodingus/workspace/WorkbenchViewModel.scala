@@ -770,6 +770,13 @@ class WorkbenchViewModel(val workspaceService: WorkspaceService) {
     }
   }
 
+  /** Gets a specific sequence run by index for a subject */
+  def getSequenceRun(sampleAccession: String, index: Int): Option[SequenceRun] = {
+    findSubject(sampleAccession).flatMap { subject =>
+      _workspace.value.main.getSequenceRunsForBiosample(subject).lift(index)
+    }
+  }
+
   /** Removes a sequence run from a subject by index */
   def removeSequenceData(sampleAccession: String, index: Int): Unit = {
     findSubject(sampleAccession) match {
@@ -2096,6 +2103,144 @@ class WorkbenchViewModel(val workspaceService: WorkspaceService) {
 
           case None =>
             onComplete(Left(s"Chip profile not found: $profileUri"))
+        }
+
+      case None =>
+        onComplete(Left(s"Subject not found: $sampleAccession"))
+    }
+  }
+
+  /**
+   * Runs CollectMultipleMetrics (alignment summary + insert size) on a sequencing run.
+   *
+   * This collects metrics not provided by CollectWgsMetrics:
+   * - Total reads, PF reads, aligned reads
+   * - Pair rates and proper pair percentages
+   * - Insert size distribution (median, mean, std)
+   *
+   * Results are stored back into the SequenceRun model.
+   *
+   * @param sampleAccession The subject's accession ID
+   * @param sequenceRunIndex Index of the sequence run within the subject
+   * @param onComplete Callback when analysis completes
+   */
+  def runMultipleMetricsAnalysis(
+    sampleAccession: String,
+    sequenceRunIndex: Int,
+    onComplete: Either[String, com.decodingus.analysis.MultipleMetricsResult] => Unit
+  ): Unit = {
+    import com.decodingus.analysis.{MultipleMetricsProcessor, ArtifactContext}
+
+    findSubject(sampleAccession) match {
+      case Some(subject) =>
+        val sequenceRuns = _workspace.value.main.getSequenceRunsForBiosample(subject)
+        if (sequenceRunIndex < 0 || sequenceRunIndex >= sequenceRuns.length) {
+          onComplete(Left(s"Invalid sequence run index: $sequenceRunIndex"))
+          return
+        }
+
+        val sequenceRun = sequenceRuns(sequenceRunIndex)
+        val alignments = _workspace.value.main.getAlignmentsForSequenceRun(sequenceRun)
+
+        if (alignments.isEmpty) {
+          onComplete(Left("No alignments found for this sequence run"))
+          return
+        }
+
+        val alignment = alignments.head
+        val bamFile = alignment.files.find(f =>
+          f.fileFormat == "BAM" || f.fileFormat == "CRAM"
+        ).flatMap(_.location)
+
+        bamFile match {
+          case Some(bamPath) =>
+            // Verify file exists
+            if (!new File(bamPath).exists()) {
+              onComplete(Left(s"BAM/CRAM file not found: $bamPath"))
+              return
+            }
+
+            // Get reference path
+            val referenceBuild = alignment.referenceBuild
+            val referenceGateway = new com.decodingus.refgenome.ReferenceGateway((_, _) => {})
+
+            referenceGateway.resolve(referenceBuild) match {
+              case Left(error) =>
+                onComplete(Left(s"Could not resolve reference genome: $error"))
+
+              case Right(referencePath) =>
+                analysisInProgress.value = true
+                analysisError.value = ""
+                analysisProgress.value = "Running CollectMultipleMetrics..."
+                analysisProgressPercent.value = 0.0
+
+                // Create artifact context
+                val artifactContext = ArtifactContext(
+                  sampleAccession = sampleAccession,
+                  sequenceRunUri = sequenceRun.atUri,
+                  alignmentUri = alignment.atUri
+                )
+
+                Future {
+                  try {
+                    val processor = new MultipleMetricsProcessor()
+                    processor.process(
+                      bamPath = bamPath,
+                      referencePath = referencePath.toString,
+                      onProgress = (msg, done, total) => updateProgress(msg, done),
+                      artifactContext = Some(artifactContext),
+                      totalReads = sequenceRun.totalReads
+                    ) match {
+                      case Right(metricsResult) =>
+                        Platform.runLater {
+                          analysisInProgress.value = false
+
+                          // Update the sequence run with the new metrics
+                          val updatedRun = sequenceRun.copy(
+                            totalReads = Some(metricsResult.totalReads),
+                            pfReads = Some(metricsResult.pfReads),
+                            pfReadsAligned = Some(metricsResult.pfReadsAligned),
+                            pctPfReadsAligned = Some(metricsResult.pctPfReadsAligned),
+                            readsPaired = Some(metricsResult.readsPaired),
+                            pctReadsPaired = Some(metricsResult.pctReadsPaired),
+                            pctProperPairs = Some(metricsResult.pctProperPairs),
+                            readLength = Some(metricsResult.meanReadLength.toInt),
+                            meanInsertSize = Some(metricsResult.meanInsertSize),
+                            medianInsertSize = Some(metricsResult.medianInsertSize),
+                            stdInsertSize = Some(metricsResult.stdInsertSize),
+                            pairOrientation = Some(metricsResult.pairOrientation),
+                            meta = sequenceRun.meta.updated("multipleMetrics")
+                          )
+
+                          // Use the existing updateSequenceRun method
+                          updateSequenceRun(sampleAccession, sequenceRunIndex, updatedRun)
+
+                          println(s"[ViewModel] MultipleMetrics complete for $sampleAccession: " +
+                            s"${metricsResult.totalReads} reads, ${f"${metricsResult.pctPfReadsAligned * 100}%.1f"}% aligned, " +
+                            s"median insert ${metricsResult.medianInsertSize.toInt}bp")
+                          onComplete(Right(metricsResult))
+                        }
+
+                      case Left(processorError) =>
+                        Platform.runLater {
+                          analysisInProgress.value = false
+                          analysisError.value = processorError.getMessage
+                          onComplete(Left(processorError.getMessage))
+                        }
+                    }
+                  } catch {
+                    case e: Exception =>
+                      Platform.runLater {
+                        analysisInProgress.value = false
+                        analysisError.value = e.getMessage
+                        onComplete(Left(e.getMessage))
+                      }
+                  }
+                }
+            }
+
+          case None =>
+            onComplete(Left("No BAM/CRAM file found in alignment"))
         }
 
       case None =>
