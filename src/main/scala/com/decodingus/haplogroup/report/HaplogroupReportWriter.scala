@@ -46,6 +46,9 @@ object HaplogroupReportWriter {
       val timestamp = LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss"))
       val dnaType = if (treeType == TreeType.YDNA) "Y-DNA" else "MT-DNA"
 
+      // Pre-compute result lookup map - O(n) instead of O(n²) for path lookups
+      val resultsByName: Map[String, HaplogroupResult] = results.map(r => r.name -> r).toMap
+
       writer.println("=" * 80)
       writer.println(s"  $dnaType Haplogroup Analysis Report")
       writer.println("=" * 80)
@@ -83,30 +86,31 @@ object HaplogroupReportWriter {
       }
       writer.println()
 
-      // Build path to predicted haplogroup
-      topResult.foreach { top =>
+      // Build path to predicted haplogroup (compute once, reuse)
+      val pathOpt = topResult.map(top => findPathToHaplogroup(tree, top.name))
+
+      pathOpt.foreach { path =>
         writer.println("-" * 80)
         writer.println("HAPLOGROUP PATH")
         writer.println("-" * 80)
-        val path = findPathToHaplogroup(tree, top.name)
         path.foreach { haplo =>
           val indent = "  " * haplo.depth
-          val result = results.find(_.name == haplo.name)
-          val scoreInfo = result.map(r => s"[+${r.matchingSnps - results.find(_.name == haplo.parent.getOrElse("")).map(_.matchingSnps).getOrElse(0)} derived]").getOrElse("")
+          val result = resultsByName.get(haplo.name)
+          val parentDerived = haplo.parent.flatMap(resultsByName.get).map(_.matchingSnps).getOrElse(0)
+          val scoreInfo = result.map(r => s"[+${r.matchingSnps - parentDerived} derived]").getOrElse("")
           writer.println(s"$indent${haplo.name} $scoreInfo")
         }
         writer.println()
       }
 
       // SNP details for top haplogroup path
-      topResult.foreach { top =>
+      pathOpt.foreach { path =>
         writer.println("-" * 80)
         writer.println("SNP DETAILS (along predicted path)")
         writer.println("-" * 80)
         writer.println(f"${"Position"}%12s  ${"SNP Name"}%-20s  ${"Ancestral"}%10s  ${"Derived"}%10s  ${"Called"}%10s  ${"State"}%10s")
         writer.println("-" * 80)
 
-        val path = findPathToHaplogroup(tree, top.name)
         val allLociOnPath = path.flatMap(_.loci)
 
         allLociOnPath.sortBy(_.position).foreach { locus =>
@@ -146,13 +150,12 @@ object HaplogroupReportWriter {
       writer.println("-" * 80)
       writer.println("SUMMARY STATISTICS")
       writer.println("-" * 80)
-      val allLoci = tree.flatMap(collectAllLoci).distinct
-      writer.println(s"  Total SNPs in tree: ${allLoci.size}")
-      writer.println(s"  SNPs with calls: ${snpCalls.size}")
+      // Use results.size as proxy for tree size - avoids full tree traversal
       writer.println(s"  Haplogroups evaluated: ${results.size}")
-      topResult.foreach { top =>
-        val pathLoci = findPathToHaplogroup(tree, top.name).flatMap(_.loci)
-        writer.println(s"  SNPs on predicted path: ${pathLoci.size}")
+      writer.println(s"  SNPs with calls: ${snpCalls.size}")
+      pathOpt.foreach { path =>
+        val pathLociCount = path.map(_.loci.size).sum
+        writer.println(s"  SNPs on predicted path: $pathLociCount")
       }
       privateVariants.foreach { variants =>
         writer.println(s"  Private variants discovered: ${variants.size}")
@@ -177,9 +180,5 @@ object HaplogroupReportWriter {
     }
 
     tree.flatMap(root => search(root, 0)).headOption.getOrElse(List.empty)
-  }
-
-  private def collectAllLoci(haplogroup: Haplogroup): List[Locus] = {
-    haplogroup.loci ++ haplogroup.children.flatMap(collectAllLoci)
   }
 }
