@@ -1,16 +1,26 @@
 # Unified Quality Metrics Walker
 
-## Status: Backlog
+## Status: Active Development
+
+## Motivation
+
+**CollectMultipleMetrics has a hard dependency on R** for generating insert size histograms. There is no way to disable chart generation, making it unsuitable for a self-contained desktop application.
+
+This elevates the unified walker from a performance optimization to a **required replacement**.
 
 ## Problem Statement
 
 Currently, gathering comprehensive quality metrics for a BAM/CRAM file requires **three separate passes** through the file:
 
 1. **CollectWgsMetrics** - Coverage depth, genome coverage percentages
-2. **CollectMultipleMetrics** - Alignment summary (read counts, alignment rates) + Insert size distribution
+2. **CollectMultipleMetrics** - Alignment summary (read counts, alignment rates) + Insert size distribution (**requires R**)
 3. **CallableLoci** - Per-position callable base analysis with contig-level summaries
 
 Each of these tools reads the entire BAM/CRAM file sequentially. For a typical 30x WGS file (~100GB), this means reading ~300GB of data when a single pass could collect everything.
+
+### Additional Constraint
+
+CollectMultipleMetrics/CollectInsertSizeMetrics requires R to be installed for histogram generation. This is unacceptable for a standalone desktop application - we cannot require users to install R just to get insert size metrics.
 
 ### Current Tool Matrix
 
@@ -331,23 +341,26 @@ case class ContigCallableMetrics(
 
 ## Implementation Plan
 
-### Phase 1: Core Walker
-- [ ] Implement `UnifiedMetricsWalker` with HTSJDK
-- [ ] Read counter collector (total, aligned, paired)
-- [ ] Insert size accumulator with histogram
+### Phase 1: Core Walker (Priority: Immediate)
+- [ ] Implement `UnifiedMetricsWalker` with HTSJDK `SamReader`
+- [ ] Read counter collector (total, aligned, paired, proper pairs)
+- [ ] Insert size accumulator with histogram (replaces R-dependent CollectInsertSizeMetrics)
+- [ ] Mean read length calculation
 - [ ] Basic coverage depth tracking
+
+**This phase eliminates the R dependency by replacing CollectMultipleMetrics.**
 
 ### Phase 2: Coverage & Callable
 - [ ] Windowed coverage accumulator
-- [ ] Callable loci state machine
+- [ ] Callable loci state machine (per GATK CallableLoci logic)
 - [ ] BED file output for callable regions
-- [ ] Coverage percentile calculations
+- [ ] Coverage percentile calculations (PCT_1X, PCT_10X, etc.)
 
 ### Phase 3: Integration
 - [ ] Create `UnifiedMetricsProcessor` following existing processor pattern
-- [ ] Add to WorkbenchViewModel as replacement/option
+- [ ] Replace `MultipleMetricsProcessor` (remove R dependency)
+- [ ] Add to WorkbenchViewModel as replacement
 - [ ] Update SequenceRun/Alignment models if needed
-- [ ] Backward compatibility with existing artifact formats
 
 ### Phase 4: Optimization
 - [ ] Multi-threaded contig processing
