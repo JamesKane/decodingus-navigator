@@ -542,6 +542,302 @@ Shared type definitions used across multiple record types.
           "knownValues": ["MODE", "MEDIAN", "PARSIMONY", "ML_PHYLOGENETIC"]
         }
       }
+    },
+    "reconciliationStatus": {
+      "type": "object",
+      "description": "Summary of multi-run reconciliation for a biosample's haplogroup assignments.",
+      "required": ["compatibilityLevel", "consensusHaplogroup"],
+      "properties": {
+        "compatibilityLevel": {
+          "type": "string",
+          "description": "Overall compatibility across all runs.",
+          "knownValues": ["COMPATIBLE", "MINOR_DIVERGENCE", "MAJOR_DIVERGENCE", "INCOMPATIBLE"]
+        },
+        "consensusHaplogroup": {
+          "type": "string",
+          "description": "The reconciled consensus haplogroup across all runs."
+        },
+        "confidence": {
+          "type": "float",
+          "description": "Confidence in the consensus (0.0-1.0)."
+        },
+        "divergencePoint": {
+          "type": "string",
+          "description": "The last common ancestor haplogroup if runs diverge (e.g., 'R-DF13')."
+        },
+        "branchCompatibilityScore": {
+          "type": "float",
+          "description": "LCA_depth / max(depth_A, depth_B). 1.0 = fully compatible, <0.5 = likely different individuals."
+        },
+        "snpConcordance": {
+          "type": "float",
+          "description": "matching_calls / (matching + conflicting). 0.99+ = same individual."
+        },
+        "runCount": {
+          "type": "integer",
+          "description": "Number of runs included in reconciliation."
+        },
+        "warnings": {
+          "type": "array",
+          "description": "Any warnings generated during reconciliation.",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "runHaplogroupCall": {
+      "type": "object",
+      "description": "A haplogroup call from a single sequencing run or STR profile with quality metrics.",
+      "required": ["sourceRef", "haplogroup", "confidence", "callMethod"],
+      "properties": {
+        "sourceRef": {
+          "type": "string",
+          "description": "AT URI of the data source: sequence run, alignment, or STR profile."
+        },
+        "haplogroup": {
+          "type": "string",
+          "description": "The called haplogroup."
+        },
+        "confidence": {
+          "type": "float",
+          "description": "Confidence score for this call (0.0-1.0)."
+        },
+        "callMethod": {
+          "type": "string",
+          "description": "Method used to determine haplogroup.",
+          "knownValues": ["SNP_PHYLOGENETIC", "STR_PREDICTION", "VENDOR_REPORTED"]
+        },
+        "score": {
+          "type": "float",
+          "description": "Raw scoring result from haplogroup assignment."
+        },
+        "supportingSnps": {
+          "type": "integer",
+          "description": "Number of derived SNPs supporting this call (SNP-based only)."
+        },
+        "conflictingSnps": {
+          "type": "integer",
+          "description": "Number of SNPs contradicting this call (SNP-based only)."
+        },
+        "noCalls": {
+          "type": "integer",
+          "description": "Number of defining SNPs with no call (SNP-based only)."
+        },
+        "technology": {
+          "type": "string",
+          "description": "Sequencing/testing technology used.",
+          "knownValues": ["WGS", "WES", "BIG_Y", "SNP_ARRAY", "AMPLICON", "STR_PANEL"]
+        },
+        "meanCoverage": {
+          "type": "float",
+          "description": "Mean coverage in the haplogroup-relevant region (sequencing only)."
+        },
+        "treeVersion": {
+          "type": "string",
+          "description": "Haplogroup tree version used for this call."
+        },
+        "strPrediction": {
+          "type": "ref",
+          "ref": "#strHaplogroupPrediction",
+          "description": "Details of STR-based prediction (when callMethod is STR_PREDICTION)."
+        }
+      }
+    },
+    "strHaplogroupPrediction": {
+      "type": "object",
+      "description": "Haplogroup prediction based on Y-STR profile analysis.",
+      "required": ["predictedHaplogroup", "probability"],
+      "properties": {
+        "predictedHaplogroup": {
+          "type": "string",
+          "description": "The predicted haplogroup from STR analysis."
+        },
+        "probability": {
+          "type": "float",
+          "description": "Probability of this prediction being correct (0.0-1.0)."
+        },
+        "predictionMethod": {
+          "type": "string",
+          "description": "Algorithm used for prediction.",
+          "knownValues": ["NEVGEN", "HAPEST", "YHAPLO", "SAPP", "BAYESIAN", "CUSTOM"]
+        },
+        "alternativePredictions": {
+          "type": "array",
+          "description": "Other possible haplogroups with their probabilities.",
+          "items": {
+            "type": "object",
+            "properties": {
+              "haplogroup": { "type": "string" },
+              "probability": { "type": "float" }
+            }
+          }
+        },
+        "markersUsed": {
+          "type": "integer",
+          "description": "Number of STR markers used in prediction."
+        },
+        "panelName": {
+          "type": "string",
+          "description": "STR panel used (e.g., Y-37, Y-111)."
+        },
+        "predictionDepth": {
+          "type": "string",
+          "description": "Expected depth/resolution of STR-based prediction.",
+          "knownValues": ["MAJOR_CLADE", "SUBCLADE", "TERMINAL"]
+        },
+        "modalMatch": {
+          "type": "object",
+          "description": "Best matching modal haplotype if applicable.",
+          "properties": {
+            "haplogroup": {
+              "type": "string",
+              "description": "Haplogroup of the modal."
+            },
+            "geneticDistance": {
+              "type": "integer",
+              "description": "Genetic distance (step mutations) from modal."
+            },
+            "sampleCount": {
+              "type": "integer",
+              "description": "Number of samples in the modal reference set."
+            }
+          }
+        },
+        "limitations": {
+          "type": "array",
+          "description": "Known limitations of this prediction.",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "snpConflict": {
+      "type": "object",
+      "description": "A conflict at a specific SNP position between runs.",
+      "required": ["position", "calls"],
+      "properties": {
+        "position": {
+          "type": "integer",
+          "description": "Genomic position of the conflict."
+        },
+        "snpName": {
+          "type": "string",
+          "description": "SNP name if known (e.g., 'M269', 'L21')."
+        },
+        "contigAccession": {
+          "type": "string",
+          "description": "GenBank accession for the contig."
+        },
+        "calls": {
+          "type": "array",
+          "description": "The different calls from each run.",
+          "items": {
+            "type": "ref",
+            "ref": "#snpCallFromRun"
+          }
+        },
+        "resolution": {
+          "type": "string",
+          "description": "How the conflict was resolved.",
+          "knownValues": ["ACCEPT_MAJORITY", "ACCEPT_HIGHER_QUALITY", "ACCEPT_HIGHER_COVERAGE", "UNRESOLVED", "HETEROPLASMY"]
+        },
+        "resolvedValue": {
+          "type": "string",
+          "description": "The resolved allele value if resolution was applied."
+        }
+      }
+    },
+    "snpCallFromRun": {
+      "type": "object",
+      "description": "A single SNP call from one run.",
+      "required": ["runRef", "allele"],
+      "properties": {
+        "runRef": {
+          "type": "string",
+          "description": "AT URI of the run that made this call."
+        },
+        "allele": {
+          "type": "string",
+          "description": "Called allele (e.g., 'A', 'T', 'NO_CALL')."
+        },
+        "quality": {
+          "type": "float",
+          "description": "Call quality score."
+        },
+        "depth": {
+          "type": "integer",
+          "description": "Read depth at this position."
+        },
+        "variantAlleleFrequency": {
+          "type": "float",
+          "description": "VAF for heteroplasmy detection (mtDNA)."
+        }
+      }
+    },
+    "heteroplasmyObservation": {
+      "type": "object",
+      "description": "An observation of mtDNA heteroplasmy at a specific position.",
+      "required": ["position", "majorAllele", "minorAllele", "majorAlleleFrequency"],
+      "properties": {
+        "position": {
+          "type": "integer",
+          "description": "Mitochondrial genome position."
+        },
+        "majorAllele": {
+          "type": "string",
+          "description": "The predominant allele."
+        },
+        "minorAllele": {
+          "type": "string",
+          "description": "The minor allele."
+        },
+        "majorAlleleFrequency": {
+          "type": "float",
+          "description": "Frequency of the major allele (0.5-1.0)."
+        },
+        "depth": {
+          "type": "integer",
+          "description": "Total read depth at this position."
+        },
+        "isDefiningSnp": {
+          "type": "boolean",
+          "description": "Whether this position is a haplogroup-defining SNP."
+        },
+        "affectedHaplogroup": {
+          "type": "string",
+          "description": "Haplogroup affected by this heteroplasmy if defining."
+        }
+      }
+    },
+    "identityVerification": {
+      "type": "object",
+      "description": "Metrics for verifying that multiple runs come from the same individual.",
+      "properties": {
+        "kinshipCoefficient": {
+          "type": "float",
+          "description": "Self-vs-self should be ~0.5, different individuals <0.05."
+        },
+        "fingerprintSnpConcordance": {
+          "type": "float",
+          "description": "Concordance on curated fingerprint SNP set (should be 1.0 for same individual)."
+        },
+        "yStrDistance": {
+          "type": "integer",
+          "description": "Genetic distance on Y-STR markers (should be 0 for same individual)."
+        },
+        "verificationStatus": {
+          "type": "string",
+          "description": "Overall verification result.",
+          "knownValues": ["VERIFIED_SAME", "LIKELY_SAME", "UNCERTAIN", "LIKELY_DIFFERENT", "VERIFIED_DIFFERENT"]
+        },
+        "verificationMethod": {
+          "type": "string",
+          "description": "Method used for verification.",
+          "knownValues": ["AUTOSOMAL_KINSHIP", "Y_STR", "FINGERPRINT_SNPS", "COMBINED"]
+        }
+      }
     }
   }
 }
@@ -679,6 +975,14 @@ This record represents a single biological sample. It contains donor metadata an
           "strProfileRef": {
             "type": "string",
             "description": "AT URI of the Y-STR profile for this biosample."
+          },
+          "yDnaReconciliationRef": {
+            "type": "string",
+            "description": "AT URI of the Y-DNA haplogroup reconciliation record for this biosample."
+          },
+          "mtDnaReconciliationRef": {
+            "type": "string",
+            "description": "AT URI of the MT-DNA haplogroup reconciliation record for this biosample."
           }
         }
       }
@@ -1715,6 +2019,153 @@ This record contains the reconstructed ancestral STR state for a haplogroup bran
 
 ---
 
+### 15. Haplogroup Reconciliation Record (`com.decodingus.atmosphere.haplogroupReconciliation`)
+
+This record contains the reconciliation results when a biosample has multiple sequencing runs with potentially different haplogroup calls. It tracks per-run calls, conflicts, and the consensus result.
+
+**NSID:** `com.decodingus.atmosphere.haplogroupReconciliation`
+
+```json
+{
+  "lexicon": 1,
+  "id": "com.decodingus.atmosphere.haplogroupReconciliation",
+  "defs": {
+    "main": {
+      "type": "record",
+      "description": "Reconciliation of haplogroup calls across multiple sequencing runs for a single biosample.",
+      "key": "tid",
+      "record": {
+        "type": "object",
+        "required": ["meta", "atUri", "biosampleRef", "dnaType", "status", "runCalls"],
+        "properties": {
+          "atUri": {
+            "type": "string",
+            "description": "The AT URI of this reconciliation record."
+          },
+          "meta": {
+            "type": "ref",
+            "ref": "com.decodingus.atmosphere.defs#recordMeta"
+          },
+          "biosampleRef": {
+            "type": "string",
+            "description": "AT URI of the parent biosample record."
+          },
+          "dnaType": {
+            "type": "string",
+            "description": "Whether this reconciliation is for Y-DNA or MT-DNA.",
+            "knownValues": ["Y_DNA", "MT_DNA"]
+          },
+          "status": {
+            "type": "ref",
+            "ref": "com.decodingus.atmosphere.defs#reconciliationStatus",
+            "description": "Summary reconciliation status."
+          },
+          "runCalls": {
+            "type": "array",
+            "description": "Individual haplogroup calls from each run.",
+            "items": {
+              "type": "ref",
+              "ref": "com.decodingus.atmosphere.defs#runHaplogroupCall"
+            },
+            "minItems": 1
+          },
+          "snpConflicts": {
+            "type": "array",
+            "description": "List of SNP-level conflicts between runs.",
+            "items": {
+              "type": "ref",
+              "ref": "com.decodingus.atmosphere.defs#snpConflict"
+            }
+          },
+          "heteroplasmyObservations": {
+            "type": "array",
+            "description": "Heteroplasmy observations (mtDNA only).",
+            "items": {
+              "type": "ref",
+              "ref": "com.decodingus.atmosphere.defs#heteroplasmyObservation"
+            }
+          },
+          "identityVerification": {
+            "type": "ref",
+            "ref": "com.decodingus.atmosphere.defs#identityVerification",
+            "description": "Identity verification metrics if multiple runs were compared."
+          },
+          "lastReconciliationAt": {
+            "type": "string",
+            "format": "datetime",
+            "description": "When reconciliation was last performed."
+          },
+          "manualOverride": {
+            "type": "object",
+            "description": "If a user manually overrode the consensus.",
+            "properties": {
+              "overriddenHaplogroup": {
+                "type": "string",
+                "description": "The user-specified haplogroup."
+              },
+              "reason": {
+                "type": "string",
+                "description": "Reason for the override."
+              },
+              "overriddenAt": {
+                "type": "string",
+                "format": "datetime"
+              },
+              "overriddenBy": {
+                "type": "string",
+                "description": "DID of the user who made the override."
+              }
+            }
+          },
+          "auditLog": {
+            "type": "array",
+            "description": "History of reconciliation decisions.",
+            "items": {
+              "type": "ref",
+              "ref": "#auditEntry"
+            }
+          }
+        }
+      }
+    },
+    "auditEntry": {
+      "type": "object",
+      "description": "An entry in the reconciliation audit log.",
+      "required": ["timestamp", "action"],
+      "properties": {
+        "timestamp": {
+          "type": "string",
+          "format": "datetime"
+        },
+        "action": {
+          "type": "string",
+          "description": "Action performed.",
+          "knownValues": ["INITIAL_RECONCILIATION", "RUN_ADDED", "RUN_REMOVED", "MANUAL_OVERRIDE", "CONFLICT_RESOLVED", "RECOMPUTED"]
+        },
+        "previousConsensus": {
+          "type": "string",
+          "description": "Previous consensus haplogroup before this action."
+        },
+        "newConsensus": {
+          "type": "string",
+          "description": "New consensus haplogroup after this action."
+        },
+        "runRef": {
+          "type": "string",
+          "description": "AT URI of run involved (for RUN_ADDED/RUN_REMOVED)."
+        },
+        "notes": {
+          "type": "string",
+          "description": "Additional notes about this action."
+        }
+      }
+    }
+  }
+}
+```
+
+---
+
 ## Record Relationship Diagram
 
 ```
@@ -1788,6 +2239,30 @@ This record contains the reconstructed ancestral STR state for a haplogroup bran
 │                         ancestralMarkers: [{ marker, value, confidence }]       │
 │                         branchMutations: [{ from, to }]                         │
 │                         tmrcaEstimate: { ybp, confidence }                      │
+│                                                                                  │
+└─────────────────────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│                         RECONCILIATION SUBSYSTEM                                 │
+├─────────────────────────────────────────────────────────────────────────────────┤
+│                                                                                  │
+│  BIOSAMPLE ──────────► HAPLOGROUP RECONCILIATION (Y-DNA)                        │
+│             ──────────► HAPLOGROUP RECONCILIATION (MT-DNA)                       │
+│                                                                                  │
+│  RECONCILIATION ─────► status: { compatibilityLevel, consensusHaplogroup,       │
+│                                  branchCompatibilityScore, snpConcordance }     │
+│                  ─────► runCalls: [{ runRef, haplogroup, confidence, tech }]    │
+│                  ─────► snpConflicts: [{ position, snpName, calls, resolution }]│
+│                  ─────► heteroplasmyObservations: [{ pos, majorAllele, VAF }]   │
+│                  ─────► identityVerification: { kinship, fingerprint, yStr }    │
+│                  ─────► auditLog: [{ timestamp, action, consensus changes }]    │
+│                                                                                  │
+│  Compatibility Levels:                                                          │
+│    COMPATIBLE        - Same branch, different depths (Run A: R-BY18291,         │
+│                        Run B: R-CTS4466 - both valid, accept deepest)           │
+│    MINOR_DIVERGENCE  - Tip-level differences, sibling terminal branches         │
+│    MAJOR_DIVERGENCE  - Branch-level split (e.g., R-DF13 children diverge)       │
+│    INCOMPATIBLE      - Different individuals (R1b vs I2a)                       │
 │                                                                                  │
 └─────────────────────────────────────────────────────────────────────────────────┘
 
@@ -2502,6 +2977,7 @@ When processing firehose events:
 | `privateVariants` (in defs) | haplogroup-discovery-system.md | Novel variant tracking |
 | `strProfile` | Y-DNA STR Support | Individual Y-STR marker data |
 | `haplogroupAncestralStr` | Y-DNA Tree Enhancement | Reconstructed ancestral STR states |
+| `haplogroupReconciliation` | MultiRunReconciliation.md | Multi-run haplogroup reconciliation and conflict resolution |
 | `haplogroupUpdate` | appview-pds-backfeed-system.md | AppView notification of haplogroup refinement |
 | `branchDiscovery` | appview-pds-backfeed-system.md | AppView notification of new branch from private variants |
 | `treeVersionUpdate` | appview-pds-backfeed-system.md | AppView notification of haplogroup tree version change |
@@ -2521,3 +2997,4 @@ When processing firehose events:
 | 1.2 | 2025-12-07 | Added STR profile and ancestral STR reconstruction records |
 | 1.3 | 2025-12-07 | Added backfeed record types for AppView-to-PDS updates |
 | 1.4 | 2025-12-07 | Edge computing compliance: Clarified all `files` fields store metadata only, updated CRUD examples to reflect local analysis model |
+| 1.5 | 2025-12-08 | Added multi-run reconciliation support: `haplogroupReconciliation` record, reconciliation definitions (reconciliationStatus, runHaplogroupCall, snpConflict, heteroplasmyObservation, identityVerification), updated biosample with reconciliation refs. Added `strHaplogroupPrediction` definition for STR-based haplogroup prediction with support for Nevgen, Hapest, YHaplo, SAPP algorithms |
