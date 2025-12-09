@@ -50,12 +50,14 @@ class CallableLociProcessor {
    * @param referencePath Path to the reference genome
    * @param onProgress Progress callback
    * @param artifactContext Optional context for organizing output artifacts by subject/run/alignment
+   * @param minDepth Minimum depth to consider a position callable (default 4, use 2 for HiFi)
    */
   def process(
     bamPath: String,
     referencePath: String,
     onProgress: (String, Int, Int) => Unit,
-    artifactContext: Option[ArtifactContext] = None
+    artifactContext: Option[ArtifactContext] = None,
+    minDepth: Int = 4
   ): Either[Throwable, (CallableLociResult, List[String])] = {
     // Ensure BAM index exists
     onProgress("Checking BAM index...", 0, 1)
@@ -102,6 +104,8 @@ class CallableLociProcessor {
           "-O", bedFile.getAbsolutePath,
           "--summary", summaryFile.getAbsolutePath,
           "-L", contigName,
+          // Minimum depth to consider callable (default 4, lower for high-accuracy long reads)
+          "--min-depth", minDepth.toString,
           // Relax reference validation - allows GRCh38 with/without alts, etc.
           "--disable-sequence-dictionary-validation", "true"
         )

@@ -33,7 +33,10 @@ class HaplogroupScorer {
       depth = 0,
       consecutiveAncestralBranches = 0
     ))
-    scores.toList.sortBy(r => (-r.score, -r.depth))
+    // Sort by descending score, then ASCENDING depth (prefer parent when tied)
+    // When a child has the same score as its parent, the child added 0 derived SNPs
+    // at its branch level - choosing the parent is more conservative/accurate
+    scores.toList.sortBy(r => (-r.score, r.depth))
   }
 
   /**

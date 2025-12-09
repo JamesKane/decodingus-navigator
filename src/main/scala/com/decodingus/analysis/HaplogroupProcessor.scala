@@ -137,21 +137,43 @@ class HaplogroupProcessor {
           }
         }
 
+        // Define artifact directory early so it can be used for saving intermediate files
+        val artifactDir = artifactContext.map(_.getSubdir(ARTIFACT_SUBDIR_NAME))
+
         val (allelesForCalling, performReverseLiftover) = if (referenceBuild == treeSourceBuild) {
           onProgress("Reference builds match.", 0.1, 1.0)
           (Right(initialAllelesVcf), false)
         } else {
-          onProgress(s"Reference mismatch: tree is $treeSourceBuild, BAM/CRAM is $referenceBuild. Performing liftover...", 0.1, 1.0)
-          // Note: The contig parameter here for liftover still refers to the primary contig for the tree type.
-          val lifted = performLiftover(initialAllelesVcf, primaryContig, treeSourceBuild, referenceBuild, onProgress)
-          (lifted, true)
+          // Check for cached lifted VCF first (shared across all samples with same tree/build combo)
+          val cachedLiftedVcf = treeCache.getLiftedSitesVcfPath(primaryCacheKey, treeSourceBuild, referenceBuild)
+          if (treeCache.isLiftedSitesVcfValid(primaryCacheKey, treeSourceBuild, referenceBuild)) {
+            onProgress(s"Using cached lifted sites VCF for $referenceBuild...", 0.1, 1.0)
+            println(s"[HaplogroupProcessor] Using cached lifted sites VCF: $cachedLiftedVcf")
+            (Right(cachedLiftedVcf), true)
+          } else {
+            onProgress(s"Reference mismatch: tree is $treeSourceBuild, BAM/CRAM is $referenceBuild. Performing liftover...", 0.1, 1.0)
+            // Note: The contig parameter here for liftover still refers to the primary contig for the tree type.
+            val lifted = performLiftover(initialAllelesVcf, primaryContig, treeSourceBuild, referenceBuild, onProgress)
+            // Cache the lifted VCF for reuse by other samples
+            lifted.foreach { liftedVcf =>
+              java.nio.file.Files.copy(liftedVcf.toPath, cachedLiftedVcf.toPath, java.nio.file.StandardCopyOption.REPLACE_EXISTING)
+              println(s"[HaplogroupProcessor] Cached lifted sites VCF to $cachedLiftedVcf")
+            }
+            // Also save a copy to artifact directory for debugging/auditing
+            lifted.foreach { liftedVcf =>
+              artifactDir.foreach { dir =>
+                val savedPath = dir.resolve(s"${outputPrefix}_lifted_alleles_${referenceBuild}.vcf")
+                java.nio.file.Files.copy(liftedVcf.toPath, savedPath, java.nio.file.StandardCopyOption.REPLACE_EXISTING)
+                println(s"[HaplogroupProcessor] Saved lifted alleles VCF to $savedPath")
+              }
+            }
+            (lifted, true)
+          }
         }
 
         allelesForCalling.flatMap { vcf =>
           referenceGateway.resolve(referenceBuild).flatMap { referencePath =>
             val caller = new GatkHaplotypeCallerProcessor()
-            // Pass artifact directory for called VCF and logs
-            val artifactDir = artifactContext.map(_.getSubdir(ARTIFACT_SUBDIR_NAME))
 
             // Two-pass calling: tree sites first, then private variants
             caller.callTwoPass(
@@ -165,69 +187,101 @@ class HaplogroupProcessor {
             ).flatMap { twoPassResult =>
               val postGatkStart = System.currentTimeMillis()
               // Handle reverse liftover for tree sites VCF if needed
+              // Filter to primaryContig to remove variants that mapped to unexpected contigs (e.g., chrY -> chrX in PAR)
               val finalTreeVcf = if (performReverseLiftover) {
                 onProgress("Performing reverse liftover on tree sites...", 0.72, 1.0)
-                performLiftover(twoPassResult.treeSitesVcf, primaryContig, referenceBuild, treeSourceBuild, onProgress)
+                val reverseLifted = performLiftover(twoPassResult.treeSitesVcf, primaryContig, referenceBuild, treeSourceBuild, onProgress, filterOutput = true)
+                // Save reverse-lifted VCF (used for scoring) to artifact directory
+                reverseLifted.foreach { liftedVcf =>
+                  artifactDir.foreach { dir =>
+                    val savedPath = dir.resolve(s"${outputPrefix}_calls_lifted_${treeSourceBuild}.vcf")
+                    java.nio.file.Files.copy(liftedVcf.toPath, savedPath, java.nio.file.StandardCopyOption.REPLACE_EXISTING)
+                    println(s"[HaplogroupProcessor] Saved reverse-lifted calls VCF to $savedPath")
+                  }
+                }
+                reverseLifted
               } else {
                 Right(twoPassResult.treeSitesVcf)
               }
 
+              // Also lift private variants VCF back to tree coordinates if needed
+              val finalPrivateVariantsVcf = if (performReverseLiftover) {
+                onProgress("Lifting private variants back to tree coordinates...", 0.76, 1.0)
+                val liftedPrivate = performLiftover(twoPassResult.privateVariantsVcf, primaryContig, referenceBuild, treeSourceBuild, onProgress, filterOutput = true)
+                // Save lifted private variants VCF
+                liftedPrivate.foreach { liftedVcf =>
+                  artifactDir.foreach { dir =>
+                    val savedPath = dir.resolve(s"${outputPrefix}_private_variants_lifted_${treeSourceBuild}.vcf")
+                    java.nio.file.Files.copy(liftedVcf.toPath, savedPath, java.nio.file.StandardCopyOption.REPLACE_EXISTING)
+                    println(s"[HaplogroupProcessor] Saved lifted private variants VCF to $savedPath")
+                  }
+                }
+                liftedPrivate
+              } else {
+                Right(twoPassResult.privateVariantsVcf)
+              }
+
               finalTreeVcf.flatMap { scoredVcf =>
-                onProgress("Scoring haplogroups...", 0.8, 1.0)
-                val scoringStart = System.currentTimeMillis()
-                // Merge calls from both VCFs:
-                // 1. Tree sites VCF (pass 1) - forced calls at reference-path positions
-                // 2. Private variants VCF (pass 2) - variant calls across full chromosome
-                // Pass 2 may contain calls at tree positions not in pass 1 (e.g., other branches)
-                val allTreePositions = allLoci.map(_.position).toSet
-                val treeSiteCalls = parseVcf(scoredVcf)
-                println(s"[HaplogroupProcessor] Parsed tree sites VCF: ${treeSiteCalls.size} calls in ${System.currentTimeMillis() - scoringStart}ms")
-                val additionalTreeCalls = parseVcfAtPositions(twoPassResult.privateVariantsVcf, allTreePositions)
-                println(s"[HaplogroupProcessor] Parsed additional calls in ${System.currentTimeMillis() - scoringStart}ms")
-                // Merge: pass 1 calls take precedence (they're force-called at exact positions)
-                val snpCalls = additionalTreeCalls ++ treeSiteCalls
+                finalPrivateVariantsVcf.flatMap { privateVcf =>
+                  onProgress("Scoring haplogroups...", 0.8, 1.0)
+                  val scoringStart = System.currentTimeMillis()
+                  // Merge calls from both VCFs:
+                  // 1. Tree sites VCF (pass 1) - forced calls at reference-path positions
+                  // 2. Private variants VCF (pass 2) - variant calls across full chromosome
+                  // Pass 2 may contain calls at tree positions not in pass 1 (e.g., other branches)
+                  // Note: Both VCFs are now in tree source coordinates for proper position matching
+                  val allTreePositions = allLoci.map(_.position).toSet
+                  val treeSiteCalls = parseVcf(scoredVcf)
+                  println(s"[HaplogroupProcessor] Parsed tree sites VCF: ${treeSiteCalls.size} calls in ${System.currentTimeMillis() - scoringStart}ms")
+                  val additionalTreeCalls = parseVcfAtPositions(privateVcf, allTreePositions)
+                  println(s"[HaplogroupProcessor] Parsed additional calls in ${System.currentTimeMillis() - scoringStart}ms")
+                  // Merge: pass 1 calls take precedence (they're force-called at exact positions)
+                  val snpCalls = additionalTreeCalls ++ treeSiteCalls
 
-                val scorer = new HaplogroupScorer()
-                val scoreStart = System.currentTimeMillis()
-                val results = scorer.score(tree, snpCalls)
-                println(s"[HaplogroupProcessor] Scored ${results.size} haplogroups in ${System.currentTimeMillis() - scoreStart}ms")
+                  val scorer = new HaplogroupScorer()
+                  val scoreStart = System.currentTimeMillis()
+                  val results = scorer.score(tree, snpCalls)
+                  println(s"[HaplogroupProcessor] Scored ${results.size} haplogroups in ${System.currentTimeMillis() - scoreStart}ms")
 
-                // Identify private variants - only exclude positions on path to terminal haplogroup
-                // Positions on other branches could be legitimate private variants for undiscovered sub-clades
-                onProgress("Identifying private variants...", 0.85, 1.0)
-                val terminalHaplogroup = results.headOption.map(_.name).getOrElse("")
-                val pathPositions = collectPathPositions(tree, terminalHaplogroup)
-                val privateVariants = parsePrivateVariants(twoPassResult.privateVariantsVcf, pathPositions)
-                println(s"[HaplogroupProcessor] Post-GATK processing completed in ${System.currentTimeMillis() - postGatkStart}ms")
+                  // Identify private variants - only exclude positions on path to terminal haplogroup
+                  // Positions on other branches could be legitimate private variants for undiscovered sub-clades
+                  // Note: Use lifted VCF for position matching, but original VCF coordinates are kept for reporting
+                  onProgress("Identifying private variants...", 0.85, 1.0)
+                  val terminalHaplogroup = results.headOption.map(_.name).getOrElse("")
+                  val pathPositions = collectPathPositions(tree, terminalHaplogroup)
+                  // Use the original (non-lifted) private variants for the report - positions in BAM's reference
+                  val privateVariants = parsePrivateVariants(twoPassResult.privateVariantsVcf, pathPositions)
+                  println(s"[HaplogroupProcessor] Post-GATK processing completed in ${System.currentTimeMillis() - postGatkStart}ms")
 
-                // Load STR annotator for indel annotation (optional - don't fail if unavailable)
-                val strAnnotator = StrAnnotator.forBuild(referenceBuild) match {
-                  case Right(annotator) =>
-                    println(s"[HaplogroupProcessor] Loaded STR reference with ${annotator.regionCount} regions")
-                    Some(annotator)
-                  case Left(error) =>
-                    println(s"[HaplogroupProcessor] STR annotation unavailable: $error")
-                    None
+                  // Load STR annotator for indel annotation (optional - don't fail if unavailable)
+                  val strAnnotator = StrAnnotator.forBuild(referenceBuild) match {
+                    case Right(annotator) =>
+                      println(s"[HaplogroupProcessor] Loaded STR reference with ${annotator.regionCount} regions")
+                      Some(annotator)
+                    case Left(error) =>
+                      println(s"[HaplogroupProcessor] STR annotation unavailable: $error")
+                      None
+                  }
+
+                  // Write report to artifact directory if available
+                  artifactDir.foreach { dir =>
+                    onProgress("Writing haplogroup report...", 0.9, 1.0)
+                    HaplogroupReportWriter.writeReport(
+                      outputDir = dir.toFile,
+                      treeType = treeType,
+                      results = results,
+                      tree = tree,
+                      snpCalls = snpCalls,
+                      sampleName = None,
+                      privateVariants = Some(privateVariants),
+                      treeProvider = Some(treeProviderType),
+                      strAnnotator = strAnnotator
+                    )
+                  }
+
+                  onProgress("Analysis complete.", 1.0, 1.0)
+                  Right(results)
                 }
-
-                // Write report to artifact directory if available
-                artifactDir.foreach { dir =>
-                  onProgress("Writing haplogroup report...", 0.9, 1.0)
-                  HaplogroupReportWriter.writeReport(
-                    outputDir = dir.toFile,
-                    treeType = treeType,
-                    results = results,
-                    tree = tree,
-                    snpCalls = snpCalls,
-                    sampleName = None,
-                    privateVariants = Some(privateVariants),
-                    treeProvider = Some(treeProviderType),
-                    strAnnotator = strAnnotator
-                  )
-                }
-
-                onProgress("Analysis complete.", 1.0, 1.0)
-                Right(results)
               }
             }
           }
@@ -263,20 +317,35 @@ class HaplogroupProcessor {
     variants
   }
 
+  /**
+   * Perform liftover of a VCF file between reference builds.
+   *
+   * @param vcfFile Input VCF file
+   * @param expectedContig Expected contig for filtering (chrY or chrM) - used to filter out
+   *                       variants that map to unexpected contigs after liftover
+   * @param fromBuild Source reference build
+   * @param toBuild Target reference build
+   * @param onProgress Progress callback
+   * @param filterOutput If true, filter output to only include variants on expectedContig.
+   *                     Should be true for reverse liftover (back to tree coordinates).
+   */
   private def performLiftover(
                                vcfFile: File,
-                               contig: String, // This contig parameter is still relevant for liftover operations
+                               expectedContig: String,
                                fromBuild: String,
                                toBuild: String,
-                               onProgress: (String, Double, Double) => Unit
+                               onProgress: (String, Double, Double) => Unit,
+                               filterOutput: Boolean = false
                              ): Either[String, File] = {
     val liftoverGateway = new LiftoverGateway((_, _) => {})
     val referenceGateway = new ReferenceGateway((_, _) => {})
 
+    val filterToContig = if (filterOutput) Some(expectedContig) else None
+
     for {
       chainFile <- liftoverGateway.resolve(fromBuild, toBuild)
       targetRef <- referenceGateway.resolve(toBuild)
-      liftedVcf <- new LiftoverProcessor().liftoverVcf(vcfFile, chainFile, targetRef, (msg, done, total) => onProgress(msg, 0.2 + (done * 0.2), 1.0))
+      liftedVcf <- new LiftoverProcessor().liftoverVcf(vcfFile, chainFile, targetRef, (msg, done, total) => onProgress(msg, 0.2 + (done * 0.2), 1.0), filterToContig)
     } yield liftedVcf
   }
 

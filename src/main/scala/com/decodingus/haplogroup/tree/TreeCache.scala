@@ -55,4 +55,26 @@ class TreeCache {
     val treeJson = cacheDir.resolve(s"$treePrefix.json").toFile
     sitesVcf.exists() && treeJson.exists() && sitesVcf.lastModified() >= treeJson.lastModified()
   }
+
+  /**
+   * Get the path for a lifted sites VCF file (tree sites lifted to a different reference build).
+   * These are cached to avoid re-lifting for every sample using the same tree/target build combination.
+   *
+   * @param treePrefix The tree cache prefix (e.g., "ftdna-ytree", "ftdna-mttree")
+   * @param sourceBuild The source reference build (tree's native build, e.g., "GRCh38")
+   * @param targetBuild The target reference build (BAM's build, e.g., "CHM13v2")
+   * @return Path to the lifted sites VCF file
+   */
+  def getLiftedSitesVcfPath(treePrefix: String, sourceBuild: String, targetBuild: String): File = {
+    cacheDir.resolve(s"$treePrefix-$sourceBuild-to-$targetBuild-sites.vcf").toFile
+  }
+
+  /**
+   * Check if a lifted sites VCF exists and is newer than the source sites VCF.
+   */
+  def isLiftedSitesVcfValid(treePrefix: String, sourceBuild: String, targetBuild: String): Boolean = {
+    val liftedVcf = getLiftedSitesVcfPath(treePrefix, sourceBuild, targetBuild)
+    val sourceVcf = getSitesVcfPath(treePrefix, sourceBuild)
+    liftedVcf.exists() && sourceVcf.exists() && liftedVcf.lastModified() >= sourceVcf.lastModified()
+  }
 }

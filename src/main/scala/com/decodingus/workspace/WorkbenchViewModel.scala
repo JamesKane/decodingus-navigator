@@ -1547,6 +1547,11 @@ class WorkbenchViewModel(val workspaceService: WorkspaceService) {
                           alignmentUri = alignment.atUri
                         )
                         val artifactDir = artifactCtx.getArtifactDir
+                        // HiFi long reads have higher per-base accuracy, so 2x coverage is callable
+                        val minDepth = seqRun.testType.toUpperCase match {
+                          case t if t.contains("HIFI") => 2
+                          case _ => 4 // Default for short reads
+                        }
                         val (result, svgStrings) = callableLociProcessor.process(
                           bamPath,
                           referencePath,
@@ -1554,7 +1559,8 @@ class WorkbenchViewModel(val workspaceService: WorkspaceService) {
                             val pct = 0.1 + (current.toDouble / total.toDouble) * 0.85
                             updateProgress(message, pct)
                           },
-                          Some(artifactCtx)
+                          Some(artifactCtx),
+                          minDepth
                         ) match {
                           case Right(r) => r
                           case Left(error) => throw error
