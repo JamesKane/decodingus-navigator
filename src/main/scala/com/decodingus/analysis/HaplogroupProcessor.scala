@@ -172,7 +172,16 @@ class HaplogroupProcessor {
 
               finalTreeVcf.flatMap { scoredVcf =>
                 onProgress("Scoring haplogroups...", 0.8, 1.0)
-                val snpCalls = parseVcf(scoredVcf)
+                // Merge calls from both VCFs:
+                // 1. Tree sites VCF (pass 1) - forced calls at reference-path positions
+                // 2. Private variants VCF (pass 2) - variant calls across full chromosome
+                // Pass 2 may contain calls at tree positions not in pass 1 (e.g., other branches)
+                val allTreePositions = allLoci.map(_.position).toSet
+                val treeSiteCalls = parseVcf(scoredVcf)
+                val additionalTreeCalls = parseVcfAtPositions(twoPassResult.privateVariantsVcf, allTreePositions)
+                // Merge: pass 1 calls take precedence (they're force-called at exact positions)
+                val snpCalls = additionalTreeCalls ++ treeSiteCalls
+
                 val scorer = new HaplogroupScorer()
                 val results = scorer.score(tree, snpCalls)
 
@@ -399,6 +408,26 @@ class HaplogroupProcessor {
         val genotype = vc.getGenotypes.get(0) // Assuming single sample VCF
         val allele = genotype.getAlleles.get(0).getBaseString
         pos -> allele
+    }.toMap
+    reader.close()
+    snpCalls
+  }
+
+  /**
+   * Parse VCF and return only calls at specified positions.
+   * Used to extract tree-position calls from the private variants VCF.
+   */
+  private def parseVcfAtPositions(vcfFile: File, positions: Set[Long]): Map[Long, String] = {
+    val reader = new VCFFileReader(vcfFile, false)
+    val snpCalls = reader.iterator().asScala.flatMap { vc =>
+      val pos = vc.getStart.toLong
+      if (positions.contains(pos)) {
+        val genotype = vc.getGenotypes.get(0)
+        val allele = genotype.getAlleles.get(0).getBaseString
+        Some(pos -> allele)
+      } else {
+        None
+      }
     }.toMap
     reader.close()
     snpCalls

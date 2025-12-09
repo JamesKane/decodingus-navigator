@@ -14,7 +14,8 @@ import scala.collection.mutable
  * - Branch score = (derived / callable) * callable, where callable = derived + ancestral
  *   This rewards both high match rate AND high SNP density
  * - No calls are neutral (don't affect the ratio)
- * - Stop descent if two consecutive branches have all available calls as ancestral
+ * - Stop descent if two consecutive branches lack positive evidence (all ancestral OR all no-calls)
+ *   This prevents traversing deep into unconfirmed paths when branch-defining SNPs have no coverage
  */
 class HaplogroupScorer {
 
@@ -108,22 +109,27 @@ class HaplogroupScorer {
       depth = depth
     )
 
-    // Determine if this branch was "all ancestral" (has calls but all were ancestral)
+    // Determine if this branch provides no positive evidence for descent
+    // - All ancestral: we have calls but none are derived (confirmed wrong path)
+    // - All no-calls: we have no data to confirm this path (unconfirmed path)
+    // Both cases should increment the "unconfirmed descent" counter
     val branchHasCalls = branchDerived > 0 || branchAncestral > 0
     val branchAllAncestral = branchHasCalls && branchDerived == 0 && branchAncestral > 0
+    val branchAllNoCalls = !branchHasCalls && haplogroup.loci.nonEmpty
 
-    val newConsecutiveAncestral = if (branchAllAncestral) {
-      consecutiveAncestralBranches + 1
-    } else if (branchDerived > 0) {
-      // Reset counter if we found any derived calls
+    val newConsecutiveUnconfirmed = if (branchDerived > 0) {
+      // Reset counter if we found any derived calls - this path is confirmed
       0
+    } else if (branchAllAncestral || branchAllNoCalls) {
+      // Increment counter: either confirmed wrong (all ancestral) or unconfirmed (all no-calls)
+      consecutiveAncestralBranches + 1
     } else {
-      // No calls at all - keep the counter as is
+      // Empty branch (no loci) - keep counter as is
       consecutiveAncestralBranches
     }
 
-    // Stop descent if we have two consecutive branches with all ancestral calls
-    if (newConsecutiveAncestral >= 2) {
+    // Stop descent if we have two consecutive branches without positive evidence
+    if (newConsecutiveUnconfirmed >= 2) {
       return
     }
 
@@ -139,7 +145,7 @@ class HaplogroupScorer {
         newCumulativeNoCalls,
         newCumulativeSnps,
         depth + 1,
-        newConsecutiveAncestral
+        newConsecutiveUnconfirmed
       )
     }
   }
