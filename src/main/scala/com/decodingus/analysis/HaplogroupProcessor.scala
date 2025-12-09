@@ -107,13 +107,34 @@ class HaplogroupProcessor {
       referenceGateway.resolve(treeSourceBuild).flatMap { treeRefPath =>
         // Cache key includes reference haplogroup for path-optimized VCFs
         val cacheKeySuffix = referenceHaplogroup.map(h => s"-path-$h").getOrElse("")
-        val cachedSitesVcf = treeCache.getSitesVcfPath(s"${treeProvider.cachePrefix}$cacheKeySuffix", treeSourceBuild)
-        val initialAllelesVcf = if (treeCache.isSitesVcfValid(s"${treeProvider.cachePrefix}$cacheKeySuffix", treeSourceBuild)) {
+        val primaryCacheKey = s"${treeProvider.cachePrefix}$cacheKeySuffix"
+        val cachedSitesVcf = treeCache.getSitesVcfPath(primaryCacheKey, treeSourceBuild)
+
+        // Check for existing VCFs - try current provider's cache first, then check alternatives
+        val initialAllelesVcf = if (treeCache.isSitesVcfValid(primaryCacheKey, treeSourceBuild)) {
           onProgress("Using cached sites VCF...", 0.05, 1.0)
           cachedSitesVcf
         } else {
-          onProgress(s"Creating sites VCF (${pass1Loci.size} positions)...", 0.05, 1.0)
-          createVcfAllelesFile(pass1Loci, treeRefPath.toString, treeType, Some(cachedSitesVcf))
+          // Check for alternative cached VCFs (e.g., from other tree providers)
+          // This allows reusing VCFs if someone switches providers
+          val alternativePrefixes = treeType match {
+            case TreeType.YDNA => List("ftdna-ytree", "decodingus-ytree")
+            case TreeType.MTDNA => List("ftdna-mttree", "decodingus-mttree")
+          }
+          val alternativeVcf = alternativePrefixes
+            .filterNot(_ == treeProvider.cachePrefix) // Skip current provider
+            .map(prefix => s"$prefix$cacheKeySuffix")
+            .map(key => treeCache.getSitesVcfPath(key, treeSourceBuild))
+            .find(_.exists())
+
+          alternativeVcf match {
+            case Some(existingVcf) =>
+              onProgress(s"Found existing sites VCF from alternative provider...", 0.05, 1.0)
+              existingVcf
+            case None =>
+              onProgress(s"Creating sites VCF (${pass1Loci.size} positions)...", 0.05, 1.0)
+              createVcfAllelesFile(pass1Loci, treeRefPath.toString, treeType, Some(cachedSitesVcf))
+          }
         }
 
         val (allelesForCalling, performReverseLiftover) = if (referenceBuild == treeSourceBuild) {

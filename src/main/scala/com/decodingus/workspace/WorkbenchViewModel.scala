@@ -1270,11 +1270,22 @@ class WorkbenchViewModel(val workspaceService: WorkspaceService) {
                           sequenceRunUri = seqRun.atUri,
                           alignmentUri = alignment.atUri
                         )
+                        // Select tree provider based on configuration
+                        val treeProviderType = treeType match {
+                          case TreeType.YDNA =>
+                            if (FeatureToggles.treeProviders.ydna.equalsIgnoreCase("decodingus"))
+                              TreeProviderType.DECODINGUS
+                            else TreeProviderType.FTDNA
+                          case TreeType.MTDNA =>
+                            if (FeatureToggles.treeProviders.mtdna.equalsIgnoreCase("decodingus"))
+                              TreeProviderType.DECODINGUS
+                            else TreeProviderType.FTDNA
+                        }
                         val result = processor.analyze(
                           bamPath,
                           libraryStats,
                           treeType,
-                          TreeProviderType.FTDNA, // Using FTDNA for POC
+                          treeProviderType,
                           (message, current, total) => {
                             val pct = if (total > 0) current / total else 0.0
                             updateProgress(message, pct)

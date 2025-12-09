@@ -15,6 +15,23 @@ object FeatureToggles {
   }
 
   /**
+   * Tree provider configuration for Y-DNA and MT-DNA analysis.
+   */
+  object treeProviders {
+    private val treeConfig = if (config.hasPath("tree-providers")) {
+      config.getConfig("tree-providers")
+    } else {
+      ConfigFactory.empty()
+    }
+
+    /** Y-DNA tree provider: "ftdna" or "decodingus" */
+    val ydna: String = if (treeConfig.hasPath("ydna")) treeConfig.getString("ydna") else "ftdna"
+
+    /** MT-DNA tree provider: "ftdna" or "decodingus" */
+    val mtdna: String = if (treeConfig.hasPath("mtdna")) treeConfig.getString("mtdna") else "ftdna"
+  }
+
+  /**
    * Reference genome haplogroup mappings for Y-DNA calling optimization.
    * Maps reference build names to their known Y-DNA haplogroup name variants.
    * Multiple name variants are supported for compatibility with different tree providers.
