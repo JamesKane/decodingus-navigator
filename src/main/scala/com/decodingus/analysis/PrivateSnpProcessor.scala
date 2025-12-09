@@ -51,10 +51,10 @@ class PrivateSnpProcessor {
     }
 
     val caller = new GatkHaplotypeCallerProcessor()
-    caller.callAllVariantsInContig(bamPath, referencePath, contig, onProgress) match {
-      case Right(callerResult) =>
+    caller.callPrivateVariants(bamPath, referencePath, contig, onProgress) match {
+      case Right(result) =>
         onProgress("Filtering for private SNPs...", 0.8, 1.0)
-        val reader = new VCFFileReader(callerResult.vcfFile, false)
+        val reader = new VCFFileReader(result.vcfFile, false)
 
         val privateVariants = reader.iterator().asScala.filterNot {
           vc =>
@@ -64,8 +64,8 @@ class PrivateSnpProcessor {
         reader.close()
         onProgress("Private SNP analysis complete.", 1.0, 1.0)
         privateVariants
-      case Left(error) =>
-        throw new RuntimeException(s"Failed to call variants in $contig: $error")
+      case Left(err) =>
+        throw new RuntimeException(s"Failed to call variants in $contig: $err")
     }
   }
 
@@ -85,23 +85,51 @@ class PrivateSnpProcessor {
           writer.println("##INFO=<ID=AF,Number=A,Type=Float,Description=\"Allele Frequency\">")
           writer.println("#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO")
 
-          Using.resource(new ReferenceQuerier(referencePath.toString)) {
+          Using.resource(new ReferenceQuerier(referencePath.toString, contig)) {
             refQuerier =>
-            loci.foreach {
-              locus =>
-              val refBase = refQuerier.getBase(contig, locus.position)
-              val (ref, alt) = if (refBase.toString.equalsIgnoreCase(locus.ref)) {
-                (locus.ref, locus.alt)
-              } else if (refBase.toString.equalsIgnoreCase(locus.alt)) {
-                (locus.alt, locus.ref)
-              } else {
-                // This locus is problematic, the reference doesn't match ANC or DER
-                // We'll skip it for now
-                ("", "")
+            // Group loci by position to combine alternates at the same site
+            val groupedLoci = loci.groupBy(_.position)
+            // Filter out positions beyond contig bounds, then sort
+            val sortedPositions = groupedLoci.keys.toList
+              .filter(refQuerier.isValidPosition)
+              .sorted
+
+            sortedPositions.foreach { position =>
+              val lociAtPosition = groupedLoci(position)
+              // Safe to use get since we filtered valid positions above
+              val refBase = refQuerier.getBase(position).get
+
+              // Filter to valid SNPs only:
+              // - Single base ref and alt (no indels)
+              // - Only valid nucleotides A, C, G, T (no dashes, dots, or other characters)
+              val validBases = Set("A", "C", "G", "T")
+              val snpLoci = lociAtPosition.filter { l =>
+                l.ref.length == 1 && l.alt.length == 1 &&
+                  validBases.contains(l.ref.toUpperCase) &&
+                  validBases.contains(l.alt.toUpperCase)
               }
 
-              if (ref.nonEmpty) {
-                writer.println(s"$contig\t${locus.position}\t.\t$ref\t$alt\t.\t.\t.")
+              // Collect all valid alternates at this position
+              val refAndAlts = snpLoci.flatMap { locus =>
+                if (refBase.toString.equalsIgnoreCase(locus.ref)) {
+                  Some((locus.ref.toUpperCase, locus.alt.toUpperCase))
+                } else if (refBase.toString.equalsIgnoreCase(locus.alt)) {
+                  Some((locus.alt.toUpperCase, locus.ref.toUpperCase))
+                } else {
+                  // This locus is problematic, the reference doesn't match ANC or DER
+                  None
+                }
+              }
+
+              if (refAndAlts.nonEmpty) {
+                // All refs should be the same (the actual reference base)
+                val ref = refAndAlts.head._1
+                // Collect unique alternates
+                val alts = refAndAlts.map(_._2).distinct.filterNot(_ == ref)
+
+                if (alts.nonEmpty) {
+                  writer.println(s"$contig\t$position\t.\t$ref\t${alts.mkString(",")}\t.\t.\t.")
+                }
               }
             }
           }

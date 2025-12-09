@@ -1,6 +1,6 @@
 package com.decodingus.analysis
 
-import com.decodingus.haplogroup.caller.GatkHaplotypeCallerProcessor
+import com.decodingus.haplogroup.caller.{GatkHaplotypeCallerProcessor, TwoPassCallerResult}
 import com.decodingus.haplogroup.model.{Haplogroup, HaplogroupResult, Locus}
 import com.decodingus.haplogroup.report.HaplogroupReportWriter
 import com.decodingus.haplogroup.scoring.HaplogroupScorer
@@ -8,13 +8,24 @@ import com.decodingus.haplogroup.tree.{TreeCache, TreeProvider, TreeProviderType
 import com.decodingus.haplogroup.vendor.{DecodingUsTreeProvider, FtdnaTreeProvider}
 import com.decodingus.liftover.LiftoverProcessor
 import com.decodingus.model.LibraryStats
-import com.decodingus.refgenome.{LiftoverGateway, ReferenceGateway, ReferenceQuerier}
+import com.decodingus.refgenome.{LiftoverGateway, MultiContigReferenceQuerier, ReferenceGateway, ReferenceQuerier}
 import htsjdk.variant.vcf.VCFFileReader
 
 import java.io.{File, PrintWriter}
 import java.nio.file.{Files, Path}
 import scala.jdk.CollectionConverters.*
 import scala.util.Using
+
+/**
+ * A private/novel variant not found in the haplogroup tree.
+ */
+case class PrivateVariant(
+  contig: String,
+  position: Long,
+  ref: String,
+  alt: String,
+  quality: Option[Double]
+)
 
 class HaplogroupProcessor {
 
@@ -50,7 +61,7 @@ class HaplogroupProcessor {
     val treeCache = new TreeCache()
 
     treeProvider.loadTree(libraryStats.referenceBuild).flatMap { tree =>
-      val allLoci = tree.flatMap(h => h.loci).distinct
+      val allLoci = collectAllLoci(tree).distinct
       // The 'contig' variable is no longer directly used here for createVcfAllelesFile,
       // as Locus objects now carry their own contig information.
       // However, it's still used for liftover and other contig-specific operations.
@@ -92,38 +103,46 @@ class HaplogroupProcessor {
             val caller = new GatkHaplotypeCallerProcessor()
             // Pass artifact directory for called VCF and logs
             val artifactDir = artifactContext.map(_.getSubdir(ARTIFACT_SUBDIR_NAME))
-            caller.callSnps(
+
+            // Two-pass calling: tree sites first, then private variants
+            caller.callTwoPass(
               bamPath,
               referencePath.toString,
               vcf,
-              (msg, done, total) => onProgress(msg, 0.4 + (done * 0.4), 1.0),
+              (msg, done, total) => onProgress(msg, 0.2 + (done * 0.5), 1.0),
               artifactDir,
               Some(outputPrefix)
-            ).flatMap { callerResult =>
-              val finalVcf = if (performReverseLiftover) {
-                onProgress("Performing reverse liftover on results...", 0.8, 1.0)
-                // Note: The contig parameter here for liftover still refers to the primary contig for the tree type.
-                performLiftover(callerResult.vcfFile, primaryContig, referenceBuild, treeSourceBuild, onProgress)
+            ).flatMap { twoPassResult =>
+              // Handle reverse liftover for tree sites VCF if needed
+              val finalTreeVcf = if (performReverseLiftover) {
+                onProgress("Performing reverse liftover on tree sites...", 0.72, 1.0)
+                performLiftover(twoPassResult.treeSitesVcf, primaryContig, referenceBuild, treeSourceBuild, onProgress)
               } else {
-                Right(callerResult.vcfFile)
+                Right(twoPassResult.treeSitesVcf)
               }
 
-              finalVcf.flatMap { scoredVcf =>
-                onProgress("Scoring haplogroups...", 0.9, 1.0)
+              finalTreeVcf.flatMap { scoredVcf =>
+                onProgress("Scoring haplogroups...", 0.8, 1.0)
                 val snpCalls = parseVcf(scoredVcf)
                 val scorer = new HaplogroupScorer()
                 val results = scorer.score(tree, snpCalls)
 
+                // Identify private variants (not in tree)
+                onProgress("Identifying private variants...", 0.85, 1.0)
+                val treePositions = allLoci.map(_.position).toSet
+                val privateVariants = parsePrivateVariants(twoPassResult.privateVariantsVcf, treePositions)
+
                 // Write report to artifact directory if available
                 artifactDir.foreach { dir =>
-                  onProgress("Writing haplogroup report...", 0.95, 1.0)
+                  onProgress("Writing haplogroup report...", 0.9, 1.0)
                   HaplogroupReportWriter.writeReport(
                     outputDir = dir.toFile,
                     treeType = treeType,
                     results = results,
                     tree = tree,
                     snpCalls = snpCalls,
-                    sampleName = None
+                    sampleName = None,
+                    privateVariants = Some(privateVariants)
                   )
                 }
 
@@ -135,6 +154,33 @@ class HaplogroupProcessor {
         }
       }
     }
+  }
+
+  /**
+   * Parse private variants from VCF, excluding known tree positions.
+   */
+  private def parsePrivateVariants(vcfFile: File, treePositions: Set[Long]): List[PrivateVariant] = {
+    val reader = new VCFFileReader(vcfFile, false)
+    val variants = reader.iterator().asScala.flatMap { vc =>
+      val pos = vc.getStart.toLong
+      if (!treePositions.contains(pos)) {
+        val genotype = vc.getGenotypes.get(0)
+        val allele = genotype.getAlleles.get(0).getBaseString
+        val ref = vc.getReference.getBaseString
+        val qual = if (vc.hasLog10PError) Some(vc.getPhredScaledQual) else None
+        Some(PrivateVariant(
+          contig = vc.getContig,
+          position = pos,
+          ref = ref,
+          alt = allele,
+          quality = qual
+        ))
+      } else {
+        None
+      }
+    }.toList
+    reader.close()
+    variants
   }
 
   private def performLiftover(
@@ -172,36 +218,82 @@ class HaplogroupProcessor {
         tempFile
     }
 
+    // Group loci by contig first, then by position within each contig
+    val lociByContig = loci.groupBy(_.contig)
+    val sortedContigs = lociByContig.keys.toList.sortBy(c => standardContigOrder.getOrElse(c, 999))
+
     Using.resource(new PrintWriter(vcfFile)) { writer =>
       writer.println("##fileformat=VCFv4.2")
-      // Dynamically add contig headers based on unique contigs in loci
-      loci.map(_.contig).distinct.foreach { c =>
+      sortedContigs.foreach { c =>
         writer.println(s"##contig=<ID=$c>")
       }
       writer.println("##INFO=<ID=AF,Number=A,Type=Float,Description=\"Allele Frequency\">")
       writer.println("#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO")
 
-      Using.resource(new ReferenceQuerier(referencePath)) { refQuerier =>
-        loci.sortBy(locus => (standardContigOrder.getOrElse(locus.contig, 999), locus.position)).foreach {
-          case locus =>
-            val refBase = refQuerier.getBase(locus.contig, locus.position)
-            val (ref, alt) = if (refBase.toString.equalsIgnoreCase(locus.ref)) {
-              (locus.ref, locus.alt)
-            } else if (refBase.toString.equalsIgnoreCase(locus.alt)) {
-              (locus.alt, locus.ref)
-            } else {
-              // This locus is problematic, the reference doesn't match ANC or DER
-              // We'll skip it for now
-              ("", "")
+      // Process one contig at a time - load reference once per contig
+      sortedContigs.foreach { contig =>
+        Using.resource(new ReferenceQuerier(referencePath, contig)) { refQuerier =>
+          val contigLoci = lociByContig(contig)
+          // Group by position to combine alternates at the same site
+          val groupedByPosition = contigLoci.groupBy(_.position)
+          // Filter out positions beyond contig bounds, then sort
+          val sortedPositions = groupedByPosition.keys.toList
+            .filter(refQuerier.isValidPosition)
+            .sorted
+
+          sortedPositions.foreach { position =>
+            val lociAtPosition = groupedByPosition(position)
+            // Safe to use get since we filtered valid positions above
+            val refBase = refQuerier.getBase(position).get
+
+            // Filter to valid SNPs only:
+            // - Single base ref and alt (no indels)
+            // - Only valid nucleotides A, C, G, T (no dashes, dots, or other characters)
+            val validBases = Set("A", "C", "G", "T")
+            val snpLoci = lociAtPosition.filter { l =>
+              l.ref.length == 1 && l.alt.length == 1 &&
+                validBases.contains(l.ref.toUpperCase) &&
+                validBases.contains(l.alt.toUpperCase)
             }
 
-            if (ref.nonEmpty && alt.nonEmpty) {
-              writer.println(s"${locus.contig}\t${locus.position}\t.\t$ref\t$alt\t.\t.\t.")
+            // Collect all valid alternates at this position
+            val refAndAlts = snpLoci.flatMap { locus =>
+              if (refBase.toString.equalsIgnoreCase(locus.ref)) {
+                Some((locus.ref.toUpperCase, locus.alt.toUpperCase))
+              } else if (refBase.toString.equalsIgnoreCase(locus.alt)) {
+                Some((locus.alt.toUpperCase, locus.ref.toUpperCase))
+              } else {
+                // This locus is problematic, the reference doesn't match ANC or DER
+                None
+              }
             }
+
+            if (refAndAlts.nonEmpty) {
+              // All refs should be the same (the actual reference base)
+              val ref = refAndAlts.head._1
+              // Collect unique alternates
+              val alts = refAndAlts.map(_._2).distinct.filterNot(_ == ref)
+
+              if (alts.nonEmpty) {
+                writer.println(s"$contig\t$position\t.\t$ref\t${alts.mkString(",")}\t.\t.\t.")
+              }
+            }
+          }
         }
       }
     }
     vcfFile
+  }
+
+  /**
+   * Recursively collect all loci from the haplogroup tree.
+   */
+  private def collectAllLoci(tree: List[Haplogroup]): List[Locus] = {
+    tree.flatMap(collectLociFromHaplogroup)
+  }
+
+  private def collectLociFromHaplogroup(haplogroup: Haplogroup): List[Locus] = {
+    haplogroup.loci ++ haplogroup.children.flatMap(collectLociFromHaplogroup)
   }
 
   private def parseVcf(vcfFile: File): Map[Long, String] = {

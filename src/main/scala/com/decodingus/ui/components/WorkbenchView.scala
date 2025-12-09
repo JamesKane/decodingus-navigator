@@ -71,11 +71,28 @@ class WorkbenchView(val viewModel: WorkbenchViewModel) extends SplitPane {
       )
     }
 
-    // Haplogroup summary
-    val haplogroupLabel = new Label(
-      s"Haplogroups: ${subject.haplogroups.map(h => s"Y: ${h.yDna.getOrElse("—")}, MT: ${h.mtDna.getOrElse("—")}").getOrElse("Not analyzed")}"
-    ) {
-      style = "-fx-padding: 10 0 0 0;"
+    // Haplogroup summary - format nicely with name and score
+    def formatHaplogroup(result: Option[com.decodingus.workspace.model.HaplogroupResult]): String = {
+      result match {
+        case Some(h) =>
+          val name = h.haplogroupName
+          val derived = h.matchingSnps.map(n => s"+$n").getOrElse("")
+          val ancestral = h.ancestralMatches.map(n => s"-$n").getOrElse("")
+          if (derived.nonEmpty || ancestral.nonEmpty) s"$name ($derived/$ancestral)" else name
+        case None => "—"
+      }
+    }
+
+    val haplogroupText = subject.haplogroups match {
+      case Some(h) =>
+        val yDisplay = s"Y: ${formatHaplogroup(h.yDna)}"
+        val mtDisplay = s"MT: ${formatHaplogroup(h.mtDna)}"
+        s"$yDisplay    $mtDisplay"
+      case None => "Haplogroups: Not analyzed"
+    }
+
+    val haplogroupLabel = new Label(haplogroupText) {
+      style = "-fx-padding: 10 0 0 0; -fx-font-family: monospace; -fx-font-size: 14px; -fx-font-weight: bold;"
     }
 
     // Sequence data table with callbacks

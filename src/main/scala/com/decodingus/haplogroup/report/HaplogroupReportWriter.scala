@@ -1,5 +1,6 @@
 package com.decodingus.haplogroup.report
 
+import com.decodingus.analysis.PrivateVariant
 import com.decodingus.haplogroup.model.{Haplogroup, HaplogroupResult, Locus}
 import com.decodingus.haplogroup.tree.TreeType
 
@@ -29,7 +30,8 @@ object HaplogroupReportWriter {
                    results: List[HaplogroupResult],
                    tree: List[Haplogroup],
                    snpCalls: Map[Long, String],
-                   sampleName: Option[String] = None
+                   sampleName: Option[String] = None,
+                   privateVariants: Option[List[PrivateVariant]] = None
                  ): File = {
     outputDir.mkdirs()
 
@@ -120,6 +122,26 @@ object HaplogroupReportWriter {
         writer.println()
       }
 
+      // Private/Novel Variants section
+      privateVariants.foreach { variants =>
+        writer.println("-" * 80)
+        writer.println("PRIVATE/NOVEL VARIANTS")
+        writer.println("-" * 80)
+        if (variants.isEmpty) {
+          writer.println("  No private variants discovered.")
+        } else {
+          writer.println(s"  Total private variants: ${variants.size}")
+          writer.println()
+          writer.println(f"${"Position"}%12s  ${"Ref"}%6s  ${"Alt"}%6s  ${"Quality"}%10s")
+          writer.println("-" * 80)
+          variants.sortBy(_.position).foreach { v =>
+            val qualStr = v.quality.map(q => f"$q%.1f").getOrElse("-")
+            writer.println(f"${v.position}%12d  ${v.ref}%6s  ${v.alt}%6s  $qualStr%10s")
+          }
+        }
+        writer.println()
+      }
+
       // Summary statistics
       writer.println("-" * 80)
       writer.println("SUMMARY STATISTICS")
@@ -131,6 +153,9 @@ object HaplogroupReportWriter {
       topResult.foreach { top =>
         val pathLoci = findPathToHaplogroup(tree, top.name).flatMap(_.loci)
         writer.println(s"  SNPs on predicted path: ${pathLoci.size}")
+      }
+      privateVariants.foreach { variants =>
+        writer.println(s"  Private variants discovered: ${variants.size}")
       }
       writer.println()
       writer.println("=" * 80)

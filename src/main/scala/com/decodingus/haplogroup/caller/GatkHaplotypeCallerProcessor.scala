@@ -1,7 +1,7 @@
 package com.decodingus.haplogroup.caller
 
 import com.decodingus.analysis.GatkRunner
-import java.io.{File, PrintWriter}
+import java.io.{BufferedReader, File, FileReader, PrintWriter}
 import java.nio.file.{Files, Path}
 import scala.util.Using
 
@@ -10,7 +10,34 @@ import scala.util.Using
  */
 case class CallerResult(vcfFile: File, logFile: Option[File])
 
+/**
+ * Result of two-pass calling for haplogroup assignment and private SNP discovery.
+ */
+case class TwoPassCallerResult(
+  treeSitesVcf: File,
+  privateVariantsVcf: File,
+  treeSitesLog: Option[File],
+  privateVariantsLog: Option[File]
+)
+
 class GatkHaplotypeCallerProcessor {
+
+  /**
+   * Detect the primary contig from a VCF file by reading the first data line.
+   */
+  private def detectContigFromVcf(vcfFile: File): String = {
+    Using.resource(new BufferedReader(new FileReader(vcfFile))) { reader =>
+      var line = reader.readLine()
+      while (line != null && line.startsWith("#")) {
+        line = reader.readLine()
+      }
+      if (line != null) {
+        line.split("\t").headOption.getOrElse("chrM")
+      } else {
+        "chrM" // Default fallback
+      }
+    }
+  }
 
   /**
    * Call SNPs at specified allele sites.
@@ -68,10 +95,18 @@ class GatkHaplotypeCallerProcessor {
       "-I", bamPath,
       "-R", referencePath,
       "-O", vcfFile.getAbsolutePath,
+      // Only call at tree sites for haplogroup assignment
       "-L", allelesVcf.getAbsolutePath,
+      // Force genotyping at known tree sites
       "--alleles", allelesVcf.getAbsolutePath,
       // Relax reference validation - allows GRCh38 with/without alts, etc.
-      "--disable-sequence-dictionary-validation", "true"
+      "--disable-sequence-dictionary-validation", "true",
+      // Haploid calling for mtDNA and Y-DNA
+      "--sample-ploidy", "1",
+      // Lower confidence threshold to capture more calls
+      "--standard-min-confidence-threshold-for-calling", "10.0",
+      // Include filtered alleles in output
+      "--force-call-filtered-alleles", "true"
     )
 
     GatkRunner.run(args) match {
@@ -103,12 +138,17 @@ class GatkHaplotypeCallerProcessor {
     }
   }
 
-  def callAllVariantsInContig(
+  /**
+   * Pass 2: Call all variants in a contig to discover private/novel SNPs.
+   * Only emits variants (sites that differ from reference).
+   */
+  def callPrivateVariants(
     bamPath: String,
     referencePath: String,
     contig: String,
     onProgress: (String, Double, Double) => Unit,
-    outputDir: Option[Path] = None
+    outputDir: Option[Path] = None,
+    outputPrefix: Option[String] = None
   ): Either[String, CallerResult] = {
     // Ensure BAM index exists
     onProgress("Checking BAM index...", 0.0, 1.0)
@@ -117,15 +157,16 @@ class GatkHaplotypeCallerProcessor {
       case Right(_) => // index exists or was created
     }
 
-    onProgress(s"Calling all variants in $contig with GATK HaplotypeCaller...", 0.1, 1.0)
+    onProgress(s"Discovering private variants in $contig...", 0.1, 1.0)
 
     // Determine output file location
     val (vcfFile, logFile) = outputDir match {
       case Some(dir) =>
         Files.createDirectories(dir)
-        (dir.resolve(s"${contig}_variants.vcf").toFile, Some(dir.resolve(s"${contig}_haplotypecaller.log").toFile))
+        val prefix = outputPrefix.getOrElse(contig)
+        (dir.resolve(s"${prefix}_private_variants.vcf").toFile, Some(dir.resolve(s"${prefix}_private_variants.log").toFile))
       case None =>
-        val tempFile = File.createTempFile(s"variants-$contig", ".vcf")
+        val tempFile = File.createTempFile(s"private-variants-$contig", ".vcf")
         tempFile.deleteOnExit()
         (tempFile, None)
     }
@@ -137,23 +178,28 @@ class GatkHaplotypeCallerProcessor {
       "-O", vcfFile.getAbsolutePath,
       "-L", contig,
       // Relax reference validation - allows GRCh38 with/without alts, etc.
-      "--disable-sequence-dictionary-validation", "true"
+      "--disable-sequence-dictionary-validation", "true",
+      // Haploid calling for mtDNA and Y-DNA
+      "--sample-ploidy", "1",
+      // Standard confidence for variant discovery
+      "--standard-min-confidence-threshold-for-calling", "20.0"
+      // Default output-mode is EMIT_VARIANTS_ONLY which is what we want
     )
 
     GatkRunner.run(args) match {
       case Left(error) =>
         logFile.foreach { lf =>
           Using(new PrintWriter(lf)) { writer =>
-            writer.println(s"GATK HaplotypeCaller failed for $contig")
+            writer.println(s"GATK HaplotypeCaller (private variants) failed for $contig")
             writer.println(s"Arguments: ${args.mkString(" ")}")
             writer.println(s"Error: $error")
           }
         }
-        Left(s"HaplotypeCaller failed for $contig: $error")
+        Left(s"Private variant calling failed for $contig: $error")
       case Right(result) =>
         logFile.foreach { lf =>
           Using(new PrintWriter(lf)) { writer =>
-            writer.println(s"GATK HaplotypeCaller completed successfully for $contig")
+            writer.println(s"GATK HaplotypeCaller (private variants) completed for $contig")
             writer.println(s"Arguments: ${args.mkString(" ")}")
             writer.println(s"Exit code: ${result.exitCode}")
             writer.println("\n=== STDOUT ===")
@@ -162,8 +208,57 @@ class GatkHaplotypeCallerProcessor {
             writer.println(result.stderr)
           }
         }
-        onProgress(s"Variant calling for $contig complete.", 1.0, 1.0)
+        onProgress(s"Private variant discovery for $contig complete.", 1.0, 1.0)
         Right(CallerResult(vcfFile, logFile))
+    }
+  }
+
+  /**
+   * Two-pass calling: first at tree sites for haplogroup assignment,
+   * then full contig for private variant discovery.
+   */
+  def callTwoPass(
+    bamPath: String,
+    referencePath: String,
+    allelesVcf: File,
+    onProgress: (String, Double, Double) => Unit,
+    outputDir: Option[Path] = None,
+    outputPrefix: Option[String] = None
+  ): Either[String, TwoPassCallerResult] = {
+    val contig = detectContigFromVcf(allelesVcf)
+
+    // Pass 1: Tree sites for haplogroup assignment
+    onProgress(s"Pass 1: Calling tree sites for haplogroup assignment...", 0.0, 1.0)
+    callSnps(
+      bamPath,
+      referencePath,
+      allelesVcf,
+      (msg, done, total) => onProgress(s"Pass 1: $msg", done * 0.4, 1.0),
+      outputDir,
+      outputPrefix
+    ) match {
+      case Left(error) => Left(s"Pass 1 failed: $error")
+      case Right(treeSitesResult) =>
+        // Pass 2: Full contig for private variant discovery
+        onProgress(s"Pass 2: Discovering private variants in $contig...", 0.4, 1.0)
+        callPrivateVariants(
+          bamPath,
+          referencePath,
+          contig,
+          (msg, done, total) => onProgress(s"Pass 2: $msg", 0.4 + done * 0.6, 1.0),
+          outputDir,
+          outputPrefix
+        ) match {
+          case Left(error) => Left(s"Pass 2 failed: $error")
+          case Right(privateResult) =>
+            onProgress("Two-pass calling complete.", 1.0, 1.0)
+            Right(TwoPassCallerResult(
+              treeSitesVcf = treeSitesResult.vcfFile,
+              privateVariantsVcf = privateResult.vcfFile,
+              treeSitesLog = treeSitesResult.logFile,
+              privateVariantsLog = privateResult.logFile
+            ))
+        }
     }
   }
 }

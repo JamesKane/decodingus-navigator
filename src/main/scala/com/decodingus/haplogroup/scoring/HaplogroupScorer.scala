@@ -8,9 +8,12 @@ import scala.collection.mutable
  * Scores haplogroups by comparing sample SNP calls against the haplogroup tree.
  *
  * Scoring rules:
- * - Derived state (sample matches tree's derived/ALT allele) = +1 to score
- * - Ancestral state (sample matches tree's ancestral/REF allele) = -1 penalty
- * - No call (position not in VCF) = neutral, no effect on score
+ * - Each branch is scored based on the proportion of derived SNPs among callable positions
+ * - Branches with many phylo-equivalent SNPs (starbursts from population bottlenecks)
+ *   contribute heavily when most/all SNPs are derived
+ * - Branch score = (derived / callable) * callable, where callable = derived + ancestral
+ *   This rewards both high match rate AND high SNP density
+ * - No calls are neutral (don't affect the ratio)
  * - Stop descent if two consecutive branches have all available calls as ancestral
  */
 class HaplogroupScorer {
@@ -21,6 +24,7 @@ class HaplogroupScorer {
       rootNode,
       snpCalls,
       scores,
+      cumulativeScore = 0.0,
       cumulativeDerived = 0,
       cumulativeAncestral = 0,
       cumulativeNoCalls = 0,
@@ -41,6 +45,7 @@ class HaplogroupScorer {
                                         haplogroup: Haplogroup,
                                         snpCalls: Map[Long, String],
                                         scores: mutable.ListBuffer[HaplogroupResult],
+                                        cumulativeScore: Double,
                                         cumulativeDerived: Int,
                                         cumulativeAncestral: Int,
                                         cumulativeNoCalls: Int,
@@ -68,18 +73,32 @@ class HaplogroupScorer {
       }
     }
 
-    // Update cumulative counts
+    // Calculate branch score that rewards starburst patterns
+    // A branch with 50 SNPs where 48 are derived should score much higher than
+    // a branch with 2 SNPs where 2 are derived
+    val branchCallable = branchDerived + branchAncestral
+    val branchScore = if (branchCallable > 0) {
+      val matchRate = branchDerived.toDouble / branchCallable.toDouble
+      // Score = matchRate * callable - (1 - matchRate) * callable
+      //       = (2 * matchRate - 1) * callable
+      // This gives: 100% match rate on 50 SNPs = +50
+      //             50% match rate on 50 SNPs = 0
+      //             0% match rate on 50 SNPs = -50
+      (2.0 * matchRate - 1.0) * branchCallable
+    } else {
+      0.0 // No callable SNPs = neutral
+    }
+
+    // Update cumulative values
+    val newCumulativeScore = cumulativeScore + branchScore
     val newCumulativeDerived = cumulativeDerived + branchDerived
     val newCumulativeAncestral = cumulativeAncestral + branchAncestral
     val newCumulativeNoCalls = cumulativeNoCalls + branchNoCalls
     val newCumulativeSnps = cumulativeSnps + haplogroup.loci.length
 
-    // Calculate score: derived adds points, ancestral subtracts points, no-calls are neutral
-    val scoreValue = newCumulativeDerived.toDouble - newCumulativeAncestral.toDouble
-
     scores += HaplogroupResult(
       name = haplogroup.name,
-      score = scoreValue,
+      score = newCumulativeScore,
       matchingSnps = newCumulativeDerived,
       mismatchingSnps = 0,
       ancestralMatches = newCumulativeAncestral,
@@ -114,6 +133,7 @@ class HaplogroupScorer {
         child,
         snpCalls,
         scores,
+        newCumulativeScore,
         newCumulativeDerived,
         newCumulativeAncestral,
         newCumulativeNoCalls,
