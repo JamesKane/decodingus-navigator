@@ -667,8 +667,45 @@ class WorkbenchViewModel(val workspaceService: WorkspaceService) {
 
               val runResult: Option[(Int, SequenceRun, Boolean)] = matchResult match {
                 case MatchFound(existingRun, idx, confidence) =>
-                  println(s"[ViewModel] Fingerprint match found ($confidence confidence) - adding ${libraryStats.referenceBuild} alignment to existing run")
-                  Some((idx, existingRun, false))
+                  // For LOW confidence matches, ask user to confirm
+                  if (confidence == "LOW") {
+                    import com.decodingus.ui.components.{FingerprintMatchDialog, GroupTogether, KeepSeparate, FingerprintMatchDecision}
+                    val dialog = new FingerprintMatchDialog(
+                      existingRun = existingRun,
+                      newReferenceBuild = libraryStats.referenceBuild,
+                      matchConfidence = confidence,
+                      totalReads = libraryStats.readCount.toLong,
+                      sampleName = libraryStats.sampleName,
+                      libraryId = libraryStats.libraryId
+                    )
+                    val dialogResult = dialog.showAndWait()
+                    val decision: Option[FingerprintMatchDecision] = dialogResult.asInstanceOf[Option[Option[FingerprintMatchDecision]]].flatten
+                    decision match {
+                      case Some(GroupTogether) =>
+                        println(s"[ViewModel] User confirmed LOW confidence match - adding ${libraryStats.referenceBuild} alignment to existing run")
+                        Some((idx, existingRun, false))
+                      case Some(KeepSeparate) =>
+                        println(s"[ViewModel] User chose to keep separate - creating new sequence run")
+                        val newIndex = addSequenceRunFromFile(sampleAccession, fileInfo)
+                        if (newIndex < 0) {
+                          analysisInProgress.value = false
+                          onComplete(Left("Failed to create sequence run entry"))
+                          None
+                        } else {
+                          val sequenceRuns = _workspace.value.main.getSequenceRunsForBiosample(subject)
+                          Some((newIndex, sequenceRuns(newIndex), true))
+                        }
+                      case None =>
+                        // User cancelled
+                        analysisInProgress.value = false
+                        onComplete(Left("User cancelled fingerprint match decision"))
+                        None
+                    }
+                  } else {
+                    // HIGH/MEDIUM confidence - auto-group
+                    println(s"[ViewModel] Fingerprint match found ($confidence confidence) - adding ${libraryStats.referenceBuild} alignment to existing run")
+                    Some((idx, existingRun, false))
+                  }
 
                 case NoMatch =>
                   // Create new SequenceRun

@@ -1,6 +1,6 @@
 # Sequence Run Fingerprinting - Design Document
 
-## Status: Implemented (Phase 2)
+## Status: Implemented (Phase 3)
 
 ## Problem Statement
 
@@ -230,11 +230,11 @@ User can always:
 - [x] Update addFileAndAnalyze to use fingerprint matching
 - [x] Auto-group HIGH/MEDIUM confidence matches
 
-### Phase 3: User Experience
-- [ ] Add confirmation dialog for low-confidence matches
-- [ ] Add "Link to different Sequence Run" context menu
-- [ ] Add UI indicator showing multiple alignments per run
-- [ ] Update SequenceDataTable to show grouped alignments
+### Phase 3: User Experience ✅
+- [x] Add confirmation dialog for low-confidence matches (FingerprintMatchDialog)
+- [ ] Add "Link to different Sequence Run" context menu (deferred)
+- [x] Update SequenceDataTable to show multiple alignments (Ref column shows all references)
+- [x] Update SequenceDataTable to show multiple files (File column shows count)
 
 ### Phase 4: Verification
 - [ ] Add read name sampling for definitive verification

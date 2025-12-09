@@ -169,12 +169,17 @@ class SequenceDataTable(
       prefWidth = 70
     }
 
-    // File column
+    // File column - shows primary file and count if multiple
     columns += new TableColumn[SequenceRunRow, String] {
       text = "File"
       cellValueFactory = { row =>
-        val fileName = row.value.run.files.headOption.map(_.fileName).getOrElse("No file")
-        StringProperty(fileName)
+        val files = row.value.run.files
+        val display = files match {
+          case Nil => "No file"
+          case single :: Nil => single.fileName
+          case first :: rest => s"${first.fileName} (+${rest.size})"
+        }
+        StringProperty(display)
       }
       prefWidth = 140
     }
@@ -188,16 +193,19 @@ class SequenceDataTable(
       prefWidth = 65
     }
 
-    // Reference column
+    // Reference column - shows all aligned references
     columns += new TableColumn[SequenceRunRow, String] {
       text = "Ref"
       cellValueFactory = { row =>
-        val ref = row.value.runAlignments.headOption
-          .map(_.referenceBuild)
-          .getOrElse("—")
-        StringProperty(ref)
+        val refs = row.value.runAlignments.map(_.referenceBuild).distinct
+        val display = refs match {
+          case Nil => "—"
+          case single :: Nil => single
+          case multiple => multiple.mkString(", ")
+        }
+        StringProperty(display)
       }
-      prefWidth = 55
+      prefWidth = 85
     }
 
     // Status column
