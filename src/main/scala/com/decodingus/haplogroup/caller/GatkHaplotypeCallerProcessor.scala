@@ -227,6 +227,9 @@ class GatkHaplotypeCallerProcessor {
    * Automatically selects the appropriate caller:
    * - chrM/MT: Mutect2 --mitochondria (optimized for dense mtDNA positions)
    * - chrY: HaplotypeCaller (better for spread-out Y-DNA positions)
+   *
+   * @param primaryContig The primary contig to use for variant calling (e.g., "chrY" or "chrM").
+   *                      If None, will attempt to detect from the allelesVcf (less reliable).
    */
   def callTwoPass(
     bamPath: String,
@@ -234,9 +237,10 @@ class GatkHaplotypeCallerProcessor {
     allelesVcf: File,
     onProgress: (String, Double, Double) => Unit,
     outputDir: Option[Path] = None,
-    outputPrefix: Option[String] = None
+    outputPrefix: Option[String] = None,
+    primaryContig: Option[String] = None
   ): Either[String, TwoPassCallerResult] = {
-    val contig = detectContigFromVcf(allelesVcf)
+    val contig = primaryContig.getOrElse(detectContigFromVcf(allelesVcf))
     val isMtDna = contig.equalsIgnoreCase("chrM") || contig.equalsIgnoreCase("MT")
 
     if (isMtDna) {

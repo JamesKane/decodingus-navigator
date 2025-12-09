@@ -840,9 +840,10 @@ class WorkbenchViewModel(val workspaceService: WorkspaceService) {
       if (count > 0) total / count else 0
     } else 0
 
-    if (stats.inferredPlatform == "PacBio" && avgReadLength > 10000) "HiFi"
-    else if (stats.inferredPlatform == "PacBio") "CLR"
-    else if (stats.inferredPlatform == "Oxford Nanopore") "Nanopore"
+    // Use codes that match TestTypes definitions for proper capability lookup
+    if (stats.inferredPlatform == "PacBio" && avgReadLength > 10000) "WGS_HIFI"
+    else if (stats.inferredPlatform == "PacBio") "WGS_CLR"
+    else if (stats.inferredPlatform == "Oxford Nanopore") "WGS_NANOPORE"
     else "WGS" // Default assumption for Illumina/MGI
   }
 
@@ -1283,6 +1284,8 @@ class WorkbenchViewModel(val workspaceService: WorkspaceService) {
                         meta = seqRun.meta.updated("analysis"),
                         platformName = if (seqRun.platformName == "Unknown" || seqRun.platformName == "Other") libraryStats.inferredPlatform else seqRun.platformName,
                         instrumentModel = seqRun.instrumentModel.orElse(Some(libraryStats.mostFrequentInstrument)),
+                        testType = inferTestType(libraryStats),
+                        libraryLayout = Some(if (libraryStats.pairedReads > libraryStats.readCount / 2) "Paired-End" else "Single-End"),
                         totalReads = Some(libraryStats.readCount.toLong),
                         readLength = calculateMeanReadLength(libraryStats.lengthDistribution).orElse(seqRun.readLength),
                         maxReadLength = libraryStats.lengthDistribution.keys.maxOption.orElse(seqRun.maxReadLength),
@@ -1391,6 +1394,12 @@ class WorkbenchViewModel(val workspaceService: WorkspaceService) {
                           sequenceRunUri = seqRun.atUri,
                           alignmentUri = alignment.atUri
                         )
+                        // Single-end reads need COUNT_UNPAIRED (long-read platforms + YSEQ WGS400 with 400bp SE reads)
+                        val isLongReadPlatform = seqRun.testType.toUpperCase match {
+                          case t if t.contains("HIFI") || t.contains("CLR") || t.contains("NANOPORE") => true
+                          case _ => false
+                        }
+                        val isSingleEnd = isLongReadPlatform || seqRun.libraryLayout.exists(_.toLowerCase == "single-end")
                         val wgsMetrics = wgsProcessor.process(
                           bamPath,
                           referencePath,
@@ -1399,7 +1408,9 @@ class WorkbenchViewModel(val workspaceService: WorkspaceService) {
                             updateProgress(message, pct)
                           },
                           seqRun.maxReadLength, // Pass max read length to handle long reads (e.g., PacBio HiFi, NovaSeq 151bp)
-                          Some(artifactCtx)
+                          Some(artifactCtx),
+                          seqRun.totalReads,
+                          countUnpaired = isSingleEnd
                         ) match {
                           case Right(metrics) => metrics
                           case Left(error) => throw error

@@ -36,6 +36,8 @@ class WgsMetricsProcessor {
    * @param onProgress Progress callback
    * @param readLength Optional read length - if > 150bp, passed to GATK to avoid crashes with long reads (e.g., PacBio HiFi)
    * @param artifactContext Optional context for organizing output artifacts by subject/run/alignment
+   * @param totalReads Optional total read count for progress estimation
+   * @param countUnpaired If true, count unpaired reads (needed for single-end long-read data like PacBio HiFi)
    */
   def process(
     bamPath: String,
@@ -43,7 +45,8 @@ class WgsMetricsProcessor {
     onProgress: (String, Double, Double) => Unit,
     readLength: Option[Int] = None,
     artifactContext: Option[ArtifactContext] = None,
-    totalReads: Option[Long] = None
+    totalReads: Option[Long] = None,
+    countUnpaired: Boolean = false
   ): Either[Throwable, WgsMetrics] = {
     // Ensure BAM index exists
     onProgress("Checking BAM index...", 0.0, 1.0)
@@ -76,9 +79,16 @@ class WgsMetricsProcessor {
     )
 
     // Add READ_LENGTH if reads are longer than the default 150bp
-    val args = readLength match {
+    val argsWithReadLength = readLength match {
       case Some(len) if len > 150 => baseArgs ++ Array("--READ_LENGTH", len.toString)
       case _ => baseArgs
+    }
+
+    // Add COUNT_UNPAIRED for single-end long-read data (PacBio HiFi, Nanopore)
+    val args = if (countUnpaired) {
+      argsWithReadLength ++ Array("--COUNT_UNPAIRED", "true")
+    } else {
+      argsWithReadLength
     }
 
     // Progress callback that maps GATK progress (0-1) to our range (0.05-0.95)

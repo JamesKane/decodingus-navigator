@@ -160,7 +160,8 @@ class HaplogroupProcessor {
               vcf,
               (msg, done, total) => onProgress(msg, 0.2 + (done * 0.5), 1.0),
               artifactDir,
-              Some(outputPrefix)
+              Some(outputPrefix),
+              Some(primaryContig) // Explicitly pass the primary contig (chrY or chrM)
             ).flatMap { twoPassResult =>
               val postGatkStart = System.currentTimeMillis()
               // Handle reverse liftover for tree sites VCF if needed
