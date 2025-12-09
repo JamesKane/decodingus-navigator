@@ -20,6 +20,13 @@ case class TwoPassCallerResult(
   privateVariantsLog: Option[File]
 )
 
+/**
+ * GATK-based variant caller for haplogroup analysis.
+ *
+ * Uses different calling strategies based on chromosome:
+ * - Y-DNA (chrY): HaplotypeCaller - positions are spread out, local assembly works well
+ * - mtDNA (chrM): Mutect2 --mitochondria - optimized for dense positions and high depth
+ */
 class GatkHaplotypeCallerProcessor {
 
   /**
@@ -216,6 +223,10 @@ class GatkHaplotypeCallerProcessor {
   /**
    * Two-pass calling: first at tree sites for haplogroup assignment,
    * then full contig for private variant discovery.
+   *
+   * Automatically selects the appropriate caller:
+   * - chrM/MT: Mutect2 --mitochondria (optimized for dense mtDNA positions)
+   * - chrY: HaplotypeCaller (better for spread-out Y-DNA positions)
    */
   def callTwoPass(
     bamPath: String,
@@ -226,7 +237,27 @@ class GatkHaplotypeCallerProcessor {
     outputPrefix: Option[String] = None
   ): Either[String, TwoPassCallerResult] = {
     val contig = detectContigFromVcf(allelesVcf)
+    val isMtDna = contig.equalsIgnoreCase("chrM") || contig.equalsIgnoreCase("MT")
 
+    if (isMtDna) {
+      callTwoPassMutect2(bamPath, referencePath, allelesVcf, contig, onProgress, outputDir, outputPrefix)
+    } else {
+      callTwoPassHaplotypeCaller(bamPath, referencePath, allelesVcf, contig, onProgress, outputDir, outputPrefix)
+    }
+  }
+
+  /**
+   * Two-pass calling using HaplotypeCaller (for Y-DNA).
+   */
+  private def callTwoPassHaplotypeCaller(
+    bamPath: String,
+    referencePath: String,
+    allelesVcf: File,
+    contig: String,
+    onProgress: (String, Double, Double) => Unit,
+    outputDir: Option[Path],
+    outputPrefix: Option[String]
+  ): Either[String, TwoPassCallerResult] = {
     // Pass 1: Tree sites for haplogroup assignment
     onProgress(s"Pass 1: Calling tree sites for haplogroup assignment...", 0.0, 1.0)
     callSnps(
@@ -252,6 +283,210 @@ class GatkHaplotypeCallerProcessor {
           case Left(error) => Left(s"Pass 2 failed: $error")
           case Right(privateResult) =>
             onProgress("Two-pass calling complete.", 1.0, 1.0)
+            Right(TwoPassCallerResult(
+              treeSitesVcf = treeSitesResult.vcfFile,
+              privateVariantsVcf = privateResult.vcfFile,
+              treeSitesLog = treeSitesResult.logFile,
+              privateVariantsLog = privateResult.logFile
+            ))
+        }
+    }
+  }
+
+  // ============================================================================
+  // Mutect2 Mitochondria Mode - for mtDNA haplogroup calling
+  // ============================================================================
+
+  /**
+   * Call SNPs at specified allele sites using Mutect2 mitochondria mode.
+   * Much faster than HaplotypeCaller for dense mtDNA positions.
+   */
+  private def callSnpsMutect2(
+    bamPath: String,
+    referencePath: String,
+    allelesVcf: File,
+    onProgress: (String, Double, Double) => Unit,
+    outputDir: Option[Path],
+    outputPrefix: Option[String]
+  ): Either[String, CallerResult] = {
+    onProgress("Calling SNPs with Mutect2 (mitochondria mode)...", 0.1, 1.0)
+
+    // Determine output file location
+    val (vcfFile, logFile) = outputDir match {
+      case Some(dir) =>
+        Files.createDirectories(dir)
+        val prefix = outputPrefix.getOrElse("mtdna")
+        (dir.resolve(s"${prefix}_calls.vcf").toFile, Some(dir.resolve(s"${prefix}_mutect2.log").toFile))
+      case None =>
+        val tempFile = File.createTempFile("mtdna_calls", ".vcf")
+        tempFile.deleteOnExit()
+        (tempFile, None)
+    }
+
+    // Index the allelesVcf file
+    val indexArgs = Array(
+      "IndexFeatureFile",
+      "-I", allelesVcf.getAbsolutePath
+    )
+
+    GatkRunner.run(indexArgs) match {
+      case Left(error) => return Left(s"Failed to index alleles VCF: $error")
+      case Right(_) => // continue
+    }
+
+    // Mutect2 with mitochondria mode - optimized for mtDNA
+    // Key differences from HaplotypeCaller:
+    // - --mitochondria-mode flag auto-tunes: initial-tumor-lod=0, tumor-lod-to-emit=0,
+    //   af-of-alleles-not-in-resource=4e-3, pruning-lod-threshold=-4*ln(10)
+    // - Also sets --recover-all-dangling-branches true
+    // - Much faster on dense positions due to optimized active region handling
+    val args = Array(
+      "Mutect2",
+      "-I", bamPath,
+      "-R", referencePath,
+      "-O", vcfFile.getAbsolutePath,
+      "-L", allelesVcf.getAbsolutePath,
+      "--alleles", allelesVcf.getAbsolutePath,
+      "--mitochondria-mode",
+      "--disable-sequence-dictionary-validation", "true",
+      // Force output at all allele sites
+      "--genotype-germline-sites", "true",
+      "--force-call-filtered-alleles", "true"
+    )
+
+    GatkRunner.run(args) match {
+      case Left(error) =>
+        logFile.foreach { lf =>
+          Using(new PrintWriter(lf)) { writer =>
+            writer.println(s"Mutect2 (mitochondria mode) failed")
+            writer.println(s"Arguments: ${args.mkString(" ")}")
+            writer.println(s"Error: $error")
+          }
+        }
+        Left(s"Mutect2 failed: $error")
+      case Right(result) =>
+        logFile.foreach { lf =>
+          Using(new PrintWriter(lf)) { writer =>
+            writer.println(s"Mutect2 (mitochondria mode) completed successfully")
+            writer.println(s"Arguments: ${args.mkString(" ")}")
+            writer.println(s"Exit code: ${result.exitCode}")
+            writer.println("\n=== STDOUT ===")
+            writer.println(result.stdout)
+            writer.println("\n=== STDERR ===")
+            writer.println(result.stderr)
+          }
+        }
+        onProgress("mtDNA SNP calling complete.", 1.0, 1.0)
+        Right(CallerResult(vcfFile, logFile))
+    }
+  }
+
+  /**
+   * Call all variants in mtDNA using Mutect2 mitochondria mode for private variant discovery.
+   */
+  private def callPrivateVariantsMutect2(
+    bamPath: String,
+    referencePath: String,
+    contig: String,
+    onProgress: (String, Double, Double) => Unit,
+    outputDir: Option[Path],
+    outputPrefix: Option[String]
+  ): Either[String, CallerResult] = {
+    onProgress(s"Discovering private variants in $contig (Mutect2)...", 0.1, 1.0)
+
+    val (vcfFile, logFile) = outputDir match {
+      case Some(dir) =>
+        Files.createDirectories(dir)
+        val prefix = outputPrefix.getOrElse("mtdna")
+        (dir.resolve(s"${prefix}_private_variants.vcf").toFile, Some(dir.resolve(s"${prefix}_private_variants.log").toFile))
+      case None =>
+        val tempFile = File.createTempFile(s"mtdna-private-variants", ".vcf")
+        tempFile.deleteOnExit()
+        (tempFile, None)
+    }
+
+    val args = Array(
+      "Mutect2",
+      "-I", bamPath,
+      "-R", referencePath,
+      "-O", vcfFile.getAbsolutePath,
+      "-L", contig,
+      "--mitochondria-mode",
+      "--disable-sequence-dictionary-validation", "true"
+    )
+
+    GatkRunner.run(args) match {
+      case Left(error) =>
+        logFile.foreach { lf =>
+          Using(new PrintWriter(lf)) { writer =>
+            writer.println(s"Mutect2 (private variants) failed for $contig")
+            writer.println(s"Arguments: ${args.mkString(" ")}")
+            writer.println(s"Error: $error")
+          }
+        }
+        Left(s"Mutect2 private variant calling failed for $contig: $error")
+      case Right(result) =>
+        logFile.foreach { lf =>
+          Using(new PrintWriter(lf)) { writer =>
+            writer.println(s"Mutect2 (private variants) completed for $contig")
+            writer.println(s"Arguments: ${args.mkString(" ")}")
+            writer.println(s"Exit code: ${result.exitCode}")
+            writer.println("\n=== STDOUT ===")
+            writer.println(result.stdout)
+            writer.println("\n=== STDERR ===")
+            writer.println(result.stderr)
+          }
+        }
+        onProgress(s"mtDNA private variant discovery complete.", 1.0, 1.0)
+        Right(CallerResult(vcfFile, logFile))
+    }
+  }
+
+  /**
+   * Two-pass calling using Mutect2 mitochondria mode (for mtDNA).
+   * Significantly faster than HaplotypeCaller for dense mtDNA positions.
+   */
+  private def callTwoPassMutect2(
+    bamPath: String,
+    referencePath: String,
+    allelesVcf: File,
+    contig: String,
+    onProgress: (String, Double, Double) => Unit,
+    outputDir: Option[Path],
+    outputPrefix: Option[String]
+  ): Either[String, TwoPassCallerResult] = {
+    // Ensure BAM index exists
+    onProgress("Checking BAM index...", 0.0, 1.0)
+    GatkRunner.ensureIndex(bamPath) match {
+      case Left(error) => return Left(error)
+      case Right(_) => // continue
+    }
+
+    // Pass 1: Tree sites for haplogroup assignment
+    onProgress(s"Pass 1: Calling mtDNA tree sites (Mutect2)...", 0.0, 1.0)
+    callSnpsMutect2(
+      bamPath,
+      referencePath,
+      allelesVcf,
+      (msg, done, total) => onProgress(s"Pass 1: $msg", done * 0.4, 1.0),
+      outputDir,
+      outputPrefix
+    ) match {
+      case Left(error) => Left(s"Pass 1 failed: $error")
+      case Right(treeSitesResult) =>
+        // Pass 2: Full chrM for private variant discovery
+        onProgress(s"Pass 2: Discovering private variants in $contig...", 0.4, 1.0)
+        callPrivateVariantsMutect2(
+          bamPath,
+          referencePath,
+          contig,
+          (msg, done, total) => onProgress(s"Pass 2: $msg", 0.4 + done * 0.6, 1.0),
+          outputDir,
+          outputPrefix
+        ) match {
+          case Left(error) => Left(s"Pass 2 failed: $error")
+          case Right(privateResult) =>
+            onProgress("mtDNA two-pass calling complete.", 1.0, 1.0)
             Right(TwoPassCallerResult(
               treeSitesVcf = treeSitesResult.vcfFile,
               privateVariantsVcf = privateResult.vcfFile,

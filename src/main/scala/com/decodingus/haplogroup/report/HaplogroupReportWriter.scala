@@ -2,7 +2,7 @@ package com.decodingus.haplogroup.report
 
 import com.decodingus.analysis.PrivateVariant
 import com.decodingus.haplogroup.model.{Haplogroup, HaplogroupResult, Locus}
-import com.decodingus.haplogroup.tree.TreeType
+import com.decodingus.haplogroup.tree.{TreeProviderType, TreeType}
 
 import java.io.{File, PrintWriter}
 import java.time.LocalDateTime
@@ -23,6 +23,8 @@ object HaplogroupReportWriter {
    * @param tree The haplogroup tree used for analysis
    * @param snpCalls The SNP calls from the VCF
    * @param sampleName Optional sample name
+   * @param privateVariants Optional list of private/novel variants
+   * @param treeProvider Optional tree provider used for analysis
    */
   def writeReport(
                    outputDir: File,
@@ -31,7 +33,8 @@ object HaplogroupReportWriter {
                    tree: List[Haplogroup],
                    snpCalls: Map[Long, String],
                    sampleName: Option[String] = None,
-                   privateVariants: Option[List[PrivateVariant]] = None
+                   privateVariants: Option[List[PrivateVariant]] = None,
+                   treeProvider: Option[TreeProviderType] = None
                  ): File = {
     outputDir.mkdirs()
 
@@ -45,6 +48,11 @@ object HaplogroupReportWriter {
     Using.resource(new PrintWriter(reportFile)) { writer =>
       val timestamp = LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss"))
       val dnaType = if (treeType == TreeType.YDNA) "Y-DNA" else "MT-DNA"
+      val treeProviderName = treeProvider match {
+        case Some(TreeProviderType.FTDNA) => "FTDNA"
+        case Some(TreeProviderType.DECODINGUS) => "Decoding Us"
+        case None => "Unknown"
+      }
 
       // Pre-compute result lookup map - O(n) instead of O(n²) for path lookups
       val resultsByName: Map[String, HaplogroupResult] = results.map(r => r.name -> r).toMap
@@ -54,6 +62,7 @@ object HaplogroupReportWriter {
       writer.println("=" * 80)
       writer.println()
       writer.println(s"Generated: $timestamp")
+      writer.println(s"Tree Provider: $treeProviderName")
       sampleName.foreach(name => writer.println(s"Sample: $name"))
       writer.println()
 

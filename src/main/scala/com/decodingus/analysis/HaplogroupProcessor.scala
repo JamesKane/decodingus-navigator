@@ -202,7 +202,8 @@ class HaplogroupProcessor {
                     tree = tree,
                     snpCalls = snpCalls,
                     sampleName = None,
-                    privateVariants = Some(privateVariants)
+                    privateVariants = Some(privateVariants),
+                    treeProvider = Some(treeProviderType)
                   )
                 }
 
