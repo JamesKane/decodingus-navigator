@@ -558,15 +558,22 @@ class WorkbenchViewModel(val workspaceService: WorkspaceService) {
     addSequenceRunFromFile(sampleAccession, fileInfo)
 
   /**
+   * Result of adding a file - either a new run or added to existing.
+   */
+  sealed trait AddFileResult
+  case class NewRunCreated(index: Int) extends AddFileResult
+  case class AddedToExistingRun(index: Int, referenceBuild: String) extends AddFileResult
+
+  /**
    * Adds a file and immediately runs library stats analysis.
    * This is the primary flow for adding new sequencing data.
    *
    * Pipeline:
-   * 1. Add file to subject (creates SequenceRun entry)
-   * 2. Detect reference build from BAM/CRAM header
-   * 3. Resolve reference genome
-   * 4. Run library stats analysis
-   * 5. Update SequenceRun with inferred metadata and create Alignment
+   * 1. Check for exact duplicate by checksum
+   * 2. Analyze file to get library stats + fingerprint
+   * 3. Check for fingerprint match (same run, different reference)
+   * 4. If match: add alignment to existing SequenceRun
+   * 5. If no match: create new SequenceRun + Alignment
    *
    * @param sampleAccession The subject's accession ID
    * @param fileInfo The file information
@@ -579,13 +586,20 @@ class WorkbenchViewModel(val workspaceService: WorkspaceService) {
     onProgress: (String, Double) => Unit,
     onComplete: Either[String, (Int, LibraryStats)] => Unit
   ): Unit = {
-    // Step 1: Add the file
-    onProgress("Adding file...", 0.05)
-    val index = addSequenceRunFromFile(sampleAccession, fileInfo)
+    // Step 1: Check for exact duplicate by checksum
+    onProgress("Checking for duplicates...", 0.05)
 
-    if (index < 0) {
-      onComplete(Left("Duplicate file - this file has already been added"))
-      return
+    findSubject(sampleAccession) match {
+      case None =>
+        onComplete(Left(s"Subject $sampleAccession not found"))
+        return
+      case Some(subject) =>
+        val sequenceRuns = _workspace.value.main.getSequenceRunsForBiosample(subject)
+        val existingChecksums = sequenceRuns.flatMap(_.files.flatMap(_.checksum)).toSet
+        if (fileInfo.checksum.exists(existingChecksums.contains)) {
+          onComplete(Left("Duplicate file - this file has already been added"))
+          return
+        }
     }
 
     val bamPath = fileInfo.location.getOrElse("")
@@ -636,105 +650,126 @@ class WorkbenchViewModel(val workspaceService: WorkspaceService) {
           updateProgress(s"Library Stats: $message", pct)
         })
 
-        // Step 5: Update the SequenceRun with results and create Alignment
-        onProgress("Saving results...", 0.95)
-        updateProgress("Saving results...", 0.95)
+        // Step 5: Check fingerprint and create/update SequenceRun + Alignment
+        onProgress("Checking for matching sequence runs...", 0.92)
+        updateProgress("Checking for matching sequence runs...", 0.92)
+
+        val fingerprint = libraryStats.computeRunFingerprint
+        val biosampleRef = findSubject(sampleAccession)
+          .flatMap(_.atUri)
+          .getOrElse(s"local:biosample:$sampleAccession")
 
         Platform.runLater {
           findSubject(sampleAccession) match {
             case Some(subject) =>
-              val sequenceRuns = _workspace.value.main.getSequenceRunsForBiosample(subject)
-              sequenceRuns.lift(index) match {
-                case Some(seqRun) =>
-                  // Check for existing alignment or create new one
-                  val alignUri = seqRun.alignmentRefs.headOption.getOrElse(
-                    s"local:alignment:${subject.sampleAccession}:${java.util.UUID.randomUUID().toString.take(8)}"
-                  )
-                  val existingAlignment = _workspace.value.main.alignments.find(_.atUri.contains(alignUri))
+              // Check for fingerprint match (same run, different reference)
+              val matchResult = findMatchingSequenceRun(biosampleRef, fingerprint, libraryStats)
 
-                  val newAlignment = Alignment(
-                    atUri = Some(alignUri),
-                    meta = existingAlignment.map(_.meta.updated("analysis")).getOrElse(RecordMeta.initial),
-                    sequenceRunRef = seqRun.atUri.getOrElse(""),
-                    biosampleRef = Some(subject.atUri.getOrElse(s"local:biosample:${subject.sampleAccession}")),
-                    referenceBuild = libraryStats.referenceBuild,
-                    aligner = libraryStats.aligner,
-                    files = seqRun.files,
-                    metrics = existingAlignment.flatMap(_.metrics) // Preserve existing metrics on re-run
-                  )
+              val runResult: Option[(Int, SequenceRun, Boolean)] = matchResult match {
+                case MatchFound(existingRun, idx, confidence) =>
+                  println(s"[ViewModel] Fingerprint match found ($confidence confidence) - adding ${libraryStats.referenceBuild} alignment to existing run")
+                  Some((idx, existingRun, false))
 
-                  // Update the SequenceRun with inferred metadata
-                  val instrumentId = if (libraryStats.mostFrequentInstrumentId != "Unknown")
-                    Some(libraryStats.mostFrequentInstrumentId)
-                  else
+                case NoMatch =>
+                  // Create new SequenceRun
+                  val newIndex = addSequenceRunFromFile(sampleAccession, fileInfo)
+                  if (newIndex < 0) {
+                    analysisInProgress.value = false
+                    onComplete(Left("Failed to create sequence run entry"))
                     None
-
-                  // Only update sampleName if not already set (preserve manual edits)
-                  val sampleNameFromBam = seqRun.sampleName.orElse {
-                    if (libraryStats.sampleName != "Unknown") Some(libraryStats.sampleName) else None
-                  }
-
-                  // Extract fingerprint fields (preserve manual edits)
-                  val libraryIdFromBam = seqRun.libraryId.orElse {
-                    if (libraryStats.libraryId != "Unknown") Some(libraryStats.libraryId) else None
-                  }
-                  val platformUnitFromBam = seqRun.platformUnit.orElse(libraryStats.platformUnit)
-                  val runFingerprint = seqRun.runFingerprint.orElse(Some(libraryStats.computeRunFingerprint))
-
-                  val updatedSeqRun = seqRun.copy(
-                    meta = seqRun.meta.updated("analysis"),
-                    platformName = libraryStats.inferredPlatform,
-                    instrumentModel = Some(libraryStats.mostFrequentInstrument),
-                    instrumentId = instrumentId,
-                    sampleName = sampleNameFromBam,
-                    libraryId = libraryIdFromBam,
-                    platformUnit = platformUnitFromBam,
-                    runFingerprint = runFingerprint,
-                    testType = inferTestType(libraryStats),
-                    libraryLayout = Some(if (libraryStats.pairedReads > libraryStats.readCount / 2) "Paired-End" else "Single-End"),
-                    totalReads = Some(libraryStats.readCount.toLong),
-                    readLength = calculateMeanReadLength(libraryStats.lengthDistribution),
-                    maxReadLength = libraryStats.lengthDistribution.keys.maxOption,
-                    meanInsertSize = calculateMeanInsertSize(libraryStats.insertSizeDistribution),
-                    alignmentRefs = if (seqRun.alignmentRefs.contains(alignUri)) seqRun.alignmentRefs else seqRun.alignmentRefs :+ alignUri
-                  )
-
-                  // Trigger facility lookup only if not already set (preserve manual edits)
-                  if (seqRun.sequencingFacility.isEmpty) {
-                    instrumentId.foreach { id =>
-                      lookupAndUpdateFacility(sampleAccession, index, id)
-                    }
-                  }
-
-                  // Update workspace - update existing alignment or add new one
-                  val updatedSequenceRuns = _workspace.value.main.sequenceRuns.map { sr =>
-                    if (sr.atUri == seqRun.atUri) updatedSeqRun else sr
-                  }
-                  val updatedAlignments = if (existingAlignment.isDefined) {
-                    _workspace.value.main.alignments.map { a =>
-                      if (a.atUri.contains(alignUri)) newAlignment else a
-                    }
                   } else {
-                    _workspace.value.main.alignments :+ newAlignment
+                    val sequenceRuns = _workspace.value.main.getSequenceRunsForBiosample(subject)
+                    Some((newIndex, sequenceRuns(newIndex), true))
                   }
-                  val updatedContent = _workspace.value.main.copy(
-                    sequenceRuns = updatedSequenceRuns,
-                    alignments = updatedAlignments
-                  )
-                  _workspace.value = _workspace.value.copy(main = updatedContent)
-                  saveWorkspace()
-
-                  lastLibraryStats.value = Some(libraryStats)
-                  analysisInProgress.value = false
-                  analysisProgress.value = "Analysis complete"
-                  analysisProgressPercent.value = 1.0
-                  onProgress("Complete", 1.0)
-                  onComplete(Right((index, libraryStats)))
-
-                case None =>
-                  analysisInProgress.value = false
-                  onComplete(Left("Sequence run entry was removed during analysis"))
               }
+
+              runResult.foreach { case (resultIndex, seqRun, isNewRun) =>
+
+              // Create alignment URI
+              val alignUri = s"local:alignment:${subject.sampleAccession}:${libraryStats.referenceBuild}:${java.util.UUID.randomUUID().toString.take(8)}"
+
+              val newAlignment = Alignment(
+                atUri = Some(alignUri),
+                meta = RecordMeta.initial,
+                sequenceRunRef = seqRun.atUri.getOrElse(""),
+                biosampleRef = Some(subject.atUri.getOrElse(s"local:biosample:${subject.sampleAccession}")),
+                referenceBuild = libraryStats.referenceBuild,
+                aligner = libraryStats.aligner,
+                files = List(fileInfo),
+                metrics = None
+              )
+
+              // Update the SequenceRun with inferred metadata
+              val instrumentId = if (libraryStats.mostFrequentInstrumentId != "Unknown")
+                Some(libraryStats.mostFrequentInstrumentId)
+              else
+                None
+
+              // Only update sampleName if not already set (preserve manual edits)
+              val sampleNameFromBam = seqRun.sampleName.orElse {
+                if (libraryStats.sampleName != "Unknown") Some(libraryStats.sampleName) else None
+              }
+
+              // Extract fingerprint fields (preserve manual edits)
+              val libraryIdFromBam = seqRun.libraryId.orElse {
+                if (libraryStats.libraryId != "Unknown") Some(libraryStats.libraryId) else None
+              }
+              val platformUnitFromBam = seqRun.platformUnit.orElse(libraryStats.platformUnit)
+              val runFingerprint = seqRun.runFingerprint.orElse(Some(fingerprint))
+
+              // Add file to sequence run if not already present (for matched runs)
+              val updatedFiles = if (seqRun.files.exists(_.checksum == fileInfo.checksum)) {
+                seqRun.files
+              } else {
+                seqRun.files :+ fileInfo
+              }
+
+              val updatedSeqRun = seqRun.copy(
+                meta = seqRun.meta.updated("analysis"),
+                platformName = libraryStats.inferredPlatform,
+                instrumentModel = Some(libraryStats.mostFrequentInstrument),
+                instrumentId = instrumentId,
+                sampleName = sampleNameFromBam,
+                libraryId = libraryIdFromBam,
+                platformUnit = platformUnitFromBam,
+                runFingerprint = runFingerprint,
+                testType = inferTestType(libraryStats),
+                libraryLayout = Some(if (libraryStats.pairedReads > libraryStats.readCount / 2) "Paired-End" else "Single-End"),
+                totalReads = Some(libraryStats.readCount.toLong),
+                readLength = calculateMeanReadLength(libraryStats.lengthDistribution),
+                maxReadLength = libraryStats.lengthDistribution.keys.maxOption,
+                meanInsertSize = calculateMeanInsertSize(libraryStats.insertSizeDistribution),
+                files = updatedFiles,
+                alignmentRefs = if (seqRun.alignmentRefs.contains(alignUri)) seqRun.alignmentRefs else seqRun.alignmentRefs :+ alignUri
+              )
+
+              // Trigger facility lookup only if not already set (preserve manual edits)
+              if (seqRun.sequencingFacility.isEmpty) {
+                instrumentId.foreach { id =>
+                  lookupAndUpdateFacility(sampleAccession, resultIndex, id)
+                }
+              }
+
+              // Update workspace
+              val updatedSequenceRuns = _workspace.value.main.sequenceRuns.map { sr =>
+                if (sr.atUri == seqRun.atUri) updatedSeqRun else sr
+              }
+              val updatedAlignments = _workspace.value.main.alignments :+ newAlignment
+              val updatedContent = _workspace.value.main.copy(
+                sequenceRuns = updatedSequenceRuns,
+                alignments = updatedAlignments
+              )
+              _workspace.value = _workspace.value.copy(main = updatedContent)
+              saveWorkspace()
+
+              lastLibraryStats.value = Some(libraryStats)
+              analysisInProgress.value = false
+              analysisProgress.value = if (isNewRun) "Analysis complete" else s"Added ${libraryStats.referenceBuild} alignment to existing run"
+              analysisProgressPercent.value = 1.0
+              onProgress("Complete", 1.0)
+              onComplete(Right((resultIndex, libraryStats)))
+              } // end runResult.foreach
+
             case None =>
               analysisInProgress.value = false
               onComplete(Left("Subject was removed during analysis"))

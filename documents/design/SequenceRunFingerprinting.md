@@ -1,6 +1,6 @@
 # Sequence Run Fingerprinting - Design Document
 
-## Status: Implemented (Phase 1)
+## Status: Implemented (Phase 2)
 
 ## Problem Statement
 
@@ -219,17 +219,16 @@ User can always:
 
 ## Implementation Phases
 
-### Phase 1: Extract Fingerprint Data
-- [ ] Add @RG parsing to LibraryStatsProcessor (LB, PU, CN, DT)
-- [ ] Compute read length histogram hash
-- [ ] Add fingerprint fields to SequenceRun model
-- [ ] Add fingerprint fields to LibraryStats
+### Phase 1: Extract Fingerprint Data ✅
+- [x] Add @RG parsing to LibraryStatsProcessor (LB, PU)
+- [x] Compute read length histogram hash
+- [x] Add fingerprint fields to SequenceRun model
+- [x] Add fingerprint fields to LibraryStats
 
-### Phase 2: Fingerprint Matching
-- [ ] Implement RunFingerprint model
-- [ ] Implement findMatchingSequenceRun algorithm
-- [ ] Update addFileAndAnalyze to use fingerprint matching
-- [ ] Auto-group high-confidence matches
+### Phase 2: Fingerprint Matching ✅
+- [x] Implement findMatchingSequenceRun algorithm
+- [x] Update addFileAndAnalyze to use fingerprint matching
+- [x] Auto-group HIGH/MEDIUM confidence matches
 
 ### Phase 3: User Experience
 - [ ] Add confirmation dialog for low-confidence matches
