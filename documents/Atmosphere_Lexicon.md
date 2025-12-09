@@ -1,38 +1,46 @@
 # Atmosphere Lexicon Design
 
-To support the "Atmosphere" integration within the AT Protocol (Bluesky) ecosystem, we define a specific Lexicon (schema) for Genomic Data. This allows `decodingus` to interact with the global network of Personal Data Stores (PDS) using standard XRPC methods, effectively turning genomic metadata into a portable, user-owned record type.
+To support the "Atmosphere" integration within the AT Protocol (Bluesky) ecosystem, we define a specific Lexicon (
+schema) for Genomic Data. This allows `decodingus` to interact with the global network of Personal Data Stores (PDS)
+using standard XRPC methods, effectively turning genomic metadata into a portable, user-owned record type.
 
 ## Design Principles
 
-1. **Granular Records**: Each logical entity (biosample, sequence run, alignment) is a first-class record with its own AT URI. This enables fine-grained CRUD operations without cascading changes.
-2. **Parent-Child References**: Child records reference their parents via AT URI, enabling relationship traversal and cascade operations.
+1. **Granular Records**: Each logical entity (biosample, sequence run, alignment) is a first-class record with its own
+   AT URI. This enables fine-grained CRUD operations without cascading changes.
+2. **Parent-Child References**: Child records reference their parents via AT URI, enabling relationship traversal and
+   cascade operations.
 3. **Version Tracking**: Records include metadata for change detection and conflict resolution.
 4. **Soft Deletes**: Deletions are non-destructive to preserve scientific lineage.
 5. **Consent-Driven Sharing**: Matching and comparison features require explicit consent records.
-6. **Edge Computing / Metadata Only**: Raw genomic data (BAM, CRAM, VCF, FASTQ, genotype files) is **never** transmitted to DecodingUs. All analysis is performed locally in the Navigator Workbench. Only computed summaries and metadata flow through the PDS to the AppView.
+6. **Edge Computing / Metadata Only**: Raw genomic data (BAM, CRAM, VCF, FASTQ, genotype files) is **never** transmitted
+   to DecodingUs. All analysis is performed locally in the Navigator Workbench. Only computed summaries and metadata
+   flow through the PDS to the AppView.
 
 ### What Flows to DecodingUs (via PDS)
 
-| Data Type | Purpose | Example Fields |
-|:---|:---|:---|
-| Haplogroup assignments | Tree placement & refinement | `haplogroupName`, `score`, `lineagePath` |
-| Private Y-DNA/mtDNA SNPs | Branch discovery consensus | `privateVariants` array |
-| STR marker values | Ancestral reconstruction & TMRCA | `strProfile.markers` |
-| Coverage/quality metrics | Sample characterization | `alignmentMetrics` summary |
-| Ancestry percentages | Population context & IBD match introductions | `populationBreakdown.components` (33 sub-continental populations), `superPopulationSummary` (9 continental groups), `pcaCoordinates` |
-| File metadata | Provenance tracking | `fileInfo` (name, checksum, size - NOT content) |
+| Data Type                | Purpose                                      | Example Fields                                                                                                                       |
+|:-------------------------|:---------------------------------------------|:-------------------------------------------------------------------------------------------------------------------------------------|
+| Haplogroup assignments   | Tree placement & refinement                  | `haplogroupName`, `score`, `lineagePath`                                                                                             |
+| Private Y-DNA/mtDNA SNPs | Branch discovery consensus                   | `privateVariants` array                                                                                                              |
+| STR marker values        | Ancestral reconstruction & TMRCA             | `strProfile.markers`                                                                                                                 |
+| Coverage/quality metrics | Sample characterization                      | `alignmentMetrics` summary                                                                                                           |
+| Ancestry percentages     | Population context & IBD match introductions | `populationBreakdown.components` (33 sub-continental populations), `superPopulationSummary` (9 continental groups), `pcaCoordinates` |
+| File metadata            | Provenance tracking                          | `fileInfo` (name, checksum, size - NOT content)                                                                                      |
 
 ### What NEVER Flows to DecodingUs
 
-| Data Type | Stays Where | Notes |
-|:---|:---|:---|
-| BAM/CRAM files | Local workbench | Aligned sequences |
-| VCF files | Local workbench | Only private SNPs shared, not full VCF |
-| FASTQ files | Local workbench | Raw reads |
-| Genotype chip files | Local workbench | Ancestry computed locally |
-| IBD segments | Local workbench | Only confirmed match metadata shared |
+| Data Type           | Stays Where     | Notes                                  |
+|:--------------------|:----------------|:---------------------------------------|
+| BAM/CRAM files      | Local workbench | Aligned sequences                      |
+| VCF files           | Local workbench | Only private SNPs shared, not full VCF |
+| FASTQ files         | Local workbench | Raw reads                              |
+| Genotype chip files | Local workbench | Ancestry computed locally              |
+| IBD segments        | Local workbench | Only confirmed match metadata shared   |
 
-**Note on `fileInfo` records**: The `location` field in `fileInfo` is for the user's own reference (local paths, personal cloud storage). DecodingUs does NOT access these locations. The field exists so users can track where their files are stored for their own analysis workflows.
+**Note on `fileInfo` records**: The `location` field in `fileInfo` is for the user's own reference (local paths,
+personal cloud storage). DecodingUs does NOT access these locations. The field exists so users can track where their
+files are stored for their own analysis workflows.
 
 ## Namespace: `com.decodingus.atmosphere`
 
@@ -56,7 +64,10 @@ Shared type definitions used across multiple record types.
     "recordMeta": {
       "type": "object",
       "description": "Metadata for tracking changes and enabling efficient sync.",
-      "required": ["version", "createdAt"],
+      "required": [
+        "version",
+        "createdAt"
+      ],
       "properties": {
         "version": {
           "type": "integer",
@@ -81,7 +92,10 @@ Shared type definitions used across multiple record types.
     "fileInfo": {
       "type": "object",
       "description": "Metadata about a data file for provenance tracking. NOTE: This is metadata ONLY - DecodingUs never accesses the actual file content. Files remain on the user's local system or personal storage.",
-      "required": ["fileName", "fileFormat"],
+      "required": [
+        "fileName",
+        "fileFormat"
+      ],
       "properties": {
         "fileName": {
           "type": "string"
@@ -91,7 +105,17 @@ Shared type definitions used across multiple record types.
         },
         "fileFormat": {
           "type": "string",
-          "knownValues": ["FASTQ", "BAM", "CRAM", "VCF", "GVCF", "BED", "23ANDME", "ANCESTRY", "FTDNA"]
+          "knownValues": [
+            "FASTQ",
+            "BAM",
+            "CRAM",
+            "VCF",
+            "GVCF",
+            "BED",
+            "23ANDME",
+            "ANCESTRY",
+            "FTDNA"
+          ]
         },
         "checksum": {
           "type": "string",
@@ -100,7 +124,11 @@ Shared type definitions used across multiple record types.
         "checksumAlgorithm": {
           "type": "string",
           "description": "Algorithm used for checksum (e.g., 'SHA-256', 'MD5').",
-          "knownValues": ["SHA-256", "MD5", "CRC32"]
+          "knownValues": [
+            "SHA-256",
+            "MD5",
+            "CRC32"
+          ]
         },
         "location": {
           "type": "string",
@@ -112,7 +140,10 @@ Shared type definitions used across multiple record types.
     "haplogroupResult": {
       "type": "object",
       "description": "Detailed scoring and classification result for a haplogroup.",
-      "required": ["haplogroupName", "score"],
+      "required": [
+        "haplogroupName",
+        "score"
+      ],
       "properties": {
         "haplogroupName": {
           "type": "string",
@@ -177,7 +208,12 @@ Shared type definitions used across multiple record types.
     "variantCall": {
       "type": "object",
       "description": "A single variant call representing a mutation.",
-      "required": ["contigAccession", "position", "referenceAllele", "alternateAllele"],
+      "required": [
+        "contigAccession",
+        "position",
+        "referenceAllele",
+        "alternateAllele"
+      ],
       "properties": {
         "contigAccession": {
           "type": "string",
@@ -289,7 +325,10 @@ Shared type definitions used across multiple record types.
     "contigMetrics": {
       "type": "object",
       "description": "Coverage analysis for a specific contig (chromosome).",
-      "required": ["contigName", "callableBases"],
+      "required": [
+        "contigName",
+        "callableBases"
+      ],
       "properties": {
         "contigName": {
           "type": "string",
@@ -317,7 +356,10 @@ Shared type definitions used across multiple record types.
     "populationComponent": {
       "type": "object",
       "description": "A single ancestry component in a population breakdown. Sub-continental granularity (~33 populations from 1000 Genomes + HGDP/SGDP).",
-      "required": ["populationCode", "percentage"],
+      "required": [
+        "populationCode",
+        "percentage"
+      ],
       "properties": {
         "populationCode": {
           "type": "string",
@@ -330,7 +372,17 @@ Shared type definitions used across multiple record types.
         "superPopulation": {
           "type": "string",
           "description": "Continental-level grouping for this population.",
-          "knownValues": ["European", "African", "East Asian", "South Asian", "Americas", "West Asian", "Oceanian", "Central Asian", "Native American"]
+          "knownValues": [
+            "European",
+            "African",
+            "East Asian",
+            "South Asian",
+            "Americas",
+            "West Asian",
+            "Oceanian",
+            "Central Asian",
+            "Native American"
+          ]
         },
         "percentage": {
           "type": "float",
@@ -340,8 +392,12 @@ Shared type definitions used across multiple record types.
           "type": "object",
           "description": "95% confidence interval for the percentage estimate.",
           "properties": {
-            "lower": { "type": "float" },
-            "upper": { "type": "float" }
+            "lower": {
+              "type": "float"
+            },
+            "upper": {
+              "type": "float"
+            }
           }
         },
         "rank": {
@@ -353,12 +409,25 @@ Shared type definitions used across multiple record types.
     "superPopulationSummary": {
       "type": "object",
       "description": "Aggregated ancestry percentage at the continental/super-population level.",
-      "required": ["superPopulation", "percentage"],
+      "required": [
+        "superPopulation",
+        "percentage"
+      ],
       "properties": {
         "superPopulation": {
           "type": "string",
           "description": "Continental-level population grouping.",
-          "knownValues": ["European", "African", "East Asian", "South Asian", "Americas", "West Asian", "Oceanian", "Central Asian", "Native American"]
+          "knownValues": [
+            "European",
+            "African",
+            "East Asian",
+            "South Asian",
+            "Americas",
+            "West Asian",
+            "Oceanian",
+            "Central Asian",
+            "Native American"
+          ]
         },
         "percentage": {
           "type": "float",
@@ -376,12 +445,18 @@ Shared type definitions used across multiple record types.
     "ancestryPanel": {
       "type": "object",
       "description": "Description of the SNP panel used for ancestry analysis.",
-      "required": ["panelType", "snpCount"],
+      "required": [
+        "panelType",
+        "snpCount"
+      ],
       "properties": {
         "panelType": {
           "type": "string",
           "description": "Type of ancestry panel used.",
-          "knownValues": ["aims", "genome-wide"]
+          "knownValues": [
+            "aims",
+            "genome-wide"
+          ]
         },
         "snpCount": {
           "type": "integer",
@@ -400,7 +475,12 @@ Shared type definitions used across multiple record types.
     "ibdSegment": {
       "type": "object",
       "description": "An identical-by-descent (IBD) segment shared between two samples.",
-      "required": ["chromosome", "startPosition", "endPosition", "lengthCm"],
+      "required": [
+        "chromosome",
+        "startPosition",
+        "endPosition",
+        "lengthCm"
+      ],
       "properties": {
         "chromosome": {
           "type": "string",
@@ -431,7 +511,10 @@ Shared type definitions used across multiple record types.
     "strMarkerValue": {
       "type": "object",
       "description": "A single STR marker value. Handles simple, multi-copy, and complex multi-allelic markers.",
-      "required": ["marker", "value"],
+      "required": [
+        "marker",
+        "value"
+      ],
       "properties": {
         "marker": {
           "type": "string",
@@ -445,12 +528,28 @@ Shared type definitions used across multiple record types.
         "panel": {
           "type": "string",
           "description": "Which panel this marker belongs to.",
-          "knownValues": ["Y12", "Y25", "Y37", "Y67", "Y111", "Y500", "Y700", "YSEQ", "FTDNA_BIG_Y", "OTHER"]
+          "knownValues": [
+            "Y12",
+            "Y25",
+            "Y37",
+            "Y67",
+            "Y111",
+            "Y500",
+            "Y700",
+            "YSEQ",
+            "FTDNA_BIG_Y",
+            "OTHER"
+          ]
         },
         "quality": {
           "type": "string",
           "description": "Call quality if available.",
-          "knownValues": ["HIGH", "MEDIUM", "LOW", "UNCERTAIN"]
+          "knownValues": [
+            "HIGH",
+            "MEDIUM",
+            "LOW",
+            "UNCERTAIN"
+          ]
         },
         "readDepth": {
           "type": "integer",
@@ -461,12 +560,19 @@ Shared type definitions used across multiple record types.
     "strValue": {
       "type": "union",
       "description": "STR value - either a simple repeat count or complex multi-allelic structure.",
-      "refs": ["#simpleStrValue", "#multiCopyStrValue", "#complexStrValue"]
+      "refs": [
+        "#simpleStrValue",
+        "#multiCopyStrValue",
+        "#complexStrValue"
+      ]
     },
     "simpleStrValue": {
       "type": "object",
       "description": "Simple single-value STR (e.g., DYS393 = 13).",
-      "required": ["type", "repeats"],
+      "required": [
+        "type",
+        "repeats"
+      ],
       "properties": {
         "type": {
           "type": "string",
@@ -481,7 +587,10 @@ Shared type definitions used across multiple record types.
     "multiCopyStrValue": {
       "type": "object",
       "description": "Multi-copy STR with ordered values (e.g., DYS385a/b = 11-14, DYS459a/b = 9-10).",
-      "required": ["type", "copies"],
+      "required": [
+        "type",
+        "copies"
+      ],
       "properties": {
         "type": {
           "type": "string",
@@ -500,7 +609,10 @@ Shared type definitions used across multiple record types.
     "complexStrValue": {
       "type": "object",
       "description": "Complex multi-allelic STR with allele counts (e.g., DYF399X = 22t-25c-26.1t). Used for palindromic markers.",
-      "required": ["type", "alleles"],
+      "required": [
+        "type",
+        "alleles"
+      ],
       "properties": {
         "type": {
           "type": "string",
@@ -524,7 +636,10 @@ Shared type definitions used across multiple record types.
     "strAllele": {
       "type": "object",
       "description": "A single allele in a complex STR marker.",
-      "required": ["repeats", "count"],
+      "required": [
+        "repeats",
+        "count"
+      ],
       "properties": {
         "repeats": {
           "type": "float",
@@ -537,19 +652,36 @@ Shared type definitions used across multiple record types.
         "designation": {
           "type": "string",
           "description": "Allele designation letter if applicable.",
-          "knownValues": ["t", "c", "q"]
+          "knownValues": [
+            "t",
+            "c",
+            "q"
+          ]
         }
       }
     },
     "strPanel": {
       "type": "object",
       "description": "Metadata about an STR panel/test.",
-      "required": ["panelName", "markerCount"],
+      "required": [
+        "panelName",
+        "markerCount"
+      ],
       "properties": {
         "panelName": {
           "type": "string",
           "description": "Panel name (e.g., 'Y-37', 'Big Y-700 STRs').",
-          "knownValues": ["Y12", "Y25", "Y37", "Y67", "Y111", "Y500", "Y700", "YSEQ_ALPHA", "CUSTOM"]
+          "knownValues": [
+            "Y12",
+            "Y25",
+            "Y37",
+            "Y67",
+            "Y111",
+            "Y500",
+            "Y700",
+            "YSEQ_ALPHA",
+            "CUSTOM"
+          ]
         },
         "markerCount": {
           "type": "integer",
@@ -558,7 +690,14 @@ Shared type definitions used across multiple record types.
         "provider": {
           "type": "string",
           "description": "Testing company or source.",
-          "knownValues": ["FTDNA", "YSEQ", "NEBULA", "DANTE", "WGS_DERIVED", "OTHER"]
+          "knownValues": [
+            "FTDNA",
+            "YSEQ",
+            "NEBULA",
+            "DANTE",
+            "WGS_DERIVED",
+            "OTHER"
+          ]
         },
         "testDate": {
           "type": "string",
@@ -570,7 +709,10 @@ Shared type definitions used across multiple record types.
     "ancestralStrState": {
       "type": "object",
       "description": "Reconstructed ancestral STR state for a haplogroup branch node.",
-      "required": ["marker", "ancestralValue"],
+      "required": [
+        "marker",
+        "ancestralValue"
+      ],
       "properties": {
         "marker": {
           "type": "string",
@@ -596,19 +738,32 @@ Shared type definitions used across multiple record types.
         "method": {
           "type": "string",
           "description": "Reconstruction method used.",
-          "knownValues": ["MODE", "MEDIAN", "PARSIMONY", "ML_PHYLOGENETIC"]
+          "knownValues": [
+            "MODE",
+            "MEDIAN",
+            "PARSIMONY",
+            "ML_PHYLOGENETIC"
+          ]
         }
       }
     },
     "reconciliationStatus": {
       "type": "object",
       "description": "Summary of multi-run reconciliation for a biosample's haplogroup assignments.",
-      "required": ["compatibilityLevel", "consensusHaplogroup"],
+      "required": [
+        "compatibilityLevel",
+        "consensusHaplogroup"
+      ],
       "properties": {
         "compatibilityLevel": {
           "type": "string",
           "description": "Overall compatibility across all runs.",
-          "knownValues": ["COMPATIBLE", "MINOR_DIVERGENCE", "MAJOR_DIVERGENCE", "INCOMPATIBLE"]
+          "knownValues": [
+            "COMPATIBLE",
+            "MINOR_DIVERGENCE",
+            "MAJOR_DIVERGENCE",
+            "INCOMPATIBLE"
+          ]
         },
         "consensusHaplogroup": {
           "type": "string",
@@ -646,7 +801,12 @@ Shared type definitions used across multiple record types.
     "runHaplogroupCall": {
       "type": "object",
       "description": "A haplogroup call from a single sequencing run or STR profile with quality metrics.",
-      "required": ["sourceRef", "haplogroup", "confidence", "callMethod"],
+      "required": [
+        "sourceRef",
+        "haplogroup",
+        "confidence",
+        "callMethod"
+      ],
       "properties": {
         "sourceRef": {
           "type": "string",
@@ -663,7 +823,11 @@ Shared type definitions used across multiple record types.
         "callMethod": {
           "type": "string",
           "description": "Method used to determine haplogroup.",
-          "knownValues": ["SNP_PHYLOGENETIC", "STR_PREDICTION", "VENDOR_REPORTED"]
+          "knownValues": [
+            "SNP_PHYLOGENETIC",
+            "STR_PREDICTION",
+            "VENDOR_REPORTED"
+          ]
         },
         "score": {
           "type": "float",
@@ -684,7 +848,14 @@ Shared type definitions used across multiple record types.
         "technology": {
           "type": "string",
           "description": "Sequencing/testing technology used.",
-          "knownValues": ["WGS", "WES", "BIG_Y", "SNP_ARRAY", "AMPLICON", "STR_PANEL"]
+          "knownValues": [
+            "WGS",
+            "WES",
+            "BIG_Y",
+            "SNP_ARRAY",
+            "AMPLICON",
+            "STR_PANEL"
+          ]
         },
         "meanCoverage": {
           "type": "float",
@@ -704,7 +875,10 @@ Shared type definitions used across multiple record types.
     "strHaplogroupPrediction": {
       "type": "object",
       "description": "Haplogroup prediction based on Y-STR profile analysis.",
-      "required": ["predictedHaplogroup", "probability"],
+      "required": [
+        "predictedHaplogroup",
+        "probability"
+      ],
       "properties": {
         "predictedHaplogroup": {
           "type": "string",
@@ -717,7 +891,14 @@ Shared type definitions used across multiple record types.
         "predictionMethod": {
           "type": "string",
           "description": "Algorithm used for prediction.",
-          "knownValues": ["NEVGEN", "HAPEST", "YHAPLO", "SAPP", "BAYESIAN", "CUSTOM"]
+          "knownValues": [
+            "NEVGEN",
+            "HAPEST",
+            "YHAPLO",
+            "SAPP",
+            "BAYESIAN",
+            "CUSTOM"
+          ]
         },
         "alternativePredictions": {
           "type": "array",
@@ -725,8 +906,12 @@ Shared type definitions used across multiple record types.
           "items": {
             "type": "object",
             "properties": {
-              "haplogroup": { "type": "string" },
-              "probability": { "type": "float" }
+              "haplogroup": {
+                "type": "string"
+              },
+              "probability": {
+                "type": "float"
+              }
             }
           }
         },
@@ -741,7 +926,11 @@ Shared type definitions used across multiple record types.
         "predictionDepth": {
           "type": "string",
           "description": "Expected depth/resolution of STR-based prediction.",
-          "knownValues": ["MAJOR_CLADE", "SUBCLADE", "TERMINAL"]
+          "knownValues": [
+            "MAJOR_CLADE",
+            "SUBCLADE",
+            "TERMINAL"
+          ]
         },
         "modalMatch": {
           "type": "object",
@@ -773,7 +962,10 @@ Shared type definitions used across multiple record types.
     "snpConflict": {
       "type": "object",
       "description": "A conflict at a specific SNP position between runs.",
-      "required": ["position", "calls"],
+      "required": [
+        "position",
+        "calls"
+      ],
       "properties": {
         "position": {
           "type": "integer",
@@ -798,7 +990,13 @@ Shared type definitions used across multiple record types.
         "resolution": {
           "type": "string",
           "description": "How the conflict was resolved.",
-          "knownValues": ["ACCEPT_MAJORITY", "ACCEPT_HIGHER_QUALITY", "ACCEPT_HIGHER_COVERAGE", "UNRESOLVED", "HETEROPLASMY"]
+          "knownValues": [
+            "ACCEPT_MAJORITY",
+            "ACCEPT_HIGHER_QUALITY",
+            "ACCEPT_HIGHER_COVERAGE",
+            "UNRESOLVED",
+            "HETEROPLASMY"
+          ]
         },
         "resolvedValue": {
           "type": "string",
@@ -809,7 +1007,10 @@ Shared type definitions used across multiple record types.
     "snpCallFromRun": {
       "type": "object",
       "description": "A single SNP call from one run.",
-      "required": ["runRef", "allele"],
+      "required": [
+        "runRef",
+        "allele"
+      ],
       "properties": {
         "runRef": {
           "type": "string",
@@ -836,7 +1037,12 @@ Shared type definitions used across multiple record types.
     "heteroplasmyObservation": {
       "type": "object",
       "description": "An observation of mtDNA heteroplasmy at a specific position.",
-      "required": ["position", "majorAllele", "minorAllele", "majorAlleleFrequency"],
+      "required": [
+        "position",
+        "majorAllele",
+        "minorAllele",
+        "majorAlleleFrequency"
+      ],
       "properties": {
         "position": {
           "type": "integer",
@@ -887,12 +1093,23 @@ Shared type definitions used across multiple record types.
         "verificationStatus": {
           "type": "string",
           "description": "Overall verification result.",
-          "knownValues": ["VERIFIED_SAME", "LIKELY_SAME", "UNCERTAIN", "LIKELY_DIFFERENT", "VERIFIED_DIFFERENT"]
+          "knownValues": [
+            "VERIFIED_SAME",
+            "LIKELY_SAME",
+            "UNCERTAIN",
+            "LIKELY_DIFFERENT",
+            "VERIFIED_DIFFERENT"
+          ]
         },
         "verificationMethod": {
           "type": "string",
           "description": "Method used for verification.",
-          "knownValues": ["AUTOSOMAL_KINSHIP", "Y_STR", "FINGERPRINT_SNPS", "COMBINED"]
+          "knownValues": [
+            "AUTOSOMAL_KINSHIP",
+            "Y_STR",
+            "FINGERPRINT_SNPS",
+            "COMBINED"
+          ]
         }
       }
     }
@@ -906,7 +1123,8 @@ Shared type definitions used across multiple record types.
 
 ### 1. Workspace Record (`com.decodingus.atmosphere.workspace`)
 
-This record serves as the root container for a Researcher's PDS, aggregating biosample references and defined research projects.
+This record serves as the root container for a Researcher's PDS, aggregating biosample references and defined research
+projects.
 
 **NSID:** `com.decodingus.atmosphere.workspace`
 
@@ -921,7 +1139,11 @@ This record serves as the root container for a Researcher's PDS, aggregating bio
       "key": "tid",
       "record": {
         "type": "object",
-        "required": ["meta", "sampleRefs", "projectRefs"],
+        "required": [
+          "meta",
+          "sampleRefs",
+          "projectRefs"
+        ],
         "properties": {
           "meta": {
             "type": "ref",
@@ -954,7 +1176,8 @@ This record serves as the root container for a Researcher's PDS, aggregating bio
 
 ### 2. Biosample Record (`com.decodingus.atmosphere.biosample`)
 
-This record represents a single biological sample. It contains donor metadata and haplogroup assignments, but references sequence runs and genotype data rather than embedding them.
+This record represents a single biological sample. It contains donor metadata and haplogroup assignments, but references
+sequence runs and genotype data rather than embedding them.
 
 **NSID:** `com.decodingus.atmosphere.biosample`
 
@@ -969,7 +1192,14 @@ This record represents a single biological sample. It contains donor metadata an
       "key": "tid",
       "record": {
         "type": "object",
-        "required": ["meta", "sampleAccession", "donorIdentifier", "centerName", "citizenDid", "atUri"],
+        "required": [
+          "meta",
+          "sampleAccession",
+          "donorIdentifier",
+          "centerName",
+          "citizenDid",
+          "atUri"
+        ],
         "properties": {
           "atUri": {
             "type": "string",
@@ -1002,7 +1232,12 @@ This record represents a single biological sample. It contains donor metadata an
           "sex": {
             "type": "string",
             "description": "Biological sex of the donor.",
-            "knownValues": ["Male", "Female", "Other", "Unknown"]
+            "knownValues": [
+              "Male",
+              "Female",
+              "Other",
+              "Unknown"
+            ]
           },
           "haplogroups": {
             "type": "ref",
@@ -1052,7 +1287,8 @@ This record represents a single biological sample. It contains donor metadata an
 
 ### 3. Sequence Run Record (`com.decodingus.atmosphere.sequencerun`)
 
-This record represents a single sequencing run (e.g., one library preparation and sequencing session). It is a first-class record that can be created, updated, or deleted independently.
+This record represents a single sequencing run (e.g., one library preparation and sequencing session). It is a
+first-class record that can be created, updated, or deleted independently.
 
 **NSID:** `com.decodingus.atmosphere.sequencerun`
 
@@ -1067,7 +1303,14 @@ This record represents a single sequencing run (e.g., one library preparation an
       "key": "tid",
       "record": {
         "type": "object",
-        "required": ["meta", "atUri", "biosampleRef", "platformName", "testType", "files"],
+        "required": [
+          "meta",
+          "atUri",
+          "biosampleRef",
+          "platformName",
+          "testType",
+          "files"
+        ],
         "properties": {
           "atUri": {
             "type": "string",
@@ -1084,7 +1327,15 @@ This record represents a single sequencing run (e.g., one library preparation an
           "platformName": {
             "type": "string",
             "description": "Sequencing platform (e.g., ILLUMINA, PACBIO, NANOPORE).",
-            "knownValues": ["ILLUMINA", "PACBIO", "NANOPORE", "ION_TORRENT", "BGI", "ELEMENT", "ULTIMA"]
+            "knownValues": [
+              "ILLUMINA",
+              "PACBIO",
+              "NANOPORE",
+              "ION_TORRENT",
+              "BGI",
+              "ELEMENT",
+              "ULTIMA"
+            ]
           },
           "instrumentModel": {
             "type": "string",
@@ -1097,12 +1348,21 @@ This record represents a single sequencing run (e.g., one library preparation an
           "testType": {
             "type": "string",
             "description": "Type of test (e.g., WGS, EXOME, TARGETED).",
-            "knownValues": ["WGS", "EXOME", "TARGETED", "RNA_SEQ", "AMPLICON"]
+            "knownValues": [
+              "WGS",
+              "EXOME",
+              "TARGETED",
+              "RNA_SEQ",
+              "AMPLICON"
+            ]
           },
           "libraryLayout": {
             "type": "string",
             "description": "Paired-end or Single-end.",
-            "knownValues": ["PAIRED", "SINGLE"]
+            "knownValues": [
+              "PAIRED",
+              "SINGLE"
+            ]
           },
           "totalReads": {
             "type": "integer",
@@ -1152,7 +1412,8 @@ This record represents a single sequencing run (e.g., one library preparation an
 
 ### 4. Alignment Record (`com.decodingus.atmosphere.alignment`)
 
-This record represents a single alignment of sequence data to a reference genome. It is independently managed, allowing metrics updates without touching parent records.
+This record represents a single alignment of sequence data to a reference genome. It is independently managed, allowing
+metrics updates without touching parent records.
 
 **NSID:** `com.decodingus.atmosphere.alignment`
 
@@ -1167,7 +1428,13 @@ This record represents a single alignment of sequence data to a reference genome
       "key": "tid",
       "record": {
         "type": "object",
-        "required": ["meta", "atUri", "sequenceRunRef", "referenceBuild", "aligner"],
+        "required": [
+          "meta",
+          "atUri",
+          "sequenceRunRef",
+          "referenceBuild",
+          "aligner"
+        ],
         "properties": {
           "atUri": {
             "type": "string",
@@ -1188,7 +1455,13 @@ This record represents a single alignment of sequence data to a reference genome
           "referenceBuild": {
             "type": "string",
             "description": "Reference genome build (e.g., GRCh38, GRCh37, T2T-CHM13).",
-            "knownValues": ["GRCh38", "GRCh37", "T2T-CHM13", "hg19", "hg38"]
+            "knownValues": [
+              "GRCh38",
+              "GRCh37",
+              "T2T-CHM13",
+              "hg19",
+              "hg38"
+            ]
           },
           "aligner": {
             "type": "string",
@@ -1221,7 +1494,9 @@ This record represents a single alignment of sequence data to a reference genome
 
 ### 5. Genotype Record (`com.decodingus.atmosphere.genotype`)
 
-This record represents genotyping array/chip data (e.g., 23andMe, AncestryDNA, FTDNA). It is a first-class record separate from sequencing data. Raw genotype calls remain local on the Edge App; only metadata and derived results (haplogroups, ancestry percentages) flow to DecodingUs.
+This record represents genotyping array/chip data (e.g., 23andMe, AncestryDNA, FTDNA). It is a first-class record
+separate from sequencing data. Raw genotype calls remain local on the Edge App; only metadata and derived results (
+haplogroups, ancestry percentages) flow to DecodingUs.
 
 **NSID:** `com.decodingus.atmosphere.genotype`
 
@@ -1230,6 +1505,7 @@ This record represents genotyping array/chip data (e.g., 23andMe, AncestryDNA, F
 **Supported Vendors**: 23andMe, AncestryDNA, FamilyTreeDNA, MyHeritage, LivingDNA
 
 **Test Type Codes** (per multi-test-type-roadmap.md):
+
 - `ARRAY_23ANDME_V5` - 23andMe v5 chip (~640K markers)
 - `ARRAY_23ANDME_V4` - 23andMe v4 chip (~570K markers)
 - `ARRAY_ANCESTRY_V2` - AncestryDNA v2 (~700K markers)
@@ -1248,7 +1524,13 @@ This record represents genotyping array/chip data (e.g., 23andMe, AncestryDNA, F
       "key": "tid",
       "record": {
         "type": "object",
-        "required": ["meta", "atUri", "biosampleRef", "testTypeCode", "provider"],
+        "required": [
+          "meta",
+          "atUri",
+          "biosampleRef",
+          "testTypeCode",
+          "provider"
+        ],
         "properties": {
           "atUri": {
             "type": "string",
@@ -1265,12 +1547,28 @@ This record represents genotyping array/chip data (e.g., 23andMe, AncestryDNA, F
           "testTypeCode": {
             "type": "string",
             "description": "Test type code from the taxonomy.",
-            "knownValues": ["ARRAY_23ANDME_V5", "ARRAY_23ANDME_V4", "ARRAY_ANCESTRY_V2", "ARRAY_FTDNA_FF", "ARRAY_MYHERITAGE", "ARRAY_LIVINGDNA", "ARRAY_CUSTOM"]
+            "knownValues": [
+              "ARRAY_23ANDME_V5",
+              "ARRAY_23ANDME_V4",
+              "ARRAY_ANCESTRY_V2",
+              "ARRAY_FTDNA_FF",
+              "ARRAY_MYHERITAGE",
+              "ARRAY_LIVINGDNA",
+              "ARRAY_CUSTOM"
+            ]
           },
           "provider": {
             "type": "string",
             "description": "The genotyping provider or company.",
-            "knownValues": ["23andMe", "AncestryDNA", "FamilyTreeDNA", "MyHeritage", "LivingDNA", "Nebula", "Custom"]
+            "knownValues": [
+              "23andMe",
+              "AncestryDNA",
+              "FamilyTreeDNA",
+              "MyHeritage",
+              "LivingDNA",
+              "Nebula",
+              "Custom"
+            ]
           },
           "chipVersion": {
             "type": "string",
@@ -1325,7 +1623,10 @@ This record represents genotyping array/chip data (e.g., 23andMe, AncestryDNA, F
           "buildVersion": {
             "type": "string",
             "description": "Reference genome build for coordinates.",
-            "knownValues": ["GRCh37", "GRCh38"]
+            "knownValues": [
+              "GRCh37",
+              "GRCh38"
+            ]
           },
           "sourceFileHash": {
             "type": "string",
@@ -1360,6 +1661,7 @@ This record represents genotyping array/chip data (e.g., 23andMe, AncestryDNA, F
 ```
 
 **Edge App Processing**: Navigator Desktop processes chip files locally:
+
 1. Auto-detects vendor format from file header
 2. Parses genotype calls (stays local, never uploaded)
 3. Computes summary statistics (marker counts, call rates)
@@ -1388,7 +1690,13 @@ This record represents imputed genotype data derived from array data.
       "key": "tid",
       "record": {
         "type": "object",
-        "required": ["meta", "atUri", "genotypeRef", "referencePanel", "imputationTool"],
+        "required": [
+          "meta",
+          "atUri",
+          "genotypeRef",
+          "referencePanel",
+          "imputationTool"
+        ],
         "properties": {
           "atUri": {
             "type": "string",
@@ -1409,7 +1717,12 @@ This record represents imputed genotype data derived from array data.
           "referencePanel": {
             "type": "string",
             "description": "Reference panel used for imputation.",
-            "knownValues": ["TOPMED", "HRC", "1000G_PHASE3", "CUSTOM"]
+            "knownValues": [
+              "TOPMED",
+              "HRC",
+              "1000G_PHASE3",
+              "CUSTOM"
+            ]
           },
           "imputationTool": {
             "type": "string",
@@ -1457,7 +1770,13 @@ This record defines a research project that aggregates multiple biosamples withi
       "key": "tid",
       "record": {
         "type": "object",
-        "required": ["meta", "atUri", "projectName", "administrator", "memberRefs"],
+        "required": [
+          "meta",
+          "atUri",
+          "projectName",
+          "administrator",
+          "memberRefs"
+        ],
         "properties": {
           "atUri": {
             "type": "string",
@@ -1500,19 +1819,23 @@ This record defines a research project that aggregates multiple biosamples withi
 
 ### 8. Population Breakdown Record (`com.decodingus.atmosphere.populationBreakdown`)
 
-This record contains ancestry composition analysis results using PCA projection onto reference populations from 1000 Genomes and HGDP/SGDP. Provides ADMIXTURE-style ancestry breakdowns at sub-continental granularity (~33 populations organized into 9 super-populations).
+This record contains ancestry composition analysis results using PCA projection onto reference populations from 1000
+Genomes and HGDP/SGDP. Provides ADMIXTURE-style ancestry breakdowns at sub-continental granularity (~33 populations
+organized into 9 super-populations).
 
 **NSID:** `com.decodingus.atmosphere.populationBreakdown`
 
 **Status:** 🚧 In Development (Navigator Desktop Implementation)
 
 **Algorithm**: PCA Projection + Gaussian Mixture Model
+
 - Projects sample genotypes onto pre-computed PCA space from reference populations
 - Calculates Mahalanobis distance to population centroids
 - Converts distances to probabilities via multivariate Gaussian PDF
 - Supports two panel types: AIMs (~5k SNPs, ~2-5 min) and genome-wide (~500k SNPs, ~20-30 min)
 
 **Reference Populations (33 total)**:
+
 - **European (5)**: CEU, FIN, GBR, IBS, TSI
 - **African (5)**: YRI, LWK, ESN, MSL, GWD
 - **East Asian (5)**: CHB, JPT, KHV, CHS, CDX
@@ -1534,7 +1857,14 @@ This record contains ancestry composition analysis results using PCA projection 
       "key": "tid",
       "record": {
         "type": "object",
-        "required": ["meta", "atUri", "biosampleRef", "analysisMethod", "panelType", "components"],
+        "required": [
+          "meta",
+          "atUri",
+          "biosampleRef",
+          "analysisMethod",
+          "panelType",
+          "components"
+        ],
         "properties": {
           "atUri": {
             "type": "string",
@@ -1551,17 +1881,31 @@ This record contains ancestry composition analysis results using PCA projection 
           "analysisMethod": {
             "type": "string",
             "description": "The analysis method/algorithm used.",
-            "knownValues": ["PCA_PROJECTION_GMM", "ADMIXTURE", "FASTSTRUCTURE", "SUPERVISED_ML", "CUSTOM"]
+            "knownValues": [
+              "PCA_PROJECTION_GMM",
+              "ADMIXTURE",
+              "FASTSTRUCTURE",
+              "SUPERVISED_ML",
+              "CUSTOM"
+            ]
           },
           "panelType": {
             "type": "string",
             "description": "SNP panel used for analysis.",
-            "knownValues": ["aims", "genome-wide"]
+            "knownValues": [
+              "aims",
+              "genome-wide"
+            ]
           },
           "referencePopulations": {
             "type": "string",
             "description": "Reference population dataset used.",
-            "knownValues": ["1000G_HGDP_v1", "1000G", "HGDP", "Custom"]
+            "knownValues": [
+              "1000G_HGDP_v1",
+              "1000G",
+              "HGDP",
+              "Custom"
+            ]
           },
           "snpsAnalyzed": {
             "type": "integer",
@@ -1624,10 +1968,12 @@ This record contains ancestry composition analysis results using PCA projection 
 ```
 
 **IBD Matching Integration**: Population breakdown data enables:
+
 - **Match contextualization**: Understand shared ancestry context for IBD matches
 - **Endogamy detection**: Identify populations with higher background relatedness
 - **Geographic correlation**: Map genetic ancestry to geographic origins
-- **Match introduction text**: Generate meaningful connection descriptions (e.g., "You share 45cM with this person who has similar Northwestern European ancestry")
+- **Match introduction text**: Generate meaningful connection descriptions (e.g., "You share 45cM with this person who
+  has similar Northwestern European ancestry")
 
 ---
 
@@ -1635,7 +1981,8 @@ This record contains ancestry composition analysis results using PCA projection 
 
 ### 9. Instrument Observation Record (`com.decodingus.atmosphere.instrumentObservation`)
 
-This record allows citizens to contribute instrument-lab observations from their sequencing data for crowdsourced lab discovery.
+This record allows citizens to contribute instrument-lab observations from their sequencing data for crowdsourced lab
+discovery.
 
 **NSID:** `com.decodingus.atmosphere.instrumentObservation`
 
@@ -1652,7 +1999,13 @@ This record allows citizens to contribute instrument-lab observations from their
       "key": "tid",
       "record": {
         "type": "object",
-        "required": ["meta", "atUri", "instrumentId", "labName", "biosampleRef"],
+        "required": [
+          "meta",
+          "atUri",
+          "instrumentId",
+          "labName",
+          "biosampleRef"
+        ],
         "properties": {
           "atUri": {
             "type": "string",
@@ -1685,7 +2038,14 @@ This record allows citizens to contribute instrument-lab observations from their
           "platform": {
             "type": "string",
             "description": "Sequencing platform (e.g., 'ILLUMINA', 'PACBIO').",
-            "knownValues": ["ILLUMINA", "PACBIO", "NANOPORE", "MGI", "ELEMENT", "ULTIMA"]
+            "knownValues": [
+              "ILLUMINA",
+              "PACBIO",
+              "NANOPORE",
+              "MGI",
+              "ELEMENT",
+              "ULTIMA"
+            ]
           },
           "instrumentModel": {
             "type": "string",
@@ -1703,7 +2063,11 @@ This record allows citizens to contribute instrument-lab observations from their
           "confidence": {
             "type": "string",
             "description": "Confidence level of the lab association.",
-            "knownValues": ["KNOWN", "INFERRED", "GUESSED"],
+            "knownValues": [
+              "KNOWN",
+              "INFERRED",
+              "GUESSED"
+            ],
             "default": "INFERRED"
           }
         }
@@ -1736,7 +2100,12 @@ This record represents a citizen's consent for IBD matching. Without this record
       "key": "tid",
       "record": {
         "type": "object",
-        "required": ["meta", "atUri", "biosampleRef", "consentLevel"],
+        "required": [
+          "meta",
+          "atUri",
+          "biosampleRef",
+          "consentLevel"
+        ],
         "properties": {
           "atUri": {
             "type": "string",
@@ -1753,14 +2122,23 @@ This record represents a citizen's consent for IBD matching. Without this record
           "consentLevel": {
             "type": "string",
             "description": "Level of matching participation.",
-            "knownValues": ["FULL", "ANONYMOUS", "PROJECT_ONLY"]
+            "knownValues": [
+              "FULL",
+              "ANONYMOUS",
+              "PROJECT_ONLY"
+            ]
           },
           "allowedMatchTypes": {
             "type": "array",
             "description": "Types of matching allowed.",
             "items": {
               "type": "string",
-              "knownValues": ["IBD", "Y_STR", "MT_SEQUENCE", "AUTOSOMAL"]
+              "knownValues": [
+                "IBD",
+                "Y_STR",
+                "MT_SEQUENCE",
+                "AUTOSOMAL"
+              ]
             }
           },
           "minimumSegmentCm": {
@@ -1809,7 +2187,12 @@ This record contains the list of IBD matches for a biosample, updated by the Dec
       "key": "tid",
       "record": {
         "type": "object",
-        "required": ["meta", "atUri", "biosampleRef", "matches"],
+        "required": [
+          "meta",
+          "atUri",
+          "biosampleRef",
+          "matches"
+        ],
         "properties": {
           "atUri": {
             "type": "string",
@@ -1850,7 +2233,11 @@ This record contains the list of IBD matches for a biosample, updated by the Dec
     "matchEntry": {
       "type": "object",
       "description": "A single match entry in the match list.",
-      "required": ["matchedBiosampleRef", "totalSharedCm", "segmentCount"],
+      "required": [
+        "matchedBiosampleRef",
+        "totalSharedCm",
+        "segmentCount"
+      ],
       "properties": {
         "matchedBiosampleRef": {
           "type": "string",
@@ -1863,9 +2250,22 @@ This record contains the list of IBD matches for a biosample, updated by the Dec
         "relationshipEstimate": {
           "type": "string",
           "description": "Estimated relationship (e.g., '2nd Cousin', 'Half Sibling').",
-          "knownValues": ["PARENT_CHILD", "FULL_SIBLING", "HALF_SIBLING", "GRANDPARENT", "AUNT_UNCLE",
-                         "1ST_COUSIN", "1ST_COUSIN_1R", "2ND_COUSIN", "2ND_COUSIN_1R", "3RD_COUSIN",
-                         "4TH_COUSIN", "5TH_COUSIN", "DISTANT", "UNKNOWN"]
+          "knownValues": [
+            "PARENT_CHILD",
+            "FULL_SIBLING",
+            "HALF_SIBLING",
+            "GRANDPARENT",
+            "AUNT_UNCLE",
+            "1ST_COUSIN",
+            "1ST_COUSIN_1R",
+            "2ND_COUSIN",
+            "2ND_COUSIN_1R",
+            "3RD_COUSIN",
+            "4TH_COUSIN",
+            "5TH_COUSIN",
+            "DISTANT",
+            "UNKNOWN"
+          ]
         },
         "totalSharedCm": {
           "type": "float",
@@ -1923,7 +2323,13 @@ This record represents a request to initiate contact with a match.
       "key": "tid",
       "record": {
         "type": "object",
-        "required": ["meta", "atUri", "fromBiosampleRef", "toBiosampleRef", "status"],
+        "required": [
+          "meta",
+          "atUri",
+          "fromBiosampleRef",
+          "toBiosampleRef",
+          "status"
+        ],
         "properties": {
           "atUri": {
             "type": "string",
@@ -1944,7 +2350,13 @@ This record represents a request to initiate contact with a match.
           "status": {
             "type": "string",
             "description": "Current status of the request.",
-            "knownValues": ["PENDING", "ACCEPTED", "DECLINED", "EXPIRED", "WITHDRAWN"]
+            "knownValues": [
+              "PENDING",
+              "ACCEPTED",
+              "DECLINED",
+              "EXPIRED",
+              "WITHDRAWN"
+            ]
           },
           "message": {
             "type": "string",
@@ -1979,7 +2391,8 @@ This record represents a request to initiate contact with a match.
 
 ### 13. STR Profile Record (`com.decodingus.atmosphere.strProfile`)
 
-This record contains a biosample's Y-STR profile data. STRs may come from dedicated STR tests (FTDNA Y-37, Y-111, etc.) or be derived from WGS/Big Y data.
+This record contains a biosample's Y-STR profile data. STRs may come from dedicated STR tests (FTDNA Y-37, Y-111, etc.)
+or be derived from WGS/Big Y data.
 
 **NSID:** `com.decodingus.atmosphere.strProfile`
 
@@ -1994,7 +2407,12 @@ This record contains a biosample's Y-STR profile data. STRs may come from dedica
       "key": "tid",
       "record": {
         "type": "object",
-        "required": ["meta", "atUri", "biosampleRef", "markers"],
+        "required": [
+          "meta",
+          "atUri",
+          "biosampleRef",
+          "markers"
+        ],
         "properties": {
           "atUri": {
             "type": "string",
@@ -2035,7 +2453,13 @@ This record contains a biosample's Y-STR profile data. STRs may come from dedica
           "source": {
             "type": "string",
             "description": "How these STRs were obtained.",
-            "knownValues": ["DIRECT_TEST", "WGS_DERIVED", "BIG_Y_DERIVED", "IMPORTED", "MANUAL_ENTRY"]
+            "knownValues": [
+              "DIRECT_TEST",
+              "WGS_DERIVED",
+              "BIG_Y_DERIVED",
+              "IMPORTED",
+              "MANUAL_ENTRY"
+            ]
           },
           "importedFrom": {
             "type": "string",
@@ -2044,7 +2468,13 @@ This record contains a biosample's Y-STR profile data. STRs may come from dedica
           "derivationMethod": {
             "type": "string",
             "description": "For WGS-derived STRs, the tool/method used.",
-            "knownValues": ["HIPSTR", "GANGSTR", "EXPANSION_HUNTER", "LOBSTR", "CUSTOM"]
+            "knownValues": [
+              "HIPSTR",
+              "GANGSTR",
+              "EXPANSION_HUNTER",
+              "LOBSTR",
+              "CUSTOM"
+            ]
           },
           "files": {
             "type": "array",
@@ -2065,7 +2495,8 @@ This record contains a biosample's Y-STR profile data. STRs may come from dedica
 
 ### 14. Haplogroup Ancestral STR Record (`com.decodingus.atmosphere.haplogroupAncestralStr`)
 
-This record contains the reconstructed ancestral STR state for a haplogroup branch node in the Y-DNA tree. Computed by the AppView using phylogenetic reconstruction methods.
+This record contains the reconstructed ancestral STR state for a haplogroup branch node in the Y-DNA tree. Computed by
+the AppView using phylogenetic reconstruction methods.
 
 **NSID:** `com.decodingus.atmosphere.haplogroupAncestralStr`
 
@@ -2082,7 +2513,13 @@ This record contains the reconstructed ancestral STR state for a haplogroup bran
       "key": "tid",
       "record": {
         "type": "object",
-        "required": ["meta", "atUri", "haplogroup", "ancestralMarkers", "computedAt"],
+        "required": [
+          "meta",
+          "atUri",
+          "haplogroup",
+          "ancestralMarkers",
+          "computedAt"
+        ],
         "properties": {
           "atUri": {
             "type": "string",
@@ -2124,7 +2561,13 @@ This record contains the reconstructed ancestral STR state for a haplogroup bran
           "method": {
             "type": "string",
             "description": "Overall reconstruction method.",
-            "knownValues": ["MODAL", "MEDIAN", "PARSIMONY", "BAYESIAN", "ML_PHYLOGENETIC"]
+            "knownValues": [
+              "MODAL",
+              "MEDIAN",
+              "PARSIMONY",
+              "BAYESIAN",
+              "ML_PHYLOGENETIC"
+            ]
           },
           "softwareVersion": {
             "type": "string",
@@ -2133,7 +2576,12 @@ This record contains the reconstructed ancestral STR state for a haplogroup bran
           "mutationRateModel": {
             "type": "string",
             "description": "Mutation rate model used (if applicable).",
-            "knownValues": ["FTDNA_INFINITE_ALLELES", "BALLANTYNE_2010", "BURGARELLA_2012", "CUSTOM"]
+            "knownValues": [
+              "FTDNA_INFINITE_ALLELES",
+              "BALLANTYNE_2010",
+              "BURGARELLA_2012",
+              "CUSTOM"
+            ]
           },
           "tmrcaEstimate": {
             "type": "object",
@@ -2145,8 +2593,12 @@ This record contains the reconstructed ancestral STR state for a haplogroup bran
               "confidenceInterval": {
                 "type": "object",
                 "properties": {
-                  "lower": { "type": "integer" },
-                  "upper": { "type": "integer" }
+                  "lower": {
+                    "type": "integer"
+                  },
+                  "upper": {
+                    "type": "integer"
+                  }
                 }
               },
               "generationTime": {
@@ -2169,7 +2621,11 @@ This record contains the reconstructed ancestral STR state for a haplogroup bran
     "strBranchMutation": {
       "type": "object",
       "description": "An inferred STR mutation along a haplogroup branch.",
-      "required": ["marker", "fromValue", "toValue"],
+      "required": [
+        "marker",
+        "fromValue",
+        "toValue"
+      ],
       "properties": {
         "marker": {
           "type": "string",
@@ -2203,7 +2659,8 @@ This record contains the reconstructed ancestral STR state for a haplogroup bran
 
 ### 15. Haplogroup Reconciliation Record (`com.decodingus.atmosphere.haplogroupReconciliation`)
 
-This record contains the reconciliation results when a biosample has multiple sequencing runs with potentially different haplogroup calls. It tracks per-run calls, conflicts, and the consensus result.
+This record contains the reconciliation results when a biosample has multiple sequencing runs with potentially different
+haplogroup calls. It tracks per-run calls, conflicts, and the consensus result.
 
 **NSID:** `com.decodingus.atmosphere.haplogroupReconciliation`
 
@@ -2218,7 +2675,14 @@ This record contains the reconciliation results when a biosample has multiple se
       "key": "tid",
       "record": {
         "type": "object",
-        "required": ["meta", "atUri", "biosampleRef", "dnaType", "status", "runCalls"],
+        "required": [
+          "meta",
+          "atUri",
+          "biosampleRef",
+          "dnaType",
+          "status",
+          "runCalls"
+        ],
         "properties": {
           "atUri": {
             "type": "string",
@@ -2235,7 +2699,10 @@ This record contains the reconciliation results when a biosample has multiple se
           "dnaType": {
             "type": "string",
             "description": "Whether this reconciliation is for Y-DNA or MT-DNA.",
-            "knownValues": ["Y_DNA", "MT_DNA"]
+            "knownValues": [
+              "Y_DNA",
+              "MT_DNA"
+            ]
           },
           "status": {
             "type": "ref",
@@ -2313,7 +2780,10 @@ This record contains the reconciliation results when a biosample has multiple se
     "auditEntry": {
       "type": "object",
       "description": "An entry in the reconciliation audit log.",
-      "required": ["timestamp", "action"],
+      "required": [
+        "timestamp",
+        "action"
+      ],
       "properties": {
         "timestamp": {
           "type": "string",
@@ -2322,7 +2792,14 @@ This record contains the reconciliation results when a biosample has multiple se
         "action": {
           "type": "string",
           "description": "Action performed.",
-          "knownValues": ["INITIAL_RECONCILIATION", "RUN_ADDED", "RUN_REMOVED", "MANUAL_OVERRIDE", "CONFLICT_RESOLVED", "RECOMPUTED"]
+          "knownValues": [
+            "INITIAL_RECONCILIATION",
+            "RUN_ADDED",
+            "RUN_REMOVED",
+            "MANUAL_OVERRIDE",
+            "CONFLICT_RESOLVED",
+            "RECOMPUTED"
+          ]
         },
         "previousConsensus": {
           "type": "string",
@@ -2472,42 +2949,51 @@ This record contains the reconciliation results when a biosample has multiple se
 
 In the "Atmosphere" model, this Lexicon defines the data structures for decentralized, user-owned genomic records:
 
-1.  **MVP (Current):** The BGS Node (Rust) constructs a JSON payload matching the `ExternalBiosampleRequest` (a simplified subset of this Lexicon) and pushes it to `decodingus` via REST.
-2.  **Phase 2 (Hybrid - Kafka):** The BGS Node uses this Lexicon structure (or a derived internal representation) to send messages to Kafka. `decodingus` consumes from Kafka and processes a compatible subset.
-3.  **Phase 3 (Full Atmosphere - AppView):**
-    *   The Researcher's Edge App (Java) or the BGS Node (authorized by the user) constructs records fully compliant with this Lexicon.
-    *   These records are written directly to the User's PDS.
-    *   `decodingus` (acting as an AppView) subscribes to the ATP Firehose, ingesting these records and indexing them.
+1. **MVP (Current):** The BGS Node (Rust) constructs a JSON payload matching the `ExternalBiosampleRequest` (a
+   simplified subset of this Lexicon) and pushes it to `decodingus` via REST.
+2. **Phase 2 (Hybrid - Kafka):** The BGS Node uses this Lexicon structure (or a derived internal representation) to send
+   messages to Kafka. `decodingus` consumes from Kafka and processes a compatible subset.
+3. **Phase 3 (Full Atmosphere - AppView):**
+    * The Researcher's Edge App (Java) or the BGS Node (authorized by the user) constructs records fully compliant with
+      this Lexicon.
+    * These records are written directly to the User's PDS.
+    * `decodingus` (acting as an AppView) subscribes to the ATP Firehose, ingesting these records and indexing them.
 
 ## Mapping to `decodingus` Backend (Phase 3 Considerations)
 
 To fully leverage this Lexicon, `decodingus` will need to evolve its internal data model and services:
 
-*   **`Biosample`:** Fields like `description`, `centerName`, `sex`, `sampleAccession`, `donorIdentifier` map directly. The `meta.createdAt` becomes the creation timestamp.
-*   **`SequenceLibrary` → `SequenceRun`:** Now a separate record. `platformName`, `instrumentModel`, `testType`, `libraryLayout`, `totalReads`, `readLength`, `meanInsertSize`.
-*   **`SequenceFile`:** `fileInfo` maps directly (`fileName`, `fileSizeBytes`, `fileFormat`, `checksum`, `location`).
-*   **`Alignment` (New Entity):** `alignment` is now a first-class record requiring new tables/models to store `referenceBuild`, `aligner`, `variantCaller`, and the associated `files`.
-*   **`AlignmentMetrics`:** Stored as part of the `alignment` record, with detailed QC statistics.
-*   **`Haplogroups` (Enhanced):** The detailed `haplogroupResult` (score, SNPs, lineage path) can replace or enrich our existing `BiosampleOriginalHaplogroup` model.
-*   **`Genotype` (New Entity):** Maps to new `genotype_data` table for chip/array results.
-*   **`Imputation` (New Entity):** Maps to new `imputation_result` table.
-*   **`PopulationBreakdown` (New Entity):** Maps to existing `ancestry_analysis` with enhanced population components.
-*   **`MatchConsent`/`MatchList`/`MatchRequest`:** Map to IBD matching system tables.
-*   **`InstrumentObservation`:** Maps to `instrument_observation` table for lab inference consensus.
-*   **`Project`:** Requires new tables (`projects`) with AT URI references to member biosamples.
-*   **`Workspace`:** A PDS-level container; we index its `sampleRefs` and `projectRefs` but may not store it directly.
+* **`Biosample`:** Fields like `description`, `centerName`, `sex`, `sampleAccession`, `donorIdentifier` map directly.
+  The `meta.createdAt` becomes the creation timestamp.
+* **`SequenceLibrary` → `SequenceRun`:** Now a separate record. `platformName`, `instrumentModel`, `testType`,
+  `libraryLayout`, `totalReads`, `readLength`, `meanInsertSize`.
+* **`SequenceFile`:** `fileInfo` maps directly (`fileName`, `fileSizeBytes`, `fileFormat`, `checksum`, `location`).
+* **`Alignment` (New Entity):** `alignment` is now a first-class record requiring new tables/models to store
+  `referenceBuild`, `aligner`, `variantCaller`, and the associated `files`.
+* **`AlignmentMetrics`:** Stored as part of the `alignment` record, with detailed QC statistics.
+* **`Haplogroups` (Enhanced):** The detailed `haplogroupResult` (score, SNPs, lineage path) can replace or enrich our
+  existing `BiosampleOriginalHaplogroup` model.
+* **`Genotype` (New Entity):** Maps to new `genotype_data` table for chip/array results.
+* **`Imputation` (New Entity):** Maps to new `imputation_result` table.
+* **`PopulationBreakdown` (New Entity):** Maps to existing `ancestry_analysis` with enhanced population components.
+* **`MatchConsent`/`MatchList`/`MatchRequest`:** Map to IBD matching system tables.
+* **`InstrumentObservation`:** Maps to `instrument_observation` table for lab inference consensus.
+* **`Project`:** Requires new tables (`projects`) with AT URI references to member biosamples.
+* **`Workspace`:** A PDS-level container; we index its `sampleRefs` and `projectRefs` but may not store it directly.
 
 ---
 
 ## Lifecycle Management (AppView Logic)
 
-As an AppView, `decodingus` subscribes to the AT Protocol Firehose to maintain a synchronized state of the genomic network.
+As an AppView, `decodingus` subscribes to the AT Protocol Firehose to maintain a synchronized state of the genomic
+network.
 
 ### 1. The Firehose Event Stream
 
 We listen for `com.atproto.sync.subscribeRepos` events containing operations for these collections:
 
 **Core Records:**
+
 - `com.decodingus.atmosphere.biosample`
 - `com.decodingus.atmosphere.sequencerun`
 - `com.decodingus.atmosphere.alignment`
@@ -2515,6 +3001,7 @@ We listen for `com.atproto.sync.subscribeRepos` events containing operations for
 - `com.decodingus.atmosphere.workspace`
 
 **Future Scope Records:**
+
 - `com.decodingus.atmosphere.genotype`
 - `com.decodingus.atmosphere.imputation`
 - `com.decodingus.atmosphere.populationBreakdown`
@@ -2529,89 +3016,90 @@ We listen for `com.atproto.sync.subscribeRepos` events containing operations for
 
 #### Biosample Events
 
-| Event | Description | DecodingUs Logic |
-|:---|:---|:---|
-| **Create** | User creates a new biosample | 1. Extract `citizenDid` and record body.<br>2. Create `biosample` row with donor metadata and haplogroups (computed locally in Navigator Workbench).<br>3. Store `at_uri` and `at_cid`.<br>4. If `haplogroups` contains `privateVariants`, add to branch discovery consensus pool.<br>5. `sequenceRunRefs` and `genotypeRefs` may be empty initially. |
-| **Update** | User modifies biosample metadata | 1. Lookup by `at_uri`.<br>2. Compare `at_cid` for version conflict.<br>3. Check `meta.lastModifiedField` for targeted update.<br>4. Update only changed fields (description, haplogroups, etc.).<br>5. Update `at_cid` and `meta.version`. |
-| **Delete** | User removes biosample | 1. Lookup by `at_uri`.<br>2. Soft-delete biosample.<br>3. Mark related sequence runs, genotypes, and alignments as orphaned (do not delete).<br>4. Revoke any active `matchConsent`. |
+| Event      | Description                      | DecodingUs Logic                                                                                                                                                                                                                                                                                                                                      |
+|:-----------|:---------------------------------|:------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| **Create** | User creates a new biosample     | 1. Extract `citizenDid` and record body.<br>2. Create `biosample` row with donor metadata and haplogroups (computed locally in Navigator Workbench).<br>3. Store `at_uri` and `at_cid`.<br>4. If `haplogroups` contains `privateVariants`, add to branch discovery consensus pool.<br>5. `sequenceRunRefs` and `genotypeRefs` may be empty initially. |
+| **Update** | User modifies biosample metadata | 1. Lookup by `at_uri`.<br>2. Compare `at_cid` for version conflict.<br>3. Check `meta.lastModifiedField` for targeted update.<br>4. Update only changed fields (description, haplogroups, etc.).<br>5. Update `at_cid` and `meta.version`.                                                                                                            |
+| **Delete** | User removes biosample           | 1. Lookup by `at_uri`.<br>2. Soft-delete biosample.<br>3. Mark related sequence runs, genotypes, and alignments as orphaned (do not delete).<br>4. Revoke any active `matchConsent`.                                                                                                                                                                  |
 
 #### Sequence Run Events
 
-| Event | Description | DecodingUs Logic |
-|:---|:---|:---|
+| Event      | Description                    | DecodingUs Logic                                                                                                                                                                                                                                                      |
+|:-----------|:-------------------------------|:----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
 | **Create** | User adds a new sequencing run | 1. Resolve `biosampleRef` to internal biosample ID.<br>2. Create `sequence_libraries` row.<br>3. Store `at_uri` and `at_cid`.<br>4. If `instrumentId` present, trigger lab inference check.<br>5. Update parent biosample's `sequenceRunRefs` if not already present. |
-| **Update** | User updates run metadata | 1. Lookup by `at_uri`.<br>2. Update only changed fields (files, metrics).<br>3. Parent biosample unchanged. |
-| **Delete** | User removes a run | 1. Soft-delete sequence run.<br>2. Mark child alignments as orphaned.<br>3. Remove from parent's `sequenceRunRefs`. |
+| **Update** | User updates run metadata      | 1. Lookup by `at_uri`.<br>2. Update only changed fields (files, metrics).<br>3. Parent biosample unchanged.                                                                                                                                                           |
+| **Delete** | User removes a run             | 1. Soft-delete sequence run.<br>2. Mark child alignments as orphaned.<br>3. Remove from parent's `sequenceRunRefs`.                                                                                                                                                   |
 
 #### Alignment Events
 
-| Event | Description | DecodingUs Logic |
-|:---|:---|:---|
-| **Create** | User adds alignment results | 1. Resolve `sequenceRunRef` to internal sequence run ID.<br>2. Create `alignments` row with metrics.<br>3. Store `at_uri` and `at_cid`. |
-| **Update** | User updates metrics or files | 1. Lookup by `at_uri`.<br>2. Update metrics or file references.<br>3. Parent records unchanged (key benefit). |
-| **Delete** | User removes alignment | 1. Soft-delete alignment only.<br>2. Parent sequence run unchanged. |
+| Event      | Description                   | DecodingUs Logic                                                                                                                        |
+|:-----------|:------------------------------|:----------------------------------------------------------------------------------------------------------------------------------------|
+| **Create** | User adds alignment results   | 1. Resolve `sequenceRunRef` to internal sequence run ID.<br>2. Create `alignments` row with metrics.<br>3. Store `at_uri` and `at_cid`. |
+| **Update** | User updates metrics or files | 1. Lookup by `at_uri`.<br>2. Update metrics or file references.<br>3. Parent records unchanged (key benefit).                           |
+| **Delete** | User removes alignment        | 1. Soft-delete alignment only.<br>2. Parent sequence run unchanged.                                                                     |
 
 #### Genotype Events (Future)
 
-| Event | Description | DecodingUs Logic |
-|:---|:---|:---|
-| **Create** | User adds genotype data | 1. Resolve `biosampleRef` to internal biosample ID.<br>2. Create `genotype_data` row with metadata (file info, chip type).<br>3. Haplogroup calling performed locally in Navigator Workbench; results sync via biosample haplogroups.<br>4. IBD analysis performed locally; only `matchConsent` determines visibility in potential matches. |
-| **Update** | User updates genotype metadata | 1. Lookup by `at_uri`.<br>2. Update chip info, file metadata.<br>3. If haplogroup results changed, biosample update follows separately. |
-| **Delete** | User removes genotype | 1. Soft-delete genotype.<br>2. Orphan any dependent imputation records.<br>3. Remove from IBD matching index. |
+| Event      | Description                    | DecodingUs Logic                                                                                                                                                                                                                                                                                                                            |
+|:-----------|:-------------------------------|:--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| **Create** | User adds genotype data        | 1. Resolve `biosampleRef` to internal biosample ID.<br>2. Create `genotype_data` row with metadata (file info, chip type).<br>3. Haplogroup calling performed locally in Navigator Workbench; results sync via biosample haplogroups.<br>4. IBD analysis performed locally; only `matchConsent` determines visibility in potential matches. |
+| **Update** | User updates genotype metadata | 1. Lookup by `at_uri`.<br>2. Update chip info, file metadata.<br>3. If haplogroup results changed, biosample update follows separately.                                                                                                                                                                                                     |
+| **Delete** | User removes genotype          | 1. Soft-delete genotype.<br>2. Orphan any dependent imputation records.<br>3. Remove from IBD matching index.                                                                                                                                                                                                                               |
 
 #### Instrument Observation Events (Future)
 
-| Event | Description | DecodingUs Logic |
-|:---|:---|:---|
+| Event      | Description                  | DecodingUs Logic                                                                                                                                                                                                                |
+|:-----------|:-----------------------------|:--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
 | **Create** | User submits lab observation | 1. Record observation in `instrument_observation` table.<br>2. Aggregate with existing observations for same `instrumentId`.<br>3. Update proposal if threshold reached.<br>4. Flag for curator review if confidence increases. |
-| **Update** | User corrects observation | 1. Update observation.<br>2. Recalculate consensus. |
-| **Delete** | User retracts observation | 1. Remove observation.<br>2. Recalculate consensus. |
+| **Update** | User corrects observation    | 1. Update observation.<br>2. Recalculate consensus.                                                                                                                                                                             |
+| **Delete** | User retracts observation    | 1. Remove observation.<br>2. Recalculate consensus.                                                                                                                                                                             |
 
 #### Match Consent Events (Future)
 
-| Event | Description | DecodingUs Logic |
-|:---|:---|:---|
+| Event      | Description             | DecodingUs Logic                                                                                                                                                                                    |
+|:-----------|:------------------------|:----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
 | **Create** | User opts into matching | 1. Create consent record.<br>2. Include biosample in potential match discovery (matching computed locally, candidates identified network-wide).<br>3. Set visibility level based on `consentLevel`. |
-| **Update** | User modifies consent | 1. Update consent parameters.<br>2. Adjust match visibility accordingly.<br>3. May need to reprocess matches. |
-| **Delete** | User revokes consent | 1. Remove from active matching pool.<br>2. Remove matches from other users' match lists.<br>3. Preserve audit trail. |
+| **Update** | User modifies consent   | 1. Update consent parameters.<br>2. Adjust match visibility accordingly.<br>3. May need to reprocess matches.                                                                                       |
+| **Delete** | User revokes consent    | 1. Remove from active matching pool.<br>2. Remove matches from other users' match lists.<br>3. Preserve audit trail.                                                                                |
 
 #### Match List Events (Future)
 
-| Event | Description | DecodingUs Logic |
-|:---|:---|:---|
+| Event      | Description                     | DecodingUs Logic                                                                                                                                        |
+|:-----------|:--------------------------------|:--------------------------------------------------------------------------------------------------------------------------------------------------------|
 | **Create** | AppView publishes match results | 1. Validate this is from authorized AppView.<br>2. Store match data for citizen access.<br>3. This is typically written BY DecodingUs, not by citizens. |
-| **Update** | AppView updates matches | 1. Replace match list with new version.<br>2. Notify citizen of significant changes. |
+| **Update** | AppView updates matches         | 1. Replace match list with new version.<br>2. Notify citizen of significant changes.                                                                    |
 
 #### STR Profile Events
 
-| Event | Description | DecodingUs Logic |
-|:---|:---|:---|
-| **Create** | User adds STR profile | 1. Resolve `biosampleRef` to internal biosample ID.<br>2. Create `str_profiles` row.<br>3. Parse and validate marker values (handle simple, multi-copy, complex).<br>4. Update biosample's `strProfileRef` if not already set. |
-| **Update** | User updates STR data | 1. Lookup by `at_uri`.<br>2. Update marker values (e.g., adding more panels).<br>3. Trigger recomputation of group project comparisons if member. |
-| **Delete** | User removes STR profile | 1. Soft-delete profile.<br>2. Remove from project STR analyses. |
+| Event      | Description              | DecodingUs Logic                                                                                                                                                                                                               |
+|:-----------|:-------------------------|:-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| **Create** | User adds STR profile    | 1. Resolve `biosampleRef` to internal biosample ID.<br>2. Create `str_profiles` row.<br>3. Parse and validate marker values (handle simple, multi-copy, complex).<br>4. Update biosample's `strProfileRef` if not already set. |
+| **Update** | User updates STR data    | 1. Lookup by `at_uri`.<br>2. Update marker values (e.g., adding more panels).<br>3. Trigger recomputation of group project comparisons if member.                                                                              |
+| **Delete** | User removes STR profile | 1. Soft-delete profile.<br>2. Remove from project STR analyses.                                                                                                                                                                |
 
 #### Haplogroup Ancestral STR Events (Future)
 
-| Event | Description | DecodingUs Logic |
-|:---|:---|:---|
-| **Create** | AppView computes ancestral state | 1. Validate this is from authorized AppView.<br>2. Store ancestral reconstruction for haplogroup node.<br>3. This is computed BY DecodingUs from descendant samples. |
-| **Update** | AppView recomputes after new data | 1. Replace with new reconstruction.<br>2. Update confidence scores and TMRCA estimates. |
+| Event      | Description                       | DecodingUs Logic                                                                                                                                                     |
+|:-----------|:----------------------------------|:---------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| **Create** | AppView computes ancestral state  | 1. Validate this is from authorized AppView.<br>2. Store ancestral reconstruction for haplogroup node.<br>3. This is computed BY DecodingUs from descendant samples. |
+| **Update** | AppView recomputes after new data | 1. Replace with new reconstruction.<br>2. Update confidence scores and TMRCA estimates.                                                                              |
 
 ### 3. Schema Requirements
 
 To support robust syncing, internal tables require these tracking fields:
 
-| Field | Type | Description |
-|:---|:---|:---|
-| `at_uri` | String, Unique | Canonical decentralized address for lookups |
-| `at_cid` | String | Content identifier for version/conflict detection |
-| `at_version` | Integer | Mirrors `meta.version` for optimistic locking |
-| `at_status` | Enum | `active`, `orphaned`, `deleted` |
-| `at_synced_at` | Timestamp | Last successful sync from firehose |
+| Field          | Type           | Description                                       |
+|:---------------|:---------------|:--------------------------------------------------|
+| `at_uri`       | String, Unique | Canonical decentralized address for lookups       |
+| `at_cid`       | String         | Content identifier for version/conflict detection |
+| `at_version`   | Integer        | Mirrors `meta.version` for optimistic locking     |
+| `at_status`    | Enum           | `active`, `orphaned`, `deleted`                   |
+| `at_synced_at` | Timestamp      | Last successful sync from firehose                |
 
 ### 4. Orphan Handling
 
 When a parent record is deleted but children exist:
+
 1. Children are marked `orphaned` (not deleted)
 2. Orphaned records are hidden from normal queries
 3. If parent is recreated with same `at_uri`, children can be reattached
@@ -2620,6 +3108,7 @@ When a parent record is deleted but children exist:
 ### 5. Conflict Resolution
 
 When processing firehose events:
+
 1. Compare incoming `at_cid` with stored value
 2. If different, compare `meta.version` numbers
 3. Higher version wins; on tie, later timestamp wins
@@ -2655,7 +3144,12 @@ When processing firehose events:
       "mismatchingSnps": 2,
       "ancestralMatches": 3000,
       "treeDepth": 25,
-      "lineagePath": ["R", "R1", "R1b", "R-M269"],
+      "lineagePath": [
+        "R",
+        "R1",
+        "R1b",
+        "R-M269"
+      ],
       "privateVariants": {
         "variants": [
           {
@@ -2679,7 +3173,15 @@ When processing firehose events:
       "mismatchingSnps": 0,
       "ancestralMatches": 800,
       "treeDepth": 18,
-      "lineagePath": ["L3", "N", "R", "HV", "H", "H1", "H1a"]
+      "lineagePath": [
+        "L3",
+        "N",
+        "R",
+        "HV",
+        "H",
+        "H1",
+        "H1a"
+      ]
     }
   },
   "sequenceRunRefs": [
@@ -2771,7 +3273,12 @@ When processing firehose events:
       "matchingSnps": 45,
       "mismatchingSnps": 2,
       "treeDepth": 8,
-      "lineagePath": ["R", "R1", "R1b", "R-M269"]
+      "lineagePath": [
+        "R",
+        "R1",
+        "R1b",
+        "R-M269"
+      ]
     },
     "mtDna": {
       "haplogroupName": "H1a",
@@ -2779,7 +3286,11 @@ When processing firehose events:
       "matchingSnps": 28,
       "mismatchingSnps": 0,
       "treeDepth": 4,
-      "lineagePath": ["H", "H1", "H1a"]
+      "lineagePath": [
+        "H",
+        "H1",
+        "H1a"
+      ]
     }
   },
   "populationBreakdownRef": "at://did:plc:alice123/com.decodingus.atmosphere.populationBreakdown/3jui7q2m1"
@@ -2798,7 +3309,11 @@ When processing firehose events:
   },
   "biosampleRef": "at://did:plc:alice123/com.decodingus.atmosphere.biosample/3jui7q2lx",
   "consentLevel": "FULL",
-  "allowedMatchTypes": ["IBD", "Y_STR", "AUTOSOMAL"],
+  "allowedMatchTypes": [
+    "IBD",
+    "Y_STR",
+    "AUTOSOMAL"
+  ],
   "minimumSegmentCm": 7.0,
   "shareContactInfo": true,
   "consentedAt": "2025-12-01T11:00:00Z"
@@ -2889,7 +3404,10 @@ When processing firehose events:
       "populationName": "Northwestern European",
       "superPopulation": "European",
       "percentage": 48.2,
-      "confidenceInterval": { "lower": 45.1, "upper": 51.3 },
+      "confidenceInterval": {
+        "lower": 45.1,
+        "upper": 51.3
+      },
       "rank": 1
     },
     {
@@ -2897,7 +3415,10 @@ When processing firehose events:
       "populationName": "British",
       "superPopulation": "European",
       "percentage": 22.5,
-      "confidenceInterval": { "lower": 19.8, "upper": 25.2 },
+      "confidenceInterval": {
+        "lower": 19.8,
+        "upper": 25.2
+      },
       "rank": 2
     },
     {
@@ -2905,7 +3426,10 @@ When processing firehose events:
       "populationName": "Iberian",
       "superPopulation": "European",
       "percentage": 15.3,
-      "confidenceInterval": { "lower": 12.1, "upper": 18.5 },
+      "confidenceInterval": {
+        "lower": 12.1,
+        "upper": 18.5
+      },
       "rank": 3
     },
     {
@@ -2913,7 +3437,10 @@ When processing firehose events:
       "populationName": "Finnish",
       "superPopulation": "European",
       "percentage": 8.7,
-      "confidenceInterval": { "lower": 6.2, "upper": 11.2 },
+      "confidenceInterval": {
+        "lower": 6.2,
+        "upper": 11.2
+      },
       "rank": 4
     },
     {
@@ -2921,7 +3448,10 @@ When processing firehose events:
       "populationName": "Yoruba",
       "superPopulation": "African",
       "percentage": 3.2,
-      "confidenceInterval": { "lower": 1.5, "upper": 4.9 },
+      "confidenceInterval": {
+        "lower": 1.5,
+        "upper": 4.9
+      },
       "rank": 5
     }
   ],
@@ -2929,15 +3459,31 @@ When processing firehose events:
     {
       "superPopulation": "European",
       "percentage": 94.7,
-      "populations": ["CEU", "GBR", "IBS", "FIN", "TSI"]
+      "populations": [
+        "CEU",
+        "GBR",
+        "IBS",
+        "FIN",
+        "TSI"
+      ]
     },
     {
       "superPopulation": "African",
       "percentage": 3.2,
-      "populations": ["YRI", "LWK", "ESN", "MSL", "GWD"]
+      "populations": [
+        "YRI",
+        "LWK",
+        "ESN",
+        "MSL",
+        "GWD"
+      ]
     }
   ],
-  "pcaCoordinates": [0.0234, -0.0156, 0.0089],
+  "pcaCoordinates": [
+    0.0234,
+    -0.0156,
+    0.0089
+  ],
   "analysisDate": "2025-12-08T16:00:00Z",
   "pipelineVersion": "1.0.0",
   "referenceVersion": "v1"
@@ -2967,25 +3513,43 @@ When processing firehose events:
   "markers": [
     {
       "marker": "DYS393",
-      "value": { "type": "simple", "repeats": 13 },
+      "value": {
+        "type": "simple",
+        "repeats": 13
+      },
       "panel": "Y12",
       "quality": "HIGH"
     },
     {
       "marker": "DYS390",
-      "value": { "type": "simple", "repeats": 24 },
+      "value": {
+        "type": "simple",
+        "repeats": 24
+      },
       "panel": "Y12",
       "quality": "HIGH"
     },
     {
       "marker": "DYS385a",
-      "value": { "type": "multiCopy", "copies": [11, 14] },
+      "value": {
+        "type": "multiCopy",
+        "copies": [
+          11,
+          14
+        ]
+      },
       "panel": "Y12",
       "quality": "HIGH"
     },
     {
       "marker": "DYS385b",
-      "value": { "type": "multiCopy", "copies": [11, 14] },
+      "value": {
+        "type": "multiCopy",
+        "copies": [
+          11,
+          14
+        ]
+      },
       "panel": "Y12",
       "quality": "HIGH"
     },
@@ -2994,9 +3558,21 @@ When processing firehose events:
       "value": {
         "type": "complex",
         "alleles": [
-          { "repeats": 22, "count": 1, "designation": "t" },
-          { "repeats": 25, "count": 2, "designation": "c" },
-          { "repeats": 26.1, "count": 1, "designation": "t" }
+          {
+            "repeats": 22,
+            "count": 1,
+            "designation": "t"
+          },
+          {
+            "repeats": 25,
+            "count": 2,
+            "designation": "c"
+          },
+          {
+            "repeats": 26.1,
+            "count": 1,
+            "designation": "t"
+          }
         ],
         "rawNotation": "22t-25c-26.1t"
       },
@@ -3005,43 +3581,67 @@ When processing firehose events:
     },
     {
       "marker": "DYS19",
-      "value": { "type": "simple", "repeats": 14 },
+      "value": {
+        "type": "simple",
+        "repeats": 14
+      },
       "panel": "Y12",
       "quality": "HIGH"
     },
     {
       "marker": "DYS391",
-      "value": { "type": "simple", "repeats": 11 },
+      "value": {
+        "type": "simple",
+        "repeats": 11
+      },
       "panel": "Y12",
       "quality": "HIGH"
     },
     {
       "marker": "DYS439",
-      "value": { "type": "simple", "repeats": 12 },
+      "value": {
+        "type": "simple",
+        "repeats": 12
+      },
       "panel": "Y25",
       "quality": "HIGH"
     },
     {
       "marker": "DYS389i",
-      "value": { "type": "simple", "repeats": 13 },
+      "value": {
+        "type": "simple",
+        "repeats": 13
+      },
       "panel": "Y12",
       "quality": "HIGH"
     },
     {
       "marker": "DYS389ii",
-      "value": { "type": "simple", "repeats": 29 },
+      "value": {
+        "type": "simple",
+        "repeats": 29
+      },
       "panel": "Y12",
       "quality": "HIGH"
     },
     {
       "marker": "DYS458",
-      "value": { "type": "simple", "repeats": 17 },
+      "value": {
+        "type": "simple",
+        "repeats": 17
+      },
       "panel": "Y37",
       "quality": "HIGH"
     },
     {
       "marker": "DYS459a",
-      "value": { "type": "multiCopy", "copies": [9, 10] },
+      "value": {
+        "type": "multiCopy",
+        "copies": [
+          9,
+          10
+        ]
+      },
       "panel": "Y37",
       "quality": "HIGH"
     }
@@ -3069,7 +3669,10 @@ When processing firehose events:
   "ancestralMarkers": [
     {
       "marker": "DYS393",
-      "ancestralValue": { "type": "simple", "repeats": 13 },
+      "ancestralValue": {
+        "type": "simple",
+        "repeats": 13
+      },
       "confidence": 0.98,
       "supportingSamples": 4521,
       "variance": 0.15,
@@ -3077,7 +3680,10 @@ When processing firehose events:
     },
     {
       "marker": "DYS390",
-      "ancestralValue": { "type": "simple", "repeats": 24 },
+      "ancestralValue": {
+        "type": "simple",
+        "repeats": 24
+      },
       "confidence": 0.95,
       "supportingSamples": 4489,
       "variance": 0.42,
@@ -3085,7 +3691,13 @@ When processing firehose events:
     },
     {
       "marker": "DYS385a",
-      "ancestralValue": { "type": "multiCopy", "copies": [11, 14] },
+      "ancestralValue": {
+        "type": "multiCopy",
+        "copies": [
+          11,
+          14
+        ]
+      },
       "confidence": 0.91,
       "supportingSamples": 4320,
       "variance": 0.68,
@@ -3093,7 +3705,10 @@ When processing firehose events:
     },
     {
       "marker": "DYS19",
-      "ancestralValue": { "type": "simple", "repeats": 14 },
+      "ancestralValue": {
+        "type": "simple",
+        "repeats": 14
+      },
       "confidence": 0.97,
       "supportingSamples": 4510,
       "variance": 0.22,
@@ -3116,8 +3731,14 @@ When processing firehose events:
   "branchMutations": [
     {
       "marker": "DYS458",
-      "fromValue": { "type": "simple", "repeats": 16 },
-      "toValue": { "type": "simple", "repeats": 17 },
+      "fromValue": {
+        "type": "simple",
+        "repeats": 16
+      },
+      "toValue": {
+        "type": "simple",
+        "repeats": 17
+      },
       "stepChange": 1,
       "confidence": 0.82
     }
@@ -3134,6 +3755,7 @@ When processing firehose events:
 **Scenario:** User already has a biosample with one 30x WGS. They add a new 60x deep WGS from a different platform.
 
 **Local Analysis Flow (in Navigator Workbench):**
+
 1. User aligns new PacBio data locally (GRCh38)
 2. Navigator computes coverage metrics, haplogroups locally
 3. Navigator syncs metadata to PDS
@@ -3163,6 +3785,7 @@ When processing firehose events:
 **Scenario:** User imports their 23andMe data in Navigator Workbench and opts into matching.
 
 **Local Analysis Flow (in Navigator Workbench):**
+
 1. User imports 23andMe file locally
 2. Navigator computes haplogroups, ancestry, IBD segments locally
 3. Navigator syncs metadata to PDS (haplogroups, ancestry percentages, consent)
@@ -3215,38 +3838,45 @@ When processing firehose events:
 
 ## Future Scope Summary
 
-| Record Type | Planning Document | Purpose |
-|:---|:---|:---|
-| `genotype` | multi-test-type-roadmap.md | Chip/array data support (🚧 In Development) |
-| `imputation` | multi-test-type-roadmap.md | Imputed genotype results |
-| `populationBreakdown` | ibd-matching-system.md, AncestryAnalysis.md | Ancestry composition (🚧 In Development) |
-| `matchConsent` | ibd-matching-system.md | IBD matching opt-in |
-| `matchList` | ibd-matching-system.md | IBD match results |
-| `matchRequest` | ibd-matching-system.md | Match contact requests |
-| `instrumentObservation` | sequencer-lab-inference-system.md | Crowdsourced lab discovery |
-| `privateVariants` (in defs) | haplogroup-discovery-system.md | Novel variant tracking |
-| `strProfile` | Y-DNA STR Support | Individual Y-STR marker data |
-| `haplogroupAncestralStr` | Y-DNA Tree Enhancement | Reconstructed ancestral STR states |
-| `haplogroupReconciliation` | MultiRunReconciliation.md | Multi-run haplogroup reconciliation and conflict resolution |
-| `haplogroupUpdate` | appview-pds-backfeed-system.md | AppView notification of haplogroup refinement |
-| `branchDiscovery` | appview-pds-backfeed-system.md | AppView notification of new branch from private variants |
-| `treeVersionUpdate` | appview-pds-backfeed-system.md | AppView notification of haplogroup tree version change |
-| `potentialMatchList` | appview-pds-backfeed-system.md | Potential match candidates for user exploration |
-| `confirmedMatch` | appview-pds-backfeed-system.md | Stamped match when both parties agree |
-| `syncStatus` | appview-pds-backfeed-system.md | Track PDS-AppView synchronization state |
-| `updateDigest` | appview-pds-backfeed-system.md | Daily digest of all updates |
+| Record Type                 | Planning Document                           | Purpose                                                     |
+|:----------------------------|:--------------------------------------------|:------------------------------------------------------------|
+| `genotype`                  | multi-test-type-roadmap.md                  | Chip/array data support (🚧 In Development)                 |
+| `imputation`                | multi-test-type-roadmap.md                  | Imputed genotype results                                    |
+| `populationBreakdown`       | ibd-matching-system.md, AncestryAnalysis.md | Ancestry composition (🚧 In Development)                    |
+| `matchConsent`              | ibd-matching-system.md                      | IBD matching opt-in                                         |
+| `matchList`                 | ibd-matching-system.md                      | IBD match results                                           |
+| `matchRequest`              | ibd-matching-system.md                      | Match contact requests                                      |
+| `instrumentObservation`     | sequencer-lab-inference-system.md           | Crowdsourced lab discovery                                  |
+| `privateVariants` (in defs) | haplogroup-discovery-system.md              | Novel variant tracking                                      |
+| `strProfile`                | Y-DNA STR Support                           | Individual Y-STR marker data                                |
+| `haplogroupAncestralStr`    | Y-DNA Tree Enhancement                      | Reconstructed ancestral STR states                          |
+| `haplogroupReconciliation`  | MultiRunReconciliation.md                   | Multi-run haplogroup reconciliation and conflict resolution |
+| `haplogroupUpdate`          | appview-pds-backfeed-system.md              | AppView notification of haplogroup refinement               |
+| `branchDiscovery`           | appview-pds-backfeed-system.md              | AppView notification of new branch from private variants    |
+| `treeVersionUpdate`         | appview-pds-backfeed-system.md              | AppView notification of haplogroup tree version change      |
+| `potentialMatchList`        | appview-pds-backfeed-system.md              | Potential match candidates for user exploration             |
+| `confirmedMatch`            | appview-pds-backfeed-system.md              | Stamped match when both parties agree                       |
+| `syncStatus`                | appview-pds-backfeed-system.md              | Track PDS-AppView synchronization state                     |
+| `updateDigest`              | appview-pds-backfeed-system.md              | Daily digest of all updates                                 |
+
+---
+
+## Edge Client Implementation Status
+
+See [Edge_Client_Implementation_Status.md](Edge_Client_Implementation_Status.md) for detailed implementation status tracking Navigator Desktop against this lexicon specification (~55% complete).
 
 ---
 
 ## Changelog
 
-| Version | Date | Changes |
-|:---|:---|:---|
-| 1.0 | 2025-12-05 | Initial design with CRUD-optimized record structure |
-| 1.1 | 2025-12-06 | Added future scope records from planning documents |
-| 1.2 | 2025-12-07 | Added STR profile and ancestral STR reconstruction records |
-| 1.3 | 2025-12-07 | Added backfeed record types for AppView-to-PDS updates |
-| 1.4 | 2025-12-07 | Edge computing compliance: Clarified all `files` fields store metadata only, updated CRUD examples to reflect local analysis model |
-| 1.5 | 2025-12-08 | Added multi-run reconciliation support: `haplogroupReconciliation` record, reconciliation definitions (reconciliationStatus, runHaplogroupCall, snpConflict, heteroplasmyObservation, identityVerification), updated biosample with reconciliation refs. Added `strHaplogroupPrediction` definition for STR-based haplogroup prediction with support for Nevgen, Hapest, YHaplo, SAPP algorithms |
-| 1.6 | 2025-12-08 | Enhanced ancestry analysis support: Updated `populationBreakdown` record with PCA projection algorithm details, two-tier panel support (AIMs/genome-wide), 33 reference populations from 1000G + HGDP/SGDP organized into 9 super-populations. Added new definitions: `superPopulationSummary`, `ancestryPanel`. Enhanced `populationComponent` with `superPopulation` and `rank` fields. Added IBD matching integration guidance. Status changed from Future Scope to In Development. |
-| 1.7 | 2025-12-08 | Multi-test-type support (Phase 1): Enhanced `genotype` record with test type taxonomy codes (ARRAY_23ANDME_V5, etc.), detailed marker statistics (Y/mtDNA/autosomal counts), and derived haplogroup support. Added Edge App processing documentation. Navigator Desktop now supports parsing 23andMe, AncestryDNA, FTDNA, MyHeritage, and LivingDNA raw data exports. Status changed from Future Scope to In Development. |
+| Version | Date       | Changes                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+|:--------|:-----------|:---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| 1.0     | 2025-12-05 | Initial design with CRUD-optimized record structure                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| 1.1     | 2025-12-06 | Added future scope records from planning documents                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| 1.2     | 2025-12-07 | Added STR profile and ancestral STR reconstruction records                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| 1.3     | 2025-12-07 | Added backfeed record types for AppView-to-PDS updates                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| 1.4     | 2025-12-07 | Edge computing compliance: Clarified all `files` fields store metadata only, updated CRUD examples to reflect local analysis model                                                                                                                                                                                                                                                                                                                                                     |
+| 1.5     | 2025-12-08 | Added multi-run reconciliation support: `haplogroupReconciliation` record, reconciliation definitions (reconciliationStatus, runHaplogroupCall, snpConflict, heteroplasmyObservation, identityVerification), updated biosample with reconciliation refs. Added `strHaplogroupPrediction` definition for STR-based haplogroup prediction with support for Nevgen, Hapest, YHaplo, SAPP algorithms                                                                                       |
+| 1.6     | 2025-12-08 | Enhanced ancestry analysis support: Updated `populationBreakdown` record with PCA projection algorithm details, two-tier panel support (AIMs/genome-wide), 33 reference populations from 1000G + HGDP/SGDP organized into 9 super-populations. Added new definitions: `superPopulationSummary`, `ancestryPanel`. Enhanced `populationComponent` with `superPopulation` and `rank` fields. Added IBD matching integration guidance. Status changed from Future Scope to In Development. |
+| 1.7     | 2025-12-08 | Multi-test-type support (Phase 1): Enhanced `genotype` record with test type taxonomy codes (ARRAY_23ANDME_V5, etc.), detailed marker statistics (Y/mtDNA/autosomal counts), and derived haplogroup support. Added Edge App processing documentation. Navigator Desktop now supports parsing 23andMe, AncestryDNA, FTDNA, MyHeritage, and LivingDNA raw data exports. Status changed from Future Scope to In Development.                                                              |
+| 1.8     | 2025-12-08 | Added Edge Client Implementation Status reference. Full tracking moved to dedicated document: Edge_Client_Implementation_Status.md                                                                                                                                                                                                                                                                                                                                                      |
