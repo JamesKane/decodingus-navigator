@@ -1848,4 +1848,121 @@ class WorkbenchViewModel(val workspaceService: WorkspaceService) {
         Left(s"Subject not found: $sampleAccession")
     }
   }
+
+  /**
+   * Runs ancestry analysis on chip/array data for a biosample.
+   *
+   * This uses the ChipAncestryAdapter to project chip genotypes onto PCA space
+   * and estimate population proportions. Unlike WGS ancestry analysis, chip data
+   * already has genotypes called at known positions so we can directly project
+   * without calling GATK HaplotypeCaller.
+   *
+   * @param sampleAccession The subject's accession ID
+   * @param profileUri The AT URI of the chip profile to analyze
+   * @param panelType AIMs (quick) or GenomeWide (detailed)
+   * @param onComplete Callback when analysis completes
+   */
+  def runChipAncestryAnalysis(
+    sampleAccession: String,
+    profileUri: String,
+    panelType: com.decodingus.ancestry.model.AncestryPanelType,
+    onComplete: Either[String, com.decodingus.ancestry.model.AncestryResult] => Unit
+  ): Unit = {
+    import com.decodingus.genotype.parser.ChipDataParser
+    import com.decodingus.genotype.processor.{ChipDataProcessor, ChipAncestryAdapter}
+
+    findSubject(sampleAccession) match {
+      case Some(subject) =>
+        // Find the chip profile
+        _workspace.value.main.chipProfiles.find(_.atUri.contains(profileUri)) match {
+          case Some(profile) =>
+            // Need the source file to re-parse genotypes
+            profile.files.headOption.flatMap(_.location) match {
+              case Some(filePath) =>
+                val file = new File(filePath)
+                if (!file.exists()) {
+                  onComplete(Left(s"Source file not found: $filePath"))
+                } else {
+                  analysisInProgress.value = true
+                  analysisError.value = ""
+                  analysisProgress.value = "Loading chip genotypes..."
+                  analysisProgressPercent.value = 0.1
+
+                  Future {
+                    try {
+                      // Re-parse the chip data to get genotypes
+                      val processor = new ChipDataProcessor()
+
+                      processor.process(file, (msg, done, total) => {
+                        updateProgress(msg, done)
+                      }) match {
+                        case Right(chipResult) =>
+                          updateProgress("Running ancestry analysis...", 0.5)
+
+                          // Run ancestry analysis
+                          val adapter = new ChipAncestryAdapter()
+                          adapter.analyze(chipResult, panelType, (msg, done, total) => {
+                            updateProgress(msg, 0.5 + done * 0.4)
+                          }) match {
+                            case Right(ancestryResult) =>
+                              Platform.runLater {
+                                updateProgress("Ancestry analysis complete.", 1.0)
+                                analysisInProgress.value = false
+
+                                // Store the result in the workspace
+                                val updatedSubject = subject.copy(
+                                  populationBreakdownRef = Some(s"local:ancestry:$sampleAccession:${java.util.UUID.randomUUID().toString.take(8)}"),
+                                  meta = subject.meta.updated("populationBreakdownRef")
+                                )
+                                val updatedSamples = _workspace.value.main.samples.map { s =>
+                                  if (s.sampleAccession == sampleAccession) updatedSubject else s
+                                }
+                                val updatedContent = _workspace.value.main.copy(samples = updatedSamples)
+                                _workspace.value = _workspace.value.copy(main = updatedContent)
+                                saveWorkspace()
+
+                                println(s"[ViewModel] Ancestry analysis complete for $sampleAccession: " +
+                                  s"${ancestryResult.percentages.take(3).map(p => s"${p.populationName}: ${f"${p.percentage}%.1f"}%").mkString(", ")}")
+                                onComplete(Right(ancestryResult))
+                              }
+
+                            case Left(analysisError) =>
+                              Platform.runLater {
+                                this.analysisInProgress.value = false
+                                this.analysisError.value = analysisError
+                                onComplete(Left(analysisError))
+                              }
+                          }
+
+                        case Left(parseError) =>
+                          Platform.runLater {
+                            analysisInProgress.value = false
+                            analysisError.value = parseError
+                            onComplete(Left(parseError))
+                          }
+                      }
+
+                    } catch {
+                      case e: Exception =>
+                        Platform.runLater {
+                          analysisInProgress.value = false
+                          analysisError.value = e.getMessage
+                          onComplete(Left(e.getMessage))
+                        }
+                    }
+                  }
+                }
+
+              case None =>
+                onComplete(Left("Chip profile has no source file location. Re-import the chip data."))
+            }
+
+          case None =>
+            onComplete(Left(s"Chip profile not found: $profileUri"))
+        }
+
+      case None =>
+        onComplete(Left(s"Subject not found: $sampleAccession"))
+    }
+  }
 }

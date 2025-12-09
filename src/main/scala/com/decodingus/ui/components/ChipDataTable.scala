@@ -204,12 +204,77 @@ class ChipDataTable(
 
   /** Handles launching ancestry analysis */
   private def handleAncestryAnalysis(profile: ChipProfile): Unit = {
-    // TODO: Implement ancestry analysis dialog similar to HaplogroupAnalysisDialog
-    new Alert(AlertType.Information) {
-      title = "Ancestry Analysis"
-      headerText = "Coming Soon"
-      contentText = "Ancestry analysis for chip data will be available in a future update."
-    }.showAndWait()
+    import com.decodingus.ancestry.model.AncestryPanelType
+
+    // Recommend panel type based on marker count
+    val recommendedPanel = if (profile.autosomalMarkersCalled >= 500000) {
+      AncestryPanelType.GenomeWide
+    } else {
+      AncestryPanelType.Aims
+    }
+
+    val panelLabel = recommendedPanel match {
+      case AncestryPanelType.Aims => "AIMs (~5k markers, faster)"
+      case AncestryPanelType.GenomeWide => "Genome-wide (~500k markers, detailed)"
+    }
+
+    // Confirm with user
+    val confirm = new Alert(AlertType.Confirmation) {
+      title = "Run Ancestry Analysis"
+      headerText = s"Analyze ${profile.vendor} chip data for ancestry"
+      contentText = s"""This will estimate population percentages using the $panelLabel panel.
+
+Markers: ${profile.autosomalMarkersCalled}
+Call Rate: ${f"${profile.callRate * 100}%.1f"}%
+
+Note: Reference data download may be required on first run."""
+    }
+
+    confirm.showAndWait() match {
+      case Some(ButtonType.OK) =>
+        profile.atUri match {
+          case Some(profileUri) =>
+            // Show progress dialog
+            val progressDialog = new AnalysisProgressDialog(
+              "Ancestry Analysis",
+              viewModel.analysisProgress,
+              viewModel.analysisProgressPercent,
+              viewModel.analysisInProgress
+            )
+
+            viewModel.runChipAncestryAnalysis(
+              subject.sampleAccession,
+              profileUri,
+              recommendedPanel,
+              onComplete = {
+                case Right(ancestryResult) =>
+                  Platform.runLater {
+                    // Show results dialog
+                    val resultDialog = new AncestryResultDialog(ancestryResult)
+                    resultDialog.showAndWait()
+                  }
+                case Left(error) =>
+                  Platform.runLater {
+                    new Alert(AlertType.Error) {
+                      title = "Ancestry Analysis Failed"
+                      headerText = "Could not complete ancestry analysis"
+                      contentText = error
+                    }.showAndWait()
+                  }
+              }
+            )
+
+            progressDialog.show()
+
+          case None =>
+            new Alert(AlertType.Error) {
+              title = "Error"
+              headerText = "Invalid chip profile"
+              contentText = "Profile has no AT URI."
+            }.showAndWait()
+        }
+      case _ => // User cancelled
+    }
   }
 
   // Action buttons
