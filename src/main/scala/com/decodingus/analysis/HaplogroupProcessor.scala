@@ -1,5 +1,6 @@
 package com.decodingus.analysis
 
+import com.decodingus.config.FeatureToggles
 import com.decodingus.haplogroup.caller.{GatkHaplotypeCallerProcessor, TwoPassCallerResult}
 import com.decodingus.haplogroup.model.{Haplogroup, HaplogroupResult, Locus}
 import com.decodingus.haplogroup.report.HaplogroupReportWriter
@@ -75,17 +76,44 @@ class HaplogroupProcessor {
         treeProvider.sourceBuild
       }
 
+      // Check if we can optimize by using reference genome's known haplogroup
+      // Only applies to Y-DNA currently (MT-DNA reference sources are less characterized)
+      val (pass1Loci, referenceHaplogroup) = if (treeType == TreeType.YDNA) {
+        FeatureToggles.referenceHaplogroups.getHaplogroups(referenceBuild) match {
+          case Some(haplogroupNames) =>
+            // Try to find the reference haplogroup in the tree (using any of the name variants)
+            val foundHaplogroup = haplogroupNames.flatMap(name => findHaplogroupByName(tree, name)).headOption
+            foundHaplogroup match {
+              case Some(refHg) =>
+                // Collect only loci on the path from root to reference haplogroup
+                val pathLoci = collectPathLoci(tree, refHg.name)
+                onProgress(s"Optimizing: Reference is ${refHg.name}, using ${pathLoci.size} path positions for pass 1...", 0.02, 1.0)
+                (pathLoci, Some(refHg.name))
+              case None =>
+                onProgress(s"Reference haplogroup not found in tree, using full tree (${allLoci.size} positions)...", 0.02, 1.0)
+                (allLoci, None)
+            }
+          case None =>
+            onProgress(s"No known haplogroup for $referenceBuild, using full tree (${allLoci.size} positions)...", 0.02, 1.0)
+            (allLoci, None)
+        }
+      } else {
+        // MT-DNA: use all loci for now
+        (allLoci, None)
+      }
+
       val referenceGateway = new ReferenceGateway((_, _) => {})
 
       referenceGateway.resolve(treeSourceBuild).flatMap { treeRefPath =>
-        // Check if cached sites VCF exists and is valid
-        val cachedSitesVcf = treeCache.getSitesVcfPath(treeProvider.cachePrefix, treeSourceBuild)
-        val initialAllelesVcf = if (treeCache.isSitesVcfValid(treeProvider.cachePrefix, treeSourceBuild)) {
+        // Cache key includes reference haplogroup for path-optimized VCFs
+        val cacheKeySuffix = referenceHaplogroup.map(h => s"-path-$h").getOrElse("")
+        val cachedSitesVcf = treeCache.getSitesVcfPath(s"${treeProvider.cachePrefix}$cacheKeySuffix", treeSourceBuild)
+        val initialAllelesVcf = if (treeCache.isSitesVcfValid(s"${treeProvider.cachePrefix}$cacheKeySuffix", treeSourceBuild)) {
           onProgress("Using cached sites VCF...", 0.05, 1.0)
           cachedSitesVcf
         } else {
-          onProgress("Creating sites VCF...", 0.05, 1.0)
-          createVcfAllelesFile(allLoci, treeRefPath.toString, treeType, Some(cachedSitesVcf))
+          onProgress(s"Creating sites VCF (${pass1Loci.size} positions)...", 0.05, 1.0)
+          createVcfAllelesFile(pass1Loci, treeRefPath.toString, treeType, Some(cachedSitesVcf))
         }
 
         val (allelesForCalling, performReverseLiftover) = if (referenceBuild == treeSourceBuild) {
@@ -299,20 +327,47 @@ class HaplogroupProcessor {
   }
 
   /**
+   * Find a haplogroup by name in the tree (case-insensitive).
+   */
+  private def findHaplogroupByName(tree: List[Haplogroup], name: String): Option[Haplogroup] = {
+    def search(haplogroup: Haplogroup): Option[Haplogroup] = {
+      if (haplogroup.name.equalsIgnoreCase(name)) {
+        Some(haplogroup)
+      } else {
+        haplogroup.children.flatMap(search).headOption
+      }
+    }
+    tree.flatMap(search).headOption
+  }
+
+  /**
+   * Collect all loci along the path from root to the specified terminal haplogroup.
+   * Used for optimized pass 1 calling when we know the reference genome's haplogroup.
+   */
+  private def collectPathLoci(tree: List[Haplogroup], terminalName: String): List[Locus] = {
+    findPath(tree, terminalName).flatMap(_.loci).distinct
+  }
+
+  /**
+   * Find the path from root to a haplogroup by name.
+   */
+  private def findPath(tree: List[Haplogroup], terminalName: String): List[Haplogroup] = {
+    def findPathFromNode(haplogroup: Haplogroup): Option[List[Haplogroup]] = {
+      if (haplogroup.name.equalsIgnoreCase(terminalName)) {
+        Some(List(haplogroup))
+      } else {
+        haplogroup.children.flatMap(findPathFromNode).headOption.map(path => haplogroup :: path)
+      }
+    }
+    tree.flatMap(findPathFromNode).headOption.getOrElse(List.empty)
+  }
+
+  /**
    * Collect all positions along the path from root to the specified terminal haplogroup.
    * Only these positions should be excluded from private variant detection.
    */
   private def collectPathPositions(tree: List[Haplogroup], terminalName: String): Set[Long] = {
-    def findPath(haplogroup: Haplogroup): Option[List[Haplogroup]] = {
-      if (haplogroup.name == terminalName) {
-        Some(List(haplogroup))
-      } else {
-        haplogroup.children.flatMap(findPath).headOption.map(path => haplogroup :: path)
-      }
-    }
-
-    val path = tree.flatMap(findPath).headOption.getOrElse(List.empty)
-    path.flatMap(_.loci.map(_.position)).toSet
+    findPath(tree, terminalName).flatMap(_.loci.map(_.position)).toSet
   }
 
   private def parseVcf(vcfFile: File): Map[Long, String] = {
