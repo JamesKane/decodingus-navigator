@@ -390,19 +390,25 @@ class SequenceDataTable(
             val summaryText = s"""Total Reads: ${fmt(metricsResult.totalReads)}
 PF Reads: ${fmt(metricsResult.pfReads)}
 Aligned: ${fmt(metricsResult.pfReadsAligned)} (${pct(metricsResult.pctPfReadsAligned)})
-Paired: ${fmt(metricsResult.readsPaired)} (${pct(metricsResult.pctReadsPaired)})
+Paired: ${fmt(metricsResult.readsAlignedInPairs)} (${pct(metricsResult.pctReadsAlignedInPairs)})
 Proper Pairs: ${pct(metricsResult.pctProperPairs)}
-Mean Read Length: ${metricsResult.meanReadLength.toInt} bp
+
+Read Length:
+  Median: ${metricsResult.medianReadLength.toInt} bp
+  Mean: ${f"${metricsResult.meanReadLength}%.1f"} bp
+  Std Dev: ${f"${metricsResult.stdReadLength}%.1f"} bp
+  Range: ${metricsResult.minReadLength} - ${metricsResult.maxReadLength} bp
 
 Insert Size:
   Median: ${metricsResult.medianInsertSize.toInt} bp
   Mean: ${f"${metricsResult.meanInsertSize}%.1f"} bp
   Std Dev: ${f"${metricsResult.stdInsertSize}%.1f"} bp
+  Range: ${metricsResult.minInsertSize} - ${metricsResult.maxInsertSize} bp
   Orientation: ${metricsResult.pairOrientation}"""
 
             new Alert(AlertType.Information) {
-              title = "Read/Insert Metrics Complete"
-              headerText = "CollectMultipleMetrics Results"
+              title = "Read Metrics Complete"
+              headerText = "Read & Insert Size Metrics"
               contentText = summaryText
             }.showAndWait()
 

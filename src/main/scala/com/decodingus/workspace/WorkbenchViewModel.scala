@@ -2127,9 +2127,9 @@ class WorkbenchViewModel(val workspaceService: WorkspaceService) {
   def runMultipleMetricsAnalysis(
     sampleAccession: String,
     sequenceRunIndex: Int,
-    onComplete: Either[String, com.decodingus.analysis.MultipleMetricsResult] => Unit
+    onComplete: Either[String, com.decodingus.analysis.ReadMetrics] => Unit
   ): Unit = {
-    import com.decodingus.analysis.{MultipleMetricsProcessor, ArtifactContext}
+    import com.decodingus.analysis.{UnifiedMetricsProcessor, ArtifactContext}
 
     findSubject(sampleAccession) match {
       case Some(subject) =>
@@ -2171,7 +2171,7 @@ class WorkbenchViewModel(val workspaceService: WorkspaceService) {
               case Right(referencePath) =>
                 analysisInProgress.value = true
                 analysisError.value = ""
-                analysisProgress.value = "Running CollectMultipleMetrics..."
+                analysisProgress.value = "Collecting read metrics..."
                 analysisProgressPercent.value = 0.0
 
                 // Create artifact context
@@ -2183,13 +2183,13 @@ class WorkbenchViewModel(val workspaceService: WorkspaceService) {
 
                 Future {
                   try {
-                    val processor = new MultipleMetricsProcessor()
+                    // Use UnifiedMetricsProcessor - no R dependency
+                    val processor = new UnifiedMetricsProcessor()
                     processor.process(
                       bamPath = bamPath,
                       referencePath = referencePath.toString,
                       onProgress = (msg, done, total) => updateProgress(msg, done),
-                      artifactContext = Some(artifactContext),
-                      totalReads = sequenceRun.totalReads
+                      artifactContext = Some(artifactContext)
                     ) match {
                       case Right(metricsResult) =>
                         Platform.runLater {
@@ -2201,21 +2201,22 @@ class WorkbenchViewModel(val workspaceService: WorkspaceService) {
                             pfReads = Some(metricsResult.pfReads),
                             pfReadsAligned = Some(metricsResult.pfReadsAligned),
                             pctPfReadsAligned = Some(metricsResult.pctPfReadsAligned),
-                            readsPaired = Some(metricsResult.readsPaired),
-                            pctReadsPaired = Some(metricsResult.pctReadsPaired),
+                            readsPaired = Some(metricsResult.readsAlignedInPairs),
+                            pctReadsPaired = Some(metricsResult.pctReadsAlignedInPairs),
                             pctProperPairs = Some(metricsResult.pctProperPairs),
                             readLength = Some(metricsResult.meanReadLength.toInt),
+                            maxReadLength = Some(metricsResult.maxReadLength),
                             meanInsertSize = Some(metricsResult.meanInsertSize),
                             medianInsertSize = Some(metricsResult.medianInsertSize),
                             stdInsertSize = Some(metricsResult.stdInsertSize),
                             pairOrientation = Some(metricsResult.pairOrientation),
-                            meta = sequenceRun.meta.updated("multipleMetrics")
+                            meta = sequenceRun.meta.updated("readMetrics")
                           )
 
                           // Use the existing updateSequenceRun method
                           updateSequenceRun(sampleAccession, sequenceRunIndex, updatedRun)
 
-                          println(s"[ViewModel] MultipleMetrics complete for $sampleAccession: " +
+                          println(s"[ViewModel] ReadMetrics complete for $sampleAccession: " +
                             s"${metricsResult.totalReads} reads, ${f"${metricsResult.pctPfReadsAligned * 100}%.1f"}% aligned, " +
                             s"median insert ${metricsResult.medianInsertSize.toInt}bp")
                           onComplete(Right(metricsResult))
