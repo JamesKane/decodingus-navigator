@@ -12,6 +12,7 @@ import com.decodingus.analysis.CallableLociResult
 import com.decodingus.workspace.model.{Biosample, SequenceRun, Alignment, AlignmentMetrics}
 import com.decodingus.workspace.WorkbenchViewModel
 import com.decodingus.haplogroup.tree.TreeType
+import com.decodingus.genotype.model.{TestTypes, TargetType}
 
 /**
  * Table component displaying sequencing runs for a subject.
@@ -44,60 +45,128 @@ class SequenceDataTable(
     }
   )
 
+  /**
+   * Calculate appropriate coverage display based on test type.
+   * - WGS: genome-wide mean coverage
+   * - WES: on-target coverage (higher than genome-wide)
+   * - Targeted Y-DNA: Y chromosome coverage
+   * - Targeted mtDNA: mtDNA coverage
+   */
+  private def formatCoverage(run: SequenceRun, alignment: Option[Alignment]): String = {
+    val metrics = alignment.flatMap(_.metrics)
+    val testType = TestTypes.byCode(run.testType)
+    val targetType = testType.map(_.targetType)
+
+    targetType match {
+      case Some(TargetType.YChromosome) =>
+        // For targeted Y-DNA, show Y coverage if available
+        // TODO: Add yCoverage to AlignmentMetrics when we calculate per-contig coverage
+        metrics.flatMap(_.meanCoverage).map(c => f"$c%.0fx").getOrElse("—")
+
+      case Some(TargetType.MtDna) =>
+        // For targeted mtDNA, show mtDNA coverage
+        // TODO: Add mtCoverage to AlignmentMetrics
+        metrics.flatMap(_.meanCoverage).map(c => f"$c%.0fx").getOrElse("—")
+
+      case Some(TargetType.Autosomal) if run.testType == "WES" =>
+        // For WES, coverage is on-target (typically 50-100x)
+        metrics.flatMap(_.meanCoverage).map(c => f"$c%.0fx").getOrElse("—")
+
+      case _ =>
+        // WGS and others: genome-wide mean coverage
+        metrics.flatMap(_.meanCoverage).map(c => f"$c%.1fx").getOrElse("—")
+    }
+  }
+
+  /**
+   * Get abbreviated test type display name.
+   */
+  private def getTestTypeAbbrev(testType: String): String = {
+    SequenceRun.testTypeDisplayName(testType) match {
+      case name if name == testType => testType
+      case "Whole Genome Sequencing" => "WGS"
+      case "Whole Exome Sequencing" => "WES"
+      case "Low-Pass WGS" => "WGS-LP"
+      case "PacBio HiFi WGS" => "HiFi"
+      case "Nanopore WGS" => "ONT"
+      case "PacBio CLR WGS" => "CLR"
+      case n if n.startsWith("FTDNA Big Y") => testType
+      case n if n.contains("Y Elite") => "Y Elite"
+      case n if n.contains("Y-Prime") => "Y-Prime"
+      case n if n.contains("mtDNA Full") => "MT Full"
+      case n if n.contains("mtDNA Plus") => "MT Plus"
+      case n if n.contains("Control Region") => "MT HVR"
+      case _ => testType
+    }
+  }
+
   private val table = new TableView[SequenceRunRow](tableData) {
     prefHeight = 150
     columnResizePolicy = TableView.ConstrainedResizePolicy
 
-    // Platform + Instrument column (e.g., "Illumina NovaSeq")
+    // Lab column (sequencing facility)
+    columns += new TableColumn[SequenceRunRow, String] {
+      text = "Lab"
+      cellValueFactory = { row =>
+        val lab = row.value.run.sequencingFacility.getOrElse("—")
+        StringProperty(lab)
+      }
+      prefWidth = 100
+    }
+
+    // Sample column (from BAM @RG SM tag)
+    columns += new TableColumn[SequenceRunRow, String] {
+      text = "Sample"
+      cellValueFactory = { row =>
+        val sample = row.value.run.sampleName.getOrElse("—")
+        StringProperty(sample)
+      }
+      prefWidth = 100
+    }
+
+    // Platform column (e.g., "Illumina", "PacBio")
     columns += new TableColumn[SequenceRunRow, String] {
       text = "Platform"
       cellValueFactory = { row =>
-        val platform = row.value.run.platformName
-        val instrument = row.value.run.instrumentModel.getOrElse("")
-        val display = if (instrument.nonEmpty) s"$platform $instrument" else platform
-        StringProperty(display)
+        StringProperty(row.value.run.platformName)
       }
-      prefWidth = 140
+      prefWidth = 80
     }
 
-    // Test Type + Read Length + Library Layout (e.g., "WGS - 150bp PE")
+    // Instrument Type column (e.g., "NovaSeq", "Sequel II")
     columns += new TableColumn[SequenceRunRow, String] {
-      text = "Test"
+      text = "Instrument"
+      cellValueFactory = { row =>
+        val instrument = row.value.run.instrumentModel.getOrElse("—")
+        StringProperty(instrument)
+      }
+      prefWidth = 90
+    }
+
+    // Library Type column (test type abbreviation)
+    columns += new TableColumn[SequenceRunRow, String] {
+      text = "Library"
+      cellValueFactory = { row =>
+        StringProperty(getTestTypeAbbrev(row.value.run.testType))
+      }
+      prefWidth = 70
+    }
+
+    // Read Length + SE/PE column (e.g., "150bp PE")
+    columns += new TableColumn[SequenceRunRow, String] {
+      text = "Reads"
       cellValueFactory = { row =>
         val run = row.value.run
-        // Use display name from TestTypes if available, otherwise raw code
-        val testTypeDisplay = SequenceRun.testTypeDisplayName(run.testType) match {
-          case name if name == run.testType => run.testType // No mapping found, use code
-          case name =>
-            // For long names, use abbreviated form
-            name match {
-              case "Whole Genome Sequencing" => "WGS"
-              case "Whole Exome Sequencing" => "WES"
-              case "Low-Pass WGS" => "WGS-LP"
-              case "PacBio HiFi WGS" => "HiFi WGS"
-              case "Nanopore WGS" => "ONT WGS"
-              case "PacBio CLR WGS" => "CLR WGS"
-              case n if n.startsWith("FTDNA Big Y") => run.testType
-              case n if n.contains("Y Elite") => "Y Elite"
-              case n if n.contains("Y-Prime") => "Y-Prime"
-              case n if n.contains("mtDNA Full") => "MT Full"
-              case n if n.contains("mtDNA Plus") => "MT Plus"
-              case n if n.contains("Control Region") => "MT HVR"
-              case _ => run.testType
-            }
-        }
         val readLen = run.readLength.map(r => s"${r}bp").getOrElse("")
         val layout = run.libraryLayout.map {
           case "Paired-End" => "PE"
           case "Single-End" => "SE"
           case other => other
         }.getOrElse("")
-
-        val details = Seq(readLen, layout).filter(_.nonEmpty).mkString(" ")
-        val display = if (details.nonEmpty) s"$testTypeDisplay - $details" else testTypeDisplay
-        StringProperty(display)
+        val display = Seq(readLen, layout).filter(_.nonEmpty).mkString(" ")
+        StringProperty(if (display.nonEmpty) display else "—")
       }
-      prefWidth = 130
+      prefWidth = 70
     }
 
     // File column
@@ -107,33 +176,28 @@ class SequenceDataTable(
         val fileName = row.value.run.files.headOption.map(_.fileName).getOrElse("No file")
         StringProperty(fileName)
       }
-      prefWidth = 180
+      prefWidth = 140
     }
 
-    // Coverage column (from alignment metrics if available)
+    // Coverage column (smart display based on test type)
     columns += new TableColumn[SequenceRunRow, String] {
       text = "Coverage"
       cellValueFactory = { row =>
-        val coverage = row.value.runAlignments.headOption
-          .flatMap(_.metrics)
-          .flatMap(_.meanCoverage)
-          .map(c => f"$c%.1fx")
-          .getOrElse("—")
-        StringProperty(coverage)
+        StringProperty(formatCoverage(row.value.run, row.value.runAlignments.headOption))
       }
-      prefWidth = 70
+      prefWidth = 65
     }
 
     // Reference column
     columns += new TableColumn[SequenceRunRow, String] {
-      text = "Reference"
+      text = "Ref"
       cellValueFactory = { row =>
         val ref = row.value.runAlignments.headOption
           .map(_.referenceBuild)
           .getOrElse("—")
         StringProperty(ref)
       }
-      prefWidth = 80
+      prefWidth = 55
     }
 
     // Status column
@@ -144,7 +208,7 @@ class SequenceDataTable(
         val status = if (hasMetrics) "Analyzed" else "Pending"
         StringProperty(status)
       }
-      prefWidth = 70
+      prefWidth = 65
     }
 
     // Context menu for row actions

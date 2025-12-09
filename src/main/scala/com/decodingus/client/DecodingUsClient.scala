@@ -9,10 +9,40 @@ import scala.concurrent.{ExecutionContext, Future}
 
 case class PdsRegistrationRequest(did: String, token: String, pdsUrl: String)
 
+/**
+ * Information about a sequencing instrument and its associated lab.
+ *
+ * @param instrumentId Unique instrument identifier (matches @RG PU/PM fields)
+ * @param labName      Name of the sequencing facility
+ * @param isD2c        Whether this is a direct-to-consumer lab
+ * @param manufacturer Instrument manufacturer (e.g., "Illumina", "PacBio")
+ * @param model        Instrument model (e.g., "NovaSeq 6000", "Sequel II")
+ * @param websiteUrl   Lab website URL if available
+ */
+case class SequencerLabInfo(
+  instrumentId: String,
+  labName: String,
+  isD2c: Boolean,
+  manufacturer: Option[String] = None,
+  model: Option[String] = None,
+  websiteUrl: Option[String] = None
+)
+
+/**
+ * Response from the lab-instruments endpoint.
+ */
+case class SequencerLabInstrumentsResponse(
+  data: List[SequencerLabInfo],
+  count: Int
+)
+
 object DecodingUsClient {
 
   private val backend = HttpClientFutureBackend()
-  private val BaseUrl = uri"https://decoding.us.com/api/v1"
+  private val BaseUrl = uri"https://decoding-us.com/api/v1"
+
+  // In-memory cache for lab instruments (refreshed on demand)
+  @volatile private var labInstrumentsCache: Option[Map[String, SequencerLabInfo]] = None
 
   /**
    * Registers the user's PDS with the DecodingUs platform.
@@ -65,5 +95,54 @@ object DecodingUsClient {
       val seed = s"$userId-${libraryStats.sampleName}-${libraryStats.referenceBuild}"
       java.util.UUID.nameUUIDFromBytes(seed.getBytes).toString
     }
+  }
+
+  /**
+   * Fetches all lab-instrument associations from the API.
+   *
+   * @param ec Execution context
+   * @return Future containing the list of lab instrument info
+   */
+  def getLabInstruments()(implicit ec: ExecutionContext): Future[List[SequencerLabInfo]] = {
+    val request = basicRequest
+      .get(BaseUrl.addPath("sequencer", "lab-instruments"))
+      .response(asJson[SequencerLabInstrumentsResponse])
+
+    request.send(backend).flatMap { response =>
+      response.body match {
+        case Right(labResponse) =>
+          // Update cache
+          labInstrumentsCache = Some(labResponse.data.map(info => info.instrumentId -> info).toMap)
+          Future.successful(labResponse.data)
+        case Left(error) =>
+          Future.failed(new RuntimeException(s"Failed to fetch lab instruments: $error"))
+      }
+    }
+  }
+
+  /**
+   * Looks up lab information for a given instrument ID.
+   * Uses cached data if available, otherwise fetches from API.
+   *
+   * @param instrumentId The instrument identifier to look up
+   * @param ec           Execution context
+   * @return Future containing optional lab info if found
+   */
+  def lookupLabByInstrument(instrumentId: String)(implicit ec: ExecutionContext): Future[Option[SequencerLabInfo]] = {
+    labInstrumentsCache match {
+      case Some(cache) =>
+        Future.successful(cache.get(instrumentId))
+      case None =>
+        getLabInstruments().map { instruments =>
+          instruments.find(_.instrumentId == instrumentId)
+        }
+    }
+  }
+
+  /**
+   * Clears the lab instruments cache, forcing a refresh on next lookup.
+   */
+  def clearLabInstrumentsCache(): Unit = {
+    labInstrumentsCache = None
   }
 }

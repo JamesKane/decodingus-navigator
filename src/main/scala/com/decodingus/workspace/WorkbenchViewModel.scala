@@ -1,6 +1,7 @@
 package com.decodingus.workspace
 
-import com.decodingus.analysis.{ArtifactContext, CallableLociProcessor, CallableLociResult, HaplogroupProcessor, LibraryStatsProcessor, WgsMetricsProcessor}
+import com.decodingus.analysis.{ArtifactContext, CallableLociProcessor, CallableLociResult, HaplogroupProcessor, LibraryStatsProcessor, UnifiedMetricsProcessor, WgsMetricsProcessor}
+import com.decodingus.client.DecodingUsClient
 import com.decodingus.haplogroup.tree.{TreeType, TreeProviderType}
 import com.decodingus.auth.User
 import com.decodingus.config.FeatureToggles
@@ -663,10 +664,32 @@ class WorkbenchViewModel(val workspaceService: WorkspaceService) {
                   )
 
                   // Update the SequenceRun with inferred metadata
+                  val instrumentId = if (libraryStats.mostFrequentInstrumentId != "Unknown")
+                    Some(libraryStats.mostFrequentInstrumentId)
+                  else
+                    None
+
+                  // Only update sampleName if not already set (preserve manual edits)
+                  val sampleNameFromBam = seqRun.sampleName.orElse {
+                    if (libraryStats.sampleName != "Unknown") Some(libraryStats.sampleName) else None
+                  }
+
+                  // Extract fingerprint fields (preserve manual edits)
+                  val libraryIdFromBam = seqRun.libraryId.orElse {
+                    if (libraryStats.libraryId != "Unknown") Some(libraryStats.libraryId) else None
+                  }
+                  val platformUnitFromBam = seqRun.platformUnit.orElse(libraryStats.platformUnit)
+                  val runFingerprint = seqRun.runFingerprint.orElse(Some(libraryStats.computeRunFingerprint))
+
                   val updatedSeqRun = seqRun.copy(
                     meta = seqRun.meta.updated("analysis"),
                     platformName = libraryStats.inferredPlatform,
                     instrumentModel = Some(libraryStats.mostFrequentInstrument),
+                    instrumentId = instrumentId,
+                    sampleName = sampleNameFromBam,
+                    libraryId = libraryIdFromBam,
+                    platformUnit = platformUnitFromBam,
+                    runFingerprint = runFingerprint,
                     testType = inferTestType(libraryStats),
                     libraryLayout = Some(if (libraryStats.pairedReads > libraryStats.readCount / 2) "Paired-End" else "Single-End"),
                     totalReads = Some(libraryStats.readCount.toLong),
@@ -675,6 +698,13 @@ class WorkbenchViewModel(val workspaceService: WorkspaceService) {
                     meanInsertSize = calculateMeanInsertSize(libraryStats.insertSizeDistribution),
                     alignmentRefs = if (seqRun.alignmentRefs.contains(alignUri)) seqRun.alignmentRefs else seqRun.alignmentRefs :+ alignUri
                   )
+
+                  // Trigger facility lookup only if not already set (preserve manual edits)
+                  if (seqRun.sequencingFacility.isEmpty) {
+                    instrumentId.foreach { id =>
+                      lookupAndUpdateFacility(sampleAccession, index, id)
+                    }
+                  }
 
                   // Update workspace - update existing alignment or add new one
                   val updatedSequenceRuns = _workspace.value.main.sequenceRuns.map { sr =>
@@ -841,6 +871,167 @@ class WorkbenchViewModel(val workspaceService: WorkspaceService) {
         }
       case None =>
         println(s"[ViewModel] Cannot update sequence run: subject $sampleAccession not found")
+    }
+  }
+
+  /**
+   * Looks up the sequencing facility for an instrument ID via the API
+   * and updates the sequence run if found.
+   *
+   * This runs asynchronously in the background and updates the workspace
+   * when the lookup completes. Failures are logged but don't interrupt
+   * the main workflow.
+   *
+   * @param sampleAccession The subject's accession ID
+   * @param index           The sequence run index
+   * @param instrumentId    The instrument identifier to look up
+   */
+  private def lookupAndUpdateFacility(sampleAccession: String, index: Int, instrumentId: String): Unit = {
+    DecodingUsClient.lookupLabByInstrument(instrumentId).onComplete {
+      case Success(Some(labInfo)) =>
+        Platform.runLater {
+          getSequenceRun(sampleAccession, index).foreach { seqRun =>
+            // Only update if facility not already set
+            if (seqRun.sequencingFacility.isEmpty) {
+              val updatedRun = seqRun.copy(
+                sequencingFacility = Some(labInfo.labName),
+                // Also update instrument model if available from API
+                instrumentModel = labInfo.model.orElse(seqRun.instrumentModel)
+              )
+              updateSequenceRun(sampleAccession, index, updatedRun)
+              println(s"[ViewModel] Updated facility for instrument $instrumentId: ${labInfo.labName}")
+            }
+          }
+        }
+      case Success(None) =>
+        println(s"[ViewModel] No facility found for instrument ID: $instrumentId")
+      case Failure(error) =>
+        println(s"[ViewModel] Failed to lookup facility for instrument $instrumentId: ${error.getMessage}")
+    }
+  }
+
+  /**
+   * Manually triggers a facility lookup for a sequence run.
+   * Useful if the initial lookup failed or needs to be refreshed.
+   */
+  def refreshFacilityLookup(sampleAccession: String, index: Int): Unit = {
+    getSequenceRun(sampleAccession, index).foreach { seqRun =>
+      seqRun.instrumentId.foreach { instrumentId =>
+        lookupAndUpdateFacility(sampleAccession, index, instrumentId)
+      }
+    }
+  }
+
+  // --- Run Fingerprint Matching ---
+
+  /**
+   * Fingerprint match result indicating confidence level.
+   */
+  sealed trait FingerprintMatchResult
+  case class MatchFound(sequenceRun: SequenceRun, index: Int, confidence: String) extends FingerprintMatchResult
+  case object NoMatch extends FingerprintMatchResult
+
+  /**
+   * Find an existing sequence run that matches the given fingerprint.
+   * Used to detect when the same sequencing run has been aligned to different references.
+   *
+   * @param biosampleRef The biosample to search within
+   * @param fingerprint The computed fingerprint to match
+   * @param libraryStats Full stats for additional matching criteria
+   * @return Match result with confidence level
+   */
+  def findMatchingSequenceRun(
+    biosampleRef: String,
+    fingerprint: String,
+    libraryStats: LibraryStats
+  ): FingerprintMatchResult = {
+    val candidateRuns = _workspace.value.main.sequenceRuns
+      .filter(_.biosampleRef == biosampleRef)
+      .zipWithIndex
+
+    // Tier 1: Exact fingerprint match (HIGH confidence)
+    candidateRuns.find { case (run, _) =>
+      run.runFingerprint.contains(fingerprint)
+    }.map { case (run, idx) =>
+      MatchFound(run, idx, "HIGH")
+    }.getOrElse {
+      // Tier 2: PU match (HIGH confidence)
+      libraryStats.platformUnit.flatMap { pu =>
+        candidateRuns.find { case (run, _) =>
+          run.platformUnit.contains(pu)
+        }.map { case (run, idx) =>
+          MatchFound(run, idx, "HIGH")
+        }
+      }.getOrElse {
+        // Tier 3: LB + SM match (MEDIUM confidence)
+        if (libraryStats.libraryId != "Unknown" && libraryStats.sampleName != "Unknown") {
+          candidateRuns.find { case (run, _) =>
+            run.libraryId.contains(libraryStats.libraryId) &&
+            run.sampleName.contains(libraryStats.sampleName)
+          }.map { case (run, idx) =>
+            MatchFound(run, idx, "MEDIUM")
+          }.getOrElse(NoMatch)
+        } else {
+          NoMatch
+        }
+      }
+    }
+  }
+
+  /**
+   * Add an alignment to an existing sequence run (for multi-reference scenarios).
+   *
+   * @param sequenceRunIndex Index of the sequence run to add alignment to
+   * @param newAlignment The new alignment to add
+   * @param fileInfo The file info for the new alignment
+   */
+  def addAlignmentToExistingRun(
+    sampleAccession: String,
+    sequenceRunIndex: Int,
+    newAlignment: Alignment,
+    fileInfo: FileInfo
+  ): Unit = {
+    findSubject(sampleAccession).foreach { subject =>
+      val sequenceRuns = _workspace.value.main.getSequenceRunsForBiosample(subject)
+      if (sequenceRunIndex >= 0 && sequenceRunIndex < sequenceRuns.size) {
+        val seqRun = sequenceRuns(sequenceRunIndex)
+        val alignUri = newAlignment.atUri.getOrElse("")
+
+        // Add file to sequence run if not already present
+        val updatedFiles = if (seqRun.files.exists(_.checksum == fileInfo.checksum)) {
+          seqRun.files
+        } else {
+          seqRun.files :+ fileInfo
+        }
+
+        // Add alignment ref if not already present
+        val updatedAlignmentRefs = if (seqRun.alignmentRefs.contains(alignUri)) {
+          seqRun.alignmentRefs
+        } else {
+          seqRun.alignmentRefs :+ alignUri
+        }
+
+        val updatedSeqRun = seqRun.copy(
+          files = updatedFiles,
+          alignmentRefs = updatedAlignmentRefs,
+          meta = seqRun.meta.updated("alignment-added")
+        )
+
+        // Update workspace
+        val updatedSequenceRuns = _workspace.value.main.sequenceRuns.map { sr =>
+          if (sr.atUri == seqRun.atUri) updatedSeqRun else sr
+        }
+        val updatedAlignments = _workspace.value.main.alignments :+ newAlignment
+
+        val updatedContent = _workspace.value.main.copy(
+          sequenceRuns = updatedSequenceRuns,
+          alignments = updatedAlignments
+        )
+        _workspace.value = _workspace.value.copy(main = updatedContent)
+        saveWorkspace()
+
+        println(s"[ViewModel] Added ${newAlignment.referenceBuild} alignment to existing sequence run")
+      }
     }
   }
 

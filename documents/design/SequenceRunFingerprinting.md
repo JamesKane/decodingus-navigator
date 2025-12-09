@@ -1,6 +1,6 @@
 # Sequence Run Fingerprinting - Design Document
 
-## Status: Design
+## Status: Implemented (Phase 1)
 
 ## Problem Statement
 
@@ -24,29 +24,31 @@ The current duplicate detection uses SHA-256 checksum of the BAM/CRAM file. This
 
 ### Tier 1: Read Group (@RG) Header Matching
 
-BAM/CRAM files contain `@RG` (Read Group) headers with metadata about the sequencing run. Key fields:
+BAM/CRAM files contain `@RG` (Read Group) headers with metadata about the sequencing run.
 
-| Field | Description | Stability |
-|-------|-------------|-----------|
-| `ID` | Read group identifier | May change during re-alignment |
-| `SM` | Sample name | **Stable** - set at sequencing |
-| `LB` | Library identifier | **Stable** - identifies library prep |
-| `PU` | Platform unit (flowcell.lane.barcode) | **Stable** - unique to run |
-| `PL` | Platform (ILLUMINA, PACBIO, etc.) | **Stable** |
-| `PM` | Platform model | **Stable** |
-| `DT` | Run date | **Stable** |
-| `CN` | Sequencing center | **Stable** |
+**GATK Required Fields** (reliable in practice):
 
-**Composite Key (Primary):**
-```
-fingerprint = hash(SM + LB + PU + PL)
-```
+| Field | Description | GATK Required | Stability |
+|-------|-------------|---------------|-----------|
+| `ID` | Read group identifier | Yes | May change during re-alignment |
+| `SM` | Sample name | Yes | **Stable** - set at sequencing |
+| `LB` | Library identifier | Yes | **Stable** - identifies library prep |
+| `PL` | Platform (ILLUMINA, PACBIO, etc.) | Yes | **Stable** |
+| `PU` | Platform unit (flowcell.lane.barcode) | No* | **Stable** - most unique |
 
-The `PU` (Platform Unit) is particularly valuable:
-- Illumina: `{flowcell_id}:{lane}:{sample_barcode}` (e.g., `HXXXXXXXX:1:ATCACG`)
-- PacBio: `{movie_name}` (e.g., `m64011_191110_011234`)
+*PU is not strictly required by GATK but is used by BQSR when present.
 
-**Confidence Level:** HIGH if all fields present, MEDIUM if only SM+LB, LOW if only SM
+**Other fields** (CN, DT, PM, etc.) are inconsistent in the wild and cannot be relied upon.
+
+**Fingerprint Priority:**
+1. `PU` alone (if present) - most unique identifier
+2. `LB + SM + PL` combination - GATK-required fields
+3. Read statistics fallback - when headers are incomplete
+
+**Confidence Levels:**
+- HIGH: PU present, or exact fingerprint match
+- MEDIUM: LB + SM match (no PU)
+- LOW: Stats-only match (needs user confirmation)
 
 ### Tier 2: Read Statistics Fingerprinting
 

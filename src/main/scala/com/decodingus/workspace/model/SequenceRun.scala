@@ -14,6 +14,11 @@ import java.time.LocalDateTime
  * @param platformName       Sequencing platform (ILLUMINA, PACBIO, NANOPORE, ION_TORRENT, BGI, ELEMENT, ULTIMA)
  * @param instrumentModel    Specific instrument model (e.g., NovaSeq 6000, Sequel II)
  * @param instrumentId       Unique instrument identifier extracted from @RG headers (for lab inference)
+ * @param sequencingFacility Name of the sequencing facility/lab (inferred from instrumentId via API)
+ * @param sampleName         Sample name from BAM/CRAM @RG SM tag (may differ from biosample name)
+ * @param libraryId          Library identifier from @RG LB tag (GATK required, stable across re-alignments)
+ * @param platformUnit       Platform unit from @RG PU tag (flowcell.lane.barcode - best for fingerprinting)
+ * @param runFingerprint     Computed fingerprint hash for matching same run across different references
  * @param testType           Type of test (WGS, EXOME, TARGETED, RNA_SEQ, AMPLICON)
  * @param libraryLayout      Paired-end or Single-end (PAIRED, SINGLE)
  * @param totalReads         Total number of reads (from CollectAlignmentSummaryMetrics TOTAL_READS)
@@ -41,6 +46,11 @@ case class SequenceRun(
   platformName: String,
   instrumentModel: Option[String] = None,
   instrumentId: Option[String] = None,
+  sequencingFacility: Option[String] = None,
+  sampleName: Option[String] = None,
+  libraryId: Option[String] = None,
+  platformUnit: Option[String] = None,
+  runFingerprint: Option[String] = None,
   testType: String,
   libraryLayout: Option[String] = None,
   totalReads: Option[Long] = None,

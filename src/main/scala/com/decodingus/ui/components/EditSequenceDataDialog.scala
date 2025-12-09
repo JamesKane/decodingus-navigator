@@ -21,6 +21,20 @@ class EditSequenceDataDialog(
   val saveButtonType = new ButtonType("Save", ButtonBar.ButtonData.OKDone)
   dialogPane().buttonTypes = Seq(saveButtonType, ButtonType.Cancel)
 
+  // Lab (sequencing facility) - editable for manual override
+  private val labField = new TextField() {
+    text = existingRun.sequencingFacility.getOrElse("")
+    promptText = "e.g., Nebula Genomics, Dante Labs"
+    prefWidth = 200
+  }
+
+  // Sample name (from BAM @RG SM tag) - editable for manual override
+  private val sampleNameField = new TextField() {
+    text = existingRun.sampleName.getOrElse("")
+    promptText = "Sample name from BAM header"
+    prefWidth = 200
+  }
+
   // Platform selection
   private val platformCombo = new ComboBox[String] {
     items = ObservableBuffer(
@@ -112,40 +126,47 @@ class EditSequenceDataDialog(
     vgap = 10
     padding = Insets(20)
 
+    // Lab and Sample (at top - most likely to need manual editing)
+    add(new Label("Lab:"), 0, 0)
+    add(labField, 1, 0)
+
+    add(new Label("Sample:"), 0, 1)
+    add(sampleNameField, 1, 1)
+
     // Editable fields
-    add(new Label("Platform:"), 0, 0)
-    add(platformCombo, 1, 0)
+    add(new Label("Platform:"), 0, 2)
+    add(platformCombo, 1, 2)
 
-    add(new Label("Test Type:"), 0, 1)
-    add(testTypeCombo, 1, 1)
+    add(new Label("Test Type:"), 0, 3)
+    add(testTypeCombo, 1, 3)
 
-    add(new Label("Instrument:"), 0, 2)
-    add(instrumentField, 1, 2)
+    add(new Label("Instrument:"), 0, 4)
+    add(instrumentField, 1, 4)
 
-    add(new Label("Library Layout:"), 0, 3)
-    add(layoutCombo, 1, 3)
+    add(new Label("Library Layout:"), 0, 5)
+    add(layoutCombo, 1, 5)
 
     // Statistics (editable)
-    add(new Label("Total Reads:"), 0, 4)
-    add(totalReadsField, 1, 4)
+    add(new Label("Total Reads:"), 0, 6)
+    add(totalReadsField, 1, 6)
 
-    add(new Label("Read Length:"), 0, 5)
-    add(readLengthField, 1, 5)
+    add(new Label("Read Length:"), 0, 7)
+    add(readLengthField, 1, 7)
 
-    add(new Label("Insert Size:"), 0, 6)
-    add(insertSizeField, 1, 6)
+    add(new Label("Insert Size:"), 0, 8)
+    add(insertSizeField, 1, 8)
 
     // Read-only info
-    add(new Label("") { prefHeight = 10 }, 0, 7) // Spacer
+    add(new Label("") { prefHeight = 10 }, 0, 9) // Spacer
 
-    add(new Label("File:") { style = "-fx-text-fill: #888888;" }, 0, 8)
-    add(fileNameLabel, 1, 8)
+    add(new Label("File:") { style = "-fx-text-fill: #888888;" }, 0, 10)
+    add(fileNameLabel, 1, 10)
 
-    add(new Label("Reference:") { style = "-fx-text-fill: #888888;" }, 0, 9)
-    add(referenceLabel, 1, 9)
+    add(new Label("Reference:") { style = "-fx-text-fill: #888888;" }, 0, 11)
+    add(referenceLabel, 1, 11)
 
-    add(new Label("Aligner:") { style = "-fx-text-fill: #888888;" }, 0, 10)
-    add(alignerLabel, 1, 10)
+    add(new Label("Aligner:") { style = "-fx-text-fill: #888888;" }, 0, 12)
+    add(alignerLabel, 1, 12)
   }
 
   private val content = new VBox(10) {
@@ -161,8 +182,8 @@ class EditSequenceDataDialog(
 
   dialogPane().content = content
 
-  // Focus on platform field
-  javafx.application.Platform.runLater(() => platformCombo.requestFocus())
+  // Focus on lab field (most likely to need editing)
+  javafx.application.Platform.runLater(() => labField.requestFocus())
 
   resultConverter = dialogButton => {
     if (dialogButton == saveButtonType) {
@@ -183,6 +204,8 @@ class EditSequenceDataDialog(
       val libraryLayout = if (layoutValue == "Unknown") None else Some(layoutValue)
 
       Some(existingRun.copy(
+        sequencingFacility = Option(labField.text.value).filter(_.nonEmpty),
+        sampleName = Option(sampleNameField.text.value).filter(_.nonEmpty),
         platformName = platformCombo.value.value,
         testType = testTypeCombo.value.value,
         instrumentModel = Option(instrumentField.text.value).filter(_.nonEmpty),

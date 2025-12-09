@@ -26,7 +26,12 @@ class LibraryStatsProcessor {
 
     val aligner = detectAligner(header)
     val referenceBuild = detectReferenceBuild(header)
-    val sampleName = header.getReadGroups.asScala.headOption.map(_.getSample).getOrElse("Unknown")
+
+    // Extract @RG fields - these are stable across re-alignments to different references
+    val firstReadGroup = header.getReadGroups.asScala.headOption
+    val sampleName = firstReadGroup.flatMap(rg => Option(rg.getSample)).getOrElse("Unknown")
+    val libraryId = firstReadGroup.flatMap(rg => Option(rg.getLibrary)).getOrElse("Unknown")
+    val platformUnit = firstReadGroup.flatMap(rg => Option(rg.getPlatformUnit)).filter(_.nonEmpty)
 
     var readCount = 0
     var pairedReads = 0
@@ -42,7 +47,7 @@ class LibraryStatsProcessor {
     boundary {
       for (record <- recordIterator) {
         if (processedRecords >= MAX_SAMPLES) {
-          break(buildLibraryStats(readCount, pairedReads, lengthDistribution, insertSizeDistribution, aligner, referenceBuild, sampleName, flowCells, instruments, platformCounts))
+          break(buildLibraryStats(readCount, pairedReads, lengthDistribution, insertSizeDistribution, aligner, referenceBuild, sampleName, libraryId, platformUnit, flowCells, instruments, platformCounts))
         }
 
         processedRecords += 1
@@ -78,10 +83,10 @@ class LibraryStatsProcessor {
     }
 
     samReader.close()
-    buildLibraryStats(readCount, pairedReads, lengthDistribution, insertSizeDistribution, aligner, referenceBuild, sampleName, flowCells, instruments, platformCounts)
+    buildLibraryStats(readCount, pairedReads, lengthDistribution, insertSizeDistribution, aligner, referenceBuild, sampleName, libraryId, platformUnit, flowCells, instruments, platformCounts)
   }
 
-  private def buildLibraryStats(readCount: Int, pairedReads: Int, lengthDistribution: mutable.Map[Int, Int], insertSizeDistribution: mutable.Map[Long, Int], aligner: String, referenceBuild: String, sampleName: String, flowCells: mutable.Map[String, Int], instruments: mutable.Map[String, Int], platformCounts: mutable.Map[String, Int]): LibraryStats = {
+  private def buildLibraryStats(readCount: Int, pairedReads: Int, lengthDistribution: mutable.Map[Int, Int], insertSizeDistribution: mutable.Map[Long, Int], aligner: String, referenceBuild: String, sampleName: String, libraryId: String, platformUnit: Option[String], flowCells: mutable.Map[String, Int], instruments: mutable.Map[String, Int], platformCounts: mutable.Map[String, Int]): LibraryStats = {
     val mostFrequentInstrumentId = instruments.toSeq.sortBy(-_._2).headOption.map(_._1).getOrElse("Unknown")
     val primaryPlatform = platformCounts.toSeq.sortBy(-_._2).headOption.map(_._1).getOrElse("Unknown")
     val specificInstrumentModel = inferPlatform(primaryPlatform, mostFrequentInstrumentId)
@@ -94,8 +99,11 @@ class LibraryStatsProcessor {
       aligner = aligner,
       referenceBuild = referenceBuild,
       sampleName = sampleName,
+      libraryId = libraryId,
+      platformUnit = platformUnit,
       flowCells = flowCells.toMap,
       instruments = instruments.toMap,
+      mostFrequentInstrumentId = mostFrequentInstrumentId,
       mostFrequentInstrument = specificInstrumentModel,
       inferredPlatform = primaryPlatform,
       platformCounts = platformCounts.toMap
