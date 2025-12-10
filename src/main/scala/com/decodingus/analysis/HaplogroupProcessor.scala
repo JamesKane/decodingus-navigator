@@ -153,7 +153,8 @@ class HaplogroupProcessor {
           } else {
             onProgress(s"Reference mismatch: tree is $treeSourceBuild, BAM/CRAM is $referenceBuild. Performing liftover...", 0.1, 1.0)
             // Note: The contig parameter here for liftover still refers to the primary contig for the tree type.
-            val lifted = performLiftover(initialAllelesVcf, primaryContig, treeSourceBuild, referenceBuild, onProgress)
+            // Filter output to only keep expected contig (chrY or chrM) to exclude NUMT mappings
+            val lifted = performLiftover(initialAllelesVcf, primaryContig, treeSourceBuild, referenceBuild, onProgress, filterOutput = true)
             // Cache the lifted VCF for reuse by other samples
             lifted.foreach { liftedVcf =>
               java.nio.file.Files.copy(liftedVcf.toPath, cachedLiftedVcf.toPath, java.nio.file.StandardCopyOption.REPLACE_EXISTING)
