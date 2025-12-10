@@ -111,7 +111,7 @@ class ChipDataTable(
     rowFactory = { _ =>
       val row = new javafx.scene.control.TableRow[ChipProfileRow]()
       val contextMenu = new ContextMenu(
-        new MenuItem("View Details") {
+        new MenuItem("Details") {
           onAction = _ => {
             Option(row.getItem).foreach { item =>
               showDetailsDialog(item.profile)
@@ -395,22 +395,6 @@ For higher resolution, consider WGS analysis."""
     onAction = _ => handleImportChipData()
   }
 
-  private val viewDetailsButton = new Button("Details") {
-    disable = true
-    tooltip = Tooltip("View chip profile details")
-    onAction = _ => {
-      Option(table.selectionModel().getSelectedItem).foreach { row =>
-        showDetailsDialog(row.profile)
-      }
-    }
-  }
-
-  // Enable/disable buttons based on selection
-  table.selectionModel().selectedItem.onChange { (_, _, selected) =>
-    val hasSelection = selected != null
-    viewDetailsButton.disable = !hasSelection
-  }
-
   /** Handles importing chip data file */
   private def handleImportChipData(): Unit = {
     val fileChooser = new FileChooser() {
@@ -467,7 +451,7 @@ For higher resolution, consider WGS analysis."""
 
   private val buttonBar = new HBox(10) {
     alignment = Pos.CenterLeft
-    children = Seq(importButton, viewDetailsButton)
+    children = Seq(importButton)
   }
 
   children = Seq(

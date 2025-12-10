@@ -238,7 +238,7 @@ class SequenceDataTable(
             }
           }
         },
-        new MenuItem("Haplogroup Analysis") {
+        new MenuItem("Haplogroup") {
           onAction = _ => {
             Option(row.getItem).foreach { item =>
               handleHaplogroupAnalysis(item.index, item.runAlignments)
@@ -629,36 +629,15 @@ Insert Size:
     }
   }
 
-  private val analyzeSelectedButton = new Button("Analyze") {
-    disable = true
-    onAction = _ => {
-      Option(table.selectionModel().getSelectedItem).foreach { row =>
-        onAnalyze(row.index)
-      }
-    }
-  }
-
-  private val haplogroupButton = new Button("Haplogroup") {
-    disable = true
-    tooltip = Tooltip("Run haplogroup analysis (Y-DNA or MT-DNA)")
-    onAction = _ => {
-      Option(table.selectionModel().getSelectedItem).foreach { row =>
-        handleHaplogroupAnalysis(row.index, row.runAlignments)
-      }
-    }
-  }
-
   // Enable/disable buttons based on selection
   table.selectionModel().selectedItem.onChange { (_, _, selected) =>
     val hasSelection = selected != null
     editButton.disable = !hasSelection
-    analyzeSelectedButton.disable = !hasSelection
-    haplogroupButton.disable = !hasSelection
   }
 
   private val buttonBar = new HBox(10) {
     alignment = Pos.CenterLeft
-    children = Seq(addButton, editButton, analyzeSelectedButton, haplogroupButton)
+    children = Seq(addButton, editButton)
   }
 
   children = Seq(

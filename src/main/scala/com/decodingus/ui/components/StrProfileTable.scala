@@ -104,7 +104,7 @@ class StrProfileTable(
     rowFactory = { _ =>
       val row = new javafx.scene.control.TableRow[StrProfileRow]()
       val contextMenu = new ContextMenu(
-        new MenuItem("View Markers") {
+        new MenuItem("Markers") {
           onAction = _ => {
             Option(row.getItem).foreach { item =>
               showMarkersDialog(item.profile)
@@ -258,25 +258,9 @@ class StrProfileTable(
     }
   }
 
-  private val viewMarkersButton = new Button("View") {
-    disable = true
-    tooltip = Tooltip("View all marker values")
-    onAction = _ => {
-      Option(table.selectionModel().getSelectedItem).foreach { row =>
-        showMarkersDialog(row.profile)
-      }
-    }
-  }
-
-  // Enable/disable buttons based on selection
-  table.selectionModel().selectedItem.onChange { (_, _, selected) =>
-    val hasSelection = selected != null
-    viewMarkersButton.disable = !hasSelection
-  }
-
   private val buttonBar = new HBox(10) {
     alignment = Pos.CenterLeft
-    children = Seq(importButton, viewMarkersButton)
+    children = Seq(importButton)
   }
 
   children = Seq(
