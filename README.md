@@ -19,6 +19,9 @@ Decoding-Us Navigator simplifies complex bioinformatics command-line tools by wr
 
 Built on the Java Virtual Machine (JVM) with ScalaFX, Decoding-Us Navigator runs on macOS, Windows, and Linux with a consistent user experience.
 
+## The Workbench
+![Workbench Screenshot](documents/images/MainWorkbench.png)
+
 ## Features
 
 ### Workspace Management
