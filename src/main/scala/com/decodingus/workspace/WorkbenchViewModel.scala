@@ -11,6 +11,7 @@ import com.decodingus.config.ReferenceConfigService
 import com.decodingus.refgenome.{ReferenceGateway, ReferenceResolveResult}
 import com.decodingus.workspace.model.{Workspace, Project, Biosample, WorkspaceContent, SyncStatus, SequenceRun, Alignment, AlignmentMetrics, ContigMetrics, FileInfo, HaplogroupAssignments, HaplogroupResult => WorkspaceHaplogroupResult, RecordMeta, StrProfile, ChipProfile}
 import com.decodingus.haplogroup.model.{HaplogroupResult => AnalysisHaplogroupResult}
+import com.decodingus.workspace.services.{WorkspaceOperations, AnalysisCoordinator, AnalysisProgress}
 import htsjdk.samtools.SamReaderFactory
 import scalafx.beans.property.{ObjectProperty, ReadOnlyObjectProperty, StringProperty, BooleanProperty, DoubleProperty}
 import scalafx.collections.ObservableBuffer
@@ -23,6 +24,10 @@ import scala.concurrent.ExecutionContext.Implicits.global
 import scala.util.{Success, Failure, Try}
 
 class WorkbenchViewModel(val workspaceService: WorkspaceService) {
+
+  // --- Service Instances ---
+  private val workspaceOps = new WorkspaceOperations()
+  private val analysisCoordinator = new AnalysisCoordinator()
 
   // --- Sync State ---
   val syncStatus: ObjectProperty[SyncStatus] = ObjectProperty(SyncStatus.Synced)
@@ -258,60 +263,44 @@ class WorkbenchViewModel(val workspaceService: WorkspaceService) {
 
   private def emptyWorkspace: Workspace = Workspace.empty
 
+  /** Gets the current workspace state for service calls */
+  private def currentState: WorkspaceState = WorkspaceState(_workspace.value)
+
+  /** Applies a new workspace state and saves */
+  private def applyState(newState: WorkspaceState): Unit = {
+    _workspace.value = newState.workspace
+    saveWorkspace()
+  }
+
   // --- Subject CRUD Operations ---
 
   /** Creates a new subject and adds it to the workspace */
   def addSubject(newBiosample: Biosample): Unit = {
-    // Generate atUri from current user's DID
-    val enrichedBiosample = currentUser.value match {
-      case Some(user) =>
-        val atUri = s"at://${user.did}/com.decodingus.atmosphere.biosample/${newBiosample.sampleAccession}"
-        newBiosample.copy(atUri = Some(atUri))
-      case None =>
-        newBiosample // Keep as-is if no user logged in
-    }
-
-    val updatedSamples = _workspace.value.main.samples :+ enrichedBiosample
-    _workspace.value = _workspace.value.copy(main = _workspace.value.main.copy(samples = updatedSamples))
-
-    // Select the newly added subject
+    val userDid = currentUser.value.map(_.did)
+    val (newState, enrichedBiosample) = workspaceOps.addSubject(currentState, newBiosample, userDid)
+    applyState(newState)
     selectedSubject.value = Some(enrichedBiosample)
-
-    saveWorkspace()
   }
 
   /** Updates an existing subject identified by sampleAccession */
   def updateSubject(updatedBiosample: Biosample): Unit = {
-    val updatedSamples = _workspace.value.main.samples.map { sample =>
-      if (sample.sampleAccession == updatedBiosample.sampleAccession) {
-        // Update meta to track the edit
-        updatedBiosample.copy(meta = sample.meta.updated("edit"))
-      } else sample
-    }
-    _workspace.value = _workspace.value.copy(main = _workspace.value.main.copy(samples = updatedSamples))
-
-    // Update selection to reflect changes (with updated meta)
-    val finalUpdated = updatedSamples.find(_.sampleAccession == updatedBiosample.sampleAccession)
-    selectedSubject.value = finalUpdated
-
-    saveWorkspace()
+    val newState = workspaceOps.updateSubject(currentState, updatedBiosample)
+    applyState(newState)
+    // Update selection to reflect changes
+    selectedSubject.value = newState.workspace.main.samples.find(_.sampleAccession == updatedBiosample.sampleAccession)
   }
 
   /** Internal: Updates a subject without modifying meta (used when meta is already updated) */
   private def updateSubjectDirect(updatedBiosample: Biosample): Unit = {
-    val updatedSamples = _workspace.value.main.samples.map { sample =>
-      if (sample.sampleAccession == updatedBiosample.sampleAccession) updatedBiosample
-      else sample
-    }
-    _workspace.value = _workspace.value.copy(main = _workspace.value.main.copy(samples = updatedSamples))
+    val newState = workspaceOps.updateSubjectDirect(currentState, updatedBiosample)
+    applyState(newState)
     selectedSubject.value = Some(updatedBiosample)
-    saveWorkspace()
   }
 
   /** Deletes a subject identified by sampleAccession */
   def deleteSubject(sampleAccession: String): Unit = {
-    val updatedSamples = _workspace.value.main.samples.filterNot(_.sampleAccession == sampleAccession)
-    _workspace.value = _workspace.value.copy(main = _workspace.value.main.copy(samples = updatedSamples))
+    val newState = workspaceOps.deleteSubject(currentState, sampleAccession)
+    applyState(newState)
 
     // Clear selection if the deleted subject was selected
     selectedSubject.value match {
@@ -319,8 +308,6 @@ class WorkbenchViewModel(val workspaceService: WorkspaceService) {
         selectedSubject.value = None
       case _ => // Keep current selection
     }
-
-    saveWorkspace()
   }
 
   /** Finds a subject by sampleAccession */
@@ -331,53 +318,29 @@ class WorkbenchViewModel(val workspaceService: WorkspaceService) {
   // --- Project CRUD Operations ---
 
   def addProject(newProject: Project): Unit = {
-    // Generate atUri for the project using current user's DID
-    val enrichedProject = currentUser.value match {
-      case Some(user) =>
-        val rkey = java.util.UUID.randomUUID().toString
-        val atUri = s"at://${user.did}/com.decodingus.atmosphere.project/$rkey"
-        newProject.copy(atUri = Some(atUri))
-      case None =>
-        newProject // Keep as-is if no user logged in
-    }
-
-    val updatedProjects = _workspace.value.main.projects :+ enrichedProject
-    _workspace.value = _workspace.value.copy(main = _workspace.value.main.copy(projects = updatedProjects))
-
+    val userDid = currentUser.value.map(_.did)
+    val (newState, enrichedProject) = workspaceOps.addProject(currentState, newProject, userDid)
+    applyState(newState)
     selectedProject.value = Some(enrichedProject)
-
-    saveWorkspace()
   }
 
   /** Updates an existing project identified by projectName */
   def updateProject(updatedProject: Project): Unit = {
-    val updatedProjects = _workspace.value.main.projects.map { project =>
-      if (project.projectName == updatedProject.projectName) {
-        // Update meta to track the edit
-        updatedProject.copy(meta = project.meta.updated("edit"))
-      } else project
-    }
-    _workspace.value = _workspace.value.copy(main = _workspace.value.main.copy(projects = updatedProjects))
-
-    // Update selection to reflect changes (with updated meta)
-    val finalUpdated = updatedProjects.find(_.projectName == updatedProject.projectName)
-    selectedProject.value = finalUpdated
-
-    saveWorkspace()
+    val newState = workspaceOps.updateProject(currentState, updatedProject)
+    applyState(newState)
+    selectedProject.value = newState.workspace.main.projects.find(_.projectName == updatedProject.projectName)
   }
 
   /** Deletes a project by projectName */
   def deleteProject(projectName: String): Unit = {
-    val updatedProjects = _workspace.value.main.projects.filterNot(_.projectName == projectName)
-    _workspace.value = _workspace.value.copy(main = _workspace.value.main.copy(projects = updatedProjects))
+    val newState = workspaceOps.deleteProject(currentState, projectName)
+    applyState(newState)
 
     selectedProject.value match {
       case Some(selected) if selected.projectName == projectName =>
         selectedProject.value = None
       case _ =>
     }
-
-    saveWorkspace()
   }
 
   /** Finds a project by projectName */
@@ -387,88 +350,46 @@ class WorkbenchViewModel(val workspaceService: WorkspaceService) {
 
   /** Backfills atUri for any samples/projects that were created while logged out */
   private def backfillAtUris(did: String): Unit = {
-    val currentWorkspace = _workspace.value
-    var updated = false
-
-    // Backfill samples missing atUri
-    val updatedSamples = currentWorkspace.main.samples.map { sample =>
-      if (sample.atUri.isEmpty) {
-        updated = true
-        val atUri = s"at://$did/com.decodingus.atmosphere.biosample/${sample.sampleAccession}"
-        sample.copy(atUri = Some(atUri))
-      } else sample
-    }
-
-    // Backfill projects missing atUri
-    val updatedProjects = currentWorkspace.main.projects.map { project =>
-      if (project.atUri.isEmpty) {
-        updated = true
-        val rkey = java.util.UUID.randomUUID().toString
-        val atUri = s"at://$did/com.decodingus.atmosphere.project/$rkey"
-        project.copy(atUri = Some(atUri))
-      } else project
-    }
-
-    if (updated) {
-      _workspace.value = currentWorkspace.copy(
-        main = currentWorkspace.main.copy(samples = updatedSamples, projects = updatedProjects)
-      )
-      saveWorkspace()
+    val newState = workspaceOps.backfillAtUris(currentState, did)
+    if (newState.workspace != currentState.workspace) {
+      applyState(newState)
       println(s"[ViewModel] Backfilled atUri for samples/projects after login")
     }
   }
 
   /** Adds a subject (by accession) to a project's members list */
   def addSubjectToProject(projectName: String, sampleAccession: String): Boolean = {
-    findProject(projectName) match {
-      case Some(project) =>
-        if (project.memberRefs.contains(sampleAccession)) {
-          println(s"[ViewModel] Subject $sampleAccession already in project $projectName")
-          false
-        } else {
-          val updatedProject = project.copy(
-            memberRefs = project.memberRefs :+ sampleAccession,
-            meta = project.meta.updated("memberRefs")
-          )
-          updateProjectDirect(updatedProject)
-          true
-        }
-      case None =>
-        println(s"[ViewModel] Project $projectName not found")
+    workspaceOps.addSubjectToProject(currentState, projectName, sampleAccession) match {
+      case Right(newState) =>
+        applyState(newState)
+        // Update selection to the modified project
+        selectedProject.value = newState.workspace.main.projects.find(_.projectName == projectName)
+        true
+      case Left(error) =>
+        println(s"[ViewModel] $error")
         false
     }
   }
 
   /** Removes a subject (by accession) from a project's members list */
   def removeSubjectFromProject(projectName: String, sampleAccession: String): Boolean = {
-    findProject(projectName) match {
-      case Some(project) =>
-        if (!project.memberRefs.contains(sampleAccession)) {
-          println(s"[ViewModel] Subject $sampleAccession not in project $projectName")
-          false
-        } else {
-          val updatedProject = project.copy(
-            memberRefs = project.memberRefs.filterNot(_ == sampleAccession),
-            meta = project.meta.updated("memberRefs")
-          )
-          updateProjectDirect(updatedProject)
-          true
-        }
-      case None =>
-        println(s"[ViewModel] Project $projectName not found")
+    workspaceOps.removeSubjectFromProject(currentState, projectName, sampleAccession) match {
+      case Right(newState) =>
+        applyState(newState)
+        // Update selection to the modified project
+        selectedProject.value = newState.workspace.main.projects.find(_.projectName == projectName)
+        true
+      case Left(error) =>
+        println(s"[ViewModel] $error")
         false
     }
   }
 
   /** Internal: Updates a project without modifying meta (used when meta is already updated) */
   private def updateProjectDirect(updatedProject: Project): Unit = {
-    val updatedProjects = _workspace.value.main.projects.map { project =>
-      if (project.projectName == updatedProject.projectName) updatedProject
-      else project
-    }
-    _workspace.value = _workspace.value.copy(main = _workspace.value.main.copy(projects = updatedProjects))
+    val newState = workspaceOps.updateProjectDirect(currentState, updatedProject)
+    applyState(newState)
     selectedProject.value = Some(updatedProject)
-    saveWorkspace()
   }
 
   /** Gets subjects that are members of a project */
@@ -499,56 +420,12 @@ class WorkbenchViewModel(val workspaceService: WorkspaceService) {
    * Returns the index of the new entry, or -1 if duplicate/error.
    */
   def addSequenceRunFromFile(sampleAccession: String, fileInfo: FileInfo): Int = {
-    findSubject(sampleAccession) match {
-      case Some(subject) =>
-        // Check for duplicate by checksum across all sequence runs for this biosample
-        val sequenceRuns = _workspace.value.main.getSequenceRunsForBiosample(subject)
-        val existingChecksums = sequenceRuns.flatMap(_.files.flatMap(_.checksum)).toSet
-        if (fileInfo.checksum.exists(existingChecksums.contains)) {
-          println(s"[ViewModel] Duplicate file detected: ${fileInfo.fileName}")
-          return -1
-        }
-
-        // Generate a unique URI for this sequence run
-        val seqRunUri = s"local:sequencerun:${subject.sampleAccession}:${java.util.UUID.randomUUID().toString.take(8)}"
-
-        val newSequenceRun = SequenceRun(
-          atUri = Some(seqRunUri),
-          meta = RecordMeta.initial,
-          biosampleRef = subject.atUri.getOrElse(s"local:biosample:${subject.sampleAccession}"),
-          platformName = "Unknown", // Will be inferred during analysis
-          instrumentModel = None,
-          testType = "Unknown",
-          libraryLayout = None,
-          totalReads = None,
-          readLength = None,
-          meanInsertSize = None,
-          files = List(fileInfo),
-          alignmentRefs = List.empty
-        )
-
-        val newIndex = sequenceRuns.size
-
-        // Update workspace with new sequence run and update biosample refs
-        val updatedSequenceRuns = _workspace.value.main.sequenceRuns :+ newSequenceRun
-        val updatedSubject = subject.copy(
-          sequenceRunRefs = subject.sequenceRunRefs :+ seqRunUri,
-          meta = subject.meta.updated("sequenceRunRefs")
-        )
-        val updatedSamples = _workspace.value.main.samples.map { s =>
-          if (s.sampleAccession == sampleAccession) updatedSubject else s
-        }
-        val updatedContent = _workspace.value.main.copy(
-          samples = updatedSamples,
-          sequenceRuns = updatedSequenceRuns
-        )
-        _workspace.value = _workspace.value.copy(main = updatedContent)
-        saveWorkspace()
-
+    workspaceOps.addSequenceRunFromFile(currentState, sampleAccession, fileInfo) match {
+      case Right((newState, _, newIndex)) =>
+        applyState(newState)
         newIndex
-
-      case None =>
-        println(s"[ViewModel] Cannot add sequence run: subject $sampleAccession not found")
+      case Left(error) =>
+        println(s"[ViewModel] $error")
         -1
     }
   }
@@ -1814,40 +1691,13 @@ class WorkbenchViewModel(val workspaceService: WorkspaceService) {
    * Returns the URI of the new profile, or an error message.
    */
   def addStrProfile(sampleAccession: String, profile: StrProfile): Either[String, String] = {
-    findSubject(sampleAccession) match {
-      case Some(subject) =>
-        // Generate a unique URI for this STR profile
-        val strProfileUri = s"local:strprofile:${subject.sampleAccession}:${java.util.UUID.randomUUID().toString.take(8)}"
-
-        val enrichedProfile = profile.copy(
-          atUri = Some(strProfileUri),
-          biosampleRef = subject.atUri.getOrElse(s"local:biosample:${subject.sampleAccession}")
-        )
-
-        // Update workspace with new STR profile
-        val updatedStrProfiles = _workspace.value.main.strProfiles :+ enrichedProfile
-
-        // Update subject's strProfileRefs list (supports multiple profiles)
-        val updatedSubject = subject.copy(
-          strProfileRefs = subject.strProfileRefs :+ strProfileUri,
-          meta = subject.meta.updated("strProfileRefs")
-        )
-        val updatedSamples = _workspace.value.main.samples.map { s =>
-          if (s.sampleAccession == sampleAccession) updatedSubject else s
-        }
-
-        val updatedContent = _workspace.value.main.copy(
-          samples = updatedSamples,
-          strProfiles = updatedStrProfiles
-        )
-        _workspace.value = _workspace.value.copy(main = updatedContent)
-        saveWorkspace()
-
-        println(s"[ViewModel] Added STR profile with ${enrichedProfile.markers.size} markers for $sampleAccession (provider: ${enrichedProfile.importedFrom.getOrElse("unknown")})")
-        Right(strProfileUri)
-
-      case None =>
-        Left(s"Subject not found: $sampleAccession")
+    workspaceOps.addStrProfile(currentState, sampleAccession, profile) match {
+      case Right((newState, profileUri)) =>
+        applyState(newState)
+        println(s"[ViewModel] Added STR profile with ${profile.markers.size} markers for $sampleAccession (provider: ${profile.importedFrom.getOrElse("unknown")})")
+        Right(profileUri)
+      case Left(error) =>
+        Left(error)
     }
   }
 
@@ -1884,23 +1734,12 @@ class WorkbenchViewModel(val workspaceService: WorkspaceService) {
    * Updates an existing STR profile.
    */
   def updateStrProfile(profileUri: String, updatedProfile: StrProfile): Either[String, Unit] = {
-    _workspace.value.main.strProfiles.find(_.atUri.contains(profileUri)) match {
-      case Some(existing) =>
-        val withUpdatedMeta = updatedProfile.copy(
-          atUri = existing.atUri,
-          meta = existing.meta.updated("edit")
-        )
-
-        val updatedStrProfiles = _workspace.value.main.strProfiles.map { p =>
-          if (p.atUri.contains(profileUri)) withUpdatedMeta else p
-        }
-        val updatedContent = _workspace.value.main.copy(strProfiles = updatedStrProfiles)
-        _workspace.value = _workspace.value.copy(main = updatedContent)
-        saveWorkspace()
+    workspaceOps.updateStrProfile(currentState, profileUri, updatedProfile) match {
+      case Right(newState) =>
+        applyState(newState)
         Right(())
-
-      case None =>
-        Left(s"STR profile not found: $profileUri")
+      case Left(error) =>
+        Left(error)
     }
   }
 
@@ -1908,32 +1747,13 @@ class WorkbenchViewModel(val workspaceService: WorkspaceService) {
    * Deletes an STR profile.
    */
   def deleteStrProfile(sampleAccession: String, profileUri: String): Either[String, Unit] = {
-    findSubject(sampleAccession) match {
-      case Some(subject) =>
-        // Remove the profile from workspace
-        val updatedStrProfiles = _workspace.value.main.strProfiles.filterNot(_.atUri.contains(profileUri))
-
-        // Remove from subject's strProfileRefs list
-        val updatedSubject = subject.copy(
-          strProfileRefs = subject.strProfileRefs.filterNot(_ == profileUri),
-          meta = subject.meta.updated("strProfileRefs")
-        )
-        val updatedSamples = _workspace.value.main.samples.map { s =>
-          if (s.sampleAccession == sampleAccession) updatedSubject else s
-        }
-
-        val updatedContent = _workspace.value.main.copy(
-          samples = updatedSamples,
-          strProfiles = updatedStrProfiles
-        )
-        _workspace.value = _workspace.value.copy(main = updatedContent)
-        saveWorkspace()
-
+    workspaceOps.deleteStrProfile(currentState, sampleAccession, profileUri) match {
+      case Right(newState) =>
+        applyState(newState)
         println(s"[ViewModel] Deleted STR profile $profileUri for $sampleAccession")
         Right(())
-
-      case None =>
-        Left(s"Subject not found: $sampleAccession")
+      case Left(error) =>
+        Left(error)
     }
   }
 
@@ -2111,32 +1931,13 @@ class WorkbenchViewModel(val workspaceService: WorkspaceService) {
    * Deletes a chip profile.
    */
   def deleteChipProfile(sampleAccession: String, profileUri: String): Either[String, Unit] = {
-    findSubject(sampleAccession) match {
-      case Some(subject) =>
-        // Remove the profile from workspace
-        val updatedChipProfiles = _workspace.value.main.chipProfiles.filterNot(_.atUri.contains(profileUri))
-
-        // Remove from subject's genotypeRefs list
-        val updatedSubject = subject.copy(
-          genotypeRefs = subject.genotypeRefs.filterNot(_ == profileUri),
-          meta = subject.meta.updated("genotypeRefs")
-        )
-        val updatedSamples = _workspace.value.main.samples.map { s =>
-          if (s.sampleAccession == sampleAccession) updatedSubject else s
-        }
-
-        val updatedContent = _workspace.value.main.copy(
-          samples = updatedSamples,
-          chipProfiles = updatedChipProfiles
-        )
-        _workspace.value = _workspace.value.copy(main = updatedContent)
-        saveWorkspace()
-
+    workspaceOps.deleteChipProfile(currentState, sampleAccession, profileUri) match {
+      case Right(newState) =>
+        applyState(newState)
         println(s"[ViewModel] Deleted chip profile $profileUri for $sampleAccession")
         Right(())
-
-      case None =>
-        Left(s"Subject not found: $sampleAccession")
+      case Left(error) =>
+        Left(error)
     }
   }
 
