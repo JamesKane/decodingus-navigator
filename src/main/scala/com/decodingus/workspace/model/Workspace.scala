@@ -15,9 +15,10 @@ package com.decodingus.workspace.model
  * @param projects      Denormalized project records for local access
  * @param sequenceRuns  Denormalized sequence run records for local access
  * @param alignments    Denormalized alignment records for local access
- * @param strProfiles   Denormalized STR profile records for local access
- * @param chipProfiles  Denormalized chip/array genotype profiles for local access
- * @param ySnpPanels    Denormalized Y-DNA SNP panel results for local access
+ * @param strProfiles              Denormalized STR profile records for local access
+ * @param chipProfiles             Denormalized chip/array genotype profiles for local access
+ * @param ySnpPanels               Denormalized Y-DNA SNP panel results for local access
+ * @param haplogroupReconciliations Haplogroup reconciliation records (multi-run tracking)
  */
 case class WorkspaceContent(
   meta: Option[RecordMeta] = None,
@@ -29,7 +30,8 @@ case class WorkspaceContent(
   alignments: List[Alignment] = List.empty,
   strProfiles: List[StrProfile] = List.empty,
   chipProfiles: List[ChipProfile] = List.empty,
-  ySnpPanels: List[com.decodingus.genotype.model.YDnaSnpPanelResult] = List.empty
+  ySnpPanels: List[com.decodingus.genotype.model.YDnaSnpPanelResult] = List.empty,
+  haplogroupReconciliations: List[HaplogroupReconciliation] = List.empty
 ) {
   /**
    * Returns sequence runs for a given biosample.
@@ -83,6 +85,28 @@ case class WorkspaceContent(
     biosample.ySnpPanelRefs.flatMap { ref =>
       ySnpPanels.find(_.atUri.contains(ref))
     }
+  }
+
+  /**
+   * Returns haplogroup reconciliation records for a biosample.
+   */
+  def getReconciliationsForBiosample(biosample: Biosample): List[HaplogroupReconciliation] = {
+    val biosampleRef = biosample.atUri.getOrElse(s"local:biosample:${biosample.sampleAccession}")
+    haplogroupReconciliations.filter(_.biosampleRef == biosampleRef)
+  }
+
+  /**
+   * Returns Y-DNA haplogroup reconciliation for a biosample, if any.
+   */
+  def getYDnaReconciliation(biosample: Biosample): Option[HaplogroupReconciliation] = {
+    getReconciliationsForBiosample(biosample).find(_.dnaType == DnaType.Y_DNA)
+  }
+
+  /**
+   * Returns mtDNA haplogroup reconciliation for a biosample, if any.
+   */
+  def getMtDnaReconciliation(biosample: Biosample): Option[HaplogroupReconciliation] = {
+    getReconciliationsForBiosample(biosample).find(_.dnaType == DnaType.MT_DNA)
   }
 }
 

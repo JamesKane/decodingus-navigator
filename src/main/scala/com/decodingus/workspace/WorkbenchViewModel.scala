@@ -1523,7 +1523,13 @@ class WorkbenchViewModel(val workspaceService: WorkspaceService) {
                           case Right(results) if results.nonEmpty =>
                             val topResult = results.head
                             Platform.runLater {
-                              // Convert analysis result to workspace model and save
+                              // Determine source type based on test type
+                              val sourceType = seqRun.testType match {
+                                case t if t.startsWith("BIGY") || t.contains("Y_ELITE") || t.contains("Y_PRIME") => "bigy"
+                                case _ => "wgs"
+                              }
+
+                              // Convert analysis result to workspace model with full provenance
                               val workspaceResult = WorkspaceHaplogroupResult(
                                 haplogroupName = topResult.name,
                                 score = topResult.score,
@@ -1531,11 +1537,16 @@ class WorkbenchViewModel(val workspaceService: WorkspaceService) {
                                 mismatchingSnps = Some(topResult.mismatchingSnps),
                                 ancestralMatches = Some(topResult.ancestralMatches),
                                 treeDepth = Some(topResult.depth),
-                                lineagePath = None // Could be populated if needed
+                                lineagePath = None,
+                                source = Some(sourceType),
+                                sourceRef = seqRun.atUri,
+                                treeProvider = Some(treeProviderType.toString.toLowerCase),
+                                treeVersion = None,
+                                analyzedAt = Some(java.time.Instant.now())
                               )
 
-                              // Update subject's haplogroup assignments
-                              val currentAssignments = subject.haplogroups.getOrElse(HaplogroupAssignments(None, None))
+                              // Update the consensus result in HaplogroupAssignments
+                              val currentAssignments = subject.haplogroups.getOrElse(HaplogroupAssignments())
                               val updatedAssignments = treeType match {
                                 case TreeType.YDNA => currentAssignments.copy(yDna = Some(workspaceResult))
                                 case TreeType.MTDNA => currentAssignments.copy(mtDna = Some(workspaceResult))
@@ -2061,9 +2072,19 @@ class WorkbenchViewModel(val workspaceService: WorkspaceService) {
                                 updateProgress(s"$treeLabel haplogroup analysis complete.", 1.0)
                                 analysisInProgress.value = false
 
-                                // Update subject with haplogroup result
+                                // Determine tree provider used (same logic as ChipHaplogroupAdapter)
+                                val treeProviderName = treeType match {
+                                  case com.decodingus.haplogroup.tree.TreeType.YDNA =>
+                                    if (com.decodingus.config.UserPreferencesService.getYdnaTreeProvider.equalsIgnoreCase("decodingus")) "decodingus"
+                                    else "ftdna"
+                                  case com.decodingus.haplogroup.tree.TreeType.MTDNA =>
+                                    if (com.decodingus.config.UserPreferencesService.getMtdnaTreeProvider.equalsIgnoreCase("decodingus")) "decodingus"
+                                    else "ftdna"
+                                }
+
+                                // Update subject with haplogroup result (with full provenance)
                                 val currentHaplogroups = subject.haplogroups.getOrElse(
-                                  com.decodingus.workspace.model.HaplogroupAssignments(None, None)
+                                  com.decodingus.workspace.model.HaplogroupAssignments()
                                 )
 
                                 val newHaplogroupResult = com.decodingus.workspace.model.HaplogroupResult(
@@ -2071,9 +2092,14 @@ class WorkbenchViewModel(val workspaceService: WorkspaceService) {
                                   score = haplogroupResult.results.headOption.map(_.score).getOrElse(0.0),
                                   matchingSnps = Some(haplogroupResult.snpsMatched),
                                   treeDepth = haplogroupResult.results.headOption.map(_.depth),
-                                  source = Some("chip")
+                                  source = Some("chip"),
+                                  sourceRef = profile.atUri,
+                                  treeProvider = Some(treeProviderName),
+                                  treeVersion = None,
+                                  analyzedAt = Some(java.time.Instant.now())
                                 )
 
+                                // Update the consensus result in HaplogroupAssignments
                                 val updatedHaplogroups = treeType match {
                                   case com.decodingus.haplogroup.tree.TreeType.YDNA =>
                                     currentHaplogroups.copy(yDna = Some(newHaplogroupResult))

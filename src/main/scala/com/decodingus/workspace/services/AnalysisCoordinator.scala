@@ -390,7 +390,13 @@ class AnalysisCoordinator(implicit ec: ExecutionContext) {
         case Right(results) if results.nonEmpty =>
           val topResult = results.head
 
-          // Convert to workspace model and update subject
+          // Determine source type based on test type
+          val sourceType = seqRun.testType match {
+            case t if t.startsWith("BIGY") || t.contains("Y_ELITE") || t.contains("Y_PRIME") => "bigy"
+            case _ => "wgs"
+          }
+
+          // Convert to workspace model with full provenance
           val workspaceResult = HaplogroupResult(
             haplogroupName = topResult.name,
             score = topResult.score,
@@ -398,10 +404,17 @@ class AnalysisCoordinator(implicit ec: ExecutionContext) {
             mismatchingSnps = Some(topResult.mismatchingSnps),
             ancestralMatches = Some(topResult.ancestralMatches),
             treeDepth = Some(topResult.depth),
-            lineagePath = None
+            lineagePath = None,
+            source = Some(sourceType),
+            sourceRef = seqRun.atUri,
+            treeProvider = Some(treeProviderType.toString.toLowerCase),
+            treeVersion = None, // TODO: Get from tree provider
+            analyzedAt = Some(java.time.Instant.now())
           )
 
-          val currentAssignments = subject.haplogroups.getOrElse(HaplogroupAssignments(None, None))
+          // Update the consensus result in HaplogroupAssignments
+          // Multi-run tracking is handled separately in HaplogroupReconciliation
+          val currentAssignments = subject.haplogroups.getOrElse(HaplogroupAssignments())
           val updatedAssignments = treeType match {
             case TreeType.YDNA => currentAssignments.copy(yDna = Some(workspaceResult))
             case TreeType.MTDNA => currentAssignments.copy(mtDna = Some(workspaceResult))

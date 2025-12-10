@@ -105,6 +105,69 @@ object LiveWorkspaceService extends WorkspaceService {
   implicit val yDnaSnpCallCodec: Codec[YDnaSnpCall] = deriveCodec
   implicit val yDnaSnpPanelResultCodec: Codec[YDnaSnpPanelResult] = deriveCodec
 
+  // HaplogroupReconciliation enum codecs
+  implicit val dnaTypeCodec: Codec[DnaType] = Codec.from(
+    Decoder.decodeString.emap {
+      case "Y_DNA" => Right(DnaType.Y_DNA)
+      case "MT_DNA" => Right(DnaType.MT_DNA)
+      case other => Left(s"Unknown DnaType: $other")
+    },
+    Encoder.encodeString.contramap(_.toString)
+  )
+
+  implicit val compatibilityLevelCodec: Codec[CompatibilityLevel] = Codec.from(
+    Decoder.decodeString.emap {
+      case "COMPATIBLE" => Right(CompatibilityLevel.COMPATIBLE)
+      case "MINOR_DIVERGENCE" => Right(CompatibilityLevel.MINOR_DIVERGENCE)
+      case "MAJOR_DIVERGENCE" => Right(CompatibilityLevel.MAJOR_DIVERGENCE)
+      case "INCOMPATIBLE" => Right(CompatibilityLevel.INCOMPATIBLE)
+      case other => Left(s"Unknown CompatibilityLevel: $other")
+    },
+    Encoder.encodeString.contramap(_.toString)
+  )
+
+  implicit val haplogroupTechnologyCodec: Codec[HaplogroupTechnology] = Codec.from(
+    Decoder.decodeString.emap {
+      case "WGS" => Right(HaplogroupTechnology.WGS)
+      case "WES" => Right(HaplogroupTechnology.WES)
+      case "BIG_Y" => Right(HaplogroupTechnology.BIG_Y)
+      case "SNP_ARRAY" => Right(HaplogroupTechnology.SNP_ARRAY)
+      case "AMPLICON" => Right(HaplogroupTechnology.AMPLICON)
+      case "STR_PANEL" => Right(HaplogroupTechnology.STR_PANEL)
+      case other => Left(s"Unknown HaplogroupTechnology: $other")
+    },
+    Encoder.encodeString.contramap(_.toString)
+  )
+
+  implicit val callMethodCodec: Codec[CallMethod] = Codec.from(
+    Decoder.decodeString.emap {
+      case "SNP_PHYLOGENETIC" => Right(CallMethod.SNP_PHYLOGENETIC)
+      case "STR_PREDICTION" => Right(CallMethod.STR_PREDICTION)
+      case "VENDOR_REPORTED" => Right(CallMethod.VENDOR_REPORTED)
+      case other => Left(s"Unknown CallMethod: $other")
+    },
+    Encoder.encodeString.contramap(_.toString)
+  )
+
+  implicit val conflictResolutionCodec: Codec[ConflictResolution] = Codec.from(
+    Decoder.decodeString.emap {
+      case "ACCEPT_MAJORITY" => Right(ConflictResolution.ACCEPT_MAJORITY)
+      case "ACCEPT_HIGHER_QUALITY" => Right(ConflictResolution.ACCEPT_HIGHER_QUALITY)
+      case "ACCEPT_HIGHER_COVERAGE" => Right(ConflictResolution.ACCEPT_HIGHER_COVERAGE)
+      case "UNRESOLVED" => Right(ConflictResolution.UNRESOLVED)
+      case "HETEROPLASMY" => Right(ConflictResolution.HETEROPLASMY)
+      case other => Left(s"Unknown ConflictResolution: $other")
+    },
+    Encoder.encodeString.contramap(_.toString)
+  )
+
+  // HaplogroupReconciliation model codecs
+  implicit val runHaplogroupCallCodec: Codec[RunHaplogroupCall] = deriveCodec
+  implicit val snpCallFromRunCodec: Codec[SnpCallFromRun] = deriveCodec
+  implicit val snpConflictCodec: Codec[SnpConflict] = deriveCodec
+  implicit val reconciliationStatusCodec: Codec[ReconciliationStatus] = deriveCodec
+  implicit val haplogroupReconciliationCodec: Codec[HaplogroupReconciliation] = deriveCodec
+
   // First-class record codecs
   implicit val sequenceRunCodec: Codec[SequenceRun] = deriveCodec
   implicit val alignmentCodec: Codec[Alignment] = deriveCodec

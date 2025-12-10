@@ -133,18 +133,70 @@ case class AlignmentMetrics(
                            )
 ```
 
-### HaplogroupResult (embedded in Biosample.haplogroups)
+### HaplogroupAssignments (embedded in Biosample.haplogroups)
+
+Container for the consensus/best haplogroup results. Multi-run tracking is in `HaplogroupReconciliation`.
+
+```scala
+case class HaplogroupAssignments(
+  yDna: Option[HaplogroupResult] = None,
+  mtDna: Option[HaplogroupResult] = None
+)
+```
+
+### HaplogroupResult (consensus result)
 
 ```scala
 case class HaplogroupResult(
-                             haplogroupName: String,
-                             score: Double,
-                             matchingSnps: Int,
-                             ancestralMatches: Int,
-                             treeDepth: Int,
-                             lineagePath: Option[List[String]],
-                             privateVariants: Option[List[PrivateVariant]]
-                           )
+  haplogroupName: String,
+  score: Double,
+  matchingSnps: Option[Int],
+  mismatchingSnps: Option[Int],
+  ancestralMatches: Option[Int],
+  treeDepth: Option[Int],
+  lineagePath: Option[List[String]],
+  privateVariants: Option[PrivateVariantData],
+  source: Option[String],       // "wgs", "bigy", "chip"
+  sourceRef: Option[String],    // AT URI of source record
+  treeProvider: Option[String], // "ftdna", "decodingus"
+  treeVersion: Option[String],
+  analyzedAt: Option[Instant]
+)
+```
+
+### HaplogroupReconciliation → `com.decodingus.atmosphere.haplogroupReconciliation`
+
+Tracks all haplogroup calls from multiple runs and reconciles them. Stored in `WorkspaceContent.haplogroupReconciliations`.
+
+```scala
+case class HaplogroupReconciliation(
+  atUri: Option[String],
+  meta: RecordMeta,
+  biosampleRef: String,
+  dnaType: DnaType,              // Y_DNA or MT_DNA
+  status: ReconciliationStatus,
+  runCalls: List[RunHaplogroupCall],
+  snpConflicts: List[SnpConflict],
+  lastReconciliationAt: Option[Instant]
+)
+
+case class RunHaplogroupCall(
+  sourceRef: String,             // AT URI of run/chip/STR
+  haplogroup: String,
+  confidence: Double,
+  callMethod: CallMethod,        // SNP_PHYLOGENETIC, STR_PREDICTION, VENDOR_REPORTED
+  technology: Option[HaplogroupTechnology], // WGS, BIG_Y, SNP_ARRAY, etc.
+  treeProvider: Option[String],
+  treeVersion: Option[String]
+)
+
+case class ReconciliationStatus(
+  compatibilityLevel: CompatibilityLevel, // COMPATIBLE, MINOR_DIVERGENCE, MAJOR_DIVERGENCE, INCOMPATIBLE
+  consensusHaplogroup: String,
+  confidence: Double,
+  runCount: Int,
+  warnings: List[String]
+)
 ```
 
 ---
@@ -228,15 +280,16 @@ Navigator stores analysis artifacts locally:
 
 See [Edge_Client_Implementation_Status.md](Edge_Client_Implementation_Status.md) for detailed tracking.
 
-**Overall: ~55% complete**
+**Overall: ~60% complete**
 
 - ✅ Core records (workspace, biosample, sequenceRun, alignment, project)
 - ✅ Haplogroup analysis (Y-DNA, mtDNA, private variants)
 - ✅ STR profile support
-- 🚧 Genotype (chip) parsing
+- ✅ Multi-run haplogroup reconciliation (quality-based selection)
+- 🚧 Genotype (chip) parsing and haplogroup analysis
 - 🚧 Ancestry estimation
 - ⬜ IBD matching
-- ⬜ Multi-run reconciliation
+- ⬜ Full reconciliation UI (conflict visualization)
 
 ---
 

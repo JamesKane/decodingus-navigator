@@ -117,6 +117,66 @@ object PdsClient {
   implicit val yDnaSnpPanelResultEncoder: Encoder[YDnaSnpPanelResult] = deriveEncoder
   implicit val yDnaSnpPanelResultDecoder: Decoder[YDnaSnpPanelResult] = deriveDecoder
 
+  // HaplogroupReconciliation enum codecs
+  import com.decodingus.workspace.model.{DnaType, CompatibilityLevel, HaplogroupTechnology, CallMethod, ConflictResolution}
+  import com.decodingus.workspace.model.{RunHaplogroupCall, SnpCallFromRun, SnpConflict, ReconciliationStatus, HaplogroupReconciliation}
+
+  implicit val dnaTypeEncoder: Encoder[DnaType] = Encoder.encodeString.contramap(_.toString)
+  implicit val dnaTypeDecoder: Decoder[DnaType] = Decoder.decodeString.emap {
+    case "Y_DNA" => Right(DnaType.Y_DNA)
+    case "MT_DNA" => Right(DnaType.MT_DNA)
+    case other => Left(s"Unknown DnaType: $other")
+  }
+
+  implicit val compatibilityLevelEncoder: Encoder[CompatibilityLevel] = Encoder.encodeString.contramap(_.toString)
+  implicit val compatibilityLevelDecoder: Decoder[CompatibilityLevel] = Decoder.decodeString.emap {
+    case "COMPATIBLE" => Right(CompatibilityLevel.COMPATIBLE)
+    case "MINOR_DIVERGENCE" => Right(CompatibilityLevel.MINOR_DIVERGENCE)
+    case "MAJOR_DIVERGENCE" => Right(CompatibilityLevel.MAJOR_DIVERGENCE)
+    case "INCOMPATIBLE" => Right(CompatibilityLevel.INCOMPATIBLE)
+    case other => Left(s"Unknown CompatibilityLevel: $other")
+  }
+
+  implicit val haplogroupTechnologyEncoder: Encoder[HaplogroupTechnology] = Encoder.encodeString.contramap(_.toString)
+  implicit val haplogroupTechnologyDecoder: Decoder[HaplogroupTechnology] = Decoder.decodeString.emap {
+    case "WGS" => Right(HaplogroupTechnology.WGS)
+    case "WES" => Right(HaplogroupTechnology.WES)
+    case "BIG_Y" => Right(HaplogroupTechnology.BIG_Y)
+    case "SNP_ARRAY" => Right(HaplogroupTechnology.SNP_ARRAY)
+    case "AMPLICON" => Right(HaplogroupTechnology.AMPLICON)
+    case "STR_PANEL" => Right(HaplogroupTechnology.STR_PANEL)
+    case other => Left(s"Unknown HaplogroupTechnology: $other")
+  }
+
+  implicit val callMethodEncoder: Encoder[CallMethod] = Encoder.encodeString.contramap(_.toString)
+  implicit val callMethodDecoder: Decoder[CallMethod] = Decoder.decodeString.emap {
+    case "SNP_PHYLOGENETIC" => Right(CallMethod.SNP_PHYLOGENETIC)
+    case "STR_PREDICTION" => Right(CallMethod.STR_PREDICTION)
+    case "VENDOR_REPORTED" => Right(CallMethod.VENDOR_REPORTED)
+    case other => Left(s"Unknown CallMethod: $other")
+  }
+
+  implicit val conflictResolutionEncoder: Encoder[ConflictResolution] = Encoder.encodeString.contramap(_.toString)
+  implicit val conflictResolutionDecoder: Decoder[ConflictResolution] = Decoder.decodeString.emap {
+    case "ACCEPT_MAJORITY" => Right(ConflictResolution.ACCEPT_MAJORITY)
+    case "ACCEPT_HIGHER_QUALITY" => Right(ConflictResolution.ACCEPT_HIGHER_QUALITY)
+    case "ACCEPT_HIGHER_COVERAGE" => Right(ConflictResolution.ACCEPT_HIGHER_COVERAGE)
+    case "UNRESOLVED" => Right(ConflictResolution.UNRESOLVED)
+    case "HETEROPLASMY" => Right(ConflictResolution.HETEROPLASMY)
+    case other => Left(s"Unknown ConflictResolution: $other")
+  }
+
+  implicit val runHaplogroupCallEncoder: Encoder[RunHaplogroupCall] = deriveEncoder
+  implicit val runHaplogroupCallDecoder: Decoder[RunHaplogroupCall] = deriveDecoder
+  implicit val snpCallFromRunEncoder: Encoder[SnpCallFromRun] = deriveEncoder
+  implicit val snpCallFromRunDecoder: Decoder[SnpCallFromRun] = deriveDecoder
+  implicit val snpConflictEncoder: Encoder[SnpConflict] = deriveEncoder
+  implicit val snpConflictDecoder: Decoder[SnpConflict] = deriveDecoder
+  implicit val reconciliationStatusEncoder: Encoder[ReconciliationStatus] = deriveEncoder
+  implicit val reconciliationStatusDecoder: Decoder[ReconciliationStatus] = deriveDecoder
+  implicit val haplogroupReconciliationEncoder: Encoder[HaplogroupReconciliation] = deriveEncoder
+  implicit val haplogroupReconciliationDecoder: Decoder[HaplogroupReconciliation] = deriveDecoder
+
   // Main entity codecs
   implicit val biosampleEncoder: Encoder[Biosample] = deriveEncoder
   implicit val biosampleDecoder: Decoder[Biosample] = deriveDecoder
