@@ -7,7 +7,7 @@ import com.decodingus.auth.User
 import com.decodingus.config.{FeatureToggles, UserPreferencesService, ReferenceConfigService}
 import com.decodingus.model.{LibraryStats, WgsMetrics}
 import com.decodingus.refgenome.{ReferenceGateway, ReferenceResolveResult}
-import com.decodingus.workspace.model.{Workspace, Project, Biosample, WorkspaceContent, SyncStatus, SequenceRun, Alignment, AlignmentMetrics, ContigMetrics, FileInfo, HaplogroupAssignments, HaplogroupResult => WorkspaceHaplogroupResult, RecordMeta, StrProfile, ChipProfile}
+import com.decodingus.workspace.model.{Workspace, Project, Biosample, WorkspaceContent, SyncStatus, SequenceRun, Alignment, AlignmentMetrics, ContigMetrics, FileInfo, HaplogroupAssignments, HaplogroupResult => WorkspaceHaplogroupResult, RecordMeta, StrProfile, ChipProfile, DnaType, RunHaplogroupCall, CallMethod, HaplogroupTechnology}
 import com.decodingus.haplogroup.model.{HaplogroupResult => AnalysisHaplogroupResult}
 import com.decodingus.workspace.services.{WorkspaceOperations, AnalysisCoordinator, AnalysisProgress, SyncService, SyncResult, FingerprintMatchService, FingerprintMatchResult}
 import htsjdk.samtools.SamReaderFactory
@@ -1523,39 +1523,44 @@ class WorkbenchViewModel(val workspaceService: WorkspaceService) {
                           case Right(results) if results.nonEmpty =>
                             val topResult = results.head
                             Platform.runLater {
-                              // Determine source type based on test type
-                              val sourceType = seqRun.testType match {
-                                case t if t.startsWith("BIGY") || t.contains("Y_ELITE") || t.contains("Y_PRIME") => "bigy"
-                                case _ => "wgs"
+                              // Determine technology based on test type
+                              val technology = seqRun.testType match {
+                                case t if t.startsWith("BIGY") || t.contains("Y_ELITE") || t.contains("Y_PRIME") =>
+                                  HaplogroupTechnology.BIG_Y
+                                case _ => HaplogroupTechnology.WGS
                               }
 
-                              // Convert analysis result to workspace model with full provenance
-                              val workspaceResult = WorkspaceHaplogroupResult(
-                                haplogroupName = topResult.name,
-                                score = topResult.score,
-                                matchingSnps = Some(topResult.matchingSnps),
-                                mismatchingSnps = Some(topResult.mismatchingSnps),
-                                ancestralMatches = Some(topResult.ancestralMatches),
-                                treeDepth = Some(topResult.depth),
-                                lineagePath = None,
-                                source = Some(sourceType),
-                                sourceRef = seqRun.atUri,
+                              // Create a RunHaplogroupCall for the reconciliation system
+                              val runCall = RunHaplogroupCall(
+                                sourceRef = seqRun.atUri.getOrElse(s"local:sequencerun:unknown"),
+                                haplogroup = topResult.name,
+                                confidence = topResult.score,
+                                callMethod = CallMethod.SNP_PHYLOGENETIC,
+                                score = Some(topResult.score),
+                                supportingSnps = Some(topResult.matchingSnps),
+                                conflictingSnps = Some(topResult.mismatchingSnps),
+                                noCalls = None,
+                                technology = Some(technology),
+                                meanCoverage = None,
                                 treeProvider = Some(treeProviderType.toString.toLowerCase),
-                                treeVersion = None,
-                                analyzedAt = Some(java.time.Instant.now())
+                                treeVersion = None
                               )
 
-                              // Update the consensus result in HaplogroupAssignments
-                              val currentAssignments = subject.haplogroups.getOrElse(HaplogroupAssignments())
-                              val updatedAssignments = treeType match {
-                                case TreeType.YDNA => currentAssignments.copy(yDna = Some(workspaceResult))
-                                case TreeType.MTDNA => currentAssignments.copy(mtDna = Some(workspaceResult))
+                              // Convert TreeType to DnaType
+                              val dnaType = treeType match {
+                                case TreeType.YDNA => DnaType.Y_DNA
+                                case TreeType.MTDNA => DnaType.MT_DNA
                               }
-                              val updatedSubject = subject.copy(
-                                haplogroups = Some(updatedAssignments),
-                                meta = subject.meta.updated("haplogroups")
-                              )
-                              updateSubjectDirect(updatedSubject)
+
+                              // Add to reconciliation - this automatically updates biosample haplogroups with consensus
+                              val currentState = WorkspaceState(_workspace.value)
+                              workspaceOps.addHaplogroupCall(currentState, subject.sampleAccession, dnaType, runCall) match {
+                                case Right((newState, _)) =>
+                                  _workspace.value = newState.workspace
+                                  saveWorkspace()
+                                case Left(error) =>
+                                  println(s"[ViewModel] Error adding haplogroup call: $error")
+                              }
 
                               lastHaplogroupResult.value = Some(topResult)
                               analysisInProgress.value = false
@@ -2082,41 +2087,37 @@ class WorkbenchViewModel(val workspaceService: WorkspaceService) {
                                     else "ftdna"
                                 }
 
-                                // Update subject with haplogroup result (with full provenance)
-                                val currentHaplogroups = subject.haplogroups.getOrElse(
-                                  com.decodingus.workspace.model.HaplogroupAssignments()
-                                )
-
-                                val newHaplogroupResult = com.decodingus.workspace.model.HaplogroupResult(
-                                  haplogroupName = haplogroupResult.topHaplogroup,
-                                  score = haplogroupResult.results.headOption.map(_.score).getOrElse(0.0),
-                                  matchingSnps = Some(haplogroupResult.snpsMatched),
-                                  treeDepth = haplogroupResult.results.headOption.map(_.depth),
-                                  source = Some("chip"),
-                                  sourceRef = profile.atUri,
+                                // Create a RunHaplogroupCall for the reconciliation system
+                                val runCall = RunHaplogroupCall(
+                                  sourceRef = profile.atUri.getOrElse(s"local:chipprofile:unknown"),
+                                  haplogroup = haplogroupResult.topHaplogroup,
+                                  confidence = haplogroupResult.confidence,
+                                  callMethod = CallMethod.SNP_PHYLOGENETIC,
+                                  score = haplogroupResult.results.headOption.map(_.score),
+                                  supportingSnps = Some(haplogroupResult.snpsMatched),
+                                  conflictingSnps = None,
+                                  noCalls = Some(haplogroupResult.snpsTotal - haplogroupResult.snpsMatched),
+                                  technology = Some(HaplogroupTechnology.SNP_ARRAY),
+                                  meanCoverage = None,
                                   treeProvider = Some(treeProviderName),
-                                  treeVersion = None,
-                                  analyzedAt = Some(java.time.Instant.now())
+                                  treeVersion = None
                                 )
 
-                                // Update the consensus result in HaplogroupAssignments
-                                val updatedHaplogroups = treeType match {
-                                  case com.decodingus.haplogroup.tree.TreeType.YDNA =>
-                                    currentHaplogroups.copy(yDna = Some(newHaplogroupResult))
-                                  case com.decodingus.haplogroup.tree.TreeType.MTDNA =>
-                                    currentHaplogroups.copy(mtDna = Some(newHaplogroupResult))
+                                // Convert TreeType to DnaType
+                                val dnaType = treeType match {
+                                  case com.decodingus.haplogroup.tree.TreeType.YDNA => DnaType.Y_DNA
+                                  case com.decodingus.haplogroup.tree.TreeType.MTDNA => DnaType.MT_DNA
                                 }
 
-                                val updatedSubject = subject.copy(
-                                  haplogroups = Some(updatedHaplogroups),
-                                  meta = subject.meta.updated("haplogroups")
-                                )
-                                val updatedSamples = _workspace.value.main.samples.map { s =>
-                                  if (s.sampleAccession == sampleAccession) updatedSubject else s
+                                // Add to reconciliation - this automatically updates biosample haplogroups with consensus
+                                val currentState = WorkspaceState(_workspace.value)
+                                workspaceOps.addHaplogroupCall(currentState, sampleAccession, dnaType, runCall) match {
+                                  case Right((newState, _)) =>
+                                    _workspace.value = newState.workspace
+                                    saveWorkspace()
+                                  case Left(error) =>
+                                    println(s"[ViewModel] Error adding chip haplogroup call: $error")
                                 }
-                                val updatedContent = _workspace.value.main.copy(samples = updatedSamples)
-                                _workspace.value = _workspace.value.copy(main = updatedContent)
-                                saveWorkspace()
 
                                 println(s"[ViewModel] $treeLabel haplogroup analysis complete for $sampleAccession: " +
                                   s"${haplogroupResult.topHaplogroup} (${haplogroupResult.snpsMatched}/${haplogroupResult.snpsTotal} SNPs)")

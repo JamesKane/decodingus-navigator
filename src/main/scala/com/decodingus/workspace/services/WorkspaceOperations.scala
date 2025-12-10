@@ -500,6 +500,212 @@ class WorkspaceOperations {
     }
   }
 
+  // --- Haplogroup Reconciliation Operations ---
+
+  /**
+   * Gets or creates a HaplogroupReconciliation record for a biosample and DNA type.
+   * Returns updated state and the reconciliation record.
+   */
+  def getOrCreateReconciliation(
+    state: WorkspaceState,
+    sampleAccession: String,
+    dnaType: DnaType
+  ): Either[String, (WorkspaceState, HaplogroupReconciliation)] = {
+    findSubject(state, sampleAccession) match {
+      case Some(subject) =>
+        val biosampleRef = subject.atUri.getOrElse(s"local:biosample:$sampleAccession")
+        val existing = state.workspace.main.haplogroupReconciliations.find { r =>
+          r.biosampleRef == biosampleRef && r.dnaType == dnaType
+        }
+
+        existing match {
+          case Some(reconciliation) =>
+            Right((state, reconciliation))
+          case None =>
+            // Create a new empty reconciliation record
+            val reconciliationUri = s"local:haploreconciliation:$sampleAccession:${dnaType.toString.toLowerCase}"
+            val newReconciliation = HaplogroupReconciliation(
+              atUri = Some(reconciliationUri),
+              meta = RecordMeta.initial,
+              biosampleRef = biosampleRef,
+              dnaType = dnaType,
+              status = ReconciliationStatus(
+                compatibilityLevel = CompatibilityLevel.COMPATIBLE,
+                consensusHaplogroup = "",
+                confidence = 0.0,
+                runCount = 0
+              ),
+              runCalls = List.empty,
+              lastReconciliationAt = None
+            )
+            val updatedReconciliations = state.workspace.main.haplogroupReconciliations :+ newReconciliation
+            val updatedContent = state.workspace.main.copy(haplogroupReconciliations = updatedReconciliations)
+            val newState = state.copy(workspace = state.workspace.copy(main = updatedContent))
+            Right((newState, newReconciliation))
+        }
+
+      case None =>
+        Left(s"Subject not found: $sampleAccession")
+    }
+  }
+
+  /**
+   * Adds a haplogroup call from a run to the reconciliation and recalculates the consensus.
+   * Returns updated state and the new consensus HaplogroupResult.
+   */
+  def addHaplogroupCall(
+    state: WorkspaceState,
+    sampleAccession: String,
+    dnaType: DnaType,
+    call: RunHaplogroupCall
+  ): Either[String, (WorkspaceState, HaplogroupResult)] = {
+    getOrCreateReconciliation(state, sampleAccession, dnaType).flatMap { case (stateWithRecon, reconciliation) =>
+      findSubject(stateWithRecon, sampleAccession) match {
+        case Some(subject) =>
+          // Add/update the call and recalculate
+          val updatedReconciliation = reconciliation
+            .withRunCall(call)
+            .recalculate()
+            .copy(meta = reconciliation.meta.updated("runCalls"))
+
+          // Convert consensus to HaplogroupResult
+          val consensusResult = if (updatedReconciliation.runCalls.nonEmpty) {
+            val bestCall = updatedReconciliation.runCalls.maxBy { c =>
+              val qualityTier = c.technology match {
+                case Some(HaplogroupTechnology.WGS) => 3
+                case Some(HaplogroupTechnology.BIG_Y) => 2
+                case Some(HaplogroupTechnology.SNP_ARRAY) => 1
+                case _ => 0
+              }
+              (qualityTier, c.confidence)
+            }
+            HaplogroupReconciliation.toHaplogroupResult(bestCall)
+          } else {
+            HaplogroupResult(
+              haplogroupName = "",
+              score = 0.0
+            )
+          }
+
+          // Update the reconciliation record
+          val updatedReconciliations = stateWithRecon.workspace.main.haplogroupReconciliations.map { r =>
+            if (r.atUri == updatedReconciliation.atUri) updatedReconciliation else r
+          }
+
+          // Update the biosample's haplogroups with the consensus
+          val currentAssignments = subject.haplogroups.getOrElse(HaplogroupAssignments())
+          val updatedAssignments = dnaType match {
+            case DnaType.Y_DNA => currentAssignments.copy(yDna = Some(consensusResult))
+            case DnaType.MT_DNA => currentAssignments.copy(mtDna = Some(consensusResult))
+          }
+          val updatedSubject = subject.copy(
+            haplogroups = Some(updatedAssignments),
+            meta = subject.meta.updated("haplogroups")
+          )
+
+          val updatedSamples = stateWithRecon.workspace.main.samples.map { s =>
+            if (s.sampleAccession == sampleAccession) updatedSubject else s
+          }
+          val updatedContent = stateWithRecon.workspace.main.copy(
+            samples = updatedSamples,
+            haplogroupReconciliations = updatedReconciliations
+          )
+          val newState = stateWithRecon.copy(workspace = stateWithRecon.workspace.copy(main = updatedContent))
+
+          Right((newState, consensusResult))
+
+        case None =>
+          Left(s"Subject not found: $sampleAccession")
+      }
+    }
+  }
+
+  /**
+   * Removes a haplogroup call from reconciliation (e.g., when a run is deleted).
+   * Recalculates consensus and updates biosample.
+   */
+  def removeHaplogroupCall(
+    state: WorkspaceState,
+    sampleAccession: String,
+    dnaType: DnaType,
+    sourceRef: String
+  ): Either[String, WorkspaceState] = {
+    findSubject(state, sampleAccession) match {
+      case Some(subject) =>
+        val biosampleRef = subject.atUri.getOrElse(s"local:biosample:$sampleAccession")
+        val existingOpt = state.workspace.main.haplogroupReconciliations.find { r =>
+          r.biosampleRef == biosampleRef && r.dnaType == dnaType
+        }
+
+        existingOpt match {
+          case Some(reconciliation) =>
+            val updatedReconciliation = reconciliation
+              .removeRunCall(sourceRef)
+              .recalculate()
+              .copy(meta = reconciliation.meta.updated("runCalls"))
+
+            val updatedReconciliations = state.workspace.main.haplogroupReconciliations.map { r =>
+              if (r.atUri == updatedReconciliation.atUri) updatedReconciliation else r
+            }
+
+            // Update biosample haplogroups based on remaining calls
+            val consensusResult = if (updatedReconciliation.runCalls.nonEmpty) {
+              val bestCall = updatedReconciliation.runCalls.maxBy { c =>
+                val qualityTier = c.technology match {
+                  case Some(HaplogroupTechnology.WGS) => 3
+                  case Some(HaplogroupTechnology.BIG_Y) => 2
+                  case Some(HaplogroupTechnology.SNP_ARRAY) => 1
+                  case _ => 0
+                }
+                (qualityTier, c.confidence)
+              }
+              Some(HaplogroupReconciliation.toHaplogroupResult(bestCall))
+            } else {
+              None
+            }
+
+            val currentAssignments = subject.haplogroups.getOrElse(HaplogroupAssignments())
+            val updatedAssignments = dnaType match {
+              case DnaType.Y_DNA => currentAssignments.copy(yDna = consensusResult)
+              case DnaType.MT_DNA => currentAssignments.copy(mtDna = consensusResult)
+            }
+            val updatedSubject = subject.copy(
+              haplogroups = Some(updatedAssignments),
+              meta = subject.meta.updated("haplogroups")
+            )
+
+            val updatedSamples = state.workspace.main.samples.map { s =>
+              if (s.sampleAccession == sampleAccession) updatedSubject else s
+            }
+            val updatedContent = state.workspace.main.copy(
+              samples = updatedSamples,
+              haplogroupReconciliations = updatedReconciliations
+            )
+            Right(state.copy(workspace = state.workspace.copy(main = updatedContent)))
+
+          case None =>
+            // No reconciliation record exists, nothing to remove
+            Right(state)
+        }
+
+      case None =>
+        Left(s"Subject not found: $sampleAccession")
+    }
+  }
+
+  /**
+   * Gets reconciliation records for a biosample.
+   */
+  def getReconciliationsForBiosample(state: WorkspaceState, sampleAccession: String): List[HaplogroupReconciliation] = {
+    findSubject(state, sampleAccession) match {
+      case Some(subject) =>
+        val biosampleRef = subject.atUri.getOrElse(s"local:biosample:$sampleAccession")
+        state.workspace.main.haplogroupReconciliations.filter(_.biosampleRef == biosampleRef)
+      case None =>
+        List.empty
+    }
+  }
+
   // --- Utility ---
 
   def getExistingChecksums(state: WorkspaceState, sampleAccession: String): Set[String] = {

@@ -390,43 +390,43 @@ class AnalysisCoordinator(implicit ec: ExecutionContext) {
         case Right(results) if results.nonEmpty =>
           val topResult = results.head
 
-          // Determine source type based on test type
-          val sourceType = seqRun.testType match {
-            case t if t.startsWith("BIGY") || t.contains("Y_ELITE") || t.contains("Y_PRIME") => "bigy"
-            case _ => "wgs"
+          // Determine technology based on test type
+          val technology = seqRun.testType match {
+            case t if t.startsWith("BIGY") || t.contains("Y_ELITE") || t.contains("Y_PRIME") =>
+              HaplogroupTechnology.BIG_Y
+            case _ => HaplogroupTechnology.WGS
           }
 
-          // Convert to workspace model with full provenance
-          val workspaceResult = HaplogroupResult(
-            haplogroupName = topResult.name,
-            score = topResult.score,
-            matchingSnps = Some(topResult.matchingSnps),
-            mismatchingSnps = Some(topResult.mismatchingSnps),
-            ancestralMatches = Some(topResult.ancestralMatches),
-            treeDepth = Some(topResult.depth),
-            lineagePath = None,
-            source = Some(sourceType),
-            sourceRef = seqRun.atUri,
+          // Create a RunHaplogroupCall for the reconciliation system
+          val runCall = RunHaplogroupCall(
+            sourceRef = seqRun.atUri.getOrElse(s"local:sequencerun:unknown"),
+            haplogroup = topResult.name,
+            confidence = topResult.score,
+            callMethod = CallMethod.SNP_PHYLOGENETIC,
+            score = Some(topResult.score),
+            supportingSnps = Some(topResult.matchingSnps),
+            conflictingSnps = Some(topResult.mismatchingSnps),
+            noCalls = None,
+            technology = Some(technology),
+            meanCoverage = None,
             treeProvider = Some(treeProviderType.toString.toLowerCase),
-            treeVersion = None, // TODO: Get from tree provider
-            analyzedAt = Some(java.time.Instant.now())
+            treeVersion = None
           )
 
-          // Update the consensus result in HaplogroupAssignments
-          // Multi-run tracking is handled separately in HaplogroupReconciliation
-          val currentAssignments = subject.haplogroups.getOrElse(HaplogroupAssignments())
-          val updatedAssignments = treeType match {
-            case TreeType.YDNA => currentAssignments.copy(yDna = Some(workspaceResult))
-            case TreeType.MTDNA => currentAssignments.copy(mtDna = Some(workspaceResult))
+          // Convert TreeType to DnaType
+          val dnaType = treeType match {
+            case TreeType.YDNA => DnaType.Y_DNA
+            case TreeType.MTDNA => DnaType.MT_DNA
           }
-          val updatedSubject = subject.copy(
-            haplogroups = Some(updatedAssignments),
-            meta = subject.meta.updated("haplogroups")
-          )
-          val newState = workspaceOps.updateSubjectDirect(state, updatedSubject)
 
-          onProgress(AnalysisProgress("Haplogroup analysis complete", 1.0, isComplete = true))
-          Right((newState, topResult))
+          // Add to reconciliation - this automatically updates biosample haplogroups with consensus
+          workspaceOps.addHaplogroupCall(state, subject.sampleAccession, dnaType, runCall) match {
+            case Right((newState, _)) =>
+              onProgress(AnalysisProgress("Haplogroup analysis complete", 1.0, isComplete = true))
+              Right((newState, topResult))
+            case Left(err) =>
+              Left(s"Failed to update reconciliation: $err")
+          }
 
         case Right(_) =>
           Left("No haplogroup matches found")
