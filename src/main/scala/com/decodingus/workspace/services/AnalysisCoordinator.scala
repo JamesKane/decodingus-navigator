@@ -232,11 +232,22 @@ class AnalysisCoordinator(implicit ec: ExecutionContext) {
       )
 
       // Use WgsMetricsProcessor for standard analysis
+      // Pass maxReadLength for long-read data (PacBio HiFi, Nanopore) - GATK defaults to 150bp
+      // Enable COUNT_UNPAIRED for single-end libraries (both short and long read)
       val processor = new WgsMetricsProcessor()
-      val wgsMetricsResult = processor.process(bamPath, referencePath, (message, current, total) => {
-        val pct = 0.3 + (current.toDouble / total) * 0.6
-        onProgress(AnalysisProgress(s"Coverage: $message", pct))
-      }, artifactContext = Some(artifactCtx))
+      val isSingleEnd = seqRun.libraryLayout.exists(_.equalsIgnoreCase("Single-End"))
+      val wgsMetricsResult = processor.process(
+        bamPath = bamPath,
+        referencePath = referencePath,
+        onProgress = (message, current, total) => {
+          val pct = 0.3 + (current.toDouble / total) * 0.6
+          onProgress(AnalysisProgress(s"Coverage: $message", pct))
+        },
+        readLength = seqRun.maxReadLength,
+        artifactContext = Some(artifactCtx),
+        totalReads = seqRun.totalReads,
+        countUnpaired = isSingleEnd
+      )
 
       wgsMetricsResult match {
         case Left(error) =>
