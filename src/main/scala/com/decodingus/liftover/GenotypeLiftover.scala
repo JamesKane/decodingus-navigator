@@ -66,6 +66,10 @@ class GenotypeLiftover(fromBuild: String, toBuild: String) {
     }
   }
 
+  // Track first few failures for debugging
+  private var debugFailureCount = 0
+  private val maxDebugFailures = 5
+
   /**
    * Lift a single genotype position.
    *
@@ -89,7 +93,15 @@ class GenotypeLiftover(fromBuild: String, toBuild: String) {
     // Create interval for the SNP position (1-based, inclusive)
     val sourceInterval = new Interval(normalizedChr, position, position, false, s"$normalizedChr:$position")
 
-    Option(liftOver.liftOver(sourceInterval)).map { targetInterval =>
+    val result = Option(liftOver.liftOver(sourceInterval))
+
+    // Debug logging for first few failures
+    if (result.isEmpty && debugFailureCount < maxDebugFailures) {
+      println(s"[GenotypeLiftover] Failed to lift: $chromosome -> $normalizedChr:$position")
+      debugFailureCount += 1
+    }
+
+    result.map { targetInterval =>
       val needsReverseComplement = targetInterval.isNegativeStrand
 
       val (liftedAllele1, liftedAllele2) = if (needsReverseComplement) {
@@ -153,26 +165,22 @@ class GenotypeLiftover(fromBuild: String, toBuild: String) {
 
   /**
    * Normalize chromosome name for liftover.
-   * Different builds use different naming conventions.
+   * UCSC chain files use "chr" prefix and "chrM" (not chrMT) for mitochondria.
    */
   private def normalizeChromosome(chr: String, build: String): String = {
     val normalized = chr.toUpperCase.stripPrefix("CHR")
 
-    // Convert numeric/letter chromosomes to appropriate format
+    // Convert numeric/letter chromosomes to UCSC format
+    // Chain files use chrM (not chrMT) for mitochondria
     val baseChr = normalized match {
       case "23" | "X" => "X"
       case "24" | "Y" => "Y"
-      case "25" | "MT" | "M" => "MT"
+      case "25" | "MT" | "M" | "MITO" => "M"  // UCSC uses chrM, not chrMT
       case other => other
     }
 
-    // GRCh37/hg19 uses "chr" prefix in chain files
-    // GRCh38/hg38 also uses "chr" prefix
-    build match {
-      case "GRCh37" | "hg19" => s"chr$baseChr"
-      case "GRCh38" | "hg38" => s"chr$baseChr"
-      case _ => s"chr$baseChr"
-    }
+    // All UCSC chain files use "chr" prefix
+    s"chr$baseChr"
   }
 }
 

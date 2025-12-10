@@ -97,14 +97,24 @@ class ChipHaplogroupAdapter {
     }
 
     // Determine which coordinate system to use for the tree
-    // If tree supports chip's build natively, use it; otherwise use tree's source build and liftover chip data
-    val treeBuild = if (treeProvider.supportedBuilds.contains(chipBuild)) {
-      chipBuild
-    } else {
-      treeProvider.sourceBuild
+    // mtDNA: All chip vendors and trees use rCRS positions (1-16569), so use rCRS if available
+    // Y-DNA: Need to match chip build to tree build, with liftover if necessary
+    val treeBuild = treeType match {
+      case TreeType.MTDNA =>
+        // Prefer rCRS for mtDNA since that's what chip data uses
+        if (treeProvider.supportedBuilds.contains("rCRS")) "rCRS"
+        else treeProvider.sourceBuild  // Fall back to source build (positions are same anyway)
+      case TreeType.YDNA =>
+        if (treeProvider.supportedBuilds.contains(chipBuild)) chipBuild
+        else treeProvider.sourceBuild
     }
 
-    val needsLiftover = GenotypeLiftover.needsLiftover(chipBuild, treeBuild)
+    // mtDNA positions use rCRS numbering (1-16569) which is consistent across builds
+    // No liftover needed for mtDNA - chip companies and trees both use rCRS positions
+    val needsLiftover = treeType match {
+      case TreeType.MTDNA => false  // rCRS coordinates are universal for mtDNA
+      case TreeType.YDNA => GenotypeLiftover.needsLiftover(chipBuild, treeBuild)
+    }
 
     if (needsLiftover) {
       onProgress(s"Chip data is $chipBuild, tree is $treeBuild. Preparing coordinate liftover...", 0.05, 1.0)
