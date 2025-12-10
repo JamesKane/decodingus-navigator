@@ -4,14 +4,12 @@ import com.decodingus.analysis.{ArtifactContext, CallableLociProcessor, Callable
 import com.decodingus.client.DecodingUsClient
 import com.decodingus.haplogroup.tree.{TreeType, TreeProviderType}
 import com.decodingus.auth.User
-import com.decodingus.config.{FeatureToggles, UserPreferencesService}
+import com.decodingus.config.{FeatureToggles, UserPreferencesService, ReferenceConfigService}
 import com.decodingus.model.{LibraryStats, WgsMetrics}
-import com.decodingus.pds.PdsClient
-import com.decodingus.config.ReferenceConfigService
 import com.decodingus.refgenome.{ReferenceGateway, ReferenceResolveResult}
 import com.decodingus.workspace.model.{Workspace, Project, Biosample, WorkspaceContent, SyncStatus, SequenceRun, Alignment, AlignmentMetrics, ContigMetrics, FileInfo, HaplogroupAssignments, HaplogroupResult => WorkspaceHaplogroupResult, RecordMeta, StrProfile, ChipProfile}
 import com.decodingus.haplogroup.model.{HaplogroupResult => AnalysisHaplogroupResult}
-import com.decodingus.workspace.services.{WorkspaceOperations, AnalysisCoordinator, AnalysisProgress}
+import com.decodingus.workspace.services.{WorkspaceOperations, AnalysisCoordinator, AnalysisProgress, SyncService, SyncResult, FingerprintMatchService, FingerprintMatchResult}
 import htsjdk.samtools.SamReaderFactory
 import scalafx.beans.property.{ObjectProperty, ReadOnlyObjectProperty, StringProperty, BooleanProperty, DoubleProperty}
 import scalafx.collections.ObservableBuffer
@@ -28,6 +26,8 @@ class WorkbenchViewModel(val workspaceService: WorkspaceService) {
   // --- Service Instances ---
   private val workspaceOps = new WorkspaceOperations()
   private val analysisCoordinator = new AnalysisCoordinator()
+  private val syncService = new SyncService(workspaceService)
+  private val fingerprintMatchService = new FingerprintMatchService()
 
   // --- Sync State ---
   val syncStatus: ObjectProperty[SyncStatus] = ObjectProperty(SyncStatus.Synced)
@@ -172,38 +172,23 @@ class WorkbenchViewModel(val workspaceService: WorkspaceService) {
    * Updates local state and cache if remote data differs.
    */
   def syncFromPdsIfAvailable(): Unit = {
-    if (FeatureToggles.atProtocolEnabled) {
-      currentUser.value match {
-        case Some(user) =>
-          syncStatus.value = SyncStatus.Syncing
-          println(s"[ViewModel] Syncing workspace from PDS for user ${user.did}...")
-
-          PdsClient.loadWorkspace(user).onComplete {
-            case Success(remoteWorkspace) =>
-              Platform.runLater {
-                // Compare and update if different
-                if (remoteWorkspace != _workspace.value) {
-                  println(s"[ViewModel] PDS workspace differs from local, updating...")
-                  _workspace.value = remoteWorkspace
-                  // Update local cache
-                  workspaceService.save(remoteWorkspace)
-                } else {
-                  println(s"[ViewModel] PDS workspace matches local, no update needed")
-                }
-                syncStatus.value = SyncStatus.Synced
-                lastSyncError.value = ""
-              }
-            case Failure(e) =>
-              Platform.runLater {
-                println(s"[ViewModel] Failed to sync from PDS: ${e.getMessage}")
-                syncStatus.value = SyncStatus.Error
-                lastSyncError.value = e.getMessage
-                // Continue with local data - app remains functional
-              }
-          }
-        case None =>
-          println(s"[ViewModel] AT Protocol enabled but no user logged in, using local workspace only")
-          syncStatus.value = SyncStatus.Offline
+    syncService.syncFromPds(
+      currentUser.value,
+      _workspace.value,
+      status => Platform.runLater { syncStatus.value = status }
+    ).foreach { case (workspace, result) =>
+      Platform.runLater {
+        result match {
+          case SyncResult.Success =>
+            _workspace.value = workspace
+            lastSyncError.value = ""
+          case SyncResult.NoChange =>
+            lastSyncError.value = ""
+          case SyncResult.Error(msg) =>
+            lastSyncError.value = msg
+          case _ =>
+            lastSyncError.value = ""
+        }
       }
     }
   }
@@ -215,49 +200,17 @@ class WorkbenchViewModel(val workspaceService: WorkspaceService) {
    * 3. Sync to PDS in background if AT Protocol enabled
    */
   def saveWorkspace(): Unit = {
-    // Step 1: Save to local JSON (fast, synchronous)
-    workspaceService.save(_workspace.value).fold(
-      error => {
-        println(s"[ViewModel] Error saving workspace locally: $error")
-      },
-      _ => {
-        println(s"[ViewModel] Workspace saved to local cache")
-      }
-    )
-
-    // Step 2: Sync to PDS in background if available
-    syncToPdsIfAvailable()
-  }
-
-  /**
-   * Attempts to sync workspace to PDS if AT Protocol is enabled and user is logged in.
-   */
-  private def syncToPdsIfAvailable(): Unit = {
-    if (FeatureToggles.atProtocolEnabled) {
-      currentUser.value match {
-        case Some(user) =>
-          syncStatus.value = SyncStatus.Syncing
-          println(s"[ViewModel] Syncing workspace to PDS for user ${user.did}...")
-
-          PdsClient.saveWorkspace(user, _workspace.value).onComplete {
-            case Success(_) =>
-              Platform.runLater {
-                println(s"[ViewModel] Successfully synced workspace to PDS")
-                syncStatus.value = SyncStatus.Synced
-                lastSyncError.value = ""
-              }
-            case Failure(e) =>
-              Platform.runLater {
-                println(s"[ViewModel] Failed to sync to PDS: ${e.getMessage}")
-                syncStatus.value = SyncStatus.Error
-                lastSyncError.value = e.getMessage
-                // Local save succeeded, so data is not lost
-              }
-          }
-        case None =>
-          // No user logged in, local-only mode
-          syncStatus.value = SyncStatus.Offline
-      }
+    syncService.saveAndSync(
+      _workspace.value,
+      currentUser.value,
+      status => Platform.runLater { syncStatus.value = status }
+    ).foreach {
+      case Left(error) =>
+        Platform.runLater { lastSyncError.value = error }
+      case Right(SyncResult.Error(msg)) =>
+        Platform.runLater { lastSyncError.value = msg }
+      case Right(_) =>
+        Platform.runLater { lastSyncError.value = "" }
     }
   }
 
@@ -543,7 +496,7 @@ class WorkbenchViewModel(val workspaceService: WorkspaceService) {
               val matchResult = findMatchingSequenceRun(biosampleRef, fingerprint, libraryStats)
 
               val runResult: Option[(Int, SequenceRun, Boolean)] = matchResult match {
-                case MatchFound(existingRun, idx, confidence) =>
+                case FingerprintMatchResult.MatchFound(existingRun, idx, confidence) =>
                   // For LOW confidence matches, ask user to confirm
                   if (confidence == "LOW") {
                     import com.decodingus.ui.components.{FingerprintMatchDialog, GroupTogether, KeepSeparate, FingerprintMatchDecision}
@@ -586,7 +539,7 @@ class WorkbenchViewModel(val workspaceService: WorkspaceService) {
                     Some((idx, existingRun, false))
                   }
 
-                case NoMatch =>
+                case FingerprintMatchResult.NoMatch =>
                   // Create new SequenceRun
                   val newIndex = addSequenceRunFromFile(sampleAccession, fileInfo)
                   if (newIndex < 0) {
@@ -879,15 +832,8 @@ class WorkbenchViewModel(val workspaceService: WorkspaceService) {
   // --- Run Fingerprint Matching ---
 
   /**
-   * Fingerprint match result indicating confidence level.
-   */
-  sealed trait FingerprintMatchResult
-  case class MatchFound(sequenceRun: SequenceRun, index: Int, confidence: String) extends FingerprintMatchResult
-  case object NoMatch extends FingerprintMatchResult
-
-  /**
    * Find an existing sequence run that matches the given fingerprint.
-   * Used to detect when the same sequencing run has been aligned to different references.
+   * Delegates to FingerprintMatchService for matching logic.
    *
    * @param biosampleRef The biosample to search within
    * @param fingerprint The computed fingerprint to match
@@ -902,34 +848,9 @@ class WorkbenchViewModel(val workspaceService: WorkspaceService) {
     val candidateRuns = _workspace.value.main.sequenceRuns
       .filter(_.biosampleRef == biosampleRef)
       .zipWithIndex
+      .toList
 
-    // Tier 1: Exact fingerprint match (HIGH confidence)
-    candidateRuns.find { case (run, _) =>
-      run.runFingerprint.contains(fingerprint)
-    }.map { case (run, idx) =>
-      MatchFound(run, idx, "HIGH")
-    }.getOrElse {
-      // Tier 2: PU match (HIGH confidence)
-      libraryStats.platformUnit.flatMap { pu =>
-        candidateRuns.find { case (run, _) =>
-          run.platformUnit.contains(pu)
-        }.map { case (run, idx) =>
-          MatchFound(run, idx, "HIGH")
-        }
-      }.getOrElse {
-        // Tier 3: LB + SM match (MEDIUM confidence)
-        if (libraryStats.libraryId != "Unknown" && libraryStats.sampleName != "Unknown") {
-          candidateRuns.find { case (run, _) =>
-            run.libraryId.contains(libraryStats.libraryId) &&
-            run.sampleName.contains(libraryStats.sampleName)
-          }.map { case (run, idx) =>
-            MatchFound(run, idx, "MEDIUM")
-          }.getOrElse(NoMatch)
-        } else {
-          NoMatch
-        }
-      }
-    }
+    fingerprintMatchService.findMatch(candidateRuns, fingerprint, libraryStats)
   }
 
   /**
