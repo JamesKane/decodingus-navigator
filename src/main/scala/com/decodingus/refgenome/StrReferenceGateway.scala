@@ -1,6 +1,5 @@
 package com.decodingus.refgenome
 
-import com.decodingus.analysis.GatkRunner
 import sttp.client3.*
 
 import java.io.{BufferedInputStream, FileInputStream, FileOutputStream, PrintWriter}
@@ -21,7 +20,6 @@ import scala.util.Using
 class StrReferenceGateway(onProgress: (String, Double) => Unit = (_, _) => ()) {
   private val cache = new StrReferenceCache
   private val liftoverGateway = new LiftoverGateway((_, _) => ())
-  private val referenceGateway = new ReferenceGateway((_, _) => ())
 
   // HipSTR provides GRCh38 directly; we'll liftover for other builds
   private val hipstrUrls: Map[String, String] = Map(
@@ -107,9 +105,7 @@ class StrReferenceGateway(onProgress: (String, Double) => Unit = (_, _) => ()) {
 
     for {
       chainFile <- liftoverGateway.resolve(fromBuild, toBuild)
-      sourceRef <- referenceGateway.resolve(fromBuild)
-      targetRef <- referenceGateway.resolve(toBuild)
-      liftedPath <- performGatkLiftover(sourcePath, sourceRef, targetRef, chainFile, toBuild)
+      liftedPath <- performLiftover(sourcePath, chainFile, toBuild)
     } yield {
       val finalPath = cache.put(toBuild, liftedPath)
       onProgress("STR reference liftover complete.", 1.0)
@@ -119,108 +115,89 @@ class StrReferenceGateway(onProgress: (String, Double) => Unit = (_, _) => ()) {
   }
 
   /**
-   * Perform liftover using GATK's BedToIntervalList and LiftOverIntervalList.
-   * This avoids requiring external liftOver tool installation.
+   * Normalize chromosome name to match chain file conventions.
+   * HipSTR BED uses "1", "2", etc. but UCSC chain files use "chr1", "chr2", etc.
    */
-  private def performGatkLiftover(
+  private def normalizeChromForChain(chrom: String): String = {
+    if (chrom.startsWith("chr")) chrom
+    else if (chrom == "MT") "chrM"
+    else s"chr$chrom"
+  }
+
+  /**
+   * Perform liftover of BED file using htsjdk's LiftOver directly.
+   * This is much faster than GATK's interval list approach for large BED files.
+   */
+  private def performLiftover(
     bedPath: Path,
-    sourceRef: Path,
-    targetRef: Path,
     chainPath: Path,
     targetBuild: String
   ): Either[String, Path] = {
-    val intervalList = Files.createTempFile(s"hipstr-intervals", ".interval_list")
-    val liftedIntervalList = Files.createTempFile(s"hipstr-$targetBuild-lifted", ".interval_list")
+    import htsjdk.samtools.liftover.LiftOver
+    import htsjdk.samtools.util.{Interval, Log}
+
+    // Suppress verbose htsjdk logging for failed liftover regions
+    Log.setGlobalLogLevel(Log.LogLevel.WARNING)
+
     val outputBed = Files.createTempFile(s"hipstr-$targetBuild", ".bed")
 
     try {
-      // Step 1: Convert BED to interval list
-      println(s"[StrReferenceGateway] Converting BED to interval list...")
-      val bedToIntervalArgs = Array(
-        "BedToIntervalList",
-        "-I", bedPath.toString,
-        "-O", intervalList.toString,
-        "-SD", sourceRef.toString
-      )
+      println(s"[StrReferenceGateway] Loading chain file for liftover...")
+      val liftOver = new LiftOver(chainPath.toFile)
 
-      GatkRunner.run(bedToIntervalArgs) match {
-        case Left(error) =>
-          cleanup(intervalList, liftedIntervalList, outputBed)
-          return Left(s"BedToIntervalList failed: $error")
-        case Right(_) => // continue
+      var liftedCount = 0
+      var failedCount = 0
+
+      println(s"[StrReferenceGateway] Lifting over STR regions (this may take a moment)...")
+      Using.resources(
+        Source.fromFile(bedPath.toFile),
+        new PrintWriter(outputBed.toFile)
+      ) { (source, writer) =>
+        for (line <- source.getLines() if !line.startsWith("#") && line.nonEmpty) {
+          val fields = line.split("\t")
+          if (fields.length >= 5) {
+            val chrom = fields(0)
+            val start = fields(1).toInt  // BED is 0-based
+            val end = fields(2).toInt
+            val period = fields(3)
+            val numRepeats = fields(4)
+            val name = if (fields.length > 5) fields(5) else ""
+
+            // Normalize chromosome name for chain file lookup (add "chr" prefix if needed)
+            val chainChrom = normalizeChromForChain(chrom)
+
+            // Create interval (htsjdk uses 1-based coordinates)
+            val interval = new Interval(chainChrom, start + 1, end)
+            val lifted = liftOver.liftOver(interval)
+
+            if (lifted != null) {
+              // Convert back to BED (0-based)
+              // Keep the output contig name as-is from the chain (will have chr prefix)
+              val liftedChrom = lifted.getContig
+              val liftedStart = lifted.getStart - 1
+              val liftedEnd = lifted.getEnd
+              writer.println(s"$liftedChrom\t$liftedStart\t$liftedEnd\t$period\t$numRepeats\t$name")
+              liftedCount += 1
+            } else {
+              failedCount += 1
+            }
+          }
+        }
       }
 
-      // Step 2: Liftover the interval list
-      println(s"[StrReferenceGateway] Lifting over interval list...")
-      val liftoverArgs = Array(
-        "LiftOverIntervalList",
-        "-I", intervalList.toString,
-        "-O", liftedIntervalList.toString,
-        "-SD", targetRef.toString,
-        "-CHAIN", chainPath.toString
-      )
+      println(s"[StrReferenceGateway] Liftover complete: $liftedCount regions lifted, $failedCount failed")
 
-      GatkRunner.run(liftoverArgs) match {
-        case Left(error) =>
-          cleanup(intervalList, liftedIntervalList, outputBed)
-          return Left(s"LiftOverIntervalList failed: $error")
-        case Right(_) => // continue
-      }
-
-      // Step 3: Convert back to BED format (preserving extra columns from original)
-      println(s"[StrReferenceGateway] Converting interval list back to BED...")
-      convertIntervalListToBed(liftedIntervalList, bedPath, outputBed)
-
-      Files.deleteIfExists(intervalList)
-      Files.deleteIfExists(liftedIntervalList)
-
-      if (Files.exists(outputBed) && Files.size(outputBed) > 0) {
+      if (liftedCount > 0) {
         Right(outputBed)
       } else {
         Files.deleteIfExists(outputBed)
-        Left("Liftover produced empty output")
+        Left("Liftover produced no valid output")
       }
     } catch {
       case e: Exception =>
-        cleanup(intervalList, liftedIntervalList, outputBed)
+        Files.deleteIfExists(outputBed)
         Left(s"Liftover failed: ${e.getMessage}")
     }
   }
 
-  /**
-   * Convert interval list back to BED format.
-   * The interval list loses the extra BED columns (period, num_repeats, name),
-   * so we try to match positions back to the original BED to recover them.
-   */
-  private def convertIntervalListToBed(intervalListPath: Path, originalBedPath: Path, outputBedPath: Path): Unit = {
-    // Load original BED data keyed by (chrom, start, end) to recover extra columns
-    // Note: After liftover, positions may shift, so we just output basic BED
-    // Future enhancement: could try fuzzy matching to recover STR metadata
-
-    Using.resources(
-      Source.fromFile(intervalListPath.toFile),
-      new PrintWriter(outputBedPath.toFile)
-    ) { (source, writer) =>
-      for (line <- source.getLines() if !line.startsWith("@") && line.nonEmpty) {
-        val fields = line.split("\t")
-        if (fields.length >= 3) {
-          // Interval list format: chrom start end strand name
-          // BED format: chrom start end [name] [score] [strand] ...
-          val chrom = fields(0)
-          val start = fields(1).toLong - 1 // Interval list is 1-based, BED is 0-based
-          val end = fields(2)
-          val name = if (fields.length > 4) fields(4) else "."
-
-          // For now, output basic BED with placeholder STR info
-          // The position lookup in StrAnnotator will still work
-          // Period and num_repeats will need to be re-estimated or defaulted
-          writer.println(s"$chrom\t$start\t$end\t4\t10.0\t$name")
-        }
-      }
-    }
-  }
-
-  private def cleanup(paths: Path*): Unit = {
-    paths.foreach(p => Files.deleteIfExists(p))
-  }
 }

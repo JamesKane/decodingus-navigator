@@ -16,6 +16,27 @@ import scala.util.Using
 object HaplogroupReportWriter {
 
   /**
+   * Convert a PHRED quality score to a 5-star rating.
+   * 0 stars = shouldn't be included (Q < 10)
+   * 1 star  = very low confidence (Q 10-19)
+   * 2 stars = low confidence (Q 20-29)
+   * 3 stars = moderate confidence (Q 30-39)
+   * 4 stars = high confidence (Q 40-49)
+   * 5 stars = very high confidence (Q >= 50)
+   */
+  private def qualityToStars(quality: Option[Double]): String = {
+    quality match {
+      case None => "-"
+      case Some(q) if q < 10 => "☆☆☆☆☆"   // 0 stars (empty)
+      case Some(q) if q < 20 => "★☆☆☆☆"   // 1 star
+      case Some(q) if q < 30 => "★★☆☆☆"   // 2 stars
+      case Some(q) if q < 40 => "★★★☆☆"   // 3 stars
+      case Some(q) if q < 50 => "★★★★☆"   // 4 stars
+      case Some(_) => "★★★★★"             // 5 stars
+    }
+  }
+
+  /**
    * Write a haplogroup analysis report to the specified directory.
    *
    * @param outputDir Directory to write the report
@@ -135,12 +156,12 @@ object HaplogroupReportWriter {
         writer.println("-" * 80)
         writer.println("SNP DETAILS (along predicted path)")
         writer.println("-" * 80)
-        writer.println(f"${"Position"}%12s  ${"SNP Name"}%-20s  ${"Ancestral"}%10s  ${"Derived"}%10s  ${"Called"}%10s  ${"State"}%10s")
+        writer.println(f"${"Contig"}%6s  ${"Position"}%12s  ${"SNP Name"}%-20s  ${"Anc"}%5s  ${"Der"}%5s  ${"Call"}%5s  ${"State"}%10s")
         writer.println("-" * 80)
 
         val allLociOnPath = path.flatMap(_.loci)
 
-        allLociOnPath.sortBy(_.position).foreach { locus =>
+        allLociOnPath.sortBy(l => (l.contig, l.position)).foreach { locus =>
           val called = snpCalls.get(locus.position).getOrElse("-")
           val state = snpCalls.get(locus.position) match {
             case Some(base) if base.equalsIgnoreCase(locus.alt) => "Derived"
@@ -148,7 +169,7 @@ object HaplogroupReportWriter {
             case Some(_) => "Unknown"
             case None => "No Call"
           }
-          writer.println(f"${locus.position}%12d  ${locus.name}%-20s  ${locus.ref}%10s  ${locus.alt}%10s  $called%10s  $state%10s")
+          writer.println(f"${locus.contig}%6s  ${locus.position}%12d  ${locus.name}%-20s  ${locus.ref}%5s  ${locus.alt}%5s  $called%5s  $state%10s")
         }
         writer.println()
       }
@@ -169,11 +190,11 @@ object HaplogroupReportWriter {
         } else {
           writer.println(s"  Total novel/unplaced SNPs: ${snpVariants.size}")
           writer.println()
-          writer.println(f"${"Position"}%12s  ${"Ref"}%6s  ${"Alt"}%6s  ${"Quality"}%10s")
+          writer.println(f"${"Contig"}%6s  ${"Position"}%12s  ${"Ref"}%5s  ${"Alt"}%5s  ${"Quality"}%-10s")
           writer.println("-" * 80)
-          snpVariants.sortBy(_.position).foreach { v =>
-            val qualStr = v.quality.map(q => f"$q%.1f").getOrElse("-")
-            writer.println(f"${v.position}%12d  ${v.ref}%6s  ${v.alt}%6s  $qualStr%10s")
+          snpVariants.sortBy(v => (v.contig, v.position)).foreach { v =>
+            val stars = qualityToStars(v.quality)
+            writer.println(f"${v.contig}%6s  ${v.position}%12d  ${v.ref}%5s  ${v.alt}%5s  $stars%-10s")
           }
         }
         writer.println()
@@ -205,16 +226,16 @@ object HaplogroupReportWriter {
           // STR indels with annotation
           if (strIndels.nonEmpty) {
             writer.println("  Known STR Regions:")
-            writer.println(f"${"Position"}%12s  ${"Ref"}%-12s  ${"Alt"}%-12s  ${"Qual"}%8s  ${"STR Type"}%-25s")
+            writer.println(f"${"Contig"}%6s  ${"Position"}%12s  ${"Ref"}%-10s  ${"Alt"}%-10s  ${"Quality"}%-10s  ${"STR Type"}%-20s")
             writer.println("-" * 80)
-            strIndels.sortBy(_.position).foreach { v =>
-              val qualStr = v.quality.map(q => f"$q%.1f").getOrElse("-")
-              val refDisplay = if (v.ref.length > 10) v.ref.take(8) + ".." else v.ref
-              val altDisplay = if (v.alt.length > 10) v.alt.take(8) + ".." else v.alt
+            strIndels.sortBy(v => (v.contig, v.position)).foreach { v =>
+              val stars = qualityToStars(v.quality)
+              val refDisplay = if (v.ref.length > 8) v.ref.take(6) + ".." else v.ref
+              val altDisplay = if (v.alt.length > 8) v.alt.take(6) + ".." else v.alt
               val strInfo = strAnnotator.flatMap(_.findOverlapping(v.contig, v.position))
                 .map(r => strAnnotator.get.formatAnnotation(r))
                 .getOrElse("-")
-              writer.println(f"${v.position}%12d  $refDisplay%-12s  $altDisplay%-12s  $qualStr%8s  $strInfo%-25s")
+              writer.println(f"${v.contig}%6s  ${v.position}%12d  $refDisplay%-10s  $altDisplay%-10s  $stars%-10s  $strInfo%-20s")
             }
             writer.println()
           }
@@ -224,13 +245,13 @@ object HaplogroupReportWriter {
             if (strIndels.nonEmpty) {
               writer.println("  Other Indels:")
             }
-            writer.println(f"${"Position"}%12s  ${"Ref"}%-15s  ${"Alt"}%-15s  ${"Quality"}%10s")
+            writer.println(f"${"Contig"}%6s  ${"Position"}%12s  ${"Ref"}%-12s  ${"Alt"}%-12s  ${"Quality"}%-10s")
             writer.println("-" * 80)
-            otherIndels.sortBy(_.position).foreach { v =>
-              val qualStr = v.quality.map(q => f"$q%.1f").getOrElse("-")
-              val refDisplay = if (v.ref.length > 12) v.ref.take(10) + ".." else v.ref
-              val altDisplay = if (v.alt.length > 12) v.alt.take(10) + ".." else v.alt
-              writer.println(f"${v.position}%12d  $refDisplay%-15s  $altDisplay%-15s  $qualStr%10s")
+            otherIndels.sortBy(v => (v.contig, v.position)).foreach { v =>
+              val stars = qualityToStars(v.quality)
+              val refDisplay = if (v.ref.length > 10) v.ref.take(8) + ".." else v.ref
+              val altDisplay = if (v.alt.length > 10) v.alt.take(8) + ".." else v.alt
+              writer.println(f"${v.contig}%6s  ${v.position}%12d  $refDisplay%-12s  $altDisplay%-12s  $stars%-10s")
             }
           }
         }

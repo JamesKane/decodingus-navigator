@@ -112,27 +112,28 @@ class HaplogroupScorer {
       depth = depth
     )
 
-    // Determine if this branch provides no positive evidence for descent
-    // - All ancestral: we have calls but none are derived (confirmed wrong path)
-    // - All no-calls: we have no data to confirm this path (unconfirmed path)
-    // Both cases should increment the "unconfirmed descent" counter
+    // Determine if this branch has evidence that says to STOP descent
+    // - All ancestral (with calls): we have data showing this is the wrong path
+    // - No-calls alone should NOT stop descent - absence of data isn't evidence against
+    // The "2 consecutive" rule provides slack for a single branch with poor data hygiene
+    // (e.g., one reversed allele due to tree error) not stopping valid descent
     val branchHasCalls = branchDerived > 0 || branchAncestral > 0
     val branchAllAncestral = branchHasCalls && branchDerived == 0 && branchAncestral > 0
-    val branchAllNoCalls = !branchHasCalls && haplogroup.loci.nonEmpty
 
-    val newConsecutiveUnconfirmed = if (branchDerived > 0) {
+    val newConsecutiveAncestral = if (branchDerived > 0) {
       // Reset counter if we found any derived calls - this path is confirmed
       0
-    } else if (branchAllAncestral || branchAllNoCalls) {
-      // Increment counter: either confirmed wrong (all ancestral) or unconfirmed (all no-calls)
+    } else if (branchAllAncestral) {
+      // Increment counter: we have calls but ALL are ancestral (evidence to stop)
       consecutiveAncestralBranches + 1
     } else {
-      // Empty branch (no loci) - keep counter as is
+      // No-calls or empty branch - keep counter as is (no evidence to stop)
       consecutiveAncestralBranches
     }
 
-    // Stop descent if we have two consecutive branches without positive evidence
-    if (newConsecutiveUnconfirmed >= 2) {
+    // Stop descent if we have two consecutive branches with evidence AGAINST this path
+    // (all-ancestral calls). This allows one "bad" branch due to tree hygiene issues.
+    if (newConsecutiveAncestral >= 2) {
       return
     }
 
@@ -148,7 +149,7 @@ class HaplogroupScorer {
         newCumulativeNoCalls,
         newCumulativeSnps,
         depth + 1,
-        newConsecutiveUnconfirmed
+        newConsecutiveAncestral
       )
     }
   }
