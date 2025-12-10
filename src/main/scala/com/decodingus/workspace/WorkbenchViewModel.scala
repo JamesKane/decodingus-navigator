@@ -1683,6 +1683,27 @@ class WorkbenchViewModel(val workspaceService: WorkspaceService) {
     findSubject(sampleAccession).flatMap(_.haplogroups)
   }
 
+  /**
+   * Gets the haplogroup artifact directory for a subject/run/alignment combination.
+   * This can be used to display cached haplogroup reports.
+   */
+  def getHaplogroupArtifactDir(sampleAccession: String, sequenceRunIndex: Int): Option[java.nio.file.Path] = {
+    for {
+      subject <- findSubject(sampleAccession)
+      sequenceRuns = _workspace.value.main.getSequenceRunsForBiosample(subject)
+      seqRun <- sequenceRuns.lift(sequenceRunIndex)
+      alignments = _workspace.value.main.getAlignmentsForSequenceRun(seqRun)
+      alignment <- alignments.headOption
+    } yield {
+      val artifactCtx = ArtifactContext(
+        sampleAccession = sampleAccession,
+        sequenceRunUri = seqRun.atUri,
+        alignmentUri = alignment.atUri
+      )
+      artifactCtx.getSubdir("haplogroup")
+    }
+  }
+
   // --- STR Profile CRUD Operations ---
 
   /**

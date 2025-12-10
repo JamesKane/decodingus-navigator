@@ -13,6 +13,7 @@ import com.decodingus.workspace.model.{Biosample, SequenceRun, Alignment, Alignm
 import com.decodingus.workspace.WorkbenchViewModel
 import com.decodingus.haplogroup.tree.TreeType
 import com.decodingus.genotype.model.{TestTypes, TargetType}
+import java.nio.file.Files
 
 /**
  * Table component displaying sequencing runs for a subject.
@@ -244,6 +245,20 @@ class SequenceDataTable(
             }
           }
         },
+        new MenuItem("View Y-DNA Report") {
+          onAction = _ => {
+            Option(row.getItem).foreach { item =>
+              showCachedHaplogroupReport(item.index, TreeType.YDNA)
+            }
+          }
+        },
+        new MenuItem("View mtDNA Report") {
+          onAction = _ => {
+            Option(row.getItem).foreach { item =>
+              showCachedHaplogroupReport(item.index, TreeType.MTDNA)
+            }
+          }
+        },
         new MenuItem("Callable Loci") {
           onAction = _ => {
             Option(row.getItem).foreach { item =>
@@ -290,6 +305,28 @@ class SequenceDataTable(
         // Update local table data
         tableData.update(index, SequenceRunRow(index, updatedRun, runAlignments))
       case _ => // User cancelled
+    }
+  }
+
+  /** Shows a cached haplogroup report if it exists */
+  private def showCachedHaplogroupReport(index: Int, treeType: TreeType): Unit = {
+    val dnaType = if (treeType == TreeType.YDNA) "Y-DNA" else "mtDNA"
+    val prefix = if (treeType == TreeType.YDNA) "ydna" else "mtdna"
+
+    viewModel.getHaplogroupArtifactDir(subject.sampleAccession, index) match {
+      case Some(dir) if Files.exists(dir.resolve(s"${prefix}_haplogroup_report.txt")) =>
+        new HaplogroupReportDialog(
+          treeType = treeType,
+          artifactDir = Some(dir),
+          sampleName = Some(subject.donorIdentifier)
+        ).showAndWait()
+
+      case _ =>
+        new Alert(AlertType.Information) {
+          title = "No Report Available"
+          headerText = s"No $dnaType haplogroup report found"
+          contentText = "Run haplogroup analysis first to generate a report."
+        }.showAndWait()
     }
   }
 
@@ -359,16 +396,34 @@ class SequenceDataTable(
       onComplete = {
         case Right(haplogroupResult) =>
           Platform.runLater {
-            // Show results dialog
-            new HaplogroupResultDialog(
-              treeType = treeType,
-              haplogroupName = haplogroupResult.name,
-              score = haplogroupResult.score,
-              matchingSnps = haplogroupResult.matchingSnps,
-              mismatchingSnps = haplogroupResult.mismatchingSnps,
-              ancestralMatches = haplogroupResult.ancestralMatches,
-              depth = haplogroupResult.depth
-            ).showAndWait()
+            // Get artifact directory for comprehensive report
+            val artifactDir = viewModel.getHaplogroupArtifactDir(subject.sampleAccession, index)
+
+            // Check if detailed report exists
+            val hasDetailedReport = artifactDir.exists { dir =>
+              val prefix = if (treeType == TreeType.YDNA) "ydna" else "mtdna"
+              Files.exists(dir.resolve(s"${prefix}_haplogroup_report.txt"))
+            }
+
+            if (hasDetailedReport) {
+              // Show comprehensive report dialog
+              new HaplogroupReportDialog(
+                treeType = treeType,
+                artifactDir = artifactDir,
+                sampleName = Some(subject.donorIdentifier)
+              ).showAndWait()
+            } else {
+              // Fall back to simple dialog
+              new HaplogroupResultDialog(
+                treeType = treeType,
+                haplogroupName = haplogroupResult.name,
+                score = haplogroupResult.score,
+                matchingSnps = haplogroupResult.matchingSnps,
+                mismatchingSnps = haplogroupResult.mismatchingSnps,
+                ancestralMatches = haplogroupResult.ancestralMatches,
+                depth = haplogroupResult.depth
+              ).showAndWait()
+            }
           }
         case Left(error) =>
           Platform.runLater {

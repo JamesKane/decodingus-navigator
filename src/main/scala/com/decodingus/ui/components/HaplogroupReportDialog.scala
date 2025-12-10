@@ -1,0 +1,563 @@
+package com.decodingus.ui.components
+
+import scalafx.Includes._
+import scalafx.scene.control.{Dialog, ButtonType, Label, TableView, TableColumn, ScrollPane, Tab, TabPane, TreeView, TreeItem, Tooltip}
+import scalafx.scene.layout.{VBox, HBox, Priority, GridPane, ColumnConstraints, Region}
+import scalafx.geometry.{Insets, Pos}
+import scalafx.beans.property.StringProperty
+import scalafx.collections.ObservableBuffer
+import com.decodingus.workspace.model.{HaplogroupResult => WorkspaceHaplogroupResult, PrivateVariantData, VariantCall}
+import com.decodingus.haplogroup.model.HaplogroupResult as AnalysisHaplogroupResult
+import com.decodingus.haplogroup.tree.TreeType
+
+import java.nio.file.{Files, Path}
+import scala.io.Source
+import scala.util.Using
+
+/**
+ * Comprehensive dialog showing haplogroup analysis results in a GUI format.
+ * Parses and displays cached report files with tabs for candidates, lineage, SNP details, and private variants.
+ * Can display from either workspace model or cached report file.
+ */
+class HaplogroupReportDialog(
+  treeType: TreeType,
+  workspaceResult: Option[WorkspaceHaplogroupResult] = None,
+  analysisResults: Option[List[AnalysisHaplogroupResult]] = None,
+  artifactDir: Option[Path] = None,
+  sampleName: Option[String] = None
+) extends Dialog[Unit] {
+
+  private val dnaType = if (treeType == TreeType.YDNA) "Y-DNA" else "mtDNA"
+
+  title = s"$dnaType Haplogroup Results"
+  headerText = s"$dnaType Haplogroup Analysis"
+
+  dialogPane().buttonTypes = Seq(ButtonType.OK)
+  dialogPane().setPrefSize(900, 700)
+
+  // Try to parse cached report if available
+  private val reportData: Option[ParsedReport] = artifactDir.flatMap { dir =>
+    val prefix = if (treeType == TreeType.YDNA) "ydna" else "mtdna"
+    val reportFile = dir.resolve(s"${prefix}_haplogroup_report.txt")
+    if (Files.exists(reportFile)) {
+      Some(parseReport(reportFile))
+    } else None
+  }
+
+  // Format large numbers with commas
+  private def formatNumber(n: Int): String = f"$n%,d"
+
+  // Score to confidence display
+  private def scoreToConfidence(score: Double, depth: Int): String = {
+    val normalizedScore = score / math.max(depth, 1)
+    if (normalizedScore > 25) "Very High"
+    else if (normalizedScore > 20) "High"
+    else if (normalizedScore > 15) "Moderate"
+    else if (normalizedScore > 10) "Low"
+    else "Very Low"
+  }
+
+  // Quality to stars
+  private def qualityToStars(quality: Option[Double]): String = {
+    quality match {
+      case None => "-"
+      case Some(q) if q < 10 => "☆☆☆☆☆"
+      case Some(q) if q < 20 => "★☆☆☆☆"
+      case Some(q) if q < 30 => "★★☆☆☆"
+      case Some(q) if q < 40 => "★★★☆☆"
+      case Some(q) if q < 50 => "★★★★☆"
+      case Some(_) => "★★★★★"
+    }
+  }
+
+  // Summary Panel
+  private val summaryPanel = createSummaryPanel()
+
+  // Candidates Table
+  private val candidatesTab = createCandidatesTab()
+
+  // Lineage Path Tab
+  private val lineageTab = createLineageTab()
+
+  // Private Variants Tab
+  private val privateVariantsTab = createPrivateVariantsTab()
+
+  // SNP Details Tab
+  private val snpDetailsTab = createSnpDetailsTab()
+
+  private val tabPane = new TabPane {
+    tabs = Seq(candidatesTab, lineageTab, snpDetailsTab, privateVariantsTab).flatten
+  }
+  VBox.setVgrow(tabPane, Priority.Always)
+
+  private val content = new VBox(10) {
+    padding = Insets(15)
+    children = Seq(summaryPanel, tabPane)
+  }
+  VBox.setVgrow(content, Priority.Always)
+
+  dialogPane().content = content
+
+  // Make dialog resizable
+  dialogPane().getScene.getWindow match {
+    case stage: javafx.stage.Stage => stage.setResizable(true)
+    case _ =>
+  }
+
+  // --- Panel Creation Methods ---
+
+  private def createSummaryPanel(): VBox = {
+    val topResult = reportData.flatMap(_.topCandidate)
+      .orElse(analysisResults.flatMap(_.headOption).map(r => CandidateRow(r.name, r.score, r.matchingSnps, r.ancestralMatches, r.noCalls, r.depth)))
+      .orElse(workspaceResult.map(r => CandidateRow(r.haplogroupName, r.score, r.matchingSnps.getOrElse(0), r.ancestralMatches.getOrElse(0), 0, r.treeDepth.getOrElse(0))))
+
+    val metadata = reportData.map(_.metadata).getOrElse(Map.empty)
+
+    new VBox(8) {
+      padding = Insets(15)
+      style = "-fx-background-color: linear-gradient(to bottom, #2d5a2d, #1a3a1a); -fx-background-radius: 8;"
+
+      children = topResult match {
+        case Some(result) =>
+          val confidence = scoreToConfidence(result.score, result.depth)
+          val confidenceColor = confidence match {
+            case "Very High" => "#00ff00"
+            case "High" => "#88ff00"
+            case "Moderate" => "#ffff00"
+            case "Low" => "#ff8800"
+            case _ => "#ff4400"
+          }
+
+          Seq(
+            new HBox(20) {
+              alignment = Pos.CenterLeft
+              children = Seq(
+                new Label(result.haplogroup) {
+                  style = "-fx-font-size: 28px; -fx-font-weight: bold; -fx-text-fill: white;"
+                },
+                new Label(s"Confidence: $confidence") {
+                  style = s"-fx-font-size: 14px; -fx-text-fill: $confidenceColor; -fx-font-weight: bold;"
+                }
+              )
+            },
+            new HBox(30) {
+              children = Seq(
+                createStatBox("Score", f"${result.score}%.0f"),
+                createStatBox("Derived SNPs", formatNumber(result.derived)),
+                createStatBox("Ancestral", formatNumber(result.ancestral)),
+                createStatBox("No Calls", formatNumber(result.noCalls)),
+                createStatBox("Tree Depth", result.depth.toString)
+              )
+            },
+            new HBox(20) {
+              children = Seq(
+                metadata.get("treeProvider").map(p => new Label(s"Tree: $p") { style = "-fx-text-fill: #aaa; -fx-font-size: 11px;" }),
+                metadata.get("treeBuild").map(b => new Label(s"Build: $b") { style = "-fx-text-fill: #aaa; -fx-font-size: 11px;" }),
+                metadata.get("liftover").map(l => new Label(s"Liftover: $l") { style = "-fx-text-fill: #aaa; -fx-font-size: 11px;" }),
+                sampleName.map(n => new Label(s"Sample: $n") { style = "-fx-text-fill: #aaa; -fx-font-size: 11px;" })
+              ).flatten
+            }
+          )
+
+        case None =>
+          Seq(
+            new Label("No haplogroup could be determined") {
+              style = "-fx-font-size: 18px; -fx-text-fill: #ff6666;"
+            }
+          )
+      }
+    }
+  }
+
+  private def createStatBox(label: String, value: String): VBox = {
+    new VBox(2) {
+      alignment = Pos.Center
+      children = Seq(
+        new Label(value) {
+          style = "-fx-font-size: 18px; -fx-font-weight: bold; -fx-text-fill: white;"
+        },
+        new Label(label) {
+          style = "-fx-font-size: 11px; -fx-text-fill: #aaa;"
+        }
+      )
+    }
+  }
+
+  private def createCandidatesTab(): Option[Tab] = {
+    val candidates = reportData.map(_.candidates)
+      .orElse(analysisResults.map(_.take(20).map(r => CandidateRow(r.name, r.score, r.matchingSnps, r.ancestralMatches, r.noCalls, r.depth))))
+      .getOrElse(List.empty)
+
+    if (candidates.isEmpty) return None
+
+    val tableData = ObservableBuffer.from(candidates)
+
+    val table = new TableView[CandidateRow](tableData) {
+      columnResizePolicy = TableView.ConstrainedResizePolicy
+
+      columns ++= Seq(
+        new TableColumn[CandidateRow, String] {
+          text = "Rank"
+          cellValueFactory = r => StringProperty((tableData.indexOf(r.value) + 1).toString)
+          prefWidth = 50
+        },
+        new TableColumn[CandidateRow, String] {
+          text = "Haplogroup"
+          cellValueFactory = r => StringProperty(r.value.haplogroup)
+          prefWidth = 180
+        },
+        new TableColumn[CandidateRow, String] {
+          text = "Score"
+          cellValueFactory = r => StringProperty(f"${r.value.score}%.1f")
+          prefWidth = 80
+        },
+        new TableColumn[CandidateRow, String] {
+          text = "Derived"
+          cellValueFactory = r => StringProperty(formatNumber(r.value.derived))
+          prefWidth = 80
+        },
+        new TableColumn[CandidateRow, String] {
+          text = "Ancestral"
+          cellValueFactory = r => StringProperty(formatNumber(r.value.ancestral))
+          prefWidth = 80
+        },
+        new TableColumn[CandidateRow, String] {
+          text = "No Calls"
+          cellValueFactory = r => StringProperty(formatNumber(r.value.noCalls))
+          prefWidth = 80
+        },
+        new TableColumn[CandidateRow, String] {
+          text = "Depth"
+          cellValueFactory = r => StringProperty(r.value.depth.toString)
+          prefWidth = 60
+        }
+      )
+    }
+    VBox.setVgrow(table, Priority.Always)
+
+    val tab = new Tab {
+      text = "Top Candidates"
+      closable = false
+    }
+    tab.content = new VBox(10) {
+      padding = Insets(10)
+      children = Seq(
+        new Label(s"Top ${candidates.size} candidate haplogroups by score:") {
+          style = "-fx-font-weight: bold;"
+        },
+        table
+      )
+    }
+    Some(tab)
+  }
+
+  private def createLineageTab(): Option[Tab] = {
+    val pathNodes = reportData.map(_.lineagePath)
+      .orElse(workspaceResult.flatMap(_.lineagePath).map(_.map(name => LineageNode(name, 0, ""))))
+      .getOrElse(List.empty)
+
+    if (pathNodes.isEmpty) return None
+
+    // Build tree structure
+    def buildTreeItem(nodes: List[LineageNode], depth: Int): Option[TreeItem[String]] = {
+      nodes.filter(_.depth == depth) match {
+        case Nil => None
+        case node :: _ =>
+          val label = if (node.derivedInfo.nonEmpty) s"${node.name} ${node.derivedInfo}" else node.name
+          val item = new TreeItem[String](label) {
+            expanded = true
+          }
+          buildTreeItem(nodes, depth + 1).foreach(child => item.children.add(child))
+          Some(item)
+      }
+    }
+
+    val rootItem = buildTreeItem(pathNodes, 0).getOrElse(new TreeItem[String]("(empty)"))
+
+    val treeView = new TreeView[String](rootItem) {
+      showRoot = true
+    }
+    VBox.setVgrow(treeView, Priority.Always)
+
+    val tab = new Tab {
+      text = "Lineage Path"
+      closable = false
+    }
+    tab.content = new VBox(10) {
+      padding = Insets(10)
+      children = Seq(
+        new Label("Phylogenetic path from root to predicted haplogroup:") {
+          style = "-fx-font-weight: bold;"
+        },
+        treeView
+      )
+    }
+    Some(tab)
+  }
+
+  private def createPrivateVariantsTab(): Option[Tab] = {
+    val (snps, indels) = reportData.map(r => (r.privateSnps, r.privateIndels))
+      .orElse(workspaceResult.flatMap(_.privateVariants).map { pvd =>
+        val (s, i) = pvd.variants.partition(v => v.referenceAllele.length == 1 && v.alternateAllele.length == 1)
+        (s.map(v => PrivateVariantRow(v.contigAccession, v.position, v.referenceAllele, v.alternateAllele, qualityToStars(v.quality), None)),
+         i.map(v => PrivateVariantRow(v.contigAccession, v.position, v.referenceAllele, v.alternateAllele, qualityToStars(v.quality), None)))
+      })
+      .getOrElse((List.empty, List.empty))
+
+    if (snps.isEmpty && indels.isEmpty) return None
+
+    val snpData = ObservableBuffer.from(snps)
+    val indelData = ObservableBuffer.from(indels)
+
+    def createVariantTable(data: ObservableBuffer[PrivateVariantRow], showStrInfo: Boolean): TableView[PrivateVariantRow] = {
+      new TableView[PrivateVariantRow](data) {
+        columnResizePolicy = TableView.ConstrainedResizePolicy
+
+        columns ++= Seq(
+          new TableColumn[PrivateVariantRow, String] {
+            text = "Contig"
+            cellValueFactory = r => StringProperty(r.value.contig)
+            prefWidth = 70
+          },
+          new TableColumn[PrivateVariantRow, String] {
+            text = "Position"
+            cellValueFactory = r => StringProperty(formatNumber(r.value.position))
+            prefWidth = 100
+          },
+          new TableColumn[PrivateVariantRow, String] {
+            text = "Ref"
+            cellValueFactory = r => StringProperty(if (r.value.ref.length > 8) r.value.ref.take(6) + ".." else r.value.ref)
+            prefWidth = 70
+          },
+          new TableColumn[PrivateVariantRow, String] {
+            text = "Alt"
+            cellValueFactory = r => StringProperty(if (r.value.alt.length > 8) r.value.alt.take(6) + ".." else r.value.alt)
+            prefWidth = 70
+          },
+          new TableColumn[PrivateVariantRow, String] {
+            text = "Quality"
+            cellValueFactory = r => StringProperty(r.value.quality)
+            prefWidth = 80
+          }
+        )
+
+        if (showStrInfo) {
+          columns += new TableColumn[PrivateVariantRow, String] {
+            text = "STR Info"
+            cellValueFactory = r => StringProperty(r.value.strInfo.getOrElse("-"))
+            prefWidth = 150
+          }
+        }
+      }
+    }
+
+    val snpTable = createVariantTable(snpData, showStrInfo = false)
+    VBox.setVgrow(snpTable, Priority.Always)
+
+    val indelTable = createVariantTable(indelData, showStrInfo = true)
+    VBox.setVgrow(indelTable, Priority.Always)
+
+    val tab = new Tab {
+      text = s"Private Variants (${snps.size + indels.size})"
+      closable = false
+    }
+    tab.content = new VBox(10) {
+      padding = Insets(10)
+      children = Seq(
+        new Label(s"Novel SNPs: ${snps.size}") { style = "-fx-font-weight: bold;" },
+        snpTable,
+        new Label(s"Novel Indels: ${indels.size}") { style = "-fx-font-weight: bold;" },
+        indelTable
+      )
+    }
+    Some(tab)
+  }
+
+  private def createSnpDetailsTab(): Option[Tab] = {
+    val snpDetails = reportData.map(_.snpDetails).getOrElse(List.empty)
+
+    if (snpDetails.isEmpty) return None
+
+    val tableData = ObservableBuffer.from(snpDetails)
+
+    val table = new TableView[SnpDetailRow](tableData) {
+      columnResizePolicy = TableView.ConstrainedResizePolicy
+
+      columns ++= Seq(
+        new TableColumn[SnpDetailRow, String] {
+          text = "Contig"
+          cellValueFactory = r => StringProperty(r.value.contig)
+          prefWidth = 70
+        },
+        new TableColumn[SnpDetailRow, String] {
+          text = "Position"
+          cellValueFactory = r => StringProperty(formatNumber(r.value.position))
+          prefWidth = 100
+        },
+        new TableColumn[SnpDetailRow, String] {
+          text = "SNP Name"
+          cellValueFactory = r => StringProperty(r.value.snpName)
+          prefWidth = 150
+        },
+        new TableColumn[SnpDetailRow, String] {
+          text = "Anc"
+          cellValueFactory = r => StringProperty(r.value.ancestral)
+          prefWidth = 50
+        },
+        new TableColumn[SnpDetailRow, String] {
+          text = "Der"
+          cellValueFactory = r => StringProperty(r.value.derived)
+          prefWidth = 50
+        },
+        new TableColumn[SnpDetailRow, String] {
+          text = "Call"
+          cellValueFactory = r => StringProperty(r.value.call)
+          prefWidth = 50
+        },
+        new TableColumn[SnpDetailRow, String] {
+          text = "State"
+          cellValueFactory = r => StringProperty(r.value.state)
+          prefWidth = 80
+        }
+      )
+    }
+    VBox.setVgrow(table, Priority.Always)
+
+    val tab = new Tab {
+      text = s"SNP Details (${snpDetails.size})"
+      closable = false
+    }
+    tab.content = new VBox(10) {
+      padding = Insets(10)
+      children = Seq(
+        new Label("SNPs along the predicted haplogroup path:") {
+          style = "-fx-font-weight: bold;"
+        },
+        table
+      )
+    }
+    Some(tab)
+  }
+
+  // --- Report Parsing ---
+
+  private case class ParsedReport(
+    metadata: Map[String, String],
+    topCandidate: Option[CandidateRow],
+    candidates: List[CandidateRow],
+    lineagePath: List[LineageNode],
+    snpDetails: List[SnpDetailRow],
+    privateSnps: List[PrivateVariantRow],
+    privateIndels: List[PrivateVariantRow]
+  )
+
+  private case class CandidateRow(haplogroup: String, score: Double, derived: Int, ancestral: Int, noCalls: Int, depth: Int)
+  private case class LineageNode(name: String, depth: Int, derivedInfo: String)
+  private case class SnpDetailRow(contig: String, position: Int, snpName: String, ancestral: String, derived: String, call: String, state: String)
+  private case class PrivateVariantRow(contig: String, position: Int, ref: String, alt: String, quality: String, strInfo: Option[String])
+
+  private def parseReport(reportPath: Path): ParsedReport = {
+    val lines = Using.resource(Source.fromFile(reportPath.toFile))(_.getLines().toList)
+
+    var metadata = Map.empty[String, String]
+    var candidates = List.empty[CandidateRow]
+    var lineagePath = List.empty[LineageNode]
+    var snpDetails = List.empty[SnpDetailRow]
+    var privateSnps = List.empty[PrivateVariantRow]
+    var privateIndels = List.empty[PrivateVariantRow]
+
+    var currentSection = ""
+    var inSnpSection = false
+    var inNovelSnpSection = false
+    var inNovelIndelSection = false
+
+    lines.foreach { line =>
+      val trimmed = line.trim
+
+      // Section detection
+      if (trimmed == "HAPLOGROUP PREDICTION") currentSection = "prediction"
+      else if (trimmed == "TOP 10 CANDIDATES") currentSection = "candidates"
+      else if (trimmed == "HAPLOGROUP PATH") currentSection = "path"
+      else if (trimmed == "SNP DETAILS (along predicted path)") { currentSection = "snp_details"; inSnpSection = false }
+      else if (trimmed == "NOVEL/UNPLACED SNPs") { currentSection = "novel_snps"; inNovelSnpSection = false }
+      else if (trimmed == "NOVEL/UNPLACED INDELS") { currentSection = "novel_indels"; inNovelIndelSection = false }
+      else if (trimmed == "SUMMARY STATISTICS") currentSection = "summary"
+
+      // Metadata parsing
+      if (trimmed.startsWith("Tree Provider:")) metadata += ("treeProvider" -> trimmed.stripPrefix("Tree Provider:").trim)
+      if (trimmed.startsWith("Tree Build:")) metadata += ("treeBuild" -> trimmed.stripPrefix("Tree Build:").trim)
+      if (trimmed.startsWith("Sample Build:")) metadata += ("sampleBuild" -> trimmed.stripPrefix("Sample Build:").trim)
+      if (trimmed.startsWith("Liftover:")) metadata += ("liftover" -> trimmed.stripPrefix("Liftover:").trim)
+
+      // Candidates parsing
+      if (currentSection == "candidates" && trimmed.matches("^\\d+\\s+.*")) {
+        val parts = trimmed.split("\\s+")
+        if (parts.length >= 6) {
+          try {
+            candidates = candidates :+ CandidateRow(
+              parts(1),
+              parts(2).toDouble,
+              parts(3).toInt,
+              parts(4).toInt,
+              0, // no calls not in this section
+              parts(5).toInt
+            )
+          } catch { case _: Exception => }
+        }
+      }
+
+      // Path parsing - detect indentation
+      if (currentSection == "path" && !trimmed.startsWith("-") && trimmed.nonEmpty && !trimmed.startsWith("HAPLOGROUP")) {
+        val depth = (line.length - line.stripLeading.length) / 2
+        val derivedMatch = "\\[([^\\]]+)\\]".r.findFirstMatchIn(trimmed)
+        val name = trimmed.split("\\s+")(0)
+        val derivedInfo = derivedMatch.map(_.group(0)).getOrElse("")
+        lineagePath = lineagePath :+ LineageNode(name, depth, derivedInfo)
+      }
+
+      // SNP details parsing
+      if (currentSection == "snp_details") {
+        if (trimmed.startsWith("Contig")) inSnpSection = true
+        else if (inSnpSection && trimmed.matches("^[A-Za-z0-9]+\\s+\\d+.*")) {
+          val parts = trimmed.split("\\s+")
+          if (parts.length >= 7) {
+            snpDetails = snpDetails :+ SnpDetailRow(parts(0), parts(1).toInt, parts(2), parts(3), parts(4), parts(5), parts(6))
+          }
+        }
+      }
+
+      // Novel SNPs parsing
+      if (currentSection == "novel_snps") {
+        if (trimmed.startsWith("Contig")) inNovelSnpSection = true
+        else if (inNovelSnpSection && trimmed.matches("^[A-Za-z0-9]+\\s+\\d+.*")) {
+          val parts = trimmed.split("\\s+")
+          if (parts.length >= 5) {
+            privateSnps = privateSnps :+ PrivateVariantRow(parts(0), parts(1).toInt, parts(2), parts(3), parts.drop(4).mkString(" "), None)
+          }
+        }
+      }
+
+      // Novel indels parsing
+      if (currentSection == "novel_indels") {
+        if (trimmed.startsWith("Contig")) inNovelIndelSection = true
+        else if (inNovelIndelSection && trimmed.matches("^[A-Za-z0-9]+\\s+\\d+.*")) {
+          val parts = trimmed.split("\\s+")
+          if (parts.length >= 5) {
+            val strInfo = if (parts.length > 5) Some(parts.drop(5).mkString(" ")) else None
+            privateIndels = privateIndels :+ PrivateVariantRow(parts(0), parts(1).toInt, parts(2), parts(3), parts(4), strInfo)
+          }
+        }
+      }
+    }
+
+    ParsedReport(
+      metadata = metadata,
+      topCandidate = candidates.headOption,
+      candidates = candidates,
+      lineagePath = lineagePath,
+      snpDetails = snpDetails,
+      privateSnps = privateSnps,
+      privateIndels = privateIndels
+    )
+  }
+}
