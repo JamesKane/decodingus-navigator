@@ -1,10 +1,12 @@
 package com.decodingus.genotype.processor
 
 import com.decodingus.config.{FeatureToggles, UserPreferencesService}
+import com.decodingus.genotype.model.GenotypeCall
 import com.decodingus.haplogroup.model.{Haplogroup, HaplogroupResult}
 import com.decodingus.haplogroup.scoring.HaplogroupScorer
 import com.decodingus.haplogroup.tree.{TreeProvider, TreeProviderType, TreeType}
 import com.decodingus.haplogroup.vendor.{DecodingUsTreeProvider, FtdnaTreeProvider}
+import com.decodingus.liftover.GenotypeLiftover
 
 /**
  * Result of chip-based haplogroup analysis.
@@ -76,6 +78,9 @@ class ChipHaplogroupAdapter {
       return Left(s"No $typeName markers found in chip data")
     }
 
+    // Most chip data uses GRCh37 coordinates
+    val chipBuild = "GRCh37"
+
     // Get tree provider from user preferences
     val providerType = treeType match {
       case TreeType.YDNA =>
@@ -91,59 +96,118 @@ class ChipHaplogroupAdapter {
       case TreeProviderType.DECODINGUS => new DecodingUsTreeProvider(treeType)
     }
 
-    // Most chip data uses GRCh37 coordinates
-    val referenceBuild = "GRCh37"
+    // Determine which coordinate system to use for the tree
+    // If tree supports chip's build natively, use it; otherwise use tree's source build and liftover chip data
+    val treeBuild = if (treeProvider.supportedBuilds.contains(chipBuild)) {
+      chipBuild
+    } else {
+      treeProvider.sourceBuild
+    }
 
-    treeProvider.loadTree(referenceBuild).flatMap { tree =>
-      onProgress("Building position map...", 0.2, 1.0)
+    val needsLiftover = GenotypeLiftover.needsLiftover(chipBuild, treeBuild)
 
-      // Collect all tree positions with their ref/alt info
-      val treeLoci = collectAllLoci(tree)
-      val treePositions = treeLoci.map(l => l.position -> (l.ref, l.alt)).toMap
+    if (needsLiftover) {
+      onProgress(s"Chip data is $chipBuild, tree is $treeBuild. Preparing coordinate liftover...", 0.05, 1.0)
+    }
 
-      onProgress(s"Matching ${relevantCalls.size} chip markers to ${treePositions.size} tree positions...", 0.4, 1.0)
+    // Prepare lifted genotypes if needed
+    val liftedCallsResult: Either[String, List[GenotypeCall]] = if (needsLiftover) {
+      liftChipGenotypes(relevantCalls, chipBuild, treeBuild, onProgress)
+    } else {
+      Right(relevantCalls)
+    }
 
-      // Build SNP calls map from chip data
-      // Chip data has position and called allele(s)
-      val snpCalls: Map[Long, String] = relevantCalls.flatMap { call =>
-        if (call.isNoCall) {
-          None
+    liftedCallsResult.flatMap { callsInTreeCoords =>
+      treeProvider.loadTree(treeBuild).flatMap { tree =>
+        onProgress("Building position map...", 0.3, 1.0)
+
+        // Collect all tree positions with their ref/alt info
+        val treeLoci = collectAllLoci(tree)
+        val treePositions = treeLoci.map(l => l.position -> (l.ref, l.alt)).toMap
+
+        onProgress(s"Matching ${callsInTreeCoords.size} chip markers to ${treePositions.size} tree positions...", 0.5, 1.0)
+
+        // Build SNP calls map from chip data (now in tree coordinates)
+        val snpCalls: Map[Long, String] = callsInTreeCoords.flatMap { call =>
+          if (call.isNoCall) {
+            None
+          } else {
+            // For haploid chromosomes (Y, MT), use allele1
+            // The tree expects the actual called allele (ref or alt)
+            Some(call.position.toLong -> call.allele1.toString)
+          }
+        }.toMap
+
+        // Count how many tree positions we have coverage for
+        val matchedPositions = treePositions.keys.count(snpCalls.contains)
+
+        if (matchedPositions < getMinSnps(treeType)) {
+          Left(s"Insufficient coverage: only $matchedPositions tree positions " +
+            s"covered by chip data (minimum ${getMinSnps(treeType)} required). " +
+            s"Chip-based $typeName haplogroup estimation may not be reliable.")
         } else {
-          // For haploid chromosomes (Y, MT), use allele1
-          // The tree expects the actual called allele (ref or alt)
-          Some(call.position.toLong -> call.allele1.toString)
+          onProgress(s"Scoring haplogroups ($matchedPositions/${treePositions.size} positions covered)...", 0.7, 1.0)
+
+          // Run the scorer
+          val results = scorer.score(tree, snpCalls)
+
+          if (results.isEmpty) {
+            Left(s"No haplogroup matches found for $typeName")
+          } else {
+            onProgress("Analysis complete.", 1.0, 1.0)
+
+            val topResult = results.head
+            val confidence = calculateConfidence(matchedPositions, treePositions.size, topResult)
+
+            Right(ChipHaplogroupResult(
+              treeType = treeType,
+              results = results,
+              snpsMatched = matchedPositions,
+              snpsTotal = treePositions.size,
+              topHaplogroup = topResult.name,
+              confidence = confidence
+            ))
+          }
         }
-      }.toMap
+      }
+    }
+  }
 
-      // Count how many tree positions we have coverage for
-      val matchedPositions = treePositions.keys.count(snpCalls.contains)
+  /**
+   * Lift chip genotypes from one reference build to another.
+   * Handles reverse-complement when mapping to negative strand.
+   */
+  private def liftChipGenotypes(
+    calls: List[GenotypeCall],
+    fromBuild: String,
+    toBuild: String,
+    onProgress: (String, Double, Double) => Unit
+  ): Either[String, List[GenotypeCall]] = {
+    onProgress(s"Lifting ${calls.size} genotypes from $fromBuild to $toBuild...", 0.1, 1.0)
 
-      if (matchedPositions < getMinSnps(treeType)) {
-        Left(s"Insufficient coverage: only $matchedPositions tree positions " +
-          s"covered by chip data (minimum ${getMinSnps(treeType)} required). " +
-          s"Chip-based $typeName haplogroup estimation may not be reliable.")
-      } else {
-        onProgress(s"Scoring haplogroups ($matchedPositions/${treePositions.size} positions covered)...", 0.6, 1.0)
+    val liftover = new GenotypeLiftover(fromBuild, toBuild)
 
-        // Run the scorer
-        val results = scorer.score(tree, snpCalls)
+    liftover.initialize().map { liftOver =>
+      val genotypeTuples = calls.map(c => (c.chromosome, c.position, c.allele1, c.allele2))
 
-        if (results.isEmpty) {
-          Left(s"No haplogroup matches found for $typeName")
-        } else {
-          onProgress("Analysis complete.", 1.0, 1.0)
+      val result = liftover.liftGenotypes(liftOver, genotypeTuples, (done, total) => {
+        val pct = 0.1 + (done.toDouble / total) * 0.15
+        onProgress(s"Lifting coordinates: $done/$total", pct, 1.0)
+      })
 
-          val topResult = results.head
-          val confidence = calculateConfidence(matchedPositions, treePositions.size, topResult)
+      println(s"[ChipHaplogroupAdapter] Lifted ${result.lifted.size} genotypes, ${result.failedCount} failed")
 
-          Right(ChipHaplogroupResult(
-            treeType = treeType,
-            results = results,
-            snpsMatched = matchedPositions,
-            snpsTotal = treePositions.size,
-            topHaplogroup = topResult.name,
-            confidence = confidence
-          ))
+      // Convert lifted results back to GenotypeCall objects
+      val originalByPos = calls.map(c => c.position.toLong -> c).toMap
+
+      result.lifted.flatMap { case (origPos, lifted) =>
+        originalByPos.get(origPos).map { origCall =>
+          origCall.copy(
+            chromosome = lifted.chromosome,
+            position = lifted.position,
+            allele1 = lifted.allele1,
+            allele2 = lifted.allele2
+          )
         }
       }
     }
