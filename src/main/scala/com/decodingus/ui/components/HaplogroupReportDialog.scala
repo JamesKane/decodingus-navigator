@@ -1,11 +1,12 @@
 package com.decodingus.ui.components
 
 import scalafx.Includes._
-import scalafx.scene.control.{Dialog, ButtonType, Label, TableView, TableColumn, ScrollPane, Tab, TabPane, TreeView, TreeItem, Tooltip}
+import scalafx.scene.control.{Dialog, ButtonType, Label, TableView, TableColumn, ScrollPane, Tab, TabPane, TreeView, TreeItem, Tooltip, TextField, ComboBox}
 import scalafx.scene.layout.{VBox, HBox, Priority, GridPane, ColumnConstraints, Region}
 import scalafx.geometry.{Insets, Pos}
 import scalafx.beans.property.StringProperty
 import scalafx.collections.ObservableBuffer
+import javafx.collections.transformation.FilteredList
 import com.decodingus.workspace.model.{HaplogroupResult => WorkspaceHaplogroupResult, PrivateVariantData, VariantCall}
 import com.decodingus.haplogroup.model.HaplogroupResult as AnalysisHaplogroupResult
 import com.decodingus.haplogroup.tree.TreeType
@@ -79,14 +80,16 @@ class HaplogroupReportDialog(
   // Lineage Path Tab
   private val lineageTab = createLineageTab()
 
-  // Private Variants Tab
-  private val privateVariantsTab = createPrivateVariantsTab()
-
   // SNP Details Tab
   private val snpDetailsTab = createSnpDetailsTab()
 
+  // Private Variant Tabs (3 separate tabs)
+  private val novelSnpsTab = createNovelSnpsTab()
+  private val strIndelsTab = createStrIndelsTab()
+  private val otherIndelsTab = createOtherIndelsTab()
+
   private val tabPane = new TabPane {
-    tabs = Seq(candidatesTab, lineageTab, snpDetailsTab, privateVariantsTab).flatten
+    tabs = Seq(candidatesTab, lineageTab, snpDetailsTab, novelSnpsTab, strIndelsTab, otherIndelsTab).flatten
   }
   VBox.setVgrow(tabPane, Priority.Always)
 
@@ -295,8 +298,9 @@ class HaplogroupReportDialog(
     Some(tab)
   }
 
-  private def createPrivateVariantsTab(): Option[Tab] = {
-    val (snps, indels) = reportData.map(r => (r.privateSnps, r.privateIndels))
+  // Helper to get parsed variant data, separated into SNPs, STR indels, and other indels
+  private lazy val parsedVariants: (List[PrivateVariantRow], List[PrivateVariantRow], List[PrivateVariantRow]) = {
+    val (snps, allIndels) = reportData.map(r => (r.privateSnps, r.privateIndels))
       .orElse(workspaceResult.flatMap(_.privateVariants).map { pvd =>
         val (s, i) = pvd.variants.partition(v => v.referenceAllele.length == 1 && v.alternateAllele.length == 1)
         (s.map(v => PrivateVariantRow(v.contigAccession, v.position, v.referenceAllele, v.alternateAllele, qualityToStars(v.quality), None)),
@@ -304,73 +308,170 @@ class HaplogroupReportDialog(
       })
       .getOrElse((List.empty, List.empty))
 
-    if (snps.isEmpty && indels.isEmpty) return None
+    // Separate STR indels (have strInfo) from other indels
+    val (strIndels, otherIndels) = allIndels.partition(_.strInfo.isDefined)
+    (snps, strIndels, otherIndels)
+  }
 
-    val snpData = ObservableBuffer.from(snps)
-    val indelData = ObservableBuffer.from(indels)
+  /** Creates a filterable variant table with contig and quality filters */
+  private def createFilterableVariantTab(
+    title: String,
+    variants: List[PrivateVariantRow],
+    showStrInfo: Boolean
+  ): Option[Tab] = {
+    if (variants.isEmpty) return None
 
-    def createVariantTable(data: ObservableBuffer[PrivateVariantRow], showStrInfo: Boolean): TableView[PrivateVariantRow] = {
-      new TableView[PrivateVariantRow](data) {
-        columnResizePolicy = TableView.ConstrainedResizePolicy
+    val sourceData = ObservableBuffer.from(variants)
+    val filteredList = new FilteredList[PrivateVariantRow](sourceData)
 
-        columns ++= Seq(
-          new TableColumn[PrivateVariantRow, String] {
-            text = "Contig"
-            cellValueFactory = r => StringProperty(r.value.contig)
-            prefWidth = 70
-          },
-          new TableColumn[PrivateVariantRow, String] {
-            text = "Position"
-            cellValueFactory = r => StringProperty(formatNumber(r.value.position))
-            prefWidth = 100
-          },
-          new TableColumn[PrivateVariantRow, String] {
-            text = "Ref"
-            cellValueFactory = r => StringProperty(if (r.value.ref.length > 8) r.value.ref.take(6) + ".." else r.value.ref)
-            prefWidth = 70
-          },
-          new TableColumn[PrivateVariantRow, String] {
-            text = "Alt"
-            cellValueFactory = r => StringProperty(if (r.value.alt.length > 8) r.value.alt.take(6) + ".." else r.value.alt)
-            prefWidth = 70
-          },
-          new TableColumn[PrivateVariantRow, String] {
-            text = "Quality"
-            cellValueFactory = r => StringProperty(r.value.quality)
-            prefWidth = 80
-          }
-        )
+    // Get unique contigs for filter dropdown
+    val contigs = variants.map(_.contig).distinct.sorted
+    val qualityLevels = List("All", "★★★★★ (5)", "★★★★☆+ (4+)", "★★★☆☆+ (3+)", "★★☆☆☆+ (2+)", "★☆☆☆☆+ (1+)")
 
-        if (showStrInfo) {
-          columns += new TableColumn[PrivateVariantRow, String] {
-            text = "STR Info"
-            cellValueFactory = r => StringProperty(r.value.strInfo.getOrElse("-"))
-            prefWidth = 150
-          }
+    // Filter controls
+    val contigFilter = new ComboBox[String](ObservableBuffer.from("All" +: contigs)) {
+      value = "All"
+      prefWidth = 100
+    }
+
+    val qualityFilter = new ComboBox[String](ObservableBuffer.from(qualityLevels)) {
+      value = "All"
+      prefWidth = 120
+    }
+
+    val positionFilter = new TextField {
+      promptText = "Position contains..."
+      prefWidth = 150
+    }
+
+    val refAltFilter = new TextField {
+      promptText = "Ref/Alt contains..."
+      prefWidth = 120
+    }
+
+    // Count label that updates with filter
+    val countLabel = new Label(s"Showing ${variants.size} of ${variants.size}")
+
+    // Apply filters
+    def updateFilter(): Unit = {
+      val contigValue = contigFilter.value.value
+      val qualityValue = qualityFilter.value.value
+      val posValue = positionFilter.text.value.trim
+      val refAltValue = refAltFilter.text.value.trim.toUpperCase
+
+      filteredList.setPredicate { row =>
+        val contigMatch = contigValue == "All" || row.contig == contigValue
+
+        val qualityMatch = qualityValue match {
+          case "All" => true
+          case s if s.contains("(5)") => row.quality.count(_ == '★') >= 5
+          case s if s.contains("(4+)") => row.quality.count(_ == '★') >= 4
+          case s if s.contains("(3+)") => row.quality.count(_ == '★') >= 3
+          case s if s.contains("(2+)") => row.quality.count(_ == '★') >= 2
+          case s if s.contains("(1+)") => row.quality.count(_ == '★') >= 1
+          case _ => true
+        }
+
+        val posMatch = posValue.isEmpty || row.position.toString.contains(posValue)
+        val refAltMatch = refAltValue.isEmpty ||
+          row.ref.toUpperCase.contains(refAltValue) ||
+          row.alt.toUpperCase.contains(refAltValue)
+
+        contigMatch && qualityMatch && posMatch && refAltMatch
+      }
+
+      countLabel.text = s"Showing ${filteredList.size} of ${variants.size}"
+    }
+
+    // Bind filter updates
+    contigFilter.value.onChange { (_, _, _) => updateFilter() }
+    qualityFilter.value.onChange { (_, _, _) => updateFilter() }
+    positionFilter.text.onChange { (_, _, _) => updateFilter() }
+    refAltFilter.text.onChange { (_, _, _) => updateFilter() }
+
+    val filterBar = new HBox(10) {
+      alignment = Pos.CenterLeft
+      children = Seq(
+        new Label("Contig:"),
+        contigFilter,
+        new Label("Min Quality:"),
+        qualityFilter,
+        new Label("Position:"),
+        positionFilter,
+        new Label("Ref/Alt:"),
+        refAltFilter,
+        new Region { HBox.setHgrow(this, Priority.Always) },
+        countLabel
+      )
+    }
+
+    // Create table with filtered data
+    val table = new TableView[PrivateVariantRow]() {
+      columnResizePolicy = TableView.ConstrainedResizePolicy
+      delegate.setItems(filteredList)
+
+      columns ++= Seq(
+        new TableColumn[PrivateVariantRow, String] {
+          text = "Contig"
+          cellValueFactory = r => StringProperty(r.value.contig)
+          prefWidth = 70
+        },
+        new TableColumn[PrivateVariantRow, String] {
+          text = "Position"
+          cellValueFactory = r => StringProperty(formatNumber(r.value.position))
+          prefWidth = 100
+        },
+        new TableColumn[PrivateVariantRow, String] {
+          text = "Ref"
+          cellValueFactory = r => StringProperty(if (r.value.ref.length > 10) r.value.ref.take(8) + ".." else r.value.ref)
+          prefWidth = 90
+        },
+        new TableColumn[PrivateVariantRow, String] {
+          text = "Alt"
+          cellValueFactory = r => StringProperty(if (r.value.alt.length > 10) r.value.alt.take(8) + ".." else r.value.alt)
+          prefWidth = 90
+        },
+        new TableColumn[PrivateVariantRow, String] {
+          text = "Quality"
+          cellValueFactory = r => StringProperty(r.value.quality)
+          prefWidth = 85
+        }
+      )
+
+      if (showStrInfo) {
+        columns += new TableColumn[PrivateVariantRow, String] {
+          text = "STR Type"
+          cellValueFactory = r => StringProperty(r.value.strInfo.getOrElse("-"))
+          prefWidth = 200
         }
       }
     }
-
-    val snpTable = createVariantTable(snpData, showStrInfo = false)
-    VBox.setVgrow(snpTable, Priority.Always)
-
-    val indelTable = createVariantTable(indelData, showStrInfo = true)
-    VBox.setVgrow(indelTable, Priority.Always)
+    VBox.setVgrow(table, Priority.Always)
 
     val tab = new Tab {
-      text = s"Private Variants (${snps.size + indels.size})"
+      text = title
       closable = false
     }
     tab.content = new VBox(10) {
       padding = Insets(10)
-      children = Seq(
-        new Label(s"Novel SNPs: ${snps.size}") { style = "-fx-font-weight: bold;" },
-        snpTable,
-        new Label(s"Novel Indels: ${indels.size}") { style = "-fx-font-weight: bold;" },
-        indelTable
-      )
+      children = Seq(filterBar, table)
     }
     Some(tab)
+  }
+
+  private def createNovelSnpsTab(): Option[Tab] = {
+    val (snps, _, _) = parsedVariants
+    createFilterableVariantTab(s"Novel SNPs (${snps.size})", snps, showStrInfo = false)
+  }
+
+  private def createStrIndelsTab(): Option[Tab] = {
+    val (_, strIndels, _) = parsedVariants
+    createFilterableVariantTab(s"STR Indels (${strIndels.size})", strIndels, showStrInfo = true)
+  }
+
+  private def createOtherIndelsTab(): Option[Tab] = {
+    val (_, _, otherIndels) = parsedVariants
+    createFilterableVariantTab(s"Other Indels (${otherIndels.size})", otherIndels, showStrInfo = false)
   }
 
   private def createSnpDetailsTab(): Option[Tab] = {
