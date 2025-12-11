@@ -48,7 +48,7 @@ CREATE TABLE sync_queue (
 
 CREATE INDEX idx_sync_queue_status ON sync_queue(status, priority, queued_at);
 CREATE INDEX idx_sync_queue_entity ON sync_queue(entity_type, entity_id);
-CREATE INDEX idx_sync_queue_next_retry ON sync_queue(next_retry_at) WHERE status = 'PENDING';
+CREATE INDEX idx_sync_queue_next_retry ON sync_queue(next_retry_at);
 
 -- ============================================
 -- SYNC_HISTORY: Audit trail of sync operations
@@ -155,7 +155,7 @@ CREATE TABLE sync_conflict (
 
 CREATE INDEX idx_sync_conflict_entity ON sync_conflict(entity_type, entity_id);
 CREATE INDEX idx_sync_conflict_status ON sync_conflict(status);
-CREATE INDEX idx_sync_conflict_unresolved ON sync_conflict(detected_at) WHERE status = 'UNRESOLVED';
+CREATE INDEX idx_sync_conflict_unresolved ON sync_conflict(detected_at);
 
 -- ============================================
 -- SYNC_SETTINGS: User sync preferences

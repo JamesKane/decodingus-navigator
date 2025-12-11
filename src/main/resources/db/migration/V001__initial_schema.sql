@@ -180,4 +180,4 @@ CREATE TABLE alignment (
 
 CREATE INDEX idx_align_seqrun ON alignment(sequence_run_id);
 CREATE INDEX idx_align_ref ON alignment(reference_build);
-CREATE INDEX idx_align_sync ON alignment(sync_status)
+CREATE INDEX idx_align_sync ON alignment(sync_status);

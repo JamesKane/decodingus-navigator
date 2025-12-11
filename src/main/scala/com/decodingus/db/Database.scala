@@ -47,9 +47,12 @@ object Database:
 
   /**
    * Initialize an in-memory database for testing.
+   * Each call creates a unique database instance.
    */
   def initializeInMemory(): Either[String, Database] =
-    createDataSource(inMemoryUrl).map(Database(_))
+    val uniqueId = java.util.UUID.randomUUID().toString.replace("-", "")
+    val url = s"jdbc:h2:mem:$uniqueId;MODE=PostgreSQL;DATABASE_TO_LOWER=TRUE"
+    createDataSource(url).map(Database(_))
 
   /**
    * Check if the database file exists.

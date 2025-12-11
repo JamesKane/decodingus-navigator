@@ -115,8 +115,13 @@ object Migrator:
       }
 
   private def tableExists(conn: Connection, tableName: String): Boolean =
-    val rs = conn.getMetaData.getTables(null, null, tableName.toUpperCase, Array("TABLE"))
-    Using.resource(rs)(_.next())
+    // H2 in PostgreSQL mode stores table names lowercase, so check both cases
+    val rsUpper = conn.getMetaData.getTables(null, null, tableName.toUpperCase, Array("TABLE"))
+    val existsUpper = Using.resource(rsUpper)(_.next())
+    if existsUpper then true
+    else
+      val rsLower = conn.getMetaData.getTables(null, null, tableName.toLowerCase, Array("TABLE"))
+      Using.resource(rsLower)(_.next())
 
   private def getAppliedMigrations(conn: Connection): List[AppliedMigration] =
     if !tableExists(conn, SchemaVersionTable) then List.empty
@@ -188,16 +193,29 @@ object Migrator:
           )
       }
 
+  /**
+   * Parse SQL into individual statements.
+   * Handles semicolons inside comments correctly by first stripping comments.
+   */
+  private def parseStatements(sql: String): List[String] =
+    // First, strip all comment lines from the entire SQL
+    val noComments = sql.linesIterator
+      .filterNot(_.trim.startsWith("--"))
+      .mkString("\n")
+
+    // Now split by semicolons (safe because comments are gone)
+    noComments
+      .split(";")
+      .map(_.trim)
+      .filter(_.nonEmpty)
+      .toList
+
   private def applyMigration(conn: Connection, migration: Migration): Unit =
     println(s"[Migrator] Applying V${migration.version} - ${migration.description}")
 
-    // Execute migration SQL (split by semicolons for multiple statements)
+    // Execute migration SQL statements
     Using.resource(conn.createStatement()) { stmt =>
-      val statements = migration.sql
-        .split(";")
-        .map(_.trim)
-        .filter(_.nonEmpty)
-        .filterNot(_.startsWith("--"))
+      val statements = parseStatements(migration.sql)
 
       for sql <- statements do
         stmt.execute(sql)
