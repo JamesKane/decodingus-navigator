@@ -152,7 +152,7 @@ class AnalysisArtifactRepository:
     queryList("SELECT * FROM analysis_artifact ORDER BY generated_at DESC")(mapRow)
 
   def insert(entity: AnalysisArtifactEntity)(using conn: Connection): AnalysisArtifactEntity =
-    val paramsJson = entity.generationParams.map(_.noSpaces).orNull
+    val paramsJson = entity.generationParams.map(j => JsonValue(j.noSpaces))
 
     executeUpdate(
       """INSERT INTO analysis_artifact (
@@ -184,7 +184,7 @@ class AnalysisArtifactRepository:
     entity
 
   def update(entity: AnalysisArtifactEntity)(using conn: Connection): AnalysisArtifactEntity =
-    val paramsJson = entity.generationParams.map(_.noSpaces).orNull
+    val paramsJson = entity.generationParams.map(j => JsonValue(j.noSpaces))
     val now = LocalDateTime.now()
 
     executeUpdate(
@@ -378,7 +378,7 @@ class AnalysisArtifactRepository:
   // ============================================
 
   private def mapRow(rs: ResultSet): AnalysisArtifactEntity =
-    val paramsJson = getOptString(rs, "generation_params")
+    val paramsJson = getOptJsonString(rs, "generation_params")
     val params = paramsJson.flatMap(json => parse(json).toOption)
 
     AnalysisArtifactEntity(

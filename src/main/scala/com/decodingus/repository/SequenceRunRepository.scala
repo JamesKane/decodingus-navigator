@@ -108,7 +108,7 @@ class SequenceRunRepository extends SyncableRepository[SequenceRunEntity, UUID]:
     queryList("SELECT * FROM sequence_run ORDER BY created_at DESC")(mapRow)
 
   override def insert(entity: SequenceRunEntity)(using conn: Connection): SequenceRunEntity =
-    val filesJson = entity.files.asJson.noSpaces
+    val filesJson = JsonValue(entity.files.asJson.noSpaces)
 
     executeUpdate(
       """INSERT INTO sequence_run (
@@ -154,7 +154,7 @@ class SequenceRunRepository extends SyncableRepository[SequenceRunEntity, UUID]:
 
   override def update(entity: SequenceRunEntity)(using conn: Connection): SequenceRunEntity =
     val updatedMeta = EntityMeta.forUpdate(entity.meta)
-    val filesJson = entity.files.asJson.noSpaces
+    val filesJson = JsonValue(entity.files.asJson.noSpaces)
 
     executeUpdate(
       """UPDATE sequence_run SET
@@ -348,7 +348,7 @@ class SequenceRunRepository extends SyncableRepository[SequenceRunEntity, UUID]:
     findById(id) match
       case Some(entity) =>
         val updatedFiles = entity.files :+ file
-        val filesJson = updatedFiles.asJson.noSpaces
+        val filesJson = JsonValue(updatedFiles.asJson.noSpaces)
         executeUpdate(
           """UPDATE sequence_run SET
             |  files = ?,
@@ -376,7 +376,7 @@ class SequenceRunRepository extends SyncableRepository[SequenceRunEntity, UUID]:
   // ============================================
 
   private def mapRow(rs: ResultSet): SequenceRunEntity =
-    val filesJson = getOptString(rs, "files").getOrElse("[]")
+    val filesJson = getOptJsonString(rs, "files").getOrElse("[]")
     val files = parse(filesJson).flatMap(_.as[List[FileInfo]]).getOrElse(List.empty)
 
     SequenceRunEntity(

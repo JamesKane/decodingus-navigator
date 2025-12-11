@@ -159,7 +159,7 @@ class SyncQueueRepository:
     queryList("SELECT * FROM sync_queue ORDER BY priority ASC, queued_at ASC")(mapRow)
 
   def insert(entity: SyncQueueEntity)(using conn: Connection): SyncQueueEntity =
-    val payloadJson = entity.payloadSnapshot.map(_.noSpaces).orNull
+    val payloadJson = entity.payloadSnapshot.map(j => JsonValue(j.noSpaces))
 
     executeUpdate(
       """INSERT INTO sync_queue (
@@ -189,7 +189,7 @@ class SyncQueueRepository:
     entity
 
   def update(entity: SyncQueueEntity)(using conn: Connection): SyncQueueEntity =
-    val payloadJson = entity.payloadSnapshot.map(_.noSpaces).orNull
+    val payloadJson = entity.payloadSnapshot.map(j => JsonValue(j.noSpaces))
     val now = LocalDateTime.now()
 
     executeUpdate(
@@ -445,7 +445,7 @@ class SyncQueueRepository:
   // ============================================
 
   private def mapRow(rs: ResultSet): SyncQueueEntity =
-    val payloadJson = getOptString(rs, "payload_snapshot")
+    val payloadJson = getOptJsonString(rs, "payload_snapshot")
     val payload = payloadJson.flatMap(json => parse(json).toOption)
 
     SyncQueueEntity(

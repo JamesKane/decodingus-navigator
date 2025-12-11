@@ -84,7 +84,7 @@ class BiosampleRepository extends SyncableRepository[BiosampleEntity, UUID]:
     queryList("SELECT * FROM biosample ORDER BY created_at DESC")(mapRow)
 
   override def insert(entity: BiosampleEntity)(using conn: Connection): BiosampleEntity =
-    val haplogroupsJson = entity.haplogroups.map(_.asJson.noSpaces).orNull
+    val haplogroupsJson = entity.haplogroups.map(h => JsonValue(h.asJson.noSpaces))
 
     executeUpdate(
       """INSERT INTO biosample (
@@ -114,7 +114,7 @@ class BiosampleRepository extends SyncableRepository[BiosampleEntity, UUID]:
 
   override def update(entity: BiosampleEntity)(using conn: Connection): BiosampleEntity =
     val updatedMeta = EntityMeta.forUpdate(entity.meta)
-    val haplogroupsJson = entity.haplogroups.map(_.asJson.noSpaces).orNull
+    val haplogroupsJson = entity.haplogroups.map(h => JsonValue(h.asJson.noSpaces))
 
     executeUpdate(
       """UPDATE biosample SET
@@ -223,7 +223,7 @@ class BiosampleRepository extends SyncableRepository[BiosampleEntity, UUID]:
    * Update haplogroup assignments for a biosample.
    */
   def updateHaplogroups(id: UUID, haplogroups: HaplogroupAssignments)(using conn: Connection): Boolean =
-    val json = haplogroups.asJson.noSpaces
+    val json = JsonValue(haplogroups.asJson.noSpaces)
     executeUpdate(
       """UPDATE biosample SET
         |  haplogroups = ?, sync_status = CASE WHEN sync_status = 'Synced' THEN 'Modified' ELSE sync_status END,
@@ -247,7 +247,7 @@ class BiosampleRepository extends SyncableRepository[BiosampleEntity, UUID]:
   // ============================================
 
   private def mapRow(rs: ResultSet): BiosampleEntity =
-    val haplogroupsJson = getOptString(rs, "haplogroups")
+    val haplogroupsJson = getOptJsonString(rs, "haplogroups")
     val haplogroups = haplogroupsJson.flatMap { json =>
       parse(json).flatMap(_.as[HaplogroupAssignments]).toOption
     }

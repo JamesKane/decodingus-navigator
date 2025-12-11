@@ -130,6 +130,7 @@ object SqlHelpers:
       case null          => ps.setNull(index, java.sql.Types.NULL)
       case None          => ps.setNull(index, java.sql.Types.NULL)
       case Some(v)       => setParam(ps, index, v)
+      case JsonValue(j)  => ps.setBytes(index, jsonToBytes(j))  // H2 JSON columns use byte[]
       case s: String     => ps.setString(index, s)
       case i: Int        => ps.setInt(index, i)
       case l: Long       => ps.setLong(index, l)
@@ -146,6 +147,30 @@ object SqlHelpers:
    */
   def getOptString(rs: ResultSet, column: String): Option[String] =
     Option(rs.getString(column))
+
+  /**
+   * Get an optional JSON string from a ResultSet.
+   * H2's JSON columns return byte[] when read with getBytes().
+   * This helper properly extracts the JSON content as a UTF-8 string.
+   */
+  def getOptJsonString(rs: ResultSet, column: String): Option[String] =
+    val bytes = rs.getBytes(column)
+    if bytes == null then None
+    else Some(new String(bytes, java.nio.charset.StandardCharsets.UTF_8))
+
+  /**
+   * Wrapper type for JSON string values to distinguish from regular strings.
+   * Use this when passing JSON data to setParam to ensure proper H2 JSON column handling.
+   */
+  case class JsonValue(json: String)
+
+  /**
+   * Convert a JSON string to bytes for H2 JSON column storage.
+   * H2 JSON type maps to byte[] in Java, so we convert the string to UTF-8 bytes.
+   */
+  def jsonToBytes(json: String): Array[Byte] =
+    if json == null then null
+    else json.getBytes(java.nio.charset.StandardCharsets.UTF_8)
 
   /**
    * Get an optional int from a ResultSet.

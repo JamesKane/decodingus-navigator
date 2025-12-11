@@ -147,7 +147,8 @@ object Migrator:
     val migrationFiles = List(
       "V001__initial_schema.sql",
       "V002__file_cache_tables.sql",
-      "V003__sync_queue_tables.sql"
+      "V003__sync_queue_tables.sql",
+      "V004__add_artifact_unique_constraint.sql"
     )
     val pattern = """V(\d+)__(.+)\.sql""".r
 

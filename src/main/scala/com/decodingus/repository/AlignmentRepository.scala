@@ -76,8 +76,8 @@ class AlignmentRepository extends SyncableRepository[AlignmentEntity, UUID]:
     queryList("SELECT * FROM alignment ORDER BY created_at DESC")(mapRow)
 
   override def insert(entity: AlignmentEntity)(using conn: Connection): AlignmentEntity =
-    val metricsJson = entity.metrics.map(_.asJson.noSpaces).orNull
-    val filesJson = entity.files.asJson.noSpaces
+    val metricsJson = entity.metrics.map(m => JsonValue(m.asJson.noSpaces))
+    val filesJson = JsonValue(entity.files.asJson.noSpaces)
 
     executeUpdate(
       """INSERT INTO alignment (
@@ -105,8 +105,8 @@ class AlignmentRepository extends SyncableRepository[AlignmentEntity, UUID]:
 
   override def update(entity: AlignmentEntity)(using conn: Connection): AlignmentEntity =
     val updatedMeta = EntityMeta.forUpdate(entity.meta)
-    val metricsJson = entity.metrics.map(_.asJson.noSpaces).orNull
-    val filesJson = entity.files.asJson.noSpaces
+    val metricsJson = entity.metrics.map(m => JsonValue(m.asJson.noSpaces))
+    val filesJson = JsonValue(entity.files.asJson.noSpaces)
 
     executeUpdate(
       """UPDATE alignment SET
@@ -223,7 +223,7 @@ class AlignmentRepository extends SyncableRepository[AlignmentEntity, UUID]:
    * Called after analysis completes.
    */
   def updateMetrics(id: UUID, metrics: AlignmentMetrics)(using conn: Connection): Boolean =
-    val metricsJson = metrics.asJson.noSpaces
+    val metricsJson = JsonValue(metrics.asJson.noSpaces)
     executeUpdate(
       """UPDATE alignment SET
         |  metrics = ?,
@@ -241,7 +241,7 @@ class AlignmentRepository extends SyncableRepository[AlignmentEntity, UUID]:
     findById(id) match
       case Some(entity) =>
         val updatedFiles = entity.files :+ file
-        val filesJson = updatedFiles.asJson.noSpaces
+        val filesJson = JsonValue(updatedFiles.asJson.noSpaces)
         executeUpdate(
           """UPDATE alignment SET
             |  files = ?,
@@ -309,12 +309,12 @@ class AlignmentRepository extends SyncableRepository[AlignmentEntity, UUID]:
   // ============================================
 
   private def mapRow(rs: ResultSet): AlignmentEntity =
-    val metricsJson = getOptString(rs, "metrics")
+    val metricsJson = getOptJsonString(rs, "metrics")
     val metrics = metricsJson.flatMap { json =>
       parse(json).flatMap(_.as[AlignmentMetrics]).toOption
     }
 
-    val filesJson = getOptString(rs, "files").getOrElse("[]")
+    val filesJson = getOptJsonString(rs, "files").getOrElse("[]")
     val files = parse(filesJson).flatMap(_.as[List[FileInfo]]).getOrElse(List.empty)
 
     AlignmentEntity(
