@@ -48,19 +48,32 @@ case class ComplexStrValue(
  * A single STR marker value. Handles simple, multi-copy, and complex multi-allelic markers.
  * Part of the Atmosphere Lexicon (com.decodingus.atmosphere.defs#strMarkerValue).
  *
- * @param marker    Standard marker name (e.g., 'DYS393', 'DYS385a', 'DYF399X')
- * @param value     The marker value - simple integer or complex allele structure
- * @param panel     Which panel this marker belongs to (Y12, Y25, Y37, Y67, Y111, Y500, Y700, etc.)
- * @param quality   Call quality if available (HIGH, MEDIUM, LOW, UNCERTAIN)
- * @param readDepth Read depth for WGS-derived STR calls
+ * @param marker        Standard marker name (e.g., 'DYS393', 'DYS385a', 'DYF399X')
+ * @param value         The marker value - simple integer or complex allele structure
+ * @param startPosition GRCh38 start position on chrY (for WGS-derived or positioned markers)
+ * @param endPosition   GRCh38 end position on chrY (repeat region boundary)
+ * @param orderedDate   Date this specific marker was ordered/tested (for incremental panels)
+ * @param panel         Which panel this marker belongs to (Y12, Y25, Y37, Y67, Y111, Y500, Y700, etc.)
+ * @param quality       Call quality if available (HIGH, MEDIUM, LOW, UNCERTAIN)
+ * @param readDepth     Read depth for WGS-derived STR calls
  */
 case class StrMarkerValue(
   marker: String,
   value: StrValue,
+  startPosition: Option[Long] = None,
+  endPosition: Option[Long] = None,
+  orderedDate: Option[LocalDateTime] = None,
   panel: Option[String] = None,
   quality: Option[String] = None,
   readDepth: Option[Int] = None
-)
+) {
+  /** Get the repeat region span in base pairs, if positions are known */
+  def regionSpan: Option[Long] =
+    for
+      start <- startPosition
+      end <- endPosition
+    yield end - start + 1
+}
 
 /**
  * Metadata about an STR panel/test.

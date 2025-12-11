@@ -148,7 +148,8 @@ object Migrator:
       "V001__initial_schema.sql",
       "V002__file_cache_tables.sql",
       "V003__sync_queue_tables.sql",
-      "V004__add_artifact_unique_constraint.sql"
+      "V004__add_artifact_unique_constraint.sql",
+      "V005__phase2_entity_tables.sql"
     )
     val pattern = """V(\d+)__(.+)\.sql""".r
 

@@ -1556,14 +1556,16 @@ def markAllAsPending(ids: List[UUID])(implicit conn: Connection): Int = {
 - [x] Transaction manager (`Transactor.scala`)
 - [x] Comprehensive test coverage (127 repository tests)
 
-### Phase 2: Full Entity Support ⏸️ DEFERRED
-> **Note**: Deferred to post-Phase 4. Core sync infrastructure prioritized over additional entity types.
-
-- [ ] STR profile tables and repository
-- [ ] Chip profile tables and repository
-- [ ] Y-DNA SNP panel tables and repository
-- [ ] Haplogroup reconciliation tables and repository
+### Phase 2: Full Entity Support ✅ COMPLETE
+- [x] STR profile tables and repository (`V005__phase2_entity_tables.sql`, `StrProfileRepository`)
+- [x] Chip profile tables and repository (`ChipProfileRepository`)
+- [x] Y-DNA SNP panel tables and repository (`YSnpPanelRepository`)
+- [x] Haplogroup reconciliation tables and repository (`HaplogroupReconciliationRepository`)
 - [x] Project-biosample relationship management (`project_member` table, `ProjectRepository`)
+- [x] Schema extensions for mixed panel imports:
+  - `YSnpCall`: Added `endPosition`, `variantType` (SNP/INDEL), `orderedDate` for INDEL support
+  - `StrMarkerValue`: Added `startPosition`, `endPosition`, `orderedDate` for genomic coordinate tracking
+- [x] Backwards-compatible JSON codecs (reads old `position` field as `startPosition`)
 
 ### Phase 3: File Cache Integration ✅ COMPLETE
 - [x] Analysis artifact tracking tables (`V002__file_cache_tables.sql`: `analysis_artifact`)
@@ -1581,7 +1583,7 @@ def markAllAsPending(ids: List[UUID])(implicit conn: Connection): Int = {
 - [x] Sync history and audit trail (`SyncHistoryRepository`)
 - [x] Background sync worker service (`AsyncSyncService.scala` - queue processing, exponential backoff, scheduled polling)
 - [x] UI sync status observable state (`ConflictNotifier.scala` - observable properties for UI binding)
-- [ ] Status bar UI component (ConflictNotifier provides state, actual ScalaFX UI pending)
+- [x] Status bar UI component (`StatusBar.scala` - displays online/offline, pending count, conflicts; bound to ConflictNotifier)
 
 ### Phase 5: Future Collaboration Prep
 - [ ] Canonical sample registry schema
@@ -1619,7 +1621,7 @@ All repositories using JSON columns have been updated to use `JsonValue` wrapper
 
 Before starting Phase 5, address:
 1. ~~**Background Sync Worker**: Service class implementing `AsyncSyncService` pattern from design doc~~ ✅ Complete
-2. **UI Sync Status**: Status bar integration showing pending/conflict counts (ConflictNotifier done, UI component pending)
+2. ~~**UI Sync Status**: Status bar integration showing pending/conflict counts~~ ✅ Complete (`StatusBar.scala` integrated into `GenomeNavigatorApp`)
 3. ~~**Cache Invalidation**: Implement logic using `depends_on_source_checksum` and `depends_on_reference_build`~~ ✅ Complete
 4. **Phase 2 Decision**: Determine if STR/Chip/SNP panel entities needed before collaboration features
 

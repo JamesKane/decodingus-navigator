@@ -212,6 +212,13 @@ object SqlHelpers:
     rs.getObject(column, classOf[UUID])
 
   /**
+   * Get an optional UUID from a ResultSet.
+   */
+  def getOptUUID(rs: ResultSet, column: String): Option[UUID] =
+    val value = rs.getObject(column, classOf[UUID])
+    if rs.wasNull() then None else Option(value)
+
+  /**
    * Execute a query and map results to a list.
    */
   def queryList[A](sql: String, params: Seq[Any] = Seq.empty)(mapper: ResultSet => A)(using conn: Connection): List[A] =
