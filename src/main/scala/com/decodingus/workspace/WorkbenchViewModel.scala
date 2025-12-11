@@ -1,6 +1,6 @@
 package com.decodingus.workspace
 
-import com.decodingus.analysis.{ArtifactContext, CallableLociProcessor, CallableLociResult, HaplogroupProcessor, LibraryStatsProcessor, MultipleMetricsResult, UnifiedMetricsProcessor, WgsMetricsProcessor}
+import com.decodingus.analysis.{ArtifactContext, CachedVcfInfo, CallableLociProcessor, CallableLociResult, HaplogroupProcessor, LibraryStatsProcessor, MultipleMetricsResult, UnifiedMetricsProcessor, WgsMetricsProcessor}
 import com.decodingus.client.DecodingUsClient
 import com.decodingus.haplogroup.tree.{TreeType, TreeProviderType}
 import com.decodingus.auth.User
@@ -1816,6 +1816,57 @@ class WorkbenchViewModel(val workspaceService: WorkspaceService) {
   ): Unit = {
     // Delegate to existing method for now - alignment index support to be added later
     runMultipleMetricsAnalysis(sampleAccession, sequenceRunIndex, onComplete)
+  }
+
+  /**
+   * Runs whole-genome variant calling for a specific alignment.
+   * This is a long-running operation that generates a cached VCF.
+   */
+  def runWholeGenomeVariantCallingForAlignment(
+    sampleAccession: String,
+    sequenceRunIndex: Int,
+    alignmentIndex: Int,
+    onComplete: Either[String, CachedVcfInfo] => Unit
+  ): Unit = {
+    analysisInProgress.value = true
+    analysisProgress.value = "Starting whole-genome variant calling..."
+    analysisProgressPercent.value = 0.0
+
+    val progressHandler: AnalysisProgress => Unit = { progress =>
+      Platform.runLater {
+        analysisProgress.value = progress.message
+        analysisProgressPercent.value = progress.percent
+      }
+    }
+
+    analysisCoordinator.runWholeGenomeVariantCalling(
+      currentState,
+      sampleAccession,
+      sequenceRunIndex,
+      alignmentIndex,
+      progressHandler
+    ).onComplete {
+      case Success(Right((newState, vcfInfo))) =>
+        Platform.runLater {
+          applyState(newState)
+          analysisInProgress.value = false
+          analysisProgress.value = "Whole-genome VCF generation complete"
+          analysisProgressPercent.value = 1.0
+          onComplete(Right(vcfInfo))
+        }
+      case Success(Left(error)) =>
+        Platform.runLater {
+          analysisInProgress.value = false
+          analysisProgress.value = s"Error: $error"
+          onComplete(Left(error))
+        }
+      case Failure(ex) =>
+        Platform.runLater {
+          analysisInProgress.value = false
+          analysisProgress.value = s"Error: ${ex.getMessage}"
+          onComplete(Left(ex.getMessage))
+        }
+    }
   }
 
   // --- STR Profile CRUD Operations ---

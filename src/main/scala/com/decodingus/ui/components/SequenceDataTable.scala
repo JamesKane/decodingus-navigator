@@ -8,13 +8,14 @@ import scalafx.geometry.{Insets, Pos}
 import scalafx.collections.ObservableBuffer
 import scalafx.beans.property.StringProperty
 import scalafx.application.Platform
-import com.decodingus.analysis.{CallableLociResult, ReadMetrics}
+import com.decodingus.analysis.{CallableLociResult, ReadMetrics, VcfCache, VcfStatus, SubjectArtifactCache}
 import com.decodingus.model.WgsMetrics
 import com.decodingus.workspace.model.{Biosample, SequenceRun, Alignment, AlignmentMetrics, FileInfo}
 import com.decodingus.workspace.WorkbenchViewModel
 import com.decodingus.haplogroup.tree.TreeType
 import com.decodingus.genotype.model.{TestTypes, TargetType}
 import java.nio.file.Files
+import scala.jdk.CollectionConverters._
 
 /**
  * Represents a row in the sequence data tree table.
@@ -155,6 +156,86 @@ class SequenceDataTable(
     }
   }
 
+  /**
+   * Get IDs for artifact cache queries from an alignment row.
+   */
+  private def getArtifactIds(ar: AlignmentRow): (String, String) = {
+    val runId = ar.run.atUri.map(SubjectArtifactCache.extractIdFromUri).getOrElse("unknown-run")
+    val alignId = ar.alignment.atUri.map(SubjectArtifactCache.extractIdFromUri).getOrElse("unknown-alignment")
+    (runId, alignId)
+  }
+
+  /**
+   * Get VCF status for an alignment.
+   */
+  private def getVcfStatus(ar: AlignmentRow): VcfStatus = {
+    val (runId, alignId) = getArtifactIds(ar)
+    VcfCache.getStatus(subject.sampleAccession, runId, alignId)
+  }
+
+  /**
+   * Check if callable loci data exists for an alignment.
+   */
+  private def hasCallableLoci(ar: AlignmentRow): Boolean = {
+    val (runId, alignId) = getArtifactIds(ar)
+    val callableLociDir = SubjectArtifactCache.getArtifactSubdir(subject.sampleAccession, runId, alignId, "callable_loci")
+    if (Files.exists(callableLociDir)) {
+      // Check if there are any .bed files
+      Files.list(callableLociDir).iterator().asScala.exists(_.toString.endsWith(".callable.bed"))
+    } else {
+      false
+    }
+  }
+
+  /**
+   * Format VCF status for display.
+   */
+  private def formatVcfStatus(status: VcfStatus): String = {
+    status match {
+      case VcfStatus.Available(_) => "✓"
+      case VcfStatus.InProgress(_, progress, _) => f"◐ ${progress * 100}%.0f%%"
+      case VcfStatus.NotGenerated => "○"
+      case VcfStatus.Incomplete => "⚠"
+      case VcfStatus.Stale => "⚠"
+    }
+  }
+
+  /**
+   * Get tooltip text for VCF status.
+   */
+  private def getVcfTooltip(ar: AlignmentRow): String = {
+    getVcfStatus(ar) match {
+      case VcfStatus.Available(info) =>
+        val sizeGb = info.fileSizeBytes / (1024.0 * 1024.0 * 1024.0)
+        s"""Whole-Genome VCF
+Reference: ${info.referenceBuild}
+Variants: ${f"${info.variantCount}%,d"}
+Size: ${f"$sizeGb%.2f"} GB
+Created: ${info.createdAt}
+Sex: ${info.inferredSex.getOrElse("Unknown")}"""
+      case VcfStatus.InProgress(startedAt, progress, currentContig) =>
+        val contigInfo = currentContig.map(c => s"\nProcessing: $c").getOrElse("")
+        s"VCF Generation in Progress\nStarted: $startedAt\nProgress: ${f"${progress * 100}%.0f"}%$contigInfo"
+      case VcfStatus.NotGenerated =>
+        "No VCF Generated\nRight-click to generate whole-genome VCF"
+      case VcfStatus.Incomplete =>
+        "VCF Incomplete\nMetadata missing or files corrupted"
+      case VcfStatus.Stale =>
+        "VCF May Be Stale\nAlignment modified since VCF was generated"
+    }
+  }
+
+  /**
+   * Get tooltip text for callable loci status.
+   */
+  private def getCallableLociTooltip(ar: AlignmentRow): String = {
+    if (hasCallableLoci(ar)) {
+      "Callable Loci Available\nBED files generated for this alignment"
+    } else {
+      "No Callable Loci\nRight-click to run callable loci analysis"
+    }
+  }
+
   private val treeTable = new TreeTableView[SequenceDataRow](buildTreeItems()) {
     prefHeight = 200
     showRoot = false
@@ -282,6 +363,34 @@ class SequenceDataTable(
       prefWidth = 60
     }
 
+    // VCF status column (for alignment rows only)
+    columns += new TreeTableColumn[SequenceDataRow, String] {
+      text = "VCF"
+      cellValueFactory = { p =>
+        val value = p.value.getValue match {
+          case _: SequenceRunRow => ""  // Empty for parent rows
+          case ar: AlignmentRow => formatVcfStatus(getVcfStatus(ar))
+        }
+        StringProperty(value)
+      }
+      prefWidth = 40
+      style = "-fx-alignment: CENTER;"
+    }
+
+    // Callable Loci status column (for alignment rows only)
+    columns += new TreeTableColumn[SequenceDataRow, String] {
+      text = "CL"
+      cellValueFactory = { p =>
+        val value = p.value.getValue match {
+          case _: SequenceRunRow => ""  // Empty for parent rows
+          case ar: AlignmentRow => if (hasCallableLoci(ar)) "✓" else "○"
+        }
+        StringProperty(value)
+      }
+      prefWidth = 30
+      style = "-fx-alignment: CENTER;"
+    }
+
     // Row factory for context menus
     rowFactory = { _ =>
       val row = new javafx.scene.control.TreeTableRow[SequenceDataRow]()
@@ -341,7 +450,21 @@ class SequenceDataTable(
    * Context menu for Alignment rows (child) - includes analysis actions.
    */
   private def createAlignmentContextMenu(ar: AlignmentRow): ContextMenu = {
+    val vcfStatus = getVcfStatus(ar)
+    val vcfMenuItem = new MenuItem("Generate Whole-Genome VCF") {
+      onAction = _ => handleGenerateVcf(ar)
+      disable = vcfStatus.isAvailable || vcfStatus.isInProgress
+    }
+
+    val viewVcfStatsMenuItem = new MenuItem("View VCF Statistics") {
+      onAction = _ => handleViewVcfStats(ar)
+      disable = !vcfStatus.isAvailable
+    }
+
     new ContextMenu(
+      vcfMenuItem,
+      viewVcfStatsMenuItem,
+      new javafx.scene.control.SeparatorMenuItem(),
       new MenuItem("Haplogroup Analysis") {
         onAction = _ => handleHaplogroupAnalysis(ar.runIndex, ar.alignmentIndex, ar.alignment)
       },
@@ -351,6 +474,7 @@ class SequenceDataTable(
       new MenuItem("View mtDNA Report") {
         onAction = _ => showCachedHaplogroupReport(ar.runIndex, ar.alignmentIndex, TreeType.MTDNA)
       },
+      new javafx.scene.control.SeparatorMenuItem(),
       new MenuItem("Callable Loci") {
         onAction = _ => handleCallableLociAnalysis(ar.runIndex, ar.alignmentIndex, ar.alignment)
       },
@@ -635,6 +759,97 @@ Insert Size:
     )
 
     progressDialog.show()
+  }
+
+  /** Handles generating whole-genome VCF for an alignment */
+  private def handleGenerateVcf(ar: AlignmentRow): Unit = {
+    // Show confirmation dialog with time estimate
+    val confirmDialog = new Alert(AlertType.Confirmation) {
+      title = "Generate Whole-Genome VCF"
+      headerText = s"Generate VCF for ${ar.alignment.referenceBuild} alignment?"
+      contentText = s"""This process is CPU-intensive and may take several hours
+depending on your hardware.
+
+Reference: ${ar.alignment.referenceBuild}
+Contigs: All chromosomes (1-22, X, Y, MT)
+
+The VCF will be cached locally and used for:
+• Haplogroup analysis (improved gap-aware resolution)
+• Future ancestry analysis
+
+You can continue using other features while it runs."""
+    }
+
+    confirmDialog.showAndWait() match {
+      case Some(ButtonType.OK) =>
+        val progressDialog = new AnalysisProgressDialog(
+          s"Generating Whole-Genome VCF (${ar.alignment.referenceBuild})",
+          viewModel.analysisProgress,
+          viewModel.analysisProgressPercent,
+          viewModel.analysisInProgress
+        )
+
+        viewModel.runWholeGenomeVariantCallingForAlignment(
+          subject.sampleAccession,
+          ar.runIndex,
+          ar.alignmentIndex,
+          onComplete = {
+            case Right(vcfInfo) =>
+              Platform.runLater {
+                val sizeGb = vcfInfo.fileSizeBytes / (1024.0 * 1024.0 * 1024.0)
+                new Alert(AlertType.Information) {
+                  title = "VCF Generation Complete"
+                  headerText = s"Whole-Genome VCF Generated (${ar.alignment.referenceBuild})"
+                  contentText = s"""Variants: ${f"${vcfInfo.variantCount}%,d"}
+Size: ${f"$sizeGb%.2f"} GB
+Contigs: ${vcfInfo.contigs.size}
+Inferred Sex: ${vcfInfo.inferredSex.getOrElse("Unknown")}"""
+                }.showAndWait()
+
+                // Rebuild tree to show updated status
+                treeTable.root = buildTreeItems()
+              }
+            case Left(error) =>
+              Platform.runLater {
+                new Alert(AlertType.Error) {
+                  title = "VCF Generation Failed"
+                  headerText = "Could not generate whole-genome VCF"
+                  contentText = error
+                }.showAndWait()
+              }
+          }
+        )
+
+        progressDialog.show()
+      case _ => // User cancelled
+    }
+  }
+
+  /** Shows VCF statistics for an alignment */
+  private def handleViewVcfStats(ar: AlignmentRow): Unit = {
+    getVcfStatus(ar) match {
+      case VcfStatus.Available(info) =>
+        val sizeGb = info.fileSizeBytes / (1024.0 * 1024.0 * 1024.0)
+        new Alert(AlertType.Information) {
+          title = "VCF Statistics"
+          headerText = s"Whole-Genome VCF (${info.referenceBuild})"
+          contentText = s"""Path: ${info.vcfPath}
+Variants: ${f"${info.variantCount}%,d"}
+Size: ${f"$sizeGb%.2f"} GB
+Contigs: ${info.contigs.mkString(", ")}
+Inferred Sex: ${info.inferredSex.getOrElse("Unknown")}
+Created: ${info.createdAt}
+GATK Version: ${info.gatkVersion}
+Caller: ${info.callerVersion}"""
+        }.showAndWait()
+
+      case _ =>
+        new Alert(AlertType.Information) {
+          title = "No VCF Available"
+          headerText = "No whole-genome VCF found"
+          contentText = "Generate a whole-genome VCF first to view statistics."
+        }.showAndWait()
+    }
   }
 
   // Action buttons

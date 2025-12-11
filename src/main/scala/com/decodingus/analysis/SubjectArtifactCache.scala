@@ -13,9 +13,13 @@ import java.nio.file.{Files, Path, Paths}
  *   │   ├── chr1.callable.bed
  *   │   ├── chr1.table.txt
  *   │   └── chr1.callable.svg
- *   └── haplogroup/
- *       ├── alleles.vcf
- *       └── called.vcf
+ *   ├── haplogroup/
+ *   │   ├── alleles.vcf
+ *   │   └── called.vcf
+ *   └── vcf/
+ *       ├── whole_genome.vcf.gz
+ *       ├── whole_genome.vcf.gz.tbi
+ *       └── vcf_metadata.json
  */
 object SubjectArtifactCache {
 

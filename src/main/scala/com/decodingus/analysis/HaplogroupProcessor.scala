@@ -310,6 +310,118 @@ class HaplogroupProcessor {
   }
 
   /**
+   * Analyze using a cached whole-genome VCF instead of calling variants on the fly.
+   * Uses GapAwareHaplogroupResolver to query the VCF and infer reference calls from callable loci.
+   *
+   * @param sampleAccession Sample accession for artifact lookup
+   * @param runId Sequence run ID
+   * @param alignmentId Alignment ID
+   * @param referenceBuild Reference build of the alignment
+   * @param treeType Y-DNA or MT-DNA tree type
+   * @param treeProviderType Tree data provider
+   * @param onProgress Progress callback
+   */
+  def analyzeFromCachedVcf(
+    sampleAccession: String,
+    runId: String,
+    alignmentId: String,
+    referenceBuild: String,
+    treeType: TreeType,
+    treeProviderType: TreeProviderType,
+    onProgress: (String, Double, Double) => Unit
+  ): Either[String, List[HaplogroupResult]] = {
+
+    onProgress("Loading haplogroup tree...", 0.0, 1.0)
+    val treeProvider: TreeProvider = treeProviderType match {
+      case TreeProviderType.FTDNA => new FtdnaTreeProvider(treeType)
+      case TreeProviderType.DECODINGUS => new DecodingUsTreeProvider(treeType)
+    }
+
+    treeProvider.loadTree(referenceBuild).flatMap { tree =>
+      val allLoci = collectAllLoci(tree).distinct
+      val primaryContig = if (treeType == TreeType.YDNA) "chrY" else "chrM"
+      val outputPrefix = if (treeType == TreeType.YDNA) "ydna" else "mtdna"
+
+      val treeSourceBuild = if (treeProvider.supportedBuilds.contains(referenceBuild)) {
+        referenceBuild
+      } else {
+        treeProvider.sourceBuild
+      }
+
+      onProgress("Loading cached VCF and callable loci...", 0.1, 1.0)
+
+      // Create gap-aware resolver
+      GapAwareHaplogroupResolver.fromCache(sampleAccession, runId, alignmentId, referenceBuild) match {
+        case Left(error) =>
+          Left(s"Failed to load cached VCF: $error")
+
+        case Right(resolver) =>
+          onProgress("Querying tree positions from VCF...", 0.2, 1.0)
+
+          // Query all tree positions
+          val positions = allLoci.map { locus =>
+            val contig = if (locus.contig.isEmpty) primaryContig else locus.contig
+            (contig, locus.position, locus.ref)
+          }
+          val resolvedCalls = resolver.resolvePositions(positions)
+
+          // Get resolution statistics
+          val stats = resolver.getResolutionStats(resolvedCalls)
+          onProgress(s"Resolved ${stats.fromVcf} from VCF, ${stats.inferredReference} inferred, ${stats.noCalls} no-calls", 0.4, 1.0)
+
+          // Convert to snpCalls format expected by scorer (position -> allele)
+          val snpCalls: Map[Long, String] = resolvedCalls.flatMap { case ((contig, pos), call) =>
+            if (call.hasCall && contig == primaryContig) {
+              Some(pos -> call.allele)
+            } else {
+              None
+            }
+          }
+
+          onProgress("Scoring haplogroups...", 0.5, 1.0)
+
+          // Score haplogroups
+          val scorer = new HaplogroupScorer()
+          val results = scorer.score(tree, snpCalls)
+
+          onProgress("Generating report...", 0.8, 1.0)
+
+          // Get artifact directory for report
+          val outputDir = SubjectArtifactCache.getArtifactSubdir(sampleAccession, runId, alignmentId, ARTIFACT_SUBDIR_NAME)
+
+          // Use named variant cache for Decoding Us provider
+          val variantCache = treeProviderType match {
+            case TreeProviderType.DECODINGUS =>
+              val cache = NamedVariantCache()
+              cache.ensureLoaded(_ => ()) match {
+                case Right(_) => Some(cache)
+                case Left(_) => None
+              }
+            case _ => None
+          }
+
+          HaplogroupReportWriter.writeReport(
+            outputDir = outputDir.toFile,
+            treeType = treeType,
+            results = results,
+            tree = tree,
+            snpCalls = snpCalls,
+            sampleName = None,
+            privateVariants = None,  // Private variants not extracted in VCF-based flow
+            treeProvider = Some(treeProviderType),
+            strAnnotator = None,
+            sampleBuild = Some(referenceBuild),
+            treeBuild = Some(treeSourceBuild),
+            namedVariantCache = variantCache
+          )
+
+          onProgress("Analysis complete.", 1.0, 1.0)
+          Right(results)
+      }
+    }
+  }
+
+  /**
    * Parse private variants from VCF, excluding known tree positions.
    */
   private def parsePrivateVariants(vcfFile: File, treePositions: Set[Long]): List[PrivateVariant] = {

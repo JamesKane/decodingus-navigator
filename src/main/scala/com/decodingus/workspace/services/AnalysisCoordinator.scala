@@ -288,6 +288,125 @@ class AnalysisCoordinator(implicit ec: ExecutionContext) {
     }
   }
 
+  // --- Whole-Genome Variant Calling ---
+
+  /**
+   * Runs whole-genome variant calling on an alignment.
+   * Uses HaplotypeCaller for autosomes/X/Y and Mutect2 for mtDNA.
+   * Results are cached in the alignment's artifact directory.
+   */
+  def runWholeGenomeVariantCalling(
+    state: WorkspaceState,
+    sampleAccession: String,
+    sequenceRunIndex: Int,
+    alignmentIndex: Int,
+    onProgress: AnalysisProgress => Unit
+  ): Future[Either[String, (WorkspaceState, CachedVcfInfo)]] = Future {
+    workspaceOps.findSubject(state, sampleAccession) match {
+      case None =>
+        Left(s"Subject not found: $sampleAccession")
+
+      case Some(subject) =>
+        val sequenceRuns = state.workspace.main.getSequenceRunsForBiosample(subject)
+        sequenceRuns.lift(sequenceRunIndex) match {
+          case None =>
+            Left(s"Sequence run not found at index $sequenceRunIndex")
+
+          case Some(seqRun) =>
+            val alignments = state.workspace.main.getAlignmentsForSequenceRun(seqRun)
+            alignments.lift(alignmentIndex) match {
+              case None =>
+                Left(s"Alignment not found at index $alignmentIndex")
+
+              case Some(alignment) =>
+                // Get BAM path from alignment's files first, then fall back to seqRun's files
+                val bamPathOpt = alignment.files.headOption.orElse(seqRun.files.headOption).flatMap(_.location)
+                bamPathOpt match {
+                  case None =>
+                    Left("No alignment file associated with this alignment")
+
+                  case Some(bamPath) =>
+                    runWholeGenomeVariantCallingInternal(state, subject, seqRun, alignment, bamPath, onProgress)
+                }
+            }
+        }
+    }
+  }
+
+  private def runWholeGenomeVariantCallingInternal(
+    state: WorkspaceState,
+    subject: Biosample,
+    seqRun: SequenceRun,
+    alignment: Alignment,
+    bamPath: String,
+    onProgress: AnalysisProgress => Unit
+  ): Either[String, (WorkspaceState, CachedVcfInfo)] = {
+    try {
+      onProgress(AnalysisProgress("Resolving reference genome...", 0.05))
+
+      val referenceGateway = new ReferenceGateway((done, total) => {
+        val pct = if (total > 0) 0.05 + (done.toDouble / total) * 0.1 else 0.05
+        onProgress(AnalysisProgress(s"Downloading reference: ${done / 1024 / 1024}MB", pct))
+      })
+
+      val referencePath = referenceGateway.resolve(alignment.referenceBuild) match {
+        case Right(path) => path.toString
+        case Left(error) => return Left(s"Failed to resolve reference: $error")
+      }
+
+      onProgress(AnalysisProgress("Starting whole-genome variant calling...", 0.15))
+
+      // Get output directory
+      val runId = seqRun.atUri.map(SubjectArtifactCache.extractIdFromUri).getOrElse("unknown-run")
+      val alignId = alignment.atUri.map(SubjectArtifactCache.extractIdFromUri).getOrElse("unknown-alignment")
+      val outputDir = VcfCache.getVcfDir(subject.sampleAccession, runId, alignId)
+
+      // Run variant calling
+      val caller = WholeGenomeVariantCaller()
+      val result = caller.generateWholeGenomeVcf(
+        bamPath = bamPath,
+        referencePath = referencePath,
+        outputDir = outputDir,
+        referenceBuild = alignment.referenceBuild,
+        onProgress = (msg, current, total) => {
+          val pct = 0.15 + (current.toDouble / total) * 0.80
+          onProgress(AnalysisProgress(msg, pct))
+        }
+      )
+
+      result match {
+        case Left(error) =>
+          Left(s"Variant calling failed: $error")
+
+        case Right(vcfInfo) =>
+          onProgress(AnalysisProgress("Saving results...", 0.98))
+
+          // Update alignment metrics with VCF info
+          val existingMetrics = alignment.metrics.getOrElse(AlignmentMetrics())
+          val updatedMetrics = existingMetrics.copy(
+            vcfPath = Some(vcfInfo.vcfPath),
+            vcfCreatedAt = Some(vcfInfo.createdAt),
+            vcfVariantCount = Some(vcfInfo.variantCount),
+            vcfReferenceBuild = Some(vcfInfo.referenceBuild),
+            inferredSex = vcfInfo.inferredSex
+          )
+
+          val updatedAlignment = alignment.copy(
+            metrics = Some(updatedMetrics),
+            meta = alignment.meta.updated("vcf")
+          )
+          val newState = workspaceOps.updateAlignment(state, updatedAlignment)
+
+          onProgress(AnalysisProgress("Whole-genome variant calling complete", 1.0, isComplete = true))
+          Right((newState, vcfInfo))
+      }
+
+    } catch {
+      case e: Exception =>
+        Left(e.getMessage)
+    }
+  }
+
   // --- Haplogroup Analysis ---
 
   def runHaplogroupAnalysis(
