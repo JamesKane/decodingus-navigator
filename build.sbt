@@ -109,6 +109,9 @@ lazy val root = (project in file("."))
         "com.typesafe" % "config" % "1.4.3",
         "com.softwaremill.sttp.client3" %% "core" % "3.9.7",
         "com.softwaremill.sttp.client3" %% "circe" % "3.9.7",
+        // Database
+        "com.h2database" % "h2" % "2.2.224",
+        "com.zaxxer" % "HikariCP" % "5.1.0",
         "org.scalameta" %% "munit" % "1.0.0" % Test
       )
     },
