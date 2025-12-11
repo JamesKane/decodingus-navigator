@@ -1,31 +1,59 @@
 package com.decodingus.ui.components
 
 import scalafx.Includes._
-import scalafx.scene.control.{TableView, TableColumn, Button, Alert, ButtonType, ContextMenu, MenuItem, Tooltip}
+import scalafx.scene.control.{TreeTableView, TreeTableColumn, TreeItem, Button, Alert, ButtonType, ContextMenu, MenuItem, Tooltip, SelectionMode}
 import scalafx.scene.control.Alert.AlertType
 import scalafx.scene.layout.{VBox, HBox, Priority}
 import scalafx.geometry.{Insets, Pos}
 import scalafx.collections.ObservableBuffer
 import scalafx.beans.property.StringProperty
 import scalafx.application.Platform
-import com.decodingus.analysis.CallableLociResult
-import com.decodingus.workspace.model.{Biosample, SequenceRun, Alignment, AlignmentMetrics}
+import com.decodingus.analysis.{CallableLociResult, ReadMetrics}
+import com.decodingus.model.WgsMetrics
+import com.decodingus.workspace.model.{Biosample, SequenceRun, Alignment, AlignmentMetrics, FileInfo}
 import com.decodingus.workspace.WorkbenchViewModel
 import com.decodingus.haplogroup.tree.TreeType
 import com.decodingus.genotype.model.{TestTypes, TargetType}
 import java.nio.file.Files
 
 /**
- * Table component displaying sequencing runs for a subject.
- * Supports adding new runs and triggering analysis actions.
+ * Represents a row in the sequence data tree table.
+ * Can be either a SequenceRun (parent) or an Alignment (child).
+ */
+sealed trait SequenceDataRow {
+  def runIndex: Int
+  def testType: String
+}
+
+case class SequenceRunRow(
+  runIndex: Int,
+  run: SequenceRun,
+  alignmentCount: Int
+) extends SequenceDataRow {
+  def testType: String = run.testType
+}
+
+case class AlignmentRow(
+  runIndex: Int,
+  alignmentIndex: Int,
+  run: SequenceRun,
+  alignment: Alignment
+) extends SequenceDataRow {
+  def testType: String = run.testType
+}
+
+/**
+ * Table component displaying sequencing runs for a subject with expandable alignment rows.
+ * Each SequenceRun can have multiple Alignments (e.g., GRCh38, CHM13v2).
+ * Analysis actions operate on specific alignments.
  */
 class SequenceDataTable(
   viewModel: WorkbenchViewModel,
   subject: Biosample,
   sequenceRuns: List[SequenceRun],
   alignments: List[Alignment],
-  onAnalyze: (Int) => Unit,  // Callback when analyze is clicked, passes index
-  onRemove: (Int) => Unit    // Callback when remove is clicked, passes index
+  onAnalyze: (Int) => Unit,  // Callback when analyze is clicked, passes run index
+  onRemove: (Int) => Unit    // Callback when remove is clicked, passes run index
 ) extends VBox(10) {
 
   padding = Insets(10, 0, 0, 0)
@@ -37,44 +65,55 @@ class SequenceDataTable(
     }
   }
 
-  // Convert the sequence runs to an observable buffer with index
-  case class SequenceRunRow(index: Int, run: SequenceRun, runAlignments: List[Alignment])
+  /**
+   * Build tree items for the TreeTableView.
+   * SequenceRuns are parent nodes, Alignments are children.
+   */
+  private def buildTreeItems(): TreeItem[SequenceDataRow] = {
+    val rootItem = new TreeItem[SequenceDataRow](null: SequenceDataRow)
+    rootItem.setExpanded(true)
 
-  private val tableData: ObservableBuffer[SequenceRunRow] = ObservableBuffer.from(
-    sequenceRuns.zipWithIndex.map { case (run, idx) =>
-      SequenceRunRow(idx, run, getAlignmentsForRun(run))
+    sequenceRuns.zipWithIndex.foreach { case (run, runIdx) =>
+      val runAlignments = getAlignmentsForRun(run)
+      val runRow = SequenceRunRow(runIdx, run, runAlignments.size)
+      val runItem = new TreeItem[SequenceDataRow](runRow)
+
+      // Add alignment children
+      runAlignments.zipWithIndex.foreach { case (alignment, alignIdx) =>
+        val alignRow = AlignmentRow(runIdx, alignIdx, run, alignment)
+        runItem.children += new TreeItem[SequenceDataRow](alignRow)
+      }
+
+      // Auto-expand if there are multiple alignments
+      runItem.setExpanded(runAlignments.size > 1)
+      rootItem.children += runItem
     }
-  )
+
+    rootItem
+  }
 
   /**
    * Calculate appropriate coverage display based on test type.
-   * - WGS: genome-wide mean coverage
-   * - WES: on-target coverage (higher than genome-wide)
-   * - Targeted Y-DNA: Y chromosome coverage
-   * - Targeted mtDNA: mtDNA coverage
    */
-  private def formatCoverage(run: SequenceRun, alignment: Option[Alignment]): String = {
-    val metrics = alignment.flatMap(_.metrics)
-    val testType = TestTypes.byCode(run.testType)
+  private def formatCoverage(row: SequenceDataRow): String = {
+    val (metrics, testTypeCode) = row match {
+      case sr: SequenceRunRow =>
+        // For parent row, show first alignment's coverage or aggregate
+        val alignments = getAlignmentsForRun(sr.run)
+        (alignments.headOption.flatMap(_.metrics), sr.run.testType)
+      case ar: AlignmentRow =>
+        (ar.alignment.metrics, ar.run.testType)
+    }
+
+    val testType = TestTypes.byCode(testTypeCode)
     val targetType = testType.map(_.targetType)
 
     targetType match {
-      case Some(TargetType.YChromosome) =>
-        // For targeted Y-DNA, show Y coverage if available
-        // TODO: Add yCoverage to AlignmentMetrics when we calculate per-contig coverage
+      case Some(TargetType.YChromosome) | Some(TargetType.MtDna) =>
         metrics.flatMap(_.meanCoverage).map(c => f"$c%.0fx").getOrElse("—")
-
-      case Some(TargetType.MtDna) =>
-        // For targeted mtDNA, show mtDNA coverage
-        // TODO: Add mtCoverage to AlignmentMetrics
+      case Some(TargetType.Autosomal) if testTypeCode == "WES" =>
         metrics.flatMap(_.meanCoverage).map(c => f"$c%.0fx").getOrElse("—")
-
-      case Some(TargetType.Autosomal) if run.testType == "WES" =>
-        // For WES, coverage is on-target (typically 50-100x)
-        metrics.flatMap(_.meanCoverage).map(c => f"$c%.0fx").getOrElse("—")
-
       case _ =>
-        // WGS and others: genome-wide mean coverage
         metrics.flatMap(_.meanCoverage).map(c => f"$c%.1fx").getOrElse("—")
     }
   }
@@ -101,197 +140,227 @@ class SequenceDataTable(
     }
   }
 
-  private val table = new TableView[SequenceRunRow](tableData) {
-    prefHeight = 150
-    columnResizePolicy = TableView.ConstrainedResizePolicy
+  /**
+   * Get the primary file for a row (for display and analysis).
+   */
+  private def getFileForRow(row: SequenceDataRow): Option[FileInfo] = {
+    row match {
+      case sr: SequenceRunRow =>
+        // Parent row: show first alignment's file or run's file
+        val alignments = getAlignmentsForRun(sr.run)
+        alignments.headOption.flatMap(_.files.headOption).orElse(sr.run.files.headOption)
+      case ar: AlignmentRow =>
+        // Alignment row: use alignment's own file
+        ar.alignment.files.headOption.orElse(ar.run.files.headOption)
+    }
+  }
 
-    // Lab column (sequencing facility)
-    columns += new TableColumn[SequenceRunRow, String] {
+  private val treeTable = new TreeTableView[SequenceDataRow](buildTreeItems()) {
+    prefHeight = 200
+    showRoot = false
+    columnResizePolicy = TreeTableView.ConstrainedResizePolicy
+
+    // Lab column (sequencing facility) - only for SequenceRun rows
+    columns += new TreeTableColumn[SequenceDataRow, String] {
       text = "Lab"
-      cellValueFactory = { row =>
-        val lab = row.value.run.sequencingFacility.getOrElse("—")
-        StringProperty(lab)
-      }
-      prefWidth = 100
-    }
-
-    // Sample column (from BAM @RG SM tag)
-    columns += new TableColumn[SequenceRunRow, String] {
-      text = "Sample"
-      cellValueFactory = { row =>
-        val sample = row.value.run.sampleName.getOrElse("—")
-        StringProperty(sample)
-      }
-      prefWidth = 100
-    }
-
-    // Platform column (e.g., "Illumina", "PacBio")
-    columns += new TableColumn[SequenceRunRow, String] {
-      text = "Platform"
-      cellValueFactory = { row =>
-        StringProperty(row.value.run.platformName)
+      cellValueFactory = { p =>
+        val value = p.value.getValue match {
+          case sr: SequenceRunRow => sr.run.sequencingFacility.getOrElse("—")
+          case _: AlignmentRow => ""  // Empty for alignment rows
+        }
+        StringProperty(value)
       }
       prefWidth = 80
     }
 
-    // Instrument Type column (e.g., "NovaSeq", "Sequel II")
-    columns += new TableColumn[SequenceRunRow, String] {
-      text = "Instrument"
-      cellValueFactory = { row =>
-        val instrument = row.value.run.instrumentModel.getOrElse("—")
-        StringProperty(instrument)
-      }
-      prefWidth = 90
-    }
-
-    // Library Type column (test type abbreviation)
-    columns += new TableColumn[SequenceRunRow, String] {
-      text = "Library"
-      cellValueFactory = { row =>
-        StringProperty(getTestTypeAbbrev(row.value.run.testType))
-      }
-      prefWidth = 70
-    }
-
-    // Read Length + SE/PE column (e.g., "150bp PE")
-    columns += new TableColumn[SequenceRunRow, String] {
-      text = "Reads"
-      cellValueFactory = { row =>
-        val run = row.value.run
-        val readLen = run.readLength.map(r => s"${r}bp").getOrElse("")
-        val layout = run.libraryLayout.map {
-          case "Paired-End" => "PE"
-          case "Single-End" => "SE"
-          case other => other
-        }.getOrElse("")
-        val display = Seq(readLen, layout).filter(_.nonEmpty).mkString(" ")
-        StringProperty(if (display.nonEmpty) display else "—")
-      }
-      prefWidth = 70
-    }
-
-    // File column - shows primary file and count if multiple
-    columns += new TableColumn[SequenceRunRow, String] {
-      text = "File"
-      cellValueFactory = { row =>
-        val files = row.value.run.files
-        val display = files match {
-          case Nil => "No file"
-          case single :: Nil => single.fileName
-          case first :: rest => s"${first.fileName} (+${rest.size})"
+    // Sample column (from BAM @RG SM tag) - only for SequenceRun rows
+    columns += new TreeTableColumn[SequenceDataRow, String] {
+      text = "Sample"
+      cellValueFactory = { p =>
+        val value = p.value.getValue match {
+          case sr: SequenceRunRow => sr.run.sampleName.getOrElse("—")
+          case _: AlignmentRow => ""
         }
-        StringProperty(display)
+        StringProperty(value)
       }
-      prefWidth = 140
+      prefWidth = 80
     }
 
-    // Coverage column (smart display based on test type)
-    columns += new TableColumn[SequenceRunRow, String] {
+    // Platform column - only for SequenceRun rows
+    columns += new TreeTableColumn[SequenceDataRow, String] {
+      text = "Platform"
+      cellValueFactory = { p =>
+        val value = p.value.getValue match {
+          case sr: SequenceRunRow => sr.run.platformName
+          case _: AlignmentRow => ""
+        }
+        StringProperty(value)
+      }
+      prefWidth = 70
+    }
+
+    // Library Type column - only for SequenceRun rows
+    columns += new TreeTableColumn[SequenceDataRow, String] {
+      text = "Library"
+      cellValueFactory = { p =>
+        val value = p.value.getValue match {
+          case sr: SequenceRunRow => getTestTypeAbbrev(sr.run.testType)
+          case _: AlignmentRow => ""
+        }
+        StringProperty(value)
+      }
+      prefWidth = 60
+    }
+
+    // Reference column - shows reference build
+    columns += new TreeTableColumn[SequenceDataRow, String] {
+      text = "Reference"
+      cellValueFactory = { p =>
+        val value = p.value.getValue match {
+          case sr: SequenceRunRow =>
+            val alignments = getAlignmentsForRun(sr.run)
+            if (alignments.isEmpty) "—"
+            else if (alignments.size == 1) alignments.head.referenceBuild
+            else s"${alignments.size} builds"
+          case ar: AlignmentRow => ar.alignment.referenceBuild
+        }
+        StringProperty(value)
+      }
+      prefWidth = 80
+    }
+
+    // File column - shows alignment file
+    columns += new TreeTableColumn[SequenceDataRow, String] {
+      text = "File"
+      cellValueFactory = { p =>
+        val value = p.value.getValue match {
+          case sr: SequenceRunRow =>
+            val alignments = getAlignmentsForRun(sr.run)
+            if (alignments.isEmpty) {
+              sr.run.files.headOption.map(_.fileName).getOrElse("No file")
+            } else if (alignments.size == 1) {
+              alignments.head.files.headOption.map(_.fileName).getOrElse(
+                sr.run.files.headOption.map(_.fileName).getOrElse("No file")
+              )
+            } else {
+              s"${alignments.size} alignments"
+            }
+          case ar: AlignmentRow =>
+            ar.alignment.files.headOption.map(_.fileName).getOrElse(
+              ar.run.files.headOption.map(_.fileName).getOrElse("—")
+            )
+        }
+        StringProperty(value)
+      }
+      prefWidth = 150
+    }
+
+    // Coverage column
+    columns += new TreeTableColumn[SequenceDataRow, String] {
       text = "Coverage"
-      cellValueFactory = { row =>
-        StringProperty(formatCoverage(row.value.run, row.value.runAlignments.headOption))
+      cellValueFactory = { p =>
+        StringProperty(formatCoverage(p.value.getValue))
       }
       prefWidth = 65
-    }
-
-    // Reference column - shows all aligned references
-    columns += new TableColumn[SequenceRunRow, String] {
-      text = "Ref"
-      cellValueFactory = { row =>
-        val refs = row.value.runAlignments.map(_.referenceBuild).distinct
-        val display = refs match {
-          case Nil => "—"
-          case single :: Nil => single
-          case multiple => multiple.mkString(", ")
-        }
-        StringProperty(display)
-      }
-      prefWidth = 85
     }
 
     // Status column
-    columns += new TableColumn[SequenceRunRow, String] {
+    columns += new TreeTableColumn[SequenceDataRow, String] {
       text = "Status"
-      cellValueFactory = { row =>
-        val hasMetrics = row.value.runAlignments.exists(_.metrics.isDefined)
-        val status = if (hasMetrics) "Analyzed" else "Pending"
-        StringProperty(status)
+      cellValueFactory = { p =>
+        val value = p.value.getValue match {
+          case sr: SequenceRunRow =>
+            val alignments = getAlignmentsForRun(sr.run)
+            if (alignments.isEmpty) "Pending"
+            else if (alignments.exists(_.metrics.isDefined)) "Analyzed"
+            else "Pending"
+          case ar: AlignmentRow =>
+            if (ar.alignment.metrics.isDefined) "Analyzed" else "Pending"
+        }
+        StringProperty(value)
       }
-      prefWidth = 65
+      prefWidth = 60
     }
 
-    // Context menu for row actions
+    // Row factory for context menus
     rowFactory = { _ =>
-      val row = new javafx.scene.control.TableRow[SequenceRunRow]()
-      val contextMenu = new ContextMenu(
-        new MenuItem("Edit") {
-          onAction = _ => {
-            Option(row.getItem).foreach { item =>
-              handleEditSequenceRun(item.index, item.run, item.runAlignments)
-            }
-          }
-        },
-        new MenuItem("Analyze") {
-          onAction = _ => {
-            Option(row.getItem).foreach { item =>
-              onAnalyze(item.index)
-            }
-          }
-        },
-        new MenuItem("Haplogroup") {
-          onAction = _ => {
-            Option(row.getItem).foreach { item =>
-              handleHaplogroupAnalysis(item.index, item.runAlignments)
-            }
-          }
-        },
-        new MenuItem("View Y-DNA Report") {
-          onAction = _ => {
-            Option(row.getItem).foreach { item =>
-              showCachedHaplogroupReport(item.index, TreeType.YDNA)
-            }
-          }
-        },
-        new MenuItem("View mtDNA Report") {
-          onAction = _ => {
-            Option(row.getItem).foreach { item =>
-              showCachedHaplogroupReport(item.index, TreeType.MTDNA)
-            }
-          }
-        },
-        new MenuItem("Callable Loci") {
-          onAction = _ => {
-            Option(row.getItem).foreach { item =>
-              handleCallableLociAnalysis(item.index, item.runAlignments)
-            }
-          }
-        },
-        new MenuItem("Read/Insert Metrics") {
-          onAction = _ => {
-            Option(row.getItem).foreach { item =>
-              handleMultipleMetricsAnalysis(item.index, item.runAlignments)
-            }
-          }
-        },
-        new MenuItem("Remove") {
-          onAction = _ => {
-            Option(row.getItem).foreach { item =>
-              val confirm = new Alert(AlertType.Confirmation) {
-                title = "Remove Sequencing Data"
-                headerText = s"Remove this sequencing run?"
-                contentText = s"Platform: ${item.run.platformName}, Test: ${item.run.testType}"
-              }
-              confirm.showAndWait() match {
-                case Some(ButtonType.OK) => onRemove(item.index)
-                case _ =>
-              }
-            }
-          }
+      val row = new javafx.scene.control.TreeTableRow[SequenceDataRow]()
+
+      row.itemProperty().addListener { (_, _, newItem) =>
+        if (newItem != null) {
+          row.setContextMenu(createContextMenu(newItem).delegate)
+        } else {
+          row.setContextMenu(null)
         }
-      )
-      row.contextMenu = contextMenu
+      }
+
       row
     }
+  }
+
+  /**
+   * Create context menu based on row type.
+   */
+  private def createContextMenu(row: SequenceDataRow): ContextMenu = {
+    row match {
+      case sr: SequenceRunRow => createSequenceRunContextMenu(sr)
+      case ar: AlignmentRow => createAlignmentContextMenu(ar)
+    }
+  }
+
+  /**
+   * Context menu for SequenceRun rows (parent).
+   */
+  private def createSequenceRunContextMenu(sr: SequenceRunRow): ContextMenu = {
+    val runAlignments = getAlignmentsForRun(sr.run)
+
+    new ContextMenu(
+      new MenuItem("Edit") {
+        onAction = _ => handleEditSequenceRun(sr.runIndex, sr.run, runAlignments)
+      },
+      new MenuItem("Analyze") {
+        onAction = _ => onAnalyze(sr.runIndex)
+      },
+      new MenuItem("Remove") {
+        onAction = _ => {
+          val confirm = new Alert(AlertType.Confirmation) {
+            title = "Remove Sequencing Data"
+            headerText = s"Remove this sequencing run and all alignments?"
+            contentText = s"Platform: ${sr.run.platformName}, Test: ${sr.run.testType}"
+          }
+          confirm.showAndWait() match {
+            case Some(ButtonType.OK) => onRemove(sr.runIndex)
+            case _ =>
+          }
+        }
+      }
+    )
+  }
+
+  /**
+   * Context menu for Alignment rows (child) - includes analysis actions.
+   */
+  private def createAlignmentContextMenu(ar: AlignmentRow): ContextMenu = {
+    new ContextMenu(
+      new MenuItem("Haplogroup Analysis") {
+        onAction = _ => handleHaplogroupAnalysis(ar.runIndex, ar.alignmentIndex, ar.alignment)
+      },
+      new MenuItem("View Y-DNA Report") {
+        onAction = _ => showCachedHaplogroupReport(ar.runIndex, ar.alignmentIndex, TreeType.YDNA)
+      },
+      new MenuItem("View mtDNA Report") {
+        onAction = _ => showCachedHaplogroupReport(ar.runIndex, ar.alignmentIndex, TreeType.MTDNA)
+      },
+      new MenuItem("Callable Loci") {
+        onAction = _ => handleCallableLociAnalysis(ar.runIndex, ar.alignmentIndex, ar.alignment)
+      },
+      new MenuItem("WGS Metrics") {
+        onAction = _ => handleWgsMetricsAnalysis(ar.runIndex, ar.alignmentIndex, ar.alignment)
+      },
+      new MenuItem("Read/Insert Metrics") {
+        onAction = _ => handleMultipleMetricsAnalysis(ar.runIndex, ar.alignmentIndex, ar.alignment)
+      }
+    )
   }
 
   /** Handles editing sequence run metadata */
@@ -302,18 +371,18 @@ class SequenceDataTable(
     result match {
       case Some(Some(updatedRun)) =>
         viewModel.updateSequenceRun(subject.sampleAccession, index, updatedRun)
-        // Update local table data
-        tableData.update(index, SequenceRunRow(index, updatedRun, runAlignments))
+        // Rebuild tree to reflect changes
+        treeTable.root = buildTreeItems()
       case _ => // User cancelled
     }
   }
 
   /** Shows a cached haplogroup report if it exists */
-  private def showCachedHaplogroupReport(index: Int, treeType: TreeType): Unit = {
+  private def showCachedHaplogroupReport(runIndex: Int, alignmentIndex: Int, treeType: TreeType): Unit = {
     val dnaType = if (treeType == TreeType.YDNA) "Y-DNA" else "mtDNA"
     val prefix = if (treeType == TreeType.YDNA) "ydna" else "mtdna"
 
-    viewModel.getHaplogroupArtifactDir(subject.sampleAccession, index) match {
+    viewModel.getHaplogroupArtifactDirForAlignment(subject.sampleAccession, runIndex, alignmentIndex) match {
       case Some(dir) if Files.exists(dir.resolve(s"${prefix}_haplogroup_report.txt")) =>
         new HaplogroupReportDialog(
           treeType = treeType,
@@ -330,90 +399,81 @@ class SequenceDataTable(
     }
   }
 
-  /** Handles launching haplogroup analysis for a sequence run */
-  private def handleHaplogroupAnalysis(index: Int, runAlignments: List[Alignment]): Unit = {
-    // Check if initial analysis has been run (need reference build info)
-    val hasAlignments = runAlignments.nonEmpty
+  /** Handles launching haplogroup analysis for a specific alignment */
+  private def handleHaplogroupAnalysis(runIndex: Int, alignmentIndex: Int, alignment: Alignment): Unit = {
+    // Get the test type capabilities from the parent run
+    viewModel.getSequenceRun(subject.sampleAccession, runIndex) match {
+      case None =>
+        new Alert(AlertType.Error) {
+          title = "Error"
+          headerText = "Sequence run not found"
+        }.showAndWait()
+        return
 
-    if (!hasAlignments) {
-      new Alert(AlertType.Warning) {
-        title = "Analysis Required"
-        headerText = "Initial analysis required"
-        contentText = "Please run the initial analysis first to detect the reference build before running haplogroup analysis."
-      }.showAndWait()
-      return
-    }
+      case Some(run) =>
+        val testType = run.testType
+        val supportsY = SequenceRun.supportsYDna(testType)
+        val supportsMt = SequenceRun.supportsMtDna(testType)
 
-    // Get the test type capabilities
-    val row = table.selectionModel().getSelectedItem
-    val testType = row.run.testType
-    val supportsY = SequenceRun.supportsYDna(testType)
-    val supportsMt = SequenceRun.supportsMtDna(testType)
+        // For targeted tests, auto-select the appropriate tree type
+        if (supportsY && !supportsMt) {
+          runHaplogroupAnalysisForAlignment(runIndex, alignmentIndex, alignment, TreeType.YDNA)
+          return
+        } else if (supportsMt && !supportsY) {
+          runHaplogroupAnalysisForAlignment(runIndex, alignmentIndex, alignment, TreeType.MTDNA)
+          return
+        } else if (!supportsY && !supportsMt) {
+          new Alert(AlertType.Information) {
+            title = "Haplogroup Analysis Unavailable"
+            headerText = s"${SequenceRun.testTypeDisplayName(testType)} does not support haplogroup analysis"
+            contentText = "This test type does not include sufficient Y-DNA or mtDNA coverage for haplogroup determination."
+          }.showAndWait()
+          return
+        }
 
-    // For targeted tests, auto-select the appropriate tree type
-    if (supportsY && !supportsMt) {
-      // Y-DNA only test (Big Y, Y Elite, etc.) - go straight to Y analysis
-      runHaplogroupAnalysisForType(index, runAlignments, TreeType.YDNA)
-      return
-    } else if (supportsMt && !supportsY) {
-      // mtDNA only test - go straight to MT analysis
-      runHaplogroupAnalysisForType(index, runAlignments, TreeType.MTDNA)
-      return
-    } else if (!supportsY && !supportsMt) {
-      // Neither supported (WES, etc.)
-      new Alert(AlertType.Information) {
-        title = "Haplogroup Analysis Unavailable"
-        headerText = s"${SequenceRun.testTypeDisplayName(testType)} does not support haplogroup analysis"
-        contentText = "This test type does not include sufficient Y-DNA or mtDNA coverage for haplogroup determination."
-      }.showAndWait()
-      return
-    }
+        // Show dialog to select tree type (for WGS and similar)
+        val dialog = new HaplogroupAnalysisDialog()
+        val result = dialog.showAndWait().asInstanceOf[Option[Option[TreeType]]]
 
-    // Show dialog to select tree type (for WGS and similar)
-    val dialog = new HaplogroupAnalysisDialog()
-    val result = dialog.showAndWait().asInstanceOf[Option[Option[TreeType]]]
-
-    result match {
-      case Some(Some(treeType)) =>
-        runHaplogroupAnalysisForType(index, runAlignments, treeType)
-      case _ => // User cancelled
+        result match {
+          case Some(Some(treeType)) =>
+            runHaplogroupAnalysisForAlignment(runIndex, alignmentIndex, alignment, treeType)
+          case _ => // User cancelled
+        }
     }
   }
 
-  /** Runs haplogroup analysis for a specific tree type */
-  private def runHaplogroupAnalysisForType(index: Int, runAlignments: List[Alignment], treeType: TreeType): Unit = {
+  /** Runs haplogroup analysis for a specific alignment */
+  private def runHaplogroupAnalysisForAlignment(runIndex: Int, alignmentIndex: Int, alignment: Alignment, treeType: TreeType): Unit = {
     val progressDialog = new AnalysisProgressDialog(
-      s"${if (treeType == TreeType.YDNA) "Y-DNA" else "MT-DNA"} Haplogroup Analysis",
+      s"${if (treeType == TreeType.YDNA) "Y-DNA" else "MT-DNA"} Haplogroup Analysis (${alignment.referenceBuild})",
       viewModel.analysisProgress,
       viewModel.analysisProgressPercent,
       viewModel.analysisInProgress
     )
 
-    viewModel.runHaplogroupAnalysis(
+    viewModel.runHaplogroupAnalysisForAlignment(
       subject.sampleAccession,
-      index,
+      runIndex,
+      alignmentIndex,
       treeType,
       onComplete = {
         case Right(haplogroupResult) =>
           Platform.runLater {
-            // Get artifact directory for comprehensive report
-            val artifactDir = viewModel.getHaplogroupArtifactDir(subject.sampleAccession, index)
+            val artifactDir = viewModel.getHaplogroupArtifactDirForAlignment(subject.sampleAccession, runIndex, alignmentIndex)
 
-            // Check if detailed report exists
             val hasDetailedReport = artifactDir.exists { dir =>
               val prefix = if (treeType == TreeType.YDNA) "ydna" else "mtdna"
               Files.exists(dir.resolve(s"${prefix}_haplogroup_report.txt"))
             }
 
             if (hasDetailedReport) {
-              // Show comprehensive report dialog
               new HaplogroupReportDialog(
                 treeType = treeType,
                 artifactDir = artifactDir,
                 sampleName = Some(subject.donorIdentifier)
               ).showAndWait()
             } else {
-              // Fall back to simple dialog
               new HaplogroupResultDialog(
                 treeType = treeType,
                 haplogroupName = haplogroupResult.name,
@@ -439,34 +499,22 @@ class SequenceDataTable(
     progressDialog.show()
   }
 
-  /** Handles launching callable loci analysis for a sequence run */
-  private def handleCallableLociAnalysis(index: Int, runAlignments: List[Alignment]): Unit = {
-    // Check if initial analysis has been run (need reference build info)
-    val hasAlignments = runAlignments.nonEmpty
-
-    if (!hasAlignments) {
-      new Alert(AlertType.Warning) {
-        title = "Analysis Required"
-        headerText = "Initial analysis required"
-        contentText = "Please run the initial analysis first to detect the reference build before running callable loci analysis."
-      }.showAndWait()
-      return
-    }
-
+  /** Handles callable loci analysis for a specific alignment */
+  private def handleCallableLociAnalysis(runIndex: Int, alignmentIndex: Int, alignment: Alignment): Unit = {
     val progressDialog = new AnalysisProgressDialog(
-      "Callable Loci Analysis",
+      s"Callable Loci Analysis (${alignment.referenceBuild})",
       viewModel.analysisProgress,
       viewModel.analysisProgressPercent,
       viewModel.analysisInProgress
     )
 
-    viewModel.runCallableLociAnalysis(
+    viewModel.runCallableLociAnalysisForAlignment(
       subject.sampleAccession,
-      index,
+      runIndex,
+      alignmentIndex,
       onComplete = {
         case Right((result, artifactDir)) =>
           Platform.runLater {
-            // Show results dialog with artifact path for SVG viewing
             new CallableLociResultDialog(result, Some(artifactDir)).showAndWait()
           }
         case Left(error) =>
@@ -483,34 +531,67 @@ class SequenceDataTable(
     progressDialog.show()
   }
 
-  /** Handles running CollectMultipleMetrics (read counts, insert sizes) for a sequence run */
-  private def handleMultipleMetricsAnalysis(index: Int, runAlignments: List[Alignment]): Unit = {
-    // Check if initial analysis has been run (need reference build info)
-    val hasAlignments = runAlignments.nonEmpty
-
-    if (!hasAlignments) {
-      new Alert(AlertType.Warning) {
-        title = "Analysis Required"
-        headerText = "Initial analysis required"
-        contentText = "Please run the initial analysis first to detect the reference build before collecting read metrics."
-      }.showAndWait()
-      return
-    }
-
+  /** Handles WGS metrics analysis for a specific alignment */
+  private def handleWgsMetricsAnalysis(runIndex: Int, alignmentIndex: Int, alignment: Alignment): Unit = {
     val progressDialog = new AnalysisProgressDialog(
-      "Collecting Read/Insert Metrics",
+      s"WGS Metrics Analysis (${alignment.referenceBuild})",
       viewModel.analysisProgress,
       viewModel.analysisProgressPercent,
       viewModel.analysisInProgress
     )
 
-    viewModel.runMultipleMetricsAnalysis(
+    viewModel.runWgsMetricsAnalysisForAlignment(
       subject.sampleAccession,
-      index,
+      runIndex,
+      alignmentIndex,
       onComplete = {
+        case Right(wgsMetrics) =>
+          Platform.runLater {
+            new Alert(AlertType.Information) {
+              title = "WGS Metrics Complete"
+              headerText = s"Coverage Analysis (${alignment.referenceBuild})"
+              contentText = s"""Mean Coverage: ${f"${wgsMetrics.meanCoverage}%.1f"}x
+Median Coverage: ${f"${wgsMetrics.medianCoverage}%.1f"}x
+SD Coverage: ${f"${wgsMetrics.sdCoverage}%.1f"}
+
+% Bases at 10x: ${f"${wgsMetrics.pct10x * 100}%.1f"}%
+% Bases at 20x: ${f"${wgsMetrics.pct20x * 100}%.1f"}%
+% Bases at 30x: ${f"${wgsMetrics.pct30x * 100}%.1f"}%"""
+            }.showAndWait()
+
+            // Rebuild tree to show updated metrics
+            treeTable.root = buildTreeItems()
+          }
+        case Left(error) =>
+          Platform.runLater {
+            new Alert(AlertType.Error) {
+              title = "WGS Metrics Failed"
+              headerText = "Could not complete WGS metrics analysis"
+              contentText = error
+            }.showAndWait()
+          }
+      }
+    )
+
+    progressDialog.show()
+  }
+
+  /** Handles read/insert metrics for a specific alignment */
+  private def handleMultipleMetricsAnalysis(runIndex: Int, alignmentIndex: Int, alignment: Alignment): Unit = {
+    val progressDialog = new AnalysisProgressDialog(
+      s"Read/Insert Metrics (${alignment.referenceBuild})",
+      viewModel.analysisProgress,
+      viewModel.analysisProgressPercent,
+      viewModel.analysisInProgress
+    )
+
+    viewModel.runMultipleMetricsAnalysisForAlignment(
+      subject.sampleAccession,
+      runIndex,
+      alignmentIndex,
+      onComplete = (result: Either[String, ReadMetrics]) => result match {
         case Right(metricsResult) =>
           Platform.runLater {
-            // Format numbers nicely
             def fmt(n: Long): String = f"$n%,d"
             def pct(d: Double): String = f"${d * 100}%.1f%%"
 
@@ -535,14 +616,12 @@ Insert Size:
 
             new Alert(AlertType.Information) {
               title = "Read Metrics Complete"
-              headerText = "Read & Insert Size Metrics"
+              headerText = s"Read & Insert Size Metrics (${alignment.referenceBuild})"
               contentText = summaryText
             }.showAndWait()
 
-            // Refresh the table data with updated sequence run from workspace
-            viewModel.getSequenceRun(subject.sampleAccession, index).foreach { updatedRun =>
-              tableData.update(index, tableData(index).copy(run = updatedRun))
-            }
+            // Rebuild tree to show updated data
+            treeTable.root = buildTreeItems()
           }
         case Left(metricsError) =>
           Platform.runLater {
@@ -619,32 +698,16 @@ Insert Size:
     }
   }
 
-  private val editButton = new Button("Edit") {
-    disable = true
-    tooltip = Tooltip("Edit sequencing run metadata")
-    onAction = _ => {
-      Option(table.selectionModel().getSelectedItem).foreach { row =>
-        handleEditSequenceRun(row.index, row.run, row.runAlignments)
-      }
-    }
-  }
-
-  // Enable/disable buttons based on selection
-  table.selectionModel().selectedItem.onChange { (_, _, selected) =>
-    val hasSelection = selected != null
-    editButton.disable = !hasSelection
-  }
-
   private val buttonBar = new HBox(10) {
     alignment = Pos.CenterLeft
-    children = Seq(addButton, editButton)
+    children = Seq(addButton)
   }
 
   children = Seq(
     new scalafx.scene.control.Label("Sequencing Runs:") { style = "-fx-font-weight: bold;" },
-    table,
+    treeTable,
     buttonBar
   )
 
-  VBox.setVgrow(table, Priority.Always)
+  VBox.setVgrow(treeTable, Priority.Always)
 }

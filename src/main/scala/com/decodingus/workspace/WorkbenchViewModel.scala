@@ -1,6 +1,6 @@
 package com.decodingus.workspace
 
-import com.decodingus.analysis.{ArtifactContext, CallableLociProcessor, CallableLociResult, HaplogroupProcessor, LibraryStatsProcessor, UnifiedMetricsProcessor, WgsMetricsProcessor}
+import com.decodingus.analysis.{ArtifactContext, CallableLociProcessor, CallableLociResult, HaplogroupProcessor, LibraryStatsProcessor, MultipleMetricsResult, UnifiedMetricsProcessor, WgsMetricsProcessor}
 import com.decodingus.client.DecodingUsClient
 import com.decodingus.haplogroup.tree.{TreeType, TreeProviderType}
 import com.decodingus.auth.User
@@ -1639,6 +1639,183 @@ class WorkbenchViewModel(val workspaceService: WorkspaceService) {
       )
       artifactCtx.getSubdir("haplogroup")
     }
+  }
+
+  /**
+   * Gets the haplogroup artifact directory for a specific alignment.
+   */
+  def getHaplogroupArtifactDirForAlignment(sampleAccession: String, sequenceRunIndex: Int, alignmentIndex: Int): Option[java.nio.file.Path] = {
+    for {
+      subject <- findSubject(sampleAccession)
+      sequenceRuns = _workspace.value.main.getSequenceRunsForBiosample(subject)
+      seqRun <- sequenceRuns.lift(sequenceRunIndex)
+      alignments = _workspace.value.main.getAlignmentsForSequenceRun(seqRun)
+      alignment <- alignments.lift(alignmentIndex)
+    } yield {
+      val artifactCtx = ArtifactContext(
+        sampleAccession = sampleAccession,
+        sequenceRunUri = seqRun.atUri,
+        alignmentUri = alignment.atUri
+      )
+      artifactCtx.getSubdir("haplogroup")
+    }
+  }
+
+  /**
+   * Runs haplogroup analysis for a specific alignment.
+   */
+  def runHaplogroupAnalysisForAlignment(
+    sampleAccession: String,
+    sequenceRunIndex: Int,
+    alignmentIndex: Int,
+    treeType: TreeType,
+    onComplete: Either[String, AnalysisHaplogroupResult] => Unit
+  ): Unit = {
+    findSubject(sampleAccession) match {
+      case Some(subject) =>
+        val sequenceRuns = _workspace.value.main.getSequenceRunsForBiosample(subject)
+        sequenceRuns.lift(sequenceRunIndex) match {
+          case Some(seqRun) =>
+            val alignments = _workspace.value.main.getAlignmentsForSequenceRun(seqRun)
+            alignments.lift(alignmentIndex) match {
+              case Some(alignment) =>
+                // Use alignment's file, fall back to seqRun file
+                val fileInfo = alignment.files.headOption.orElse(seqRun.files.headOption)
+                fileInfo match {
+                  case Some(file) =>
+                    val bamPath = file.location.getOrElse("")
+                    println(s"[ViewModel] Starting ${treeType} haplogroup analysis for ${file.fileName} (${alignment.referenceBuild})")
+
+                    analysisInProgress.value = true
+                    analysisError.value = ""
+                    analysisProgress.value = "Starting haplogroup analysis..."
+                    analysisProgressPercent.value = 0.0
+
+                    Future {
+                      try {
+                        val libraryStats = LibraryStats(
+                          readCount = seqRun.totalReads.map(_.toInt).getOrElse(0),
+                          pairedReads = 0,
+                          lengthDistribution = Map.empty,
+                          insertSizeDistribution = Map.empty,
+                          aligner = alignment.aligner,
+                          referenceBuild = alignment.referenceBuild,
+                          sampleName = subject.donorIdentifier,
+                          flowCells = Map.empty,
+                          instruments = Map.empty,
+                          mostFrequentInstrument = seqRun.instrumentModel.getOrElse("Unknown"),
+                          inferredPlatform = seqRun.platformName,
+                          platformCounts = Map.empty
+                        )
+
+                        val artifactCtx = ArtifactContext(
+                          sampleAccession = sampleAccession,
+                          sequenceRunUri = seqRun.atUri,
+                          alignmentUri = alignment.atUri
+                        )
+
+                        val processor = new HaplogroupProcessor()
+
+                        // Select tree provider based on user preferences
+                        val treeProviderType = treeType match {
+                          case TreeType.YDNA =>
+                            if (UserPreferencesService.getYdnaTreeProvider.equalsIgnoreCase("decodingus"))
+                              TreeProviderType.DECODINGUS
+                            else TreeProviderType.FTDNA
+                          case TreeType.MTDNA =>
+                            if (UserPreferencesService.getMtdnaTreeProvider.equalsIgnoreCase("decodingus"))
+                              TreeProviderType.DECODINGUS
+                            else TreeProviderType.FTDNA
+                        }
+
+                        val result = processor.analyze(
+                          bamPath = bamPath,
+                          libraryStats = libraryStats,
+                          treeType = treeType,
+                          treeProviderType = treeProviderType,
+                          onProgress = (message, current, total) => {
+                            Platform.runLater {
+                              analysisProgress.value = message
+                              analysisProgressPercent.value = if (total > 0) current / total else 0.0
+                            }
+                          },
+                          artifactContext = Some(artifactCtx)
+                        )
+
+                        Platform.runLater {
+                          analysisInProgress.value = false
+                          result match {
+                            case Right(results) if results.nonEmpty =>
+                              val topResult = results.head
+                              onComplete(Right(topResult))
+                            case Right(_) =>
+                              onComplete(Left("No haplogroup results"))
+                            case Left(error) =>
+                              onComplete(Left(error))
+                          }
+                        }
+                      } catch {
+                        case e: Exception =>
+                          Platform.runLater {
+                            analysisInProgress.value = false
+                            onComplete(Left(e.getMessage))
+                          }
+                      }
+                    }
+
+                  case None =>
+                    onComplete(Left("No file associated with this alignment"))
+                }
+              case None =>
+                onComplete(Left(s"Alignment not found at index $alignmentIndex"))
+            }
+          case None =>
+            onComplete(Left(s"Sequence run not found at index $sequenceRunIndex"))
+        }
+      case None =>
+        onComplete(Left(s"Subject not found: $sampleAccession"))
+    }
+  }
+
+  /**
+   * Runs callable loci analysis for a specific alignment.
+   */
+  def runCallableLociAnalysisForAlignment(
+    sampleAccession: String,
+    sequenceRunIndex: Int,
+    alignmentIndex: Int,
+    onComplete: Either[String, (CallableLociResult, java.nio.file.Path)] => Unit
+  ): Unit = {
+    // Delegate to existing method for now - alignment index support to be added later
+    runCallableLociAnalysis(sampleAccession, sequenceRunIndex, onComplete)
+  }
+
+  /**
+   * Runs WGS metrics analysis for a specific alignment.
+   */
+  def runWgsMetricsAnalysisForAlignment(
+    sampleAccession: String,
+    sequenceRunIndex: Int,
+    alignmentIndex: Int,
+    onComplete: Either[String, WgsMetrics] => Unit
+  ): Unit = {
+    // Delegate to existing method for now - alignment index support to be added later
+    runWgsMetricsAnalysis(sampleAccession, sequenceRunIndex, (result: Either[String, WgsMetrics]) => {
+      onComplete(result)
+    })
+  }
+
+  /**
+   * Runs multiple metrics analysis for a specific alignment.
+   */
+  def runMultipleMetricsAnalysisForAlignment(
+    sampleAccession: String,
+    sequenceRunIndex: Int,
+    alignmentIndex: Int,
+    onComplete: Either[String, com.decodingus.analysis.ReadMetrics] => Unit
+  ): Unit = {
+    // Delegate to existing method for now - alignment index support to be added later
+    runMultipleMetricsAnalysis(sampleAccession, sequenceRunIndex, onComplete)
   }
 
   // --- STR Profile CRUD Operations ---
