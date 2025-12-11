@@ -669,55 +669,8 @@ class WorkbenchView(val viewModel: WorkbenchViewModel) extends SplitPane {
     onAction = _ => viewModel.saveWorkspace() // Delegate to ViewModel
   }
 
-  // Sync status indicator - initialize with default values directly
-  private val syncStatusLabel = new Label("○ Local Only") {
-    style = "-fx-font-size: 12px; -fx-padding: 2 6 2 6; -fx-text-fill: #9E9E9E;"
-    tooltip = Tooltip("Using local storage only (not logged in)")
-  }
-
-  private def updateSyncStatus(status: SyncStatus): Unit = {
-    status match {
-      case SyncStatus.Synced =>
-        syncStatusLabel.text = "✓ Synced"
-        syncStatusLabel.style = "-fx-font-size: 12px; -fx-padding: 2 6 2 6; -fx-text-fill: #4CAF50;"
-        syncStatusLabel.tooltip = Tooltip("Workspace is synced")
-      case SyncStatus.Syncing =>
-        syncStatusLabel.text = "↻ Syncing..."
-        syncStatusLabel.style = "-fx-font-size: 12px; -fx-padding: 2 6 2 6; -fx-text-fill: #2196F3;"
-        syncStatusLabel.tooltip = Tooltip("Syncing with PDS...")
-      case SyncStatus.Pending =>
-        syncStatusLabel.text = "● Pending"
-        syncStatusLabel.style = "-fx-font-size: 12px; -fx-padding: 2 6 2 6; -fx-text-fill: #FF9800;"
-        syncStatusLabel.tooltip = Tooltip("Changes pending sync")
-      case SyncStatus.Error =>
-        syncStatusLabel.text = "⚠ Sync Error"
-        syncStatusLabel.style = "-fx-font-size: 12px; -fx-padding: 2 6 2 6; -fx-text-fill: #F44336;"
-        syncStatusLabel.tooltip = Tooltip(s"Sync failed: ${viewModel.lastSyncError.value}")
-      case SyncStatus.Offline =>
-        syncStatusLabel.text = "○ Local Only"
-        syncStatusLabel.style = "-fx-font-size: 12px; -fx-padding: 2 6 2 6; -fx-text-fill: #9E9E9E;"
-        syncStatusLabel.tooltip = Tooltip("Using local storage only (not logged in)")
-    }
-  }
-
-  // Listen to sync status changes
-  viewModel.syncStatus.onChange { (_, _, newStatus) =>
-    Platform.runLater {
-      updateSyncStatus(newStatus)
-    }
-  }
-
-  // Update tooltip when error message changes
-  viewModel.lastSyncError.onChange { (_, _, newError) =>
-    Platform.runLater {
-      if (viewModel.syncStatus.value == SyncStatus.Error && newError.nonEmpty) {
-        syncStatusLabel.tooltip = Tooltip(s"Sync failed: $newError")
-      }
-    }
-  }
-
-  // Apply initial status after label is constructed
-  updateSyncStatus(viewModel.syncStatus.value)
+  // Note: Sync status is now displayed in the application's StatusBar (bottom)
+  // This simplifies the left panel and provides a more standard UX
 
   private val leftPanel = new VBox(10) {
     padding = Insets(10)
@@ -742,14 +695,7 @@ class WorkbenchView(val viewModel: WorkbenchViewModel) extends SplitPane {
       },
       sampleList,
       addSampleButton,
-      new HBox(10) {
-        alignment = Pos.CenterLeft
-        children = Seq(
-          syncStatusLabel,
-          new Region { HBox.setHgrow(this, Priority.Always) }, // Spacer
-          saveButton
-        )
-      }
+      saveButton
     )
   }
   SplitPane.setResizableWithParent(leftPanel, false) // Make left panel not resize with parent by default

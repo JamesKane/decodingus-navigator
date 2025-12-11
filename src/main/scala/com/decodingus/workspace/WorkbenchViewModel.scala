@@ -33,6 +33,10 @@ class WorkbenchViewModel(val workspaceService: WorkspaceService) {
   val syncStatus: ObjectProperty[SyncStatus] = ObjectProperty(SyncStatus.Synced)
   val lastSyncError: StringProperty = StringProperty("")
 
+  // Async sync notifier for status bar binding
+  // Provides observable properties for pending sync count, conflicts, online status
+  val syncNotifier: com.decodingus.sync.ConflictNotifier = com.decodingus.sync.ConflictNotifier()
+
   // Current authenticated user (set from GenomeNavigatorApp when user logs in)
   val currentUser: ObjectProperty[Option[User]] = ObjectProperty(None)
 

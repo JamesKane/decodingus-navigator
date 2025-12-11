@@ -103,8 +103,12 @@ object GenomeNavigatorApp extends JFXApp3 {
   )
 
   override def start(): Unit = {
+    // Create status bar bound to ViewModel's sync notifier
+    val statusBar = StatusBar(viewModel.syncNotifier)
+
     val borderPaneRoot = new BorderPane {
       top = topBar
+      bottom = statusBar
     }
 
     stage = new PrimaryStage {
