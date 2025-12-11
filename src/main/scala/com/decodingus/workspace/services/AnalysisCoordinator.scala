@@ -659,6 +659,335 @@ class AnalysisCoordinator(implicit ec: ExecutionContext) {
     }
   }
 
+  // --- Comprehensive Batch Analysis ---
+
+  /**
+   * Runs a comprehensive batch analysis on a new sample:
+   * 1. Read/WGS Metrics - Coverage depth analysis
+   * 2. Callable Loci Metrics - Base-level coverage assessment
+   * 3. Sex Inference - Determine biological sex from X:autosome ratio
+   * 4. mtDNA Haplogroup - Maternal lineage determination
+   * 5. Y-DNA Haplogroup - Paternal lineage (if male)
+   * 6. Ancestral Composition - Stub for future implementation
+   *
+   * @param state Current workspace state
+   * @param sampleAccession Sample accession identifier
+   * @param sequenceRunIndex Index of sequence run
+   * @param alignmentIndex Index of alignment
+   * @param onProgress Progress callback with step information
+   * @return Updated state and batch analysis results
+   */
+  def runComprehensiveAnalysis(
+    state: WorkspaceState,
+    sampleAccession: String,
+    sequenceRunIndex: Int,
+    alignmentIndex: Int,
+    onProgress: AnalysisProgress => Unit
+  ): Future[Either[String, (WorkspaceState, BatchAnalysisResult)]] = Future {
+    workspaceOps.findSubject(state, sampleAccession) match {
+      case None =>
+        Left(s"Subject not found: $sampleAccession")
+
+      case Some(subject) =>
+        val sequenceRuns = state.workspace.main.getSequenceRunsForBiosample(subject)
+        sequenceRuns.lift(sequenceRunIndex) match {
+          case None =>
+            Left(s"Sequence run not found at index $sequenceRunIndex")
+
+          case Some(seqRun) =>
+            val alignments = state.workspace.main.getAlignmentsForSequenceRun(seqRun)
+            alignments.lift(alignmentIndex) match {
+              case None =>
+                Left(s"Alignment not found at index $alignmentIndex")
+
+              case Some(alignment) =>
+                val bamPathOpt = alignment.files.headOption.orElse(seqRun.files.headOption).flatMap(_.location)
+                bamPathOpt match {
+                  case None =>
+                    Left("No alignment file associated with this alignment")
+
+                  case Some(bamPath) =>
+                    runComprehensiveAnalysisInternal(state, subject, seqRun, alignment, bamPath, onProgress)
+                }
+            }
+        }
+    }
+  }
+
+  private def runComprehensiveAnalysisInternal(
+    state: WorkspaceState,
+    subject: Biosample,
+    seqRun: SequenceRun,
+    alignment: Alignment,
+    bamPath: String,
+    onProgress: AnalysisProgress => Unit
+  ): Either[String, (WorkspaceState, BatchAnalysisResult)] = {
+    var currentState = state
+    var result = BatchAnalysisResult()
+
+    try {
+      // Step 0: Resolve reference genome (shared across steps)
+      onProgress(AnalysisProgress("Resolving reference genome...", 0.02))
+      val referenceGateway = new ReferenceGateway((done, total) => {
+        val pct = if (total > 0) 0.02 + (done.toDouble / total) * 0.03 else 0.02
+        onProgress(AnalysisProgress(s"Downloading reference: ${done / 1024 / 1024}MB", pct))
+      })
+
+      val referencePath = referenceGateway.resolve(alignment.referenceBuild) match {
+        case Right(path) => path.toString
+        case Left(error) => return Left(s"Failed to resolve reference: $error")
+      }
+
+      val artifactCtx = ArtifactContext(
+        sampleAccession = subject.sampleAccession,
+        sequenceRunUri = seqRun.atUri,
+        alignmentUri = alignment.atUri
+      )
+
+      // Step 1: WGS Metrics (0.05 - 0.20)
+      onProgress(AnalysisProgress("Step 1/6: Running coverage depth analysis...", 0.05))
+      val wgsMetricsResult = runWgsMetricsStep(bamPath, referencePath, seqRun, artifactCtx, { pct =>
+        onProgress(AnalysisProgress(s"Step 1/6: Coverage analysis (${(pct * 100).toInt}%)", 0.05 + pct * 0.15))
+      })
+      wgsMetricsResult match {
+        case Right(wgsMetrics) =>
+          result = result.copy(wgsMetrics = Some(wgsMetrics))
+          // Update alignment metrics
+          val alignmentMetrics = alignment.metrics.getOrElse(AlignmentMetrics()).copy(
+            genomeTerritory = Some(wgsMetrics.genomeTerritory),
+            meanCoverage = Some(wgsMetrics.meanCoverage),
+            sdCoverage = Some(wgsMetrics.sdCoverage),
+            medianCoverage = Some(wgsMetrics.medianCoverage),
+            pct10x = Some(wgsMetrics.pct10x),
+            pct20x = Some(wgsMetrics.pct20x),
+            pct30x = Some(wgsMetrics.pct30x)
+          )
+          val updatedAlignment = alignment.copy(metrics = Some(alignmentMetrics))
+          currentState = workspaceOps.updateAlignment(currentState, updatedAlignment)
+        case Left(error) =>
+          println(s"[BatchAnalysis] WGS metrics warning: $error")
+          // Continue even if this step fails
+      }
+
+      // Step 2: Callable Loci (0.20 - 0.45)
+      onProgress(AnalysisProgress("Step 2/6: Running callable loci analysis...", 0.20))
+      val callableLociResult = runCallableLociStep(bamPath, referencePath, seqRun, artifactCtx, { pct =>
+        onProgress(AnalysisProgress(s"Step 2/6: Callable loci (${(pct * 100).toInt}%)", 0.20 + pct * 0.25))
+      })
+      callableLociResult match {
+        case Right((clResult, _)) =>
+          result = result.copy(callableLociResult = Some(clResult))
+          // Update alignment with callable bases
+          val alignmentMetrics = currentState.workspace.main.alignments
+            .find(_.atUri == alignment.atUri)
+            .flatMap(_.metrics)
+            .getOrElse(AlignmentMetrics())
+            .copy(
+              callableBases = Some(clResult.callableBases),
+              callableLociComplete = Some(true)
+            )
+          val updatedAlignment = alignment.copy(metrics = Some(alignmentMetrics))
+          currentState = workspaceOps.updateAlignment(currentState, updatedAlignment)
+        case Left(error) =>
+          println(s"[BatchAnalysis] Callable loci warning: $error")
+      }
+
+      // Step 3: Sex Inference (0.45 - 0.50)
+      onProgress(AnalysisProgress("Step 3/6: Inferring biological sex...", 0.45))
+      val sexResult = SexInference.inferFromBam(bamPath, (msg, pct) => {
+        onProgress(AnalysisProgress(s"Step 3/6: Sex inference - $msg", 0.45 + pct * 0.05))
+      })
+      sexResult match {
+        case Right(sr) =>
+          result = result.copy(sexInferenceResult = Some(sr))
+          // Update alignment metrics with sex inference
+          val alignmentMetrics = currentState.workspace.main.alignments
+            .find(_.atUri == alignment.atUri)
+            .flatMap(_.metrics)
+            .getOrElse(AlignmentMetrics())
+            .copy(
+              inferredSex = Some(sr.inferredSex.toString),
+              sexInferenceConfidence = Some(sr.confidence),
+              xAutosomeRatio = Some(sr.xAutosomeRatio)
+            )
+          val updatedAlignment = alignment.copy(metrics = Some(alignmentMetrics))
+          currentState = workspaceOps.updateAlignment(currentState, updatedAlignment)
+        case Left(error) =>
+          println(s"[BatchAnalysis] Sex inference warning: $error")
+      }
+
+      // Step 4: mtDNA Haplogroup (0.50 - 0.70)
+      onProgress(AnalysisProgress("Step 4/6: Determining mtDNA haplogroup...", 0.50))
+      val mtDnaResult = runHaplogroupStep(bamPath, subject, seqRun, alignment, TreeType.MTDNA, artifactCtx, { pct =>
+        onProgress(AnalysisProgress(s"Step 4/6: mtDNA haplogroup (${(pct * 100).toInt}%)", 0.50 + pct * 0.20))
+      })
+      mtDnaResult match {
+        case Right(haplogroupResult) =>
+          result = result.copy(mtDnaHaplogroup = Some(haplogroupResult))
+        case Left(error) =>
+          println(s"[BatchAnalysis] mtDNA haplogroup warning: $error")
+      }
+
+      // Step 5: Y-DNA Haplogroup (0.70 - 0.90) - Only if male
+      val isMale = result.sexInferenceResult.exists(_.isMale)
+      val sexUnknown = result.sexInferenceResult.exists(_.isUnknown)
+
+      if (isMale || sexUnknown) {
+        onProgress(AnalysisProgress("Step 5/6: Determining Y-DNA haplogroup...", 0.70))
+        val yDnaResult = runHaplogroupStep(bamPath, subject, seqRun, alignment, TreeType.YDNA, artifactCtx, { pct =>
+          onProgress(AnalysisProgress(s"Step 5/6: Y-DNA haplogroup (${(pct * 100).toInt}%)", 0.70 + pct * 0.20))
+        })
+        yDnaResult match {
+          case Right(haplogroupResult) =>
+            result = result.copy(yDnaHaplogroup = Some(haplogroupResult))
+          case Left(error) =>
+            println(s"[BatchAnalysis] Y-DNA haplogroup warning: $error")
+            result = result.copy(skippedYDna = true, skippedYDnaReason = Some(error))
+        }
+      } else {
+        onProgress(AnalysisProgress("Step 5/6: Skipping Y-DNA (female sample)...", 0.70))
+        result = result.copy(skippedYDna = true, skippedYDnaReason = Some("Sample inferred as female"))
+      }
+
+      // Step 6: Ancestral Composition Stub (0.90 - 1.0)
+      onProgress(AnalysisProgress("Step 6/6: Preparing for ancestry analysis...", 0.90))
+      // This is a stub for future implementation
+      // Will use autosomal SNPs from the VCF for ancestry composition
+      result = result.copy(ancestryStub = true)
+      onProgress(AnalysisProgress("Ancestry analysis will be available in a future update", 0.95))
+
+      onProgress(AnalysisProgress("Comprehensive analysis complete!", 1.0, isComplete = true))
+      Right((currentState, result))
+
+    } catch {
+      case e: Exception =>
+        Left(s"Batch analysis failed: ${e.getMessage}")
+    }
+  }
+
+  /**
+   * Run WGS metrics step for batch analysis.
+   */
+  private def runWgsMetricsStep(
+    bamPath: String,
+    referencePath: String,
+    seqRun: SequenceRun,
+    artifactCtx: ArtifactContext,
+    onProgress: Double => Unit
+  ): Either[String, WgsMetrics] = {
+    val processor = new WgsMetricsProcessor()
+    val isSingleEnd = seqRun.libraryLayout.exists(_.equalsIgnoreCase("Single-End")) ||
+      (seqRun.libraryLayout.isEmpty && seqRun.totalReads.exists(total =>
+        seqRun.readsPaired.forall(_ < total / 2)))
+
+    processor.process(
+      bamPath = bamPath,
+      referencePath = referencePath,
+      onProgress = (_, current, total) => {
+        if (total > 0) onProgress(current.toDouble / total)
+      },
+      readLength = seqRun.maxReadLength,
+      artifactContext = Some(artifactCtx),
+      totalReads = seqRun.totalReads,
+      countUnpaired = isSingleEnd
+    ).left.map(_.getMessage)
+  }
+
+  /**
+   * Run callable loci step for batch analysis.
+   */
+  private def runCallableLociStep(
+    bamPath: String,
+    referencePath: String,
+    seqRun: SequenceRun,
+    artifactCtx: ArtifactContext,
+    onProgress: Double => Unit
+  ): Either[String, (CallableLociResult, List[String])] = {
+    val processor = new CallableLociProcessor()
+    val minDepth = seqRun.testType.toUpperCase match {
+      case t if t.contains("HIFI") => 2
+      case _ => 4
+    }
+
+    processor.process(
+      bamPath = bamPath,
+      referencePath = referencePath,
+      onProgress = (_, current, total) => {
+        if (total > 0) onProgress(current.toDouble / total)
+      },
+      artifactContext = Some(artifactCtx),
+      minDepth = minDepth
+    ).left.map(_.getMessage)
+  }
+
+  /**
+   * Run haplogroup analysis step for batch analysis.
+   * Returns just the haplogroup result - state updates are handled by the caller.
+   */
+  private def runHaplogroupStep(
+    bamPath: String,
+    subject: Biosample,
+    seqRun: SequenceRun,
+    alignment: Alignment,
+    treeType: TreeType,
+    artifactCtx: ArtifactContext,
+    onProgress: Double => Unit
+  ): Either[String, AnalysisHaplogroupResult] = {
+    // Build LibraryStats from existing data for the processor
+    val libraryStats = LibraryStats(
+      readCount = seqRun.totalReads.map(_.toInt).getOrElse(0),
+      pairedReads = 0,
+      lengthDistribution = Map.empty,
+      insertSizeDistribution = Map.empty,
+      aligner = alignment.aligner,
+      referenceBuild = alignment.referenceBuild,
+      sampleName = subject.donorIdentifier,
+      flowCells = Map.empty,
+      instruments = Map.empty,
+      mostFrequentInstrument = seqRun.instrumentModel.getOrElse("Unknown"),
+      inferredPlatform = seqRun.platformName,
+      platformCounts = Map.empty
+    )
+
+    // Select tree provider based on user preferences
+    val treeProviderType = treeType match {
+      case TreeType.YDNA =>
+        if (UserPreferencesService.getYdnaTreeProvider.equalsIgnoreCase("decodingus"))
+          TreeProviderType.DECODINGUS
+        else TreeProviderType.FTDNA
+      case TreeType.MTDNA =>
+        if (UserPreferencesService.getMtdnaTreeProvider.equalsIgnoreCase("decodingus"))
+          TreeProviderType.DECODINGUS
+        else TreeProviderType.FTDNA
+    }
+
+    val processor = new HaplogroupProcessor()
+    processor.analyze(
+      bamPath,
+      libraryStats,
+      treeType,
+      treeProviderType,
+      (_, current, total) => {
+        val pct = if (total > 0) current / total else 0.0
+        onProgress(pct)
+      },
+      Some(artifactCtx)
+    ).map(_.headOption.getOrElse(
+      // Return a default result if no haplogroups found
+      AnalysisHaplogroupResult(
+        name = "Unknown",
+        score = 0.0,
+        matchingSnps = 0,
+        mismatchingSnps = 0,
+        ancestralMatches = 0,
+        noCalls = 0,
+        totalSnps = 0,
+        cumulativeSnps = 0,
+        depth = 0
+      )
+    ))
+  }
+
   // --- Helper Methods ---
 
   private def inferTestType(stats: LibraryStats): String = {
@@ -693,3 +1022,17 @@ class AnalysisCoordinator(implicit ec: ExecutionContext) {
   }
 
 }
+
+/**
+ * Result of comprehensive batch analysis.
+ */
+case class BatchAnalysisResult(
+  wgsMetrics: Option[WgsMetrics] = None,
+  callableLociResult: Option[CallableLociResult] = None,
+  sexInferenceResult: Option[SexInference.SexInferenceResult] = None,
+  mtDnaHaplogroup: Option[AnalysisHaplogroupResult] = None,
+  yDnaHaplogroup: Option[AnalysisHaplogroupResult] = None,
+  skippedYDna: Boolean = false,
+  skippedYDnaReason: Option[String] = None,
+  ancestryStub: Boolean = false  // Stub for future ancestry composition
+)

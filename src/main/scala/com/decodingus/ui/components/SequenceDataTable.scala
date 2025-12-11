@@ -8,10 +8,11 @@ import scalafx.geometry.{Insets, Pos}
 import scalafx.collections.ObservableBuffer
 import scalafx.beans.property.StringProperty
 import scalafx.application.Platform
-import com.decodingus.analysis.{CallableLociResult, ReadMetrics, VcfCache, VcfStatus, SubjectArtifactCache}
+import com.decodingus.analysis.{CallableLociProcessor, CallableLociResult, ReadMetrics, VcfCache, VcfStatus, SubjectArtifactCache}
 import com.decodingus.model.WgsMetrics
 import com.decodingus.workspace.model.{Biosample, SequenceRun, Alignment, AlignmentMetrics, FileInfo}
 import com.decodingus.workspace.WorkbenchViewModel
+import com.decodingus.workspace.services.BatchAnalysisResult
 import com.decodingus.haplogroup.tree.TreeType
 import com.decodingus.genotype.model.{TestTypes, TargetType}
 import java.nio.file.Files
@@ -462,6 +463,10 @@ Sex: ${info.inferredSex.getOrElse("Unknown")}"""
     }
 
     new ContextMenu(
+      new MenuItem("Run Comprehensive Analysis") {
+        onAction = _ => handleComprehensiveAnalysis(ar)
+      },
+      new javafx.scene.control.SeparatorMenuItem(),
       vcfMenuItem,
       viewVcfStatsMenuItem,
       new javafx.scene.control.SeparatorMenuItem(),
@@ -475,8 +480,13 @@ Sex: ${info.inferredSex.getOrElse("Unknown")}"""
         onAction = _ => showCachedHaplogroupReport(ar.runIndex, ar.alignmentIndex, TreeType.MTDNA)
       },
       new javafx.scene.control.SeparatorMenuItem(),
-      new MenuItem("Callable Loci") {
+      new MenuItem("Run Callable Loci Analysis") {
         onAction = _ => handleCallableLociAnalysis(ar.runIndex, ar.alignmentIndex, ar.alignment)
+        disable = hasCallableLoci(ar)  // Disable if already exists
+      },
+      new MenuItem("View Callable Loci Results") {
+        onAction = _ => handleViewCallableLociResults(ar)
+        disable = !hasCallableLoci(ar)  // Disable if not exists
       },
       new MenuItem("WGS Metrics") {
         onAction = _ => handleWgsMetricsAnalysis(ar.runIndex, ar.alignmentIndex, ar.alignment)
@@ -621,6 +631,28 @@ Sex: ${info.inferredSex.getOrElse("Unknown")}"""
     )
 
     progressDialog.show()
+  }
+
+  /** Handles viewing cached callable loci results */
+  private def handleViewCallableLociResults(ar: AlignmentRow): Unit = {
+    val (runId, alignId) = getArtifactIds(ar)
+    val callableLociDir = SubjectArtifactCache.getArtifactSubdir(
+      subject.sampleAccession, runId, alignId, "callable_loci"
+    )
+
+    CallableLociProcessor.loadFromCache(callableLociDir) match {
+      case Some(result) =>
+        // Get the parent directory (alignment artifact dir) for SVG access
+        val artifactDir = callableLociDir.getParent
+        new CallableLociResultDialog(result, Some(artifactDir)).showAndWait()
+
+      case None =>
+        new Alert(AlertType.Information) {
+          title = "No Results Available"
+          headerText = "Callable loci results not found"
+          contentText = "Run callable loci analysis first to generate results."
+        }.showAndWait()
+    }
   }
 
   /** Handles callable loci analysis for a specific alignment */
@@ -849,6 +881,109 @@ Caller: ${info.callerVersion}"""
           headerText = "No whole-genome VCF found"
           contentText = "Generate a whole-genome VCF first to view statistics."
         }.showAndWait()
+    }
+  }
+
+  /** Handles comprehensive analysis (batch pipeline) for an alignment */
+  private def handleComprehensiveAnalysis(ar: AlignmentRow): Unit = {
+    // Show confirmation dialog
+    val confirmDialog = new Alert(AlertType.Confirmation) {
+      title = "Run Comprehensive Analysis"
+      headerText = s"Run full analysis pipeline for ${ar.alignment.referenceBuild} alignment?"
+      contentText = s"""This will run the following analyses in sequence:
+
+1. Read/Insert Metrics
+2. WGS Coverage Metrics
+3. Callable Loci Analysis
+4. Sex Inference
+5. mtDNA Haplogroup
+6. Y-DNA Haplogroup (if male/unknown)
+
+Reference: ${ar.alignment.referenceBuild}
+
+This process may take 30-60 minutes depending on your hardware.
+You can continue using other features while it runs."""
+    }
+
+    confirmDialog.showAndWait() match {
+      case Some(ButtonType.OK) =>
+        val progressDialog = new AnalysisProgressDialog(
+          s"Comprehensive Analysis (${ar.alignment.referenceBuild})",
+          viewModel.analysisProgress,
+          viewModel.analysisProgressPercent,
+          viewModel.analysisInProgress
+        )
+
+        viewModel.runComprehensiveAnalysisForAlignment(
+          subject.sampleAccession,
+          ar.runIndex,
+          ar.alignmentIndex,
+          onComplete = {
+            case Right(result) =>
+              Platform.runLater {
+                val summaryLines = scala.collection.mutable.ListBuffer[String]()
+
+                // WGS Metrics summary
+                result.wgsMetrics.foreach { wgs =>
+                  summaryLines += s"Coverage: ${f"${wgs.meanCoverage}%.1f"}x mean"
+                }
+
+                // Callable Loci summary
+                result.callableLociResult.foreach { cl =>
+                  val callablePct = if (cl.callableBases > 0) {
+                    val totalBases = cl.contigAnalysis.map(c => c.callable + c.noCoverage + c.lowCoverage + c.poorMappingQuality + c.refN).sum
+                    if (totalBases > 0) f"${(cl.callableBases.toDouble / totalBases) * 100}%.1f%%" else "N/A"
+                  } else "N/A"
+                  summaryLines += s"Callable Bases: ${f"${cl.callableBases}%,d"} ($callablePct)"
+                }
+
+                // Sex inference summary
+                result.sexInferenceResult.foreach { sex =>
+                  summaryLines += s"Inferred Sex: ${sex.inferredSex} (${sex.confidence} confidence)"
+                }
+
+                // mtDNA haplogroup summary
+                result.mtDnaHaplogroup.foreach { mt =>
+                  summaryLines += s"mtDNA Haplogroup: ${mt.name} (${f"${mt.score * 100}%.1f"}%)"
+                }
+
+                // Y-DNA haplogroup summary
+                result.yDnaHaplogroup.foreach { y =>
+                  summaryLines += s"Y-DNA Haplogroup: ${y.name} (${f"${y.score * 100}%.1f"}%)"
+                }
+
+                // If Y-DNA was skipped
+                if (result.skippedYDna) {
+                  summaryLines += s"Y-DNA: Skipped (${result.skippedYDnaReason.getOrElse("female sample")})"
+                }
+
+                // Ancestry stub
+                if (result.ancestryStub) {
+                  summaryLines += "Ancestry: Placeholder for future implementation"
+                }
+
+                new Alert(AlertType.Information) {
+                  title = "Comprehensive Analysis Complete"
+                  headerText = s"Analysis Results (${ar.alignment.referenceBuild})"
+                  contentText = summaryLines.mkString("\n")
+                }.showAndWait()
+
+                // Rebuild tree to show updated data
+                treeTable.root = buildTreeItems()
+              }
+            case Left(error) =>
+              Platform.runLater {
+                new Alert(AlertType.Error) {
+                  title = "Comprehensive Analysis Failed"
+                  headerText = "Could not complete comprehensive analysis"
+                  contentText = error
+                }.showAndWait()
+              }
+          }
+        )
+
+        progressDialog.show()
+      case _ => // User cancelled
     }
   }
 

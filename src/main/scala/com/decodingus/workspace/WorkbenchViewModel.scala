@@ -9,7 +9,7 @@ import com.decodingus.model.{LibraryStats, WgsMetrics}
 import com.decodingus.refgenome.{ReferenceGateway, ReferenceResolveResult}
 import com.decodingus.workspace.model.{Workspace, Project, Biosample, WorkspaceContent, SyncStatus, SequenceRun, Alignment, AlignmentMetrics, ContigMetrics, FileInfo, HaplogroupAssignments, HaplogroupResult => WorkspaceHaplogroupResult, RecordMeta, StrProfile, ChipProfile, DnaType, RunHaplogroupCall, CallMethod, HaplogroupTechnology}
 import com.decodingus.haplogroup.model.{HaplogroupResult => AnalysisHaplogroupResult}
-import com.decodingus.workspace.services.{WorkspaceOperations, AnalysisCoordinator, AnalysisProgress, SyncService, SyncResult, FingerprintMatchService, FingerprintMatchResult}
+import com.decodingus.workspace.services.{WorkspaceOperations, AnalysisCoordinator, AnalysisProgress, BatchAnalysisResult, SyncService, SyncResult, FingerprintMatchService, FingerprintMatchResult}
 import htsjdk.samtools.SamReaderFactory
 import scalafx.beans.property.{ObjectProperty, ReadOnlyObjectProperty, StringProperty, BooleanProperty, DoubleProperty}
 import scalafx.collections.ObservableBuffer
@@ -1853,6 +1853,57 @@ class WorkbenchViewModel(val workspaceService: WorkspaceService) {
           analysisProgress.value = "Whole-genome VCF generation complete"
           analysisProgressPercent.value = 1.0
           onComplete(Right(vcfInfo))
+        }
+      case Success(Left(error)) =>
+        Platform.runLater {
+          analysisInProgress.value = false
+          analysisProgress.value = s"Error: $error"
+          onComplete(Left(error))
+        }
+      case Failure(ex) =>
+        Platform.runLater {
+          analysisInProgress.value = false
+          analysisProgress.value = s"Error: ${ex.getMessage}"
+          onComplete(Left(ex.getMessage))
+        }
+    }
+  }
+
+  /**
+   * Runs comprehensive analysis pipeline for a specific alignment.
+   * Executes: Read Metrics → WGS Metrics → Callable Loci → Sex Inference → mtDNA → Y-DNA → Ancestry stub
+   */
+  def runComprehensiveAnalysisForAlignment(
+    sampleAccession: String,
+    sequenceRunIndex: Int,
+    alignmentIndex: Int,
+    onComplete: Either[String, BatchAnalysisResult] => Unit
+  ): Unit = {
+    analysisInProgress.value = true
+    analysisProgress.value = "Starting comprehensive analysis..."
+    analysisProgressPercent.value = 0.0
+
+    val progressHandler: AnalysisProgress => Unit = { progress =>
+      Platform.runLater {
+        analysisProgress.value = progress.message
+        analysisProgressPercent.value = progress.percent
+      }
+    }
+
+    analysisCoordinator.runComprehensiveAnalysis(
+      currentState,
+      sampleAccession,
+      sequenceRunIndex,
+      alignmentIndex,
+      progressHandler
+    ).onComplete {
+      case Success(Right((newState, batchResult))) =>
+        Platform.runLater {
+          applyState(newState)
+          analysisInProgress.value = false
+          analysisProgress.value = "Comprehensive analysis complete"
+          analysisProgressPercent.value = 1.0
+          onComplete(Right(batchResult))
         }
       case Success(Left(error)) =>
         Platform.runLater {

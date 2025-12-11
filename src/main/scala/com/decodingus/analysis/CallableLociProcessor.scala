@@ -250,3 +250,98 @@ class CallableLociProcessor {
     )
   }
 }
+
+object CallableLociProcessor {
+
+  /**
+   * Load CallableLociResult from cached artifacts.
+   * Reads the .table.txt summary files from the callable_loci directory.
+   *
+   * @param callableLociDir Path to the callable_loci artifact directory
+   * @return CallableLociResult if successful, None if not found or invalid
+   */
+  def loadFromCache(callableLociDir: Path): Option[CallableLociResult] = {
+    if (!Files.exists(callableLociDir)) return None
+
+    import scala.jdk.CollectionConverters._
+
+    val tableFiles = Files.list(callableLociDir).iterator().asScala
+      .filter(_.toString.endsWith(".table.txt"))
+      .toList
+
+    if (tableFiles.isEmpty) return None
+
+    val contigSummaries = ListBuffer[ContigSummary]()
+
+    for (tableFile <- tableFiles) {
+      val fileName = tableFile.getFileName.toString
+      val contigName = fileName.stripSuffix(".table.txt")
+
+      Using(Source.fromFile(tableFile.toFile)) { source =>
+        val summaryMap = scala.collection.mutable.Map[String, Long]()
+        for (line <- source.getLines()) {
+          if (!line.strip.startsWith("state nBases") && line.strip.nonEmpty) {
+            val fields = line.strip.split("\\s+")
+            if (fields.length == 2) {
+              summaryMap(fields(0)) = fields(1).toLong
+            }
+          }
+        }
+
+        contigSummaries += ContigSummary(
+          contigName = contigName,
+          refN = summaryMap.getOrElse("REF_N", 0L),
+          callable = summaryMap.getOrElse("CALLABLE", 0L),
+          noCoverage = summaryMap.getOrElse("NO_COVERAGE", 0L),
+          lowCoverage = summaryMap.getOrElse("LOW_COVERAGE", 0L),
+          excessiveCoverage = summaryMap.getOrElse("EXCESSIVE_COVERAGE", 0L),
+          poorMappingQuality = summaryMap.getOrElse("POOR_MAPPING_QUALITY", 0L)
+        )
+      }
+    }
+
+    if (contigSummaries.isEmpty) return None
+
+    // Sort contigs by standard order (chr1, chr2, ..., chrX, chrY, chrM)
+    val sortedSummaries = contigSummaries.toList.sortBy { cs =>
+      val name = cs.contigName.replaceFirst("^chr", "")
+      name match {
+        case "X" => 23
+        case "Y" => 24
+        case "M" | "MT" => 25
+        case n if n.forall(_.isDigit) => n.toInt
+        case _ => 100
+      }
+    }
+
+    val callableBases = sortedSummaries.map(_.callable).sum
+
+    Some(CallableLociResult(
+      callableBases = callableBases,
+      contigAnalysis = sortedSummaries
+    ))
+  }
+
+  /**
+   * Load from cache using artifact context IDs.
+   */
+  def loadFromCache(
+    sampleAccession: String,
+    runId: String,
+    alignmentId: String
+  ): Option[CallableLociResult] = {
+    val callableLociDir = SubjectArtifactCache.getArtifactSubdir(
+      sampleAccession, runId, alignmentId, "callable_loci"
+    )
+    loadFromCache(callableLociDir)
+  }
+
+  /**
+   * Check if callable loci data exists in cache.
+   */
+  def existsInCache(callableLociDir: Path): Boolean = {
+    if (!Files.exists(callableLociDir)) return false
+    import scala.jdk.CollectionConverters._
+    Files.list(callableLociDir).iterator().asScala.exists(_.toString.endsWith(".table.txt"))
+  }
+}
