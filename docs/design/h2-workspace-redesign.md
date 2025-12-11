@@ -1548,60 +1548,104 @@ def markAllAsPending(ids: List[UUID])(implicit conn: Connection): Int = {
 
 ## Implementation Phases
 
-### Phase 1: Core Database Layer
-- H2 DataSource setup and connection pooling
-- Schema migration framework
-- Core entity tables (biosample, project, sequence_run, alignment)
-- Basic repository implementations
-- Transaction manager
+### Phase 1: Core Database Layer ✅ COMPLETE
+- [x] H2 DataSource setup and connection pooling (`Database.scala`)
+- [x] Schema migration framework (`Migrator.scala`)
+- [x] Core entity tables (`V001__initial_schema.sql`: biosample, project, project_member, sequence_run, alignment)
+- [x] Basic repository implementations (`BiosampleRepository`, `ProjectRepository`, `SequenceRunRepository`, `AlignmentRepository`)
+- [x] Transaction manager (`Transactor.scala`)
+- [x] Comprehensive test coverage (127 repository tests)
 
-### Phase 2: Full Entity Support
-- STR profile tables and repository
-- Chip profile tables and repository
-- Y-DNA SNP panel tables and repository
-- Haplogroup reconciliation tables and repository
-- Project-biosample relationship management
+### Phase 2: Full Entity Support ⏸️ DEFERRED
+> **Note**: Deferred to post-Phase 4. Core sync infrastructure prioritized over additional entity types.
 
-### Phase 3: File Cache Integration
-- Analysis artifact tracking tables
-- VCF cache metadata tables
-- Callable loci cache tables
-- Source file registry
-- Cache invalidation logic
+- [ ] STR profile tables and repository
+- [ ] Chip profile tables and repository
+- [ ] Y-DNA SNP panel tables and repository
+- [ ] Haplogroup reconciliation tables and repository
+- [x] Project-biosample relationship management (`project_member` table, `ProjectRepository`)
 
-### Phase 4: Async PDS Sync
-- Sync queue tables
-- Background sync worker
-- Conflict detection and resolution
-- Sync history and audit trail
-- UI integration for sync status
+### Phase 3: File Cache Integration ✅ COMPLETE
+- [x] Analysis artifact tracking tables (`V002__file_cache_tables.sql`: `analysis_artifact`)
+- [x] VCF cache metadata tables (`vcf_cache`)
+- [x] Callable loci cache tables (`callable_loci_cache`, `callable_loci_contig`)
+- [x] Source file registry (`source_file`, `SourceFileRepository`)
+- [x] Coverage summary cache (`coverage_summary_cache`)
+- [x] Unique constraint on artifact type per alignment (`V004__add_artifact_unique_constraint.sql`)
+- [ ] Cache invalidation logic (schema supports via `depends_on_*` columns)
+
+### Phase 4: Async PDS Sync ✅ COMPLETE
+- [x] Sync queue tables (`V003__sync_queue_tables.sql`: `sync_queue`, `sync_history`, `sync_conflict`, `sync_settings`)
+- [x] Sync queue repository (`SyncQueueRepository`)
+- [x] Conflict detection and resolution (`SyncConflictRepository` with resolution actions)
+- [x] Sync history and audit trail (`SyncHistoryRepository`)
+- [ ] Background sync worker service (schema ready, service implementation pending)
+- [ ] UI integration for sync status (schema ready, UI pending)
 
 ### Phase 5: Future Collaboration Prep
-- Canonical sample registry schema
-- Biosample-canonical linking
-- AppView query integration for contribution detection
-- Deduplication UI hints
+- [ ] Canonical sample registry schema
+- [ ] Biosample-canonical linking
+- [ ] AppView query integration for contribution detection
+- [ ] Deduplication UI hints
+
+---
+
+## Known Issues & Technical Notes
+
+### H2 JSON Column Handling
+
+**Issue**: H2's JSON data type maps to `byte[]` in Java, not `String`. Without proper handling:
+- Writing strings directly creates JSON string literals (quoted values)
+- Reading with `getString()` returns corrupted data
+
+**Solution** (implemented in `Repository.scala`):
+```scala
+// Writing: Wrap JSON strings in JsonValue to convert to bytes
+case class JsonValue(json: String)
+def setParam(...) = value match {
+  case JsonValue(j) => ps.setBytes(index, j.getBytes(UTF_8))
+  ...
+}
+
+// Reading: Use getBytes() and decode as UTF-8
+def getOptJsonString(rs: ResultSet, column: String): Option[String] =
+  Option(rs.getBytes(column)).map(new String(_, UTF_8))
+```
+
+All repositories using JSON columns have been updated to use `JsonValue` wrapper.
+
+### Pre-Phase 5 Checklist
+
+Before starting Phase 5, address:
+1. **Background Sync Worker**: Service class implementing `AsyncSyncService` pattern from design doc
+2. **UI Sync Status**: Status bar integration showing pending/conflict counts
+3. **Cache Invalidation**: Implement logic using `depends_on_source_checksum` and `depends_on_reference_build`
+4. **Phase 2 Decision**: Determine if STR/Chip/SNP panel entities needed before collaboration features
 
 ---
 
 ## Testing Strategy
 
-### Unit Tests
-- Repository CRUD operations with in-memory H2
-- Transaction rollback on error
-- Conflict detection logic
-- Migration script validation
+### Unit Tests ✅ IMPLEMENTED (127 tests passing)
+- [x] Repository CRUD operations with in-memory H2 (all repositories)
+- [x] Transaction rollback on error (`TransactorSpec`)
+- [x] Conflict detection logic (`SyncConflictRepositorySpec`)
+- [x] Migration script validation (`MigratorSpec`)
+- [x] Database lifecycle (`DatabaseSpec`)
+- [x] Sync queue operations (`SyncQueueRepositorySpec`)
+- [x] Analysis artifact tracking (`AnalysisArtifactRepositorySpec`)
+- [x] Source file registry (`SourceFileRepositorySpec`)
 
 ### Integration Tests
-- Full workflow: create → update → sync → conflict → resolve
-- Large dataset performance (1000+ biosamples)
-- Concurrent access simulation
-- Cache invalidation scenarios
+- [ ] Full workflow: create → update → sync → conflict → resolve
+- [ ] Large dataset performance (1000+ biosamples)
+- [ ] Concurrent access simulation
+- [ ] Cache invalidation scenarios
 
 ### Performance Benchmarks
-- Query latency targets: <100ms for common operations
-- Bulk import: 1000 samples in <10 seconds
-- Sync queue throughput: 100 items/minute
+- [ ] Query latency targets: <100ms for common operations
+- [ ] Bulk import: 1000 samples in <10 seconds
+- [ ] Sync queue throughput: 100 items/minute
 
 ---
 
