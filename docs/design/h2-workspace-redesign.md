@@ -1642,16 +1642,20 @@ Before starting Phase 5, address:
 - [x] Conflict notifier (`ConflictNotifierSpec` - observable state management)
 - [x] Cache invalidation (`CacheServiceSpec` - artifact validation, source verification, cleanup)
 
-### Integration Tests
-- [ ] Full workflow: create → update → sync → conflict → resolve
-- [ ] Large dataset performance (1000+ biosamples)
-- [ ] Concurrent access simulation
-- [ ] Cache invalidation scenarios
+### Integration Tests ✅ IMPLEMENTED (90 tests passing)
+- [x] Full workflow: create → update → sync → conflict → resolve (`ConflictResolutionWorkflowSpec`)
+- [x] Large dataset performance (1000+ biosamples) (`PerformanceIntegrationSpec`)
+- [x] Concurrent access simulation (`PerformanceIntegrationSpec`)
+- [x] Cache invalidation scenarios (`WorkspaceWorkflowSpec`)
+- [x] H2WorkspaceService CRUD operations (`H2WorkspaceServiceSpec`)
+- [x] End-to-end workflow tests (`WorkspaceWorkflowSpec`)
+- [x] Phase 2 entity integration (`Phase2EntityIntegrationSpec`)
 
-### Performance Benchmarks
-- [ ] Query latency targets: <100ms for common operations
-- [ ] Bulk import: 1000 samples in <10 seconds
-- [ ] Sync queue throughput: 100 items/minute
+### Performance Benchmarks ✅ IMPLEMENTED (in PerformanceIntegrationSpec)
+- [x] Query latency targets: <100ms for common operations (findAll, getMemberIds)
+- [x] Bulk import: 1000 samples in <10 seconds
+- [x] Sync queue batch fetch: 100 items in <100ms
+- [x] Memory efficiency: 2000 biosamples in <50MB
 
 ---
 

@@ -30,7 +30,8 @@ import scalafx.scene.text.{Text, TextAlignment}
 import scalafx.scene.web.WebView
 
 import com.decodingus.workspace.model.{Workspace, Biosample, Project, SequenceRun, Alignment, AlignmentMetrics, ContigMetrics, HaplogroupResult, HaplogroupAssignments, FileInfo, RecordMeta} // Explicitly import all workspace models
-import com.decodingus.workspace.{WorkspaceService, LiveWorkspaceService, WorkbenchViewModel} // Import the workspace service trait and its live implementation, and the ViewModel
+import com.decodingus.workspace.{WorkspaceService, LiveWorkspaceService, WorkbenchViewModel, H2WorkspaceAdapter} // Import the workspace service trait and its live implementation, and the ViewModel
+import com.decodingus.service.{DatabaseInitializer, DatabaseContext} // Import H2 database initializer
 import com.decodingus.ui.components.WorkbenchView // Import the new WorkbenchView
 
 import java.io.File
@@ -63,8 +64,32 @@ object GenomeNavigatorApp extends JFXApp3 {
 
   private var currentUser: Option[User] = None // Keep currentUser for login
 
+  // Database context for H2 persistence (initialized lazily)
+  private lazy val databaseContext: Option[DatabaseContext] = {
+    println("[App] Initializing H2 database...")
+    DatabaseInitializer.initialize() match {
+      case Right(context) =>
+        println(s"[App] H2 database initialized successfully. Schema version: ${context.schemaVersion}")
+        Some(context)
+      case Left(error) =>
+        println(s"[App] ERROR: Failed to initialize H2 database: $error")
+        println("[App] Falling back to JSON workspace storage")
+        None
+    }
+  }
+
+  // Workspace service - uses H2 if available, otherwise falls back to JSON
+  private lazy val workspaceService: WorkspaceService = databaseContext match {
+    case Some(ctx) =>
+      println("[App] Using H2 database for workspace storage")
+      H2WorkspaceAdapter(ctx)
+    case None =>
+      println("[App] Using JSON file for workspace storage (fallback)")
+      LiveWorkspaceService
+  }
+
   // ViewModel is created early so topBar can reference it
-  private lazy val viewModel = new WorkbenchViewModel(LiveWorkspaceService)
+  private lazy val viewModel = new WorkbenchViewModel(workspaceService)
 
   private lazy val topBar: TopBar = new TopBar(
     onLogin = () => {

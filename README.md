@@ -63,8 +63,10 @@ All application data is stored under `~/.decodingus/`:
 ```
 ~/.decodingus/
 ├── config/
-│   ├── workspace.json              # Workspace state (projects, samples)
 │   └── reference_config.json       # Reference genome configuration
+│
+├── data/
+│   └── workspace.mv.db             # H2 database (workspace state)
 │
 └── cache/
     ├── references/                 # Downloaded reference genomes (.fa.gz)
@@ -93,6 +95,30 @@ All application data is stored under `~/.decodingus/`:
                         ├── mtdna_private_variants.vcf
                         └── mtdna_report.txt
 ```
+
+### Local Database
+
+Your workspace data (biosamples, projects, sequence runs, and alignments) is stored in a local H2 database for fast, reliable storage.
+
+The database is created automatically on first launch. No configuration is required.
+
+### Connecting to the Database
+
+You can query your workspace data directly using any H2-compatible database tool (DBeaver, IntelliJ Database Tools, or the H2 Console).
+
+**Connection details:**
+- **JDBC URL:** `jdbc:h2:file:~/.decodingus/data/workspace`
+- **Username:** `sa`
+- **Password:** *(empty)*
+- **Driver:** H2 (download from [h2database.com](https://h2database.com))
+
+**Important:** Close the Navigator application before connecting, as H2 only allows one connection at a time by default.
+
+**Example tables:**
+- `biosample` - Research subjects
+- `project` - Project groupings
+- `sequence_run` - Sequencing sessions
+- `alignment` - Reference alignments and metrics
 
 ### Optional Cloud Integration
 - AT Protocol authentication and PDS integration
