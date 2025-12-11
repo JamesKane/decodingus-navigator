@@ -1,7 +1,10 @@
 package com.decodingus.service
 
 import com.decodingus.db.{Database, Migrator, Transactor}
-import com.decodingus.repository.*
+import com.decodingus.repository.{
+  BiosampleRepository, ProjectRepository, SequenceRunRepository, AlignmentRepository,
+  AnalysisArtifactRepository, SourceFileRepository
+}
 
 /**
  * Database initialization and service wiring.
@@ -59,6 +62,8 @@ object DatabaseInitializer:
       val projectRepo = ProjectRepository()
       val sequenceRunRepo = SequenceRunRepository()
       val alignmentRepo = AlignmentRepository()
+      val artifactRepo = AnalysisArtifactRepository()
+      val sourceFileRepo = SourceFileRepository()
 
       // Create the workspace service
       val workspaceService = H2WorkspaceService(
@@ -69,14 +74,24 @@ object DatabaseInitializer:
         alignmentRepo = alignmentRepo
       )
 
+      // Create the cache service
+      val cacheService = H2CacheService(
+        transactor = transactor,
+        artifactRepo = artifactRepo,
+        sourceFileRepo = sourceFileRepo
+      )
+
       Right(DatabaseContext(
         database = database,
         transactor = transactor,
         workspaceService = workspaceService,
+        cacheService = cacheService,
         biosampleRepository = biosampleRepo,
         projectRepository = projectRepo,
         sequenceRunRepository = sequenceRunRepo,
-        alignmentRepository = alignmentRepo
+        alignmentRepository = alignmentRepo,
+        analysisArtifactRepository = artifactRepo,
+        sourceFileRepository = sourceFileRepo
       ))
     catch
       case e: Exception =>
@@ -88,6 +103,7 @@ object DatabaseInitializer:
  *
  * Provides access to:
  * - The high-level WorkspaceService (recommended for most use cases)
+ * - The CacheService for artifact and source file management
  * - Individual repositories (for advanced/direct database access)
  * - The transactor (for custom transactions)
  */
@@ -95,10 +111,13 @@ case class DatabaseContext(
   database: Database,
   transactor: Transactor,
   workspaceService: WorkspaceService,
+  cacheService: CacheService,
   biosampleRepository: BiosampleRepository,
   projectRepository: ProjectRepository,
   sequenceRunRepository: SequenceRunRepository,
-  alignmentRepository: AlignmentRepository
+  alignmentRepository: AlignmentRepository,
+  analysisArtifactRepository: AnalysisArtifactRepository,
+  sourceFileRepository: SourceFileRepository
 ):
   /**
    * Shutdown the database connection pool.
