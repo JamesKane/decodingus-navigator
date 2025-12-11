@@ -22,7 +22,7 @@ object PdsClient {
   implicit val contigSummaryEncoder: Encoder[ContigSummary] = deriveEncoder
   implicit val coverageSummaryEncoder: Encoder[CoverageSummary] = deriveEncoder
 
-  // --- Workspace Codecs (mirrored from LiveWorkspaceService for PDS serialization) ---
+  // --- Workspace Codecs (for PDS serialization) ---
   implicit val encodeLocalDateTime: Encoder[LocalDateTime] = Encoder.encodeString.contramap[LocalDateTime](_.format(DateTimeFormatter.ISO_LOCAL_DATE_TIME))
   implicit val decodeLocalDateTime: Decoder[LocalDateTime] = Decoder.decodeString.emap { str =>
     Try(LocalDateTime.parse(str, DateTimeFormatter.ISO_LOCAL_DATE_TIME)).toEither.left.map(t => s"LocalDateTime: $t")
