@@ -126,6 +126,43 @@ trait CacheService:
    */
   def invalidateBySourceChecksum(oldChecksum: String, reason: String): Either[String, Int]
 
+  /**
+   * Invalidate artifacts when reference build changes.
+   */
+  def invalidateByReferenceBuild(referenceBuild: String, reason: String): Either[String, Int]
+
+  /**
+   * Validate a single artifact against its dependencies.
+   * Returns true if valid, marks stale and returns false if invalid.
+   */
+  def validateArtifact(id: UUID): Either[String, ArtifactValidationResult]
+
+  /**
+   * Validate all available artifacts.
+   * Returns validation results for all checked artifacts.
+   */
+  def validateAllArtifacts(): Either[String, BatchValidationResult]
+
+  /**
+   * Verify all source files and invalidate artifacts for inaccessible sources.
+   */
+  def verifyAllSourceFiles(): Either[String, SourceFileVerificationResult]
+
+  /**
+   * Check if an artifact's cached file exists on disk.
+   */
+  def verifyArtifactFile(id: UUID): Either[String, Boolean]
+
+  /**
+   * Clean up artifacts whose files are missing from disk.
+   */
+  def cleanupMissingArtifacts(): Either[String, Int]
+
+  /**
+   * Get all stale artifacts that need regeneration.
+   */
+  def getStaleArtifacts(): Either[String, List[AnalysisArtifactEntity]]
+
   // ============================================
   // Cache Statistics
   // ============================================
@@ -149,6 +186,39 @@ case class CacheStats(
   accessibleSourceFiles: Int,
   inaccessibleSourceFiles: Int,
   analyzedSourceFiles: Int
+)
+
+/**
+ * Result of validating a single artifact.
+ */
+enum ArtifactValidationResult:
+  case Valid                                    // Artifact is valid and available
+  case MarkedStale(reason: String)              // Artifact was marked stale
+  case AlreadyStale                             // Artifact was already stale
+  case NotFound                                 // Artifact doesn't exist
+  case FileNotFound                             // Cached file is missing
+
+/**
+ * Result of batch artifact validation.
+ */
+case class BatchValidationResult(
+  checkedCount: Int,
+  validCount: Int,
+  markedStaleCount: Int,
+  alreadyStaleCount: Int,
+  missingFileCount: Int,
+  staleReasons: Map[String, Int]                // Reason -> count
+)
+
+/**
+ * Result of source file verification.
+ */
+case class SourceFileVerificationResult(
+  checkedCount: Int,
+  accessibleCount: Int,
+  inaccessibleCount: Int,
+  newlyInaccessible: Int,
+  artifactsInvalidated: Int
 )
 
 /**
@@ -328,6 +398,162 @@ class H2CacheService(
   override def invalidateBySourceChecksum(oldChecksum: String, reason: String): Either[String, Int] =
     transactor.readWrite {
       artifactRepo.markStaleBySourceChecksum(oldChecksum, reason)
+    }
+
+  override def invalidateByReferenceBuild(referenceBuild: String, reason: String): Either[String, Int] =
+    transactor.readWrite {
+      val artifacts = artifactRepo.findAll().filter { artifact =>
+        artifact.status == ArtifactStatus.Available &&
+          artifact.dependsOnReferenceBuild.contains(referenceBuild)
+      }
+      var count = 0
+      for artifact <- artifacts do
+        if artifactRepo.markStale(artifact.id, reason) then count += 1
+      count
+    }
+
+  override def validateArtifact(id: UUID): Either[String, ArtifactValidationResult] =
+    transactor.readWrite {
+      artifactRepo.findById(id) match
+        case None =>
+          ArtifactValidationResult.NotFound
+
+        case Some(artifact) if artifact.status == ArtifactStatus.Stale =>
+          ArtifactValidationResult.AlreadyStale
+
+        case Some(artifact) if artifact.status != ArtifactStatus.Available =>
+          ArtifactValidationResult.Valid // Not available yet, can't validate
+
+        case Some(artifact) =>
+          // Check if cached file exists
+          val cachePath = CacheDir.resolve(artifact.cachePath)
+          if !Files.exists(cachePath) then
+            artifactRepo.markDeleted(artifact.id)
+            ArtifactValidationResult.FileNotFound
+          else
+            // Check source checksum dependency
+            artifact.dependsOnSourceChecksum match
+              case Some(expectedChecksum) =>
+                // Find source file with this checksum
+                val sourceExists = sourceFileRepo.findByChecksum(expectedChecksum).exists(_.isAccessible)
+                if !sourceExists then
+                  val reason = s"Source file no longer accessible (checksum: ${expectedChecksum.take(12)}...)"
+                  artifactRepo.markStale(artifact.id, reason)
+                  ArtifactValidationResult.MarkedStale(reason)
+                else
+                  ArtifactValidationResult.Valid
+              case None =>
+                ArtifactValidationResult.Valid
+    }
+
+  override def validateAllArtifacts(): Either[String, BatchValidationResult] =
+    transactor.readWrite {
+      val artifacts = artifactRepo.findByStatus(ArtifactStatus.Available)
+      var validCount = 0
+      var markedStaleCount = 0
+      var alreadyStaleCount = 0
+      var missingFileCount = 0
+      val staleReasons = scala.collection.mutable.Map[String, Int]()
+
+      for artifact <- artifacts do
+        val cachePath = CacheDir.resolve(artifact.cachePath)
+
+        if !Files.exists(cachePath) then
+          artifactRepo.markDeleted(artifact.id)
+          missingFileCount += 1
+        else
+          // Check source dependency
+          artifact.dependsOnSourceChecksum match
+            case Some(expectedChecksum) =>
+              val sourceAccessible = sourceFileRepo.findByChecksum(expectedChecksum).exists(_.isAccessible)
+              if !sourceAccessible then
+                val reason = "Source file no longer accessible"
+                artifactRepo.markStale(artifact.id, reason)
+                markedStaleCount += 1
+                staleReasons.updateWith(reason)(_.map(_ + 1).orElse(Some(1)))
+              else
+                validCount += 1
+            case None =>
+              validCount += 1
+
+      // Also count already stale
+      alreadyStaleCount = artifactRepo.findStale().size
+
+      BatchValidationResult(
+        checkedCount = artifacts.size,
+        validCount = validCount,
+        markedStaleCount = markedStaleCount,
+        alreadyStaleCount = alreadyStaleCount,
+        missingFileCount = missingFileCount,
+        staleReasons = staleReasons.toMap
+      )
+    }
+
+  override def verifyAllSourceFiles(): Either[String, SourceFileVerificationResult] =
+    transactor.readWrite {
+      val sourceFiles = sourceFileRepo.findAll()
+      var accessibleCount = 0
+      var inaccessibleCount = 0
+      var newlyInaccessible = 0
+      var artifactsInvalidated = 0
+
+      for sf <- sourceFiles do
+        val isAccessible = sf.filePath.exists { path =>
+          val file = Paths.get(path)
+          Files.exists(file) && Files.isReadable(file)
+        }
+
+        if isAccessible then
+          accessibleCount += 1
+          if !sf.isAccessible then
+            sourceFileRepo.markAccessible(sf.id)
+        else
+          inaccessibleCount += 1
+          if sf.isAccessible then
+            sourceFileRepo.markInaccessible(sf.id)
+            newlyInaccessible += 1
+            // Invalidate artifacts depending on this source
+            artifactsInvalidated += artifactRepo.markStaleBySourceChecksum(
+              sf.fileChecksum,
+              s"Source file no longer accessible: ${sf.filePath.getOrElse("unknown")}"
+            )
+
+      SourceFileVerificationResult(
+        checkedCount = sourceFiles.size,
+        accessibleCount = accessibleCount,
+        inaccessibleCount = inaccessibleCount,
+        newlyInaccessible = newlyInaccessible,
+        artifactsInvalidated = artifactsInvalidated
+      )
+    }
+
+  override def verifyArtifactFile(id: UUID): Either[String, Boolean] =
+    transactor.readOnly {
+      artifactRepo.findById(id) match
+        case Some(artifact) =>
+          val cachePath = CacheDir.resolve(artifact.cachePath)
+          Files.exists(cachePath) && Files.isReadable(cachePath)
+        case None =>
+          false
+    }
+
+  override def cleanupMissingArtifacts(): Either[String, Int] =
+    transactor.readWrite {
+      val available = artifactRepo.findByStatus(ArtifactStatus.Available)
+      var cleanedCount = 0
+
+      for artifact <- available do
+        val cachePath = CacheDir.resolve(artifact.cachePath)
+        if !Files.exists(cachePath) then
+          artifactRepo.markDeleted(artifact.id)
+          cleanedCount += 1
+
+      cleanedCount
+    }
+
+  override def getStaleArtifacts(): Either[String, List[AnalysisArtifactEntity]] =
+    transactor.readOnly {
+      artifactRepo.findStale()
     }
 
   // ============================================

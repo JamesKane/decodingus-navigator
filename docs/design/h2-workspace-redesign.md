@@ -1572,15 +1572,16 @@ def markAllAsPending(ids: List[UUID])(implicit conn: Connection): Int = {
 - [x] Source file registry (`source_file`, `SourceFileRepository`)
 - [x] Coverage summary cache (`coverage_summary_cache`)
 - [x] Unique constraint on artifact type per alignment (`V004__add_artifact_unique_constraint.sql`)
-- [ ] Cache invalidation logic (schema supports via `depends_on_*` columns)
+- [x] Cache invalidation logic (`CacheService` with `invalidateBySourceChecksum`, `invalidateByReferenceBuild`, `validateArtifact`, `validateAllArtifacts`, `verifyAllSourceFiles`, `cleanupMissingArtifacts`)
 
 ### Phase 4: Async PDS Sync ✅ COMPLETE
 - [x] Sync queue tables (`V003__sync_queue_tables.sql`: `sync_queue`, `sync_history`, `sync_conflict`, `sync_settings`)
 - [x] Sync queue repository (`SyncQueueRepository`)
 - [x] Conflict detection and resolution (`SyncConflictRepository` with resolution actions)
 - [x] Sync history and audit trail (`SyncHistoryRepository`)
-- [ ] Background sync worker service (schema ready, service implementation pending)
-- [ ] UI integration for sync status (schema ready, UI pending)
+- [x] Background sync worker service (`AsyncSyncService.scala` - queue processing, exponential backoff, scheduled polling)
+- [x] UI sync status observable state (`ConflictNotifier.scala` - observable properties for UI binding)
+- [ ] Status bar UI component (ConflictNotifier provides state, actual ScalaFX UI pending)
 
 ### Phase 5: Future Collaboration Prep
 - [ ] Canonical sample registry schema
@@ -1617,16 +1618,16 @@ All repositories using JSON columns have been updated to use `JsonValue` wrapper
 ### Pre-Phase 5 Checklist
 
 Before starting Phase 5, address:
-1. **Background Sync Worker**: Service class implementing `AsyncSyncService` pattern from design doc
-2. **UI Sync Status**: Status bar integration showing pending/conflict counts
-3. **Cache Invalidation**: Implement logic using `depends_on_source_checksum` and `depends_on_reference_build`
+1. ~~**Background Sync Worker**: Service class implementing `AsyncSyncService` pattern from design doc~~ ✅ Complete
+2. **UI Sync Status**: Status bar integration showing pending/conflict counts (ConflictNotifier done, UI component pending)
+3. ~~**Cache Invalidation**: Implement logic using `depends_on_source_checksum` and `depends_on_reference_build`~~ ✅ Complete
 4. **Phase 2 Decision**: Determine if STR/Chip/SNP panel entities needed before collaboration features
 
 ---
 
 ## Testing Strategy
 
-### Unit Tests ✅ IMPLEMENTED (127 tests passing)
+### Unit Tests ✅ IMPLEMENTED (198 tests passing)
 - [x] Repository CRUD operations with in-memory H2 (all repositories)
 - [x] Transaction rollback on error (`TransactorSpec`)
 - [x] Conflict detection logic (`SyncConflictRepositorySpec`)
@@ -1635,6 +1636,9 @@ Before starting Phase 5, address:
 - [x] Sync queue operations (`SyncQueueRepositorySpec`)
 - [x] Analysis artifact tracking (`AnalysisArtifactRepositorySpec`)
 - [x] Source file registry (`SourceFileRepositorySpec`)
+- [x] Async sync service (`AsyncSyncServiceSpec` - queue operations, stats, lifecycle)
+- [x] Conflict notifier (`ConflictNotifierSpec` - observable state management)
+- [x] Cache invalidation (`CacheServiceSpec` - artifact validation, source verification, cleanup)
 
 ### Integration Tests
 - [ ] Full workflow: create → update → sync → conflict → resolve
