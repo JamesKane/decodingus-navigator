@@ -1,8 +1,9 @@
 package com.decodingus.haplogroup.report
 
 import com.decodingus.analysis.PrivateVariant
-import com.decodingus.haplogroup.model.{Haplogroup, HaplogroupResult, Locus}
+import com.decodingus.haplogroup.model.{Haplogroup, HaplogroupResult, Locus, NamedVariant}
 import com.decodingus.haplogroup.tree.{TreeProviderType, TreeType}
+import com.decodingus.haplogroup.vendor.NamedVariantCache
 import com.decodingus.refgenome.StrAnnotator
 
 import java.io.{File, PrintWriter}
@@ -37,6 +38,30 @@ object HaplogroupReportWriter {
   }
 
   /**
+   * Format variant aliases for display, showing rsIds and common names.
+   * Truncates if too long for the column width.
+   */
+  private def formatVariantAliases(variant: NamedVariant): String = {
+    val parts = scala.collection.mutable.ListBuffer[String]()
+
+    // Add first rsId if available
+    variant.aliases.rsIds.headOption.foreach(parts += _)
+
+    // Add common names (excluding the canonical name which is shown separately)
+    val otherNames = variant.aliases.commonNames.filterNot(n =>
+      variant.canonicalName.contains(n)
+    ).take(2)
+    parts ++= otherNames
+
+    if (parts.isEmpty) {
+      "-"
+    } else {
+      val result = parts.mkString(", ")
+      if (result.length > 23) result.take(20) + "..." else result
+    }
+  }
+
+  /**
    * Write a haplogroup analysis report to the specified directory.
    *
    * @param outputDir Directory to write the report
@@ -50,6 +75,7 @@ object HaplogroupReportWriter {
    * @param strAnnotator Optional STR annotator for indel classification
    * @param sampleBuild Optional reference build of the sample BAM/CRAM
    * @param treeBuild Optional reference build of the tree coordinates
+   * @param namedVariantCache Optional cache for looking up variant aliases and rsIds
    */
   def writeReport(
                    outputDir: File,
@@ -62,7 +88,8 @@ object HaplogroupReportWriter {
                    treeProvider: Option[TreeProviderType] = None,
                    strAnnotator: Option[StrAnnotator] = None,
                    sampleBuild: Option[String] = None,
-                   treeBuild: Option[String] = None
+                   treeBuild: Option[String] = None,
+                   namedVariantCache: Option[NamedVariantCache] = None
                  ): File = {
     outputDir.mkdirs()
 
@@ -156,10 +183,24 @@ object HaplogroupReportWriter {
         writer.println("-" * 80)
         writer.println("SNP DETAILS (along predicted path)")
         writer.println("-" * 80)
-        writer.println(f"${"Contig"}%6s  ${"Position"}%12s  ${"SNP Name"}%-20s  ${"Anc"}%5s  ${"Der"}%5s  ${"Call"}%5s  ${"State"}%10s")
-        writer.println("-" * 80)
 
         val allLociOnPath = path.flatMap(_.loci)
+
+        // Check if we have named variant data and determine which build to use for lookups
+        val variantLookupBuild = namedVariantCache.flatMap { cache =>
+          // Try treeBuild first, then sampleBuild, then common builds
+          treeBuild.orElse(sampleBuild).orElse(Some("GRCh38"))
+        }
+
+        // Determine if we should show aliases column
+        val showAliases = namedVariantCache.isDefined && namedVariantCache.exists(_.isLoaded)
+
+        if (showAliases) {
+          writer.println(f"${"Contig"}%6s  ${"Position"}%12s  ${"SNP Name"}%-15s  ${"Aliases/rsIds"}%-25s  ${"Anc"}%5s  ${"Der"}%5s  ${"Call"}%5s  ${"State"}%10s")
+        } else {
+          writer.println(f"${"Contig"}%6s  ${"Position"}%12s  ${"SNP Name"}%-20s  ${"Anc"}%5s  ${"Der"}%5s  ${"Call"}%5s  ${"State"}%10s")
+        }
+        writer.println("-" * 80)
 
         allLociOnPath.sortBy(l => (l.contig, l.position)).foreach { locus =>
           val called = snpCalls.get(locus.position).getOrElse("-")
@@ -169,7 +210,15 @@ object HaplogroupReportWriter {
             case Some(_) => "Unknown"
             case None => "No Call"
           }
-          writer.println(f"${locus.contig}%6s  ${locus.position}%12d  ${locus.name}%-20s  ${locus.ref}%5s  ${locus.alt}%5s  $called%5s  $state%10s")
+
+          if (showAliases) {
+            val aliases = variantLookupBuild.flatMap { build =>
+              namedVariantCache.flatMap(_.getByPosition(build, locus.position))
+            }.map(formatVariantAliases).getOrElse("-")
+            writer.println(f"${locus.contig}%6s  ${locus.position}%12d  ${locus.name}%-15s  $aliases%-25s  ${locus.ref}%5s  ${locus.alt}%5s  $called%5s  $state%10s")
+          } else {
+            writer.println(f"${locus.contig}%6s  ${locus.position}%12d  ${locus.name}%-20s  ${locus.ref}%5s  ${locus.alt}%5s  $called%5s  $state%10s")
+          }
         }
         writer.println()
       }

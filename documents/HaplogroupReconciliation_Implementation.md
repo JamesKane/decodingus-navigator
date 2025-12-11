@@ -109,59 +109,54 @@ When selecting the consensus result:
 | `workspace/services/AnalysisCoordinator.scala` | Updated to use new model |
 | `workspace/WorkbenchViewModel.scala` | Updated WGS and chip haplogroup paths |
 | `pds/PdsClient.scala` | Added codecs for PDS sync |
+| `ui/components/WorkbenchView.scala` | Added reconciliation status indicator to subject detail |
+| `ui/components/ReconciliationDetailDialog.scala` | **NEW** - Dialog showing all run calls and reconciliation status |
 | `documents/Atmosphere_Lexicon.md` | Updated documentation |
 
 ## Current State
 
-### What Works Now
-- Haplogroup analysis stores results with provenance tracking
-- Results include source type, source reference, tree provider, and timestamp
-- Model structure matches global Atmosphere schema
+### What Works Now (Phase 1 & 2 Complete)
+
+#### Phase 1: Reconciliation Records
+- `WorkspaceOperations` has helper methods for reconciliation management:
+  - `getOrCreateReconciliation()` - Creates/retrieves Y-DNA or mtDNA reconciliation
+  - `addHaplogroupCall()` - Adds a run call and auto-selects consensus
+  - `removeHaplogroupCall()` - Removes a call when a run is deleted
+- `AnalysisCoordinator.runHaplogroupInternal()` creates `RunHaplogroupCall` and uses reconciliation
+- `WorkbenchViewModel` chip haplogroup path uses reconciliation
+- Consensus selection uses quality tier ranking (WGS > Big Y > Chip)
+
+#### Phase 2: UI Integration
+- Subject detail view shows haplogroup results with reconciliation status indicator
+- Traffic light colors: Green (compatible), Orange (minor divergence), Red (major divergence), Purple (incompatible)
+- Clickable button shows run count and opens detail dialog
+- `ReconciliationDetailDialog` displays:
+  - Y-DNA and mtDNA reconciliation panels
+  - Consensus haplogroup with confidence
+  - Status indicator with tooltip
+  - Table of all individual run calls with technology, haplogroup, SNPs, confidence, tree provider
 
 ### What's NOT Yet Implemented
 
-#### 1. Reconciliation Record Creation
-The analysis paths update `Biosample.haplogroups` but don't yet create/update `HaplogroupReconciliation` records.
-
-**Required changes:**
-- `AnalysisCoordinator.runHaplogroupInternal()` - Create/update Y-DNA or mtDNA reconciliation
-- `WorkbenchViewModel.runChipHaplogroupAnalysis()` - Create/update reconciliation for chip results
-- `WorkbenchViewModel.runHaplogroupAnalysis()` - Create/update reconciliation for WGS results
-
-#### 2. Consensus Selection from Reconciliation
-Currently, analysis directly updates `Biosample.haplogroups`. Should instead:
-1. Add run call to `HaplogroupReconciliation`
-2. Recalculate consensus using `recalculate()` method
-3. Update `Biosample.haplogroups` with the consensus result
-
-#### 3. UI for Reconciliation Status
-- Show reconciliation status indicator on subject card
-- Traffic light: Green (compatible), Yellow (minor divergence), Red (major/incompatible)
-- Detailed view showing all run calls and any conflicts
-
-#### 4. Cleanup on Run/Profile Deletion
+#### 1. Cleanup on Run/Profile Deletion
 When a SequenceRun or ChipProfile is deleted:
 - Remove its call from `HaplogroupReconciliation.runCalls`
 - Recalculate consensus
 - Update `Biosample.haplogroups`
 
+#### 2. Advanced Reconciliation Logic
+- Branch compatibility scoring (LCA analysis between different haplogroups)
+- Automatic detection of COMPATIBLE vs MINOR_DIVERGENCE vs MAJOR_DIVERGENCE
+- Currently always sets COMPATIBLE; needs tree structure comparison
+
 ## Next Steps
 
-### Phase 1: Wire Up Reconciliation Records
-1. Update `AnalysisCoordinator` to create/update reconciliation records
-2. Update `WorkbenchViewModel` chip path similarly
-3. Move consensus selection logic to use reconciliation
-
-### Phase 2: UI Integration
-1. Add reconciliation status to subject card
-2. Create reconciliation detail view
-3. Add ability to view all run calls
-
 ### Phase 3: Advanced Features
-1. SNP-level conflict detection
-2. Branch compatibility scoring (LCA analysis)
-3. Identity verification metrics
-4. Manual override capability
+1. Cleanup on run/profile deletion
+2. SNP-level conflict detection
+3. Branch compatibility scoring (LCA analysis)
+4. Identity verification metrics
+5. Manual override capability
 
 ## Related Documents
 

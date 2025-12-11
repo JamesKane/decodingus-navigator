@@ -6,7 +6,7 @@ import com.decodingus.haplogroup.model.{Haplogroup, HaplogroupResult, Locus}
 import com.decodingus.haplogroup.report.HaplogroupReportWriter
 import com.decodingus.haplogroup.scoring.HaplogroupScorer
 import com.decodingus.haplogroup.tree.{TreeCache, TreeProvider, TreeProviderType, TreeType}
-import com.decodingus.haplogroup.vendor.{DecodingUsTreeProvider, FtdnaTreeProvider}
+import com.decodingus.haplogroup.vendor.{DecodingUsTreeProvider, FtdnaTreeProvider, NamedVariantCache}
 import com.decodingus.liftover.LiftoverProcessor
 import com.decodingus.model.LibraryStats
 import com.decodingus.refgenome.{LiftoverGateway, MultiContigReferenceQuerier, ReferenceGateway, ReferenceQuerier, StrAnnotator}
@@ -267,6 +267,21 @@ class HaplogroupProcessor {
                   // Write report to artifact directory if available
                   artifactDir.foreach { dir =>
                     onProgress("Writing haplogroup report...", 0.9, 1.0)
+
+                    // Use named variant cache for Decoding Us provider to enrich reports with aliases
+                    val variantCache = treeProviderType match {
+                      case TreeProviderType.DECODINGUS =>
+                        val cache = NamedVariantCache()
+                        // Try to load silently - don't fail the report if cache unavailable
+                        cache.ensureLoaded(msg => println(s"[HaplogroupProcessor] $msg")) match {
+                          case Right(_) => Some(cache)
+                          case Left(err) =>
+                            println(s"[HaplogroupProcessor] Named variant cache unavailable: $err")
+                            None
+                        }
+                      case _ => None
+                    }
+
                     HaplogroupReportWriter.writeReport(
                       outputDir = dir.toFile,
                       treeType = treeType,
@@ -278,7 +293,8 @@ class HaplogroupProcessor {
                       treeProvider = Some(treeProviderType),
                       strAnnotator = strAnnotator,
                       sampleBuild = Some(referenceBuild),
-                      treeBuild = Some(treeSourceBuild)
+                      treeBuild = Some(treeSourceBuild),
+                      namedVariantCache = variantCache
                     )
                   }
 

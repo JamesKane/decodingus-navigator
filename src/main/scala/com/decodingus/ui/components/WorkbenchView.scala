@@ -5,7 +5,7 @@ import scalafx.scene.layout.{VBox, HBox, Priority, StackPane, BorderPane, Region
 import scalafx.scene.control.{Label, Button, ListView, SplitPane, Alert, ListCell, Tooltip, TextField}
 import scalafx.geometry.{Insets, Pos}
 import scalafx.collections.ObservableBuffer
-import com.decodingus.workspace.model.{Workspace, Project, Biosample, SyncStatus, StrProfile}
+import com.decodingus.workspace.model.{Workspace, Project, Biosample, SyncStatus, StrProfile, HaplogroupReconciliation, CompatibilityLevel}
 import com.decodingus.workspace.WorkbenchViewModel
 import scalafx.scene.control.Alert.AlertType
 import scalafx.application.Platform
@@ -91,8 +91,46 @@ class WorkbenchView(val viewModel: WorkbenchViewModel) extends SplitPane {
       case None => "Haplogroups: Not analyzed"
     }
 
-    val haplogroupLabel = new Label(haplogroupText) {
-      style = "-fx-padding: 10 0 0 0; -fx-font-family: monospace; -fx-font-size: 14px; -fx-font-weight: bold;"
+    // Get reconciliation records for status indicator
+    val yDnaReconciliation = viewModel.workspace.value.main.getYDnaReconciliation(subject)
+    val mtDnaReconciliation = viewModel.workspace.value.main.getMtDnaReconciliation(subject)
+    val hasReconciliations = yDnaReconciliation.isDefined || mtDnaReconciliation.isDefined
+
+    // Create the haplogroup section with optional reconciliation status
+    val haplogroupSection = new HBox(10) {
+      alignment = Pos.CenterLeft
+      padding = Insets(10, 0, 0, 0)
+
+      val haplogroupLabel = new Label(haplogroupText) {
+        style = "-fx-font-family: monospace; -fx-font-size: 14px; -fx-font-weight: bold;"
+      }
+
+      // Reconciliation status indicator (traffic light)
+      val statusIndicator = if (hasReconciliations) {
+        val reconciliations = List(yDnaReconciliation, mtDnaReconciliation).flatten
+        val worstLevel = reconciliations.map(_.status.compatibilityLevel).maxBy {
+          case CompatibilityLevel.COMPATIBLE => 0
+          case CompatibilityLevel.MINOR_DIVERGENCE => 1
+          case CompatibilityLevel.MAJOR_DIVERGENCE => 2
+          case CompatibilityLevel.INCOMPATIBLE => 3
+        }
+        val totalRuns = reconciliations.map(_.status.runCount).sum
+
+        val (color, statusText) = worstLevel match {
+          case CompatibilityLevel.COMPATIBLE => ("#4CAF50", "Compatible")
+          case CompatibilityLevel.MINOR_DIVERGENCE => ("#FF9800", "Minor differences")
+          case CompatibilityLevel.MAJOR_DIVERGENCE => ("#F44336", "Major divergence")
+          case CompatibilityLevel.INCOMPATIBLE => ("#9C27B0", "Incompatible")
+        }
+
+        Some(new Button(s"● $totalRuns run${if (totalRuns != 1) "s" else ""}") {
+          style = s"-fx-background-color: transparent; -fx-text-fill: $color; -fx-font-size: 12px; -fx-cursor: hand;"
+          tooltip = Tooltip(s"$statusText - Click for reconciliation details")
+          onAction = _ => showReconciliationDetails(subject, yDnaReconciliation, mtDnaReconciliation)
+        })
+      } else None
+
+      children = Seq(haplogroupLabel) ++ statusIndicator.toSeq
     }
 
     // Sequence data table with callbacks
@@ -132,11 +170,21 @@ class WorkbenchView(val viewModel: WorkbenchViewModel) extends SplitPane {
       new Label(s"Subject: ${subject.donorIdentifier}") { style = "-fx-font-size: 20px; -fx-font-weight: bold;" },
       actionButtons,
       infoSection,
-      haplogroupLabel,
+      haplogroupSection,
       sequenceTable,
       chipTable,
       strTable
     )
+  }
+
+  /** Shows the reconciliation detail dialog for a subject */
+  private def showReconciliationDetails(
+    subject: Biosample,
+    yDnaReconciliation: Option[HaplogroupReconciliation],
+    mtDnaReconciliation: Option[HaplogroupReconciliation]
+  ): Unit = {
+    val dialog = new ReconciliationDetailDialog(subject, yDnaReconciliation, mtDnaReconciliation)
+    dialog.showAndWait()
   }
 
   /** Handles triggering analysis for a sequence run */
