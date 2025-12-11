@@ -3,7 +3,8 @@ package com.decodingus.service
 import com.decodingus.db.{Database, Migrator, Transactor}
 import com.decodingus.repository.{
   BiosampleRepository, ProjectRepository, SequenceRunRepository, AlignmentRepository,
-  AnalysisArtifactRepository, SourceFileRepository
+  AnalysisArtifactRepository, SourceFileRepository,
+  SyncQueueRepository, SyncHistoryRepository, SyncConflictRepository
 }
 
 /**
@@ -81,17 +82,34 @@ object DatabaseInitializer:
         sourceFileRepo = sourceFileRepo
       )
 
+      // Create sync repositories
+      val syncQueueRepo = SyncQueueRepository()
+      val syncHistoryRepo = SyncHistoryRepository()
+      val syncConflictRepo = SyncConflictRepository()
+
+      // Create the sync service
+      val syncService = H2SyncService(
+        transactor = transactor,
+        queueRepo = syncQueueRepo,
+        historyRepo = syncHistoryRepo,
+        conflictRepo = syncConflictRepo
+      )
+
       Right(DatabaseContext(
         database = database,
         transactor = transactor,
         workspaceService = workspaceService,
         cacheService = cacheService,
+        syncService = syncService,
         biosampleRepository = biosampleRepo,
         projectRepository = projectRepo,
         sequenceRunRepository = sequenceRunRepo,
         alignmentRepository = alignmentRepo,
         analysisArtifactRepository = artifactRepo,
-        sourceFileRepository = sourceFileRepo
+        sourceFileRepository = sourceFileRepo,
+        syncQueueRepository = syncQueueRepo,
+        syncHistoryRepository = syncHistoryRepo,
+        syncConflictRepository = syncConflictRepo
       ))
     catch
       case e: Exception =>
@@ -104,6 +122,7 @@ object DatabaseInitializer:
  * Provides access to:
  * - The high-level WorkspaceService (recommended for most use cases)
  * - The CacheService for artifact and source file management
+ * - The SyncService for PDS synchronization
  * - Individual repositories (for advanced/direct database access)
  * - The transactor (for custom transactions)
  */
@@ -112,12 +131,16 @@ case class DatabaseContext(
   transactor: Transactor,
   workspaceService: WorkspaceService,
   cacheService: CacheService,
+  syncService: SyncService,
   biosampleRepository: BiosampleRepository,
   projectRepository: ProjectRepository,
   sequenceRunRepository: SequenceRunRepository,
   alignmentRepository: AlignmentRepository,
   analysisArtifactRepository: AnalysisArtifactRepository,
-  sourceFileRepository: SourceFileRepository
+  sourceFileRepository: SourceFileRepository,
+  syncQueueRepository: SyncQueueRepository,
+  syncHistoryRepository: SyncHistoryRepository,
+  syncConflictRepository: SyncConflictRepository
 ):
   /**
    * Shutdown the database connection pool.

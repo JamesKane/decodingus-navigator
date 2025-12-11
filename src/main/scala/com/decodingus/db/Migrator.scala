@@ -141,7 +141,8 @@ object Migrator:
     // Known migrations - in production, could scan classpath
     val migrationFiles = List(
       "V001__initial_schema.sql",
-      "V002__file_cache_tables.sql"
+      "V002__file_cache_tables.sql",
+      "V003__sync_queue_tables.sql"
     )
     val pattern = """V(\d+)__(.+)\.sql""".r
 
