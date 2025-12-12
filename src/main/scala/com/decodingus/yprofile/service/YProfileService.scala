@@ -94,7 +94,7 @@ class YProfileService(
     coveragePct: Option[Double] = None
   ): Either[String, YProfileSourceEntity] =
     transactor.readWrite {
-      val methodTier = YProfileSourceType.snpMethodTier(sourceType)
+      val methodTier = sourceType.snpTier
       val source = YProfileSourceEntity.create(
         yProfileId = profileId,
         sourceType = sourceType,
@@ -355,49 +355,7 @@ class YProfileService(
       val variant = variantRepo.findById(variantId).getOrElse(
         throw new IllegalArgumentException(s"Variant not found: $variantId")
       )
-
-      val calls = sourceCallRepo.findByVariant(variantId)
-      val sources = calls.flatMap(c => sourceRepo.findById(c.sourceId))
-      val sourceMap = sources.map(s => s.id -> s).toMap
-
-      // Convert to concordance input
-      val callInputs = calls.flatMap { call =>
-        sourceMap.get(call.sourceId).map { source =>
-          SourceCallInput(
-            sourceId = call.sourceId,
-            sourceType = source.sourceType,
-            calledAllele = call.calledAllele,
-            callState = call.callState,
-            readDepth = call.readDepth,
-            mappingQuality = call.mappingQuality,
-            callableState = call.callableState,
-            calledRepeatCount = call.calledRepeatCount
-          )
-        }
-      }
-
-      // Calculate consensus based on variant type
-      val result = variant.variantType match
-        case YVariantType.STR =>
-          YVariantConcordance.calculateStrConsensus(callInputs, isInTree)
-        case _ =>
-          YVariantConcordance.calculateConsensus(callInputs, variant.variantType, isInTree)
-
-      // Update variant with consensus
-      val updated = variant.copy(
-        consensusAllele = result.consensusAllele,
-        consensusState = result.consensusState,
-        status = result.status,
-        sourceCount = result.sourceCount,
-        concordantCount = result.concordantCount,
-        discordantCount = result.discordantCount,
-        confidenceScore = result.confidenceScore,
-        maxReadDepth = calls.flatMap(_.readDepth).maxOption,
-        maxQualityScore = calls.flatMap(_.qualityScore).maxOption,
-        lastUpdatedAt = LocalDateTime.now()
-      )
-
-      variantRepo.update(updated)
+      reconcileVariantInternal(variant, isInTree)
     }
 
   /**

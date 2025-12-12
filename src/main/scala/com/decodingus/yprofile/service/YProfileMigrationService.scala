@@ -205,7 +205,7 @@ class YProfileMigrationService(
       case Some(HaplogroupTechnology.STR_PANEL) => YProfileSourceType.CAPILLARY_ELECTROPHORESIS
       case None => YProfileSourceType.MANUAL
 
-    val methodTier = YProfileSourceType.snpMethodTier(sourceType)
+    val methodTier = sourceType.snpTier
 
     sourceRepo.insert(YProfileSourceEntity.create(
       yProfileId = profileId,

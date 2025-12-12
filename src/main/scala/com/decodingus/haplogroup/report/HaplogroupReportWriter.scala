@@ -14,7 +14,7 @@ import scala.util.Using
 /**
  * Generates Yleaf-style haplogroup reports.
  */
-object HaplogroupReportWriter {
+object  HaplogroupReportWriter {
 
   /**
    * Convert a PHRED quality score to a 5-star rating.

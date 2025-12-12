@@ -7,49 +7,12 @@ import com.decodingus.yprofile.model.*
  *
  * Uses quality-weighted voting to determine consensus from multiple test sources.
  * Different quality tiers are used for SNPs/INDELs vs STRs based on method reliability.
+ *
+ * Method weights are defined in YProfileSourceType as data-carrying enum values.
  */
 object YVariantConcordance:
 
-  /**
-   * Method tier weights for SNP/INDEL/MNP variants.
-   * Sequencing methods are more reliable for point mutations.
-   */
-  val SnpMethodTierWeights: Map[YProfileSourceType, Double] = Map(
-    YProfileSourceType.SANGER                   -> 1.0,   // Gold standard
-    YProfileSourceType.WGS_LONG_READ            -> 0.95,  // Excellent for SNPs
-    YProfileSourceType.WGS_SHORT_READ           -> 0.85,  // Good coverage
-    YProfileSourceType.TARGETED_NGS             -> 0.75,  // Good but limited regions
-    YProfileSourceType.CHIP                     -> 0.5,   // Probe-based, limited
-    YProfileSourceType.CAPILLARY_ELECTROPHORESIS -> 0.5,  // Not designed for SNPs
-    YProfileSourceType.MANUAL                   -> 0.3    // User-provided
-  )
-
-  /**
-   * Method tier weights for STR variants.
-   * Capillary electrophoresis is more reliable for repeat counting.
-   */
-  val StrMethodTierWeights: Map[YProfileSourceType, Double] = Map(
-    YProfileSourceType.CAPILLARY_ELECTROPHORESIS -> 1.0,  // Gold standard for STRs
-    YProfileSourceType.SANGER                   -> 0.9,   // Good when targeted
-    YProfileSourceType.WGS_LONG_READ            -> 0.7,   // HiFi better for repeats
-    YProfileSourceType.WGS_SHORT_READ           -> 0.5,   // Repeat estimation error-prone
-    YProfileSourceType.TARGETED_NGS             -> 0.4,   // Limited STR support
-    YProfileSourceType.CHIP                     -> 0.3,   // Inferred from SNPs
-    YProfileSourceType.MANUAL                   -> 0.2    // User-provided
-  )
-
-  /**
-   * Callable state factors for weight calculation.
-   */
-  val CallableStateFactors: Map[YCallableState, Double] = Map(
-    YCallableState.CALLABLE             -> 1.0,
-    YCallableState.LOW_COVERAGE         -> 0.5,
-    YCallableState.POOR_MAPPING_QUALITY -> 0.3,
-    YCallableState.NO_COVERAGE          -> 0.0,
-    YCallableState.EXCESSIVE_COVERAGE   -> 0.3,
-    YCallableState.REF_N                -> 0.0,
-    YCallableState.SUMMARY              -> 0.5
-  )
+  // Callable state weights are now defined in YCallableState enum values.
 
   /**
    * Threshold for discordance to be classified as CONFLICT.
@@ -65,10 +28,12 @@ object YVariantConcordance:
   /**
    * Calculate concordance weight for a source call.
    *
-   * Formula: methodTierWeight × (1 + depthBonus) × mapQFactor × callableFactor
+   * Formula: methodWeight × (1 + depthBonus) × mapQFactor × callableFactor
+   *
+   * Method weights are sourced from YProfileSourceType enum values.
    *
    * @param sourceType     Testing method used
-   * @param variantType    Type of variant (affects method tier selection)
+   * @param variantType    Type of variant (affects method weight selection)
    * @param readDepth      Read depth at position (optional, for sequencing sources)
    * @param mappingQuality Mapping quality (optional, for sequencing sources)
    * @param callableState  Callable state at position (optional)
@@ -81,10 +46,10 @@ object YVariantConcordance:
     mappingQuality: Option[Double] = None,
     callableState: Option[YCallableState] = None
   ): Double =
-    // Select method tier based on variant type
-    val methodTierWeight = variantType match
-      case YVariantType.STR => StrMethodTierWeights.getOrElse(sourceType, 0.3)
-      case _                => SnpMethodTierWeights.getOrElse(sourceType, 0.3)
+    // Select method weight based on variant type (from enum)
+    val methodWeight = variantType match
+      case YVariantType.STR => sourceType.strWeight
+      case _                => sourceType.snpWeight
 
     // Depth bonus: min(sqrt(depth)/10, 1.0) - rewards higher coverage
     val depthBonus = readDepth match
@@ -96,13 +61,13 @@ object YVariantConcordance:
       case Some(mq) if mq > 0 => math.min(mq / 60.0, 1.0)
       case _                  => 1.0 // Default to 1.0 for non-sequencing sources
 
-    // Callable state factor
+    // Callable state factor (from enum)
     val callableFactor = callableState match
-      case Some(state) => CallableStateFactors.getOrElse(state, 0.5)
+      case Some(state) => state.weight
       case None        => 1.0 // Assume callable if unknown
 
     // Final weight calculation
-    methodTierWeight * (1.0 + depthBonus) * mapQFactor * callableFactor
+    methodWeight * (1.0 + depthBonus) * mapQFactor * callableFactor
 
   /**
    * Input data for a single source call.

@@ -11,15 +11,28 @@ import java.util.UUID
 /**
  * Source type for Y chromosome profile data.
  * Different testing technologies have different quality characteristics.
+ *
+ * Each source type carries its quality weights for SNP and STR concordance:
+ * - snpWeight: Reliability for SNP/INDEL/MNP detection (0.0-1.0)
+ * - strWeight: Reliability for STR repeat counting (0.0-1.0)
+ *
+ * @param snpWeight Weight for SNP/INDEL/MNP concordance (higher = more reliable)
+ * @param strWeight Weight for STR concordance (higher = more reliable)
  */
-enum YProfileSourceType:
-  case SANGER                   // Sanger sequencing (gap-fill, targeted)
-  case CAPILLARY_ELECTROPHORESIS // CE for STRs (FTDNA Y-STR panels, YSEQ)
-  case WGS_LONG_READ            // HiFi, ONT long-read WGS
-  case WGS_SHORT_READ           // Illumina short-read WGS
-  case TARGETED_NGS             // Big Y-700, Y Elite, targeted panels
-  case CHIP                     // 23andMe, AncestryDNA SNP arrays
-  case MANUAL                   // User-provided manual entries
+enum YProfileSourceType(val snpWeight: Double, val strWeight: Double):
+  case SANGER                    extends YProfileSourceType(1.0,  0.9)   // Gold standard for SNPs, good for STRs
+  case CAPILLARY_ELECTROPHORESIS extends YProfileSourceType(0.5,  1.0)   // Not for SNPs, gold standard for STRs
+  case WGS_LONG_READ             extends YProfileSourceType(0.95, 0.7)   // Excellent for SNPs, good for repeats
+  case WGS_SHORT_READ            extends YProfileSourceType(0.85, 0.5)   // Good for SNPs, repeat estimation error-prone
+  case TARGETED_NGS              extends YProfileSourceType(0.75, 0.4)   // Good but limited regions
+  case CHIP                      extends YProfileSourceType(0.5,  0.3)   // Probe-based, limited
+  case MANUAL                    extends YProfileSourceType(0.3,  0.2)   // User-provided, lowest confidence
+
+  /** Get method tier (0-5 integer) for SNP concordance. */
+  def snpTier: Int = math.round(snpWeight * 5).toInt
+
+  /** Get method tier (0-5 integer) for STR concordance. */
+  def strTier: Int = math.round(strWeight * 5).toInt
 
 object YProfileSourceType:
   def fromString(s: String): YProfileSourceType = s match
@@ -31,32 +44,6 @@ object YProfileSourceType:
     case "CHIP"                     => CHIP
     case "MANUAL"                   => MANUAL
     case other => throw new IllegalArgumentException(s"Unknown YProfileSourceType: $other")
-
-  /**
-   * Get the method tier for SNP/INDEL/MNP concordance weighting.
-   * Higher tier = more reliable for point mutations.
-   */
-  def snpMethodTier(sourceType: YProfileSourceType): Int = sourceType match
-    case SANGER                   => 5  // Gold standard for SNPs
-    case WGS_LONG_READ            => 4  // Excellent for SNPs
-    case WGS_SHORT_READ           => 3  // Good coverage, standard
-    case TARGETED_NGS             => 2  // Good but limited regions
-    case CHIP                     => 1  // Probe-based, limited
-    case CAPILLARY_ELECTROPHORESIS => 1  // Not designed for SNPs
-    case MANUAL                   => 0  // Lowest confidence
-
-  /**
-   * Get the method tier for STR concordance weighting.
-   * Higher tier = more reliable for repeat counting.
-   */
-  def strMethodTier(sourceType: YProfileSourceType): Int = sourceType match
-    case CAPILLARY_ELECTROPHORESIS => 5  // Gold standard for STRs (direct measurement)
-    case SANGER                   => 4  // Good for STRs when targeted
-    case WGS_LONG_READ            => 3  // HiFi better for repeats than short-read
-    case WGS_SHORT_READ           => 2  // Repeat estimation error-prone
-    case CHIP                     => 1  // Inferred from SNPs
-    case TARGETED_NGS             => 1  // Limited STR support
-    case MANUAL                   => 0  // Lowest confidence
 
 /**
  * Variant type classification.
@@ -113,15 +100,21 @@ object YVariantStatus:
 
 /**
  * Callable state for a genomic region.
+ *
+ * Each state carries a weight factor for concordance calculations:
+ * - CALLABLE regions get full weight (1.0)
+ * - Problem regions get reduced weight based on reliability
+ *
+ * @param weight Factor applied to concordance weight (0.0-1.0)
  */
-enum YCallableState:
-  case CALLABLE             // Region has sufficient coverage and quality
-  case NO_COVERAGE          // Zero reads
-  case LOW_COVERAGE         // Below threshold
-  case EXCESSIVE_COVERAGE   // Likely repeat region or mapping artifact
-  case POOR_MAPPING_QUALITY // Low mapping quality
-  case REF_N                // Reference contains N
-  case SUMMARY              // Aggregated summary region
+enum YCallableState(val weight: Double):
+  case CALLABLE             extends YCallableState(1.0)  // Full confidence
+  case NO_COVERAGE          extends YCallableState(0.0)  // Zero confidence
+  case LOW_COVERAGE         extends YCallableState(0.5)  // Reduced confidence
+  case EXCESSIVE_COVERAGE   extends YCallableState(0.3)  // Likely artifact
+  case POOR_MAPPING_QUALITY extends YCallableState(0.3)  // Unreliable mapping
+  case REF_N                extends YCallableState(0.0)  // Can't call
+  case SUMMARY              extends YCallableState(0.5)  // Aggregated
 
 object YCallableState:
   def fromString(s: String): YCallableState = s match
