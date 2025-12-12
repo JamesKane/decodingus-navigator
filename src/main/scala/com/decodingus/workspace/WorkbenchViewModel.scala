@@ -2,14 +2,22 @@ package com.decodingus.workspace
 
 import com.decodingus.analysis.{ArtifactContext, CachedVcfInfo, CallableLociProcessor, CallableLociResult, HaplogroupProcessor, LibraryStatsProcessor, MultipleMetricsResult, UnifiedMetricsProcessor, WgsMetricsProcessor}
 import com.decodingus.client.DecodingUsClient
+import com.decodingus.db.Transactor
 import com.decodingus.haplogroup.tree.{TreeType, TreeProviderType}
 import com.decodingus.auth.User
 import com.decodingus.config.{FeatureToggles, UserPreferencesService, ReferenceConfigService}
 import com.decodingus.model.{LibraryStats, WgsMetrics}
 import com.decodingus.refgenome.{ReferenceGateway, ReferenceResolveResult}
+import com.decodingus.repository.{
+  BiosampleRepository, YChromosomeProfileRepository, YProfileSourceRepository,
+  YProfileRegionRepository, YProfileVariantRepository, YVariantSourceCallRepository,
+  YVariantAuditRepository, YSourceCallAlignmentRepository
+}
 import com.decodingus.workspace.model.{Workspace, Project, Biosample, WorkspaceContent, SyncStatus, SequenceRun, Alignment, AlignmentMetrics, ContigMetrics, FileInfo, HaplogroupAssignments, HaplogroupResult => WorkspaceHaplogroupResult, RecordMeta, StrProfile, ChipProfile, DnaType, RunHaplogroupCall, CallMethod, HaplogroupTechnology}
 import com.decodingus.haplogroup.model.{HaplogroupResult => AnalysisHaplogroupResult}
 import com.decodingus.workspace.services.{WorkspaceOperations, AnalysisCoordinator, AnalysisProgress, BatchAnalysisResult, SyncService, SyncResult, FingerprintMatchService, FingerprintMatchResult}
+import com.decodingus.yprofile.model.*
+import com.decodingus.yprofile.service.YProfileService
 import htsjdk.samtools.SamReaderFactory
 import scalafx.beans.property.{ObjectProperty, ReadOnlyObjectProperty, StringProperty, BooleanProperty, DoubleProperty}
 import scalafx.collections.ObservableBuffer
@@ -17,17 +25,35 @@ import scalafx.application.Platform
 
 import java.io.File
 import java.time.LocalDateTime
+import java.util.UUID
 import scala.concurrent.{ExecutionContext, Future}
 import scala.concurrent.ExecutionContext.Implicits.global
 import scala.util.{Success, Failure, Try}
 
-class WorkbenchViewModel(val workspaceService: WorkspaceService) {
+class WorkbenchViewModel(
+  val workspaceService: WorkspaceService,
+  transactor: Option[Transactor] = None
+) {
 
   // --- Service Instances ---
   private val workspaceOps = new WorkspaceOperations()
   private val analysisCoordinator = new AnalysisCoordinator()
   private val syncService = new SyncService(workspaceService)
   private val fingerprintMatchService = new FingerprintMatchService()
+
+  // Y Profile service (requires transactor)
+  private val yProfileService: Option[YProfileService] = transactor.map { tx =>
+    YProfileService(
+      tx,
+      YChromosomeProfileRepository(),
+      YProfileSourceRepository(),
+      YProfileRegionRepository(),
+      YProfileVariantRepository(),
+      YVariantSourceCallRepository(),
+      YVariantAuditRepository(),
+      YSourceCallAlignmentRepository()
+    )
+  }
 
   // --- Sync State ---
   val syncStatus: ObjectProperty[SyncStatus] = ObjectProperty(SyncStatus.Synced)
@@ -2585,4 +2611,115 @@ class WorkbenchViewModel(val workspaceService: WorkspaceService) {
         onComplete(Left(s"Subject not found: $sampleAccession"))
     }
   }
+
+  // ============================================
+  // Y Chromosome Profile Methods
+  // ============================================
+
+  /**
+   * Summary data for Y Profile display in subject detail view.
+   */
+  case class YProfileSummary(
+    profileId: UUID,
+    consensusHaplogroup: Option[String],
+    haplogroupConfidence: Option[Double],
+    totalVariants: Int,
+    confirmedCount: Int,
+    novelCount: Int,
+    conflictCount: Int,
+    sourceCount: Int,
+    callableRegionPct: Option[Double]
+  )
+
+  /**
+   * Full Y Profile data for detail dialog.
+   */
+  case class YProfileLoadedData(
+    profile: YChromosomeProfileEntity,
+    variants: List[YProfileVariantEntity],
+    sources: List[YProfileSourceEntity],
+    variantCalls: Map[UUID, List[YVariantSourceCallEntity]],
+    auditEntries: List[YVariantAuditEntity]
+  )
+
+  /**
+   * Get Y Profile summary for a biosample (lightweight query).
+   * Returns None if no profile exists or service unavailable.
+   */
+  def getYProfileSummary(biosampleId: UUID): Option[YProfileSummary] =
+    yProfileService.flatMap { service =>
+      service.getProfileByBiosample(biosampleId).toOption.flatten.map { profile =>
+        YProfileSummary(
+          profileId = profile.id,
+          consensusHaplogroup = profile.consensusHaplogroup,
+          haplogroupConfidence = profile.haplogroupConfidence,
+          totalVariants = profile.totalVariants,
+          confirmedCount = profile.confirmedCount,
+          novelCount = profile.novelCount,
+          conflictCount = profile.conflictCount,
+          sourceCount = profile.sourceCount,
+          callableRegionPct = profile.callableRegionPct
+        )
+      }
+    }
+
+  /**
+   * Check if Y Profile service is available.
+   */
+  def isYProfileAvailable: Boolean = yProfileService.isDefined
+
+  /**
+   * Load full Y Profile data for a biosample (async, on-demand).
+   *
+   * @param biosampleId The biosample UUID
+   * @param onComplete Callback with Either[error, data]
+   */
+  def loadYProfileForBiosample(
+    biosampleId: UUID,
+    onComplete: Either[String, YProfileLoadedData] => Unit
+  ): Unit = {
+    yProfileService match {
+      case None =>
+        onComplete(Left("Y Profile service not available"))
+
+      case Some(service) =>
+        Future {
+          for {
+            profileOpt <- service.getProfileByBiosample(biosampleId)
+            profile <- profileOpt.toRight("No Y Profile found for this biosample")
+            variants <- service.getVariants(profile.id)
+            sources <- service.getSources(profile.id)
+            // Load variant calls for each variant
+            variantCalls = variants.flatMap { v =>
+              service.getVariantCalls(v.id).toOption.map(calls => v.id -> calls)
+            }.toMap
+            // Load audit entries for all variants
+            auditEntries = variants.flatMap { v =>
+              service.getAuditHistory(v.id).toOption.getOrElse(Nil)
+            }
+          } yield YProfileLoadedData(profile, variants, sources, variantCalls, auditEntries)
+        }.onComplete {
+          case Success(result) =>
+            Platform.runLater {
+              onComplete(result)
+            }
+          case Failure(ex) =>
+            Platform.runLater {
+              onComplete(Left(ex.getMessage))
+            }
+        }
+    }
+  }
+
+  /**
+   * Look up biosample UUID by sample accession.
+   * Searches the workspace samples for matching accession and extracts UUID from atUri.
+   */
+  def getBiosampleIdByAccession(sampleAccession: String): Option[UUID] =
+    samples.find(_.sampleAccession == sampleAccession).flatMap { sample =>
+      // Try to extract UUID from atUri (format: at://did:plc:xxx/collection/uuid)
+      sample.atUri.flatMap { uri =>
+        Try(UUID.fromString(uri.split("/").last)).toOption
+      }
+    }
 }

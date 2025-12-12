@@ -12,7 +12,7 @@ import scalafx.application.Platform
 import scalafx.scene.control.ControlIncludes._
 import scalafx.scene.control.ButtonType
 import scalafx.scene.input.{MouseEvent, DragEvent, TransferMode, ClipboardContent}
-import java.util.{Timer, TimerTask}
+import java.util.{Timer, TimerTask, UUID}
 
 class WorkbenchView(val viewModel: WorkbenchViewModel) extends SplitPane {
   println(s"[DEBUG] WorkbenchView: Initializing WorkbenchView. ViewModel Projects: ${viewModel.projects.size}, ViewModel Samples: ${viewModel.samples.size}")
@@ -166,15 +166,18 @@ class WorkbenchView(val viewModel: WorkbenchViewModel) extends SplitPane {
       onRemove = (uri: String) => handleRemoveStrProfile(subject.sampleAccession, uri)
     )
 
+    // Y Profile section (shown if available)
+    val yProfileSection = createYProfileSection(subject)
+
+    // Build the children list with optional Y Profile section
     detailView.children.addAll(
       new Label(s"Subject: ${subject.donorIdentifier}") { style = "-fx-font-size: 20px; -fx-font-weight: bold;" },
       actionButtons,
       infoSection,
-      haplogroupSection,
-      sequenceTable,
-      chipTable,
-      strTable
+      haplogroupSection
     )
+    yProfileSection.foreach(section => detailView.children.add(section))
+    detailView.children.addAll(sequenceTable, chipTable, strTable)
   }
 
   /** Shows the reconciliation detail dialog for a subject */
@@ -185,6 +188,115 @@ class WorkbenchView(val viewModel: WorkbenchViewModel) extends SplitPane {
   ): Unit = {
     val dialog = new ReconciliationDetailDialog(subject, yDnaReconciliation, mtDnaReconciliation)
     dialog.showAndWait()
+  }
+
+  /** Creates the Y Chromosome Profile summary section for a subject */
+  private def createYProfileSection(subject: Biosample): Option[VBox] = {
+    if (!viewModel.isYProfileAvailable) return None
+
+    // Try to get biosample UUID from atUri
+    val biosampleId = viewModel.getBiosampleIdByAccession(subject.sampleAccession)
+    biosampleId.flatMap { bsId =>
+      viewModel.getYProfileSummary(bsId).map { summary =>
+        new VBox(8) {
+          padding = Insets(10, 0, 10, 0)
+          style = "-fx-background-color: #f5f5f5; -fx-background-radius: 6; -fx-padding: 10;"
+
+          val headerBox = new HBox(10) {
+            alignment = Pos.CenterLeft
+            children = Seq(
+              new Label("Y Chromosome Profile") {
+                style = "-fx-font-size: 14px; -fx-font-weight: bold;"
+              },
+              new Region { HBox.setHgrow(this, Priority.Always) },
+              new Button("View Details") {
+                style = "-fx-font-size: 11px;"
+                onAction = _ => handleViewYProfile(subject, bsId)
+              }
+            )
+          }
+
+          // Haplogroup display
+          val haplogroupLabel = summary.consensusHaplogroup match {
+            case Some(hg) =>
+              val confidenceText = summary.haplogroupConfidence.map(c => f" (${c * 100}%.0f%%)").getOrElse("")
+              new Label(s"$hg$confidenceText") {
+                style = "-fx-font-size: 16px; -fx-font-weight: bold; -fx-text-fill: #2d5a2d;"
+              }
+            case None =>
+              new Label("Haplogroup pending") {
+                style = "-fx-font-size: 14px; -fx-text-fill: #666;"
+              }
+          }
+
+          // Status badges
+          val badgeBox = new HBox(8) {
+            alignment = Pos.CenterLeft
+            children = Seq(
+              if (summary.confirmedCount > 0) Some(createBadge(s"${summary.confirmedCount} Confirmed", "#4CAF50")) else None,
+              if (summary.novelCount > 0) Some(createBadge(s"${summary.novelCount} Novel", "#2196F3")) else None,
+              if (summary.conflictCount > 0) Some(createBadge(s"${summary.conflictCount} Conflict", "#F44336")) else None,
+              Some(createBadge(s"${summary.sourceCount} Source${if (summary.sourceCount != 1) "s" else ""}", "#9E9E9E"))
+            ).flatten
+          }
+
+          // Callable region (if available)
+          val callableLabel = summary.callableRegionPct.map { pct =>
+            new Label(f"Callable: ${pct * 100}%.1f%%") {
+              style = "-fx-font-size: 11px; -fx-text-fill: #666;"
+            }
+          }
+
+          children = Seq(headerBox, haplogroupLabel, badgeBox) ++ callableLabel.toSeq
+        }
+      }
+    }
+  }
+
+  /** Creates a colored badge label */
+  private def createBadge(text: String, color: String): Label = {
+    new Label(text) {
+      style = s"-fx-background-color: $color; -fx-text-fill: white; -fx-padding: 2 6 2 6; -fx-background-radius: 3; -fx-font-size: 11px;"
+    }
+  }
+
+  /** Handles opening the Y Profile detail dialog */
+  private def handleViewYProfile(subject: Biosample, biosampleId: UUID): Unit = {
+    // Show loading indicator
+    val loadingAlert = new Alert(AlertType.Information) {
+      title = "Loading"
+      headerText = "Loading Y Profile..."
+      contentText = "Please wait while the profile data is loaded."
+      buttonTypes = Seq.empty // No buttons - auto-close when loaded
+    }
+
+    // Load data asynchronously
+    viewModel.loadYProfileForBiosample(biosampleId, {
+      case Right(data) =>
+        Platform.runLater {
+          loadingAlert.close()
+          val dialog = new YProfileDetailDialog(
+            data.profile,
+            data.variants,
+            data.sources,
+            data.variantCalls,
+            data.auditEntries,
+            subject.donorIdentifier
+          )
+          dialog.showAndWait()
+        }
+      case Left(error) =>
+        Platform.runLater {
+          loadingAlert.close()
+          new Alert(AlertType.Error) {
+            title = "Error"
+            headerText = "Could not load Y Profile"
+            contentText = error
+          }.showAndWait()
+        }
+    })
+
+    loadingAlert.show()
   }
 
   /** Handles triggering analysis for a sequence run */

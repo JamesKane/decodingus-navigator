@@ -83,7 +83,7 @@ object GenomeNavigatorApp extends JFXApp3 {
   }
 
   // ViewModel is created early so topBar can reference it
-  private lazy val viewModel = new WorkbenchViewModel(workspaceService)
+  private lazy val viewModel = new WorkbenchViewModel(workspaceService, Some(databaseContext.transactor))
 
   private lazy val topBar: TopBar = new TopBar(
     onLogin = () => {
