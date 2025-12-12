@@ -38,6 +38,7 @@ class WholeGenomeVariantCaller {
    * @param outputDir Directory to write output files
    * @param referenceBuild Reference build name (e.g., "GRCh38")
    * @param onProgress Progress callback (message, current, total)
+   * @param sexInferenceResult Optional pre-computed sex inference result (avoids re-running)
    * @return Either error or the generated VCF metadata
    */
   def generateWholeGenomeVcf(
@@ -45,7 +46,8 @@ class WholeGenomeVariantCaller {
     referencePath: String,
     outputDir: Path,
     referenceBuild: String,
-    onProgress: (String, Int, Int) => Unit
+    onProgress: (String, Int, Int) => Unit,
+    sexInferenceResult: Option[SexInference.SexInferenceResult] = None
   ): Either[String, CachedVcfInfo] = {
     // Ensure BAM index exists
     onProgress("Checking BAM index...", 0, 1)
@@ -65,23 +67,26 @@ class WholeGenomeVariantCaller {
       return Left("No main assembly contigs found in reference")
     }
 
-    // Infer sex for ploidy determination
-    onProgress("Inferring sex from coverage ratios...", 0, 1)
-    val sexResult = SexInference.inferFromBam(bamPath, (msg, _) => onProgress(msg, 0, 1)) match {
-      case Left(error) =>
-        // Continue with unknown sex (will use conservative defaults)
-        println(s"[WholeGenomeVariantCaller] Sex inference failed: $error, using default ploidy")
-        SexInference.SexInferenceResult(
-          SexInference.InferredSex.Unknown,
-          xAutosomeRatio = 0.0,
-          autosomeMeanCoverage = 0.0,
-          xCoverage = 0.0,
-          confidence = "low"
-        )
-      case Right(result) =>
-        println(s"[WholeGenomeVariantCaller] Inferred sex: ${result.inferredSex}, confidence: ${result.confidence}")
-        result
+    // Use provided sex result or infer if not provided
+    val sexResult = sexInferenceResult.getOrElse {
+      onProgress("Inferring sex from coverage ratios...", 0, 1)
+      SexInference.inferFromBam(bamPath, (msg, _) => onProgress(msg, 0, 1)) match {
+        case Left(error) =>
+          // Continue with unknown sex (will use conservative defaults)
+          println(s"[WholeGenomeVariantCaller] Sex inference failed: $error, using default ploidy")
+          SexInference.SexInferenceResult(
+            SexInference.InferredSex.Unknown,
+            xAutosomeRatio = 0.0,
+            autosomeMeanCoverage = 0.0,
+            xCoverage = 0.0,
+            confidence = "low"
+          )
+        case Right(result) =>
+          println(s"[WholeGenomeVariantCaller] Inferred sex: ${result.inferredSex}, confidence: ${result.confidence}")
+          result
+      }
     }
+    println(s"[WholeGenomeVariantCaller] Using sex: ${sexResult.inferredSex}, confidence: ${sexResult.confidence}")
 
     // Create output directory
     Files.createDirectories(outputDir)

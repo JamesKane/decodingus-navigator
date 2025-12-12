@@ -188,8 +188,8 @@ class GatkHaplotypeCallerProcessor {
       "--disable-sequence-dictionary-validation", "true",
       // Haploid calling for mtDNA and Y-DNA
       "--sample-ploidy", "1",
-      // Standard confidence for variant discovery
-      "--standard-min-confidence-threshold-for-calling", "20.0"
+      // Use same confidence threshold as WholeGenomeVariantCaller for consistency
+      "--standard-min-confidence-threshold-for-calling", "10.0"
       // Default output-mode is EMIT_VARIANTS_ONLY which is what we want
     )
 

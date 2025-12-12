@@ -13,9 +13,11 @@ import scala.util.{Try, Using}
  * Tracks the completion status of analysis pipeline steps.
  * Allows resuming from the last successful step on re-run.
  *
+ * @param readMetricsCompleted Read metrics step completed (gets read length for WGS)
  * @param wgsMetricsCompleted WGS metrics step completed successfully
  * @param callableLociCompleted Callable loci step completed successfully
  * @param sexInferenceCompleted Sex inference step completed successfully
+ * @param variantCallingCompleted Variant calling step completed (generates VCF, requires sex for ploidy)
  * @param mtDnaHaplogroupCompleted mtDNA haplogroup step completed successfully
  * @param yDnaHaplogroupCompleted Y-DNA haplogroup step completed successfully (or skipped if female)
  * @param yDnaSkipped Y-DNA was skipped (female sample)
@@ -23,45 +25,55 @@ import scala.util.{Try, Using}
  * @param lastUpdated Timestamp of last checkpoint update
  * @param bamPath Path to the BAM file being analyzed (for validation)
  * @param bamModified BAM file modification time (for invalidation)
+ * @param maxReadLength Cached read length from read metrics step (for WGS metrics)
  */
 case class AnalysisCheckpoint(
+  readMetricsCompleted: Boolean = false,
   wgsMetricsCompleted: Boolean = false,
   callableLociCompleted: Boolean = false,
   sexInferenceCompleted: Boolean = false,
+  variantCallingCompleted: Boolean = false,
   mtDnaHaplogroupCompleted: Boolean = false,
   yDnaHaplogroupCompleted: Boolean = false,
   yDnaSkipped: Boolean = false,
   ancestryCompleted: Boolean = false,
   lastUpdated: Instant = Instant.now(),
   bamPath: Option[String] = None,
-  bamModified: Option[Long] = None
+  bamModified: Option[Long] = None,
+  maxReadLength: Option[Int] = None
 ) {
   /** Check if all steps are complete */
   def isComplete: Boolean =
+    readMetricsCompleted &&
     wgsMetricsCompleted &&
     callableLociCompleted &&
     sexInferenceCompleted &&
+    variantCallingCompleted &&
     mtDnaHaplogroupCompleted &&
     (yDnaHaplogroupCompleted || yDnaSkipped) &&
     ancestryCompleted
 
-  /** Get the next incomplete step number (1-6) or None if all complete */
+  /** Get the next incomplete step number (1-8) or None if all complete */
   def nextStep: Option[Int] = {
-    if (!wgsMetricsCompleted) Some(1)
-    else if (!callableLociCompleted) Some(2)
-    else if (!sexInferenceCompleted) Some(3)
-    else if (!mtDnaHaplogroupCompleted) Some(4)
-    else if (!yDnaHaplogroupCompleted && !yDnaSkipped) Some(5)
-    else if (!ancestryCompleted) Some(6)
+    if (!readMetricsCompleted) Some(1)
+    else if (!wgsMetricsCompleted) Some(2)
+    else if (!callableLociCompleted) Some(3)
+    else if (!sexInferenceCompleted) Some(4)
+    else if (!variantCallingCompleted) Some(5)
+    else if (!mtDnaHaplogroupCompleted) Some(6)
+    else if (!yDnaHaplogroupCompleted && !yDnaSkipped) Some(7)
+    else if (!ancestryCompleted) Some(8)
     else None
   }
 
   /** Get count of completed steps */
   def completedSteps: Int = {
     var count = 0
+    if (readMetricsCompleted) count += 1
     if (wgsMetricsCompleted) count += 1
     if (callableLociCompleted) count += 1
     if (sexInferenceCompleted) count += 1
+    if (variantCallingCompleted) count += 1
     if (mtDnaHaplogroupCompleted) count += 1
     if (yDnaHaplogroupCompleted || yDnaSkipped) count += 1
     if (ancestryCompleted) count += 1
@@ -113,7 +125,7 @@ object AnalysisCheckpoint {
   def loadAndValidate(artifactDir: Path, bamPath: String): AnalysisCheckpoint = {
     val checkpoint = load(artifactDir)
     if (checkpoint.isValidFor(bamPath)) {
-      println(s"[AnalysisCheckpoint] Resuming from step ${checkpoint.nextStep.getOrElse("complete")} (${checkpoint.completedSteps}/6 steps done)")
+      println(s"[AnalysisCheckpoint] Resuming from step ${checkpoint.nextStep.getOrElse("complete")} (${checkpoint.completedSteps}/8 steps done)")
       checkpoint
     } else {
       if (checkpoint.bamPath.isDefined) {
@@ -140,14 +152,28 @@ object AnalysisCheckpoint {
    */
   def markStepComplete(artifactDir: Path, checkpoint: AnalysisCheckpoint, step: Int, skipped: Boolean = false): AnalysisCheckpoint = {
     val updated = step match {
-      case 1 => checkpoint.copy(wgsMetricsCompleted = true)
-      case 2 => checkpoint.copy(callableLociCompleted = true)
-      case 3 => checkpoint.copy(sexInferenceCompleted = true)
-      case 4 => checkpoint.copy(mtDnaHaplogroupCompleted = true)
-      case 5 => if (skipped) checkpoint.copy(yDnaSkipped = true) else checkpoint.copy(yDnaHaplogroupCompleted = true)
-      case 6 => checkpoint.copy(ancestryCompleted = true)
+      case 1 => checkpoint.copy(readMetricsCompleted = true)
+      case 2 => checkpoint.copy(wgsMetricsCompleted = true)
+      case 3 => checkpoint.copy(callableLociCompleted = true)
+      case 4 => checkpoint.copy(sexInferenceCompleted = true)
+      case 5 => checkpoint.copy(variantCallingCompleted = true)
+      case 6 => checkpoint.copy(mtDnaHaplogroupCompleted = true)
+      case 7 => if (skipped) checkpoint.copy(yDnaSkipped = true) else checkpoint.copy(yDnaHaplogroupCompleted = true)
+      case 8 => checkpoint.copy(ancestryCompleted = true)
       case _ => checkpoint
     }
+    save(artifactDir, updated)
+    updated
+  }
+
+  /**
+   * Update checkpoint with read length from read metrics step.
+   */
+  def markReadMetricsComplete(artifactDir: Path, checkpoint: AnalysisCheckpoint, maxReadLength: Int): AnalysisCheckpoint = {
+    val updated = checkpoint.copy(
+      readMetricsCompleted = true,
+      maxReadLength = Some(maxReadLength)
+    )
     save(artifactDir, updated)
     updated
   }
