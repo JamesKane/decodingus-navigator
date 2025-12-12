@@ -394,4 +394,17 @@ object YRegionAnnotator {
   val grch37Heterochromatin: List[GenomicRegion] = List(
     GenomicRegion("chrY", 25294945, 59034049, RegionType.Heterochromatin, Some("Yq12"))
   )
+
+  /**
+   * CHM13v2.0 (T2T) Y chromosome heterochromatin boundaries.
+   *
+   * The T2T-Y assembly is 62,460,029 bp with complete heterochromatin sequence.
+   * Yq12 contains ~30 Mbp of DYZ1, DYZ2, DYZ3 satellite arrays.
+   *
+   * Note: More precise boundaries available from chm13v2.0_censat_v2.1.bed
+   * This is a conservative estimate based on T2T-Y publication.
+   */
+  val chm13v2Heterochromatin: List[GenomicRegion] = List(
+    GenomicRegion("chrY", 26637971, 62122809, RegionType.Heterochromatin, Some("Yq12"))
+  )
 }

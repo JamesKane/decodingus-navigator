@@ -26,11 +26,18 @@ case class YRegionPaths(
 /**
  * Gateway for downloading and caching Y chromosome region annotation files.
  *
- * Downloads from:
- * - ybrowse.org: cytobands, palindromes, STRs (GFF3 format, GRCh38)
- * - GIAB genome-stratifications: PAR, XTR, ampliconic (BED format, GRCh38)
+ * Downloads from build-specific native sources when available:
  *
- * Supports liftover to GRCh37 and CHM13v2 using htsjdk LiftOver.
+ * GRCh38:
+ * - ybrowse.org: cytobands, palindromes, STRs (GFF3 format)
+ * - GIAB genome-stratifications: PAR, XTR, ampliconic (BED format)
+ *
+ * CHM13v2.0 (hs1) - Native T2T annotations for best quality:
+ * - T2T/CHM13 S3: amplicons, palindromes, cytobands, sequence class (BED format)
+ * - GIAB genome-stratifications: PAR, XTR (BED format)
+ *
+ * GRCh37:
+ * - Liftover from GRCh38 (no native files available)
  *
  * @param onProgress Callback for progress updates (message, 0.0-1.0)
  */
@@ -38,8 +45,10 @@ class YRegionGateway(onProgress: (String, Double) => Unit = (_, _) => ()) {
   private val cache = new YRegionCache
   private val liftoverGateway = new LiftoverGateway((_, _) => ())
 
-  // ybrowse.org GFF3 URLs (GRCh38 coordinates)
-  private val ybrowseUrls: Map[String, String] = Map(
+  // ========== GRCh38 Sources ==========
+
+  // ybrowse.org GFF3 URLs (GRCh38/hg38 coordinates)
+  private val grch38YbrowseUrls: Map[String, String] = Map(
     "cytobands" -> "https://ybrowse.org/gbrowse2/gff/cytobands_hg38.gff3",
     "palindromes" -> "https://ybrowse.org/gbrowse2/gff/palindromes_hg38.gff3",
     "strs" -> "https://ybrowse.org/gbrowse2/gff/str_hg38.gff3"
@@ -47,14 +56,51 @@ class YRegionGateway(onProgress: (String, Double) => Unit = (_, _) => ()) {
 
   // GIAB genome-stratifications BED URLs (GRCh38)
   // From: https://github.com/genome-in-a-bottle/genome-stratifications
-  private val giabUrls: Map[String, String] = Map(
+  private val grch38GiabUrls: Map[String, String] = Map(
     "par" -> "https://raw.githubusercontent.com/genome-in-a-bottle/genome-stratifications/master/GRCh38/XY/GRCh38_chrY_PAR.bed",
     "xtr" -> "https://raw.githubusercontent.com/genome-in-a-bottle/genome-stratifications/master/GRCh38/XY/GRCh38_chrY_XTR.bed",
     "ampliconic" -> "https://raw.githubusercontent.com/genome-in-a-bottle/genome-stratifications/master/GRCh38/XY/GRCh38_chrY_ampliconic.bed"
   )
 
-  // Builds that need liftover from GRCh38
-  private val liftoverBuilds: Set[String] = Set("GRCh37", "CHM13v2")
+  // ========== GRCh37 Sources ==========
+
+  // ybrowse.org GFF3 URLs (GRCh37/hg19 coordinates) - native files, no liftover needed!
+  private val grch37YbrowseUrls: Map[String, String] = Map(
+    "cytobands" -> "https://ybrowse.org/gbrowse2/gff/cytobands_hg19.gff3",
+    "palindromes" -> "https://ybrowse.org/gbrowse2/gff/palindromes_hg19.gff3",
+    "strs" -> "https://ybrowse.org/gbrowse2/gff/str_hg19.gff3"
+  )
+
+  // GIAB genome-stratifications BED URLs (GRCh37)
+  // From: https://github.com/genome-in-a-bottle/genome-stratifications
+  private val grch37GiabUrls: Map[String, String] = Map(
+    "par" -> "https://raw.githubusercontent.com/genome-in-a-bottle/genome-stratifications/master/GRCh37/XY/GRCh37_chrY_PAR.bed",
+    "xtr" -> "https://raw.githubusercontent.com/genome-in-a-bottle/genome-stratifications/master/GRCh37/XY/GRCh37_chrY_XTR.bed",
+    "ampliconic" -> "https://raw.githubusercontent.com/genome-in-a-bottle/genome-stratifications/master/GRCh37/XY/GRCh37_chrY_ampliconic.bed"
+  )
+
+  // ========== CHM13v2.0 (hs1) Native Sources ==========
+
+  // T2T CHM13 S3 URLs - Native annotations from the T2T consortium
+  // From: https://github.com/marbl/CHM13
+  // These are the gold standard for CHM13v2.0 with 30+ Mbp more Y sequence than GRCh38
+  private val chm13T2tUrls: Map[String, String] = Map(
+    "cytobands" -> "https://s3-us-west-2.amazonaws.com/human-pangenomics/T2T/CHM13/assemblies/annotation/chm13v2.0_cytobands_allchrs.bed",
+    "palindromes" -> "https://s3-us-west-2.amazonaws.com/human-pangenomics/T2T/CHM13/assemblies/annotation/chm13v2.0Y_inverted_repeats_v1.bed",
+    "ampliconic" -> "https://s3-us-west-2.amazonaws.com/human-pangenomics/T2T/CHM13/assemblies/annotation/chm13v2.0Y_amplicons_v1.bed",
+    "sequence_class" -> "https://s3-us-west-2.amazonaws.com/human-pangenomics/T2T/CHM13/assemblies/annotation/chm13v2.0_chrXY_sequence_class_v1.bed",
+    "azf_dyz" -> "https://s3-us-west-2.amazonaws.com/human-pangenomics/T2T/CHM13/assemblies/annotation/chm13v2.0Y_AZF_DYZ_v1.bed",
+    "censat" -> "https://s3-us-west-2.amazonaws.com/human-pangenomics/T2T/CHM13/assemblies/annotation/chm13v2.0_censat_v2.1.bed"
+  )
+
+  // GIAB genome-stratifications BED URLs (CHM13v2.0)
+  // From: https://github.com/genome-in-a-bottle/genome-stratifications/tree/master/CHM13v2.0/XY
+  private val chm13GiabUrls: Map[String, String] = Map(
+    "par" -> "https://raw.githubusercontent.com/genome-in-a-bottle/genome-stratifications/master/CHM13v2.0/XY/CHM13v2.0_chrY_PAR.bed",
+    "xtr" -> "https://raw.githubusercontent.com/genome-in-a-bottle/genome-stratifications/master/CHM13v2.0/XY/CHM13v2.0_chrY_XTR.bed"
+  )
+
+  // Note: All builds now have native sources - liftover is only used as fallback for missing region types
 
   /**
    * Resolve all region files for a reference build.
@@ -81,45 +127,108 @@ class YRegionGateway(onProgress: (String, Double) => Unit = (_, _) => ()) {
    * @return Either error message or path to the region file
    */
   def resolve(regionType: String, referenceBuild: String): Either[String, Path] = {
+    // Normalize build name
+    val normalizedBuild = normalizeBuildName(referenceBuild)
+
     // Check cache first
-    cache.getPath(regionType, referenceBuild) match {
+    cache.getPath(regionType, normalizedBuild) match {
       case Some(path) =>
-        println(s"[YRegionGateway] Found $regionType for $referenceBuild in cache: $path")
+        println(s"[YRegionGateway] Found $regionType for $normalizedBuild in cache: $path")
         Right(path)
       case None =>
-        if (referenceBuild == "GRCh38") {
-          // Download directly for GRCh38
-          downloadRegionFile(regionType, referenceBuild)
-        } else if (liftoverBuilds.contains(referenceBuild)) {
-          // First ensure we have GRCh38, then liftover
-          resolve(regionType, "GRCh38").flatMap { grch38Path =>
-            liftoverRegionFile(grch38Path, regionType, "GRCh38", referenceBuild)
-          }
-        } else {
-          Left(s"Unsupported reference build: $referenceBuild")
+        normalizedBuild match {
+          case "GRCh38" =>
+            // Download directly for GRCh38
+            downloadGrch38RegionFile(regionType)
+
+          case "GRCh37" =>
+            // Download native GRCh37 files from ybrowse + GIAB
+            downloadGrch37RegionFile(regionType)
+
+          case "CHM13v2" =>
+            // Download native CHM13v2.0 files from T2T + GIAB - best quality!
+            downloadChm13RegionFile(regionType)
+
+          case _ =>
+            Left(s"Unsupported reference build: $referenceBuild")
         }
     }
   }
 
   /**
-   * Download a region file from the appropriate source.
+   * Normalize build name to canonical form.
    */
-  private def downloadRegionFile(regionType: String, referenceBuild: String): Either[String, Path] = {
-    val url = ybrowseUrls.get(regionType).orElse(giabUrls.get(regionType))
+  private def normalizeBuildName(build: String): String = {
+    build.toLowerCase match {
+      case b if b.contains("chm13") || b == "hs1" || b.contains("t2t") => "CHM13v2"
+      case b if b.contains("grch38") || b == "hg38" => "GRCh38"
+      case b if b.contains("grch37") || b == "hg19" => "GRCh37"
+      case _ => build
+    }
+  }
+
+  /**
+   * Download a GRCh38 region file from ybrowse or GIAB.
+   */
+  private def downloadGrch38RegionFile(regionType: String): Either[String, Path] = {
+    val url = grch38YbrowseUrls.get(regionType).orElse(grch38GiabUrls.get(regionType))
     url match {
-      case Some(u) => downloadFile(regionType, referenceBuild, u)
-      case None => Left(s"Unknown region type: $regionType")
+      case Some(u) =>
+        val isGff3 = grch38YbrowseUrls.contains(regionType)
+        downloadFile(regionType, "GRCh38", u, isGff3)
+      case None => Left(s"Unknown region type for GRCh38: $regionType")
+    }
+  }
+
+  /**
+   * Download a GRCh37 region file from ybrowse or GIAB.
+   * Native files available - no liftover needed!
+   */
+  private def downloadGrch37RegionFile(regionType: String): Either[String, Path] = {
+    val url = grch37YbrowseUrls.get(regionType).orElse(grch37GiabUrls.get(regionType))
+    url match {
+      case Some(u) =>
+        val isGff3 = grch37YbrowseUrls.contains(regionType)
+        downloadFile(regionType, "GRCh37", u, isGff3)
+      case None => Left(s"Unknown region type for GRCh37: $regionType")
+    }
+  }
+
+  /**
+   * Download a CHM13v2.0 region file from native T2T or GIAB sources.
+   * CHM13v2.0 uses native annotations - no liftover needed!
+   */
+  private def downloadChm13RegionFile(regionType: String): Either[String, Path] = {
+    // CHM13v2.0 doesn't have STRs in T2T annotations - liftover from GRCh38 as fallback
+    if (regionType == "strs") {
+      println(s"[YRegionGateway] CHM13v2.0 STRs not available natively, lifting over from GRCh38")
+      return resolve("strs", "GRCh38").flatMap { grch38Path =>
+        liftoverRegionFile(grch38Path, "strs", "GRCh38", "CHM13v2")
+      }
+    }
+
+    val url = chm13T2tUrls.get(regionType).orElse(chm13GiabUrls.get(regionType))
+    url match {
+      case Some(u) =>
+        // All CHM13v2.0 files are BED format
+        downloadFile(regionType, "CHM13v2", u, isGff3 = false)
+      case None => Left(s"Unknown region type for CHM13v2.0: $regionType")
     }
   }
 
   /**
    * Download a file from URL and cache it.
+   *
+   * @param regionType Type of region
+   * @param referenceBuild Target build
+   * @param url Download URL
+   * @param isGff3 True if file is GFF3 format, false for BED format
    */
-  private def downloadFile(regionType: String, referenceBuild: String, url: String): Either[String, Path] = {
+  private def downloadFile(regionType: String, referenceBuild: String, url: String, isGff3: Boolean): Either[String, Path] = {
     onProgress(s"Downloading $regionType for $referenceBuild...", 0.0)
     println(s"[YRegionGateway] Downloading $regionType from $url")
 
-    val ext = if (YRegionCache.gff3Types.contains(regionType)) ".gff3" else ".bed"
+    val ext = if (isGff3) ".gff3" else ".bed"
     val tempFile = Files.createTempFile(s"yregion-$regionType-", ext)
 
     try {
@@ -373,21 +482,42 @@ class YRegionGateway(onProgress: (String, Double) => Unit = (_, _) => ()) {
     referenceBuild: String,
     callableLociPath: Option[Path]
   ): Either[String, YRegionAnnotator] = {
+    val normalizedBuild = normalizeBuildName(referenceBuild)
+
     try {
-      // Parse GFF3 files
-      val cytobands = RegionFileParser.parseGff3(paths.cytobands)
-        .map(records => YRegionAnnotator.gff3ToRegions(records, RegionType.Cytoband))
-        .getOrElse(Nil)
+      // CHM13v2.0 uses BED format for all files (from T2T consortium)
+      // GRCh38/GRCh37 use GFF3 from ybrowse for cytobands/palindromes/strs
+      val useBedFormat = normalizedBuild == "CHM13v2"
 
-      val palindromes = RegionFileParser.parseGff3(paths.palindromes)
-        .map(records => YRegionAnnotator.gff3ToRegions(records, RegionType.Palindrome))
-        .getOrElse(Nil)
+      val cytobands = if (useBedFormat) {
+        RegionFileParser.parseBed(paths.cytobands)
+          .map(records => YRegionAnnotator.bedToRegions(
+            RegionFileParser.filterYChromosome(records, _.chrom),
+            RegionType.Cytoband
+          ))
+          .getOrElse(Nil)
+      } else {
+        RegionFileParser.parseGff3(paths.cytobands)
+          .map(records => YRegionAnnotator.gff3ToRegions(records, RegionType.Cytoband))
+          .getOrElse(Nil)
+      }
 
+      val palindromes = if (useBedFormat) {
+        RegionFileParser.parseBed(paths.palindromes)
+          .map(records => YRegionAnnotator.bedToRegions(records, RegionType.Palindrome))
+          .getOrElse(Nil)
+      } else {
+        RegionFileParser.parseGff3(paths.palindromes)
+          .map(records => YRegionAnnotator.gff3ToRegions(records, RegionType.Palindrome))
+          .getOrElse(Nil)
+      }
+
+      // STRs are always GFF3 (from ybrowse) - CHM13v2 falls back to liftover
       val strs = RegionFileParser.parseGff3(paths.strs)
         .map(records => YRegionAnnotator.gff3ToRegions(records, RegionType.STR))
         .getOrElse(Nil)
 
-      // Parse BED files
+      // BED files (same format for all builds)
       val pars = RegionFileParser.parseBed(paths.par)
         .map(records => YRegionAnnotator.bedToRegions(records, RegionType.PAR))
         .getOrElse(Nil)
@@ -401,9 +531,11 @@ class YRegionGateway(onProgress: (String, Double) => Unit = (_, _) => ()) {
         .getOrElse(Nil)
 
       // Get hardcoded heterochromatin boundaries
-      val heterochromatin = referenceBuild match {
+      // CHM13v2.0 has better heterochromatin definition from censat file (future enhancement)
+      val heterochromatin = normalizedBuild match {
         case "GRCh38" => YRegionAnnotator.grch38Heterochromatin
         case "GRCh37" => YRegionAnnotator.grch37Heterochromatin
+        case "CHM13v2" => YRegionAnnotator.chm13v2Heterochromatin
         case _ => Nil
       }
 
