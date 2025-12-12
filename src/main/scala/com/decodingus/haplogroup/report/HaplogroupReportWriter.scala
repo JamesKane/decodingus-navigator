@@ -1,10 +1,10 @@
 package com.decodingus.haplogroup.report
 
-import com.decodingus.analysis.PrivateVariant
-import com.decodingus.haplogroup.model.{Haplogroup, HaplogroupResult, Locus, NamedVariant}
+import com.decodingus.analysis.{PrivateVariant, SnpCallInfo}
+import com.decodingus.haplogroup.model.{EnrichedVariantCall, Haplogroup, HaplogroupResult, Locus, NamedVariant}
 import com.decodingus.haplogroup.tree.{TreeProviderType, TreeType}
 import com.decodingus.haplogroup.vendor.NamedVariantCache
-import com.decodingus.refgenome.StrAnnotator
+import com.decodingus.refgenome.{StrAnnotator, YRegionAnnotator}
 
 import java.io.{File, PrintWriter}
 import java.time.LocalDateTime
@@ -62,6 +62,30 @@ object HaplogroupReportWriter {
   }
 
   /**
+   * Format depth for display.
+   */
+  private def formatDepth(depth: Option[Int]): String = {
+    depth.map(d => s"${d}x").getOrElse("-")
+  }
+
+  /**
+   * Calculate adjusted quality stars based on depth and region modifiers.
+   */
+  private def adjustedQualityToStars(
+    quality: Option[Double],
+    depth: Option[Int],
+    regionModifier: Double
+  ): String = {
+    quality match {
+      case None => "-"
+      case Some(q) =>
+        val depthModifier = if (depth.exists(_ < 10)) 0.7 else 1.0
+        val adjustedQ = q * depthModifier * regionModifier
+        qualityToStars(Some(adjustedQ))
+    }
+  }
+
+  /**
    * Write a haplogroup analysis report to the specified directory.
    *
    * @param outputDir Directory to write the report
@@ -76,6 +100,8 @@ object HaplogroupReportWriter {
    * @param sampleBuild Optional reference build of the sample BAM/CRAM
    * @param treeBuild Optional reference build of the tree coordinates
    * @param namedVariantCache Optional cache for looking up variant aliases and rsIds
+   * @param snpCallInfo Optional map of position to full SNP call info (quality, depth)
+   * @param yRegionAnnotator Optional Y chromosome region annotator for region info
    */
   def writeReport(
                    outputDir: File,
@@ -89,7 +115,9 @@ object HaplogroupReportWriter {
                    strAnnotator: Option[StrAnnotator] = None,
                    sampleBuild: Option[String] = None,
                    treeBuild: Option[String] = None,
-                   namedVariantCache: Option[NamedVariantCache] = None
+                   namedVariantCache: Option[NamedVariantCache] = None,
+                   snpCallInfo: Option[Map[Long, SnpCallInfo]] = None,
+                   yRegionAnnotator: Option[YRegionAnnotator] = None
                  ): File = {
     outputDir.mkdirs()
 
@@ -192,15 +220,25 @@ object HaplogroupReportWriter {
           treeBuild.orElse(sampleBuild).orElse(Some("GRCh38"))
         }
 
-        // Determine if we should show aliases column
+        // Determine what columns to show
         val showAliases = namedVariantCache.isDefined && namedVariantCache.exists(_.isLoaded)
+        val showDepthRegion = snpCallInfo.isDefined || yRegionAnnotator.isDefined
 
-        if (showAliases) {
-          writer.println(f"${"Contig"}%6s  ${"Position"}%12s  ${"SNP Name"}%-15s  ${"Aliases/rsIds"}%-25s  ${"Anc"}%5s  ${"Der"}%5s  ${"Call"}%5s  ${"State"}%10s")
+        // Print header based on available columns
+        if (showDepthRegion) {
+          if (showAliases) {
+            writer.println(f"${"Contig"}%6s  ${"Position"}%12s  ${"SNP Name"}%-12s  ${"Aliases"}%-18s  ${"Anc"}%4s  ${"Der"}%4s  ${"Call"}%4s  ${"State"}%-10s  ${"Depth"}%6s  ${"Region"}%-15s  ${"Quality"}%-10s")
+          } else {
+            writer.println(f"${"Contig"}%6s  ${"Position"}%12s  ${"SNP Name"}%-15s  ${"Anc"}%4s  ${"Der"}%4s  ${"Call"}%4s  ${"State"}%-10s  ${"Depth"}%6s  ${"Region"}%-15s  ${"Quality"}%-10s")
+          }
         } else {
-          writer.println(f"${"Contig"}%6s  ${"Position"}%12s  ${"SNP Name"}%-20s  ${"Anc"}%5s  ${"Der"}%5s  ${"Call"}%5s  ${"State"}%10s")
+          if (showAliases) {
+            writer.println(f"${"Contig"}%6s  ${"Position"}%12s  ${"SNP Name"}%-15s  ${"Aliases/rsIds"}%-25s  ${"Anc"}%5s  ${"Der"}%5s  ${"Call"}%5s  ${"State"}%10s")
+          } else {
+            writer.println(f"${"Contig"}%6s  ${"Position"}%12s  ${"SNP Name"}%-20s  ${"Anc"}%5s  ${"Der"}%5s  ${"Call"}%5s  ${"State"}%10s")
+          }
         }
-        writer.println("-" * 80)
+        writer.println("-" * (if (showDepthRegion) 120 else 80))
 
         allLociOnPath.sortBy(l => (l.contig, l.position)).foreach { locus =>
           val called = snpCalls.get(locus.position).getOrElse("-")
@@ -211,13 +249,44 @@ object HaplogroupReportWriter {
             case None => "No Call"
           }
 
-          if (showAliases) {
-            val aliases = variantLookupBuild.flatMap { build =>
-              namedVariantCache.flatMap(_.getByPosition(build, locus.position))
-            }.map(formatVariantAliases).getOrElse("-")
-            writer.println(f"${locus.contig}%6s  ${locus.position}%12d  ${locus.name}%-15s  $aliases%-25s  ${locus.ref}%5s  ${locus.alt}%5s  $called%5s  $state%10s")
+          // Get call info (quality, depth) if available
+          val callInfo = snpCallInfo.flatMap(_.get(locus.position))
+          val depth = callInfo.flatMap(_.depth)
+          val quality = callInfo.flatMap(_.quality)
+
+          // Get region annotation if available
+          val regionAnn = yRegionAnnotator.map(_.annotate(locus.contig, locus.position, depth))
+          val regionDisplay = regionAnn.map(_.shortDisplay).getOrElse("-")
+          val regionModifier = regionAnn.map(_.qualityModifier).getOrElse(1.0)
+
+          // Format quality - show adjusted if there's a modifier
+          val qualityDisplay = if (regionModifier < 1.0 || depth.exists(_ < 10)) {
+            val adjStars = adjustedQualityToStars(quality, depth, regionModifier)
+            s"$adjStars (adj)"
           } else {
-            writer.println(f"${locus.contig}%6s  ${locus.position}%12d  ${locus.name}%-20s  ${locus.ref}%5s  ${locus.alt}%5s  $called%5s  $state%10s")
+            qualityToStars(quality)
+          }
+
+          if (showDepthRegion) {
+            val depthStr = formatDepth(depth)
+            if (showAliases) {
+              val aliases = variantLookupBuild.flatMap { build =>
+                namedVariantCache.flatMap(_.getByPosition(build, locus.position))
+              }.map(formatVariantAliases).getOrElse("-")
+              val aliasShort = if (aliases.length > 16) aliases.take(14) + ".." else aliases
+              writer.println(f"${locus.contig}%6s  ${locus.position}%12d  ${locus.name}%-12s  $aliasShort%-18s  ${locus.ref}%4s  ${locus.alt}%4s  $called%4s  $state%-10s  $depthStr%6s  $regionDisplay%-15s  $qualityDisplay%-10s")
+            } else {
+              writer.println(f"${locus.contig}%6s  ${locus.position}%12d  ${locus.name}%-15s  ${locus.ref}%4s  ${locus.alt}%4s  $called%4s  $state%-10s  $depthStr%6s  $regionDisplay%-15s  $qualityDisplay%-10s")
+            }
+          } else {
+            if (showAliases) {
+              val aliases = variantLookupBuild.flatMap { build =>
+                namedVariantCache.flatMap(_.getByPosition(build, locus.position))
+              }.map(formatVariantAliases).getOrElse("-")
+              writer.println(f"${locus.contig}%6s  ${locus.position}%12d  ${locus.name}%-15s  $aliases%-25s  ${locus.ref}%5s  ${locus.alt}%5s  $called%5s  $state%10s")
+            } else {
+              writer.println(f"${locus.contig}%6s  ${locus.position}%12d  ${locus.name}%-20s  ${locus.ref}%5s  ${locus.alt}%5s  $called%5s  $state%10s")
+            }
           }
         }
         writer.println()
@@ -230,28 +299,49 @@ object HaplogroupReportWriter {
           v.ref.length == 1 && v.alt.length == 1
         }
 
+        // Check if we have region annotation available
+        val showDepthRegionNovel = yRegionAnnotator.isDefined || snpVariants.exists(_.depth.isDefined)
+
         // SNPs section
-        writer.println("-" * 80)
+        writer.println("-" * (if (showDepthRegionNovel) 120 else 80))
         writer.println("NOVEL/UNPLACED SNPs")
-        writer.println("-" * 80)
+        writer.println("-" * (if (showDepthRegionNovel) 120 else 80))
         if (snpVariants.isEmpty) {
           writer.println("  No novel SNPs discovered.")
         } else {
           writer.println(s"  Total novel/unplaced SNPs: ${snpVariants.size}")
           writer.println()
-          writer.println(f"${"Contig"}%6s  ${"Position"}%12s  ${"Ref"}%5s  ${"Alt"}%5s  ${"Quality"}%-10s")
-          writer.println("-" * 80)
+          if (showDepthRegionNovel) {
+            writer.println(f"${"Contig"}%6s  ${"Position"}%12s  ${"Ref"}%5s  ${"Alt"}%5s  ${"Depth"}%6s  ${"Region"}%-15s  ${"Quality"}%-10s")
+          } else {
+            writer.println(f"${"Contig"}%6s  ${"Position"}%12s  ${"Ref"}%5s  ${"Alt"}%5s  ${"Quality"}%-10s")
+          }
+          writer.println("-" * (if (showDepthRegionNovel) 120 else 80))
           snpVariants.sortBy(v => (v.contig, v.position)).foreach { v =>
-            val stars = qualityToStars(v.quality)
-            writer.println(f"${v.contig}%6s  ${v.position}%12d  ${v.ref}%5s  ${v.alt}%5s  $stars%-10s")
+            if (showDepthRegionNovel) {
+              val regionAnn = yRegionAnnotator.map(_.annotate(v.contig, v.position, v.depth))
+              val regionDisplay = regionAnn.map(_.shortDisplay).getOrElse("-")
+              val regionModifier = regionAnn.map(_.qualityModifier).getOrElse(1.0)
+              val qualityDisplay = if (regionModifier < 1.0 || v.depth.exists(_ < 10)) {
+                val adjStars = adjustedQualityToStars(v.quality, v.depth, regionModifier)
+                s"$adjStars (adj)"
+              } else {
+                qualityToStars(v.quality)
+              }
+              writer.println(f"${v.contig}%6s  ${v.position}%12d  ${v.ref}%5s  ${v.alt}%5s  ${formatDepth(v.depth)}%6s  $regionDisplay%-15s  $qualityDisplay%-10s")
+            } else {
+              val stars = qualityToStars(v.quality)
+              writer.println(f"${v.contig}%6s  ${v.position}%12d  ${v.ref}%5s  ${v.alt}%5s  $stars%-10s")
+            }
           }
         }
         writer.println()
 
         // Indels section (potential STRs) - annotate with HipSTR if available
-        writer.println("-" * 80)
+        val showDepthRegionIndel = yRegionAnnotator.isDefined || indelVariants.exists(_.depth.isDefined)
+        writer.println("-" * (if (showDepthRegionIndel) 120 else 80))
         writer.println("NOVEL/UNPLACED INDELS")
-        writer.println("-" * 80)
+        writer.println("-" * (if (showDepthRegionIndel) 120 else 80))
         if (indelVariants.isEmpty) {
           writer.println("  No novel indels discovered.")
         } else {
@@ -275,16 +365,33 @@ object HaplogroupReportWriter {
           // STR indels with annotation
           if (strIndels.nonEmpty) {
             writer.println("  Known STR Regions:")
-            writer.println(f"${"Contig"}%6s  ${"Position"}%12s  ${"Ref"}%-10s  ${"Alt"}%-10s  ${"Quality"}%-10s  ${"STR Type"}%-20s")
-            writer.println("-" * 80)
+            if (showDepthRegionIndel) {
+              writer.println(f"${"Contig"}%6s  ${"Position"}%12s  ${"Ref"}%-10s  ${"Alt"}%-10s  ${"Depth"}%6s  ${"Region"}%-12s  ${"Quality"}%-10s  ${"STR Type"}%-20s")
+            } else {
+              writer.println(f"${"Contig"}%6s  ${"Position"}%12s  ${"Ref"}%-10s  ${"Alt"}%-10s  ${"Quality"}%-10s  ${"STR Type"}%-20s")
+            }
+            writer.println("-" * (if (showDepthRegionIndel) 120 else 80))
             strIndels.sortBy(v => (v.contig, v.position)).foreach { v =>
-              val stars = qualityToStars(v.quality)
               val refDisplay = if (v.ref.length > 8) v.ref.take(6) + ".." else v.ref
               val altDisplay = if (v.alt.length > 8) v.alt.take(6) + ".." else v.alt
               val strInfo = strAnnotator.flatMap(_.findOverlapping(v.contig, v.position))
                 .map(r => strAnnotator.get.formatAnnotation(r))
                 .getOrElse("-")
-              writer.println(f"${v.contig}%6s  ${v.position}%12d  $refDisplay%-10s  $altDisplay%-10s  $stars%-10s  $strInfo%-20s")
+              if (showDepthRegionIndel) {
+                val regionAnn = yRegionAnnotator.map(_.annotate(v.contig, v.position, v.depth))
+                val regionDisplay = regionAnn.map(_.shortDisplay).getOrElse("-")
+                val regionModifier = regionAnn.map(_.qualityModifier).getOrElse(1.0)
+                val qualityDisplay = if (regionModifier < 1.0 || v.depth.exists(_ < 10)) {
+                  val adjStars = adjustedQualityToStars(v.quality, v.depth, regionModifier)
+                  s"$adjStars (adj)"
+                } else {
+                  qualityToStars(v.quality)
+                }
+                writer.println(f"${v.contig}%6s  ${v.position}%12d  $refDisplay%-10s  $altDisplay%-10s  ${formatDepth(v.depth)}%6s  $regionDisplay%-12s  $qualityDisplay%-10s  $strInfo%-20s")
+              } else {
+                val stars = qualityToStars(v.quality)
+                writer.println(f"${v.contig}%6s  ${v.position}%12d  $refDisplay%-10s  $altDisplay%-10s  $stars%-10s  $strInfo%-20s")
+              }
             }
             writer.println()
           }
@@ -294,13 +401,30 @@ object HaplogroupReportWriter {
             if (strIndels.nonEmpty) {
               writer.println("  Other Indels:")
             }
-            writer.println(f"${"Contig"}%6s  ${"Position"}%12s  ${"Ref"}%-12s  ${"Alt"}%-12s  ${"Quality"}%-10s")
-            writer.println("-" * 80)
+            if (showDepthRegionIndel) {
+              writer.println(f"${"Contig"}%6s  ${"Position"}%12s  ${"Ref"}%-12s  ${"Alt"}%-12s  ${"Depth"}%6s  ${"Region"}%-12s  ${"Quality"}%-10s")
+            } else {
+              writer.println(f"${"Contig"}%6s  ${"Position"}%12s  ${"Ref"}%-12s  ${"Alt"}%-12s  ${"Quality"}%-10s")
+            }
+            writer.println("-" * (if (showDepthRegionIndel) 120 else 80))
             otherIndels.sortBy(v => (v.contig, v.position)).foreach { v =>
-              val stars = qualityToStars(v.quality)
               val refDisplay = if (v.ref.length > 10) v.ref.take(8) + ".." else v.ref
               val altDisplay = if (v.alt.length > 10) v.alt.take(8) + ".." else v.alt
-              writer.println(f"${v.contig}%6s  ${v.position}%12d  $refDisplay%-12s  $altDisplay%-12s  $stars%-10s")
+              if (showDepthRegionIndel) {
+                val regionAnn = yRegionAnnotator.map(_.annotate(v.contig, v.position, v.depth))
+                val regionDisplay = regionAnn.map(_.shortDisplay).getOrElse("-")
+                val regionModifier = regionAnn.map(_.qualityModifier).getOrElse(1.0)
+                val qualityDisplay = if (regionModifier < 1.0 || v.depth.exists(_ < 10)) {
+                  val adjStars = adjustedQualityToStars(v.quality, v.depth, regionModifier)
+                  s"$adjStars (adj)"
+                } else {
+                  qualityToStars(v.quality)
+                }
+                writer.println(f"${v.contig}%6s  ${v.position}%12d  $refDisplay%-12s  $altDisplay%-12s  ${formatDepth(v.depth)}%6s  $regionDisplay%-12s  $qualityDisplay%-10s")
+              } else {
+                val stars = qualityToStars(v.quality)
+                writer.println(f"${v.contig}%6s  ${v.position}%12d  $refDisplay%-12s  $altDisplay%-12s  $stars%-10s")
+              }
             }
           }
         }
@@ -324,6 +448,27 @@ object HaplogroupReportWriter {
         writer.println(s"  Novel/unplaced indels: ${indels.size}")
       }
       writer.println()
+
+      // Add quality modifier legend if region annotations were used
+      if (yRegionAnnotator.isDefined) {
+        writer.println("-" * 80)
+        writer.println("QUALITY MODIFIER LEGEND")
+        writer.println("-" * 80)
+        writer.println("  Quality stars marked '(adj)' have been adjusted for region or depth:")
+        writer.println()
+        writer.println("  Region Modifiers:")
+        writer.println("    X-degenerate: 1.0x (reliable)    PAR: 0.5x           Palindrome: 0.4x")
+        writer.println("    XTR: 0.3x                        Ampliconic: 0.3x    STR: 0.25x")
+        writer.println("    Centromere: 0.1x                 Heterochromatin: 0.1x")
+        writer.println()
+        writer.println("  Depth Modifiers:")
+        writer.println("    Low depth (<10x): 0.7x           Non-callable: 0.5x")
+        writer.println()
+        writer.println("  Note: Modifiers combine multiplicatively. Adjustments affect display only,")
+        writer.println("        not internal haplogroup scoring.")
+        writer.println()
+      }
+
       writer.println("=" * 80)
     }
 

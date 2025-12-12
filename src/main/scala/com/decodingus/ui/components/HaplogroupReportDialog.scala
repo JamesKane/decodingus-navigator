@@ -438,6 +438,34 @@ class HaplogroupReportDialog(
         }
       )
 
+      // Add optional depth and region columns if data is available
+      val hasDepthData = variants.exists(_.readDepth.isDefined)
+      val hasRegionData = variants.exists(_.region.isDefined)
+
+      if (hasDepthData) {
+        // Insert depth column before quality
+        val qualityCol = columns.last
+        columns.remove(columns.size - 1)
+        columns += new TableColumn[PrivateVariantRow, String] {
+          text = "Depth"
+          cellValueFactory = r => StringProperty(r.value.readDepth.getOrElse("-"))
+          prefWidth = 60
+        }
+        columns += qualityCol
+      }
+
+      if (hasRegionData) {
+        // Insert region column before quality
+        val qualityCol = columns.last
+        columns.remove(columns.size - 1)
+        columns += new TableColumn[PrivateVariantRow, String] {
+          text = "Region"
+          cellValueFactory = r => StringProperty(r.value.region.getOrElse("-"))
+          prefWidth = 120
+        }
+        columns += qualityCol
+      }
+
       if (showStrInfo) {
         columns += new TableColumn[PrivateVariantRow, String] {
           text = "STR Type"
@@ -521,6 +549,33 @@ class HaplogroupReportDialog(
           prefWidth = 80
         }
       )
+
+      // Add optional columns if data is available
+      val hasDepthData = snpDetails.exists(_.readDepth.isDefined)
+      val hasRegionData = snpDetails.exists(_.region.isDefined)
+      val hasQualityData = snpDetails.exists(_.quality.isDefined)
+
+      if (hasDepthData) {
+        columns += new TableColumn[SnpDetailRow, String] {
+          text = "Depth"
+          cellValueFactory = r => StringProperty(r.value.readDepth.getOrElse("-"))
+          prefWidth = 60
+        }
+      }
+      if (hasRegionData) {
+        columns += new TableColumn[SnpDetailRow, String] {
+          text = "Region"
+          cellValueFactory = r => StringProperty(r.value.region.getOrElse("-"))
+          prefWidth = 120
+        }
+      }
+      if (hasQualityData) {
+        columns += new TableColumn[SnpDetailRow, String] {
+          text = "Quality"
+          cellValueFactory = r => StringProperty(r.value.quality.getOrElse("-"))
+          prefWidth = 85
+        }
+      }
     }
     VBox.setVgrow(table, Priority.Always)
 
@@ -554,8 +609,28 @@ class HaplogroupReportDialog(
 
   private case class CandidateRow(haplogroup: String, score: Double, derived: Int, ancestral: Int, noCalls: Int, depth: Int)
   private case class LineageNode(name: String, depth: Int, derivedInfo: String)
-  private case class SnpDetailRow(contig: String, position: Int, snpName: String, ancestral: String, derived: String, call: String, state: String)
-  private case class PrivateVariantRow(contig: String, position: Int, ref: String, alt: String, quality: String, strInfo: Option[String])
+  private case class SnpDetailRow(
+    contig: String,
+    position: Int,
+    snpName: String,
+    ancestral: String,
+    derived: String,
+    call: String,
+    state: String,
+    readDepth: Option[String] = None,
+    region: Option[String] = None,
+    quality: Option[String] = None
+  )
+  private case class PrivateVariantRow(
+    contig: String,
+    position: Int,
+    ref: String,
+    alt: String,
+    quality: String,
+    strInfo: Option[String],
+    readDepth: Option[String] = None,
+    region: Option[String] = None
+  )
 
   private def parseReport(reportPath: Path): ParsedReport = {
     val lines = Using.resource(Source.fromFile(reportPath.toFile))(_.getLines().toList)
@@ -616,34 +691,72 @@ class HaplogroupReportDialog(
         lineagePath = lineagePath :+ LineageNode(name, depth, derivedInfo)
       }
 
-      // SNP details parsing
+      // SNP details parsing - handles both old (7 cols) and new (10 cols with depth/region/quality) formats
       if (currentSection == "snp_details") {
         if (trimmed.startsWith("Contig")) inSnpSection = true
         else if (inSnpSection && trimmed.matches("^[A-Za-z0-9]+\\s+\\d+.*")) {
           val parts = trimmed.split("\\s+")
-          if (parts.length >= 7) {
+          if (parts.length >= 10) {
+            // New format with depth, region, quality: Contig Position SNP Anc Der Call State Depth Region Quality
+            snpDetails = snpDetails :+ SnpDetailRow(
+              parts(0), parts(1).toInt, parts(2), parts(3), parts(4), parts(5), parts(6),
+              readDepth = Some(parts(7)),
+              region = Some(parts(8)),
+              quality = Some(parts.drop(9).mkString(" "))
+            )
+          } else if (parts.length >= 7) {
+            // Old format: Contig Position SNP Anc Der Call State
             snpDetails = snpDetails :+ SnpDetailRow(parts(0), parts(1).toInt, parts(2), parts(3), parts(4), parts(5), parts(6))
           }
         }
       }
 
-      // Novel SNPs parsing
+      // Novel SNPs parsing - handles both old (5 cols) and new (7 cols with depth/region) formats
       if (currentSection == "novel_snps") {
         if (trimmed.startsWith("Contig")) inNovelSnpSection = true
         else if (inNovelSnpSection && trimmed.matches("^[A-Za-z0-9]+\\s+\\d+.*")) {
           val parts = trimmed.split("\\s+")
-          if (parts.length >= 5) {
+          if (parts.length >= 7) {
+            // New format with depth, region: Contig Position Ref Alt Depth Region Quality
+            privateSnps = privateSnps :+ PrivateVariantRow(
+              parts(0), parts(1).toInt, parts(2), parts(3),
+              quality = parts.drop(6).mkString(" "),
+              strInfo = None,
+              readDepth = Some(parts(4)),
+              region = Some(parts(5))
+            )
+          } else if (parts.length >= 5) {
+            // Old format: Contig Position Ref Alt Quality
             privateSnps = privateSnps :+ PrivateVariantRow(parts(0), parts(1).toInt, parts(2), parts(3), parts.drop(4).mkString(" "), None)
           }
         }
       }
 
-      // Novel indels parsing
+      // Novel indels parsing - handles both old (5+ cols) and new (7+ cols with depth/region) formats
       if (currentSection == "novel_indels") {
         if (trimmed.startsWith("Contig")) inNovelIndelSection = true
         else if (inNovelIndelSection && trimmed.matches("^[A-Za-z0-9]+\\s+\\d+.*")) {
           val parts = trimmed.split("\\s+")
-          if (parts.length >= 5) {
+          if (parts.length >= 8) {
+            // New format with depth, region, quality, STR: Contig Position Ref Alt Depth Region Quality STR...
+            privateIndels = privateIndels :+ PrivateVariantRow(
+              parts(0), parts(1).toInt, parts(2), parts(3),
+              quality = parts(6),
+              strInfo = if (parts.length > 7) Some(parts.drop(7).mkString(" ")) else None,
+              readDepth = Some(parts(4)),
+              region = Some(parts(5))
+            )
+          } else if (parts.length >= 7) {
+            // New format with depth, region, quality: Contig Position Ref Alt Depth Region Quality
+            privateIndels = privateIndels :+ PrivateVariantRow(
+              parts(0), parts(1).toInt, parts(2), parts(3),
+              quality = parts.drop(6).mkString(" "),
+              strInfo = None,
+              readDepth = Some(parts(4)),
+              region = Some(parts(5))
+            )
+          } else if (parts.length >= 5) {
+            // Old format: Contig Position Ref Alt Quality [STR...]
             val strInfo = if (parts.length > 5) Some(parts.drop(5).mkString(" ")) else None
             privateIndels = privateIndels :+ PrivateVariantRow(parts(0), parts(1).toInt, parts(2), parts(3), parts(4), strInfo)
           }

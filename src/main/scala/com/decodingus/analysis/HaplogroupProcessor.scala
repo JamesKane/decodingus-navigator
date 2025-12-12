@@ -25,7 +25,18 @@ case class PrivateVariant(
   position: Long,
   ref: String,
   alt: String,
-  quality: Option[Double]
+  quality: Option[Double],
+  depth: Option[Int] = None
+)
+
+/**
+ * SNP call information including quality and depth.
+ * Used for enriched reporting with region annotations.
+ */
+case class SnpCallInfo(
+  call: String,
+  quality: Option[Double],
+  depth: Option[Int]
 )
 
 class HaplogroupProcessor {
@@ -433,12 +444,14 @@ class HaplogroupProcessor {
         val allele = genotype.getAlleles.get(0).getBaseString
         val ref = vc.getReference.getBaseString
         val qual = if (vc.hasLog10PError) Some(vc.getPhredScaledQual) else None
+        val depth = if (genotype.hasDP) Some(genotype.getDP) else None
         Some(PrivateVariant(
           contig = vc.getContig,
           position = pos,
           ref = ref,
           alt = allele,
-          quality = qual
+          quality = qual,
+          depth = depth
         ))
       } else {
         None
@@ -628,6 +641,24 @@ class HaplogroupProcessor {
         val genotype = vc.getGenotypes.get(0) // Assuming single sample VCF
         val allele = genotype.getAlleles.get(0).getBaseString
         pos -> allele
+    }.toMap
+    reader.close()
+    snpCalls
+  }
+
+  /**
+   * Parse VCF and return full SNP call information including quality and depth.
+   * Used for enriched reporting with region annotations.
+   */
+  private def parseVcfWithInfo(vcfFile: File): Map[Long, SnpCallInfo] = {
+    val reader = new VCFFileReader(vcfFile, false)
+    val snpCalls = reader.iterator().asScala.map { vc =>
+      val pos = vc.getStart.toLong
+      val genotype = vc.getGenotypes.get(0) // Assuming single sample VCF
+      val allele = genotype.getAlleles.get(0).getBaseString
+      val qual = if (vc.hasLog10PError) Some(vc.getPhredScaledQual) else None
+      val depth = if (genotype.hasDP) Some(genotype.getDP) else None
+      pos -> SnpCallInfo(allele, qual, depth)
     }.toMap
     reader.close()
     snpCalls
