@@ -149,7 +149,16 @@ class WorkbenchViewModel(
 
   /** Synchronizes the observable buffers with the workspace state */
   private def syncBuffers(workspace: Workspace): Unit = {
-    println(s"[DEBUG] WorkbenchViewModel: Syncing buffers with workspace...")
+    println(s"[DEBUG] WorkbenchViewModel.syncBuffers: Syncing buffers with workspace...")
+    println(s"[DEBUG]   workspace.main.samples: ${workspace.main.samples.size}")
+    workspace.main.samples.foreach { s =>
+      println(s"[DEBUG]     Sample ${s.sampleAccession}: sequenceRunRefs=${s.sequenceRunRefs.size} ${s.sequenceRunRefs.mkString(", ")}")
+    }
+    println(s"[DEBUG]   workspace.main.sequenceRuns: ${workspace.main.sequenceRuns.size}")
+    workspace.main.sequenceRuns.foreach { sr =>
+      println(s"[DEBUG]     SequenceRun atUri=${sr.atUri}, biosampleRef=${sr.biosampleRef}, alignmentRefs=${sr.alignmentRefs.size}")
+    }
+    println(s"[DEBUG]   workspace.main.alignments: ${workspace.main.alignments.size}")
 
     // Preserve current selection identifiers before clearing
     val selectedProjectName = selectedProject.value.map(_.projectName)
@@ -174,7 +183,7 @@ class WorkbenchViewModel(
       }
     }
 
-    println(s"[DEBUG] WorkbenchViewModel: Buffers synced. Projects: ${projects.size}, Samples: ${samples.size}")
+    println(s"[DEBUG] WorkbenchViewModel.syncBuffers: Buffers synced. Projects: ${projects.size}, Samples: ${samples.size}")
   }
 
   // --- Commands (Business Logic) ---
@@ -626,8 +635,33 @@ class WorkbenchViewModel(
             h2Service.createSequenceRun(sequenceRun, bsId) match {
               case Right(persistedRun) =>
                 println(s"[ViewModel] SequenceRun persisted to H2: ${persistedRun.atUri}")
-                // Step 4: Update in-memory state with persisted data
-                updateInMemoryState(newState)
+
+                // Step 4: Update in-memory state with the PERSISTED atUri (not the temp one)
+                // Replace the temp URI in sequenceRuns and in biosample's sequenceRunRefs
+                val tempUri = sequenceRun.atUri.getOrElse("")
+                val persistedUri = persistedRun.atUri.getOrElse("")
+                println(s"[DEBUG] addSequenceRunFromFile: Replacing temp URI '$tempUri' with persisted URI '$persistedUri'")
+
+                val updatedSequenceRuns = newState.workspace.main.sequenceRuns.map { sr =>
+                  if (sr.atUri == sequenceRun.atUri) persistedRun else sr
+                }
+                val updatedSamples = newState.workspace.main.samples.map { s =>
+                  if (s.sampleAccession == sampleAccession) {
+                    val updatedRefs = s.sequenceRunRefs.map { ref =>
+                      if (ref == tempUri) persistedUri else ref
+                    }
+                    s.copy(sequenceRunRefs = updatedRefs)
+                  } else s
+                }
+                val updatedContent = newState.workspace.main.copy(
+                  samples = updatedSamples,
+                  sequenceRuns = updatedSequenceRuns
+                )
+                val fixedState = newState.copy(workspace = newState.workspace.copy(main = updatedContent))
+
+                println(s"[DEBUG] addSequenceRunFromFile: Updated state has ${updatedSequenceRuns.size} runs, sample refs: ${updatedSamples.find(_.sampleAccession == sampleAccession).map(_.sequenceRunRefs).getOrElse(Nil)}")
+
+                updateInMemoryState(fixedState)
                 newIndex
               case Left(error) =>
                 println(s"[ViewModel] Failed to persist SequenceRun to H2: $error")

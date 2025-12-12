@@ -38,9 +38,18 @@ case class WorkspaceContent(
    * Resolves sequenceRunRefs to actual SequenceRun records.
    */
   def getSequenceRunsForBiosample(biosample: Biosample): List[SequenceRun] = {
-    biosample.sequenceRunRefs.flatMap { ref =>
-      sequenceRuns.find(_.atUri.contains(ref))
+    println(s"[DEBUG] getSequenceRunsForBiosample: biosample=${biosample.sampleAccession}, sequenceRunRefs=${biosample.sequenceRunRefs.size}: ${biosample.sequenceRunRefs.mkString(", ")}")
+    println(s"[DEBUG]   Available sequenceRuns: ${sequenceRuns.size}")
+    sequenceRuns.foreach { sr =>
+      println(s"[DEBUG]     SequenceRun atUri=${sr.atUri}, biosampleRef=${sr.biosampleRef}")
     }
+    val result = biosample.sequenceRunRefs.flatMap { ref =>
+      val found = sequenceRuns.find(_.atUri.contains(ref))
+      println(s"[DEBUG]   Looking for ref='$ref' -> found=${found.isDefined}")
+      found
+    }
+    println(s"[DEBUG]   Result: ${result.size} sequence runs")
+    result
   }
 
   /**
@@ -48,9 +57,15 @@ case class WorkspaceContent(
    * Resolves alignmentRefs to actual Alignment records.
    */
   def getAlignmentsForSequenceRun(sequenceRun: SequenceRun): List[Alignment] = {
-    sequenceRun.alignmentRefs.flatMap { ref =>
-      alignments.find(_.atUri.contains(ref))
+    println(s"[DEBUG] getAlignmentsForSequenceRun: sequenceRun atUri=${sequenceRun.atUri}, alignmentRefs=${sequenceRun.alignmentRefs.size}: ${sequenceRun.alignmentRefs.mkString(", ")}")
+    println(s"[DEBUG]   Available alignments: ${alignments.size}")
+    val result = sequenceRun.alignmentRefs.flatMap { ref =>
+      val found = alignments.find(_.atUri.contains(ref))
+      println(s"[DEBUG]   Looking for ref='$ref' -> found=${found.isDefined}")
+      found
     }
+    println(s"[DEBUG]   Result: ${result.size} alignments")
+    result
   }
 
   /**

@@ -198,8 +198,11 @@ class H2WorkspaceService(
           throw new IllegalArgumentException(s"Biosample not found: $biosampleId")
         case Some(biosample) =>
           val entity = toSequenceRunEntity(sequenceRun, biosampleId)
+          println(s"[DEBUG] H2WorkspaceService.createSequenceRun: Inserting entity id=${entity.id}, biosampleId=$biosampleId")
           val saved = sequenceRunRepo.insert(entity)
-          fromSequenceRunEntity(saved, localUri("biosample", biosampleId))
+          val result = fromSequenceRunEntity(saved, localUri("biosample", biosampleId))
+          println(s"[DEBUG] H2WorkspaceService.createSequenceRun: Created SequenceRun atUri=${result.atUri}, biosampleRef=${result.biosampleRef}")
+          result
     }
 
   override def updateSequenceRun(sequenceRun: SequenceRun): Either[String, SequenceRun] =
@@ -358,22 +361,66 @@ class H2WorkspaceService(
 
   override def loadWorkspaceContent(): Either[String, WorkspaceContent] =
     transactor.readOnly {
-      val samples = biosampleRepo.findAll().map(fromBiosampleEntity)
+      println(s"[DEBUG] H2WorkspaceService.loadWorkspaceContent: Starting load...")
+
+      val rawSamples = biosampleRepo.findAll()
+      println(s"[DEBUG] H2WorkspaceService.loadWorkspaceContent: Found ${rawSamples.size} biosample entities")
+
+      val rawSequenceRuns = sequenceRunRepo.findAll()
+      println(s"[DEBUG] H2WorkspaceService.loadWorkspaceContent: Found ${rawSequenceRuns.size} sequence run entities")
+      rawSequenceRuns.foreach { sr =>
+        println(s"[DEBUG]   SequenceRun entity: id=${sr.id}, biosampleId=${sr.biosampleId}")
+      }
+
+      // Build a map of biosampleId -> list of sequence run atUris
+      val sequenceRunsByBiosample: Map[UUID, List[String]] = rawSequenceRuns
+        .groupBy(_.biosampleId)
+        .view
+        .mapValues(_.map(sr => localUri("sequencerun", sr.id)))
+        .toMap
+
+      println(s"[DEBUG] H2WorkspaceService.loadWorkspaceContent: SequenceRuns by biosample: ${sequenceRunsByBiosample.map { case (k, v) => s"$k -> ${v.size} runs" }.mkString(", ")}")
+
+      // Build a map of sequenceRunId -> list of alignment atUris
+      val rawAlignments = alignmentRepo.findAll()
+      println(s"[DEBUG] H2WorkspaceService.loadWorkspaceContent: Found ${rawAlignments.size} alignment entities")
+
+      val alignmentsBySequenceRun: Map[UUID, List[String]] = rawAlignments
+        .groupBy(_.sequenceRunId)
+        .view
+        .mapValues(_.map(al => localUri("alignment", al.id)))
+        .toMap
+
+      // Convert samples with populated sequenceRunRefs
+      val samples = rawSamples.map { entity =>
+        val refs = sequenceRunsByBiosample.getOrElse(entity.id, List.empty)
+        val biosample = fromBiosampleEntity(entity)
+        val populated = biosample.copy(sequenceRunRefs = refs)
+        println(s"[DEBUG]   Biosample ${entity.sampleAccession}: sequenceRunRefs=${refs.size}")
+        populated
+      }
 
       val projects = projectRepo.findAll().map { entity =>
         val memberRefs = projectRepo.getMemberIds(entity.id).map(id => localUri("biosample", id))
         fromProjectEntity(entity, memberRefs)
       }
 
-      val sequenceRuns = sequenceRunRepo.findAll().map { entity =>
+      // Convert sequence runs with populated alignmentRefs
+      val sequenceRuns = rawSequenceRuns.map { entity =>
         val biosampleRef = localUri("biosample", entity.biosampleId)
-        fromSequenceRunEntity(entity, biosampleRef)
+        val alignRefs = alignmentsBySequenceRun.getOrElse(entity.id, List.empty)
+        val seqRun = fromSequenceRunEntity(entity, biosampleRef)
+        val populated = seqRun.copy(alignmentRefs = alignRefs)
+        println(s"[DEBUG]   SequenceRun ${entity.id}: atUri=${populated.atUri}, alignmentRefs=${alignRefs.size}")
+        populated
       }
 
-      val alignments = alignmentRepo.findAll().map { entity =>
+      val alignments = rawAlignments.map { entity =>
         val sequenceRunRef = localUri("sequencerun", entity.sequenceRunId)
         fromAlignmentEntity(entity, sequenceRunRef)
       }
+
+      println(s"[DEBUG] H2WorkspaceService.loadWorkspaceContent: Returning ${samples.size} samples, ${sequenceRuns.size} sequenceRuns, ${alignments.size} alignments")
 
       WorkspaceContent(
         meta = Some(RecordMeta.initial),

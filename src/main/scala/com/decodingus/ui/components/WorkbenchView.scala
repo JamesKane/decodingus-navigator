@@ -138,6 +138,17 @@ class WorkbenchView(val viewModel: WorkbenchViewModel) extends SplitPane {
     val sequenceRuns = viewModel.workspace.value.main.getSequenceRunsForBiosample(subject)
     val allAlignments = viewModel.workspace.value.main.alignments
 
+    println(s"[DEBUG] WorkbenchView.createSubjectDetailView: Subject ${subject.sampleAccession}")
+    println(s"[DEBUG]   sequenceRunRefs on biosample: ${subject.sequenceRunRefs.size} - ${subject.sequenceRunRefs.mkString(", ")}")
+    println(s"[DEBUG]   sequenceRuns found: ${sequenceRuns.size}")
+    sequenceRuns.foreach { sr =>
+      println(s"[DEBUG]     SequenceRun: atUri=${sr.atUri}, alignmentRefs=${sr.alignmentRefs.size} ${sr.alignmentRefs.mkString(", ")}")
+    }
+    println(s"[DEBUG]   allAlignments in workspace: ${allAlignments.size}")
+    allAlignments.foreach { al =>
+      println(s"[DEBUG]     Alignment: atUri=${al.atUri}, sequenceRunRef=${al.sequenceRunRef}")
+    }
+
     val sequenceTable = new SequenceDataTable(
       viewModel = viewModel,
       subject = subject,

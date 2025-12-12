@@ -72,16 +72,19 @@ class SequenceDataTable(
    * SequenceRuns are parent nodes, Alignments are children.
    */
   private def buildTreeItems(): TreeItem[SequenceDataRow] = {
+    println(s"[DEBUG] SequenceDataTable.buildTreeItems: Building tree with ${sequenceRuns.size} runs, ${alignments.size} total alignments")
     val rootItem = new TreeItem[SequenceDataRow](null: SequenceDataRow)
     rootItem.setExpanded(true)
 
     sequenceRuns.zipWithIndex.foreach { case (run, runIdx) =>
       val runAlignments = getAlignmentsForRun(run)
+      println(s"[DEBUG]   Run $runIdx: atUri=${run.atUri}, alignmentRefs=${run.alignmentRefs.size}, matched alignments=${runAlignments.size}")
       val runRow = SequenceRunRow(runIdx, run, runAlignments.size)
       val runItem = new TreeItem[SequenceDataRow](runRow)
 
       // Add alignment children
       runAlignments.zipWithIndex.foreach { case (alignment, alignIdx) =>
+        println(s"[DEBUG]     Alignment $alignIdx: atUri=${alignment.atUri}, referenceBuild=${alignment.referenceBuild}")
         val alignRow = AlignmentRow(runIdx, alignIdx, run, alignment)
         runItem.children += new TreeItem[SequenceDataRow](alignRow)
       }
@@ -91,6 +94,7 @@ class SequenceDataTable(
       rootItem.children += runItem
     }
 
+    println(s"[DEBUG] SequenceDataTable.buildTreeItems: Built tree with ${rootItem.children.size} run nodes")
     rootItem
   }
 

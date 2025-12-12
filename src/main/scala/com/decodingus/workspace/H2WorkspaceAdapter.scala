@@ -22,7 +22,12 @@ class H2WorkspaceAdapter(h2Service: H2WorkspaceService) extends WorkspaceService
    * Converts the WorkspaceContent from H2 to the legacy Workspace format.
    */
   override def load(): Either[String, Workspace] =
+    println(s"[DEBUG] H2WorkspaceAdapter.load(): Loading workspace from H2...")
     h2Service.loadWorkspaceContent().map { content =>
+      println(s"[DEBUG] H2WorkspaceAdapter.load(): Loaded content - samples=${content.samples.size}, sequenceRuns=${content.sequenceRuns.size}, alignments=${content.alignments.size}")
+      content.samples.foreach { s =>
+        println(s"[DEBUG]   Sample ${s.sampleAccession}: sequenceRunRefs=${s.sequenceRunRefs.size} ${s.sequenceRunRefs.mkString(", ")}")
+      }
       Workspace(
         lexicon = Workspace.CurrentLexiconVersion,
         id = Workspace.NamespaceId,
