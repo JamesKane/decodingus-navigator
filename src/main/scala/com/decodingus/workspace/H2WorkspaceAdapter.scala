@@ -49,12 +49,14 @@ class H2WorkspaceAdapter(h2Service: H2WorkspaceService) extends WorkspaceService
     // 3. Apply create/update/delete operations
 
     val result = for
-      // Sync biosamples
+      // Sync biosamples first (sequence runs depend on them)
       _ <- syncBiosamples(workspace.main.samples)
+      // Sync sequence runs (alignments depend on them)
+      _ <- syncSequenceRuns(workspace.main.sequenceRuns)
+      // Sync alignments
+      _ <- syncAlignments(workspace.main.alignments)
       // Sync projects
       _ <- syncProjects(workspace.main.projects)
-      // Note: SequenceRuns and Alignments are typically created via ViewModel operations,
-      // not saved as part of workspace bulk save
     yield ()
 
     result
@@ -96,6 +98,83 @@ class H2WorkspaceAdapter(h2Service: H2WorkspaceService) extends WorkspaceService
         }
       }
     }
+
+  /**
+   * Sync sequence runs from workspace to H2.
+   * Creates new sequence runs, updates existing ones.
+   */
+  private def syncSequenceRuns(sequenceRuns: List[model.SequenceRun]): Either[String, Unit] =
+    sequenceRuns.foldLeft[Either[String, Unit]](Right(())) { (acc, seqRun) =>
+      acc.flatMap { _ =>
+        // Extract biosample ID from biosampleRef
+        val biosampleId = parseIdFromRef(seqRun.biosampleRef)
+        biosampleId match {
+          case None =>
+            // Skip if we can't determine the parent biosample
+            println(s"[H2WorkspaceAdapter] Skipping sequence run - invalid biosampleRef: ${seqRun.biosampleRef}")
+            Right(())
+          case Some(bsId) =>
+            // Check if sequence run exists by its ID
+            val seqRunId = seqRun.atUri.flatMap(parseIdFromRef)
+            seqRunId match {
+              case Some(id) =>
+                h2Service.getSequenceRun(id).flatMap {
+                  case Some(_) =>
+                    // Update existing
+                    h2Service.updateSequenceRun(seqRun).map(_ => ())
+                  case None =>
+                    // Create new (atUri suggests it should exist, but it doesn't - create it)
+                    h2Service.createSequenceRun(seqRun, bsId).map(_ => ())
+                }
+              case None =>
+                // No ID yet, create new
+                h2Service.createSequenceRun(seqRun, bsId).map(_ => ())
+            }
+        }
+      }
+    }
+
+  /**
+   * Sync alignments from workspace to H2.
+   * Creates new alignments, updates existing ones.
+   */
+  private def syncAlignments(alignments: List[model.Alignment]): Either[String, Unit] =
+    alignments.foldLeft[Either[String, Unit]](Right(())) { (acc, alignment) =>
+      acc.flatMap { _ =>
+        // Extract sequence run ID from sequenceRunRef
+        val seqRunId = parseIdFromRef(alignment.sequenceRunRef)
+        seqRunId match {
+          case None =>
+            // Skip if we can't determine the parent sequence run
+            println(s"[H2WorkspaceAdapter] Skipping alignment - invalid sequenceRunRef: ${alignment.sequenceRunRef}")
+            Right(())
+          case Some(srId) =>
+            // Check if alignment exists by its ID
+            val alignmentId = alignment.atUri.flatMap(parseIdFromRef)
+            alignmentId match {
+              case Some(id) =>
+                h2Service.getAlignment(id).flatMap {
+                  case Some(_) =>
+                    // Update existing
+                    h2Service.updateAlignment(alignment).map(_ => ())
+                  case None =>
+                    // Create new (atUri suggests it should exist, but it doesn't - create it)
+                    h2Service.createAlignment(alignment, srId).map(_ => ())
+                }
+              case None =>
+                // No ID yet, create new
+                h2Service.createAlignment(alignment, srId).map(_ => ())
+            }
+        }
+      }
+    }
+
+  /**
+   * Parse a UUID from a reference (AT URI or local URI).
+   */
+  private def parseIdFromRef(ref: String): Option[java.util.UUID] =
+    import com.decodingus.service.EntityConversions.parseIdFromRef as parse
+    parse(ref)
 
 object H2WorkspaceAdapter:
   /**
