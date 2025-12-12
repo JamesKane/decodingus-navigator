@@ -8,7 +8,8 @@ import com.decodingus.haplogroup.tree.{TreeProvider, TreeProviderType, TreeType}
 import com.decodingus.haplogroup.vendor.{DecodingUsTreeProvider, FtdnaTreeProvider}
 import com.decodingus.repository.{
   YChromosomeProfileRepository, YProfileSourceRepository, YProfileRegionRepository,
-  YProfileVariantRepository, YVariantSourceCallRepository, YVariantAuditRepository
+  YProfileVariantRepository, YVariantSourceCallRepository, YVariantAuditRepository,
+  YSourceCallAlignmentRepository, YSnpPanelEntity, YSnpCall, YPrivateVariant
 }
 import com.decodingus.yprofile.concordance.YVariantConcordance
 import com.decodingus.yprofile.concordance.YVariantConcordance.{SourceCallInput, ConcordanceResult}
@@ -29,7 +30,8 @@ class YProfileService(
   regionRepo: YProfileRegionRepository,
   variantRepo: YProfileVariantRepository,
   sourceCallRepo: YVariantSourceCallRepository,
-  auditRepo: YVariantAuditRepository
+  auditRepo: YVariantAuditRepository,
+  alignmentRepo: YSourceCallAlignmentRepository = YSourceCallAlignmentRepository()
 ):
 
   // ============================================
@@ -148,10 +150,13 @@ class YProfileService(
   // ============================================
 
   /**
-   * Add or update a variant with a source call.
+   * Add or update a variant with a source call and alignment record.
    *
    * If the variant already exists (by position+alleles), adds a source call.
-   * Otherwise creates a new variant.
+   * Otherwise creates a new variant. Also creates an alignment record
+   * for the source call's coordinates in the specified reference build.
+   *
+   * @return Tuple of (variant, sourceCall, alignment)
    */
   def addVariantCall(
     profileId: UUID,
@@ -173,7 +178,9 @@ class YProfileService(
     variantAlleleFrequency: Option[Double] = None,
     callableState: Option[YCallableState] = None,
     definingHaplogroup: Option[String] = None,
-    haplogroupBranchDepth: Option[Int] = None
+    haplogroupBranchDepth: Option[Int] = None,
+    referenceBuild: Option[String] = None,
+    contig: String = "chrY"
   ): Either[String, (YProfileVariantEntity, YVariantSourceCallEntity)] =
     transactor.readWrite {
       // Find or create variant
@@ -204,7 +211,7 @@ class YProfileService(
             haplogroupBranchDepth = haplogroupBranchDepth
           ))
 
-      // Get source info for weight calculation
+      // Get source info for weight calculation and reference build
       val source = sourceRepo.findById(sourceId).getOrElse(
         throw new IllegalArgumentException(s"Source not found: $sourceId")
       )
@@ -219,10 +226,12 @@ class YProfileService(
       )
 
       // Add source call (replace if exists)
-      sourceCallRepo.findByVariantAndSource(variant.id, sourceId) match
-        case Some(existing) =>
-          sourceCallRepo.delete(existing.id)
-        case None => ()
+      val existingCall = sourceCallRepo.findByVariantAndSource(variant.id, sourceId)
+      existingCall.foreach { existing =>
+        // Delete existing alignments for this source call
+        alignmentRepo.deleteBySourceCall(existing.id)
+        sourceCallRepo.delete(existing.id)
+      }
 
       val sourceCall = sourceCallRepo.insert(YVariantSourceCallEntity.create(
         variantId = variant.id,
@@ -238,7 +247,80 @@ class YProfileService(
         concordanceWeight = weight
       ))
 
+      // Create alignment record for coordinates
+      // Use provided referenceBuild, or source's referenceBuild, or default to GRCh38
+      val refBuild = referenceBuild
+        .orElse(source.referenceBuild)
+        .getOrElse("GRCh38")
+
+      alignmentRepo.insert(YSourceCallAlignmentEntity.create(
+        sourceCallId = sourceCall.id,
+        referenceBuild = refBuild,
+        contig = contig,
+        position = position,
+        refAllele = refAllele,
+        altAllele = altAllele,
+        calledAllele = calledAllele,
+        readDepth = readDepth,
+        mappingQuality = mappingQuality,
+        variantAlleleFrequency = variantAlleleFrequency
+      ))
+
       (variant, sourceCall)
+    }
+
+  /**
+   * Add an additional alignment to an existing source call.
+   *
+   * This is used when the same variant data is aligned to multiple references
+   * (e.g., GRCh37, GRCh38, hs1). Each alignment represents coordinates in a
+   * different reference, but they all count as ONE piece of evidence.
+   */
+  def addAlignmentToSourceCall(
+    sourceCallId: UUID,
+    referenceBuild: String,
+    position: Long,
+    refAllele: String,
+    altAllele: String,
+    calledAllele: String,
+    contig: String = "chrY",
+    readDepth: Option[Int] = None,
+    mappingQuality: Option[Double] = None,
+    variantAlleleFrequency: Option[Double] = None
+  ): Either[String, YSourceCallAlignmentEntity] =
+    transactor.readWrite {
+      // Upsert alignment (replace if same source_call + reference_build exists)
+      alignmentRepo.upsert(YSourceCallAlignmentEntity.create(
+        sourceCallId = sourceCallId,
+        referenceBuild = referenceBuild,
+        contig = contig,
+        position = position,
+        refAllele = refAllele,
+        altAllele = altAllele,
+        calledAllele = calledAllele,
+        readDepth = readDepth,
+        mappingQuality = mappingQuality,
+        variantAlleleFrequency = variantAlleleFrequency
+      ))
+    }
+
+  /**
+   * Get alignments for a source call.
+   */
+  def getAlignments(sourceCallId: UUID): Either[String, List[YSourceCallAlignmentEntity]] =
+    transactor.readOnly {
+      alignmentRepo.findBySourceCall(sourceCallId)
+    }
+
+  /**
+   * Get alignment for a specific reference build.
+   */
+  def getAlignmentForBuild(
+    sourceCallId: UUID,
+    referenceBuild: String
+  ): Either[String, Option[YSourceCallAlignmentEntity]] =
+    transactor.readOnly {
+      alignmentRepo.findBySourceCallAndBuild(sourceCallId, referenceBuild)
     }
 
   /**
@@ -844,6 +926,248 @@ class YProfileService(
       case CallableState.Unknown => YCallableState.NO_COVERAGE
 
   // ============================================
+  // Source Import
+  // ============================================
+
+  /**
+   * Import variants from a Y-SNP panel into the unified profile.
+   *
+   * Creates a source entity and imports all SNP calls and private variants
+   * as variant calls with appropriate concordance weights.
+   *
+   * @param profileId Profile to import into
+   * @param panel The YSnpPanelEntity to import from
+   * @param sourceType Source type (default: TARGETED_NGS for Big Y, CHIP for panels)
+   * @return Import result with counts
+   */
+  def importFromSnpPanel(
+    profileId: UUID,
+    panel: YSnpPanelEntity,
+    sourceType: YProfileSourceType = YProfileSourceType.TARGETED_NGS
+  ): Either[String, SourceImportResult] =
+    // First create the source outside the main transaction
+    val sourceResult = addSource(
+      profileId = profileId,
+      sourceType = sourceType,
+      vendor = panel.provider,
+      testName = panel.panelName,
+      testDate = panel.testDate,
+      referenceBuild = Some("GRCh38") // SNP panels use GRCh38
+    )
+
+    sourceResult.flatMap { source =>
+      transactor.readWrite {
+        var snpCount = 0
+        var privateCount = 0
+        var errorCount = 0
+
+        // Import SNP calls
+        panel.snpCalls.foreach { call =>
+          try {
+            val callState = if call.derived then YConsensusState.DERIVED else YConsensusState.ANCESTRAL
+            val variantType = call.variantType match
+              case Some(com.decodingus.repository.YVariantType.INDEL) =>
+                com.decodingus.yprofile.model.YVariantType.INDEL
+              case _ =>
+                com.decodingus.yprofile.model.YVariantType.SNP
+
+            // For SNP panels, we typically don't have ref/alt alleles, just the called allele
+            // We'll use the allele as both ref (ancestral) and alt (derived) based on state
+            val (refAllele, altAllele) = if call.derived then
+              ("N", call.allele) // Derived: called allele is the alt
+            else
+              (call.allele, "N") // Ancestral: called allele is the ref
+
+            addVariantCallInternal(
+              profileId = profileId,
+              sourceId = source.id,
+              position = call.startPosition,
+              refAllele = refAllele,
+              altAllele = altAllele,
+              calledAllele = call.allele,
+              callState = callState,
+              variantType = variantType,
+              variantName = Some(call.name),
+              qualityScore = call.quality,
+              referenceBuild = "GRCh38"
+            )
+            snpCount += 1
+          } catch {
+            case e: Exception =>
+              errorCount += 1
+          }
+        }
+
+        // Import private variants
+        panel.privateVariants.foreach { pv =>
+          try {
+            addVariantCallInternal(
+              profileId = profileId,
+              sourceId = source.id,
+              position = pv.position,
+              refAllele = pv.refAllele,
+              altAllele = pv.altAllele,
+              calledAllele = pv.altAllele, // Private variants are derived
+              callState = YConsensusState.DERIVED,
+              variantType = com.decodingus.yprofile.model.YVariantType.SNP,
+              variantName = pv.snpName,
+              qualityScore = pv.quality,
+              readDepth = pv.readDepth,
+              referenceBuild = "GRCh38"
+            )
+            privateCount += 1
+          } catch {
+            case e: Exception =>
+              errorCount += 1
+          }
+        }
+
+        SourceImportResult(
+          sourceId = source.id,
+          sourceType = sourceType,
+          snpCallsImported = snpCount,
+          privateVariantsImported = privateCount,
+          errorsEncountered = errorCount
+        )
+      }
+    }
+
+  /**
+   * Import variants from a list of SNP calls (generic import).
+   *
+   * This is useful for importing from parsed VCF, haplogroup analysis results,
+   * or other sources that provide SNP call data.
+   *
+   * @param profileId Profile to import into
+   * @param sourceId Source that these calls belong to
+   * @param calls List of (position, refAllele, altAllele, calledAllele, derived, variantName)
+   * @param referenceBuild Reference build for coordinates
+   * @return Import result with counts
+   */
+  def importVariantCalls(
+    profileId: UUID,
+    sourceId: UUID,
+    calls: List[VariantCallInput],
+    referenceBuild: String = "GRCh38"
+  ): Either[String, SourceImportResult] =
+    transactor.readWrite {
+      var successCount = 0
+      var errorCount = 0
+
+      calls.foreach { call =>
+        try {
+          val callState = if call.derived then YConsensusState.DERIVED else YConsensusState.ANCESTRAL
+
+          addVariantCallInternal(
+            profileId = profileId,
+            sourceId = sourceId,
+            position = call.position,
+            refAllele = call.refAllele,
+            altAllele = call.altAllele,
+            calledAllele = call.calledAllele,
+            callState = callState,
+            variantType = call.variantType.getOrElse(com.decodingus.yprofile.model.YVariantType.SNP),
+            variantName = call.variantName,
+            readDepth = call.readDepth,
+            qualityScore = call.qualityScore,
+            mappingQuality = call.mappingQuality,
+            referenceBuild = referenceBuild
+          )
+          successCount += 1
+        } catch {
+          case e: Exception =>
+            errorCount += 1
+        }
+      }
+
+      SourceImportResult(
+        sourceId = sourceId,
+        sourceType = YProfileSourceType.WGS_SHORT_READ, // Will be overwritten
+        snpCallsImported = successCount,
+        privateVariantsImported = 0,
+        errorsEncountered = errorCount
+      )
+    }
+
+  /**
+   * Internal variant call addition (within existing transaction).
+   */
+  private def addVariantCallInternal(
+    profileId: UUID,
+    sourceId: UUID,
+    position: Long,
+    refAllele: String,
+    altAllele: String,
+    calledAllele: String,
+    callState: YConsensusState,
+    variantType: com.decodingus.yprofile.model.YVariantType = com.decodingus.yprofile.model.YVariantType.SNP,
+    variantName: Option[String] = None,
+    readDepth: Option[Int] = None,
+    qualityScore: Option[Double] = None,
+    mappingQuality: Option[Double] = None,
+    referenceBuild: String = "GRCh38"
+  )(using java.sql.Connection): Unit =
+    // Find or create variant
+    val variant = variantRepo.findByPosition(profileId, position) match
+      case Some(existing) =>
+        val updated = existing.copy(
+          variantName = variantName.orElse(existing.variantName)
+        )
+        if updated != existing then variantRepo.update(updated) else existing
+      case None =>
+        variantRepo.insert(YProfileVariantEntity.create(
+          yProfileId = profileId,
+          position = position,
+          refAllele = refAllele,
+          altAllele = altAllele,
+          variantType = variantType,
+          variantName = variantName
+        ))
+
+    // Get source for weight calculation
+    val source = sourceRepo.findById(sourceId).getOrElse(
+      throw new IllegalArgumentException(s"Source not found: $sourceId")
+    )
+
+    val weight = YVariantConcordance.calculateWeight(
+      source.sourceType,
+      variantType,
+      readDepth,
+      mappingQuality,
+      None
+    )
+
+    // Delete existing call if present
+    sourceCallRepo.findByVariantAndSource(variant.id, sourceId).foreach { existing =>
+      alignmentRepo.deleteBySourceCall(existing.id)
+      sourceCallRepo.delete(existing.id)
+    }
+
+    // Insert source call
+    val sourceCall = sourceCallRepo.insert(YVariantSourceCallEntity.create(
+      variantId = variant.id,
+      sourceId = sourceId,
+      calledAllele = calledAllele,
+      callState = callState,
+      readDepth = readDepth,
+      qualityScore = qualityScore,
+      mappingQuality = mappingQuality,
+      concordanceWeight = weight
+    ))
+
+    // Insert alignment
+    alignmentRepo.insert(YSourceCallAlignmentEntity.create(
+      sourceCallId = sourceCall.id,
+      referenceBuild = referenceBuild,
+      position = position,
+      refAllele = refAllele,
+      altAllele = altAllele,
+      calledAllele = calledAllele,
+      readDepth = readDepth,
+      mappingQuality = mappingQuality
+    ))
+
+  // ============================================
   // Haplogroup Determination
   // ============================================
 
@@ -1009,4 +1333,33 @@ case class CallableSummary(
   callableBases: Long,
   totalBases: Long,
   callablePct: Double
+)
+
+/**
+ * Result of importing variants from a source.
+ */
+case class SourceImportResult(
+  sourceId: UUID,
+  sourceType: YProfileSourceType,
+  snpCallsImported: Int,
+  privateVariantsImported: Int,
+  errorsEncountered: Int
+) {
+  def totalImported: Int = snpCallsImported + privateVariantsImported
+}
+
+/**
+ * Input for importing a variant call.
+ */
+case class VariantCallInput(
+  position: Long,
+  refAllele: String,
+  altAllele: String,
+  calledAllele: String,
+  derived: Boolean,
+  variantName: Option[String] = None,
+  variantType: Option[YVariantType] = None,
+  readDepth: Option[Int] = None,
+  qualityScore: Option[Double] = None,
+  mappingQuality: Option[Double] = None
 )

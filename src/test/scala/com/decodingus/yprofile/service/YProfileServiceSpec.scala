@@ -4,9 +4,11 @@ import com.decodingus.db.{DatabaseTestSupport, Transactor}
 import com.decodingus.repository.{
   BiosampleRepository, BiosampleEntity,
   YChromosomeProfileRepository, YProfileSourceRepository, YProfileRegionRepository,
-  YProfileVariantRepository, YVariantSourceCallRepository, YVariantAuditRepository
+  YProfileVariantRepository, YVariantSourceCallRepository, YVariantAuditRepository,
+  YSourceCallAlignmentRepository
 }
 import com.decodingus.yprofile.model.*
+import com.decodingus.yprofile.service.VariantCallInput
 import munit.FunSuite
 import java.time.LocalDateTime
 import java.util.UUID
@@ -21,7 +23,8 @@ class YProfileServiceSpec extends FunSuite with DatabaseTestSupport:
       YProfileRegionRepository(),
       YProfileVariantRepository(),
       YVariantSourceCallRepository(),
-      YVariantAuditRepository()
+      YVariantAuditRepository(),
+      YSourceCallAlignmentRepository()
     )
 
   val biosampleRepo = BiosampleRepository()
@@ -556,4 +559,218 @@ class YProfileServiceSpec extends FunSuite with DatabaseTestSupport:
     // The weight should be reduced due to LOW_COVERAGE
     // (callableFactor = 0.5 instead of 1.0)
     assert(sourceCall.concordanceWeight < 0.85) // Base WGS weight without penalty
+  }
+
+  // ============================================
+  // Alignment Record Tests
+  // ============================================
+
+  testTransactor.test("addVariantCall creates alignment record") { case (db, tx) =>
+    val service = createService(tx)
+
+    val biosampleId = tx.readWrite { createTestBiosample().id }.toOption.get
+    val profile = service.getOrCreateProfile(biosampleId).toOption.get
+    val source = service.addSource(
+      profile.id, YProfileSourceType.WGS_SHORT_READ,
+      referenceBuild = Some("GRCh38")
+    ).toOption.get
+
+    val result = service.addVariantCall(
+      profile.id, source.id,
+      position = 2887824L,
+      refAllele = "G",
+      altAllele = "A",
+      calledAllele = "A",
+      callState = YConsensusState.DERIVED,
+      variantName = Some("M269"),
+      readDepth = Some(30),
+      mappingQuality = Some(60.0)
+    )
+
+    assert(result.isRight)
+    val (variant, sourceCall) = result.toOption.get
+
+    // Verify alignment was created
+    val alignments = service.getAlignments(sourceCall.id)
+    assert(alignments.isRight)
+    assertEquals(alignments.toOption.get.size, 1)
+
+    val alignment = alignments.toOption.get.head
+    assertEquals(alignment.referenceBuild, "GRCh38")
+    assertEquals(alignment.position, 2887824L)
+    assertEquals(alignment.refAllele, "G")
+    assertEquals(alignment.altAllele, "A")
+    assertEquals(alignment.calledAllele, "A")
+    assertEquals(alignment.readDepth, Some(30))
+  }
+
+  testTransactor.test("addAlignmentToSourceCall adds multi-reference alignment") { case (db, tx) =>
+    val service = createService(tx)
+
+    val biosampleId = tx.readWrite { createTestBiosample().id }.toOption.get
+    val profile = service.getOrCreateProfile(biosampleId).toOption.get
+    val source = service.addSource(profile.id, YProfileSourceType.WGS_SHORT_READ).toOption.get
+
+    // Add variant (creates GRCh38 alignment by default)
+    val (variant, sourceCall) = service.addVariantCall(
+      profile.id, source.id,
+      position = 2887824L,
+      refAllele = "G", altAllele = "A",
+      calledAllele = "A",
+      callState = YConsensusState.DERIVED,
+      referenceBuild = Some("GRCh38")
+    ).toOption.get
+
+    // Add GRCh37 alignment (same data, different coordinates)
+    val grch37Result = service.addAlignmentToSourceCall(
+      sourceCallId = sourceCall.id,
+      referenceBuild = "GRCh37",
+      position = 2793009L,  // Different position in GRCh37
+      refAllele = "G",
+      altAllele = "A",
+      calledAllele = "A"
+    )
+
+    assert(grch37Result.isRight)
+
+    // Verify both alignments exist
+    val alignments = service.getAlignments(sourceCall.id)
+    assertEquals(alignments.toOption.get.size, 2)
+
+    // Verify specific build queries work
+    val grch38 = service.getAlignmentForBuild(sourceCall.id, "GRCh38")
+    val grch37 = service.getAlignmentForBuild(sourceCall.id, "GRCh37")
+
+    assert(grch38.toOption.get.isDefined)
+    assert(grch37.toOption.get.isDefined)
+    assertEquals(grch38.toOption.get.get.position, 2887824L)
+    assertEquals(grch37.toOption.get.get.position, 2793009L)
+  }
+
+  testTransactor.test("multiple alignments still count as one evidence") { case (db, tx) =>
+    val service = createService(tx)
+
+    val biosampleId = tx.readWrite { createTestBiosample().id }.toOption.get
+    val profile = service.getOrCreateProfile(biosampleId).toOption.get
+    val source = service.addSource(profile.id, YProfileSourceType.WGS_SHORT_READ).toOption.get
+
+    // Add variant with GRCh38 alignment
+    val (variant, sourceCall) = service.addVariantCall(
+      profile.id, source.id,
+      position = 2887824L, refAllele = "G", altAllele = "A",
+      calledAllele = "A", callState = YConsensusState.DERIVED,
+      referenceBuild = Some("GRCh38")
+    ).toOption.get
+
+    // Add GRCh37 and hs1 alignments
+    service.addAlignmentToSourceCall(
+      sourceCall.id, "GRCh37", 2793009L, "G", "A", "A"
+    )
+    service.addAlignmentToSourceCall(
+      sourceCall.id, "hs1", 2912345L, "C", "T", "T"  // Reverse complement
+    )
+
+    // Should have 3 alignments but only 1 source call
+    val alignments = service.getAlignments(sourceCall.id)
+    assertEquals(alignments.toOption.get.size, 3)
+
+    val calls = service.getVariantCalls(variant.id)
+    assertEquals(calls.toOption.get.size, 1) // Only ONE piece of evidence
+
+    // Reconcile - should have source_count = 1
+    val reconciled = service.reconcileVariant(variant.id, isInTree = true)
+    assertEquals(reconciled.toOption.get.sourceCount, 1)
+  }
+
+  // ============================================
+  // Source Import Tests
+  // ============================================
+
+  testTransactor.test("importVariantCalls imports list of variants") { case (db, tx) =>
+    val service = createService(tx)
+
+    val biosampleId = tx.readWrite { createTestBiosample().id }.toOption.get
+    val profile = service.getOrCreateProfile(biosampleId).toOption.get
+    val source = service.addSource(profile.id, YProfileSourceType.WGS_SHORT_READ).toOption.get
+
+    val calls = List(
+      VariantCallInput(
+        position = 2887824L,
+        refAllele = "G",
+        altAllele = "A",
+        calledAllele = "A",
+        derived = true,
+        variantName = Some("M269")
+      ),
+      VariantCallInput(
+        position = 2790184L,
+        refAllele = "G",
+        altAllele = "A",
+        calledAllele = "A",
+        derived = true,
+        variantName = Some("L21")
+      ),
+      VariantCallInput(
+        position = 15571716L,
+        refAllele = "C",
+        altAllele = "T",
+        calledAllele = "C",
+        derived = false  // Ancestral
+      )
+    )
+
+    val result = service.importVariantCalls(profile.id, source.id, calls)
+
+    assert(result.isRight)
+    val importResult = result.toOption.get
+    assertEquals(importResult.snpCallsImported, 3)
+    assertEquals(importResult.errorsEncountered, 0)
+
+    // Verify variants were created
+    val variants = service.getVariants(profile.id)
+    assertEquals(variants.toOption.get.size, 3)
+
+    // Verify alignments were created
+    val variantCalls = variants.toOption.get.flatMap { v =>
+      service.getVariantCalls(v.id).toOption.get
+    }
+    assertEquals(variantCalls.size, 3)
+
+    variantCalls.foreach { call =>
+      val alignments = service.getAlignments(call.id)
+      assertEquals(alignments.toOption.get.size, 1)
+    }
+  }
+
+  testTransactor.test("importVariantCalls handles readDepth and quality") { case (db, tx) =>
+    val service = createService(tx)
+
+    val biosampleId = tx.readWrite { createTestBiosample().id }.toOption.get
+    val profile = service.getOrCreateProfile(biosampleId).toOption.get
+    val source = service.addSource(profile.id, YProfileSourceType.WGS_SHORT_READ).toOption.get
+
+    val calls = List(
+      VariantCallInput(
+        position = 2887824L,
+        refAllele = "G",
+        altAllele = "A",
+        calledAllele = "A",
+        derived = true,
+        variantName = Some("M269"),
+        readDepth = Some(45),
+        qualityScore = Some(99.5),
+        mappingQuality = Some(60.0)
+      )
+    )
+
+    val result = service.importVariantCalls(profile.id, source.id, calls)
+    assert(result.isRight)
+
+    // Verify quality metrics were captured
+    val variants = service.getVariants(profile.id).toOption.get
+    val variantCalls = service.getVariantCalls(variants.head.id).toOption.get
+
+    assertEquals(variantCalls.head.readDepth, Some(45))
+    assertEquals(variantCalls.head.qualityScore, Some(99.5))
+    assertEquals(variantCalls.head.mappingQuality, Some(60.0))
   }
