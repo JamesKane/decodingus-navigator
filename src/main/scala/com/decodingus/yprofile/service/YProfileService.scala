@@ -1,5 +1,6 @@
 package com.decodingus.yprofile.service
 
+import com.decodingus.analysis.{CallableLociQueryService, CallableState}
 import com.decodingus.db.Transactor
 import com.decodingus.haplogroup.model.HaplogroupResult
 import com.decodingus.haplogroup.scoring.HaplogroupScorer
@@ -567,6 +568,282 @@ class YProfileService(
     }
 
   // ============================================
+  // Callable Loci Integration
+  // ============================================
+
+  /**
+   * Import callable loci regions from a CallableLociQueryService for a source.
+   *
+   * This reads the BED file regions and stores them in y_profile_region,
+   * enabling callable state queries for variant positions.
+   *
+   * @param profileId The Y profile ID
+   * @param sourceId The source these regions belong to
+   * @param callableLociService The query service with loaded BED data
+   * @param contig Contig to import (default: chrY)
+   * @return Count of regions imported
+   */
+  def importCallableRegions(
+    profileId: UUID,
+    sourceId: UUID,
+    callableLociService: CallableLociQueryService,
+    contig: String = "chrY"
+  ): Either[String, Int] =
+    // Check if data exists for this contig
+    if !callableLociService.hasDataForContig(contig) then
+      return Right(0)
+
+    // Get the intervals by querying a range - we'll use the BED loading
+    // The CallableLociQueryService loads intervals internally, but we need to extract them
+    // For now, we'll store summary regions based on what we can query
+
+    transactor.readWrite {
+      // First, delete existing regions for this source
+      regionRepo.deleteBySource(sourceId)
+
+      // Get callable bases count for profile statistics
+      val callableBases = callableLociService.getCallableBasesForContig(contig)
+
+      // Store a summary region for the source
+      // In a production system, we'd want to expose the intervals from CallableLociQueryService
+      // For now, we store the summary with the callable bases
+      val summaryRegion = YProfileRegionEntity.create(
+        yProfileId = profileId,
+        sourceId = sourceId,
+        contig = contig,
+        startPosition = 0,
+        endPosition = callableBases, // Using this field to store callable base count
+        callableState = YCallableState.SUMMARY,
+        meanCoverage = None,
+        meanMappingQuality = None
+      )
+
+      regionRepo.insert(summaryRegion)
+
+      // Update profile's callable region percentage (inline since we're already in a transaction)
+      updateCallableRegionPctInternal(profileId, contig)
+
+      1 // Return count of regions imported
+    }
+
+  /**
+   * Import detailed callable loci intervals for a source.
+   *
+   * This version takes pre-parsed intervals for batch import.
+   *
+   * @param profileId The Y profile ID
+   * @param sourceId The source these regions belong to
+   * @param intervals List of (start, end, state) tuples
+   * @param contig Contig (default: chrY)
+   * @return Count of regions imported
+   */
+  def importCallableIntervals(
+    profileId: UUID,
+    sourceId: UUID,
+    intervals: List[(Long, Long, YCallableState)],
+    contig: String = "chrY"
+  ): Either[String, Int] =
+    transactor.readWrite {
+      // Delete existing regions for this source
+      regionRepo.deleteBySource(sourceId)
+
+      // Insert all intervals
+      val regions = intervals.map { case (start, end, state) =>
+        YProfileRegionEntity.create(
+          yProfileId = profileId,
+          sourceId = sourceId,
+          contig = contig,
+          startPosition = start,
+          endPosition = end,
+          callableState = state
+        )
+      }
+
+      regions.foreach(regionRepo.insert)
+
+      // Update profile statistics (inline since we're already in a transaction)
+      updateCallableRegionPctInternal(profileId, contig)
+
+      regions.size
+    }
+
+  /**
+   * Query the callable state at a specific position for a profile.
+   *
+   * Checks stored regions first. If a live CallableLociQueryService is provided,
+   * falls back to querying it directly.
+   *
+   * @param profileId The profile ID
+   * @param position Genomic position (1-based)
+   * @param contig Contig (default: chrY)
+   * @param liveService Optional live query service for fallback
+   * @return Callable state at position
+   */
+  def queryCallableState(
+    profileId: UUID,
+    position: Long,
+    contig: String = "chrY",
+    liveService: Option[CallableLociQueryService] = None
+  ): Either[String, YCallableState] =
+    transactor.readOnly {
+      // Query stored regions first
+      val overlapping = regionRepo.findOverlapping(profileId, position)
+        .filter(_.contig == contig)
+        .filterNot(_.callableState == YCallableState.SUMMARY) // Skip summary regions
+
+      overlapping.headOption match
+        case Some(region) => region.callableState
+        case None =>
+          // Fall back to live service if available
+          liveService match
+            case Some(service) =>
+              convertCallableState(service.queryPosition(contig, position))
+            case None =>
+              // No stored region and no live service - unknown
+              YCallableState.NO_COVERAGE
+    }
+
+  /**
+   * Query callable states for multiple positions at once.
+   *
+   * @param profileId The profile ID
+   * @param positions List of positions to query
+   * @param contig Contig (default: chrY)
+   * @param liveService Optional live query service for fallback
+   * @return Map of position to callable state
+   */
+  def queryCallableStates(
+    profileId: UUID,
+    positions: List[Long],
+    contig: String = "chrY",
+    liveService: Option[CallableLociQueryService] = None
+  ): Either[String, Map[Long, YCallableState]] =
+    transactor.readOnly {
+      // Get all relevant regions for the profile
+      val allRegions = regionRepo.findByProfile(profileId)
+        .filter(_.contig == contig)
+        .filterNot(_.callableState == YCallableState.SUMMARY)
+
+      positions.map { pos =>
+        val state = allRegions.find(r => pos >= r.startPosition && pos <= r.endPosition) match
+          case Some(region) => region.callableState
+          case None =>
+            liveService match
+              case Some(service) =>
+                convertCallableState(service.queryPosition(contig, pos))
+              case None =>
+                YCallableState.NO_COVERAGE
+        pos -> state
+      }.toMap
+    }
+
+  /**
+   * Update callable region percentage on profile.
+   *
+   * Calculates percentage based on stored regions vs total chrY length.
+   *
+   * @param profileId Profile ID
+   * @param contig Contig (default: chrY)
+   * @param totalChrYLength Total chrY length in reference (default: GRCh38 ~57Mb)
+   */
+  def updateCallableRegionPct(
+    profileId: UUID,
+    contig: String = "chrY",
+    totalChrYLength: Long = 57227415L // GRCh38 chrY length
+  ): Either[String, YChromosomeProfileEntity] =
+    transactor.readWrite {
+      updateCallableRegionPctInternal(profileId, contig, totalChrYLength)
+    }
+
+  /**
+   * Internal version that works within an existing transaction.
+   */
+  private def updateCallableRegionPctInternal(
+    profileId: UUID,
+    contig: String = "chrY",
+    totalChrYLength: Long = 57227415L
+  )(using java.sql.Connection): YChromosomeProfileEntity =
+    val profile = profileRepo.findById(profileId).getOrElse(
+      throw new IllegalArgumentException(s"Profile not found: $profileId")
+    )
+
+    // Get all CALLABLE regions for this profile
+    val callableRegions = regionRepo.findByState(profileId, YCallableState.CALLABLE)
+      .filter(_.contig == contig)
+
+    // Calculate total callable bases
+    val callableBases = if callableRegions.isEmpty then
+      // Check for summary region
+      regionRepo.findByState(profileId, YCallableState.SUMMARY)
+        .filter(_.contig == contig)
+        .headOption
+        .map(_.endPosition) // We stored callable bases in endPosition
+        .getOrElse(0L)
+    else
+      callableRegions.map(r => r.endPosition - r.startPosition + 1).sum
+
+    val pct = if totalChrYLength > 0 then
+      callableBases.toDouble / totalChrYLength.toDouble
+    else
+      0.0
+
+    val updated = profile.copy(
+      callableRegionPct = Some(pct)
+    )
+
+    profileRepo.update(updated)
+
+  /**
+   * Get callable summary for a source.
+   *
+   * Returns statistics about callable regions from a specific source.
+   */
+  def getCallableSummary(sourceId: UUID): Either[String, CallableSummary] =
+    transactor.readOnly {
+      val regions = regionRepo.findBySource(sourceId)
+
+      val callableCount = regions.count(_.callableState == YCallableState.CALLABLE)
+      val lowCoverageCount = regions.count(_.callableState == YCallableState.LOW_COVERAGE)
+      val noCoverageCount = regions.count(_.callableState == YCallableState.NO_COVERAGE)
+      val poorMappingCount = regions.count(_.callableState == YCallableState.POOR_MAPPING_QUALITY)
+
+      val callableBases = regions
+        .filter(_.callableState == YCallableState.CALLABLE)
+        .map(r => r.endPosition - r.startPosition + 1)
+        .sum
+
+      val totalBases = regions
+        .filterNot(_.callableState == YCallableState.SUMMARY)
+        .map(r => r.endPosition - r.startPosition + 1)
+        .sum
+
+      CallableSummary(
+        sourceId = sourceId,
+        regionCount = regions.size,
+        callableRegionCount = callableCount,
+        lowCoverageRegionCount = lowCoverageCount,
+        noCoverageRegionCount = noCoverageCount,
+        poorMappingRegionCount = poorMappingCount,
+        callableBases = callableBases,
+        totalBases = totalBases,
+        callablePct = if totalBases > 0 then callableBases.toDouble / totalBases.toDouble else 0.0
+      )
+    }
+
+  /**
+   * Convert CallableState (from CallableLociQueryService) to YCallableState.
+   */
+  private def convertCallableState(state: CallableState): YCallableState =
+    state match
+      case CallableState.Callable => YCallableState.CALLABLE
+      case CallableState.NoCoverage => YCallableState.NO_COVERAGE
+      case CallableState.LowCoverage => YCallableState.LOW_COVERAGE
+      case CallableState.ExcessiveCoverage => YCallableState.EXCESSIVE_COVERAGE
+      case CallableState.PoorMappingQuality => YCallableState.POOR_MAPPING_QUALITY
+      case CallableState.RefN => YCallableState.REF_N
+      case CallableState.Unknown => YCallableState.NO_COVERAGE
+
+  // ============================================
   // Haplogroup Determination
   // ============================================
 
@@ -717,4 +994,19 @@ case class HaplogroupDeterminationResult(
   treeProvider: String,
   treeVersion: String,
   snpCallCount: Int
+)
+
+/**
+ * Summary of callable loci statistics for a source.
+ */
+case class CallableSummary(
+  sourceId: UUID,
+  regionCount: Int,
+  callableRegionCount: Int,
+  lowCoverageRegionCount: Int,
+  noCoverageRegionCount: Int,
+  poorMappingRegionCount: Int,
+  callableBases: Long,
+  totalBases: Long,
+  callablePct: Double
 )

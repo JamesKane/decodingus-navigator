@@ -430,3 +430,130 @@ class YProfileServiceSpec extends FunSuite with DatabaseTestSupport:
     assertEquals(result.consensusAllele, Some("(GATA)13"),
       "CE source should outweigh WGS source for STR")
   }
+
+  // ============================================
+  // Callable Loci Integration Tests
+  // ============================================
+
+  testTransactor.test("importCallableIntervals stores regions and updates profile pct") { case (db, tx) =>
+    val service = createService(tx)
+
+    val biosampleId = tx.readWrite { createTestBiosample().id }.toOption.get
+    val profile = service.getOrCreateProfile(biosampleId).toOption.get
+    val source = service.addSource(profile.id, YProfileSourceType.WGS_SHORT_READ).toOption.get
+
+    // Import some callable intervals
+    val intervals = List(
+      (1000000L, 5000000L, YCallableState.CALLABLE),      // 4M bases callable
+      (5000001L, 6000000L, YCallableState.LOW_COVERAGE),  // 1M low coverage
+      (6000001L, 10000000L, YCallableState.CALLABLE)      // 4M bases callable
+    )
+
+    val result = service.importCallableIntervals(profile.id, source.id, intervals)
+
+    assert(result.isRight)
+    assertEquals(result.toOption.get, 3)
+
+    // Check profile has callable region pct updated
+    val updatedProfile = service.getProfile(profile.id).toOption.flatten.get
+    assert(updatedProfile.callableRegionPct.isDefined)
+    assert(updatedProfile.callableRegionPct.get > 0)
+  }
+
+  testTransactor.test("queryCallableState returns stored state for position") { case (db, tx) =>
+    val service = createService(tx)
+
+    val biosampleId = tx.readWrite { createTestBiosample().id }.toOption.get
+    val profile = service.getOrCreateProfile(biosampleId).toOption.get
+    val source = service.addSource(profile.id, YProfileSourceType.WGS_SHORT_READ).toOption.get
+
+    // Import intervals
+    val intervals = List(
+      (1000000L, 2000000L, YCallableState.CALLABLE),
+      (2000001L, 3000000L, YCallableState.LOW_COVERAGE),
+      (3000001L, 4000000L, YCallableState.NO_COVERAGE)
+    )
+    service.importCallableIntervals(profile.id, source.id, intervals)
+
+    // Query positions in different regions
+    val callable = service.queryCallableState(profile.id, 1500000L)
+    val lowCov = service.queryCallableState(profile.id, 2500000L)
+    val noCov = service.queryCallableState(profile.id, 3500000L)
+    val unknown = service.queryCallableState(profile.id, 100L) // Outside any region
+
+    assertEquals(callable.toOption.get, YCallableState.CALLABLE)
+    assertEquals(lowCov.toOption.get, YCallableState.LOW_COVERAGE)
+    assertEquals(noCov.toOption.get, YCallableState.NO_COVERAGE)
+    assertEquals(unknown.toOption.get, YCallableState.NO_COVERAGE) // Default for unknown
+  }
+
+  testTransactor.test("queryCallableStates returns map for multiple positions") { case (db, tx) =>
+    val service = createService(tx)
+
+    val biosampleId = tx.readWrite { createTestBiosample().id }.toOption.get
+    val profile = service.getOrCreateProfile(biosampleId).toOption.get
+    val source = service.addSource(profile.id, YProfileSourceType.WGS_SHORT_READ).toOption.get
+
+    val intervals = List(
+      (1000000L, 2000000L, YCallableState.CALLABLE),
+      (2000001L, 3000000L, YCallableState.LOW_COVERAGE)
+    )
+    service.importCallableIntervals(profile.id, source.id, intervals)
+
+    val positions = List(1500000L, 2500000L, 5000000L)
+    val states = service.queryCallableStates(profile.id, positions)
+
+    assert(states.isRight)
+    val statesMap = states.toOption.get
+    assertEquals(statesMap(1500000L), YCallableState.CALLABLE)
+    assertEquals(statesMap(2500000L), YCallableState.LOW_COVERAGE)
+    assertEquals(statesMap(5000000L), YCallableState.NO_COVERAGE)
+  }
+
+  testTransactor.test("getCallableSummary returns correct statistics") { case (db, tx) =>
+    val service = createService(tx)
+
+    val biosampleId = tx.readWrite { createTestBiosample().id }.toOption.get
+    val profile = service.getOrCreateProfile(biosampleId).toOption.get
+    val source = service.addSource(profile.id, YProfileSourceType.WGS_SHORT_READ).toOption.get
+
+    val intervals = List(
+      (1000000L, 5000000L, YCallableState.CALLABLE),      // 4M bases
+      (5000001L, 6000000L, YCallableState.LOW_COVERAGE),  // 1M bases
+      (6000001L, 7000000L, YCallableState.NO_COVERAGE),   // 1M bases
+      (7000001L, 10000000L, YCallableState.CALLABLE)      // 3M bases
+    )
+    service.importCallableIntervals(profile.id, source.id, intervals)
+
+    val summary = service.getCallableSummary(source.id)
+
+    assert(summary.isRight)
+    val s = summary.toOption.get
+    assertEquals(s.regionCount, 4)
+    assertEquals(s.callableRegionCount, 2)
+    assertEquals(s.lowCoverageRegionCount, 1)
+    assertEquals(s.noCoverageRegionCount, 1)
+    assertEquals(s.callableBases, 7000001L) // 4000001 + 3000000 from inclusive range
+    assertEquals(s.totalBases, 9000001L)    // 4000001 + 1000000 + 1000000 + 3000000
+  }
+
+  testTransactor.test("callable state affects variant concordance weight") { case (db, tx) =>
+    val service = createService(tx)
+
+    val biosampleId = tx.readWrite { createTestBiosample().id }.toOption.get
+    val profile = service.getOrCreateProfile(biosampleId).toOption.get
+    val source = service.addSource(profile.id, YProfileSourceType.WGS_SHORT_READ).toOption.get
+
+    // Add variant with callable state = LOW_COVERAGE
+    val (variant, sourceCall) = service.addVariantCall(
+      profile.id, source.id,
+      position = 2000000L, refAllele = "G", altAllele = "A",
+      calledAllele = "A", callState = YConsensusState.DERIVED,
+      readDepth = Some(30), mappingQuality = Some(60),
+      callableState = Some(YCallableState.LOW_COVERAGE)
+    ).toOption.get
+
+    // The weight should be reduced due to LOW_COVERAGE
+    // (callableFactor = 0.5 instead of 1.0)
+    assert(sourceCall.concordanceWeight < 0.85) // Base WGS weight without penalty
+  }
