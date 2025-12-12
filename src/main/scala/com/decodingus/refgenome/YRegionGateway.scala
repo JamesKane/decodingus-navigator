@@ -1,5 +1,6 @@
 package com.decodingus.refgenome
 
+import com.decodingus.util.Logger
 import htsjdk.samtools.liftover.LiftOver
 import htsjdk.samtools.util.{Interval, Log}
 import sttp.client3.*
@@ -20,7 +21,8 @@ case class YRegionPaths(
   par: Path,
   xtr: Path,
   ampliconic: Path,
-  centromeres: Option[Path] = None
+  centromeres: Option[Path] = None,
+  sequenceClass: Option[Path] = None  // T2T sequence class file (contains X-DEG, etc.)
 )
 
 /**
@@ -42,6 +44,7 @@ case class YRegionPaths(
  * @param onProgress Callback for progress updates (message, 0.0-1.0)
  */
 class YRegionGateway(onProgress: (String, Double) => Unit = (_, _) => ()) {
+  private val log = Logger[YRegionGateway]
   private val cache = new YRegionCache
   private val liftoverGateway = new LiftoverGateway((_, _) => ())
 
@@ -109,6 +112,8 @@ class YRegionGateway(onProgress: (String, Double) => Unit = (_, _) => ()) {
    * @return Either error message or paths to all region files
    */
   def resolveAll(referenceBuild: String): Either[String, YRegionPaths] = {
+    val normalizedBuild = normalizeBuildName(referenceBuild)
+
     for {
       cytobands <- resolve("cytobands", referenceBuild)
       palindromes <- resolve("palindromes", referenceBuild)
@@ -116,7 +121,15 @@ class YRegionGateway(onProgress: (String, Double) => Unit = (_, _) => ()) {
       par <- resolve("par", referenceBuild)
       xtr <- resolve("xtr", referenceBuild)
       ampliconic <- resolve("ampliconic", referenceBuild)
-    } yield YRegionPaths(cytobands, palindromes, strs, par, xtr, ampliconic)
+    } yield {
+      // sequence_class is only available natively for CHM13v2 (contains X-DEG regions)
+      val sequenceClass = if (normalizedBuild == "CHM13v2") {
+        resolve("sequence_class", referenceBuild).toOption
+      } else {
+        None
+      }
+      YRegionPaths(cytobands, palindromes, strs, par, xtr, ampliconic, sequenceClass = sequenceClass)
+    }
   }
 
   /**
@@ -133,7 +146,7 @@ class YRegionGateway(onProgress: (String, Double) => Unit = (_, _) => ()) {
     // Check cache first
     cache.getPath(regionType, normalizedBuild) match {
       case Some(path) =>
-        println(s"[YRegionGateway] Found $regionType for $normalizedBuild in cache: $path")
+        log.debug(s"Found $regionType for $normalizedBuild in cache: $path")
         Right(path)
       case None =>
         normalizedBuild match {
@@ -201,7 +214,7 @@ class YRegionGateway(onProgress: (String, Double) => Unit = (_, _) => ()) {
   private def downloadChm13RegionFile(regionType: String): Either[String, Path] = {
     // CHM13v2.0 doesn't have STRs in T2T annotations - liftover from GRCh38 as fallback
     if (regionType == "strs") {
-      println(s"[YRegionGateway] CHM13v2.0 STRs not available natively, lifting over from GRCh38")
+      log.info("CHM13v2.0 STRs not available natively, lifting over from GRCh38")
       return resolve("strs", "GRCh38").flatMap { grch38Path =>
         liftoverRegionFile(grch38Path, "strs", "GRCh38", "CHM13v2")
       }
@@ -226,7 +239,7 @@ class YRegionGateway(onProgress: (String, Double) => Unit = (_, _) => ()) {
    */
   private def downloadFile(regionType: String, referenceBuild: String, url: String, isGff3: Boolean): Either[String, Path] = {
     onProgress(s"Downloading $regionType for $referenceBuild...", 0.0)
-    println(s"[YRegionGateway] Downloading $regionType from $url")
+    log.info(s"Downloading $regionType from $url")
 
     val ext = if (isGff3) ".gff3" else ".bed"
     val tempFile = Files.createTempFile(s"yregion-$regionType-", ext)
@@ -255,7 +268,7 @@ class YRegionGateway(onProgress: (String, Double) => Unit = (_, _) => ()) {
 
           val cachedPath = cache.put(regionType, referenceBuild, finalPath)
           onProgress(s"$regionType ready.", 1.0)
-          println(s"[YRegionGateway] Cached $regionType at $cachedPath")
+          log.debug(s"Cached $regionType at $cachedPath")
           Right(cachedPath)
 
         case Left(error) =>
@@ -298,7 +311,7 @@ class YRegionGateway(onProgress: (String, Double) => Unit = (_, _) => ()) {
     toBuild: String
   ): Either[String, Path] = {
     onProgress(s"Lifting over $regionType from $fromBuild to $toBuild...", 0.0)
-    println(s"[YRegionGateway] Lifting over $regionType from $fromBuild to $toBuild")
+    log.info(s"Lifting over $regionType from $fromBuild to $toBuild")
 
     for {
       chainFile <- liftoverGateway.resolve(fromBuild, toBuild)
@@ -310,7 +323,7 @@ class YRegionGateway(onProgress: (String, Double) => Unit = (_, _) => ()) {
     } yield {
       val cachedPath = cache.put(regionType, toBuild, liftedPath)
       onProgress(s"$regionType liftover complete.", 1.0)
-      println(s"[YRegionGateway] Cached lifted $regionType at $cachedPath")
+      log.debug(s"Cached lifted $regionType at $cachedPath")
       cachedPath
     }
   }
@@ -368,7 +381,7 @@ class YRegionGateway(onProgress: (String, Double) => Unit = (_, _) => ()) {
         }
       }
 
-      println(s"[YRegionGateway] GFF3 liftover complete: $liftedCount regions lifted, $failedCount failed")
+      log.info(s"GFF3 liftover complete: $liftedCount regions lifted, $failedCount failed")
 
       if (liftedCount > 0) Right(outputPath)
       else {
@@ -433,7 +446,7 @@ class YRegionGateway(onProgress: (String, Double) => Unit = (_, _) => ()) {
         }
       }
 
-      println(s"[YRegionGateway] BED liftover complete: $liftedCount regions lifted, $failedCount failed")
+      log.info(s"BED liftover complete: $liftedCount regions lifted, $failedCount failed")
 
       if (liftedCount > 0) Right(outputPath)
       else {
@@ -552,6 +565,19 @@ class YRegionGateway(onProgress: (String, Double) => Unit = (_, _) => ()) {
         }
       }
 
+      // Parse X-degenerate regions from sequence_class file (CHM13v2 only)
+      // The sequence_class file has entries like: chrY  start  end  X-DEG
+      val xdegenerate = paths.sequenceClass.flatMap { seqClassPath =>
+        RegionFileParser.parseBed(seqClassPath).toOption.map { records =>
+          // Filter for X-DEG (X-degenerate) entries on Y chromosome
+          val xdegRecords = records.filter { r =>
+            r.name.exists(_.toUpperCase.contains("X-DEG")) &&
+              RegionFileParser.filterYChromosome(List(r), _.chrom).nonEmpty
+          }
+          YRegionAnnotator.bedToRegions(xdegRecords, RegionType.XDegenerate)
+        }
+      }.getOrElse(Nil)
+
       val annotator = YRegionAnnotator.fromRegions(
         cytobands = cytobands,
         palindromes = palindromes,
@@ -560,10 +586,11 @@ class YRegionGateway(onProgress: (String, Double) => Unit = (_, _) => ()) {
         xtrs = xtrs,
         ampliconic = ampliconic,
         heterochromatin = heterochromatin,
+        xdegenerate = xdegenerate,
         callablePositions = callablePositions
       )
 
-      println(s"[YRegionGateway] Created annotator with ${annotator.totalRegionCount} regions")
+      log.info(s"Created annotator with ${annotator.totalRegionCount} regions (${xdegenerate.size} X-degenerate)")
       Right(annotator)
     } catch {
       case e: Exception =>

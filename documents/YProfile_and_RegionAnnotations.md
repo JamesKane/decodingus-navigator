@@ -56,7 +56,8 @@ The Y chromosome isn't uniform—some parts are easy to sequence accurately, oth
 
 | Region Type | What It Means | Reliability |
 |-------------|---------------|-------------|
-| **Normal regions** | Standard single-copy DNA | Very reliable |
+| **X-degenerate** | Stable, single-copy regions—the gold standard | Most reliable |
+| **Normal regions** | Standard callable DNA | Very reliable |
 | **Palindromes (P1-P8)** | Mirror-image sequences that can "gene convert" | Moderate concern |
 | **STRs** | Short tandem repeats that can change between generations | Higher concern |
 | **PAR** | Pseudoautosomal regions that recombine with X | Moderate concern |
@@ -114,6 +115,8 @@ The Y Profile system consists of three main layers:
 
 ### Data Model
 
+> **Note**: The entity definitions below are simplified for documentation purposes. The actual implementations in `yprofile/model/YChromosomeProfile.scala` contain additional fields for multi-reference support, STR metadata, and migration compatibility. See the Code Reference section for file paths.
+
 #### YChromosomeProfileEntity
 
 The root entity for a biosample's Y chromosome data:
@@ -160,23 +163,34 @@ Data sources contributing to the profile:
 case class YProfileSourceEntity(
   id: UUID,
   yProfileId: UUID,
-  sourceType: YProfileSourceType,   // WGS_SHORT_READ, WGS_LONG_READ, TARGETED_Y, CHIP, MANUAL
-  alignmentId: Option[UUID],
-  referenceBuild: Option[String],
-  evidenceWeight: Double,           // Base weight for this source type
-  variantCount: Int,
-  processedAt: Instant
+  sourceType: YProfileSourceType,   // SANGER, WGS_SHORT_READ, WGS_LONG_READ, TARGETED_NGS, CHIP, etc.
+  sourceRef: Option[String],        // External reference ID
+  vendor: Option[String],           // Test vendor (e.g., "FTDNA", "Nebula")
+  testName: Option[String],         // Specific test name (e.g., "Big Y-700")
+  testDate: Option[LocalDateTime],  // When test was performed
+  methodTier: Int,                  // Quality tier (0-5 from sourceType.snpTier)
+  meanReadDepth: Option[Double],    // Average coverage
+  meanMappingQuality: Option[Double],
+  coveragePct: Option[Double],      // Percentage of Y covered
+  variantCount: Int,                // SNP count from this source
+  strMarkerCount: Int,              // STR marker count
+  novelVariantCount: Int,           // Private/novel variants
+  alignmentId: Option[UUID],        // Link to alignment if from BAM/CRAM
+  referenceBuild: Option[String],   // GRCh38, GRCh37, CHM13v2
+  importedAt: LocalDateTime
 )
 ```
 
-Source type weights (default):
-| Source Type | Weight | Rationale |
-|-------------|--------|-----------|
-| WGS Long Read | 1.0 | Gold standard for Y |
-| WGS Short Read | 0.8 | Good but repetitive regions challenging |
-| Targeted Y (Big Y) | 0.9 | Optimized for Y, very reliable |
-| Chip | 0.6 | Limited positions, batch effects |
-| Manual | 0.5 | User-entered, no QC |
+Source type weights (from `YProfileSourceType` enum, separate SNP/STR weights):
+| Source Type | SNP Weight | STR Weight | Rationale |
+|-------------|------------|------------|-----------|
+| Sanger Sequencing | 1.0 | 0.9 | Gold standard for SNPs, good for STRs |
+| Capillary Electrophoresis | 0.5 | 1.0 | Not for SNPs, gold standard for STRs |
+| WGS Long Read | 0.95 | 0.7 | Excellent for SNPs, good for repeats |
+| WGS Short Read | 0.85 | 0.5 | Good for SNPs, repeat estimation error-prone |
+| Targeted NGS (Big Y) | 0.75 | 0.4 | Good but limited regions |
+| Chip | 0.5 | 0.3 | Probe-based, limited |
+| Manual | 0.3 | 0.2 | User-provided, lowest confidence |
 
 #### YVariantSourceCallEntity
 
@@ -210,13 +224,35 @@ For each variant position:
   6. Conflict = any source disagrees with consensus
 ```
 
-**Quality Modifier** (based on PHRED score):
-- Q50+: 1.0
-- Q40-49: 0.9
-- Q30-39: 0.8
-- Q20-29: 0.6
-- Q10-19: 0.4
-- Q<10: 0.2
+**Weight Calculation Formula** (implemented in `YVariantConcordance.calculateWeight()`):
+```
+weight = methodWeight × (1 + depthBonus) × mapQFactor × callableFactor × regionFactor
+```
+
+Where:
+- `methodWeight`: From `YProfileSourceType` enum (SNP vs STR weights)
+- `depthBonus`: min(sqrt(depth)/10, 1.0) - rewards higher coverage
+- `mapQFactor`: min(MQ/60, 1.0) - mapping quality normalized to 60
+- `callableFactor`: From `YCallableState` enum (callable=1.0, non-callable=0.5)
+- `regionFactor`: From `RegionType.modifier` (X-degenerate=1.0, palindrome=0.4, etc.)
+
+**Mapping Quality Factor** (`mapQFactor`):
+- Calculated as: min(MQ / 60.0, 1.0)
+- MQ60: 1.0 (highest confidence mapping)
+- MQ30: 0.5
+- MQ0 or missing: 1.0 (default for non-sequencing sources)
+
+> **Note**: The concordance algorithm uses mapping quality (MQ), not variant quality (PHRED). Mapping quality indicates how confidently a read aligns to the reference, while variant quality indicates confidence in the called allele. For haplogroup *display*, star ratings are based on variant quality—see `HaplogroupReportWriter`.
+
+**Region Modifier** (from `RegionType.modifier`):
+- X-degenerate: 1.0 (gold standard single-copy)
+- Normal: 1.0
+- PAR: 0.5 (recombines with X)
+- Palindrome: 0.4 (gene conversion risk)
+- XTR: 0.3 (99% X-identical)
+- Ampliconic: 0.3 (high copy number)
+- STR: 0.25 (recLOH risk)
+- Centromere/Heterochromatin: 0.1 (unmappable)
 
 ### Database Schema
 
@@ -278,19 +314,19 @@ CREATE TABLE y_variant_source_calls (
 ### Region Types and Quality Modifiers
 
 ```scala
-enum RegionType(val modifier: Double, val displayName: String):
-  case Cytoband       extends RegionType(1.0, "Cytoband")       // Display only
-  case XDegenerate    extends RegionType(1.0, "X-degenerate")   // Gold standard
-  case Normal         extends RegionType(1.0, "Normal")
-  case PAR            extends RegionType(0.5, "PAR")
-  case Palindrome     extends RegionType(0.4, "Palindrome")
-  case XTR            extends RegionType(0.3, "XTR")
-  case Ampliconic     extends RegionType(0.3, "Ampliconic")
-  case STR            extends RegionType(0.25, "STR")
-  case Centromere     extends RegionType(0.1, "Centromere")
-  case Heterochromatin extends RegionType(0.1, "Heterochromatin")
-  case NonCallable    extends RegionType(0.5, "Non-callable")
-  case LowDepth       extends RegionType(0.7, "Low depth")
+enum RegionType(val modifier: Double, val displayName: String, val description: String):
+  case Cytoband       extends RegionType(1.0, "Cytoband", "Chromosome band (display only)")
+  case XDegenerate    extends RegionType(1.0, "X-degenerate", "Stable, single-copy regions - gold standard")
+  case Normal         extends RegionType(1.0, "Normal", "Normal callable region")
+  case PAR            extends RegionType(0.5, "PAR", "Pseudoautosomal region - recombines with X")
+  case Palindrome     extends RegionType(0.4, "Palindrome", "Palindromic region - gene conversion risk")
+  case XTR            extends RegionType(0.3, "XTR", "X-transposed region - 99% X-identical, contamination risk")
+  case Ampliconic     extends RegionType(0.3, "Ampliconic", "Ampliconic region - high copy number, mapping artifacts")
+  case STR            extends RegionType(0.25, "STR", "Short tandem repeat - recLOH risk")
+  case Centromere     extends RegionType(0.1, "Centromere", "Centromeric region - nearly unmappable")
+  case Heterochromatin extends RegionType(0.1, "Heterochromatin", "Heterochromatic region (Yq12) - unmappable")
+  case NonCallable    extends RegionType(0.5, "Non-callable", "Failed callable loci criteria")
+  case LowDepth       extends RegionType(0.7, "Low depth", "Read depth below threshold (<10x)")
 ```
 
 Modifiers combine **multiplicatively**. A variant in a palindrome (0.4) with low depth (0.7) has combined modifier: 0.4 × 0.7 = 0.28
@@ -422,6 +458,7 @@ When provided, reports include:
 
 | Component | File | Purpose |
 |-----------|------|---------|
+| Y Profile Models | `yprofile/model/YChromosomeProfile.scala` | Entity definitions, enums |
 | Y Profile Entity | `repository/YChromosomeProfileRepository.scala` | Profile CRUD |
 | Y Variant Entity | `repository/YProfileVariantRepository.scala` | Variant CRUD |
 | Y Source Entity | `repository/YProfileSourceRepository.scala` | Source tracking |
@@ -453,8 +490,22 @@ When provided, reports include:
 
 ## Future Enhancements
 
-1. **Region-Aware Concordance**: Factor region modifiers into the Y Profile consensus algorithm
-2. **Callable Loci Integration**: Use `callable_loci.bed` from GATK to mark non-callable positions
-3. **X-Degenerate Annotation**: Download and annotate X-degenerate regions (highest confidence)
-4. **Interactive Region Visualization**: Show regions on a chromosome ideogram in the UI
-5. **Export with Annotations**: Include region info in VCF/CSV exports
+| Enhancement | Status | Notes |
+|-------------|--------|-------|
+| **Region-Aware Concordance** | ✅ Implemented | `regionModifier` parameter added to `YVariantConcordance.calculateWeight()` and `SourceCallInput` |
+| **Callable Loci Integration** | ✅ Implemented | Uses `callable_loci.bed` from GATK via `YCallableState` enum |
+| **X-Degenerate Annotation** | ✅ Implemented | Parsed from T2T `sequence_class` file for CHM13v2; marked as `RegionType.XDegenerate` |
+| **Interactive Region Visualization** | ❌ Planned | Show regions on a chromosome ideogram in the UI |
+| **Export with Annotations** | ✅ Implemented | `HaplogroupReportWriter.writeCsvReport()` exports CSVs with region annotations |
+
+### CSV Export Details
+
+The `writeCsvReport()` method creates three CSV files with full region annotation:
+
+| File | Contents |
+|------|----------|
+| `ydna_snp_details.csv` | SNPs along the predicted haplogroup path |
+| `ydna_novel_snps.csv` | Novel/unplaced SNPs |
+| `ydna_novel_indels.csv` | Novel indels with STR marker info |
+
+Each CSV includes columns: `region_type`, `region_name`, `quality_modifier`, `adjusted_quality`

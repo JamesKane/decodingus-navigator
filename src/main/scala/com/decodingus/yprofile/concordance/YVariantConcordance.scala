@@ -28,15 +28,17 @@ object YVariantConcordance:
   /**
    * Calculate concordance weight for a source call.
    *
-   * Formula: methodWeight × (1 + depthBonus) × mapQFactor × callableFactor
+   * Formula: methodWeight × (1 + depthBonus) × mapQFactor × callableFactor × regionFactor
    *
    * Method weights are sourced from YProfileSourceType enum values.
+   * Region factors come from YRegionAnnotator.RegionType (e.g., palindrome=0.4, XTR=0.3)
    *
    * @param sourceType     Testing method used
    * @param variantType    Type of variant (affects method weight selection)
    * @param readDepth      Read depth at position (optional, for sequencing sources)
    * @param mappingQuality Mapping quality (optional, for sequencing sources)
    * @param callableState  Callable state at position (optional)
+   * @param regionModifier Quality modifier based on genomic region (default 1.0)
    * @return Calculated concordance weight
    */
   def calculateWeight(
@@ -44,7 +46,8 @@ object YVariantConcordance:
     variantType: YVariantType,
     readDepth: Option[Int] = None,
     mappingQuality: Option[Double] = None,
-    callableState: Option[YCallableState] = None
+    callableState: Option[YCallableState] = None,
+    regionModifier: Double = 1.0
   ): Double =
     // Select method weight based on variant type (from enum)
     val methodWeight = variantType match
@@ -66,11 +69,27 @@ object YVariantConcordance:
       case Some(state) => state.weight
       case None        => 1.0 // Assume callable if unknown
 
+    // Region factor: regions like palindromes, XTR, ampliconic have lower confidence
+    // Values come from YRegionAnnotator.RegionType modifiers
+    val regionFactor = math.max(0.1, math.min(1.0, regionModifier))
+
     // Final weight calculation
-    methodWeight * (1.0 + depthBonus) * mapQFactor * callableFactor
+    methodWeight * (1.0 + depthBonus) * mapQFactor * callableFactor * regionFactor
 
   /**
    * Input data for a single source call.
+   *
+   * @param sourceId         Unique ID of the data source
+   * @param sourceType       Testing method used (WGS, chip, etc.)
+   * @param calledAllele     The allele called at this position
+   * @param callState        Consensus state (ANCESTRAL, DERIVED, etc.)
+   * @param readDepth        Read depth at position (optional)
+   * @param mappingQuality   Mapping quality (optional)
+   * @param callableState    Callable state at position (optional)
+   * @param calledRepeatCount STR repeat count (optional, for STR markers)
+   * @param regionModifier   Quality modifier based on genomic region (default 1.0)
+   *                         Values from YRegionAnnotator: XDegenerate=1.0, PAR=0.5,
+   *                         Palindrome=0.4, XTR=0.3, Ampliconic=0.3, STR=0.25, etc.
    */
   case class SourceCallInput(
     sourceId: java.util.UUID,
@@ -80,7 +99,8 @@ object YVariantConcordance:
     readDepth: Option[Int] = None,
     mappingQuality: Option[Double] = None,
     callableState: Option[YCallableState] = None,
-    calledRepeatCount: Option[Int] = None
+    calledRepeatCount: Option[Int] = None,
+    regionModifier: Double = 1.0
   )
 
   /**
@@ -122,14 +142,15 @@ object YVariantConcordance:
         weightedCalls = List.empty
       )
 
-    // Calculate weights for each call
+    // Calculate weights for each call (including region modifier)
     val weightedCalls = calls.map { call =>
       val weight = calculateWeight(
         call.sourceType,
         variantType,
         call.readDepth,
         call.mappingQuality,
-        call.callableState
+        call.callableState,
+        call.regionModifier
       )
       (call, weight)
     }
@@ -218,14 +239,15 @@ object YVariantConcordance:
         weightedCalls = List.empty
       )
 
-    // Calculate weights for each call
+    // Calculate weights for each call (including region modifier)
     val weightedCalls = calls.map { call =>
       val weight = calculateWeight(
         call.sourceType,
         YVariantType.STR,
         call.readDepth,
         call.mappingQuality,
-        call.callableState
+        call.callableState,
+        call.regionModifier
       )
       (call, weight)
     }

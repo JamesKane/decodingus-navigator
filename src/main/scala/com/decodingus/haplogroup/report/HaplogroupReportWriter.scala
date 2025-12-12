@@ -489,4 +489,203 @@ object  HaplogroupReportWriter {
 
     tree.flatMap(root => search(root, 0)).headOption.getOrElse(List.empty)
   }
+
+  /**
+   * Escape a string for CSV output (handles commas, quotes, newlines).
+   */
+  private def escapeCsv(s: String): String = {
+    if (s.contains(",") || s.contains("\"") || s.contains("\n") || s.contains("\r")) {
+      "\"" + s.replace("\"", "\"\"") + "\""
+    } else {
+      s
+    }
+  }
+
+  /**
+   * Write a CSV export of haplogroup analysis results with region annotations.
+   *
+   * Creates three CSV files:
+   * - {prefix}_snp_details.csv - SNPs along the predicted haplogroup path
+   * - {prefix}_novel_snps.csv - Novel/unplaced SNPs
+   * - {prefix}_novel_indels.csv - Novel/unplaced indels
+   *
+   * @param outputDir Directory to write the CSV files
+   * @param treeType Y-DNA or MT-DNA
+   * @param results Scored haplogroup results
+   * @param tree The haplogroup tree used for analysis
+   * @param snpCalls The SNP calls from the VCF
+   * @param sampleName Optional sample name
+   * @param privateVariants Optional list of private/novel variants
+   * @param snpCallInfo Optional map of position to full SNP call info (quality, depth)
+   * @param yRegionAnnotator Optional Y chromosome region annotator for region info
+   * @param strAnnotator Optional STR annotator for indel classification
+   * @return List of created CSV files
+   */
+  def writeCsvReport(
+    outputDir: File,
+    treeType: TreeType,
+    results: List[HaplogroupResult],
+    tree: List[Haplogroup],
+    snpCalls: Map[Long, String],
+    sampleName: Option[String] = None,
+    privateVariants: Option[List[PrivateVariant]] = None,
+    snpCallInfo: Option[Map[Long, SnpCallInfo]] = None,
+    yRegionAnnotator: Option[YRegionAnnotator] = None,
+    strAnnotator: Option[StrAnnotator] = None
+  ): List[File] = {
+    outputDir.mkdirs()
+
+    val prefix = treeType match {
+      case TreeType.YDNA => "ydna"
+      case TreeType.MTDNA => "mtdna"
+    }
+
+    val createdFiles = scala.collection.mutable.ListBuffer[File]()
+
+    // Build path to predicted haplogroup
+    val topResult = results.headOption
+    val pathOpt = topResult.map(top => findPathToHaplogroup(tree, top.name))
+
+    // SNP Details CSV
+    pathOpt.foreach { path =>
+      val snpDetailsFile = new File(outputDir, s"${prefix}_snp_details.csv")
+      Using.resource(new PrintWriter(snpDetailsFile)) { writer =>
+        // Header
+        writer.println("contig,position,snp_name,haplogroup,ref,alt,call,state,depth,quality,region_type,region_name,quality_modifier,adjusted_quality")
+
+        val allLociOnPath = path.flatMap { hp =>
+          hp.loci.map(l => (l, hp.name))
+        }
+
+        allLociOnPath.sortBy { case (l, _) => (l.contig, l.position) }.foreach { case (locus, haplogroup) =>
+          val called = snpCalls.get(locus.position).getOrElse("")
+          val state = snpCalls.get(locus.position) match {
+            case Some(base) if base.equalsIgnoreCase(locus.alt) => "Derived"
+            case Some(base) if base.equalsIgnoreCase(locus.ref) => "Ancestral"
+            case Some(_) => "Unknown"
+            case None => "NoCall"
+          }
+
+          val callInfo = snpCallInfo.flatMap(_.get(locus.position))
+          val depth = callInfo.flatMap(_.depth)
+          val quality = callInfo.flatMap(_.quality)
+
+          val regionAnn = yRegionAnnotator.map(_.annotate(locus.contig, locus.position, depth))
+          val regionType = regionAnn.map(_.primaryRegion.map(_.regionType.toString).getOrElse("")).getOrElse("")
+          val regionName = regionAnn.map(_.shortDisplay).getOrElse("")
+          val regionModifier = regionAnn.map(_.qualityModifier).getOrElse(1.0)
+
+          val depthModifier = if (depth.exists(_ < 10)) 0.7 else 1.0
+          val adjustedQuality = quality.map(q => q * depthModifier * regionModifier)
+
+          val row = Seq(
+            escapeCsv(locus.contig),
+            locus.position.toString,
+            escapeCsv(locus.name),
+            escapeCsv(haplogroup),
+            escapeCsv(locus.ref),
+            escapeCsv(locus.alt),
+            escapeCsv(called),
+            state,
+            depth.map(_.toString).getOrElse(""),
+            quality.map(q => f"$q%.1f").getOrElse(""),
+            regionType,
+            escapeCsv(regionName),
+            f"$regionModifier%.2f",
+            adjustedQuality.map(q => f"$q%.1f").getOrElse("")
+          ).mkString(",")
+
+          writer.println(row)
+        }
+      }
+      createdFiles += snpDetailsFile
+    }
+
+    // Novel SNPs CSV
+    privateVariants.foreach { variants =>
+      val snpVariants = variants.filter(v => v.ref.length == 1 && v.alt.length == 1)
+
+      if (snpVariants.nonEmpty) {
+        val novelSnpsFile = new File(outputDir, s"${prefix}_novel_snps.csv")
+        Using.resource(new PrintWriter(novelSnpsFile)) { writer =>
+          writer.println("contig,position,ref,alt,depth,quality,region_type,region_name,quality_modifier,adjusted_quality")
+
+          snpVariants.sortBy(v => (v.contig, v.position)).foreach { v =>
+            val regionAnn = yRegionAnnotator.map(_.annotate(v.contig, v.position, v.depth))
+            val regionType = regionAnn.map(_.primaryRegion.map(_.regionType.toString).getOrElse("")).getOrElse("")
+            val regionName = regionAnn.map(_.shortDisplay).getOrElse("")
+            val regionModifier = regionAnn.map(_.qualityModifier).getOrElse(1.0)
+
+            val depthModifier = if (v.depth.exists(_ < 10)) 0.7 else 1.0
+            val adjustedQuality = v.quality.map(q => q * depthModifier * regionModifier)
+
+            val row = Seq(
+              escapeCsv(v.contig),
+              v.position.toString,
+              escapeCsv(v.ref),
+              escapeCsv(v.alt),
+              v.depth.map(_.toString).getOrElse(""),
+              v.quality.map(q => f"$q%.1f").getOrElse(""),
+              regionType,
+              escapeCsv(regionName),
+              f"$regionModifier%.2f",
+              adjustedQuality.map(q => f"$q%.1f").getOrElse("")
+            ).mkString(",")
+
+            writer.println(row)
+          }
+        }
+        createdFiles += novelSnpsFile
+      }
+    }
+
+    // Novel Indels CSV
+    privateVariants.foreach { variants =>
+      val indelVariants = variants.filterNot(v => v.ref.length == 1 && v.alt.length == 1)
+
+      if (indelVariants.nonEmpty) {
+        val novelIndelsFile = new File(outputDir, s"${prefix}_novel_indels.csv")
+        Using.resource(new PrintWriter(novelIndelsFile)) { writer =>
+          writer.println("contig,position,ref,alt,depth,quality,region_type,region_name,quality_modifier,adjusted_quality,str_marker,str_period,str_repeats")
+
+          indelVariants.sortBy(v => (v.contig, v.position)).foreach { v =>
+            val regionAnn = yRegionAnnotator.map(_.annotate(v.contig, v.position, v.depth))
+            val regionType = regionAnn.map(_.primaryRegion.map(_.regionType.toString).getOrElse("")).getOrElse("")
+            val regionName = regionAnn.map(_.shortDisplay).getOrElse("")
+            val regionModifier = regionAnn.map(_.qualityModifier).getOrElse(1.0)
+
+            val depthModifier = if (v.depth.exists(_ < 10)) 0.7 else 1.0
+            val adjustedQuality = v.quality.map(q => q * depthModifier * regionModifier)
+
+            // STR annotation if available
+            val strInfo = strAnnotator.flatMap(_.findOverlapping(v.contig, v.position))
+            val strMarker = strInfo.flatMap(_.name).getOrElse("")
+            val strPeriod = strInfo.map(_.period.toString).getOrElse("")
+            val strRepeats = strInfo.map(r => f"${r.numRepeats}%.1f").getOrElse("")
+
+            val row = Seq(
+              escapeCsv(v.contig),
+              v.position.toString,
+              escapeCsv(v.ref),
+              escapeCsv(v.alt),
+              v.depth.map(_.toString).getOrElse(""),
+              v.quality.map(q => f"$q%.1f").getOrElse(""),
+              regionType,
+              escapeCsv(regionName),
+              f"$regionModifier%.2f",
+              adjustedQuality.map(q => f"$q%.1f").getOrElse(""),
+              escapeCsv(strMarker),
+              strPeriod,
+              strRepeats
+            ).mkString(",")
+
+            writer.println(row)
+          }
+        }
+        createdFiles += novelIndelsFile
+      }
+    }
+
+    createdFiles.toList
+  }
 }
