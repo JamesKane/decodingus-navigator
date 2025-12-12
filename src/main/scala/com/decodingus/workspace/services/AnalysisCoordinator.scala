@@ -1,6 +1,7 @@
 package com.decodingus.workspace.services
 
 import com.decodingus.analysis.*
+import com.decodingus.analysis.SexInference.{InferredSex, SexInferenceResult}
 import com.decodingus.config.{FeatureToggles, ReferenceConfigService, UserPreferencesService}
 import com.decodingus.haplogroup.model.HaplogroupResult as AnalysisHaplogroupResult
 import com.decodingus.haplogroup.tree.{TreeProviderType, TreeType}
@@ -744,117 +745,173 @@ class AnalysisCoordinator(implicit ec: ExecutionContext) {
         alignmentUri = alignment.atUri
       )
 
+      // Load checkpoint - resume from last successful step if BAM hasn't changed
+      val artifactDir = artifactCtx.getArtifactDir
+      var checkpoint = AnalysisCheckpoint.loadAndValidate(artifactDir, bamPath)
+
       // Step 1: WGS Metrics (0.05 - 0.20)
-      onProgress(AnalysisProgress("Step 1/6: Running coverage depth analysis...", 0.05))
-      val wgsMetricsResult = runWgsMetricsStep(bamPath, referencePath, seqRun, artifactCtx, { pct =>
-        onProgress(AnalysisProgress(s"Step 1/6: Coverage analysis (${(pct * 100).toInt}%)", 0.05 + pct * 0.15))
-      })
-      wgsMetricsResult match {
-        case Right(wgsMetrics) =>
-          result = result.copy(wgsMetrics = Some(wgsMetrics))
-          // Update alignment metrics
-          val alignmentMetrics = alignment.metrics.getOrElse(AlignmentMetrics()).copy(
-            genomeTerritory = Some(wgsMetrics.genomeTerritory),
-            meanCoverage = Some(wgsMetrics.meanCoverage),
-            sdCoverage = Some(wgsMetrics.sdCoverage),
-            medianCoverage = Some(wgsMetrics.medianCoverage),
-            pct10x = Some(wgsMetrics.pct10x),
-            pct20x = Some(wgsMetrics.pct20x),
-            pct30x = Some(wgsMetrics.pct30x)
-          )
-          val updatedAlignment = alignment.copy(metrics = Some(alignmentMetrics))
-          currentState = workspaceOps.updateAlignment(currentState, updatedAlignment)
-        case Left(error) =>
-          println(s"[BatchAnalysis] WGS metrics warning: $error")
-          // Continue even if this step fails
+      if (!checkpoint.wgsMetricsCompleted) {
+        onProgress(AnalysisProgress("Step 1/6: Running coverage depth analysis...", 0.05))
+        val wgsMetricsResult = runWgsMetricsStep(bamPath, referencePath, seqRun, artifactCtx, { pct =>
+          onProgress(AnalysisProgress(s"Step 1/6: Coverage analysis (${(pct * 100).toInt}%)", 0.05 + pct * 0.15))
+        })
+        wgsMetricsResult match {
+          case Right(wgsMetrics) =>
+            result = result.copy(wgsMetrics = Some(wgsMetrics))
+            // Update alignment metrics
+            val alignmentMetrics = alignment.metrics.getOrElse(AlignmentMetrics()).copy(
+              genomeTerritory = Some(wgsMetrics.genomeTerritory),
+              meanCoverage = Some(wgsMetrics.meanCoverage),
+              sdCoverage = Some(wgsMetrics.sdCoverage),
+              medianCoverage = Some(wgsMetrics.medianCoverage),
+              pct10x = Some(wgsMetrics.pct10x),
+              pct20x = Some(wgsMetrics.pct20x),
+              pct30x = Some(wgsMetrics.pct30x)
+            )
+            val updatedAlignment = alignment.copy(metrics = Some(alignmentMetrics))
+            currentState = workspaceOps.updateAlignment(currentState, updatedAlignment)
+            checkpoint = AnalysisCheckpoint.markStepComplete(artifactDir, checkpoint, 1)
+          case Left(error) =>
+            println(s"[BatchAnalysis] WGS metrics warning: $error")
+            // Mark complete anyway to allow continuing (metrics are optional)
+            checkpoint = AnalysisCheckpoint.markStepComplete(artifactDir, checkpoint, 1)
+        }
+      } else {
+        onProgress(AnalysisProgress("Step 1/6: Coverage analysis (cached)", 0.20))
       }
 
       // Step 2: Callable Loci (0.20 - 0.45)
-      onProgress(AnalysisProgress("Step 2/6: Running callable loci analysis...", 0.20))
-      val callableLociResult = runCallableLociStep(bamPath, referencePath, seqRun, artifactCtx, { pct =>
-        onProgress(AnalysisProgress(s"Step 2/6: Callable loci (${(pct * 100).toInt}%)", 0.20 + pct * 0.25))
-      })
-      callableLociResult match {
-        case Right((clResult, _)) =>
-          result = result.copy(callableLociResult = Some(clResult))
-          // Update alignment with callable bases
-          val alignmentMetrics = currentState.workspace.main.alignments
-            .find(_.atUri == alignment.atUri)
-            .flatMap(_.metrics)
-            .getOrElse(AlignmentMetrics())
-            .copy(
-              callableBases = Some(clResult.callableBases),
-              callableLociComplete = Some(true)
-            )
-          val updatedAlignment = alignment.copy(metrics = Some(alignmentMetrics))
-          currentState = workspaceOps.updateAlignment(currentState, updatedAlignment)
-        case Left(error) =>
-          println(s"[BatchAnalysis] Callable loci warning: $error")
+      if (!checkpoint.callableLociCompleted) {
+        onProgress(AnalysisProgress("Step 2/6: Running callable loci analysis...", 0.20))
+        val callableLociResult = runCallableLociStep(bamPath, referencePath, seqRun, artifactCtx, { pct =>
+          onProgress(AnalysisProgress(s"Step 2/6: Callable loci (${(pct * 100).toInt}%)", 0.20 + pct * 0.25))
+        })
+        callableLociResult match {
+          case Right((clResult, _)) =>
+            result = result.copy(callableLociResult = Some(clResult))
+            // Update alignment with callable bases
+            val alignmentMetrics = currentState.workspace.main.alignments
+              .find(_.atUri == alignment.atUri)
+              .flatMap(_.metrics)
+              .getOrElse(AlignmentMetrics())
+              .copy(
+                callableBases = Some(clResult.callableBases),
+                callableLociComplete = Some(true)
+              )
+            val updatedAlignment = alignment.copy(metrics = Some(alignmentMetrics))
+            currentState = workspaceOps.updateAlignment(currentState, updatedAlignment)
+            checkpoint = AnalysisCheckpoint.markStepComplete(artifactDir, checkpoint, 2)
+          case Left(error) =>
+            println(s"[BatchAnalysis] Callable loci warning: $error")
+            checkpoint = AnalysisCheckpoint.markStepComplete(artifactDir, checkpoint, 2)
+        }
+      } else {
+        onProgress(AnalysisProgress("Step 2/6: Callable loci (cached)", 0.45))
       }
 
       // Step 3: Sex Inference (0.45 - 0.50)
-      onProgress(AnalysisProgress("Step 3/6: Inferring biological sex...", 0.45))
-      val sexResult = SexInference.inferFromBam(bamPath, (msg, pct) => {
-        onProgress(AnalysisProgress(s"Step 3/6: Sex inference - $msg", 0.45 + pct * 0.05))
-      })
-      sexResult match {
-        case Right(sr) =>
-          result = result.copy(sexInferenceResult = Some(sr))
-          // Update alignment metrics with sex inference
-          val alignmentMetrics = currentState.workspace.main.alignments
-            .find(_.atUri == alignment.atUri)
-            .flatMap(_.metrics)
-            .getOrElse(AlignmentMetrics())
-            .copy(
-              inferredSex = Some(sr.inferredSex.toString),
-              sexInferenceConfidence = Some(sr.confidence),
-              xAutosomeRatio = Some(sr.xAutosomeRatio)
-            )
-          val updatedAlignment = alignment.copy(metrics = Some(alignmentMetrics))
-          currentState = workspaceOps.updateAlignment(currentState, updatedAlignment)
-        case Left(error) =>
-          println(s"[BatchAnalysis] Sex inference warning: $error")
+      if (!checkpoint.sexInferenceCompleted) {
+        onProgress(AnalysisProgress("Step 3/6: Inferring biological sex...", 0.45))
+        val sexResult = SexInference.inferFromBam(bamPath, (msg, pct) => {
+          onProgress(AnalysisProgress(s"Step 3/6: Sex inference - $msg", 0.45 + pct * 0.05))
+        })
+        sexResult match {
+          case Right(sr) =>
+            result = result.copy(sexInferenceResult = Some(sr))
+            // Update alignment metrics with sex inference
+            val alignmentMetrics = currentState.workspace.main.alignments
+              .find(_.atUri == alignment.atUri)
+              .flatMap(_.metrics)
+              .getOrElse(AlignmentMetrics())
+              .copy(
+                inferredSex = Some(sr.inferredSex.toString),
+                sexInferenceConfidence = Some(sr.confidence),
+                xAutosomeRatio = Some(sr.xAutosomeRatio)
+              )
+            val updatedAlignment = alignment.copy(metrics = Some(alignmentMetrics))
+            currentState = workspaceOps.updateAlignment(currentState, updatedAlignment)
+            checkpoint = AnalysisCheckpoint.markStepComplete(artifactDir, checkpoint, 3)
+          case Left(error) =>
+            println(s"[BatchAnalysis] Sex inference warning: $error")
+            checkpoint = AnalysisCheckpoint.markStepComplete(artifactDir, checkpoint, 3)
+        }
+      } else {
+        onProgress(AnalysisProgress("Step 3/6: Sex inference (cached)", 0.50))
+        // Load cached sex inference result from alignment metrics
+        val cachedSex = currentState.workspace.main.alignments
+          .find(_.atUri == alignment.atUri)
+          .flatMap(_.metrics)
+          .flatMap(m => m.inferredSex.map(s => SexInferenceResult(
+            inferredSex = InferredSex.valueOf(s),
+            xAutosomeRatio = m.xAutosomeRatio.getOrElse(0.0),
+            autosomeMeanCoverage = 0.0, // Not stored in metrics, use default
+            xCoverage = 0.0, // Not stored in metrics, use default
+            confidence = m.sexInferenceConfidence.getOrElse("unknown")
+          )))
+        result = result.copy(sexInferenceResult = cachedSex)
       }
 
       // Step 4: mtDNA Haplogroup (0.50 - 0.70)
-      onProgress(AnalysisProgress("Step 4/6: Determining mtDNA haplogroup...", 0.50))
-      val mtDnaResult = runHaplogroupStep(bamPath, subject, seqRun, alignment, TreeType.MTDNA, artifactCtx, { pct =>
-        onProgress(AnalysisProgress(s"Step 4/6: mtDNA haplogroup (${(pct * 100).toInt}%)", 0.50 + pct * 0.20))
-      })
-      mtDnaResult match {
-        case Right(haplogroupResult) =>
-          result = result.copy(mtDnaHaplogroup = Some(haplogroupResult))
-        case Left(error) =>
-          println(s"[BatchAnalysis] mtDNA haplogroup warning: $error")
+      if (!checkpoint.mtDnaHaplogroupCompleted) {
+        onProgress(AnalysisProgress("Step 4/6: Determining mtDNA haplogroup...", 0.50))
+        val mtDnaResult = runHaplogroupStep(bamPath, subject, seqRun, alignment, TreeType.MTDNA, artifactCtx, { pct =>
+          onProgress(AnalysisProgress(s"Step 4/6: mtDNA haplogroup (${(pct * 100).toInt}%)", 0.50 + pct * 0.20))
+        })
+        mtDnaResult match {
+          case Right(haplogroupResult) =>
+            result = result.copy(mtDnaHaplogroup = Some(haplogroupResult))
+            checkpoint = AnalysisCheckpoint.markStepComplete(artifactDir, checkpoint, 4)
+          case Left(error) =>
+            println(s"[BatchAnalysis] mtDNA haplogroup warning: $error")
+            checkpoint = AnalysisCheckpoint.markStepComplete(artifactDir, checkpoint, 4)
+        }
+      } else {
+        onProgress(AnalysisProgress("Step 4/6: mtDNA haplogroup (cached)", 0.70))
       }
 
       // Step 5: Y-DNA Haplogroup (0.70 - 0.90) - Only if male
-      val isMale = result.sexInferenceResult.exists(_.isMale)
-      val sexUnknown = result.sexInferenceResult.exists(_.isUnknown)
+      if (!checkpoint.yDnaHaplogroupCompleted && !checkpoint.yDnaSkipped) {
+        val isMale = result.sexInferenceResult.exists(_.isMale)
+        val sexUnknown = result.sexInferenceResult.exists(_.isUnknown)
 
-      if (isMale || sexUnknown) {
-        onProgress(AnalysisProgress("Step 5/6: Determining Y-DNA haplogroup...", 0.70))
-        val yDnaResult = runHaplogroupStep(bamPath, subject, seqRun, alignment, TreeType.YDNA, artifactCtx, { pct =>
-          onProgress(AnalysisProgress(s"Step 5/6: Y-DNA haplogroup (${(pct * 100).toInt}%)", 0.70 + pct * 0.20))
-        })
-        yDnaResult match {
-          case Right(haplogroupResult) =>
-            result = result.copy(yDnaHaplogroup = Some(haplogroupResult))
-          case Left(error) =>
-            println(s"[BatchAnalysis] Y-DNA haplogroup warning: $error")
-            result = result.copy(skippedYDna = true, skippedYDnaReason = Some(error))
+        if (isMale || sexUnknown) {
+          onProgress(AnalysisProgress("Step 5/6: Determining Y-DNA haplogroup...", 0.70))
+          val yDnaResult = runHaplogroupStep(bamPath, subject, seqRun, alignment, TreeType.YDNA, artifactCtx, { pct =>
+            onProgress(AnalysisProgress(s"Step 5/6: Y-DNA haplogroup (${(pct * 100).toInt}%)", 0.70 + pct * 0.20))
+          })
+          yDnaResult match {
+            case Right(haplogroupResult) =>
+              result = result.copy(yDnaHaplogroup = Some(haplogroupResult))
+              checkpoint = AnalysisCheckpoint.markStepComplete(artifactDir, checkpoint, 5)
+            case Left(error) =>
+              println(s"[BatchAnalysis] Y-DNA haplogroup warning: $error")
+              result = result.copy(skippedYDna = true, skippedYDnaReason = Some(error))
+              checkpoint = AnalysisCheckpoint.markStepComplete(artifactDir, checkpoint, 5, skipped = true)
+          }
+        } else {
+          onProgress(AnalysisProgress("Step 5/6: Skipping Y-DNA (female sample)...", 0.70))
+          result = result.copy(skippedYDna = true, skippedYDnaReason = Some("Sample inferred as female"))
+          checkpoint = AnalysisCheckpoint.markStepComplete(artifactDir, checkpoint, 5, skipped = true)
         }
       } else {
-        onProgress(AnalysisProgress("Step 5/6: Skipping Y-DNA (female sample)...", 0.70))
-        result = result.copy(skippedYDna = true, skippedYDnaReason = Some("Sample inferred as female"))
+        onProgress(AnalysisProgress("Step 5/6: Y-DNA haplogroup (cached/skipped)", 0.90))
+        if (checkpoint.yDnaSkipped) {
+          result = result.copy(skippedYDna = true)
+        }
       }
 
       // Step 6: Ancestral Composition Stub (0.90 - 1.0)
-      onProgress(AnalysisProgress("Step 6/6: Preparing for ancestry analysis...", 0.90))
-      // This is a stub for future implementation
-      // Will use autosomal SNPs from the VCF for ancestry composition
-      result = result.copy(ancestryStub = true)
-      onProgress(AnalysisProgress("Ancestry analysis will be available in a future update", 0.95))
+      if (!checkpoint.ancestryCompleted) {
+        onProgress(AnalysisProgress("Step 6/6: Preparing for ancestry analysis...", 0.90))
+        // This is a stub for future implementation
+        // Will use autosomal SNPs from the VCF for ancestry composition
+        result = result.copy(ancestryStub = true)
+        onProgress(AnalysisProgress("Ancestry analysis will be available in a future update", 0.95))
+        checkpoint = AnalysisCheckpoint.markStepComplete(artifactDir, checkpoint, 6)
+      } else {
+        onProgress(AnalysisProgress("Step 6/6: Ancestry analysis (cached)", 1.0))
+        result = result.copy(ancestryStub = true)
+      }
 
       onProgress(AnalysisProgress("Comprehensive analysis complete!", 1.0, isComplete = true))
       Right((currentState, result))

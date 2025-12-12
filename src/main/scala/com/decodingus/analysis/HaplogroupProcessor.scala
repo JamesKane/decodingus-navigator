@@ -248,7 +248,31 @@ class HaplogroupProcessor {
                   val additionalTreeCalls = parseVcfAtPositions(privateVcf, allTreePositions)
                   println(s"[HaplogroupProcessor] Parsed additional calls in ${System.currentTimeMillis() - scoringStart}ms")
                   // Merge: pass 1 calls take precedence (they're force-called at exact positions)
-                  val snpCalls = additionalTreeCalls ++ treeSiteCalls
+                  val vcfCalls = additionalTreeCalls ++ treeSiteCalls
+
+                  // Fill in reference calls for callable positions not in VCF
+                  // When a position is not called as a variant but IS callable, assume reference
+                  val snpCalls = artifactContext.flatMap { ctx =>
+                    val callableLociDir = ctx.getSubdir("callable_loci")
+                    if (java.nio.file.Files.exists(callableLociDir)) {
+                      val callableService = new CallableLociQueryService(callableLociDir)
+                      // Build map of position -> reference allele for callable uncalled positions
+                      val inferredReferenceCalls = allLoci.flatMap { locus =>
+                        val contig = if (locus.contig.isEmpty) primaryContig else locus.contig
+                        if (!vcfCalls.contains(locus.position) && callableService.isCallable(contig, locus.position)) {
+                          Some(locus.position -> locus.ref)
+                        } else {
+                          None
+                        }
+                      }.toMap
+                      if (inferredReferenceCalls.nonEmpty) {
+                        println(s"[HaplogroupProcessor] Inferred ${inferredReferenceCalls.size} reference calls from callable loci")
+                      }
+                      Some(inferredReferenceCalls ++ vcfCalls) // VCF calls take precedence
+                    } else {
+                      None
+                    }
+                  }.getOrElse(vcfCalls)
 
                   val scorer = new HaplogroupScorer()
                   val scoreStart = System.currentTimeMillis()

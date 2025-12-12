@@ -244,7 +244,9 @@ class GatkHaplotypeCallerProcessor {
     val isMtDna = contig.equalsIgnoreCase("chrM") || contig.equalsIgnoreCase("MT")
 
     if (isMtDna) {
-      callTwoPassMutect2(bamPath, referencePath, allelesVcf, contig, onProgress, outputDir, outputPrefix)
+      // Single-pass Mutect2 for mtDNA - much faster than forced allele calling
+      // Tree sites not in VCF are assumed to be reference
+      callSinglePassMutect2(bamPath, referencePath, contig, onProgress, outputDir, outputPrefix)
     } else {
       callTwoPassHaplotypeCaller(bamPath, referencePath, allelesVcf, contig, onProgress, outputDir, outputPrefix)
     }
@@ -324,20 +326,22 @@ class GatkHaplotypeCallerProcessor {
   // ============================================================================
 
   /**
-   * Call SNPs at specified allele sites using Mutect2 mitochondria mode.
-   * Much faster than HaplotypeCaller for dense mtDNA positions.
+   * Call variants on mtDNA using Mutect2 mitochondria mode.
+   *
+   * Uses simple region-based calling (-L chrM) without forced alleles.
+   * Tree sites not called are assumed to be reference by downstream processing.
+   * This is much faster than force-calling at every tree site position.
    */
-  private def callSnpsMutect2(
+  private def callMtDnaMutect2(
     bamPath: String,
     referencePath: String,
-    allelesVcf: File,
+    contig: String,
     onProgress: (String, Double, Double) => Unit,
     outputDir: Option[Path],
     outputPrefix: Option[String]
   ): Either[String, CallerResult] = {
-    onProgress("Calling SNPs with Mutect2 (mitochondria mode)...", 0.1, 1.0)
+    onProgress(s"Calling variants on $contig with Mutect2...", 0.1, 1.0)
 
-    // Determine output file location
     val (vcfFile, logFile) = outputDir match {
       case Some(dir) =>
         Files.createDirectories(dir)
@@ -349,88 +353,8 @@ class GatkHaplotypeCallerProcessor {
         (tempFile, None)
     }
 
-    // Index the allelesVcf file
-    val indexArgs = Array(
-      "IndexFeatureFile",
-      "-I", allelesVcf.getAbsolutePath
-    )
-
-    GatkRunner.run(indexArgs) match {
-      case Left(error) => return Left(s"Failed to index alleles VCF: $error")
-      case Right(_) => // continue
-    }
-
-    // Mutect2 with mitochondria mode - optimized for mtDNA
-    // Key differences from HaplotypeCaller:
-    // - --mitochondria-mode flag auto-tunes: initial-tumor-lod=0, tumor-lod-to-emit=0,
-    //   af-of-alleles-not-in-resource=4e-3, pruning-lod-threshold=-4*ln(10)
-    // - Also sets --recover-all-dangling-branches true
-    // - Much faster on dense positions due to optimized active region handling
-    val args = Array(
-      "Mutect2",
-      "-I", bamPath,
-      "-R", referencePath,
-      "-O", vcfFile.getAbsolutePath,
-      "-L", allelesVcf.getAbsolutePath,
-      "--alleles", allelesVcf.getAbsolutePath,
-      "--mitochondria-mode",
-      "--disable-sequence-dictionary-validation", "true",
-      // Force output at all allele sites
-      "--genotype-germline-sites", "true",
-      "--force-call-filtered-alleles", "true"
-    )
-
-    GatkRunner.run(args) match {
-      case Left(error) =>
-        logFile.foreach { lf =>
-          Using(new PrintWriter(lf)) { writer =>
-            writer.println(s"Mutect2 (mitochondria mode) failed")
-            writer.println(s"Arguments: ${args.mkString(" ")}")
-            writer.println(s"Error: $error")
-          }
-        }
-        Left(s"Mutect2 failed: $error")
-      case Right(result) =>
-        logFile.foreach { lf =>
-          Using(new PrintWriter(lf)) { writer =>
-            writer.println(s"Mutect2 (mitochondria mode) completed successfully")
-            writer.println(s"Arguments: ${args.mkString(" ")}")
-            writer.println(s"Exit code: ${result.exitCode}")
-            writer.println("\n=== STDOUT ===")
-            writer.println(result.stdout)
-            writer.println("\n=== STDERR ===")
-            writer.println(result.stderr)
-          }
-        }
-        onProgress("mtDNA SNP calling complete.", 1.0, 1.0)
-        Right(CallerResult(vcfFile, logFile))
-    }
-  }
-
-  /**
-   * Call all variants in mtDNA using Mutect2 mitochondria mode for private variant discovery.
-   */
-  private def callPrivateVariantsMutect2(
-    bamPath: String,
-    referencePath: String,
-    contig: String,
-    onProgress: (String, Double, Double) => Unit,
-    outputDir: Option[Path],
-    outputPrefix: Option[String]
-  ): Either[String, CallerResult] = {
-    onProgress(s"Calling variants in $contig...", 0.1, 1.0)
-
-    val (vcfFile, logFile) = outputDir match {
-      case Some(dir) =>
-        Files.createDirectories(dir)
-        val prefix = outputPrefix.getOrElse("mtdna")
-        (dir.resolve(s"${prefix}_private_variants.vcf").toFile, Some(dir.resolve(s"${prefix}_private_variants.log").toFile))
-      case None =>
-        val tempFile = File.createTempFile(s"mtdna-private-variants", ".vcf")
-        tempFile.deleteOnExit()
-        (tempFile, None)
-    }
-
+    // Simple Mutect2 call on entire contig - no forced alleles
+    // Positions not called are assumed to be reference
     val args = Array(
       "Mutect2",
       "-I", bamPath,
@@ -445,16 +369,16 @@ class GatkHaplotypeCallerProcessor {
       case Left(error) =>
         logFile.foreach { lf =>
           Using(new PrintWriter(lf)) { writer =>
-            writer.println(s"Mutect2 (private variants) failed for $contig")
+            writer.println(s"Mutect2 failed for $contig")
             writer.println(s"Arguments: ${args.mkString(" ")}")
             writer.println(s"Error: $error")
           }
         }
-        Left(s"Mutect2 private variant calling failed for $contig: $error")
+        Left(s"Mutect2 failed for $contig: $error")
       case Right(result) =>
         logFile.foreach { lf =>
           Using(new PrintWriter(lf)) { writer =>
-            writer.println(s"Mutect2 (private variants) completed for $contig")
+            writer.println(s"Mutect2 completed for $contig")
             writer.println(s"Arguments: ${args.mkString(" ")}")
             writer.println(s"Exit code: ${result.exitCode}")
             writer.println("\n=== STDOUT ===")
@@ -463,20 +387,24 @@ class GatkHaplotypeCallerProcessor {
             writer.println(result.stderr)
           }
         }
-        onProgress(s"Variant calling for $contig complete.", 1.0, 1.0)
+        onProgress(s"mtDNA variant calling complete.", 1.0, 1.0)
         Right(CallerResult(vcfFile, logFile))
     }
   }
 
   /**
-   * Two-pass calling using Mutect2 mitochondria mode (for mtDNA).
-   * Significantly faster than HaplotypeCaller for dense mtDNA positions.
-   * Checks for cached VCF files and skips GATK if they exist.
+   * Single-pass mtDNA calling using Mutect2 mitochondria mode.
+   *
+   * Replaces the old two-pass approach (forced alleles + private variants).
+   * Now does a single call on chrM and uses the same VCF for both tree site
+   * matching and private variant discovery. Tree sites not in VCF are assumed
+   * to be reference by downstream processing.
+   *
+   * Checks for cached VCF file and skips GATK if it exists.
    */
-  private def callTwoPassMutect2(
+  private def callSinglePassMutect2(
     bamPath: String,
     referencePath: String,
-    allelesVcf: File,
     contig: String,
     onProgress: (String, Double, Double) => Unit,
     outputDir: Option[Path],
@@ -486,18 +414,16 @@ class GatkHaplotypeCallerProcessor {
     outputDir match {
       case Some(dir) =>
         val prefix = outputPrefix.getOrElse("mtdna")
-        val cachedTreeSites = dir.resolve(s"${prefix}_calls.vcf").toFile
-        val cachedPrivateVariants = dir.resolve(s"${prefix}_private_variants.vcf").toFile
+        val cachedVcf = dir.resolve(s"${prefix}_calls.vcf").toFile
 
-        if (cachedTreeSites.exists() && cachedPrivateVariants.exists() &&
-            cachedTreeSites.length() > 0 && cachedPrivateVariants.length() > 0) {
-          println(s"[GatkHaplotypeCallerProcessor] Using cached VCFs (mtDNA): ${cachedTreeSites.getName}, ${cachedPrivateVariants.getName}")
-          onProgress("Using cached VCF files from previous analysis...", 1.0, 1.0)
+        if (cachedVcf.exists() && cachedVcf.length() > 0) {
+          println(s"[GatkHaplotypeCallerProcessor] Using cached VCF (mtDNA): ${cachedVcf.getName}")
+          onProgress("Using cached VCF file from previous analysis...", 1.0, 1.0)
           return Right(TwoPassCallerResult(
-            treeSitesVcf = cachedTreeSites,
-            privateVariantsVcf = cachedPrivateVariants,
+            treeSitesVcf = cachedVcf,
+            privateVariantsVcf = cachedVcf,  // Same VCF for both
             treeSitesLog = Some(dir.resolve(s"${prefix}_mutect2.log").toFile).filter(_.exists()),
-            privateVariantsLog = Some(dir.resolve(s"${prefix}_private_variants.log").toFile).filter(_.exists())
+            privateVariantsLog = None
           ))
         }
       case None => // No output dir, can't cache
@@ -510,38 +436,26 @@ class GatkHaplotypeCallerProcessor {
       case Right(_) => // continue
     }
 
-    // Phase 1: Resolve overlapping reference reversed SNPs (mtDNA tree sites)
-    onProgress(s"Phase 1: Resolving overlapping reference reversed SNPs...", 0.0, 1.0)
-    callSnpsMutect2(
+    // Single pass: call all variants on chrM
+    // Tree sites not called are assumed to be reference
+    callMtDnaMutect2(
       bamPath,
       referencePath,
-      allelesVcf,
-      (msg, done, total) => onProgress(s"Phase 1: $msg", done * 0.4, 1.0),
+      contig,
+      onProgress,
       outputDir,
       outputPrefix
     ) match {
-      case Left(error) => Left(s"Phase 1 failed: $error")
-      case Right(treeSitesResult) =>
-        // Phase 2: Resolve remaining callable SNPs (private variant discovery)
-        onProgress(s"Phase 2: Resolving remaining callable SNPs...", 0.4, 1.0)
-        callPrivateVariantsMutect2(
-          bamPath,
-          referencePath,
-          contig,
-          (msg, done, total) => onProgress(s"Phase 2: $msg", 0.4 + done * 0.6, 1.0),
-          outputDir,
-          outputPrefix
-        ) match {
-          case Left(error) => Left(s"Phase 2 failed: $error")
-          case Right(privateResult) =>
-            onProgress("SNP resolution complete.", 1.0, 1.0)
-            Right(TwoPassCallerResult(
-              treeSitesVcf = treeSitesResult.vcfFile,
-              privateVariantsVcf = privateResult.vcfFile,
-              treeSitesLog = treeSitesResult.logFile,
-              privateVariantsLog = privateResult.logFile
-            ))
-        }
+      case Left(error) => Left(error)
+      case Right(result) =>
+        onProgress("mtDNA variant calling complete.", 1.0, 1.0)
+        // Return same VCF for both tree sites and private variants
+        Right(TwoPassCallerResult(
+          treeSitesVcf = result.vcfFile,
+          privateVariantsVcf = result.vcfFile,
+          treeSitesLog = result.logFile,
+          privateVariantsLog = None
+        ))
     }
   }
 }
