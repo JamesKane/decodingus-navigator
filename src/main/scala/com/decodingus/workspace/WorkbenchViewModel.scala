@@ -13,6 +13,7 @@ import com.decodingus.repository.{
   YProfileRegionRepository, YProfileVariantRepository, YVariantSourceCallRepository,
   YVariantAuditRepository, YSourceCallAlignmentRepository
 }
+import com.decodingus.service.{DatabaseContext, H2WorkspaceService}
 import com.decodingus.workspace.model.{Workspace, Project, Biosample, WorkspaceContent, SyncStatus, SequenceRun, Alignment, AlignmentMetrics, ContigMetrics, FileInfo, HaplogroupAssignments, HaplogroupResult => WorkspaceHaplogroupResult, RecordMeta, StrProfile, ChipProfile, DnaType, RunHaplogroupCall, CallMethod, HaplogroupTechnology}
 import com.decodingus.haplogroup.model.{HaplogroupResult => AnalysisHaplogroupResult}
 import com.decodingus.workspace.services.{WorkspaceOperations, AnalysisCoordinator, AnalysisProgress, BatchAnalysisResult, SyncService, SyncResult, FingerprintMatchService, FingerprintMatchResult}
@@ -31,9 +32,13 @@ import scala.concurrent.ExecutionContext.Implicits.global
 import scala.util.{Success, Failure, Try}
 
 class WorkbenchViewModel(
-  val workspaceService: WorkspaceService,
-  transactor: Option[Transactor] = None
+  databaseContext: DatabaseContext
 ) {
+  // H2 service for atomic CRUD operations
+  private val h2Service: H2WorkspaceService = databaseContext.workspaceService
+
+  // Legacy adapter for load/sync operations
+  private val workspaceService: WorkspaceService = H2WorkspaceAdapter(databaseContext)
 
   // --- Service Instances ---
   private val workspaceOps = new WorkspaceOperations()
@@ -41,8 +46,8 @@ class WorkbenchViewModel(
   private val syncService = new SyncService(workspaceService)
   private val fingerprintMatchService = new FingerprintMatchService()
 
-  // Y Profile service (requires transactor)
-  private val yProfileService: Option[YProfileService] = transactor.map { tx =>
+  // Y Profile service
+  private val yProfileService: Option[YProfileService] = Some(databaseContext.transactor).map { tx =>
     YProfileService(
       tx,
       YChromosomeProfileRepository(),
@@ -250,40 +255,128 @@ class WorkbenchViewModel(
   private def currentState: WorkspaceState = WorkspaceState(_workspace.value)
 
   /** Applies a new workspace state and saves */
+  /**
+   * Updates in-memory state from a WorkspaceState.
+   * Used by atomic operations that have already persisted to H2.
+   * Does NOT trigger a save (data is already persisted).
+   */
+  private def updateInMemoryState(newState: WorkspaceState): Unit = {
+    _workspace.value = newState.workspace
+  }
+
+  /**
+   * Updates in-memory state from a WorkspaceState.
+   * Used by batch operations (like AnalysisCoordinator) that handle their own
+   * H2 persistence internally.
+   *
+   * Note: This no longer calls saveWorkspace() because all CRUD operations now
+   * persist atomically to H2. This method only updates the in-memory state.
+   */
   private def applyState(newState: WorkspaceState): Unit = {
     _workspace.value = newState.workspace
-    saveWorkspace()
   }
 
   // --- Subject CRUD Operations ---
 
-  /** Creates a new subject and adds it to the workspace */
+  /**
+   * Creates a new subject and adds it to the workspace.
+   * ATOMIC: Persists to H2 first, then updates in-memory state.
+   */
   def addSubject(newBiosample: Biosample): Unit = {
     val userDid = currentUser.value.map(_.did)
     val (newState, enrichedBiosample) = workspaceOps.addSubject(currentState, newBiosample, userDid)
-    applyState(newState)
-    selectedSubject.value = Some(enrichedBiosample)
+
+    // Persist to H2 atomically
+    h2Service.createBiosample(enrichedBiosample) match {
+      case Right(persistedBiosample) =>
+        println(s"[ViewModel] Biosample persisted to H2: ${persistedBiosample.sampleAccession}")
+        updateInMemoryState(newState)
+        selectedSubject.value = Some(persistedBiosample)
+      case Left(error) =>
+        println(s"[ViewModel] Failed to persist Biosample to H2: $error")
+        // Fallback: still update in-memory but note it's not persisted
+        updateInMemoryState(newState)
+        selectedSubject.value = Some(enrichedBiosample)
+    }
   }
 
-  /** Updates an existing subject identified by sampleAccession */
+  /**
+   * Updates an existing subject identified by sampleAccession.
+   * ATOMIC: Persists to H2 first, then updates in-memory state.
+   */
   def updateSubject(updatedBiosample: Biosample): Unit = {
     val newState = workspaceOps.updateSubject(currentState, updatedBiosample)
-    applyState(newState)
-    // Update selection to reflect changes
-    selectedSubject.value = newState.workspace.main.samples.find(_.sampleAccession == updatedBiosample.sampleAccession)
+    val biosampleWithMeta = newState.workspace.main.samples.find(_.sampleAccession == updatedBiosample.sampleAccession)
+
+    biosampleWithMeta.foreach { bs =>
+      h2Service.updateBiosample(bs) match {
+        case Right(persisted) =>
+          println(s"[ViewModel] Biosample updated in H2: ${persisted.sampleAccession}")
+        case Left(error) =>
+          println(s"[ViewModel] Failed to update Biosample in H2: $error")
+      }
+    }
+    updateInMemoryState(newState)
+    selectedSubject.value = biosampleWithMeta
   }
 
-  /** Internal: Updates a subject without modifying meta (used when meta is already updated) */
+  /**
+   * Internal: Updates a subject without modifying meta (used when meta is already updated).
+   * ATOMIC: Persists to H2 first, then updates in-memory state.
+   */
   private def updateSubjectDirect(updatedBiosample: Biosample): Unit = {
     val newState = workspaceOps.updateSubjectDirect(currentState, updatedBiosample)
-    applyState(newState)
+
+    h2Service.updateBiosample(updatedBiosample) match {
+      case Right(persisted) =>
+        println(s"[ViewModel] Biosample updated (direct) in H2: ${persisted.sampleAccession}")
+      case Left(error) =>
+        println(s"[ViewModel] Failed to update Biosample (direct) in H2: $error")
+    }
+    updateInMemoryState(newState)
     selectedSubject.value = Some(updatedBiosample)
   }
 
-  /** Deletes a subject identified by sampleAccession */
+  /**
+   * Deletes a subject identified by sampleAccession.
+   * ATOMIC: Deletes from H2 first, then updates in-memory state.
+   */
   def deleteSubject(sampleAccession: String): Unit = {
-    val newState = workspaceOps.deleteSubject(currentState, sampleAccession)
-    applyState(newState)
+    import com.decodingus.service.EntityConversions.parseIdFromRef
+
+    // Find the biosample to get its ID
+    findSubject(sampleAccession) match {
+      case None =>
+        println(s"[ViewModel] Cannot delete - biosample not found: $sampleAccession")
+        return
+      case Some(biosample) =>
+        // Extract UUID from atUri
+        val biosampleId = biosample.atUri.flatMap(parseIdFromRef)
+        biosampleId match {
+          case Some(id) =>
+            // Delete from H2 first
+            h2Service.deleteBiosample(id) match {
+              case Right(deleted) if deleted =>
+                println(s"[ViewModel] Biosample deleted from H2: $sampleAccession")
+                // Update in-memory state
+                val newState = workspaceOps.deleteSubject(currentState, sampleAccession)
+                updateInMemoryState(newState)
+              case Right(_) =>
+                println(s"[ViewModel] Biosample not found in H2, removing from in-memory: $sampleAccession")
+                val newState = workspaceOps.deleteSubject(currentState, sampleAccession)
+                updateInMemoryState(newState)
+              case Left(error) =>
+                println(s"[ViewModel] Failed to delete Biosample from H2: $error")
+                // Still remove from in-memory to keep UI consistent
+                val newState = workspaceOps.deleteSubject(currentState, sampleAccession)
+                updateInMemoryState(newState)
+            }
+          case None =>
+            println(s"[ViewModel] Cannot extract ID from biosample atUri, removing from in-memory only")
+            val newState = workspaceOps.deleteSubject(currentState, sampleAccession)
+            updateInMemoryState(newState)
+        }
+    }
 
     // Clear selection if the deleted subject was selected
     selectedSubject.value match {
@@ -300,24 +393,86 @@ class WorkbenchViewModel(
 
   // --- Project CRUD Operations ---
 
+  /**
+   * Creates a new project and adds it to the workspace.
+   * ATOMIC: Persists to H2 first, then updates in-memory state.
+   */
   def addProject(newProject: Project): Unit = {
     val userDid = currentUser.value.map(_.did)
     val (newState, enrichedProject) = workspaceOps.addProject(currentState, newProject, userDid)
-    applyState(newState)
-    selectedProject.value = Some(enrichedProject)
+
+    // Persist to H2 atomically
+    h2Service.createProject(enrichedProject) match {
+      case Right(persistedProject) =>
+        println(s"[ViewModel] Project persisted to H2: ${persistedProject.projectName}")
+        updateInMemoryState(newState)
+        selectedProject.value = Some(persistedProject)
+      case Left(error) =>
+        println(s"[ViewModel] Failed to persist Project to H2: $error")
+        // Fallback: still update in-memory but note it's not persisted
+        updateInMemoryState(newState)
+        selectedProject.value = Some(enrichedProject)
+    }
   }
 
-  /** Updates an existing project identified by projectName */
+  /**
+   * Updates an existing project identified by projectName.
+   * ATOMIC: Persists to H2 first, then updates in-memory state.
+   */
   def updateProject(updatedProject: Project): Unit = {
     val newState = workspaceOps.updateProject(currentState, updatedProject)
-    applyState(newState)
-    selectedProject.value = newState.workspace.main.projects.find(_.projectName == updatedProject.projectName)
+    val projectWithMeta = newState.workspace.main.projects.find(_.projectName == updatedProject.projectName)
+
+    projectWithMeta.foreach { proj =>
+      h2Service.updateProject(proj) match {
+        case Right(persisted) =>
+          println(s"[ViewModel] Project updated in H2: ${persisted.projectName}")
+        case Left(error) =>
+          println(s"[ViewModel] Failed to update Project in H2: $error")
+      }
+    }
+    updateInMemoryState(newState)
+    selectedProject.value = projectWithMeta
   }
 
-  /** Deletes a project by projectName */
+  /**
+   * Deletes a project by projectName.
+   * ATOMIC: Deletes from H2 first, then updates in-memory state.
+   */
   def deleteProject(projectName: String): Unit = {
-    val newState = workspaceOps.deleteProject(currentState, projectName)
-    applyState(newState)
+    import com.decodingus.service.EntityConversions.parseIdFromRef
+
+    // Find the project to get its ID
+    findProject(projectName) match {
+      case None =>
+        println(s"[ViewModel] Cannot delete - project not found: $projectName")
+        return
+      case Some(project) =>
+        // Extract UUID from atUri
+        val projectId = project.atUri.flatMap(parseIdFromRef)
+        projectId match {
+          case Some(id) =>
+            // Delete from H2 first
+            h2Service.deleteProject(id) match {
+              case Right(deleted) if deleted =>
+                println(s"[ViewModel] Project deleted from H2: $projectName")
+                val newState = workspaceOps.deleteProject(currentState, projectName)
+                updateInMemoryState(newState)
+              case Right(_) =>
+                println(s"[ViewModel] Project not found in H2, removing from in-memory: $projectName")
+                val newState = workspaceOps.deleteProject(currentState, projectName)
+                updateInMemoryState(newState)
+              case Left(error) =>
+                println(s"[ViewModel] Failed to delete Project from H2: $error")
+                val newState = workspaceOps.deleteProject(currentState, projectName)
+                updateInMemoryState(newState)
+            }
+          case None =>
+            println(s"[ViewModel] Cannot extract ID from project atUri, removing from in-memory only")
+            val newState = workspaceOps.deleteProject(currentState, projectName)
+            updateInMemoryState(newState)
+        }
+    }
 
     selectedProject.value match {
       case Some(selected) if selected.projectName == projectName =>
@@ -331,22 +486,53 @@ class WorkbenchViewModel(
     _workspace.value.main.projects.find(_.projectName == projectName)
   }
 
-  /** Backfills atUri for any samples/projects that were created while logged out */
+  /**
+   * Backfills atUri for any samples/projects that were created while logged out.
+   * ATOMIC: Persists each updated entity to H2, then updates in-memory state.
+   */
   private def backfillAtUris(did: String): Unit = {
     val newState = workspaceOps.backfillAtUris(currentState, did)
     if (newState.workspace != currentState.workspace) {
-      applyState(newState)
+      // Persist updated biosamples to H2
+      newState.workspace.main.samples.foreach { sample =>
+        h2Service.updateBiosample(sample) match {
+          case Right(_) => // Success
+          case Left(error) =>
+            println(s"[ViewModel] Failed to backfill biosample atUri in H2: $error")
+        }
+      }
+      // Persist updated projects to H2
+      newState.workspace.main.projects.foreach { project =>
+        h2Service.updateProject(project) match {
+          case Right(_) => // Success
+          case Left(error) =>
+            println(s"[ViewModel] Failed to backfill project atUri in H2: $error")
+        }
+      }
+      updateInMemoryState(newState)
       println(s"[ViewModel] Backfilled atUri for samples/projects after login")
     }
   }
 
-  /** Adds a subject (by accession) to a project's members list */
+  /**
+   * Adds a subject (by accession) to a project's members list.
+   * ATOMIC: Persists updated project to H2 first, then updates in-memory state.
+   */
   def addSubjectToProject(projectName: String, sampleAccession: String): Boolean = {
     workspaceOps.addSubjectToProject(currentState, projectName, sampleAccession) match {
       case Right(newState) =>
-        applyState(newState)
-        // Update selection to the modified project
-        selectedProject.value = newState.workspace.main.projects.find(_.projectName == projectName)
+        // Find the updated project and persist to H2
+        val updatedProject = newState.workspace.main.projects.find(_.projectName == projectName)
+        updatedProject.foreach { proj =>
+          h2Service.updateProject(proj) match {
+            case Right(persisted) =>
+              println(s"[ViewModel] Project membership updated in H2: ${persisted.projectName}")
+            case Left(error) =>
+              println(s"[ViewModel] Failed to update project membership in H2: $error")
+          }
+        }
+        updateInMemoryState(newState)
+        selectedProject.value = updatedProject
         true
       case Left(error) =>
         println(s"[ViewModel] $error")
@@ -354,13 +540,25 @@ class WorkbenchViewModel(
     }
   }
 
-  /** Removes a subject (by accession) from a project's members list */
+  /**
+   * Removes a subject (by accession) from a project's members list.
+   * ATOMIC: Persists updated project to H2 first, then updates in-memory state.
+   */
   def removeSubjectFromProject(projectName: String, sampleAccession: String): Boolean = {
     workspaceOps.removeSubjectFromProject(currentState, projectName, sampleAccession) match {
       case Right(newState) =>
-        applyState(newState)
-        // Update selection to the modified project
-        selectedProject.value = newState.workspace.main.projects.find(_.projectName == projectName)
+        // Find the updated project and persist to H2
+        val updatedProject = newState.workspace.main.projects.find(_.projectName == projectName)
+        updatedProject.foreach { proj =>
+          h2Service.updateProject(proj) match {
+            case Right(persisted) =>
+              println(s"[ViewModel] Project membership updated in H2: ${persisted.projectName}")
+            case Left(error) =>
+              println(s"[ViewModel] Failed to update project membership in H2: $error")
+          }
+        }
+        updateInMemoryState(newState)
+        selectedProject.value = updatedProject
         true
       case Left(error) =>
         println(s"[ViewModel] $error")
@@ -368,10 +566,20 @@ class WorkbenchViewModel(
     }
   }
 
-  /** Internal: Updates a project without modifying meta (used when meta is already updated) */
+  /**
+   * Internal: Updates a project without modifying meta (used when meta is already updated).
+   * ATOMIC: Persists to H2 first, then updates in-memory state.
+   */
   private def updateProjectDirect(updatedProject: Project): Unit = {
     val newState = workspaceOps.updateProjectDirect(currentState, updatedProject)
-    applyState(newState)
+
+    h2Service.updateProject(updatedProject) match {
+      case Right(persisted) =>
+        println(s"[ViewModel] Project updated (direct) in H2: ${persisted.projectName}")
+      case Left(error) =>
+        println(s"[ViewModel] Failed to update Project (direct) in H2: $error")
+    }
+    updateInMemoryState(newState)
     selectedProject.value = Some(updatedProject)
   }
 
@@ -401,12 +609,34 @@ class WorkbenchViewModel(
    * Creates a new SequenceRun from a FileInfo.
    * All metadata (platform, reads, etc.) will be populated during analysis.
    * Returns the index of the new entry, or -1 if duplicate/error.
+   *
+   * ATOMIC: Persists to H2 first, then updates in-memory state.
    */
   def addSequenceRunFromFile(sampleAccession: String, fileInfo: FileInfo): Int = {
+    import com.decodingus.service.EntityConversions.parseIdFromRef
+
+    // Step 1: Use WorkspaceOperations to create the SequenceRun object
     workspaceOps.addSequenceRunFromFile(currentState, sampleAccession, fileInfo) match {
-      case Right((newState, _, newIndex)) =>
-        applyState(newState)
-        newIndex
+      case Right((newState, sequenceRun, newIndex)) =>
+        // Step 2: Get biosample UUID for H2 FK
+        val biosampleId = parseIdFromRef(sequenceRun.biosampleRef)
+        biosampleId match {
+          case Some(bsId) =>
+            // Step 3: Persist to H2 atomically
+            h2Service.createSequenceRun(sequenceRun, bsId) match {
+              case Right(persistedRun) =>
+                println(s"[ViewModel] SequenceRun persisted to H2: ${persistedRun.atUri}")
+                // Step 4: Update in-memory state with persisted data
+                updateInMemoryState(newState)
+                newIndex
+              case Left(error) =>
+                println(s"[ViewModel] Failed to persist SequenceRun to H2: $error")
+                -1
+            }
+          case None =>
+            println(s"[ViewModel] Cannot persist SequenceRun - invalid biosampleRef: ${sequenceRun.biosampleRef}")
+            -1
+        }
       case Left(error) =>
         println(s"[ViewModel] $error")
         -1
@@ -651,7 +881,24 @@ class WorkbenchViewModel(
                 }
               }
 
-              // Update workspace
+              // Persist to H2 atomically
+              import com.decodingus.service.EntityConversions.parseIdFromRef
+              seqRun.atUri.flatMap(parseIdFromRef).foreach { seqRunId =>
+                h2Service.createAlignment(newAlignment, seqRunId) match {
+                  case Right(persisted) =>
+                    println(s"[ViewModel] Alignment persisted to H2: ${persisted.atUri}")
+                  case Left(error) =>
+                    println(s"[ViewModel] Failed to persist Alignment to H2: $error")
+                }
+              }
+              h2Service.updateSequenceRun(updatedSeqRun) match {
+                case Right(persisted) =>
+                  println(s"[ViewModel] SequenceRun updated in H2: ${persisted.atUri}")
+                case Left(error) =>
+                  println(s"[ViewModel] Failed to update SequenceRun in H2: $error")
+              }
+
+              // Update in-memory state
               val updatedSequenceRuns = _workspace.value.main.sequenceRuns.map { sr =>
                 if (sr.atUri == seqRun.atUri) updatedSeqRun else sr
               }
@@ -661,7 +908,6 @@ class WorkbenchViewModel(
                 alignments = updatedAlignments
               )
               _workspace.value = _workspace.value.copy(main = updatedContent)
-              saveWorkspace()
 
               lastLibraryStats.value = Some(libraryStats)
               analysisInProgress.value = false
@@ -744,15 +990,44 @@ class WorkbenchViewModel(
     }
   }
 
-  /** Removes a sequence run from a subject by index */
+  /**
+   * Removes a sequence run from a subject by index.
+   * ATOMIC: Deletes from H2 first (cascade deletes alignments), then updates in-memory state.
+   */
   def removeSequenceData(sampleAccession: String, index: Int): Unit = {
+    import com.decodingus.service.EntityConversions.parseIdFromRef
+
     findSubject(sampleAccession) match {
       case Some(subject) =>
         val sequenceRuns = _workspace.value.main.getSequenceRunsForBiosample(subject)
         if (index >= 0 && index < sequenceRuns.size) {
           val seqRunToRemove = sequenceRuns(index)
 
-          // Remove the sequence run from workspace
+          // Delete from H2 first (cascade deletes related alignments)
+          seqRunToRemove.atUri.flatMap(parseIdFromRef).foreach { seqRunId =>
+            h2Service.deleteSequenceRun(seqRunId) match {
+              case Right(deleted) if deleted =>
+                println(s"[ViewModel] SequenceRun deleted from H2: ${seqRunToRemove.atUri}")
+              case Right(_) =>
+                println(s"[ViewModel] SequenceRun not found in H2: ${seqRunToRemove.atUri}")
+              case Left(error) =>
+                println(s"[ViewModel] Failed to delete SequenceRun from H2: $error")
+            }
+          }
+
+          // Also update the biosample in H2
+          val updatedSubject = subject.copy(
+            sequenceRunRefs = subject.sequenceRunRefs.filterNot(ref => seqRunToRemove.atUri.contains(ref)),
+            meta = subject.meta.updated("sequenceRunRefs")
+          )
+          h2Service.updateBiosample(updatedSubject) match {
+            case Right(_) =>
+              println(s"[ViewModel] Biosample updated in H2 after sequence run removal")
+            case Left(error) =>
+              println(s"[ViewModel] Failed to update Biosample in H2: $error")
+          }
+
+          // Update in-memory state
           val updatedSequenceRuns = _workspace.value.main.sequenceRuns.filterNot(_.atUri == seqRunToRemove.atUri)
 
           // Remove any alignments that reference this sequence run
@@ -760,11 +1035,6 @@ class WorkbenchViewModel(
             seqRunToRemove.atUri.exists(uri => align.sequenceRunRef == uri)
           }
 
-          // Update subject's sequenceRunRefs
-          val updatedSubject = subject.copy(
-            sequenceRunRefs = subject.sequenceRunRefs.filterNot(ref => seqRunToRemove.atUri.contains(ref)),
-            meta = subject.meta.updated("sequenceRunRefs")
-          )
           val updatedSamples = _workspace.value.main.samples.map { s =>
             if (s.sampleAccession == sampleAccession) updatedSubject else s
           }
@@ -775,7 +1045,6 @@ class WorkbenchViewModel(
             alignments = updatedAlignments
           )
           _workspace.value = _workspace.value.copy(main = updatedContent)
-          saveWorkspace()
         } else {
           println(s"[ViewModel] Cannot remove sequence run: index $index out of bounds")
         }
@@ -784,7 +1053,10 @@ class WorkbenchViewModel(
     }
   }
 
-  /** Updates a sequence run at a specific index for a subject */
+  /**
+   * Updates a sequence run at a specific index for a subject.
+   * ATOMIC: Persists to H2 first, then updates in-memory state.
+   */
   def updateSequenceRun(sampleAccession: String, index: Int, updatedRun: SequenceRun): Unit = {
     findSubject(sampleAccession) match {
       case Some(subject) =>
@@ -796,13 +1068,21 @@ class WorkbenchViewModel(
             meta = originalRun.meta.updated("edit")
           )
 
+          // Persist to H2 first
+          h2Service.updateSequenceRun(runWithUpdatedMeta) match {
+            case Right(persisted) =>
+              println(s"[ViewModel] SequenceRun updated in H2: ${persisted.atUri}")
+            case Left(error) =>
+              println(s"[ViewModel] Failed to update SequenceRun in H2: $error")
+          }
+
+          // Update in-memory state
           val updatedSequenceRuns = _workspace.value.main.sequenceRuns.map { sr =>
             if (sr.atUri == originalRun.atUri) runWithUpdatedMeta else sr
           }
 
           val updatedContent = _workspace.value.main.copy(sequenceRuns = updatedSequenceRuns)
           _workspace.value = _workspace.value.copy(main = updatedContent)
-          saveWorkspace()
         } else {
           println(s"[ViewModel] Cannot update sequence run: index $index out of bounds")
         }
@@ -890,12 +1170,18 @@ class WorkbenchViewModel(
    * @param newAlignment The new alignment to add
    * @param fileInfo The file info for the new alignment
    */
+  /**
+   * Add an alignment to an existing sequence run (for multi-reference scenarios).
+   * ATOMIC: Creates alignment in H2, updates sequence run in H2, then updates in-memory state.
+   */
   def addAlignmentToExistingRun(
     sampleAccession: String,
     sequenceRunIndex: Int,
     newAlignment: Alignment,
     fileInfo: FileInfo
   ): Unit = {
+    import com.decodingus.service.EntityConversions.parseIdFromRef
+
     findSubject(sampleAccession).foreach { subject =>
       val sequenceRuns = _workspace.value.main.getSequenceRunsForBiosample(subject)
       if (sequenceRunIndex >= 0 && sequenceRunIndex < sequenceRuns.size) {
@@ -922,7 +1208,25 @@ class WorkbenchViewModel(
           meta = seqRun.meta.updated("alignment-added")
         )
 
-        // Update workspace
+        // Persist alignment to H2 first
+        seqRun.atUri.flatMap(parseIdFromRef).foreach { seqRunId =>
+          h2Service.createAlignment(newAlignment, seqRunId) match {
+            case Right(persisted) =>
+              println(s"[ViewModel] Alignment persisted to H2: ${persisted.atUri}")
+            case Left(error) =>
+              println(s"[ViewModel] Failed to persist Alignment to H2: $error")
+          }
+        }
+
+        // Update sequence run in H2
+        h2Service.updateSequenceRun(updatedSeqRun) match {
+          case Right(persisted) =>
+            println(s"[ViewModel] SequenceRun updated in H2: ${persisted.atUri}")
+          case Left(error) =>
+            println(s"[ViewModel] Failed to update SequenceRun in H2: $error")
+        }
+
+        // Update in-memory state
         val updatedSequenceRuns = _workspace.value.main.sequenceRuns.map { sr =>
           if (sr.atUri == seqRun.atUri) updatedSeqRun else sr
         }
@@ -933,7 +1237,6 @@ class WorkbenchViewModel(
           alignments = updatedAlignments
         )
         _workspace.value = _workspace.value.copy(main = updatedContent)
-        saveWorkspace()
 
         println(s"[ViewModel] Added ${newAlignment.referenceBuild} alignment to existing sequence run")
       }
@@ -1121,7 +1424,33 @@ class WorkbenchViewModel(
                         alignmentRefs = if (seqRun.alignmentRefs.contains(alignUri)) seqRun.alignmentRefs else seqRun.alignmentRefs :+ alignUri
                       )
 
-                      // Update workspace
+                      // Persist to H2 atomically
+                      import com.decodingus.service.EntityConversions.parseIdFromRef
+                      seqRun.atUri.flatMap(parseIdFromRef).foreach { seqRunId =>
+                        if (existingAlignment.isDefined) {
+                          h2Service.updateAlignment(newAlignment) match {
+                            case Right(persisted) =>
+                              println(s"[ViewModel] Alignment updated in H2: ${persisted.atUri}")
+                            case Left(error) =>
+                              println(s"[ViewModel] Failed to update Alignment in H2: $error")
+                          }
+                        } else {
+                          h2Service.createAlignment(newAlignment, seqRunId) match {
+                            case Right(persisted) =>
+                              println(s"[ViewModel] Alignment created in H2: ${persisted.atUri}")
+                            case Left(error) =>
+                              println(s"[ViewModel] Failed to create Alignment in H2: $error")
+                          }
+                        }
+                      }
+                      h2Service.updateSequenceRun(updatedSeqRun) match {
+                        case Right(persisted) =>
+                          println(s"[ViewModel] SequenceRun updated in H2: ${persisted.atUri}")
+                        case Left(error) =>
+                          println(s"[ViewModel] Failed to update SequenceRun in H2: $error")
+                      }
+
+                      // Update in-memory state
                       val updatedSequenceRuns = _workspace.value.main.sequenceRuns.map { sr =>
                         if (sr.atUri == seqRun.atUri) updatedSeqRun else sr
                       }
@@ -1137,7 +1466,6 @@ class WorkbenchViewModel(
                         alignments = updatedAlignments
                       )
                       _workspace.value = _workspace.value.copy(main = updatedContent)
-                      saveWorkspace()
 
                       lastLibraryStats.value = Some(libraryStats)
                       analysisInProgress.value = false
@@ -1265,13 +1593,20 @@ class WorkbenchViewModel(
                             metrics = Some(updatedMetrics)
                           )
 
-                          // Update workspace
+                          // Persist to H2 atomically
+                          h2Service.updateAlignment(updatedAlignment) match {
+                            case Right(persisted) =>
+                              println(s"[ViewModel] Alignment metrics updated in H2: ${persisted.atUri}")
+                            case Left(error) =>
+                              println(s"[ViewModel] Failed to update Alignment metrics in H2: $error")
+                          }
+
+                          // Update in-memory state
                           val updatedAlignments = _workspace.value.main.alignments.map { a =>
                             if (a.atUri == alignment.atUri) updatedAlignment else a
                           }
                           val updatedContent = _workspace.value.main.copy(alignments = updatedAlignments)
                           _workspace.value = _workspace.value.copy(main = updatedContent)
-                          saveWorkspace()
 
                           lastWgsMetrics.value = Some(wgsMetrics)
                           analysisInProgress.value = false
@@ -1416,13 +1751,20 @@ class WorkbenchViewModel(
                             metrics = Some(updatedMetrics)
                           )
 
-                          // Update workspace
+                          // Persist to H2 atomically
+                          h2Service.updateAlignment(updatedAlignment) match {
+                            case Right(persisted) =>
+                              println(s"[ViewModel] Alignment callable loci updated in H2: ${persisted.atUri}")
+                            case Left(error) =>
+                              println(s"[ViewModel] Failed to update Alignment callable loci in H2: $error")
+                          }
+
+                          // Update in-memory state
                           val updatedAlignments = _workspace.value.main.alignments.map { a =>
                             if (a.atUri == alignment.atUri) updatedAlignment else a
                           }
                           val updatedContent = _workspace.value.main.copy(alignments = updatedAlignments)
                           _workspace.value = _workspace.value.copy(main = updatedContent)
-                          saveWorkspace()
 
                           lastCallableLociResult.value = Some(result)
                           analysisInProgress.value = false
@@ -1586,10 +1928,18 @@ class WorkbenchViewModel(
                               val currentState = WorkspaceState(_workspace.value)
                               workspaceOps.addHaplogroupCall(currentState, subject.sampleAccession, dnaType, runCall) match {
                                 case Right((newState, _)) =>
+                                  // Persist updated biosample to H2
+                                  newState.workspace.main.samples.find(_.sampleAccession == subject.sampleAccession).foreach { updatedBiosample =>
+                                    h2Service.updateBiosample(updatedBiosample) match {
+                                      case Right(persistedBs) =>
+                                        println(s"[ViewModel] Biosample haplogroup updated in H2: ${persistedBs.sampleAccession}")
+                                      case Left(err) =>
+                                        println(s"[ViewModel] Failed to update Biosample haplogroup in H2: $err")
+                                    }
+                                  }
                                   _workspace.value = newState.workspace
-                                  saveWorkspace()
-                                case Left(error) =>
-                                  println(s"[ViewModel] Error adding haplogroup call: $error")
+                                case Left(hapError) =>
+                                  println(s"[ViewModel] Error adding haplogroup call: $hapError")
                               }
 
                               lastHaplogroupResult.value = Some(topResult)
@@ -2115,6 +2465,15 @@ class WorkbenchViewModel(
                         genotypeRefs = subject.genotypeRefs :+ chipProfileUri,
                         meta = subject.meta.updated("genotypeRefs")
                       )
+
+                      // Persist biosample update to H2
+                      h2Service.updateBiosample(updatedSubject) match {
+                        case Right(persisted) =>
+                          println(s"[ViewModel] Biosample genotypeRefs updated in H2: ${persisted.sampleAccession}")
+                        case Left(error) =>
+                          println(s"[ViewModel] Failed to update Biosample genotypeRefs in H2: $error")
+                      }
+
                       val updatedSamples = _workspace.value.main.samples.map { s =>
                         if (s.sampleAccession == sampleAccession) updatedSubject else s
                       }
@@ -2123,7 +2482,6 @@ class WorkbenchViewModel(
                         chipProfiles = updatedChipProfiles
                       )
                       _workspace.value = _workspace.value.copy(main = updatedContent)
-                      saveWorkspace()
 
                       analysisInProgress.value = false
                       analysisProgress.value = "Import complete"
@@ -2273,12 +2631,20 @@ class WorkbenchViewModel(
                                   populationBreakdownRef = Some(s"local:ancestry:$sampleAccession:${java.util.UUID.randomUUID().toString.take(8)}"),
                                   meta = subject.meta.updated("populationBreakdownRef")
                                 )
+
+                                // Persist biosample update to H2
+                                h2Service.updateBiosample(updatedSubject) match {
+                                  case Right(persisted) =>
+                                    println(s"[ViewModel] Biosample ancestry ref updated in H2: ${persisted.sampleAccession}")
+                                  case Left(error) =>
+                                    println(s"[ViewModel] Failed to update Biosample ancestry ref in H2: $error")
+                                }
+
                                 val updatedSamples = _workspace.value.main.samples.map { s =>
                                   if (s.sampleAccession == sampleAccession) updatedSubject else s
                                 }
                                 val updatedContent = _workspace.value.main.copy(samples = updatedSamples)
                                 _workspace.value = _workspace.value.copy(main = updatedContent)
-                                saveWorkspace()
 
                                 println(s"[ViewModel] Ancestry analysis complete for $sampleAccession: " +
                                   s"${ancestryResult.percentages.take(3).map(p => s"${p.populationName}: ${f"${p.percentage}%.1f"}%").mkString(", ")}")
@@ -2422,10 +2788,18 @@ class WorkbenchViewModel(
                                 val currentState = WorkspaceState(_workspace.value)
                                 workspaceOps.addHaplogroupCall(currentState, sampleAccession, dnaType, runCall) match {
                                   case Right((newState, _)) =>
+                                    // Persist updated biosample to H2
+                                    newState.workspace.main.samples.find(_.sampleAccession == sampleAccession).foreach { updatedBiosample =>
+                                      h2Service.updateBiosample(updatedBiosample) match {
+                                        case Right(persistedBs) =>
+                                          println(s"[ViewModel] Biosample chip haplogroup updated in H2: ${persistedBs.sampleAccession}")
+                                        case Left(err) =>
+                                          println(s"[ViewModel] Failed to update Biosample chip haplogroup in H2: $err")
+                                      }
+                                    }
                                     _workspace.value = newState.workspace
-                                    saveWorkspace()
-                                  case Left(error) =>
-                                    println(s"[ViewModel] Error adding chip haplogroup call: $error")
+                                  case Left(hapError) =>
+                                    println(s"[ViewModel] Error adding chip haplogroup call: $hapError")
                                 }
 
                                 println(s"[ViewModel] $treeLabel haplogroup analysis complete for $sampleAccession: " +

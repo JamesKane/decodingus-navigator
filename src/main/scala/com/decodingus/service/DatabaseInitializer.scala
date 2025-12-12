@@ -129,7 +129,7 @@ object DatabaseInitializer:
 case class DatabaseContext(
   database: Database,
   transactor: Transactor,
-  workspaceService: WorkspaceService,
+  workspaceService: H2WorkspaceService,
   cacheService: CacheService,
   syncService: SyncService,
   biosampleRepository: BiosampleRepository,

@@ -76,14 +76,9 @@ object GenomeNavigatorApp extends JFXApp3 {
     }
   }
 
-  // Workspace service backed by H2 database
-  private lazy val workspaceService: WorkspaceService = {
-    println("[App] Using H2 database for workspace storage")
-    H2WorkspaceAdapter(databaseContext)
-  }
-
   // ViewModel is created early so topBar can reference it
-  private lazy val viewModel = new WorkbenchViewModel(workspaceService, Some(databaseContext.transactor))
+  // Uses DatabaseContext directly for atomic CRUD operations
+  private lazy val viewModel = new WorkbenchViewModel(databaseContext)
 
   private lazy val topBar: TopBar = new TopBar(
     onLogin = () => {

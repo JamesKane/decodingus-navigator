@@ -181,7 +181,7 @@ object H2WorkspaceAdapter:
    * Create an adapter from a DatabaseContext.
    */
   def apply(context: DatabaseContext): H2WorkspaceAdapter =
-    new H2WorkspaceAdapter(context.workspaceService.asInstanceOf[H2WorkspaceService])
+    new H2WorkspaceAdapter(context.workspaceService)
 
   /**
    * Create an adapter directly from an H2WorkspaceService.
