@@ -29,20 +29,25 @@ class YProfileVariantRepository extends Repository[YProfileVariantEntity, UUID]:
 
   override def insert(entity: YProfileVariantEntity)(using conn: Connection): YProfileVariantEntity =
     val strMetadataJson = entity.strMetadata.map(m => JsonValue(m.asJson.noSpaces))
+    val novelCoordsJson = entity.novelCoordinates.map(m => JsonValue(m.asJson.noSpaces))
 
     executeUpdate(
       """INSERT INTO y_profile_variant (
-        |  id, y_profile_id, contig, position, end_position, ref_allele, alt_allele,
+        |  id, y_profile_id, canonical_name, naming_status, novel_coordinates,
+        |  contig, position, end_position, ref_allele, alt_allele,
         |  variant_type, variant_name, rs_id, marker_name, repeat_count, str_metadata,
         |  consensus_allele, consensus_state, status,
         |  source_count, concordant_count, discordant_count, confidence_score,
         |  max_read_depth, max_quality_score, defining_haplogroup, haplogroup_branch_depth,
         |  last_updated_at
-        |) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        |) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       """.stripMargin,
       Seq(
         entity.id,
         entity.yProfileId,
+        entity.canonicalName,
+        entity.namingStatus.toString,
+        novelCoordsJson,
         entity.contig,
         entity.position,
         entity.endPosition,
@@ -72,10 +77,12 @@ class YProfileVariantRepository extends Repository[YProfileVariantEntity, UUID]:
 
   override def update(entity: YProfileVariantEntity)(using conn: Connection): YProfileVariantEntity =
     val strMetadataJson = entity.strMetadata.map(m => JsonValue(m.asJson.noSpaces))
+    val novelCoordsJson = entity.novelCoordinates.map(m => JsonValue(m.asJson.noSpaces))
 
     executeUpdate(
       """UPDATE y_profile_variant SET
-        |  y_profile_id = ?, contig = ?, position = ?, end_position = ?, ref_allele = ?, alt_allele = ?,
+        |  y_profile_id = ?, canonical_name = ?, naming_status = ?, novel_coordinates = ?,
+        |  contig = ?, position = ?, end_position = ?, ref_allele = ?, alt_allele = ?,
         |  variant_type = ?, variant_name = ?, rs_id = ?, marker_name = ?, repeat_count = ?, str_metadata = ?,
         |  consensus_allele = ?, consensus_state = ?, status = ?,
         |  source_count = ?, concordant_count = ?, discordant_count = ?, confidence_score = ?,
@@ -85,6 +92,9 @@ class YProfileVariantRepository extends Repository[YProfileVariantEntity, UUID]:
       """.stripMargin,
       Seq(
         entity.yProfileId,
+        entity.canonicalName,
+        entity.namingStatus.toString,
+        novelCoordsJson,
         entity.contig,
         entity.position,
         entity.endPosition,
@@ -278,9 +288,20 @@ class YProfileVariantRepository extends Repository[YProfileVariantEntity, UUID]:
       parse(json).flatMap(_.as[StrMetadata]).toOption
     }
 
+    val novelCoordsJson = getOptJsonString(rs, "novel_coordinates")
+    val novelCoordinates = novelCoordsJson.flatMap { json =>
+      parse(json).flatMap(_.as[Map[String, NovelCoordinates]]).toOption
+    }
+
+    val namingStatusStr = getOptString(rs, "naming_status").getOrElse("UNNAMED")
+    val namingStatus = YNamingStatus.fromString(namingStatusStr)
+
     YProfileVariantEntity(
       id = getUUID(rs, "id"),
       yProfileId = getUUID(rs, "y_profile_id"),
+      canonicalName = getOptString(rs, "canonical_name"),
+      namingStatus = namingStatus,
+      novelCoordinates = novelCoordinates,
       contig = rs.getString("contig"),
       position = rs.getLong("position"),
       endPosition = getOptLong(rs, "end_position"),

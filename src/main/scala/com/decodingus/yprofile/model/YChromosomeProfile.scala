@@ -153,6 +153,21 @@ object YAuditAction:
     case "REVERT"   => REVERT
     case other      => throw new IllegalArgumentException(s"Unknown YAuditAction: $other")
 
+/**
+ * Naming status for variants.
+ */
+enum YNamingStatus:
+  case UNNAMED        // Novel variant, not yet named
+  case PENDING_REVIEW // Submitted for naming review
+  case NAMED          // Has canonical name in the tree
+
+object YNamingStatus:
+  def fromString(s: String): YNamingStatus = s match
+    case "UNNAMED"        => UNNAMED
+    case "PENDING_REVIEW" => PENDING_REVIEW
+    case "NAMED"          => NAMED
+    case other            => throw new IllegalArgumentException(s"Unknown YNamingStatus: $other")
+
 // ============================================
 // STR Metadata
 // ============================================
@@ -368,17 +383,113 @@ object YVariantSourceCallEntity:
   )
 
 /**
+ * Coordinate representation of a source call in a specific reference build.
+ *
+ * Key insight: The same source call (one piece of evidence) can be represented
+ * in multiple reference builds. These are NOT separate pieces of evidence for
+ * concordance - they're just different coordinate representations of the same call.
+ *
+ * @param id                 Unique identifier
+ * @param sourceCallId       Parent source call
+ * @param referenceBuild     Reference build (GRCh38, GRCh37, hs1, T2T-CHM13)
+ * @param contig             Contig in this reference
+ * @param position           Position in this reference
+ * @param refAllele          Reference allele in this reference (may differ due to strand)
+ * @param altAllele          Alternate allele in this reference
+ * @param calledAllele       The allele called at this position
+ * @param readDepth          Read depth for this alignment
+ * @param mappingQuality     Mapping quality for this alignment
+ * @param baseQuality        Base quality at this position
+ * @param variantAlleleFrequency VAF for this alignment
+ * @param graphNode          For pangenome: node ID
+ * @param graphOffset        For pangenome: offset within node
+ * @param alignmentId        Optional link to alignment entity
+ * @param createdAt          When this record was created
+ */
+case class YSourceCallAlignmentEntity(
+  id: UUID,
+  sourceCallId: UUID,
+  referenceBuild: String,
+  contig: String,
+  position: Long,
+  refAllele: String,
+  altAllele: String,
+  calledAllele: String,
+  readDepth: Option[Int],
+  mappingQuality: Option[Double],
+  baseQuality: Option[Double],
+  variantAlleleFrequency: Option[Double],
+  graphNode: Option[String],
+  graphOffset: Option[Int],
+  alignmentId: Option[UUID],
+  createdAt: LocalDateTime
+) extends Entity[UUID]
+
+object YSourceCallAlignmentEntity:
+  def create(
+    sourceCallId: UUID,
+    referenceBuild: String,
+    position: Long,
+    refAllele: String,
+    altAllele: String,
+    calledAllele: String,
+    contig: String = "chrY",
+    readDepth: Option[Int] = None,
+    mappingQuality: Option[Double] = None,
+    baseQuality: Option[Double] = None,
+    variantAlleleFrequency: Option[Double] = None,
+    graphNode: Option[String] = None,
+    graphOffset: Option[Int] = None,
+    alignmentId: Option[UUID] = None
+  ): YSourceCallAlignmentEntity = YSourceCallAlignmentEntity(
+    id = UUID.randomUUID(),
+    sourceCallId = sourceCallId,
+    referenceBuild = referenceBuild,
+    contig = contig,
+    position = position,
+    refAllele = refAllele,
+    altAllele = altAllele,
+    calledAllele = calledAllele,
+    readDepth = readDepth,
+    mappingQuality = mappingQuality,
+    baseQuality = baseQuality,
+    variantAlleleFrequency = variantAlleleFrequency,
+    graphNode = graphNode,
+    graphOffset = graphOffset,
+    alignmentId = alignmentId,
+    createdAt = LocalDateTime.now()
+  )
+
+/**
+ * Coordinates for a novel variant in a specific reference build.
+ * Stored as JSON in novel_coordinates field.
+ */
+case class NovelCoordinates(
+  position: Long,
+  ref: String,
+  alt: String,
+  contig: String = "chrY"
+)
+
+/**
  * A variant in the Y chromosome profile with concordance information.
+ *
+ * Key concept: Variant identity is (canonical_name, defining_haplogroup), NOT position.
+ * Position varies by reference build; the same variant has different coordinates in
+ * GRCh37, GRCh38, hs1, etc. Coordinates are stored at the source_call_alignment level.
  *
  * @param id                 Unique identifier
  * @param yProfileId         Parent profile ID
- * @param contig             Contig name (chrY)
- * @param position           Position (GRCh38)
+ * @param canonicalName      Primary variant name (M269, L21) - NULL for unnamed
+ * @param namingStatus       UNNAMED, PENDING_REVIEW, or NAMED
+ * @param novelCoordinates   For unnamed variants: GRCh38 coordinates (JSON)
+ * @param contig             Contig name (chrY) - deprecated, use alignments
+ * @param position           Position (GRCh38) - deprecated, use alignments
  * @param endPosition        End position for INDELs
- * @param refAllele          Reference allele
- * @param altAllele          Alternate allele
+ * @param refAllele          Reference allele - deprecated, use alignments
+ * @param altAllele          Alternate allele - deprecated, use alignments
  * @param variantType        SNP, INDEL, MNP, or STR
- * @param variantName        Marker name (M269, L21, etc.)
+ * @param variantName        Marker name (deprecated, use canonicalName)
  * @param rsId               dbSNP rsID if available
  * @param markerName         STR marker name (DYS393, etc.)
  * @param repeatCount        Consensus repeat count for STRs
@@ -386,7 +497,7 @@ object YVariantSourceCallEntity:
  * @param consensusAllele    Consensus allele from voting
  * @param consensusState     DERIVED, ANCESTRAL, etc.
  * @param status             CONFIRMED, NOVEL, CONFLICT, etc.
- * @param sourceCount        Number of sources with data
+ * @param sourceCount        Number of sources with data (NOT alignments!)
  * @param concordantCount    Sources agreeing with consensus
  * @param discordantCount    Sources disagreeing with consensus
  * @param confidenceScore    Weighted confidence score
@@ -399,6 +510,11 @@ object YVariantSourceCallEntity:
 case class YProfileVariantEntity(
   id: UUID,
   yProfileId: UUID,
+  // Variant identity (new)
+  canonicalName: Option[String],
+  namingStatus: YNamingStatus,
+  novelCoordinates: Option[Map[String, NovelCoordinates]],  // {"GRCh38": {...}}
+  // Legacy coordinates (kept for backward compatibility, deprecated)
   contig: String,
   position: Long,
   endPosition: Option[Long],
@@ -433,6 +549,9 @@ object YProfileVariantEntity:
     variantType: YVariantType = YVariantType.SNP,
     contig: String = "chrY",
     endPosition: Option[Long] = None,
+    canonicalName: Option[String] = None,
+    namingStatus: YNamingStatus = YNamingStatus.UNNAMED,
+    novelCoordinates: Option[Map[String, NovelCoordinates]] = None,
     variantName: Option[String] = None,
     rsId: Option[String] = None,
     markerName: Option[String] = None,
@@ -449,33 +568,46 @@ object YProfileVariantEntity:
     maxQualityScore: Option[Double] = None,
     definingHaplogroup: Option[String] = None,
     haplogroupBranchDepth: Option[Int] = None
-  ): YProfileVariantEntity = YProfileVariantEntity(
-    id = UUID.randomUUID(),
-    yProfileId = yProfileId,
-    contig = contig,
-    position = position,
-    endPosition = endPosition,
-    refAllele = refAllele,
-    altAllele = altAllele,
-    variantType = variantType,
-    variantName = variantName,
-    rsId = rsId,
-    markerName = markerName,
-    repeatCount = repeatCount,
-    strMetadata = strMetadata,
-    consensusAllele = consensusAllele,
-    consensusState = consensusState,
-    status = status,
-    sourceCount = sourceCount,
-    concordantCount = concordantCount,
-    discordantCount = discordantCount,
-    confidenceScore = confidenceScore,
-    maxReadDepth = maxReadDepth,
-    maxQualityScore = maxQualityScore,
-    definingHaplogroup = definingHaplogroup,
-    haplogroupBranchDepth = haplogroupBranchDepth,
-    lastUpdatedAt = LocalDateTime.now()
-  )
+  ): YProfileVariantEntity =
+    // Auto-populate canonical_name from variant_name if provided
+    val effectiveCanonicalName = canonicalName.orElse(variantName)
+    val effectiveNamingStatus = if effectiveCanonicalName.isDefined then YNamingStatus.NAMED else namingStatus
+    // Auto-create novel_coordinates for unnamed variants
+    val effectiveNovelCoordinates = if effectiveCanonicalName.isEmpty && novelCoordinates.isEmpty then
+      Some(Map("GRCh38" -> NovelCoordinates(position, refAllele, altAllele, contig)))
+    else
+      novelCoordinates
+
+    YProfileVariantEntity(
+      id = UUID.randomUUID(),
+      yProfileId = yProfileId,
+      canonicalName = effectiveCanonicalName,
+      namingStatus = effectiveNamingStatus,
+      novelCoordinates = effectiveNovelCoordinates,
+      contig = contig,
+      position = position,
+      endPosition = endPosition,
+      refAllele = refAllele,
+      altAllele = altAllele,
+      variantType = variantType,
+      variantName = variantName,
+      rsId = rsId,
+      markerName = markerName,
+      repeatCount = repeatCount,
+      strMetadata = strMetadata,
+      consensusAllele = consensusAllele,
+      consensusState = consensusState,
+      status = status,
+      sourceCount = sourceCount,
+      concordantCount = concordantCount,
+      discordantCount = discordantCount,
+      confidenceScore = confidenceScore,
+      maxReadDepth = maxReadDepth,
+      maxQualityScore = maxQualityScore,
+      definingHaplogroup = definingHaplogroup,
+      haplogroupBranchDepth = haplogroupBranchDepth,
+      lastUpdatedAt = LocalDateTime.now()
+    )
 
 /**
  * Audit trail entry for manual variant overrides.

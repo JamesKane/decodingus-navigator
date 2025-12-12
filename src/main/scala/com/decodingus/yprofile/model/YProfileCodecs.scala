@@ -49,6 +49,34 @@ object YProfileCodecs:
     catch case e: IllegalArgumentException => Left(e.getMessage)
   }
 
+  given Encoder[YNamingStatus] = Encoder.encodeString.contramap(_.toString)
+  given Decoder[YNamingStatus] = Decoder.decodeString.emap { s =>
+    try Right(YNamingStatus.fromString(s))
+    catch case e: IllegalArgumentException => Left(e.getMessage)
+  }
+
+  // ============================================
+  // NovelCoordinates Codec (stored as JSON in database)
+  // ============================================
+
+  given Encoder[NovelCoordinates] = Encoder.instance { coords =>
+    Json.obj(
+      "position" -> Json.fromLong(coords.position),
+      "ref" -> Json.fromString(coords.ref),
+      "alt" -> Json.fromString(coords.alt),
+      "contig" -> Json.fromString(coords.contig)
+    )
+  }
+
+  given Decoder[NovelCoordinates] = Decoder.instance { cursor =>
+    for
+      position <- cursor.get[Long]("position")
+      ref <- cursor.get[String]("ref")
+      alt <- cursor.get[String]("alt")
+      contig <- cursor.getOrElse[String]("contig")("chrY")
+    yield NovelCoordinates(position, ref, alt, contig)
+  }
+
   // ============================================
   // StrMetadata Codec (stored as JSON in database)
   // ============================================
