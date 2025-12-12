@@ -4,6 +4,7 @@ import com.decodingus.auth.User
 import com.decodingus.config.FeatureToggles
 import com.decodingus.db.Transactor
 import com.decodingus.repository.*
+import com.decodingus.util.Logger
 import io.circe.Json
 
 import java.sql.Connection
@@ -41,6 +42,7 @@ class AsyncSyncService(
   conflictNotifier: ConflictNotifier
 )(using ec: ExecutionContext):
 
+  private val log = Logger[AsyncSyncService]
   private val scheduler: ScheduledExecutorService = Executors.newScheduledThreadPool(2)
   private val isProcessing = AtomicBoolean(false)
   private val incomingSyncEnabled = AtomicBoolean(true)
@@ -77,20 +79,20 @@ class AsyncSyncService(
       TimeUnit.SECONDS
     ))
 
-    println("[AsyncSyncService] Started background sync service")
+    log.info("Started background sync service")
 
   /**
    * Stop the sync service.
    * Allows in-progress operations to complete gracefully.
    */
   def shutdown(): Unit =
-    println("[AsyncSyncService] Shutting down...")
+    log.info("Shutting down...")
     incomingSyncTask.foreach(_.cancel(false))
     queueProcessorTask.foreach(_.cancel(false))
     scheduler.shutdown()
     if !scheduler.awaitTermination(30, TimeUnit.SECONDS) then
       scheduler.shutdownNow()
-    println("[AsyncSyncService] Shutdown complete")
+    log.info("Shutdown complete")
 
   /**
    * Enable or disable incoming sync polling.
@@ -98,7 +100,7 @@ class AsyncSyncService(
    */
   def setIncomingSyncEnabled(enabled: Boolean): Unit =
     incomingSyncEnabled.set(enabled)
-    println(s"[AsyncSyncService] Incoming sync ${if enabled then "enabled" else "disabled"}")
+    log.info(s"Incoming sync ${if enabled then "enabled" else "disabled"}")
 
   /**
    * Update the current user (e.g., after login/logout).
@@ -130,7 +132,7 @@ class AsyncSyncService(
   ): Future[SyncQueueEntity] = Future {
     transactor.readWrite {
       val entry = syncQueueRepo.enqueue(entityType, entityId, operation, priority, payload)
-      println(s"[AsyncSyncService] Queued ${operation} for ${entityType}:${entityId}")
+      log.debug(s"Queued $operation for $entityType:$entityId")
       entry
     }.getOrElse {
       throw new RuntimeException("Failed to enqueue sync operation")
@@ -141,7 +143,7 @@ class AsyncSyncService(
       processOutgoingQueueAsync()
       updatePendingCount()
     case Failure(e) =>
-      println(s"[AsyncSyncService] Failed to queue sync: ${e.getMessage}")
+      log.error(s"Failed to queue sync: ${e.getMessage}")
   }
 
   /**
@@ -210,7 +212,7 @@ class AsyncSyncService(
         finally isProcessing.set(false)
     catch
       case e: Exception =>
-        println(s"[AsyncSyncService] Queue processing error: ${e.getMessage}")
+        log.error(s"Queue processing error: ${e.getMessage}")
 
   private def processOutgoingQueueAsync(): Unit =
     Future(processOutgoingQueueSafe())
@@ -240,11 +242,11 @@ class AsyncSyncService(
                 case Success(_) =>
                   processed += 1
                 case Failure(e) =>
-                  println(s"[AsyncSyncService] Failed to process ${entry.entityType}:${entry.entityId}: ${e.getMessage}")
+                  log.warn(s"Failed to process ${entry.entityType}:${entry.entityId}: ${e.getMessage}")
             }
 
         if processed > 0 then
-          println(s"[AsyncSyncService] Processed $processed queue entries")
+          log.debug(s"Processed $processed queue entries")
         processed
 
   private def processEntry(entry: SyncQueueEntity, user: User): Try[Unit] =
@@ -281,17 +283,17 @@ class AsyncSyncService(
   private def pushCreate(entry: SyncQueueEntity, user: User): Unit =
     // TODO: Implement actual PDS create
     // For now, simulate success
-    println(s"[AsyncSyncService] Would push CREATE for ${entry.entityType}:${entry.entityId} to PDS")
+    log.debug(s"Would push CREATE for ${entry.entityType}:${entry.entityId} to PDS")
     // PdsClient.createRecord(user, entry.entityType, getEntityPayload(entry))
 
   private def pushUpdate(entry: SyncQueueEntity, user: User): Unit =
     // TODO: Implement actual PDS update
-    println(s"[AsyncSyncService] Would push UPDATE for ${entry.entityType}:${entry.entityId} to PDS")
+    log.debug(s"Would push UPDATE for ${entry.entityType}:${entry.entityId} to PDS")
     // PdsClient.updateRecord(user, entry.entityType, entry.entityId, getEntityPayload(entry))
 
   private def pushDelete(entry: SyncQueueEntity, user: User): Unit =
     // TODO: Implement actual PDS delete
-    println(s"[AsyncSyncService] Would push DELETE for ${entry.entityType}:${entry.entityId} to PDS")
+    log.debug(s"Would push DELETE for ${entry.entityType}:${entry.entityId} to PDS")
     // PdsClient.deleteRecord(user, entry.entityType, entry.entityId)
 
   // ============================================
@@ -302,7 +304,7 @@ class AsyncSyncService(
     try pullRemoteChanges()
     catch
       case e: Exception =>
-        println(s"[AsyncSyncService] Pull remote changes error: ${e.getMessage}")
+        log.error(s"Pull remote changes error: ${e.getMessage}")
 
   private def pullRemoteChanges(): Unit =
     if !FeatureToggles.atProtocolEnabled then return
@@ -310,7 +312,7 @@ class AsyncSyncService(
     currentUser match
       case None => // Offline
       case Some(user) =>
-        println("[AsyncSyncService] Checking for remote changes...")
+        log.debug("Checking for remote changes...")
         // TODO: Implement actual PDS fetch and conflict detection
         // 1. Fetch remote records since last sync
         // 2. Compare with local versions
@@ -321,7 +323,7 @@ class AsyncSyncService(
         val conflicts = detectRemoteConflicts(user)
         if conflicts.nonEmpty then
           conflictNotifier.notifyConflicts(conflicts)
-          println(s"[AsyncSyncService] Detected ${conflicts.size} conflicts")
+          log.info(s"Detected ${conflicts.size} conflicts")
 
   private def detectRemoteConflicts(user: User): List[SyncConflictEntity] =
     // TODO: Implement actual conflict detection

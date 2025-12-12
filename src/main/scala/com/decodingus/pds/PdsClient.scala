@@ -1,6 +1,7 @@
 package com.decodingus.pds
 
 import com.decodingus.auth.User
+import com.decodingus.util.Logger
 import com.decodingus.model.{ContigSummary, CoverageSummary, LibraryStats, WgsMetrics}
 import com.decodingus.workspace.model._
 import sttp.client3._
@@ -16,6 +17,8 @@ import scala.concurrent.{ExecutionContext, Future}
 import scala.util.Try
 
 object PdsClient {
+
+  private val log = Logger("PdsClient")
 
   implicit val libraryStatsEncoder: Encoder[LibraryStats] = deriveEncoder
   implicit val wgsMetricsEncoder: Encoder[WgsMetrics] = deriveEncoder
@@ -207,19 +210,19 @@ object PdsClient {
       .body(summary)
       .response(asString)
 
-    println(s"Initiating PDS upload for user ${summary.pdsUserId} to $PdsEndpoint...")
+    log.info(s"Initiating PDS upload for user ${summary.pdsUserId} to $PdsEndpoint...")
 
     request.send(backend).flatMap { response =>
       response.body match {
         case Right(body) =>
-          println(s"Successfully uploaded summary. Server response: $body")
+          log.info(s"Successfully uploaded summary. Server response: $body")
           Future.successful(())
         case Left(error) =>
-          println(s"Failed to upload summary. Status: ${response.code}, Error: $error")
+          log.error(s"Failed to upload summary. Status: ${response.code}, Error: $error")
           Future.failed(new RuntimeException(s"PDS Upload failed with status ${response.code}: $error"))
       }
     }.recoverWith { case e: Exception =>
-      println(s"Exception during PDS upload: ${e.getMessage}")
+      log.error(s"Exception during PDS upload: ${e.getMessage}", e)
       Future.failed(e)
     }
   }
@@ -255,19 +258,19 @@ object PdsClient {
       .body(payload)
       .response(asString)
 
-    println(s"Initiating PDS upload for user ${user.did} to $endpoint...")
+    log.info(s"Initiating PDS upload for user ${user.did} to $endpoint...")
 
     request.send(backend).flatMap { response =>
       response.body match {
         case Right(body) =>
-          println(s"Successfully uploaded summary to PDS. Response: $body")
+          log.info(s"Successfully uploaded summary to PDS. Response: $body")
           Future.successful(())
         case Left(error) =>
-          println(s"Failed to upload summary. Status: ${response.code}, Error: $error")
+          log.error(s"Failed to upload summary. Status: ${response.code}, Error: $error")
           Future.failed(new RuntimeException(s"PDS Upload failed with status ${response.code}: $error"))
       }
     }.recoverWith { case e: Exception =>
-      println(s"Exception during PDS upload: ${e.getMessage}")
+      log.error(s"Exception during PDS upload: ${e.getMessage}", e)
       Future.failed(e)
     }
   }
@@ -304,19 +307,19 @@ object PdsClient {
       .body(payload)
       .response(asString)
 
-    println(s"[PDS] Saving workspace for user ${user.did} to $endpoint...")
+    log.info(s"Saving workspace for user ${user.did} to $endpoint...")
 
     request.send(backend).flatMap { response =>
       response.body match {
         case Right(body) =>
-          println(s"[PDS] Successfully saved workspace. Response: $body")
+          log.info(s"Successfully saved workspace. Response: $body")
           Future.successful(())
         case Left(error) =>
-          println(s"[PDS] Failed to save workspace. Status: ${response.code}, Error: $error")
+          log.error(s"Failed to save workspace. Status: ${response.code}, Error: $error")
           Future.failed(new RuntimeException(s"PDS save failed with status ${response.code}: $error"))
       }
     }.recoverWith { case e: Exception =>
-      println(s"[PDS] Exception during workspace save: ${e.getMessage}")
+      log.error(s"Exception during workspace save: ${e.getMessage}", e)
       Future.failed(e)
     }
   }
@@ -337,7 +340,7 @@ object PdsClient {
       .header("Authorization", s"Bearer ${user.token}")
       .response(asString)
 
-    println(s"[PDS] Loading workspace for user ${user.did} from $endpoint...")
+    log.info(s"Loading workspace for user ${user.did} from $endpoint...")
 
     request.send(backend).flatMap { response =>
       response.body match {
@@ -345,24 +348,24 @@ object PdsClient {
           // The response contains { uri, cid, value } - we need to extract "value"
           io.circe.parser.parse(body).flatMap(_.hcursor.downField("value").as[Workspace]) match {
             case Right(workspace) =>
-              println(s"[PDS] Successfully loaded workspace: ${workspace.main.samples.size} samples, ${workspace.main.projects.size} projects")
+              log.info(s"Successfully loaded workspace: ${workspace.main.samples.size} samples, ${workspace.main.projects.size} projects")
               Future.successful(workspace)
             case Left(parseError) =>
-              println(s"[PDS] Failed to parse workspace response: $parseError")
+              log.error(s"Failed to parse workspace response: $parseError")
               Future.failed(new RuntimeException(s"Failed to parse workspace: $parseError"))
           }
         case Left(error) =>
           // 400 with RecordNotFound is expected for new users
           if (response.code.code == 400 && error.contains("RecordNotFound")) {
-            println(s"[PDS] No workspace found for user (new user), returning empty workspace")
+            log.info("No workspace found for user (new user), returning empty workspace")
             Future.successful(Workspace.empty)
           } else {
-            println(s"[PDS] Failed to load workspace. Status: ${response.code}, Error: $error")
+            log.error(s"Failed to load workspace. Status: ${response.code}, Error: $error")
             Future.failed(new RuntimeException(s"PDS load failed with status ${response.code}: $error"))
           }
       }
     }.recoverWith { case e: Exception =>
-      println(s"[PDS] Exception during workspace load: ${e.getMessage}")
+      log.error(s"Exception during workspace load: ${e.getMessage}", e)
       Future.failed(e)
     }
   }

@@ -7,6 +7,7 @@ import com.decodingus.haplogroup.model.HaplogroupResult as AnalysisHaplogroupRes
 import com.decodingus.haplogroup.tree.{TreeProviderType, TreeType}
 import com.decodingus.model.{LibraryStats, WgsMetrics}
 import com.decodingus.refgenome.{ReferenceGateway, ReferenceResolveResult}
+import com.decodingus.util.Logger
 import com.decodingus.workspace.WorkspaceState
 import com.decodingus.workspace.model.*
 import htsjdk.samtools.SamReaderFactory
@@ -32,6 +33,7 @@ case class AnalysisProgress(
  */
 class AnalysisCoordinator(implicit ec: ExecutionContext) {
 
+  private val log = Logger[AnalysisCoordinator]
   private val workspaceOps = new WorkspaceOperations()
 
   // --- Initial Analysis (Library Stats) ---
@@ -786,15 +788,15 @@ class AnalysisCoordinator(implicit ec: ExecutionContext) {
             currentState = workspaceOps.updateSequenceRunByUri(currentState, updatedSeqRun)
 
             checkpoint = AnalysisCheckpoint.markReadMetricsComplete(artifactDir, checkpoint, readMetrics.maxReadLength)
-            println(s"[BatchAnalysis] Read metrics complete: maxReadLength=${readMetrics.maxReadLength}")
+            log.info(s"Read metrics complete: maxReadLength=${readMetrics.maxReadLength}")
           case Left(error) =>
-            println(s"[BatchAnalysis] Read metrics warning: ${error.getMessage}")
+            log.warn(s"Read metrics warning: ${error.getMessage}")
             // Mark complete to continue, but WGS metrics will use seqRun.maxReadLength fallback
             checkpoint = AnalysisCheckpoint.markStepComplete(artifactDir, checkpoint, 1)
         }
       } else {
         onProgress(AnalysisProgress("Step 1/8: Read metrics (cached)", 0.07))
-        println(s"[BatchAnalysis] Using cached read length: ${checkpoint.maxReadLength}")
+        log.debug(s"Using cached read length: ${checkpoint.maxReadLength}")
       }
 
       // Step 2: WGS Metrics (0.07 - 0.17) - uses read length from step 1
@@ -803,7 +805,7 @@ class AnalysisCoordinator(implicit ec: ExecutionContext) {
 
         // Create a seqRun with the effective read length for WGS metrics
         val seqRunForWgs = seqRun.copy(maxReadLength = effectiveReadLength)
-        println(s"[BatchAnalysis] WGS Metrics using maxReadLength: ${seqRunForWgs.maxReadLength}")
+        log.debug(s"WGS Metrics using maxReadLength: ${seqRunForWgs.maxReadLength}")
 
         val wgsMetricsResult = runWgsMetricsStep(bamPath, referencePath, seqRunForWgs, artifactCtx, { pct =>
           onProgress(AnalysisProgress(s"Step 2/8: Coverage analysis (${(pct * 100).toInt}%)", 0.07 + pct * 0.10))
@@ -825,7 +827,7 @@ class AnalysisCoordinator(implicit ec: ExecutionContext) {
             currentState = workspaceOps.updateAlignment(currentState, updatedAlignment)
             checkpoint = AnalysisCheckpoint.markStepComplete(artifactDir, checkpoint, 2)
           case Left(error) =>
-            println(s"[BatchAnalysis] WGS metrics warning: $error")
+            log.warn(s"WGS metrics warning: $error")
             // Mark complete anyway to allow continuing (metrics are optional)
             checkpoint = AnalysisCheckpoint.markStepComplete(artifactDir, checkpoint, 2)
         }
@@ -855,7 +857,7 @@ class AnalysisCoordinator(implicit ec: ExecutionContext) {
             currentState = workspaceOps.updateAlignment(currentState, updatedAlignment)
             checkpoint = AnalysisCheckpoint.markStepComplete(artifactDir, checkpoint, 3)
           case Left(error) =>
-            println(s"[BatchAnalysis] Callable loci warning: $error")
+            log.warn(s"Callable loci warning: $error")
             checkpoint = AnalysisCheckpoint.markStepComplete(artifactDir, checkpoint, 3)
         }
       } else {
@@ -890,7 +892,7 @@ class AnalysisCoordinator(implicit ec: ExecutionContext) {
             // Use user-provided sex - skip BAM scanning
             onProgress(AnalysisProgress(s"Step 4/8: Using user-provided sex (${userSex.inferredSex})...", 0.30))
             result = result.copy(sexInferenceResult = Some(userSex))
-            println(s"[BatchAnalysis] Using user-provided sex: ${userSex.inferredSex}")
+            log.info(s"Using user-provided sex: ${userSex.inferredSex}")
             // Update alignment metrics
             val alignmentMetrics = currentState.workspace.main.alignments
               .find(_.atUri == alignment.atUri)
@@ -928,7 +930,7 @@ class AnalysisCoordinator(implicit ec: ExecutionContext) {
                 currentState = workspaceOps.updateAlignment(currentState, updatedAlignment)
                 checkpoint = AnalysisCheckpoint.markStepComplete(artifactDir, checkpoint, 4)
               case Left(error) =>
-                println(s"[BatchAnalysis] Sex inference warning: $error")
+                log.warn(s"Sex inference warning: $error")
                 checkpoint = AnalysisCheckpoint.markStepComplete(artifactDir, checkpoint, 4)
             }
         }
@@ -986,9 +988,9 @@ class AnalysisCoordinator(implicit ec: ExecutionContext) {
             val updatedAlignment = alignment.copy(metrics = Some(alignmentMetrics))
             currentState = workspaceOps.updateAlignment(currentState, updatedAlignment)
             checkpoint = AnalysisCheckpoint.markStepComplete(artifactDir, checkpoint, 5)
-            println(s"[BatchAnalysis] Variant calling complete: ${vcfInfo.variantCount} variants")
+            log.info(s"Variant calling complete: ${vcfInfo.variantCount} variants")
           case Left(error) =>
-            println(s"[BatchAnalysis] Variant calling warning: $error")
+            log.warn(s"Variant calling warning: $error")
             checkpoint = AnalysisCheckpoint.markStepComplete(artifactDir, checkpoint, 5)
         }
       } else {
@@ -1006,7 +1008,7 @@ class AnalysisCoordinator(implicit ec: ExecutionContext) {
             result = result.copy(mtDnaHaplogroup = Some(haplogroupResult))
             checkpoint = AnalysisCheckpoint.markStepComplete(artifactDir, checkpoint, 6)
           case Left(error) =>
-            println(s"[BatchAnalysis] mtDNA haplogroup warning: $error")
+            log.warn(s"mtDNA haplogroup warning: $error")
             checkpoint = AnalysisCheckpoint.markStepComplete(artifactDir, checkpoint, 6)
         }
       } else {
@@ -1028,7 +1030,7 @@ class AnalysisCoordinator(implicit ec: ExecutionContext) {
               result = result.copy(yDnaHaplogroup = Some(haplogroupResult))
               checkpoint = AnalysisCheckpoint.markStepComplete(artifactDir, checkpoint, 7)
             case Left(error) =>
-              println(s"[BatchAnalysis] Y-DNA haplogroup warning: $error")
+              log.warn(s"Y-DNA haplogroup warning: $error")
               result = result.copy(skippedYDna = true, skippedYDnaReason = Some(error))
               checkpoint = AnalysisCheckpoint.markStepComplete(artifactDir, checkpoint, 7, skipped = true)
           }
@@ -1160,7 +1162,7 @@ class AnalysisCoordinator(implicit ec: ExecutionContext) {
 
     if (java.nio.file.Files.exists(cachedVcfPath)) {
       // Use cached VCF from variant calling step - much faster!
-      println(s"[BatchAnalysis] Using cached whole-genome VCF for $treeTypeStr haplogroup analysis")
+      log.info(s"Using cached whole-genome VCF for $treeTypeStr haplogroup analysis")
       processor.analyzeFromCachedVcf(
         sampleAccession = subject.sampleAccession,
         runId = runId,
@@ -1176,7 +1178,7 @@ class AnalysisCoordinator(implicit ec: ExecutionContext) {
     } else {
       // Fall back to BAM-based calling (slower, but works without Step 5)
       // This generates contig-specific VCFs which we'll save to the common VCF location
-      println(s"[BatchAnalysis] No cached VCF found, using BAM-based calling for $treeTypeStr haplogroup analysis")
+      log.info(s"No cached VCF found, using BAM-based calling for $treeTypeStr haplogroup analysis")
 
       // Build LibraryStats from existing data for the processor
       val libraryStats = LibraryStats(
@@ -1227,13 +1229,13 @@ class AnalysisCoordinator(implicit ec: ExecutionContext) {
               "--CREATE_INDEX", "true"
             )) match {
               case Right(_) =>
-                println(s"[BatchAnalysis] Saved $treeTypeStr VCF to common location: $destVcf")
+                log.info(s"Saved $treeTypeStr VCF to common location: $destVcf")
               case Left(err) =>
-                println(s"[BatchAnalysis] Warning: Failed to copy VCF to common location: $err")
+                log.warn(s"Failed to copy VCF to common location: $err")
             }
           } catch {
             case e: Exception =>
-              println(s"[BatchAnalysis] Warning: Failed to save VCF to common location: ${e.getMessage}")
+              log.warn(s"Failed to save VCF to common location: ${e.getMessage}")
           }
         }
       }

@@ -10,6 +10,7 @@ import com.decodingus.haplogroup.vendor.{DecodingUsTreeProvider, FtdnaTreeProvid
 import com.decodingus.liftover.LiftoverProcessor
 import com.decodingus.model.LibraryStats
 import com.decodingus.refgenome.{LiftoverGateway, MultiContigReferenceQuerier, ReferenceGateway, ReferenceQuerier, StrAnnotator}
+import com.decodingus.util.Logger
 import htsjdk.variant.vcf.VCFFileReader
 
 import java.io.{File, PrintWriter}
@@ -40,6 +41,8 @@ case class SnpCallInfo(
 )
 
 class HaplogroupProcessor {
+
+  private val log = Logger[HaplogroupProcessor]
 
   private val standardContigOrder: Map[String, Int] = (1 to 22).map(i => s"chr$i" -> i).toMap ++
     Map("chrX" -> 23, "chrY" -> 24, "chrM" -> 25)
@@ -159,7 +162,7 @@ class HaplogroupProcessor {
           val cachedLiftedVcf = treeCache.getLiftedSitesVcfPath(primaryCacheKey, treeSourceBuild, referenceBuild)
           if (treeCache.isLiftedSitesVcfValid(primaryCacheKey, treeSourceBuild, referenceBuild)) {
             onProgress(s"Using cached lifted sites VCF for $referenceBuild...", 0.1, 1.0)
-            println(s"[HaplogroupProcessor] Using cached lifted sites VCF: $cachedLiftedVcf")
+            log.info(s" Using cached lifted sites VCF: $cachedLiftedVcf")
             (Right(cachedLiftedVcf), true)
           } else {
             onProgress(s"Reference mismatch: tree is $treeSourceBuild, BAM/CRAM is $referenceBuild. Performing liftover...", 0.1, 1.0)
@@ -169,14 +172,14 @@ class HaplogroupProcessor {
             // Cache the lifted VCF for reuse by other samples
             lifted.foreach { liftedVcf =>
               java.nio.file.Files.copy(liftedVcf.toPath, cachedLiftedVcf.toPath, java.nio.file.StandardCopyOption.REPLACE_EXISTING)
-              println(s"[HaplogroupProcessor] Cached lifted sites VCF to $cachedLiftedVcf")
+              log.info(s" Cached lifted sites VCF to $cachedLiftedVcf")
             }
             // Also save a copy to artifact directory for debugging/auditing
             lifted.foreach { liftedVcf =>
               artifactDir.foreach { dir =>
                 val savedPath = dir.resolve(s"${outputPrefix}_lifted_alleles_${referenceBuild}.vcf")
                 java.nio.file.Files.copy(liftedVcf.toPath, savedPath, java.nio.file.StandardCopyOption.REPLACE_EXISTING)
-                println(s"[HaplogroupProcessor] Saved lifted alleles VCF to $savedPath")
+                log.info(s" Saved lifted alleles VCF to $savedPath")
               }
             }
             (lifted, true)
@@ -208,7 +211,7 @@ class HaplogroupProcessor {
                   artifactDir.foreach { dir =>
                     val savedPath = dir.resolve(s"${outputPrefix}_calls_lifted_${treeSourceBuild}.vcf")
                     java.nio.file.Files.copy(liftedVcf.toPath, savedPath, java.nio.file.StandardCopyOption.REPLACE_EXISTING)
-                    println(s"[HaplogroupProcessor] Saved reverse-lifted calls VCF to $savedPath")
+                    log.info(s" Saved reverse-lifted calls VCF to $savedPath")
                   }
                 }
                 reverseLifted
@@ -225,7 +228,7 @@ class HaplogroupProcessor {
                   artifactDir.foreach { dir =>
                     val savedPath = dir.resolve(s"${outputPrefix}_private_variants_lifted_${treeSourceBuild}.vcf")
                     java.nio.file.Files.copy(liftedVcf.toPath, savedPath, java.nio.file.StandardCopyOption.REPLACE_EXISTING)
-                    println(s"[HaplogroupProcessor] Saved lifted private variants VCF to $savedPath")
+                    log.info(s" Saved lifted private variants VCF to $savedPath")
                   }
                 }
                 liftedPrivate
@@ -244,9 +247,9 @@ class HaplogroupProcessor {
                   // Note: Both VCFs are now in tree source coordinates for proper position matching
                   val allTreePositions = allLoci.map(_.position).toSet
                   val treeSiteCalls = parseVcf(scoredVcf)
-                  println(s"[HaplogroupProcessor] Parsed tree sites VCF: ${treeSiteCalls.size} calls in ${System.currentTimeMillis() - scoringStart}ms")
+                  log.info(s" Parsed tree sites VCF: ${treeSiteCalls.size} calls in ${System.currentTimeMillis() - scoringStart}ms")
                   val additionalTreeCalls = parseVcfAtPositions(privateVcf, allTreePositions)
-                  println(s"[HaplogroupProcessor] Parsed additional calls in ${System.currentTimeMillis() - scoringStart}ms")
+                  log.info(s" Parsed additional calls in ${System.currentTimeMillis() - scoringStart}ms")
                   // Merge: pass 1 calls take precedence (they're force-called at exact positions)
                   val vcfCalls = additionalTreeCalls ++ treeSiteCalls
 
@@ -266,7 +269,7 @@ class HaplogroupProcessor {
                         }
                       }.toMap
                       if (inferredReferenceCalls.nonEmpty) {
-                        println(s"[HaplogroupProcessor] Inferred ${inferredReferenceCalls.size} reference calls from callable loci")
+                        log.info(s" Inferred ${inferredReferenceCalls.size} reference calls from callable loci")
                       }
                       Some(inferredReferenceCalls ++ vcfCalls) // VCF calls take precedence
                     } else {
@@ -277,7 +280,7 @@ class HaplogroupProcessor {
                   val scorer = new HaplogroupScorer()
                   val scoreStart = System.currentTimeMillis()
                   val results = scorer.score(tree, snpCalls)
-                  println(s"[HaplogroupProcessor] Scored ${results.size} haplogroups in ${System.currentTimeMillis() - scoreStart}ms")
+                  log.info(s" Scored ${results.size} haplogroups in ${System.currentTimeMillis() - scoreStart}ms")
 
                   // Identify private variants - only exclude positions on path to terminal haplogroup
                   // Positions on other branches could be legitimate private variants for undiscovered sub-clades
@@ -287,15 +290,15 @@ class HaplogroupProcessor {
                   val pathPositions = collectPathPositions(tree, terminalHaplogroup)
                   // Use the original (non-lifted) private variants for the report - positions in BAM's reference
                   val privateVariants = parsePrivateVariants(twoPassResult.privateVariantsVcf, pathPositions)
-                  println(s"[HaplogroupProcessor] Post-GATK processing completed in ${System.currentTimeMillis() - postGatkStart}ms")
+                  log.info(s" Post-GATK processing completed in ${System.currentTimeMillis() - postGatkStart}ms")
 
                   // Load STR annotator for indel annotation (optional - don't fail if unavailable)
                   val strAnnotator = StrAnnotator.forBuild(referenceBuild) match {
                     case Right(annotator) =>
-                      println(s"[HaplogroupProcessor] Loaded STR reference with ${annotator.regionCount} regions")
+                      log.info(s" Loaded STR reference with ${annotator.regionCount} regions")
                       Some(annotator)
                     case Left(error) =>
-                      println(s"[HaplogroupProcessor] STR annotation unavailable: $error")
+                      log.info(s" STR annotation unavailable: $error")
                       None
                   }
 
@@ -308,10 +311,10 @@ class HaplogroupProcessor {
                       case TreeProviderType.DECODINGUS =>
                         val cache = NamedVariantCache()
                         // Try to load silently - don't fail the report if cache unavailable
-                        cache.ensureLoaded(msg => println(s"[HaplogroupProcessor] $msg")) match {
+                        cache.ensureLoaded(msg => log.info(s" $msg")) match {
                           case Right(_) => Some(cache)
                           case Left(err) =>
-                            println(s"[HaplogroupProcessor] Named variant cache unavailable: $err")
+                            log.info(s" Named variant cache unavailable: $err")
                             None
                         }
                       case _ => None

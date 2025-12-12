@@ -3,6 +3,7 @@ package com.decodingus.workspace.services
 import com.decodingus.auth.User
 import com.decodingus.config.FeatureToggles
 import com.decodingus.pds.PdsClient
+import com.decodingus.util.Logger
 import com.decodingus.workspace.WorkspaceService
 import com.decodingus.workspace.model.{Workspace, SyncStatus}
 
@@ -42,6 +43,8 @@ class SyncService(
   workspaceService: WorkspaceService
 )(implicit ec: ExecutionContext) {
 
+  private val log = Logger[SyncService]
+
   /**
    * Attempts to load workspace from PDS if AT Protocol is enabled and user is logged in.
    *
@@ -61,29 +64,29 @@ class SyncService(
       user match {
         case Some(u) =>
           onStatusChange(SyncStatus.Syncing)
-          println(s"[SyncService] Syncing workspace from PDS for user ${u.did}...")
+          log.info(s"Syncing workspace from PDS for user ${u.did}...")
 
           PdsClient.loadWorkspace(u).map { remoteWorkspace =>
             if (remoteWorkspace != currentWorkspace) {
-              println(s"[SyncService] PDS workspace differs from local, updating...")
+              log.info("PDS workspace differs from local, updating...")
               // Save remote to local cache
               workspaceService.save(remoteWorkspace)
               onStatusChange(SyncStatus.Synced)
               (remoteWorkspace, SyncResult.Success)
             } else {
-              println(s"[SyncService] PDS workspace matches local, no update needed")
+              log.debug("PDS workspace matches local, no update needed")
               onStatusChange(SyncStatus.Synced)
               (currentWorkspace, SyncResult.NoChange)
             }
           }.recover {
             case e: Exception =>
-              println(s"[SyncService] Failed to sync from PDS: ${e.getMessage}")
+              log.error(s"Failed to sync from PDS: ${e.getMessage}")
               onStatusChange(SyncStatus.Error)
               (currentWorkspace, SyncResult.Error(e.getMessage))
           }
 
         case None =>
-          println(s"[SyncService] AT Protocol enabled but no user logged in, using local workspace only")
+          log.debug("AT Protocol enabled but no user logged in, using local workspace only")
           onStatusChange(SyncStatus.Offline)
           Future.successful((currentWorkspace, SyncResult.Offline))
       }
@@ -109,15 +112,15 @@ class SyncService(
       user match {
         case Some(u) =>
           onStatusChange(SyncStatus.Syncing)
-          println(s"[SyncService] Syncing workspace to PDS for user ${u.did}...")
+          log.info(s"Syncing workspace to PDS for user ${u.did}...")
 
           PdsClient.saveWorkspace(u, workspace).map { _ =>
-            println(s"[SyncService] Successfully synced workspace to PDS")
+            log.info("Successfully synced workspace to PDS")
             onStatusChange(SyncStatus.Synced)
             SyncResult.Success
           }.recover {
             case e: Exception =>
-              println(s"[SyncService] Failed to sync to PDS: ${e.getMessage}")
+              log.error(s"Failed to sync to PDS: ${e.getMessage}")
               onStatusChange(SyncStatus.Error)
               SyncResult.Error(e.getMessage)
           }
@@ -145,11 +148,11 @@ class SyncService(
     // Step 1: Save to local JSON (synchronous)
     workspaceService.save(workspace) match {
       case Left(error) =>
-        println(s"[SyncService] Error saving workspace locally: $error")
+        log.error(s"Error saving workspace locally: $error")
         Future.successful(Left(error))
 
       case Right(_) =>
-        println(s"[SyncService] Workspace saved to local cache")
+        log.debug("Workspace saved to local cache")
         // Step 2: Sync to PDS in background if available
         syncToPds(user, workspace, onStatusChange).map(Right(_))
     }

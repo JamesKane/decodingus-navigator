@@ -1,5 +1,6 @@
 package com.decodingus.analysis
 
+import com.decodingus.util.Logger
 import org.broadinstitute.hellbender.Main
 
 import java.io.{ByteArrayOutputStream, File, OutputStream, PrintStream}
@@ -10,6 +11,8 @@ import java.nio.file.{Files, Paths}
  * Uses GATK's instanceMain() method which returns exit codes instead of calling System.exit().
  */
 object GatkRunner {
+
+  private val log = Logger("GatkRunner")
 
   case class GatkResult(exitCode: Int, stdout: String, stderr: String)
 
@@ -137,7 +140,7 @@ object GatkRunner {
         Right(existingIndex)
       case None =>
         // Need to create the index - GATK will put it next to the input file
-        println(s"[GatkRunner] BAM index not found, creating with BuildBamIndex...")
+        log.info("BAM index not found, creating with BuildBamIndex...")
         val args = Array(
           "BuildBamIndex",
           "-I", bamPath
@@ -147,7 +150,7 @@ object GatkRunner {
             // Find the created index
             possibleIndexPaths.find(p => new File(p).exists()) match {
               case Some(idx) =>
-                println(s"[GatkRunner] Created index: $idx")
+                log.info(s"Created index: $idx")
                 Right(idx)
               case None =>
                 Left("BuildBamIndex completed but index file not found")
@@ -172,12 +175,12 @@ object GatkRunner {
     val cachedIndexPath = IndexCacheDir.resolve(cacheFileName)
 
     if (Files.exists(cachedIndexPath)) {
-      println(s"[GatkRunner] Using cached index: $cachedIndexPath")
+      log.debug(s"Using cached index: $cachedIndexPath")
       Right(cachedIndexPath.toString)
     } else {
       // Try to create index - GATK should handle cloud URLs
       // We specify output location in the cache
-      println(s"[GatkRunner] Cloud BAM index not found, creating with BuildBamIndex...")
+      log.info("Cloud BAM index not found, creating with BuildBamIndex...")
       val args = Array(
         "BuildBamIndex",
         "-I", bamPath,
@@ -186,7 +189,7 @@ object GatkRunner {
       run(args) match {
         case Right(_) =>
           if (Files.exists(cachedIndexPath)) {
-            println(s"[GatkRunner] Created index in cache: $cachedIndexPath")
+            log.info(s"Created index in cache: $cachedIndexPath")
             Right(cachedIndexPath.toString)
           } else {
             Left("BuildBamIndex completed but index file not found in cache")

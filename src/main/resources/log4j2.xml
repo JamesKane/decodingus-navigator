@@ -2,7 +2,7 @@
 <Configuration status="WARN">
     <Appenders>
         <Console name="Console" target="SYSTEM_ERR">
-            <PatternLayout pattern="%d{HH:mm:ss.SSS} [%t] %-5level %logger{36} - %msg%n"/>
+            <PatternLayout pattern="%d{HH:mm:ss.SSS} %-5level [%logger{20}] %msg%n"/>
         </Console>
     </Appenders>
     <Loggers>
@@ -11,6 +11,11 @@
         <Logger name="htsjdk" level="WARN"/>
         <Logger name="org.apache.spark" level="ERROR"/>
         <Logger name="com.intel" level="ERROR"/>
+
+        <!-- Application logging - DEBUG for development, change to INFO for production -->
+        <Logger name="com.decodingus" level="DEBUG"/>
+        <!-- Reduce noise from specific verbose components -->
+        <Logger name="com.decodingus.workspace.model" level="INFO"/>
 
         <Root level="INFO">
             <AppenderRef ref="Console"/>

@@ -1,5 +1,7 @@
 package com.decodingus.db
 
+import com.decodingus.util.Logger
+
 import java.io.{BufferedReader, InputStreamReader}
 import java.nio.charset.StandardCharsets
 import java.security.MessageDigest
@@ -21,6 +23,7 @@ import scala.util.Using
  */
 object Migrator:
 
+  private val log = Logger("Migrator")
   private val MigrationPath = "db/migration"
   private val SchemaVersionTable = "schema_version"
 
@@ -215,7 +218,7 @@ object Migrator:
       .toList
 
   private def applyMigration(conn: Connection, migration: Migration): Unit =
-    println(s"[Migrator] Applying V${migration.version} - ${migration.description}")
+    log.info(s"Applying V${migration.version} - ${migration.description}")
 
     // Execute migration SQL statements
     Using.resource(conn.createStatement()) { stmt =>
@@ -235,4 +238,4 @@ object Migrator:
       ps.executeUpdate()
     }
 
-    println(s"[Migrator] Applied V${migration.version}")
+    log.info(s"Applied V${migration.version}")

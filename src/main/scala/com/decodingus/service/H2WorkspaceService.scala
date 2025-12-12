@@ -1,6 +1,7 @@
 package com.decodingus.service
 
 import com.decodingus.db.Transactor
+import com.decodingus.util.Logger
 import com.decodingus.repository.{
   BiosampleRepository, ProjectRepository, SequenceRunRepository, AlignmentRepository,
   SyncStatus as RepoSyncStatus
@@ -25,6 +26,8 @@ class H2WorkspaceService(
   sequenceRunRepo: SequenceRunRepository,
   alignmentRepo: AlignmentRepository
 ) extends WorkspaceService:
+
+  private val log = Logger[H2WorkspaceService]
 
   // ============================================
   // Biosample Operations
@@ -198,10 +201,10 @@ class H2WorkspaceService(
           throw new IllegalArgumentException(s"Biosample not found: $biosampleId")
         case Some(biosample) =>
           val entity = toSequenceRunEntity(sequenceRun, biosampleId)
-          println(s"[DEBUG] H2WorkspaceService.createSequenceRun: Inserting entity id=${entity.id}, biosampleId=$biosampleId")
+          log.debug(s"createSequenceRun: Inserting entity id=${entity.id}, biosampleId=$biosampleId")
           val saved = sequenceRunRepo.insert(entity)
           val result = fromSequenceRunEntity(saved, localUri("biosample", biosampleId))
-          println(s"[DEBUG] H2WorkspaceService.createSequenceRun: Created SequenceRun atUri=${result.atUri}, biosampleRef=${result.biosampleRef}")
+          log.debug(s"createSequenceRun: Created SequenceRun atUri=${result.atUri}, biosampleRef=${result.biosampleRef}")
           result
     }
 
@@ -361,15 +364,15 @@ class H2WorkspaceService(
 
   override def loadWorkspaceContent(): Either[String, WorkspaceContent] =
     transactor.readOnly {
-      println(s"[DEBUG] H2WorkspaceService.loadWorkspaceContent: Starting load...")
+      log.debug("loadWorkspaceContent: Starting load...")
 
       val rawSamples = biosampleRepo.findAll()
-      println(s"[DEBUG] H2WorkspaceService.loadWorkspaceContent: Found ${rawSamples.size} biosample entities")
+      log.debug(s"loadWorkspaceContent: Found ${rawSamples.size} biosample entities")
 
       val rawSequenceRuns = sequenceRunRepo.findAll()
-      println(s"[DEBUG] H2WorkspaceService.loadWorkspaceContent: Found ${rawSequenceRuns.size} sequence run entities")
+      log.debug(s"loadWorkspaceContent: Found ${rawSequenceRuns.size} sequence run entities")
       rawSequenceRuns.foreach { sr =>
-        println(s"[DEBUG]   SequenceRun entity: id=${sr.id}, biosampleId=${sr.biosampleId}")
+        log.debug(s"  SequenceRun entity: id=${sr.id}, biosampleId=${sr.biosampleId}")
       }
 
       // Build a map of biosampleId -> list of sequence run atUris
@@ -379,11 +382,11 @@ class H2WorkspaceService(
         .mapValues(_.map(sr => localUri("sequencerun", sr.id)))
         .toMap
 
-      println(s"[DEBUG] H2WorkspaceService.loadWorkspaceContent: SequenceRuns by biosample: ${sequenceRunsByBiosample.map { case (k, v) => s"$k -> ${v.size} runs" }.mkString(", ")}")
+      log.debug(s"loadWorkspaceContent: SequenceRuns by biosample: ${sequenceRunsByBiosample.map { case (k, v) => s"$k -> ${v.size} runs" }.mkString(", ")}")
 
       // Build a map of sequenceRunId -> list of alignment atUris
       val rawAlignments = alignmentRepo.findAll()
-      println(s"[DEBUG] H2WorkspaceService.loadWorkspaceContent: Found ${rawAlignments.size} alignment entities")
+      log.debug(s"loadWorkspaceContent: Found ${rawAlignments.size} alignment entities")
 
       val alignmentsBySequenceRun: Map[UUID, List[String]] = rawAlignments
         .groupBy(_.sequenceRunId)
@@ -396,7 +399,7 @@ class H2WorkspaceService(
         val refs = sequenceRunsByBiosample.getOrElse(entity.id, List.empty)
         val biosample = fromBiosampleEntity(entity)
         val populated = biosample.copy(sequenceRunRefs = refs)
-        println(s"[DEBUG]   Biosample ${entity.sampleAccession}: sequenceRunRefs=${refs.size}")
+        log.debug(s"  Biosample ${entity.sampleAccession}: sequenceRunRefs=${refs.size}")
         populated
       }
 
@@ -411,7 +414,7 @@ class H2WorkspaceService(
         val alignRefs = alignmentsBySequenceRun.getOrElse(entity.id, List.empty)
         val seqRun = fromSequenceRunEntity(entity, biosampleRef)
         val populated = seqRun.copy(alignmentRefs = alignRefs)
-        println(s"[DEBUG]   SequenceRun ${entity.id}: atUri=${populated.atUri}, alignmentRefs=${alignRefs.size}")
+        log.debug(s"  SequenceRun ${entity.id}: atUri=${populated.atUri}, alignmentRefs=${alignRefs.size}")
         populated
       }
 
@@ -420,7 +423,7 @@ class H2WorkspaceService(
         fromAlignmentEntity(entity, sequenceRunRef)
       }
 
-      println(s"[DEBUG] H2WorkspaceService.loadWorkspaceContent: Returning ${samples.size} samples, ${sequenceRuns.size} sequenceRuns, ${alignments.size} alignments")
+      log.debug(s"loadWorkspaceContent: Returning ${samples.size} samples, ${sequenceRuns.size} sequenceRuns, ${alignments.size} alignments")
 
       WorkspaceContent(
         meta = Some(RecordMeta.initial),
