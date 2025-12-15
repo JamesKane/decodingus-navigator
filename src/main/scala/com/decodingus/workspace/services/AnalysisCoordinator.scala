@@ -496,9 +496,34 @@ class AnalysisCoordinator(implicit ec: ExecutionContext) {
 
       val treeTypeStr = if (treeType == TreeType.YDNA) "Y-DNA" else "mtDNA"
 
+      // Check for vendor-provided VCF first (e.g., FTDNA Big Y)
+      val vendorVcf: Option[VendorVcfInfo] = if (treeType == TreeType.YDNA) {
+        VcfCache.findYDnaVendorVcf(subject.sampleAccession, runId, alignId)
+      } else {
+        VcfCache.findMtDnaVendorVcf(subject.sampleAccession, runId, alignId)
+      }
+
       val result: Either[String, List[AnalysisHaplogroupResult]] =
-        if (java.nio.file.Files.exists(cachedVcfPath)) {
-          // Use cached whole-genome VCF - fastest option
+        if (vendorVcf.isDefined) {
+          // Use vendor-provided VCF - highest priority
+          val vvcf = vendorVcf.get
+          log.info(s"Using ${vvcf.vendor.displayName} VCF for $treeTypeStr haplogroup analysis: ${vvcf.vcfPath}")
+          onProgress(AnalysisProgress(s"Using ${vvcf.vendor.displayName} VCF for $treeTypeStr analysis...", 0.2))
+          // Analyze directly from the vendor VCF path
+          val haplogroupOutputDir = artifactCtx.getSubdir("haplogroup")
+          processor.analyzeFromVcfFile(
+            vcfPath = vvcf.vcfPath,
+            referenceBuild = vvcf.referenceBuild,
+            treeType = treeType,
+            treeProviderType = treeProviderType,
+            onProgress = (message, current, total) => {
+              val pct = if (total > 0) 0.2 + (current / total) * 0.7 else 0.2
+              onProgress(AnalysisProgress(message, pct))
+            },
+            outputDir = Some(haplogroupOutputDir)
+          )
+        } else if (java.nio.file.Files.exists(cachedVcfPath)) {
+          // Use cached whole-genome VCF - second priority
           log.info(s"Using cached whole-genome VCF for $treeTypeStr haplogroup analysis: $cachedVcfPath")
           onProgress(AnalysisProgress(s"Using cached VCF for $treeTypeStr analysis...", 0.2))
           processor.analyzeFromCachedVcf(

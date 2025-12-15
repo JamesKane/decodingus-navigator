@@ -227,6 +227,39 @@ object VcfQueryService {
   }
 
   /**
+   * Create a VcfQueryService from a VCF file path directly.
+   * Used for vendor-provided VCFs that aren't in the standard cache structure.
+   *
+   * @param vcfPath Path to the VCF file (must be indexed)
+   * @param referenceBuild Reference build of the VCF
+   * @return VcfQueryService or error
+   */
+  def fromVcfPath(
+    vcfPath: String,
+    referenceBuild: String
+  ): Either[String, VcfQueryService] = {
+    val vcfFile = new File(vcfPath)
+    if (!vcfFile.exists()) {
+      Left(s"VCF file not found: $vcfPath")
+    } else {
+      // Create a minimal CachedVcfInfo for the VCF path
+      val info = CachedVcfInfo(
+        vcfPath = vcfPath,
+        indexPath = vcfPath + ".tbi",  // Assume tabix index
+        referenceBuild = referenceBuild,
+        callerVersion = "vendor",
+        gatkVersion = "N/A",
+        createdAt = java.time.LocalDateTime.now().format(java.time.format.DateTimeFormatter.ISO_LOCAL_DATE_TIME),
+        fileSizeBytes = vcfFile.length(),
+        variantCount = 0L,
+        contigs = List.empty,
+        inferredSex = None
+      )
+      Right(new VcfQueryService(info))
+    }
+  }
+
+  /**
    * Create a VcfQueryService from AT URIs.
    */
   def fromUris(

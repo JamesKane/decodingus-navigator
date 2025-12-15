@@ -460,6 +460,122 @@ class HaplogroupProcessor {
   }
 
   /**
+   * Analyze using a VCF file directly (e.g., vendor-provided VCF).
+   * Used for FTDNA Big Y, YSEQ, and other vendor VCFs.
+   *
+   * Note: Vendor VCFs typically don't have callable loci data, so reference inference
+   * is not possible. Positions not in the VCF will be marked as no-call.
+   *
+   * @param vcfPath Path to the VCF file (must be indexed with .tbi)
+   * @param referenceBuild Reference build of the VCF
+   * @param treeType Y-DNA or MT-DNA tree type
+   * @param treeProviderType Tree data provider
+   * @param onProgress Progress callback
+   * @param outputDir Optional directory for saving reports
+   */
+  def analyzeFromVcfFile(
+    vcfPath: String,
+    referenceBuild: String,
+    treeType: TreeType,
+    treeProviderType: TreeProviderType,
+    onProgress: (String, Double, Double) => Unit,
+    outputDir: Option[Path] = None
+  ): Either[String, List[HaplogroupResult]] = {
+
+    onProgress("Loading haplogroup tree...", 0.0, 1.0)
+    val treeProvider: TreeProvider = treeProviderType match {
+      case TreeProviderType.FTDNA => new FtdnaTreeProvider(treeType)
+      case TreeProviderType.DECODINGUS => new DecodingUsTreeProvider(treeType)
+    }
+
+    treeProvider.loadTree(referenceBuild).flatMap { tree =>
+      val allLoci = collectAllLoci(tree).distinct
+      val primaryContig = if (treeType == TreeType.YDNA) "chrY" else "chrM"
+      val outputPrefix = if (treeType == TreeType.YDNA) "ydna" else "mtdna"
+
+      val treeSourceBuild = if (treeProvider.supportedBuilds.contains(referenceBuild)) {
+        referenceBuild
+      } else {
+        treeProvider.sourceBuild
+      }
+
+      onProgress("Creating VCF resolver...", 0.1, 1.0)
+
+      // Create gap-aware resolver from VCF file
+      GapAwareHaplogroupResolver.fromVcfPath(vcfPath, referenceBuild) match {
+        case Left(error) =>
+          Left(s"Failed to open vendor VCF: $error")
+
+        case Right(resolver) =>
+          onProgress("Querying tree positions from VCF...", 0.2, 1.0)
+
+          // Query all tree positions
+          val positions = allLoci.map { locus =>
+            val contig = if (locus.contig.isEmpty) primaryContig else locus.contig
+            (contig, locus.position, locus.ref)
+          }
+          val resolvedCalls = resolver.resolvePositions(positions)
+
+          // Get resolution statistics
+          val stats = resolver.getResolutionStats(resolvedCalls)
+          log.info(s"[VendorVCF] Resolved ${stats.fromVcf} from VCF, ${stats.inferredReference} inferred, ${stats.noCalls} no-calls")
+          onProgress(s"Resolved ${stats.fromVcf} variants, ${stats.noCalls} no-calls", 0.4, 1.0)
+
+          // Convert to snpCalls format expected by scorer (position -> allele)
+          val snpCalls: Map[Long, String] = resolvedCalls.flatMap { case ((contig, pos), call) =>
+            if (call.hasCall && contig == primaryContig) {
+              Some(pos -> call.allele)
+            } else {
+              None
+            }
+          }
+
+          onProgress("Scoring haplogroups...", 0.5, 1.0)
+
+          // Score haplogroups
+          val scorer = new HaplogroupScorer()
+          val results = scorer.score(tree, snpCalls)
+
+          onProgress("Generating report...", 0.8, 1.0)
+
+          // Get artifact directory for report (use provided outputDir or skip)
+          outputDir.foreach { dir =>
+            Files.createDirectories(dir)
+
+            // Use named variant cache for Decoding Us provider
+            val variantCache = treeProviderType match {
+              case TreeProviderType.DECODINGUS =>
+                val cache = NamedVariantCache()
+                cache.ensureLoaded(_ => ()) match {
+                  case Right(_) => Some(cache)
+                  case Left(_) => None
+                }
+              case _ => None
+            }
+
+            HaplogroupReportWriter.writeReport(
+              outputDir = dir.toFile,
+              treeType = treeType,
+              results = results,
+              tree = tree,
+              snpCalls = snpCalls,
+              sampleName = None,
+              privateVariants = None,  // Private variants not extracted in vendor VCF flow
+              treeProvider = Some(treeProviderType),
+              strAnnotator = None,
+              sampleBuild = Some(referenceBuild),
+              treeBuild = Some(treeSourceBuild),
+              namedVariantCache = variantCache
+            )
+          }
+
+          onProgress("Analysis complete.", 1.0, 1.0)
+          Right(results)
+      }
+    }
+  }
+
+  /**
    * Parse private variants from VCF, excluding known tree positions.
    */
   private def parsePrivateVariants(vcfFile: File, treePositions: Set[Long]): List[PrivateVariant] = {

@@ -272,4 +272,28 @@ object GapAwareHaplogroupResolver {
       new GapAwareHaplogroupResolver(vcfService, callableService, referenceBuild)
     }
   }
+
+  /**
+   * Create a resolver from a VCF file path directly.
+   * Used for vendor-provided VCFs (e.g., FTDNA Big Y).
+   *
+   * Note: Vendor VCFs typically don't have callable loci data, so reference inference
+   * will be limited. Positions not in the VCF will be marked as no-call.
+   *
+   * @param vcfPath Path to the VCF file (must be indexed)
+   * @param referenceBuild Reference build of the VCF
+   * @param targetBedPath Optional path to target regions BED (not callable loci - just capture targets)
+   */
+  def fromVcfPath(
+    vcfPath: String,
+    referenceBuild: String,
+    targetBedPath: Option[String] = None
+  ): Either[String, GapAwareHaplogroupResolver] = {
+    VcfQueryService.fromVcfPath(vcfPath, referenceBuild).map { vcfService =>
+      // Vendor VCFs don't have callable loci data - target BED is capture regions, not callable loci
+      // We could potentially use target BED to infer that positions in targets but not in VCF are ref,
+      // but that's not as reliable as true callable loci analysis
+      new GapAwareHaplogroupResolver(vcfService, None, referenceBuild)
+    }
+  }
 }
