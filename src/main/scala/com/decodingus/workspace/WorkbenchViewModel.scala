@@ -1432,11 +1432,14 @@ class WorkbenchViewModel(
                     // Step 4: Update SequenceRun and create/update Alignment
                     updateProgress("Saving results...", 0.95)
                     Platform.runLater {
-                      // Create or update alignment
-                      val alignUri = seqRun.alignmentRefs.headOption.getOrElse(
-                        s"local:alignment:${subject.sampleAccession}:${java.util.UUID.randomUUID().toString.take(8)}"
+                      // Create or update alignment - find one matching THIS reference build
+                      val existingAlignment = seqRun.alignmentRefs.flatMap { ref =>
+                        _workspace.value.main.alignments.find(a => a.atUri.contains(ref) && a.referenceBuild == libraryStats.referenceBuild)
+                      }.headOption
+
+                      val alignUri = existingAlignment.flatMap(_.atUri).getOrElse(
+                        s"local:alignment:${subject.sampleAccession}:${libraryStats.referenceBuild}:${java.util.UUID.randomUUID().toString.take(8)}"
                       )
-                      val existingAlignment = _workspace.value.main.alignments.find(_.atUri.contains(alignUri))
                       val newAlignment = Alignment(
                         atUri = Some(alignUri),
                         meta = existingAlignment.map(_.meta.updated("analysis")).getOrElse(RecordMeta.initial),

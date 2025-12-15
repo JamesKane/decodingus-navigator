@@ -111,10 +111,14 @@ class AnalysisCoordinator(implicit ec: ExecutionContext) {
       // Step 4: Create or update alignment
       onProgress(AnalysisProgress("Saving results...", 0.95))
 
-      val alignUri = seqRun.alignmentRefs.headOption.getOrElse(
-        s"local:alignment:${subject.sampleAccession}:${java.util.UUID.randomUUID().toString.take(8)}"
+      // Find existing alignment for THIS reference build (not just the first one)
+      val existingAlignment = seqRun.alignmentRefs.flatMap { ref =>
+        state.workspace.main.alignments.find(a => a.atUri.contains(ref) && a.referenceBuild == libraryStats.referenceBuild)
+      }.headOption
+
+      val alignUri = existingAlignment.flatMap(_.atUri).getOrElse(
+        s"local:alignment:${subject.sampleAccession}:${libraryStats.referenceBuild}:${java.util.UUID.randomUUID().toString.take(8)}"
       )
-      val existingAlignment = state.workspace.main.alignments.find(_.atUri.contains(alignUri))
 
       val newAlignment = Alignment(
         atUri = Some(alignUri),
