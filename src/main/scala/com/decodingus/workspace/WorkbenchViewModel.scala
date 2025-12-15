@@ -1,6 +1,6 @@
 package com.decodingus.workspace
 
-import com.decodingus.analysis.{ArtifactContext, CachedVcfInfo, CallableLociProcessor, CallableLociResult, HaplogroupProcessor, LibraryStatsProcessor, MultipleMetricsResult, UnifiedMetricsProcessor, WgsMetricsProcessor}
+import com.decodingus.analysis.{ArtifactContext, CachedVcfInfo, CallableLociProcessor, CallableLociResult, HaplogroupProcessor, LibraryStatsProcessor, MultipleMetricsResult, UnifiedMetricsProcessor, VcfVendor, VendorVcfInfo, WgsMetricsProcessor}
 import com.decodingus.client.DecodingUsClient
 import com.decodingus.db.Transactor
 import com.decodingus.haplogroup.tree.{TreeType, TreeProviderType}
@@ -3159,4 +3159,129 @@ class WorkbenchViewModel(
         Try(UUID.fromString(uri.split("/").last)).toOption
       }
     }
+
+  // --- Vendor VCF Import ---
+
+  /**
+   * Import a vendor-provided VCF (and optional target regions BED) for a sequence run.
+   * This is for vendor deliverables like FTDNA Big Y that don't include BAM files.
+   *
+   * The VCF will be stored in the cache at the SequenceRun level and automatically
+   * used for haplogroup analysis when available.
+   *
+   * @param sampleAccession Sample accession
+   * @param sequenceRunIndex Index of the sequence run within the subject
+   * @param vcfPath Path to the VCF file
+   * @param bedPath Optional path to the target regions BED file
+   * @param vendor The vendor that provided the files (e.g., FTDNA_BIGY)
+   * @param referenceBuild Reference genome build (e.g., "GRCh38")
+   * @param notes Optional notes about this import
+   * @return Either error message or success message
+   */
+  def importVendorVcf(
+    sampleAccession: String,
+    sequenceRunIndex: Int,
+    vcfPath: java.nio.file.Path,
+    bedPath: Option[java.nio.file.Path],
+    vendor: VcfVendor,
+    referenceBuild: String,
+    notes: Option[String] = None
+  ): Either[String, String] = {
+    import com.decodingus.analysis.{VcfCache, SubjectArtifactCache}
+
+    findSubject(sampleAccession) match {
+      case None =>
+        Left(s"Subject not found: $sampleAccession")
+
+      case Some(subject) =>
+        val sequenceRuns = _workspace.value.main.getSequenceRunsForBiosample(subject)
+        if (sequenceRunIndex < 0 || sequenceRunIndex >= sequenceRuns.size) {
+          return Left(s"Invalid sequence run index: $sequenceRunIndex")
+        }
+
+        val seqRun = sequenceRuns(sequenceRunIndex)
+        val runId = SubjectArtifactCache.extractIdFromUri(seqRun.atUri.getOrElse("unknown"))
+
+        // Validate VCF file exists
+        if (!java.nio.file.Files.exists(vcfPath)) {
+          return Left(s"VCF file not found: $vcfPath")
+        }
+
+        // Validate BED file exists if provided
+        bedPath.foreach { path =>
+          if (!java.nio.file.Files.exists(path)) {
+            return Left(s"BED file not found: $path")
+          }
+        }
+
+        // Import the vendor VCF
+        VcfCache.importRunVendorVcf(
+          sampleAccession = sampleAccession,
+          runId = runId,
+          vcfSourcePath = vcfPath,
+          bedSourcePath = bedPath,
+          vendor = vendor,
+          referenceBuild = referenceBuild,
+          notes = notes
+        ) match {
+          case Right(info) =>
+            log.info(s"Imported ${vendor.displayName} VCF for $sampleAccession run $runId: ${info.variantCount} variants")
+            Right(s"Successfully imported ${vendor.displayName} VCF with ${info.variantCount} variants")
+
+          case Left(error) =>
+            Left(s"Failed to import vendor VCF: $error")
+        }
+    }
+  }
+
+  /**
+   * List vendor VCFs imported for a sequence run.
+   */
+  def listVendorVcfsForRun(
+    sampleAccession: String,
+    sequenceRunIndex: Int
+  ): List[VendorVcfInfo] = {
+    import com.decodingus.analysis.{VcfCache, SubjectArtifactCache}
+
+    findSubject(sampleAccession) match {
+      case None => List.empty
+
+      case Some(subject) =>
+        val sequenceRuns = _workspace.value.main.getSequenceRunsForBiosample(subject)
+        if (sequenceRunIndex < 0 || sequenceRunIndex >= sequenceRuns.size) {
+          return List.empty
+        }
+
+        val seqRun = sequenceRuns(sequenceRunIndex)
+        val runId = SubjectArtifactCache.extractIdFromUri(seqRun.atUri.getOrElse("unknown"))
+
+        VcfCache.listRunVendorVcfs(sampleAccession, runId)
+    }
+  }
+
+  /**
+   * Delete a vendor VCF from a sequence run.
+   */
+  def deleteVendorVcf(
+    sampleAccession: String,
+    sequenceRunIndex: Int,
+    vendor: VcfVendor
+  ): Boolean = {
+    import com.decodingus.analysis.{VcfCache, SubjectArtifactCache}
+
+    findSubject(sampleAccession) match {
+      case None => false
+
+      case Some(subject) =>
+        val sequenceRuns = _workspace.value.main.getSequenceRunsForBiosample(subject)
+        if (sequenceRunIndex < 0 || sequenceRunIndex >= sequenceRuns.size) {
+          return false
+        }
+
+        val seqRun = sequenceRuns(sequenceRunIndex)
+        val runId = SubjectArtifactCache.extractIdFromUri(seqRun.atUri.getOrElse("unknown"))
+
+        VcfCache.deleteRunVendorVcf(sampleAccession, runId, vendor)
+    }
+  }
 }

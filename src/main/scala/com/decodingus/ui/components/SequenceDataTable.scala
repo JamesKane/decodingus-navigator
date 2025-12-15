@@ -8,7 +8,7 @@ import scalafx.geometry.{Insets, Pos}
 import scalafx.collections.ObservableBuffer
 import scalafx.beans.property.StringProperty
 import scalafx.application.Platform
-import com.decodingus.analysis.{CallableLociProcessor, CallableLociResult, ReadMetrics, VcfCache, VcfStatus, SubjectArtifactCache}
+import com.decodingus.analysis.{CallableLociProcessor, CallableLociResult, ReadMetrics, VcfCache, VcfStatus, SubjectArtifactCache, VcfVendor}
 import com.decodingus.model.WgsMetrics
 import com.decodingus.workspace.model.{Biosample, SequenceRun, Alignment, AlignmentMetrics, FileInfo}
 import com.decodingus.workspace.WorkbenchViewModel
@@ -17,6 +17,7 @@ import com.decodingus.haplogroup.tree.TreeType
 import com.decodingus.genotype.model.{TestTypes, TargetType}
 import java.nio.file.Files
 import scala.jdk.CollectionConverters._
+import com.decodingus.ui.components.VendorVcfImportRequest
 
 /**
  * Represents a row in the sequence data tree table.
@@ -428,6 +429,10 @@ Sex: ${info.inferredSex.getOrElse("Unknown")}"""
   private def createSequenceRunContextMenu(sr: SequenceRunRow): ContextMenu = {
     val runAlignments = getAlignmentsForRun(sr.run)
 
+    // Check for existing vendor VCFs
+    val vendorVcfs = viewModel.listVendorVcfsForRun(subject.sampleAccession, sr.runIndex)
+    val hasVendorVcfs = vendorVcfs.nonEmpty
+
     new ContextMenu(
       new MenuItem("Edit") {
         onAction = _ => handleEditSequenceRun(sr.runIndex, sr.run, runAlignments)
@@ -435,6 +440,15 @@ Sex: ${info.inferredSex.getOrElse("Unknown")}"""
       new MenuItem("Analyze") {
         onAction = _ => onAnalyze(sr.runIndex)
       },
+      new javafx.scene.control.SeparatorMenuItem(),
+      new MenuItem("Import Vendor VCF...") {
+        onAction = _ => handleImportVendorVcf(sr.runIndex)
+      },
+      new MenuItem(if (hasVendorVcfs) s"Vendor VCFs (${vendorVcfs.size})" else "No Vendor VCFs") {
+        disable = !hasVendorVcfs
+        onAction = _ => showVendorVcfInfo(sr.runIndex, vendorVcfs)
+      },
+      new javafx.scene.control.SeparatorMenuItem(),
       new MenuItem("Remove") {
         onAction = _ => {
           val confirm = new Alert(AlertType.Confirmation) {
@@ -449,6 +463,62 @@ Sex: ${info.inferredSex.getOrElse("Unknown")}"""
         }
       }
     )
+  }
+
+  /**
+   * Handle importing a vendor VCF for a sequence run.
+   */
+  private def handleImportVendorVcf(runIndex: Int): Unit = {
+    val dialog = new ImportVendorVcfDialog()
+    val result = dialog.showAndWait()
+
+    result match {
+      case Some(Some(request: VendorVcfImportRequest)) =>
+        viewModel.importVendorVcf(
+          sampleAccession = subject.sampleAccession,
+          sequenceRunIndex = runIndex,
+          vcfPath = request.vcfPath,
+          bedPath = request.bedPath,
+          vendor = request.vendor,
+          referenceBuild = request.referenceBuild,
+          notes = request.notes
+        ) match {
+          case Right(msg) =>
+            new Alert(AlertType.Information) {
+              title = "Import Successful"
+              headerText = "Vendor VCF imported"
+              contentText = msg
+            }.showAndWait()
+
+          case Left(err) =>
+            new Alert(AlertType.Error) {
+              title = "Import Failed"
+              headerText = "Failed to import vendor VCF"
+              contentText = err
+            }.showAndWait()
+        }
+      case _ => // Cancelled or None
+    }
+  }
+
+  /**
+   * Show information about imported vendor VCFs.
+   */
+  private def showVendorVcfInfo(runIndex: Int, vcfs: List[com.decodingus.analysis.VendorVcfInfo]): Unit = {
+    val info = vcfs.map { vcf =>
+      s"${vcf.vendor.displayName}:\n" +
+      s"  Reference: ${vcf.referenceBuild}\n" +
+      s"  Variants: ${vcf.variantCount}\n" +
+      s"  Contigs: ${vcf.contigs.take(5).mkString(", ")}${if (vcf.contigs.size > 5) "..." else ""}\n" +
+      s"  Imported: ${vcf.importedAt}"
+    }.mkString("\n\n")
+
+    new Alert(AlertType.Information) {
+      title = "Vendor VCFs"
+      headerText = s"${vcfs.size} vendor VCF(s) imported"
+      contentText = info
+      dialogPane().setPrefWidth(500)
+    }.showAndWait()
   }
 
   /**
