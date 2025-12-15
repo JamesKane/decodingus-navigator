@@ -1,6 +1,7 @@
 package com.decodingus.client
 
 import com.decodingus.model.LibraryStats
+import com.decodingus.refgenome.model.{GenomeRegions, GenomeRegionsCodecs}
 import sttp.client3._
 import sttp.client3.circe._
 import io.circe.generic.auto._
@@ -144,5 +145,32 @@ object DecodingUsClient {
    */
   def clearLabInstrumentsCache(): Unit = {
     labInstrumentsCache = None
+  }
+
+  /**
+   * Fetches genome region metadata for a reference build.
+   * Returns centromeres, telomeres, cytobands, and Y-specific region annotations.
+   *
+   * @param build The reference genome build (GRCh38, GRCh37, CHM13v2)
+   * @param ec    Execution context
+   * @return Future containing Either error message or GenomeRegions data
+   */
+  def getGenomeRegions(build: String)(implicit ec: ExecutionContext): Future[Either[String, GenomeRegions]] = {
+    import GenomeRegionsCodecs.given
+
+    val request = basicRequest
+      .get(BaseUrl.addPath("genome-regions", build))
+      .response(asJson[GenomeRegions])
+
+    request.send(backend).map { response =>
+      response.body match {
+        case Right(regions) =>
+          Right(regions)
+        case Left(error) =>
+          Left(s"Failed to fetch genome regions for $build: ${error.getMessage}")
+      }
+    }.recover { case e: Exception =>
+      Left(s"Network error fetching genome regions: ${e.getMessage}")
+    }
   }
 }

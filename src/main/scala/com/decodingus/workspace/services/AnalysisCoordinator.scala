@@ -730,6 +730,17 @@ class AnalysisCoordinator(implicit ec: ExecutionContext) {
     var currentState = state
     var result = BatchAnalysisResult()
 
+    // IMPORTANT: Track the current sequence run separately from the parameter.
+    // The parameter `seqRun` is immutable, but we update currentState throughout.
+    // We need to track the latest version to avoid using stale data in later steps.
+    var currentSeqRun = seqRun
+
+    // Helper to get the latest alignment from state (since we update it in multiple steps)
+    def getCurrentAlignment: Alignment =
+      currentState.workspace.main.alignments
+        .find(_.atUri == alignment.atUri)
+        .getOrElse(alignment)
+
     try {
       // Step 0: Resolve reference genome (shared across steps)
       onProgress(AnalysisProgress("Resolving reference genome...", 0.02))
@@ -775,7 +786,8 @@ class AnalysisCoordinator(implicit ec: ExecutionContext) {
             effectiveReadLength = Some(readMetrics.maxReadLength)
 
             // Update sequence run with read length and other metrics
-            val updatedSeqRun = seqRun.copy(
+            // IMPORTANT: Use currentSeqRun (not the stale seqRun parameter) to preserve any prior updates
+            val updatedSeqRun = currentSeqRun.copy(
               maxReadLength = Some(readMetrics.maxReadLength),
               readLength = Some(readMetrics.meanReadLength.toInt),
               totalReads = Some(readMetrics.totalReads),
@@ -786,6 +798,7 @@ class AnalysisCoordinator(implicit ec: ExecutionContext) {
               stdInsertSize = Some(readMetrics.stdInsertSize)
             )
             currentState = workspaceOps.updateSequenceRunByUri(currentState, updatedSeqRun)
+            currentSeqRun = updatedSeqRun  // Keep local var in sync with state
 
             checkpoint = AnalysisCheckpoint.markReadMetricsComplete(artifactDir, checkpoint, readMetrics.maxReadLength)
             log.info(s"Read metrics complete: maxReadLength=${readMetrics.maxReadLength}")
@@ -803,8 +816,9 @@ class AnalysisCoordinator(implicit ec: ExecutionContext) {
       if (!checkpoint.wgsMetricsCompleted) {
         onProgress(AnalysisProgress("Step 2/8: Running coverage depth analysis...", 0.07))
 
-        // Create a seqRun with the effective read length for WGS metrics
-        val seqRunForWgs = seqRun.copy(maxReadLength = effectiveReadLength)
+        // Use currentSeqRun which has updated read length from Step 1
+        // Also patch effectiveReadLength in case Step 1 was cached but checkpoint has it
+        val seqRunForWgs = currentSeqRun.copy(maxReadLength = effectiveReadLength)
         log.debug(s"WGS Metrics using maxReadLength: ${seqRunForWgs.maxReadLength}")
 
         val wgsMetricsResult = runWgsMetricsStep(bamPath, referencePath, seqRunForWgs, artifactCtx, { pct =>
@@ -813,8 +827,9 @@ class AnalysisCoordinator(implicit ec: ExecutionContext) {
         wgsMetricsResult match {
           case Right(wgsMetrics) =>
             result = result.copy(wgsMetrics = Some(wgsMetrics))
-            // Update alignment metrics
-            val alignmentMetrics = alignment.metrics.getOrElse(AlignmentMetrics()).copy(
+            // Update alignment metrics - use getCurrentAlignment to get latest state
+            val currentAlign = getCurrentAlignment
+            val alignmentMetrics = currentAlign.metrics.getOrElse(AlignmentMetrics()).copy(
               genomeTerritory = Some(wgsMetrics.genomeTerritory),
               meanCoverage = Some(wgsMetrics.meanCoverage),
               sdCoverage = Some(wgsMetrics.sdCoverage),
@@ -823,7 +838,7 @@ class AnalysisCoordinator(implicit ec: ExecutionContext) {
               pct20x = Some(wgsMetrics.pct20x),
               pct30x = Some(wgsMetrics.pct30x)
             )
-            val updatedAlignment = alignment.copy(metrics = Some(alignmentMetrics))
+            val updatedAlignment = currentAlign.copy(metrics = Some(alignmentMetrics))
             currentState = workspaceOps.updateAlignment(currentState, updatedAlignment)
             checkpoint = AnalysisCheckpoint.markStepComplete(artifactDir, checkpoint, 2)
           case Left(error) =>
@@ -838,22 +853,22 @@ class AnalysisCoordinator(implicit ec: ExecutionContext) {
       // Step 3: Callable Loci (0.17 - 0.30)
       if (!checkpoint.callableLociCompleted) {
         onProgress(AnalysisProgress("Step 3/8: Running callable loci analysis...", 0.17))
-        val callableLociResult = runCallableLociStep(bamPath, referencePath, seqRun, artifactCtx, { pct =>
+        // Use currentSeqRun to get latest testType for minDepth calculation
+        val callableLociResult = runCallableLociStep(bamPath, referencePath, currentSeqRun, artifactCtx, { pct =>
           onProgress(AnalysisProgress(s"Step 3/8: Callable loci (${(pct * 100).toInt}%)", 0.17 + pct * 0.13))
         })
         callableLociResult match {
           case Right((clResult, _)) =>
             result = result.copy(callableLociResult = Some(clResult))
-            // Update alignment with callable bases
-            val alignmentMetrics = currentState.workspace.main.alignments
-              .find(_.atUri == alignment.atUri)
-              .flatMap(_.metrics)
+            // Update alignment with callable bases - use getCurrentAlignment for latest metrics
+            val currentAlign = getCurrentAlignment
+            val alignmentMetrics = currentAlign.metrics
               .getOrElse(AlignmentMetrics())
               .copy(
                 callableBases = Some(clResult.callableBases),
                 callableLociComplete = Some(true)
               )
-            val updatedAlignment = alignment.copy(metrics = Some(alignmentMetrics))
+            val updatedAlignment = currentAlign.copy(metrics = Some(alignmentMetrics))
             currentState = workspaceOps.updateAlignment(currentState, updatedAlignment)
             checkpoint = AnalysisCheckpoint.markStepComplete(artifactDir, checkpoint, 3)
           case Left(error) =>
@@ -910,12 +925,21 @@ class AnalysisCoordinator(implicit ec: ExecutionContext) {
           case None =>
             // Infer sex from BAM coverage
             onProgress(AnalysisProgress("Step 4/8: Inferring biological sex...", 0.30))
+
+            // Ensure BAM index exists before sex inference (it requires indexed BAM)
+            GatkRunner.ensureIndex(bamPath) match {
+              case Left(indexError) =>
+                log.warn(s"Failed to create BAM index for sex inference: $indexError")
+              case Right(_) => // Index exists or was created
+            }
+
             val sexResult = SexInference.inferFromBam(bamPath, (msg, pct) => {
               onProgress(AnalysisProgress(s"Step 4/8: Sex inference - $msg", 0.30 + pct * 0.05))
             })
             sexResult match {
               case Right(sr) =>
                 result = result.copy(sexInferenceResult = Some(sr))
+                log.info(s"Sex inferred: ${sr.inferredSex} (confidence: ${sr.confidence}, X:autosome ratio: ${sr.xAutosomeRatio})")
                 // Update alignment metrics with sex inference
                 val alignmentMetrics = currentState.workspace.main.alignments
                   .find(_.atUri == alignment.atUri)
@@ -930,7 +954,28 @@ class AnalysisCoordinator(implicit ec: ExecutionContext) {
                 currentState = workspaceOps.updateAlignment(currentState, updatedAlignment)
                 checkpoint = AnalysisCheckpoint.markStepComplete(artifactDir, checkpoint, 4)
               case Left(error) =>
-                log.warn(s"Sex inference warning: $error")
+                log.warn(s"Sex inference failed: $error - using Unknown sex (will attempt Y-DNA analysis)")
+                // Set Unknown sex instead of leaving as None - this allows Y-DNA to proceed
+                val unknownSex = SexInferenceResult(
+                  inferredSex = InferredSex.Unknown,
+                  xAutosomeRatio = 0.0,
+                  autosomeMeanCoverage = 0.0,
+                  xCoverage = 0.0,
+                  confidence = "failed"
+                )
+                result = result.copy(sexInferenceResult = Some(unknownSex))
+                // Update alignment metrics to indicate inference failed
+                val alignmentMetrics = currentState.workspace.main.alignments
+                  .find(_.atUri == alignment.atUri)
+                  .flatMap(_.metrics)
+                  .getOrElse(AlignmentMetrics())
+                  .copy(
+                    inferredSex = Some(InferredSex.Unknown.toString),
+                    sexInferenceConfidence = Some("failed"),
+                    xAutosomeRatio = None
+                  )
+                val updatedAlignment = alignment.copy(metrics = Some(alignmentMetrics))
+                currentState = workspaceOps.updateAlignment(currentState, updatedAlignment)
                 checkpoint = AnalysisCheckpoint.markStepComplete(artifactDir, checkpoint, 4)
             }
         }
@@ -947,16 +992,28 @@ class AnalysisCoordinator(implicit ec: ExecutionContext) {
             xCoverage = 0.0, // Not stored in metrics, use default
             confidence = m.sexInferenceConfidence.getOrElse("unknown")
           )))
-        result = result.copy(sexInferenceResult = cachedSex)
+        // If cached lookup fails, use Unknown sex (allows Y-DNA to proceed)
+        val sexResult = cachedSex.getOrElse {
+          log.warn("Could not load cached sex inference - using Unknown (will attempt Y-DNA analysis)")
+          SexInferenceResult(
+            inferredSex = InferredSex.Unknown,
+            xAutosomeRatio = 0.0,
+            autosomeMeanCoverage = 0.0,
+            xCoverage = 0.0,
+            confidence = "cache-miss"
+          )
+        }
+        result = result.copy(sexInferenceResult = Some(sexResult))
       }
 
       // Step 5: Variant Calling (0.35 - 0.55) - uses sex for ploidy
       if (!checkpoint.variantCallingCompleted) {
         onProgress(AnalysisProgress("Step 5/8: Running whole-genome variant calling...", 0.35))
 
-        // Get output directory for VCF
-        val runId = seqRun.atUri.map(SubjectArtifactCache.extractIdFromUri).getOrElse("unknown-run")
-        val alignId = alignment.atUri.map(SubjectArtifactCache.extractIdFromUri).getOrElse("unknown-alignment")
+        // Get output directory for VCF - use currentSeqRun for consistency
+        val runId = currentSeqRun.atUri.map(SubjectArtifactCache.extractIdFromUri).getOrElse("unknown-run")
+        val currentAlign = getCurrentAlignment
+        val alignId = currentAlign.atUri.map(SubjectArtifactCache.extractIdFromUri).getOrElse("unknown-alignment")
         val outputDir = VcfCache.getVcfDir(subject.sampleAccession, runId, alignId)
 
         val caller = WholeGenomeVariantCaller()
@@ -964,7 +1021,7 @@ class AnalysisCoordinator(implicit ec: ExecutionContext) {
           bamPath = bamPath,
           referencePath = referencePath,
           outputDir = outputDir,
-          referenceBuild = alignment.referenceBuild,
+          referenceBuild = currentAlign.referenceBuild,
           onProgress = (msg, current, total) => {
             val pct = if (total > 0) current.toDouble / total else 0.0
             onProgress(AnalysisProgress(s"Step 5/8: Variant calling - $msg", 0.35 + pct * 0.20))
@@ -974,10 +1031,9 @@ class AnalysisCoordinator(implicit ec: ExecutionContext) {
         vcfResult match {
           case Right(vcfInfo) =>
             result = result.copy(vcfInfo = Some(vcfInfo))
-            // Update alignment metrics with VCF info
-            val alignmentMetrics = currentState.workspace.main.alignments
-              .find(_.atUri == alignment.atUri)
-              .flatMap(_.metrics)
+            // Update alignment metrics with VCF info - re-fetch to get latest
+            val latestAlign = getCurrentAlignment
+            val alignmentMetrics = latestAlign.metrics
               .getOrElse(AlignmentMetrics())
               .copy(
                 vcfPath = Some(vcfInfo.vcfPath),
@@ -985,7 +1041,7 @@ class AnalysisCoordinator(implicit ec: ExecutionContext) {
                 vcfVariantCount = Some(vcfInfo.variantCount),
                 vcfReferenceBuild = Some(vcfInfo.referenceBuild)
               )
-            val updatedAlignment = alignment.copy(metrics = Some(alignmentMetrics))
+            val updatedAlignment = latestAlign.copy(metrics = Some(alignmentMetrics))
             currentState = workspaceOps.updateAlignment(currentState, updatedAlignment)
             checkpoint = AnalysisCheckpoint.markStepComplete(artifactDir, checkpoint, 5)
             log.info(s"Variant calling complete: ${vcfInfo.variantCount} variants")
@@ -1000,7 +1056,8 @@ class AnalysisCoordinator(implicit ec: ExecutionContext) {
       // Step 6: mtDNA Haplogroup (0.55 - 0.70)
       if (!checkpoint.mtDnaHaplogroupCompleted) {
         onProgress(AnalysisProgress("Step 6/8: Determining mtDNA haplogroup...", 0.55))
-        val mtDnaResult = runHaplogroupStep(bamPath, subject, seqRun, alignment, TreeType.MTDNA, artifactCtx, { pct =>
+        // Use currentSeqRun and getCurrentAlignment for latest state
+        val mtDnaResult = runHaplogroupStep(bamPath, subject, currentSeqRun, getCurrentAlignment, TreeType.MTDNA, artifactCtx, { pct =>
           onProgress(AnalysisProgress(s"Step 6/8: mtDNA haplogroup (${(pct * 100).toInt}%)", 0.55 + pct * 0.15))
         })
         mtDnaResult match {
@@ -1015,14 +1072,20 @@ class AnalysisCoordinator(implicit ec: ExecutionContext) {
         onProgress(AnalysisProgress("Step 6/8: mtDNA haplogroup (cached)", 0.70))
       }
 
-      // Step 7: Y-DNA Haplogroup (0.70 - 0.92) - Only if male
+      // Step 7: Y-DNA Haplogroup (0.70 - 0.92) - Only if male or unknown
+      // Note: We run Y-DNA for male, unknown, OR if sex inference is completely missing (None)
+      // This ensures we don't incorrectly skip Y-DNA due to inference failures
       if (!checkpoint.yDnaHaplogroupCompleted && !checkpoint.yDnaSkipped) {
         val isMale = result.sexInferenceResult.exists(_.isMale)
         val sexUnknown = result.sexInferenceResult.exists(_.isUnknown)
+        val sexMissing = result.sexInferenceResult.isEmpty  // Defensive: treat missing as "try Y-DNA"
+        val isFemale = result.sexInferenceResult.exists(_.isFemale)
 
-        if (isMale || sexUnknown) {
-          onProgress(AnalysisProgress("Step 7/8: Determining Y-DNA haplogroup...", 0.70))
-          val yDnaResult = runHaplogroupStep(bamPath, subject, seqRun, alignment, TreeType.YDNA, artifactCtx, { pct =>
+        if (isMale || sexUnknown || sexMissing) {
+          val reason = if (isMale) "male sample" else if (sexMissing) "sex unknown (missing)" else "sex unknown"
+          onProgress(AnalysisProgress(s"Step 7/8: Determining Y-DNA haplogroup ($reason)...", 0.70))
+          // Use currentSeqRun and getCurrentAlignment for latest state
+          val yDnaResult = runHaplogroupStep(bamPath, subject, currentSeqRun, getCurrentAlignment, TreeType.YDNA, artifactCtx, { pct =>
             onProgress(AnalysisProgress(s"Step 7/8: Y-DNA haplogroup (${(pct * 100).toInt}%)", 0.70 + pct * 0.22))
           })
           yDnaResult match {
@@ -1034,10 +1097,25 @@ class AnalysisCoordinator(implicit ec: ExecutionContext) {
               result = result.copy(skippedYDna = true, skippedYDnaReason = Some(error))
               checkpoint = AnalysisCheckpoint.markStepComplete(artifactDir, checkpoint, 7, skipped = true)
           }
-        } else {
+        } else if (isFemale) {
           onProgress(AnalysisProgress("Step 7/8: Skipping Y-DNA (female sample)...", 0.70))
           result = result.copy(skippedYDna = true, skippedYDnaReason = Some("Sample inferred as female"))
           checkpoint = AnalysisCheckpoint.markStepComplete(artifactDir, checkpoint, 7, skipped = true)
+        } else {
+          // Shouldn't happen with current logic, but handle defensively
+          log.warn("Unexpected sex inference state - attempting Y-DNA analysis")
+          onProgress(AnalysisProgress("Step 7/8: Determining Y-DNA haplogroup (unknown state)...", 0.70))
+          val yDnaResult = runHaplogroupStep(bamPath, subject, currentSeqRun, getCurrentAlignment, TreeType.YDNA, artifactCtx, { pct =>
+            onProgress(AnalysisProgress(s"Step 7/8: Y-DNA haplogroup (${(pct * 100).toInt}%)", 0.70 + pct * 0.22))
+          })
+          yDnaResult match {
+            case Right(haplogroupResult) =>
+              result = result.copy(yDnaHaplogroup = Some(haplogroupResult))
+              checkpoint = AnalysisCheckpoint.markStepComplete(artifactDir, checkpoint, 7)
+            case Left(error) =>
+              result = result.copy(skippedYDna = true, skippedYDnaReason = Some(error))
+              checkpoint = AnalysisCheckpoint.markStepComplete(artifactDir, checkpoint, 7, skipped = true)
+          }
         }
       } else {
         onProgress(AnalysisProgress("Step 7/8: Y-DNA haplogroup (cached/skipped)", 0.92))

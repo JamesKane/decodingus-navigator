@@ -467,6 +467,7 @@ When provided, reports include:
 | Profile Service | `yprofile/service/YProfileService.scala` | High-level operations |
 | Region Parser | `refgenome/RegionFileParser.scala` | GFF3/BED parsing |
 | Region Cache | `refgenome/YRegionCache.scala` | File caching |
+| Ideogram Renderer | `ui/components/YChromosomeIdeogramRenderer.scala` | SVG visualization |
 | Region Gateway | `refgenome/YRegionGateway.scala` | Download & liftover |
 | Region Annotator | `refgenome/YRegionAnnotator.scala` | Position lookup |
 | Enriched Call | `haplogroup/model/EnrichedVariantCall.scala` | Call + annotations |
@@ -495,7 +496,7 @@ When provided, reports include:
 | **Region-Aware Concordance** | ✅ Implemented | `regionModifier` parameter added to `YVariantConcordance.calculateWeight()` and `SourceCallInput` |
 | **Callable Loci Integration** | ✅ Implemented | Uses `callable_loci.bed` from GATK via `YCallableState` enum |
 | **X-Degenerate Annotation** | ✅ Implemented | Parsed from T2T `sequence_class` file for CHM13v2; marked as `RegionType.XDegenerate` |
-| **Interactive Region Visualization** | ❌ Planned | Show regions on a chromosome ideogram in the UI |
+| **Interactive Region Visualization** | ✅ Implemented | `YChromosomeIdeogramRenderer` generates SVG ideogram in Y Profile Detail Dialog "Ideogram" tab |
 | **Export with Annotations** | ✅ Implemented | `HaplogroupReportWriter.writeCsvReport()` exports CSVs with region annotations |
 
 ### CSV Export Details

@@ -3,17 +3,21 @@ package com.decodingus.ui.components
 import scalafx.Includes._
 import scalafx.scene.control.{Dialog, ButtonType, Label, TableView, TableColumn, ScrollPane, Tab, TabPane, Tooltip, TextField, ComboBox, ProgressBar}
 import scalafx.scene.layout.{VBox, HBox, Priority, Region}
+import scalafx.scene.web.WebView
 import scalafx.geometry.{Insets, Pos}
 import scalafx.beans.property.{StringProperty, ObjectProperty}
 import scalafx.collections.ObservableBuffer
 import com.decodingus.yprofile.model.*
+import com.decodingus.refgenome.YRegionAnnotator
 
 import java.time.format.DateTimeFormatter
 import java.util.UUID
 
 /**
  * Comprehensive dialog showing Y Chromosome Profile details.
- * Displays unified profile data with tabs for Summary, Variants, Sources, Concordance, and Audit Trail.
+ * Displays unified profile data with tabs for Summary, Variants, Sources, Concordance, Audit Trail, and Ideogram.
+ *
+ * @param yRegionAnnotator Optional annotator for displaying chromosome ideogram visualization
  */
 class YProfileDetailDialog(
   profile: YChromosomeProfileEntity,
@@ -21,7 +25,8 @@ class YProfileDetailDialog(
   sources: List[YProfileSourceEntity],
   variantCalls: Map[UUID, List[YVariantSourceCallEntity]],
   auditEntries: List[YVariantAuditEntity],
-  biosampleName: String
+  biosampleName: String,
+  yRegionAnnotator: Option[YRegionAnnotator] = None
 ) extends Dialog[Unit] {
 
   private val dateFormatter = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm")
@@ -41,9 +46,10 @@ class YProfileDetailDialog(
   private val sourcesTab = createSourcesTab()
   private val concordanceTab = createConcordanceTab()
   private val auditTab = createAuditTab()
+  private val ideogramTab: Option[Tab] = yRegionAnnotator.map(createIdeogramTab)
 
   private val tabPane = new TabPane {
-    tabs = Seq(summaryTab, variantsTab, sourcesTab, concordanceTab, auditTab)
+    tabs = Seq(summaryTab, variantsTab, sourcesTab, concordanceTab, auditTab) ++ ideogramTab.toSeq
   }
   VBox.setVgrow(tabPane, Priority.Always)
 
@@ -609,6 +615,58 @@ class YProfileDetailDialog(
       text = s"Audit Trail (${auditEntries.size})"
       closable = false
       this.content = table
+    }
+  }
+
+  /**
+   * Create the ideogram tab showing Y chromosome regions and variant positions.
+   */
+  private def createIdeogramTab(annotator: YRegionAnnotator): Tab = {
+    // Convert variants to markers (only show derived/novel/conflict)
+    val variantMarkers = variants
+      .filter(v => v.consensusState == YConsensusState.DERIVED ||
+                   v.status == YVariantStatus.NOVEL ||
+                   v.status == YVariantStatus.CONFLICT)
+      .map(YChromosomeIdeogramRenderer.VariantMarker.fromVariantEntity)
+
+    // Generate SVG
+    val svgContent = YChromosomeIdeogramRenderer.render(annotator, variantMarkers)
+    val statsHtml = YChromosomeIdeogramRenderer.renderStatsHtml(variants, annotator)
+
+    // Wrap in HTML for WebView
+    val html =
+      s"""<!DOCTYPE html>
+         |<html>
+         |<head>
+         |  <style>
+         |    body { margin: 0; padding: 15px; background: #1a1a1a; font-family: system-ui, sans-serif; }
+         |    svg { max-width: 100%; height: auto; }
+         |  </style>
+         |</head>
+         |<body>
+         |$svgContent
+         |$statsHtml
+         |</body>
+         |</html>""".stripMargin
+
+    val webView = new WebView {
+      prefHeight = 350
+    }
+    webView.engine.loadContent(html)
+
+    new Tab {
+      text = "Ideogram"
+      closable = false
+      this.content = new VBox(10) {
+        padding = Insets(10)
+        children = Seq(
+          new Label("Y Chromosome Region Map") {
+            style = "-fx-font-size: 14px; -fx-font-weight: bold;"
+          },
+          webView
+        )
+        VBox.setVgrow(webView, Priority.Always)
+      }
     }
   }
 }

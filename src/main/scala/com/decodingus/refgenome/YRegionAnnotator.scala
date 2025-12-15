@@ -1,5 +1,7 @@
 package com.decodingus.refgenome
 
+import com.decodingus.refgenome.model.{ChromosomeRegions, GenomeRegions, NamedRegion, Region, StrMarker, YChromosomeRegions}
+
 import scala.collection.mutable
 
 /**
@@ -311,6 +313,31 @@ class YRegionAnnotator(
   def xtrCount: Int = xtrs.size
   def ampliconicCount: Int = ampliconic.size
   def totalRegionCount: Int = cytobands.size + palindromes.size + strs.size + pars.size + xtrs.size + ampliconic.size + centromeres.size + heterochromatin.size
+
+  /**
+   * Get all regions grouped by type for visualization.
+   * Useful for drawing chromosome ideograms with color-coded regions.
+   */
+  def getAllRegions: Map[RegionType, IndexedSeq[GenomicRegion]] = Map(
+    RegionType.Cytoband -> cytobands,
+    RegionType.Palindrome -> palindromes,
+    RegionType.STR -> strs,
+    RegionType.PAR -> pars,
+    RegionType.XTR -> xtrs,
+    RegionType.Ampliconic -> ampliconic,
+    RegionType.Centromere -> centromeres,
+    RegionType.Heterochromatin -> heterochromatin,
+    RegionType.XDegenerate -> xdegenerate
+  ).filter(_._2.nonEmpty)
+
+  /**
+   * Get chromosome length (max end position from all regions).
+   * Falls back to CHM13v2 Y length if no regions loaded.
+   */
+  def getChromosomeLength: Long = {
+    val allEnds = (cytobands ++ pars ++ heterochromatin ++ xdegenerate).map(_.end)
+    if (allEnds.isEmpty) 62_460_029L else allEnds.max  // Default to CHM13v2 Y length
+  }
 }
 
 object YRegionAnnotator {
@@ -407,4 +434,89 @@ object YRegionAnnotator {
   val chm13v2Heterochromatin: List[GenomicRegion] = List(
     GenomicRegion("chrY", 26637971, 62122809, RegionType.Heterochromatin, Some("Yq12"))
   )
+
+  /**
+   * Create an annotator from centralized GenomeRegions API response.
+   *
+   * Converts the API's GenomeRegions model to YRegionAnnotator format,
+   * extracting chrY-specific regions including cytobands, centromere,
+   * heterochromatin, PAR, XTR, ampliconic, palindromes, and STR markers.
+   *
+   * @param regions GenomeRegions from the API or bundled resource
+   * @param callablePositions Optional set of callable positions from callable_loci.bed
+   * @return YRegionAnnotator configured with all available region data
+   */
+  def fromGenomeRegions(regions: GenomeRegions, callablePositions: Option[Set[Long]] = None): YRegionAnnotator = {
+    // Get chrY data if available
+    val chrY = regions.chromosomes.get("chrY")
+    if (chrY.isEmpty) {
+      println(s"[YRegionAnnotator] No chrY data in GenomeRegions for ${regions.build}")
+      return empty
+    }
+
+    val yData = chrY.get
+
+    // Convert cytobands
+    val cytobands = yData.cytobands.map { c =>
+      GenomicRegion("chrY", c.start, c.end, RegionType.Cytoband, Some(c.name))
+    }
+
+    // Convert centromere
+    val centromeres = yData.centromere.toList.map { r =>
+      GenomicRegion("chrY", r.start, r.end, RegionType.Centromere, Some("centromere"))
+    }
+
+    // Convert Y-specific regions if available
+    val (pars, xtrs, ampliconic, palindromes, heterochromatin, xdegenerate) = yData.regions match {
+      case Some(yRegions) =>
+        val parList = List(
+          GenomicRegion("chrY", yRegions.par1.start, yRegions.par1.end, RegionType.PAR, Some("PAR1")),
+          GenomicRegion("chrY", yRegions.par2.start, yRegions.par2.end, RegionType.PAR, Some("PAR2"))
+        )
+
+        val xtrList = yRegions.xtr.map { r =>
+          GenomicRegion("chrY", r.start, r.end, RegionType.XTR, r.regionType)
+        }
+
+        val ampliconicList = yRegions.ampliconic.map { r =>
+          GenomicRegion("chrY", r.start, r.end, RegionType.Ampliconic, r.regionType)
+        }
+
+        val palindromeList = yRegions.palindromes.map { nr =>
+          GenomicRegion("chrY", nr.start, nr.end, RegionType.Palindrome, Some(nr.name))
+        }
+
+        val heterochromatinList = List(
+          GenomicRegion("chrY", yRegions.heterochromatin.start, yRegions.heterochromatin.end,
+            RegionType.Heterochromatin, Some("Yq12"))
+        )
+
+        val xdegList = yRegions.xDegenerate.map { r =>
+          GenomicRegion("chrY", r.start, r.end, RegionType.XDegenerate, r.regionType)
+        }
+
+        (parList, xtrList, ampliconicList, palindromeList, heterochromatinList, xdegList)
+
+      case None =>
+        (Nil, Nil, Nil, Nil, Nil, Nil)
+    }
+
+    // Convert STR markers
+    val strs = yData.strMarkers.getOrElse(Nil).map { marker =>
+      GenomicRegion("chrY", marker.start, marker.end, RegionType.STR, Some(marker.name))
+    }
+
+    fromRegions(
+      cytobands = cytobands,
+      palindromes = palindromes,
+      strs = strs,
+      pars = pars,
+      xtrs = xtrs,
+      ampliconic = ampliconic,
+      centromeres = centromeres,
+      heterochromatin = heterochromatin,
+      xdegenerate = xdegenerate,
+      callablePositions = callablePositions
+    )
+  }
 }

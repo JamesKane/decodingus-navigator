@@ -292,7 +292,8 @@ class WorkbenchView(val viewModel: WorkbenchViewModel) extends SplitPane {
             data.sources,
             data.variantCalls,
             data.auditEntries,
-            subject.donorIdentifier
+            subject.donorIdentifier,
+            data.yRegionAnnotator
           )
           dialog.showAndWait()
         }

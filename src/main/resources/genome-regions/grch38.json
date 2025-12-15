@@ -1,0 +1,112 @@
+{
+  "build": "GRCh38",
+  "version": "2024.12.1",
+  "generatedAt": "2024-12-12T00:00:00Z",
+  "chromosomes": {
+    "chrY": {
+      "length": 57227415,
+      "centromere": {
+        "start": 10316944,
+        "end": 10544039,
+        "type": "Centromere",
+        "modifier": 0.1
+      },
+      "telomeres": {
+        "p": { "start": 1, "end": 10000 },
+        "q": { "start": 57217415, "end": 57227415 }
+      },
+      "cytobands": [
+        { "name": "p11.32", "start": 1, "end": 300000, "stain": "gneg" },
+        { "name": "p11.31", "start": 300001, "end": 2800000, "stain": "gpos50" },
+        { "name": "p11.2", "start": 2800001, "end": 6300000, "stain": "gneg" },
+        { "name": "p11.1", "start": 6300001, "end": 10400000, "stain": "gneg" },
+        { "name": "q11.1", "start": 10400001, "end": 10600000, "stain": "acen" },
+        { "name": "q11.21", "start": 10600001, "end": 12500000, "stain": "gneg" },
+        { "name": "q11.221", "start": 12500001, "end": 15100000, "stain": "gpos50" },
+        { "name": "q11.222", "start": 15100001, "end": 18500000, "stain": "gneg" },
+        { "name": "q11.223", "start": 18500001, "end": 21000000, "stain": "gpos50" },
+        { "name": "q11.23", "start": 21000001, "end": 26673237, "stain": "gneg" },
+        { "name": "q12", "start": 26673238, "end": 57227415, "stain": "gvar" }
+      ],
+      "regions": {
+        "par1": {
+          "start": 10001,
+          "end": 2781479,
+          "type": "PAR",
+          "modifier": 0.5
+        },
+        "par2": {
+          "start": 56887903,
+          "end": 57217415,
+          "type": "PAR",
+          "modifier": 0.5
+        },
+        "xtr": [
+          {
+            "start": 2781480,
+            "end": 2963732,
+            "type": "XTR",
+            "modifier": 0.3
+          }
+        ],
+        "ampliconic": [
+          { "start": 6171816, "end": 6681427, "type": "Ampliconic", "modifier": 0.3 },
+          { "start": 9328000, "end": 9430000, "type": "Ampliconic", "modifier": 0.3 },
+          { "start": 13985000, "end": 14210000, "type": "Ampliconic", "modifier": 0.3 },
+          { "start": 17565000, "end": 17790000, "type": "Ampliconic", "modifier": 0.3 },
+          { "start": 18475000, "end": 18900000, "type": "Ampliconic", "modifier": 0.3 },
+          { "start": 20650000, "end": 22050000, "type": "Ampliconic", "modifier": 0.3 },
+          { "start": 23550000, "end": 23800000, "type": "Ampliconic", "modifier": 0.3 },
+          { "start": 25200000, "end": 25400000, "type": "Ampliconic", "modifier": 0.3 }
+        ],
+        "palindromes": [
+          { "name": "P8", "start": 18500000, "end": 18700000, "type": "Palindrome", "modifier": 0.4 },
+          { "name": "P7", "start": 19500000, "end": 19750000, "type": "Palindrome", "modifier": 0.4 },
+          { "name": "P6", "start": 20200000, "end": 20450000, "type": "Palindrome", "modifier": 0.4 },
+          { "name": "P5", "start": 21565950, "end": 21700000, "type": "Palindrome", "modifier": 0.4 },
+          { "name": "P4", "start": 22100000, "end": 22400000, "type": "Palindrome", "modifier": 0.4 },
+          { "name": "P3", "start": 23000000, "end": 23350000, "type": "Palindrome", "modifier": 0.4 },
+          { "name": "P2", "start": 24000000, "end": 24400000, "type": "Palindrome", "modifier": 0.4 },
+          { "name": "P1", "start": 24600000, "end": 25800000, "type": "Palindrome", "modifier": 0.4 }
+        ],
+        "heterochromatin": {
+          "start": 26673237,
+          "end": 56887902,
+          "type": "Heterochromatin",
+          "modifier": 0.1
+        },
+        "xDegenerate": [
+          { "start": 2963733, "end": 6171815, "type": "XDegenerate", "modifier": 1.0 },
+          { "start": 10600001, "end": 12400000, "type": "XDegenerate", "modifier": 1.0 },
+          { "start": 14500000, "end": 17500000, "type": "XDegenerate", "modifier": 1.0 }
+        ]
+      },
+      "strMarkers": [
+        { "name": "DYS456", "start": 13786322, "end": 13786389, "period": 4, "verified": true },
+        { "name": "DYS389I", "start": 12684538, "end": 12684589, "period": 4, "verified": true },
+        { "name": "DYS389II", "start": 12684538, "end": 12684837, "period": 4, "verified": true },
+        { "name": "DYS390", "start": 17260820, "end": 17260899, "period": 4, "verified": true },
+        { "name": "DYS391", "start": 14473827, "end": 14473870, "period": 4, "verified": true },
+        { "name": "DYS392", "start": 20025254, "end": 20025297, "period": 3, "verified": true },
+        { "name": "DYS393", "start": 3031989, "end": 3032040, "period": 4, "verified": true },
+        { "name": "DYS19", "start": 9678903, "end": 9678962, "period": 4, "verified": true },
+        { "name": "DYS385a/b", "start": 20842496, "end": 20842551, "period": 4, "verified": true },
+        { "name": "DYS437", "start": 14470339, "end": 14470398, "period": 4, "verified": true },
+        { "name": "DYS438", "start": 15831277, "end": 15831326, "period": 5, "verified": true },
+        { "name": "DYS439", "start": 15001261, "end": 15001312, "period": 4, "verified": true },
+        { "name": "DYS448", "start": 22693854, "end": 22693933, "period": 6, "verified": true },
+        { "name": "DYS449", "start": 19286379, "end": 19286534, "period": 4, "verified": true },
+        { "name": "DYS458", "start": 8978177, "end": 8978248, "period": 4, "verified": true },
+        { "name": "DYS460", "start": 18908898, "end": 18908942, "period": 4, "verified": true },
+        { "name": "DYS481", "start": 7936558, "end": 7936627, "period": 4, "verified": true },
+        { "name": "DYS533", "start": 18334997, "end": 18335052, "period": 4, "verified": true },
+        { "name": "DYS549", "start": 14473567, "end": 14473614, "period": 4, "verified": true },
+        { "name": "DYS570", "start": 6980555, "end": 6980632, "period": 4, "verified": true },
+        { "name": "DYS576", "start": 14471979, "end": 14472050, "period": 4, "verified": true },
+        { "name": "DYS607", "start": 7948085, "end": 7948156, "period": 4, "verified": true },
+        { "name": "DYS635", "start": 22003818, "end": 22003895, "period": 4, "verified": true },
+        { "name": "GATAH4", "start": 16634892, "end": 16634931, "period": 4, "verified": true }
+      ]
+    }
+  }
+}

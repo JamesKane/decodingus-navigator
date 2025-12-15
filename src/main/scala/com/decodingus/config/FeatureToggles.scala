@@ -148,4 +148,33 @@ object FeatureToggles {
      */
     def hasHaplogroup(referenceBuild: String): Boolean = getHaplogroups(referenceBuild).isDefined
   }
+
+  /**
+   * Centralized genome region metadata API configuration.
+   * Provides curated centromeres, telomeres, cytobands, and Y-specific regions
+   * from a single authoritative source.
+   */
+  object genomeRegionsApi {
+    private val apiConfig = if (config.hasPath("genome-regions-api")) {
+      config.getConfig("genome-regions-api")
+    } else {
+      ConfigFactory.empty()
+    }
+
+    /** Whether the genome regions API is enabled */
+    val enabled: Boolean =
+      if (apiConfig.hasPath("enabled")) apiConfig.getBoolean("enabled") else false
+
+    /** API endpoint base URL */
+    val baseUrl: String =
+      if (apiConfig.hasPath("base-url")) apiConfig.getString("base-url") else "https://decoding-us.com/api/v1"
+
+    /** Cache duration in days */
+    val cacheDays: Int =
+      if (apiConfig.hasPath("cache-days")) apiConfig.getInt("cache-days") else 7
+
+    /** Whether to fallback to file downloads when API unavailable */
+    val fallbackEnabled: Boolean =
+      if (apiConfig.hasPath("fallback-enabled")) apiConfig.getBoolean("fallback-enabled") else true
+  }
 }

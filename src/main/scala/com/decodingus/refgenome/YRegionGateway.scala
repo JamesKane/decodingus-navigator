@@ -1,5 +1,7 @@
 package com.decodingus.refgenome
 
+import com.decodingus.config.FeatureToggles
+import com.decodingus.refgenome.model.GenomeRegions
 import com.decodingus.util.Logger
 import htsjdk.samtools.liftover.LiftOver
 import htsjdk.samtools.util.{Interval, Log}
@@ -8,8 +10,10 @@ import sttp.client3.*
 import java.io.{BufferedInputStream, FileInputStream, FileOutputStream, PrintWriter}
 import java.nio.file.{Files, Path}
 import java.util.zip.GZIPInputStream
+import scala.concurrent.{Await, ExecutionContext}
+import scala.concurrent.duration.*
 import scala.io.Source
-import scala.util.Using
+import scala.util.{Try, Using}
 
 /**
  * Paths to all Y chromosome region files for a reference build.
@@ -471,7 +475,10 @@ class YRegionGateway(onProgress: (String, Double) => Unit = (_, _) => ()) {
 
   /**
    * Load a YRegionAnnotator for a reference build.
-   * Downloads all required region files and creates an annotator.
+   *
+   * Resolution order:
+   * 1. GenomeRegionService (if feature toggle enabled) - centralized API with caching
+   * 2. File-based downloads from ybrowse, GIAB, T2T - legacy fallback
    *
    * @param referenceBuild Target reference build
    * @param callableLociPath Optional path to callable_loci.bed file
@@ -480,6 +487,66 @@ class YRegionGateway(onProgress: (String, Double) => Unit = (_, _) => ()) {
   def loadAnnotator(
     referenceBuild: String,
     callableLociPath: Option[Path] = None
+  ): Either[String, YRegionAnnotator] = {
+    // Parse callable loci positions if provided (used by both paths)
+    val callablePositions: Option[Set[Long]] = callableLociPath.flatMap { path =>
+      RegionFileParser.parseBed(path).toOption.map { records =>
+        val yRecords = RegionFileParser.filterYChromosome(records, _.chrom)
+        yRecords.flatMap { r =>
+          val (start, end) = RegionFileParser.bedToOneBased(r.start, r.end)
+          (start to end)
+        }.toSet
+      }
+    }
+
+    // Try GenomeRegionService first (respects feature toggle)
+    loadFromGenomeRegionService(referenceBuild, callablePositions) match {
+      case Right(annotator) =>
+        log.info(s"Loaded annotator from GenomeRegionService for $referenceBuild")
+        Right(annotator)
+
+      case Left(apiError) =>
+        // Fall back to file-based approach
+        log.info(s"GenomeRegionService unavailable ($apiError), falling back to file downloads")
+        loadFromFiles(referenceBuild, callableLociPath)
+    }
+  }
+
+  /**
+   * Try to load annotator from GenomeRegionService (API + cache).
+   */
+  private def loadFromGenomeRegionService(
+    referenceBuild: String,
+    callablePositions: Option[Set[Long]]
+  ): Either[String, YRegionAnnotator] = {
+    implicit val ec: ExecutionContext = ExecutionContext.global
+
+    try {
+      // GenomeRegionService handles feature toggle check internally
+      val futureResult = GenomeRegionService.getRegions(referenceBuild)
+      val result = Await.result(futureResult, 30.seconds)
+
+      result match {
+        case Right(regions) =>
+          val annotator = YRegionAnnotator.fromGenomeRegions(regions, callablePositions)
+          log.info(s"Created annotator from API with ${annotator.totalRegionCount} regions")
+          Right(annotator)
+
+        case Left(error) =>
+          Left(error)
+      }
+    } catch {
+      case e: Exception =>
+        Left(s"GenomeRegionService error: ${e.getMessage}")
+    }
+  }
+
+  /**
+   * Load annotator from file downloads (legacy path).
+   */
+  private def loadFromFiles(
+    referenceBuild: String,
+    callableLociPath: Option[Path]
   ): Either[String, YRegionAnnotator] = {
     for {
       paths <- resolveAll(referenceBuild)

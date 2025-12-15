@@ -7,7 +7,7 @@ import com.decodingus.haplogroup.tree.{TreeType, TreeProviderType}
 import com.decodingus.auth.User
 import com.decodingus.config.{FeatureToggles, UserPreferencesService, ReferenceConfigService}
 import com.decodingus.model.{LibraryStats, WgsMetrics}
-import com.decodingus.refgenome.{ReferenceGateway, ReferenceResolveResult}
+import com.decodingus.refgenome.{ReferenceGateway, ReferenceResolveResult, YRegionAnnotator}
 import com.decodingus.repository.{
   BiosampleRepository, YChromosomeProfileRepository, YProfileSourceRepository,
   YProfileRegionRepository, YProfileVariantRepository, YVariantSourceCallRepository,
@@ -3044,13 +3044,16 @@ class WorkbenchViewModel(
 
   /**
    * Full Y Profile data for detail dialog.
+   *
+   * @param yRegionAnnotator Optional annotator for region visualization (ideogram)
    */
   case class YProfileLoadedData(
     profile: YChromosomeProfileEntity,
     variants: List[YProfileVariantEntity],
     sources: List[YProfileSourceEntity],
     variantCalls: Map[UUID, List[YVariantSourceCallEntity]],
-    auditEntries: List[YVariantAuditEntity]
+    auditEntries: List[YVariantAuditEntity],
+    yRegionAnnotator: Option[YRegionAnnotator] = None
   )
 
   /**
@@ -3108,7 +3111,11 @@ class WorkbenchViewModel(
             auditEntries = variants.flatMap { v =>
               service.getAuditHistory(v.id).toOption.getOrElse(Nil)
             }
-          } yield YProfileLoadedData(profile, variants, sources, variantCalls, auditEntries)
+            // Get reference build from first source (or default to GRCh38)
+            referenceBuild = sources.flatMap(_.referenceBuild).headOption
+            // Create basic annotator based on reference build (with hardcoded heterochromatin)
+            annotator = createBasicYRegionAnnotator(referenceBuild)
+          } yield YProfileLoadedData(profile, variants, sources, variantCalls, auditEntries, Some(annotator))
         }.onComplete {
           case Success(result) =>
             Platform.runLater {
@@ -3120,6 +3127,22 @@ class WorkbenchViewModel(
             }
         }
     }
+  }
+
+  /**
+   * Create a basic Y region annotator with hardcoded heterochromatin boundaries.
+   * Uses reference build to select correct coordinates.
+   */
+  private def createBasicYRegionAnnotator(referenceBuild: Option[String]): YRegionAnnotator = {
+    val heterochromatin = referenceBuild.map(_.toUpperCase) match {
+      case Some(b) if b.contains("37") || b.contains("HG19") =>
+        YRegionAnnotator.grch37Heterochromatin
+      case Some(b) if b.contains("CHM13") || b.contains("T2T") || b.contains("HS1") =>
+        YRegionAnnotator.chm13v2Heterochromatin
+      case _ =>
+        YRegionAnnotator.grch38Heterochromatin // Default to GRCh38
+    }
+    YRegionAnnotator.fromRegions(heterochromatin = heterochromatin)
   }
 
   /**
