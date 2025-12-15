@@ -501,10 +501,13 @@ class AnalysisCoordinator(implicit ec: ExecutionContext) {
       val treeTypeStr = if (treeType == TreeType.YDNA) "Y-DNA" else "mtDNA"
 
       // Check for vendor-provided VCF first (e.g., FTDNA Big Y)
+      // Check both alignment-level (for BAM-based imports) and run-level (for VCF-only imports)
       val vendorVcf: Option[VendorVcfInfo] = if (treeType == TreeType.YDNA) {
         VcfCache.findYDnaVendorVcf(subject.sampleAccession, runId, alignId)
+          .orElse(VcfCache.findYDnaRunVendorVcf(subject.sampleAccession, runId))
       } else {
         VcfCache.findMtDnaVendorVcf(subject.sampleAccession, runId, alignId)
+          .orElse(VcfCache.findMtDnaRunVendorVcf(subject.sampleAccession, runId))
       }
 
       val result: Either[String, List[AnalysisHaplogroupResult]] =
