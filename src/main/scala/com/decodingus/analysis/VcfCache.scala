@@ -113,6 +113,35 @@ case class VendorVcfInfo(
 }
 
 /**
+ * Information about a vendor-provided mtDNA FASTA sequence.
+ *
+ * Vendors like FTDNA (mtFull Sequence) and YSEQ provide complete mitochondrial
+ * genome sequences as FASTA files. These need to be compared against rCRS
+ * (revised Cambridge Reference Sequence) to identify variants.
+ *
+ * @param fastaPath         Path to the FASTA file
+ * @param vendor            Vendor that provided the file
+ * @param originalFileName  Original filename of the FASTA
+ * @param importedAt        When the file was imported
+ * @param sequenceLength    Length of the mtDNA sequence
+ * @param notes             Optional notes about the import
+ */
+case class VendorFastaInfo(
+  fastaPath: String,
+  vendor: VcfVendor,
+  originalFileName: String,
+  importedAt: String,
+  sequenceLength: Int,
+  notes: Option[String] = None
+) derives Codec.AsObject {
+
+  def fastaFile: File = new File(fastaPath)
+  def importedAtDateTime: LocalDateTime = LocalDateTime.parse(importedAt, DateTimeFormatter.ISO_LOCAL_DATE_TIME)
+
+  def isValid: Boolean = fastaFile.exists()
+}
+
+/**
  * Manages cached VCF storage and retrieval for whole-genome variant calling.
  *
  * VCF files are stored in:
@@ -733,6 +762,160 @@ object VcfCache {
       vendorDir.resolve(s"$baseFilename.vcf.gz.tbi"),
       vendorDir.resolve(s"${baseFilename}_targets.bed"),
       vendorDir.resolve(s"$baseFilename$VENDOR_METADATA_SUFFIX")
+    ).foreach { path =>
+      if (Files.exists(path)) {
+        Files.delete(path)
+        deleted = true
+      }
+    }
+    deleted
+  }
+
+  // --- Vendor mtDNA FASTA Support ---
+
+  private val FASTA_SUBDIR = "fasta"
+  private val FASTA_METADATA_SUFFIX = "_fasta_metadata.json"
+
+  /**
+   * Get the vendor FASTA directory for a sequence run.
+   */
+  def getRunFastaDir(sampleAccession: String, runId: String): Path = {
+    SubjectArtifactCache.getSequenceRunDir(sampleAccession, runId).resolve(FASTA_SUBDIR)
+  }
+
+  /**
+   * Import a vendor-provided mtDNA FASTA file at the SequenceRun level.
+   *
+   * @param sampleAccession Sample accession
+   * @param runId Sequence run ID
+   * @param fastaSourcePath Path to the source FASTA file
+   * @param vendor The vendor that provided the file
+   * @param notes Optional notes about this import
+   * @return Either error message or the VendorFastaInfo for the imported file
+   */
+  def importRunFasta(
+    sampleAccession: String,
+    runId: String,
+    fastaSourcePath: Path,
+    vendor: VcfVendor,
+    notes: Option[String] = None
+  ): Either[String, VendorFastaInfo] = {
+    try {
+      val fastaDir = getRunFastaDir(sampleAccession, runId)
+      Files.createDirectories(fastaDir)
+
+      val originalFileName = fastaSourcePath.getFileName.toString
+      val baseFilename = vendor.code
+      val fastaDest = fastaDir.resolve(s"$baseFilename.fasta")
+
+      // Copy the FASTA file
+      Files.copy(fastaSourcePath, fastaDest, java.nio.file.StandardCopyOption.REPLACE_EXISTING)
+
+      // Read sequence length
+      val sequenceLength = readFastaSequenceLength(fastaDest)
+
+      // Create metadata
+      val metadata = VendorFastaInfo(
+        fastaPath = fastaDest.toAbsolutePath.toString,
+        vendor = vendor,
+        originalFileName = originalFileName,
+        importedAt = LocalDateTime.now().format(DateTimeFormatter.ISO_LOCAL_DATE_TIME),
+        sequenceLength = sequenceLength,
+        notes = notes
+      )
+
+      // Write metadata
+      val metadataPath = fastaDir.resolve(s"$baseFilename$FASTA_METADATA_SUFFIX")
+      Files.writeString(metadataPath, metadata.asJson.spaces2)
+
+      Right(metadata)
+    } catch {
+      case e: Exception =>
+        Left(s"Failed to import vendor FASTA: ${e.getMessage}")
+    }
+  }
+
+  /**
+   * Read the sequence length from a FASTA file.
+   */
+  private def readFastaSequenceLength(fastaPath: Path): Int = {
+    Using(scala.io.Source.fromFile(fastaPath.toFile)) { source =>
+      source.getLines()
+        .filterNot(_.startsWith(">"))  // Skip header lines
+        .map(_.trim.length)
+        .sum
+    }.getOrElse(0)
+  }
+
+  /**
+   * List all vendor FASTA files imported at the SequenceRun level.
+   */
+  def listRunFastas(sampleAccession: String, runId: String): List[VendorFastaInfo] = {
+    val fastaDir = getRunFastaDir(sampleAccession, runId)
+
+    if (!Files.exists(fastaDir)) {
+      return List.empty
+    }
+
+    import scala.jdk.CollectionConverters._
+    Files.list(fastaDir).iterator().asScala
+      .filter(p => p.toString.endsWith(FASTA_METADATA_SUFFIX))
+      .flatMap { metadataPath =>
+        Using(scala.io.Source.fromFile(metadataPath.toFile)) { source =>
+          parser.decode[VendorFastaInfo](source.mkString).toOption
+        }.toOption.flatten
+      }
+      .filter(_.isValid)
+      .toList
+  }
+
+  /**
+   * Load a specific vendor FASTA by vendor type at the SequenceRun level.
+   */
+  def loadRunFasta(
+    sampleAccession: String,
+    runId: String,
+    vendor: VcfVendor
+  ): Option[VendorFastaInfo] = {
+    val fastaDir = getRunFastaDir(sampleAccession, runId)
+    val metadataPath = fastaDir.resolve(s"${vendor.code}$FASTA_METADATA_SUFFIX")
+
+    if (!Files.exists(metadataPath)) {
+      return None
+    }
+
+    Using(scala.io.Source.fromFile(metadataPath.toFile)) { source =>
+      parser.decode[VendorFastaInfo](source.mkString).toOption.filter(_.isValid)
+    }.toOption.flatten
+  }
+
+  /**
+   * Find the best vendor FASTA for mtDNA haplogroup analysis at the SequenceRun level.
+   */
+  def findMtDnaRunFasta(sampleAccession: String, runId: String): Option[VendorFastaInfo] = {
+    val fastas = listRunFastas(sampleAccession, runId)
+
+    // Priority order for mtDNA FASTA
+    val priorityOrder = List(VcfVendor.FTDNA_MTFULL, VcfVendor.YSEQ, VcfVendor.OTHER)
+    priorityOrder.flatMap(vendor => fastas.find(_.vendor == vendor)).headOption
+      .orElse(fastas.headOption)
+  }
+
+  /**
+   * Delete a vendor FASTA from the run-level cache.
+   */
+  def deleteRunFasta(
+    sampleAccession: String,
+    runId: String,
+    vendor: VcfVendor
+  ): Boolean = {
+    val fastaDir = getRunFastaDir(sampleAccession, runId)
+    val baseFilename = vendor.code
+
+    var deleted = false
+    List(
+      fastaDir.resolve(s"$baseFilename.fasta"),
+      fastaDir.resolve(s"$baseFilename$FASTA_METADATA_SUFFIX")
     ).foreach { path =>
       if (Files.exists(path)) {
         Files.delete(path)

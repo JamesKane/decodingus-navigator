@@ -510,8 +510,30 @@ class AnalysisCoordinator(implicit ec: ExecutionContext) {
           .orElse(VcfCache.findMtDnaRunVendorVcf(subject.sampleAccession, runId))
       }
 
+      // Check for vendor-provided FASTA (mtDNA only - e.g., FTDNA mtFull Sequence, YSEQ mtDNA)
+      val vendorFasta: Option[VendorFastaInfo] = if (treeType == TreeType.MTDNA) {
+        VcfCache.findMtDnaRunFasta(subject.sampleAccession, runId)
+      } else {
+        None
+      }
+
       val result: Either[String, List[AnalysisHaplogroupResult]] =
-        if (vendorVcf.isDefined) {
+        if (vendorFasta.isDefined && treeType == TreeType.MTDNA) {
+          // Use vendor-provided FASTA for mtDNA - highest priority for mtDNA
+          val vfasta = vendorFasta.get
+          log.info(s"Using ${vfasta.vendor.displayName} FASTA for mtDNA haplogroup analysis: ${vfasta.fastaPath}")
+          onProgress(AnalysisProgress(s"Using ${vfasta.vendor.displayName} FASTA for mtDNA analysis...", 0.2))
+          val haplogroupOutputDir = artifactCtx.getSubdir("haplogroup")
+          processor.analyzeFromFasta(
+            fastaPath = vfasta.fastaPath,
+            treeProviderType = treeProviderType,
+            onProgress = (message, current, total) => {
+              val pct = if (total > 0) 0.2 + (current / total) * 0.7 else 0.2
+              onProgress(AnalysisProgress(message, pct))
+            },
+            outputDir = Some(haplogroupOutputDir)
+          )
+        } else if (vendorVcf.isDefined) {
           // Use vendor-provided VCF - highest priority
           val vvcf = vendorVcf.get
           log.info(s"Using ${vvcf.vendor.displayName} VCF for $treeTypeStr haplogroup analysis: ${vvcf.vcfPath}")
@@ -751,10 +773,32 @@ class AnalysisCoordinator(implicit ec: ExecutionContext) {
       )
 
       val processor = new CallableLociProcessor()
+
+      // Determine minDepth based on test type AND coverage (same logic as batch analysis)
+      val meanCoverage = alignment.metrics.flatMap(_.meanCoverage).getOrElse(30.0)
+      val isLowPass = meanCoverage <= 5.0
+      val isHiFi = seqRun.testType.toUpperCase.contains("HIFI")
+      val isLongRead = seqRun.testType.toUpperCase.contains("NANOPORE") ||
+                       seqRun.testType.toUpperCase.contains("CLR") ||
+                       seqRun.maxReadLength.exists(_ > 10000)
+
+      val minDepth = if (isHiFi) {
+        2  // HiFi: high accuracy, minDepth=2 is fine
+      } else if (isLowPass) {
+        // Low-pass data: use minDepth proportional to coverage
+        math.max(1, (meanCoverage / 2).toInt)
+      } else if (isLongRead) {
+        3  // ONT/CLR: moderate accuracy, minDepth=3
+      } else {
+        4  // Illumina WGS at normal depth: standard minDepth=4
+      }
+
+      log.info(s"[CallableLoci] Using minDepth=$minDepth (testType=${seqRun.testType}, meanCov=${f"$meanCoverage%.1f"}x, isHiFi=$isHiFi, isLowPass=$isLowPass)")
+
       val resultEither = processor.process(bamPath, referencePath, (message, current, total) => {
         val pct = 0.3 + (current.toDouble / total) * 0.6
         onProgress(AnalysisProgress(s"Callable Loci: $message", pct))
-      }, Some(artifactCtx))
+      }, Some(artifactCtx), minDepth)
 
       resultEither match {
         case Left(error) =>
@@ -907,6 +951,32 @@ class AnalysisCoordinator(implicit ec: ExecutionContext) {
 
             // Update sequence run with read length and other metrics
             // IMPORTANT: Use currentSeqRun (not the stale seqRun parameter) to preserve any prior updates
+
+            // Infer testType based on collected metrics if not already set or is generic WGS
+            // Platform detection uses read length as proxy: maxReadLength > 10000 implies long-read (PacBio/ONT)
+            val inferredTestType = currentSeqRun.testType match {
+              case t if t.contains("HIFI") || t.contains("CLR") || t.contains("NANOPORE") =>
+                // Already a specific long-read type, keep it
+                t
+              case "WGS" | "Unknown" | "" =>
+                // Generic type - infer from read length
+                if (readMetrics.maxReadLength > 10000) {
+                  // Long reads - use platform hint if available, otherwise assume HiFi (most common now)
+                  if (currentSeqRun.platformName.toUpperCase.contains("NANOPORE") ||
+                      currentSeqRun.platformName.toUpperCase.contains("ONT")) {
+                    "WGS_NANOPORE"
+                  } else {
+                    "WGS_HIFI"  // Default to HiFi for PacBio or unknown long-read
+                  }
+                } else {
+                  currentSeqRun.testType  // Keep existing for short reads
+                }
+              case other => other  // Keep any other specific type
+            }
+
+            // Infer library layout from read pairing
+            val inferredLayout = if (readMetrics.readsAlignedInPairs > readMetrics.totalReads / 2) "Paired-End" else "Single-End"
+
             val updatedSeqRun = currentSeqRun.copy(
               maxReadLength = Some(readMetrics.maxReadLength),
               readLength = Some(readMetrics.meanReadLength.toInt),
@@ -915,13 +985,15 @@ class AnalysisCoordinator(implicit ec: ExecutionContext) {
               pfReadsAligned = Some(readMetrics.pfReadsAligned),
               meanInsertSize = Some(readMetrics.meanInsertSize),
               medianInsertSize = Some(readMetrics.medianInsertSize.toInt),
-              stdInsertSize = Some(readMetrics.stdInsertSize)
+              stdInsertSize = Some(readMetrics.stdInsertSize),
+              testType = inferredTestType,
+              libraryLayout = Some(inferredLayout)
             )
             currentState = workspaceOps.updateSequenceRunByUri(currentState, updatedSeqRun)
             currentSeqRun = updatedSeqRun  // Keep local var in sync with state
 
             checkpoint = AnalysisCheckpoint.markReadMetricsComplete(artifactDir, checkpoint, readMetrics.maxReadLength)
-            log.info(s"Read metrics complete: maxReadLength=${readMetrics.maxReadLength}")
+            log.info(s"Read metrics complete: maxReadLength=${readMetrics.maxReadLength}, testType=$inferredTestType, layout=$inferredLayout")
           case Left(error) =>
             log.warn(s"Read metrics warning: ${error.getMessage}")
             // Mark complete to continue, but WGS metrics will use seqRun.maxReadLength fallback
@@ -973,8 +1045,8 @@ class AnalysisCoordinator(implicit ec: ExecutionContext) {
       // Step 3: Callable Loci (0.17 - 0.30)
       if (!checkpoint.callableLociCompleted) {
         onProgress(AnalysisProgress("Step 3/8: Running callable loci analysis...", 0.17))
-        // Use currentSeqRun to get latest testType for minDepth calculation
-        val callableLociResult = runCallableLociStep(bamPath, referencePath, currentSeqRun, artifactCtx, { pct =>
+        // Use currentSeqRun for testType and getCurrentAlignment for coverage metrics in minDepth calculation
+        val callableLociResult = runCallableLociStep(bamPath, referencePath, currentSeqRun, getCurrentAlignment, artifactCtx, { pct =>
           onProgress(AnalysisProgress(s"Step 3/8: Callable loci (${(pct * 100).toInt}%)", 0.17 + pct * 0.13))
         })
         callableLociResult match {
@@ -1296,19 +1368,41 @@ class AnalysisCoordinator(implicit ec: ExecutionContext) {
 
   /**
    * Run callable loci step for batch analysis.
+   * Note: This now takes alignment to access coverage metrics for minDepth calculation.
    */
   private def runCallableLociStep(
     bamPath: String,
     referencePath: String,
     seqRun: SequenceRun,
+    alignment: Alignment,
     artifactCtx: ArtifactContext,
     onProgress: Double => Unit
   ): Either[String, (CallableLociResult, List[String])] = {
     val processor = new CallableLociProcessor()
-    val minDepth = seqRun.testType.toUpperCase match {
-      case t if t.contains("HIFI") => 2
-      case _ => 4
+
+    // Determine minDepth based on test type AND coverage
+    // HiFi reads are highly accurate, so minDepth=2 is appropriate
+    // Low-pass WGS (<=5x) should also use minDepth=2 to avoid excessive no-calls
+    val meanCoverage = alignment.metrics.flatMap(_.meanCoverage).getOrElse(30.0)
+    val isLowPass = meanCoverage <= 5.0
+    val isHiFi = seqRun.testType.toUpperCase.contains("HIFI")
+    val isLongRead = seqRun.testType.toUpperCase.contains("NANOPORE") ||
+                     seqRun.testType.toUpperCase.contains("CLR") ||
+                     seqRun.maxReadLength.exists(_ > 10000)
+
+    val minDepth = if (isHiFi) {
+      2  // HiFi: high accuracy, minDepth=2 is fine
+    } else if (isLowPass) {
+      // Low-pass data: use minDepth proportional to coverage
+      // At 4x, use minDepth=2; at 2x, use minDepth=1
+      math.max(1, (meanCoverage / 2).toInt)
+    } else if (isLongRead) {
+      3  // ONT/CLR: moderate accuracy, minDepth=3
+    } else {
+      4  // Illumina WGS at normal depth: standard minDepth=4
     }
+
+    log.info(s"[CallableLoci] Using minDepth=$minDepth (testType=${seqRun.testType}, meanCov=${f"$meanCoverage%.1f"}x, isHiFi=$isHiFi, isLowPass=$isLowPass)")
 
     processor.process(
       bamPath = bamPath,
@@ -1358,7 +1452,49 @@ class AnalysisCoordinator(implicit ec: ExecutionContext) {
 
     val treeTypeStr = if (treeType == TreeType.YDNA) "Y-DNA" else "mtDNA"
 
-    if (java.nio.file.Files.exists(cachedVcfPath)) {
+    // Check for vendor-provided FASTA (mtDNA only)
+    val vendorFasta = if (treeType == TreeType.MTDNA) {
+      VcfCache.findMtDnaRunFasta(subject.sampleAccession, runId)
+    } else {
+      None
+    }
+
+    // Check for vendor-provided VCF
+    val vendorVcf = if (treeType == TreeType.YDNA) {
+      VcfCache.findYDnaRunVendorVcf(subject.sampleAccession, runId)
+    } else {
+      VcfCache.findMtDnaRunVendorVcf(subject.sampleAccession, runId)
+    }
+
+    if (vendorFasta.isDefined && treeType == TreeType.MTDNA) {
+      // Use vendor-provided FASTA for mtDNA
+      val vfasta = vendorFasta.get
+      log.info(s"Using ${vfasta.vendor.displayName} FASTA for mtDNA haplogroup analysis")
+      processor.analyzeFromFasta(
+        fastaPath = vfasta.fastaPath,
+        treeProviderType = treeProviderType,
+        onProgress = (_, current, total) => {
+          val pct = if (total > 0) current / total else 0.0
+          onProgress(pct)
+        },
+        outputDir = None
+      ).map(_.headOption.getOrElse(defaultHaplogroupResult))
+    } else if (vendorVcf.isDefined) {
+      // Use vendor-provided VCF
+      val vvcf = vendorVcf.get
+      log.info(s"Using ${vvcf.vendor.displayName} VCF for $treeTypeStr haplogroup analysis")
+      processor.analyzeFromVcfFile(
+        vcfPath = vvcf.vcfPath,
+        referenceBuild = vvcf.referenceBuild,
+        treeType = treeType,
+        treeProviderType = treeProviderType,
+        onProgress = (_, current, total) => {
+          val pct = if (total > 0) current / total else 0.0
+          onProgress(pct)
+        },
+        outputDir = None
+      ).map(_.headOption.getOrElse(defaultHaplogroupResult))
+    } else if (java.nio.file.Files.exists(cachedVcfPath)) {
       // Use cached VCF from variant calling step - much faster!
       log.info(s"Using cached whole-genome VCF for $treeTypeStr haplogroup analysis")
       processor.analyzeFromCachedVcf(

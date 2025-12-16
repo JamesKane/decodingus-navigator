@@ -1,6 +1,6 @@
 package com.decodingus.workspace
 
-import com.decodingus.analysis.{ArtifactContext, CachedVcfInfo, CallableLociProcessor, CallableLociResult, HaplogroupProcessor, LibraryStatsProcessor, MultipleMetricsResult, UnifiedMetricsProcessor, VcfVendor, VendorVcfInfo, WgsMetricsProcessor}
+import com.decodingus.analysis.{ArtifactContext, CachedVcfInfo, CallableLociProcessor, CallableLociResult, HaplogroupProcessor, LibraryStatsProcessor, MultipleMetricsResult, UnifiedMetricsProcessor, VcfVendor, VendorFastaInfo, VendorVcfInfo, WgsMetricsProcessor}
 import com.decodingus.client.DecodingUsClient
 import com.decodingus.db.Transactor
 import com.decodingus.haplogroup.tree.{TreeType, TreeProviderType}
@@ -3282,6 +3282,112 @@ class WorkbenchViewModel(
         val runId = SubjectArtifactCache.extractIdFromUri(seqRun.atUri.getOrElse("unknown"))
 
         VcfCache.deleteRunVendorVcf(sampleAccession, runId, vendor)
+    }
+  }
+
+  // --- Vendor FASTA Management (mtDNA) ---
+
+  /**
+   * Import a vendor-provided mtDNA FASTA file for a sequence run.
+   *
+   * @param sampleAccession The sample accession identifier
+   * @param sequenceRunIndex Index of the sequence run
+   * @param fastaPath Path to the FASTA file
+   * @param vendor Vendor type (e.g., FTDNA_MTFULL, YSEQ)
+   * @param notes Optional notes about the import
+   * @return Either error message or success message
+   */
+  def importVendorFasta(
+    sampleAccession: String,
+    sequenceRunIndex: Int,
+    fastaPath: java.nio.file.Path,
+    vendor: VcfVendor,
+    notes: Option[String] = None
+  ): Either[String, String] = {
+    import com.decodingus.analysis.{VcfCache, SubjectArtifactCache, MtDnaFastaProcessor}
+
+    findSubject(sampleAccession) match {
+      case None =>
+        Left(s"Subject not found: $sampleAccession")
+
+      case Some(subject) =>
+        val sequenceRuns = _workspace.value.main.getSequenceRunsForBiosample(subject)
+        if (sequenceRunIndex < 0 || sequenceRunIndex >= sequenceRuns.size) {
+          return Left(s"Invalid sequence run index: $sequenceRunIndex")
+        }
+
+        val seqRun = sequenceRuns(sequenceRunIndex)
+        val runId = SubjectArtifactCache.extractIdFromUri(seqRun.atUri.getOrElse("unknown"))
+
+        // Validate the FASTA file
+        MtDnaFastaProcessor.readFasta(fastaPath) match {
+          case Left(error) =>
+            Left(s"Invalid FASTA file: $error")
+
+          case Right(sequence) =>
+            if (sequence.length < 16000 || sequence.length > 17000) {
+              Left(s"Unexpected mtDNA sequence length: ${sequence.length} bp (expected ~16569)")
+            } else {
+              // Import the FASTA
+              VcfCache.importRunFasta(sampleAccession, runId, fastaPath, vendor, notes) match {
+                case Right(info) =>
+                  Right(s"Imported ${vendor.displayName} mtDNA FASTA\nSequence length: ${info.sequenceLength} bp")
+                case Left(error) =>
+                  Left(error)
+              }
+            }
+        }
+    }
+  }
+
+  /**
+   * List all imported vendor FASTAs for a sequence run.
+   */
+  def listVendorFastasForRun(
+    sampleAccession: String,
+    sequenceRunIndex: Int
+  ): List[VendorFastaInfo] = {
+    import com.decodingus.analysis.{VcfCache, SubjectArtifactCache}
+
+    findSubject(sampleAccession) match {
+      case None => List.empty
+
+      case Some(subject) =>
+        val sequenceRuns = _workspace.value.main.getSequenceRunsForBiosample(subject)
+        if (sequenceRunIndex < 0 || sequenceRunIndex >= sequenceRuns.size) {
+          return List.empty
+        }
+
+        val seqRun = sequenceRuns(sequenceRunIndex)
+        val runId = SubjectArtifactCache.extractIdFromUri(seqRun.atUri.getOrElse("unknown"))
+
+        VcfCache.listRunFastas(sampleAccession, runId)
+    }
+  }
+
+  /**
+   * Delete a vendor FASTA from a sequence run.
+   */
+  def deleteVendorFasta(
+    sampleAccession: String,
+    sequenceRunIndex: Int,
+    vendor: VcfVendor
+  ): Boolean = {
+    import com.decodingus.analysis.{VcfCache, SubjectArtifactCache}
+
+    findSubject(sampleAccession) match {
+      case None => false
+
+      case Some(subject) =>
+        val sequenceRuns = _workspace.value.main.getSequenceRunsForBiosample(subject)
+        if (sequenceRunIndex < 0 || sequenceRunIndex >= sequenceRuns.size) {
+          return false
+        }
+
+        val seqRun = sequenceRuns(sequenceRunIndex)
+        val runId = SubjectArtifactCache.extractIdFromUri(seqRun.atUri.getOrElse("unknown"))
+
+        VcfCache.deleteRunFasta(sampleAccession, runId, vendor)
     }
   }
 }

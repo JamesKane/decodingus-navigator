@@ -17,7 +17,7 @@ import com.decodingus.haplogroup.tree.TreeType
 import com.decodingus.genotype.model.{TestTypes, TargetType}
 import java.nio.file.Files
 import scala.jdk.CollectionConverters._
-import com.decodingus.ui.components.VendorVcfImportRequest
+import com.decodingus.ui.components.{VendorVcfImportRequest, VendorFastaImportRequest}
 
 /**
  * Represents a row in the sequence data tree table.
@@ -429,9 +429,11 @@ Sex: ${info.inferredSex.getOrElse("Unknown")}"""
   private def createSequenceRunContextMenu(sr: SequenceRunRow): ContextMenu = {
     val runAlignments = getAlignmentsForRun(sr.run)
 
-    // Check for existing vendor VCFs
+    // Check for existing vendor VCFs and FASTAs
     val vendorVcfs = viewModel.listVendorVcfsForRun(subject.sampleAccession, sr.runIndex)
+    val vendorFastas = viewModel.listVendorFastasForRun(subject.sampleAccession, sr.runIndex)
     val hasVendorVcfs = vendorVcfs.nonEmpty
+    val hasVendorFastas = vendorFastas.nonEmpty
 
     new ContextMenu(
       new MenuItem("Edit") {
@@ -444,9 +446,17 @@ Sex: ${info.inferredSex.getOrElse("Unknown")}"""
       new MenuItem("Import Vendor VCF...") {
         onAction = _ => handleImportVendorVcf(sr.runIndex)
       },
+      new MenuItem("Import mtDNA FASTA...") {
+        onAction = _ => handleImportVendorFasta(sr.runIndex)
+      },
+      new javafx.scene.control.SeparatorMenuItem(),
       new MenuItem(if (hasVendorVcfs) s"Vendor VCFs (${vendorVcfs.size})" else "No Vendor VCFs") {
         disable = !hasVendorVcfs
         onAction = _ => showVendorVcfInfo(sr.runIndex, vendorVcfs)
+      },
+      new MenuItem(if (hasVendorFastas) s"Vendor FASTAs (${vendorFastas.size})" else "No Vendor FASTAs") {
+        disable = !hasVendorFastas
+        onAction = _ => showVendorFastaInfo(sr.runIndex, vendorFastas)
       },
       new javafx.scene.control.SeparatorMenuItem(),
       new MenuItem("Remove") {
@@ -516,6 +526,60 @@ Sex: ${info.inferredSex.getOrElse("Unknown")}"""
     new Alert(AlertType.Information) {
       title = "Vendor VCFs"
       headerText = s"${vcfs.size} vendor VCF(s) imported"
+      contentText = info
+      dialogPane().setPrefWidth(500)
+    }.showAndWait()
+  }
+
+  /**
+   * Handle importing a vendor mtDNA FASTA for a sequence run.
+   */
+  private def handleImportVendorFasta(runIndex: Int): Unit = {
+    val dialog = new ImportVendorFastaDialog()
+    val result = dialog.showAndWait()
+
+    result match {
+      case Some(Some(request: VendorFastaImportRequest)) =>
+        viewModel.importVendorFasta(
+          sampleAccession = subject.sampleAccession,
+          sequenceRunIndex = runIndex,
+          fastaPath = request.fastaPath,
+          vendor = request.vendor,
+          notes = request.notes
+        ) match {
+          case Right(msg) =>
+            new Alert(AlertType.Information) {
+              title = "Import Successful"
+              headerText = "mtDNA FASTA imported"
+              contentText = msg
+            }.showAndWait()
+
+          case Left(err) =>
+            new Alert(AlertType.Error) {
+              title = "Import Failed"
+              headerText = "Failed to import mtDNA FASTA"
+              contentText = err
+            }.showAndWait()
+        }
+      case _ => // Cancelled or None
+    }
+  }
+
+  /**
+   * Show information about imported vendor FASTAs.
+   */
+  private def showVendorFastaInfo(runIndex: Int, fastas: List[com.decodingus.analysis.VendorFastaInfo]): Unit = {
+    val info = fastas.map { fasta =>
+      s"${fasta.vendor.displayName}:\n" +
+      s"  Original file: ${fasta.originalFileName}\n" +
+      s"  Sequence length: ${f"${fasta.sequenceLength}%,d"} bp\n" +
+      s"  Imported: ${fasta.importedAt}" +
+      fasta.notes.map(n => s"\n  Notes: $n").getOrElse("")
+    }.mkString("\n\n")
+
+    new Alert(AlertType.Information) {
+      title = "Vendor mtDNA FASTAs"
+      headerText = s"${fastas.size} vendor FASTA(s) imported"
       contentText = info
       dialogPane().setPrefWidth(500)
     }.showAndWait()

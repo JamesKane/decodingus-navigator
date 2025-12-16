@@ -576,6 +576,118 @@ class HaplogroupProcessor {
   }
 
   /**
+   * Analyze mtDNA haplogroup from a FASTA file (e.g., FTDNA mtFull Sequence, YSEQ mtDNA).
+   *
+   * Compares the FASTA sequence against rCRS to identify variants, then scores
+   * against the haplogroup tree.
+   *
+   * @param fastaPath Path to the mtDNA FASTA file
+   * @param treeProviderType Tree data provider
+   * @param onProgress Progress callback
+   * @param outputDir Optional directory for saving reports
+   */
+  def analyzeFromFasta(
+    fastaPath: String,
+    treeProviderType: TreeProviderType,
+    onProgress: (String, Double, Double) => Unit,
+    outputDir: Option[Path] = None
+  ): Either[String, List[HaplogroupResult]] = {
+
+    // mtDNA FASTA analysis always uses MTDNA tree type
+    val treeType = TreeType.MTDNA
+    // rCRS is based on GRCh38 coordinates
+    val referenceBuild = "GRCh38"
+
+    onProgress("Processing mtDNA FASTA...", 0.0, 1.0)
+
+    // Process the FASTA file to extract variants
+    MtDnaFastaProcessor.process(Path.of(fastaPath), (msg, pct) => {
+      onProgress(msg, pct * 0.3, 1.0)
+    }) match {
+      case Left(error) =>
+        Left(s"Failed to process mtDNA FASTA: $error")
+
+      case Right(fastaResult) =>
+        log.info(s"[MtDnaFasta] Processed FASTA: ${fastaResult.sequenceLength} bp, ${fastaResult.variants.size} variants")
+
+        onProgress("Loading haplogroup tree...", 0.35, 1.0)
+
+        val treeProvider: TreeProvider = treeProviderType match {
+          case TreeProviderType.FTDNA => new FtdnaTreeProvider(treeType)
+          case TreeProviderType.DECODINGUS => new DecodingUsTreeProvider(treeType)
+        }
+
+        treeProvider.loadTree(referenceBuild).flatMap { tree =>
+          val treeSourceBuild = if (treeProvider.supportedBuilds.contains(referenceBuild)) {
+            referenceBuild
+          } else {
+            treeProvider.sourceBuild
+          }
+
+          // Use the snpCalls map from FASTA processing
+          val snpCalls = fastaResult.snpCalls
+
+          onProgress(s"Scoring haplogroups with ${snpCalls.size} SNP calls...", 0.5, 1.0)
+
+          // Score haplogroups
+          val scorer = new HaplogroupScorer()
+          val results = scorer.score(tree, snpCalls)
+
+          log.info(s"[MtDnaFasta] Scored ${results.size} haplogroups, top: ${results.headOption.map(_.name).getOrElse("none")}")
+
+          onProgress("Generating report...", 0.8, 1.0)
+
+          // Get artifact directory for report (use provided outputDir or skip)
+          outputDir.foreach { dir =>
+            Files.createDirectories(dir)
+
+            // Use named variant cache for Decoding Us provider
+            val variantCache = treeProviderType match {
+              case TreeProviderType.DECODINGUS =>
+                val cache = NamedVariantCache()
+                cache.ensureLoaded(_ => ()) match {
+                  case Right(_) => Some(cache)
+                  case Left(_) => None
+                }
+              case _ => None
+            }
+
+            HaplogroupReportWriter.writeReport(
+              outputDir = dir.toFile,
+              treeType = treeType,
+              results = results,
+              tree = tree,
+              snpCalls = snpCalls,
+              sampleName = None,
+              privateVariants = None,  // Could extract from fastaResult.variants in future
+              treeProvider = Some(treeProviderType),
+              strAnnotator = None,
+              sampleBuild = Some(referenceBuild),
+              treeBuild = Some(treeSourceBuild),
+              namedVariantCache = variantCache
+            )
+
+            // Also save the variant list for reference
+            val variantListPath = dir.resolve("mtdna_variants_from_fasta.txt")
+            Using(new PrintWriter(variantListPath.toFile)) { writer =>
+              writer.println("# mtDNA variants identified from FASTA vs rCRS")
+              writer.println(s"# Sequence length: ${fastaResult.sequenceLength} bp")
+              writer.println(s"# Total variants: ${fastaResult.variants.size}")
+              writer.println("#")
+              writer.println("# Position\tRef\tAlt\tType\tNotation")
+              fastaResult.variants.sortBy(_.position).foreach { v =>
+                writer.println(s"${v.position}\t${v.ref}\t${v.alt}\t${v.variantType}\t${v.notation}")
+              }
+            }
+          }
+
+          onProgress("Analysis complete.", 1.0, 1.0)
+          Right(results)
+        }
+    }
+  }
+
+  /**
    * Parse private variants from VCF, excluding known tree positions.
    */
   private def parsePrivateVariants(vcfFile: File, treePositions: Set[Long]): List[PrivateVariant] = {
