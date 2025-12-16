@@ -58,9 +58,11 @@ object AlignmentEntity:
 /**
  * Repository for alignment persistence operations.
  */
-class AlignmentRepository extends SyncableRepository[AlignmentEntity, UUID]:
+class AlignmentRepository extends SyncableRepositoryBase[AlignmentEntity]:
 
   import AlignmentEntity.given
+
+  override protected def tableName: String = "alignment"
 
   // ============================================
   // Core Repository Operations
@@ -135,38 +137,8 @@ class AlignmentRepository extends SyncableRepository[AlignmentEntity, UUID]:
   override def delete(id: UUID)(using conn: Connection): Boolean =
     executeUpdate("DELETE FROM alignment WHERE id = ?", Seq(id)) > 0
 
-  override def count()(using conn: Connection): Long =
-    queryOne("SELECT COUNT(*) FROM alignment") { rs =>
-      rs.getLong(1)
-    }.getOrElse(0L)
-
   override def exists(id: UUID)(using conn: Connection): Boolean =
     queryOne("SELECT 1 FROM alignment WHERE id = ?", Seq(id)) { _ => true }.isDefined
-
-  // ============================================
-  // Syncable Repository Operations
-  // ============================================
-
-  override def findByStatus(status: SyncStatus)(using conn: Connection): List[AlignmentEntity] =
-    queryList(
-      "SELECT * FROM alignment WHERE sync_status = ? ORDER BY updated_at DESC",
-      Seq(status.toString)
-    )(mapRow)
-
-  override def updateStatus(id: UUID, status: SyncStatus)(using conn: Connection): Boolean =
-    executeUpdate(
-      "UPDATE alignment SET sync_status = ?, updated_at = ? WHERE id = ?",
-      Seq(status.toString, LocalDateTime.now(), id)
-    ) > 0
-
-  override def markSynced(id: UUID, atUri: String, atCid: String)(using conn: Connection): Boolean =
-    executeUpdate(
-      """UPDATE alignment SET
-        |  sync_status = ?, at_uri = ?, at_cid = ?, updated_at = ?
-        |WHERE id = ?
-      """.stripMargin,
-      Seq(SyncStatus.Synced.toString, atUri, atCid, LocalDateTime.now(), id)
-    ) > 0
 
   // ============================================
   // Alignment-Specific Queries
@@ -188,17 +160,6 @@ class AlignmentRepository extends SyncableRepository[AlignmentEntity, UUID]:
     queryList(
       "SELECT * FROM alignment WHERE reference_build = ? ORDER BY created_at DESC",
       Seq(referenceBuild)
-    )(mapRow)
-
-  /**
-   * Find alignments pending sync.
-   */
-  def findPendingSync()(using conn: Connection): List[AlignmentEntity] =
-    queryList(
-      """SELECT * FROM alignment
-        |WHERE sync_status IN ('Local', 'Modified')
-        |ORDER BY updated_at ASC
-      """.stripMargin
     )(mapRow)
 
   /**
@@ -308,7 +269,7 @@ class AlignmentRepository extends SyncableRepository[AlignmentEntity, UUID]:
   // Result Set Mapping
   // ============================================
 
-  private def mapRow(rs: ResultSet): AlignmentEntity =
+  override protected def mapRow(rs: ResultSet): AlignmentEntity =
     val metricsJson = getOptJsonString(rs, "metrics")
     val metrics = metricsJson.flatMap { json =>
       parse(json).flatMap(_.as[AlignmentMetrics]).toOption
@@ -325,12 +286,5 @@ class AlignmentRepository extends SyncableRepository[AlignmentEntity, UUID]:
       variantCaller = getOptString(rs, "variant_caller"),
       metrics = metrics,
       files = files,
-      meta = EntityMeta(
-        syncStatus = SyncStatus.fromString(rs.getString("sync_status")),
-        atUri = getOptString(rs, "at_uri"),
-        atCid = getOptString(rs, "at_cid"),
-        version = rs.getInt("version"),
-        createdAt = getDateTime(rs, "created_at"),
-        updatedAt = getDateTime(rs, "updated_at")
-      )
+      meta = readEntityMeta(rs)
     )

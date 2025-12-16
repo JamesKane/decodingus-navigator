@@ -111,9 +111,11 @@ object ChipProfileCodecs:
 /**
  * Repository for Chip profile persistence operations.
  */
-class ChipProfileRepository extends SyncableRepository[ChipProfileEntity, UUID]:
+class ChipProfileRepository extends SyncableRepositoryBase[ChipProfileEntity]:
 
   import ChipProfileCodecs.given
+
+  override protected def tableName: String = "chip_profile"
 
   // ============================================
   // Core Repository Operations
@@ -209,38 +211,8 @@ class ChipProfileRepository extends SyncableRepository[ChipProfileEntity, UUID]:
   override def delete(id: UUID)(using conn: Connection): Boolean =
     executeUpdate("DELETE FROM chip_profile WHERE id = ?", Seq(id)) > 0
 
-  override def count()(using conn: Connection): Long =
-    queryOne("SELECT COUNT(*) FROM chip_profile") { rs =>
-      rs.getLong(1)
-    }.getOrElse(0L)
-
   override def exists(id: UUID)(using conn: Connection): Boolean =
     queryOne("SELECT 1 FROM chip_profile WHERE id = ?", Seq(id)) { _ => true }.isDefined
-
-  // ============================================
-  // Syncable Repository Operations
-  // ============================================
-
-  override def findByStatus(status: SyncStatus)(using conn: Connection): List[ChipProfileEntity] =
-    queryList(
-      "SELECT * FROM chip_profile WHERE sync_status = ? ORDER BY updated_at DESC",
-      Seq(status.toString)
-    )(mapRow)
-
-  override def updateStatus(id: UUID, status: SyncStatus)(using conn: Connection): Boolean =
-    executeUpdate(
-      "UPDATE chip_profile SET sync_status = ?, updated_at = ? WHERE id = ?",
-      Seq(status.toString, LocalDateTime.now(), id)
-    ) > 0
-
-  override def markSynced(id: UUID, atUri: String, atCid: String)(using conn: Connection): Boolean =
-    executeUpdate(
-      """UPDATE chip_profile SET
-        |  sync_status = ?, at_uri = ?, at_cid = ?, updated_at = ?
-        |WHERE id = ?
-      """.stripMargin,
-      Seq(SyncStatus.Synced.toString, atUri, atCid, LocalDateTime.now(), id)
-    ) > 0
 
   // ============================================
   // Chip Profile-Specific Queries
@@ -274,17 +246,6 @@ class ChipProfileRepository extends SyncableRepository[ChipProfileEntity, UUID]:
     )(mapRow)
 
   /**
-   * Find profiles pending sync.
-   */
-  def findPendingSync()(using conn: Connection): List[ChipProfileEntity] =
-    queryList(
-      """SELECT * FROM chip_profile
-        |WHERE sync_status IN ('Local', 'Modified')
-        |ORDER BY updated_at ASC
-      """.stripMargin
-    )(mapRow)
-
-  /**
    * Find chip profile by source file hash (for deduplication).
    */
   def findBySourceFileHash(hash: String)(using conn: Connection): Option[ChipProfileEntity] =
@@ -297,7 +258,7 @@ class ChipProfileRepository extends SyncableRepository[ChipProfileEntity, UUID]:
   // Result Set Mapping
   // ============================================
 
-  private def mapRow(rs: ResultSet): ChipProfileEntity =
+  override protected def mapRow(rs: ResultSet): ChipProfileEntity =
     val filesJson = getOptJsonString(rs, "files")
     val files = filesJson.flatMap(json => parse(json).flatMap(_.as[List[FileInfo]]).toOption).getOrElse(List.empty)
 
@@ -318,12 +279,5 @@ class ChipProfileRepository extends SyncableRepository[ChipProfileEntity, UUID]:
       sourceFileHash = getOptString(rs, "source_file_hash"),
       sourceFileName = getOptString(rs, "source_file_name"),
       files = files,
-      meta = EntityMeta(
-        syncStatus = SyncStatus.fromString(rs.getString("sync_status")),
-        atUri = getOptString(rs, "at_uri"),
-        atCid = getOptString(rs, "at_cid"),
-        version = rs.getInt("version"),
-        createdAt = getDateTime(rs, "created_at"),
-        updatedAt = getDateTime(rs, "updated_at")
-      )
+      meta = readEntityMeta(rs)
     )

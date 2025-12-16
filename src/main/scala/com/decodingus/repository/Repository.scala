@@ -257,3 +257,17 @@ object SqlHelpers:
       }
       ps.executeUpdate()
     }
+
+  /**
+   * Convert an object to a JsonValue for H2 JSON column storage.
+   * Requires a Circe Encoder in scope for the type.
+   */
+  def toJsonValue[A](obj: A)(using encoder: io.circe.Encoder[A]): JsonValue =
+    JsonValue(encoder(obj).noSpaces)
+
+  /**
+   * Convert an optional object to an optional JsonValue.
+   * Returns None if the input is None, otherwise wraps the JSON in Some.
+   */
+  def toOptJsonValue[A](obj: Option[A])(using encoder: io.circe.Encoder[A]): Option[JsonValue] =
+    obj.map(o => JsonValue(encoder(o).noSpaces))

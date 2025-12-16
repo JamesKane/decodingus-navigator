@@ -118,9 +118,11 @@ object StrProfileCodecs:
 /**
  * Repository for STR profile persistence operations.
  */
-class StrProfileRepository extends SyncableRepository[StrProfileEntity, UUID]:
+class StrProfileRepository extends SyncableRepositoryBase[StrProfileEntity]:
 
   import StrProfileCodecs.given
+
+  override protected def tableName: String = "str_profile"
 
   // ============================================
   // Core Repository Operations
@@ -204,38 +206,8 @@ class StrProfileRepository extends SyncableRepository[StrProfileEntity, UUID]:
   override def delete(id: UUID)(using conn: Connection): Boolean =
     executeUpdate("DELETE FROM str_profile WHERE id = ?", Seq(id)) > 0
 
-  override def count()(using conn: Connection): Long =
-    queryOne("SELECT COUNT(*) FROM str_profile") { rs =>
-      rs.getLong(1)
-    }.getOrElse(0L)
-
   override def exists(id: UUID)(using conn: Connection): Boolean =
     queryOne("SELECT 1 FROM str_profile WHERE id = ?", Seq(id)) { _ => true }.isDefined
-
-  // ============================================
-  // Syncable Repository Operations
-  // ============================================
-
-  override def findByStatus(status: SyncStatus)(using conn: Connection): List[StrProfileEntity] =
-    queryList(
-      "SELECT * FROM str_profile WHERE sync_status = ? ORDER BY updated_at DESC",
-      Seq(status.toString)
-    )(mapRow)
-
-  override def updateStatus(id: UUID, status: SyncStatus)(using conn: Connection): Boolean =
-    executeUpdate(
-      "UPDATE str_profile SET sync_status = ?, updated_at = ? WHERE id = ?",
-      Seq(status.toString, LocalDateTime.now(), id)
-    ) > 0
-
-  override def markSynced(id: UUID, atUri: String, atCid: String)(using conn: Connection): Boolean =
-    executeUpdate(
-      """UPDATE str_profile SET
-        |  sync_status = ?, at_uri = ?, at_cid = ?, updated_at = ?
-        |WHERE id = ?
-      """.stripMargin,
-      Seq(SyncStatus.Synced.toString, atUri, atCid, LocalDateTime.now(), id)
-    ) > 0
 
   // ============================================
   // STR Profile-Specific Queries
@@ -277,22 +249,11 @@ class StrProfileRepository extends SyncableRepository[StrProfileEntity, UUID]:
       Seq(provider)
     )(mapRow)
 
-  /**
-   * Find profiles pending sync.
-   */
-  def findPendingSync()(using conn: Connection): List[StrProfileEntity] =
-    queryList(
-      """SELECT * FROM str_profile
-        |WHERE sync_status IN ('Local', 'Modified')
-        |ORDER BY updated_at ASC
-      """.stripMargin
-    )(mapRow)
-
   // ============================================
   // Result Set Mapping
   // ============================================
 
-  private def mapRow(rs: ResultSet): StrProfileEntity =
+  override protected def mapRow(rs: ResultSet): StrProfileEntity =
     val panelsJson = getOptJsonString(rs, "panels")
     val panels = panelsJson.flatMap(json => parse(json).flatMap(_.as[List[StrPanel]]).toOption).getOrElse(List.empty)
 
@@ -313,12 +274,5 @@ class StrProfileRepository extends SyncableRepository[StrProfileEntity, UUID]:
       importedFrom = getOptString(rs, "imported_from"),
       derivationMethod = getOptString(rs, "derivation_method"),
       files = files,
-      meta = EntityMeta(
-        syncStatus = SyncStatus.fromString(rs.getString("sync_status")),
-        atUri = getOptString(rs, "at_uri"),
-        atCid = getOptString(rs, "at_cid"),
-        version = rs.getInt("version"),
-        createdAt = getDateTime(rs, "created_at"),
-        updatedAt = getDateTime(rs, "updated_at")
-      )
+      meta = readEntityMeta(rs)
     )

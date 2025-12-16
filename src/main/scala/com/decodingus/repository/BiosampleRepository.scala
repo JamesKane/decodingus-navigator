@@ -66,9 +66,11 @@ object BiosampleEntity:
 /**
  * Repository for biosample persistence operations.
  */
-class BiosampleRepository extends SyncableRepository[BiosampleEntity, UUID]:
+class BiosampleRepository extends SyncableRepositoryBase[BiosampleEntity]:
 
   import BiosampleEntity.given
+
+  override protected def tableName: String = "biosample"
 
   // ============================================
   // Core Repository Operations
@@ -144,38 +146,8 @@ class BiosampleRepository extends SyncableRepository[BiosampleEntity, UUID]:
   override def delete(id: UUID)(using conn: Connection): Boolean =
     executeUpdate("DELETE FROM biosample WHERE id = ?", Seq(id)) > 0
 
-  override def count()(using conn: Connection): Long =
-    queryOne("SELECT COUNT(*) FROM biosample") { rs =>
-      rs.getLong(1)
-    }.getOrElse(0L)
-
   override def exists(id: UUID)(using conn: Connection): Boolean =
     queryOne("SELECT 1 FROM biosample WHERE id = ?", Seq(id)) { _ => true }.isDefined
-
-  // ============================================
-  // Syncable Repository Operations
-  // ============================================
-
-  override def findByStatus(status: SyncStatus)(using conn: Connection): List[BiosampleEntity] =
-    queryList(
-      "SELECT * FROM biosample WHERE sync_status = ? ORDER BY updated_at DESC",
-      Seq(status.toString)
-    )(mapRow)
-
-  override def updateStatus(id: UUID, status: SyncStatus)(using conn: Connection): Boolean =
-    executeUpdate(
-      "UPDATE biosample SET sync_status = ?, updated_at = ? WHERE id = ?",
-      Seq(status.toString, LocalDateTime.now(), id)
-    ) > 0
-
-  override def markSynced(id: UUID, atUri: String, atCid: String)(using conn: Connection): Boolean =
-    executeUpdate(
-      """UPDATE biosample SET
-        |  sync_status = ?, at_uri = ?, at_cid = ?, updated_at = ?
-        |WHERE id = ?
-      """.stripMargin,
-      Seq(SyncStatus.Synced.toString, atUri, atCid, LocalDateTime.now(), id)
-    ) > 0
 
   // ============================================
   // Biosample-Specific Queries
@@ -209,17 +181,6 @@ class BiosampleRepository extends SyncableRepository[BiosampleEntity, UUID]:
     )(mapRow)
 
   /**
-   * Find biosamples pending sync (Local or Modified status).
-   */
-  def findPendingSync()(using conn: Connection): List[BiosampleEntity] =
-    queryList(
-      """SELECT * FROM biosample
-        |WHERE sync_status IN ('Local', 'Modified')
-        |ORDER BY updated_at ASC
-      """.stripMargin
-    )(mapRow)
-
-  /**
    * Update haplogroup assignments for a biosample.
    */
   def updateHaplogroups(id: UUID, haplogroups: HaplogroupAssignments)(using conn: Connection): Boolean =
@@ -246,7 +207,7 @@ class BiosampleRepository extends SyncableRepository[BiosampleEntity, UUID]:
   // Result Set Mapping
   // ============================================
 
-  private def mapRow(rs: ResultSet): BiosampleEntity =
+  override protected def mapRow(rs: ResultSet): BiosampleEntity =
     val haplogroupsJson = getOptJsonString(rs, "haplogroups")
     val haplogroups = haplogroupsJson.flatMap { json =>
       parse(json).flatMap(_.as[HaplogroupAssignments]).toOption
@@ -261,12 +222,5 @@ class BiosampleRepository extends SyncableRepository[BiosampleEntity, UUID]:
       sex = getOptString(rs, "sex"),
       citizenDid = getOptString(rs, "citizen_did"),
       haplogroups = haplogroups,
-      meta = EntityMeta(
-        syncStatus = SyncStatus.fromString(rs.getString("sync_status")),
-        atUri = getOptString(rs, "at_uri"),
-        atCid = getOptString(rs, "at_cid"),
-        version = rs.getInt("version"),
-        createdAt = getDateTime(rs, "created_at"),
-        updatedAt = getDateTime(rs, "updated_at")
-      )
+      meta = readEntityMeta(rs)
     )

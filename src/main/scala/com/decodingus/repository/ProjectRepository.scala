@@ -49,7 +49,9 @@ case class ProjectMembership(
  *
  * Includes methods for managing project membership via the junction table.
  */
-class ProjectRepository extends SyncableRepository[ProjectEntity, UUID]:
+class ProjectRepository extends SyncableRepositoryBase[ProjectEntity]:
+
+  override protected def tableName: String = "project"
 
   // ============================================
   // Core Repository Operations
@@ -113,38 +115,8 @@ class ProjectRepository extends SyncableRepository[ProjectEntity, UUID]:
     // CASCADE delete will remove project_member entries
     executeUpdate("DELETE FROM project WHERE id = ?", Seq(id)) > 0
 
-  override def count()(using conn: Connection): Long =
-    queryOne("SELECT COUNT(*) FROM project") { rs =>
-      rs.getLong(1)
-    }.getOrElse(0L)
-
   override def exists(id: UUID)(using conn: Connection): Boolean =
     queryOne("SELECT 1 FROM project WHERE id = ?", Seq(id)) { _ => true }.isDefined
-
-  // ============================================
-  // Syncable Repository Operations
-  // ============================================
-
-  override def findByStatus(status: SyncStatus)(using conn: Connection): List[ProjectEntity] =
-    queryList(
-      "SELECT * FROM project WHERE sync_status = ? ORDER BY updated_at DESC",
-      Seq(status.toString)
-    )(mapRow)
-
-  override def updateStatus(id: UUID, status: SyncStatus)(using conn: Connection): Boolean =
-    executeUpdate(
-      "UPDATE project SET sync_status = ?, updated_at = ? WHERE id = ?",
-      Seq(status.toString, LocalDateTime.now(), id)
-    ) > 0
-
-  override def markSynced(id: UUID, atUri: String, atCid: String)(using conn: Connection): Boolean =
-    executeUpdate(
-      """UPDATE project SET
-        |  sync_status = ?, at_uri = ?, at_cid = ?, updated_at = ?
-        |WHERE id = ?
-      """.stripMargin,
-      Seq(SyncStatus.Synced.toString, atUri, atCid, LocalDateTime.now(), id)
-    ) > 0
 
   // ============================================
   // Project-Specific Queries
@@ -166,17 +138,6 @@ class ProjectRepository extends SyncableRepository[ProjectEntity, UUID]:
     queryList(
       "SELECT * FROM project WHERE administrator_did = ? ORDER BY project_name",
       Seq(did)
-    )(mapRow)
-
-  /**
-   * Find projects pending sync.
-   */
-  def findPendingSync()(using conn: Connection): List[ProjectEntity] =
-    queryList(
-      """SELECT * FROM project
-        |WHERE sync_status IN ('Local', 'Modified')
-        |ORDER BY updated_at ASC
-      """.stripMargin
     )(mapRow)
 
   /**
@@ -326,18 +287,11 @@ class ProjectRepository extends SyncableRepository[ProjectEntity, UUID]:
   // Result Set Mapping
   // ============================================
 
-  private def mapRow(rs: ResultSet): ProjectEntity =
+  override protected def mapRow(rs: ResultSet): ProjectEntity =
     ProjectEntity(
       id = getUUID(rs, "id"),
       projectName = rs.getString("project_name"),
       description = getOptString(rs, "description"),
       administratorDid = rs.getString("administrator_did"),
-      meta = EntityMeta(
-        syncStatus = SyncStatus.fromString(rs.getString("sync_status")),
-        atUri = getOptString(rs, "at_uri"),
-        atCid = getOptString(rs, "at_cid"),
-        version = rs.getInt("version"),
-        createdAt = getDateTime(rs, "created_at"),
-        updatedAt = getDateTime(rs, "updated_at")
-      )
+      meta = readEntityMeta(rs)
     )
