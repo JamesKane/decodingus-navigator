@@ -6,7 +6,7 @@ import com.decodingus.ui.components.{AddSequenceDataDialog, ConfirmDialog, EditS
 import com.decodingus.ui.v2.BiosampleExtensions.*
 import com.decodingus.util.Logger
 import com.decodingus.workspace.WorkbenchViewModel
-import com.decodingus.workspace.model.{Biosample, HaplogroupResult}
+import com.decodingus.workspace.model.{Biosample, ChipProfile, HaplogroupResult, SequenceRun, StrProfile}
 import scalafx.Includes.*
 import scalafx.beans.property.{ObjectProperty, StringProperty}
 import scalafx.geometry.{Insets, Pos, Side}
@@ -154,6 +154,17 @@ class SubjectDetailView(viewModel: WorkbenchViewModel) extends VBox {
   }
   private val mtdnaResultPane = new VBox(15) {
     padding = Insets(0)
+  }
+
+  // Data Sources tab containers
+  private val sequencingListContainer = new VBox(8) {
+    id = "sequencing-list"
+  }
+  private val chipListContainer = new VBox(8) {
+    id = "chip-list"
+  }
+  private val strListContainer = new VBox(8) {
+    id = "str-list"
   }
 
   // ============================================================================
@@ -514,9 +525,9 @@ class SubjectDetailView(viewModel: WorkbenchViewModel) extends VBox {
   // ============================================================================
 
   private def createDataSourcesContent(): ScrollPane = {
-    val sequencingSection = createDataSection("data.sequencing_runs", "sequencing-list")
-    val chipSection = createDataSection("data.chip_profiles", "chip-list")
-    val strSection = createDataSection("data.str_profiles", "str-list")
+    val sequencingSection = createDataSection("data.sequencing_runs", sequencingListContainer, "data.no_sequencing")
+    val chipSection = createDataSection("data.chip_profiles", chipListContainer, "data.no_chip")
+    val strSection = createDataSection("data.str_profiles", strListContainer, "data.no_str")
 
     val addDataButton = new Button {
       text <== bind("data.add")
@@ -526,13 +537,15 @@ class SubjectDetailView(viewModel: WorkbenchViewModel) extends VBox {
 
     new ScrollPane {
       fitToWidth = true
+      style = "-fx-background: #1e1e1e; -fx-background-color: #1e1e1e;"
       content = new VBox(20) {
         padding = Insets(20)
+        style = "-fx-background-color: #1e1e1e;"
         children = Seq(
           new HBox(10) {
             alignment = Pos.CenterLeft
             children = Seq(
-              new Label { text <== bind("data.title"); style = "-fx-font-size: 18px; -fx-font-weight: bold;" },
+              new Label { text <== bind("data.title"); style = "-fx-font-size: 18px; -fx-font-weight: bold; -fx-text-fill: #ffffff;" },
               new Region { hgrow = Priority.Always },
               addDataButton
             )
@@ -545,26 +558,196 @@ class SubjectDetailView(viewModel: WorkbenchViewModel) extends VBox {
     }
   }
 
-  private def createDataSection(titleKey: String, listId: String): VBox = {
-    val placeholder = new Label {
-      text <== bind(titleKey match {
-        case "data.sequencing_runs" => "data.no_sequencing"
-        case "data.chip_profiles" => "data.no_chip"
-        case _ => "data.no_str"
-      })
-      style = "-fx-text-fill: #666666;"
-    }
-
+  private def createDataSection(titleKey: String, container: VBox, emptyKey: String): VBox = {
     new VBox(10) {
       padding = Insets(15)
       style = "-fx-background-color: #2a2a2a; -fx-background-radius: 10;"
       children = Seq(
-        new Label { text <== bind(titleKey); style = "-fx-font-weight: bold;" },
-        new VBox {
-          id = listId
-          children = Seq(placeholder)
+        new Label { text <== bind(titleKey); style = "-fx-font-weight: bold; -fx-text-fill: #ffffff;" },
+        container
+      )
+    }
+  }
+
+  // ============================================================================
+  // Data Source Item Creation
+  // ============================================================================
+
+  private def createSequenceRunItem(seqRun: SequenceRun, index: Int): HBox = {
+    val testTypeDisplay = SequenceRun.testTypeDisplayName(seqRun.testType)
+    val readsDisplay = seqRun.totalReads.map(r => formatReadCount(r)).getOrElse("-")
+    val alignedPct = seqRun.pctPfReadsAligned.map(p => f"${p * 100}%.1f%%").getOrElse("-")
+
+    new HBox(15) {
+      alignment = Pos.CenterLeft
+      padding = Insets(10)
+      style = "-fx-background-color: #333333; -fx-background-radius: 5;"
+      children = Seq(
+        // Icon/type indicator
+        new Label {
+          text = seqRun.platformName.take(3)
+          prefWidth = 40
+          style = "-fx-font-weight: bold; -fx-text-fill: #4ade80; -fx-font-family: monospace;"
+        },
+        // Main info
+        new VBox(3) {
+          hgrow = Priority.Always
+          children = Seq(
+            new HBox(8) {
+              alignment = Pos.CenterLeft
+              children = Seq(
+                new Label(testTypeDisplay) { style = "-fx-font-weight: bold; -fx-text-fill: #ffffff;" },
+                new Label(s"• ${seqRun.platformName}") { style = "-fx-text-fill: #888888;" },
+                seqRun.instrumentModel.map(m => new Label(s"• $m") { style = "-fx-text-fill: #888888;" }).getOrElse(new Region)
+              )
+            },
+            new HBox(15) {
+              children = Seq(
+                new Label(s"${t("data.reads")}: $readsDisplay") { style = "-fx-text-fill: #b0b0b0; -fx-font-size: 11px;" },
+                new Label(s"${t("data.aligned")}: $alignedPct") { style = "-fx-text-fill: #b0b0b0; -fx-font-size: 11px;" },
+                seqRun.libraryLayout.map(l => new Label(l) { style = "-fx-text-fill: #666666; -fx-font-size: 11px;" }).getOrElse(new Region)
+              )
+            }
+          )
+        },
+        // Capabilities badges
+        new HBox(5) {
+          alignment = Pos.CenterRight
+          children = {
+            val badges = scala.collection.mutable.ArrayBuffer[scalafx.scene.Node]()
+            if (SequenceRun.supportsYDna(seqRun.testType)) {
+              badges += new Label("Y") {
+                style = "-fx-background-color: #2d3a2d; -fx-text-fill: #4ade80; -fx-padding: 2 6; -fx-background-radius: 3; -fx-font-size: 10px;"
+              }
+            }
+            if (SequenceRun.supportsMtDna(seqRun.testType)) {
+              badges += new Label("mt") {
+                style = "-fx-background-color: #2d2d3a; -fx-text-fill: #60a5fa; -fx-padding: 2 6; -fx-background-radius: 3; -fx-font-size: 10px;"
+              }
+            }
+            badges.toSeq
+          }
         }
       )
+    }
+  }
+
+  private def createChipProfileItem(chip: ChipProfile, index: Int): HBox = {
+    val callRatePct = f"${chip.callRate * 100}%.1f%%"
+    val statusStyle = chip.status match {
+      case "Good" => "-fx-text-fill: #4ade80;"
+      case "Acceptable" => "-fx-text-fill: #fbbf24;"
+      case _ => "-fx-text-fill: #f87171;"
+    }
+
+    new HBox(15) {
+      alignment = Pos.CenterLeft
+      padding = Insets(10)
+      style = "-fx-background-color: #333333; -fx-background-radius: 5;"
+      children = Seq(
+        // Icon/vendor indicator
+        new Label {
+          text = chip.vendor.take(3).toUpperCase
+          prefWidth = 40
+          style = "-fx-font-weight: bold; -fx-text-fill: #fbbf24; -fx-font-family: monospace;"
+        },
+        // Main info
+        new VBox(3) {
+          hgrow = Priority.Always
+          children = Seq(
+            new HBox(8) {
+              alignment = Pos.CenterLeft
+              children = Seq(
+                new Label(chip.vendor) { style = "-fx-font-weight: bold; -fx-text-fill: #ffffff;" },
+                chip.chipVersion.map(v => new Label(s"• $v") { style = "-fx-text-fill: #888888;" }).getOrElse(new Region)
+              )
+            },
+            new HBox(15) {
+              children = Seq(
+                new Label(s"${t("data.markers")}: ${Formatters.formatNumber(chip.totalMarkersCalled)}") { style = "-fx-text-fill: #b0b0b0; -fx-font-size: 11px;" },
+                new Label(s"${t("data.call_rate")}: $callRatePct") { style = "-fx-text-fill: #b0b0b0; -fx-font-size: 11px;" },
+                new Label(chip.status) { style = s"-fx-font-size: 11px; $statusStyle" }
+              )
+            }
+          )
+        },
+        // Capabilities badges
+        new HBox(5) {
+          alignment = Pos.CenterRight
+          children = {
+            val badges = scala.collection.mutable.ArrayBuffer[scalafx.scene.Node]()
+            if (chip.hasSufficientYCoverage) {
+              badges += new Label("Y") {
+                style = "-fx-background-color: #2d3a2d; -fx-text-fill: #4ade80; -fx-padding: 2 6; -fx-background-radius: 3; -fx-font-size: 10px;"
+              }
+            }
+            if (chip.hasSufficientMtCoverage) {
+              badges += new Label("mt") {
+                style = "-fx-background-color: #2d2d3a; -fx-text-fill: #60a5fa; -fx-padding: 2 6; -fx-background-radius: 3; -fx-font-size: 10px;"
+              }
+            }
+            if (chip.isAcceptableForAncestry) {
+              badges += new Label("Anc") {
+                style = "-fx-background-color: #3a2d3a; -fx-text-fill: #c084fc; -fx-padding: 2 6; -fx-background-radius: 3; -fx-font-size: 10px;"
+              }
+            }
+            badges.toSeq
+          }
+        }
+      )
+    }
+  }
+
+  private def createStrProfileItem(strProfile: StrProfile, index: Int): HBox = {
+    val markerCount = strProfile.totalMarkers.getOrElse(strProfile.markers.size)
+    val panelNames = strProfile.panels.map(_.panelName).mkString(", ")
+    val sourceDisplay = strProfile.source.getOrElse(strProfile.importedFrom.getOrElse("-"))
+
+    new HBox(15) {
+      alignment = Pos.CenterLeft
+      padding = Insets(10)
+      style = "-fx-background-color: #333333; -fx-background-radius: 5;"
+      children = Seq(
+        // Icon/source indicator
+        new Label {
+          text = strProfile.importedFrom.map(_.take(3).toUpperCase).getOrElse("STR")
+          prefWidth = 40
+          style = "-fx-font-weight: bold; -fx-text-fill: #c084fc; -fx-font-family: monospace;"
+        },
+        // Main info
+        new VBox(3) {
+          hgrow = Priority.Always
+          children = Seq(
+            new HBox(8) {
+              alignment = Pos.CenterLeft
+              children = Seq(
+                new Label(if (panelNames.nonEmpty) panelNames else t("data.str_profile")) { style = "-fx-font-weight: bold; -fx-text-fill: #ffffff;" },
+                strProfile.importedFrom.map(s => new Label(s"• $s") { style = "-fx-text-fill: #888888;" }).getOrElse(new Region)
+              )
+            },
+            new HBox(15) {
+              children = Seq(
+                new Label(s"${t("data.markers")}: $markerCount") { style = "-fx-text-fill: #b0b0b0; -fx-font-size: 11px;" },
+                new Label(s"${t("data.source")}: $sourceDisplay") { style = "-fx-text-fill: #b0b0b0; -fx-font-size: 11px;" }
+              )
+            }
+          )
+        }
+      )
+    }
+  }
+
+  private def formatReadCount(reads: Long): String = {
+    if (reads >= 1_000_000_000) f"${reads / 1_000_000_000.0}%.1fB"
+    else if (reads >= 1_000_000) f"${reads / 1_000_000.0}%.1fM"
+    else if (reads >= 1_000) f"${reads / 1_000.0}%.1fK"
+    else reads.toString
+  }
+
+  private def createEmptyPlaceholder(messageKey: String): Label = {
+    new Label {
+      text <== bind(messageKey)
+      style = "-fx-text-fill: #666666; -fx-font-style: italic;"
     }
   }
 
@@ -661,10 +844,50 @@ class SubjectDetailView(viewModel: WorkbenchViewModel) extends VBox {
         mtdnaResultPane.visible = false
     }
 
-    // Update data counts
-    sequencingCountLabel.text = subject.sequenceRunCount.toString
-    chipCountLabel.text = subject.genotypeCount.toString
-    strCountLabel.text = subject.strProfileCount.toString
+    // Update data counts and Data Sources tab
+    updateDataSources(subject)
+  }
+
+  private def updateDataSources(subject: Biosample): Unit = {
+    // Get actual data from ViewModel
+    val sequenceRuns = viewModel.workspace.value.main.getSequenceRunsForBiosample(subject)
+    val chipProfiles = viewModel.getChipProfilesForBiosample(subject.accession)
+    val strProfiles = viewModel.getStrProfilesForBiosample(subject.accession)
+
+    // Update counts on Overview tab
+    sequencingCountLabel.text = sequenceRuns.size.toString
+    chipCountLabel.text = chipProfiles.size.toString
+    strCountLabel.text = strProfiles.size.toString
+
+    // Update sequencing runs container
+    sequencingListContainer.children.clear()
+    if (sequenceRuns.isEmpty) {
+      sequencingListContainer.children += createEmptyPlaceholder("data.no_sequencing")
+    } else {
+      sequenceRuns.zipWithIndex.foreach { case (seqRun, idx) =>
+        sequencingListContainer.children += createSequenceRunItem(seqRun, idx)
+      }
+    }
+
+    // Update chip profiles container
+    chipListContainer.children.clear()
+    if (chipProfiles.isEmpty) {
+      chipListContainer.children += createEmptyPlaceholder("data.no_chip")
+    } else {
+      chipProfiles.zipWithIndex.foreach { case (chip, idx) =>
+        chipListContainer.children += createChipProfileItem(chip, idx)
+      }
+    }
+
+    // Update STR profiles container
+    strListContainer.children.clear()
+    if (strProfiles.isEmpty) {
+      strListContainer.children += createEmptyPlaceholder("data.no_str")
+    } else {
+      strProfiles.zipWithIndex.foreach { case (strProfile, idx) =>
+        strListContainer.children += createStrProfileItem(strProfile, idx)
+      }
+    }
   }
 
   private def confidenceStyle(level: String): String = level match {
