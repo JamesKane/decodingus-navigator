@@ -1076,7 +1076,7 @@ class SubjectDetailView(viewModel: WorkbenchViewModel) extends VBox {
                       return
                   }
 
-                case DataType.ChipData =>
+                case DataType.ChipData(_) =>
                   // Chip/array data import using existing parser
                   viewModel.importChipData(subject.accession, file, {
                     case Right(chipProfile) =>
@@ -1096,6 +1096,11 @@ class SubjectDetailView(viewModel: WorkbenchViewModel) extends VBox {
                       }
                   })
                   // Chip import is async, so return here - callback will handle UI update
+                  return
+
+                case DataType.Unknown =>
+                  // Should not happen as dialog disables Add button for unknown types
+                  log.warn("Unknown file type - this should not happen")
                   return
               }
 

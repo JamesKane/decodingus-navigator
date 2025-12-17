@@ -2,6 +2,7 @@ package com.decodingus.ui.components
 
 import com.decodingus.analysis.AnalysisCache
 import com.decodingus.i18n.I18n.t
+import com.decodingus.util.{CsvFileType, CsvFingerprinter}
 import com.decodingus.workspace.model.FileInfo
 import scalafx.Includes.*
 import scalafx.application.Platform
@@ -21,36 +22,28 @@ import scala.util.{Failure, Success}
  */
 sealed trait DataType {
   def label: String
-  def extensions: Seq[String]
-  def extensionFilter: FileChooser.ExtensionFilter
 }
 
 object DataType {
   case object Alignment extends DataType {
     val label = "Alignment (BAM/CRAM)"
-    val extensions = Seq("*.bam", "*.cram")
-    val extensionFilter = new FileChooser.ExtensionFilter("Alignment Files", extensions)
   }
 
   case object Variants extends DataType {
     val label = "Variants (VCF)"
-    val extensions = Seq("*.vcf", "*.vcf.gz")
-    val extensionFilter = new FileChooser.ExtensionFilter("VCF Files", extensions)
   }
 
   case object StrProfile extends DataType {
-    val label = "STR Profile (CSV/TSV)"
-    val extensions = Seq("*.csv", "*.tsv", "*.txt")
-    val extensionFilter = new FileChooser.ExtensionFilter("STR Files", extensions)
+    val label = "STR Profile"
   }
 
-  case object ChipData extends DataType {
-    val label = "Chip/Array Data (23andMe, Ancestry, etc.)"
-    val extensions = Seq("*.txt", "*.csv", "*.zip")
-    val extensionFilter = new FileChooser.ExtensionFilter("Chip Data Files", extensions)
+  case class ChipData(vendor: Option[String] = None) extends DataType {
+    val label = vendor.map(v => s"$v Chip Data").getOrElse("Chip/SNP Data")
   }
 
-  val all: Seq[DataType] = Seq(Alignment, Variants, StrProfile, ChipData)
+  case object Unknown extends DataType {
+    val label = "Unknown"
+  }
 }
 
 /**
@@ -63,59 +56,42 @@ case class DataInput(
 )
 
 /**
- * Unified dialog for adding data of various types.
- * Supports:
- * - Alignment files (BAM/CRAM)
- * - Variant files (VCF)
- * - STR profiles (CSV/TSV)
- * - Chip/Array data (23andMe, AncestryDNA, etc.)
+ * Unified dialog for adding data files with auto-detection.
+ *
+ * Automatically detects file type based on:
+ * - File extension (BAM, CRAM, VCF)
+ * - Content fingerprinting for CSV/TXT (STR profiles vs chip data)
  */
 class AddDataDialog(
   existingChecksums: Set[String] = Set.empty
 ) extends Dialog[Option[DataInput]] {
 
   title = t("data.add")
-  headerText = t("data.select_type")
+  headerText = t("data.add_file")
 
   val addButtonType = new ButtonType(t("action.add"), ButtonBar.ButtonData.OKDone)
   dialogPane().buttonTypes = Seq(addButtonType, ButtonType.Cancel)
 
-  // Data type selection
-  private val dataTypeCombo = new ComboBox[DataType] {
-    items = scalafx.collections.ObservableBuffer.from(DataType.all)
-    cellFactory = (lv: scalafx.scene.control.ListView[DataType]) => new ListCell[DataType] {
-      item.onChange { (_, _, newType) =>
-        text = Option(newType).map(_.label).getOrElse("")
-      }
-    }
-    buttonCell = new ListCell[DataType] {
-      item.onChange { (_, _, newType) =>
-        text = Option(newType).map(_.label).getOrElse("")
-      }
-    }
-    selectionModel.value.selectFirst()
-    prefWidth = 350
-  }
-
-  private val dataTypeSection = new VBox(5) {
-    children = Seq(
-      new Label(t("data.type")) { style = "-fx-font-weight: bold;" },
-      dataTypeCombo
-    )
-  }
-
-  // File selection
+  // State
   private var selectedFile: Option[File] = None
+  private var detectedType: DataType = DataType.Unknown
   private var computedSha256: Option[String] = None
-  private var isComputingHash = false
+  private var isProcessing = false
 
+  // UI Elements - Drop zone
   private val dropZoneLabel = new Label(t("data.drag_drop_or_browse")) {
     style = "-fx-font-size: 14px; -fx-text-fill: #888888;"
     wrapText = true
   }
 
   private val fileNameLabel = new Label() {
-    style = "-fx-font-size: 12px; -fx-font-weight: bold;"
+    style = "-fx-font-size: 14px; -fx-font-weight: bold; -fx-text-fill: #333333;"
+    visible = false
+    managed = false
+  }
+
+  private val detectedTypeLabel = new Label() {
+    style = "-fx-font-size: 12px; -fx-text-fill: #4CAF50; -fx-font-weight: bold;"
     visible = false
     managed = false
   }
@@ -126,27 +102,39 @@ class AddDataDialog(
     managed = false
   }
 
-  private val hashProgress = new ProgressIndicator() {
+  private val progressIndicator = new ProgressIndicator() {
     prefWidth = 24
     prefHeight = 24
     visible = false
     managed = false
   }
 
-  private val dropZone = new VBox(10) {
+  private val statusLabel = new Label() {
+    style = "-fx-font-size: 11px; -fx-text-fill: #888888;"
+    visible = false
+    managed = false
+  }
+
+  private val dropZone = new VBox(8) {
     alignment = Pos.Center
     padding = Insets(30)
-    prefHeight = 150
+    prefHeight = 180
     style = "-fx-border-color: #cccccc; -fx-border-style: dashed; -fx-border-width: 2; -fx-border-radius: 8; -fx-background-color: #f8f8f8; -fx-background-radius: 8;"
-    children = Seq(dropZoneLabel, fileNameLabel, new HBox(10) {
-      alignment = Pos.Center
-      children = Seq(hashProgress, checksumLabel)
-    })
+    children = Seq(
+      dropZoneLabel,
+      fileNameLabel,
+      detectedTypeLabel,
+      new HBox(10) {
+        alignment = Pos.Center
+        children = Seq(progressIndicator, statusLabel)
+      },
+      checksumLabel
+    )
 
     onDragOver = (event: DragEvent) => {
-      if (event.dragboard.hasFiles) {
+      if (event.dragboard.hasFiles && !isProcessing) {
         val files = event.dragboard.getFiles
-        if (files.size == 1 && isValidFile(files.get(0))) {
+        if (files.size == 1 && isSupportedFile(files.get(0))) {
           event.acceptTransferModes(TransferMode.Copy)
           style = "-fx-border-color: #4CAF50; -fx-border-style: dashed; -fx-border-width: 2; -fx-border-radius: 8; -fx-background-color: #e8f5e9; -fx-background-radius: 8;"
         }
@@ -155,13 +143,15 @@ class AddDataDialog(
     }
 
     onDragExited = (_: DragEvent) => {
-      style = "-fx-border-color: #cccccc; -fx-border-style: dashed; -fx-border-width: 2; -fx-border-radius: 8; -fx-background-color: #f8f8f8; -fx-background-radius: 8;"
+      if (!selectedFile.isDefined) {
+        style = "-fx-border-color: #cccccc; -fx-border-style: dashed; -fx-border-width: 2; -fx-border-radius: 8; -fx-background-color: #f8f8f8; -fx-background-radius: 8;"
+      }
     }
 
     onDragDropped = (event: DragEvent) => {
-      if (event.dragboard.hasFiles) {
+      if (event.dragboard.hasFiles && !isProcessing) {
         val files = event.dragboard.getFiles
-        if (files.size == 1 && isValidFile(files.get(0))) {
+        if (files.size == 1 && isSupportedFile(files.get(0))) {
           handleFileSelected(files.get(0))
           event.dropCompleted = true
         }
@@ -172,36 +162,42 @@ class AddDataDialog(
 
   private val browseButton = new Button(t("action.browse")) {
     onAction = _ => {
-      val selectedType = dataTypeCombo.selectionModel.value.getSelectedItem
-      val fileChooser = new FileChooser() {
-        title = t("data.select_file")
-        extensionFilters.add(selectedType.extensionFilter)
-        extensionFilters.add(new FileChooser.ExtensionFilter("All Files", "*.*"))
+      if (!isProcessing) {
+        val fileChooser = new FileChooser() {
+          title = t("data.select_file")
+          extensionFilters.addAll(
+            new FileChooser.ExtensionFilter("All Supported Files", Seq("*.bam", "*.cram", "*.vcf", "*.vcf.gz", "*.csv", "*.tsv", "*.txt", "*.zip")),
+            new FileChooser.ExtensionFilter("Alignment Files", Seq("*.bam", "*.cram")),
+            new FileChooser.ExtensionFilter("VCF Files", Seq("*.vcf", "*.vcf.gz")),
+            new FileChooser.ExtensionFilter("CSV/Text Files", Seq("*.csv", "*.tsv", "*.txt")),
+            new FileChooser.ExtensionFilter("All Files", "*.*")
+          )
+        }
+        Option(fileChooser.showOpenDialog(dialogPane().getScene.getWindow)).foreach(handleFileSelected)
       }
-      Option(fileChooser.showOpenDialog(dialogPane().getScene.getWindow)).foreach(handleFileSelected)
     }
   }
 
-  private val fileSection = new VBox(10) {
-    children = Seq(
-      new Label(t("data.file")) { style = "-fx-font-weight: bold;" },
-      dropZone,
-      browseButton
-    )
+  private val clearButton = new Button(t("action.clear")) {
+    visible = false
+    managed = false
+    onAction = _ => clearFileSelection()
   }
 
-  // Update drop zone text when data type changes
-  dataTypeCombo.selectionModel.value.selectedItemProperty.onChange { (_, _, newType) =>
-    if (newType != null) {
-      dropZoneLabel.text = s"${t("data.drag_drop_or_browse")}\n(${newType.extensions.mkString(", ")})"
-      // Clear any previously selected file
-      clearFileSelection()
-    }
+  private val buttonBox = new HBox(10) {
+    alignment = Pos.Center
+    children = Seq(browseButton, clearButton)
   }
 
-  private val contentPane = new VBox(20) {
+  private val helpLabel = new Label(t("data.auto_detect_help")) {
+    wrapText = true
+    prefWidth = 380
+    style = "-fx-text-fill: #888888; -fx-font-size: 11px;"
+  }
+
+  private val contentPane = new VBox(15) {
     padding = Insets(20)
-    children = Seq(dataTypeSection, fileSection)
+    children = Seq(dropZone, buttonBox, helpLabel)
   }
 
   dialogPane().content = contentPane
@@ -212,34 +208,44 @@ class AddDataDialog(
   addButton.disable = true
 
   private def updateAddButton(): Unit = {
-    val isValid = selectedFile.isDefined && !isComputingHash
+    val isValid = selectedFile.isDefined && !isProcessing && detectedType != DataType.Unknown
     addButton.disable = !isValid
   }
 
-  private def isValidFile(file: File): Boolean = {
-    val selectedType = dataTypeCombo.selectionModel.value.getSelectedItem
-    if (selectedType == null) return false
-
+  private def isSupportedFile(file: File): Boolean = {
     val name = file.getName.toLowerCase
-    selectedType.extensions.exists { ext =>
-      val pattern = ext.replace("*", "").toLowerCase
-      name.endsWith(pattern)
-    }
+    name.endsWith(".bam") ||
+      name.endsWith(".cram") ||
+      name.endsWith(".vcf") ||
+      name.endsWith(".vcf.gz") ||
+      name.endsWith(".csv") ||
+      name.endsWith(".tsv") ||
+      name.endsWith(".txt") ||
+      name.endsWith(".zip") ||
+      name.endsWith(".csv.gz") ||
+      name.endsWith(".txt.gz")
   }
 
   private def clearFileSelection(): Unit = {
     selectedFile = None
+    detectedType = DataType.Unknown
     computedSha256 = None
-    isComputingHash = false
+    isProcessing = false
 
     dropZoneLabel.visible = true
     dropZoneLabel.managed = true
     fileNameLabel.visible = false
     fileNameLabel.managed = false
+    detectedTypeLabel.visible = false
+    detectedTypeLabel.managed = false
     checksumLabel.visible = false
     checksumLabel.managed = false
-    hashProgress.visible = false
-    hashProgress.managed = false
+    progressIndicator.visible = false
+    progressIndicator.managed = false
+    statusLabel.visible = false
+    statusLabel.managed = false
+    clearButton.visible = false
+    clearButton.managed = false
 
     dropZone.style = "-fx-border-color: #cccccc; -fx-border-style: dashed; -fx-border-width: 2; -fx-border-radius: 8; -fx-background-color: #f8f8f8; -fx-background-radius: 8;"
     updateAddButton()
@@ -247,79 +253,118 @@ class AddDataDialog(
 
   private def handleFileSelected(file: File): Unit = {
     selectedFile = Some(file)
+    detectedType = DataType.Unknown
     computedSha256 = None
-    isComputingHash = true
+    isProcessing = true
 
+    // Update UI to show processing state
     dropZoneLabel.visible = false
     dropZoneLabel.managed = false
     fileNameLabel.text = file.getName
     fileNameLabel.visible = true
     fileNameLabel.managed = true
-    checksumLabel.text = t("data.computing_checksum")
-    checksumLabel.visible = true
-    checksumLabel.managed = true
-    hashProgress.visible = true
-    hashProgress.managed = true
+    detectedTypeLabel.text = t("data.detecting_type")
+    detectedTypeLabel.style = "-fx-font-size: 12px; -fx-text-fill: #888888;"
+    detectedTypeLabel.visible = true
+    detectedTypeLabel.managed = true
+    progressIndicator.visible = true
+    progressIndicator.managed = true
+    statusLabel.text = t("data.analyzing_file")
+    statusLabel.visible = true
+    statusLabel.managed = true
+    checksumLabel.visible = false
+    checksumLabel.managed = false
+    clearButton.visible = true
+    clearButton.managed = true
 
-    dropZone.style = "-fx-border-color: #4CAF50; -fx-border-style: solid; -fx-border-width: 2; -fx-border-radius: 8; -fx-background-color: #e8f5e9; -fx-background-radius: 8;"
-
+    dropZone.style = "-fx-border-color: #2196F3; -fx-border-style: solid; -fx-border-width: 2; -fx-border-radius: 8; -fx-background-color: #e3f2fd; -fx-background-radius: 8;"
     updateAddButton()
 
-    // Calculate SHA256 in background
+    // Process file in background: fingerprint + checksum
     Future {
-      AnalysisCache.calculateSha256(file)
+      val fingerprint = CsvFingerprinter.fingerprint(file)
+      val sha256 = AnalysisCache.calculateSha256(file)
+      (fingerprint, sha256)
     }.onComplete {
-      case Success(sha256) =>
+      case Success((fingerprint, sha256)) =>
         Platform.runLater {
           computedSha256 = Some(sha256)
-          isComputingHash = false
-          hashProgress.visible = false
-          hashProgress.managed = false
+          isProcessing = false
+          progressIndicator.visible = false
+          progressIndicator.managed = false
 
+          // Convert fingerprint to DataType
+          detectedType = fingerprint match {
+            case CsvFileType.Alignment => DataType.Alignment
+            case CsvFileType.VcfVariants => DataType.Variants
+            case CsvFileType.StrProfile => DataType.StrProfile
+            case CsvFileType.ChipData(vendor) => DataType.ChipData(vendor)
+            case CsvFileType.Unknown => DataType.Unknown
+          }
+
+          // Update UI based on detection result
+          if (detectedType == DataType.Unknown) {
+            detectedTypeLabel.text = s"⚠ ${t("data.unknown_type")}"
+            detectedTypeLabel.style = "-fx-font-size: 12px; -fx-text-fill: #F44336; -fx-font-weight: bold;"
+            statusLabel.text = t("data.unknown_type_help")
+            statusLabel.visible = true
+            statusLabel.managed = true
+            dropZone.style = "-fx-border-color: #FF9800; -fx-border-style: solid; -fx-border-width: 2; -fx-border-radius: 8; -fx-background-color: #fff3e0; -fx-background-radius: 8;"
+          } else {
+            detectedTypeLabel.text = s"✓ ${detectedType.label}"
+            detectedTypeLabel.style = "-fx-font-size: 12px; -fx-text-fill: #4CAF50; -fx-font-weight: bold;"
+            statusLabel.visible = false
+            statusLabel.managed = false
+            dropZone.style = "-fx-border-color: #4CAF50; -fx-border-style: solid; -fx-border-width: 2; -fx-border-radius: 8; -fx-background-color: #e8f5e9; -fx-background-radius: 8;"
+          }
+
+          // Show checksum
+          checksumLabel.visible = true
+          checksumLabel.managed = true
           if (existingChecksums.contains(sha256)) {
             checksumLabel.text = s"⚠ ${t("data.duplicate")}: ${sha256.take(12)}..."
             checksumLabel.style = "-fx-font-size: 11px; -fx-text-fill: #F44336;"
-            dropZone.style = "-fx-border-color: #FF9800; -fx-border-style: solid; -fx-border-width: 2; -fx-border-radius: 8; -fx-background-color: #fff3e0; -fx-background-radius: 8;"
           } else {
             checksumLabel.text = s"SHA256: ${sha256.take(12)}..."
-            checksumLabel.style = "-fx-font-size: 11px; -fx-text-fill: #4CAF50;"
+            checksumLabel.style = "-fx-font-size: 11px; -fx-text-fill: #666666;"
           }
+
           updateAddButton()
         }
+
       case Failure(e) =>
         Platform.runLater {
-          isComputingHash = false
-          hashProgress.visible = false
-          hashProgress.managed = false
-          checksumLabel.text = s"${t("data.checksum_failed")}: ${e.getMessage}"
-          checksumLabel.style = "-fx-font-size: 11px; -fx-text-fill: #F44336;"
+          isProcessing = false
+          progressIndicator.visible = false
+          progressIndicator.managed = false
+          detectedTypeLabel.text = s"⚠ ${t("error.generic")}"
+          detectedTypeLabel.style = "-fx-font-size: 12px; -fx-text-fill: #F44336; -fx-font-weight: bold;"
+          statusLabel.text = e.getMessage
+          statusLabel.visible = true
+          statusLabel.managed = true
+          dropZone.style = "-fx-border-color: #F44336; -fx-border-style: solid; -fx-border-width: 2; -fx-border-radius: 8; -fx-background-color: #ffebee; -fx-background-radius: 8;"
           updateAddButton()
         }
     }
   }
 
-  private def determineFileFormat(file: File, dataType: DataType): String = {
+  private def determineFileFormat(file: File): String = {
     val name = file.getName.toLowerCase
-    dataType match {
-      case DataType.Alignment =>
-        if (name.endsWith(".cram")) "CRAM" else "BAM"
-      case DataType.Variants =>
-        if (name.endsWith(".vcf.gz")) "VCF.GZ" else "VCF"
-      case DataType.StrProfile =>
-        if (name.endsWith(".tsv")) "TSV" else "CSV"
-      case DataType.ChipData =>
-        if (name.endsWith(".zip")) "ZIP"
-        else if (name.endsWith(".csv")) "CSV"
-        else "TXT"
-    }
+    if (name.endsWith(".cram")) "CRAM"
+    else if (name.endsWith(".bam")) "BAM"
+    else if (name.endsWith(".vcf.gz")) "VCF.GZ"
+    else if (name.endsWith(".vcf")) "VCF"
+    else if (name.endsWith(".tsv")) "TSV"
+    else if (name.endsWith(".csv") || name.endsWith(".csv.gz")) "CSV"
+    else if (name.endsWith(".zip")) "ZIP"
+    else "TXT"
   }
 
   // Result converter
   resultConverter = dialogButton => {
-    if (dialogButton == addButtonType) {
+    if (dialogButton == addButtonType && selectedFile.isDefined && detectedType != DataType.Unknown) {
       selectedFile.map { file =>
-        val dataType = dataTypeCombo.selectionModel.value.getSelectedItem
-        val fileFormat = determineFileFormat(file, dataType)
+        val fileFormat = determineFileFormat(file)
         val fileInfo = FileInfo(
           fileName = file.getName,
           fileSizeBytes = Some(file.length()),
@@ -328,7 +373,7 @@ class AddDataDialog(
           checksumAlgorithm = computedSha256.map(_ => "SHA-256"),
           location = Some(file.getAbsolutePath)
         )
-        DataInput(dataType, fileInfo, computedSha256)
+        DataInput(detectedType, fileInfo, computedSha256)
       }
     } else {
       None
