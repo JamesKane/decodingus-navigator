@@ -32,6 +32,18 @@ class DashboardView(viewModel: WorkbenchViewModel) extends ScrollPane {
   styleClass += "dashboard-view"
   style = "-fx-background: #1e1e1e; -fx-background-color: #1e1e1e;"
 
+  /** Represents an alignment to analyze for batch processing */
+  private case class SubjectAlignment(
+    subject: Biosample,
+    seqRunIndex: Int,
+    alignIndex: Int,
+    referenceBuild: String
+  )
+
+  /** Helper to get the window for dialog ownership */
+  private def getWindow: Option[javafx.stage.Window] =
+    Option(this.getScene).flatMap(s => Option(s.getWindow))
+
   // ============================================================================
   // Summary Cards
   // ============================================================================
@@ -321,16 +333,196 @@ class DashboardView(viewModel: WorkbenchViewModel) extends ScrollPane {
   }
 
   private def runAllPendingAnalyses(): Unit = {
-    val pendingCount = countPendingAnalyses
-    if (pendingCount > 0) {
-      // TODO: Integrate with actual batch analysis workflow
-      log.debug(s"Run all pending analyses - $pendingCount subjects - not yet integrated")
+    // Get subjects that need analysis (missing haplogroup)
+    val pendingSubjects = viewModel.samples.filter { s =>
+      s.yHaplogroup.isEmpty || s.mtHaplogroup.isEmpty
+    }.toSeq
+
+    if (pendingSubjects.isEmpty) {
       showInfoDialog(
         t("analysis.batch.title"),
-        t("analysis.batch.not_implemented"),
-        s"$pendingCount ${t("subjects.selected_for_analysis")}"
+        "No Pending Analyses",
+        "All subjects have been analyzed."
       )
+      return
     }
+
+    // Collect alignments for each pending subject
+    val subjectAlignments = pendingSubjects.flatMap { subject =>
+      val seqRuns = viewModel.workspace.value.main.getSequenceRunsForBiosample(subject)
+      seqRuns.zipWithIndex.flatMap { case (seqRun, seqRunIdx) =>
+        val alignments = viewModel.workspace.value.main.getAlignmentsForSequenceRun(seqRun)
+        alignments.zipWithIndex.map { case (align, alignIdx) =>
+          SubjectAlignment(subject, seqRunIdx, alignIdx, align.referenceBuild)
+        }
+      }
+    }
+
+    if (subjectAlignments.isEmpty) {
+      showInfoDialog(
+        t("analysis.batch.title"),
+        "No Alignments Found",
+        "None of the pending subjects have alignments. Please add alignment files first."
+      )
+      return
+    }
+
+    // Get unique reference builds
+    val availableBuilds = subjectAlignments.map(_.referenceBuild).distinct.sorted
+
+    // If multiple reference builds, let user choose preference
+    val selectedBuild: Option[String] = if (availableBuilds.size > 1) {
+      val choices = Seq("All available") ++ availableBuilds
+      val dialog = new scalafx.scene.control.ChoiceDialog[String](
+        choices.head,
+        choices
+      ) {
+        title = t("analysis.batch.title")
+        headerText = "Select Reference Build"
+        contentText = s"${pendingSubjects.size} pending subjects. Choose reference build to analyze:"
+      }
+      getWindow.foreach(w => dialog.initOwner(w))
+
+      dialog.showAndWait() match {
+        case Some("All available") => None
+        case Some(build) => Some(build)
+        case _ => return
+      }
+    } else {
+      None
+    }
+
+    // Filter alignments based on selection
+    val toAnalyze = selectedBuild match {
+      case Some(build) => subjectAlignments.filter(_.referenceBuild == build)
+      case None => subjectAlignments
+    }
+
+    // Group by subject to avoid analyzing same subject multiple times for same reference
+    val uniqueAnalyses = toAnalyze
+      .groupBy(sa => (sa.subject.sampleAccession, sa.referenceBuild))
+      .values
+      .map(_.head)
+      .toSeq
+
+    if (uniqueAnalyses.isEmpty) {
+      showInfoDialog(
+        t("analysis.batch.title"),
+        "No Matching Alignments",
+        "No alignments found for the selected reference build."
+      )
+      return
+    }
+
+    // Show confirmation
+    val buildSummary = uniqueAnalyses.groupBy(_.referenceBuild).map { case (build, items) =>
+      s"$build: ${items.size} subject(s)"
+    }.mkString("\n")
+
+    val confirmDialog = new scalafx.scene.control.Alert(scalafx.scene.control.Alert.AlertType.Confirmation) {
+      title = t("analysis.batch.title")
+      headerText = s"Run comprehensive analysis on ${uniqueAnalyses.size} pending subject(s)?"
+      contentText = s"""$buildSummary
+
+This will run the full analysis pipeline:
+1. WGS Metrics
+2. Callable Loci
+3. Sex Inference
+4. mtDNA Haplogroup
+5. Y-DNA Haplogroup
+
+This may take a while. Continue?"""
+    }
+    getWindow.foreach(w => confirmDialog.initOwner(w))
+
+    confirmDialog.showAndWait() match {
+      case Some(scalafx.scene.control.ButtonType.OK) =>
+        runBatchAnalysis(uniqueAnalyses)
+      case _ =>
+    }
+  }
+
+  /** Run batch analysis on multiple subject alignments */
+  private def runBatchAnalysis(analyses: Seq[SubjectAlignment]): Unit = {
+    val totalCount = analyses.size
+    var completedCount = 0
+    var failedCount = 0
+    val results = scala.collection.mutable.ListBuffer[String]()
+
+    // Create progress dialog
+    val progressLabel = new scalafx.beans.property.StringProperty(s"Starting batch analysis of $totalCount subject(s)...")
+    val progressValue = scalafx.beans.property.DoubleProperty(0.0)
+
+    val progressDialog = new scalafx.scene.control.Dialog[Unit]() {
+      title = t("analysis.batch.title")
+      headerText = "Batch Analysis in Progress"
+      dialogPane().content = new scalafx.scene.layout.VBox(15) {
+        padding = scalafx.geometry.Insets(20)
+        prefWidth = 400
+        children = Seq(
+          new scalafx.scene.control.Label {
+            text <== progressLabel
+          },
+          new scalafx.scene.control.ProgressBar {
+            progress <== progressValue
+            prefWidth = 360
+          }
+        )
+      }
+      dialogPane().buttonTypes = Seq(scalafx.scene.control.ButtonType.Cancel)
+    }
+    getWindow.foreach(w => progressDialog.initOwner(w))
+
+    // Run analyses sequentially
+    def runNext(remaining: List[SubjectAlignment]): Unit = {
+      remaining match {
+        case Nil =>
+          scalafx.application.Platform.runLater {
+            progressDialog.close()
+            val summary = if (failedCount == 0) {
+              s"Successfully analyzed $completedCount subject(s)."
+            } else {
+              s"Completed: $completedCount, Failed: $failedCount"
+            }
+            showInfoDialog(
+              t("analysis.batch.title"),
+              "Batch Analysis Complete",
+              summary + (if (results.nonEmpty) "\n\n" + results.take(10).mkString("\n") else "")
+            )
+            // Refresh dashboard stats
+            updateStats()
+            updatePendingWork()
+          }
+
+        case current :: rest =>
+          scalafx.application.Platform.runLater {
+            progressLabel.value = s"Analyzing ${current.subject.donorIdentifier} (${current.referenceBuild})... (${completedCount + 1}/$totalCount)"
+            progressValue.value = completedCount.toDouble / totalCount
+          }
+
+          viewModel.runComprehensiveAnalysisForAlignment(
+            current.subject.sampleAccession,
+            current.seqRunIndex,
+            current.alignIndex,
+            {
+              case Right(result) =>
+                completedCount += 1
+                val hg = result.yDnaHaplogroup.map(_.name).orElse(result.mtDnaHaplogroup.map(_.name)).getOrElse("-")
+                results += s"✓ ${current.subject.donorIdentifier}: $hg"
+                runNext(rest)
+
+              case Left(error) =>
+                completedCount += 1
+                failedCount += 1
+                results += s"✗ ${current.subject.donorIdentifier}: ${error.take(50)}"
+                runNext(rest)
+            }
+          )
+      }
+    }
+
+    progressDialog.show()
+    runNext(analyses.toList)
   }
 
   private def showInfoDialog(dialogTitle: String, dialogHeader: String, dialogContent: String): Unit = {
