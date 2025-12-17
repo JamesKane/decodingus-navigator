@@ -70,6 +70,24 @@ class AlignmentRepository extends SyncableRepositoryBase[AlignmentEntity]:
 
   override protected def tableName: String = "alignment"
 
+  /**
+   * Map internal reference build names to database constraint values.
+   * Internal: CHM13v2 -> DB: T2T-CHM13
+   */
+  private def toDbReferenceBuild(build: String): String = build match {
+    case "CHM13v2" => "T2T-CHM13"
+    case other => other
+  }
+
+  /**
+   * Map database reference build names back to internal names.
+   * DB: T2T-CHM13 -> Internal: CHM13v2
+   */
+  private def fromDbReferenceBuild(build: String): String = build match {
+    case "T2T-CHM13" => "CHM13v2"
+    case other => other
+  }
+
   // ============================================
   // Core Repository Operations
   // ============================================
@@ -96,7 +114,7 @@ class AlignmentRepository extends SyncableRepositoryBase[AlignmentEntity]:
       Seq(
         entity.id,
         entity.sequenceRunId,
-        entity.referenceBuild,
+        toDbReferenceBuild(entity.referenceBuild),
         entity.aligner,
         entity.variantCaller,
         metricsJson,
@@ -125,7 +143,7 @@ class AlignmentRepository extends SyncableRepositoryBase[AlignmentEntity]:
       """.stripMargin,
       Seq(
         entity.sequenceRunId,
-        entity.referenceBuild,
+        toDbReferenceBuild(entity.referenceBuild),
         entity.aligner,
         entity.variantCaller,
         metricsJson,
@@ -287,7 +305,7 @@ class AlignmentRepository extends SyncableRepositoryBase[AlignmentEntity]:
     AlignmentEntity(
       id = getUUID(rs, "id"),
       sequenceRunId = getUUID(rs, "sequence_run_id"),
-      referenceBuild = rs.getString("reference_build"),
+      referenceBuild = fromDbReferenceBuild(rs.getString("reference_build")),
       aligner = rs.getString("aligner"),
       variantCaller = getOptString(rs, "variant_caller"),
       metrics = metrics,

@@ -736,6 +736,8 @@ class SubjectDetailView(viewModel: WorkbenchViewModel) extends VBox {
 
   /** Creates context menu items for alignment actions */
   private def createAlignmentMenuItems(alignment: Alignment, seqRunIndex: Int, alignIndex: Int): Seq[MenuItem] = {
+    import com.decodingus.haplogroup.tree.TreeType
+
     val items = scala.collection.mutable.ArrayBuffer[MenuItem]()
 
     // Run WGS Metrics
@@ -752,12 +754,144 @@ class SubjectDetailView(viewModel: WorkbenchViewModel) extends VBox {
 
     items += new SeparatorMenuItem()
 
+    // Haplogroup Analysis submenu
+    items += new MenuItem("Run Y-DNA Haplogroup Analysis") {
+      onAction = _ => handleRunHaplogroupAnalysis(seqRunIndex, alignIndex, alignment, TreeType.YDNA)
+    }
+
+    items += new MenuItem("Run mtDNA Haplogroup Analysis") {
+      onAction = _ => handleRunHaplogroupAnalysis(seqRunIndex, alignIndex, alignment, TreeType.MTDNA)
+    }
+
+    items += new SeparatorMenuItem()
+
+    // View cached reports
+    items += new MenuItem("View Y-DNA Report") {
+      onAction = _ => showCachedHaplogroupReport(seqRunIndex, alignIndex, TreeType.YDNA)
+    }
+
+    items += new MenuItem("View mtDNA Report") {
+      onAction = _ => showCachedHaplogroupReport(seqRunIndex, alignIndex, TreeType.MTDNA)
+    }
+
+    items += new SeparatorMenuItem()
+
     // Details
     items += new MenuItem("Details") {
       onAction = _ => showAlignmentDetailsDialog(alignment)
     }
 
     items.toSeq
+  }
+
+  /** Handle running full analysis for a sequence run, prompting for reference build if multiple alignments exist */
+  private def handleRunFullAnalysis(seqRun: SequenceRun, seqRunIndex: Int): Unit = {
+    currentSubject.value.foreach { subject =>
+      val alignments = viewModel.workspace.value.main.getAlignmentsForSequenceRun(seqRun)
+
+      if (alignments.isEmpty) {
+        showInfoDialog(
+          t("error.title"),
+          "No Alignments",
+          "This sequence run has no alignments. Please add an alignment file first."
+        )
+        return
+      }
+
+      // Determine which alignment to use
+      val selectedAlignmentIndex: Int = if (alignments.size == 1) {
+        0 // Only one alignment, use it
+      } else {
+        // Multiple alignments - let user choose which reference build to analyze
+        val buildChoices = alignments.map(_.referenceBuild)
+        val choiceDialog = new scalafx.scene.control.ChoiceDialog[String](
+          buildChoices.head,
+          buildChoices
+        ) {
+          title = "Select Reference Build"
+          headerText = "Multiple reference builds available"
+          contentText = "Choose which reference build to analyze:"
+        }
+        Option(SubjectDetailView.this.getScene).flatMap(s => Option(s.getWindow)).foreach { window =>
+          choiceDialog.initOwner(window)
+        }
+
+        choiceDialog.showAndWait() match {
+          case Some(selectedBuild) =>
+            buildChoices.indexOf(selectedBuild)
+          case None =>
+            log.debug("Full analysis cancelled - no reference build selected")
+            return
+        }
+      }
+
+      // Run comprehensive analysis
+      val progressDialog = new AnalysisProgressDialog(
+        "Full Analysis",
+        viewModel.analysisProgress,
+        viewModel.analysisProgressPercent,
+        viewModel.analysisInProgress
+      )
+      Option(SubjectDetailView.this.getScene).flatMap(s => Option(s.getWindow)).foreach { window =>
+        progressDialog.initOwner(window)
+      }
+
+      val selectedBuild = alignments(selectedAlignmentIndex).referenceBuild
+      log.info(s"Starting full analysis for ${subject.accession}, seqRun=$seqRunIndex, alignment=$selectedAlignmentIndex ($selectedBuild)")
+
+      viewModel.runComprehensiveAnalysisForAlignment(
+        subject.accession,
+        seqRunIndex,
+        selectedAlignmentIndex,
+        {
+          case Right(result) =>
+            scalafx.application.Platform.runLater {
+              // Refresh entire view to show updated haplogroups and metrics
+              setSubject(subject)
+              val summary = buildAnalysisSummary(result)
+              showInfoDialog(
+                "Full Analysis Complete",
+                s"Analysis finished for $selectedBuild",
+                summary
+              )
+            }
+          case Left(error) =>
+            scalafx.application.Platform.runLater {
+              showInfoDialog(t("error.title"), "Full Analysis Failed", error)
+            }
+        }
+      )
+
+      progressDialog.show()
+    }
+  }
+
+  /** Build a summary string from batch analysis result */
+  private def buildAnalysisSummary(result: com.decodingus.workspace.services.BatchAnalysisResult): String = {
+    val parts = scala.collection.mutable.ArrayBuffer[String]()
+
+    result.wgsMetrics.foreach { m =>
+      parts += s"Coverage: ${f"${m.meanCoverage}%.1f"}x"
+    }
+    result.callableLociResult.foreach { cl =>
+      parts += s"Callable bases: ${Formatters.formatNumber(cl.callableBases)}"
+    }
+    result.sexInferenceResult.foreach { sex =>
+      parts += s"Inferred sex: ${sex.inferredSex}"
+    }
+    result.mtDnaHaplogroup.foreach { hg =>
+      parts += s"mtDNA: ${hg.name}"
+    }
+    result.yDnaHaplogroup.foreach { hg =>
+      parts += s"Y-DNA: ${hg.name}"
+    }
+    if (result.skippedYDna) {
+      result.skippedYDnaReason.foreach { reason =>
+        parts += s"Y-DNA skipped: $reason"
+      }
+    }
+
+    if (parts.isEmpty) "Analysis completed" else parts.mkString("\n")
   }
 
   /** Handle running WGS metrics analysis for a specific alignment */
@@ -836,6 +970,118 @@ class SubjectDetailView(viewModel: WorkbenchViewModel) extends VBox {
     }
   }
 
+  /** Handle running haplogroup analysis for a specific alignment */
+  private def handleRunHaplogroupAnalysis(
+    seqRunIndex: Int,
+    alignIndex: Int,
+    alignment: Alignment,
+    treeType: com.decodingus.haplogroup.tree.TreeType
+  ): Unit = {
+    import com.decodingus.haplogroup.tree.TreeType
+    import com.decodingus.ui.components.HaplogroupResultDialog
+
+    currentSubject.value.foreach { subject =>
+      val dnaType = if (treeType == TreeType.YDNA) "Y-DNA" else "mtDNA"
+      val progressDialog = new AnalysisProgressDialog(
+        s"$dnaType Haplogroup Analysis (${alignment.referenceBuild})",
+        viewModel.analysisProgress,
+        viewModel.analysisProgressPercent,
+        viewModel.analysisInProgress
+      )
+      Option(SubjectDetailView.this.getScene).flatMap(s => Option(s.getWindow)).foreach { window =>
+        progressDialog.initOwner(window)
+      }
+
+      viewModel.runHaplogroupAnalysisForAlignment(
+        subject.accession,
+        seqRunIndex,
+        alignIndex,
+        treeType,
+        {
+          case Right(result) =>
+            scalafx.application.Platform.runLater {
+              // Refresh the subject view to show updated haplogroups
+              setSubject(subject)
+
+              // Show result dialog
+              val resultDialog = new HaplogroupResultDialog(
+                treeType,
+                result.name,
+                result.score,
+                result.matchingSnps,
+                result.mismatchingSnps,
+                result.ancestralMatches,
+                result.depth
+              )
+              Option(SubjectDetailView.this.getScene).flatMap(s => Option(s.getWindow)).foreach { window =>
+                resultDialog.initOwner(window)
+              }
+              resultDialog.showAndWait()
+            }
+          case Left(error) =>
+            scalafx.application.Platform.runLater {
+              showInfoDialog(t("error.title"), s"$dnaType Haplogroup Analysis Failed", error)
+            }
+        }
+      )
+
+      progressDialog.show()
+    }
+  }
+
+  /** Show cached haplogroup report if it exists */
+  private def showCachedHaplogroupReport(seqRunIndex: Int, alignIndex: Int, treeType: com.decodingus.haplogroup.tree.TreeType): Unit = {
+    import com.decodingus.haplogroup.tree.TreeType
+
+    currentSubject.value.foreach { subject =>
+      val dnaType = if (treeType == TreeType.YDNA) "Y-DNA" else "mtDNA"
+      val prefix = if (treeType == TreeType.YDNA) "ydna" else "mtdna"
+
+      viewModel.getHaplogroupArtifactDirForAlignment(subject.accession, seqRunIndex, alignIndex) match {
+        case Some(artifactDir) =>
+          val reportPath = artifactDir.resolve(s"${prefix}_report.txt")
+          if (java.nio.file.Files.exists(reportPath)) {
+            try {
+              val reportContent = java.nio.file.Files.readString(reportPath)
+              val textArea = new scalafx.scene.control.TextArea(reportContent) {
+                editable = false
+                wrapText = true
+                prefWidth = 600
+                prefHeight = 500
+                style = "-fx-font-family: monospace; -fx-font-size: 12px;"
+              }
+
+              val dialog = new Dialog[Unit]() {
+                title = s"$dnaType Haplogroup Report"
+                headerText = s"$dnaType analysis report for ${subject.accession}"
+                dialogPane().content = textArea
+                dialogPane().buttonTypes = Seq(ButtonType.Close)
+              }
+              Option(SubjectDetailView.this.getScene).flatMap(s => Option(s.getWindow)).foreach { window =>
+                dialog.initOwner(window)
+              }
+              dialog.showAndWait()
+            } catch {
+              case e: Exception =>
+                showInfoDialog(t("error.title"), "Error Reading Report", e.getMessage)
+            }
+          } else {
+            showInfoDialog(
+              "No Report Available",
+              s"No $dnaType report found",
+              s"Run $dnaType haplogroup analysis first to generate a report."
+            )
+          }
+        case None =>
+          showInfoDialog(
+            "No Report Available",
+            s"No $dnaType report found",
+            "No analysis artifacts found for this alignment."
+          )
+      }
+    }
+  }
+
   /** Show alignment details dialog */
   private def showAlignmentDetailsDialog(alignment: Alignment): Unit = {
     val metrics = alignment.metrics.getOrElse(com.decodingus.workspace.model.AlignmentMetrics())
@@ -880,6 +1126,13 @@ class SubjectDetailView(viewModel: WorkbenchViewModel) extends VBox {
     import com.decodingus.ui.components.{MergeSequenceRunsDialog, MergeDecision}
 
     val items = scala.collection.mutable.ArrayBuffer[MenuItem]()
+
+    // Run Full Analysis
+    items += new MenuItem("Run Full Analysis...") {
+      onAction = _ => handleRunFullAnalysis(seqRun, index)
+    }
+
+    items += new SeparatorMenuItem()
 
     // Details
     items += new MenuItem("Details") {
