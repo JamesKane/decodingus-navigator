@@ -55,6 +55,8 @@ class SubjectsView(viewModel: WorkbenchViewModel) extends SplitPane {
   private val searchText = StringProperty("")
   private val selectedSubject: ObjectProperty[Option[Biosample]] = ObjectProperty(None)
   private val selectedSubjects: ObservableBuffer[Biosample] = ObservableBuffer.empty
+  private val isListCollapsed = scalafx.beans.property.BooleanProperty(false)
+  private val savedDividerPosition = scalafx.beans.property.DoubleProperty(0.45)
 
   /** Helper to get the window for dialog ownership */
   private def getWindow: Option[javafx.stage.Window] =
@@ -80,6 +82,13 @@ class SubjectsView(viewModel: WorkbenchViewModel) extends SplitPane {
     onAction = _ => handleAddSubject()
   }
 
+  private val collapseButton = new Button {
+    text = "◀"
+    style = "-fx-background-color: transparent; -fx-text-fill: #888888; -fx-font-size: 12px; -fx-padding: 4 8; -fx-cursor: hand;"
+    tooltip = Tooltip("Collapse subject list")
+    onAction = _ => toggleListCollapse()
+  }
+
   private val searchBar = new HBox(10) {
     alignment = Pos.CenterLeft
     padding = Insets(10)
@@ -87,7 +96,35 @@ class SubjectsView(viewModel: WorkbenchViewModel) extends SplitPane {
     children = Seq(
       searchField,
       new Region { hgrow = Priority.Always },
-      addSubjectButton
+      addSubjectButton,
+      collapseButton
+    )
+  }
+
+  // Collapsed sidebar - thin strip shown when list is collapsed
+  private val expandButton = new Button {
+    text = "▶"
+    style = "-fx-background-color: #2a2a2a; -fx-text-fill: #888888; -fx-font-size: 14px; -fx-padding: 8; -fx-cursor: hand;"
+    tooltip = Tooltip("Expand subject list")
+    onAction = _ => toggleListCollapse()
+  }
+
+  private val collapsedSidebar = new VBox {
+    alignment = Pos.TopCenter
+    padding = Insets(10, 5, 10, 5)
+    spacing = 10
+    minWidth = 40
+    maxWidth = 40
+    prefWidth = 40
+    style = "-fx-background-color: #252525;"
+    visible = false
+    managed = false
+    children = Seq(
+      expandButton,
+      new Label("S") {
+        style = "-fx-font-size: 14px; -fx-font-weight: bold; -fx-text-fill: #666666;"
+        tooltip = Tooltip(t("subjects.title"))
+      }
     )
   }
 
@@ -134,10 +171,17 @@ class SubjectsView(viewModel: WorkbenchViewModel) extends SplitPane {
     )
   }
 
-  private val leftPanel = new VBox {
+  private val leftPanelContent = new VBox {
     vgrow = Priority.Always
     style = "-fx-background-color: #1e1e1e;"
     children = Seq(searchBar, subjectTable, selectionActionsBar)
+  }
+
+  // Wrapper that can show either full list or collapsed sidebar
+  private val leftPanel = new HBox {
+    vgrow = Priority.Always
+    style = "-fx-background-color: #1e1e1e;"
+    children = Seq(collapsedSidebar, leftPanelContent)
   }
 
   // ============================================================================
@@ -366,6 +410,37 @@ class SubjectsView(viewModel: WorkbenchViewModel) extends SplitPane {
   // ============================================================================
   // Action Handlers
   // ============================================================================
+
+  private def toggleListCollapse(): Unit = {
+    if (isListCollapsed.value) {
+      // Expand
+      isListCollapsed.value = false
+      collapsedSidebar.visible = false
+      collapsedSidebar.managed = false
+      leftPanelContent.visible = true
+      leftPanelContent.managed = true
+      collapseButton.text = "◀"
+      collapseButton.tooltip = Tooltip("Collapse subject list")
+      // Restore divider position
+      scalafx.application.Platform.runLater {
+        dividerPositions = savedDividerPosition.value
+      }
+    } else {
+      // Collapse
+      savedDividerPosition.value = dividerPositions.head
+      isListCollapsed.value = true
+      leftPanelContent.visible = false
+      leftPanelContent.managed = false
+      collapsedSidebar.visible = true
+      collapsedSidebar.managed = true
+      collapseButton.text = "▶"
+      collapseButton.tooltip = Tooltip("Expand subject list")
+      // Move divider to show collapsed sidebar
+      scalafx.application.Platform.runLater {
+        dividerPositions = 0.03 // Just enough for the collapsed sidebar
+      }
+    }
+  }
 
   private def handleAddSubject(): Unit = {
     val dialog = new AddSubjectDialog()
