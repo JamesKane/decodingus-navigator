@@ -6,7 +6,7 @@ import com.decodingus.haplogroup.model.HaplogroupResult
 import com.decodingus.haplogroup.scoring.HaplogroupScorer
 import com.decodingus.haplogroup.tree.{TreeProvider, TreeProviderType, TreeType}
 import com.decodingus.haplogroup.vendor.{DecodingUsTreeProvider, FtdnaTreeProvider}
-import com.decodingus.repository.{
+import com.decodingus.yprofile.repository.{
   YChromosomeProfileRepository, YProfileSourceRepository, YProfileRegionRepository,
   YProfileVariantRepository, YVariantSourceCallRepository, YVariantAuditRepository,
   YSourceCallAlignmentRepository, YSnpPanelEntity, YSnpCall, YPrivateVariant
@@ -924,7 +924,7 @@ class YProfileService(
           try {
             val callState = if call.derived then YConsensusState.DERIVED else YConsensusState.ANCESTRAL
             val variantType = call.variantType match
-              case Some(com.decodingus.repository.YVariantType.INDEL) =>
+              case Some(com.decodingus.yprofile.repository.YVariantType.INDEL) =>
                 com.decodingus.yprofile.model.YVariantType.INDEL
               case _ =>
                 com.decodingus.yprofile.model.YVariantType.SNP

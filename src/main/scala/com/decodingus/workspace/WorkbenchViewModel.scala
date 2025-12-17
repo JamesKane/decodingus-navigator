@@ -9,8 +9,9 @@ import com.decodingus.auth.User
 import com.decodingus.config.{FeatureToggles, UserPreferencesService, ReferenceConfigService}
 import com.decodingus.model.{LibraryStats, WgsMetrics}
 import com.decodingus.refgenome.{ReferenceGateway, ReferenceResolveResult, YRegionAnnotator}
-import com.decodingus.repository.{
-  BiosampleRepository, YChromosomeProfileRepository, YProfileSourceRepository,
+import com.decodingus.repository.BiosampleRepository
+import com.decodingus.yprofile.repository.{
+  YChromosomeProfileRepository, YProfileSourceRepository,
   YProfileRegionRepository, YProfileVariantRepository, YVariantSourceCallRepository,
   YVariantAuditRepository, YSourceCallAlignmentRepository
 }

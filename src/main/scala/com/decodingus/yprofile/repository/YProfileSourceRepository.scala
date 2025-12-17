@@ -1,5 +1,6 @@
-package com.decodingus.repository
+package com.decodingus.yprofile.repository
 
+import com.decodingus.repository.{Repository, SqlHelpers}
 import com.decodingus.repository.SqlHelpers.*
 import com.decodingus.yprofile.model.*
 import java.sql.{Connection, ResultSet}

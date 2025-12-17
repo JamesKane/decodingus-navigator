@@ -2,7 +2,9 @@ package com.decodingus.yprofile.service
 
 import com.decodingus.db.Transactor
 import com.decodingus.repository.{
-  HaplogroupReconciliationEntity, HaplogroupReconciliationRepository,
+  HaplogroupReconciliationEntity, HaplogroupReconciliationRepository
+}
+import com.decodingus.yprofile.repository.{
   YChromosomeProfileRepository, YProfileSourceRepository, YProfileRegionRepository,
   YProfileVariantRepository, YVariantSourceCallRepository, YVariantAuditRepository
 }

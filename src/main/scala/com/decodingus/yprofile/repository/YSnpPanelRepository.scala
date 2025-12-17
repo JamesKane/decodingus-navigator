@@ -1,5 +1,6 @@
-package com.decodingus.repository
+package com.decodingus.yprofile.repository
 
+import com.decodingus.repository.{SyncableRepository, Entity, EntityMeta, SqlHelpers, SyncStatus}
 import com.decodingus.repository.SqlHelpers.*
 import com.decodingus.workspace.model.FileInfo
 import io.circe.*

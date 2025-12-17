@@ -1,6 +1,7 @@
-package com.decodingus.repository
+package com.decodingus.yprofile.repository
 
 import com.decodingus.db.{DatabaseTestSupport, Transactor}
+import com.decodingus.repository.{BiosampleRepository, BiosampleEntity}
 import com.decodingus.yprofile.model.*
 import munit.FunSuite
 import java.time.LocalDateTime

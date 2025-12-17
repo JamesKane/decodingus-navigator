@@ -1,8 +1,8 @@
 package com.decodingus.yprofile.service
 
 import com.decodingus.db.{DatabaseTestSupport, Transactor}
-import com.decodingus.repository.{
-  BiosampleRepository, BiosampleEntity,
+import com.decodingus.repository.{BiosampleRepository, BiosampleEntity}
+import com.decodingus.yprofile.repository.{
   YChromosomeProfileRepository, YProfileSourceRepository, YProfileRegionRepository,
   YProfileVariantRepository, YVariantSourceCallRepository, YVariantAuditRepository,
   YSourceCallAlignmentRepository
