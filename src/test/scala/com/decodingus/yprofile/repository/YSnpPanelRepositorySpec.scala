@@ -5,6 +5,7 @@ import com.decodingus.repository.{
   BiosampleRepository, BiosampleEntity, AlignmentRepository, AlignmentEntity,
   SequenceRunRepository, SequenceRunEntity, SyncStatus
 }
+import com.decodingus.yprofile.model.YVariantType
 import munit.FunSuite
 import java.time.LocalDateTime
 import java.util.UUID

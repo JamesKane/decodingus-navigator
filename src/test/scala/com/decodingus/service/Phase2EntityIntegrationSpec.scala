@@ -3,8 +3,9 @@ package com.decodingus.service
 import com.decodingus.db.{DatabaseTestSupport, Transactor}
 import com.decodingus.repository.*
 import com.decodingus.yprofile.repository.{
-  YSnpPanelRepository, YSnpPanelEntity, YSnpCall, YVariantType, YPrivateVariant
+  YSnpPanelRepository, YSnpPanelEntity, YSnpCall, YPrivateVariant
 }
+import com.decodingus.yprofile.model.YVariantType
 import com.decodingus.workspace.model.{
   FileInfo, SimpleStrValue, StrMarkerValue, StrPanel,
   DnaType, CompatibilityLevel, HaplogroupTechnology, CallMethod, ConflictResolution,
