@@ -48,16 +48,16 @@ class FingerprintMatchService {
    * 2. Platform Unit (PU) match → HIGH confidence
    * 3. Library ID + Sample Name match → MEDIUM confidence (may require user confirmation)
    *
-   * @param candidateRuns     Sequence runs to search within (typically all runs for a biosample)
-   * @param fingerprint       The computed run fingerprint from LibraryStats
-   * @param libraryStats      Full stats for additional matching criteria
+   * @param candidateRuns Sequence runs to search within (typically all runs for a biosample)
+   * @param fingerprint   The computed run fingerprint from LibraryStats
+   * @param libraryStats  Full stats for additional matching criteria
    * @return Match result with confidence level
    */
   def findMatch(
-    candidateRuns: List[(SequenceRun, Int)],
-    fingerprint: String,
-    libraryStats: LibraryStats
-  ): FingerprintMatchResult = {
+                 candidateRuns: List[(SequenceRun, Int)],
+                 fingerprint: String,
+                 libraryStats: LibraryStats
+               ): FingerprintMatchResult = {
     // Tier 1: Exact fingerprint match (HIGH confidence)
     candidateRuns.find { case (run, _) =>
       run.runFingerprint.contains(fingerprint)
@@ -76,7 +76,7 @@ class FingerprintMatchService {
         if (libraryStats.libraryId != "Unknown" && libraryStats.sampleName != "Unknown") {
           candidateRuns.find { case (run, _) =>
             run.libraryId.contains(libraryStats.libraryId) &&
-            run.sampleName.contains(libraryStats.sampleName)
+              run.sampleName.contains(libraryStats.sampleName)
           }.map { case (run, idx) =>
             FingerprintMatchResult.MatchFound(run, idx, "MEDIUM")
           }.getOrElse(FingerprintMatchResult.NoMatch)

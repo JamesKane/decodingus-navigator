@@ -1,8 +1,9 @@
 package com.decodingus.yprofile.repository
 
-import com.decodingus.repository.{Repository, SqlHelpers}
 import com.decodingus.repository.SqlHelpers.*
+import com.decodingus.repository.{Repository, SqlHelpers}
 import com.decodingus.yprofile.model.*
+
 import java.sql.{Connection, ResultSet}
 import java.time.LocalDateTime
 import java.util.UUID
@@ -145,11 +146,11 @@ class YSourceCallAlignmentRepository extends Repository[YSourceCallAlignmentEnti
    * Find alignments in a position range.
    */
   def findByPositionRange(
-    referenceBuild: String,
-    contig: String,
-    startPosition: Long,
-    endPosition: Long
-  )(using conn: Connection): List[YSourceCallAlignmentEntity] =
+                           referenceBuild: String,
+                           contig: String,
+                           startPosition: Long,
+                           endPosition: Long
+                         )(using conn: Connection): List[YSourceCallAlignmentEntity] =
     queryList(
       """SELECT * FROM y_source_call_alignment
         |WHERE reference_build = ? AND contig = ? AND position >= ? AND position <= ?

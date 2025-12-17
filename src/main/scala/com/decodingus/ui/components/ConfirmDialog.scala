@@ -1,8 +1,8 @@
 package com.decodingus.ui.components
 
-import scalafx.Includes._
-import scalafx.scene.control.{Alert, ButtonType}
+import scalafx.Includes.*
 import scalafx.scene.control.Alert.AlertType
+import scalafx.scene.control.{Alert, ButtonType}
 
 /**
  * Utility for displaying confirmation dialogs.
@@ -16,15 +16,15 @@ object ConfirmDialog {
    * Display a generic confirmation dialog.
    *
    * @param dialogTitle Window title
-   * @param header Header text (the main question)
-   * @param content Detailed content explaining the action
+   * @param header      Header text (the main question)
+   * @param content     Detailed content explaining the action
    * @return true if the user confirmed, false otherwise
    */
   def confirm(
-    dialogTitle: String,
-    header: String,
-    content: String
-  ): Boolean = {
+               dialogTitle: String,
+               header: String,
+               content: String
+             ): Boolean = {
     val alert = new Alert(AlertType.Confirmation) {
       title = dialogTitle
       headerText = header
@@ -40,7 +40,7 @@ object ConfirmDialog {
    * Confirm removal/deletion of an item.
    *
    * @param itemType The type of item being removed (e.g., "Subject", "Project")
-   * @param details Additional details about what will be removed
+   * @param details  Additional details about what will be removed
    * @return true if the user confirmed, false otherwise
    */
   def confirmRemoval(itemType: String, details: String): Boolean =
@@ -53,7 +53,7 @@ object ConfirmDialog {
   /**
    * Confirm a destructive action.
    *
-   * @param action Description of the action (e.g., "delete all files")
+   * @param action  Description of the action (e.g., "delete all files")
    * @param warning Warning text about consequences
    * @return true if the user confirmed, false otherwise
    */

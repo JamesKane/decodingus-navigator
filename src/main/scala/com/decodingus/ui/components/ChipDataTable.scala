@@ -1,29 +1,29 @@
 package com.decodingus.ui.components
 
-import scalafx.Includes._
-import scalafx.scene.control.{TableView, TableColumn, Button, Alert, ButtonType, ContextMenu, MenuItem, Tooltip, Dialog, Label, TextArea}
-import scalafx.scene.control.Alert.AlertType
-import scalafx.scene.layout.{VBox, HBox, Priority}
-import scalafx.geometry.{Insets, Pos}
-import scalafx.collections.ObservableBuffer
-import scalafx.beans.property.StringProperty
-import scalafx.application.Platform
-import scalafx.stage.FileChooser
 import com.decodingus.config.FeatureToggles
 import com.decodingus.haplogroup.tree.TreeType
-import com.decodingus.workspace.model.{Biosample, ChipProfile}
 import com.decodingus.workspace.WorkbenchViewModel
+import com.decodingus.workspace.model.{Biosample, ChipProfile}
+import scalafx.Includes.*
+import scalafx.application.Platform
+import scalafx.beans.property.StringProperty
+import scalafx.collections.ObservableBuffer
+import scalafx.geometry.{Insets, Pos}
+import scalafx.scene.control.Alert.AlertType
+import scalafx.scene.control.*
+import scalafx.scene.layout.{HBox, Priority, VBox}
+import scalafx.stage.FileChooser
 
 /**
  * Table component displaying chip/array genotype data for a subject.
  * Supports importing raw data from 23andMe, AncestryDNA, FTDNA, MyHeritage, and LivingDNA.
  */
 class ChipDataTable(
-  viewModel: WorkbenchViewModel,
-  subject: Biosample,
-  chipProfiles: List[ChipProfile],
-  onRemove: (String) => Unit  // Callback when remove is clicked, passes profile URI
-) extends VBox(10) {
+                     viewModel: WorkbenchViewModel,
+                     subject: Biosample,
+                     chipProfiles: List[ChipProfile],
+                     onRemove: (String) => Unit // Callback when remove is clicked, passes profile URI
+                   ) extends VBox(10) {
 
   padding = Insets(10, 0, 0, 0)
 
@@ -238,7 +238,8 @@ class ChipDataTable(
     val confirm = new Alert(AlertType.Confirmation) {
       title = "Run Ancestry Analysis"
       headerText = s"Analyze ${profile.vendor} chip data for ancestry"
-      contentText = s"""This will estimate population percentages using the $panelLabel panel.
+      contentText =
+        s"""This will estimate population percentages using the $panelLabel panel.
 
 Markers: ${profile.autosomalMarkersCalled}
 Call Rate: ${f"${profile.callRate * 100}%.1f"}%
@@ -307,7 +308,8 @@ Note: Reference data download may be required on first run."""
     val confirm = new Alert(AlertType.Confirmation) {
       title = s"Run $typeName Haplogroup Analysis"
       headerText = s"Analyze ${profile.vendor} chip data for $typeName haplogroup"
-      contentText = s"""This will score chip genotypes against the $typeName haplogroup tree.
+      contentText =
+        s"""This will score chip genotypes against the $typeName haplogroup tree.
 
 $typeName Markers: $markerCount
 
@@ -339,7 +341,8 @@ The terminal haplogroup may be upstream of the true assignment."""
                     new Alert(AlertType.Information) {
                       title = s"$typeName Haplogroup Result"
                       headerText = s"$typeName: ${haplogroupResult.topHaplogroup}"
-                      contentText = s"""Confidence: $confidenceDesc (${f"${haplogroupResult.confidence * 100}%.0f"}%)
+                      contentText =
+                        s"""Confidence: $confidenceDesc (${f"${haplogroupResult.confidence * 100}%.0f"}%)
 SNPs Matched: ${haplogroupResult.snpsMatched} / ${haplogroupResult.snpsTotal}
 Tree Depth: ${haplogroupResult.results.headOption.map(_.depth).getOrElse(0)}
 
@@ -409,11 +412,12 @@ For higher resolution, consider WGS analysis."""
               new Alert(AlertType.Information) {
                 title = "Import Complete"
                 headerText = s"Successfully imported ${chipProfile.vendor} chip data"
-                contentText = s"""Markers: ${chipProfile.totalMarkersCalled}
-                                 |Call Rate: ${f"${chipProfile.callRate * 100}%.1f"}%
-                                 |Y Markers: ${chipProfile.yMarkersCalled.getOrElse("N/A")}
-                                 |MT Markers: ${chipProfile.mtMarkersCalled.getOrElse("N/A")}
-                                 |Status: ${chipProfile.status}""".stripMargin
+                contentText =
+                  s"""Markers: ${chipProfile.totalMarkersCalled}
+                     |Call Rate: ${f"${chipProfile.callRate * 100}%.1f"}%
+                     |Y Markers: ${chipProfile.yMarkersCalled.getOrElse("N/A")}
+                     |MT Markers: ${chipProfile.mtMarkersCalled.getOrElse("N/A")}
+                     |Status: ${chipProfile.status}""".stripMargin
               }.showAndWait()
             }
           case Left(error) =>
@@ -437,7 +441,9 @@ For higher resolution, consider WGS analysis."""
   }
 
   children = Seq(
-    new scalafx.scene.control.Label("Chip/Array Data:") { style = "-fx-font-weight: bold;" },
+    new scalafx.scene.control.Label("Chip/Array Data:") {
+      style = "-fx-font-weight: bold;"
+    },
     table,
     buttonBar
   )

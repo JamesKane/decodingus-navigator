@@ -9,11 +9,11 @@ import scala.util.{Try, Using}
  * Result of detecting the file format.
  */
 case class FormatDetectionResult(
-  detected: Boolean,
-  testType: Option[TestTypeDefinition],
-  chipVersion: Option[String],
-  headerLines: Int
-)
+                                  detected: Boolean,
+                                  testType: Option[TestTypeDefinition],
+                                  chipVersion: Option[String],
+                                  headerLines: Int
+                                )
 
 /**
  * Base trait for chip data file parsers.
@@ -47,7 +47,7 @@ trait ChipDataParser {
   /**
    * Parse genotype calls from the file.
    *
-   * @param file The file to parse
+   * @param file       The file to parse
    * @param onProgress Progress callback (current line, total lines estimate)
    * @return Iterator of genotype calls
    */
@@ -93,14 +93,14 @@ object ChipDataParser {
   /**
    * Parse a chip data file with auto-detection.
    *
-   * @param file The file to parse
+   * @param file       The file to parse
    * @param onProgress Progress callback
    * @return Either error or (parser, detection result, genotype calls)
    */
   def parseFile(
-    file: File,
-    onProgress: (Int, Int) => Unit = (_, _) => ()
-  ): Either[String, (ChipDataParser, FormatDetectionResult, List[GenotypeCall])] = {
+                 file: File,
+                 onProgress: (Int, Int) => Unit = (_, _) => ()
+               ): Either[String, (ChipDataParser, FormatDetectionResult, List[GenotypeCall])] = {
     detectParser(file).flatMap { case (parser, detection) =>
       parser.parse(file, onProgress).map { calls =>
         (parser, detection, calls.toList)
@@ -144,7 +144,7 @@ object Parser23andMe extends ChipDataParser {
   override def detect(firstLines: List[String]): FormatDetectionResult = {
     val header = firstLines.mkString("\n").toLowerCase
     val is23andMe = header.contains("23andme") ||
-                    (header.contains("rsid") && header.contains("genotype") && !header.contains("allele1"))
+      (header.contains("rsid") && header.contains("genotype") && !header.contains("allele1"))
 
     if (is23andMe) {
       val version = inferVersion(header)
@@ -227,7 +227,7 @@ object ParserAncestryDna extends ChipDataParser {
   override def detect(firstLines: List[String]): FormatDetectionResult = {
     val header = firstLines.mkString("\n").toLowerCase
     val isAncestry = header.contains("ancestrydna") ||
-                     (header.contains("rsid") && header.contains("allele1") && header.contains("allele2"))
+      (header.contains("rsid") && header.contains("allele1") && header.contains("allele2"))
 
     if (isAncestry) {
       FormatDetectionResult(
@@ -314,7 +314,7 @@ object ParserFtdna extends ChipDataParser {
   override def detect(firstLines: List[String]): FormatDetectionResult = {
     val header = firstLines.mkString("\n").toUpperCase
     val isFtdna = header.contains("RSID,CHROMOSOME,POSITION,RESULT") ||
-                  (header.contains("FTDNA") || header.contains("FAMILYTREEDNA"))
+      (header.contains("FTDNA") || header.contains("FAMILYTREEDNA"))
 
     if (isFtdna) {
       FormatDetectionResult(

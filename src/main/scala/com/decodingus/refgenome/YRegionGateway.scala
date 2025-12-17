@@ -10,8 +10,8 @@ import sttp.client3.*
 import java.io.{BufferedInputStream, FileInputStream, FileOutputStream, PrintWriter}
 import java.nio.file.{Files, Path}
 import java.util.zip.GZIPInputStream
-import scala.concurrent.{Await, ExecutionContext}
 import scala.concurrent.duration.*
+import scala.concurrent.{Await, ExecutionContext}
 import scala.io.Source
 import scala.util.{Try, Using}
 
@@ -19,15 +19,15 @@ import scala.util.{Try, Using}
  * Paths to all Y chromosome region files for a reference build.
  */
 case class YRegionPaths(
-  cytobands: Path,
-  palindromes: Path,
-  strs: Path,
-  par: Path,
-  xtr: Path,
-  ampliconic: Path,
-  centromeres: Option[Path] = None,
-  sequenceClass: Option[Path] = None  // T2T sequence class file (contains X-DEG, etc.)
-)
+                         cytobands: Path,
+                         palindromes: Path,
+                         strs: Path,
+                         par: Path,
+                         xtr: Path,
+                         ampliconic: Path,
+                         centromeres: Option[Path] = None,
+                         sequenceClass: Option[Path] = None // T2T sequence class file (contains X-DEG, etc.)
+                       )
 
 /**
  * Gateway for downloading and caching Y chromosome region annotation files.
@@ -139,7 +139,7 @@ class YRegionGateway(onProgress: (String, Double) => Unit = (_, _) => ()) {
   /**
    * Resolve a single region file for a reference build.
    *
-   * @param regionType Type of region (cytobands, palindromes, strs, par, xtr, ampliconic)
+   * @param regionType     Type of region (cytobands, palindromes, strs, par, xtr, ampliconic)
    * @param referenceBuild Target reference build
    * @return Either error message or path to the region file
    */
@@ -236,10 +236,10 @@ class YRegionGateway(onProgress: (String, Double) => Unit = (_, _) => ()) {
   /**
    * Download a file from URL and cache it.
    *
-   * @param regionType Type of region
+   * @param regionType     Type of region
    * @param referenceBuild Target build
-   * @param url Download URL
-   * @param isGff3 True if file is GFF3 format, false for BED format
+   * @param url            Download URL
+   * @param isGff3         True if file is GFF3 format, false for BED format
    */
   private def downloadFile(regionType: String, referenceBuild: String, url: String, isGff3: Boolean): Either[String, Path] = {
     onProgress(s"Downloading $regionType for $referenceBuild...", 0.0)
@@ -309,11 +309,11 @@ class YRegionGateway(onProgress: (String, Double) => Unit = (_, _) => ()) {
    * Liftover a region file from one build to another.
    */
   private def liftoverRegionFile(
-    sourcePath: Path,
-    regionType: String,
-    fromBuild: String,
-    toBuild: String
-  ): Either[String, Path] = {
+                                  sourcePath: Path,
+                                  regionType: String,
+                                  fromBuild: String,
+                                  toBuild: String
+                                ): Either[String, Path] = {
     onProgress(s"Lifting over $regionType from $fromBuild to $toBuild...", 0.0)
     log.info(s"Lifting over $regionType from $fromBuild to $toBuild")
 
@@ -336,11 +336,11 @@ class YRegionGateway(onProgress: (String, Double) => Unit = (_, _) => ()) {
    * Liftover a GFF3 file.
    */
   private def liftoverGff3(
-    gff3Path: Path,
-    chainPath: Path,
-    regionType: String,
-    targetBuild: String
-  ): Either[String, Path] = {
+                            gff3Path: Path,
+                            chainPath: Path,
+                            regionType: String,
+                            targetBuild: String
+                          ): Either[String, Path] = {
     // Suppress verbose htsjdk logging
     Log.setGlobalLogLevel(Log.LogLevel.WARNING)
 
@@ -403,11 +403,11 @@ class YRegionGateway(onProgress: (String, Double) => Unit = (_, _) => ()) {
    * Liftover a BED file.
    */
   private def liftoverBed(
-    bedPath: Path,
-    chainPath: Path,
-    regionType: String,
-    targetBuild: String
-  ): Either[String, Path] = {
+                           bedPath: Path,
+                           chainPath: Path,
+                           regionType: String,
+                           targetBuild: String
+                         ): Either[String, Path] = {
     // Suppress verbose htsjdk logging
     Log.setGlobalLogLevel(Log.LogLevel.WARNING)
 
@@ -426,7 +426,7 @@ class YRegionGateway(onProgress: (String, Double) => Unit = (_, _) => ()) {
           val fields = line.split("\t")
           if (fields.length >= 3) {
             val chrom = normalizeChromForChain(fields(0))
-            val start = fields(1).toInt  // BED is 0-based
+            val start = fields(1).toInt // BED is 0-based
             val end = fields(2).toInt
 
             // Create interval (htsjdk uses 1-based, so convert BED 0-based)
@@ -480,14 +480,14 @@ class YRegionGateway(onProgress: (String, Double) => Unit = (_, _) => ()) {
    * 1. GenomeRegionService (if feature toggle enabled) - centralized API with caching
    * 2. File-based downloads from ybrowse, GIAB, T2T - legacy fallback
    *
-   * @param referenceBuild Target reference build
+   * @param referenceBuild   Target reference build
    * @param callableLociPath Optional path to callable_loci.bed file
    * @return Either error message or configured annotator
    */
   def loadAnnotator(
-    referenceBuild: String,
-    callableLociPath: Option[Path] = None
-  ): Either[String, YRegionAnnotator] = {
+                     referenceBuild: String,
+                     callableLociPath: Option[Path] = None
+                   ): Either[String, YRegionAnnotator] = {
     // Parse callable loci positions if provided (used by both paths)
     val callablePositions: Option[Set[Long]] = callableLociPath.flatMap { path =>
       RegionFileParser.parseBed(path).toOption.map { records =>
@@ -516,9 +516,9 @@ class YRegionGateway(onProgress: (String, Double) => Unit = (_, _) => ()) {
    * Try to load annotator from GenomeRegionService (API + cache).
    */
   private def loadFromGenomeRegionService(
-    referenceBuild: String,
-    callablePositions: Option[Set[Long]]
-  ): Either[String, YRegionAnnotator] = {
+                                           referenceBuild: String,
+                                           callablePositions: Option[Set[Long]]
+                                         ): Either[String, YRegionAnnotator] = {
     implicit val ec: ExecutionContext = ExecutionContext.global
 
     try {
@@ -545,9 +545,9 @@ class YRegionGateway(onProgress: (String, Double) => Unit = (_, _) => ()) {
    * Load annotator from file downloads (legacy path).
    */
   private def loadFromFiles(
-    referenceBuild: String,
-    callableLociPath: Option[Path]
-  ): Either[String, YRegionAnnotator] = {
+                             referenceBuild: String,
+                             callableLociPath: Option[Path]
+                           ): Either[String, YRegionAnnotator] = {
     for {
       paths <- resolveAll(referenceBuild)
       annotator <- createAnnotator(paths, referenceBuild, callableLociPath)
@@ -558,10 +558,10 @@ class YRegionGateway(onProgress: (String, Double) => Unit = (_, _) => ()) {
    * Create an annotator from resolved paths.
    */
   private def createAnnotator(
-    paths: YRegionPaths,
-    referenceBuild: String,
-    callableLociPath: Option[Path]
-  ): Either[String, YRegionAnnotator] = {
+                               paths: YRegionPaths,
+                               referenceBuild: String,
+                               callableLociPath: Option[Path]
+                             ): Either[String, YRegionAnnotator] = {
     val normalizedBuild = normalizeBuildName(referenceBuild)
 
     try {

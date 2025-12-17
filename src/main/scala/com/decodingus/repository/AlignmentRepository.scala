@@ -6,6 +6,7 @@ import io.circe.*
 import io.circe.generic.semiauto.*
 import io.circe.parser.*
 import io.circe.syntax.*
+
 import java.sql.{Connection, ResultSet}
 import java.time.LocalDateTime
 import java.util.UUID
@@ -17,34 +18,39 @@ import java.util.UUID
  * with associated QC metrics and file references.
  */
 case class AlignmentEntity(
-  id: UUID,
-  sequenceRunId: UUID,
-  referenceBuild: String,
-  aligner: String,
-  variantCaller: Option[String],
-  metrics: Option[AlignmentMetrics],
-  files: List[FileInfo],
-  meta: EntityMeta
-) extends Entity[UUID]
+                            id: UUID,
+                            sequenceRunId: UUID,
+                            referenceBuild: String,
+                            aligner: String,
+                            variantCaller: Option[String],
+                            metrics: Option[AlignmentMetrics],
+                            files: List[FileInfo],
+                            meta: EntityMeta
+                          ) extends Entity[UUID]
 
 object AlignmentEntity:
   // Circe codecs for JSON serialization
   given Encoder[FileInfo] = deriveEncoder
+
   given Decoder[FileInfo] = deriveDecoder
+
   given Encoder[ContigMetrics] = deriveEncoder
+
   given Decoder[ContigMetrics] = deriveDecoder
+
   given Encoder[AlignmentMetrics] = deriveEncoder
+
   given Decoder[AlignmentMetrics] = deriveDecoder
 
   /**
    * Create a new AlignmentEntity with generated ID and initial metadata.
    */
   def create(
-    sequenceRunId: UUID,
-    referenceBuild: String,
-    aligner: String,
-    variantCaller: Option[String] = None
-  ): AlignmentEntity = AlignmentEntity(
+              sequenceRunId: UUID,
+              referenceBuild: String,
+              aligner: String,
+              variantCaller: Option[String] = None
+            ): AlignmentEntity = AlignmentEntity(
     id = UUID.randomUUID(),
     sequenceRunId = sequenceRunId,
     referenceBuild = referenceBuild,
@@ -167,9 +173,9 @@ class AlignmentRepository extends SyncableRepositoryBase[AlignmentEntity]:
    * Returns the most recent if multiple exist.
    */
   def findBySequenceRunAndReference(
-    sequenceRunId: UUID,
-    referenceBuild: String
-  )(using conn: Connection): Option[AlignmentEntity] =
+                                     sequenceRunId: UUID,
+                                     referenceBuild: String
+                                   )(using conn: Connection): Option[AlignmentEntity] =
     queryOne(
       """SELECT * FROM alignment
         |WHERE sequence_run_id = ? AND reference_build = ?

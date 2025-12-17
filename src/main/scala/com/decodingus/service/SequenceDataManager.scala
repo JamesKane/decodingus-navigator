@@ -1,14 +1,11 @@
 package com.decodingus.service
 
 import com.decodingus.db.Transactor
-import com.decodingus.repository.{
-  BiosampleRepository, SequenceRunRepository, AlignmentRepository
-}
+import com.decodingus.repository.{AlignmentRepository, BiosampleRepository, SequenceRunRepository}
 import com.decodingus.service.EntityConversions.*
 import com.decodingus.util.Logger
-import com.decodingus.workspace.model.{
-  Biosample, SequenceRun, Alignment, FileInfo, AlignmentMetrics, RecordMeta, Workspace
-}
+import com.decodingus.workspace.model.*
+
 import java.util.UUID
 
 /**
@@ -34,11 +31,11 @@ import java.util.UUID
  * ```
  */
 class SequenceDataManager(
-  transactor: Transactor,
-  biosampleRepo: BiosampleRepository,
-  sequenceRunRepo: SequenceRunRepository,
-  alignmentRepo: AlignmentRepository
-):
+                           transactor: Transactor,
+                           biosampleRepo: BiosampleRepository,
+                           sequenceRunRepo: SequenceRunRepository,
+                           alignmentRepo: AlignmentRepository
+                         ):
 
   private val log = Logger[SequenceDataManager]
 
@@ -51,9 +48,9 @@ class SequenceDataManager(
    * This should be called once during initialization.
    */
   def setWorkspaceCallbacks(
-    getter: () => Workspace,
-    updater: Workspace => Unit
-  ): Unit =
+                             getter: () => Workspace,
+                             updater: Workspace => Unit
+                           ): Unit =
     workspaceGetter = getter
     workspaceUpdater = updater
 
@@ -65,10 +62,10 @@ class SequenceDataManager(
    * Result of creating a SequenceRun - includes the persisted run and its index.
    */
   case class CreateSequenceRunResult(
-    sequenceRun: SequenceRun,
-    index: Int,
-    biosampleId: UUID
-  )
+                                      sequenceRun: SequenceRun,
+                                      index: Int,
+                                      biosampleId: UUID
+                                    )
 
   /**
    * Creates a new SequenceRun for a biosample.
@@ -80,15 +77,15 @@ class SequenceDataManager(
    * 4. Updates in-memory workspace state
    *
    * @param sampleAccession The biosample's accession ID
-   * @param initialRun Initial SequenceRun data (can have placeholder values)
-   * @param fileInfo The BAM/CRAM file info
+   * @param initialRun      Initial SequenceRun data (can have placeholder values)
+   * @param fileInfo        The BAM/CRAM file info
    * @return Either error message or CreateSequenceRunResult
    */
   def createSequenceRun(
-    sampleAccession: String,
-    initialRun: SequenceRun,
-    fileInfo: FileInfo
-  ): Either[String, CreateSequenceRunResult] =
+                         sampleAccession: String,
+                         initialRun: SequenceRun,
+                         fileInfo: FileInfo
+                       ): Either[String, CreateSequenceRunResult] =
     transactor.readWrite {
       // Step 1: Find biosample
       val biosampleOpt = biosampleRepo.findByAccession(sampleAccession)
@@ -169,7 +166,7 @@ class SequenceDataManager(
    * Deletes a SequenceRun and all its alignments.
    *
    * @param sampleAccession The biosample's accession ID
-   * @param sequenceRunUri The URI of the SequenceRun to delete
+   * @param sequenceRunUri  The URI of the SequenceRun to delete
    * @return Either error message or true if deleted
    */
   def deleteSequenceRun(sampleAccession: String, sequenceRunUri: String): Either[String, Boolean] =
@@ -234,23 +231,23 @@ class SequenceDataManager(
    * Result of creating an Alignment.
    */
   case class CreateAlignmentResult(
-    alignment: Alignment,
-    sequenceRunId: UUID
-  )
+                                    alignment: Alignment,
+                                    sequenceRunId: UUID
+                                  )
 
   /**
    * Creates a new Alignment for a SequenceRun.
    *
    * @param sequenceRunUri The parent SequenceRun's URI
-   * @param alignment The alignment to create
-   * @param fileInfo Optional file to add to the parent SequenceRun
+   * @param alignment      The alignment to create
+   * @param fileInfo       Optional file to add to the parent SequenceRun
    * @return Either error message or CreateAlignmentResult
    */
   def createAlignment(
-    sequenceRunUri: String,
-    alignment: Alignment,
-    fileInfo: Option[FileInfo] = None
-  ): Either[String, CreateAlignmentResult] =
+                       sequenceRunUri: String,
+                       alignment: Alignment,
+                       fileInfo: Option[FileInfo] = None
+                     ): Either[String, CreateAlignmentResult] =
     val seqRunIdOpt = parseIdFromRef(sequenceRunUri)
 
     seqRunIdOpt match
@@ -325,7 +322,7 @@ class SequenceDataManager(
    * Updates alignment metrics.
    *
    * @param alignmentUri The alignment's URI
-   * @param metrics The new metrics
+   * @param metrics      The new metrics
    * @return Either error message or true if updated
    */
   def updateAlignmentMetrics(alignmentUri: String, metrics: AlignmentMetrics): Either[String, Boolean] =
@@ -394,9 +391,9 @@ class SequenceDataManager(
    * Updates workspace after creating a new SequenceRun.
    */
   private def updateWorkspaceWithNewSequenceRun(
-    sequenceRun: SequenceRun,
-    biosampleId: UUID
-  ): Unit =
+                                                 sequenceRun: SequenceRun,
+                                                 biosampleId: UUID
+                                               ): Unit =
     val workspace = workspaceGetter()
     val biosampleUri = localUri("biosample", biosampleId)
     val seqRunUri = sequenceRun.atUri.getOrElse("")
@@ -407,7 +404,7 @@ class SequenceDataManager(
     // Update biosample's sequenceRunRefs
     val updatedSamples = workspace.main.samples.map { sample =>
       if sample.atUri.contains(biosampleUri) ||
-         sample.atUri.exists(uri => parseIdFromRef(uri).contains(biosampleId)) then
+        sample.atUri.exists(uri => parseIdFromRef(uri).contains(biosampleId)) then
         sample.copy(sequenceRunRefs = sample.sequenceRunRefs :+ seqRunUri)
       else
         sample
@@ -434,9 +431,9 @@ class SequenceDataManager(
    * Updates workspace after deleting a SequenceRun.
    */
   private def updateWorkspaceWithDeletedSequenceRun(
-    sampleAccession: String,
-    sequenceRunUri: String
-  ): Unit =
+                                                     sampleAccession: String,
+                                                     sequenceRunUri: String
+                                                   ): Unit =
     val workspace = workspaceGetter()
 
     // Remove the sequence run
@@ -464,10 +461,10 @@ class SequenceDataManager(
    * Updates workspace after creating a new Alignment.
    */
   private def updateWorkspaceWithNewAlignment(
-    alignment: Alignment,
-    sequenceRunUri: String,
-    fileInfo: Option[FileInfo]
-  ): Unit =
+                                               alignment: Alignment,
+                                               sequenceRunUri: String,
+                                               fileInfo: Option[FileInfo]
+                                             ): Unit =
     val workspace = workspaceGetter()
     val alignUri = alignment.atUri.getOrElse("")
 
@@ -478,7 +475,7 @@ class SequenceDataManager(
     val updatedSequenceRuns = workspace.main.sequenceRuns.map { sr =>
       if sr.atUri.contains(sequenceRunUri) then
         val newAlignRefs = if sr.alignmentRefs.contains(alignUri) then sr.alignmentRefs
-                          else sr.alignmentRefs :+ alignUri
+        else sr.alignmentRefs :+ alignUri
         val newFiles = fileInfo match
           case Some(file) if !sr.files.exists(_.checksum == file.checksum) => sr.files :+ file
           case _ => sr.files

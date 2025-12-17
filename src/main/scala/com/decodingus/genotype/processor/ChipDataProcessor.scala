@@ -12,14 +12,14 @@ import scala.util.Using
  * Result of processing a chip data file.
  */
 case class ChipProcessingResult(
-  parser: ChipDataParser,
-  detection: FormatDetectionResult,
-  summary: GenotypingTestSummary,
-  genotypeCalls: List[GenotypeCall],
-  yDnaCalls: List[GenotypeCall],
-  mtDnaCalls: List[GenotypeCall],
-  autosomalCalls: List[GenotypeCall]
-) {
+                                 parser: ChipDataParser,
+                                 detection: FormatDetectionResult,
+                                 summary: GenotypingTestSummary,
+                                 genotypeCalls: List[GenotypeCall],
+                                 yDnaCalls: List[GenotypeCall],
+                                 mtDnaCalls: List[GenotypeCall],
+                                 autosomalCalls: List[GenotypeCall]
+                               ) {
   /**
    * Total markers parsed.
    */
@@ -58,14 +58,14 @@ class ChipDataProcessor {
   /**
    * Process a chip data file.
    *
-   * @param file The raw data export file
+   * @param file       The raw data export file
    * @param onProgress Progress callback (message, current, total)
    * @return Either error message or processing result
    */
   def process(
-    file: File,
-    onProgress: (String, Double, Double) => Unit = (_, _, _) => ()
-  ): Either[String, ChipProcessingResult] = {
+               file: File,
+               onProgress: (String, Double, Double) => Unit = (_, _, _) => ()
+             ): Either[String, ChipProcessingResult] = {
 
     onProgress("Detecting file format...", 0.0, 1.0)
 
@@ -120,9 +120,9 @@ class ChipDataProcessor {
    * Process a file and return only the summary (lighter weight for quick checks).
    */
   def processSummaryOnly(
-    file: File,
-    onProgress: (String, Double, Double) => Unit = (_, _, _) => ()
-  ): Either[String, GenotypingTestSummary] = {
+                          file: File,
+                          onProgress: (String, Double, Double) => Unit = (_, _, _) => ()
+                        ): Either[String, GenotypingTestSummary] = {
     process(file, onProgress).map(_.summary)
   }
 
@@ -135,13 +135,13 @@ class ChipDataProcessor {
    * - 2 = homozygous alternate
    * - -1 = no call
    *
-   * @param result The chip processing result
+   * @param result           The chip processing result
    * @param referenceAlleles Map of chr:pos to reference allele
    */
   def toAncestryGenotypes(
-    result: ChipProcessingResult,
-    referenceAlleles: Map[String, Char]
-  ): Map[String, Int] = {
+                           result: ChipProcessingResult,
+                           referenceAlleles: Map[String, Char]
+                         ): Map[String, Int] = {
     result.autosomalCalls.map { call =>
       val snpId = s"${normalizeChromosome(call.chromosome)}:${call.position}"
       val refAllele = referenceAlleles.getOrElse(snpId, call.allele1) // Default to first allele if unknown
@@ -222,12 +222,12 @@ class ChipDataProcessor {
  * A variant call extracted from chip data for haplogroup analysis.
  */
 case class ChipVariantCall(
-  chromosome: String,
-  position: Int,
-  rsId: Option[String],
-  allele: String,
-  isHaploid: Boolean
-)
+                            chromosome: String,
+                            position: Int,
+                            rsId: Option[String],
+                            allele: String,
+                            isHaploid: Boolean
+                          )
 
 object ChipDataProcessor {
   /**

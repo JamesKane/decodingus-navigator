@@ -1,14 +1,14 @@
 package com.decodingus.ui.components
 
-import scalafx.Includes._
-import scalafx.scene.control.{ButtonType, Dialog, Label, TextField, CheckBox, ButtonBar, Button, TableView, TableColumn, Alert}
-import scalafx.scene.control.Alert.AlertType
-import scalafx.scene.layout.{GridPane, VBox, HBox, Priority}
-import scalafx.geometry.{Insets, Pos}
-import scalafx.stage.{FileChooser, DirectoryChooser}
+import com.decodingus.refgenome.config.{ReferenceConfig, ReferenceConfigService, ReferenceGenomeConfig}
+import scalafx.Includes.*
+import scalafx.beans.property.{BooleanProperty, StringProperty}
 import scalafx.collections.ObservableBuffer
-import scalafx.beans.property.{StringProperty, BooleanProperty}
-import com.decodingus.refgenome.config.{ReferenceConfig, ReferenceGenomeConfig, ReferenceConfigService}
+import scalafx.geometry.{Insets, Pos}
+import scalafx.scene.control.Alert.AlertType
+import scalafx.scene.control.*
+import scalafx.scene.layout.{GridPane, HBox, Priority, VBox}
+import scalafx.stage.{DirectoryChooser, FileChooser}
 
 import java.io.File
 import java.nio.file.Files
@@ -17,11 +17,11 @@ import java.nio.file.Files
  * Row model for the reference table
  */
 case class ReferenceRow(
-  build: String,
-  localPath: StringProperty,
-  autoDownload: BooleanProperty,
-  status: StringProperty
-)
+                         build: String,
+                         localPath: StringProperty,
+                         autoDownload: BooleanProperty,
+                         status: StringProperty
+                       )
 
 /**
  * Dialog for configuring reference genome paths and download settings.
@@ -42,8 +42,8 @@ class ReferenceConfigDialog extends Dialog[Unit] {
     ReferenceConfig.knownBuilds.keys.toSeq.sorted.map { build =>
       val buildConfig = config.getOrDefault(build)
       val status = if (buildConfig.hasValidLocalPath) "Local file configured"
-                   else if (ReferenceConfigService.isReferenceAvailable(build)) "In cache"
-                   else "Not available"
+      else if (ReferenceConfigService.isReferenceAvailable(build)) "In cache"
+      else "Not available"
       ReferenceRow(
         build = build,
         localPath = StringProperty(buildConfig.localPath.getOrElse("")),
@@ -213,7 +213,9 @@ class ReferenceConfigDialog extends Dialog[Unit] {
   private val content = new VBox(15) {
     padding = Insets(20)
     children = Seq(
-      new Label("Reference Genome Paths:") { style = "-fx-font-weight: bold;" },
+      new Label("Reference Genome Paths:") {
+        style = "-fx-font-weight: bold;"
+      },
       new Label("Specify local paths to reference FASTA files (.fa.gz). If not specified, references will be downloaded to the cache directory when needed.") {
         wrapText = true
         maxWidth = 650
@@ -221,11 +223,19 @@ class ReferenceConfigDialog extends Dialog[Unit] {
       },
       table,
       tableButtonBar,
-      new Label("") { prefHeight = 10 }, // Spacer
-      new Label("Download Settings:") { style = "-fx-font-weight: bold;" },
+      new Label("") {
+        prefHeight = 10
+      }, // Spacer
+      new Label("Download Settings:") {
+        style = "-fx-font-weight: bold;"
+      },
       promptCheckbox,
-      new Label("") { prefHeight = 10 }, // Spacer
-      new Label("Cache Settings:") { style = "-fx-font-weight: bold;" },
+      new Label("") {
+        prefHeight = 10
+      }, // Spacer
+      new Label("Cache Settings:") {
+        style = "-fx-font-weight: bold;"
+      },
       cacheDirRow
     )
   }
@@ -281,12 +291,12 @@ class ReferenceConfigDialog extends Dialog[Unit] {
  * Prompts the user to confirm the download or configure a local path.
  */
 class ReferenceDownloadPromptDialog(
-  build: String,
-  url: String,
-  estimatedSizeMB: Int
-) extends Dialog[ReferenceDownloadPromptDialog.Result] {
+                                     build: String,
+                                     url: String,
+                                     estimatedSizeMB: Int
+                                   ) extends Dialog[ReferenceDownloadPromptDialog.Result] {
 
-  import ReferenceDownloadPromptDialog._
+  import ReferenceDownloadPromptDialog.*
 
   title = "Reference Genome Required"
   headerText = s"Reference genome $build is not available locally"
@@ -308,8 +318,12 @@ class ReferenceDownloadPromptDialog(
       new Label("This may take a significant amount of time on slower connections.") {
         style = "-fx-text-fill: #666666;"
       },
-      new Label("") { prefHeight = 10 },
-      new Label("Options:") { style = "-fx-font-weight: bold;" },
+      new Label("") {
+        prefHeight = 10
+      },
+      new Label("Options:") {
+        style = "-fx-font-weight: bold;"
+      },
       new Label("  - Download Now: Download the reference from the internet"),
       new Label("  - Configure Path: Specify a local file path in settings"),
       new Label("  - Cancel: Abort the current operation")
@@ -327,9 +341,12 @@ class ReferenceDownloadPromptDialog(
 
 object ReferenceDownloadPromptDialog {
   sealed trait Result
+
   object Result {
     case object Download extends Result
+
     case object Configure extends Result
+
     case object Cancel extends Result
   }
 }

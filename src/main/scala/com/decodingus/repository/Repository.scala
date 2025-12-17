@@ -9,18 +9,18 @@ import scala.util.Using
  * Sync status for PDS integration.
  */
 enum SyncStatus:
-  case Local     // Never synced to PDS
-  case Synced    // In sync with PDS
-  case Modified  // Local changes pending sync
-  case Conflict  // Diverged from PDS, needs resolution
+  case Local // Never synced to PDS
+  case Synced // In sync with PDS
+  case Modified // Local changes pending sync
+  case Conflict // Diverged from PDS, needs resolution
 
 object SyncStatus:
   def fromString(s: String): SyncStatus = s match
-    case "Local"    => Local
-    case "Synced"   => Synced
+    case "Local" => Local
+    case "Synced" => Synced
     case "Modified" => Modified
     case "Conflict" => Conflict
-    case other      => throw new IllegalArgumentException(s"Unknown sync status: $other")
+    case other => throw new IllegalArgumentException(s"Unknown sync status: $other")
 
 /**
  * Base trait for entities with a typed identifier.
@@ -32,13 +32,13 @@ trait Entity[ID]:
  * Metadata common to all persisted entities.
  */
 case class EntityMeta(
-  syncStatus: SyncStatus,
-  atUri: Option[String],
-  atCid: Option[String],
-  version: Int,
-  createdAt: LocalDateTime,
-  updatedAt: LocalDateTime
-)
+                       syncStatus: SyncStatus,
+                       atUri: Option[String],
+                       atCid: Option[String],
+                       version: Int,
+                       createdAt: LocalDateTime,
+                       updatedAt: LocalDateTime
+                     )
 
 object EntityMeta:
   def create(): EntityMeta = EntityMeta(
@@ -59,7 +59,7 @@ object EntityMeta:
 /**
  * Base repository operations.
  *
- * @tparam E Entity type
+ * @tparam E  Entity type
  * @tparam ID Identifier type
  */
 trait Repository[E <: Entity[ID], ID]:
@@ -121,7 +121,9 @@ trait SyncableRepository[E <: Entity[ID], ID] extends Repository[E, ID]:
  * SQL helper utilities for repositories.
  */
 object SqlHelpers:
+
   import com.decodingus.util.Logger
+
   private val log = Logger("SqlHelpers")
 
   /**
@@ -129,20 +131,20 @@ object SqlHelpers:
    */
   def setParam(ps: PreparedStatement, index: Int, value: Any): Unit =
     value match
-      case null          => ps.setNull(index, java.sql.Types.NULL)
-      case None          => ps.setNull(index, java.sql.Types.NULL)
-      case Some(v)       => setParam(ps, index, v)
-      case JsonValue(j)  => ps.setBytes(index, jsonToBytes(j))  // H2 JSON columns use byte[]
-      case s: String     => ps.setString(index, s)
-      case i: Int        => ps.setInt(index, i)
-      case l: Long       => ps.setLong(index, l)
-      case d: Double     => ps.setDouble(index, d)
-      case b: Boolean    => ps.setBoolean(index, b)
-      case u: UUID       => ps.setObject(index, u)
-      case t: Timestamp  => ps.setTimestamp(index, t)
+      case null => ps.setNull(index, java.sql.Types.NULL)
+      case None => ps.setNull(index, java.sql.Types.NULL)
+      case Some(v) => setParam(ps, index, v)
+      case JsonValue(j) => ps.setBytes(index, jsonToBytes(j)) // H2 JSON columns use byte[]
+      case s: String => ps.setString(index, s)
+      case i: Int => ps.setInt(index, i)
+      case l: Long => ps.setLong(index, l)
+      case d: Double => ps.setDouble(index, d)
+      case b: Boolean => ps.setBoolean(index, b)
+      case u: UUID => ps.setObject(index, u)
+      case t: Timestamp => ps.setTimestamp(index, t)
       case ldt: LocalDateTime => ps.setTimestamp(index, Timestamp.valueOf(ldt))
       case ss: SyncStatus => ps.setString(index, ss.toString)
-      case other         => ps.setObject(index, other)
+      case other => ps.setObject(index, other)
 
   /**
    * Get an optional string from a ResultSet.

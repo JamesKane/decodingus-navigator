@@ -1,6 +1,6 @@
 package com.decodingus.haplogroup.processor
 
-import com.decodingus.analysis.{ArtifactContext, CallableLociQueryService, MtDnaFastaProcessor, SubjectArtifactCache, VcfQueryService}
+import com.decodingus.analysis.*
 import com.decodingus.config.FeatureToggles
 import com.decodingus.haplogroup.caller.{GatkHaplotypeCallerProcessor, TwoPassCallerResult}
 import com.decodingus.haplogroup.model.{Haplogroup, HaplogroupResult, Locus}
@@ -10,7 +10,7 @@ import com.decodingus.haplogroup.tree.{TreeCache, TreeProvider, TreeProviderType
 import com.decodingus.haplogroup.vendor.{DecodingUsTreeProvider, FtdnaTreeProvider, NamedVariantCache}
 import com.decodingus.liftover.LiftoverProcessor
 import com.decodingus.model.LibraryStats
-import com.decodingus.refgenome.{LiftoverGateway, MultiContigReferenceQuerier, ReferenceGateway, ReferenceQuerier, StrAnnotator}
+import com.decodingus.refgenome.*
 import com.decodingus.util.Logger
 import htsjdk.variant.vcf.VCFFileReader
 
@@ -23,23 +23,23 @@ import scala.util.Using
  * A private/novel variant not found in the haplogroup tree.
  */
 case class PrivateVariant(
-  contig: String,
-  position: Long,
-  ref: String,
-  alt: String,
-  quality: Option[Double],
-  depth: Option[Int] = None
-)
+                           contig: String,
+                           position: Long,
+                           ref: String,
+                           alt: String,
+                           quality: Option[Double],
+                           depth: Option[Int] = None
+                         )
 
 /**
  * SNP call information including quality and depth.
  * Used for enriched reporting with region annotations.
  */
 case class SnpCallInfo(
-  call: String,
-  quality: Option[Double],
-  depth: Option[Int]
-)
+                        call: String,
+                        quality: Option[Double],
+                        depth: Option[Int]
+                      )
 
 class HaplogroupProcessor {
 
@@ -53,12 +53,12 @@ class HaplogroupProcessor {
   /**
    * Analyze a BAM/CRAM file for haplogroup assignment.
    *
-   * @param bamPath Path to the BAM/CRAM file
-   * @param libraryStats Library statistics from initial analysis
-   * @param treeType Y-DNA or MT-DNA tree type
+   * @param bamPath          Path to the BAM/CRAM file
+   * @param libraryStats     Library statistics from initial analysis
+   * @param treeType         Y-DNA or MT-DNA tree type
    * @param treeProviderType Tree data provider (FTDNA or DecodingUs)
-   * @param onProgress Progress callback
-   * @param artifactContext Optional context for organizing output artifacts by subject/run/alignment
+   * @param onProgress       Progress callback
+   * @param artifactContext  Optional context for organizing output artifacts by subject/run/alignment
    */
   def analyze(
                bamPath: String,
@@ -352,23 +352,23 @@ class HaplogroupProcessor {
    * Analyze using a cached whole-genome VCF instead of calling variants on the fly.
    * Uses GapAwareHaplogroupResolver to query the VCF and infer reference calls from callable loci.
    *
-   * @param sampleAccession Sample accession for artifact lookup
-   * @param runId Sequence run ID
-   * @param alignmentId Alignment ID
-   * @param referenceBuild Reference build of the alignment
-   * @param treeType Y-DNA or MT-DNA tree type
+   * @param sampleAccession  Sample accession for artifact lookup
+   * @param runId            Sequence run ID
+   * @param alignmentId      Alignment ID
+   * @param referenceBuild   Reference build of the alignment
+   * @param treeType         Y-DNA or MT-DNA tree type
    * @param treeProviderType Tree data provider
-   * @param onProgress Progress callback
+   * @param onProgress       Progress callback
    */
   def analyzeFromCachedVcf(
-    sampleAccession: String,
-    runId: String,
-    alignmentId: String,
-    referenceBuild: String,
-    treeType: TreeType,
-    treeProviderType: TreeProviderType,
-    onProgress: (String, Double, Double) => Unit
-  ): Either[String, List[HaplogroupResult]] = {
+                            sampleAccession: String,
+                            runId: String,
+                            alignmentId: String,
+                            referenceBuild: String,
+                            treeType: TreeType,
+                            treeProviderType: TreeProviderType,
+                            onProgress: (String, Double, Double) => Unit
+                          ): Either[String, List[HaplogroupResult]] = {
 
     onProgress("Loading haplogroup tree...", 0.0, 1.0)
     val treeProvider: TreeProvider = treeProviderType match {
@@ -389,114 +389,125 @@ class HaplogroupProcessor {
 
       onProgress("Loading cached VCF and callable loci...", 0.1, 1.0)
 
-      // Create gap-aware resolver
-      GapAwareHaplogroupResolver.fromCache(sampleAccession, runId, alignmentId, referenceBuild) match {
+      // Resolve reference genome path for accurate reference allele inference
+      val referenceGateway = new ReferenceGateway((_, _) => {})
+      referenceGateway.resolve(referenceBuild) match {
         case Left(error) =>
-          Left(s"Failed to load cached VCF: $error")
+          Left(s"Failed to resolve reference genome: $error")
 
-        case Right(resolver) =>
-          // Pre-load data for the primary contig to optimize batch queries
-          onProgress("Loading VCF and callable loci data into memory...", 0.15, 1.0)
-          resolver.preloadContigs(List(primaryContig))
+        case Right(referencePath) =>
+          // Create gap-aware resolver with reference genome for accurate allele inference
+          GapAwareHaplogroupResolver.fromCache(
+            sampleAccession, runId, alignmentId, referenceBuild,
+            referencePath = Some(referencePath.toString)
+          ) match {
+            case Left(error) =>
+              Left(s"Failed to load cached VCF: $error")
 
-          onProgress("Querying tree positions from VCF...", 0.2, 1.0)
+            case Right(resolver) =>
+              // Pre-load data for the primary contig to optimize batch queries
+              onProgress("Loading VCF and callable loci data into memory...", 0.15, 1.0)
+              resolver.preloadContigs(List(primaryContig))
 
-          // Query all tree positions
-          val positions = allLoci.map { locus =>
-            val contig = if (locus.contig.isEmpty) primaryContig else locus.contig
-            (contig, locus.position, locus.ref)
-          }
-          val resolvedCalls = resolver.resolvePositions(positions)
+              onProgress("Querying tree positions from VCF...", 0.2, 1.0)
 
-          // Get resolution statistics
-          val stats = resolver.getResolutionStats(resolvedCalls)
-          onProgress(s"Resolved ${stats.fromVcf} from VCF, ${stats.inferredReference} inferred, ${stats.noCalls} no-calls", 0.4, 1.0)
-
-          // Convert to snpCalls format expected by scorer (position -> allele)
-          val snpCalls: Map[Long, String] = resolvedCalls.flatMap { case ((contig, pos), call) =>
-            if (call.hasCall && contig == primaryContig) {
-              Some(pos -> call.allele)
-            } else {
-              None
-            }
-          }
-
-          onProgress("Scoring haplogroups...", 0.5, 1.0)
-
-          // Score haplogroups
-          val scorer = new HaplogroupScorer()
-          val results = scorer.score(tree, snpCalls)
-
-          onProgress("Identifying private variants...", 0.7, 1.0)
-
-          // Identify private variants by querying the full VCF and excluding path positions
-          val terminalHaplogroup = results.headOption.map(_.name).getOrElse("")
-          val pathPositions = collectPathPositions(tree, terminalHaplogroup)
-
-          // Reuse the VCF service from the resolver instead of opening a new one
-          val privateVariants = try {
-            resolver.getVcfService.queryContig(referenceBuild, primaryContig) match {
-              case Right(iter) =>
-                iter.flatMap { vc =>
-                  if (vc.isVariant && !pathPositions.contains(vc.position)) {
-                    Some(PrivateVariant(
-                      contig = vc.contig,
-                      position = vc.position,
-                      ref = vc.ref,
-                      alt = vc.alt,
-                      quality = vc.quality,
-                      depth = vc.depth
-                    ))
-                  } else {
-                    None
-                  }
-                }.toList
-              case Left(err) =>
-                log.info(s"Failed to query contig for private variants: $err")
-                List.empty
-            }
-          } catch {
-            case e: Exception =>
-              log.info(s"Failed to extract private variants: ${e.getMessage}")
-              List.empty
-          }
-
-          // Load STR annotator for indel annotation (optional)
-          val strAnnotator = StrAnnotator.forBuild(referenceBuild).toOption
-
-          onProgress("Generating report...", 0.8, 1.0)
-
-          // Get artifact directory for report
-          val outputDir = SubjectArtifactCache.getArtifactSubdir(sampleAccession, runId, alignmentId, ARTIFACT_SUBDIR_NAME)
-
-          // Use named variant cache for Decoding Us provider
-          val variantCache = treeProviderType match {
-            case TreeProviderType.DECODINGUS =>
-              val cache = NamedVariantCache()
-              cache.ensureLoaded(_ => ()) match {
-                case Right(_) => Some(cache)
-                case Left(_) => None
+              // Query all tree positions
+              val positions = allLoci.map { locus =>
+                val contig = if (locus.contig.isEmpty) primaryContig else locus.contig
+                (contig, locus.position, locus.ref)
               }
-            case _ => None
+              val resolvedCalls = resolver.resolvePositions(positions)
+
+              // Get resolution statistics
+              val stats = resolver.getResolutionStats(resolvedCalls)
+              onProgress(s"Resolved ${stats.fromVcf} from VCF, ${stats.inferredReference} inferred, ${stats.noCalls} no-calls", 0.4, 1.0)
+
+              // Convert to snpCalls format expected by scorer (position -> allele)
+              val snpCalls: Map[Long, String] = resolvedCalls.flatMap { case ((contig, pos), call) =>
+                if (call.hasCall && contig == primaryContig) {
+                  Some(pos -> call.allele)
+                } else {
+                  None
+                }
+              }
+
+              onProgress("Scoring haplogroups...", 0.5, 1.0)
+
+              // Score haplogroups
+              val scorer = new HaplogroupScorer()
+              val results = scorer.score(tree, snpCalls)
+
+              onProgress("Identifying private variants...", 0.7, 1.0)
+
+              // Identify private variants by querying the full VCF and excluding path positions
+              val terminalHaplogroup = results.headOption.map(_.name).getOrElse("")
+              val pathPositions = collectPathPositions(tree, terminalHaplogroup)
+
+              // Reuse the VCF service from the resolver instead of opening a new one
+              val privateVariants = try {
+                resolver.getVcfService.queryContig(referenceBuild, primaryContig) match {
+                  case Right(iter) =>
+                    iter.flatMap { vc =>
+                      if (vc.isVariant && !pathPositions.contains(vc.position)) {
+                        Some(PrivateVariant(
+                          contig = vc.contig,
+                          position = vc.position,
+                          ref = vc.ref,
+                          alt = vc.alt,
+                          quality = vc.quality,
+                          depth = vc.depth
+                        ))
+                      } else {
+                        None
+                      }
+                    }.toList
+                  case Left(err) =>
+                    log.info(s"Failed to query contig for private variants: $err")
+                    List.empty
+                }
+              } catch {
+                case e: Exception =>
+                  log.info(s"Failed to extract private variants: ${e.getMessage}")
+                  List.empty
+              }
+
+              // Load STR annotator for indel annotation (optional)
+              val strAnnotator = StrAnnotator.forBuild(referenceBuild).toOption
+
+              onProgress("Generating report...", 0.8, 1.0)
+
+              // Get artifact directory for report
+              val outputDir = SubjectArtifactCache.getArtifactSubdir(sampleAccession, runId, alignmentId, ARTIFACT_SUBDIR_NAME)
+
+              // Use named variant cache for Decoding Us provider
+              val variantCache = treeProviderType match {
+                case TreeProviderType.DECODINGUS =>
+                  val cache = NamedVariantCache()
+                  cache.ensureLoaded(_ => ()) match {
+                    case Right(_) => Some(cache)
+                    case Left(_) => None
+                  }
+                case _ => None
+              }
+
+              HaplogroupReportWriter.writeReport(
+                outputDir = outputDir.toFile,
+                treeType = treeType,
+                results = results,
+                tree = tree,
+                snpCalls = snpCalls,
+                sampleName = None,
+                privateVariants = Some(privateVariants),
+                treeProvider = Some(treeProviderType),
+                strAnnotator = strAnnotator,
+                sampleBuild = Some(referenceBuild),
+                treeBuild = Some(treeSourceBuild),
+                namedVariantCache = variantCache
+              )
+
+              onProgress("Analysis complete.", 1.0, 1.0)
+              Right(results)
           }
-
-          HaplogroupReportWriter.writeReport(
-            outputDir = outputDir.toFile,
-            treeType = treeType,
-            results = results,
-            tree = tree,
-            snpCalls = snpCalls,
-            sampleName = None,
-            privateVariants = Some(privateVariants),
-            treeProvider = Some(treeProviderType),
-            strAnnotator = strAnnotator,
-            sampleBuild = Some(referenceBuild),
-            treeBuild = Some(treeSourceBuild),
-            namedVariantCache = variantCache
-          )
-
-          onProgress("Analysis complete.", 1.0, 1.0)
-          Right(results)
       }
     }
   }
@@ -508,21 +519,21 @@ class HaplogroupProcessor {
    * Note: Vendor VCFs typically don't have callable loci data, so reference inference
    * is not possible. Positions not in the VCF will be marked as no-call.
    *
-   * @param vcfPath Path to the VCF file (must be indexed with .tbi)
-   * @param referenceBuild Reference build of the VCF
-   * @param treeType Y-DNA or MT-DNA tree type
+   * @param vcfPath          Path to the VCF file (must be indexed with .tbi)
+   * @param referenceBuild   Reference build of the VCF
+   * @param treeType         Y-DNA or MT-DNA tree type
    * @param treeProviderType Tree data provider
-   * @param onProgress Progress callback
-   * @param outputDir Optional directory for saving reports
+   * @param onProgress       Progress callback
+   * @param outputDir        Optional directory for saving reports
    */
   def analyzeFromVcfFile(
-    vcfPath: String,
-    referenceBuild: String,
-    treeType: TreeType,
-    treeProviderType: TreeProviderType,
-    onProgress: (String, Double, Double) => Unit,
-    outputDir: Option[Path] = None
-  ): Either[String, List[HaplogroupResult]] = {
+                          vcfPath: String,
+                          referenceBuild: String,
+                          treeType: TreeType,
+                          treeProviderType: TreeProviderType,
+                          onProgress: (String, Double, Double) => Unit,
+                          outputDir: Option[Path] = None
+                        ): Either[String, List[HaplogroupResult]] = {
 
     onProgress("Loading haplogroup tree...", 0.0, 1.0)
     val treeProvider: TreeProvider = treeProviderType match {
@@ -606,7 +617,7 @@ class HaplogroupProcessor {
               tree = tree,
               snpCalls = snpCalls,
               sampleName = None,
-              privateVariants = None,  // Private variants not extracted in vendor VCF flow
+              privateVariants = None, // Private variants not extracted in vendor VCF flow
               treeProvider = Some(treeProviderType),
               strAnnotator = None,
               sampleBuild = Some(referenceBuild),
@@ -627,17 +638,17 @@ class HaplogroupProcessor {
    * Compares the FASTA sequence against rCRS to identify variants, then scores
    * against the haplogroup tree.
    *
-   * @param fastaPath Path to the mtDNA FASTA file
+   * @param fastaPath        Path to the mtDNA FASTA file
    * @param treeProviderType Tree data provider
-   * @param onProgress Progress callback
-   * @param outputDir Optional directory for saving reports
+   * @param onProgress       Progress callback
+   * @param outputDir        Optional directory for saving reports
    */
   def analyzeFromFasta(
-    fastaPath: String,
-    treeProviderType: TreeProviderType,
-    onProgress: (String, Double, Double) => Unit,
-    outputDir: Option[Path] = None
-  ): Either[String, List[HaplogroupResult]] = {
+                        fastaPath: String,
+                        treeProviderType: TreeProviderType,
+                        onProgress: (String, Double, Double) => Unit,
+                        outputDir: Option[Path] = None
+                      ): Either[String, List[HaplogroupResult]] = {
 
     // mtDNA FASTA analysis always uses MTDNA tree type
     val treeType = TreeType.MTDNA
@@ -705,7 +716,7 @@ class HaplogroupProcessor {
               tree = tree,
               snpCalls = snpCalls,
               sampleName = None,
-              privateVariants = None,  // Could extract from fastaResult.variants in future
+              privateVariants = None, // Could extract from fastaResult.variants in future
               treeProvider = Some(treeProviderType),
               strAnnotator = None,
               sampleBuild = Some(referenceBuild),
@@ -765,14 +776,15 @@ class HaplogroupProcessor {
   /**
    * Perform liftover of a VCF file between reference builds.
    *
-   * @param vcfFile Input VCF file
+   * @param vcfFile        Input VCF file
    * @param expectedContig Expected contig for filtering (chrY or chrM) - used to filter out
    *                       variants that map to unexpected contigs after liftover
-   * @param fromBuild Source reference build
-   * @param toBuild Target reference build
-   * @param onProgress Progress callback
-   * @param filterOutput If true, filter output to only include variants on expectedContig.
-   *                     Should be true for reverse liftover (back to tree coordinates).
+   *
+   * @param fromBuild      Source reference build
+   * @param toBuild        Target reference build
+   * @param onProgress     Progress callback
+   * @param filterOutput   If true, filter output to only include variants on expectedContig.
+   *                       Should be true for reverse liftover (back to tree coordinates).
    */
   private def performLiftover(
                                vcfFile: File,
@@ -795,11 +807,11 @@ class HaplogroupProcessor {
   }
 
   private def createVcfAllelesFile(
-    loci: List[Locus],
-    referencePath: String,
-    treeType: TreeType,
-    outputFile: Option[File]
-  ): File = {
+                                    loci: List[Locus],
+                                    referencePath: String,
+                                    treeType: TreeType,
+                                    outputFile: Option[File]
+                                  ): File = {
     // Use provided output file or create temp file
     val vcfFile = outputFile match {
       case Some(file) =>
@@ -901,6 +913,7 @@ class HaplogroupProcessor {
         haplogroup.children.flatMap(search).headOption
       }
     }
+
     tree.flatMap(search).headOption
   }
 
@@ -923,6 +936,7 @@ class HaplogroupProcessor {
         haplogroup.children.flatMap(findPathFromNode).headOption.map(path => haplogroup :: path)
       }
     }
+
     tree.flatMap(findPathFromNode).headOption.getOrElse(List.empty)
   }
 

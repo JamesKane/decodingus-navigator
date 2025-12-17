@@ -8,31 +8,31 @@ package com.decodingus.workspace.model
  * pointing to individual records. For local storage, we denormalize and store all records
  * together for efficient access.
  *
- * @param meta          Record metadata for tracking changes and sync
- * @param sampleRefs    AT URIs of biosample records in this workspace (for PDS sync)
- * @param projectRefs   AT URIs of project records in this workspace (for PDS sync)
- * @param samples       Denormalized biosample records for local access
- * @param projects      Denormalized project records for local access
- * @param sequenceRuns  Denormalized sequence run records for local access
- * @param alignments    Denormalized alignment records for local access
- * @param strProfiles              Denormalized STR profile records for local access
- * @param chipProfiles             Denormalized chip/array genotype profiles for local access
- * @param ySnpPanels               Denormalized Y-DNA SNP panel results for local access
+ * @param meta                      Record metadata for tracking changes and sync
+ * @param sampleRefs                AT URIs of biosample records in this workspace (for PDS sync)
+ * @param projectRefs               AT URIs of project records in this workspace (for PDS sync)
+ * @param samples                   Denormalized biosample records for local access
+ * @param projects                  Denormalized project records for local access
+ * @param sequenceRuns              Denormalized sequence run records for local access
+ * @param alignments                Denormalized alignment records for local access
+ * @param strProfiles               Denormalized STR profile records for local access
+ * @param chipProfiles              Denormalized chip/array genotype profiles for local access
+ * @param ySnpPanels                Denormalized Y-DNA SNP panel results for local access
  * @param haplogroupReconciliations Haplogroup reconciliation records (multi-run tracking)
  */
 case class WorkspaceContent(
-  meta: Option[RecordMeta] = None,
-  sampleRefs: List[String] = List.empty,
-  projectRefs: List[String] = List.empty,
-  samples: List[Biosample] = List.empty,
-  projects: List[Project] = List.empty,
-  sequenceRuns: List[SequenceRun] = List.empty,
-  alignments: List[Alignment] = List.empty,
-  strProfiles: List[StrProfile] = List.empty,
-  chipProfiles: List[ChipProfile] = List.empty,
-  ySnpPanels: List[com.decodingus.genotype.model.YDnaSnpPanelResult] = List.empty,
-  haplogroupReconciliations: List[HaplogroupReconciliation] = List.empty
-) {
+                             meta: Option[RecordMeta] = None,
+                             sampleRefs: List[String] = List.empty,
+                             projectRefs: List[String] = List.empty,
+                             samples: List[Biosample] = List.empty,
+                             projects: List[Project] = List.empty,
+                             sequenceRuns: List[SequenceRun] = List.empty,
+                             alignments: List[Alignment] = List.empty,
+                             strProfiles: List[StrProfile] = List.empty,
+                             chipProfiles: List[ChipProfile] = List.empty,
+                             ySnpPanels: List[com.decodingus.genotype.model.YDnaSnpPanelResult] = List.empty,
+                             haplogroupReconciliations: List[HaplogroupReconciliation] = List.empty
+                           ) {
   /**
    * Returns sequence runs for a given biosample.
    * Resolves sequenceRunRefs to actual SequenceRun records.
@@ -133,10 +133,10 @@ case class WorkspaceContent(
  * @param main    The workspace content
  */
 case class Workspace(
-  lexicon: Int,
-  id: String,
-  main: WorkspaceContent
-)
+                      lexicon: Int,
+                      id: String,
+                      main: WorkspaceContent
+                    )
 
 object Workspace {
   /** Current lexicon version - increment when schema changes */

@@ -1,23 +1,24 @@
 package com.decodingus.ui.components
 
-import scalafx.Includes._
-import scalafx.scene.control.{TreeTableView, TreeTableColumn, TreeItem, Button, Alert, ButtonType, ContextMenu, MenuItem, Tooltip, SelectionMode}
-import scalafx.scene.control.Alert.AlertType
-import scalafx.scene.layout.{VBox, HBox, Priority}
-import scalafx.geometry.{Insets, Pos}
-import scalafx.collections.ObservableBuffer
-import scalafx.beans.property.StringProperty
-import scalafx.application.Platform
-import com.decodingus.analysis.{CallableLociProcessor, CallableLociResult, ReadMetrics, VcfCache, VcfStatus, SubjectArtifactCache, VcfVendor}
-import com.decodingus.model.WgsMetrics
-import com.decodingus.workspace.model.{Biosample, SequenceRun, Alignment, AlignmentMetrics, FileInfo}
-import com.decodingus.workspace.WorkbenchViewModel
-import com.decodingus.workspace.services.BatchAnalysisResult
+import com.decodingus.analysis.*
+import com.decodingus.genotype.model.{TargetType, TestTypes}
 import com.decodingus.haplogroup.tree.TreeType
-import com.decodingus.genotype.model.{TestTypes, TargetType}
+import com.decodingus.model.WgsMetrics
+import com.decodingus.ui.components.{VendorFastaImportRequest, VendorVcfImportRequest}
+import com.decodingus.workspace.WorkbenchViewModel
+import com.decodingus.workspace.model.*
+import com.decodingus.workspace.services.BatchAnalysisResult
+import scalafx.Includes.*
+import scalafx.application.Platform
+import scalafx.beans.property.StringProperty
+import scalafx.collections.ObservableBuffer
+import scalafx.geometry.{Insets, Pos}
+import scalafx.scene.control.Alert.AlertType
+import scalafx.scene.control.*
+import scalafx.scene.layout.{HBox, Priority, VBox}
+
 import java.nio.file.Files
-import scala.jdk.CollectionConverters._
-import com.decodingus.ui.components.{VendorVcfImportRequest, VendorFastaImportRequest}
+import scala.jdk.CollectionConverters.*
 
 /**
  * Represents a row in the sequence data tree table.
@@ -25,23 +26,24 @@ import com.decodingus.ui.components.{VendorVcfImportRequest, VendorFastaImportRe
  */
 sealed trait SequenceDataRow {
   def runIndex: Int
+
   def testType: String
 }
 
 case class SequenceRunRow(
-  runIndex: Int,
-  run: SequenceRun,
-  alignmentCount: Int
-) extends SequenceDataRow {
+                           runIndex: Int,
+                           run: SequenceRun,
+                           alignmentCount: Int
+                         ) extends SequenceDataRow {
   def testType: String = run.testType
 }
 
 case class AlignmentRow(
-  runIndex: Int,
-  alignmentIndex: Int,
-  run: SequenceRun,
-  alignment: Alignment
-) extends SequenceDataRow {
+                         runIndex: Int,
+                         alignmentIndex: Int,
+                         run: SequenceRun,
+                         alignment: Alignment
+                       ) extends SequenceDataRow {
   def testType: String = run.testType
 }
 
@@ -51,13 +53,13 @@ case class AlignmentRow(
  * Analysis actions operate on specific alignments.
  */
 class SequenceDataTable(
-  viewModel: WorkbenchViewModel,
-  subject: Biosample,
-  sequenceRuns: List[SequenceRun],
-  alignments: List[Alignment],
-  onAnalyze: (Int) => Unit,  // Callback when analyze is clicked, passes run index
-  onRemove: (Int) => Unit    // Callback when remove is clicked, passes run index
-) extends VBox(10) {
+                         viewModel: WorkbenchViewModel,
+                         subject: Biosample,
+                         sequenceRuns: List[SequenceRun],
+                         alignments: List[Alignment],
+                         onAnalyze: (Int) => Unit, // Callback when analyze is clicked, passes run index
+                         onRemove: (Int) => Unit // Callback when remove is clicked, passes run index
+                       ) extends VBox(10) {
 
   padding = Insets(10, 0, 0, 0)
 
@@ -253,7 +255,7 @@ Sex: ${info.inferredSex.getOrElse("Unknown")}"""
       cellValueFactory = { p =>
         val value = p.value.getValue match {
           case sr: SequenceRunRow => sr.run.sequencingFacility.getOrElse("—")
-          case _: AlignmentRow => ""  // Empty for alignment rows
+          case _: AlignmentRow => "" // Empty for alignment rows
         }
         StringProperty(value)
       }
@@ -374,7 +376,7 @@ Sex: ${info.inferredSex.getOrElse("Unknown")}"""
       text = "VCF"
       cellValueFactory = { p =>
         val value = p.value.getValue match {
-          case _: SequenceRunRow => ""  // Empty for parent rows
+          case _: SequenceRunRow => "" // Empty for parent rows
           case ar: AlignmentRow => formatVcfStatus(getVcfStatus(ar))
         }
         StringProperty(value)
@@ -388,7 +390,7 @@ Sex: ${info.inferredSex.getOrElse("Unknown")}"""
       text = "CL"
       cellValueFactory = { p =>
         val value = p.value.getValue match {
-          case _: SequenceRunRow => ""  // Empty for parent rows
+          case _: SequenceRunRow => "" // Empty for parent rows
           case ar: AlignmentRow => if (hasCallableLoci(ar)) "✓" else "○"
         }
         StringProperty(value)
@@ -517,10 +519,10 @@ Sex: ${info.inferredSex.getOrElse("Unknown")}"""
   private def showVendorVcfInfo(runIndex: Int, vcfs: List[com.decodingus.analysis.VendorVcfInfo]): Unit = {
     val info = vcfs.map { vcf =>
       s"${vcf.vendor.displayName}:\n" +
-      s"  Reference: ${vcf.referenceBuild}\n" +
-      s"  Variants: ${vcf.variantCount}\n" +
-      s"  Contigs: ${vcf.contigs.take(5).mkString(", ")}${if (vcf.contigs.size > 5) "..." else ""}\n" +
-      s"  Imported: ${vcf.importedAt}"
+        s"  Reference: ${vcf.referenceBuild}\n" +
+        s"  Variants: ${vcf.variantCount}\n" +
+        s"  Contigs: ${vcf.contigs.take(5).mkString(", ")}${if (vcf.contigs.size > 5) "..." else ""}\n" +
+        s"  Imported: ${vcf.importedAt}"
     }.mkString("\n\n")
 
     new Alert(AlertType.Information) {
@@ -571,10 +573,10 @@ Sex: ${info.inferredSex.getOrElse("Unknown")}"""
   private def showVendorFastaInfo(runIndex: Int, fastas: List[com.decodingus.analysis.VendorFastaInfo]): Unit = {
     val info = fastas.map { fasta =>
       s"${fasta.vendor.displayName}:\n" +
-      s"  Original file: ${fasta.originalFileName}\n" +
-      s"  Sequence length: ${f"${fasta.sequenceLength}%,d"} bp\n" +
-      s"  Imported: ${fasta.importedAt}" +
-      fasta.notes.map(n => s"\n  Notes: $n").getOrElse("")
+        s"  Original file: ${fasta.originalFileName}\n" +
+        s"  Sequence length: ${f"${fasta.sequenceLength}%,d"} bp\n" +
+        s"  Imported: ${fasta.importedAt}" +
+        fasta.notes.map(n => s"\n  Notes: $n").getOrElse("")
     }.mkString("\n\n")
 
     new Alert(AlertType.Information) {
@@ -620,11 +622,11 @@ Sex: ${info.inferredSex.getOrElse("Unknown")}"""
       new javafx.scene.control.SeparatorMenuItem(),
       new MenuItem("Run Callable Loci Analysis") {
         onAction = _ => handleCallableLociAnalysis(ar.runIndex, ar.alignmentIndex, ar.alignment)
-        disable = hasCallableLoci(ar)  // Disable if already exists
+        disable = hasCallableLoci(ar) // Disable if already exists
       },
       new MenuItem("View Callable Loci Results") {
         onAction = _ => handleViewCallableLociResults(ar)
-        disable = !hasCallableLoci(ar)  // Disable if not exists
+        disable = !hasCallableLoci(ar) // Disable if not exists
       },
       new MenuItem("WGS Metrics") {
         onAction = _ => handleWgsMetricsAnalysis(ar.runIndex, ar.alignmentIndex, ar.alignment)
@@ -844,7 +846,8 @@ Sex: ${info.inferredSex.getOrElse("Unknown")}"""
             new Alert(AlertType.Information) {
               title = "WGS Metrics Complete"
               headerText = s"Coverage Analysis (${alignment.referenceBuild})"
-              contentText = s"""Mean Coverage: ${f"${wgsMetrics.meanCoverage}%.1f"}x
+              contentText =
+                s"""Mean Coverage: ${f"${wgsMetrics.meanCoverage}%.1f"}x
 Median Coverage: ${f"${wgsMetrics.medianCoverage}%.1f"}x
 SD Coverage: ${f"${wgsMetrics.sdCoverage}%.1f"}
 
@@ -887,9 +890,11 @@ SD Coverage: ${f"${wgsMetrics.sdCoverage}%.1f"}
         case Right(metricsResult) =>
           Platform.runLater {
             def fmt(n: Long): String = f"$n%,d"
+
             def pct(d: Double): String = f"${d * 100}%.1f%%"
 
-            val summaryText = s"""Total Reads: ${fmt(metricsResult.totalReads)}
+            val summaryText =
+              s"""Total Reads: ${fmt(metricsResult.totalReads)}
 PF Reads: ${fmt(metricsResult.pfReads)}
 Aligned: ${fmt(metricsResult.pfReadsAligned)} (${pct(metricsResult.pctPfReadsAligned)})
 Paired: ${fmt(metricsResult.readsAlignedInPairs)} (${pct(metricsResult.pctReadsAlignedInPairs)})
@@ -937,7 +942,8 @@ Insert Size:
     val confirmDialog = new Alert(AlertType.Confirmation) {
       title = "Generate Whole-Genome VCF"
       headerText = s"Generate VCF for ${ar.alignment.referenceBuild} alignment?"
-      contentText = s"""This process is CPU-intensive and may take several hours
+      contentText =
+        s"""This process is CPU-intensive and may take several hours
 depending on your hardware.
 
 Reference: ${ar.alignment.referenceBuild}
@@ -970,7 +976,8 @@ You can continue using other features while it runs."""
                 new Alert(AlertType.Information) {
                   title = "VCF Generation Complete"
                   headerText = s"Whole-Genome VCF Generated (${ar.alignment.referenceBuild})"
-                  contentText = s"""Variants: ${f"${vcfInfo.variantCount}%,d"}
+                  contentText =
+                    s"""Variants: ${f"${vcfInfo.variantCount}%,d"}
 Size: ${f"$sizeGb%.2f"} GB
 Contigs: ${vcfInfo.contigs.size}
 Inferred Sex: ${vcfInfo.inferredSex.getOrElse("Unknown")}"""
@@ -1003,7 +1010,8 @@ Inferred Sex: ${vcfInfo.inferredSex.getOrElse("Unknown")}"""
         new Alert(AlertType.Information) {
           title = "VCF Statistics"
           headerText = s"Whole-Genome VCF (${info.referenceBuild})"
-          contentText = s"""Path: ${info.vcfPath}
+          contentText =
+            s"""Path: ${info.vcfPath}
 Variants: ${f"${info.variantCount}%,d"}
 Size: ${f"$sizeGb%.2f"} GB
 Contigs: ${info.contigs.mkString(", ")}
@@ -1028,7 +1036,8 @@ Caller: ${info.callerVersion}"""
     val confirmDialog = new Alert(AlertType.Confirmation) {
       title = "Run Comprehensive Analysis"
       headerText = s"Run full analysis pipeline for ${ar.alignment.referenceBuild} alignment?"
-      contentText = s"""This will run the following analyses in sequence:
+      contentText =
+        s"""This will run the following analyses in sequence:
 
 1. Read/Insert Metrics
 2. WGS Coverage Metrics
@@ -1154,10 +1163,11 @@ You can continue using other features while it runs."""
                   new Alert(Alert.AlertType.Information) {
                     title = "Sequencing Data Added"
                     headerText = s"Successfully analyzed ${input.fileInfo.fileName}"
-                    contentText = s"""Platform: ${libraryStats.inferredPlatform}
-                                     |Instrument: ${libraryStats.mostFrequentInstrument}
-                                     |Reference: ${libraryStats.referenceBuild}
-                                     |Sample: ${libraryStats.sampleName}
+                    contentText =
+                      s"""Platform: ${libraryStats.inferredPlatform}
+                         |Instrument: ${libraryStats.mostFrequentInstrument}
+                         |Reference: ${libraryStats.referenceBuild}
+                         |Sample: ${libraryStats.sampleName}
                                      """.stripMargin
                   }.showAndWait()
                 }
@@ -1192,7 +1202,9 @@ You can continue using other features while it runs."""
   }
 
   children = Seq(
-    new scalafx.scene.control.Label("Sequencing Runs:") { style = "-fx-font-weight: bold;" },
+    new scalafx.scene.control.Label("Sequencing Runs:") {
+      style = "-fx-font-weight: bold;"
+    },
     treeTable,
     buttonBar
   )

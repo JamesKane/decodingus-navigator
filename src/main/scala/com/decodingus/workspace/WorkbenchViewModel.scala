@@ -1,44 +1,40 @@
 package com.decodingus.workspace
 
-import com.decodingus.analysis.{ArtifactContext, CachedVcfInfo, CallableLociProcessor, CallableLociResult, LibraryStatsProcessor, MultipleMetricsResult, UnifiedMetricsProcessor, VcfVendor, VendorFastaInfo, VendorVcfInfo, WgsMetricsProcessor, VcfCache, VcfStatus, SubjectArtifactCache}
-import com.decodingus.haplogroup.processor.HaplogroupProcessor
-import com.decodingus.client.DecodingUsClient
-import com.decodingus.db.Transactor
-import com.decodingus.haplogroup.tree.{TreeType, TreeProviderType}
+import com.decodingus.analysis.*
 import com.decodingus.auth.User
+import com.decodingus.client.DecodingUsClient
 import com.decodingus.config.{FeatureToggles, UserPreferencesService}
-import com.decodingus.refgenome.config.ReferenceConfigService
+import com.decodingus.db.Transactor
+import com.decodingus.haplogroup.model.HaplogroupResult as AnalysisHaplogroupResult
+import com.decodingus.haplogroup.processor.HaplogroupProcessor
+import com.decodingus.haplogroup.tree.{TreeProviderType, TreeType}
 import com.decodingus.model.{LibraryStats, WgsMetrics}
+import com.decodingus.refgenome.config.ReferenceConfigService
 import com.decodingus.refgenome.{ReferenceGateway, ReferenceResolveResult, YRegionAnnotator}
 import com.decodingus.repository.BiosampleRepository
-import com.decodingus.yprofile.repository.{
-  YChromosomeProfileRepository, YProfileSourceRepository,
-  YProfileRegionRepository, YProfileVariantRepository, YVariantSourceCallRepository,
-  YVariantAuditRepository, YSourceCallAlignmentRepository
-}
 import com.decodingus.service.{DatabaseContext, H2WorkspaceService, SequenceDataManager}
 import com.decodingus.util.Logger
-import com.decodingus.workspace.model.{Workspace, Project, Biosample, WorkspaceContent, SyncStatus, SequenceRun, Alignment, AlignmentMetrics, ContigMetrics, FileInfo, HaplogroupAssignments, HaplogroupResult => WorkspaceHaplogroupResult, RecordMeta, StrProfile, ChipProfile, DnaType, RunHaplogroupCall, CallMethod, HaplogroupTechnology}
-import com.decodingus.haplogroup.model.{HaplogroupResult => AnalysisHaplogroupResult}
-import com.decodingus.workspace.services.{WorkspaceOperations, AnalysisCoordinator, AnalysisProgress, BatchAnalysisResult, SyncService, SyncResult, FingerprintMatchService, FingerprintMatchResult}
+import com.decodingus.workspace.model.{Alignment, AlignmentMetrics, Biosample, CallMethod, ChipProfile, ContigMetrics, DnaType, FileInfo, HaplogroupAssignments, HaplogroupTechnology, Project, RecordMeta, RunHaplogroupCall, SequenceRun, StrProfile, SyncStatus, Workspace, WorkspaceContent, HaplogroupResult as WorkspaceHaplogroupResult}
+import com.decodingus.workspace.services.*
 import com.decodingus.yprofile.model.*
+import com.decodingus.yprofile.repository.*
 import com.decodingus.yprofile.service.YProfileService
 import htsjdk.samtools.SamReaderFactory
-import scalafx.beans.property.{ObjectProperty, ReadOnlyObjectProperty, StringProperty, BooleanProperty, DoubleProperty}
-import scalafx.collections.ObservableBuffer
 import scalafx.application.Platform
+import scalafx.beans.property.*
+import scalafx.collections.ObservableBuffer
 
 import java.io.File
 import java.nio.file.{Files, Path}
 import java.time.LocalDateTime
 import java.util.UUID
-import scala.concurrent.{ExecutionContext, Future}
 import scala.concurrent.ExecutionContext.Implicits.global
-import scala.util.{Success, Failure, Try}
+import scala.concurrent.{ExecutionContext, Future}
+import scala.util.{Failure, Success, Try}
 
 class WorkbenchViewModel(
-  databaseContext: DatabaseContext
-) {
+                          databaseContext: DatabaseContext
+                        ) {
   private val log = Logger[WorkbenchViewModel]
 
   // H2 service for atomic CRUD operations
@@ -126,8 +122,8 @@ class WorkbenchViewModel(
     } else {
       filteredProjects ++= projects.filter { p =>
         p.projectName.toLowerCase.contains(projectQuery) ||
-        p.description.exists(_.toLowerCase.contains(projectQuery)) ||
-        p.administrator.toLowerCase.contains(projectQuery)
+          p.description.exists(_.toLowerCase.contains(projectQuery)) ||
+          p.administrator.toLowerCase.contains(projectQuery)
       }
     }
 
@@ -138,9 +134,9 @@ class WorkbenchViewModel(
     } else {
       filteredSamples ++= samples.filter { s =>
         s.donorIdentifier.toLowerCase.contains(subjectQuery) ||
-        s.sampleAccession.toLowerCase.contains(subjectQuery) ||
-        s.description.exists(_.toLowerCase.contains(subjectQuery)) ||
-        s.centerName.exists(_.toLowerCase.contains(subjectQuery))
+          s.sampleAccession.toLowerCase.contains(subjectQuery) ||
+          s.description.exists(_.toLowerCase.contains(subjectQuery)) ||
+          s.centerName.exists(_.toLowerCase.contains(subjectQuery))
       }
     }
   }
@@ -235,7 +231,9 @@ class WorkbenchViewModel(
     syncService.syncFromPds(
       currentUser.value,
       _workspace.value,
-      status => Platform.runLater { syncStatus.value = status }
+      status => Platform.runLater {
+        syncStatus.value = status
+      }
     ).foreach { case (workspace, result) =>
       Platform.runLater {
         result match {
@@ -263,14 +261,22 @@ class WorkbenchViewModel(
     syncService.saveAndSync(
       _workspace.value,
       currentUser.value,
-      status => Platform.runLater { syncStatus.value = status }
+      status => Platform.runLater {
+        syncStatus.value = status
+      }
     ).foreach {
       case Left(error) =>
-        Platform.runLater { lastSyncError.value = error }
+        Platform.runLater {
+          lastSyncError.value = error
+        }
       case Right(SyncResult.Error(msg)) =>
-        Platform.runLater { lastSyncError.value = msg }
+        Platform.runLater {
+          lastSyncError.value = msg
+        }
       case Right(_) =>
-        Platform.runLater { lastSyncError.value = "" }
+        Platform.runLater {
+          lastSyncError.value = ""
+        }
     }
   }
 
@@ -280,6 +286,7 @@ class WorkbenchViewModel(
   private def currentState: WorkspaceState = WorkspaceState(_workspace.value)
 
   /** Applies a new workspace state and saves */
+
   /**
    * Updates in-memory state from a WorkspaceState.
    * Used by atomic operations that have already persisted to H2.
@@ -673,7 +680,9 @@ class WorkbenchViewModel(
    * Result of adding a file - either a new run or added to existing.
    */
   sealed trait AddFileResult
+
   case class NewRunCreated(index: Int) extends AddFileResult
+
   case class AddedToExistingRun(index: Int, referenceBuild: String) extends AddFileResult
 
   /**
@@ -688,16 +697,16 @@ class WorkbenchViewModel(
    * 5. If no match: create new SequenceRun + Alignment
    *
    * @param sampleAccession The subject's accession ID
-   * @param fileInfo The file information
-   * @param onProgress Progress callback (message, percent)
-   * @param onComplete Completion callback with result
+   * @param fileInfo        The file information
+   * @param onProgress      Progress callback (message, percent)
+   * @param onComplete      Completion callback with result
    */
   def addFileAndAnalyze(
-    sampleAccession: String,
-    fileInfo: FileInfo,
-    onProgress: (String, Double) => Unit,
-    onComplete: Either[String, (Int, LibraryStats)] => Unit
-  ): Unit = {
+                         sampleAccession: String,
+                         fileInfo: FileInfo,
+                         onProgress: (String, Double) => Unit,
+                         onComplete: Either[String, (Int, LibraryStats)] => Unit
+                       ): Unit = {
     // Step 1: Check for exact duplicate by checksum
     onProgress("Checking for duplicates...", 0.05)
 
@@ -781,7 +790,7 @@ class WorkbenchViewModel(
                 case FingerprintMatchResult.MatchFound(existingRun, idx, confidence) =>
                   // For LOW confidence matches, ask user to confirm
                   if (confidence == "LOW") {
-                    import com.decodingus.ui.components.{FingerprintMatchDialog, GroupTogether, KeepSeparate, FingerprintMatchDecision}
+                    import com.decodingus.ui.components.{FingerprintMatchDecision, FingerprintMatchDialog, GroupTogether, KeepSeparate}
                     val dialog = new FingerprintMatchDialog(
                       existingRun = existingRun,
                       newReferenceBuild = libraryStats.referenceBuild,
@@ -838,105 +847,105 @@ class WorkbenchViewModel(
 
               runResult.foreach { case (resultIndex, seqRun, isNewRun) =>
 
-              // Create alignment URI
-              val alignUri = s"local:alignment:${subject.sampleAccession}:${libraryStats.referenceBuild}:${java.util.UUID.randomUUID().toString.take(8)}"
+                // Create alignment URI
+                val alignUri = s"local:alignment:${subject.sampleAccession}:${libraryStats.referenceBuild}:${java.util.UUID.randomUUID().toString.take(8)}"
 
-              val newAlignment = Alignment(
-                atUri = Some(alignUri),
-                meta = RecordMeta.initial,
-                sequenceRunRef = seqRun.atUri.getOrElse(""),
-                biosampleRef = Some(subject.atUri.getOrElse(s"local:biosample:${subject.sampleAccession}")),
-                referenceBuild = libraryStats.referenceBuild,
-                aligner = libraryStats.aligner,
-                files = List(fileInfo),
-                metrics = None
-              )
+                val newAlignment = Alignment(
+                  atUri = Some(alignUri),
+                  meta = RecordMeta.initial,
+                  sequenceRunRef = seqRun.atUri.getOrElse(""),
+                  biosampleRef = Some(subject.atUri.getOrElse(s"local:biosample:${subject.sampleAccession}")),
+                  referenceBuild = libraryStats.referenceBuild,
+                  aligner = libraryStats.aligner,
+                  files = List(fileInfo),
+                  metrics = None
+                )
 
-              // Update the SequenceRun with inferred metadata
-              val instrumentId = if (libraryStats.mostFrequentInstrumentId != "Unknown")
-                Some(libraryStats.mostFrequentInstrumentId)
-              else
-                None
+                // Update the SequenceRun with inferred metadata
+                val instrumentId = if (libraryStats.mostFrequentInstrumentId != "Unknown")
+                  Some(libraryStats.mostFrequentInstrumentId)
+                else
+                  None
 
-              // Only update sampleName if not already set (preserve manual edits)
-              val sampleNameFromBam = seqRun.sampleName.orElse {
-                if (libraryStats.sampleName != "Unknown") Some(libraryStats.sampleName) else None
-              }
-
-              // Extract fingerprint fields (preserve manual edits)
-              val libraryIdFromBam = seqRun.libraryId.orElse {
-                if (libraryStats.libraryId != "Unknown") Some(libraryStats.libraryId) else None
-              }
-              val platformUnitFromBam = seqRun.platformUnit.orElse(libraryStats.platformUnit)
-              val runFingerprint = seqRun.runFingerprint.orElse(Some(fingerprint))
-
-              // Add file to sequence run if not already present (for matched runs)
-              val updatedFiles = if (seqRun.files.exists(_.checksum == fileInfo.checksum)) {
-                seqRun.files
-              } else {
-                seqRun.files :+ fileInfo
-              }
-
-              val updatedSeqRun = seqRun.copy(
-                meta = seqRun.meta.updated("analysis"),
-                platformName = libraryStats.inferredPlatform,
-                instrumentModel = Some(libraryStats.mostFrequentInstrument),
-                instrumentId = instrumentId,
-                sampleName = sampleNameFromBam,
-                libraryId = libraryIdFromBam,
-                platformUnit = platformUnitFromBam,
-                runFingerprint = runFingerprint,
-                testType = inferTestType(libraryStats),
-                libraryLayout = Some(if (libraryStats.pairedReads > libraryStats.readCount / 2) "Paired-End" else "Single-End"),
-                totalReads = Some(libraryStats.readCount.toLong),
-                readLength = calculateMeanReadLength(libraryStats.lengthDistribution),
-                maxReadLength = libraryStats.lengthDistribution.keys.maxOption,
-                meanInsertSize = calculateMeanInsertSize(libraryStats.insertSizeDistribution),
-                files = updatedFiles,
-                alignmentRefs = if (seqRun.alignmentRefs.contains(alignUri)) seqRun.alignmentRefs else seqRun.alignmentRefs :+ alignUri
-              )
-
-              // Trigger facility lookup only if not already set (preserve manual edits)
-              if (seqRun.sequencingFacility.isEmpty) {
-                instrumentId.foreach { id =>
-                  lookupAndUpdateFacility(sampleAccession, resultIndex, id)
+                // Only update sampleName if not already set (preserve manual edits)
+                val sampleNameFromBam = seqRun.sampleName.orElse {
+                  if (libraryStats.sampleName != "Unknown") Some(libraryStats.sampleName) else None
                 }
-              }
 
-              // Persist to H2 atomically
-              import com.decodingus.service.EntityConversions.parseIdFromRef
-              seqRun.atUri.flatMap(parseIdFromRef).foreach { seqRunId =>
-                h2Service.createAlignment(newAlignment, seqRunId) match {
+                // Extract fingerprint fields (preserve manual edits)
+                val libraryIdFromBam = seqRun.libraryId.orElse {
+                  if (libraryStats.libraryId != "Unknown") Some(libraryStats.libraryId) else None
+                }
+                val platformUnitFromBam = seqRun.platformUnit.orElse(libraryStats.platformUnit)
+                val runFingerprint = seqRun.runFingerprint.orElse(Some(fingerprint))
+
+                // Add file to sequence run if not already present (for matched runs)
+                val updatedFiles = if (seqRun.files.exists(_.checksum == fileInfo.checksum)) {
+                  seqRun.files
+                } else {
+                  seqRun.files :+ fileInfo
+                }
+
+                val updatedSeqRun = seqRun.copy(
+                  meta = seqRun.meta.updated("analysis"),
+                  platformName = libraryStats.inferredPlatform,
+                  instrumentModel = Some(libraryStats.mostFrequentInstrument),
+                  instrumentId = instrumentId,
+                  sampleName = sampleNameFromBam,
+                  libraryId = libraryIdFromBam,
+                  platformUnit = platformUnitFromBam,
+                  runFingerprint = runFingerprint,
+                  testType = inferTestType(libraryStats),
+                  libraryLayout = Some(if (libraryStats.pairedReads > libraryStats.readCount / 2) "Paired-End" else "Single-End"),
+                  totalReads = Some(libraryStats.readCount.toLong),
+                  readLength = calculateMeanReadLength(libraryStats.lengthDistribution),
+                  maxReadLength = libraryStats.lengthDistribution.keys.maxOption,
+                  meanInsertSize = calculateMeanInsertSize(libraryStats.insertSizeDistribution),
+                  files = updatedFiles,
+                  alignmentRefs = if (seqRun.alignmentRefs.contains(alignUri)) seqRun.alignmentRefs else seqRun.alignmentRefs :+ alignUri
+                )
+
+                // Trigger facility lookup only if not already set (preserve manual edits)
+                if (seqRun.sequencingFacility.isEmpty) {
+                  instrumentId.foreach { id =>
+                    lookupAndUpdateFacility(sampleAccession, resultIndex, id)
+                  }
+                }
+
+                // Persist to H2 atomically
+                import com.decodingus.service.EntityConversions.parseIdFromRef
+                seqRun.atUri.flatMap(parseIdFromRef).foreach { seqRunId =>
+                  h2Service.createAlignment(newAlignment, seqRunId) match {
+                    case Right(persisted) =>
+                      log.info(s" Alignment persisted to H2: ${persisted.atUri}")
+                    case Left(error) =>
+                      log.error(s"Failed to persist Alignment to H2: $error")
+                  }
+                }
+                h2Service.updateSequenceRun(updatedSeqRun) match {
                   case Right(persisted) =>
-                    log.info(s" Alignment persisted to H2: ${persisted.atUri}")
+                    log.info(s" SequenceRun updated in H2: ${persisted.atUri}")
                   case Left(error) =>
-                    log.error(s"Failed to persist Alignment to H2: $error")
+                    log.error(s"Failed to update SequenceRun in H2: $error")
                 }
-              }
-              h2Service.updateSequenceRun(updatedSeqRun) match {
-                case Right(persisted) =>
-                  log.info(s" SequenceRun updated in H2: ${persisted.atUri}")
-                case Left(error) =>
-                  log.error(s"Failed to update SequenceRun in H2: $error")
-              }
 
-              // Update in-memory state
-              val updatedSequenceRuns = _workspace.value.main.sequenceRuns.map { sr =>
-                if (sr.atUri == seqRun.atUri) updatedSeqRun else sr
-              }
-              val updatedAlignments = _workspace.value.main.alignments :+ newAlignment
-              val updatedContent = _workspace.value.main.copy(
-                sequenceRuns = updatedSequenceRuns,
-                alignments = updatedAlignments
-              )
-              _workspace.value = _workspace.value.copy(main = updatedContent)
+                // Update in-memory state
+                val updatedSequenceRuns = _workspace.value.main.sequenceRuns.map { sr =>
+                  if (sr.atUri == seqRun.atUri) updatedSeqRun else sr
+                }
+                val updatedAlignments = _workspace.value.main.alignments :+ newAlignment
+                val updatedContent = _workspace.value.main.copy(
+                  sequenceRuns = updatedSequenceRuns,
+                  alignments = updatedAlignments
+                )
+                _workspace.value = _workspace.value.copy(main = updatedContent)
 
-              lastLibraryStats.value = Some(libraryStats)
-              analysisInProgress.value = false
-              analysisProgress.value = if (isNewRun) "Analysis complete" else s"Added ${libraryStats.referenceBuild} alignment to existing run"
-              analysisProgressPercent.value = 1.0
-              onProgress("Complete", 1.0)
-              onComplete(Right((resultIndex, libraryStats)))
+                lastLibraryStats.value = Some(libraryStats)
+                analysisInProgress.value = false
+                analysisProgress.value = if (isNewRun) "Analysis complete" else s"Added ${libraryStats.referenceBuild} alignment to existing run"
+                analysisProgressPercent.value = 1.0
+                onProgress("Complete", 1.0)
+                onComplete(Right((resultIndex, libraryStats)))
               } // end runResult.foreach
 
             case None =>
@@ -1127,15 +1136,15 @@ class WorkbenchViewModel(
    * Delegates to FingerprintMatchService for matching logic.
    *
    * @param biosampleRef The biosample to search within
-   * @param fingerprint The computed fingerprint to match
+   * @param fingerprint  The computed fingerprint to match
    * @param libraryStats Full stats for additional matching criteria
    * @return Match result with confidence level
    */
   def findMatchingSequenceRun(
-    biosampleRef: String,
-    fingerprint: String,
-    libraryStats: LibraryStats
-  ): FingerprintMatchResult = {
+                               biosampleRef: String,
+                               fingerprint: String,
+                               libraryStats: LibraryStats
+                             ): FingerprintMatchResult = {
     val candidateRuns = _workspace.value.main.sequenceRuns
       .filter(_.biosampleRef == biosampleRef)
       .zipWithIndex
@@ -1148,17 +1157,17 @@ class WorkbenchViewModel(
    * Add an alignment to an existing sequence run (for multi-reference scenarios).
    * Uses SequenceDataManager for atomic alignment creation + in-memory state update.
    *
-   * @param sampleAccession The biosample's accession ID
+   * @param sampleAccession  The biosample's accession ID
    * @param sequenceRunIndex Index of the sequence run to add alignment to
-   * @param newAlignment The new alignment to add
-   * @param fileInfo The file info for the new alignment
+   * @param newAlignment     The new alignment to add
+   * @param fileInfo         The file info for the new alignment
    */
   def addAlignmentToExistingRun(
-    sampleAccession: String,
-    sequenceRunIndex: Int,
-    newAlignment: Alignment,
-    fileInfo: FileInfo
-  ): Unit = {
+                                 sampleAccession: String,
+                                 sequenceRunIndex: Int,
+                                 newAlignment: Alignment,
+                                 fileInfo: FileInfo
+                               ): Unit = {
     findSubject(sampleAccession).foreach { subject =>
       val sequenceRuns = _workspace.value.main.getSequenceRunsForBiosample(subject)
       if (sequenceRunIndex >= 0 && sequenceRunIndex < sequenceRuns.size) {
@@ -1195,7 +1204,9 @@ class WorkbenchViewModel(
   // --- Reference Download State ---
   // These properties allow the UI to show a prompt when a reference download is needed
   sealed trait ReferenceDownloadRequest
+
   case class PendingDownload(build: String, url: String, sizeMB: Int, onConfirm: () => Unit, onCancel: () => Unit) extends ReferenceDownloadRequest
+
   case object NoDownloadPending extends ReferenceDownloadRequest
 
   val pendingReferenceDownload: ObjectProperty[ReferenceDownloadRequest] = ObjectProperty(NoDownloadPending)
@@ -1205,16 +1216,16 @@ class WorkbenchViewModel(
    * If prompting is enabled and download is required, sets pendingReferenceDownload for UI to handle.
    *
    * @param referenceBuild The build to resolve (e.g., "GRCh38")
-   * @param onProgress Progress callback for download
-   * @param onResolved Called with the resolved path when available
-   * @param onError Called if resolution fails or is cancelled
+   * @param onProgress     Progress callback for download
+   * @param onResolved     Called with the resolved path when available
+   * @param onError        Called if resolution fails or is cancelled
    */
   def resolveReferenceWithPrompt(
-    referenceBuild: String,
-    onProgress: (Long, Long) => Unit,
-    onResolved: String => Unit,
-    onError: String => Unit
-  ): Unit = {
+                                  referenceBuild: String,
+                                  onProgress: (Long, Long) => Unit,
+                                  onResolved: String => Unit,
+                                  onError: String => Unit
+                                ): Unit = {
     val config = ReferenceConfigService.load()
     val referenceGateway = new ReferenceGateway(onProgress)
 
@@ -1236,9 +1247,13 @@ class WorkbenchViewModel(
                 Future {
                   referenceGateway.downloadAndResolve(build) match {
                     case Right(path) =>
-                      Platform.runLater { onResolved(path.toString) }
+                      Platform.runLater {
+                        onResolved(path.toString)
+                      }
                     case Left(error) =>
-                      Platform.runLater { onError(error) }
+                      Platform.runLater {
+                        onError(error)
+                      }
                   }
                 }
               },
@@ -1253,9 +1268,13 @@ class WorkbenchViewModel(
           Future {
             referenceGateway.downloadAndResolve(build) match {
               case Right(path) =>
-                Platform.runLater { onResolved(path.toString) }
+                Platform.runLater {
+                  onResolved(path.toString)
+                }
               case Left(error) =>
-                Platform.runLater { onError(error) }
+                Platform.runLater {
+                  onError(error)
+                }
             }
           }
         }
@@ -1274,15 +1293,15 @@ class WorkbenchViewModel(
    * 3. Collects library statistics
    * 4. Updates the SequenceRun with results and creates Alignment
    *
-   * @param sampleAccession The subject's accession ID
+   * @param sampleAccession  The subject's accession ID
    * @param sequenceRunIndex The index of the sequence run to analyze
-   * @param onComplete Callback when analysis completes (success or failure)
+   * @param onComplete       Callback when analysis completes (success or failure)
    */
   def runInitialAnalysis(
-    sampleAccession: String,
-    sequenceRunIndex: Int,
-    onComplete: Either[String, LibraryStats] => Unit
-  ): Unit = {
+                          sampleAccession: String,
+                          sequenceRunIndex: Int,
+                          onComplete: Either[String, LibraryStats] => Unit
+                        ): Unit = {
     findSubject(sampleAccession) match {
       case Some(subject) =>
         val sequenceRuns = _workspace.value.main.getSequenceRunsForBiosample(subject)
@@ -1447,15 +1466,15 @@ class WorkbenchViewModel(
    * Runs WGS metrics analysis (deep coverage) for a sequencing run.
    * Requires that initial analysis has already been run.
    *
-   * @param sampleAccession The subject's accession ID
+   * @param sampleAccession  The subject's accession ID
    * @param sequenceRunIndex The index of the sequence run to analyze
-   * @param onComplete Callback when analysis completes
+   * @param onComplete       Callback when analysis completes
    */
   def runWgsMetricsAnalysis(
-    sampleAccession: String,
-    sequenceRunIndex: Int,
-    onComplete: Either[String, WgsMetrics] => Unit
-  ): Unit = {
+                             sampleAccession: String,
+                             sequenceRunIndex: Int,
+                             onComplete: Either[String, WgsMetrics] => Unit
+                           ): Unit = {
     findSubject(sampleAccession) match {
       case Some(subject) =>
         val sequenceRuns = _workspace.value.main.getSequenceRunsForBiosample(subject)
@@ -1606,15 +1625,15 @@ class WorkbenchViewModel(
    * Analyzes each contig to determine callable vs non-callable regions.
    * Requires that initial analysis has already been run.
    *
-   * @param sampleAccession The subject's accession ID
+   * @param sampleAccession  The subject's accession ID
    * @param sequenceRunIndex The index of the sequence run to analyze
-   * @param onComplete Callback when analysis completes, returns result and artifact directory path
+   * @param onComplete       Callback when analysis completes, returns result and artifact directory path
    */
   def runCallableLociAnalysis(
-    sampleAccession: String,
-    sequenceRunIndex: Int,
-    onComplete: Either[String, (CallableLociResult, java.nio.file.Path)] => Unit
-  ): Unit = {
+                               sampleAccession: String,
+                               sequenceRunIndex: Int,
+                               onComplete: Either[String, (CallableLociResult, java.nio.file.Path)] => Unit
+                             ): Unit = {
     findSubject(sampleAccession) match {
       case Some(subject) =>
         val sequenceRuns = _workspace.value.main.getSequenceRunsForBiosample(subject)
@@ -1755,17 +1774,17 @@ class WorkbenchViewModel(
    * Runs haplogroup analysis for a subject using the specified tree type.
    * Uses FTDNA tree provider for both Y-DNA and MT-DNA.
    *
-   * @param sampleAccession The subject's accession ID
+   * @param sampleAccession  The subject's accession ID
    * @param sequenceRunIndex The index of the sequence run to analyze
-   * @param treeType The type of haplogroup tree (YDNA or MTDNA)
-   * @param onComplete Callback when analysis completes
+   * @param treeType         The type of haplogroup tree (YDNA or MTDNA)
+   * @param onComplete       Callback when analysis completes
    */
   def runHaplogroupAnalysis(
-    sampleAccession: String,
-    sequenceRunIndex: Int,
-    treeType: TreeType,
-    onComplete: Either[String, AnalysisHaplogroupResult] => Unit
-  ): Unit = {
+                             sampleAccession: String,
+                             sequenceRunIndex: Int,
+                             treeType: TreeType,
+                             onComplete: Either[String, AnalysisHaplogroupResult] => Unit
+                           ): Unit = {
     findSubject(sampleAccession) match {
       case Some(subject) =>
         val sequenceRuns = _workspace.value.main.getSequenceRunsForBiosample(subject)
@@ -1988,12 +2007,12 @@ class WorkbenchViewModel(
    * Runs haplogroup analysis for a specific alignment.
    */
   def runHaplogroupAnalysisForAlignment(
-    sampleAccession: String,
-    sequenceRunIndex: Int,
-    alignmentIndex: Int,
-    treeType: TreeType,
-    onComplete: Either[String, AnalysisHaplogroupResult] => Unit
-  ): Unit = {
+                                         sampleAccession: String,
+                                         sequenceRunIndex: Int,
+                                         alignmentIndex: Int,
+                                         treeType: TreeType,
+                                         onComplete: Either[String, AnalysisHaplogroupResult] => Unit
+                                       ): Unit = {
     findSubject(sampleAccession) match {
       case Some(subject) =>
         val sequenceRuns = _workspace.value.main.getSequenceRunsForBiosample(subject)
@@ -2056,7 +2075,7 @@ class WorkbenchViewModel(
                           val haplogroupDir = SubjectArtifactCache.getArtifactSubdir(sampleAccession, runId, alignId, "haplogroup")
                           val prefix = if (treeType == TreeType.YDNA) "ydna" else "mtdna"
                           val callsVcf = haplogroupDir.resolve(s"${prefix}_calls.vcf")
-                          
+
                           val artifactsExist = if (treeType == TreeType.YDNA) {
                             val privateVcf = haplogroupDir.resolve(s"${prefix}_private_variants.vcf")
                             Files.exists(callsVcf) && Files.exists(privateVcf)
@@ -2065,7 +2084,7 @@ class WorkbenchViewModel(
                           }
 
                           if (artifactsExist) {
-                             log.info(s" Found existing haplogroup artifacts for $prefix at $haplogroupDir. Analysis will reuse them.")
+                            log.info(s" Found existing haplogroup artifacts for $prefix at $haplogroupDir. Analysis will reuse them.")
                           }
 
                           val libraryStats = LibraryStats(
@@ -2143,11 +2162,11 @@ class WorkbenchViewModel(
    * Runs callable loci analysis for a specific alignment.
    */
   def runCallableLociAnalysisForAlignment(
-    sampleAccession: String,
-    sequenceRunIndex: Int,
-    alignmentIndex: Int,
-    onComplete: Either[String, (CallableLociResult, java.nio.file.Path)] => Unit
-  ): Unit = {
+                                           sampleAccession: String,
+                                           sequenceRunIndex: Int,
+                                           alignmentIndex: Int,
+                                           onComplete: Either[String, (CallableLociResult, java.nio.file.Path)] => Unit
+                                         ): Unit = {
     // Delegate to existing method for now - alignment index support to be added later
     runCallableLociAnalysis(sampleAccession, sequenceRunIndex, onComplete)
   }
@@ -2156,11 +2175,11 @@ class WorkbenchViewModel(
    * Runs WGS metrics analysis for a specific alignment.
    */
   def runWgsMetricsAnalysisForAlignment(
-    sampleAccession: String,
-    sequenceRunIndex: Int,
-    alignmentIndex: Int,
-    onComplete: Either[String, WgsMetrics] => Unit
-  ): Unit = {
+                                         sampleAccession: String,
+                                         sequenceRunIndex: Int,
+                                         alignmentIndex: Int,
+                                         onComplete: Either[String, WgsMetrics] => Unit
+                                       ): Unit = {
     // Delegate to existing method for now - alignment index support to be added later
     runWgsMetricsAnalysis(sampleAccession, sequenceRunIndex, (result: Either[String, WgsMetrics]) => {
       onComplete(result)
@@ -2171,11 +2190,11 @@ class WorkbenchViewModel(
    * Runs multiple metrics analysis for a specific alignment.
    */
   def runMultipleMetricsAnalysisForAlignment(
-    sampleAccession: String,
-    sequenceRunIndex: Int,
-    alignmentIndex: Int,
-    onComplete: Either[String, com.decodingus.analysis.ReadMetrics] => Unit
-  ): Unit = {
+                                              sampleAccession: String,
+                                              sequenceRunIndex: Int,
+                                              alignmentIndex: Int,
+                                              onComplete: Either[String, com.decodingus.analysis.ReadMetrics] => Unit
+                                            ): Unit = {
     // Delegate to existing method for now - alignment index support to be added later
     runMultipleMetricsAnalysis(sampleAccession, sequenceRunIndex, onComplete)
   }
@@ -2185,11 +2204,11 @@ class WorkbenchViewModel(
    * This is a long-running operation that generates a cached VCF.
    */
   def runWholeGenomeVariantCallingForAlignment(
-    sampleAccession: String,
-    sequenceRunIndex: Int,
-    alignmentIndex: Int,
-    onComplete: Either[String, CachedVcfInfo] => Unit
-  ): Unit = {
+                                                sampleAccession: String,
+                                                sequenceRunIndex: Int,
+                                                alignmentIndex: Int,
+                                                onComplete: Either[String, CachedVcfInfo] => Unit
+                                              ): Unit = {
     analysisInProgress.value = true
     analysisProgress.value = "Starting whole-genome variant calling..."
     analysisProgressPercent.value = 0.0
@@ -2236,11 +2255,11 @@ class WorkbenchViewModel(
    * Executes: Read Metrics → WGS Metrics → Callable Loci → Sex Inference → mtDNA → Y-DNA → Ancestry stub
    */
   def runComprehensiveAnalysisForAlignment(
-    sampleAccession: String,
-    sequenceRunIndex: Int,
-    alignmentIndex: Int,
-    onComplete: Either[String, BatchAnalysisResult] => Unit
-  ): Unit = {
+                                            sampleAccession: String,
+                                            sequenceRunIndex: Int,
+                                            alignmentIndex: Int,
+                                            onComplete: Either[String, BatchAnalysisResult] => Unit
+                                          ): Unit = {
     analysisInProgress.value = true
     analysisProgress.value = "Starting comprehensive analysis..."
     analysisProgressPercent.value = 0.0
@@ -2363,16 +2382,17 @@ class WorkbenchViewModel(
    * Parses the file, computes statistics, and creates a ChipProfile record.
    *
    * @param sampleAccession The subject's accession ID
-   * @param file The chip data file to import
-   * @param onComplete Callback when import completes
+   * @param file            The chip data file to import
+   * @param onComplete      Callback when import completes
    */
   def importChipData(
-    sampleAccession: String,
-    file: File,
-    onComplete: Either[String, ChipProfile] => Unit
-  ): Unit = {
-    import com.decodingus.genotype.parser.ChipDataParser
+                      sampleAccession: String,
+                      file: File,
+                      onComplete: Either[String, ChipProfile] => Unit
+                    ): Unit = {
     import com.decodingus.genotype.model.GenotypingTestSummary
+    import com.decodingus.genotype.parser.ChipDataParser
+
     import java.security.MessageDigest
 
     findSubject(sampleAccession) match {
@@ -2506,8 +2526,8 @@ class WorkbenchViewModel(
 
   /** Compute SHA-256 hash of a file */
   private def computeFileHash(file: File): String = {
-    import java.security.MessageDigest
     import java.nio.file.Files
+    import java.security.MessageDigest
     val bytes = Files.readAllBytes(file.toPath)
     val digest = MessageDigest.getInstance("SHA-256").digest(bytes)
     digest.map("%02x".format(_)).mkString
@@ -2557,18 +2577,18 @@ class WorkbenchViewModel(
    * without calling GATK HaplotypeCaller.
    *
    * @param sampleAccession The subject's accession ID
-   * @param profileUri The AT URI of the chip profile to analyze
-   * @param panelType AIMs (quick) or GenomeWide (detailed)
-   * @param onComplete Callback when analysis completes
+   * @param profileUri      The AT URI of the chip profile to analyze
+   * @param panelType       AIMs (quick) or GenomeWide (detailed)
+   * @param onComplete      Callback when analysis completes
    */
   def runChipAncestryAnalysis(
-    sampleAccession: String,
-    profileUri: String,
-    panelType: com.decodingus.ancestry.model.AncestryPanelType,
-    onComplete: Either[String, com.decodingus.ancestry.model.AncestryResult] => Unit
-  ): Unit = {
+                               sampleAccession: String,
+                               profileUri: String,
+                               panelType: com.decodingus.ancestry.model.AncestryPanelType,
+                               onComplete: Either[String, com.decodingus.ancestry.model.AncestryResult] => Unit
+                             ): Unit = {
     import com.decodingus.genotype.parser.ChipDataParser
-    import com.decodingus.genotype.processor.{ChipDataProcessor, ChipAncestryAdapter}
+    import com.decodingus.genotype.processor.{ChipAncestryAdapter, ChipDataProcessor}
 
     findSubject(sampleAccession) match {
       case Some(subject) =>
@@ -2682,16 +2702,16 @@ class WorkbenchViewModel(
    * may be less precise.
    *
    * @param sampleAccession The subject's accession ID
-   * @param profileUri The AT URI of the chip profile to analyze
-   * @param treeType Y-DNA or MT-DNA tree type
-   * @param onComplete Callback when analysis completes
+   * @param profileUri      The AT URI of the chip profile to analyze
+   * @param treeType        Y-DNA or MT-DNA tree type
+   * @param onComplete      Callback when analysis completes
    */
   def runChipHaplogroupAnalysis(
-    sampleAccession: String,
-    profileUri: String,
-    treeType: com.decodingus.haplogroup.tree.TreeType,
-    onComplete: Either[String, com.decodingus.genotype.processor.ChipHaplogroupResult] => Unit
-  ): Unit = {
+                                 sampleAccession: String,
+                                 profileUri: String,
+                                 treeType: com.decodingus.haplogroup.tree.TreeType,
+                                 onComplete: Either[String, com.decodingus.genotype.processor.ChipHaplogroupResult] => Unit
+                               ): Unit = {
     import com.decodingus.genotype.processor.{ChipDataProcessor, ChipHaplogroupAdapter}
 
     val treeLabel = if (treeType == com.decodingus.haplogroup.tree.TreeType.YDNA) "Y-DNA" else "mtDNA"
@@ -2839,16 +2859,16 @@ class WorkbenchViewModel(
    *
    * Results are stored back into the SequenceRun model.
    *
-   * @param sampleAccession The subject's accession ID
+   * @param sampleAccession  The subject's accession ID
    * @param sequenceRunIndex Index of the sequence run within the subject
-   * @param onComplete Callback when analysis completes
+   * @param onComplete       Callback when analysis completes
    */
   def runMultipleMetricsAnalysis(
-    sampleAccession: String,
-    sequenceRunIndex: Int,
-    onComplete: Either[String, com.decodingus.analysis.ReadMetrics] => Unit
-  ): Unit = {
-    import com.decodingus.analysis.{UnifiedMetricsProcessor, ArtifactContext}
+                                  sampleAccession: String,
+                                  sequenceRunIndex: Int,
+                                  onComplete: Either[String, com.decodingus.analysis.ReadMetrics] => Unit
+                                ): Unit = {
+    import com.decodingus.analysis.{ArtifactContext, UnifiedMetricsProcessor}
 
     findSubject(sampleAccession) match {
       case Some(subject) =>
@@ -2976,16 +2996,16 @@ class WorkbenchViewModel(
    * Summary data for Y Profile display in subject detail view.
    */
   case class YProfileSummary(
-    profileId: UUID,
-    consensusHaplogroup: Option[String],
-    haplogroupConfidence: Option[Double],
-    totalVariants: Int,
-    confirmedCount: Int,
-    novelCount: Int,
-    conflictCount: Int,
-    sourceCount: Int,
-    callableRegionPct: Option[Double]
-  )
+                              profileId: UUID,
+                              consensusHaplogroup: Option[String],
+                              haplogroupConfidence: Option[Double],
+                              totalVariants: Int,
+                              confirmedCount: Int,
+                              novelCount: Int,
+                              conflictCount: Int,
+                              sourceCount: Int,
+                              callableRegionPct: Option[Double]
+                            )
 
   /**
    * Full Y Profile data for detail dialog.
@@ -2993,13 +3013,13 @@ class WorkbenchViewModel(
    * @param yRegionAnnotator Optional annotator for region visualization (ideogram)
    */
   case class YProfileLoadedData(
-    profile: YChromosomeProfileEntity,
-    variants: List[YProfileVariantEntity],
-    sources: List[YProfileSourceEntity],
-    variantCalls: Map[UUID, List[YVariantSourceCallEntity]],
-    auditEntries: List[YVariantAuditEntity],
-    yRegionAnnotator: Option[YRegionAnnotator] = None
-  )
+                                 profile: YChromosomeProfileEntity,
+                                 variants: List[YProfileVariantEntity],
+                                 sources: List[YProfileSourceEntity],
+                                 variantCalls: Map[UUID, List[YVariantSourceCallEntity]],
+                                 auditEntries: List[YVariantAuditEntity],
+                                 yRegionAnnotator: Option[YRegionAnnotator] = None
+                               )
 
   /**
    * Get Y Profile summary for a biosample (lightweight query).
@@ -3031,12 +3051,12 @@ class WorkbenchViewModel(
    * Load full Y Profile data for a biosample (async, on-demand).
    *
    * @param biosampleId The biosample UUID
-   * @param onComplete Callback with Either[error, data]
+   * @param onComplete  Callback with Either[error, data]
    */
   def loadYProfileForBiosample(
-    biosampleId: UUID,
-    onComplete: Either[String, YProfileLoadedData] => Unit
-  ): Unit = {
+                                biosampleId: UUID,
+                                onComplete: Either[String, YProfileLoadedData] => Unit
+                              ): Unit = {
     yProfileService match {
       case None =>
         onComplete(Left("Y Profile service not available"))
@@ -3111,25 +3131,25 @@ class WorkbenchViewModel(
    * The VCF will be stored in the cache at the SequenceRun level and automatically
    * used for haplogroup analysis when available.
    *
-   * @param sampleAccession Sample accession
+   * @param sampleAccession  Sample accession
    * @param sequenceRunIndex Index of the sequence run within the subject
-   * @param vcfPath Path to the VCF file
-   * @param bedPath Optional path to the target regions BED file
-   * @param vendor The vendor that provided the files (e.g., FTDNA_BIGY)
-   * @param referenceBuild Reference genome build (e.g., "GRCh38")
-   * @param notes Optional notes about this import
+   * @param vcfPath          Path to the VCF file
+   * @param bedPath          Optional path to the target regions BED file
+   * @param vendor           The vendor that provided the files (e.g., FTDNA_BIGY)
+   * @param referenceBuild   Reference genome build (e.g., "GRCh38")
+   * @param notes            Optional notes about this import
    * @return Either error message or success message
    */
   def importVendorVcf(
-    sampleAccession: String,
-    sequenceRunIndex: Int,
-    vcfPath: java.nio.file.Path,
-    bedPath: Option[java.nio.file.Path],
-    vendor: VcfVendor,
-    referenceBuild: String,
-    notes: Option[String] = None
-  ): Either[String, String] = {
-    import com.decodingus.analysis.{VcfCache, SubjectArtifactCache}
+                       sampleAccession: String,
+                       sequenceRunIndex: Int,
+                       vcfPath: java.nio.file.Path,
+                       bedPath: Option[java.nio.file.Path],
+                       vendor: VcfVendor,
+                       referenceBuild: String,
+                       notes: Option[String] = None
+                     ): Either[String, String] = {
+    import com.decodingus.analysis.{SubjectArtifactCache, VcfCache}
 
     findSubject(sampleAccession) match {
       case None =>
@@ -3180,10 +3200,10 @@ class WorkbenchViewModel(
    * List vendor VCFs imported for a sequence run.
    */
   def listVendorVcfsForRun(
-    sampleAccession: String,
-    sequenceRunIndex: Int
-  ): List[VendorVcfInfo] = {
-    import com.decodingus.analysis.{VcfCache, SubjectArtifactCache}
+                            sampleAccession: String,
+                            sequenceRunIndex: Int
+                          ): List[VendorVcfInfo] = {
+    import com.decodingus.analysis.{SubjectArtifactCache, VcfCache}
 
     findSubject(sampleAccession) match {
       case None => List.empty
@@ -3205,11 +3225,11 @@ class WorkbenchViewModel(
    * Delete a vendor VCF from a sequence run.
    */
   def deleteVendorVcf(
-    sampleAccession: String,
-    sequenceRunIndex: Int,
-    vendor: VcfVendor
-  ): Boolean = {
-    import com.decodingus.analysis.{VcfCache, SubjectArtifactCache}
+                       sampleAccession: String,
+                       sequenceRunIndex: Int,
+                       vendor: VcfVendor
+                     ): Boolean = {
+    import com.decodingus.analysis.{SubjectArtifactCache, VcfCache}
 
     findSubject(sampleAccession) match {
       case None => false
@@ -3232,21 +3252,21 @@ class WorkbenchViewModel(
   /**
    * Import a vendor-provided mtDNA FASTA file for a sequence run.
    *
-   * @param sampleAccession The sample accession identifier
+   * @param sampleAccession  The sample accession identifier
    * @param sequenceRunIndex Index of the sequence run
-   * @param fastaPath Path to the FASTA file
-   * @param vendor Vendor type (e.g., FTDNA_MTFULL, YSEQ)
-   * @param notes Optional notes about the import
+   * @param fastaPath        Path to the FASTA file
+   * @param vendor           Vendor type (e.g., FTDNA_MTFULL, YSEQ)
+   * @param notes            Optional notes about the import
    * @return Either error message or success message
    */
   def importVendorFasta(
-    sampleAccession: String,
-    sequenceRunIndex: Int,
-    fastaPath: java.nio.file.Path,
-    vendor: VcfVendor,
-    notes: Option[String] = None
-  ): Either[String, String] = {
-    import com.decodingus.analysis.{VcfCache, SubjectArtifactCache, MtDnaFastaProcessor}
+                         sampleAccession: String,
+                         sequenceRunIndex: Int,
+                         fastaPath: java.nio.file.Path,
+                         vendor: VcfVendor,
+                         notes: Option[String] = None
+                       ): Either[String, String] = {
+    import com.decodingus.analysis.{MtDnaFastaProcessor, SubjectArtifactCache, VcfCache}
 
     findSubject(sampleAccession) match {
       case None =>
@@ -3286,10 +3306,10 @@ class WorkbenchViewModel(
    * List all imported vendor FASTAs for a sequence run.
    */
   def listVendorFastasForRun(
-    sampleAccession: String,
-    sequenceRunIndex: Int
-  ): List[VendorFastaInfo] = {
-    import com.decodingus.analysis.{VcfCache, SubjectArtifactCache}
+                              sampleAccession: String,
+                              sequenceRunIndex: Int
+                            ): List[VendorFastaInfo] = {
+    import com.decodingus.analysis.{SubjectArtifactCache, VcfCache}
 
     findSubject(sampleAccession) match {
       case None => List.empty
@@ -3311,11 +3331,11 @@ class WorkbenchViewModel(
    * Delete a vendor FASTA from a sequence run.
    */
   def deleteVendorFasta(
-    sampleAccession: String,
-    sequenceRunIndex: Int,
-    vendor: VcfVendor
-  ): Boolean = {
-    import com.decodingus.analysis.{VcfCache, SubjectArtifactCache}
+                         sampleAccession: String,
+                         sequenceRunIndex: Int,
+                         vendor: VcfVendor
+                       ): Boolean = {
+    import com.decodingus.analysis.{SubjectArtifactCache, VcfCache}
 
     findSubject(sampleAccession) match {
       case None => false

@@ -21,30 +21,30 @@ import java.time.Instant
  * @param analyzedAt       Timestamp when this analysis was performed
  */
 case class HaplogroupResult(
-  haplogroupName: String,
-  score: Double,
-  matchingSnps: Option[Int] = None,
-  mismatchingSnps: Option[Int] = None,
-  ancestralMatches: Option[Int] = None,
-  treeDepth: Option[Int] = None,
-  lineagePath: Option[List[String]] = None,
-  privateVariants: Option[PrivateVariantData] = None,
-  source: Option[String] = None,
-  sourceRef: Option[String] = None,
-  treeProvider: Option[String] = None,
-  treeVersion: Option[String] = None,
-  analyzedAt: Option[Instant] = None
-) {
+                             haplogroupName: String,
+                             score: Double,
+                             matchingSnps: Option[Int] = None,
+                             mismatchingSnps: Option[Int] = None,
+                             ancestralMatches: Option[Int] = None,
+                             treeDepth: Option[Int] = None,
+                             lineagePath: Option[List[String]] = None,
+                             privateVariants: Option[PrivateVariantData] = None,
+                             source: Option[String] = None,
+                             sourceRef: Option[String] = None,
+                             treeProvider: Option[String] = None,
+                             treeVersion: Option[String] = None,
+                             analyzedAt: Option[Instant] = None
+                           ) {
 
   /**
    * Quality tier for reconciliation purposes.
    * Higher tier = more trusted/detailed result.
    */
   def qualityTier: Int = source match {
-    case Some("wgs") => 3      // WGS - highest quality
-    case Some("bigy") => 2     // Targeted Y-DNA (Big Y, Y Elite)
-    case Some("chip") => 1     // SNP array/chip
-    case _ => 0                // Unknown
+    case Some("wgs") => 3 // WGS - highest quality
+    case Some("bigy") => 2 // Targeted Y-DNA (Big Y, Y Elite)
+    case Some("chip") => 1 // SNP array/chip
+    case _ => 0 // Unknown
   }
 
   /**

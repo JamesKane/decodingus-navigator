@@ -28,6 +28,7 @@ import scala.util.{Try, Using}
  * Cache structure: ~/.decodingus/cache/genome-regions/{build}.json
  */
 object GenomeRegionService {
+
   import GenomeRegionsCodecs.given
 
   private val cacheDir: Path = {
@@ -207,10 +208,10 @@ object GenomeRegionService {
    */
   private def normalizeBuild(build: String): String = {
     build.toLowerCase match {
-      case "grch38" | "hg38"                      => "GRCh38"
-      case "grch37" | "hg19"                      => "GRCh37"
+      case "grch38" | "hg38" => "GRCh38"
+      case "grch37" | "hg19" => "GRCh37"
       case "chm13v2" | "chm13" | "t2t-chm13" | "hs1" => "CHM13v2"
-      case _                                       => build
+      case _ => build
     }
   }
 

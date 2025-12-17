@@ -7,30 +7,30 @@ import htsjdk.samtools.util.Interval
 /**
  * Lifted genotype call with position in target coordinates.
  *
- * @param chromosome Target chromosome name
- * @param position Target position (1-based)
- * @param allele1 First allele (reverse-complemented if needed)
- * @param allele2 Second allele (reverse-complemented if needed)
+ * @param chromosome             Target chromosome name
+ * @param position               Target position (1-based)
+ * @param allele1                First allele (reverse-complemented if needed)
+ * @param allele2                Second allele (reverse-complemented if needed)
  * @param wasReverseComplemented True if alleles were reverse-complemented
  */
 case class LiftedGenotype(
-  chromosome: String,
-  position: Int,
-  allele1: Char,
-  allele2: Char,
-  wasReverseComplemented: Boolean
-)
+                           chromosome: String,
+                           position: Int,
+                           allele1: Char,
+                           allele2: Char,
+                           wasReverseComplemented: Boolean
+                         )
 
 /**
  * Result of lifting a batch of genotypes.
  *
- * @param lifted Successfully lifted genotypes
+ * @param lifted      Successfully lifted genotypes
  * @param failedCount Number of positions that couldn't be lifted
  */
 case class LiftoverResult(
-  lifted: List[(Long, LiftedGenotype)], // Original position -> Lifted genotype
-  failedCount: Int
-)
+                           lifted: List[(Long, LiftedGenotype)], // Original position -> Lifted genotype
+                           failedCount: Int
+                         )
 
 /**
  * Utility for lifting genotype coordinates between reference builds using htsjdk.
@@ -73,20 +73,20 @@ class GenotypeLiftover(fromBuild: String, toBuild: String) {
   /**
    * Lift a single genotype position.
    *
-   * @param liftOver The initialized LiftOver instance
+   * @param liftOver   The initialized LiftOver instance
    * @param chromosome Source chromosome (e.g., "Y", "chrY", "24")
-   * @param position Source position (1-based)
-   * @param allele1 First allele
-   * @param allele2 Second allele
+   * @param position   Source position (1-based)
+   * @param allele1    First allele
+   * @param allele2    Second allele
    * @return Some(LiftedGenotype) if successful, None if position couldn't be lifted
    */
   def liftGenotype(
-    liftOver: LiftOver,
-    chromosome: String,
-    position: Int,
-    allele1: Char,
-    allele2: Char
-  ): Option[LiftedGenotype] = {
+                    liftOver: LiftOver,
+                    chromosome: String,
+                    position: Int,
+                    allele1: Char,
+                    allele2: Char
+                  ): Option[LiftedGenotype] = {
     // Normalize chromosome name for liftover (htsjdk expects certain formats)
     val normalizedChr = normalizeChromosome(chromosome, fromBuild)
 
@@ -123,16 +123,16 @@ class GenotypeLiftover(fromBuild: String, toBuild: String) {
   /**
    * Lift a batch of genotypes efficiently.
    *
-   * @param liftOver The initialized LiftOver instance
-   * @param genotypes List of (chromosome, position, allele1, allele2)
+   * @param liftOver   The initialized LiftOver instance
+   * @param genotypes  List of (chromosome, position, allele1, allele2)
    * @param onProgress Progress callback (lifted count, total count)
    * @return LiftoverResult with lifted genotypes and failure count
    */
   def liftGenotypes(
-    liftOver: LiftOver,
-    genotypes: List[(String, Int, Char, Char)],
-    onProgress: (Int, Int) => Unit = (_, _) => ()
-  ): LiftoverResult = {
+                     liftOver: LiftOver,
+                     genotypes: List[(String, Int, Char, Char)],
+                     onProgress: (Int, Int) => Unit = (_, _) => ()
+                   ): LiftoverResult = {
     val total = genotypes.size
     var lifted = List.empty[(Long, LiftedGenotype)]
     var failedCount = 0
@@ -175,7 +175,7 @@ class GenotypeLiftover(fromBuild: String, toBuild: String) {
     val baseChr = normalized match {
       case "23" | "X" => "X"
       case "24" | "Y" => "Y"
-      case "25" | "MT" | "M" | "MITO" => "M"  // UCSC uses chrM, not chrMT
+      case "25" | "MT" | "M" | "MITO" => "M" // UCSC uses chrM, not chrMT
       case other => other
     }
 

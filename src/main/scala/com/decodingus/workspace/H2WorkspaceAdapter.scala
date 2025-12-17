@@ -1,7 +1,7 @@
 package com.decodingus.workspace
 
-import com.decodingus.service.{H2WorkspaceService, DatabaseContext}
-import com.decodingus.workspace.model.{Workspace, WorkspaceContent, RecordMeta}
+import com.decodingus.service.{DatabaseContext, H2WorkspaceService}
+import com.decodingus.workspace.model.{RecordMeta, Workspace, WorkspaceContent}
 
 /**
  * Adapter that implements the legacy WorkspaceService interface using H2 backend.

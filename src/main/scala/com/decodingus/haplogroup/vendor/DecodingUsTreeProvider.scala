@@ -58,7 +58,7 @@ class DecodingUsTreeProvider(treeType: TreeType) extends TreeProvider(treeType) 
       val allNodes = apiNodes.zipWithIndex.map { case (node, i) =>
         val haplogroupId = i.toLong
         val parentId: Option[Long] = if (haplogroupId == rootId) None
-                                     else node.parentName.flatMap(nameToId.get).orElse(Some(rootId))
+        else node.parentName.flatMap(nameToId.get).orElse(Some(rootId))
 
         val loci = node.variants.flatMap { v =>
           v.coordinates.collectFirst {

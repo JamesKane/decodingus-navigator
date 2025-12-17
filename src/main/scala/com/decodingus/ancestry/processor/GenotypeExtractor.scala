@@ -10,21 +10,22 @@ import scala.jdk.CollectionConverters.*
 /**
  * Result of genotype extraction from a BAM/CRAM file.
  *
- * @param genotypes Map of SNP ID (chr:pos format) to genotype value:
- *                  0 = homozygous reference
- *                  1 = heterozygous
- *                  2 = homozygous alternate
- *                  -1 = no call / missing
+ * @param genotypes        Map of SNP ID (chr:pos format) to genotype value:
+ *                         0 = homozygous reference
+ *                         1 = heterozygous
+ *                         2 = homozygous alternate
+ *                         -1 = no call / missing
+ *
  * @param snpsWithGenotype Number of SNPs with valid genotype calls
- * @param snpsMissing Number of SNPs with no call
- * @param outputVcf Path to the output VCF with called genotypes
+ * @param snpsMissing      Number of SNPs with no call
+ * @param outputVcf        Path to the output VCF with called genotypes
  */
 case class GenotypeExtractionResult(
-  genotypes: Map[String, Int],
-  snpsWithGenotype: Int,
-  snpsMissing: Int,
-  outputVcf: File
-)
+                                     genotypes: Map[String, Int],
+                                     snpsWithGenotype: Int,
+                                     snpsMissing: Int,
+                                     outputVcf: File
+                                   )
 
 /**
  * Extracts genotypes from BAM/CRAM at specified SNP positions.
@@ -35,20 +36,20 @@ class GenotypeExtractor {
   /**
    * Extract genotypes at specified SNP sites from a BAM/CRAM file.
    *
-   * @param bamPath Path to the BAM/CRAM file
+   * @param bamPath       Path to the BAM/CRAM file
    * @param referencePath Path to the reference genome FASTA
-   * @param sitesVcf VCF file containing SNP positions to genotype
-   * @param onProgress Progress callback (message, current, total)
-   * @param outputDir Optional directory for output VCF (uses temp if None)
+   * @param sitesVcf      VCF file containing SNP positions to genotype
+   * @param onProgress    Progress callback (message, current, total)
+   * @param outputDir     Optional directory for output VCF (uses temp if None)
    * @return Either error message or extraction result
    */
   def extractGenotypes(
-    bamPath: String,
-    referencePath: String,
-    sitesVcf: File,
-    onProgress: (String, Double, Double) => Unit,
-    outputDir: Option[Path]
-  ): Either[String, GenotypeExtractionResult] = {
+                        bamPath: String,
+                        referencePath: String,
+                        sitesVcf: File,
+                        onProgress: (String, Double, Double) => Unit,
+                        outputDir: Option[Path]
+                      ): Either[String, GenotypeExtractionResult] = {
 
     onProgress("Preparing genotype extraction...", 0.0, 1.0)
 
@@ -98,7 +99,7 @@ class GenotypeExtractor {
       "--sample-ploidy", "2",
       "--standard-min-confidence-threshold-for-calling", "10.0",
       "--force-call-filtered-alleles", "true",
-      "--output-mode", "EMIT_ALL_SITES"  // Include ref calls and no-calls
+      "--output-mode", "EMIT_ALL_SITES" // Include ref calls and no-calls
     )
 
     val progressCallback: Option[(String, Double) => Unit] = Some { (msg, done) =>
@@ -170,13 +171,13 @@ class GenotypeExtractor {
    * Extract genotypes for a subset of chromosomes (for parallelization).
    */
   def extractGenotypesForChromosomes(
-    bamPath: String,
-    referencePath: String,
-    sitesVcf: File,
-    chromosomes: List[String],
-    onProgress: (String, Double, Double) => Unit,
-    outputDir: Option[Path]
-  ): Either[String, GenotypeExtractionResult] = {
+                                      bamPath: String,
+                                      referencePath: String,
+                                      sitesVcf: File,
+                                      chromosomes: List[String],
+                                      onProgress: (String, Double, Double) => Unit,
+                                      outputDir: Option[Path]
+                                    ): Either[String, GenotypeExtractionResult] = {
 
     // Create interval list for specified chromosomes
     val intervalArg = chromosomes.mkString(" -L ", " -L ", "")

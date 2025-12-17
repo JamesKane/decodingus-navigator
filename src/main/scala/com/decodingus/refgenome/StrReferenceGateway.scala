@@ -129,10 +129,10 @@ class StrReferenceGateway(onProgress: (String, Double) => Unit = (_, _) => ()) {
    * This is much faster than GATK's interval list approach for large BED files.
    */
   private def performLiftover(
-    bedPath: Path,
-    chainPath: Path,
-    targetBuild: String
-  ): Either[String, Path] = {
+                               bedPath: Path,
+                               chainPath: Path,
+                               targetBuild: String
+                             ): Either[String, Path] = {
     import htsjdk.samtools.liftover.LiftOver
     import htsjdk.samtools.util.{Interval, Log}
 
@@ -157,7 +157,7 @@ class StrReferenceGateway(onProgress: (String, Double) => Unit = (_, _) => ()) {
           val fields = line.split("\t")
           if (fields.length >= 5) {
             val chrom = fields(0)
-            val start = fields(1).toInt  // BED is 0-based
+            val start = fields(1).toInt // BED is 0-based
             val end = fields(2).toInt
             val period = fields(3)
             val numRepeats = fields(4)

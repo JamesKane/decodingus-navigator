@@ -9,7 +9,7 @@ import java.io.File
  * Loads the entire contig into memory on first access for fast lookups.
  *
  * @param referencePath Path to the reference FASTA file
- * @param contig The contig to query (e.g., "chrY", "chrM")
+ * @param contig        The contig to query (e.g., "chrY", "chrM")
  */
 class ReferenceQuerier(referencePath: String, contig: String) extends AutoCloseable {
   private val referenceFile: ReferenceSequenceFile = ReferenceSequenceFileFactory.getReferenceSequenceFile(new File(referencePath))
@@ -20,6 +20,7 @@ class ReferenceQuerier(referencePath: String, contig: String) extends AutoClosea
 
   /**
    * Check if a position is within the contig bounds.
+   *
    * @param position 1-based position
    */
   def isValidPosition(position: Long): Boolean = {
@@ -28,6 +29,7 @@ class ReferenceQuerier(referencePath: String, contig: String) extends AutoClosea
 
   /**
    * Get the base at a 1-based position.
+   *
    * @return Some(base) if position is valid, None if out of bounds
    */
   def getBase(position: Long): Option[Char] = {
@@ -40,6 +42,7 @@ class ReferenceQuerier(referencePath: String, contig: String) extends AutoClosea
 
   /**
    * Get the base at a 1-based position, throwing if out of bounds.
+   *
    * @throws IndexOutOfBoundsException if position is outside contig
    */
   def getBaseUnsafe(position: Long): Char = {
@@ -77,6 +80,7 @@ class MultiContigReferenceQuerier(referencePath: String) extends AutoCloseable {
 
   /**
    * Check if a position is within the contig bounds.
+   *
    * @param position 1-based position
    */
   def isValidPosition(contig: String, position: Long): Boolean = {
@@ -86,6 +90,7 @@ class MultiContigReferenceQuerier(referencePath: String) extends AutoCloseable {
 
   /**
    * Get the base at a 1-based position.
+   *
    * @return Some(base) if position is valid, None if out of bounds
    */
   def getBase(contig: String, position: Long): Option[Char] = {
@@ -99,6 +104,7 @@ class MultiContigReferenceQuerier(referencePath: String) extends AutoCloseable {
 
   /**
    * Get the base at a 1-based position, throwing if out of bounds.
+   *
    * @throws IndexOutOfBoundsException if position is outside contig
    */
   def getBaseUnsafe(contig: String, position: Long): Char = {

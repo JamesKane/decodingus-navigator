@@ -1,10 +1,10 @@
 package com.decodingus.ui.components
 
-import scalafx.Includes._
-import scalafx.scene.control.{ButtonType, Dialog, Label, RadioButton, ToggleGroup, ButtonBar}
-import scalafx.scene.layout.{VBox, HBox}
-import scalafx.geometry.Insets
 import com.decodingus.haplogroup.tree.TreeType
+import scalafx.Includes.*
+import scalafx.geometry.Insets
+import scalafx.scene.control.*
+import scalafx.scene.layout.{HBox, VBox}
 
 /**
  * Dialog for selecting haplogroup analysis type (Y-DNA or MT-DNA).
@@ -45,7 +45,9 @@ class HaplogroupAnalysisDialog extends Dialog[Option[TreeType]] {
           }
         )
       },
-      new Label("") { prefHeight = 10 }, // Spacer
+      new Label("") {
+        prefHeight = 10
+      }, // Spacer
       new Label("Note: Analysis requires initial analysis to be completed first.") {
         style = "-fx-text-fill: #888888; -fx-font-size: 11px; -fx-font-style: italic;"
         wrapText = true
@@ -69,14 +71,14 @@ class HaplogroupAnalysisDialog extends Dialog[Option[TreeType]] {
  * Dialog showing haplogroup analysis results.
  */
 class HaplogroupResultDialog(
-  treeType: TreeType,
-  haplogroupName: String,
-  score: Double,
-  matchingSnps: Int,
-  mismatchingSnps: Int,
-  ancestralMatches: Int,
-  depth: Int
-) extends Dialog[Unit] {
+                              treeType: TreeType,
+                              haplogroupName: String,
+                              score: Double,
+                              matchingSnps: Int,
+                              mismatchingSnps: Int,
+                              ancestralMatches: Int,
+                              depth: Int
+                            ) extends Dialog[Unit] {
 
   title = "Haplogroup Analysis Results"
   headerText = s"${if (treeType == TreeType.YDNA) "Y-DNA" else "MT-DNA"} Haplogroup: $haplogroupName"
@@ -89,14 +91,20 @@ class HaplogroupResultDialog(
       new Label(s"Top Haplogroup: $haplogroupName") {
         style = "-fx-font-size: 18px; -fx-font-weight: bold;"
       },
-      new Label("") { prefHeight = 5 },
-      new Label("Analysis Details:") { style = "-fx-font-weight: bold;" },
+      new Label("") {
+        prefHeight = 5
+      },
+      new Label("Analysis Details:") {
+        style = "-fx-font-weight: bold;"
+      },
       createStatRow("Score:", f"$score%.4f"),
       createStatRow("Matching SNPs:", matchingSnps.toString),
       createStatRow("Mismatching SNPs:", mismatchingSnps.toString),
       createStatRow("Ancestral Matches:", ancestralMatches.toString),
       createStatRow("Tree Depth:", depth.toString),
-      new Label("") { prefHeight = 10 },
+      new Label("") {
+        prefHeight = 10
+      },
       new Label("This result has been saved to the subject's profile.") {
         style = "-fx-text-fill: #4CAF50; -fx-font-style: italic;"
       }
@@ -106,8 +114,12 @@ class HaplogroupResultDialog(
   private def createStatRow(label: String, value: String): HBox = {
     new HBox(10) {
       children = Seq(
-        new Label(label) { prefWidth = 150 },
-        new Label(value) { style = "-fx-font-weight: bold;" }
+        new Label(label) {
+          prefWidth = 150
+        },
+        new Label(value) {
+          style = "-fx-font-weight: bold;"
+        }
       )
     }
   }

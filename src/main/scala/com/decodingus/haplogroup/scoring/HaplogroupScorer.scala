@@ -71,7 +71,7 @@ class HaplogroupScorer {
           } else if (calledBase.equalsIgnoreCase(locus.ref)) {
             branchAncestral += 1
           }
-          // If calledBase doesn't match either ref or alt, treat as no-call
+        // If calledBase doesn't match either ref or alt, treat as no-call
         case None =>
           branchNoCalls += 1
       }

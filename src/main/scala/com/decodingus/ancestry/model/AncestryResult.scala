@@ -6,63 +6,63 @@ import io.circe.Codec
  * Percentage assignment for a single population.
  */
 case class PopulationPercentage(
-  populationCode: String,
-  populationName: String,
-  percentage: Double,                    // 0.0 to 100.0
-  confidenceLow: Double,                 // Lower bound of 95% CI
-  confidenceHigh: Double,                // Upper bound of 95% CI
-  rank: Int                              // Sorted by percentage (1 = highest)
-) derives Codec.AsObject
+                                 populationCode: String,
+                                 populationName: String,
+                                 percentage: Double, // 0.0 to 100.0
+                                 confidenceLow: Double, // Lower bound of 95% CI
+                                 confidenceHigh: Double, // Upper bound of 95% CI
+                                 rank: Int // Sorted by percentage (1 = highest)
+                               ) derives Codec.AsObject
 
 /**
  * Summary for a super-population (continental grouping).
  */
 case class SuperPopulationPercentage(
-  superPopulation: String,               // "European", "African", etc.
-  percentage: Double,                    // Sum of constituent populations
-  populations: List[String]              // Contributing population codes
-) derives Codec.AsObject
+                                      superPopulation: String, // "European", "African", etc.
+                                      percentage: Double, // Sum of constituent populations
+                                      populations: List[String] // Contributing population codes
+                                    ) derives Codec.AsObject
 
 /**
  * Result of ancestry analysis for a single sample.
  */
 case class AncestryResult(
-  panelType: String,                     // "aims" or "genome-wide"
-  snpsAnalyzed: Int,                     // Total SNPs in panel
-  snpsWithGenotype: Int,                 // SNPs with valid genotype calls
-  snpsMissing: Int,                      // SNPs with no call
-  percentages: List[PopulationPercentage],
-  superPopulationSummary: List[SuperPopulationPercentage],
-  confidenceLevel: Double,               // Overall confidence (0-1) based on data quality
-  analysisVersion: String,
-  referenceVersion: String,
-  pcaCoordinates: Option[List[Double]]   // Optional: first N PCA coordinates for visualization
-) derives Codec.AsObject
+                           panelType: String, // "aims" or "genome-wide"
+                           snpsAnalyzed: Int, // Total SNPs in panel
+                           snpsWithGenotype: Int, // SNPs with valid genotype calls
+                           snpsMissing: Int, // SNPs with no call
+                           percentages: List[PopulationPercentage],
+                           superPopulationSummary: List[SuperPopulationPercentage],
+                           confidenceLevel: Double, // Overall confidence (0-1) based on data quality
+                           analysisVersion: String,
+                           referenceVersion: String,
+                           pcaCoordinates: Option[List[Double]] // Optional: first N PCA coordinates for visualization
+                         ) derives Codec.AsObject
 
 object AncestryResult {
 
   /**
    * Create an AncestryResult from raw population probabilities.
    *
-   * @param panelType "aims" or "genome-wide"
-   * @param snpsAnalyzed Total SNPs in the panel
+   * @param panelType        "aims" or "genome-wide"
+   * @param snpsAnalyzed     Total SNPs in the panel
    * @param snpsWithGenotype SNPs with valid calls
-   * @param populationProbs Map of population code -> raw probability
-   * @param confidenceLevel Overall confidence score
-   * @param analysisVersion Version of the analysis algorithm
+   * @param populationProbs  Map of population code -> raw probability
+   * @param confidenceLevel  Overall confidence score
+   * @param analysisVersion  Version of the analysis algorithm
    * @param referenceVersion Version of the reference panel
-   * @param pcaCoords Optional PCA coordinates
+   * @param pcaCoords        Optional PCA coordinates
    */
   def fromProbabilities(
-    panelType: String,
-    snpsAnalyzed: Int,
-    snpsWithGenotype: Int,
-    populationProbs: Map[String, Double],
-    confidenceLevel: Double,
-    analysisVersion: String,
-    referenceVersion: String,
-    pcaCoords: Option[List[Double]] = None
-  ): AncestryResult = {
+                         panelType: String,
+                         snpsAnalyzed: Int,
+                         snpsWithGenotype: Int,
+                         populationProbs: Map[String, Double],
+                         confidenceLevel: Double,
+                         analysisVersion: String,
+                         referenceVersion: String,
+                         pcaCoords: Option[List[Double]] = None
+                       ): AncestryResult = {
     // Normalize probabilities to percentages
     val totalProb = populationProbs.values.sum
     val normalizedPcts = if (totalProb > 0) {

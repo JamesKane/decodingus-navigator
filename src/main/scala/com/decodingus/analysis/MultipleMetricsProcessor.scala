@@ -8,50 +8,50 @@ import scala.util.Using
 /**
  * Results from CollectMultipleMetrics containing alignment summary and insert size metrics.
  *
- * @param totalReads             Total number of reads (TOTAL_READS from alignment_summary_metrics)
- * @param pfReads                Pass-filter reads (PF_READS)
- * @param pfReadsAligned         PF reads that aligned (PF_READS_ALIGNED)
- * @param pctPfReadsAligned      Percentage of PF reads aligned
- * @param pfHqAlignedReads       PF reads with high-quality alignments (PF_HQ_ALIGNED_READS)
- * @param readsPaired            Reads from paired-end libraries (READS_ALIGNED_IN_PAIRS)
- * @param pctReadsPaired         Percentage of aligned reads that are paired
- * @param pctProperPairs         Percentage of reads aligned as proper pairs (PF_READS_IMPROPER_PAIRS inverse)
- * @param meanReadLength         Mean read length (MEAN_READ_LENGTH)
- * @param strandBalance          Strand balance (PCT_PF_READS_ALIGNED / strand ratio)
- * @param pctChimeras            Percentage of reads that are chimeric (PCT_CHIMERAS)
- * @param pctAdapter             Percentage of bases that are adapter (PCT_ADAPTER)
- * @param medianInsertSize       Median insert size (MEDIAN_INSERT_SIZE from insert_size_metrics)
- * @param meanInsertSize         Mean insert size (MEAN_INSERT_SIZE)
- * @param stdInsertSize          Standard deviation of insert size (STANDARD_DEVIATION)
+ * @param totalReads              Total number of reads (TOTAL_READS from alignment_summary_metrics)
+ * @param pfReads                 Pass-filter reads (PF_READS)
+ * @param pfReadsAligned          PF reads that aligned (PF_READS_ALIGNED)
+ * @param pctPfReadsAligned       Percentage of PF reads aligned
+ * @param pfHqAlignedReads        PF reads with high-quality alignments (PF_HQ_ALIGNED_READS)
+ * @param readsPaired             Reads from paired-end libraries (READS_ALIGNED_IN_PAIRS)
+ * @param pctReadsPaired          Percentage of aligned reads that are paired
+ * @param pctProperPairs          Percentage of reads aligned as proper pairs (PF_READS_IMPROPER_PAIRS inverse)
+ * @param meanReadLength          Mean read length (MEAN_READ_LENGTH)
+ * @param strandBalance           Strand balance (PCT_PF_READS_ALIGNED / strand ratio)
+ * @param pctChimeras             Percentage of reads that are chimeric (PCT_CHIMERAS)
+ * @param pctAdapter              Percentage of bases that are adapter (PCT_ADAPTER)
+ * @param medianInsertSize        Median insert size (MEDIAN_INSERT_SIZE from insert_size_metrics)
+ * @param meanInsertSize          Mean insert size (MEAN_INSERT_SIZE)
+ * @param stdInsertSize           Standard deviation of insert size (STANDARD_DEVIATION)
  * @param medianAbsoluteDeviation Median absolute deviation of insert size (MEDIAN_ABSOLUTE_DEVIATION)
- * @param minInsertSize          Minimum insert size
- * @param maxInsertSize          Maximum insert size
- * @param pairOrientation        Read pair orientation (FR, RF, TANDEM)
+ * @param minInsertSize           Minimum insert size
+ * @param maxInsertSize           Maximum insert size
+ * @param pairOrientation         Read pair orientation (FR, RF, TANDEM)
  */
 case class MultipleMetricsResult(
-  // Alignment Summary Metrics
-  totalReads: Long = 0,
-  pfReads: Long = 0,
-  pfReadsAligned: Long = 0,
-  pctPfReadsAligned: Double = 0.0,
-  pfHqAlignedReads: Long = 0,
-  readsPaired: Long = 0,
-  pctReadsPaired: Double = 0.0,
-  pctProperPairs: Double = 0.0,
-  meanReadLength: Double = 0.0,
-  strandBalance: Double = 0.0,
-  pctChimeras: Double = 0.0,
-  pctAdapter: Double = 0.0,
+                                  // Alignment Summary Metrics
+                                  totalReads: Long = 0,
+                                  pfReads: Long = 0,
+                                  pfReadsAligned: Long = 0,
+                                  pctPfReadsAligned: Double = 0.0,
+                                  pfHqAlignedReads: Long = 0,
+                                  readsPaired: Long = 0,
+                                  pctReadsPaired: Double = 0.0,
+                                  pctProperPairs: Double = 0.0,
+                                  meanReadLength: Double = 0.0,
+                                  strandBalance: Double = 0.0,
+                                  pctChimeras: Double = 0.0,
+                                  pctAdapter: Double = 0.0,
 
-  // Insert Size Metrics
-  medianInsertSize: Double = 0.0,
-  meanInsertSize: Double = 0.0,
-  stdInsertSize: Double = 0.0,
-  medianAbsoluteDeviation: Double = 0.0,
-  minInsertSize: Int = 0,
-  maxInsertSize: Int = 0,
-  pairOrientation: String = "FR"
-)
+                                  // Insert Size Metrics
+                                  medianInsertSize: Double = 0.0,
+                                  meanInsertSize: Double = 0.0,
+                                  stdInsertSize: Double = 0.0,
+                                  medianAbsoluteDeviation: Double = 0.0,
+                                  minInsertSize: Int = 0,
+                                  maxInsertSize: Int = 0,
+                                  pairOrientation: String = "FR"
+                                )
 
 /**
  * Processor for running GATK CollectMultipleMetrics to gather alignment summary
@@ -70,19 +70,19 @@ class MultipleMetricsProcessor {
   /**
    * Process a BAM/CRAM file to collect multiple metrics using GATK.
    *
-   * @param bamPath Path to the BAM/CRAM file
-   * @param referencePath Path to the reference genome
-   * @param onProgress Progress callback
+   * @param bamPath         Path to the BAM/CRAM file
+   * @param referencePath   Path to the reference genome
+   * @param onProgress      Progress callback
    * @param artifactContext Optional context for organizing output artifacts by subject/run/alignment
-   * @param totalReads Optional total read count for progress estimation
+   * @param totalReads      Optional total read count for progress estimation
    */
   def process(
-    bamPath: String,
-    referencePath: String,
-    onProgress: (String, Double, Double) => Unit,
-    artifactContext: Option[ArtifactContext] = None,
-    totalReads: Option[Long] = None
-  ): Either[Throwable, MultipleMetricsResult] = {
+               bamPath: String,
+               referencePath: String,
+               onProgress: (String, Double, Double) => Unit,
+               artifactContext: Option[ArtifactContext] = None,
+               totalReads: Option[Long] = None
+             ): Either[Throwable, MultipleMetricsResult] = {
     // Ensure BAM index exists
     onProgress("Checking BAM index...", 0.0, 1.0)
     GatkRunner.ensureIndex(bamPath) match {
@@ -217,9 +217,9 @@ class MultipleMetricsProcessor {
    * Build the result object from parsed metrics maps.
    */
   private def buildResult(
-    alignment: Map[String, String],
-    insertSize: Map[String, String]
-  ): MultipleMetricsResult = {
+                           alignment: Map[String, String],
+                           insertSize: Map[String, String]
+                         ): MultipleMetricsResult = {
 
     def getLong(map: Map[String, String], key: String): Long =
       map.get(key).flatMap(s => scala.util.Try(s.toLong).toOption).getOrElse(0L)

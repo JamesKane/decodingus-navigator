@@ -46,19 +46,19 @@ class CallableLociProcessor {
   /**
    * Process a BAM/CRAM file to compute callable loci.
    *
-   * @param bamPath Path to the BAM/CRAM file
-   * @param referencePath Path to the reference genome
-   * @param onProgress Progress callback
+   * @param bamPath         Path to the BAM/CRAM file
+   * @param referencePath   Path to the reference genome
+   * @param onProgress      Progress callback
    * @param artifactContext Optional context for organizing output artifacts by subject/run/alignment
-   * @param minDepth Minimum depth to consider a position callable (default 4, use 2 for HiFi)
+   * @param minDepth        Minimum depth to consider a position callable (default 4, use 2 for HiFi)
    */
   def process(
-    bamPath: String,
-    referencePath: String,
-    onProgress: (String, Int, Int) => Unit,
-    artifactContext: Option[ArtifactContext] = None,
-    minDepth: Int = 4
-  ): Either[Throwable, (CallableLociResult, List[String])] = {
+               bamPath: String,
+               referencePath: String,
+               onProgress: (String, Int, Int) => Unit,
+               artifactContext: Option[ArtifactContext] = None,
+               minDepth: Int = 4
+             ): Either[Throwable, (CallableLociResult, List[String])] = {
     // Ensure BAM index exists
     onProgress("Checking BAM index...", 0, 1)
     GatkRunner.ensureIndex(bamPath) match {
@@ -263,7 +263,7 @@ object CallableLociProcessor {
   def loadFromCache(callableLociDir: Path): Option[CallableLociResult] = {
     if (!Files.exists(callableLociDir)) return None
 
-    import scala.jdk.CollectionConverters._
+    import scala.jdk.CollectionConverters.*
 
     val tableFiles = Files.list(callableLociDir).iterator().asScala
       .filter(_.toString.endsWith(".table.txt"))
@@ -326,10 +326,10 @@ object CallableLociProcessor {
    * Load from cache using artifact context IDs.
    */
   def loadFromCache(
-    sampleAccession: String,
-    runId: String,
-    alignmentId: String
-  ): Option[CallableLociResult] = {
+                     sampleAccession: String,
+                     runId: String,
+                     alignmentId: String
+                   ): Option[CallableLociResult] = {
     val callableLociDir = SubjectArtifactCache.getArtifactSubdir(
       sampleAccession, runId, alignmentId, "callable_loci"
     )
@@ -341,7 +341,7 @@ object CallableLociProcessor {
    */
   def existsInCache(callableLociDir: Path): Boolean = {
     if (!Files.exists(callableLociDir)) return false
-    import scala.jdk.CollectionConverters._
+    import scala.jdk.CollectionConverters.*
     Files.list(callableLociDir).iterator().asScala.exists(_.toString.endsWith(".table.txt"))
   }
 }

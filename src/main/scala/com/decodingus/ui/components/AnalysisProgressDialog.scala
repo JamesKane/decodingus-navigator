@@ -1,22 +1,22 @@
 package com.decodingus.ui.components
 
-import scalafx.Includes._
-import scalafx.scene.control.{Dialog, Label, ProgressBar, ProgressIndicator, ButtonType}
-import scalafx.scene.layout.{VBox, HBox}
-import scalafx.geometry.{Insets, Pos}
-import scalafx.beans.property.{StringProperty, DoubleProperty, BooleanProperty}
+import scalafx.Includes.*
 import scalafx.application.Platform
+import scalafx.beans.property.{BooleanProperty, DoubleProperty, StringProperty}
+import scalafx.geometry.{Insets, Pos}
+import scalafx.scene.control.*
+import scalafx.scene.layout.{HBox, VBox}
 
 /**
  * A dialog that displays analysis progress with a progress bar and status message.
  * Binds to observable properties from the ViewModel.
  */
 class AnalysisProgressDialog(
-  titleText: String,
-  progressMessage: StringProperty,
-  progressPercent: DoubleProperty,
-  inProgress: BooleanProperty
-) extends Dialog[Unit] {
+                              titleText: String,
+                              progressMessage: StringProperty,
+                              progressPercent: DoubleProperty,
+                              inProgress: BooleanProperty
+                            ) extends Dialog[Unit] {
 
   title = titleText
   headerText = "Analysis in progress..."

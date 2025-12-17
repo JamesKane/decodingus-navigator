@@ -1,6 +1,6 @@
 package com.decodingus.workspace
 
-import com.decodingus.workspace.model._
+import com.decodingus.workspace.model.*
 
 /**
  * Workspace persistence service trait.
@@ -9,5 +9,6 @@ import com.decodingus.workspace.model._
  */
 trait WorkspaceService {
   def load(): Either[String, Workspace]
+
   def save(workspace: Workspace): Either[String, Unit]
 }

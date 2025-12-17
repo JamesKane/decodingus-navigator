@@ -1,60 +1,57 @@
 package com.decodingus.ui
 
-import com.decodingus.analysis._
-import com.decodingus.auth._
+import com.decodingus.analysis.*
+import com.decodingus.analysis.AnalysisCache.{contigSummaryEncoder, coverageSummaryEncoder, libraryStatsEncoder, wgsMetricsEncoder}
+import com.decodingus.auth.*
+import com.decodingus.client.DecodingUsClient
 import com.decodingus.config.FeatureToggles
 import com.decodingus.haplogroup.model.Haplogroup
 import com.decodingus.haplogroup.tree.{TreeProvider, TreeProviderType, TreeType}
 import com.decodingus.haplogroup.vendor.{DecodingUsTreeProvider, FtdnaTreeProvider}
-import com.decodingus.model._
+import com.decodingus.model.*
 import com.decodingus.pds.PdsClient
-import com.decodingus.client.DecodingUsClient
 import com.decodingus.refgenome.ReferenceGateway
-import com.decodingus.ui.components._
+import com.decodingus.service.{DatabaseContext, DatabaseInitializer}
+import com.decodingus.ui.components.*
+import com.decodingus.workspace.model.*
+import com.decodingus.workspace.{H2WorkspaceAdapter, WorkbenchViewModel, WorkspaceService}
 import htsjdk.samtools.SamReaderFactory
-import io.circe.syntax._
-import com.decodingus.analysis.AnalysisCache.{coverageSummaryEncoder, libraryStatsEncoder, wgsMetricsEncoder, contigSummaryEncoder} // Import implicits
+import io.circe.syntax.*
 import javafx.concurrent as jfxc
+import javafx.stage.FileChooser
 import scalafx.Includes.*
 import scalafx.application.JFXApp3.PrimaryStage
 import scalafx.application.{JFXApp3, Platform}
 import scalafx.collections.ObservableBuffer
 import scalafx.geometry.{Insets, Pos}
 import scalafx.scene.Scene
-import scalafx.scene.control.Alert.AlertType
 import scalafx.scene.control.*
+import scalafx.scene.control.Alert.AlertType
 import scalafx.scene.control.TableColumn.sfxTableColumn2jfx
 import scalafx.scene.input.{DragEvent, TransferMode}
-import scalafx.scene.layout.{BorderPane, GridPane, HBox, Priority, Region, StackPane, VBox}
+import scalafx.scene.layout.*
 import scalafx.scene.text.{Text, TextAlignment}
 import scalafx.scene.web.WebView
 
-import com.decodingus.workspace.model.{Workspace, Biosample, Project, SequenceRun, Alignment, AlignmentMetrics, ContigMetrics, HaplogroupResult, HaplogroupAssignments, FileInfo, RecordMeta} // Explicitly import all workspace models
-import com.decodingus.workspace.{WorkspaceService, WorkbenchViewModel, H2WorkspaceAdapter}
-import com.decodingus.service.{DatabaseInitializer, DatabaseContext} // Import H2 database initializer
-import com.decodingus.ui.components.WorkbenchView // Import the new WorkbenchView
-
 import java.io.File
-import java.nio.file.Files
-import java.nio.file.Paths
+import java.nio.file.{Files, Paths}
 import java.time.LocalDateTime
 import java.time.format.DateTimeFormatter
-import javafx.stage.FileChooser
 import scala.collection.mutable
-import scala.concurrent.ExecutionContext.Implicits.global
 import scala.concurrent.Await
-import scala.concurrent.duration._
+import scala.concurrent.ExecutionContext.Implicits.global
+import scala.concurrent.duration.*
 
 
 case class ContigAnalysisRow(
-  contig: String,
-  callableBases: Long,
-  noCoverage: Long,
-  lowCoverage: Long,
-  poorMq: Long,
-  refN: Long,
-  svgFile: String
-)
+                              contig: String,
+                              callableBases: Long,
+                              noCoverage: Long,
+                              lowCoverage: Long,
+                              poorMq: Long,
+                              refN: Long,
+                              svgFile: String
+                            )
 
 object GenomeNavigatorApp extends JFXApp3 {
   private val mainLayout = new StackPane()
@@ -90,20 +87,20 @@ object GenomeNavigatorApp extends JFXApp3 {
         viewModel.currentUser.value = Some(user)
 
         if (FeatureToggles.atProtocolEnabled) {
-           // Register PDS with the main server asynchronously if AT Protocol is enabled
-           DecodingUsClient.registerPds(user.did, user.token, user.pdsUrl).failed.foreach { e =>
-              Platform.runLater {
-                new Alert(AlertType.Error) {
-                  initOwner(stage)
-                  title = "PDS Registration Failed"
-                  headerText = "Could not register PDS with DecodingUs"
-                  contentText = e.getMessage
-                }.showAndWait()
-              }
-           }
+          // Register PDS with the main server asynchronously if AT Protocol is enabled
+          DecodingUsClient.registerPds(user.did, user.token, user.pdsUrl).failed.foreach { e =>
+            Platform.runLater {
+              new Alert(AlertType.Error) {
+                initOwner(stage)
+                title = "PDS Registration Failed"
+                headerText = "Could not register PDS with DecodingUs"
+                contentText = e.getMessage
+              }.showAndWait()
+            }
+          }
 
-           // Trigger PDS sync now that user is logged in
-           viewModel.syncFromPdsIfAvailable()
+          // Trigger PDS sync now that user is logged in
+          viewModel.syncFromPdsIfAvailable()
         }
       }
     },

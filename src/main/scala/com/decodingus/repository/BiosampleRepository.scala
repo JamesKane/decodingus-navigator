@@ -6,6 +6,7 @@ import io.circe.*
 import io.circe.generic.semiauto.*
 import io.circe.parser.*
 import io.circe.syntax.*
+
 import java.sql.{Connection, ResultSet}
 import java.time.LocalDateTime
 import java.util.UUID
@@ -17,41 +18,48 @@ import java.util.UUID
  * persistence metadata (sync status, version, timestamps).
  */
 case class BiosampleEntity(
-  id: UUID,
-  sampleAccession: String,
-  donorIdentifier: String,
-  description: Option[String],
-  centerName: Option[String],
-  sex: Option[String],
-  citizenDid: Option[String],
-  haplogroups: Option[HaplogroupAssignments],
-  meta: EntityMeta
-) extends Entity[UUID]
+                            id: UUID,
+                            sampleAccession: String,
+                            donorIdentifier: String,
+                            description: Option[String],
+                            centerName: Option[String],
+                            sex: Option[String],
+                            citizenDid: Option[String],
+                            haplogroups: Option[HaplogroupAssignments],
+                            meta: EntityMeta
+                          ) extends Entity[UUID]
 
 object BiosampleEntity:
   // Circe codecs for JSON serialization of haplogroups
   // Note: These could be moved to a shared Codecs object if needed elsewhere
   given Encoder[VariantCall] = deriveEncoder
+
   given Decoder[VariantCall] = deriveDecoder
+
   given Encoder[PrivateVariantData] = deriveEncoder
+
   given Decoder[PrivateVariantData] = deriveDecoder
+
   given Encoder[HaplogroupResult] = deriveEncoder
+
   given Decoder[HaplogroupResult] = deriveDecoder
+
   given Encoder[HaplogroupAssignments] = deriveEncoder
+
   given Decoder[HaplogroupAssignments] = deriveDecoder
 
   /**
    * Create a new BiosampleEntity with generated ID and initial metadata.
    */
   def create(
-    sampleAccession: String,
-    donorIdentifier: String,
-    description: Option[String] = None,
-    centerName: Option[String] = None,
-    sex: Option[String] = None,
-    citizenDid: Option[String] = None,
-    haplogroups: Option[HaplogroupAssignments] = None
-  ): BiosampleEntity = BiosampleEntity(
+              sampleAccession: String,
+              donorIdentifier: String,
+              description: Option[String] = None,
+              centerName: Option[String] = None,
+              sex: Option[String] = None,
+              citizenDid: Option[String] = None,
+              haplogroups: Option[HaplogroupAssignments] = None
+            ): BiosampleEntity = BiosampleEntity(
     id = UUID.randomUUID(),
     sampleAccession = sampleAccession,
     donorIdentifier = donorIdentifier,

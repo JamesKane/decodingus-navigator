@@ -1,15 +1,15 @@
 package com.decodingus.ui.components
 
-import scalafx.Includes._
-import scalafx.scene.control.{Dialog, ButtonType, Label, TableView, TableColumn, ScrollPane, Tab, TabPane, TreeView, TreeItem, Tooltip, TextField, ComboBox}
-import scalafx.scene.layout.{VBox, HBox, Priority, GridPane, ColumnConstraints, Region}
-import scalafx.geometry.{Insets, Pos}
-import scalafx.beans.property.StringProperty
-import scalafx.collections.ObservableBuffer
-import javafx.collections.transformation.FilteredList
-import com.decodingus.workspace.model.{HaplogroupResult => WorkspaceHaplogroupResult, PrivateVariantData, VariantCall}
 import com.decodingus.haplogroup.model.HaplogroupResult as AnalysisHaplogroupResult
 import com.decodingus.haplogroup.tree.TreeType
+import com.decodingus.workspace.model.{PrivateVariantData, VariantCall, HaplogroupResult as WorkspaceHaplogroupResult}
+import javafx.collections.transformation.FilteredList
+import scalafx.Includes.*
+import scalafx.beans.property.StringProperty
+import scalafx.collections.ObservableBuffer
+import scalafx.geometry.{Insets, Pos}
+import scalafx.scene.control.*
+import scalafx.scene.layout.*
 
 import java.nio.file.{Files, Path}
 import scala.io.Source
@@ -21,12 +21,12 @@ import scala.util.Using
  * Can display from either workspace model or cached report file.
  */
 class HaplogroupReportDialog(
-  treeType: TreeType,
-  workspaceResult: Option[WorkspaceHaplogroupResult] = None,
-  analysisResults: Option[List[AnalysisHaplogroupResult]] = None,
-  artifactDir: Option[Path] = None,
-  sampleName: Option[String] = None
-) extends Dialog[Unit] {
+                              treeType: TreeType,
+                              workspaceResult: Option[WorkspaceHaplogroupResult] = None,
+                              analysisResults: Option[List[AnalysisHaplogroupResult]] = None,
+                              artifactDir: Option[Path] = None,
+                              sampleName: Option[String] = None
+                            ) extends Dialog[Unit] {
 
   private val dnaType = if (treeType == TreeType.YDNA) "Y-DNA" else "mtDNA"
 
@@ -154,10 +154,18 @@ class HaplogroupReportDialog(
             },
             new HBox(20) {
               children = Seq(
-                metadata.get("treeProvider").map(p => new Label(s"Tree: $p") { style = "-fx-text-fill: #aaa; -fx-font-size: 11px;" }),
-                metadata.get("treeBuild").map(b => new Label(s"Build: $b") { style = "-fx-text-fill: #aaa; -fx-font-size: 11px;" }),
-                metadata.get("liftover").map(l => new Label(s"Liftover: $l") { style = "-fx-text-fill: #aaa; -fx-font-size: 11px;" }),
-                sampleName.map(n => new Label(s"Sample: $n") { style = "-fx-text-fill: #aaa; -fx-font-size: 11px;" })
+                metadata.get("treeProvider").map(p => new Label(s"Tree: $p") {
+                  style = "-fx-text-fill: #aaa; -fx-font-size: 11px;"
+                }),
+                metadata.get("treeBuild").map(b => new Label(s"Build: $b") {
+                  style = "-fx-text-fill: #aaa; -fx-font-size: 11px;"
+                }),
+                metadata.get("liftover").map(l => new Label(s"Liftover: $l") {
+                  style = "-fx-text-fill: #aaa; -fx-font-size: 11px;"
+                }),
+                sampleName.map(n => new Label(s"Sample: $n") {
+                  style = "-fx-text-fill: #aaa; -fx-font-size: 11px;"
+                })
               ).flatten
             }
           )
@@ -304,7 +312,7 @@ class HaplogroupReportDialog(
       .orElse(workspaceResult.flatMap(_.privateVariants).map { pvd =>
         val (s, i) = pvd.variants.partition(v => v.referenceAllele.length == 1 && v.alternateAllele.length == 1)
         (s.map(v => PrivateVariantRow(v.contigAccession, v.position, v.referenceAllele, v.alternateAllele, qualityToStars(v.quality), None)),
-         i.map(v => PrivateVariantRow(v.contigAccession, v.position, v.referenceAllele, v.alternateAllele, qualityToStars(v.quality), None)))
+          i.map(v => PrivateVariantRow(v.contigAccession, v.position, v.referenceAllele, v.alternateAllele, qualityToStars(v.quality), None)))
       })
       .getOrElse((List.empty, List.empty))
 
@@ -315,10 +323,10 @@ class HaplogroupReportDialog(
 
   /** Creates a filterable variant table with contig and quality filters */
   private def createFilterableVariantTab(
-    title: String,
-    variants: List[PrivateVariantRow],
-    showStrInfo: Boolean
-  ): Option[Tab] = {
+                                          title: String,
+                                          variants: List[PrivateVariantRow],
+                                          showStrInfo: Boolean
+                                        ): Option[Tab] = {
     if (variants.isEmpty) return None
 
     val sourceData = ObservableBuffer.from(variants)
@@ -400,7 +408,9 @@ class HaplogroupReportDialog(
         positionFilter,
         new Label("Ref/Alt:"),
         refAltFilter,
-        new Region { HBox.setHgrow(this, Priority.Always) },
+        new Region {
+          HBox.setHgrow(this, Priority.Always)
+        },
         countLabel
       )
     }
@@ -598,39 +608,42 @@ class HaplogroupReportDialog(
   // --- Report Parsing ---
 
   private case class ParsedReport(
-    metadata: Map[String, String],
-    topCandidate: Option[CandidateRow],
-    candidates: List[CandidateRow],
-    lineagePath: List[LineageNode],
-    snpDetails: List[SnpDetailRow],
-    privateSnps: List[PrivateVariantRow],
-    privateIndels: List[PrivateVariantRow]
-  )
+                                   metadata: Map[String, String],
+                                   topCandidate: Option[CandidateRow],
+                                   candidates: List[CandidateRow],
+                                   lineagePath: List[LineageNode],
+                                   snpDetails: List[SnpDetailRow],
+                                   privateSnps: List[PrivateVariantRow],
+                                   privateIndels: List[PrivateVariantRow]
+                                 )
 
   private case class CandidateRow(haplogroup: String, score: Double, derived: Int, ancestral: Int, noCalls: Int, depth: Int)
+
   private case class LineageNode(name: String, depth: Int, derivedInfo: String)
+
   private case class SnpDetailRow(
-    contig: String,
-    position: Int,
-    snpName: String,
-    ancestral: String,
-    derived: String,
-    call: String,
-    state: String,
-    readDepth: Option[String] = None,
-    region: Option[String] = None,
-    quality: Option[String] = None
-  )
+                                   contig: String,
+                                   position: Int,
+                                   snpName: String,
+                                   ancestral: String,
+                                   derived: String,
+                                   call: String,
+                                   state: String,
+                                   readDepth: Option[String] = None,
+                                   region: Option[String] = None,
+                                   quality: Option[String] = None
+                                 )
+
   private case class PrivateVariantRow(
-    contig: String,
-    position: Int,
-    ref: String,
-    alt: String,
-    quality: String,
-    strInfo: Option[String],
-    readDepth: Option[String] = None,
-    region: Option[String] = None
-  )
+                                        contig: String,
+                                        position: Int,
+                                        ref: String,
+                                        alt: String,
+                                        quality: String,
+                                        strInfo: Option[String],
+                                        readDepth: Option[String] = None,
+                                        region: Option[String] = None
+                                      )
 
   private def parseReport(reportPath: Path): ParsedReport = {
     val lines = Using.resource(Source.fromFile(reportPath.toFile))(_.getLines().toList)
@@ -654,9 +667,15 @@ class HaplogroupReportDialog(
       if (trimmed == "HAPLOGROUP PREDICTION") currentSection = "prediction"
       else if (trimmed == "TOP 10 CANDIDATES") currentSection = "candidates"
       else if (trimmed == "HAPLOGROUP PATH") currentSection = "path"
-      else if (trimmed == "SNP DETAILS (along predicted path)") { currentSection = "snp_details"; inSnpSection = false }
-      else if (trimmed == "NOVEL/UNPLACED SNPs") { currentSection = "novel_snps"; inNovelSnpSection = false }
-      else if (trimmed == "NOVEL/UNPLACED INDELS") { currentSection = "novel_indels"; inNovelIndelSection = false }
+      else if (trimmed == "SNP DETAILS (along predicted path)") {
+        currentSection = "snp_details"; inSnpSection = false
+      }
+      else if (trimmed == "NOVEL/UNPLACED SNPs") {
+        currentSection = "novel_snps"; inNovelSnpSection = false
+      }
+      else if (trimmed == "NOVEL/UNPLACED INDELS") {
+        currentSection = "novel_indels"; inNovelIndelSection = false
+      }
       else if (trimmed == "SUMMARY STATISTICS") currentSection = "summary"
 
       // Metadata parsing
@@ -678,7 +697,9 @@ class HaplogroupReportDialog(
               0, // no calls not in this section
               parts(5).toInt
             )
-          } catch { case _: Exception => }
+          } catch {
+            case _: Exception =>
+          }
         }
       }
 

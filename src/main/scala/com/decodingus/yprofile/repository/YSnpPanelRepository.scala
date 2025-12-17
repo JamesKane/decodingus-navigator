@@ -1,21 +1,17 @@
 package com.decodingus.yprofile.repository
 
-import com.decodingus.repository.{SyncableRepository, Entity, EntityMeta, SqlHelpers, SyncStatus}
 import com.decodingus.repository.SqlHelpers.*
+import com.decodingus.repository.*
 import com.decodingus.workspace.model.FileInfo
+import com.decodingus.yprofile.model.YVariantType
 import io.circe.*
 import io.circe.generic.semiauto.*
 import io.circe.parser.*
 import io.circe.syntax.*
-import java.sql.{Connection, ResultSet}
-import java.time.{LocalDateTime, Instant}
-import java.util.UUID
 
-/**
- * Variant type for Y-DNA markers.
- */
-enum YVariantType:
-  case SNP, INDEL
+import java.sql.{Connection, ResultSet}
+import java.time.{Instant, LocalDateTime}
+import java.util.UUID
 
 /**
  * A single SNP or INDEL call from a Y-SNP panel test.
@@ -32,15 +28,15 @@ enum YVariantType:
  * @param quality       Quality score if available
  */
 case class YSnpCall(
-  name: String,
-  startPosition: Long,
-  endPosition: Option[Long] = None,
-  allele: String,
-  derived: Boolean,
-  variantType: Option[YVariantType] = None,
-  orderedDate: Option[LocalDateTime] = None,
-  quality: Option[Double] = None
-) {
+                     name: String,
+                     startPosition: Long,
+                     endPosition: Option[Long] = None,
+                     allele: String,
+                     derived: Boolean,
+                     variantType: Option[YVariantType] = None,
+                     orderedDate: Option[LocalDateTime] = None,
+                     quality: Option[Double] = None
+                   ) {
   /** Convenience: get end position, defaulting to start for SNPs */
   def effectiveEndPosition: Long = endPosition.getOrElse(startPosition)
 
@@ -51,21 +47,21 @@ case class YSnpCall(
 /**
  * A private/novel Y-DNA variant not in the reference tree.
  *
- * @param position    GRCh38 position on chrY
- * @param refAllele   Reference allele
- * @param altAllele   Alternate (called) allele
- * @param snpName     Assigned name if available
- * @param quality     Quality score if available
- * @param readDepth   Read depth at this position
+ * @param position  GRCh38 position on chrY
+ * @param refAllele Reference allele
+ * @param altAllele Alternate (called) allele
+ * @param snpName   Assigned name if available
+ * @param quality   Quality score if available
+ * @param readDepth Read depth at this position
  */
 case class YPrivateVariant(
-  position: Long,
-  refAllele: String,
-  altAllele: String,
-  snpName: Option[String] = None,
-  quality: Option[Double] = None,
-  readDepth: Option[Int] = None
-)
+                            position: Long,
+                            refAllele: String,
+                            altAllele: String,
+                            snpName: Option[String] = None,
+                            quality: Option[Double] = None,
+                            readDepth: Option[Int] = None
+                          )
 
 /**
  * Y-SNP Panel entity for database persistence.
@@ -73,46 +69,47 @@ case class YPrivateVariant(
  * Stores Y-DNA SNP panel testing results from various providers.
  */
 case class YSnpPanelEntity(
-  id: UUID,
-  biosampleId: UUID,
-  alignmentId: Option[UUID],
-  panelName: Option[String],
-  provider: Option[String],
-  testDate: Option[LocalDateTime],
-  totalSnpsTested: Option[Int],
-  derivedCount: Option[Int],
-  ancestralCount: Option[Int],
-  noCallCount: Option[Int],
-  terminalHaplogroup: Option[String],
-  confidence: Option[Double],
-  snpCalls: List[YSnpCall],
-  privateVariants: List[YPrivateVariant],
-  files: List[FileInfo],
-  meta: EntityMeta
-) extends Entity[UUID]
+                            id: UUID,
+                            biosampleId: UUID,
+                            alignmentId: Option[UUID],
+                            panelName: Option[String],
+                            provider: Option[String],
+                            testDate: Option[LocalDateTime],
+                            totalSnpsTested: Option[Int],
+                            derivedCount: Option[Int],
+                            ancestralCount: Option[Int],
+                            noCallCount: Option[Int],
+                            terminalHaplogroup: Option[String],
+                            confidence: Option[Double],
+                            snpCalls: List[YSnpCall],
+                            privateVariants: List[YPrivateVariant],
+                            files: List[FileInfo],
+                            meta: EntityMeta
+                          ) extends Entity[UUID]
 
 object YSnpPanelEntity:
+
   import YSnpPanelCodecs.given
 
   /**
    * Create a new YSnpPanelEntity with generated ID and initial metadata.
    */
   def create(
-    biosampleId: UUID,
-    alignmentId: Option[UUID] = None,
-    panelName: Option[String] = None,
-    provider: Option[String] = None,
-    testDate: Option[LocalDateTime] = None,
-    totalSnpsTested: Option[Int] = None,
-    derivedCount: Option[Int] = None,
-    ancestralCount: Option[Int] = None,
-    noCallCount: Option[Int] = None,
-    terminalHaplogroup: Option[String] = None,
-    confidence: Option[Double] = None,
-    snpCalls: List[YSnpCall] = List.empty,
-    privateVariants: List[YPrivateVariant] = List.empty,
-    files: List[FileInfo] = List.empty
-  ): YSnpPanelEntity = YSnpPanelEntity(
+              biosampleId: UUID,
+              alignmentId: Option[UUID] = None,
+              panelName: Option[String] = None,
+              provider: Option[String] = None,
+              testDate: Option[LocalDateTime] = None,
+              totalSnpsTested: Option[Int] = None,
+              derivedCount: Option[Int] = None,
+              ancestralCount: Option[Int] = None,
+              noCallCount: Option[Int] = None,
+              terminalHaplogroup: Option[String] = None,
+              confidence: Option[Double] = None,
+              snpCalls: List[YSnpCall] = List.empty,
+              privateVariants: List[YPrivateVariant] = List.empty,
+              files: List[FileInfo] = List.empty
+            ): YSnpPanelEntity = YSnpPanelEntity(
     id = UUID.randomUUID(),
     biosampleId = biosampleId,
     alignmentId = alignmentId,
@@ -137,6 +134,7 @@ object YSnpPanelEntity:
 object YSnpPanelCodecs:
   // YVariantType enum codec
   given Encoder[YVariantType] = Encoder.encodeString.contramap(_.toString)
+
   given Decoder[YVariantType] = Decoder.decodeString.emap { s =>
     try Right(YVariantType.valueOf(s))
     catch case _: IllegalArgumentException => Left(s"Invalid YVariantType: $s")
@@ -171,8 +169,11 @@ object YSnpPanelCodecs:
   }
 
   given Encoder[YPrivateVariant] = deriveEncoder
+
   given Decoder[YPrivateVariant] = deriveDecoder
+
   given Encoder[FileInfo] = deriveEncoder
+
   given Decoder[FileInfo] = deriveDecoder
 
 /**

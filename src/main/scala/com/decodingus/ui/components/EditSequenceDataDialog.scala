@@ -1,20 +1,20 @@
 package com.decodingus.ui.components
 
-import scalafx.Includes._
-import scalafx.scene.control.{ButtonType, Dialog, Label, TextField, ComboBox, ButtonBar}
-import scalafx.scene.layout.{GridPane, VBox}
-import scalafx.geometry.Insets
+import com.decodingus.workspace.model.{Alignment, SequenceRun}
+import scalafx.Includes.*
 import scalafx.collections.ObservableBuffer
-import com.decodingus.workspace.model.{SequenceRun, Alignment}
+import scalafx.geometry.Insets
+import scalafx.scene.control.*
+import scalafx.scene.layout.{GridPane, VBox}
 
 /**
  * Dialog for editing sequencing run metadata.
  * Allows users to correct or customize auto-detected values.
  */
 class EditSequenceDataDialog(
-  existingRun: SequenceRun,
-  alignments: List[Alignment] = List.empty
-) extends Dialog[Option[SequenceRun]] {
+                              existingRun: SequenceRun,
+                              alignments: List[Alignment] = List.empty
+                            ) extends Dialog[Option[SequenceRun]] {
   title = "Edit Sequencing Run"
   headerText = "Edit sequencing run metadata"
 
@@ -157,15 +157,23 @@ class EditSequenceDataDialog(
     add(insertSizeField, 1, 8)
 
     // Read-only info
-    add(new Label("") { prefHeight = 10 }, 0, 9) // Spacer
+    add(new Label("") {
+      prefHeight = 10
+    }, 0, 9) // Spacer
 
-    add(new Label("File:") { style = "-fx-text-fill: #888888;" }, 0, 10)
+    add(new Label("File:") {
+      style = "-fx-text-fill: #888888;"
+    }, 0, 10)
     add(fileNameLabel, 1, 10)
 
-    add(new Label("Reference:") { style = "-fx-text-fill: #888888;" }, 0, 11)
+    add(new Label("Reference:") {
+      style = "-fx-text-fill: #888888;"
+    }, 0, 11)
     add(referenceLabel, 1, 11)
 
-    add(new Label("Aligner:") { style = "-fx-text-fill: #888888;" }, 0, 12)
+    add(new Label("Aligner:") {
+      style = "-fx-text-fill: #888888;"
+    }, 0, 12)
     add(alignerLabel, 1, 12)
   }
 

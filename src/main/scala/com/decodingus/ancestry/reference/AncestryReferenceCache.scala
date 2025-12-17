@@ -11,14 +11,14 @@ import java.nio.file.{Files, Path, Paths}
  *
  * Cache structure:
  * ~/.decodingus/cache/ancestry/{version}/
- *   ├── populations.json
- *   ├── aims/
- *   │   ├── {build}_sites.vcf.gz
- *   │   ├── {build}_sites.vcf.gz.tbi
- *   │   ├── allele_freqs.bin
- *   │   └── pca_loadings.bin
- *   └── genome-wide/
- *       └── ...
+ * ├── populations.json
+ * ├── aims/
+ * │   ├── {build}_sites.vcf.gz
+ * │   ├── {build}_sites.vcf.gz.tbi
+ * │   ├── allele_freqs.bin
+ * │   └── pca_loadings.bin
+ * └── genome-wide/
+ * └── ...
  */
 class AncestryReferenceCache {
 

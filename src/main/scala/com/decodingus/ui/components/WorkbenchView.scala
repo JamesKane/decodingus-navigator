@@ -1,17 +1,17 @@
 package com.decodingus.ui.components
 
-import scalafx.Includes._
-import scalafx.scene.layout.{VBox, HBox, Priority, StackPane, BorderPane, Region}
-import scalafx.scene.control.{Label, Button, ListView, SplitPane, Alert, ListCell, Tooltip, TextField}
-import scalafx.geometry.{Insets, Pos}
-import scalafx.collections.ObservableBuffer
-import com.decodingus.workspace.model.{Workspace, Project, Biosample, SyncStatus, StrProfile, HaplogroupReconciliation, CompatibilityLevel}
 import com.decodingus.workspace.WorkbenchViewModel
-import scalafx.scene.control.Alert.AlertType
+import com.decodingus.workspace.model.*
+import scalafx.Includes.*
 import scalafx.application.Platform
-import scalafx.scene.control.ControlIncludes._
-import scalafx.scene.control.ButtonType
-import scalafx.scene.input.{MouseEvent, DragEvent, TransferMode, ClipboardContent}
+import scalafx.collections.ObservableBuffer
+import scalafx.geometry.{Insets, Pos}
+import scalafx.scene.control.Alert.AlertType
+import scalafx.scene.control.ControlIncludes.*
+import scalafx.scene.control.*
+import scalafx.scene.input.{ClipboardContent, DragEvent, MouseEvent, TransferMode}
+import scalafx.scene.layout.*
+
 import java.util.{Timer, TimerTask, UUID}
 
 class WorkbenchView(val viewModel: WorkbenchViewModel) extends SplitPane {
@@ -37,7 +37,9 @@ class WorkbenchView(val viewModel: WorkbenchViewModel) extends SplitPane {
   private val detailView = new VBox(10) {
     padding = Insets(10)
     children = Seq(
-      new Label("Select an item to view details") { style = "-fx-font-size: 18px; -fx-font-weight: bold;" }
+      new Label("Select an item to view details") {
+        style = "-fx-font-size: 18px; -fx-font-weight: bold;"
+      }
     )
   }
   VBox.setVgrow(detailView, Priority.Always)
@@ -182,7 +184,9 @@ class WorkbenchView(val viewModel: WorkbenchViewModel) extends SplitPane {
 
     // Build the children list with optional Y Profile section
     detailView.children.addAll(
-      new Label(s"Subject: ${subject.donorIdentifier}") { style = "-fx-font-size: 20px; -fx-font-weight: bold;" },
+      new Label(s"Subject: ${subject.donorIdentifier}") {
+        style = "-fx-font-size: 20px; -fx-font-weight: bold;"
+      },
       actionButtons,
       infoSection,
       haplogroupSection
@@ -193,10 +197,10 @@ class WorkbenchView(val viewModel: WorkbenchViewModel) extends SplitPane {
 
   /** Shows the reconciliation detail dialog for a subject */
   private def showReconciliationDetails(
-    subject: Biosample,
-    yDnaReconciliation: Option[HaplogroupReconciliation],
-    mtDnaReconciliation: Option[HaplogroupReconciliation]
-  ): Unit = {
+                                         subject: Biosample,
+                                         yDnaReconciliation: Option[HaplogroupReconciliation],
+                                         mtDnaReconciliation: Option[HaplogroupReconciliation]
+                                       ): Unit = {
     val dialog = new ReconciliationDetailDialog(subject, yDnaReconciliation, mtDnaReconciliation)
     dialog.showAndWait()
   }
@@ -219,7 +223,9 @@ class WorkbenchView(val viewModel: WorkbenchViewModel) extends SplitPane {
               new Label("Y Chromosome Profile") {
                 style = "-fx-font-size: 14px; -fx-font-weight: bold;"
               },
-              new Region { HBox.setHgrow(this, Priority.Always) },
+              new Region {
+                HBox.setHgrow(this, Priority.Always)
+              },
               new Button("View Details") {
                 style = "-fx-font-size: 11px;"
                 onAction = _ => handleViewYProfile(subject, bsId)
@@ -355,22 +361,22 @@ class WorkbenchView(val viewModel: WorkbenchViewModel) extends SplitPane {
     val (dialogHeader, dialogContent, options) = state match {
       case "initial" =>
         ("Run Initial Analysis",
-         s"Analyze $fileName to detect platform, reference build, and collect library statistics.",
-         Seq(("Run Initial Analysis", () => runInitialAnalysis(sampleAccession, index))))
+          s"Analyze $fileName to detect platform, reference build, and collect library statistics.",
+          Seq(("Run Initial Analysis", () => runInitialAnalysis(sampleAccession, index))))
       case "wgs" =>
         ("Run Deep Coverage Analysis",
-         s"Initial analysis complete. Would you like to run WGS metrics analysis?\n\nThis will calculate detailed coverage statistics using GATK and may take several minutes for large genomes.",
-         Seq(
-           ("Run WGS Metrics", () => runWgsMetricsAnalysis(sampleAccession, index)),
-           ("Re-run Initial Analysis", () => runInitialAnalysis(sampleAccession, index))
-         ))
+          s"Initial analysis complete. Would you like to run WGS metrics analysis?\n\nThis will calculate detailed coverage statistics using GATK and may take several minutes for large genomes.",
+          Seq(
+            ("Run WGS Metrics", () => runWgsMetricsAnalysis(sampleAccession, index)),
+            ("Re-run Initial Analysis", () => runInitialAnalysis(sampleAccession, index))
+          ))
       case "both_complete" =>
         ("Analysis Complete",
-         s"Both initial and WGS metrics analysis have been completed for $fileName.\n\nWould you like to re-run any analysis?",
-         Seq(
-           ("Re-run WGS Metrics", () => runWgsMetricsAnalysis(sampleAccession, index)),
-           ("Re-run Initial Analysis", () => runInitialAnalysis(sampleAccession, index))
-         ))
+          s"Both initial and WGS metrics analysis have been completed for $fileName.\n\nWould you like to re-run any analysis?",
+          Seq(
+            ("Re-run WGS Metrics", () => runWgsMetricsAnalysis(sampleAccession, index)),
+            ("Re-run Initial Analysis", () => runInitialAnalysis(sampleAccession, index))
+          ))
       case _ =>
         ("Analysis", "Choose an analysis to run.", Seq.empty)
     }
@@ -430,13 +436,14 @@ class WorkbenchView(val viewModel: WorkbenchViewModel) extends SplitPane {
           new Alert(AlertType.Information) {
             title = "Analysis Complete"
             headerText = "Initial Analysis Results"
-            contentText = s"""Sample: ${libraryStats.sampleName}
-                             |Platform: ${libraryStats.inferredPlatform}
-                             |Instrument: ${libraryStats.mostFrequentInstrument}
-                             |Reference: ${libraryStats.referenceBuild}
-                             |Aligner: ${libraryStats.aligner}
-                             |Mean Read Length: $meanReadLength
-                             |Mean Insert Size: $meanInsertSize""".stripMargin
+            contentText =
+              s"""Sample: ${libraryStats.sampleName}
+                 |Platform: ${libraryStats.inferredPlatform}
+                 |Instrument: ${libraryStats.mostFrequentInstrument}
+                 |Reference: ${libraryStats.referenceBuild}
+                 |Aligner: ${libraryStats.aligner}
+                 |Mean Read Length: $meanReadLength
+                 |Mean Insert Size: $meanInsertSize""".stripMargin
           }.showAndWait()
           // Refresh the detail view
           viewModel.selectedSubject.value.foreach(renderSubjectDetail)
@@ -469,13 +476,14 @@ class WorkbenchView(val viewModel: WorkbenchViewModel) extends SplitPane {
           new Alert(AlertType.Information) {
             title = "Analysis Complete"
             headerText = "WGS Metrics Results"
-            contentText = f"""Mean Coverage: ${wgsMetrics.meanCoverage}%.1fx
-                             |Median Coverage: ${wgsMetrics.medianCoverage}%.1fx
-                             |SD Coverage: ${wgsMetrics.sdCoverage}%.2f
-                             |PCT 10x: ${wgsMetrics.pct10x * 100}%.1f%%
-                             |PCT 20x: ${wgsMetrics.pct20x * 100}%.1f%%
-                             |PCT 30x: ${wgsMetrics.pct30x * 100}%.1f%%
-                             |Het SNP Sensitivity: ${wgsMetrics.hetSnpSensitivity}%.4f""".stripMargin
+            contentText =
+              f"""Mean Coverage: ${wgsMetrics.meanCoverage}%.1fx
+                 |Median Coverage: ${wgsMetrics.medianCoverage}%.1fx
+                 |SD Coverage: ${wgsMetrics.sdCoverage}%.2f
+                 |PCT 10x: ${wgsMetrics.pct10x * 100}%.1f%%
+                 |PCT 20x: ${wgsMetrics.pct20x * 100}%.1f%%
+                 |PCT 30x: ${wgsMetrics.pct30x * 100}%.1f%%
+                 |Het SNP Sensitivity: ${wgsMetrics.hetSnpSensitivity}%.4f""".stripMargin
           }.showAndWait()
           // Refresh the detail view
           viewModel.selectedSubject.value.foreach(renderSubjectDetail)
@@ -576,7 +584,9 @@ class WorkbenchView(val viewModel: WorkbenchViewModel) extends SplitPane {
   private def renderEmptyDetail(message: String): Unit = {
     detailView.children.clear()
     detailView.children.add(
-      new Label(message) { style = "-fx-font-size: 18px; -fx-font-weight: bold;" }
+      new Label(message) {
+        style = "-fx-font-size: 18px; -fx-font-weight: bold;"
+      }
     )
   }
 
@@ -802,8 +812,12 @@ class WorkbenchView(val viewModel: WorkbenchViewModel) extends SplitPane {
       new HBox(10) {
         alignment = Pos.CenterLeft
         children = Seq(
-          new Label("Projects:") { style = "-fx-font-weight: bold;" },
-          new Region { HBox.setHgrow(this, Priority.Always) },
+          new Label("Projects:") {
+            style = "-fx-font-weight: bold;"
+          },
+          new Region {
+            HBox.setHgrow(this, Priority.Always)
+          },
           projectFilterField
         )
       },
@@ -812,8 +826,12 @@ class WorkbenchView(val viewModel: WorkbenchViewModel) extends SplitPane {
       new HBox(10) {
         alignment = Pos.CenterLeft
         children = Seq(
-          new Label("Subjects:") { style = "-fx-font-weight: bold;" },
-          new Region { HBox.setHgrow(this, Priority.Always) },
+          new Label("Subjects:") {
+            style = "-fx-font-weight: bold;"
+          },
+          new Region {
+            HBox.setHgrow(this, Priority.Always)
+          },
           subjectFilterField
         )
       },
@@ -854,7 +872,7 @@ class WorkbenchView(val viewModel: WorkbenchViewModel) extends SplitPane {
           }
         }
       case viewModel.NoDownloadPending =>
-        // Nothing to do
+      // Nothing to do
     }
   }
 }

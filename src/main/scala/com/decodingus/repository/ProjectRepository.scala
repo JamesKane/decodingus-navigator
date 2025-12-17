@@ -1,6 +1,7 @@
 package com.decodingus.repository
 
 import com.decodingus.repository.SqlHelpers.*
+
 import java.sql.{Connection, ResultSet}
 import java.time.LocalDateTime
 import java.util.UUID
@@ -12,22 +13,22 @@ import java.util.UUID
  * Membership is managed via a junction table, not stored directly on the entity.
  */
 case class ProjectEntity(
-  id: UUID,
-  projectName: String,
-  description: Option[String],
-  administratorDid: String,
-  meta: EntityMeta
-) extends Entity[UUID]
+                          id: UUID,
+                          projectName: String,
+                          description: Option[String],
+                          administratorDid: String,
+                          meta: EntityMeta
+                        ) extends Entity[UUID]
 
 object ProjectEntity:
   /**
    * Create a new ProjectEntity with generated ID and initial metadata.
    */
   def create(
-    projectName: String,
-    administratorDid: String,
-    description: Option[String] = None
-  ): ProjectEntity = ProjectEntity(
+              projectName: String,
+              administratorDid: String,
+              description: Option[String] = None
+            ): ProjectEntity = ProjectEntity(
     id = UUID.randomUUID(),
     projectName = projectName,
     description = description,
@@ -39,10 +40,10 @@ object ProjectEntity:
  * A project membership record from the junction table.
  */
 case class ProjectMembership(
-  projectId: UUID,
-  biosampleId: UUID,
-  addedAt: LocalDateTime
-)
+                              projectId: UUID,
+                              biosampleId: UUID,
+                              addedAt: LocalDateTime
+                            )
 
 /**
  * Repository for project persistence operations.

@@ -3,6 +3,7 @@ package com.decodingus.service
 import com.decodingus.db.Transactor
 import com.decodingus.repository.*
 import io.circe.Json
+
 import java.time.LocalDateTime
 import java.util.UUID
 
@@ -27,12 +28,12 @@ trait SyncService:
    * Called when local changes are made.
    */
   def enqueuePush(
-    entityType: SyncEntityType,
-    entityId: UUID,
-    operation: SyncOperation,
-    priority: Int = 5,
-    payloadSnapshot: Option[Json] = None
-  ): Either[String, SyncQueueEntity]
+                   entityType: SyncEntityType,
+                   entityId: UUID,
+                   operation: SyncOperation,
+                   priority: Int = 5,
+                   payloadSnapshot: Option[Json] = None
+                 ): Either[String, SyncQueueEntity]
 
   /**
    * Get pending sync count.
@@ -53,10 +54,10 @@ trait SyncService:
    * Mark a queued item as successfully synced.
    */
   def markSynced(
-    queueId: UUID,
-    atUri: Option[String] = None,
-    remoteCid: Option[String] = None
-  ): Either[String, Boolean]
+                  queueId: UUID,
+                  atUri: Option[String] = None,
+                  remoteCid: Option[String] = None
+                ): Either[String, Boolean]
 
   /**
    * Mark a queued item as failed (will retry).
@@ -86,19 +87,19 @@ trait SyncService:
    * Record a sync conflict.
    */
   def recordConflict(
-    entityType: SyncEntityType,
-    entityId: UUID,
-    localVersion: Int,
-    remoteVersion: Int,
-    atUri: Option[String] = None,
-    localChanges: Option[Json] = None,
-    remoteChanges: Option[Json] = None,
-    overlappingFields: Option[Json] = None,
-    localSnapshot: Option[Json] = None,
-    remoteSnapshot: Option[Json] = None,
-    suggestedResolution: Option[ConflictResolution] = None,
-    resolutionReason: Option[String] = None
-  ): Either[String, SyncConflictEntity]
+                      entityType: SyncEntityType,
+                      entityId: UUID,
+                      localVersion: Int,
+                      remoteVersion: Int,
+                      atUri: Option[String] = None,
+                      localChanges: Option[Json] = None,
+                      remoteChanges: Option[Json] = None,
+                      overlappingFields: Option[Json] = None,
+                      localSnapshot: Option[Json] = None,
+                      remoteSnapshot: Option[Json] = None,
+                      suggestedResolution: Option[ConflictResolution] = None,
+                      resolutionReason: Option[String] = None
+                    ): Either[String, SyncConflictEntity]
 
   /**
    * Get unresolved conflicts.
@@ -201,37 +202,37 @@ trait SyncService:
  * Overall sync status information.
  */
 case class SyncStatusInfo(
-  pendingCount: Long,
-  inProgressCount: Long,
-  failedCount: Long,
-  unresolvedConflicts: Long,
-  lastSuccessfulSync: Option[LocalDateTime],
-  lastSyncAttempt: Option[LocalDateTime],
-  isHealthy: Boolean,
-  healthMessage: Option[String]
-)
+                           pendingCount: Long,
+                           inProgressCount: Long,
+                           failedCount: Long,
+                           unresolvedConflicts: Long,
+                           lastSuccessfulSync: Option[LocalDateTime],
+                           lastSyncAttempt: Option[LocalDateTime],
+                           isHealthy: Boolean,
+                           healthMessage: Option[String]
+                         )
 
 /**
  * H2 database-backed implementation of SyncService.
  */
 class H2SyncService(
-  transactor: Transactor,
-  queueRepo: SyncQueueRepository,
-  historyRepo: SyncHistoryRepository,
-  conflictRepo: SyncConflictRepository
-) extends SyncService:
+                     transactor: Transactor,
+                     queueRepo: SyncQueueRepository,
+                     historyRepo: SyncHistoryRepository,
+                     conflictRepo: SyncConflictRepository
+                   ) extends SyncService:
 
   // ============================================
   // Queue Operations
   // ============================================
 
   override def enqueuePush(
-    entityType: SyncEntityType,
-    entityId: UUID,
-    operation: SyncOperation,
-    priority: Int,
-    payloadSnapshot: Option[Json]
-  ): Either[String, SyncQueueEntity] =
+                            entityType: SyncEntityType,
+                            entityId: UUID,
+                            operation: SyncOperation,
+                            priority: Int,
+                            payloadSnapshot: Option[Json]
+                          ): Either[String, SyncQueueEntity] =
     transactor.readWrite {
       queueRepo.enqueue(entityType, entityId, operation, priority, payloadSnapshot)
     }
@@ -252,10 +253,10 @@ class H2SyncService(
     }
 
   override def markSynced(
-    queueId: UUID,
-    atUri: Option[String],
-    remoteCid: Option[String]
-  ): Either[String, Boolean] =
+                           queueId: UUID,
+                           atUri: Option[String],
+                           remoteCid: Option[String]
+                         ): Either[String, Boolean] =
     transactor.readWrite {
       // Get the queue entry to record in history
       queueRepo.findById(queueId) match
@@ -329,19 +330,19 @@ class H2SyncService(
   // ============================================
 
   override def recordConflict(
-    entityType: SyncEntityType,
-    entityId: UUID,
-    localVersion: Int,
-    remoteVersion: Int,
-    atUri: Option[String],
-    localChanges: Option[Json],
-    remoteChanges: Option[Json],
-    overlappingFields: Option[Json],
-    localSnapshot: Option[Json],
-    remoteSnapshot: Option[Json],
-    suggestedResolution: Option[ConflictResolution],
-    resolutionReason: Option[String]
-  ): Either[String, SyncConflictEntity] =
+                               entityType: SyncEntityType,
+                               entityId: UUID,
+                               localVersion: Int,
+                               remoteVersion: Int,
+                               atUri: Option[String],
+                               localChanges: Option[Json],
+                               remoteChanges: Option[Json],
+                               overlappingFields: Option[Json],
+                               localSnapshot: Option[Json],
+                               remoteSnapshot: Option[Json],
+                               suggestedResolution: Option[ConflictResolution],
+                               resolutionReason: Option[String]
+                             ): Either[String, SyncConflictEntity] =
     transactor.readWrite {
       val entity = SyncConflictEntity.create(
         entityType = entityType,

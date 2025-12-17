@@ -1,27 +1,28 @@
 package com.decodingus.haplogroup.processor
 
-import io.circe.Codec
 import com.decodingus.analysis.{CallableLociQueryService, CallableState, VcfQueryService}
+import com.decodingus.refgenome.MultiContigReferenceQuerier
+import io.circe.Codec
 
 /**
  * Source of a SNP call for haplogroup analysis.
  */
 enum CallSource derives Codec.AsObject:
   case FromVcf(depth: Int, quality: Double)
-  case InferredReference(callableState: String)  // CALLABLE, REF_N
-  case NoCall(reason: String)                    // LOW_COVERAGE, NO_COVERAGE, etc.
+  case InferredReference(callableState: String) // CALLABLE, REF_N
+  case NoCall(reason: String) // LOW_COVERAGE, NO_COVERAGE, etc.
 
 /**
  * An enhanced SNP call with source information.
  */
 case class EnhancedSnpCall(
-  contig: String,
-  position: Long,
-  referenceBuild: String,
-  allele: String,
-  source: CallSource,
-  quality: Option[Double]
-) derives Codec.AsObject {
+                            contig: String,
+                            position: Long,
+                            referenceBuild: String,
+                            allele: String,
+                            source: CallSource,
+                            quality: Option[Double]
+                          ) derives Codec.AsObject {
 
   def isFromVcf: Boolean = source match {
     case CallSource.FromVcf(_, _) => true
@@ -45,21 +46,26 @@ case class EnhancedSnpCall(
  * Resolves SNP calls by combining VCF queries with callable loci data.
  *
  * When a position is not in the VCF:
- * - If callable loci shows CALLABLE: infer homozygous reference
+ * - If callable loci shows CALLABLE: query reference genome for actual allele
  * - If callable loci shows NO_COVERAGE/LOW_COVERAGE: mark as no-call
  * - If callable loci shows REF_N: the reference is N, cannot determine
  *
  * This allows haplogroup analysis to work even when the VCF has gaps
  * (positions where no variant was called because the sample matches reference).
  *
+ * IMPORTANT: The reference allele is queried from the actual reference genome,
+ * NOT assumed to be the tree's ancestral allele. This is critical because the
+ * reference genome may have derived alleles at haplogroup-defining positions.
+ *
  * Performance: The resolver pre-loads VCF and callable loci data for the target
  * contigs into memory for fast O(1) lookups during position resolution.
  */
 class GapAwareHaplogroupResolver(
-  vcfService: VcfQueryService,
-  callableLociService: Option[CallableLociQueryService],
-  referenceBuild: String
-) {
+                                  vcfService: VcfQueryService,
+                                  callableLociService: Option[CallableLociQueryService],
+                                  referenceQuerier: Option[MultiContigReferenceQuerier],
+                                  referenceBuild: String
+                                ) {
 
   /**
    * Pre-load data for specified contigs to optimize subsequent queries.
@@ -79,23 +85,29 @@ class GapAwareHaplogroupResolver(
   def getVcfService: VcfQueryService = vcfService
 
   /**
-   * Close the underlying VCF reader and free resources.
+   * Close the underlying VCF reader, reference querier, and free resources.
    * Call this when done with the resolver.
    */
   def close(): Unit = {
     vcfService.close()
+    referenceQuerier.foreach(_.close())
   }
 
   /**
    * Resolve SNP calls at specified haplogroup tree positions.
    *
+   * Performance optimized: Batch-queries both VCF and callable loci to minimize
+   * per-position overhead when resolving hundreds of thousands of positions.
+   *
    * @param positions List of (contig, position, referenceAllele) for tree positions
    * @return Map of position to enhanced SNP call
    */
   def resolvePositions(
-    positions: List[(String, Long, String)]
-  ): Map[(String, Long), EnhancedSnpCall] = {
-    // Query VCF for all positions
+                        positions: List[(String, Long, String)]
+                      ): Map[(String, Long), EnhancedSnpCall] = {
+    val startTime = System.currentTimeMillis()
+
+    // Query VCF for all positions (already optimized with in-memory cache)
     val vcfResults = vcfService.queryPositions(
       referenceBuild,
       positions.map { case (c, p, _) => (c, p) }
@@ -107,10 +119,28 @@ class GapAwareHaplogroupResolver(
       case Right(results) => results
     }
 
-    positions.map { case (contig, position, refAllele) =>
+    // Identify positions NOT in VCF that need callable loci lookup
+    val positionsNotInVcf = positions.filter { case (c, p, _) =>
+      vcfResults.get((c, p)).flatten.isEmpty
+    }
+
+    // Batch-query callable loci for all missing positions at once
+    val callableLociResults: Map[(String, Long), CallableState] = callableLociService match {
+      case Some(service) if positionsNotInVcf.nonEmpty =>
+        service.queryPositions(positionsNotInVcf.map { case (c, p, _) => (c, p) })
+      case _ =>
+        Map.empty
+    }
+
+    val vcfQueryTime = System.currentTimeMillis() - startTime
+
+    // Build result map efficiently
+    val resultBuilder = scala.collection.mutable.Map.empty[(String, Long), EnhancedSnpCall]
+
+    positions.foreach { case (contig, position, _) =>
       val call = vcfResults.get((contig, position)).flatten match {
         case Some(vcfCall) =>
-          // Position found in VCF
+          // Position found in VCF - use the VCF allele directly
           val allele = if (vcfCall.isVariant) vcfCall.alt else vcfCall.ref
           EnhancedSnpCall(
             contig = contig,
@@ -122,11 +152,62 @@ class GapAwareHaplogroupResolver(
           )
 
         case None =>
-          // Position not in VCF - check callable loci
-          resolveFromCallableLoci(contig, position, refAllele)
+          // Position not in VCF - check callable loci and query reference genome if callable
+          val state = callableLociResults.getOrElse((contig, position), CallableState.Unknown)
+          callableStateToEnhancedCall(contig, position, state)
       }
-      (contig, position) -> call
-    }.toMap
+      resultBuilder((contig, position)) = call
+    }
+
+    val totalTime = System.currentTimeMillis() - startTime
+    if (positions.size > 1000) {
+      println(s"[GapAwareResolver] Resolved ${positions.size} positions in ${totalTime}ms (VCF: ${vcfQueryTime}ms)")
+    }
+
+    resultBuilder.toMap
+  }
+
+  /**
+   * Convert a callable loci state to an EnhancedSnpCall.
+   * For CALLABLE positions, queries the actual reference genome to get the allele.
+   */
+  private def callableStateToEnhancedCall(
+                                           contig: String,
+                                           position: Long,
+                                           state: CallableState
+                                         ): EnhancedSnpCall = {
+    state match {
+      case CallableState.Callable =>
+        // Query the actual reference genome for the allele at this position
+        val refAllele = referenceQuerier.flatMap(_.getBase(contig, position).map(_.toString.toUpperCase))
+          .getOrElse(".")
+        if (refAllele == ".") {
+          // Couldn't get reference allele - treat as no-call
+          EnhancedSnpCall(contig, position, referenceBuild, ".",
+            CallSource.NoCall("Reference lookup failed"), None)
+        } else {
+          EnhancedSnpCall(contig, position, referenceBuild, refAllele,
+            CallSource.InferredReference("CALLABLE"), None)
+        }
+      case CallableState.RefN =>
+        EnhancedSnpCall(contig, position, referenceBuild, "N",
+          CallSource.InferredReference("REF_N"), None)
+      case CallableState.NoCoverage =>
+        EnhancedSnpCall(contig, position, referenceBuild, ".",
+          CallSource.NoCall("NO_COVERAGE"), None)
+      case CallableState.LowCoverage =>
+        EnhancedSnpCall(contig, position, referenceBuild, ".",
+          CallSource.NoCall("LOW_COVERAGE"), None)
+      case CallableState.ExcessiveCoverage =>
+        EnhancedSnpCall(contig, position, referenceBuild, ".",
+          CallSource.NoCall("EXCESSIVE_COVERAGE"), None)
+      case CallableState.PoorMappingQuality =>
+        EnhancedSnpCall(contig, position, referenceBuild, ".",
+          CallSource.NoCall("POOR_MAPPING_QUALITY"), None)
+      case CallableState.Unknown =>
+        EnhancedSnpCall(contig, position, referenceBuild, ".",
+          CallSource.NoCall("Position not in callable loci data"), None)
+    }
   }
 
   /**
@@ -144,104 +225,6 @@ class GapAwareHaplogroupResolver(
         quality = None
       )
     )
-  }
-
-  /**
-   * When VCF has no call, check callable loci to determine if we can infer reference.
-   */
-  private def resolveFromCallableLoci(
-    contig: String,
-    position: Long,
-    refAllele: String
-  ): EnhancedSnpCall = {
-    callableLociService match {
-      case None =>
-        // No callable loci data - mark as no-call
-        EnhancedSnpCall(
-          contig = contig,
-          position = position,
-          referenceBuild = referenceBuild,
-          allele = ".",
-          source = CallSource.NoCall("No callable loci data available"),
-          quality = None
-        )
-
-      case Some(service) =>
-        val state = service.queryPosition(contig, position)
-        state match {
-          case CallableState.Callable =>
-            // Position is callable but not in VCF = homozygous reference
-            EnhancedSnpCall(
-              contig = contig,
-              position = position,
-              referenceBuild = referenceBuild,
-              allele = refAllele,
-              source = CallSource.InferredReference("CALLABLE"),
-              quality = None
-            )
-
-          case CallableState.RefN =>
-            // Reference is N - cannot determine allele
-            EnhancedSnpCall(
-              contig = contig,
-              position = position,
-              referenceBuild = referenceBuild,
-              allele = "N",
-              source = CallSource.InferredReference("REF_N"),
-              quality = None
-            )
-
-          case CallableState.NoCoverage =>
-            EnhancedSnpCall(
-              contig = contig,
-              position = position,
-              referenceBuild = referenceBuild,
-              allele = ".",
-              source = CallSource.NoCall("NO_COVERAGE"),
-              quality = None
-            )
-
-          case CallableState.LowCoverage =>
-            EnhancedSnpCall(
-              contig = contig,
-              position = position,
-              referenceBuild = referenceBuild,
-              allele = ".",
-              source = CallSource.NoCall("LOW_COVERAGE"),
-              quality = None
-            )
-
-          case CallableState.ExcessiveCoverage =>
-            EnhancedSnpCall(
-              contig = contig,
-              position = position,
-              referenceBuild = referenceBuild,
-              allele = ".",
-              source = CallSource.NoCall("EXCESSIVE_COVERAGE"),
-              quality = None
-            )
-
-          case CallableState.PoorMappingQuality =>
-            EnhancedSnpCall(
-              contig = contig,
-              position = position,
-              referenceBuild = referenceBuild,
-              allele = ".",
-              source = CallSource.NoCall("POOR_MAPPING_QUALITY"),
-              quality = None
-            )
-
-          case CallableState.Unknown =>
-            EnhancedSnpCall(
-              contig = contig,
-              position = position,
-              referenceBuild = referenceBuild,
-              allele = ".",
-              source = CallSource.NoCall("Position not in callable loci data"),
-              quality = None
-            )
-        }
-    }
   }
 
   /**
@@ -263,42 +246,58 @@ class GapAwareHaplogroupResolver(
 }
 
 case class ResolutionStats(
-  totalPositions: Int,
-  fromVcf: Int,
-  inferredReference: Int,
-  noCalls: Int,
-  callRate: Double
-)
+                            totalPositions: Int,
+                            fromVcf: Int,
+                            inferredReference: Int,
+                            noCalls: Int,
+                            callRate: Double
+                          )
 
 object GapAwareHaplogroupResolver {
 
   /**
    * Create a resolver from cached artifacts.
+   *
+   * @param sampleAccession Sample accession
+   * @param runId           Sequence run ID
+   * @param alignmentId     Alignment ID
+   * @param referenceBuild  Reference build name
+   * @param referencePath   Optional path to reference genome FASTA for inferring reference alleles at callable positions
    */
   def fromCache(
-    sampleAccession: String,
-    runId: String,
-    alignmentId: String,
-    referenceBuild: String
-  ): Either[String, GapAwareHaplogroupResolver] = {
+                 sampleAccession: String,
+                 runId: String,
+                 alignmentId: String,
+                 referenceBuild: String,
+                 referencePath: Option[String] = None
+               ): Either[String, GapAwareHaplogroupResolver] = {
     VcfQueryService.fromCache(sampleAccession, runId, alignmentId).map { vcfService =>
       val callableService = CallableLociQueryService.fromAlignment(sampleAccession, runId, alignmentId)
-      new GapAwareHaplogroupResolver(vcfService, callableService, referenceBuild)
+      val refQuerier = referencePath.map(path => new MultiContigReferenceQuerier(path))
+      new GapAwareHaplogroupResolver(vcfService, callableService, refQuerier, referenceBuild)
     }
   }
 
   /**
    * Create a resolver from AT URIs.
+   *
+   * @param sampleAccession Sample accession
+   * @param sequenceRunUri  Optional sequence run URI
+   * @param alignmentUri    Optional alignment URI
+   * @param referenceBuild  Reference build name
+   * @param referencePath   Optional path to reference genome FASTA for inferring reference alleles at callable positions
    */
   def fromUris(
-    sampleAccession: String,
-    sequenceRunUri: Option[String],
-    alignmentUri: Option[String],
-    referenceBuild: String
-  ): Either[String, GapAwareHaplogroupResolver] = {
+                sampleAccession: String,
+                sequenceRunUri: Option[String],
+                alignmentUri: Option[String],
+                referenceBuild: String,
+                referencePath: Option[String] = None
+              ): Either[String, GapAwareHaplogroupResolver] = {
     VcfQueryService.fromUris(sampleAccession, sequenceRunUri, alignmentUri).map { vcfService =>
       val callableService = CallableLociQueryService.fromUris(sampleAccession, sequenceRunUri, alignmentUri)
-      new GapAwareHaplogroupResolver(vcfService, callableService, referenceBuild)
+      val refQuerier = referencePath.map(path => new MultiContigReferenceQuerier(path))
+      new GapAwareHaplogroupResolver(vcfService, callableService, refQuerier, referenceBuild)
     }
   }
 
@@ -309,20 +308,23 @@ object GapAwareHaplogroupResolver {
    * Note: Vendor VCFs typically don't have callable loci data, so reference inference
    * will be limited. Positions not in the VCF will be marked as no-call.
    *
-   * @param vcfPath Path to the VCF file (must be indexed)
+   * @param vcfPath        Path to the VCF file (must be indexed)
    * @param referenceBuild Reference build of the VCF
-   * @param targetBedPath Optional path to target regions BED (not callable loci - just capture targets)
+   * @param referencePath  Optional path to reference genome FASTA for inferring reference alleles at callable positions
+   * @param targetBedPath  Optional path to target regions BED (not callable loci - just capture targets)
    */
   def fromVcfPath(
-    vcfPath: String,
-    referenceBuild: String,
-    targetBedPath: Option[String] = None
-  ): Either[String, GapAwareHaplogroupResolver] = {
+                   vcfPath: String,
+                   referenceBuild: String,
+                   referencePath: Option[String] = None,
+                   targetBedPath: Option[String] = None
+                 ): Either[String, GapAwareHaplogroupResolver] = {
     VcfQueryService.fromVcfPath(vcfPath, referenceBuild).map { vcfService =>
       // Vendor VCFs don't have callable loci data - target BED is capture regions, not callable loci
       // We could potentially use target BED to infer that positions in targets but not in VCF are ref,
       // but that's not as reliable as true callable loci analysis
-      new GapAwareHaplogroupResolver(vcfService, None, referenceBuild)
+      val refQuerier = referencePath.map(path => new MultiContigReferenceQuerier(path))
+      new GapAwareHaplogroupResolver(vcfService, None, refQuerier, referenceBuild)
     }
   }
 }

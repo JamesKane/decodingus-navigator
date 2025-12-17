@@ -1,33 +1,35 @@
 package com.decodingus.analysis
 
+import io.circe.syntax.*
 import io.circe.{Codec, parser}
-import io.circe.syntax._
 
 import java.io.File
 import java.nio.file.{Files, Path}
 import java.time.LocalDateTime
 import java.time.format.DateTimeFormatter
-import scala.jdk.CollectionConverters._
+import scala.jdk.CollectionConverters.*
 import scala.util.{Either, Left, Right, Using}
 
 /**
  * Information about a cached whole-genome VCF.
  */
 case class CachedVcfInfo(
-  vcfPath: String,
-  indexPath: String,
-  referenceBuild: String,
-  callerVersion: String,
-  gatkVersion: String,
-  createdAt: String,
-  fileSizeBytes: Long,
-  variantCount: Long,
-  contigs: List[String],
-  inferredSex: Option[String] = None
-) derives Codec.AsObject {
+                          vcfPath: String,
+                          indexPath: String,
+                          referenceBuild: String,
+                          callerVersion: String,
+                          gatkVersion: String,
+                          createdAt: String,
+                          fileSizeBytes: Long,
+                          variantCount: Long,
+                          contigs: List[String],
+                          inferredSex: Option[String] = None
+                        ) derives Codec.AsObject {
 
   def vcfFile: File = new File(vcfPath)
+
   def indexFile: File = new File(indexPath)
+
   def createdAtDateTime: LocalDateTime = LocalDateTime.parse(createdAt, DateTimeFormatter.ISO_LOCAL_DATE_TIME)
 
   def isValid: Boolean = {
@@ -67,35 +69,38 @@ object VcfVendor:
  * callable regions. It indicates where the assay was designed to sequence,
  * not what regions achieved adequate coverage.
  *
- * @param vcfPath           Path to the vendor VCF file
- * @param indexPath         Path to the VCF index (.tbi)
- * @param targetBedPath     Optional path to target capture regions BED file
- * @param vendor            Vendor that provided the file
- * @param originalVcfName   Original filename of the VCF
- * @param originalBedName   Original filename of the BED (if provided)
- * @param referenceBuild    Reference genome build (GRCh37, GRCh38, etc.)
- * @param importedAt        When the file was imported
- * @param variantCount      Number of variants in the VCF
- * @param contigs           Contigs present in the VCF
- * @param notes             Optional notes about the import
+ * @param vcfPath         Path to the vendor VCF file
+ * @param indexPath       Path to the VCF index (.tbi)
+ * @param targetBedPath   Optional path to target capture regions BED file
+ * @param vendor          Vendor that provided the file
+ * @param originalVcfName Original filename of the VCF
+ * @param originalBedName Original filename of the BED (if provided)
+ * @param referenceBuild  Reference genome build (GRCh37, GRCh38, etc.)
+ * @param importedAt      When the file was imported
+ * @param variantCount    Number of variants in the VCF
+ * @param contigs         Contigs present in the VCF
+ * @param notes           Optional notes about the import
  */
 case class VendorVcfInfo(
-  vcfPath: String,
-  indexPath: String,
-  targetBedPath: Option[String],
-  vendor: VcfVendor,
-  originalVcfName: String,
-  originalBedName: Option[String],
-  referenceBuild: String,
-  importedAt: String,
-  variantCount: Long,
-  contigs: List[String],
-  notes: Option[String] = None
-) derives Codec.AsObject {
+                          vcfPath: String,
+                          indexPath: String,
+                          targetBedPath: Option[String],
+                          vendor: VcfVendor,
+                          originalVcfName: String,
+                          originalBedName: Option[String],
+                          referenceBuild: String,
+                          importedAt: String,
+                          variantCount: Long,
+                          contigs: List[String],
+                          notes: Option[String] = None
+                        ) derives Codec.AsObject {
 
   def vcfFile: File = new File(vcfPath)
+
   def indexFile: File = new File(indexPath)
+
   def targetBedFile: Option[File] = targetBedPath.map(new File(_))
+
   def importedAtDateTime: LocalDateTime = LocalDateTime.parse(importedAt, DateTimeFormatter.ISO_LOCAL_DATE_TIME)
 
   def isValid: Boolean = {
@@ -119,23 +124,24 @@ case class VendorVcfInfo(
  * genome sequences as FASTA files. These need to be compared against rCRS
  * (revised Cambridge Reference Sequence) to identify variants.
  *
- * @param fastaPath         Path to the FASTA file
- * @param vendor            Vendor that provided the file
- * @param originalFileName  Original filename of the FASTA
- * @param importedAt        When the file was imported
- * @param sequenceLength    Length of the mtDNA sequence
- * @param notes             Optional notes about the import
+ * @param fastaPath        Path to the FASTA file
+ * @param vendor           Vendor that provided the file
+ * @param originalFileName Original filename of the FASTA
+ * @param importedAt       When the file was imported
+ * @param sequenceLength   Length of the mtDNA sequence
+ * @param notes            Optional notes about the import
  */
 case class VendorFastaInfo(
-  fastaPath: String,
-  vendor: VcfVendor,
-  originalFileName: String,
-  importedAt: String,
-  sequenceLength: Int,
-  notes: Option[String] = None
-) derives Codec.AsObject {
+                            fastaPath: String,
+                            vendor: VcfVendor,
+                            originalFileName: String,
+                            importedAt: String,
+                            sequenceLength: Int,
+                            notes: Option[String] = None
+                          ) derives Codec.AsObject {
 
   def fastaFile: File = new File(fastaPath)
+
   def importedAtDateTime: LocalDateTime = LocalDateTime.parse(importedAt, DateTimeFormatter.ISO_LOCAL_DATE_TIME)
 
   def isValid: Boolean = fastaFile.exists()
@@ -223,10 +229,10 @@ object VcfCache {
    * Load cached VCF info using AT URIs.
    */
   def loadMetadataFromUris(
-    sampleAccession: String,
-    sequenceRunUri: Option[String],
-    alignmentUri: Option[String]
-  ): Either[String, CachedVcfInfo] = {
+                            sampleAccession: String,
+                            sequenceRunUri: Option[String],
+                            alignmentUri: Option[String]
+                          ): Either[String, CachedVcfInfo] = {
     val runId = sequenceRunUri.map(SubjectArtifactCache.extractIdFromUri).getOrElse("unknown-run")
     val alignId = alignmentUri.map(SubjectArtifactCache.extractIdFromUri).getOrElse("unknown-alignment")
     loadMetadata(sampleAccession, runId, alignId)
@@ -236,11 +242,11 @@ object VcfCache {
    * Save VCF metadata after generation.
    */
   def saveMetadata(
-    sampleAccession: String,
-    runId: String,
-    alignmentId: String,
-    info: CachedVcfInfo
-  ): Either[String, Unit] = {
+                    sampleAccession: String,
+                    runId: String,
+                    alignmentId: String,
+                    info: CachedVcfInfo
+                  ): Either[String, Unit] = {
     val metadataPath = getMetadataPath(sampleAccession, runId, alignmentId)
 
     try {
@@ -255,15 +261,15 @@ object VcfCache {
    * Create VCF metadata from a generated VCF file.
    */
   def createMetadata(
-    vcfPath: Path,
-    indexPath: Path,
-    referenceBuild: String,
-    callerVersion: String,
-    gatkVersion: String,
-    contigs: List[String],
-    variantCount: Long,
-    inferredSex: Option[String] = None
-  ): CachedVcfInfo = {
+                      vcfPath: Path,
+                      indexPath: Path,
+                      referenceBuild: String,
+                      callerVersion: String,
+                      gatkVersion: String,
+                      contigs: List[String],
+                      variantCount: Long,
+                      inferredSex: Option[String] = None
+                    ): CachedVcfInfo = {
     CachedVcfInfo(
       vcfPath = vcfPath.toAbsolutePath.toString,
       indexPath = indexPath.toAbsolutePath.toString,
@@ -285,7 +291,7 @@ object VcfCache {
     val vcfDir = getVcfDir(sampleAccession, runId, alignmentId)
 
     if (Files.exists(vcfDir)) {
-      import scala.jdk.CollectionConverters._
+      import scala.jdk.CollectionConverters.*
       Files.walk(vcfDir)
         .sorted(java.util.Comparator.reverseOrder())
         .iterator()
@@ -315,11 +321,11 @@ object VcfCache {
    * Validate that a cached VCF matches the expected reference build.
    */
   def validateBuild(
-    sampleAccession: String,
-    runId: String,
-    alignmentId: String,
-    expectedBuild: String
-  ): Either[String, CachedVcfInfo] = {
+                     sampleAccession: String,
+                     runId: String,
+                     alignmentId: String,
+                     expectedBuild: String
+                   ): Either[String, CachedVcfInfo] = {
     loadMetadata(sampleAccession, runId, alignmentId).flatMap { info =>
       if (info.referenceBuild == expectedBuild) {
         Right(info)
@@ -347,25 +353,25 @@ object VcfCache {
    * The VCF will be indexed if not already indexed.
    *
    * @param sampleAccession Sample accession
-   * @param runId Sequence run ID
-   * @param alignmentId Alignment ID
-   * @param vcfSourcePath Path to the source VCF file
-   * @param bedSourcePath Optional path to the target regions BED file
-   * @param vendor The vendor that provided the files
-   * @param referenceBuild Reference genome build
-   * @param notes Optional notes about this import
+   * @param runId           Sequence run ID
+   * @param alignmentId     Alignment ID
+   * @param vcfSourcePath   Path to the source VCF file
+   * @param bedSourcePath   Optional path to the target regions BED file
+   * @param vendor          The vendor that provided the files
+   * @param referenceBuild  Reference genome build
+   * @param notes           Optional notes about this import
    * @return Either error message or the VendorVcfInfo for the imported files
    */
   def importVendorVcf(
-    sampleAccession: String,
-    runId: String,
-    alignmentId: String,
-    vcfSourcePath: Path,
-    bedSourcePath: Option[Path],
-    vendor: VcfVendor,
-    referenceBuild: String,
-    notes: Option[String] = None
-  ): Either[String, VendorVcfInfo] = {
+                       sampleAccession: String,
+                       runId: String,
+                       alignmentId: String,
+                       vcfSourcePath: Path,
+                       bedSourcePath: Option[Path],
+                       vendor: VcfVendor,
+                       referenceBuild: String,
+                       notes: Option[String] = None
+                     ): Either[String, VendorVcfInfo] = {
     try {
       val vendorDir = getVendorVcfDir(sampleAccession, runId, alignmentId)
       Files.createDirectories(vendorDir)
@@ -478,7 +484,7 @@ object VcfCache {
       return List.empty
     }
 
-    import scala.jdk.CollectionConverters._
+    import scala.jdk.CollectionConverters.*
     Files.list(vendorDir).iterator().asScala
       .filter(p => p.toString.endsWith(VENDOR_METADATA_SUFFIX))
       .flatMap { metadataPath =>
@@ -494,11 +500,11 @@ object VcfCache {
    * Load a specific vendor VCF by vendor type.
    */
   def loadVendorVcf(
-    sampleAccession: String,
-    runId: String,
-    alignmentId: String,
-    vendor: VcfVendor
-  ): Option[VendorVcfInfo] = {
+                     sampleAccession: String,
+                     runId: String,
+                     alignmentId: String,
+                     vendor: VcfVendor
+                   ): Option[VendorVcfInfo] = {
     val vendorDir = getVendorVcfDir(sampleAccession, runId, alignmentId)
     val metadataPath = vendorDir.resolve(s"${vendor.code}$VENDOR_METADATA_SUFFIX")
 
@@ -544,11 +550,11 @@ object VcfCache {
    * Delete a vendor VCF from the cache.
    */
   def deleteVendorVcf(
-    sampleAccession: String,
-    runId: String,
-    alignmentId: String,
-    vendor: VcfVendor
-  ): Boolean = {
+                       sampleAccession: String,
+                       runId: String,
+                       alignmentId: String,
+                       vendor: VcfVendor
+                     ): Boolean = {
     val vendorDir = getVendorVcfDir(sampleAccession, runId, alignmentId)
     val baseFilename = vendor.code
 
@@ -582,23 +588,23 @@ object VcfCache {
    * This is for vendor deliverables like FTDNA Big Y that don't include BAM files.
    *
    * @param sampleAccession Sample accession
-   * @param runId Sequence run ID
-   * @param vcfSourcePath Path to the source VCF file
-   * @param bedSourcePath Optional path to the target regions BED file
-   * @param vendor The vendor that provided the files
-   * @param referenceBuild Reference genome build
-   * @param notes Optional notes about this import
+   * @param runId           Sequence run ID
+   * @param vcfSourcePath   Path to the source VCF file
+   * @param bedSourcePath   Optional path to the target regions BED file
+   * @param vendor          The vendor that provided the files
+   * @param referenceBuild  Reference genome build
+   * @param notes           Optional notes about this import
    * @return Either error message or the VendorVcfInfo for the imported files
    */
   def importRunVendorVcf(
-    sampleAccession: String,
-    runId: String,
-    vcfSourcePath: Path,
-    bedSourcePath: Option[Path],
-    vendor: VcfVendor,
-    referenceBuild: String,
-    notes: Option[String] = None
-  ): Either[String, VendorVcfInfo] = {
+                          sampleAccession: String,
+                          runId: String,
+                          vcfSourcePath: Path,
+                          bedSourcePath: Option[Path],
+                          vendor: VcfVendor,
+                          referenceBuild: String,
+                          notes: Option[String] = None
+                        ): Either[String, VendorVcfInfo] = {
     try {
       val vendorDir = getRunVendorVcfDir(sampleAccession, runId)
       Files.createDirectories(vendorDir)
@@ -689,7 +695,7 @@ object VcfCache {
       return List.empty
     }
 
-    import scala.jdk.CollectionConverters._
+    import scala.jdk.CollectionConverters.*
     Files.list(vendorDir).iterator().asScala
       .filter(p => p.toString.endsWith(VENDOR_METADATA_SUFFIX))
       .flatMap { metadataPath =>
@@ -705,10 +711,10 @@ object VcfCache {
    * Load a specific vendor VCF by vendor type at the SequenceRun level.
    */
   def loadRunVendorVcf(
-    sampleAccession: String,
-    runId: String,
-    vendor: VcfVendor
-  ): Option[VendorVcfInfo] = {
+                        sampleAccession: String,
+                        runId: String,
+                        vendor: VcfVendor
+                      ): Option[VendorVcfInfo] = {
     val vendorDir = getRunVendorVcfDir(sampleAccession, runId)
     val metadataPath = vendorDir.resolve(s"${vendor.code}$VENDOR_METADATA_SUFFIX")
 
@@ -749,10 +755,10 @@ object VcfCache {
    * Delete a vendor VCF from the run-level cache.
    */
   def deleteRunVendorVcf(
-    sampleAccession: String,
-    runId: String,
-    vendor: VcfVendor
-  ): Boolean = {
+                          sampleAccession: String,
+                          runId: String,
+                          vendor: VcfVendor
+                        ): Boolean = {
     val vendorDir = getRunVendorVcfDir(sampleAccession, runId)
     val baseFilename = vendor.code
 
@@ -787,19 +793,19 @@ object VcfCache {
    * Import a vendor-provided mtDNA FASTA file at the SequenceRun level.
    *
    * @param sampleAccession Sample accession
-   * @param runId Sequence run ID
+   * @param runId           Sequence run ID
    * @param fastaSourcePath Path to the source FASTA file
-   * @param vendor The vendor that provided the file
-   * @param notes Optional notes about this import
+   * @param vendor          The vendor that provided the file
+   * @param notes           Optional notes about this import
    * @return Either error message or the VendorFastaInfo for the imported file
    */
   def importRunFasta(
-    sampleAccession: String,
-    runId: String,
-    fastaSourcePath: Path,
-    vendor: VcfVendor,
-    notes: Option[String] = None
-  ): Either[String, VendorFastaInfo] = {
+                      sampleAccession: String,
+                      runId: String,
+                      fastaSourcePath: Path,
+                      vendor: VcfVendor,
+                      notes: Option[String] = None
+                    ): Either[String, VendorFastaInfo] = {
     try {
       val fastaDir = getRunFastaDir(sampleAccession, runId)
       Files.createDirectories(fastaDir)
@@ -841,7 +847,7 @@ object VcfCache {
   private def readFastaSequenceLength(fastaPath: Path): Int = {
     Using(scala.io.Source.fromFile(fastaPath.toFile)) { source =>
       source.getLines()
-        .filterNot(_.startsWith(">"))  // Skip header lines
+        .filterNot(_.startsWith(">")) // Skip header lines
         .map(_.trim.length)
         .sum
     }.getOrElse(0)
@@ -857,7 +863,7 @@ object VcfCache {
       return List.empty
     }
 
-    import scala.jdk.CollectionConverters._
+    import scala.jdk.CollectionConverters.*
     Files.list(fastaDir).iterator().asScala
       .filter(p => p.toString.endsWith(FASTA_METADATA_SUFFIX))
       .flatMap { metadataPath =>
@@ -873,10 +879,10 @@ object VcfCache {
    * Load a specific vendor FASTA by vendor type at the SequenceRun level.
    */
   def loadRunFasta(
-    sampleAccession: String,
-    runId: String,
-    vendor: VcfVendor
-  ): Option[VendorFastaInfo] = {
+                    sampleAccession: String,
+                    runId: String,
+                    vendor: VcfVendor
+                  ): Option[VendorFastaInfo] = {
     val fastaDir = getRunFastaDir(sampleAccession, runId)
     val metadataPath = fastaDir.resolve(s"${vendor.code}$FASTA_METADATA_SUFFIX")
 
@@ -905,10 +911,10 @@ object VcfCache {
    * Delete a vendor FASTA from the run-level cache.
    */
   def deleteRunFasta(
-    sampleAccession: String,
-    runId: String,
-    vendor: VcfVendor
-  ): Boolean = {
+                      sampleAccession: String,
+                      runId: String,
+                      vendor: VcfVendor
+                    ): Boolean = {
     val fastaDir = getRunFastaDir(sampleAccession, runId)
     val baseFilename = vendor.code
 
@@ -933,8 +939,8 @@ enum VcfStatus:
   case Available(info: CachedVcfInfo)
   case InProgress(startedAt: LocalDateTime, progress: Double, currentContig: Option[String])
   case NotGenerated
-  case Incomplete  // Files exist but metadata is invalid
-  case Stale       // VCF exists but alignment has been modified since
+  case Incomplete // Files exist but metadata is invalid
+  case Stale // VCF exists but alignment has been modified since
 
   def isAvailable: Boolean = this match {
     case Available(_) => true

@@ -11,21 +11,21 @@ import com.decodingus.liftover.GenotypeLiftover
 /**
  * Result of chip-based haplogroup analysis.
  *
- * @param treeType Y-DNA or MT-DNA
- * @param results Scored haplogroup results, sorted by score descending
- * @param snpsMatched Number of chip positions that matched tree positions
- * @param snpsTotal Total tree positions checked
+ * @param treeType      Y-DNA or MT-DNA
+ * @param results       Scored haplogroup results, sorted by score descending
+ * @param snpsMatched   Number of chip positions that matched tree positions
+ * @param snpsTotal     Total tree positions checked
  * @param topHaplogroup Best matching haplogroup name
- * @param confidence Confidence level based on coverage
+ * @param confidence    Confidence level based on coverage
  */
 case class ChipHaplogroupResult(
-  treeType: TreeType,
-  results: List[HaplogroupResult],
-  snpsMatched: Int,
-  snpsTotal: Int,
-  topHaplogroup: String,
-  confidence: Double
-)
+                                 treeType: TreeType,
+                                 results: List[HaplogroupResult],
+                                 snpsMatched: Int,
+                                 snpsTotal: Int,
+                                 topHaplogroup: String,
+                                 confidence: Double
+                               )
 
 /**
  * Adapter to run haplogroup analysis on chip/array genotype data.
@@ -55,15 +55,15 @@ class ChipHaplogroupAdapter {
    * Analyze chip data for haplogroup assignment.
    *
    * @param chipResult The processed chip data
-   * @param treeType Y-DNA or MT-DNA
+   * @param treeType   Y-DNA or MT-DNA
    * @param onProgress Progress callback
    * @return Either error or haplogroup result
    */
   def analyze(
-    chipResult: ChipProcessingResult,
-    treeType: TreeType,
-    onProgress: (String, Double, Double) => Unit
-  ): Either[String, ChipHaplogroupResult] = {
+               chipResult: ChipProcessingResult,
+               treeType: TreeType,
+               onProgress: (String, Double, Double) => Unit
+             ): Either[String, ChipHaplogroupResult] = {
 
     val typeName = if (treeType == TreeType.YDNA) "Y-DNA" else "mtDNA"
     onProgress(s"Loading $typeName haplogroup tree...", 0.0, 1.0)
@@ -103,7 +103,7 @@ class ChipHaplogroupAdapter {
       case TreeType.MTDNA =>
         // Prefer rCRS for mtDNA since that's what chip data uses
         if (treeProvider.supportedBuilds.contains("rCRS")) "rCRS"
-        else treeProvider.sourceBuild  // Fall back to source build (positions are same anyway)
+        else treeProvider.sourceBuild // Fall back to source build (positions are same anyway)
       case TreeType.YDNA =>
         if (treeProvider.supportedBuilds.contains(chipBuild)) chipBuild
         else treeProvider.sourceBuild
@@ -112,7 +112,7 @@ class ChipHaplogroupAdapter {
     // mtDNA positions use rCRS numbering (1-16569) which is consistent across builds
     // No liftover needed for mtDNA - chip companies and trees both use rCRS positions
     val needsLiftover = treeType match {
-      case TreeType.MTDNA => false  // rCRS coordinates are universal for mtDNA
+      case TreeType.MTDNA => false // rCRS coordinates are universal for mtDNA
       case TreeType.YDNA => GenotypeLiftover.needsLiftover(chipBuild, treeBuild)
     }
 
@@ -188,11 +188,11 @@ class ChipHaplogroupAdapter {
    * Handles reverse-complement when mapping to negative strand.
    */
   private def liftChipGenotypes(
-    calls: List[GenotypeCall],
-    fromBuild: String,
-    toBuild: String,
-    onProgress: (String, Double, Double) => Unit
-  ): Either[String, List[GenotypeCall]] = {
+                                 calls: List[GenotypeCall],
+                                 fromBuild: String,
+                                 toBuild: String,
+                                 onProgress: (String, Double, Double) => Unit
+                               ): Either[String, List[GenotypeCall]] = {
     onProgress(s"Lifting ${calls.size} genotypes from $fromBuild to $toBuild...", 0.1, 1.0)
 
     val liftover = new GenotypeLiftover(fromBuild, toBuild)

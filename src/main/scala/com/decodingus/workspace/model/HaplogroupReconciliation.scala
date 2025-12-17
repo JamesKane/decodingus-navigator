@@ -12,10 +12,10 @@ enum DnaType:
  * Compatibility level between runs.
  */
 enum CompatibilityLevel:
-  case COMPATIBLE        // Same branch, different depths
-  case MINOR_DIVERGENCE  // Tip-level differences
-  case MAJOR_DIVERGENCE  // Branch-level split
-  case INCOMPATIBLE      // Different individuals
+  case COMPATIBLE // Same branch, different depths
+  case MINOR_DIVERGENCE // Tip-level differences
+  case MAJOR_DIVERGENCE // Branch-level split
+  case INCOMPATIBLE // Different individuals
 
 /**
  * Technology used for sequencing/testing.
@@ -40,57 +40,57 @@ enum ConflictResolution:
  * Matches global Atmosphere schema: com.decodingus.atmosphere.defs#runHaplogroupCall
  */
 case class RunHaplogroupCall(
-  sourceRef: String,                          // AT URI of SequenceRun, ChipProfile, or StrProfile
-  haplogroup: String,
-  confidence: Double,
-  callMethod: CallMethod,
-  score: Option[Double] = None,
-  supportingSnps: Option[Int] = None,
-  conflictingSnps: Option[Int] = None,
-  noCalls: Option[Int] = None,
-  technology: Option[HaplogroupTechnology] = None,
-  meanCoverage: Option[Double] = None,
-  treeProvider: Option[String] = None,        // "ftdna", "decodingus"
-  treeVersion: Option[String] = None
-)
+                              sourceRef: String, // AT URI of SequenceRun, ChipProfile, or StrProfile
+                              haplogroup: String,
+                              confidence: Double,
+                              callMethod: CallMethod,
+                              score: Option[Double] = None,
+                              supportingSnps: Option[Int] = None,
+                              conflictingSnps: Option[Int] = None,
+                              noCalls: Option[Int] = None,
+                              technology: Option[HaplogroupTechnology] = None,
+                              meanCoverage: Option[Double] = None,
+                              treeProvider: Option[String] = None, // "ftdna", "decodingus"
+                              treeVersion: Option[String] = None
+                            )
 
 /**
  * A single SNP call from one run.
  */
 case class SnpCallFromRun(
-  runRef: String,
-  allele: String,
-  quality: Option[Double] = None,
-  depth: Option[Int] = None,
-  variantAlleleFrequency: Option[Double] = None  // For heteroplasmy
-)
+                           runRef: String,
+                           allele: String,
+                           quality: Option[Double] = None,
+                           depth: Option[Int] = None,
+                           variantAlleleFrequency: Option[Double] = None // For heteroplasmy
+                         )
 
 /**
  * A conflict at a specific SNP position between runs.
  */
 case class SnpConflict(
-  position: Long,
-  snpName: Option[String] = None,
-  contigAccession: Option[String] = None,
-  calls: List[SnpCallFromRun],
-  resolution: Option[ConflictResolution] = None,
-  resolvedValue: Option[String] = None
-)
+                        position: Long,
+                        snpName: Option[String] = None,
+                        contigAccession: Option[String] = None,
+                        calls: List[SnpCallFromRun],
+                        resolution: Option[ConflictResolution] = None,
+                        resolvedValue: Option[String] = None
+                      )
 
 /**
  * Summary reconciliation status.
  * Matches global Atmosphere schema: com.decodingus.atmosphere.defs#reconciliationStatus
  */
 case class ReconciliationStatus(
-  compatibilityLevel: CompatibilityLevel,
-  consensusHaplogroup: String,
-  confidence: Double,
-  divergencePoint: Option[String] = None,
-  branchCompatibilityScore: Option[Double] = None,
-  snpConcordance: Option[Double] = None,
-  runCount: Int,
-  warnings: List[String] = List.empty
-)
+                                 compatibilityLevel: CompatibilityLevel,
+                                 consensusHaplogroup: String,
+                                 confidence: Double,
+                                 divergencePoint: Option[String] = None,
+                                 branchCompatibilityScore: Option[Double] = None,
+                                 snpConcordance: Option[Double] = None,
+                                 runCount: Int,
+                                 warnings: List[String] = List.empty
+                               )
 
 /**
  * Reconciliation of haplogroup calls across multiple runs for a biosample.
@@ -100,15 +100,15 @@ case class ReconciliationStatus(
  * we track at biosample level since users typically have one biosample per donor.
  */
 case class HaplogroupReconciliation(
-  atUri: Option[String] = None,
-  meta: RecordMeta,
-  biosampleRef: String,                       // AT URI of the biosample
-  dnaType: DnaType,
-  status: ReconciliationStatus,
-  runCalls: List[RunHaplogroupCall],
-  snpConflicts: List[SnpConflict] = List.empty,
-  lastReconciliationAt: Option[Instant] = None
-) {
+                                     atUri: Option[String] = None,
+                                     meta: RecordMeta,
+                                     biosampleRef: String, // AT URI of the biosample
+                                     dnaType: DnaType,
+                                     status: ReconciliationStatus,
+                                     runCalls: List[RunHaplogroupCall],
+                                     snpConflicts: List[SnpConflict] = List.empty,
+                                     lastReconciliationAt: Option[Instant] = None
+                                   ) {
 
   /**
    * Add or update a run call. Replaces existing call from same source.
@@ -155,7 +155,7 @@ case class HaplogroupReconciliation(
           consensusHaplogroup = best.haplogroup,
           confidence = best.confidence,
           runCount = runCalls.size,
-          compatibilityLevel = CompatibilityLevel.COMPATIBLE  // TODO: actual tree comparison
+          compatibilityLevel = CompatibilityLevel.COMPATIBLE // TODO: actual tree comparison
         ),
         lastReconciliationAt = Some(Instant.now())
       )
@@ -169,10 +169,10 @@ object HaplogroupReconciliation {
    * Create a new reconciliation record from a single run call.
    */
   def fromSingleRun(
-    biosampleRef: String,
-    dnaType: DnaType,
-    call: RunHaplogroupCall
-  ): HaplogroupReconciliation = {
+                     biosampleRef: String,
+                     dnaType: DnaType,
+                     call: RunHaplogroupCall
+                   ): HaplogroupReconciliation = {
     HaplogroupReconciliation(
       meta = RecordMeta.initial,
       biosampleRef = biosampleRef,

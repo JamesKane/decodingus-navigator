@@ -1,11 +1,11 @@
 package com.decodingus.ui.components
 
-import scalafx.Includes._
-import scalafx.scene.control.{TableView, TableColumn, Label}
-import scalafx.scene.layout.{VBox, HBox, Priority}
-import scalafx.geometry.{Insets, Pos}
+import scalafx.Includes.*
 import scalafx.beans.property.StringProperty
+import scalafx.geometry.{Insets, Pos}
 import scalafx.scene.Node
+import scalafx.scene.control.{Label, TableColumn, TableView}
+import scalafx.scene.layout.{HBox, Priority, VBox}
 
 /**
  * Base trait for data table components with common layout patterns.
@@ -43,7 +43,9 @@ trait DataTableBase[T] extends VBox {
    */
   protected def initializeLayout(): Unit = {
     children = Seq(
-      new Label(tableTitle) { style = "-fx-font-weight: bold;" },
+      new Label(tableTitle) {
+        style = "-fx-font-weight: bold;"
+      },
       table,
       buttonBar
     )
@@ -53,16 +55,16 @@ trait DataTableBase[T] extends VBox {
   /**
    * Create a string column with a value extractor.
    *
-   * @param header Column header text
-   * @param colWidth Preferred column width
+   * @param header    Column header text
+   * @param colWidth  Preferred column width
    * @param extractor Function to extract the string value from a row
    * @return Configured TableColumn
    */
   protected def stringColumn(
-    header: String,
-    colWidth: Double,
-    extractor: T => String
-  ): TableColumn[T, String] = new TableColumn[T, String] {
+                              header: String,
+                              colWidth: Double,
+                              extractor: T => String
+                            ): TableColumn[T, String] = new TableColumn[T, String] {
     text = header
     prefWidth = colWidth
     cellValueFactory = row => StringProperty(extractor(row.value))
@@ -71,48 +73,48 @@ trait DataTableBase[T] extends VBox {
   /**
    * Create a string column with an optional value extractor.
    *
-   * @param header Column header text
-   * @param colWidth Preferred column width
+   * @param header    Column header text
+   * @param colWidth  Preferred column width
    * @param extractor Function to extract the optional value from a row
-   * @param default Value to display when the extracted value is None
+   * @param default   Value to display when the extracted value is None
    * @return Configured TableColumn
    */
   protected def optStringColumn(
-    header: String,
-    colWidth: Double,
-    extractor: T => Option[String],
-    default: String = "—"
-  ): TableColumn[T, String] = stringColumn(header, colWidth, t => extractor(t).getOrElse(default))
+                                 header: String,
+                                 colWidth: Double,
+                                 extractor: T => Option[String],
+                                 default: String = "—"
+                               ): TableColumn[T, String] = stringColumn(header, colWidth, t => extractor(t).getOrElse(default))
 
   /**
    * Create a numeric column formatted as a string.
    *
-   * @param header Column header text
-   * @param colWidth Preferred column width
+   * @param header    Column header text
+   * @param colWidth  Preferred column width
    * @param extractor Function to extract the numeric value
    * @return Configured TableColumn
    */
   protected def intColumn(
-    header: String,
-    colWidth: Double,
-    extractor: T => Int
-  ): TableColumn[T, String] = stringColumn(header, colWidth, t => extractor(t).toString)
+                           header: String,
+                           colWidth: Double,
+                           extractor: T => Int
+                         ): TableColumn[T, String] = stringColumn(header, colWidth, t => extractor(t).toString)
 
   /**
    * Create an optional numeric column formatted as a string.
    *
-   * @param header Column header text
-   * @param colWidth Preferred column width
+   * @param header    Column header text
+   * @param colWidth  Preferred column width
    * @param extractor Function to extract the optional numeric value
-   * @param default Value to display when None
+   * @param default   Value to display when None
    * @return Configured TableColumn
    */
   protected def optIntColumn(
-    header: String,
-    colWidth: Double,
-    extractor: T => Option[Int],
-    default: String = "—"
-  ): TableColumn[T, String] = optStringColumn(header, colWidth, t => extractor(t).map(_.toString), default)
+                              header: String,
+                              colWidth: Double,
+                              extractor: T => Option[Int],
+                              default: String = "—"
+                            ): TableColumn[T, String] = optStringColumn(header, colWidth, t => extractor(t).map(_.toString), default)
 
   /**
    * Create a button bar with centered left alignment.

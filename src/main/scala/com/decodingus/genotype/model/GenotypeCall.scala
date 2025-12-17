@@ -5,19 +5,19 @@ import io.circe.Codec
 /**
  * A single genotype call from a chip/array file.
  *
- * @param markerId rsID or vendor marker name (e.g., "rs12345")
+ * @param markerId   rsID or vendor marker name (e.g., "rs12345")
  * @param chromosome Chromosome name (e.g., "1", "X", "Y", "MT")
- * @param position 1-based position on the chromosome
- * @param allele1 First allele (A, C, G, T, I, D, or - for no call)
- * @param allele2 Second allele (A, C, G, T, I, D, or - for no call)
+ * @param position   1-based position on the chromosome
+ * @param allele1    First allele (A, C, G, T, I, D, or - for no call)
+ * @param allele2    Second allele (A, C, G, T, I, D, or - for no call)
  */
 case class GenotypeCall(
-  markerId: String,
-  chromosome: String,
-  position: Int,
-  allele1: Char,
-  allele2: Char
-) derives Codec.AsObject {
+                         markerId: String,
+                         chromosome: String,
+                         position: Int,
+                         allele1: Char,
+                         allele2: Char
+                       ) derives Codec.AsObject {
 
   /**
    * Check if this is a no-call (missing data).
@@ -52,26 +52,26 @@ case class GenotypeCall(
    */
   def isYChromosome: Boolean =
     chromosome.equalsIgnoreCase("Y") ||
-    chromosome.equalsIgnoreCase("chrY") ||
-    chromosome == "24"
+      chromosome.equalsIgnoreCase("chrY") ||
+      chromosome == "24"
 
   /**
    * Check if this is on mitochondrial DNA.
    */
   def isMitochondrial: Boolean =
     chromosome.equalsIgnoreCase("MT") ||
-    chromosome.equalsIgnoreCase("M") ||
-    chromosome.equalsIgnoreCase("chrM") ||
-    chromosome.equalsIgnoreCase("chrMT") ||
-    chromosome == "26"
+      chromosome.equalsIgnoreCase("M") ||
+      chromosome.equalsIgnoreCase("chrM") ||
+      chromosome.equalsIgnoreCase("chrMT") ||
+      chromosome == "26"
 
   /**
    * Check if this is on the X chromosome.
    */
   def isXChromosome: Boolean =
     chromosome.equalsIgnoreCase("X") ||
-    chromosome.equalsIgnoreCase("chrX") ||
-    chromosome == "23"
+      chromosome.equalsIgnoreCase("chrX") ||
+      chromosome == "23"
 
   /**
    * Check if this is autosomal (chromosomes 1-22).
@@ -123,30 +123,30 @@ object GenotypeCall {
  * Summary statistics from a genotyping test.
  */
 case class GenotypingTestSummary(
-  testType: TestTypeDefinition,
-  totalMarkersCalled: Int,
-  totalMarkersPossible: Int,
-  noCallCount: Int,
-  noCallRate: Double,
+                                  testType: TestTypeDefinition,
+                                  totalMarkersCalled: Int,
+                                  totalMarkersPossible: Int,
+                                  noCallCount: Int,
+                                  noCallRate: Double,
 
-  // Y-DNA marker coverage
-  yMarkersCalled: Option[Int],
-  yMarkersTotal: Option[Int],
-  yCoverageRate: Option[Double],
+                                  // Y-DNA marker coverage
+                                  yMarkersCalled: Option[Int],
+                                  yMarkersTotal: Option[Int],
+                                  yCoverageRate: Option[Double],
 
-  // mtDNA marker coverage
-  mtMarkersCalled: Option[Int],
-  mtMarkersTotal: Option[Int],
-  mtCoverageRate: Option[Double],
+                                  // mtDNA marker coverage
+                                  mtMarkersCalled: Option[Int],
+                                  mtMarkersTotal: Option[Int],
+                                  mtCoverageRate: Option[Double],
 
-  // Autosomal markers
-  autosomalMarkersCalled: Int,
+                                  // Autosomal markers
+                                  autosomalMarkersCalled: Int,
 
-  // Quality indicators
-  hetRate: Option[Double],
-  chipVersion: Option[String],
-  sourceFileHash: Option[String]
-) derives Codec.AsObject {
+                                  // Quality indicators
+                                  hetRate: Option[Double],
+                                  chipVersion: Option[String],
+                                  sourceFileHash: Option[String]
+                                ) derives Codec.AsObject {
 
   /**
    * Overall call rate.
@@ -179,11 +179,11 @@ object GenotypingTestSummary {
    * Compute summary from a list of genotype calls.
    */
   def fromCalls(
-    calls: List[GenotypeCall],
-    testType: TestTypeDefinition,
-    chipVersion: Option[String] = None,
-    sourceFileHash: Option[String] = None
-  ): GenotypingTestSummary = {
+                 calls: List[GenotypeCall],
+                 testType: TestTypeDefinition,
+                 chipVersion: Option[String] = None,
+                 sourceFileHash: Option[String] = None
+               ): GenotypingTestSummary = {
     val totalCalls = calls.size
     val validCalls = calls.filterNot(_.isNoCall)
     val noCalls = calls.filter(_.isNoCall)

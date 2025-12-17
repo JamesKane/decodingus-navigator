@@ -1,11 +1,11 @@
 package com.decodingus.ui.components
 
-import scalafx.Includes._
-import scalafx.scene.control.{ButtonType, Dialog, Label, TextField, ChoiceBox, ButtonBar}
-import scalafx.scene.layout.{GridPane, Priority}
-import scalafx.geometry.Insets
-import scalafx.collections.ObservableBuffer
 import com.decodingus.workspace.model.Biosample
+import scalafx.Includes.*
+import scalafx.collections.ObservableBuffer
+import scalafx.geometry.Insets
+import scalafx.scene.control.*
+import scalafx.scene.layout.{GridPane, Priority}
 
 /**
  * Dialog for editing an existing Subject/Biosample.

@@ -6,14 +6,11 @@ import com.decodingus.haplogroup.model.HaplogroupResult
 import com.decodingus.haplogroup.scoring.HaplogroupScorer
 import com.decodingus.haplogroup.tree.{TreeProvider, TreeProviderType, TreeType}
 import com.decodingus.haplogroup.vendor.{DecodingUsTreeProvider, FtdnaTreeProvider}
-import com.decodingus.yprofile.repository.{
-  YChromosomeProfileRepository, YProfileSourceRepository, YProfileRegionRepository,
-  YProfileVariantRepository, YVariantSourceCallRepository, YVariantAuditRepository,
-  YSourceCallAlignmentRepository, YSnpPanelEntity, YSnpCall, YPrivateVariant
-}
 import com.decodingus.yprofile.concordance.YVariantConcordance
-import com.decodingus.yprofile.concordance.YVariantConcordance.{SourceCallInput, ConcordanceResult}
+import com.decodingus.yprofile.concordance.YVariantConcordance.{ConcordanceResult, SourceCallInput}
 import com.decodingus.yprofile.model.*
+import com.decodingus.yprofile.repository.*
+
 import java.time.LocalDateTime
 import java.util.UUID
 
@@ -24,15 +21,15 @@ import java.util.UUID
  * and concordance-based reconciliation.
  */
 class YProfileService(
-  transactor: Transactor,
-  profileRepo: YChromosomeProfileRepository,
-  sourceRepo: YProfileSourceRepository,
-  regionRepo: YProfileRegionRepository,
-  variantRepo: YProfileVariantRepository,
-  sourceCallRepo: YVariantSourceCallRepository,
-  auditRepo: YVariantAuditRepository,
-  alignmentRepo: YSourceCallAlignmentRepository = YSourceCallAlignmentRepository()
-):
+                       transactor: Transactor,
+                       profileRepo: YChromosomeProfileRepository,
+                       sourceRepo: YProfileSourceRepository,
+                       regionRepo: YProfileRegionRepository,
+                       variantRepo: YProfileVariantRepository,
+                       sourceCallRepo: YVariantSourceCallRepository,
+                       auditRepo: YVariantAuditRepository,
+                       alignmentRepo: YSourceCallAlignmentRepository = YSourceCallAlignmentRepository()
+                     ):
 
   // ============================================
   // Profile Management
@@ -81,18 +78,18 @@ class YProfileService(
    * Add a new test source to a profile.
    */
   def addSource(
-    profileId: UUID,
-    sourceType: YProfileSourceType,
-    sourceRef: Option[String] = None,
-    vendor: Option[String] = None,
-    testName: Option[String] = None,
-    testDate: Option[LocalDateTime] = None,
-    alignmentId: Option[UUID] = None,
-    referenceBuild: Option[String] = None,
-    meanReadDepth: Option[Double] = None,
-    meanMappingQuality: Option[Double] = None,
-    coveragePct: Option[Double] = None
-  ): Either[String, YProfileSourceEntity] =
+                 profileId: UUID,
+                 sourceType: YProfileSourceType,
+                 sourceRef: Option[String] = None,
+                 vendor: Option[String] = None,
+                 testName: Option[String] = None,
+                 testDate: Option[LocalDateTime] = None,
+                 alignmentId: Option[UUID] = None,
+                 referenceBuild: Option[String] = None,
+                 meanReadDepth: Option[Double] = None,
+                 meanMappingQuality: Option[Double] = None,
+                 coveragePct: Option[Double] = None
+               ): Either[String, YProfileSourceEntity] =
     transactor.readWrite {
       val methodTier = sourceType.snpTier
       val source = YProfileSourceEntity.create(
@@ -159,29 +156,29 @@ class YProfileService(
    * @return Tuple of (variant, sourceCall, alignment)
    */
   def addVariantCall(
-    profileId: UUID,
-    sourceId: UUID,
-    position: Long,
-    refAllele: String,
-    altAllele: String,
-    calledAllele: String,
-    callState: YConsensusState,
-    variantType: YVariantType = YVariantType.SNP,
-    variantName: Option[String] = None,
-    rsId: Option[String] = None,
-    markerName: Option[String] = None,
-    repeatCount: Option[Int] = None,
-    strMetadata: Option[StrMetadata] = None,
-    readDepth: Option[Int] = None,
-    qualityScore: Option[Double] = None,
-    mappingQuality: Option[Double] = None,
-    variantAlleleFrequency: Option[Double] = None,
-    callableState: Option[YCallableState] = None,
-    definingHaplogroup: Option[String] = None,
-    haplogroupBranchDepth: Option[Int] = None,
-    referenceBuild: Option[String] = None,
-    contig: String = "chrY"
-  ): Either[String, (YProfileVariantEntity, YVariantSourceCallEntity)] =
+                      profileId: UUID,
+                      sourceId: UUID,
+                      position: Long,
+                      refAllele: String,
+                      altAllele: String,
+                      calledAllele: String,
+                      callState: YConsensusState,
+                      variantType: YVariantType = YVariantType.SNP,
+                      variantName: Option[String] = None,
+                      rsId: Option[String] = None,
+                      markerName: Option[String] = None,
+                      repeatCount: Option[Int] = None,
+                      strMetadata: Option[StrMetadata] = None,
+                      readDepth: Option[Int] = None,
+                      qualityScore: Option[Double] = None,
+                      mappingQuality: Option[Double] = None,
+                      variantAlleleFrequency: Option[Double] = None,
+                      callableState: Option[YCallableState] = None,
+                      definingHaplogroup: Option[String] = None,
+                      haplogroupBranchDepth: Option[Int] = None,
+                      referenceBuild: Option[String] = None,
+                      contig: String = "chrY"
+                    ): Either[String, (YProfileVariantEntity, YVariantSourceCallEntity)] =
     transactor.readWrite {
       // Find or create variant
       val variant = variantRepo.findByPosition(profileId, position) match
@@ -277,17 +274,17 @@ class YProfileService(
    * different reference, but they all count as ONE piece of evidence.
    */
   def addAlignmentToSourceCall(
-    sourceCallId: UUID,
-    referenceBuild: String,
-    position: Long,
-    refAllele: String,
-    altAllele: String,
-    calledAllele: String,
-    contig: String = "chrY",
-    readDepth: Option[Int] = None,
-    mappingQuality: Option[Double] = None,
-    variantAlleleFrequency: Option[Double] = None
-  ): Either[String, YSourceCallAlignmentEntity] =
+                                sourceCallId: UUID,
+                                referenceBuild: String,
+                                position: Long,
+                                refAllele: String,
+                                altAllele: String,
+                                calledAllele: String,
+                                contig: String = "chrY",
+                                readDepth: Option[Int] = None,
+                                mappingQuality: Option[Double] = None,
+                                variantAlleleFrequency: Option[Double] = None
+                              ): Either[String, YSourceCallAlignmentEntity] =
     transactor.readWrite {
       // Upsert alignment (replace if same source_call + reference_build exists)
       alignmentRepo.upsert(YSourceCallAlignmentEntity.create(
@@ -316,9 +313,9 @@ class YProfileService(
    * Get alignment for a specific reference build.
    */
   def getAlignmentForBuild(
-    sourceCallId: UUID,
-    referenceBuild: String
-  ): Either[String, Option[YSourceCallAlignmentEntity]] =
+                            sourceCallId: UUID,
+                            referenceBuild: String
+                          ): Either[String, Option[YSourceCallAlignmentEntity]] =
     transactor.readOnly {
       alignmentRepo.findBySourceCallAndBuild(sourceCallId, referenceBuild)
     }
@@ -347,7 +344,7 @@ class YProfileService(
    * Reconcile a single variant using concordance algorithm.
    *
    * @param variantId The variant to reconcile
-   * @param isInTree Whether the variant is in the haplogroup reference tree
+   * @param isInTree  Whether the variant is in the haplogroup reference tree
    * @return Updated variant entity
    */
   def reconcileVariant(variantId: UUID, isInTree: Boolean = true): Either[String, YProfileVariantEntity] =
@@ -361,20 +358,20 @@ class YProfileService(
   /**
    * Reconcile all variants in a profile.
    *
-   * @param profileId The profile to reconcile
+   * @param profileId        The profile to reconcile
    * @param treeVariantNames Set of variant names that are in the haplogroup tree
    * @return Count of variants reconciled
    */
   def reconcileProfile(
-    profileId: UUID,
-    treeVariantNames: Set[String] = Set.empty
-  ): Either[String, Int] =
+                        profileId: UUID,
+                        treeVariantNames: Set[String] = Set.empty
+                      ): Either[String, Int] =
     transactor.readWrite {
       val variants = variantRepo.findByProfile(profileId)
 
       variants.foreach { variant =>
         val isInTree = variant.variantName.exists(treeVariantNames.contains) ||
-                       variant.definingHaplogroup.isDefined
+          variant.definingHaplogroup.isDefined
         reconcileVariantInternal(variant, isInTree)
       }
 
@@ -441,14 +438,14 @@ class YProfileService(
    * Creates an audit trail entry.
    */
   def overrideVariant(
-    variantId: UUID,
-    newConsensusAllele: String,
-    newConsensusState: YConsensusState,
-    newStatus: YVariantStatus,
-    reason: String,
-    userId: Option[String] = None,
-    supportingEvidence: Option[String] = None
-  ): Either[String, YProfileVariantEntity] =
+                       variantId: UUID,
+                       newConsensusAllele: String,
+                       newConsensusState: YConsensusState,
+                       newStatus: YVariantStatus,
+                       reason: String,
+                       userId: Option[String] = None,
+                       supportingEvidence: Option[String] = None
+                     ): Either[String, YProfileVariantEntity] =
     transactor.readWrite {
       val variant = variantRepo.findById(variantId).getOrElse(
         throw new IllegalArgumentException(s"Variant not found: $variantId")
@@ -487,11 +484,11 @@ class YProfileService(
    * Revert a variant to its calculated consensus.
    */
   def revertOverride(
-    variantId: UUID,
-    reason: String,
-    userId: Option[String] = None,
-    isInTree: Boolean = true
-  ): Either[String, YProfileVariantEntity] =
+                      variantId: UUID,
+                      reason: String,
+                      userId: Option[String] = None,
+                      isInTree: Boolean = true
+                    ): Either[String, YProfileVariantEntity] =
     transactor.readWrite {
       val variant = variantRepo.findById(variantId).getOrElse(
         throw new IllegalArgumentException(s"Variant not found: $variantId")
@@ -570,12 +567,12 @@ class YProfileService(
    * Update haplogroup assignment on a profile.
    */
   def updateHaplogroup(
-    profileId: UUID,
-    haplogroup: String,
-    confidence: Double,
-    treeProvider: String,
-    treeVersion: String
-  ): Either[String, YChromosomeProfileEntity] =
+                        profileId: UUID,
+                        haplogroup: String,
+                        confidence: Double,
+                        treeProvider: String,
+                        treeVersion: String
+                      ): Either[String, YChromosomeProfileEntity] =
     transactor.readWrite {
       val profile = profileRepo.findById(profileId).getOrElse(
         throw new IllegalArgumentException(s"Profile not found: $profileId")
@@ -617,18 +614,18 @@ class YProfileService(
    * This reads the BED file regions and stores them in y_profile_region,
    * enabling callable state queries for variant positions.
    *
-   * @param profileId The Y profile ID
-   * @param sourceId The source these regions belong to
+   * @param profileId           The Y profile ID
+   * @param sourceId            The source these regions belong to
    * @param callableLociService The query service with loaded BED data
-   * @param contig Contig to import (default: chrY)
+   * @param contig              Contig to import (default: chrY)
    * @return Count of regions imported
    */
   def importCallableRegions(
-    profileId: UUID,
-    sourceId: UUID,
-    callableLociService: CallableLociQueryService,
-    contig: String = "chrY"
-  ): Either[String, Int] =
+                             profileId: UUID,
+                             sourceId: UUID,
+                             callableLociService: CallableLociQueryService,
+                             contig: String = "chrY"
+                           ): Either[String, Int] =
     // Check if data exists for this contig
     if !callableLociService.hasDataForContig(contig) then
       return Right(0)
@@ -672,17 +669,17 @@ class YProfileService(
    * This version takes pre-parsed intervals for batch import.
    *
    * @param profileId The Y profile ID
-   * @param sourceId The source these regions belong to
+   * @param sourceId  The source these regions belong to
    * @param intervals List of (start, end, state) tuples
-   * @param contig Contig (default: chrY)
+   * @param contig    Contig (default: chrY)
    * @return Count of regions imported
    */
   def importCallableIntervals(
-    profileId: UUID,
-    sourceId: UUID,
-    intervals: List[(Long, Long, YCallableState)],
-    contig: String = "chrY"
-  ): Either[String, Int] =
+                               profileId: UUID,
+                               sourceId: UUID,
+                               intervals: List[(Long, Long, YCallableState)],
+                               contig: String = "chrY"
+                             ): Either[String, Int] =
     transactor.readWrite {
       // Delete existing regions for this source
       regionRepo.deleteBySource(sourceId)
@@ -713,18 +710,18 @@ class YProfileService(
    * Checks stored regions first. If a live CallableLociQueryService is provided,
    * falls back to querying it directly.
    *
-   * @param profileId The profile ID
-   * @param position Genomic position (1-based)
-   * @param contig Contig (default: chrY)
+   * @param profileId   The profile ID
+   * @param position    Genomic position (1-based)
+   * @param contig      Contig (default: chrY)
    * @param liveService Optional live query service for fallback
    * @return Callable state at position
    */
   def queryCallableState(
-    profileId: UUID,
-    position: Long,
-    contig: String = "chrY",
-    liveService: Option[CallableLociQueryService] = None
-  ): Either[String, YCallableState] =
+                          profileId: UUID,
+                          position: Long,
+                          contig: String = "chrY",
+                          liveService: Option[CallableLociQueryService] = None
+                        ): Either[String, YCallableState] =
     transactor.readOnly {
       // Query stored regions first
       val overlapping = regionRepo.findOverlapping(profileId, position)
@@ -746,18 +743,18 @@ class YProfileService(
   /**
    * Query callable states for multiple positions at once.
    *
-   * @param profileId The profile ID
-   * @param positions List of positions to query
-   * @param contig Contig (default: chrY)
+   * @param profileId   The profile ID
+   * @param positions   List of positions to query
+   * @param contig      Contig (default: chrY)
    * @param liveService Optional live query service for fallback
    * @return Map of position to callable state
    */
   def queryCallableStates(
-    profileId: UUID,
-    positions: List[Long],
-    contig: String = "chrY",
-    liveService: Option[CallableLociQueryService] = None
-  ): Either[String, Map[Long, YCallableState]] =
+                           profileId: UUID,
+                           positions: List[Long],
+                           contig: String = "chrY",
+                           liveService: Option[CallableLociQueryService] = None
+                         ): Either[String, Map[Long, YCallableState]] =
     transactor.readOnly {
       // Get all relevant regions for the profile
       val allRegions = regionRepo.findByProfile(profileId)
@@ -782,15 +779,15 @@ class YProfileService(
    *
    * Calculates percentage based on stored regions vs total chrY length.
    *
-   * @param profileId Profile ID
-   * @param contig Contig (default: chrY)
+   * @param profileId       Profile ID
+   * @param contig          Contig (default: chrY)
    * @param totalChrYLength Total chrY length in reference (default: GRCh38 ~57Mb)
    */
   def updateCallableRegionPct(
-    profileId: UUID,
-    contig: String = "chrY",
-    totalChrYLength: Long = 57227415L // GRCh38 chrY length
-  ): Either[String, YChromosomeProfileEntity] =
+                               profileId: UUID,
+                               contig: String = "chrY",
+                               totalChrYLength: Long = 57227415L // GRCh38 chrY length
+                             ): Either[String, YChromosomeProfileEntity] =
     transactor.readWrite {
       updateCallableRegionPctInternal(profileId, contig, totalChrYLength)
     }
@@ -799,10 +796,10 @@ class YProfileService(
    * Internal version that works within an existing transaction.
    */
   private def updateCallableRegionPctInternal(
-    profileId: UUID,
-    contig: String = "chrY",
-    totalChrYLength: Long = 57227415L
-  )(using java.sql.Connection): YChromosomeProfileEntity =
+                                               profileId: UUID,
+                                               contig: String = "chrY",
+                                               totalChrYLength: Long = 57227415L
+                                             )(using java.sql.Connection): YChromosomeProfileEntity =
     val profile = profileRepo.findById(profileId).getOrElse(
       throw new IllegalArgumentException(s"Profile not found: $profileId")
     )
@@ -893,16 +890,16 @@ class YProfileService(
    * Creates a source entity and imports all SNP calls and private variants
    * as variant calls with appropriate concordance weights.
    *
-   * @param profileId Profile to import into
-   * @param panel The YSnpPanelEntity to import from
+   * @param profileId  Profile to import into
+   * @param panel      The YSnpPanelEntity to import from
    * @param sourceType Source type (default: TARGETED_NGS for Big Y, CHIP for panels)
    * @return Import result with counts
    */
   def importFromSnpPanel(
-    profileId: UUID,
-    panel: YSnpPanelEntity,
-    sourceType: YProfileSourceType = YProfileSourceType.TARGETED_NGS
-  ): Either[String, SourceImportResult] =
+                          profileId: UUID,
+                          panel: YSnpPanelEntity,
+                          sourceType: YProfileSourceType = YProfileSourceType.TARGETED_NGS
+                        ): Either[String, SourceImportResult] =
     // First create the source outside the main transaction
     val sourceResult = addSource(
       profileId = profileId,
@@ -924,10 +921,8 @@ class YProfileService(
           try {
             val callState = if call.derived then YConsensusState.DERIVED else YConsensusState.ANCESTRAL
             val variantType = call.variantType match
-              case Some(com.decodingus.yprofile.repository.YVariantType.INDEL) =>
-                com.decodingus.yprofile.model.YVariantType.INDEL
-              case _ =>
-                com.decodingus.yprofile.model.YVariantType.SNP
+              case Some(YVariantType.INDEL) => YVariantType.INDEL
+              case _ => YVariantType.SNP
 
             // For SNP panels, we typically don't have ref/alt alleles, just the called allele
             // We'll use the allele as both ref (ancestral) and alt (derived) based on state
@@ -996,18 +991,18 @@ class YProfileService(
    * This is useful for importing from parsed VCF, haplogroup analysis results,
    * or other sources that provide SNP call data.
    *
-   * @param profileId Profile to import into
-   * @param sourceId Source that these calls belong to
-   * @param calls List of (position, refAllele, altAllele, calledAllele, derived, variantName)
+   * @param profileId      Profile to import into
+   * @param sourceId       Source that these calls belong to
+   * @param calls          List of (position, refAllele, altAllele, calledAllele, derived, variantName)
    * @param referenceBuild Reference build for coordinates
    * @return Import result with counts
    */
   def importVariantCalls(
-    profileId: UUID,
-    sourceId: UUID,
-    calls: List[VariantCallInput],
-    referenceBuild: String = "GRCh38"
-  ): Either[String, SourceImportResult] =
+                          profileId: UUID,
+                          sourceId: UUID,
+                          calls: List[VariantCallInput],
+                          referenceBuild: String = "GRCh38"
+                        ): Either[String, SourceImportResult] =
     transactor.readWrite {
       var successCount = 0
       var errorCount = 0
@@ -1051,20 +1046,20 @@ class YProfileService(
    * Internal variant call addition (within existing transaction).
    */
   private def addVariantCallInternal(
-    profileId: UUID,
-    sourceId: UUID,
-    position: Long,
-    refAllele: String,
-    altAllele: String,
-    calledAllele: String,
-    callState: YConsensusState,
-    variantType: com.decodingus.yprofile.model.YVariantType = com.decodingus.yprofile.model.YVariantType.SNP,
-    variantName: Option[String] = None,
-    readDepth: Option[Int] = None,
-    qualityScore: Option[Double] = None,
-    mappingQuality: Option[Double] = None,
-    referenceBuild: String = "GRCh38"
-  )(using java.sql.Connection): Unit =
+                                      profileId: UUID,
+                                      sourceId: UUID,
+                                      position: Long,
+                                      refAllele: String,
+                                      altAllele: String,
+                                      calledAllele: String,
+                                      callState: YConsensusState,
+                                      variantType: com.decodingus.yprofile.model.YVariantType = com.decodingus.yprofile.model.YVariantType.SNP,
+                                      variantName: Option[String] = None,
+                                      readDepth: Option[Int] = None,
+                                      qualityScore: Option[Double] = None,
+                                      mappingQuality: Option[Double] = None,
+                                      referenceBuild: String = "GRCh38"
+                                    )(using java.sql.Connection): Unit =
     // Find or create variant
     val variant = variantRepo.findByPosition(profileId, position) match
       case Some(existing) =>
@@ -1135,16 +1130,16 @@ class YProfileService(
    * Collects DERIVED SNP calls from the profile and scores them against
    * the haplogroup tree to determine the terminal haplogroup.
    *
-   * @param profileId The profile to score
+   * @param profileId        The profile to score
    * @param treeProviderType Tree provider (FTDNA or DecodingUs)
-   * @param referenceBuild Reference build for tree coordinates (e.g., "hg38")
+   * @param referenceBuild   Reference build for tree coordinates (e.g., "hg38")
    * @return Either an error or the haplogroup scoring results
    */
   def determineHaplogroup(
-    profileId: UUID,
-    treeProviderType: TreeProviderType,
-    referenceBuild: String
-  ): Either[String, HaplogroupDeterminationResult] =
+                           profileId: UUID,
+                           treeProviderType: TreeProviderType,
+                           referenceBuild: String
+                         ): Either[String, HaplogroupDeterminationResult] =
     // Load the haplogroup tree (outside transaction to avoid long DB locks)
     val treeProvider: TreeProvider = treeProviderType match
       case TreeProviderType.FTDNA => new FtdnaTreeProvider(TreeType.YDNA)
@@ -1160,8 +1155,8 @@ class YProfileService(
         val snpCalls: Map[Long, String] = variants
           .filter { v =>
             v.variantType == YVariantType.SNP &&
-            v.consensusState == YConsensusState.DERIVED &&
-            (v.status == YVariantStatus.CONFIRMED || v.status == YVariantStatus.NOVEL)
+              v.consensusState == YConsensusState.DERIVED &&
+              (v.status == YVariantStatus.CONFIRMED || v.status == YVariantStatus.NOVEL)
           }
           .flatMap { v =>
             v.consensusAllele.map(allele => v.position -> allele)
@@ -1172,8 +1167,8 @@ class YProfileService(
         val ancestralCalls: Map[Long, String] = variants
           .filter { v =>
             v.variantType == YVariantType.SNP &&
-            v.consensusState == YConsensusState.ANCESTRAL &&
-            (v.status == YVariantStatus.CONFIRMED || v.status == YVariantStatus.NOVEL)
+              v.consensusState == YConsensusState.ANCESTRAL &&
+              (v.status == YVariantStatus.CONFIRMED || v.status == YVariantStatus.NOVEL)
           }
           .flatMap { v =>
             v.consensusAllele.map(allele => v.position -> allele)
@@ -1264,45 +1259,45 @@ class YProfileService(
  * Result of haplogroup determination from unified profile.
  */
 case class HaplogroupDeterminationResult(
-  terminalHaplogroup: String,
-  score: Double,
-  confidence: Double,
-  matchingSnps: Int,
-  ancestralSnps: Int,
-  noCalls: Int,
-  totalTreeSnps: Int,
-  depth: Int,
-  topResults: List[HaplogroupResult],
-  treeProvider: String,
-  treeVersion: String,
-  snpCallCount: Int
-)
+                                          terminalHaplogroup: String,
+                                          score: Double,
+                                          confidence: Double,
+                                          matchingSnps: Int,
+                                          ancestralSnps: Int,
+                                          noCalls: Int,
+                                          totalTreeSnps: Int,
+                                          depth: Int,
+                                          topResults: List[HaplogroupResult],
+                                          treeProvider: String,
+                                          treeVersion: String,
+                                          snpCallCount: Int
+                                        )
 
 /**
  * Summary of callable loci statistics for a source.
  */
 case class CallableSummary(
-  sourceId: UUID,
-  regionCount: Int,
-  callableRegionCount: Int,
-  lowCoverageRegionCount: Int,
-  noCoverageRegionCount: Int,
-  poorMappingRegionCount: Int,
-  callableBases: Long,
-  totalBases: Long,
-  callablePct: Double
-)
+                            sourceId: UUID,
+                            regionCount: Int,
+                            callableRegionCount: Int,
+                            lowCoverageRegionCount: Int,
+                            noCoverageRegionCount: Int,
+                            poorMappingRegionCount: Int,
+                            callableBases: Long,
+                            totalBases: Long,
+                            callablePct: Double
+                          )
 
 /**
  * Result of importing variants from a source.
  */
 case class SourceImportResult(
-  sourceId: UUID,
-  sourceType: YProfileSourceType,
-  snpCallsImported: Int,
-  privateVariantsImported: Int,
-  errorsEncountered: Int
-) {
+                               sourceId: UUID,
+                               sourceType: YProfileSourceType,
+                               snpCallsImported: Int,
+                               privateVariantsImported: Int,
+                               errorsEncountered: Int
+                             ) {
   def totalImported: Int = snpCallsImported + privateVariantsImported
 }
 
@@ -1310,14 +1305,14 @@ case class SourceImportResult(
  * Input for importing a variant call.
  */
 case class VariantCallInput(
-  position: Long,
-  refAllele: String,
-  altAllele: String,
-  calledAllele: String,
-  derived: Boolean,
-  variantName: Option[String] = None,
-  variantType: Option[YVariantType] = None,
-  readDepth: Option[Int] = None,
-  qualityScore: Option[Double] = None,
-  mappingQuality: Option[Double] = None
-)
+                             position: Long,
+                             refAllele: String,
+                             altAllele: String,
+                             calledAllele: String,
+                             derived: Boolean,
+                             variantName: Option[String] = None,
+                             variantType: Option[YVariantType] = None,
+                             readDepth: Option[Int] = None,
+                             qualityScore: Option[Double] = None,
+                             mappingQuality: Option[Double] = None
+                           )

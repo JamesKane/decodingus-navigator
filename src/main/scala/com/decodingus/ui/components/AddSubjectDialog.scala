@@ -1,11 +1,12 @@
 package com.decodingus.ui.components
 
-import scalafx.Includes._
-import scalafx.scene.control.{ButtonType, Dialog, Label, TextField, ChoiceBox, ButtonBar}
-import scalafx.scene.layout.{GridPane, Priority}
-import scalafx.geometry.Insets
-import scalafx.collections.ObservableBuffer
 import com.decodingus.workspace.model.{Biosample, HaplogroupAssignments, RecordMeta}
+import scalafx.Includes.*
+import scalafx.collections.ObservableBuffer
+import scalafx.geometry.Insets
+import scalafx.scene.control.*
+import scalafx.scene.layout.{GridPane, Priority}
+
 import java.time.LocalDateTime
 import java.util.UUID
 
@@ -22,7 +23,7 @@ class AddSubjectDialog extends Dialog[Option[Biosample]] {
   val accessionField = new TextField() {
     text = UUID.randomUUID().toString
     editable = false
-    disable = true 
+    disable = true
   }
   val sexChoiceBox = new ChoiceBox[String](ObservableBuffer("Male", "Female", "Other", "Unknown")) {
     value = "Unknown"

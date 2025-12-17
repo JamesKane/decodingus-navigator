@@ -1,6 +1,7 @@
 package com.decodingus.repository
 
 import com.decodingus.repository.SqlHelpers.*
+
 import java.sql.{Connection, ResultSet}
 import java.time.LocalDateTime
 import java.util.UUID
@@ -16,7 +17,7 @@ import java.util.UUID
  * @tparam E Entity type extending Entity[UUID]
  */
 abstract class SyncableRepositoryBase[E <: Entity[UUID]]
-    extends SyncableRepository[E, UUID]:
+  extends SyncableRepository[E, UUID]:
 
   /**
    * The database table name for this entity type.

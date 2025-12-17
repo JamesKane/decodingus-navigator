@@ -1,13 +1,13 @@
 package com.decodingus.ui.components
 
-import scalafx.Includes._
-import scalafx.scene.control.{Dialog, ButtonType, Label, TableView, TableColumn, ScrollPane, SplitPane}
-import scalafx.scene.layout.{VBox, HBox, Priority, StackPane}
-import scalafx.scene.web.WebView
-import scalafx.geometry.{Insets, Orientation}
+import com.decodingus.analysis.CallableLociResult
+import scalafx.Includes.*
 import scalafx.beans.property.StringProperty
 import scalafx.collections.ObservableBuffer
-import com.decodingus.analysis.CallableLociResult
+import scalafx.geometry.{Insets, Orientation}
+import scalafx.scene.control.*
+import scalafx.scene.layout.{HBox, Priority, StackPane, VBox}
+import scalafx.scene.web.WebView
 
 import java.io.File
 import java.nio.file.{Files, Path}
@@ -18,9 +18,9 @@ import java.nio.file.{Files, Path}
  * Lower half: SVG histogram for selected contig
  */
 class CallableLociResultDialog(
-  result: CallableLociResult,
-  artifactDir: Option[Path] = None
-) extends Dialog[Unit] {
+                                result: CallableLociResult,
+                                artifactDir: Option[Path] = None
+                              ) extends Dialog[Unit] {
 
   title = "Callable Loci Analysis Results"
   headerText = "Genome Coverage Analysis Complete"
@@ -42,14 +42,14 @@ class CallableLociResultDialog(
 
   // Table data model
   case class ContigRow(
-    contig: String,
-    callable: Long,
-    noCoverage: Long,
-    lowCoverage: Long,
-    excessiveCoverage: Long,
-    poorMappingQuality: Long,
-    callablePercent: Double
-  )
+                        contig: String,
+                        callable: Long,
+                        noCoverage: Long,
+                        lowCoverage: Long,
+                        excessiveCoverage: Long,
+                        poorMappingQuality: Long,
+                        callablePercent: Double
+                      )
 
   private val tableData = ObservableBuffer.from(
     result.contigAnalysis.map { cs =>
@@ -79,19 +79,20 @@ class CallableLociResultDialog(
         if (Files.exists(svgFile)) {
           val svgContent = Files.readString(svgFile)
           // Wrap SVG in HTML for proper rendering
-          val html = s"""
-            |<!DOCTYPE html>
-            |<html>
-            |<head>
-            |  <style>
-            |    body { margin: 0; padding: 10px; background: #222; display: flex; justify-content: center; }
-            |    svg { max-width: 100%; height: auto; }
-            |  </style>
-            |</head>
-            |<body>
-            |$svgContent
-            |</body>
-            |</html>
+          val html =
+            s"""
+               |<!DOCTYPE html>
+               |<html>
+               |<head>
+               |  <style>
+               |    body { margin: 0; padding: 10px; background: #222; display: flex; justify-content: center; }
+               |    svg { max-width: 100%; height: auto; }
+               |  </style>
+               |</head>
+               |<body>
+               |$svgContent
+               |</body>
+               |</html>
           """.stripMargin
           svgWebView.engine.loadContent(html)
         } else {
@@ -187,7 +188,9 @@ class CallableLociResultDialog(
   private val lowerSection = new VBox(5) {
     padding = Insets(10)
     children = Seq(
-      new Label("Coverage Histogram:") { style = "-fx-font-weight: bold;" },
+      new Label("Coverage Histogram:") {
+        style = "-fx-font-weight: bold;"
+      },
       svgWebView
     )
   }
@@ -207,7 +210,9 @@ class CallableLociResultDialog(
         style = "-fx-font-size: 11px; -fx-text-fill: #888;"
       }
     case None =>
-      new Label("") { visible = false }
+      new Label("") {
+        visible = false
+      }
   }
 
   private val content = new VBox(5) {

@@ -31,21 +31,21 @@ object Migrator:
    * A migration script to apply.
    */
   case class Migration(
-    version: Int,
-    description: String,
-    sql: String,
-    checksum: String
-  )
+                        version: Int,
+                        description: String,
+                        sql: String,
+                        checksum: String
+                      )
 
   /**
    * A migration that has been applied.
    */
   case class AppliedMigration(
-    version: Int,
-    description: String,
-    appliedAt: LocalDateTime,
-    checksum: String
-  )
+                               version: Int,
+                               description: String,
+                               appliedAt: LocalDateTime,
+                               checksum: String
+                             )
 
   /**
    * Run all pending migrations.
@@ -107,7 +107,8 @@ object Migrator:
   private def ensureSchemaVersionTable(conn: Connection): Unit =
     if !tableExists(conn, SchemaVersionTable) then
       Using.resource(conn.createStatement()) { stmt =>
-        stmt.execute("""
+        stmt.execute(
+          """
           CREATE TABLE schema_version (
             version INT PRIMARY KEY,
             description VARCHAR(255) NOT NULL,

@@ -1,10 +1,10 @@
 package com.decodingus.config
 
-import io.circe.parser._
-import io.circe.syntax._
+import io.circe.parser.*
+import io.circe.syntax.*
 
 import java.nio.file.{Files, Path, Paths, StandardOpenOption}
-import scala.util.{Try, Success, Failure}
+import scala.util.{Failure, Success, Try}
 
 /**
  * Service for loading and saving user preferences.

@@ -4,6 +4,7 @@ import com.decodingus.repository.SqlHelpers.*
 import io.circe.*
 import io.circe.parser.*
 import io.circe.syntax.*
+
 import java.sql.{Connection, ResultSet}
 import java.time.LocalDateTime
 import java.util.UUID
@@ -93,34 +94,34 @@ object QueueStatus:
  * Sync queue entry entity.
  */
 case class SyncQueueEntity(
-  id: UUID,
-  entityType: SyncEntityType,
-  entityId: UUID,
-  operation: SyncOperation,
-  status: QueueStatus,
-  priority: Int,
-  queuedAt: LocalDateTime,
-  startedAt: Option[LocalDateTime],
-  completedAt: Option[LocalDateTime],
-  attemptCount: Int,
-  nextRetryAt: Option[LocalDateTime],
-  lastError: Option[String],
-  payloadSnapshot: Option[Json],
-  createdAt: LocalDateTime,
-  updatedAt: LocalDateTime
-) extends Entity[UUID]
+                            id: UUID,
+                            entityType: SyncEntityType,
+                            entityId: UUID,
+                            operation: SyncOperation,
+                            status: QueueStatus,
+                            priority: Int,
+                            queuedAt: LocalDateTime,
+                            startedAt: Option[LocalDateTime],
+                            completedAt: Option[LocalDateTime],
+                            attemptCount: Int,
+                            nextRetryAt: Option[LocalDateTime],
+                            lastError: Option[String],
+                            payloadSnapshot: Option[Json],
+                            createdAt: LocalDateTime,
+                            updatedAt: LocalDateTime
+                          ) extends Entity[UUID]
 
 object SyncQueueEntity:
   /**
    * Create a new sync queue entry.
    */
   def create(
-    entityType: SyncEntityType,
-    entityId: UUID,
-    operation: SyncOperation,
-    priority: Int = 5,
-    payloadSnapshot: Option[Json] = None
-  ): SyncQueueEntity =
+              entityType: SyncEntityType,
+              entityId: UUID,
+              operation: SyncOperation,
+              priority: Int = 5,
+              payloadSnapshot: Option[Json] = None
+            ): SyncQueueEntity =
     val now = LocalDateTime.now()
     SyncQueueEntity(
       id = UUID.randomUUID(),
@@ -230,12 +231,12 @@ class SyncQueueRepository:
    * If an entry already exists for this entity/operation, updates it.
    */
   def enqueue(
-    entityType: SyncEntityType,
-    entityId: UUID,
-    operation: SyncOperation,
-    priority: Int = 5,
-    payloadSnapshot: Option[Json] = None
-  )(using conn: Connection): SyncQueueEntity =
+               entityType: SyncEntityType,
+               entityId: UUID,
+               operation: SyncOperation,
+               priority: Int = 5,
+               payloadSnapshot: Option[Json] = None
+             )(using conn: Connection): SyncQueueEntity =
     // Check for existing pending entry
     findByEntityAndOperation(entityType, entityId, operation) match
       case Some(existing) if existing.status == QueueStatus.Pending =>
@@ -268,10 +269,10 @@ class SyncQueueRepository:
    * Find entry by entity and operation.
    */
   def findByEntityAndOperation(
-    entityType: SyncEntityType,
-    entityId: UUID,
-    operation: SyncOperation
-  )(using conn: Connection): Option[SyncQueueEntity] =
+                                entityType: SyncEntityType,
+                                entityId: UUID,
+                                operation: SyncOperation
+                              )(using conn: Connection): Option[SyncQueueEntity] =
     queryOne(
       """SELECT * FROM sync_queue
         |WHERE entity_type = ? AND entity_id = ? AND operation = ?

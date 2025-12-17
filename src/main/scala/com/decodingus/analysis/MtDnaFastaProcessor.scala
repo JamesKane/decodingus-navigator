@@ -7,17 +7,17 @@ import scala.util.Using
 /**
  * Represents a variant identified by comparing mtDNA FASTA against rCRS.
  *
- * @param position 1-based position in rCRS
- * @param ref Reference allele (from rCRS)
- * @param alt Alternate allele (from sample)
+ * @param position    1-based position in rCRS
+ * @param ref         Reference allele (from rCRS)
+ * @param alt         Alternate allele (from sample)
  * @param variantType SNP, INS, or DEL
  */
 case class MtDnaVariant(
-  position: Int,
-  ref: String,
-  alt: String,
-  variantType: String
-) {
+                         position: Int,
+                         ref: String,
+                         alt: String,
+                         variantType: String
+                       ) {
   /** Standard mtDNA notation (e.g., "16519C", "315.1C") */
   def notation: String = variantType match {
     case "SNP" => s"$position$alt"
@@ -30,11 +30,11 @@ case class MtDnaVariant(
  * Result of processing an mtDNA FASTA file.
  */
 case class MtDnaFastaResult(
-  sampleSequence: String,
-  sequenceLength: Int,
-  variants: List[MtDnaVariant],
-  snpCalls: Map[Long, String]  // Position -> allele map for haplogroup scoring
-)
+                             sampleSequence: String,
+                             sequenceLength: Int,
+                             variants: List[MtDnaVariant],
+                             snpCalls: Map[Long, String] // Position -> allele map for haplogroup scoring
+                           )
 
 /**
  * Processes mtDNA FASTA files from vendors like FTDNA and YSEQ.
@@ -90,14 +90,14 @@ object MtDnaFastaProcessor {
   /**
    * Process an mtDNA FASTA file and extract variants relative to rCRS.
    *
-   * @param fastaPath Path to the FASTA file
+   * @param fastaPath  Path to the FASTA file
    * @param onProgress Optional progress callback
    * @return Either error or processing result
    */
   def process(
-    fastaPath: Path,
-    onProgress: (String, Double) => Unit = (_, _) => ()
-  ): Either[String, MtDnaFastaResult] = {
+               fastaPath: Path,
+               onProgress: (String, Double) => Unit = (_, _) => ()
+             ): Either[String, MtDnaFastaResult] = {
     if (!Files.exists(fastaPath)) {
       return Left(s"FASTA file not found: $fastaPath")
     }
@@ -149,7 +149,7 @@ object MtDnaFastaProcessor {
     try {
       Using(scala.io.Source.fromFile(fastaPath.toFile)) { source =>
         source.getLines()
-          .filterNot(_.startsWith(">"))  // Skip header lines
+          .filterNot(_.startsWith(">")) // Skip header lines
           .map(_.trim.toUpperCase.replaceAll("[^ACGTN]", ""))
           .mkString
       } match {
@@ -168,9 +168,9 @@ object MtDnaFastaProcessor {
    * For mtDNA haplogroup calling, we primarily care about SNPs.
    */
   private def compareToRcrs(
-    sampleSeq: String,
-    onProgress: (String, Double) => Unit
-  ): List[MtDnaVariant] = {
+                             sampleSeq: String,
+                             onProgress: (String, Double) => Unit
+                           ): List[MtDnaVariant] = {
     if (!isRcrsAvailable) {
       println("[MtDnaFastaProcessor] Warning: rCRS not available, returning empty variants")
       return List.empty
@@ -198,7 +198,7 @@ object MtDnaFastaProcessor {
       if (refBase != sampleBase && sampleBase != 'N') {
         // SNP detected
         variants += MtDnaVariant(
-          position = i + 1,  // 1-based position
+          position = i + 1, // 1-based position
           ref = refBase.toString,
           alt = sampleBase.toString,
           variantType = "SNP"
@@ -235,10 +235,10 @@ object MtDnaFastaProcessor {
    * This can be used by the standard haplogroup analysis pipeline.
    */
   def generateVcf(
-    variants: List[MtDnaVariant],
-    outputPath: Path,
-    sampleName: String = "SAMPLE"
-  ): Either[String, Path] = {
+                   variants: List[MtDnaVariant],
+                   outputPath: Path,
+                   sampleName: String = "SAMPLE"
+                 ): Either[String, Path] = {
     try {
       Using(new PrintWriter(outputPath.toFile)) { writer =>
         // VCF header

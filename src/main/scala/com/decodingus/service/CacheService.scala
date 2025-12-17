@@ -1,11 +1,9 @@
 package com.decodingus.service
 
 import com.decodingus.db.Transactor
-import com.decodingus.repository.{
-  AnalysisArtifactRepository, AnalysisArtifactEntity, ArtifactType, ArtifactStatus,
-  SourceFileRepository, SourceFileEntity, SourceFileFormat
-}
+import com.decodingus.repository.*
 import io.circe.Json
+
 import java.nio.file.{Files, Path, Paths}
 import java.util.UUID
 
@@ -29,11 +27,11 @@ trait CacheService:
    * If the file already exists (by checksum), updates the path.
    */
   def registerSourceFile(
-    filePath: String,
-    fileChecksum: String,
-    fileSize: Option[Long] = None,
-    fileFormat: Option[SourceFileFormat] = None
-  ): Either[String, SourceFileEntity]
+                          filePath: String,
+                          fileChecksum: String,
+                          fileSize: Option[Long] = None,
+                          fileFormat: Option[SourceFileFormat] = None
+                        ): Either[String, SourceFileEntity]
 
   /**
    * Link a source file to an alignment.
@@ -68,24 +66,24 @@ trait CacheService:
    * Start tracking a new artifact (mark as in-progress).
    */
   def startArtifact(
-    alignmentId: UUID,
-    artifactType: ArtifactType,
-    cachePath: String,
-    generatorVersion: Option[String] = None,
-    generationParams: Option[Json] = None,
-    dependsOnSourceChecksum: Option[String] = None,
-    dependsOnReferenceBuild: Option[String] = None
-  ): Either[String, AnalysisArtifactEntity]
+                     alignmentId: UUID,
+                     artifactType: ArtifactType,
+                     cachePath: String,
+                     generatorVersion: Option[String] = None,
+                     generationParams: Option[Json] = None,
+                     dependsOnSourceChecksum: Option[String] = None,
+                     dependsOnReferenceBuild: Option[String] = None
+                   ): Either[String, AnalysisArtifactEntity]
 
   /**
    * Complete an artifact (mark as available).
    */
   def completeArtifact(
-    id: UUID,
-    fileSize: Long,
-    fileChecksum: String,
-    fileFormat: Option[String] = None
-  ): Either[String, Boolean]
+                        id: UUID,
+                        fileSize: Long,
+                        fileChecksum: String,
+                        fileFormat: Option[String] = None
+                      ): Either[String, Boolean]
 
   /**
    * Mark an artifact as failed.
@@ -176,59 +174,59 @@ trait CacheService:
  * Cache statistics summary.
  */
 case class CacheStats(
-  totalArtifacts: Int,
-  availableArtifacts: Int,
-  staleArtifacts: Int,
-  inProgressArtifacts: Int,
-  errorArtifacts: Int,
-  totalCacheSizeBytes: Long,
-  trackedSourceFiles: Int,
-  accessibleSourceFiles: Int,
-  inaccessibleSourceFiles: Int,
-  analyzedSourceFiles: Int
-)
+                       totalArtifacts: Int,
+                       availableArtifacts: Int,
+                       staleArtifacts: Int,
+                       inProgressArtifacts: Int,
+                       errorArtifacts: Int,
+                       totalCacheSizeBytes: Long,
+                       trackedSourceFiles: Int,
+                       accessibleSourceFiles: Int,
+                       inaccessibleSourceFiles: Int,
+                       analyzedSourceFiles: Int
+                     )
 
 /**
  * Result of validating a single artifact.
  */
 enum ArtifactValidationResult:
-  case Valid                                    // Artifact is valid and available
-  case MarkedStale(reason: String)              // Artifact was marked stale
-  case AlreadyStale                             // Artifact was already stale
-  case NotFound                                 // Artifact doesn't exist
-  case FileNotFound                             // Cached file is missing
+  case Valid // Artifact is valid and available
+  case MarkedStale(reason: String) // Artifact was marked stale
+  case AlreadyStale // Artifact was already stale
+  case NotFound // Artifact doesn't exist
+  case FileNotFound // Cached file is missing
 
 /**
  * Result of batch artifact validation.
  */
 case class BatchValidationResult(
-  checkedCount: Int,
-  validCount: Int,
-  markedStaleCount: Int,
-  alreadyStaleCount: Int,
-  missingFileCount: Int,
-  staleReasons: Map[String, Int]                // Reason -> count
-)
+                                  checkedCount: Int,
+                                  validCount: Int,
+                                  markedStaleCount: Int,
+                                  alreadyStaleCount: Int,
+                                  missingFileCount: Int,
+                                  staleReasons: Map[String, Int] // Reason -> count
+                                )
 
 /**
  * Result of source file verification.
  */
 case class SourceFileVerificationResult(
-  checkedCount: Int,
-  accessibleCount: Int,
-  inaccessibleCount: Int,
-  newlyInaccessible: Int,
-  artifactsInvalidated: Int
-)
+                                         checkedCount: Int,
+                                         accessibleCount: Int,
+                                         inaccessibleCount: Int,
+                                         newlyInaccessible: Int,
+                                         artifactsInvalidated: Int
+                                       )
 
 /**
  * H2 database-backed implementation of CacheService.
  */
 class H2CacheService(
-  transactor: Transactor,
-  artifactRepo: AnalysisArtifactRepository,
-  sourceFileRepo: SourceFileRepository
-) extends CacheService:
+                      transactor: Transactor,
+                      artifactRepo: AnalysisArtifactRepository,
+                      sourceFileRepo: SourceFileRepository
+                    ) extends CacheService:
 
   private val CacheDir: Path = Paths.get(System.getProperty("user.home"), ".decodingus", "cache")
 
@@ -237,11 +235,11 @@ class H2CacheService(
   // ============================================
 
   override def registerSourceFile(
-    filePath: String,
-    fileChecksum: String,
-    fileSize: Option[Long],
-    fileFormat: Option[SourceFileFormat]
-  ): Either[String, SourceFileEntity] =
+                                   filePath: String,
+                                   fileChecksum: String,
+                                   fileSize: Option[Long],
+                                   fileFormat: Option[SourceFileFormat]
+                                 ): Either[String, SourceFileEntity] =
     transactor.readWrite {
       sourceFileRepo.upsertByChecksum(filePath, fileChecksum, fileSize, fileFormat)
     }
@@ -291,14 +289,14 @@ class H2CacheService(
   // ============================================
 
   override def startArtifact(
-    alignmentId: UUID,
-    artifactType: ArtifactType,
-    cachePath: String,
-    generatorVersion: Option[String],
-    generationParams: Option[Json],
-    dependsOnSourceChecksum: Option[String],
-    dependsOnReferenceBuild: Option[String]
-  ): Either[String, AnalysisArtifactEntity] =
+                              alignmentId: UUID,
+                              artifactType: ArtifactType,
+                              cachePath: String,
+                              generatorVersion: Option[String],
+                              generationParams: Option[Json],
+                              dependsOnSourceChecksum: Option[String],
+                              dependsOnReferenceBuild: Option[String]
+                            ): Either[String, AnalysisArtifactEntity] =
     transactor.readWrite {
       // Check if artifact already exists for this alignment/type
       artifactRepo.findByAlignmentAndType(alignmentId, artifactType) match
@@ -332,11 +330,11 @@ class H2CacheService(
     }
 
   override def completeArtifact(
-    id: UUID,
-    fileSize: Long,
-    fileChecksum: String,
-    fileFormat: Option[String]
-  ): Either[String, Boolean] =
+                                 id: UUID,
+                                 fileSize: Long,
+                                 fileChecksum: String,
+                                 fileFormat: Option[String]
+                               ): Either[String, Boolean] =
     transactor.readWrite {
       artifactRepo.markAvailable(id, fileSize, fileChecksum, fileFormat)
     }

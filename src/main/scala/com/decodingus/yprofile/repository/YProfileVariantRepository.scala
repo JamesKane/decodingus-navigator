@@ -1,11 +1,12 @@
 package com.decodingus.yprofile.repository
 
-import com.decodingus.repository.{Repository, SqlHelpers}
 import com.decodingus.repository.SqlHelpers.*
+import com.decodingus.repository.{Repository, SqlHelpers}
 import com.decodingus.yprofile.model.*
 import com.decodingus.yprofile.model.YProfileCodecs.given
 import io.circe.parser.*
 import io.circe.syntax.*
+
 import java.sql.{Connection, ResultSet}
 import java.time.LocalDateTime
 import java.util.UUID

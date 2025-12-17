@@ -1,12 +1,13 @@
 package com.decodingus.ui.components
 
-import scalafx.Includes._
-import scalafx.scene.control._
-import scalafx.scene.layout._
-import scalafx.geometry.{Insets, Pos}
-import scalafx.collections.ObservableBuffer
+import com.decodingus.workspace.model.*
+import scalafx.Includes.*
 import scalafx.beans.property.StringProperty
-import com.decodingus.workspace.model._
+import scalafx.collections.ObservableBuffer
+import scalafx.geometry.{Insets, Pos}
+import scalafx.scene.control.*
+import scalafx.scene.layout.*
+
 import java.time.format.DateTimeFormatter
 
 /**
@@ -14,10 +15,10 @@ import java.time.format.DateTimeFormatter
  * Displays all run calls, consensus result, and compatibility status.
  */
 class ReconciliationDetailDialog(
-  subject: Biosample,
-  yDnaReconciliation: Option[HaplogroupReconciliation],
-  mtDnaReconciliation: Option[HaplogroupReconciliation]
-) extends Dialog[Unit] {
+                                  subject: Biosample,
+                                  yDnaReconciliation: Option[HaplogroupReconciliation],
+                                  mtDnaReconciliation: Option[HaplogroupReconciliation]
+                                ) extends Dialog[Unit] {
 
   title = s"Haplogroup Reconciliation - ${subject.donorIdentifier}"
   headerText = "Multi-Run Haplogroup Analysis"
@@ -28,9 +29,9 @@ class ReconciliationDetailDialog(
   private val dateFormatter = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm")
 
   private def createReconciliationPane(
-    dnaLabel: String,
-    reconciliationOpt: Option[HaplogroupReconciliation]
-  ): VBox = {
+                                        dnaLabel: String,
+                                        reconciliationOpt: Option[HaplogroupReconciliation]
+                                      ): VBox = {
     new VBox(8) {
       padding = Insets(10)
       style = "-fx-border-color: #E0E0E0; -fx-border-radius: 4; -fx-background-color: #FAFAFA; -fx-background-radius: 4;"
@@ -58,7 +59,9 @@ class ReconciliationDetailDialog(
                 style = "-fx-font-size: 14px; -fx-font-weight: bold;"
               },
               statusIndicator,
-              new Region { HBox.setHgrow(this, Priority.Always) },
+              new Region {
+                HBox.setHgrow(this, Priority.Always)
+              },
               new Label(s"${status.runCount} run${if (status.runCount != 1) "s" else ""}") {
                 style = "-fx-text-fill: #757575; -fx-font-size: 12px;"
               }
@@ -69,7 +72,9 @@ class ReconciliationDetailDialog(
           val consensusBox = new HBox(10) {
             alignment = Pos.CenterLeft
             children = Seq(
-              new Label("Consensus:") { style = "-fx-font-weight: bold;" },
+              new Label("Consensus:") {
+                style = "-fx-font-weight: bold;"
+              },
               new Label(status.consensusHaplogroup) {
                 style = "-fx-font-family: monospace; -fx-font-size: 14px;"
               },
@@ -225,9 +230,9 @@ object ReconciliationDetailDialog {
    * Returns (indicator label, tooltip text).
    */
   def createCompactStatusIndicator(
-    yDnaReconciliation: Option[HaplogroupReconciliation],
-    mtDnaReconciliation: Option[HaplogroupReconciliation]
-  ): Option[(String, String, String)] = {
+                                    yDnaReconciliation: Option[HaplogroupReconciliation],
+                                    mtDnaReconciliation: Option[HaplogroupReconciliation]
+                                  ): Option[(String, String, String)] = {
     val reconciliations = List(yDnaReconciliation, mtDnaReconciliation).flatten
 
     if (reconciliations.isEmpty) {

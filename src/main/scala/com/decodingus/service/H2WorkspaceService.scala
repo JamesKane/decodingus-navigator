@@ -1,16 +1,11 @@
 package com.decodingus.service
 
 import com.decodingus.db.Transactor
-import com.decodingus.util.Logger
-import com.decodingus.repository.{
-  BiosampleRepository, ProjectRepository, SequenceRunRepository, AlignmentRepository,
-  SyncStatus as RepoSyncStatus
-}
+import com.decodingus.repository.{AlignmentRepository, BiosampleRepository, ProjectRepository, SequenceRunRepository, SyncStatus as RepoSyncStatus}
 import com.decodingus.service.EntityConversions.*
-import com.decodingus.workspace.model.{
-  Biosample, Project, SequenceRun, Alignment,
-  WorkspaceContent, RecordMeta, HaplogroupAssignments, AlignmentMetrics
-}
+import com.decodingus.util.Logger
+import com.decodingus.workspace.model.*
+
 import java.util.UUID
 
 /**
@@ -20,12 +15,12 @@ import java.util.UUID
  * Uses the repository layer for data access.
  */
 class H2WorkspaceService(
-  transactor: Transactor,
-  biosampleRepo: BiosampleRepository,
-  projectRepo: ProjectRepository,
-  sequenceRunRepo: SequenceRunRepository,
-  alignmentRepo: AlignmentRepository
-) extends WorkspaceService:
+                          transactor: Transactor,
+                          biosampleRepo: BiosampleRepository,
+                          projectRepo: ProjectRepository,
+                          sequenceRunRepo: SequenceRunRepository,
+                          alignmentRepo: AlignmentRepository
+                        ) extends WorkspaceService:
 
   private val log = Logger[H2WorkspaceService]
 

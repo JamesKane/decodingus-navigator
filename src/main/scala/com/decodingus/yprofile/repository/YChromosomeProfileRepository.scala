@@ -1,8 +1,9 @@
 package com.decodingus.yprofile.repository
 
-import com.decodingus.repository.{SyncableRepositoryBase, SqlHelpers, EntityMeta}
 import com.decodingus.repository.SqlHelpers.*
+import com.decodingus.repository.{EntityMeta, SqlHelpers, SyncableRepositoryBase}
 import com.decodingus.yprofile.model.*
+
 import java.sql.{Connection, ResultSet}
 import java.time.LocalDateTime
 import java.util.UUID

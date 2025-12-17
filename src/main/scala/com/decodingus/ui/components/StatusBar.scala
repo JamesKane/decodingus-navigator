@@ -1,7 +1,7 @@
 package com.decodingus.ui.components
 
 import com.decodingus.sync.ConflictNotifier
-import scalafx.Includes._
+import scalafx.Includes.*
 import scalafx.application.Platform
 import scalafx.geometry.{Insets, Pos}
 import scalafx.scene.control.{Button, Label, Tooltip}
@@ -126,7 +126,7 @@ class StatusBar(notifier: ConflictNotifier) extends HBox {
             syncLabel.tooltip = Tooltip(error)
             syncLabel.visible = true
           case None =>
-            // Handled by other listeners
+        // Handled by other listeners
       }
     }
   }

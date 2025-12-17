@@ -1,15 +1,15 @@
 package com.decodingus.pds
 
 import com.decodingus.auth.User
-import com.decodingus.util.Logger
 import com.decodingus.model.{ContigSummary, CoverageSummary, LibraryStats, WgsMetrics}
-import com.decodingus.workspace.model._
-import sttp.client3._
-import sttp.client3.circe._
-import io.circe.{Decoder, Encoder, Json}
+import com.decodingus.util.Logger
+import com.decodingus.workspace.model.*
 import io.circe.generic.semiauto.{deriveDecoder, deriveEncoder}
-import io.circe.syntax._
 import io.circe.parser.decode
+import io.circe.syntax.*
+import io.circe.{Decoder, Encoder, Json}
+import sttp.client3.*
+import sttp.client3.circe.*
 
 import java.time.LocalDateTime
 import java.time.format.DateTimeFormatter
@@ -107,7 +107,9 @@ object PdsClient {
   implicit val chipProfileDecoder: Decoder[ChipProfile] = deriveDecoder
 
   // Y-DNA SNP panel codecs
-  import com.decodingus.genotype.model.{YSnpResult, YDnaSnpCall, YDnaSnpPanelResult}
+
+  import com.decodingus.genotype.model.{YDnaSnpCall, YDnaSnpPanelResult, YSnpResult}
+
   implicit val ySnpResultEncoder: Encoder[YSnpResult] = Encoder.encodeString.contramap(_.toString)
   implicit val ySnpResultDecoder: Decoder[YSnpResult] = Decoder.decodeString.emap {
     case "Positive" => Right(YSnpResult.Positive)
@@ -121,8 +123,8 @@ object PdsClient {
   implicit val yDnaSnpPanelResultDecoder: Decoder[YDnaSnpPanelResult] = deriveDecoder
 
   // HaplogroupReconciliation enum codecs
-  import com.decodingus.workspace.model.{DnaType, CompatibilityLevel, HaplogroupTechnology, CallMethod, ConflictResolution}
-  import com.decodingus.workspace.model.{RunHaplogroupCall, SnpCallFromRun, SnpConflict, ReconciliationStatus, HaplogroupReconciliation}
+
+  import com.decodingus.workspace.model.{CallMethod, CompatibilityLevel, ConflictResolution, DnaType, HaplogroupReconciliation, HaplogroupTechnology, ReconciliationStatus, RunHaplogroupCall, SnpCallFromRun, SnpConflict}
 
   implicit val dnaTypeEncoder: Encoder[DnaType] = Encoder.encodeString.contramap(_.toString)
   implicit val dnaTypeDecoder: Decoder[DnaType] = Decoder.decodeString.emap {
@@ -234,13 +236,13 @@ object PdsClient {
    * @param user    The authenticated User.
    * @param summary The CoverageSummary to upload.
    * @param ec      The execution context for the future.
-   * @return        A Future that completes when the upload is finished.
+   * @return A Future that completes when the upload is finished.
    */
   def uploadSummaryAtProto(user: User, summary: CoverageSummary)(implicit ec: ExecutionContext): Future[Unit] = {
     // Check if PDS URL is valid (it should be if user is logged in)
     val pdsUrl = if (user.pdsUrl.endsWith("/")) user.pdsUrl.dropRight(1) else user.pdsUrl
     val endpoint = uri"$pdsUrl/xrpc/com.atproto.repo.createRecord"
-    
+
     val collection = "com.decodingus.genome.summary"
     // Generate a random Record Key (rkey)
     val rkey = java.util.UUID.randomUUID().toString
@@ -288,7 +290,7 @@ object PdsClient {
    * @param user      The authenticated User.
    * @param workspace The Workspace to save.
    * @param ec        The execution context for the future.
-   * @return          A Future that completes when the save is finished.
+   * @return A Future that completes when the save is finished.
    */
   def saveWorkspace(user: User, workspace: Workspace)(implicit ec: ExecutionContext): Future[Unit] = {
     val pdsUrl = if (user.pdsUrl.endsWith("/")) user.pdsUrl.dropRight(1) else user.pdsUrl
@@ -329,7 +331,7 @@ object PdsClient {
    *
    * @param user The authenticated User.
    * @param ec   The execution context for the future.
-   * @return     A Future containing the Workspace, or a failed future if not found/error.
+   * @return A Future containing the Workspace, or a failed future if not found/error.
    */
   def loadWorkspace(user: User)(implicit ec: ExecutionContext): Future[Workspace] = {
     val pdsUrl = if (user.pdsUrl.endsWith("/")) user.pdsUrl.dropRight(1) else user.pdsUrl

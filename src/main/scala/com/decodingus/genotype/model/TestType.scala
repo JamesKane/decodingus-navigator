@@ -26,20 +26,20 @@ enum TargetType derives Codec.AsObject:
  * @see multi-test-type-roadmap.md for full taxonomy
  */
 case class TestTypeDefinition(
-  code: String,
-  displayName: String,
-  category: DataGenerationMethod,
-  vendor: Option[String],
-  targetType: TargetType,
-  expectedMinDepth: Option[Double],
-  expectedTargetDepth: Option[Double],
-  expectedMarkerCount: Option[Int],
-  supportsHaplogroupY: Boolean,
-  supportsHaplogroupMt: Boolean,
-  supportsAutosomalIbd: Boolean,
-  supportsAncestry: Boolean,
-  typicalFileFormats: List[String]
-) derives Codec.AsObject
+                               code: String,
+                               displayName: String,
+                               category: DataGenerationMethod,
+                               vendor: Option[String],
+                               targetType: TargetType,
+                               expectedMinDepth: Option[Double],
+                               expectedTargetDepth: Option[Double],
+                               expectedMarkerCount: Option[Int],
+                               supportsHaplogroupY: Boolean,
+                               supportsHaplogroupMt: Boolean,
+                               supportsAutosomalIbd: Boolean,
+                               supportsAncestry: Boolean,
+                               typicalFileFormats: List[String]
+                             ) derives Codec.AsObject
 
 /**
  * Known test types - sequencing and genotyping.
@@ -202,7 +202,7 @@ object TestTypes {
     supportsHaplogroupY = true,
     supportsHaplogroupMt = false,
     supportsAutosomalIbd = false, // Autosomal not delivered
-    supportsAncestry = false,     // Autosomal not delivered
+    supportsAncestry = false, // Autosomal not delivered
     typicalFileFormats = List("CSV", "TXT")
   )
 
@@ -547,24 +547,24 @@ object TestTypes {
    * A 4x HiFi is still HiFi (not low-pass) because the long-read technology
    * still provides value in resolving complex regions.
    *
-   * @param yCoverage Mean Y chromosome coverage (None if no reads)
-   * @param mtCoverage Mean mtDNA coverage (None if no reads)
+   * @param yCoverage         Mean Y chromosome coverage (None if no reads)
+   * @param mtCoverage        Mean mtDNA coverage (None if no reads)
    * @param autosomalCoverage Mean autosomal coverage (None if no reads)
-   * @param totalReads Total read count
-   * @param vendor Optional vendor hint from file/header
-   * @param platform Optional platform (PacBio, Nanopore, Illumina, etc.)
-   * @param meanReadLength Optional mean read length for long-read detection
+   * @param totalReads        Total read count
+   * @param vendor            Optional vendor hint from file/header
+   * @param platform          Optional platform (PacBio, Nanopore, Illumina, etc.)
+   * @param meanReadLength    Optional mean read length for long-read detection
    * @return Best-guess test type, defaults to WGS
    */
   def inferFromCoverage(
-    yCoverage: Option[Double],
-    mtCoverage: Option[Double],
-    autosomalCoverage: Option[Double],
-    totalReads: Long,
-    vendor: Option[String] = None,
-    platform: Option[String] = None,
-    meanReadLength: Option[Int] = None
-  ): TestTypeDefinition = {
+                         yCoverage: Option[Double],
+                         mtCoverage: Option[Double],
+                         autosomalCoverage: Option[Double],
+                         totalReads: Long,
+                         vendor: Option[String] = None,
+                         platform: Option[String] = None,
+                         meanReadLength: Option[Int] = None
+                       ): TestTypeDefinition = {
 
     val hasYCoverage = yCoverage.exists(_ > 1.0)
     val hasMtCoverage = mtCoverage.exists(_ > 10.0)
@@ -631,14 +631,14 @@ object TestTypes {
   /**
    * Infer WGS subtype based on platform and read length.
    *
-   * @param platform Sequencing platform (PacBio, Nanopore, Illumina, etc.)
+   * @param platform       Sequencing platform (PacBio, Nanopore, Illumina, etc.)
    * @param meanReadLength Mean read length in bp
    * @return Appropriate WGS test type
    */
   def inferWgsType(
-    platform: Option[String],
-    meanReadLength: Option[Int]
-  ): TestTypeDefinition = {
+                    platform: Option[String],
+                    meanReadLength: Option[Int]
+                  ): TestTypeDefinition = {
     val platformLower = platform.map(_.toLowerCase)
     val isLongRead = meanReadLength.exists(_ > 1000)
 

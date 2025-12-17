@@ -1,6 +1,7 @@
 package com.decodingus.db
 
 import com.zaxxer.hikari.{HikariConfig, HikariDataSource}
+
 import java.nio.file.{Files, Path}
 import java.sql.Connection
 import scala.util.Using
@@ -11,7 +12,7 @@ import scala.util.Using
  * Manages an H2 embedded database with HikariCP connection pooling.
  * The database file is stored at ~/.decodingus/data/workspace.mv.db
  */
-final class Database private (dataSource: HikariDataSource):
+final class Database private(dataSource: HikariDataSource):
 
   /**
    * Execute a function with a connection from the pool.
@@ -85,8 +86,8 @@ object Database:
       // Pool configuration tuned for desktop application
       config.setMaximumPoolSize(5)
       config.setMinimumIdle(1)
-      config.setIdleTimeout(300000)      // 5 minutes
-      config.setMaxLifetime(600000)      // 10 minutes
+      config.setIdleTimeout(300000) // 5 minutes
+      config.setMaxLifetime(600000) // 10 minutes
       config.setConnectionTimeout(10000) // 10 seconds
       config.setPoolName("DUNavigator-H2")
 

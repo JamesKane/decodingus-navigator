@@ -1,13 +1,8 @@
 package com.decodingus.service
 
-import com.decodingus.repository.{
-  BiosampleEntity, ProjectEntity, SequenceRunEntity, AlignmentEntity,
-  EntityMeta, SyncStatus as RepoSyncStatus
-}
-import com.decodingus.workspace.model.{
-  Biosample, Project, SequenceRun, Alignment,
-  RecordMeta, HaplogroupAssignments, AlignmentMetrics, FileInfo
-}
+import com.decodingus.repository.{AlignmentEntity, BiosampleEntity, EntityMeta, ProjectEntity, SequenceRunEntity, SyncStatus as RepoSyncStatus}
+import com.decodingus.workspace.model.*
+
 import java.time.LocalDateTime
 import java.util.UUID
 
@@ -146,10 +141,10 @@ object EntityConversions:
     )
 
   def toSequenceRunEntity(
-    sequenceRun: SequenceRun,
-    biosampleId: UUID,
-    existingId: Option[UUID] = None
-  ): SequenceRunEntity =
+                           sequenceRun: SequenceRun,
+                           biosampleId: UUID,
+                           existingId: Option[UUID] = None
+                         ): SequenceRunEntity =
     val id = existingId.getOrElse(extractOrGenerateId(sequenceRun.atUri))
     SequenceRunEntity(
       id = id,
@@ -223,10 +218,10 @@ object EntityConversions:
   // ============================================
 
   def toAlignmentEntity(
-    alignment: Alignment,
-    sequenceRunId: UUID,
-    existingId: Option[UUID] = None
-  ): AlignmentEntity =
+                         alignment: Alignment,
+                         sequenceRunId: UUID,
+                         existingId: Option[UUID] = None
+                       ): AlignmentEntity =
     val id = existingId.getOrElse(extractOrGenerateId(alignment.atUri))
     AlignmentEntity(
       id = id,

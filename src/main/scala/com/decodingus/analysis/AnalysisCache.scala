@@ -1,9 +1,9 @@
 package com.decodingus.analysis
 
 import com.decodingus.model.{ContigSummary, CoverageSummary, LibraryStats, WgsMetrics}
-import io.circe.parser._
-import io.circe.syntax._
-import io.circe.generic.semiauto._
+import io.circe.generic.semiauto.*
+import io.circe.parser.*
+import io.circe.syntax.*
 import io.circe.{Decoder, Encoder}
 
 import java.io.{BufferedInputStream, File, FileInputStream, PrintWriter}

@@ -4,6 +4,7 @@ import com.decodingus.repository.SqlHelpers.*
 import io.circe.*
 import io.circe.parser.*
 import io.circe.syntax.*
+
 import java.sql.{Connection, ResultSet}
 import java.time.LocalDateTime
 import java.util.UUID
@@ -53,11 +54,11 @@ object ArtifactType:
  * Status of a cached artifact.
  */
 enum ArtifactStatus:
-  case Available   // Ready to use
-  case InProgress  // Currently being generated
-  case Stale       // Dependencies changed, needs regeneration
-  case Deleted     // File was deleted
-  case Error       // Generation failed
+  case Available // Ready to use
+  case InProgress // Currently being generated
+  case Stale // Dependencies changed, needs regeneration
+  case Deleted // File was deleted
+  case Error // Generation failed
 
 object ArtifactStatus:
   def fromString(s: String): ArtifactStatus = s match
@@ -82,37 +83,37 @@ object ArtifactStatus:
  * linked to their source alignment.
  */
 case class AnalysisArtifactEntity(
-  id: UUID,
-  alignmentId: UUID,
-  artifactType: ArtifactType,
-  cachePath: String,
-  fileSize: Option[Long],
-  fileChecksum: Option[String],
-  fileFormat: Option[String],
-  generatedAt: LocalDateTime,
-  generatorVersion: Option[String],
-  generationParams: Option[Json],
-  status: ArtifactStatus,
-  staleReason: Option[String],
-  dependsOnSourceChecksum: Option[String],
-  dependsOnReferenceBuild: Option[String],
-  createdAt: LocalDateTime,
-  updatedAt: LocalDateTime
-) extends Entity[UUID]
+                                   id: UUID,
+                                   alignmentId: UUID,
+                                   artifactType: ArtifactType,
+                                   cachePath: String,
+                                   fileSize: Option[Long],
+                                   fileChecksum: Option[String],
+                                   fileFormat: Option[String],
+                                   generatedAt: LocalDateTime,
+                                   generatorVersion: Option[String],
+                                   generationParams: Option[Json],
+                                   status: ArtifactStatus,
+                                   staleReason: Option[String],
+                                   dependsOnSourceChecksum: Option[String],
+                                   dependsOnReferenceBuild: Option[String],
+                                   createdAt: LocalDateTime,
+                                   updatedAt: LocalDateTime
+                                 ) extends Entity[UUID]
 
 object AnalysisArtifactEntity:
   /**
    * Create a new artifact entity.
    */
   def create(
-    alignmentId: UUID,
-    artifactType: ArtifactType,
-    cachePath: String,
-    generatorVersion: Option[String] = None,
-    generationParams: Option[Json] = None,
-    dependsOnSourceChecksum: Option[String] = None,
-    dependsOnReferenceBuild: Option[String] = None
-  ): AnalysisArtifactEntity =
+              alignmentId: UUID,
+              artifactType: ArtifactType,
+              cachePath: String,
+              generatorVersion: Option[String] = None,
+              generationParams: Option[Json] = None,
+              dependsOnSourceChecksum: Option[String] = None,
+              dependsOnReferenceBuild: Option[String] = None
+            ): AnalysisArtifactEntity =
     val now = LocalDateTime.now()
     AnalysisArtifactEntity(
       id = UUID.randomUUID(),
@@ -235,9 +236,9 @@ class AnalysisArtifactRepository:
    * Find artifact by alignment and type (unique combination).
    */
   def findByAlignmentAndType(
-    alignmentId: UUID,
-    artifactType: ArtifactType
-  )(using conn: Connection): Option[AnalysisArtifactEntity] =
+                              alignmentId: UUID,
+                              artifactType: ArtifactType
+                            )(using conn: Connection): Option[AnalysisArtifactEntity] =
     queryOne(
       "SELECT * FROM analysis_artifact WHERE alignment_id = ? AND artifact_type = ?",
       Seq(alignmentId, ArtifactType.toDbString(artifactType))
@@ -285,11 +286,11 @@ class AnalysisArtifactRepository:
    * Mark an artifact as available (generation complete).
    */
   def markAvailable(
-    id: UUID,
-    fileSize: Long,
-    fileChecksum: String,
-    fileFormat: Option[String] = None
-  )(using conn: Connection): Boolean =
+                     id: UUID,
+                     fileSize: Long,
+                     fileChecksum: String,
+                     fileFormat: Option[String] = None
+                   )(using conn: Connection): Boolean =
     executeUpdate(
       """UPDATE analysis_artifact SET
         |  status = 'AVAILABLE', file_size = ?, file_checksum = ?, file_format = ?,

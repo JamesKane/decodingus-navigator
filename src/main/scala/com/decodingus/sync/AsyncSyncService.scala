@@ -10,8 +10,8 @@ import io.circe.Json
 import java.sql.Connection
 import java.time.LocalDateTime
 import java.util.UUID
-import java.util.concurrent.{Executors, ScheduledExecutorService, ScheduledFuture, TimeUnit}
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.{Executors, ScheduledExecutorService, ScheduledFuture, TimeUnit}
 import scala.concurrent.{ExecutionContext, Future}
 import scala.util.{Failure, Success, Try}
 
@@ -31,16 +31,16 @@ import scala.util.{Failure, Success, Try}
  * - Exponential backoff: Failed syncs retry with increasing delays (capped at 1 hour)
  */
 class AsyncSyncService(
-  transactor: Transactor,
-  syncQueueRepo: SyncQueueRepository,
-  syncConflictRepo: SyncConflictRepository,
-  syncHistoryRepo: SyncHistoryRepository,
-  biosampleRepo: BiosampleRepository,
-  projectRepo: ProjectRepository,
-  sequenceRunRepo: SequenceRunRepository,
-  alignmentRepo: AlignmentRepository,
-  conflictNotifier: ConflictNotifier
-)(using ec: ExecutionContext):
+                        transactor: Transactor,
+                        syncQueueRepo: SyncQueueRepository,
+                        syncConflictRepo: SyncConflictRepository,
+                        syncHistoryRepo: SyncHistoryRepository,
+                        biosampleRepo: BiosampleRepository,
+                        projectRepo: ProjectRepository,
+                        sequenceRunRepo: SequenceRunRepository,
+                        alignmentRepo: AlignmentRepository,
+                        conflictNotifier: ConflictNotifier
+                      )(using ec: ExecutionContext):
 
   private val log = Logger[AsyncSyncService]
   private val scheduler: ScheduledExecutorService = Executors.newScheduledThreadPool(2)
@@ -66,15 +66,15 @@ class AsyncSyncService(
     // Start queue processor (runs every 30 seconds)
     queueProcessorTask = Some(scheduler.scheduleWithFixedDelay(
       () => processOutgoingQueueSafe(),
-      5,    // Initial delay: 5 seconds
-      30,   // Period: 30 seconds
+      5, // Initial delay: 5 seconds
+      30, // Period: 30 seconds
       TimeUnit.SECONDS
     ))
 
     // Start incoming sync poller (runs hourly, if enabled)
     incomingSyncTask = Some(scheduler.scheduleWithFixedDelay(
       () => if incomingSyncEnabled.get() then pullRemoteChangesSafe(),
-      60,   // Initial delay: 1 minute
+      60, // Initial delay: 1 minute
       3600, // Period: 1 hour
       TimeUnit.SECONDS
     ))
@@ -118,18 +118,18 @@ class AsyncSyncService(
    * Returns immediately; actual sync happens in background.
    *
    * @param entityType The type of entity being synced
-   * @param entityId The entity's unique identifier
-   * @param operation The sync operation (Create, Update, Delete)
-   * @param priority Lower numbers = higher priority (default: 5)
-   * @param payload Optional JSON snapshot of entity state
+   * @param entityId   The entity's unique identifier
+   * @param operation  The sync operation (Create, Update, Delete)
+   * @param priority   Lower numbers = higher priority (default: 5)
+   * @param payload    Optional JSON snapshot of entity state
    */
   def queueForSync(
-    entityType: SyncEntityType,
-    entityId: UUID,
-    operation: SyncOperation,
-    priority: Int = 5,
-    payload: Option[Json] = None
-  ): Future[SyncQueueEntity] = Future {
+                    entityType: SyncEntityType,
+                    entityId: UUID,
+                    operation: SyncOperation,
+                    priority: Int = 5,
+                    payload: Option[Json] = None
+                  ): Future[SyncQueueEntity] = Future {
     transactor.readWrite {
       val entry = syncQueueRepo.enqueue(entityType, entityId, operation, priority, payload)
       log.debug(s"Queued $operation for $entityType:$entityId")
@@ -284,17 +284,17 @@ class AsyncSyncService(
     // TODO: Implement actual PDS create
     // For now, simulate success
     log.debug(s"Would push CREATE for ${entry.entityType}:${entry.entityId} to PDS")
-    // PdsClient.createRecord(user, entry.entityType, getEntityPayload(entry))
+  // PdsClient.createRecord(user, entry.entityType, getEntityPayload(entry))
 
   private def pushUpdate(entry: SyncQueueEntity, user: User): Unit =
     // TODO: Implement actual PDS update
     log.debug(s"Would push UPDATE for ${entry.entityType}:${entry.entityId} to PDS")
-    // PdsClient.updateRecord(user, entry.entityType, entry.entityId, getEntityPayload(entry))
+  // PdsClient.updateRecord(user, entry.entityType, entry.entityId, getEntityPayload(entry))
 
   private def pushDelete(entry: SyncQueueEntity, user: User): Unit =
     // TODO: Implement actual PDS delete
     log.debug(s"Would push DELETE for ${entry.entityType}:${entry.entityId} to PDS")
-    // PdsClient.deleteRecord(user, entry.entityType, entry.entityId)
+  // PdsClient.deleteRecord(user, entry.entityType, entry.entityId)
 
   // ============================================
   // Incoming Sync (Remote Changes)
@@ -335,11 +335,11 @@ class AsyncSyncService(
   // ============================================
 
   private def recordSyncHistory(
-    entry: SyncQueueEntity,
-    direction: SyncDirection,
-    status: SyncResultStatus,
-    error: Option[String]
-  )(using conn: Connection): Unit =
+                                 entry: SyncQueueEntity,
+                                 direction: SyncDirection,
+                                 status: SyncResultStatus,
+                                 error: Option[String]
+                               )(using conn: Connection): Unit =
     val now = LocalDateTime.now()
     syncHistoryRepo.insert(SyncHistoryEntity.create(
       entityType = entry.entityType,
@@ -369,10 +369,10 @@ class AsyncSyncService(
  * Queue statistics.
  */
 case class QueueStats(
-  pending: Long,
-  inProgress: Long,
-  failed: Long,
-  completed: Long
-):
+                       pending: Long,
+                       inProgress: Long,
+                       failed: Long,
+                       completed: Long
+                     ):
   def total: Long = pending + inProgress + failed + completed
 

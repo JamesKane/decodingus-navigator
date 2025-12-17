@@ -1,6 +1,7 @@
 package com.decodingus.repository
 
 import com.decodingus.repository.SqlHelpers.*
+
 import java.sql.{Connection, ResultSet}
 import java.time.LocalDateTime
 import java.util.UUID
@@ -49,49 +50,49 @@ object SyncResultStatus:
  * Sync history entry entity - audit trail of sync operations.
  */
 case class SyncHistoryEntity(
-  id: UUID,
-  entityType: SyncEntityType,
-  entityId: UUID,
-  atUri: Option[String],
-  operation: SyncOperation,
-  direction: SyncDirection,
-  status: SyncResultStatus,
-  errorMessage: Option[String],
-  startedAt: LocalDateTime,
-  completedAt: LocalDateTime,
-  durationMs: Option[Long],
-  localVersionBefore: Option[Int],
-  localVersionAfter: Option[Int],
-  remoteVersionBefore: Option[Int],
-  remoteVersionAfter: Option[Int],
-  localCidBefore: Option[String],
-  localCidAfter: Option[String],
-  remoteCid: Option[String],
-  createdAt: LocalDateTime
-) extends Entity[UUID]
+                              id: UUID,
+                              entityType: SyncEntityType,
+                              entityId: UUID,
+                              atUri: Option[String],
+                              operation: SyncOperation,
+                              direction: SyncDirection,
+                              status: SyncResultStatus,
+                              errorMessage: Option[String],
+                              startedAt: LocalDateTime,
+                              completedAt: LocalDateTime,
+                              durationMs: Option[Long],
+                              localVersionBefore: Option[Int],
+                              localVersionAfter: Option[Int],
+                              remoteVersionBefore: Option[Int],
+                              remoteVersionAfter: Option[Int],
+                              localCidBefore: Option[String],
+                              localCidAfter: Option[String],
+                              remoteCid: Option[String],
+                              createdAt: LocalDateTime
+                            ) extends Entity[UUID]
 
 object SyncHistoryEntity:
   /**
    * Create a new sync history entry.
    */
   def create(
-    entityType: SyncEntityType,
-    entityId: UUID,
-    operation: SyncOperation,
-    direction: SyncDirection,
-    status: SyncResultStatus,
-    startedAt: LocalDateTime,
-    completedAt: LocalDateTime,
-    atUri: Option[String] = None,
-    errorMessage: Option[String] = None,
-    localVersionBefore: Option[Int] = None,
-    localVersionAfter: Option[Int] = None,
-    remoteVersionBefore: Option[Int] = None,
-    remoteVersionAfter: Option[Int] = None,
-    localCidBefore: Option[String] = None,
-    localCidAfter: Option[String] = None,
-    remoteCid: Option[String] = None
-  ): SyncHistoryEntity =
+              entityType: SyncEntityType,
+              entityId: UUID,
+              operation: SyncOperation,
+              direction: SyncDirection,
+              status: SyncResultStatus,
+              startedAt: LocalDateTime,
+              completedAt: LocalDateTime,
+              atUri: Option[String] = None,
+              errorMessage: Option[String] = None,
+              localVersionBefore: Option[Int] = None,
+              localVersionAfter: Option[Int] = None,
+              remoteVersionBefore: Option[Int] = None,
+              remoteVersionAfter: Option[Int] = None,
+              localCidBefore: Option[String] = None,
+              localCidAfter: Option[String] = None,
+              remoteCid: Option[String] = None
+            ): SyncHistoryEntity =
     val now = LocalDateTime.now()
     val durationMs = java.time.Duration.between(startedAt, completedAt).toMillis
     SyncHistoryEntity(
@@ -248,16 +249,16 @@ class SyncHistoryRepository:
    * Record a successful sync.
    */
   def recordSuccess(
-    entityType: SyncEntityType,
-    entityId: UUID,
-    operation: SyncOperation,
-    direction: SyncDirection,
-    startedAt: LocalDateTime,
-    atUri: Option[String] = None,
-    localVersionBefore: Option[Int] = None,
-    localVersionAfter: Option[Int] = None,
-    remoteCid: Option[String] = None
-  )(using conn: Connection): SyncHistoryEntity =
+                     entityType: SyncEntityType,
+                     entityId: UUID,
+                     operation: SyncOperation,
+                     direction: SyncDirection,
+                     startedAt: LocalDateTime,
+                     atUri: Option[String] = None,
+                     localVersionBefore: Option[Int] = None,
+                     localVersionAfter: Option[Int] = None,
+                     remoteCid: Option[String] = None
+                   )(using conn: Connection): SyncHistoryEntity =
     val entity = SyncHistoryEntity.create(
       entityType = entityType,
       entityId = entityId,
@@ -277,15 +278,15 @@ class SyncHistoryRepository:
    * Record a failed sync.
    */
   def recordFailure(
-    entityType: SyncEntityType,
-    entityId: UUID,
-    operation: SyncOperation,
-    direction: SyncDirection,
-    startedAt: LocalDateTime,
-    errorMessage: String,
-    atUri: Option[String] = None,
-    localVersionBefore: Option[Int] = None
-  )(using conn: Connection): SyncHistoryEntity =
+                     entityType: SyncEntityType,
+                     entityId: UUID,
+                     operation: SyncOperation,
+                     direction: SyncDirection,
+                     startedAt: LocalDateTime,
+                     errorMessage: String,
+                     atUri: Option[String] = None,
+                     localVersionBefore: Option[Int] = None
+                   )(using conn: Connection): SyncHistoryEntity =
     val entity = SyncHistoryEntity.create(
       entityType = entityType,
       entityId = entityId,
@@ -304,15 +305,15 @@ class SyncHistoryRepository:
    * Record a conflict.
    */
   def recordConflict(
-    entityType: SyncEntityType,
-    entityId: UUID,
-    operation: SyncOperation,
-    direction: SyncDirection,
-    startedAt: LocalDateTime,
-    localVersionBefore: Int,
-    remoteVersionBefore: Int,
-    atUri: Option[String] = None
-  )(using conn: Connection): SyncHistoryEntity =
+                      entityType: SyncEntityType,
+                      entityId: UUID,
+                      operation: SyncOperation,
+                      direction: SyncDirection,
+                      startedAt: LocalDateTime,
+                      localVersionBefore: Int,
+                      remoteVersionBefore: Int,
+                      atUri: Option[String] = None
+                    )(using conn: Connection): SyncHistoryEntity =
     val entity = SyncHistoryEntity.create(
       entityType = entityType,
       entityId = entityId,
@@ -400,12 +401,12 @@ class SyncHistoryRepository:
  * Sync statistics summary.
  */
 case class SyncStats(
-  total: Int,
-  successful: Int,
-  failed: Int,
-  conflicts: Int,
-  skipped: Int,
-  pushes: Int,
-  pulls: Int,
-  avgDurationMs: Long
-)
+                      total: Int,
+                      successful: Int,
+                      failed: Int,
+                      conflicts: Int,
+                      skipped: Int,
+                      pushes: Int,
+                      pulls: Int,
+                      avgDurationMs: Long
+                    )

@@ -2,10 +2,9 @@ package com.decodingus.analysis
 
 import htsjdk.samtools.reference.ReferenceSequenceFileFactory
 
-import java.io.{File, PrintWriter}
+import java.io.File
 import java.nio.file.{Files, Path}
-import scala.jdk.CollectionConverters._
-import scala.util.Using
+import scala.jdk.CollectionConverters.*
 
 /**
  * Orchestrates whole-genome variant calling for a single alignment.
@@ -33,22 +32,22 @@ class WholeGenomeVariantCaller {
   /**
    * Generate a whole-genome VCF for an alignment.
    *
-   * @param bamPath Path to BAM/CRAM file
-   * @param referencePath Path to reference genome
-   * @param outputDir Directory to write output files
-   * @param referenceBuild Reference build name (e.g., "GRCh38")
-   * @param onProgress Progress callback (message, current, total)
+   * @param bamPath            Path to BAM/CRAM file
+   * @param referencePath      Path to reference genome
+   * @param outputDir          Directory to write output files
+   * @param referenceBuild     Reference build name (e.g., "GRCh38")
+   * @param onProgress         Progress callback (message, current, total)
    * @param sexInferenceResult Optional pre-computed sex inference result (avoids re-running)
    * @return Either error or the generated VCF metadata
    */
   def generateWholeGenomeVcf(
-    bamPath: String,
-    referencePath: String,
-    outputDir: Path,
-    referenceBuild: String,
-    onProgress: (String, Int, Int) => Unit,
-    sexInferenceResult: Option[SexInference.SexInferenceResult] = None
-  ): Either[String, CachedVcfInfo] = {
+                              bamPath: String,
+                              referencePath: String,
+                              outputDir: Path,
+                              referenceBuild: String,
+                              onProgress: (String, Int, Int) => Unit,
+                              sexInferenceResult: Option[SexInference.SexInferenceResult] = None
+                            ): Either[String, CachedVcfInfo] = {
     // Ensure BAM index exists
     onProgress("Checking BAM index...", 0, 1)
     GatkRunner.ensureIndex(bamPath) match {
@@ -120,7 +119,7 @@ class WholeGenomeVariantCaller {
           vcfResult match {
             case Left(error) =>
               println(s"[WholeGenomeVariantCaller] Warning: Failed to call $contigName: $error")
-              // Continue with other contigs
+            // Continue with other contigs
             case Right(vcfFile) =>
               perContigVcfs += vcfFile
               processedContigs += contigName
@@ -159,7 +158,7 @@ class WholeGenomeVariantCaller {
 
     // Save metadata
     val metadataPath = outputDir.resolve("vcf_metadata.json")
-    import io.circe.syntax._
+    import io.circe.syntax.*
     Files.writeString(metadataPath, metadata.asJson.spaces2)
 
     // Clean up per-contig VCFs
@@ -181,12 +180,12 @@ class WholeGenomeVariantCaller {
    * Call variants on a single contig using HaplotypeCaller.
    */
   private def callContigVariants(
-    bamPath: String,
-    referencePath: String,
-    contigName: String,
-    ploidy: Int,
-    outputDir: Path
-  ): Either[String, File] = {
+                                  bamPath: String,
+                                  referencePath: String,
+                                  contigName: String,
+                                  ploidy: Int,
+                                  outputDir: Path
+                                ): Either[String, File] = {
     val vcfFile = outputDir.resolve(s"$contigName.vcf").toFile
 
     val args = Array(
@@ -217,11 +216,11 @@ class WholeGenomeVariantCaller {
    * Preserves the existing Mutect2 --mitochondria implementation.
    */
   private def callMitochondrialVariants(
-    bamPath: String,
-    referencePath: String,
-    contigName: String,
-    outputDir: Path
-  ): Either[String, File] = {
+                                         bamPath: String,
+                                         referencePath: String,
+                                         contigName: String,
+                                         outputDir: Path
+                                       ): Either[String, File] = {
     val vcfFile = outputDir.resolve(s"$contigName.vcf").toFile
 
     // Mutect2 with mitochondria mode
@@ -250,10 +249,10 @@ class WholeGenomeVariantCaller {
    * Merge multiple VCF files into a single gzipped VCF with tabix index.
    */
   private def mergeVcfs(
-    vcfFiles: List[File],
-    outputPath: Path,
-    referencePath: String
-  ): Either[String, Unit] = {
+                         vcfFiles: List[File],
+                         outputPath: Path,
+                         referencePath: String
+                       ): Either[String, Unit] = {
     if (vcfFiles.isEmpty) {
       return Left("No VCF files to merge")
     }
@@ -332,5 +331,6 @@ class WholeGenomeVariantCaller {
 
 object WholeGenomeVariantCaller {
   private lazy val instance = new WholeGenomeVariantCaller()
+
   def apply(): WholeGenomeVariantCaller = instance
 }

@@ -1,7 +1,7 @@
 package com.decodingus.haplogroup.report
 
+import com.decodingus.haplogroup.model.{Haplogroup, HaplogroupResult, Locus, NamedVariant}
 import com.decodingus.haplogroup.processor.{PrivateVariant, SnpCallInfo}
-import com.decodingus.haplogroup.model.{EnrichedVariantCall, Haplogroup, HaplogroupResult, Locus, NamedVariant}
 import com.decodingus.haplogroup.tree.{TreeProviderType, TreeType}
 import com.decodingus.haplogroup.vendor.NamedVariantCache
 import com.decodingus.refgenome.{StrAnnotator, YRegionAnnotator}
@@ -14,7 +14,7 @@ import scala.util.Using
 /**
  * Generates Yleaf-style haplogroup reports.
  */
-object  HaplogroupReportWriter {
+object HaplogroupReportWriter {
 
   /**
    * Convert a PHRED quality score to a 5-star rating.
@@ -28,12 +28,12 @@ object  HaplogroupReportWriter {
   private def qualityToStars(quality: Option[Double]): String = {
     quality match {
       case None => "-"
-      case Some(q) if q < 10 => "☆☆☆☆☆"   // 0 stars (empty)
-      case Some(q) if q < 20 => "★☆☆☆☆"   // 1 star
-      case Some(q) if q < 30 => "★★☆☆☆"   // 2 stars
-      case Some(q) if q < 40 => "★★★☆☆"   // 3 stars
-      case Some(q) if q < 50 => "★★★★☆"   // 4 stars
-      case Some(_) => "★★★★★"             // 5 stars
+      case Some(q) if q < 10 => "☆☆☆☆☆" // 0 stars (empty)
+      case Some(q) if q < 20 => "★☆☆☆☆" // 1 star
+      case Some(q) if q < 30 => "★★☆☆☆" // 2 stars
+      case Some(q) if q < 40 => "★★★☆☆" // 3 stars
+      case Some(q) if q < 50 => "★★★★☆" // 4 stars
+      case Some(_) => "★★★★★" // 5 stars
     }
   }
 
@@ -72,10 +72,10 @@ object  HaplogroupReportWriter {
    * Calculate adjusted quality stars based on depth and region modifiers.
    */
   private def adjustedQualityToStars(
-    quality: Option[Double],
-    depth: Option[Int],
-    regionModifier: Double
-  ): String = {
+                                      quality: Option[Double],
+                                      depth: Option[Int],
+                                      regionModifier: Double
+                                    ): String = {
     quality match {
       case None => "-"
       case Some(q) =>
@@ -88,20 +88,20 @@ object  HaplogroupReportWriter {
   /**
    * Write a haplogroup analysis report to the specified directory.
    *
-   * @param outputDir Directory to write the report
-   * @param treeType Y-DNA or MT-DNA
-   * @param results Scored haplogroup results
-   * @param tree The haplogroup tree used for analysis
-   * @param snpCalls The SNP calls from the VCF
-   * @param sampleName Optional sample name
-   * @param privateVariants Optional list of private/novel variants
-   * @param treeProvider Optional tree provider used for analysis
-   * @param strAnnotator Optional STR annotator for indel classification
-   * @param sampleBuild Optional reference build of the sample BAM/CRAM
-   * @param treeBuild Optional reference build of the tree coordinates
+   * @param outputDir         Directory to write the report
+   * @param treeType          Y-DNA or MT-DNA
+   * @param results           Scored haplogroup results
+   * @param tree              The haplogroup tree used for analysis
+   * @param snpCalls          The SNP calls from the VCF
+   * @param sampleName        Optional sample name
+   * @param privateVariants   Optional list of private/novel variants
+   * @param treeProvider      Optional tree provider used for analysis
+   * @param strAnnotator      Optional STR annotator for indel classification
+   * @param sampleBuild       Optional reference build of the sample BAM/CRAM
+   * @param treeBuild         Optional reference build of the tree coordinates
    * @param namedVariantCache Optional cache for looking up variant aliases and rsIds
-   * @param snpCallInfo Optional map of position to full SNP call info (quality, depth)
-   * @param yRegionAnnotator Optional Y chromosome region annotator for region info
+   * @param snpCallInfo       Optional map of position to full SNP call info (quality, depth)
+   * @param yRegionAnnotator  Optional Y chromosome region annotator for region info
    */
   def writeReport(
                    outputDir: File,
@@ -155,7 +155,7 @@ object  HaplogroupReportWriter {
         case (Some(sample), Some(tree)) =>
           writer.println(s"Liftover: No (native $sample coordinates)")
         case _ =>
-          // Don't show liftover status if builds are unknown
+        // Don't show liftover status if builds are unknown
       }
       sampleName.foreach(name => writer.println(s"Sample: $name"))
       writer.println()
@@ -509,30 +509,30 @@ object  HaplogroupReportWriter {
    * - {prefix}_novel_snps.csv - Novel/unplaced SNPs
    * - {prefix}_novel_indels.csv - Novel/unplaced indels
    *
-   * @param outputDir Directory to write the CSV files
-   * @param treeType Y-DNA or MT-DNA
-   * @param results Scored haplogroup results
-   * @param tree The haplogroup tree used for analysis
-   * @param snpCalls The SNP calls from the VCF
-   * @param sampleName Optional sample name
-   * @param privateVariants Optional list of private/novel variants
-   * @param snpCallInfo Optional map of position to full SNP call info (quality, depth)
+   * @param outputDir        Directory to write the CSV files
+   * @param treeType         Y-DNA or MT-DNA
+   * @param results          Scored haplogroup results
+   * @param tree             The haplogroup tree used for analysis
+   * @param snpCalls         The SNP calls from the VCF
+   * @param sampleName       Optional sample name
+   * @param privateVariants  Optional list of private/novel variants
+   * @param snpCallInfo      Optional map of position to full SNP call info (quality, depth)
    * @param yRegionAnnotator Optional Y chromosome region annotator for region info
-   * @param strAnnotator Optional STR annotator for indel classification
+   * @param strAnnotator     Optional STR annotator for indel classification
    * @return List of created CSV files
    */
   def writeCsvReport(
-    outputDir: File,
-    treeType: TreeType,
-    results: List[HaplogroupResult],
-    tree: List[Haplogroup],
-    snpCalls: Map[Long, String],
-    sampleName: Option[String] = None,
-    privateVariants: Option[List[PrivateVariant]] = None,
-    snpCallInfo: Option[Map[Long, SnpCallInfo]] = None,
-    yRegionAnnotator: Option[YRegionAnnotator] = None,
-    strAnnotator: Option[StrAnnotator] = None
-  ): List[File] = {
+                      outputDir: File,
+                      treeType: TreeType,
+                      results: List[HaplogroupResult],
+                      tree: List[Haplogroup],
+                      snpCalls: Map[Long, String],
+                      sampleName: Option[String] = None,
+                      privateVariants: Option[List[PrivateVariant]] = None,
+                      snpCallInfo: Option[Map[Long, SnpCallInfo]] = None,
+                      yRegionAnnotator: Option[YRegionAnnotator] = None,
+                      strAnnotator: Option[StrAnnotator] = None
+                    ): List[File] = {
     outputDir.mkdirs()
 
     val prefix = treeType match {

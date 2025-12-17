@@ -1,15 +1,15 @@
 package com.decodingus.ui.components
 
-import scalafx.Includes._
-import scalafx.scene.control.{ButtonType, Dialog, Label, RadioButton, ToggleGroup, Tab, TabPane, ComboBox, ButtonBar, TextField, CheckBox, Button, TableView, TableColumn, Alert}
-import scalafx.scene.control.Alert.AlertType
-import scalafx.scene.layout.{VBox, HBox, GridPane, Priority}
-import scalafx.geometry.{Insets, Pos}
-import scalafx.stage.{FileChooser, DirectoryChooser}
-import scalafx.collections.ObservableBuffer
-import scalafx.beans.property.{StringProperty, BooleanProperty}
 import com.decodingus.config.{UserPreferences, UserPreferencesService}
-import com.decodingus.refgenome.config.{ReferenceConfig, ReferenceGenomeConfig, ReferenceConfigService}
+import com.decodingus.refgenome.config.{ReferenceConfig, ReferenceConfigService, ReferenceGenomeConfig}
+import scalafx.Includes.*
+import scalafx.beans.property.{BooleanProperty, StringProperty}
+import scalafx.collections.ObservableBuffer
+import scalafx.geometry.{Insets, Pos}
+import scalafx.scene.control.Alert.AlertType
+import scalafx.scene.control.*
+import scalafx.scene.layout.{GridPane, HBox, Priority, VBox}
+import scalafx.stage.{DirectoryChooser, FileChooser}
 
 import java.io.File
 import java.nio.file.Files
@@ -65,7 +65,9 @@ class SettingsDialog extends Dialog[Unit] {
           // Y-DNA Provider
           new VBox(5) {
             children = Seq(
-              new Label("Y-DNA Tree Provider:") { style = "-fx-font-weight: bold;" },
+              new Label("Y-DNA Tree Provider:") {
+                style = "-fx-font-weight: bold;"
+              },
               ydnaProviderCombo,
               new Label("  FTDNA: Uses FamilyTreeDNA's public Y-DNA haplogroup tree") {
                 style = "-fx-text-fill: #888888; -fx-font-size: 11px;"
@@ -78,7 +80,9 @@ class SettingsDialog extends Dialog[Unit] {
           // MT-DNA Provider
           new VBox(5) {
             children = Seq(
-              new Label("MT-DNA Tree Provider:") { style = "-fx-font-weight: bold;" },
+              new Label("MT-DNA Tree Provider:") {
+                style = "-fx-font-weight: bold;"
+              },
               mtdnaProviderCombo,
               new Label("  FTDNA: Uses FamilyTreeDNA's public MT-DNA haplogroup tree") {
                 style = "-fx-text-fill: #888888; -fx-font-size: 11px;"
@@ -90,7 +94,9 @@ class SettingsDialog extends Dialog[Unit] {
           }
         )
       },
-      new Label("") { prefHeight = 20 }, // Spacer
+      new Label("") {
+        prefHeight = 20
+      }, // Spacer
       new Label("Note: Changes take effect on the next haplogroup analysis.") {
         style = "-fx-text-fill: #888888; -fx-font-style: italic;"
       }
@@ -106,19 +112,19 @@ class SettingsDialog extends Dialog[Unit] {
 
   // Row model for the reference table
   private case class ReferenceRow(
-    build: String,
-    localPath: StringProperty,
-    autoDownload: BooleanProperty,
-    status: StringProperty
-  )
+                                   build: String,
+                                   localPath: StringProperty,
+                                   autoDownload: BooleanProperty,
+                                   status: StringProperty
+                                 )
 
   // Create row data from config
   private val refRowData: ObservableBuffer[ReferenceRow] = ObservableBuffer.from(
     ReferenceConfig.knownBuilds.keys.toSeq.sorted.map { build =>
       val buildConfig = refConfig.getOrDefault(build)
       val status = if (buildConfig.hasValidLocalPath) "Local file configured"
-                   else if (ReferenceConfigService.isReferenceAvailable(build)) "In cache"
-                   else "Not available"
+      else if (ReferenceConfigService.isReferenceAvailable(build)) "In cache"
+      else "Not available"
       ReferenceRow(
         build = build,
         localPath = StringProperty(buildConfig.localPath.getOrElse("")),
@@ -286,7 +292,9 @@ class SettingsDialog extends Dialog[Unit] {
   private val referenceContent = new VBox(12) {
     padding = Insets(20)
     children = Seq(
-      new Label("Reference Genome Paths:") { style = "-fx-font-weight: bold;" },
+      new Label("Reference Genome Paths:") {
+        style = "-fx-font-weight: bold;"
+      },
       new Label("Specify local paths to reference FASTA files. If not specified, references will be downloaded to the cache directory when needed.") {
         wrapText = true
         maxWidth = 700
@@ -294,11 +302,19 @@ class SettingsDialog extends Dialog[Unit] {
       },
       refTable,
       refTableButtonBar,
-      new Label("") { prefHeight = 5 }, // Spacer
-      new Label("Download Settings:") { style = "-fx-font-weight: bold;" },
+      new Label("") {
+        prefHeight = 5
+      }, // Spacer
+      new Label("Download Settings:") {
+        style = "-fx-font-weight: bold;"
+      },
       promptCheckbox,
-      new Label("") { prefHeight = 5 }, // Spacer
-      new Label("Cache Settings:") { style = "-fx-font-weight: bold;" },
+      new Label("") {
+        prefHeight = 5
+      }, // Spacer
+      new Label("Cache Settings:") {
+        style = "-fx-font-weight: bold;"
+      },
       cacheDirRow
     )
   }

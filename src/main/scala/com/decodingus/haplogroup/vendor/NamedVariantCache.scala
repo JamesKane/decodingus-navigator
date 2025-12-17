@@ -1,11 +1,11 @@
 package com.decodingus.haplogroup.vendor
 
-import com.decodingus.haplogroup.model.{NamedVariant, VariantAliases, VariantCoordinate, DefiningHaplogroup}
-import io.circe.parser.decode
+import com.decodingus.haplogroup.model.{DefiningHaplogroup, NamedVariant, VariantAliases, VariantCoordinate}
 import io.circe.generic.auto.*
-import sttp.client3.{HttpURLConnectionBackend, basicRequest, asByteArray}
+import io.circe.parser.decode
+import sttp.client3.{HttpURLConnectionBackend, asByteArray, basicRequest}
 
-import java.io.{BufferedReader, File, FileInputStream, FileOutputStream, InputStreamReader}
+import java.io.*
 import java.nio.file.{Files, Path, Paths}
 import java.time.{Duration, Instant}
 import java.util.zip.GZIPInputStream
@@ -182,7 +182,7 @@ class NamedVariantCache {
   /**
    * Look up a variant by genomic position.
    *
-   * @param build Reference build (e.g., "GRCh38")
+   * @param build    Reference build (e.g., "GRCh38")
    * @param position Genomic position
    * @return The variant if found
    */

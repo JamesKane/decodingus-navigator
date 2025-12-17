@@ -17,18 +17,18 @@ class AncestryEstimator {
   /**
    * Estimate ancestry proportions for a sample.
    *
-   * @param genotypes Map of SNP ID (chr:pos) to genotype (0, 1, 2, or -1 for missing)
+   * @param genotypes   Map of SNP ID (chr:pos) to genotype (0, 1, 2, or -1 for missing)
    * @param alleleFreqs Reference allele frequency matrix
    * @param pcaLoadings PCA loadings for projection
-   * @param panelType Panel type identifier ("aims" or "genome-wide")
+   * @param panelType   Panel type identifier ("aims" or "genome-wide")
    * @return AncestryResult with population percentages
    */
   def estimate(
-    genotypes: Map[String, Int],
-    alleleFreqs: AlleleFrequencyMatrix,
-    pcaLoadings: PCALoadings,
-    panelType: String
-  ): AncestryResult = {
+                genotypes: Map[String, Int],
+                alleleFreqs: AlleleFrequencyMatrix,
+                pcaLoadings: PCALoadings,
+                panelType: String
+              ): AncestryResult = {
 
     // Step 1: Project sample onto PCA space
     val pcaCoords = projectToPca(genotypes, pcaLoadings)
@@ -63,9 +63,9 @@ class AncestryEstimator {
    * 3. Sum contributions across all SNPs
    */
   private def projectToPca(
-    genotypes: Map[String, Int],
-    loadings: PCALoadings
-  ): Array[Double] = {
+                            genotypes: Map[String, Int],
+                            loadings: PCALoadings
+                          ): Array[Double] = {
     val numComponents = loadings.numComponents
     val coords = new Array[Double](numComponents)
     var snpsUsed = 0
@@ -102,9 +102,9 @@ class AncestryEstimator {
    * Returns unnormalized probabilities (caller should normalize to sum=1).
    */
   private def calculatePopulationProbabilities(
-    sampleCoords: Array[Double],
-    loadings: PCALoadings
-  ): Map[String, Double] = {
+                                                sampleCoords: Array[Double],
+                                                loadings: PCALoadings
+                                              ): Map[String, Double] = {
     loadings.populations.zipWithIndex.map { case (popCode, popIdx) =>
       val centroid = loadings.getCentroid(popIdx)
       val variance = loadings.getVariance(popIdx)
@@ -122,10 +122,10 @@ class AncestryEstimator {
    * d^2 = sum((x_i - mu_i)^2 / sigma_i^2)
    */
   private def computeMahalanobisDistance(
-    sample: Array[Double],
-    centroid: Array[Float],
-    variance: Array[Float]
-  ): Double = {
+                                          sample: Array[Double],
+                                          centroid: Array[Float],
+                                          variance: Array[Float]
+                                        ): Double = {
     sample.indices.map { i =>
       val diff = sample(i) - centroid(i)
       val v = variance(i).toDouble
@@ -145,11 +145,11 @@ class AncestryEstimator {
    * - Distinctiveness (how clearly sample clusters with one population)
    */
   private def calculateConfidence(
-    snpsWithData: Int,
-    totalSnps: Int,
-    pcaCoords: Array[Double],
-    loadings: PCALoadings
-  ): Double = {
+                                   snpsWithData: Int,
+                                   totalSnps: Int,
+                                   pcaCoords: Array[Double],
+                                   loadings: PCALoadings
+                                 ): Double = {
     // Base confidence from data completeness
     val completeness = snpsWithData.toDouble / totalSnps
 
@@ -173,10 +173,10 @@ class AncestryEstimator {
    * Product of P(genotype | allele_freq) across all SNPs
    */
   def estimateByAlleleFrequency(
-    genotypes: Map[String, Int],
-    alleleFreqs: AlleleFrequencyMatrix,
-    panelType: String
-  ): AncestryResult = {
+                                 genotypes: Map[String, Int],
+                                 alleleFreqs: AlleleFrequencyMatrix,
+                                 panelType: String
+                               ): AncestryResult = {
     val snpIdToIndex = alleleFreqs.snpIds.zipWithIndex.toMap
     val numPops = alleleFreqs.numPopulations
 
@@ -193,9 +193,9 @@ class AncestryEstimator {
 
             // Binomial probability for diploid genotype
             val prob = geno match {
-              case 0 => (1 - freq) * (1 - freq)           // AA
-              case 1 => 2 * freq * (1 - freq)             // Aa
-              case 2 => freq * freq                       // aa
+              case 0 => (1 - freq) * (1 - freq) // AA
+              case 1 => 2 * freq * (1 - freq) // Aa
+              case 2 => freq * freq // aa
               case _ => 1.0
             }
             logLikelihoods(popIdx) += math.log(prob)

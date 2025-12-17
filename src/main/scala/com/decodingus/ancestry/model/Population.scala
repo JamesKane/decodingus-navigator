@@ -7,13 +7,13 @@ import io.circe.Codec
  * Sub-continental granularity with ~25 populations from 1000 Genomes and HGDP/SGDP.
  */
 case class Population(
-  code: String,            // e.g., "CEU", "YRI", "CHB"
-  name: String,            // "Northwestern European", "Yoruba", "Han Chinese"
-  superPopulation: String, // "European", "African", "East Asian"
-  region: String,          // Geographic region
-  sampleCount: Int,        // Number of reference samples
-  color: String            // Display color (hex)
-) derives Codec.AsObject
+                       code: String, // e.g., "CEU", "YRI", "CHB"
+                       name: String, // "Northwestern European", "Yoruba", "Han Chinese"
+                       superPopulation: String, // "European", "African", "East Asian"
+                       region: String, // Geographic region
+                       sampleCount: Int, // Number of reference samples
+                       color: String // Display color (hex)
+                     ) derives Codec.AsObject
 
 object Population {
 

@@ -26,20 +26,20 @@ class AncestryProcessor {
   /**
    * Run ancestry analysis on a BAM/CRAM file.
    *
-   * @param bamPath Path to aligned reads (BAM/CRAM)
-   * @param libraryStats Library statistics from initial analysis
-   * @param panelType AIMs (quick) or GenomeWide (detailed)
-   * @param onProgress Progress callback (message, current, total)
+   * @param bamPath         Path to aligned reads (BAM/CRAM)
+   * @param libraryStats    Library statistics from initial analysis
+   * @param panelType       AIMs (quick) or GenomeWide (detailed)
+   * @param onProgress      Progress callback (message, current, total)
    * @param artifactContext Optional context for organizing output artifacts
    * @return Either error message or ancestry result
    */
   def analyze(
-    bamPath: String,
-    libraryStats: LibraryStats,
-    panelType: AncestryPanelType,
-    onProgress: (String, Double, Double) => Unit,
-    artifactContext: Option[ArtifactContext] = None
-  ): Either[String, AncestryResult] = {
+               bamPath: String,
+               libraryStats: LibraryStats,
+               panelType: AncestryPanelType,
+               onProgress: (String, Double, Double) => Unit,
+               artifactContext: Option[ArtifactContext] = None
+             ): Either[String, AncestryResult] = {
 
     val panelName = panelType match {
       case AncestryPanelType.Aims => "aims"
@@ -78,15 +78,15 @@ class AncestryProcessor {
    * Run analysis with pre-loaded reference data.
    */
   private def analyzeWithData(
-    bamPath: String,
-    libraryStats: LibraryStats,
-    panelType: AncestryPanelType,
-    sitesVcf: Path,
-    alleleFreqs: AlleleFrequencyMatrix,
-    pcaLoadings: PCALoadings,
-    onProgress: (String, Double, Double) => Unit,
-    artifactContext: Option[ArtifactContext]
-  ): Either[String, AncestryResult] = {
+                               bamPath: String,
+                               libraryStats: LibraryStats,
+                               panelType: AncestryPanelType,
+                               sitesVcf: Path,
+                               alleleFreqs: AlleleFrequencyMatrix,
+                               pcaLoadings: PCALoadings,
+                               onProgress: (String, Double, Double) => Unit,
+                               artifactContext: Option[ArtifactContext]
+                             ): Either[String, AncestryResult] = {
 
     val panelName = panelType match {
       case AncestryPanelType.Aims => "aims"
@@ -153,11 +153,11 @@ class AncestryProcessor {
    * Returns results for both if successful.
    */
   def analyzeAll(
-    bamPath: String,
-    libraryStats: LibraryStats,
-    onProgress: (String, Double, Double) => Unit,
-    artifactContext: Option[ArtifactContext] = None
-  ): Either[String, (AncestryResult, Option[AncestryResult])] = {
+                  bamPath: String,
+                  libraryStats: LibraryStats,
+                  onProgress: (String, Double, Double) => Unit,
+                  artifactContext: Option[ArtifactContext] = None
+                ): Either[String, (AncestryResult, Option[AncestryResult])] = {
 
     // Run AIMs first (quick)
     onProgress("Running quick AIMs analysis...", 0.0, 1.0)

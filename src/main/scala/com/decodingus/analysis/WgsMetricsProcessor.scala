@@ -11,10 +11,10 @@ import scala.util.{Either, Left, Right, Using}
  * Context for organizing analysis artifacts by subject/run/alignment.
  */
 case class ArtifactContext(
-  sampleAccession: String,
-  sequenceRunUri: Option[String],
-  alignmentUri: Option[String]
-) {
+                            sampleAccession: String,
+                            sequenceRunUri: Option[String],
+                            alignmentUri: Option[String]
+                          ) {
   /** Gets the artifact directory for this context */
   def getArtifactDir: Path = SubjectArtifactCache.getAlignmentDirFromUris(sampleAccession, sequenceRunUri, alignmentUri)
 
@@ -31,23 +31,23 @@ class WgsMetricsProcessor {
   /**
    * Process a BAM/CRAM file to collect WGS metrics using GATK.
    *
-   * @param bamPath Path to the BAM/CRAM file
-   * @param referencePath Path to the reference genome
-   * @param onProgress Progress callback
-   * @param readLength Optional read length - if > 150bp, passed to GATK to avoid crashes with long reads (e.g., PacBio HiFi)
+   * @param bamPath         Path to the BAM/CRAM file
+   * @param referencePath   Path to the reference genome
+   * @param onProgress      Progress callback
+   * @param readLength      Optional read length - if > 150bp, passed to GATK to avoid crashes with long reads (e.g., PacBio HiFi)
    * @param artifactContext Optional context for organizing output artifacts by subject/run/alignment
-   * @param totalReads Optional total read count for progress estimation
-   * @param countUnpaired If true, count unpaired reads (needed for single-end long-read data like PacBio HiFi)
+   * @param totalReads      Optional total read count for progress estimation
+   * @param countUnpaired   If true, count unpaired reads (needed for single-end long-read data like PacBio HiFi)
    */
   def process(
-    bamPath: String,
-    referencePath: String,
-    onProgress: (String, Double, Double) => Unit,
-    readLength: Option[Int] = None,
-    artifactContext: Option[ArtifactContext] = None,
-    totalReads: Option[Long] = None,
-    countUnpaired: Boolean = false
-  ): Either[Throwable, WgsMetrics] = {
+               bamPath: String,
+               referencePath: String,
+               onProgress: (String, Double, Double) => Unit,
+               readLength: Option[Int] = None,
+               artifactContext: Option[ArtifactContext] = None,
+               totalReads: Option[Long] = None,
+               countUnpaired: Boolean = false
+             ): Either[Throwable, WgsMetrics] = {
     // Ensure BAM index exists
     onProgress("Checking BAM index...", 0.0, 1.0)
     GatkRunner.ensureIndex(bamPath) match {

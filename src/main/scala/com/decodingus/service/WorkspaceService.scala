@@ -1,6 +1,7 @@
 package com.decodingus.service
 
 import com.decodingus.workspace.model.*
+
 import java.util.UUID
 
 /**
@@ -216,18 +217,18 @@ trait WorkspaceService:
  * Summary of sync status across all entity types.
  */
 case class SyncStatusSummary(
-  localCount: Int,
-  syncedCount: Int,
-  modifiedCount: Int,
-  conflictCount: Int
-)
+                              localCount: Int,
+                              syncedCount: Int,
+                              modifiedCount: Int,
+                              conflictCount: Int
+                            )
 
 /**
  * Entities pending synchronization to PDS.
  */
 case class PendingSyncEntities(
-  biosamples: List[Biosample],
-  projects: List[Project],
-  sequenceRuns: List[SequenceRun],
-  alignments: List[Alignment]
-)
+                                biosamples: List[Biosample],
+                                projects: List[Project],
+                                sequenceRuns: List[SequenceRun],
+                                alignments: List[Alignment]
+                              )

@@ -1,16 +1,16 @@
 package com.decodingus.ui.components
 
-import scalafx.Includes._
-import scalafx.scene.control.{ButtonType, Dialog, Label, TextField, ButtonBar, Button, ComboBox, Alert}
-import scalafx.scene.control.Alert.AlertType
-import scalafx.scene.layout.{VBox, HBox, GridPane, Priority}
-import scalafx.scene.input.{DragEvent, TransferMode}
-import scalafx.geometry.{Insets, Pos}
-import scalafx.stage.FileChooser
-import scalafx.collections.ObservableBuffer
-import com.decodingus.workspace.model.{StrProfile, RecordMeta}
 import com.decodingus.str.StrCsvParser
 import com.decodingus.str.StrCsvParser.VendorFormat
+import com.decodingus.workspace.model.{RecordMeta, StrProfile}
+import scalafx.Includes.*
+import scalafx.collections.ObservableBuffer
+import scalafx.geometry.{Insets, Pos}
+import scalafx.scene.control.Alert.AlertType
+import scalafx.scene.control.*
+import scalafx.scene.input.{DragEvent, TransferMode}
+import scalafx.scene.layout.{GridPane, HBox, Priority, VBox}
+import scalafx.stage.FileChooser
 
 import java.io.File
 
@@ -18,19 +18,19 @@ import java.io.File
  * Result from the dialog - contains the parsed STR profile
  */
 case class StrProfileInput(
-  profile: StrProfile,
-  detectedFormat: VendorFormat,
-  warnings: List[String]
-)
+                            profile: StrProfile,
+                            detectedFormat: VendorFormat,
+                            warnings: List[String]
+                          )
 
 /**
  * Dialog for importing Y-STR data from vendor CSV files.
  * Supports FTDNA, YSEQ, and generic two-column formats.
  */
 class AddStrProfileDialog(
-  biosampleRef: String,
-  existingProfileCount: Int
-) extends Dialog[Option[StrProfileInput]] {
+                           biosampleRef: String,
+                           existingProfileCount: Int
+                         ) extends Dialog[Option[StrProfileInput]] {
 
   title = "Import Y-STR Profile"
   headerText = "Import Y-STR markers from a CSV file"
@@ -149,9 +149,9 @@ class AddStrProfileDialog(
   // Help text
   private val helpText = new Label(
     "Supported formats:\n" +
-    "  - FTDNA Y-STR exports (Y-12, Y-25, Y-37, Y-67, Y-111, etc.)\n" +
-    "  - YSEQ Y-STR results\n" +
-    "  - Two-column CSV (Marker, Value)"
+      "  - FTDNA Y-STR exports (Y-12, Y-25, Y-37, Y-67, Y-111, etc.)\n" +
+      "  - YSEQ Y-STR results\n" +
+      "  - Two-column CSV (Marker, Value)"
   ) {
     style = "-fx-font-size: 11px; -fx-text-fill: #666666;"
     wrapText = true
@@ -162,7 +162,9 @@ class AddStrProfileDialog(
     padding = Insets(20)
     children = Seq(
       helpText,
-      new Label("") { prefHeight = 5 }, // Spacer
+      new Label("") {
+        prefHeight = 5
+      }, // Spacer
       providerRow,
       dropZone,
       browseButton,
@@ -258,7 +260,7 @@ class AddStrProfileDialog(
   }
 
   private def formatValue(value: com.decodingus.workspace.model.StrValue): String = {
-    import com.decodingus.workspace.model._
+    import com.decodingus.workspace.model.*
     value match {
       case SimpleStrValue(repeats) => repeats.toString
       case MultiCopyStrValue(copies) => copies.mkString("-")

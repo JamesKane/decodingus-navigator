@@ -2,16 +2,16 @@ package com.decodingus.ui.components
 
 import com.decodingus.auth.{AuthenticationService, User}
 import com.decodingus.config.FeatureToggles
-import scalafx.Includes._
+import scalafx.Includes.*
 import scalafx.application.Platform
 import scalafx.geometry.Insets
-import scalafx.scene.control._
+import scalafx.scene.control.*
 import scalafx.scene.layout.GridPane
 import scalafx.stage.Window
 
-import scala.concurrent.duration._
-import scala.concurrent.{Await, ExecutionContext}
 import java.util.concurrent.Executors
+import scala.concurrent.duration.*
+import scala.concurrent.{Await, ExecutionContext}
 
 object LoginDialog {
   def show(ownerWindow: Window): Option[User] = {
@@ -24,12 +24,16 @@ object LoginDialog {
     val loginButtonType = new ButtonType("Login", ButtonBar.ButtonData.OKDone)
     dialog.dialogPane().buttonTypes = Seq(loginButtonType, ButtonType.Cancel)
 
-    val usernameField = new TextField() { promptText = if (FeatureToggles.atProtocolEnabled) "Handle" else "Username" }
-    val passwordField = new PasswordField() { promptText = "Password" }
-    
+    val usernameField = new TextField() {
+      promptText = if (FeatureToggles.atProtocolEnabled) "Handle" else "Username"
+    }
+    val passwordField = new PasswordField() {
+      promptText = "Password"
+    }
+
     // PDS URL Field (only if feature enabled)
-    val pdsUrlField = new TextField() { 
-      promptText = "PDS URL (e.g. https://bsky.social)" 
+    val pdsUrlField = new TextField() {
+      promptText = "PDS URL (e.g. https://bsky.social)"
       text = "https://bsky.social"
     }
 
@@ -41,7 +45,7 @@ object LoginDialog {
       add(usernameField, 1, 0)
       add(new Label("Password:"), 0, 1)
       add(passwordField, 1, 1)
-      
+
       if (FeatureToggles.atProtocolEnabled) {
         add(new Label("PDS URL:"), 0, 2)
         add(pdsUrlField, 1, 2)
@@ -58,7 +62,7 @@ object LoginDialog {
           implicit val ec = ExecutionContext.fromExecutor(Executors.newSingleThreadExecutor())
           try {
             val future = AuthenticationService.loginAtProto(
-              usernameField.text.value, 
+              usernameField.text.value,
               passwordField.text.value,
               pdsUrlField.text.value
             )

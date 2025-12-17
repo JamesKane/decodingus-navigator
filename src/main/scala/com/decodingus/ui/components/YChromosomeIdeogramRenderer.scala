@@ -26,22 +26,22 @@ object YChromosomeIdeogramRenderer {
 
   // Region colors (dark theme compatible)
   private val regionColors: Map[RegionType, String] = Map(
-    RegionType.PAR -> "#6B8E23",           // Olive green
-    RegionType.XDegenerate -> "#228B22",   // Forest green
-    RegionType.XTR -> "#CD853F",           // Tan
-    RegionType.Ampliconic -> "#DAA520",    // Goldenrod
-    RegionType.Palindrome -> "#FF8C00",    // Dark orange
+    RegionType.PAR -> "#6B8E23", // Olive green
+    RegionType.XDegenerate -> "#228B22", // Forest green
+    RegionType.XTR -> "#CD853F", // Tan
+    RegionType.Ampliconic -> "#DAA520", // Goldenrod
+    RegionType.Palindrome -> "#FF8C00", // Dark orange
     RegionType.Heterochromatin -> "#4A4A4A", // Dark gray
-    RegionType.Centromere -> "#696969",    // Dim gray
-    RegionType.STR -> "#9370DB"            // Medium purple (for STR markers if shown)
+    RegionType.Centromere -> "#696969", // Dim gray
+    RegionType.STR -> "#9370DB" // Medium purple (for STR markers if shown)
   )
 
   // Variant marker colors by status
   private val variantColors: Map[YVariantStatus, String] = Map(
     YVariantStatus.CONFIRMED -> "#4CAF50", // Green
-    YVariantStatus.NOVEL -> "#2196F3",     // Blue
-    YVariantStatus.CONFLICT -> "#F44336",  // Red
-    YVariantStatus.PENDING -> "#FF9800"    // Orange
+    YVariantStatus.NOVEL -> "#2196F3", // Blue
+    YVariantStatus.CONFLICT -> "#F44336", // Red
+    YVariantStatus.PENDING -> "#FF9800" // Orange
   )
 
   /**
@@ -52,10 +52,10 @@ object YChromosomeIdeogramRenderer {
    * @param label    Optional label for tooltip (variant name)
    */
   case class VariantMarker(
-    position: Long,
-    status: YVariantStatus,
-    label: Option[String] = None
-  )
+                            position: Long,
+                            status: YVariantStatus,
+                            label: Option[String] = None
+                          )
 
   object VariantMarker {
     def fromVariantEntity(v: YProfileVariantEntity): VariantMarker =
@@ -65,16 +65,16 @@ object YChromosomeIdeogramRenderer {
   /**
    * Render the ideogram as SVG.
    *
-   * @param annotator     Y region annotator with region data
-   * @param variants      Optional list of variant markers to display
+   * @param annotator      Y region annotator with region data
+   * @param variants       Optional list of variant markers to display
    * @param showAllRegions Whether to show all region types or just major ones
    * @return SVG string
    */
   def render(
-    annotator: YRegionAnnotator,
-    variants: List[VariantMarker] = Nil,
-    showAllRegions: Boolean = true
-  ): String = {
+              annotator: YRegionAnnotator,
+              variants: List[VariantMarker] = Nil,
+              showAllRegions: Boolean = true
+            ): String = {
     val chromLength = annotator.getChromosomeLength
     val regions = annotator.getAllRegions
     val drawWidth = SVG_WIDTH - (2 * MARGIN_X)
@@ -126,8 +126,8 @@ object YChromosomeIdeogramRenderer {
     // Draw variant markers (triangles above chromosome)
     val derivedVariants = variants.filter(v =>
       v.status == YVariantStatus.CONFIRMED ||
-      v.status == YVariantStatus.NOVEL ||
-      v.status == YVariantStatus.CONFLICT
+        v.status == YVariantStatus.NOVEL ||
+        v.status == YVariantStatus.CONFLICT
     )
 
     // Group nearby variants to avoid overcrowding
@@ -223,9 +223,9 @@ object YChromosomeIdeogramRenderer {
    * Render a simple stats panel as HTML to show below the ideogram.
    */
   def renderStatsHtml(
-    variants: List[YProfileVariantEntity],
-    annotator: YRegionAnnotator
-  ): String = {
+                       variants: List[YProfileVariantEntity],
+                       annotator: YRegionAnnotator
+                     ): String = {
     val derived = variants.count(_.consensusState == YConsensusState.DERIVED)
     val confirmed = variants.count(_.status == YVariantStatus.CONFIRMED)
     val novel = variants.count(_.status == YVariantStatus.NOVEL)

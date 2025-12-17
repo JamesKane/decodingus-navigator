@@ -4,6 +4,7 @@ import com.decodingus.repository.SqlHelpers.*
 import io.circe.*
 import io.circe.parser.*
 import io.circe.syntax.*
+
 import java.sql.{Connection, ResultSet}
 import java.time.LocalDateTime
 import java.util.UUID
@@ -78,46 +79,46 @@ object ResolutionAction:
  * Sync conflict entity.
  */
 case class SyncConflictEntity(
-  id: UUID,
-  entityType: SyncEntityType,
-  entityId: UUID,
-  atUri: Option[String],
-  detectedAt: LocalDateTime,
-  localVersion: Int,
-  remoteVersion: Int,
-  localChanges: Option[Json],
-  remoteChanges: Option[Json],
-  overlappingFields: Option[Json],
-  suggestedResolution: Option[ConflictResolution],
-  resolutionReason: Option[String],
-  status: ConflictStatus,
-  resolvedAt: Option[LocalDateTime],
-  resolvedBy: Option[String],
-  resolutionAction: Option[ResolutionAction],
-  localSnapshot: Option[Json],
-  remoteSnapshot: Option[Json],
-  createdAt: LocalDateTime,
-  updatedAt: LocalDateTime
-) extends Entity[UUID]
+                               id: UUID,
+                               entityType: SyncEntityType,
+                               entityId: UUID,
+                               atUri: Option[String],
+                               detectedAt: LocalDateTime,
+                               localVersion: Int,
+                               remoteVersion: Int,
+                               localChanges: Option[Json],
+                               remoteChanges: Option[Json],
+                               overlappingFields: Option[Json],
+                               suggestedResolution: Option[ConflictResolution],
+                               resolutionReason: Option[String],
+                               status: ConflictStatus,
+                               resolvedAt: Option[LocalDateTime],
+                               resolvedBy: Option[String],
+                               resolutionAction: Option[ResolutionAction],
+                               localSnapshot: Option[Json],
+                               remoteSnapshot: Option[Json],
+                               createdAt: LocalDateTime,
+                               updatedAt: LocalDateTime
+                             ) extends Entity[UUID]
 
 object SyncConflictEntity:
   /**
    * Create a new conflict entry.
    */
   def create(
-    entityType: SyncEntityType,
-    entityId: UUID,
-    localVersion: Int,
-    remoteVersion: Int,
-    atUri: Option[String] = None,
-    localChanges: Option[Json] = None,
-    remoteChanges: Option[Json] = None,
-    overlappingFields: Option[Json] = None,
-    suggestedResolution: Option[ConflictResolution] = None,
-    resolutionReason: Option[String] = None,
-    localSnapshot: Option[Json] = None,
-    remoteSnapshot: Option[Json] = None
-  ): SyncConflictEntity =
+              entityType: SyncEntityType,
+              entityId: UUID,
+              localVersion: Int,
+              remoteVersion: Int,
+              atUri: Option[String] = None,
+              localChanges: Option[Json] = None,
+              remoteChanges: Option[Json] = None,
+              overlappingFields: Option[Json] = None,
+              suggestedResolution: Option[ConflictResolution] = None,
+              resolutionReason: Option[String] = None,
+              localSnapshot: Option[Json] = None,
+              remoteSnapshot: Option[Json] = None
+            ): SyncConflictEntity =
     val now = LocalDateTime.now()
     SyncConflictEntity(
       id = UUID.randomUUID(),

@@ -12,11 +12,11 @@ import java.time.LocalDateTime
  * @param lastModifiedField Hint about what field changed in the last update (e.g., 'haplogroups.yDna', 'description').
  */
 case class RecordMeta(
-  version: Int,
-  createdAt: LocalDateTime,
-  updatedAt: Option[LocalDateTime] = None,
-  lastModifiedField: Option[String] = None
-) {
+                       version: Int,
+                       createdAt: LocalDateTime,
+                       updatedAt: Option[LocalDateTime] = None,
+                       lastModifiedField: Option[String] = None
+                     ) {
   /** Creates a new meta with incremented version and updated timestamp */
   def updated(field: String): RecordMeta = copy(
     version = version + 1,

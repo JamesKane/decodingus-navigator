@@ -10,29 +10,31 @@ import scala.util.Using
  * GFF3 format has 9 tab-separated columns:
  * seqid, source, type, start (1-based), end (1-based, inclusive), score, strand, phase, attributes
  *
- * @param seqId Chromosome or contig (e.g., "chrY")
- * @param source Annotation source (e.g., "ybrowse")
+ * @param seqId       Chromosome or contig (e.g., "chrY")
+ * @param source      Annotation source (e.g., "ybrowse")
  * @param featureType Feature type (e.g., "cytoband", "palindrome", "str")
- * @param start Start position (1-based, inclusive)
- * @param end End position (1-based, inclusive)
- * @param score Score field (often "." for not applicable)
- * @param strand Strand ("+" or "-" or ".")
- * @param phase Phase for CDS features (0, 1, 2, or ".")
- * @param attributes Key-value attribute pairs (e.g., Name=P8; Note=...)
+ * @param start       Start position (1-based, inclusive)
+ * @param end         End position (1-based, inclusive)
+ * @param score       Score field (often "." for not applicable)
+ * @param strand      Strand ("+" or "-" or ".")
+ * @param phase       Phase for CDS features (0, 1, 2, or ".")
+ * @param attributes  Key-value attribute pairs (e.g., Name=P8; Note=...)
  */
 case class Gff3Record(
-  seqId: String,
-  source: String,
-  featureType: String,
-  start: Long,
-  end: Long,
-  score: Option[Double],
-  strand: String,
-  phase: Option[Int],
-  attributes: Map[String, String]
-) {
+                       seqId: String,
+                       source: String,
+                       featureType: String,
+                       start: Long,
+                       end: Long,
+                       score: Option[Double],
+                       strand: String,
+                       phase: Option[Int],
+                       attributes: Map[String, String]
+                     ) {
   def getAttribute(key: String): Option[String] = attributes.get(key)
+
   def name: Option[String] = getAttribute("Name").orElse(getAttribute("name"))
+
   def note: Option[String] = getAttribute("Note").orElse(getAttribute("note"))
 }
 
@@ -41,21 +43,21 @@ case class Gff3Record(
  *
  * BED format uses 0-based, half-open coordinates [start, end).
  *
- * @param chrom Chromosome (e.g., "chrY")
- * @param start Start position (0-based, inclusive)
- * @param end End position (0-based, exclusive)
- * @param name Feature name (optional, column 4)
- * @param score Score (optional, column 5)
+ * @param chrom  Chromosome (e.g., "chrY")
+ * @param start  Start position (0-based, inclusive)
+ * @param end    End position (0-based, exclusive)
+ * @param name   Feature name (optional, column 4)
+ * @param score  Score (optional, column 5)
  * @param strand Strand (optional, column 6)
  */
 case class BedRecord(
-  chrom: String,
-  start: Long,
-  end: Long,
-  name: Option[String] = None,
-  score: Option[Double] = None,
-  strand: Option[String] = None
-)
+                      chrom: String,
+                      start: Long,
+                      end: Long,
+                      name: Option[String] = None,
+                      score: Option[Double] = None,
+                      strand: Option[String] = None
+                    )
 
 /**
  * Parser for GFF3 and BED format genomic region files.
@@ -165,7 +167,11 @@ object RegionFileParser {
         val end = fields(2).toLong
         val name = if (fields.length > 3 && fields(3).nonEmpty && fields(3) != ".") Some(fields(3)) else None
         val score = if (fields.length > 4 && fields(4).nonEmpty && fields(4) != ".") {
-          try { Some(fields(4).toDouble) } catch { case _: NumberFormatException => None }
+          try {
+            Some(fields(4).toDouble)
+          } catch {
+            case _: NumberFormatException => None
+          }
         } else None
         val strand = if (fields.length > 5 && fields(5).nonEmpty && fields(5) != ".") Some(fields(5)) else None
 
@@ -182,18 +188,18 @@ object RegionFileParser {
    * GFF3/VCF uses 1-based, closed [start, end].
    *
    * @param bedStart 0-based start
-   * @param bedEnd 0-based exclusive end
+   * @param bedEnd   0-based exclusive end
    * @return (1-based start, 1-based end)
    */
   def bedToOneBased(bedStart: Long, bedEnd: Long): (Long, Long) = {
-    (bedStart + 1, bedEnd)  // BED end is already at the correct position when converting
+    (bedStart + 1, bedEnd) // BED end is already at the correct position when converting
   }
 
   /**
    * Convert 1-based inclusive coordinates to BED format.
    *
    * @param start 1-based start
-   * @param end 1-based end
+   * @param end   1-based end
    * @return (0-based start, 0-based exclusive end)
    */
   def oneBasedToBed(start: Long, end: Long): (Long, Long) = {

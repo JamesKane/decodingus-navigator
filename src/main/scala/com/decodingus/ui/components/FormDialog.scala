@@ -1,10 +1,10 @@
 package com.decodingus.ui.components
 
-import scalafx.Includes._
-import scalafx.scene.control.{ButtonType, Dialog, Label, TextField, ButtonBar}
-import scalafx.scene.layout.{GridPane, Priority}
-import scalafx.scene.Node
+import scalafx.Includes.*
 import scalafx.geometry.Insets
+import scalafx.scene.Node
+import scalafx.scene.control.*
+import scalafx.scene.layout.{GridPane, Priority}
 
 /**
  * Base trait for form-based dialogs with common setup patterns.
@@ -94,18 +94,18 @@ trait FormDialog[T] extends Dialog[Option[T]] {
   /**
    * Helper to build a standard form grid with labeled rows.
    *
-   * @param rows Pairs of (label text, form node) for each row
-   * @param gridHgap Horizontal gap between columns (default 10)
-   * @param gridVgap Vertical gap between rows (default 10)
+   * @param rows        Pairs of (label text, form node) for each row
+   * @param gridHgap    Horizontal gap between columns (default 10)
+   * @param gridVgap    Vertical gap between rows (default 10)
    * @param gridPadding Insets around the grid
    * @return A configured GridPane with the rows added
    */
   protected def buildGrid(
-    rows: Seq[(String, Node)],
-    gridHgap: Int = 10,
-    gridVgap: Int = 10,
-    gridPadding: Insets = Insets(20, 150, 10, 10)
-  ): GridPane = {
+                           rows: Seq[(String, Node)],
+                           gridHgap: Int = 10,
+                           gridVgap: Int = 10,
+                           gridPadding: Insets = Insets(20, 150, 10, 10)
+                         ): GridPane = {
     new GridPane() {
       hgap = gridHgap
       vgap = gridVgap

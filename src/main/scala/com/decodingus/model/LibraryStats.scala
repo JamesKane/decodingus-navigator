@@ -8,8 +8,8 @@ case class LibraryStats(
                          aligner: String = "Unknown",
                          referenceBuild: String = "Unknown",
                          sampleName: String = "Unknown",
-                         libraryId: String = "Unknown",        // @RG LB - GATK required, stable across re-alignments
-                         platformUnit: Option[String] = None,  // @RG PU - optional but best for fingerprinting
+                         libraryId: String = "Unknown", // @RG LB - GATK required, stable across re-alignments
+                         platformUnit: Option[String] = None, // @RG PU - optional but best for fingerprinting
                          flowCells: Map[String, Int] = Map(),
                          instruments: Map[String, Int] = Map(),
                          mostFrequentInstrumentId: String = "Unknown",

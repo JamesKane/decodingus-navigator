@@ -1,26 +1,26 @@
 package com.decodingus.ui.components
 
-import scalafx.Includes._
-import scalafx.scene.control.{TableView, TableColumn, Button, Alert, ButtonType, ContextMenu, MenuItem, Tooltip, Dialog, Label, TextArea, ScrollPane}
-import scalafx.scene.control.Alert.AlertType
-import scalafx.scene.layout.{VBox, HBox, Priority, GridPane}
-import scalafx.geometry.{Insets, Pos}
-import scalafx.collections.ObservableBuffer
-import scalafx.beans.property.StringProperty
-import scalafx.application.Platform
-import com.decodingus.workspace.model.{Biosample, StrProfile, StrMarkerValue, StrValue, SimpleStrValue, MultiCopyStrValue, ComplexStrValue}
 import com.decodingus.workspace.WorkbenchViewModel
+import com.decodingus.workspace.model.*
+import scalafx.Includes.*
+import scalafx.application.Platform
+import scalafx.beans.property.StringProperty
+import scalafx.collections.ObservableBuffer
+import scalafx.geometry.{Insets, Pos}
+import scalafx.scene.control.Alert.AlertType
+import scalafx.scene.control.*
+import scalafx.scene.layout.{GridPane, HBox, Priority, VBox}
 
 /**
  * Table component displaying Y-STR profiles for a subject.
  * Supports importing profiles from FTDNA, YSEQ, and other vendors.
  */
 class StrProfileTable(
-  viewModel: WorkbenchViewModel,
-  subject: Biosample,
-  strProfiles: List[StrProfile],
-  onRemove: (String) => Unit  // Callback when remove is clicked, passes profile URI
-) extends VBox(10) {
+                       viewModel: WorkbenchViewModel,
+                       subject: Biosample,
+                       strProfiles: List[StrProfile],
+                       onRemove: (String) => Unit // Callback when remove is clicked, passes profile URI
+                     ) extends VBox(10) {
 
   padding = Insets(10, 0, 0, 0)
 
@@ -228,7 +228,9 @@ class StrProfileTable(
   }
 
   children = Seq(
-    new scalafx.scene.control.Label("Y-STR Profiles:") { style = "-fx-font-weight: bold;" },
+    new scalafx.scene.control.Label("Y-STR Profiles:") {
+      style = "-fx-font-weight: bold;"
+    },
     table,
     buttonBar
   )

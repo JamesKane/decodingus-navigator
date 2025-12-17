@@ -1,18 +1,19 @@
 package com.decodingus.auth
 
 import com.decodingus.util.Logger
-import sttp.client3._
-import sttp.client3.circe._
-import io.circe.generic.auto._
+import io.circe.generic.auto.*
+import sttp.client3.*
+import sttp.client3.circe.*
+
 import scala.concurrent.{ExecutionContext, Future}
 
 case class User(
-  id: String, 
-  username: String, 
-  token: String,
-  did: String = "",
-  pdsUrl: String = ""
-)
+                 id: String,
+                 username: String,
+                 token: String,
+                 did: String = "",
+                 pdsUrl: String = ""
+               )
 
 case class AtpSessionResponse(did: String, handle: String, accessJwt: String, refreshJwt: String)
 

@@ -24,12 +24,12 @@ class LiftoverProcessor {
   /**
    * Liftover a VCF file to a new reference build.
    *
-   * @param vcfFile Input VCF file
-   * @param chainFile Chain file for coordinate conversion
+   * @param vcfFile         Input VCF file
+   * @param chainFile       Chain file for coordinate conversion
    * @param targetReference Target reference genome
-   * @param onProgress Progress callback
-   * @param filterToContig Optional contig to filter results to. Useful for reverse liftover
-   *                       where some positions may map to unexpected contigs (e.g., chrY -> chrX in PAR regions).
+   * @param onProgress      Progress callback
+   * @param filterToContig  Optional contig to filter results to. Useful for reverse liftover
+   *                        where some positions may map to unexpected contigs (e.g., chrY -> chrX in PAR regions).
    */
   def liftoverVcf(
                    vcfFile: File,

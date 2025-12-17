@@ -155,10 +155,10 @@ class WorkspaceOperations {
    * Returns updated state, the new run, and its index, or an error message.
    */
   def addSequenceRunFromFile(
-    state: WorkspaceState,
-    sampleAccession: String,
-    fileInfo: FileInfo
-  ): Either[String, (WorkspaceState, SequenceRun, Int)] = {
+                              state: WorkspaceState,
+                              sampleAccession: String,
+                              fileInfo: FileInfo
+                            ): Either[String, (WorkspaceState, SequenceRun, Int)] = {
     findSubject(state, sampleAccession) match {
       case Some(subject) =>
         val sequenceRuns = state.workspace.main.getSequenceRunsForBiosample(subject)
@@ -507,10 +507,10 @@ class WorkspaceOperations {
    * Returns updated state and the reconciliation record.
    */
   def getOrCreateReconciliation(
-    state: WorkspaceState,
-    sampleAccession: String,
-    dnaType: DnaType
-  ): Either[String, (WorkspaceState, HaplogroupReconciliation)] = {
+                                 state: WorkspaceState,
+                                 sampleAccession: String,
+                                 dnaType: DnaType
+                               ): Either[String, (WorkspaceState, HaplogroupReconciliation)] = {
     findSubject(state, sampleAccession) match {
       case Some(subject) =>
         val biosampleRef = subject.atUri.getOrElse(s"local:biosample:$sampleAccession")
@@ -554,11 +554,11 @@ class WorkspaceOperations {
    * Returns updated state and the new consensus HaplogroupResult.
    */
   def addHaplogroupCall(
-    state: WorkspaceState,
-    sampleAccession: String,
-    dnaType: DnaType,
-    call: RunHaplogroupCall
-  ): Either[String, (WorkspaceState, HaplogroupResult)] = {
+                         state: WorkspaceState,
+                         sampleAccession: String,
+                         dnaType: DnaType,
+                         call: RunHaplogroupCall
+                       ): Either[String, (WorkspaceState, HaplogroupResult)] = {
     getOrCreateReconciliation(state, sampleAccession, dnaType).flatMap { case (stateWithRecon, reconciliation) =>
       findSubject(stateWithRecon, sampleAccession) match {
         case Some(subject) =>
@@ -625,11 +625,11 @@ class WorkspaceOperations {
    * Recalculates consensus and updates biosample.
    */
   def removeHaplogroupCall(
-    state: WorkspaceState,
-    sampleAccession: String,
-    dnaType: DnaType,
-    sourceRef: String
-  ): Either[String, WorkspaceState] = {
+                            state: WorkspaceState,
+                            sampleAccession: String,
+                            dnaType: DnaType,
+                            sourceRef: String
+                          ): Either[String, WorkspaceState] = {
     findSubject(state, sampleAccession) match {
       case Some(subject) =>
         val biosampleRef = subject.atUri.getOrElse(s"local:biosample:$sampleAccession")

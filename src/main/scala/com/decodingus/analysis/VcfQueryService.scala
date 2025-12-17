@@ -1,13 +1,13 @@
 package com.decodingus.analysis
 
 import com.decodingus.util.Logger
-import htsjdk.variant.vcf.VCFFileReader
 import htsjdk.variant.variantcontext.VariantContext
+import htsjdk.variant.vcf.VCFFileReader
 
 import java.io.File
 import java.nio.file.Path
 import scala.collection.mutable
-import scala.jdk.CollectionConverters._
+import scala.jdk.CollectionConverters.*
 import scala.util.{Either, Left, Right, Try, Using}
 
 /**
@@ -19,18 +19,21 @@ case class BuildMismatch(expected: String, actual: String)
  * A variant call from the VCF.
  */
 case class VariantCall(
-  contig: String,
-  position: Long,
-  ref: String,
-  alt: String,
-  genotype: String,
-  depth: Option[Int],
-  quality: Option[Double],
-  filter: String
-) {
+                        contig: String,
+                        position: Long,
+                        ref: String,
+                        alt: String,
+                        genotype: String,
+                        depth: Option[Int],
+                        quality: Option[Double],
+                        filter: String
+                      ) {
   def isVariant: Boolean = alt != ref && alt != "."
+
   def isHomRef: Boolean = genotype == "0/0" || genotype == "0"
+
   def isHomAlt: Boolean = genotype == "1/1" || genotype == "1"
+
   def isHet: Boolean = genotype == "0/1" || genotype == "1/0"
 }
 
@@ -50,7 +53,7 @@ class VcfQueryService(vcfInfo: CachedVcfInfo) {
 
   private lazy val reader: VCFFileReader = {
     val vcfFile = new File(vcfInfo.vcfPath)
-    new VCFFileReader(vcfFile, true)  // true = require index
+    new VCFFileReader(vcfFile, true) // true = require index
   }
 
   // In-memory cache of variants by contig -> position -> VariantCall
@@ -86,16 +89,16 @@ class VcfQueryService(vcfInfo: CachedVcfInfo) {
   /**
    * Query a single position in the VCF.
    *
-   * @param build Expected reference build
-   * @param contig Chromosome name (e.g., "chr1")
+   * @param build    Expected reference build
+   * @param contig   Chromosome name (e.g., "chr1")
    * @param position 1-based genomic position
    * @return Either build mismatch error or optional variant call
    */
   def queryPosition(
-    build: String,
-    contig: String,
-    position: Long
-  ): Either[BuildMismatch, Option[VariantCall]] = {
+                     build: String,
+                     contig: String,
+                     position: Long
+                   ): Either[BuildMismatch, Option[VariantCall]] = {
     validateBuild(build).map { _ =>
       Try {
         val results = reader.query(contig, position.toInt, position.toInt)
@@ -115,14 +118,14 @@ class VcfQueryService(vcfInfo: CachedVcfInfo) {
    * variants into memory once, then performs O(1) lookups. This is much faster
    * than individual tabix queries when querying many positions.
    *
-   * @param build Expected reference build
+   * @param build     Expected reference build
    * @param positions List of (contig, position) tuples
    * @return Either build mismatch error or map of position to optional variant call
    */
   def queryPositions(
-    build: String,
-    positions: List[(String, Long)]
-  ): Either[BuildMismatch, Map[(String, Long), Option[VariantCall]]] = {
+                      build: String,
+                      positions: List[(String, Long)]
+                    ): Either[BuildMismatch, Map[(String, Long), Option[VariantCall]]] = {
     validateBuild(build).map { _ =>
       val startTime = System.currentTimeMillis()
 
@@ -149,18 +152,18 @@ class VcfQueryService(vcfInfo: CachedVcfInfo) {
   /**
    * Query all variants in a region.
    *
-   * @param build Expected reference build
+   * @param build  Expected reference build
    * @param contig Chromosome name
-   * @param start Start position (1-based, inclusive)
-   * @param end End position (1-based, inclusive)
+   * @param start  Start position (1-based, inclusive)
+   * @param end    End position (1-based, inclusive)
    * @return Either build mismatch error or list of variant calls
    */
   def queryRegion(
-    build: String,
-    contig: String,
-    start: Long,
-    end: Long
-  ): Either[BuildMismatch, List[VariantCall]] = {
+                   build: String,
+                   contig: String,
+                   start: Long,
+                   end: Long
+                 ): Either[BuildMismatch, List[VariantCall]] = {
     validateBuild(build).map { _ =>
       Try {
         reader.query(contig, start.toInt, end.toInt).asScala.map(variantContextToCall).toList
@@ -242,7 +245,7 @@ class VcfQueryService(vcfInfo: CachedVcfInfo) {
     }
 
     val altAllele = if (vc.getAlternateAlleles.isEmpty) "."
-      else vc.getAlternateAllele(0).getBaseString
+    else vc.getAlternateAllele(0).getBaseString
 
     VariantCall(
       contig = vc.getContig,
@@ -270,10 +273,10 @@ object VcfQueryService {
    * Create a VcfQueryService from cached VCF metadata.
    */
   def fromCache(
-    sampleAccession: String,
-    runId: String,
-    alignmentId: String
-  ): Either[String, VcfQueryService] = {
+                 sampleAccession: String,
+                 runId: String,
+                 alignmentId: String
+               ): Either[String, VcfQueryService] = {
     VcfCache.loadMetadata(sampleAccession, runId, alignmentId).map { info =>
       new VcfQueryService(info)
     }
@@ -283,14 +286,14 @@ object VcfQueryService {
    * Create a VcfQueryService from a VCF file path directly.
    * Used for vendor-provided VCFs that aren't in the standard cache structure.
    *
-   * @param vcfPath Path to the VCF file (must be indexed)
+   * @param vcfPath        Path to the VCF file (must be indexed)
    * @param referenceBuild Reference build of the VCF
    * @return VcfQueryService or error
    */
   def fromVcfPath(
-    vcfPath: String,
-    referenceBuild: String
-  ): Either[String, VcfQueryService] = {
+                   vcfPath: String,
+                   referenceBuild: String
+                 ): Either[String, VcfQueryService] = {
     val vcfFile = new File(vcfPath)
     if (!vcfFile.exists()) {
       Left(s"VCF file not found: $vcfPath")
@@ -298,7 +301,7 @@ object VcfQueryService {
       // Create a minimal CachedVcfInfo for the VCF path
       val info = CachedVcfInfo(
         vcfPath = vcfPath,
-        indexPath = vcfPath + ".tbi",  // Assume tabix index
+        indexPath = vcfPath + ".tbi", // Assume tabix index
         referenceBuild = referenceBuild,
         callerVersion = "vendor",
         gatkVersion = "N/A",
@@ -316,10 +319,10 @@ object VcfQueryService {
    * Create a VcfQueryService from AT URIs.
    */
   def fromUris(
-    sampleAccession: String,
-    sequenceRunUri: Option[String],
-    alignmentUri: Option[String]
-  ): Either[String, VcfQueryService] = {
+                sampleAccession: String,
+                sequenceRunUri: Option[String],
+                alignmentUri: Option[String]
+              ): Either[String, VcfQueryService] = {
     VcfCache.loadMetadataFromUris(sampleAccession, sequenceRunUri, alignmentUri).map { info =>
       new VcfQueryService(info)
     }
@@ -329,13 +332,13 @@ object VcfQueryService {
    * Query a position using a cached VCF, automatically loading and closing.
    */
   def quickQuery(
-    sampleAccession: String,
-    runId: String,
-    alignmentId: String,
-    build: String,
-    contig: String,
-    position: Long
-  ): Either[String, Option[VariantCall]] = {
+                  sampleAccession: String,
+                  runId: String,
+                  alignmentId: String,
+                  build: String,
+                  contig: String,
+                  position: Long
+                ): Either[String, Option[VariantCall]] = {
     fromCache(sampleAccession, runId, alignmentId).flatMap { service =>
       try {
         service.queryPosition(build, contig, position) match {

@@ -1,14 +1,14 @@
 package com.decodingus.workspace.services
 
 import com.decodingus.analysis.*
-import com.decodingus.haplogroup.processor.HaplogroupProcessor
 import com.decodingus.analysis.SexInference.{InferredSex, SexInferenceResult}
-import com.decodingus.config.{FeatureToggles, UserPreferencesService}
-import com.decodingus.refgenome.config.ReferenceConfigService
+import com.decodingus.config.UserPreferencesService
 import com.decodingus.haplogroup.model.HaplogroupResult as AnalysisHaplogroupResult
+import com.decodingus.haplogroup.processor.HaplogroupProcessor
 import com.decodingus.haplogroup.tree.{TreeProviderType, TreeType}
 import com.decodingus.model.{LibraryStats, WgsMetrics}
-import com.decodingus.refgenome.{ReferenceGateway, ReferenceResolveResult}
+import com.decodingus.refgenome.ReferenceGateway
+import com.decodingus.refgenome.config.ReferenceConfigService
 import com.decodingus.util.Logger
 import com.decodingus.workspace.WorkspaceState
 import com.decodingus.workspace.model.*
@@ -21,11 +21,11 @@ import scala.concurrent.{ExecutionContext, Future}
  * Progress state for analysis operations.
  */
 case class AnalysisProgress(
-  message: String,
-  percent: Double,
-  isComplete: Boolean = false,
-  error: Option[String] = None
-)
+                             message: String,
+                             percent: Double,
+                             isComplete: Boolean = false,
+                             error: Option[String] = None
+                           )
 
 /**
  * Coordinates all analysis operations (library stats, WGS metrics, haplogroups, callable loci).
@@ -45,11 +45,11 @@ class AnalysisCoordinator(implicit ec: ExecutionContext) {
    * Returns the stats and updates needed to the workspace.
    */
   def runLibraryStatsAnalysis(
-    state: WorkspaceState,
-    sampleAccession: String,
-    sequenceRunIndex: Int,
-    onProgress: AnalysisProgress => Unit
-  ): Future[Either[String, (WorkspaceState, LibraryStats, Alignment)]] = Future {
+                               state: WorkspaceState,
+                               sampleAccession: String,
+                               sequenceRunIndex: Int,
+                               onProgress: AnalysisProgress => Unit
+                             ): Future[Either[String, (WorkspaceState, LibraryStats, Alignment)]] = Future {
     workspaceOps.findSubject(state, sampleAccession) match {
       case None =>
         Left(s"Subject not found: $sampleAccession")
@@ -74,12 +74,12 @@ class AnalysisCoordinator(implicit ec: ExecutionContext) {
   }
 
   private def runLibraryStatsInternal(
-    state: WorkspaceState,
-    subject: Biosample,
-    seqRun: SequenceRun,
-    bamPath: String,
-    onProgress: AnalysisProgress => Unit
-  ): Either[String, (WorkspaceState, LibraryStats, Alignment)] = {
+                                       state: WorkspaceState,
+                                       subject: Biosample,
+                                       seqRun: SequenceRun,
+                                       bamPath: String,
+                                       onProgress: AnalysisProgress => Unit
+                                     ): Either[String, (WorkspaceState, LibraryStats, Alignment)] = {
     try {
       // Step 1: Detect reference build
       onProgress(AnalysisProgress("Reading BAM/CRAM header...", 0.1))
@@ -176,11 +176,11 @@ class AnalysisCoordinator(implicit ec: ExecutionContext) {
   // --- WGS Metrics Analysis ---
 
   def runWgsMetricsAnalysis(
-    state: WorkspaceState,
-    sampleAccession: String,
-    sequenceRunIndex: Int,
-    onProgress: AnalysisProgress => Unit
-  ): Future[Either[String, (WorkspaceState, WgsMetrics)]] = Future {
+                             state: WorkspaceState,
+                             sampleAccession: String,
+                             sequenceRunIndex: Int,
+                             onProgress: AnalysisProgress => Unit
+                           ): Future[Either[String, (WorkspaceState, WgsMetrics)]] = Future {
     workspaceOps.findSubject(state, sampleAccession) match {
       case None =>
         Left(s"Subject not found: $sampleAccession")
@@ -212,13 +212,13 @@ class AnalysisCoordinator(implicit ec: ExecutionContext) {
   }
 
   private def runWgsMetricsInternal(
-    state: WorkspaceState,
-    subject: Biosample,
-    seqRun: SequenceRun,
-    alignment: Alignment,
-    bamPath: String,
-    onProgress: AnalysisProgress => Unit
-  ): Either[String, (WorkspaceState, WgsMetrics)] = {
+                                     state: WorkspaceState,
+                                     subject: Biosample,
+                                     seqRun: SequenceRun,
+                                     alignment: Alignment,
+                                     bamPath: String,
+                                     onProgress: AnalysisProgress => Unit
+                                   ): Either[String, (WorkspaceState, WgsMetrics)] = {
     try {
       onProgress(AnalysisProgress("Resolving reference genome...", 0.1))
 
@@ -305,12 +305,12 @@ class AnalysisCoordinator(implicit ec: ExecutionContext) {
    * Results are cached in the alignment's artifact directory.
    */
   def runWholeGenomeVariantCalling(
-    state: WorkspaceState,
-    sampleAccession: String,
-    sequenceRunIndex: Int,
-    alignmentIndex: Int,
-    onProgress: AnalysisProgress => Unit
-  ): Future[Either[String, (WorkspaceState, CachedVcfInfo)]] = Future {
+                                    state: WorkspaceState,
+                                    sampleAccession: String,
+                                    sequenceRunIndex: Int,
+                                    alignmentIndex: Int,
+                                    onProgress: AnalysisProgress => Unit
+                                  ): Future[Either[String, (WorkspaceState, CachedVcfInfo)]] = Future {
     workspaceOps.findSubject(state, sampleAccession) match {
       case None =>
         Left(s"Subject not found: $sampleAccession")
@@ -343,13 +343,13 @@ class AnalysisCoordinator(implicit ec: ExecutionContext) {
   }
 
   private def runWholeGenomeVariantCallingInternal(
-    state: WorkspaceState,
-    subject: Biosample,
-    seqRun: SequenceRun,
-    alignment: Alignment,
-    bamPath: String,
-    onProgress: AnalysisProgress => Unit
-  ): Either[String, (WorkspaceState, CachedVcfInfo)] = {
+                                                    state: WorkspaceState,
+                                                    subject: Biosample,
+                                                    seqRun: SequenceRun,
+                                                    alignment: Alignment,
+                                                    bamPath: String,
+                                                    onProgress: AnalysisProgress => Unit
+                                                  ): Either[String, (WorkspaceState, CachedVcfInfo)] = {
     try {
       onProgress(AnalysisProgress("Resolving reference genome...", 0.05))
 
@@ -419,12 +419,12 @@ class AnalysisCoordinator(implicit ec: ExecutionContext) {
   // --- Haplogroup Analysis ---
 
   def runHaplogroupAnalysis(
-    state: WorkspaceState,
-    sampleAccession: String,
-    sequenceRunIndex: Int,
-    treeType: TreeType,
-    onProgress: AnalysisProgress => Unit
-  ): Future[Either[String, (WorkspaceState, AnalysisHaplogroupResult)]] = Future {
+                             state: WorkspaceState,
+                             sampleAccession: String,
+                             sequenceRunIndex: Int,
+                             treeType: TreeType,
+                             onProgress: AnalysisProgress => Unit
+                           ): Future[Either[String, (WorkspaceState, AnalysisHaplogroupResult)]] = Future {
     workspaceOps.findSubject(state, sampleAccession) match {
       case None =>
         Left(s"Subject not found: $sampleAccession")
@@ -456,14 +456,14 @@ class AnalysisCoordinator(implicit ec: ExecutionContext) {
   }
 
   private def runHaplogroupInternal(
-    state: WorkspaceState,
-    subject: Biosample,
-    seqRun: SequenceRun,
-    alignment: Alignment,
-    bamPath: String,
-    treeType: TreeType,
-    onProgress: AnalysisProgress => Unit
-  ): Either[String, (WorkspaceState, AnalysisHaplogroupResult)] = {
+                                     state: WorkspaceState,
+                                     subject: Biosample,
+                                     seqRun: SequenceRun,
+                                     alignment: Alignment,
+                                     bamPath: String,
+                                     treeType: TreeType,
+                                     onProgress: AnalysisProgress => Unit
+                                   ): Either[String, (WorkspaceState, AnalysisHaplogroupResult)] = {
     try {
       onProgress(AnalysisProgress("Loading haplogroup tree...", 0.1))
 
@@ -710,11 +710,11 @@ class AnalysisCoordinator(implicit ec: ExecutionContext) {
   // --- Callable Loci Analysis ---
 
   def runCallableLociAnalysis(
-    state: WorkspaceState,
-    sampleAccession: String,
-    sequenceRunIndex: Int,
-    onProgress: AnalysisProgress => Unit
-  ): Future[Either[String, (WorkspaceState, CallableLociResult)]] = Future {
+                               state: WorkspaceState,
+                               sampleAccession: String,
+                               sequenceRunIndex: Int,
+                               onProgress: AnalysisProgress => Unit
+                             ): Future[Either[String, (WorkspaceState, CallableLociResult)]] = Future {
     workspaceOps.findSubject(state, sampleAccession) match {
       case None =>
         Left(s"Subject not found: $sampleAccession")
@@ -746,13 +746,13 @@ class AnalysisCoordinator(implicit ec: ExecutionContext) {
   }
 
   private def runCallableLociInternal(
-    state: WorkspaceState,
-    subject: Biosample,
-    seqRun: SequenceRun,
-    alignment: Alignment,
-    bamPath: String,
-    onProgress: AnalysisProgress => Unit
-  ): Either[String, (WorkspaceState, CallableLociResult)] = {
+                                       state: WorkspaceState,
+                                       subject: Biosample,
+                                       seqRun: SequenceRun,
+                                       alignment: Alignment,
+                                       bamPath: String,
+                                       onProgress: AnalysisProgress => Unit
+                                     ): Either[String, (WorkspaceState, CallableLociResult)] = {
     try {
       onProgress(AnalysisProgress("Resolving reference genome...", 0.1))
 
@@ -781,18 +781,18 @@ class AnalysisCoordinator(implicit ec: ExecutionContext) {
       val isLowPass = meanCoverage <= 5.0
       val isHiFi = seqRun.testType.toUpperCase.contains("HIFI")
       val isLongRead = seqRun.testType.toUpperCase.contains("NANOPORE") ||
-                       seqRun.testType.toUpperCase.contains("CLR") ||
-                       seqRun.maxReadLength.exists(_ > 10000)
+        seqRun.testType.toUpperCase.contains("CLR") ||
+        seqRun.maxReadLength.exists(_ > 10000)
 
       val minDepth = if (isHiFi) {
-        2  // HiFi: high accuracy, minDepth=2 is fine
+        2 // HiFi: high accuracy, minDepth=2 is fine
       } else if (isLowPass) {
         // Low-pass data: use minDepth proportional to coverage
         math.max(1, (meanCoverage / 2).toInt)
       } else if (isLongRead) {
-        3  // ONT/CLR: moderate accuracy, minDepth=3
+        3 // ONT/CLR: moderate accuracy, minDepth=3
       } else {
-        4  // Illumina WGS at normal depth: standard minDepth=4
+        4 // Illumina WGS at normal depth: standard minDepth=4
       }
 
       log.info(s"[CallableLoci] Using minDepth=$minDepth (testType=${seqRun.testType}, meanCov=${f"$meanCoverage%.1f"}x, isHiFi=$isHiFi, isLowPass=$isLowPass)")
@@ -841,20 +841,20 @@ class AnalysisCoordinator(implicit ec: ExecutionContext) {
    * 7. Y-DNA Haplogroup - Paternal lineage (if male)
    * 8. Ancestral Composition - Stub for future implementation
    *
-   * @param state Current workspace state
-   * @param sampleAccession Sample accession identifier
+   * @param state            Current workspace state
+   * @param sampleAccession  Sample accession identifier
    * @param sequenceRunIndex Index of sequence run
-   * @param alignmentIndex Index of alignment
-   * @param onProgress Progress callback with step information
+   * @param alignmentIndex   Index of alignment
+   * @param onProgress       Progress callback with step information
    * @return Updated state and batch analysis results
    */
   def runComprehensiveAnalysis(
-    state: WorkspaceState,
-    sampleAccession: String,
-    sequenceRunIndex: Int,
-    alignmentIndex: Int,
-    onProgress: AnalysisProgress => Unit
-  ): Future[Either[String, (WorkspaceState, BatchAnalysisResult)]] = Future {
+                                state: WorkspaceState,
+                                sampleAccession: String,
+                                sequenceRunIndex: Int,
+                                alignmentIndex: Int,
+                                onProgress: AnalysisProgress => Unit
+                              ): Future[Either[String, (WorkspaceState, BatchAnalysisResult)]] = Future {
     workspaceOps.findSubject(state, sampleAccession) match {
       case None =>
         Left(s"Subject not found: $sampleAccession")
@@ -886,13 +886,13 @@ class AnalysisCoordinator(implicit ec: ExecutionContext) {
   }
 
   private def runComprehensiveAnalysisInternal(
-    state: WorkspaceState,
-    subject: Biosample,
-    seqRun: SequenceRun,
-    alignment: Alignment,
-    bamPath: String,
-    onProgress: AnalysisProgress => Unit
-  ): Either[String, (WorkspaceState, BatchAnalysisResult)] = {
+                                                state: WorkspaceState,
+                                                subject: Biosample,
+                                                seqRun: SequenceRun,
+                                                alignment: Alignment,
+                                                bamPath: String,
+                                                onProgress: AnalysisProgress => Unit
+                                              ): Either[String, (WorkspaceState, BatchAnalysisResult)] = {
     var currentState = state
     var result = BatchAnalysisResult()
 
@@ -965,15 +965,15 @@ class AnalysisCoordinator(implicit ec: ExecutionContext) {
                 if (readMetrics.maxReadLength > 10000) {
                   // Long reads - use platform hint if available, otherwise assume HiFi (most common now)
                   if (currentSeqRun.platformName.toUpperCase.contains("NANOPORE") ||
-                      currentSeqRun.platformName.toUpperCase.contains("ONT")) {
+                    currentSeqRun.platformName.toUpperCase.contains("ONT")) {
                     "WGS_NANOPORE"
                   } else {
-                    "WGS_HIFI"  // Default to HiFi for PacBio or unknown long-read
+                    "WGS_HIFI" // Default to HiFi for PacBio or unknown long-read
                   }
                 } else {
-                  currentSeqRun.testType  // Keep existing for short reads
+                  currentSeqRun.testType // Keep existing for short reads
                 }
-              case other => other  // Keep any other specific type
+              case other => other // Keep any other specific type
             }
 
             // Infer library layout from read pairing
@@ -992,7 +992,7 @@ class AnalysisCoordinator(implicit ec: ExecutionContext) {
               libraryLayout = Some(inferredLayout)
             )
             currentState = workspaceOps.updateSequenceRunByUri(currentState, updatedSeqRun)
-            currentSeqRun = updatedSeqRun  // Keep local var in sync with state
+            currentSeqRun = updatedSeqRun // Keep local var in sync with state
 
             checkpoint = AnalysisCheckpoint.markReadMetricsComplete(artifactDir, checkpoint, readMetrics.maxReadLength)
             log.info(s"Read metrics complete: maxReadLength=${readMetrics.maxReadLength}, testType=$inferredTestType, layout=$inferredLayout")
@@ -1220,7 +1220,7 @@ class AnalysisCoordinator(implicit ec: ExecutionContext) {
             val pct = if (total > 0) current.toDouble / total else 0.0
             onProgress(AnalysisProgress(s"Step 5/8: Variant calling - $msg", 0.35 + pct * 0.20))
           },
-          sexInferenceResult = result.sexInferenceResult  // Pass sex result from Step 4 to avoid re-computing
+          sexInferenceResult = result.sexInferenceResult // Pass sex result from Step 4 to avoid re-computing
         )
         vcfResult match {
           case Right(vcfInfo) =>
@@ -1272,7 +1272,7 @@ class AnalysisCoordinator(implicit ec: ExecutionContext) {
       if (!checkpoint.yDnaHaplogroupCompleted && !checkpoint.yDnaSkipped) {
         val isMale = result.sexInferenceResult.exists(_.isMale)
         val sexUnknown = result.sexInferenceResult.exists(_.isUnknown)
-        val sexMissing = result.sexInferenceResult.isEmpty  // Defensive: treat missing as "try Y-DNA"
+        val sexMissing = result.sexInferenceResult.isEmpty // Defensive: treat missing as "try Y-DNA"
         val isFemale = result.sexInferenceResult.exists(_.isFemale)
 
         if (isMale || sexUnknown || sexMissing) {
@@ -1344,12 +1344,12 @@ class AnalysisCoordinator(implicit ec: ExecutionContext) {
    * Run WGS metrics step for batch analysis.
    */
   private def runWgsMetricsStep(
-    bamPath: String,
-    referencePath: String,
-    seqRun: SequenceRun,
-    artifactCtx: ArtifactContext,
-    onProgress: Double => Unit
-  ): Either[String, WgsMetrics] = {
+                                 bamPath: String,
+                                 referencePath: String,
+                                 seqRun: SequenceRun,
+                                 artifactCtx: ArtifactContext,
+                                 onProgress: Double => Unit
+                               ): Either[String, WgsMetrics] = {
     val processor = new WgsMetricsProcessor()
     val isSingleEnd = seqRun.libraryLayout.exists(_.equalsIgnoreCase("Single-End")) ||
       (seqRun.libraryLayout.isEmpty && seqRun.totalReads.exists(total =>
@@ -1373,13 +1373,13 @@ class AnalysisCoordinator(implicit ec: ExecutionContext) {
    * Note: This now takes alignment to access coverage metrics for minDepth calculation.
    */
   private def runCallableLociStep(
-    bamPath: String,
-    referencePath: String,
-    seqRun: SequenceRun,
-    alignment: Alignment,
-    artifactCtx: ArtifactContext,
-    onProgress: Double => Unit
-  ): Either[String, (CallableLociResult, List[String])] = {
+                                   bamPath: String,
+                                   referencePath: String,
+                                   seqRun: SequenceRun,
+                                   alignment: Alignment,
+                                   artifactCtx: ArtifactContext,
+                                   onProgress: Double => Unit
+                                 ): Either[String, (CallableLociResult, List[String])] = {
     val processor = new CallableLociProcessor()
 
     // Determine minDepth based on test type AND coverage
@@ -1389,19 +1389,19 @@ class AnalysisCoordinator(implicit ec: ExecutionContext) {
     val isLowPass = meanCoverage <= 5.0
     val isHiFi = seqRun.testType.toUpperCase.contains("HIFI")
     val isLongRead = seqRun.testType.toUpperCase.contains("NANOPORE") ||
-                     seqRun.testType.toUpperCase.contains("CLR") ||
-                     seqRun.maxReadLength.exists(_ > 10000)
+      seqRun.testType.toUpperCase.contains("CLR") ||
+      seqRun.maxReadLength.exists(_ > 10000)
 
     val minDepth = if (isHiFi) {
-      2  // HiFi: high accuracy, minDepth=2 is fine
+      2 // HiFi: high accuracy, minDepth=2 is fine
     } else if (isLowPass) {
       // Low-pass data: use minDepth proportional to coverage
       // At 4x, use minDepth=2; at 2x, use minDepth=1
       math.max(1, (meanCoverage / 2).toInt)
     } else if (isLongRead) {
-      3  // ONT/CLR: moderate accuracy, minDepth=3
+      3 // ONT/CLR: moderate accuracy, minDepth=3
     } else {
-      4  // Illumina WGS at normal depth: standard minDepth=4
+      4 // Illumina WGS at normal depth: standard minDepth=4
     }
 
     log.info(s"[CallableLoci] Using minDepth=$minDepth (testType=${seqRun.testType}, meanCov=${f"$meanCoverage%.1f"}x, isHiFi=$isHiFi, isLowPass=$isLowPass)")
@@ -1424,14 +1424,14 @@ class AnalysisCoordinator(implicit ec: ExecutionContext) {
    * Returns just the haplogroup result - state updates are handled by the caller.
    */
   private def runHaplogroupStep(
-    bamPath: String,
-    subject: Biosample,
-    seqRun: SequenceRun,
-    alignment: Alignment,
-    treeType: TreeType,
-    artifactCtx: ArtifactContext,
-    onProgress: Double => Unit
-  ): Either[String, AnalysisHaplogroupResult] = {
+                                 bamPath: String,
+                                 subject: Biosample,
+                                 seqRun: SequenceRun,
+                                 alignment: Alignment,
+                                 treeType: TreeType,
+                                 artifactCtx: ArtifactContext,
+                                 onProgress: Double => Unit
+                               ): Either[String, AnalysisHaplogroupResult] = {
     // Select tree provider based on user preferences
     val treeProviderType = treeType match {
       case TreeType.YDNA =>
@@ -1632,14 +1632,14 @@ class AnalysisCoordinator(implicit ec: ExecutionContext) {
  * Result of comprehensive batch analysis.
  */
 case class BatchAnalysisResult(
-  readMetrics: Option[ReadMetrics] = None,
-  wgsMetrics: Option[WgsMetrics] = None,
-  callableLociResult: Option[CallableLociResult] = None,
-  sexInferenceResult: Option[SexInference.SexInferenceResult] = None,
-  vcfInfo: Option[CachedVcfInfo] = None,
-  mtDnaHaplogroup: Option[AnalysisHaplogroupResult] = None,
-  yDnaHaplogroup: Option[AnalysisHaplogroupResult] = None,
-  skippedYDna: Boolean = false,
-  skippedYDnaReason: Option[String] = None,
-  ancestryStub: Boolean = false  // Stub for future ancestry composition
-)
+                                readMetrics: Option[ReadMetrics] = None,
+                                wgsMetrics: Option[WgsMetrics] = None,
+                                callableLociResult: Option[CallableLociResult] = None,
+                                sexInferenceResult: Option[SexInference.SexInferenceResult] = None,
+                                vcfInfo: Option[CachedVcfInfo] = None,
+                                mtDnaHaplogroup: Option[AnalysisHaplogroupResult] = None,
+                                yDnaHaplogroup: Option[AnalysisHaplogroupResult] = None,
+                                skippedYDna: Boolean = false,
+                                skippedYDnaReason: Option[String] = None,
+                                ancestryStub: Boolean = false // Stub for future ancestry composition
+                              )

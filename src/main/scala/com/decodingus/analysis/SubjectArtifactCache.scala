@@ -8,18 +8,18 @@ import java.nio.file.{Files, Path, Paths}
  *
  * Directory structure:
  * ~/.decodingus/cache/subjects/{sampleAccession}/runs/{runId}/alignments/{alignmentId}/
- *   ├── wgs_metrics.txt
- *   ├── callable_loci/
- *   │   ├── chr1.callable.bed
- *   │   ├── chr1.table.txt
- *   │   └── chr1.callable.svg
- *   ├── haplogroup/
- *   │   ├── alleles.vcf
- *   │   └── called.vcf
- *   └── vcf/
- *       ├── whole_genome.vcf.gz
- *       ├── whole_genome.vcf.gz.tbi
- *       └── vcf_metadata.json
+ * ├── wgs_metrics.txt
+ * ├── callable_loci/
+ * │   ├── chr1.callable.bed
+ * │   ├── chr1.table.txt
+ * │   └── chr1.callable.svg
+ * ├── haplogroup/
+ * │   ├── alleles.vcf
+ * │   └── called.vcf
+ * └── vcf/
+ * ├── whole_genome.vcf.gz
+ * ├── whole_genome.vcf.gz.tbi
+ * └── vcf_metadata.json
  */
 object SubjectArtifactCache {
 
@@ -77,7 +77,7 @@ object SubjectArtifactCache {
   /**
    * Extracts the ID portion from an AT URI.
    * e.g., "local:alignment:SAMPLE001:abc12345" -> "abc12345"
-   *       "at://did:plc:123/com.decodingus.atmosphere.alignment/xyz" -> "xyz"
+   * "at://did:plc:123/com.decodingus.atmosphere.alignment/xyz" -> "xyz"
    */
   def extractIdFromUri(uri: String): String = {
     if (uri.contains(":")) {
@@ -91,10 +91,10 @@ object SubjectArtifactCache {
    * Convenience method to get artifact directory using AT URIs directly.
    */
   def getAlignmentDirFromUris(
-    sampleAccession: String,
-    sequenceRunUri: Option[String],
-    alignmentUri: Option[String]
-  ): Path = {
+                               sampleAccession: String,
+                               sequenceRunUri: Option[String],
+                               alignmentUri: Option[String]
+                             ): Path = {
     val runId = sequenceRunUri.map(extractIdFromUri).getOrElse("unknown-run")
     val alignId = alignmentUri.map(extractIdFromUri).getOrElse("unknown-alignment")
     getAlignmentDir(sampleAccession, runId, alignId)
@@ -131,7 +131,7 @@ object SubjectArtifactCache {
   def listArtifacts(sampleAccession: String, runId: String, alignmentId: String): List[Path] = {
     val dir = getAlignmentDir(sampleAccession, runId, alignmentId)
     if (Files.exists(dir)) {
-      import scala.jdk.CollectionConverters._
+      import scala.jdk.CollectionConverters.*
       Files.walk(dir).iterator().asScala.filter(Files.isRegularFile(_)).toList
     } else {
       List.empty
@@ -144,7 +144,7 @@ object SubjectArtifactCache {
   def deleteAlignmentArtifacts(sampleAccession: String, runId: String, alignmentId: String): Unit = {
     val dir = getAlignmentDir(sampleAccession, runId, alignmentId)
     if (Files.exists(dir)) {
-      import scala.jdk.CollectionConverters._
+      import scala.jdk.CollectionConverters.*
       Files.walk(dir)
         .sorted(java.util.Comparator.reverseOrder())
         .iterator()
@@ -159,7 +159,7 @@ object SubjectArtifactCache {
   def deleteSequenceRunArtifacts(sampleAccession: String, runId: String): Unit = {
     val dir = getSequenceRunDir(sampleAccession, runId)
     if (Files.exists(dir)) {
-      import scala.jdk.CollectionConverters._
+      import scala.jdk.CollectionConverters.*
       Files.walk(dir)
         .sorted(java.util.Comparator.reverseOrder())
         .iterator()
@@ -174,7 +174,7 @@ object SubjectArtifactCache {
   def deleteSubjectArtifacts(sampleAccession: String): Unit = {
     val dir = getSubjectDir(sampleAccession)
     if (Files.exists(dir)) {
-      import scala.jdk.CollectionConverters._
+      import scala.jdk.CollectionConverters.*
       Files.walk(dir)
         .sorted(java.util.Comparator.reverseOrder())
         .iterator()

@@ -4,7 +4,7 @@ import com.decodingus.auth.User
 import com.decodingus.config.FeatureToggles
 import scalafx.geometry.{Insets, Pos}
 import scalafx.scene.control.{Button, Label}
-import scalafx.scene.layout.{HBox, Region, Priority}
+import scalafx.scene.layout.{HBox, Priority, Region}
 
 class TopBar(onLogin: () => Unit, onLogout: () => Unit) extends HBox {
   alignment = Pos.CenterRight

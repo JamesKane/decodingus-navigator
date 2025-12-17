@@ -6,6 +6,7 @@ import io.circe.*
 import io.circe.generic.semiauto.*
 import io.circe.parser.*
 import io.circe.syntax.*
+
 import java.sql.{Connection, ResultSet, Timestamp}
 import java.time.LocalDateTime
 import java.util.UUID
@@ -16,58 +17,59 @@ import java.util.UUID
  * Represents a single sequencing session with platform info, metrics, and file references.
  */
 case class SequenceRunEntity(
-  id: UUID,
-  biosampleId: UUID,
-  platform: String,
-  instrumentModel: Option[String],
-  instrumentId: Option[String],
-  testType: String,
-  libraryId: Option[String],
-  platformUnit: Option[String],
-  libraryLayout: Option[String],
-  sampleName: Option[String],
-  sequencingFacility: Option[String],
-  runFingerprint: Option[String],
-  totalReads: Option[Long],
-  pfReads: Option[Long],
-  pfReadsAligned: Option[Long],
-  pctPfReadsAligned: Option[Double],
-  readsPaired: Option[Long],
-  pctReadsPaired: Option[Double],
-  pctProperPairs: Option[Double],
-  readLength: Option[Int],
-  maxReadLength: Option[Int],
-  meanInsertSize: Option[Double],
-  medianInsertSize: Option[Double],
-  stdInsertSize: Option[Double],
-  pairOrientation: Option[String],
-  flowcellId: Option[String],
-  runDate: Option[LocalDateTime],
-  files: List[FileInfo],
-  meta: EntityMeta
-) extends Entity[UUID]
+                              id: UUID,
+                              biosampleId: UUID,
+                              platform: String,
+                              instrumentModel: Option[String],
+                              instrumentId: Option[String],
+                              testType: String,
+                              libraryId: Option[String],
+                              platformUnit: Option[String],
+                              libraryLayout: Option[String],
+                              sampleName: Option[String],
+                              sequencingFacility: Option[String],
+                              runFingerprint: Option[String],
+                              totalReads: Option[Long],
+                              pfReads: Option[Long],
+                              pfReadsAligned: Option[Long],
+                              pctPfReadsAligned: Option[Double],
+                              readsPaired: Option[Long],
+                              pctReadsPaired: Option[Double],
+                              pctProperPairs: Option[Double],
+                              readLength: Option[Int],
+                              maxReadLength: Option[Int],
+                              meanInsertSize: Option[Double],
+                              medianInsertSize: Option[Double],
+                              stdInsertSize: Option[Double],
+                              pairOrientation: Option[String],
+                              flowcellId: Option[String],
+                              runDate: Option[LocalDateTime],
+                              files: List[FileInfo],
+                              meta: EntityMeta
+                            ) extends Entity[UUID]
 
 object SequenceRunEntity:
   // Circe codecs for FileInfo JSON
   given Encoder[FileInfo] = deriveEncoder
+
   given Decoder[FileInfo] = deriveDecoder
 
   /**
    * Create a new SequenceRunEntity with generated ID and initial metadata.
    */
   def create(
-    biosampleId: UUID,
-    platform: String,
-    testType: String,
-    instrumentModel: Option[String] = None,
-    instrumentId: Option[String] = None,
-    libraryId: Option[String] = None,
-    platformUnit: Option[String] = None,
-    libraryLayout: Option[String] = None,
-    sampleName: Option[String] = None,
-    sequencingFacility: Option[String] = None,
-    runFingerprint: Option[String] = None
-  ): SequenceRunEntity = SequenceRunEntity(
+              biosampleId: UUID,
+              platform: String,
+              testType: String,
+              instrumentModel: Option[String] = None,
+              instrumentId: Option[String] = None,
+              libraryId: Option[String] = None,
+              platformUnit: Option[String] = None,
+              libraryLayout: Option[String] = None,
+              sampleName: Option[String] = None,
+              sequencingFacility: Option[String] = None,
+              runFingerprint: Option[String] = None
+            ): SequenceRunEntity = SequenceRunEntity(
     id = UUID.randomUUID(),
     biosampleId = biosampleId,
     platform = platform,
@@ -300,15 +302,15 @@ class SequenceRunRepository extends SyncableRepositoryBase[SequenceRunEntity]:
    * Commonly called after analysis completes.
    */
   def updateMetrics(
-    id: UUID,
-    totalReads: Option[Long] = None,
-    pfReads: Option[Long] = None,
-    pfReadsAligned: Option[Long] = None,
-    readLength: Option[Int] = None,
-    meanInsertSize: Option[Double] = None,
-    medianInsertSize: Option[Double] = None,
-    stdInsertSize: Option[Double] = None
-  )(using conn: Connection): Boolean =
+                     id: UUID,
+                     totalReads: Option[Long] = None,
+                     pfReads: Option[Long] = None,
+                     pfReadsAligned: Option[Long] = None,
+                     readLength: Option[Int] = None,
+                     meanInsertSize: Option[Double] = None,
+                     medianInsertSize: Option[Double] = None,
+                     stdInsertSize: Option[Double] = None
+                   )(using conn: Connection): Boolean =
     executeUpdate(
       """UPDATE sequence_run SET
         |  total_reads = COALESCE(?, total_reads),

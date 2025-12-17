@@ -1,10 +1,10 @@
 package com.decodingus.ui.components
 
-import scalafx.Includes._
-import scalafx.scene.control.{ButtonType, Dialog, Label, TextField, TextArea, ButtonBar}
-import scalafx.scene.layout.{GridPane, VBox, Priority}
-import scalafx.geometry.Insets
 import com.decodingus.workspace.model.{Project, RecordMeta}
+import scalafx.Includes.*
+import scalafx.geometry.Insets
+import scalafx.scene.control.*
+import scalafx.scene.layout.{GridPane, Priority, VBox}
 
 /**
  * Dialog for creating a new Project.

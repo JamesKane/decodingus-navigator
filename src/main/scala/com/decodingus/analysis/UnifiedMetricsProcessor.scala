@@ -25,18 +25,18 @@ class UnifiedMetricsProcessor {
   /**
    * Process a BAM/CRAM file to collect read-level metrics.
    *
-   * @param bamPath Path to BAM/CRAM file
-   * @param referencePath Path to reference genome
-   * @param onProgress Progress callback
+   * @param bamPath         Path to BAM/CRAM file
+   * @param referencePath   Path to reference genome
+   * @param onProgress      Progress callback
    * @param artifactContext Optional context for organizing output artifacts
    * @return Either error or ReadMetrics
    */
   def process(
-    bamPath: String,
-    referencePath: String,
-    onProgress: (String, Double, Double) => Unit,
-    artifactContext: Option[ArtifactContext] = None
-  ): Either[Throwable, ReadMetrics] = {
+               bamPath: String,
+               referencePath: String,
+               onProgress: (String, Double, Double) => Unit,
+               artifactContext: Option[ArtifactContext] = None
+             ): Either[Throwable, ReadMetrics] = {
 
     onProgress("Collecting read metrics...", 0.0, 1.0)
 
@@ -118,10 +118,10 @@ class UnifiedMetricsProcessor {
    * Write a histogram to a TSV file.
    * Can be used for visualization without R.
    *
-   * @param outputDir Directory to write to
-   * @param filename Output filename
+   * @param outputDir  Directory to write to
+   * @param filename   Output filename
    * @param columnName Name for the value column (e.g., "insert_size", "read_length")
-   * @param histogram The histogram data
+   * @param histogram  The histogram data
    */
   private def writeHistogram(outputDir: Path, filename: String, columnName: String, histogram: Map[Int, Long]): Unit = {
     if (histogram.isEmpty) return

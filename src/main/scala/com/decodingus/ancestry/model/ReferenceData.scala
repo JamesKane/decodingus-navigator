@@ -1,9 +1,9 @@
 package com.decodingus.ancestry.model
 
-import java.io.{DataInputStream, DataOutputStream, File, FileInputStream, FileOutputStream}
-import java.nio.{ByteBuffer, ByteOrder}
+import java.io.*
 import java.nio.channels.FileChannel
 import java.nio.file.{Path, StandardOpenOption}
+import java.nio.{ByteBuffer, ByteOrder}
 import scala.util.Using
 
 /**
@@ -16,10 +16,10 @@ import scala.util.Using
  * - Frequencies: numPops * numSnps * 4 bytes (floats, SNP-major order)
  */
 case class AlleleFrequencyMatrix(
-  populations: Array[String],
-  snpIds: Array[String],
-  frequencies: Array[Float]  // Flattened: frequencies[snpIdx * numPops + popIdx]
-) {
+                                  populations: Array[String],
+                                  snpIds: Array[String],
+                                  frequencies: Array[Float] // Flattened: frequencies[snpIdx * numPops + popIdx]
+                                ) {
   require(frequencies.length == populations.length * snpIds.length,
     s"Frequency array size mismatch: expected ${populations.length * snpIds.length}, got ${frequencies.length}")
 
@@ -38,8 +38,14 @@ case class AlleleFrequencyMatrix(
    */
   def getFrequency(popCode: String, snpId: String): Option[Float] = {
     for {
-      popIdx <- populations.indexOf(popCode) match { case -1 => None; case i => Some(i) }
-      snpIdx <- snpIds.indexOf(snpId) match { case -1 => None; case i => Some(i) }
+      popIdx <- populations.indexOf(popCode) match {
+        case -1 => None;
+        case i => Some(i)
+      }
+      snpIdx <- snpIds.indexOf(snpId) match {
+        case -1 => None;
+        case i => Some(i)
+      }
     } yield getFrequency(popIdx, snpIdx)
   }
 
@@ -55,7 +61,7 @@ case class AlleleFrequencyMatrix(
 }
 
 object AlleleFrequencyMatrix {
-  private val MAGIC = 0x41464D58  // "AFMX"
+  private val MAGIC = 0x41464D58 // "AFMX"
   private val VERSION: Short = 1
   private val STRING_SIZE = 32
 
@@ -143,14 +149,14 @@ object AlleleFrequencyMatrix {
  * - Variances: numPops * numComponents * 4 bytes (diagonal covariance)
  */
 case class PCALoadings(
-  snpIds: Array[String],
-  snpMeans: Array[Float],              // Mean genotype for each SNP (for centering)
-  loadings: Array[Float],              // Flattened: loadings[snpIdx * numComponents + pcIdx]
-  numComponents: Int,
-  populations: Array[String],
-  centroids: Array[Float],             // Flattened: centroids[popIdx * numComponents + pcIdx]
-  variances: Array[Float]              // Flattened: variances[popIdx * numComponents + pcIdx]
-) {
+                        snpIds: Array[String],
+                        snpMeans: Array[Float], // Mean genotype for each SNP (for centering)
+                        loadings: Array[Float], // Flattened: loadings[snpIdx * numComponents + pcIdx]
+                        numComponents: Int,
+                        populations: Array[String],
+                        centroids: Array[Float], // Flattened: centroids[popIdx * numComponents + pcIdx]
+                        variances: Array[Float] // Flattened: variances[popIdx * numComponents + pcIdx]
+                      ) {
   val numSnps: Int = snpIds.length
   val numPopulations: Int = populations.length
 
@@ -183,7 +189,7 @@ case class PCALoadings(
 }
 
 object PCALoadings {
-  private val MAGIC = 0x50434C44  // "PCLD"
+  private val MAGIC = 0x50434C44 // "PCLD"
   private val VERSION: Short = 1
   private val STRING_SIZE = 32
 
@@ -280,8 +286,8 @@ object PCALoadings {
  * Panel type for ancestry analysis.
  */
 enum AncestryPanelType {
-  case Aims        // ~5,000 ancestry-informative markers
-  case GenomeWide  // ~500,000 common SNPs
+  case Aims // ~5,000 ancestry-informative markers
+  case GenomeWide // ~500,000 common SNPs
 }
 
 object AncestryPanelType {

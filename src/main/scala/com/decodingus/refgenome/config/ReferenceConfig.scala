@@ -1,22 +1,22 @@
 package com.decodingus.refgenome.config
 
-import io.circe.{Decoder, Encoder}
 import io.circe.generic.semiauto.{deriveDecoder, deriveEncoder}
+import io.circe.{Decoder, Encoder}
 
 import java.nio.file.{Files, Path, Paths}
 
 /**
  * Configuration for a single reference genome.
  *
- * @param build The reference build name (e.g., "GRCh38", "GRCh37", "CHM13v2")
- * @param localPath Optional user-specified local path to the reference FASTA (.fa.gz)
+ * @param build        The reference build name (e.g., "GRCh38", "GRCh37", "CHM13v2")
+ * @param localPath    Optional user-specified local path to the reference FASTA (.fa.gz)
  * @param autoDownload Whether to automatically download if not found locally
  */
 case class ReferenceGenomeConfig(
-  build: String,
-  localPath: Option[String] = None,
-  autoDownload: Boolean = false
-) {
+                                  build: String,
+                                  localPath: Option[String] = None,
+                                  autoDownload: Boolean = false
+                                ) {
   /** Checks if the local path exists and is a valid file */
   def hasValidLocalPath: Boolean = localPath.exists { p =>
     val path = Paths.get(p)
@@ -38,15 +38,15 @@ object ReferenceGenomeConfig {
 /**
  * Application-wide reference configuration.
  *
- * @param references Map of build name to reference config
+ * @param references           Map of build name to reference config
  * @param promptBeforeDownload Whether to prompt the user before downloading references
- * @param defaultCacheDir Optional custom cache directory (defaults to ~/.decodingus/cache/references)
+ * @param defaultCacheDir      Optional custom cache directory (defaults to ~/.decodingus/cache/references)
  */
 case class ReferenceConfig(
-  references: Map[String, ReferenceGenomeConfig] = Map.empty,
-  promptBeforeDownload: Boolean = true,
-  defaultCacheDir: Option[String] = None
-) {
+                            references: Map[String, ReferenceGenomeConfig] = Map.empty,
+                            promptBeforeDownload: Boolean = true,
+                            defaultCacheDir: Option[String] = None
+                          ) {
   /** Gets config for a specific build, or creates a default one */
   def getOrDefault(build: String): ReferenceGenomeConfig = {
     references.getOrElse(build, ReferenceGenomeConfig(build))

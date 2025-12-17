@@ -1,28 +1,28 @@
 package com.decodingus.ui.components
 
-import scalafx.Includes._
-import scalafx.scene.control.{ButtonType, Dialog, Label, TextField, ButtonBar, Button, ProgressIndicator, RadioButton, ToggleGroup}
-import scalafx.scene.layout.{VBox, HBox, Priority, StackPane}
-import scalafx.scene.input.{DragEvent, TransferMode}
-import scalafx.geometry.{Insets, Pos}
-import scalafx.stage.FileChooser
-import scalafx.application.Platform
-import com.decodingus.workspace.model.FileInfo
 import com.decodingus.analysis.AnalysisCache
+import com.decodingus.workspace.model.FileInfo
+import scalafx.Includes.*
+import scalafx.application.Platform
+import scalafx.geometry.{Insets, Pos}
+import scalafx.scene.control.*
+import scalafx.scene.input.{DragEvent, TransferMode}
+import scalafx.scene.layout.{HBox, Priority, StackPane, VBox}
+import scalafx.stage.FileChooser
 
 import java.io.File
 import java.net.URL
-import scala.concurrent.Future
 import scala.concurrent.ExecutionContext.Implicits.global
-import scala.util.{Success, Failure}
+import scala.concurrent.Future
+import scala.util.{Failure, Success}
 
 /**
  * Result from the dialog - contains the file info and optional SHA256
  */
 case class SequenceDataInput(
-  fileInfo: FileInfo,
-  sha256: Option[String]
-)
+                              fileInfo: FileInfo,
+                              sha256: Option[String]
+                            )
 
 /**
  * Simplified dialog for adding sequencing data.
@@ -33,8 +33,8 @@ case class SequenceDataInput(
  * - Cloud storage URLs (HTTP/HTTPS/S3)
  */
 class AddSequenceDataDialog(
-  existingChecksums: Set[String] // Checksums of already-added files to detect duplicates
-) extends Dialog[Option[SequenceDataInput]] {
+                             existingChecksums: Set[String] // Checksums of already-added files to detect duplicates
+                           ) extends Dialog[Option[SequenceDataInput]] {
 
   title = "Add Sequencing Data"
   headerText = "Select an alignment file (BAM/CRAM)"

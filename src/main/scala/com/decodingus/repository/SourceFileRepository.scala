@@ -1,6 +1,7 @@
 package com.decodingus.repository
 
 import com.decodingus.repository.SqlHelpers.*
+
 import java.sql.{Connection, ResultSet}
 import java.time.LocalDateTime
 import java.util.UUID
@@ -38,30 +39,30 @@ object SourceFileFormat:
  * Linked to alignments when analysis is performed.
  */
 case class SourceFileEntity(
-  id: UUID,
-  alignmentId: Option[UUID],
-  filePath: Option[String],
-  fileChecksum: String,
-  fileSize: Option[Long],
-  fileFormat: Option[SourceFileFormat],
-  lastVerifiedAt: Option[LocalDateTime],
-  isAccessible: Boolean,
-  hasBeenAnalyzed: Boolean,
-  analysisCompletedAt: Option[LocalDateTime],
-  createdAt: LocalDateTime,
-  updatedAt: LocalDateTime
-) extends Entity[UUID]
+                             id: UUID,
+                             alignmentId: Option[UUID],
+                             filePath: Option[String],
+                             fileChecksum: String,
+                             fileSize: Option[Long],
+                             fileFormat: Option[SourceFileFormat],
+                             lastVerifiedAt: Option[LocalDateTime],
+                             isAccessible: Boolean,
+                             hasBeenAnalyzed: Boolean,
+                             analysisCompletedAt: Option[LocalDateTime],
+                             createdAt: LocalDateTime,
+                             updatedAt: LocalDateTime
+                           ) extends Entity[UUID]
 
 object SourceFileEntity:
   /**
    * Create a new source file entity.
    */
   def create(
-    filePath: String,
-    fileChecksum: String,
-    fileSize: Option[Long] = None,
-    fileFormat: Option[SourceFileFormat] = None
-  ): SourceFileEntity =
+              filePath: String,
+              fileChecksum: String,
+              fileSize: Option[Long] = None,
+              fileFormat: Option[SourceFileFormat] = None
+            ): SourceFileEntity =
     val now = LocalDateTime.now()
     SourceFileEntity(
       id = UUID.randomUUID(),
@@ -269,11 +270,11 @@ class SourceFileRepository:
    * Returns the existing or newly created entity.
    */
   def upsertByChecksum(
-    filePath: String,
-    fileChecksum: String,
-    fileSize: Option[Long],
-    fileFormat: Option[SourceFileFormat]
-  )(using conn: Connection): SourceFileEntity =
+                        filePath: String,
+                        fileChecksum: String,
+                        fileSize: Option[Long],
+                        fileFormat: Option[SourceFileFormat]
+                      )(using conn: Connection): SourceFileEntity =
     findByChecksum(fileChecksum) match
       case Some(existing) =>
         // Update path if changed

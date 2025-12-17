@@ -1,6 +1,7 @@
 package com.decodingus.db
 
 import com.decodingus.util.Logger
+
 import java.sql.{Connection, SQLException}
 
 /**

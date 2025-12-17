@@ -1,19 +1,19 @@
 package com.decodingus.config
 
-import io.circe.{Decoder, Encoder}
 import io.circe.generic.semiauto.{deriveDecoder, deriveEncoder}
+import io.circe.{Decoder, Encoder}
 
 /**
  * User preferences for the application.
  * Stored in ~/.decodingus/config/user_preferences.json
  */
 case class UserPreferences(
-  /** Y-DNA tree provider: "ftdna" or "decodingus" */
-  ydnaTreeProvider: String = "ftdna",
+                            /** Y-DNA tree provider: "ftdna" or "decodingus" */
+                            ydnaTreeProvider: String = "ftdna",
 
-  /** MT-DNA tree provider: "ftdna" or "decodingus" */
-  mtdnaTreeProvider: String = "ftdna"
-)
+                            /** MT-DNA tree provider: "ftdna" or "decodingus" */
+                            mtdnaTreeProvider: String = "ftdna"
+                          )
 
 object UserPreferences {
   val default: UserPreferences = UserPreferences()

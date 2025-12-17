@@ -11,41 +11,41 @@ import scala.jdk.CollectionConverters.*
  * Replaces CollectAlignmentSummaryMetrics + CollectInsertSizeMetrics (no R dependency).
  */
 case class ReadMetrics(
-  // Read counts
-  totalReads: Long,
-  pfReads: Long,                    // Pass-filter reads (non-vendor-failed)
-  pfReadsAligned: Long,             // PF reads that aligned
-  readsAlignedInPairs: Long,        // Reads aligned as part of a pair
-  properPairs: Long,                // Reads aligned as proper pairs
+                        // Read counts
+                        totalReads: Long,
+                        pfReads: Long, // Pass-filter reads (non-vendor-failed)
+                        pfReadsAligned: Long, // PF reads that aligned
+                        readsAlignedInPairs: Long, // Reads aligned as part of a pair
+                        properPairs: Long, // Reads aligned as proper pairs
 
-  // Percentages
-  pctPfReadsAligned: Double,
-  pctReadsAlignedInPairs: Double,
-  pctProperPairs: Double,
+                        // Percentages
+                        pctPfReadsAligned: Double,
+                        pctReadsAlignedInPairs: Double,
+                        pctProperPairs: Double,
 
-  // Read length statistics
-  medianReadLength: Double,
-  meanReadLength: Double,
-  stdReadLength: Double,
-  minReadLength: Int,
-  maxReadLength: Int,
-  readLengthHistogram: Map[Int, Long],
+                        // Read length statistics
+                        medianReadLength: Double,
+                        meanReadLength: Double,
+                        stdReadLength: Double,
+                        minReadLength: Int,
+                        maxReadLength: Int,
+                        readLengthHistogram: Map[Int, Long],
 
-  // Insert size (from proper pairs, first-of-pair only)
-  medianInsertSize: Double,
-  meanInsertSize: Double,
-  stdInsertSize: Double,
-  minInsertSize: Int,
-  maxInsertSize: Int,
-  insertSizeHistogram: Map[Int, Long],
+                        // Insert size (from proper pairs, first-of-pair only)
+                        medianInsertSize: Double,
+                        meanInsertSize: Double,
+                        stdInsertSize: Double,
+                        minInsertSize: Int,
+                        maxInsertSize: Int,
+                        insertSizeHistogram: Map[Int, Long],
 
-  // Pair orientation (FR, RF, TANDEM)
-  pairOrientation: String,
+                        // Pair orientation (FR, RF, TANDEM)
+                        pairOrientation: String,
 
-  // Quality metrics
-  pctChimeras: Double,
-  meanMappingQuality: Double
-)
+                        // Quality metrics
+                        pctChimeras: Double,
+                        meanMappingQuality: Double
+                      )
 
 /**
  * Single-pass BAM walker that collects read-level metrics.
@@ -63,16 +63,16 @@ class UnifiedMetricsWalker {
   /**
    * Process a BAM/CRAM file and collect read-level metrics.
    *
-   * @param bamPath Path to BAM/CRAM file
+   * @param bamPath       Path to BAM/CRAM file
    * @param referencePath Path to reference genome (required for CRAM)
-   * @param onProgress Progress callback (message, current, total)
+   * @param onProgress    Progress callback (message, current, total)
    * @return ReadMetrics containing all collected statistics
    */
   def collectReadMetrics(
-    bamPath: String,
-    referencePath: String,
-    onProgress: (String, Long, Long) => Unit
-  ): Either[String, ReadMetrics] = {
+                          bamPath: String,
+                          referencePath: String,
+                          onProgress: (String, Long, Long) => Unit
+                        ): Either[String, ReadMetrics] = {
     try {
       val samReaderFactory = SamReaderFactory.makeDefault()
         .validationStringency(ValidationStringency.SILENT)
@@ -232,8 +232,8 @@ class UnifiedMetricsWalker {
 
       // Determine dominant pair orientation
       val pairOrientation = if (frCount >= rfCount && frCount >= tandemCount) "FR"
-        else if (rfCount >= frCount && rfCount >= tandemCount) "RF"
-        else "TANDEM"
+      else if (rfCount >= frCount && rfCount >= tandemCount) "RF"
+      else "TANDEM"
 
       Right(ReadMetrics(
         totalReads = totalReads,

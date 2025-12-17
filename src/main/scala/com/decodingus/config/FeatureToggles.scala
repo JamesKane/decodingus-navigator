@@ -1,6 +1,7 @@
 package com.decodingus.config
 
 import com.typesafe.config.ConfigFactory
+
 import scala.jdk.CollectionConverters.*
 
 object FeatureToggles {

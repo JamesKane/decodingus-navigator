@@ -6,6 +6,7 @@ import io.circe.*
 import io.circe.generic.semiauto.*
 import io.circe.parser.*
 import io.circe.syntax.*
+
 import java.sql.{Connection, ResultSet}
 import java.time.LocalDateTime
 import java.util.UUID
@@ -16,36 +17,37 @@ import java.util.UUID
  * Stores Y-STR marker profiles with panel information and values.
  */
 case class StrProfileEntity(
-  id: UUID,
-  biosampleId: UUID,
-  sequenceRunId: Option[UUID],
-  panels: List[StrPanel],
-  markers: List[StrMarkerValue],
-  totalMarkers: Option[Int],
-  source: Option[String],
-  importedFrom: Option[String],
-  derivationMethod: Option[String],
-  files: List[FileInfo],
-  meta: EntityMeta
-) extends Entity[UUID]
+                             id: UUID,
+                             biosampleId: UUID,
+                             sequenceRunId: Option[UUID],
+                             panels: List[StrPanel],
+                             markers: List[StrMarkerValue],
+                             totalMarkers: Option[Int],
+                             source: Option[String],
+                             importedFrom: Option[String],
+                             derivationMethod: Option[String],
+                             files: List[FileInfo],
+                             meta: EntityMeta
+                           ) extends Entity[UUID]
 
 object StrProfileEntity:
+
   import StrProfileCodecs.given
 
   /**
    * Create a new StrProfileEntity with generated ID and initial metadata.
    */
   def create(
-    biosampleId: UUID,
-    sequenceRunId: Option[UUID] = None,
-    panels: List[StrPanel] = List.empty,
-    markers: List[StrMarkerValue] = List.empty,
-    totalMarkers: Option[Int] = None,
-    source: Option[String] = None,
-    importedFrom: Option[String] = None,
-    derivationMethod: Option[String] = None,
-    files: List[FileInfo] = List.empty
-  ): StrProfileEntity = StrProfileEntity(
+              biosampleId: UUID,
+              sequenceRunId: Option[UUID] = None,
+              panels: List[StrPanel] = List.empty,
+              markers: List[StrMarkerValue] = List.empty,
+              totalMarkers: Option[Int] = None,
+              source: Option[String] = None,
+              importedFrom: Option[String] = None,
+              derivationMethod: Option[String] = None,
+              files: List[FileInfo] = List.empty
+            ): StrProfileEntity = StrProfileEntity(
     id = UUID.randomUUID(),
     biosampleId = biosampleId,
     sequenceRunId = sequenceRunId,
@@ -81,16 +83,24 @@ object StrProfileEntity:
  * Circe codecs for STR profile JSON fields.
  */
 object StrProfileCodecs:
+
   import com.decodingus.workspace.model.*
 
   // StrValue hierarchy
   given Encoder[SimpleStrValue] = deriveEncoder
+
   given Decoder[SimpleStrValue] = deriveDecoder
+
   given Encoder[MultiCopyStrValue] = deriveEncoder
+
   given Decoder[MultiCopyStrValue] = deriveDecoder
+
   given Encoder[StrAllele] = deriveEncoder
+
   given Decoder[StrAllele] = deriveDecoder
+
   given Encoder[ComplexStrValue] = deriveEncoder
+
   given Decoder[ComplexStrValue] = deriveDecoder
 
   given Encoder[StrValue] = Encoder.instance {
@@ -109,10 +119,15 @@ object StrProfileCodecs:
   }
 
   given Encoder[StrMarkerValue] = deriveEncoder
+
   given Decoder[StrMarkerValue] = deriveDecoder
+
   given Encoder[StrPanel] = deriveEncoder
+
   given Decoder[StrPanel] = deriveDecoder
+
   given Encoder[FileInfo] = deriveEncoder
+
   given Decoder[FileInfo] = deriveDecoder
 
 /**

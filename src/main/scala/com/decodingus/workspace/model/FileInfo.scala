@@ -16,10 +16,10 @@ package com.decodingus.workspace.model
  *                          DecodingUs does NOT access this URI.
  */
 case class FileInfo(
-  fileName: String,
-  fileSizeBytes: Option[Long],
-  fileFormat: String,
-  checksum: Option[String],
-  checksumAlgorithm: Option[String] = None,
-  location: Option[String] = None
-)
+                     fileName: String,
+                     fileSizeBytes: Option[Long],
+                     fileFormat: String,
+                     checksum: Option[String],
+                     checksumAlgorithm: Option[String] = None,
+                     location: Option[String] = None
+                   )

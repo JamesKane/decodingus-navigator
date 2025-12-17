@@ -1,6 +1,7 @@
 package com.decodingus.haplogroup.caller
 
 import com.decodingus.analysis.GatkRunner
+
 import java.io.{BufferedReader, File, FileReader, PrintWriter}
 import java.nio.file.{Files, Path}
 import scala.util.Using
@@ -14,11 +15,11 @@ case class CallerResult(vcfFile: File, logFile: Option[File])
  * Result of two-pass calling for haplogroup assignment and private SNP discovery.
  */
 case class TwoPassCallerResult(
-  treeSitesVcf: File,
-  privateVariantsVcf: File,
-  treeSitesLog: Option[File],
-  privateVariantsLog: Option[File]
-)
+                                treeSitesVcf: File,
+                                privateVariantsVcf: File,
+                                treeSitesLog: Option[File],
+                                privateVariantsLog: Option[File]
+                              )
 
 /**
  * GATK-based variant caller for haplogroup analysis.
@@ -49,22 +50,22 @@ class GatkHaplotypeCallerProcessor {
   /**
    * Call SNPs at specified allele sites.
    *
-   * @param bamPath Path to the BAM/CRAM file
+   * @param bamPath       Path to the BAM/CRAM file
    * @param referencePath Path to the reference genome
-   * @param allelesVcf Sites VCF file specifying positions to call
-   * @param onProgress Progress callback
-   * @param outputDir Optional directory to save the called VCF and logs (if None, uses temp files)
-   * @param outputPrefix Optional prefix for output files (e.g., "mtdna" or "ydna")
+   * @param allelesVcf    Sites VCF file specifying positions to call
+   * @param onProgress    Progress callback
+   * @param outputDir     Optional directory to save the called VCF and logs (if None, uses temp files)
+   * @param outputPrefix  Optional prefix for output files (e.g., "mtdna" or "ydna")
    * @return Either error message or CallerResult with VCF and optional log file
    */
   def callSnps(
-    bamPath: String,
-    referencePath: String,
-    allelesVcf: File,
-    onProgress: (String, Double, Double) => Unit,
-    outputDir: Option[Path] = None,
-    outputPrefix: Option[String] = None
-  ): Either[String, CallerResult] = {
+                bamPath: String,
+                referencePath: String,
+                allelesVcf: File,
+                onProgress: (String, Double, Double) => Unit,
+                outputDir: Option[Path] = None,
+                outputPrefix: Option[String] = None
+              ): Either[String, CallerResult] = {
     // Ensure BAM index exists
     onProgress("Checking BAM index...", 0.0, 1.0)
     GatkRunner.ensureIndex(bamPath) match {
@@ -150,13 +151,13 @@ class GatkHaplotypeCallerProcessor {
    * Only emits variants (sites that differ from reference).
    */
   def callPrivateVariants(
-    bamPath: String,
-    referencePath: String,
-    contig: String,
-    onProgress: (String, Double, Double) => Unit,
-    outputDir: Option[Path] = None,
-    outputPrefix: Option[String] = None
-  ): Either[String, CallerResult] = {
+                           bamPath: String,
+                           referencePath: String,
+                           contig: String,
+                           onProgress: (String, Double, Double) => Unit,
+                           outputDir: Option[Path] = None,
+                           outputPrefix: Option[String] = None
+                         ): Either[String, CallerResult] = {
     // Ensure BAM index exists
     onProgress("Checking BAM index...", 0.0, 1.0)
     GatkRunner.ensureIndex(bamPath) match {
@@ -232,14 +233,14 @@ class GatkHaplotypeCallerProcessor {
    *                      If None, will attempt to detect from the allelesVcf (less reliable).
    */
   def callTwoPass(
-    bamPath: String,
-    referencePath: String,
-    allelesVcf: File,
-    onProgress: (String, Double, Double) => Unit,
-    outputDir: Option[Path] = None,
-    outputPrefix: Option[String] = None,
-    primaryContig: Option[String] = None
-  ): Either[String, TwoPassCallerResult] = {
+                   bamPath: String,
+                   referencePath: String,
+                   allelesVcf: File,
+                   onProgress: (String, Double, Double) => Unit,
+                   outputDir: Option[Path] = None,
+                   outputPrefix: Option[String] = None,
+                   primaryContig: Option[String] = None
+                 ): Either[String, TwoPassCallerResult] = {
     val contig = primaryContig.getOrElse(detectContigFromVcf(allelesVcf))
     val isMtDna = contig.equalsIgnoreCase("chrM") || contig.equalsIgnoreCase("MT")
 
@@ -257,14 +258,14 @@ class GatkHaplotypeCallerProcessor {
    * Checks for cached VCF files and skips GATK if they exist.
    */
   private def callTwoPassHaplotypeCaller(
-    bamPath: String,
-    referencePath: String,
-    allelesVcf: File,
-    contig: String,
-    onProgress: (String, Double, Double) => Unit,
-    outputDir: Option[Path],
-    outputPrefix: Option[String]
-  ): Either[String, TwoPassCallerResult] = {
+                                          bamPath: String,
+                                          referencePath: String,
+                                          allelesVcf: File,
+                                          contig: String,
+                                          onProgress: (String, Double, Double) => Unit,
+                                          outputDir: Option[Path],
+                                          outputPrefix: Option[String]
+                                        ): Either[String, TwoPassCallerResult] = {
     // Check for cached results
     outputDir match {
       case Some(dir) =>
@@ -273,7 +274,7 @@ class GatkHaplotypeCallerProcessor {
         val cachedPrivateVariants = dir.resolve(s"${prefix}_private_variants.vcf").toFile
 
         if (cachedTreeSites.exists() && cachedPrivateVariants.exists() &&
-            cachedTreeSites.length() > 0 && cachedPrivateVariants.length() > 0) {
+          cachedTreeSites.length() > 0 && cachedPrivateVariants.length() > 0) {
           println(s"[GatkHaplotypeCallerProcessor] Using cached VCFs (Y-DNA): ${cachedTreeSites.getName}, ${cachedPrivateVariants.getName}")
           onProgress("Using cached VCF files from previous analysis...", 1.0, 1.0)
           return Right(TwoPassCallerResult(
@@ -333,13 +334,13 @@ class GatkHaplotypeCallerProcessor {
    * This is much faster than force-calling at every tree site position.
    */
   private def callMtDnaMutect2(
-    bamPath: String,
-    referencePath: String,
-    contig: String,
-    onProgress: (String, Double, Double) => Unit,
-    outputDir: Option[Path],
-    outputPrefix: Option[String]
-  ): Either[String, CallerResult] = {
+                                bamPath: String,
+                                referencePath: String,
+                                contig: String,
+                                onProgress: (String, Double, Double) => Unit,
+                                outputDir: Option[Path],
+                                outputPrefix: Option[String]
+                              ): Either[String, CallerResult] = {
     onProgress(s"Calling variants on $contig with Mutect2...", 0.1, 1.0)
 
     val (vcfFile, logFile) = outputDir match {
@@ -403,13 +404,13 @@ class GatkHaplotypeCallerProcessor {
    * Checks for cached VCF file and skips GATK if it exists.
    */
   private def callSinglePassMutect2(
-    bamPath: String,
-    referencePath: String,
-    contig: String,
-    onProgress: (String, Double, Double) => Unit,
-    outputDir: Option[Path],
-    outputPrefix: Option[String]
-  ): Either[String, TwoPassCallerResult] = {
+                                     bamPath: String,
+                                     referencePath: String,
+                                     contig: String,
+                                     onProgress: (String, Double, Double) => Unit,
+                                     outputDir: Option[Path],
+                                     outputPrefix: Option[String]
+                                   ): Either[String, TwoPassCallerResult] = {
     // Check for cached results
     outputDir match {
       case Some(dir) =>
@@ -421,7 +422,7 @@ class GatkHaplotypeCallerProcessor {
           onProgress("Using cached VCF file from previous analysis...", 1.0, 1.0)
           return Right(TwoPassCallerResult(
             treeSitesVcf = cachedVcf,
-            privateVariantsVcf = cachedVcf,  // Same VCF for both
+            privateVariantsVcf = cachedVcf, // Same VCF for both
             treeSitesLog = Some(dir.resolve(s"${prefix}_mutect2.log").toFile).filter(_.exists()),
             privateVariantsLog = None
           ))

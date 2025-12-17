@@ -24,15 +24,15 @@ class ChipAncestryAdapter {
    * Run ancestry analysis on chip genotypes.
    *
    * @param chipResult The processed chip data
-   * @param panelType The ancestry panel to use (AIMs or GenomeWide)
+   * @param panelType  The ancestry panel to use (AIMs or GenomeWide)
    * @param onProgress Progress callback
    * @return Either error or ancestry result
    */
   def analyze(
-    chipResult: ChipProcessingResult,
-    panelType: AncestryPanelType,
-    onProgress: (String, Double, Double) => Unit
-  ): Either[String, AncestryResult] = {
+               chipResult: ChipProcessingResult,
+               panelType: AncestryPanelType,
+               onProgress: (String, Double, Double) => Unit
+             ): Either[String, AncestryResult] = {
 
     val panelName = panelType match {
       case AncestryPanelType.Aims => "aims"
@@ -64,12 +64,12 @@ class ChipAncestryAdapter {
    * Analyze chip data using pre-loaded reference data.
    */
   private def analyzeWithData(
-    chipResult: ChipProcessingResult,
-    alleleFreqs: AlleleFrequencyMatrix,
-    pcaLoadings: PCALoadings,
-    panelName: String,
-    onProgress: (String, Double, Double) => Unit
-  ): Either[String, AncestryResult] = {
+                               chipResult: ChipProcessingResult,
+                               alleleFreqs: AlleleFrequencyMatrix,
+                               pcaLoadings: PCALoadings,
+                               panelName: String,
+                               onProgress: (String, Double, Double) => Unit
+                             ): Either[String, AncestryResult] = {
 
     onProgress("Converting chip genotypes to ancestry format...", 0.2, 1.0)
 
@@ -116,10 +116,10 @@ class ChipAncestryAdapter {
    * We'll match by position where possible.
    */
   private def buildGenotypeMap(
-    autosomalCalls: List[GenotypeCall],
-    panelSnpIds: Set[String],
-    alleleFreqs: AlleleFrequencyMatrix
-  ): Map[String, Int] = {
+                                autosomalCalls: List[GenotypeCall],
+                                panelSnpIds: Set[String],
+                                alleleFreqs: AlleleFrequencyMatrix
+                              ): Map[String, Int] = {
 
     // Create position-based lookup
     val callsByPosition: Map[String, GenotypeCall] = autosomalCalls.map { call =>
@@ -160,10 +160,10 @@ class ChipAncestryAdapter {
    * - Fixed marker set that may not perfectly overlap ancestry panel
    */
   private def adjustConfidenceForChipData(
-    result: AncestryResult,
-    matchedSnps: Int,
-    panelSnps: Int
-  ): AncestryResult = {
+                                           result: AncestryResult,
+                                           matchedSnps: Int,
+                                           panelSnps: Int
+                                         ): AncestryResult = {
     val coverageRatio = matchedSnps.toDouble / panelSnps
 
     // Apply coverage-based penalty

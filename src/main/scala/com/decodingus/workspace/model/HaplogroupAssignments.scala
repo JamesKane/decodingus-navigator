@@ -9,6 +9,6 @@ package com.decodingus.workspace.model
  * Matches global Atmosphere schema: com.decodingus.atmosphere.defs#haplogroupAssignments
  */
 case class HaplogroupAssignments(
-  yDna: Option[HaplogroupResult] = None,
-  mtDna: Option[HaplogroupResult] = None
-)
+                                  yDna: Option[HaplogroupResult] = None,
+                                  mtDna: Option[HaplogroupResult] = None
+                                )

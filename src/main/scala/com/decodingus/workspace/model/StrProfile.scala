@@ -27,10 +27,10 @@ case class MultiCopyStrValue(copies: List[Int]) extends StrValue
  * @param designation Allele designation letter if applicable (t, c, q)
  */
 case class StrAllele(
-  repeats: Double,
-  count: Int,
-  designation: Option[String] = None
-)
+                      repeats: Double,
+                      count: Int,
+                      designation: Option[String] = None
+                    )
 
 /**
  * Complex multi-allelic STR with allele counts (e.g., DYF399X = 22t-25c-26.1t).
@@ -40,9 +40,9 @@ case class StrAllele(
  * @param rawNotation Original notation string for reference (e.g., '22t-25c-26.1t')
  */
 case class ComplexStrValue(
-  alleles: List[StrAllele],
-  rawNotation: Option[String] = None
-) extends StrValue
+                            alleles: List[StrAllele],
+                            rawNotation: Option[String] = None
+                          ) extends StrValue
 
 /**
  * A single STR marker value. Handles simple, multi-copy, and complex multi-allelic markers.
@@ -58,15 +58,15 @@ case class ComplexStrValue(
  * @param readDepth     Read depth for WGS-derived STR calls
  */
 case class StrMarkerValue(
-  marker: String,
-  value: StrValue,
-  startPosition: Option[Long] = None,
-  endPosition: Option[Long] = None,
-  orderedDate: Option[LocalDateTime] = None,
-  panel: Option[String] = None,
-  quality: Option[String] = None,
-  readDepth: Option[Int] = None
-) {
+                           marker: String,
+                           value: StrValue,
+                           startPosition: Option[Long] = None,
+                           endPosition: Option[Long] = None,
+                           orderedDate: Option[LocalDateTime] = None,
+                           panel: Option[String] = None,
+                           quality: Option[String] = None,
+                           readDepth: Option[Int] = None
+                         ) {
   /** Get the repeat region span in base pairs, if positions are known */
   def regionSpan: Option[Long] =
     for
@@ -85,11 +85,11 @@ case class StrMarkerValue(
  * @param testDate    When the test was performed
  */
 case class StrPanel(
-  panelName: String,
-  markerCount: Int,
-  provider: Option[String] = None,
-  testDate: Option[LocalDateTime] = None
-)
+                     panelName: String,
+                     markerCount: Int,
+                     provider: Option[String] = None,
+                     testDate: Option[LocalDateTime] = None
+                   )
 
 /**
  * Y-STR profile for a biosample. Can contain multiple panels from different sources.
@@ -108,18 +108,18 @@ case class StrPanel(
  * @param files            Source CSV/TSV files if available
  */
 case class StrProfile(
-  atUri: Option[String],
-  meta: RecordMeta,
-  biosampleRef: String,
-  sequenceRunRef: Option[String] = None,
-  panels: List[StrPanel] = List.empty,
-  markers: List[StrMarkerValue] = List.empty,
-  totalMarkers: Option[Int] = None,
-  source: Option[String] = None,
-  importedFrom: Option[String] = None,
-  derivationMethod: Option[String] = None,
-  files: List[FileInfo] = List.empty
-)
+                       atUri: Option[String],
+                       meta: RecordMeta,
+                       biosampleRef: String,
+                       sequenceRunRef: Option[String] = None,
+                       panels: List[StrPanel] = List.empty,
+                       markers: List[StrMarkerValue] = List.empty,
+                       totalMarkers: Option[Int] = None,
+                       source: Option[String] = None,
+                       importedFrom: Option[String] = None,
+                       derivationMethod: Option[String] = None,
+                       files: List[FileInfo] = List.empty
+                     )
 
 object StrProfile {
   /** Known panel values */

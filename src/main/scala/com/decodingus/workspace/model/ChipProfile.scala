@@ -11,43 +11,43 @@ import java.time.LocalDateTime
  * Note: Raw genotype calls are NOT stored in the workspace - they are processed locally
  * and only summary statistics and derived data (haplogroups, ancestry) are persisted.
  *
- * @param atUri                 The AT URI of this chip profile record
- * @param meta                  Record metadata for tracking changes and sync
- * @param biosampleRef          AT URI of the parent biosample
- * @param vendor                Chip vendor (23andMe, AncestryDNA, FamilyTreeDNA, MyHeritage, LivingDNA)
- * @param testTypeCode          Test type code (e.g., ARRAY_23ANDME_V5)
- * @param chipVersion           Chip version if detected from file
- * @param totalMarkersCalled    Total number of markers with valid calls
- * @param totalMarkersPossible  Total markers in the chip file
- * @param noCallRate            Percentage of no-calls (0.0-1.0)
- * @param yMarkersCalled        Number of Y-DNA markers called (if applicable)
- * @param mtMarkersCalled       Number of mtDNA markers called (if applicable)
+ * @param atUri                  The AT URI of this chip profile record
+ * @param meta                   Record metadata for tracking changes and sync
+ * @param biosampleRef           AT URI of the parent biosample
+ * @param vendor                 Chip vendor (23andMe, AncestryDNA, FamilyTreeDNA, MyHeritage, LivingDNA)
+ * @param testTypeCode           Test type code (e.g., ARRAY_23ANDME_V5)
+ * @param chipVersion            Chip version if detected from file
+ * @param totalMarkersCalled     Total number of markers with valid calls
+ * @param totalMarkersPossible   Total markers in the chip file
+ * @param noCallRate             Percentage of no-calls (0.0-1.0)
+ * @param yMarkersCalled         Number of Y-DNA markers called (if applicable)
+ * @param mtMarkersCalled        Number of mtDNA markers called (if applicable)
  * @param autosomalMarkersCalled Number of autosomal markers called
- * @param hetRate               Heterozygosity rate (autosomal only)
- * @param importDate            When this chip data was imported
- * @param sourceFileHash        SHA-256 hash of the source file for deduplication
- * @param sourceFileName        Original filename
- * @param files                 Source files info
+ * @param hetRate                Heterozygosity rate (autosomal only)
+ * @param importDate             When this chip data was imported
+ * @param sourceFileHash         SHA-256 hash of the source file for deduplication
+ * @param sourceFileName         Original filename
+ * @param files                  Source files info
  */
 case class ChipProfile(
-  atUri: Option[String],
-  meta: RecordMeta,
-  biosampleRef: String,
-  vendor: String,
-  testTypeCode: String,
-  chipVersion: Option[String] = None,
-  totalMarkersCalled: Int,
-  totalMarkersPossible: Int,
-  noCallRate: Double,
-  yMarkersCalled: Option[Int] = None,
-  mtMarkersCalled: Option[Int] = None,
-  autosomalMarkersCalled: Int,
-  hetRate: Option[Double] = None,
-  importDate: LocalDateTime,
-  sourceFileHash: Option[String] = None,
-  sourceFileName: Option[String] = None,
-  files: List[FileInfo] = List.empty
-) {
+                        atUri: Option[String],
+                        meta: RecordMeta,
+                        biosampleRef: String,
+                        vendor: String,
+                        testTypeCode: String,
+                        chipVersion: Option[String] = None,
+                        totalMarkersCalled: Int,
+                        totalMarkersPossible: Int,
+                        noCallRate: Double,
+                        yMarkersCalled: Option[Int] = None,
+                        mtMarkersCalled: Option[Int] = None,
+                        autosomalMarkersCalled: Int,
+                        hetRate: Option[Double] = None,
+                        importDate: LocalDateTime,
+                        sourceFileHash: Option[String] = None,
+                        sourceFileName: Option[String] = None,
+                        files: List[FileInfo] = List.empty
+                      ) {
 
   /**
    * Overall call rate.

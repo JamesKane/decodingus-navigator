@@ -2,6 +2,7 @@ package com.decodingus.refgenome.model
 
 import io.circe.*
 import io.circe.generic.semiauto.*
+
 import java.time.Instant
 
 /**
@@ -15,11 +16,11 @@ import java.time.Instant
  * @param chromosomes Map of chromosome name to region data
  */
 case class GenomeRegions(
-  build: String,
-  version: String,
-  generatedAt: Instant,
-  chromosomes: Map[String, ChromosomeRegions]
-)
+                          build: String,
+                          version: String,
+                          generatedAt: Instant,
+                          chromosomes: Map[String, ChromosomeRegions]
+                        )
 
 /**
  * Region data for a single chromosome.
@@ -32,13 +33,13 @@ case class GenomeRegions(
  * @param strMarkers Named STR markers (only for chrY)
  */
 case class ChromosomeRegions(
-  length: Long,
-  centromere: Option[Region],
-  telomeres: Option[Telomeres],
-  cytobands: List[Cytoband],
-  regions: Option[YChromosomeRegions],
-  strMarkers: Option[List[StrMarker]]
-)
+                              length: Long,
+                              centromere: Option[Region],
+                              telomeres: Option[Telomeres],
+                              cytobands: List[Cytoband],
+                              regions: Option[YChromosomeRegions],
+                              strMarkers: Option[List[StrMarker]]
+                            )
 
 /**
  * A genomic region with optional type and quality modifier.
@@ -49,13 +50,15 @@ case class ChromosomeRegions(
  * @param modifier   Quality modifier for concordance weighting (1.0 = reliable, <1.0 = reduced confidence)
  */
 case class Region(
-  start: Long,
-  end: Long,
-  regionType: Option[String] = None,
-  modifier: Option[Double] = None
-) {
+                   start: Long,
+                   end: Long,
+                   regionType: Option[String] = None,
+                   modifier: Option[Double] = None
+                 ) {
   def length: Long = end - start + 1
+
   def contains(position: Long): Boolean = position >= start && position <= end
+
   def overlaps(other: Region): Boolean = start <= other.end && end >= other.start
 }
 
@@ -66,9 +69,9 @@ case class Region(
  * @param q Q-arm (long arm) telomere
  */
 case class Telomeres(
-  p: Region,
-  q: Region
-)
+                      p: Region,
+                      q: Region
+                    )
 
 /**
  * Cytoband annotation for chromosome ideogram display.
@@ -79,11 +82,11 @@ case class Telomeres(
  * @param stain Giemsa stain pattern (gneg, gpos25, gpos50, gpos75, gpos100, acen, gvar, stalk)
  */
 case class Cytoband(
-  name: String,
-  start: Long,
-  end: Long,
-  stain: String
-) {
+                     name: String,
+                     start: Long,
+                     end: Long,
+                     stain: String
+                   ) {
   /** Whether this is a centromeric band */
   def isCentromeric: Boolean = stain == "acen"
 
@@ -102,13 +105,13 @@ case class Cytoband(
  * @param note     Optional annotation (e.g., "Position estimated via liftover from GRCh38")
  */
 case class StrMarker(
-  name: String,
-  start: Long,
-  end: Long,
-  period: Int,
-  verified: Boolean,
-  note: Option[String] = None
-) {
+                      name: String,
+                      start: Long,
+                      end: Long,
+                      period: Int,
+                      verified: Boolean,
+                      note: Option[String] = None
+                    ) {
   def length: Long = end - start + 1
 }
 
@@ -116,23 +119,23 @@ case class StrMarker(
  * Y chromosome-specific region annotations.
  * Includes PAR, XTR, ampliconic regions, palindromes, heterochromatin, and X-degenerate regions.
  *
- * @param par1           Pseudoautosomal region 1 (Yp)
- * @param par2           Pseudoautosomal region 2 (Yq)
- * @param xtr            X-transposed region
- * @param ampliconic     Ampliconic (high-copy) regions
- * @param palindromes    Palindromic regions (P1-P8)
+ * @param par1            Pseudoautosomal region 1 (Yp)
+ * @param par2            Pseudoautosomal region 2 (Yq)
+ * @param xtr             X-transposed region
+ * @param ampliconic      Ampliconic (high-copy) regions
+ * @param palindromes     Palindromic regions (P1-P8)
  * @param heterochromatin Yq12 heterochromatin region
- * @param xDegenerate    X-degenerate (stable single-copy) regions
+ * @param xDegenerate     X-degenerate (stable single-copy) regions
  */
 case class YChromosomeRegions(
-  par1: Region,
-  par2: Region,
-  xtr: List[Region],
-  ampliconic: List[Region],
-  palindromes: List[NamedRegion],
-  heterochromatin: Region,
-  xDegenerate: List[Region]
-)
+                               par1: Region,
+                               par2: Region,
+                               xtr: List[Region],
+                               ampliconic: List[Region],
+                               palindromes: List[NamedRegion],
+                               heterochromatin: Region,
+                               xDegenerate: List[Region]
+                             )
 
 /**
  * A named region with type and quality modifier.
@@ -144,13 +147,14 @@ case class YChromosomeRegions(
  * @param modifier   Quality modifier for concordance weighting
  */
 case class NamedRegion(
-  name: String,
-  start: Long,
-  end: Long,
-  regionType: String,
-  modifier: Double
-) {
+                        name: String,
+                        start: Long,
+                        end: Long,
+                        regionType: String,
+                        modifier: Double
+                      ) {
   def length: Long = end - start + 1
+
   def toRegion: Region = Region(start, end, Some(regionType), Some(modifier))
 }
 
@@ -161,6 +165,7 @@ object GenomeRegionsCodecs:
 
   // Instant codec (ISO-8601 format)
   given Encoder[Instant] = Encoder.encodeString.contramap(_.toString)
+
   given Decoder[Instant] = Decoder.decodeString.emap { s =>
     try Right(Instant.parse(s))
     catch case e: Exception => Left(s"Invalid timestamp: $s")
@@ -187,14 +192,17 @@ object GenomeRegionsCodecs:
 
   // Telomeres codec
   given Encoder[Telomeres] = deriveEncoder[Telomeres]
+
   given Decoder[Telomeres] = deriveDecoder[Telomeres]
 
   // Cytoband codec
   given Encoder[Cytoband] = deriveEncoder[Cytoband]
+
   given Decoder[Cytoband] = deriveDecoder[Cytoband]
 
   // StrMarker codec
   given Encoder[StrMarker] = deriveEncoder[StrMarker]
+
   given Decoder[StrMarker] = deriveDecoder[StrMarker]
 
   // NamedRegion codec
@@ -220,12 +228,15 @@ object GenomeRegionsCodecs:
 
   // YChromosomeRegions codec
   given Encoder[YChromosomeRegions] = deriveEncoder[YChromosomeRegions]
+
   given Decoder[YChromosomeRegions] = deriveDecoder[YChromosomeRegions]
 
   // ChromosomeRegions codec
   given Encoder[ChromosomeRegions] = deriveEncoder[ChromosomeRegions]
+
   given Decoder[ChromosomeRegions] = deriveDecoder[ChromosomeRegions]
 
   // GenomeRegions codec
   given Encoder[GenomeRegions] = deriveEncoder[GenomeRegions]
+
   given Decoder[GenomeRegions] = deriveDecoder[GenomeRegions]

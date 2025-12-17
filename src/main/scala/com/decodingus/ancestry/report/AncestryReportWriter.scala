@@ -131,8 +131,8 @@ object AncestryReportWriter {
            |  <h1>Ancestry Analysis Report</h1>
            |
            |  <div class="summary">
-           |    <strong>Panel:</strong> ${result.panelType} |
-           |    <strong>SNPs:</strong> ${result.snpsWithGenotype} / ${result.snpsAnalyzed} |
+           |    <strong>Panel:</strong> ${result.panelType}|
+           |    <strong>SNPs:</strong> ${result.snpsWithGenotype} / ${result.snpsAnalyzed}|
            |    <strong>Confidence:</strong> ${f"${result.confidenceLevel * 100}%.0f"}%
            |  </div>
            |

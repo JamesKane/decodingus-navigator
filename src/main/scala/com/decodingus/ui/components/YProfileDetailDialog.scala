@@ -1,14 +1,14 @@
 package com.decodingus.ui.components
 
-import scalafx.Includes._
-import scalafx.scene.control.{Dialog, ButtonType, Label, TableView, TableColumn, ScrollPane, Tab, TabPane, Tooltip, TextField, ComboBox, ProgressBar}
-import scalafx.scene.layout.{VBox, HBox, Priority, Region}
-import scalafx.scene.web.WebView
-import scalafx.geometry.{Insets, Pos}
-import scalafx.beans.property.{StringProperty, ObjectProperty}
-import scalafx.collections.ObservableBuffer
-import com.decodingus.yprofile.model.*
 import com.decodingus.refgenome.YRegionAnnotator
+import com.decodingus.yprofile.model.*
+import scalafx.Includes.*
+import scalafx.beans.property.{ObjectProperty, StringProperty}
+import scalafx.collections.ObservableBuffer
+import scalafx.geometry.{Insets, Pos}
+import scalafx.scene.control.*
+import scalafx.scene.layout.{HBox, Priority, Region, VBox}
+import scalafx.scene.web.WebView
 
 import java.time.format.DateTimeFormatter
 import java.util.UUID
@@ -20,14 +20,14 @@ import java.util.UUID
  * @param yRegionAnnotator Optional annotator for displaying chromosome ideogram visualization
  */
 class YProfileDetailDialog(
-  profile: YChromosomeProfileEntity,
-  variants: List[YProfileVariantEntity],
-  sources: List[YProfileSourceEntity],
-  variantCalls: Map[UUID, List[YVariantSourceCallEntity]],
-  auditEntries: List[YVariantAuditEntity],
-  biosampleName: String,
-  yRegionAnnotator: Option[YRegionAnnotator] = None
-) extends Dialog[Unit] {
+                            profile: YChromosomeProfileEntity,
+                            variants: List[YProfileVariantEntity],
+                            sources: List[YProfileSourceEntity],
+                            variantCalls: Map[UUID, List[YVariantSourceCallEntity]],
+                            auditEntries: List[YVariantAuditEntity],
+                            biosampleName: String,
+                            yRegionAnnotator: Option[YRegionAnnotator] = None
+                          ) extends Dialog[Unit] {
 
   private val dateFormatter = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm")
 
@@ -126,9 +126,15 @@ class YProfileDetailDialog(
 
       val metadataBox = new HBox(20) {
         children = Seq(
-          profile.haplogroupTreeProvider.map(p => new Label(s"Tree: $p") { style = "-fx-text-fill: #aaa; -fx-font-size: 11px;" }),
-          profile.haplogroupTreeVersion.map(v => new Label(s"Version: $v") { style = "-fx-text-fill: #aaa; -fx-font-size: 11px;" }),
-          Some(new Label(s"Updated: ${profile.meta.updatedAt.format(dateFormatter)}") { style = "-fx-text-fill: #aaa; -fx-font-size: 11px;" })
+          profile.haplogroupTreeProvider.map(p => new Label(s"Tree: $p") {
+            style = "-fx-text-fill: #aaa; -fx-font-size: 11px;"
+          }),
+          profile.haplogroupTreeVersion.map(v => new Label(s"Version: $v") {
+            style = "-fx-text-fill: #aaa; -fx-font-size: 11px;"
+          }),
+          Some(new Label(s"Updated: ${profile.meta.updatedAt.format(dateFormatter)}") {
+            style = "-fx-text-fill: #aaa; -fx-font-size: 11px;"
+          })
         ).flatten
       }
 
@@ -190,10 +196,16 @@ class YProfileDetailDialog(
       }
 
       children = Seq(
-        new Label("Status Breakdown") { style = "-fx-font-size: 16px; -fx-font-weight: bold;" }
+        new Label("Status Breakdown") {
+          style = "-fx-font-size: 16px; -fx-font-weight: bold;"
+        }
       ) ++ statusRows ++ Seq(
-        new Region { prefHeight = 20 },
-        new Label("Variant Types") { style = "-fx-font-size: 16px; -fx-font-weight: bold;" }
+        new Region {
+          prefHeight = 20
+        },
+        new Label("Variant Types") {
+          style = "-fx-font-size: 16px; -fx-font-weight: bold;"
+        }
       ) ++ typeRows
     }
 
@@ -233,16 +245,16 @@ class YProfileDetailDialog(
 
     // Table data
     case class VariantRow(
-      position: Long,
-      name: String,
-      variantType: String,
-      refAllele: String,
-      altAllele: String,
-      status: String,
-      consensusState: String,
-      sourceCount: Int,
-      confidence: String
-    )
+                           position: Long,
+                           name: String,
+                           variantType: String,
+                           refAllele: String,
+                           altAllele: String,
+                           status: String,
+                           consensusState: String,
+                           sourceCount: Int,
+                           confidence: String
+                         )
 
     val tableData = ObservableBuffer.from(variants.map { v =>
       val callCount = variantCalls.get(v.id).map(_.size).getOrElse(0)
@@ -365,15 +377,15 @@ class YProfileDetailDialog(
 
   private def createSourcesTab(): Tab = {
     case class SourceRow(
-      vendor: String,
-      testName: String,
-      sourceType: String,
-      tier: String,
-      meanDepth: String,
-      coverage: String,
-      variantCount: Int,
-      importedAt: String
-    )
+                          vendor: String,
+                          testName: String,
+                          sourceType: String,
+                          tier: String,
+                          meanDepth: String,
+                          coverage: String,
+                          variantCount: Int,
+                          importedAt: String
+                        )
 
     val tableData = ObservableBuffer.from(sources.sortBy(-_.methodTier).map { s =>
       SourceRow(
@@ -450,16 +462,16 @@ class YProfileDetailDialog(
     }
 
     case class ConcordanceRow(
-      variantName: String,
-      position: Long,
-      sourceName: String,
-      calledAllele: String,
-      callState: String,
-      weight: String,
-      depth: String,
-      isVariant: Boolean,
-      indent: Int
-    )
+                               variantName: String,
+                               position: Long,
+                               sourceName: String,
+                               calledAllele: String,
+                               callState: String,
+                               weight: String,
+                               depth: String,
+                               isVariant: Boolean,
+                               indent: Int
+                             )
 
     val rows = multiSourceVariants.flatMap { v =>
       val calls = variantCalls.getOrElse(v.id, Nil)
@@ -546,14 +558,14 @@ class YProfileDetailDialog(
 
   private def createAuditTab(): Tab = {
     case class AuditRow(
-      timestamp: String,
-      variantName: String,
-      action: String,
-      previousStatus: String,
-      newStatus: String,
-      userId: String,
-      reason: String
-    )
+                         timestamp: String,
+                         variantName: String,
+                         action: String,
+                         previousStatus: String,
+                         newStatus: String,
+                         userId: String,
+                         reason: String
+                       )
 
     val tableData = ObservableBuffer.from(auditEntries.sortBy(-_.createdAt.toEpochSecond(java.time.ZoneOffset.UTC)).map { a =>
       val variantName = variants.find(_.id == a.variantId).flatMap(_.variantName).getOrElse(s"Variant ${a.variantId.toString.take(8)}")
@@ -625,8 +637,8 @@ class YProfileDetailDialog(
     // Convert variants to markers (only show derived/novel/conflict)
     val variantMarkers = variants
       .filter(v => v.consensusState == YConsensusState.DERIVED ||
-                   v.status == YVariantStatus.NOVEL ||
-                   v.status == YVariantStatus.CONFLICT)
+        v.status == YVariantStatus.NOVEL ||
+        v.status == YVariantStatus.CONFLICT)
       .map(YChromosomeIdeogramRenderer.VariantMarker.fromVariantEntity)
 
     // Generate SVG

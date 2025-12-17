@@ -1,6 +1,7 @@
 package com.decodingus.str
 
-import com.decodingus.workspace.model._
+import com.decodingus.workspace.model.*
+
 import java.io.File
 import java.time.LocalDateTime
 import scala.io.Source
@@ -14,24 +15,28 @@ object StrCsvParser {
 
   /** Detected vendor format */
   sealed trait VendorFormat
+
   object VendorFormat {
     case object FTDNA extends VendorFormat
+
     case object YSEQ extends VendorFormat
+
     case object Generic extends VendorFormat
+
     case object Unknown extends VendorFormat
   }
 
   /** Result of parsing a CSV file */
   case class ParseResult(
-    profile: StrProfile,
-    detectedFormat: VendorFormat,
-    warnings: List[String]
-  )
+                          profile: StrProfile,
+                          detectedFormat: VendorFormat,
+                          warnings: List[String]
+                        )
 
   /**
    * Parses a Y-STR CSV file and returns an StrProfile.
    *
-   * @param file The CSV file to parse
+   * @param file         The CSV file to parse
    * @param biosampleRef The AT URI of the parent biosample
    * @return Either an error message or the parsed StrProfile with metadata
    */
@@ -78,11 +83,11 @@ object StrCsvParser {
    * This is common for FTDNA and YSEQ exports.
    */
   private def parseHorizontalFormat(
-    lines: List[String],
-    format: VendorFormat,
-    fileName: String,
-    biosampleRef: String
-  ): Either[String, ParseResult] = {
+                                     lines: List[String],
+                                     format: VendorFormat,
+                                     fileName: String,
+                                     biosampleRef: String
+                                   ): Either[String, ParseResult] = {
     if (lines.size < 2) {
       return Left("Horizontal format requires at least 2 rows (headers and values)")
     }
@@ -159,8 +164,10 @@ object StrCsvParser {
 
   /** Represents the layout of the CSV file */
   sealed trait CsvLayout
+
   object CsvLayout {
-    case object Vertical extends CsvLayout   // Marker in col 1, value in col 2 (rows = markers)
+    case object Vertical extends CsvLayout // Marker in col 1, value in col 2 (rows = markers)
+
     case object Horizontal extends CsvLayout // Markers as column headers, values in row below
   }
 
@@ -200,7 +207,7 @@ object StrCsvParser {
         if (lower.contains("marker name") && lower.contains("allele")) {
           Some(FormatInfo(VendorFormat.FTDNA, idx, CsvLayout.Vertical))
         } else if (cols.headOption.exists(c => c == "marker name" || c == "marker") &&
-                   cols.lift(1).exists(c => c == "allele" || c == "value" || c == "alleles")) {
+          cols.lift(1).exists(c => c == "allele" || c == "value" || c == "alleles")) {
           // Check if it looks like FTDNA based on other columns
           if (cols.exists(c => c.contains("ftdna") || c.contains("ystr"))) {
             Some(FormatInfo(VendorFormat.FTDNA, idx, CsvLayout.Vertical))
@@ -239,12 +246,12 @@ object StrCsvParser {
   }
 
   private def parseWithFormat(
-    lines: List[String],
-    headerIdx: Int,
-    format: VendorFormat,
-    fileName: String,
-    biosampleRef: String
-  ): Either[String, ParseResult] = {
+                               lines: List[String],
+                               headerIdx: Int,
+                               format: VendorFormat,
+                               fileName: String,
+                               biosampleRef: String
+                             ): Either[String, ParseResult] = {
     val dataLines = if (headerIdx >= 0) lines.drop(headerIdx + 1) else lines
     var warnings = List.empty[String]
     var markers = List.empty[StrMarkerValue]
@@ -257,7 +264,7 @@ object StrCsvParser {
             markers = markers :+ marker
             marker.panel.foreach(p => panels += p)
           case Right(None) =>
-            // Empty or skipped line
+          // Empty or skipped line
           case Left(warning) =>
             warnings = warnings :+ warning
         }
@@ -421,16 +428,16 @@ object StrCsvParser {
   private def looksLikeMarkerName(name: String): Boolean = {
     val upper = name.toUpperCase.trim
     upper.startsWith("DYS") ||
-    upper.startsWith("DYF") ||
-    upper.startsWith("DYR") ||
-    upper.startsWith("FTY") ||  // YSEQ markers
-    upper.startsWith("GATA") ||
-    upper.startsWith("Y-GATA") ||
-    upper.startsWith("Y-GGAAT") ||
-    upper.startsWith("YCAII") ||
-    upper.startsWith("CDY") ||
-    upper == "H4" ||
-    upper.matches("Y[A-Z]+.*")
+      upper.startsWith("DYF") ||
+      upper.startsWith("DYR") ||
+      upper.startsWith("FTY") || // YSEQ markers
+      upper.startsWith("GATA") ||
+      upper.startsWith("Y-GATA") ||
+      upper.startsWith("Y-GGAAT") ||
+      upper.startsWith("YCAII") ||
+      upper.startsWith("CDY") ||
+      upper == "H4" ||
+      upper.matches("Y[A-Z]+.*")
   }
 
   /** Normalizes marker names to a standard format */
@@ -443,7 +450,7 @@ object StrCsvParser {
       case n if n.startsWith("DYS") => n
       case n if n.startsWith("DYF") => n
       case n if n.startsWith("DYR") => n
-      case n if n.startsWith("FTY") => n  // YSEQ markers
+      case n if n.startsWith("FTY") => n // YSEQ markers
       case n if n.startsWith("GATA") => n
       case n if n.startsWith("Y-GATA") => n.replace("Y-GATA", "YGATA")
       case n if n.startsWith("Y-GGAAT") => n.replace("Y-GGAAT", "YGGAAT")
@@ -492,10 +499,10 @@ object StrCsvParser {
    * This is important for YSEQ files which often have sparse data.
    */
   private def inferProviderFromContextWithAllMarkers(
-    fileName: String,
-    markers: List[StrMarkerValue],
-    allMarkerNames: List[String]
-  ): Option[String] = {
+                                                      fileName: String,
+                                                      markers: List[StrMarkerValue],
+                                                      allMarkerNames: List[String]
+                                                    ): Option[String] = {
     val lowerFileName = fileName.toLowerCase
     val markerNamesSet = allMarkerNames.map(_.toUpperCase).toSet
 
@@ -504,7 +511,7 @@ object StrCsvParser {
       return Some("YSEQ")
     }
     if (lowerFileName.contains("ftdna") || lowerFileName.contains("ydna") ||
-        lowerFileName.matches(".*[bB]\\d{4,}.*")) {
+      lowerFileName.matches(".*[bB]\\d{4,}.*")) {
       return Some("FTDNA")
     }
 

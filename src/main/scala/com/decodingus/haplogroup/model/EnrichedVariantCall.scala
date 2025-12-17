@@ -12,25 +12,25 @@ import com.decodingus.refgenome.{RegionAnnotation, RegionType, YRegionAnnotator}
  *
  * Note: Quality adjustments are for display only and don't affect haplogroup scoring.
  *
- * @param contig Chromosome (e.g., "chrY")
- * @param position 1-based genomic position
- * @param ref Reference allele
- * @param alt Alternate allele
- * @param call Called base at this position
- * @param quality PHRED quality score from VCF
- * @param depth Read depth at this position (from DP field)
+ * @param contig           Chromosome (e.g., "chrY")
+ * @param position         1-based genomic position
+ * @param ref              Reference allele
+ * @param alt              Alternate allele
+ * @param call             Called base at this position
+ * @param quality          PHRED quality score from VCF
+ * @param depth            Read depth at this position (from DP field)
  * @param regionAnnotation Region annotation for display and quality adjustment
  */
 case class EnrichedVariantCall(
-  contig: String,
-  position: Long,
-  ref: String,
-  alt: String,
-  call: String,
-  quality: Option[Double],
-  depth: Option[Int],
-  regionAnnotation: Option[RegionAnnotation] = None
-) {
+                                contig: String,
+                                position: Long,
+                                ref: String,
+                                alt: String,
+                                call: String,
+                                quality: Option[Double],
+                                depth: Option[Int],
+                                regionAnnotation: Option[RegionAnnotation] = None
+                              ) {
   /**
    * Get the adjusted quality based on region modifiers.
    * Returns None if no base quality available.
@@ -119,12 +119,12 @@ case class EnrichedVariantCall(
    */
   private def qualityToStars(qual: Option[Double]): String = qual match {
     case None => "-"
-    case Some(q) if q < 10 => "☆☆☆☆☆"   // 0 stars
-    case Some(q) if q < 20 => "★☆☆☆☆"   // 1 star
-    case Some(q) if q < 30 => "★★☆☆☆"   // 2 stars
-    case Some(q) if q < 40 => "★★★☆☆"   // 3 stars
-    case Some(q) if q < 50 => "★★★★☆"   // 4 stars
-    case Some(_) => "★★★★★"             // 5 stars
+    case Some(q) if q < 10 => "☆☆☆☆☆" // 0 stars
+    case Some(q) if q < 20 => "★☆☆☆☆" // 1 star
+    case Some(q) if q < 30 => "★★☆☆☆" // 2 stars
+    case Some(q) if q < 40 => "★★★☆☆" // 3 stars
+    case Some(q) if q < 50 => "★★★★☆" // 4 stars
+    case Some(_) => "★★★★★" // 5 stars
   }
 }
 
@@ -132,25 +132,25 @@ object EnrichedVariantCall {
   /**
    * Create an enriched variant call with region annotation.
    *
-   * @param contig Chromosome
-   * @param position 1-based position
-   * @param ref Reference allele
-   * @param alt Alternate allele
-   * @param call Called base
-   * @param quality PHRED quality score
-   * @param depth Read depth
+   * @param contig    Chromosome
+   * @param position  1-based position
+   * @param ref       Reference allele
+   * @param alt       Alternate allele
+   * @param call      Called base
+   * @param quality   PHRED quality score
+   * @param depth     Read depth
    * @param annotator Optional region annotator for region info
    */
   def create(
-    contig: String,
-    position: Long,
-    ref: String,
-    alt: String,
-    call: String,
-    quality: Option[Double] = None,
-    depth: Option[Int] = None,
-    annotator: Option[YRegionAnnotator] = None
-  ): EnrichedVariantCall = {
+              contig: String,
+              position: Long,
+              ref: String,
+              alt: String,
+              call: String,
+              quality: Option[Double] = None,
+              depth: Option[Int] = None,
+              annotator: Option[YRegionAnnotator] = None
+            ): EnrichedVariantCall = {
     val regionAnnotation = annotator.map(_.annotate(contig, position, depth))
     EnrichedVariantCall(contig, position, ref, alt, call, quality, depth, regionAnnotation)
   }
@@ -169,17 +169,17 @@ object EnrichedVariantCall {
 /**
  * Container for enriched variant data for a haplogroup analysis.
  *
- * @param snpCalls Map of position to enriched call for SNPs on the haplogroup path
- * @param novelSnps Enriched novel/private SNP variants
- * @param novelIndels Enriched novel/private indel variants
+ * @param snpCalls       Map of position to enriched call for SNPs on the haplogroup path
+ * @param novelSnps      Enriched novel/private SNP variants
+ * @param novelIndels    Enriched novel/private indel variants
  * @param referenceBuild Reference build used for annotation
  */
 case class EnrichedVariantData(
-  snpCalls: Map[Long, EnrichedVariantCall],
-  novelSnps: List[EnrichedVariantCall],
-  novelIndels: List[EnrichedVariantCall],
-  referenceBuild: String
-) {
+                                snpCalls: Map[Long, EnrichedVariantCall],
+                                novelSnps: List[EnrichedVariantCall],
+                                novelIndels: List[EnrichedVariantCall],
+                                referenceBuild: String
+                              ) {
   def hasRegionAnnotations: Boolean = {
     snpCalls.values.exists(_.regionAnnotation.isDefined) ||
       novelSnps.exists(_.regionAnnotation.isDefined) ||

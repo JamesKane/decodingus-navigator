@@ -42,32 +42,32 @@ object YVariantConcordance:
    * @return Calculated concordance weight
    */
   def calculateWeight(
-    sourceType: YProfileSourceType,
-    variantType: YVariantType,
-    readDepth: Option[Int] = None,
-    mappingQuality: Option[Double] = None,
-    callableState: Option[YCallableState] = None,
-    regionModifier: Double = 1.0
-  ): Double =
+                       sourceType: YProfileSourceType,
+                       variantType: YVariantType,
+                       readDepth: Option[Int] = None,
+                       mappingQuality: Option[Double] = None,
+                       callableState: Option[YCallableState] = None,
+                       regionModifier: Double = 1.0
+                     ): Double =
     // Select method weight based on variant type (from enum)
     val methodWeight = variantType match
       case YVariantType.STR => sourceType.strWeight
-      case _                => sourceType.snpWeight
+      case _ => sourceType.snpWeight
 
     // Depth bonus: min(sqrt(depth)/10, 1.0) - rewards higher coverage
     val depthBonus = readDepth match
       case Some(depth) if depth > 0 => math.min(math.sqrt(depth.toDouble) / 10.0, 1.0)
-      case _                        => 0.0
+      case _ => 0.0
 
     // Mapping quality factor: min(MQ/60, 1.0)
     val mapQFactor = mappingQuality match
       case Some(mq) if mq > 0 => math.min(mq / 60.0, 1.0)
-      case _                  => 1.0 // Default to 1.0 for non-sequencing sources
+      case _ => 1.0 // Default to 1.0 for non-sequencing sources
 
     // Callable state factor (from enum)
     val callableFactor = callableState match
       case Some(state) => state.weight
-      case None        => 1.0 // Assume callable if unknown
+      case None => 1.0 // Assume callable if unknown
 
     // Region factor: regions like palindromes, XTR, ampliconic have lower confidence
     // Values come from YRegionAnnotator.RegionType modifiers
@@ -79,43 +79,43 @@ object YVariantConcordance:
   /**
    * Input data for a single source call.
    *
-   * @param sourceId         Unique ID of the data source
-   * @param sourceType       Testing method used (WGS, chip, etc.)
-   * @param calledAllele     The allele called at this position
-   * @param callState        Consensus state (ANCESTRAL, DERIVED, etc.)
-   * @param readDepth        Read depth at position (optional)
-   * @param mappingQuality   Mapping quality (optional)
-   * @param callableState    Callable state at position (optional)
+   * @param sourceId          Unique ID of the data source
+   * @param sourceType        Testing method used (WGS, chip, etc.)
+   * @param calledAllele      The allele called at this position
+   * @param callState         Consensus state (ANCESTRAL, DERIVED, etc.)
+   * @param readDepth         Read depth at position (optional)
+   * @param mappingQuality    Mapping quality (optional)
+   * @param callableState     Callable state at position (optional)
    * @param calledRepeatCount STR repeat count (optional, for STR markers)
-   * @param regionModifier   Quality modifier based on genomic region (default 1.0)
-   *                         Values from YRegionAnnotator: XDegenerate=1.0, PAR=0.5,
-   *                         Palindrome=0.4, XTR=0.3, Ampliconic=0.3, STR=0.25, etc.
+   * @param regionModifier    Quality modifier based on genomic region (default 1.0)
+   *                          Values from YRegionAnnotator: XDegenerate=1.0, PAR=0.5,
+   *                          Palindrome=0.4, XTR=0.3, Ampliconic=0.3, STR=0.25, etc.
    */
   case class SourceCallInput(
-    sourceId: java.util.UUID,
-    sourceType: YProfileSourceType,
-    calledAllele: String,
-    callState: YConsensusState,
-    readDepth: Option[Int] = None,
-    mappingQuality: Option[Double] = None,
-    callableState: Option[YCallableState] = None,
-    calledRepeatCount: Option[Int] = None,
-    regionModifier: Double = 1.0
-  )
+                              sourceId: java.util.UUID,
+                              sourceType: YProfileSourceType,
+                              calledAllele: String,
+                              callState: YConsensusState,
+                              readDepth: Option[Int] = None,
+                              mappingQuality: Option[Double] = None,
+                              callableState: Option[YCallableState] = None,
+                              calledRepeatCount: Option[Int] = None,
+                              regionModifier: Double = 1.0
+                            )
 
   /**
    * Result of concordance calculation.
    */
   case class ConcordanceResult(
-    consensusAllele: Option[String],
-    consensusState: YConsensusState,
-    status: YVariantStatus,
-    confidenceScore: Double,
-    sourceCount: Int,
-    concordantCount: Int,
-    discordantCount: Int,
-    weightedCalls: List[(SourceCallInput, Double)]  // Calls with their calculated weights
-  )
+                                consensusAllele: Option[String],
+                                consensusState: YConsensusState,
+                                status: YVariantStatus,
+                                confidenceScore: Double,
+                                sourceCount: Int,
+                                concordantCount: Int,
+                                discordantCount: Int,
+                                weightedCalls: List[(SourceCallInput, Double)] // Calls with their calculated weights
+                              )
 
   /**
    * Calculate consensus from multiple source calls.
@@ -126,10 +126,10 @@ object YVariantConcordance:
    * @return Concordance result with consensus and status
    */
   def calculateConsensus(
-    calls: List[SourceCallInput],
-    variantType: YVariantType,
-    isInTree: Boolean = true
-  ): ConcordanceResult =
+                          calls: List[SourceCallInput],
+                          variantType: YVariantType,
+                          isInTree: Boolean = true
+                        ): ConcordanceResult =
     if calls.isEmpty then
       return ConcordanceResult(
         consensusAllele = None,
@@ -219,14 +219,14 @@ object YVariantConcordance:
    *
    * For STRs, differences of more than 1 repeat are considered significant conflicts.
    *
-   * @param calls       List of source calls with repeat counts
-   * @param isInTree    Whether the marker is in the reference panel
+   * @param calls    List of source calls with repeat counts
+   * @param isInTree Whether the marker is in the reference panel
    * @return Concordance result
    */
   def calculateStrConsensus(
-    calls: List[SourceCallInput],
-    isInTree: Boolean = true
-  ): ConcordanceResult =
+                             calls: List[SourceCallInput],
+                             isInTree: Boolean = true
+                           ): ConcordanceResult =
     if calls.isEmpty then
       return ConcordanceResult(
         consensusAllele = None,
@@ -308,7 +308,7 @@ object YVariantConcordance:
 
     ConcordanceResult(
       consensusAllele = Some(consensusAllele),
-      consensusState = YConsensusState.DERIVED,  // STRs are typically considered derived
+      consensusState = YConsensusState.DERIVED, // STRs are typically considered derived
       status = status,
       confidenceScore = confidenceScore,
       sourceCount = calls.size,
@@ -321,11 +321,11 @@ object YVariantConcordance:
    * Determine variant status based on concordance metrics.
    */
   private def determineStatus(
-    discordanceRatio: Double,
-    confidenceScore: Double,
-    isInTree: Boolean,
-    hasData: Boolean
-  ): YVariantStatus =
+                               discordanceRatio: Double,
+                               confidenceScore: Double,
+                               isInTree: Boolean,
+                               hasData: Boolean
+                             ): YVariantStatus =
     if !hasData then
       YVariantStatus.NO_COVERAGE
     else if discordanceRatio > ConflictThreshold then
@@ -358,11 +358,11 @@ object YVariantConcordance:
    * @return Overall confidence score (0.0 to 1.0)
    */
   def calculateProfileConfidence(
-    confirmedCount: Int,
-    novelCount: Int,
-    conflictCount: Int,
-    totalCount: Int
-  ): Double =
+                                  confirmedCount: Int,
+                                  novelCount: Int,
+                                  conflictCount: Int,
+                                  totalCount: Int
+                                ): Double =
     if totalCount == 0 then 0.0
     else
       // Weight: confirmed contributes fully, novel partially, conflicts reduce confidence

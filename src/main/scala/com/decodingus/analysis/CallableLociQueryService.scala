@@ -1,25 +1,27 @@
 package com.decodingus.analysis
 
 import com.decodingus.util.Logger
+
 import java.io.{BufferedReader, File, FileReader}
 import java.nio.file.{Files, Path}
 import scala.collection.mutable
-import scala.jdk.CollectionConverters._
+import scala.jdk.CollectionConverters.*
 import scala.util.Using
 
 /**
  * Callable loci states from GATK CallableLoci.
  */
 enum CallableState:
-  case Callable          // Position is callable (good coverage, quality)
-  case NoCoverage        // No reads covering this position
-  case LowCoverage       // Coverage below threshold
+  case Callable // Position is callable (good coverage, quality)
+  case NoCoverage // No reads covering this position
+  case LowCoverage // Coverage below threshold
   case ExcessiveCoverage // Coverage too high (possible mapping issue)
   case PoorMappingQuality // Reads have poor mapping quality
-  case RefN              // Reference is N at this position
-  case Unknown           // Position not in BED file
+  case RefN // Reference is N at this position
+  case Unknown // Position not in BED file
 
   def isCallable: Boolean = this == Callable
+
   def canInferReference: Boolean = this == Callable || this == RefN
 
 /**
@@ -46,7 +48,7 @@ class CallableLociQueryService(callableLociDir: Path) {
   /**
    * Query the callable state at a specific position.
    *
-   * @param contig Chromosome name (e.g., "chr1")
+   * @param contig   Chromosome name (e.g., "chr1")
    * @param position 1-based genomic position
    * @return The callable state at that position
    */
@@ -76,7 +78,7 @@ class CallableLociQueryService(callableLociDir: Path) {
 
     while (low <= high) {
       val mid = low + (high - low) / 2
-      val interval = intervals(mid)  // O(1) with Array
+      val interval = intervals(mid) // O(1) with Array
 
       if (position >= interval.start && position <= interval.end) {
         return Some(interval)
@@ -101,7 +103,7 @@ class CallableLociQueryService(callableLociDir: Path) {
     contigs.foreach { contig =>
       if (!contigIntervals.contains(contig)) {
         loadContigBed(contig)
-        totalIntervals += contigIntervals.getOrElse(contig, Array.empty).length
+        totalIntervals += contigIntervals.getOrElse(contig, Array.empty[CallableInterval]).length
       }
     }
     val elapsed = System.currentTimeMillis() - startTime
@@ -127,7 +129,7 @@ class CallableLociQueryService(callableLociDir: Path) {
     byContig.keys.foreach(ensureContigLoaded)
 
     val results = byContig.flatMap { case (contig, contigPositions) =>
-      val intervals = contigIntervals.getOrElse(contig, List.empty)
+      val intervals = contigIntervals.getOrElse(contig, Array.empty[CallableInterval])
       contigPositions.map { case (c, pos) =>
         val state = findInterval(intervals, pos).map(_.state).getOrElse(CallableState.Unknown)
         (c, pos) -> state
@@ -177,7 +179,7 @@ class CallableLociQueryService(callableLociDir: Path) {
   def getTotalCallableBases: Long = {
     // Load all contigs
     listAvailableContigs.foreach(ensureContigLoaded)
-    contigIntervals.values.flatMap(_.filter(_.state == CallableState.Callable))
+    contigIntervals.values.flatMap(_.iterator.filter(_.state == CallableState.Callable))
       .map(i => i.end - i.start + 1)
       .sum
   }
@@ -223,12 +225,12 @@ class CallableLociQueryService(callableLociDir: Path) {
     val bedFile = callableLociDir.resolve(s"$contig.callable.bed")
 
     if (!Files.exists(bedFile)) {
-      contigIntervals(contig) = List.empty
+      contigIntervals(contig) = Array.empty
       return
     }
 
     val startTime = System.currentTimeMillis()
-    val intervals = mutable.ListBuffer[CallableInterval]()
+    val intervals = mutable.ArrayBuffer[CallableInterval]()
 
     Using(new BufferedReader(new FileReader(bedFile.toFile))) { reader =>
       var line = reader.readLine()
@@ -238,8 +240,8 @@ class CallableLociQueryService(callableLociDir: Path) {
           if (fields.length >= 4) {
             val intervalContig = fields(0)
             if (intervalContig == contig) {
-              val start = fields(1).toLong + 1  // BED is 0-based, convert to 1-based
-              val end = fields(2).toLong         // BED end is exclusive, but we use inclusive
+              val start = fields(1).toLong + 1 // BED is 0-based, convert to 1-based
+              val end = fields(2).toLong // BED end is exclusive, but we use inclusive
               val state = parseState(fields(3))
               intervals += CallableInterval(start, end, state)
             }
@@ -249,10 +251,11 @@ class CallableLociQueryService(callableLociDir: Path) {
       }
     }
 
-    val sortedIntervals = intervals.toList.sortBy(_.start)
+    // Sort and convert to Array for O(1) random access in binary search
+    val sortedIntervals = intervals.sortBy(_.start).toArray
     contigIntervals(contig) = sortedIntervals
     val elapsed = System.currentTimeMillis() - startTime
-    log.info(s"Loaded callable loci for $contig: ${sortedIntervals.size} intervals in ${elapsed}ms")
+    log.info(s"Loaded callable loci for $contig: ${sortedIntervals.length} intervals in ${elapsed}ms")
   }
 
   /**
@@ -282,10 +285,10 @@ object CallableLociQueryService {
    * Create a query service from an alignment's artifact directory.
    */
   def fromAlignment(
-    sampleAccession: String,
-    runId: String,
-    alignmentId: String
-  ): Option[CallableLociQueryService] = {
+                     sampleAccession: String,
+                     runId: String,
+                     alignmentId: String
+                   ): Option[CallableLociQueryService] = {
     val callableLociDir = SubjectArtifactCache.getArtifactSubdir(
       sampleAccession, runId, alignmentId, "callable_loci"
     )
@@ -300,10 +303,10 @@ object CallableLociQueryService {
    * Create a query service from AT URIs.
    */
   def fromUris(
-    sampleAccession: String,
-    sequenceRunUri: Option[String],
-    alignmentUri: Option[String]
-  ): Option[CallableLociQueryService] = {
+                sampleAccession: String,
+                sequenceRunUri: Option[String],
+                alignmentUri: Option[String]
+              ): Option[CallableLociQueryService] = {
     val runId = sequenceRunUri.map(SubjectArtifactCache.extractIdFromUri).getOrElse("unknown-run")
     val alignId = alignmentUri.map(SubjectArtifactCache.extractIdFromUri).getOrElse("unknown-alignment")
     fromAlignment(sampleAccession, runId, alignId)
@@ -313,12 +316,12 @@ object CallableLociQueryService {
    * Quick query for a single position.
    */
   def quickQuery(
-    sampleAccession: String,
-    runId: String,
-    alignmentId: String,
-    contig: String,
-    position: Long
-  ): CallableState = {
+                  sampleAccession: String,
+                  runId: String,
+                  alignmentId: String,
+                  contig: String,
+                  position: Long
+                ): CallableState = {
     fromAlignment(sampleAccession, runId, alignmentId) match {
       case Some(service) => service.queryPosition(contig, position)
       case None => CallableState.Unknown

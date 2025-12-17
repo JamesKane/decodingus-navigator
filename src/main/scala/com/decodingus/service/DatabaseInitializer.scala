@@ -1,11 +1,7 @@
 package com.decodingus.service
 
 import com.decodingus.db.{Database, Migrator, Transactor}
-import com.decodingus.repository.{
-  BiosampleRepository, ProjectRepository, SequenceRunRepository, AlignmentRepository,
-  AnalysisArtifactRepository, SourceFileRepository,
-  SyncQueueRepository, SyncHistoryRepository, SyncConflictRepository
-}
+import com.decodingus.repository.*
 
 /**
  * Database initialization and service wiring.
@@ -136,22 +132,22 @@ object DatabaseInitializer:
  * - The transactor (for custom transactions)
  */
 case class DatabaseContext(
-  database: Database,
-  transactor: Transactor,
-  workspaceService: H2WorkspaceService,
-  cacheService: CacheService,
-  syncService: SyncService,
-  sequenceDataManager: SequenceDataManager,
-  biosampleRepository: BiosampleRepository,
-  projectRepository: ProjectRepository,
-  sequenceRunRepository: SequenceRunRepository,
-  alignmentRepository: AlignmentRepository,
-  analysisArtifactRepository: AnalysisArtifactRepository,
-  sourceFileRepository: SourceFileRepository,
-  syncQueueRepository: SyncQueueRepository,
-  syncHistoryRepository: SyncHistoryRepository,
-  syncConflictRepository: SyncConflictRepository
-):
+                            database: Database,
+                            transactor: Transactor,
+                            workspaceService: H2WorkspaceService,
+                            cacheService: CacheService,
+                            syncService: SyncService,
+                            sequenceDataManager: SequenceDataManager,
+                            biosampleRepository: BiosampleRepository,
+                            projectRepository: ProjectRepository,
+                            sequenceRunRepository: SequenceRunRepository,
+                            alignmentRepository: AlignmentRepository,
+                            analysisArtifactRepository: AnalysisArtifactRepository,
+                            sourceFileRepository: SourceFileRepository,
+                            syncQueueRepository: SyncQueueRepository,
+                            syncHistoryRepository: SyncHistoryRepository,
+                            syncConflictRepository: SyncConflictRepository
+                          ):
   /**
    * Shutdown the database connection pool.
    * Call this on application exit.

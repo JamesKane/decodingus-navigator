@@ -34,7 +34,7 @@ class YRegionCache {
   /**
    * Get cached file path for a region type and reference build.
    *
-   * @param regionType Type of region (e.g., "cytobands", "palindromes", "par")
+   * @param regionType     Type of region (e.g., "cytobands", "palindromes", "par")
    * @param referenceBuild Reference genome build (e.g., "GRCh38", "GRCh37")
    * @return Some(path) if cached file exists, None otherwise
    */
@@ -47,9 +47,9 @@ class YRegionCache {
   /**
    * Store a region file in the cache.
    *
-   * @param regionType Type of region
+   * @param regionType     Type of region
    * @param referenceBuild Reference genome build
-   * @param sourceFile Path to the file to cache (will be moved)
+   * @param sourceFile     Path to the file to cache (will be moved)
    * @return Path to the cached file
    */
   def put(regionType: String, referenceBuild: String, sourceFile: Path): Path = {
@@ -62,9 +62,9 @@ class YRegionCache {
   /**
    * Copy a file to the cache (preserving original).
    *
-   * @param regionType Type of region
+   * @param regionType     Type of region
    * @param referenceBuild Reference genome build
-   * @param sourceFile Path to the file to cache (will be copied)
+   * @param sourceFile     Path to the file to cache (will be copied)
    * @return Path to the cached file
    */
   def putCopy(regionType: String, referenceBuild: String, sourceFile: Path): Path = {

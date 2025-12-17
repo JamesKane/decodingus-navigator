@@ -1,28 +1,28 @@
 package com.decodingus.refgenome
 
 import java.nio.file.Path
+import scala.collection.mutable
 import scala.io.Source
 import scala.util.Using
-import scala.collection.mutable
 
 /**
  * STR (Short Tandem Repeat) region from HipSTR reference.
  *
- * @param chrom Chromosome
- * @param start Start position (0-based)
- * @param end End position (0-based, exclusive)
- * @param period Repeat unit length (e.g., 2 for dinucleotide, 3 for trinucleotide)
+ * @param chrom      Chromosome
+ * @param start      Start position (0-based)
+ * @param end        End position (0-based, exclusive)
+ * @param period     Repeat unit length (e.g., 2 for dinucleotide, 3 for trinucleotide)
  * @param numRepeats Number of repeat copies in reference
- * @param name STR locus name (if available)
+ * @param name       STR locus name (if available)
  */
 case class StrRegion(
-  chrom: String,
-  start: Long,
-  end: Long,
-  period: Int,
-  numRepeats: Double,
-  name: Option[String]
-)
+                      chrom: String,
+                      start: Long,
+                      end: Long,
+                      period: Int,
+                      numRepeats: Double,
+                      name: Option[String]
+                    )
 
 /**
  * Annotates genomic positions with STR (Short Tandem Repeat) information.
@@ -62,7 +62,7 @@ class StrAnnotator(bedPath: Path) {
   /**
    * Find STR region overlapping a given position.
    *
-   * @param chrom Chromosome (e.g., "chrY", "Y")
+   * @param chrom    Chromosome (e.g., "chrY", "Y")
    * @param position 1-based genomic position
    * @return Some(StrRegion) if position falls within a known STR, None otherwise
    */

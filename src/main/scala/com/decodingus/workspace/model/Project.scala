@@ -12,10 +12,10 @@ package com.decodingus.workspace.model
  * @param memberRefs    AT URIs of biosample records associated with this project
  */
 case class Project(
-  atUri: Option[String],
-  meta: RecordMeta,
-  projectName: String,
-  description: Option[String] = None,
-  administrator: String,
-  memberRefs: List[String] = List.empty
-)
+                    atUri: Option[String],
+                    meta: RecordMeta,
+                    projectName: String,
+                    description: Option[String] = None,
+                    administrator: String,
+                    memberRefs: List[String] = List.empty
+                  )

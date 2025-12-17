@@ -2,9 +2,9 @@ package com.decodingus.client
 
 import com.decodingus.model.LibraryStats
 import com.decodingus.refgenome.model.{GenomeRegions, GenomeRegionsCodecs}
-import sttp.client3._
-import sttp.client3.circe._
-import io.circe.generic.auto._
+import io.circe.generic.auto.*
+import sttp.client3.*
+import sttp.client3.circe.*
 
 import scala.concurrent.{ExecutionContext, Future}
 
@@ -21,21 +21,21 @@ case class PdsRegistrationRequest(did: String, token: String, pdsUrl: String)
  * @param websiteUrl   Lab website URL if available
  */
 case class SequencerLabInfo(
-  instrumentId: String,
-  labName: String,
-  isD2c: Boolean,
-  manufacturer: Option[String] = None,
-  model: Option[String] = None,
-  websiteUrl: Option[String] = None
-)
+                             instrumentId: String,
+                             labName: String,
+                             isD2c: Boolean,
+                             manufacturer: Option[String] = None,
+                             model: Option[String] = None,
+                             websiteUrl: Option[String] = None
+                           )
 
 /**
  * Response from the lab-instruments endpoint.
  */
 case class SequencerLabInstrumentsResponse(
-  data: List[SequencerLabInfo],
-  count: Int
-)
+                                            data: List[SequencerLabInfo],
+                                            count: Int
+                                          )
 
 object DecodingUsClient {
 
@@ -52,7 +52,7 @@ object DecodingUsClient {
    * @param token  The authentication token (R_Token).
    * @param pdsUrl The URL of the PDS.
    * @param ec     Execution context.
-   * @return       A Future completing on success.
+   * @return A Future completing on success.
    */
   def registerPds(did: String, token: String, pdsUrl: String)(implicit ec: ExecutionContext): Future[Unit] = {
     val request = basicRequest
@@ -77,7 +77,7 @@ object DecodingUsClient {
    * @param userId       The user's ID.
    * @param libraryStats Metadata about the library (sample name, reference, platform).
    * @param ec           Execution context.
-   * @return             A Future containing the Biosample ID string.
+   * @return A Future containing the Biosample ID string.
    */
   def resolveBiosampleId(userId: String, libraryStats: LibraryStats)(implicit ec: ExecutionContext): Future[String] = {
     // In a real implementation, this would POST metadata to the platform to find or register the biosample.
@@ -89,7 +89,7 @@ object DecodingUsClient {
     Future {
       // simulating network delay
       Thread.sleep(500)
-      
+
       // Mock logic to generate a consistent ID based on input for testing, 
       // or just a random one if it were a real 'new' sample.
       // For stubbing purposes, we'll make it look like a UUID but deterministic for the same sample name.

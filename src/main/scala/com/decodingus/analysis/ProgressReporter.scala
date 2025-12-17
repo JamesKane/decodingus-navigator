@@ -59,8 +59,8 @@ object ProgressReporter {
    * of the overall progress.
    *
    * @param callback The parent progress callback
-   * @param start Starting fraction within parent (0.0 to 1.0)
-   * @param end Ending fraction within parent (0.0 to 1.0)
+   * @param start    Starting fraction within parent (0.0 to 1.0)
+   * @param end      Ending fraction within parent (0.0 to 1.0)
    * @return A scoped progress callback for the sub-task
    */
   def scoped(callback: ProgressCallback, start: Double, end: Double): ProgressCallback =
@@ -76,7 +76,7 @@ object ProgressReporter {
    * Useful when multiple sub-systems report to the same callback.
    *
    * @param callback The underlying progress callback
-   * @param prefix Prefix to add to all messages
+   * @param prefix   Prefix to add to all messages
    * @return A prefixed progress callback
    */
   def prefixed(callback: ProgressCallback, prefix: String): ProgressCallback =
@@ -87,7 +87,7 @@ object ProgressReporter {
    *
    * Reduces UI update frequency when processing many items.
    *
-   * @param callback The underlying progress callback
+   * @param callback      The underlying progress callback
    * @param minIntervalMs Minimum milliseconds between updates
    * @return A throttled progress callback
    */

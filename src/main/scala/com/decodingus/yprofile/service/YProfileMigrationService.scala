@@ -1,17 +1,11 @@
 package com.decodingus.yprofile.service
 
 import com.decodingus.db.Transactor
-import com.decodingus.repository.{
-  HaplogroupReconciliationEntity, HaplogroupReconciliationRepository
-}
-import com.decodingus.yprofile.repository.{
-  YChromosomeProfileRepository, YProfileSourceRepository, YProfileRegionRepository,
-  YProfileVariantRepository, YVariantSourceCallRepository, YVariantAuditRepository
-}
-import com.decodingus.workspace.model.{
-  DnaType, HaplogroupTechnology, RunHaplogroupCall, SnpConflict, SnpCallFromRun
-}
+import com.decodingus.repository.{HaplogroupReconciliationEntity, HaplogroupReconciliationRepository}
+import com.decodingus.workspace.model.*
 import com.decodingus.yprofile.model.*
+import com.decodingus.yprofile.repository.*
+
 import java.time.{LocalDateTime, ZoneId}
 import java.util.UUID
 
@@ -26,37 +20,37 @@ import java.util.UUID
  * After migration, HaplogroupReconciliation is retained only for MT-DNA.
  */
 class YProfileMigrationService(
-  transactor: Transactor,
-  reconciliationRepo: HaplogroupReconciliationRepository,
-  profileRepo: YChromosomeProfileRepository,
-  sourceRepo: YProfileSourceRepository,
-  regionRepo: YProfileRegionRepository,
-  variantRepo: YProfileVariantRepository,
-  sourceCallRepo: YVariantSourceCallRepository,
-  auditRepo: YVariantAuditRepository
-):
+                                transactor: Transactor,
+                                reconciliationRepo: HaplogroupReconciliationRepository,
+                                profileRepo: YChromosomeProfileRepository,
+                                sourceRepo: YProfileSourceRepository,
+                                regionRepo: YProfileRegionRepository,
+                                variantRepo: YProfileVariantRepository,
+                                sourceCallRepo: YVariantSourceCallRepository,
+                                auditRepo: YVariantAuditRepository
+                              ):
 
   /**
    * Result of a single record migration.
    */
   case class MigrationResult(
-    biosampleId: UUID,
-    profileId: UUID,
-    sourcesCreated: Int,
-    variantsCreated: Int,
-    success: Boolean,
-    errorMessage: Option[String] = None
-  )
+                              biosampleId: UUID,
+                              profileId: UUID,
+                              sourcesCreated: Int,
+                              variantsCreated: Int,
+                              success: Boolean,
+                              errorMessage: Option[String] = None
+                            )
 
   /**
    * Summary of migration operation.
    */
   case class MigrationSummary(
-    totalRecords: Int,
-    successfulMigrations: Int,
-    failedMigrations: Int,
-    results: List[MigrationResult]
-  )
+                               totalRecords: Int,
+                               successfulMigrations: Int,
+                               failedMigrations: Int,
+                               results: List[MigrationResult]
+                             )
 
   /**
    * Migrate all Y-DNA HaplogroupReconciliation records to YChromosomeProfile.
@@ -222,10 +216,10 @@ class YProfileMigrationService(
    * Create YProfileVariant and source calls from an SNP conflict.
    */
   private def createVariantsFromConflict(
-    profileId: UUID,
-    sources: List[YProfileSourceEntity],
-    conflict: SnpConflict
-  )(using java.sql.Connection): List[YProfileVariantEntity] =
+                                          profileId: UUID,
+                                          sources: List[YProfileSourceEntity],
+                                          conflict: SnpConflict
+                                        )(using java.sql.Connection): List[YProfileVariantEntity] =
     // Create the variant
     val variant = variantRepo.insert(YProfileVariantEntity.create(
       yProfileId = profileId,

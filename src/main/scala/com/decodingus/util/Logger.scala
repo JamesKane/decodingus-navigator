@@ -26,7 +26,7 @@ import org.apache.logging.log4j.{LogManager, Logger as Log4jLogger}
  * val log = Logger("MyComponent")
  * }}}
  */
-class Logger private (private val underlying: Log4jLogger) {
+class Logger private(private val underlying: Log4jLogger) {
 
   def trace(message: => String): Unit =
     if (underlying.isTraceEnabled) underlying.trace(message)
@@ -59,7 +59,9 @@ class Logger private (private val underlying: Log4jLogger) {
     underlying.error(message, throwable)
 
   def isDebugEnabled: Boolean = underlying.isDebugEnabled
+
   def isTraceEnabled: Boolean = underlying.isTraceEnabled
+
   def isInfoEnabled: Boolean = underlying.isInfoEnabled
 }
 

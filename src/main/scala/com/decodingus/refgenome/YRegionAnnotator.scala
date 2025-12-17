@@ -1,6 +1,6 @@
 package com.decodingus.refgenome
 
-import com.decodingus.refgenome.model.{ChromosomeRegions, GenomeRegions, NamedRegion, Region, StrMarker, YChromosomeRegions}
+import com.decodingus.refgenome.model.*
 
 import scala.collection.mutable
 
@@ -14,37 +14,37 @@ import scala.collection.mutable
  * Modifiers combine multiplicatively for overlapping regions.
  */
 enum RegionType(val modifier: Double, val displayName: String, val description: String):
-  case Cytoband       extends RegionType(1.0, "Cytoband", "Chromosome band (display only)")
-  case XDegenerate    extends RegionType(1.0, "X-degenerate", "Stable, single-copy regions - gold standard")
-  case Normal         extends RegionType(1.0, "Normal", "Normal callable region")
-  case PAR            extends RegionType(0.5, "PAR", "Pseudoautosomal region - recombines with X")
-  case Palindrome     extends RegionType(0.4, "Palindrome", "Palindromic region - gene conversion risk")
-  case XTR            extends RegionType(0.3, "XTR", "X-transposed region - 99% X-identical, contamination risk")
-  case Ampliconic     extends RegionType(0.3, "Ampliconic", "Ampliconic region - high copy number, mapping artifacts")
-  case STR            extends RegionType(0.25, "STR", "Short tandem repeat - recLOH risk")
-  case Centromere     extends RegionType(0.1, "Centromere", "Centromeric region - nearly unmappable")
+  case Cytoband extends RegionType(1.0, "Cytoband", "Chromosome band (display only)")
+  case XDegenerate extends RegionType(1.0, "X-degenerate", "Stable, single-copy regions - gold standard")
+  case Normal extends RegionType(1.0, "Normal", "Normal callable region")
+  case PAR extends RegionType(0.5, "PAR", "Pseudoautosomal region - recombines with X")
+  case Palindrome extends RegionType(0.4, "Palindrome", "Palindromic region - gene conversion risk")
+  case XTR extends RegionType(0.3, "XTR", "X-transposed region - 99% X-identical, contamination risk")
+  case Ampliconic extends RegionType(0.3, "Ampliconic", "Ampliconic region - high copy number, mapping artifacts")
+  case STR extends RegionType(0.25, "STR", "Short tandem repeat - recLOH risk")
+  case Centromere extends RegionType(0.1, "Centromere", "Centromeric region - nearly unmappable")
   case Heterochromatin extends RegionType(0.1, "Heterochromatin", "Heterochromatic region (Yq12) - unmappable")
-  case NonCallable    extends RegionType(0.5, "Non-callable", "Failed callable loci criteria")
-  case LowDepth       extends RegionType(0.7, "Low depth", "Read depth below threshold (<10x)")
+  case NonCallable extends RegionType(0.5, "Non-callable", "Failed callable loci criteria")
+  case LowDepth extends RegionType(0.7, "Low depth", "Read depth below threshold (<10x)")
 
 /**
  * A genomic region with interval bounds and metadata.
  *
  * Uses 1-based, inclusive coordinates (matching VCF/GFF3 conventions).
  *
- * @param contig Chromosome (e.g., "chrY")
- * @param start Start position (1-based, inclusive)
- * @param end End position (1-based, inclusive)
+ * @param contig     Chromosome (e.g., "chrY")
+ * @param start      Start position (1-based, inclusive)
+ * @param end        End position (1-based, inclusive)
  * @param regionType Type of region affecting quality modifier
- * @param name Optional name for display (e.g., "P8", "DYS389", "Yq11.223")
+ * @param name       Optional name for display (e.g., "P8", "DYS389", "Yq11.223")
  */
 case class GenomicRegion(
-  contig: String,
-  start: Long,
-  end: Long,
-  regionType: RegionType,
-  name: Option[String] = None
-) {
+                          contig: String,
+                          start: Long,
+                          end: Long,
+                          regionType: RegionType,
+                          name: Option[String] = None
+                        ) {
   def contains(position: Long): Boolean = position >= start && position <= end
 
   def displayDescription: String = name match {
@@ -56,17 +56,17 @@ case class GenomicRegion(
 /**
  * Result of annotating a genomic position with region information.
  *
- * @param regions All overlapping regions at the position
+ * @param regions         All overlapping regions at the position
  * @param qualityModifier Combined modifier from all regions (multiplicative)
- * @param cytoband The cytoband containing this position (for display)
- * @param primaryRegion The most significant region affecting quality
+ * @param cytoband        The cytoband containing this position (for display)
+ * @param primaryRegion   The most significant region affecting quality
  */
 case class RegionAnnotation(
-  regions: List[GenomicRegion],
-  qualityModifier: Double,
-  cytoband: Option[GenomicRegion],
-  primaryRegion: Option[GenomicRegion]
-) {
+                             regions: List[GenomicRegion],
+                             qualityModifier: Double,
+                             cytoband: Option[GenomicRegion],
+                             primaryRegion: Option[GenomicRegion]
+                           ) {
   /**
    * Human-readable description of the annotation.
    * Prioritizes specific region names over generic types.
@@ -122,29 +122,29 @@ object RegionAnnotation {
  * Loads region files and provides fast lookup via binary search.
  * Regions are stored sorted by start position for efficient interval queries.
  *
- * @param cytobands Cytoband regions (display only, no modifier)
- * @param palindromes Palindromic regions P1-P8
- * @param strs Short tandem repeat regions
- * @param pars Pseudoautosomal regions PAR1/PAR2
- * @param xtrs X-transposed regions
- * @param ampliconic Ampliconic/multicopy regions
- * @param centromeres Centromeric regions
- * @param heterochromatin Heterochromatic regions (Yq12)
- * @param xdegenerate X-degenerate regions
+ * @param cytobands         Cytoband regions (display only, no modifier)
+ * @param palindromes       Palindromic regions P1-P8
+ * @param strs              Short tandem repeat regions
+ * @param pars              Pseudoautosomal regions PAR1/PAR2
+ * @param xtrs              X-transposed regions
+ * @param ampliconic        Ampliconic/multicopy regions
+ * @param centromeres       Centromeric regions
+ * @param heterochromatin   Heterochromatic regions (Yq12)
+ * @param xdegenerate       X-degenerate regions
  * @param callablePositions Optional set of callable positions from callable_loci.bed
  */
 class YRegionAnnotator(
-  cytobands: IndexedSeq[GenomicRegion] = IndexedSeq.empty,
-  palindromes: IndexedSeq[GenomicRegion] = IndexedSeq.empty,
-  strs: IndexedSeq[GenomicRegion] = IndexedSeq.empty,
-  pars: IndexedSeq[GenomicRegion] = IndexedSeq.empty,
-  xtrs: IndexedSeq[GenomicRegion] = IndexedSeq.empty,
-  ampliconic: IndexedSeq[GenomicRegion] = IndexedSeq.empty,
-  centromeres: IndexedSeq[GenomicRegion] = IndexedSeq.empty,
-  heterochromatin: IndexedSeq[GenomicRegion] = IndexedSeq.empty,
-  xdegenerate: IndexedSeq[GenomicRegion] = IndexedSeq.empty,
-  callablePositions: Option[Set[Long]] = None
-) {
+                        cytobands: IndexedSeq[GenomicRegion] = IndexedSeq.empty,
+                        palindromes: IndexedSeq[GenomicRegion] = IndexedSeq.empty,
+                        strs: IndexedSeq[GenomicRegion] = IndexedSeq.empty,
+                        pars: IndexedSeq[GenomicRegion] = IndexedSeq.empty,
+                        xtrs: IndexedSeq[GenomicRegion] = IndexedSeq.empty,
+                        ampliconic: IndexedSeq[GenomicRegion] = IndexedSeq.empty,
+                        centromeres: IndexedSeq[GenomicRegion] = IndexedSeq.empty,
+                        heterochromatin: IndexedSeq[GenomicRegion] = IndexedSeq.empty,
+                        xdegenerate: IndexedSeq[GenomicRegion] = IndexedSeq.empty,
+                        callablePositions: Option[Set[Long]] = None
+                      ) {
   // All region sets for iteration (exclude cytobands from modifier calculation)
   private val modifierRegions: List[IndexedSeq[GenomicRegion]] = List(
     palindromes, strs, pars, xtrs, ampliconic, centromeres, heterochromatin
@@ -153,9 +153,9 @@ class YRegionAnnotator(
   /**
    * Annotate a genomic position.
    *
-   * @param contig Chromosome (accepts "chrY", "Y", etc.)
+   * @param contig   Chromosome (accepts "chrY", "Y", etc.)
    * @param position 1-based position
-   * @param depth Optional read depth for depth-based modifier
+   * @param depth    Optional read depth for depth-based modifier
    * @return RegionAnnotation with all overlapping regions and combined modifier
    */
   def annotate(contig: String, position: Long, depth: Option[Int] = None): RegionAnnotation = {
@@ -307,11 +307,17 @@ class YRegionAnnotator(
 
   // Statistics
   def cytobandCount: Int = cytobands.size
+
   def palindromeCount: Int = palindromes.size
+
   def strCount: Int = strs.size
+
   def parCount: Int = pars.size
+
   def xtrCount: Int = xtrs.size
+
   def ampliconicCount: Int = ampliconic.size
+
   def totalRegionCount: Int = cytobands.size + palindromes.size + strs.size + pars.size + xtrs.size + ampliconic.size + centromeres.size + heterochromatin.size
 
   /**
@@ -336,7 +342,7 @@ class YRegionAnnotator(
    */
   def getChromosomeLength: Long = {
     val allEnds = (cytobands ++ pars ++ heterochromatin ++ xdegenerate).map(_.end)
-    if (allEnds.isEmpty) 62_460_029L else allEnds.max  // Default to CHM13v2 Y length
+    if (allEnds.isEmpty) 62_460_029L else allEnds.max // Default to CHM13v2 Y length
   }
 }
 
@@ -345,17 +351,17 @@ object YRegionAnnotator {
    * Create an annotator from parsed region files.
    */
   def fromRegions(
-    cytobands: List[GenomicRegion] = Nil,
-    palindromes: List[GenomicRegion] = Nil,
-    strs: List[GenomicRegion] = Nil,
-    pars: List[GenomicRegion] = Nil,
-    xtrs: List[GenomicRegion] = Nil,
-    ampliconic: List[GenomicRegion] = Nil,
-    centromeres: List[GenomicRegion] = Nil,
-    heterochromatin: List[GenomicRegion] = Nil,
-    xdegenerate: List[GenomicRegion] = Nil,
-    callablePositions: Option[Set[Long]] = None
-  ): YRegionAnnotator = {
+                   cytobands: List[GenomicRegion] = Nil,
+                   palindromes: List[GenomicRegion] = Nil,
+                   strs: List[GenomicRegion] = Nil,
+                   pars: List[GenomicRegion] = Nil,
+                   xtrs: List[GenomicRegion] = Nil,
+                   ampliconic: List[GenomicRegion] = Nil,
+                   centromeres: List[GenomicRegion] = Nil,
+                   heterochromatin: List[GenomicRegion] = Nil,
+                   xdegenerate: List[GenomicRegion] = Nil,
+                   callablePositions: Option[Set[Long]] = None
+                 ): YRegionAnnotator = {
     new YRegionAnnotator(
       cytobands = cytobands.sortBy(_.start).toIndexedSeq,
       palindromes = palindromes.sortBy(_.start).toIndexedSeq,
@@ -442,7 +448,7 @@ object YRegionAnnotator {
    * extracting chrY-specific regions including cytobands, centromere,
    * heterochromatin, PAR, XTR, ampliconic, palindromes, and STR markers.
    *
-   * @param regions GenomeRegions from the API or bundled resource
+   * @param regions           GenomeRegions from the API or bundled resource
    * @param callablePositions Optional set of callable positions from callable_loci.bed
    * @return YRegionAnnotator configured with all available region data
    */

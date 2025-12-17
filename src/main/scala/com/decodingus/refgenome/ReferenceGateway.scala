@@ -1,12 +1,12 @@
 package com.decodingus.refgenome
 
-import com.decodingus.refgenome.config.{ReferenceConfig, ReferenceConfigService}
 import com.decodingus.analysis.GatkRunner
+import com.decodingus.refgenome.config.{ReferenceConfig, ReferenceConfigService}
 import sttp.client3.*
 
 import java.io.IOException
 import java.nio.file.{Files, Path, Paths}
-import sys.process._
+import scala.sys.process.*
 
 // NOTE: Do NOT import org.broadinstitute.hellbender.Main here!
 // Use GatkRunner which handles Log4j initialization properly.
@@ -15,11 +15,14 @@ import sys.process._
  * Result type for reference resolution when user confirmation is needed.
  */
 sealed trait ReferenceResolveResult
+
 object ReferenceResolveResult {
   /** Reference was found locally and is ready to use */
   case class Available(path: Path) extends ReferenceResolveResult
+
   /** Reference not found, download is required - includes estimated size info */
   case class DownloadRequired(build: String, url: String, estimatedSizeMB: Int) extends ReferenceResolveResult
+
   /** Error occurred */
   case class Error(message: String) extends ReferenceResolveResult
 }
@@ -31,9 +34,9 @@ class ReferenceGateway(onProgress: (Long, Long) => Unit) {
 
   // Estimated download sizes in MB for user information
   private val estimatedSizes: Map[String, Int] = Map(
-    "GRCh38" -> 3100,  // ~3.1 GB uncompressed, downloads as uncompressed
-    "GRCh37" -> 900,   // ~900 MB compressed
-    "CHM13v2" -> 900   // ~900 MB compressed
+    "GRCh38" -> 3100, // ~3.1 GB uncompressed, downloads as uncompressed
+    "GRCh37" -> 900, // ~900 MB compressed
+    "CHM13v2" -> 900 // ~900 MB compressed
   )
 
   /**

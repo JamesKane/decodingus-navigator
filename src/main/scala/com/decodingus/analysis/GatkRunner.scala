@@ -21,9 +21,9 @@ object GatkRunner {
    * Also accumulates all output for the final result.
    */
   private class ProgressCapturingStream(
-    accumulator: ByteArrayOutputStream,
-    onLine: String => Unit
-  ) extends PrintStream(accumulator) {
+                                         accumulator: ByteArrayOutputStream,
+                                         onLine: String => Unit
+                                       ) extends PrintStream(accumulator) {
     private val lineBuffer = new StringBuilder
 
     override def write(b: Int): Unit = {
@@ -55,16 +55,16 @@ object GatkRunner {
    * Picard logs lines like: "INFO ... Processed 1,000,000 records"
    * GATK Walker logs lines like: "INFO ... chr1:12345678" showing current position
    *
-   * @param line The log line to parse
-   * @param totalRecords Optional total record count for percentage calculation
+   * @param line          The log line to parse
+   * @param totalRecords  Optional total record count for percentage calculation
    * @param contigLengths Optional map of contig names to lengths for position-based progress
    * @return Optional (message, fraction) tuple
    */
   private def parseProgressLine(
-    line: String,
-    totalRecords: Option[Long] = None,
-    contigLengths: Option[Map[String, Long]] = None
-  ): Option[(String, Double)] = {
+                                 line: String,
+                                 totalRecords: Option[Long] = None,
+                                 contigLengths: Option[Map[String, Long]] = None
+                               ): Option[(String, Double)] = {
     // Picard-style: "Processed 1,000,000 records" or "Read 1,000,000 records"
     val recordsPattern = """(?:Processed|Read)\s+([\d,]+)\s+(?:records?|loci)""".r.unanchored
     // GATK Walker-style position: "chr1:12345678" or just position info
@@ -97,7 +97,7 @@ object GatkRunner {
    */
   private def isCloudPath(path: String): Boolean = {
     path.startsWith("gs://") || path.startsWith("s3://") ||
-    path.startsWith("http://") || path.startsWith("https://")
+      path.startsWith("http://") || path.startsWith("https://")
   }
 
   /**
@@ -131,8 +131,8 @@ object GatkRunner {
   private def ensureLocalIndex(bamPath: String, indexExt: String): Either[String, String] = {
     // Possible index locations for local files
     val possibleIndexPaths = Seq(
-      bamPath + indexExt,                                    // file.bam.bai
-      bamPath.stripSuffix(if (indexExt == ".crai") ".cram" else ".bam") + indexExt  // file.bai
+      bamPath + indexExt, // file.bam.bai
+      bamPath.stripSuffix(if (indexExt == ".crai") ".cram" else ".bam") + indexExt // file.bai
     )
 
     possibleIndexPaths.find(p => new File(p).exists()) match {
@@ -215,18 +215,18 @@ object GatkRunner {
    * Runs a GATK tool with progress callback support.
    * Parses GATK/Picard log output to extract progress information.
    *
-   * @param args Command line arguments for GATK (tool name first, then options)
-   * @param onProgress Optional callback receiving (message, fractionComplete) - fractions are 0.0 to 1.0
-   * @param totalRecords Optional total record count for Picard-style progress (e.g., total reads)
+   * @param args          Command line arguments for GATK (tool name first, then options)
+   * @param onProgress    Optional callback receiving (message, fractionComplete) - fractions are 0.0 to 1.0
+   * @param totalRecords  Optional total record count for Picard-style progress (e.g., total reads)
    * @param contigLengths Optional contig lengths for position-based progress (e.g., Map("chr1" -> 248956422L))
    * @return Either an error message (Left) or success (Right with exit code 0)
    */
   def runWithProgress(
-    args: Array[String],
-    onProgress: Option[(String, Double) => Unit],
-    totalRecords: Option[Long] = None,
-    contigLengths: Option[Map[String, Long]] = None
-  ): Either[String, GatkResult] = {
+                       args: Array[String],
+                       onProgress: Option[(String, Double) => Unit],
+                       totalRecords: Option[Long] = None,
+                       contigLengths: Option[Map[String, Long]] = None
+                     ): Either[String, GatkResult] = {
     val originalOut = System.out
     val originalErr = System.err
 

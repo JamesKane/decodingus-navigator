@@ -13,21 +13,22 @@ import scala.util.{Failure, Success, Try, Using}
  * Result of checking ancestry reference data availability.
  */
 sealed trait AncestryReferenceResult
+
 object AncestryReferenceResult {
   /** Reference data is available locally */
   case class Available(
-    sitesVcf: Path,
-    alleleFreqs: AlleleFrequencyMatrix,
-    pcaLoadings: PCALoadings
-  ) extends AncestryReferenceResult
+                        sitesVcf: Path,
+                        alleleFreqs: AlleleFrequencyMatrix,
+                        pcaLoadings: PCALoadings
+                      ) extends AncestryReferenceResult
 
   /** Reference data needs to be downloaded */
   case class DownloadRequired(
-    panelType: AncestryPanelType,
-    referenceBuild: String,
-    estimatedSizeMB: Int,
-    downloadUrl: String
-  ) extends AncestryReferenceResult
+                               panelType: AncestryPanelType,
+                               referenceBuild: String,
+                               estimatedSizeMB: Int,
+                               downloadUrl: String
+                             ) extends AncestryReferenceResult
 
   /** Error accessing reference data */
   case class Error(message: String) extends AncestryReferenceResult
@@ -55,9 +56,9 @@ class AncestryReferenceGateway(onProgress: (Long, Long) => Unit) {
    * Does not download - use downloadAndResolve for that.
    */
   def checkAvailability(
-    panelType: AncestryPanelType,
-    referenceBuild: String
-  ): AncestryReferenceResult = {
+                         panelType: AncestryPanelType,
+                         referenceBuild: String
+                       ): AncestryReferenceResult = {
     if (cache.isPanelAvailable(panelType, referenceBuild)) {
       loadCachedPanel(panelType, referenceBuild)
     } else {
@@ -79,9 +80,9 @@ class AncestryReferenceGateway(onProgress: (Long, Long) => Unit) {
    * Load cached panel data.
    */
   private def loadCachedPanel(
-    panelType: AncestryPanelType,
-    referenceBuild: String
-  ): AncestryReferenceResult = {
+                               panelType: AncestryPanelType,
+                               referenceBuild: String
+                             ): AncestryReferenceResult = {
     val sitesVcf = cache.getSitesVcfPath(panelType, referenceBuild)
     val alleleFreqPath = cache.getAlleleFreqPath(panelType)
     val pcaLoadingsPath = cache.getPcaLoadingsPath(panelType)
@@ -101,9 +102,9 @@ class AncestryReferenceGateway(onProgress: (Long, Long) => Unit) {
    * Returns path to sites VCF and loaded reference matrices.
    */
   def resolve(
-    panelType: AncestryPanelType,
-    referenceBuild: String
-  ): Either[String, (Path, AlleleFrequencyMatrix, PCALoadings)] = {
+               panelType: AncestryPanelType,
+               referenceBuild: String
+             ): Either[String, (Path, AlleleFrequencyMatrix, PCALoadings)] = {
     checkAvailability(panelType, referenceBuild) match {
       case AncestryReferenceResult.Available(sitesVcf, alleleFreqs, pcaLoadings) =>
         Right((sitesVcf, alleleFreqs, pcaLoadings))
@@ -121,9 +122,9 @@ class AncestryReferenceGateway(onProgress: (Long, Long) => Unit) {
    * Call this after user confirms download.
    */
   def downloadAndResolve(
-    panelType: AncestryPanelType,
-    referenceBuild: String
-  ): Either[String, (Path, AlleleFrequencyMatrix, PCALoadings)] = {
+                          panelType: AncestryPanelType,
+                          referenceBuild: String
+                        ): Either[String, (Path, AlleleFrequencyMatrix, PCALoadings)] = {
     val version = FeatureToggles.ancestryAnalysis.referenceVersion
     val panelName = panelType match {
       case AncestryPanelType.Aims => "aims"
@@ -181,7 +182,9 @@ class AncestryReferenceGateway(onProgress: (Long, Long) => Unit) {
       ) { (in, out) =>
         val buffer = new Array[Byte](8192)
         var bytesRead = 0
-        while ({bytesRead = in.read(buffer); bytesRead != -1}) {
+        while ( {
+          bytesRead = in.read(buffer); bytesRead != -1
+        }) {
           out.write(buffer, 0, bytesRead)
           downloaded += bytesRead
           if (contentLength > 0) {

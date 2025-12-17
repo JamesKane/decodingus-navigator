@@ -6,6 +6,7 @@ import io.circe.*
 import io.circe.generic.semiauto.*
 import io.circe.parser.*
 import io.circe.syntax.*
+
 import java.sql.{Connection, ResultSet}
 import java.time.LocalDateTime
 import java.util.UUID
@@ -16,48 +17,49 @@ import java.util.UUID
  * Stores DNA microarray (chip) testing results with marker statistics.
  */
 case class ChipProfileEntity(
-  id: UUID,
-  biosampleId: UUID,
-  vendor: String,
-  testTypeCode: String,
-  chipVersion: Option[String],
-  totalMarkersCalled: Int,
-  totalMarkersPossible: Int,
-  noCallRate: Double,
-  yMarkersCalled: Option[Int],
-  mtMarkersCalled: Option[Int],
-  autosomalMarkersCalled: Int,
-  hetRate: Option[Double],
-  importDate: LocalDateTime,
-  sourceFileHash: Option[String],
-  sourceFileName: Option[String],
-  files: List[FileInfo],
-  meta: EntityMeta
-) extends Entity[UUID]
+                              id: UUID,
+                              biosampleId: UUID,
+                              vendor: String,
+                              testTypeCode: String,
+                              chipVersion: Option[String],
+                              totalMarkersCalled: Int,
+                              totalMarkersPossible: Int,
+                              noCallRate: Double,
+                              yMarkersCalled: Option[Int],
+                              mtMarkersCalled: Option[Int],
+                              autosomalMarkersCalled: Int,
+                              hetRate: Option[Double],
+                              importDate: LocalDateTime,
+                              sourceFileHash: Option[String],
+                              sourceFileName: Option[String],
+                              files: List[FileInfo],
+                              meta: EntityMeta
+                            ) extends Entity[UUID]
 
 object ChipProfileEntity:
+
   import ChipProfileCodecs.given
 
   /**
    * Create a new ChipProfileEntity with generated ID and initial metadata.
    */
   def create(
-    biosampleId: UUID,
-    vendor: String,
-    testTypeCode: String,
-    totalMarkersCalled: Int,
-    totalMarkersPossible: Int,
-    noCallRate: Double,
-    autosomalMarkersCalled: Int,
-    importDate: LocalDateTime,
-    chipVersion: Option[String] = None,
-    yMarkersCalled: Option[Int] = None,
-    mtMarkersCalled: Option[Int] = None,
-    hetRate: Option[Double] = None,
-    sourceFileHash: Option[String] = None,
-    sourceFileName: Option[String] = None,
-    files: List[FileInfo] = List.empty
-  ): ChipProfileEntity = ChipProfileEntity(
+              biosampleId: UUID,
+              vendor: String,
+              testTypeCode: String,
+              totalMarkersCalled: Int,
+              totalMarkersPossible: Int,
+              noCallRate: Double,
+              autosomalMarkersCalled: Int,
+              importDate: LocalDateTime,
+              chipVersion: Option[String] = None,
+              yMarkersCalled: Option[Int] = None,
+              mtMarkersCalled: Option[Int] = None,
+              hetRate: Option[Double] = None,
+              sourceFileHash: Option[String] = None,
+              sourceFileName: Option[String] = None,
+              files: List[FileInfo] = List.empty
+            ): ChipProfileEntity = ChipProfileEntity(
     id = UUID.randomUUID(),
     biosampleId = biosampleId,
     vendor = vendor,
@@ -106,6 +108,7 @@ object ChipProfileEntity:
  */
 object ChipProfileCodecs:
   given Encoder[FileInfo] = deriveEncoder
+
   given Decoder[FileInfo] = deriveDecoder
 
 /**

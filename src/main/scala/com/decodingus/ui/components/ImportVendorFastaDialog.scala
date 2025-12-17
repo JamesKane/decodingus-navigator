@@ -1,13 +1,13 @@
 package com.decodingus.ui.components
 
-import scalafx.Includes._
-import scalafx.scene.control.{ButtonType, Dialog, Label, TextField, ButtonBar, Button, ComboBox, Alert}
-import scalafx.scene.control.Alert.AlertType
-import scalafx.scene.layout.{VBox, HBox, GridPane, Priority}
-import scalafx.geometry.{Insets, Pos}
-import scalafx.stage.FileChooser
-import scalafx.collections.ObservableBuffer
 import com.decodingus.analysis.VcfVendor
+import scalafx.Includes.*
+import scalafx.collections.ObservableBuffer
+import scalafx.geometry.{Insets, Pos}
+import scalafx.scene.control.Alert.AlertType
+import scalafx.scene.control.*
+import scalafx.scene.layout.{GridPane, HBox, Priority, VBox}
+import scalafx.stage.FileChooser
 
 import java.io.File
 import java.nio.file.Path
@@ -16,10 +16,10 @@ import java.nio.file.Path
  * Result from the import vendor FASTA dialog.
  */
 case class VendorFastaImportRequest(
-  fastaPath: Path,
-  vendor: VcfVendor,
-  notes: Option[String]
-)
+                                     fastaPath: Path,
+                                     vendor: VcfVendor,
+                                     notes: Option[String]
+                                   )
 
 /**
  * Dialog for importing vendor-provided mtDNA FASTA files (e.g., FTDNA mtFull Sequence, YSEQ mtDNA).
@@ -74,7 +74,9 @@ class ImportVendorFastaDialog extends Dialog[Option[VendorFastaImportRequest]] {
     padding = Insets(20)
 
     // Row 0: FASTA file
-    add(new Label("FASTA File:") { style = "-fx-font-weight: bold;" }, 0, 0)
+    add(new Label("FASTA File:") {
+      style = "-fx-font-weight: bold;"
+    }, 0, 0)
     add(new HBox(10) {
       children = Seq(fastaPathField, fastaBrowseButton)
       hgrow = Priority.Always
@@ -92,10 +94,10 @@ class ImportVendorFastaDialog extends Dialog[Option[VendorFastaImportRequest]] {
   // Help text
   private val helpLabel = new Label(
     "Import an mtDNA FASTA file from a vendor test (e.g., FTDNA mtFull Sequence).\n" +
-    "The sequence will be compared against rCRS to identify variants for haplogroup analysis.\n\n" +
-    "Supported formats:\n" +
-    "- Standard FASTA (.fa, .fasta, .fna)\n" +
-    "- Full mtDNA sequence (~16,569 bp)"
+      "The sequence will be compared against rCRS to identify variants for haplogroup analysis.\n\n" +
+      "Supported formats:\n" +
+      "- Standard FASTA (.fa, .fasta, .fna)\n" +
+      "- Full mtDNA sequence (~16,569 bp)"
   ) {
     style = "-fx-text-fill: #666666; -fx-font-size: 11px;"
     wrapText = true
@@ -162,7 +164,7 @@ class ImportVendorFastaDialog extends Dialog[Option[VendorFastaImportRequest]] {
               fastaPathField.text = file.getName
               importButton.disable = false
             case _ =>
-              // User declined, keep current state
+            // User declined, keep current state
           }
       }
     }

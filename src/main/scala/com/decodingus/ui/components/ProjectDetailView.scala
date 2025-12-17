@@ -1,13 +1,13 @@
 package com.decodingus.ui.components
 
-import scalafx.Includes._
-import scalafx.scene.layout.{VBox, HBox, Priority}
-import scalafx.scene.control.{Label, Button, ListView, ListCell}
-import scalafx.scene.input.{DragEvent, TransferMode, ClipboardContent, DataFormat}
-import scalafx.geometry.{Insets, Pos}
-import scalafx.collections.ObservableBuffer
-import com.decodingus.workspace.model.{Project, Biosample}
 import com.decodingus.workspace.WorkbenchViewModel
+import com.decodingus.workspace.model.{Biosample, Project}
+import scalafx.Includes.*
+import scalafx.collections.ObservableBuffer
+import scalafx.geometry.{Insets, Pos}
+import scalafx.scene.control.{Button, Label, ListCell, ListView}
+import scalafx.scene.input.{ClipboardContent, DataFormat, DragEvent, TransferMode}
+import scalafx.scene.layout.{HBox, Priority, VBox}
 
 /** Companion object for shared constants */
 object ProjectDetailView {
@@ -21,15 +21,16 @@ object ProjectDetailView {
  * - Member list (drag-drop target for adding subjects from left panel)
  */
 class ProjectDetailView(
-  viewModel: WorkbenchViewModel,
-  project: Project,
-  onEdit: Project => Unit,
-  onDelete: Project => Unit
-) extends VBox(10) {
+                         viewModel: WorkbenchViewModel,
+                         project: Project,
+                         onEdit: Project => Unit,
+                         onDelete: Project => Unit
+                       ) extends VBox(10) {
 
   padding = Insets(10)
 
   // Import the shared DataFormat from companion object
+
   import ProjectDetailView.biosampleFormat
 
   // Observable buffer for project members
@@ -151,7 +152,9 @@ class ProjectDetailView(
 
   // Layout
   children = Seq(
-    new Label(s"Project: ${project.projectName}") { style = "-fx-font-size: 20px; -fx-font-weight: bold;" },
+    new Label(s"Project: ${project.projectName}") {
+      style = "-fx-font-size: 20px; -fx-font-weight: bold;"
+    },
     actionButtons,
     infoSection,
     membersLabel,

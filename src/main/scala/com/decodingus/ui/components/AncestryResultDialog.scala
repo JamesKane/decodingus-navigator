@@ -1,13 +1,13 @@
 package com.decodingus.ui.components
 
-import scalafx.Includes._
-import scalafx.scene.control.{Dialog, ButtonType, Label, TableView, TableColumn, ScrollPane, SplitPane, ProgressBar}
-import scalafx.scene.layout.{VBox, HBox, Priority, GridPane, StackPane, Region}
-import scalafx.scene.chart.PieChart
-import scalafx.geometry.{Insets, Orientation, Pos}
+import com.decodingus.ancestry.model.{AncestryResult, Population, PopulationPercentage, SuperPopulationPercentage}
+import scalafx.Includes.*
 import scalafx.beans.property.StringProperty
 import scalafx.collections.ObservableBuffer
-import com.decodingus.ancestry.model.{AncestryResult, Population, PopulationPercentage, SuperPopulationPercentage}
+import scalafx.geometry.{Insets, Orientation, Pos}
+import scalafx.scene.chart.PieChart
+import scalafx.scene.control.*
+import scalafx.scene.layout.*
 
 /**
  * Dialog showing ancestry analysis results.
@@ -64,14 +64,14 @@ class AncestryResultDialog(result: AncestryResult) extends Dialog[Unit] {
 
   // Table data for detailed population breakdown
   case class PopulationRow(
-    code: String,
-    name: String,
-    superPop: String,
-    percentage: Double,
-    ciLow: Double,
-    ciHigh: Double,
-    rank: Int
-  )
+                            code: String,
+                            name: String,
+                            superPop: String,
+                            percentage: Double,
+                            ciLow: Double,
+                            ciHigh: Double,
+                            rank: Int
+                          )
 
   private val tableData = ObservableBuffer.from(
     result.percentages
@@ -128,7 +128,9 @@ class AncestryResultDialog(result: AncestryResult) extends Dialog[Unit] {
   private val qualitySection = new VBox(5) {
     padding = Insets(10, 0, 0, 0)
     children = Seq(
-      new Label("Data Quality") { style = "-fx-font-weight: bold; -fx-font-size: 13px;" },
+      new Label("Data Quality") {
+        style = "-fx-font-weight: bold; -fx-font-size: 13px;"
+      },
       new GridPane {
         hgap = 15
         vgap = 5
@@ -165,7 +167,9 @@ class AncestryResultDialog(result: AncestryResult) extends Dialog[Unit] {
   private val rightPanel = new VBox(10) {
     padding = Insets(10)
     children = Seq(
-      new Label("Detailed Population Breakdown") { style = "-fx-font-weight: bold; -fx-font-size: 13px;" },
+      new Label("Detailed Population Breakdown") {
+        style = "-fx-font-weight: bold; -fx-font-size: 13px;"
+      },
       populationTable
     )
   }

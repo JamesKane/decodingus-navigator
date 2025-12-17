@@ -1,13 +1,13 @@
 package com.decodingus.ui.components
 
-import scalafx.Includes._
-import scalafx.scene.control.{ButtonType, Dialog, Label, TextField, ButtonBar, Button, ComboBox, Alert}
-import scalafx.scene.control.Alert.AlertType
-import scalafx.scene.layout.{VBox, HBox, GridPane, Priority}
-import scalafx.geometry.{Insets, Pos}
-import scalafx.stage.FileChooser
-import scalafx.collections.ObservableBuffer
 import com.decodingus.analysis.VcfVendor
+import scalafx.Includes.*
+import scalafx.collections.ObservableBuffer
+import scalafx.geometry.{Insets, Pos}
+import scalafx.scene.control.Alert.AlertType
+import scalafx.scene.control.*
+import scalafx.scene.layout.{GridPane, HBox, Priority, VBox}
+import scalafx.stage.FileChooser
 
 import java.io.File
 import java.nio.file.Path
@@ -16,12 +16,12 @@ import java.nio.file.Path
  * Result from the import vendor VCF dialog.
  */
 case class VendorVcfImportRequest(
-  vcfPath: Path,
-  bedPath: Option[Path],
-  vendor: VcfVendor,
-  referenceBuild: String,
-  notes: Option[String]
-)
+                                   vcfPath: Path,
+                                   bedPath: Option[Path],
+                                   vendor: VcfVendor,
+                                   referenceBuild: String,
+                                   notes: Option[String]
+                                 )
 
 /**
  * Dialog for importing vendor-provided VCF files (e.g., FTDNA Big Y).
@@ -112,7 +112,9 @@ class ImportVendorVcfDialog extends Dialog[Option[VendorVcfImportRequest]] {
     padding = Insets(20)
 
     // Row 0: VCF file
-    add(new Label("VCF File:") { style = "-fx-font-weight: bold;" }, 0, 0)
+    add(new Label("VCF File:") {
+      style = "-fx-font-weight: bold;"
+    }, 0, 0)
     add(new HBox(10) {
       children = Seq(vcfPathField, vcfBrowseButton)
       hgrow = Priority.Always
@@ -141,7 +143,7 @@ class ImportVendorVcfDialog extends Dialog[Option[VendorVcfImportRequest]] {
   // Help text
   private val helpLabel = new Label(
     "Import a VCF file from a vendor test (e.g., FTDNA Big Y).\n" +
-    "The target regions BED file is optional and helps with coverage analysis."
+      "The target regions BED file is optional and helps with coverage analysis."
   ) {
     style = "-fx-text-fill: #666666; -fx-font-size: 11px;"
     wrapText = true

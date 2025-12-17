@@ -1,16 +1,18 @@
 package com.decodingus.ui.components
 
-import scalafx.Includes._
-import scalafx.scene.control.{ButtonType, Dialog, Label, RadioButton, ToggleGroup, ButtonBar}
-import scalafx.scene.layout.{VBox, HBox, GridPane}
-import scalafx.geometry.Insets
 import com.decodingus.workspace.model.SequenceRun
+import scalafx.Includes.*
+import scalafx.geometry.Insets
+import scalafx.scene.control.*
+import scalafx.scene.layout.{GridPane, HBox, VBox}
 
 /**
  * Result of the fingerprint match confirmation dialog.
  */
 sealed trait FingerprintMatchDecision
+
 case object GroupTogether extends FingerprintMatchDecision
+
 case object KeepSeparate extends FingerprintMatchDecision
 
 /**
@@ -19,13 +21,13 @@ case object KeepSeparate extends FingerprintMatchDecision
  * but cannot confirm with @RG header fields.
  */
 class FingerprintMatchDialog(
-  existingRun: SequenceRun,
-  newReferenceBuild: String,
-  matchConfidence: String,
-  totalReads: Long,
-  sampleName: String,
-  libraryId: String
-) extends Dialog[Option[FingerprintMatchDecision]] {
+                              existingRun: SequenceRun,
+                              newReferenceBuild: String,
+                              matchConfidence: String,
+                              totalReads: Long,
+                              sampleName: String,
+                              libraryId: String
+                            ) extends Dialog[Option[FingerprintMatchDecision]] {
 
   title = "Potential Matching Sequence Run Detected"
   headerText = "This file may be from the same sequencing run"
@@ -48,11 +50,19 @@ class FingerprintMatchDialog(
           case _ => "-fx-font-weight: bold; -fx-text-fill: #F44336;"
         }
       },
-      new Label("") { prefHeight = 5 },
-      new Label("Comparison:") { style = "-fx-font-weight: bold;" },
+      new Label("") {
+        prefHeight = 5
+      },
+      new Label("Comparison:") {
+        style = "-fx-font-weight: bold;"
+      },
       createComparisonGrid(),
-      new Label("") { prefHeight = 5 },
-      new Label("What would you like to do?") { style = "-fx-font-weight: bold;" },
+      new Label("") {
+        prefHeight = 5
+      },
+      new Label("What would you like to do?") {
+        style = "-fx-font-weight: bold;"
+      },
       new VBox(8) {
         children = Seq(
           new Label("• Group Together: Add this as another reference alignment of the same run") {
@@ -73,9 +83,15 @@ class FingerprintMatchDialog(
       padding = Insets(10, 0, 10, 20)
 
       // Header row
-      add(new Label("") { prefWidth = 100 }, 0, 0)
-      add(new Label("Existing Run") { style = "-fx-font-weight: bold;" }, 1, 0)
-      add(new Label("New File") { style = "-fx-font-weight: bold;" }, 2, 0)
+      add(new Label("") {
+        prefWidth = 100
+      }, 0, 0)
+      add(new Label("Existing Run") {
+        style = "-fx-font-weight: bold;"
+      }, 1, 0)
+      add(new Label("New File") {
+        style = "-fx-font-weight: bold;"
+      }, 2, 0)
 
       // Reference build
       add(new Label("Reference:"), 0, 1)

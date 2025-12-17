@@ -1,6 +1,6 @@
 package com.decodingus.ui.components
 
-import scalafx.Includes._
+import scalafx.Includes.*
 import scalafx.geometry.Pos
 import scalafx.scene.control.{Button, Label}
 import scalafx.scene.input.{DragEvent, TransferMode}
@@ -10,7 +10,7 @@ import scalafx.scene.text.TextAlignment
 class WelcomeScreen(onFileSelected: String => Unit, onSelectFileClicked: () => Unit) extends VBox(20) {
   alignment = Pos.Center
   styleClass.add("root-pane")
-  
+
   children = Seq(
     new Label("Welcome to Decoding-Us Navigator") {
       styleClass.add("title-label")

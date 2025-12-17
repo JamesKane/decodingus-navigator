@@ -1,14 +1,12 @@
 package com.decodingus.repository
 
 import com.decodingus.repository.SqlHelpers.*
-import com.decodingus.workspace.model.{
-  DnaType, CompatibilityLevel, HaplogroupTechnology, CallMethod, ConflictResolution,
-  ReconciliationStatus, RunHaplogroupCall, SnpCallFromRun, SnpConflict, HaplogroupReconciliation
-}
+import com.decodingus.workspace.model.{CallMethod, CompatibilityLevel, ConflictResolution, DnaType, HaplogroupReconciliation, HaplogroupTechnology, ReconciliationStatus, RunHaplogroupCall, SnpCallFromRun, SnpConflict}
 import io.circe.*
 import io.circe.generic.semiauto.*
 import io.circe.parser.*
 import io.circe.syntax.*
+
 import java.sql.{Connection, ResultSet}
 import java.time.{Instant, LocalDateTime}
 import java.util.UUID
@@ -19,30 +17,31 @@ import java.util.UUID
  * Stores reconciliation of haplogroup calls across multiple runs for a biosample.
  */
 case class HaplogroupReconciliationEntity(
-  id: UUID,
-  biosampleId: UUID,
-  dnaType: DnaType,
-  status: ReconciliationStatus,
-  runCalls: List[RunHaplogroupCall],
-  snpConflicts: List[SnpConflict],
-  lastReconciliationAt: Option[Instant],
-  meta: EntityMeta
-) extends Entity[UUID]
+                                           id: UUID,
+                                           biosampleId: UUID,
+                                           dnaType: DnaType,
+                                           status: ReconciliationStatus,
+                                           runCalls: List[RunHaplogroupCall],
+                                           snpConflicts: List[SnpConflict],
+                                           lastReconciliationAt: Option[Instant],
+                                           meta: EntityMeta
+                                         ) extends Entity[UUID]
 
 object HaplogroupReconciliationEntity:
+
   import HaplogroupReconciliationCodecs.given
 
   /**
    * Create a new HaplogroupReconciliationEntity with generated ID and initial metadata.
    */
   def create(
-    biosampleId: UUID,
-    dnaType: DnaType,
-    status: ReconciliationStatus,
-    runCalls: List[RunHaplogroupCall] = List.empty,
-    snpConflicts: List[SnpConflict] = List.empty,
-    lastReconciliationAt: Option[Instant] = None
-  ): HaplogroupReconciliationEntity = HaplogroupReconciliationEntity(
+              biosampleId: UUID,
+              dnaType: DnaType,
+              status: ReconciliationStatus,
+              runCalls: List[RunHaplogroupCall] = List.empty,
+              snpConflicts: List[SnpConflict] = List.empty,
+              lastReconciliationAt: Option[Instant] = None
+            ): HaplogroupReconciliationEntity = HaplogroupReconciliationEntity(
     id = UUID.randomUUID(),
     biosampleId = biosampleId,
     dnaType = dnaType,
@@ -74,24 +73,28 @@ object HaplogroupReconciliationEntity:
 object HaplogroupReconciliationCodecs:
   // Enum codecs
   given Encoder[CompatibilityLevel] = Encoder.encodeString.contramap(_.toString)
+
   given Decoder[CompatibilityLevel] = Decoder.decodeString.emap { s =>
     try Right(CompatibilityLevel.valueOf(s))
     catch case _: IllegalArgumentException => Left(s"Invalid CompatibilityLevel: $s")
   }
 
   given Encoder[HaplogroupTechnology] = Encoder.encodeString.contramap(_.toString)
+
   given Decoder[HaplogroupTechnology] = Decoder.decodeString.emap { s =>
     try Right(HaplogroupTechnology.valueOf(s))
     catch case _: IllegalArgumentException => Left(s"Invalid HaplogroupTechnology: $s")
   }
 
   given Encoder[CallMethod] = Encoder.encodeString.contramap(_.toString)
+
   given Decoder[CallMethod] = Decoder.decodeString.emap { s =>
     try Right(CallMethod.valueOf(s))
     catch case _: IllegalArgumentException => Left(s"Invalid CallMethod: $s")
   }
 
   given Encoder[ConflictResolution] = Encoder.encodeString.contramap(_.toString)
+
   given Decoder[ConflictResolution] = Decoder.decodeString.emap { s =>
     try Right(ConflictResolution.valueOf(s))
     catch case _: IllegalArgumentException => Left(s"Invalid ConflictResolution: $s")
@@ -99,12 +102,19 @@ object HaplogroupReconciliationCodecs:
 
   // Complex type codecs
   given Encoder[ReconciliationStatus] = deriveEncoder
+
   given Decoder[ReconciliationStatus] = deriveDecoder
+
   given Encoder[RunHaplogroupCall] = deriveEncoder
+
   given Decoder[RunHaplogroupCall] = deriveDecoder
+
   given Encoder[SnpCallFromRun] = deriveEncoder
+
   given Decoder[SnpCallFromRun] = deriveDecoder
+
   given Encoder[SnpConflict] = deriveEncoder
+
   given Decoder[SnpConflict] = deriveDecoder
 
 /**

@@ -5,7 +5,7 @@ import com.decodingus.config.FeatureToggles
 import com.decodingus.pds.PdsClient
 import com.decodingus.util.Logger
 import com.decodingus.workspace.WorkspaceService
-import com.decodingus.workspace.model.{Workspace, SyncStatus}
+import com.decodingus.workspace.model.{SyncStatus, Workspace}
 
 import scala.concurrent.{ExecutionContext, Future}
 import scala.util.{Failure, Success}
@@ -14,11 +14,16 @@ import scala.util.{Failure, Success}
  * Result of a sync operation.
  */
 sealed trait SyncResult
+
 object SyncResult {
   case object Success extends SyncResult
+
   case object NoChange extends SyncResult
+
   case object Offline extends SyncResult
+
   case object Disabled extends SyncResult
+
   case class Error(message: String) extends SyncResult
 }
 
@@ -27,6 +32,7 @@ object SyncResult {
  */
 trait SyncStatusListener {
   def onSyncStatusChanged(status: SyncStatus): Unit
+
   def onSyncError(message: String): Unit
 }
 
@@ -40,24 +46,24 @@ trait SyncStatusListener {
  * - Offline/online mode detection
  */
 class SyncService(
-  workspaceService: WorkspaceService
-)(implicit ec: ExecutionContext) {
+                   workspaceService: WorkspaceService
+                 )(implicit ec: ExecutionContext) {
 
   private val log = Logger[SyncService]
 
   /**
    * Attempts to load workspace from PDS if AT Protocol is enabled and user is logged in.
    *
-   * @param user Current logged-in user (if any)
+   * @param user             Current logged-in user (if any)
    * @param currentWorkspace The current local workspace for comparison
-   * @param onStatusChange Callback for status updates
+   * @param onStatusChange   Callback for status updates
    * @return Future containing the workspace (either remote or current) and sync result
    */
   def syncFromPds(
-    user: Option[User],
-    currentWorkspace: Workspace,
-    onStatusChange: SyncStatus => Unit = _ => ()
-  ): Future[(Workspace, SyncResult)] = {
+                   user: Option[User],
+                   currentWorkspace: Workspace,
+                   onStatusChange: SyncStatus => Unit = _ => ()
+                 ): Future[(Workspace, SyncResult)] = {
     if (!FeatureToggles.atProtocolEnabled) {
       Future.successful((currentWorkspace, SyncResult.Disabled))
     } else {
@@ -96,16 +102,16 @@ class SyncService(
   /**
    * Attempts to sync workspace to PDS if AT Protocol is enabled and user is logged in.
    *
-   * @param user Current logged-in user (if any)
-   * @param workspace The workspace to sync
+   * @param user           Current logged-in user (if any)
+   * @param workspace      The workspace to sync
    * @param onStatusChange Callback for status updates
    * @return Future containing the sync result
    */
   def syncToPds(
-    user: Option[User],
-    workspace: Workspace,
-    onStatusChange: SyncStatus => Unit = _ => ()
-  ): Future[SyncResult] = {
+                 user: Option[User],
+                 workspace: Workspace,
+                 onStatusChange: SyncStatus => Unit = _ => ()
+               ): Future[SyncResult] = {
     if (!FeatureToggles.atProtocolEnabled) {
       Future.successful(SyncResult.Disabled)
     } else {
@@ -135,16 +141,16 @@ class SyncService(
   /**
    * Saves workspace locally and optionally syncs to PDS.
    *
-   * @param workspace The workspace to save
-   * @param user Current logged-in user (if any)
+   * @param workspace      The workspace to save
+   * @param user           Current logged-in user (if any)
    * @param onStatusChange Callback for status updates
    * @return Either error message or sync result
    */
   def saveAndSync(
-    workspace: Workspace,
-    user: Option[User],
-    onStatusChange: SyncStatus => Unit = _ => ()
-  ): Future[Either[String, SyncResult]] = {
+                   workspace: Workspace,
+                   user: Option[User],
+                   onStatusChange: SyncStatus => Unit = _ => ()
+                 ): Future[Either[String, SyncResult]] = {
     // Step 1: Save to local JSON (synchronous)
     workspaceService.save(workspace) match {
       case Left(error) =>

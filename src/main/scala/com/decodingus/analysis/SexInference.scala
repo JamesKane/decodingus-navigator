@@ -3,7 +3,7 @@ package com.decodingus.analysis
 import htsjdk.samtools.{SamReader, SamReaderFactory, ValidationStringency}
 
 import java.io.File
-import scala.jdk.CollectionConverters._
+import scala.jdk.CollectionConverters.*
 import scala.util.{Either, Left, Right, Using}
 
 /**
@@ -26,21 +26,23 @@ object SexInference {
     case Unknown
 
   case class SexInferenceResult(
-    inferredSex: InferredSex,
-    xAutosomeRatio: Double,
-    autosomeMeanCoverage: Double,
-    xCoverage: Double,
-    confidence: String   // "high", "medium", "low"
-  ) {
+                                 inferredSex: InferredSex,
+                                 xAutosomeRatio: Double,
+                                 autosomeMeanCoverage: Double,
+                                 xCoverage: Double,
+                                 confidence: String // "high", "medium", "low"
+                               ) {
     def isMale: Boolean = inferredSex == InferredSex.Male
+
     def isFemale: Boolean = inferredSex == InferredSex.Female
+
     def isUnknown: Boolean = inferredSex == InferredSex.Unknown
   }
 
   // Thresholds for sex determination
-  private val MaleRatioThreshold = 0.65    // X:autosome ratio below this suggests male
-  private val FemaleRatioThreshold = 0.85  // X:autosome ratio above this suggests female
-  private val MinAutosomeCoverage = 5.0    // Minimum coverage for confident inference
+  private val MaleRatioThreshold = 0.65 // X:autosome ratio below this suggests male
+  private val FemaleRatioThreshold = 0.85 // X:autosome ratio above this suggests female
+  private val MinAutosomeCoverage = 5.0 // Minimum coverage for confident inference
 
   // Pattern for autosomal chromosomes (chr1-22 or 1-22)
   private val autosomePattern = "^(chr)?([1-9]|1[0-9]|2[0-2])$".r
@@ -51,14 +53,14 @@ object SexInference {
   /**
    * Infer sex from a BAM/CRAM file by comparing chrX coverage to autosomal coverage.
    *
-   * @param bamPath Path to BAM/CRAM file
+   * @param bamPath    Path to BAM/CRAM file
    * @param onProgress Optional progress callback
    * @return Sex inference result or error
    */
   def inferFromBam(
-    bamPath: String,
-    onProgress: (String, Double) => Unit = (_, _) => ()
-  ): Either[String, SexInferenceResult] = {
+                    bamPath: String,
+                    onProgress: (String, Double) => Unit = (_, _) => ()
+                  ): Either[String, SexInferenceResult] = {
     onProgress("Opening BAM file for sex inference...", 0.0)
 
     val bamFile = new File(bamPath)
@@ -80,9 +82,9 @@ object SexInference {
    * Infer sex from an open SamReader.
    */
   private def inferFromReader(
-    reader: SamReader,
-    onProgress: (String, Double) => Unit
-  ): Either[String, SexInferenceResult] = {
+                               reader: SamReader,
+                               onProgress: (String, Double) => Unit
+                             ): Either[String, SexInferenceResult] = {
     onProgress("Reading sequence dictionary...", 0.1)
 
     val header = reader.getFileHeader
@@ -131,13 +133,13 @@ object SexInference {
   }
 
   private def calculateFromIndexStats(
-    readCounts: Map[String, Long],
-    autosomeNames: List[String],
-    chrXName: String,
-    autosomeLength: Long,
-    chrXLength: Long,
-    onProgress: (String, Double) => Unit
-  ): Either[String, SexInferenceResult] = {
+                                       readCounts: Map[String, Long],
+                                       autosomeNames: List[String],
+                                       chrXName: String,
+                                       autosomeLength: Long,
+                                       chrXLength: Long,
+                                       onProgress: (String, Double) => Unit
+                                     ): Either[String, SexInferenceResult] = {
     onProgress("Computing coverage ratios...", 0.7)
 
     val autosomeReads = autosomeNames.map(name => readCounts.getOrElse(name, 0L)).sum
@@ -148,7 +150,7 @@ object SexInference {
     }
 
     // Normalize by length to get coverage
-    val autosomeCoverage = autosomeReads.toDouble / autosomeLength * 100  // reads per 100bp
+    val autosomeCoverage = autosomeReads.toDouble / autosomeLength * 100 // reads per 100bp
     val chrXCoverage = chrXReads.toDouble / chrXLength * 100
 
     val ratio = if (autosomeCoverage > 0) chrXCoverage / autosomeCoverage else 0.0
@@ -197,7 +199,7 @@ object SexInference {
    * Get the ploidy to use for a given contig based on inferred sex.
    *
    * @param contigName The contig name (e.g., "chrX", "chrY", "chr1")
-   * @param sexResult The sex inference result
+   * @param sexResult  The sex inference result
    * @return Ploidy (1 for haploid, 2 for diploid), or None if contig should be skipped
    */
   def ploidyForContig(contigName: String, sexResult: SexInferenceResult): Option[Int] = {
@@ -216,7 +218,7 @@ object SexInference {
       case chrYPattern(_) =>
         // chrY: skip for females, haploid for males
         sexResult.inferredSex match {
-          case InferredSex.Female => None  // Skip chrY for females
+          case InferredSex.Female => None // Skip chrY for females
           case InferredSex.Male => Some(1)
           case InferredSex.Unknown => Some(1) // Include chrY but haploid if unknown
         }

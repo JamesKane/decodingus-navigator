@@ -39,7 +39,7 @@ class TreeCache {
    * Get the path for a sites VCF file associated with a tree.
    * Sites VCFs are cached alongside their source tree and can be reused.
    *
-   * @param treePrefix The tree cache prefix (e.g., "ftdna-ytree", "ftdna-mttree")
+   * @param treePrefix     The tree cache prefix (e.g., "ftdna-ytree", "ftdna-mttree")
    * @param referenceBuild The reference build (e.g., "GRCh38")
    * @return Path to the sites VCF file
    */
@@ -60,7 +60,7 @@ class TreeCache {
    * Get the path for a lifted sites VCF file (tree sites lifted to a different reference build).
    * These are cached to avoid re-lifting for every sample using the same tree/target build combination.
    *
-   * @param treePrefix The tree cache prefix (e.g., "ftdna-ytree", "ftdna-mttree")
+   * @param treePrefix  The tree cache prefix (e.g., "ftdna-ytree", "ftdna-mttree")
    * @param sourceBuild The source reference build (tree's native build, e.g., "GRCh38")
    * @param targetBuild The target reference build (BAM's build, e.g., "CHM13v2")
    * @return Path to the lifted sites VCF file

@@ -1,22 +1,22 @@
 package com.decodingus.ui.components
 
-import scalafx.Includes._
-import scalafx.scene.control.{ContextMenu, MenuItem, SeparatorMenuItem, TableView, TableRow}
+import scalafx.Includes.*
+import scalafx.scene.control.*
 
 /**
  * Represents a context menu action for a table row.
  *
- * @param label The menu item label text
- * @param action The action to perform when clicked
- * @param enabled Function to determine if the action is enabled for a given item
+ * @param label     The menu item label text
+ * @param action    The action to perform when clicked
+ * @param enabled   Function to determine if the action is enabled for a given item
  * @param separator Whether to add a separator before this item
  */
 case class MenuAction[T](
-  label: String,
-  action: T => Unit,
-  enabled: T => Boolean = (_: T) => true,
-  separator: Boolean = false
-)
+                          label: String,
+                          action: T => Unit,
+                          enabled: T => Boolean = (_: T) => true,
+                          separator: Boolean = false
+                        )
 
 /**
  * Builder utility for creating context menus on table rows.
@@ -88,14 +88,14 @@ object ContextMenuBuilder {
    * Create a context menu with actions that receive the selected item.
    *
    * @param getSelected Function to get the currently selected item (may return null)
-   * @param actions Menu actions to include
+   * @param actions     Menu actions to include
    * @tparam T The item type
    * @return A ContextMenu instance
    */
   def createMenuForSelection[T](
-    getSelected: () => T,
-    actions: Seq[MenuAction[T]]
-  ): ContextMenu = {
+                                 getSelected: () => T,
+                                 actions: Seq[MenuAction[T]]
+                               ): ContextMenu = {
     new ContextMenu(
       actions.flatMap { menuAction =>
         val items = scala.collection.mutable.ListBuffer[MenuItem]()
