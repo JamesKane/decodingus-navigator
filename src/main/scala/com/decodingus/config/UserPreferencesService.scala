@@ -4,6 +4,7 @@ import io.circe.parser.*
 import io.circe.syntax.*
 
 import java.nio.file.{Files, Path, Paths, StandardOpenOption}
+import java.util.Locale
 import scala.util.{Failure, Success, Try}
 
 /**
@@ -97,6 +98,29 @@ object UserPreferencesService {
       val currentPrefs = load()
       save(currentPrefs.copy(mtdnaTreeProvider = provider.toLowerCase))
     }
+  }
+
+  /**
+   * Gets the saved locale, or None if using system default.
+   */
+  def getLocale: Option[Locale] = {
+    load().locale.map(Locale.forLanguageTag)
+  }
+
+  /**
+   * Sets the UI locale.
+   * Pass None to use system default.
+   */
+  def setLocale(locale: Option[Locale]): Either[String, Unit] = {
+    val currentPrefs = load()
+    save(currentPrefs.copy(locale = locale.map(_.toLanguageTag)))
+  }
+
+  /**
+   * Sets the UI locale by Locale object.
+   */
+  def setLocale(locale: Locale): Either[String, Unit] = {
+    setLocale(Some(locale))
   }
 
   private def loadFromDisk(): UserPreferences = {
