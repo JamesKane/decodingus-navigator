@@ -2,7 +2,7 @@ package com.decodingus.ui.components
 
 import com.decodingus.analysis.AnalysisCache
 import com.decodingus.i18n.I18n.t
-import com.decodingus.util.{CsvFileType, CsvFingerprinter}
+import com.decodingus.util.{DetectedFileType, FileTypeDetector}
 import com.decodingus.workspace.model.FileInfo
 import scalafx.Includes.*
 import scalafx.application.Platform
@@ -35,6 +35,10 @@ object DataType {
 
   case object StrProfile extends DataType {
     val label = "STR Profile"
+  }
+
+  case object MtdnaFasta extends DataType {
+    val label = "mtDNA FASTA"
   }
 
   case class ChipData(vendor: Option[String] = None) extends DataType {
@@ -282,7 +286,7 @@ class AddDataDialog(
 
     // Process file in background: fingerprint + checksum
     Future {
-      val fingerprint = CsvFingerprinter.fingerprint(file)
+      val fingerprint = FileTypeDetector.detect(file)
       val sha256 = AnalysisCache.calculateSha256(file)
       (fingerprint, sha256)
     }.onComplete {
@@ -295,11 +299,12 @@ class AddDataDialog(
 
           // Convert fingerprint to DataType
           detectedType = fingerprint match {
-            case CsvFileType.Alignment => DataType.Alignment
-            case CsvFileType.VcfVariants => DataType.Variants
-            case CsvFileType.StrProfile => DataType.StrProfile
-            case CsvFileType.ChipData(vendor) => DataType.ChipData(vendor)
-            case CsvFileType.Unknown => DataType.Unknown
+            case DetectedFileType.Alignment => DataType.Alignment
+            case DetectedFileType.VcfVariants => DataType.Variants
+            case DetectedFileType.StrProfile => DataType.StrProfile
+            case DetectedFileType.FastaMtdna => DataType.MtdnaFasta
+            case DetectedFileType.ChipData(vendor) => DataType.ChipData(vendor)
+            case DetectedFileType.Unknown => DataType.Unknown
           }
 
           // Update UI based on detection result

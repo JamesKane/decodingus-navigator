@@ -4,10 +4,10 @@ import munit.FunSuite
 import java.io.{File, PrintWriter}
 import java.nio.file.Files
 
-class CsvFingerprinterSpec extends FunSuite {
+class FileTypeDetectorSpec extends FunSuite {
 
   private def withTempFile(content: String, extension: String = ".csv")(test: File => Unit): Unit = {
-    val file = Files.createTempFile("fingerprint_test", extension).toFile
+    val file = Files.createTempFile("filetype_test", extension).toFile
     try {
       val writer = new PrintWriter(file)
       try {
@@ -23,19 +23,31 @@ class CsvFingerprinterSpec extends FunSuite {
 
   test("detects BAM files by extension") {
     withTempFile("binary content", ".bam") { file =>
-      assertEquals(CsvFingerprinter.fingerprint(file), CsvFileType.Alignment)
+      assertEquals(FileTypeDetector.detect(file), DetectedFileType.Alignment)
     }
   }
 
   test("detects CRAM files by extension") {
     withTempFile("binary content", ".cram") { file =>
-      assertEquals(CsvFingerprinter.fingerprint(file), CsvFileType.Alignment)
+      assertEquals(FileTypeDetector.detect(file), DetectedFileType.Alignment)
     }
   }
 
   test("detects VCF files by extension") {
     withTempFile("##fileformat=VCFv4.2", ".vcf") { file =>
-      assertEquals(CsvFingerprinter.fingerprint(file), CsvFileType.VcfVariants)
+      assertEquals(FileTypeDetector.detect(file), DetectedFileType.VcfVariants)
+    }
+  }
+
+  test("detects FASTA files by extension") {
+    withTempFile(">sample\nACGT", ".fasta") { file =>
+      assertEquals(FileTypeDetector.detect(file), DetectedFileType.FastaMtdna)
+    }
+  }
+
+  test("detects FA files by extension") {
+    withTempFile(">sample\nACGT", ".fa") { file =>
+      assertEquals(FileTypeDetector.detect(file), DetectedFileType.FastaMtdna)
     }
   }
 
@@ -56,7 +68,7 @@ class CsvFingerprinterSpec extends FunSuite {
         |DYS389II,29""".stripMargin
 
     withTempFile(strContent, ".csv") { file =>
-      assertEquals(CsvFingerprinter.fingerprint(file), CsvFileType.StrProfile)
+      assertEquals(FileTypeDetector.detect(file), DetectedFileType.StrProfile)
     }
   }
 
@@ -66,7 +78,7 @@ class CsvFingerprinterSpec extends FunSuite {
         |SAMPLE001,13,24,14,11,11,14,12,12,11,13,13,29""".stripMargin
 
     withTempFile(strContent, ".csv") { file =>
-      assertEquals(CsvFingerprinter.fingerprint(file), CsvFileType.StrProfile)
+      assertEquals(FileTypeDetector.detect(file), DetectedFileType.StrProfile)
     }
   }
 
@@ -85,7 +97,7 @@ class CsvFingerprinterSpec extends FunSuite {
       } finally {
         writer.close()
       }
-      assertEquals(CsvFingerprinter.fingerprint(file), CsvFileType.StrProfile)
+      assertEquals(FileTypeDetector.detect(file), DetectedFileType.StrProfile)
     } finally {
       file.delete()
     }
@@ -104,9 +116,9 @@ class CsvFingerprinterSpec extends FunSuite {
         |rs6681049	1	800007	CC""".stripMargin
 
     withTempFile(chipContent, ".txt") { file =>
-      val result = CsvFingerprinter.fingerprint(file)
-      assert(result.isInstanceOf[CsvFileType.ChipData])
-      assertEquals(result.asInstanceOf[CsvFileType.ChipData].vendor, Some("23andMe"))
+      val result = FileTypeDetector.detect(file)
+      assert(result.isInstanceOf[DetectedFileType.ChipData])
+      assertEquals(result.asInstanceOf[DetectedFileType.ChipData].vendor, Some("23andMe"))
     }
   }
 
@@ -122,9 +134,9 @@ class CsvFingerprinterSpec extends FunSuite {
         |rs11240777	1	798959	A	G""".stripMargin
 
     withTempFile(chipContent, ".txt") { file =>
-      val result = CsvFingerprinter.fingerprint(file)
-      assert(result.isInstanceOf[CsvFileType.ChipData])
-      assertEquals(result.asInstanceOf[CsvFileType.ChipData].vendor, Some("AncestryDNA"))
+      val result = FileTypeDetector.detect(file)
+      assert(result.isInstanceOf[DetectedFileType.ChipData])
+      assertEquals(result.asInstanceOf[DetectedFileType.ChipData].vendor, Some("AncestryDNA"))
     }
   }
 
@@ -136,14 +148,14 @@ class CsvFingerprinterSpec extends FunSuite {
         |rs3131972,1,752721,GG""".stripMargin
 
     withTempFile(chipContent, ".csv") { file =>
-      val result = CsvFingerprinter.fingerprint(file)
-      assert(result.isInstanceOf[CsvFileType.ChipData])
+      val result = FileTypeDetector.detect(file)
+      assert(result.isInstanceOf[DetectedFileType.ChipData])
     }
   }
 
   test("returns Unknown for empty file") {
     withTempFile("", ".csv") { file =>
-      assertEquals(CsvFingerprinter.fingerprint(file), CsvFileType.Unknown)
+      assertEquals(FileTypeDetector.detect(file), DetectedFileType.Unknown)
     }
   }
 
@@ -154,7 +166,7 @@ class CsvFingerprinterSpec extends FunSuite {
         |Bob,25,Seattle""".stripMargin
 
     withTempFile(content, ".csv") { file =>
-      assertEquals(CsvFingerprinter.fingerprint(file), CsvFileType.Unknown)
+      assertEquals(FileTypeDetector.detect(file), DetectedFileType.Unknown)
     }
   }
 
@@ -172,9 +184,9 @@ class CsvFingerprinterSpec extends FunSuite {
       } finally {
         writer.close()
       }
-      val result = CsvFingerprinter.fingerprint(file)
-      assert(result.isInstanceOf[CsvFileType.ChipData])
-      assertEquals(result.asInstanceOf[CsvFileType.ChipData].vendor, Some("23andMe"))
+      val result = FileTypeDetector.detect(file)
+      assert(result.isInstanceOf[DetectedFileType.ChipData])
+      assertEquals(result.asInstanceOf[DetectedFileType.ChipData].vendor, Some("23andMe"))
     } finally {
       file.delete()
     }
@@ -182,25 +194,25 @@ class CsvFingerprinterSpec extends FunSuite {
 
   test("isTextFile returns true for CSV files") {
     withTempFile("test", ".csv") { file =>
-      assert(CsvFingerprinter.isTextFile(file))
+      assert(FileTypeDetector.isTextFile(file))
     }
   }
 
   test("isTextFile returns true for TSV files") {
     withTempFile("test", ".tsv") { file =>
-      assert(CsvFingerprinter.isTextFile(file))
+      assert(FileTypeDetector.isTextFile(file))
     }
   }
 
   test("isTextFile returns true for TXT files") {
     withTempFile("test", ".txt") { file =>
-      assert(CsvFingerprinter.isTextFile(file))
+      assert(FileTypeDetector.isTextFile(file))
     }
   }
 
   test("isTextFile returns false for BAM files") {
     withTempFile("test", ".bam") { file =>
-      assert(!CsvFingerprinter.isTextFile(file))
+      assert(!FileTypeDetector.isTextFile(file))
     }
   }
 }

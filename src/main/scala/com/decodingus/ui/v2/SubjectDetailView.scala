@@ -5,7 +5,7 @@ import com.decodingus.i18n.Formatters
 import com.decodingus.str.StrCsvParser
 import com.decodingus.config.FeatureToggles
 import com.decodingus.haplogroup.tree.TreeType
-import com.decodingus.ui.components.{AddDataDialog, AddSequenceDataDialog, AnalysisProgressDialog, AncestryResultDialog, ConfirmDialog, DataInput, DataType, EditSubjectDialog, InfoDialog, SequenceDataInput, VcfMetadata, VcfMetadataDialog}
+import com.decodingus.ui.components.{AddDataDialog, AddSequenceDataDialog, AnalysisProgressDialog, AncestryResultDialog, ConfirmDialog, DataInput, DataType, EditSubjectDialog, ImportVendorFastaDialog, InfoDialog, SequenceDataInput, VcfMetadata, VcfMetadataDialog, VendorFastaImportRequest}
 import com.decodingus.ui.v2.BiosampleExtensions.*
 import com.decodingus.util.Logger
 import com.decodingus.workspace.WorkbenchViewModel
@@ -1705,6 +1705,57 @@ Note: Reference data download may be required on first run."""
                     case Left(error) =>
                       log.error(s"Failed to parse STR file: $error")
                       showInfoDialog(t("error.title"), t("data.str_import"), error)
+                      return
+                  }
+
+                case DataType.MtdnaFasta =>
+                  // mtDNA FASTA import - show vendor dialog to get metadata (pre-filled with selected file)
+                  val fastaDialog = new ImportVendorFastaDialog(Some(file))
+                  Option(this.getScene).flatMap(s => Option(s.getWindow)).foreach { window =>
+                    fastaDialog.initOwner(window)
+                  }
+
+                  fastaDialog.showAndWait() match {
+                    case Some(Some(request: VendorFastaImportRequest)) =>
+                      // Create a new sequence run for the mtDNA FASTA
+                      val fastaFileInfo = dataInput.fileInfo.copy(
+                        fileFormat = "FASTA"
+                      )
+                      val newIndex = viewModel.addSequenceRunFromFile(subject.accession, fastaFileInfo)
+
+                      // Update the sequence run with mtDNA metadata
+                      viewModel.getSequenceRun(subject.accession, newIndex).foreach { seqRun =>
+                        val updatedRun = seqRun.copy(
+                          platformName = request.vendor.displayName,
+                          testType = "MT_FASTA"
+                        )
+                        viewModel.updateSequenceRun(subject.accession, newIndex, updatedRun)
+                      }
+
+                      // Import the FASTA into the sequence run
+                      viewModel.importVendorFasta(
+                        sampleAccession = subject.accession,
+                        sequenceRunIndex = newIndex,
+                        fastaPath = file.toPath,
+                        vendor = request.vendor,
+                        notes = request.notes
+                      ) match {
+                        case Right(msg) =>
+                          log.info(s"Imported mtDNA FASTA: $msg")
+                          updateDataSources(subject)
+                          showInfoDialog(
+                            "Import Successful",
+                            "mtDNA FASTA imported",
+                            msg
+                          )
+                        case Left(err) =>
+                          log.error(s"Failed to import mtDNA FASTA: $err")
+                          showInfoDialog(t("error.title"), "mtDNA FASTA Import Failed", err)
+                      }
+                      return
+
+                    case _ =>
+                      log.debug("mtDNA FASTA dialog cancelled")
                       return
                   }
 

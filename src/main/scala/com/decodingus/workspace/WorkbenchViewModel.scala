@@ -721,7 +721,7 @@ class WorkbenchViewModel(
                          onProgress: (String, Double) => Unit,
                          onComplete: Either[String, (Int, LibraryStats)] => Unit
                        ): Unit = {
-    // Step 1: Check for exact duplicate by checksum
+    // Step 1: Check for exact duplicate by checksum (including alignment files)
     onProgress("Checking for duplicates...", 0.05)
 
     findSubject(sampleAccession) match {
@@ -730,9 +730,16 @@ class WorkbenchViewModel(
         return
       case Some(subject) =>
         val sequenceRuns = _workspace.value.main.getSequenceRunsForBiosample(subject)
-        val existingChecksums = sequenceRuns.flatMap(_.files.flatMap(_.checksum)).toSet
+        val seqRunChecksums = sequenceRuns.flatMap(_.files.flatMap(_.checksum))
+        // Also include alignment file checksums
+        val alignmentChecksums = sequenceRuns.flatMap { sr =>
+          _workspace.value.main.getAlignmentsForSequenceRun(sr).flatMap(_.files.flatMap(_.checksum))
+        }
+        val existingChecksums = (seqRunChecksums ++ alignmentChecksums).toSet
         if (fileInfo.checksum.exists(existingChecksums.contains)) {
-          onComplete(Left("Duplicate file - this file has already been added"))
+          val checksumPreview = fileInfo.checksum.map(_.take(12) + "...").getOrElse("unknown")
+          log.warn(s"Duplicate file detected: ${fileInfo.fileName} (checksum: $checksumPreview)")
+          onComplete(Left(s"Duplicate file - ${fileInfo.fileName} has already been added (checksum: $checksumPreview)"))
           return
         }
     }
@@ -926,40 +933,56 @@ class WorkbenchViewModel(
                   }
                 }
 
-                // Persist to H2 atomically
+                // Persist to H2 - alignment first, then sequence run
                 import com.decodingus.service.EntityConversions.parseIdFromRef
-                seqRun.atUri.flatMap(parseIdFromRef).foreach { seqRunId =>
-                  h2Service.createAlignment(newAlignment, seqRunId) match {
-                    case Right(persisted) =>
-                      log.info(s" Alignment persisted to H2: ${persisted.atUri}")
-                    case Left(error) =>
-                      log.error(s"Failed to persist Alignment to H2: $error")
-                  }
+                val persistResult = seqRun.atUri.flatMap(parseIdFromRef) match {
+                  case Some(seqRunId) =>
+                    h2Service.createAlignment(newAlignment, seqRunId) match {
+                      case Right(persisted) =>
+                        log.info(s" Alignment persisted to H2: ${persisted.atUri}")
+                        // Only update sequence run if alignment succeeded
+                        h2Service.updateSequenceRun(updatedSeqRun) match {
+                          case Right(seqRunPersisted) =>
+                            log.info(s" SequenceRun updated in H2: ${seqRunPersisted.atUri}")
+                            Right(())
+                          case Left(error) =>
+                            log.error(s"Failed to update SequenceRun in H2: $error")
+                            Left(s"Failed to update sequence run: $error")
+                        }
+                      case Left(error) =>
+                        log.error(s"Failed to persist Alignment to H2: $error")
+                        Left(s"Failed to create alignment: $error")
+                    }
+                  case None =>
+                    log.warn(s"Cannot persist alignment: sequence run has no valid URI")
+                    Left("Sequence run has no valid URI")
                 }
-                h2Service.updateSequenceRun(updatedSeqRun) match {
-                  case Right(persisted) =>
-                    log.info(s" SequenceRun updated in H2: ${persisted.atUri}")
+
+                persistResult match {
+                  case Right(_) =>
+                    // Update in-memory state only on success
+                    val updatedSequenceRuns = _workspace.value.main.sequenceRuns.map { sr =>
+                      if (sr.atUri == seqRun.atUri) updatedSeqRun else sr
+                    }
+                    val updatedAlignments = _workspace.value.main.alignments :+ newAlignment
+                    val updatedContent = _workspace.value.main.copy(
+                      sequenceRuns = updatedSequenceRuns,
+                      alignments = updatedAlignments
+                    )
+                    _workspace.value = _workspace.value.copy(main = updatedContent)
+
+                    lastLibraryStats.value = Some(libraryStats)
+                    analysisInProgress.value = false
+                    analysisProgress.value = if (isNewRun) "Analysis complete" else s"Added ${libraryStats.referenceBuild} alignment to existing run"
+                    analysisProgressPercent.value = 1.0
+                    onProgress("Complete", 1.0)
+                    onComplete(Right((resultIndex, libraryStats)))
+
                   case Left(error) =>
-                    log.error(s"Failed to update SequenceRun in H2: $error")
+                    analysisInProgress.value = false
+                    analysisProgress.value = s"Failed: $error"
+                    onComplete(Left(error))
                 }
-
-                // Update in-memory state
-                val updatedSequenceRuns = _workspace.value.main.sequenceRuns.map { sr =>
-                  if (sr.atUri == seqRun.atUri) updatedSeqRun else sr
-                }
-                val updatedAlignments = _workspace.value.main.alignments :+ newAlignment
-                val updatedContent = _workspace.value.main.copy(
-                  sequenceRuns = updatedSequenceRuns,
-                  alignments = updatedAlignments
-                )
-                _workspace.value = _workspace.value.copy(main = updatedContent)
-
-                lastLibraryStats.value = Some(libraryStats)
-                analysisInProgress.value = false
-                analysisProgress.value = if (isNewRun) "Analysis complete" else s"Added ${libraryStats.referenceBuild} alignment to existing run"
-                analysisProgressPercent.value = 1.0
-                onProgress("Complete", 1.0)
-                onComplete(Right((resultIndex, libraryStats)))
               } // end runResult.foreach
 
             case None =>
@@ -1017,12 +1040,17 @@ class WorkbenchViewModel(
     }
   }
 
-  /** Gets all checksums for a subject's sequence run files */
+  /** Gets all checksums for a subject's sequence run and alignment files */
   def getExistingChecksums(sampleAccession: String): Set[String] = {
     findSubject(sampleAccession) match {
       case Some(subject) =>
         val sequenceRuns = _workspace.value.main.getSequenceRunsForBiosample(subject)
-        sequenceRuns.flatMap(_.files.flatMap(_.checksum)).toSet
+        val seqRunChecksums = sequenceRuns.flatMap(_.files.flatMap(_.checksum))
+        // Also include alignment file checksums
+        val alignmentChecksums = sequenceRuns.flatMap { sr =>
+          _workspace.value.main.getAlignmentsForSequenceRun(sr).flatMap(_.files.flatMap(_.checksum))
+        }
+        (seqRunChecksums ++ alignmentChecksums).toSet
       case None =>
         Set.empty
     }

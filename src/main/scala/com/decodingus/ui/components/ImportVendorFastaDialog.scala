@@ -24,8 +24,10 @@ case class VendorFastaImportRequest(
 /**
  * Dialog for importing vendor-provided mtDNA FASTA files (e.g., FTDNA mtFull Sequence, YSEQ mtDNA).
  * These files contain the full mtDNA sequence aligned to rCRS.
+ *
+ * @param initialFile Optional pre-selected file (e.g., from drag-and-drop)
  */
-class ImportVendorFastaDialog extends Dialog[Option[VendorFastaImportRequest]] {
+class ImportVendorFastaDialog(initialFile: Option[File] = None) extends Dialog[Option[VendorFastaImportRequest]] {
 
   title = "Import mtDNA FASTA"
   headerText = "Import vendor-provided mtDNA FASTA sequence"
@@ -34,7 +36,7 @@ class ImportVendorFastaDialog extends Dialog[Option[VendorFastaImportRequest]] {
   dialogPane().buttonTypes = Seq(importButtonType, ButtonType.Cancel)
 
   // State
-  private var selectedFastaFile: Option[File] = None
+  private var selectedFastaFile: Option[File] = initialFile
 
   // FASTA file selection
   private val fastaPathField = new TextField {
@@ -111,6 +113,12 @@ class ImportVendorFastaDialog extends Dialog[Option[VendorFastaImportRequest]] {
   // Disable import button until FASTA is selected
   private val importButton = dialogPane().lookupButton(importButtonType)
   importButton.disable = true
+
+  // Initialize with pre-selected file if provided
+  initialFile.foreach { file =>
+    fastaPathField.text = file.getName
+    importButton.disable = false
+  }
 
   // Result converter
   resultConverter = dialogButton => {

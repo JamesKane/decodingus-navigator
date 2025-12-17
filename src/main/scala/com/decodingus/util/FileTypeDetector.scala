@@ -5,82 +5,93 @@ import java.util.zip.GZIPInputStream
 import scala.util.{Try, Using}
 
 /**
- * Detected CSV file type based on content fingerprinting.
+ * Detected bioinformatics file type based on extension and content fingerprinting.
  */
-sealed trait CsvFileType {
+sealed trait DetectedFileType {
   def description: String
 }
 
-object CsvFileType {
+object DetectedFileType {
   /** Y-STR profile data (FTDNA, YSEQ, etc.) */
-  case object StrProfile extends CsvFileType {
+  case object StrProfile extends DetectedFileType {
     val description = "Y-STR Profile"
   }
 
   /** Chip/SNP array data (23andMe, AncestryDNA, etc.) */
-  case class ChipData(vendor: Option[String]) extends CsvFileType {
+  case class ChipData(vendor: Option[String]) extends DetectedFileType {
     val description = vendor.map(v => s"$v Chip Data").getOrElse("Chip/SNP Data")
   }
 
   /** VCF variant file (detected by extension, not content) */
-  case object VcfVariants extends CsvFileType {
+  case object VcfVariants extends DetectedFileType {
     val description = "VCF Variants"
   }
 
   /** BAM/CRAM alignment file (detected by extension) */
-  case object Alignment extends CsvFileType {
+  case object Alignment extends DetectedFileType {
     val description = "Alignment File"
   }
 
+  /** FASTA file for mtDNA sequence (detected by extension) */
+  case object FastaMtdna extends DetectedFileType {
+    val description = "mtDNA FASTA"
+  }
+
   /** Unknown or unrecognized format */
-  case object Unknown extends CsvFileType {
+  case object Unknown extends DetectedFileType {
     val description = "Unknown Format"
   }
 }
 
 /**
- * Fingerprints CSV/text files to detect their type based on content patterns.
+ * Detects bioinformatics file types based on extension and content patterns.
  *
  * Detects:
- * - Y-STR profiles (FTDNA, YSEQ, generic)
- * - Chip/SNP data (23andMe, AncestryDNA, MyHeritage, LivingDNA, FTDNA)
- * - VCF files (by extension)
- * - BAM/CRAM files (by extension)
+ * - BAM/CRAM alignment files (by extension)
+ * - VCF variant files (by extension)
+ * - FASTA files for mtDNA (by extension)
+ * - Y-STR profiles (by content - FTDNA, YSEQ, generic)
+ * - Chip/SNP data (by content - 23andMe, AncestryDNA, MyHeritage, LivingDNA, FTDNA)
  */
-object CsvFingerprinter {
+object FileTypeDetector {
 
-  private val log = Logger[CsvFingerprinter.type]
+  private val log = Logger[FileTypeDetector.type]
 
   // Number of lines to sample for fingerprinting
   private val SampleLines = 50
 
   /**
-   * Fingerprints a file to detect its type.
+   * Detects a file's type based on extension and content.
    *
    * @param file The file to analyze
    * @return The detected file type
    */
-  def fingerprint(file: File): CsvFileType = {
+  def detect(file: File): DetectedFileType = {
     val fileName = file.getName.toLowerCase
 
-    // First check by extension for binary/non-CSV formats
+    // First check by extension for binary/non-text formats
     if (fileName.endsWith(".bam") || fileName.endsWith(".cram")) {
-      return CsvFileType.Alignment
+      return DetectedFileType.Alignment
     }
     if (fileName.endsWith(".vcf") || fileName.endsWith(".vcf.gz")) {
-      return CsvFileType.VcfVariants
+      return DetectedFileType.VcfVariants
+    }
+    if (fileName.endsWith(".fasta") || fileName.endsWith(".fa") ||
+        fileName.endsWith(".fasta.gz") || fileName.endsWith(".fa.gz") ||
+        fileName.endsWith(".fna") || fileName.endsWith(".fna.gz")) {
+      return DetectedFileType.FastaMtdna
     }
 
     // For text files, analyze content
     readSampleLines(file) match {
       case Right(lines) if lines.nonEmpty =>
-        fingerprintFromContent(lines, fileName)
+        detectFromContent(lines, fileName)
       case Right(_) =>
         log.warn(s"Empty file: ${file.getName}")
-        CsvFileType.Unknown
+        DetectedFileType.Unknown
       case Left(error) =>
         log.error(s"Failed to read file ${file.getName}: $error")
-        CsvFileType.Unknown
+        DetectedFileType.Unknown
     }
   }
 
@@ -108,34 +119,34 @@ object CsvFingerprinter {
   /**
    * Analyzes content lines to determine file type.
    */
-  private def fingerprintFromContent(lines: List[String], fileName: String): CsvFileType = {
+  private def detectFromContent(lines: List[String], fileName: String): DetectedFileType = {
     // Skip comment lines for analysis but keep them for vendor detection
     val commentLines = lines.filter(l => l.startsWith("#") || l.startsWith("\"#"))
     val dataLines = lines.filterNot(l => l.startsWith("#") || l.startsWith("\"#") || l.trim.isEmpty)
 
     if (dataLines.isEmpty) {
-      return CsvFileType.Unknown
+      return DetectedFileType.Unknown
     }
 
     // Check for STR profile markers
     val strScore = calculateStrScore(dataLines, fileName)
     val chipScore = calculateChipScore(dataLines, commentLines, fileName)
 
-    log.debug(s"Fingerprint scores for ${fileName}: STR=$strScore, Chip=$chipScore")
+    log.debug(s"Detection scores for ${fileName}: STR=$strScore, Chip=$chipScore")
 
     if (strScore > chipScore && strScore >= 3) {
-      CsvFileType.StrProfile
+      DetectedFileType.StrProfile
     } else if (chipScore > strScore && chipScore >= 3) {
       val vendor = detectChipVendor(dataLines, commentLines, fileName)
-      CsvFileType.ChipData(vendor)
+      DetectedFileType.ChipData(vendor)
     } else if (strScore >= 2) {
       // Lower threshold for STR if it's the only match
-      CsvFileType.StrProfile
+      DetectedFileType.StrProfile
     } else if (chipScore >= 2) {
       val vendor = detectChipVendor(dataLines, commentLines, fileName)
-      CsvFileType.ChipData(vendor)
+      DetectedFileType.ChipData(vendor)
     } else {
-      CsvFileType.Unknown
+      DetectedFileType.Unknown
     }
   }
 
@@ -322,7 +333,7 @@ object CsvFingerprinter {
   }
 
   /**
-   * Quick check if a file is likely a CSV/text file (vs binary).
+   * Quick check if a file is likely a text file (vs binary).
    */
   def isTextFile(file: File): Boolean = {
     val fileName = file.getName.toLowerCase
