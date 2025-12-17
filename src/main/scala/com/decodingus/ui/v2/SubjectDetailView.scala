@@ -5,7 +5,7 @@ import com.decodingus.i18n.Formatters
 import com.decodingus.str.StrCsvParser
 import com.decodingus.config.FeatureToggles
 import com.decodingus.haplogroup.tree.TreeType
-import com.decodingus.ui.components.{AddDataDialog, AddSequenceDataDialog, AncestryResultDialog, ConfirmDialog, DataInput, DataType, EditSubjectDialog, ImportVendorFastaDialog, InfoDialog, SequenceDataInput, VcfMetadata, VcfMetadataDialog, VendorFastaImportRequest}
+import com.decodingus.ui.components.{AddDataDialog, AddSequenceDataDialog, AncestryResultDialog, ConfirmDialog, DataInput, DataType, EditSubjectDialog, ImportVendorFastaDialog, InfoDialog, MtdnaVariantsPanel, SequenceDataInput, SourceReconciliationPanel, VcfMetadata, VcfMetadataDialog, VendorFastaImportRequest}
 import com.decodingus.ui.v2.BiosampleExtensions.*
 import com.decodingus.util.Logger
 import com.decodingus.workspace.WorkbenchViewModel
@@ -133,6 +133,7 @@ class SubjectDetailView(viewModel: WorkbenchViewModel) extends VBox {
   private val ydnaResultPane = new VBox(15) {
     padding = Insets(0)
   }
+  private val ydnaReconciliationPanel = SourceReconciliationPanel()
 
   // mtDNA tab labels
   private val mtdnaTerminalLabel = new Label("-") {
@@ -159,6 +160,7 @@ class SubjectDetailView(viewModel: WorkbenchViewModel) extends VBox {
   private val mtdnaResultPane = new VBox(15) {
     padding = Insets(0)
   }
+  private val mtdnaVariantsPanel = MtdnaVariantsPanel()
 
   // Data Sources tab containers
   private val sequencingListContainer = new VBox(8) {
@@ -520,7 +522,8 @@ class SubjectDetailView(viewModel: WorkbenchViewModel) extends VBox {
           },
           new StackPane {
             children = Seq(ydnaNotAnalyzedPane, ydnaResultPane)
-          }
+          },
+          ydnaReconciliationPanel
         )
       }
     }
@@ -596,7 +599,8 @@ class SubjectDetailView(viewModel: WorkbenchViewModel) extends VBox {
           },
           new StackPane {
             children = Seq(mtdnaNotAnalyzedPane, mtdnaResultPane)
-          }
+          },
+          mtdnaVariantsPanel
         )
       }
     }
@@ -625,18 +629,141 @@ class SubjectDetailView(viewModel: WorkbenchViewModel) extends VBox {
   // IBD Tab Content
   // ============================================================================
 
-  private def createIbdContent(): VBox = {
-    new VBox(20) {
-      padding = Insets(20)
-      alignment = Pos.Center
+  private def createIbdContent(): ScrollPane = {
+    // Header with action buttons (disabled with tooltip)
+    val runMatchButton = new Button {
+      text <== bind("ibd.run_match")
+      styleClass += "button-primary"
+      disable = true
+      tooltip = Tooltip(t("ibd.coming_soon"))
+    }
+
+    val importButton = new Button {
+      text <== bind("ibd.import_matches")
+      disable = true
+      tooltip = Tooltip(t("ibd.coming_soon"))
+    }
+
+    val headerBox = new HBox(10) {
+      alignment = Pos.CenterLeft
       children = Seq(
-        new Label { text <== bind("ibd.title"); style = "-fx-font-size: 18px; -fx-font-weight: bold;" },
-        new Label { text <== bind("ibd.no_matches"); style = "-fx-text-fill: #666666;" },
-        new Button {
-          text <== bind("ibd.run_match")
-          styleClass += "button-primary"
+        new Label { text <== bind("ibd.title"); style = "-fx-font-size: 18px; -fx-font-weight: bold; -fx-text-fill: #ffffff;" },
+        new Region { hgrow = Priority.Always },
+        importButton,
+        runMatchButton
+      )
+    }
+
+    // Filter controls
+    val minCmLabel = new Label {
+      text <== bind("ibd.min_cm")
+      style = "-fx-text-fill: #b0b0b0;"
+    }
+    val minCmSlider = new Slider {
+      min = 0
+      max = 100
+      value = 7
+      showTickLabels = true
+      showTickMarks = true
+      majorTickUnit = 20
+      prefWidth = 200
+      disable = true
+    }
+    val minCmValueLabel = new Label("7 cM") {
+      style = "-fx-text-fill: #ffffff; -fx-font-family: monospace;"
+    }
+
+    val filterBox = new HBox(15) {
+      alignment = Pos.CenterLeft
+      padding = Insets(10, 0, 10, 0)
+      children = Seq(
+        minCmLabel,
+        minCmSlider,
+        minCmValueLabel,
+        new Region { hgrow = Priority.Always },
+        new TextField {
+          promptText = t("ibd.filter_matches")
+          prefWidth = 200
+          disable = true
         }
       )
+    }
+
+    // Placeholder matches table
+    val ibdMatchesTable = new TableView[String] {
+      prefHeight = 200
+      placeholder = new Label(t("ibd.no_matches")) {
+        style = "-fx-text-fill: #888888;"
+      }
+      style = "-fx-background-color: #333333;"
+      columnResizePolicy = TableView.ConstrainedResizePolicy
+
+      columns ++= Seq(
+        new TableColumn[String, String] {
+          text = t("ibd.match_name")
+          prefWidth = 150
+        },
+        new TableColumn[String, String] {
+          text = t("ibd.shared_cm")
+          prefWidth = 80
+        },
+        new TableColumn[String, String] {
+          text = t("ibd.segments")
+          prefWidth = 80
+        },
+        new TableColumn[String, String] {
+          text = t("ibd.longest")
+          prefWidth = 80
+        },
+        new TableColumn[String, String] {
+          text = t("ibd.relationship")
+          prefWidth = 120
+        }
+      )
+    }
+
+    // Placeholder chromosome browser
+    val chromosomeBrowserPlaceholder = new VBox(15) {
+      alignment = Pos.Center
+      padding = Insets(40)
+      style = "-fx-background-color: #2a2a2a; -fx-background-radius: 10; -fx-border-color: #444444; -fx-border-style: dashed; -fx-border-radius: 10;"
+      prefHeight = 200
+      children = Seq(
+        new Label(t("ibd.chromosome_browser")) {
+          style = "-fx-font-size: 14px; -fx-font-weight: bold; -fx-text-fill: #888888;"
+        },
+        new Label(t("ibd.select_match_to_view")) {
+          style = "-fx-font-size: 12px; -fx-text-fill: #666666;"
+        }
+      )
+    }
+
+    // Export button (disabled)
+    val exportButton = new Button {
+      text <== bind("ibd.export_segments")
+      disable = true
+      tooltip = Tooltip(t("ibd.coming_soon"))
+    }
+
+    val footerBox = new HBox(10) {
+      alignment = Pos.CenterRight
+      children = Seq(exportButton)
+    }
+
+    new ScrollPane {
+      fitToWidth = true
+      style = "-fx-background: #1e1e1e; -fx-background-color: #1e1e1e;"
+      content = new VBox(15) {
+        padding = Insets(20)
+        style = "-fx-background-color: #1e1e1e;"
+        children = Seq(
+          headerBox,
+          filterBox,
+          ibdMatchesTable,
+          chromosomeBrowserPlaceholder,
+          footerBox
+        )
+      }
     }
   }
 
@@ -1733,6 +1860,10 @@ Note: Reference data download may be required on first run."""
         ydnaResultPane.visible = false
     }
 
+    // Update Y-DNA reconciliation panel
+    val yDnaReconciliation = viewModel.workspace.value.main.getYDnaReconciliation(subject)
+    ydnaReconciliationPanel.setReconciliation(yDnaReconciliation)
+
     // Update mtDNA tab
     subject.mtHaplogroupResult match {
       case Some(result) =>
@@ -1754,6 +1885,9 @@ Note: Reference data download may be required on first run."""
         mtdnaNotAnalyzedPane.visible = true
         mtdnaResultPane.visible = false
     }
+
+    // Update mtDNA variants panel
+    mtdnaVariantsPanel.setMtdnaResult(subject.mtHaplogroupResult)
 
     // Update data counts and Data Sources tab
     updateDataSources(subject)

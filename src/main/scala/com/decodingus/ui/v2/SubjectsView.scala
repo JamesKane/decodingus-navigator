@@ -2,7 +2,7 @@ package com.decodingus.ui.v2
 
 import com.decodingus.i18n.I18n.{t, bind}
 import com.decodingus.i18n.Formatters
-import com.decodingus.ui.components.AddSubjectDialog
+import com.decodingus.ui.components.{AddSubjectDialog, SubjectCompareDialog}
 import com.decodingus.ui.v2.BiosampleExtensions.*
 import com.decodingus.util.Logger
 import com.decodingus.workspace.WorkbenchViewModel
@@ -383,14 +383,20 @@ class SubjectsView(viewModel: WorkbenchViewModel) extends SplitPane {
 
   private def handleCompare(): Unit = {
     val subjects = selectedSubjects.toSeq
-    if (subjects.size >= 2) {
-      // TODO: Open compare view - requires new CompareView component
-      log.debug(s"Compare ${subjects.size} subjects - not yet implemented")
-      showInfoDialog(
-        t("compare.title"),
-        t("compare.not_implemented"),
-        s"${subjects.size} ${t("subjects.selected_for_compare")}"
-      )
+    if (subjects.size >= 2 && subjects.size <= 3) {
+      log.debug(s"Opening compare dialog for ${subjects.size} subjects")
+
+      // Load STR profiles for all selected subjects
+      val strProfiles = subjects.flatMap { subject =>
+        viewModel.getStrProfilesForBiosample(subject.accession).headOption.map { profile =>
+          subject.accession -> profile
+        }
+      }.toMap
+
+      // Open the compare dialog
+      val dialog = SubjectCompareDialog(subjects.toList, strProfiles)
+      dialog.initOwner(this.scene().getWindow)
+      dialog.showAndWait()
     }
   }
 
