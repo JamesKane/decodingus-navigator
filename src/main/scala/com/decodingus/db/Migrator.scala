@@ -154,7 +154,8 @@ object Migrator:
       "V004__add_artifact_unique_constraint.sql",
       "V005__phase2_entity_tables.sql",
       "V006__y_chromosome_unified_profile.sql",
-      "V007__multi_reference_variant_model.sql"
+      "V007__multi_reference_variant_model.sql",
+      "V008__add_sequence_run_metrics_columns.sql"
     )
     val pattern = """V(\d+)__(.+)\.sql""".r
 

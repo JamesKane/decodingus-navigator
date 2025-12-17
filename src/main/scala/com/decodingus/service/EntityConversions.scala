@@ -119,6 +119,32 @@ object EntityConversions:
   // SequenceRun Conversions
   // ============================================
 
+  /**
+   * Normalize platform name to match DB constraint values.
+   * Analysis returns values like "Illumina", "PacBio" but DB requires "ILLUMINA", "PACBIO".
+   */
+  def normalizePlatform(platform: String): String =
+    platform.toUpperCase match
+      case "ILLUMINA" | "ILLUMINA/SOLEXA" => "ILLUMINA"
+      case "PACBIO" | "PACIFIC BIOSCIENCES" => "PACBIO"
+      case "NANOPORE" | "OXFORD NANOPORE" => "NANOPORE"
+      case "ION_TORRENT" | "ION TORRENT" | "IONTORRENT" => "ION_TORRENT"
+      case "BGI" | "MGI" | "BGISEQ" | "MGISEQ" => "BGI"
+      case "ELEMENT" | "ELEMENT BIOSCIENCES" => "ELEMENT"
+      case "ULTIMA" | "ULTIMA GENOMICS" => "ULTIMA"
+      case _ => "Unknown"
+
+  /**
+   * Normalize library layout to match DB constraint values.
+   * Analysis returns "Paired-End"/"Single-End" but DB requires "PAIRED"/"SINGLE".
+   */
+  def normalizeLibraryLayout(layout: Option[String]): Option[String] =
+    layout.map(_.toUpperCase match
+      case "PAIRED-END" | "PAIRED" | "PE" => "PAIRED"
+      case "SINGLE-END" | "SINGLE" | "SE" => "SINGLE"
+      case other => other // Pass through unknown values
+    )
+
   def toSequenceRunEntity(
     sequenceRun: SequenceRun,
     biosampleId: UUID,
@@ -128,23 +154,29 @@ object EntityConversions:
     SequenceRunEntity(
       id = id,
       biosampleId = biosampleId,
-      platform = sequenceRun.platformName,
+      platform = normalizePlatform(sequenceRun.platformName),
       instrumentModel = sequenceRun.instrumentModel,
       instrumentId = sequenceRun.instrumentId,
       testType = sequenceRun.testType,
       libraryId = sequenceRun.libraryId,
       platformUnit = sequenceRun.platformUnit,
-      libraryLayout = sequenceRun.libraryLayout,
+      libraryLayout = normalizeLibraryLayout(sequenceRun.libraryLayout),
       sampleName = sequenceRun.sampleName,
       sequencingFacility = sequenceRun.sequencingFacility,
       runFingerprint = sequenceRun.runFingerprint,
       totalReads = sequenceRun.totalReads,
       pfReads = sequenceRun.pfReads,
       pfReadsAligned = sequenceRun.pfReadsAligned,
+      pctPfReadsAligned = sequenceRun.pctPfReadsAligned,
+      readsPaired = sequenceRun.readsPaired,
+      pctReadsPaired = sequenceRun.pctReadsPaired,
+      pctProperPairs = sequenceRun.pctProperPairs,
       readLength = sequenceRun.readLength,
+      maxReadLength = sequenceRun.maxReadLength,
       meanInsertSize = sequenceRun.meanInsertSize,
       medianInsertSize = sequenceRun.medianInsertSize,
       stdInsertSize = sequenceRun.stdInsertSize,
+      pairOrientation = sequenceRun.pairOrientation,
       flowcellId = sequenceRun.flowcellId,
       runDate = sequenceRun.runDate,
       files = sequenceRun.files,
@@ -169,10 +201,16 @@ object EntityConversions:
       totalReads = entity.totalReads,
       pfReads = entity.pfReads,
       pfReadsAligned = entity.pfReadsAligned,
+      pctPfReadsAligned = entity.pctPfReadsAligned,
+      readsPaired = entity.readsPaired,
+      pctReadsPaired = entity.pctReadsPaired,
+      pctProperPairs = entity.pctProperPairs,
       readLength = entity.readLength,
+      maxReadLength = entity.maxReadLength,
       meanInsertSize = entity.meanInsertSize,
       medianInsertSize = entity.medianInsertSize,
       stdInsertSize = entity.stdInsertSize,
+      pairOrientation = entity.pairOrientation,
       flowcellId = entity.flowcellId,
       runDate = entity.runDate,
       files = entity.files,
