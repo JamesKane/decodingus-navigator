@@ -1,5 +1,6 @@
-package com.decodingus.analysis
+package com.decodingus.haplogroup.processor
 
+import com.decodingus.analysis.{ArtifactContext, CallableLociQueryService, MtDnaFastaProcessor, SubjectArtifactCache, VcfQueryService}
 import com.decodingus.config.FeatureToggles
 import com.decodingus.haplogroup.caller.{GatkHaplotypeCallerProcessor, TwoPassCallerResult}
 import com.decodingus.haplogroup.model.{Haplogroup, HaplogroupResult, Locus}

@@ -1,6 +1,7 @@
-package com.decodingus.analysis
+package com.decodingus.haplogroup.processor
 
 import io.circe.Codec
+import com.decodingus.analysis.{CallableLociQueryService, CallableState, VcfQueryService}
 
 /**
  * Source of a SNP call for haplogroup analysis.

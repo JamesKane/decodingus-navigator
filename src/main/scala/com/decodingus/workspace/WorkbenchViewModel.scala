@@ -1,6 +1,7 @@
 package com.decodingus.workspace
 
-import com.decodingus.analysis.{ArtifactContext, CachedVcfInfo, CallableLociProcessor, CallableLociResult, HaplogroupProcessor, LibraryStatsProcessor, MultipleMetricsResult, UnifiedMetricsProcessor, VcfVendor, VendorFastaInfo, VendorVcfInfo, WgsMetricsProcessor, VcfCache, VcfStatus, SubjectArtifactCache}
+import com.decodingus.analysis.{ArtifactContext, CachedVcfInfo, CallableLociProcessor, CallableLociResult, LibraryStatsProcessor, MultipleMetricsResult, UnifiedMetricsProcessor, VcfVendor, VendorFastaInfo, VendorVcfInfo, WgsMetricsProcessor, VcfCache, VcfStatus, SubjectArtifactCache}
+import com.decodingus.haplogroup.processor.HaplogroupProcessor
 import com.decodingus.client.DecodingUsClient
 import com.decodingus.db.Transactor
 import com.decodingus.haplogroup.tree.{TreeType, TreeProviderType}

@@ -1,6 +1,6 @@
 package com.decodingus.haplogroup.report
 
-import com.decodingus.analysis.{PrivateVariant, SnpCallInfo}
+import com.decodingus.haplogroup.processor.{PrivateVariant, SnpCallInfo}
 import com.decodingus.haplogroup.model.{EnrichedVariantCall, Haplogroup, HaplogroupResult, Locus, NamedVariant}
 import com.decodingus.haplogroup.tree.{TreeProviderType, TreeType}
 import com.decodingus.haplogroup.vendor.NamedVariantCache
