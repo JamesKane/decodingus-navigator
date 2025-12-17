@@ -631,9 +631,127 @@ class SubjectDetailView(viewModel: WorkbenchViewModel) extends VBox {
             }
             badges.toSeq
           }
+        },
+        // Action menu button
+        new MenuButton("⋮") {
+          style = "-fx-background-color: transparent; -fx-text-fill: #888888; -fx-font-size: 16px;"
+          items = createSequenceRunMenuItems(seqRun, index)
         }
       )
     }
+  }
+
+  /** Creates context menu items for sequence run actions */
+  private def createSequenceRunMenuItems(seqRun: SequenceRun, index: Int): Seq[MenuItem] = {
+    import com.decodingus.ui.components.{MergeSequenceRunsDialog, MergeDecision}
+
+    val items = scala.collection.mutable.ArrayBuffer[MenuItem]()
+
+    // Details
+    items += new MenuItem("Details") {
+      onAction = _ => showSequenceRunDetailsDialog(seqRun)
+    }
+
+    items += new SeparatorMenuItem()
+
+    // Merge with another run
+    items += new MenuItem("Merge with another run...") {
+      onAction = _ => {
+        currentSubject.value.foreach { subject =>
+          val allRuns = viewModel.workspace.value.main.getSequenceRunsForBiosample(subject)
+          if (allRuns.size < 2) {
+            showInfoDialog("Cannot Merge", "Not enough runs", "You need at least two sequence runs to merge.")
+          } else {
+            // Find another run to merge with (pick the first one that isn't this one)
+            val otherRuns = allRuns.zipWithIndex.filterNot(_._2 == index)
+            if (otherRuns.isEmpty) {
+              showInfoDialog("Cannot Merge", "Not enough runs", "No other sequence runs available to merge with.")
+            } else {
+              // For simplicity, show merge dialog with first other run
+              // Could enhance to let user pick which run to merge with
+              val (otherRun, otherIndex) = otherRuns.head
+              val mergeDialog = new MergeSequenceRunsDialog(seqRun, index, otherRun, otherIndex)
+              // Set owner window from this view if available
+              Option(SubjectDetailView.this.getScene).flatMap(s => Option(s.getWindow)).foreach { window =>
+                mergeDialog.initOwner(window)
+              }
+
+              mergeDialog.showAndWait() match {
+                case Some(Some(decision: MergeDecision)) =>
+                  viewModel.mergeSequenceRuns(
+                    subject.sampleAccession,
+                    decision.primaryIndex,
+                    decision.secondaryIndex
+                  ) match {
+                    case Right(movedCount) =>
+                      updateDataSources(subject)
+                      showInfoDialog(
+                        "Merge Complete",
+                        "Sequence runs merged",
+                        s"Moved $movedCount alignment${if (movedCount != 1) "s" else ""} to the primary run."
+                      )
+                    case Left(error) =>
+                      showInfoDialog(t("error.title"), "Merge Failed", error)
+                  }
+                case _ =>
+                  log.debug("Merge dialog cancelled")
+              }
+            }
+          }
+        }
+      }
+    }
+
+    items += new SeparatorMenuItem()
+
+    // Remove
+    items += new MenuItem("Remove") {
+      onAction = _ => {
+        val details = s"${seqRun.platformName} - ${SequenceRun.testTypeDisplayName(seqRun.testType)}"
+        if (ConfirmDialog.confirmRemoval("Sequence Run", details)) {
+          currentSubject.value.foreach { subject =>
+            viewModel.removeSequenceData(subject.accession, index)
+            updateDataSources(subject)
+          }
+        }
+      }
+    }
+
+    items.toSeq
+  }
+
+  /** Shows sequence run details dialog */
+  private def showSequenceRunDetailsDialog(seqRun: SequenceRun): Unit = {
+    val alignmentCount = seqRun.alignmentRefs.size
+    val fileCount = seqRun.files.size
+
+    val detailsText =
+      s"""Platform: ${seqRun.platformName}
+         |Instrument: ${seqRun.instrumentModel.getOrElse("Unknown")}
+         |Test Type: ${SequenceRun.testTypeDisplayName(seqRun.testType)}
+         |Library Layout: ${seqRun.libraryLayout.getOrElse("Unknown")}
+         |
+         |Total Reads: ${seqRun.totalReads.map(r => Formatters.formatNumber(r)).getOrElse("N/A")}
+         |PF Reads Aligned: ${seqRun.pctPfReadsAligned.map(p => f"${p * 100}%.1f%%").getOrElse("N/A")}
+         |Read Length: ${seqRun.readLength.map(_.toString).getOrElse("N/A")}
+         |Mean Insert Size: ${seqRun.meanInsertSize.map(s => f"$s%.0f").getOrElse("N/A")}
+         |
+         |Sample Name: ${seqRun.sampleName.getOrElse("N/A")}
+         |Library ID: ${seqRun.libraryId.getOrElse("N/A")}
+         |Platform Unit: ${seqRun.platformUnit.getOrElse("N/A")}
+         |Fingerprint: ${seqRun.runFingerprint.map(_.take(16) + "...").getOrElse("Not computed")}
+         |
+         |Alignments: $alignmentCount
+         |Files: $fileCount
+       """.stripMargin
+
+    InfoDialog.showCode(
+      "Sequence Run Details",
+      s"${seqRun.platformName} - ${SequenceRun.testTypeDisplayName(seqRun.testType)}",
+      detailsText,
+      dialogWidth = 420,
+      dialogHeight = 400
+    )
   }
 
   private def createChipProfileItem(chip: ChipProfile, index: Int): HBox = {
@@ -1261,8 +1379,45 @@ Note: Reference data download may be required on first run."""
 
               dataInput.dataType match {
                 case DataType.Alignment =>
-                  val newIndex = viewModel.addSequenceRunFromFile(subject.accession, dataInput.fileInfo)
-                  log.info(s"Added sequence run at index $newIndex for ${subject.accession}")
+                  // Use addFileAndAnalyze for BAM/CRAM to get proper fingerprint matching
+                  // This detects if the file is a re-alignment of existing data to a different reference
+                  val progressDialog = new AnalysisProgressDialog(
+                    "Analyzing Alignment",
+                    viewModel.analysisProgress,
+                    viewModel.analysisProgressPercent,
+                    viewModel.analysisInProgress
+                  )
+
+                  viewModel.addFileAndAnalyze(
+                    subject.accession,
+                    dataInput.fileInfo,
+                    onProgress = (message, percent) => {
+                      scalafx.application.Platform.runLater {
+                        viewModel.analysisProgress.value = message
+                        viewModel.analysisProgressPercent.value = percent
+                      }
+                    },
+                    onComplete = {
+                      case Right((index, libraryStats)) =>
+                        scalafx.application.Platform.runLater {
+                          log.info(s"Added alignment at index $index for ${subject.accession} (ref: ${libraryStats.referenceBuild})")
+                          updateDataSources(subject)
+                          showInfoDialog(
+                            t("data.title"),
+                            t("data.added.success"),
+                            s"${dataInput.fileInfo.fileName}\n${libraryStats.inferredPlatform} - ${libraryStats.referenceBuild}"
+                          )
+                        }
+                      case Left(error) =>
+                        scalafx.application.Platform.runLater {
+                          log.error(s"Failed to add alignment: $error")
+                          showInfoDialog(t("error.title"), t("data.alignment"), error)
+                        }
+                    }
+                  )
+                  progressDialog.show()
+                  // Alignment analysis is async, return early
+                  return
 
                 case DataType.Variants =>
                   // VCF files - show metadata dialog to get test type info

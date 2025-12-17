@@ -1204,6 +1204,121 @@ class WorkbenchViewModel(
     }
   }
 
+  /**
+   * Merges two sequence runs that represent the same source sequencing data.
+   * The secondary run's alignments are moved to the primary run, then the secondary is deleted.
+   *
+   * Use case: Same HiFi/Illumina data aligned to different references (GRCh38, CHM13, etc.)
+   *
+   * @param sampleAccession  The biosample's accession ID
+   * @param primaryIndex     Index of the run to keep (alignments will be added here)
+   * @param secondaryIndex   Index of the run to merge and delete
+   * @return Either error message or success with count of moved alignments
+   */
+  def mergeSequenceRuns(
+    sampleAccession: String,
+    primaryIndex: Int,
+    secondaryIndex: Int
+  ): Either[String, Int] = {
+    findSubject(sampleAccession) match {
+      case None =>
+        Left(s"Subject $sampleAccession not found")
+
+      case Some(subject) =>
+        val sequenceRuns = _workspace.value.main.getSequenceRunsForBiosample(subject)
+
+        if (primaryIndex < 0 || primaryIndex >= sequenceRuns.size) {
+          return Left(s"Primary run index $primaryIndex out of bounds")
+        }
+        if (secondaryIndex < 0 || secondaryIndex >= sequenceRuns.size) {
+          return Left(s"Secondary run index $secondaryIndex out of bounds")
+        }
+        if (primaryIndex == secondaryIndex) {
+          return Left("Cannot merge a run with itself")
+        }
+
+        val primaryRun = sequenceRuns(primaryIndex)
+        val secondaryRun = sequenceRuns(secondaryIndex)
+
+        val primaryUri = primaryRun.atUri match {
+          case Some(uri) => uri
+          case None => return Left("Primary run has no URI")
+        }
+
+        val secondaryUri = secondaryRun.atUri match {
+          case Some(uri) => uri
+          case None => return Left("Secondary run has no URI")
+        }
+
+        log.info(s"Merging sequence runs for $sampleAccession: secondary[$secondaryIndex] -> primary[$primaryIndex]")
+
+        // Get alignments from the secondary run
+        val secondaryAlignments = _workspace.value.main.getAlignmentsForSequenceRun(secondaryRun)
+        var movedCount = 0
+
+        // Update each alignment's sequenceRunRef to point to the primary run
+        secondaryAlignments.foreach { alignment =>
+          val updatedAlignment = alignment.copy(
+            sequenceRunRef = primaryUri,
+            meta = alignment.meta.updated("merge")
+          )
+
+          // Update alignment in database
+          sequenceDataManager.updateAlignment(updatedAlignment) match {
+            case Right(_) =>
+              movedCount += 1
+              log.info(s"Moved alignment ${alignment.atUri} from $secondaryUri to $primaryUri")
+            case Left(error) =>
+              log.error(s"Failed to update alignment ${alignment.atUri}: $error")
+          }
+        }
+
+        // Update primary run's alignmentRefs to include secondary's alignments
+        val updatedAlignmentRefs = primaryRun.alignmentRefs ++ secondaryRun.alignmentRefs.filterNot(primaryRun.alignmentRefs.contains)
+
+        // Move files from secondary to primary
+        val updatedFiles = primaryRun.files ++ secondaryRun.files.filterNot { sf =>
+          primaryRun.files.exists(pf => pf.checksum == sf.checksum && sf.checksum.isDefined)
+        }
+
+        // Merge fingerprint data (keep primary's data, fill in gaps from secondary)
+        val updatedPrimaryRun = primaryRun.copy(
+          alignmentRefs = updatedAlignmentRefs,
+          files = updatedFiles,
+          sampleName = primaryRun.sampleName.orElse(secondaryRun.sampleName),
+          libraryId = primaryRun.libraryId.orElse(secondaryRun.libraryId),
+          platformUnit = primaryRun.platformUnit.orElse(secondaryRun.platformUnit),
+          runFingerprint = primaryRun.runFingerprint.orElse(secondaryRun.runFingerprint),
+          meta = primaryRun.meta.updated("merge")
+        )
+
+        // Update the primary run
+        sequenceDataManager.updateSequenceRun(updatedPrimaryRun) match {
+          case Right(_) =>
+            log.info(s"Updated primary run with ${updatedAlignmentRefs.size} alignment refs")
+          case Left(error) =>
+            log.error(s"Failed to update primary run: $error")
+            return Left(s"Failed to update primary run: $error")
+        }
+
+        // Delete the secondary run
+        sequenceDataManager.deleteSequenceRun(sampleAccession, secondaryUri) match {
+          case Right(deleted) =>
+            if (deleted) {
+              log.info(s"Deleted secondary run: $secondaryUri")
+            } else {
+              log.warn(s"Secondary run not found for deletion: $secondaryUri")
+            }
+          case Left(error) =>
+            log.error(s"Failed to delete secondary run: $error")
+            // Continue anyway - alignments have been moved
+        }
+
+        log.info(s"Merge complete: moved $movedCount alignments, merged ${secondaryRun.files.size} files")
+        Right(movedCount)
+    }
+  }
+
   // --- Analysis State ---
   // Observable properties for tracking analysis progress
   val analysisInProgress: BooleanProperty = BooleanProperty(false)
