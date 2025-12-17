@@ -12,7 +12,10 @@ case class UserPreferences(
                             ydnaTreeProvider: String = "ftdna",
 
                             /** MT-DNA tree provider: "ftdna" or "decodingus" */
-                            mtdnaTreeProvider: String = "ftdna"
+                            mtdnaTreeProvider: String = "ftdna",
+
+                            /** UI locale as language tag (e.g., "en", "de", "es") */
+                            locale: Option[String] = None
                           )
 
 object UserPreferences {
