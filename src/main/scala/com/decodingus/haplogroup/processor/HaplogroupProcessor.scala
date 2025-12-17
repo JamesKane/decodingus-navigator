@@ -12,10 +12,13 @@ import com.decodingus.liftover.LiftoverProcessor
 import com.decodingus.model.LibraryStats
 import com.decodingus.refgenome.*
 import com.decodingus.util.Logger
+import com.decodingus.yprofile.model.*
+import com.decodingus.yprofile.service.{SourceImportResult, VariantCallInput, YProfileService}
 import htsjdk.variant.vcf.VCFFileReader
 
 import java.io.{File, PrintWriter}
 import java.nio.file.{Files, Path}
+import java.util.UUID
 import scala.jdk.CollectionConverters.*
 import scala.util.Using
 
@@ -359,6 +362,9 @@ class HaplogroupProcessor {
    * @param treeType         Y-DNA or MT-DNA tree type
    * @param treeProviderType Tree data provider
    * @param onProgress       Progress callback
+   * @param yProfileService  Optional Y-DNA profile service for auto-population
+   * @param biosampleId      Optional biosample UUID for Y-DNA profile creation
+   * @param yProfileSourceType Optional source type for YProfile (WGS_SHORT_READ, WGS_LONG_READ, etc.)
    */
   def analyzeFromCachedVcf(
                             sampleAccession: String,
@@ -367,7 +373,10 @@ class HaplogroupProcessor {
                             referenceBuild: String,
                             treeType: TreeType,
                             treeProviderType: TreeProviderType,
-                            onProgress: (String, Double, Double) => Unit
+                            onProgress: (String, Double, Double) => Unit,
+                            yProfileService: Option[YProfileService] = None,
+                            biosampleId: Option[UUID] = None,
+                            yProfileSourceType: Option[YProfileSourceType] = None
                           ): Either[String, List[HaplogroupResult]] = {
 
     onProgress("Loading haplogroup tree...", 0.0, 1.0)
@@ -504,6 +513,30 @@ class HaplogroupProcessor {
                 treeBuild = Some(treeSourceBuild),
                 namedVariantCache = variantCache
               )
+
+              // Auto-populate Y-DNA profile if service and biosampleId provided
+              if (treeType == TreeType.YDNA) {
+                (yProfileService, biosampleId) match {
+                  case (Some(service), Some(bsId)) =>
+                    onProgress("Populating Y chromosome profile...", 0.95, 1.0)
+                    val callableLociDir = SubjectArtifactCache.getArtifactSubdir(
+                      sampleAccession, runId, alignmentId, "callable_loci"
+                    )
+                    val sourceType = yProfileSourceType.getOrElse(YProfileSourceType.WGS_SHORT_READ)
+                    populateYProfile(
+                      service, bsId, results, resolvedCalls, privateVariants,
+                      referenceBuild, treeProviderType, sourceType,
+                      if (Files.exists(callableLociDir)) Some(callableLociDir) else None
+                    ) match {
+                      case Right(profileId) =>
+                        log.info(s"Auto-populated Y chromosome profile: $profileId")
+                      case Left(error) =>
+                        log.warn(s"Failed to populate Y chromosome profile: $error")
+                    }
+                  case _ =>
+                    // YProfile service or biosampleId not provided - skip auto-population
+                }
+              }
 
               onProgress("Analysis complete.", 1.0, 1.0)
               Right(results)
@@ -741,6 +774,125 @@ class HaplogroupProcessor {
           onProgress("Analysis complete.", 1.0, 1.0)
           Right(results)
         }
+    }
+  }
+
+  /**
+   * Populate Y chromosome profile with analysis results.
+   *
+   * Creates or updates the Y profile for the biosample with:
+   * - A source entry for this WGS analysis
+   * - Variant calls from the resolved positions
+   * - Private/novel variants
+   * - Callable regions (if available)
+   * - Updated haplogroup assignment
+   *
+   * @return Either error message or the profile UUID
+   */
+  private def populateYProfile(
+    yProfileService: YProfileService,
+    biosampleId: UUID,
+    results: List[HaplogroupResult],
+    resolvedCalls: Map[(String, Long), EnhancedSnpCall],
+    privateVariants: List[PrivateVariant],
+    referenceBuild: String,
+    treeProviderType: TreeProviderType,
+    sourceType: YProfileSourceType,
+    callableLociDir: Option[Path]
+  ): Either[String, UUID] = {
+    // Get or create the profile
+    yProfileService.getOrCreateProfile(biosampleId).flatMap { profile =>
+      // Add a source for this WGS analysis
+      val sourceResult = yProfileService.addSource(
+        profileId = profile.id,
+        sourceType = sourceType,
+        sourceRef = None,
+        vendor = Some("Internal WGS"),
+        testName = Some(s"WGS Y-DNA Analysis (${treeProviderType.toString} tree)"),
+        testDate = Some(java.time.LocalDateTime.now()),
+        alignmentId = None,
+        referenceBuild = Some(referenceBuild),
+        meanReadDepth = None,
+        meanMappingQuality = None,
+        coveragePct = None
+      )
+
+      sourceResult.flatMap { source =>
+        // Import variant calls from resolvedCalls
+        val variantInputs = resolvedCalls.collect {
+          case ((contig, pos), call) if call.hasCall && contig == "chrY" =>
+            val (depth, quality) = call.source match {
+              case CallSource.FromVcf(d, q) => (Some(d), Some(q))
+              case _ => (None, None)
+            }
+            VariantCallInput(
+              position = pos,
+              refAllele = "N", // We don't have ref readily available
+              altAllele = call.allele,
+              calledAllele = call.allele,
+              derived = true, // Assume derived for now - reconciliation will verify
+              variantName = None,
+              variantType = Some(YVariantType.SNP),
+              readDepth = depth,
+              qualityScore = quality,
+              mappingQuality = None
+            )
+        }.toList
+
+        val importResult = if (variantInputs.nonEmpty) {
+          yProfileService.importVariantCalls(profile.id, source.id, variantInputs, referenceBuild)
+        } else {
+          Right(SourceImportResult(source.id, sourceType, 0, 0, 0))
+        }
+
+        importResult.flatMap { _ =>
+          // Import private variants as NOVEL (derived)
+          val novelInputs = privateVariants.map { pv =>
+            VariantCallInput(
+              position = pv.position,
+              refAllele = pv.ref,
+              altAllele = pv.alt,
+              calledAllele = pv.alt,
+              derived = true, // Private variants are derived by definition
+              variantName = None,
+              variantType = Some(YVariantType.SNP),
+              readDepth = pv.depth,
+              qualityScore = pv.quality,
+              mappingQuality = None
+            )
+          }
+
+          val novelResult = if (novelInputs.nonEmpty) {
+            yProfileService.importVariantCalls(profile.id, source.id, novelInputs, referenceBuild)
+          } else {
+            Right(SourceImportResult(source.id, sourceType, 0, 0, 0))
+          }
+
+          novelResult.flatMap { _ =>
+            // Import callable regions if available
+            callableLociDir.foreach { dir =>
+              val callableService = new CallableLociQueryService(dir)
+              yProfileService.importCallableRegions(profile.id, source.id, callableService, "chrY") match {
+                case Right(count) => log.info(s"Imported $count callable regions to Y profile")
+                case Left(err) => log.warn(s"Failed to import callable regions: $err")
+              }
+            }
+
+            // Update haplogroup on profile
+            results.headOption.foreach { terminal =>
+              yProfileService.updateHaplogroup(
+                profile.id,
+                terminal.name,
+                terminal.score,
+                treeProviderType.toString,
+                "unknown" // tree version not readily available
+              )
+            }
+
+            Right(profile.id)
+          }
+        }
+      }
     }
   }
 

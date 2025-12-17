@@ -19,6 +19,7 @@ import com.decodingus.workspace.services.*
 import com.decodingus.yprofile.model.*
 import com.decodingus.yprofile.repository.*
 import com.decodingus.yprofile.service.YProfileService
+import com.decodingus.yprofile.repository.YSnpPanelRepository
 import htsjdk.samtools.SamReaderFactory
 import scalafx.application.Platform
 import scalafx.beans.property.*
@@ -45,7 +46,6 @@ class WorkbenchViewModel(
 
   // --- Service Instances ---
   private val workspaceOps = new WorkspaceOperations()
-  private val analysisCoordinator = new AnalysisCoordinator()
   private val syncService = new SyncService(workspaceService)
   private val fingerprintMatchService = new FingerprintMatchService()
 
@@ -65,6 +65,9 @@ class WorkbenchViewModel(
       YSourceCallAlignmentRepository()
     )
   }
+
+  // Analysis coordinator (uses YProfileService for auto-populating Y profiles during analysis)
+  private val analysisCoordinator = new AnalysisCoordinator(yProfileService)
 
   // --- Sync State ---
   val syncStatus: ObjectProperty[SyncStatus] = ObjectProperty(SyncStatus.Synced)
@@ -2054,6 +2057,26 @@ class WorkbenchViewModel(
                         val alignId = alignment.atUri.map(SubjectArtifactCache.extractIdFromUri).getOrElse("unknown-alignment")
                         val vcfStatus = VcfCache.getStatus(sampleAccession, runId, alignId)
 
+                        // Extract biosampleId for YProfile population
+                        val biosampleId = subject.atUri.flatMap { uri =>
+                          scala.util.Try(UUID.fromString(uri.split("/").last)).toOption
+                        }
+
+                        // Infer source type from platform/test type
+                        val yProfileSourceType = {
+                          val testType = seqRun.testType.toLowerCase
+                          val platform = seqRun.platformName.toLowerCase
+                          if (testType.contains("hifi") || testType.contains("pacbio") || platform.contains("pacbio")) {
+                            YProfileSourceType.WGS_LONG_READ
+                          } else if (testType.contains("nanopore") || platform.contains("nanopore")) {
+                            YProfileSourceType.WGS_LONG_READ
+                          } else if (testType.contains("targeted") || testType.contains("panel")) {
+                            YProfileSourceType.TARGETED_NGS
+                          } else {
+                            YProfileSourceType.WGS_SHORT_READ
+                          }
+                        }
+
                         val result = if (vcfStatus.isAvailable) {
                           log.info(s" Found cached whole-genome VCF for $sampleAccession, using it for haplogroup analysis.")
                           processor.analyzeFromCachedVcf(
@@ -2068,7 +2091,10 @@ class WorkbenchViewModel(
                                 analysisProgress.value = message
                                 analysisProgressPercent.value = if (total > 0) current / total else 0.0
                               }
-                            }
+                            },
+                            yProfileService = yProfileService,
+                            biosampleId = biosampleId,
+                            yProfileSourceType = Some(yProfileSourceType)
                           )
                         } else {
                           // Check for existing haplogroup artifacts to avoid redundant analysis
@@ -2128,6 +2154,54 @@ class WorkbenchViewModel(
                           result match {
                             case Right(results) if results.nonEmpty =>
                               val topResult = results.head
+
+                              // Update biosample haplogroups via reconciliation system
+                              val technology = seqRun.testType match {
+                                case t if t.startsWith("BIGY") || t.contains("Y_ELITE") || t.contains("Y_PRIME") =>
+                                  HaplogroupTechnology.BIG_Y
+                                case _ => HaplogroupTechnology.WGS
+                              }
+
+                              val treeProviderStr = treeProviderType.toString.toLowerCase
+                              val runCall = RunHaplogroupCall(
+                                sourceRef = seqRun.atUri.getOrElse(s"local:sequencerun:unknown"),
+                                haplogroup = topResult.name,
+                                confidence = topResult.score,
+                                callMethod = CallMethod.SNP_PHYLOGENETIC,
+                                score = Some(topResult.score),
+                                supportingSnps = Some(topResult.matchingSnps),
+                                conflictingSnps = Some(topResult.mismatchingSnps),
+                                noCalls = None,
+                                technology = Some(technology),
+                                meanCoverage = None,
+                                treeProvider = Some(treeProviderStr),
+                                treeVersion = None
+                              )
+
+                              val dnaType = treeType match {
+                                case TreeType.YDNA => DnaType.Y_DNA
+                                case TreeType.MTDNA => DnaType.MT_DNA
+                              }
+
+                              // Add to reconciliation - this updates biosample haplogroups with consensus
+                              val currentState = WorkspaceState(_workspace.value)
+                              workspaceOps.addHaplogroupCall(currentState, subject.sampleAccession, dnaType, runCall) match {
+                                case Right((newState, _)) =>
+                                  // Persist updated biosample to H2
+                                  newState.workspace.main.samples.find(_.sampleAccession == subject.sampleAccession).foreach { updatedBiosample =>
+                                    h2Service.updateBiosample(updatedBiosample) match {
+                                      case Right(persistedBs) =>
+                                        log.info(s" Biosample haplogroup updated in H2: ${persistedBs.sampleAccession}")
+                                      case Left(err) =>
+                                        log.error(s"Failed to update Biosample haplogroup in H2: $err")
+                                    }
+                                  }
+                                  _workspace.value = newState.workspace
+                                case Left(hapError) =>
+                                  log.error(s"Error adding haplogroup call: $hapError")
+                              }
+
+                              lastHaplogroupResult.value = Some(topResult)
                               onComplete(Right(topResult))
                             case Right(_) =>
                               onComplete(Left("No haplogroup results"))
@@ -3081,6 +3155,66 @@ class WorkbenchViewModel(
             // Create basic annotator based on reference build (with hardcoded heterochromatin)
             annotator = createBasicYRegionAnnotator(referenceBuild)
           } yield YProfileLoadedData(profile, variants, sources, variantCalls, auditEntries, Some(annotator))
+        }.onComplete {
+          case Success(result) =>
+            Platform.runLater {
+              onComplete(result)
+            }
+          case Failure(ex) =>
+            Platform.runLater {
+              onComplete(Left(ex.getMessage))
+            }
+        }
+    }
+  }
+
+  /**
+   * Data loaded for Y Profile management dialog.
+   */
+  case class YProfileManagementData(
+                                     yProfileService: YProfileService,
+                                     profile: Option[YChromosomeProfileEntity],
+                                     sources: List[YProfileSourceEntity],
+                                     variants: List[YProfileVariantEntity],
+                                     snpPanels: List[YSnpPanelEntity]
+                                   )
+
+  /**
+   * Load Y Profile data for the management dialog.
+   * Unlike loadYProfileForBiosample, this works even when no profile exists yet.
+   */
+  def loadYProfileManagementData(
+                                  biosampleId: UUID,
+                                  onComplete: Either[String, YProfileManagementData] => Unit
+                                ): Unit = {
+    yProfileService match {
+      case None =>
+        onComplete(Left("Y Profile service not available"))
+
+      case Some(service) =>
+        Future {
+          val snpPanelRepo = new YSnpPanelRepository()
+          val transactor = databaseContext.transactor
+
+          // Load profile (may not exist)
+          val profileOpt = service.getProfileByBiosample(biosampleId).toOption.flatten
+
+          // Load sources and variants (if profile exists)
+          val (sources, variants) = profileOpt match {
+            case Some(profile) =>
+              val s = service.getSources(profile.id).toOption.getOrElse(Nil)
+              val v = service.getVariants(profile.id).toOption.getOrElse(Nil)
+              (s, v)
+            case None =>
+              (Nil, Nil)
+          }
+
+          // Load SNP panels for this biosample
+          val snpPanels = transactor.readOnly {
+            snpPanelRepo.findByBiosample(biosampleId)
+          }.toOption.getOrElse(Nil)
+
+          Right(YProfileManagementData(service, profileOpt, sources, variants, snpPanels))
         }.onComplete {
           case Success(result) =>
             Platform.runLater {

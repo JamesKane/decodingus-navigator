@@ -211,61 +211,99 @@ class WorkbenchView(val viewModel: WorkbenchViewModel) extends SplitPane {
 
     // Try to get biosample UUID from atUri
     val biosampleId = viewModel.getBiosampleIdByAccession(subject.sampleAccession)
-    biosampleId.flatMap { bsId =>
-      viewModel.getYProfileSummary(bsId).map { summary =>
-        new VBox(8) {
-          padding = Insets(10, 0, 10, 0)
-          style = "-fx-background-color: #f5f5f5; -fx-background-radius: 6; -fx-padding: 10;"
+    biosampleId.map { bsId =>
+      val profileSummary = viewModel.getYProfileSummary(bsId)
 
-          val headerBox = new HBox(10) {
-            alignment = Pos.CenterLeft
-            children = Seq(
-              new Label("Y Chromosome Profile") {
-                style = "-fx-font-size: 14px; -fx-font-weight: bold;"
-              },
-              new Region {
-                HBox.setHgrow(this, Priority.Always)
-              },
-              new Button("View Details") {
-                style = "-fx-font-size: 11px;"
-                onAction = _ => handleViewYProfile(subject, bsId)
-              }
-            )
-          }
+      profileSummary match {
+        case Some(summary) =>
+          // Profile exists - show summary with View and Manage buttons
+          new VBox(8) {
+            padding = Insets(10, 0, 10, 0)
+            style = "-fx-background-color: #f5f5f5; -fx-background-radius: 6; -fx-padding: 10;"
 
-          // Haplogroup display
-          val haplogroupLabel = summary.consensusHaplogroup match {
-            case Some(hg) =>
-              val confidenceText = summary.haplogroupConfidence.map(c => f" (${c * 100}%.0f%%)").getOrElse("")
-              new Label(s"$hg$confidenceText") {
-                style = "-fx-font-size: 16px; -fx-font-weight: bold; -fx-text-fill: #2d5a2d;"
-              }
-            case None =>
-              new Label("Haplogroup pending") {
-                style = "-fx-font-size: 14px; -fx-text-fill: #666;"
-              }
-          }
-
-          // Status badges
-          val badgeBox = new HBox(8) {
-            alignment = Pos.CenterLeft
-            children = Seq(
-              if (summary.confirmedCount > 0) Some(createBadge(s"${summary.confirmedCount} Confirmed", "#4CAF50")) else None,
-              if (summary.novelCount > 0) Some(createBadge(s"${summary.novelCount} Novel", "#2196F3")) else None,
-              if (summary.conflictCount > 0) Some(createBadge(s"${summary.conflictCount} Conflict", "#F44336")) else None,
-              Some(createBadge(s"${summary.sourceCount} Source${if (summary.sourceCount != 1) "s" else ""}", "#9E9E9E"))
-            ).flatten
-          }
-
-          // Callable region (if available)
-          val callableLabel = summary.callableRegionPct.map { pct =>
-            new Label(f"Callable: ${pct * 100}%.1f%%") {
-              style = "-fx-font-size: 11px; -fx-text-fill: #666;"
+            val headerBox = new HBox(10) {
+              alignment = Pos.CenterLeft
+              children = Seq(
+                new Label("Y Chromosome Profile") {
+                  style = "-fx-font-size: 14px; -fx-font-weight: bold;"
+                },
+                new Region {
+                  HBox.setHgrow(this, Priority.Always)
+                },
+                new Button("View Details") {
+                  style = "-fx-font-size: 11px;"
+                  onAction = _ => handleViewYProfile(subject, bsId)
+                },
+                new Button("Manage") {
+                  style = "-fx-font-size: 11px;"
+                  onAction = _ => handleManageYProfile(subject, bsId)
+                }
+              )
             }
+
+            // Haplogroup display
+            val haplogroupLabel = summary.consensusHaplogroup match {
+              case Some(hg) =>
+                val confidenceText = summary.haplogroupConfidence.map(c => f" (${c * 100}%.0f%%)").getOrElse("")
+                new Label(s"$hg$confidenceText") {
+                  style = "-fx-font-size: 16px; -fx-font-weight: bold; -fx-text-fill: #2d5a2d;"
+                }
+              case None =>
+                new Label("Haplogroup pending") {
+                  style = "-fx-font-size: 14px; -fx-text-fill: #666;"
+                }
+            }
+
+            // Status badges
+            val badgeBox = new HBox(8) {
+              alignment = Pos.CenterLeft
+              children = Seq(
+                if (summary.confirmedCount > 0) Some(createBadge(s"${summary.confirmedCount} Confirmed", "#4CAF50")) else None,
+                if (summary.novelCount > 0) Some(createBadge(s"${summary.novelCount} Novel", "#2196F3")) else None,
+                if (summary.conflictCount > 0) Some(createBadge(s"${summary.conflictCount} Conflict", "#F44336")) else None,
+                Some(createBadge(s"${summary.sourceCount} Source${if (summary.sourceCount != 1) "s" else ""}", "#9E9E9E"))
+              ).flatten
+            }
+
+            // Callable region (if available)
+            val callableLabel = summary.callableRegionPct.map { pct =>
+              new Label(f"Callable: ${pct * 100}%.1f%%") {
+                style = "-fx-font-size: 11px; -fx-text-fill: #666;"
+              }
+            }
+
+            children = Seq(headerBox, haplogroupLabel, badgeBox) ++ callableLabel.toSeq
           }
 
-          children = Seq(headerBox, haplogroupLabel, badgeBox) ++ callableLabel.toSeq
-        }
+        case None =>
+          // No profile exists - show create button
+          new VBox(8) {
+            padding = Insets(10, 0, 10, 0)
+            style = "-fx-background-color: #f0f0f0; -fx-background-radius: 6; -fx-padding: 10;"
+
+            val headerBox = new HBox(10) {
+              alignment = Pos.CenterLeft
+              children = Seq(
+                new Label("Y Chromosome Profile") {
+                  style = "-fx-font-size: 14px; -fx-font-weight: bold;"
+                },
+                new Region {
+                  HBox.setHgrow(this, Priority.Always)
+                },
+                new Button("Create Profile") {
+                  style = "-fx-font-size: 11px;"
+                  onAction = _ => handleManageYProfile(subject, bsId)
+                }
+              )
+            }
+
+            val descLabel = new Label("No Y-DNA profile exists. Create one to combine data from multiple Y-DNA tests.") {
+              style = "-fx-font-size: 12px; -fx-text-fill: #666;"
+              wrapText = true
+            }
+
+            children = Seq(headerBox, descLabel)
+          }
       }
     }
   }
@@ -315,6 +353,38 @@ class WorkbenchView(val viewModel: WorkbenchViewModel) extends SplitPane {
     })
 
     loadingAlert.show()
+  }
+
+  /** Handles opening the Y Profile management dialog */
+  private def handleManageYProfile(subject: Biosample, biosampleId: UUID): Unit = {
+    // Load data for the management dialog
+    viewModel.loadYProfileManagementData(biosampleId, {
+      case Right(data) =>
+        Platform.runLater {
+          val dialog = new YProfileManagementDialog(
+            biosampleId = biosampleId,
+            biosampleName = subject.donorIdentifier,
+            yProfileService = data.yProfileService,
+            existingProfile = data.profile,
+            sources = data.sources,
+            variants = data.variants,
+            snpPanels = data.snpPanels,
+            onRefresh = () => {
+              // Refresh the subject detail view after profile changes
+              renderSubjectDetail(subject)
+            }
+          )
+          dialog.showAndWait()
+        }
+      case Left(error) =>
+        Platform.runLater {
+          new Alert(AlertType.Error) {
+            title = "Error"
+            headerText = "Could not load Y Profile data"
+            contentText = error
+          }.showAndWait()
+        }
+    })
   }
 
   /** Handles triggering analysis for a sequence run */

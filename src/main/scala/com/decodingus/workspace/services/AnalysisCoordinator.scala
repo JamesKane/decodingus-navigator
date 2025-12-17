@@ -12,9 +12,12 @@ import com.decodingus.refgenome.config.ReferenceConfigService
 import com.decodingus.util.Logger
 import com.decodingus.workspace.WorkspaceState
 import com.decodingus.workspace.model.*
+import com.decodingus.yprofile.model.YProfileSourceType
+import com.decodingus.yprofile.service.YProfileService
 import htsjdk.samtools.SamReaderFactory
 
 import java.io.File
+import java.util.UUID
 import scala.concurrent.{ExecutionContext, Future}
 
 /**
@@ -32,11 +35,51 @@ case class AnalysisProgress(
  *
  * This service runs analyses and returns results along with workspace state updates.
  * The caller is responsible for persisting changes and updating UI state.
+ *
+ * @param yProfileService Optional Y-DNA profile service for auto-populating profiles during analysis
  */
-class AnalysisCoordinator(implicit ec: ExecutionContext) {
+class AnalysisCoordinator(
+  yProfileService: Option[YProfileService] = None
+)(implicit ec: ExecutionContext) {
 
   private val log = Logger[AnalysisCoordinator]
   private val workspaceOps = new WorkspaceOperations()
+
+  /**
+   * Map sequencing platform/test type to YProfileSourceType.
+   */
+  private def inferSourceType(seqRun: SequenceRun): YProfileSourceType = {
+    val testType = seqRun.testType.toLowerCase
+    val platform = seqRun.platformName.toLowerCase
+
+    if (testType.contains("hifi") || testType.contains("pacbio") || platform.contains("pacbio")) {
+      YProfileSourceType.WGS_LONG_READ
+    } else if (testType.contains("nanopore") || platform.contains("nanopore")) {
+      YProfileSourceType.WGS_LONG_READ
+    } else if (testType.contains("illumina") || platform.contains("illumina") ||
+      testType.contains("wgs") || testType.contains("whole genome")) {
+      YProfileSourceType.WGS_SHORT_READ
+    } else if (testType.contains("targeted") || testType.contains("panel")) {
+      YProfileSourceType.TARGETED_NGS
+    } else {
+      // Default to short-read WGS
+      YProfileSourceType.WGS_SHORT_READ
+    }
+  }
+
+  /**
+   * Extract biosample UUID from atUri.
+   */
+  private def extractBiosampleId(subject: Biosample): Option[UUID] = {
+    subject.atUri.flatMap { uri =>
+      // Parse "local://biosample/{uuid}" or "at://did/biosample/{uuid}"
+      val pattern = ".*/biosample/([a-f0-9-]+)/?$".r
+      uri match {
+        case pattern(id) => scala.util.Try(UUID.fromString(id)).toOption
+        case _ => None
+      }
+    }
+  }
 
   // --- Initial Analysis (Library Stats) ---
 
@@ -567,7 +610,10 @@ class AnalysisCoordinator(implicit ec: ExecutionContext) {
             onProgress = (message, current, total) => {
               val pct = if (total > 0) 0.2 + (current / total) * 0.7 else 0.2
               onProgress(AnalysisProgress(message, pct))
-            }
+            },
+            yProfileService = yProfileService,
+            biosampleId = extractBiosampleId(subject),
+            yProfileSourceType = Some(inferSourceType(seqRun))
           )
         } else if (java.nio.file.Files.exists(contigVcfPath)) {
           // Use contig-specific VCF from previous haplogroup analysis
@@ -583,7 +629,10 @@ class AnalysisCoordinator(implicit ec: ExecutionContext) {
             onProgress = (message, current, total) => {
               val pct = if (total > 0) 0.2 + (current / total) * 0.7 else 0.2
               onProgress(AnalysisProgress(message, pct))
-            }
+            },
+            yProfileService = yProfileService,
+            biosampleId = extractBiosampleId(subject),
+            yProfileSourceType = Some(inferSourceType(seqRun))
           )
         } else {
           // No cached VCF - fall back to BAM-based variant calling
@@ -1509,7 +1558,10 @@ class AnalysisCoordinator(implicit ec: ExecutionContext) {
         onProgress = (_, current, total) => {
           val pct = if (total > 0) current / total else 0.0
           onProgress(pct)
-        }
+        },
+        yProfileService = yProfileService,
+        biosampleId = extractBiosampleId(subject),
+        yProfileSourceType = Some(inferSourceType(seqRun))
       ).map(_.headOption.getOrElse(defaultHaplogroupResult))
     } else {
       // Fall back to BAM-based calling (slower, but works without Step 5)
