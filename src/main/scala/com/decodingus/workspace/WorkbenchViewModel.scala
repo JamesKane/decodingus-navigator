@@ -1457,6 +1457,8 @@ class WorkbenchViewModel(
                         platformName = if (seqRun.platformName == "Unknown" || seqRun.platformName == "Other") libraryStats.inferredPlatform else seqRun.platformName,
                         instrumentModel = seqRun.instrumentModel.orElse(Some(libraryStats.mostFrequentInstrument)),
                         testType = inferTestType(libraryStats),
+                        libraryId = if (libraryStats.libraryId != "Unknown") Some(libraryStats.libraryId) else seqRun.libraryId,
+                        platformUnit = libraryStats.platformUnit.orElse(seqRun.platformUnit),
                         libraryLayout = Some(if (libraryStats.pairedReads > libraryStats.readCount / 2) "Paired-End" else "Single-End"),
                         totalReads = Some(libraryStats.readCount.toLong),
                         readLength = calculateMeanReadLength(libraryStats.lengthDistribution).orElse(seqRun.readLength),
@@ -1616,7 +1618,8 @@ class WorkbenchViewModel(
                         // Update alignment metrics
                         updateProgress("Saving results...", 0.95)
                         Platform.runLater {
-                          val updatedMetrics = AlignmentMetrics(
+                          val existingMetrics = alignment.metrics.getOrElse(AlignmentMetrics())
+                          val updatedMetrics = existingMetrics.copy(
                             genomeTerritory = Some(wgsMetrics.genomeTerritory),
                             meanCoverage = Some(wgsMetrics.meanCoverage),
                             medianCoverage = Some(wgsMetrics.medianCoverage),
@@ -1626,8 +1629,7 @@ class WorkbenchViewModel(
                             pct10x = Some(wgsMetrics.pct10x),
                             pct20x = Some(wgsMetrics.pct20x),
                             pct30x = Some(wgsMetrics.pct30x),
-                            hetSnpSensitivity = Some(wgsMetrics.hetSnpSensitivity),
-                            contigs = List.empty
+                            hetSnpSensitivity = Some(wgsMetrics.hetSnpSensitivity)
                           )
                           val updatedAlignment = alignment.copy(
                             meta = alignment.meta.updated("wgsMetrics"),
