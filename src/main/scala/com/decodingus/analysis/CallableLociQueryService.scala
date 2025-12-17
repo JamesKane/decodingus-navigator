@@ -1,5 +1,6 @@
 package com.decodingus.analysis
 
+import com.decodingus.util.Logger
 import java.io.{BufferedReader, File, FileReader}
 import java.nio.file.{Files, Path}
 import scala.collection.mutable
@@ -28,11 +29,17 @@ enum CallableState:
  * {contig}\t{start}\t{end}\t{state}
  *
  * Where state is one of: CALLABLE, NO_COVERAGE, LOW_COVERAGE, EXCESSIVE_COVERAGE, POOR_MAPPING_QUALITY, REF_N
+ *
+ * Performance: The service loads contig data lazily and caches it in memory.
+ * For batch operations, use preloadContigs() to load all needed contigs upfront.
  */
 class CallableLociQueryService(callableLociDir: Path) {
 
+  private val log = Logger[CallableLociQueryService]
+
   // Cache of loaded BED intervals per contig
-  private val contigIntervals: mutable.Map[String, List[CallableInterval]] = mutable.Map.empty
+  // Uses Array for O(1) random access in binary search (List would be O(n) per access!)
+  private val contigIntervals: mutable.Map[String, Array[CallableInterval]] = mutable.Map.empty
 
   case class CallableInterval(start: Long, end: Long, state: CallableState)
 
@@ -58,15 +65,18 @@ class CallableLociQueryService(callableLociDir: Path) {
 
   /**
    * Performs a binary search to find the CallableInterval that contains the given position.
-   * Assumes the list of intervals is sorted by start position.
+   * Assumes the array of intervals is sorted by start position.
+   * Uses Array for O(1) random access - using List would make each access O(n)!
    */
-  private def findInterval(intervals: List[CallableInterval], position: Long): Option[CallableInterval] = {
+  private def findInterval(intervals: Array[CallableInterval], position: Long): Option[CallableInterval] = {
+    if (intervals.isEmpty) return None
+
     var low = 0
-    var high = intervals.size - 1
+    var high = intervals.length - 1
 
     while (low <= high) {
       val mid = low + (high - low) / 2
-      val interval = intervals(mid)
+      val interval = intervals(mid)  // O(1) with Array
 
       if (position >= interval.start && position <= interval.end) {
         return Some(interval)
@@ -80,21 +90,56 @@ class CallableLociQueryService(callableLociDir: Path) {
   }
 
   /**
+   * Pre-load callable loci data for specified contigs.
+   * Call this before batch queries for better performance.
+   *
+   * @param contigs List of contig names to preload
+   */
+  def preloadContigs(contigs: List[String]): Unit = {
+    val startTime = System.currentTimeMillis()
+    var totalIntervals = 0
+    contigs.foreach { contig =>
+      if (!contigIntervals.contains(contig)) {
+        loadContigBed(contig)
+        totalIntervals += contigIntervals.getOrElse(contig, Array.empty).length
+      }
+    }
+    val elapsed = System.currentTimeMillis() - startTime
+    if (contigs.nonEmpty) {
+      log.info(s"Preloaded ${contigs.size} contigs with $totalIntervals intervals in ${elapsed}ms")
+    }
+  }
+
+  /**
    * Query multiple positions at once.
+   * For best performance, call preloadContigs() first with the relevant contigs.
    *
    * @param positions List of (contig, position) tuples
    * @return Map of position to callable state
    */
   def queryPositions(positions: List[(String, Long)]): Map[(String, Long), CallableState] = {
+    val startTime = System.currentTimeMillis()
+
     // Group by contig to minimize BED file loading
     val byContig = positions.groupBy(_._1)
 
-    byContig.flatMap { case (contig, contigPositions) =>
-      ensureContigLoaded(contig)
+    // Ensure all contigs are loaded first (batch loading is more efficient)
+    byContig.keys.foreach(ensureContigLoaded)
+
+    val results = byContig.flatMap { case (contig, contigPositions) =>
+      val intervals = contigIntervals.getOrElse(contig, List.empty)
       contigPositions.map { case (c, pos) =>
-        (c, pos) -> queryPosition(c, pos)
+        val state = findInterval(intervals, pos).map(_.state).getOrElse(CallableState.Unknown)
+        (c, pos) -> state
       }
     }
+
+    val elapsed = System.currentTimeMillis() - startTime
+    if (positions.size > 100) {
+      log.info(s"Batch queried ${positions.size} callable loci positions in ${elapsed}ms")
+    }
+
+    results
   }
 
   /**
@@ -182,6 +227,7 @@ class CallableLociQueryService(callableLociDir: Path) {
       return
     }
 
+    val startTime = System.currentTimeMillis()
     val intervals = mutable.ListBuffer[CallableInterval]()
 
     Using(new BufferedReader(new FileReader(bedFile.toFile))) { reader =>
@@ -203,7 +249,10 @@ class CallableLociQueryService(callableLociDir: Path) {
       }
     }
 
-    contigIntervals(contig) = intervals.toList.sortBy(_.start)
+    val sortedIntervals = intervals.toList.sortBy(_.start)
+    contigIntervals(contig) = sortedIntervals
+    val elapsed = System.currentTimeMillis() - startTime
+    log.info(s"Loaded callable loci for $contig: ${sortedIntervals.size} intervals in ${elapsed}ms")
   }
 
   /**

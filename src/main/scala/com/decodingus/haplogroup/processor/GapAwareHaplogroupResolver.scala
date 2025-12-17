@@ -51,12 +51,40 @@ case class EnhancedSnpCall(
  *
  * This allows haplogroup analysis to work even when the VCF has gaps
  * (positions where no variant was called because the sample matches reference).
+ *
+ * Performance: The resolver pre-loads VCF and callable loci data for the target
+ * contigs into memory for fast O(1) lookups during position resolution.
  */
 class GapAwareHaplogroupResolver(
   vcfService: VcfQueryService,
   callableLociService: Option[CallableLociQueryService],
   referenceBuild: String
 ) {
+
+  /**
+   * Pre-load data for specified contigs to optimize subsequent queries.
+   * Call this before resolvePositions() for best performance.
+   *
+   * @param contigs List of contig names to preload (e.g., List("chrY") for Y-DNA)
+   */
+  def preloadContigs(contigs: List[String]): Unit = {
+    // Pre-load callable loci data
+    callableLociService.foreach(_.preloadContigs(contigs))
+  }
+
+  /**
+   * Get the underlying VcfQueryService for additional queries.
+   * Useful for extracting private variants after position resolution.
+   */
+  def getVcfService: VcfQueryService = vcfService
+
+  /**
+   * Close the underlying VCF reader and free resources.
+   * Call this when done with the resolver.
+   */
+  def close(): Unit = {
+    vcfService.close()
+  }
 
   /**
    * Resolve SNP calls at specified haplogroup tree positions.

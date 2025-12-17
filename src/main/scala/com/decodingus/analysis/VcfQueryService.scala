@@ -1,10 +1,12 @@
 package com.decodingus.analysis
 
+import com.decodingus.util.Logger
 import htsjdk.variant.vcf.VCFFileReader
 import htsjdk.variant.variantcontext.VariantContext
 
 import java.io.File
 import java.nio.file.Path
+import scala.collection.mutable
 import scala.jdk.CollectionConverters._
 import scala.util.{Either, Left, Right, Try, Using}
 
@@ -37,12 +39,48 @@ case class VariantCall(
  * Uses tabix index for efficient random access.
  *
  * Build-aware: validates that query build matches VCF metadata.
+ *
+ * Performance optimization: When querying many positions on the same contig,
+ * the service loads all variants for that contig into memory and performs
+ * lookups from the in-memory map. This reduces tabix queries from O(n) to O(1).
  */
 class VcfQueryService(vcfInfo: CachedVcfInfo) {
+
+  private val log = Logger[VcfQueryService]
 
   private lazy val reader: VCFFileReader = {
     val vcfFile = new File(vcfInfo.vcfPath)
     new VCFFileReader(vcfFile, true)  // true = require index
+  }
+
+  // In-memory cache of variants by contig -> position -> VariantCall
+  // This dramatically speeds up batch queries on the same contig
+  private val contigCache: mutable.Map[String, Map[Long, VariantCall]] = mutable.Map.empty
+
+  /**
+   * Load all variants for a contig into memory for fast lookup.
+   * This is more efficient than individual tabix queries when querying many positions.
+   */
+  private def ensureContigLoaded(contig: String): Map[Long, VariantCall] = {
+    contigCache.getOrElseUpdate(contig, {
+      val startTime = System.currentTimeMillis()
+      val variants = Try {
+        reader.query(contig, 1, Int.MaxValue).asScala.map { vc =>
+          val call = variantContextToCall(vc)
+          call.position -> call
+        }.toMap
+      }.getOrElse(Map.empty)
+      val elapsed = System.currentTimeMillis() - startTime
+      log.info(s"Loaded ${variants.size} variants for $contig in ${elapsed}ms")
+      variants
+    })
+  }
+
+  /**
+   * Clear the contig cache to free memory.
+   */
+  def clearCache(): Unit = {
+    contigCache.clear()
   }
 
   /**
@@ -73,6 +111,10 @@ class VcfQueryService(vcfInfo: CachedVcfInfo) {
   /**
    * Query multiple positions in the VCF (batch query).
    *
+   * Performance optimized: Groups positions by contig and loads each contig's
+   * variants into memory once, then performs O(1) lookups. This is much faster
+   * than individual tabix queries when querying many positions.
+   *
    * @param build Expected reference build
    * @param positions List of (contig, position) tuples
    * @return Either build mismatch error or map of position to optional variant call
@@ -82,17 +124,25 @@ class VcfQueryService(vcfInfo: CachedVcfInfo) {
     positions: List[(String, Long)]
   ): Either[BuildMismatch, Map[(String, Long), Option[VariantCall]]] = {
     validateBuild(build).map { _ =>
-      positions.map { case (contig, pos) =>
-        val call = Try {
-          val results = reader.query(contig, pos.toInt, pos.toInt)
-          if (results.hasNext) {
-            Some(variantContextToCall(results.next()))
-          } else {
-            None
-          }
-        }.getOrElse(None)
-        (contig, pos) -> call
-      }.toMap
+      val startTime = System.currentTimeMillis()
+
+      // Group positions by contig for efficient batch loading
+      val byContig = positions.groupBy(_._1)
+
+      // Load each contig's variants into memory and perform lookups
+      val results = byContig.flatMap { case (contig, contigPositions) =>
+        val contigVariants = ensureContigLoaded(contig)
+        contigPositions.map { case (c, pos) =>
+          (c, pos) -> contigVariants.get(pos)
+        }
+      }
+
+      val elapsed = System.currentTimeMillis() - startTime
+      if (positions.size > 100) {
+        log.info(s"Batch queried ${positions.size} positions across ${byContig.size} contigs in ${elapsed}ms")
+      }
+
+      results
     }
   }
 
@@ -120,10 +170,13 @@ class VcfQueryService(vcfInfo: CachedVcfInfo) {
 
   /**
    * Get all variants on a contig.
+   * Uses the in-memory cache if available for consistent performance.
    */
   def queryContig(build: String, contig: String): Either[BuildMismatch, Iterator[VariantCall]] = {
     validateBuild(build).map { _ =>
-      reader.query(contig, 1, Int.MaxValue).asScala.map(variantContextToCall)
+      // Use cache if already loaded, otherwise load from VCF
+      val contigVariants = ensureContigLoaded(contig)
+      contigVariants.values.iterator
     }
   }
 

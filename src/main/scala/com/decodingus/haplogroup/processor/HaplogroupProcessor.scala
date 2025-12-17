@@ -395,6 +395,10 @@ class HaplogroupProcessor {
           Left(s"Failed to load cached VCF: $error")
 
         case Right(resolver) =>
+          // Pre-load data for the primary contig to optimize batch queries
+          onProgress("Loading VCF and callable loci data into memory...", 0.15, 1.0)
+          resolver.preloadContigs(List(primaryContig))
+
           onProgress("Querying tree positions from VCF...", 0.2, 1.0)
 
           // Query all tree positions
@@ -429,34 +433,31 @@ class HaplogroupProcessor {
           val terminalHaplogroup = results.headOption.map(_.name).getOrElse("")
           val pathPositions = collectPathPositions(tree, terminalHaplogroup)
 
-          val privateVariants = VcfQueryService.fromCache(sampleAccession, runId, alignmentId) match {
-            case Right(vcfService) =>
-              try {
-                vcfService.queryContig(referenceBuild, primaryContig) match {
-                  case Right(iter) =>
-                    iter.flatMap { vc =>
-                      if (vc.isVariant && !pathPositions.contains(vc.position)) {
-                        Some(PrivateVariant(
-                          contig = vc.contig,
-                          position = vc.position,
-                          ref = vc.ref,
-                          alt = vc.alt,
-                          quality = vc.quality,
-                          depth = vc.depth
-                        ))
-                      } else {
-                        None
-                      }
-                    }.toList
-                  case Left(err) =>
-                    log.info(s"Failed to query contig for private variants: $err")
-                    List.empty
-                }
-              } finally {
-                vcfService.close()
-              }
-            case Left(err) =>
-              log.info(s"Failed to open VCF service for private variants: $err")
+          // Reuse the VCF service from the resolver instead of opening a new one
+          val privateVariants = try {
+            resolver.getVcfService.queryContig(referenceBuild, primaryContig) match {
+              case Right(iter) =>
+                iter.flatMap { vc =>
+                  if (vc.isVariant && !pathPositions.contains(vc.position)) {
+                    Some(PrivateVariant(
+                      contig = vc.contig,
+                      position = vc.position,
+                      ref = vc.ref,
+                      alt = vc.alt,
+                      quality = vc.quality,
+                      depth = vc.depth
+                    ))
+                  } else {
+                    None
+                  }
+                }.toList
+              case Left(err) =>
+                log.info(s"Failed to query contig for private variants: $err")
+                List.empty
+            }
+          } catch {
+            case e: Exception =>
+              log.info(s"Failed to extract private variants: ${e.getMessage}")
               List.empty
           }
 
@@ -548,6 +549,10 @@ class HaplogroupProcessor {
           Left(s"Failed to open vendor VCF: $error")
 
         case Right(resolver) =>
+          // Pre-load data for the primary contig to optimize batch queries
+          onProgress("Loading VCF data into memory...", 0.15, 1.0)
+          resolver.preloadContigs(List(primaryContig))
+
           onProgress("Querying tree positions from VCF...", 0.2, 1.0)
 
           // Query all tree positions
