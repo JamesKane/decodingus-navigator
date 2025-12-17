@@ -3,11 +3,14 @@ package com.decodingus.ui.v2
 import com.decodingus.i18n.I18n.{t, bind}
 import com.decodingus.i18n.Formatters
 import com.decodingus.str.StrCsvParser
-import com.decodingus.ui.components.{AddDataDialog, AddSequenceDataDialog, ConfirmDialog, DataInput, DataType, EditSubjectDialog, SequenceDataInput, VcfMetadata, VcfMetadataDialog}
+import com.decodingus.config.FeatureToggles
+import com.decodingus.haplogroup.tree.TreeType
+import com.decodingus.ui.components.{AddDataDialog, AddSequenceDataDialog, AnalysisProgressDialog, AncestryResultDialog, ConfirmDialog, DataInput, DataType, EditSubjectDialog, InfoDialog, SequenceDataInput, VcfMetadata, VcfMetadataDialog}
 import com.decodingus.ui.v2.BiosampleExtensions.*
 import com.decodingus.util.Logger
 import com.decodingus.workspace.WorkbenchViewModel
 import com.decodingus.workspace.model.{Biosample, ChipProfile, HaplogroupResult, SequenceRun, StrProfile}
+import scalafx.scene.control.Alert.AlertType
 import scalafx.Includes.*
 import scalafx.beans.property.{ObjectProperty, StringProperty}
 import scalafx.geometry.{Insets, Pos, Side}
@@ -641,7 +644,7 @@ class SubjectDetailView(viewModel: WorkbenchViewModel) extends VBox {
       case _ => "-fx-text-fill: #f87171;"
     }
 
-    new HBox(15) {
+    val itemBox = new HBox(15) {
       alignment = Pos.CenterLeft
       padding = Insets(10)
       style = "-fx-background-color: #333333; -fx-background-radius: 5;"
@@ -694,8 +697,248 @@ class SubjectDetailView(viewModel: WorkbenchViewModel) extends VBox {
             }
             badges.toSeq
           }
+        },
+        // Action menu button
+        new MenuButton("⋮") {
+          style = "-fx-background-color: transparent; -fx-text-fill: #888888; -fx-font-size: 16px;"
+          items = createChipProfileMenuItems(chip)
         }
       )
+    }
+    itemBox
+  }
+
+  /** Creates context menu items for chip profile actions */
+  private def createChipProfileMenuItems(chip: ChipProfile): Seq[MenuItem] = {
+    val items = scala.collection.mutable.ArrayBuffer[MenuItem]()
+
+    // Details
+    items += new MenuItem("Details") {
+      onAction = _ => showChipDetailsDialog(chip)
+    }
+
+    items += new SeparatorMenuItem()
+
+    // Y-DNA Haplogroup
+    val yMenuItem = new MenuItem("Y-DNA Haplogroup") {
+      onAction = _ => handleChipHaplogroupAnalysis(chip, TreeType.YDNA)
+    }
+    if (!chip.hasSufficientYCoverage) {
+      yMenuItem.disable = true
+    }
+    items += yMenuItem
+
+    // mtDNA Haplogroup
+    val mtMenuItem = new MenuItem("mtDNA Haplogroup") {
+      onAction = _ => handleChipHaplogroupAnalysis(chip, TreeType.MTDNA)
+    }
+    if (!chip.hasSufficientMtCoverage) {
+      mtMenuItem.disable = true
+    }
+    items += mtMenuItem
+
+    // Ancestry Analysis
+    val ancMenuItem = new MenuItem("Ancestry Analysis") {
+      onAction = _ => handleChipAncestryAnalysis(chip)
+    }
+    if (!chip.isAcceptableForAncestry) {
+      ancMenuItem.disable = true
+    }
+    items += ancMenuItem
+
+    items += new SeparatorMenuItem()
+
+    // Remove
+    items += new MenuItem("Remove") {
+      onAction = _ => {
+        val details = s"${chip.vendor} - ${Formatters.formatNumber(chip.totalMarkersCalled)} markers"
+        if (ConfirmDialog.confirmRemoval("Chip Data", details)) {
+          chip.atUri.foreach { uri =>
+            currentSubject.value.foreach { subject =>
+              viewModel.deleteChipProfile(subject.accession, uri)
+              updateDataSources(subject)
+            }
+          }
+        }
+      }
+    }
+
+    items.toSeq
+  }
+
+  /** Shows chip profile details dialog */
+  private def showChipDetailsDialog(chip: ChipProfile): Unit = {
+    val detailsText =
+      s"""Vendor: ${chip.vendor}
+         |Test Type: ${chip.testTypeCode}
+         |Chip Version: ${chip.chipVersion.getOrElse("Unknown")}
+         |
+         |Total Markers: ${Formatters.formatNumber(chip.totalMarkersCalled)} / ${Formatters.formatNumber(chip.totalMarkersPossible)}
+         |Call Rate: ${f"${chip.callRate * 100}%.2f"}%
+         |No-Call Rate: ${f"${chip.noCallRate * 100}%.2f"}%
+         |
+         |Autosomal Markers: ${Formatters.formatNumber(chip.autosomalMarkersCalled)}
+         |Y-DNA Markers: ${chip.yMarkersCalled.map(n => Formatters.formatNumber(n)).getOrElse("N/A")}
+         |mtDNA Markers: ${chip.mtMarkersCalled.map(n => Formatters.formatNumber(n)).getOrElse("N/A")}
+         |Heterozygosity Rate: ${chip.hetRate.map(r => f"${r * 100}%.2f%%").getOrElse("N/A")}
+         |
+         |Status: ${chip.status}
+         |Suitable for Ancestry: ${if (chip.isAcceptableForAncestry) "Yes" else "No"}
+         |Sufficient Y Coverage: ${if (chip.hasSufficientYCoverage) "Yes" else "No"}
+         |Sufficient MT Coverage: ${if (chip.hasSufficientMtCoverage) "Yes" else "No"}
+         |
+         |Import Date: ${chip.importDate.toLocalDate}
+         |Source File: ${chip.sourceFileName.getOrElse("Unknown")}
+       """.stripMargin
+
+    InfoDialog.showCode(
+      "Chip Data Details",
+      s"${chip.vendor} - ${chip.testTypeCode}",
+      detailsText,
+      dialogWidth = 420,
+      dialogHeight = 380
+    )
+  }
+
+  /** Handles Y-DNA or mtDNA haplogroup analysis from chip data */
+  private def handleChipHaplogroupAnalysis(chip: ChipProfile, treeType: TreeType): Unit = {
+    val typeName = if (treeType == TreeType.YDNA) "Y-DNA" else "mtDNA"
+    val markerCount = treeType match {
+      case TreeType.YDNA => chip.yMarkersCalled.getOrElse(0)
+      case TreeType.MTDNA => chip.mtMarkersCalled.getOrElse(0)
+    }
+
+    val confirm = new Alert(AlertType.Confirmation) {
+      title = s"Run $typeName Haplogroup Analysis"
+      headerText = s"Analyze ${chip.vendor} chip data for $typeName haplogroup"
+      contentText =
+        s"""This will score chip genotypes against the $typeName haplogroup tree.
+
+$typeName Markers: ${Formatters.formatNumber(markerCount)}
+
+Note: Chip-based haplogroup estimation has limited resolution compared to WGS.
+The terminal haplogroup may be upstream of the true assignment."""
+    }
+
+    confirm.showAndWait() match {
+      case Some(ButtonType.OK) =>
+        chip.atUri match {
+          case Some(profileUri) =>
+            currentSubject.value.foreach { subject =>
+              val progressDialog = new AnalysisProgressDialog(
+                s"$typeName Haplogroup Analysis",
+                viewModel.analysisProgress,
+                viewModel.analysisProgressPercent,
+                viewModel.analysisInProgress
+              )
+
+              viewModel.runChipHaplogroupAnalysis(
+                subject.sampleAccession,
+                profileUri,
+                treeType,
+                onComplete = {
+                  case Right(haplogroupResult) =>
+                    scalafx.application.Platform.runLater {
+                      import com.decodingus.genotype.processor.ChipHaplogroupAdapter
+                      val confidenceDesc = ChipHaplogroupAdapter.confidenceDescription(haplogroupResult.confidence)
+                      new Alert(AlertType.Information) {
+                        title = s"$typeName Haplogroup Result"
+                        headerText = s"$typeName: ${haplogroupResult.topHaplogroup}"
+                        contentText =
+                          s"""Confidence: $confidenceDesc (${f"${haplogroupResult.confidence * 100}%.0f"}%)
+SNPs Matched: ${haplogroupResult.snpsMatched} / ${haplogroupResult.snpsTotal}
+Tree Depth: ${haplogroupResult.results.headOption.map(_.depth).getOrElse(0)}
+
+Note: Chip data covers ~${f"${haplogroupResult.snpsMatched.toDouble / haplogroupResult.snpsTotal * 100}%.0f"}% of tree positions.
+For higher resolution, consider WGS analysis."""
+                      }.showAndWait()
+                    }
+                  case Left(error) =>
+                    scalafx.application.Platform.runLater {
+                      new Alert(AlertType.Error) {
+                        title = s"$typeName Haplogroup Analysis Failed"
+                        headerText = "Could not complete haplogroup analysis"
+                        contentText = error
+                      }.showAndWait()
+                    }
+                }
+              )
+
+              progressDialog.show()
+            }
+          case None =>
+            showInfoDialog("Error", "Invalid chip profile", "Profile has no AT URI.")
+        }
+      case _ => // User cancelled
+    }
+  }
+
+  /** Handles ancestry analysis from chip data */
+  private def handleChipAncestryAnalysis(chip: ChipProfile): Unit = {
+    import com.decodingus.ancestry.model.AncestryPanelType
+
+    val recommendedPanel = if (chip.autosomalMarkersCalled >= 500000) {
+      AncestryPanelType.GenomeWide
+    } else {
+      AncestryPanelType.Aims
+    }
+
+    val panelLabel = recommendedPanel match {
+      case AncestryPanelType.Aims => "AIMs (~5k markers, faster)"
+      case AncestryPanelType.GenomeWide => "Genome-wide (~500k markers, detailed)"
+    }
+
+    val confirm = new Alert(AlertType.Confirmation) {
+      title = "Run Ancestry Analysis"
+      headerText = s"Analyze ${chip.vendor} chip data for ancestry"
+      contentText =
+        s"""This will estimate population percentages using the $panelLabel panel.
+
+Markers: ${Formatters.formatNumber(chip.autosomalMarkersCalled)}
+Call Rate: ${f"${chip.callRate * 100}%.1f"}%
+
+Note: Reference data download may be required on first run."""
+    }
+
+    confirm.showAndWait() match {
+      case Some(ButtonType.OK) =>
+        chip.atUri match {
+          case Some(profileUri) =>
+            currentSubject.value.foreach { subject =>
+              val progressDialog = new AnalysisProgressDialog(
+                "Ancestry Analysis",
+                viewModel.analysisProgress,
+                viewModel.analysisProgressPercent,
+                viewModel.analysisInProgress
+              )
+
+              viewModel.runChipAncestryAnalysis(
+                subject.sampleAccession,
+                profileUri,
+                recommendedPanel,
+                onComplete = {
+                  case Right(ancestryResult) =>
+                    scalafx.application.Platform.runLater {
+                      val resultDialog = new AncestryResultDialog(ancestryResult)
+                      resultDialog.showAndWait()
+                    }
+                  case Left(error) =>
+                    scalafx.application.Platform.runLater {
+                      new Alert(AlertType.Error) {
+                        title = "Ancestry Analysis Failed"
+                        headerText = "Could not complete ancestry analysis"
+                        contentText = error
+                      }.showAndWait()
+                    }
+                }
+              )
+
+              progressDialog.show()
+            }
+          case None =>
+            showInfoDialog("Error", "Invalid chip profile", "Profile has no AT URI.")
+        }
+      case _ => // User cancelled
     }
   }
 
