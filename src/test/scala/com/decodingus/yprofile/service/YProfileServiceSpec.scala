@@ -93,7 +93,7 @@ class YProfileServiceSpec extends FunSuite with DatabaseTestSupport:
 
     val source = service.addSource(profile.id, YProfileSourceType.WGS_SHORT_READ)
 
-    assertEquals(source.toOption.get.methodTier, 3) // WGS_SHORT_READ = tier 3
+    assertEquals(source.toOption.get.methodTier, 4) // WGS_SHORT_READ = tier 4 (0.85 * 5 = 4.25 -> 4)
   }
 
   testTransactor.test("removeSource deletes source and updates profile") { case (db, tx) =>
