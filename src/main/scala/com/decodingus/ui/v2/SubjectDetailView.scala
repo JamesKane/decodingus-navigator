@@ -2,6 +2,7 @@ package com.decodingus.ui.v2
 
 import com.decodingus.i18n.I18n.{t, bind}
 import com.decodingus.i18n.Formatters
+import com.decodingus.str.StrCsvParser
 import com.decodingus.ui.components.{AddDataDialog, AddSequenceDataDialog, ConfirmDialog, DataInput, DataType, EditSubjectDialog, SequenceDataInput}
 import com.decodingus.ui.v2.BiosampleExtensions.*
 import com.decodingus.util.Logger
@@ -1013,15 +1014,16 @@ class SubjectDetailView(viewModel: WorkbenchViewModel) extends VBox {
               log.info(s"Adding ${dataInput.dataType} data for ${subject.accession}: ${dataInput.fileInfo.fileName}")
 
               // Handle based on data type
+              val file = new java.io.File(dataInput.fileInfo.location.getOrElse(""))
+
               dataInput.dataType match {
                 case DataType.Alignment =>
                   val newIndex = viewModel.addSequenceRunFromFile(subject.accession, dataInput.fileInfo)
                   log.info(s"Added sequence run at index $newIndex for ${subject.accession}")
 
                 case DataType.Variants =>
-                  // VCF files - for now, treat as sequence data attachment
-                  // TODO: Implement proper VCF handling
-                  log.info(s"VCF import not yet fully implemented: ${dataInput.fileInfo.fileName}")
+                  // VCF files - for now show info that it needs sequence run context
+                  log.info(s"VCF import requires sequence run context: ${dataInput.fileInfo.fileName}")
                   showInfoDialog(
                     t("data.title"),
                     t("data.vcf_import"),
@@ -1030,25 +1032,47 @@ class SubjectDetailView(viewModel: WorkbenchViewModel) extends VBox {
                   return
 
                 case DataType.StrProfile =>
-                  // STR CSV import
-                  // TODO: Implement STR profile parsing and import
-                  log.info(s"STR import not yet fully implemented: ${dataInput.fileInfo.fileName}")
-                  showInfoDialog(
-                    t("data.title"),
-                    t("data.str_import"),
-                    t("data.str_import.detail")
-                  )
-                  return
+                  // STR CSV import using StrCsvParser
+                  val biosampleRef = subject.atUri.getOrElse(s"local:biosample:${subject.sampleAccession}")
+                  StrCsvParser.parse(file, biosampleRef) match {
+                    case Right(parseResult) =>
+                      viewModel.addStrProfile(subject.accession, parseResult.profile) match {
+                        case Right(profileUri) =>
+                          log.info(s"Added STR profile with ${parseResult.profile.markers.size} markers for ${subject.accession}")
+                          if (parseResult.warnings.nonEmpty) {
+                            log.warn(s"STR import warnings: ${parseResult.warnings.mkString("; ")}")
+                          }
+                        case Left(error) =>
+                          log.error(s"Failed to add STR profile: $error")
+                          showInfoDialog(t("error.title"), t("data.str_import"), error)
+                          return
+                      }
+                    case Left(error) =>
+                      log.error(s"Failed to parse STR file: $error")
+                      showInfoDialog(t("error.title"), t("data.str_import"), error)
+                      return
+                  }
 
                 case DataType.ChipData =>
-                  // Chip/array data import (23andMe, etc.)
-                  // TODO: Implement chip data parsing and import
-                  log.info(s"Chip data import not yet fully implemented: ${dataInput.fileInfo.fileName}")
-                  showInfoDialog(
-                    t("data.title"),
-                    t("data.chip_import"),
-                    t("data.chip_import.detail")
-                  )
+                  // Chip/array data import using existing parser
+                  viewModel.importChipData(subject.accession, file, {
+                    case Right(chipProfile) =>
+                      log.info(s"Imported chip data: ${chipProfile.vendor} with ${chipProfile.totalMarkersCalled} markers")
+                      scalafx.application.Platform.runLater {
+                        updateDataSources(subject)
+                        showInfoDialog(
+                          t("data.title"),
+                          t("data.added.success"),
+                          s"${chipProfile.vendor} - ${Formatters.formatNumber(chipProfile.totalMarkersCalled)} ${t("data.markers")}"
+                        )
+                      }
+                    case Left(error) =>
+                      log.error(s"Failed to import chip data: $error")
+                      scalafx.application.Platform.runLater {
+                        showInfoDialog(t("error.title"), t("data.chip_import"), error)
+                      }
+                  })
+                  // Chip import is async, so return here - callback will handle UI update
                   return
               }
 
