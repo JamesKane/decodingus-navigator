@@ -5,7 +5,7 @@ import com.decodingus.i18n.Formatters
 import com.decodingus.str.StrCsvParser
 import com.decodingus.config.FeatureToggles
 import com.decodingus.haplogroup.tree.TreeType
-import com.decodingus.ui.components.{AddDataDialog, AddSequenceDataDialog, AnalysisProgressDialog, AncestryResultDialog, ConfirmDialog, DataInput, DataType, EditSubjectDialog, ImportVendorFastaDialog, InfoDialog, SequenceDataInput, VcfMetadata, VcfMetadataDialog, VendorFastaImportRequest}
+import com.decodingus.ui.components.{AddDataDialog, AddSequenceDataDialog, AncestryResultDialog, ConfirmDialog, DataInput, DataType, EditSubjectDialog, ImportVendorFastaDialog, InfoDialog, SequenceDataInput, VcfMetadata, VcfMetadataDialog, VendorFastaImportRequest}
 import com.decodingus.ui.v2.BiosampleExtensions.*
 import com.decodingus.util.Logger
 import com.decodingus.workspace.WorkbenchViewModel
@@ -172,6 +172,122 @@ class SubjectDetailView(viewModel: WorkbenchViewModel) extends VBox {
   }
 
   // ============================================================================
+  // Analysis Progress Panel (slide-in at bottom)
+  // ============================================================================
+
+  private val progressTaskLabel = new Label("") {
+    style = "-fx-font-size: 13px; -fx-text-fill: #ffffff; -fx-font-weight: bold;"
+  }
+
+  private val progressStatusLabel = new Label("") {
+    style = "-fx-font-size: 12px; -fx-text-fill: #b0b0b0;"
+  }
+
+  private val progressBar = new ProgressBar {
+    prefWidth = 300
+    progress = 0.0
+  }
+
+  private val progressPercentLabel = new Label("0%") {
+    style = "-fx-font-size: 12px; -fx-text-fill: #ffffff; -fx-min-width: 45px;"
+  }
+
+  private val minimizeProgressButton = new Button("−") {
+    style = "-fx-background-color: transparent; -fx-text-fill: #888888; -fx-font-size: 16px; -fx-padding: 0 8 0 8; -fx-cursor: hand;"
+    tooltip = new Tooltip("Minimize")
+    onAction = _ => toggleProgressPanelMinimized()
+  }
+
+  private val progressPanelExpanded = new HBox(15) {
+    alignment = Pos.CenterLeft
+    padding = Insets(12, 15, 12, 15)
+    children = Seq(
+      new ProgressIndicator {
+        prefWidth = 24
+        prefHeight = 24
+      },
+      new VBox(4) {
+        children = Seq(progressTaskLabel, progressStatusLabel)
+        hgrow = Priority.Always
+        HBox.setHgrow(this, Priority.Always)
+      },
+      progressBar,
+      progressPercentLabel,
+      minimizeProgressButton
+    )
+  }
+
+  private val expandProgressButton = new Button("▲ Analysis Running...") {
+    style = "-fx-background-color: transparent; -fx-text-fill: #4ade80; -fx-font-size: 12px; -fx-cursor: hand;"
+    onAction = _ => toggleProgressPanelMinimized()
+  }
+
+  private val progressPanelMinimized = new HBox {
+    alignment = Pos.Center
+    padding = Insets(6)
+    children = Seq(expandProgressButton)
+    visible = false
+    managed = false
+  }
+
+  private val analysisProgressPanel = new VBox {
+    style = "-fx-background-color: #2d3748; -fx-border-color: #4a5568; -fx-border-width: 1 0 0 0;"
+    children = Seq(progressPanelExpanded, progressPanelMinimized)
+    visible = false
+    managed = false
+  }
+
+  private var isProgressPanelMinimized = false
+
+  private def toggleProgressPanelMinimized(): Unit = {
+    isProgressPanelMinimized = !isProgressPanelMinimized
+    progressPanelExpanded.visible = !isProgressPanelMinimized
+    progressPanelExpanded.managed = !isProgressPanelMinimized
+    progressPanelMinimized.visible = isProgressPanelMinimized
+    progressPanelMinimized.managed = isProgressPanelMinimized
+  }
+
+  private def showProgressPanel(taskName: String): Unit = {
+    progressTaskLabel.text = taskName
+    isProgressPanelMinimized = false
+    progressPanelExpanded.visible = true
+    progressPanelExpanded.managed = true
+    progressPanelMinimized.visible = false
+    progressPanelMinimized.managed = false
+    analysisProgressPanel.visible = true
+    analysisProgressPanel.managed = true
+  }
+
+  private def hideProgressPanel(): Unit = {
+    analysisProgressPanel.visible = false
+    analysisProgressPanel.managed = false
+  }
+
+  // Bind to viewModel progress properties
+  progressStatusLabel.text <== viewModel.analysisProgress
+  progressBar.progress <== viewModel.analysisProgressPercent
+  viewModel.analysisProgressPercent.onChange { (_, _, newValue) =>
+    val percent = (newValue.doubleValue() * 100).toInt
+    progressPercentLabel.text = s"$percent%"
+  }
+
+  // Auto-hide when analysis completes
+  viewModel.analysisInProgress.onChange { (_, _, inProgress) =>
+    if (!inProgress) {
+      // Small delay before hiding to show 100% completion
+      val timer = new java.util.Timer()
+      timer.schedule(new java.util.TimerTask {
+        def run(): Unit = {
+          scalafx.application.Platform.runLater {
+            hideProgressPanel()
+          }
+          timer.cancel()
+        }
+      }, 1500)
+    }
+  }
+
+  // ============================================================================
   // Tab Content Views
   // ============================================================================
 
@@ -194,7 +310,7 @@ class SubjectDetailView(viewModel: WorkbenchViewModel) extends VBox {
   // ============================================================================
 
   vgrow = Priority.Always
-  children = Seq(headerSection, tabPane)
+  children = Seq(headerSection, tabPane, analysisProgressPanel)
 
   VBox.setVgrow(tabPane, Priority.Always)
 
@@ -825,19 +941,11 @@ class SubjectDetailView(viewModel: WorkbenchViewModel) extends VBox {
         }
       }
 
-      // Run comprehensive analysis
-      val progressDialog = new AnalysisProgressDialog(
-        "Full Analysis",
-        viewModel.analysisProgress,
-        viewModel.analysisProgressPercent,
-        viewModel.analysisInProgress
-      )
-      Option(SubjectDetailView.this.getScene).flatMap(s => Option(s.getWindow)).foreach { window =>
-        progressDialog.initOwner(window)
-      }
-
+      // Run comprehensive analysis with slide-in progress panel
       val selectedBuild = alignments(selectedAlignmentIndex).referenceBuild
       log.info(s"Starting full analysis for ${subject.accession}, seqRun=$seqRunIndex, alignment=$selectedAlignmentIndex ($selectedBuild)")
+
+      showProgressPanel(s"Full Analysis ($selectedBuild)")
 
       viewModel.runComprehensiveAnalysisForAlignment(
         subject.accession,
@@ -861,8 +969,6 @@ class SubjectDetailView(viewModel: WorkbenchViewModel) extends VBox {
             }
         }
       )
-
-      progressDialog.show()
     }
   }
 
@@ -897,15 +1003,7 @@ class SubjectDetailView(viewModel: WorkbenchViewModel) extends VBox {
   /** Handle running WGS metrics analysis for a specific alignment */
   private def handleRunWgsMetrics(seqRunIndex: Int, alignIndex: Int): Unit = {
     currentSubject.value.foreach { subject =>
-      val progressDialog = new AnalysisProgressDialog(
-        "WGS Metrics Analysis",
-        viewModel.analysisProgress,
-        viewModel.analysisProgressPercent,
-        viewModel.analysisInProgress
-      )
-      Option(SubjectDetailView.this.getScene).flatMap(s => Option(s.getWindow)).foreach { window =>
-        progressDialog.initOwner(window)
-      }
+      showProgressPanel("WGS Metrics Analysis")
 
       viewModel.runWgsMetricsAnalysisForAlignment(
         subject.accession,
@@ -927,23 +1025,13 @@ class SubjectDetailView(viewModel: WorkbenchViewModel) extends VBox {
             }
         }
       )
-
-      progressDialog.show()
     }
   }
 
   /** Handle running callable loci analysis for a specific alignment */
   private def handleRunCallableLoci(seqRunIndex: Int, alignIndex: Int): Unit = {
     currentSubject.value.foreach { subject =>
-      val progressDialog = new AnalysisProgressDialog(
-        "Callable Loci Analysis",
-        viewModel.analysisProgress,
-        viewModel.analysisProgressPercent,
-        viewModel.analysisInProgress
-      )
-      Option(SubjectDetailView.this.getScene).flatMap(s => Option(s.getWindow)).foreach { window =>
-        progressDialog.initOwner(window)
-      }
+      showProgressPanel("Callable Loci Analysis")
 
       viewModel.runCallableLociAnalysisForAlignment(
         subject.accession,
@@ -965,8 +1053,6 @@ class SubjectDetailView(viewModel: WorkbenchViewModel) extends VBox {
             }
         }
       )
-
-      progressDialog.show()
     }
   }
 
@@ -982,15 +1068,7 @@ class SubjectDetailView(viewModel: WorkbenchViewModel) extends VBox {
 
     currentSubject.value.foreach { subject =>
       val dnaType = if (treeType == TreeType.YDNA) "Y-DNA" else "mtDNA"
-      val progressDialog = new AnalysisProgressDialog(
-        s"$dnaType Haplogroup Analysis (${alignment.referenceBuild})",
-        viewModel.analysisProgress,
-        viewModel.analysisProgressPercent,
-        viewModel.analysisInProgress
-      )
-      Option(SubjectDetailView.this.getScene).flatMap(s => Option(s.getWindow)).foreach { window =>
-        progressDialog.initOwner(window)
-      }
+      showProgressPanel(s"$dnaType Haplogroup Analysis (${alignment.referenceBuild})")
 
       viewModel.runHaplogroupAnalysisForAlignment(
         subject.accession,
@@ -1024,8 +1102,6 @@ class SubjectDetailView(viewModel: WorkbenchViewModel) extends VBox {
             }
         }
       )
-
-      progressDialog.show()
     }
   }
 
@@ -1430,12 +1506,7 @@ The terminal haplogroup may be upstream of the true assignment."""
         chip.atUri match {
           case Some(profileUri) =>
             currentSubject.value.foreach { subject =>
-              val progressDialog = new AnalysisProgressDialog(
-                s"$typeName Haplogroup Analysis",
-                viewModel.analysisProgress,
-                viewModel.analysisProgressPercent,
-                viewModel.analysisInProgress
-              )
+              showProgressPanel(s"$typeName Haplogroup Analysis (Chip)")
 
               viewModel.runChipHaplogroupAnalysis(
                 subject.sampleAccession,
@@ -1468,8 +1539,6 @@ For higher resolution, consider WGS analysis."""
                     }
                 }
               )
-
-              progressDialog.show()
             }
           case None =>
             showInfoDialog("Error", "Invalid chip profile", "Profile has no AT URI.")
@@ -1510,12 +1579,7 @@ Note: Reference data download may be required on first run."""
         chip.atUri match {
           case Some(profileUri) =>
             currentSubject.value.foreach { subject =>
-              val progressDialog = new AnalysisProgressDialog(
-                "Ancestry Analysis",
-                viewModel.analysisProgress,
-                viewModel.analysisProgressPercent,
-                viewModel.analysisInProgress
-              )
+              showProgressPanel("Ancestry Analysis")
 
               viewModel.runChipAncestryAnalysis(
                 subject.sampleAccession,
@@ -1537,8 +1601,6 @@ Note: Reference data download may be required on first run."""
                     }
                 }
               )
-
-              progressDialog.show()
             }
           case None =>
             showInfoDialog("Error", "Invalid chip profile", "Profile has no AT URI.")
@@ -2048,12 +2110,7 @@ Note: Reference data download may be required on first run."""
                 case DataType.Alignment =>
                   // Use addFileAndAnalyze for BAM/CRAM to get proper fingerprint matching
                   // This detects if the file is a re-alignment of existing data to a different reference
-                  val progressDialog = new AnalysisProgressDialog(
-                    "Analyzing Alignment",
-                    viewModel.analysisProgress,
-                    viewModel.analysisProgressPercent,
-                    viewModel.analysisInProgress
-                  )
+                  showProgressPanel(s"Analyzing ${dataInput.fileInfo.fileName}")
 
                   viewModel.addFileAndAnalyze(
                     subject.accession,
@@ -2082,7 +2139,6 @@ Note: Reference data download may be required on first run."""
                         }
                     }
                   )
-                  progressDialog.show()
                   // Alignment analysis is async, return early
                   return
 
