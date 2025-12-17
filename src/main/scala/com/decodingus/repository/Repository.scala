@@ -121,6 +121,8 @@ trait SyncableRepository[E <: Entity[ID], ID] extends Repository[E, ID]:
  * SQL helper utilities for repositories.
  */
 object SqlHelpers:
+  import com.decodingus.util.Logger
+  private val log = Logger("SqlHelpers")
 
   /**
    * Set a parameter on a PreparedStatement, handling Option types.
@@ -222,41 +224,56 @@ object SqlHelpers:
    * Execute a query and map results to a list.
    */
   def queryList[A](sql: String, params: Seq[Any] = Seq.empty)(mapper: ResultSet => A)(using conn: Connection): List[A] =
-    Using.resource(conn.prepareStatement(sql)) { ps =>
-      params.zipWithIndex.foreach { case (param, idx) =>
-        setParam(ps, idx + 1, param)
+    try
+      Using.resource(conn.prepareStatement(sql)) { ps =>
+        params.zipWithIndex.foreach { case (param, idx) =>
+          setParam(ps, idx + 1, param)
+        }
+        Using.resource(ps.executeQuery()) { rs =>
+          val results = scala.collection.mutable.ListBuffer.empty[A]
+          while rs.next() do
+            results += mapper(rs)
+          results.toList
+        }
       }
-      Using.resource(ps.executeQuery()) { rs =>
-        val results = scala.collection.mutable.ListBuffer.empty[A]
-        while rs.next() do
-          results += mapper(rs)
-        results.toList
-      }
-    }
+    catch
+      case e: java.sql.SQLException =>
+        log.error(s"SQL query failed - SQL: ${sql.take(200)}... Params: ${params.take(5)}... SQLState: ${e.getSQLState}, ErrorCode: ${e.getErrorCode}", e)
+        throw e
 
   /**
    * Execute a query and return an optional single result.
    */
   def queryOne[A](sql: String, params: Seq[Any] = Seq.empty)(mapper: ResultSet => A)(using conn: Connection): Option[A] =
-    Using.resource(conn.prepareStatement(sql)) { ps =>
-      params.zipWithIndex.foreach { case (param, idx) =>
-        setParam(ps, idx + 1, param)
+    try
+      Using.resource(conn.prepareStatement(sql)) { ps =>
+        params.zipWithIndex.foreach { case (param, idx) =>
+          setParam(ps, idx + 1, param)
+        }
+        Using.resource(ps.executeQuery()) { rs =>
+          if rs.next() then Some(mapper(rs)) else None
+        }
       }
-      Using.resource(ps.executeQuery()) { rs =>
-        if rs.next() then Some(mapper(rs)) else None
-      }
-    }
+    catch
+      case e: java.sql.SQLException =>
+        log.error(s"SQL query failed - SQL: ${sql.take(200)}... Params: ${params.take(5)}... SQLState: ${e.getSQLState}, ErrorCode: ${e.getErrorCode}", e)
+        throw e
 
   /**
    * Execute an update and return the number of affected rows.
    */
   def executeUpdate(sql: String, params: Seq[Any])(using conn: Connection): Int =
-    Using.resource(conn.prepareStatement(sql)) { ps =>
-      params.zipWithIndex.foreach { case (param, idx) =>
-        setParam(ps, idx + 1, param)
+    try
+      Using.resource(conn.prepareStatement(sql)) { ps =>
+        params.zipWithIndex.foreach { case (param, idx) =>
+          setParam(ps, idx + 1, param)
+        }
+        ps.executeUpdate()
       }
-      ps.executeUpdate()
-    }
+    catch
+      case e: java.sql.SQLException =>
+        log.error(s"SQL update failed - SQL: ${sql.take(200)}... Params: ${params.take(5)}... SQLState: ${e.getSQLState}, ErrorCode: ${e.getErrorCode}", e)
+        throw e
 
   /**
    * Convert an object to a JsonValue for H2 JSON column storage.
