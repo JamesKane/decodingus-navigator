@@ -383,7 +383,7 @@ class SubjectDetailView(viewModel: WorkbenchViewModel) extends VBox {
 
     val viewProfileButton = new Button {
       text <== bind("haplogroup.view_profile")
-      onAction = _ => log.debug("View full Y profile - not yet implemented")
+      onAction = _ => handleViewYProfile()
     }
 
     new ScrollPane {
@@ -1874,6 +1874,96 @@ Note: Reference data download may be required on first run."""
         selectedAlignment.alignment,
         treeType
       )
+    }
+  }
+
+  /** Handle viewing the full Y Profile dialog */
+  private def handleViewYProfile(): Unit = {
+    import com.decodingus.ui.components.YProfileDetailDialog
+
+    currentSubject.value.foreach { subject =>
+      // Get biosample UUID from accession
+      viewModel.getBiosampleIdByAccession(subject.sampleAccession) match {
+        case None =>
+          showInfoDialog(
+            t("error.title"),
+            "No Biosample ID",
+            "Cannot load Y Profile: biosample has no ID. Please sync the sample first."
+          )
+
+        case Some(biosampleId) =>
+          // Check if Y Profile service is available
+          if (!viewModel.isYProfileAvailable) {
+            showInfoDialog(
+              t("error.title"),
+              "Y Profile Unavailable",
+              "Y Profile service is not available."
+            )
+            return
+          }
+
+          // Show loading indicator
+          val loadingDialog = new Dialog[Unit]() {
+            title = "Loading Y Profile"
+            headerText = "Please wait..."
+            dialogPane().content = new VBox(15) {
+              alignment = scalafx.geometry.Pos.Center
+              padding = Insets(20)
+              children = Seq(
+                new ProgressIndicator {
+                  prefWidth = 50
+                  prefHeight = 50
+                },
+                new Label("Loading Y Chromosome Profile data...")
+              )
+            }
+            dialogPane().buttonTypes = Seq(ButtonType.Cancel)
+          }
+          Option(SubjectDetailView.this.getScene).flatMap(s => Option(s.getWindow)).foreach { window =>
+            loadingDialog.initOwner(window)
+          }
+
+          // Display name for the biosample
+          val displayName = subject.donorIdentifier
+
+          // Start async load
+          viewModel.loadYProfileForBiosample(
+            biosampleId,
+            {
+              case Right(data) =>
+                scalafx.application.Platform.runLater {
+                  loadingDialog.close()
+
+                  // Open the Y Profile detail dialog
+                  val profileDialog = new YProfileDetailDialog(
+                    profile = data.profile,
+                    variants = data.variants,
+                    sources = data.sources,
+                    variantCalls = data.variantCalls,
+                    auditEntries = data.auditEntries,
+                    biosampleName = displayName,
+                    yRegionAnnotator = data.yRegionAnnotator
+                  )
+                  Option(SubjectDetailView.this.getScene).flatMap(s => Option(s.getWindow)).foreach { window =>
+                    profileDialog.initOwner(window)
+                  }
+                  profileDialog.showAndWait()
+                }
+
+              case Left(error) =>
+                scalafx.application.Platform.runLater {
+                  loadingDialog.close()
+                  showInfoDialog(
+                    t("error.title"),
+                    "Failed to Load Y Profile",
+                    error
+                  )
+                }
+            }
+          )
+
+          loadingDialog.show()
+      }
     }
   }
 
