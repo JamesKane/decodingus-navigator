@@ -1,6 +1,6 @@
 package com.decodingus.workspace
 
-import com.decodingus.analysis.{ArtifactContext, CachedVcfInfo, CallableLociProcessor, CallableLociResult, HaplogroupProcessor, LibraryStatsProcessor, MultipleMetricsResult, UnifiedMetricsProcessor, VcfVendor, VendorFastaInfo, VendorVcfInfo, WgsMetricsProcessor}
+import com.decodingus.analysis.{ArtifactContext, CachedVcfInfo, CallableLociProcessor, CallableLociResult, HaplogroupProcessor, LibraryStatsProcessor, MultipleMetricsResult, UnifiedMetricsProcessor, VcfVendor, VendorFastaInfo, VendorVcfInfo, WgsMetricsProcessor, VcfCache, VcfStatus, SubjectArtifactCache}
 import com.decodingus.client.DecodingUsClient
 import com.decodingus.db.Transactor
 import com.decodingus.haplogroup.tree.{TreeType, TreeProviderType}
@@ -26,6 +26,7 @@ import scalafx.collections.ObservableBuffer
 import scalafx.application.Platform
 
 import java.io.File
+import java.nio.file.{Files, Path}
 import java.time.LocalDateTime
 import java.util.UUID
 import scala.concurrent.{ExecutionContext, Future}
@@ -2113,27 +2114,6 @@ class WorkbenchViewModel(
 
                     Future {
                       try {
-                        val libraryStats = LibraryStats(
-                          readCount = seqRun.totalReads.map(_.toInt).getOrElse(0),
-                          pairedReads = 0,
-                          lengthDistribution = Map.empty,
-                          insertSizeDistribution = Map.empty,
-                          aligner = alignment.aligner,
-                          referenceBuild = alignment.referenceBuild,
-                          sampleName = subject.donorIdentifier,
-                          flowCells = Map.empty,
-                          instruments = Map.empty,
-                          mostFrequentInstrument = seqRun.instrumentModel.getOrElse("Unknown"),
-                          inferredPlatform = seqRun.platformName,
-                          platformCounts = Map.empty
-                        )
-
-                        val artifactCtx = ArtifactContext(
-                          sampleAccession = sampleAccession,
-                          sequenceRunUri = seqRun.atUri,
-                          alignmentUri = alignment.atUri
-                        )
-
                         val processor = new HaplogroupProcessor()
 
                         // Select tree provider based on user preferences
@@ -2148,19 +2128,79 @@ class WorkbenchViewModel(
                             else TreeProviderType.FTDNA
                         }
 
-                        val result = processor.analyze(
-                          bamPath = bamPath,
-                          libraryStats = libraryStats,
-                          treeType = treeType,
-                          treeProviderType = treeProviderType,
-                          onProgress = (message, current, total) => {
-                            Platform.runLater {
-                              analysisProgress.value = message
-                              analysisProgressPercent.value = if (total > 0) current / total else 0.0
+                        // Check for existing whole-genome VCF
+                        val runId = seqRun.atUri.map(SubjectArtifactCache.extractIdFromUri).getOrElse("unknown-run")
+                        val alignId = alignment.atUri.map(SubjectArtifactCache.extractIdFromUri).getOrElse("unknown-alignment")
+                        val vcfStatus = VcfCache.getStatus(sampleAccession, runId, alignId)
+
+                        val result = if (vcfStatus.isAvailable) {
+                          log.info(s" Found cached whole-genome VCF for $sampleAccession, using it for haplogroup analysis.")
+                          processor.analyzeFromCachedVcf(
+                            sampleAccession = sampleAccession,
+                            runId = runId,
+                            alignmentId = alignId,
+                            referenceBuild = alignment.referenceBuild,
+                            treeType = treeType,
+                            treeProviderType = treeProviderType,
+                            onProgress = (message, current, total) => {
+                              Platform.runLater {
+                                analysisProgress.value = message
+                                analysisProgressPercent.value = if (total > 0) current / total else 0.0
+                              }
                             }
-                          },
-                          artifactContext = Some(artifactCtx)
-                        )
+                          )
+                        } else {
+                          // Check for existing haplogroup artifacts to avoid redundant analysis
+                          val haplogroupDir = SubjectArtifactCache.getArtifactSubdir(sampleAccession, runId, alignId, "haplogroup")
+                          val prefix = if (treeType == TreeType.YDNA) "ydna" else "mtdna"
+                          val callsVcf = haplogroupDir.resolve(s"${prefix}_calls.vcf")
+                          
+                          val artifactsExist = if (treeType == TreeType.YDNA) {
+                            val privateVcf = haplogroupDir.resolve(s"${prefix}_private_variants.vcf")
+                            Files.exists(callsVcf) && Files.exists(privateVcf)
+                          } else {
+                            Files.exists(callsVcf)
+                          }
+
+                          if (artifactsExist) {
+                             log.info(s" Found existing haplogroup artifacts for $prefix at $haplogroupDir. Analysis will reuse them.")
+                          }
+
+                          val libraryStats = LibraryStats(
+                            readCount = seqRun.totalReads.map(_.toInt).getOrElse(0),
+                            pairedReads = 0,
+                            lengthDistribution = Map.empty,
+                            insertSizeDistribution = Map.empty,
+                            aligner = alignment.aligner,
+                            referenceBuild = alignment.referenceBuild,
+                            sampleName = subject.donorIdentifier,
+                            flowCells = Map.empty,
+                            instruments = Map.empty,
+                            mostFrequentInstrument = seqRun.instrumentModel.getOrElse("Unknown"),
+                            inferredPlatform = seqRun.platformName,
+                            platformCounts = Map.empty
+                          )
+
+                          val artifactCtx = ArtifactContext(
+                            sampleAccession = sampleAccession,
+                            sequenceRunUri = seqRun.atUri,
+                            alignmentUri = alignment.atUri
+                          )
+
+                          processor.analyze(
+                            bamPath = bamPath,
+                            libraryStats = libraryStats,
+                            treeType = treeType,
+                            treeProviderType = treeProviderType,
+                            onProgress = (message, current, total) => {
+                              Platform.runLater {
+                                analysisProgress.value = message
+                                analysisProgressPercent.value = if (total > 0) current / total else 0.0
+                              }
+                            },
+                            artifactContext = Some(artifactCtx)
+                          )
+                        }
 
                         Platform.runLater {
                           analysisInProgress.value = false

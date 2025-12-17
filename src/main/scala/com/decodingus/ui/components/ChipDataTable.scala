@@ -170,15 +170,9 @@ class ChipDataTable(
         new MenuItem("Remove") {
           onAction = _ => {
             Option(row.getItem).foreach { item =>
-              val confirm = new Alert(AlertType.Confirmation) {
-                title = "Remove Chip Data"
-                headerText = "Remove this chip/array data?"
-                contentText = s"Vendor: ${item.profile.vendor}, ${item.profile.totalMarkersCalled} markers"
-              }
-              confirm.showAndWait() match {
-                case Some(ButtonType.OK) =>
-                  item.profile.atUri.foreach(onRemove)
-                case _ =>
+              val details = s"Vendor: ${item.profile.vendor}, ${item.profile.totalMarkersCalled} markers"
+              if (ConfirmDialog.confirmRemoval("Chip Data", details)) {
+                item.profile.atUri.foreach(onRemove)
               }
             }
           }
@@ -191,49 +185,37 @@ class ChipDataTable(
 
   /** Shows a dialog with chip profile details */
   private def showDetailsDialog(profile: ChipProfile): Unit = {
-    val dialog = new Dialog[Unit] {
-      title = "Chip Data Details"
-      headerText = s"${profile.vendor} - ${profile.testTypeCode}"
-      dialogPane().buttonTypes = Seq(ButtonType.Close)
-      dialogPane().setPrefSize(400, 350)
+    val detailsText =
+      s"""Vendor: ${profile.vendor}
+         |Test Type: ${profile.testTypeCode}
+         |Chip Version: ${profile.chipVersion.getOrElse("Unknown")}
+         |
+         |Total Markers: ${profile.totalMarkersCalled} / ${profile.totalMarkersPossible}
+         |Call Rate: ${f"${profile.callRate * 100}%.2f"}%
+         |No-Call Rate: ${f"${profile.noCallRate * 100}%.2f"}%
+         |
+         |Autosomal Markers: ${profile.autosomalMarkersCalled}
+         |Y-DNA Markers: ${profile.yMarkersCalled.getOrElse("N/A")}
+         |mtDNA Markers: ${profile.mtMarkersCalled.getOrElse("N/A")}
+         |Heterozygosity Rate: ${profile.hetRate.map(r => f"${r * 100}%.2f%%").getOrElse("N/A")}
+         |
+         |Status: ${profile.status}
+         |Suitable for Ancestry: ${if (profile.isAcceptableForAncestry) "Yes" else "No"}
+         |Sufficient Y Coverage: ${if (profile.hasSufficientYCoverage) "Yes" else "No"}
+         |Sufficient MT Coverage: ${if (profile.hasSufficientMtCoverage) "Yes" else "No"}
+         |
+         |Import Date: ${profile.importDate.toLocalDate}
+         |Source File: ${profile.sourceFileName.getOrElse("Unknown")}
+         |File Hash: ${profile.sourceFileHash.map(_.take(16) + "...").getOrElse("N/A")}
+       """.stripMargin
 
-      val detailsText =
-        s"""Vendor: ${profile.vendor}
-           |Test Type: ${profile.testTypeCode}
-           |Chip Version: ${profile.chipVersion.getOrElse("Unknown")}
-           |
-           |Total Markers: ${profile.totalMarkersCalled} / ${profile.totalMarkersPossible}
-           |Call Rate: ${f"${profile.callRate * 100}%.2f"}%
-           |No-Call Rate: ${f"${profile.noCallRate * 100}%.2f"}%
-           |
-           |Autosomal Markers: ${profile.autosomalMarkersCalled}
-           |Y-DNA Markers: ${profile.yMarkersCalled.getOrElse("N/A")}
-           |mtDNA Markers: ${profile.mtMarkersCalled.getOrElse("N/A")}
-           |Heterozygosity Rate: ${profile.hetRate.map(r => f"${r * 100}%.2f%%").getOrElse("N/A")}
-           |
-           |Status: ${profile.status}
-           |Suitable for Ancestry: ${if (profile.isAcceptableForAncestry) "Yes" else "No"}
-           |Sufficient Y Coverage: ${if (profile.hasSufficientYCoverage) "Yes" else "No"}
-           |Sufficient MT Coverage: ${if (profile.hasSufficientMtCoverage) "Yes" else "No"}
-           |
-           |Import Date: ${profile.importDate.toLocalDate}
-           |Source File: ${profile.sourceFileName.getOrElse("Unknown")}
-           |File Hash: ${profile.sourceFileHash.map(_.take(16) + "...").getOrElse("N/A")}
-         """.stripMargin
-
-      val textArea = new TextArea(detailsText) {
-        editable = false
-        wrapText = true
-        style = "-fx-font-family: monospace; -fx-font-size: 12px;"
-      }
-      VBox.setVgrow(textArea, Priority.Always)
-
-      dialogPane().content = new VBox(10) {
-        padding = Insets(10)
-        children = Seq(textArea)
-      }
-    }
-    dialog.showAndWait()
+    InfoDialog.showCode(
+      "Chip Data Details",
+      s"${profile.vendor} - ${profile.testTypeCode}",
+      detailsText,
+      dialogWidth = 400,
+      dialogHeight = 350
+    )
   }
 
   /** Handles launching ancestry analysis */

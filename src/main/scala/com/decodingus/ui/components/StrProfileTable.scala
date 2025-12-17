@@ -121,15 +121,9 @@ class StrProfileTable(
         new MenuItem("Remove") {
           onAction = _ => {
             Option(row.getItem).foreach { item =>
-              val confirm = new Alert(AlertType.Confirmation) {
-                title = "Remove STR Profile"
-                headerText = "Remove this STR profile?"
-                contentText = s"Provider: ${item.profile.importedFrom.getOrElse("Unknown")}, ${item.profile.markers.size} markers"
-              }
-              confirm.showAndWait() match {
-                case Some(ButtonType.OK) =>
-                  item.profile.atUri.foreach(onRemove)
-                case _ =>
+              val details = s"Provider: ${item.profile.importedFrom.getOrElse("Unknown")}, ${item.profile.markers.size} markers"
+              if (ConfirmDialog.confirmRemoval("STR Profile", details)) {
+                item.profile.atUri.foreach(onRemove)
               }
             }
           }
@@ -142,37 +136,22 @@ class StrProfileTable(
 
   /** Shows a dialog with all marker values */
   private def showMarkersDialog(profile: StrProfile): Unit = {
-    val dialog = new Dialog[Unit] {
-      title = "Y-STR Markers"
-      headerText = s"${profile.importedFrom.getOrElse("STR")} Profile - ${profile.markers.size} markers"
-      dialogPane().buttonTypes = Seq(ButtonType.Close)
-      dialogPane().setPrefSize(500, 500)
-
-      // Format markers as readable text
-      val markerText = profile.markers
-        .sortBy(_.marker)
-        .map { m =>
-          val value = formatStrValue(m.value)
-          f"${m.marker}%-15s = $value"
-        }
-        .mkString("\n")
-
-      val textArea = new TextArea(markerText) {
-        editable = false
-        wrapText = false
-        style = "-fx-font-family: monospace; -fx-font-size: 12px;"
+    val panelName = profile.panels.headOption.map(_.panelName).getOrElse("Custom")
+    val markerText = s"Panel: $panelName\n\n" + profile.markers
+      .sortBy(_.marker)
+      .map { m =>
+        val value = formatStrValue(m.value)
+        f"${m.marker}%-15s = $value"
       }
-      VBox.setVgrow(textArea, Priority.Always)
+      .mkString("\n")
 
-      dialogPane().content = new VBox(10) {
-        padding = Insets(10)
-        children = Seq(
-          new Label(s"Panel: ${profile.panels.headOption.map(_.panelName).getOrElse("Custom")}"),
-          textArea
-        )
-      }
-    }
-    dialog.showAndWait()
+    InfoDialog.showCode(
+      "Y-STR Markers",
+      s"${profile.importedFrom.getOrElse("STR")} Profile - ${profile.markers.size} markers",
+      markerText,
+      dialogWidth = 500,
+      dialogHeight = 500
+    )
   }
 
   /** Formats an STR value for display */
@@ -186,35 +165,20 @@ class StrProfileTable(
 
   /** Exports profile to CSV (placeholder - could open save dialog) */
   private def exportToCsv(profile: StrProfile): Unit = {
-    val csvContent = profile.markers
+    val csvContent = "Copy and paste to save:\n\nMarker,Value\n" + profile.markers
       .sortBy(_.marker)
       .map { m =>
         s"${m.marker},${formatStrValue(m.value)}"
       }
-      .mkString("Marker,Value\n", "\n", "")
+      .mkString("\n")
 
-    // For now, show in a dialog - could be extended to save to file
-    val dialog = new Dialog[Unit] {
-      title = "Export CSV"
-      headerText = "STR Profile CSV Export"
-      dialogPane().buttonTypes = Seq(ButtonType.Close)
-      dialogPane().setPrefSize(400, 400)
-
-      val textArea = new TextArea(csvContent) {
-        editable = false
-        wrapText = false
-        style = "-fx-font-family: monospace; -fx-font-size: 11px;"
-      }
-
-      dialogPane().content = new VBox(10) {
-        padding = Insets(10)
-        children = Seq(
-          new Label("Copy and paste to save:"),
-          textArea
-        )
-      }
-    }
-    dialog.showAndWait()
+    InfoDialog.showCode(
+      "Export CSV",
+      "STR Profile CSV Export",
+      csvContent,
+      dialogWidth = 400,
+      dialogHeight = 400
+    )
   }
 
   // Action buttons
