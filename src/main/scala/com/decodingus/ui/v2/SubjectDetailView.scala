@@ -1797,43 +1797,83 @@ Note: Reference data download may be required on first run."""
   }
 
   private def handleRunYdnaAnalysis(): Unit = {
-    currentSubject.value.foreach { subject =>
-      // Analysis requires sequence data - check if available
-      if (!subject.hasSequenceData) {
-        showInfoDialog(
-          t("analysis.title"),
-          t("data.no_sequencing"),
-          t("data.add_sequence_first")
-        )
-      } else {
-        // TODO: Integrate with existing HaplogroupAnalysisDialog and analysis flow
-        log.debug(s"Run Y-DNA analysis for: ${subject.accession} - not yet integrated")
-        showInfoDialog(
-          t("haplogroup.ydna.title"),
-          t("analysis.not_integrated"),
-          t("analysis.use_main_workflow")
-        )
-      }
-    }
+    import com.decodingus.haplogroup.tree.TreeType
+    runHaplogroupAnalysisFromTab(TreeType.YDNA, "Y-DNA")
   }
 
   private def handleRunMtdnaAnalysis(): Unit = {
+    import com.decodingus.haplogroup.tree.TreeType
+    runHaplogroupAnalysisFromTab(TreeType.MTDNA, "mtDNA")
+  }
+
+  /** Common logic for running haplogroup analysis from the Y-DNA or mtDNA tabs */
+  private def runHaplogroupAnalysisFromTab(treeType: com.decodingus.haplogroup.tree.TreeType, dnaTypeLabel: String): Unit = {
     currentSubject.value.foreach { subject =>
-      if (!subject.hasSequenceData) {
+      // Get all sequence runs and their alignments
+      val sequenceRuns = viewModel.workspace.value.main.getSequenceRunsForBiosample(subject)
+
+      if (sequenceRuns.isEmpty) {
         showInfoDialog(
           t("analysis.title"),
           t("data.no_sequencing"),
           t("data.add_sequence_first")
         )
-      } else {
-        // TODO: Integrate with existing HaplogroupAnalysisDialog and analysis flow
-        log.debug(s"Run mtDNA analysis for: ${subject.accession} - not yet integrated")
-        showInfoDialog(
-          t("haplogroup.mtdna.title"),
-          t("analysis.not_integrated"),
-          t("analysis.use_main_workflow")
-        )
+        return
       }
+
+      // Collect all alignments with their indices
+      case class AlignmentInfo(seqRunIndex: Int, alignIndex: Int, alignment: Alignment)
+      val allAlignments = sequenceRuns.zipWithIndex.flatMap { case (seqRun, seqRunIdx) =>
+        val alignments = viewModel.workspace.value.main.getAlignmentsForSequenceRun(seqRun)
+        alignments.zipWithIndex.map { case (align, alignIdx) =>
+          AlignmentInfo(seqRunIdx, alignIdx, align)
+        }
+      }
+
+      if (allAlignments.isEmpty) {
+        showInfoDialog(
+          t("analysis.title"),
+          "No Alignments",
+          "No alignments found. Please run initial analysis on a sequence run first."
+        )
+        return
+      }
+
+      // Select alignment to use
+      val selectedAlignment: AlignmentInfo = if (allAlignments.size == 1) {
+        allAlignments.head
+      } else {
+        // Multiple alignments - let user choose
+        val choices = allAlignments.map(ai => s"${ai.alignment.referenceBuild} (Run ${ai.seqRunIndex + 1})")
+        val choiceDialog = new scalafx.scene.control.ChoiceDialog[String](
+          choices.head,
+          choices
+        ) {
+          title = s"Select Alignment for $dnaTypeLabel Analysis"
+          headerText = "Multiple alignments available"
+          contentText = "Choose which alignment to analyze:"
+        }
+        Option(SubjectDetailView.this.getScene).flatMap(s => Option(s.getWindow)).foreach { window =>
+          choiceDialog.initOwner(window)
+        }
+
+        choiceDialog.showAndWait() match {
+          case Some(selected) =>
+            val idx = choices.indexOf(selected)
+            allAlignments(idx)
+          case None =>
+            log.debug(s"$dnaTypeLabel analysis cancelled - no alignment selected")
+            return
+        }
+      }
+
+      // Run the analysis
+      handleRunHaplogroupAnalysis(
+        selectedAlignment.seqRunIndex,
+        selectedAlignment.alignIndex,
+        selectedAlignment.alignment,
+        treeType
+      )
     }
   }
 
