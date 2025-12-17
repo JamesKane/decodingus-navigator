@@ -1,7 +1,7 @@
 package com.decodingus.i18n
 
 import java.text.NumberFormat
-import java.time.LocalDate
+import java.time.{Instant, LocalDate, LocalDateTime, ZoneId}
 import java.time.format.{DateTimeFormatter, FormatStyle}
 import java.time.temporal.ChronoUnit
 
@@ -98,6 +98,26 @@ object Formatters {
       case n if n < 7 => I18n.t("time.ago.days", n)
       case _ => formatDate(date)
     }
+  }
+
+  /**
+   * Format a date and time in medium style.
+   * Example: "Dec 15, 2024, 2:30 PM" (en) or "15. Dez. 2024, 14:30" (de)
+   */
+  def formatDateTime(dateTime: LocalDateTime): String = {
+    DateTimeFormatter
+      .ofLocalizedDateTime(FormatStyle.MEDIUM, FormatStyle.SHORT)
+      .withLocale(I18n.currentLocale.value)
+      .format(dateTime)
+  }
+
+  /**
+   * Format an Instant as local date/time.
+   * Example: "Dec 15, 2024, 2:30 PM" (en)
+   */
+  def formatInstant(instant: Instant): String = {
+    val localDateTime = LocalDateTime.ofInstant(instant, ZoneId.systemDefault())
+    formatDateTime(localDateTime)
   }
 
   // ===========================================================================

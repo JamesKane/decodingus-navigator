@@ -5,7 +5,7 @@ import com.decodingus.i18n.Formatters
 import com.decodingus.str.StrCsvParser
 import com.decodingus.config.FeatureToggles
 import com.decodingus.haplogroup.tree.TreeType
-import com.decodingus.ui.components.{AddDataDialog, AddSequenceDataDialog, AncestryResultDialog, ConfirmDialog, DataInput, DataType, EditSubjectDialog, ImportVendorFastaDialog, InfoDialog, MtdnaVariantsPanel, SequenceDataInput, SourceReconciliationPanel, VcfMetadata, VcfMetadataDialog, VendorFastaImportRequest}
+import com.decodingus.ui.components.{AddDataDialog, AddSequenceDataDialog, AncestryResultDialog, ConfirmDialog, DataInput, DataType, EditSubjectDialog, ImportVendorFastaDialog, InfoDialog, MtdnaVariantsPanel, SequenceDataInput, SourceReconciliationPanel, VcfMetadata, VcfMetadataDialog, VendorFastaImportRequest, YStrSummaryPanel}
 import com.decodingus.ui.v2.BiosampleExtensions.*
 import com.decodingus.util.Logger
 import com.decodingus.workspace.WorkbenchViewModel
@@ -94,6 +94,12 @@ class SubjectDetailView(viewModel: WorkbenchViewModel) extends VBox {
     text = ""
     style = "-fx-font-size: 11px; -fx-text-fill: #b0b0b0;"
   }
+  private val overviewYdnaQualityBadge = new Label {
+    text = ""
+    style = "-fx-font-size: 10px; -fx-padding: 2 6; -fx-background-radius: 3;"
+    visible = false
+    managed = false
+  }
   private val overviewMtdnaHaplogroupLabel = new Label("-") {
     styleClass += "haplogroup-value"
     style = "-fx-font-size: 24px; -fx-font-weight: bold; -fx-text-fill: #ffffff;"
@@ -102,9 +108,16 @@ class SubjectDetailView(viewModel: WorkbenchViewModel) extends VBox {
     text = ""
     style = "-fx-font-size: 11px; -fx-text-fill: #b0b0b0;"
   }
+  private val overviewMtdnaQualityBadge = new Label {
+    text = ""
+    style = "-fx-font-size: 10px; -fx-padding: 2 6; -fx-background-radius: 3;"
+    visible = false
+    managed = false
+  }
   private val sequencingCountLabel = new Label("0") { style = "-fx-font-weight: bold; -fx-text-fill: #ffffff;" }
   private val chipCountLabel = new Label("0") { style = "-fx-font-weight: bold; -fx-text-fill: #ffffff;" }
   private val strCountLabel = new Label("0") { style = "-fx-font-weight: bold; -fx-text-fill: #ffffff;" }
+  private val ystrSummaryPanel = YStrSummaryPanel()
 
   // Y-DNA tab labels
   private val ydnaTerminalLabel = new Label("-") {
@@ -122,6 +135,7 @@ class SubjectDetailView(viewModel: WorkbenchViewModel) extends VBox {
   private val ydnaConfidenceLabel = new Label("-") { id = "ydna-confidence"; style = "-fx-font-weight: bold; -fx-text-fill: #ffffff;" }
   private val ydnaSourceLabel = new Label("-") { id = "ydna-source"; style = "-fx-text-fill: #888888;" }
   private val ydnaQualityLabel = new Label("-") { id = "ydna-quality"; style = "-fx-font-weight: bold;" }
+  private val ydnaLastAnalyzedLabel = new Label { id = "ydna-last-analyzed"; style = "-fx-font-size: 11px; -fx-text-fill: #666666;"; visible = false; managed = false }
   private val ydnaNotAnalyzedPane = new VBox(10) {
     alignment = Pos.Center
     padding = Insets(40)
@@ -149,6 +163,7 @@ class SubjectDetailView(viewModel: WorkbenchViewModel) extends VBox {
   private val mtdnaConfidenceLabel = new Label("-") { id = "mtdna-confidence"; style = "-fx-font-weight: bold; -fx-text-fill: #ffffff;" }
   private val mtdnaSourceLabel = new Label("-") { id = "mtdna-source"; style = "-fx-text-fill: #888888;" }
   private val mtdnaQualityLabel = new Label("-") { id = "mtdna-quality"; style = "-fx-font-weight: bold;" }
+  private val mtdnaLastAnalyzedLabel = new Label { id = "mtdna-last-analyzed"; style = "-fx-font-size: 11px; -fx-text-fill: #666666;"; visible = false; managed = false }
   private val mtdnaNotAnalyzedPane = new VBox(10) {
     alignment = Pos.Center
     padding = Insets(40)
@@ -161,6 +176,7 @@ class SubjectDetailView(viewModel: WorkbenchViewModel) extends VBox {
     padding = Insets(0)
   }
   private val mtdnaVariantsPanel = MtdnaVariantsPanel()
+  private val mtdnaReconciliationPanel = SourceReconciliationPanel()
 
   // Data Sources tab containers
   private val sequencingListContainer = new VBox(8) {
@@ -335,13 +351,13 @@ class SubjectDetailView(viewModel: WorkbenchViewModel) extends VBox {
 
   private def createOverviewContent(): ScrollPane = {
     val ydnaCard = createHaplogroupCard("haplogroup.ydna.title", "#2d3a2d", "ydna",
-      overviewYdnaHaplogroupLabel, overviewYdnaConfidenceLabel)
+      overviewYdnaHaplogroupLabel, overviewYdnaConfidenceLabel, overviewYdnaQualityBadge)
     val mtdnaCard = createHaplogroupCard("haplogroup.mtdna.title", "#2d2d3a", "mtdna",
-      overviewMtdnaHaplogroupLabel, overviewMtdnaConfidenceLabel)
+      overviewMtdnaHaplogroupLabel, overviewMtdnaConfidenceLabel, overviewMtdnaQualityBadge)
 
     val haplogroupSection = new HBox(20) {
       padding = Insets(0, 0, 20, 0)
-      children = Seq(ydnaCard, mtdnaCard)
+      children = Seq(ydnaCard, mtdnaCard, ystrSummaryPanel)
     }
 
     val ancestryCard = createPlaceholderCard("ancestry.title", "ancestry.not_analyzed", "action.analyze")
@@ -376,7 +392,8 @@ class SubjectDetailView(viewModel: WorkbenchViewModel) extends VBox {
     bgColor: String,
     dataType: String,
     haplogroupLabel: Label,
-    confidenceLabel: Label
+    confidenceLabel: Label,
+    qualityBadge: Label
   ): VBox = {
     val viewDetailsButton = new Button {
       text = t(if (dataType == "ydna") "haplogroup.view_profile" else "haplogroup.view_details")
@@ -393,7 +410,13 @@ class SubjectDetailView(viewModel: WorkbenchViewModel) extends VBox {
       prefWidth = 220
       style = s"-fx-background-color: $bgColor; -fx-background-radius: 10;"
       children = Seq(
-        new Label { text <== bind(titleKey); style = "-fx-font-weight: bold; -fx-text-fill: #ffffff;" },
+        new HBox(8) {
+          alignment = Pos.CenterLeft
+          children = Seq(
+            new Label { text <== bind(titleKey); style = "-fx-font-weight: bold; -fx-text-fill: #ffffff;" },
+            qualityBadge
+          )
+        },
         haplogroupLabel,
         confidenceLabel,
         viewDetailsButton
@@ -487,7 +510,8 @@ class SubjectDetailView(viewModel: WorkbenchViewModel) extends VBox {
             }
           )
         },
-        ydnaSourceLabel
+        ydnaSourceLabel,
+        ydnaLastAnalyzedLabel
       )
     }
 
@@ -564,7 +588,8 @@ class SubjectDetailView(viewModel: WorkbenchViewModel) extends VBox {
             }
           )
         },
-        mtdnaSourceLabel
+        mtdnaSourceLabel,
+        mtdnaLastAnalyzedLabel
       )
     }
 
@@ -600,6 +625,7 @@ class SubjectDetailView(viewModel: WorkbenchViewModel) extends VBox {
           new StackPane {
             children = Seq(mtdnaNotAnalyzedPane, mtdnaResultPane)
           },
+          mtdnaReconciliationPanel,
           mtdnaVariantsPanel
         )
       }
@@ -1820,8 +1846,11 @@ Note: Reference data download may be required on first run."""
       case Some(result) =>
         overviewYdnaConfidenceLabel.text = s"${t("haplogroup.confidence")}: ${t(s"haplogroup.confidence.${result.confidenceLevel.toLowerCase}")}"
         overviewYdnaConfidenceLabel.style = confidenceStyle(result.confidenceLevel)
+        updateQualityBadge(overviewYdnaQualityBadge, result.qualityRating)
       case None =>
         overviewYdnaConfidenceLabel.text = ""
+        overviewYdnaQualityBadge.visible = false
+        overviewYdnaQualityBadge.managed = false
     }
 
     // Update Overview tab - mtDNA card
@@ -1830,8 +1859,11 @@ Note: Reference data download may be required on first run."""
       case Some(result) =>
         overviewMtdnaConfidenceLabel.text = s"${t("haplogroup.confidence")}: ${t(s"haplogroup.confidence.${result.confidenceLevel.toLowerCase}")}"
         overviewMtdnaConfidenceLabel.style = confidenceStyle(result.confidenceLevel)
+        updateQualityBadge(overviewMtdnaQualityBadge, result.qualityRating)
       case None =>
         overviewMtdnaConfidenceLabel.text = ""
+        overviewMtdnaQualityBadge.visible = false
+        overviewMtdnaQualityBadge.managed = false
     }
 
     // Update Y-DNA tab
@@ -1846,6 +1878,15 @@ Note: Reference data download may be required on first run."""
         ydnaSourceLabel.text = s"${t("data.platform")}: ${result.sourceDisplay}"
         ydnaQualityLabel.text = t(s"analysis.quality.${result.qualityRating.toLowerCase}")
         ydnaQualityLabel.style = s"-fx-font-weight: bold; ${qualityTextColor(result.qualityRating)}"
+        result.analyzedAt match {
+          case Some(instant) =>
+            ydnaLastAnalyzedLabel.text = t("analysis.last_analyzed", Formatters.formatInstant(instant))
+            ydnaLastAnalyzedLabel.visible = true
+            ydnaLastAnalyzedLabel.managed = true
+          case None =>
+            ydnaLastAnalyzedLabel.visible = false
+            ydnaLastAnalyzedLabel.managed = false
+        }
         ydnaNotAnalyzedPane.visible = false
         ydnaResultPane.visible = true
       case None =>
@@ -1856,6 +1897,8 @@ Note: Reference data download may be required on first run."""
         ydnaConfidenceLabel.text = "-"
         ydnaSourceLabel.text = ""
         ydnaQualityLabel.text = "-"
+        ydnaLastAnalyzedLabel.visible = false
+        ydnaLastAnalyzedLabel.managed = false
         ydnaNotAnalyzedPane.visible = true
         ydnaResultPane.visible = false
     }
@@ -1874,6 +1917,15 @@ Note: Reference data download may be required on first run."""
         mtdnaSourceLabel.text = s"${t("data.platform")}: ${result.sourceDisplay}"
         mtdnaQualityLabel.text = t(s"analysis.quality.${result.qualityRating.toLowerCase}")
         mtdnaQualityLabel.style = s"-fx-font-weight: bold; ${qualityTextColor(result.qualityRating)}"
+        result.analyzedAt match {
+          case Some(instant) =>
+            mtdnaLastAnalyzedLabel.text = t("analysis.last_analyzed", Formatters.formatInstant(instant))
+            mtdnaLastAnalyzedLabel.visible = true
+            mtdnaLastAnalyzedLabel.managed = true
+          case None =>
+            mtdnaLastAnalyzedLabel.visible = false
+            mtdnaLastAnalyzedLabel.managed = false
+        }
         mtdnaNotAnalyzedPane.visible = false
         mtdnaResultPane.visible = true
       case None =>
@@ -1882,9 +1934,15 @@ Note: Reference data download may be required on first run."""
         mtdnaConfidenceLabel.text = "-"
         mtdnaSourceLabel.text = ""
         mtdnaQualityLabel.text = "-"
+        mtdnaLastAnalyzedLabel.visible = false
+        mtdnaLastAnalyzedLabel.managed = false
         mtdnaNotAnalyzedPane.visible = true
         mtdnaResultPane.visible = false
     }
+
+    // Update mtDNA reconciliation panel
+    val mtDnaReconciliation = viewModel.workspace.value.main.getMtDnaReconciliation(subject)
+    mtdnaReconciliationPanel.setReconciliation(mtDnaReconciliation)
 
     // Update mtDNA variants panel
     mtdnaVariantsPanel.setMtdnaResult(subject.mtHaplogroupResult)
@@ -1903,6 +1961,9 @@ Note: Reference data download may be required on first run."""
     sequencingCountLabel.text = sequenceRuns.size.toString
     chipCountLabel.text = chipProfiles.size.toString
     strCountLabel.text = strProfiles.size.toString
+
+    // Update Y-STR summary panel on Overview tab
+    ystrSummaryPanel.setStrProfiles(strProfiles, () => handleViewYProfile())
 
     // Update sequencing runs container
     sequencingListContainer.children.clear()
@@ -1952,6 +2013,19 @@ Note: Reference data download may be required on first run."""
     case "Good" => "-fx-text-fill: #60a5fa;"
     case "Fair" => "-fx-text-fill: #fbbf24;"
     case _ => "-fx-text-fill: #f87171;"
+  }
+
+  private def updateQualityBadge(badge: Label, quality: String): Unit = {
+    val (bgColor, textColor, text) = quality match {
+      case "Excellent" => ("#1a472a", "#4ade80", t("analysis.quality.excellent"))
+      case "Good" => ("#1a3a4a", "#60a5fa", t("analysis.quality.good"))
+      case "Fair" => ("#4a3a1a", "#fbbf24", t("analysis.quality.fair"))
+      case _ => ("#4a1a1a", "#f87171", t("analysis.quality.poor"))
+    }
+    badge.text = text
+    badge.style = s"-fx-font-size: 10px; -fx-padding: 2 6; -fx-background-radius: 3; -fx-background-color: $bgColor; -fx-text-fill: $textColor;"
+    badge.visible = true
+    badge.managed = true
   }
 
   private def formatSex(sex: Option[String]): String = {
