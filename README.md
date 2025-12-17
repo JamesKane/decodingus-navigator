@@ -1,6 +1,6 @@
 # Decoding-Us Navigator
 
-Decoding-Us Navigator is an edge-computing companion application to [decoding.us](https://decoding.us). It leverages the Genome Analysis Toolkit (GATK) to analyze BAM/CRAM files directly on your local machine, empowering citizen scientists with advanced bioinformatics capabilities while preserving privacy.
+Decoding-Us Navigator is an edge-computing companion application to [decoding-us.com](https://decoding-us.com). It leverages the Genome Analysis Toolkit (GATK) to analyze BAM/CRAM files directly on your local machine, empowering citizen scientists with advanced bioinformatics capabilities while preserving privacy.
 
 ## Privacy-Preserving Analysis
 
