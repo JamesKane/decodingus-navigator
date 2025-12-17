@@ -2,6 +2,7 @@ package com.decodingus.ui.v2
 
 import com.decodingus.i18n.I18n.{t, bind}
 import com.decodingus.i18n.Formatters
+import com.decodingus.ui.components.AddSubjectDialog
 import com.decodingus.ui.v2.BiosampleExtensions.*
 import com.decodingus.util.Logger
 import com.decodingus.workspace.WorkbenchViewModel
@@ -336,28 +337,88 @@ class SubjectsView(viewModel: WorkbenchViewModel) extends SplitPane {
   // ============================================================================
 
   private def handleAddSubject(): Unit = {
-    // TODO: Open AddSubjectDialog
-    log.debug("Add subject")
+    val dialog = new AddSubjectDialog()
+    dialog.showAndWait() match {
+      case Some(Some(newSubject: Biosample)) =>
+        viewModel.addSubject(newSubject)
+        log.info(s"Added new subject: ${newSubject.sampleAccession}")
+        // Select the newly added subject
+        applyFilter()
+        selectedSubject.value = Some(newSubject)
+      case _ =>
+        log.debug("Add subject cancelled")
+    }
   }
 
   private def handleCompare(): Unit = {
     val subjects = selectedSubjects.toSeq
     if (subjects.size >= 2) {
-      // TODO: Open compare view
-      log.debug(s"Compare ${subjects.size} subjects")
+      // TODO: Open compare view - requires new CompareView component
+      log.debug(s"Compare ${subjects.size} subjects - not yet implemented")
+      showInfoDialog(
+        t("compare.title"),
+        t("compare.not_implemented"),
+        s"${subjects.size} ${t("subjects.selected_for_compare")}"
+      )
     }
   }
 
   private def handleBatchAnalyze(): Unit = {
     val subjects = selectedSubjects.toSeq
-    // TODO: Run batch analysis
-    log.debug(s"Batch analyze ${subjects.size} subjects")
+    if (subjects.nonEmpty) {
+      // TODO: Implement batch analysis with progress dialog
+      log.debug(s"Batch analyze ${subjects.size} subjects - not yet implemented")
+      showInfoDialog(
+        t("analysis.batch.title"),
+        t("analysis.batch.not_implemented"),
+        s"${subjects.size} ${t("subjects.selected_for_analysis")}"
+      )
+    }
   }
 
   private def handleAddToProject(): Unit = {
     val subjects = selectedSubjects.toSeq
-    // TODO: Show project picker dialog
-    log.debug(s"Add ${subjects.size} subjects to project")
+    if (subjects.nonEmpty && viewModel.projects.nonEmpty) {
+      // Show project picker using ChoiceDialog
+      val projectNames = viewModel.projects.map(_.projectName).toSeq
+      val dialog = new scalafx.scene.control.ChoiceDialog[String](
+        projectNames.head,
+        projectNames
+      ) {
+        title = t("projects.add_to")
+        headerText = t("projects.select_project")
+        contentText = s"${subjects.size} ${t("subjects.to_add")}:"
+      }
+
+      dialog.showAndWait() match {
+        case Some(projectName) =>
+          var addedCount = 0
+          subjects.foreach { subject =>
+            if (viewModel.addSubjectToProject(projectName, subject.accession)) {
+              addedCount += 1
+            }
+          }
+          log.info(s"Added $addedCount subjects to project: $projectName")
+        case None =>
+          log.debug("Add to project cancelled")
+      }
+    } else if (viewModel.projects.isEmpty) {
+      showInfoDialog(
+        t("projects.none"),
+        t("projects.create_first"),
+        t("projects.create_first.detail")
+      )
+    }
+  }
+
+  private def showInfoDialog(dialogTitle: String, dialogHeader: String, dialogContent: String): Unit = {
+    import scalafx.scene.control.Alert
+    import scalafx.scene.control.Alert.AlertType
+    new Alert(AlertType.Information) {
+      title = dialogTitle
+      headerText = dialogHeader
+      contentText = dialogContent
+    }.showAndWait()
   }
 
   // ============================================================================

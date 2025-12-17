@@ -2,6 +2,7 @@ package com.decodingus.ui.v2
 
 import com.decodingus.i18n.I18n.{t, bind}
 import com.decodingus.i18n.Formatters
+import com.decodingus.ui.components.{AddProjectDialog, ConfirmDialog, EditProjectDialog}
 import com.decodingus.ui.v2.BiosampleExtensions.*
 import com.decodingus.util.Logger
 import com.decodingus.workspace.WorkbenchViewModel
@@ -360,28 +361,92 @@ class ProjectsView(viewModel: WorkbenchViewModel) extends SplitPane {
   // ============================================================================
 
   private def handleAddProject(): Unit = {
-    // TODO: Open AddProjectDialog
-    log.debug("Add project")
+    val dialog = new AddProjectDialog()
+    dialog.showAndWait() match {
+      case Some(Some(newProject: Project)) =>
+        viewModel.addProject(newProject)
+        log.info(s"Added new project: ${newProject.projectName}")
+        applyFilter()
+        // Select the newly created project
+        viewModel.projects.find(_.projectName == newProject.projectName).foreach { p =>
+          projectListView.selectionModel.value.select(p)
+          selectedProject.value = Some(p)
+        }
+      case _ =>
+        log.debug("Add project cancelled")
+    }
   }
 
   private def handleEditProject(): Unit = {
     selectedProject.value.foreach { project =>
-      // TODO: Open EditProjectDialog
-      log.debug(s"Edit project: ${project.name}")
+      val dialog = new EditProjectDialog(project)
+      dialog.showAndWait() match {
+        case Some(Some(updatedProject: Project)) =>
+          viewModel.updateProject(updatedProject)
+          log.info(s"Updated project: ${updatedProject.projectName}")
+          // Refresh the selection to reflect changes
+          selectedProject.value = Some(updatedProject)
+          updateProjectDetail(updatedProject)
+          applyFilter()
+        case _ =>
+          log.debug("Edit project cancelled")
+      }
     }
   }
 
   private def handleDeleteProject(): Unit = {
     selectedProject.value.foreach { project =>
-      // TODO: Show confirmation and delete
-      log.debug(s"Delete project: ${project.name}")
+      if (ConfirmDialog.confirmRemoval("project", s"${project.name}\n${t("confirm.delete.warning")}")) {
+        viewModel.deleteProject(project.name)
+        log.info(s"Deleted project: ${project.name}")
+        selectedProject.value = None
+        applyFilter()
+      }
     }
   }
 
   private def handleAddMember(): Unit = {
     selectedProject.value.foreach { project =>
-      // TODO: Open member picker dialog
-      log.debug(s"Add member to project: ${project.name}")
+      // Get subjects not already in this project
+      val currentMemberAccessions = project.memberAccessions.toSet
+      val availableSubjects = viewModel.samples.filterNot(s => currentMemberAccessions.contains(s.accession)).toSeq
+
+      if (availableSubjects.isEmpty) {
+        showInfoDialog(
+          t("projects.add_member"),
+          t("info.no_data"),
+          t("projects.no_available_subjects")
+        )
+      } else {
+        // Show choice dialog with available subjects
+        val subjectLabels = availableSubjects.map(s => s.donorId.getOrElse(s.accession))
+        val subjectMap = availableSubjects.map(s => s.donorId.getOrElse(s.accession) -> s.accession).toMap
+
+        val dialog = new scalafx.scene.control.ChoiceDialog[String](
+          subjectLabels.head,
+          subjectLabels
+        ) {
+          title = t("projects.add_member")
+          headerText = t("projects.select_subject")
+          contentText = s"${t("projects.add_to")}: ${project.name}"
+        }
+
+        dialog.showAndWait() match {
+          case Some(selectedLabel) =>
+            subjectMap.get(selectedLabel).foreach { accession =>
+              if (viewModel.addSubjectToProject(project.name, accession)) {
+                log.info(s"Added $accession to project: ${project.name}")
+                // Refresh the detail view
+                viewModel.projects.find(_.name == project.name).foreach { updatedProject =>
+                  selectedProject.value = Some(updatedProject)
+                  updateProjectDetail(updatedProject)
+                }
+              }
+            }
+          case None =>
+            log.debug("Add member cancelled")
+        }
+      }
     }
   }
 
@@ -389,8 +454,21 @@ class ProjectsView(viewModel: WorkbenchViewModel) extends SplitPane {
     val selected = memberTableView.selectionModel.value.getSelectedItem
     if (selected != null) {
       selectedProject.value.foreach { project =>
-        // TODO: Remove member from project
-        log.debug(s"Remove ${selected.accession} from ${project.name}")
+        val memberName = selected.donorId.getOrElse(selected.accession)
+        if (ConfirmDialog.confirm(
+          t("confirm.remove_member"),
+          t("confirm.remove_member.message", memberName, project.name),
+          t("confirm.delete.warning")
+        )) {
+          if (viewModel.removeSubjectFromProject(project.name, selected.accession)) {
+            log.info(s"Removed ${selected.accession} from project: ${project.name}")
+            // Refresh the detail view
+            viewModel.projects.find(_.name == project.name).foreach { updatedProject =>
+              selectedProject.value = Some(updatedProject)
+              updateProjectDetail(updatedProject)
+            }
+          }
+        }
       }
     }
   }
@@ -398,10 +476,28 @@ class ProjectsView(viewModel: WorkbenchViewModel) extends SplitPane {
   private def handleDroppedMember(accession: String): Unit = {
     selectedProject.value.foreach { project =>
       viewModel.samples.find(_.accession == accession).foreach { biosample =>
-        // TODO: Add member to project via ViewModel
-        log.debug(s"Add ${accession} to ${project.name} via drag-drop")
+        if (viewModel.addSubjectToProject(project.name, accession)) {
+          log.info(s"Added ${accession} to ${project.name} via drag-drop")
+          // Refresh the detail view
+          viewModel.projects.find(_.name == project.name).foreach { updatedProject =>
+            selectedProject.value = Some(updatedProject)
+            updateProjectDetail(updatedProject)
+          }
+        } else {
+          log.debug(s"Subject $accession already in project or project not found")
+        }
       }
     }
+  }
+
+  private def showInfoDialog(dialogTitle: String, dialogHeader: String, dialogContent: String): Unit = {
+    import scalafx.scene.control.Alert
+    import scalafx.scene.control.Alert.AlertType
+    new Alert(AlertType.Information) {
+      title = dialogTitle
+      headerText = dialogHeader
+      contentText = dialogContent
+    }.showAndWait()
   }
 
   // ============================================================================

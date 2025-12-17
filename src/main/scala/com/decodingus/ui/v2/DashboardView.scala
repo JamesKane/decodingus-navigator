@@ -321,8 +321,26 @@ class DashboardView(viewModel: WorkbenchViewModel) extends ScrollPane {
   }
 
   private def runAllPendingAnalyses(): Unit = {
-    // TODO: Implement batch analysis
-    log.debug("Run all pending analyses")
+    val pendingCount = countPendingAnalyses
+    if (pendingCount > 0) {
+      // TODO: Integrate with actual batch analysis workflow
+      log.debug(s"Run all pending analyses - $pendingCount subjects - not yet integrated")
+      showInfoDialog(
+        t("analysis.batch.title"),
+        t("analysis.batch.not_implemented"),
+        s"$pendingCount ${t("subjects.selected_for_analysis")}"
+      )
+    }
+  }
+
+  private def showInfoDialog(dialogTitle: String, dialogHeader: String, dialogContent: String): Unit = {
+    import scalafx.scene.control.Alert
+    import scalafx.scene.control.Alert.AlertType
+    new Alert(AlertType.Information) {
+      title = dialogTitle
+      headerText = dialogHeader
+      contentText = dialogContent
+    }.showAndWait()
   }
 
   // ============================================================================

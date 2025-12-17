@@ -50,6 +50,12 @@ object BiosampleExtensions {
 
     /** Get atUri for identification (use sampleAccession as fallback ID) */
     def id: String = b.atUri.getOrElse(b.sampleAccession)
+
+    /** Check if biosample has any sequencing data references */
+    def hasSequenceData: Boolean = b.sequenceRunRefs.nonEmpty
+
+    /** Check if biosample has any genotype data references */
+    def hasGenotypeData: Boolean = b.genotypeRefs.nonEmpty
   }
 
   // ============================================================================

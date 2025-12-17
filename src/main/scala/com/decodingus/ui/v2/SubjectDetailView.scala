@@ -2,6 +2,7 @@ package com.decodingus.ui.v2
 
 import com.decodingus.i18n.I18n.{t, bind}
 import com.decodingus.i18n.Formatters
+import com.decodingus.ui.components.{AddSequenceDataDialog, ConfirmDialog, EditSubjectDialog, SequenceDataInput}
 import com.decodingus.ui.v2.BiosampleExtensions.*
 import com.decodingus.util.Logger
 import com.decodingus.workspace.WorkbenchViewModel
@@ -491,37 +492,101 @@ class SubjectDetailView(viewModel: WorkbenchViewModel) extends VBox {
 
   private def handleEdit(): Unit = {
     currentSubject.value.foreach { subject =>
-      // TODO: Open edit dialog
-      log.debug(s"Edit subject: ${subject.accession}")
+      val dialog = new EditSubjectDialog(subject)
+      dialog.showAndWait() match {
+        case Some(Some(updatedSubject: Biosample)) =>
+          viewModel.updateSubject(updatedSubject)
+          currentSubject.value = Some(updatedSubject)
+          updateContent(updatedSubject)
+          log.info(s"Updated subject: ${updatedSubject.sampleAccession}")
+        case _ =>
+          log.debug("Edit subject cancelled")
+      }
     }
   }
 
   private def handleDelete(): Unit = {
     currentSubject.value.foreach { subject =>
-      // TODO: Show confirmation and delete
-      log.debug(s"Delete subject: ${subject.accession}")
+      val subjectName = subject.donorId.getOrElse(subject.accession)
+      if (ConfirmDialog.confirmRemoval("subject", subjectName)) {
+        viewModel.deleteSubject(subject.accession)
+        currentSubject.value = None
+        log.info(s"Deleted subject: ${subject.accession}")
+      }
     }
   }
 
   private def handleRunYdnaAnalysis(): Unit = {
     currentSubject.value.foreach { subject =>
-      // TODO: Run Y-DNA analysis
-      log.debug(s"Run Y-DNA analysis for: ${subject.accession}")
+      // Analysis requires sequence data - check if available
+      if (!subject.hasSequenceData) {
+        showInfoDialog(
+          t("analysis.title"),
+          t("data.no_sequencing"),
+          t("data.add_sequence_first")
+        )
+      } else {
+        // TODO: Integrate with existing HaplogroupAnalysisDialog and analysis flow
+        log.debug(s"Run Y-DNA analysis for: ${subject.accession} - not yet integrated")
+        showInfoDialog(
+          t("haplogroup.ydna.title"),
+          t("analysis.not_integrated"),
+          t("analysis.use_main_workflow")
+        )
+      }
     }
   }
 
   private def handleRunMtdnaAnalysis(): Unit = {
     currentSubject.value.foreach { subject =>
-      // TODO: Run mtDNA analysis
-      log.debug(s"Run mtDNA analysis for: ${subject.accession}")
+      if (!subject.hasSequenceData) {
+        showInfoDialog(
+          t("analysis.title"),
+          t("data.no_sequencing"),
+          t("data.add_sequence_first")
+        )
+      } else {
+        // TODO: Integrate with existing HaplogroupAnalysisDialog and analysis flow
+        log.debug(s"Run mtDNA analysis for: ${subject.accession} - not yet integrated")
+        showInfoDialog(
+          t("haplogroup.mtdna.title"),
+          t("analysis.not_integrated"),
+          t("analysis.use_main_workflow")
+        )
+      }
     }
   }
 
   private def handleAddData(): Unit = {
     currentSubject.value.foreach { subject =>
-      // TODO: Show add data dialog
-      log.debug(s"Add data for: ${subject.accession}")
+      // For now, pass empty set - duplicate detection can be enhanced later
+      // when we have full sequence run resolution from refs
+      val existingChecksums: Set[String] = Set.empty
+
+      val dialog = new AddSequenceDataDialog(existingChecksums)
+      dialog.showAndWait() match {
+        case Some(Some(dataInput: SequenceDataInput)) =>
+          // TODO: Process the data input and add to subject
+          log.info(s"Adding data for ${subject.accession}: ${dataInput.fileInfo.fileName}")
+          showInfoDialog(
+            t("data.title"),
+            t("data.processing"),
+            t("data.processing.detail")
+          )
+        case _ =>
+          log.debug("Add data cancelled")
+      }
     }
+  }
+
+  private def showInfoDialog(dialogTitle: String, dialogHeader: String, dialogContent: String): Unit = {
+    import scalafx.scene.control.Alert
+    import scalafx.scene.control.Alert.AlertType
+    new Alert(AlertType.Information) {
+      title = dialogTitle
+      headerText = dialogHeader
+      contentText = dialogContent
+    }.showAndWait()
   }
 
   // ============================================================================
