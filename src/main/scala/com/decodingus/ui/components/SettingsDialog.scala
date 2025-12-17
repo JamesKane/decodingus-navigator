@@ -8,7 +8,8 @@ import scalafx.geometry.{Insets, Pos}
 import scalafx.stage.{FileChooser, DirectoryChooser}
 import scalafx.collections.ObservableBuffer
 import scalafx.beans.property.{StringProperty, BooleanProperty}
-import com.decodingus.config.{UserPreferences, UserPreferencesService, ReferenceConfig, ReferenceGenomeConfig, ReferenceConfigService}
+import com.decodingus.config.{UserPreferences, UserPreferencesService}
+import com.decodingus.refgenome.config.{ReferenceConfig, ReferenceGenomeConfig, ReferenceConfigService}
 
 import java.io.File
 import java.nio.file.Files

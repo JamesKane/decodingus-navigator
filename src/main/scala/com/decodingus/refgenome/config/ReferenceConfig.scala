@@ -1,4 +1,4 @@
-package com.decodingus.config
+package com.decodingus.refgenome.config
 
 import io.circe.{Decoder, Encoder}
 import io.circe.generic.semiauto.{deriveDecoder, deriveEncoder}

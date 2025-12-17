@@ -6,7 +6,8 @@ import com.decodingus.client.DecodingUsClient
 import com.decodingus.db.Transactor
 import com.decodingus.haplogroup.tree.{TreeType, TreeProviderType}
 import com.decodingus.auth.User
-import com.decodingus.config.{FeatureToggles, UserPreferencesService, ReferenceConfigService}
+import com.decodingus.config.{FeatureToggles, UserPreferencesService}
+import com.decodingus.refgenome.config.ReferenceConfigService
 import com.decodingus.model.{LibraryStats, WgsMetrics}
 import com.decodingus.refgenome.{ReferenceGateway, ReferenceResolveResult, YRegionAnnotator}
 import com.decodingus.repository.BiosampleRepository

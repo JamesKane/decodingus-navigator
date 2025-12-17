@@ -1,4 +1,4 @@
-package com.decodingus.config
+package com.decodingus.refgenome.config
 
 import io.circe.parser._
 import io.circe.syntax._

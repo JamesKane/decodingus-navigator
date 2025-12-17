@@ -1,6 +1,6 @@
 package com.decodingus.refgenome
 
-import com.decodingus.config.{ReferenceConfig, ReferenceConfigService}
+import com.decodingus.refgenome.config.{ReferenceConfig, ReferenceConfigService}
 import com.decodingus.analysis.GatkRunner
 import sttp.client3.*
 

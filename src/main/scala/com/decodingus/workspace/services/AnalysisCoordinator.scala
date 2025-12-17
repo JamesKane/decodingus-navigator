@@ -3,7 +3,8 @@ package com.decodingus.workspace.services
 import com.decodingus.analysis.*
 import com.decodingus.haplogroup.processor.HaplogroupProcessor
 import com.decodingus.analysis.SexInference.{InferredSex, SexInferenceResult}
-import com.decodingus.config.{FeatureToggles, ReferenceConfigService, UserPreferencesService}
+import com.decodingus.config.{FeatureToggles, UserPreferencesService}
+import com.decodingus.refgenome.config.ReferenceConfigService
 import com.decodingus.haplogroup.model.HaplogroupResult as AnalysisHaplogroupResult
 import com.decodingus.haplogroup.tree.{TreeProviderType, TreeType}
 import com.decodingus.model.{LibraryStats, WgsMetrics}

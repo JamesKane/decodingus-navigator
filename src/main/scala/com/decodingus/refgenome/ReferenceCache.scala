@@ -1,6 +1,6 @@
 package com.decodingus.refgenome
 
-import com.decodingus.config.ReferenceConfigService
+import com.decodingus.refgenome.config.ReferenceConfigService
 
 import java.io.IOException
 import java.nio.file.{Files, Path, Paths}
