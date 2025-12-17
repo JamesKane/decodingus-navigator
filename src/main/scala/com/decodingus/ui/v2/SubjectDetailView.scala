@@ -9,7 +9,7 @@ import com.decodingus.ui.components.{AddDataDialog, AddSequenceDataDialog, Analy
 import com.decodingus.ui.v2.BiosampleExtensions.*
 import com.decodingus.util.Logger
 import com.decodingus.workspace.WorkbenchViewModel
-import com.decodingus.workspace.model.{Biosample, ChipProfile, HaplogroupResult, SequenceRun, StrProfile}
+import com.decodingus.workspace.model.{Alignment, Biosample, ChipProfile, HaplogroupResult, SequenceRun, StrProfile}
 import scalafx.scene.control.Alert.AlertType
 import scalafx.Includes.*
 import scalafx.beans.property.{ObjectProperty, StringProperty}
@@ -577,15 +577,18 @@ class SubjectDetailView(viewModel: WorkbenchViewModel) extends VBox {
   // Data Source Item Creation
   // ============================================================================
 
-  private def createSequenceRunItem(seqRun: SequenceRun, index: Int): HBox = {
+  private def createSequenceRunItem(seqRun: SequenceRun, index: Int): VBox = {
     val testTypeDisplay = SequenceRun.testTypeDisplayName(seqRun.testType)
     val readsDisplay = seqRun.totalReads.map(r => formatReadCount(r)).getOrElse("-")
     val alignedPct = seqRun.pctPfReadsAligned.map(p => f"${p * 100}%.1f%%").getOrElse("-")
 
-    new HBox(15) {
+    // Get alignments for this sequence run
+    val alignments = viewModel.workspace.value.main.getAlignmentsForSequenceRun(seqRun)
+
+    val runInfoBox = new HBox(15) {
       alignment = Pos.CenterLeft
       padding = Insets(10)
-      style = "-fx-background-color: #333333; -fx-background-radius: 5;"
+      style = "-fx-background-color: #333333; -fx-background-radius: 5 5 0 0;"
       children = Seq(
         // Icon/type indicator
         new Label {
@@ -639,6 +642,237 @@ class SubjectDetailView(viewModel: WorkbenchViewModel) extends VBox {
         }
       )
     }
+
+    // Alignments section (collapsed under the run info)
+    val alignmentsContainer = new VBox(5) {
+      padding = Insets(5, 10, 10, 50) // Indented from the left
+      style = "-fx-background-color: #2a2a2a; -fx-background-radius: 0 0 5 5;"
+      visible = alignments.nonEmpty
+      managed = alignments.nonEmpty
+      children = alignments.zipWithIndex.map { case (alignment, alignIdx) =>
+        createAlignmentItem(alignment, index, alignIdx)
+      }
+    }
+
+    new VBox(0) {
+      style = "-fx-background-color: #333333; -fx-background-radius: 5;"
+      children = if (alignments.nonEmpty) {
+        Seq(runInfoBox, alignmentsContainer)
+      } else {
+        // Adjust runInfoBox style when no alignments
+        runInfoBox.style = "-fx-background-color: #333333; -fx-background-radius: 5;"
+        Seq(runInfoBox)
+      }
+    }
+  }
+
+  /** Creates a display item for an alignment with analysis actions */
+  private def createAlignmentItem(alignmentData: Alignment, seqRunIndex: Int, alignIndex: Int): HBox = {
+    val coverageDisplay = alignmentData.metrics.flatMap(_.meanCoverage).map(c => f"$c%.1fx").getOrElse("-")
+    val callableDisplay = alignmentData.metrics.flatMap(_.callableBases).map(b => Formatters.formatNumber(b)).getOrElse("-")
+
+    val refBuild = alignmentData.referenceBuild
+    val alignerName = alignmentData.aligner
+    val hasCoverage = alignmentData.metrics.flatMap(_.meanCoverage).isDefined
+    val hasCallable = alignmentData.metrics.flatMap(_.callableBases).isDefined
+    val hasVcf = alignmentData.metrics.exists(_.hasVcf)
+
+    new HBox(10) {
+      alignment = Pos.CenterLeft
+      padding = Insets(8)
+      style = "-fx-background-color: #3a3a3a; -fx-background-radius: 3;"
+      children = Seq(
+        // Reference badge
+        new Label(refBuild) {
+          prefWidth = 80
+          style = "-fx-font-weight: bold; -fx-text-fill: #60a5fa; -fx-font-size: 11px;"
+        },
+        // Aligner
+        new Label(alignerName) {
+          style = "-fx-text-fill: #888888; -fx-font-size: 11px;"
+        },
+        // Metrics info
+        new HBox(15) {
+          hgrow = Priority.Always
+          children = Seq(
+            new Label(s"Coverage: $coverageDisplay") {
+              style = s"-fx-text-fill: ${if (coverageDisplay == "-") "#666666" else "#b0b0b0"}; -fx-font-size: 11px;"
+            },
+            new Label(s"Callable: $callableDisplay") {
+              style = s"-fx-text-fill: ${if (callableDisplay == "-") "#666666" else "#b0b0b0"}; -fx-font-size: 11px;"
+            }
+          )
+        },
+        // Status indicators
+        new HBox(5) {
+          children = {
+            val indicators = scala.collection.mutable.ArrayBuffer[scalafx.scene.Node]()
+            if (hasCoverage) {
+              indicators += new Label("WGS") {
+                style = "-fx-background-color: #2d3a2d; -fx-text-fill: #4ade80; -fx-padding: 1 4; -fx-background-radius: 2; -fx-font-size: 9px;"
+              }
+            }
+            if (hasCallable) {
+              indicators += new Label("CL") {
+                style = "-fx-background-color: #2d3a2d; -fx-text-fill: #4ade80; -fx-padding: 1 4; -fx-background-radius: 2; -fx-font-size: 9px;"
+              }
+            }
+            if (hasVcf) {
+              indicators += new Label("VCF") {
+                style = "-fx-background-color: #3a2d3a; -fx-text-fill: #c084fc; -fx-padding: 1 4; -fx-background-radius: 2; -fx-font-size: 9px;"
+              }
+            }
+            indicators.toSeq
+          }
+        },
+        // Action menu
+        new MenuButton("⋮") {
+          style = "-fx-background-color: transparent; -fx-text-fill: #666666; -fx-font-size: 14px;"
+          items = createAlignmentMenuItems(alignmentData, seqRunIndex, alignIndex)
+        }
+      )
+    }
+  }
+
+  /** Creates context menu items for alignment actions */
+  private def createAlignmentMenuItems(alignment: Alignment, seqRunIndex: Int, alignIndex: Int): Seq[MenuItem] = {
+    val items = scala.collection.mutable.ArrayBuffer[MenuItem]()
+
+    // Run WGS Metrics
+    items += new MenuItem("Run WGS Metrics") {
+      disable = alignment.metrics.flatMap(_.meanCoverage).isDefined
+      onAction = _ => handleRunWgsMetrics(seqRunIndex, alignIndex)
+    }
+
+    // Run Callable Loci
+    items += new MenuItem("Run Callable Loci") {
+      disable = alignment.metrics.flatMap(_.callableBases).isDefined
+      onAction = _ => handleRunCallableLoci(seqRunIndex, alignIndex)
+    }
+
+    items += new SeparatorMenuItem()
+
+    // Details
+    items += new MenuItem("Details") {
+      onAction = _ => showAlignmentDetailsDialog(alignment)
+    }
+
+    items.toSeq
+  }
+
+  /** Handle running WGS metrics analysis for a specific alignment */
+  private def handleRunWgsMetrics(seqRunIndex: Int, alignIndex: Int): Unit = {
+    currentSubject.value.foreach { subject =>
+      val progressDialog = new AnalysisProgressDialog(
+        "WGS Metrics Analysis",
+        viewModel.analysisProgress,
+        viewModel.analysisProgressPercent,
+        viewModel.analysisInProgress
+      )
+      Option(SubjectDetailView.this.getScene).flatMap(s => Option(s.getWindow)).foreach { window =>
+        progressDialog.initOwner(window)
+      }
+
+      viewModel.runWgsMetricsAnalysisForAlignment(
+        subject.accession,
+        seqRunIndex,
+        alignIndex,
+        {
+          case Right(metrics) =>
+            scalafx.application.Platform.runLater {
+              updateDataSources(subject)
+              showInfoDialog(
+                "WGS Metrics Complete",
+                "Analysis finished successfully",
+                s"Mean coverage: ${f"${metrics.meanCoverage}%.1f"}x\nMedian coverage: ${f"${metrics.medianCoverage}%.1f"}x"
+              )
+            }
+          case Left(error) =>
+            scalafx.application.Platform.runLater {
+              showInfoDialog(t("error.title"), "WGS Metrics Failed", error)
+            }
+        }
+      )
+
+      progressDialog.show()
+    }
+  }
+
+  /** Handle running callable loci analysis for a specific alignment */
+  private def handleRunCallableLoci(seqRunIndex: Int, alignIndex: Int): Unit = {
+    currentSubject.value.foreach { subject =>
+      val progressDialog = new AnalysisProgressDialog(
+        "Callable Loci Analysis",
+        viewModel.analysisProgress,
+        viewModel.analysisProgressPercent,
+        viewModel.analysisInProgress
+      )
+      Option(SubjectDetailView.this.getScene).flatMap(s => Option(s.getWindow)).foreach { window =>
+        progressDialog.initOwner(window)
+      }
+
+      viewModel.runCallableLociAnalysisForAlignment(
+        subject.accession,
+        seqRunIndex,
+        alignIndex,
+        {
+          case Right((result, _)) =>
+            scalafx.application.Platform.runLater {
+              updateDataSources(subject)
+              showInfoDialog(
+                "Callable Loci Complete",
+                "Analysis finished successfully",
+                s"Callable bases: ${Formatters.formatNumber(result.callableBases)}\nContigs analyzed: ${result.contigAnalysis.size}"
+              )
+            }
+          case Left(error) =>
+            scalafx.application.Platform.runLater {
+              showInfoDialog(t("error.title"), "Callable Loci Failed", error)
+            }
+        }
+      )
+
+      progressDialog.show()
+    }
+  }
+
+  /** Show alignment details dialog */
+  private def showAlignmentDetailsDialog(alignment: Alignment): Unit = {
+    val metrics = alignment.metrics.getOrElse(com.decodingus.workspace.model.AlignmentMetrics())
+    val detailsText =
+      s"""Reference: ${alignment.referenceBuild}
+         |Aligner: ${alignment.aligner}
+         |Variant Caller: ${alignment.variantCaller.getOrElse("N/A")}
+         |Files: ${alignment.files.size}
+         |
+         |--- WGS Metrics ---
+         |Mean Coverage: ${metrics.meanCoverage.map(c => f"$c%.2fx").getOrElse("Not analyzed")}
+         |Median Coverage: ${metrics.medianCoverage.map(c => f"$c%.2fx").getOrElse("N/A")}
+         |SD Coverage: ${metrics.sdCoverage.map(c => f"$c%.2f").getOrElse("N/A")}
+         |% at 10x: ${metrics.pct10x.map(p => f"${p * 100}%.1f%%").getOrElse("N/A")}
+         |% at 20x: ${metrics.pct20x.map(p => f"${p * 100}%.1f%%").getOrElse("N/A")}
+         |% at 30x: ${metrics.pct30x.map(p => f"${p * 100}%.1f%%").getOrElse("N/A")}
+         |
+         |--- Callable Loci ---
+         |Callable Bases: ${metrics.callableBases.map(b => Formatters.formatNumber(b)).getOrElse("Not analyzed")}
+         |Analysis Complete: ${metrics.callableLociComplete.map(_.toString).getOrElse("N/A")}
+         |
+         |--- VCF Status ---
+         |VCF Generated: ${if (metrics.hasVcf) "Yes" else "No"}
+         |Variant Count: ${metrics.vcfVariantCount.map(v => Formatters.formatNumber(v)).getOrElse("N/A")}
+         |
+         |--- Sex Inference ---
+         |Inferred Sex: ${metrics.inferredSex.getOrElse("Not determined")}
+         |Confidence: ${metrics.sexInferenceConfidence.getOrElse("N/A")}
+       """.stripMargin
+
+    InfoDialog.showCode(
+      "Alignment Details",
+      s"${alignment.referenceBuild} - ${alignment.aligner}",
+      detailsText,
+      dialogWidth = 450,
+      dialogHeight = 500
+    )
   }
 
   /** Creates context menu items for sequence run actions */
