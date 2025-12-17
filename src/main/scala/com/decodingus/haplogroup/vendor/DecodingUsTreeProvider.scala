@@ -61,14 +61,10 @@ class DecodingUsTreeProvider(treeType: TreeType) extends TreeProvider(treeType) 
                                      else node.parentName.flatMap(nameToId.get).orElse(Some(rootId))
 
         val loci = node.variants.flatMap { v =>
-          v.coordinates.headOption.flatMap { case (apiBuild, coord) =>
-            buildMap.get(apiBuild).flatMap { internalBuild =>
-              if (internalBuild == targetBuild) {
-                Some(Locus(v.name, getContigName(treeType, internalBuild), coord.start, coord.anc, coord.der))
-              } else {
-                None
-              }
-            }
+          v.coordinates.collectFirst {
+            case (apiBuild, coord) if buildMap.get(apiBuild).contains(targetBuild) =>
+              val internalBuild = buildMap(apiBuild)
+              Locus(v.name, getContigName(treeType, internalBuild), coord.start, coord.anc, coord.der)
           }
         }
 

@@ -422,6 +422,46 @@ class HaplogroupProcessor {
           val scorer = new HaplogroupScorer()
           val results = scorer.score(tree, snpCalls)
 
+          onProgress("Identifying private variants...", 0.7, 1.0)
+
+          // Identify private variants by querying the full VCF and excluding path positions
+          val terminalHaplogroup = results.headOption.map(_.name).getOrElse("")
+          val pathPositions = collectPathPositions(tree, terminalHaplogroup)
+
+          val privateVariants = VcfQueryService.fromCache(sampleAccession, runId, alignmentId) match {
+            case Right(vcfService) =>
+              try {
+                vcfService.queryContig(referenceBuild, primaryContig) match {
+                  case Right(iter) =>
+                    iter.flatMap { vc =>
+                      if (vc.isVariant && !pathPositions.contains(vc.position)) {
+                        Some(PrivateVariant(
+                          contig = vc.contig,
+                          position = vc.position,
+                          ref = vc.ref,
+                          alt = vc.alt,
+                          quality = vc.quality,
+                          depth = vc.depth
+                        ))
+                      } else {
+                        None
+                      }
+                    }.toList
+                  case Left(err) =>
+                    log.info(s"Failed to query contig for private variants: $err")
+                    List.empty
+                }
+              } finally {
+                vcfService.close()
+              }
+            case Left(err) =>
+              log.info(s"Failed to open VCF service for private variants: $err")
+              List.empty
+          }
+
+          // Load STR annotator for indel annotation (optional)
+          val strAnnotator = StrAnnotator.forBuild(referenceBuild).toOption
+
           onProgress("Generating report...", 0.8, 1.0)
 
           // Get artifact directory for report
@@ -445,9 +485,9 @@ class HaplogroupProcessor {
             tree = tree,
             snpCalls = snpCalls,
             sampleName = None,
-            privateVariants = None,  // Private variants not extracted in VCF-based flow
+            privateVariants = Some(privateVariants),
             treeProvider = Some(treeProviderType),
-            strAnnotator = None,
+            strAnnotator = strAnnotator,
             sampleBuild = Some(referenceBuild),
             treeBuild = Some(treeSourceBuild),
             namedVariantCache = variantCache
