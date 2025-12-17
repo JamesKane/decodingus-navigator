@@ -6,7 +6,7 @@ import com.decodingus.ui.components.{AddSequenceDataDialog, ConfirmDialog, EditS
 import com.decodingus.ui.v2.BiosampleExtensions.*
 import com.decodingus.util.Logger
 import com.decodingus.workspace.WorkbenchViewModel
-import com.decodingus.workspace.model.Biosample
+import com.decodingus.workspace.model.{Biosample, HaplogroupResult}
 import scalafx.Includes.*
 import scalafx.beans.property.{ObjectProperty, StringProperty}
 import scalafx.geometry.{Insets, Pos, Side}
@@ -78,6 +78,85 @@ class SubjectDetailView(viewModel: WorkbenchViewModel) extends VBox {
   }
 
   // ============================================================================
+  // UI Labels (must be declared before tab creation)
+  // ============================================================================
+
+  // Overview tab labels
+  private val overviewYdnaHaplogroupLabel = new Label("-") {
+    styleClass += "haplogroup-value"
+    style = "-fx-font-size: 24px; -fx-font-weight: bold; -fx-text-fill: #ffffff;"
+  }
+  private val overviewYdnaConfidenceLabel = new Label {
+    text = ""
+    style = "-fx-font-size: 11px; -fx-text-fill: #b0b0b0;"
+  }
+  private val overviewMtdnaHaplogroupLabel = new Label("-") {
+    styleClass += "haplogroup-value"
+    style = "-fx-font-size: 24px; -fx-font-weight: bold; -fx-text-fill: #ffffff;"
+  }
+  private val overviewMtdnaConfidenceLabel = new Label {
+    text = ""
+    style = "-fx-font-size: 11px; -fx-text-fill: #b0b0b0;"
+  }
+  private val sequencingCountLabel = new Label("0") { style = "-fx-font-weight: bold; -fx-text-fill: #ffffff;" }
+  private val chipCountLabel = new Label("0") { style = "-fx-font-weight: bold; -fx-text-fill: #ffffff;" }
+  private val strCountLabel = new Label("0") { style = "-fx-font-weight: bold; -fx-text-fill: #ffffff;" }
+
+  // Y-DNA tab labels
+  private val ydnaTerminalLabel = new Label("-") {
+    id = "ydna-terminal"
+    style = "-fx-font-size: 28px; -fx-font-weight: bold; -fx-text-fill: #4ade80;"
+  }
+  private val ydnaPathLabel = new Label {
+    id = "ydna-path"
+    text = ""
+    style = "-fx-text-fill: #b0b0b0; -fx-font-size: 12px;"
+    wrapText = true
+  }
+  private val ydnaDerivedLabel = new Label("-") { id = "ydna-derived"; style = "-fx-font-weight: bold; -fx-text-fill: #ffffff;" }
+  private val ydnaAncestralLabel = new Label("-") { id = "ydna-ancestral"; style = "-fx-font-weight: bold; -fx-text-fill: #ffffff;" }
+  private val ydnaConfidenceLabel = new Label("-") { id = "ydna-confidence"; style = "-fx-font-weight: bold; -fx-text-fill: #ffffff;" }
+  private val ydnaSourceLabel = new Label("-") { id = "ydna-source"; style = "-fx-text-fill: #888888;" }
+  private val ydnaQualityLabel = new Label("-") { id = "ydna-quality"; style = "-fx-font-weight: bold;" }
+  private val ydnaNotAnalyzedPane = new VBox(10) {
+    alignment = Pos.Center
+    padding = Insets(40)
+    children = Seq(
+      new Label { text <== bind("haplogroup.not_determined"); style = "-fx-font-size: 16px; -fx-text-fill: #888888;" },
+      new Label { text <== bind("data.add_sequence_first"); style = "-fx-text-fill: #666666;" }
+    )
+  }
+  private val ydnaResultPane = new VBox(15) {
+    padding = Insets(0)
+  }
+
+  // mtDNA tab labels
+  private val mtdnaTerminalLabel = new Label("-") {
+    id = "mtdna-terminal"
+    style = "-fx-font-size: 28px; -fx-font-weight: bold; -fx-text-fill: #60a5fa;"
+  }
+  private val mtdnaPathLabel = new Label {
+    id = "mtdna-path"
+    text = ""
+    style = "-fx-text-fill: #b0b0b0; -fx-font-size: 12px;"
+    wrapText = true
+  }
+  private val mtdnaConfidenceLabel = new Label("-") { id = "mtdna-confidence"; style = "-fx-font-weight: bold; -fx-text-fill: #ffffff;" }
+  private val mtdnaSourceLabel = new Label("-") { id = "mtdna-source"; style = "-fx-text-fill: #888888;" }
+  private val mtdnaQualityLabel = new Label("-") { id = "mtdna-quality"; style = "-fx-font-weight: bold;" }
+  private val mtdnaNotAnalyzedPane = new VBox(10) {
+    alignment = Pos.Center
+    padding = Insets(40)
+    children = Seq(
+      new Label { text <== bind("haplogroup.not_determined"); style = "-fx-font-size: 16px; -fx-text-fill: #888888;" },
+      new Label { text <== bind("data.add_sequence_first"); style = "-fx-text-fill: #666666;" }
+    )
+  }
+  private val mtdnaResultPane = new VBox(15) {
+    padding = Insets(0)
+  }
+
+  // ============================================================================
   // Tab Content Views
   // ============================================================================
 
@@ -122,8 +201,10 @@ class SubjectDetailView(viewModel: WorkbenchViewModel) extends VBox {
   // ============================================================================
 
   private def createOverviewContent(): ScrollPane = {
-    val ydnaCard = createHaplogroupCard("haplogroup.ydna.title", "#2d3a2d", "ydna")
-    val mtdnaCard = createHaplogroupCard("haplogroup.mtdna.title", "#2d2d3a", "mtdna")
+    val ydnaCard = createHaplogroupCard("haplogroup.ydna.title", "#2d3a2d", "ydna",
+      overviewYdnaHaplogroupLabel, overviewYdnaConfidenceLabel)
+    val mtdnaCard = createHaplogroupCard("haplogroup.mtdna.title", "#2d2d3a", "mtdna",
+      overviewMtdnaHaplogroupLabel, overviewMtdnaConfidenceLabel)
 
     val haplogroupSection = new HBox(20) {
       padding = Insets(0, 0, 20, 0)
@@ -142,8 +223,10 @@ class SubjectDetailView(viewModel: WorkbenchViewModel) extends VBox {
 
     new ScrollPane {
       fitToWidth = true
+      style = "-fx-background: #1e1e1e; -fx-background-color: #1e1e1e;"
       content = new VBox(20) {
         padding = Insets(20)
+        style = "-fx-background-color: #1e1e1e;"
         children = Seq(
           createSectionLabel("subject.genetic_summary"),
           haplogroupSection,
@@ -155,19 +238,13 @@ class SubjectDetailView(viewModel: WorkbenchViewModel) extends VBox {
     }
   }
 
-  private def createHaplogroupCard(titleKey: String, bgColor: String, dataType: String): VBox = {
-    val haplogroupLabel = new Label("-") {
-      styleClass += "haplogroup-value"
-      style = "-fx-font-size: 24px; -fx-font-weight: bold; -fx-text-fill: #ffffff;"
-      id = s"${dataType}-haplogroup"
-    }
-
-    val confidenceLabel = new Label {
-      text = ""
-      style = "-fx-font-size: 11px; -fx-text-fill: #b0b0b0;"
-      id = s"${dataType}-confidence"
-    }
-
+  private def createHaplogroupCard(
+    titleKey: String,
+    bgColor: String,
+    dataType: String,
+    haplogroupLabel: Label,
+    confidenceLabel: Label
+  ): VBox = {
     val viewDetailsButton = new Button {
       text = t(if (dataType == "ydna") "haplogroup.view_profile" else "haplogroup.view_details")
       styleClass += "button-link"
@@ -197,7 +274,7 @@ class SubjectDetailView(viewModel: WorkbenchViewModel) extends VBox {
       prefWidth = 220
       style = "-fx-background-color: #2a2a2a; -fx-background-radius: 10;"
       children = Seq(
-        new Label { text <== bind(titleKey); style = "-fx-font-weight: bold;" },
+        new Label { text <== bind(titleKey); style = "-fx-font-weight: bold; -fx-text-fill: #ffffff;" },
         new Label { text <== bind(placeholderKey); style = "-fx-text-fill: #666666;" },
         new Button {
           text <== bind(actionKey)
@@ -211,20 +288,20 @@ class SubjectDetailView(viewModel: WorkbenchViewModel) extends VBox {
     new HBox(15) {
       id = "data-summary"
       children = Seq(
-        createDataCountBadge("data.sequencing_runs", 0),
-        createDataCountBadge("data.chip_profiles", 0),
-        createDataCountBadge("data.str_profiles", 0)
+        createDataCountBadge("data.sequencing_runs", sequencingCountLabel),
+        createDataCountBadge("data.chip_profiles", chipCountLabel),
+        createDataCountBadge("data.str_profiles", strCountLabel)
       )
     }
   }
 
-  private def createDataCountBadge(labelKey: String, count: Int): HBox = {
+  private def createDataCountBadge(labelKey: String, countLabel: Label): HBox = {
     new HBox(5) {
       alignment = Pos.CenterLeft
       padding = Insets(8, 12, 8, 12)
       style = "-fx-background-color: #333333; -fx-background-radius: 5;"
       children = Seq(
-        new Label(count.toString) { style = "-fx-font-weight: bold;" },
+        countLabel,
         new Label { text <== bind(labelKey); style = "-fx-text-fill: #888888;" }
       )
     }
@@ -235,29 +312,53 @@ class SubjectDetailView(viewModel: WorkbenchViewModel) extends VBox {
   // ============================================================================
 
   private def createYdnaContent(): ScrollPane = {
-    val terminalHaplogroupSection = new VBox(10) {
-      padding = Insets(15)
+    val terminalHaplogroupSection = new VBox(15) {
+      padding = Insets(20)
       style = "-fx-background-color: #2a2a2a; -fx-background-radius: 10;"
       children = Seq(
-        new Label { text <== bind("haplogroup.terminal"); style = "-fx-font-weight: bold;" },
-        new Label("-") {
-          id = "ydna-terminal"
-          style = "-fx-font-size: 28px; -fx-font-weight: bold; -fx-text-fill: #4ade80;"
-        },
-        new Label {
-          id = "ydna-path"
-          text = ""
-          style = "-fx-text-fill: #888888;"
-        },
-        new HBox(20) {
+        new Label { text <== bind("haplogroup.terminal"); style = "-fx-font-weight: bold; -fx-text-fill: #aaaaaa;" },
+        ydnaTerminalLabel,
+        new VBox(5) {
           children = Seq(
-            createStatLabel("haplogroup.derived", "ydna-derived", "-"),
-            createStatLabel("haplogroup.ancestral", "ydna-ancestral", "-"),
-            createStatLabel("haplogroup.callable", "ydna-callable", "-")
+            new Label { text <== bind("haplogroup.phylogenetic_path"); style = "-fx-font-size: 11px; -fx-text-fill: #888888;" },
+            ydnaPathLabel
           )
-        }
+        },
+        new Separator { style = "-fx-background-color: #444444;" },
+        new HBox(30) {
+          alignment = Pos.CenterLeft
+          children = Seq(
+            new VBox(2) {
+              children = Seq(
+                new Label { text <== bind("haplogroup.derived"); style = "-fx-font-size: 11px; -fx-text-fill: #888888;" },
+                ydnaDerivedLabel
+              )
+            },
+            new VBox(2) {
+              children = Seq(
+                new Label { text <== bind("haplogroup.ancestral"); style = "-fx-font-size: 11px; -fx-text-fill: #888888;" },
+                ydnaAncestralLabel
+              )
+            },
+            new VBox(2) {
+              children = Seq(
+                new Label { text <== bind("haplogroup.confidence"); style = "-fx-font-size: 11px; -fx-text-fill: #888888;" },
+                ydnaConfidenceLabel
+              )
+            },
+            new VBox(2) {
+              children = Seq(
+                new Label { text <== bind("analysis.quality"); style = "-fx-font-size: 11px; -fx-text-fill: #888888;" },
+                ydnaQualityLabel
+              )
+            }
+          )
+        },
+        ydnaSourceLabel
       )
     }
+
+    ydnaResultPane.children = Seq(terminalHaplogroupSection)
 
     val analyzeButton = new Button {
       text <== bind("analysis.run")
@@ -265,20 +366,30 @@ class SubjectDetailView(viewModel: WorkbenchViewModel) extends VBox {
       onAction = _ => handleRunYdnaAnalysis()
     }
 
+    val viewProfileButton = new Button {
+      text <== bind("haplogroup.view_profile")
+      onAction = _ => log.debug("View full Y profile - not yet implemented")
+    }
+
     new ScrollPane {
       fitToWidth = true
+      style = "-fx-background: #1e1e1e; -fx-background-color: #1e1e1e;"
       content = new VBox(20) {
         padding = Insets(20)
+        style = "-fx-background-color: #1e1e1e;"
         children = Seq(
           new HBox(10) {
             alignment = Pos.CenterLeft
             children = Seq(
-              new Label { text <== bind("haplogroup.ydna.title"); style = "-fx-font-size: 18px; -fx-font-weight: bold;" },
+              new Label { text <== bind("haplogroup.ydna.title"); style = "-fx-font-size: 18px; -fx-font-weight: bold; -fx-text-fill: #ffffff;" },
               new Region { hgrow = Priority.Always },
+              viewProfileButton,
               analyzeButton
             )
           },
-          terminalHaplogroupSection
+          new StackPane {
+            children = Seq(ydnaNotAnalyzedPane, ydnaResultPane)
+          }
         )
       }
     }
@@ -289,22 +400,41 @@ class SubjectDetailView(viewModel: WorkbenchViewModel) extends VBox {
   // ============================================================================
 
   private def createMtdnaContent(): ScrollPane = {
-    val haplogroupSection = new VBox(10) {
-      padding = Insets(15)
+    val haplogroupSection = new VBox(15) {
+      padding = Insets(20)
       style = "-fx-background-color: #2a2a2a; -fx-background-radius: 10;"
       children = Seq(
-        new Label { text <== bind("haplogroup.title"); style = "-fx-font-weight: bold;" },
-        new Label("-") {
-          id = "mtdna-terminal"
-          style = "-fx-font-size: 28px; -fx-font-weight: bold; -fx-text-fill: #60a5fa;"
+        new Label { text <== bind("haplogroup.title"); style = "-fx-font-weight: bold; -fx-text-fill: #aaaaaa;" },
+        mtdnaTerminalLabel,
+        new VBox(5) {
+          children = Seq(
+            new Label { text <== bind("haplogroup.phylogenetic_path"); style = "-fx-font-size: 11px; -fx-text-fill: #888888;" },
+            mtdnaPathLabel
+          )
         },
-        new Label {
-          id = "mtdna-path"
-          text = ""
-          style = "-fx-text-fill: #888888;"
-        }
+        new Separator { style = "-fx-background-color: #444444;" },
+        new HBox(30) {
+          alignment = Pos.CenterLeft
+          children = Seq(
+            new VBox(2) {
+              children = Seq(
+                new Label { text <== bind("haplogroup.confidence"); style = "-fx-font-size: 11px; -fx-text-fill: #888888;" },
+                mtdnaConfidenceLabel
+              )
+            },
+            new VBox(2) {
+              children = Seq(
+                new Label { text <== bind("analysis.quality"); style = "-fx-font-size: 11px; -fx-text-fill: #888888;" },
+                mtdnaQualityLabel
+              )
+            }
+          )
+        },
+        mtdnaSourceLabel
       )
     }
+
+    mtdnaResultPane.children = Seq(haplogroupSection)
 
     val analyzeButton = new Button {
       text <== bind("analysis.run")
@@ -312,20 +442,30 @@ class SubjectDetailView(viewModel: WorkbenchViewModel) extends VBox {
       onAction = _ => handleRunMtdnaAnalysis()
     }
 
+    val viewDetailsButton = new Button {
+      text <== bind("haplogroup.view_details")
+      onAction = _ => log.debug("View mtDNA details - not yet implemented")
+    }
+
     new ScrollPane {
       fitToWidth = true
+      style = "-fx-background: #1e1e1e; -fx-background-color: #1e1e1e;"
       content = new VBox(20) {
         padding = Insets(20)
+        style = "-fx-background-color: #1e1e1e;"
         children = Seq(
           new HBox(10) {
             alignment = Pos.CenterLeft
             children = Seq(
-              new Label { text <== bind("haplogroup.mtdna.title"); style = "-fx-font-size: 18px; -fx-font-weight: bold;" },
+              new Label { text <== bind("haplogroup.mtdna.title"); style = "-fx-font-size: 18px; -fx-font-weight: bold; -fx-text-fill: #ffffff;" },
               new Region { hgrow = Priority.Always },
+              viewDetailsButton,
               analyzeButton
             )
           },
-          haplogroupSection
+          new StackPane {
+            children = Seq(mtdnaNotAnalyzedPane, mtdnaResultPane)
+          }
         )
       }
     }
@@ -454,28 +594,96 @@ class SubjectDetailView(viewModel: WorkbenchViewModel) extends VBox {
     subjectIdLabel.text = s"ID: ${subject.accession} • ${formatSex(subject.sex)}"
 
     // Update Overview tab - Y-DNA card
-    lookupLabel("ydna-haplogroup").foreach(_.text = subject.yHaplogroup.getOrElse("-"))
+    overviewYdnaHaplogroupLabel.text = subject.yHaplogroup.getOrElse("-")
+    subject.yHaplogroupResult match {
+      case Some(result) =>
+        overviewYdnaConfidenceLabel.text = s"${t("haplogroup.confidence")}: ${t(s"haplogroup.confidence.${result.confidenceLevel.toLowerCase}")}"
+        overviewYdnaConfidenceLabel.style = confidenceStyle(result.confidenceLevel)
+      case None =>
+        overviewYdnaConfidenceLabel.text = ""
+    }
 
     // Update Overview tab - mtDNA card
-    lookupLabel("mtdna-haplogroup").foreach(_.text = subject.mtHaplogroup.getOrElse("-"))
+    overviewMtdnaHaplogroupLabel.text = subject.mtHaplogroup.getOrElse("-")
+    subject.mtHaplogroupResult match {
+      case Some(result) =>
+        overviewMtdnaConfidenceLabel.text = s"${t("haplogroup.confidence")}: ${t(s"haplogroup.confidence.${result.confidenceLevel.toLowerCase}")}"
+        overviewMtdnaConfidenceLabel.style = confidenceStyle(result.confidenceLevel)
+      case None =>
+        overviewMtdnaConfidenceLabel.text = ""
+    }
 
     // Update Y-DNA tab
-    lookupLabel("ydna-terminal").foreach(_.text = subject.yHaplogroup.getOrElse("-"))
+    subject.yHaplogroupResult match {
+      case Some(result) =>
+        ydnaTerminalLabel.text = result.haplogroupName
+        ydnaPathLabel.text = result.formattedPath
+        ydnaDerivedLabel.text = result.derivedCount.toString
+        ydnaAncestralLabel.text = result.ancestralCount.toString
+        ydnaConfidenceLabel.text = s"${result.confidencePercent} (${t(s"haplogroup.confidence.${result.confidenceLevel.toLowerCase}")})"
+        ydnaConfidenceLabel.style = s"-fx-font-weight: bold; ${confidenceTextColor(result.confidenceLevel)}"
+        ydnaSourceLabel.text = s"${t("data.platform")}: ${result.sourceDisplay}"
+        ydnaQualityLabel.text = t(s"analysis.quality.${result.qualityRating.toLowerCase}")
+        ydnaQualityLabel.style = s"-fx-font-weight: bold; ${qualityTextColor(result.qualityRating)}"
+        ydnaNotAnalyzedPane.visible = false
+        ydnaResultPane.visible = true
+      case None =>
+        ydnaTerminalLabel.text = "-"
+        ydnaPathLabel.text = ""
+        ydnaDerivedLabel.text = "-"
+        ydnaAncestralLabel.text = "-"
+        ydnaConfidenceLabel.text = "-"
+        ydnaSourceLabel.text = ""
+        ydnaQualityLabel.text = "-"
+        ydnaNotAnalyzedPane.visible = true
+        ydnaResultPane.visible = false
+    }
 
     // Update mtDNA tab
-    lookupLabel("mtdna-terminal").foreach(_.text = subject.mtHaplogroup.getOrElse("-"))
+    subject.mtHaplogroupResult match {
+      case Some(result) =>
+        mtdnaTerminalLabel.text = result.haplogroupName
+        mtdnaPathLabel.text = result.formattedPath
+        mtdnaConfidenceLabel.text = s"${result.confidencePercent} (${t(s"haplogroup.confidence.${result.confidenceLevel.toLowerCase}")})"
+        mtdnaConfidenceLabel.style = s"-fx-font-weight: bold; ${confidenceTextColor(result.confidenceLevel)}"
+        mtdnaSourceLabel.text = s"${t("data.platform")}: ${result.sourceDisplay}"
+        mtdnaQualityLabel.text = t(s"analysis.quality.${result.qualityRating.toLowerCase}")
+        mtdnaQualityLabel.style = s"-fx-font-weight: bold; ${qualityTextColor(result.qualityRating)}"
+        mtdnaNotAnalyzedPane.visible = false
+        mtdnaResultPane.visible = true
+      case None =>
+        mtdnaTerminalLabel.text = "-"
+        mtdnaPathLabel.text = ""
+        mtdnaConfidenceLabel.text = "-"
+        mtdnaSourceLabel.text = ""
+        mtdnaQualityLabel.text = "-"
+        mtdnaNotAnalyzedPane.visible = true
+        mtdnaResultPane.visible = false
+    }
 
-    // TODO: Load and display sequence runs, chip profiles, STR profiles from workspace
+    // Update data counts
+    sequencingCountLabel.text = subject.sequenceRunCount.toString
+    chipCountLabel.text = subject.genotypeCount.toString
+    strCountLabel.text = subject.strProfileCount.toString
   }
 
-  private def lookupLabel(labelId: String): Option[Label] = {
-    val node = this.lookup(s"#$labelId")
-    if (node != null) {
-      node.delegate match {
-        case l: javafx.scene.control.Label => Some(new Label(l))
-        case _ => None
-      }
-    } else None
+  private def confidenceStyle(level: String): String = level match {
+    case "HIGH" => "-fx-font-size: 11px; -fx-text-fill: #4ade80;"
+    case "MEDIUM" => "-fx-font-size: 11px; -fx-text-fill: #fbbf24;"
+    case _ => "-fx-font-size: 11px; -fx-text-fill: #f87171;"
+  }
+
+  private def confidenceTextColor(level: String): String = level match {
+    case "HIGH" => "-fx-text-fill: #4ade80;"
+    case "MEDIUM" => "-fx-text-fill: #fbbf24;"
+    case _ => "-fx-text-fill: #f87171;"
+  }
+
+  private def qualityTextColor(quality: String): String = quality match {
+    case "Excellent" => "-fx-text-fill: #4ade80;"
+    case "Good" => "-fx-text-fill: #60a5fa;"
+    case "Fair" => "-fx-text-fill: #fbbf24;"
+    case _ => "-fx-text-fill: #f87171;"
   }
 
   private def formatSex(sex: Option[String]): String = {
