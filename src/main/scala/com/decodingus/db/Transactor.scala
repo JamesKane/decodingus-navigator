@@ -1,6 +1,7 @@
 package com.decodingus.db
 
-import java.sql.Connection
+import com.decodingus.util.Logger
+import java.sql.{Connection, SQLException}
 
 /**
  * Transaction management with clean Scala 3 context parameters.
@@ -9,6 +10,7 @@ import java.sql.Connection
  * Uses `Connection ?=>` context functions for implicit connection passing.
  */
 final class Transactor(database: Database):
+  private val log = Logger[Transactor]
 
   /**
    * Execute a read-only operation.
@@ -27,7 +29,11 @@ final class Transactor(database: Database):
           conn.setReadOnly(false)
       })
     catch
+      case e: SQLException =>
+        log.error(s"Read operation failed - SQL State: ${e.getSQLState}, Error Code: ${e.getErrorCode}", e)
+        Left(s"Read operation failed: ${e.getMessage} [SQLState: ${e.getSQLState}]")
       case e: Exception =>
+        log.error(s"Read operation failed: ${e.getMessage}", e)
         Left(s"Read operation failed: ${e.getMessage}")
 
   /**
@@ -53,7 +59,11 @@ final class Transactor(database: Database):
           conn.setAutoCommit(true)
       })
     catch
+      case e: SQLException =>
+        log.error(s"Transaction failed - SQL State: ${e.getSQLState}, Error Code: ${e.getErrorCode}", e)
+        Left(s"Transaction failed: ${e.getMessage} [SQLState: ${e.getSQLState}]")
       case e: Exception =>
+        log.error(s"Transaction failed: ${e.getMessage}", e)
         Left(s"Transaction failed: ${e.getMessage}")
 
   /**
