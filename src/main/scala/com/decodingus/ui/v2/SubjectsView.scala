@@ -294,6 +294,9 @@ class SubjectsView(viewModel: WorkbenchViewModel) extends SplitPane {
   // ============================================================================
 
   private def applyFilter(): Unit = {
+    // Preserve current selection before replacing items
+    val previouslySelectedAccession = selectedSubject.value.map(_.accession)
+
     val query = searchText.value.toLowerCase.trim
     val filtered = if (query.isEmpty) {
       viewModel.samples.toSeq
@@ -309,6 +312,18 @@ class SubjectsView(viewModel: WorkbenchViewModel) extends SplitPane {
     }
 
     subjectTable.items = ObservableBuffer.from(filtered)
+
+    // Restore selection if the previously selected subject is still in the filtered list
+    previouslySelectedAccession.foreach { accession =>
+      val indexOpt = filtered.zipWithIndex.find(_._1.accession == accession).map(_._2)
+      indexOpt.foreach { index =>
+        val subject = filtered(index)
+        // Update with fresh data from filtered list (may have been modified)
+        selectedSubject.value = Some(subject)
+        // Also update table selection to keep UI in sync - use delegate to avoid ScalaFX wrapper issues
+        subjectTable.delegate.getSelectionModel.clearAndSelect(index)
+      }
+    }
   }
 
   // ============================================================================
