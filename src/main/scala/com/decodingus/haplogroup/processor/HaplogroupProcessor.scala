@@ -57,11 +57,14 @@ class HaplogroupProcessor {
    * Analyze a BAM/CRAM file for haplogroup assignment.
    *
    * @param bamPath          Path to the BAM/CRAM file
-   * @param libraryStats     Library statistics from initial analysis
-   * @param treeType         Y-DNA or MT-DNA tree type
-   * @param treeProviderType Tree data provider (FTDNA or DecodingUs)
-   * @param onProgress       Progress callback
-   * @param artifactContext  Optional context for organizing output artifacts by subject/run/alignment
+   * @param libraryStats       Library statistics from initial analysis
+   * @param treeType           Y-DNA or MT-DNA tree type
+   * @param treeProviderType   Tree data provider (FTDNA or DecodingUs)
+   * @param onProgress         Progress callback
+   * @param artifactContext    Optional context for organizing output artifacts by subject/run/alignment
+   * @param yProfileService    Optional Y Profile service for auto-populating Y chromosome profile
+   * @param biosampleId        Optional biosample UUID for Y Profile population
+   * @param yProfileSourceType Optional source type for Y Profile (defaults to WGS_SHORT_READ)
    */
   def analyze(
                bamPath: String,
@@ -69,7 +72,10 @@ class HaplogroupProcessor {
                treeType: TreeType,
                treeProviderType: TreeProviderType,
                onProgress: (String, Double, Double) => Unit,
-               artifactContext: Option[ArtifactContext] = None
+               artifactContext: Option[ArtifactContext] = None,
+               yProfileService: Option[YProfileService] = None,
+               biosampleId: Option[UUID] = None,
+               yProfileSourceType: Option[YProfileSourceType] = None
              ): Either[String, List[HaplogroupResult]] = {
 
     onProgress("Loading haplogroup tree...", 0.0, 1.0)
@@ -338,6 +344,39 @@ class HaplogroupProcessor {
                       treeBuild = Some(treeSourceBuild),
                       namedVariantCache = variantCache
                     )
+                  }
+
+                  // Auto-populate Y-DNA profile if service and biosampleId provided
+                  if (treeType == TreeType.YDNA) {
+                    (yProfileService, biosampleId) match {
+                      case (Some(service), Some(bsId)) =>
+                        onProgress("Populating Y chromosome profile...", 0.95, 1.0)
+                        val callableLociDir = artifactContext.map { ctx =>
+                          SubjectArtifactCache.getArtifactSubdir(
+                            ctx.sampleAccession,
+                            ctx.sequenceRunUri.map(SubjectArtifactCache.extractIdFromUri).getOrElse("unknown-run"),
+                            ctx.alignmentUri.map(SubjectArtifactCache.extractIdFromUri).getOrElse("unknown-alignment"),
+                            "callable_loci"
+                          )
+                        }
+                        val sourceType = yProfileSourceType.getOrElse(YProfileSourceType.WGS_SHORT_READ)
+                        // Build simplified resolvedCalls from snpCalls (without quality/depth info)
+                        val simplifiedCalls = snpCalls.map { case (pos, allele) =>
+                          (("chrY", pos), EnhancedSnpCall("chrY", pos, referenceBuild, allele, CallSource.InferredReference("FROM_VCF_CALL"), None))
+                        }
+                        populateYProfile(
+                          service, bsId, results, simplifiedCalls, privateVariants,
+                          referenceBuild, treeProviderType, sourceType,
+                          callableLociDir.filter(Files.exists(_))
+                        ) match {
+                          case Right(profileId) =>
+                            log.info(s"Auto-populated Y chromosome profile: $profileId")
+                          case Left(error) =>
+                            log.warn(s"Failed to populate Y chromosome profile: $error")
+                        }
+                      case _ =>
+                        // YProfile service or biosampleId not provided - skip auto-population
+                    }
                   }
 
                   onProgress("Analysis complete.", 1.0, 1.0)
@@ -818,9 +857,10 @@ class HaplogroupProcessor {
       )
 
       sourceResult.flatMap { source =>
-        // Import variant calls from resolvedCalls
+        // Import only actual VCF variants (derived positions), not inferred reference calls
+        // This dramatically reduces the number of imports from ~50,000 to ~hundreds
         val variantInputs = resolvedCalls.collect {
-          case ((contig, pos), call) if call.hasCall && contig == "chrY" =>
+          case ((contig, pos), call) if call.isFromVcf && contig == "chrY" =>
             val (depth, quality) = call.source match {
               case CallSource.FromVcf(d, q) => (Some(d), Some(q))
               case _ => (None, None)
@@ -830,7 +870,7 @@ class HaplogroupProcessor {
               refAllele = "N", // We don't have ref readily available
               altAllele = call.allele,
               calledAllele = call.allele,
-              derived = true, // Assume derived for now - reconciliation will verify
+              derived = true, // These are actual variants from VCF
               variantName = None,
               variantType = Some(YVariantType.SNP),
               readDepth = depth,
@@ -838,6 +878,8 @@ class HaplogroupProcessor {
               mappingQuality = None
             )
         }.toList
+
+        log.info(s"Importing ${variantInputs.size} variant calls to Y profile (filtered from ${resolvedCalls.size} total positions)")
 
         val importResult = if (variantInputs.nonEmpty) {
           yProfileService.importVariantCalls(profile.id, source.id, variantInputs, referenceBuild)

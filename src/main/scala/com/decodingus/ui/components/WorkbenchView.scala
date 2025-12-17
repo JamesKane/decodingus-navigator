@@ -48,32 +48,39 @@ class WorkbenchView(val viewModel: WorkbenchViewModel) extends SplitPane {
   private def renderSubjectDetail(subject: Biosample): Unit = {
     detailView.children.clear()
 
-    val editButton = new Button("Edit") {
-      onAction = _ => handleEditSubject(subject)
-    }
-
-    val deleteButton = new Button("Delete") {
-      style = "-fx-text-fill: #D32F2F;"
-      onAction = _ => handleDeleteSubject(subject)
-    }
-
-    val actionButtons = new HBox(10) {
-      padding = Insets(10, 0, 10, 0)
-      children = Seq(editButton, deleteButton)
-    }
-
-    // Subject info section
-    val infoSection = new VBox(5) {
+    // === HEADER ROW: Title + Action Buttons ===
+    val headerRow = new HBox(10) {
+      alignment = Pos.CenterLeft
       children = Seq(
-        new Label(s"Accession: ${subject.sampleAccession}"),
-        new Label(s"Sex: ${subject.sex.getOrElse("N/A")}"),
-        new Label(s"Center: ${subject.centerName.getOrElse("N/A")}"),
-        new Label(s"Description: ${subject.description.getOrElse("N/A")}"),
-        new Label(s"Created At: ${subject.meta.createdAt.toLocalDate.toString}")
+        new Label(s"Subject: ${subject.donorIdentifier}") {
+          style = "-fx-font-size: 20px; -fx-font-weight: bold;"
+        },
+        new Region { hgrow = Priority.Always },
+        new Button("Edit") {
+          onAction = _ => handleEditSubject(subject)
+        },
+        new Button("Delete") {
+          style = "-fx-text-fill: #D32F2F;"
+          onAction = _ => handleDeleteSubject(subject)
+        }
       )
     }
 
-    // Haplogroup summary - format nicely with name and score
+    // === INFO SECTION: Two-column grid for better horizontal space usage ===
+    val infoGrid = new GridPane {
+      hgap = 30
+      vgap = 4
+      padding = Insets(5, 0, 10, 0)
+    }
+    // Left column
+    infoGrid.add(new Label(s"Accession: ${subject.sampleAccession}") { style = "-fx-font-size: 12px;" }, 0, 0)
+    infoGrid.add(new Label(s"Sex: ${subject.sex.getOrElse("N/A")}") { style = "-fx-font-size: 12px;" }, 0, 1)
+    infoGrid.add(new Label(s"Created: ${subject.meta.createdAt.toLocalDate}") { style = "-fx-font-size: 12px;" }, 0, 2)
+    // Right column
+    infoGrid.add(new Label(s"Center: ${subject.centerName.getOrElse("N/A")}") { style = "-fx-font-size: 12px;" }, 1, 0)
+    infoGrid.add(new Label(s"Description: ${subject.description.getOrElse("N/A")}") { style = "-fx-font-size: 12px;" }, 1, 1)
+
+    // === HAPLOGROUP SECTION: Combines Y Haplogroup with Profile management ===
     def formatHaplogroup(result: Option[com.decodingus.workspace.model.HaplogroupResult]): String = {
       result match {
         case Some(h) =>
@@ -85,71 +92,92 @@ class WorkbenchView(val viewModel: WorkbenchViewModel) extends SplitPane {
       }
     }
 
-    val haplogroupText = subject.haplogroups match {
-      case Some(h) =>
-        val yDisplay = s"Y: ${formatHaplogroup(h.yDna)}"
-        val mtDisplay = s"MT: ${formatHaplogroup(h.mtDna)}"
-        s"$yDisplay    $mtDisplay"
-      case None => "Haplogroups: Not analyzed"
-    }
-
-    // Get reconciliation records for status indicator
     val yDnaReconciliation = viewModel.workspace.value.main.getYDnaReconciliation(subject)
     val mtDnaReconciliation = viewModel.workspace.value.main.getMtDnaReconciliation(subject)
-    val hasReconciliations = yDnaReconciliation.isDefined || mtDnaReconciliation.isDefined
+    val biosampleId = viewModel.getBiosampleIdByAccession(subject.sampleAccession)
 
-    // Create the haplogroup section with optional reconciliation status
-    val haplogroupSection = new HBox(10) {
+    // Y-DNA haplogroup box with integrated profile management
+    val yHaplogroupBox = new HBox(8) {
       alignment = Pos.CenterLeft
-      padding = Insets(10, 0, 0, 0)
+      padding = Insets(8)
+      style = "-fx-background-color: #2d3a2d; -fx-background-radius: 6;"
 
-      val haplogroupLabel = new Label(haplogroupText) {
-        style = "-fx-font-family: monospace; -fx-font-size: 14px; -fx-font-weight: bold;"
-      }
+      val yHaplogroup = subject.haplogroups.flatMap(_.yDna)
+      val yText = formatHaplogroup(yHaplogroup)
 
-      // Reconciliation status indicator (traffic light)
-      val statusIndicator = if (hasReconciliations) {
-        val reconciliations = List(yDnaReconciliation, mtDnaReconciliation).flatten
-        val worstLevel = reconciliations.map(_.status.compatibilityLevel).maxBy {
-          case CompatibilityLevel.COMPATIBLE => 0
-          case CompatibilityLevel.MINOR_DIVERGENCE => 1
-          case CompatibilityLevel.MAJOR_DIVERGENCE => 2
-          case CompatibilityLevel.INCOMPATIBLE => 3
-        }
-        val totalRuns = reconciliations.map(_.status.runCount).sum
+      children = Seq(
+        new Label("Y:") { style = "-fx-font-size: 13px; -fx-font-weight: bold; -fx-text-fill: #888;" },
+        new Label(yText) { style = "-fx-font-size: 14px; -fx-font-weight: bold; -fx-text-fill: #8f8;" },
+        new Region { hgrow = Priority.Always }
+      )
 
-        val (color, statusText) = worstLevel match {
+      // Add reconciliation indicator if available
+      yDnaReconciliation.foreach { recon =>
+        val (color, _) = recon.status.compatibilityLevel match {
           case CompatibilityLevel.COMPATIBLE => ("#4CAF50", "Compatible")
           case CompatibilityLevel.MINOR_DIVERGENCE => ("#FF9800", "Minor differences")
           case CompatibilityLevel.MAJOR_DIVERGENCE => ("#F44336", "Major divergence")
           case CompatibilityLevel.INCOMPATIBLE => ("#9C27B0", "Incompatible")
         }
-
-        Some(new Button(s"● $totalRuns run${if (totalRuns != 1) "s" else ""}") {
-          style = s"-fx-background-color: transparent; -fx-text-fill: $color; -fx-font-size: 12px; -fx-cursor: hand;"
-          tooltip = Tooltip(s"$statusText - Click for reconciliation details")
-          onAction = _ => showReconciliationDetails(subject, yDnaReconciliation, mtDnaReconciliation)
+        children.add(new Label(s"● ${recon.status.runCount}") {
+          style = s"-fx-text-fill: $color; -fx-font-size: 11px;"
+          tooltip = Tooltip("Runs contributing to haplogroup")
         })
-      } else None
+      }
 
-      children = Seq(haplogroupLabel) ++ statusIndicator.toSeq
+      // Y Profile management button (replaces separate Y Profile section)
+      biosampleId.foreach { bsId =>
+        val hasProfile = viewModel.getYProfileSummary(bsId).isDefined
+        children.add(new Button(if (hasProfile) "Profile" else "+ Profile") {
+          style = "-fx-font-size: 10px; -fx-padding: 2 6;"
+          tooltip = Tooltip(if (hasProfile) "Manage Y Chromosome Profile" else "Create Y Chromosome Profile")
+          onAction = _ => handleManageYProfile(subject, bsId)
+        })
+      }
+    }
+    HBox.setHgrow(yHaplogroupBox, Priority.Always)
+
+    // MT-DNA haplogroup box
+    val mtHaplogroupBox = new HBox(8) {
+      alignment = Pos.CenterLeft
+      padding = Insets(8)
+      style = "-fx-background-color: #2d2d3a; -fx-background-radius: 6;"
+
+      val mtHaplogroup = subject.haplogroups.flatMap(_.mtDna)
+      val mtText = formatHaplogroup(mtHaplogroup)
+
+      children = Seq(
+        new Label("MT:") { style = "-fx-font-size: 13px; -fx-font-weight: bold; -fx-text-fill: #888;" },
+        new Label(mtText) { style = "-fx-font-size: 14px; -fx-font-weight: bold; -fx-text-fill: #88f;" },
+        new Region { hgrow = Priority.Always }
+      )
+
+      // Add reconciliation indicator if available
+      mtDnaReconciliation.foreach { recon =>
+        val (color, _) = recon.status.compatibilityLevel match {
+          case CompatibilityLevel.COMPATIBLE => ("#4CAF50", "Compatible")
+          case CompatibilityLevel.MINOR_DIVERGENCE => ("#FF9800", "Minor differences")
+          case CompatibilityLevel.MAJOR_DIVERGENCE => ("#F44336", "Major divergence")
+          case CompatibilityLevel.INCOMPATIBLE => ("#9C27B0", "Incompatible")
+        }
+        children.add(new Label(s"● ${recon.status.runCount}") {
+          style = s"-fx-text-fill: $color; -fx-font-size: 11px;"
+          tooltip = Tooltip("Runs contributing to haplogroup")
+        })
+      }
+    }
+    HBox.setHgrow(mtHaplogroupBox, Priority.Always)
+
+    val haplogroupRow = new HBox(10) {
+      padding = Insets(5, 0, 10, 0)
+      children = Seq(yHaplogroupBox, mtHaplogroupBox)
     }
 
-    // Sequence data table with callbacks
-    // Get sequence runs and alignments for this subject from the workspace
+    // === DATA TABS: Sequencing, Chip/Array, STR ===
     val sequenceRuns = viewModel.workspace.value.main.getSequenceRunsForBiosample(subject)
     val allAlignments = viewModel.workspace.value.main.alignments
-
-    println(s"[DEBUG] WorkbenchView.createSubjectDetailView: Subject ${subject.sampleAccession}")
-    println(s"[DEBUG]   sequenceRunRefs on biosample: ${subject.sequenceRunRefs.size} - ${subject.sequenceRunRefs.mkString(", ")}")
-    println(s"[DEBUG]   sequenceRuns found: ${sequenceRuns.size}")
-    sequenceRuns.foreach { sr =>
-      println(s"[DEBUG]     SequenceRun: atUri=${sr.atUri}, alignmentRefs=${sr.alignmentRefs.size} ${sr.alignmentRefs.mkString(", ")}")
-    }
-    println(s"[DEBUG]   allAlignments in workspace: ${allAlignments.size}")
-    allAlignments.foreach { al =>
-      println(s"[DEBUG]     Alignment: atUri=${al.atUri}, sequenceRunRef=${al.sequenceRunRef}")
-    }
+    val chipProfiles = viewModel.getChipProfilesForBiosample(subject.sampleAccession)
+    val strProfiles = viewModel.getStrProfilesForBiosample(subject.sampleAccession)
 
     val sequenceTable = new SequenceDataTable(
       viewModel = viewModel,
@@ -159,10 +187,7 @@ class WorkbenchView(val viewModel: WorkbenchViewModel) extends SplitPane {
       onAnalyze = (index: Int) => handleAnalyzeSequenceData(subject.sampleAccession, index),
       onRemove = (index: Int) => handleRemoveSequenceData(subject.sampleAccession, index)
     )
-    VBox.setVgrow(sequenceTable, Priority.Always)
 
-    // Chip/Array data table
-    val chipProfiles = viewModel.getChipProfilesForBiosample(subject.sampleAccession)
     val chipTable = new ChipDataTable(
       viewModel = viewModel,
       subject = subject,
@@ -170,8 +195,6 @@ class WorkbenchView(val viewModel: WorkbenchViewModel) extends SplitPane {
       onRemove = (uri: String) => handleRemoveChipProfile(subject.sampleAccession, uri)
     )
 
-    // STR profile table
-    val strProfiles = viewModel.getStrProfilesForBiosample(subject.sampleAccession)
     val strTable = new StrProfileTable(
       viewModel = viewModel,
       subject = subject,
@@ -179,20 +202,38 @@ class WorkbenchView(val viewModel: WorkbenchViewModel) extends SplitPane {
       onRemove = (uri: String) => handleRemoveStrProfile(subject.sampleAccession, uri)
     )
 
-    // Y Profile section (shown if available)
-    val yProfileSection = createYProfileSection(subject)
+    // Create tabs for data types
+    val sequenceTab = new Tab {
+      text = s"Sequencing (${sequenceRuns.size})"
+      closable = false
+      content = sequenceTable
+    }
 
-    // Build the children list with optional Y Profile section
+    val chipTab = new Tab {
+      text = s"Chip/Array (${chipProfiles.size})"
+      closable = false
+      content = chipTable
+    }
+
+    val strTab = new Tab {
+      text = s"STR Profiles (${strProfiles.size})"
+      closable = false
+      content = strTable
+    }
+
+    val dataTabPane = new TabPane {
+      tabs = Seq(sequenceTab, chipTab, strTab)
+      tabMinWidth = 100
+    }
+    VBox.setVgrow(dataTabPane, Priority.Always)
+
+    // === ASSEMBLE THE VIEW ===
     detailView.children.addAll(
-      new Label(s"Subject: ${subject.donorIdentifier}") {
-        style = "-fx-font-size: 20px; -fx-font-weight: bold;"
-      },
-      actionButtons,
-      infoSection,
-      haplogroupSection
+      headerRow,
+      infoGrid,
+      haplogroupRow,
+      dataTabPane
     )
-    yProfileSection.foreach(section => detailView.children.add(section))
-    detailView.children.addAll(sequenceTable, chipTable, strTable)
   }
 
   /** Shows the reconciliation detail dialog for a subject */

@@ -64,7 +64,8 @@ class SequenceDataManager(
   case class CreateSequenceRunResult(
                                       sequenceRun: SequenceRun,
                                       index: Int,
-                                      biosampleId: UUID
+                                      biosampleId: UUID,
+                                      sampleAccession: String
                                     )
 
   /**
@@ -122,10 +123,10 @@ class SequenceDataManager(
 
           log.info(s"SequenceRun created: ${persistedRun.atUri} for biosample $sampleAccession")
 
-          CreateSequenceRunResult(persistedRun, newIndex, biosampleId)
+          CreateSequenceRunResult(persistedRun, newIndex, biosampleId, sampleAccession)
     }.map { result =>
       // Step 7: Update in-memory workspace after successful persist
-      updateWorkspaceWithNewSequenceRun(result.sequenceRun, result.biosampleId)
+      updateWorkspaceWithNewSequenceRun(result.sequenceRun, result.biosampleId, result.sampleAccession)
       result
     }
 
@@ -392,7 +393,8 @@ class SequenceDataManager(
    */
   private def updateWorkspaceWithNewSequenceRun(
                                                  sequenceRun: SequenceRun,
-                                                 biosampleId: UUID
+                                                 biosampleId: UUID,
+                                                 sampleAccession: String
                                                ): Unit =
     val workspace = workspaceGetter()
     val biosampleUri = localUri("biosample", biosampleId)
@@ -402,9 +404,13 @@ class SequenceDataManager(
     val updatedSequenceRuns = workspace.main.sequenceRuns :+ sequenceRun
 
     // Update biosample's sequenceRunRefs
+    // Match by: 1) atUri containing local biosample URI, 2) atUri containing biosampleId, or 3) sampleAccession
     val updatedSamples = workspace.main.samples.map { sample =>
-      if sample.atUri.contains(biosampleUri) ||
-        sample.atUri.exists(uri => parseIdFromRef(uri).contains(biosampleId)) then
+      val matchesByUri = sample.atUri.contains(biosampleUri) ||
+        sample.atUri.exists(uri => parseIdFromRef(uri).contains(biosampleId))
+      val matchesByAccession = sample.sampleAccession == sampleAccession
+
+      if matchesByUri || matchesByAccession then
         sample.copy(sequenceRunRefs = sample.sequenceRunRefs :+ seqRunUri)
       else
         sample

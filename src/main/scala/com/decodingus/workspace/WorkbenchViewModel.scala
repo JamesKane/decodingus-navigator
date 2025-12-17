@@ -325,7 +325,18 @@ class WorkbenchViewModel(
     h2Service.createBiosample(enrichedBiosample) match {
       case Right(persistedBiosample) =>
         log.info(s" Biosample persisted to H2: ${persistedBiosample.sampleAccession}")
-        updateInMemoryState(newState)
+        // IMPORTANT: Update state with persisted biosample (which has the correct DB-assigned atUri/UUID)
+        // The enrichedBiosample may have a different atUri that doesn't contain a valid UUID
+        val stateWithPersistedBiosample = newState.copy(
+          workspace = newState.workspace.copy(
+            main = newState.workspace.main.copy(
+              samples = newState.workspace.main.samples.map { s =>
+                if s.sampleAccession == persistedBiosample.sampleAccession then persistedBiosample else s
+              }
+            )
+          )
+        )
+        updateInMemoryState(stateWithPersistedBiosample)
         selectedSubject.value = Some(persistedBiosample)
       case Left(error) =>
         log.error(s"Failed to persist Biosample to H2: $error")
@@ -1844,16 +1855,40 @@ class WorkbenchViewModel(
                               TreeProviderType.DECODINGUS
                             else TreeProviderType.FTDNA
                         }
+
+                        // Extract biosampleId for YProfile population
+                        val biosampleId = subject.atUri.flatMap { uri =>
+                          scala.util.Try(UUID.fromString(uri.split("/").last)).toOption
+                        }
+
+                        // Infer source type from platform/test type
+                        val yProfileSourceType = {
+                          val testType = seqRun.testType.toLowerCase
+                          val platform = seqRun.platformName.toLowerCase
+                          if (testType.contains("hifi") || testType.contains("pacbio") || platform.contains("pacbio")) {
+                            YProfileSourceType.WGS_LONG_READ
+                          } else if (testType.contains("nanopore") || platform.contains("nanopore")) {
+                            YProfileSourceType.WGS_LONG_READ
+                          } else if (testType.contains("targeted") || testType.contains("panel")) {
+                            YProfileSourceType.TARGETED_NGS
+                          } else {
+                            YProfileSourceType.WGS_SHORT_READ
+                          }
+                        }
+
                         val result = processor.analyze(
-                          bamPath,
-                          libraryStats,
-                          treeType,
-                          treeProviderType,
-                          (message, current, total) => {
+                          bamPath = bamPath,
+                          libraryStats = libraryStats,
+                          treeType = treeType,
+                          treeProviderType = treeProviderType,
+                          onProgress = (message, current, total) => {
                             val pct = if (total > 0) current / total else 0.0
                             updateProgress(message, pct)
                           },
-                          Some(artifactCtx)
+                          artifactContext = Some(artifactCtx),
+                          yProfileService = yProfileService,
+                          biosampleId = biosampleId,
+                          yProfileSourceType = Some(yProfileSourceType)
                         )
 
                         result match {
@@ -2145,7 +2180,10 @@ class WorkbenchViewModel(
                                 analysisProgressPercent.value = if (total > 0) current / total else 0.0
                               }
                             },
-                            artifactContext = Some(artifactCtx)
+                            artifactContext = Some(artifactCtx),
+                            yProfileService = yProfileService,
+                            biosampleId = biosampleId,
+                            yProfileSourceType = Some(yProfileSourceType)
                           )
                         }
 
