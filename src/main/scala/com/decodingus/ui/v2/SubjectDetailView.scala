@@ -3,6 +3,7 @@ package com.decodingus.ui.v2
 import com.decodingus.i18n.I18n.{t, bind}
 import com.decodingus.i18n.Formatters
 import com.decodingus.ui.v2.BiosampleExtensions.*
+import com.decodingus.util.Logger
 import com.decodingus.workspace.WorkbenchViewModel
 import com.decodingus.workspace.model.Biosample
 import scalafx.Includes.*
@@ -24,8 +25,11 @@ import scalafx.scene.layout.*
  */
 class SubjectDetailView(viewModel: WorkbenchViewModel) extends VBox {
 
+  private val log = Logger[SubjectDetailView]
+
   spacing = 0
   styleClass += "subject-detail-view"
+  style = "-fx-background-color: #1e1e1e;"
 
   // ============================================================================
   // State
@@ -39,12 +43,12 @@ class SubjectDetailView(viewModel: WorkbenchViewModel) extends VBox {
 
   private val subjectNameLabel = new Label {
     styleClass += "subject-name"
-    style = "-fx-font-size: 20px; -fx-font-weight: bold;"
+    style = "-fx-font-size: 20px; -fx-font-weight: bold; -fx-text-fill: #ffffff;"
   }
 
   private val subjectIdLabel = new Label {
     styleClass += "subject-id"
-    style = "-fx-font-size: 12px; -fx-text-fill: #888888;"
+    style = "-fx-font-size: 12px; -fx-text-fill: #b0b0b0;"
   }
 
   private val editButton = new Button {
@@ -153,13 +157,13 @@ class SubjectDetailView(viewModel: WorkbenchViewModel) extends VBox {
   private def createHaplogroupCard(titleKey: String, bgColor: String, dataType: String): VBox = {
     val haplogroupLabel = new Label("-") {
       styleClass += "haplogroup-value"
-      style = "-fx-font-size: 24px; -fx-font-weight: bold;"
+      style = "-fx-font-size: 24px; -fx-font-weight: bold; -fx-text-fill: #ffffff;"
       id = s"${dataType}-haplogroup"
     }
 
     val confidenceLabel = new Label {
       text = ""
-      style = "-fx-font-size: 11px; -fx-text-fill: #888888;"
+      style = "-fx-font-size: 11px; -fx-text-fill: #b0b0b0;"
       id = s"${dataType}-confidence"
     }
 
@@ -178,7 +182,7 @@ class SubjectDetailView(viewModel: WorkbenchViewModel) extends VBox {
       prefWidth = 220
       style = s"-fx-background-color: $bgColor; -fx-background-radius: 10;"
       children = Seq(
-        new Label { text <== bind(titleKey); style = "-fx-font-weight: bold;" },
+        new Label { text <== bind(titleKey); style = "-fx-font-weight: bold; -fx-text-fill: #ffffff;" },
         haplogroupLabel,
         confidenceLabel,
         viewDetailsButton
@@ -488,35 +492,35 @@ class SubjectDetailView(viewModel: WorkbenchViewModel) extends VBox {
   private def handleEdit(): Unit = {
     currentSubject.value.foreach { subject =>
       // TODO: Open edit dialog
-      println(s"[SubjectDetailView] Edit subject: ${subject.accession}")
+      log.debug(s"Edit subject: ${subject.accession}")
     }
   }
 
   private def handleDelete(): Unit = {
     currentSubject.value.foreach { subject =>
       // TODO: Show confirmation and delete
-      println(s"[SubjectDetailView] Delete subject: ${subject.accession}")
+      log.debug(s"Delete subject: ${subject.accession}")
     }
   }
 
   private def handleRunYdnaAnalysis(): Unit = {
     currentSubject.value.foreach { subject =>
       // TODO: Run Y-DNA analysis
-      println(s"[SubjectDetailView] Run Y-DNA analysis for: ${subject.accession}")
+      log.debug(s"Run Y-DNA analysis for: ${subject.accession}")
     }
   }
 
   private def handleRunMtdnaAnalysis(): Unit = {
     currentSubject.value.foreach { subject =>
       // TODO: Run mtDNA analysis
-      println(s"[SubjectDetailView] Run mtDNA analysis for: ${subject.accession}")
+      log.debug(s"Run mtDNA analysis for: ${subject.accession}")
     }
   }
 
   private def handleAddData(): Unit = {
     currentSubject.value.foreach { subject =>
       // TODO: Show add data dialog
-      println(s"[SubjectDetailView] Add data for: ${subject.accession}")
+      log.debug(s"Add data for: ${subject.accession}")
     }
   }
 

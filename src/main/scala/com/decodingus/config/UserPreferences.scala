@@ -15,7 +15,10 @@ case class UserPreferences(
                             mtdnaTreeProvider: String = "ftdna",
 
                             /** UI locale as language tag (e.g., "en", "de", "es") */
-                            locale: Option[String] = None
+                            locale: Option[String] = None,
+
+                            /** UI theme: "dark" or "light" */
+                            theme: Option[String] = None
                           )
 
 object UserPreferences {

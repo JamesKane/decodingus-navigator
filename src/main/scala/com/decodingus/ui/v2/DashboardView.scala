@@ -3,6 +3,7 @@ package com.decodingus.ui.v2
 import com.decodingus.i18n.I18n.{t, bind}
 import com.decodingus.i18n.Formatters
 import com.decodingus.ui.v2.BiosampleExtensions.*
+import com.decodingus.util.Logger
 import com.decodingus.workspace.WorkbenchViewModel
 import com.decodingus.workspace.model.Biosample
 import scalafx.Includes.*
@@ -24,9 +25,12 @@ import scalafx.scene.text.{Font, FontWeight, Text}
  */
 class DashboardView(viewModel: WorkbenchViewModel) extends ScrollPane {
 
+  private val log = Logger[DashboardView]
+
   fitToWidth = true
   hbarPolicy = ScrollPane.ScrollBarPolicy.Never
   styleClass += "dashboard-view"
+  style = "-fx-background: #1e1e1e; -fx-background-color: #1e1e1e;"
 
   // ============================================================================
   // Summary Cards
@@ -133,6 +137,7 @@ class DashboardView(viewModel: WorkbenchViewModel) extends ScrollPane {
 
   private val mainContent = new VBox(20) {
     padding = Insets(20)
+    style = "-fx-background-color: #1e1e1e;"
     children = Seq(
       createPageHeader("dashboard.title"),
       summaryCardsBox,
@@ -167,7 +172,7 @@ class DashboardView(viewModel: WorkbenchViewModel) extends ScrollPane {
         new Label {
           text <== bind(titleKey)
           styleClass += "page-title"
-          style = "-fx-font-size: 24px; -fx-font-weight: bold;"
+          style = "-fx-font-size: 24px; -fx-font-weight: bold; -fx-text-fill: #ffffff;"
         }
       )
     }
@@ -181,7 +186,7 @@ class DashboardView(viewModel: WorkbenchViewModel) extends ScrollPane {
         new Label {
           text <== bind(titleKey)
           styleClass += "section-title"
-          style = "-fx-font-size: 16px; -fx-font-weight: bold;"
+          style = "-fx-font-size: 16px; -fx-font-weight: bold; -fx-text-fill: #ffffff;"
         },
         new Region { hgrow = Priority.Always }
       ) ++ actionButton.toSeq
@@ -192,14 +197,14 @@ class DashboardView(viewModel: WorkbenchViewModel) extends ScrollPane {
     val valueLabel = new Label {
       text = valueProvider()
       styleClass += "stat-value"
-      style = "-fx-font-size: 32px; -fx-font-weight: bold;"
+      style = "-fx-font-size: 32px; -fx-font-weight: bold; -fx-text-fill: #ffffff;"
     }
 
     val titleLabel = new Label {
       // Extract just the label part (remove the {0} placeholder)
       text = t(labelKey, "").trim
       styleClass += "stat-label"
-      style = "-fx-font-size: 12px; -fx-text-fill: #888888;"
+      style = "-fx-font-size: 12px; -fx-text-fill: #b0b0b0;"
     }
 
     new VBox(5) {
@@ -235,7 +240,7 @@ class DashboardView(viewModel: WorkbenchViewModel) extends ScrollPane {
 
       if (data.isEmpty) {
         contentBox.children = Seq(new Label(t("info.no_data")) {
-          style = "-fx-text-fill: #666666;"
+          style = "-fx-text-fill: #999999;"
         })
       }
     }
@@ -251,7 +256,7 @@ class DashboardView(viewModel: WorkbenchViewModel) extends ScrollPane {
         new Label {
           text <== bind(titleKey)
           styleClass += "distribution-title"
-          style = "-fx-font-size: 14px; -fx-font-weight: bold;"
+          style = "-fx-font-size: 14px; -fx-font-weight: bold; -fx-text-fill: #ffffff;"
         },
         contentBox
       )
@@ -269,7 +274,7 @@ class DashboardView(viewModel: WorkbenchViewModel) extends ScrollPane {
       children = Seq(
         new Label(label) {
           prefWidth = 80
-          style = "-fx-font-family: monospace;"
+          style = "-fx-font-family: monospace; -fx-text-fill: #e0e0e0;"
         },
         new Region {
           prefWidth = barWidth
@@ -277,7 +282,7 @@ class DashboardView(viewModel: WorkbenchViewModel) extends ScrollPane {
           style = "-fx-background-color: #4a9eff; -fx-background-radius: 3;"
         },
         new Label(count.toString) {
-          style = "-fx-text-fill: #888888; -fx-font-size: 11px;"
+          style = "-fx-text-fill: #b0b0b0; -fx-font-size: 11px;"
         }
       )
     }
@@ -317,7 +322,7 @@ class DashboardView(viewModel: WorkbenchViewModel) extends ScrollPane {
 
   private def runAllPendingAnalyses(): Unit = {
     // TODO: Implement batch analysis
-    println("[Dashboard] Run all pending analyses")
+    log.debug("Run all pending analyses")
   }
 
   // ============================================================================

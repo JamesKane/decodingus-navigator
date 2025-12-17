@@ -3,6 +3,7 @@ package com.decodingus.ui.v2
 import com.decodingus.i18n.I18n.{t, bind}
 import com.decodingus.i18n.Formatters
 import com.decodingus.ui.v2.BiosampleExtensions.*
+import com.decodingus.util.Logger
 import com.decodingus.workspace.WorkbenchViewModel
 import com.decodingus.workspace.model.{Biosample, Project}
 import scalafx.Includes.*
@@ -26,9 +27,12 @@ import java.util.UUID
  */
 class ProjectsView(viewModel: WorkbenchViewModel) extends SplitPane {
 
+  private val log = Logger[ProjectsView]
+
   orientation = Orientation.Horizontal
   dividerPositions = 0.35
   styleClass += "projects-view"
+  style = "-fx-background-color: #1e1e1e;"
 
   // ============================================================================
   // State
@@ -59,6 +63,7 @@ class ProjectsView(viewModel: WorkbenchViewModel) extends SplitPane {
   private val searchBar = new HBox(10) {
     alignment = Pos.CenterLeft
     padding = Insets(10)
+    style = "-fx-background-color: #1e1e1e;"
     children = Seq(
       searchField,
       new Region { hgrow = Priority.Always },
@@ -100,6 +105,7 @@ class ProjectsView(viewModel: WorkbenchViewModel) extends SplitPane {
 
   private val leftPanel = new VBox {
     vgrow = Priority.Always
+    style = "-fx-background-color: #1e1e1e;"
     children = Seq(searchBar, projectListView)
   }
 
@@ -108,11 +114,11 @@ class ProjectsView(viewModel: WorkbenchViewModel) extends SplitPane {
   // ============================================================================
 
   private val projectNameLabel = new Label {
-    style = "-fx-font-size: 20px; -fx-font-weight: bold;"
+    style = "-fx-font-size: 20px; -fx-font-weight: bold; -fx-text-fill: #ffffff;"
   }
 
   private val projectMetaLabel = new Label {
-    style = "-fx-font-size: 12px; -fx-text-fill: #888888;"
+    style = "-fx-font-size: 12px; -fx-text-fill: #b0b0b0;"
   }
 
   private val editProjectButton = new Button {
@@ -168,6 +174,7 @@ class ProjectsView(viewModel: WorkbenchViewModel) extends SplitPane {
   private val memberActionsBar = new HBox(10) {
     alignment = Pos.CenterLeft
     padding = Insets(10)
+    style = "-fx-background-color: #1e1e1e;"
     children = Seq(
       addMemberButton,
       removeMemberButton,
@@ -182,7 +189,7 @@ class ProjectsView(viewModel: WorkbenchViewModel) extends SplitPane {
     style = "-fx-border-style: dashed; -fx-border-color: #555555; -fx-border-radius: 10; -fx-background-color: #252525; -fx-background-radius: 10;"
     children = Seq(
       new Label(t("projects.drag_hint")) {
-        style = "-fx-text-fill: #666666;"
+        style = "-fx-text-fill: #888888;"
       }
     )
 
@@ -212,8 +219,9 @@ class ProjectsView(viewModel: WorkbenchViewModel) extends SplitPane {
   private val memberSection = new VBox(10) {
     vgrow = Priority.Always
     padding = Insets(15)
+    style = "-fx-background-color: #1e1e1e;"
     children = Seq(
-      new Label { text <== bind("projects.members"); style = "-fx-font-weight: bold;" },
+      new Label { text <== bind("projects.members"); style = "-fx-font-weight: bold; -fx-text-fill: #ffffff;" },
       memberTableView,
       memberActionsBar,
       dropZone
@@ -222,9 +230,10 @@ class ProjectsView(viewModel: WorkbenchViewModel) extends SplitPane {
 
   private val emptyProjectPane = new VBox {
     alignment = Pos.Center
+    style = "-fx-background-color: #1e1e1e;"
     children = Seq(
       new Label(t("info.no_data")) {
-        style = "-fx-font-size: 16px; -fx-text-fill: #666666;"
+        style = "-fx-font-size: 16px; -fx-text-fill: #888888;"
       }
     )
   }
@@ -232,10 +241,12 @@ class ProjectsView(viewModel: WorkbenchViewModel) extends SplitPane {
   private val projectDetailPane = new VBox {
     vgrow = Priority.Always
     visible = false
+    style = "-fx-background-color: #1e1e1e;"
     children = Seq(projectHeader, memberSection)
   }
 
   private val rightPanel = new StackPane {
+    style = "-fx-background-color: #1e1e1e;"
     children = Seq(emptyProjectPane, projectDetailPane)
   }
 
@@ -350,27 +361,27 @@ class ProjectsView(viewModel: WorkbenchViewModel) extends SplitPane {
 
   private def handleAddProject(): Unit = {
     // TODO: Open AddProjectDialog
-    println("[ProjectsView] Add project")
+    log.debug("Add project")
   }
 
   private def handleEditProject(): Unit = {
     selectedProject.value.foreach { project =>
       // TODO: Open EditProjectDialog
-      println(s"[ProjectsView] Edit project: ${project.name}")
+      log.debug(s"Edit project: ${project.name}")
     }
   }
 
   private def handleDeleteProject(): Unit = {
     selectedProject.value.foreach { project =>
       // TODO: Show confirmation and delete
-      println(s"[ProjectsView] Delete project: ${project.name}")
+      log.debug(s"Delete project: ${project.name}")
     }
   }
 
   private def handleAddMember(): Unit = {
     selectedProject.value.foreach { project =>
       // TODO: Open member picker dialog
-      println(s"[ProjectsView] Add member to project: ${project.name}")
+      log.debug(s"Add member to project: ${project.name}")
     }
   }
 
@@ -379,7 +390,7 @@ class ProjectsView(viewModel: WorkbenchViewModel) extends SplitPane {
     if (selected != null) {
       selectedProject.value.foreach { project =>
         // TODO: Remove member from project
-        println(s"[ProjectsView] Remove ${selected.accession} from ${project.name}")
+        log.debug(s"Remove ${selected.accession} from ${project.name}")
       }
     }
   }
@@ -388,7 +399,7 @@ class ProjectsView(viewModel: WorkbenchViewModel) extends SplitPane {
     selectedProject.value.foreach { project =>
       viewModel.samples.find(_.accession == accession).foreach { biosample =>
         // TODO: Add member to project via ViewModel
-        println(s"[ProjectsView] Add ${accession} to ${project.name} via drag-drop")
+        log.debug(s"Add ${accession} to ${project.name} via drag-drop")
       }
     }
   }

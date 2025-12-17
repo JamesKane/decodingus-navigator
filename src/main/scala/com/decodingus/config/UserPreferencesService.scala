@@ -123,6 +123,26 @@ object UserPreferencesService {
     setLocale(Some(locale))
   }
 
+  /**
+   * Gets the saved theme, or None if using default (dark).
+   */
+  def getTheme: Option[String] = {
+    load().theme
+  }
+
+  /**
+   * Sets the UI theme ("dark" or "light").
+   */
+  def setTheme(theme: String): Either[String, Unit] = {
+    val validThemes = Set("dark", "light")
+    if (!validThemes.contains(theme.toLowerCase)) {
+      Left(s"Invalid theme: $theme. Valid options: dark, light")
+    } else {
+      val currentPrefs = load()
+      save(currentPrefs.copy(theme = Some(theme.toLowerCase)))
+    }
+  }
+
   private def loadFromDisk(): UserPreferences = {
     if (!Files.exists(configFilePath)) {
       println(s"[UserPreferencesService] Preferences file not found, using defaults")

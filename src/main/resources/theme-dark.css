@@ -1,91 +1,26 @@
-.root-pane {
-    -fx-background-color: #282828;
-}
+/*
+ * Dark Theme Stylesheet
+ * Applied when user preference is set to dark mode
+ */
 
-.title-label {
-    -fx-font-size: 24px;
-    -fx-font-weight: bold;
-    -fx-text-fill: #E0E0E0; /* Keep slightly off-white for title */
-}
+/* ============================================================================
+   Root and Base Colors
+   ============================================================================ */
 
-.sub-title-label {
-    -fx-font-size: 20px; /* Increased font size */
-    -fx-font-weight: bold;
-    -fx-text-fill: #FFFFFF; /* Pure white for maximum contrast */
-}
-
-.info-label {
-    -fx-font-size: 18px; /* Increased font size */
-    -fx-text-fill: #FFFFFF; /* Pure white for maximum contrast (for Labels) */
-    -fx-fill: #FFFFFF;      /* Pure white for maximum contrast (for Text nodes) */
-}
-
-.progress-label {
-    -fx-font-size: 20px;
-    -fx-font-weight: bold;
-    -fx-text-fill: #E0E0E0;
-}
-
-.drag-drop-area {
-    -fx-border-color: #606060;
-    -fx-border-width: 2;
-    -fx-border-style: dashed;
-    -fx-background-color: #303030;
-}
-
-.drag-drop-text {
-    -fx-font-size: 18px;
-    -fx-text-fill: #FFFFFF; /* Pure white for maximum contrast */
-}
-
-.button-select {
-    -fx-background-color: #4CAF50;
-    -fx-text-fill: white;
-    -fx-font-size: 16px;
-    -fx-padding: 10 20;
-}
-
-.button-upload {
-    -fx-background-color: #2196F3;
-    -fx-text-fill: white;
-    -fx-font-size: 16px;
-    -fx-padding: 10 20;
-}
-
-.button-success {
-    -fx-background-color: #4CAF50;
-    -fx-text-fill: white;
-    -fx-font-size: 16px;
-    -fx-padding: 10 20;
-}
-
-.stats-grid {
-    -fx-background-color: #383838;
-    -fx-background-radius: 10;
-}
-
-.stat-name {
-    -fx-fill: #FFFFFF; /* Pure white for maximum contrast */
-    -fx-font-size: 18px; /* Increased font size */
-}
-
-.stat-value {
-    -fx-fill: #FFFFFF; /* Pure white for maximum contrast */
-    -fx-font-size: 18px; /* Increased font size */
-    -fx-font-weight: bold;
-}
-
-.error-label {
-    -fx-font-size: 20px;
-    -fx-font-weight: bold;
-    -fx-text-fill: #FF5252;
+.root {
+    -fx-base: #1e1e1e;
+    -fx-background: #1e1e1e;
+    -fx-control-inner-background: #1e1e1e;
+    -fx-control-inner-background-alt: #252525;
+    -fx-accent: #4a9eff;
+    -fx-focus-color: #4a9eff;
+    -fx-faint-focus-color: #4a9eff22;
 }
 
 /* ============================================================================
-   Dark Theme - Tables and Lists
+   Tables and Lists
    ============================================================================ */
 
-/* TableView base styling */
 .table-view {
     -fx-background-color: #1e1e1e;
     -fx-table-color: #1e1e1e;
@@ -151,31 +86,7 @@
     -fx-text-fill: #888888;
 }
 
-/* TableView scrollbars */
-.table-view .scroll-bar {
-    -fx-background-color: #1e1e1e;
-}
-
-.table-view .scroll-bar .thumb {
-    -fx-background-color: #4a4a4a;
-    -fx-background-radius: 4;
-}
-
-.table-view .scroll-bar .thumb:hover {
-    -fx-background-color: #5a5a5a;
-}
-
-.table-view .scroll-bar .increment-button,
-.table-view .scroll-bar .decrement-button {
-    -fx-background-color: transparent;
-}
-
-.table-view .scroll-bar .increment-arrow,
-.table-view .scroll-bar .decrement-arrow {
-    -fx-background-color: #666666;
-}
-
-/* ListView styling */
+/* ListView */
 .list-view {
     -fx-background-color: #1e1e1e;
     -fx-control-inner-background: #1e1e1e;
@@ -213,21 +124,37 @@
     -fx-text-fill: #888888;
 }
 
-/* ListView scrollbars */
-.list-view .scroll-bar {
+/* ============================================================================
+   Scrollbars
+   ============================================================================ */
+
+.scroll-bar {
     -fx-background-color: #1e1e1e;
 }
 
-.list-view .scroll-bar .thumb {
+.scroll-bar .thumb {
     -fx-background-color: #4a4a4a;
     -fx-background-radius: 4;
 }
 
+.scroll-bar .thumb:hover {
+    -fx-background-color: #5a5a5a;
+}
+
+.scroll-bar .increment-button,
+.scroll-bar .decrement-button {
+    -fx-background-color: transparent;
+}
+
+.scroll-bar .increment-arrow,
+.scroll-bar .decrement-arrow {
+    -fx-background-color: #666666;
+}
+
 /* ============================================================================
-   Dark Theme - General Controls
+   Containers
    ============================================================================ */
 
-/* ScrollPane */
 .scroll-pane {
     -fx-background: #1e1e1e;
     -fx-background-color: #1e1e1e;
@@ -237,16 +164,6 @@
     -fx-background-color: #1e1e1e;
 }
 
-.scroll-pane .scroll-bar {
-    -fx-background-color: #1e1e1e;
-}
-
-.scroll-pane .scroll-bar .thumb {
-    -fx-background-color: #4a4a4a;
-    -fx-background-radius: 4;
-}
-
-/* SplitPane */
 .split-pane {
     -fx-background-color: #1e1e1e;
 }
@@ -256,7 +173,10 @@
     -fx-padding: 0 2 0 2;
 }
 
-/* TabPane */
+/* ============================================================================
+   TabPane
+   ============================================================================ */
+
 .tab-pane {
     -fx-background-color: #1e1e1e;
 }
@@ -290,7 +210,10 @@
     -fx-background-color: #1e1e1e;
 }
 
-/* TextField */
+/* ============================================================================
+   Form Controls
+   ============================================================================ */
+
 .text-field {
     -fx-background-color: #2a2a2a;
     -fx-text-fill: #e0e0e0;
@@ -304,34 +227,10 @@
     -fx-border-color: #4a9eff;
 }
 
-/* Button - Primary */
-.button-primary {
-    -fx-background-color: #4a9eff;
-    -fx-text-fill: #ffffff;
-    -fx-background-radius: 4;
-    -fx-padding: 8 16 8 16;
-}
+/* ============================================================================
+   Buttons
+   ============================================================================ */
 
-.button-primary:hover {
-    -fx-background-color: #5aafff;
-}
-
-.button-primary:pressed {
-    -fx-background-color: #3a8eef;
-}
-
-/* Button - Danger */
-.button-danger {
-    -fx-background-color: #e53935;
-    -fx-text-fill: #ffffff;
-    -fx-background-radius: 4;
-}
-
-.button-danger:hover {
-    -fx-background-color: #f54945;
-}
-
-/* Default button */
 .button {
     -fx-background-color: #3a3a3a;
     -fx-text-fill: #e0e0e0;
@@ -352,7 +251,35 @@
     -fx-text-fill: #666666;
 }
 
-/* Label defaults for dark theme */
+.button-primary {
+    -fx-background-color: #4a9eff;
+    -fx-text-fill: #ffffff;
+    -fx-background-radius: 4;
+    -fx-padding: 8 16 8 16;
+}
+
+.button-primary:hover {
+    -fx-background-color: #5aafff;
+}
+
+.button-primary:pressed {
+    -fx-background-color: #3a8eef;
+}
+
+.button-danger {
+    -fx-background-color: #e53935;
+    -fx-text-fill: #ffffff;
+    -fx-background-radius: 4;
+}
+
+.button-danger:hover {
+    -fx-background-color: #f54945;
+}
+
+/* ============================================================================
+   Labels
+   ============================================================================ */
+
 .label {
     -fx-text-fill: #e0e0e0;
 }

@@ -1,0 +1,285 @@
+/*
+ * Light Theme Stylesheet
+ * Applied when user preference is set to light mode
+ */
+
+/* ============================================================================
+   Root and Base Colors
+   ============================================================================ */
+
+.root {
+    -fx-base: #f5f5f5;
+    -fx-background: #f5f5f5;
+    -fx-control-inner-background: #ffffff;
+    -fx-control-inner-background-alt: #fafafa;
+    -fx-accent: #4a9eff;
+    -fx-focus-color: #4a9eff;
+    -fx-faint-focus-color: #4a9eff22;
+}
+
+/* ============================================================================
+   Tables and Lists
+   ============================================================================ */
+
+.table-view {
+    -fx-background-color: #ffffff;
+    -fx-table-color: #ffffff;
+    -fx-control-inner-background: #ffffff;
+    -fx-control-inner-background-alt: #fafafa;
+}
+
+.table-view .column-header-background {
+    -fx-background-color: #f0f0f0;
+}
+
+.table-view .column-header {
+    -fx-background-color: #f0f0f0;
+    -fx-border-color: #d0d0d0;
+    -fx-border-width: 0 1 1 0;
+}
+
+.table-view .column-header .label {
+    -fx-text-fill: #333333;
+    -fx-font-weight: bold;
+}
+
+.table-view .table-row-cell {
+    -fx-background-color: #ffffff;
+    -fx-border-color: transparent;
+}
+
+.table-view .table-row-cell:odd {
+    -fx-background-color: #fafafa;
+}
+
+.table-view .table-row-cell:selected {
+    -fx-background-color: #cce5ff;
+}
+
+.table-view .table-row-cell:selected .text {
+    -fx-fill: #1a1a1a;
+}
+
+.table-view .table-row-cell:hover {
+    -fx-background-color: #e8e8e8;
+}
+
+.table-view .table-row-cell:selected:hover {
+    -fx-background-color: #b3d9ff;
+}
+
+.table-view .table-cell {
+    -fx-text-fill: #333333;
+    -fx-alignment: CENTER-LEFT;
+    -fx-padding: 4 8 4 8;
+}
+
+.table-view .table-row-cell:selected .table-cell {
+    -fx-text-fill: #1a1a1a;
+}
+
+.table-view:focused {
+    -fx-background-color: #ffffff;
+}
+
+.table-view .placeholder .label {
+    -fx-text-fill: #666666;
+}
+
+/* ListView */
+.list-view {
+    -fx-background-color: #ffffff;
+    -fx-control-inner-background: #ffffff;
+    -fx-control-inner-background-alt: #fafafa;
+}
+
+.list-view .list-cell {
+    -fx-background-color: #ffffff;
+    -fx-text-fill: #333333;
+    -fx-padding: 8 12 8 12;
+}
+
+.list-view .list-cell:odd {
+    -fx-background-color: #fafafa;
+}
+
+.list-view .list-cell:selected {
+    -fx-background-color: #cce5ff;
+    -fx-text-fill: #1a1a1a;
+}
+
+.list-view .list-cell:hover {
+    -fx-background-color: #e8e8e8;
+}
+
+.list-view .list-cell:selected:hover {
+    -fx-background-color: #b3d9ff;
+}
+
+.list-view .list-cell:empty {
+    -fx-background-color: #ffffff;
+}
+
+.list-view .placeholder .label {
+    -fx-text-fill: #666666;
+}
+
+/* ============================================================================
+   Scrollbars
+   ============================================================================ */
+
+.scroll-bar {
+    -fx-background-color: #f5f5f5;
+}
+
+.scroll-bar .thumb {
+    -fx-background-color: #c0c0c0;
+    -fx-background-radius: 4;
+}
+
+.scroll-bar .thumb:hover {
+    -fx-background-color: #a0a0a0;
+}
+
+.scroll-bar .increment-button,
+.scroll-bar .decrement-button {
+    -fx-background-color: transparent;
+}
+
+.scroll-bar .increment-arrow,
+.scroll-bar .decrement-arrow {
+    -fx-background-color: #888888;
+}
+
+/* ============================================================================
+   Containers
+   ============================================================================ */
+
+.scroll-pane {
+    -fx-background: #f5f5f5;
+    -fx-background-color: #f5f5f5;
+}
+
+.scroll-pane .viewport {
+    -fx-background-color: #f5f5f5;
+}
+
+.split-pane {
+    -fx-background-color: #f5f5f5;
+}
+
+.split-pane .split-pane-divider {
+    -fx-background-color: #d0d0d0;
+    -fx-padding: 0 2 0 2;
+}
+
+/* ============================================================================
+   TabPane
+   ============================================================================ */
+
+.tab-pane {
+    -fx-background-color: #f5f5f5;
+}
+
+.tab-pane .tab-header-area {
+    -fx-background-color: #e8e8e8;
+}
+
+.tab-pane .tab-header-background {
+    -fx-background-color: #e8e8e8;
+}
+
+.tab-pane .tab {
+    -fx-background-color: #e8e8e8;
+    -fx-background-radius: 4 4 0 0;
+}
+
+.tab-pane .tab:selected {
+    -fx-background-color: #f5f5f5;
+}
+
+.tab-pane .tab .tab-label {
+    -fx-text-fill: #666666;
+}
+
+.tab-pane .tab:selected .tab-label {
+    -fx-text-fill: #1a1a1a;
+}
+
+.tab-pane .tab-content-area {
+    -fx-background-color: #f5f5f5;
+}
+
+/* ============================================================================
+   Form Controls
+   ============================================================================ */
+
+.text-field {
+    -fx-background-color: #ffffff;
+    -fx-text-fill: #333333;
+    -fx-prompt-text-fill: #999999;
+    -fx-border-color: #d0d0d0;
+    -fx-border-radius: 4;
+    -fx-background-radius: 4;
+}
+
+.text-field:focused {
+    -fx-border-color: #4a9eff;
+}
+
+/* ============================================================================
+   Buttons
+   ============================================================================ */
+
+.button {
+    -fx-background-color: #e0e0e0;
+    -fx-text-fill: #333333;
+    -fx-background-radius: 4;
+    -fx-padding: 6 12 6 12;
+}
+
+.button:hover {
+    -fx-background-color: #d0d0d0;
+}
+
+.button:pressed {
+    -fx-background-color: #c0c0c0;
+}
+
+.button:disabled {
+    -fx-background-color: #f0f0f0;
+    -fx-text-fill: #999999;
+}
+
+.button-primary {
+    -fx-background-color: #4a9eff;
+    -fx-text-fill: #ffffff;
+    -fx-background-radius: 4;
+    -fx-padding: 8 16 8 16;
+}
+
+.button-primary:hover {
+    -fx-background-color: #5aafff;
+}
+
+.button-primary:pressed {
+    -fx-background-color: #3a8eef;
+}
+
+.button-danger {
+    -fx-background-color: #e53935;
+    -fx-text-fill: #ffffff;
+    -fx-background-radius: 4;
+}
+
+.button-danger:hover {
+    -fx-background-color: #f54945;
+}
+
+/* ============================================================================
+   Labels
+   ============================================================================ */
+
+.label {
+    -fx-text-fill: #333333;
+}

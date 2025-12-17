@@ -12,11 +12,11 @@ lazy val root = (project in file("."))
     maintainer := "decodingus",
 
     // Main class for the application
-    Compile / mainClass := Some("com.decodingus.ui.GenomeNavigatorApp"),
+    Compile / mainClass := Some("com.decodingus.ui.v2.NavigatorAppV2"),
 
     // Assembly settings for fat JAR
     assembly / assemblyJarName := s"DUNavigator-assembly-${version.value}.jar",
-    assembly / mainClass := Some("com.decodingus.ui.GenomeNavigatorApp"),
+    assembly / mainClass := Some("com.decodingus.ui.v2.NavigatorAppV2"),
     // Enable Multi-Release JAR for Log4j2 compatibility with Java 9+
     assembly / packageOptions += Package.ManifestAttributes("Multi-Release" -> "true"),
     assembly / assemblyMergeStrategy := {

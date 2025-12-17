@@ -3,6 +3,7 @@ package com.decodingus.ui.v2
 import com.decodingus.i18n.I18n.{t, bind}
 import com.decodingus.i18n.Formatters
 import com.decodingus.ui.v2.BiosampleExtensions.*
+import com.decodingus.util.Logger
 import com.decodingus.workspace.WorkbenchViewModel
 import com.decodingus.workspace.model.Biosample
 import scalafx.Includes.*
@@ -27,9 +28,12 @@ import java.util.UUID
  */
 class SubjectsView(viewModel: WorkbenchViewModel) extends SplitPane {
 
+  private val log = Logger[SubjectsView]
+
   orientation = Orientation.Horizontal
   dividerPositions = 0.45
   styleClass += "subjects-view"
+  style = "-fx-background-color: #1e1e1e;"
 
   // ============================================================================
   // State
@@ -62,6 +66,7 @@ class SubjectsView(viewModel: WorkbenchViewModel) extends SplitPane {
   private val searchBar = new HBox(10) {
     alignment = Pos.CenterLeft
     padding = Insets(10)
+    style = "-fx-background-color: #1e1e1e;"
     children = Seq(
       searchField,
       new Region { hgrow = Priority.Always },
@@ -102,6 +107,7 @@ class SubjectsView(viewModel: WorkbenchViewModel) extends SplitPane {
     visible = false
     managed <== visible
     styleClass += "selection-actions-bar"
+    style = "-fx-background-color: #252525;"
     children = Seq(
       selectionCountLabel,
       new Region { hgrow = Priority.Always },
@@ -113,6 +119,7 @@ class SubjectsView(viewModel: WorkbenchViewModel) extends SplitPane {
 
   private val leftPanel = new VBox {
     vgrow = Priority.Always
+    style = "-fx-background-color: #1e1e1e;"
     children = Seq(searchBar, subjectTable, selectionActionsBar)
   }
 
@@ -125,18 +132,20 @@ class SubjectsView(viewModel: WorkbenchViewModel) extends SplitPane {
   private val emptyDetailPane = new VBox {
     alignment = Pos.Center
     spacing = 10
+    style = "-fx-background-color: #1e1e1e;"
     children = Seq(
       new Label(t("info.no_data")) {
         styleClass += "empty-state-text"
-        style = "-fx-font-size: 16px; -fx-text-fill: #666666;"
+        style = "-fx-font-size: 16px; -fx-text-fill: #888888;"
       },
       new Label(t("subjects.no_results")) {
-        style = "-fx-text-fill: #888888;"
+        style = "-fx-text-fill: #666666;"
       }
     )
   }
 
   private val rightPanel = new StackPane {
+    style = "-fx-background-color: #1e1e1e;"
     children = Seq(emptyDetailPane, detailView)
   }
 
@@ -328,27 +337,27 @@ class SubjectsView(viewModel: WorkbenchViewModel) extends SplitPane {
 
   private def handleAddSubject(): Unit = {
     // TODO: Open AddSubjectDialog
-    println("[SubjectsView] Add subject")
+    log.debug("Add subject")
   }
 
   private def handleCompare(): Unit = {
     val subjects = selectedSubjects.toSeq
     if (subjects.size >= 2) {
       // TODO: Open compare view
-      println(s"[SubjectsView] Compare ${subjects.size} subjects")
+      log.debug(s"Compare ${subjects.size} subjects")
     }
   }
 
   private def handleBatchAnalyze(): Unit = {
     val subjects = selectedSubjects.toSeq
     // TODO: Run batch analysis
-    println(s"[SubjectsView] Batch analyze ${subjects.size} subjects")
+    log.debug(s"Batch analyze ${subjects.size} subjects")
   }
 
   private def handleAddToProject(): Unit = {
     val subjects = selectedSubjects.toSeq
     // TODO: Show project picker dialog
-    println(s"[SubjectsView] Add ${subjects.size} subjects to project")
+    log.debug(s"Add ${subjects.size} subjects to project")
   }
 
   // ============================================================================
