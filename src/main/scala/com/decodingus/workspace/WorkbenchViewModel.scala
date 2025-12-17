@@ -1220,6 +1220,8 @@ class WorkbenchViewModel(
     primaryIndex: Int,
     secondaryIndex: Int
   ): Either[String, Int] = {
+    import com.decodingus.service.EntityConversions.parseIdFromRef
+
     findSubject(sampleAccession) match {
       case None =>
         Left(s"Subject $sampleAccession not found")
@@ -1250,30 +1252,38 @@ class WorkbenchViewModel(
           case None => return Left("Secondary run has no URI")
         }
 
+        val secondaryId = parseIdFromRef(secondaryUri) match {
+          case Some(id) => id
+          case None => return Left(s"Invalid secondary run URI: $secondaryUri")
+        }
+
         log.info(s"Merging sequence runs for $sampleAccession: secondary[$secondaryIndex] -> primary[$primaryIndex]")
 
         // Get alignments from the secondary run
         val secondaryAlignments = _workspace.value.main.getAlignmentsForSequenceRun(secondaryRun)
         var movedCount = 0
+        val movedAlignmentUris = scala.collection.mutable.ArrayBuffer[String]()
 
-        // Update each alignment's sequenceRunRef to point to the primary run
+        // Step 1: Update each alignment's sequenceRunRef to point to the primary run (DB only)
+        // h2Service methods don't trigger in-memory workspace updates
         secondaryAlignments.foreach { alignment =>
           val updatedAlignment = alignment.copy(
             sequenceRunRef = primaryUri,
             meta = alignment.meta.updated("merge")
           )
 
-          // Update alignment in database
-          sequenceDataManager.updateAlignment(updatedAlignment) match {
+          // Update alignment in database only
+          h2Service.updateAlignment(updatedAlignment) match {
             case Right(_) =>
               movedCount += 1
+              alignment.atUri.foreach(uri => movedAlignmentUris += uri)
               log.info(s"Moved alignment ${alignment.atUri} from $secondaryUri to $primaryUri")
             case Left(error) =>
               log.error(s"Failed to update alignment ${alignment.atUri}: $error")
           }
         }
 
-        // Update primary run's alignmentRefs to include secondary's alignments
+        // Step 2: Update primary run's alignmentRefs to include secondary's alignments
         val updatedAlignmentRefs = primaryRun.alignmentRefs ++ secondaryRun.alignmentRefs.filterNot(primaryRun.alignmentRefs.contains)
 
         // Move files from secondary to primary
@@ -1292,8 +1302,8 @@ class WorkbenchViewModel(
           meta = primaryRun.meta.updated("merge")
         )
 
-        // Update the primary run
-        sequenceDataManager.updateSequenceRun(updatedPrimaryRun) match {
+        // Step 3: Update the primary run in DB
+        h2Service.updateSequenceRun(updatedPrimaryRun) match {
           case Right(_) =>
             log.info(s"Updated primary run with ${updatedAlignmentRefs.size} alignment refs")
           case Left(error) =>
@@ -1301,8 +1311,8 @@ class WorkbenchViewModel(
             return Left(s"Failed to update primary run: $error")
         }
 
-        // Delete the secondary run
-        sequenceDataManager.deleteSequenceRun(sampleAccession, secondaryUri) match {
+        // Step 4: Delete the secondary run from DB (takes UUID)
+        h2Service.deleteSequenceRun(secondaryId) match {
           case Right(deleted) =>
             if (deleted) {
               log.info(s"Deleted secondary run: $secondaryUri")
@@ -1313,6 +1323,42 @@ class WorkbenchViewModel(
             log.error(s"Failed to delete secondary run: $error")
             // Continue anyway - alignments have been moved
         }
+
+        // Step 5: Manually update in-memory workspace state in one atomic operation
+        // This avoids the multiple syncBuffers calls that can cause race conditions
+        val workspace = _workspace.value
+
+        // Update alignments to point to primary
+        val updatedAlignments = workspace.main.alignments.map { alignment =>
+          if (movedAlignmentUris.contains(alignment.atUri.getOrElse(""))) {
+            alignment.copy(sequenceRunRef = primaryUri)
+          } else {
+            alignment
+          }
+        }
+
+        // Update the primary sequence run and remove secondary
+        val updatedSequenceRuns = workspace.main.sequenceRuns
+          .filterNot(_.atUri.contains(secondaryUri)) // Remove secondary
+          .map { sr =>
+            if (sr.atUri == primaryRun.atUri) updatedPrimaryRun else sr // Update primary
+          }
+
+        // Update biosample's sequenceRunRefs to remove secondary
+        val updatedSamples = workspace.main.samples.map { sample =>
+          if (sample.sampleAccession == sampleAccession) {
+            sample.copy(sequenceRunRefs = sample.sequenceRunRefs.filterNot(_ == secondaryUri))
+          } else {
+            sample
+          }
+        }
+
+        val updatedContent = workspace.main.copy(
+          samples = updatedSamples,
+          sequenceRuns = updatedSequenceRuns,
+          alignments = updatedAlignments
+        )
+        _workspace.value = workspace.copy(main = updatedContent)
 
         log.info(s"Merge complete: moved $movedCount alignments, merged ${secondaryRun.files.size} files")
         Right(movedCount)
