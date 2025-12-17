@@ -459,7 +459,7 @@ class SubjectDetailView(viewModel: WorkbenchViewModel) extends VBox {
 
     val viewDetailsButton = new Button {
       text <== bind("haplogroup.view_details")
-      onAction = _ => log.debug("View mtDNA details - not yet implemented")
+      onAction = _ => handleViewMtdnaDetails()
     }
 
     new ScrollPane {
@@ -1963,6 +1963,56 @@ Note: Reference data download may be required on first run."""
           )
 
           loadingDialog.show()
+      }
+    }
+  }
+
+  /** Handle viewing mtDNA haplogroup details dialog */
+  private def handleViewMtdnaDetails(): Unit = {
+    import com.decodingus.ui.components.HaplogroupReportDialog
+    import com.decodingus.haplogroup.tree.TreeType
+
+    currentSubject.value.foreach { subject =>
+      // Get the mtDNA haplogroup result from the subject's assignments
+      val mtdnaResult = subject.haplogroups.flatMap(_.mtDna)
+
+      mtdnaResult match {
+        case None =>
+          showInfoDialog(
+            t("error.title"),
+            "No mtDNA Analysis",
+            "No mtDNA haplogroup analysis has been performed for this subject. Run mtDNA analysis first."
+          )
+
+        case Some(result) =>
+          // Try to find an artifact directory with mtDNA reports
+          val artifactDir: Option[java.nio.file.Path] = {
+            val sequenceRuns = viewModel.workspace.value.main.getSequenceRunsForBiosample(subject)
+            sequenceRuns.indices.view.flatMap { seqRunIndex =>
+              val seqRun = sequenceRuns(seqRunIndex)
+              val alignments = viewModel.workspace.value.main.getAlignmentsForSequenceRun(seqRun)
+              alignments.indices.view.flatMap { alignIndex =>
+                viewModel.getHaplogroupArtifactDirForAlignment(subject.accession, seqRunIndex, alignIndex).filter { dir =>
+                  val reportFile = dir.resolve("mtdna_haplogroup_report.txt")
+                  java.nio.file.Files.exists(reportFile)
+                }
+              }
+            }.headOption
+          }
+
+          // Open the haplogroup report dialog
+          val dialog = new HaplogroupReportDialog(
+            treeType = TreeType.MTDNA,
+            workspaceResult = Some(result),
+            artifactDir = artifactDir,
+            sampleName = Some(subject.donorIdentifier)
+          )
+
+          Option(SubjectDetailView.this.getScene).flatMap(s => Option(s.getWindow)).foreach { window =>
+            dialog.initOwner(window)
+          }
+
+          dialog.showAndWait()
       }
     }
   }
