@@ -5,7 +5,7 @@ import com.decodingus.i18n.Formatters
 import com.decodingus.str.StrCsvParser
 import com.decodingus.config.FeatureToggles
 import com.decodingus.haplogroup.tree.TreeType
-import com.decodingus.ui.components.{AddDataDialog, AddSequenceDataDialog, AncestryResultDialog, ConfirmDialog, DataInput, DataType, EditSubjectDialog, ImportVendorFastaDialog, InfoDialog, MtdnaVariantsPanel, SequenceDataInput, SourceReconciliationPanel, VcfMetadata, VcfMetadataDialog, VendorFastaImportRequest, YStrSummaryPanel}
+import com.decodingus.ui.components.{AddDataDialog, AddSequenceDataDialog, AncestryResultDialog, ConfirmDialog, DataInput, DataType, EditSubjectDialog, ImportVendorFastaDialog, InfoDialog, MtdnaVariantsPanel, SequenceDataInput, SourceReconciliationPanel, VcfMetadata, VcfMetadataDialog, VendorFastaImportRequest, YChromosomeIdeogramPanel, YStrSummaryPanel}
 import com.decodingus.ui.v2.BiosampleExtensions.*
 import com.decodingus.util.Logger
 import com.decodingus.workspace.WorkbenchViewModel
@@ -148,6 +148,7 @@ class SubjectDetailView(viewModel: WorkbenchViewModel) extends VBox {
     padding = Insets(0)
   }
   private val ydnaReconciliationPanel = SourceReconciliationPanel()
+  private val ydnaIdeogramPanel = YChromosomeIdeogramPanel()
 
   // mtDNA tab labels
   private val mtdnaTerminalLabel = new Label("-") {
@@ -547,7 +548,8 @@ class SubjectDetailView(viewModel: WorkbenchViewModel) extends VBox {
           new StackPane {
             children = Seq(ydnaNotAnalyzedPane, ydnaResultPane)
           },
-          ydnaReconciliationPanel
+          ydnaReconciliationPanel,
+          ydnaIdeogramPanel
         )
       }
     }
@@ -1906,6 +1908,17 @@ Note: Reference data download may be required on first run."""
     // Update Y-DNA reconciliation panel
     val yDnaReconciliation = viewModel.workspace.value.main.getYDnaReconciliation(subject)
     ydnaReconciliationPanel.setReconciliation(yDnaReconciliation)
+
+    // Update Y-DNA ideogram panel (basic version without variant markers)
+    subject.yHaplogroupResult match {
+      case Some(_) =>
+        // Create basic annotator for ideogram (uses default GRCh38 heterochromatin)
+        import com.decodingus.refgenome.YRegionAnnotator
+        val annotator = YRegionAnnotator.fromRegions(heterochromatin = YRegionAnnotator.grch38Heterochromatin)
+        ydnaIdeogramPanel.setData(Some(annotator), Nil) // Show chromosome structure, no variant markers
+      case None =>
+        ydnaIdeogramPanel.clear()
+    }
 
     // Update mtDNA tab
     subject.mtHaplogroupResult match {

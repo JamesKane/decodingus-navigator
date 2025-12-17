@@ -1,7 +1,8 @@
 # UI Redesign Proposal: DUNavigator
 
 **Date:** December 2024
-**Status:** Draft Proposal
+**Last Updated:** December 17, 2024
+**Status:** In Progress - Phases 1-3 Complete
 **Target Users:** Genetic genealogists and scientists managing large subject collections
 
 ---
@@ -517,44 +518,293 @@ Monospace:   JetBrains Mono (for IDs, sequences)
 
 ---
 
+## Implementation Status
+
+### Current Implementation (December 2024)
+
+#### Completed Features
+
+**Navigation & Layout**
+- [x] Tab-based navigation shell (Dashboard, Subjects, Projects)
+- [x] Modern dark theme with color palette
+- [x] Status bar with workspace info
+- [x] Responsive layout with proper spacing
+
+**Dashboard Tab**
+- [x] Workspace summary cards (subject count, project count, Y-DNA count, mtDNA count, IBD count)
+- [x] Pending work queue with clickable items
+- [x] Haplogroup distribution charts (Y-DNA and mtDNA)
+- [x] Recent activity feed
+
+**Subjects Tab**
+- [x] Data grid with multi-select support
+- [x] Column customization (show/hide columns)
+- [x] Search and filtering
+- [x] Batch operations toolbar (Compare, Batch Analyze, Add to Project)
+- [x] Inline status indicators with color coding
+
+**Subject Detail View**
+- [x] Tabbed interface (Overview, Y-DNA, mtDNA, Ancestry, IBD, Data Sources)
+- [x] Header with subject info and action buttons
+
+**Overview Tab**
+- [x] Y-DNA haplogroup card with confidence and quality badge
+- [x] mtDNA haplogroup card with confidence and quality badge
+- [x] Y-STR summary panel with FTDNA panel indicators (Y-12 through Y-700)
+- [x] Ancestry placeholder card
+- [x] IBD matches placeholder card
+- [x] Data sources summary (sequencing runs, chip profiles, STR profiles)
+
+**Y-DNA Tab**
+- [x] Terminal haplogroup display with phylogenetic path
+- [x] Derived/Ancestral SNP counts
+- [x] Confidence level with color coding
+- [x] Quality rating with color coding
+- [x] Last analyzed timestamp
+- [x] Source reconciliation table (multi-run comparison)
+- [x] Y-Chromosome ideogram with region bands (PAR, X-degenerate, Ampliconic, etc.)
+- [x] View Full Y Profile button (opens detailed dialog with variant markers)
+- [x] Run Analysis button with slide-in progress panel
+
+**mtDNA Tab**
+- [x] Haplogroup display with phylogenetic path
+- [x] Confidence level with color coding
+- [x] Quality rating with color coding
+- [x] Last analyzed timestamp
+- [x] Source reconciliation table (multi-run comparison)
+- [x] Variants from rCRS table with region classification (HVS1/HVS2/HVS3/Coding)
+- [x] Export FASTA placeholder button
+- [x] Run Analysis button
+
+**Data Sources Tab**
+- [x] Sequencing runs list with expandable details
+- [x] Chip/Array profiles list
+- [x] STR profiles list
+- [x] Add Data button with file type auto-detection
+- [x] VCF import with metadata dialog
+
+**Compare View**
+- [x] Subject comparison dialog (2-3 subjects)
+- [x] Y-STR comparison tab with genetic distance calculation
+- [x] Y-DNA haplogroup comparison tab
+- [x] mtDNA haplogroup comparison tab
+- [x] Match/mismatch highlighting with step difference display
+
+**Projects Tab**
+- [x] Project list with member counts
+- [x] Project detail with member grid
+- [x] Add/remove members
+- [x] Create new project
+
+**Analysis Features**
+- [x] Slide-in progress panel for running analyses
+- [x] Progress tracking with task name and status
+- [x] Cancel button for running analyses
+
+**Internationalization**
+- [x] Full i18n support with messages.properties
+- [x] Locale-aware number/date formatting via Formatters
+
+#### Pending Features (Future Work)
+
+**Ancestry Tab** (Phase 4)
+- [ ] Ancestry composition visualization (bar chart)
+- [ ] Reference panel information
+- [ ] Run Analysis integration (requires backend implementation)
+
+**IBD Matches Tab** (Phase 4)
+- [ ] IBD matches table with filtering (UI placeholder exists)
+- [ ] Chromosome browser visualization
+- [ ] Relationship estimation display
+- [ ] Import Matches functionality (requires backend implementation)
+- [ ] Run Match functionality (requires backend implementation)
+
+**Advanced Visualizations** (Future)
+- [ ] Interactive haplogroup tree visualization (SVG/Canvas)
+- [x] Y-Chromosome ideogram with region bands (moved from Y Profile dialog to Y-DNA tab)
+- [ ] Y-Chromosome ideogram with SNP position markers (available in View Full Y Profile)
+- [ ] Cross-subject IBD network view
+
+---
+
 ## Implementation Phases
 
-### Phase 1: Foundation
-1. Implement tab-based navigation shell
-2. Create new dashboard home view
-3. Upgrade data grid with multi-select and column customization
-4. Add batch operation support
+### Phase 1: Foundation - COMPLETE
+1. [x] Implement tab-based navigation shell
+2. [x] Create new dashboard home view
+3. [x] Upgrade data grid with multi-select and column customization
+4. [x] Add batch operation support
 
-### Phase 2: Enhanced Subject Detail
-1. Refactor subject detail into tabbed interface
-2. Move analysis results into dedicated sub-tabs
-3. Add IBD matches tab
-4. Implement ancestry composition view
+### Phase 2: Enhanced Subject Detail - COMPLETE
+1. [x] Refactor subject detail into tabbed interface
+2. [x] Move analysis results into dedicated sub-tabs
+3. [x] Add IBD matches tab (placeholder UI)
+4. [x] Implement ancestry composition view (placeholder UI)
 
-### Phase 3: Comparison & Visualization
-1. Haplogroup tree visualization (interactive SVG/Canvas)
-2. Comparison view for multiple subjects
-3. Chromosome browser component
-4. Enhanced STR comparison tools
+### Phase 3: Comparison & Visualization - COMPLETE
+1. [ ] Haplogroup tree visualization (interactive SVG/Canvas) - DEFERRED
+2. [x] Comparison view for multiple subjects
+3. [ ] Chromosome browser component - DEFERRED (awaiting IBD backend)
+4. [x] Enhanced STR comparison tools
 
-### Phase 4: IBD & Ancestry (when features ready)
-1. IBD matching integration
-2. Relationship estimation display
-3. Ancestry composition visualization
-4. Cross-subject IBD network view
+### Phase 4: IBD & Ancestry - FUTURE WORK
+*Requires backend implementation before UI can be fully functional*
+
+1. [ ] IBD matching integration
+   - Backend: IBD segment detection algorithm
+   - Backend: Match storage and retrieval
+   - UI: Wire up matches table
+   - UI: Implement chromosome browser
+
+2. [ ] Relationship estimation display
+   - Backend: cM to relationship mapping
+   - UI: Relationship badges in matches table
+
+3. [ ] Ancestry composition visualization
+   - Backend: Ancestry inference algorithm
+   - Backend: Reference panel integration
+   - UI: Stacked bar chart component
+   - UI: Confidence intervals display
+
+4. [ ] Cross-subject IBD network view
+   - Backend: Network graph data structure
+   - UI: Force-directed graph visualization
 
 ---
 
 ## Key Architectural Changes
 
-| Current | Proposed |
-|---------|----------|
-| Single SplitPane | TabPane with specialized views |
-| ListView for subjects | TableView with virtual scrolling |
-| Modal dialogs for results | Inline expandable panels + sub-tabs |
-| Text-only haplogroups | Interactive tree visualization |
-| One detail view | Comparison view + rich detail |
-| Imperative styling | CSS variables + theme system |
-| 5 top-level concepts | 3 entity-focused tabs |
-| Analysis as global feature | Analysis within Subject detail |
-| Matching as global feature | IBD Matches within Subject detail |
+| Original Design | V2 Implementation | Status |
+|-----------------|-------------------|--------|
+| Single SplitPane | TabPane with specialized views | DONE |
+| ListView for subjects | TableView with virtual scrolling | DONE |
+| Modal dialogs for results | Inline expandable panels + sub-tabs | DONE |
+| Text-only haplogroups | Interactive tree visualization | DEFERRED |
+| One detail view | Comparison view + rich detail | DONE |
+| Imperative styling | CSS variables + theme system | DONE |
+| 5 top-level concepts | 3 entity-focused tabs | DONE |
+| Analysis as global feature | Analysis within Subject detail | DONE |
+| Matching as global feature | IBD Matches within Subject detail | PLACEHOLDER |
+
+---
+
+## Planned UI Enhancements
+
+### Near-Term Improvements
+
+These improvements can be added without backend changes:
+
+**Y-DNA Tab Enhancements**
+- [ ] SNP list export button (CSV/TSV format)
+- [ ] Haplogroup badge with phylogenetic depth indicator
+- [ ] Tree provider selector (switch between FTDNA/DecodingUs trees)
+- [ ] Private SNP discovery panel (when available from analysis)
+
+**mtDNA Tab Enhancements**
+- [ ] Heteroplasmy indicator for variants
+- [ ] Region highlighting in variant table (color-coded by region)
+- [ ] Export FASTA implementation (construct sequence from variants)
+- [ ] mtDNA sequence viewer (circular or linear visualization)
+
+**Compare View Enhancements**
+- [ ] Export comparison report (PDF/HTML)
+- [ ] MRCA estimation based on genetic distance
+- [ ] Modal STR difference highlighting
+- [ ] Add more than 3 subjects (scrollable comparison)
+
+**Dashboard Enhancements**
+- [ ] Clickable haplogroup distribution bars (filter subjects)
+- [ ] Analysis queue progress indicators
+- [ ] Quick actions (add subject, import data)
+
+**Data Sources Enhancements**
+- [ ] Data quality summary per source
+- [ ] Coverage histogram visualization
+- [ ] Batch import from folder
+
+### Future UI Work (Requires Backend)
+
+**Ancestry Composition** (Phase 4)
+```
++---------------------------------------------------------------------+
+|  ANCESTRY COMPOSITION                                               |
++---------------------------------------------------------------------+
+|                                                                     |
+|  [Stacked horizontal bar chart]                                     |
+|  ================================================================== |
+|  | NW European 78% | S. European 12% | E. European 6% | Other 4% | |
+|  ================================================================== |
+|                                                                     |
+|  DETAILED BREAKDOWN                              Confidence: 90%    |
+|  +----------------------------+                                     |
+|  | British & Irish     54.1% | ===============                      |
+|  | French & German     16.8% | =====                                |
+|  | Scandinavian         7.3% | ==                                   |
+|  | Italian              9.1% | ===                                  |
+|  | Iberian              3.3% | =                                    |
+|  | Eastern European     6.2% | ==                                   |
+|  | Broadly European     3.2% | =                                    |
+|  +----------------------------+                                     |
+|                                                                     |
+|  Reference Panel: v5.2 (Dec 2024)                                   |
+|  [Run Analysis]  [Export Report]                                    |
++---------------------------------------------------------------------+
+```
+
+**IBD Matches** (Phase 4)
+```
++---------------------------------------------------------------------+
+|  IBD MATCHES                            [Run Match] [Import Matches]|
++---------------------------------------------------------------------+
+|                                                                     |
+|  FILTERS                                                            |
+|  Min cM: [====o====] 20 cM     Relationship: [All v]                |
+|  Show: [x] In workspace  [ ] External matches                       |
+|                                                                     |
+|  MATCHES (47 found)                                                 |
+|  +---------------------+--------+------+-------+------------------+ |
+|  | Match               | Shared | Segs | Long. | Relationship     | |
+|  +---------------------+--------+------+-------+------------------+ |
+|  | * Bob Smith [ws]    | 1,847  | 42   | 287   | Close Family     | |
+|  |   Jane Doe [ws]     | 847    | 28   | 94    | 1st-2nd Cousin   | |
+|  |   External Match 1  | 127    | 8    | 32    | 3rd-4th Cousin   | |
+|  +---------------------+--------+------+-------+------------------+ |
+|  [ws] = In workspace                                                |
+|                                                                     |
+|  CHROMOSOME BROWSER                                                 |
+|  +-------------------------------------------------------------------+
+|  | Chr 1  [====    ====                              ========     ] |
+|  | Chr 2  [    ========              ====                         ] |
+|  | Chr 3  [                ============                           ] |
+|  | Chr 4  [  ====                                    ====         ] |
+|  | ...                                                              |
+|  +-------------------------------------------------------------------+
+|  Legend: [===] Shared IBD segment                                   |
+|                                                                     |
+|  [View in Compare Mode]  [Export Segments]  [Add to Project]        |
++---------------------------------------------------------------------+
+```
+
+**Haplogroup Tree Visualization** (Future)
+```
++---------------------------------------------------------------------+
+|  Y-DNA PHYLOGENETIC TREE                           [Zoom] [Reset]   |
++---------------------------------------------------------------------+
+|                                                                     |
+|  R ─┬─ R1 ─┬─ R1a ─── ...                                          |
+|     │      │                                                        |
+|     │      └─ R1b ─┬─ R1b-M269 ─┬─ R1b-L151 ─┬─ R1b-P312 ●         |
+|     │              │            │            │                      |
+|     │              │            │            └─ R1b-U106 ───...     |
+|     │              │            │                                   |
+|     │              │            └─ R1b-L11 ───...                   |
+|     │              │                                                |
+|     │              └─ R1b-V88 ───...                                |
+|     │                                                               |
+|     └─ R2 ───...                                                    |
+|                                                                     |
+|  ● = Current subject position                                       |
+|  Click any node to see details                                      |
+|                                                                     |
++---------------------------------------------------------------------+
+```
