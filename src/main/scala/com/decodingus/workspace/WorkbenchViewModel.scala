@@ -16,7 +16,7 @@ import com.decodingus.yprofile.repository.{
   YProfileRegionRepository, YProfileVariantRepository, YVariantSourceCallRepository,
   YVariantAuditRepository, YSourceCallAlignmentRepository
 }
-import com.decodingus.service.{DatabaseContext, H2WorkspaceService}
+import com.decodingus.service.{DatabaseContext, H2WorkspaceService, SequenceDataManager}
 import com.decodingus.util.Logger
 import com.decodingus.workspace.model.{Workspace, Project, Biosample, WorkspaceContent, SyncStatus, SequenceRun, Alignment, AlignmentMetrics, ContigMetrics, FileInfo, HaplogroupAssignments, HaplogroupResult => WorkspaceHaplogroupResult, RecordMeta, StrProfile, ChipProfile, DnaType, RunHaplogroupCall, CallMethod, HaplogroupTechnology}
 import com.decodingus.haplogroup.model.{HaplogroupResult => AnalysisHaplogroupResult}
@@ -52,6 +52,9 @@ class WorkbenchViewModel(
   private val analysisCoordinator = new AnalysisCoordinator()
   private val syncService = new SyncService(workspaceService)
   private val fingerprintMatchService = new FingerprintMatchService()
+
+  // Centralized manager for SequenceRun and Alignment CRUD operations
+  private val sequenceDataManager: SequenceDataManager = databaseContext.sequenceDataManager
 
   // Y Profile service
   private val yProfileService: Option[YProfileService] = Some(databaseContext.transactor).map { tx =>
@@ -151,6 +154,12 @@ class WorkbenchViewModel(
   }
 
   // --- Initialization ---
+  // Set up the SequenceDataManager callbacks to keep in-memory state in sync
+  sequenceDataManager.setWorkspaceCallbacks(
+    getter = () => _workspace.value,
+    updater = (updated: Workspace) => _workspace.value = updated
+  )
+
   // Load workspace on creation of ViewModel (AFTER onChange listener is registered)
   loadWorkspace()
 
@@ -626,60 +635,32 @@ class WorkbenchViewModel(
    * All metadata (platform, reads, etc.) will be populated during analysis.
    * Returns the index of the new entry, or -1 if duplicate/error.
    *
-   * ATOMIC: Persists to H2 first, then updates in-memory state.
+   * Uses SequenceDataManager for atomic H2 persistence + in-memory state update.
    */
   def addSequenceRunFromFile(sampleAccession: String, fileInfo: FileInfo): Int = {
-    import com.decodingus.service.EntityConversions.parseIdFromRef
+    // Create initial SequenceRun with placeholder values
+    val initialRun = SequenceRun(
+      atUri = None, // Will be assigned by SequenceDataManager
+      meta = RecordMeta.initial,
+      biosampleRef = "", // Will be set by SequenceDataManager
+      platformName = "Unknown",
+      instrumentModel = None,
+      testType = "Unknown",
+      libraryLayout = None,
+      totalReads = None,
+      readLength = None,
+      meanInsertSize = None,
+      files = List.empty, // fileInfo added by manager
+      alignmentRefs = List.empty
+    )
 
-    // Step 1: Use WorkspaceOperations to create the SequenceRun object
-    workspaceOps.addSequenceRunFromFile(currentState, sampleAccession, fileInfo) match {
-      case Right((newState, sequenceRun, newIndex)) =>
-        // Step 2: Get biosample UUID for H2 FK
-        val biosampleId = parseIdFromRef(sequenceRun.biosampleRef)
-        biosampleId match {
-          case Some(bsId) =>
-            // Step 3: Persist to H2 atomically
-            h2Service.createSequenceRun(sequenceRun, bsId) match {
-              case Right(persistedRun) =>
-                log.info(s" SequenceRun persisted to H2: ${persistedRun.atUri}")
-
-                // Step 4: Update in-memory state with the PERSISTED atUri (not the temp one)
-                // Replace the temp URI in sequenceRuns and in biosample's sequenceRunRefs
-                val tempUri = sequenceRun.atUri.getOrElse("")
-                val persistedUri = persistedRun.atUri.getOrElse("")
-                log.debug(s" addSequenceRunFromFile: Replacing temp URI '$tempUri' with persisted URI '$persistedUri'")
-
-                val updatedSequenceRuns = newState.workspace.main.sequenceRuns.map { sr =>
-                  if (sr.atUri == sequenceRun.atUri) persistedRun else sr
-                }
-                val updatedSamples = newState.workspace.main.samples.map { s =>
-                  if (s.sampleAccession == sampleAccession) {
-                    val updatedRefs = s.sequenceRunRefs.map { ref =>
-                      if (ref == tempUri) persistedUri else ref
-                    }
-                    s.copy(sequenceRunRefs = updatedRefs)
-                  } else s
-                }
-                val updatedContent = newState.workspace.main.copy(
-                  samples = updatedSamples,
-                  sequenceRuns = updatedSequenceRuns
-                )
-                val fixedState = newState.copy(workspace = newState.workspace.copy(main = updatedContent))
-
-                log.debug(s" addSequenceRunFromFile: Updated state has ${updatedSequenceRuns.size} runs, sample refs: ${updatedSamples.find(_.sampleAccession == sampleAccession).map(_.sequenceRunRefs).getOrElse(Nil)}")
-
-                updateInMemoryState(fixedState)
-                newIndex
-              case Left(error) =>
-                log.error(s"Failed to persist SequenceRun to H2: $error")
-                -1
-            }
-          case None =>
-            log.info(s" Cannot persist SequenceRun - invalid biosampleRef: ${sequenceRun.biosampleRef}")
-            -1
-        }
+    // SequenceDataManager handles: validation, persistence, in-memory state update
+    sequenceDataManager.createSequenceRun(sampleAccession, initialRun, fileInfo) match {
+      case Right(result) =>
+        log.info(s"SequenceRun created via SequenceDataManager: ${result.sequenceRun.atUri}")
+        result.index
       case Left(error) =>
-        log.info(s" $error")
+        log.error(s"Failed to create SequenceRun: $error")
         -1
     }
   }
@@ -1033,70 +1014,37 @@ class WorkbenchViewModel(
 
   /**
    * Removes a sequence run from a subject by index.
-   * ATOMIC: Deletes from H2 first (cascade deletes alignments), then updates in-memory state.
+   * Uses SequenceDataManager for atomic H2 deletion + in-memory state update.
    */
   def removeSequenceData(sampleAccession: String, index: Int): Unit = {
-    import com.decodingus.service.EntityConversions.parseIdFromRef
-
     findSubject(sampleAccession) match {
       case Some(subject) =>
         val sequenceRuns = _workspace.value.main.getSequenceRunsForBiosample(subject)
         if (index >= 0 && index < sequenceRuns.size) {
           val seqRunToRemove = sequenceRuns(index)
-
-          // Delete from H2 first (cascade deletes related alignments)
-          seqRunToRemove.atUri.flatMap(parseIdFromRef).foreach { seqRunId =>
-            h2Service.deleteSequenceRun(seqRunId) match {
-              case Right(deleted) if deleted =>
-                log.info(s" SequenceRun deleted from H2: ${seqRunToRemove.atUri}")
-              case Right(_) =>
-                log.info(s" SequenceRun not found in H2: ${seqRunToRemove.atUri}")
-              case Left(error) =>
-                log.error(s"Failed to delete SequenceRun from H2: $error")
-            }
+          seqRunToRemove.atUri match {
+            case Some(uri) =>
+              sequenceDataManager.deleteSequenceRun(sampleAccession, uri) match {
+                case Right(deleted) =>
+                  if (deleted) log.info(s"SequenceRun deleted via SequenceDataManager: $uri")
+                  else log.warn(s"SequenceRun not found for deletion: $uri")
+                case Left(error) =>
+                  log.error(s"Failed to delete SequenceRun: $error")
+              }
+            case None =>
+              log.warn(s"Cannot delete sequence run at index $index: no URI")
           }
-
-          // Also update the biosample in H2
-          val updatedSubject = subject.copy(
-            sequenceRunRefs = subject.sequenceRunRefs.filterNot(ref => seqRunToRemove.atUri.contains(ref)),
-            meta = subject.meta.updated("sequenceRunRefs")
-          )
-          h2Service.updateBiosample(updatedSubject) match {
-            case Right(_) =>
-              log.info(s" Biosample updated in H2 after sequence run removal")
-            case Left(error) =>
-              log.error(s"Failed to update Biosample in H2: $error")
-          }
-
-          // Update in-memory state
-          val updatedSequenceRuns = _workspace.value.main.sequenceRuns.filterNot(_.atUri == seqRunToRemove.atUri)
-
-          // Remove any alignments that reference this sequence run
-          val updatedAlignments = _workspace.value.main.alignments.filterNot { align =>
-            seqRunToRemove.atUri.exists(uri => align.sequenceRunRef == uri)
-          }
-
-          val updatedSamples = _workspace.value.main.samples.map { s =>
-            if (s.sampleAccession == sampleAccession) updatedSubject else s
-          }
-
-          val updatedContent = _workspace.value.main.copy(
-            samples = updatedSamples,
-            sequenceRuns = updatedSequenceRuns,
-            alignments = updatedAlignments
-          )
-          _workspace.value = _workspace.value.copy(main = updatedContent)
         } else {
-          log.info(s" Cannot remove sequence run: index $index out of bounds")
+          log.info(s"Cannot remove sequence run: index $index out of bounds")
         }
       case None =>
-        log.info(s" Cannot remove sequence run: subject $sampleAccession not found")
+        log.info(s"Cannot remove sequence run: subject $sampleAccession not found")
     }
   }
 
   /**
    * Updates a sequence run at a specific index for a subject.
-   * ATOMIC: Persists to H2 first, then updates in-memory state.
+   * Uses SequenceDataManager for atomic H2 update + in-memory state update.
    */
   def updateSequenceRun(sampleAccession: String, index: Int, updatedRun: SequenceRun): Unit = {
     findSubject(sampleAccession) match {
@@ -1104,28 +1052,20 @@ class WorkbenchViewModel(
         val sequenceRuns = _workspace.value.main.getSequenceRunsForBiosample(subject)
         if (index >= 0 && index < sequenceRuns.size) {
           val originalRun = sequenceRuns(index)
-          val runWithUpdatedMeta = updatedRun.copy(
+          // Ensure the updated run has the original URI and updated metadata
+          val runToUpdate = updatedRun.copy(
             atUri = originalRun.atUri,
             meta = originalRun.meta.updated("edit")
           )
 
-          // Persist to H2 first
-          h2Service.updateSequenceRun(runWithUpdatedMeta) match {
+          sequenceDataManager.updateSequenceRun(runToUpdate) match {
             case Right(persisted) =>
-              log.info(s" SequenceRun updated in H2: ${persisted.atUri}")
+              log.info(s"SequenceRun updated via SequenceDataManager: ${persisted.atUri}")
             case Left(error) =>
-              log.error(s"Failed to update SequenceRun in H2: $error")
+              log.error(s"Failed to update SequenceRun: $error")
           }
-
-          // Update in-memory state
-          val updatedSequenceRuns = _workspace.value.main.sequenceRuns.map { sr =>
-            if (sr.atUri == originalRun.atUri) runWithUpdatedMeta else sr
-          }
-
-          val updatedContent = _workspace.value.main.copy(sequenceRuns = updatedSequenceRuns)
-          _workspace.value = _workspace.value.copy(main = updatedContent)
         } else {
-          log.info(s" Cannot update sequence run: index $index out of bounds")
+          log.info(s"Cannot update sequence run: index $index out of bounds")
         }
       case None =>
         log.info(s" Cannot update sequence run: subject $sampleAccession not found")
@@ -1206,14 +1146,12 @@ class WorkbenchViewModel(
 
   /**
    * Add an alignment to an existing sequence run (for multi-reference scenarios).
+   * Uses SequenceDataManager for atomic alignment creation + in-memory state update.
    *
+   * @param sampleAccession The biosample's accession ID
    * @param sequenceRunIndex Index of the sequence run to add alignment to
    * @param newAlignment The new alignment to add
    * @param fileInfo The file info for the new alignment
-   */
-  /**
-   * Add an alignment to an existing sequence run (for multi-reference scenarios).
-   * ATOMIC: Creates alignment in H2, updates sequence run in H2, then updates in-memory state.
    */
   def addAlignmentToExistingRun(
     sampleAccession: String,
@@ -1221,65 +1159,24 @@ class WorkbenchViewModel(
     newAlignment: Alignment,
     fileInfo: FileInfo
   ): Unit = {
-    import com.decodingus.service.EntityConversions.parseIdFromRef
-
     findSubject(sampleAccession).foreach { subject =>
       val sequenceRuns = _workspace.value.main.getSequenceRunsForBiosample(subject)
       if (sequenceRunIndex >= 0 && sequenceRunIndex < sequenceRuns.size) {
         val seqRun = sequenceRuns(sequenceRunIndex)
-        val alignUri = newAlignment.atUri.getOrElse("")
 
-        // Add file to sequence run if not already present
-        val updatedFiles = if (seqRun.files.exists(_.checksum == fileInfo.checksum)) {
-          seqRun.files
-        } else {
-          seqRun.files :+ fileInfo
+        seqRun.atUri match {
+          case Some(seqRunUri) =>
+            sequenceDataManager.createAlignment(seqRunUri, newAlignment, Some(fileInfo)) match {
+              case Right(result) =>
+                log.info(s"Alignment created via SequenceDataManager: ${result.alignment.atUri}")
+              case Left(error) =>
+                log.error(s"Failed to create Alignment: $error")
+            }
+          case None =>
+            log.warn(s"Cannot add alignment: sequence run at index $sequenceRunIndex has no URI")
         }
-
-        // Add alignment ref if not already present
-        val updatedAlignmentRefs = if (seqRun.alignmentRefs.contains(alignUri)) {
-          seqRun.alignmentRefs
-        } else {
-          seqRun.alignmentRefs :+ alignUri
-        }
-
-        val updatedSeqRun = seqRun.copy(
-          files = updatedFiles,
-          alignmentRefs = updatedAlignmentRefs,
-          meta = seqRun.meta.updated("alignment-added")
-        )
-
-        // Persist alignment to H2 first
-        seqRun.atUri.flatMap(parseIdFromRef).foreach { seqRunId =>
-          h2Service.createAlignment(newAlignment, seqRunId) match {
-            case Right(persisted) =>
-              log.info(s" Alignment persisted to H2: ${persisted.atUri}")
-            case Left(error) =>
-              log.error(s"Failed to persist Alignment to H2: $error")
-          }
-        }
-
-        // Update sequence run in H2
-        h2Service.updateSequenceRun(updatedSeqRun) match {
-          case Right(persisted) =>
-            log.info(s" SequenceRun updated in H2: ${persisted.atUri}")
-          case Left(error) =>
-            log.error(s"Failed to update SequenceRun in H2: $error")
-        }
-
-        // Update in-memory state
-        val updatedSequenceRuns = _workspace.value.main.sequenceRuns.map { sr =>
-          if (sr.atUri == seqRun.atUri) updatedSeqRun else sr
-        }
-        val updatedAlignments = _workspace.value.main.alignments :+ newAlignment
-
-        val updatedContent = _workspace.value.main.copy(
-          sequenceRuns = updatedSequenceRuns,
-          alignments = updatedAlignments
-        )
-        _workspace.value = _workspace.value.copy(main = updatedContent)
-
-        log.info(s" Added ${newAlignment.referenceBuild} alignment to existing sequence run")
+      } else {
+        log.info(s"Cannot add alignment: index $sequenceRunIndex out of bounds")
       }
     }
   }

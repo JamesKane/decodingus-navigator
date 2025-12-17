@@ -95,12 +95,21 @@ object DatabaseInitializer:
         conflictRepo = syncConflictRepo
       )
 
+      // Create the centralized sequence data manager
+      val sequenceDataManager = new SequenceDataManager(
+        transactor = transactor,
+        biosampleRepo = biosampleRepo,
+        sequenceRunRepo = sequenceRunRepo,
+        alignmentRepo = alignmentRepo
+      )
+
       Right(DatabaseContext(
         database = database,
         transactor = transactor,
         workspaceService = workspaceService,
         cacheService = cacheService,
         syncService = syncService,
+        sequenceDataManager = sequenceDataManager,
         biosampleRepository = biosampleRepo,
         projectRepository = projectRepo,
         sequenceRunRepository = sequenceRunRepo,
@@ -132,6 +141,7 @@ case class DatabaseContext(
   workspaceService: H2WorkspaceService,
   cacheService: CacheService,
   syncService: SyncService,
+  sequenceDataManager: SequenceDataManager,
   biosampleRepository: BiosampleRepository,
   projectRepository: ProjectRepository,
   sequenceRunRepository: SequenceRunRepository,

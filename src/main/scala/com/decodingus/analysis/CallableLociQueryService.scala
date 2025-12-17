@@ -48,12 +48,35 @@ class CallableLociQueryService(callableLociDir: Path) {
     contigIntervals.get(contig) match {
       case None => CallableState.Unknown
       case Some(intervals) =>
-        // Binary search would be more efficient, but linear is fine for typical query sizes
-        intervals.find(i => position >= i.start && position <= i.end) match {
+        // Use binary search for efficiency since intervals are sorted by start position
+        findInterval(intervals, position) match {
           case Some(interval) => interval.state
           case None => CallableState.Unknown
         }
     }
+  }
+
+  /**
+   * Performs a binary search to find the CallableInterval that contains the given position.
+   * Assumes the list of intervals is sorted by start position.
+   */
+  private def findInterval(intervals: List[CallableInterval], position: Long): Option[CallableInterval] = {
+    var low = 0
+    var high = intervals.size - 1
+
+    while (low <= high) {
+      val mid = low + (high - low) / 2
+      val interval = intervals(mid)
+
+      if (position >= interval.start && position <= interval.end) {
+        return Some(interval)
+      } else if (position < interval.start) {
+        high = mid - 1
+      } else {
+        low = mid + 1
+      }
+    }
+    None
   }
 
   /**
