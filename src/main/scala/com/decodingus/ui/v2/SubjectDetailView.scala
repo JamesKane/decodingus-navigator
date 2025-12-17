@@ -3,7 +3,7 @@ package com.decodingus.ui.v2
 import com.decodingus.i18n.I18n.{t, bind}
 import com.decodingus.i18n.Formatters
 import com.decodingus.str.StrCsvParser
-import com.decodingus.ui.components.{AddDataDialog, AddSequenceDataDialog, ConfirmDialog, DataInput, DataType, EditSubjectDialog, SequenceDataInput}
+import com.decodingus.ui.components.{AddDataDialog, AddSequenceDataDialog, ConfirmDialog, DataInput, DataType, EditSubjectDialog, SequenceDataInput, VcfMetadata, VcfMetadataDialog}
 import com.decodingus.ui.v2.BiosampleExtensions.*
 import com.decodingus.util.Logger
 import com.decodingus.workspace.WorkbenchViewModel
@@ -1022,14 +1022,37 @@ class SubjectDetailView(viewModel: WorkbenchViewModel) extends VBox {
                   log.info(s"Added sequence run at index $newIndex for ${subject.accession}")
 
                 case DataType.Variants =>
-                  // VCF files - for now show info that it needs sequence run context
-                  log.info(s"VCF import requires sequence run context: ${dataInput.fileInfo.fileName}")
-                  showInfoDialog(
-                    t("data.title"),
-                    t("data.vcf_import"),
-                    t("data.vcf_import.detail")
-                  )
-                  return
+                  // VCF files - show metadata dialog to get test type info
+                  val metadataDialog = new VcfMetadataDialog(dataInput.fileInfo)
+                  Option(this.getScene).flatMap(s => Option(s.getWindow)).foreach { window =>
+                    metadataDialog.initOwner(window)
+                  }
+
+                  metadataDialog.showAndWait() match {
+                    case Some(Some(metadata: VcfMetadata)) =>
+                      // Create a SequenceRun with the VCF file using existing method
+                      val vcfFileInfo = dataInput.fileInfo.copy(
+                        fileFormat = if (dataInput.fileInfo.fileName.toLowerCase.endsWith(".vcf.gz")) "VCF.GZ" else "VCF"
+                      )
+
+                      // Add the file first (creates sequence run with placeholder values)
+                      val newIndex = viewModel.addSequenceRunFromFile(subject.accession, vcfFileInfo)
+
+                      // Get the new sequence run and update it with proper metadata
+                      viewModel.getSequenceRun(subject.accession, newIndex).foreach { seqRun =>
+                        val updatedRun = seqRun.copy(
+                          platformName = metadata.platform,
+                          instrumentModel = metadata.testType.vendor,
+                          testType = metadata.testType.code
+                        )
+                        viewModel.updateSequenceRun(subject.accession, newIndex, updatedRun)
+                        log.info(s"Created sequence run for VCF (${metadata.testType.displayName}): ${dataInput.fileInfo.fileName}")
+                      }
+
+                    case _ =>
+                      log.debug("VCF metadata dialog cancelled")
+                      return
+                  }
 
                 case DataType.StrProfile =>
                   // STR CSV import using StrCsvParser
