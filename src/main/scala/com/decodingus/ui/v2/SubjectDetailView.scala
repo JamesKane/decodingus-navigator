@@ -2,7 +2,7 @@ package com.decodingus.ui.v2
 
 import com.decodingus.i18n.I18n.{t, bind}
 import com.decodingus.i18n.Formatters
-import com.decodingus.ui.components.{AddSequenceDataDialog, ConfirmDialog, EditSubjectDialog, SequenceDataInput}
+import com.decodingus.ui.components.{AddDataDialog, AddSequenceDataDialog, ConfirmDialog, DataInput, DataType, EditSubjectDialog, SequenceDataInput}
 import com.decodingus.ui.v2.BiosampleExtensions.*
 import com.decodingus.util.Logger
 import com.decodingus.workspace.WorkbenchViewModel
@@ -989,24 +989,90 @@ class SubjectDetailView(viewModel: WorkbenchViewModel) extends VBox {
   }
 
   private def handleAddData(): Unit = {
-    currentSubject.value.foreach { subject =>
-      // For now, pass empty set - duplicate detection can be enhanced later
-      // when we have full sequence run resolution from refs
-      val existingChecksums: Set[String] = Set.empty
+    currentSubject.value match {
+      case None =>
+        log.warn("handleAddData called but no subject selected")
+        showInfoDialog(
+          t("error.title"),
+          t("error.no_subject"),
+          t("error.select_subject_first")
+        )
+      case Some(subject) =>
+        try {
+          // Get existing checksums for duplicate detection
+          val existingChecksums = viewModel.getExistingChecksums(subject.accession)
 
-      val dialog = new AddSequenceDataDialog(existingChecksums)
-      dialog.showAndWait() match {
-        case Some(Some(dataInput: SequenceDataInput)) =>
-          // TODO: Process the data input and add to subject
-          log.info(s"Adding data for ${subject.accession}: ${dataInput.fileInfo.fileName}")
-          showInfoDialog(
-            t("data.title"),
-            t("data.processing"),
-            t("data.processing.detail")
-          )
-        case _ =>
-          log.debug("Add data cancelled")
-      }
+          val dialog = new AddDataDialog(existingChecksums)
+          // Set owner window for proper modal behavior
+          Option(this.getScene).flatMap(s => Option(s.getWindow)).foreach { window =>
+            dialog.initOwner(window)
+          }
+
+          dialog.showAndWait() match {
+            case Some(Some(dataInput: DataInput)) =>
+              log.info(s"Adding ${dataInput.dataType} data for ${subject.accession}: ${dataInput.fileInfo.fileName}")
+
+              // Handle based on data type
+              dataInput.dataType match {
+                case DataType.Alignment =>
+                  val newIndex = viewModel.addSequenceRunFromFile(subject.accession, dataInput.fileInfo)
+                  log.info(s"Added sequence run at index $newIndex for ${subject.accession}")
+
+                case DataType.Variants =>
+                  // VCF files - for now, treat as sequence data attachment
+                  // TODO: Implement proper VCF handling
+                  log.info(s"VCF import not yet fully implemented: ${dataInput.fileInfo.fileName}")
+                  showInfoDialog(
+                    t("data.title"),
+                    t("data.vcf_import"),
+                    t("data.vcf_import.detail")
+                  )
+                  return
+
+                case DataType.StrProfile =>
+                  // STR CSV import
+                  // TODO: Implement STR profile parsing and import
+                  log.info(s"STR import not yet fully implemented: ${dataInput.fileInfo.fileName}")
+                  showInfoDialog(
+                    t("data.title"),
+                    t("data.str_import"),
+                    t("data.str_import.detail")
+                  )
+                  return
+
+                case DataType.ChipData =>
+                  // Chip/array data import (23andMe, etc.)
+                  // TODO: Implement chip data parsing and import
+                  log.info(s"Chip data import not yet fully implemented: ${dataInput.fileInfo.fileName}")
+                  showInfoDialog(
+                    t("data.title"),
+                    t("data.chip_import"),
+                    t("data.chip_import.detail")
+                  )
+                  return
+              }
+
+              // Refresh the data sources display
+              updateDataSources(subject)
+
+              // Show success message
+              showInfoDialog(
+                t("data.title"),
+                t("data.added.success"),
+                s"${dataInput.fileInfo.fileName} ${t("data.added.to_subject")}"
+              )
+            case _ =>
+              log.debug("Add data cancelled")
+          }
+        } catch {
+          case e: Exception =>
+            log.error(s"Error in handleAddData: ${e.getMessage}", e)
+            showInfoDialog(
+              t("error.title"),
+              t("error.unexpected"),
+              e.getMessage
+            )
+        }
     }
   }
 
