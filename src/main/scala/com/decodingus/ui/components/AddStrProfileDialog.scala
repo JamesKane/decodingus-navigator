@@ -1,5 +1,6 @@
 package com.decodingus.ui.components
 
+import com.decodingus.config.LabsConfig
 import com.decodingus.str.StrCsvParser
 import com.decodingus.str.StrCsvParser.VendorFormat
 import com.decodingus.workspace.model.{RecordMeta, StrProfile}
@@ -43,11 +44,12 @@ class AddStrProfileDialog(
   private var selectedFile: Option[File] = None
   private var parseResult: Option[StrCsvParser.ParseResult] = None
 
-  // Provider selection (manual override)
+  // Provider selection (manual override) - populated from LabsConfig
+  private val strProviders = LabsConfig.strProviderNames
   private val providerCombo = new ComboBox[String] {
-    items = ObservableBuffer("Auto-detect", "FTDNA", "YSEQ", "Other")
+    items = ObservableBuffer.from("Auto-detect" +: strProviders :+ "Other")
     selectionModel().selectFirst()
-    prefWidth = 150
+    prefWidth = 180
   }
 
   // Drop zone for file selection
@@ -149,8 +151,7 @@ class AddStrProfileDialog(
   // Help text
   private val helpText = new Label(
     "Supported formats:\n" +
-      "  - FTDNA Y-STR exports (Y-12, Y-25, Y-37, Y-67, Y-111, etc.)\n" +
-      "  - YSEQ Y-STR results\n" +
+      "  - Vendor Y-STR exports (FTDNA, YSEQ, etc.)\n" +
       "  - Two-column CSV (Marker, Value)"
   ) {
     style = "-fx-font-size: 11px; -fx-text-fill: #666666;"
@@ -206,13 +207,11 @@ class AddStrProfileDialog(
         parseResult = Some(result)
 
         // Apply manual provider override if set
-        val finalResult = providerCombo.selectionModel().getSelectedItem match {
-          case "Auto-detect" => result
-          case "FTDNA" =>
-            val updatedProfile = result.profile.copy(importedFrom = Some("FTDNA"))
-            result.copy(profile = updatedProfile)
-          case "YSEQ" =>
-            val updatedProfile = result.profile.copy(importedFrom = Some("YSEQ"))
+        val selectedProvider = providerCombo.selectionModel().getSelectedItem
+        val finalResult = selectedProvider match {
+          case "Auto-detect" | "Other" => result
+          case provider if strProviders.contains(provider) =>
+            val updatedProfile = result.profile.copy(importedFrom = Some(provider))
             result.copy(profile = updatedProfile)
           case _ => result
         }

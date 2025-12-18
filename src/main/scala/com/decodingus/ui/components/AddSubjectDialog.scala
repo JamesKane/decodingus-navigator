@@ -1,5 +1,6 @@
 package com.decodingus.ui.components
 
+import com.decodingus.config.LabsConfig
 import com.decodingus.workspace.model.{Biosample, HaplogroupAssignments, RecordMeta}
 import scalafx.Includes.*
 import scalafx.collections.ObservableBuffer
@@ -28,8 +29,23 @@ class AddSubjectDialog extends Dialog[Option[Biosample]] {
   val sexChoiceBox = new ChoiceBox[String](ObservableBuffer("Male", "Female", "Other", "Unknown")) {
     value = "Unknown"
   }
-  val centerNameField = new TextField() {
+  // Center name combo box (editable for custom entry)
+  private val centerOptions = ObservableBuffer.from(
+    "" +: LabsConfig.allLabNames :+ "Other..."
+  )
+  val centerNameCombo = new ComboBox[String]() {
+    items = centerOptions
+    editable = true
     promptText = "Sequencing Center (Optional)"
+    prefWidth = 200
+  }
+
+  // Handle "Other..." selection to clear for custom entry
+  centerNameCombo.selectionModel().selectedItem.onChange { (_, _, newVal) =>
+    if (newVal == "Other...") {
+      centerNameCombo.editor.value.clear()
+      centerNameCombo.editor.value.requestFocus()
+    }
   }
   val descriptionField = new TextField() {
     promptText = "Description (Optional)"
@@ -47,7 +63,7 @@ class AddSubjectDialog extends Dialog[Option[Biosample]] {
     add(new Label("Sex:"), 0, 2)
     add(sexChoiceBox, 1, 2)
     add(new Label("Center Name:"), 0, 3)
-    add(centerNameField, 1, 3)
+    add(centerNameCombo, 1, 3)
     add(new Label("Description:"), 0, 4)
     add(descriptionField, 1, 4)
   }
@@ -60,13 +76,16 @@ class AddSubjectDialog extends Dialog[Option[Biosample]] {
   // Convert the result to a Biosample when the save button is clicked
   resultConverter = dialogButton => {
     if (dialogButton == saveButtonType) {
+      // Get value from editor (for editable combo) or selection
+      val centerRaw = Option(centerNameCombo.editor.value.getText).getOrElse(centerNameCombo.value.value)
+      val centerName = Option(centerRaw).map(_.trim).filter(v => v.nonEmpty && v != "Other...")
       val newBiosample = Biosample(
         atUri = None,
         meta = RecordMeta.initial,
         sampleAccession = accessionField.text.value,
         donorIdentifier = donorIdField.text.value,
         description = Option(descriptionField.text.value).filter(_.nonEmpty),
-        centerName = Option(centerNameField.text.value).filter(_.nonEmpty),
+        centerName = centerName,
         sex = Option(sexChoiceBox.value.value),
         haplogroups = None,
         sequenceRunRefs = List.empty // No sequence runs initially

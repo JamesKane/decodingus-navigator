@@ -1,6 +1,7 @@
 package com.decodingus.ui.components
 
 import com.decodingus.analysis.VcfVendor
+import com.decodingus.config.LabsConfig
 import scalafx.Includes.*
 import scalafx.collections.ObservableBuffer
 import scalafx.geometry.{Insets, Pos}
@@ -72,17 +73,19 @@ class ImportVendorVcfDialog extends Dialog[Option[VendorVcfImportRequest]] {
     }
   }
 
-  // Vendor selection
+  // Vendor selection - specific test types for VCF imports
+  // Uses display names from LabsConfig where available
+  private val vcfVendorOptions = Seq(
+    "FTDNA Big Y",
+    "FTDNA mtFull Sequence",
+    "YSEQ",
+    LabsConfig.getDisplayName("nebula"),
+    LabsConfig.getDisplayName("dante"),
+    LabsConfig.getDisplayName("full-genomes"),
+    "Other"
+  )
   private val vendorCombo = new ComboBox[String] {
-    items = ObservableBuffer(
-      "FTDNA Big Y",
-      "FTDNA mtFull Sequence",
-      "YSEQ",
-      "Nebula Genomics",
-      "Dante Labs",
-      "Full Genomes Corp",
-      "Other"
-    )
+    items = ObservableBuffer.from(vcfVendorOptions)
     value = "FTDNA Big Y"
     prefWidth = 200
   }
@@ -161,13 +164,14 @@ class ImportVendorVcfDialog extends Dialog[Option[VendorVcfImportRequest]] {
   // Result converter
   resultConverter = dialogButton => {
     if (dialogButton == importButtonType && selectedVcfFile.isDefined) {
-      val vendor = vendorCombo.value.value match {
+      val selectedVendor = vendorCombo.value.value
+      val vendor = selectedVendor match {
         case "FTDNA Big Y" => VcfVendor.FTDNA_BIGY
         case "FTDNA mtFull Sequence" => VcfVendor.FTDNA_MTFULL
         case "YSEQ" => VcfVendor.YSEQ
-        case "Nebula Genomics" => VcfVendor.NEBULA
-        case "Dante Labs" => VcfVendor.DANTE
-        case "Full Genomes Corp" => VcfVendor.FULL_GENOMES
+        case v if LabsConfig.findLab(v).exists(_.id == "nebula") => VcfVendor.NEBULA
+        case v if LabsConfig.findLab(v).exists(_.id == "dante") => VcfVendor.DANTE
+        case v if LabsConfig.findLab(v).exists(_.id == "full-genomes") => VcfVendor.FULL_GENOMES
         case _ => VcfVendor.OTHER
       }
 

@@ -1,5 +1,6 @@
 package com.decodingus.ui.components
 
+import com.decodingus.config.LabsConfig
 import com.decodingus.genotype.model.TestTypes
 import com.decodingus.i18n.I18n.t
 import com.decodingus.ui.theme.Theme
@@ -59,11 +60,27 @@ class EditSequenceRunDialog(seqRun: SequenceRun) extends Dialog[Option[SequenceR
     style = s"-fx-font-size: 11px; -fx-text-fill: ${Theme.current.textMuted};"
   }
 
-  // Lab/sequencing facility text field
-  private val labTextField = new TextField() {
-    text = seqRun.sequencingFacility.getOrElse("")
+  // Lab/sequencing facility combo box (editable for custom entry)
+  private val labOptions = ObservableBuffer.from(
+    "" +: LabsConfig.sequenceRunLabNames :+ "Other..."
+  )
+  private val labComboBox = new ComboBox[String]() {
+    items = labOptions
+    editable = true
+    // Set current value - find matching lab name or use existing value
+    val currentLab = seqRun.sequencingFacility.getOrElse("")
+    value = if (currentLab.isEmpty) ""
+            else LabsConfig.findLab(currentLab).map(_.displayName).getOrElse(currentLab)
     promptText = t("dialog.edit_sequence_run.lab_placeholder")
     prefWidth = 280
+  }
+
+  // Handle "Other..." selection to clear for custom entry
+  labComboBox.selectionModel().selectedItem.onChange { (_, _, newVal) =>
+    if (newVal == "Other...") {
+      labComboBox.editor.value.clear()
+      labComboBox.editor.value.requestFocus()
+    }
   }
 
   // Build the form
@@ -83,7 +100,7 @@ class EditSequenceRunDialog(seqRun: SequenceRun) extends Dialog[Option[SequenceR
     add(new Label(t("dialog.edit_sequence_run.lab") + ":") {
       style = "-fx-font-weight: bold;"
     }, 0, 1)
-    add(labTextField, 1, 1)
+    add(labComboBox, 1, 1)
 
     // Info about current detection (read-only)
     add(new Label(t("dialog.edit_sequence_run.platform") + ":"), 0, 2)
@@ -117,7 +134,9 @@ class EditSequenceRunDialog(seqRun: SequenceRun) extends Dialog[Option[SequenceR
   // Convert result
   resultConverter = dialogButton => {
     if (dialogButton == saveButtonType) {
-      val labValue = Option(labTextField.text.value).map(_.trim).filter(_.nonEmpty)
+      // Get value from editor (for editable combo) or selection
+      val rawValue = Option(labComboBox.editor.value.getText).getOrElse(labComboBox.value.value)
+      val labValue = Option(rawValue).map(_.trim).filter(v => v.nonEmpty && v != "Other...")
       Some(SequenceRunEditResult(
         testType = testTypeCombo.value.value,
         sequencingFacility = labValue

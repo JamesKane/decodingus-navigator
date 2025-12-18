@@ -1,5 +1,6 @@
 package com.decodingus.ui.components
 
+import com.decodingus.config.LabsConfig
 import com.decodingus.workspace.model.Biosample
 import scalafx.Includes.*
 import scalafx.collections.ObservableBuffer
@@ -33,9 +34,27 @@ class EditSubjectDialog(existingSubject: Biosample) extends Dialog[Option[Biosam
     value = existingSubject.sex.getOrElse("Unknown")
   }
 
-  val centerNameField = new TextField() {
-    text = existingSubject.centerName.getOrElse("")
+  // Center name combo box (editable for custom entry)
+  private val centerOptions = ObservableBuffer.from(
+    "" +: LabsConfig.allLabNames :+ "Other..."
+  )
+  val centerNameCombo = new ComboBox[String]() {
+    items = centerOptions
+    editable = true
+    // Set current value - find matching lab name or use existing value
+    val currentCenter = existingSubject.centerName.getOrElse("")
+    value = if (currentCenter.isEmpty) ""
+            else LabsConfig.findLab(currentCenter).map(_.displayName).getOrElse(currentCenter)
     promptText = "Sequencing Center (Optional)"
+    prefWidth = 200
+  }
+
+  // Handle "Other..." selection to clear for custom entry
+  centerNameCombo.selectionModel().selectedItem.onChange { (_, _, newVal) =>
+    if (newVal == "Other...") {
+      centerNameCombo.editor.value.clear()
+      centerNameCombo.editor.value.requestFocus()
+    }
   }
 
   val descriptionField = new TextField() {
@@ -55,7 +74,7 @@ class EditSubjectDialog(existingSubject: Biosample) extends Dialog[Option[Biosam
     add(new Label("Sex:"), 0, 2)
     add(sexChoiceBox, 1, 2)
     add(new Label("Center Name:"), 0, 3)
-    add(centerNameField, 1, 3)
+    add(centerNameCombo, 1, 3)
     add(new Label("Description:"), 0, 4)
     add(descriptionField, 1, 4)
   }
@@ -68,11 +87,14 @@ class EditSubjectDialog(existingSubject: Biosample) extends Dialog[Option[Biosam
   // Convert the result to an updated Biosample when the save button is clicked
   resultConverter = dialogButton => {
     if (dialogButton == saveButtonType) {
+      // Get value from editor (for editable combo) or selection
+      val centerRaw = Option(centerNameCombo.editor.value.getText).getOrElse(centerNameCombo.value.value)
+      val centerName = Option(centerRaw).map(_.trim).filter(v => v.nonEmpty && v != "Other...")
       // Preserve existing data that shouldn't change (sequenceData, haplogroups, createdAt)
       val updatedBiosample = existingSubject.copy(
         donorIdentifier = donorIdField.text.value,
         description = Option(descriptionField.text.value).filter(_.nonEmpty),
-        centerName = Option(centerNameField.text.value).filter(_.nonEmpty),
+        centerName = centerName,
         sex = Option(sexChoiceBox.value.value)
       )
       Some(updatedBiosample)

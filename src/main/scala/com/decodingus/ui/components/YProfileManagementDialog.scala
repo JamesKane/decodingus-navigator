@@ -1,5 +1,6 @@
 package com.decodingus.ui.components
 
+import com.decodingus.config.LabsConfig
 import com.decodingus.yprofile.model.*
 import com.decodingus.yprofile.repository.YSnpPanelEntity
 import com.decodingus.yprofile.service.YProfileService
@@ -593,9 +594,21 @@ class AddYProfileSourceDialog(
     prefWidth = 200
   }
 
-  private val vendorField = new TextField {
-    promptText = "e.g., FTDNA, 23andMe, Internal"
+  // Vendor combo box (editable for custom entry) - populated from LabsConfig
+  private val yDnaProviders = LabsConfig.yDnaProviderNames
+  private val vendorCombo = new ComboBox[String] {
+    items = ObservableBuffer.from("" +: yDnaProviders :+ "Other...")
+    editable = true
+    promptText = "e.g., FTDNA, 23andMe"
     prefWidth = 200
+  }
+
+  // Handle "Other..." selection to clear for custom entry
+  vendorCombo.selectionModel().selectedItem.onChange { (_, _, newVal) =>
+    if (newVal == "Other...") {
+      vendorCombo.editor.value.clear()
+      vendorCombo.editor.value.requestFocus()
+    }
   }
 
   private val testNameField = new TextField {
@@ -618,7 +631,7 @@ class AddYProfileSourceDialog(
     add(new Label("Source Type:"), 0, 0)
     add(sourceTypeCombo, 1, 0)
     add(new Label("Vendor:"), 0, 1)
-    add(vendorField, 1, 1)
+    add(vendorCombo, 1, 1)
     add(new Label("Test Name:"), 0, 2)
     add(testNameField, 1, 2)
     add(new Label("Reference Build:"), 0, 3)
@@ -638,10 +651,14 @@ class AddYProfileSourceDialog(
         case _ => YProfileSourceType.MANUAL
       }
 
+      // Get value from editor (for editable combo) or selection
+      val vendorRaw = Option(vendorCombo.editor.value.getText).getOrElse(vendorCombo.value.value)
+      val vendor = Option(vendorRaw).map(_.trim).filter(v => v.nonEmpty && v != "Other...")
+
       yProfileService.addSource(
         profileId = profileId,
         sourceType = sourceType,
-        vendor = Option(vendorField.text.value).filter(_.nonEmpty),
+        vendor = vendor,
         testName = Option(testNameField.text.value).filter(_.nonEmpty),
         referenceBuild = Some(referenceBuildCombo.value.value)
       ) match {
