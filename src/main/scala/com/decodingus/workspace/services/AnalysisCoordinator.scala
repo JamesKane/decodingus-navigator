@@ -738,7 +738,8 @@ class AnalysisCoordinator(
             technology = Some(technology),
             meanCoverage = None,
             treeProvider = Some(treeProviderType.toString.toLowerCase),
-            treeVersion = None
+            treeVersion = None,
+            lineagePath = if (topResult.lineagePath.nonEmpty) Some(topResult.lineagePath) else None
           )
 
           // Convert TreeType to DnaType

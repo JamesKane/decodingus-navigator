@@ -440,24 +440,9 @@ object StrCsvParser {
       upper.matches("Y[A-Z]+.*")
   }
 
-  /** Normalizes marker names to a standard format */
+  /** Normalizes marker names to a standard format (uppercase, trimmed) */
   private def normalizeMarkerName(name: String): String = {
-    // Remove quotes, trim, and standardize case
-    val cleaned = name.replace("\"", "").trim
-
-    // Handle common variations
-    cleaned.toUpperCase match {
-      case n if n.startsWith("DYS") => n
-      case n if n.startsWith("DYF") => n
-      case n if n.startsWith("DYR") => n
-      case n if n.startsWith("FTY") => n // YSEQ markers
-      case n if n.startsWith("GATA") => n
-      case n if n.startsWith("Y-GATA") => n.replace("Y-GATA", "YGATA")
-      case n if n.startsWith("Y-GGAAT") => n.replace("Y-GGAAT", "YGGAAT")
-      case n if n.startsWith("YCAII") => n
-      case n if n.startsWith("CDY") => n
-      case n => n
-    }
+    name.replace("\"", "").trim.toUpperCase
   }
 
   /** Infers which panel a marker belongs to based on its name */

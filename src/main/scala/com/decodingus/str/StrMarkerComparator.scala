@@ -94,12 +94,12 @@ object StrMarkerComparator {
       return MarkerComparisonResult(Map.empty, Nil, Map.empty, 0)
     }
 
-    // Build map: normalizedMarkerName -> List[(provider, value)]
+    // Build map: markerName -> List[(provider, value)]
     val allMarkers: Map[String, List[(String, StrValue)]] = profiles
       .flatMap { profile =>
         val provider = profile.importedFrom.getOrElse("UNKNOWN")
         profile.markers.map { m =>
-          (normalizeMarkerName(m.marker), provider, m.value)
+          (m.marker, provider, m.value)
         }
       }
       .groupBy(_._1)
@@ -159,17 +159,6 @@ object StrMarkerComparator {
    */
   def compareTwoProfiles(profile1: StrProfile, profile2: StrProfile): MarkerComparisonResult = {
     compare(List(profile1, profile2))
-  }
-
-  /**
-   * Normalize marker name for comparison.
-   * Handles variations in marker naming across providers.
-   */
-  private def normalizeMarkerName(name: String): String = {
-    name.toUpperCase.trim
-      .replace("Y-GATA-", "YGATA")
-      .replace("Y-GGAAT-", "YGGAAT")
-      .replaceAll("\\s+", "")
   }
 
   /**

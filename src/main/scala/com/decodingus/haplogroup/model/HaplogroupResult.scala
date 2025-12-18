@@ -18,5 +18,6 @@ case class HaplogroupResult(
                              noCalls: Int,
                              totalSnps: Int,
                              cumulativeSnps: Int,
-                             depth: Int
+                             depth: Int,
+                             lineagePath: List[String] = List.empty
                            )

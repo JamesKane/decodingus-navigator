@@ -1954,10 +1954,40 @@ Note: Reference data download may be required on first run."""
     }
   }
 
-  private def createStrProfileItem(strProfile: StrProfile, index: Int): HBox = {
+  private def createStrProfileItem(strProfile: StrProfile, index: Int, subject: Biosample): HBox = {
     val markerCount = strProfile.totalMarkers.getOrElse(strProfile.markers.size)
     val panelNames = strProfile.panels.map(_.panelName).mkString(", ")
     val sourceDisplay = strProfile.source.getOrElse(strProfile.importedFrom.getOrElse("-"))
+
+    val deleteButton = new Button("✕") {
+      style = "-fx-background-color: transparent; -fx-text-fill: #666666; -fx-font-size: 12px; -fx-padding: 2 6; -fx-cursor: hand;"
+      tooltip = Tooltip(t("action.delete"))
+      onMouseEntered = _ => style = "-fx-background-color: #4a4a4a; -fx-text-fill: #f87171; -fx-font-size: 12px; -fx-padding: 2 6; -fx-cursor: hand;"
+      onMouseExited = _ => style = "-fx-background-color: transparent; -fx-text-fill: #666666; -fx-font-size: 12px; -fx-padding: 2 6; -fx-cursor: hand;"
+      onAction = _ => {
+        strProfile.atUri match {
+          case Some(uri) =>
+            val confirm = new Alert(Alert.AlertType.Confirmation) {
+              initOwner(SubjectDetailView.this.scene.value.getWindow)
+              title = t("action.delete")
+              headerText = t("str.delete_confirm_title")
+              contentText = t("str.delete_confirm_message")
+            }
+            confirm.showAndWait() match {
+              case Some(ButtonType.OK) =>
+                viewModel.deleteStrProfile(subject.accession, uri) match {
+                  case Right(_) =>
+                    updateDataSources(subject)
+                  case Left(err) =>
+                    showInfoDialog("Error", "Failed to delete STR profile", err)
+                }
+              case _ => // Cancelled
+            }
+          case None =>
+            showInfoDialog("Error", "Cannot delete", "Profile has no identifier.")
+        }
+      }
+    }
 
     new HBox(15) {
       alignment = Pos.CenterLeft
@@ -1988,7 +2018,9 @@ Note: Reference data download may be required on first run."""
               )
             }
           )
-        }
+        },
+        // Delete button
+        deleteButton
       )
     }
   }
@@ -2203,7 +2235,7 @@ Note: Reference data download may be required on first run."""
       strListContainer.children += createEmptyPlaceholder("data.no_str")
     } else {
       strProfiles.zipWithIndex.foreach { case (strProfile, idx) =>
-        strListContainer.children += createStrProfileItem(strProfile, idx)
+        strListContainer.children += createStrProfileItem(strProfile, idx, subject)
       }
     }
   }

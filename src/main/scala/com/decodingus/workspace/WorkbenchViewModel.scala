@@ -2121,20 +2121,29 @@ class WorkbenchViewModel(
                                 case _ => HaplogroupTechnology.WGS
                               }
 
+                              // Calculate confidence as match quality (0-1 range)
+                              val callableSnps = topResult.matchingSnps + topResult.ancestralMatches
+                              val confidence = if (callableSnps > 0) {
+                                topResult.matchingSnps.toDouble / callableSnps.toDouble
+                              } else {
+                                0.0
+                              }
+
                               // Create a RunHaplogroupCall for the reconciliation system
                               val runCall = RunHaplogroupCall(
                                 sourceRef = seqRun.atUri.getOrElse(s"local:sequencerun:unknown"),
                                 haplogroup = topResult.name,
-                                confidence = topResult.score,
+                                confidence = confidence,
                                 callMethod = CallMethod.SNP_PHYLOGENETIC,
-                                score = Some(topResult.score),
+                                score = Some(confidence),
                                 supportingSnps = Some(topResult.matchingSnps),
                                 conflictingSnps = Some(topResult.mismatchingSnps),
                                 noCalls = None,
                                 technology = Some(technology),
                                 meanCoverage = None,
                                 treeProvider = Some(treeProviderType.toString.toLowerCase),
-                                treeVersion = None
+                                treeVersion = None,
+                                lineagePath = if (topResult.lineagePath.nonEmpty) Some(topResult.lineagePath) else None
                               )
 
                               // Convert TreeType to DnaType
@@ -2419,20 +2428,29 @@ class WorkbenchViewModel(
                                 case _ => HaplogroupTechnology.WGS
                               }
 
+                              // Calculate confidence as match quality (0-1 range)
+                              val callableSnps = topResult.matchingSnps + topResult.ancestralMatches
+                              val confidence = if (callableSnps > 0) {
+                                topResult.matchingSnps.toDouble / callableSnps.toDouble
+                              } else {
+                                0.0
+                              }
+
                               val treeProviderStr = treeProviderType.toString.toLowerCase
                               val runCall = RunHaplogroupCall(
                                 sourceRef = seqRun.atUri.getOrElse(s"local:sequencerun:unknown"),
                                 haplogroup = topResult.name,
-                                confidence = topResult.score,
+                                confidence = confidence,
                                 callMethod = CallMethod.SNP_PHYLOGENETIC,
-                                score = Some(topResult.score),
+                                score = Some(confidence),
                                 supportingSnps = Some(topResult.matchingSnps),
                                 conflictingSnps = Some(topResult.mismatchingSnps),
                                 noCalls = None,
                                 technology = Some(technology),
                                 meanCoverage = None,
                                 treeProvider = Some(treeProviderStr),
-                                treeVersion = None
+                                treeVersion = None,
+                                lineagePath = if (topResult.lineagePath.nonEmpty) Some(topResult.lineagePath) else None
                               )
 
                               val dnaType = treeType match {
@@ -3142,19 +3160,21 @@ class WorkbenchViewModel(
                                 }
 
                                 // Create a RunHaplogroupCall for the reconciliation system
+                                val topResult = haplogroupResult.results.headOption
                                 val runCall = RunHaplogroupCall(
                                   sourceRef = profile.atUri.getOrElse(s"local:chipprofile:unknown"),
                                   haplogroup = haplogroupResult.topHaplogroup,
                                   confidence = haplogroupResult.confidence,
                                   callMethod = CallMethod.SNP_PHYLOGENETIC,
-                                  score = haplogroupResult.results.headOption.map(_.score),
+                                  score = Some(haplogroupResult.confidence), // Use calculated confidence, not raw score
                                   supportingSnps = Some(haplogroupResult.snpsMatched),
                                   conflictingSnps = None,
                                   noCalls = Some(haplogroupResult.snpsTotal - haplogroupResult.snpsMatched),
                                   technology = Some(HaplogroupTechnology.SNP_ARRAY),
                                   meanCoverage = None,
                                   treeProvider = Some(treeProviderName),
-                                  treeVersion = None
+                                  treeVersion = None,
+                                  lineagePath = topResult.map(_.lineagePath).filter(_.nonEmpty)
                                 )
 
                                 // Convert TreeType to DnaType

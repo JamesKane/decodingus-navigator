@@ -1,5 +1,6 @@
 package com.decodingus.ui.components
 
+import com.decodingus.config.UserPreferencesService
 import com.decodingus.i18n.I18n.t
 import com.decodingus.str.{MarkerComparisonResult, StrMarkerComparator, StrPanelService}
 import com.decodingus.workspace.model.*
@@ -24,8 +25,18 @@ class YStrDetailDialog(
   title = t("str.detail_title")
   headerText = s"Y-STR Profile: $biosampleName"
 
+  private val DialogId = "ystr-detail-dialog"
+  private val DefaultWidth = 900.0
+  private val DefaultHeight = 700.0
+
   dialogPane().buttonTypes = Seq(ButtonType.Close)
-  dialogPane().setPrefSize(900, 700)
+
+  // Restore saved size or use defaults
+  private val savedSize = UserPreferencesService.getDialogSize(DialogId)
+  dialogPane().setPrefSize(
+    savedSize.map(_.width).getOrElse(DefaultWidth),
+    savedSize.map(_.height).getOrElse(DefaultHeight)
+  )
   resizable = true
 
   // Track selected provider
@@ -147,9 +158,14 @@ class YStrDetailDialog(
 
   dialogPane().content = dialogContent
 
-  // Make dialog resizable
+  // Make dialog resizable and save size on close
   dialogPane().getScene.getWindow match {
-    case stage: javafx.stage.Stage => stage.setResizable(true)
+    case stage: javafx.stage.Stage =>
+      stage.setResizable(true)
+      // Save size when dialog closes
+      stage.setOnHiding { _ =>
+        UserPreferencesService.setDialogSize(DialogId, stage.getWidth, stage.getHeight)
+      }
     case _ =>
   }
 
@@ -498,88 +514,111 @@ class YStrDetailDialog(
     val endMarker = startMarker + rows.size - 1
     val rangeText = s"($startMarker-$endMarker)"
 
-    // Create horizontal table layout like YSEQ/FTDNA
     // Header row with panel name
-    val headerLabel = new Label(s"$provider PANEL ${panelIndex + 1} $rangeText") {
+    val headerText = if (panelName == "Other") {
+      s"$provider OTHER MARKERS (${rows.size})"
+    } else {
+      s"$provider PANEL ${panelIndex + 1} $rangeText"
+    }
+    val headerLabel = new Label(headerText) {
       style = "-fx-font-size: 12px; -fx-font-weight: bold; -fx-text-fill: #888888; -fx-font-style: italic;"
       padding = Insets(8, 0, 4, 0)
     }
 
-    // Create grid with Marker row and Value row
-    val grid = new GridPane {
-      hgap = 0
-      vgap = 0
-      style = "-fx-background-color: #2a2a2a;"
+    // Split rows into subpanels with max 12 markers each (13 columns total: 1 header + 12 data)
+    // If the last row would have few entries, distribute more evenly
+    val maxPerRow = 12
+    val subpanels = if (rows.size <= maxPerRow) {
+      Seq(rows)
+    } else {
+      val numRows = (rows.size + maxPerRow - 1) / maxPerRow  // ceil(size / maxPerRow)
+      val markersPerRow = (rows.size + numRows - 1) / numRows  // ceil(size / numRows) for even distribution
+      rows.grouped(markersPerRow).toSeq
     }
 
-    // Cell border style
+    // Cell dimensions
+    val headerCellWidth = 60
+    val dataCellWidth = 95  // Wide enough for multi-copy markers like DYS464 (14-15-16-17)
+    val cellHeight = 28
     val cellBorder = "-fx-border-color: #555555; -fx-border-width: 1;"
 
-    // Row 0: "Marker" label in first column
-    grid.add(new Label("Marker") {
-      prefWidth = 60
-      prefHeight = 28
-      alignment = Pos.Center
-      style = s"$cellBorder -fx-background-color: #3a3a3a; -fx-text-fill: #888888; -fx-font-size: 11px; -fx-font-weight: bold;"
-    }, 0, 0)
-
-    // Row 1: "Value" label in first column
-    grid.add(new Label("Value") {
-      prefWidth = 60
-      prefHeight = 28
-      alignment = Pos.Center
-      style = s"$cellBorder -fx-background-color: #3a3a3a; -fx-text-fill: #888888; -fx-font-size: 11px; -fx-font-weight: bold;"
-    }, 0, 1)
-
-    // Add marker names and values
-    rows.zipWithIndex.foreach { case (row, idx) =>
-      val col = idx + 1
-
-      // Marker name cell (row 0)
-      val markerCell = new Label(row.marker) {
-        prefWidth = 75
-        prefHeight = 28
-        alignment = Pos.Center
-        style = if (row.hasConflict) {
-          s"$cellBorder -fx-background-color: #4a3a2a; -fx-text-fill: #f59e0b; -fx-font-size: 11px; -fx-font-weight: bold;"
-        } else {
-          s"$cellBorder -fx-background-color: #333333; -fx-text-fill: #b0b0b0; -fx-font-size: 11px;"
-        }
+    // Create a grid for each subpanel
+    val subpanelGrids = subpanels.map { subpanelRows =>
+      val grid = new GridPane {
+        hgap = 0
+        vgap = 0
+        style = "-fx-background-color: #2a2a2a;"
       }
 
-      // Value cell (row 1)
-      val valueCell = new Label(row.displayValue) {
-        prefWidth = 75
-        prefHeight = 28
+      // Row 0: "Marker" label in first column
+      grid.add(new Label("Marker") {
+        prefWidth = headerCellWidth
+        prefHeight = cellHeight
         alignment = Pos.Center
-        style = if (row.hasConflict) {
-          s"$cellBorder -fx-background-color: #b45309; -fx-text-fill: #ffffff; -fx-font-family: monospace; -fx-font-size: 12px; -fx-font-weight: bold;"
-        } else {
-          s"$cellBorder -fx-background-color: #2a2a2a; -fx-text-fill: $accentColor; -fx-font-family: monospace; -fx-font-size: 12px; -fx-font-weight: bold;"
+        style = s"$cellBorder -fx-background-color: #3a3a3a; -fx-text-fill: #888888; -fx-font-size: 11px; -fx-font-weight: bold;"
+      }, 0, 0)
+
+      // Row 1: "Value" label in first column
+      grid.add(new Label("Value") {
+        prefWidth = headerCellWidth
+        prefHeight = cellHeight
+        alignment = Pos.Center
+        style = s"$cellBorder -fx-background-color: #3a3a3a; -fx-text-fill: #888888; -fx-font-size: 11px; -fx-font-weight: bold;"
+      }, 0, 1)
+
+      // Add marker names and values
+      subpanelRows.zipWithIndex.foreach { case (row, idx) =>
+        val col = idx + 1
+
+        // Marker name cell (row 0)
+        val markerCell = new Label(row.marker) {
+          prefWidth = dataCellWidth
+          prefHeight = cellHeight
+          alignment = Pos.Center
+          style = if (row.hasConflict) {
+            s"$cellBorder -fx-background-color: #4a3a2a; -fx-text-fill: #f59e0b; -fx-font-size: 11px; -fx-font-weight: bold;"
+          } else {
+            s"$cellBorder -fx-background-color: #333333; -fx-text-fill: #b0b0b0; -fx-font-size: 11px;"
+          }
         }
 
-        if (row.hasConflict) {
-          tooltip = Tooltip(row.conflictTooltip)
+        // Value cell (row 1)
+        val valueCell = new Label(row.displayValue) {
+          minWidth = dataCellWidth
+          prefWidth = dataCellWidth
+          maxWidth = dataCellWidth
+          minHeight = cellHeight
+          prefHeight = cellHeight
+          alignment = Pos.Center
+          style = if (row.hasConflict) {
+            s"$cellBorder -fx-background-color: #b45309; -fx-text-fill: #ffffff; -fx-font-family: monospace; -fx-font-size: 12px; -fx-font-weight: bold;"
+          } else {
+            s"$cellBorder -fx-background-color: #2a2a2a; -fx-text-fill: $accentColor; -fx-font-family: monospace; -fx-font-size: 12px; -fx-font-weight: bold;"
+          }
+
+          // Always show tooltip with full value (helpful for multi-copy markers)
+          val tt = new Tooltip(s"${row.marker}: ${row.displayValue}")
+          if (row.hasConflict) {
+            tt.text = row.conflictTooltip
+          }
+          tooltip = tt
         }
+
+        grid.add(markerCell, col, 0)
+        grid.add(valueCell, col, 1)
       }
 
-      grid.add(markerCell, col, 0)
-      grid.add(valueCell, col, 1)
+      grid
     }
 
-    // Wrap in scroll pane for wide panels
-    val scrollPane = new ScrollPane {
-      content = grid
-      fitToHeight = true
-      hbarPolicy = ScrollPane.ScrollBarPolicy.AsNeeded
-      vbarPolicy = ScrollPane.ScrollBarPolicy.Never
-      style = "-fx-background-color: transparent; -fx-background: transparent;"
-      prefHeight = 80
+    // Stack subpanels vertically
+    val subpanelContainer = new VBox(4) {
+      children = subpanelGrids
     }
 
     new VBox(2) {
       padding = Insets(0, 0, 15, 0)
-      children = Seq(headerLabel, scrollPane)
+      children = Seq(headerLabel, subpanelContainer)
     }
   }
 
@@ -604,24 +643,20 @@ class YStrDetailDialog(
       return assignToFtdnaPanels(markers)
     }
 
-    // Build cumulative marker sets for each panel
+    // Build cumulative marker sets for each panel (config uses uppercase)
     var cumulativeMarkers = Set.empty[String]
     val panelMarkerSets = panelDefs.sortBy(_.order).map { panel =>
       cumulativeMarkers = cumulativeMarkers ++ panel.markers.map(_.toUpperCase)
       (panel.name, cumulativeMarkers)
     }
 
-    // Assign each marker to its first matching panel
+    // Assign each marker to its first matching panel (markers already normalized at import)
     markers.map { mv =>
-      val normalized = mv.marker.toUpperCase.trim
-        .replace("Y-GATA-", "YGATA")
-        .replace("Y-GGAAT-", "YGGAAT")
-
       val panel = panelMarkerSets.find { case (_, markerSet) =>
-        markerSet.contains(normalized)
+        markerSet.contains(mv.marker)
       }.map(_._1).getOrElse("")
 
-      normalized -> panel
+      mv.marker -> panel
     }.toMap
   }
 

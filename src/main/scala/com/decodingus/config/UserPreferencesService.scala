@@ -143,6 +143,22 @@ object UserPreferencesService {
     }
   }
 
+  /**
+   * Gets saved dialog size for a given dialog ID.
+   */
+  def getDialogSize(dialogId: String): Option[DialogSize] = {
+    load().dialogSizes.get(dialogId)
+  }
+
+  /**
+   * Saves dialog size for a given dialog ID.
+   */
+  def setDialogSize(dialogId: String, width: Double, height: Double): Either[String, Unit] = {
+    val currentPrefs = load()
+    val updatedSizes = currentPrefs.dialogSizes + (dialogId -> DialogSize(width, height))
+    save(currentPrefs.copy(dialogSizes = updatedSizes))
+  }
+
   private def loadFromDisk(): UserPreferences = {
     if (!Files.exists(configFilePath)) {
       println(s"[UserPreferencesService] Preferences file not found, using defaults")

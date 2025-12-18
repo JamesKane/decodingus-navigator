@@ -31,7 +31,8 @@ class HaplogroupScorer {
       cumulativeNoCalls = 0,
       cumulativeSnps = 0,
       depth = 0,
-      consecutiveAncestralBranches = 0
+      consecutiveAncestralBranches = 0,
+      pathSoFar = List.empty
     ))
     // Sort by descending score, then ASCENDING depth (prefer parent when tied)
     // When a child has the same score as its parent, the child added 0 derived SNPs
@@ -44,6 +45,7 @@ class HaplogroupScorer {
    *
    * @param consecutiveAncestralBranches Number of consecutive branches where all calls were ancestral.
    *                                     Stop descent when this reaches 2.
+   * @param pathSoFar The lineage path from root to the current haplogroup's parent.
    */
   private def calculateHaplogroupScore(
                                         haplogroup: Haplogroup,
@@ -55,8 +57,11 @@ class HaplogroupScorer {
                                         cumulativeNoCalls: Int,
                                         cumulativeSnps: Int,
                                         depth: Int,
-                                        consecutiveAncestralBranches: Int
+                                        consecutiveAncestralBranches: Int,
+                                        pathSoFar: List[String]
                                       ): Unit = {
+    // Build the current path including this haplogroup
+    val currentPath = pathSoFar :+ haplogroup.name
 
     var branchDerived = 0
     var branchAncestral = 0
@@ -109,7 +114,8 @@ class HaplogroupScorer {
       noCalls = newCumulativeNoCalls,
       totalSnps = haplogroup.loci.length,
       cumulativeSnps = newCumulativeSnps,
-      depth = depth
+      depth = depth,
+      lineagePath = currentPath
     )
 
     // Determine if this branch has evidence that says to STOP descent
@@ -149,7 +155,8 @@ class HaplogroupScorer {
         newCumulativeNoCalls,
         newCumulativeSnps,
         depth + 1,
-        newConsecutiveAncestral
+        newConsecutiveAncestral,
+        currentPath
       )
     }
   }

@@ -100,18 +100,16 @@ object StrPanelService {
   /**
    * Detect provider from marker set using exclusive markers.
    *
-   * @param markers Set of marker names (will be normalized to uppercase)
+   * @param markers Set of marker names (already normalized to uppercase at import)
    * @return Detected provider key or None
    */
   def detectProvider(markers: Set[String]): Option[String] = {
     getConfig.toOption.flatMap { config =>
-      val normalizedMarkers = markers.map(normalizeMarkerName)
-
       // Check each provider's exclusive markers
       config.providers.collectFirst {
         case (providerKey, providerDef)
           if providerDef.exclusiveMarkers.nonEmpty &&
-            providerDef.exclusiveMarkers.exists(m => normalizedMarkers.contains(normalizeMarkerName(m))) =>
+            providerDef.exclusiveMarkers.exists(m => markers.contains(m)) =>
           providerKey
       }
     }
@@ -140,10 +138,8 @@ object StrPanelService {
           error = Some(error)
         )
       case Right(config) =>
-        val normalizedMarkers = markers.map(normalizeMarkerName)
-
         // Detect provider from exclusive markers if not provided
-        val effectiveProvider = provider.orElse(detectProvider(normalizedMarkers))
+        val effectiveProvider = provider.orElse(detectProvider(markers))
 
         // Get panels for this provider, sorted by order
         val providerPanels = effectiveProvider match {
@@ -156,9 +152,9 @@ object StrPanelService {
         val isCumulative = providerDef.exists(_.cumulativePanels)
 
         val (matchedPanel, matchedCount) = if (isCumulative) {
-          findHighestCumulativePanel(normalizedMarkers, providerPanels)
+          findHighestCumulativePanel(markers, providerPanels)
         } else {
-          findBestMatchingPanel(normalizedMarkers, providerPanels)
+          findBestMatchingPanel(markers, providerPanels)
         }
 
         PanelClassificationResult(
@@ -184,7 +180,7 @@ object StrPanelService {
 
     for (panel <- panels) {
       // Add this panel's markers to cumulative set
-      cumulativeMarkers = cumulativeMarkers ++ panel.markers.map(normalizeMarkerName)
+      cumulativeMarkers = cumulativeMarkers ++ panel.markers
 
       // Count how many of profile's markers match cumulative set
       val matchCount = markers.count(m => cumulativeMarkers.contains(m))
@@ -211,7 +207,7 @@ object StrPanelService {
     panels: List[StrPanelDef]
   ): (Option[StrPanelDef], Int) = {
     val matchedPanels = panels.map { panel =>
-      val panelMarkers = panel.markers.map(normalizeMarkerName).toSet
+      val panelMarkers = panel.markers.toSet
       val overlapCount = markers.intersect(panelMarkers).size
       (panel, overlapCount)
     }.filter { case (panel, count) =>
@@ -315,7 +311,7 @@ object StrPanelService {
   def getExclusiveMarkers(provider: String): Set[String] = {
     getConfig.toOption
       .flatMap(_.providers.get(provider))
-      .map(_.exclusiveMarkers.map(normalizeMarkerName).toSet)
+      .map(_.exclusiveMarkers.toSet)
       .getOrElse(Set.empty)
   }
 
@@ -324,15 +320,5 @@ object StrPanelService {
    */
   def clearCache(): Unit = {
     cachedConfig = None
-  }
-
-  /**
-   * Normalize marker name for comparison.
-   * Uppercase and remove common variations.
-   */
-  private def normalizeMarkerName(name: String): String = {
-    name.toUpperCase.trim
-      .replace("Y-GATA-", "YGATA")
-      .replace("Y-GGAAT-", "YGGAAT")
   }
 }

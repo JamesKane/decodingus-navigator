@@ -51,7 +51,8 @@ case class RunHaplogroupCall(
                               technology: Option[HaplogroupTechnology] = None,
                               meanCoverage: Option[Double] = None,
                               treeProvider: Option[String] = None, // "ftdna", "decodingus"
-                              treeVersion: Option[String] = None
+                              treeVersion: Option[String] = None,
+                              lineagePath: Option[List[String]] = None
                             )
 
 /**
@@ -197,6 +198,7 @@ object HaplogroupReconciliation {
       score = call.score.getOrElse(call.confidence),
       matchingSnps = call.supportingSnps,
       mismatchingSnps = call.conflictingSnps,
+      lineagePath = call.lineagePath,
       source = call.technology.map {
         case HaplogroupTechnology.WGS => "wgs"
         case HaplogroupTechnology.BIG_Y => "bigy"
