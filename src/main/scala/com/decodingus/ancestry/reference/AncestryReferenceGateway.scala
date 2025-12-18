@@ -43,7 +43,7 @@ class AncestryReferenceGateway(onProgress: (Long, Long) => Unit) {
   private val cache = new AncestryReferenceCache()
 
   // Base URL for reference data downloads
-  private val baseUrl = "https://reference-data.decodingus.org/ancestry"
+  private val baseUrl = "https://decoding-us.org/ancestry"
 
   // Estimated download sizes in MB
   private val panelSizes: Map[AncestryPanelType, Int] = Map(
