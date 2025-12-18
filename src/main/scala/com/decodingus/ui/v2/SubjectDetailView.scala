@@ -42,6 +42,9 @@ class SubjectDetailView(viewModel: WorkbenchViewModel) extends VBox {
 
   private val currentSubject: ObjectProperty[Option[Biosample]] = ObjectProperty(None)
 
+  // Track which sequence runs have expanded alignments (by sequence run AT URI or index key)
+  private val expandedSequenceRuns = scala.collection.mutable.Set[String]()
+
   // ============================================================================
   // Header Section
   // ============================================================================
@@ -307,6 +310,88 @@ class SubjectDetailView(viewModel: WorkbenchViewModel) extends VBox {
   }
 
   // ============================================================================
+  // Completion Notification (Toast-style, non-modal)
+  // ============================================================================
+
+  private val notificationIconLabel = new Label("✓") {
+    style = "-fx-font-size: 18px; -fx-text-fill: #4ade80;"
+  }
+
+  private val notificationTitleLabel = new Label("") {
+    style = "-fx-font-size: 13px; -fx-text-fill: #ffffff; -fx-font-weight: bold;"
+  }
+
+  private val notificationMessageLabel = new Label("") {
+    style = "-fx-font-size: 12px; -fx-text-fill: #b0b0b0;"
+    wrapText = true
+  }
+
+  private val dismissNotificationButton = new Button("×") {
+    style = "-fx-background-color: transparent; -fx-text-fill: #888888; -fx-font-size: 18px; -fx-padding: 0 8 0 8; -fx-cursor: hand;"
+    tooltip = new Tooltip("Dismiss")
+    onAction = _ => hideNotificationPanel()
+  }
+
+  private val notificationPanel = new HBox(12) {
+    alignment = Pos.CenterLeft
+    padding = Insets(12, 15, 12, 15)
+    style = "-fx-background-color: #2d3748; -fx-border-color: #4a5568; -fx-border-width: 1 0 0 0;"
+    visible = false
+    managed = false
+    children = Seq(
+      notificationIconLabel,
+      new VBox(4) {
+        children = Seq(notificationTitleLabel, notificationMessageLabel)
+        hgrow = Priority.Always
+        HBox.setHgrow(this, Priority.Always)
+      },
+      dismissNotificationButton
+    )
+  }
+
+  private var notificationTimer: Option[java.util.Timer] = None
+
+  private def showNotification(title: String, message: String, isError: Boolean = false): Unit = {
+    // Cancel any existing timer
+    notificationTimer.foreach(_.cancel())
+
+    // Update content and styling based on success/error
+    if (isError) {
+      notificationIconLabel.text = "✗"
+      notificationIconLabel.style = "-fx-font-size: 18px; -fx-text-fill: #f87171;"
+      notificationPanel.style = "-fx-background-color: #3f2020; -fx-border-color: #7f1d1d; -fx-border-width: 1 0 0 0;"
+    } else {
+      notificationIconLabel.text = "✓"
+      notificationIconLabel.style = "-fx-font-size: 18px; -fx-text-fill: #4ade80;"
+      notificationPanel.style = "-fx-background-color: #1a3a2a; -fx-border-color: #166534; -fx-border-width: 1 0 0 0;"
+    }
+
+    notificationTitleLabel.text = title
+    notificationMessageLabel.text = message
+    notificationPanel.visible = true
+    notificationPanel.managed = true
+
+    // Auto-dismiss after 5 seconds (longer for errors)
+    val timer = new java.util.Timer()
+    timer.schedule(new java.util.TimerTask {
+      def run(): Unit = {
+        scalafx.application.Platform.runLater {
+          hideNotificationPanel()
+        }
+        timer.cancel()
+      }
+    }, if (isError) 8000 else 5000)
+    notificationTimer = Some(timer)
+  }
+
+  private def hideNotificationPanel(): Unit = {
+    notificationPanel.visible = false
+    notificationPanel.managed = false
+    notificationTimer.foreach(_.cancel())
+    notificationTimer = None
+  }
+
+  // ============================================================================
   // Tab Content Views
   // ============================================================================
 
@@ -329,7 +414,7 @@ class SubjectDetailView(viewModel: WorkbenchViewModel) extends VBox {
   // ============================================================================
 
   vgrow = Priority.Always
-  children = Seq(headerSection, tabPane, analysisProgressPanel)
+  children = Seq(headerSection, tabPane, analysisProgressPanel, notificationPanel)
 
   VBox.setVgrow(tabPane, Priority.Always)
 
@@ -856,11 +941,36 @@ class SubjectDetailView(viewModel: WorkbenchViewModel) extends VBox {
     // Get alignments for this sequence run
     val alignments = viewModel.workspace.value.main.getAlignmentsForSequenceRun(seqRun)
 
+    // Use AT URI or fallback to index-based key for tracking expansion state
+    val expansionKey = seqRun.atUri.getOrElse(s"seqrun-$index")
+    val isExpanded = expandedSequenceRuns.contains(expansionKey)
+
+    // Chevron toggle for alignments (only shown if there are alignments)
+    val chevronLabel = new Label(if (isExpanded) "▼" else "▶") {
+      style = "-fx-text-fill: #888888; -fx-font-size: 12px; -fx-cursor: hand;"
+      visible = alignments.nonEmpty
+      managed = alignments.nonEmpty
+    }
+
+    // Alignments section (collapsed under the run info)
+    val alignmentsContainer = new VBox(5) {
+      padding = Insets(5, 10, 10, 50) // Indented from the left
+      style = "-fx-background-color: #2a2a2a; -fx-background-radius: 0 0 5 5;"
+      visible = alignments.nonEmpty && isExpanded
+      managed = alignments.nonEmpty && isExpanded
+      children = alignments.zipWithIndex.map { case (alignment, alignIdx) =>
+        createAlignmentItem(alignment, index, alignIdx)
+      }
+    }
+
     val runInfoBox = new HBox(15) {
       alignment = Pos.CenterLeft
       padding = Insets(10)
-      style = "-fx-background-color: #333333; -fx-background-radius: 5 5 0 0;"
+      style = if (alignments.nonEmpty && isExpanded) "-fx-background-color: #333333; -fx-background-radius: 5 5 0 0;"
+              else "-fx-background-color: #333333; -fx-background-radius: 5;"
       children = Seq(
+        // Chevron toggle for alignments
+        chevronLabel,
         // Icon/type indicator
         new Label {
           text = seqRun.platformName.take(3)
@@ -914,14 +1024,20 @@ class SubjectDetailView(viewModel: WorkbenchViewModel) extends VBox {
       )
     }
 
-    // Alignments section (collapsed under the run info)
-    val alignmentsContainer = new VBox(5) {
-      padding = Insets(5, 10, 10, 50) // Indented from the left
-      style = "-fx-background-color: #2a2a2a; -fx-background-radius: 0 0 5 5;"
-      visible = alignments.nonEmpty
-      managed = alignments.nonEmpty
-      children = alignments.zipWithIndex.map { case (alignment, alignIdx) =>
-        createAlignmentItem(alignment, index, alignIdx)
+    // Click handler for chevron to toggle expansion
+    chevronLabel.onMouseClicked = _ => {
+      if (expandedSequenceRuns.contains(expansionKey)) {
+        expandedSequenceRuns -= expansionKey
+        chevronLabel.text = "▶"
+        alignmentsContainer.visible = false
+        alignmentsContainer.managed = false
+        runInfoBox.style = "-fx-background-color: #333333; -fx-background-radius: 5;"
+      } else {
+        expandedSequenceRuns += expansionKey
+        chevronLabel.text = "▼"
+        alignmentsContainer.visible = true
+        alignmentsContainer.managed = true
+        runInfoBox.style = "-fx-background-color: #333333; -fx-background-radius: 5 5 0 0;"
       }
     }
 
@@ -1964,9 +2080,18 @@ Note: Reference data download may be required on first run."""
     updateDataSources(subject)
   }
 
-  private def updateDataSources(subject: Biosample): Unit = {
+  private def updateDataSources(subject: Biosample, expandSequenceRunIndex: Option[Int] = None): Unit = {
     // Get actual data from ViewModel
     val sequenceRuns = viewModel.workspace.value.main.getSequenceRunsForBiosample(subject)
+
+    // If a specific sequence run should be expanded (e.g., after adding alignment), mark it as expanded
+    expandSequenceRunIndex.foreach { idx =>
+      if (idx >= 0 && idx < sequenceRuns.size) {
+        val seqRun = sequenceRuns(idx)
+        val expansionKey = seqRun.atUri.getOrElse(s"seqrun-$idx")
+        expandedSequenceRuns += expansionKey
+      }
+    }
     val chipProfiles = viewModel.getChipProfilesForBiosample(subject.accession)
     val strProfiles = viewModel.getStrProfilesForBiosample(subject.accession)
 
@@ -2346,17 +2471,16 @@ Note: Reference data download may be required on first run."""
                       case Right((index, libraryStats)) =>
                         scalafx.application.Platform.runLater {
                           log.info(s"Added alignment at index $index for ${subject.accession} (ref: ${libraryStats.referenceBuild})")
-                          updateDataSources(subject)
-                          showInfoDialog(
-                            t("data.title"),
+                          updateDataSources(subject, expandSequenceRunIndex = Some(index))
+                          showNotification(
                             t("data.added.success"),
-                            s"${dataInput.fileInfo.fileName}\n${libraryStats.inferredPlatform} - ${libraryStats.referenceBuild}"
+                            s"${dataInput.fileInfo.fileName} • ${libraryStats.inferredPlatform} • ${libraryStats.referenceBuild}"
                           )
                         }
                       case Left(error) =>
                         scalafx.application.Platform.runLater {
                           log.error(s"Failed to add alignment: $error")
-                          showInfoDialog(t("error.title"), t("data.alignment"), error)
+                          showNotification(t("data.alignment"), error, isError = true)
                         }
                     }
                   )
@@ -2409,12 +2533,12 @@ Note: Reference data download may be required on first run."""
                           }
                         case Left(error) =>
                           log.error(s"Failed to add STR profile: $error")
-                          showInfoDialog(t("error.title"), t("data.str_import"), error)
+                          showNotification(t("data.str_import"), error, isError = true)
                           return
                       }
                     case Left(error) =>
                       log.error(s"Failed to parse STR file: $error")
-                      showInfoDialog(t("error.title"), t("data.str_import"), error)
+                      showNotification(t("data.str_import"), error, isError = true)
                       return
                   }
 
@@ -2453,14 +2577,10 @@ Note: Reference data download may be required on first run."""
                         case Right(msg) =>
                           log.info(s"Imported mtDNA FASTA: $msg")
                           updateDataSources(subject)
-                          showInfoDialog(
-                            "Import Successful",
-                            "mtDNA FASTA imported",
-                            msg
-                          )
+                          showNotification("mtDNA FASTA imported", msg)
                         case Left(err) =>
                           log.error(s"Failed to import mtDNA FASTA: $err")
-                          showInfoDialog(t("error.title"), "mtDNA FASTA Import Failed", err)
+                          showNotification("mtDNA FASTA Import Failed", err, isError = true)
                       }
                       return
 
@@ -2476,16 +2596,15 @@ Note: Reference data download may be required on first run."""
                       log.info(s"Imported chip data: ${chipProfile.vendor} with ${chipProfile.totalMarkersCalled} markers")
                       scalafx.application.Platform.runLater {
                         updateDataSources(subject)
-                        showInfoDialog(
-                          t("data.title"),
+                        showNotification(
                           t("data.added.success"),
-                          s"${chipProfile.vendor} - ${Formatters.formatNumber(chipProfile.totalMarkersCalled)} ${t("data.markers")}"
+                          s"${chipProfile.vendor} • ${Formatters.formatNumber(chipProfile.totalMarkersCalled)} ${t("data.markers")}"
                         )
                       }
                     case Left(error) =>
                       log.error(s"Failed to import chip data: $error")
                       scalafx.application.Platform.runLater {
-                        showInfoDialog(t("error.title"), t("data.chip_import"), error)
+                        showNotification(t("data.chip_import"), error, isError = true)
                       }
                   })
                   // Chip import is async, so return here - callback will handle UI update
@@ -2500,9 +2619,8 @@ Note: Reference data download may be required on first run."""
               // Refresh the data sources display
               updateDataSources(subject)
 
-              // Show success message
-              showInfoDialog(
-                t("data.title"),
+              // Show success notification
+              showNotification(
                 t("data.added.success"),
                 s"${dataInput.fileInfo.fileName} ${t("data.added.to_subject")}"
               )
@@ -2512,11 +2630,7 @@ Note: Reference data download may be required on first run."""
         } catch {
           case e: Exception =>
             log.error(s"Error in handleAddData: ${e.getMessage}", e)
-            showInfoDialog(
-              t("error.title"),
-              t("error.unexpected"),
-              e.getMessage
-            )
+            showNotification(t("error.unexpected"), e.getMessage, isError = true)
         }
     }
   }

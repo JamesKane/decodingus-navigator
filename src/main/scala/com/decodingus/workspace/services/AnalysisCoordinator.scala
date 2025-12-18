@@ -9,6 +9,7 @@ import com.decodingus.haplogroup.tree.{TreeProviderType, TreeType}
 import com.decodingus.model.{LibraryStats, WgsMetrics}
 import com.decodingus.refgenome.ReferenceGateway
 import com.decodingus.refgenome.config.ReferenceConfigService
+import com.decodingus.service.H2WorkspaceService
 import com.decodingus.util.Logger
 import com.decodingus.workspace.WorkspaceState
 import com.decodingus.workspace.model.*
@@ -34,11 +35,13 @@ case class AnalysisProgress(
  * Coordinates all analysis operations (library stats, WGS metrics, haplogroups, callable loci).
  *
  * This service runs analyses and returns results along with workspace state updates.
- * The caller is responsible for persisting changes and updating UI state.
+ * Persists changes to H2 database after each analysis step for durability.
  *
+ * @param h2Service H2 workspace service for persisting analysis results
  * @param yProfileService Optional Y-DNA profile service for auto-populating profiles during analysis
  */
 class AnalysisCoordinator(
+  h2Service: H2WorkspaceService,
   yProfileService: Option[YProfileService] = None
 )(implicit ec: ExecutionContext) {
 
@@ -1043,6 +1046,12 @@ class AnalysisCoordinator(
             currentState = workspaceOps.updateSequenceRunByUri(currentState, updatedSeqRun)
             currentSeqRun = updatedSeqRun // Keep local var in sync with state
 
+            // Persist to H2 immediately for durability
+            h2Service.updateSequenceRun(updatedSeqRun) match {
+              case Right(_) => log.debug(s"SequenceRun persisted to H2 after read metrics")
+              case Left(err) => log.warn(s"Failed to persist SequenceRun to H2: $err")
+            }
+
             checkpoint = AnalysisCheckpoint.markReadMetricsComplete(artifactDir, checkpoint, readMetrics.maxReadLength)
             log.info(s"Read metrics complete: maxReadLength=${readMetrics.maxReadLength}, testType=$inferredTestType, layout=$inferredLayout")
           case Left(error) =>
@@ -1083,6 +1092,13 @@ class AnalysisCoordinator(
             )
             val updatedAlignment = currentAlign.copy(metrics = Some(alignmentMetrics))
             currentState = workspaceOps.updateAlignment(currentState, updatedAlignment)
+
+            // Persist to H2 immediately for durability
+            h2Service.updateAlignment(updatedAlignment) match {
+              case Right(_) => log.debug(s"Alignment persisted to H2 after WGS metrics")
+              case Left(err) => log.warn(s"Failed to persist Alignment to H2: $err")
+            }
+
             checkpoint = AnalysisCheckpoint.markStepComplete(artifactDir, checkpoint, 2)
           case Left(error) =>
             log.warn(s"WGS metrics warning: $error")
@@ -1113,6 +1129,13 @@ class AnalysisCoordinator(
               )
             val updatedAlignment = currentAlign.copy(metrics = Some(alignmentMetrics))
             currentState = workspaceOps.updateAlignment(currentState, updatedAlignment)
+
+            // Persist to H2 immediately for durability
+            h2Service.updateAlignment(updatedAlignment) match {
+              case Right(_) => log.debug(s"Alignment persisted to H2 after callable loci")
+              case Left(err) => log.warn(s"Failed to persist Alignment to H2: $err")
+            }
+
             checkpoint = AnalysisCheckpoint.markStepComplete(artifactDir, checkpoint, 3)
           case Left(error) =>
             log.warn(s"Callable loci warning: $error")
@@ -1163,6 +1186,13 @@ class AnalysisCoordinator(
               )
             val updatedAlignment = alignment.copy(metrics = Some(alignmentMetrics))
             currentState = workspaceOps.updateAlignment(currentState, updatedAlignment)
+
+            // Persist to H2 immediately for durability
+            h2Service.updateAlignment(updatedAlignment) match {
+              case Right(_) => log.debug(s"Alignment persisted to H2 after user-provided sex")
+              case Left(err) => log.warn(s"Failed to persist Alignment to H2: $err")
+            }
+
             checkpoint = AnalysisCheckpoint.markStepComplete(artifactDir, checkpoint, 4)
 
           case None =>
@@ -1195,6 +1225,13 @@ class AnalysisCoordinator(
                   )
                 val updatedAlignment = alignment.copy(metrics = Some(alignmentMetrics))
                 currentState = workspaceOps.updateAlignment(currentState, updatedAlignment)
+
+                // Persist to H2 immediately for durability
+                h2Service.updateAlignment(updatedAlignment) match {
+                  case Right(_) => log.debug(s"Alignment persisted to H2 after sex inference")
+                  case Left(err) => log.warn(s"Failed to persist Alignment to H2: $err")
+                }
+
                 checkpoint = AnalysisCheckpoint.markStepComplete(artifactDir, checkpoint, 4)
               case Left(error) =>
                 log.warn(s"Sex inference failed: $error - using Unknown sex (will attempt Y-DNA analysis)")
@@ -1219,6 +1256,13 @@ class AnalysisCoordinator(
                   )
                 val updatedAlignment = alignment.copy(metrics = Some(alignmentMetrics))
                 currentState = workspaceOps.updateAlignment(currentState, updatedAlignment)
+
+                // Persist to H2 immediately for durability
+                h2Service.updateAlignment(updatedAlignment) match {
+                  case Right(_) => log.debug(s"Alignment persisted to H2 after failed sex inference")
+                  case Left(err) => log.warn(s"Failed to persist Alignment to H2: $err")
+                }
+
                 checkpoint = AnalysisCheckpoint.markStepComplete(artifactDir, checkpoint, 4)
             }
         }
@@ -1286,6 +1330,13 @@ class AnalysisCoordinator(
               )
             val updatedAlignment = latestAlign.copy(metrics = Some(alignmentMetrics))
             currentState = workspaceOps.updateAlignment(currentState, updatedAlignment)
+
+            // Persist to H2 immediately for durability
+            h2Service.updateAlignment(updatedAlignment) match {
+              case Right(_) => log.debug(s"Alignment persisted to H2 after variant calling")
+              case Left(err) => log.warn(s"Failed to persist Alignment to H2: $err")
+            }
+
             checkpoint = AnalysisCheckpoint.markStepComplete(artifactDir, checkpoint, 5)
             log.info(s"Variant calling complete: ${vcfInfo.variantCount} variants")
           case Left(error) =>

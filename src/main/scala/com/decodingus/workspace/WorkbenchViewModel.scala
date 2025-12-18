@@ -67,7 +67,8 @@ class WorkbenchViewModel(
   }
 
   // Analysis coordinator (uses YProfileService for auto-populating Y profiles during analysis)
-  private val analysisCoordinator = new AnalysisCoordinator(yProfileService)
+  // Receives h2Service for persisting analysis results after each step
+  private val analysisCoordinator = new AnalysisCoordinator(h2Service, yProfileService)
 
   // --- Sync State ---
   val syncStatus: ObjectProperty[SyncStatus] = ObjectProperty(SyncStatus.Synced)
