@@ -64,10 +64,13 @@ class FingerprintMatchService {
     }.map { case (run, idx) =>
       FingerprintMatchResult.MatchFound(run, idx, "HIGH")
     }.getOrElse {
-      // Tier 2: PU match (HIGH confidence)
+      // Tier 2: PU + SM match (HIGH confidence)
+      // PU alone is not sufficient - sample name must also match to avoid false positives
+      // from generic PU values like "unit1"
       libraryStats.platformUnit.flatMap { pu =>
+        val sm = libraryStats.sampleName
         candidateRuns.find { case (run, _) =>
-          run.platformUnit.contains(pu)
+          run.platformUnit.contains(pu) && run.sampleName.contains(sm)
         }.map { case (run, idx) =>
           FingerprintMatchResult.MatchFound(run, idx, "HIGH")
         }
