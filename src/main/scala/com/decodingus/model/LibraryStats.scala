@@ -21,25 +21,26 @@ case class LibraryStats(
    * Compute a fingerprint hash for identifying the same sequencing run
    * across different reference alignments.
    *
+   * Uses SM (Sample Name) + Platform as the primary identifier since PU (Platform Unit)
+   * is unreliable - most BAMs don't tag it correctly.
+   *
    * Priority:
-   * 1. PU (Platform Unit) - most unique, includes flowcell+lane+barcode
-   * 2. LB + SM - library + sample combination
-   * 3. Read stats - fallback when headers are incomplete
+   * 1. SM + Platform - sample name on a specific platform
+   * 2. Read stats - fallback when headers are incomplete
    */
   def computeRunFingerprint: String = {
     import java.security.MessageDigest
 
-    val input = platformUnit match {
-      case Some(pu) if pu.nonEmpty =>
-        // Best case: PU uniquely identifies the run
-        s"PU:$pu"
-      case _ if libraryId != "Unknown" && sampleName != "Unknown" =>
-        // Good case: LB + SM combination (GATK required fields)
-        s"LB:$libraryId:SM:$sampleName:PL:$inferredPlatform"
-      case _ =>
-        // Fallback: use read statistics
-        val lengthHash = lengthDistribution.toSeq.sorted.hashCode()
-        s"STATS:$readCount:$lengthHash:$pairedReads"
+    val input = if (sampleName != "Unknown" && inferredPlatform != "Unknown") {
+      // Primary: SM + Platform uniquely identifies a sequencing run
+      s"SM:$sampleName:PL:$inferredPlatform"
+    } else if (sampleName != "Unknown") {
+      // Fallback: just sample name
+      s"SM:$sampleName"
+    } else {
+      // Last resort: use read statistics
+      val lengthHash = lengthDistribution.toSeq.sorted.hashCode()
+      s"STATS:$readCount:$lengthHash:$pairedReads"
     }
 
     val md = MessageDigest.getInstance("SHA-256")
@@ -51,10 +52,8 @@ case class LibraryStats(
    * Confidence level of the fingerprint.
    */
   def fingerprintConfidence: String = {
-    platformUnit match {
-      case Some(pu) if pu.nonEmpty => "HIGH"
-      case _ if libraryId != "Unknown" && sampleName != "Unknown" => "MEDIUM"
-      case _ => "LOW"
-    }
+    if (sampleName != "Unknown" && inferredPlatform != "Unknown") "HIGH"
+    else if (sampleName != "Unknown") "MEDIUM"
+    else "LOW"
   }
 }

@@ -41,16 +41,15 @@ class FingerprintMatchService {
 
   /**
    * Find an existing sequence run that matches the given fingerprint.
-   * Uses a tiered matching approach with different confidence levels.
    *
-   * Matching tiers:
-   * 1. Exact fingerprint hash match → HIGH confidence
-   * 2. Platform Unit (PU) match → HIGH confidence
-   * 3. Library ID + Sample Name match → MEDIUM confidence (may require user confirmation)
+   * Matching is simple: SM (Sample Name) + Platform must match.
+   * Same sample name on same platform = same sequencing run aligned to different references.
+   *
+   * If SM or Platform is unknown, no automatic matching occurs - files are treated as separate runs.
    *
    * @param candidateRuns Sequence runs to search within (typically all runs for a biosample)
-   * @param fingerprint   The computed run fingerprint from LibraryStats
-   * @param libraryStats  Full stats for additional matching criteria
+   * @param fingerprint   The computed run fingerprint from LibraryStats (kept for API compatibility)
+   * @param libraryStats  Full stats for matching criteria
    * @return Match result with confidence level
    */
   def findMatch(
@@ -58,35 +57,20 @@ class FingerprintMatchService {
                  fingerprint: String,
                  libraryStats: LibraryStats
                ): FingerprintMatchResult = {
-    // Tier 1: Exact fingerprint match (HIGH confidence)
-    candidateRuns.find { case (run, _) =>
-      run.runFingerprint.contains(fingerprint)
-    }.map { case (run, idx) =>
-      FingerprintMatchResult.MatchFound(run, idx, "HIGH")
-    }.getOrElse {
-      // Tier 2: PU + SM match (HIGH confidence)
-      // PU alone is not sufficient - sample name must also match to avoid false positives
-      // from generic PU values like "unit1"
-      libraryStats.platformUnit.flatMap { pu =>
-        val sm = libraryStats.sampleName
-        candidateRuns.find { case (run, _) =>
-          run.platformUnit.contains(pu) && run.sampleName.contains(sm)
-        }.map { case (run, idx) =>
-          FingerprintMatchResult.MatchFound(run, idx, "HIGH")
-        }
-      }.getOrElse {
-        // Tier 3: LB + SM match (MEDIUM confidence)
-        if (libraryStats.libraryId != "Unknown" && libraryStats.sampleName != "Unknown") {
-          candidateRuns.find { case (run, _) =>
-            run.libraryId.contains(libraryStats.libraryId) &&
-              run.sampleName.contains(libraryStats.sampleName)
-          }.map { case (run, idx) =>
-            FingerprintMatchResult.MatchFound(run, idx, "MEDIUM")
-          }.getOrElse(FingerprintMatchResult.NoMatch)
-        } else {
-          FingerprintMatchResult.NoMatch
-        }
-      }
+    val sm = libraryStats.sampleName
+    val platform = libraryStats.inferredPlatform
+
+    // SM + Platform match (HIGH confidence)
+    // Same sample name on same platform = same sequencing run
+    if (sm != "Unknown" && platform != "Unknown") {
+      candidateRuns.find { case (run, _) =>
+        run.sampleName.contains(sm) && run.platformName.equalsIgnoreCase(platform)
+      }.map { case (run, idx) =>
+        FingerprintMatchResult.MatchFound(run, idx, "HIGH")
+      }.getOrElse(FingerprintMatchResult.NoMatch)
+    } else {
+      // Can't reliably match without SM + Platform - treat as new run
+      FingerprintMatchResult.NoMatch
     }
   }
 

@@ -176,14 +176,14 @@ class WorkbenchViewModel(
     }
     log.debug(s"   workspace.main.alignments: ${workspace.main.alignments.size}")
 
-    // Preserve current selection identifiers before clearing
+    // Preserve current selection identifiers before updating buffers
     val selectedProjectName = selectedProject.value.map(_.projectName)
     val selectedSampleAccession = selectedSubject.value.map(_.sampleAccession)
 
-    projects.clear()
-    projects ++= workspace.main.projects
-    samples.clear()
-    samples ++= workspace.main.samples
+    // Use setAll for atomic update (single onChange event instead of clear + add)
+    import scala.jdk.CollectionConverters.*
+    projects.delegate.setAll(workspace.main.projects.asJava)
+    samples.delegate.setAll(workspace.main.samples.asJava)
     // Also refresh filtered lists
     applyFilters()
 

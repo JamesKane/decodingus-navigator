@@ -53,7 +53,8 @@ class SubjectsView(viewModel: WorkbenchViewModel) extends SplitPane {
   // ============================================================================
 
   private val searchText = StringProperty("")
-  private val selectedSubject: ObjectProperty[Option[Biosample]] = ObjectProperty(None)
+  // Use ViewModel's selectedSubject to stay in sync when ViewModel refreshes data
+  private def selectedSubject = viewModel.selectedSubject
   private val selectedSubjects: ObservableBuffer[Biosample] = ObservableBuffer.empty
   private val isListCollapsed = scalafx.beans.property.BooleanProperty(false)
   private val savedDividerPosition = scalafx.beans.property.DoubleProperty(0.45)
@@ -285,9 +286,10 @@ class SubjectsView(viewModel: WorkbenchViewModel) extends SplitPane {
         selectedSubjects ++= buffer.toSeq
 
         // Update single selection for detail view
-        buffer.headOption match {
-          case Some(s) => selectedSubject.value = Some(s)
-          case None => selectedSubject.value = None
+        // Only update when user actually selects something - don't clear on empty
+        // because that happens during refresh when items are replaced
+        buffer.headOption.foreach { s =>
+          selectedSubject.value = Some(s)
         }
       }
 
