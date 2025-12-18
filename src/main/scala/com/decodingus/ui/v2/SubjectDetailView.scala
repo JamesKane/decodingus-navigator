@@ -936,7 +936,11 @@ class SubjectDetailView(viewModel: WorkbenchViewModel) extends VBox {
 
   private def createSequenceRunItem(seqRun: SequenceRun, index: Int): VBox = {
     val testTypeDisplay = SequenceRun.testTypeDisplayName(seqRun.testType)
-    val readsDisplay = seqRun.totalReads.map(r => formatReadCount(r)).getOrElse("-")
+    val readsDisplay = (seqRun.totalReads, seqRun.readLength) match {
+      case (Some(reads), Some(len)) => s"${formatReadCount(reads)} @ ${len}bp"
+      case (Some(reads), None) => formatReadCount(reads)
+      case _ => "-"
+    }
     val alignedPct = seqRun.pctPfReadsAligned.map(p => f"${p * 100}%.1f%%").getOrElse("-")
 
     // Get alignments for this sequence run
