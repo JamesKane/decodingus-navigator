@@ -2,7 +2,7 @@ package com.decodingus.ui.v2
 
 import com.decodingus.i18n.I18n
 import com.decodingus.service.DatabaseInitializer
-import com.decodingus.ui.components.StatusBar
+import com.decodingus.ui.components.{SettingsDialog, StatusBar}
 import com.decodingus.ui.theme.Theme
 import com.decodingus.util.Logger
 import com.decodingus.workspace.WorkbenchViewModel
@@ -10,7 +10,7 @@ import scalafx.application.JFXApp3
 import scalafx.application.JFXApp3.PrimaryStage
 import scalafx.geometry.{Insets, Pos}
 import scalafx.scene.Scene
-import scalafx.scene.control.{Button, Label}
+import scalafx.scene.control.{Button, Label, Tooltip}
 import scalafx.scene.layout.{BorderPane, HBox}
 
 /**
@@ -102,8 +102,28 @@ object NavigatorAppV2 extends JFXApp3 {
       right = new HBox(10) {
         alignment = Pos.CenterRight
         padding = Insets(0, 10, 0, 0)
-        children = Seq(themeToggleButton)
+        children = Seq(
+          settingsButton,
+          themeToggleButton
+        )
       }
     }
+  }
+
+  private def settingsButton: Button = {
+    val colors = Theme.current
+    new Button("⚙") {
+      style = s"-fx-background-color: transparent; -fx-text-fill: ${colors.textPrimary}; -fx-font-size: 16px; -fx-cursor: hand;"
+      tooltip = new Tooltip(I18n.t("settings.title"))
+      onAction = _ => openSettings()
+    }
+  }
+
+  private def openSettings(): Unit = {
+    val dialog = new SettingsDialog()
+    Option(stage.scene.value).flatMap(s => Option(s.getWindow)).foreach { window =>
+      dialog.initOwner(window)
+    }
+    dialog.showAndWait()
   }
 }
