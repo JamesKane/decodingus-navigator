@@ -276,7 +276,7 @@ class SubjectsView(viewModel: WorkbenchViewModel) extends SplitPane {
         createColumn[String]("column.ydna", 100, s => s.yHaplogroup.getOrElse("-")),
         createColumn[String]("column.mtdna", 80, s => s.mtHaplogroup.getOrElse("-")),
         createColumn[String]("column.sex", 60, s => formatSex(s.sex)),
-        createColumn[String]("column.center", 120, s => s.center.getOrElse("-")),
+        //createColumn[String]("column.center", 120, s => s.center.getOrElse("-")),
         createStatusColumn()
       )
 
@@ -368,7 +368,7 @@ class SubjectsView(viewModel: WorkbenchViewModel) extends SplitPane {
           s.donorId.exists(_.toLowerCase.contains(query)) ||
           s.yHaplogroup.exists(_.toLowerCase.contains(query)) ||
           s.mtHaplogroup.exists(_.toLowerCase.contains(query)) ||
-          s.center.exists(_.toLowerCase.contains(query)) ||
+          //s.center.exists(_.toLowerCase.contains(query)) ||
           s.description.exists(_.toLowerCase.contains(query))
       }.toSeq
     }

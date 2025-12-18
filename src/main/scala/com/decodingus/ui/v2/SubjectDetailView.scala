@@ -1403,6 +1403,7 @@ class SubjectDetailView(viewModel: WorkbenchViewModel) extends VBox {
   /** Show cached haplogroup report if it exists */
   private def showCachedHaplogroupReport(seqRunIndex: Int, alignIndex: Int, treeType: com.decodingus.haplogroup.tree.TreeType): Unit = {
     import com.decodingus.haplogroup.tree.TreeType
+    import com.decodingus.ui.components.HaplogroupReportDialog
 
     currentSubject.value.foreach { subject =>
       val dnaType = if (treeType == TreeType.YDNA) "Y-DNA" else "mtDNA"
@@ -1410,44 +1411,35 @@ class SubjectDetailView(viewModel: WorkbenchViewModel) extends VBox {
 
       viewModel.getHaplogroupArtifactDirForAlignment(subject.accession, seqRunIndex, alignIndex) match {
         case Some(artifactDir) =>
-          val reportPath = artifactDir.resolve(s"${prefix}_report.txt")
+          val reportPath = artifactDir.resolve(s"${prefix}_haplogroup_report.txt")
           if (java.nio.file.Files.exists(reportPath)) {
             try {
-              val reportContent = java.nio.file.Files.readString(reportPath)
-              val textArea = new scalafx.scene.control.TextArea(reportContent) {
-                editable = false
-                wrapText = true
-                prefWidth = 600
-                prefHeight = 500
-                style = "-fx-font-family: monospace; -fx-font-size: 12px;"
-              }
-
-              val dialog = new Dialog[Unit]() {
-                title = s"$dnaType Haplogroup Report"
-                headerText = s"$dnaType analysis report for ${subject.accession}"
-                dialogPane().content = textArea
-                dialogPane().buttonTypes = Seq(ButtonType.Close)
-              }
+              val dialog = new HaplogroupReportDialog(
+                treeType = treeType,
+                artifactDir = Some(artifactDir),
+                sampleName = Some(subject.accession)
+              )
               Option(SubjectDetailView.this.getScene).flatMap(s => Option(s.getWindow)).foreach { window =>
                 dialog.initOwner(window)
               }
               dialog.showAndWait()
             } catch {
               case e: Exception =>
-                showInfoDialog(t("error.title"), "Error Reading Report", e.getMessage)
+                log.error(s"Error showing haplogroup report dialog: ${e.getMessage}", e)
+                showInfoDialog(t("error.title"), t("haplogroup.report_error"), e.getMessage)
             }
           } else {
             showInfoDialog(
-              "No Report Available",
-              s"No $dnaType report found",
-              s"Run $dnaType haplogroup analysis first to generate a report."
+              t("haplogroup.no_report_title"),
+              t("haplogroup.no_report_header", dnaType),
+              t("haplogroup.no_report_content", dnaType)
             )
           }
         case None =>
           showInfoDialog(
-            "No Report Available",
-            s"No $dnaType report found",
-            "No analysis artifacts found for this alignment."
+            t("haplogroup.no_report_title"),
+            t("haplogroup.no_report_header", dnaType),
+            t("haplogroup.no_artifacts")
           )
       }
     }

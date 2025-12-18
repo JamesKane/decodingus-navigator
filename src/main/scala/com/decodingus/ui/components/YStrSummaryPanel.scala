@@ -67,6 +67,10 @@ class YStrSummaryPanel extends VBox {
   }
 
   // Conflict badge
+  private val conflictCountLabel = new Label("0 conflicts") {
+    style = "-fx-text-fill: white; -fx-font-size: 10px; -fx-font-weight: bold;"
+  }
+
   private val conflictBadge = new HBox(4) {
     alignment = Pos.Center
     style = "-fx-background-color: #f59e0b; -fx-background-radius: 4; -fx-padding: 3 8;"
@@ -79,10 +83,6 @@ class YStrSummaryPanel extends VBox {
       conflictCountLabel
     )
     cursor = scalafx.scene.Cursor.Hand
-  }
-
-  private val conflictCountLabel = new Label("0 conflicts") {
-    style = "-fx-text-fill: white; -fx-font-size: 10px; -fx-font-weight: bold;"
   }
 
   private val sourceLabel = new Label {
