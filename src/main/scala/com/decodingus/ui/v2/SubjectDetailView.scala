@@ -11,6 +11,7 @@ import com.decodingus.util.Logger
 import com.decodingus.workspace.WorkbenchViewModel
 import com.decodingus.workspace.model.{Alignment, Biosample, ChipProfile, HaplogroupResult, SequenceRun, StrProfile}
 import scalafx.scene.control.Alert.AlertType
+import scala.util.boundary, boundary.break
 import scalafx.Includes.*
 import scalafx.beans.property.{ObjectProperty, StringProperty}
 import scalafx.geometry.{Insets, Pos, Side}
@@ -1173,7 +1174,7 @@ class SubjectDetailView(viewModel: WorkbenchViewModel) extends VBox {
 
   /** Handle running full analysis for a sequence run, prompting for reference build if multiple alignments exist */
   private def handleRunFullAnalysis(seqRun: SequenceRun, seqRunIndex: Int): Unit = {
-    currentSubject.value.foreach { subject =>
+    currentSubject.value.foreach { subject => boundary {
       val alignments = viewModel.workspace.value.main.getAlignmentsForSequenceRun(seqRun)
 
       if (alignments.isEmpty) {
@@ -1182,7 +1183,7 @@ class SubjectDetailView(viewModel: WorkbenchViewModel) extends VBox {
           "No Alignments",
           "This sequence run has no alignments. Please add an alignment file first."
         )
-        return
+        break()
       }
 
       // Determine which alignment to use
@@ -1208,7 +1209,7 @@ class SubjectDetailView(viewModel: WorkbenchViewModel) extends VBox {
             buildChoices.indexOf(selectedBuild)
           case None =>
             log.debug("Full analysis cancelled - no reference build selected")
-            return
+            break()
         }
       }
 
@@ -1240,7 +1241,7 @@ class SubjectDetailView(viewModel: WorkbenchViewModel) extends VBox {
             }
         }
       )
-    }
+    }}
   }
 
   /** Build a summary string from batch analysis result */
@@ -2216,7 +2217,7 @@ Note: Reference data download may be required on first run."""
 
   /** Common logic for running haplogroup analysis from the Y-DNA or mtDNA tabs */
   private def runHaplogroupAnalysisFromTab(treeType: com.decodingus.haplogroup.tree.TreeType, dnaTypeLabel: String): Unit = {
-    currentSubject.value.foreach { subject =>
+    currentSubject.value.foreach { subject => boundary {
       // Get all sequence runs and their alignments
       val sequenceRuns = viewModel.workspace.value.main.getSequenceRunsForBiosample(subject)
 
@@ -2226,7 +2227,7 @@ Note: Reference data download may be required on first run."""
           t("data.no_sequencing"),
           t("data.add_sequence_first")
         )
-        return
+        break()
       }
 
       // Collect all alignments with their indices
@@ -2244,7 +2245,7 @@ Note: Reference data download may be required on first run."""
           "No Alignments",
           "No alignments found. Please run initial analysis on a sequence run first."
         )
-        return
+        break()
       }
 
       // Select alignment to use
@@ -2271,7 +2272,7 @@ Note: Reference data download may be required on first run."""
             allAlignments(idx)
           case None =>
             log.debug(s"$dnaTypeLabel analysis cancelled - no alignment selected")
-            return
+            break()
         }
       }
 
@@ -2282,14 +2283,14 @@ Note: Reference data download may be required on first run."""
         selectedAlignment.alignment,
         treeType
       )
-    }
+    }}
   }
 
   /** Handle viewing the full Y Profile dialog */
   private def handleViewYProfile(): Unit = {
     import com.decodingus.ui.components.YProfileDetailDialog
 
-    currentSubject.value.foreach { subject =>
+    currentSubject.value.foreach { subject => boundary {
       // Get biosample UUID from accession
       viewModel.getBiosampleIdByAccession(subject.sampleAccession) match {
         case None =>
@@ -2307,7 +2308,7 @@ Note: Reference data download may be required on first run."""
               "Y Profile Unavailable",
               "Y Profile service is not available."
             )
-            return
+            break()
           }
 
           // Show loading indicator
@@ -2372,7 +2373,7 @@ Note: Reference data download may be required on first run."""
 
           loadingDialog.show()
       }
-    }
+    }}
   }
 
   /** Handle viewing mtDNA haplogroup details dialog */
