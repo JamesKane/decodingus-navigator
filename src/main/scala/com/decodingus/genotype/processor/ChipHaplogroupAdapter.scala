@@ -3,7 +3,7 @@ package com.decodingus.genotype.processor
 import com.decodingus.config.{FeatureToggles, UserPreferencesService}
 import com.decodingus.genotype.model.GenotypeCall
 import com.decodingus.haplogroup.model.{Haplogroup, HaplogroupResult}
-import com.decodingus.haplogroup.scoring.HaplogroupScorer
+import com.decodingus.haplogroup.scoring.{ConfidenceCalculator, HaplogroupScorer}
 import com.decodingus.haplogroup.tree.{TreeProvider, TreeProviderType, TreeType}
 import com.decodingus.haplogroup.vendor.{DecodingUsTreeProvider, FtdnaTreeProvider}
 import com.decodingus.liftover.GenotypeLiftover
@@ -167,7 +167,8 @@ class ChipHaplogroupAdapter {
             onProgress("Analysis complete.", 1.0, 1.0)
 
             val topResult = results.head
-            val confidence = calculateConfidence(matchedPositions, treePositions.size, topResult, results)
+            // Cap at 85% for chip data since we can't detect private variants or resolve terminal branches
+            val confidence = ConfidenceCalculator.calculate(topResult, results, maxCap = 0.85)
 
             Right(ChipHaplogroupResult(
               treeType = treeType,
@@ -231,57 +232,6 @@ class ChipHaplogroupAdapter {
       case TreeType.YDNA => FeatureToggles.chipData.minYMarkers
       case TreeType.MTDNA => FeatureToggles.chipData.minMtMarkers
     }
-  }
-
-  /**
-   * Calculate confidence score based on match quality and ambiguity.
-   *
-   * Match quality = how well the called SNPs fit the assigned haplogroup path
-   * Ambiguity = whether close relatives have similar scores (indicating uncertainty)
-   *
-   * We don't penalize for missing tree coverage - those are positions we simply
-   * can't evaluate, not evidence against the call.
-   */
-  private def calculateConfidence(matched: Int, total: Int, topResult: HaplogroupResult, allResults: List[HaplogroupResult]): Double = {
-    // Match quality: proportion of callable SNPs that are derived (matching the path)
-    val callableSnps = topResult.matchingSnps + topResult.ancestralMatches
-    val matchQuality = if (callableSnps > 0) {
-      topResult.matchingSnps.toDouble / callableSnps
-    } else {
-      0.0
-    }
-
-    // Ambiguity penalty: if a sibling/cousin haplogroup is close to top, we're less certain
-    // Don't penalize for ancestors being close - that's expected (parent score + branch = child score)
-    val ambiguityPenalty = if (allResults.size > 1 && topResult.score > 0) {
-      // Find closest non-ancestor competitor
-      val topPath = topResult.lineagePath
-      val closestCompetitor = allResults.tail.find { candidate =>
-        val candidatePath = candidate.lineagePath
-        // Not an ancestor if candidate path is NOT a prefix of top path
-        !topPath.startsWith(candidatePath)
-      }
-
-      closestCompetitor match {
-        case Some(competitor) =>
-          val scoreDiff = (topResult.score - competitor.score) / topResult.score
-          // If competitor is within 20% of top score, apply penalty proportional to closeness
-          if (scoreDiff < 0.2) {
-            (0.2 - scoreDiff) * 0.5 // Up to 10% penalty when scores are nearly identical
-          } else {
-            0.0
-          }
-        case None =>
-          0.0 // No non-ancestor competitors
-      }
-    } else {
-      0.0
-    }
-
-    val confidence = matchQuality * (1.0 - ambiguityPenalty)
-
-    // Cap at 85% for chip data since we can't detect private variants or resolve terminal branches
-    math.min(0.85, confidence)
   }
 
   /**

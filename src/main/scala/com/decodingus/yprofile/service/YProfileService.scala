@@ -3,7 +3,7 @@ package com.decodingus.yprofile.service
 import com.decodingus.analysis.{CallableLociQueryService, CallableState}
 import com.decodingus.db.Transactor
 import com.decodingus.haplogroup.model.HaplogroupResult
-import com.decodingus.haplogroup.scoring.HaplogroupScorer
+import com.decodingus.haplogroup.scoring.{ConfidenceCalculator, HaplogroupScorer}
 import com.decodingus.haplogroup.tree.{TreeProvider, TreeProviderType, TreeType}
 import com.decodingus.haplogroup.vendor.{DecodingUsTreeProvider, FtdnaTreeProvider}
 import com.decodingus.yprofile.concordance.YVariantConcordance
@@ -1221,39 +1221,12 @@ class YProfileService(
   /**
    * Calculate haplogroup confidence based on scoring results.
    *
-   * Higher confidence when:
-   * - Terminal haplogroup score is well above next-best alternatives
-   * - High proportion of tree SNPs have callable data
-   * - Low number of ancestral mismatches on path to terminal
+   * Uses shared ConfidenceCalculator for consistent confidence scoring
+   * across chip and WGS/VCF analysis paths.
    */
   private def calculateHaplogroupConfidence(results: List[HaplogroupResult]): Double =
     if results.isEmpty then return 0.0
-
-    val terminal = results.head
-    if terminal.cumulativeSnps == 0 then return 0.0
-
-    // Coverage factor: proportion of tree positions with calls
-    val callableProportion = 1.0 - (terminal.noCalls.toDouble / terminal.cumulativeSnps.toDouble)
-
-    // Score factor: how much better is the terminal vs alternatives
-    val scoreFactor = results.lift(1) match
-      case Some(nextBest) if nextBest.score > 0 =>
-        math.min(terminal.score / nextBest.score, 2.0) / 2.0 // Normalize to 0-1
-      case Some(_) =>
-        1.0 // Next best has zero or negative score
-      case None =>
-        0.5 // Only one result - uncertain
-
-    // Match factor: proportion of derived matches vs ancestral on path
-    val totalPathCalls = terminal.matchingSnps + terminal.ancestralMatches
-    val matchFactor = if totalPathCalls > 0 then
-      terminal.matchingSnps.toDouble / totalPathCalls.toDouble
-    else
-      0.0
-
-    // Combined confidence
-    val confidence = callableProportion * 0.3 + scoreFactor * 0.4 + matchFactor * 0.3
-    math.min(1.0, math.max(0.0, confidence))
+    ConfidenceCalculator.calculate(results.head, results, maxCap = 1.0)
 
 /**
  * Result of haplogroup determination from unified profile.
