@@ -917,7 +917,7 @@ class WorkbenchViewModel(
                   libraryId = libraryIdFromBam,
                   platformUnit = platformUnitFromBam,
                   runFingerprint = runFingerprint,
-                  testType = inferTestType(libraryStats),
+                  testType = inferTestType(libraryStats, Some(bamPath)),
                   libraryLayout = Some(if (libraryStats.pairedReads > libraryStats.readCount / 2) "Paired-End" else "Single-End"),
                   totalReads = Some(libraryStats.readCount.toLong),
                   readLength = calculateMeanReadLength(libraryStats.lengthDistribution),
@@ -1006,20 +1006,49 @@ class WorkbenchViewModel(
     }
   }
 
-  /** Infer test type from library stats */
-  private def inferTestType(stats: LibraryStats): String = {
+  /**
+   * Infer test type from library stats and BAM coverage patterns.
+   *
+   * Phase 1: Uses BAM index statistics for coverage-based detection (fast).
+   * Falls back to platform-based inference if coverage analysis fails.
+   *
+   * @param stats Library statistics from BAM analysis
+   * @param bamPath Path to BAM file for coverage-based detection
+   * @return Test type code (e.g., "WGS", "WGS_HIFI", "Y_ELITE", "BIG_Y_700")
+   */
+  private def inferTestType(stats: LibraryStats, bamPath: Option[String] = None): String = {
     // HiFi reads are typically very long (>10kb average)
     val avgReadLength = if (stats.lengthDistribution.nonEmpty) {
       val total = stats.lengthDistribution.map { case (len, count) => len.toLong * count }.sum
       val count = stats.lengthDistribution.values.sum
-      if (count > 0) total / count else 0
+      if (count > 0) (total / count).toInt else 0
     } else 0
 
-    // Use codes that match TestTypes definitions for proper capability lookup
-    if (stats.inferredPlatform == "PacBio" && avgReadLength > 10000) "WGS_HIFI"
-    else if (stats.inferredPlatform == "PacBio") "WGS_CLR"
-    else if (stats.inferredPlatform == "Oxford Nanopore") "WGS_NANOPORE"
-    else "WGS" // Default assumption for Illumina/MGI
+    // Try coverage-based inference first (Phase 1)
+    val coverageBasedType = bamPath.flatMap { path =>
+      TestTypeInference.inferFromBamIndex(
+        bamPath = path,
+        platform = Some(stats.inferredPlatform),
+        vendor = None, // Could extract from file path or header in future
+        meanReadLength = Some(avgReadLength)
+      ) match {
+        case Right(testType) =>
+          log.info(s"Coverage-based test type inference: ${testType.code}")
+          Some(testType.code)
+        case Left(error) =>
+          log.debug(s"Coverage-based inference failed, using platform-based: $error")
+          None
+      }
+    }
+
+    // Return coverage-based result if available, otherwise fall back to platform-based
+    coverageBasedType.getOrElse {
+      // Platform-based fallback
+      if (stats.inferredPlatform == "PacBio" && avgReadLength > 10000) "WGS_HIFI"
+      else if (stats.inferredPlatform == "PacBio") "WGS_CLR"
+      else if (stats.inferredPlatform == "Oxford Nanopore") "WGS_NANOPORE"
+      else "WGS" // Default assumption for Illumina/MGI
+    }
   }
 
   /** Calculate mean insert size from distribution */
@@ -1579,7 +1608,7 @@ class WorkbenchViewModel(
                         meta = seqRun.meta.updated("analysis"),
                         platformName = if (seqRun.platformName == "Unknown" || seqRun.platformName == "Other") libraryStats.inferredPlatform else seqRun.platformName,
                         instrumentModel = seqRun.instrumentModel.orElse(Some(libraryStats.mostFrequentInstrument)),
-                        testType = inferTestType(libraryStats),
+                        testType = inferTestType(libraryStats, Some(bamPath)),
                         libraryId = if (libraryStats.libraryId != "Unknown") Some(libraryStats.libraryId) else seqRun.libraryId,
                         platformUnit = libraryStats.platformUnit.orElse(seqRun.platformUnit),
                         libraryLayout = Some(if (libraryStats.pairedReads > libraryStats.readCount / 2) "Paired-End" else "Single-End"),

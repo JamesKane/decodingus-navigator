@@ -3,6 +3,7 @@ package com.decodingus.workspace.services
 import com.decodingus.analysis.*
 import com.decodingus.analysis.SexInference.{InferredSex, SexInferenceResult}
 import com.decodingus.config.UserPreferencesService
+import com.decodingus.genotype.model.{TestTypeDefinition, TestTypes}
 import com.decodingus.haplogroup.model.HaplogroupResult as AnalysisHaplogroupResult
 import com.decodingus.haplogroup.processor.HaplogroupProcessor
 import com.decodingus.haplogroup.tree.{TreeProviderType, TreeType}
@@ -1100,6 +1101,24 @@ class AnalysisCoordinator(
             }
 
             checkpoint = AnalysisCheckpoint.markStepComplete(artifactDir, checkpoint, 2)
+
+            // Phase 2 Test Type Refinement: Use actual coverage data to refine test type
+            refineTestType(bamPath, currentSeqRun, wgsMetrics.meanCoverage) match {
+              case Some(refinedType) if TestTypeInference.shouldUpdateTestType(currentSeqRun.testType, refinedType) =>
+                log.info(s"Refining test type from ${currentSeqRun.testType} to ${refinedType.code} based on coverage analysis")
+                val updatedSeqRun = currentSeqRun.copy(testType = refinedType.code)
+                currentState = workspaceOps.updateSequenceRunByUri(currentState, updatedSeqRun)
+                currentSeqRun = updatedSeqRun
+
+                // Persist updated test type to H2
+                h2Service.updateSequenceRun(updatedSeqRun) match {
+                  case Right(_) => log.debug(s"SequenceRun test type updated in H2: ${refinedType.code}")
+                  case Left(err) => log.warn(s"Failed to update SequenceRun test type in H2: $err")
+                }
+              case _ =>
+                log.debug(s"Test type unchanged: ${currentSeqRun.testType}")
+            }
+
           case Left(error) =>
             log.warn(s"WGS metrics warning: $error")
             // Mark complete anyway to allow continuing (metrics are optional)
@@ -1726,6 +1745,51 @@ class AnalysisCoordinator(
       val total = distribution.map { case (size, count) => size * count }.sum
       val count = distribution.values.sum
       if (count > 0) Some(total.toDouble / count) else None
+    }
+  }
+
+  /**
+   * Phase 2 Test Type Refinement: Refine test type based on actual coverage data.
+   *
+   * Uses BAM index statistics for per-chromosome coverage combined with
+   * WGS metrics for overall coverage validation.
+   *
+   * @param bamPath Path to BAM file
+   * @param seqRun Current sequence run (for platform info)
+   * @param wgsMeanCoverage Mean coverage from WGS metrics analysis
+   * @return Refined test type definition if inference succeeds
+   */
+  private def refineTestType(
+    bamPath: String,
+    seqRun: SequenceRun,
+    wgsMeanCoverage: Double
+  ): Option[TestTypeDefinition] = {
+    TestTypeInference.calculateChromosomeCoverage(bamPath, seqRun.readLength) match {
+      case Right(stats) =>
+        // Use actual mean coverage from WGS metrics to scale the BAM index estimates
+        // BAM index gives relative coverage, WGS metrics gives actual coverage
+        val scaleFactor = if (stats.autosomalCoverage > 0) wgsMeanCoverage / stats.autosomalCoverage else 1.0
+
+        val scaledYCoverage = stats.yCoverage * scaleFactor
+        val scaledMtCoverage = stats.mtCoverage * scaleFactor
+        val scaledAutoCoverage = wgsMeanCoverage // Already calibrated
+
+        log.debug(s"Phase 2 coverage refinement: auto=${f"$scaledAutoCoverage%.1f"}x, Y=${f"$scaledYCoverage%.1f"}x, MT=${f"$scaledMtCoverage%.1f"}x (scale=$scaleFactor)")
+
+        val inferred = TestTypes.inferFromCoverage(
+          yCoverage = Some(scaledYCoverage),
+          mtCoverage = Some(scaledMtCoverage),
+          autosomalCoverage = Some(scaledAutoCoverage),
+          totalReads = seqRun.totalReads.getOrElse(stats.totalReads),
+          vendor = None, // Could extract from file path in future
+          platform = Some(seqRun.platformName),
+          meanReadLength = seqRun.readLength
+        )
+        Some(inferred)
+
+      case Left(error) =>
+        log.debug(s"Phase 2 test type refinement skipped: $error")
+        None
     }
   }
 

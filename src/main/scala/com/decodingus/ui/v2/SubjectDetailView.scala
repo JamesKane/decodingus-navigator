@@ -5,7 +5,7 @@ import com.decodingus.i18n.Formatters
 import com.decodingus.str.StrCsvParser
 import com.decodingus.config.FeatureToggles
 import com.decodingus.haplogroup.tree.TreeType
-import com.decodingus.ui.components.{AddDataDialog, AddSequenceDataDialog, AncestryResultDialog, ConfirmDialog, DataInput, DataType, EditSubjectDialog, ImportVendorFastaDialog, InfoDialog, MtdnaVariantsPanel, SequenceDataInput, SourceReconciliationPanel, VcfMetadata, VcfMetadataDialog, VendorFastaImportRequest, YChromosomeIdeogramPanel, YStrSummaryPanel}
+import com.decodingus.ui.components.{AddDataDialog, AddSequenceDataDialog, AncestryResultDialog, ConfirmDialog, DataInput, DataType, EditSequenceRunDialog, EditSubjectDialog, ImportVendorFastaDialog, InfoDialog, MtdnaVariantsPanel, SequenceDataInput, SequenceRunEditResult, SourceReconciliationPanel, VcfMetadata, VcfMetadataDialog, VendorFastaImportRequest, YChromosomeIdeogramPanel, YStrSummaryPanel}
 import com.decodingus.ui.v2.BiosampleExtensions.*
 import com.decodingus.util.Logger
 import com.decodingus.workspace.WorkbenchViewModel
@@ -986,9 +986,10 @@ class SubjectDetailView(viewModel: WorkbenchViewModel) extends VBox {
               alignment = Pos.CenterLeft
               children = Seq(
                 new Label(testTypeDisplay) { style = "-fx-font-weight: bold; -fx-text-fill: #ffffff;" },
+                seqRun.sequencingFacility.map(lab => new Label(s"• $lab") { style = "-fx-text-fill: #60a5fa;" }).getOrElse(new Region),
                 new Label(s"• ${seqRun.platformName}") { style = "-fx-text-fill: #888888;" },
                 seqRun.instrumentModel.map(m => new Label(s"• $m") { style = "-fx-text-fill: #888888;" }).getOrElse(new Region)
-              )
+              ).filter(_.isInstanceOf[Label]) // Filter out empty Regions
             },
             new HBox(15) {
               children = Seq(
@@ -1003,7 +1004,25 @@ class SubjectDetailView(viewModel: WorkbenchViewModel) extends VBox {
         new HBox(5) {
           alignment = Pos.CenterRight
           children = {
+            import com.decodingus.genotype.model.{TestTypes, TargetType}
             val badges = scala.collection.mutable.ArrayBuffer[scalafx.scene.Node]()
+
+            // Test category badge (only for non-WGS types)
+            TestTypes.byCode(seqRun.testType).foreach { testType =>
+              testType.targetType match {
+                case TargetType.YChromosome =>
+                  badges += new Label("Y-Targeted") {
+                    style = "-fx-background-color: #3d2d1d; -fx-text-fill: #fbbf24; -fx-padding: 2 6; -fx-background-radius: 3; -fx-font-size: 10px; -fx-font-weight: bold;"
+                  }
+                case TargetType.MtDna =>
+                  badges += new Label("MT-Targeted") {
+                    style = "-fx-background-color: #3d2d1d; -fx-text-fill: #fbbf24; -fx-padding: 2 6; -fx-background-radius: 3; -fx-font-size: 10px; -fx-font-weight: bold;"
+                  }
+                case _ => // WGS types don't need a category badge
+              }
+            }
+
+            // Capability badges
             if (SequenceRun.supportsYDna(seqRun.testType)) {
               badges += new Label("Y") {
                 style = "-fx-background-color: #2d3a2d; -fx-text-fill: #4ade80; -fx-padding: 2 6; -fx-background-radius: 3; -fx-font-size: 10px;"
@@ -1487,6 +1506,11 @@ class SubjectDetailView(viewModel: WorkbenchViewModel) extends VBox {
       onAction = _ => showSequenceRunDetailsDialog(seqRun)
     }
 
+    // Edit
+    items += new MenuItem("Edit...") {
+      onAction = _ => showEditSequenceRunDialog(seqRun, index)
+    }
+
     items += new SeparatorMenuItem()
 
     // Merge with another run
@@ -1564,6 +1588,7 @@ class SubjectDetailView(viewModel: WorkbenchViewModel) extends VBox {
       s"""Platform: ${seqRun.platformName}
          |Instrument: ${seqRun.instrumentModel.getOrElse("Unknown")}
          |Test Type: ${SequenceRun.testTypeDisplayName(seqRun.testType)}
+         |Lab: ${seqRun.sequencingFacility.getOrElse("Unknown")}
          |Library Layout: ${seqRun.libraryLayout.getOrElse("Unknown")}
          |
          |Total Reads: ${seqRun.totalReads.map(r => Formatters.formatNumber(r)).getOrElse("N/A")}
@@ -1587,6 +1612,47 @@ class SubjectDetailView(viewModel: WorkbenchViewModel) extends VBox {
       dialogWidth = 420,
       dialogHeight = 400
     )
+  }
+
+  /** Shows edit dialog for sequence run */
+  private def showEditSequenceRunDialog(seqRun: SequenceRun, index: Int): Unit = {
+    val dialog = new EditSequenceRunDialog(seqRun)
+    Option(this.getScene).flatMap(s => Option(s.getWindow)).foreach { window =>
+      dialog.initOwner(window)
+    }
+
+    dialog.showAndWait() match {
+      case Some(Some(editResult: SequenceRunEditResult)) =>
+        // Update the sequence run with new values
+        currentSubject.value.foreach { subject =>
+          val updatedSeqRun = seqRun.copy(
+            testType = editResult.testType,
+            sequencingFacility = editResult.sequencingFacility.orElse(seqRun.sequencingFacility)
+          )
+
+          // Persist via ViewModel
+          viewModel.updateSequenceRun(subject.accession, index, updatedSeqRun)
+
+          // Build notification message
+          val changes = scala.collection.mutable.ArrayBuffer[String]()
+          if (editResult.testType != seqRun.testType) {
+            changes += s"Test type: ${SequenceRun.testTypeDisplayName(editResult.testType)}"
+          }
+          if (editResult.sequencingFacility != seqRun.sequencingFacility) {
+            changes += s"Lab: ${editResult.sequencingFacility.getOrElse("(cleared)")}"
+          }
+
+          log.info(s"Sequence run updated: ${changes.mkString(", ")}")
+          showNotification("Sequence Run Updated", changes.mkString("\n"))
+
+          // Refresh the data sources display
+          val freshSubject = viewModel.findSubject(subject.accession).getOrElse(subject)
+          currentSubject.value = Some(freshSubject)
+          updateDataSources(freshSubject)
+        }
+      case _ =>
+        // User cancelled
+    }
   }
 
   private def createChipProfileItem(chip: ChipProfile, index: Int): HBox = {
