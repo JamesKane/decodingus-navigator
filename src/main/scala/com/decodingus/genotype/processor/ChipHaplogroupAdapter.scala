@@ -167,7 +167,7 @@ class ChipHaplogroupAdapter {
             onProgress("Analysis complete.", 1.0, 1.0)
 
             val topResult = results.head
-            val confidence = calculateConfidence(matchedPositions, treePositions.size, topResult)
+            val confidence = calculateConfidence(matchedPositions, treePositions.size, topResult, results)
 
             Right(ChipHaplogroupResult(
               treeType = treeType,
@@ -234,21 +234,53 @@ class ChipHaplogroupAdapter {
   }
 
   /**
-   * Calculate confidence score based on coverage and match quality.
+   * Calculate confidence score based on match quality and ambiguity.
+   *
+   * Match quality = how well the called SNPs fit the assigned haplogroup path
+   * Ambiguity = whether close relatives have similar scores (indicating uncertainty)
+   *
+   * We don't penalize for missing tree coverage - those are positions we simply
+   * can't evaluate, not evidence against the call.
    */
-  private def calculateConfidence(matched: Int, total: Int, topResult: HaplogroupResult): Double = {
-    val coverageRatio = matched.toDouble / total
-    val matchQuality = if (topResult.matchingSnps + topResult.ancestralMatches > 0) {
-      topResult.matchingSnps.toDouble / (topResult.matchingSnps + topResult.ancestralMatches)
+  private def calculateConfidence(matched: Int, total: Int, topResult: HaplogroupResult, allResults: List[HaplogroupResult]): Double = {
+    // Match quality: proportion of callable SNPs that are derived (matching the path)
+    val callableSnps = topResult.matchingSnps + topResult.ancestralMatches
+    val matchQuality = if (callableSnps > 0) {
+      topResult.matchingSnps.toDouble / callableSnps
     } else {
       0.0
     }
 
-    // Confidence is a combination of coverage and match quality
-    // Weight coverage more heavily since limited coverage is the main limitation
-    val confidence = (coverageRatio * 0.6 + matchQuality * 0.4)
+    // Ambiguity penalty: if a sibling/cousin haplogroup is close to top, we're less certain
+    // Don't penalize for ancestors being close - that's expected (parent score + branch = child score)
+    val ambiguityPenalty = if (allResults.size > 1 && topResult.score > 0) {
+      // Find closest non-ancestor competitor
+      val topPath = topResult.lineagePath
+      val closestCompetitor = allResults.tail.find { candidate =>
+        val candidatePath = candidate.lineagePath
+        // Not an ancestor if candidate path is NOT a prefix of top path
+        !topPath.startsWith(candidatePath)
+      }
 
-    // Cap confidence for chip data since we can't detect private variants
+      closestCompetitor match {
+        case Some(competitor) =>
+          val scoreDiff = (topResult.score - competitor.score) / topResult.score
+          // If competitor is within 20% of top score, apply penalty proportional to closeness
+          if (scoreDiff < 0.2) {
+            (0.2 - scoreDiff) * 0.5 // Up to 10% penalty when scores are nearly identical
+          } else {
+            0.0
+          }
+        case None =>
+          0.0 // No non-ancestor competitors
+      }
+    } else {
+      0.0
+    }
+
+    val confidence = matchQuality * (1.0 - ambiguityPenalty)
+
+    // Cap at 85% for chip data since we can't detect private variants or resolve terminal branches
     math.min(0.85, confidence)
   }
 
