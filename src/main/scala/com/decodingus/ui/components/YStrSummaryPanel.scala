@@ -1,6 +1,7 @@
 package com.decodingus.ui.components
 
 import com.decodingus.i18n.I18n.t
+import com.decodingus.str.StrPanelService
 import com.decodingus.workspace.model.StrProfile
 import scalafx.Includes.*
 import scalafx.geometry.{Insets, Pos}
@@ -18,16 +19,10 @@ class YStrSummaryPanel extends VBox {
   style = "-fx-background-color: #2d2a3a; -fx-background-radius: 10;"
   prefWidth = 220
 
-  // FTDNA panel definitions (marker thresholds)
-  private val panels = Seq(
-    ("Y-12", 12),
-    ("Y-25", 25),
-    ("Y-37", 37),
-    ("Y-67", 67),
-    ("Y-111", 111),
-    ("Y-500", 500),
-    ("Y-700", 700)
-  )
+  // FTDNA panel definitions loaded from config
+  // Uses actual marker key counts (not marketing counts) for accurate thresholds
+  // Returns (name, actualThreshold, marketingCount)
+  private val panelThresholds: Seq[(String, Int, Int)] = StrPanelService.getFtdnaPanelThresholds
 
   private val titleLabel = new Label(t("str.panel_summary")) {
     style = "-fx-font-weight: bold; -fx-text-fill: #ffffff;"
@@ -79,15 +74,15 @@ class YStrSummaryPanel extends VBox {
         val markerCount = p.markers.size
         markerCountLabel.text = markerCount.toString
 
-        // Determine which panels are filled
-        val filledPanels = panels.filter { case (_, threshold) => markerCount >= threshold }
+        // Determine which panels are filled using actual thresholds (not marketing counts)
+        val filledPanels = panelThresholds.filter { case (_, actualThreshold, _) => markerCount >= actualThreshold }
         val highestPanel = filledPanels.lastOption.map(_._1).getOrElse("")
 
         // Create panel indicators
         panelIndicatorsBox.children.clear()
-        panels.foreach { case (name, threshold) =>
-          val isFilled = markerCount >= threshold
-          val indicator = createPanelIndicator(name, isFilled, markerCount >= threshold)
+        panelThresholds.foreach { case (name, actualThreshold, marketingCount) =>
+          val isFilled = markerCount >= actualThreshold
+          val indicator = createPanelIndicator(name, isFilled, isFilled)
           panelIndicatorsBox.children += indicator
         }
 

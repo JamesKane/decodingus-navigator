@@ -1,5 +1,6 @@
 package com.decodingus.workspace.model
 
+import com.decodingus.str.StrPanelService
 import java.time.LocalDateTime
 
 /**
@@ -122,10 +123,12 @@ case class StrProfile(
                      )
 
 object StrProfile {
-  /** Known panel values */
-  val KnownPanels: Set[String] = Set(
-    "Y12", "Y25", "Y37", "Y67", "Y111", "Y500", "Y700", "YSEQ_ALPHA", "CUSTOM"
-  )
+  /** Known panel values - loaded from config with fallback */
+  lazy val KnownPanels: Set[String] = {
+    val configPanels = StrPanelService.getKnownPanelNames
+    if (configPanels.nonEmpty) configPanels + "CUSTOM"
+    else Set("Y-12", "Y-25", "Y-37", "Y-67", "Y-111", "Y-500", "Y-700", "YSEQ_ALPHA", "CUSTOM")
+  }
 
   /** Known provider values */
   val KnownProviders: Set[String] = Set(

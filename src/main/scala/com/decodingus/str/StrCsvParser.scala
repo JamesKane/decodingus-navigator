@@ -476,13 +476,8 @@ object StrCsvParser {
     }
   }
 
-  // YSEQ-exclusive markers (not in FTDNA panels)
-  private val yseqExclusiveMarkers = Set(
-    // YSEQ Exclusive Markers Set 1
-    "DYS728", "DYS723", "DYR112", "DYS711", "DYR76", "DYR33", "DYS727", "DYR157", "DYS713",
-    // YSEQ Exclusive Markers Set 2
-    "DYS518", "DYS614", "DYS626", "DYS644", "DYS684", "DYF397", "DYF399X", "DYS464X", "DYF408"
-  )
+  // YSEQ-exclusive markers loaded from config
+  private def yseqExclusiveMarkers: Set[String] = StrPanelService.getExclusiveMarkers("YSEQ")
 
   /**
    * Infers the provider (FTDNA, YSEQ) from filename and marker content.
@@ -521,18 +516,10 @@ object StrCsvParser {
       return Some("YSEQ")
     }
 
-    // Check marker count - FTDNA has standard panel sizes
-    // Note: FTY markers appear in both FTDNA Big Y-700 and YSEQ panels
-    val ftdnaPanelSizes = Set(12, 25, 37, 67, 111, 500, 700)
-    val markerCount = markers.size
-
-    // If marker count matches a standard FTDNA panel size (with tolerance), likely FTDNA
-    if (ftdnaPanelSizes.exists(size => math.abs(markerCount - size) <= 5)) {
-      Some("FTDNA")
-    } else {
-      // Non-standard count - could be either vendor or custom panel
-      None
-    }
+    // Use config-driven panel classification to detect provider
+    // This uses actual marker counts (not marketing counts) for accurate detection
+    val result = StrPanelService.classifyPanel(markerNamesSet, None)
+    result.provider
   }
 
   /** Splits a CSV line handling quoted values */
