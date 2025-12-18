@@ -1,6 +1,6 @@
 package com.decodingus.service
 
-import com.decodingus.repository.{AlignmentEntity, BiosampleEntity, EntityMeta, ProjectEntity, SequenceRunEntity, SyncStatus as RepoSyncStatus}
+import com.decodingus.repository.{AlignmentEntity, BiosampleEntity, ChipProfileEntity, EntityMeta, ProjectEntity, SequenceRunEntity, StrProfileEntity, SyncStatus as RepoSyncStatus}
 import com.decodingus.workspace.model.*
 
 import java.time.LocalDateTime
@@ -245,6 +245,96 @@ object EntityConversions:
       variantCaller = entity.variantCaller,
       files = entity.files,
       metrics = entity.metrics
+    )
+
+  // ============================================
+  // STR Profile Conversions
+  // ============================================
+
+  def toStrProfileEntity(
+                          profile: StrProfile,
+                          biosampleId: UUID,
+                          existingId: Option[UUID] = None
+                        ): StrProfileEntity =
+    val id = existingId.getOrElse(extractOrGenerateId(profile.atUri))
+    StrProfileEntity(
+      id = id,
+      biosampleId = biosampleId,
+      sequenceRunId = profile.sequenceRunRef.flatMap(parseIdFromRef),
+      panels = profile.panels,
+      markers = profile.markers,
+      totalMarkers = profile.totalMarkers,
+      source = profile.source,
+      importedFrom = profile.importedFrom,
+      derivationMethod = profile.derivationMethod,
+      files = profile.files,
+      meta = toEntityMeta(profile.meta, profile.atUri)
+    )
+
+  def fromStrProfileEntity(entity: StrProfileEntity, biosampleRef: String): StrProfile =
+    StrProfile(
+      atUri = entity.meta.atUri.orElse(Some(localUri("strprofile", entity.id))),
+      meta = fromEntityMeta(entity.meta),
+      biosampleRef = biosampleRef,
+      sequenceRunRef = entity.sequenceRunId.map(id => localUri("sequencerun", id)),
+      panels = entity.panels,
+      markers = entity.markers,
+      totalMarkers = entity.totalMarkers,
+      source = entity.source,
+      importedFrom = entity.importedFrom,
+      derivationMethod = entity.derivationMethod,
+      files = entity.files
+    )
+
+  // ============================================
+  // Chip Profile Conversions
+  // ============================================
+
+  def toChipProfileEntity(
+                           profile: ChipProfile,
+                           biosampleId: UUID,
+                           existingId: Option[UUID] = None
+                         ): ChipProfileEntity =
+    val id = existingId.getOrElse(extractOrGenerateId(profile.atUri))
+    ChipProfileEntity(
+      id = id,
+      biosampleId = biosampleId,
+      vendor = profile.vendor,
+      testTypeCode = profile.testTypeCode,
+      chipVersion = profile.chipVersion,
+      totalMarkersCalled = profile.totalMarkersCalled,
+      totalMarkersPossible = profile.totalMarkersPossible,
+      noCallRate = profile.noCallRate,
+      yMarkersCalled = profile.yMarkersCalled,
+      mtMarkersCalled = profile.mtMarkersCalled,
+      autosomalMarkersCalled = profile.autosomalMarkersCalled,
+      hetRate = profile.hetRate,
+      importDate = profile.importDate,
+      sourceFileHash = profile.sourceFileHash,
+      sourceFileName = profile.sourceFileName,
+      files = profile.files,
+      meta = toEntityMeta(profile.meta, profile.atUri)
+    )
+
+  def fromChipProfileEntity(entity: ChipProfileEntity, biosampleRef: String): ChipProfile =
+    ChipProfile(
+      atUri = entity.meta.atUri.orElse(Some(localUri("chipprofile", entity.id))),
+      meta = fromEntityMeta(entity.meta),
+      biosampleRef = biosampleRef,
+      vendor = entity.vendor,
+      testTypeCode = entity.testTypeCode,
+      chipVersion = entity.chipVersion,
+      totalMarkersCalled = entity.totalMarkersCalled,
+      totalMarkersPossible = entity.totalMarkersPossible,
+      noCallRate = entity.noCallRate,
+      yMarkersCalled = entity.yMarkersCalled,
+      mtMarkersCalled = entity.mtMarkersCalled,
+      autosomalMarkersCalled = entity.autosomalMarkersCalled,
+      hetRate = entity.hetRate,
+      importDate = entity.importDate,
+      sourceFileHash = entity.sourceFileHash,
+      sourceFileName = entity.sourceFileName,
+      files = entity.files
     )
 
   // ============================================

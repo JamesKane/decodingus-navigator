@@ -190,6 +190,79 @@ trait WorkspaceService:
   def deleteAlignment(id: UUID): Either[String, Boolean]
 
   // ============================================
+  // STR Profile Operations
+  // ============================================
+
+  /**
+   * Get all STR profiles in the workspace.
+   */
+  def getAllStrProfiles(): Either[String, List[StrProfile]]
+
+  /**
+   * Get STR profiles for a biosample.
+   */
+  def getStrProfilesForBiosample(biosampleId: UUID): Either[String, List[StrProfile]]
+
+  /**
+   * Find an STR profile by ID.
+   */
+  def getStrProfile(id: UUID): Either[String, Option[StrProfile]]
+
+  /**
+   * Create a new STR profile.
+   */
+  def createStrProfile(profile: StrProfile, biosampleId: UUID): Either[String, StrProfile]
+
+  /**
+   * Update an existing STR profile.
+   */
+  def updateStrProfile(profile: StrProfile): Either[String, StrProfile]
+
+  /**
+   * Delete an STR profile by ID.
+   */
+  def deleteStrProfile(id: UUID): Either[String, Boolean]
+
+  // ============================================
+  // Chip Profile Operations
+  // ============================================
+
+  /**
+   * Get all chip profiles in the workspace.
+   */
+  def getAllChipProfiles(): Either[String, List[ChipProfile]]
+
+  /**
+   * Get chip profiles for a biosample.
+   */
+  def getChipProfilesForBiosample(biosampleId: UUID): Either[String, List[ChipProfile]]
+
+  /**
+   * Find a chip profile by ID.
+   */
+  def getChipProfile(id: UUID): Either[String, Option[ChipProfile]]
+
+  /**
+   * Create a new chip profile.
+   */
+  def createChipProfile(profile: ChipProfile, biosampleId: UUID): Either[String, ChipProfile]
+
+  /**
+   * Update an existing chip profile.
+   */
+  def updateChipProfile(profile: ChipProfile): Either[String, ChipProfile]
+
+  /**
+   * Delete a chip profile by ID.
+   */
+  def deleteChipProfile(id: UUID): Either[String, Boolean]
+
+  /**
+   * Find a chip profile by source file hash (for deduplication).
+   */
+  def getChipProfileBySourceHash(hash: String): Either[String, Option[ChipProfile]]
+
+  // ============================================
   // Sync Status Operations
   // ============================================
 

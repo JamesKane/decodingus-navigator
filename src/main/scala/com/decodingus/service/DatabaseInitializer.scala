@@ -59,6 +59,8 @@ object DatabaseInitializer:
       val projectRepo = ProjectRepository()
       val sequenceRunRepo = SequenceRunRepository()
       val alignmentRepo = AlignmentRepository()
+      val strProfileRepo = StrProfileRepository()
+      val chipProfileRepo = ChipProfileRepository()
       val artifactRepo = AnalysisArtifactRepository()
       val sourceFileRepo = SourceFileRepository()
 
@@ -68,7 +70,9 @@ object DatabaseInitializer:
         biosampleRepo = biosampleRepo,
         projectRepo = projectRepo,
         sequenceRunRepo = sequenceRunRepo,
-        alignmentRepo = alignmentRepo
+        alignmentRepo = alignmentRepo,
+        strProfileRepo = strProfileRepo,
+        chipProfileRepo = chipProfileRepo
       )
 
       // Create the cache service

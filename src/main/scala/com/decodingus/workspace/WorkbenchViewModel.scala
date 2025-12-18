@@ -2611,13 +2611,29 @@ class WorkbenchViewModel(
    * Returns the URI of the new profile, or an error message.
    */
   def addStrProfile(sampleAccession: String, profile: StrProfile): Either[String, String] = {
-    workspaceOps.addStrProfile(currentState, sampleAccession, profile) match {
-      case Right((newState, profileUri)) =>
-        applyState(newState)
-        log.info(s" Added STR profile with ${profile.markers.size} markers for $sampleAccession (provider: ${profile.importedFrom.getOrElse("unknown")})")
-        Right(profileUri)
-      case Left(error) =>
-        Left(error)
+    // Get biosample ID for H2 persistence
+    getBiosampleIdByAccession(sampleAccession) match {
+      case None =>
+        Left(s"Biosample not found: $sampleAccession")
+      case Some(biosampleId) =>
+        // Persist to H2 first
+        h2Service.createStrProfile(profile, biosampleId) match {
+          case Right(savedProfile) =>
+            // Update in-memory state with the saved profile (which has the atUri)
+            workspaceOps.addStrProfile(currentState, sampleAccession, savedProfile) match {
+              case Right((newState, profileUri)) =>
+                applyState(newState)
+                log.info(s"Added STR profile with ${profile.markers.size} markers for $sampleAccession (provider: ${profile.importedFrom.getOrElse("unknown")})")
+                Right(profileUri)
+              case Left(error) =>
+                // H2 succeeded but in-memory failed - this shouldn't happen but log it
+                log.warn(s"STR profile saved to H2 but in-memory update failed: $error")
+                savedProfile.atUri.toRight(error)
+            }
+          case Left(error) =>
+            log.error(s"Failed to persist STR profile to H2: $error")
+            Left(error)
+        }
     }
   }
 
@@ -2732,8 +2748,6 @@ class WorkbenchViewModel(
                     updateProgress("Creating chip profile...", 0.9)
 
                     Platform.runLater {
-                      val chipProfileUri = s"local:chipprofile:${subject.sampleAccession}:${java.util.UUID.randomUUID().toString.take(8)}"
-
                       val fileInfo = FileInfo(
                         fileName = file.getName,
                         fileSizeBytes = Some(file.length()),
@@ -2744,7 +2758,7 @@ class WorkbenchViewModel(
                       )
 
                       val chipProfile = ChipProfile(
-                        atUri = Some(chipProfileUri),
+                        atUri = None, // Will be assigned by H2
                         meta = RecordMeta.initial,
                         biosampleRef = subject.atUri.getOrElse(s"local:biosample:${subject.sampleAccession}"),
                         vendor = parser.vendor,
@@ -2763,36 +2777,57 @@ class WorkbenchViewModel(
                         files = List(fileInfo)
                       )
 
-                      // Update workspace
-                      val updatedChipProfiles = _workspace.value.main.chipProfiles :+ chipProfile
-                      val updatedSubject = subject.copy(
-                        genotypeRefs = subject.genotypeRefs :+ chipProfileUri,
-                        meta = subject.meta.updated("genotypeRefs")
-                      )
+                      // Get biosample ID for H2 persistence
+                      getBiosampleIdByAccession(sampleAccession) match {
+                        case None =>
+                          analysisInProgress.value = false
+                          analysisError.value = s"Biosample not found: $sampleAccession"
+                          onComplete(Left(s"Biosample not found: $sampleAccession"))
 
-                      // Persist biosample update to H2
-                      h2Service.updateBiosample(updatedSubject) match {
-                        case Right(persisted) =>
-                          log.info(s" Biosample genotypeRefs updated in H2: ${persisted.sampleAccession}")
-                        case Left(error) =>
-                          log.error(s"Failed to update Biosample genotypeRefs in H2: $error")
+                        case Some(biosampleId) =>
+                          // Persist chip profile to H2
+                          h2Service.createChipProfile(chipProfile, biosampleId) match {
+                            case Right(savedProfile) =>
+                              val chipProfileUri = savedProfile.atUri.getOrElse(s"local:chipprofile:${java.util.UUID.randomUUID()}")
+
+                              // Update workspace with saved profile
+                              val updatedChipProfiles = _workspace.value.main.chipProfiles :+ savedProfile
+                              val updatedSubject = subject.copy(
+                                genotypeRefs = subject.genotypeRefs :+ chipProfileUri,
+                                meta = subject.meta.updated("genotypeRefs")
+                              )
+
+                              // Persist biosample update to H2
+                              h2Service.updateBiosample(updatedSubject) match {
+                                case Right(persisted) =>
+                                  log.info(s"Biosample genotypeRefs updated in H2: ${persisted.sampleAccession}")
+                                case Left(error) =>
+                                  log.error(s"Failed to update Biosample genotypeRefs in H2: $error")
+                              }
+
+                              val updatedSamples = _workspace.value.main.samples.map { s =>
+                                if (s.sampleAccession == sampleAccession) updatedSubject else s
+                              }
+                              val updatedContent = _workspace.value.main.copy(
+                                samples = updatedSamples,
+                                chipProfiles = updatedChipProfiles
+                              )
+                              _workspace.value = _workspace.value.copy(main = updatedContent)
+
+                              analysisInProgress.value = false
+                              analysisProgress.value = "Import complete"
+                              analysisProgressPercent.value = 1.0
+
+                              log.info(s"Imported chip data: ${parser.vendor}, ${summary.totalMarkersCalled} markers")
+                              onComplete(Right(savedProfile))
+
+                            case Left(error) =>
+                              log.error(s"Failed to persist chip profile to H2: $error")
+                              analysisInProgress.value = false
+                              analysisError.value = error
+                              onComplete(Left(error))
+                          }
                       }
-
-                      val updatedSamples = _workspace.value.main.samples.map { s =>
-                        if (s.sampleAccession == sampleAccession) updatedSubject else s
-                      }
-                      val updatedContent = _workspace.value.main.copy(
-                        samples = updatedSamples,
-                        chipProfiles = updatedChipProfiles
-                      )
-                      _workspace.value = _workspace.value.copy(main = updatedContent)
-
-                      analysisInProgress.value = false
-                      analysisProgress.value = "Import complete"
-                      analysisProgressPercent.value = 1.0
-
-                      log.info(s" Imported chip data: ${parser.vendor}, ${summary.totalMarkersCalled} markers")
-                      onComplete(Right(chipProfile))
                     }
 
                   case Left(parseError) =>

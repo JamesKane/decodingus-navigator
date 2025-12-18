@@ -1,7 +1,7 @@
 package com.decodingus.service
 
 import com.decodingus.db.Transactor
-import com.decodingus.repository.{AlignmentRepository, BiosampleRepository, ProjectRepository, SequenceRunRepository, SyncStatus as RepoSyncStatus}
+import com.decodingus.repository.{AlignmentRepository, BiosampleRepository, ChipProfileRepository, ProjectRepository, SequenceRunRepository, StrProfileRepository, SyncStatus as RepoSyncStatus}
 import com.decodingus.service.EntityConversions.*
 import com.decodingus.util.Logger
 import com.decodingus.workspace.model.*
@@ -19,7 +19,9 @@ class H2WorkspaceService(
                           biosampleRepo: BiosampleRepository,
                           projectRepo: ProjectRepository,
                           sequenceRunRepo: SequenceRunRepository,
-                          alignmentRepo: AlignmentRepository
+                          alignmentRepo: AlignmentRepository,
+                          strProfileRepo: StrProfileRepository,
+                          chipProfileRepo: ChipProfileRepository
                         ) extends WorkspaceService:
 
   private val log = Logger[H2WorkspaceService]
@@ -303,6 +305,140 @@ class H2WorkspaceService(
     }
 
   // ============================================
+  // STR Profile Operations
+  // ============================================
+
+  override def getAllStrProfiles(): Either[String, List[StrProfile]] =
+    transactor.readOnly {
+      strProfileRepo.findAll().map { entity =>
+        val biosampleRef = localUri("biosample", entity.biosampleId)
+        fromStrProfileEntity(entity, biosampleRef)
+      }
+    }
+
+  override def getStrProfilesForBiosample(biosampleId: UUID): Either[String, List[StrProfile]] =
+    transactor.readOnly {
+      val biosampleRef = localUri("biosample", biosampleId)
+      strProfileRepo.findByBiosample(biosampleId).map { entity =>
+        fromStrProfileEntity(entity, biosampleRef)
+      }
+    }
+
+  override def getStrProfile(id: UUID): Either[String, Option[StrProfile]] =
+    transactor.readOnly {
+      strProfileRepo.findById(id).map { entity =>
+        val biosampleRef = localUri("biosample", entity.biosampleId)
+        fromStrProfileEntity(entity, biosampleRef)
+      }
+    }
+
+  override def createStrProfile(profile: StrProfile, biosampleId: UUID): Either[String, StrProfile] =
+    transactor.readWrite {
+      // Verify biosample exists
+      biosampleRepo.findById(biosampleId) match
+        case None =>
+          throw new IllegalArgumentException(s"Biosample not found: $biosampleId")
+        case Some(_) =>
+          val entity = toStrProfileEntity(profile, biosampleId)
+          val saved = strProfileRepo.insert(entity)
+          fromStrProfileEntity(saved, localUri("biosample", biosampleId))
+    }
+
+  override def updateStrProfile(profile: StrProfile): Either[String, StrProfile] =
+    transactor.readWrite {
+      val existingId = profile.atUri.flatMap(parseIdFromRef)
+
+      existingId match
+        case Some(id) =>
+          strProfileRepo.findById(id) match
+            case Some(existing) =>
+              val entity = toStrProfileEntity(profile, existing.biosampleId, Some(id))
+              val updated = strProfileRepo.update(entity)
+              val biosampleRef = localUri("biosample", updated.biosampleId)
+              fromStrProfileEntity(updated, biosampleRef)
+            case None =>
+              throw new IllegalArgumentException(s"StrProfile not found: $id")
+        case None =>
+          throw new IllegalArgumentException("StrProfile has no valid ID")
+    }
+
+  override def deleteStrProfile(id: UUID): Either[String, Boolean] =
+    transactor.readWrite {
+      strProfileRepo.delete(id)
+    }
+
+  // ============================================
+  // Chip Profile Operations
+  // ============================================
+
+  override def getAllChipProfiles(): Either[String, List[ChipProfile]] =
+    transactor.readOnly {
+      chipProfileRepo.findAll().map { entity =>
+        val biosampleRef = localUri("biosample", entity.biosampleId)
+        fromChipProfileEntity(entity, biosampleRef)
+      }
+    }
+
+  override def getChipProfilesForBiosample(biosampleId: UUID): Either[String, List[ChipProfile]] =
+    transactor.readOnly {
+      val biosampleRef = localUri("biosample", biosampleId)
+      chipProfileRepo.findByBiosample(biosampleId).map { entity =>
+        fromChipProfileEntity(entity, biosampleRef)
+      }
+    }
+
+  override def getChipProfile(id: UUID): Either[String, Option[ChipProfile]] =
+    transactor.readOnly {
+      chipProfileRepo.findById(id).map { entity =>
+        val biosampleRef = localUri("biosample", entity.biosampleId)
+        fromChipProfileEntity(entity, biosampleRef)
+      }
+    }
+
+  override def createChipProfile(profile: ChipProfile, biosampleId: UUID): Either[String, ChipProfile] =
+    transactor.readWrite {
+      // Verify biosample exists
+      biosampleRepo.findById(biosampleId) match
+        case None =>
+          throw new IllegalArgumentException(s"Biosample not found: $biosampleId")
+        case Some(_) =>
+          val entity = toChipProfileEntity(profile, biosampleId)
+          val saved = chipProfileRepo.insert(entity)
+          fromChipProfileEntity(saved, localUri("biosample", biosampleId))
+    }
+
+  override def updateChipProfile(profile: ChipProfile): Either[String, ChipProfile] =
+    transactor.readWrite {
+      val existingId = profile.atUri.flatMap(parseIdFromRef)
+
+      existingId match
+        case Some(id) =>
+          chipProfileRepo.findById(id) match
+            case Some(existing) =>
+              val entity = toChipProfileEntity(profile, existing.biosampleId, Some(id))
+              val updated = chipProfileRepo.update(entity)
+              val biosampleRef = localUri("biosample", updated.biosampleId)
+              fromChipProfileEntity(updated, biosampleRef)
+            case None =>
+              throw new IllegalArgumentException(s"ChipProfile not found: $id")
+        case None =>
+          throw new IllegalArgumentException("ChipProfile has no valid ID")
+    }
+
+  override def deleteChipProfile(id: UUID): Either[String, Boolean] =
+    transactor.readWrite {
+      chipProfileRepo.delete(id)
+    }
+
+  override def getChipProfileBySourceHash(hash: String): Either[String, Option[ChipProfile]] =
+    transactor.readOnly {
+      chipProfileRepo.findBySourceFileHash(hash).map { entity =>
+        val biosampleRef = localUri("biosample", entity.biosampleId)
+        fromChipProfileEntity(entity, biosampleRef)
+      }
+    }
+
+  // ============================================
   // Sync Status Operations
   // ============================================
 
@@ -418,13 +554,58 @@ class H2WorkspaceService(
         fromAlignmentEntity(entity, sequenceRunRef)
       }
 
-      log.debug(s"loadWorkspaceContent: Returning ${samples.size} samples, ${sequenceRuns.size} sequenceRuns, ${alignments.size} alignments")
+      // Load STR profiles
+      val rawStrProfiles = strProfileRepo.findAll()
+      log.debug(s"loadWorkspaceContent: Found ${rawStrProfiles.size} STR profile entities")
+
+      val strProfiles = rawStrProfiles.map { entity =>
+        val biosampleRef = localUri("biosample", entity.biosampleId)
+        fromStrProfileEntity(entity, biosampleRef)
+      }
+
+      // Build map of biosampleId -> list of STR profile atUris for populating biosample refs
+      val strProfilesByBiosample: Map[UUID, List[String]] = rawStrProfiles
+        .groupBy(_.biosampleId)
+        .view
+        .mapValues(_.map(sp => localUri("strprofile", sp.id)))
+        .toMap
+
+      // Load Chip profiles
+      val rawChipProfiles = chipProfileRepo.findAll()
+      log.debug(s"loadWorkspaceContent: Found ${rawChipProfiles.size} chip profile entities")
+
+      val chipProfiles = rawChipProfiles.map { entity =>
+        val biosampleRef = localUri("biosample", entity.biosampleId)
+        fromChipProfileEntity(entity, biosampleRef)
+      }
+
+      // Build map of biosampleId -> list of chip profile atUris for populating biosample refs
+      val chipProfilesByBiosample: Map[UUID, List[String]] = rawChipProfiles
+        .groupBy(_.biosampleId)
+        .view
+        .mapValues(_.map(cp => localUri("chipprofile", cp.id)))
+        .toMap
+
+      // Update samples with STR and chip profile refs
+      val samplesWithAllRefs = samples.map { sample =>
+        val biosampleId = sample.atUri.flatMap(parseIdFromRef)
+        val strRefs = biosampleId.flatMap(id => strProfilesByBiosample.get(id)).getOrElse(List.empty)
+        val chipRefs = biosampleId.flatMap(id => chipProfilesByBiosample.get(id)).getOrElse(List.empty)
+        sample.copy(
+          strProfileRefs = strRefs,
+          genotypeRefs = chipRefs
+        )
+      }
+
+      log.debug(s"loadWorkspaceContent: Returning ${samplesWithAllRefs.size} samples, ${sequenceRuns.size} sequenceRuns, ${alignments.size} alignments, ${strProfiles.size} strProfiles, ${chipProfiles.size} chipProfiles")
 
       WorkspaceContent(
         meta = Some(RecordMeta.initial),
-        samples = samples,
+        samples = samplesWithAllRefs,
         projects = projects,
         sequenceRuns = sequenceRuns,
-        alignments = alignments
+        alignments = alignments,
+        strProfiles = strProfiles,
+        chipProfiles = chipProfiles
       )
     }
