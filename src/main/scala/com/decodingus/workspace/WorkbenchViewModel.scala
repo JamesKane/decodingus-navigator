@@ -2612,6 +2612,17 @@ class WorkbenchViewModel(
       case Success(Right((newState, batchResult))) =>
         Platform.runLater {
           applyState(newState)
+
+          // Persist updated biosample (with haplogroups) to H2
+          newState.workspace.main.samples.find(_.sampleAccession == sampleAccession).foreach { updatedBiosample =>
+            h2Service.updateBiosample(updatedBiosample) match {
+              case Right(persistedBs) =>
+                log.info(s" Biosample updated in H2 after comprehensive analysis: ${persistedBs.sampleAccession}")
+              case Left(err) =>
+                log.error(s" Failed to persist biosample after comprehensive analysis: $err")
+            }
+          }
+
           analysisInProgress.value = false
           analysisProgress.value = "Comprehensive analysis complete"
           analysisProgressPercent.value = 1.0

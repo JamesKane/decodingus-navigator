@@ -46,7 +46,14 @@ class SourceReconciliationPanel extends VBox {
     prefHeight = 150
     maxHeight = 200
     columnResizePolicy = TableView.ConstrainedResizePolicy
-    style = "-fx-background-color: #333333; -fx-border-color: #444444;"
+    // Dark theme styling for table, headers, and rows
+    style = """-fx-background-color: #333333; -fx-border-color: #444444;
+              |-fx-control-inner-background: #333333;
+              |-fx-control-inner-background-alt: #3a3a3a;
+              |-fx-table-header-border-color: #444444;
+              |-fx-table-cell-border-color: transparent;""".stripMargin
+    // Add style class for dark theme table header text
+    styleClass.add("dark-reconciliation-table")
 
     columns ++= Seq(
       new TableColumn[RunHaplogroupCall, String] {

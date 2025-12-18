@@ -716,13 +716,22 @@ class AnalysisCoordinator(
             case _ => HaplogroupTechnology.WGS
           }
 
+          // Calculate confidence as match quality (0-1 range)
+          // This is the proportion of callable SNPs that are derived (matching)
+          val callableSnps = topResult.matchingSnps + topResult.ancestralMatches
+          val confidence = if (callableSnps > 0) {
+            topResult.matchingSnps.toDouble / callableSnps.toDouble
+          } else {
+            0.0
+          }
+
           // Create a RunHaplogroupCall for the reconciliation system
           val runCall = RunHaplogroupCall(
             sourceRef = seqRun.atUri.getOrElse(s"local:sequencerun:unknown"),
             haplogroup = topResult.name,
-            confidence = topResult.score,
+            confidence = confidence,
             callMethod = CallMethod.SNP_PHYLOGENETIC,
-            score = Some(topResult.score),
+            score = Some(confidence),
             supportingSnps = Some(topResult.matchingSnps),
             conflictingSnps = Some(topResult.mismatchingSnps),
             noCalls = None,
