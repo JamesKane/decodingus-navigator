@@ -3,7 +3,7 @@ package com.decodingus.ui.v2
 import com.decodingus.i18n.I18n.{t, bind}
 import com.decodingus.i18n.Formatters
 import com.decodingus.str.StrCsvParser
-import com.decodingus.config.FeatureToggles
+import com.decodingus.config.{FeatureToggles, LabsConfig}
 import com.decodingus.haplogroup.tree.TreeType
 import com.decodingus.ui.components.{AddDataDialog, AddSequenceDataDialog, AncestryResultDialog, ConfirmDialog, DataInput, DataType, EditSequenceRunDialog, EditSubjectDialog, ImportVendorFastaDialog, InfoDialog, MtdnaVariantsPanel, SequenceDataInput, SequenceRunEditResult, SourceReconciliationPanel, VcfMetadata, VcfMetadataDialog, VendorFastaImportRequest, YChromosomeIdeogramPanel, YStrDetailDialog, YStrSummaryPanel}
 import com.decodingus.ui.v2.BiosampleExtensions.*
@@ -978,8 +978,8 @@ class SubjectDetailView(viewModel: WorkbenchViewModel) extends VBox {
         chevronLabel,
         // Lab or platform indicator (prefer lab when available)
         new Label {
-          text = seqRun.sequencingFacility.map(_.take(3).toUpperCase).getOrElse(seqRun.platformName.take(3))
-          prefWidth = 40
+          text = seqRun.sequencingFacility.map(LabsConfig.getAbbreviation(_)).getOrElse(LabsConfig.getAbbreviation(seqRun.platformName))
+          prefWidth = 50
           style = "-fx-font-weight: bold; -fx-text-fill: #4ade80; -fx-font-family: monospace;"
         },
         // Main info
@@ -1677,8 +1677,8 @@ class SubjectDetailView(viewModel: WorkbenchViewModel) extends VBox {
       children = Seq(
         // Icon/vendor indicator
         new Label {
-          text = chip.vendor.take(3).toUpperCase
-          prefWidth = 40
+          text = LabsConfig.getAbbreviation(chip.vendor)
+          prefWidth = 50
           style = "-fx-font-weight: bold; -fx-text-fill: #fbbf24; -fx-font-family: monospace;"
         },
         // Main info
@@ -1996,8 +1996,8 @@ Note: Reference data download may be required on first run."""
       children = Seq(
         // Icon/source indicator
         new Label {
-          text = strProfile.importedFrom.map(_.take(3).toUpperCase).getOrElse("STR")
-          prefWidth = 40
+          text = strProfile.importedFrom.map(LabsConfig.getAbbreviation(_)).getOrElse("STR")
+          prefWidth = 50
           style = "-fx-font-weight: bold; -fx-text-fill: #c084fc; -fx-font-family: monospace;"
         },
         // Main info
