@@ -227,6 +227,12 @@ class YProfileDetailDialog(
       prefWidth = 120
     }
 
+    val buildFilter = new ComboBox[String] {
+      items = ObservableBuffer("GRCh38", "GRCh37", "hs1 (CHM13v2)")
+      value = "GRCh38"
+      prefWidth = 140
+    }
+
     val searchField = new TextField {
       promptText = "Search variants..."
       prefWidth = 200
@@ -236,6 +242,8 @@ class YProfileDetailDialog(
       padding = Insets(5)
       alignment = Pos.CenterLeft
       children = Seq(
+        new Label("Build:"),
+        buildFilter,
         new Label("Status:"),
         statusFilter,
         new Label("Search:"),
@@ -243,61 +251,170 @@ class YProfileDetailDialog(
       )
     }
 
-    // Table data
+    // Table data model with multi-reference support
     case class VariantRow(
-                           position: Long,
-                           name: String,
+                           name: String,                    // Canonical name or "Novel-N"
+                           position: Option[Long],          // Position in selected build
                            variantType: String,
-                           refAllele: String,
-                           altAllele: String,
+                           ancAllele: String,               // Ancestral allele
+                           derAllele: String,               // Derived allele
                            status: String,
-                           consensusState: String,
+                           call: String,                    // "+" / "-" / "?"
+                           isDerived: Option[Boolean],      // For color coding
                            sourceCount: Int,
-                           confidence: String
+                           confidence: String,
+                           allCoordinates: Map[String, (Long, String, String)], // build -> (pos, anc, der)
+                           variantEntity: YProfileVariantEntity // Keep reference for filtering
                          )
 
-    val tableData = ObservableBuffer.from(variants.map { v =>
-      val callCount = variantCalls.get(v.id).map(_.size).getOrElse(0)
-      VariantRow(
-        v.position,
-        v.variantName.getOrElse("-"),
-        v.variantType.toString,
-        v.refAllele,
-        v.altAllele,
-        v.status.toString,
-        v.consensusState.toString,
-        callCount,
-        f"${v.confidenceScore * 100}%.0f%%"
-      )
-    })
+    // Helper to normalize build name for lookup
+    def normalizeBuildName(build: String): String = build match {
+      case "hs1 (CHM13v2)" => "hs1"
+      case other => other
+    }
+
+    // Helper to get coordinates for a build from variant entity
+    def getCoordinatesForBuild(v: YProfileVariantEntity, build: String): Option[(Long, String, String)] = {
+      val normalizedBuild = normalizeBuildName(build)
+      // First check novelCoordinates map
+      v.novelCoordinates.flatMap(_.get(normalizedBuild)).map(nc => (nc.position, nc.ref, nc.alt))
+        // Fallback to legacy fields for GRCh38 (default build)
+        .orElse {
+          if (normalizedBuild == "GRCh38") Some((v.position, v.refAllele, v.altAllele))
+          else None
+        }
+    }
+
+    // Helper to collect all available coordinates
+    def getAllCoordinates(v: YProfileVariantEntity): Map[String, (Long, String, String)] = {
+      val fromNovelCoords = v.novelCoordinates.getOrElse(Map.empty).map { case (build, nc) =>
+        build -> (nc.position, nc.ref, nc.alt)
+      }
+      // Always include legacy GRCh38 coordinates if not already present
+      if (!fromNovelCoords.contains("GRCh38")) {
+        fromNovelCoords + ("GRCh38" -> (v.position, v.refAllele, v.altAllele))
+      } else {
+        fromNovelCoords
+      }
+    }
+
+    // Helper to determine call symbol and isDerived based on consensus state
+    def determineCall(v: YProfileVariantEntity): (String, Option[Boolean]) = v.consensusState match {
+      case YConsensusState.DERIVED => ("+", Some(true))
+      case YConsensusState.ANCESTRAL => ("-", Some(false))
+      case YConsensusState.HETEROPLASMY => ("~", None) // Rare on Y
+      case YConsensusState.NO_CALL => ("?", None)
+    }
+
+    // Generate Novel-N IDs for unnamed variants, ordered by position
+    val sortedVariants = variants.sortBy(v => (v.canonicalName.isEmpty && v.variantName.isEmpty, v.position))
+    var novelCounter = 0
+    val variantToName: Map[UUID, String] = sortedVariants.map { v =>
+      val name = v.canonicalName.orElse(v.variantName).getOrElse {
+        novelCounter += 1
+        s"Novel-$novelCounter"
+      }
+      v.id -> name
+    }.toMap
+
+    // Build rows for current build selection
+    def buildRows(selectedBuild: String): List[VariantRow] = {
+      sortedVariants.map { v =>
+        val name = variantToName(v.id)
+        val coords = getCoordinatesForBuild(v, selectedBuild)
+        val allCoords = getAllCoordinates(v)
+        val callCount = variantCalls.get(v.id).map(_.size).getOrElse(0)
+        val (callSymbol, isDerived) = determineCall(v)
+
+        VariantRow(
+          name = name,
+          position = coords.map(_._1),
+          variantType = v.variantType.toString,
+          ancAllele = coords.map(_._2).getOrElse("-"),
+          derAllele = coords.map(_._3).getOrElse("-"),
+          status = v.status.toString,
+          call = callSymbol,
+          isDerived = isDerived,
+          sourceCount = callCount,
+          confidence = f"${v.confidenceScore * 100}%.0f%%",
+          allCoordinates = allCoords,
+          variantEntity = v
+        )
+      }
+    }
+
+    val tableData = ObservableBuffer.from(buildRows(buildFilter.value.value))
+
+    // Position column with dynamic header
+    val positionColumn = new TableColumn[VariantRow, String] {
+      text = s"Position (${buildFilter.value.value})"
+      cellValueFactory = { r =>
+        StringProperty(r.value.position.map(p => f"$p%,d").getOrElse("-"))
+      }
+      cellFactory = { (_: TableColumn[VariantRow, String]) =>
+        new TableCell[VariantRow, String] {
+          item.onChange { (_, _, newValue) =>
+            text = newValue
+            Option(tableRow.value).flatMap(tr => Option(tr.item.value)).foreach { row =>
+              if (row.allCoordinates.size > 1) {
+                val tooltipText = row.allCoordinates.toSeq.sortBy(_._1).map { case (build, (pos, anc, der)) =>
+                  f"$build: chrY:$pos%,d ($anc>$der)"
+                }.mkString("\n")
+                tooltip = new Tooltip(tooltipText)
+              } else {
+                tooltip = null
+              }
+            }
+          }
+        }
+      }
+      prefWidth = 140
+    }
+
+    // Call column with color coding
+    val callColumn = new TableColumn[VariantRow, String] {
+      text = "Call"
+      cellValueFactory = { r => StringProperty(r.value.call) }
+      cellFactory = { (_: TableColumn[VariantRow, String]) =>
+        new TableCell[VariantRow, String] {
+          item.onChange { (_, _, newValue) =>
+            text = newValue
+            Option(tableRow.value).flatMap(tr => Option(tr.item.value)).foreach { row =>
+              style = row.isDerived match {
+                case Some(true) => "-fx-background-color: #22c55e33; -fx-text-fill: #22c55e; -fx-font-weight: bold;"
+                case Some(false) => "-fx-background-color: #6b728033; -fx-text-fill: #9ca3af;"
+                case None => ""
+              }
+            }
+          }
+        }
+      }
+      prefWidth = 50
+    }
 
     val table = new TableView[VariantRow](tableData) {
       columnResizePolicy = TableView.ConstrainedResizePolicy
 
       columns ++= Seq(
-        new TableColumn[VariantRow, Long] {
-          text = "Position"
-          cellValueFactory = { r => ObjectProperty(r.value.position) }
-          prefWidth = 100
-        },
         new TableColumn[VariantRow, String] {
           text = "Name"
           cellValueFactory = { r => StringProperty(r.value.name) }
           prefWidth = 100
         },
+        positionColumn,
         new TableColumn[VariantRow, String] {
           text = "Type"
           cellValueFactory = { r => StringProperty(r.value.variantType) }
           prefWidth = 60
         },
         new TableColumn[VariantRow, String] {
-          text = "Ref"
-          cellValueFactory = { r => StringProperty(r.value.refAllele) }
+          text = "Anc"
+          cellValueFactory = { r => StringProperty(r.value.ancAllele) }
           prefWidth = 50
         },
         new TableColumn[VariantRow, String] {
-          text = "Alt"
-          cellValueFactory = { r => StringProperty(r.value.altAllele) }
+          text = "Der"
+          cellValueFactory = { r => StringProperty(r.value.derAllele) }
           prefWidth = 50
         },
         new TableColumn[VariantRow, String] {
@@ -305,11 +422,7 @@ class YProfileDetailDialog(
           cellValueFactory = { r => StringProperty(r.value.status) }
           prefWidth = 90
         },
-        new TableColumn[VariantRow, String] {
-          text = "Call"
-          cellValueFactory = { r => StringProperty(r.value.consensusState) }
-          prefWidth = 80
-        },
+        callColumn,
         new TableColumn[VariantRow, Int] {
           text = "Sources"
           cellValueFactory = { r => ObjectProperty(r.value.sourceCount) }
@@ -326,6 +439,7 @@ class YProfileDetailDialog(
 
     // Filter logic
     def applyFilters(): Unit = {
+      val selectedBuild = buildFilter.value.value
       val statusValue = statusFilter.value.value
       val searchText = searchField.text.value.toLowerCase
 
@@ -337,31 +451,25 @@ class YProfileDetailDialog(
         "Pending" -> YVariantStatus.PENDING
       )
 
-      val filtered = variants.filter { v =>
-        val statusMatch = statusValue == "All" || statusMapping.get(statusValue).contains(v.status)
+      // Rebuild rows with current build selection
+      val allRows = buildRows(selectedBuild)
+
+      val filtered = allRows.filter { row =>
+        val statusMatch = statusValue == "All" || statusMapping.get(statusValue).contains(row.variantEntity.status)
         val searchMatch = searchText.isEmpty ||
-          v.variantName.exists(_.toLowerCase.contains(searchText)) ||
-          v.position.toString.contains(searchText)
+          row.name.toLowerCase.contains(searchText) ||
+          row.position.exists(_.toString.contains(searchText))
         statusMatch && searchMatch
       }
 
       tableData.clear()
-      tableData.addAll(filtered.map { v =>
-        val callCount = variantCalls.get(v.id).map(_.size).getOrElse(0)
-        VariantRow(
-          v.position,
-          v.variantName.getOrElse("-"),
-          v.variantType.toString,
-          v.refAllele,
-          v.altAllele,
-          v.status.toString,
-          v.consensusState.toString,
-          callCount,
-          f"${v.confidenceScore * 100}%.0f%%"
-        )
-      }: _*)
+      tableData.addAll(filtered: _*)
+
+      // Update position column header
+      positionColumn.text = s"Position ($selectedBuild)"
     }
 
+    buildFilter.value.onChange { (_, _, _) => applyFilters() }
     statusFilter.value.onChange { (_, _, _) => applyFilters() }
     searchField.text.onChange { (_, _, _) => applyFilters() }
 
