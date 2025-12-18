@@ -262,6 +262,47 @@ object StrPanelService {
   }
 
   /**
+   * Get list of available providers that have defined panels.
+   * Filters out providers with only placeholder/empty panels.
+   */
+  def getAvailableProviders: List[String] = {
+    getConfig.toOption.map { config =>
+      config.providers.keys.toList.filter { provider =>
+        // Provider is available if it has at least one panel with markers or defined thresholds
+        config.panelsForProvider(provider).exists { panel =>
+          panel.markers.nonEmpty || panel.actualCount.isDefined
+        }
+      }.sorted
+    }.getOrElse(List("FTDNA"))
+  }
+
+  /**
+   * Get panel thresholds for a specific provider.
+   * Returns tuples of (displayName, actualThreshold, marketingCount).
+   */
+  def getPanelThresholdsForProvider(provider: String): List[(String, Int, Int)] = {
+    getConfig.toOption.map { config =>
+      config.panelsForProvider(provider)
+        .filter(p => p.markers.nonEmpty || p.actualCount.isDefined) // Only panels with data
+        .map { p =>
+          (p.name, p.threshold, p.marketingCount)
+        }
+    }.getOrElse {
+      if (provider == "FTDNA") getFtdnaPanelThresholds
+      else Nil
+    }
+  }
+
+  /**
+   * Check if a provider has panel definitions with actual marker data.
+   */
+  def providerHasPanelData(provider: String): Boolean = {
+    getConfig.toOption.exists { config =>
+      config.panelsForProvider(provider).exists(_.markers.nonEmpty)
+    }
+  }
+
+  /**
    * Get all known panel names for validation.
    */
   def getKnownPanelNames: Set[String] = {
