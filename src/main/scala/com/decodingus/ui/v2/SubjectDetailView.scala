@@ -1667,6 +1667,15 @@ class SubjectDetailView(viewModel: WorkbenchViewModel) extends VBox {
       case _ => "-fx-text-fill: #f87171;"
     }
 
+    // Build markers display with Y and mt breakdown when available
+    val markerBreakdown = (chip.yMarkersCalled, chip.mtMarkersCalled) match {
+      case (Some(y), Some(mt)) => s" (Y: ${Formatters.formatNumber(y)} • mt: ${Formatters.formatNumber(mt)})"
+      case (Some(y), None) => s" (Y: ${Formatters.formatNumber(y)})"
+      case (None, Some(mt)) => s" (mt: ${Formatters.formatNumber(mt)})"
+      case _ => ""
+    }
+    val markersDisplay = s"${t("data.markers")}: ${Formatters.formatNumber(chip.totalMarkersCalled)}$markerBreakdown"
+
     val itemBox = new HBox(15) {
       alignment = Pos.CenterLeft
       padding = Insets(10)
@@ -1691,7 +1700,7 @@ class SubjectDetailView(viewModel: WorkbenchViewModel) extends VBox {
             },
             new HBox(15) {
               children = Seq(
-                new Label(s"${t("data.markers")}: ${Formatters.formatNumber(chip.totalMarkersCalled)}") { style = "-fx-text-fill: #b0b0b0; -fx-font-size: 11px;" },
+                new Label(markersDisplay) { style = "-fx-text-fill: #b0b0b0; -fx-font-size: 11px;" },
                 new Label(s"${t("data.call_rate")}: $callRatePct") { style = "-fx-text-fill: #b0b0b0; -fx-font-size: 11px;" },
                 new Label(chip.status) { style = s"-fx-font-size: 11px; $statusStyle" }
               )
