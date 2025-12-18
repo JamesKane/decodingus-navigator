@@ -5,7 +5,7 @@ import com.decodingus.i18n.Formatters
 import com.decodingus.str.StrCsvParser
 import com.decodingus.config.FeatureToggles
 import com.decodingus.haplogroup.tree.TreeType
-import com.decodingus.ui.components.{AddDataDialog, AddSequenceDataDialog, AncestryResultDialog, ConfirmDialog, DataInput, DataType, EditSequenceRunDialog, EditSubjectDialog, ImportVendorFastaDialog, InfoDialog, MtdnaVariantsPanel, SequenceDataInput, SequenceRunEditResult, SourceReconciliationPanel, VcfMetadata, VcfMetadataDialog, VendorFastaImportRequest, YChromosomeIdeogramPanel, YStrSummaryPanel}
+import com.decodingus.ui.components.{AddDataDialog, AddSequenceDataDialog, AncestryResultDialog, ConfirmDialog, DataInput, DataType, EditSequenceRunDialog, EditSubjectDialog, ImportVendorFastaDialog, InfoDialog, MtdnaVariantsPanel, SequenceDataInput, SequenceRunEditResult, SourceReconciliationPanel, VcfMetadata, VcfMetadataDialog, VendorFastaImportRequest, YChromosomeIdeogramPanel, YStrDetailDialog, YStrSummaryPanel}
 import com.decodingus.ui.v2.BiosampleExtensions.*
 import com.decodingus.util.Logger
 import com.decodingus.workspace.WorkbenchViewModel
@@ -2168,7 +2168,7 @@ Note: Reference data download may be required on first run."""
     strCountLabel.text = strProfiles.size.toString
 
     // Update Y-STR summary panel on Overview tab
-    ystrSummaryPanel.setStrProfiles(strProfiles, () => handleViewYProfile())
+    ystrSummaryPanel.setStrProfiles(strProfiles, () => handleViewStrProfile(strProfiles, subject))
 
     // Update sequencing runs container
     sequencingListContainer.children.clear()
@@ -2350,6 +2350,29 @@ Note: Reference data download may be required on first run."""
         treeType
       )
     }}
+  }
+
+  /** Handle viewing the Y-STR detail dialog */
+  private def handleViewStrProfile(strProfiles: List[StrProfile], subject: Biosample): Unit = {
+    if (strProfiles.isEmpty) {
+      showInfoDialog(
+        t("str.no_data"),
+        t("str.no_data_title"),
+        t("str.no_data_message")
+      )
+      return
+    }
+
+    val biosampleName = subject.donorId.getOrElse(subject.accession)
+
+    val dialog = YStrDetailDialog(strProfiles, biosampleName)
+
+    // Set dialog owner for proper modal behavior
+    Option(SubjectDetailView.this.getScene).flatMap(s => Option(s.getWindow)).foreach { window =>
+      dialog.initOwner(window)
+    }
+
+    dialog.showAndWait()
   }
 
   /** Handle viewing the full Y Profile dialog */
