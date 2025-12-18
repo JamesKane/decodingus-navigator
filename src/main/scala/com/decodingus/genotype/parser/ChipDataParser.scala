@@ -68,6 +68,7 @@ object ChipDataParser {
    * All available parsers.
    */
   val parsers: List[ChipDataParser] = List(
+    ParserBisdna,
     Parser23andMe,
     ParserAncestryDna,
     ParserFtdna,
@@ -445,4 +446,157 @@ object ParserLivingDna extends ChipDataParser {
   }
 
   override def inferVersion(header: String): Option[String] = None
+}
+
+/**
+ * Parser for BISDNA Y-DNA chip data exports (chromo2 chip).
+ *
+ * BISDNA provides pre-interpreted Y-DNA SNP results. The file format is:
+ * {{{
+ * SNPID    genotype    result
+ * CTS10003    CC    negative
+ * M269    GG    positive
+ * }}}
+ *
+ * Key differences from other chip parsers:
+ * - Only Y-DNA markers (no autosomal/mtDNA)
+ * - No position in file - must look up from DecodingUs variant database
+ * - Result column provides lab interpretation (positive/negative/no_call/back-mutated)
+ * - Genotypes are Illumina TOP strand, shown as diploid (GG = G) even though Y is haploid
+ * - Heterozygous calls (e.g., "AG") indicate positive due to Illumina clustering
+ *
+ * This parser uses the genotype column to determine derived/ancestral status
+ * by comparing against ref/alt from the DecodingUs variant database.
+ */
+object ParserBisdna extends ChipDataParser {
+
+  import com.decodingus.haplogroup.vendor.NamedVariantCache
+
+  override def vendor: String = "BISDNA"
+
+  override def supportedExtensions: List[String] = List(".txt", ".csv", ".tsv")
+
+  override def detect(firstLines: List[String]): FormatDetectionResult = {
+    // Look for the characteristic BISDNA header: SNPID<tab>genotype<tab>result
+    val headerLine = firstLines.find { line =>
+      val lower = line.toLowerCase.trim
+      lower.startsWith("snpid") && lower.contains("genotype") && lower.contains("result")
+    }
+
+    headerLine match {
+      case Some(_) =>
+        FormatDetectionResult(
+          detected = true,
+          testType = Some(TestTypes.ARRAY_BISDNA),
+          chipVersion = Some("chromo2"),
+          headerLines = 1
+        )
+      case None =>
+        FormatDetectionResult(detected = false, testType = None, chipVersion = None, headerLines = 0)
+    }
+  }
+
+  override def parse(file: File, onProgress: (Int, Int) => Unit): Either[String, Iterator[GenotypeCall]] = {
+    // Ensure the variant cache is loaded first
+    val cache = NamedVariantCache()
+    cache.ensureLoaded(msg => println(s"[ParserBisdna] $msg")) match {
+      case Left(error) =>
+        return Left(s"Failed to load variant database: $error. Cannot parse BISDNA file without position lookups.")
+      case Right(_) => // continue
+    }
+
+    Try {
+      val reader = new BufferedReader(new FileReader(file))
+      val lineCount = file.length() / 30 // Rough estimate
+
+      var lineNumber = 0
+      var headerSkipped = false
+
+      Iterator.continually(reader.readLine())
+        .takeWhile(_ != null)
+        .filterNot(_.trim.isEmpty)
+        .flatMap { line =>
+          lineNumber += 1
+          if (lineNumber % 1000 == 0) onProgress(lineNumber, lineCount.toInt)
+
+          // Skip header line
+          if (!headerSkipped && line.toLowerCase.startsWith("snpid")) {
+            headerSkipped = true
+            None
+          } else {
+            headerSkipped = true
+            parseLine(line, cache)
+          }
+        }
+    }.toEither.left.map(e => s"Failed to parse BISDNA file: ${e.getMessage}")
+  }
+
+  /**
+   * Parse a single BISDNA data line.
+   *
+   * Format: SNPID<tab>genotype<tab>result
+   * Example: CTS10003    CC    negative
+   *
+   * Genotype interpretation (per BISDNA documentation):
+   * - Homozygous (AA, GG, CC, TT): The actual allele (A, G, C, or T)
+   * - Heterozygous (AG, CT, etc.): Due to Illumina clustering limitations on Y,
+   *   het calls indicate a POSITIVE/DERIVED call. Use the alt allele from the database.
+   * - Back-mutations: Result column shows "back-mutated" - ancestral reversion cases
+   *
+   * We use the genotype to determine the allele, and look up the position
+   * from the DecodingUs variant database.
+   */
+  private def parseLine(line: String, cache: NamedVariantCache): Option[GenotypeCall] = {
+    val parts = line.split("\t")
+    if (parts.length >= 2) {
+      val snpName = parts(0).trim
+      val genotypeStr = parts(1).trim.toUpperCase
+      val resultStr = if (parts.length >= 3) parts(2).trim.toLowerCase else ""
+
+      // Skip no-call entries
+      if (genotypeStr == "0" || genotypeStr == "00" || genotypeStr.isEmpty || resultStr == "no_call") {
+        return None
+      }
+
+      // Look up this SNP in the variant database
+      cache.getByName(snpName) match {
+        case Some(variant) =>
+          // Get GRCh38 coordinates (or fall back to GRCh37)
+          val coord = variant.coordinateFor("GRCh38")
+            .orElse(variant.coordinateFor("GRCh37"))
+
+          coord.map { c =>
+            // Determine the allele based on genotype pattern
+            val allele: Char = if (genotypeStr.length >= 2 && genotypeStr(0) != genotypeStr(1)) {
+              // Heterozygous call (e.g., "AG") - Illumina clustering artifact
+              // Per BISDNA: het calls on Y indicate POSITIVE/DERIVED
+              // Use the alt (derived) allele from the variant database
+              if (c.alt.nonEmpty) c.alt.head else genotypeStr(0)
+            } else if (resultStr == "back-mutated") {
+              // Back-mutation case - sample has reverted to ancestral
+              // Use the ref (ancestral) allele
+              if (c.ref.nonEmpty) c.ref.head else genotypeStr(0)
+            } else {
+              // Homozygous call (AA, GG, CC, TT) - the actual allele
+              if (genotypeStr.nonEmpty) genotypeStr(0) else '-'
+            }
+
+            GenotypeCall(
+              markerId = snpName,
+              chromosome = "Y",
+              position = c.position,
+              allele1 = allele,
+              allele2 = allele
+            )
+          }
+
+        case None =>
+          // SNP not found in database - skip it
+          // This is expected for some markers that may be vendor-specific
+          None
+      }
+    } else None
+  }
+
+  override def inferVersion(header: String): Option[String] = Some("chromo2")
 }
