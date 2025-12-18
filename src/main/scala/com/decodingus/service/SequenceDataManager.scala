@@ -424,11 +424,16 @@ class SequenceDataManager(
 
   /**
    * Updates workspace after updating a SequenceRun.
+   * Preserves alignmentRefs from the existing run since they are not stored in H2
+   * and fromSequenceRunEntity returns empty alignmentRefs.
    */
   private def updateWorkspaceWithUpdatedSequenceRun(sequenceRun: SequenceRun): Unit =
     val workspace = workspaceGetter()
     val updatedSequenceRuns = workspace.main.sequenceRuns.map { sr =>
-      if sr.atUri == sequenceRun.atUri then sequenceRun else sr
+      if sr.atUri == sequenceRun.atUri then
+        // Preserve alignmentRefs from existing in-memory run
+        sequenceRun.copy(alignmentRefs = sr.alignmentRefs)
+      else sr
     }
     val updatedContent = workspace.main.copy(sequenceRuns = updatedSequenceRuns)
     workspaceUpdater(workspace.copy(main = updatedContent))
