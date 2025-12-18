@@ -2472,7 +2472,10 @@ Note: Reference data download may be required on first run."""
                       case Right((index, libraryStats)) =>
                         scalafx.application.Platform.runLater {
                           log.info(s"Added alignment at index $index for ${subject.accession} (ref: ${libraryStats.referenceBuild})")
-                          updateDataSources(subject, expandSequenceRunIndex = Some(index))
+                          // Refresh subject from workspace to get updated sequenceRunRefs
+                          val freshSubject = viewModel.findSubject(subject.accession).getOrElse(subject)
+                          currentSubject.value = Some(freshSubject)
+                          updateDataSources(freshSubject, expandSequenceRunIndex = Some(index))
                           showNotification(
                             t("data.added.success"),
                             s"${dataInput.fileInfo.fileName} • ${libraryStats.inferredPlatform} • ${libraryStats.referenceBuild}"
@@ -2577,7 +2580,10 @@ Note: Reference data download may be required on first run."""
                       ) match {
                         case Right(msg) =>
                           log.info(s"Imported mtDNA FASTA: $msg")
-                          updateDataSources(subject)
+                          // Refresh subject from workspace to get updated sequenceRunRefs
+                          val freshSubject = viewModel.findSubject(subject.accession).getOrElse(subject)
+                          currentSubject.value = Some(freshSubject)
+                          updateDataSources(freshSubject)
                           showNotification("mtDNA FASTA imported", msg)
                         case Left(err) =>
                           log.error(s"Failed to import mtDNA FASTA: $err")
@@ -2596,7 +2602,10 @@ Note: Reference data download may be required on first run."""
                     case Right(chipProfile) =>
                       log.info(s"Imported chip data: ${chipProfile.vendor} with ${chipProfile.totalMarkersCalled} markers")
                       scalafx.application.Platform.runLater {
-                        updateDataSources(subject)
+                        // Refresh subject from workspace to get updated refs
+                        val freshSubject = viewModel.findSubject(subject.accession).getOrElse(subject)
+                        currentSubject.value = Some(freshSubject)
+                        updateDataSources(freshSubject)
                         showNotification(
                           t("data.added.success"),
                           s"${chipProfile.vendor} • ${Formatters.formatNumber(chipProfile.totalMarkersCalled)} ${t("data.markers")}"
@@ -2617,8 +2626,12 @@ Note: Reference data download may be required on first run."""
                   return
               }
 
+              // Refresh subject from workspace to get updated refs
+              val freshSubject = viewModel.findSubject(subject.accession).getOrElse(subject)
+              currentSubject.value = Some(freshSubject)
+
               // Refresh the data sources display
-              updateDataSources(subject)
+              updateDataSources(freshSubject)
 
               // Show success notification
               showNotification(
