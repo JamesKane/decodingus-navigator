@@ -972,9 +972,9 @@ class SubjectDetailView(viewModel: WorkbenchViewModel) extends VBox {
       children = Seq(
         // Chevron toggle for alignments
         chevronLabel,
-        // Icon/type indicator
+        // Lab or platform indicator (prefer lab when available)
         new Label {
-          text = seqRun.platformName.take(3)
+          text = seqRun.sequencingFacility.map(_.take(3).toUpperCase).getOrElse(seqRun.platformName.take(3))
           prefWidth = 40
           style = "-fx-font-weight: bold; -fx-text-fill: #4ade80; -fx-font-family: monospace;"
         },
