@@ -267,7 +267,7 @@ object TestTypes {
     expectedTargetDepth = Some(30.0),
     expectedMarkerCount = None,
     supportsHaplogroupY = true,
-    supportsHaplogroupMt = false,
+    supportsHaplogroupMt = true, // Off-target mtDNA reads provide sufficient coverage for precise haplogroup
     supportsAutosomalIbd = false,
     supportsAncestry = false,
     typicalFileFormats = List("BAM", "CRAM", "VCF")
