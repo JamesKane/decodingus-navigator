@@ -32,6 +32,9 @@ class YStrSummaryPanel extends VBox {
     style = "-fx-font-weight: bold; -fx-text-fill: #ffffff;"
   }
 
+  // Provider toggle group - must be declared before toggle buttons
+  private val providerToggleGroup = new ToggleGroup()
+
   // Provider toggle buttons
   private val ftdnaToggle = new ToggleButton("FTDNA") {
     selected = true
@@ -44,8 +47,6 @@ class YStrSummaryPanel extends VBox {
     style = "-fx-background-color: #444444; -fx-text-fill: #888888; -fx-background-radius: 0 5 5 0; -fx-padding: 4 10;"
     toggleGroup = providerToggleGroup
   }
-
-  private val providerToggleGroup = new ToggleGroup()
 
   private val providerToggleBox = new HBox(0) {
     alignment = Pos.Center
