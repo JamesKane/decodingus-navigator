@@ -1,6 +1,11 @@
 package com.decodingus.genotype.model
 
+import com.typesafe.config.{Config, ConfigFactory}
 import io.circe.{Codec, Decoder, Encoder}
+import org.slf4j.LoggerFactory
+
+import scala.jdk.CollectionConverters.*
+import scala.util.Try
 
 /**
  * Data generation method - sequencing vs genotyping arrays.
@@ -43,472 +48,193 @@ case class TestTypeDefinition(
 
 /**
  * Known test types - sequencing and genotyping.
+ *
+ * Test types are loaded from HOCON configuration (test_types.conf) at startup.
+ * This allows adding or modifying test types without recompiling.
  */
 object TestTypes {
 
-  // ============ SEQUENCING: Whole Genome - Short Read ============
+  private val log = LoggerFactory.getLogger(getClass)
 
-  val WGS: TestTypeDefinition = TestTypeDefinition(
-    code = "WGS",
-    displayName = "Whole Genome Sequencing",
-    category = DataGenerationMethod.Sequencing,
-    vendor = None,
-    targetType = TargetType.WholeGenome,
-    expectedMinDepth = Some(10.0),
-    expectedTargetDepth = Some(30.0),
-    expectedMarkerCount = None,
-    supportsHaplogroupY = true,
-    supportsHaplogroupMt = true,
-    supportsAutosomalIbd = true,
-    supportsAncestry = true,
-    typicalFileFormats = List("BAM", "CRAM", "VCF")
+  // ============================================================================
+  // Configuration Loading
+  // ============================================================================
+
+  private def loadTestTypesFromConfig(): List[TestTypeDefinition] = {
+    try {
+      val config = ConfigFactory.load("test_types.conf")
+      if (!config.hasPath("test-types")) {
+        log.warn("No test-types configuration found, using defaults")
+        return defaultTestTypes
+      }
+
+      val testTypesConfig = config.getConfig("test-types")
+      val codes = testTypesConfig.root().keySet().asScala.toList
+
+      codes.flatMap { code =>
+        Try {
+          val typeConfig = testTypesConfig.getConfig(code)
+          parseTestType(code, typeConfig)
+        }.toOption.orElse {
+          log.warn(s"Failed to parse test type: $code")
+          None
+        }
+      }
+    } catch {
+      case e: Exception =>
+        log.error(s"Failed to load test types from config: ${e.getMessage}", e)
+        defaultTestTypes
+    }
+  }
+
+  private def parseTestType(code: String, config: Config): TestTypeDefinition = {
+    val category = config.getString("category").toLowerCase match {
+      case "sequencing" => DataGenerationMethod.Sequencing
+      case "genotyping" => DataGenerationMethod.Genotyping
+      case other => throw new IllegalArgumentException(s"Unknown category: $other")
+    }
+
+    val targetType = config.getString("target-type").toLowerCase match {
+      case "whole-genome" => TargetType.WholeGenome
+      case "y-chromosome" => TargetType.YChromosome
+      case "mt-dna" => TargetType.MtDna
+      case "autosomal" => TargetType.Autosomal
+      case "x-chromosome" => TargetType.XChromosome
+      case "mixed" => TargetType.Mixed
+      case other => throw new IllegalArgumentException(s"Unknown target type: $other")
+    }
+
+    val supportsConfig = config.getConfig("supports")
+
+    TestTypeDefinition(
+      code = code,
+      displayName = config.getString("display-name"),
+      category = category,
+      vendor = if (config.hasPath("vendor")) Some(config.getString("vendor")) else None,
+      targetType = targetType,
+      expectedMinDepth = if (config.hasPath("expected-min-depth")) Some(config.getDouble("expected-min-depth")) else None,
+      expectedTargetDepth = if (config.hasPath("expected-target-depth")) Some(config.getDouble("expected-target-depth")) else None,
+      expectedMarkerCount = if (config.hasPath("expected-marker-count")) Some(config.getInt("expected-marker-count")) else None,
+      supportsHaplogroupY = supportsConfig.getBoolean("haplogroup-y"),
+      supportsHaplogroupMt = supportsConfig.getBoolean("haplogroup-mt"),
+      supportsAutosomalIbd = supportsConfig.getBoolean("autosomal-ibd"),
+      supportsAncestry = supportsConfig.getBoolean("ancestry"),
+      typicalFileFormats = config.getStringList("typical-file-formats").asScala.toList
+    )
+  }
+
+  // ============================================================================
+  // Default Test Types (Fallback)
+  // ============================================================================
+
+  private def defaultTestTypes: List[TestTypeDefinition] = List(
+    TestTypeDefinition("WGS", "Whole Genome Sequencing", DataGenerationMethod.Sequencing, None,
+      TargetType.WholeGenome, Some(10.0), Some(30.0), None, true, true, true, true, List("BAM", "CRAM", "VCF")),
+    TestTypeDefinition("WGS_LOW_PASS", "Low-Pass WGS", DataGenerationMethod.Sequencing, None,
+      TargetType.WholeGenome, Some(0.5), Some(4.0), None, true, true, true, true, List("BAM", "CRAM", "VCF")),
+    TestTypeDefinition("BIG_Y_700", "FTDNA Big Y-700", DataGenerationMethod.Sequencing, Some("FamilyTreeDNA"),
+      TargetType.YChromosome, Some(30.0), Some(50.0), None, true, false, false, false, List("BAM", "VCF", "BED")),
+    TestTypeDefinition("Y_ELITE", "Full Genomes Y Elite", DataGenerationMethod.Sequencing, Some("Full Genomes"),
+      TargetType.YChromosome, Some(20.0), Some(30.0), None, true, true, false, false, List("BAM", "CRAM", "VCF")),
+    TestTypeDefinition("MT_FULL_SEQUENCE", "mtDNA Full Sequence", DataGenerationMethod.Sequencing, None,
+      TargetType.MtDna, Some(500.0), Some(1000.0), None, false, true, false, false, List("BAM", "FASTA", "VCF"))
   )
 
-  val WGS_LOW_PASS: TestTypeDefinition = TestTypeDefinition(
-    code = "WGS_LOW_PASS",
-    displayName = "Low-Pass WGS",
-    category = DataGenerationMethod.Sequencing,
-    vendor = None,
-    targetType = TargetType.WholeGenome,
-    expectedMinDepth = Some(0.5),
-    expectedTargetDepth = Some(4.0),
-    expectedMarkerCount = None,
-    supportsHaplogroupY = true, // Limited but possible
-    supportsHaplogroupMt = true,
-    supportsAutosomalIbd = true, // Via imputation
-    supportsAncestry = true,
-    typicalFileFormats = List("BAM", "CRAM", "VCF")
-  )
-
-  // ============ SEQUENCING: Whole Genome - Long Read ============
-  // Long-read technologies excel at resolving complex/repetitive regions
-  // including palindromic regions on the Y chromosome.
-
-  val WGS_HIFI: TestTypeDefinition = TestTypeDefinition(
-    code = "WGS_HIFI",
-    displayName = "PacBio HiFi WGS",
-    category = DataGenerationMethod.Sequencing,
-    vendor = Some("PacBio"),
-    targetType = TargetType.WholeGenome,
-    expectedMinDepth = Some(15.0),
-    expectedTargetDepth = Some(30.0),
-    expectedMarkerCount = None,
-    supportsHaplogroupY = true, // Excellent - resolves complex Y regions
-    supportsHaplogroupMt = true,
-    supportsAutosomalIbd = true,
-    supportsAncestry = true,
-    typicalFileFormats = List("BAM", "CRAM", "VCF")
-  )
-
-  val WGS_NANOPORE: TestTypeDefinition = TestTypeDefinition(
-    code = "WGS_NANOPORE",
-    displayName = "Nanopore WGS",
-    category = DataGenerationMethod.Sequencing,
-    vendor = Some("Oxford Nanopore"),
-    targetType = TargetType.WholeGenome,
-    expectedMinDepth = Some(15.0),
-    expectedTargetDepth = Some(30.0),
-    expectedMarkerCount = None,
-    supportsHaplogroupY = true, // Good - ultra-long reads span complex regions
-    supportsHaplogroupMt = true,
-    supportsAutosomalIbd = true,
-    supportsAncestry = true,
-    typicalFileFormats = List("BAM", "CRAM", "VCF", "FASTQ")
-  )
-
-  // PacBio CLR (Continuous Long Read) - older technology, lower accuracy than HiFi
-  val WGS_CLR: TestTypeDefinition = TestTypeDefinition(
-    code = "WGS_CLR",
-    displayName = "PacBio CLR WGS",
-    category = DataGenerationMethod.Sequencing,
-    vendor = Some("PacBio"),
-    targetType = TargetType.WholeGenome,
-    expectedMinDepth = Some(20.0),
-    expectedTargetDepth = Some(40.0), // Higher depth needed due to lower accuracy
-    expectedMarkerCount = None,
-    supportsHaplogroupY = true,
-    supportsHaplogroupMt = true,
-    supportsAutosomalIbd = true,
-    supportsAncestry = true,
-    typicalFileFormats = List("BAM", "VCF")
-  )
-
-  // ============ SEQUENCING: Exome ============
-
-  val WES: TestTypeDefinition = TestTypeDefinition(
-    code = "WES",
-    displayName = "Whole Exome Sequencing",
-    category = DataGenerationMethod.Sequencing,
-    vendor = None,
-    targetType = TargetType.Autosomal, // Primarily exonic regions
-    expectedMinDepth = Some(50.0),
-    expectedTargetDepth = Some(100.0),
-    expectedMarkerCount = None,
-    supportsHaplogroupY = false, // No Y coverage
-    supportsHaplogroupMt = false, // No mtDNA coverage
-    supportsAutosomalIbd = false, // Sparse coverage
-    supportsAncestry = false,
-    typicalFileFormats = List("BAM", "CRAM", "VCF")
-  )
-
-  // ============ GENOTYPING: Y-DNA SNP Packs/Panels ============
-  // These are probe-based or Sanger sequencing tests for specific Y-SNPs.
-  // Results typically delivered as positive/negative calls for named SNPs.
-
-  val YDNA_SNP_PACK_FTDNA: TestTypeDefinition = TestTypeDefinition(
-    code = "YDNA_SNP_PACK_FTDNA",
-    displayName = "FTDNA SNP Pack",
-    category = DataGenerationMethod.Genotyping, // Probe-based, not sequencing
-    vendor = Some("FamilyTreeDNA"),
-    targetType = TargetType.YChromosome,
-    expectedMinDepth = None,
-    expectedTargetDepth = None,
-    expectedMarkerCount = Some(100), // Varies by pack, typically 50-200 SNPs
-    supportsHaplogroupY = true,
-    supportsHaplogroupMt = false,
-    supportsAutosomalIbd = false,
-    supportsAncestry = false,
-    typicalFileFormats = List("CSV", "TXT")
-  )
-
-  val YDNA_PANEL_YSEQ: TestTypeDefinition = TestTypeDefinition(
-    code = "YDNA_PANEL_YSEQ",
-    displayName = "YSEQ Panel",
-    category = DataGenerationMethod.Genotyping,
-    vendor = Some("YSEQ"),
-    targetType = TargetType.YChromosome,
-    expectedMinDepth = None,
-    expectedTargetDepth = None,
-    expectedMarkerCount = None, // Continuous delivery - grows over time
-    supportsHaplogroupY = true,
-    supportsHaplogroupMt = false,
-    supportsAutosomalIbd = false,
-    supportsAncestry = false,
-    typicalFileFormats = List("CSV", "YSEQ") // Custom YSEQ format for incremental updates
-  )
-
-  // BISDNA was a genotyping array with Y-DNA emphasis.
-  // The underlying chip included autosomal markers, but only Y-DNA results
-  // were delivered to customers as raw data.
-  val ARRAY_BISDNA: TestTypeDefinition = TestTypeDefinition(
-    code = "ARRAY_BISDNA",
-    displayName = "BISDNA Array",
-    category = DataGenerationMethod.Genotyping,
-    vendor = Some("BISDNA"),
-    targetType = TargetType.YChromosome, // Only Y-DNA delivered to customers
-    expectedMinDepth = None,
-    expectedTargetDepth = None,
-    expectedMarkerCount = Some(15000), // Y-DNA markers delivered
-    supportsHaplogroupY = true,
-    supportsHaplogroupMt = false,
-    supportsAutosomalIbd = false, // Autosomal not delivered
-    supportsAncestry = false, // Autosomal not delivered
-    typicalFileFormats = List("CSV", "TXT")
-  )
-
-  // Generic Y-SNP panel for other vendors or custom panels
-  val YDNA_SNP_PANEL: TestTypeDefinition = TestTypeDefinition(
-    code = "YDNA_SNP_PANEL",
-    displayName = "Y-DNA SNP Panel",
-    category = DataGenerationMethod.Genotyping,
-    vendor = None,
-    targetType = TargetType.YChromosome,
-    expectedMinDepth = None,
-    expectedTargetDepth = None,
-    expectedMarkerCount = None,
-    supportsHaplogroupY = true,
-    supportsHaplogroupMt = false,
-    supportsAutosomalIbd = false,
-    supportsAncestry = false,
-    typicalFileFormats = List("CSV", "TXT", "VCF")
-  )
-
-  // ============ SEQUENCING: Targeted Y-DNA ============
-
-  val BIG_Y_500: TestTypeDefinition = TestTypeDefinition(
-    code = "BIG_Y_500",
-    displayName = "FTDNA Big Y-500",
-    category = DataGenerationMethod.Sequencing,
-    vendor = Some("FamilyTreeDNA"),
-    targetType = TargetType.YChromosome,
-    expectedMinDepth = Some(30.0),
-    expectedTargetDepth = Some(50.0),
-    expectedMarkerCount = None,
-    supportsHaplogroupY = true,
-    supportsHaplogroupMt = false,
-    supportsAutosomalIbd = false,
-    supportsAncestry = false,
-    typicalFileFormats = List("BAM", "VCF", "BED")
-  )
-
-  val BIG_Y_700: TestTypeDefinition = TestTypeDefinition(
-    code = "BIG_Y_700",
-    displayName = "FTDNA Big Y-700",
-    category = DataGenerationMethod.Sequencing,
-    vendor = Some("FamilyTreeDNA"),
-    targetType = TargetType.YChromosome,
-    expectedMinDepth = Some(30.0),
-    expectedTargetDepth = Some(50.0),
-    expectedMarkerCount = None,
-    supportsHaplogroupY = true,
-    supportsHaplogroupMt = false,
-    supportsAutosomalIbd = false,
-    supportsAncestry = false,
-    typicalFileFormats = List("BAM", "VCF", "BED")
-  )
-
-  val Y_ELITE: TestTypeDefinition = TestTypeDefinition(
-    code = "Y_ELITE",
-    displayName = "Full Genomes Y Elite",
-    category = DataGenerationMethod.Sequencing,
-    vendor = Some("Full Genomes"),
-    targetType = TargetType.YChromosome,
-    expectedMinDepth = Some(20.0),
-    expectedTargetDepth = Some(30.0),
-    expectedMarkerCount = None,
-    supportsHaplogroupY = true,
-    supportsHaplogroupMt = true, // Off-target mtDNA reads provide sufficient coverage for precise haplogroup
-    supportsAutosomalIbd = false,
-    supportsAncestry = false,
-    typicalFileFormats = List("BAM", "CRAM", "VCF")
-  )
-
-  val Y_PRIME: TestTypeDefinition = TestTypeDefinition(
-    code = "Y_PRIME",
-    displayName = "YSEQ Y-Prime",
-    category = DataGenerationMethod.Sequencing,
-    vendor = Some("YSEQ"),
-    targetType = TargetType.YChromosome,
-    expectedMinDepth = Some(20.0),
-    expectedTargetDepth = Some(30.0),
-    expectedMarkerCount = None,
-    supportsHaplogroupY = true,
-    supportsHaplogroupMt = false,
-    supportsAutosomalIbd = false,
-    supportsAncestry = false,
-    typicalFileFormats = List("BAM", "VCF")
-  )
-
-  // ============ SEQUENCING: Targeted mtDNA ============
-
-  val MT_FULL_SEQUENCE: TestTypeDefinition = TestTypeDefinition(
-    code = "MT_FULL_SEQUENCE",
-    displayName = "mtDNA Full Sequence",
-    category = DataGenerationMethod.Sequencing,
-    vendor = None,
-    targetType = TargetType.MtDna,
-    expectedMinDepth = Some(500.0),
-    expectedTargetDepth = Some(1000.0),
-    expectedMarkerCount = None,
-    supportsHaplogroupY = false,
-    supportsHaplogroupMt = true,
-    supportsAutosomalIbd = false,
-    supportsAncestry = false,
-    typicalFileFormats = List("BAM", "FASTA", "VCF")
-  )
-
-  val MT_PLUS: TestTypeDefinition = TestTypeDefinition(
-    code = "MT_PLUS",
-    displayName = "FTDNA mtDNA Plus",
-    category = DataGenerationMethod.Sequencing,
-    vendor = Some("FamilyTreeDNA"),
-    targetType = TargetType.MtDna,
-    expectedMinDepth = Some(500.0),
-    expectedTargetDepth = Some(1000.0),
-    expectedMarkerCount = None,
-    supportsHaplogroupY = false,
-    supportsHaplogroupMt = true,
-    supportsAutosomalIbd = false,
-    supportsAncestry = false,
-    typicalFileFormats = List("FASTA", "VCF")
-  )
-
-  val MT_CR_ONLY: TestTypeDefinition = TestTypeDefinition(
-    code = "MT_CR_ONLY",
-    displayName = "mtDNA Control Region (HVR1/HVR2)",
-    category = DataGenerationMethod.Sequencing,
-    vendor = None,
-    targetType = TargetType.MtDna,
-    expectedMinDepth = Some(100.0),
-    expectedTargetDepth = Some(500.0),
-    expectedMarkerCount = None,
-    supportsHaplogroupY = false,
-    supportsHaplogroupMt = true, // Limited resolution
-    supportsAutosomalIbd = false,
-    supportsAncestry = false,
-    typicalFileFormats = List("FASTA", "VCF")
-  )
-
-  // Genotyping array types
-  val ARRAY_23ANDME_V5: TestTypeDefinition = TestTypeDefinition(
-    code = "ARRAY_23ANDME_V5",
-    displayName = "23andMe v5 Chip",
-    category = DataGenerationMethod.Genotyping,
-    vendor = Some("23andMe"),
-    targetType = TargetType.Mixed,
-    expectedMinDepth = None,
-    expectedTargetDepth = None,
-    expectedMarkerCount = Some(640000),
-    supportsHaplogroupY = true,
-    supportsHaplogroupMt = true,
-    supportsAutosomalIbd = true,
-    supportsAncestry = true,
-    typicalFileFormats = List("TXT")
-  )
-
-  val ARRAY_23ANDME_V4: TestTypeDefinition = TestTypeDefinition(
-    code = "ARRAY_23ANDME_V4",
-    displayName = "23andMe v4 Chip",
-    category = DataGenerationMethod.Genotyping,
-    vendor = Some("23andMe"),
-    targetType = TargetType.Mixed,
-    expectedMinDepth = None,
-    expectedTargetDepth = None,
-    expectedMarkerCount = Some(570000),
-    supportsHaplogroupY = true,
-    supportsHaplogroupMt = true,
-    supportsAutosomalIbd = true,
-    supportsAncestry = true,
-    typicalFileFormats = List("TXT")
-  )
-
-  val ARRAY_ANCESTRY_V2: TestTypeDefinition = TestTypeDefinition(
-    code = "ARRAY_ANCESTRY_V2",
-    displayName = "AncestryDNA v2",
-    category = DataGenerationMethod.Genotyping,
-    vendor = Some("AncestryDNA"),
-    targetType = TargetType.Mixed,
-    expectedMinDepth = None,
-    expectedTargetDepth = None,
-    expectedMarkerCount = Some(700000),
-    supportsHaplogroupY = true,
-    supportsHaplogroupMt = true,
-    supportsAutosomalIbd = true,
-    supportsAncestry = true,
-    typicalFileFormats = List("TXT")
-  )
-
-  val ARRAY_FTDNA_FF: TestTypeDefinition = TestTypeDefinition(
-    code = "ARRAY_FTDNA_FF",
-    displayName = "FTDNA Family Finder",
-    category = DataGenerationMethod.Genotyping,
-    vendor = Some("FamilyTreeDNA"),
-    targetType = TargetType.Autosomal,
-    expectedMinDepth = None,
-    expectedTargetDepth = None,
-    expectedMarkerCount = Some(700000),
-    supportsHaplogroupY = false,
-    supportsHaplogroupMt = false,
-    supportsAutosomalIbd = true,
-    supportsAncestry = true,
-    typicalFileFormats = List("CSV")
-  )
-
-  val ARRAY_MYHERITAGE: TestTypeDefinition = TestTypeDefinition(
-    code = "ARRAY_MYHERITAGE",
-    displayName = "MyHeritage DNA",
-    category = DataGenerationMethod.Genotyping,
-    vendor = Some("MyHeritage"),
-    targetType = TargetType.Mixed,
-    expectedMinDepth = None,
-    expectedTargetDepth = None,
-    expectedMarkerCount = Some(700000),
-    supportsHaplogroupY = true,
-    supportsHaplogroupMt = true,
-    supportsAutosomalIbd = true,
-    supportsAncestry = true,
-    typicalFileFormats = List("CSV")
-  )
-
-  val ARRAY_LIVINGDNA: TestTypeDefinition = TestTypeDefinition(
-    code = "ARRAY_LIVINGDNA",
-    displayName = "LivingDNA",
-    category = DataGenerationMethod.Genotyping,
-    vendor = Some("LivingDNA"),
-    targetType = TargetType.Mixed,
-    expectedMinDepth = None,
-    expectedTargetDepth = None,
-    expectedMarkerCount = Some(630000),
-    supportsHaplogroupY = true,
-    supportsHaplogroupMt = true,
-    supportsAutosomalIbd = true,
-    supportsAncestry = true,
-    typicalFileFormats = List("CSV", "TXT")
-  )
-
-  // ============ Collections ============
+  // ============================================================================
+  // Loaded Test Types
+  // ============================================================================
 
   /**
-   * All known test types.
+   * All known test types loaded from configuration.
    */
-  val all: List[TestTypeDefinition] = List(
-    // Whole genome sequencing - short read (Illumina, BGI, Element, Ultima)
-    WGS, WGS_LOW_PASS,
-    // Whole genome sequencing - long read (PacBio, Nanopore)
-    WGS_HIFI, WGS_NANOPORE, WGS_CLR,
-    // Exome sequencing
-    WES,
-    // Targeted Y-DNA sequencing
-    BIG_Y_500, BIG_Y_700, Y_ELITE, Y_PRIME,
-    // Targeted mtDNA sequencing
-    MT_FULL_SEQUENCE, MT_PLUS, MT_CR_ONLY,
-    // Y-DNA SNP packs/panels (genotyping - probe-based or Sanger)
-    YDNA_SNP_PACK_FTDNA, YDNA_PANEL_YSEQ, YDNA_SNP_PANEL,
-    // Y-DNA focused arrays (genotyping arrays with Y emphasis)
-    ARRAY_BISDNA,
-    // Genotyping arrays (autosomal + mixed)
-    ARRAY_23ANDME_V5, ARRAY_23ANDME_V4, ARRAY_ANCESTRY_V2,
-    ARRAY_FTDNA_FF, ARRAY_MYHERITAGE, ARRAY_LIVINGDNA
-  )
+  lazy val all: List[TestTypeDefinition] = {
+    val loaded = loadTestTypesFromConfig()
+    if (loaded.nonEmpty) {
+      log.info(s"Loaded ${loaded.size} test types from configuration")
+      loaded
+    } else {
+      log.warn("No test types loaded, using defaults")
+      defaultTestTypes
+    }
+  }
+
+  // Named accessors for commonly used test types (for backward compatibility)
+  lazy val WGS: TestTypeDefinition = byCode("WGS").getOrElse(defaultTestTypes.head)
+  lazy val WGS_LOW_PASS: TestTypeDefinition = byCode("WGS_LOW_PASS").getOrElse(WGS)
+  lazy val WGS_HIFI: TestTypeDefinition = byCode("WGS_HIFI").getOrElse(WGS)
+  lazy val WGS_NANOPORE: TestTypeDefinition = byCode("WGS_NANOPORE").getOrElse(WGS)
+  lazy val WGS_CLR: TestTypeDefinition = byCode("WGS_CLR").getOrElse(WGS)
+  lazy val WES: TestTypeDefinition = byCode("WES").getOrElse(WGS)
+  lazy val BIG_Y_500: TestTypeDefinition = byCode("BIG_Y_500").getOrElse(byCode("BIG_Y_700").getOrElse(WGS))
+  lazy val BIG_Y_700: TestTypeDefinition = byCode("BIG_Y_700").getOrElse(WGS)
+  lazy val Y_ELITE: TestTypeDefinition = byCode("Y_ELITE").getOrElse(BIG_Y_700)
+  lazy val Y_PRIME: TestTypeDefinition = byCode("Y_PRIME").getOrElse(BIG_Y_700)
+  lazy val MT_FULL_SEQUENCE: TestTypeDefinition = byCode("MT_FULL_SEQUENCE").getOrElse(WGS)
+  lazy val MT_PLUS: TestTypeDefinition = byCode("MT_PLUS").getOrElse(MT_FULL_SEQUENCE)
+  lazy val MT_CR_ONLY: TestTypeDefinition = byCode("MT_CR_ONLY").getOrElse(MT_FULL_SEQUENCE)
+  lazy val YDNA_SNP_PACK_FTDNA: TestTypeDefinition = byCode("YDNA_SNP_PACK_FTDNA").getOrElse(BIG_Y_700)
+  lazy val YDNA_PANEL_YSEQ: TestTypeDefinition = byCode("YDNA_PANEL_YSEQ").getOrElse(BIG_Y_700)
+  lazy val YDNA_SNP_PANEL: TestTypeDefinition = byCode("YDNA_SNP_PANEL").getOrElse(BIG_Y_700)
+  lazy val ARRAY_BISDNA: TestTypeDefinition = byCode("ARRAY_BISDNA").getOrElse(WGS)
+  lazy val ARRAY_23ANDME_V5: TestTypeDefinition = byCode("ARRAY_23ANDME_V5").getOrElse(WGS)
+  lazy val ARRAY_23ANDME_V4: TestTypeDefinition = byCode("ARRAY_23ANDME_V4").getOrElse(WGS)
+  lazy val ARRAY_ANCESTRY_V2: TestTypeDefinition = byCode("ARRAY_ANCESTRY_V2").getOrElse(WGS)
+  lazy val ARRAY_FTDNA_FF: TestTypeDefinition = byCode("ARRAY_FTDNA_FF").getOrElse(WGS)
+  lazy val ARRAY_MYHERITAGE: TestTypeDefinition = byCode("ARRAY_MYHERITAGE").getOrElse(WGS)
+  lazy val ARRAY_LIVINGDNA: TestTypeDefinition = byCode("ARRAY_LIVINGDNA").getOrElse(WGS)
+
+  // ============================================================================
+  // Collections
+  // ============================================================================
 
   /**
    * All sequencing test types.
    */
-  val sequencing: List[TestTypeDefinition] =
+  def sequencing: List[TestTypeDefinition] =
     all.filter(_.category == DataGenerationMethod.Sequencing)
 
   /**
    * Short-read WGS types (Illumina, BGI, Element, Ultima).
    */
-  val shortReadWgs: List[TestTypeDefinition] =
-    List(WGS, WGS_LOW_PASS)
+  def shortReadWgs: List[TestTypeDefinition] =
+    all.filter(t => t.code == "WGS" || t.code == "WGS_LOW_PASS")
 
   /**
    * Long-read WGS types (PacBio HiFi, Nanopore, PacBio CLR).
    * These excel at resolving complex/repetitive regions including Y palindromes.
    */
-  val longReadWgs: List[TestTypeDefinition] =
-    List(WGS_HIFI, WGS_NANOPORE, WGS_CLR)
+  def longReadWgs: List[TestTypeDefinition] =
+    all.filter(t => t.code == "WGS_HIFI" || t.code == "WGS_NANOPORE" || t.code == "WGS_CLR")
 
   /**
    * All genotyping array types.
    */
-  val genotypingArrays: List[TestTypeDefinition] =
+  def genotypingArrays: List[TestTypeDefinition] =
     all.filter(_.category == DataGenerationMethod.Genotyping)
 
   /**
    * Targeted Y-DNA sequencing types (Big Y, Y Elite, etc.).
    */
-  val targetedYDnaSequencing: List[TestTypeDefinition] =
+  def targetedYDnaSequencing: List[TestTypeDefinition] =
     sequencing.filter(_.targetType == TargetType.YChromosome)
 
   /**
    * Y-DNA SNP packs and panels (probe-based genotyping).
    * These are NOT sequencing - they test specific named SNPs.
    */
-  val yDnaSnpPanels: List[TestTypeDefinition] =
+  def yDnaSnpPanels: List[TestTypeDefinition] =
     genotypingArrays.filter(_.targetType == TargetType.YChromosome)
 
   /**
    * All Y-DNA capable test types (sequencing + SNP panels).
    */
-  val allYDnaTests: List[TestTypeDefinition] =
+  def allYDnaTests: List[TestTypeDefinition] =
     targetedYDnaSequencing ++ yDnaSnpPanels
 
   /**
    * Targeted mtDNA sequencing types.
    */
-  val targetedMtDna: List[TestTypeDefinition] =
+  def targetedMtDna: List[TestTypeDefinition] =
     sequencing.filter(_.targetType == TargetType.MtDna)
 
   /**
