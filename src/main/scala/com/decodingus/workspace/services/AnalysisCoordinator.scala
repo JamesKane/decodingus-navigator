@@ -549,6 +549,11 @@ class AnalysisCoordinator(
 
       val treeTypeStr = if (treeType == TreeType.YDNA) "Y-DNA" else "mtDNA"
 
+      // Extract expected Y chromosome coverage from alignment metrics for excessive depth detection
+      val expectedYCoverage: Option[Double] = alignment.metrics.flatMap { m =>
+        m.contigs.find(c => c.contigName == "chrY" || c.contigName == "Y").flatMap(_.meanCoverage)
+      }
+
       // Check for vendor-provided VCF first (e.g., FTDNA Big Y)
       // Check both alignment-level (for BAM-based imports) and run-level (for VCF-only imports)
       val vendorVcf: Option[VendorVcfInfo] = if (treeType == TreeType.YDNA) {
@@ -617,7 +622,8 @@ class AnalysisCoordinator(
             },
             yProfileService = yProfileService,
             biosampleId = extractBiosampleId(subject),
-            yProfileSourceType = Some(inferSourceType(seqRun))
+            yProfileSourceType = Some(inferSourceType(seqRun)),
+            expectedYCoverage = expectedYCoverage
           )
         } else if (java.nio.file.Files.exists(contigVcfPath)) {
           // Use contig-specific VCF from previous haplogroup analysis
@@ -636,7 +642,8 @@ class AnalysisCoordinator(
             },
             yProfileService = yProfileService,
             biosampleId = extractBiosampleId(subject),
-            yProfileSourceType = Some(inferSourceType(seqRun))
+            yProfileSourceType = Some(inferSourceType(seqRun)),
+            expectedYCoverage = expectedYCoverage
           )
         } else {
           // No cached VCF - fall back to BAM-based variant calling
@@ -671,7 +678,8 @@ class AnalysisCoordinator(
               val pct = if (total > 0) 0.2 + (current / total) * 0.7 else 0.2
               onProgress(AnalysisProgress(message, pct))
             },
-            Some(artifactCtx)
+            Some(artifactCtx),
+            expectedYCoverage = expectedYCoverage
           )
 
           // Save the generated VCF to cache for future use
@@ -1583,6 +1591,11 @@ class AnalysisCoordinator(
 
     val treeTypeStr = if (treeType == TreeType.YDNA) "Y-DNA" else "mtDNA"
 
+    // Extract expected Y chromosome coverage from alignment metrics for excessive depth detection
+    val expectedYCoverage: Option[Double] = alignment.metrics.flatMap { m =>
+      m.contigs.find(c => c.contigName == "chrY" || c.contigName == "Y").flatMap(_.meanCoverage)
+    }
+
     // Check for vendor-provided FASTA (mtDNA only)
     val vendorFasta = if (treeType == TreeType.MTDNA) {
       VcfCache.findMtDnaRunFasta(subject.sampleAccession, runId)
@@ -1641,7 +1654,8 @@ class AnalysisCoordinator(
         },
         yProfileService = yProfileService,
         biosampleId = extractBiosampleId(subject),
-        yProfileSourceType = Some(inferSourceType(seqRun))
+        yProfileSourceType = Some(inferSourceType(seqRun)),
+        expectedYCoverage = expectedYCoverage
       ).map(_.headOption.getOrElse(defaultHaplogroupResult))
     } else {
       // Fall back to BAM-based calling (slower, but works without Step 5)
@@ -1673,7 +1687,8 @@ class AnalysisCoordinator(
           val pct = if (total > 0) current / total else 0.0
           onProgress(pct)
         },
-        Some(artifactCtx)
+        Some(artifactCtx),
+        expectedYCoverage = expectedYCoverage
       )
 
       // Copy the generated contig VCF to the common VCF location for future reuse

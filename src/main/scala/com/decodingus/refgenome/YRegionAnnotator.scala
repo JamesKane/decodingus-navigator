@@ -26,6 +26,9 @@ enum RegionType(val modifier: Double, val displayName: String, val description: 
   case Heterochromatin extends RegionType(0.1, "Heterochromatin", "Heterochromatic region (Yq12) - unmappable")
   case NonCallable extends RegionType(0.5, "Non-callable", "Failed callable loci criteria")
   case LowDepth extends RegionType(0.7, "Low depth", "Read depth below threshold (<10x)")
+  case ExcessiveDepth extends RegionType(0.4, "Excessive depth", "Read depth 2-3x expected - possible multi-mapping")
+  case HighlyExcessiveDepth extends RegionType(0.2, "Highly excessive depth", "Read depth 3-4x expected - likely multi-mapping or collapsed duplication")
+  case ExtremeDepth extends RegionType(0.1, "Extreme depth", "Read depth >4x expected - very likely mapping artifact")
 
 /**
  * A genomic region with interval bounds and metadata.
@@ -153,12 +156,13 @@ class YRegionAnnotator(
   /**
    * Annotate a genomic position.
    *
-   * @param contig   Chromosome (accepts "chrY", "Y", etc.)
-   * @param position 1-based position
-   * @param depth    Optional read depth for depth-based modifier
+   * @param contig        Chromosome (accepts "chrY", "Y", etc.)
+   * @param position      1-based position
+   * @param depth         Optional read depth for depth-based modifier
+   * @param expectedDepth Optional expected depth (e.g., Y chromosome mean coverage) for excessive depth detection
    * @return RegionAnnotation with all overlapping regions and combined modifier
    */
-  def annotate(contig: String, position: Long, depth: Option[Int] = None): RegionAnnotation = {
+  def annotate(contig: String, position: Long, depth: Option[Int] = None, expectedDepth: Option[Double] = None): RegionAnnotation = {
     if (!isYChromosome(contig)) return RegionAnnotation.empty
 
     val overlapping = mutable.ListBuffer[GenomicRegion]()
@@ -195,10 +199,24 @@ class YRegionAnnotator(
       overlapping += GenomicRegion("chrY", position, position, RegionType.NonCallable)
     }
 
-    // Check depth
+    // Check low depth
     val lowDepth = depth.exists(_ < 10)
     if (lowDepth) {
       overlapping += GenomicRegion("chrY", position, position, RegionType.LowDepth)
+    }
+
+    // Check excessive depth (only when expectedDepth is available and meaningful)
+    (depth, expectedDepth) match {
+      case (Some(d), Some(exp)) if exp >= 5 =>
+        val ratio = d.toDouble / exp
+        if (ratio > 4) {
+          overlapping += GenomicRegion("chrY", position, position, RegionType.ExtremeDepth)
+        } else if (ratio > 3) {
+          overlapping += GenomicRegion("chrY", position, position, RegionType.HighlyExcessiveDepth)
+        } else if (ratio > 2) {
+          overlapping += GenomicRegion("chrY", position, position, RegionType.ExcessiveDepth)
+        }
+      case _ => // No expected depth available or too low to be meaningful
     }
 
     // Calculate combined modifier (multiplicative)
@@ -219,8 +237,8 @@ class YRegionAnnotator(
   /**
    * Get quality modifier for a position (shortcut for just the modifier value).
    */
-  def getQualityModifier(contig: String, position: Long, depth: Option[Int] = None): Double = {
-    annotate(contig, position, depth).qualityModifier
+  def getQualityModifier(contig: String, position: Long, depth: Option[Int] = None, expectedDepth: Option[Double] = None): Double = {
+    annotate(contig, position, depth, expectedDepth).qualityModifier
   }
 
   /**

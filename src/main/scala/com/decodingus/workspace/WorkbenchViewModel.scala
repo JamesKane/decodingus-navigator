@@ -2095,6 +2095,11 @@ class WorkbenchViewModel(
                           }
                         }
 
+                        // Extract expected Y chromosome coverage for excessive depth detection
+                        val expectedYCoverage: Option[Double] = alignment.metrics.flatMap { m =>
+                          m.contigs.find(c => c.contigName == "chrY" || c.contigName == "Y").flatMap(_.meanCoverage)
+                        }
+
                         val result = processor.analyze(
                           bamPath = bamPath,
                           libraryStats = libraryStats,
@@ -2107,7 +2112,8 @@ class WorkbenchViewModel(
                           artifactContext = Some(artifactCtx),
                           yProfileService = yProfileService,
                           biosampleId = biosampleId,
-                          yProfileSourceType = Some(yProfileSourceType)
+                          yProfileSourceType = Some(yProfileSourceType),
+                          expectedYCoverage = expectedYCoverage
                         )
 
                         result match {
@@ -2340,6 +2346,11 @@ class WorkbenchViewModel(
                           }
                         }
 
+                        // Extract expected Y chromosome coverage for excessive depth detection
+                        val expectedYCoverage: Option[Double] = alignment.metrics.flatMap { m =>
+                          m.contigs.find(c => c.contigName == "chrY" || c.contigName == "Y").flatMap(_.meanCoverage)
+                        }
+
                         val result = if (vcfStatus.isAvailable) {
                           log.info(s" Found cached whole-genome VCF for $sampleAccession, using it for haplogroup analysis.")
                           processor.analyzeFromCachedVcf(
@@ -2357,7 +2368,8 @@ class WorkbenchViewModel(
                             },
                             yProfileService = yProfileService,
                             biosampleId = biosampleId,
-                            yProfileSourceType = Some(yProfileSourceType)
+                            yProfileSourceType = Some(yProfileSourceType),
+                            expectedYCoverage = expectedYCoverage
                           )
                         } else {
                           // Check for existing haplogroup artifacts to avoid redundant analysis
@@ -2411,7 +2423,8 @@ class WorkbenchViewModel(
                             artifactContext = Some(artifactCtx),
                             yProfileService = yProfileService,
                             biosampleId = biosampleId,
-                            yProfileSourceType = Some(yProfileSourceType)
+                            yProfileSourceType = Some(yProfileSourceType),
+                            expectedYCoverage = expectedYCoverage
                           )
                         }
 

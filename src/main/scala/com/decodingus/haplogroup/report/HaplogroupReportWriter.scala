@@ -100,8 +100,9 @@ object HaplogroupReportWriter {
    * @param sampleBuild       Optional reference build of the sample BAM/CRAM
    * @param treeBuild         Optional reference build of the tree coordinates
    * @param namedVariantCache Optional cache for looking up variant aliases and rsIds
-   * @param snpCallInfo       Optional map of position to full SNP call info (quality, depth)
-   * @param yRegionAnnotator  Optional Y chromosome region annotator for region info
+   * @param snpCallInfo        Optional map of position to full SNP call info (quality, depth)
+   * @param yRegionAnnotator   Optional Y chromosome region annotator for region info
+   * @param expectedYCoverage  Optional expected Y chromosome coverage for excessive depth detection
    */
   def writeReport(
                    outputDir: File,
@@ -117,7 +118,8 @@ object HaplogroupReportWriter {
                    treeBuild: Option[String] = None,
                    namedVariantCache: Option[NamedVariantCache] = None,
                    snpCallInfo: Option[Map[Long, SnpCallInfo]] = None,
-                   yRegionAnnotator: Option[YRegionAnnotator] = None
+                   yRegionAnnotator: Option[YRegionAnnotator] = None,
+                   expectedYCoverage: Option[Double] = None
                  ): File = {
     outputDir.mkdirs()
 
@@ -255,7 +257,7 @@ object HaplogroupReportWriter {
           val quality = callInfo.flatMap(_.quality)
 
           // Get region annotation if available
-          val regionAnn = yRegionAnnotator.map(_.annotate(locus.contig, locus.position, depth))
+          val regionAnn = yRegionAnnotator.map(_.annotate(locus.contig, locus.position, depth, expectedYCoverage))
           val regionDisplay = regionAnn.map(_.shortDisplay).getOrElse("-")
           val regionModifier = regionAnn.map(_.qualityModifier).getOrElse(1.0)
 
@@ -319,7 +321,7 @@ object HaplogroupReportWriter {
           writer.println("-" * (if (showDepthRegionNovel) 120 else 80))
           snpVariants.sortBy(v => (v.contig, v.position)).foreach { v =>
             if (showDepthRegionNovel) {
-              val regionAnn = yRegionAnnotator.map(_.annotate(v.contig, v.position, v.depth))
+              val regionAnn = yRegionAnnotator.map(_.annotate(v.contig, v.position, v.depth, expectedYCoverage))
               val regionDisplay = regionAnn.map(_.shortDisplay).getOrElse("-")
               val regionModifier = regionAnn.map(_.qualityModifier).getOrElse(1.0)
               val qualityDisplay = if (regionModifier < 1.0 || v.depth.exists(_ < 10)) {
@@ -378,7 +380,7 @@ object HaplogroupReportWriter {
                 .map(r => strAnnotator.get.formatAnnotation(r))
                 .getOrElse("-")
               if (showDepthRegionIndel) {
-                val regionAnn = yRegionAnnotator.map(_.annotate(v.contig, v.position, v.depth))
+                val regionAnn = yRegionAnnotator.map(_.annotate(v.contig, v.position, v.depth, expectedYCoverage))
                 val regionDisplay = regionAnn.map(_.shortDisplay).getOrElse("-")
                 val regionModifier = regionAnn.map(_.qualityModifier).getOrElse(1.0)
                 val qualityDisplay = if (regionModifier < 1.0 || v.depth.exists(_ < 10)) {
@@ -411,7 +413,7 @@ object HaplogroupReportWriter {
               val refDisplay = if (v.ref.length > 10) v.ref.take(8) + ".." else v.ref
               val altDisplay = if (v.alt.length > 10) v.alt.take(8) + ".." else v.alt
               if (showDepthRegionIndel) {
-                val regionAnn = yRegionAnnotator.map(_.annotate(v.contig, v.position, v.depth))
+                val regionAnn = yRegionAnnotator.map(_.annotate(v.contig, v.position, v.depth, expectedYCoverage))
                 val regionDisplay = regionAnn.map(_.shortDisplay).getOrElse("-")
                 val regionModifier = regionAnn.map(_.qualityModifier).getOrElse(1.0)
                 val qualityDisplay = if (regionModifier < 1.0 || v.depth.exists(_ < 10)) {
@@ -463,6 +465,8 @@ object HaplogroupReportWriter {
         writer.println()
         writer.println("  Depth Modifiers:")
         writer.println("    Low depth (<10x): 0.7x           Non-callable: 0.5x")
+        writer.println("    Excessive depth (2-3x): 0.4x     Highly excessive (3-4x): 0.2x")
+        writer.println("    Extreme depth (>4x): 0.1x")
         writer.println()
         writer.println("  Note: Modifiers combine multiplicatively. Adjustments affect display only,")
         writer.println("        not internal haplogroup scoring.")
@@ -516,9 +520,10 @@ object HaplogroupReportWriter {
    * @param snpCalls         The SNP calls from the VCF
    * @param sampleName       Optional sample name
    * @param privateVariants  Optional list of private/novel variants
-   * @param snpCallInfo      Optional map of position to full SNP call info (quality, depth)
-   * @param yRegionAnnotator Optional Y chromosome region annotator for region info
-   * @param strAnnotator     Optional STR annotator for indel classification
+   * @param snpCallInfo       Optional map of position to full SNP call info (quality, depth)
+   * @param yRegionAnnotator  Optional Y chromosome region annotator for region info
+   * @param strAnnotator      Optional STR annotator for indel classification
+   * @param expectedYCoverage Optional expected Y chromosome coverage for excessive depth detection
    * @return List of created CSV files
    */
   def writeCsvReport(
@@ -531,7 +536,8 @@ object HaplogroupReportWriter {
                       privateVariants: Option[List[PrivateVariant]] = None,
                       snpCallInfo: Option[Map[Long, SnpCallInfo]] = None,
                       yRegionAnnotator: Option[YRegionAnnotator] = None,
-                      strAnnotator: Option[StrAnnotator] = None
+                      strAnnotator: Option[StrAnnotator] = None,
+                      expectedYCoverage: Option[Double] = None
                     ): List[File] = {
     outputDir.mkdirs()
 
@@ -570,7 +576,7 @@ object HaplogroupReportWriter {
           val depth = callInfo.flatMap(_.depth)
           val quality = callInfo.flatMap(_.quality)
 
-          val regionAnn = yRegionAnnotator.map(_.annotate(locus.contig, locus.position, depth))
+          val regionAnn = yRegionAnnotator.map(_.annotate(locus.contig, locus.position, depth, expectedYCoverage))
           val regionType = regionAnn.map(_.primaryRegion.map(_.regionType.toString).getOrElse("")).getOrElse("")
           val regionName = regionAnn.map(_.shortDisplay).getOrElse("")
           val regionModifier = regionAnn.map(_.qualityModifier).getOrElse(1.0)
@@ -611,7 +617,7 @@ object HaplogroupReportWriter {
           writer.println("contig,position,ref,alt,depth,quality,region_type,region_name,quality_modifier,adjusted_quality")
 
           snpVariants.sortBy(v => (v.contig, v.position)).foreach { v =>
-            val regionAnn = yRegionAnnotator.map(_.annotate(v.contig, v.position, v.depth))
+            val regionAnn = yRegionAnnotator.map(_.annotate(v.contig, v.position, v.depth, expectedYCoverage))
             val regionType = regionAnn.map(_.primaryRegion.map(_.regionType.toString).getOrElse("")).getOrElse("")
             val regionName = regionAnn.map(_.shortDisplay).getOrElse("")
             val regionModifier = regionAnn.map(_.qualityModifier).getOrElse(1.0)
@@ -649,7 +655,7 @@ object HaplogroupReportWriter {
           writer.println("contig,position,ref,alt,depth,quality,region_type,region_name,quality_modifier,adjusted_quality,str_marker,str_period,str_repeats")
 
           indelVariants.sortBy(v => (v.contig, v.position)).foreach { v =>
-            val regionAnn = yRegionAnnotator.map(_.annotate(v.contig, v.position, v.depth))
+            val regionAnn = yRegionAnnotator.map(_.annotate(v.contig, v.position, v.depth, expectedYCoverage))
             val regionType = regionAnn.map(_.primaryRegion.map(_.regionType.toString).getOrElse("")).getOrElse("")
             val regionName = regionAnn.map(_.shortDisplay).getOrElse("")
             val regionModifier = regionAnn.map(_.qualityModifier).getOrElse(1.0)

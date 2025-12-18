@@ -56,7 +56,7 @@ class HaplogroupProcessor {
   /**
    * Analyze a BAM/CRAM file for haplogroup assignment.
    *
-   * @param bamPath          Path to the BAM/CRAM file
+   * @param bamPath            Path to the BAM/CRAM file
    * @param libraryStats       Library statistics from initial analysis
    * @param treeType           Y-DNA or MT-DNA tree type
    * @param treeProviderType   Tree data provider (FTDNA or DecodingUs)
@@ -65,6 +65,7 @@ class HaplogroupProcessor {
    * @param yProfileService    Optional Y Profile service for auto-populating Y chromosome profile
    * @param biosampleId        Optional biosample UUID for Y Profile population
    * @param yProfileSourceType Optional source type for Y Profile (defaults to WGS_SHORT_READ)
+   * @param expectedYCoverage  Optional expected Y chromosome coverage for excessive depth detection
    */
   def analyze(
                bamPath: String,
@@ -75,7 +76,8 @@ class HaplogroupProcessor {
                artifactContext: Option[ArtifactContext] = None,
                yProfileService: Option[YProfileService] = None,
                biosampleId: Option[UUID] = None,
-               yProfileSourceType: Option[YProfileSourceType] = None
+               yProfileSourceType: Option[YProfileSourceType] = None,
+               expectedYCoverage: Option[Double] = None
              ): Either[String, List[HaplogroupResult]] = {
 
     onProgress("Loading haplogroup tree...", 0.0, 1.0)
@@ -342,7 +344,8 @@ class HaplogroupProcessor {
                       strAnnotator = strAnnotator,
                       sampleBuild = Some(referenceBuild),
                       treeBuild = Some(treeSourceBuild),
-                      namedVariantCache = variantCache
+                      namedVariantCache = variantCache,
+                      expectedYCoverage = expectedYCoverage
                     )
                   }
 
@@ -394,16 +397,17 @@ class HaplogroupProcessor {
    * Analyze using a cached whole-genome VCF instead of calling variants on the fly.
    * Uses GapAwareHaplogroupResolver to query the VCF and infer reference calls from callable loci.
    *
-   * @param sampleAccession  Sample accession for artifact lookup
-   * @param runId            Sequence run ID
-   * @param alignmentId      Alignment ID
-   * @param referenceBuild   Reference build of the alignment
-   * @param treeType         Y-DNA or MT-DNA tree type
-   * @param treeProviderType Tree data provider
-   * @param onProgress       Progress callback
-   * @param yProfileService  Optional Y-DNA profile service for auto-population
-   * @param biosampleId      Optional biosample UUID for Y-DNA profile creation
+   * @param sampleAccession    Sample accession for artifact lookup
+   * @param runId              Sequence run ID
+   * @param alignmentId        Alignment ID
+   * @param referenceBuild     Reference build of the alignment
+   * @param treeType           Y-DNA or MT-DNA tree type
+   * @param treeProviderType   Tree data provider
+   * @param onProgress         Progress callback
+   * @param yProfileService    Optional Y-DNA profile service for auto-population
+   * @param biosampleId        Optional biosample UUID for Y-DNA profile creation
    * @param yProfileSourceType Optional source type for YProfile (WGS_SHORT_READ, WGS_LONG_READ, etc.)
+   * @param expectedYCoverage  Optional expected Y chromosome coverage for excessive depth detection
    */
   def analyzeFromCachedVcf(
                             sampleAccession: String,
@@ -415,7 +419,8 @@ class HaplogroupProcessor {
                             onProgress: (String, Double, Double) => Unit,
                             yProfileService: Option[YProfileService] = None,
                             biosampleId: Option[UUID] = None,
-                            yProfileSourceType: Option[YProfileSourceType] = None
+                            yProfileSourceType: Option[YProfileSourceType] = None,
+                            expectedYCoverage: Option[Double] = None
                           ): Either[String, List[HaplogroupResult]] = {
 
     onProgress("Loading haplogroup tree...", 0.0, 1.0)
@@ -550,7 +555,8 @@ class HaplogroupProcessor {
                 strAnnotator = strAnnotator,
                 sampleBuild = Some(referenceBuild),
                 treeBuild = Some(treeSourceBuild),
-                namedVariantCache = variantCache
+                namedVariantCache = variantCache,
+                expectedYCoverage = expectedYCoverage
               )
 
               // Auto-populate Y-DNA profile if service and biosampleId provided

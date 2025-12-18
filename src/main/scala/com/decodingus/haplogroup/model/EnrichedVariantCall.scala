@@ -132,14 +132,15 @@ object EnrichedVariantCall {
   /**
    * Create an enriched variant call with region annotation.
    *
-   * @param contig    Chromosome
-   * @param position  1-based position
-   * @param ref       Reference allele
-   * @param alt       Alternate allele
-   * @param call      Called base
-   * @param quality   PHRED quality score
-   * @param depth     Read depth
-   * @param annotator Optional region annotator for region info
+   * @param contig        Chromosome
+   * @param position      1-based position
+   * @param ref           Reference allele
+   * @param alt           Alternate allele
+   * @param call          Called base
+   * @param quality       PHRED quality score
+   * @param depth         Read depth
+   * @param annotator     Optional region annotator for region info
+   * @param expectedDepth Optional expected depth (e.g., Y chromosome mean coverage) for excessive depth detection
    */
   def create(
               contig: String,
@@ -149,9 +150,10 @@ object EnrichedVariantCall {
               call: String,
               quality: Option[Double] = None,
               depth: Option[Int] = None,
-              annotator: Option[YRegionAnnotator] = None
+              annotator: Option[YRegionAnnotator] = None,
+              expectedDepth: Option[Double] = None
             ): EnrichedVariantCall = {
-    val regionAnnotation = annotator.map(_.annotate(contig, position, depth))
+    val regionAnnotation = annotator.map(_.annotate(contig, position, depth, expectedDepth))
     EnrichedVariantCall(contig, position, ref, alt, call, quality, depth, regionAnnotation)
   }
 
@@ -163,7 +165,9 @@ object EnrichedVariantCall {
       |  X-degenerate: 1.0x (reliable)    PAR: 0.5x           Palindrome: 0.4x
       |  XTR: 0.3x                        Ampliconic: 0.3x    STR: 0.25x
       |  Centromere: 0.1x                 Heterochromatin: 0.1x
-      |  Low depth (<10x): 0.7x           Non-callable: 0.5x""".stripMargin
+      |  Low depth (<10x): 0.7x           Non-callable: 0.5x
+      |  Excessive depth (2-3x): 0.4x     Highly excessive (3-4x): 0.2x
+      |  Extreme depth (>4x): 0.1x""".stripMargin
 }
 
 /**
