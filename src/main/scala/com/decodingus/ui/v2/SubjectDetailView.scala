@@ -1250,7 +1250,9 @@ class SubjectDetailView(viewModel: WorkbenchViewModel) extends VBox {
           case Right(result) =>
             scalafx.application.Platform.runLater {
               // Refresh entire view to show updated haplogroups and metrics
-              setSubject(subject)
+              // Re-fetch the subject from ViewModel to get updated haplogroups
+              val updatedSubject = viewModel.findSubject(subject.accession).getOrElse(subject)
+              setSubject(updatedSubject)
               val summary = buildAnalysisSummary(result)
               showInfoDialog(
                 "Full Analysis Complete",
