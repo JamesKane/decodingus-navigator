@@ -1,14 +1,16 @@
 package com.decodingus.ui.components
 
 import com.decodingus.config.{UserPreferences, UserPreferencesService}
+import com.decodingus.i18n.I18n.t
 import com.decodingus.refgenome.config.{ReferenceConfig, ReferenceConfigService, ReferenceGenomeConfig}
+import com.decodingus.ui.theme.Theme
 import scalafx.Includes.*
 import scalafx.beans.property.{BooleanProperty, StringProperty}
 import scalafx.collections.ObservableBuffer
 import scalafx.geometry.{Insets, Pos}
 import scalafx.scene.control.Alert.AlertType
 import scalafx.scene.control.*
-import scalafx.scene.layout.{GridPane, HBox, Priority, VBox}
+import scalafx.scene.layout.{GridPane, HBox, Priority, Region, VBox}
 import scalafx.stage.{DirectoryChooser, FileChooser}
 
 import java.io.File
@@ -16,14 +18,23 @@ import java.nio.file.Files
 
 /**
  * Main Settings dialog with tabs for different configuration areas.
+ * Uses dark theme styling consistent with V2 UI.
  */
 class SettingsDialog extends Dialog[Unit] {
-  title = "Settings"
-  headerText = "Application Settings"
+  title = t("settings.title")
+  headerText = t("settings.header")
   resizable = true
 
   dialogPane().buttonTypes = Seq(ButtonType.OK, ButtonType.Cancel)
   dialogPane().setPrefSize(800, 700)
+
+  // Helper to get current theme colors
+  private def colors = Theme.current
+
+  // Apply theme to dialog
+  dialogPane().style = s"-fx-background-color: ${colors.background};"
+  dialogPane().lookup(".header-panel").setStyle(s"-fx-background-color: ${colors.surface};")
+  dialogPane().lookup(".content").setStyle(s"-fx-background-color: ${colors.background};")
 
   // Load current preferences
   private val currentPrefs = UserPreferencesService.load()
@@ -39,25 +50,28 @@ class SettingsDialog extends Dialog[Unit] {
     items = ObservableBuffer(providerDisplayNames.keys.toSeq.sorted: _*)
     value = providerReverseMap.getOrElse(currentPrefs.ydnaTreeProvider, "FTDNA (FamilyTreeDNA)")
     prefWidth = 200
+    style = s"-fx-background-color: ${colors.border}; -fx-text-fill: ${colors.textPrimary};"
   }
 
   private val mtdnaProviderCombo = new ComboBox[String] {
     items = ObservableBuffer(providerDisplayNames.keys.toSeq.sorted: _*)
     value = providerReverseMap.getOrElse(currentPrefs.mtdnaTreeProvider, "FTDNA (FamilyTreeDNA)")
     prefWidth = 200
+    style = s"-fx-background-color: ${colors.border}; -fx-text-fill: ${colors.textPrimary};"
   }
 
   // Tree Providers tab content
   private val treeProvidersContent = new VBox(20) {
     padding = Insets(20)
+    style = s"-fx-background-color: ${colors.background};"
     children = Seq(
-      new Label("Haplogroup Tree Providers") {
-        style = "-fx-font-size: 16px; -fx-font-weight: bold;"
+      new Label(t("settings.tree_providers.title")) {
+        style = s"-fx-font-size: 16px; -fx-font-weight: bold; -fx-text-fill: ${colors.textPrimary};"
       },
-      new Label("Select which haplogroup tree provider to use for Y-DNA and MT-DNA analysis.") {
+      new Label(t("settings.tree_providers.description")) {
         wrapText = true
         prefWidth = 500
-        style = "-fx-text-fill: #666666;"
+        style = s"-fx-text-fill: ${colors.textMuted};"
       },
       new VBox(15) {
         padding = Insets(10, 0, 0, 0)
@@ -65,40 +79,38 @@ class SettingsDialog extends Dialog[Unit] {
           // Y-DNA Provider
           new VBox(5) {
             children = Seq(
-              new Label("Y-DNA Tree Provider:") {
-                style = "-fx-font-weight: bold;"
+              new Label(t("settings.tree_providers.ydna")) {
+                style = s"-fx-font-weight: bold; -fx-text-fill: ${colors.textPrimary};"
               },
               ydnaProviderCombo,
-              new Label("  FTDNA: Uses FamilyTreeDNA's public Y-DNA haplogroup tree") {
-                style = "-fx-text-fill: #888888; -fx-font-size: 11px;"
+              new Label(t("settings.tree_providers.ftdna_desc")) {
+                style = s"-fx-text-fill: ${colors.textDisabled}; -fx-font-size: 11px;"
               },
-              new Label("  Decoding-Us: Uses the Decoding-Us curated tree with additional variants") {
-                style = "-fx-text-fill: #888888; -fx-font-size: 11px;"
+              new Label(t("settings.tree_providers.decodingus_desc")) {
+                style = s"-fx-text-fill: ${colors.textDisabled}; -fx-font-size: 11px;"
               }
             )
           },
           // MT-DNA Provider
           new VBox(5) {
             children = Seq(
-              new Label("MT-DNA Tree Provider:") {
-                style = "-fx-font-weight: bold;"
+              new Label(t("settings.tree_providers.mtdna")) {
+                style = s"-fx-font-weight: bold; -fx-text-fill: ${colors.textPrimary};"
               },
               mtdnaProviderCombo,
-              new Label("  FTDNA: Uses FamilyTreeDNA's public MT-DNA haplogroup tree") {
-                style = "-fx-text-fill: #888888; -fx-font-size: 11px;"
+              new Label(t("settings.tree_providers.ftdna_mt_desc")) {
+                style = s"-fx-text-fill: ${colors.textDisabled}; -fx-font-size: 11px;"
               },
-              new Label("  Decoding-Us: Uses the Decoding-Us curated tree") {
-                style = "-fx-text-fill: #888888; -fx-font-size: 11px;"
+              new Label(t("settings.tree_providers.decodingus_mt_desc")) {
+                style = s"-fx-text-fill: ${colors.textDisabled}; -fx-font-size: 11px;"
               }
             )
           }
         )
       },
-      new Label("") {
-        prefHeight = 20
-      }, // Spacer
-      new Label("Note: Changes take effect on the next haplogroup analysis.") {
-        style = "-fx-text-fill: #888888; -fx-font-style: italic;"
+      { val spacer = new Region(); spacer.prefHeight = 20; spacer }, // Spacer
+      new Label(t("settings.tree_providers.note")) {
+        style = s"-fx-text-fill: ${colors.textDisabled}; -fx-font-style: italic;"
       }
     )
   }
@@ -135,9 +147,10 @@ class SettingsDialog extends Dialog[Unit] {
   )
 
   // Prompt before download checkbox
-  private val promptCheckbox = new CheckBox("Prompt before downloading references") {
+  private val promptCheckbox = new CheckBox(t("settings.references.prompt_download")) {
     selected = refConfig.promptBeforeDownload
-    tooltip = scalafx.scene.control.Tooltip("When enabled, you'll be asked before downloading large reference files")
+    tooltip = new Tooltip(t("settings.references.prompt_download_tooltip"))
+    style = s"-fx-text-fill: ${colors.textPrimary};"
   }
 
   // Cache directory display and selector
@@ -145,12 +158,14 @@ class SettingsDialog extends Dialog[Unit] {
     text = refConfig.defaultCacheDir.getOrElse(ReferenceConfigService.getCacheDir.toString)
     editable = false
     prefWidth = 350
+    style = s"-fx-background-color: ${colors.border}; -fx-text-fill: ${colors.textPrimary}; -fx-border-color: ${colors.borderLight};"
   }
 
-  private val browseCacheDirButton = new Button("Browse...") {
+  private val browseCacheDirButton = new Button(t("settings.browse")) {
+    style = s"-fx-background-color: ${colors.border}; -fx-text-fill: ${colors.textPrimary};"
     onAction = _ => {
       val dirChooser = new DirectoryChooser {
-        title = "Select Reference Cache Directory"
+        title = t("settings.references.select_cache_dir")
         initialDirectory = new File(cacheDirField.text.value)
       }
       Option(dirChooser.showDialog(dialogPane().getScene.getWindow)).foreach { dir =>
@@ -159,7 +174,8 @@ class SettingsDialog extends Dialog[Unit] {
     }
   }
 
-  private val resetCacheDirButton = new Button("Reset") {
+  private val resetCacheDirButton = new Button(t("settings.reset")) {
+    style = s"-fx-background-color: ${colors.border}; -fx-text-fill: ${colors.textPrimary};"
     onAction = _ => {
       cacheDirField.text = System.getProperty("user.home") + "/.decodingus/cache/references"
     }
@@ -169,32 +185,36 @@ class SettingsDialog extends Dialog[Unit] {
   private val refTable = new TableView[ReferenceRow](refRowData) {
     prefHeight = 250
     columnResizePolicy = TableView.ConstrainedResizePolicy
+    style = s"-fx-background-color: ${colors.surface}; -fx-control-inner-background: ${colors.surface}; -fx-table-cell-border-color: ${colors.borderLight};"
 
     // Build column
     columns += new TableColumn[ReferenceRow, String] {
-      text = "Reference Build"
+      text = t("settings.references.col_build")
       cellValueFactory = { row => StringProperty(row.value.build) }
       prefWidth = 100
       editable = false
+      style = s"-fx-text-fill: ${colors.textPrimary};"
     }
 
     // Local Path column
     columns += new TableColumn[ReferenceRow, String] {
-      text = "Local Path"
+      text = t("settings.references.col_path")
       cellValueFactory = { row => row.value.localPath }
       prefWidth = 300
+      style = s"-fx-text-fill: ${colors.textPrimary};"
     }
 
     // Status column
     columns += new TableColumn[ReferenceRow, String] {
-      text = "Status"
+      text = t("settings.references.col_status")
       cellValueFactory = { row => row.value.status }
       prefWidth = 120
+      style = s"-fx-text-fill: ${colors.textPrimary};"
     }
 
     // Auto-download column
     columns += new TableColumn[ReferenceRow, java.lang.Boolean] {
-      text = "Auto-Download"
+      text = t("settings.references.col_auto_download")
       cellValueFactory = { row =>
         val objProp = new scalafx.beans.property.ObjectProperty[java.lang.Boolean]()
         objProp.value = row.value.autoDownload.value
@@ -204,16 +224,18 @@ class SettingsDialog extends Dialog[Unit] {
         objProp
       }
       prefWidth = 100
+      style = s"-fx-text-fill: ${colors.textPrimary};"
     }
   }
 
   // Buttons for table actions
-  private val refBrowseButton = new Button("Browse...") {
+  private val refBrowseButton = new Button(t("settings.browse")) {
     disable = true
+    style = s"-fx-background-color: ${colors.border}; -fx-text-fill: ${colors.textPrimary};"
     onAction = _ => {
       Option(refTable.selectionModel().getSelectedItem).foreach { row =>
         val fileChooser = new FileChooser {
-          title = s"Select ${row.build} Reference FASTA"
+          title = t("settings.references.select_fasta").replace("{build}", row.build)
           extensionFilters.addAll(
             new FileChooser.ExtensionFilter("FASTA files", Seq("*.fa.gz", "*.fasta.gz", "*.fa", "*.fasta", "*.fna")),
             new FileChooser.ExtensionFilter("All files", "*.*")
@@ -233,8 +255,9 @@ class SettingsDialog extends Dialog[Unit] {
     }
   }
 
-  private val refClearPathButton = new Button("Clear Path") {
+  private val refClearPathButton = new Button(t("settings.references.clear_path")) {
     disable = true
+    style = s"-fx-background-color: ${colors.border}; -fx-text-fill: ${colors.textPrimary};"
     onAction = _ => {
       Option(refTable.selectionModel().getSelectedItem).foreach { row =>
         row.localPath.value = ""
@@ -243,8 +266,9 @@ class SettingsDialog extends Dialog[Unit] {
     }
   }
 
-  private val refToggleAutoDownloadButton = new Button("Toggle Auto-Download") {
+  private val refToggleAutoDownloadButton = new Button(t("settings.references.toggle_auto_download")) {
     disable = true
+    style = s"-fx-background-color: ${colors.border}; -fx-text-fill: ${colors.textPrimary};"
     onAction = _ => {
       Option(refTable.selectionModel().getSelectedItem).foreach { row =>
         row.autoDownload.value = !row.autoDownload.value
@@ -282,7 +306,9 @@ class SettingsDialog extends Dialog[Unit] {
   private val cacheDirRow = new HBox(10) {
     alignment = Pos.CenterLeft
     children = Seq(
-      new Label("Cache Directory:"),
+      new Label(t("settings.references.cache_dir")) {
+        style = s"-fx-text-fill: ${colors.textPrimary};"
+      },
       cacheDirField,
       browseCacheDirButton,
       resetCacheDirButton
@@ -291,29 +317,26 @@ class SettingsDialog extends Dialog[Unit] {
 
   private val referenceContent = new VBox(12) {
     padding = Insets(20)
+    style = s"-fx-background-color: ${colors.background};"
     children = Seq(
-      new Label("Reference Genome Paths:") {
-        style = "-fx-font-weight: bold;"
+      new Label(t("settings.references.paths_title")) {
+        style = s"-fx-font-weight: bold; -fx-text-fill: ${colors.textPrimary};"
       },
-      new Label("Specify local paths to reference FASTA files. If not specified, references will be downloaded to the cache directory when needed.") {
+      new Label(t("settings.references.paths_description")) {
         wrapText = true
         maxWidth = 700
-        style = "-fx-text-fill: #666666; -fx-font-size: 11px;"
+        style = s"-fx-text-fill: ${colors.textMuted}; -fx-font-size: 11px;"
       },
       refTable,
       refTableButtonBar,
-      new Label("") {
-        prefHeight = 5
-      }, // Spacer
-      new Label("Download Settings:") {
-        style = "-fx-font-weight: bold;"
+      { val spacer = new Region(); spacer.prefHeight = 5; spacer }, // Spacer
+      new Label(t("settings.references.download_settings")) {
+        style = s"-fx-font-weight: bold; -fx-text-fill: ${colors.textPrimary};"
       },
       promptCheckbox,
-      new Label("") {
-        prefHeight = 5
-      }, // Spacer
-      new Label("Cache Settings:") {
-        style = "-fx-font-weight: bold;"
+      { val spacer = new Region(); spacer.prefHeight = 5; spacer }, // Spacer
+      new Label(t("settings.references.cache_settings")) {
+        style = s"-fx-font-weight: bold; -fx-text-fill: ${colors.textPrimary};"
       },
       cacheDirRow
     )
@@ -323,16 +346,19 @@ class SettingsDialog extends Dialog[Unit] {
 
   // Create tabs
   private val tabPane = new TabPane {
+    style = s"-fx-background-color: ${colors.background};"
     tabs = Seq(
       new Tab {
-        text = "Tree Providers"
+        text = t("settings.tab.tree_providers")
         content = treeProvidersContent
         closable = false
+        style = s"-fx-background-color: ${colors.surface};"
       },
       new Tab {
-        text = "Reference Genomes"
+        text = t("settings.tab.references")
         content = referenceContent
         closable = false
+        style = s"-fx-background-color: ${colors.surface};"
       }
     )
   }
@@ -388,8 +414,8 @@ class SettingsDialog extends Dialog[Unit] {
         println("[SettingsDialog] Reference config saved successfully")
       case Left(error) =>
         new Alert(AlertType.Error) {
-          title = "Error"
-          headerText = "Failed to save reference configuration"
+          title = t("error.title")
+          headerText = t("settings.references.save_failed")
           contentText = error
         }.showAndWait()
     }

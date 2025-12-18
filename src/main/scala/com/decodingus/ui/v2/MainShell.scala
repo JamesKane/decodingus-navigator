@@ -2,6 +2,7 @@ package com.decodingus.ui.v2
 
 import com.decodingus.i18n.I18n
 import com.decodingus.i18n.I18n.{t, bind}
+import com.decodingus.ui.components.SettingsDialog
 import com.decodingus.workspace.WorkbenchViewModel
 import scalafx.Includes.*
 import scalafx.geometry.{Insets, Pos, Side}
@@ -32,6 +33,26 @@ class MainShell(viewModel: WorkbenchViewModel) extends BorderPane {
   private val projectsView = new ProjectsView(viewModel)
 
   // ============================================================================
+  // Header Bar with Settings
+  // ============================================================================
+
+  private val settingsButton = new Button("⚙") {
+    style = "-fx-background-color: transparent; -fx-text-fill: #888888; -fx-font-size: 18px; -fx-cursor: hand;"
+    tooltip = new Tooltip("Settings")
+    onAction = _ => openSettings()
+  }
+
+  private val headerBar = new HBox {
+    alignment = Pos.CenterRight
+    padding = Insets(5, 15, 5, 15)
+    style = "-fx-background-color: #1a1a1a; -fx-border-color: #333333; -fx-border-width: 0 0 1 0;"
+    children = Seq(
+      new Region { hgrow = Priority.Always }, // Spacer
+      settingsButton
+    )
+  }
+
+  // ============================================================================
   // Tab Navigation
   // ============================================================================
 
@@ -57,12 +78,24 @@ class MainShell(viewModel: WorkbenchViewModel) extends BorderPane {
   // Layout
   // ============================================================================
 
+  top = headerBar
   center = tabPane
   styleClass += "main-shell"
 
   // ============================================================================
   // Helper Methods
   // ============================================================================
+
+  /**
+   * Opens the Settings dialog.
+   */
+  private def openSettings(): Unit = {
+    val dialog = new SettingsDialog()
+    Option(this.getScene).flatMap(s => Option(s.getWindow)).foreach { window =>
+      dialog.initOwner(window)
+    }
+    dialog.showAndWait()
+  }
 
   /**
    * Creates a tab with an icon and i18n-bound text.
