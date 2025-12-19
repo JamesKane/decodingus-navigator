@@ -4,9 +4,9 @@ import com.decodingus.i18n.I18n.{t, bind}
 import com.decodingus.i18n.Formatters
 import com.decodingus.str.StrCsvParser
 import com.decodingus.config.{FeatureToggles, LabsConfig}
-import com.decodingus.analysis.StrCall
+import com.decodingus.analysis.{CallableLociProcessor, StrCall}
 import com.decodingus.haplogroup.tree.TreeType
-import com.decodingus.ui.components.{AddDataDialog, AddSequenceDataDialog, AncestryResultDialog, ConfirmDialog, DataInput, DataType, EditSequenceRunDialog, EditSubjectDialog, ImportVendorFastaDialog, InfoDialog, MtdnaVariantsPanel, SequenceDataInput, SequenceRunEditResult, SourceReconciliationPanel, VcfMetadata, VcfMetadataDialog, VendorFastaImportRequest, YChromosomeIdeogramPanel, YStrDetailDialog, YStrSummaryPanel}
+import com.decodingus.ui.components.{AddDataDialog, AddSequenceDataDialog, AncestryResultDialog, CallableLociResultDialog, ConfirmDialog, DataInput, DataType, EditSequenceRunDialog, EditSubjectDialog, ImportVendorFastaDialog, InfoDialog, MtdnaVariantsPanel, SequenceDataInput, SequenceRunEditResult, SourceReconciliationPanel, VcfMetadata, VcfMetadataDialog, VendorFastaImportRequest, YChromosomeIdeogramPanel, YStrDetailDialog, YStrSummaryPanel}
 import com.decodingus.ui.v2.BiosampleExtensions.*
 import com.decodingus.util.Logger
 import com.decodingus.workspace.WorkbenchViewModel
@@ -1152,32 +1152,32 @@ class SubjectDetailView(viewModel: WorkbenchViewModel) extends VBox {
 
     val items = scala.collection.mutable.ArrayBuffer[MenuItem]()
 
-    // Run WGS Metrics
+    // --- Coverage Analysis ---
     items += new MenuItem("Run WGS Metrics") {
       disable = alignment.metrics.flatMap(_.meanCoverage).isDefined
       onAction = _ => handleRunWgsMetrics(seqRunIndex, alignIndex)
     }
 
-    // Run Callable Loci
     items += new MenuItem("Run Callable Loci") {
       disable = alignment.metrics.flatMap(_.callableBases).isDefined
       onAction = _ => handleRunCallableLoci(seqRunIndex, alignIndex)
     }
 
+    items += new MenuItem("View Coverage Report") {
+      onAction = _ => showCachedCallableLociReport(seqRunIndex, alignIndex)
+    }
+
     items += new SeparatorMenuItem()
 
-    // Haplogroup Analysis submenu
-    items += new MenuItem("Run Y-DNA Haplogroup Analysis") {
+    // --- Haplogroup Analysis ---
+    items += new MenuItem("Run Y-DNA Haplogroup") {
       onAction = _ => handleRunHaplogroupAnalysis(seqRunIndex, alignIndex, alignment, TreeType.YDNA)
     }
 
-    items += new MenuItem("Run mtDNA Haplogroup Analysis") {
+    items += new MenuItem("Run mtDNA Haplogroup") {
       onAction = _ => handleRunHaplogroupAnalysis(seqRunIndex, alignIndex, alignment, TreeType.MTDNA)
     }
 
-    items += new SeparatorMenuItem()
-
-    // View cached reports
     items += new MenuItem("View Y-DNA Report") {
       onAction = _ => showCachedHaplogroupReport(seqRunIndex, alignIndex, TreeType.YDNA)
     }
@@ -1188,7 +1188,7 @@ class SubjectDetailView(viewModel: WorkbenchViewModel) extends VBox {
 
     items += new SeparatorMenuItem()
 
-    // Details
+    // --- Other ---
     items += new MenuItem("Details") {
       onAction = _ => showAlignmentDetailsDialog(alignment)
     }
@@ -1590,6 +1590,44 @@ class SubjectDetailView(viewModel: WorkbenchViewModel) extends VBox {
             t("haplogroup.no_report_title"),
             t("haplogroup.no_report_header", dnaType),
             t("haplogroup.no_artifacts")
+          )
+      }
+    }
+  }
+
+  /** Show cached callable loci report if it exists */
+  private def showCachedCallableLociReport(seqRunIndex: Int, alignIndex: Int): Unit = {
+    currentSubject.value.foreach { subject =>
+      viewModel.getCallableLociArtifactDirForAlignment(subject.accession, seqRunIndex, alignIndex) match {
+        case Some(artifactDir) =>
+          CallableLociProcessor.loadFromCache(artifactDir) match {
+            case Some(result) =>
+              try {
+                val dialog = new CallableLociResultDialog(
+                  result = result,
+                  artifactDir = Some(artifactDir.getParent) // Parent dir since callable_loci is the subdir
+                )
+                Option(SubjectDetailView.this.getScene).flatMap(s => Option(s.getWindow)).foreach { window =>
+                  dialog.initOwner(window)
+                }
+                dialog.showAndWait()
+              } catch {
+                case e: Exception =>
+                  log.error(s"Error showing callable loci report dialog: ${e.getMessage}", e)
+                  showInfoDialog(t("error.title"), "Report Error", e.getMessage)
+              }
+            case None =>
+              showInfoDialog(
+                "No Report",
+                "Callable Loci Not Analyzed",
+                "No callable loci analysis data found. Please run the analysis first."
+              )
+          }
+        case None =>
+          showInfoDialog(
+            "No Report",
+            "Callable Loci Not Analyzed",
+            "No analysis artifacts found for this alignment."
           )
       }
     }

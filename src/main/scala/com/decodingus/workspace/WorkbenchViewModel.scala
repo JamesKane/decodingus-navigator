@@ -2276,6 +2276,26 @@ class WorkbenchViewModel(
   }
 
   /**
+   * Gets the callable loci artifact directory for a specific alignment.
+   */
+  def getCallableLociArtifactDirForAlignment(sampleAccession: String, sequenceRunIndex: Int, alignmentIndex: Int): Option[java.nio.file.Path] = {
+    for {
+      subject <- findSubject(sampleAccession)
+      sequenceRuns = _workspace.value.main.getSequenceRunsForBiosample(subject)
+      seqRun <- sequenceRuns.lift(sequenceRunIndex)
+      alignments = _workspace.value.main.getAlignmentsForSequenceRun(seqRun)
+      alignment <- alignments.lift(alignmentIndex)
+    } yield {
+      val artifactCtx = ArtifactContext(
+        sampleAccession = sampleAccession,
+        sequenceRunUri = seqRun.atUri,
+        alignmentUri = alignment.atUri
+      )
+      artifactCtx.getSubdir("callable_loci")
+    }
+  }
+
+  /**
    * Runs haplogroup analysis for a specific alignment.
    */
   def runHaplogroupAnalysisForAlignment(
