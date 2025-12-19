@@ -322,6 +322,9 @@ object CoverageCallableProcessor {
 
     // Note: When loading from cache, we don't have the full coverage metrics
     // This is a partial result suitable for callable loci visualization
+    // Try to load coverage.txt if available for samtools-style stats
+    val coverageStats = loadCoverageStats(callableLociDir)
+
     Some(CoverageCallableResult(
       genomeTerritory = sortedSummaries.map(s => s.refN + s.callable + s.noCoverage + s.lowCoverage + s.excessiveCoverage + s.poorMappingQuality).sum,
       meanCoverage = 0.0,  // Not available from cache
@@ -339,8 +342,40 @@ object CoverageCallableProcessor {
       pct50x = 0.0,
       callableBases = callableBases,
       contigSummaries = sortedSummaries,
-      contigCoverage = Map.empty
+      contigCoverage = Map.empty,
+      contigCoverageStats = coverageStats
     ))
+  }
+
+  /**
+   * Load samtools-style coverage stats from coverage.txt if available.
+   */
+  private def loadCoverageStats(callableLociDir: Path): List[ContigCoverageStats] = {
+    val coverageFile = callableLociDir.resolve("coverage.txt")
+    if (!Files.exists(coverageFile)) return List.empty
+
+    val stats = ListBuffer[ContigCoverageStats]()
+    Using(Source.fromFile(coverageFile.toFile)) { source =>
+      for (line <- source.getLines()) {
+        if (!line.startsWith("#") && line.trim.nonEmpty) {
+          val fields = line.split("\\t")
+          if (fields.length >= 9) {
+            stats += ContigCoverageStats(
+              contig = fields(0),
+              startPos = fields(1).toLong,
+              endPos = fields(2).toLong,
+              numReads = fields(3).toLong,
+              covBases = fields(4).toLong,
+              coverage = fields(5).toDouble,
+              meanDepth = fields(6).toDouble,
+              meanBaseQ = fields(7).toDouble,
+              meanMapQ = fields(8).toDouble
+            )
+          }
+        }
+      }
+    }
+    stats.toList
   }
 
   /**

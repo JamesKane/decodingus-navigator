@@ -43,6 +43,22 @@ case class ContigCoverageMetrics(
 )
 
 /**
+ * Per-contig coverage statistics matching samtools coverage output format.
+ * Provides read counts, coverage breadth, depth, and quality metrics.
+ */
+case class ContigCoverageStats(
+  contig: String,
+  startPos: Long,        // Always 1
+  endPos: Long,          // Contig length
+  numReads: Long,        // Number of reads mapped to this contig
+  covBases: Long,        // Number of bases with coverage > 0
+  coverage: Double,      // Percentage of contig covered (covBases / length * 100)
+  meanDepth: Double,     // Mean depth across all positions
+  meanBaseQ: Double,     // Mean base quality (weighted by coverage)
+  meanMapQ: Double       // Mean mapping quality (weighted by coverage)
+)
+
+/**
  * Combined result from coverage and callable analysis.
  * Replaces both WgsMetrics and CallableLociResult.
  */
@@ -68,7 +84,10 @@ case class CoverageCallableResult(
   contigSummaries: List[ContigSummary],
 
   // Per-contig coverage for visualizations
-  contigCoverage: Map[String, ContigCoverageMetrics]
+  contigCoverage: Map[String, ContigCoverageMetrics],
+
+  // Per-contig samtools-style coverage stats
+  contigCoverageStats: List[ContigCoverageStats]
 )
 
 /**
@@ -105,35 +124,69 @@ private class ContigCallableAccumulator {
 
 /**
  * Accumulator for per-contig coverage statistics using Welford's algorithm.
+ * Also tracks quality metrics for samtools-style output.
  */
 private class ContigCoverageAccumulator(val contigName: String, val contigLength: Long) {
   private val histogram = new Array[Long](256)  // depth 0-255
-  private var count = 0L
+  private var positionCount = 0L      // Number of positions processed
   private var mean = 0.0
-  private var m2 = 0.0  // For Welford's variance
+  private var m2 = 0.0                // For Welford's variance
 
-  def addDepth(depth: Int): Unit = {
+  // For samtools coverage-style metrics
+  private var coveredBases = 0L       // Positions with depth > 0
+  private var totalBaseObs = 0L       // Sum of all depths (total base observations)
+  private var baseQualitySum = 0L     // Sum of base qualities across all observations
+  private var mapQualitySum = 0L      // Sum of mapping qualities across all observations
+  private var readStarts = 0L         // Number of reads starting at positions in this contig
+
+  /**
+   * Add a position's coverage data.
+   * @param depth Number of reads covering this position
+   * @param baseQualSum Sum of base qualities at this position
+   * @param mapQualSum Sum of mapping qualities at this position
+   * @param numReadStarts Number of reads that start at this position
+   */
+  def addPosition(depth: Int, baseQualSum: Int, mapQualSum: Int, numReadStarts: Int): Unit = {
     val clampedDepth = math.min(depth, 255)
     histogram(clampedDepth) += 1
-    count += 1
+    positionCount += 1
+
+    if (depth > 0) {
+      coveredBases += 1
+      totalBaseObs += depth
+      baseQualitySum += baseQualSum
+      mapQualitySum += mapQualSum
+    }
+    readStarts += numReadStarts
 
     // Welford's online algorithm for mean and variance
     val delta = depth - mean
-    mean += delta / count
+    mean += delta / positionCount
     val delta2 = depth - mean
     m2 += delta * delta2
   }
 
+  // Legacy method for backward compatibility
+  def addDepth(depth: Int): Unit = addPosition(depth, 0, 0, 0)
+
   def getMean: Double = mean
 
-  def getVariance: Double = if (count < 2) 0.0 else m2 / count
+  def getVariance: Double = if (positionCount < 2) 0.0 else m2 / positionCount
 
   def getStdDev: Double = math.sqrt(getVariance)
 
+  def getCoveredBases: Long = coveredBases
+
+  def getReadCount: Long = readStarts
+
+  def getMeanBaseQuality: Double = if (totalBaseObs == 0) 0.0 else baseQualitySum.toDouble / totalBaseObs
+
+  def getMeanMapQuality: Double = if (totalBaseObs == 0) 0.0 else mapQualitySum.toDouble / totalBaseObs
+
   def getMedian: Double = {
-    if (count == 0) 0.0
+    if (positionCount == 0) 0.0
     else {
-      val halfCount = count / 2
+      val halfCount = positionCount / 2
       var cumulative = 0L
       var result = 255.0
       var found = false
@@ -153,9 +206,9 @@ private class ContigCoverageAccumulator(val contigName: String, val contigLength
   def getHistogram: Array[Long] = histogram.clone()
 
   def getPctAtLeast(minDepth: Int): Double = {
-    if (count == 0) return 0.0
+    if (positionCount == 0) return 0.0
     val atLeast = (minDepth until histogram.length).map(histogram(_)).sum
-    atLeast.toDouble / count
+    atLeast.toDouble / positionCount
   }
 
   def toContigCoverageMetrics: ContigCoverageMetrics = ContigCoverageMetrics(
@@ -168,6 +221,18 @@ private class ContigCoverageAccumulator(val contigName: String, val contigLength
     pct20x = getPctAtLeast(20),
     pct30x = getPctAtLeast(30),
     coverageHistogram = getHistogram
+  )
+
+  def toContigCoverageStats: ContigCoverageStats = ContigCoverageStats(
+    contig = contigName,
+    startPos = 1,
+    endPos = contigLength,
+    numReads = readStarts,
+    covBases = coveredBases,
+    coverage = if (contigLength == 0) 0.0 else (coveredBases.toDouble / contigLength) * 100.0,
+    meanDepth = getMean,
+    meanBaseQ = getMeanBaseQuality,
+    meanMapQ = getMeanMapQuality
   )
 }
 
@@ -372,6 +437,24 @@ class CoverageCallableWalker {
         val pileup = locus.getRecordAndOffsets
         val rawDepth = pileup.size()
 
+        // Calculate quality sums and read starts for samtools-style metrics
+        var baseQualSum = 0
+        var mapQualSum = 0
+        var readStartCount = 0
+
+        val pileupIter = pileup.iterator()
+        while (pileupIter.hasNext) {
+          val rec = pileupIter.next()
+          val read = rec.getRecord
+          baseQualSum += rec.getBaseQuality.toInt
+          mapQualSum += read.getMappingQuality
+
+          // Count reads that start at this position
+          if (read.getAlignmentStart == position) {
+            readStartCount += 1
+          }
+        }
+
         // Update coverage statistics
         val clampedDepth = math.min(rawDepth, 255)
         globalCoverageHist(clampedDepth) += 1
@@ -383,8 +466,8 @@ class CoverageCallableWalker {
         val delta2 = rawDepth - globalMean
         globalM2 += delta * delta2
 
-        // Per-contig coverage
-        contigCoverage(contig).addDepth(rawDepth)
+        // Per-contig coverage with quality metrics
+        contigCoverage(contig).addPosition(rawDepth, baseQualSum, mapQualSum, readStartCount)
 
         // Determine callable state
         val refBase = getRefBase(contig, position)
@@ -443,6 +526,11 @@ class CoverageCallableWalker {
         contigCallable(seq.getSequenceName).toContigSummary(seq.getSequenceName)
       }
 
+      // Build samtools-style coverage stats
+      val coverageStatsList = mainContigs.map { seq =>
+        contigCoverage(seq.getSequenceName).toContigCoverageStats
+      }
+
       // Write per-contig summary files (GATK format)
       contigSummaries.foreach { summary =>
         val summaryPath = outputDir.resolve(s"${summary.contigName}.table.txt")
@@ -454,6 +542,15 @@ class CoverageCallableWalker {
           writer.println(s"LOW_COVERAGE ${summary.lowCoverage}")
           writer.println(s"EXCESSIVE_COVERAGE ${summary.excessiveCoverage}")
           writer.println(s"POOR_MAPPING_QUALITY ${summary.poorMappingQuality}")
+        }
+      }
+
+      // Write samtools-style coverage report
+      val coverageReportPath = outputDir.resolve("coverage.txt")
+      Using.resource(new PrintWriter(coverageReportPath.toFile)) { writer =>
+        writer.println("#rname\tstartpos\tendpos\tnumreads\tcovbases\tcoverage\tmeandepth\tmeanbaseq\tmeanmapq")
+        coverageStatsList.foreach { stats =>
+          writer.println(f"${stats.contig}\t${stats.startPos}\t${stats.endPos}\t${stats.numReads}\t${stats.covBases}\t${stats.coverage}%.4f\t${stats.meanDepth}%.4f\t${stats.meanBaseQ}%.1f\t${stats.meanMapQ}%.1f")
         }
       }
 
@@ -474,7 +571,8 @@ class CoverageCallableWalker {
         pct50x = getPctAtLeast(globalCoverageHist, globalCount, 50),
         callableBases = contigSummaries.map(_.callable).sum,
         contigSummaries = contigSummaries,
-        contigCoverage = contigCoverage.view.mapValues(_.toContigCoverageMetrics).toMap
+        contigCoverage = contigCoverage.view.mapValues(_.toContigCoverageMetrics).toMap,
+        contigCoverageStats = coverageStatsList
       )
 
       onProgress("Coverage and callable analysis complete.", totalBases, totalBases)
