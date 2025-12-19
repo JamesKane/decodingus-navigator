@@ -1,6 +1,6 @@
 # Unified Quality Metrics Walker
 
-## Status: Phase 1 & 2 Complete, Phase 3 Ready
+## Status: Phase 1, 2, & 3 (Integration) Complete
 
 **Last Updated**: 2025-12-18
 
@@ -632,14 +632,20 @@ Recommendation: Generate BED files for compatibility, add direct binning later a
 - [ ] Validate callable counts against CallableLoci
 - [ ] Performance benchmarking vs 2-pass GATK approach
 
-### Phase 3: Integration
+### Phase 3: Integration ✅ COMPLETE
 - [x] Create `UnifiedMetricsProcessor` following existing processor pattern (Phase 1)
 - [x] Create `CoverageCallableProcessor` wrapping the walker (Phase 2)
-- [ ] Replace `MultipleMetricsProcessor` usage (remove R dependency)
-- [ ] Update `WorkbenchViewModel` to use new unified processors
-- [ ] Ensure compatibility with existing `ContigSummary` visualization
-- [ ] Update `AnalysisCache` to handle new result types
-- [ ] Deprecate `WgsMetricsProcessor` and `CallableLociProcessor`
+- [x] Add feature toggle `experimental.unified-metrics-enabled`
+- [x] Update `AnalysisCoordinator.runBatchAnalysis()` to use `CoverageCallableProcessor`
+- [x] Ensure compatibility with existing `ContigSummary` visualization
+- [x] Convert results to `WgsMetrics` and `CallableLociResult` for downstream compatibility
+- [ ] Replace `MultipleMetricsProcessor` usage (remove R dependency) - separate issue
+- [ ] Deprecate `WgsMetricsProcessor` and `CallableLociProcessor` - after validation
+
+**Wired up in:**
+- `src/main/scala/com/decodingus/config/FeatureToggles.scala` - toggle access
+- `src/main/resources/feature_toggles.conf` - toggle definition (enabled by default)
+- `src/main/scala/com/decodingus/workspace/services/AnalysisCoordinator.scala` - batch analysis
 
 #### Phase 3 Implementation Strategy
 

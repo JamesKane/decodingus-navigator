@@ -3,7 +3,7 @@ package com.decodingus.workspace.services
 import com.decodingus.analysis.*
 import com.decodingus.analysis.SexInference.{InferredSex, SexInferenceResult}
 import com.decodingus.analysis.sv.{SvAnalysisResult, SvCaller, SvCallerConfig}
-import com.decodingus.config.UserPreferencesService
+import com.decodingus.config.{FeatureToggles, UserPreferencesService}
 import com.decodingus.genotype.model.{TestTypeDefinition, TestTypes}
 import com.decodingus.haplogroup.model.HaplogroupResult as AnalysisHaplogroupResult
 import com.decodingus.haplogroup.processor.HaplogroupProcessor
@@ -1255,45 +1255,92 @@ class AnalysisCoordinator(
         log.debug(s"Using cached read length: ${checkpoint.maxReadLength}")
       }
 
-      // Step 2: WGS Metrics (0.07 - 0.17) - uses read length from step 1
-      if (!checkpoint.wgsMetricsCompleted) {
-        onProgress(AnalysisProgress("Step 2/8: Running coverage depth analysis...", 0.07))
+      // Steps 2-3: Coverage & Callable Loci (0.07 - 0.30)
+      // Use unified processor when feature toggle is enabled
+      if (FeatureToggles.experimental.unifiedMetricsEnabled && !checkpoint.wgsMetricsCompleted && !checkpoint.callableLociCompleted) {
+        // UNIFIED PATH: Single-pass coverage + callable loci analysis
+        onProgress(AnalysisProgress("Step 2-3/8: Running unified coverage & callable loci...", 0.07))
+        log.info("[UnifiedMetrics] Using single-pass CoverageCallableProcessor")
 
-        // Use currentSeqRun which has updated read length from Step 1
-        // Also patch effectiveReadLength in case Step 1 was cached but checkpoint has it
-        val seqRunForWgs = currentSeqRun.copy(maxReadLength = effectiveReadLength)
-        log.debug(s"WGS Metrics using maxReadLength: ${seqRunForWgs.maxReadLength}")
+        val seqRunForUnified = currentSeqRun.copy(maxReadLength = effectiveReadLength)
 
-        val wgsMetricsResult = runWgsMetricsStep(bamPath, referencePath, seqRunForWgs, artifactCtx, { pct =>
-          onProgress(AnalysisProgress(s"Step 2/8: Coverage analysis (${(pct * 100).toInt}%)", 0.07 + pct * 0.10))
+        val unifiedResult = runUnifiedCoverageCallableStep(bamPath, referencePath, seqRunForUnified, artifactCtx, { pct =>
+          onProgress(AnalysisProgress(s"Step 2-3/8: Coverage & callable (${(pct * 100).toInt}%)", 0.07 + pct * 0.23))
         })
-        wgsMetricsResult match {
-          case Right(wgsMetrics) =>
-            result = result.copy(wgsMetrics = Some(wgsMetrics))
-            // Update alignment metrics - use getCurrentAlignment to get latest state
+
+        unifiedResult match {
+          case Right((ccResult, _)) =>
+            // Create WgsMetrics-compatible result for downstream compatibility
+            val wgsMetrics = WgsMetrics(
+              genomeTerritory = ccResult.genomeTerritory,
+              meanCoverage = ccResult.meanCoverage,
+              sdCoverage = ccResult.sdCoverage,
+              medianCoverage = ccResult.medianCoverage,
+              madCoverage = 0.0, // Not computed in unified processor
+              pctExcMapq = 0.0,
+              pctExcDupe = 0.0,
+              pctExcUnpaired = 0.0,
+              pctExcBaseq = 0.0,
+              pctExcOverlap = 0.0,
+              pctExcCapped = 0.0,
+              pctExcTotal = 0.0,
+              pct1x = ccResult.pct1x,
+              pct5x = ccResult.pct5x,
+              pct10x = ccResult.pct10x,
+              pct15x = ccResult.pct15x,
+              pct20x = ccResult.pct20x,
+              pct25x = ccResult.pct25x,
+              pct30x = ccResult.pct30x,
+              pct40x = ccResult.pct40x,
+              pct50x = ccResult.pct50x,
+              pct60x = 0.0,
+              pct70x = 0.0,
+              pct80x = 0.0,
+              pct90x = 0.0,
+              pct100x = 0.0,
+              hetSnpSensitivity = 0.0,
+              hetSnpQ = 0.0
+            )
+
+            // Create CallableLociResult for downstream compatibility
+            val clResult = CallableLociResult(
+              callableBases = ccResult.callableBases,
+              contigAnalysis = ccResult.contigSummaries
+            )
+
+            result = result.copy(
+              wgsMetrics = Some(wgsMetrics),
+              callableLociResult = Some(clResult)
+            )
+
+            // Update alignment metrics with both coverage and callable data
             val currentAlign = getCurrentAlignment
             val alignmentMetrics = currentAlign.metrics.getOrElse(AlignmentMetrics()).copy(
-              genomeTerritory = Some(wgsMetrics.genomeTerritory),
-              meanCoverage = Some(wgsMetrics.meanCoverage),
-              sdCoverage = Some(wgsMetrics.sdCoverage),
-              medianCoverage = Some(wgsMetrics.medianCoverage),
-              pct10x = Some(wgsMetrics.pct10x),
-              pct20x = Some(wgsMetrics.pct20x),
-              pct30x = Some(wgsMetrics.pct30x)
+              genomeTerritory = Some(ccResult.genomeTerritory),
+              meanCoverage = Some(ccResult.meanCoverage),
+              sdCoverage = Some(ccResult.sdCoverage),
+              medianCoverage = Some(ccResult.medianCoverage),
+              pct10x = Some(ccResult.pct10x),
+              pct20x = Some(ccResult.pct20x),
+              pct30x = Some(ccResult.pct30x),
+              callableBases = Some(ccResult.callableBases),
+              callableLociComplete = Some(true)
             )
             val updatedAlignment = currentAlign.copy(metrics = Some(alignmentMetrics))
             currentState = workspaceOps.updateAlignment(currentState, updatedAlignment)
 
             // Persist to H2 immediately for durability
             h2Service.updateAlignment(updatedAlignment) match {
-              case Right(_) => log.debug(s"Alignment persisted to H2 after WGS metrics")
+              case Right(_) => log.debug(s"Alignment persisted to H2 after unified coverage/callable")
               case Left(err) => log.warn(s"Failed to persist Alignment to H2: $err")
             }
 
+            // Mark both steps complete
             checkpoint = AnalysisCheckpoint.markStepComplete(artifactDir, checkpoint, 2)
+            checkpoint = AnalysisCheckpoint.markStepComplete(artifactDir, checkpoint, 3)
 
             // Phase 2 Test Type Refinement: Use actual coverage data to refine test type
-            refineTestType(bamPath, currentSeqRun, wgsMetrics.meanCoverage) match {
+            refineTestType(bamPath, currentSeqRun, ccResult.meanCoverage) match {
               case Some(refinedType) if TestTypeInference.shouldUpdateTestType(currentSeqRun.testType, refinedType) =>
                 log.info(s"Refining test type from ${currentSeqRun.testType} to ${refinedType.code} based on coverage analysis")
                 val updatedSeqRun = currentSeqRun.copy(testType = refinedType.code)
@@ -1310,48 +1357,124 @@ class AnalysisCoordinator(
             }
 
           case Left(error) =>
-            log.warn(s"WGS metrics warning: $error")
-            // Mark complete anyway to allow continuing (metrics are optional)
+            log.warn(s"Unified metrics warning: $error")
+            // Mark both steps complete to allow continuing
             checkpoint = AnalysisCheckpoint.markStepComplete(artifactDir, checkpoint, 2)
+            checkpoint = AnalysisCheckpoint.markStepComplete(artifactDir, checkpoint, 3)
         }
+
       } else {
-        onProgress(AnalysisProgress("Step 2/8: Coverage analysis (cached)", 0.17))
+        // LEGACY PATH: Separate WGS metrics and callable loci steps
+
+        // Step 2: WGS Metrics (0.07 - 0.17) - uses read length from step 1
+        if (!checkpoint.wgsMetricsCompleted) {
+          onProgress(AnalysisProgress("Step 2/8: Running coverage depth analysis...", 0.07))
+
+          // Use currentSeqRun which has updated read length from Step 1
+          // Also patch effectiveReadLength in case Step 1 was cached but checkpoint has it
+          val seqRunForWgs = currentSeqRun.copy(maxReadLength = effectiveReadLength)
+          log.debug(s"WGS Metrics using maxReadLength: ${seqRunForWgs.maxReadLength}")
+
+          val wgsMetricsResult = runWgsMetricsStep(bamPath, referencePath, seqRunForWgs, artifactCtx, { pct =>
+            onProgress(AnalysisProgress(s"Step 2/8: Coverage analysis (${(pct * 100).toInt}%)", 0.07 + pct * 0.10))
+          })
+          wgsMetricsResult match {
+            case Right(wgsMetrics) =>
+              result = result.copy(wgsMetrics = Some(wgsMetrics))
+              // Update alignment metrics - use getCurrentAlignment to get latest state
+              val currentAlign = getCurrentAlignment
+              val alignmentMetrics = currentAlign.metrics.getOrElse(AlignmentMetrics()).copy(
+                genomeTerritory = Some(wgsMetrics.genomeTerritory),
+                meanCoverage = Some(wgsMetrics.meanCoverage),
+                sdCoverage = Some(wgsMetrics.sdCoverage),
+                medianCoverage = Some(wgsMetrics.medianCoverage),
+                pct10x = Some(wgsMetrics.pct10x),
+                pct20x = Some(wgsMetrics.pct20x),
+                pct30x = Some(wgsMetrics.pct30x)
+              )
+              val updatedAlignment = currentAlign.copy(metrics = Some(alignmentMetrics))
+              currentState = workspaceOps.updateAlignment(currentState, updatedAlignment)
+
+              // Persist to H2 immediately for durability
+              h2Service.updateAlignment(updatedAlignment) match {
+                case Right(_) => log.debug(s"Alignment persisted to H2 after WGS metrics")
+                case Left(err) => log.warn(s"Failed to persist Alignment to H2: $err")
+              }
+
+              checkpoint = AnalysisCheckpoint.markStepComplete(artifactDir, checkpoint, 2)
+
+              // Phase 2 Test Type Refinement: Use actual coverage data to refine test type
+              refineTestType(bamPath, currentSeqRun, wgsMetrics.meanCoverage) match {
+                case Some(refinedType) if TestTypeInference.shouldUpdateTestType(currentSeqRun.testType, refinedType) =>
+                  log.info(s"Refining test type from ${currentSeqRun.testType} to ${refinedType.code} based on coverage analysis")
+                  val updatedSeqRun = currentSeqRun.copy(testType = refinedType.code)
+                  currentState = workspaceOps.updateSequenceRunByUri(currentState, updatedSeqRun)
+                  currentSeqRun = updatedSeqRun
+
+                  // Persist updated test type to H2
+                  h2Service.updateSequenceRun(updatedSeqRun) match {
+                    case Right(_) => log.debug(s"SequenceRun test type updated in H2: ${refinedType.code}")
+                    case Left(err) => log.warn(s"Failed to update SequenceRun test type in H2: $err")
+                  }
+                case _ =>
+                  log.debug(s"Test type unchanged: ${currentSeqRun.testType}")
+              }
+
+            case Left(error) =>
+              log.warn(s"WGS metrics warning: $error")
+              // Mark complete anyway to allow continuing (metrics are optional)
+              checkpoint = AnalysisCheckpoint.markStepComplete(artifactDir, checkpoint, 2)
+          }
+        } else {
+          onProgress(AnalysisProgress("Step 2/8: Coverage analysis (cached)", 0.17))
+        }
+
+        // Step 3: Callable Loci (0.17 - 0.30)
+        if (!checkpoint.callableLociCompleted) {
+          onProgress(AnalysisProgress("Step 3/8: Running callable loci analysis...", 0.17))
+          // Use currentSeqRun for testType and getCurrentAlignment for coverage metrics in minDepth calculation
+          val callableLociResult = runCallableLociStep(bamPath, referencePath, currentSeqRun, getCurrentAlignment, artifactCtx, { pct =>
+            onProgress(AnalysisProgress(s"Step 3/8: Callable loci (${(pct * 100).toInt}%)", 0.17 + pct * 0.13))
+          })
+          callableLociResult match {
+            case Right((clResult, _)) =>
+              result = result.copy(callableLociResult = Some(clResult))
+              // Update alignment with callable bases - use getCurrentAlignment for latest metrics
+              val currentAlign = getCurrentAlignment
+              val alignmentMetrics = currentAlign.metrics
+                .getOrElse(AlignmentMetrics())
+                .copy(
+                  callableBases = Some(clResult.callableBases),
+                  callableLociComplete = Some(true)
+                )
+              val updatedAlignment = currentAlign.copy(metrics = Some(alignmentMetrics))
+              currentState = workspaceOps.updateAlignment(currentState, updatedAlignment)
+
+              // Persist to H2 immediately for durability
+              h2Service.updateAlignment(updatedAlignment) match {
+                case Right(_) => log.debug(s"Alignment persisted to H2 after callable loci")
+                case Left(err) => log.warn(s"Failed to persist Alignment to H2: $err")
+              }
+
+              checkpoint = AnalysisCheckpoint.markStepComplete(artifactDir, checkpoint, 3)
+            case Left(error) =>
+              log.warn(s"Callable loci warning: $error")
+              checkpoint = AnalysisCheckpoint.markStepComplete(artifactDir, checkpoint, 3)
+          }
+        } else {
+          onProgress(AnalysisProgress("Step 3/8: Callable loci (cached)", 0.30))
+        }
       }
 
-      // Step 3: Callable Loci (0.17 - 0.30)
-      if (!checkpoint.callableLociCompleted) {
-        onProgress(AnalysisProgress("Step 3/8: Running callable loci analysis...", 0.17))
-        // Use currentSeqRun for testType and getCurrentAlignment for coverage metrics in minDepth calculation
-        val callableLociResult = runCallableLociStep(bamPath, referencePath, currentSeqRun, getCurrentAlignment, artifactCtx, { pct =>
-          onProgress(AnalysisProgress(s"Step 3/8: Callable loci (${(pct * 100).toInt}%)", 0.17 + pct * 0.13))
-        })
-        callableLociResult match {
-          case Right((clResult, _)) =>
-            result = result.copy(callableLociResult = Some(clResult))
-            // Update alignment with callable bases - use getCurrentAlignment for latest metrics
-            val currentAlign = getCurrentAlignment
-            val alignmentMetrics = currentAlign.metrics
-              .getOrElse(AlignmentMetrics())
-              .copy(
-                callableBases = Some(clResult.callableBases),
-                callableLociComplete = Some(true)
-              )
-            val updatedAlignment = currentAlign.copy(metrics = Some(alignmentMetrics))
-            currentState = workspaceOps.updateAlignment(currentState, updatedAlignment)
-
-            // Persist to H2 immediately for durability
-            h2Service.updateAlignment(updatedAlignment) match {
-              case Right(_) => log.debug(s"Alignment persisted to H2 after callable loci")
-              case Left(err) => log.warn(s"Failed to persist Alignment to H2: $err")
-            }
-
-            checkpoint = AnalysisCheckpoint.markStepComplete(artifactDir, checkpoint, 3)
-          case Left(error) =>
-            log.warn(s"Callable loci warning: $error")
-            checkpoint = AnalysisCheckpoint.markStepComplete(artifactDir, checkpoint, 3)
-        }
-      } else {
+      // Handle case where only one of the steps was cached (shouldn't happen with unified, but for safety)
+      if (checkpoint.wgsMetricsCompleted && !checkpoint.callableLociCompleted) {
+        onProgress(AnalysisProgress("Step 2/8: Coverage analysis (cached)", 0.17))
+      }
+      if (!checkpoint.wgsMetricsCompleted && checkpoint.callableLociCompleted) {
         onProgress(AnalysisProgress("Step 3/8: Callable loci (cached)", 0.30))
+      }
+      if (checkpoint.wgsMetricsCompleted && checkpoint.callableLociCompleted) {
+        onProgress(AnalysisProgress("Step 2-3/8: Coverage & callable (cached)", 0.30))
       }
 
       // Step 4: Sex Inference (0.30 - 0.35)
@@ -1714,6 +1837,48 @@ class AnalysisCoordinator(
     }
 
     log.info(s"[CallableLoci] Using minDepth=$minDepth (testType=${seqRun.testType}, meanCov=${f"$meanCoverage%.1f"}x, isHiFi=$isHiFi, isLowPass=$isLowPass)")
+
+    processor.process(
+      bamPath = bamPath,
+      referencePath = referencePath,
+      onProgress = (_, current, total) => {
+        if (total > 0) onProgress(current.toDouble / total)
+      },
+      artifactContext = Some(artifactCtx),
+      minDepth = minDepth
+    ).left.map(_.getMessage)
+  }
+
+  /**
+   * Run unified coverage + callable loci step for batch analysis.
+   * Replaces separate WGS metrics and callable loci steps with a single-pass analysis.
+   * Uses HTSJDK SamLocusIterator instead of GATK tools.
+   */
+  private def runUnifiedCoverageCallableStep(
+    bamPath: String,
+    referencePath: String,
+    seqRun: SequenceRun,
+    artifactCtx: ArtifactContext,
+    onProgress: Double => Unit
+  ): Either[String, (CoverageCallableResult, List[String])] = {
+    val processor = new CoverageCallableProcessor()
+
+    // Determine minDepth based on test type
+    // Note: We don't have prior coverage estimate, so use test type heuristics
+    val isHiFi = seqRun.testType.toUpperCase.contains("HIFI")
+    val isLongRead = seqRun.testType.toUpperCase.contains("NANOPORE") ||
+      seqRun.testType.toUpperCase.contains("CLR") ||
+      seqRun.maxReadLength.exists(_ > 10000)
+
+    val minDepth = if (isHiFi) {
+      2 // HiFi: high accuracy, minDepth=2 is fine
+    } else if (isLongRead) {
+      3 // ONT/CLR: moderate accuracy, minDepth=3
+    } else {
+      4 // Illumina WGS: standard minDepth=4
+    }
+
+    log.info(s"[UnifiedMetrics] Using minDepth=$minDepth (testType=${seqRun.testType}, isHiFi=$isHiFi, isLongRead=$isLongRead)")
 
     processor.process(
       bamPath = bamPath,

@@ -32,6 +32,10 @@ object FeatureToggles {
     /** Structural variant (SV) calling from BAM/CRAM files */
     val svCallerEnabled: Boolean =
       if (expConfig.hasPath("sv-caller-enabled")) expConfig.getBoolean("sv-caller-enabled") else false
+
+    /** Unified metrics walker - single-pass coverage + callable loci analysis */
+    val unifiedMetricsEnabled: Boolean =
+      if (expConfig.hasPath("unified-metrics-enabled")) expConfig.getBoolean("unified-metrics-enabled") else false
   }
 
   /**
