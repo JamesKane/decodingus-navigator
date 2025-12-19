@@ -1,6 +1,8 @@
 # Unified Quality Metrics Walker
 
-## Status: Active Development
+## Status: Phase 1 & 2 Complete, Phase 3 Ready
+
+**Last Updated**: 2025-12-18
 
 ## Motivation
 
@@ -341,32 +343,389 @@ case class ContigCallableMetrics(
 
 ## Implementation Plan
 
-### Phase 1: Core Walker (Priority: Immediate)
-- [ ] Implement `UnifiedMetricsWalker` with HTSJDK `SamReader`
-- [ ] Read counter collector (total, aligned, paired, proper pairs)
-- [ ] Insert size accumulator with histogram (replaces R-dependent CollectInsertSizeMetrics)
-- [ ] Mean read length calculation
-- [ ] Basic coverage depth tracking
+### Phase 1: Core Walker ✅ COMPLETE
+- [x] Implement `UnifiedMetricsWalker` with HTSJDK `SamReader`
+- [x] Read counter collector (total, aligned, paired, proper pairs)
+- [x] Insert size accumulator with histogram (replaces R-dependent CollectInsertSizeMetrics)
+- [x] Mean read length calculation
+- [x] `UnifiedMetricsProcessor` with artifact output
+
+**Implemented in:**
+- `src/main/scala/com/decodingus/analysis/UnifiedMetricsWalker.scala`
+- `src/main/scala/com/decodingus/analysis/UnifiedMetricsProcessor.scala`
 
 **This phase eliminates the R dependency by replacing CollectMultipleMetrics.**
 
-### Phase 2: Coverage & Callable
-- [ ] Windowed coverage accumulator
-- [ ] Callable loci state machine (per GATK CallableLoci logic)
-- [ ] BED file output for callable regions
-- [ ] Coverage percentile calculations (PCT_1X, PCT_10X, etc.)
+### Phase 2: Coverage & Callable Loci ✅ COMPLETE
+- [x] Windowed coverage accumulator
+- [x] Callable loci state machine (per GATK CallableLoci logic)
+- [x] BED file output for callable regions (per-contig for chrY analysis)
+- [x] Coverage percentile calculations (PCT_1X, PCT_10X, etc.)
+
+**Implemented in:**
+- `src/main/scala/com/decodingus/analysis/CoverageCallableWalker.scala`
+- `src/main/scala/com/decodingus/analysis/CoverageCallableProcessor.scala`
+
+#### Phase 2 Detailed Design
+
+The key insight is that Phase 2 requires **position-level iteration** (pileup), not just read-level iteration as in Phase 1. This is fundamentally different because:
+
+1. **Read metrics** (Phase 1): One iteration per read, ~800M reads for 30x WGS
+2. **Coverage/Callable** (Phase 2): One iteration per position, ~3.1B positions for GRCh38
+
+The existing `CallableLociProcessor` runs GATK's `CallableLoci` per-contig (25 separate GATK invocations). A unified walker must handle this more efficiently.
+
+##### Two-Pass Strategy (Recommended)
+
+Given the fundamentally different iteration patterns, the optimal approach is **two passes with shared I/O**:
+
+```
+Pass 1: Read-level (UnifiedMetricsWalker - COMPLETE)
+        ├── Read counts, alignment stats
+        ├── Insert size histogram
+        └── Read length distribution
+
+Pass 2: Position-level (CoverageCallableWalker - NEW)
+        ├── Coverage histogram per position
+        ├── Callable state per position
+        ├── Per-contig summaries
+        └── PCT_1X, PCT_10X, etc.
+```
+
+This still achieves the goal of eliminating the **3-pass problem** because:
+- Original: `CollectMultipleMetrics (Pass 1)` + `CollectWgsMetrics (Pass 2)` + `CallableLoci (Pass 3)`
+- Unified: `ReadMetrics (Pass 1)` + `CoverageCallable (Pass 2)`
+
+But more importantly, Pass 2 replaces **both** `CollectWgsMetrics` AND `CallableLoci` in a single traversal.
+
+##### CoverageCallableWalker Design
+
+```scala
+/**
+ * Single-pass position-level walker that collects both coverage metrics
+ * and callable loci state. Replaces both CollectWgsMetrics and CallableLoci.
+ */
+class CoverageCallableWalker {
+
+  /**
+   * Process a BAM/CRAM file using SamLocusIterator for pileup.
+   * Collects coverage histogram and callable state simultaneously.
+   */
+  def collectCoverageAndCallable(
+    bamPath: String,
+    referencePath: String,
+    intervals: Option[List[String]] = None,  // Optional: restrict to contigs
+    callableParams: CallableLociParams = CallableLociParams(),
+    onProgress: (String, Long, Long) => Unit
+  ): Either[String, CoverageCallableResult]
+}
+
+/**
+ * Parameters for callable loci determination.
+ * Defaults match GATK CallableLoci.
+ */
+case class CallableLociParams(
+  minDepth: Int = 4,
+  maxDepth: Option[Int] = None,
+  minMappingQuality: Int = 10,
+  minBaseQuality: Int = 20,
+  maxLowMapQ: Int = 1,
+  maxFractionLowMapQ: Double = 0.1
+)
+
+/**
+ * Combined result from coverage and callable analysis.
+ */
+case class CoverageCallableResult(
+  // Global coverage metrics (replaces WgsMetrics)
+  genomeTerritory: Long,
+  meanCoverage: Double,
+  medianCoverage: Double,
+  sdCoverage: Double,
+  coverageHistogram: Array[Long],  // depth 0-255+
+  pct1x: Double,
+  pct5x: Double,
+  pct10x: Double,
+  pct15x: Double,
+  pct20x: Double,
+  pct25x: Double,
+  pct30x: Double,
+  pct40x: Double,
+  pct50x: Double,
+
+  // Callable loci summary (replaces CallableLociResult)
+  callableBases: Long,
+  contigSummaries: List[ContigSummary],
+
+  // Per-contig coverage for visualizations
+  contigCoverage: Map[String, ContigCoverageMetrics]
+)
+```
+
+##### Memory Management for Position-Level Iteration
+
+The pileup iterator naturally handles memory by not materializing all positions at once. Key considerations:
+
+1. **Coverage histogram**: Global `Array[Long](256)` = 2KB, trivial
+2. **Per-contig callable counts**: 6 `Long` counters per contig × 25 contigs = 1.2KB
+3. **Per-contig coverage histogram** (optional): 2KB × 25 = 50KB
+4. **Running statistics**: Welford's algorithm for mean/variance, O(1) space
+
+Total memory: ~60KB + `SamLocusIterator` buffer (configurable)
+
+##### Implementation Approach
+
+Use HTSJDK's `SamLocusIterator` which provides pileup without full GATK overhead:
+
+```scala
+import htsjdk.samtools.util.SamLocusIterator
+import htsjdk.samtools.util.IntervalList
+
+val samReader = SamReaderFactory.makeDefault()
+  .referenceSequence(new File(referencePath))
+  .open(new File(bamPath))
+
+// Create interval list for main assembly contigs only
+val header = samReader.getFileHeader
+val intervalList = new IntervalList(header)
+for (seq <- header.getSequenceDictionary.getSequences.asScala) {
+  if (isMainAssemblyContig(seq.getSequenceName)) {
+    intervalList.add(new Interval(seq.getSequenceName, 1, seq.getSequenceLength))
+  }
+}
+
+// Use indexed lookup for better performance with intervals
+val locusIterator = new SamLocusIterator(samReader, intervalList, true /* useIndex */)
+locusIterator.setEmitUncoveredLoci(true)  // Need zeros for coverage calculation
+locusIterator.setIncludeIndels(false)     // We only need depth, not base-level detail
+locusIterator.setMappingQualityScoreCutoff(0)  // Handle MAPQ filtering ourselves for callable logic
+
+for (locus <- locusIterator.iterator().asScala) {
+  val contig = locus.getSequenceName
+  val position = locus.getPosition
+  val pileup = locus.getRecordAndOffsets
+
+  // 1. Update coverage histogram
+  val depth = pileup.size()
+  coverageHistogram(math.min(depth, 255)) += 1
+
+  // 2. Determine callable state (requires reference base)
+  val refBase = getRefBase(contig, position)
+  val state = determineCallableState(refBase, pileup, callableParams)
+  updateContigCallableCounts(contig, state)
+
+  // 3. Optional: emit BED intervals on state transitions
+  if (state != previousState) {
+    emitBedInterval(contig, intervalStart, position - 1, previousState)
+    intervalStart = position
+    previousState = state
+  }
+}
+```
+
+**Important SamLocusIterator configuration notes:**
+
+1. **`setEmitUncoveredLoci(true)`**: Required for accurate coverage calculation. Without this, positions with zero coverage are skipped, making it impossible to calculate mean coverage or PCT_0X.
+
+2. **`setMappingQualityScoreCutoff(0)`**: We handle MAPQ filtering ourselves in the callable state logic. GATK's CallableLoci uses a more nuanced approach (fraction of low-MAPQ reads), not a simple cutoff.
+
+3. **`setIncludeIndels(false)`**: Indel tracking adds overhead and we don't need it for coverage/callable analysis.
+
+4. **Use `IntervalList` constructor**: Restricts iteration to main assembly contigs (chr1-22, X, Y, M). This avoids processing alt contigs, decoys, and HLA which would slow down iteration significantly.
+
+5. **Use index (`useIndex=true`)**: When specifying intervals, indexed lookup is recommended for better performance.
+
+##### Reference Base Access
+
+**Important**: `SamLocusIterator` does NOT provide reference bases - it only provides pileup information. For callable loci, we need to know if the reference is 'N', so we must access the reference separately.
+
+Two approaches:
+
+1. **Pre-load contigs**: Load each contig's reference as we enter it. ~250MB for largest chromosome.
+2. **On-demand lookup**: Use `ReferenceSequenceFile.getSubsequenceAt()`. Slower but constant memory.
+
+Recommendation: Pre-load approach, loading one contig at a time as the iterator moves through contigs.
+
+```scala
+import htsjdk.samtools.reference.ReferenceSequenceFileFactory
+
+val referenceFile = ReferenceSequenceFileFactory.getReferenceSequenceFile(new File(referencePath))
+var currentContigBases: Array[Byte] = null
+var currentContigName: String = ""
+
+def getRefBase(contig: String, position: Long): Byte = {
+  if (contig != currentContigName) {
+    // Load new contig reference
+    val seq = referenceFile.getSequence(contig)
+    currentContigBases = seq.getBases
+    currentContigName = contig
+  }
+  currentContigBases((position - 1).toInt)  // 1-based position to 0-based index
+}
+```
+
+##### BED File Output
+
+Unlike the current `CallableLociProcessor` which gets BED from GATK, we need to generate it ourselves:
+
+```scala
+class CallableRegionWriter(outputPath: Path) {
+  private var currentContig: String = ""
+  private var intervalStart: Long = 0
+  private var currentState: CallableState = CallableState.NoCoverage
+
+  def update(contig: String, position: Long, state: CallableState): Unit = {
+    if (contig != currentContig) {
+      flush()
+      currentContig = contig
+      intervalStart = position
+      currentState = state
+    } else if (state != currentState) {
+      emitInterval(currentContig, intervalStart, position - 1, currentState)
+      intervalStart = position
+      currentState = state
+    }
+  }
+
+  def flush(): Unit = { /* emit final interval */ }
+}
+```
+
+##### SVG Visualization Compatibility
+
+The current `CallableLociProcessor.binIntervals()` reads BED files to generate SVG visualizations. The new walker should either:
+
+1. **Generate BED files** (as above) so existing SVG code works unchanged
+2. **Generate binned data directly** during traversal (more efficient, but requires refactoring viz code)
+
+Recommendation: Generate BED files for compatibility, add direct binning later as optimization.
+
+##### Phase 2 Implementation Tasks ✅ COMPLETE
+
+**2.1 Core Data Structures**
+- [x] Reuse existing `CallableState` enum from `CallableLociQueryService`
+- [x] Create `CallableLociParams` case class with GATK defaults
+- [x] Create `CoverageCallableResult` unified result type
+- [x] Create `ContigCoverageMetrics` for per-chromosome data
+
+**2.2 CoverageCallableWalker**
+- [x] Implement `SamLocusIterator`-based traversal
+- [x] Implement callable state determination logic
+- [x] Implement Welford's algorithm for online mean/variance
+- [x] Implement coverage histogram accumulation
+- [x] Implement per-contig callable counts
+- [x] Implement progress reporting with estimated completion
+
+**2.3 Reference Handling**
+- [x] Implement per-contig reference loading
+- [x] Handle N-base detection for REF_N state
+
+**2.4 Output Generation**
+- [x] Implement BED file writer with interval coalescing
+- [x] Implement per-contig summary file output (GATK format)
+- [x] Implement coverage percentile calculations from histogram
+- [x] SVG visualization generation (reuses existing pattern)
+
+**2.5 Testing & Validation**
+- [ ] Create test suite comparing output to GATK tools
+- [ ] Validate coverage metrics against CollectWgsMetrics
+- [ ] Validate callable counts against CallableLoci
+- [ ] Performance benchmarking vs 2-pass GATK approach
 
 ### Phase 3: Integration
-- [ ] Create `UnifiedMetricsProcessor` following existing processor pattern
-- [ ] Replace `MultipleMetricsProcessor` (remove R dependency)
-- [ ] Add to WorkbenchViewModel as replacement
-- [ ] Update SequenceRun/Alignment models if needed
+- [x] Create `UnifiedMetricsProcessor` following existing processor pattern (Phase 1)
+- [x] Create `CoverageCallableProcessor` wrapping the walker (Phase 2)
+- [ ] Replace `MultipleMetricsProcessor` usage (remove R dependency)
+- [ ] Update `WorkbenchViewModel` to use new unified processors
+- [ ] Ensure compatibility with existing `ContigSummary` visualization
+- [ ] Update `AnalysisCache` to handle new result types
+- [ ] Deprecate `WgsMetricsProcessor` and `CallableLociProcessor`
+
+#### Phase 3 Implementation Strategy
+
+The integration should be **gradual and backward-compatible**:
+
+1. **Add new processors alongside existing ones** - Don't remove anything yet
+2. **Feature toggle** - Use `feature_toggles.conf` to switch between old/new
+3. **Validation period** - Run both and compare results
+4. **Migration** - Once validated, make new processors the default
+5. **Cleanup** - Remove old processors after migration complete
+
+```scala
+// Example feature toggle usage
+if (FeatureToggles.isEnabled("unified_metrics")) {
+  // Use CoverageCallableProcessor
+} else {
+  // Use WgsMetricsProcessor + CallableLociProcessor
+}
+```
 
 ### Phase 4: Optimization
-- [ ] Multi-threaded contig processing
-- [ ] Memory profiling and tuning
-- [ ] Progress reporting with accurate ETA
-- [ ] Optional Spark-based distributed mode
+- [ ] Multi-threaded contig processing (process contigs in parallel)
+- [ ] Memory profiling and tuning window sizes
+- [ ] Progress reporting with accurate ETA based on genome position
+- [ ] Direct SVG binning during traversal (avoid BED parsing)
+- [ ] Investigate CRAM-specific optimizations (reference caching)
+
+#### Phase 4 Notes
+
+**Parallel contig processing** is the most impactful optimization. Since each contig can be processed independently:
+
+```scala
+val contigResults = contigs.par.map { contig =>
+  processContig(bamPath, referencePath, contig)
+}.toList
+```
+
+However, this requires careful management of:
+- Reference sequence file handles (thread-safe or per-thread)
+- BAM index access (typically thread-safe in HTSJDK)
+- Memory for concurrent contig reference sequences
+
+## Open Questions & Decisions
+
+### Q1: Should Phase 1 and Phase 2 share a single traversal?
+
+**Current decision: No (separate passes)**
+
+While tempting to collect read-level and position-level metrics in a single pass, this would require:
+- Tracking read pileup state manually (complex)
+- Significantly more memory for reads spanning multiple positions
+- Slower iteration due to pileup construction overhead
+
+The two-pass approach is simpler, more maintainable, and still achieves the core goal (3 passes → 2 passes).
+
+### Q2: How to handle CRAM files with remote references?
+
+The current `ReferenceGateway` caches reference genomes locally. For `SamLocusIterator`, we need to:
+- Ensure reference is fully downloaded before starting
+- Pass the local reference path to both `SamReader` and `ReferenceSequenceFile`
+
+### Q3: Should we generate per-contig BED files or a single combined BED?
+
+**Decision: Per-contig BED files**
+
+While a single combined BED would be simpler, per-contig files are needed for:
+- **chrY callable regions** are used for downstream Y-chromosome analysis workflows
+- Compatibility with existing SVG visualization code
+- Parallel processing in future optimizations
+
+### Q4: What about HiFi/long-read specific settings?
+
+The current processors have special handling for PacBio HiFi:
+- `minDepth = 2` instead of 4 (lower coverage is still callable with high-accuracy reads)
+- `countUnpaired = true` for single-molecule reads
+
+The unified walker should accept these as parameters via `CallableLociParams`.
+
+### Q5: Progress reporting granularity?
+
+Options:
+1. **Per-contig**: Report after each contig completes (~25 updates for WGS)
+2. **Per-million-bases**: Report every 1M positions (~3000 updates)
+3. **Time-based**: Report every N seconds regardless of position
+
+**Recommendation: Per-million-bases** for smooth progress bar movement with reasonable overhead.
 
 ## Risks and Mitigations
 
