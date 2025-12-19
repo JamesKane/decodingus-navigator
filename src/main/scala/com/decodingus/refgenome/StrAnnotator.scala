@@ -142,6 +142,23 @@ class StrAnnotator(bedPath: Path) {
     val chromVariants = List(chrom, s"chr$chrom", chrom.stripPrefix("chr"))
     chromVariants.flatMap(c => regionsByChrom.get(c).map(_.size)).headOption.getOrElse(0)
   }
+
+  /**
+   * Get all STR regions for a specific chromosome.
+   * Tries multiple naming conventions (chrY, Y, etc.)
+   *
+   * @param chrom Chromosome name
+   * @return List of STR regions sorted by position, or empty if chromosome not found
+   */
+  def getRegionsForChromosome(chrom: String): List[StrRegion] = {
+    val chromVariants = List(chrom, s"chr$chrom", chrom.stripPrefix("chr"))
+    chromVariants.flatMap(c => regionsByChrom.get(c)).headOption.map(_.toList).getOrElse(Nil)
+  }
+
+  /**
+   * Get all chromosomes that have STR regions.
+   */
+  def getChromosomes: Set[String] = regionsByChrom.keySet
 }
 
 object StrAnnotator {

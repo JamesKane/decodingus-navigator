@@ -4,6 +4,7 @@ import com.decodingus.i18n.I18n.{t, bind}
 import com.decodingus.i18n.Formatters
 import com.decodingus.str.StrCsvParser
 import com.decodingus.config.{FeatureToggles, LabsConfig}
+import com.decodingus.analysis.StrCall
 import com.decodingus.haplogroup.tree.TreeType
 import com.decodingus.ui.components.{AddDataDialog, AddSequenceDataDialog, AncestryResultDialog, ConfirmDialog, DataInput, DataType, EditSequenceRunDialog, EditSubjectDialog, ImportVendorFastaDialog, InfoDialog, MtdnaVariantsPanel, SequenceDataInput, SequenceRunEditResult, SourceReconciliationPanel, VcfMetadata, VcfMetadataDialog, VendorFastaImportRequest, YChromosomeIdeogramPanel, YStrDetailDialog, YStrSummaryPanel}
 import com.decodingus.ui.v2.BiosampleExtensions.*
@@ -1192,6 +1193,14 @@ class SubjectDetailView(viewModel: WorkbenchViewModel) extends VBox {
       onAction = _ => showAlignmentDetailsDialog(alignment)
     }
 
+    // Experimental features
+    if (FeatureToggles.experimental.strCallerEnabled) {
+      items += new SeparatorMenuItem()
+      items += new MenuItem("⚗ Call Y-STRs (Experimental)") {
+        onAction = _ => handleRunStrCaller(seqRunIndex, alignIndex, alignment)
+      }
+    }
+
     items.toSeq
   }
 
@@ -1351,6 +1360,145 @@ class SubjectDetailView(viewModel: WorkbenchViewModel) extends VBox {
         }
       )
     }
+  }
+
+  /** Handle running experimental STR caller for a specific alignment */
+  private def handleRunStrCaller(seqRunIndex: Int, alignIndex: Int, alignment: Alignment): Unit = {
+    import com.decodingus.analysis.{StrCaller, StrCall, StrCallerConfig}
+    import com.decodingus.refgenome.ReferenceGateway
+    import scala.concurrent.Future
+    import scala.concurrent.ExecutionContext.Implicits.global
+
+    currentSubject.value.foreach { subject =>
+      val sequenceRuns = viewModel.workspace.value.main.getSequenceRunsForBiosample(subject)
+      sequenceRuns.lift(seqRunIndex) match {
+        case Some(seqRun) =>
+          seqRun.files.headOption.flatMap(_.location) match {
+            case Some(bamPath) =>
+              showProgressPanel(s"Y-STR Calling (${alignment.referenceBuild})")
+
+              Future {
+                try {
+                  // Resolve reference
+                  scalafx.application.Platform.runLater {
+                    viewModel.analysisProgress.value = "Resolving reference genome..."
+                    viewModel.analysisProgressPercent.value = 0.05
+                  }
+
+                  val referenceGateway = new ReferenceGateway((_, _) => {})
+                  val referencePath = referenceGateway.resolve(alignment.referenceBuild) match {
+                    case Right(path) => path.toString
+                    case Left(error) => throw new Exception(s"Failed to resolve reference: $error")
+                  }
+
+                  // Create STR caller
+                  scalafx.application.Platform.runLater {
+                    viewModel.analysisProgress.value = "Loading HipSTR reference..."
+                    viewModel.analysisProgressPercent.value = 0.1
+                  }
+
+                  val caller = StrCaller.forBuild(alignment.referenceBuild) match {
+                    case Right(c) => c
+                    case Left(error) => throw new Exception(s"Failed to create STR caller: $error")
+                  }
+
+                  // Run STR calling
+                  val calls = caller.callYChromosomeStrs(
+                    bamPath,
+                    referencePath,
+                    (message, current, total) => {
+                      val pct = 0.1 + (current.toDouble / Math.max(total, 1).toDouble) * 0.85
+                      scalafx.application.Platform.runLater {
+                        viewModel.analysisProgress.value = message
+                        viewModel.analysisProgressPercent.value = pct
+                      }
+                    }
+                  ) match {
+                    case Right(c) => c
+                    case Left(error) => throw new Exception(error)
+                  }
+
+                  // Show results
+                  scalafx.application.Platform.runLater {
+                    viewModel.analysisInProgress.value = false
+                    viewModel.analysisProgressPercent.value = 1.0
+                    hideProgressPanel()
+
+                    val successfulCalls = calls.filter(_.calledRepeats.isDefined)
+                    val highQualityCalls = calls.filter(_.quality == "HIGH")
+
+                    showStrCallerResultDialog(calls, alignment.referenceBuild)
+                  }
+                } catch {
+                  case e: Exception =>
+                    log.error(s"STR calling failed: ${e.getMessage}", e)
+                    scalafx.application.Platform.runLater {
+                      viewModel.analysisInProgress.value = false
+                      hideProgressPanel()
+                      showInfoDialog(t("error.title"), "STR Calling Failed", e.getMessage)
+                    }
+                }
+              }
+
+            case None =>
+              showInfoDialog(t("error.title"), "No BAM File", "No BAM/CRAM file path found for this alignment.")
+          }
+
+        case None =>
+          showInfoDialog(t("error.title"), "Sequence Run Not Found", s"Could not find sequence run at index $seqRunIndex")
+      }
+    }
+  }
+
+  /** Show STR caller results in a dialog */
+  private def showStrCallerResultDialog(calls: List[StrCall], referenceBuild: String): Unit = {
+    val successfulCalls = calls.filter(_.calledRepeats.isDefined)
+    val highQualityCalls = successfulCalls.filter(_.quality == "HIGH")
+    val namedCalls = successfulCalls.filter(_.name.isDefined)
+
+    val content = new VBox {
+      spacing = 10
+      padding = Insets(15)
+      children = Seq(
+        new Label(s"Reference Build: $referenceBuild") {
+          style = "-fx-font-weight: bold;"
+        },
+        new Label(s"Total loci examined: ${calls.size}"),
+        new Label(s"Successful calls: ${successfulCalls.size}"),
+        new Label(s"High quality calls: ${highQualityCalls.size}"),
+        new Label(s"Named loci (DYS/FTY): ${namedCalls.size}"),
+        new Separator(),
+        new Label("Sample calls (first 20 with names):") {
+          style = "-fx-font-weight: bold;"
+        },
+        new TextArea {
+          editable = false
+          prefHeight = 300
+          prefWidth = 500
+          text = namedCalls.take(20).map { call =>
+            val name = call.name.getOrElse(s"chr${call.chrom}:${call.start1Based}")
+            val repeats = call.calledRepeats.map(_.toString).getOrElse("N/A")
+            val quality = call.quality
+            val depth = call.readDepth
+            f"$name%-20s = $repeats%-5s [$quality%-6s, ${depth}x]"
+          }.mkString("\n")
+        }
+      )
+    }
+
+    val dialog = new Dialog[Unit]() {
+      title = "Y-STR Calling Results (Experimental)"
+      headerText = s"Called ${successfulCalls.size} Y-STRs from BAM"
+      dialogPane().content = content
+      dialogPane().buttonTypes = Seq(ButtonType.OK)
+      dialogPane().setPrefWidth(550)
+    }
+
+    Option(SubjectDetailView.this.getScene).flatMap(s => Option(s.getWindow)).foreach { window =>
+      dialog.initOwner(window)
+    }
+
+    dialog.showAndWait()
   }
 
   /** Handle running haplogroup analysis for a specific alignment */

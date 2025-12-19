@@ -1,0 +1,1427 @@
+Skip to main content
+Logo
+Help Center
+Help | FamilyTreeDNA  Your Results & Tools  Y-DNA Results & Tools  Y-DNA STR Results & Tools
+
+Home
+Types of DNA & Tests
+Ordering a Test
+Privacy & Security
+Your Account & Settings
+Your Results & Tools
+Family Finder Results & Tools
+mtDNA Results & Tools
+Y-DNA Results & Tools
+Y-DNA Matches
+Y-DNA Haplogroup Reports & Tools
+Y-DNA SNP Results & Tools
+Y-DNA STR Results & Tools
+Y-STR Results Introduction
+Y-STR Results Guide
+Understanding Y-STRs
+Big Y - STR Results
+Understanding Y-DNA Multi-Copy Markers
+Y-STRS - Null Values
+Y-STR Results Frequently Asked Questions
+Ancient Y-DNA
+Y-DNA Data Downloads
+Advanced Matches
+Downloading Your Data
+Family Trees
+Group Projects
+Learn More
+Y-STR Results Guide
+
+At FamilyTreeDNA, we test up to 838 Y-chromosome DNA short tandem repeat (STR) markers in our Y-STR tests. Below is a list of all markers offered in these panels.
+
+The following are descriptions of special characters that you might see on your results page:
+
+¤ This result is new since your last sign in.
+* A value of “0” for any marker indicates that the lab reported a null value for this marker. Our labs retest all cases of null values multiple times to confirm their accuracy. Mutations causing null values are infrequent, but fathers pass on null values to their sons just like other Y-DNA mutations. Therefore, related male lineages such as a father and a son are likely to share null values.
+** DYS19 is also known as DYS394.
+*** The FamilyTreeDNA and the Genographic Project report DYS389II differently.
+– For Panel 6 (112-561) and Panel 7 (562-838) Y-STR results, a – is displayed when you have a “no call” result for an STR. A “no call” result means that we do not have enough information for that STR to confirm a value
+For the Big Y Panels 6 and 7 (112-838) STRs, please note that although we test 727 STRs for these panels, we only guarantee results for at least 589 of these STRs.
+
+Y-STR Panels Each panel includes the following:
+
+Marker - Specific STR tested. Short Tandem Repeats (STRs) determine your Y-DNA signature in order to predict your haplogroup and match you to other testers.
+Value - Determined repeat count for the specific Short Tandem Repeat marker in your Y chromosome. Some markers have multiple copies and values (alleles).
+The first row is the locus number in the test panel. For example, for the first panel (Y-12 results) each locus is numbered 1 through 12.
+The second row is the scientific name of each STR tested. Everyone who tests, respective to the Y-12, 25, 37, 67, or 111 marker tests, is tested for the same STR markers at the same loci.
+The third row contains the allele values for each STR. These are the values that make up your DNA signature.
+ 
+Panel 1 (1-12) 
+STR markers tested and compared for Y-12 matches. Matches must be exact unless you are members of the same project (up to a genetic distance of 1).
+
+In Panel 1 (1-12), the following markers are displayed:
+
+DYS393
+DYS390
+DYS19
+DYS391
+DYS385
+DYS426
+DYS388
+DYS439
+DYS389I
+DYS392
+DYS389II - NOTE: DYS389II is reported in our system as the sum total of DYS389I and DYS389II. 
+Panel 2 (13-25)
+STR markers tested and compared for Y-25 matches. Up to a genetic distance of 2 is allowed in total for matching.
+
+In Panel 2 (13-25), the following markers are displayed:
+
+DYS458
+DYS459a-b
+DYS455
+DYS454
+DYS447
+DYS437
+DYS448
+DYS449
+DYS464a-b-c-d
+Panel 3 (26-37)
+STR markers tested and compared for Y-37 matches. Up to a genetic distance of 4 is allowed in total for matching.
+
+In Panel 3 (26-37), the following markers are displayed:
+
+DYS460
+Y-GATA-H4
+YCA IIa-b
+DYS456
+DYS456
+DYS607
+DYS576
+DYS570
+CDY a-b
+DYS442
+DYS438
+Panel 4 (38-47)
+STR markers tested and compared for Y-67 matches. Up to a genetic distance of 7 is allowed in total for matching.
+
+In Panel 4 (38-47), the following markers are displayed:
+
+DYS531
+DYS578
+DYF395S1a-b
+DYS590
+DYS537
+DYS641
+DYS472
+DYF406S1
+DYS511
+Panel 4 (48-60)
+STR markers tested and compared for Y-67 matches. Up to a genetic distance of 7 is allowed in total for matching.
+
+In Panel 4 (48-60), the following markers are displayed:
+
+DYS425
+DYS413
+DYS557
+DYS594
+DYS436
+DYS490
+DYS534
+DYS450
+DYS444
+DYS481
+DYS520
+DYS446
+Panel 4 (61-67)
+STR markers tested and compared for Y-67 matches. Up to a genetic distance of 7 is allowed in total for matching.
+
+In Panel 4 (61-67), the following markers are displayed:
+
+DYS617
+DYS568
+DYS487
+DYS572
+DYS640
+DYS492
+DYS565
+Panel 5 (68-75)
+STR markers tested and compared for Y-111 matches. Up to a genetic distance of 10 is allowed in total for matching.
+
+In Panel 5 (68-75), the following markers are displayed:
+
+DYS710
+DYS485
+DYS632
+DYS495
+DYS540
+DYS714
+DYS716
+DYS717
+Panel 5 (76-85)
+STR markers tested and compared for Y-111 matches. Up to a genetic distance of 10 is allowed in total for matching.
+
+In Panel 5 (76-85), the following markers are displayed:
+
+DYS505
+DYS556
+DYS549
+DYS589
+DYS522
+DYS494
+DYS533
+DYS636
+DYS575
+DYS638
+Panel 5 (86-93)
+STR markers tested and compared for Y-111 matches. Up to a genetic distance of 10 is allowed in total for matching.
+
+In Panel 5 (86-93), the following markers are displayed:
+
+DYS462
+DYS452
+DYS445
+Y-GATA-A10
+DYS463
+DYS441
+Y-GGAAT-1B07
+DYS525
+Panel 5 (94-102)
+STR markers tested and compared for Y-111 matches. Up to a genetic distance of 10 is allowed in total for matching.
+
+In Panel 5 (94-102), the following markers are displayed:
+
+DYS712
+DYS593
+DYS650
+DYS532
+DYS715
+DYS504
+DYS513
+DYS561
+DYS552
+Panel 5 (103-111)
+STR markers tested and compared for Y-111 matches. Up to a genetic distance of 10 is allowed in total for matching.
+
+In Panel 5 (103-111), the following markers are displayed:
+
+DYS726
+DYS635
+DYS587
+DYS643
+DYS497
+DYS510
+DYS434
+DYS461
+DYS435
+Panel 6 (112-121)
+Bonus STR markers received with the Big Y results. Some markers have a dash indicating a no call. Each Big Y result has slightly different coverage.
+
+In Panel 6 (112-121), the following markers are displayed:
+
+FTY371
+FTY303
+FTY10
+FTY284
+FTY219
+FTY324
+FTY327
+FTY394
+DYS538
+FTY220
+Panel 6 (122-131)
+Bonus STR markers received with the Big Y results. Some markers have a dash indicating a no call. Each Big Y result has slightly different coverage.
+
+In Panel 6 (122-131), the following markers are displayed:
+
+FTY254
+FTY19
+FTY4
+DYS577
+FTY24
+FTY346
+FTY160
+FTY62
+FTY400
+FTY114
+Panel 6 (132-141)
+Bonus STR markers received with the Big Y results. Some markers have a dash indicating a no call. Each Big Y result has slightly different coverage.
+
+In Panel 6 (132-141), the following markers are displayed:
+
+FTY246
+FTY26
+FTY368
+FTY173
+FTY209
+FTY337
+FTY81
+FTY387
+FTY361
+FTY330
+Panel 6 (142-151)
+Bonus STR markers received with the Big Y results. Some markers have a dash indicating a no call. Each Big Y result has slightly different coverage.
+
+In Panel 6 (142-151), the following markers are displayed:
+
+FTY65
+Y168
+FTY171
+FTY136
+FTY53
+FTY40
+FTY386
+FTY100
+FTY152
+FTY55
+Panel 6 (152-161)
+Bonus STR markers received with the Big Y results. Some markers have a dash indicating a no call. Each Big Y result has slightly different coverage.
+
+In Panel 6 (152-161), the following markers are displayed:
+
+FTY297
+FTY370
+FTY103
+FTY64
+FTY174
+FTY313
+FTY362
+FTY342
+FTY161
+FTY374
+Panel 6 (162-171)
+Bonus STR markers received with the Big Y results. Some markers have a dash indicating a no call. Each Big Y result has slightly different coverage.
+
+In Panel 6 (162-171), the following markers are displayed:
+
+FTY316
+FTY101
+FTY204
+DYS477
+FTY192
+DYS502
+FTY341
+DYS493
+FTY1
+FTY227
+Panel 6 (172-181)
+Bonus STR markers received with the Big Y results. Some markers have a dash indicating a no call. Each Big Y result has slightly different coverage.
+
+In Panel 6 (172-181), the following markers are displayed:
+
+DYS499
+FTY391
+FTY353
+FTY332
+FTY163
+DYS483
+FTY172
+FTY180
+DYS581
+FTY179
+Panel 6 (182-191)
+Bonus STR markers received with the Big Y results. Some markers have a dash indicating a no call. Each Big Y result has slightly different coverage.
+
+In Panel 6 (182-191), the following markers are displayed:
+
+FTY188
+FTY369
+FTY70
+FTY63
+DYS508
+FTY347
+FTY83
+FTY277
+FTY276
+FTY195
+Panel 6 (192-201)
+Bonus STR markers received with the Big Y results. Some markers have a dash indicating a no call. Each Big Y result has slightly different coverage.
+
+In Panel 6 (192-201), the following markers are displayed:
+
+FTY109
+FTY356
+FTY215
+FTY105
+FTY123
+FTY242
+FTY214
+FTY132
+FTY262
+FTY333
+Panel 6 (202-211)
+Bonus STR markers received with the Big Y results. Some markers have a dash indicating a no call. Each Big Y result has slightly different coverage.
+
+In Panel 6 (202-211), the following markers are displayed:
+
+FTY208
+DYF398B
+FTY43
+FTY166
+FTY13
+FTY11
+DYS584
+DYS608
+FTY95
+FTY151
+Panel 6 (212-221)
+Bonus STR markers received with the Big Y results. Some markers have a dash indicating a no call. Each Big Y result has slightly different coverage.
+
+In Panel 6 (212-221), the following markers are displayed:
+
+FTY388
+FTY256
+DYS580
+FTY234
+FTY268
+FTY139
+FTY27
+FTY75
+DYS512
+FTY329
+Panel 6 (222-231)
+Bonus STR markers received with the Big Y results. Some markers have a dash indicating a no call. Each Big Y result has slightly different coverage.
+
+In Panel 6 (222-231), the following markers are displayed:
+
+FTY320
+FTY7
+FTY247
+FTY211
+DYS474
+FTY39
+FTY376
+FTY37
+FTY373
+DYS475
+Panel 6 (232-241)
+Bonus STR markers received with the Big Y results. Some markers have a dash indicating a no call. Each Big Y result has slightly different coverage.
+
+In Panel 6 (232-241), the following markers are displayed:
+
+FTY138
+FTY288
+FTY264
+FTY93
+FTY380
+FTY18
+FTY115
+DYS569
+FTY390
+FTY46
+Panel 6 (242-251)
+Bonus STR markers received with the Big Y results. Some markers have a dash indicating a no call. Each Big Y result has slightly different coverage.
+
+In Panel 6 (242-251), the following markers are displayed:
+
+FTY243
+FTY322
+FTY281
+FTY153
+FTY181
+FTY184
+FTY359
+FTY121
+FTY74
+FTY279
+Panel 6 (252-261)
+Bonus STR markers received with the Big Y results. Some markers have a dash indicating a no call. Each Big Y result has slightly different coverage.
+
+In Panel 6 (252-261), the following markers are displayed:
+
+DYS530
+FTY45
+DYS573
+DYS542
+FTY36
+FTY304
+FTY203
+FTY291
+FTY142
+FTY191
+Panel 6 (262-271)
+Bonus STR markers received with the Big Y results. Some markers have a dash indicating a no call. Each Big Y result has slightly different coverage.
+
+In Panel 6 (262-271), the following markers are displayed:
+
+FTY183
+FTY141
+FTY299
+FTY193
+FTY124
+FTY16
+FTY236
+FTY185
+FTY378
+FTY225
+Panel 6 (272-281)
+Bonus STR markers received with the Big Y results. Some markers have a dash indicating a no call. Each Big Y result has slightly different coverage.
+
+In Panel 6 (272-281), the following markers are displayed:
+
+FTY397
+FTY3
+FTY67
+FTY182
+FTY182
+DYS623
+FTY348
+FTY357
+FTY275
+FTY306
+Panel 6 (282-291)
+Bonus STR markers received with the Big Y results. Some markers have a dash indicating a no call. Each Big Y result has slightly different coverage.
+
+In Panel 6 (282-291), the following markers are displayed:
+
+FTY383
+FTY253
+FTY285
+DYS645
+FTY17
+FTY85
+DYS598
+FTY375
+FTY325
+FTY12
+Panel 6 (292-301)
+Bonus STR markers received with the Big Y results. Some markers have a dash indicating a no call. Each Big Y result has slightly different coverage.
+
+In Panel 6 (292-301), the following markers are displayed:
+
+FTY365
+FTY35
+FTY237
+FTY238
+FTY305
+FTY56
+FTY129
+FTY352
+FTY292
+FTY154
+Panel 6 (302-311)
+Bonus STR markers received with the Big Y results. Some markers have a dash indicating a no call. Each Big Y result has slightly different coverage.
+
+In Panel 6 (302-311), the following markers are displayed:
+
+DYS539
+FTY301
+FTY366
+FTY231
+DYS618
+FTY216
+FTY82
+FTY393
+FTY155
+FTY68
+Panel 6 (312-321)
+Bonus STR markers received with the Big Y results. Some markers have a dash indicating a no call. Each Big Y result has slightly different coverage.
+
+In Panel 6 (312-321), the following markers are displayed:
+
+FTY32
+FTY265
+FTY300
+FTY143
+FTY201
+FTY199
+FTY86
+FTY98
+FTY144
+DYS541
+Panel 6 (322-331)
+Bonus STR markers received with the Big Y results. Some markers have a dash indicating a no call. Each Big Y result has slightly different coverage.
+
+In Panel 6 (322-331), the following markers are displayed:
+
+DYS507
+FTY20
+FTY116
+FTY308
+FTY177
+FTY89
+FTY158
+FTY22
+FTY84
+FTY186
+ 
+
+Panel 6 (332-341)
+Bonus STR markers received with the Big Y results. Some markers have a dash indicating a no call. Each Big Y result has slightly different coverage.
+
+In Panel 6 (332-341), the following markers are displayed:
+
+FTY396
+FTY91
+FTY29
+FTY78
+FTY229
+FTY260
+FTY250
+FTY364
+DYS476
+FTY221
+Panel 6 (342-351)
+Bonus STR markers received with the Big Y results. Some markers have a dash indicating a no call. Each Big Y result has slightly different coverage.
+
+In Panel 6 (342-351), the following markers are displayed:
+
+FTY57
+FTY377
+FTY384
+DYS466
+FTY363
+FTY137
+FTY69
+FTY72
+FTY251
+FTY2
+Panel 6 (352-361)
+Bonus STR markers received with the Big Y results. Some markers have a dash indicating a no call. Each Big Y result has slightly different coverage.
+
+In Panel 6 (352-361), the following markers are displayed:
+
+FTY217
+FTY257
+FTY120
+FTY25
+FTY252
+FTY33
+FTY42
+FTY54
+FTY372
+DYS480
+Panel 6 (362-371)
+Bonus STR markers received with the Big Y results. Some markers have a dash indicating a no call. Each Big Y result has slightly different coverage.
+
+In Panel 6 (362-371), the following markers are displayed:
+
+FTY176
+FTY76
+FTY66
+FTY197
+FTY385
+FTY270
+FTY298
+FTY198
+FTY117
+DYS544
+Panel 6 (372-381)
+Bonus STR markers received with the Big Y results. Some markers have a dash indicating a no call. Each Big Y result has slightly different coverage.
+
+In Panel 6 (372-381), the following markers are displayed:
+
+FTY159
+FTY232
+FTY156
+FTY343
+FTY296
+FTY311
+FTY344
+FTY178
+FTY367
+FTY73
+Panel 6 (382-391)
+Bonus STR markers received with the Big Y results. Some markers have a dash indicating a no call. Each Big Y result has slightly different coverage.
+
+In Panel 6 (382-391), the following markers are displayed:
+
+FTY112
+FTY295
+DYS616
+FTY338
+FTY196
+FTY157
+FTY162
+DYS551
+FTY148
+FTY94
+Panel 6 (392-401)
+Bonus STR markers received with the Big Y results. Some markers have a dash indicating a no call. Each Big Y result has slightly different coverage.
+
+In Panel 6 (392-401), the following markers are displayed:
+
+FTY52
+FTY131
+FTY9
+FTY194
+FTY8
+FTY318
+FTY317
+FTY99
+FTY289
+FTY169
+Panel 6 (402-411)
+Bonus STR markers received with the Big Y results. Some markers have a dash indicating a no call. Each Big Y result has slightly different coverage.
+
+In Panel 6 (402-411), the following markers are displayed:
+
+FTY51
+FTY345
+FTY398
+FTY111
+FTY273
+FTY382
+FTY47
+FTY30
+FTY147
+DYS615
+Panel 6 (412-421)
+Bonus STR markers received with the Big Y results. Some markers have a dash indicating a no call. Each Big Y result has slightly different coverage.
+
+In Panel 6 (412-421), the following markers are displayed:
+
+FTY302
+FTY354
+FTY326
+FTY88
+FTY248
+FTY267
+FTY170
+FTY60
+DYS453
+FTY249
+Panel 6 (422-431)
+Bonus STR markers received with the Big Y results. Some markers have a dash indicating a no call. Each Big Y result has slightly different coverage.
+
+In Panel 6 (422-431), the following markers are displayed:
+
+FTY167
+DYS624
+FTY134
+FTY235
+FTY145
+FTY14
+FTY80
+FTY50
+DYS514
+FTY340
+Panel 6 (432-441)
+Bonus STR markers received with the Big Y results. Some markers have a dash indicating a no call. Each Big Y result has slightly different coverage.
+
+In Panel 6 (432-441), the following markers are displayed:
+
+DYS585
+DYS516
+FTY293
+FTY207
+FTY278
+FTY210
+DYS523
+FTY269
+FTY530
+FTY1156
+Panel 6 (442-451)
+Bonus STR markers received with the Big Y results. Some markers have a dash indicating a no call. Each Big Y result has slightly different coverage.
+
+In Panel 6 (442-451), the following markers are displayed:FTY1070
+
+FTY906
+FTY1004
+FTY331
+FTY31
+FTY226
+FTY335
+DYS583
+FTY339
+FTY113
+Panel 6 (452-461)
+Bonus STR markers received with the Big Y results. Some markers have a dash indicating a no call. Each Big Y result has slightly different coverage.
+
+In Panel 6 (452-461), the following markers are displayed:
+
+FTY280
+FTY255
+FTY59
+DYS620
+FTY349
+FTY130
+FTY119
+DYF398A
+FTY58
+FTY127
+Panel 6 (462-471)
+Bonus STR markers received with the Big Y results. Some markers have a dash indicating a no call. Each Big Y result has slightly different coverage.
+
+In Panel 6 (462-471), the following markers are displayed:
+
+FTY321
+FTY92
+FTY392
+DYF392
+FTY290
+FTY312
+FTY135
+FTY150
+FTY294
+FTY244
+Panel 6 (472-481)
+Bonus STR markers received with the Big Y results. Some markers have a dash indicating a no call. Each Big Y result has slightly different coverage.
+
+In Panel 6 (472-481), the following markers are displayed:
+
+FTY48
+FTY282
+DYS489
+FTY272
+FTY239
+FTY258
+FTY49
+DYS574
+FTY41
+FTY905
+Panel 6 (482-491)
+Bonus STR markers received with the Big Y results. Some markers have a dash indicating a no call. Each Big Y result has slightly different coverage.
+
+In Panel 6 (482-491), the following markers are displayed:
+
+FTY1103
+FTY502
+FTY743
+FTY443
+FTY670
+FTY883
+DYS631
+FTY1042
+FTY510
+DYS389B
+Panel 6 (492-501)
+Bonus STR markers received with the Big Y results. Some markers have a dash indicating a no call. Each Big Y result has slightly different coverage.
+
+In Panel 6 (492-501), the following markers are displayed:
+
+FTY512
+FTY837
+DYS642
+FTY407
+FTY935
+FTY563
+FTY1016
+FTY1091
+FTY1049
+FTY1155
+Panel 6 (502-511)
+Bonus STR markers received with the Big Y results. Some markers have a dash indicating a no call. Each Big Y result has slightly different coverage.
+
+In Panel 6 (502-511), the following markers are displayed:
+
+DYS602
+FTY587
+FTY635
+FTY904
+DYS543
+FTY1148
+FTY861
+FTY742
+FTY433
+FTY1039
+Panel 6 (512-521)
+Bonus STR markers received with the Big Y results. Some markers have a dash indicating a no call. Each Big Y result has slightly different coverage.
+
+In Panel 6 (512-521), the following markers are displayed:
+
+FTY71
+FTY259
+FTY108
+FTY336
+FTY44
+FTY233
+FTY274
+FTY34
+FTY942
+FTY1068
+Panel 6 (522-531)
+Bonus STR markers received with the Big Y results. Some markers have a dash indicating a no call. Each Big Y result has slightly different coverage.
+
+In Panel 6 (522-531), the following markers are displayed:
+
+FTY945
+FTY1051
+FTY658
+FTY625
+FTY800
+FTY818
+FTY971
+FTY509
+FTY1025
+FTY835
+Panel 6 (532-541)
+Bonus STR markers received with the Big Y results. Some markers have a dash indicating a no call. Each Big Y result has slightly different coverage.
+
+In Panel 6 (532-541), the following markers are displayed:
+
+FTY984
+DYS637
+FTY832
+FTY689
+FTY998
+FTY520
+FTY445
+FTY809
+FTY428
+FTY562
+Panel 6 (542-551)
+Bonus STR markers received with the Big Y results. Some markers have a dash indicating a no call. Each Big Y result has slightly different coverage.
+
+In Panel 6 (542-551), the following markers are displayed:
+
+FTY897
+FTY1064
+FTY1088
+FTY1052
+DYF405
+FTY310
+FTY189
+DYS488
+FTY283
+FTY28
+Panel 6 (552-561)
+Bonus STR markers received with the Big Y results. Some markers have a dash indicating a no call. Each Big Y result has slightly different coverage.
+
+In Panel 6 (552-561), the following markers are displayed:
+
+FTY578
+DYS484
+FTY858
+FTY596
+FTY915
+FTY446
+FTY452
+FTY1006
+FTY612
+FTY507
+Panel 7 (562-571)
+Bonus STR markers received with the Big Y results. Some markers have a dash indicating a no call. Each Big Y result has slightly different coverage.
+
+In Panel 7 (562-571), the following markers are displayed:
+
+FTY614
+FTY824
+FTY690
+FTY2318
+FTY981
+FTY946
+FTY1040
+DYS718
+FTY15
+Panel 7 (572-581)
+Bonus STR markers received with the Big Y results. Some markers have a dash indicating a no call. Each Big Y result has slightly different coverage.
+
+In Panel 7 (572-581), the following markers are displayed:
+
+FTY2025
+DYS685u1
+DYS596u5
+FTY1511
+FTY769
+FTY923
+FTY1167
+FTY415
+FTY505
+FTY241
+Panel 7 (582-591)
+Bonus STR markers received with the Big Y results. Some markers have a dash indicating a no call. Each Big Y result has slightly different coverage.
+
+In Panel 7 (582-591), the following markers are displayed:
+
+FTY2263
+FTY517
+FTY2180
+FTY775
+DYS567
+FTY444
+FTY691
+FTY1120
+FTY223
+DYF393u3
+Panel 7 (592-601)
+Bonus STR markers received with the Big Y results. Some markers have a dash indicating a no call. Each Big Y result has slightly different coverage.
+
+In Panel 7 (592-601), the following markers are displayed:
+
+FTY1850
+FTY645
+FTY696
+FTY1166
+FTY991
+FTY912
+DYS551u4
+FTY447
+DYS518u3
+FTY875
+Panel 7 (602-611)
+Bonus STR markers received with the Big Y results. Some markers have a dash indicating a no call. Each Big Y result has slightly different coverage.
+
+In Panel 7 (602-611), the following markers are displayed:
+
+DYS536u1
+FTY585
+FTY896
+FTY731
+FTY401
+FTY2011
+FTY665
+FTY814
+FTY2050
+DYS626u3
+Panel 7 (612-621)
+Bonus STR markers received with the Big Y results. Some markers have a dash indicating a no call. Each Big Y result has slightly different coverage.
+
+In Panel 7 (612-621), the following markers are displayed:
+
+FTY750
+FTY471
+FTY985
+FTY589
+FTY420
+FTY921
+FTY457
+FTY657
+FTY1110
+FTY485
+Panel 7 (622-631)
+Bonus STR markers received with the Big Y results. Some markers have a dash indicating a no call. Each Big Y result has slightly different coverage.
+
+In Panel 7 (622-631), the following markers are displayed:
+
+FTY315
+FTY1852
+FTY1107
+FTY489
+FTY522
+FTY654
+FTY110
+FTY881
+DYS470
+FTY534
+Panel 7 (632-641)
+Bonus STR markers received with the Big Y results. Some markers have a dash indicating a no call. Each Big Y result has slightly different coverage.
+
+In Panel 7 (632-641), the following markers are displayed:
+
+FTY1101
+FTY1933
+FTY936
+FTY772
+FTY1047
+FTY2351
+FTY680
+FTY2254
+FTY1030
+FTY2083
+Panel 7 (642-651)
+Bonus STR markers received with the Big Y results. Some markers have a dash indicating a no call. Each Big Y result has slightly different coverage.
+
+In Panel 7 (642-651), the following markers are displayed:
+
+FTY287
+FTY797
+FTY2366
+FTY951
+FTY774
+FTY1116
+DYS621
+FTY885
+FTY1012
+DYF394u1
+Panel 7 (652-661)
+Bonus STR markers received with the Big Y results. Some markers have a dash indicating a no call. Each Big Y result has slightly different coverage.
+
+In Panel 7 (652-661), the following markers are displayed:
+
+FTY888
+FTY648
+FTY725
+FTY643
+FTY927
+FTY1022
+DYS559
+FTY933
+FTY633
+FTY900
+Panel 7 (662-671)
+Bonus STR markers received with the Big Y results. Some markers have a dash indicating a no call. Each Big Y result has slightly different coverage.
+
+In Panel 7 (662-671), the following markers are displayed:
+
+FTY1848
+FTY478
+FTY533
+FTY467
+FTY1900
+FTY421
+DYS612u5
+DYS595
+FTY668
+FTY1028
+Panel 7 (672-681)
+Bonus STR markers received with the Big Y results. Some markers have a dash indicating a no call. Each Big Y result has slightly different coverage.
+
+In Panel 7 (672-681), the following markers are displayed:
+
+DYS579
+FTY646
+FTY1026
+FTY801
+FTY432
+FTY2301
+FTY466
+FTY531
+FTY1083
+FTY997
+Panel 7 (682-691)
+Bonus STR markers received with the Big Y results. Some markers have a dash indicating a no call. Each Big Y result has slightly different coverage.
+
+In Panel 7 (682-691), the following markers are displayed:
+
+FTY1114
+FTY830
+FTY655
+FTY910
+FTY1143
+FTY572
+DYS506
+DYS558u2
+FTY1127
+FTY712
+Panel 7 (692-701)
+Bonus STR markers received with the Big Y results. Some markers have a dash indicating a no call. Each Big Y result has slightly different coverage.
+
+In Panel 7 (692-701), the following markers are displayed:
+
+FTY634
+FTY499
+FTY1094
+FTY724
+FTY535
+FTY552
+FTY430
+FTY588
+DYS609
+FTY961
+Panel 7 (702-711)
+Bonus STR markers received with the Big Y results. Some markers have a dash indicating a no call. Each Big Y result has slightly different coverage.
+
+In Panel 7 (702-711), the following markers are displayed:
+
+FTY813
+FTY656
+FTY839
+FTY882
+FTY789
+FTY459
+FTY1037
+FTY435
+FTY1157
+FTY1546
+Panel 7 (712-721)
+Bonus STR markers received with the Big Y results. Some markers have a dash indicating a no call. Each Big Y result has slightly different coverage.
+
+In Panel 7 (712-721), the following markers are displayed:
+
+FTY2242
+FTY720
+DYS614u10
+FTY887
+FTY473
+FTY816
+FTY1060
+FTY472
+FTY943
+FTY1482
+Panel 7 (722-731)
+Bonus STR markers received with the Big Y results. Some markers have a dash indicating a no call. Each Big Y result has slightly different coverage.
+
+In Panel 7 (722-731), the following markers are displayed:
+
+FTY565
+DYS629
+FTY891
+FTY438
+DYS582
+FTY468
+FTY649
+FTY606
+FTY792
+FTY1087
+Panel 7 (732-741)
+Bonus STR markers received with the Big Y results. Some markers have a dash indicating a no call. Each Big Y result has slightly different coverage.
+
+In Panel 7 (732-741), the following markers are displayed:
+
+FTY895
+DYS614u3
+FTY574
+FTY1556
+FTY560
+FTY694
+FTY1097
+DYS518u6
+FTY876
+FTY2443
+Panel 7 (742-751)
+Bonus STR markers received with the Big Y results. Some markers have a dash indicating a no call. Each Big Y result has slightly different coverage.
+
+In Panel 7 (742-751), the following markers are displayed:
+
+FTY990
+FTY934
+FTY465
+FTY1046
+FTY1312
+FTY751
+FTY1915
+FTY678
+FTY419
+FTY958
+Panel 7 (752-761)
+Bonus STR markers received with the Big Y results. Some markers have a dash indicating a no call. Each Big Y result has slightly different coverage.
+
+In Panel 7 (752-761), the following markers are displayed:
+
+FTY456
+DYS592u1
+FTY1172
+FTY416
+FTY650
+FTY808
+FTY1542
+DYS721u1
+FTY746
+FTY2233
+Panel 7 (762-771)
+Bonus STR markers received with the Big Y results. Some markers have a dash indicating a no call. Each Big Y result has slightly different coverage.
+
+In Panel 7 (762-771), the following markers are displayed:
+
+FTY892
+FTY845
+FTY1034
+FTY498
+DYF382u1
+FTY637
+DYS588
+FTY947
+DYS543u3
+FTY644
+Panel 7 (772-781)
+Bonus STR markers received with the Big Y results. Some markers have a dash indicating a no call. Each Big Y result has slightly different coverage.
+
+In Panel 7 (772-781), the following markers are displayed:
+
+DYS703
+DYS649
+FTY212
+FTY781
+FTY1106
+FTY592
+FTY848
+FTY940
+FTY903
+FTY1081
+Panel 7 (782-791)
+Bonus STR markers received with the Big Y results. Some markers have a dash indicating a no call. Each Big Y result has slightly different coverage.
+
+In Panel 7 (782-791), the following markers are displayed:
+
+FTY952
+DYS706u2
+FTY1084
+FTY700
+FTY482
+DYS625u7
+FTY960
+FTY586
+FTY1330
+FTY1119
+Panel 7 (792-801)
+Bonus STR markers received with the Big Y results. Some markers have a dash indicating a no call. Each Big Y result has slightly different coverage.
+
+In Panel 7 (792-801), the following markers are displayed:
+
+FTY1762
+FTY1010
+FTY417
+FTY716
+DYS627u3
+FTY1942
+FTY1067
+FTY841
+FTY1031
+FTY1082
+Panel 7 (802-811)
+Bonus STR markers received with the Big Y results. Some markers have a dash indicating a no call. Each Big Y result has slightly different coverage.
+
+In Panel 7 (802-811), the following markers are displayed:
+
+FTY1023
+FTY475
+FTY222
+FTY962
+FTY423
+FTY664
+DYS517u1
+FTY1076
+FTY1557
+FTY1154
+Panel 7 (812-821)
+Bonus STR markers received with the Big Y results. Some markers have a dash indicating a no call. Each Big Y result has slightly different coverage.
+
+In Panel 7 (812-821), the following markers are displayed:
+
+DYS681
+FTY1002
+DYS706u1
+FTY1174
+FTY986
+FTY651
+FTY886
+FTY1078
+DYS546u4
+FTY1092
+Panel 7 (822-831)
+Bonus STR markers received with the Big Y results. Some markers have a dash indicating a no call. Each Big Y result has slightly different coverage.
+
+In Panel 7 (822-831), the following markers are displayed:
+
+FTY2471
+FTY1111
+FTY461
+FTY323
+FTY1013
+FTY506
+FTY550
+FTY767
+FTY721
+DYS548
+Panel 7 (832-838)
+Bonus STR markers received with the Big Y results. Some markers have a dash indicating a no call. Each Big Y result has slightly different coverage.
+
+In Panel 7 (832-838), the following markers are displayed:
+
+FTY559
+DYS705
+FTY640
+FTY613
+FTY402
+FTY2426
+FTY755
+Micro Alleles
+Some STR markers might have a partial repeat reported here. Micro alleles are normalized before matching.
+
+Marker - Specific STR tested. Short Tandem Repeats (STRs) determine your Y-DNA signature in order to predict your haplogroup and match you to other testers
+Result - Determined repeat count for the specific Short Tandem Repeat marker in your Y chromosome, including the number of bases in the partial repeat.
+Normalized Result - Normalized (rounded) repeat count for the specific Short Tandem Repeat marker in your Y chromosome, which is the value used for matching.
+Table of Contents
+
+Panel 1 (1-12)
+Panel 2 (13-25)
+Panel 3 (26-37)
+Panel 4 (38-47)
+Panel 4 (48-60)
+Panel 4 (61-67)
+Panel 5 (68-75)
+Panel 5 (76-85)
+Panel 5 (86-93)
+Panel 5 (94-102)
+Panel 5 (103-111)
+Panel 6 (112-121)
+Panel 6 (122-131)
+Panel 6 (132-141)
+Panel 6 (142-151)
+Panel 6 (152-161)
+Panel 6 (162-171)
+Panel 6 (172-181)
+Panel 6 (182-191)
+Panel 6 (192-201)
+Panel 6 (202-211)
+Panel 6 (212-221)
+Panel 6 (222-231)
+Panel 6 (232-241)
+Panel 6 (242-251)
+Panel 6 (252-261)
+Panel 6 (262-271)
+Panel 6 (272-281)
+Panel 6 (282-291)
+Panel 6 (292-301)
+Panel 6 (302-311)
+Panel 6 (312-321)
+Panel 6 (322-331)
+Panel 6 (332-341)
+Panel 6 (342-351)
+Panel 6 (352-361)
+Panel 6 (362-371)
+Panel 6 (372-381)
+Panel 6 (382-391)
+Panel 6 (392-401)
+Panel 6 (402-411)
+Panel 6 (412-421)
+Panel 6 (422-431)
+Panel 6 (432-441)
+Panel 6 (442-451)
+Panel 6 (452-461)
+Panel 6 (462-471)
+Panel 6 (472-481)
+Panel 6 (482-491)
+Panel 6 (492-501)
+Panel 6 (502-511)
+Panel 6 (512-521)
+Panel 6 (522-531)
+Panel 6 (532-541)
+Panel 6 (542-551)
+Panel 6 (552-561)
+Panel 7 (562-571)
+Panel 7 (572-581)
+Panel 7 (582-591)
+Panel 7 (592-601)
+Panel 7 (602-611)
+Panel 7 (612-621)
+Panel 7 (622-631)
+Panel 7 (632-641)
+Panel 7 (642-651)
+Panel 7 (652-661)
+Panel 7 (662-671)
+Panel 7 (672-681)
+Panel 7 (682-691)
+Panel 7 (692-701)
+Panel 7 (702-711)
+Panel 7 (712-721)
+Panel 7 (722-731)
+Panel 7 (732-741)
+Panel 7 (742-751)
+Panel 7 (752-761)
+Panel 7 (762-771)
+Panel 7 (772-781)
+Panel 7 (782-791)
+Panel 7 (792-801)
+Panel 7 (802-811)
+Panel 7 (812-821)
+Panel 7 (822-831)
+Panel 7 (832-838)
+Micro Alleles
+FamilyTreeDNA
+ABOUT
+Blog
+Careers
+Refund Policy
+Affiliate Program
+SERVICES
+Family Finder
+Family Finder + myDNA Wellness
+Y-DNA
+Big Y
+mtDNA
+Gift Cards
+COMMUNITY
+Group Projects
+Forums
+Y-DNA Haplotree
+mtDNA Haplotree
+LEGAL
+Terms of Service
+Privacy Statement
+Cookie Policy
+Cookie Settings
+All Policies
+SUPPORT
+Help Center
+Glossary
+Contact Us
+CONNECT WITH US
+All Contents Copyright 2001-2025 Gene by Gene, Ltd.
+English

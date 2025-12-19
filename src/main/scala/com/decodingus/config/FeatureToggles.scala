@@ -16,6 +16,21 @@ object FeatureToggles {
   }
 
   /**
+   * Experimental features not yet production-ready.
+   */
+  object experimental {
+    private val expConfig = if (config.hasPath("experimental")) {
+      config.getConfig("experimental")
+    } else {
+      ConfigFactory.empty()
+    }
+
+    /** STR calling from BAM/CRAM files using HipSTR reference */
+    val strCallerEnabled: Boolean =
+      if (expConfig.hasPath("str-caller-enabled")) expConfig.getBoolean("str-caller-enabled") else false
+  }
+
+  /**
    * Tree provider configuration for Y-DNA and MT-DNA analysis.
    *
    * @deprecated Use UserPreferencesService instead. Tree provider selection
