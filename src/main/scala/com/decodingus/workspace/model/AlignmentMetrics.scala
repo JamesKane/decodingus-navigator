@@ -27,11 +27,18 @@ case class AlignmentMetrics(
                              // Sex Inference
                              inferredSex: Option[String] = None,
                              sexInferenceConfidence: Option[String] = None,
-                             xAutosomeRatio: Option[Double] = None
+                             xAutosomeRatio: Option[Double] = None,
+
+                             // Structural Variant Calling
+                             svVcfPath: Option[String] = None,
+                             svCallCount: Option[Int] = None
                            ) {
   /** Check if whole-genome VCF has been generated */
   def hasVcf: Boolean = vcfPath.isDefined && vcfVariantCount.isDefined
 
   /** Check if callable loci analysis is complete */
   def hasCallableLoci: Boolean = callableLociComplete.getOrElse(false)
+
+  /** Check if structural variant calling has been done */
+  def hasSvCalling: Boolean = svVcfPath.isDefined && svCallCount.isDefined
 }

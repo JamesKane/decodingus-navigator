@@ -2,6 +2,7 @@ package com.decodingus.workspace.services
 
 import com.decodingus.analysis.*
 import com.decodingus.analysis.SexInference.{InferredSex, SexInferenceResult}
+import com.decodingus.analysis.sv.{SvAnalysisResult, SvCaller, SvCallerConfig}
 import com.decodingus.config.UserPreferencesService
 import com.decodingus.genotype.model.{TestTypeDefinition, TestTypes}
 import com.decodingus.haplogroup.model.HaplogroupResult as AnalysisHaplogroupResult
@@ -21,6 +22,7 @@ import htsjdk.samtools.SamReaderFactory
 import java.io.File
 import java.util.UUID
 import scala.concurrent.{ExecutionContext, Future}
+import scala.jdk.CollectionConverters.*
 
 /**
  * Progress state for analysis operations.
@@ -891,6 +893,176 @@ class AnalysisCoordinator(
 
           onProgress(AnalysisProgress("Callable loci analysis complete", 1.0, isComplete = true))
           Right((newState, result))
+      }
+
+    } catch {
+      case e: Exception =>
+        Left(e.getMessage)
+    }
+  }
+
+  // --- Structural Variant Calling ---
+
+  /**
+   * Runs structural variant detection on an alignment.
+   * This is an optional analysis that detects deletions, duplications,
+   * inversions, and translocations.
+   *
+   * Requires the experimental.sv-caller-enabled feature toggle to be true.
+   */
+  def runSvCalling(
+    state: WorkspaceState,
+    sampleAccession: String,
+    sequenceRunIndex: Int,
+    alignmentIndex: Int,
+    onProgress: AnalysisProgress => Unit
+  ): Future[Either[String, (WorkspaceState, SvAnalysisResult)]] = {
+    import com.decodingus.config.FeatureToggles
+
+    // Check feature toggle before entering Future
+    if (!FeatureToggles.experimental.svCallerEnabled) {
+      return Future.successful(Left("SV calling is disabled. Enable it in feature_toggles.conf under experimental.sv-caller-enabled"))
+    }
+
+    Future {
+      workspaceOps.findSubject(state, sampleAccession) match {
+      case None =>
+        Left(s"Subject not found: $sampleAccession")
+
+      case Some(subject) =>
+        val sequenceRuns = state.workspace.main.getSequenceRunsForBiosample(subject)
+        sequenceRuns.lift(sequenceRunIndex) match {
+          case None =>
+            Left(s"Sequence run not found at index $sequenceRunIndex")
+
+          case Some(seqRun) =>
+            val alignments = state.workspace.main.getAlignmentsForSequenceRun(seqRun)
+            alignments.lift(alignmentIndex) match {
+              case None =>
+                Left(s"Alignment not found at index $alignmentIndex")
+
+              case Some(alignment) =>
+                // Get BAM path from alignment's files first, then fall back to seqRun's files
+                val bamPathOpt = alignment.files.headOption.orElse(seqRun.files.headOption).flatMap(_.location)
+                bamPathOpt match {
+                  case None =>
+                    Left("No alignment file associated with this alignment")
+
+                  case Some(bamPath) =>
+                    runSvCallingInternal(state, subject, seqRun, alignment, bamPath, onProgress)
+                }
+            }
+        }
+      }
+    }
+  }
+
+  private def runSvCallingInternal(
+    state: WorkspaceState,
+    subject: Biosample,
+    seqRun: SequenceRun,
+    alignment: Alignment,
+    bamPath: String,
+    onProgress: AnalysisProgress => Unit
+  ): Either[String, (WorkspaceState, SvAnalysisResult)] = {
+    import com.decodingus.config.FeatureToggles
+    import htsjdk.samtools.SamReaderFactory
+
+    try {
+      // Check minimum coverage
+      val meanCoverage = alignment.metrics.flatMap(_.meanCoverage).getOrElse(0.0)
+      val minCoverage = FeatureToggles.svCalling.minCoverage
+      if (meanCoverage < minCoverage) {
+        return Left(s"Coverage too low for SV calling (${meanCoverage}x, minimum ${minCoverage}x required). Run WGS Metrics first.")
+      }
+
+      onProgress(AnalysisProgress("Resolving reference genome...", 0.05))
+
+      val referenceGateway = new ReferenceGateway((done, total) => {
+        val pct = if (total > 0) 0.05 + (done.toDouble / total) * 0.1 else 0.05
+        onProgress(AnalysisProgress(s"Downloading reference: ${done / 1024 / 1024}MB", pct))
+      })
+
+      val referencePath = referenceGateway.resolve(alignment.referenceBuild) match {
+        case Right(path) => path.toString
+        case Left(error) => return Left(s"Failed to resolve reference: $error")
+      }
+
+      onProgress(AnalysisProgress("Starting structural variant detection...", 0.15))
+
+      // Get contig lengths from BAM header
+      val samReader = SamReaderFactory.makeDefault().open(new File(bamPath))
+      val contigLengths = samReader.getFileHeader.getSequenceDictionary.getSequences.asScala
+        .map(s => s.getSequenceName -> s.getSequenceLength.toLong)
+        .toMap
+      samReader.close()
+
+      // Get artifact context for caching
+      val artifactCtx = ArtifactContext(
+        sampleAccession = subject.sampleAccession,
+        sequenceRunUri = seqRun.atUri,
+        alignmentUri = alignment.atUri
+      )
+
+      // Get insert size stats from sequence run
+      val meanInsertSize = seqRun.meanInsertSize.getOrElse(350.0)
+      val insertSizeSd = seqRun.stdInsertSize.getOrElse(50.0)
+      val meanReadLength = seqRun.readLength.map(_.toDouble).getOrElse(150.0)
+
+      // Create SV caller with config from feature toggles
+      val svConfig = FeatureToggles.svCalling.toSvCallerConfig
+      val svCaller = new SvCaller(svConfig)
+
+      val svResult = svCaller.callStructuralVariants(
+        bamPath = bamPath,
+        referencePath = referencePath,
+        contigLengths = contigLengths,
+        referenceBuild = alignment.referenceBuild,
+        meanCoverage = meanCoverage,
+        meanInsertSize = meanInsertSize,
+        insertSizeSd = insertSizeSd,
+        meanReadLength = meanReadLength,
+        onProgress = (msg, pct) => {
+          onProgress(AnalysisProgress(s"SV Calling: $msg", 0.15 + pct * 0.80))
+        },
+        artifactContext = Some(artifactCtx)
+      )
+
+      svResult match {
+        case Right(result) =>
+          onProgress(AnalysisProgress("Saving results...", 0.98))
+
+          // Update alignment metrics with SV info
+          val runId = seqRun.atUri.map(SubjectArtifactCache.extractIdFromUri).getOrElse("unknown-run")
+          val alignId = alignment.atUri.map(SubjectArtifactCache.extractIdFromUri).getOrElse("unknown-alignment")
+          val svVcfPath = SubjectArtifactCache.getArtifactSubdir(
+            subject.sampleAccession, runId, alignId, "sv"
+          ).resolve("structural_variants.vcf.gz").toString
+
+          val existingMetrics = alignment.metrics.getOrElse(AlignmentMetrics())
+          val updatedMetrics = existingMetrics.copy(
+            svVcfPath = Some(svVcfPath),
+            svCallCount = Some(result.svCalls.size)
+          )
+
+          val updatedAlignment = alignment.copy(
+            metrics = Some(updatedMetrics),
+            meta = alignment.meta.updated("sv")
+          )
+          val newState = workspaceOps.updateAlignment(state, updatedAlignment)
+
+          // Persist to H2
+          h2Service.updateAlignment(updatedAlignment) match {
+            case Right(_) => log.debug("Alignment persisted to H2 after SV calling")
+            case Left(err) => log.warn(s"Failed to persist Alignment to H2: $err")
+          }
+
+          onProgress(AnalysisProgress("SV calling complete", 1.0, isComplete = true))
+          log.info(s"SV calling complete: ${result.svCalls.size} structural variants detected")
+          Right((newState, result))
+
+        case Left(error) =>
+          Left(s"SV calling failed: $error")
       }
 
     } catch {

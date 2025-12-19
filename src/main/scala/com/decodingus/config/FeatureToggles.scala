@@ -28,6 +28,67 @@ object FeatureToggles {
     /** STR calling from BAM/CRAM files using HipSTR reference */
     val strCallerEnabled: Boolean =
       if (expConfig.hasPath("str-caller-enabled")) expConfig.getBoolean("str-caller-enabled") else false
+
+    /** Structural variant (SV) calling from BAM/CRAM files */
+    val svCallerEnabled: Boolean =
+      if (expConfig.hasPath("sv-caller-enabled")) expConfig.getBoolean("sv-caller-enabled") else false
+  }
+
+  /**
+   * Structural variant calling configuration.
+   * Detects deletions, duplications, inversions, and translocations
+   * using combined depth + paired-end + split-read evidence.
+   */
+  object svCalling {
+    private val svConfig = if (config.hasPath("sv-calling")) {
+      config.getConfig("sv-calling")
+    } else {
+      ConfigFactory.empty()
+    }
+
+    /** Minimum mean coverage required for SV calling */
+    val minCoverage: Double =
+      if (svConfig.hasPath("min-coverage")) svConfig.getDouble("min-coverage") else 10.0
+
+    /** Minimum size for CNV detection (in bp) */
+    val minCnvSize: Int =
+      if (svConfig.hasPath("min-cnv-size")) svConfig.getInt("min-cnv-size") else 10000
+
+    /** Z-score threshold for depth-based CNV calling */
+    val minDepthZScore: Double =
+      if (svConfig.hasPath("min-depth-z-score")) svConfig.getDouble("min-depth-z-score") else 2.5
+
+    /** Minimum paired-end read support for SV call */
+    val minPeSupport: Int =
+      if (svConfig.hasPath("min-pe-support")) svConfig.getInt("min-pe-support") else 2
+
+    /** Minimum split-read support for SV call */
+    val minSrSupport: Int =
+      if (svConfig.hasPath("min-sr-support")) svConfig.getInt("min-sr-support") else 1
+
+    /** Minimum total evidence support (PE + SR) for non-depth calls */
+    val minTotalSupport: Int =
+      if (svConfig.hasPath("min-total-support")) svConfig.getInt("min-total-support") else 3
+
+    /** Maximum distance for clustering evidence (in bp) */
+    val maxClusterDistance: Int =
+      if (svConfig.hasPath("max-cluster-distance")) svConfig.getInt("max-cluster-distance") else 500
+
+    /** Insert size z-score threshold for discordant pair detection */
+    val insertSizeZThreshold: Double =
+      if (svConfig.hasPath("insert-size-z-threshold")) svConfig.getDouble("insert-size-z-threshold") else 4.0
+
+    /** Create an SvCallerConfig from feature toggles */
+    def toSvCallerConfig: com.decodingus.analysis.sv.SvCallerConfig =
+      com.decodingus.analysis.sv.SvCallerConfig(
+        minCnvSize = minCnvSize,
+        minDepthZScore = minDepthZScore,
+        minPairedEndSupport = minPeSupport,
+        minSplitReadSupport = minSrSupport,
+        minTotalSupport = minTotalSupport,
+        maxClusterDistance = maxClusterDistance,
+        insertSizeZThreshold = insertSizeZThreshold
+      )
   }
 
   /**
