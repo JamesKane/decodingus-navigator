@@ -1,15 +1,17 @@
 package com.decodingus.ui.components
 
 import com.decodingus.analysis.{CallableLociResult, ContigCoverageStats}
+import com.decodingus.i18n.I18n.t
+import com.decodingus.i18n.Formatters
+import com.decodingus.ui.theme.Theme
 import scalafx.Includes.*
 import scalafx.beans.property.StringProperty
 import scalafx.collections.ObservableBuffer
 import scalafx.geometry.{Insets, Orientation}
 import scalafx.scene.control.*
-import scalafx.scene.layout.{HBox, Priority, StackPane, VBox}
+import scalafx.scene.layout.{HBox, Priority, VBox}
 import scalafx.scene.web.WebView
 
-import java.io.File
 import java.nio.file.{Files, Path}
 import scala.io.Source
 import scala.util.Using
@@ -24,14 +26,14 @@ class CallableLociResultDialog(
                                 artifactDir: Option[Path] = None
                               ) extends Dialog[Unit] {
 
-  title = "Callable Loci Analysis Results"
-  headerText = "Genome Coverage Analysis Complete"
+  private def colors = Theme.current
+
+  title = t("callable_loci.dialog.title")
+  headerText = t("callable_loci.dialog.header")
 
   dialogPane().buttonTypes = Seq(ButtonType.OK)
   dialogPane().setPrefSize(1000, 750)
-
-  // Format large numbers with commas
-  private def formatNumber(n: Long): String = f"$n%,d"
+  dialogPane().style = s"-fx-background-color: ${colors.background};"
 
   // Calculate total bases and percentages
   private val totalBases = result.contigAnalysis.map { cs =>
@@ -125,6 +127,9 @@ class CallableLociResultDialog(
   }
 
   private def loadSvgForContig(contigName: String): Unit = {
+    val bgColor = colors.background
+    val textColor = colors.textSecondary
+
     artifactDir match {
       case Some(dir) =>
         val svgFile = dir.resolve("callable_loci").resolve(s"$contigName.callable.svg")
@@ -137,7 +142,7 @@ class CallableLociResultDialog(
                |<html>
                |<head>
                |  <style>
-               |    body { margin: 0; padding: 10px; background: #222; display: flex; justify-content: center; }
+               |    body { margin: 0; padding: 10px; background: $bgColor; display: flex; justify-content: center; }
                |    svg { max-width: 100%; height: auto; }
                |  </style>
                |</head>
@@ -148,10 +153,14 @@ class CallableLociResultDialog(
           """.stripMargin
           svgWebView.engine.loadContent(html)
         } else {
-          svgWebView.engine.loadContent(s"<html><body style='background:#333;color:#ccc;padding:20px;'>SVG not found: $svgFile</body></html>")
+          svgWebView.engine.loadContent(
+            s"<html><body style='background:${colors.surface};color:$textColor;padding:20px;'>${t("callable_loci.svg_not_found")}: $svgFile</body></html>"
+          )
         }
       case None =>
-        svgWebView.engine.loadContent("<html><body style='background:#333;color:#ccc;padding:20px;'>No artifact directory provided</body></html>")
+        svgWebView.engine.loadContent(
+          s"<html><body style='background:${colors.surface};color:$textColor;padding:20px;'>${t("callable_loci.no_artifact_dir")}</body></html>"
+        )
     }
   }
 
@@ -161,21 +170,22 @@ class CallableLociResultDialog(
   private val contigTable = new TableView[ContigRow](tableData) {
     prefHeight = 280
     columnResizePolicy = TableView.ConstrainedResizePolicy
+    style = s"-fx-background-color: ${colors.surface};"
 
     // Core callable loci columns
     val coreColumns = Seq(
       new TableColumn[ContigRow, String] {
-        text = "Contig"
+        text = t("callable_loci.col.contig")
         cellValueFactory = r => StringProperty(r.value.contig)
         prefWidth = 60
       },
       new TableColumn[ContigRow, String] {
-        text = "Callable"
-        cellValueFactory = r => StringProperty(formatNumber(r.value.callable))
+        text = t("callable_loci.col.callable")
+        cellValueFactory = r => StringProperty(Formatters.formatNumber(r.value.callable))
         prefWidth = 90
       },
       new TableColumn[ContigRow, String] {
-        text = "% Callable"
+        text = t("callable_loci.col.callable_pct")
         cellValueFactory = r => StringProperty(f"${r.value.callablePercent}%.1f%%")
         prefWidth = 70
       }
@@ -184,32 +194,32 @@ class CallableLociResultDialog(
     // Coverage metrics columns (only shown if coverage.txt exists)
     val coverageColumns = if (hasCoverageStats) Seq(
       new TableColumn[ContigRow, String] {
-        text = "Reads"
-        cellValueFactory = r => StringProperty(r.value.numReads.map(formatNumber).getOrElse("-"))
+        text = t("callable_loci.col.reads")
+        cellValueFactory = r => StringProperty(r.value.numReads.map(n => Formatters.formatNumber(n)).getOrElse("-"))
         prefWidth = 85
       },
       new TableColumn[ContigRow, String] {
-        text = "Cov Bases"
-        cellValueFactory = r => StringProperty(r.value.covBases.map(formatNumber).getOrElse("-"))
+        text = t("callable_loci.col.cov_bases")
+        cellValueFactory = r => StringProperty(r.value.covBases.map(n => Formatters.formatNumber(n)).getOrElse("-"))
         prefWidth = 90
       },
       new TableColumn[ContigRow, String] {
-        text = "% Cov"
+        text = t("callable_loci.col.cov_pct")
         cellValueFactory = r => StringProperty(r.value.coveragePct.map(p => f"$p%.1f%%").getOrElse("-"))
         prefWidth = 60
       },
       new TableColumn[ContigRow, String] {
-        text = "Depth"
+        text = t("callable_loci.col.depth")
         cellValueFactory = r => StringProperty(r.value.meanDepth.map(d => f"$d%.1f").getOrElse("-"))
         prefWidth = 55
       },
       new TableColumn[ContigRow, String] {
-        text = "BaseQ"
+        text = t("callable_loci.col.baseq")
         cellValueFactory = r => StringProperty(r.value.meanBaseQ.map(q => f"$q%.1f").getOrElse("-"))
         prefWidth = 50
       },
       new TableColumn[ContigRow, String] {
-        text = "MapQ"
+        text = t("callable_loci.col.mapq")
         cellValueFactory = r => StringProperty(r.value.meanMapQ.map(q => f"$q%.1f").getOrElse("-"))
         prefWidth = 50
       }
@@ -218,23 +228,23 @@ class CallableLociResultDialog(
     // Additional callable loci detail columns
     val detailColumns = Seq(
       new TableColumn[ContigRow, String] {
-        text = "No Cov"
-        cellValueFactory = r => StringProperty(formatNumber(r.value.noCoverage))
+        text = t("callable_loci.col.no_cov")
+        cellValueFactory = r => StringProperty(Formatters.formatNumber(r.value.noCoverage))
         prefWidth = 80
       },
       new TableColumn[ContigRow, String] {
-        text = "Low Cov"
-        cellValueFactory = r => StringProperty(formatNumber(r.value.lowCoverage))
+        text = t("callable_loci.col.low_cov")
+        cellValueFactory = r => StringProperty(Formatters.formatNumber(r.value.lowCoverage))
         prefWidth = 80
       },
       new TableColumn[ContigRow, String] {
-        text = "Excess"
-        cellValueFactory = r => StringProperty(formatNumber(r.value.excessiveCoverage))
+        text = t("callable_loci.col.excess")
+        cellValueFactory = r => StringProperty(Formatters.formatNumber(r.value.excessiveCoverage))
         prefWidth = 70
       },
       new TableColumn[ContigRow, String] {
-        text = "Poor MapQ"
-        cellValueFactory = r => StringProperty(formatNumber(r.value.poorMappingQuality))
+        text = t("callable_loci.col.poor_mapq")
+        cellValueFactory = r => StringProperty(Formatters.formatNumber(r.value.poorMappingQuality))
         prefWidth = 80
       }
     )
@@ -256,11 +266,11 @@ class CallableLociResultDialog(
     children = Seq(
       new HBox(20) {
         children = Seq(
-          new Label(s"Total Callable: ${formatNumber(result.callableBases)}") {
-            style = "-fx-font-size: 16px; -fx-font-weight: bold;"
+          new Label(t("callable_loci.total_callable", Formatters.formatNumber(result.callableBases))) {
+            style = s"-fx-font-size: 16px; -fx-font-weight: bold; -fx-text-fill: ${colors.textPrimary};"
           },
-          new Label(f"($callablePercent%.1f%% of genome)") {
-            style = "-fx-font-size: 14px;"
+          new Label(f"($callablePercent%.1f%% ${t("callable_loci.of_genome")})") {
+            style = s"-fx-font-size: 14px; -fx-text-fill: ${colors.textSecondary};"
           }
         )
       }
@@ -270,10 +280,11 @@ class CallableLociResultDialog(
   // Upper section: summary + table
   private val upperSection = new VBox(5) {
     padding = Insets(10)
+    style = s"-fx-background-color: ${colors.background};"
     children = Seq(
       summarySection,
-      new Label("Per-Contig Analysis (select row to view histogram):") {
-        style = "-fx-font-weight: bold;"
+      new Label(t("callable_loci.per_contig_hint")) {
+        style = s"-fx-font-weight: bold; -fx-text-fill: ${colors.textPrimary};"
       },
       contigTable
     )
@@ -283,9 +294,10 @@ class CallableLociResultDialog(
   // Lower section: SVG histogram
   private val lowerSection = new VBox(5) {
     padding = Insets(10)
+    style = s"-fx-background-color: ${colors.background};"
     children = Seq(
-      new Label("Coverage Histogram:") {
-        style = "-fx-font-weight: bold;"
+      new Label(t("callable_loci.histogram_label")) {
+        style = s"-fx-font-weight: bold; -fx-text-fill: ${colors.textPrimary};"
       },
       svgWebView
     )
@@ -297,13 +309,14 @@ class CallableLociResultDialog(
     orientation = Orientation.Vertical
     items.addAll(upperSection, lowerSection)
     dividerPositions = 0.55
+    style = s"-fx-background-color: ${colors.background};"
   }
   VBox.setVgrow(splitPane, Priority.Always)
 
   private val artifactPathLabel = artifactDir match {
     case Some(dir) =>
-      new Label(s"Artifacts: ${dir.resolve("callable_loci")}") {
-        style = "-fx-font-size: 11px; -fx-text-fill: #888;"
+      new Label(s"${t("callable_loci.artifacts_path")}: ${dir.resolve("callable_loci")}") {
+        style = s"-fx-font-size: 11px; -fx-text-fill: ${colors.textMuted};"
       }
     case None =>
       new Label("") {
@@ -313,6 +326,7 @@ class CallableLociResultDialog(
 
   private val content = new VBox(5) {
     padding = Insets(10)
+    style = s"-fx-background-color: ${colors.background};"
     children = Seq(splitPane, artifactPathLabel)
   }
   VBox.setVgrow(content, Priority.Always)
