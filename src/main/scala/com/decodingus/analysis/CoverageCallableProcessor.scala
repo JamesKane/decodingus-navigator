@@ -256,4 +256,28 @@ object CoverageCallableProcessor {
     import scala.jdk.CollectionConverters.*
     Files.list(callableLociDir).iterator().asScala.exists(_.toString.endsWith(".table.txt"))
   }
+
+  /**
+   * Load as legacy CallableLociResult for compatibility.
+   */
+  def loadAsCallableLociResult(callableLociDir: Path): Option[CallableLociResult] = {
+    loadFromCache(callableLociDir).map { res =>
+      CallableLociResult(
+        callableBases = res.callableBases,
+        contigAnalysis = res.contigSummaries
+      )
+    }
+  }
+
+  /**
+   * Load as legacy CallableLociResult using artifact context IDs.
+   */
+  def loadAsCallableLociResult(
+                                sampleAccession: String,
+                                runId: String,
+                                alignmentId: String
+                              ): Option[CallableLociResult] = {
+    val dir = SubjectArtifactCache.getArtifactSubdir(sampleAccession, runId, alignmentId, "callable_loci")
+    loadAsCallableLociResult(dir)
+  }
 }

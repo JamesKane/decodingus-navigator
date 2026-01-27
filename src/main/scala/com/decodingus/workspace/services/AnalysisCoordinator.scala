@@ -847,7 +847,7 @@ class AnalysisCoordinator(
         alignmentUri = alignment.atUri
       )
 
-      val processor = new CallableLociProcessor()
+      val processor = new CoverageCallableProcessor()
 
       // Determine minDepth based on test type AND coverage (same logic as batch analysis)
       val meanCoverage = alignment.metrics.flatMap(_.meanCoverage).getOrElse(30.0)
@@ -879,8 +879,14 @@ class AnalysisCoordinator(
         case Left(error) =>
           Left(s"Callable loci failed: ${error.getMessage}")
 
-        case Right((result, _)) =>
+        case Right((ccResult, _)) =>
           onProgress(AnalysisProgress("Saving results...", 0.95))
+
+          // Convert to legacy result type for compatibility
+          val result = CallableLociResult(
+            callableBases = ccResult.callableBases,
+            contigAnalysis = ccResult.contigSummaries
+          )
 
           // Update alignment metrics with callable bases
           val currentMetrics = alignment.metrics.getOrElse(AlignmentMetrics())
@@ -1812,7 +1818,7 @@ class AnalysisCoordinator(
                                    artifactCtx: ArtifactContext,
                                    onProgress: Double => Unit
                                  ): Either[String, (CallableLociResult, List[String])] = {
-    val processor = new CallableLociProcessor()
+    val processor = new CoverageCallableProcessor()
 
     // Determine minDepth based on test type AND coverage
     // HiFi reads are highly accurate, so minDepth=2 is appropriate
@@ -1846,7 +1852,13 @@ class AnalysisCoordinator(
       },
       artifactContext = Some(artifactCtx),
       minDepth = minDepth
-    ).left.map(_.getMessage)
+    ).map { case (ccResult, svgs) =>
+      val clResult = CallableLociResult(
+        callableBases = ccResult.callableBases,
+        contigAnalysis = ccResult.contigSummaries
+      )
+      (clResult, svgs)
+    }.left.map(_.getMessage)
   }
 
   /**

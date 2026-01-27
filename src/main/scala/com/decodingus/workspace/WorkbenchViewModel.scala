@@ -1896,9 +1896,9 @@ class WorkbenchViewModel(
                           case Left(error) => throw new Exception(s"Failed to resolve reference: $error")
                         }
 
-                        // Run GATK CallableLoci
-                        updateProgress("Running GATK CallableLoci (analyzing contigs)...", 0.1)
-                        val callableLociProcessor = new CallableLociProcessor()
+                        // Run GATK CallableLoci (via CoverageCallableProcessor)
+                        updateProgress("Running CallableLoci (analyzing contigs)...", 0.1)
+                        val callableLociProcessor = new CoverageCallableProcessor()
                         val artifactCtx = ArtifactContext(
                           sampleAccession = sampleAccession,
                           sequenceRunUri = seqRun.atUri,
@@ -1920,7 +1920,9 @@ class WorkbenchViewModel(
                           Some(artifactCtx),
                           minDepth
                         ) match {
-                          case Right(r) => r
+                          case Right((r, svgs)) =>
+                            val clResult = CallableLociResult(r.callableBases, r.contigSummaries)
+                            (clResult, svgs)
                           case Left(error) => throw error
                         }
 

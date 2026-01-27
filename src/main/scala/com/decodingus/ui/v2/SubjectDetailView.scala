@@ -4,7 +4,7 @@ import com.decodingus.i18n.I18n.{t, bind}
 import com.decodingus.i18n.Formatters
 import com.decodingus.str.StrCsvParser
 import com.decodingus.config.{FeatureToggles, LabsConfig}
-import com.decodingus.analysis.{CallableLociProcessor, StrCall}
+import com.decodingus.analysis.{CallableLociResult, CoverageCallableProcessor, StrCall}
 import com.decodingus.haplogroup.tree.TreeType
 import com.decodingus.ui.components.{AddDataDialog, AddSequenceDataDialog, AncestryResultDialog, CallableLociResultDialog, ConfirmDialog, DataInput, DataType, EditSequenceRunDialog, EditSubjectDialog, ImportVendorFastaDialog, InfoDialog, MtdnaVariantsPanel, SequenceDataInput, SequenceRunEditResult, SourceReconciliationPanel, VcfMetadata, VcfMetadataDialog, VendorFastaImportRequest, YChromosomeIdeogramPanel, YStrDetailDialog, YStrSummaryPanel}
 import com.decodingus.ui.v2.BiosampleExtensions.*
@@ -1600,7 +1600,7 @@ class SubjectDetailView(viewModel: WorkbenchViewModel) extends VBox {
     currentSubject.value.foreach { subject =>
       viewModel.getCallableLociArtifactDirForAlignment(subject.accession, seqRunIndex, alignIndex) match {
         case Some(artifactDir) =>
-          CallableLociProcessor.loadFromCache(artifactDir) match {
+          CoverageCallableProcessor.loadAsCallableLociResult(artifactDir) match {
             case Some(result) =>
               try {
                 val dialog = new CallableLociResultDialog(
