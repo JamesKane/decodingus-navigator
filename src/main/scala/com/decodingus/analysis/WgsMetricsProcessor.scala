@@ -7,26 +7,9 @@ import java.nio.file.Path
 import scala.io.Source
 import scala.util.{Either, Left, Right, Using}
 
-/**
- * Context for organizing analysis artifacts by subject/run/alignment.
- */
-case class ArtifactContext(
-                            sampleAccession: String,
-                            sequenceRunUri: Option[String],
-                            alignmentUri: Option[String]
-                          ) {
-  /** Gets the artifact directory for this context */
-  def getArtifactDir: Path = SubjectArtifactCache.getAlignmentDirFromUris(sampleAccession, sequenceRunUri, alignmentUri)
+class WgsMetricsProcessor extends GatkToolProcessor[WgsMetrics] {
 
-  /** Gets a subdirectory for a specific artifact type */
-  def getSubdir(name: String): Path = {
-    val runId = sequenceRunUri.map(SubjectArtifactCache.extractIdFromUri).getOrElse("unknown-run")
-    val alignId = alignmentUri.map(SubjectArtifactCache.extractIdFromUri).getOrElse("unknown-alignment")
-    SubjectArtifactCache.getArtifactSubdir(sampleAccession, runId, alignId, name)
-  }
-}
-
-class WgsMetricsProcessor {
+  override protected def getToolName: String = "CollectWgsMetrics"
 
   /**
    * Process a BAM/CRAM file to collect WGS metrics using GATK.
@@ -48,63 +31,48 @@ class WgsMetricsProcessor {
                totalReads: Option[Long] = None,
                countUnpaired: Boolean = false
              ): Either[Throwable, WgsMetrics] = {
-    // Ensure BAM index exists
-    onProgress("Checking BAM index...", 0.0, 1.0)
-    GatkRunner.ensureIndex(bamPath) match {
-      case Left(error) => return Left(new RuntimeException(error))
-      case Right(_) => // index exists or was created
-    }
 
-    onProgress("Running GATK CollectWgsMetrics...", 0.05, 1.0)
+    executeGatkTool(
+      bamPath,
+      referencePath,
+      onProgress,
+      artifactContext,
+      totalReads,
+      buildArgs = (bam, ref, out) => {
+        val baseArgs = Array(
+          "CollectWgsMetrics",
+          "-I", bam,
+          "-R", ref,
+          "-O", out,
+          "--USE_FAST_ALGORITHM", "true",
+          "--VALIDATION_STRINGENCY", "SILENT"
+        )
 
-    // Use artifact cache directory if context provided, otherwise use temp file
-    val outputFile = artifactContext match {
+        val argsWithReadLength = readLength match {
+          case Some(len) if len > 150 => baseArgs ++ Array("--READ_LENGTH", len.toString)
+          case _ => baseArgs
+        }
+
+        if (countUnpaired) {
+          argsWithReadLength ++ Array("--COUNT_UNPAIRED", "true")
+        } else {
+          argsWithReadLength
+        }
+      },
+      parseOutput = parse,
+      resolveOutputPath = resolveOutput
+    )
+  }
+
+  private def resolveOutput(artifactContext: Option[ArtifactContext]): (Option[Path], String) = {
+    artifactContext match {
       case Some(ctx) =>
         val dir = ctx.getArtifactDir
-        dir.resolve("wgs_metrics.txt").toFile
+        (Some(dir), dir.resolve("wgs_metrics.txt").toFile.getAbsolutePath)
       case None =>
         val tempFile = File.createTempFile("wgs_metrics", ".txt")
         tempFile.deleteOnExit()
-        tempFile
-    }
-
-    // Base arguments
-    val baseArgs = Array(
-      "CollectWgsMetrics",
-      "-I", bamPath,
-      "-R", referencePath,
-      "-O", outputFile.getAbsolutePath,
-      "--USE_FAST_ALGORITHM", "true",
-      "--VALIDATION_STRINGENCY", "SILENT"
-    )
-
-    // Add READ_LENGTH if reads are longer than the default 150bp
-    val argsWithReadLength = readLength match {
-      case Some(len) if len > 150 => baseArgs ++ Array("--READ_LENGTH", len.toString)
-      case _ => baseArgs
-    }
-
-    // Add COUNT_UNPAIRED for single-end long-read data (PacBio HiFi, Nanopore)
-    val args = if (countUnpaired) {
-      argsWithReadLength ++ Array("--COUNT_UNPAIRED", "true")
-    } else {
-      argsWithReadLength
-    }
-
-    // Progress callback that maps GATK progress (0-1) to our range (0.05-0.95)
-    val gatkProgress: (String, Double) => Unit = (msg, fraction) => {
-      val mappedProgress = 0.05 + (fraction * 0.9)
-      onProgress(msg, mappedProgress, 1.0)
-    }
-
-    GatkRunner.runWithProgress(args, Some(gatkProgress), totalReads, None) match {
-      case Right(_) =>
-        onProgress("Parsing GATK CollectWgsMetrics output...", 0.95, 1.0)
-        val metrics = parse(outputFile.getAbsolutePath)
-        onProgress("GATK CollectWgsMetrics complete.", 1.0, 1.0)
-        Right(metrics)
-      case Left(error) =>
-        Left(new RuntimeException(error))
+        (None, tempFile.getAbsolutePath)
     }
   }
 

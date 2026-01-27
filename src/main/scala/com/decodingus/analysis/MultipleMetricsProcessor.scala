@@ -63,9 +63,11 @@ case class MultipleMetricsResult(
  *
  * These complement CollectWgsMetrics (coverage) and CallableLoci (callable bases).
  */
-class MultipleMetricsProcessor {
+class MultipleMetricsProcessor extends GatkToolProcessor[MultipleMetricsResult] {
 
   private val ARTIFACT_SUBDIR_NAME = "multiple_metrics"
+
+  override protected def getToolName: String = "CollectMultipleMetrics"
 
   /**
    * Process a BAM/CRAM file to collect multiple metrics using GATK.
@@ -83,17 +85,29 @@ class MultipleMetricsProcessor {
                artifactContext: Option[ArtifactContext] = None,
                totalReads: Option[Long] = None
              ): Either[Throwable, MultipleMetricsResult] = {
-    // Ensure BAM index exists
-    onProgress("Checking BAM index...", 0.0, 1.0)
-    GatkRunner.ensureIndex(bamPath) match {
-      case Left(error) => return Left(new RuntimeException(error))
-      case Right(_) => // index exists or was created
-    }
 
-    onProgress("Running GATK CollectMultipleMetrics...", 0.05, 1.0)
+    executeGatkTool(
+      bamPath,
+      referencePath,
+      onProgress,
+      artifactContext,
+      totalReads,
+      buildArgs = (bam, ref, outPrefix) => Array(
+        "CollectMultipleMetrics",
+        "-I", bam,
+        "-R", ref,
+        "-O", outPrefix,
+        "--PROGRAM", "CollectAlignmentSummaryMetrics",
+        "--PROGRAM", "CollectInsertSizeMetrics",
+        "--VALIDATION_STRINGENCY", "SILENT"
+      ),
+      parseOutput = parse,
+      resolveOutputPath = resolveOutput
+    )
+  }
 
-    // Determine output prefix
-    val (outputDir, outputPrefix) = artifactContext match {
+  private def resolveOutput(artifactContext: Option[ArtifactContext]): (Option[Path], String) = {
+    artifactContext match {
       case Some(ctx) =>
         val dir = ctx.getSubdir(ARTIFACT_SUBDIR_NAME)
         (Some(dir), dir.resolve("metrics").toString)
@@ -102,54 +116,28 @@ class MultipleMetricsProcessor {
         tempDir.toFile.deleteOnExit()
         (None, tempDir.resolve("metrics").toString)
     }
+  }
 
-    // GATK CollectMultipleMetrics arguments
-    // We request specific programs to avoid running unnecessary collectors
-    val args = Array(
-      "CollectMultipleMetrics",
-      "-I", bamPath,
-      "-R", referencePath,
-      "-O", outputPrefix,
-      "--PROGRAM", "CollectAlignmentSummaryMetrics",
-      "--PROGRAM", "CollectInsertSizeMetrics",
-      "--VALIDATION_STRINGENCY", "SILENT"
-    )
+  private def parse(outputPrefix: String): MultipleMetricsResult = {
+    // Parse both output files
+    val alignmentSummaryFile = new File(outputPrefix + ".alignment_summary_metrics")
+    val insertSizeFile = new File(outputPrefix + ".insert_size_metrics")
 
-    // Progress callback that maps GATK progress (0-1) to our range (0.05-0.90)
-    val gatkProgress: (String, Double) => Unit = (msg, fraction) => {
-      val mappedProgress = 0.05 + (fraction * 0.85)
-      onProgress(msg, mappedProgress, 1.0)
+    val alignmentMetrics = if (alignmentSummaryFile.exists()) {
+      parseAlignmentSummaryMetrics(alignmentSummaryFile)
+    } else {
+      println(s"[MultipleMetricsProcessor] Warning: alignment_summary_metrics not found")
+      Map.empty[String, String]
     }
 
-    GatkRunner.runWithProgress(args, Some(gatkProgress), totalReads, None) match {
-      case Right(_) =>
-        onProgress("Parsing metrics output...", 0.92, 1.0)
-
-        // Parse both output files
-        val alignmentSummaryFile = new File(outputPrefix + ".alignment_summary_metrics")
-        val insertSizeFile = new File(outputPrefix + ".insert_size_metrics")
-
-        val alignmentMetrics = if (alignmentSummaryFile.exists()) {
-          parseAlignmentSummaryMetrics(alignmentSummaryFile)
-        } else {
-          println(s"[MultipleMetricsProcessor] Warning: alignment_summary_metrics not found")
-          Map.empty[String, String]
-        }
-
-        val insertSizeMetrics = if (insertSizeFile.exists()) {
-          parseInsertSizeMetrics(insertSizeFile)
-        } else {
-          println(s"[MultipleMetricsProcessor] Warning: insert_size_metrics not found (may be single-end library)")
-          Map.empty[String, String]
-        }
-
-        onProgress("CollectMultipleMetrics complete.", 1.0, 1.0)
-
-        Right(buildResult(alignmentMetrics, insertSizeMetrics))
-
-      case Left(error) =>
-        Left(new RuntimeException(error))
+    val insertSizeMetrics = if (insertSizeFile.exists()) {
+      parseInsertSizeMetrics(insertSizeFile)
+    } else {
+      println(s"[MultipleMetricsProcessor] Warning: insert_size_metrics not found (may be single-end library)")
+      Map.empty[String, String]
     }
+
+    buildResult(alignmentMetrics, insertSizeMetrics)
   }
 
   /**
