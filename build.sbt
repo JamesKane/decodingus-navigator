@@ -77,7 +77,9 @@ lazy val root = (project in file("."))
       val jacksonVersion = "2.15.2"
       val javaFXVersion = "21.0.2"
       val osName = System.getProperty("os.name").toLowerCase match {
-        case n if n.contains("mac") => "mac"
+        case n if n.contains("mac") =>
+          if (System.getProperty("os.arch").toLowerCase.contains("aarch64")) "mac-aarch64"
+          else "mac"
         case n if n.contains("win") => "win"
         case _ => "linux"
       }

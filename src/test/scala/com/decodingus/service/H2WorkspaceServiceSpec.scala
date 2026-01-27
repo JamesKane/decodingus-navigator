@@ -14,7 +14,9 @@ class H2WorkspaceServiceSpec extends FunSuite with DatabaseTestSupport:
       biosampleRepo = BiosampleRepository(),
       projectRepo = ProjectRepository(),
       sequenceRunRepo = SequenceRunRepository(),
-      alignmentRepo = AlignmentRepository()
+      alignmentRepo = AlignmentRepository(),
+      strProfileRepo = StrProfileRepository(),
+      chipProfileRepo = ChipProfileRepository()
     )
 
   // ============================================

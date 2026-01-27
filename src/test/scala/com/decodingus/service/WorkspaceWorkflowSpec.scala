@@ -24,7 +24,8 @@ class WorkspaceWorkflowSpec extends FunSuite with DatabaseTestSupport:
     WorkspaceServices(
       workspace = H2WorkspaceService(
         tx, BiosampleRepository(), ProjectRepository(),
-        SequenceRunRepository(), AlignmentRepository()
+        SequenceRunRepository(), AlignmentRepository(),
+        StrProfileRepository(), ChipProfileRepository()
       ),
       sync = H2SyncService(
         tx, SyncQueueRepository(), SyncHistoryRepository(), SyncConflictRepository()
@@ -346,7 +347,7 @@ class WorkspaceWorkflowSpec extends FunSuite with DatabaseTestSupport:
     val alignments = services.workspace.getAlignmentsForBiosample(biosampleId).toOption.get
     assertEquals(alignments.size, 2)
     assert(alignments.exists(_.referenceBuild == "GRCh38"))
-    assert(alignments.exists(_.referenceBuild == "T2T-CHM13"))
+    assert(alignments.exists(_.referenceBuild == "CHM13v2"))
 
     // Invalidate by reference build (e.g., reference genome update)
     val invalidated = services.cache.invalidateByReferenceBuild("GRCh38", "GRCh38 reference updated")
@@ -560,7 +561,7 @@ class WorkspaceWorkflowSpec extends FunSuite with DatabaseTestSupport:
 
     // Verify: Reference builds are different
     val refBuilds = alignmentsForBiosample.map(_.referenceBuild).toSet
-    assertEquals(refBuilds, Set("GRCh38", "GRCh37", "T2T-CHM13"))
+    assertEquals(refBuilds, Set("GRCh38", "GRCh37", "CHM13v2"))
 
     // Verify: Still only ONE sequence run for this biosample
     val sequenceRunsForBiosample = services.workspace.getSequenceRunsForBiosample(biosampleId).toOption.get
