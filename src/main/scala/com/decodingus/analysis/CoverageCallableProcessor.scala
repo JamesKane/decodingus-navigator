@@ -1,5 +1,6 @@
 package com.decodingus.analysis
 
+import com.decodingus.analysis.util.BioVisualizationUtil
 import com.decodingus.model.ContigSummary
 
 import java.io.{File, PrintWriter}
@@ -93,22 +94,6 @@ class CoverageCallableProcessor {
    * Reuses the visualization approach from CallableLociProcessor.
    */
   private def generateSvgVisualizations(outputDir: Path, contigSummaries: List[ContigSummary]): List[String] = {
-    val STRIDE_LEN = 10000
-    val MAX_SVG_WIDTH = 2000
-    val SVG_HEIGHT_PER_CONTIG = 50
-    val BAR_HEIGHT = 200
-    val MARGIN_TOP = 20
-    val MARGIN_BOTTOM = 40
-    val MARGIN_LEFT = 30
-    val MARGIN_RIGHT = 30
-    val TOTAL_FIXED_HEIGHT = BAR_HEIGHT + SVG_HEIGHT_PER_CONTIG + MARGIN_BOTTOM
-
-    val COLOR_GREEN = "#007700"
-    val COLOR_RED = "#770000"
-    val TEXT_COLOR = "#CCCCCC"
-    val BG_COLOR = "#222222"
-    val AXIS_COLOR = "#CCCCCC"
-    val TICK_COLOR = "#FFFF00"
 
     // Get max contig length for scaling
     val maxContigLength = contigSummaries.map { s =>
@@ -125,12 +110,9 @@ class CoverageCallableProcessor {
         val contigLength = (summary.refN + summary.callable + summary.noCoverage +
           summary.lowCoverage + summary.excessiveCoverage + summary.poorMappingQuality).toInt
 
-        val binData = binIntervalsFromBed(bedFile, contigName, contigLength, STRIDE_LEN)
-        val svg = generateSvgForContig(
-          contigName, contigLength, maxContigLength.toInt, binData,
-          STRIDE_LEN, MAX_SVG_WIDTH, BAR_HEIGHT, MARGIN_TOP, MARGIN_BOTTOM,
-          MARGIN_LEFT, MARGIN_RIGHT, SVG_HEIGHT_PER_CONTIG, TOTAL_FIXED_HEIGHT,
-          COLOR_GREEN, COLOR_RED, TEXT_COLOR, BG_COLOR, AXIS_COLOR, TICK_COLOR
+        val binData = BioVisualizationUtil.binIntervalsFromBed(bedFile, contigName, contigLength)
+        val svg = BioVisualizationUtil.generateSvgForContig(
+          contigName, contigLength, maxContigLength.toInt, binData
         )
 
         // Write SVG to file
@@ -140,118 +122,6 @@ class CoverageCallableProcessor {
         Some(svg)
       }
     }
-  }
-
-  /**
-   * Bin intervals from BED file for visualization.
-   */
-  private def binIntervalsFromBed(bedPath: Path, contigName: String, contigLength: Int, strideLen: Int): Array[Array[Int]] = {
-    val maxBin = (contigLength.toDouble / strideLen).ceil.toInt
-    val binData = Array.fill(maxBin)(Array.fill(3)(0)) // 0: CALLABLE, 1: POOR_MAPPING_QUALITY, 2: Other
-
-    Using(Source.fromFile(bedPath.toFile)) { source =>
-      for (line <- source.getLines()) {
-        if (!line.startsWith("#") && line.trim.nonEmpty) {
-          val fields = line.split("\\s+")
-          if (fields.length >= 4 && fields(0) == contigName) {
-            val start = fields(1).toInt
-            val stop = fields(2).toInt
-            val status = fields(3)
-
-            (start until stop).foreach { basePos =>
-              val binIndex = basePos / strideLen
-              if (binIndex < maxBin) {
-                status match {
-                  case "CALLABLE" => binData(binIndex)(0) += 1
-                  case "POOR_MAPPING_QUALITY" => binData(binIndex)(1) += 1
-                  case _ => binData(binIndex)(2) += 1
-                }
-              }
-            }
-          }
-        }
-      }
-    }
-    binData
-  }
-
-  /**
-   * Generate SVG for a single contig.
-   */
-  private def generateSvgForContig(
-    contigName: String,
-    contigLength: Int,
-    maxGenomeLength: Int,
-    binData: Array[Array[Int]],
-    strideLen: Int,
-    maxSvgWidth: Int,
-    barHeight: Int,
-    marginTop: Int,
-    marginBottom: Int,
-    marginLeft: Int,
-    marginRight: Int,
-    svgHeightPerContig: Int,
-    totalFixedHeight: Int,
-    colorGreen: String,
-    colorRed: String,
-    textColor: String,
-    bgColor: String,
-    axisColor: String,
-    tickColor: String
-  ): String = {
-    val scalingFactor = contigLength.toDouble / maxGenomeLength
-    val currentSvgWidth = (maxSvgWidth * scalingFactor).max(50) + marginLeft + marginRight
-    val drawableWidth = currentSvgWidth - marginLeft - marginRight
-    val maxBin = (contigLength.toDouble / strideLen).ceil.toInt
-    val pixelsPerBin = drawableWidth / maxBin
-
-    val svg = new StringBuilder
-    svg.append(
-      s"""<svg width="${currentSvgWidth.round}" height="$totalFixedHeight" viewBox="0 0 ${currentSvgWidth.round} $totalFixedHeight" xmlns="http://www.w3.org/2000/svg" font-family="Arial, sans-serif">
-    <rect x="0" y="0" width="${currentSvgWidth.round}" height="$totalFixedHeight" fill="$bgColor" />
-    <text x="${currentSvgWidth / 2}" y="${marginTop + 15}" text-anchor="middle" font-size="20" fill="$textColor">$contigName (Stride: ${strideLen / 1000}kb)</text>
-  """)
-
-    val drawYOffset = marginTop + svgHeightPerContig
-
-    binData.zipWithIndex.foreach { case (counts, index) =>
-      val binXStart = marginLeft + (index * pixelsPerBin)
-      val callableDepth = counts(0).toDouble / strideLen
-      val poorQualDepth = counts(1).toDouble / strideLen
-      val otherDepth = counts(2).toDouble / strideLen
-
-      var yPos = drawYOffset + barHeight
-      if (callableDepth > 0) {
-        val heightPx = (callableDepth * barHeight).round.toInt
-        yPos -= heightPx
-        svg.append(s"""  <rect x="$binXStart" y="$yPos" width="$pixelsPerBin" height="$heightPx" fill="$colorGreen" />""")
-      }
-      if (poorQualDepth > 0) {
-        val heightPx = (poorQualDepth * barHeight).round.toInt
-        yPos -= heightPx
-        svg.append(s"""  <rect x="$binXStart" y="$yPos" width="$pixelsPerBin" height="$heightPx" fill="$colorRed" />""")
-      }
-      if (otherDepth > 0) {
-        val heightPx = (otherDepth * barHeight).round.toInt
-        yPos -= heightPx
-        svg.append(s"""  <rect x="$binXStart" y="$yPos" width="$pixelsPerBin" height="$heightPx" fill="#AAAAAA" />""")
-      }
-    }
-
-    svg.append(s"""  <line x1="$marginLeft" y1="${drawYOffset + barHeight}" x2="${marginLeft + drawableWidth}" y2="${drawYOffset + barHeight}" stroke="$axisColor" stroke-width="1" />""")
-
-    val textY = drawYOffset + barHeight + 15
-    val tickYTop = drawYOffset + barHeight - 2
-    val tickYBottom = drawYOffset + barHeight + 3
-
-    (10000000 to contigLength by 10000000).foreach { mbMark =>
-      val markX = marginLeft + (mbMark.toDouble / contigLength * drawableWidth)
-      svg.append(s"""  <line x1="$markX" y1="$tickYTop" x2="$markX" y2="$tickYBottom" stroke="$tickColor" stroke-width="2" />""")
-      svg.append(s"""  <text x="$markX" y="$textY" text-anchor="middle" font-size="12" fill="$tickColor">${mbMark / 1000000}Mb</text>""")
-    }
-
-    svg.append("</svg>")
-    svg.toString()
   }
 }
 
