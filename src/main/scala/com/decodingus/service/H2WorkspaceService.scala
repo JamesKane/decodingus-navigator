@@ -609,3 +609,36 @@ class H2WorkspaceService(
         chipProfiles = chipProfiles
       )
     }
+
+  override def saveWorkspaceContent(content: WorkspaceContent): Either[String, Unit] =
+    transactor.readWrite {
+      content.samples.foreach { sample =>
+        biosampleRepo.findByAccession(sample.sampleAccession) match {
+          case Some(_) => biosampleRepo.update(toBiosampleEntity(sample))
+          case None => biosampleRepo.insert(toBiosampleEntity(sample))
+        }
+      }
+
+      content.sequenceRuns.foreach { seqRun =>
+        parseIdFromRef(seqRun.biosampleRef).foreach { bsId =>
+          val entity = toSequenceRunEntity(seqRun, bsId)
+          if (sequenceRunRepo.exists(entity.id)) sequenceRunRepo.update(entity)
+          else sequenceRunRepo.insert(entity)
+        }
+      }
+
+      content.alignments.foreach { alignment =>
+        parseIdFromRef(alignment.sequenceRunRef).foreach { srId =>
+          val entity = toAlignmentEntity(alignment, srId)
+          if (alignmentRepo.exists(entity.id)) alignmentRepo.update(entity)
+          else alignmentRepo.insert(entity)
+        }
+      }
+
+      content.projects.foreach { project =>
+        projectRepo.findByName(project.projectName) match {
+          case Some(_) => projectRepo.update(toProjectEntity(project))
+          case None => projectRepo.insert(toProjectEntity(project))
+        }
+      }
+    }

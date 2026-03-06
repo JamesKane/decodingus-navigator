@@ -1,7 +1,6 @@
 package com.decodingus.refgenome
 
-import java.io.IOException
-import java.nio.file.{Files, Path, Paths, StandardCopyOption}
+import java.nio.file.{Files, Path}
 
 /**
  * Cache for Y chromosome region annotation files.
@@ -18,103 +17,33 @@ import java.nio.file.{Files, Path, Paths, StandardCopyOption}
  *
  * Files are stored at: ~/.decodingus/cache/yregions/{build}_{type}.{ext}
  */
-class YRegionCache {
-  private val cacheDir: Path = {
-    val dir = Paths.get(System.getProperty("user.home"), ".decodingus", "cache", "yregions")
-    try {
-      Files.createDirectories(dir)
-    } catch {
-      case e: IOException =>
-        println(s"[YRegionCache] Failed to create cache directory: $dir")
-        Files.createTempDirectory("yregions-cache")
-    }
-    dir
-  }
+class YRegionCache extends FileCache {
+  protected def cacheSubdir = "yregions"
 
-  /**
-   * Get cached file path for a region type and reference build.
-   *
-   * @param regionType     Type of region (e.g., "cytobands", "palindromes", "par")
-   * @param referenceBuild Reference genome build (e.g., "GRCh38", "GRCh37")
-   * @return Some(path) if cached file exists, None otherwise
-   */
-  def getPath(regionType: String, referenceBuild: String): Option[Path] = {
-    val fileName = buildFileName(regionType, referenceBuild)
-    val path = cacheDir.resolve(fileName)
-    if (Files.exists(path) && Files.size(path) > 0) Some(path) else None
-  }
+  def getPath(regionType: String, referenceBuild: String): Option[Path] =
+    cachedPath(buildFileName(regionType, referenceBuild))
 
-  /**
-   * Store a region file in the cache.
-   *
-   * @param regionType     Type of region
-   * @param referenceBuild Reference genome build
-   * @param sourceFile     Path to the file to cache (will be moved)
-   * @return Path to the cached file
-   */
-  def put(regionType: String, referenceBuild: String, sourceFile: Path): Path = {
-    val fileName = buildFileName(regionType, referenceBuild)
-    val targetPath = cacheDir.resolve(fileName)
-    Files.move(sourceFile, targetPath, StandardCopyOption.REPLACE_EXISTING)
-    targetPath
-  }
+  def put(regionType: String, referenceBuild: String, sourceFile: Path): Path =
+    moveToCache(sourceFile, buildFileName(regionType, referenceBuild))
 
-  /**
-   * Copy a file to the cache (preserving original).
-   *
-   * @param regionType     Type of region
-   * @param referenceBuild Reference genome build
-   * @param sourceFile     Path to the file to cache (will be copied)
-   * @return Path to the cached file
-   */
-  def putCopy(regionType: String, referenceBuild: String, sourceFile: Path): Path = {
-    val fileName = buildFileName(regionType, referenceBuild)
-    val targetPath = cacheDir.resolve(fileName)
-    Files.copy(sourceFile, targetPath, StandardCopyOption.REPLACE_EXISTING)
-    targetPath
-  }
+  def putCopy(regionType: String, referenceBuild: String, sourceFile: Path): Path =
+    copyToCache(sourceFile, buildFileName(regionType, referenceBuild))
 
-  /**
-   * Check if all required region files are cached for a build.
-   *
-   * @param referenceBuild Reference genome build
-   * @return True if all region files are cached
-   */
-  def isComplete(referenceBuild: String): Boolean = {
+  def isComplete(referenceBuild: String): Boolean =
     YRegionCache.requiredRegionTypes.forall(getPath(_, referenceBuild).isDefined)
-  }
 
-  /**
-   * Get list of missing region types for a build.
-   *
-   * @param referenceBuild Reference genome build
-   * @return List of region types that need to be downloaded
-   */
-  def getMissing(referenceBuild: String): List[String] = {
+  def getMissing(referenceBuild: String): List[String] =
     YRegionCache.requiredRegionTypes.filterNot(rt => getPath(rt, referenceBuild).isDefined)
-  }
 
-  /**
-   * Clear cache for a specific build.
-   */
-  def clearBuild(referenceBuild: String): Unit = {
+  def clearBuild(referenceBuild: String): Unit =
     YRegionCache.allRegionTypes.foreach { regionType =>
-      val fileName = buildFileName(regionType, referenceBuild)
-      val path = cacheDir.resolve(fileName)
-      Files.deleteIfExists(path)
+      Files.deleteIfExists(resolve(buildFileName(regionType, referenceBuild)))
     }
-  }
 
-  /**
-   * Clear entire cache.
-   */
-  def clearAll(): Unit = {
+  def clearAll(): Unit =
     if (Files.exists(cacheDir)) {
       Files.list(cacheDir).forEach(Files.deleteIfExists)
     }
-  }
-
-  def getCacheDir: Path = cacheDir
 
   private def buildFileName(regionType: String, referenceBuild: String): String = {
     val ext = if (YRegionCache.gff3Types.contains(regionType)) "gff3" else "bed"

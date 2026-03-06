@@ -163,46 +163,30 @@ object VcfCache {
   private val INDEX_FILENAME = "whole_genome.vcf.gz.tbi"
   private val METADATA_FILENAME = "vcf_metadata.json"
 
-  /**
-   * Get the VCF directory for an alignment.
-   */
+  // --- Whole-Genome VCF Operations ---
+
   def getVcfDir(sampleAccession: String, runId: String, alignmentId: String): Path = {
     SubjectArtifactCache.getArtifactSubdir(sampleAccession, runId, alignmentId, VCF_SUBDIR)
   }
 
-  /**
-   * Get the VCF file path for an alignment.
-   */
   def getVcfPath(sampleAccession: String, runId: String, alignmentId: String): Path = {
     getVcfDir(sampleAccession, runId, alignmentId).resolve(VCF_FILENAME)
   }
 
-  /**
-   * Get the VCF index file path for an alignment.
-   */
   def getIndexPath(sampleAccession: String, runId: String, alignmentId: String): Path = {
     getVcfDir(sampleAccession, runId, alignmentId).resolve(INDEX_FILENAME)
   }
 
-  /**
-   * Get the metadata file path for an alignment.
-   */
   def getMetadataPath(sampleAccession: String, runId: String, alignmentId: String): Path = {
     getVcfDir(sampleAccession, runId, alignmentId).resolve(METADATA_FILENAME)
   }
 
-  /**
-   * Check if a cached VCF exists for an alignment.
-   */
   def exists(sampleAccession: String, runId: String, alignmentId: String): Boolean = {
     val vcfPath = getVcfPath(sampleAccession, runId, alignmentId)
     val indexPath = getIndexPath(sampleAccession, runId, alignmentId)
     Files.exists(vcfPath) && Files.exists(indexPath)
   }
 
-  /**
-   * Load cached VCF metadata for an alignment.
-   */
   def loadMetadata(sampleAccession: String, runId: String, alignmentId: String): Either[String, CachedVcfInfo] = {
     val metadataPath = getMetadataPath(sampleAccession, runId, alignmentId)
 
@@ -225,9 +209,6 @@ object VcfCache {
     )
   }
 
-  /**
-   * Load cached VCF info using AT URIs.
-   */
   def loadMetadataFromUris(
                             sampleAccession: String,
                             sequenceRunUri: Option[String],
@@ -238,9 +219,6 @@ object VcfCache {
     loadMetadata(sampleAccession, runId, alignId)
   }
 
-  /**
-   * Save VCF metadata after generation.
-   */
   def saveMetadata(
                     sampleAccession: String,
                     runId: String,
@@ -257,9 +235,6 @@ object VcfCache {
     }
   }
 
-  /**
-   * Create VCF metadata from a generated VCF file.
-   */
   def createMetadata(
                       vcfPath: Path,
                       indexPath: Path,
@@ -284,9 +259,6 @@ object VcfCache {
     )
   }
 
-  /**
-   * Delete cached VCF for an alignment.
-   */
   def delete(sampleAccession: String, runId: String, alignmentId: String): Unit = {
     val vcfDir = getVcfDir(sampleAccession, runId, alignmentId)
 
@@ -300,16 +272,12 @@ object VcfCache {
     }
   }
 
-  /**
-   * Get a summary of the cached VCF status for display.
-   */
   def getStatus(sampleAccession: String, runId: String, alignmentId: String): VcfStatus = {
     loadMetadata(sampleAccession, runId, alignmentId) match {
       case Right(info) =>
         VcfStatus.Available(info)
       case Left(_) =>
         if (exists(sampleAccession, runId, alignmentId)) {
-          // VCF exists but metadata is missing/invalid
           VcfStatus.Incomplete
         } else {
           VcfStatus.NotGenerated
@@ -317,9 +285,6 @@ object VcfCache {
     }
   }
 
-  /**
-   * Validate that a cached VCF matches the expected reference build.
-   */
   def validateBuild(
                      sampleAccession: String,
                      runId: String,
@@ -340,28 +305,18 @@ object VcfCache {
   private val VENDOR_SUBDIR = "vendor"
   private val VENDOR_METADATA_SUFFIX = "_metadata.json"
 
-  /**
-   * Get the vendor VCF directory for an alignment.
-   */
+  // Alignment-level vendor VCF directory
   def getVendorVcfDir(sampleAccession: String, runId: String, alignmentId: String): Path = {
     getVcfDir(sampleAccession, runId, alignmentId).resolve(VENDOR_SUBDIR)
   }
 
-  /**
-   * Import a vendor-provided VCF (and optional target regions BED) into the cache.
-   *
-   * The VCF will be indexed if not already indexed.
-   *
-   * @param sampleAccession Sample accession
-   * @param runId           Sequence run ID
-   * @param alignmentId     Alignment ID
-   * @param vcfSourcePath   Path to the source VCF file
-   * @param bedSourcePath   Optional path to the target regions BED file
-   * @param vendor          The vendor that provided the files
-   * @param referenceBuild  Reference genome build
-   * @param notes           Optional notes about this import
-   * @return Either error message or the VendorVcfInfo for the imported files
-   */
+  // Run-level vendor VCF directory
+  def getRunVendorVcfDir(sampleAccession: String, runId: String): Path = {
+    SubjectArtifactCache.getSequenceRunDir(sampleAccession, runId).resolve(VENDOR_SUBDIR)
+  }
+
+  // --- Alignment-level vendor VCF public API (delegates to shared helpers) ---
+
   def importVendorVcf(
                        sampleAccession: String,
                        runId: String,
@@ -371,15 +326,68 @@ object VcfCache {
                        vendor: VcfVendor,
                        referenceBuild: String,
                        notes: Option[String] = None
-                     ): Either[String, VendorVcfInfo] = {
+                     ): Either[String, VendorVcfInfo] =
+    importVendorVcfTo(getVendorVcfDir(sampleAccession, runId, alignmentId), vcfSourcePath, bedSourcePath, vendor, referenceBuild, notes)
+
+  def listVendorVcfs(sampleAccession: String, runId: String, alignmentId: String): List[VendorVcfInfo] =
+    listVendorVcfsIn(getVendorVcfDir(sampleAccession, runId, alignmentId))
+
+  def loadVendorVcf(sampleAccession: String, runId: String, alignmentId: String, vendor: VcfVendor): Option[VendorVcfInfo] =
+    loadVendorVcfFrom(getVendorVcfDir(sampleAccession, runId, alignmentId), vendor)
+
+  def findYDnaVendorVcf(sampleAccession: String, runId: String, alignmentId: String): Option[VendorVcfInfo] =
+    findYDnaVcfIn(listVendorVcfs(sampleAccession, runId, alignmentId))
+
+  def findMtDnaVendorVcf(sampleAccession: String, runId: String, alignmentId: String): Option[VendorVcfInfo] =
+    findMtDnaVcfIn(listVendorVcfs(sampleAccession, runId, alignmentId))
+
+  def deleteVendorVcf(sampleAccession: String, runId: String, alignmentId: String, vendor: VcfVendor): Boolean =
+    deleteVendorVcfFrom(getVendorVcfDir(sampleAccession, runId, alignmentId), vendor)
+
+  // --- Run-level vendor VCF public API (delegates to shared helpers) ---
+
+  def importRunVendorVcf(
+                          sampleAccession: String,
+                          runId: String,
+                          vcfSourcePath: Path,
+                          bedSourcePath: Option[Path],
+                          vendor: VcfVendor,
+                          referenceBuild: String,
+                          notes: Option[String] = None
+                        ): Either[String, VendorVcfInfo] =
+    importVendorVcfTo(getRunVendorVcfDir(sampleAccession, runId), vcfSourcePath, bedSourcePath, vendor, referenceBuild, notes)
+
+  def listRunVendorVcfs(sampleAccession: String, runId: String): List[VendorVcfInfo] =
+    listVendorVcfsIn(getRunVendorVcfDir(sampleAccession, runId))
+
+  def loadRunVendorVcf(sampleAccession: String, runId: String, vendor: VcfVendor): Option[VendorVcfInfo] =
+    loadVendorVcfFrom(getRunVendorVcfDir(sampleAccession, runId), vendor)
+
+  def findYDnaRunVendorVcf(sampleAccession: String, runId: String): Option[VendorVcfInfo] =
+    findYDnaVcfIn(listRunVendorVcfs(sampleAccession, runId))
+
+  def findMtDnaRunVendorVcf(sampleAccession: String, runId: String): Option[VendorVcfInfo] =
+    findMtDnaVcfIn(listRunVendorVcfs(sampleAccession, runId))
+
+  def deleteRunVendorVcf(sampleAccession: String, runId: String, vendor: VcfVendor): Boolean =
+    deleteVendorVcfFrom(getRunVendorVcfDir(sampleAccession, runId), vendor)
+
+  // --- Shared vendor VCF implementation ---
+
+  private def importVendorVcfTo(
+                                 vendorDir: Path,
+                                 vcfSourcePath: Path,
+                                 bedSourcePath: Option[Path],
+                                 vendor: VcfVendor,
+                                 referenceBuild: String,
+                                 notes: Option[String]
+                               ): Either[String, VendorVcfInfo] = {
     try {
-      val vendorDir = getVendorVcfDir(sampleAccession, runId, alignmentId)
       Files.createDirectories(vendorDir)
 
       val originalVcfName = vcfSourcePath.getFileName.toString
       val originalBedName = bedSourcePath.map(_.getFileName.toString)
 
-      // Determine destination filename based on vendor
       val baseFilename = vendor.code
       val vcfDest = vendorDir.resolve(s"$baseFilename.vcf.gz")
       val indexDest = vendorDir.resolve(s"$baseFilename.vcf.gz.tbi")
@@ -390,7 +398,6 @@ object VcfCache {
       if (vcfIsGzipped) {
         Files.copy(vcfSourcePath, vcfDest, java.nio.file.StandardCopyOption.REPLACE_EXISTING)
       } else {
-        // Compress using GATK SortVcf which also handles bgzip
         GatkRunner.run(Array(
           "SortVcf",
           "-I", vcfSourcePath.toString,
@@ -404,12 +411,10 @@ object VcfCache {
 
       // Create index if needed
       if (vcfIsGzipped && !Files.exists(indexDest)) {
-        // Check for existing index
         val sourceIndex = vcfSourcePath.resolveSibling(originalVcfName + ".tbi")
         if (Files.exists(sourceIndex)) {
           Files.copy(sourceIndex, indexDest, java.nio.file.StandardCopyOption.REPLACE_EXISTING)
         } else {
-          // Create index using GATK
           GatkRunner.run(Array(
             "IndexFeatureFile",
             "-I", vcfDest.toString
@@ -428,7 +433,6 @@ object VcfCache {
       // Extract contig list and count variants
       val (contigs, variantCount) = extractVcfInfo(vcfDest)
 
-      // Create metadata
       val metadata = VendorVcfInfo(
         vcfPath = vcfDest.toAbsolutePath.toString,
         indexPath = indexDest.toAbsolutePath.toString,
@@ -443,7 +447,6 @@ object VcfCache {
         notes = notes
       )
 
-      // Save metadata
       val metadataPath = vendorDir.resolve(s"$baseFilename$VENDOR_METADATA_SUFFIX")
       Files.writeString(metadataPath, metadata.asJson.spaces2)
 
@@ -454,9 +457,6 @@ object VcfCache {
     }
   }
 
-  /**
-   * Extract contig list and variant count from a VCF file.
-   */
   private def extractVcfInfo(vcfPath: Path): (List[String], Long) = {
     import htsjdk.variant.vcf.VCFFileReader
     val reader = new VCFFileReader(vcfPath, false)
@@ -474,17 +474,11 @@ object VcfCache {
     }
   }
 
-  /**
-   * List all vendor VCFs imported for an alignment.
-   */
-  def listVendorVcfs(sampleAccession: String, runId: String, alignmentId: String): List[VendorVcfInfo] = {
-    val vendorDir = getVendorVcfDir(sampleAccession, runId, alignmentId)
-
+  private def listVendorVcfsIn(vendorDir: Path): List[VendorVcfInfo] = {
     if (!Files.exists(vendorDir)) {
       return List.empty
     }
 
-    import scala.jdk.CollectionConverters.*
     Files.list(vendorDir).iterator().asScala
       .filter(p => p.toString.endsWith(VENDOR_METADATA_SUFFIX))
       .flatMap { metadataPath =>
@@ -496,16 +490,7 @@ object VcfCache {
       .toList
   }
 
-  /**
-   * Load a specific vendor VCF by vendor type.
-   */
-  def loadVendorVcf(
-                     sampleAccession: String,
-                     runId: String,
-                     alignmentId: String,
-                     vendor: VcfVendor
-                   ): Option[VendorVcfInfo] = {
-    val vendorDir = getVendorVcfDir(sampleAccession, runId, alignmentId)
+  private def loadVendorVcfFrom(vendorDir: Path, vendor: VcfVendor): Option[VendorVcfInfo] = {
     val metadataPath = vendorDir.resolve(s"${vendor.code}$VENDOR_METADATA_SUFFIX")
 
     if (!Files.exists(metadataPath)) {
@@ -517,251 +502,22 @@ object VcfCache {
     }.toOption.flatten
   }
 
-  /**
-   * Find the best vendor VCF for Y-DNA haplogroup analysis.
-   * Prefers FTDNA Big Y, then other Y-DNA specific vendors.
-   */
-  def findYDnaVendorVcf(sampleAccession: String, runId: String, alignmentId: String): Option[VendorVcfInfo] = {
-    val vendorVcfs = listVendorVcfs(sampleAccession, runId, alignmentId)
+  private def findYDnaVcfIn(vendorVcfs: List[VendorVcfInfo]): Option[VendorVcfInfo] = {
     val yDnaVcfs = vendorVcfs.filter(_.isYDna)
-
-    // Priority order for Y-DNA
-    val priorityOrder = List(VcfVendor.FTDNA_BIGY, VcfVendor.YSEQ, VcfVendor.FULL_GENOMES)
-
-    priorityOrder.flatMap(vendor => yDnaVcfs.find(_.vendor == vendor)).headOption
-      .orElse(yDnaVcfs.headOption)
-  }
-
-  /**
-   * Find the best vendor VCF for mtDNA haplogroup analysis.
-   */
-  def findMtDnaVendorVcf(sampleAccession: String, runId: String, alignmentId: String): Option[VendorVcfInfo] = {
-    val vendorVcfs = listVendorVcfs(sampleAccession, runId, alignmentId)
-    val mtDnaVcfs = vendorVcfs.filter(_.isMtDna)
-
-    // Priority order for mtDNA
-    val priorityOrder = List(VcfVendor.FTDNA_MTFULL, VcfVendor.NEBULA, VcfVendor.DANTE)
-
-    priorityOrder.flatMap(vendor => mtDnaVcfs.find(_.vendor == vendor)).headOption
-      .orElse(mtDnaVcfs.headOption)
-  }
-
-  /**
-   * Delete a vendor VCF from the cache.
-   */
-  def deleteVendorVcf(
-                       sampleAccession: String,
-                       runId: String,
-                       alignmentId: String,
-                       vendor: VcfVendor
-                     ): Boolean = {
-    val vendorDir = getVendorVcfDir(sampleAccession, runId, alignmentId)
-    val baseFilename = vendor.code
-
-    var deleted = false
-    List(
-      vendorDir.resolve(s"$baseFilename.vcf.gz"),
-      vendorDir.resolve(s"$baseFilename.vcf.gz.tbi"),
-      vendorDir.resolve(s"${baseFilename}_targets.bed"),
-      vendorDir.resolve(s"$baseFilename$VENDOR_METADATA_SUFFIX")
-    ).foreach { path =>
-      if (Files.exists(path)) {
-        Files.delete(path)
-        deleted = true
-      }
-    }
-    deleted
-  }
-
-  // --- SequenceRun-Level Vendor VCF Support (for VCF-only imports, no alignment) ---
-
-  /**
-   * Get the vendor VCF directory for a sequence run (no alignment required).
-   * Used for vendor VCFs like FTDNA Big Y that don't have associated BAM files.
-   */
-  def getRunVendorVcfDir(sampleAccession: String, runId: String): Path = {
-    SubjectArtifactCache.getSequenceRunDir(sampleAccession, runId).resolve(VENDOR_SUBDIR)
-  }
-
-  /**
-   * Import a vendor-provided VCF at the SequenceRun level (no alignment required).
-   * This is for vendor deliverables like FTDNA Big Y that don't include BAM files.
-   *
-   * @param sampleAccession Sample accession
-   * @param runId           Sequence run ID
-   * @param vcfSourcePath   Path to the source VCF file
-   * @param bedSourcePath   Optional path to the target regions BED file
-   * @param vendor          The vendor that provided the files
-   * @param referenceBuild  Reference genome build
-   * @param notes           Optional notes about this import
-   * @return Either error message or the VendorVcfInfo for the imported files
-   */
-  def importRunVendorVcf(
-                          sampleAccession: String,
-                          runId: String,
-                          vcfSourcePath: Path,
-                          bedSourcePath: Option[Path],
-                          vendor: VcfVendor,
-                          referenceBuild: String,
-                          notes: Option[String] = None
-                        ): Either[String, VendorVcfInfo] = {
-    try {
-      val vendorDir = getRunVendorVcfDir(sampleAccession, runId)
-      Files.createDirectories(vendorDir)
-
-      val originalVcfName = vcfSourcePath.getFileName.toString
-      val originalBedName = bedSourcePath.map(_.getFileName.toString)
-
-      // Determine destination filename based on vendor
-      val baseFilename = vendor.code
-      val vcfDest = vendorDir.resolve(s"$baseFilename.vcf.gz")
-      val indexDest = vendorDir.resolve(s"$baseFilename.vcf.gz.tbi")
-      val bedDest = bedSourcePath.map(_ => vendorDir.resolve(s"${baseFilename}_targets.bed"))
-
-      // Copy or compress the VCF
-      val vcfIsGzipped = originalVcfName.endsWith(".gz")
-      if (vcfIsGzipped) {
-        Files.copy(vcfSourcePath, vcfDest, java.nio.file.StandardCopyOption.REPLACE_EXISTING)
-      } else {
-        // Compress using GATK SortVcf which also handles bgzip
-        GatkRunner.run(Array(
-          "SortVcf",
-          "-I", vcfSourcePath.toString,
-          "-O", vcfDest.toString,
-          "--CREATE_INDEX", "true"
-        )) match {
-          case Left(error) => return Left(s"Failed to compress VCF: $error")
-          case Right(_) =>
-        }
-      }
-
-      // Create index if needed
-      if (vcfIsGzipped && !Files.exists(indexDest)) {
-        val sourceIndex = vcfSourcePath.resolveSibling(originalVcfName + ".tbi")
-        if (Files.exists(sourceIndex)) {
-          Files.copy(sourceIndex, indexDest, java.nio.file.StandardCopyOption.REPLACE_EXISTING)
-        } else {
-          GatkRunner.run(Array(
-            "IndexFeatureFile",
-            "-I", vcfDest.toString
-          )) match {
-            case Left(error) => return Left(s"Failed to index VCF: $error")
-            case Right(_) =>
-          }
-        }
-      }
-
-      // Copy BED file if provided
-      bedSourcePath.zip(bedDest).foreach { case (src, dest) =>
-        Files.copy(src, dest, java.nio.file.StandardCopyOption.REPLACE_EXISTING)
-      }
-
-      // Extract contig list and count variants
-      val (contigs, variantCount) = extractVcfInfo(vcfDest)
-
-      // Create metadata
-      val metadata = VendorVcfInfo(
-        vcfPath = vcfDest.toAbsolutePath.toString,
-        indexPath = indexDest.toAbsolutePath.toString,
-        targetBedPath = bedDest.map(_.toAbsolutePath.toString),
-        vendor = vendor,
-        originalVcfName = originalVcfName,
-        originalBedName = originalBedName,
-        referenceBuild = referenceBuild,
-        importedAt = LocalDateTime.now().format(DateTimeFormatter.ISO_LOCAL_DATE_TIME),
-        variantCount = variantCount,
-        contigs = contigs,
-        notes = notes
-      )
-
-      // Write metadata
-      val metadataPath = vendorDir.resolve(s"$baseFilename$VENDOR_METADATA_SUFFIX")
-      Files.writeString(metadataPath, metadata.asJson.spaces2)
-
-      Right(metadata)
-    } catch {
-      case e: Exception =>
-        Left(s"Failed to import vendor VCF: ${e.getMessage}")
-    }
-  }
-
-  /**
-   * List all vendor VCFs imported at the SequenceRun level.
-   */
-  def listRunVendorVcfs(sampleAccession: String, runId: String): List[VendorVcfInfo] = {
-    val vendorDir = getRunVendorVcfDir(sampleAccession, runId)
-
-    if (!Files.exists(vendorDir)) {
-      return List.empty
-    }
-
-    import scala.jdk.CollectionConverters.*
-    Files.list(vendorDir).iterator().asScala
-      .filter(p => p.toString.endsWith(VENDOR_METADATA_SUFFIX))
-      .flatMap { metadataPath =>
-        Using(scala.io.Source.fromFile(metadataPath.toFile)) { source =>
-          parser.decode[VendorVcfInfo](source.mkString).toOption
-        }.toOption.flatten
-      }
-      .filter(_.isValid)
-      .toList
-  }
-
-  /**
-   * Load a specific vendor VCF by vendor type at the SequenceRun level.
-   */
-  def loadRunVendorVcf(
-                        sampleAccession: String,
-                        runId: String,
-                        vendor: VcfVendor
-                      ): Option[VendorVcfInfo] = {
-    val vendorDir = getRunVendorVcfDir(sampleAccession, runId)
-    val metadataPath = vendorDir.resolve(s"${vendor.code}$VENDOR_METADATA_SUFFIX")
-
-    if (!Files.exists(metadataPath)) {
-      return None
-    }
-
-    Using(scala.io.Source.fromFile(metadataPath.toFile)) { source =>
-      parser.decode[VendorVcfInfo](source.mkString).toOption.filter(_.isValid)
-    }.toOption.flatten
-  }
-
-  /**
-   * Find the best vendor VCF for Y-DNA haplogroup analysis at the SequenceRun level.
-   */
-  def findYDnaRunVendorVcf(sampleAccession: String, runId: String): Option[VendorVcfInfo] = {
-    val vendorVcfs = listRunVendorVcfs(sampleAccession, runId)
-    val yDnaVcfs = vendorVcfs.filter(_.isYDna)
-
     val priorityOrder = List(VcfVendor.FTDNA_BIGY, VcfVendor.YSEQ, VcfVendor.FULL_GENOMES)
     priorityOrder.flatMap(vendor => yDnaVcfs.find(_.vendor == vendor)).headOption
       .orElse(yDnaVcfs.headOption)
   }
 
-  /**
-   * Find the best vendor VCF for mtDNA haplogroup analysis at the SequenceRun level.
-   */
-  def findMtDnaRunVendorVcf(sampleAccession: String, runId: String): Option[VendorVcfInfo] = {
-    val vendorVcfs = listRunVendorVcfs(sampleAccession, runId)
+  private def findMtDnaVcfIn(vendorVcfs: List[VendorVcfInfo]): Option[VendorVcfInfo] = {
     val mtDnaVcfs = vendorVcfs.filter(_.isMtDna)
-
     val priorityOrder = List(VcfVendor.FTDNA_MTFULL, VcfVendor.NEBULA, VcfVendor.DANTE)
     priorityOrder.flatMap(vendor => mtDnaVcfs.find(_.vendor == vendor)).headOption
       .orElse(mtDnaVcfs.headOption)
   }
 
-  /**
-   * Delete a vendor VCF from the run-level cache.
-   */
-  def deleteRunVendorVcf(
-                          sampleAccession: String,
-                          runId: String,
-                          vendor: VcfVendor
-                        ): Boolean = {
-    val vendorDir = getRunVendorVcfDir(sampleAccession, runId)
+  private def deleteVendorVcfFrom(vendorDir: Path, vendor: VcfVendor): Boolean = {
     val baseFilename = vendor.code
-
     var deleted = false
     List(
       vendorDir.resolve(s"$baseFilename.vcf.gz"),
@@ -782,23 +538,10 @@ object VcfCache {
   private val FASTA_SUBDIR = "fasta"
   private val FASTA_METADATA_SUFFIX = "_fasta_metadata.json"
 
-  /**
-   * Get the vendor FASTA directory for a sequence run.
-   */
   def getRunFastaDir(sampleAccession: String, runId: String): Path = {
     SubjectArtifactCache.getSequenceRunDir(sampleAccession, runId).resolve(FASTA_SUBDIR)
   }
 
-  /**
-   * Import a vendor-provided mtDNA FASTA file at the SequenceRun level.
-   *
-   * @param sampleAccession Sample accession
-   * @param runId           Sequence run ID
-   * @param fastaSourcePath Path to the source FASTA file
-   * @param vendor          The vendor that provided the file
-   * @param notes           Optional notes about this import
-   * @return Either error message or the VendorFastaInfo for the imported file
-   */
   def importRunFasta(
                       sampleAccession: String,
                       runId: String,
@@ -814,13 +557,10 @@ object VcfCache {
       val baseFilename = vendor.code
       val fastaDest = fastaDir.resolve(s"$baseFilename.fasta")
 
-      // Copy the FASTA file
       Files.copy(fastaSourcePath, fastaDest, java.nio.file.StandardCopyOption.REPLACE_EXISTING)
 
-      // Read sequence length
       val sequenceLength = readFastaSequenceLength(fastaDest)
 
-      // Create metadata
       val metadata = VendorFastaInfo(
         fastaPath = fastaDest.toAbsolutePath.toString,
         vendor = vendor,
@@ -830,7 +570,6 @@ object VcfCache {
         notes = notes
       )
 
-      // Write metadata
       val metadataPath = fastaDir.resolve(s"$baseFilename$FASTA_METADATA_SUFFIX")
       Files.writeString(metadataPath, metadata.asJson.spaces2)
 
@@ -841,21 +580,15 @@ object VcfCache {
     }
   }
 
-  /**
-   * Read the sequence length from a FASTA file.
-   */
   private def readFastaSequenceLength(fastaPath: Path): Int = {
     Using(scala.io.Source.fromFile(fastaPath.toFile)) { source =>
       source.getLines()
-        .filterNot(_.startsWith(">")) // Skip header lines
+        .filterNot(_.startsWith(">"))
         .map(_.trim.length)
         .sum
     }.getOrElse(0)
   }
 
-  /**
-   * List all vendor FASTA files imported at the SequenceRun level.
-   */
   def listRunFastas(sampleAccession: String, runId: String): List[VendorFastaInfo] = {
     val fastaDir = getRunFastaDir(sampleAccession, runId)
 
@@ -863,7 +596,6 @@ object VcfCache {
       return List.empty
     }
 
-    import scala.jdk.CollectionConverters.*
     Files.list(fastaDir).iterator().asScala
       .filter(p => p.toString.endsWith(FASTA_METADATA_SUFFIX))
       .flatMap { metadataPath =>
@@ -875,9 +607,6 @@ object VcfCache {
       .toList
   }
 
-  /**
-   * Load a specific vendor FASTA by vendor type at the SequenceRun level.
-   */
   def loadRunFasta(
                     sampleAccession: String,
                     runId: String,
@@ -895,21 +624,13 @@ object VcfCache {
     }.toOption.flatten
   }
 
-  /**
-   * Find the best vendor FASTA for mtDNA haplogroup analysis at the SequenceRun level.
-   */
   def findMtDnaRunFasta(sampleAccession: String, runId: String): Option[VendorFastaInfo] = {
     val fastas = listRunFastas(sampleAccession, runId)
-
-    // Priority order for mtDNA FASTA
     val priorityOrder = List(VcfVendor.FTDNA_MTFULL, VcfVendor.YSEQ, VcfVendor.OTHER)
     priorityOrder.flatMap(vendor => fastas.find(_.vendor == vendor)).headOption
       .orElse(fastas.headOption)
   }
 
-  /**
-   * Delete a vendor FASTA from the run-level cache.
-   */
   def deleteRunFasta(
                       sampleAccession: String,
                       runId: String,

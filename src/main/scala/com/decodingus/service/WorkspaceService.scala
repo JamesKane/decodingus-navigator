@@ -286,6 +286,12 @@ trait WorkspaceService:
    */
   def loadWorkspaceContent(): Either[String, WorkspaceContent]
 
+  /**
+   * Save full workspace content by syncing each entity type.
+   * Creates new entities and updates existing ones.
+   */
+  def saveWorkspaceContent(content: WorkspaceContent): Either[String, Unit]
+
 /**
  * Summary of sync status across all entity types.
  */

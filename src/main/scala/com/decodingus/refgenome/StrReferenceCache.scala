@@ -1,37 +1,17 @@
 package com.decodingus.refgenome
 
-import java.io.IOException
-import java.nio.file.{Files, Path, Paths, StandardCopyOption}
+import java.nio.file.Path
 
 /**
  * Cache for STR (Short Tandem Repeat) reference BED files.
  * Uses HipSTR reference files which contain known STR regions.
  */
-class StrReferenceCache {
-  private val cacheDir: Path = {
-    val dir = Paths.get(System.getProperty("user.home"), ".decodingus", "cache", "str")
-    try {
-      Files.createDirectories(dir)
-    } catch {
-      case e: IOException =>
-        println(s"Failed to create STR cache directory: $dir")
-        Files.createTempDirectory("str-cache")
-    }
-    dir
-  }
+class StrReferenceCache extends FileCache {
+  protected def cacheSubdir = "str"
 
-  def getPath(referenceBuild: String): Option[Path] = {
-    val bedFileName = s"$referenceBuild.hipstr_reference.bed"
-    val bedPath = cacheDir.resolve(bedFileName)
-    if (Files.exists(bedPath) && Files.size(bedPath) > 0) Some(bedPath) else None
-  }
+  def getPath(referenceBuild: String): Option[Path] =
+    cachedPath(s"$referenceBuild.hipstr_reference.bed")
 
-  def put(referenceBuild: String, file: Path): Path = {
-    val bedFileName = s"$referenceBuild.hipstr_reference.bed"
-    val targetPath = cacheDir.resolve(bedFileName)
-    Files.move(file, targetPath, StandardCopyOption.REPLACE_EXISTING)
-    targetPath
-  }
-
-  def getCacheDir: Path = cacheDir
+  def put(referenceBuild: String, file: Path): Path =
+    moveToCache(file, s"$referenceBuild.hipstr_reference.bed")
 }

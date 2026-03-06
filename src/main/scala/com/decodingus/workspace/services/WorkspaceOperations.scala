@@ -1,7 +1,7 @@
 package com.decodingus.workspace.services
 
 import com.decodingus.workspace.model.*
-import com.decodingus.workspace.{WorkspaceService, WorkspaceState}
+import com.decodingus.workspace.WorkspaceState
 
 /**
  * Handles all CRUD operations for workspace entities (Biosamples, Projects, SequenceRuns, Alignments).

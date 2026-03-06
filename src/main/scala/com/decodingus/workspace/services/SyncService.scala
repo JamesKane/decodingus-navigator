@@ -3,8 +3,8 @@ package com.decodingus.workspace.services
 import com.decodingus.auth.User
 import com.decodingus.config.FeatureToggles
 import com.decodingus.pds.PdsClient
+import com.decodingus.service.H2WorkspaceService
 import com.decodingus.util.Logger
-import com.decodingus.workspace.WorkspaceService
 import com.decodingus.workspace.model.{SyncStatus, Workspace}
 
 import scala.concurrent.{ExecutionContext, Future}
@@ -46,7 +46,7 @@ trait SyncStatusListener {
  * - Offline/online mode detection
  */
 class SyncService(
-                   workspaceService: WorkspaceService
+                   h2Service: H2WorkspaceService
                  )(implicit ec: ExecutionContext) {
 
   private val log = Logger[SyncService]
@@ -75,8 +75,7 @@ class SyncService(
           PdsClient.loadWorkspace(u).map { remoteWorkspace =>
             if (remoteWorkspace != currentWorkspace) {
               log.info("PDS workspace differs from local, updating...")
-              // Save remote to local cache
-              workspaceService.save(remoteWorkspace)
+              h2Service.saveWorkspaceContent(remoteWorkspace.main)
               onStatusChange(SyncStatus.Synced)
               (remoteWorkspace, SyncResult.Success)
             } else {
@@ -151,15 +150,13 @@ class SyncService(
                    user: Option[User],
                    onStatusChange: SyncStatus => Unit = _ => ()
                  ): Future[Either[String, SyncResult]] = {
-    // Step 1: Save to local JSON (synchronous)
-    workspaceService.save(workspace) match {
+    h2Service.saveWorkspaceContent(workspace.main) match {
       case Left(error) =>
         log.error(s"Error saving workspace locally: $error")
         Future.successful(Left(error))
 
       case Right(_) =>
         log.debug("Workspace saved to local cache")
-        // Step 2: Sync to PDS in background if available
         syncToPds(user, workspace, onStatusChange).map(Right(_))
     }
   }

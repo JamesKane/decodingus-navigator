@@ -41,12 +41,9 @@ class WorkbenchViewModel(
   // H2 service for atomic CRUD operations
   private val h2Service: H2WorkspaceService = databaseContext.workspaceService
 
-  // Legacy adapter for load/sync operations
-  private val workspaceService: WorkspaceService = H2WorkspaceAdapter(databaseContext)
-
   // --- Service Instances ---
   private val workspaceOps = new WorkspaceOperations()
-  private val syncService = new SyncService(workspaceService)
+  private val syncService = new SyncService(h2Service)
   private val fingerprintMatchService = new FingerprintMatchService()
 
   // Centralized manager for SequenceRun and Alignment CRUD operations
@@ -211,15 +208,19 @@ class WorkbenchViewModel(
    * 3. If PDS has newer/different data, update local state and cache
    */
   def loadWorkspace(): Unit = {
-    // Step 1: Load from local cache immediately
-    workspaceService.load().fold(
+    // Step 1: Load from H2 database immediately
+    h2Service.loadWorkspaceContent().fold(
       error => {
-        log.error(s"Error loading local workspace: $error")
+        log.error(s"Error loading workspace: $error")
         _workspace.value = emptyWorkspace
       },
-      loadedWorkspace => {
-        log.info(s" Loaded workspace from local cache: ${loadedWorkspace.main.samples.size} samples")
-        _workspace.value = loadedWorkspace
+      content => {
+        log.info(s" Loaded workspace: ${content.samples.size} samples")
+        _workspace.value = Workspace(
+          lexicon = Workspace.CurrentLexiconVersion,
+          id = Workspace.NamespaceId,
+          main = content
+        )
       }
     )
 
