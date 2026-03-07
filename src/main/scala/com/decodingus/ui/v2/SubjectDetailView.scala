@@ -6,7 +6,7 @@ import com.decodingus.str.StrCsvParser
 import com.decodingus.config.{FeatureToggles, LabsConfig}
 import com.decodingus.analysis.{CallableLociResult, CoverageCallableProcessor, StrCall}
 import com.decodingus.haplogroup.tree.TreeType
-import com.decodingus.ui.components.{AddDataDialog, AddSequenceDataDialog, AncestryResultDialog, CallableLociResultDialog, ConfirmDialog, DataInput, DataType, EditSequenceRunDialog, EditSubjectDialog, ImportVendorFastaDialog, InfoDialog, MtdnaVariantsPanel, SequenceDataInput, SequenceRunEditResult, SourceReconciliationPanel, VcfMetadata, VcfMetadataDialog, VendorFastaImportRequest, YChromosomeIdeogramPanel, YStrDetailDialog, YStrSummaryPanel}
+import com.decodingus.ui.components.{AddDataDialog, AddSequenceDataDialog, AncestryResultDialog, CallableLociResultDialog, ChromosomeBrowserPanel, ConfirmDialog, DataInput, DataType, EditSequenceRunDialog, EditSubjectDialog, ImportVendorFastaDialog, InfoDialog, MatchDetailDialog, MtdnaVariantsPanel, SequenceDataInput, SequenceRunEditResult, SourceReconciliationPanel, VcfMetadata, VcfMetadataDialog, VendorFastaImportRequest, YChromosomeIdeogramPanel, YStrDetailDialog, YStrSummaryPanel}
 import com.decodingus.ui.v2.BiosampleExtensions.*
 import com.decodingus.util.Logger
 import com.decodingus.workspace.WorkbenchViewModel
@@ -931,20 +931,19 @@ class SubjectDetailView(viewModel: WorkbenchViewModel) extends VBox {
       )
     }
 
-    // Chromosome browser placeholder (remains until Phase 6 UI work)
-    val chromosomeBrowserPlaceholder = new VBox(15) {
-      alignment = Pos.Center
-      padding = Insets(40)
-      style = "-fx-background-color: #2a2a2a; -fx-background-radius: 10; -fx-border-color: #444444; -fx-border-style: dashed; -fx-border-radius: 10;"
-      prefHeight = 200
-      children = Seq(
-        new Label(t("ibd.chromosome_browser")) {
-          style = "-fx-font-size: 14px; -fx-font-weight: bold; -fx-text-fill: #888888;"
-        },
-        new Label(t("ibd.select_match_to_view")) {
-          style = "-fx-font-size: 12px; -fx-text-fill: #666666;"
-        }
-      )
+    // Chromosome browser panel
+    val chromosomeBrowser = new ChromosomeBrowserPanel
+
+    // Row click → update chromosome browser + open detail dialog on double-click
+    ibdMatchesTable.selectionModel().selectedItem.onChange { (_, _, selected) =>
+      if selected != null then
+        chromosomeBrowser.setMatch(selected)
+    }
+    ibdMatchesTable.onMouseClicked = event => {
+      if event.getClickCount == 2 then
+        val selected = ibdMatchesTable.selectionModel().getSelectedItem
+        if selected != null then
+          new MatchDetailDialog(selected).showAndWait()
     }
 
     // Export button
@@ -970,7 +969,7 @@ class SubjectDetailView(viewModel: WorkbenchViewModel) extends VBox {
           consentBox,
           filterBox,
           ibdMatchesTable,
-          chromosomeBrowserPlaceholder,
+          chromosomeBrowser,
           footerBox
         )
       }
