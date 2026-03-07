@@ -9,7 +9,7 @@ case class HaplogroupScore(
                             depth: Int = 0
                           )
 
-case class HaplogroupResult(
+case class ScoredHaplogroup(
                              name: String,
                              score: Double,
                              matchingSnps: Int,

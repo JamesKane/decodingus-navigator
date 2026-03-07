@@ -3,7 +3,7 @@ package com.decodingus.haplogroup.processor
 import com.decodingus.analysis.*
 import com.decodingus.config.FeatureToggles
 import com.decodingus.haplogroup.caller.{GatkHaplotypeCallerProcessor, TwoPassCallerResult}
-import com.decodingus.haplogroup.model.{Haplogroup, HaplogroupResult, Locus}
+import com.decodingus.haplogroup.model.{Haplogroup, ScoredHaplogroup, Locus}
 import com.decodingus.haplogroup.report.HaplogroupReportWriter
 import com.decodingus.haplogroup.scoring.HaplogroupScorer
 import com.decodingus.haplogroup.tree.{TreeCache, TreeProvider, TreeProviderType, TreeType}
@@ -78,7 +78,7 @@ class HaplogroupProcessor {
                biosampleId: Option[UUID] = None,
                yProfileSourceType: Option[YProfileSourceType] = None,
                expectedYCoverage: Option[Double] = None
-             ): Either[String, List[HaplogroupResult]] = {
+             ): Either[String, List[ScoredHaplogroup]] = {
 
     onProgress("Loading haplogroup tree...", 0.0, 1.0)
     val treeProvider: TreeProvider = treeProviderType match {
@@ -421,7 +421,7 @@ class HaplogroupProcessor {
                             biosampleId: Option[UUID] = None,
                             yProfileSourceType: Option[YProfileSourceType] = None,
                             expectedYCoverage: Option[Double] = None
-                          ): Either[String, List[HaplogroupResult]] = {
+                          ): Either[String, List[ScoredHaplogroup]] = {
 
     onProgress("Loading haplogroup tree...", 0.0, 1.0)
     val treeProvider: TreeProvider = treeProviderType match {
@@ -611,7 +611,7 @@ class HaplogroupProcessor {
                           treeProviderType: TreeProviderType,
                           onProgress: (String, Double, Double) => Unit,
                           outputDir: Option[Path] = None
-                        ): Either[String, List[HaplogroupResult]] = {
+                        ): Either[String, List[ScoredHaplogroup]] = {
 
     onProgress("Loading haplogroup tree...", 0.0, 1.0)
     val treeProvider: TreeProvider = treeProviderType match {
@@ -726,7 +726,7 @@ class HaplogroupProcessor {
                         treeProviderType: TreeProviderType,
                         onProgress: (String, Double, Double) => Unit,
                         outputDir: Option[Path] = None
-                      ): Either[String, List[HaplogroupResult]] = {
+                      ): Either[String, List[ScoredHaplogroup]] = {
 
     // mtDNA FASTA analysis always uses MTDNA tree type
     val treeType = TreeType.MTDNA
@@ -736,7 +736,7 @@ class HaplogroupProcessor {
     onProgress("Processing mtDNA FASTA...", 0.0, 1.0)
 
     // Process the FASTA file to extract variants
-    MtDnaFastaProcessor.process(Path.of(fastaPath), (msg, pct) => {
+    MtDnaFastaProcessor.process(Path.of(fastaPath), (msg, pct, _) => {
       onProgress(msg, pct * 0.3, 1.0)
     }) match {
       case Left(error) =>
@@ -837,7 +837,7 @@ class HaplogroupProcessor {
   private def populateYProfile(
     yProfileService: YProfileService,
     biosampleId: UUID,
-    results: List[HaplogroupResult],
+    results: List[ScoredHaplogroup],
     resolvedCalls: Map[(String, Long), EnhancedSnpCall],
     privateVariants: List[PrivateVariant],
     referenceBuild: String,

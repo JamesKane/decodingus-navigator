@@ -1,6 +1,7 @@
 package com.decodingus.analysis
 
-import com.decodingus.model.{ContigSummary, CoverageSummary, LibraryStats, WgsMetrics}
+import com.decodingus.model.{CoverageSummary, LibraryStats, WgsMetrics}
+import com.decodingus.workspace.model.ContigMetrics
 import io.circe.generic.semiauto.*
 import io.circe.parser.*
 import io.circe.syntax.*
@@ -20,8 +21,8 @@ object AnalysisCache {
   implicit val libraryStatsDecoder: Decoder[LibraryStats] = deriveDecoder
   implicit val wgsMetricsEncoder: Encoder[WgsMetrics] = deriveEncoder
   implicit val wgsMetricsDecoder: Decoder[WgsMetrics] = deriveDecoder
-  implicit val contigSummaryEncoder: Encoder[ContigSummary] = deriveEncoder
-  implicit val contigSummaryDecoder: Decoder[ContigSummary] = deriveDecoder
+  implicit val contigMetricsEncoder: Encoder[ContigMetrics] = deriveEncoder
+  implicit val contigMetricsDecoder: Decoder[ContigMetrics] = deriveDecoder
   implicit val coverageSummaryEncoder: Encoder[CoverageSummary] = deriveEncoder
   implicit val coverageSummaryDecoder: Decoder[CoverageSummary] = deriveDecoder
 

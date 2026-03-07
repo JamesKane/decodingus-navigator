@@ -1,7 +1,7 @@
 package com.decodingus.analysis
 
 import com.decodingus.analysis.util.BioVisualizationUtil
-import com.decodingus.model.ContigSummary
+import com.decodingus.workspace.model.ContigMetrics
 
 import java.io.{File, PrintWriter}
 import java.nio.file.{Files, Path}
@@ -19,7 +19,7 @@ import scala.util.Using
  * - Single pass through BAM/CRAM for both coverage and callable loci
  * - Per-contig BED files for callable regions (required for Y-chromosome analysis)
  * - Per-contig summary files in GATK format
- * - Compatible with existing ContigSummary visualization
+ * - Compatible with existing ContigMetrics visualization
  */
 class CoverageCallableProcessor {
 
@@ -42,18 +42,18 @@ class CoverageCallableProcessor {
     onProgress: (String, Double, Double) => Unit,
     artifactContext: Option[ArtifactContext] = None,
     minDepth: Int = 4
-  ): Either[Throwable, (CoverageCallableResult, List[String])] = {
+  ): Either[String, (CoverageCallableResult, List[String])] = {
 
     // Ensure BAM index exists
     onProgress("Checking BAM index...", 0.0, 1.0)
     GatkRunner.ensureIndex(bamPath) match {
-      case Left(error) => return Left(new RuntimeException(error))
+      case Left(error) => return Left(error)
       case Right(_) => // index exists or was created
     }
 
     // Verify input file exists
     if (!new File(bamPath).exists()) {
-      return Left(new RuntimeException(s"BAM/CRAM file not found: $bamPath"))
+      return Left(s"BAM/CRAM file not found: $bamPath")
     }
 
     // Use artifact cache directory if context provided, otherwise use local directory
@@ -85,7 +85,7 @@ class CoverageCallableProcessor {
         Right((result, svgStrings))
 
       case Left(error) =>
-        Left(new RuntimeException(error))
+        Left(error)
     }
   }
 
@@ -93,7 +93,7 @@ class CoverageCallableProcessor {
    * Generate SVG visualizations for callable loci by reading the BED files.
    * Reuses the visualization approach from CallableLociProcessor.
    */
-  private def generateSvgVisualizations(outputDir: Path, contigSummaries: List[ContigSummary]): List[String] = {
+  private def generateSvgVisualizations(outputDir: Path, contigSummaries: List[ContigMetrics]): List[String] = {
 
     // Get max contig length for scaling
     val maxContigLength = contigSummaries.map { s =>
@@ -145,7 +145,7 @@ object CoverageCallableProcessor {
 
     if (tableFiles.isEmpty) return None
 
-    val contigSummaries = ListBuffer[ContigSummary]()
+    val contigSummaries = ListBuffer[ContigMetrics]()
 
     for (tableFile <- tableFiles) {
       val fileName = tableFile.getFileName.toString
@@ -162,7 +162,7 @@ object CoverageCallableProcessor {
           }
         }
 
-        contigSummaries += ContigSummary(
+        contigSummaries += ContigMetrics(
           contigName = contigName,
           refN = summaryMap.getOrElse("REF_N", 0L),
           callable = summaryMap.getOrElse("CALLABLE", 0L),

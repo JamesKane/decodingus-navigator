@@ -1,6 +1,6 @@
 package com.decodingus.haplogroup.scoring
 
-import com.decodingus.haplogroup.model.HaplogroupResult
+import com.decodingus.haplogroup.model.ScoredHaplogroup
 
 /**
  * Shared confidence calculation for haplogroup assignments.
@@ -22,7 +22,7 @@ object ConfidenceCalculator {
    * @param maxCap     Maximum confidence cap (e.g., 0.85 for chip data, 1.0 for WGS)
    * @return Confidence score between 0.0 and maxCap
    */
-  def calculate(topResult: HaplogroupResult, allResults: List[HaplogroupResult], maxCap: Double = 1.0): Double = {
+  def calculate(topResult: ScoredHaplogroup, allResults: List[ScoredHaplogroup], maxCap: Double = 1.0): Double = {
     // Match quality: proportion of callable SNPs that are derived (matching the path)
     val callableSnps = topResult.matchingSnps + topResult.ancestralMatches
     val matchQuality = if (callableSnps > 0) {
@@ -42,7 +42,7 @@ object ConfidenceCalculator {
   /**
    * Calculate ambiguity penalty based on competing (non-ancestor) haplogroups.
    */
-  private def calculateAmbiguityPenalty(topResult: HaplogroupResult, allResults: List[HaplogroupResult]): Double = {
+  private def calculateAmbiguityPenalty(topResult: ScoredHaplogroup, allResults: List[ScoredHaplogroup]): Double = {
     if (allResults.size <= 1 || topResult.score <= 0) {
       return 0.0
     }

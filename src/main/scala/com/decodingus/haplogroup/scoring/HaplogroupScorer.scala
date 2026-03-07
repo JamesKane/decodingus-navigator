@@ -1,6 +1,6 @@
 package com.decodingus.haplogroup.scoring
 
-import com.decodingus.haplogroup.model.{Haplogroup, HaplogroupResult, HaplogroupScore, Locus}
+import com.decodingus.haplogroup.model.{Haplogroup, ScoredHaplogroup, HaplogroupScore, Locus}
 
 import scala.collection.mutable
 
@@ -19,8 +19,8 @@ import scala.collection.mutable
  */
 class HaplogroupScorer {
 
-  def score(tree: List[Haplogroup], snpCalls: Map[Long, String]): List[HaplogroupResult] = {
-    val scores = mutable.ListBuffer[HaplogroupResult]()
+  def score(tree: List[Haplogroup], snpCalls: Map[Long, String]): List[ScoredHaplogroup] = {
+    val scores = mutable.ListBuffer[ScoredHaplogroup]()
     tree.foreach(rootNode => calculateHaplogroupScore(
       rootNode,
       snpCalls,
@@ -50,7 +50,7 @@ class HaplogroupScorer {
   private def calculateHaplogroupScore(
                                         haplogroup: Haplogroup,
                                         snpCalls: Map[Long, String],
-                                        scores: mutable.ListBuffer[HaplogroupResult],
+                                        scores: mutable.ListBuffer[ScoredHaplogroup],
                                         cumulativeScore: Double,
                                         cumulativeDerived: Int,
                                         cumulativeAncestral: Int,
@@ -105,7 +105,7 @@ class HaplogroupScorer {
     val newCumulativeNoCalls = cumulativeNoCalls + branchNoCalls
     val newCumulativeSnps = cumulativeSnps + haplogroup.loci.length
 
-    scores += HaplogroupResult(
+    scores += ScoredHaplogroup(
       name = haplogroup.name,
       score = newCumulativeScore,
       matchingSnps = newCumulativeDerived,

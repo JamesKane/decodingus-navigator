@@ -96,13 +96,13 @@ object MtDnaFastaProcessor {
    */
   def process(
                fastaPath: Path,
-               onProgress: (String, Double) => Unit = (_, _) => ()
+               onProgress: (String, Double, Double) => Unit = (_, _, _) => ()
              ): Either[String, MtDnaFastaResult] = {
     if (!Files.exists(fastaPath)) {
       return Left(s"FASTA file not found: $fastaPath")
     }
 
-    onProgress("Reading FASTA file...", 0.1)
+    onProgress("Reading FASTA file...", 0.1, 1.0)
 
     // Read the sample sequence
     val sampleSequence = readFasta(fastaPath) match {
@@ -119,12 +119,12 @@ object MtDnaFastaProcessor {
       return Left(s"Unexpected mtDNA sequence length: ${sampleSequence.length} bp (expected ~16569)")
     }
 
-    onProgress("Comparing against rCRS...", 0.3)
+    onProgress("Comparing against rCRS...", 0.3, 1.0)
 
     // Compare to rCRS
     val variants = compareToRcrs(sampleSequence, onProgress)
 
-    onProgress("Extracting SNP calls...", 0.8)
+    onProgress("Extracting SNP calls...", 0.8, 1.0)
 
     // Convert to snpCalls map for haplogroup scoring
     val snpCalls: Map[Long, String] = variants
@@ -132,7 +132,7 @@ object MtDnaFastaProcessor {
       .map(v => v.position.toLong -> v.alt)
       .toMap
 
-    onProgress("Processing complete", 1.0)
+    onProgress("Processing complete", 1.0, 1.0)
 
     Right(MtDnaFastaResult(
       sampleSequence = sampleSequence,
@@ -169,7 +169,7 @@ object MtDnaFastaProcessor {
    */
   private def compareToRcrs(
                              sampleSeq: String,
-                             onProgress: (String, Double) => Unit
+                             onProgress: (String, Double, Double) => Unit
                            ): List[MtDnaVariant] = {
     if (!isRcrsAvailable) {
       println("[MtDnaFastaProcessor] Warning: rCRS not available, returning empty variants")
@@ -192,7 +192,7 @@ object MtDnaFastaProcessor {
       // Report progress every 1000 bases
       if (i % 1000 == 0) {
         val pct = 0.3 + (i.toDouble / minLen) * 0.5
-        onProgress(s"Comparing position $i of $minLen...", pct)
+        onProgress(s"Comparing position $i of $minLen...", pct, 1.0)
       }
 
       if (refBase != sampleBase && sampleBase != 'N') {

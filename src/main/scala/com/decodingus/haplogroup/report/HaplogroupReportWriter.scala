@@ -1,6 +1,6 @@
 package com.decodingus.haplogroup.report
 
-import com.decodingus.haplogroup.model.{Haplogroup, HaplogroupResult, Locus, NamedVariant}
+import com.decodingus.haplogroup.model.{Haplogroup, ScoredHaplogroup, Locus, NamedVariant}
 import com.decodingus.haplogroup.processor.{PrivateVariant, SnpCallInfo}
 import com.decodingus.haplogroup.tree.{TreeProviderType, TreeType}
 import com.decodingus.haplogroup.vendor.NamedVariantCache
@@ -107,7 +107,7 @@ object HaplogroupReportWriter {
   def writeReport(
                    outputDir: File,
                    treeType: TreeType,
-                   results: List[HaplogroupResult],
+                   results: List[ScoredHaplogroup],
                    tree: List[Haplogroup],
                    snpCalls: Map[Long, String],
                    sampleName: Option[String] = None,
@@ -140,7 +140,7 @@ object HaplogroupReportWriter {
       }
 
       // Pre-compute result lookup map - O(n) instead of O(n²) for path lookups
-      val resultsByName: Map[String, HaplogroupResult] = results.map(r => r.name -> r).toMap
+      val resultsByName: Map[String, ScoredHaplogroup] = results.map(r => r.name -> r).toMap
 
       writer.println("=" * 80)
       writer.println(s"  $dnaType Haplogroup Analysis Report")
@@ -529,7 +529,7 @@ object HaplogroupReportWriter {
   def writeCsvReport(
                       outputDir: File,
                       treeType: TreeType,
-                      results: List[HaplogroupResult],
+                      results: List[ScoredHaplogroup],
                       tree: List[Haplogroup],
                       snpCalls: Map[Long, String],
                       sampleName: Option[String] = None,

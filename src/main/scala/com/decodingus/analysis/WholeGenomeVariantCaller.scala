@@ -69,7 +69,7 @@ class WholeGenomeVariantCaller {
     // Use provided sex result or infer if not provided
     val sexResult = sexInferenceResult.getOrElse {
       onProgress("Inferring sex from coverage ratios...", 0, 1)
-      SexInference.inferFromBam(bamPath, (msg, _) => onProgress(msg, 0, 1)) match {
+      SexInference.inferFromBam(bamPath, (msg, _, _) => onProgress(msg, 0, 1)) match {
         case Left(error) =>
           // Continue with unknown sex (will use conservative defaults)
           println(s"[WholeGenomeVariantCaller] Sex inference failed: $error, using default ploidy")

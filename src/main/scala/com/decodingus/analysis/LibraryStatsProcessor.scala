@@ -13,7 +13,7 @@ class LibraryStatsProcessor {
 
   private val MAX_SAMPLES = 10000
 
-  def process(bamPath: String, referencePath: String, onProgress: (String, Long, Long) => Unit): LibraryStats = {
+  def process(bamPath: String, referencePath: String, onProgress: (String, Double, Double) => Unit): LibraryStats = {
     val samReaderFactory = SamReaderFactory.makeDefault().validationStringency(ValidationStringency.SILENT)
 
     val samReader = if (bamPath.endsWith(".cram")) {
@@ -77,7 +77,7 @@ class LibraryStatsProcessor {
         }
 
         if (processedRecords % 1000 == 0) {
-          onProgress(s"Scanned $processedRecords reads...", processedRecords, MAX_SAMPLES)
+          onProgress(s"Scanned $processedRecords reads...", processedRecords.toDouble / MAX_SAMPLES, 1.0)
         }
       }
     }

@@ -94,7 +94,7 @@ class StrCaller(
   def callYChromosomeStrs(
     bamPath: String,
     referencePath: String,
-    onProgress: (String, Long, Long) => Unit = (_, _, _) => ()
+    onProgress: (String, Double, Double) => Unit = (_, _, _) => ()
   ): Either[String, List[StrCall]] = {
     try {
       val samReaderFactory = SamReaderFactory.makeDefault()
@@ -116,7 +116,7 @@ class StrCaller(
       }
 
       val yChrom = yContig.get
-      onProgress(s"Calling STRs on $yChrom...", 0, 1)
+      onProgress(s"Calling STRs on $yChrom...", 0.0, 1.0)
 
       // Get all STR regions for Y chromosome from annotator
       val yStrRegions = getYStrRegions(yChrom)
@@ -133,7 +133,7 @@ class StrCaller(
       for (region <- yStrRegions) {
         processed += 1
         if (processed % 100 == 0) {
-          onProgress(s"Processing locus $processed of $totalLoci...", processed, totalLoci)
+          onProgress(s"Processing locus $processed of $totalLoci...", processed.toDouble / totalLoci, 1.0)
         }
 
         // Query reads overlapping this STR region
@@ -151,7 +151,7 @@ class StrCaller(
       }
 
       samReader.close()
-      onProgress(s"Called ${calls.size} STR loci", totalLoci, totalLoci)
+      onProgress(s"Called ${calls.size} STR loci", 1.0, 1.0)
 
       Right(calls.toList)
     } catch {

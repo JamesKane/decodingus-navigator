@@ -5,7 +5,7 @@ import com.decodingus.analysis.SexInference.{InferredSex, SexInferenceResult}
 import com.decodingus.analysis.sv.{SvAnalysisResult, SvCaller, SvCallerConfig}
 import com.decodingus.config.{FeatureToggles, UserPreferencesService}
 import com.decodingus.genotype.model.{TestTypeDefinition, TestTypes}
-import com.decodingus.haplogroup.model.HaplogroupResult as AnalysisHaplogroupResult
+import com.decodingus.haplogroup.model.ScoredHaplogroup
 import com.decodingus.haplogroup.processor.HaplogroupProcessor
 import com.decodingus.haplogroup.tree.{TreeProviderType, TreeType}
 import com.decodingus.model.{LibraryStats, WgsMetrics}
@@ -154,8 +154,8 @@ class AnalysisCoordinator(
 
       // Step 3: Collect library stats
       onProgress(AnalysisProgress("Analyzing library statistics...", 0.5))
-      val libraryStats = libraryStatsProcessor.process(bamPath, referencePath, (message, current, total) => {
-        val pct = 0.5 + (current.toDouble / total) * 0.4
+      val libraryStats = libraryStatsProcessor.process(bamPath, referencePath, (message, current, _) => {
+        val pct = 0.5 + current * 0.4
         onProgress(AnalysisProgress(s"Library Stats: $message", pct))
       })
 
@@ -312,7 +312,7 @@ class AnalysisCoordinator(
 
       wgsMetricsResult match {
         case Left(error) =>
-          Left(s"WGS metrics failed: ${error.getMessage}")
+          Left(s"WGS metrics failed: $error")
 
         case Right(wgsMetrics) =>
           onProgress(AnalysisProgress("Saving results...", 0.95))
@@ -473,7 +473,7 @@ class AnalysisCoordinator(
                              sequenceRunIndex: Int,
                              treeType: TreeType,
                              onProgress: AnalysisProgress => Unit
-                           ): Future[Either[String, (WorkspaceState, AnalysisHaplogroupResult)]] = Future {
+                           ): Future[Either[String, (WorkspaceState, ScoredHaplogroup)]] = Future {
     workspaceOps.findSubject(state, sampleAccession) match {
       case None =>
         Left(s"Subject not found: $sampleAccession")
@@ -512,7 +512,7 @@ class AnalysisCoordinator(
                                      bamPath: String,
                                      treeType: TreeType,
                                      onProgress: AnalysisProgress => Unit
-                                   ): Either[String, (WorkspaceState, AnalysisHaplogroupResult)] = {
+                                   ): Either[String, (WorkspaceState, ScoredHaplogroup)] = {
     try {
       onProgress(AnalysisProgress("Loading haplogroup tree...", 0.1))
 
@@ -573,7 +573,7 @@ class AnalysisCoordinator(
         None
       }
 
-      val result: Either[String, List[AnalysisHaplogroupResult]] =
+      val result: Either[String, List[ScoredHaplogroup]] =
         if (vendorFasta.isDefined && treeType == TreeType.MTDNA) {
           // Use vendor-provided FASTA for mtDNA - highest priority for mtDNA
           val vfasta = vendorFasta.get
@@ -877,7 +877,7 @@ class AnalysisCoordinator(
 
       resultEither match {
         case Left(error) =>
-          Left(s"Callable loci failed: ${error.getMessage}")
+          Left(s"Callable loci failed: $error")
 
         case Right((ccResult, _)) =>
           onProgress(AnalysisProgress("Saving results...", 0.95))
@@ -1028,7 +1028,7 @@ class AnalysisCoordinator(
         meanInsertSize = meanInsertSize,
         insertSizeSd = insertSizeSd,
         meanReadLength = meanReadLength,
-        onProgress = (msg, pct) => {
+        onProgress = (msg, pct, _) => {
           onProgress(AnalysisProgress(s"SV Calling: $msg", 0.15 + pct * 0.80))
         },
         artifactContext = Some(artifactCtx)
@@ -1252,7 +1252,7 @@ class AnalysisCoordinator(
             checkpoint = AnalysisCheckpoint.markReadMetricsComplete(artifactDir, checkpoint, readMetrics.maxReadLength)
             log.info(s"Read metrics complete: maxReadLength=${readMetrics.maxReadLength}, testType=$inferredTestType, layout=$inferredLayout")
           case Left(error) =>
-            log.warn(s"Read metrics warning: ${error.getMessage}")
+            log.warn(s"Read metrics warning: $error")
             // Mark complete to continue, but WGS metrics will use seqRun.maxReadLength fallback
             checkpoint = AnalysisCheckpoint.markStepComplete(artifactDir, checkpoint, 1)
         }
@@ -1544,7 +1544,7 @@ class AnalysisCoordinator(
               case Right(_) => // Index exists or was created
             }
 
-            val sexResult = SexInference.inferFromBam(bamPath, (msg, pct) => {
+            val sexResult = SexInference.inferFromBam(bamPath, (msg, pct, _) => {
               onProgress(AnalysisProgress(s"Step 4/8: Sex inference - $msg", 0.30 + pct * 0.05))
             })
             sexResult match {
@@ -1803,7 +1803,7 @@ class AnalysisCoordinator(
       artifactContext = Some(artifactCtx),
       totalReads = seqRun.totalReads,
       countUnpaired = isSingleEnd
-    ).left.map(_.getMessage)
+    )
   }
 
   /**
@@ -1858,7 +1858,7 @@ class AnalysisCoordinator(
         contigAnalysis = ccResult.contigSummaries
       )
       (clResult, svgs)
-    }.left.map(_.getMessage)
+    }
   }
 
   /**
@@ -1900,7 +1900,7 @@ class AnalysisCoordinator(
       },
       artifactContext = Some(artifactCtx),
       minDepth = minDepth
-    ).left.map(_.getMessage)
+    )
   }
 
   /**
@@ -1917,7 +1917,7 @@ class AnalysisCoordinator(
                                  treeType: TreeType,
                                  artifactCtx: ArtifactContext,
                                  onProgress: Double => Unit
-                               ): Either[String, AnalysisHaplogroupResult] = {
+                               ): Either[String, ScoredHaplogroup] = {
     // Select tree provider based on user preferences
     val treeProviderType = treeType match {
       case TreeType.YDNA =>
@@ -2077,7 +2077,7 @@ class AnalysisCoordinator(
   }
 
   /** Default result when no haplogroup matches found */
-  private val defaultHaplogroupResult = AnalysisHaplogroupResult(
+  private val defaultHaplogroupResult = ScoredHaplogroup(
     name = "Unknown",
     score = 0.0,
     matchingSnps = 0,
@@ -2178,8 +2178,8 @@ case class BatchAnalysisResult(
                                 callableLociResult: Option[CallableLociResult] = None,
                                 sexInferenceResult: Option[SexInference.SexInferenceResult] = None,
                                 vcfInfo: Option[CachedVcfInfo] = None,
-                                mtDnaHaplogroup: Option[AnalysisHaplogroupResult] = None,
-                                yDnaHaplogroup: Option[AnalysisHaplogroupResult] = None,
+                                mtDnaHaplogroup: Option[ScoredHaplogroup] = None,
+                                yDnaHaplogroup: Option[ScoredHaplogroup] = None,
                                 skippedYDna: Boolean = false,
                                 skippedYDnaReason: Option[String] = None,
                                 ancestryStub: Boolean = false // Stub for future ancestry composition

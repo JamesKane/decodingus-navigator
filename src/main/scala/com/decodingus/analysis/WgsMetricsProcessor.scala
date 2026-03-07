@@ -30,7 +30,7 @@ class WgsMetricsProcessor extends GatkToolProcessor[WgsMetrics] {
                artifactContext: Option[ArtifactContext] = None,
                totalReads: Option[Long] = None,
                countUnpaired: Boolean = false
-             ): Either[Throwable, WgsMetrics] = {
+             ): Either[String, WgsMetrics] = {
 
     executeGatkTool(
       bamPath,

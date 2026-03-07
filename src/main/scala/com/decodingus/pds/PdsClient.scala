@@ -1,7 +1,7 @@
 package com.decodingus.pds
 
 import com.decodingus.auth.User
-import com.decodingus.model.{ContigSummary, CoverageSummary, LibraryStats, WgsMetrics}
+import com.decodingus.model.{CoverageSummary, LibraryStats, WgsMetrics}
 import com.decodingus.util.Logger
 import com.decodingus.workspace.model.*
 import io.circe.generic.semiauto.{deriveDecoder, deriveEncoder}
@@ -22,7 +22,6 @@ object PdsClient {
 
   implicit val libraryStatsEncoder: Encoder[LibraryStats] = deriveEncoder
   implicit val wgsMetricsEncoder: Encoder[WgsMetrics] = deriveEncoder
-  implicit val contigSummaryEncoder: Encoder[ContigSummary] = deriveEncoder
   implicit val coverageSummaryEncoder: Encoder[CoverageSummary] = deriveEncoder
 
   // --- Workspace Codecs (for PDS serialization) ---

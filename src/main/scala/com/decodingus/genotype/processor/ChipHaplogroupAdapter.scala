@@ -2,7 +2,7 @@ package com.decodingus.genotype.processor
 
 import com.decodingus.config.{FeatureToggles, UserPreferencesService}
 import com.decodingus.genotype.model.GenotypeCall
-import com.decodingus.haplogroup.model.{Haplogroup, HaplogroupResult}
+import com.decodingus.haplogroup.model.{Haplogroup, ScoredHaplogroup}
 import com.decodingus.haplogroup.scoring.{ConfidenceCalculator, HaplogroupScorer}
 import com.decodingus.haplogroup.tree.{TreeProvider, TreeProviderType, TreeType}
 import com.decodingus.haplogroup.vendor.{DecodingUsTreeProvider, FtdnaTreeProvider}
@@ -20,7 +20,7 @@ import com.decodingus.liftover.GenotypeLiftover
  */
 case class ChipHaplogroupResult(
                                  treeType: TreeType,
-                                 results: List[HaplogroupResult],
+                                 results: List[ScoredHaplogroup],
                                  snpsMatched: Int,
                                  snpsTotal: Int,
                                  topHaplogroup: String,

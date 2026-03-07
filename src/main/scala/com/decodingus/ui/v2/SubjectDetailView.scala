@@ -1500,8 +1500,8 @@ class SubjectDetailView(viewModel: WorkbenchViewModel) extends VBox {
                   val calls = caller.callYChromosomeStrs(
                     bamPath,
                     referencePath,
-                    (message, current, total) => {
-                      val pct = 0.1 + (current.toDouble / Math.max(total, 1).toDouble) * 0.85
+                    (message, current, _) => {
+                      val pct = 0.1 + current * 0.85
                       scalafx.application.Platform.runLater {
                         viewModel.analysisProgress.value = message
                         viewModel.analysisProgressPercent.value = pct

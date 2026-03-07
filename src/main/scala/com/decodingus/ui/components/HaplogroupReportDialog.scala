@@ -1,8 +1,8 @@
 package com.decodingus.ui.components
 
-import com.decodingus.haplogroup.model.HaplogroupResult as AnalysisHaplogroupResult
+import com.decodingus.haplogroup.model.ScoredHaplogroup
 import com.decodingus.haplogroup.tree.TreeType
-import com.decodingus.workspace.model.{PrivateVariantData, VariantCall, HaplogroupResult as WorkspaceHaplogroupResult}
+import com.decodingus.workspace.model.{HaplogroupResult, PrivateVariantData, VariantCall}
 import javafx.collections.transformation.FilteredList
 import scalafx.Includes.*
 import scalafx.beans.property.StringProperty
@@ -22,8 +22,8 @@ import scala.util.Using
  */
 class HaplogroupReportDialog(
                               treeType: TreeType,
-                              workspaceResult: Option[WorkspaceHaplogroupResult] = None,
-                              analysisResults: Option[List[AnalysisHaplogroupResult]] = None,
+                              workspaceResult: Option[HaplogroupResult] = None,
+                              analysisResults: Option[List[ScoredHaplogroup]] = None,
                               artifactDir: Option[Path] = None,
                               sampleName: Option[String] = None
                             ) extends Dialog[Unit] {

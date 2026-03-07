@@ -44,11 +44,11 @@ abstract class GatkToolProcessor[T] {
                                  buildArgs: (String, String, String) => Array[String],
                                  parseOutput: String => T,
                                  resolveOutputPath: Option[ArtifactContext] => (Option[Path], String)
-                               ): Either[Throwable, T] = {
+                               ): Either[String, T] = {
 
     onProgress("Checking BAM index...", 0.0, 1.0)
     GatkRunner.ensureIndex(bamPath) match {
-      case Left(error) => return Left(new RuntimeException(error))
+      case Left(error) => return Left(error)
       case Right(_) => // index exists or was created
     }
 
@@ -75,10 +75,10 @@ abstract class GatkToolProcessor[T] {
           onProgress(s"GATK $getToolName complete.", 1.0, 1.0)
           Right(result)
         } catch {
-          case e: Throwable => Left(e)
+          case e: Throwable => Left(e.getMessage)
         }
       case Left(error) =>
-        Left(new RuntimeException(error))
+        Left(error)
     }
   }
 }

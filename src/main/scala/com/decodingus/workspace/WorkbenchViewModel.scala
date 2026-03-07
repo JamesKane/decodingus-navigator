@@ -5,7 +5,7 @@ import com.decodingus.auth.User
 import com.decodingus.client.DecodingUsClient
 import com.decodingus.config.{FeatureToggles, UserPreferencesService}
 import com.decodingus.db.Transactor
-import com.decodingus.haplogroup.model.HaplogroupResult as AnalysisHaplogroupResult
+import com.decodingus.haplogroup.model.ScoredHaplogroup
 import com.decodingus.haplogroup.processor.HaplogroupProcessor
 import com.decodingus.haplogroup.tree.{TreeProviderType, TreeType}
 import com.decodingus.model.{LibraryStats, WgsMetrics}
@@ -14,7 +14,7 @@ import com.decodingus.refgenome.{ReferenceGateway, ReferenceResolveResult, YRegi
 import com.decodingus.repository.BiosampleRepository
 import com.decodingus.service.{DatabaseContext, H2WorkspaceService, SequenceDataManager}
 import com.decodingus.util.Logger
-import com.decodingus.workspace.model.{Alignment, AlignmentMetrics, Biosample, CallMethod, ChipProfile, ConsentLevel, ContigMetrics, DnaType, FileInfo, HaplogroupAssignments, HaplogroupTechnology, MatchConsent, MatchRequest, MatchResult, MatchSuggestion, Project, RecordMeta, RunHaplogroupCall, SequenceRun, StrProfile, SyncStatus, Workspace, WorkspaceContent, HaplogroupResult as WorkspaceHaplogroupResult}
+import com.decodingus.workspace.model.{Alignment, AlignmentMetrics, Biosample, CallMethod, ChipProfile, ConsentLevel, ContigMetrics, DnaType, FileInfo, HaplogroupAssignments, HaplogroupTechnology, MatchConsent, MatchRequest, MatchResult, MatchSuggestion, Project, RecordMeta, RunHaplogroupCall, SequenceRun, StrProfile, SyncStatus, Workspace, WorkspaceContent, HaplogroupResult}
 import com.decodingus.workspace.services.*
 import com.decodingus.yprofile.model.*
 import com.decodingus.yprofile.repository.*
@@ -788,8 +788,8 @@ class WorkbenchViewModel(
         onProgress("Analyzing library statistics...", 0.55)
         updateProgress("Analyzing library statistics...", 0.55)
 
-        val libraryStats = libraryStatsProcessor.process(bamPath, referencePath, (message, current, total) => {
-          val pct = 0.55 + (current.toDouble / total) * 0.35
+        val libraryStats = libraryStatsProcessor.process(bamPath, referencePath, (message, current, _) => {
+          val pct = 0.55 + current * 0.35
           onProgress(s"Library Stats: $message", pct)
           updateProgress(s"Library Stats: $message", pct)
         })
@@ -1578,8 +1578,8 @@ class WorkbenchViewModel(
 
                     // Step 3: Collect library stats
                     updateProgress("Analyzing library statistics...", 0.5)
-                    val libraryStats = libraryStatsProcessor.process(bamPath, referencePath, (message, current, total) => {
-                      val pct = 0.5 + (current.toDouble / total) * 0.4
+                    val libraryStats = libraryStatsProcessor.process(bamPath, referencePath, (message, current, _) => {
+                      val pct = 0.5 + current * 0.4
                       updateProgress(s"Library Stats: $message", pct)
                     })
 
@@ -1765,7 +1765,7 @@ class WorkbenchViewModel(
                           countUnpaired = isSingleEnd
                         ) match {
                           case Right(metrics) => metrics
-                          case Left(error) => throw error
+                          case Left(error) => throw new RuntimeException(error)
                         }
 
                         // Update alignment metrics
@@ -1924,7 +1924,7 @@ class WorkbenchViewModel(
                           case Right((r, svgs)) =>
                             val clResult = CallableLociResult(r.callableBases, r.contigSummaries)
                             (clResult, svgs)
-                          case Left(error) => throw error
+                          case Left(error) => throw new RuntimeException(error)
                         }
 
                         // Update alignment metrics with callable bases count
@@ -1933,16 +1933,7 @@ class WorkbenchViewModel(
                           val existingMetrics = alignment.metrics.getOrElse(AlignmentMetrics())
                           val updatedMetrics = existingMetrics.copy(
                             callableBases = Some(result.callableBases),
-                            contigs = result.contigAnalysis.map { cs =>
-                              ContigMetrics(
-                                contigName = cs.contigName,
-                                callable = cs.callable,
-                                noCoverage = cs.noCoverage,
-                                lowCoverage = cs.lowCoverage,
-                                excessiveCoverage = cs.excessiveCoverage,
-                                poorMappingQuality = cs.poorMappingQuality
-                              )
-                            }
+                            contigs = result.contigAnalysis
                           )
                           val updatedAlignment = alignment.copy(
                             meta = alignment.meta.updated("callableLoci"),
@@ -2004,7 +1995,7 @@ class WorkbenchViewModel(
   // --- Haplogroup Analysis ---
 
   // Store last haplogroup analysis result
-  val lastHaplogroupResult: ObjectProperty[Option[AnalysisHaplogroupResult]] = ObjectProperty(None)
+  val lastHaplogroupResult: ObjectProperty[Option[ScoredHaplogroup]] = ObjectProperty(None)
 
   /**
    * Runs haplogroup analysis for a subject using the specified tree type.
@@ -2019,7 +2010,7 @@ class WorkbenchViewModel(
                              sampleAccession: String,
                              sequenceRunIndex: Int,
                              treeType: TreeType,
-                             onComplete: Either[String, AnalysisHaplogroupResult] => Unit
+                             onComplete: Either[String, ScoredHaplogroup] => Unit
                            ): Unit = {
     findSubject(sampleAccession) match {
       case Some(subject) =>
@@ -2306,7 +2297,7 @@ class WorkbenchViewModel(
                                          sequenceRunIndex: Int,
                                          alignmentIndex: Int,
                                          treeType: TreeType,
-                                         onComplete: Either[String, AnalysisHaplogroupResult] => Unit
+                                         onComplete: Either[String, ScoredHaplogroup] => Unit
                                        ): Unit = {
     findSubject(sampleAccession) match {
       case Some(subject) =>
@@ -3401,8 +3392,8 @@ class WorkbenchViewModel(
                       case Left(processorError) =>
                         Platform.runLater {
                           analysisInProgress.value = false
-                          analysisError.value = processorError.getMessage
-                          onComplete(Left(processorError.getMessage))
+                          analysisError.value = processorError
+                          onComplete(Left(processorError))
                         }
                     }
                   } catch {

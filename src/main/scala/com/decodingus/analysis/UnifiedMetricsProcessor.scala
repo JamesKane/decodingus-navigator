@@ -36,13 +36,13 @@ class UnifiedMetricsProcessor {
                referencePath: String,
                onProgress: (String, Double, Double) => Unit,
                artifactContext: Option[ArtifactContext] = None
-             ): Either[Throwable, ReadMetrics] = {
+             ): Either[String, ReadMetrics] = {
 
     onProgress("Collecting read metrics...", 0.0, 1.0)
 
     // Verify input file exists
     if (!new File(bamPath).exists()) {
-      return Left(new RuntimeException(s"BAM/CRAM file not found: $bamPath"))
+      return Left(s"BAM/CRAM file not found: $bamPath")
     }
 
     // Progress adapter
@@ -65,7 +65,7 @@ class UnifiedMetricsProcessor {
         Right(metrics)
 
       case Left(error) =>
-        Left(new RuntimeException(error))
+        Left(error)
     }
   }
 

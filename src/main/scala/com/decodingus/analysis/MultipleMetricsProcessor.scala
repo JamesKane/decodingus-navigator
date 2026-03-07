@@ -84,7 +84,7 @@ class MultipleMetricsProcessor extends GatkToolProcessor[MultipleMetricsResult] 
                onProgress: (String, Double, Double) => Unit,
                artifactContext: Option[ArtifactContext] = None,
                totalReads: Option[Long] = None
-             ): Either[Throwable, MultipleMetricsResult] = {
+             ): Either[String, MultipleMetricsResult] = {
 
     executeGatkTool(
       bamPath,

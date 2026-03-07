@@ -56,7 +56,7 @@ class SvCaller(config: SvCallerConfig = SvCallerConfig.default) {
     meanInsertSize: Double,
     insertSizeSd: Double,
     meanReadLength: Double = 150.0,
-    onProgress: (String, Double) => Unit,
+    onProgress: (String, Double, Double) => Unit,
     artifactContext: Option[ArtifactContext] = None
   ): Either[String, SvAnalysisResult] = {
 
@@ -65,12 +65,12 @@ class SvCaller(config: SvCallerConfig = SvCallerConfig.default) {
       return Left(s"Coverage too low for SV calling (${meanCoverage}x, minimum 10x required)")
     }
 
-    onProgress("Phase 1: Collecting SV evidence from BAM...", 0.0)
+    onProgress("Phase 1: Collecting SV evidence from BAM...", 0.0, 1.0)
 
     // Phase 1: Evidence collection (0% - 60%)
     val progressAdapter: (String, Long, Long) => Unit = (msg, current, total) => {
       val fraction = if (total > 0) current.toDouble / total else 0.0
-      onProgress(s"Collecting evidence: $msg", fraction * 0.6)
+      onProgress(s"Collecting evidence: $msg", fraction * 0.6, 1.0)
     }
 
     val evidence = walker.collectEvidence(
@@ -85,7 +85,7 @@ class SvCaller(config: SvCallerConfig = SvCallerConfig.default) {
       case Left(error) => return Left(error)
     }
 
-    onProgress("Phase 2: Segmenting read depth for CNV detection...", 0.6)
+    onProgress("Phase 2: Segmenting read depth for CNV detection...", 0.6, 1.0)
 
     // Phase 2: Depth segmentation (60% - 75%)
     val rawSegments = segmenter.segment(
@@ -97,19 +97,19 @@ class SvCaller(config: SvCallerConfig = SvCallerConfig.default) {
 
     val mergedSegments = segmenter.mergeNearbySegments(rawSegments)
 
-    onProgress("Phase 3: Clustering PE/SR evidence...", 0.75)
+    onProgress("Phase 3: Clustering PE/SR evidence...", 0.75, 1.0)
 
     // Phase 3: Evidence clustering (75% - 90%)
     val svCalls = clusterer.cluster(evidence, mergedSegments)
 
-    onProgress("Phase 4: Writing results...", 0.9)
+    onProgress("Phase 4: Writing results...", 0.9, 1.0)
 
     // Phase 4: Write outputs (90% - 100%)
     artifactContext.foreach { ctx =>
       writeArtifacts(ctx, evidence, mergedSegments, svCalls, referenceBuild)
     }
 
-    onProgress("SV calling complete.", 1.0)
+    onProgress("SV calling complete.", 1.0, 1.0)
 
     Right(SvAnalysisResult(
       svCalls = svCalls.filter(_.filter == "PASS"),

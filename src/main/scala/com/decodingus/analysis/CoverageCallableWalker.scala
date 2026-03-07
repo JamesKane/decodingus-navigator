@@ -1,6 +1,6 @@
 package com.decodingus.analysis
 
-import com.decodingus.model.ContigSummary
+import com.decodingus.workspace.model.ContigMetrics
 import htsjdk.samtools.reference.ReferenceSequenceFileFactory
 import htsjdk.samtools.util.{Interval, IntervalList, SamLocusIterator}
 import htsjdk.samtools.{SamReaderFactory, ValidationStringency}
@@ -81,7 +81,7 @@ case class CoverageCallableResult(
 
   // Callable loci summary (replaces CallableLociResult)
   callableBases: Long,
-  contigSummaries: List[ContigSummary],
+  contigSummaries: List[ContigMetrics],
 
   // Per-contig coverage for visualizations
   contigCoverage: Map[String, ContigCoverageMetrics],
@@ -111,7 +111,7 @@ private class ContigCallableAccumulator {
     case CallableState.Unknown => () // Should not occur during analysis
   }
 
-  def toContigSummary(contigName: String): ContigSummary = ContigSummary(
+  def toContigMetrics(contigName: String): ContigMetrics = ContigMetrics(
     contigName = contigName,
     refN = refN,
     callable = callable,
@@ -523,7 +523,7 @@ class CoverageCallableWalker {
 
       // Build contig summaries
       val contigSummaries = mainContigs.map { seq =>
-        contigCallable(seq.getSequenceName).toContigSummary(seq.getSequenceName)
+        contigCallable(seq.getSequenceName).toContigMetrics(seq.getSequenceName)
       }
 
       // Build samtools-style coverage stats

@@ -2,7 +2,7 @@ package com.decodingus.yprofile.service
 
 import com.decodingus.analysis.{CallableLociQueryService, CallableState}
 import com.decodingus.db.Transactor
-import com.decodingus.haplogroup.model.HaplogroupResult
+import com.decodingus.haplogroup.model.ScoredHaplogroup
 import com.decodingus.haplogroup.scoring.{ConfidenceCalculator, HaplogroupScorer}
 import com.decodingus.haplogroup.tree.{TreeProvider, TreeProviderType, TreeType}
 import com.decodingus.haplogroup.vendor.{DecodingUsTreeProvider, FtdnaTreeProvider}
@@ -1224,7 +1224,7 @@ class YProfileService(
    * Uses shared ConfidenceCalculator for consistent confidence scoring
    * across chip and WGS/VCF analysis paths.
    */
-  private def calculateHaplogroupConfidence(results: List[HaplogroupResult]): Double =
+  private def calculateHaplogroupConfidence(results: List[ScoredHaplogroup]): Double =
     if results.isEmpty then return 0.0
     ConfidenceCalculator.calculate(results.head, results, maxCap = 1.0)
 
@@ -1240,7 +1240,7 @@ case class HaplogroupDeterminationResult(
                                           noCalls: Int,
                                           totalTreeSnps: Int,
                                           depth: Int,
-                                          topResults: List[HaplogroupResult],
+                                          topResults: List[ScoredHaplogroup],
                                           treeProvider: String,
                                           treeVersion: String,
                                           snpCallCount: Int

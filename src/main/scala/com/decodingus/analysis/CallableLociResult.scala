@@ -1,8 +1,8 @@
 package com.decodingus.analysis
 
-import com.decodingus.model.ContigSummary
+import com.decodingus.workspace.model.ContigMetrics
 
 case class CallableLociResult(
                                callableBases: Long,
-                               contigAnalysis: List[ContigSummary]
+                               contigAnalysis: List[ContigMetrics]
                              )

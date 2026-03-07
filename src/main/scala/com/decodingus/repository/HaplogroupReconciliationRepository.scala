@@ -223,9 +223,11 @@ object HaplogroupReconciliationCodecs:
 /**
  * Repository for Haplogroup reconciliation persistence operations.
  */
-class HaplogroupReconciliationRepository extends SyncableRepository[HaplogroupReconciliationEntity, UUID]:
+class HaplogroupReconciliationRepository extends SyncableRepositoryBase[HaplogroupReconciliationEntity]:
 
   import HaplogroupReconciliationCodecs.given
+
+  override protected def tableName: String = "haplogroup_reconciliation"
 
   // ============================================
   // Core Repository Operations
@@ -319,38 +321,8 @@ class HaplogroupReconciliationRepository extends SyncableRepository[HaplogroupRe
   override def delete(id: UUID)(using conn: Connection): Boolean =
     executeUpdate("DELETE FROM haplogroup_reconciliation WHERE id = ?", Seq(id)) > 0
 
-  override def count()(using conn: Connection): Long =
-    queryOne("SELECT COUNT(*) FROM haplogroup_reconciliation") { rs =>
-      rs.getLong(1)
-    }.getOrElse(0L)
-
   override def exists(id: UUID)(using conn: Connection): Boolean =
     queryOne("SELECT 1 FROM haplogroup_reconciliation WHERE id = ?", Seq(id)) { _ => true }.isDefined
-
-  // ============================================
-  // Syncable Repository Operations
-  // ============================================
-
-  override def findByStatus(status: SyncStatus)(using conn: Connection): List[HaplogroupReconciliationEntity] =
-    queryList(
-      "SELECT * FROM haplogroup_reconciliation WHERE sync_status = ? ORDER BY updated_at DESC",
-      Seq(status.toString)
-    )(mapRow)
-
-  override def updateStatus(id: UUID, status: SyncStatus)(using conn: Connection): Boolean =
-    executeUpdate(
-      "UPDATE haplogroup_reconciliation SET sync_status = ?, updated_at = ? WHERE id = ?",
-      Seq(status.toString, LocalDateTime.now(), id)
-    ) > 0
-
-  override def markSynced(id: UUID, atUri: String, atCid: String)(using conn: Connection): Boolean =
-    executeUpdate(
-      """UPDATE haplogroup_reconciliation SET
-        |  sync_status = ?, at_uri = ?, at_cid = ?, updated_at = ?
-        |WHERE id = ?
-      """.stripMargin,
-      Seq(SyncStatus.Synced.toString, atUri, atCid, LocalDateTime.now(), id)
-    ) > 0
 
   // ============================================
   // Haplogroup Reconciliation-Specific Queries
@@ -396,17 +368,6 @@ class HaplogroupReconciliationRepository extends SyncableRepository[HaplogroupRe
     )(mapRow)
 
   /**
-   * Find profiles pending sync.
-   */
-  def findPendingSync()(using conn: Connection): List[HaplogroupReconciliationEntity] =
-    queryList(
-      """SELECT * FROM haplogroup_reconciliation
-        |WHERE sync_status IN ('Local', 'Modified')
-        |ORDER BY updated_at ASC
-      """.stripMargin
-    )(mapRow)
-
-  /**
    * Upsert reconciliation (insert if not exists, update if exists).
    * Uses the unique constraint on (biosample_id, dna_type).
    */
@@ -421,7 +382,7 @@ class HaplogroupReconciliationRepository extends SyncableRepository[HaplogroupRe
   // Result Set Mapping
   // ============================================
 
-  private def mapRow(rs: ResultSet): HaplogroupReconciliationEntity =
+  override protected def mapRow(rs: ResultSet): HaplogroupReconciliationEntity =
     val statusJson = getOptJsonString(rs, "status")
     val status = statusJson.flatMap(json =>
       parse(json).flatMap(_.as[ReconciliationStatus]).toOption
@@ -480,12 +441,5 @@ class HaplogroupReconciliationRepository extends SyncableRepository[HaplogroupRe
       manualOverride = manualOverride,
       auditLog = auditLog,
       lastReconciliationAt = lastReconciliationAt,
-      meta = EntityMeta(
-        syncStatus = SyncStatus.fromString(rs.getString("sync_status")),
-        atUri = getOptString(rs, "at_uri"),
-        atCid = getOptString(rs, "at_cid"),
-        version = rs.getInt("version"),
-        createdAt = getDateTime(rs, "created_at"),
-        updatedAt = getDateTime(rs, "updated_at")
-      )
+      meta = readEntityMeta(rs)
     )

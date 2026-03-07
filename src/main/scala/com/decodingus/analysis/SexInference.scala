@@ -59,9 +59,9 @@ object SexInference {
    */
   def inferFromBam(
                     bamPath: String,
-                    onProgress: (String, Double) => Unit = (_, _) => ()
+                    onProgress: (String, Double, Double) => Unit = (_, _, _) => ()
                   ): Either[String, SexInferenceResult] = {
-    onProgress("Opening BAM file for sex inference...", 0.0)
+    onProgress("Opening BAM file for sex inference...", 0.0, 1.0)
 
     val bamFile = new File(bamPath)
     if (!bamFile.exists()) {
@@ -83,9 +83,9 @@ object SexInference {
    */
   private def inferFromReader(
                                reader: SamReader,
-                               onProgress: (String, Double) => Unit
+                               onProgress: (String, Double, Double) => Unit
                              ): Either[String, SexInferenceResult] = {
-    onProgress("Reading sequence dictionary...", 0.1)
+    onProgress("Reading sequence dictionary...", 0.1, 1.0)
 
     val header = reader.getFileHeader
     val sequences = header.getSequenceDictionary.getSequences.asScala.toList
@@ -101,7 +101,7 @@ object SexInference {
     chrXSeq match {
       case None => Left("chrX not found in BAM header")
       case Some(chrX) =>
-        onProgress("Calculating autosomal coverage...", 0.2)
+        onProgress("Calculating autosomal coverage...", 0.2, 1.0)
 
         // Calculate total autosome length
         val autosomeLength = autosomes.map(_.getSequenceLength.toLong).sum
@@ -138,9 +138,9 @@ object SexInference {
                                        chrXName: String,
                                        autosomeLength: Long,
                                        chrXLength: Long,
-                                       onProgress: (String, Double) => Unit
+                                       onProgress: (String, Double, Double) => Unit
                                      ): Either[String, SexInferenceResult] = {
-    onProgress("Computing coverage ratios...", 0.7)
+    onProgress("Computing coverage ratios...", 0.7, 1.0)
 
     val autosomeReads = autosomeNames.map(name => readCounts.getOrElse(name, 0L)).sum
     val chrXReads = readCounts.getOrElse(chrXName, 0L)
@@ -155,7 +155,7 @@ object SexInference {
 
     val ratio = if (autosomeCoverage > 0) chrXCoverage / autosomeCoverage else 0.0
 
-    onProgress("Sex inference complete", 1.0)
+    onProgress("Sex inference complete", 1.0, 1.0)
 
     val (sex, confidence) = determineSex(ratio, autosomeCoverage)
 
