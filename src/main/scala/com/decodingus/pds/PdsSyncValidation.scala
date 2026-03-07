@@ -80,6 +80,30 @@ object PdsSyncValidation:
     if hr.runCalls.isEmpty then errors += "HaplogroupReconciliation has no runCalls"
     buildResult(errors)
 
+  /**
+   * Validate a MatchConsent for PDS sync.
+   * Required: biosampleRef, consentLevel
+   */
+  def validateMatchConsent(mc: MatchConsent): Either[List[String], Unit] =
+    val errors = List.newBuilder[String]
+    if mc.biosampleRef.isEmpty then errors += "MatchConsent missing biosampleRef"
+    if mc.consentLevel.isEmpty then errors += "MatchConsent missing consentLevel"
+    if !MatchConsent.ConsentLevels.contains(mc.consentLevel) then
+      errors += s"MatchConsent invalid consentLevel: ${mc.consentLevel}"
+    buildResult(errors)
+
+  /**
+   * Validate a MatchRequest for PDS sync.
+   * Required: fromBiosampleRef, toBiosampleRef, status
+   */
+  def validateMatchRequest(mr: MatchRequest): Either[List[String], Unit] =
+    val errors = List.newBuilder[String]
+    if mr.atUri.isEmpty then errors += "MatchRequest missing atUri"
+    if mr.fromBiosampleRef.isEmpty then errors += "MatchRequest missing fromBiosampleRef"
+    if mr.toBiosampleRef.isEmpty then errors += "MatchRequest missing toBiosampleRef"
+    if mr.status.isEmpty then errors += "MatchRequest missing status"
+    buildResult(errors)
+
   private def buildResult(errors: scala.collection.mutable.Builder[String, List[String]]): Either[List[String], Unit] =
     val result = errors.result()
     if result.isEmpty then Right(()) else Left(result)

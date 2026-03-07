@@ -1,6 +1,6 @@
 package com.decodingus.service
 
-import com.decodingus.repository.{AlignmentEntity, BiosampleEntity, ChipProfileEntity, EntityMeta, PopulationBreakdownEntity, ProjectEntity, SequenceRunEntity, StrProfileEntity, SyncStatus as RepoSyncStatus}
+import com.decodingus.repository.{AlignmentEntity, BiosampleEntity, ChipProfileEntity, EntityMeta, MatchConsentEntity, MatchRequestEntity, MatchResultEntity, PopulationBreakdownEntity, ProjectEntity, SequenceRunEntity, StrProfileEntity, SyncStatus as RepoSyncStatus}
 import com.decodingus.workspace.model.*
 
 import java.time.LocalDateTime
@@ -425,6 +425,110 @@ object EntityConversions:
       analysisDate = entity.analysisDate,
       pipelineVersion = entity.pipelineVersion.getOrElse("unknown"),
       referenceVersion = entity.referenceVersion.getOrElse("unknown")
+    )
+
+  // ============================================
+  // MatchConsent Conversions
+  // ============================================
+
+  def toMatchConsentEntity(consent: MatchConsent, biosampleId: UUID): MatchConsentEntity =
+    MatchConsentEntity(
+      id = extractOrGenerateId(consent.atUri),
+      biosampleId = biosampleId,
+      consentLevel = consent.consentLevel,
+      allowedMatchTypes = consent.allowedMatchTypes,
+      minimumSegmentCm = consent.minimumSegmentCm,
+      shareContactInfo = consent.shareContactInfo,
+      consentedAt = consent.consentedAt,
+      expiresAt = consent.expiresAt,
+      meta = toEntityMeta(consent.meta, consent.atUri)
+    )
+
+  def fromMatchConsentEntity(entity: MatchConsentEntity, biosampleRef: String): MatchConsent =
+    MatchConsent(
+      atUri = entity.meta.atUri.orElse(Some(localUri("matchconsent", entity.id))),
+      meta = fromEntityMeta(entity.meta),
+      biosampleRef = biosampleRef,
+      consentLevel = entity.consentLevel,
+      allowedMatchTypes = entity.allowedMatchTypes,
+      minimumSegmentCm = entity.minimumSegmentCm,
+      shareContactInfo = entity.shareContactInfo,
+      consentedAt = entity.consentedAt,
+      expiresAt = entity.expiresAt
+    )
+
+  // ============================================
+  // MatchRequest Conversions
+  // ============================================
+
+  def toMatchRequestEntity(request: MatchRequest): MatchRequestEntity =
+    MatchRequestEntity(
+      id = extractOrGenerateId(request.atUri),
+      fromBiosampleRef = request.fromBiosampleRef,
+      toBiosampleRef = request.toBiosampleRef,
+      status = request.status,
+      requestType = request.requestType,
+      message = request.message,
+      sharedAncestorHint = request.sharedAncestorHint,
+      discoveryReason = request.discoveryReason,
+      createdAt = request.createdAt,
+      expiresAt = request.expiresAt,
+      respondedAt = request.respondedAt,
+      meta = toEntityMeta(request.meta, request.atUri)
+    )
+
+  def fromMatchRequestEntity(entity: MatchRequestEntity): MatchRequest =
+    MatchRequest(
+      atUri = entity.meta.atUri.orElse(Some(localUri("matchrequest", entity.id))),
+      meta = fromEntityMeta(entity.meta),
+      fromBiosampleRef = entity.fromBiosampleRef,
+      toBiosampleRef = entity.toBiosampleRef,
+      status = entity.status,
+      requestType = entity.requestType,
+      message = entity.message,
+      sharedAncestorHint = entity.sharedAncestorHint,
+      discoveryReason = entity.discoveryReason,
+      createdAt = entity.createdAt,
+      expiresAt = entity.expiresAt,
+      respondedAt = entity.respondedAt
+    )
+
+  // ============================================
+  // MatchResult Conversions
+  // ============================================
+
+  def toMatchResultEntity(result: MatchResult, biosampleId: UUID): MatchResultEntity =
+    MatchResultEntity(
+      id = extractOrGenerateId(result.atUri),
+      biosampleId = biosampleId,
+      matchedBiosampleRef = result.matchedBiosampleRef,
+      matchedCitizenDid = result.matchedCitizenDid,
+      relationshipEstimate = result.relationshipEstimate,
+      totalSharedCm = result.totalSharedCm,
+      longestSegmentCm = result.longestSegmentCm,
+      segmentCount = result.segmentCount,
+      sharedSegments = result.sharedSegments,
+      xMatchSharedCm = result.xMatchSharedCm,
+      matchedAt = result.matchedAt,
+      attestationHash = result.attestationHash,
+      meta = toEntityMeta(result.meta, result.atUri)
+    )
+
+  def fromMatchResultEntity(entity: MatchResultEntity, biosampleRef: String): MatchResult =
+    MatchResult(
+      atUri = entity.meta.atUri.orElse(Some(localUri("matchresult", entity.id))),
+      meta = fromEntityMeta(entity.meta),
+      biosampleRef = biosampleRef,
+      matchedBiosampleRef = entity.matchedBiosampleRef,
+      matchedCitizenDid = entity.matchedCitizenDid,
+      relationshipEstimate = entity.relationshipEstimate,
+      totalSharedCm = entity.totalSharedCm,
+      longestSegmentCm = entity.longestSegmentCm,
+      segmentCount = entity.segmentCount,
+      sharedSegments = entity.sharedSegments,
+      xMatchSharedCm = entity.xMatchSharedCm,
+      matchedAt = entity.matchedAt,
+      attestationHash = entity.attestationHash
     )
 
   // ============================================

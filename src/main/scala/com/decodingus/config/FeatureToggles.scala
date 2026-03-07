@@ -10,6 +10,10 @@ object FeatureToggles {
   val authEnabled: Boolean = config.hasPath("auth.enabled") && config.getBoolean("auth.enabled")
   val atProtocolEnabled: Boolean = config.hasPath("at-protocol.enabled") && config.getBoolean("at-protocol.enabled")
 
+  /** Whether IBD matching system is enabled */
+  val ibdMatchingEnabled: Boolean =
+    if (config.hasPath("ibd-matching.enabled")) config.getBoolean("ibd-matching.enabled") else false
+
   object developerFeatures {
     private val devConfig = config.getConfig("developer-features")
     val saveJsonEnabled: Boolean = devConfig.getBoolean("save-json-enabled")

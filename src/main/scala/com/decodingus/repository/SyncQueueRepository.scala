@@ -22,6 +22,8 @@ enum SyncEntityType:
   case YSnpPanel
   case HaplogroupReconciliation
   case PopulationBreakdown
+  case MatchConsent
+  case MatchRequest
 
 object SyncEntityType:
   def fromString(s: String): SyncEntityType = s match
@@ -34,6 +36,8 @@ object SyncEntityType:
     case "Y_SNP_PANEL" => YSnpPanel
     case "HAPLOGROUP_RECONCILIATION" => HaplogroupReconciliation
     case "POPULATION_BREAKDOWN" => PopulationBreakdown
+    case "MATCH_CONSENT" => MatchConsent
+    case "MATCH_REQUEST" => MatchRequest
     case other => throw new IllegalArgumentException(s"Unknown entity type: $other")
 
   def toDbString(t: SyncEntityType): String = t match
@@ -46,6 +50,8 @@ object SyncEntityType:
     case YSnpPanel => "Y_SNP_PANEL"
     case HaplogroupReconciliation => "HAPLOGROUP_RECONCILIATION"
     case PopulationBreakdown => "POPULATION_BREAKDOWN"
+    case MatchConsent => "MATCH_CONSENT"
+    case MatchRequest => "MATCH_REQUEST"
 
 /**
  * Sync operations.

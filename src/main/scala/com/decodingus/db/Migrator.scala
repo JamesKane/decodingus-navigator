@@ -159,7 +159,8 @@ object Migrator:
       "V008__add_sequence_run_metrics_columns.sql",
       "V009__align_chip_profile_with_lexicon.sql",
       "V010__population_breakdown_table.sql",
-      "V011__enrich_haplogroup_reconciliation.sql"
+      "V011__enrich_haplogroup_reconciliation.sql",
+      "V012__ibd_matching_tables.sql"
     )
     val pattern = """V(\d+)__(.+)\.sql""".r
 
