@@ -131,4 +131,25 @@ object SequenceRun {
     import com.decodingus.genotype.model.TestTypes
     TestTypes.byCode(testTypeCode).exists(_.supportsAncestry)
   }
+
+  /**
+   * Map Navigator's detailed test type taxonomy to the web app's generic categories
+   * for PDS sync. Navigator's internal codes are preserved locally.
+   */
+  def toSyncTestType(navigatorCode: String): String = navigatorCode match {
+    // Whole genome
+    case "WGS" | "WGS_LOW_PASS" | "WGS_HIFI" | "WGS_NANOPORE" | "WGS_CLR" => "WGS"
+    // Exome
+    case "WES" | "EXOME" => "EXOME"
+    // Targeted Y-DNA
+    case "BIG_Y_500" | "BIG_Y_700" | "Y_ELITE" | "Y_PRIME" => "TARGETED"
+    // Targeted mtDNA
+    case "MT_FULL_SEQUENCE" | "MT_PLUS" | "MT_CR_ONLY" => "TARGETED"
+    // Direct matches
+    case "AMPLICON" => "AMPLICON"
+    case "RNA_SEQ" => "RNA_SEQ"
+    case "TARGETED" => "TARGETED"
+    // Fallback
+    case other => other
+  }
 }
