@@ -128,43 +128,211 @@ case class HaplogroupReconciliation(
 
   /**
    * Recalculate the consensus/status from current run calls.
-   * Returns updated reconciliation with new status.
+   *
+   * Uses lineage paths (when available) to compute branch compatibility via LCA.
+   * Falls back to simple tier-based selection when lineage data is missing.
    */
   def recalculate(): HaplogroupReconciliation = {
     if (runCalls.isEmpty) {
-      copy(status = status.copy(
-        compatibilityLevel = CompatibilityLevel.COMPATIBLE,
-        consensusHaplogroup = "",
-        confidence = 0.0,
-        runCount = 0
-      ))
+      copy(
+        status = status.copy(
+          compatibilityLevel = CompatibilityLevel.COMPATIBLE,
+          consensusHaplogroup = "",
+          confidence = 0.0,
+          runCount = 0,
+          divergencePoint = None,
+          branchCompatibilityScore = None,
+          snpConcordance = None,
+          warnings = List.empty
+        ),
+        snpConflicts = List.empty,
+        lastReconciliationAt = Some(Instant.now())
+      )
     } else {
-      // Simple reconciliation: pick best by quality tier then confidence
-      val sorted = runCalls.sortBy { call =>
-        val qualityTier = call.technology match {
-          case Some(HaplogroupTechnology.WGS) => 3
-          case Some(HaplogroupTechnology.BIG_Y) => 2
-          case Some(HaplogroupTechnology.SNP_ARRAY) => 1
-          case _ => 0
-        }
-        (-qualityTier, -call.confidence)
-      }
-      val best = sorted.head
+      // Pick best call by quality tier then confidence
+      val best = HaplogroupReconciliation.bestCall(runCalls)
+
+      // Compute branch compatibility from lineage paths
+      val (compatLevel, compatScore, divergence, warnings) =
+        HaplogroupReconciliation.assessBranchCompatibility(runCalls, dnaType)
+
+      // Compute SNP-level concordance and conflicts
+      val (concordance, conflicts) = HaplogroupReconciliation.detectSnpConflicts(runCalls, dnaType)
+
+      // Combine warnings from branch and SNP analysis
+      val allWarnings = warnings ++ concordanceWarnings(concordance)
 
       copy(
         status = status.copy(
           consensusHaplogroup = best.haplogroup,
           confidence = best.confidence,
           runCount = runCalls.size,
-          compatibilityLevel = CompatibilityLevel.COMPATIBLE // TODO: actual tree comparison
+          compatibilityLevel = compatLevel,
+          branchCompatibilityScore = compatScore,
+          divergencePoint = divergence,
+          snpConcordance = concordance,
+          warnings = allWarnings
         ),
+        snpConflicts = conflicts,
         lastReconciliationAt = Some(Instant.now())
       )
     }
   }
+
+  private def concordanceWarnings(concordance: Option[Double]): List[String] =
+    concordance match {
+      case Some(c) if c < 0.95 =>
+        List(s"Low SNP concordance (${f"${c * 100}%.1f"}%%) — possible sample mix-up")
+      case Some(c) if c < 0.99 =>
+        List(s"SNP concordance ${f"${c * 100}%.1f"}%% — possible somatic variation or heteroplasmy")
+      case _ => List.empty
+    }
 }
 
 object HaplogroupReconciliation {
+
+  /**
+   * Select the best call by technology quality tier then confidence.
+   */
+  def bestCall(calls: List[RunHaplogroupCall]): RunHaplogroupCall =
+    calls.maxBy { call =>
+      val qualityTier = call.technology match {
+        case Some(HaplogroupTechnology.WGS) => 3
+        case Some(HaplogroupTechnology.BIG_Y) => 2
+        case Some(HaplogroupTechnology.SNP_ARRAY) => 1
+        case _ => 0
+      }
+      (qualityTier, call.confidence)
+    }
+
+  // ============================================
+  // Branch Compatibility (LCA-based)
+  // ============================================
+
+  /**
+   * Assess branch compatibility across all run calls using lineage paths.
+   *
+   * Computes the LCA (longest common prefix) of all lineage paths, then
+   * calculates a compatibility score: LCA_depth / max(call depths).
+   *
+   * @return (compatibilityLevel, score, divergencePoint, warnings)
+   */
+  def assessBranchCompatibility(
+                                  calls: List[RunHaplogroupCall],
+                                  dnaType: DnaType
+                                ): (CompatibilityLevel, Option[Double], Option[String], List[String]) = {
+    if (calls.size <= 1) {
+      return (CompatibilityLevel.COMPATIBLE, Some(1.0), None, List.empty)
+    }
+
+    val paths = calls.flatMap(_.lineagePath).filter(_.nonEmpty)
+    if (paths.size < 2) {
+      // Not enough lineage data for tree comparison — assume compatible
+      return (CompatibilityLevel.COMPATIBLE, None, None,
+        List("Insufficient lineage data for tree comparison"))
+    }
+
+    val lca = longestCommonPrefix(paths)
+    val lcaDepth = lca.size
+    val maxDepth = paths.map(_.size).max
+
+    if (maxDepth == 0) {
+      return (CompatibilityLevel.COMPATIBLE, None, None, List.empty)
+    }
+
+    val warnings = scala.collection.mutable.ListBuffer[String]()
+
+    // Check for actual divergence: paths that go in different directions beyond the LCA
+    val branchesBeyondLca = paths.map(_.drop(lcaDepth)).filter(_.nonEmpty).map(_.head).distinct
+    val hasDivergence = branchesBeyondLca.size > 1
+
+    // If no divergence, all paths are on the same branch (ancestor/descendant)
+    // Score 1.0 = fully compatible, even if depths differ
+    val score = if (hasDivergence) {
+      lcaDepth.toDouble / maxDepth
+    } else {
+      1.0
+    }
+
+    val divergencePoint = if (hasDivergence) lca.lastOption else None
+
+    if (hasDivergence) {
+      warnings += s"Runs diverge after ${divergencePoint.getOrElse("root")}: ${branchesBeyondLca.mkString(", ")}"
+    }
+
+    val level = scoreToCompatibilityLevel(score)
+    if (level == CompatibilityLevel.INCOMPATIBLE) {
+      warnings += "Sample verification recommended — haplogroup calls are incompatible"
+    }
+
+    (level, Some(score), divergencePoint, warnings.toList)
+  }
+
+  /**
+   * Find the longest common prefix of multiple lineage paths.
+   * This gives the Last Common Ancestor (LCA) path.
+   */
+  def longestCommonPrefix(paths: List[List[String]]): List[String] = {
+    if (paths.isEmpty) return List.empty
+    val minLen = paths.map(_.size).min
+    val reference = paths.head
+    val prefixLen = (0 until minLen).takeWhile { i =>
+      paths.forall(_(i) == reference(i))
+    }.size
+    reference.take(prefixLen)
+  }
+
+  /**
+   * Map a branch compatibility score to a compatibility level.
+   */
+  def scoreToCompatibilityLevel(score: Double): CompatibilityLevel =
+    if (score >= 0.8) CompatibilityLevel.COMPATIBLE
+    else if (score >= 0.5) CompatibilityLevel.MINOR_DIVERGENCE
+    else if (score >= 0.3) CompatibilityLevel.MAJOR_DIVERGENCE
+    else CompatibilityLevel.INCOMPATIBLE
+
+  // ============================================
+  // SNP-Level Conflict Detection
+  // ============================================
+
+  /**
+   * Detect SNP-level conflicts across runs.
+   *
+   * Compares supporting/conflicting SNP counts to estimate concordance.
+   * When detailed SNP data isn't available, returns None.
+   *
+   * @return (concordance, conflicts)
+   */
+  def detectSnpConflicts(
+                          calls: List[RunHaplogroupCall],
+                          dnaType: DnaType
+                        ): (Option[Double], List[SnpConflict]) = {
+    if (calls.size < 2) return (None, List.empty)
+
+    // Estimate concordance from supporting/conflicting SNP counts
+    val callsWithSnpData = calls.filter(c => c.supportingSnps.isDefined || c.conflictingSnps.isDefined)
+    if (callsWithSnpData.size < 2) return (None, List.empty)
+
+    val totalSupporting = callsWithSnpData.flatMap(_.supportingSnps).sum
+    val totalConflicting = callsWithSnpData.flatMap(_.conflictingSnps).sum
+    val totalCalls = totalSupporting + totalConflicting
+
+    val concordance = if (totalCalls > 0) {
+      Some(totalSupporting.toDouble / totalCalls)
+    } else {
+      None
+    }
+
+    // For now we report aggregate concordance. Detailed per-SNP conflicts
+    // require the full variant call data which isn't stored on RunHaplogroupCall.
+    // The snpConflicts list will be populated when detailed SNP comparison
+    // data is available from the analysis pipeline.
+    (concordance, List.empty)
+  }
+
+  // ============================================
+  // Factory Methods
+  // ============================================
 
   /**
    * Create a new reconciliation record from a single run call.
@@ -182,7 +350,8 @@ object HaplogroupReconciliation {
         compatibilityLevel = CompatibilityLevel.COMPATIBLE,
         consensusHaplogroup = call.haplogroup,
         confidence = call.confidence,
-        runCount = 1
+        runCount = 1,
+        branchCompatibilityScore = Some(1.0)
       ),
       runCalls = List(call),
       lastReconciliationAt = Some(Instant.now())

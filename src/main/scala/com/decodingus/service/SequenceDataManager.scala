@@ -440,12 +440,23 @@ class SequenceDataManager(
 
   /**
    * Updates workspace after deleting a SequenceRun.
+   * Also cascades removal of haplogroup reconciliation calls sourced from
+   * this run or its alignments.
    */
   private def updateWorkspaceWithDeletedSequenceRun(
                                                      sampleAccession: String,
                                                      sequenceRunUri: String
                                                    ): Unit =
     val workspace = workspaceGetter()
+
+    // Collect URIs of alignments being deleted (they source haplogroup calls)
+    val deletedAlignmentUris = workspace.main.alignments
+      .filter(_.sequenceRunRef == sequenceRunUri)
+      .flatMap(_.atUri)
+      .toSet
+
+    // All source refs to remove from reconciliation (the run itself + its alignments)
+    val deletedSourceRefs = deletedAlignmentUris + sequenceRunUri
 
     // Remove the sequence run
     val updatedSequenceRuns = workspace.main.sequenceRuns.filterNot(_.atUri.contains(sequenceRunUri))
@@ -461,10 +472,40 @@ class SequenceDataManager(
         sample
     }
 
+    // Cascade: remove haplogroup calls sourced from deleted run/alignments and recalculate
+    val biosampleRef = workspace.main.samples
+      .find(_.sampleAccession == sampleAccession)
+      .flatMap(_.atUri)
+      .getOrElse(s"local:biosample:$sampleAccession")
+
+    val updatedReconciliations = workspace.main.haplogroupReconciliations.map { recon =>
+      if recon.biosampleRef == biosampleRef && recon.runCalls.exists(c => deletedSourceRefs.contains(c.sourceRef)) then
+        val cleaned = deletedSourceRefs.foldLeft(recon)((r, ref) => r.removeRunCall(ref))
+        cleaned.recalculate()
+      else
+        recon
+    }
+
+    // Update biosample haplogroups from recalculated reconciliation
+    val finalSamples = updatedSamples.map { sample =>
+      if sample.sampleAccession == sampleAccession then
+        val yRecon = updatedReconciliations.find(r => r.biosampleRef == biosampleRef && r.dnaType == DnaType.Y_DNA)
+        val mtRecon = updatedReconciliations.find(r => r.biosampleRef == biosampleRef && r.dnaType == DnaType.MT_DNA)
+        val currentAssignments = sample.haplogroups.getOrElse(HaplogroupAssignments())
+        val updatedAssignments = currentAssignments.copy(
+          yDna = yRecon.flatMap(r => r.runCalls.headOption.map(_ => HaplogroupReconciliation.toHaplogroupResult(HaplogroupReconciliation.bestCall(r.runCalls)))).orElse(if yRecon.exists(_.runCalls.isEmpty) then None else currentAssignments.yDna),
+          mtDna = mtRecon.flatMap(r => r.runCalls.headOption.map(_ => HaplogroupReconciliation.toHaplogroupResult(HaplogroupReconciliation.bestCall(r.runCalls)))).orElse(if mtRecon.exists(_.runCalls.isEmpty) then None else currentAssignments.mtDna)
+        )
+        sample.copy(haplogroups = Some(updatedAssignments))
+      else
+        sample
+    }
+
     val updatedContent = workspace.main.copy(
-      samples = updatedSamples,
+      samples = finalSamples,
       sequenceRuns = updatedSequenceRuns,
-      alignments = updatedAlignments
+      alignments = updatedAlignments,
+      haplogroupReconciliations = updatedReconciliations
     )
     workspaceUpdater(workspace.copy(main = updatedContent))
 

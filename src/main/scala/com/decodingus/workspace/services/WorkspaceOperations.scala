@@ -493,7 +493,17 @@ class WorkspaceOperations {
           samples = updatedSamples,
           chipProfiles = updatedChipProfiles
         )
-        Right(state.copy(workspace = state.workspace.copy(main = updatedContent)))
+        var updatedState = state.copy(workspace = state.workspace.copy(main = updatedContent))
+
+        // Cascade: remove haplogroup calls sourced from this chip profile
+        for (dnaType <- List(DnaType.Y_DNA, DnaType.MT_DNA)) {
+          removeHaplogroupCall(updatedState, sampleAccession, dnaType, profileUri) match {
+            case Right(s) => updatedState = s
+            case Left(_) => // No reconciliation for this type, ok
+          }
+        }
+
+        Right(updatedState)
 
       case None =>
         Left(s"Subject not found: $sampleAccession")
