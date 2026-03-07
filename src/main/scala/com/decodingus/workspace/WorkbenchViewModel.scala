@@ -1424,6 +1424,89 @@ class WorkbenchViewModel(
     }
   }
 
+  // --- Pre-computed Metrics (Project Import) ---
+
+  /**
+   * Apply pre-computed metrics from existing analysis files (flagstat, WGS metrics)
+   * to the first alignment of the first sequence run for a given sample.
+   * Used during project directory import to avoid re-running GATK.
+   */
+  def applyPrecomputedMetrics(
+    sampleAccession: String,
+    metrics: AlignmentMetrics,
+    flagstatResult: Option[com.decodingus.analysis.FlagstatResult]
+  ): Unit = {
+    findSubject(sampleAccession) match {
+      case Some(subject) =>
+        val sequenceRuns = _workspace.value.main.getSequenceRunsForBiosample(subject)
+        sequenceRuns.headOption.foreach { seqRun =>
+
+          // Update SequenceRun with flagstat data if available
+          flagstatResult.foreach { fs =>
+            val updatedRun = seqRun.copy(
+              meta = seqRun.meta.updated("precomputedMetrics"),
+              totalReads = Some(fs.totalReads),
+              pfReadsAligned = Some(fs.mapped),
+              pctPfReadsAligned = fs.mappingRate,
+              pctProperPairs = fs.properlyPairedPercent.map(_ / 100.0),
+              libraryLayout = Some(if (fs.isPairedEnd) "PAIRED" else "SINGLE")
+            )
+
+            h2Service.updateSequenceRun(updatedRun) match {
+              case Right(_) =>
+                log.info(s"SequenceRun updated with flagstat data: ${seqRun.atUri}")
+                val updatedRuns = _workspace.value.main.sequenceRuns.map { sr =>
+                  if (sr.atUri == seqRun.atUri) updatedRun else sr
+                }
+                _workspace.value = _workspace.value.copy(
+                  main = _workspace.value.main.copy(sequenceRuns = updatedRuns)
+                )
+              case Left(error) =>
+                log.error(s"Failed to update SequenceRun with flagstat: $error")
+            }
+          }
+
+          // Update Alignment with WGS metrics
+          val alignments = _workspace.value.main.getAlignmentsForSequenceRun(seqRun)
+          alignments.headOption.foreach { alignment =>
+            val existingMetrics = alignment.metrics.getOrElse(AlignmentMetrics())
+            val merged = existingMetrics.copy(
+              genomeTerritory = metrics.genomeTerritory.orElse(existingMetrics.genomeTerritory),
+              meanCoverage = metrics.meanCoverage.orElse(existingMetrics.meanCoverage),
+              medianCoverage = metrics.medianCoverage.orElse(existingMetrics.medianCoverage),
+              sdCoverage = metrics.sdCoverage.orElse(existingMetrics.sdCoverage),
+              pctExcDupe = metrics.pctExcDupe.orElse(existingMetrics.pctExcDupe),
+              pctExcMapq = metrics.pctExcMapq.orElse(existingMetrics.pctExcMapq),
+              pct10x = metrics.pct10x.orElse(existingMetrics.pct10x),
+              pct20x = metrics.pct20x.orElse(existingMetrics.pct20x),
+              pct30x = metrics.pct30x.orElse(existingMetrics.pct30x),
+              hetSnpSensitivity = metrics.hetSnpSensitivity.orElse(existingMetrics.hetSnpSensitivity)
+            )
+
+            val updatedAlignment = alignment.copy(
+              meta = alignment.meta.updated("precomputedMetrics"),
+              metrics = Some(merged)
+            )
+
+            h2Service.updateAlignment(updatedAlignment) match {
+              case Right(_) =>
+                log.info(s"Alignment updated with pre-computed metrics: ${alignment.atUri}")
+                val updatedAlignments = _workspace.value.main.alignments.map { a =>
+                  if (a.atUri == alignment.atUri) updatedAlignment else a
+                }
+                _workspace.value = _workspace.value.copy(
+                  main = _workspace.value.main.copy(alignments = updatedAlignments)
+                )
+              case Left(error) =>
+                log.error(s"Failed to update Alignment with pre-computed metrics: $error")
+            }
+          }
+        }
+      case None =>
+        log.warn(s"Cannot apply pre-computed metrics: subject $sampleAccession not found")
+    }
+  }
+
   // --- Analysis State ---
   // Observable properties for tracking analysis progress
   val analysisInProgress: BooleanProperty = BooleanProperty(false)

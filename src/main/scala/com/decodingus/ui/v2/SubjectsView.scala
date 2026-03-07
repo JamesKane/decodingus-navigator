@@ -2,7 +2,7 @@ package com.decodingus.ui.v2
 
 import com.decodingus.i18n.I18n.{t, bind}
 import com.decodingus.i18n.Formatters
-import com.decodingus.ui.components.{AddSubjectDialog, BatchImportDialog, BatchImportEntry, SubjectCompareDialog}
+import com.decodingus.ui.components.{AddSubjectDialog, BatchImportDialog, BatchImportEntry, ProjectImportDialog, ProjectImportEntry, SubjectCompareDialog}
 import com.decodingus.ui.v2.BiosampleExtensions.*
 import com.decodingus.util.Logger
 import com.decodingus.workspace.WorkbenchViewModel
@@ -83,6 +83,12 @@ class SubjectsView(viewModel: WorkbenchViewModel) extends SplitPane {
     onAction = _ => handleAddSubject()
   }
 
+  private val projectImportButton = new Button {
+    text = t("project.import.menu")
+    style = "-fx-font-size: 11px;"
+    onAction = _ => handleProjectImport()
+  }
+
   private val batchImportButton = new Button {
     text = t("batch.import")
     style = "-fx-font-size: 11px;"
@@ -103,6 +109,7 @@ class SubjectsView(viewModel: WorkbenchViewModel) extends SplitPane {
     children = Seq(
       searchField,
       new Region { hgrow = Priority.Always },
+      projectImportButton,
       batchImportButton,
       addSubjectButton,
       collapseButton
@@ -479,6 +486,162 @@ class SubjectsView(viewModel: WorkbenchViewModel) extends SplitPane {
         log.info(s"Batch import complete: ${entries.size} subjects created")
       case _ =>
         log.debug("Batch import cancelled")
+    }
+  }
+
+  private def handleProjectImport(): Unit = {
+    val dialog = new ProjectImportDialog(viewModel)
+    getWindow.foreach(w => dialog.initOwner(w))
+    dialog.showAndWait() match {
+      case Some(Some(entries: List[ProjectImportEntry @unchecked])) if entries.nonEmpty =>
+        log.info(s"Project import: ${entries.size} samples")
+        runProjectImport(entries)
+      case _ =>
+        log.debug("Project import cancelled")
+    }
+  }
+
+  private def runProjectImport(entries: List[ProjectImportEntry]): Unit = {
+    import scala.concurrent.ExecutionContext.Implicits.global
+    import scala.concurrent.Future
+
+    val totalCount = entries.size
+    var completedCount = 0
+    var failedCount = 0
+    val results = scala.collection.mutable.ListBuffer[String]()
+
+    val progressLabel = new scalafx.beans.property.StringProperty(s"Importing $totalCount sample(s)...")
+    val progressValue = scalafx.beans.property.DoubleProperty(0.0)
+
+    val progressDialog = new scalafx.scene.control.Dialog[Unit]() {
+      title = t("project.import.title")
+      headerText = "Project Import in Progress"
+      dialogPane().content = new scalafx.scene.layout.VBox(15) {
+        padding = scalafx.geometry.Insets(20)
+        prefWidth = 450
+        children = Seq(
+          new scalafx.scene.control.Label { text <== progressLabel },
+          new scalafx.scene.control.ProgressBar {
+            progress <== progressValue
+            prefWidth = 410
+          }
+        )
+      }
+      dialogPane().buttonTypes = Seq(scalafx.scene.control.ButtonType.Cancel)
+    }
+    getWindow.foreach(w => progressDialog.initOwner(w))
+
+    def importNext(remaining: List[ProjectImportEntry]): Unit = {
+      remaining match {
+        case Nil =>
+          scalafx.application.Platform.runLater {
+            progressDialog.close()
+            applyFilter()
+            val summary = if (failedCount == 0)
+              s"Successfully imported $completedCount sample(s)."
+            else
+              s"Imported: $completedCount, Failed: $failedCount"
+            showInfoDialog(
+              t("project.import.title"),
+              "Project Import Complete",
+              summary + (if (results.nonEmpty) "\n\n" + results.take(20).mkString("\n") else "")
+            )
+          }
+
+        case entry :: rest =>
+          scalafx.application.Platform.runLater {
+            progressLabel.value = s"Importing ${entry.sampleId} (${completedCount + 1}/$totalCount)"
+            progressValue.value = completedCount.toDouble / totalCount
+          }
+
+          Future {
+            try {
+              importSingleSample(entry)
+              completedCount += 1
+              val coverageInfo = entry.precomputedMetrics
+                .flatMap(_.meanCoverage)
+                .map(c => f" (${c}%.0fx)")
+                .getOrElse("")
+              results += s"+ ${entry.sampleId}$coverageInfo"
+            } catch {
+              case e: Exception =>
+                completedCount += 1
+                failedCount += 1
+                results += s"x ${entry.sampleId}: ${e.getMessage}"
+            }
+          }.foreach { _ =>
+            scalafx.application.Platform.runLater {
+              importNext(rest)
+            }
+          }
+      }
+    }
+
+    progressDialog.show()
+    importNext(entries)
+  }
+
+  private def importSingleSample(entry: ProjectImportEntry): Unit = {
+    import com.decodingus.workspace.model.{Biosample, FileInfo, RecordMeta}
+
+    // Create Biosample with resolved metadata
+    val biosample = Biosample(
+      atUri = None,
+      meta = RecordMeta.initial,
+      sampleAccession = entry.sampleAccession,
+      donorIdentifier = entry.donorIdentifier,
+      description = entry.description,
+      centerName = entry.centerName,
+      sex = entry.sex
+    )
+
+    scalafx.application.Platform.runLater {
+      viewModel.addSubject(biosample)
+    }
+
+    // Small delay to let FX thread process
+    Thread.sleep(50)
+
+    // Add each alignment file
+    entry.discoveredSample.alignmentFiles.foreach { alignFile =>
+      val format = if (alignFile.getName.toLowerCase.endsWith(".cram")) "CRAM" else "BAM"
+      val fileInfo = FileInfo(
+        fileName = alignFile.getName,
+        fileSizeBytes = Some(alignFile.length()),
+        fileFormat = format,
+        checksum = None,
+        location = Some(alignFile.getAbsolutePath)
+      )
+
+      scalafx.application.Platform.runLater {
+        viewModel.addSequenceDataFromFile(entry.sampleAccession, fileInfo)
+      }
+      Thread.sleep(50)
+    }
+
+    // Add variant files
+    entry.discoveredSample.variantFiles.foreach { vcfFile =>
+      val format = if (vcfFile.getName.toLowerCase.contains(".g.vcf") ||
+        vcfFile.getName.toLowerCase.contains(".gvcf")) "GVCF" else "VCF"
+      val fileInfo = FileInfo(
+        fileName = vcfFile.getName,
+        fileSizeBytes = Some(vcfFile.length()),
+        fileFormat = format,
+        checksum = None,
+        location = Some(vcfFile.getAbsolutePath)
+      )
+
+      scalafx.application.Platform.runLater {
+        viewModel.addSequenceDataFromFile(entry.sampleAccession, fileInfo)
+      }
+      Thread.sleep(50)
+    }
+
+    // Apply pre-computed metrics if available
+    entry.precomputedMetrics.foreach { metrics =>
+      scalafx.application.Platform.runLater {
+        viewModel.applyPrecomputedMetrics(entry.sampleAccession, metrics, entry.flagstatResult)
+      }
     }
   }
 
