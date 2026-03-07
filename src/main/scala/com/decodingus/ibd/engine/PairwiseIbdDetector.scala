@@ -187,9 +187,6 @@ class PairwiseIbdDetector(config: IbdDetectorConfig = IbdDetectorConfig()):
     var ibs2Count = 0
     var segSnpCount = 0
 
-    // Initialize first window
-    var windowIbs2 = 0
-    var windowTotal = 0
     val halfWindow = config.windowSize / 2
 
     var i = 0

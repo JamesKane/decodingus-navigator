@@ -48,7 +48,7 @@ class ChromosomeBrowserPanel extends VBox {
     if matchResult.sharedSegments.isEmpty then
       contentBox.children = Seq(placeholderLabel)
     else
-      val html = ChromosomeBrowserRenderer.renderHtml(matchResult.sharedSegments, matchResult)
+      val html = ChromosomeBrowserRenderer.renderHtml(matchResult.sharedSegments, Some(matchResult))
       webView.engine.loadContent(html)
       contentBox.children = Seq(webView)
 
@@ -59,7 +59,7 @@ class ChromosomeBrowserPanel extends VBox {
     if segments.isEmpty then
       contentBox.children = Seq(placeholderLabel)
     else
-      val html = ChromosomeBrowserRenderer.renderHtml(segments, null)
+      val html = ChromosomeBrowserRenderer.renderHtml(segments)
       webView.engine.loadContent(html)
       contentBox.children = Seq(webView)
 
@@ -92,7 +92,7 @@ object ChromosomeBrowserRenderer:
 
   private val maxChrLength: Long = chromosomeLengths.values.max
 
-  def renderHtml(segments: List[IbdSegment], matchResult: MatchResult | Null): String =
+  def renderHtml(segments: List[IbdSegment], matchResult: Option[MatchResult] = None): String =
     val segmentsByChr = segments.groupBy(_.chromosome)
     val maxSegmentCm = if segments.nonEmpty then segments.map(_.lengthCm).max else 1.0
 
@@ -140,15 +140,15 @@ object ChromosomeBrowserRenderer:
     svgLines.append("</svg>")
 
     // Summary stats
-    val statsHtml = if matchResult != null then
-      val relLabel = matchResult.relationshipEstimate.map(_.label).getOrElse("Unknown")
+    val statsHtml = matchResult.map { mr =>
+      val relLabel = mr.relationshipEstimate.map(_.label).getOrElse("Unknown")
       s"""<div class="stats">
-         |  <span class="stat">Shared: <b>${f"${matchResult.totalSharedCm}%.1f"} cM</b></span>
-         |  <span class="stat">Segments: <b>${matchResult.segmentCount}</b></span>
-         |  <span class="stat">Longest: <b>${matchResult.longestSegmentCm.map(cm => f"$cm%.1f").getOrElse("-")} cM</b></span>
+         |  <span class="stat">Shared: <b>${f"${mr.totalSharedCm}%.1f"} cM</b></span>
+         |  <span class="stat">Segments: <b>${mr.segmentCount}</b></span>
+         |  <span class="stat">Longest: <b>${mr.longestSegmentCm.map(cm => f"$cm%.1f").getOrElse("-")} cM</b></span>
          |  <span class="stat">Estimate: <b>$relLabel</b></span>
          |</div>""".stripMargin
-    else ""
+    }.getOrElse("")
 
     s"""<!DOCTYPE html>
        |<html>

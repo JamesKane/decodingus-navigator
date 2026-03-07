@@ -30,7 +30,11 @@ object IbdVariantExtractor:
     try
       val reader = new VCFFileReader(vcfFile, false)
       val header = reader.getFileHeader
-      val sample = sampleName.getOrElse(header.getGenotypeSamples.get(0))
+      val samples = header.getGenotypeSamples
+      if samples.isEmpty && sampleName.isEmpty then
+        reader.close()
+        return Left("VCF file contains no samples")
+      val sample = sampleName.getOrElse(samples.get(0))
 
       // Accumulate per chromosome
       val chrData = scala.collection.mutable.Map.empty[String,

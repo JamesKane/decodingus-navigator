@@ -338,20 +338,20 @@ class IbdMatchingCoordinator(
     // Try to process if we already have the shared key
     tryProcessPendingVariants()
 
-  @volatile private var sharedSecretForReceive: Option[SecretKey] = None
+  private val sharedSecretForReceive = AtomicReference[Option[SecretKey]](None)
   private val receivedChromosomes = java.util.concurrent.ConcurrentHashMap[String, Array[Byte]]()
 
   private[protocol] def setSharedSecretForReceive(key: SecretKey): Unit =
-    sharedSecretForReceive = Some(key)
+    sharedSecretForReceive.set(Some(key))
     tryProcessPendingVariants()
 
   private val variantsCompleteMarker = "VARIANTS_COMPLETE".getBytes(StandardCharsets.UTF_8)
 
   private def tryProcessPendingVariants(): Unit =
-    sharedSecretForReceive.foreach { key =>
-      var payload = pendingVariantPayloads.poll()
-      while payload != null do
-        val decrypted = IbdCryptoService.decryptPayload(payload, key)
+    sharedSecretForReceive.get().foreach { key =>
+      var payload = Option(pendingVariantPayloads.poll())
+      while payload.isDefined do
+        val decrypted = IbdCryptoService.decryptPayload(payload.get, key)
         if java.util.Arrays.equals(decrypted, variantsCompleteMarker) then
           partnerVariantData.set(Some(
             scala.jdk.CollectionConverters.MapHasAsScala(receivedChromosomes).asScala.toMap
@@ -362,22 +362,27 @@ class IbdMatchingCoordinator(
           // Parse "chr:length" header followed by compact binary data.
           // Find the colon in the first few bytes (chromosome names are short).
           val colonIdx = decrypted.indexOf(':'.toByte)
-          if colonIdx > 0 then
+          if colonIdx > 0 && colonIdx < 8 then
             val chr = new String(decrypted, 0, colonIdx, StandardCharsets.UTF_8)
-            // Find the end of the length digits — scan until a non-digit byte
             var lengthEnd = colonIdx + 1
             while lengthEnd < decrypted.length && decrypted(lengthEnd) >= '0' && decrypted(lengthEnd) <= '9' do
               lengthEnd += 1
-            val dataLength = new String(decrypted, colonIdx + 1, lengthEnd - colonIdx - 1, StandardCharsets.UTF_8).toInt
+            val lengthStr = new String(decrypted, colonIdx + 1, lengthEnd - colonIdx - 1, StandardCharsets.UTF_8)
+            val dataLength = Try(lengthStr.toInt).getOrElse(-1)
             val headerLength = lengthEnd
-            val compactBytes = java.util.Arrays.copyOfRange(decrypted, headerLength, headerLength + dataLength)
-            receivedChromosomes.put(chr, compactBytes)
-            log.debug(s"Received partner chr $chr variants ($dataLength bytes)")
-        payload = pendingVariantPayloads.poll()
+            if dataLength > 0 && headerLength + dataLength <= decrypted.length then
+              val compactBytes = java.util.Arrays.copyOfRange(decrypted, headerLength, headerLength + dataLength)
+              receivedChromosomes.put(chr, compactBytes)
+              log.debug(s"Received partner chr $chr variants ($dataLength bytes)")
+            else
+              log.warn(s"Malformed variant payload: dataLength=$dataLength, available=${decrypted.length - headerLength}")
+          else
+            log.warn(s"Malformed variant payload: no valid header found")
+        payload = Option(pendingVariantPayloads.poll())
     }
 
   private def handleSummaryHash(payload: EncryptedPayload): Unit =
-    sharedSecretForReceive.foreach { key =>
+    sharedSecretForReceive.get().foreach { key =>
       val decrypted = IbdCryptoService.decryptPayload(payload, key)
       val hash = new String(decrypted, StandardCharsets.UTF_8)
       partnerHash.set(Some(hash))
@@ -386,7 +391,7 @@ class IbdMatchingCoordinator(
     }
 
   private def handleAttestation(payload: EncryptedPayload): Unit =
-    sharedSecretForReceive.foreach { key =>
+    sharedSecretForReceive.get().foreach { key =>
       val decrypted = IbdCryptoService.decryptPayload(payload, key)
       val json = new String(decrypted, StandardCharsets.UTF_8)
       import io.circe.parser.decode as jsonDecode
@@ -420,7 +425,8 @@ class IbdMatchingCoordinator(
       case Failure(e) =>
         throw RuntimeException(s"Failed to $description: ${e.getMessage}", e)
 
-  private def cleanup()(implicit ec: ExecutionContext = ExecutionContext.global): Unit =
+  private def cleanup(): Unit =
+    given ExecutionContext = ExecutionContext.global
     relayClient.foreach { relay =>
       Try(relay.disconnect())
       relayClient = None

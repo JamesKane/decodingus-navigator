@@ -12,7 +12,7 @@ object PayloadDataType:
     case "ATTESTATION" => Attestation
     case "SUMMARY" => Summary
     case "KEY_EXCHANGE" => KeyExchange
-    case other => throw new IllegalArgumentException(s"Unknown payload data type: $other")
+    case other => throw IllegalArgumentException(s"Unknown payload data type: $other")
 
   extension (pdt: PayloadDataType)
     def toDbString: String = pdt match
