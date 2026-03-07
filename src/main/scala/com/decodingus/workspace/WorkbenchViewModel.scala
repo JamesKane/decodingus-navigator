@@ -14,7 +14,7 @@ import com.decodingus.refgenome.{ReferenceGateway, ReferenceResolveResult, YRegi
 import com.decodingus.repository.BiosampleRepository
 import com.decodingus.service.{DatabaseContext, H2WorkspaceService, SequenceDataManager}
 import com.decodingus.util.Logger
-import com.decodingus.workspace.model.{Alignment, AlignmentMetrics, Biosample, CallMethod, ChipProfile, ContigMetrics, DnaType, FileInfo, HaplogroupAssignments, HaplogroupTechnology, Project, RecordMeta, RunHaplogroupCall, SequenceRun, StrProfile, SyncStatus, Workspace, WorkspaceContent, HaplogroupResult as WorkspaceHaplogroupResult}
+import com.decodingus.workspace.model.{Alignment, AlignmentMetrics, Biosample, CallMethod, ChipProfile, ContigMetrics, DnaType, FileInfo, HaplogroupAssignments, HaplogroupTechnology, MatchConsent, MatchRequest, MatchResult, MatchSuggestion, Project, RecordMeta, RunHaplogroupCall, SequenceRun, StrProfile, SyncStatus, Workspace, WorkspaceContent, HaplogroupResult as WorkspaceHaplogroupResult}
 import com.decodingus.workspace.services.*
 import com.decodingus.yprofile.model.*
 import com.decodingus.yprofile.repository.*
@@ -3849,4 +3849,99 @@ class WorkbenchViewModel(
         VcfCache.deleteRunFasta(sampleAccession, runId, vendor)
     }
   }
+
+  // ============================================
+  // IBD Match Operations
+  // ============================================
+
+  private val ibdMatchService: com.decodingus.service.IbdMatchService = databaseContext.ibdMatchService
+
+  val ibdMatchResults: ObservableBuffer[MatchResult] = ObservableBuffer[MatchResult]()
+  val ibdSuggestions: ObservableBuffer[MatchSuggestion] = ObservableBuffer[MatchSuggestion]()
+  val ibdPendingRequests: ObservableBuffer[MatchRequest] = ObservableBuffer[MatchRequest]()
+  val ibdConsentStatus: ObjectProperty[Option[MatchConsent]] = ObjectProperty(None)
+
+  def isIbdEnabled: Boolean = ibdMatchService.isEnabled
+
+  def loadIbdData(biosampleId: UUID, biosampleRef: String): Unit =
+    // Load consent status
+    ibdMatchService.getConsent(biosampleId) match
+      case Right(consent) =>
+        Platform.runLater { ibdConsentStatus.value = consent }
+      case Left(err) =>
+        log.warn(s"Failed to load IBD consent: $err")
+
+    // Load match results
+    ibdMatchService.getMatchResults(biosampleId) match
+      case Right(results) =>
+        Platform.runLater {
+          import scala.jdk.CollectionConverters.*
+          ibdMatchResults.delegate.setAll(results.asJava)
+        }
+      case Left(err) =>
+        log.warn(s"Failed to load IBD match results: $err")
+
+    // Load pending incoming requests
+    ibdMatchService.getPendingRequests(biosampleRef) match
+      case Right(requests) =>
+        Platform.runLater {
+          import scala.jdk.CollectionConverters.*
+          ibdPendingRequests.delegate.setAll(requests.asJava)
+        }
+      case Left(err) =>
+        log.warn(s"Failed to load IBD pending requests: $err")
+
+  def loadIbdMatchResultsFiltered(biosampleId: UUID, minCm: Double): Unit =
+    ibdMatchService.getMatchResultsAboveThreshold(biosampleId, minCm) match
+      case Right(results) =>
+        Platform.runLater {
+          import scala.jdk.CollectionConverters.*
+          ibdMatchResults.delegate.setAll(results.asJava)
+        }
+      case Left(err) =>
+        log.warn(s"Failed to load filtered IBD match results: $err")
+
+  def fetchIbdSuggestions(biosampleRef: String): Unit =
+    if !isIbdEnabled then return
+    ibdMatchService.fetchSuggestions(biosampleRef).onComplete {
+      case scala.util.Success(Right(suggestions)) =>
+        Platform.runLater {
+          import scala.jdk.CollectionConverters.*
+          ibdSuggestions.delegate.setAll(suggestions.asJava)
+        }
+      case scala.util.Success(Left(err)) =>
+        log.warn(s"Failed to fetch IBD suggestions: $err")
+      case scala.util.Failure(ex) =>
+        log.warn(s"Error fetching IBD suggestions: ${ex.getMessage}")
+    }
+
+  def grantIbdConsent(biosampleId: UUID, biosampleRef: String, consentLevel: String): Either[String, MatchConsent] =
+    val result = ibdMatchService.grantConsent(biosampleId, biosampleRef, consentLevel)
+    result.foreach { consent =>
+      Platform.runLater { ibdConsentStatus.value = Some(consent) }
+    }
+    result
+
+  def revokeIbdConsent(biosampleId: UUID): Either[String, Boolean] =
+    val result = ibdMatchService.revokeConsent(biosampleId)
+    result.foreach { _ =>
+      Platform.runLater { ibdConsentStatus.value = None }
+    }
+    result
+
+  def sendIbdMatchRequest(fromBiosampleRef: String, toBiosampleRef: String,
+                          message: Option[String] = None): Either[String, MatchRequest] =
+    ibdMatchService.sendMatchRequest(fromBiosampleRef, toBiosampleRef, message = message)
+
+  def respondToIbdRequest(requestId: UUID, accept: Boolean): Either[String, Boolean] =
+    ibdMatchService.respondToRequest(requestId, accept)
+
+  def dismissIbdSuggestion(suggestionId: String): Unit =
+    ibdMatchService.dismissSuggestion(suggestionId).onComplete {
+      case scala.util.Success(Right(true)) =>
+        Platform.runLater {
+          ibdSuggestions.filterInPlace(_.suggestionId != suggestionId)
+        }
+      case _ => ()
+    }
 }

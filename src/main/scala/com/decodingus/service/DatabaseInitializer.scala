@@ -63,6 +63,9 @@ object DatabaseInitializer:
       val chipProfileRepo = ChipProfileRepository()
       val artifactRepo = AnalysisArtifactRepository()
       val sourceFileRepo = SourceFileRepository()
+      val matchConsentRepo = MatchConsentRepository()
+      val matchRequestRepo = MatchRequestRepository()
+      val matchResultRepo = MatchResultRepository()
 
       // Create the workspace service
       val workspaceService = H2WorkspaceService(
@@ -103,6 +106,14 @@ object DatabaseInitializer:
         alignmentRepo = alignmentRepo
       )
 
+      // Create the IBD match service
+      val ibdMatchService = IbdMatchService(
+        transactor = transactor,
+        consentRepo = matchConsentRepo,
+        requestRepo = matchRequestRepo,
+        resultRepo = matchResultRepo
+      )
+
       Right(DatabaseContext(
         database = database,
         transactor = transactor,
@@ -110,6 +121,7 @@ object DatabaseInitializer:
         cacheService = cacheService,
         syncService = syncService,
         sequenceDataManager = sequenceDataManager,
+        ibdMatchService = ibdMatchService,
         biosampleRepository = biosampleRepo,
         projectRepository = projectRepo,
         sequenceRunRepository = sequenceRunRepo,
@@ -142,6 +154,7 @@ case class DatabaseContext(
                             cacheService: CacheService,
                             syncService: SyncService,
                             sequenceDataManager: SequenceDataManager,
+                            ibdMatchService: IbdMatchService,
                             biosampleRepository: BiosampleRepository,
                             projectRepository: ProjectRepository,
                             sequenceRunRepository: SequenceRunRepository,

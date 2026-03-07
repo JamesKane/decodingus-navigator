@@ -2,6 +2,8 @@ package com.decodingus.client
 
 import com.decodingus.model.LibraryStats
 import com.decodingus.refgenome.model.{GenomeRegions, GenomeRegionsCodecs}
+import com.decodingus.workspace.model.MatchSuggestion
+import io.circe.*
 import io.circe.generic.auto.*
 import sttp.client3.*
 import sttp.client3.circe.*
@@ -9,6 +11,34 @@ import sttp.client3.circe.*
 import scala.concurrent.{ExecutionContext, Future}
 
 case class PdsRegistrationRequest(did: String, token: String, pdsUrl: String)
+
+/**
+ * Response from the match suggestions discovery endpoint.
+ */
+case class MatchSuggestionsResponse(
+                                     data: List[MatchSuggestionDto],
+                                     count: Int
+                                   )
+
+/**
+ * DTO for a match suggestion from the AppView API.
+ */
+case class MatchSuggestionDto(
+                               suggestionId: String,
+                               biosampleRef: String,
+                               matchedBiosampleRef: String,
+                               matchedDid: Option[String],
+                               matchedLabel: String,
+                               score: Double,
+                               reasonType: String,
+                               reasonDetail: Option[String],
+                               populationOverlap: Option[Double]
+                             )
+
+/**
+ * Response from the population overlap endpoint.
+ */
+case class PopulationOverlapResponse(overlap: Double)
 
 /**
  * Information about a sequencing instrument and its associated lab.
@@ -171,6 +201,92 @@ object DecodingUsClient {
       }
     }.recover { case e: Exception =>
       Left(s"Network error fetching genome regions: ${e.getMessage}")
+    }
+  }
+
+  // ============================================
+  // IBD Match Discovery API
+  // ============================================
+
+  /**
+   * Fetches match suggestions for a biosample from the AppView discovery engine.
+   *
+   * @param biosampleRef AT URI of the biosample to get suggestions for
+   * @param limit        Maximum number of suggestions to return
+   * @param ec           Execution context
+   * @return Future containing either error message or list of suggestions
+   */
+  def getMatchSuggestions(biosampleRef: String, limit: Int = 20)(implicit ec: ExecutionContext): Future[Either[String, List[MatchSuggestion]]] = {
+    val request = basicRequest
+      .get(BaseUrl.addPath("ibd", "suggestions")
+        .addParam("biosampleRef", biosampleRef)
+        .addParam("limit", limit.toString))
+      .response(asJson[MatchSuggestionsResponse])
+
+    request.send(backend).map { response =>
+      response.body match {
+        case Right(suggestionsResp) =>
+          Right(suggestionsResp.data.map(dto => MatchSuggestion(
+            suggestionId = dto.suggestionId,
+            biosampleRef = dto.biosampleRef,
+            matchedBiosampleRef = dto.matchedBiosampleRef,
+            matchedDid = dto.matchedDid,
+            matchedLabel = dto.matchedLabel,
+            score = dto.score,
+            reasonType = dto.reasonType,
+            reasonDetail = dto.reasonDetail,
+            populationOverlap = dto.populationOverlap
+          )))
+        case Left(error) =>
+          Left(s"Failed to fetch match suggestions: ${error.getMessage}")
+      }
+    }.recover { case e: Exception =>
+      Left(s"Network error fetching match suggestions: ${e.getMessage}")
+    }
+  }
+
+  /**
+   * Dismisses a match suggestion so it won't appear again.
+   *
+   * @param suggestionId The suggestion ID to dismiss
+   * @param ec           Execution context
+   * @return Future containing either error message or success
+   */
+  def dismissMatchSuggestion(suggestionId: String)(implicit ec: ExecutionContext): Future[Either[String, Boolean]] = {
+    val request = basicRequest
+      .post(BaseUrl.addPath("ibd", "suggestions", suggestionId, "dismiss"))
+      .response(asString)
+
+    request.send(backend).map { response =>
+      if (response.code.isSuccess) Right(true)
+      else Left(s"Failed to dismiss suggestion: ${response.code}")
+    }.recover { case e: Exception =>
+      Left(s"Network error dismissing suggestion: ${e.getMessage}")
+    }
+  }
+
+  /**
+   * Gets the estimated population overlap between two biosamples.
+   *
+   * @param biosampleRef1 AT URI of the first biosample
+   * @param biosampleRef2 AT URI of the second biosample
+   * @param ec            Execution context
+   * @return Future containing either error message or overlap percentage (0.0-100.0)
+   */
+  def getPopulationOverlap(biosampleRef1: String, biosampleRef2: String)(implicit ec: ExecutionContext): Future[Either[String, Double]] = {
+    val request = basicRequest
+      .get(BaseUrl.addPath("ibd", "population-overlap")
+        .addParam("biosample1", biosampleRef1)
+        .addParam("biosample2", biosampleRef2))
+      .response(asJson[PopulationOverlapResponse])
+
+    request.send(backend).map { response =>
+      response.body match {
+        case Right(overlapResp) => Right(overlapResp.overlap)
+        case Left(error) => Left(s"Failed to fetch population overlap: ${error.getMessage}")
+      }
+    }.recover { case e: Exception =>
+      Left(s"Network error fetching population overlap: ${e.getMessage}")
     }
   }
 }

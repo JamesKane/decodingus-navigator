@@ -10,7 +10,7 @@ import com.decodingus.ui.components.{AddDataDialog, AddSequenceDataDialog, Ances
 import com.decodingus.ui.v2.BiosampleExtensions.*
 import com.decodingus.util.Logger
 import com.decodingus.workspace.WorkbenchViewModel
-import com.decodingus.workspace.model.{Alignment, Biosample, ChipProfile, HaplogroupResult, SequenceRun, StrProfile}
+import com.decodingus.workspace.model.{Alignment, Biosample, ChipProfile, HaplogroupResult, MatchConsent, MatchResult, MatchSuggestion, SequenceRun, StrProfile}
 import scalafx.scene.control.Alert.AlertType
 import scala.util.boundary, boundary.break
 import scalafx.Includes.*
@@ -744,19 +744,154 @@ class SubjectDetailView(viewModel: WorkbenchViewModel) extends VBox {
   // IBD Tab Content
   // ============================================================================
 
+  // IBD table and consent state (accessible for data updates)
+  private val ibdMatchesTable = new TableView[MatchResult] {
+    prefHeight = 200
+    placeholder = new Label(t("ibd.no_matches")) {
+      style = "-fx-text-fill: #888888;"
+    }
+    style = "-fx-background-color: #333333;"
+    columnResizePolicy = TableView.ConstrainedResizePolicy
+
+    columns ++= Seq(
+      new TableColumn[MatchResult, String] {
+        text = t("ibd.match_name")
+        prefWidth = 150
+        cellValueFactory = { p =>
+          StringProperty(p.value.matchedCitizenDid.getOrElse(p.value.matchedBiosampleRef.takeRight(12)))
+        }
+      },
+      new TableColumn[MatchResult, String] {
+        text = t("ibd.shared_cm")
+        prefWidth = 80
+        cellValueFactory = { p =>
+          StringProperty(f"${p.value.totalSharedCm}%.1f")
+        }
+      },
+      new TableColumn[MatchResult, String] {
+        text = t("ibd.segments")
+        prefWidth = 80
+        cellValueFactory = { p =>
+          StringProperty(p.value.segmentCount.toString)
+        }
+      },
+      new TableColumn[MatchResult, String] {
+        text = t("ibd.longest")
+        prefWidth = 80
+        cellValueFactory = { p =>
+          StringProperty(p.value.longestSegmentCm.map(cm => f"$cm%.1f").getOrElse("-"))
+        }
+      },
+      new TableColumn[MatchResult, String] {
+        text = t("ibd.relationship")
+        prefWidth = 120
+        cellValueFactory = { p =>
+          StringProperty(p.value.relationshipEstimate.getOrElse("-"))
+        }
+      }
+    )
+  }
+
+  private val ibdConsentToggle = new CheckBox {
+    text = t("ibd.consent_enabled")
+    style = "-fx-text-fill: #b0b0b0;"
+  }
+
+  private val ibdConsentLevelCombo = new ComboBox[String] {
+    items = scalafx.collections.ObservableBuffer("FULL", "ANONYMOUS", "PROJECT_ONLY")
+    value = "FULL"
+    disable = true
+  }
+
+  private val ibdMinCmSlider = new Slider {
+    min = 0
+    max = 100
+    value = 7
+    showTickLabels = true
+    showTickMarks = true
+    majorTickUnit = 20
+    prefWidth = 200
+  }
+
+  private val ibdMinCmValueLabel = new Label("7 cM") {
+    style = "-fx-text-fill: #ffffff; -fx-font-family: monospace;"
+  }
+
   private def createIbdContent(): ScrollPane = {
-    // Header with action buttons (disabled with tooltip)
-    val runMatchButton = new Button {
-      text <== bind("ibd.run_match")
-      styleClass += "button-primary"
-      disable = true
-      tooltip = Tooltip(t("ibd.coming_soon"))
+    val ibdEnabled = viewModel.isIbdEnabled
+
+    // Consent toggle behavior
+    ibdConsentToggle.disable = !ibdEnabled
+    ibdConsentLevelCombo.disable = !ibdEnabled
+    ibdMinCmSlider.disable = !ibdEnabled
+
+    ibdConsentToggle.selected.onChange { (_, _, isSelected) =>
+      ibdConsentLevelCombo.disable = !isSelected
+      currentSubject.value.foreach { subject =>
+        viewModel.getBiosampleIdByAccession(subject.sampleAccession).foreach { biosampleId =>
+          val biosampleRef = subject.atUri.getOrElse(s"local://${biosampleId}")
+          if (isSelected) {
+            viewModel.grantIbdConsent(biosampleId, biosampleRef, ibdConsentLevelCombo.value.value)
+          } else {
+            viewModel.revokeIbdConsent(biosampleId)
+          }
+        }
+      }
     }
 
-    val importButton = new Button {
-      text <== bind("ibd.import_matches")
-      disable = true
-      tooltip = Tooltip(t("ibd.coming_soon"))
+    ibdConsentLevelCombo.value.onChange { (_, _, newLevel) =>
+      if (ibdConsentToggle.selected.value && newLevel != null) {
+        currentSubject.value.foreach { subject =>
+          viewModel.getBiosampleIdByAccession(subject.sampleAccession).foreach { biosampleId =>
+            val biosampleRef = subject.atUri.getOrElse(s"local://${biosampleId}")
+            viewModel.grantIbdConsent(biosampleId, biosampleRef, newLevel)
+          }
+        }
+      }
+    }
+
+    // Sync table items with ViewModel observable buffer
+    ibdMatchesTable.items = viewModel.ibdMatchResults
+
+    // Min cM slider updates label and refilters
+    ibdMinCmSlider.value.onChange { (_, _, newVal) =>
+      val cm = newVal.doubleValue()
+      ibdMinCmValueLabel.text = f"$cm%.0f cM"
+    }
+
+    // Refilter on slider drag release
+    ibdMinCmSlider.delegate.setOnMouseReleased { _ =>
+      currentSubject.value.foreach { subject =>
+        viewModel.getBiosampleIdByAccession(subject.sampleAccession).foreach { biosampleId =>
+          viewModel.loadIbdMatchResultsFiltered(biosampleId, ibdMinCmSlider.value.value)
+        }
+      }
+    }
+
+    // Observe ViewModel consent status to update toggle
+    viewModel.ibdConsentStatus.onChange { (_, _, newConsent) =>
+      scalafx.application.Platform.runLater {
+        newConsent match {
+          case Some(consent) =>
+            ibdConsentToggle.selected = true
+            ibdConsentLevelCombo.value = consent.consentLevel
+            ibdConsentLevelCombo.disable = false
+          case None =>
+            ibdConsentToggle.selected = false
+            ibdConsentLevelCombo.disable = true
+        }
+      }
+    }
+
+    // Header
+    val fetchSuggestionsButton = new Button {
+      text <== bind("ibd.fetch_suggestions")
+      disable = !ibdEnabled
+      onAction = _ => {
+        currentSubject.value.foreach { subject =>
+          subject.atUri.foreach(ref => viewModel.fetchIbdSuggestions(ref))
+        }
+      }
     }
 
     val headerBox = new HBox(10) {
@@ -764,80 +899,39 @@ class SubjectDetailView(viewModel: WorkbenchViewModel) extends VBox {
       children = Seq(
         new Label { text <== bind("ibd.title"); style = "-fx-font-size: 18px; -fx-font-weight: bold; -fx-text-fill: #ffffff;" },
         new Region { hgrow = Priority.Always },
-        importButton,
-        runMatchButton
+        fetchSuggestionsButton
+      )
+    }
+
+    // Consent section
+    val consentBox = new HBox(15) {
+      alignment = Pos.CenterLeft
+      padding = Insets(5, 0, 5, 0)
+      children = Seq(
+        ibdConsentToggle,
+        new Label(t("ibd.consent_level")) { style = "-fx-text-fill: #b0b0b0;" },
+        ibdConsentLevelCombo
       )
     }
 
     // Filter controls
-    val minCmLabel = new Label {
-      text <== bind("ibd.min_cm")
-      style = "-fx-text-fill: #b0b0b0;"
-    }
-    val minCmSlider = new Slider {
-      min = 0
-      max = 100
-      value = 7
-      showTickLabels = true
-      showTickMarks = true
-      majorTickUnit = 20
-      prefWidth = 200
-      disable = true
-    }
-    val minCmValueLabel = new Label("7 cM") {
-      style = "-fx-text-fill: #ffffff; -fx-font-family: monospace;"
-    }
-
     val filterBox = new HBox(15) {
       alignment = Pos.CenterLeft
       padding = Insets(10, 0, 10, 0)
       children = Seq(
-        minCmLabel,
-        minCmSlider,
-        minCmValueLabel,
+        new Label { text <== bind("ibd.min_cm"); style = "-fx-text-fill: #b0b0b0;" },
+        ibdMinCmSlider,
+        ibdMinCmValueLabel,
         new Region { hgrow = Priority.Always },
         new TextField {
           promptText = t("ibd.filter_matches")
           prefWidth = 200
-          disable = true
+          disable = !ibdEnabled
         }
       )
     }
 
-    // Placeholder matches table
-    val ibdMatchesTable = new TableView[String] {
-      prefHeight = 200
-      placeholder = new Label(t("ibd.no_matches")) {
-        style = "-fx-text-fill: #888888;"
-      }
-      style = "-fx-background-color: #333333;"
-      columnResizePolicy = TableView.ConstrainedResizePolicy
-
-      columns ++= Seq(
-        new TableColumn[String, String] {
-          text = t("ibd.match_name")
-          prefWidth = 150
-        },
-        new TableColumn[String, String] {
-          text = t("ibd.shared_cm")
-          prefWidth = 80
-        },
-        new TableColumn[String, String] {
-          text = t("ibd.segments")
-          prefWidth = 80
-        },
-        new TableColumn[String, String] {
-          text = t("ibd.longest")
-          prefWidth = 80
-        },
-        new TableColumn[String, String] {
-          text = t("ibd.relationship")
-          prefWidth = 120
-        }
-      )
-    }
-
-    // Placeholder chromosome browser
+    // Chromosome browser placeholder (remains until Phase 6 UI work)
     val chromosomeBrowserPlaceholder = new VBox(15) {
       alignment = Pos.Center
       padding = Insets(40)
@@ -853,7 +947,7 @@ class SubjectDetailView(viewModel: WorkbenchViewModel) extends VBox {
       )
     }
 
-    // Export button (disabled)
+    // Export button
     val exportButton = new Button {
       text <== bind("ibd.export_segments")
       disable = true
@@ -873,6 +967,7 @@ class SubjectDetailView(viewModel: WorkbenchViewModel) extends VBox {
         style = "-fx-background-color: #1e1e1e;"
         children = Seq(
           headerBox,
+          consentBox,
           filterBox,
           ibdMatchesTable,
           chromosomeBrowserPlaceholder,
@@ -2368,8 +2463,19 @@ Note: Reference data download may be required on first run."""
     // Update mtDNA variants panel
     mtdnaVariantsPanel.setMtdnaResult(subject.mtHaplogroupResult)
 
+    // Update IBD tab
+    updateIbdTab(subject)
+
     // Update data counts and Data Sources tab
     updateDataSources(subject)
+  }
+
+  private def updateIbdTab(subject: Biosample): Unit = {
+    if (!viewModel.isIbdEnabled) return
+    viewModel.getBiosampleIdByAccession(subject.sampleAccession).foreach { biosampleId =>
+      val biosampleRef = subject.atUri.getOrElse(s"local://${biosampleId}")
+      viewModel.loadIbdData(biosampleId, biosampleRef)
+    }
   }
 
   private def updateDataSources(subject: Biosample, expandSequenceRunIndex: Option[Int] = None): Unit = {
