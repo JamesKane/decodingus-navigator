@@ -1,6 +1,6 @@
 package com.decodingus.workspace.model
 
-import java.time.Instant
+import java.time.{Instant, LocalDateTime}
 
 /**
  * DNA type for haplogroup reconciliation.
@@ -94,6 +94,56 @@ case class ReconciliationStatus(
                                )
 
 /**
+ * An observation of mtDNA heteroplasmy at a specific position.
+ * Matches Atmosphere Lexicon: com.decodingus.atmosphere.defs#heteroplasmyObservation
+ */
+case class HeteroplasmyObservation(
+                                    position: Int,
+                                    majorAllele: String,
+                                    minorAllele: String,
+                                    majorAlleleFrequency: Double, // 0.5-1.0
+                                    depth: Option[Int] = None,
+                                    isDefiningSnp: Option[Boolean] = None,
+                                    affectedHaplogroup: Option[String] = None
+                                  )
+
+/**
+ * Metrics for verifying that multiple runs come from the same individual.
+ * Matches Atmosphere Lexicon: com.decodingus.atmosphere.defs#identityVerification
+ */
+case class IdentityVerification(
+                                 kinshipCoefficient: Option[Double] = None,
+                                 fingerprintSnpConcordance: Option[Double] = None,
+                                 yStrDistance: Option[Int] = None,
+                                 verificationStatus: Option[String] = None, // VERIFIED_SAME, LIKELY_SAME, UNCERTAIN, LIKELY_DIFFERENT, VERIFIED_DIFFERENT
+                                 verificationMethod: Option[String] = None // AUTOSOMAL_KINSHIP, Y_STR, FINGERPRINT_SNPS, COMBINED
+                               )
+
+/**
+ * A user's manual override of the consensus haplogroup.
+ * Matches Atmosphere Lexicon: com.decodingus.atmosphere.haplogroupReconciliation#manualOverride
+ */
+case class ManualOverride(
+                           overriddenHaplogroup: String,
+                           reason: Option[String] = None,
+                           overriddenAt: Option[LocalDateTime] = None,
+                           overriddenBy: Option[String] = None // DID
+                         )
+
+/**
+ * An entry in the reconciliation audit log.
+ * Matches Atmosphere Lexicon: com.decodingus.atmosphere.haplogroupReconciliation#auditEntry
+ */
+case class AuditEntry(
+                       timestamp: LocalDateTime,
+                       action: String, // INITIAL_RECONCILIATION, RUN_ADDED, RUN_REMOVED, MANUAL_OVERRIDE, CONFLICT_RESOLVED, RECOMPUTED
+                       previousConsensus: Option[String] = None,
+                       newConsensus: Option[String] = None,
+                       runRef: Option[String] = None,
+                       notes: Option[String] = None
+                     )
+
+/**
  * Reconciliation of haplogroup calls across multiple runs for a biosample.
  * Matches global Atmosphere schema: com.decodingus.atmosphere.haplogroupReconciliation
  *
@@ -108,22 +158,49 @@ case class HaplogroupReconciliation(
                                      status: ReconciliationStatus,
                                      runCalls: List[RunHaplogroupCall],
                                      snpConflicts: List[SnpConflict] = List.empty,
+                                     heteroplasmyObservations: List[HeteroplasmyObservation] = List.empty,
+                                     identityVerification: Option[IdentityVerification] = None,
+                                     manualOverride: Option[ManualOverride] = None,
+                                     auditLog: List[AuditEntry] = List.empty,
                                      lastReconciliationAt: Option[Instant] = None
                                    ) {
 
   /**
    * Add or update a run call. Replaces existing call from same source.
+   * Appends a RUN_ADDED audit entry.
    */
   def withRunCall(call: RunHaplogroupCall): HaplogroupReconciliation = {
     val filtered = runCalls.filterNot(_.sourceRef == call.sourceRef)
-    copy(runCalls = call :: filtered)
+    val entry = AuditEntry(
+      timestamp = LocalDateTime.now(),
+      action = "RUN_ADDED",
+      previousConsensus = Some(status.consensusHaplogroup),
+      runRef = Some(call.sourceRef),
+      notes = Some(s"Added call: ${call.haplogroup}")
+    )
+    copy(
+      runCalls = call :: filtered,
+      auditLog = auditLog :+ entry
+    )
   }
 
   /**
    * Remove a run call by source reference.
+   * Appends a RUN_REMOVED audit entry.
    */
   def removeRunCall(sourceRef: String): HaplogroupReconciliation = {
-    copy(runCalls = runCalls.filterNot(_.sourceRef == sourceRef))
+    val removedCall = runCalls.find(_.sourceRef == sourceRef)
+    val entry = AuditEntry(
+      timestamp = LocalDateTime.now(),
+      action = "RUN_REMOVED",
+      previousConsensus = Some(status.consensusHaplogroup),
+      runRef = Some(sourceRef),
+      notes = removedCall.map(c => s"Removed call: ${c.haplogroup}")
+    )
+    copy(
+      runCalls = runCalls.filterNot(_.sourceRef == sourceRef),
+      auditLog = auditLog :+ entry
+    )
   }
 
   /**
@@ -133,6 +210,13 @@ case class HaplogroupReconciliation(
    * Falls back to simple tier-based selection when lineage data is missing.
    */
   def recalculate(): HaplogroupReconciliation = {
+    val newConsensus = if (runCalls.isEmpty) "" else HaplogroupReconciliation.bestCall(runCalls).haplogroup
+
+    // Update the last audit entry's newConsensus field
+    val updatedAuditLog = if (auditLog.nonEmpty) {
+      auditLog.init :+ auditLog.last.copy(newConsensus = Some(newConsensus))
+    } else auditLog
+
     if (runCalls.isEmpty) {
       copy(
         status = status.copy(
@@ -146,6 +230,7 @@ case class HaplogroupReconciliation(
           warnings = List.empty
         ),
         snpConflicts = List.empty,
+        auditLog = updatedAuditLog,
         lastReconciliationAt = Some(Instant.now())
       )
     } else {
@@ -174,6 +259,7 @@ case class HaplogroupReconciliation(
           warnings = allWarnings
         ),
         snpConflicts = conflicts,
+        auditLog = updatedAuditLog,
         lastReconciliationAt = Some(Instant.now())
       )
     }
@@ -354,6 +440,13 @@ object HaplogroupReconciliation {
         branchCompatibilityScore = Some(1.0)
       ),
       runCalls = List(call),
+      auditLog = List(AuditEntry(
+        timestamp = LocalDateTime.now(),
+        action = "INITIAL_RECONCILIATION",
+        newConsensus = Some(call.haplogroup),
+        runRef = Some(call.sourceRef),
+        notes = Some(s"Initial call: ${call.haplogroup}")
+      )),
       lastReconciliationAt = Some(Instant.now())
     )
   }

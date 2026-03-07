@@ -1,7 +1,7 @@
 package com.decodingus.repository
 
 import com.decodingus.repository.SqlHelpers.*
-import com.decodingus.workspace.model.{CallMethod, CompatibilityLevel, ConflictResolution, DnaType, HaplogroupReconciliation, HaplogroupTechnology, ReconciliationStatus, RunHaplogroupCall, SnpCallFromRun, SnpConflict}
+import com.decodingus.workspace.model.{AuditEntry, CallMethod, CompatibilityLevel, ConflictResolution, DnaType, HaplogroupReconciliation, HaplogroupTechnology, HeteroplasmyObservation, IdentityVerification, ManualOverride, ReconciliationStatus, RunHaplogroupCall, SnpCallFromRun, SnpConflict}
 import io.circe.*
 import io.circe.generic.semiauto.*
 import io.circe.parser.*
@@ -23,6 +23,10 @@ case class HaplogroupReconciliationEntity(
                                            status: ReconciliationStatus,
                                            runCalls: List[RunHaplogroupCall],
                                            snpConflicts: List[SnpConflict],
+                                           heteroplasmyObservations: List[HeteroplasmyObservation] = List.empty,
+                                           identityVerification: Option[IdentityVerification] = None,
+                                           manualOverride: Option[ManualOverride] = None,
+                                           auditLog: List[AuditEntry] = List.empty,
                                            lastReconciliationAt: Option[Instant],
                                            meta: EntityMeta
                                          ) extends Entity[UUID]
@@ -40,6 +44,10 @@ object HaplogroupReconciliationEntity:
               status: ReconciliationStatus,
               runCalls: List[RunHaplogroupCall] = List.empty,
               snpConflicts: List[SnpConflict] = List.empty,
+              heteroplasmyObservations: List[HeteroplasmyObservation] = List.empty,
+              identityVerification: Option[IdentityVerification] = None,
+              manualOverride: Option[ManualOverride] = None,
+              auditLog: List[AuditEntry] = List.empty,
               lastReconciliationAt: Option[Instant] = None
             ): HaplogroupReconciliationEntity = HaplogroupReconciliationEntity(
     id = UUID.randomUUID(),
@@ -48,6 +56,10 @@ object HaplogroupReconciliationEntity:
     status = status,
     runCalls = runCalls,
     snpConflicts = snpConflicts,
+    heteroplasmyObservations = heteroplasmyObservations,
+    identityVerification = identityVerification,
+    manualOverride = manualOverride,
+    auditLog = auditLog,
     lastReconciliationAt = lastReconciliationAt,
     meta = EntityMeta.create()
   )
@@ -63,6 +75,10 @@ object HaplogroupReconciliationEntity:
       status = reconciliation.status,
       runCalls = reconciliation.runCalls,
       snpConflicts = reconciliation.snpConflicts,
+      heteroplasmyObservations = reconciliation.heteroplasmyObservations,
+      identityVerification = reconciliation.identityVerification,
+      manualOverride = reconciliation.manualOverride,
+      auditLog = reconciliation.auditLog,
       lastReconciliationAt = reconciliation.lastReconciliationAt,
       meta = EntityMeta.create()
     )
@@ -117,6 +133,93 @@ object HaplogroupReconciliationCodecs:
 
   given Decoder[SnpConflict] = deriveDecoder
 
+  given Encoder[HeteroplasmyObservation] = Encoder.instance { h =>
+    Json.obj(
+      "position" -> Json.fromInt(h.position),
+      "majorAllele" -> Json.fromString(h.majorAllele),
+      "minorAllele" -> Json.fromString(h.minorAllele),
+      "majorAlleleFrequency" -> Json.fromDoubleOrNull(h.majorAlleleFrequency),
+      "depth" -> h.depth.fold(Json.Null)(Json.fromInt),
+      "isDefiningSnp" -> h.isDefiningSnp.fold(Json.Null)(Json.fromBoolean),
+      "affectedHaplogroup" -> h.affectedHaplogroup.fold(Json.Null)(Json.fromString)
+    )
+  }
+
+  given Decoder[HeteroplasmyObservation] = Decoder.instance { c =>
+    for
+      pos <- c.get[Int]("position")
+      maj <- c.get[String]("majorAllele")
+      min <- c.get[String]("minorAllele")
+      freq <- c.get[Double]("majorAlleleFrequency")
+      depth <- c.get[Option[Int]]("depth")
+      isDef <- c.get[Option[Boolean]]("isDefiningSnp")
+      haplo <- c.get[Option[String]]("affectedHaplogroup")
+    yield HeteroplasmyObservation(pos, maj, min, freq, depth, isDef, haplo)
+  }
+
+  given Encoder[IdentityVerification] = Encoder.instance { iv =>
+    Json.obj(
+      "kinshipCoefficient" -> iv.kinshipCoefficient.fold(Json.Null)(Json.fromDoubleOrNull),
+      "fingerprintSnpConcordance" -> iv.fingerprintSnpConcordance.fold(Json.Null)(Json.fromDoubleOrNull),
+      "yStrDistance" -> iv.yStrDistance.fold(Json.Null)(Json.fromInt),
+      "verificationStatus" -> iv.verificationStatus.fold(Json.Null)(Json.fromString),
+      "verificationMethod" -> iv.verificationMethod.fold(Json.Null)(Json.fromString)
+    )
+  }
+
+  given Decoder[IdentityVerification] = Decoder.instance { c =>
+    for
+      kinship <- c.get[Option[Double]]("kinshipCoefficient")
+      fingerprint <- c.get[Option[Double]]("fingerprintSnpConcordance")
+      yStr <- c.get[Option[Int]]("yStrDistance")
+      status <- c.get[Option[String]]("verificationStatus")
+      method <- c.get[Option[String]]("verificationMethod")
+    yield IdentityVerification(kinship, fingerprint, yStr, status, method)
+  }
+
+  given Encoder[ManualOverride] = Encoder.instance { mo =>
+    Json.obj(
+      "overriddenHaplogroup" -> Json.fromString(mo.overriddenHaplogroup),
+      "reason" -> mo.reason.fold(Json.Null)(Json.fromString),
+      "overriddenAt" -> mo.overriddenAt.fold(Json.Null)(t => Json.fromString(t.toString)),
+      "overriddenBy" -> mo.overriddenBy.fold(Json.Null)(Json.fromString)
+    )
+  }
+
+  given Decoder[ManualOverride] = Decoder.instance { c =>
+    for
+      haplo <- c.get[String]("overriddenHaplogroup")
+      reason <- c.get[Option[String]]("reason")
+      at <- c.get[Option[String]]("overriddenAt").map(_.flatMap(s =>
+        try Some(LocalDateTime.parse(s)) catch case _: Exception => None
+      ))
+      by <- c.get[Option[String]]("overriddenBy")
+    yield ManualOverride(haplo, reason, at, by)
+  }
+
+  given Encoder[AuditEntry] = Encoder.instance { ae =>
+    Json.obj(
+      "timestamp" -> Json.fromString(ae.timestamp.toString),
+      "action" -> Json.fromString(ae.action),
+      "previousConsensus" -> ae.previousConsensus.fold(Json.Null)(Json.fromString),
+      "newConsensus" -> ae.newConsensus.fold(Json.Null)(Json.fromString),
+      "runRef" -> ae.runRef.fold(Json.Null)(Json.fromString),
+      "notes" -> ae.notes.fold(Json.Null)(Json.fromString)
+    )
+  }
+
+  given Decoder[AuditEntry] = Decoder.instance { c =>
+    for
+      tsStr <- c.get[String]("timestamp")
+      ts = try LocalDateTime.parse(tsStr) catch case _: Exception => LocalDateTime.MIN
+      action <- c.get[String]("action")
+      prev <- c.get[Option[String]]("previousConsensus")
+      next <- c.get[Option[String]]("newConsensus")
+      runRef <- c.get[Option[String]]("runRef")
+      notes <- c.get[Option[String]]("notes")
+    yield AuditEntry(ts, action, prev, next, runRef, notes)
+  }
+
 /**
  * Repository for Haplogroup reconciliation persistence operations.
  */
@@ -141,12 +244,17 @@ class HaplogroupReconciliationRepository extends SyncableRepository[HaplogroupRe
     val statusJson = JsonValue(entity.status.asJson.noSpaces)
     val runCallsJson = JsonValue(entity.runCalls.asJson.noSpaces)
     val snpConflictsJson = JsonValue(entity.snpConflicts.asJson.noSpaces)
+    val heteroplasmyJson = JsonValue(entity.heteroplasmyObservations.asJson.noSpaces)
+    val identityJson = entity.identityVerification.map(iv => JsonValue(iv.asJson.noSpaces))
+    val overrideJson = entity.manualOverride.map(mo => JsonValue(mo.asJson.noSpaces))
+    val auditLogJson = JsonValue(entity.auditLog.asJson.noSpaces)
 
     executeUpdate(
       """INSERT INTO haplogroup_reconciliation (
         |  id, biosample_id, dna_type, status, run_calls, snp_conflicts,
+        |  heteroplasmy_observations, identity_verification, manual_override, audit_log,
         |  last_reconciliation_at, sync_status, at_uri, at_cid, version, created_at, updated_at
-        |) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        |) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       """.stripMargin,
       Seq(
         entity.id,
@@ -155,6 +263,10 @@ class HaplogroupReconciliationRepository extends SyncableRepository[HaplogroupRe
         statusJson,
         runCallsJson,
         snpConflictsJson,
+        heteroplasmyJson,
+        identityJson,
+        overrideJson,
+        auditLogJson,
         entity.lastReconciliationAt.map(i => java.sql.Timestamp.from(i)),
         entity.meta.syncStatus,
         entity.meta.atUri,
@@ -171,10 +283,15 @@ class HaplogroupReconciliationRepository extends SyncableRepository[HaplogroupRe
     val statusJson = JsonValue(entity.status.asJson.noSpaces)
     val runCallsJson = JsonValue(entity.runCalls.asJson.noSpaces)
     val snpConflictsJson = JsonValue(entity.snpConflicts.asJson.noSpaces)
+    val heteroplasmyJson = JsonValue(entity.heteroplasmyObservations.asJson.noSpaces)
+    val identityJson = entity.identityVerification.map(iv => JsonValue(iv.asJson.noSpaces))
+    val overrideJson = entity.manualOverride.map(mo => JsonValue(mo.asJson.noSpaces))
+    val auditLogJson = JsonValue(entity.auditLog.asJson.noSpaces)
 
     executeUpdate(
       """UPDATE haplogroup_reconciliation SET
         |  biosample_id = ?, dna_type = ?, status = ?, run_calls = ?, snp_conflicts = ?,
+        |  heteroplasmy_observations = ?, identity_verification = ?, manual_override = ?, audit_log = ?,
         |  last_reconciliation_at = ?, sync_status = ?, at_uri = ?, at_cid = ?, version = ?, updated_at = ?
         |WHERE id = ?
       """.stripMargin,
@@ -184,6 +301,10 @@ class HaplogroupReconciliationRepository extends SyncableRepository[HaplogroupRe
         statusJson,
         runCallsJson,
         snpConflictsJson,
+        heteroplasmyJson,
+        identityJson,
+        overrideJson,
+        auditLogJson,
         entity.lastReconciliationAt.map(i => java.sql.Timestamp.from(i)),
         updatedMeta.syncStatus,
         updatedMeta.atUri,
@@ -321,6 +442,26 @@ class HaplogroupReconciliationRepository extends SyncableRepository[HaplogroupRe
       parse(json).flatMap(_.as[List[SnpConflict]]).toOption
     ).getOrElse(List.empty)
 
+    val heteroplasmyJson = getOptJsonString(rs, "heteroplasmy_observations")
+    val heteroplasmyObs = heteroplasmyJson.flatMap(json =>
+      parse(json).flatMap(_.as[List[HeteroplasmyObservation]]).toOption
+    ).getOrElse(List.empty)
+
+    val identityJson = getOptJsonString(rs, "identity_verification")
+    val identityVerification = identityJson.flatMap(json =>
+      parse(json).flatMap(_.as[IdentityVerification]).toOption
+    )
+
+    val overrideJson = getOptJsonString(rs, "manual_override")
+    val manualOverride = overrideJson.flatMap(json =>
+      parse(json).flatMap(_.as[ManualOverride]).toOption
+    )
+
+    val auditLogJson = getOptJsonString(rs, "audit_log")
+    val auditLog = auditLogJson.flatMap(json =>
+      parse(json).flatMap(_.as[List[AuditEntry]]).toOption
+    ).getOrElse(List.empty)
+
     val lastReconTs = rs.getTimestamp("last_reconciliation_at")
     val lastReconciliationAt = if rs.wasNull() then None else Some(lastReconTs.toInstant)
 
@@ -334,6 +475,10 @@ class HaplogroupReconciliationRepository extends SyncableRepository[HaplogroupRe
       status = status,
       runCalls = runCalls,
       snpConflicts = snpConflicts,
+      heteroplasmyObservations = heteroplasmyObs,
+      identityVerification = identityVerification,
+      manualOverride = manualOverride,
+      auditLog = auditLog,
       lastReconciliationAt = lastReconciliationAt,
       meta = EntityMeta(
         syncStatus = SyncStatus.fromString(rs.getString("sync_status")),

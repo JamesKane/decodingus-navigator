@@ -179,6 +179,86 @@ object PdsClient {
   implicit val snpConflictDecoder: Decoder[SnpConflict] = deriveDecoder
   implicit val reconciliationStatusEncoder: Encoder[ReconciliationStatus] = deriveEncoder
   implicit val reconciliationStatusDecoder: Decoder[ReconciliationStatus] = deriveDecoder
+  // New Atmosphere Lexicon types — manual codecs to stay within Scala 3 inline limit
+  implicit val heteroplasmyObservationEncoder: Encoder[HeteroplasmyObservation] = Encoder.instance { h =>
+    Json.obj(
+      "position" -> Json.fromInt(h.position),
+      "majorAllele" -> Json.fromString(h.majorAllele),
+      "minorAllele" -> Json.fromString(h.minorAllele),
+      "majorAlleleFrequency" -> Json.fromDoubleOrNull(h.majorAlleleFrequency),
+      "depth" -> h.depth.fold(Json.Null)(Json.fromInt),
+      "isDefiningSnp" -> h.isDefiningSnp.fold(Json.Null)(Json.fromBoolean),
+      "affectedHaplogroup" -> h.affectedHaplogroup.fold(Json.Null)(Json.fromString)
+    )
+  }
+  implicit val heteroplasmyObservationDecoder: Decoder[HeteroplasmyObservation] = Decoder.instance { c =>
+    for
+      pos <- c.get[Int]("position")
+      maj <- c.get[String]("majorAllele")
+      min <- c.get[String]("minorAllele")
+      freq <- c.get[Double]("majorAlleleFrequency")
+      depth <- c.get[Option[Int]]("depth")
+      isDef <- c.get[Option[Boolean]]("isDefiningSnp")
+      haplo <- c.get[Option[String]]("affectedHaplogroup")
+    yield HeteroplasmyObservation(pos, maj, min, freq, depth, isDef, haplo)
+  }
+  implicit val identityVerificationEncoder: Encoder[IdentityVerification] = Encoder.instance { iv =>
+    Json.obj(
+      "kinshipCoefficient" -> iv.kinshipCoefficient.fold(Json.Null)(Json.fromDoubleOrNull),
+      "fingerprintSnpConcordance" -> iv.fingerprintSnpConcordance.fold(Json.Null)(Json.fromDoubleOrNull),
+      "yStrDistance" -> iv.yStrDistance.fold(Json.Null)(Json.fromInt),
+      "verificationStatus" -> iv.verificationStatus.fold(Json.Null)(Json.fromString),
+      "verificationMethod" -> iv.verificationMethod.fold(Json.Null)(Json.fromString)
+    )
+  }
+  implicit val identityVerificationDecoder: Decoder[IdentityVerification] = Decoder.instance { c =>
+    for
+      kinship <- c.get[Option[Double]]("kinshipCoefficient")
+      fingerprint <- c.get[Option[Double]]("fingerprintSnpConcordance")
+      yStr <- c.get[Option[Int]]("yStrDistance")
+      status <- c.get[Option[String]]("verificationStatus")
+      method <- c.get[Option[String]]("verificationMethod")
+    yield IdentityVerification(kinship, fingerprint, yStr, status, method)
+  }
+  implicit val manualOverrideEncoder: Encoder[ManualOverride] = Encoder.instance { mo =>
+    Json.obj(
+      "overriddenHaplogroup" -> Json.fromString(mo.overriddenHaplogroup),
+      "reason" -> mo.reason.fold(Json.Null)(Json.fromString),
+      "overriddenAt" -> mo.overriddenAt.fold(Json.Null)(t => Json.fromString(t.toString)),
+      "overriddenBy" -> mo.overriddenBy.fold(Json.Null)(Json.fromString)
+    )
+  }
+  implicit val manualOverrideDecoder: Decoder[ManualOverride] = Decoder.instance { c =>
+    for
+      haplo <- c.get[String]("overriddenHaplogroup")
+      reason <- c.get[Option[String]]("reason")
+      at <- c.get[Option[String]]("overriddenAt").map(_.flatMap(s =>
+        try Some(java.time.LocalDateTime.parse(s)) catch case _: Exception => None
+      ))
+      by <- c.get[Option[String]]("overriddenBy")
+    yield ManualOverride(haplo, reason, at, by)
+  }
+  implicit val auditEntryEncoder: Encoder[AuditEntry] = Encoder.instance { ae =>
+    Json.obj(
+      "timestamp" -> Json.fromString(ae.timestamp.toString),
+      "action" -> Json.fromString(ae.action),
+      "previousConsensus" -> ae.previousConsensus.fold(Json.Null)(Json.fromString),
+      "newConsensus" -> ae.newConsensus.fold(Json.Null)(Json.fromString),
+      "runRef" -> ae.runRef.fold(Json.Null)(Json.fromString),
+      "notes" -> ae.notes.fold(Json.Null)(Json.fromString)
+    )
+  }
+  implicit val auditEntryDecoder: Decoder[AuditEntry] = Decoder.instance { c =>
+    for
+      tsStr <- c.get[String]("timestamp")
+      ts = try java.time.LocalDateTime.parse(tsStr) catch case _: Exception => java.time.LocalDateTime.MIN
+      action <- c.get[String]("action")
+      prev <- c.get[Option[String]]("previousConsensus")
+      next <- c.get[Option[String]]("newConsensus")
+      runRef <- c.get[Option[String]]("runRef")
+      notes <- c.get[Option[String]]("notes")
+    yield AuditEntry(ts, action, prev, next, runRef, notes)
+  }
   implicit val haplogroupReconciliationEncoder: Encoder[HaplogroupReconciliation] = deriveEncoder
   implicit val haplogroupReconciliationDecoder: Decoder[HaplogroupReconciliation] = deriveDecoder
 
