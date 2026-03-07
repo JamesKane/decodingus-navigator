@@ -9,6 +9,7 @@ import scalafx.collections.ObservableBuffer
 import scalafx.geometry.{Insets, Pos}
 import scalafx.scene.control.*
 import scalafx.scene.layout.*
+import scalafx.stage.FileChooser
 
 /**
  * Dialog for comparing 2-3 subjects side-by-side.
@@ -23,7 +24,6 @@ class SubjectCompareDialog(
 
   title = t("compare.title")
   headerText = t("compare.subjects", subjects.size.toString)
-  dialogPane().buttonTypes = Seq(ButtonType.Close)
   resizable = true
   dialogPane().setPrefSize(900, 700)
 
@@ -40,8 +40,15 @@ class SubjectCompareDialog(
     )
   }
 
+  private val exportButton = new ButtonType("Export CSV")
+  dialogPane().buttonTypes = Seq(exportButton, ButtonType.Close)
   dialogPane().content = tabPane
   resultConverter = _ => ()
+
+  // Wire up export button
+  dialogPane().lookupButton(exportButton).asInstanceOf[javafx.scene.control.Button].setOnAction { _ =>
+    exportComparisonCsv()
+  }
 
   // ============================================================================
   // Y-STR Comparison Tab
@@ -279,6 +286,78 @@ class SubjectCompareDialog(
     }
 
     tab
+  }
+
+  // ============================================================================
+  // Export
+  // ============================================================================
+
+  private def exportComparisonCsv(): Unit = {
+    val fileChooser = new FileChooser {
+      this.title = "Export Comparison"
+      initialFileName = s"comparison_${subjectNames.mkString("_vs_")}.csv"
+      extensionFilters.addAll(
+        new FileChooser.ExtensionFilter("CSV Files", Seq("*.csv")),
+        new FileChooser.ExtensionFilter("All Files", "*.*")
+      )
+    }
+    Option(fileChooser.showSaveDialog(dialogPane().getScene.getWindow)).foreach { file =>
+      try {
+        val writer = new java.io.PrintWriter(file)
+        try {
+          // Y-STR comparison
+          val profiles: List[Option[StrProfile]] = subjects.map(s => strProfiles.get(s.accession))
+          val definedProfiles = profiles.collect { case Some(p) => p }
+          if (definedProfiles.nonEmpty) {
+            writer.println("--- Y-STR Comparison ---")
+            writer.println(("Marker" +: subjectNames :+ "Status").mkString(","))
+            val allMarkers = definedProfiles.flatMap(_.markers.map(_.marker)).distinct.sorted
+            allMarkers.foreach { marker =>
+              val values = profiles.map { profileOpt =>
+                profileOpt.flatMap(_.markers.find(_.marker == marker)).map(formatStrValue).getOrElse("")
+              }
+              val row = StrComparisonRow(marker, values.map(v => if (v.isEmpty) None else Some(v)))
+              writer.println((marker +: values :+ row.matchStatus).mkString(","))
+            }
+            writer.println()
+          }
+
+          // Y-DNA comparison
+          writer.println("--- Y-DNA Comparison ---")
+          writer.println(("Subject" +: Seq("Haplogroup", "Score", "Source", "Lineage")).mkString(","))
+          subjects.zip(subjectNames).foreach { case (subject, name) =>
+            subject.yHaplogroupResult match {
+              case Some(r) =>
+                writer.println(Seq(name, r.haplogroupName, f"${r.score}%.2f", r.sourceDisplay, r.formattedPath).mkString(","))
+              case None =>
+                writer.println(s"$name,-,-,-,-")
+            }
+          }
+          writer.println()
+
+          // mtDNA comparison
+          writer.println("--- mtDNA Comparison ---")
+          writer.println(("Subject" +: Seq("Haplogroup", "Score", "Source", "Lineage")).mkString(","))
+          subjects.zip(subjectNames).foreach { case (subject, name) =>
+            subject.mtHaplogroupResult match {
+              case Some(r) =>
+                writer.println(Seq(name, r.haplogroupName, f"${r.score}%.2f", r.sourceDisplay, r.formattedPath).mkString(","))
+              case None =>
+                writer.println(s"$name,-,-,-,-")
+            }
+          }
+        } finally {
+          writer.close()
+        }
+      } catch {
+        case e: Exception =>
+          new Alert(Alert.AlertType.Error) {
+            this.title = "Export Error"
+            headerText = "Failed to export comparison"
+            contentText = e.getMessage
+          }.showAndWait()
+      }
+    }
   }
 
   // ============================================================================

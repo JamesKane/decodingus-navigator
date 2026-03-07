@@ -53,6 +53,9 @@ class MainShell(viewModel: WorkbenchViewModel) extends BorderPane {
     }
   }
 
+  // Wire up dashboard quick action navigation
+  dashboardView.onNavigateToSubjects = () => tabPane.selectionModel.value.select(subjectsTab)
+
   // ============================================================================
   // Layout
   // ============================================================================

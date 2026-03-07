@@ -9,6 +9,7 @@ import scalafx.geometry.{Insets, Pos}
 import scalafx.scene.control.*
 import scalafx.scene.layout.{HBox, Priority, Region, VBox}
 import scalafx.scene.web.WebView
+import scalafx.stage.FileChooser
 
 import java.time.format.DateTimeFormatter
 import java.util.UUID
@@ -238,19 +239,6 @@ class YProfileDetailDialog(
       prefWidth = 200
     }
 
-    val filterBox = new HBox(10) {
-      padding = Insets(5)
-      alignment = Pos.CenterLeft
-      children = Seq(
-        new Label("Build:"),
-        buildFilter,
-        new Label("Status:"),
-        statusFilter,
-        new Label("Search:"),
-        searchField
-      )
-    }
-
     // Table data model with multi-reference support
     case class VariantRow(
                            name: String,                    // Canonical name or "Novel-N"
@@ -344,6 +332,55 @@ class YProfileDetailDialog(
     }
 
     val tableData = ObservableBuffer.from(buildRows(buildFilter.value.value))
+
+    val exportCsvButton = new Button("Export CSV") {
+      style = "-fx-font-size: 11px;"
+      onAction = _ => {
+        val fileChooser = new FileChooser {
+          this.title = "Export CSV"
+          initialFileName = "y_dna_variants.csv"
+          extensionFilters.addAll(
+            new FileChooser.ExtensionFilter("CSV Files", Seq("*.csv")),
+            new FileChooser.ExtensionFilter("All Files", "*.*")
+          )
+        }
+        Option(fileChooser.showSaveDialog(dialogPane().getScene.getWindow)).foreach { file =>
+          try {
+            val writer = new java.io.PrintWriter(file)
+            try {
+              writer.println("Name,Position,Type,Ancestral,Derived,Status,Call,Sources,Confidence")
+              tableData.forEach { row =>
+                writer.println(s"${row.name},${row.position.getOrElse("")},${row.variantType},${row.ancAllele},${row.derAllele},${row.status},${row.call},${row.sourceCount},${row.confidence}")
+              }
+            } finally {
+              writer.close()
+            }
+          } catch {
+            case e: Exception =>
+              new Alert(Alert.AlertType.Error) {
+                this.title = "Export Error"
+                headerText = "Failed to export CSV"
+                contentText = e.getMessage
+              }.showAndWait()
+          }
+        }
+      }
+    }
+
+    val filterBox = new HBox(10) {
+      padding = Insets(5)
+      alignment = Pos.CenterLeft
+      children = Seq(
+        new Label("Build:"),
+        buildFilter,
+        new Label("Status:"),
+        statusFilter,
+        new Label("Search:"),
+        searchField,
+        new Region { HBox.setHgrow(this, Priority.Always) },
+        exportCsvButton
+      )
+    }
 
     // Position column with dynamic header
     val positionColumn = new TableColumn[VariantRow, String] {

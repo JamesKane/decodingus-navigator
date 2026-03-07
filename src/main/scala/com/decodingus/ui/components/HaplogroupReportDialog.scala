@@ -11,6 +11,8 @@ import scalafx.geometry.{Insets, Pos}
 import scalafx.scene.control.*
 import scalafx.scene.layout.*
 
+import scalafx.stage.FileChooser
+
 import java.nio.file.{Files, Path}
 import scala.io.Source
 import scala.util.Using
@@ -329,6 +331,7 @@ class HaplogroupReportDialog(
                                         ): Option[Tab] = {
     if (variants.isEmpty) return None
 
+    val tabTitle = title
     val sourceData = ObservableBuffer.from(variants)
     val filteredList = new FilteredList[PrivateVariantRow](sourceData)
 
@@ -397,6 +400,41 @@ class HaplogroupReportDialog(
     positionFilter.text.onChange { (_, _, _) => updateFilter() }
     refAltFilter.text.onChange { (_, _, _) => updateFilter() }
 
+    val exportCsvButton = new Button("Export CSV") {
+      style = "-fx-font-size: 11px;"
+      onAction = _ => {
+        val fileChooser = new FileChooser {
+          this.title = "Export CSV"
+          initialFileName = s"${tabTitle.replaceAll("[^a-zA-Z0-9]", "_")}.csv"
+          extensionFilters.addAll(
+            new FileChooser.ExtensionFilter("CSV Files", Seq("*.csv")),
+            new FileChooser.ExtensionFilter("All Files", "*.*")
+          )
+        }
+        Option(fileChooser.showSaveDialog(dialogPane().getScene.getWindow)).foreach { file =>
+          try {
+            val writer = new java.io.PrintWriter(file)
+            try {
+              writer.println("Contig,Position,Ref,Alt,Quality,Depth,Region")
+              import scala.jdk.CollectionConverters.*
+              filteredList.asScala.foreach { row =>
+                writer.println(s"${row.contig},${row.position},${row.ref},${row.alt},${row.quality},${row.readDepth.getOrElse("")},${row.region.getOrElse("")}")
+              }
+            } finally {
+              writer.close()
+            }
+          } catch {
+            case e: Exception =>
+              new Alert(Alert.AlertType.Error) {
+                this.title = "Export Error"
+                headerText = "Failed to export CSV"
+                contentText = e.getMessage
+              }.showAndWait()
+          }
+        }
+      }
+    }
+
     val filterBar = new HBox(10) {
       alignment = Pos.CenterLeft
       children = Seq(
@@ -411,7 +449,8 @@ class HaplogroupReportDialog(
         new Region {
           HBox.setHgrow(this, Priority.Always)
         },
-        countLabel
+        countLabel,
+        exportCsvButton
       )
     }
 
@@ -589,18 +628,58 @@ class HaplogroupReportDialog(
     }
     VBox.setVgrow(table, Priority.Always)
 
+    val snpExportButton = new Button("Export CSV") {
+      style = "-fx-font-size: 11px;"
+      onAction = _ => {
+        val fileChooser = new FileChooser {
+          this.title = "Export CSV"
+          initialFileName = "snp_details.csv"
+          extensionFilters.addAll(
+            new FileChooser.ExtensionFilter("CSV Files", Seq("*.csv")),
+            new FileChooser.ExtensionFilter("All Files", "*.*")
+          )
+        }
+        Option(fileChooser.showSaveDialog(dialogPane().getScene.getWindow)).foreach { file =>
+          try {
+            val writer = new java.io.PrintWriter(file)
+            try {
+              writer.println("Contig,Position,SNP Name,Ancestral,Derived,Call,State,Depth,Region,Quality")
+              snpDetails.foreach { row =>
+                writer.println(s"${row.contig},${row.position},${row.snpName},${row.ancestral},${row.derived},${row.call},${row.state},${row.readDepth.getOrElse("")},${row.region.getOrElse("")},${row.quality.getOrElse("")}")
+              }
+            } finally {
+              writer.close()
+            }
+          } catch {
+            case e: Exception =>
+              new Alert(Alert.AlertType.Error) {
+                this.title = "Export Error"
+                headerText = "Failed to export CSV"
+                contentText = e.getMessage
+              }.showAndWait()
+          }
+        }
+      }
+    }
+
+    val snpHeaderBar = new HBox(10) {
+      alignment = Pos.CenterLeft
+      children = Seq(
+        new Label("SNPs along the predicted haplogroup path:") {
+          style = "-fx-font-weight: bold;"
+        },
+        new Region { HBox.setHgrow(this, Priority.Always) },
+        snpExportButton
+      )
+    }
+
     val tab = new Tab {
       text = s"SNP Details (${snpDetails.size})"
       closable = false
     }
     tab.content = new VBox(10) {
       padding = Insets(10)
-      children = Seq(
-        new Label("SNPs along the predicted haplogroup path:") {
-          style = "-fx-font-weight: bold;"
-        },
-        table
-      )
+      children = Seq(snpHeaderBar, table)
     }
     Some(tab)
   }

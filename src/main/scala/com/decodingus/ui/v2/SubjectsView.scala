@@ -2,7 +2,7 @@ package com.decodingus.ui.v2
 
 import com.decodingus.i18n.I18n.{t, bind}
 import com.decodingus.i18n.Formatters
-import com.decodingus.ui.components.{AddSubjectDialog, SubjectCompareDialog}
+import com.decodingus.ui.components.{AddSubjectDialog, BatchImportDialog, BatchImportEntry, SubjectCompareDialog}
 import com.decodingus.ui.v2.BiosampleExtensions.*
 import com.decodingus.util.Logger
 import com.decodingus.workspace.WorkbenchViewModel
@@ -83,6 +83,12 @@ class SubjectsView(viewModel: WorkbenchViewModel) extends SplitPane {
     onAction = _ => handleAddSubject()
   }
 
+  private val batchImportButton = new Button {
+    text = t("batch.import")
+    style = "-fx-font-size: 11px;"
+    onAction = _ => handleBatchImport()
+  }
+
   private val collapseButton = new Button {
     text = "◀"
     style = "-fx-background-color: transparent; -fx-text-fill: #888888; -fx-font-size: 12px; -fx-padding: 4 8; -fx-cursor: hand;"
@@ -97,6 +103,7 @@ class SubjectsView(viewModel: WorkbenchViewModel) extends SplitPane {
     children = Seq(
       searchField,
       new Region { hgrow = Priority.Always },
+      batchImportButton,
       addSubjectButton,
       collapseButton
     )
@@ -441,6 +448,37 @@ class SubjectsView(viewModel: WorkbenchViewModel) extends SplitPane {
       scalafx.application.Platform.runLater {
         dividerPositions = 0.03 // Just enough for the collapsed sidebar
       }
+    }
+  }
+
+  private def handleBatchImport(): Unit = {
+    val dialog = new BatchImportDialog()
+    dialog.showAndWait() match {
+      case Some(Some(entries: List[BatchImportEntry @unchecked])) if entries.nonEmpty =>
+        log.info(s"Batch import: ${entries.size} files")
+        entries.foreach { entry =>
+          val accession = s"BATCH-${java.util.UUID.randomUUID().toString.take(8)}"
+          val biosample = Biosample(
+            atUri = None,
+            meta = com.decodingus.workspace.model.RecordMeta.initial,
+            sampleAccession = accession,
+            donorIdentifier = entry.subjectName
+          )
+          viewModel.addSubject(biosample)
+
+          val fileInfo = com.decodingus.workspace.model.FileInfo(
+            fileName = entry.file.getName,
+            fileSizeBytes = Some(entry.file.length()),
+            fileFormat = entry.detectedType.description,
+            checksum = None,
+            location = Some(entry.file.getAbsolutePath)
+          )
+          viewModel.addSequenceDataFromFile(accession, fileInfo)
+        }
+        applyFilter()
+        log.info(s"Batch import complete: ${entries.size} subjects created")
+      case _ =>
+        log.debug("Batch import cancelled")
     }
   }
 

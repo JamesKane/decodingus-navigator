@@ -269,4 +269,45 @@ object MtDnaFastaProcessor {
   def toMtDnaNotation(variants: List[MtDnaVariant]): List[String] = {
     variants.map(_.notation).sorted
   }
+
+  /**
+   * Reconstruct a sample mtDNA sequence by applying SNP variants to the rCRS reference.
+   * Insertions and deletions are not applied (SNPs only).
+   *
+   * @param variants List of (1-based position, referenceAllele, alternateAllele) tuples
+   * @return The reconstructed sequence, or None if rCRS is not available
+   */
+  def reconstructFromVariants(variants: List[(Int, String, String)]): Option[String] = {
+    if (!isRcrsAvailable) return None
+
+    val chars = rCRS.toCharArray
+    variants.foreach { case (pos, _, alt) =>
+      val idx = pos - 1 // Convert 1-based to 0-based
+      if (idx >= 0 && idx < chars.length && alt.length == 1) {
+        chars(idx) = alt.charAt(0)
+      }
+    }
+    Some(new String(chars))
+  }
+
+  /**
+   * Write a sequence to a FASTA file with standard 70-character line wrapping.
+   *
+   * @param sequence   The DNA sequence to write
+   * @param outputPath Path to the output file
+   * @param header     FASTA header line (without the '>' prefix)
+   */
+  def writeFasta(sequence: String, outputPath: Path, header: String): Either[String, Path] = {
+    try {
+      Using(new PrintWriter(outputPath.toFile)) { writer =>
+        writer.println(s">$header")
+        sequence.grouped(70).foreach(writer.println)
+      } match {
+        case scala.util.Success(_) => Right(outputPath)
+        case scala.util.Failure(e) => Left(s"Failed to write FASTA: ${e.getMessage}")
+      }
+    } catch {
+      case e: Exception => Left(s"Error writing FASTA: ${e.getMessage}")
+    }
+  }
 }

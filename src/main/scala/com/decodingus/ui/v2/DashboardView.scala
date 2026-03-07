@@ -126,20 +126,39 @@ class DashboardView(viewModel: WorkbenchViewModel) extends ScrollPane {
   }
 
   // ============================================================================
-  // Recent Activity Section
+  // Quick Actions Section
   // ============================================================================
 
-  private val activityList = new ListView[String] {
-    prefHeight = 150
-    placeholder = new Label(t("info.no_data"))
-    styleClass += "activity-list"
-  }
+  /** Optional callback when a quick action should navigate to the subjects tab */
+  var onNavigateToSubjects: () => Unit = () => ()
 
-  private val activitySection = new VBox(10) {
+  private val quickActionsSection = new VBox(10) {
     styleClass += "dashboard-section"
     children = Seq(
-      createSectionHeader("dashboard.recent_activity", None),
-      activityList
+      createSectionHeader("dashboard.quick_actions", None),
+      new HBox(15) {
+        alignment = Pos.CenterLeft
+        children = Seq(
+          createQuickActionButton(t("dashboard.action.view_subjects"), "#4a9eff", () => onNavigateToSubjects()),
+          createQuickActionButton(t("dashboard.action.run_pending"), "#f59e0b", () => runAllPendingAnalyses())
+        )
+      }
+    )
+  }
+
+  // ============================================================================
+  // Recent Subjects Section
+  // ============================================================================
+
+  private val recentSubjectsList = new VBox(8) {
+    styleClass += "recent-subjects"
+  }
+
+  private val recentSubjectsSection = new VBox(10) {
+    styleClass += "dashboard-section"
+    children = Seq(
+      createSectionHeader("dashboard.recent_subjects", None),
+      recentSubjectsList
     )
   }
 
@@ -153,9 +172,10 @@ class DashboardView(viewModel: WorkbenchViewModel) extends ScrollPane {
     children = Seq(
       createPageHeader("dashboard.title"),
       summaryCardsBox,
+      quickActionsSection,
       distributionsBox,
-      pendingWorkSection,
-      activitySection
+      recentSubjectsSection,
+      pendingWorkSection
     )
   }
 
@@ -172,6 +192,7 @@ class DashboardView(viewModel: WorkbenchViewModel) extends ScrollPane {
   // Initial data load
   updateStats()
   updatePendingWork()
+  updateRecentSubjects()
 
   // ============================================================================
   // Helper Methods
@@ -297,6 +318,60 @@ class DashboardView(viewModel: WorkbenchViewModel) extends ScrollPane {
           style = "-fx-text-fill: #b0b0b0; -fx-font-size: 11px;"
         }
       )
+    }
+  }
+
+  private def createQuickActionButton(label: String, color: String, action: () => Unit): Button = {
+    new Button(label) {
+      style = s"-fx-font-size: 12px; -fx-padding: 10 20; -fx-background-color: ${color}22; -fx-text-fill: $color; -fx-background-radius: 6; -fx-border-color: ${color}44; -fx-border-radius: 6;"
+      onAction = _ => action()
+    }
+  }
+
+  private def updateRecentSubjects(): Unit = {
+    val recent = viewModel.samples.toSeq
+      .sortBy(s => s.meta.updatedAt.getOrElse(s.meta.createdAt))(Ordering[java.time.LocalDateTime].reverse)
+      .take(5)
+
+    if (recent.isEmpty) {
+      recentSubjectsList.children = Seq(
+        new Label(t("info.no_data")) { style = "-fx-text-fill: #888888;" }
+      )
+    } else {
+      recentSubjectsList.children = recent.map { subject =>
+        val name = subject.donorId.getOrElse(subject.accession)
+        val yHg = subject.yHaplogroup.getOrElse("-")
+        val mtHg = subject.mtHaplogroup.getOrElse("-")
+        val timestamp = subject.meta.updatedAt.getOrElse(subject.meta.createdAt)
+        val timeStr = Formatters.formatRelativeTime(timestamp.toLocalDate)
+
+        new HBox(15) {
+          alignment = Pos.CenterLeft
+          padding = Insets(10, 15, 10, 15)
+          style = "-fx-background-color: #2a2a2a; -fx-background-radius: 6; -fx-cursor: hand;"
+          onMouseClicked = _ => {
+            viewModel.selectedSubject.value = Some(subject)
+          }
+          children = Seq(
+            new Label(name) {
+              prefWidth = 150
+              style = "-fx-font-size: 13px; -fx-font-weight: bold; -fx-text-fill: #ffffff;"
+            },
+            new Label(s"Y: $yHg") {
+              prefWidth = 120
+              style = "-fx-font-size: 11px; -fx-text-fill: #4ade80;"
+            },
+            new Label(s"mt: $mtHg") {
+              prefWidth = 120
+              style = "-fx-font-size: 11px; -fx-text-fill: #60a5fa;"
+            },
+            new Region { hgrow = Priority.Always },
+            new Label(timeStr) {
+              style = "-fx-font-size: 11px; -fx-text-fill: #888888;"
+            }
+          )
+        }
+      }
     }
   }
 
@@ -593,5 +668,6 @@ This may take a while. Continue?"""
   def refresh(): Unit = {
     updateStats()
     updatePendingWork()
+    updateRecentSubjects()
   }
 }

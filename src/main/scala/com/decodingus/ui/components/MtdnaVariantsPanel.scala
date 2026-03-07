@@ -1,13 +1,15 @@
 package com.decodingus.ui.components
 
+import com.decodingus.analysis.MtDnaFastaProcessor
 import com.decodingus.i18n.I18n.t
-import com.decodingus.workspace.model.{HaplogroupResult, VariantCall}
+import com.decodingus.workspace.model.{HaplogroupResult, HeteroplasmyObservation, VariantCall}
 import scalafx.Includes.*
 import scalafx.beans.property.StringProperty
 import scalafx.collections.ObservableBuffer
 import scalafx.geometry.{Insets, Pos}
 import scalafx.scene.control.*
 import scalafx.scene.layout.*
+import scalafx.stage.FileChooser
 
 /**
  * Panel showing mtDNA variants from rCRS (revised Cambridge Reference Sequence).
@@ -21,6 +23,9 @@ class MtdnaVariantsPanel extends VBox {
 
   private val tableData = ObservableBuffer.empty[MtdnaVariant]
   private var variantCount: Int = 0
+  private var currentVariantCalls: List[VariantCall] = List.empty
+  private var currentHaplogroupName: String = "unknown"
+  private var heteroplasmyByPosition: Map[Int, HeteroplasmyObservation] = Map.empty
 
   // Header with title and count
   private val titleLabel = new Label(t("mtdna.variants_from_rcrs")) {
@@ -31,17 +36,26 @@ class MtdnaVariantsPanel extends VBox {
     style = "-fx-font-size: 12px; -fx-text-fill: #888888;"
   }
 
+  private val exportFastaButton = new Button(t("mtdna.export_fasta")) {
+    style = "-fx-font-size: 11px;"
+    disable = true
+    onAction = _ => exportFasta()
+  }
+
+  private val exportCsvButton = new Button(t("snp.export_csv")) {
+    style = "-fx-font-size: 11px;"
+    disable = true
+    onAction = _ => exportCsv()
+  }
+
   private val headerBox = new HBox(10) {
     alignment = Pos.CenterLeft
     children = Seq(
       titleLabel,
       countLabel,
       new Region { hgrow = Priority.Always },
-      new Button(t("mtdna.export_fasta")) {
-        style = "-fx-font-size: 11px;"
-        disable = true
-        tooltip = Tooltip(t("mtdna.export_coming_soon"))
-      }
+      exportCsvButton,
+      exportFastaButton
     )
   }
 
@@ -149,8 +163,42 @@ class MtdnaVariantsPanel extends VBox {
             }
           }
         }
-      }
+      },
+      heteroplasmyColumn
     )
+  }
+
+  private val heteroplasmyColumn = new TableColumn[MtdnaVariant, String] {
+    text = t("mtdna.heteroplasmy")
+    prefWidth = 90
+    cellValueFactory = { p =>
+      val obs = heteroplasmyByPosition.get(p.value.position)
+      StringProperty(obs.map(h => f"${h.majorAlleleFrequency * 100}%.0f%%").getOrElse(""))
+    }
+    cellFactory = { (_: TableColumn[MtdnaVariant, String]) =>
+      new TableCell[MtdnaVariant, String] {
+        item.onChange { (_, _, newValue) =>
+          if (newValue != null && newValue.nonEmpty) {
+            text = s"\u26A0 $newValue"
+            style = "-fx-text-fill: #f59e0b; -fx-font-size: 11px; -fx-font-weight: bold;"
+            Option(tableRow.value).flatMap(tr => Option(tr.item.value)).foreach { row =>
+              heteroplasmyByPosition.get(row.position).foreach { h =>
+                tooltip = Tooltip(
+                  s"Heteroplasmy: ${h.majorAllele}/${h.minorAllele}\n" +
+                    s"Major allele frequency: ${f"${h.majorAlleleFrequency * 100}%.1f%%"}\n" +
+                    h.depth.map(d => s"Read depth: $d\n").getOrElse("") +
+                    h.affectedHaplogroup.map(hg => s"Affected haplogroup: $hg").getOrElse("")
+                )
+              }
+            }
+          } else {
+            text = ""
+            tooltip = null
+            style = ""
+          }
+        }
+      }
+    }
   }
 
   // Placeholder when no data
@@ -166,7 +214,90 @@ class MtdnaVariantsPanel extends VBox {
     managed = false
   }
 
-  children = Seq(headerBox, variantsTable, noDataPlaceholder)
+  private def exportFasta(): Unit = {
+    val mtdnaVariants = currentVariantCalls
+      .filter(isMtdnaVariantCall)
+      .map(v => (v.position, v.referenceAllele, v.alternateAllele))
+
+    MtDnaFastaProcessor.reconstructFromVariants(mtdnaVariants) match {
+      case Some(sequence) =>
+        val fileChooser = new FileChooser {
+          title = t("mtdna.export_fasta")
+          initialFileName = s"mtDNA_${currentHaplogroupName}.fasta"
+          extensionFilters.addAll(
+            new FileChooser.ExtensionFilter("FASTA Files", Seq("*.fasta", "*.fa", "*.fna")),
+            new FileChooser.ExtensionFilter("All Files", "*.*")
+          )
+        }
+        val window = this.scene.value.getWindow
+        Option(fileChooser.showSaveDialog(window)).foreach { file =>
+          val header = s"$currentHaplogroupName mtDNA sequence reconstructed from rCRS + ${mtdnaVariants.size} variants"
+          MtDnaFastaProcessor.writeFasta(sequence, file.toPath, header) match {
+            case Left(error) =>
+              new Alert(Alert.AlertType.Error) {
+                title = "Export Error"
+                headerText = "Failed to export FASTA"
+                contentText = error
+              }.showAndWait()
+            case Right(_) => // success
+          }
+        }
+      case None =>
+        new Alert(Alert.AlertType.Warning) {
+          title = "Export Unavailable"
+          headerText = "Cannot export FASTA"
+          contentText = "The rCRS reference sequence is not available for sequence reconstruction."
+        }.showAndWait()
+    }
+  }
+
+  private def exportCsv(): Unit = {
+    val fileChooser = new FileChooser {
+      title = t("snp.export_csv")
+      initialFileName = s"mtDNA_variants_${currentHaplogroupName}.csv"
+      extensionFilters.addAll(
+        new FileChooser.ExtensionFilter("CSV Files", Seq("*.csv")),
+        new FileChooser.ExtensionFilter("All Files", "*.*")
+      )
+    }
+    val window = this.scene.value.getWindow
+    Option(fileChooser.showSaveDialog(window)).foreach { file =>
+      try {
+        val writer = new java.io.PrintWriter(file)
+        try {
+          writer.println("Position,rCRS,Sample,Region,Type")
+          tableData.forEach { v =>
+            writer.println(s"${v.positionDisplay},${v.reference},${v.alternate},${v.regionDisplay},${v.mutationType}")
+          }
+        } finally {
+          writer.close()
+        }
+      } catch {
+        case e: Exception =>
+          new Alert(Alert.AlertType.Error) {
+            title = "Export Error"
+            headerText = "Failed to export CSV"
+            contentText = e.getMessage
+          }.showAndWait()
+      }
+    }
+  }
+
+  private def isMtdnaVariantCall(v: VariantCall): Boolean = {
+    v.contigAccession.contains("NC_012920") ||
+      v.contigAccession.equalsIgnoreCase("chrM") ||
+      v.contigAccession.equalsIgnoreCase("MT")
+  }
+
+  private val heteroplasmySummary = new HBox(10) {
+    alignment = Pos.CenterLeft
+    padding = Insets(8, 10, 8, 10)
+    style = "-fx-background-color: #3a3020; -fx-background-radius: 6;"
+    visible = false
+    managed = false
+  }
+
+  children = Seq(headerBox, variantsTable, heteroplasmySummary, noDataPlaceholder)
 
   /**
    * Update the panel with mtDNA haplogroup result containing variants.
@@ -174,6 +305,9 @@ class MtdnaVariantsPanel extends VBox {
   def setMtdnaResult(result: Option[HaplogroupResult]): Unit = {
     result.flatMap(_.privateVariants) match {
       case Some(pvd) if pvd.variants.nonEmpty =>
+        currentVariantCalls = pvd.variants
+        currentHaplogroupName = result.map(_.haplogroupName).getOrElse("unknown")
+
         // Convert VariantCall to MtdnaVariant with region classification
         val variants = pvd.variants
           .filter(isMtdnaVariant)
@@ -186,6 +320,9 @@ class MtdnaVariantsPanel extends VBox {
         tableData.clear()
         tableData ++= variants
 
+        exportFastaButton.disable = false
+        exportCsvButton.disable = false
+
         variantsTable.visible = true
         variantsTable.managed = true
         noDataPlaceholder.visible = false
@@ -194,10 +331,43 @@ class MtdnaVariantsPanel extends VBox {
         this.managed = true
 
       case _ =>
+        currentVariantCalls = List.empty
+        exportFastaButton.disable = true
+        exportCsvButton.disable = true
         // No variants - hide panel
         this.visible = false
         this.managed = false
     }
+  }
+
+  /**
+   * Set heteroplasmy observations to display indicators on matching variant positions.
+   */
+  def setHeteroplasmyObservations(observations: List[HeteroplasmyObservation]): Unit = {
+    heteroplasmyByPosition = observations.map(h => h.position -> h).toMap
+    if (observations.nonEmpty) {
+      val count = observations.size
+      val definingCount = observations.count(_.isDefiningSnp.contains(true))
+      val summaryParts = scala.collection.mutable.ListBuffer[String]()
+      summaryParts += s"$count heteroplasm${if (count == 1) "y" else "ies"} detected"
+      if (definingCount > 0) summaryParts += s"$definingCount at defining SNP${if (definingCount > 1) "s" else ""}"
+
+      heteroplasmySummary.children = Seq(
+        new Label("\u26A0") { style = "-fx-text-fill: #f59e0b; -fx-font-size: 14px;" },
+        new Label(summaryParts.mkString(" \u2022 ")) {
+          style = "-fx-text-fill: #f59e0b; -fx-font-size: 12px;"
+        }
+      )
+      heteroplasmySummary.visible = true
+      heteroplasmySummary.managed = true
+    } else {
+      heteroplasmySummary.visible = false
+      heteroplasmySummary.managed = false
+    }
+    // Refresh table to update heteroplasmy column
+    val items = tableData.toList
+    tableData.clear()
+    tableData ++= items
   }
 
   private def isMtdnaVariant(v: VariantCall): Boolean = {

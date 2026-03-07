@@ -2459,8 +2459,11 @@ Note: Reference data download may be required on first run."""
     val mtDnaReconciliation = viewModel.workspace.value.main.getMtDnaReconciliation(subject)
     mtdnaReconciliationPanel.setReconciliation(mtDnaReconciliation)
 
-    // Update mtDNA variants panel
+    // Update mtDNA variants panel with heteroplasmy indicators
     mtdnaVariantsPanel.setMtdnaResult(subject.mtHaplogroupResult)
+    mtdnaVariantsPanel.setHeteroplasmyObservations(
+      mtDnaReconciliation.map(_.heteroplasmyObservations).getOrElse(List.empty)
+    )
 
     // Update IBD tab
     updateIbdTab(subject)
