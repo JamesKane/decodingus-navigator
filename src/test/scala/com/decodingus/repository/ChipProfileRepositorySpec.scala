@@ -22,7 +22,7 @@ class ChipProfileRepositorySpec extends FunSuite with DatabaseTestSupport:
       val biosample = createTestBiosample()
       val entity = ChipProfileEntity.create(
         biosampleId = biosample.id,
-        vendor = "23andMe",
+        provider = "23andMe",
         testTypeCode = "V5",
         chipVersion = Some("v5.2"),
         totalMarkersCalled = 650000,
@@ -38,7 +38,7 @@ class ChipProfileRepositorySpec extends FunSuite with DatabaseTestSupport:
       val found = repo.findById(saved.id)
 
       assert(found.isDefined, "Should find inserted entity")
-      assertEquals(found.get.vendor, "23andMe")
+      assertEquals(found.get.provider, "23andMe")
       assertEquals(found.get.testTypeCode, "V5")
       assertEquals(found.get.chipVersion, Some("v5.2"))
       assertEquals(found.get.totalMarkersCalled, 650000)
@@ -63,7 +63,7 @@ class ChipProfileRepositorySpec extends FunSuite with DatabaseTestSupport:
     }
   }
 
-  testTransactor.test("findByVendor filters by vendor") { case (db, tx) =>
+  testTransactor.test("findByProvider filters by provider") { case (db, tx) =>
     tx.readWrite {
       val biosample = createTestBiosample()
 
@@ -71,9 +71,9 @@ class ChipProfileRepositorySpec extends FunSuite with DatabaseTestSupport:
       repo.insert(createChipProfile(biosample.id, "23andMe", "V4"))
       repo.insert(createChipProfile(biosample.id, "AncestryDNA", "V2"))
 
-      val results = repo.findByVendor("23andMe")
+      val results = repo.findByProvider("23andMe")
       assertEquals(results.size, 2)
-      assert(results.forall(_.vendor == "23andMe"))
+      assert(results.forall(_.provider == "23andMe"))
     }
   }
 
@@ -112,14 +112,14 @@ class ChipProfileRepositorySpec extends FunSuite with DatabaseTestSupport:
       val saved = repo.insert(entity)
 
       val updated = saved.copy(
-        vendor = "Updated Vendor",
+        provider = "Updated Vendor",
         noCallRate = 0.05
       )
       repo.update(updated)
 
       val found = repo.findById(saved.id)
       assert(found.isDefined)
-      assertEquals(found.get.vendor, "Updated Vendor")
+      assertEquals(found.get.provider, "Updated Vendor")
       assertEquals(found.get.noCallRate, 0.05)
       assertEquals(found.get.meta.version, 2)
     }
@@ -162,10 +162,10 @@ class ChipProfileRepositorySpec extends FunSuite with DatabaseTestSupport:
     }
   }
 
-  private def createChipProfile(biosampleId: UUID, vendor: String, testType: String): ChipProfileEntity =
+  private def createChipProfile(biosampleId: UUID, provider: String, testType: String): ChipProfileEntity =
     ChipProfileEntity.create(
       biosampleId = biosampleId,
-      vendor = vendor,
+      provider = provider,
       testTypeCode = testType,
       totalMarkersCalled = 600000,
       totalMarkersPossible = 700000,

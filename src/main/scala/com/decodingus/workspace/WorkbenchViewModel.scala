@@ -2821,7 +2821,7 @@ class WorkbenchViewModel(
 
             ChipDataParser.detectParser(file) match {
               case Right((parser, detection)) =>
-                updateProgress(s"Detected ${parser.vendor} format...", 0.3)
+                updateProgress(s"Detected ${parser.provider} format...", 0.3)
 
                 parser.parse(file, (current, total) => {
                   val pct = 0.3 + (current.toDouble / total) * 0.4
@@ -2855,17 +2855,21 @@ class WorkbenchViewModel(
                         atUri = None, // Will be assigned by H2
                         meta = RecordMeta.initial,
                         biosampleRef = subject.atUri.getOrElse(s"local:biosample:${subject.sampleAccession}"),
-                        vendor = parser.vendor,
+                        provider = parser.provider,
                         testTypeCode = detection.testType.map(_.code).getOrElse("UNKNOWN"),
                         chipVersion = detection.chipVersion,
                         totalMarkersCalled = summary.totalMarkersCalled,
                         totalMarkersPossible = summary.totalMarkersPossible,
                         noCallRate = summary.noCallRate,
                         yMarkersCalled = summary.yMarkersCalled,
+                        yMarkersTotal = summary.yMarkersTotal,
                         mtMarkersCalled = summary.mtMarkersCalled,
+                        mtMarkersTotal = summary.mtMarkersTotal,
                         autosomalMarkersCalled = summary.autosomalMarkersCalled,
                         hetRate = summary.hetRate,
                         importDate = LocalDateTime.now(),
+                        processedAt = Some(LocalDateTime.now()),
+                        buildVersion = None, // Chip data doesn't include build version
                         sourceFileHash = Some(computeFileHash(file)),
                         sourceFileName = Some(file.getName),
                         files = List(fileInfo)
@@ -2912,7 +2916,7 @@ class WorkbenchViewModel(
                               analysisProgress.value = "Import complete"
                               analysisProgressPercent.value = 1.0
 
-                              log.info(s"Imported chip data: ${parser.vendor}, ${summary.totalMarkersCalled} markers")
+                              log.info(s"Imported chip data: ${parser.provider}, ${summary.totalMarkersCalled} markers")
                               onComplete(Right(savedProfile))
 
                             case Left(error) =>

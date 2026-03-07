@@ -295,45 +295,65 @@ object EntityConversions:
                            biosampleId: UUID,
                            existingId: Option[UUID] = None
                          ): ChipProfileEntity =
+    import io.circe.syntax.*
+    import com.decodingus.repository.ChipProfileCodecs.given
     val id = existingId.getOrElse(extractOrGenerateId(profile.atUri))
     ChipProfileEntity(
       id = id,
       biosampleId = biosampleId,
-      vendor = profile.vendor,
+      provider = profile.provider,
       testTypeCode = profile.testTypeCode,
       chipVersion = profile.chipVersion,
       totalMarkersCalled = profile.totalMarkersCalled,
       totalMarkersPossible = profile.totalMarkersPossible,
       noCallRate = profile.noCallRate,
       yMarkersCalled = profile.yMarkersCalled,
+      yMarkersTotal = profile.yMarkersTotal,
       mtMarkersCalled = profile.mtMarkersCalled,
+      mtMarkersTotal = profile.mtMarkersTotal,
       autosomalMarkersCalled = profile.autosomalMarkersCalled,
       hetRate = profile.hetRate,
       importDate = profile.importDate,
+      testDate = profile.testDate,
+      processedAt = profile.processedAt,
+      buildVersion = profile.buildVersion,
       sourceFileHash = profile.sourceFileHash,
       sourceFileName = profile.sourceFileName,
+      derivedHaplogroups = profile.derivedHaplogroups.map(_.asJson.noSpaces),
+      populationBreakdownRef = profile.populationBreakdownRef,
+      imputationRef = profile.imputationRef,
       files = profile.files,
       meta = toEntityMeta(profile.meta, profile.atUri)
     )
 
   def fromChipProfileEntity(entity: ChipProfileEntity, biosampleRef: String): ChipProfile =
+    import io.circe.parser.*
+    import com.decodingus.repository.ChipProfileCodecs.given
     ChipProfile(
       atUri = entity.meta.atUri.orElse(Some(localUri("chipprofile", entity.id))),
       meta = fromEntityMeta(entity.meta),
       biosampleRef = biosampleRef,
-      vendor = entity.vendor,
+      provider = entity.provider,
       testTypeCode = entity.testTypeCode,
       chipVersion = entity.chipVersion,
       totalMarkersCalled = entity.totalMarkersCalled,
       totalMarkersPossible = entity.totalMarkersPossible,
       noCallRate = entity.noCallRate,
       yMarkersCalled = entity.yMarkersCalled,
+      yMarkersTotal = entity.yMarkersTotal,
       mtMarkersCalled = entity.mtMarkersCalled,
+      mtMarkersTotal = entity.mtMarkersTotal,
       autosomalMarkersCalled = entity.autosomalMarkersCalled,
       hetRate = entity.hetRate,
       importDate = entity.importDate,
+      testDate = entity.testDate,
+      processedAt = entity.processedAt,
+      buildVersion = entity.buildVersion,
       sourceFileHash = entity.sourceFileHash,
       sourceFileName = entity.sourceFileName,
+      derivedHaplogroups = entity.derivedHaplogroups.flatMap(json => decode[HaplogroupAssignments](json).toOption),
+      populationBreakdownRef = entity.populationBreakdownRef,
+      imputationRef = entity.imputationRef,
       files = entity.files
     )
 

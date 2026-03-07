@@ -14,38 +14,54 @@ import java.time.LocalDateTime
  * @param atUri                  The AT URI of this chip profile record
  * @param meta                   Record metadata for tracking changes and sync
  * @param biosampleRef           AT URI of the parent biosample
- * @param vendor                 Chip vendor (23andMe, AncestryDNA, FamilyTreeDNA, MyHeritage, LivingDNA)
+ * @param provider               Chip provider (23andMe, AncestryDNA, FamilyTreeDNA, MyHeritage, LivingDNA)
  * @param testTypeCode           Test type code (e.g., ARRAY_23ANDME_V5)
  * @param chipVersion            Chip version if detected from file
  * @param totalMarkersCalled     Total number of markers with valid calls
  * @param totalMarkersPossible   Total markers in the chip file
  * @param noCallRate             Percentage of no-calls (0.0-1.0)
  * @param yMarkersCalled         Number of Y-DNA markers called (if applicable)
+ * @param yMarkersTotal          Total Y-DNA markers on chip (if known)
  * @param mtMarkersCalled        Number of mtDNA markers called (if applicable)
+ * @param mtMarkersTotal         Total mtDNA markers on chip (if known)
  * @param autosomalMarkersCalled Number of autosomal markers called
  * @param hetRate                Heterozygosity rate (autosomal only)
  * @param importDate             When this chip data was imported
+ * @param testDate               When the genotyping was performed (if known)
+ * @param processedAt            When the file was processed by Navigator
+ * @param buildVersion           Reference genome build for coordinates (GRCh37/GRCh38)
  * @param sourceFileHash         SHA-256 hash of the source file for deduplication
  * @param sourceFileName         Original filename
+ * @param derivedHaplogroups     Haplogroups derived from chip Y/mtDNA markers
+ * @param populationBreakdownRef AT URI of the population breakdown derived from this genotype data
+ * @param imputationRef          AT URI of imputation results if available
  * @param files                  Source files info
  */
 case class ChipProfile(
                         atUri: Option[String],
                         meta: RecordMeta,
                         biosampleRef: String,
-                        vendor: String,
+                        provider: String,
                         testTypeCode: String,
                         chipVersion: Option[String] = None,
                         totalMarkersCalled: Int,
                         totalMarkersPossible: Int,
                         noCallRate: Double,
                         yMarkersCalled: Option[Int] = None,
+                        yMarkersTotal: Option[Int] = None,
                         mtMarkersCalled: Option[Int] = None,
+                        mtMarkersTotal: Option[Int] = None,
                         autosomalMarkersCalled: Int,
                         hetRate: Option[Double] = None,
                         importDate: LocalDateTime,
+                        testDate: Option[LocalDateTime] = None,
+                        processedAt: Option[LocalDateTime] = None,
+                        buildVersion: Option[String] = None,
                         sourceFileHash: Option[String] = None,
                         sourceFileName: Option[String] = None,
+                        derivedHaplogroups: Option[HaplogroupAssignments] = None,
+                        populationBreakdownRef: Option[String] = None,
+                        imputationRef: Option[String] = None,
                         files: List[FileInfo] = List.empty
                       ) {
 
@@ -85,8 +101,8 @@ case class ChipProfile(
 }
 
 object ChipProfile {
-  /** Known vendor values */
-  val KnownVendors: Set[String] = Set(
+  /** Known provider values */
+  val KnownProviders: Set[String] = Set(
     "23andMe", "AncestryDNA", "FamilyTreeDNA", "MyHeritage", "LivingDNA"
   )
 
@@ -95,4 +111,7 @@ object ChipProfile {
     "ARRAY_23ANDME_V5", "ARRAY_23ANDME_V4", "ARRAY_ANCESTRY_V2",
     "ARRAY_FTDNA_FF", "ARRAY_MYHERITAGE", "ARRAY_LIVINGDNA"
   )
+
+  /** Known reference build versions */
+  val KnownBuildVersions: Set[String] = Set("GRCh37", "GRCh38")
 }

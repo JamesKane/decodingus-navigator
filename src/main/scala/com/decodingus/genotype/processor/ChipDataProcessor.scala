@@ -74,7 +74,7 @@ class ChipDataProcessor {
 
     // Detect format and parse
     ChipDataParser.detectParser(file).flatMap { case (parser, detection) =>
-      onProgress(s"Detected ${parser.vendor} format. Parsing genotypes...", 0.1, 1.0)
+      onProgress(s"Detected ${parser.provider} format. Parsing genotypes...", 0.1, 1.0)
 
       var lastProgress = 0.1
       parser.parse(file, (current, total) => {

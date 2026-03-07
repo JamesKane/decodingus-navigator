@@ -27,9 +27,9 @@ case class FormatDetectionResult(
 trait ChipDataParser {
 
   /**
-   * The vendor this parser handles.
+   * The provider this parser handles.
    */
-  def vendor: String
+  def provider: String
 
   /**
    * Supported file extensions.
@@ -87,7 +87,7 @@ object ChipDataParser {
       parsers.view
         .map(p => (p, p.detect(lines)))
         .find(_._2.detected)
-        .toRight(s"Unknown file format. Unable to detect vendor from file header.")
+        .toRight(s"Unknown file format. Unable to detect provider from file header.")
     }
   }
 
@@ -138,7 +138,7 @@ object ChipDataParser {
  */
 object Parser23andMe extends ChipDataParser {
 
-  override def vendor: String = "23andMe"
+  override def provider: String = "23andMe"
 
   override def supportedExtensions: List[String] = List(".txt")
 
@@ -221,7 +221,7 @@ object Parser23andMe extends ChipDataParser {
  */
 object ParserAncestryDna extends ChipDataParser {
 
-  override def vendor: String = "AncestryDNA"
+  override def provider: String = "AncestryDNA"
 
   override def supportedExtensions: List[String] = List(".txt")
 
@@ -308,7 +308,7 @@ object ParserAncestryDna extends ChipDataParser {
  */
 object ParserFtdna extends ChipDataParser {
 
-  override def vendor: String = "FamilyTreeDNA"
+  override def provider: String = "FamilyTreeDNA"
 
   override def supportedExtensions: List[String] = List(".csv")
 
@@ -385,7 +385,7 @@ object ParserFtdna extends ChipDataParser {
  */
 object ParserMyHeritage extends ChipDataParser {
 
-  override def vendor: String = "MyHeritage"
+  override def provider: String = "MyHeritage"
 
   override def supportedExtensions: List[String] = List(".csv")
 
@@ -420,7 +420,7 @@ object ParserMyHeritage extends ChipDataParser {
  */
 object ParserLivingDna extends ChipDataParser {
 
-  override def vendor: String = "LivingDNA"
+  override def provider: String = "LivingDNA"
 
   override def supportedExtensions: List[String] = List(".csv", ".txt")
 
@@ -472,7 +472,7 @@ object ParserBisdna extends ChipDataParser {
 
   import com.decodingus.haplogroup.vendor.NamedVariantCache
 
-  override def vendor: String = "BISDNA"
+  override def provider: String = "BISDNA"
 
   override def supportedExtensions: List[String] = List(".txt", ".csv", ".tsv")
 

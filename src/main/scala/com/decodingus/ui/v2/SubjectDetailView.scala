@@ -1863,7 +1863,7 @@ class SubjectDetailView(viewModel: WorkbenchViewModel) extends VBox {
       children = Seq(
         // Icon/vendor indicator
         new Label {
-          text = LabsConfig.getAbbreviation(chip.vendor)
+          text = LabsConfig.getAbbreviation(chip.provider)
           prefWidth = 50
           style = "-fx-font-weight: bold; -fx-text-fill: #fbbf24; -fx-font-family: monospace;"
         },
@@ -1874,7 +1874,7 @@ class SubjectDetailView(viewModel: WorkbenchViewModel) extends VBox {
             new HBox(8) {
               alignment = Pos.CenterLeft
               children = Seq(
-                new Label(chip.vendor) { style = "-fx-font-weight: bold; -fx-text-fill: #ffffff;" },
+                new Label(chip.provider) { style = "-fx-font-weight: bold; -fx-text-fill: #ffffff;" },
                 chip.chipVersion.map(v => new Label(s"• $v") { style = "-fx-text-fill: #888888;" }).getOrElse(new Region)
               )
             },
@@ -1963,7 +1963,7 @@ class SubjectDetailView(viewModel: WorkbenchViewModel) extends VBox {
     // Remove
     items += new MenuItem("Remove") {
       onAction = _ => {
-        val details = s"${chip.vendor} - ${Formatters.formatNumber(chip.totalMarkersCalled)} markers"
+        val details = s"${chip.provider} - ${Formatters.formatNumber(chip.totalMarkersCalled)} markers"
         if (ConfirmDialog.confirmRemoval("Chip Data", details)) {
           chip.atUri.foreach { uri =>
             currentSubject.value.foreach { subject =>
@@ -1981,7 +1981,7 @@ class SubjectDetailView(viewModel: WorkbenchViewModel) extends VBox {
   /** Shows chip profile details dialog */
   private def showChipDetailsDialog(chip: ChipProfile): Unit = {
     val detailsText =
-      s"""Vendor: ${chip.vendor}
+      s"""Provider: ${chip.provider}
          |Test Type: ${chip.testTypeCode}
          |Chip Version: ${chip.chipVersion.getOrElse("Unknown")}
          |
@@ -2005,7 +2005,7 @@ class SubjectDetailView(viewModel: WorkbenchViewModel) extends VBox {
 
     InfoDialog.showCode(
       "Chip Data Details",
-      s"${chip.vendor} - ${chip.testTypeCode}",
+      s"${chip.provider} - ${chip.testTypeCode}",
       detailsText,
       dialogWidth = 420,
       dialogHeight = 380
@@ -2022,7 +2022,7 @@ class SubjectDetailView(viewModel: WorkbenchViewModel) extends VBox {
 
     val confirm = new Alert(AlertType.Confirmation) {
       title = s"Run $typeName Haplogroup Analysis"
-      headerText = s"Analyze ${chip.vendor} chip data for $typeName haplogroup"
+      headerText = s"Analyze ${chip.provider} chip data for $typeName haplogroup"
       contentText =
         s"""This will score chip genotypes against the $typeName haplogroup tree.
 
@@ -2095,7 +2095,7 @@ For higher resolution, consider WGS analysis."""
 
     val confirm = new Alert(AlertType.Confirmation) {
       title = "Run Ancestry Analysis"
-      headerText = s"Analyze ${chip.vendor} chip data for ancestry"
+      headerText = s"Analyze ${chip.provider} chip data for ancestry"
       contentText =
         s"""This will estimate population percentages using the $panelLabel panel.
 
@@ -2914,7 +2914,7 @@ Note: Reference data download may be required on first run."""
                   // Chip/array data import using existing parser
                   viewModel.importChipData(subject.accession, file, {
                     case Right(chipProfile) =>
-                      log.info(s"Imported chip data: ${chipProfile.vendor} with ${chipProfile.totalMarkersCalled} markers")
+                      log.info(s"Imported chip data: ${chipProfile.provider} with ${chipProfile.totalMarkersCalled} markers")
                       scalafx.application.Platform.runLater {
                         // Refresh subject from workspace to get updated refs
                         val freshSubject = viewModel.findSubject(subject.accession).getOrElse(subject)
@@ -2922,7 +2922,7 @@ Note: Reference data download may be required on first run."""
                         updateDataSources(freshSubject)
                         showNotification(
                           t("data.added.success"),
-                          s"${chipProfile.vendor} • ${Formatters.formatNumber(chipProfile.totalMarkersCalled)} ${t("data.markers")}"
+                          s"${chipProfile.provider} • ${Formatters.formatNumber(chipProfile.totalMarkersCalled)} ${t("data.markers")}"
                         )
                       }
                     case Left(error) =>

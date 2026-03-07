@@ -153,7 +153,7 @@ class Phase2EntityIntegrationSpec extends FunSuite with DatabaseTestSupport:
 
       val chipProfile = chipProfileRepo.insert(ChipProfileEntity.create(
         biosampleId = biosample.id,
-        vendor = "ILLUMINA",
+        provider = "ILLUMINA",
         testTypeCode = "ANCESTRY_V2",
         totalMarkersCalled = 650000,
         totalMarkersPossible = 700000,
@@ -172,19 +172,19 @@ class Phase2EntityIntegrationSpec extends FunSuite with DatabaseTestSupport:
 
       val profiles = chipProfileRepo.findByBiosample(biosample.id)
       assertEquals(profiles.size, 1)
-      assertEquals(profiles.head.vendor, "ILLUMINA")
+      assertEquals(profiles.head.provider, "ILLUMINA")
       assertEquals(profiles.head.totalMarkersCalled, 650000)
     }
   }
 
-  testTransactor.test("Chip profile: find by vendor") { case (db, tx) =>
+  testTransactor.test("Chip profile: find by provider") { case (db, tx) =>
     tx.readWrite {
       val biosample1 = createTestBiosample("CHIP-VENDOR-001")
       val biosample2 = createTestBiosample("CHIP-VENDOR-002")
 
       chipProfileRepo.insert(ChipProfileEntity.create(
         biosampleId = biosample1.id,
-        vendor = "ILLUMINA",
+        provider = "ILLUMINA",
         testTypeCode = "ANCESTRY_V2",
         totalMarkersCalled = 650000,
         totalMarkersPossible = 700000,
@@ -194,7 +194,7 @@ class Phase2EntityIntegrationSpec extends FunSuite with DatabaseTestSupport:
       ))
       chipProfileRepo.insert(ChipProfileEntity.create(
         biosampleId = biosample2.id,
-        vendor = "ILLUMINA",
+        provider = "ILLUMINA",
         testTypeCode = "GSA_V3",
         totalMarkersCalled = 700000,
         totalMarkersPossible = 750000,
@@ -204,7 +204,7 @@ class Phase2EntityIntegrationSpec extends FunSuite with DatabaseTestSupport:
       ))
       chipProfileRepo.insert(ChipProfileEntity.create(
         biosampleId = biosample1.id,
-        vendor = "23ANDME",
+        provider = "23ANDME",
         testTypeCode = "CUSTOM_V5",
         totalMarkersCalled = 650000,
         totalMarkersPossible = 680000,
@@ -213,10 +213,10 @@ class Phase2EntityIntegrationSpec extends FunSuite with DatabaseTestSupport:
         importDate = LocalDateTime.now()
       ))
 
-      val illuminaProfiles = chipProfileRepo.findByVendor("ILLUMINA")
+      val illuminaProfiles = chipProfileRepo.findByProvider("ILLUMINA")
       assertEquals(illuminaProfiles.size, 2)
 
-      val andMeProfiles = chipProfileRepo.findByVendor("23ANDME")
+      val andMeProfiles = chipProfileRepo.findByProvider("23ANDME")
       assertEquals(andMeProfiles.size, 1)
     }
   }
@@ -446,7 +446,7 @@ class Phase2EntityIntegrationSpec extends FunSuite with DatabaseTestSupport:
       // 5. Create chip profile from autosomal test
       val chipProfile = chipProfileRepo.insert(ChipProfileEntity.create(
         biosampleId = biosample.id,
-        vendor = "ILLUMINA",
+        provider = "ILLUMINA",
         testTypeCode = "GSA_V3",
         totalMarkersCalled = 650000,
         totalMarkersPossible = 700000,
