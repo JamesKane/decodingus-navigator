@@ -2,7 +2,7 @@ package com.decodingus.client
 
 import com.decodingus.model.LibraryStats
 import com.decodingus.refgenome.model.{GenomeRegions, GenomeRegionsCodecs}
-import com.decodingus.workspace.model.MatchSuggestion
+import com.decodingus.workspace.model.{MatchSuggestion, SuggestionReason}
 import io.circe.*
 import io.circe.generic.auto.*
 import sttp.client3.*
@@ -233,7 +233,7 @@ object DecodingUsClient {
             matchedDid = dto.matchedDid,
             matchedLabel = dto.matchedLabel,
             score = dto.score,
-            reasonType = dto.reasonType,
+            reasonType = SuggestionReason.fromString(dto.reasonType),
             reasonDetail = dto.reasonDetail,
             populationOverlap = dto.populationOverlap
           )))

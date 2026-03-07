@@ -87,9 +87,6 @@ object PdsSyncValidation:
   def validateMatchConsent(mc: MatchConsent): Either[List[String], Unit] =
     val errors = List.newBuilder[String]
     if mc.biosampleRef.isEmpty then errors += "MatchConsent missing biosampleRef"
-    if mc.consentLevel.isEmpty then errors += "MatchConsent missing consentLevel"
-    if !MatchConsent.ConsentLevels.contains(mc.consentLevel) then
-      errors += s"MatchConsent invalid consentLevel: ${mc.consentLevel}"
     buildResult(errors)
 
   /**
@@ -101,7 +98,6 @@ object PdsSyncValidation:
     if mr.atUri.isEmpty then errors += "MatchRequest missing atUri"
     if mr.fromBiosampleRef.isEmpty then errors += "MatchRequest missing fromBiosampleRef"
     if mr.toBiosampleRef.isEmpty then errors += "MatchRequest missing toBiosampleRef"
-    if mr.status.isEmpty then errors += "MatchRequest missing status"
     buildResult(errors)
 
   private def buildResult(errors: scala.collection.mutable.Builder[String, List[String]]): Either[List[String], Unit] =

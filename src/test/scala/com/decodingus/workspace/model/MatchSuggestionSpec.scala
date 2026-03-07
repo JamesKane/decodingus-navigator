@@ -12,13 +12,13 @@ class MatchSuggestionSpec extends FunSuite:
       matchedDid = Some("did:plc:b"),
       matchedLabel = "Anonymous Match #42",
       score = 0.85,
-      reasonType = "POPULATION_OVERLAP",
+      reasonType = SuggestionReason.PopulationOverlap,
       reasonDetail = Some("Shared 92% population overlap in Northern European reference panel"),
       populationOverlap = Some(92.0)
     )
     assertEquals(suggestion.suggestionId, "sug-001")
     assertEquals(suggestion.score, 0.85)
-    assertEquals(suggestion.reasonType, "POPULATION_OVERLAP")
+    assertEquals(suggestion.reasonType, SuggestionReason.PopulationOverlap)
     assert(suggestion.populationOverlap.contains(92.0))
     assert(!suggestion.dismissed)
   }
@@ -30,7 +30,7 @@ class MatchSuggestionSpec extends FunSuite:
       matchedBiosampleRef = "at://did:plc:c/bio/1",
       matchedLabel = "Anonymous",
       score = 0.5,
-      reasonType = "HAPLOGROUP_PROXIMITY"
+      reasonType = SuggestionReason.HaplogroupProximity
     )
     assert(suggestion.matchedDid.isEmpty)
     assert(suggestion.reasonDetail.isEmpty)
@@ -38,12 +38,13 @@ class MatchSuggestionSpec extends FunSuite:
     assert(!suggestion.dismissed)
   }
 
-  test("MatchSuggestion.ReasonTypes contains expected values") {
-    assert(MatchSuggestion.ReasonTypes.contains("POPULATION_OVERLAP"))
-    assert(MatchSuggestion.ReasonTypes.contains("HAPLOGROUP_PROXIMITY"))
-    assert(MatchSuggestion.ReasonTypes.contains("GEOGRAPHIC_CLUSTER"))
-    assert(MatchSuggestion.ReasonTypes.contains("PROJECT_MEMBER"))
-    assert(MatchSuggestion.ReasonTypes.contains("MUTUAL_INTEREST"))
+  test("SuggestionReason has all expected values") {
+    assertEquals(SuggestionReason.values.length, 5)
+    assertEquals(SuggestionReason.fromString("POPULATION_OVERLAP"), SuggestionReason.PopulationOverlap)
+    assertEquals(SuggestionReason.fromString("HAPLOGROUP_PROXIMITY"), SuggestionReason.HaplogroupProximity)
+    assertEquals(SuggestionReason.fromString("GEOGRAPHIC_CLUSTER"), SuggestionReason.GeographicCluster)
+    assertEquals(SuggestionReason.fromString("PROJECT_MEMBER"), SuggestionReason.ProjectMember)
+    assertEquals(SuggestionReason.fromString("MUTUAL_INTEREST"), SuggestionReason.MutualInterest)
   }
 
   test("MatchSuggestion dismissed flag") {
@@ -53,7 +54,7 @@ class MatchSuggestionSpec extends FunSuite:
       matchedBiosampleRef = "at://did:plc:d/bio/1",
       matchedLabel = "Anonymous",
       score = 0.3,
-      reasonType = "PROJECT_MEMBER",
+      reasonType = SuggestionReason.ProjectMember,
       dismissed = true
     )
     assert(suggestion.dismissed)

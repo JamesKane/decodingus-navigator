@@ -10,7 +10,7 @@ import com.decodingus.ui.components.{AddDataDialog, AddSequenceDataDialog, Ances
 import com.decodingus.ui.v2.BiosampleExtensions.*
 import com.decodingus.util.Logger
 import com.decodingus.workspace.WorkbenchViewModel
-import com.decodingus.workspace.model.{Alignment, Biosample, ChipProfile, HaplogroupResult, MatchConsent, MatchResult, MatchSuggestion, SequenceRun, StrProfile}
+import com.decodingus.workspace.model.{Alignment, Biosample, ChipProfile, ConsentLevel, HaplogroupResult, MatchConsent, MatchResult, MatchSuggestion, RelationshipEstimate, SequenceRun, StrProfile}
 import scalafx.scene.control.Alert.AlertType
 import scala.util.boundary, boundary.break
 import scalafx.Includes.*
@@ -786,7 +786,7 @@ class SubjectDetailView(viewModel: WorkbenchViewModel) extends VBox {
         text = t("ibd.relationship")
         prefWidth = 120
         cellValueFactory = { p =>
-          StringProperty(p.value.relationshipEstimate.getOrElse("-"))
+          StringProperty(p.value.relationshipEstimate.map(_.label).getOrElse("-"))
         }
       }
     )
@@ -797,9 +797,9 @@ class SubjectDetailView(viewModel: WorkbenchViewModel) extends VBox {
     style = "-fx-text-fill: #b0b0b0;"
   }
 
-  private val ibdConsentLevelCombo = new ComboBox[String] {
-    items = scalafx.collections.ObservableBuffer("FULL", "ANONYMOUS", "PROJECT_ONLY")
-    value = "FULL"
+  private val ibdConsentLevelCombo = new ComboBox[ConsentLevel] {
+    items = scalafx.collections.ObservableBuffer(ConsentLevel.values.toSeq*)
+    value = ConsentLevel.Full
     disable = true
   }
 

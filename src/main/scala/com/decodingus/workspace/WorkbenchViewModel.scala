@@ -14,7 +14,7 @@ import com.decodingus.refgenome.{ReferenceGateway, ReferenceResolveResult, YRegi
 import com.decodingus.repository.BiosampleRepository
 import com.decodingus.service.{DatabaseContext, H2WorkspaceService, SequenceDataManager}
 import com.decodingus.util.Logger
-import com.decodingus.workspace.model.{Alignment, AlignmentMetrics, Biosample, CallMethod, ChipProfile, ContigMetrics, DnaType, FileInfo, HaplogroupAssignments, HaplogroupTechnology, MatchConsent, MatchRequest, MatchResult, MatchSuggestion, Project, RecordMeta, RunHaplogroupCall, SequenceRun, StrProfile, SyncStatus, Workspace, WorkspaceContent, HaplogroupResult as WorkspaceHaplogroupResult}
+import com.decodingus.workspace.model.{Alignment, AlignmentMetrics, Biosample, CallMethod, ChipProfile, ConsentLevel, ContigMetrics, DnaType, FileInfo, HaplogroupAssignments, HaplogroupTechnology, MatchConsent, MatchRequest, MatchResult, MatchSuggestion, Project, RecordMeta, RunHaplogroupCall, SequenceRun, StrProfile, SyncStatus, Workspace, WorkspaceContent, HaplogroupResult as WorkspaceHaplogroupResult}
 import com.decodingus.workspace.services.*
 import com.decodingus.yprofile.model.*
 import com.decodingus.yprofile.repository.*
@@ -3915,7 +3915,7 @@ class WorkbenchViewModel(
         log.warn(s"Error fetching IBD suggestions: ${ex.getMessage}")
     }
 
-  def grantIbdConsent(biosampleId: UUID, biosampleRef: String, consentLevel: String): Either[String, MatchConsent] =
+  def grantIbdConsent(biosampleId: UUID, biosampleRef: String, consentLevel: ConsentLevel): Either[String, MatchConsent] =
     val result = ibdMatchService.grantConsent(biosampleId, biosampleRef, consentLevel)
     result.foreach { consent =>
       Platform.runLater { ibdConsentStatus.value = Some(consent) }

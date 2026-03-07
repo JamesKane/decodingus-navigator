@@ -2,6 +2,64 @@ package com.decodingus.workspace.model
 
 import java.time.LocalDateTime
 
+enum RelationshipEstimate:
+  case ParentChild, FullSibling, HalfSibling, Grandparent, AuntUncle
+  case FirstCousin, FirstCousinOnceRemoved
+  case SecondCousin, SecondCousinOnceRemoved
+  case ThirdCousin, FourthCousin, FifthCousin
+  case Distant, Unknown
+
+object RelationshipEstimate:
+  def fromString(s: String): RelationshipEstimate = s match
+    case "PARENT_CHILD" => ParentChild
+    case "FULL_SIBLING" => FullSibling
+    case "HALF_SIBLING" => HalfSibling
+    case "GRANDPARENT" => Grandparent
+    case "AUNT_UNCLE" => AuntUncle
+    case "1ST_COUSIN" => FirstCousin
+    case "1ST_COUSIN_1R" => FirstCousinOnceRemoved
+    case "2ND_COUSIN" => SecondCousin
+    case "2ND_COUSIN_1R" => SecondCousinOnceRemoved
+    case "3RD_COUSIN" => ThirdCousin
+    case "4TH_COUSIN" => FourthCousin
+    case "5TH_COUSIN" => FifthCousin
+    case "DISTANT" => Distant
+    case "UNKNOWN" => Unknown
+    case other => throw new IllegalArgumentException(s"Unknown relationship estimate: $other")
+
+  extension (re: RelationshipEstimate)
+    def toDbString: String = re match
+      case ParentChild => "PARENT_CHILD"
+      case FullSibling => "FULL_SIBLING"
+      case HalfSibling => "HALF_SIBLING"
+      case Grandparent => "GRANDPARENT"
+      case AuntUncle => "AUNT_UNCLE"
+      case FirstCousin => "1ST_COUSIN"
+      case FirstCousinOnceRemoved => "1ST_COUSIN_1R"
+      case SecondCousin => "2ND_COUSIN"
+      case SecondCousinOnceRemoved => "2ND_COUSIN_1R"
+      case ThirdCousin => "3RD_COUSIN"
+      case FourthCousin => "4TH_COUSIN"
+      case FifthCousin => "5TH_COUSIN"
+      case Distant => "DISTANT"
+      case Unknown => "UNKNOWN"
+
+    def label: String = re match
+      case ParentChild => "Parent/Child"
+      case FullSibling => "Full Sibling"
+      case HalfSibling => "Half Sibling"
+      case Grandparent => "Grandparent/Grandchild"
+      case AuntUncle => "Aunt/Uncle/Niece/Nephew"
+      case FirstCousin => "1st Cousin"
+      case FirstCousinOnceRemoved => "1st Cousin Once Removed"
+      case SecondCousin => "2nd Cousin"
+      case SecondCousinOnceRemoved => "2nd Cousin Once Removed"
+      case ThirdCousin => "3rd Cousin"
+      case FourthCousin => "4th Cousin"
+      case FifthCousin => "5th Cousin"
+      case Distant => "Distant Relative"
+      case Unknown => "Unknown"
+
 /**
  * A confirmed IBD match with another biosample.
  *
@@ -25,7 +83,7 @@ case class MatchResult(
                         biosampleRef: String,
                         matchedBiosampleRef: String,
                         matchedCitizenDid: Option[String] = None,
-                        relationshipEstimate: Option[String] = None,
+                        relationshipEstimate: Option[RelationshipEstimate] = None,
                         totalSharedCm: Double,
                         longestSegmentCm: Option[Double] = None,
                         segmentCount: Int,
@@ -34,10 +92,3 @@ case class MatchResult(
                         matchedAt: LocalDateTime,
                         attestationHash: Option[String] = None
                       )
-
-object MatchResult:
-  val RelationshipEstimates: Set[String] = Set(
-    "PARENT_CHILD", "FULL_SIBLING", "HALF_SIBLING", "GRANDPARENT", "AUNT_UNCLE",
-    "1ST_COUSIN", "1ST_COUSIN_1R", "2ND_COUSIN", "2ND_COUSIN_1R", "3RD_COUSIN",
-    "4TH_COUSIN", "5TH_COUSIN", "DISTANT", "UNKNOWN"
-  )

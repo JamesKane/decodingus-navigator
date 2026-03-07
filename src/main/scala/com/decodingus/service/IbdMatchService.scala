@@ -48,8 +48,8 @@ class IbdMatchService(
       consentRepo.findByBiosample(biosampleId).isDefined
     }
 
-  def grantConsent(biosampleId: UUID, biosampleRef: String, consentLevel: String,
-                   allowedMatchTypes: List[String] = List("IBD"),
+  def grantConsent(biosampleId: UUID, biosampleRef: String, consentLevel: ConsentLevel,
+                   allowedMatchTypes: List[MatchType] = List(MatchType.Ibd),
                    minimumSegmentCm: Double = 7.0,
                    shareContactInfo: Boolean = false): Either[String, MatchConsent] =
     transactor.readWrite {
@@ -57,8 +57,8 @@ class IbdMatchService(
       consentRepo.findByBiosample(biosampleId) match
         case Some(existing) =>
           val updated = existing.copy(
-            consentLevel = consentLevel,
-            allowedMatchTypes = allowedMatchTypes,
+            consentLevel = consentLevel.toDbString,
+            allowedMatchTypes = allowedMatchTypes.map(_.toDbString),
             minimumSegmentCm = minimumSegmentCm,
             shareContactInfo = shareContactInfo
           )
@@ -66,8 +66,8 @@ class IbdMatchService(
         case None =>
           val entity = com.decodingus.repository.MatchConsentEntity.create(
             biosampleId = biosampleId,
-            consentLevel = consentLevel,
-            allowedMatchTypes = allowedMatchTypes,
+            consentLevel = consentLevel.toDbString,
+            allowedMatchTypes = allowedMatchTypes.map(_.toDbString),
             minimumSegmentCm = minimumSegmentCm,
             shareContactInfo = shareContactInfo
           )
@@ -111,7 +111,7 @@ class IbdMatchService(
     }
 
   def sendMatchRequest(fromBiosampleRef: String, toBiosampleRef: String,
-                       requestType: String = "AUTOSOMAL",
+                       requestType: RequestType = RequestType.Autosomal,
                        message: Option[String] = None,
                        sharedAncestorHint: Option[String] = None,
                        discoveryReason: Option[String] = None): Either[String, MatchRequest] =
@@ -119,7 +119,7 @@ class IbdMatchService(
       val entity = com.decodingus.repository.MatchRequestEntity.create(
         fromBiosampleRef = fromBiosampleRef,
         toBiosampleRef = toBiosampleRef,
-        requestType = requestType,
+        requestType = requestType.toDbString,
         message = message,
         sharedAncestorHint = sharedAncestorHint,
         discoveryReason = discoveryReason
@@ -129,13 +129,13 @@ class IbdMatchService(
 
   def respondToRequest(requestId: UUID, accept: Boolean): Either[String, Boolean] =
     transactor.readWrite {
-      val newStatus = if accept then "ACCEPTED" else "DECLINED"
-      requestRepo.updateRequestStatus(requestId, newStatus)
+      val newStatus = if accept then RequestStatus.Accepted else RequestStatus.Declined
+      requestRepo.updateRequestStatus(requestId, newStatus.toDbString)
     }
 
   def withdrawRequest(requestId: UUID): Either[String, Boolean] =
     transactor.readWrite {
-      requestRepo.updateRequestStatus(requestId, "WITHDRAWN")
+      requestRepo.updateRequestStatus(requestId, RequestStatus.Withdrawn.toDbString)
     }
 
   // ============================================

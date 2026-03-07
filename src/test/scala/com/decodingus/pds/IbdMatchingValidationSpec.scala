@@ -22,24 +22,6 @@ class IbdMatchingValidationSpec extends FunSuite:
     assert(errors.exists(_.contains("biosampleRef")))
   }
 
-  test("validateMatchConsent fails when missing consentLevel") {
-    val mc = makeConsent(consentLevel = "")
-    val Left(errors) = PdsSyncValidation.validateMatchConsent(mc): @unchecked
-    assert(errors.exists(_.contains("consentLevel")))
-  }
-
-  test("validateMatchConsent fails with invalid consentLevel") {
-    val mc = makeConsent(consentLevel = "INVALID")
-    val Left(errors) = PdsSyncValidation.validateMatchConsent(mc): @unchecked
-    assert(errors.exists(_.contains("invalid consentLevel")))
-  }
-
-  test("validateMatchConsent accepts all valid consent levels") {
-    for level <- MatchConsent.ConsentLevels do
-      val mc = makeConsent(consentLevel = level)
-      assert(PdsSyncValidation.validateMatchConsent(mc).isRight, s"Failed for $level")
-  }
-
   // ============================================
   // MatchRequest Validation
   // ============================================
@@ -68,9 +50,9 @@ class IbdMatchingValidationSpec extends FunSuite:
   }
 
   test("validateMatchRequest collects multiple errors") {
-    val mr = makeRequest(atUri = None, fromBiosampleRef = "", toBiosampleRef = "", status = "")
+    val mr = makeRequest(atUri = None, fromBiosampleRef = "", toBiosampleRef = "")
     val Left(errors) = PdsSyncValidation.validateMatchRequest(mr): @unchecked
-    assertEquals(errors.size, 4)
+    assertEquals(errors.size, 3)
   }
 
   // ============================================
@@ -92,34 +74,48 @@ class IbdMatchingValidationSpec extends FunSuite:
   }
 
   // ============================================
-  // MatchConsent Known Values
+  // Enum Completeness
   // ============================================
 
-  test("MatchConsent.ConsentLevels contains expected values") {
-    assert(MatchConsent.ConsentLevels.contains("FULL"))
-    assert(MatchConsent.ConsentLevels.contains("ANONYMOUS"))
-    assert(MatchConsent.ConsentLevels.contains("PROJECT_ONLY"))
+  test("ConsentLevel has all expected values") {
+    assertEquals(ConsentLevel.values.length, 3)
+    assertEquals(ConsentLevel.fromString("FULL"), ConsentLevel.Full)
+    assertEquals(ConsentLevel.fromString("ANONYMOUS"), ConsentLevel.Anonymous)
+    assertEquals(ConsentLevel.fromString("PROJECT_ONLY"), ConsentLevel.ProjectOnly)
   }
 
-  test("MatchConsent.MatchTypes contains expected values") {
-    assert(MatchConsent.MatchTypes.contains("IBD"))
-    assert(MatchConsent.MatchTypes.contains("Y_STR"))
-    assert(MatchConsent.MatchTypes.contains("MT_SEQUENCE"))
-    assert(MatchConsent.MatchTypes.contains("AUTOSOMAL"))
+  test("MatchType has all expected values") {
+    assertEquals(MatchType.values.length, 4)
+    assertEquals(MatchType.fromString("IBD"), MatchType.Ibd)
+    assertEquals(MatchType.fromString("Y_STR"), MatchType.YStr)
+    assertEquals(MatchType.fromString("MT_SEQUENCE"), MatchType.MtSequence)
+    assertEquals(MatchType.fromString("AUTOSOMAL"), MatchType.Autosomal)
   }
 
-  test("MatchRequest.Statuses contains expected values") {
-    assert(MatchRequest.Statuses.contains("PENDING"))
-    assert(MatchRequest.Statuses.contains("ACCEPTED"))
-    assert(MatchRequest.Statuses.contains("DECLINED"))
-    assert(MatchRequest.Statuses.contains("EXPIRED"))
-    assert(MatchRequest.Statuses.contains("WITHDRAWN"))
+  test("RequestStatus has all expected values") {
+    assertEquals(RequestStatus.values.length, 5)
+    assertEquals(RequestStatus.fromString("PENDING"), RequestStatus.Pending)
+    assertEquals(RequestStatus.fromString("ACCEPTED"), RequestStatus.Accepted)
+    assertEquals(RequestStatus.fromString("DECLINED"), RequestStatus.Declined)
+    assertEquals(RequestStatus.fromString("EXPIRED"), RequestStatus.Expired)
+    assertEquals(RequestStatus.fromString("WITHDRAWN"), RequestStatus.Withdrawn)
   }
 
-  test("MatchResult.RelationshipEstimates contains expected values") {
-    assert(MatchResult.RelationshipEstimates.contains("PARENT_CHILD"))
-    assert(MatchResult.RelationshipEstimates.contains("2ND_COUSIN"))
-    assert(MatchResult.RelationshipEstimates.contains("DISTANT"))
+  test("RelationshipEstimate has all expected values") {
+    assertEquals(RelationshipEstimate.values.length, 14)
+    assertEquals(RelationshipEstimate.fromString("PARENT_CHILD"), RelationshipEstimate.ParentChild)
+    assertEquals(RelationshipEstimate.fromString("2ND_COUSIN"), RelationshipEstimate.SecondCousin)
+    assertEquals(RelationshipEstimate.fromString("DISTANT"), RelationshipEstimate.Distant)
+  }
+
+  test("ConsentLevel round-trips through toDbString/fromString") {
+    for level <- ConsentLevel.values do
+      assertEquals(ConsentLevel.fromString(level.toDbString), level)
+  }
+
+  test("RelationshipEstimate round-trips through toDbString/fromString") {
+    for est <- RelationshipEstimate.values do
+      assertEquals(RelationshipEstimate.fromString(est.toDbString), est)
   }
 
   // ============================================
@@ -128,7 +124,7 @@ class IbdMatchingValidationSpec extends FunSuite:
 
   private def makeConsent(
                            biosampleRef: String = "at://did:plc:test/bio/1",
-                           consentLevel: String = "FULL"
+                           consentLevel: ConsentLevel = ConsentLevel.Full
                          ): MatchConsent =
     MatchConsent(
       atUri = Some("at://did:plc:test/matchconsent/1"),
@@ -141,14 +137,13 @@ class IbdMatchingValidationSpec extends FunSuite:
   private def makeRequest(
                             atUri: Option[String] = Some("at://did:plc:test/matchrequest/1"),
                             fromBiosampleRef: String = "at://did:plc:a/bio/1",
-                            toBiosampleRef: String = "at://did:plc:b/bio/1",
-                            status: String = "PENDING"
+                            toBiosampleRef: String = "at://did:plc:b/bio/1"
                           ): MatchRequest =
     MatchRequest(
       atUri = atUri,
       meta = RecordMeta.initial,
       fromBiosampleRef = fromBiosampleRef,
       toBiosampleRef = toBiosampleRef,
-      status = status,
+      status = RequestStatus.Pending,
       createdAt = LocalDateTime.now()
     )

@@ -76,7 +76,7 @@ object IbdCryptoService:
    * Encrypt data and package as an EncryptedPayload for relay transport.
    */
   def encryptToPayload(data: Array[Byte], key: SecretKey, sessionId: String,
-                       dataType: String, senderKeyId: Option[String] = None): EncryptedPayload =
+                       dataType: PayloadDataType, senderKeyId: Option[String] = None): EncryptedPayload =
     val (ciphertext, iv) = encrypt(data, key)
     val encoder = Base64.getEncoder
     EncryptedPayload(

@@ -35,11 +35,11 @@ class IbdMatchServiceSpec extends FunSuite with DatabaseTestSupport:
     val service = createService(tx)
     val biosampleId = createBiosample(tx)
 
-    val result = service.grantConsent(biosampleId, s"local://$biosampleId", "FULL")
+    val result = service.grantConsent(biosampleId, s"local://$biosampleId", ConsentLevel.Full)
     assert(result.isRight)
     result.foreach { consent =>
-      assertEquals(consent.consentLevel, "FULL")
-      assert(consent.allowedMatchTypes.contains("IBD"))
+      assertEquals(consent.consentLevel, ConsentLevel.Full)
+      assert(consent.allowedMatchTypes.contains(MatchType.Ibd))
     }
   }
 
@@ -47,11 +47,11 @@ class IbdMatchServiceSpec extends FunSuite with DatabaseTestSupport:
     val service = createService(tx)
     val biosampleId = createBiosample(tx)
 
-    service.grantConsent(biosampleId, s"local://$biosampleId", "FULL")
-    val result = service.grantConsent(biosampleId, s"local://$biosampleId", "ANONYMOUS")
+    service.grantConsent(biosampleId, s"local://$biosampleId", ConsentLevel.Full)
+    val result = service.grantConsent(biosampleId, s"local://$biosampleId", ConsentLevel.Anonymous)
     assert(result.isRight)
     result.foreach { consent =>
-      assertEquals(consent.consentLevel, "ANONYMOUS")
+      assertEquals(consent.consentLevel, ConsentLevel.Anonymous)
     }
   }
 
@@ -59,7 +59,7 @@ class IbdMatchServiceSpec extends FunSuite with DatabaseTestSupport:
     val service = createService(tx)
     val biosampleId = createBiosample(tx)
 
-    service.grantConsent(biosampleId, s"local://$biosampleId", "FULL")
+    service.grantConsent(biosampleId, s"local://$biosampleId", ConsentLevel.Full)
     val result = service.hasConsent(biosampleId)
     assertEquals(result, Right(true))
   }
@@ -76,7 +76,7 @@ class IbdMatchServiceSpec extends FunSuite with DatabaseTestSupport:
     val service = createService(tx)
     val biosampleId = createBiosample(tx)
 
-    service.grantConsent(biosampleId, s"local://$biosampleId", "FULL")
+    service.grantConsent(biosampleId, s"local://$biosampleId", ConsentLevel.Full)
     val revokeResult = service.revokeConsent(biosampleId)
     assertEquals(revokeResult, Right(true))
 
@@ -98,7 +98,7 @@ class IbdMatchServiceSpec extends FunSuite with DatabaseTestSupport:
     )
     assert(result.isRight)
     result.foreach { request =>
-      assertEquals(request.status, "PENDING")
+      assertEquals(request.status, RequestStatus.Pending)
       assertEquals(request.fromBiosampleRef, "at://did:plc:a/bio/1")
       assertEquals(request.toBiosampleRef, "at://did:plc:b/bio/1")
       assertEquals(request.message, Some("I think we share a common ancestor"))
@@ -132,7 +132,7 @@ class IbdMatchServiceSpec extends FunSuite with DatabaseTestSupport:
     assert(result.isRight)
     // Should have at most 1 pending (the second one)
     result.foreach { pending =>
-      assert(pending.forall(_.status == "PENDING"))
+      assert(pending.forall(_.status == RequestStatus.Pending))
     }
   }
 
@@ -187,7 +187,7 @@ class IbdMatchServiceSpec extends FunSuite with DatabaseTestSupport:
       assertEquals(results.size, 1)
       assertEquals(results.head.totalSharedCm, 150.5)
       assertEquals(results.head.segmentCount, 5)
-      assertEquals(results.head.relationshipEstimate, Some("2ND_COUSIN"))
+      assertEquals(results.head.relationshipEstimate, Some(RelationshipEstimate.SecondCousin))
     }
   }
 

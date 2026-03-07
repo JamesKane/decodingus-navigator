@@ -146,12 +146,12 @@ class IbdCryptoServiceSpec extends FunSuite:
     val payload = IbdCryptoService.encryptToPayload(
       plaintext, key,
       sessionId = "session-001",
-      dataType = "GENOTYPES",
+      dataType = PayloadDataType.Genotypes,
       senderKeyId = Some("alice-key-1")
     )
 
     assertEquals(payload.sessionId, "session-001")
-    assertEquals(payload.dataType, "GENOTYPES")
+    assertEquals(payload.dataType, PayloadDataType.Genotypes)
     assertEquals(payload.senderKeyId, Some("alice-key-1"))
 
     // Bob decrypts with the same shared secret
@@ -166,7 +166,7 @@ class IbdCryptoServiceSpec extends FunSuite:
     val key = IbdCryptoService.deriveSharedSecret(alice.getPrivate, bob.getPublic)
 
     val plaintext = "test data".getBytes(StandardCharsets.UTF_8)
-    val payload = IbdCryptoService.encryptToPayload(plaintext, key, "s1", "GENOTYPES")
+    val payload = IbdCryptoService.encryptToPayload(plaintext, key, "s1", PayloadDataType.Genotypes)
 
     // All fields should be valid Base64
     val decoder = Base64.getDecoder
@@ -314,7 +314,7 @@ class IbdCryptoServiceSpec extends FunSuite:
     // 3. Alice encrypts genotype data and sends as payload
     val genotypeData = """{"chr1":[0,1,2,0,1,1,2,0]}""".getBytes(StandardCharsets.UTF_8)
     val payload = IbdCryptoService.encryptToPayload(
-      genotypeData, aliceKey, "session-001", "GENOTYPES", Some("alice-x-key")
+      genotypeData, aliceKey, "session-001", PayloadDataType.Genotypes, Some("alice-x-key")
     )
 
     // 4. Bob decrypts (simulating receiving via relay)

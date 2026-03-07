@@ -11,7 +11,7 @@ class EncryptedPayloadSpec extends FunSuite:
       sessionId = "session-001",
       encryptedData = "dGVzdCBkYXRh",
       iv = "aXYxMjM0NTY3ODkw",
-      dataType = "GENOTYPES",
+      dataType = PayloadDataType.Genotypes,
       senderKeyId = Some("key-123")
     )
 
@@ -27,7 +27,7 @@ class EncryptedPayloadSpec extends FunSuite:
       sessionId = "session-002",
       encryptedData = "Y2lwaGVydGV4dA==",
       iv = "aXYxMjM0NTY=",
-      dataType = "ATTESTATION"
+      dataType = PayloadDataType.Attestation
     )
 
     val json = payload.asJson.noSpaces
@@ -36,14 +36,15 @@ class EncryptedPayloadSpec extends FunSuite:
     assert(decoded.isRight)
     decoded.foreach { p =>
       assertEquals(p.sessionId, "session-002")
-      assertEquals(p.dataType, "ATTESTATION")
+      assertEquals(p.dataType, PayloadDataType.Attestation)
       assertEquals(p.senderKeyId, None)
     }
   }
 
-  test("EncryptedPayload.DataTypes contains expected values") {
-    assert(EncryptedPayload.DataTypes.contains("GENOTYPES"))
-    assert(EncryptedPayload.DataTypes.contains("ATTESTATION"))
-    assert(EncryptedPayload.DataTypes.contains("SUMMARY"))
-    assert(EncryptedPayload.DataTypes.contains("KEY_EXCHANGE"))
+  test("PayloadDataType has all expected values") {
+    assertEquals(PayloadDataType.values.length, 4)
+    assertEquals(PayloadDataType.fromString("GENOTYPES"), PayloadDataType.Genotypes)
+    assertEquals(PayloadDataType.fromString("ATTESTATION"), PayloadDataType.Attestation)
+    assertEquals(PayloadDataType.fromString("SUMMARY"), PayloadDataType.Summary)
+    assertEquals(PayloadDataType.fromString("KEY_EXCHANGE"), PayloadDataType.KeyExchange)
   }
