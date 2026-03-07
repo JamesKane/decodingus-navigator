@@ -3084,7 +3084,7 @@ class WorkbenchViewModel(
                                 _workspace.value = _workspace.value.copy(main = updatedContent)
 
                                 log.info(s" Ancestry analysis complete for $sampleAccession: " +
-                                  s"${ancestryResult.percentages.take(3).map(p => s"${p.populationName}: ${f"${p.percentage}%.1f"}%").mkString(", ")}")
+                                  s"${ancestryResult.components.take(3).map(p => s"${p.populationName}: ${f"${p.percentage}%.1f"}%").mkString(", ")}")
                                 onComplete(Right(ancestryResult))
                               }
 

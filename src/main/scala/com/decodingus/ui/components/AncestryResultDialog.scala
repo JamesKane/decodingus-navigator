@@ -1,6 +1,6 @@
 package com.decodingus.ui.components
 
-import com.decodingus.ancestry.model.{AncestryResult, Population, PopulationPercentage, SuperPopulationPercentage}
+import com.decodingus.ancestry.model.{AncestryResult, Population, PopulationComponent, SuperPopulationSummary}
 import scalafx.Includes.*
 import scalafx.beans.property.StringProperty
 import scalafx.collections.ObservableBuffer
@@ -74,17 +74,16 @@ class AncestryResultDialog(result: AncestryResult) extends Dialog[Unit] {
                           )
 
   private val tableData = ObservableBuffer.from(
-    result.percentages
+    result.components
       .filter(_.percentage >= 0.1) // Hide trace amounts in table
       .map { p =>
-        val pop = Population.byCode(p.populationCode)
         PopulationRow(
           p.populationCode,
           p.populationName,
-          pop.map(_.superPopulation).getOrElse("Unknown"),
+          p.superPopulation,
           p.percentage,
-          p.confidenceLow,
-          p.confidenceHigh,
+          p.confidenceInterval.lower,
+          p.confidenceInterval.upper,
           p.rank
         )
       }
@@ -181,7 +180,7 @@ class AncestryResultDialog(result: AncestryResult) extends Dialog[Unit] {
   }
 
   // Version info at bottom
-  private val versionInfo = new Label(s"Analysis: ${result.analysisVersion} | Reference: ${result.referenceVersion}") {
+  private val versionInfo = new Label(s"Pipeline: ${result.pipelineVersion} | Reference: ${result.referenceVersion}") {
     style = "-fx-font-size: 10px; -fx-text-fill: #888;"
   }
 

@@ -3,25 +3,35 @@ package com.decodingus.ancestry.model
 import io.circe.Codec
 
 /**
- * Percentage assignment for a single population.
+ * Confidence interval bounds.
  */
-case class PopulationPercentage(
-                                 populationCode: String,
-                                 populationName: String,
-                                 percentage: Double, // 0.0 to 100.0
-                                 confidenceLow: Double, // Lower bound of 95% CI
-                                 confidenceHigh: Double, // Upper bound of 95% CI
-                                 rank: Int // Sorted by percentage (1 = highest)
-                               ) derives Codec.AsObject
+case class ConfidenceInterval(
+                               lower: Double,
+                               upper: Double
+                             ) derives Codec.AsObject
+
+/**
+ * Percentage assignment for a single population component.
+ * Matches Atmosphere Lexicon: com.decodingus.atmosphere.defs#populationComponent
+ */
+case class PopulationComponent(
+                                populationCode: String,
+                                populationName: String,
+                                superPopulation: String, // Continental grouping
+                                percentage: Double, // 0.0 to 100.0
+                                confidenceInterval: ConfidenceInterval,
+                                rank: Int // Sorted by percentage (1 = highest)
+                              ) derives Codec.AsObject
 
 /**
  * Summary for a super-population (continental grouping).
+ * Matches Atmosphere Lexicon: com.decodingus.atmosphere.defs#superPopulationSummary
  */
-case class SuperPopulationPercentage(
-                                      superPopulation: String, // "European", "African", etc.
-                                      percentage: Double, // Sum of constituent populations
-                                      populations: List[String] // Contributing population codes
-                                    ) derives Codec.AsObject
+case class SuperPopulationSummary(
+                                   superPopulation: String, // "European", "African", etc.
+                                   percentage: Double, // Sum of constituent populations
+                                   populations: List[String] // Contributing population codes
+                                 ) derives Codec.AsObject
 
 /**
  * Result of ancestry analysis for a single sample.
@@ -31,10 +41,10 @@ case class AncestryResult(
                            snpsAnalyzed: Int, // Total SNPs in panel
                            snpsWithGenotype: Int, // SNPs with valid genotype calls
                            snpsMissing: Int, // SNPs with no call
-                           percentages: List[PopulationPercentage],
-                           superPopulationSummary: List[SuperPopulationPercentage],
+                           components: List[PopulationComponent],
+                           superPopulationSummary: List[SuperPopulationSummary],
                            confidenceLevel: Double, // Overall confidence (0-1) based on data quality
-                           analysisVersion: String,
+                           pipelineVersion: String,
                            referenceVersion: String,
                            pcaCoordinates: Option[List[Double]] // Optional: first N PCA coordinates for visualization
                          ) derives Codec.AsObject
@@ -49,7 +59,7 @@ object AncestryResult {
    * @param snpsWithGenotype SNPs with valid calls
    * @param populationProbs  Map of population code -> raw probability
    * @param confidenceLevel  Overall confidence score
-   * @param analysisVersion  Version of the analysis algorithm
+   * @param pipelineVersion  Version of the analysis pipeline
    * @param referenceVersion Version of the reference panel
    * @param pcaCoords        Optional PCA coordinates
    */
@@ -59,7 +69,7 @@ object AncestryResult {
                          snpsWithGenotype: Int,
                          populationProbs: Map[String, Double],
                          confidenceLevel: Double,
-                         analysisVersion: String,
+                         pipelineVersion: String,
                          referenceVersion: String,
                          pcaCoords: Option[List[Double]] = None
                        ): AncestryResult = {
@@ -77,14 +87,17 @@ object AncestryResult {
       .zipWithIndex
       .flatMap { case ((code, pct), idx) =>
         Population.byCode(code).map { pop =>
-          // Simple confidence interval based on sample size and data completeness
           val ciWidth = calculateCiWidth(pct, snpsWithGenotype, snpsAnalyzed)
-          PopulationPercentage(
+          val superPop = Population.superPopulationFor(code).getOrElse("Unknown")
+          PopulationComponent(
             populationCode = code,
             populationName = pop.name,
+            superPopulation = superPop,
             percentage = pct,
-            confidenceLow = math.max(0.0, pct - ciWidth),
-            confidenceHigh = math.min(100.0, pct + ciWidth),
+            confidenceInterval = ConfidenceInterval(
+              lower = math.max(0.0, pct - ciWidth),
+              upper = math.min(100.0, pct + ciWidth)
+            ),
             rank = idx + 1
           )
         }
@@ -94,7 +107,7 @@ object AncestryResult {
     val superPopSummary = Population.SuperPopulations.map { case (superPop, pops) =>
       val popCodes = pops.map(_.code)
       val total = popCodes.flatMap(normalizedPcts.get).sum
-      SuperPopulationPercentage(superPop, total, popCodes)
+      SuperPopulationSummary(superPop, total, popCodes)
     }.toList.sortBy(-_.percentage)
 
     AncestryResult(
@@ -102,10 +115,10 @@ object AncestryResult {
       snpsAnalyzed = snpsAnalyzed,
       snpsWithGenotype = snpsWithGenotype,
       snpsMissing = snpsAnalyzed - snpsWithGenotype,
-      percentages = sortedPops,
+      components = sortedPops,
       superPopulationSummary = superPopSummary,
       confidenceLevel = confidenceLevel,
-      analysisVersion = analysisVersion,
+      pipelineVersion = pipelineVersion,
       referenceVersion = referenceVersion,
       pcaCoordinates = pcaCoords
     )
@@ -133,7 +146,7 @@ object AncestryResult {
    */
   def filterByThreshold(result: AncestryResult, minPercentage: Double): AncestryResult = {
     result.copy(
-      percentages = result.percentages.filter(_.percentage >= minPercentage)
+      components = result.components.filter(_.percentage >= minPercentage)
     )
   }
 

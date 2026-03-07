@@ -1,6 +1,6 @@
 package com.decodingus.service
 
-import com.decodingus.repository.{AlignmentEntity, BiosampleEntity, ChipProfileEntity, EntityMeta, ProjectEntity, SequenceRunEntity, StrProfileEntity, SyncStatus as RepoSyncStatus}
+import com.decodingus.repository.{AlignmentEntity, BiosampleEntity, ChipProfileEntity, EntityMeta, PopulationBreakdownEntity, ProjectEntity, SequenceRunEntity, StrProfileEntity, SyncStatus as RepoSyncStatus}
 import com.decodingus.workspace.model.*
 
 import java.time.LocalDateTime
@@ -377,6 +377,54 @@ object EntityConversions:
       createdAt = entityMeta.createdAt,
       updatedAt = Some(entityMeta.updatedAt),
       lastModifiedField = None
+    )
+
+  // ============================================
+  // PopulationBreakdown Conversions
+  // ============================================
+
+  def toPopulationBreakdownEntity(
+                                   breakdown: PopulationBreakdown,
+                                   biosampleId: UUID
+                                 ): PopulationBreakdownEntity =
+    PopulationBreakdownEntity.create(
+      biosampleId = biosampleId,
+      analysisMethod = breakdown.analysisMethod,
+      panelType = breakdown.panelType,
+      referencePopulations = breakdown.referencePopulations,
+      snpsAnalyzed = breakdown.snpsAnalyzed,
+      snpsWithGenotype = breakdown.snpsWithGenotype,
+      snpsMissing = breakdown.snpsMissing,
+      confidenceLevel = breakdown.confidenceLevel,
+      components = breakdown.components,
+      superPopulationSummary = breakdown.superPopulationSummary,
+      pcaCoordinates = breakdown.pcaCoordinates,
+      analysisDate = breakdown.analysisDate,
+      pipelineVersion = Some(breakdown.pipelineVersion),
+      referenceVersion = Some(breakdown.referenceVersion)
+    )
+
+  def fromPopulationBreakdownEntity(entity: PopulationBreakdownEntity, biosampleRef: String): PopulationBreakdown =
+    PopulationBreakdown(
+      meta = RecordMeta(
+        version = entity.meta.version,
+        createdAt = entity.meta.createdAt,
+        updatedAt = Some(entity.meta.updatedAt)
+      ),
+      biosampleRef = biosampleRef,
+      analysisMethod = entity.analysisMethod,
+      panelType = entity.panelType,
+      referencePopulations = entity.referencePopulations,
+      snpsAnalyzed = entity.snpsAnalyzed,
+      snpsWithGenotype = entity.snpsWithGenotype,
+      snpsMissing = entity.snpsMissing,
+      confidenceLevel = entity.confidenceLevel,
+      components = entity.components,
+      superPopulationSummary = entity.superPopulationSummary,
+      pcaCoordinates = entity.pcaCoordinates,
+      analysisDate = entity.analysisDate,
+      pipelineVersion = entity.pipelineVersion.getOrElse("unknown"),
+      referenceVersion = entity.referenceVersion.getOrElse("unknown")
     )
 
   // ============================================

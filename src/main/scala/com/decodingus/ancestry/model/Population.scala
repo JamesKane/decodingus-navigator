@@ -97,6 +97,11 @@ object Population {
   def byCode(code: String): Option[Population] = All.find(_.code == code)
 
   /**
+   * Look up the super-population for a population code.
+   */
+  def superPopulationFor(code: String): Option[String] = byCode(code).map(_.superPopulation)
+
+  /**
    * Get all populations for a super-population.
    */
   def bySuperPopulation(superPop: String): List[Population] =

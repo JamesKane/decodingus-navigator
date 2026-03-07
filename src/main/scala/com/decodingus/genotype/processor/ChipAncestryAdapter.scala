@@ -170,19 +170,22 @@ class ChipAncestryAdapter {
     val adjustedConfidence = result.confidenceLevel * math.min(1.0, coverageRatio * 1.2)
 
     // Also widen confidence intervals for chip data
-    val adjustedPercentages = result.percentages.map { p =>
-      val intervalWidth = p.confidenceHigh - p.confidenceLow
+    val adjustedComponents = result.components.map { p =>
+      val ci = p.confidenceInterval
+      val intervalWidth = ci.upper - ci.lower
       val adjustedWidth = intervalWidth * (1.0 + (1.0 - coverageRatio) * 0.5)
-      val midpoint = (p.confidenceHigh + p.confidenceLow) / 2
+      val midpoint = (ci.upper + ci.lower) / 2
       p.copy(
-        confidenceLow = math.max(0.0, midpoint - adjustedWidth / 2),
-        confidenceHigh = math.min(100.0, midpoint + adjustedWidth / 2)
+        confidenceInterval = ConfidenceInterval(
+          lower = math.max(0.0, midpoint - adjustedWidth / 2),
+          upper = math.min(100.0, midpoint + adjustedWidth / 2)
+        )
       )
     }
 
     result.copy(
       confidenceLevel = adjustedConfidence,
-      percentages = adjustedPercentages
+      components = adjustedComponents
     )
   }
 

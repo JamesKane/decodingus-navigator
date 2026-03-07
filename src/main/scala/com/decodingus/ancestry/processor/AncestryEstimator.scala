@@ -48,7 +48,7 @@ class AncestryEstimator {
       snpsWithGenotype = snpsWithData,
       populationProbs = populationProbs,
       confidenceLevel = confidence,
-      analysisVersion = "1.0.0",
+      pipelineVersion = "1.0.0",
       referenceVersion = FeatureToggles.ancestryAnalysis.referenceVersion,
       pcaCoords = Some(pcaCoords.take(3).toList) // First 3 PCs for visualization
     )
@@ -218,7 +218,7 @@ class AncestryEstimator {
       snpsWithGenotype = snpsWithData,
       populationProbs = popProbs,
       confidenceLevel = math.min(1.0, confidence),
-      analysisVersion = "1.0.0-af",
+      pipelineVersion = "1.0.0-af",
       referenceVersion = FeatureToggles.ancestryAnalysis.referenceVersion,
       pcaCoords = None
     )

@@ -156,7 +156,9 @@ object Migrator:
       "V005__phase2_entity_tables.sql",
       "V006__y_chromosome_unified_profile.sql",
       "V007__multi_reference_variant_model.sql",
-      "V008__add_sequence_run_metrics_columns.sql"
+      "V008__add_sequence_run_metrics_columns.sql",
+      "V009__align_chip_profile_with_lexicon.sql",
+      "V010__population_breakdown_table.sql"
     )
     val pattern = """V(\d+)__(.+)\.sql""".r
 

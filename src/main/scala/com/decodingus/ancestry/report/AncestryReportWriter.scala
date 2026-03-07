@@ -26,7 +26,7 @@ object AncestryReportWriter {
       writer.println()
       writer.println(s"Analysis Date: ${LocalDateTime.now().format(DateTimeFormatter.ISO_LOCAL_DATE_TIME)}")
       writer.println(s"Panel Type: ${result.panelType}")
-      writer.println(s"Analysis Version: ${result.analysisVersion}")
+      writer.println(s"Pipeline Version: ${result.pipelineVersion}")
       writer.println(s"Reference Version: ${result.referenceVersion}")
       writer.println()
 
@@ -59,11 +59,11 @@ object AncestryReportWriter {
       writer.println(f"${"Rank"}%-5s ${"Population"}%-25s ${"Percentage"}%-12s ${"95% CI"}")
       writer.println("-" * 60)
 
-      result.percentages
+      result.components
         .filter(_.percentage >= 0.5)
         .foreach { p =>
           writer.println(f"${p.rank}%-5d ${p.populationName}%-25s ${p.percentage}%6.1f%%       " +
-            f"(${p.confidenceLow}%.1f%% - ${p.confidenceHigh}%.1f%%)")
+            f"(${p.confidenceInterval.lower}%.1f%% - ${p.confidenceInterval.upper}%.1f%%)")
         }
       writer.println()
 
@@ -179,14 +179,14 @@ object AncestryReportWriter {
   }
 
   private def renderPopulationTable(result: AncestryResult): String = {
-    val rows = result.percentages
+    val rows = result.components
       .filter(_.percentage >= 0.5)
       .map { p =>
         s"""<tr>
            |  <td>${p.rank}</td>
            |  <td>${p.populationName}</td>
            |  <td>${f"${p.percentage}%.1f"}%</td>
-           |  <td class="confidence">${f"${p.confidenceLow}%.1f"}% - ${f"${p.confidenceHigh}%.1f"}%</td>
+           |  <td class="confidence">${f"${p.confidenceInterval.lower}%.1f"}% - ${f"${p.confidenceInterval.upper}%.1f"}%</td>
            |</tr>""".stripMargin
       }
       .mkString("\n")
