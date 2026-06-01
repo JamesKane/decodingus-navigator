@@ -11,3 +11,4 @@ license.workspace = true
 navigator-domain = { workspace = true }
 du-bio = { workspace = true }
 thiserror = { workspace = true }
+noodles = { version = "0.93.0", features = ["bam", "sam", "fasta", "core", "csi"] }
