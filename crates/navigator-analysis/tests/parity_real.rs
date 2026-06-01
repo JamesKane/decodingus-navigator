@@ -13,6 +13,7 @@ use std::path::PathBuf;
 
 use navigator_analysis::caller::{call_denovo, HaploidCallerParams};
 use navigator_analysis::coverage::{collect_coverage_callable, CallableLociParams};
+use navigator_analysis::parity::{compare_denovo_snps, parse_truth_vcf};
 use navigator_analysis::read_metrics::collect_read_metrics;
 use navigator_analysis::sex::{infer_from_bam, InferredSex};
 
@@ -130,4 +131,51 @@ fn hg002_read_metrics_smoke() {
     assert!(m.total_reads > 0);
     assert!(m.pct_pf_reads_aligned > 0.5);
     assert!(m.proper_pairs > 0);
+}
+
+/// §4c parity gate: Rust de-novo SNP calls vs a GATK truth VCF on HG002 chrM.
+/// Generate the truth with:
+///   gatk HaplotypeCaller -I hg002.chrM.bam -R chm13v2.0.fa -L chrM \
+///     --sample-ploidy 1 -O hg002.chrM.gatk.vcf.gz && bgzip -d hg002.chrM.gatk.vcf.gz
+#[test]
+#[ignore = "requires GATK_CHRM_VCF + HG002_CHRM_BAM + CHM13_REF env vars"]
+fn hg002_chrm_gatk_parity() {
+    let (Ok(vcf), Ok(bam), Ok(reference)) = (
+        std::env::var("GATK_CHRM_VCF"),
+        std::env::var("HG002_CHRM_BAM"),
+        std::env::var("CHM13_REF"),
+    ) else {
+        eprintln!("set GATK_CHRM_VCF, HG002_CHRM_BAM, CHM13_REF to run this test");
+        return;
+    };
+
+    let truth = parse_truth_vcf(&PathBuf::from(vcf)).expect("parse GATK VCF");
+    let calls = call_denovo(
+        &PathBuf::from(bam),
+        &PathBuf::from(reference),
+        "chrM",
+        &HaploidCallerParams::default(),
+    )
+    .expect("de-novo should succeed");
+
+    let report = compare_denovo_snps(&truth, &calls);
+    eprintln!(
+        "SNP parity: matched={} rust_only(FP)={} truth_only(FN)={} truth_indels_skipped={}",
+        report.matched_count(),
+        report.rust_only.len(),
+        report.truth_only.len(),
+        report.truth_non_snp_alleles
+    );
+    eprintln!("precision={:.3} recall={:.3} f1={:.3}", report.precision(), report.recall(), report.f1());
+    for fp in &report.rust_only {
+        eprintln!("  FP {}:{} {}>{}", fp.chrom, fp.pos, fp.reference, fp.alternate);
+    }
+    for f_n in &report.truth_only {
+        eprintln!("  FN {}:{} {}>{}", f_n.chrom, f_n.pos, f_n.reference, f_n.alternate);
+    }
+
+    // Gate: catch every GATK SNP; allow a few homopolymer-adjacent FPs (the §4b indel
+    // risk) until local realignment lands.
+    assert!(report.recall() >= 0.95, "recall {:.3} below gate", report.recall());
+    assert!(report.precision() >= 0.80, "precision {:.3} below gate", report.precision());
 }
