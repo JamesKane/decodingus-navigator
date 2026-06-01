@@ -67,5 +67,27 @@ samtools sort -o paired.bam paired.sam && samtools index paired.bam
 } > sex.sam
 samtools sort -o sex.bam sex.sam && samtools index sex.bam
 
-rm -f coverage.sam paired.sam sex.sam
-echo "wrote ref.fa(.fai), coverage.bam, paired.bam, sex.bam (+ .bai)"
+# ---- sv.bam ---------------------------------------------------------------
+# chr1 + chr2 (5000 bp each, bin size 1000 -> 5 bins). Evidence:
+#   inter pair  (chr1:100 <-> chr2:200)         -> 2 InterChromosomal (one per mate)
+#   big-insert  (chr1:300 <-> chr1:4000, TLEN 5000) -> 2 InsertSizeOutlier
+#   split read  (chr1:1000, 20S30M + SA tag)    -> 1 SplitRead (clip 20)
+# Depth bins: chr1 = [2,1,0,0,1], chr2 = [1,0,0,0,0].
+seq50="AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+qual50="IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII"
+{
+  echo -e "@HD\tVN:1.6\tSO:coordinate"
+  echo -e "@SQ\tSN:chr1\tLN:5000"
+  echo -e "@SQ\tSN:chr2\tLN:5000"
+  # name flag rname pos mapq cigar rnext pnext tlen seq qual [extra]
+  row() { echo -e "$1\t$2\t$3\t$4\t60\t$5\t$6\t$7\t$8\t$seq50\t$qual50${9:+\t$9}"; }
+  row r_inter  65  chr1 100  50M  chr2 200  0
+  row r_big    97  chr1 300  50M  =    4000 5000
+  row r_split  0   chr1 1000 20S30M '*' 0  0    "SA:Z:chr1,2000,+,30M20S,60,0"
+  row r_big2   145 chr1 4000 50M  =    300  -5000
+  row r_inter2 129 chr2 200  50M  chr1 100  0
+} > sv.sam
+samtools sort -o sv.bam sv.sam && samtools index sv.bam
+
+rm -f coverage.sam paired.sam sex.sam sv.sam
+echo "wrote ref.fa(.fai), coverage.bam, paired.bam, sex.bam, sv.bam (+ .bai)"

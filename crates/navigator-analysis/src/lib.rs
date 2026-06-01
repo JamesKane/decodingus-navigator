@@ -15,5 +15,6 @@ pub mod coverage;
 pub mod error;
 pub mod read_metrics;
 pub mod sex;
+pub mod sv;
 
 pub use error::AnalysisError;
