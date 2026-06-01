@@ -9,6 +9,7 @@
 //! Built on `du-bio` for liftover/callable/coordinate primitives. A GATK-vs-Rust
 //! golden-truth parity harness gates cutover. Implemented in roadmap phases 2–3.
 
+pub mod caller;
 pub mod coverage;
 pub mod error;
 

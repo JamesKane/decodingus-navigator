@@ -11,16 +11,23 @@
 use std::collections::HashSet;
 use std::path::PathBuf;
 
+use navigator_analysis::caller::{call_denovo, HaploidCallerParams};
 use navigator_analysis::coverage::{collect_coverage_callable, CallableLociParams};
+
+fn real_data() -> Option<(String, String)> {
+    match (std::env::var("HG002_CHRM_BAM"), std::env::var("CHM13_REF")) {
+        (Ok(bam), Ok(reference)) => Some((bam, reference)),
+        _ => {
+            eprintln!("set HG002_CHRM_BAM and CHM13_REF to run this test");
+            None
+        }
+    }
+}
 
 #[test]
 #[ignore = "requires local HG002_CHRM_BAM + CHM13_REF env vars"]
 fn hg002_chrm_smoke() {
-    let (Ok(bam), Ok(reference)) = (std::env::var("HG002_CHRM_BAM"), std::env::var("CHM13_REF"))
-    else {
-        eprintln!("set HG002_CHRM_BAM and CHM13_REF to run this test");
-        return;
-    };
+    let Some((bam, reference)) = real_data() else { return };
 
     let allow: HashSet<String> = ["chrM".to_string()].into_iter().collect();
     let result = collect_coverage_callable(
@@ -52,4 +59,36 @@ fn hg002_chrm_smoke() {
     let total = cm.callable + cm.low_coverage + cm.no_coverage + cm.poor_mapping_quality
         + cm.ref_n + cm.excessive_coverage;
     assert_eq!(total, 16569);
+}
+
+#[test]
+#[ignore = "requires local HG002_CHRM_BAM + CHM13_REF env vars"]
+fn hg002_chrm_denovo_smoke() {
+    let Some((bam, reference)) = real_data() else { return };
+
+    let calls = call_denovo(
+        &PathBuf::from(bam),
+        &PathBuf::from(reference),
+        "chrM",
+        &HaploidCallerParams::default(),
+    )
+    .expect("de-novo should succeed on real data");
+
+    eprintln!("chrM de-novo SNP calls: {}", calls.len());
+    for c in calls.iter().take(15) {
+        eprintln!(
+            "  chrM:{} {}>{} depth={} af={:.3}",
+            c.position, c.reference_allele, c.alternate_allele, c.depth, c.allele_fraction
+        );
+    }
+
+    // HG002 mtDNA vs CHM13 chrM: a handful to a few dozen real differences at high
+    // depth — never thousands (that would mean the consensus/fraction gate is broken).
+    assert!(!calls.is_empty(), "expected some mtDNA variants");
+    assert!(calls.len() < 1000, "implausibly many calls: {}", calls.len());
+    for c in &calls {
+        assert!(c.allele_fraction >= 0.5);
+        assert!(c.depth >= 4);
+        assert_ne!(c.reference_allele, c.alternate_allele);
+    }
 }
