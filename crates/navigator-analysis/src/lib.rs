@@ -10,7 +10,10 @@
 //! golden-truth parity harness gates cutover. Implemented in roadmap phases 2–3.
 
 pub mod caller;
+pub mod contig;
 pub mod coverage;
 pub mod error;
+pub mod read_metrics;
+pub mod sex;
 
 pub use error::AnalysisError;

@@ -13,6 +13,8 @@ use std::path::PathBuf;
 
 use navigator_analysis::caller::{call_denovo, HaploidCallerParams};
 use navigator_analysis::coverage::{collect_coverage_callable, CallableLociParams};
+use navigator_analysis::read_metrics::collect_read_metrics;
+use navigator_analysis::sex::{infer_from_bam, InferredSex};
 
 fn real_data() -> Option<(String, String)> {
     match (std::env::var("HG002_CHRM_BAM"), std::env::var("CHM13_REF")) {
@@ -91,4 +93,41 @@ fn hg002_chrm_denovo_smoke() {
         assert!(c.depth >= 4);
         assert_ne!(c.reference_allele, c.alternate_allele);
     }
+}
+
+/// Whole-BAM smoke tests for sex + read_metrics. Driven by HG002_BAM.
+#[test]
+#[ignore = "requires local HG002_BAM env var (full whole-genome BAM)"]
+fn hg002_sex_smoke() {
+    let Ok(bam) = std::env::var("HG002_BAM") else {
+        eprintln!("set HG002_BAM to run this test");
+        return;
+    };
+    let r = infer_from_bam(&PathBuf::from(bam)).expect("sex inference should succeed");
+    eprintln!(
+        "inferred {:?} ({:?}); ratio={:.3} autosome={:.1} chrX={:.1}",
+        r.inferred_sex, r.confidence, r.x_autosome_ratio, r.autosome_mean_coverage, r.x_coverage
+    );
+    // HG002 / NA24385 is male.
+    assert_eq!(r.inferred_sex, InferredSex::Male);
+}
+
+#[test]
+#[ignore = "requires local HG002_BAM env var (full whole-genome BAM scan)"]
+fn hg002_read_metrics_smoke() {
+    let Ok(bam) = std::env::var("HG002_BAM") else {
+        eprintln!("set HG002_BAM to run this test");
+        return;
+    };
+    let m = collect_read_metrics(&PathBuf::from(bam)).expect("read metrics should succeed");
+    eprintln!(
+        "total={} pf_aligned={} ({:.3}) proper={:.3} chimera={:.4} orient={} \
+         read_len mean={:.1} median={} insert mean={:.1} median={} mapq={:.1}",
+        m.total_reads, m.pf_reads_aligned, m.pct_pf_reads_aligned, m.pct_proper_pairs,
+        m.pct_chimeras, m.pair_orientation.as_str(), m.mean_read_length, m.median_read_length,
+        m.mean_insert_size, m.median_insert_size, m.mean_mapping_quality
+    );
+    assert!(m.total_reads > 0);
+    assert!(m.pct_pf_reads_aligned > 0.5);
+    assert!(m.proper_pairs > 0);
 }

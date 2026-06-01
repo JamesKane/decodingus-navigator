@@ -20,6 +20,7 @@ use noodles::bam;
 use noodles::core::Region;
 use noodles::fasta;
 
+use crate::contig;
 use crate::error::AnalysisError;
 
 /// Callable-loci parameters. Defaults match GATK `CallableLoci` (and the Scala walker).
@@ -137,19 +138,6 @@ impl ContigAccum {
     }
 }
 
-/// Main assembly contigs only — excludes alts, decoys, HLA, etc. Mirrors the Scala
-/// regex `^(chr)?([1-9]|1[0-9]|2[0-2]|X|Y|M|MT)$`.
-fn is_main_assembly(name: &str) -> bool {
-    let core = name.strip_prefix("chr").unwrap_or(name);
-    match core {
-        "X" | "Y" | "M" | "MT" => true,
-        _ => core
-            .parse::<u32>()
-            .map(|n| (1..=22).contains(&n) && core == n.to_string())
-            .unwrap_or(false),
-    }
-}
-
 /// Walk a coordinate-sorted BAM and collect coverage + callable metrics for the
 /// main-assembly contigs (optionally restricted to `contig_allowlist`).
 pub fn collect_coverage_callable(
@@ -170,7 +158,7 @@ pub fn collect_coverage_callable(
     let mut tracked: Vec<Option<ContigAccum>> = Vec::with_capacity(ref_seqs.len());
     for (name_bytes, map) in ref_seqs.iter() {
         let name = String::from_utf8_lossy(name_bytes.as_ref()).into_owned();
-        let keep = is_main_assembly(&name)
+        let keep = contig::is_main_assembly(&name)
             && contig_allowlist.map_or(true, |set| set.contains(&name));
         tracked.push(keep.then(|| ContigAccum::new(name, map.length().get())));
     }
@@ -412,17 +400,3 @@ fn median_from_hist(hist: &[u64], total: u64) -> f64 {
     255.0
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn main_assembly_matches_scala_regex() {
-        for ok in ["1", "22", "X", "Y", "M", "MT", "chr1", "chr22", "chrX", "chrM"] {
-            assert!(is_main_assembly(ok), "{ok} should match");
-        }
-        for no in ["0", "23", "01", "chr0", "chrUn", "chr1_KI270706v1_random", "HLA-A", "M1"] {
-            assert!(!is_main_assembly(no), "{no} should not match");
-        }
-    }
-}
