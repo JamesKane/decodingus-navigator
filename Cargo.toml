@@ -1,0 +1,34 @@
+# DUNavigator — Rust rewrite workspace. Coexists with the legacy Scala build
+# (build.sbt / src) until cutover. Lower crates come from the sibling
+# `decodingus-shared` repo via path deps during local co-development.
+# See documents/design/RustRewrite_Plan.md §2 for the topology + dependency rule.
+[workspace]
+resolver = "2"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.80"
+license = "BSD-3-Clause"
+
+[workspace.dependencies]
+# Shared crates (sibling repo; switch to git deps once it has a remote — README there)
+du-domain  = { path = "../decodingus-shared/crates/du-domain" }
+du-atproto = { path = "../decodingus-shared/crates/du-atproto" }
+du-bio     = { path = "../decodingus-shared/crates/du-bio" }
+
+# Internal crates
+navigator-domain   = { path = "crates/navigator-domain" }
+navigator-store    = { path = "crates/navigator-store" }
+navigator-analysis = { path = "crates/navigator-analysis" }
+navigator-sync     = { path = "crates/navigator-sync" }
+navigator-app      = { path = "crates/navigator-app" }
+
+# Common
+thiserror = "2"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true

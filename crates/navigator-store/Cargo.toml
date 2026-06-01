@@ -1,0 +1,11 @@
+[package]
+name = "navigator-store"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+# Local persistence: SQLite via sqlx (replaces H2/Slick). sqlx is added in phase 4.
+[dependencies]
+navigator-domain = { workspace = true }
+thiserror = { workspace = true }

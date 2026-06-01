@@ -1,0 +1,12 @@
+[package]
+name = "navigator-domain"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+# Desktop-only domain types not in du-domain; re-exports the shared types so
+# downstream crates depend on one domain surface. Pure types, no IO.
+[dependencies]
+du-domain = { workspace = true }
+thiserror = { workspace = true }

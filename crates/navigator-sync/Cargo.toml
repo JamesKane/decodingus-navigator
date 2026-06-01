@@ -1,0 +1,13 @@
+[package]
+name = "navigator-sync"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+# PDS push/pull + AsyncSync; coverage publishing + variant-proposal submission.
+# OAuth (public/native client) reuses du-atproto. Implemented in phase 6.
+[dependencies]
+navigator-domain = { workspace = true }
+du-atproto = { workspace = true }
+thiserror = { workspace = true }

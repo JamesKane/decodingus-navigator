@@ -1,0 +1,15 @@
+[package]
+name = "navigator-app"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+# Application/command layer: orchestrates store + analysis + sync behind a command
+# API the UI dispatches to. No UI, no domain decisions in widgets.
+[dependencies]
+navigator-domain = { workspace = true }
+navigator-store = { workspace = true }
+navigator-analysis = { workspace = true }
+navigator-sync = { workspace = true }
+thiserror = { workspace = true }

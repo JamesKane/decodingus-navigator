@@ -1,0 +1,13 @@
+[package]
+name = "navigator-analysis"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+# Raw-read I/O (noodles) + the ported GATK walkers + the haploid variant caller.
+# Uses du-bio for liftover/callable/coordinate math. noodles is added in phase 2.
+[dependencies]
+navigator-domain = { workspace = true }
+du-bio = { workspace = true }
+thiserror = { workspace = true }
