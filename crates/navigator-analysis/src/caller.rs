@@ -29,8 +29,10 @@ use std::path::Path;
 use noodles::bam;
 use noodles::core::Region;
 use noodles::fasta;
+use noodles::sam::alignment::record::cigar::op::Kind;
 
 use crate::error::AnalysisError;
+use crate::realign;
 
 /// Parameters for haploid calling. Defaults are v1 starting points (gated by §4c).
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -43,6 +45,12 @@ pub struct HaploidCallerParams {
     pub min_base_quality: u8,
     /// The consensus base must be at least this fraction of passing depth to call.
     pub min_allele_fraction: f64,
+    /// Run light local realignment around candidate indels before de-novo calling.
+    pub local_realign: bool,
+    /// Minimum reads with indel evidence at a position to open a realignment window.
+    pub realign_min_indel_reads: u32,
+    /// Padding (bp) added around indel-evidence runs to form a realignment window.
+    pub realign_pad: i64,
 }
 
 impl Default for HaploidCallerParams {
@@ -52,6 +60,9 @@ impl Default for HaploidCallerParams {
             min_mapping_quality: 20,
             min_base_quality: 20,
             min_allele_fraction: 0.5,
+            local_realign: true,
+            realign_min_indel_reads: 3,
+            realign_pad: 15,
         }
     }
 }
@@ -147,6 +158,16 @@ impl AlleleCounts {
             AlleleCounts::Sparse(m) => m.get(&idx).copied().unwrap_or([0; 4]),
         }
     }
+
+    /// Overwrite the tally at a position (used by realignment to replace window counts).
+    fn set(&mut self, idx: usize, value: [u32; 4]) {
+        match self {
+            AlleleCounts::Dense(v) => v[idx] = value,
+            AlleleCounts::Sparse(m) => {
+                m.insert(idx, value);
+            }
+        }
+    }
 }
 
 /// Resolve a contig's length from the BAM header.
@@ -162,13 +183,16 @@ fn contig_length(header: &noodles::sam::Header, contig: &str) -> Option<usize> {
 }
 
 /// One indexed pass over `contig`, tallying passing A/C/G/T observations. When
-/// `targets` is `Some`, only those 1-based positions are tallied (sparse).
+/// `targets` is `Some`, only those 1-based positions are tallied (sparse). When
+/// `track_indels` is set, also returns per-position indel-evidence counts (reads whose
+/// CIGAR has an I/D op at that position) for opening realignment windows.
 fn tally_alleles(
     bam_path: &Path,
     contig: &str,
     params: &HaploidCallerParams,
     targets: Option<&HashSet<i64>>,
-) -> Result<(usize, AlleleCounts), AnalysisError> {
+    track_indels: bool,
+) -> Result<(usize, AlleleCounts, Vec<u32>), AnalysisError> {
     let mut reader = bam::io::indexed_reader::Builder::default()
         .build_from_path(bam_path)
         .map_err(|e| AnalysisError::io(bam_path, e))?;
@@ -183,6 +207,7 @@ fn tally_alleles(
         Some(_) => AlleleCounts::Sparse(std::collections::HashMap::new()),
         None => AlleleCounts::Dense(vec![[0u32; 4]; length]),
     };
+    let mut indel_evidence = if track_indels { vec![0u32; length] } else { Vec::new() };
 
     let region: Region = contig
         .parse()
@@ -234,14 +259,32 @@ fn tally_alleles(
                     ref_pos += len;
                     query_off += len;
                 }
-                (true, false) => ref_pos += len,
-                (false, true) => query_off += len,
+                (true, false) => {
+                    // Deletion / skip: mark indel evidence over the gapped positions.
+                    if track_indels {
+                        for k in 0..len {
+                            if let Some(slot) = indel_evidence.get_mut(ref_pos - 1 + k) {
+                                *slot += 1;
+                            }
+                        }
+                    }
+                    ref_pos += len;
+                }
+                (false, true) => {
+                    // Insertion / soft clip: mark indel evidence at the anchor position.
+                    if track_indels && kind == Kind::Insertion {
+                        if let Some(slot) = indel_evidence.get_mut(ref_pos.saturating_sub(1)) {
+                            *slot += 1;
+                        }
+                    }
+                    query_off += len;
+                }
                 (false, false) => {}
             }
         }
     }
 
-    Ok((length, counts))
+    Ok((length, counts, indel_evidence))
 }
 
 /// Force-call (genotype-given-alleles) at known SNP sites on `contig`. Non-SNP sites
@@ -260,7 +303,7 @@ pub fn force_call_sites(
     if targets.is_empty() {
         return Ok(Vec::new());
     }
-    let (length, counts) = tally_alleles(bam_path, contig, params, Some(&targets))?;
+    let (length, counts, _) = tally_alleles(bam_path, contig, params, Some(&targets), false)?;
 
     let mut out = Vec::new();
     for site in sites.iter().filter(|s| s.contig == contig) {
@@ -315,7 +358,8 @@ pub fn call_denovo(
     contig: &str,
     params: &HaploidCallerParams,
 ) -> Result<Vec<VariantCall>, AnalysisError> {
-    let (length, counts) = tally_alleles(bam_path, contig, params, None)?;
+    let (length, mut counts, indel_evidence) =
+        tally_alleles(bam_path, contig, params, None, params.local_realign)?;
 
     // Load the contig reference bases for ref-vs-consensus comparison.
     let mut fasta_reader = fasta::io::indexed_reader::Builder::default()
@@ -328,6 +372,12 @@ pub fn call_denovo(
         .query(&region)
         .map_err(|e| AnalysisError::io(reference_path, e))?;
     let ref_bases = ref_record.sequence().as_ref();
+
+    // Light local realignment: re-fit reads in indel-active windows so homopolymer
+    // indels stop smearing spurious SNPs onto neighbouring positions (§4b).
+    if params.local_realign {
+        realign_windows(bam_path, contig, ref_bases, &mut counts, &indel_evidence, params)?;
+    }
 
     let mut out = Vec::new();
     for idx in 0..length {
@@ -362,6 +412,156 @@ pub fn call_denovo(
     Ok(out)
 }
 
+/// Maximal runs of positions with enough indel evidence, each padded by `pad` and
+/// merged where they touch. Returns 0-based inclusive `(start, end)` reference windows.
+fn active_windows(indel_evidence: &[u32], min_reads: u32, pad: i64) -> Vec<(usize, usize)> {
+    let len = indel_evidence.len();
+    let mut windows: Vec<(usize, usize)> = Vec::new();
+    let mut i = 0usize;
+    while i < len {
+        if indel_evidence[i] >= min_reads {
+            let run_start = i;
+            while i < len && indel_evidence[i] >= min_reads {
+                i += 1;
+            }
+            let run_end = i - 1;
+            let w0 = (run_start as i64 - pad).max(0) as usize;
+            let w1 = ((run_end as i64 + pad) as usize).min(len - 1);
+            match windows.last_mut() {
+                Some(last) if w0 <= last.1 + 1 => last.1 = last.1.max(w1),
+                _ => windows.push((w0, w1)),
+            }
+        } else {
+            i += 1;
+        }
+    }
+    windows
+}
+
+/// Re-fit reads in each indel-active window onto the reference and replace the tally
+/// over those windows, so ambiguous homopolymer indels stop producing spurious SNPs.
+fn realign_windows(
+    bam_path: &Path,
+    contig: &str,
+    ref_bases: &[u8],
+    counts: &mut AlleleCounts,
+    indel_evidence: &[u32],
+    params: &HaploidCallerParams,
+) -> Result<(), AnalysisError> {
+    let windows = active_windows(indel_evidence, params.realign_min_indel_reads, params.realign_pad);
+    if windows.is_empty() {
+        return Ok(());
+    }
+
+    let mut reader = bam::io::indexed_reader::Builder::default()
+        .build_from_path(bam_path)
+        .map_err(|e| AnalysisError::io(bam_path, e))?;
+    let header = reader
+        .read_header()
+        .map_err(|e| AnalysisError::io(bam_path, e))?;
+
+    for (w0, w1) in windows {
+        if w1 >= ref_bases.len() {
+            continue;
+        }
+        let target = &ref_bases[w0..=w1];
+        let mut win_counts = vec![[0u32; 4]; w1 - w0 + 1];
+
+        // 1-based region for the window.
+        let region: Region = format!("{}:{}-{}", contig, w0 + 1, w1 + 1)
+            .parse()
+            .map_err(|_| AnalysisError::Message(format!("bad region for {contig}")))?;
+        let query = reader
+            .query(&header, &region)
+            .map_err(|e| AnalysisError::io(bam_path, e))?;
+
+        for result in query {
+            let record = result.map_err(|e| AnalysisError::io(bam_path, e))?;
+            let flags = record.flags();
+            if flags.is_secondary() || flags.is_supplementary() || flags.is_duplicate() || flags.is_qc_fail() {
+                continue;
+            }
+            if record.mapping_quality().map_or(255u8, |m| m.get()) < params.min_mapping_quality {
+                continue;
+            }
+            let start = match record.alignment_start() {
+                Some(p) => p.map_err(|e| AnalysisError::io(bam_path, e))?.get(),
+                None => continue,
+            };
+            let (qbases, qquals) = window_substring(&record, start, w0 + 1, w1 + 1, bam_path)?;
+            if qbases.is_empty() {
+                continue;
+            }
+            let (tstart, ops) = realign::fitting_align(&qbases, target);
+            for (ref_idx, base, qual) in realign::project(&qbases, &qquals, w0, tstart, &ops) {
+                if qual >= params.min_base_quality {
+                    if let Some(bi) = base_index(base) {
+                        win_counts[ref_idx - w0][bi] += 1;
+                    }
+                }
+            }
+        }
+
+        for (k, c) in win_counts.into_iter().enumerate() {
+            counts.set(w0 + k, c);
+        }
+    }
+    Ok(())
+}
+
+/// Extract a read's bases + qualities over the 1-based reference window `[wlo, whi]`,
+/// in reference order, including any inserted bases anchored inside the window.
+fn window_substring(
+    record: &bam::Record,
+    start: usize,
+    wlo: usize,
+    whi: usize,
+    path: &Path,
+) -> Result<(Vec<u8>, Vec<u8>), AnalysisError> {
+    let seq = record.sequence();
+    let quals = record.quality_scores();
+    let quals = quals.as_ref();
+    let mut bases = Vec::new();
+    let mut q = Vec::new();
+    let mut ref_pos = start; // 1-based
+    let mut query_off = 0usize;
+    for op in record.cigar().iter() {
+        let op = op.map_err(|e| AnalysisError::io(path, e))?;
+        let kind = op.kind();
+        let len = op.len();
+        match (kind.consumes_reference(), kind.consumes_read()) {
+            (true, true) => {
+                for i in 0..len {
+                    let pos = ref_pos + i;
+                    if pos >= wlo && pos <= whi {
+                        if let Some(b) = seq.get(query_off + i) {
+                            bases.push(b);
+                            q.push(quals.get(query_off + i).copied().unwrap_or(0));
+                        }
+                    }
+                }
+                ref_pos += len;
+                query_off += len;
+            }
+            (true, false) => ref_pos += len,
+            (false, true) => {
+                // Insertion anchored at ref_pos: include if inside the window.
+                if kind == Kind::Insertion && ref_pos >= wlo && ref_pos <= whi {
+                    for i in 0..len {
+                        if let Some(b) = seq.get(query_off + i) {
+                            bases.push(b);
+                            q.push(quals.get(query_off + i).copied().unwrap_or(0));
+                        }
+                    }
+                }
+                query_off += len;
+            }
+            (false, false) => {}
+        }
+    }
+    Ok((bases, q))
+}
+
 /// Subtract known tree positions from de-novo calls to yield the private variant set
 /// (the role `PrivateSnpProcessor` plays after liftover of the tree loci).
 pub fn subtract_known(calls: &[VariantCall], known_positions: &HashSet<i64>) -> Vec<VariantCall> {
@@ -375,6 +575,19 @@ pub fn subtract_known(calls: &[VariantCall], known_positions: &HashSet<i64>) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn active_windows_pads_and_merges_indel_runs() {
+        // evidence at idx 50 and 52 (>=3 reads); pad 5 -> [45,57] (the two merge).
+        let mut ev = vec![0u32; 100];
+        ev[50] = 4;
+        ev[52] = 3;
+        ev[90] = 1; // below threshold -> ignored
+        let w = active_windows(&ev, 3, 5);
+        assert_eq!(w, vec![(45, 57)]);
+        // higher threshold drops everything.
+        assert!(active_windows(&ev, 5, 5).is_empty());
+    }
 
     #[test]
     fn consensus_breaks_ties_toward_earlier_base() {
