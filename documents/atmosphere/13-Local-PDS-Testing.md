@@ -120,27 +120,69 @@ discovery → public-client PAR → DPoP → nonce-retry against this PDS
 Reusable `du-atproto` builders: `Pkce`, `dpop_proof`, `par_form_public`,
 `token_form_public`.
 
-## 6. Full browser login loop needs HTTPS (the one caveat)
+## 6. Full browser login loop over TLS (verified setup)
 
 Discovery + PAR work over plain `http://<ip>:3000` **if** you sign the canonical
-`htu` (§5). But the redirect → consent → `code` → token loop needs the auth server
-reachable over **HTTPS at its canonical host** (`https://pds.test`), because the
-issuer and DPoP `htu` are https-canonical and the browser is redirected to the
-advertised `https://pds.test/oauth/authorize`. To close the loop locally:
+`htu` (§5). The redirect → consent → `code` → token loop additionally needs the
+auth server reachable over **HTTPS at its canonical host** (`https://pds.test`) —
+the issuer and DPoP `htu` are https-canonical and the browser is redirected to the
+advertised `https://pds.test/oauth/authorize`. We stood this up and verified the
+handshake end-to-end **up to the consent screen** (the consent click itself is
+browser-gated — §6.3). Recipe:
 
-- Put a TLS reverse proxy (e.g. Caddy with an internal CA) in front of the PDS at
-  `https://pds.test:443` → container `:3000`; add a `pds.test` hosts entry; trust
-  the proxy's CA in your client.
-- **Identity resolution caveat:** a handle like `alice.pds.test` won't resolve
-  without wildcard DNS (handle→DID is HTTPS well-known on the *handle's* host). For
-  local dev, point Navigator directly at the known PDS as the authorization server
-  (skip handle→DID→PDS resolution) and pass the handle as `login_hint`, or add a
-  DNS/hosts entry. `did:plc` resolution also depends on the genesis op reaching the
-  configured `PDS_DID_PLC_URL`.
+### 6.1 TLS proxy (Caddy internal CA)
+
+```sh
+PDS_IP=$(container ls | awk '$1=="pds"{print $6}' | cut -d/ -f1)   # docker: 127.0.0.1
+printf '{\n  auto_https disable_redirects\n}\npds.test {\n  tls internal\n  reverse_proxy %s:3000\n}\n' "$PDS_IP" > /tmp/Caddyfile
+container run -d --name caddy -v /tmp/Caddyfile:/etc/caddy/Caddyfile docker.io/library/caddy:2
+CADDY_IP=$(container ls | awk '$1=="caddy"{print $6}' | cut -d/ -f1)
+# Export Caddy's internal root CA so clients can trust https://pds.test:
+container exec caddy cat /data/caddy/pki/authorities/local/root.crt > /tmp/caddy_ca.crt
+# Verify (no /etc/hosts needed for curl — use --resolve):
+curl --resolve pds.test:443:$CADDY_IP --cacert /tmp/caddy_ca.crt \
+  https://pds.test/.well-known/oauth-authorization-server
+```
+
+(Docker users: `-p 443:443` on Caddy and `127.0.0.1` as `PDS_IP`, then a hosts
+entry `127.0.0.1 pds.test`.)
+
+### 6.2 Reaching `https://pds.test` from your client without `/etc/hosts`
+
+For **programmatic** HTTP clients, pin the name → IP rather than editing
+`/etc/hosts` (decodingus' Rust client does exactly this via env — useful pattern
+for Navigator too):
+- trust the CA: load `/tmp/caddy_ca.crt` as an extra root;
+- resolve override: map `pds.test` → `$CADDY_IP:443`.
+
+decodingus' reference: `du-web/src/oauth.rs` reads `DU_OAUTH_DEV_CA` (PEM path) and
+`DU_OAUTH_DEV_RESOLVE` (`pds.test:<caddy-ip>`) to build a reqwest client that trusts
+the CA + pins the host; `DU_OAUTH_DEV_PDS` makes it use the PDS as a fixed auth
+server (skipping handle→DID→PDS resolution); the loopback redirect comes from
+`DU_OAUTH_LOOPBACK`. Over this, discovery + PAR + DPoP + `use_dpop_nonce` complete
+over canonical `https://pds.test` and the authorize page renders with the **loopback
+client accepted** (`__authorizeData.clientMetadata.redirect_uris = [http://127.0.0.1:<port>/...]`).
+
+### 6.3 The consent step (real browser)
+
+The **browser** still needs to reach `https://pds.test`, so for the interactive
+part add a hosts entry `pds.test → $CADDY_IP` and trust `/tmp/caddy_ca.crt` in the
+browser (or click through the warning). Then drive `…/oauth/authorize`, sign in, and
+approve; the PDS redirects to your loopback `…/oauth/callback?code=…&state=…` and
+the client exchanges the code. The authorize endpoint enforces browser **`Sec-Fetch-*`**
+headers + a CSRF SPA, so this step is a genuine browser action, not easily scripted.
+
+### 6.4 Identity-resolution caveat
+
+A handle like `alice.pds.test` won't resolve without wildcard DNS (handle→DID is
+HTTPS well-known on the *handle's* host). For local dev, point the client directly
+at the known PDS as the authorization server (skip handle→DID→PDS resolution) and
+pass the handle as `login_hint`, or add a DNS/hosts entry. `did:plc` resolution also
+depends on the genesis op reaching the configured `PDS_DID_PLC_URL`.
 
 ## 7. Teardown / notes
 
-`docker rm -f pds` / `container rm -f pds`; the data dir is recreatable from §2.
-Everything here is throwaway local state — generate fresh secrets per boot; don't
-reuse these creds anywhere real. Coordinate with decodingus if you want a shared
-long-lived instance or a scripted `compose`/`Makefile` target.
+`docker rm -f pds caddy` / `container rm -f pds caddy`; the data dir is recreatable
+from §2. Everything here is throwaway local state — generate fresh secrets per boot;
+don't reuse these creds anywhere real. Coordinate with decodingus if you want a
+shared long-lived instance or a scripted `compose`/`Makefile` target.
