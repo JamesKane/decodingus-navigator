@@ -6,6 +6,7 @@
 
 use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use chrono::Utc;
@@ -31,7 +32,7 @@ pub use navigator_sync::{
     CoverageSummaryRecord, PdsClient, PrivateVariantsRecord, RecordRef, VariantCallEntry,
     COVERAGE_SUMMARY_COLLECTION, PRIVATE_VARIANTS_COLLECTION,
 };
-use navigator_sync::{dev_http_client, login_default, OAuthConfig, TokenStore};
+use navigator_sync::{dev_http_client, login_default, AsyncSync, OAuthConfig, RetryPolicy, TokenStore};
 
 /// Keychain service namespace for stored sessions (plan §7).
 const KEYCHAIN_SERVICE: &str = "decodingus-navigator";
@@ -99,6 +100,9 @@ struct Auth {
     http: reqwest::Client,
     /// The signed-in account's DID, or `None`. `Arc<Mutex>` so clones of `App` share it.
     active: Arc<Mutex<Option<String>>>,
+    /// Offline indicator shared with every [`AsyncSync`] this app builds: cleared on a
+    /// transient write failure, set on success. Starts optimistic (`true`).
+    online: Arc<AtomicBool>,
 }
 
 impl Auth {
@@ -111,6 +115,7 @@ impl Auth {
             config: OAuthConfig::loopback("atproto"),
             http: dev_http_client(),
             active: Arc::new(Mutex::new(active)),
+            online: Arc::new(AtomicBool::new(true)),
         }
     }
 }
@@ -292,14 +297,8 @@ impl App {
 
     // ---- publish -----------------------------------------------------------
 
-    /// Publish an alignment's cached coverage summary to the PDS as a public record.
-    /// Requires coverage to have been computed (cached) and an authenticated `client`
-    /// (built from a logged-in `Session`, or a Bearer client for testing).
-    pub async fn publish_coverage_summary(
-        &self,
-        client: &PdsClient,
-        alignment_id: i64,
-    ) -> Result<RecordRef, AppError> {
+    /// Build the coverage-summary record JSON for an alignment (floats encoded as strings).
+    async fn coverage_record(&self, alignment_id: i64) -> Result<serde_json::Value, AppError> {
         let cov = self
             .cached_coverage(alignment_id)
             .await?
@@ -319,18 +318,11 @@ impl App {
             cov.callable_bases,
             Utc::now().to_rfc3339(),
         );
-        let value = serde_json::to_value(&record)?;
-        Ok(client.create_record(COVERAGE_SUMMARY_COLLECTION, value, None).await?)
+        Ok(serde_json::to_value(&record)?)
     }
 
-    /// Publish an alignment's cached de-novo SNP calls for `contig` to the PDS as a
-    /// private-variants record. Requires the de-novo caller to have been run for that contig.
-    pub async fn publish_private_variants(
-        &self,
-        client: &PdsClient,
-        alignment_id: i64,
-        contig: &str,
-    ) -> Result<RecordRef, AppError> {
+    /// Build the private-variants record JSON for an alignment's cached de-novo calls.
+    async fn variants_record(&self, alignment_id: i64, contig: &str) -> Result<serde_json::Value, AppError> {
         let calls = self
             .cached_denovo(alignment_id, contig)
             .await?
@@ -340,7 +332,29 @@ impl App {
             .map(|c| VariantCallEntry::new(c.position, c.reference_allele, c.alternate_allele, c.depth, c.alt_depth, c.allele_fraction))
             .collect();
         let record = PrivateVariantsRecord::new(contig, caller::DENOVO_VERSION, Utc::now().to_rfc3339(), variants);
-        let value = serde_json::to_value(&record)?;
+        Ok(serde_json::to_value(&record)?)
+    }
+
+    /// Publish an alignment's cached coverage summary using an explicit `client` (the
+    /// testable core; production callers use [`publish_coverage`](Self::publish_coverage)).
+    pub async fn publish_coverage_summary(
+        &self,
+        client: &PdsClient,
+        alignment_id: i64,
+    ) -> Result<RecordRef, AppError> {
+        let value = self.coverage_record(alignment_id).await?;
+        Ok(client.create_record(COVERAGE_SUMMARY_COLLECTION, value, None).await?)
+    }
+
+    /// Publish an alignment's cached de-novo calls for `contig` using an explicit `client`
+    /// (the testable core; production callers use [`publish_variants`](Self::publish_variants)).
+    pub async fn publish_private_variants(
+        &self,
+        client: &PdsClient,
+        alignment_id: i64,
+        contig: &str,
+    ) -> Result<RecordRef, AppError> {
+        let value = self.variants_record(alignment_id, contig).await?;
         Ok(client.create_record(PRIVATE_VARIANTS_COLLECTION, value, None).await?)
     }
 
@@ -373,24 +387,40 @@ impl App {
         Ok(())
     }
 
-    /// Build a DPoP-bound PDS client for the active account, loading its session from the
-    /// keychain. Errors with [`AppError::NotAuthenticated`] when no one is signed in.
-    fn pds_client(&self) -> Result<PdsClient, AppError> {
+    /// Build the resilient sync engine for the active account, loading its session from the
+    /// keychain. Errors with [`AppError::NotAuthenticated`] when no one is signed in. The
+    /// engine auto-refreshes on 401 and retries transient failures with backoff.
+    fn sync_engine(&self) -> Result<AsyncSync, AppError> {
         let did = self.current_account().ok_or(AppError::NotAuthenticated)?;
         let session = self.auth.tokens.load(&did)?.ok_or(AppError::NotAuthenticated)?;
-        Ok(PdsClient::from_session(self.auth.http.clone(), &session)?)
+        Ok(AsyncSync::new(
+            self.auth.http.clone(),
+            self.auth.tokens.clone(),
+            session,
+            RetryPolicy::default(),
+            self.auth.online.clone(),
+        ))
     }
 
-    /// Publish the alignment's coverage summary to the signed-in account's PDS.
+    /// Whether the last PDS write reached the server. Drives the UI's offline indicator;
+    /// optimistic (`true`) until a transient write failure.
+    pub fn is_online(&self) -> bool {
+        self.auth.online.load(Ordering::Relaxed)
+    }
+
+    /// Publish the alignment's coverage summary to the signed-in account's PDS (with
+    /// refresh-on-expiry and retry/backoff via [`AsyncSync`]).
     pub async fn publish_coverage(&self, alignment_id: i64) -> Result<RecordRef, AppError> {
-        let client = self.pds_client()?;
-        self.publish_coverage_summary(&client, alignment_id).await
+        let mut engine = self.sync_engine()?; // auth check before touching the DB
+        let value = self.coverage_record(alignment_id).await?;
+        Ok(engine.push_create(COVERAGE_SUMMARY_COLLECTION, value).await?)
     }
 
     /// Publish the alignment's de-novo calls for `contig` to the signed-in account's PDS.
     pub async fn publish_variants(&self, alignment_id: i64, contig: &str) -> Result<RecordRef, AppError> {
-        let client = self.pds_client()?;
-        self.publish_private_variants(&client, alignment_id, contig).await
+        let mut engine = self.sync_engine()?; // auth check before touching the DB
+        let value = self.variants_record(alignment_id, contig).await?;
+        Ok(engine.push_create(PRIVATE_VARIANTS_COLLECTION, value).await?)
     }
 
     // ---- panels + IBD ------------------------------------------------------

@@ -118,7 +118,7 @@ impl PdsClient {
             .send()
             .await?;
         if !resp.status().is_success() {
-            return Err(SyncError::Oauth(format!("getRecord: {}", resp.status())));
+            return Err(xrpc_error("getRecord", resp).await);
         }
         Ok(resp.json().await?)
     }
@@ -150,7 +150,7 @@ impl PdsClient {
                 }
                 let nonce = resp.headers().get("DPoP-Nonce").and_then(|v| v.to_str().ok()).map(String::from);
                 let Some(nonce) = nonce else {
-                    return Err(SyncError::Oauth(format!("{nsid}: {}", resp.status())));
+                    return Err(xrpc_error(nsid, resp).await);
                 };
                 let proof = dpop_proof(key, "POST", &url, now(), Some(&nonce), Some(token));
                 let retry = self
@@ -171,11 +171,20 @@ impl PdsClient {
     }
 }
 
-/// Turn a non-2xx XRPC response into an error that includes the PDS's reason body.
+/// Classify a non-2xx XRPC response: 401 → [`SyncError::Unauthorized`] (drives refresh),
+/// 5xx → [`SyncError::Server`] (transient), anything else → an `Oauth` error carrying the
+/// PDS's reason body. Reading the body consumes `resp`, so the status is captured first.
 async fn xrpc_error(nsid: &str, resp: reqwest::Response) -> SyncError {
     let status = resp.status();
+    if status.as_u16() == 401 {
+        return SyncError::Unauthorized;
+    }
     let body = resp.text().await.unwrap_or_default();
-    SyncError::Oauth(format!("{nsid}: {status}: {body}"))
+    if status.is_server_error() {
+        SyncError::Server(status.as_u16(), format!("{nsid}: {body}"))
+    } else {
+        SyncError::Oauth(format!("{nsid}: {status}: {body}"))
+    }
 }
 
 /// The `createRecord` request body.

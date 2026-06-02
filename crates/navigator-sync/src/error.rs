@@ -19,4 +19,24 @@ pub enum SyncError {
 
     #[error("oauth error: {0}")]
     Oauth(String),
+
+    /// The access token was rejected (HTTP 401) — refresh and retry.
+    #[error("unauthorized (token expired or revoked)")]
+    Unauthorized,
+
+    /// A 5xx from the PDS/auth server — transient, worth retrying.
+    #[error("server error {0}: {1}")]
+    Server(u16, String),
+}
+
+impl SyncError {
+    /// Whether retrying the same request later might succeed: transport failures
+    /// (offline, timeout) and 5xx server errors. 4xx/validation/auth errors are not.
+    pub fn is_transient(&self) -> bool {
+        match self {
+            SyncError::Http(e) => e.is_connect() || e.is_timeout() || e.is_request(),
+            SyncError::Server(code, _) => *code >= 500,
+            _ => false,
+        }
+    }
 }

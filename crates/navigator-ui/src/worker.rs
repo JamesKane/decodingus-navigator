@@ -50,6 +50,8 @@ pub enum Command {
     CompareIbd { a: i64, b: i64, panel_id: i64, ploidy: u8 },
     /// Report who's signed in (no side effects) — sent on startup.
     AuthStatus,
+    /// Report the current online/offline state (no side effects).
+    SyncStatus,
     /// Sign in to a PDS via OAuth (opens a browser); `handle` is a handle or DID.
     Login { handle: String },
     Logout,
@@ -87,6 +89,8 @@ pub enum Event {
     Authenticated(Option<String>),
     /// A record was published; `kind` is a human label, `uri` the `at://` URI.
     Published { kind: String, uri: String },
+    /// Whether the last PDS write reached the server (offline indicator).
+    SyncOnline(bool),
     Error(String),
 }
 
@@ -191,6 +195,7 @@ pub async fn handle(app: &App, cmd: Command) -> Event {
             }
         }
         Command::AuthStatus => Event::Authenticated(app.current_account()),
+        Command::SyncStatus => Event::SyncOnline(app.is_online()),
         Command::Login { handle } => match app.login(&handle).await {
             Ok(did) => Event::Authenticated(Some(did)),
             Err(e) => Event::Error(e.to_string()),

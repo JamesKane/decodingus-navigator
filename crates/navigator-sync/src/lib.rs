@@ -9,11 +9,13 @@ pub mod error;
 pub mod oauth;
 pub mod publish;
 pub mod records;
+pub mod sync;
 pub mod tokens;
 
 pub use error::SyncError;
-pub use oauth::{login, login_default, OAuthConfig};
+pub use oauth::{login, login_default, refresh, OAuthConfig};
 pub use publish::{dev_http_client, PdsClient, RecordRef};
+pub use sync::{AsyncSync, RetryPolicy};
 pub use records::{
     CoverageSummaryRecord, PrivateVariantsRecord, VariantCallEntry, COVERAGE_SUMMARY_COLLECTION,
     PRIVATE_VARIANTS_COLLECTION,

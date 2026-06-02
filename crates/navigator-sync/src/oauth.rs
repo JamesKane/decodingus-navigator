@@ -295,6 +295,49 @@ pub async fn login(
         refresh_token,
         dpop_key_b64: ec.to_base64(),
         scope,
+        client_id,
+    })
+}
+
+/// Refresh-token grant (plan §7: rotation — the old code discarded the refresh token).
+/// Re-discovers the auth server from the session's PDS and exchanges the stored refresh
+/// token for a new access token, DPoP-bound to the **same** key (so resource tokens stay
+/// valid). Returns a new [`Session`]; the refresh token is rotated when the server issues
+/// a new one, otherwise the existing one is carried forward.
+pub async fn refresh(http: &reqwest::Client, session: &Session) -> Result<Session, SyncError> {
+    if session.refresh_token.is_empty() {
+        return Err(SyncError::Oauth("session has no refresh token".into()));
+    }
+    let meta = discover_auth_server(http, &session.pds).await?;
+    let ec = EcKey::from_base64(&session.dpop_key_b64)?;
+    let form = vec![
+        ("grant_type".to_string(), "refresh_token".to_string()),
+        ("refresh_token".to_string(), session.refresh_token.clone()),
+        ("client_id".to_string(), session.client_id.clone()),
+    ];
+    let tok = post_with_dpop(http, &ec, &meta.token_endpoint, &meta.token_endpoint, &form).await?;
+    let access_token = tok
+        .get("access_token")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| SyncError::Oauth("refresh response missing access_token".into()))?
+        .to_string();
+    // Rotation: prefer a server-issued refresh token, else keep the current one.
+    let refresh_token = tok
+        .get("refresh_token")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+        .map(String::from)
+        .unwrap_or_else(|| session.refresh_token.clone());
+    let scope = tok.get("scope").and_then(|v| v.as_str()).unwrap_or(&session.scope).to_string();
+
+    Ok(Session {
+        did: session.did.clone(),
+        pds: session.pds.clone(),
+        access_token,
+        refresh_token,
+        dpop_key_b64: session.dpop_key_b64.clone(),
+        scope,
+        client_id: session.client_id.clone(),
     })
 }
 

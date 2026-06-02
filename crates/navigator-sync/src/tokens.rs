@@ -22,6 +22,9 @@ pub struct Session {
     /// The DPoP key (base64, via `EcKey::to_base64`) that bound these tokens.
     pub dpop_key_b64: String,
     pub scope: String,
+    /// The `client_id` presented at login — replayed verbatim on token refresh (a public
+    /// client must send the same identifier).
+    pub client_id: String,
 }
 
 /// Keychain account name under which the active-account DID is remembered, so the app
@@ -100,6 +103,7 @@ mod tests {
             refresh_token: "rt".into(),
             dpop_key_b64: "key".into(),
             scope: "atproto navigatorCore".into(),
+            client_id: "http://localhost?redirect_uri=…".into(),
         }
     }
 

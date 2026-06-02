@@ -57,6 +57,8 @@ pub struct NavigatorApp {
     running_ibd: bool,
     /// Signed-in account DID, or `None`. Gates the "Publish" actions.
     account: Option<String>,
+    /// Whether the last PDS write reached the server (offline indicator).
+    online: bool,
     logging_in: bool,
     publishing: bool,
     forms: Forms,
@@ -76,6 +78,7 @@ impl NavigatorApp {
         let _ = tx.send(Command::LoadPanels);
         let _ = tx.send(Command::LoadAllAlignments);
         let _ = tx.send(Command::AuthStatus);
+        let _ = tx.send(Command::SyncStatus);
         NavigatorApp {
             tx,
             rx,
@@ -100,6 +103,7 @@ impl NavigatorApp {
             ibd_result: None,
             running_ibd: false,
             account: None,
+            online: true,
             logging_in: false,
             publishing: false,
             forms: Forms { denovo_contig: "chrM".into(), ploidy: "2".into(), ..Forms::default() },
@@ -192,7 +196,9 @@ impl NavigatorApp {
                 Event::Published { kind, uri } => {
                     self.status = format!("Published {kind}: {uri}");
                     self.publishing = false;
+                    let _ = self.tx.send(Command::SyncStatus); // refresh the online dot
                 }
+                Event::SyncOnline(online) => self.online = online,
                 Event::Error(e) => {
                     self.status = format!("Error: {e}");
                     self.running = false;
@@ -201,6 +207,7 @@ impl NavigatorApp {
                     self.running_ibd = false;
                     self.logging_in = false;
                     self.publishing = false;
+                    let _ = self.tx.send(Command::SyncStatus); // a failed publish may have gone offline
                 }
             }
         }
@@ -312,6 +319,11 @@ impl NavigatorApp {
                 match &self.account {
                     Some(did) => {
                         ui.label(format!("Signed in: {did}"));
+                        if self.online {
+                            ui.colored_label(egui::Color32::from_rgb(60, 160, 60), "● online");
+                        } else {
+                            ui.colored_label(egui::Color32::from_rgb(200, 120, 40), "○ offline");
+                        }
                         if ui.button("Sign out").clicked() {
                             let _ = self.tx.send(Command::Logout);
                         }
