@@ -14,6 +14,7 @@ use std::sync::Arc;
 use navigator_app::{App, Coverage, DenovoCall, IbdComparison, IbdDetectorConfig, PanelGenotype, ProjectOverview};
 use navigator_domain::du_domain::ids::SampleGuid;
 use navigator_domain::strprofile::StrProfile;
+use navigator_domain::variants::VariantSet;
 use navigator_domain::workspace::{
     Alignment, Biosample, NewAlignment, NewProject, NewSequenceRun, Panel, Project, SequenceRun,
 };
@@ -48,6 +49,8 @@ pub enum Command {
         source: Option<String>,
         path: PathBuf,
     },
+    LoadVariantSets(SampleGuid),
+    ImportVariants { biosample_guid: SampleGuid, path: PathBuf },
     LoadAlignments(i64),
     AddAlignment(NewAlignment),
     LoadCoverage(i64),
@@ -92,6 +95,8 @@ pub enum Event {
     RunsChanged(SampleGuid),
     StrProfiles { biosample_guid: SampleGuid, profiles: Vec<StrProfile> },
     StrProfilesChanged(SampleGuid),
+    VariantSets { biosample_guid: SampleGuid, sets: Vec<VariantSet> },
+    VariantSetsChanged(SampleGuid),
     Alignments { sequence_run_id: i64, alignments: Vec<Alignment> },
     AlignmentsChanged(i64),
     Coverage { alignment_id: i64, result: Option<Coverage> },
@@ -156,6 +161,16 @@ pub async fn handle(app: &App, cmd: Command) -> Event {
                 .await
             {
                 Ok(_) => Event::StrProfilesChanged(biosample_guid),
+                Err(e) => Event::Error(e.to_string()),
+            }
+        }
+        Command::LoadVariantSets(guid) => match app.list_variant_sets(guid).await {
+            Ok(sets) => Event::VariantSets { biosample_guid: guid, sets },
+            Err(e) => Event::Error(e.to_string()),
+        },
+        Command::ImportVariants { biosample_guid, path } => {
+            match app.import_variants_from_file(biosample_guid, &path).await {
+                Ok(_) => Event::VariantSetsChanged(biosample_guid),
                 Err(e) => Event::Error(e.to_string()),
             }
         }

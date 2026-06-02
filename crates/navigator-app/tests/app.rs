@@ -42,6 +42,28 @@ async fn import_str_profile_from_csv_round_trips() {
     let _ = std::fs::remove_file(&path);
 }
 
+#[tokio::test]
+async fn import_variants_from_csv_keeps_only_snps() {
+    let app = app().await;
+    let subject = app.add_biosample(None, "HG002", None, None).await.unwrap();
+
+    let path = std::env::temp_dir().join(format!("variants-{}.csv", subject.guid.0));
+    // header layout; one indel row that must be dropped (SNP-only)
+    std::fs::write(&path, "contig,position,ref,alt,rsid,genotype\nchr1,1000,A,G,rs1,0/1\nchr1,2000,A,AT,rs2,0/1\nchrM,73,G,A,.,1/1\n").unwrap();
+
+    let set = app.import_variants_from_file(subject.guid, &path).await.unwrap();
+    assert_eq!(set.source_label, path.file_name().unwrap().to_string_lossy());
+    assert_eq!(set.calls.len(), 2); // the A>AT indel dropped
+
+    let listed = app.list_variant_sets(subject.guid).await.unwrap();
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0].calls[0].rs_id.as_deref(), Some("rs1"));
+    assert_eq!(listed[0].calls[0].genotype.as_deref(), Some("0/1"));
+    assert_eq!(listed[0].calls[1].rs_id, None); // "." normalized away
+
+    let _ = std::fs::remove_file(&path);
+}
+
 /// Create a sample → run → alignment chain and return the alignment id.
 async fn alignment_id(app: &App) -> i64 {
     let b = app.add_biosample(None, "HG002", None, None).await.unwrap();

@@ -10,6 +10,7 @@ use navigator_app::{Coverage, DenovoCall, IbdComparison, PanelGenotype, ProjectO
 use navigator_domain::du_domain::ids::SampleGuid;
 use navigator_domain::strprofile::{self, StrProfile};
 use navigator_domain::testtype;
+use navigator_domain::variants::VariantSet;
 use navigator_domain::workspace::{Alignment, Biosample, NewAlignment, NewProject, NewSequenceRun, SequenceRun};
 use tokio::sync::mpsc::UnboundedSender;
 
@@ -49,6 +50,8 @@ pub struct NavigatorApp {
     runs: Vec<SequenceRun>,
     /// STR profiles for the selected subject.
     str_profiles: Vec<StrProfile>,
+    /// SNP variant sets for the selected subject.
+    variant_sets: Vec<VariantSet>,
     selected_run: Option<i64>,
     alignments: Vec<Alignment>,
     selected_alignment: Option<i64>,
@@ -111,6 +114,7 @@ impl NavigatorApp {
             selected_sample: None,
             runs: Vec::new(),
             str_profiles: Vec::new(),
+            variant_sets: Vec::new(),
             selected_run: None,
             alignments: Vec::new(),
             selected_alignment: None,
@@ -187,6 +191,17 @@ impl NavigatorApp {
                         let _ = self.tx.send(Command::LoadStrProfiles(guid));
                     }
                     self.status = "STR profile imported".into();
+                }
+                Event::VariantSets { biosample_guid, sets } => {
+                    if self.selected_sample == Some(biosample_guid) {
+                        self.variant_sets = sets;
+                    }
+                }
+                Event::VariantSetsChanged(guid) => {
+                    if self.selected_sample == Some(guid) {
+                        let _ = self.tx.send(Command::LoadVariantSets(guid));
+                    }
+                    self.status = "Variants imported".into();
                 }
                 Event::Alignments { sequence_run_id, alignments } => {
                     if self.selected_run == Some(sequence_run_id) {
@@ -270,8 +285,10 @@ impl NavigatorApp {
         self.clear_run_selection();
         self.runs.clear();
         self.str_profiles.clear();
+        self.variant_sets.clear();
         let _ = self.tx.send(Command::LoadRuns(guid));
         let _ = self.tx.send(Command::LoadStrProfiles(guid));
+        let _ = self.tx.send(Command::LoadVariantSets(guid));
     }
 
     fn select_run(&mut self, id: i64) {
@@ -347,6 +364,7 @@ impl eframe::App for NavigatorApp {
                 if let Some(guid) = self.selected_sample {
                     self.subject_header(ui);
                     self.str_section(ui, guid);
+                    self.variants_section(ui, guid);
                     self.runs_section(ui);
                 }
                 if self.selected_run.is_some() {
@@ -539,6 +557,31 @@ impl NavigatorApp {
                 }
             }
             ui.label("Expects rows of marker,value (e.g. DYS393,13).");
+        });
+    }
+
+    /// SNP variant sets for the selected subject + an import form (VCF or CSV/TSV).
+    fn variants_section(&mut self, ui: &mut egui::Ui, guid: SampleGuid) {
+        ui.add_space(12.0);
+        ui.separator();
+        ui.heading("SNP variants");
+        if self.variant_sets.is_empty() {
+            ui.label("No variants imported yet.");
+        }
+        for s in &self.variant_sets {
+            ui.label(format!("{} — {} SNP(s)", s.source_label, s.calls.len()));
+        }
+
+        ui.add_space(6.0);
+        ui.collapsing("Import variants", |ui| {
+            if ui.button("Choose VCF/CSV/TSV…").clicked() {
+                if let Some(path) =
+                    rfd::FileDialog::new().add_filter("variants", &["vcf", "csv", "tsv", "txt"]).pick_file()
+                {
+                    let _ = self.tx.send(Command::ImportVariants { biosample_guid: guid, path });
+                }
+            }
+            ui.label("VCF, or rows of contig,position,ref,alt[,rsid][,genotype]. SNP-only.");
         });
     }
 

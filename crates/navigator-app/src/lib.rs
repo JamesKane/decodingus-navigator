@@ -48,7 +48,10 @@ use navigator_domain::workspace::{
     SequenceRun,
 };
 use navigator_domain::strprofile::{self, NewStrProfile, StrProfile};
-use navigator_store::{alignment, artifact, biosample, project, sequence_run, str_profile, Store, StoreError};
+use navigator_domain::variants::{self, NewVariantSet, VariantSet};
+use navigator_store::{
+    alignment, artifact, biosample, project, sequence_run, str_profile, variant_set, Store, StoreError,
+};
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 use uuid::Uuid;
@@ -474,6 +477,48 @@ impl App {
     /// All STR profiles for a subject.
     pub async fn list_str_profiles(&self, biosample_guid: SampleGuid) -> Result<Vec<StrProfile>, AppError> {
         Ok(str_profile::list_for_biosample(self.store.pool(), biosample_guid).await?)
+    }
+
+    // ---- SNP variants ------------------------------------------------------
+
+    /// Import a subject's SNP variant calls from a file. `.vcf` is parsed as a VCF (reusing
+    /// the shared column parser); `.csv`/`.tsv` as a `contig,position,ref,alt[,rsid][,gt]`
+    /// table. Indels/symbolic alleles are dropped (SNP-only). `source_label` defaults to the
+    /// file name.
+    pub async fn import_variants_from_file(
+        &self,
+        biosample_guid: SampleGuid,
+        path: &Path,
+    ) -> Result<VariantSet, AppError> {
+        let label = path.file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or_else(|| "variants".into());
+        let is_vcf = path
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(|e| e.eq_ignore_ascii_case("vcf"))
+            .unwrap_or(false);
+
+        let calls = if is_vcf {
+            navigator_analysis::parity::parse_truth_vcf(path)?
+                .into_iter()
+                .filter_map(|v| {
+                    let alt = v.alternate.first()?;
+                    variants::snp_call(&v.chrom, v.pos, &v.reference, alt, v.ids.first().cloned(), None)
+                })
+                .collect()
+        } else {
+            let text = std::fs::read_to_string(path)?;
+            variants::parse_csv(&text).map_err(AppError::Import)?
+        };
+        if calls.is_empty() {
+            return Err(AppError::Import("no SNP variants found in file".into()));
+        }
+        let new = NewVariantSet { biosample_guid, source_label: label, calls };
+        Ok(variant_set::create(self.store.pool(), &new).await?)
+    }
+
+    /// All variant sets for a subject.
+    pub async fn list_variant_sets(&self, biosample_guid: SampleGuid) -> Result<Vec<VariantSet>, AppError> {
+        Ok(variant_set::list_for_biosample(self.store.pool(), biosample_guid).await?)
     }
 
     pub async fn panel_site_count(&self, panel_id: i64) -> Result<i64, AppError> {

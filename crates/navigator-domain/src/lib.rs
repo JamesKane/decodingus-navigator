@@ -11,4 +11,5 @@ pub use du_domain;
 
 pub mod strprofile;
 pub mod testtype;
+pub mod variants;
 pub mod workspace;

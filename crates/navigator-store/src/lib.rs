@@ -16,6 +16,7 @@ pub mod panel;
 pub mod project;
 pub mod sequence_run;
 pub mod str_profile;
+pub mod variant_set;
 
 pub use error::StoreError;
 
