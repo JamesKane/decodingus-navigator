@@ -24,6 +24,12 @@ pub enum AppError {
     #[error("not signed in — log in to a PDS account first")]
     NotAuthenticated,
 
+    #[error("could not read file: {0}")]
+    Io(#[from] std::io::Error),
+
+    #[error("import error: {0}")]
+    Import(String),
+
     #[error(transparent)]
     Sync(#[from] navigator_sync::SyncError),
 }

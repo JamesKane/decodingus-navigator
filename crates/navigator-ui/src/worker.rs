@@ -13,6 +13,7 @@ use std::sync::Arc;
 
 use navigator_app::{App, Coverage, DenovoCall, IbdComparison, IbdDetectorConfig, PanelGenotype, ProjectOverview};
 use navigator_domain::du_domain::ids::SampleGuid;
+use navigator_domain::strprofile::StrProfile;
 use navigator_domain::workspace::{
     Alignment, Biosample, NewAlignment, NewProject, NewSequenceRun, Panel, Project, SequenceRun,
 };
@@ -39,6 +40,14 @@ pub enum Command {
     AddBiosample(NewBiosample),
     LoadRuns(SampleGuid),
     AddRun(NewSequenceRun),
+    LoadStrProfiles(SampleGuid),
+    ImportStrProfile {
+        biosample_guid: SampleGuid,
+        panel_name: String,
+        provider: Option<String>,
+        source: Option<String>,
+        path: PathBuf,
+    },
     LoadAlignments(i64),
     AddAlignment(NewAlignment),
     LoadCoverage(i64),
@@ -81,6 +90,8 @@ pub enum Event {
     BiosamplesChanged,
     Runs { biosample_guid: SampleGuid, runs: Vec<SequenceRun> },
     RunsChanged(SampleGuid),
+    StrProfiles { biosample_guid: SampleGuid, profiles: Vec<StrProfile> },
+    StrProfilesChanged(SampleGuid),
     Alignments { sequence_run_id: i64, alignments: Vec<Alignment> },
     AlignmentsChanged(i64),
     Coverage { alignment_id: i64, result: Option<Coverage> },
@@ -135,6 +146,19 @@ pub async fn handle(app: &App, cmd: Command) -> Event {
             Ok(run) => Event::RunsChanged(run.biosample_guid),
             Err(e) => Event::Error(e.to_string()),
         },
+        Command::LoadStrProfiles(guid) => match app.list_str_profiles(guid).await {
+            Ok(profiles) => Event::StrProfiles { biosample_guid: guid, profiles },
+            Err(e) => Event::Error(e.to_string()),
+        },
+        Command::ImportStrProfile { biosample_guid, panel_name, provider, source, path } => {
+            match app
+                .import_str_profile_from_csv(biosample_guid, &panel_name, provider, source, &path)
+                .await
+            {
+                Ok(_) => Event::StrProfilesChanged(biosample_guid),
+                Err(e) => Event::Error(e.to_string()),
+            }
+        }
         Command::LoadAlignments(sequence_run_id) => match app.list_alignments(sequence_run_id).await {
             Ok(alignments) => Event::Alignments { sequence_run_id, alignments },
             Err(e) => Event::Error(e.to_string()),

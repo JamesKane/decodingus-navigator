@@ -8,6 +8,7 @@ use std::sync::mpsc::Receiver;
 use eframe::egui;
 use navigator_app::{Coverage, DenovoCall, IbdComparison, PanelGenotype, ProjectOverview};
 use navigator_domain::du_domain::ids::SampleGuid;
+use navigator_domain::strprofile::{self, StrProfile};
 use navigator_domain::testtype;
 use navigator_domain::workspace::{Alignment, Biosample, NewAlignment, NewProject, NewSequenceRun, SequenceRun};
 use tokio::sync::mpsc::UnboundedSender;
@@ -31,6 +32,9 @@ struct Forms {
     ploidy: String,
     panel_import_name: String,
     login_handle: String,
+    str_panel: String,
+    str_provider: String,
+    str_source: String,
 }
 
 pub struct NavigatorApp {
@@ -43,6 +47,8 @@ pub struct NavigatorApp {
     all_biosamples: Vec<Biosample>,
     selected_sample: Option<SampleGuid>,
     runs: Vec<SequenceRun>,
+    /// STR profiles for the selected subject.
+    str_profiles: Vec<StrProfile>,
     selected_run: Option<i64>,
     alignments: Vec<Alignment>,
     selected_alignment: Option<i64>,
@@ -73,6 +79,18 @@ fn opt(s: &str) -> Option<String> {
     (!t.is_empty()).then(|| t.to_string())
 }
 
+/// A labeled dropdown that sets `value` to one of `options` (string codes).
+fn combo(ui: &mut egui::Ui, label: &str, id: &str, value: &mut String, options: &[&str]) {
+    ui.horizontal(|ui| {
+        ui.label(label);
+        egui::ComboBox::from_id_salt(id).selected_text(value.clone()).show_ui(ui, |ui| {
+            for opt in options {
+                ui.selectable_value(value, opt.to_string(), *opt);
+            }
+        });
+    });
+}
+
 impl NavigatorApp {
     pub fn new(cc: &eframe::CreationContext<'_>, db_path: PathBuf) -> Self {
         let ctx = cc.egui_ctx.clone();
@@ -92,6 +110,7 @@ impl NavigatorApp {
             all_biosamples: Vec::new(),
             selected_sample: None,
             runs: Vec::new(),
+            str_profiles: Vec::new(),
             selected_run: None,
             alignments: Vec::new(),
             selected_alignment: None,
@@ -115,6 +134,9 @@ impl NavigatorApp {
                 denovo_contig: "chrM".into(),
                 ploidy: "2".into(),
                 run_test_type: "WGS".into(),
+                str_panel: "Y-37".into(),
+                str_provider: "FTDNA".into(),
+                str_source: "DIRECT_TEST".into(),
                 ..Forms::default()
             },
             status: "Loading…".into(),
@@ -154,6 +176,17 @@ impl NavigatorApp {
                     if self.selected_sample == Some(guid) {
                         let _ = self.tx.send(Command::LoadRuns(guid));
                     }
+                }
+                Event::StrProfiles { biosample_guid, profiles } => {
+                    if self.selected_sample == Some(biosample_guid) {
+                        self.str_profiles = profiles;
+                    }
+                }
+                Event::StrProfilesChanged(guid) => {
+                    if self.selected_sample == Some(guid) {
+                        let _ = self.tx.send(Command::LoadStrProfiles(guid));
+                    }
+                    self.status = "STR profile imported".into();
                 }
                 Event::Alignments { sequence_run_id, alignments } => {
                     if self.selected_run == Some(sequence_run_id) {
@@ -236,7 +269,9 @@ impl NavigatorApp {
         self.selected_sample = Some(guid);
         self.clear_run_selection();
         self.runs.clear();
+        self.str_profiles.clear();
         let _ = self.tx.send(Command::LoadRuns(guid));
+        let _ = self.tx.send(Command::LoadStrProfiles(guid));
     }
 
     fn select_run(&mut self, id: i64) {
@@ -309,8 +344,9 @@ impl eframe::App for NavigatorApp {
                 if self.selected_project.is_some() {
                     self.samples_section(ui);
                 }
-                if self.selected_sample.is_some() {
+                if let Some(guid) = self.selected_sample {
                     self.subject_header(ui);
+                    self.str_section(ui, guid);
                     self.runs_section(ui);
                 }
                 if self.selected_run.is_some() {
@@ -471,6 +507,39 @@ impl NavigatorApp {
         ui.add_space(12.0);
         ui.separator();
         ui.heading(format!("Subject — {donor}"));
+    }
+
+    /// Y-STR profiles for the selected subject + an import form (CSV/TSV marker table).
+    fn str_section(&mut self, ui: &mut egui::Ui, guid: SampleGuid) {
+        ui.add_space(12.0);
+        ui.separator();
+        ui.heading("STR profiles");
+        if self.str_profiles.is_empty() {
+            ui.label("No STR profiles yet.");
+        }
+        for p in &self.str_profiles {
+            let provider = p.provider.as_deref().unwrap_or("—");
+            ui.label(format!("{} — {} markers  ({provider})", p.panel_name, p.markers.len()));
+        }
+
+        ui.add_space(6.0);
+        ui.collapsing("Import STR profile", |ui| {
+            combo(ui, "Panel:", "str_panel", &mut self.forms.str_panel, strprofile::KNOWN_PANELS);
+            combo(ui, "Provider:", "str_provider", &mut self.forms.str_provider, strprofile::KNOWN_PROVIDERS);
+            combo(ui, "Source:", "str_source", &mut self.forms.str_source, strprofile::KNOWN_SOURCES);
+            if ui.button("Choose CSV/TSV…").clicked() {
+                if let Some(path) = rfd::FileDialog::new().add_filter("STR table", &["csv", "tsv", "txt"]).pick_file() {
+                    let _ = self.tx.send(Command::ImportStrProfile {
+                        biosample_guid: guid,
+                        panel_name: self.forms.str_panel.clone(),
+                        provider: opt(&self.forms.str_provider),
+                        source: opt(&self.forms.str_source),
+                        path,
+                    });
+                }
+            }
+            ui.label("Expects rows of marker,value (e.g. DYS393,13).");
+        });
     }
 
     fn panels_section(&mut self, ui: &mut egui::Ui) {

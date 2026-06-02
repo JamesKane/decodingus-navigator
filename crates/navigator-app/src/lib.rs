@@ -47,7 +47,8 @@ use navigator_domain::workspace::{
     Alignment, AnalysisArtifact, Biosample, NewAlignment, NewProject, NewSequenceRun, Project,
     SequenceRun,
 };
-use navigator_store::{alignment, artifact, biosample, project, sequence_run, Store, StoreError};
+use navigator_domain::strprofile::{self, NewStrProfile, StrProfile};
+use navigator_store::{alignment, artifact, biosample, project, sequence_run, str_profile, Store, StoreError};
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 use uuid::Uuid;
@@ -451,6 +452,28 @@ impl App {
 
     pub async fn list_panels(&self) -> Result<Vec<Panel>, AppError> {
         Ok(panel::list(self.store.pool()).await?)
+    }
+
+    // ---- STR profiles ------------------------------------------------------
+
+    /// Import a Y-STR profile for a subject from an exported marker table (CSV/TSV).
+    pub async fn import_str_profile_from_csv(
+        &self,
+        biosample_guid: SampleGuid,
+        panel_name: &str,
+        provider: Option<String>,
+        source: Option<String>,
+        csv_path: &Path,
+    ) -> Result<StrProfile, AppError> {
+        let text = std::fs::read_to_string(csv_path)?;
+        let markers = strprofile::parse_csv(&text).map_err(AppError::Import)?;
+        let new = NewStrProfile { biosample_guid, panel_name: panel_name.to_string(), provider, source, markers };
+        Ok(str_profile::create(self.store.pool(), &new).await?)
+    }
+
+    /// All STR profiles for a subject.
+    pub async fn list_str_profiles(&self, biosample_guid: SampleGuid) -> Result<Vec<StrProfile>, AppError> {
+        Ok(str_profile::list_for_biosample(self.store.pool(), biosample_guid).await?)
     }
 
     pub async fn panel_site_count(&self, panel_id: i64) -> Result<i64, AppError> {

@@ -18,6 +18,30 @@ fn fixtures() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../navigator-analysis/tests/fixtures")
 }
 
+#[tokio::test]
+async fn import_str_profile_from_csv_round_trips() {
+    let app = app().await;
+    let subject = app.add_biosample(None, "HG002", None, None).await.unwrap(); // no project needed
+
+    // A small FTDNA-style marker export.
+    let path = std::env::temp_dir().join(format!("str-{}.csv", subject.guid.0));
+    std::fs::write(&path, "Marker,Value\nDYS393,13\nDYS390,24\nDYS385,11-14\n").unwrap();
+
+    let profile = app
+        .import_str_profile_from_csv(subject.guid, "Y-37", Some("FTDNA".into()), Some("DIRECT_TEST".into()), &path)
+        .await
+        .unwrap();
+    assert_eq!(profile.panel_name, "Y-37");
+    assert_eq!(profile.markers.len(), 3);
+
+    let listed = app.list_str_profiles(subject.guid).await.unwrap();
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0].provider.as_deref(), Some("FTDNA"));
+    assert_eq!(listed[0].markers[2].value, "11-14"); // multi-copy preserved through the store
+
+    let _ = std::fs::remove_file(&path);
+}
+
 /// Create a sample → run → alignment chain and return the alignment id.
 async fn alignment_id(app: &App) -> i64 {
     let b = app.add_biosample(None, "HG002", None, None).await.unwrap();

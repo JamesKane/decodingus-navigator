@@ -15,6 +15,7 @@ pub mod error;
 pub mod panel;
 pub mod project;
 pub mod sequence_run;
+pub mod str_profile;
 
 pub use error::StoreError;
 
