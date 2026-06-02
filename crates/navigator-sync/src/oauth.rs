@@ -22,17 +22,60 @@ use du_atproto::Resolver;
 use crate::error::SyncError;
 use crate::tokens::Session;
 
-/// Public/native client configuration. `client_id` is the (hosted) client-metadata.json
-/// URL the authorization server fetches; `scope` is e.g. `"atproto navigatorCore"`.
+/// How the public client identifies itself.
+#[derive(Debug, Clone)]
+pub enum ClientId {
+    /// A hosted `client-metadata.json` URL the authorization server fetches (production).
+    Hosted(String),
+    /// The atproto **loopback** dev client — no hosted document; the `client_id` is
+    /// derived from the loopback redirect URI at runtime (`http://localhost?redirect_uri=…`).
+    Loopback,
+}
+
+/// Public/native client configuration.
 #[derive(Debug, Clone)]
 pub struct OAuthConfig {
-    pub client_id: String,
+    pub client: ClientId,
     pub scope: String,
+}
+
+impl OAuthConfig {
+    pub fn hosted(client_id: impl Into<String>, scope: impl Into<String>) -> Self {
+        OAuthConfig { client: ClientId::Hosted(client_id.into()), scope: scope.into() }
+    }
+
+    pub fn loopback(scope: impl Into<String>) -> Self {
+        OAuthConfig { client: ClientId::Loopback, scope: scope.into() }
+    }
+
+    /// The `client_id` to use for a given loopback redirect URI.
+    pub fn client_id(&self, redirect_uri: &str) -> String {
+        match &self.client {
+            ClientId::Hosted(id) => id.clone(),
+            ClientId::Loopback => format!(
+                "http://localhost?redirect_uri={}&scope={}",
+                percent_encode(redirect_uri),
+                percent_encode(&self.scope)
+            ),
+        }
+    }
 }
 
 /// The loopback redirect URI for a chosen port.
 pub fn redirect_uri(port: u16) -> String {
     format!("http://127.0.0.1:{port}/callback")
+}
+
+/// Percent-encode for query values (everything but the unreserved set).
+fn percent_encode(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for &b in s.as_bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => out.push(b as char),
+            _ => out.push_str(&format!("%{b:02X}")),
+        }
+    }
+    out
 }
 
 fn now() -> i64 {
@@ -126,28 +169,32 @@ impl LoopbackServer {
 }
 
 /// POST a form with a DPoP proof, retrying once with the server-supplied nonce (the
-/// AT Proto OAuth nonce dance). Returns the JSON body on success.
+/// AT Proto `use_dpop_nonce` dance). The proof's `htu` is the server's **canonical**
+/// endpoint (from metadata), which can differ from the transport `post_url` you connect
+/// over (e.g. a local container reached by IP but validating against its https issuer).
+/// Returns the JSON body on success.
 async fn post_with_dpop(
     http: &reqwest::Client,
     key: &EcKey,
-    url: &str,
+    post_url: &str,
+    htu: &str,
     form: &[(String, String)],
 ) -> Result<serde_json::Value, SyncError> {
-    let proof = dpop_proof(key, "POST", url, now(), None, None);
-    let resp = http.post(url).header("DPoP", proof).form(form).send().await?;
+    let proof = dpop_proof(key, "POST", htu, now(), None, None);
+    let resp = http.post(post_url).header("DPoP", proof).form(form).send().await?;
     if resp.status().is_success() {
         return Ok(resp.json().await?);
     }
     let nonce = resp.headers().get("DPoP-Nonce").and_then(|v| v.to_str().ok()).map(String::from);
     let Some(nonce) = nonce else {
-        return Err(SyncError::Oauth(format!("{url}: {}", resp.status())));
+        return Err(SyncError::Oauth(format!("{post_url}: {}", resp.status())));
     };
-    let proof = dpop_proof(key, "POST", url, now(), Some(&nonce), None);
-    let retry = http.post(url).header("DPoP", proof).form(form).send().await?;
+    let proof = dpop_proof(key, "POST", htu, now(), Some(&nonce), None);
+    let retry = http.post(post_url).header("DPoP", proof).form(form).send().await?;
     if retry.status().is_success() {
         Ok(retry.json().await?)
     } else {
-        Err(SyncError::Oauth(format!("{url}: {}", retry.status())))
+        Err(SyncError::Oauth(format!("{post_url}: {}", retry.status())))
     }
 }
 
@@ -195,16 +242,18 @@ pub async fn login(
     let state = random_token();
     let server = LoopbackServer::bind()?;
     let redirect = redirect_uri(server.port());
+    let client_id = config.client_id(&redirect);
 
-    // Pushed authorization request (PKCE, no client assertion).
-    let par_form = par_form_public(&config.client_id, &redirect, &config.scope, &state, &pkce.challenge, Some(handle));
-    let par = post_with_dpop(http, &ec, &par_endpoint, &par_form).await?;
+    // Pushed authorization request (PKCE, no client assertion). Over an HTTPS-reachable
+    // PDS the transport URL is the canonical endpoint, so post_url == htu here.
+    let par_form = par_form_public(&client_id, &redirect, &config.scope, &state, &pkce.challenge, Some(handle));
+    let par = post_with_dpop(http, &ec, &par_endpoint, &par_endpoint, &par_form).await?;
     let request_uri = par
         .get("request_uri")
         .and_then(|v| v.as_str())
         .ok_or_else(|| SyncError::Oauth("PAR response missing request_uri".into()))?;
 
-    open_browser(&authorize_url(&meta.authorization_endpoint, &config.client_id, request_uri));
+    open_browser(&authorize_url(&meta.authorization_endpoint, &client_id, request_uri));
 
     // Wait for the redirect on the loopback server (blocking accept off the runtime).
     let params = tokio::task::spawn_blocking(move || server.wait())
@@ -219,8 +268,8 @@ pub async fn login(
     let code = params.code.ok_or_else(|| SyncError::Oauth("callback missing code".into()))?;
 
     // Exchange the code for tokens (PKCE verifier, DPoP-bound).
-    let token_form = token_form_public(&config.client_id, &redirect, &code, &pkce.verifier);
-    let tok = post_with_dpop(http, &ec, &meta.token_endpoint, &token_form).await?;
+    let token_form = token_form_public(&client_id, &redirect, &code, &pkce.verifier);
+    let tok = post_with_dpop(http, &ec, &meta.token_endpoint, &meta.token_endpoint, &token_form).await?;
     let access_token = tok
         .get("access_token")
         .and_then(|v| v.as_str())
@@ -262,6 +311,65 @@ mod tests {
     #[test]
     fn redirect_uri_is_loopback() {
         assert_eq!(redirect_uri(49152), "http://127.0.0.1:49152/callback");
+    }
+
+    #[test]
+    fn loopback_client_id_embeds_the_redirect_and_scope() {
+        let cfg = OAuthConfig::loopback("atproto");
+        let id = cfg.client_id("http://127.0.0.1:9000/callback");
+        assert_eq!(
+            id,
+            "http://localhost?redirect_uri=http%3A%2F%2F127.0.0.1%3A9000%2Fcallback&scope=atproto"
+        );
+        assert_eq!(OAuthConfig::hosted("https://x/cm.json", "s").client_id("ignored"), "https://x/cm.json");
+    }
+
+    /// Live discovery + public-client PAR (DPoP + use_dpop_nonce) against a local atproto
+    /// PDS container (see documents/atmosphere/13-Local-PDS-Testing.md). Exercises this
+    /// crate's `post_with_dpop` (canonical htu vs transport URL) and loopback client_id.
+    /// The full browser→token loop needs HTTPS at the canonical host, so it's a manual smoke.
+    #[tokio::test]
+    #[ignore = "requires PDS_TEST_URL (local atproto PDS container)"]
+    async fn discovery_and_par_against_live_pds() {
+        use du_atproto::oauth::AuthServerMetadata;
+
+        let Ok(pds) = std::env::var("PDS_TEST_URL") else {
+            eprintln!("PDS_TEST_URL unset — skipping live PDS PAR test");
+            return;
+        };
+        let pds = pds.trim_end_matches('/').to_string();
+        let http = reqwest::Client::new();
+
+        // Fetch metadata from the reachable base (not the https issuer a container won't terminate).
+        let meta: AuthServerMetadata = http
+            .get(format!("{pds}/.well-known/oauth-authorization-server"))
+            .send()
+            .await
+            .expect("fetch metadata")
+            .error_for_status()
+            .expect("metadata 2xx")
+            .json()
+            .await
+            .expect("parse AuthServerMetadata");
+        let canonical_par = meta.pushed_authorization_request_endpoint.expect("PAR endpoint");
+
+        let redirect = redirect_uri(9000);
+        let config = OAuthConfig::loopback("atproto");
+        let client_id = config.client_id(&redirect);
+        let pkce = Pkce::generate();
+        let state = random_token();
+        let form = par_form_public(&client_id, &redirect, "atproto", &state, &pkce.challenge, None);
+
+        let key = EcKey::generate();
+        let post_to = format!("{pds}/oauth/par"); // transport; htu is the canonical endpoint
+        let par = post_with_dpop(&http, &key, &post_to, &canonical_par, &form)
+            .await
+            .expect("PAR should succeed");
+        assert!(
+            par.get("request_uri").and_then(|v| v.as_str()).is_some(),
+            "PAR response must include request_uri: {par}"
+        );
+        eprintln!("✓ navigator-sync PAR accepted: request_uri present");
     }
 
     #[test]
