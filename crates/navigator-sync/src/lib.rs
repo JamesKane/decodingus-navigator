@@ -7,8 +7,10 @@
 
 pub mod error;
 pub mod oauth;
+pub mod publish;
 pub mod tokens;
 
 pub use error::SyncError;
 pub use oauth::{login, OAuthConfig};
+pub use publish::{dev_http_client, PdsClient, RecordRef};
 pub use tokens::{Session, TokenStore};
