@@ -132,7 +132,7 @@ impl PdsClient {
                 if resp.status().is_success() {
                     Ok(resp.json().await?)
                 } else {
-                    Err(SyncError::Oauth(format!("{nsid}: {}", resp.status())))
+                    Err(xrpc_error(nsid, resp).await)
                 }
             }
             Auth::Dpop { token, key } => {
@@ -164,11 +164,18 @@ impl PdsClient {
                 if retry.status().is_success() {
                     Ok(retry.json().await?)
                 } else {
-                    Err(SyncError::Oauth(format!("{nsid}: {}", retry.status())))
+                    Err(xrpc_error(nsid, retry).await)
                 }
             }
         }
     }
+}
+
+/// Turn a non-2xx XRPC response into an error that includes the PDS's reason body.
+async fn xrpc_error(nsid: &str, resp: reqwest::Response) -> SyncError {
+    let status = resp.status();
+    let body = resp.text().await.unwrap_or_default();
+    SyncError::Oauth(format!("{nsid}: {status}: {body}"))
 }
 
 /// The `createRecord` request body.
@@ -223,7 +230,8 @@ mod tests {
         let http = reqwest::Client::new();
 
         // Throwaway account (unique handle under the PDS host).
-        let n = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        // Short unique suffix (low digits of the nanos clock) — handle labels are length-limited.
+        let n = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos() % 1_000_000_000;
         let handle = format!("nav{n}.pds.test");
         let acct: serde_json::Value = http
             .post(format!("{pds}/xrpc/com.atproto.server.createAccount"))
@@ -238,17 +246,20 @@ mod tests {
         let jwt = acct["accessJwt"].as_str().expect("accessJwt");
 
         let client = PdsClient::bearer(http, &pds, did, jwt);
+        // atproto records have no float type (DAG-CBOR) — encode metrics as strings or
+        // scaled integers. (A real finding for the coverage-summary lexicon.)
         let record = json!({
             "$type": "com.decodingus.test.coverageSummary",
             "referenceBuild": "chm13v2.0",
-            "meanCoverage": 30.5,
+            "meanCoverage": "30.5",
             "callableBases": 3_000_000,
         });
         let r = client.create_record("com.decodingus.test.coverageSummary", record, None).await.expect("createRecord");
         assert!(r.uri.starts_with("at://"), "uri: {}", r.uri);
 
         let got = client.get_record("com.decodingus.test.coverageSummary", r.rkey()).await.expect("getRecord");
-        assert_eq!(got["value"]["meanCoverage"].as_f64(), Some(30.5));
+        assert_eq!(got["value"]["meanCoverage"], "30.5");
+        assert_eq!(got["value"]["callableBases"], 3_000_000);
         assert_eq!(got["value"]["referenceBuild"], "chm13v2.0");
         eprintln!("✓ wrote + read {}", r.uri);
     }
