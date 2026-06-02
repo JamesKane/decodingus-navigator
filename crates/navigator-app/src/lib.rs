@@ -197,9 +197,14 @@ impl App {
         Ok(biosample::list_for_project(self.store.pool(), project_id).await?)
     }
 
-    /// Alignments for a biosample (across its sequence runs).
-    pub async fn list_alignments(&self, biosample_guid: SampleGuid) -> Result<Vec<Alignment>, AppError> {
-        Ok(alignment::list_for_biosample(self.store.pool(), biosample_guid).await?)
+    /// Sequence runs for a biosample.
+    pub async fn list_sequence_runs(&self, biosample_guid: SampleGuid) -> Result<Vec<SequenceRun>, AppError> {
+        Ok(sequence_run::list_for_biosample(self.store.pool(), biosample_guid).await?)
+    }
+
+    /// Alignments for a sequence run.
+    pub async fn list_alignments(&self, sequence_run_id: i64) -> Result<Vec<Alignment>, AppError> {
+        Ok(alignment::list_for_run(self.store.pool(), sequence_run_id).await?)
     }
 
     /// Projects with their sample counts, for a dashboard/list view.

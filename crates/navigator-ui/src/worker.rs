@@ -13,8 +13,17 @@ use std::sync::Arc;
 
 use navigator_app::{App, Coverage, ProjectOverview};
 use navigator_domain::du_domain::ids::SampleGuid;
-use navigator_domain::workspace::{Alignment, Biosample, NewProject, Project};
+use navigator_domain::workspace::{Alignment, Biosample, NewAlignment, NewProject, NewSequenceRun, Project, SequenceRun};
 use tokio::sync::mpsc::{unbounded_channel, UnboundedSender};
+
+/// Fields for adding a biosample (the app assigns its `SampleGuid`).
+#[derive(Debug, Clone)]
+pub struct NewBiosample {
+    pub project_id: i64,
+    pub donor_identifier: String,
+    pub sample_accession: Option<String>,
+    pub sex: Option<String>,
+}
 
 /// A request from the UI to the worker.
 #[derive(Debug, Clone)]
@@ -22,7 +31,11 @@ pub enum Command {
     LoadOverview,
     CreateProject(NewProject),
     LoadSamples(i64),
-    LoadAlignments(SampleGuid),
+    AddBiosample(NewBiosample),
+    LoadRuns(SampleGuid),
+    AddRun(NewSequenceRun),
+    LoadAlignments(i64),
+    AddAlignment(NewAlignment),
     LoadCoverage(i64),
     RunCoverage(i64),
 }
@@ -33,7 +46,12 @@ pub enum Event {
     Overview(Vec<ProjectOverview>),
     ProjectCreated(Project),
     Samples { project_id: i64, samples: Vec<Biosample> },
-    Alignments { biosample_guid: SampleGuid, alignments: Vec<Alignment> },
+    /// A sample was added/changed under this project; the UI should reload.
+    SamplesChanged(i64),
+    Runs { biosample_guid: SampleGuid, runs: Vec<SequenceRun> },
+    RunsChanged(SampleGuid),
+    Alignments { sequence_run_id: i64, alignments: Vec<Alignment> },
+    AlignmentsChanged(i64),
     Coverage { alignment_id: i64, result: Option<Coverage> },
     Error(String),
 }
@@ -53,8 +71,29 @@ pub async fn handle(app: &App, cmd: Command) -> Event {
             Ok(samples) => Event::Samples { project_id, samples },
             Err(e) => Event::Error(e.to_string()),
         },
-        Command::LoadAlignments(biosample_guid) => match app.list_alignments(biosample_guid).await {
-            Ok(alignments) => Event::Alignments { biosample_guid, alignments },
+        Command::AddBiosample(b) => {
+            match app
+                .add_biosample(Some(b.project_id), b.donor_identifier, b.sample_accession, b.sex)
+                .await
+            {
+                Ok(_) => Event::SamplesChanged(b.project_id),
+                Err(e) => Event::Error(e.to_string()),
+            }
+        }
+        Command::LoadRuns(biosample_guid) => match app.list_sequence_runs(biosample_guid).await {
+            Ok(runs) => Event::Runs { biosample_guid, runs },
+            Err(e) => Event::Error(e.to_string()),
+        },
+        Command::AddRun(new) => match app.record_sequence_run(new).await {
+            Ok(run) => Event::RunsChanged(run.biosample_guid),
+            Err(e) => Event::Error(e.to_string()),
+        },
+        Command::LoadAlignments(sequence_run_id) => match app.list_alignments(sequence_run_id).await {
+            Ok(alignments) => Event::Alignments { sequence_run_id, alignments },
+            Err(e) => Event::Error(e.to_string()),
+        },
+        Command::AddAlignment(new) => match app.record_alignment(new).await {
+            Ok(a) => Event::AlignmentsChanged(a.sequence_run_id),
             Err(e) => Event::Error(e.to_string()),
         },
         Command::LoadCoverage(alignment_id) => match app.cached_coverage(alignment_id).await {
@@ -195,8 +234,8 @@ mod tests {
             .await
             .unwrap();
 
-        // alignments query
-        match handle(&app, Command::LoadAlignments(b.guid)).await {
+        // alignments query (keyed by run)
+        match handle(&app, Command::LoadAlignments(run.id)).await {
             Event::Alignments { alignments, .. } => assert_eq!(alignments, vec![aln.clone()]),
             other => panic!("expected Alignments, got {other:?}"),
         }
@@ -220,6 +259,77 @@ mod tests {
         match handle(&app, Command::LoadCoverage(aln.id)).await {
             Event::Coverage { result, .. } => assert_eq!(result.unwrap().callable_bases, 10),
             other => panic!("expected cached Coverage, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn add_commands_create_and_signal_reload() {
+        use navigator_domain::workspace::{NewAlignment, NewSequenceRun};
+
+        let app = app().await;
+        let pid = match handle(&app, Command::CreateProject(NewProject {
+            name: "P".into(),
+            description: None,
+            administrator: "jk".into(),
+        }))
+        .await
+        {
+            Event::ProjectCreated(p) => p.id,
+            other => panic!("got {other:?}"),
+        };
+
+        // add a sample -> SamplesChanged(project)
+        match handle(&app, Command::AddBiosample(NewBiosample {
+            project_id: pid,
+            donor_identifier: "HG002".into(),
+            sample_accession: None,
+            sex: Some("male".into()),
+        }))
+        .await
+        {
+            Event::SamplesChanged(p) => assert_eq!(p, pid),
+            other => panic!("got {other:?}"),
+        }
+        let guid = match handle(&app, Command::LoadSamples(pid)).await {
+            Event::Samples { samples, .. } => samples[0].guid,
+            other => panic!("got {other:?}"),
+        };
+
+        // add a run -> RunsChanged(sample)
+        match handle(&app, Command::AddRun(NewSequenceRun {
+            biosample_guid: guid,
+            platform_name: "ILLUMINA".into(),
+            instrument_model: None,
+            test_type: "WGS".into(),
+            library_layout: None,
+            total_reads: None,
+            pf_reads_aligned: None,
+            mean_read_length: None,
+            mean_insert_size: None,
+        }))
+        .await
+        {
+            Event::RunsChanged(g) => assert_eq!(g, guid),
+            other => panic!("got {other:?}"),
+        }
+        let run_id = match handle(&app, Command::LoadRuns(guid)).await {
+            Event::Runs { runs, .. } => runs[0].id,
+            other => panic!("got {other:?}"),
+        };
+
+        // add an alignment -> AlignmentsChanged(run)
+        match handle(&app, Command::AddAlignment(NewAlignment {
+            sequence_run_id: run_id,
+            reference_build: "chm13v2.0".into(),
+            aligner: "bwa".into(),
+            variant_caller: None,
+            bam_path: None,
+            reference_path: None,
+        }))
+        .await
+        {
+            Event::AlignmentsChanged(r) => assert_eq!(r, run_id),
+            other => panic!("got {other:?}"),
         }
     }
 }
