@@ -14,6 +14,7 @@ pub mod contig;
 pub mod coverage;
 pub mod error;
 pub mod genotype;
+pub mod haplo;
 pub mod ibd;
 pub mod mtvariants;
 pub mod parity;

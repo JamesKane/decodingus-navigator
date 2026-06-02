@@ -11,7 +11,9 @@ use std::path::PathBuf;
 use std::sync::mpsc::{Receiver, Sender};
 use std::sync::Arc;
 
-use navigator_app::{App, Coverage, DenovoCall, IbdComparison, IbdDetectorConfig, PanelGenotype, ProjectOverview};
+use navigator_app::{
+    App, Coverage, DenovoCall, IbdComparison, IbdDetectorConfig, PanelGenotype, ProjectOverview, ScoredHaplogroup,
+};
 use navigator_domain::du_domain::ids::SampleGuid;
 use navigator_domain::chipprofile::ChipProfile;
 use navigator_domain::mtdna::MtdnaSequence;
@@ -59,6 +61,8 @@ pub enum Command {
     ImportMtdna { biosample_guid: SampleGuid, path: PathBuf },
     /// Derive mtDNA variants for a stored sequence vs an rCRS reference FASTA.
     DeriveMtdnaVariants { mtdna_id: i64, rcrs_path: PathBuf },
+    /// Assign an mtDNA haplogroup (derive vs rCRS, fetch the FTDNA tree, rank).
+    AssignMtdnaHaplogroup { mtdna_id: i64, rcrs_path: PathBuf },
     /// Unified import: detect the file's type and route it to the right importer.
     AddData { biosample_guid: SampleGuid, path: PathBuf },
     LoadAlignments(i64),
@@ -114,6 +118,8 @@ pub enum Event {
     /// A unified import succeeded; `label` describes the detected type. The UI should
     /// reload the subject's data sections.
     DataImported { biosample_guid: SampleGuid, label: String },
+    /// Ranked mtDNA haplogroup candidates for a sequence (best first).
+    Haplogroup { mtdna_id: i64, ranked: Vec<ScoredHaplogroup> },
     Alignments { sequence_run_id: i64, alignments: Vec<Alignment> },
     AlignmentsChanged(i64),
     Coverage { alignment_id: i64, result: Option<Coverage> },
@@ -214,6 +220,12 @@ pub async fn handle(app: &App, cmd: Command) -> Event {
         Command::DeriveMtdnaVariants { mtdna_id, rcrs_path } => {
             match app.derive_mtdna_variants(mtdna_id, &rcrs_path).await {
                 Ok(set) => Event::VariantSetsChanged(set.biosample_guid),
+                Err(e) => Event::Error(e.to_string()),
+            }
+        }
+        Command::AssignMtdnaHaplogroup { mtdna_id, rcrs_path } => {
+            match app.assign_mtdna_haplogroup(mtdna_id, &rcrs_path).await {
+                Ok(ranked) => Event::Haplogroup { mtdna_id, ranked },
                 Err(e) => Event::Error(e.to_string()),
             }
         }

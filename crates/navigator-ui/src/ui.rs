@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use std::sync::mpsc::Receiver;
 
 use eframe::egui;
-use navigator_app::{Coverage, DenovoCall, IbdComparison, PanelGenotype, ProjectOverview};
+use navigator_app::{Coverage, DenovoCall, IbdComparison, PanelGenotype, ProjectOverview, ScoredHaplogroup};
 use navigator_domain::du_domain::ids::SampleGuid;
 use navigator_domain::chipprofile::{self, ChipProfile};
 use navigator_domain::mtdna::MtdnaSequence;
@@ -61,6 +61,8 @@ pub struct NavigatorApp {
     mtdna_sequences: Vec<MtdnaSequence>,
     /// Chosen rCRS reference FASTA, reused across mtDNA variant derivations.
     rcrs_path: Option<PathBuf>,
+    /// Last mtDNA haplogroup assignment: (sequence id, ranked candidates).
+    mtdna_haplogroup: Option<(i64, Vec<ScoredHaplogroup>)>,
     selected_run: Option<i64>,
     alignments: Vec<Alignment>,
     selected_alignment: Option<i64>,
@@ -142,6 +144,7 @@ impl NavigatorApp {
             chip_profiles: Vec::new(),
             mtdna_sequences: Vec::new(),
             rcrs_path: None,
+            mtdna_haplogroup: None,
             selected_run: None,
             alignments: Vec::new(),
             selected_alignment: None,
@@ -253,6 +256,13 @@ impl NavigatorApp {
                     }
                     self.status = "mtDNA sequence imported".into();
                 }
+                Event::Haplogroup { mtdna_id, ranked } => {
+                    self.status = match ranked.first() {
+                        Some(top) => format!("mtDNA haplogroup: {} (score {:.3})", top.name, top.score),
+                        None => "No haplogroup match".into(),
+                    };
+                    self.mtdna_haplogroup = Some((mtdna_id, ranked));
+                }
                 Event::DataImported { biosample_guid, label } => {
                     self.status = format!("Imported {label}");
                     if self.selected_sample == Some(biosample_guid) {
@@ -348,6 +358,7 @@ impl NavigatorApp {
         self.variant_sets.clear();
         self.chip_profiles.clear();
         self.mtdna_sequences.clear();
+        self.mtdna_haplogroup = None;
         let _ = self.tx.send(Command::LoadRuns(guid));
         let _ = self.tx.send(Command::LoadStrProfiles(guid));
         let _ = self.tx.send(Command::LoadVariantSets(guid));
@@ -843,7 +854,26 @@ impl NavigatorApp {
                         let _ = self.tx.send(Command::DeriveMtdnaVariants { mtdna_id: m.id, rcrs_path: path });
                     }
                 }
+                if ui.add_enabled(rcrs.is_some(), egui::Button::new("Assign haplogroup")).clicked() {
+                    if let Some(path) = rcrs.clone() {
+                        self.status = "Assigning haplogroup (fetching FTDNA tree)…".into();
+                        let _ = self.tx.send(Command::AssignMtdnaHaplogroup { mtdna_id: m.id, rcrs_path: path });
+                    }
+                }
             });
+            // Show the haplogroup result for this sequence, if any.
+            if let Some((id, ranked)) = &self.mtdna_haplogroup {
+                if *id == m.id {
+                    if let Some(top) = ranked.first() {
+                        ui.label(format!("  Haplogroup: {}   ({}/{} mutations, score {:.3})", top.name, top.matched, top.expected, top.score));
+                        ui.label(format!("  Lineage: {}", top.lineage.join(" › ")));
+                        let alts: Vec<String> = ranked.iter().skip(1).take(3).map(|r| format!("{} ({:.3})", r.name, r.score)).collect();
+                        if !alts.is_empty() {
+                            ui.label(format!("  Alternatives: {}", alts.join(", ")));
+                        }
+                    }
+                }
+            }
         }
 
         ui.add_space(6.0);
