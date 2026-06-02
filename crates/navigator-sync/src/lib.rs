@@ -1,8 +1,14 @@
-//! Navigator sync — completes the stubbed `AsyncSyncService`: PDS push/pull with
-//! explicit retry/backoff, conflict policy, and an offline indicator. Also publishes
-//! per-sample coverage summaries as public PDS records and submits variant/branch
-//! proposals to the AppView curation API (post-AppView-scope-reduction work).
+//! Navigator sync — AT Proto OAuth (public/native client) + PDS push/pull.
 //!
-//! Authenticates via `du-atproto` OAuth as a public/native client: PKCE only, native
-//! `client-metadata.json`, loopback redirect (`http://127.0.0.1:<port>/callback`),
-//! tokens in the OS keychain. Implemented in roadmap phase 6.
+//! Authenticates as a **public/native client** (plan §7): PKCE only, a loopback redirect
+//! (`http://127.0.0.1:<port>/callback`), DPoP-bound tokens in the OS keychain. Reuses the
+//! shared `du-atproto` OAuth primitives. PDS publishing (coverage summaries, variant
+//! proposals) and the completed AsyncSync build on the authenticated [`tokens::Session`].
+
+pub mod error;
+pub mod oauth;
+pub mod tokens;
+
+pub use error::SyncError;
+pub use oauth::{login, OAuthConfig};
+pub use tokens::{Session, TokenStore};
