@@ -35,11 +35,15 @@ use noodles::sam::alignment::record::cigar::op::Kind;
 use serde::{Deserialize, Serialize};
 
 use crate::error::AnalysisError;
+use crate::genotype::{self, GenotypeResult};
 use crate::realign;
 
 /// Algorithm version for de-novo caller artifacts; bump on output-affecting changes
 /// (e.g. the local-realignment addition bumped this to -2).
 pub const DENOVO_VERSION: &str = "haploid-denovo-2";
+
+/// Algorithm version for site-genotype (panel) artifacts.
+pub const GENOTYPE_VERSION: &str = "genotype-1";
 
 /// Parameters for haploid calling. Defaults are v1 starting points (gated by §4c).
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -114,6 +118,25 @@ pub struct GenotypeCall {
     pub ref_depth: u32,
     pub alt_depth: u32,
     pub allele_fraction: f64, // alt_depth / depth
+}
+
+/// A diploid/haploid genotype at a known site (genotype-likelihood model). `dosage` is
+/// the alt-allele count (0..=ploidy), or -1 for a no-call — the encoding the
+/// population/ancestry/IBD paths consume.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SiteGenotype {
+    pub name: String,
+    pub contig: String,
+    pub position: i64,
+    pub reference_allele: String,
+    pub alternate_allele: String,
+    pub ploidy: u8,
+    pub dosage: i32,
+    pub gq: u8,
+    pub depth: u32,
+    pub ref_depth: u32,
+    pub alt_depth: u32,
+    pub pls: Vec<u8>,
 }
 
 /// A de-novo SNP call (consensus base differs from reference).
@@ -313,6 +336,120 @@ fn tally_region(
         }
     }
     Ok((counts, indel))
+}
+
+/// Per-target-site passing `(base, qual)` observations (ACGT bases clearing the quality
+/// filters), keyed by 1-based position — the input the genotype-likelihood model needs.
+fn tally_site_observations(
+    bam_path: &Path,
+    contig: &str,
+    params: &HaploidCallerParams,
+    targets: &HashSet<i64>,
+) -> Result<HashMap<i64, Vec<(u8, u8)>>, AnalysisError> {
+    let mut reader = bam::io::indexed_reader::Builder::default()
+        .build_from_path(bam_path)
+        .map_err(|e| AnalysisError::io(bam_path, e))?;
+    let header = reader.read_header().map_err(|e| AnalysisError::io(bam_path, e))?;
+
+    let mut obs: HashMap<i64, Vec<(u8, u8)>> = HashMap::new();
+    let region: Region = contig
+        .parse()
+        .map_err(|_| AnalysisError::Message(format!("bad region for contig {contig}")))?;
+    let query = reader.query(&header, &region).map_err(|e| AnalysisError::io(bam_path, e))?;
+    for result in query {
+        let record = result.map_err(|e| AnalysisError::io(bam_path, e))?;
+        if !passes(&record, params) {
+            continue;
+        }
+        let start = match record.alignment_start() {
+            Some(p) => p.map_err(|e| AnalysisError::io(bam_path, e))?.get(),
+            None => continue,
+        };
+        let seq = record.sequence();
+        let quals = record.quality_scores();
+        let quals = quals.as_ref();
+        let mut ref_pos = start;
+        let mut query_off = 0usize;
+        for op in record.cigar().iter() {
+            let op = op.map_err(|e| AnalysisError::io(bam_path, e))?;
+            let (cr, cq) = (op.kind().consumes_reference(), op.kind().consumes_read());
+            let len = op.len();
+            if cr && cq {
+                for i in 0..len {
+                    let pos = ref_pos + i;
+                    if targets.contains(&(pos as i64)) {
+                        let base_q = quals.get(query_off + i).copied().unwrap_or(0);
+                        if base_q >= params.min_base_quality {
+                            if let Some(base) = seq.get(query_off + i) {
+                                if base_index(base).is_some() {
+                                    obs.entry(pos as i64).or_default().push((base, base_q));
+                                }
+                            }
+                        }
+                    }
+                }
+                ref_pos += len;
+                query_off += len;
+            } else if cr {
+                ref_pos += len;
+            } else if cq {
+                query_off += len;
+            }
+        }
+    }
+    Ok(obs)
+}
+
+/// Genotype known SNP sites on `contig` at the given `ploidy` (1 = haploid Y/MT/male-X,
+/// 2 = autosome / female-X) using the genotype-likelihood model — the panel-genotyping
+/// path the population / ancestry / IBD analyses consume. Non-SNP sites are skipped.
+pub fn genotype_sites(
+    bam_path: &Path,
+    contig: &str,
+    sites: &[Site],
+    ploidy: u8,
+    params: &HaploidCallerParams,
+) -> Result<Vec<SiteGenotype>, AnalysisError> {
+    let targets: HashSet<i64> = sites
+        .iter()
+        .filter(|s| s.contig == contig && s.reference_allele.len() == 1 && s.alternate_allele.len() == 1)
+        .map(|s| s.position)
+        .collect();
+    if targets.is_empty() {
+        return Ok(Vec::new());
+    }
+    let obs = tally_site_observations(bam_path, contig, params, &targets)?;
+
+    let empty: Vec<(u8, u8)> = Vec::new();
+    let mut out = Vec::new();
+    for site in sites.iter().filter(|s| s.contig == contig) {
+        if site.reference_allele.len() != 1 || site.alternate_allele.len() != 1 {
+            continue; // SNP-only
+        }
+        let site_obs = obs.get(&site.position).unwrap_or(&empty);
+        let GenotypeResult { dosage, pls, gq, depth, ref_depth, alt_depth } = genotype::call_genotype(
+            site_obs,
+            site.reference_allele.as_bytes()[0],
+            site.alternate_allele.as_bytes()[0],
+            ploidy,
+            params.min_depth,
+        );
+        out.push(SiteGenotype {
+            name: site.name.clone(),
+            contig: site.contig.clone(),
+            position: site.position,
+            reference_allele: site.reference_allele.clone(),
+            alternate_allele: site.alternate_allele.clone(),
+            ploidy,
+            dosage,
+            gq,
+            depth,
+            ref_depth,
+            alt_depth,
+            pls,
+        });
+    }
+    Ok(out)
 }
 
 /// Force-call (genotype-given-alleles) at known SNP sites on `contig`. Non-SNP sites

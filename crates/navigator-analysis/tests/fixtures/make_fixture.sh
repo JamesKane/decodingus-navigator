@@ -89,5 +89,18 @@ qual50="IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII"
 } > sv.sam
 samtools sort -o sv.bam sv.sam && samtools index sv.bam
 
-rm -f coverage.sam paired.sam sex.sam sv.sam
-echo "wrote ref.fa(.fai), coverage.bam, paired.bam, sex.bam, sv.bam (+ .bai)"
+# ---- diploid.bam ------------------------------------------------------------
+# chr1 (10 bp), two haplotypes at depth 20 (10 reads each):
+#   H1 = ACGTACGAAC, H2 = AGGTTCGAAC  (conceptual ref ACGTACGTAC)
+#   pos2 C/G het, pos5 A/T het, pos8 T->A hom-alt, pos1 hom-ref. For the GL genotyper.
+{
+  echo -e "@HD\tVN:1.6\tSO:coordinate"
+  echo -e "@SQ\tSN:chr1\tLN:10"
+  dr() { echo -e "$1\t0\tchr1\t1\t60\t10M\t*\t0\t0\t$2\tIIIIIIIIII"; }
+  for i in $(seq 1 10); do dr "h1_$i" ACGTACGAAC; done
+  for i in $(seq 1 10); do dr "h2_$i" AGGTTCGAAC; done
+} > diploid.sam
+samtools sort -o diploid.bam diploid.sam && samtools index diploid.bam
+
+rm -f coverage.sam paired.sam sex.sam sv.sam diploid.sam
+echo "wrote ref.fa(.fai), coverage.bam, paired.bam, sex.bam, sv.bam, diploid.bam (+ .bai)"
