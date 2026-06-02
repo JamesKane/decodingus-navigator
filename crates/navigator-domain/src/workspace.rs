@@ -65,7 +65,8 @@ pub struct NewSequenceRun {
     pub mean_insert_size: Option<f64>,
 }
 
-/// An alignment of a sequence run to a reference build.
+/// An alignment of a sequence run to a reference build. `bam_path`/`reference_path`
+/// locate the files so analysis can be run directly from the record.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Alignment {
     pub id: i64,
@@ -73,6 +74,8 @@ pub struct Alignment {
     pub reference_build: String,
     pub aligner: String,
     pub variant_caller: Option<String>,
+    pub bam_path: Option<String>,
+    pub reference_path: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -81,6 +84,8 @@ pub struct NewAlignment {
     pub reference_build: String,
     pub aligner: String,
     pub variant_caller: Option<String>,
+    pub bam_path: Option<String>,
+    pub reference_path: Option<String>,
 }
 
 /// A persisted analysis result, keyed by `(alignment, kind, algorithm_version)`. The

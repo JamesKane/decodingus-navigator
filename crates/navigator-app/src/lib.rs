@@ -11,6 +11,11 @@ use chrono::Utc;
 use du_domain::ids::SampleGuid;
 use navigator_analysis::caller::{self, HaploidCallerParams, VariantCall};
 use navigator_analysis::coverage::{self, CallableLociParams, CoverageResult};
+
+// Re-export the analysis result types the command API returns, so the UI depends only
+// on navigator-app (ui -> app), not directly on navigator-analysis.
+pub use navigator_analysis::caller::VariantCall as DenovoCall;
+pub use navigator_analysis::coverage::CoverageResult as Coverage;
 use navigator_domain::workspace::{
     Alignment, AnalysisArtifact, Biosample, NewAlignment, NewProject, NewSequenceRun, Project,
     SequenceRun,
@@ -142,6 +147,25 @@ impl App {
         self.load_analysis(alignment_id, "coverage", coverage::COVERAGE_VERSION).await
     }
 
+    /// Run coverage using the alignment's own stored BAM/reference paths, then persist.
+    /// Errors if the alignment is unknown or has no paths recorded.
+    pub async fn run_coverage_for_alignment(&self, alignment_id: i64) -> Result<CoverageResult, AppError> {
+        let aln = alignment::get(self.store.pool(), alignment_id)
+            .await?
+            .ok_or_else(|| AppError::Store(StoreError::NotFound(format!("alignment {alignment_id}"))))?;
+        let (Some(bam), Some(reference)) = (aln.bam_path, aln.reference_path) else {
+            return Err(AppError::MissingPaths(alignment_id));
+        };
+        self.run_coverage(
+            alignment_id,
+            PathBuf::from(bam),
+            PathBuf::from(reference),
+            None,
+            CallableLociParams::default(),
+        )
+        .await
+    }
+
     /// Run de-novo haploid calling on a contig and persist the SNP calls as a versioned
     /// `denovo_snps` artifact.
     pub async fn run_denovo_caller(
@@ -171,6 +195,11 @@ impl App {
     /// Biosamples belonging to a project.
     pub async fn list_biosamples(&self, project_id: i64) -> Result<Vec<Biosample>, AppError> {
         Ok(biosample::list_for_project(self.store.pool(), project_id).await?)
+    }
+
+    /// Alignments for a biosample (across its sequence runs).
+    pub async fn list_alignments(&self, biosample_guid: SampleGuid) -> Result<Vec<Alignment>, AppError> {
+        Ok(alignment::list_for_biosample(self.store.pool(), biosample_guid).await?)
     }
 
     /// Projects with their sample counts, for a dashboard/list view.

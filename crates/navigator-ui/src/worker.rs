@@ -11,8 +11,9 @@ use std::path::PathBuf;
 use std::sync::mpsc::{Receiver, Sender};
 use std::sync::Arc;
 
-use navigator_app::{App, ProjectOverview};
-use navigator_domain::workspace::{Biosample, NewProject, Project};
+use navigator_app::{App, Coverage, ProjectOverview};
+use navigator_domain::du_domain::ids::SampleGuid;
+use navigator_domain::workspace::{Alignment, Biosample, NewProject, Project};
 use tokio::sync::mpsc::{unbounded_channel, UnboundedSender};
 
 /// A request from the UI to the worker.
@@ -21,6 +22,9 @@ pub enum Command {
     LoadOverview,
     CreateProject(NewProject),
     LoadSamples(i64),
+    LoadAlignments(SampleGuid),
+    LoadCoverage(i64),
+    RunCoverage(i64),
 }
 
 /// A result/notification from the worker to the UI.
@@ -29,6 +33,8 @@ pub enum Event {
     Overview(Vec<ProjectOverview>),
     ProjectCreated(Project),
     Samples { project_id: i64, samples: Vec<Biosample> },
+    Alignments { biosample_guid: SampleGuid, alignments: Vec<Alignment> },
+    Coverage { alignment_id: i64, result: Option<Coverage> },
     Error(String),
 }
 
@@ -45,6 +51,18 @@ pub async fn handle(app: &App, cmd: Command) -> Event {
         },
         Command::LoadSamples(project_id) => match app.list_biosamples(project_id).await {
             Ok(samples) => Event::Samples { project_id, samples },
+            Err(e) => Event::Error(e.to_string()),
+        },
+        Command::LoadAlignments(biosample_guid) => match app.list_alignments(biosample_guid).await {
+            Ok(alignments) => Event::Alignments { biosample_guid, alignments },
+            Err(e) => Event::Error(e.to_string()),
+        },
+        Command::LoadCoverage(alignment_id) => match app.cached_coverage(alignment_id).await {
+            Ok(result) => Event::Coverage { alignment_id, result },
+            Err(e) => Event::Error(e.to_string()),
+        },
+        Command::RunCoverage(alignment_id) => match app.run_coverage_for_alignment(alignment_id).await {
+            Ok(result) => Event::Coverage { alignment_id, result: Some(result) },
             Err(e) => Event::Error(e.to_string()),
         },
     }
@@ -140,6 +158,68 @@ mod tests {
                 assert!(samples.is_empty());
             }
             other => panic!("expected Samples, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn handle_runs_coverage_for_a_stored_alignment() {
+        use navigator_domain::workspace::{NewAlignment, NewSequenceRun};
+        use std::path::PathBuf;
+
+        let app = app().await;
+        let b = app.add_biosample(None, "HG002", None, None).await.unwrap();
+        let run = app
+            .record_sequence_run(NewSequenceRun {
+                biosample_guid: b.guid,
+                platform_name: "ILLUMINA".into(),
+                instrument_model: None,
+                test_type: "WGS".into(),
+                library_layout: None,
+                total_reads: None,
+                pf_reads_aligned: None,
+                mean_read_length: None,
+                mean_insert_size: None,
+            })
+            .await
+            .unwrap();
+        let fixtures = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../navigator-analysis/tests/fixtures");
+        let aln = app
+            .record_alignment(NewAlignment {
+                sequence_run_id: run.id,
+                reference_build: "chrM".into(),
+                aligner: "synthetic".into(),
+                variant_caller: None,
+                bam_path: Some(fixtures.join("coverage.bam").to_string_lossy().into_owned()),
+                reference_path: Some(fixtures.join("ref.fa").to_string_lossy().into_owned()),
+            })
+            .await
+            .unwrap();
+
+        // alignments query
+        match handle(&app, Command::LoadAlignments(b.guid)).await {
+            Event::Alignments { alignments, .. } => assert_eq!(alignments, vec![aln.clone()]),
+            other => panic!("expected Alignments, got {other:?}"),
+        }
+
+        // cold cache
+        match handle(&app, Command::LoadCoverage(aln.id)).await {
+            Event::Coverage { result, .. } => assert!(result.is_none()),
+            other => panic!("expected Coverage(None), got {other:?}"),
+        }
+
+        // run + persist (uses the alignment's stored paths, via spawn_blocking)
+        match handle(&app, Command::RunCoverage(aln.id)).await {
+            Event::Coverage { alignment_id, result } => {
+                assert_eq!(alignment_id, aln.id);
+                assert_eq!(result.unwrap().genome_territory, 50);
+            }
+            other => panic!("expected Coverage(Some), got {other:?}"),
+        }
+
+        // now cached
+        match handle(&app, Command::LoadCoverage(aln.id)).await {
+            Event::Coverage { result, .. } => assert_eq!(result.unwrap().callable_bases, 10),
+            other => panic!("expected cached Coverage, got {other:?}"),
         }
     }
 }

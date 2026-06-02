@@ -108,6 +108,8 @@ async fn run_alignment_chain_persists() {
             reference_build: "chm13v2.0".into(),
             aligner: "bwa-mem 0.7.19".into(),
             variant_caller: Some("navigator-haploid".into()),
+            bam_path: None,
+            reference_path: None,
         },
     )
     .await
@@ -138,7 +140,7 @@ async fn artifact_upsert_replaces_same_version_and_keeps_distinct_versions() {
     .unwrap();
     let aln = alignment::create(
         s.pool(),
-        &NewAlignment { sequence_run_id: run.id, reference_build: "chm13v2.0".into(), aligner: "bwa".into(), variant_caller: None },
+        &NewAlignment { sequence_run_id: run.id, reference_build: "chm13v2.0".into(), aligner: "bwa".into(), variant_caller: None, bam_path: None, reference_path: None },
     )
     .await
     .unwrap();

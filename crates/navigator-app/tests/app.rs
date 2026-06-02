@@ -39,7 +39,7 @@ async fn alignment_id(app: &App) -> i64 {
         sequence_run_id: run.id,
         reference_build: "chrM-fixture".into(),
         aligner: "synthetic".into(),
-        variant_caller: None,
+        variant_caller: None, bam_path: None, reference_path: None,
     })
     .await
     .unwrap()
@@ -82,7 +82,7 @@ async fn command_flow_and_overview() {
             sequence_run_id: run.id,
             reference_build: "chm13v2.0".into(),
             aligner: "bwa".into(),
-            variant_caller: None,
+            variant_caller: None, bam_path: None, reference_path: None,
         })
         .await
         .unwrap();
@@ -125,7 +125,7 @@ async fn typed_analysis_artifact_round_trips_and_versions() {
             sequence_run_id: run.id,
             reference_build: "chm13v2.0".into(),
             aligner: "bwa".into(),
-            variant_caller: None,
+            variant_caller: None, bam_path: None, reference_path: None,
         })
         .await
         .unwrap();

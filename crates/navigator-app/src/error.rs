@@ -14,4 +14,7 @@ pub enum AppError {
     /// A blocking analysis task failed to join (panicked or was cancelled).
     #[error("analysis task failed: {0}")]
     Join(String),
+
+    #[error("alignment {0} has no BAM/reference path recorded")]
+    MissingPaths(i64),
 }
