@@ -191,3 +191,72 @@ async fn run_denovo_caller_persists_snp_calls() {
     // a different contig has no cached result
     assert!(app.cached_denovo(aln, "chrY").await.unwrap().is_none());
 }
+
+/// Build a sample → run → alignment chain whose BAM is the diploid fixture, return id.
+async fn diploid_alignment(app: &App) -> i64 {
+    let b = app.add_biosample(None, "diploid", None, None).await.unwrap();
+    let run = app
+        .record_sequence_run(NewSequenceRun {
+            biosample_guid: b.guid,
+            platform_name: "ILLUMINA".into(),
+            instrument_model: None,
+            test_type: "WGS".into(),
+            library_layout: None,
+            total_reads: None,
+            pf_reads_aligned: None,
+            mean_read_length: None,
+            mean_insert_size: None,
+        })
+        .await
+        .unwrap();
+    let bam = fixtures().join("diploid.bam").to_string_lossy().into_owned();
+    app.record_alignment(NewAlignment {
+        sequence_run_id: run.id,
+        reference_build: "chr1".into(),
+        aligner: "synthetic".into(),
+        variant_caller: None,
+        bam_path: Some(bam),
+        reference_path: None,
+    })
+    .await
+    .unwrap()
+    .id
+}
+
+#[tokio::test]
+async fn panel_genotyping_then_ibd_compare() {
+    use navigator_analysis::ibd::IbdDetectorConfig;
+    use navigator_domain::workspace::PanelSite;
+
+    let app = app().await;
+    let site = |pos, r: &str, a: &str| PanelSite {
+        chrom: "chr1".into(),
+        position: pos,
+        reference_allele: r.into(),
+        alternate_allele: a.into(),
+        name: format!("s{pos}"),
+    };
+    // The four informative sites in the diploid fixture: hom-ref, het, het, hom-alt.
+    let sites = vec![site(1, "A", "G"), site(2, "C", "G"), site(5, "A", "T"), site(8, "T", "A")];
+
+    let panel = app.import_panel("test-panel", &sites).await.unwrap();
+    assert_eq!(app.panel_site_count(panel.id).await.unwrap(), 4);
+
+    let aln = diploid_alignment(&app).await;
+    let genos = app.genotype_panel(aln, panel.id, 2).await.unwrap();
+    let dosages: Vec<i32> = genos.iter().map(|g| g.dosage).collect();
+    assert_eq!(dosages, vec![0, 1, 1, 2]);
+
+    // cached read-back
+    assert_eq!(app.cached_panel_genotypes(aln, panel.id, 2).await.unwrap().unwrap(), genos);
+
+    // IBD self-compare with relaxed thresholds (only 4 sites): one fully-shared segment.
+    let cfg = IbdDetectorConfig { min_snp_count: 3, window_size: 3, min_segment_cm: 0.0, ..IbdDetectorConfig::default() };
+    let cmp = app.compare_ibd(aln, aln, panel.id, 2, cfg).await.unwrap();
+    assert_eq!(cmp.segments.len(), 1);
+    assert!(cmp.summary.total_shared_cm >= 0.0);
+
+    // comparing against an un-genotyped alignment errors clearly.
+    let other = diploid_alignment(&app).await;
+    assert!(matches!(app.compare_ibd(aln, other, panel.id, 2, cfg).await, Err(AppError::NotGenotyped(_))));
+}

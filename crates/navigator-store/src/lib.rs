@@ -12,6 +12,7 @@ pub mod alignment;
 pub mod artifact;
 pub mod biosample;
 pub mod error;
+pub mod panel;
 pub mod project;
 pub mod sequence_run;
 

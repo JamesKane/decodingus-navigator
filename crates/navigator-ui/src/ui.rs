@@ -6,12 +6,12 @@ use std::path::PathBuf;
 use std::sync::mpsc::Receiver;
 
 use eframe::egui;
-use navigator_app::{Coverage, DenovoCall, ProjectOverview};
+use navigator_app::{Coverage, DenovoCall, IbdComparison, PanelGenotype, ProjectOverview};
 use navigator_domain::du_domain::ids::SampleGuid;
 use navigator_domain::workspace::{Alignment, Biosample, NewAlignment, NewProject, NewSequenceRun, SequenceRun};
 use tokio::sync::mpsc::UnboundedSender;
 
-use crate::worker::{self, Command, Event, NewBiosample};
+use crate::worker::{self, Command, Event, NewBiosample, PanelInfo};
 
 #[derive(Default)]
 struct Forms {
@@ -27,6 +27,8 @@ struct Forms {
     aln_bam: String,
     aln_reference: String,
     denovo_contig: String,
+    ploidy: String,
+    panel_import_name: String,
 }
 
 pub struct NavigatorApp {
@@ -44,6 +46,14 @@ pub struct NavigatorApp {
     running: bool,
     denovo: Option<Vec<DenovoCall>>,
     running_denovo: bool,
+    panels: Vec<PanelInfo>,
+    selected_panel: Option<i64>,
+    all_alignments: Vec<Alignment>,
+    panel_genotypes: Option<Vec<PanelGenotype>>,
+    running_genotype: bool,
+    ibd_other: Option<i64>,
+    ibd_result: Option<IbdComparison>,
+    running_ibd: bool,
     forms: Forms,
     status: String,
 }
@@ -58,6 +68,8 @@ impl NavigatorApp {
         let ctx = cc.egui_ctx.clone();
         let (tx, rx) = worker::spawn(db_path, move || ctx.request_repaint());
         let _ = tx.send(Command::LoadOverview);
+        let _ = tx.send(Command::LoadPanels);
+        let _ = tx.send(Command::LoadAllAlignments);
         NavigatorApp {
             tx,
             rx,
@@ -73,7 +85,15 @@ impl NavigatorApp {
             running: false,
             denovo: None,
             running_denovo: false,
-            forms: Forms { denovo_contig: "chrM".into(), ..Forms::default() },
+            panels: Vec::new(),
+            selected_panel: None,
+            all_alignments: Vec::new(),
+            panel_genotypes: None,
+            running_genotype: false,
+            ibd_other: None,
+            ibd_result: None,
+            running_ibd: false,
+            forms: Forms { denovo_contig: "chrM".into(), ploidy: "2".into(), ..Forms::default() },
             status: "Loading…".into(),
         }
     }
@@ -119,6 +139,7 @@ impl NavigatorApp {
                     if self.selected_run == Some(run_id) {
                         let _ = self.tx.send(Command::LoadAlignments(run_id));
                     }
+                    let _ = self.tx.send(Command::LoadAllAlignments); // keep IBD picker current
                 }
                 Event::Coverage { alignment_id, result } => {
                     if self.selected_alignment == Some(alignment_id) {
@@ -132,10 +153,31 @@ impl NavigatorApp {
                     }
                     self.running_denovo = false;
                 }
+                Event::Panels(p) => self.panels = p,
+                Event::PanelImported => {
+                    self.status = "Panel imported".into();
+                    let _ = self.tx.send(Command::LoadPanels);
+                }
+                Event::AllAlignments(a) => self.all_alignments = a,
+                Event::PanelGenotypes { alignment_id, panel_id, ploidy, genotypes } => {
+                    if self.selected_alignment == Some(alignment_id)
+                        && self.selected_panel == Some(panel_id)
+                        && self.ploidy() == ploidy
+                    {
+                        self.panel_genotypes = (!genotypes.is_empty()).then_some(genotypes);
+                    }
+                    self.running_genotype = false;
+                }
+                Event::Ibd(cmp) => {
+                    self.ibd_result = Some(cmp);
+                    self.running_ibd = false;
+                }
                 Event::Error(e) => {
                     self.status = format!("Error: {e}");
                     self.running = false;
                     self.running_denovo = false;
+                    self.running_genotype = false;
+                    self.running_ibd = false;
                 }
             }
         }
@@ -167,8 +209,26 @@ impl NavigatorApp {
         self.selected_alignment = Some(id);
         self.coverage = None;
         self.denovo = None;
+        self.panel_genotypes = None;
+        self.ibd_result = None;
         let _ = self.tx.send(Command::LoadCoverage(id));
         let _ = self.tx.send(Command::LoadDenovo { alignment_id: id, contig: self.forms.denovo_contig.clone() });
+        if let Some(panel_id) = self.selected_panel {
+            let _ = self.tx.send(Command::LoadPanelGenotypes { alignment_id: id, panel_id, ploidy: self.ploidy() });
+        }
+    }
+
+    fn select_panel(&mut self, panel_id: i64) {
+        self.selected_panel = Some(panel_id);
+        self.panel_genotypes = None;
+        self.ibd_result = None;
+        if let Some(aln) = self.selected_alignment {
+            let _ = self.tx.send(Command::LoadPanelGenotypes { alignment_id: aln, panel_id, ploidy: self.ploidy() });
+        }
+    }
+
+    fn ploidy(&self) -> u8 {
+        self.forms.ploidy.trim().parse().unwrap_or(2)
     }
 
     fn clear_sample_selection(&mut self) {
@@ -212,6 +272,7 @@ impl eframe::App for NavigatorApp {
                 if let Some(id) = self.selected_alignment {
                     self.coverage_section(ui, id);
                     self.denovo_section(ui, id);
+                    self.genotyping_section(ui, id);
                 }
             });
         });
@@ -251,7 +312,38 @@ impl NavigatorApp {
                 self.forms.project_name.clear();
                 self.forms.project_admin.clear();
             }
+
+            ui.add_space(12.0);
+            ui.separator();
+            self.panels_section(ui);
         });
+    }
+
+    fn panels_section(&mut self, ui: &mut egui::Ui) {
+        ui.label("Panels");
+        let mut pick = None;
+        for info in &self.panels {
+            let label = format!("{}  ({} sites)", info.panel.name, info.site_count);
+            if ui.selectable_label(self.selected_panel == Some(info.panel.id), label).clicked() {
+                pick = Some(info.panel.id);
+            }
+        }
+        if let Some(id) = pick {
+            self.select_panel(id);
+        }
+        ui.add(egui::TextEdit::singleline(&mut self.forms.panel_import_name).hint_text("new panel name"));
+        if ui
+            .add_enabled(!self.forms.panel_import_name.trim().is_empty(), egui::Button::new("Import sites VCF…"))
+            .clicked()
+        {
+            if let Some(path) = rfd::FileDialog::new().add_filter("VCF", &["vcf"]).pick_file() {
+                let _ = self.tx.send(Command::ImportPanel {
+                    name: self.forms.panel_import_name.trim().to_string(),
+                    path,
+                });
+                self.forms.panel_import_name.clear();
+            }
+        }
     }
 
     fn samples_section(&mut self, ui: &mut egui::Ui) {
@@ -453,6 +545,125 @@ impl NavigatorApp {
                     row(ui, "% ≥10x", format!("{:.1}%", c.pct_10x * 100.0));
                     row(ui, "% ≥20x", format!("{:.1}%", c.pct_20x * 100.0));
                     row(ui, "% ≥30x", format!("{:.1}%", c.pct_30x * 100.0));
+                });
+            }
+        }
+    }
+
+    fn genotyping_section(&mut self, ui: &mut egui::Ui, alignment_id: i64) {
+        ui.add_space(12.0);
+        ui.separator();
+        ui.heading("Panel genotyping & IBD");
+
+        let Some(panel_id) = self.selected_panel else {
+            ui.label("Select a panel in the sidebar.");
+            return;
+        };
+        let panel_name = self
+            .panels
+            .iter()
+            .find(|p| p.panel.id == panel_id)
+            .map(|p| p.panel.name.clone())
+            .unwrap_or_default();
+        let has_bam = self
+            .alignments
+            .iter()
+            .find(|a| a.id == alignment_id)
+            .map(|a| a.bam_path.is_some())
+            .unwrap_or(false);
+
+        ui.horizontal(|ui| {
+            ui.label("Ploidy:");
+            ui.add(egui::TextEdit::singleline(&mut self.forms.ploidy).desired_width(32.0));
+            if ui
+                .add_enabled(has_bam && !self.running_genotype, egui::Button::new(format!("Genotype vs {panel_name}")))
+                .clicked()
+            {
+                self.running_genotype = true;
+                let _ = self.tx.send(Command::GenotypePanel { alignment_id, panel_id, ploidy: self.ploidy() });
+            }
+            if self.running_genotype {
+                ui.spinner();
+            }
+        });
+
+        match &self.panel_genotypes {
+            Some(genos) => {
+                let (mut hr, mut het, mut ha, mut nc) = (0, 0, 0, 0);
+                for g in genos {
+                    match g.dosage {
+                        0 => hr += 1,
+                        1 => het += 1,
+                        2 => ha += 1,
+                        _ => nc += 1,
+                    }
+                }
+                ui.label(format!(
+                    "{} sites — {hr} hom-ref, {het} het, {ha} hom-alt, {nc} no-call",
+                    genos.len()
+                ));
+            }
+            None if !self.running_genotype => {
+                ui.label("Not genotyped against this panel.");
+            }
+            None => {}
+        }
+
+        // IBD compare against another genotyped alignment.
+        ui.add_space(8.0);
+        ui.horizontal(|ui| {
+            ui.label("IBD vs:");
+            let current = self
+                .all_alignments
+                .iter()
+                .find(|a| Some(a.id) == self.ibd_other)
+                .map(|a| format!("#{} {}", a.id, a.reference_build))
+                .unwrap_or_else(|| "(pick alignment)".into());
+            egui::ComboBox::from_id_salt("ibd_other").selected_text(current).show_ui(ui, |ui| {
+                for a in &self.all_alignments {
+                    if a.id != alignment_id {
+                        ui.selectable_value(&mut self.ibd_other, Some(a.id), format!("#{} {}", a.id, a.reference_build));
+                    }
+                }
+            });
+            let ready = self.ibd_other.is_some() && !self.running_ibd;
+            if ui.add_enabled(ready, egui::Button::new("Compare")).clicked() {
+                self.running_ibd = true;
+                self.ibd_result = None;
+                let _ = self.tx.send(Command::CompareIbd {
+                    a: alignment_id,
+                    b: self.ibd_other.unwrap(),
+                    panel_id,
+                    ploidy: self.ploidy(),
+                });
+            }
+            if self.running_ibd {
+                ui.spinner();
+            }
+        });
+
+        if let Some(cmp) = &self.ibd_result {
+            ui.label(format!(
+                "{:?} — total {:.1} cM, {} segment(s), longest {:.1} cM",
+                cmp.summary.relationship,
+                cmp.summary.total_shared_cm,
+                cmp.summary.segment_count,
+                cmp.summary.longest_segment_cm,
+            ));
+            if !cmp.segments.is_empty() {
+                egui::Grid::new("ibd_segments").striped(true).num_columns(4).show(ui, |ui| {
+                    ui.strong("Chr");
+                    ui.strong("Start");
+                    ui.strong("End");
+                    ui.strong("cM");
+                    ui.end_row();
+                    for s in &cmp.segments {
+                        ui.label(&s.chromosome);
+                        ui.label(s.start_position.to_string());
+                        ui.label(s.end_position.to_string());
+                        ui.label(format!("{:.1}", s.length_cm));
+                        ui.end_row();
+                    }
                 });
             }
         }

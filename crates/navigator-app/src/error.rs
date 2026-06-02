@@ -17,4 +17,7 @@ pub enum AppError {
 
     #[error("alignment {0} has no BAM/reference path recorded")]
     MissingPaths(i64),
+
+    #[error("alignment {0} has not been genotyped against this panel")]
+    NotGenotyped(i64),
 }

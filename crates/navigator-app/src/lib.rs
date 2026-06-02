@@ -4,18 +4,34 @@
 //! embedded (identity assignment, existence checks, result (de)serialization). The UI
 //! holds only view-state and dispatch — no DB calls or domain decisions in widgets.
 
-use std::collections::HashSet;
-use std::path::PathBuf;
+use std::collections::{BTreeMap, HashSet};
+use std::path::{Path, PathBuf};
 
 use chrono::Utc;
 use du_domain::ids::SampleGuid;
-use navigator_analysis::caller::{self, HaploidCallerParams, VariantCall};
+use navigator_analysis::caller::{self, HaploidCallerParams, SiteGenotype, Site, VariantCall};
 use navigator_analysis::coverage::{self, CallableLociParams, CoverageResult};
+use navigator_analysis::ibd::{
+    ChromosomeGenotypes, GeneticMap, IbdSegment, MatchSummary, PairwiseIbdDetector,
+};
+use navigator_domain::workspace::{Panel, PanelSite};
+use navigator_store::panel;
 
 // Re-export the analysis result types the command API returns, so the UI depends only
 // on navigator-app (ui -> app), not directly on navigator-analysis.
+pub use navigator_analysis::caller::SiteGenotype as PanelGenotype;
 pub use navigator_analysis::caller::VariantCall as DenovoCall;
 pub use navigator_analysis::coverage::CoverageResult as Coverage;
+pub use navigator_analysis::ibd::{
+    IbdDetectorConfig, IbdSegment as Segment, MatchSummary as IbdSummary, RelationshipEstimate,
+};
+
+/// IBD comparison result between two genotyped alignments.
+#[derive(Debug, Clone, PartialEq)]
+pub struct IbdComparison {
+    pub summary: MatchSummary,
+    pub segments: Vec<IbdSegment>,
+}
 use navigator_domain::workspace::{
     Alignment, AnalysisArtifact, Biosample, NewAlignment, NewProject, NewSequenceRun, Project,
     SequenceRun,
@@ -32,6 +48,29 @@ pub use error::AppError;
 /// overwrite each other in the cache.
 fn denovo_kind(contig: &str) -> String {
     format!("denovo_snps:{contig}")
+}
+
+/// Artifact kind for panel genotypes, keyed by panel + ploidy.
+fn panel_kind(panel_id: i64, ploidy: u8) -> String {
+    format!("panel:{panel_id}:p{ploidy}")
+}
+
+/// Group per-site genotypes into per-chromosome dosage arrays (sorted by position) for
+/// the IBD detector.
+fn group_chrom_genotypes(genotypes: &[SiteGenotype]) -> std::collections::HashMap<String, ChromosomeGenotypes> {
+    let mut by_contig: BTreeMap<String, Vec<(i64, i32)>> = BTreeMap::new();
+    for g in genotypes {
+        by_contig.entry(g.contig.clone()).or_default().push((g.position, g.dosage));
+    }
+    by_contig
+        .into_iter()
+        .map(|(chrom, mut v)| {
+            v.sort_by_key(|(p, _)| *p);
+            let positions = v.iter().map(|(p, _)| *p as i32).collect();
+            let dosages = v.iter().map(|(_, d)| *d as i8).collect();
+            (chrom.clone(), ChromosomeGenotypes { chromosome: chrom, positions, dosages })
+        })
+        .collect()
 }
 
 /// A project plus a rolled-up count for list/dashboard views.
@@ -215,6 +254,130 @@ impl App {
         .await
     }
 
+    // ---- panels + IBD ------------------------------------------------------
+
+    /// Create a genotyping panel from explicit sites.
+    pub async fn import_panel(&self, name: &str, sites: &[PanelSite]) -> Result<Panel, AppError> {
+        Ok(panel::create(self.store.pool(), name, sites).await?)
+    }
+
+    /// Create a panel from a (plain-text) sites VCF — biallelic SNP rows only.
+    pub async fn import_panel_from_vcf(&self, name: &str, vcf_path: &Path) -> Result<Panel, AppError> {
+        let variants = navigator_analysis::parity::parse_truth_vcf(vcf_path)?;
+        let sites: Vec<PanelSite> = variants
+            .iter()
+            .filter_map(|v| {
+                let alt = v.alternate.first()?;
+                (v.reference.len() == 1 && alt.len() == 1).then(|| PanelSite {
+                    chrom: v.chrom.clone(),
+                    position: v.pos,
+                    reference_allele: v.reference.clone(),
+                    alternate_allele: alt.clone(),
+                    name: v.ids.first().cloned().unwrap_or_else(|| format!("{}:{}", v.chrom, v.pos)),
+                })
+            })
+            .collect();
+        self.import_panel(name, &sites).await
+    }
+
+    pub async fn list_panels(&self) -> Result<Vec<Panel>, AppError> {
+        Ok(panel::list(self.store.pool()).await?)
+    }
+
+    pub async fn panel_site_count(&self, panel_id: i64) -> Result<i64, AppError> {
+        Ok(panel::site_count(self.store.pool(), panel_id).await?)
+    }
+
+    /// Genotype an alignment against a panel at the given ploidy and persist the dosages
+    /// (one artifact per alignment+panel+ploidy). Runs the blocking caller off-thread.
+    pub async fn genotype_panel(
+        &self,
+        alignment_id: i64,
+        panel_id: i64,
+        ploidy: u8,
+    ) -> Result<Vec<SiteGenotype>, AppError> {
+        let aln = alignment::get(self.store.pool(), alignment_id)
+            .await?
+            .ok_or_else(|| AppError::Store(StoreError::NotFound(format!("alignment {alignment_id}"))))?;
+        let bam = aln.bam_path.ok_or(AppError::MissingPaths(alignment_id))?;
+        let sites: Vec<Site> = panel::sites(self.store.pool(), panel_id)
+            .await?
+            .into_iter()
+            .map(|s| Site {
+                name: s.name,
+                contig: s.chrom,
+                position: s.position,
+                reference_allele: s.reference_allele,
+                alternate_allele: s.alternate_allele,
+            })
+            .collect();
+
+        let bam_pb = PathBuf::from(bam);
+        let params = HaploidCallerParams::default();
+        let genotypes = tokio::task::spawn_blocking(move || {
+            let contigs: std::collections::BTreeSet<&str> = sites.iter().map(|s| s.contig.as_str()).collect();
+            let mut all = Vec::new();
+            for contig in contigs {
+                all.extend(caller::genotype_sites(&bam_pb, contig, &sites, ploidy, &params)?);
+            }
+            Ok::<_, navigator_analysis::AnalysisError>(all)
+        })
+        .await
+        .map_err(|e| AppError::Join(e.to_string()))??;
+
+        self.save_analysis(alignment_id, &panel_kind(panel_id, ploidy), caller::GENOTYPE_VERSION, &genotypes).await?;
+        Ok(genotypes)
+    }
+
+    /// Cached panel genotypes for an alignment, if present.
+    pub async fn cached_panel_genotypes(
+        &self,
+        alignment_id: i64,
+        panel_id: i64,
+        ploidy: u8,
+    ) -> Result<Option<Vec<SiteGenotype>>, AppError> {
+        self.load_analysis(alignment_id, &panel_kind(panel_id, ploidy), caller::GENOTYPE_VERSION).await
+    }
+
+    /// Compare two alignments for IBD, using each one's cached panel genotypes. Both must
+    /// have been genotyped against `panel_id` at `ploidy` first.
+    pub async fn compare_ibd(
+        &self,
+        alignment_a: i64,
+        alignment_b: i64,
+        panel_id: i64,
+        ploidy: u8,
+        config: IbdDetectorConfig,
+    ) -> Result<IbdComparison, AppError> {
+        let ga = self
+            .cached_panel_genotypes(alignment_a, panel_id, ploidy)
+            .await?
+            .ok_or_else(|| AppError::NotGenotyped(alignment_a))?;
+        let gb = self
+            .cached_panel_genotypes(alignment_b, panel_id, ploidy)
+            .await?
+            .ok_or_else(|| AppError::NotGenotyped(alignment_b))?;
+
+        let sample_a = group_chrom_genotypes(&ga);
+        let sample_b = group_chrom_genotypes(&gb);
+
+        // Uniform 1 cM/Mb map over the chromosomes present (max observed position as the
+        // length). A real HapMap genetic map can replace this later.
+        let mut lengths: BTreeMap<String, i32> = BTreeMap::new();
+        for sample in [&sample_a, &sample_b] {
+            for (chr, cg) in sample {
+                let m = cg.positions.last().copied().unwrap_or(1);
+                lengths.entry(chr.clone()).and_modify(|e| *e = (*e).max(m)).or_insert(m);
+            }
+        }
+        let pairs: Vec<(&str, i32)> = lengths.iter().map(|(k, v)| (k.as_str(), *v)).collect();
+        let gmap = GeneticMap::uniform(1.0, &pairs);
+
+        let segments = PairwiseIbdDetector::new(config).detect_segments(&sample_a, &sample_b, &gmap);
+        let summary = MatchSummary::from_segments(&segments);
+        Ok(IbdComparison { summary, segments })
+    }
+
     // ---- queries -----------------------------------------------------------
 
     /// Biosamples belonging to a project.
@@ -230,6 +393,11 @@ impl App {
     /// Alignments for a sequence run.
     pub async fn list_alignments(&self, sequence_run_id: i64) -> Result<Vec<Alignment>, AppError> {
         Ok(alignment::list_for_run(self.store.pool(), sequence_run_id).await?)
+    }
+
+    /// Every alignment in the workspace (for cross-sample selection like IBD compare).
+    pub async fn list_all_alignments(&self) -> Result<Vec<Alignment>, AppError> {
+        Ok(alignment::list_all(self.store.pool()).await?)
     }
 
     /// Projects with their sample counts, for a dashboard/list view.

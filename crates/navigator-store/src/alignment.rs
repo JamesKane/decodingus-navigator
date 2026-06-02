@@ -73,6 +73,14 @@ pub async fn list_for_run(pool: &SqlitePool, sequence_run_id: i64) -> Result<Vec
     Ok(rows.into_iter().map(Row::into_domain).collect())
 }
 
+/// Every alignment in the workspace (for cross-sample selection, e.g. IBD compare).
+pub async fn list_all(pool: &SqlitePool) -> Result<Vec<Alignment>, StoreError> {
+    let rows: Vec<Row> = sqlx::query_as(&format!("SELECT {COLS} FROM alignment ORDER BY id"))
+        .fetch_all(pool)
+        .await?;
+    Ok(rows.into_iter().map(Row::into_domain).collect())
+}
+
 /// All alignments for a biosample (joined through its sequence runs).
 pub async fn list_for_biosample(pool: &SqlitePool, guid: SampleGuid) -> Result<Vec<Alignment>, StoreError> {
     let rows: Vec<Row> = sqlx::query_as(&format!(
