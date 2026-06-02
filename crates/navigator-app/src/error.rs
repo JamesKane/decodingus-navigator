@@ -20,4 +20,7 @@ pub enum AppError {
 
     #[error("alignment {0} has not been genotyped against this panel")]
     NotGenotyped(i64),
+
+    #[error(transparent)]
+    Sync(#[from] navigator_sync::SyncError),
 }

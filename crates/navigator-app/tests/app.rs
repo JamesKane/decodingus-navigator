@@ -224,6 +224,54 @@ async fn diploid_alignment(app: &App) -> i64 {
 }
 
 #[tokio::test]
+async fn publish_coverage_summary_requires_cached_coverage() {
+    let app = app().await;
+    let aln = diploid_alignment(&app).await; // has a BAM but no coverage run
+    // Bearer client is never reached — the missing-coverage check fails first.
+    let client = navigator_app::PdsClient::bearer(reqwest::Client::new(), "http://127.0.0.1:1", "did:plc:x", "tok");
+    let err = app.publish_coverage_summary(&client, aln).await;
+    assert!(
+        matches!(err, Err(navigator_app::AppError::Store(navigator_store::StoreError::NotFound(_)))),
+        "got {err:?}"
+    );
+}
+
+/// Full path: run coverage on the fixture → publish the summary (a real CoverageResult,
+/// floats encoded as strings) to a live PDS via a throwaway Bearer account.
+#[tokio::test]
+#[ignore = "requires PDS_TEST_URL (local atproto PDS container)"]
+async fn publish_coverage_summary_to_live_pds() {
+    let Ok(pds) = std::env::var("PDS_TEST_URL") else {
+        eprintln!("PDS_TEST_URL unset — skipping live publish test");
+        return;
+    };
+    let pds = pds.trim_end_matches('/').to_string();
+    let app = app().await;
+    let dir = fixtures();
+    let aln = alignment_id(&app).await; // bam = coverage.bam, ref = ref.fa, build = chrM-fixture
+    app.run_coverage(aln, dir.join("coverage.bam"), dir.join("ref.fa"), None, CallableLociParams::default())
+        .await
+        .expect("run_coverage");
+
+    let http = reqwest::Client::new();
+    let n = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos() % 1_000_000_000;
+    let acct: serde_json::Value = http
+        .post(format!("{pds}/xrpc/com.atproto.server.createAccount"))
+        .json(&serde_json::json!({ "handle": format!("navp{n}.pds.test"), "email": format!("navp{n}@example.test"), "password": "navp-pw-123456" }))
+        .send()
+        .await
+        .expect("createAccount")
+        .json()
+        .await
+        .expect("createAccount json");
+    let client = navigator_app::PdsClient::bearer(http, &pds, acct["did"].as_str().unwrap(), acct["accessJwt"].as_str().unwrap());
+
+    let r = app.publish_coverage_summary(&client, aln).await.expect("publish coverage summary");
+    assert!(r.uri.starts_with("at://"), "uri: {}", r.uri);
+    eprintln!("✓ published coverage summary {}", r.uri);
+}
+
+#[tokio::test]
 async fn panel_genotyping_then_ibd_compare() {
     use navigator_analysis::ibd::IbdDetectorConfig;
     use navigator_domain::workspace::PanelSite;

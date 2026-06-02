@@ -246,20 +246,21 @@ mod tests {
         let jwt = acct["accessJwt"].as_str().expect("accessJwt");
 
         let client = PdsClient::bearer(http, &pds, did, jwt);
-        // atproto records have no float type (DAG-CBOR) — encode metrics as strings or
-        // scaled integers. (A real finding for the coverage-summary lexicon.)
-        let record = json!({
-            "$type": "com.decodingus.test.coverageSummary",
-            "referenceBuild": "chm13v2.0",
-            "meanCoverage": "30.5",
-            "callableBases": 3_000_000,
-        });
-        let r = client.create_record("com.decodingus.test.coverageSummary", record, None).await.expect("createRecord");
+        // Publish the real typed coverage-summary record (floats as strings — atproto
+        // DAG-CBOR rejects floats).
+        let rec = crate::records::CoverageSummaryRecord::new(
+            "chm13v2.0", 178.81, 182.0, 28.9, 1.0, 1.0, 1.0, 16569, 16292, "2026-06-02T00:00:00Z",
+        );
+        let record = serde_json::to_value(&rec).unwrap();
+        let r = client
+            .create_record(crate::records::COVERAGE_SUMMARY_COLLECTION, record, None)
+            .await
+            .expect("createRecord");
         assert!(r.uri.starts_with("at://"), "uri: {}", r.uri);
 
-        let got = client.get_record("com.decodingus.test.coverageSummary", r.rkey()).await.expect("getRecord");
-        assert_eq!(got["value"]["meanCoverage"], "30.5");
-        assert_eq!(got["value"]["callableBases"], 3_000_000);
+        let got = client.get_record(crate::records::COVERAGE_SUMMARY_COLLECTION, r.rkey()).await.expect("getRecord");
+        assert_eq!(got["value"]["meanCoverage"], "178.81");
+        assert_eq!(got["value"]["callableBases"], 16292);
         assert_eq!(got["value"]["referenceBuild"], "chm13v2.0");
         eprintln!("✓ wrote + read {}", r.uri);
     }

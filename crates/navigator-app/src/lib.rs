@@ -25,6 +25,8 @@ pub use navigator_analysis::coverage::CoverageResult as Coverage;
 pub use navigator_analysis::ibd::{
     IbdDetectorConfig, IbdSegment as Segment, MatchSummary as IbdSummary, RelationshipEstimate,
 };
+// Sync/publish types the command API uses, re-exported so the UI depends only on navigator-app.
+pub use navigator_sync::{CoverageSummaryRecord, PdsClient, RecordRef, COVERAGE_SUMMARY_COLLECTION};
 
 /// IBD comparison result between two genotyped alignments.
 #[derive(Debug, Clone, PartialEq)]
@@ -252,6 +254,39 @@ impl App {
             HaploidCallerParams::default(),
         )
         .await
+    }
+
+    // ---- publish -----------------------------------------------------------
+
+    /// Publish an alignment's cached coverage summary to the PDS as a public record.
+    /// Requires coverage to have been computed (cached) and an authenticated `client`
+    /// (built from a logged-in `Session`, or a Bearer client for testing).
+    pub async fn publish_coverage_summary(
+        &self,
+        client: &PdsClient,
+        alignment_id: i64,
+    ) -> Result<RecordRef, AppError> {
+        let cov = self
+            .cached_coverage(alignment_id)
+            .await?
+            .ok_or_else(|| AppError::Store(StoreError::NotFound(format!("coverage for alignment {alignment_id}"))))?;
+        let aln = alignment::get(self.store.pool(), alignment_id)
+            .await?
+            .ok_or_else(|| AppError::Store(StoreError::NotFound(format!("alignment {alignment_id}"))))?;
+        let record = CoverageSummaryRecord::new(
+            aln.reference_build,
+            cov.mean_coverage,
+            cov.median_coverage,
+            cov.sd_coverage,
+            cov.pct_10x,
+            cov.pct_20x,
+            cov.pct_30x,
+            cov.genome_territory,
+            cov.callable_bases,
+            Utc::now().to_rfc3339(),
+        );
+        let value = serde_json::to_value(&record)?;
+        Ok(client.create_record(COVERAGE_SUMMARY_COLLECTION, value, None).await?)
     }
 
     // ---- panels + IBD ------------------------------------------------------
