@@ -14,6 +14,7 @@ pub mod contig;
 pub mod coverage;
 pub mod error;
 pub mod genotype;
+pub mod ibd;
 pub mod parity;
 pub mod read_metrics;
 pub mod realign;
