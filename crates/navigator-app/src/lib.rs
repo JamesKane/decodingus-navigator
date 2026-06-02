@@ -48,11 +48,12 @@ use navigator_domain::workspace::{
     SequenceRun,
 };
 use navigator_domain::chipprofile::{self, ChipProfile, NewChipProfile};
+use navigator_domain::mtdna::{self, MtdnaSequence, NewMtdnaSequence};
 use navigator_domain::strprofile::{self, NewStrProfile, StrProfile};
 use navigator_domain::variants::{self, NewVariantSet, VariantSet};
 use navigator_store::{
-    alignment, artifact, biosample, chip_profile, project, sequence_run, str_profile, variant_set,
-    Store, StoreError,
+    alignment, artifact, biosample, chip_profile, mtdna as mtdna_store, project, sequence_run,
+    str_profile, variant_set, Store, StoreError,
 };
 use serde::de::DeserializeOwned;
 use serde::Serialize;
@@ -545,6 +546,33 @@ impl App {
     /// All chip profiles for a subject.
     pub async fn list_chip_profiles(&self, biosample_guid: SampleGuid) -> Result<Vec<ChipProfile>, AppError> {
         Ok(chip_profile::list_for_biosample(self.store.pool(), biosample_guid).await?)
+    }
+
+    // ---- mtDNA sequences ---------------------------------------------------
+
+    /// Import a vendor mtDNA FASTA (~16,569 bp) for a subject. Validates the header,
+    /// length, and bases; stores the sequence + N count.
+    pub async fn import_mtdna_from_fasta(
+        &self,
+        biosample_guid: SampleGuid,
+        path: &Path,
+    ) -> Result<MtdnaSequence, AppError> {
+        let text = std::fs::read_to_string(path)?;
+        let parsed = mtdna::parse_fasta(&text).map_err(AppError::Import)?;
+        let source_file_name = path.file_name().map(|s| s.to_string_lossy().into_owned());
+        let new = NewMtdnaSequence {
+            biosample_guid,
+            defline: parsed.defline,
+            sequence: parsed.sequence,
+            n_count: parsed.n_count,
+            source_file_name,
+        };
+        Ok(mtdna_store::create(self.store.pool(), &new).await?)
+    }
+
+    /// All mtDNA sequences for a subject.
+    pub async fn list_mtdna_sequences(&self, biosample_guid: SampleGuid) -> Result<Vec<MtdnaSequence>, AppError> {
+        Ok(mtdna_store::list_for_biosample(self.store.pool(), biosample_guid).await?)
     }
 
     pub async fn panel_site_count(&self, panel_id: i64) -> Result<i64, AppError> {

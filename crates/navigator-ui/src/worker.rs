@@ -14,6 +14,7 @@ use std::sync::Arc;
 use navigator_app::{App, Coverage, DenovoCall, IbdComparison, IbdDetectorConfig, PanelGenotype, ProjectOverview};
 use navigator_domain::du_domain::ids::SampleGuid;
 use navigator_domain::chipprofile::ChipProfile;
+use navigator_domain::mtdna::MtdnaSequence;
 use navigator_domain::strprofile::StrProfile;
 use navigator_domain::variants::VariantSet;
 use navigator_domain::workspace::{
@@ -54,6 +55,8 @@ pub enum Command {
     ImportVariants { biosample_guid: SampleGuid, path: PathBuf },
     LoadChipProfiles(SampleGuid),
     ImportChipProfile { biosample_guid: SampleGuid, provider: Option<String>, path: PathBuf },
+    LoadMtdna(SampleGuid),
+    ImportMtdna { biosample_guid: SampleGuid, path: PathBuf },
     LoadAlignments(i64),
     AddAlignment(NewAlignment),
     LoadCoverage(i64),
@@ -102,6 +105,8 @@ pub enum Event {
     VariantSetsChanged(SampleGuid),
     ChipProfiles { biosample_guid: SampleGuid, profiles: Vec<ChipProfile> },
     ChipProfilesChanged(SampleGuid),
+    MtdnaSequences { biosample_guid: SampleGuid, sequences: Vec<MtdnaSequence> },
+    MtdnaChanged(SampleGuid),
     Alignments { sequence_run_id: i64, alignments: Vec<Alignment> },
     AlignmentsChanged(i64),
     Coverage { alignment_id: i64, result: Option<Coverage> },
@@ -186,6 +191,16 @@ pub async fn handle(app: &App, cmd: Command) -> Event {
         Command::ImportChipProfile { biosample_guid, provider, path } => {
             match app.import_chip_profile_from_csv(biosample_guid, provider, None, &path).await {
                 Ok(_) => Event::ChipProfilesChanged(biosample_guid),
+                Err(e) => Event::Error(e.to_string()),
+            }
+        }
+        Command::LoadMtdna(guid) => match app.list_mtdna_sequences(guid).await {
+            Ok(sequences) => Event::MtdnaSequences { biosample_guid: guid, sequences },
+            Err(e) => Event::Error(e.to_string()),
+        },
+        Command::ImportMtdna { biosample_guid, path } => {
+            match app.import_mtdna_from_fasta(biosample_guid, &path).await {
+                Ok(_) => Event::MtdnaChanged(biosample_guid),
                 Err(e) => Event::Error(e.to_string()),
             }
         }

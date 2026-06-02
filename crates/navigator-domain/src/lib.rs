@@ -10,6 +10,7 @@
 pub use du_domain;
 
 pub mod chipprofile;
+pub mod mtdna;
 pub mod strprofile;
 pub mod testtype;
 pub mod variants;

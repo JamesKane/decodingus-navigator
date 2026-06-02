@@ -92,6 +92,35 @@ async fn import_chip_profile_detects_vendor_and_summarizes() {
     let _ = std::fs::remove_file(&path);
 }
 
+#[tokio::test]
+async fn import_mtdna_fasta_round_trips() {
+    let app = app().await;
+    let subject = app.add_biosample(None, "HG002", None, None).await.unwrap();
+
+    // 16,569 bp with two Ns.
+    let mut body = "A".repeat(16_567);
+    body.insert_str(100, "NN");
+    let path = std::env::temp_dir().join(format!("mtdna-{}.fasta", subject.guid.0));
+    std::fs::write(&path, format!(">sample mtDNA\n{body}\n")).unwrap();
+
+    let seq = app.import_mtdna_from_fasta(subject.guid, &path).await.unwrap();
+    assert_eq!(seq.length(), 16_569);
+    assert_eq!(seq.n_count, 2);
+    assert_eq!(seq.defline.as_deref(), Some("sample mtDNA"));
+
+    let listed = app.list_mtdna_sequences(subject.guid).await.unwrap();
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0].sequence.len(), 16_569);
+
+    // a too-short sequence is rejected
+    let bad = std::env::temp_dir().join(format!("mtdna-bad-{}.fasta", subject.guid.0));
+    std::fs::write(&bad, ">x\nACGT\n").unwrap();
+    assert!(matches!(app.import_mtdna_from_fasta(subject.guid, &bad).await, Err(AppError::Import(_))));
+
+    let _ = std::fs::remove_file(&path);
+    let _ = std::fs::remove_file(&bad);
+}
+
 /// Create a sample → run → alignment chain and return the alignment id.
 async fn alignment_id(app: &App) -> i64 {
     let b = app.add_biosample(None, "HG002", None, None).await.unwrap();

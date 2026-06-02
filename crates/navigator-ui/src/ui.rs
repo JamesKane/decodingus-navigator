@@ -9,6 +9,7 @@ use eframe::egui;
 use navigator_app::{Coverage, DenovoCall, IbdComparison, PanelGenotype, ProjectOverview};
 use navigator_domain::du_domain::ids::SampleGuid;
 use navigator_domain::chipprofile::{self, ChipProfile};
+use navigator_domain::mtdna::MtdnaSequence;
 use navigator_domain::strprofile::{self, StrProfile};
 use navigator_domain::testtype;
 use navigator_domain::variants::VariantSet;
@@ -56,6 +57,8 @@ pub struct NavigatorApp {
     variant_sets: Vec<VariantSet>,
     /// Chip/array profiles for the selected subject.
     chip_profiles: Vec<ChipProfile>,
+    /// mtDNA sequences for the selected subject.
+    mtdna_sequences: Vec<MtdnaSequence>,
     selected_run: Option<i64>,
     alignments: Vec<Alignment>,
     selected_alignment: Option<i64>,
@@ -123,6 +126,7 @@ impl NavigatorApp {
             str_profiles: Vec::new(),
             variant_sets: Vec::new(),
             chip_profiles: Vec::new(),
+            mtdna_sequences: Vec::new(),
             selected_run: None,
             alignments: Vec::new(),
             selected_alignment: None,
@@ -223,6 +227,17 @@ impl NavigatorApp {
                     }
                     self.status = "Chip data imported".into();
                 }
+                Event::MtdnaSequences { biosample_guid, sequences } => {
+                    if self.selected_sample == Some(biosample_guid) {
+                        self.mtdna_sequences = sequences;
+                    }
+                }
+                Event::MtdnaChanged(guid) => {
+                    if self.selected_sample == Some(guid) {
+                        let _ = self.tx.send(Command::LoadMtdna(guid));
+                    }
+                    self.status = "mtDNA sequence imported".into();
+                }
                 Event::Alignments { sequence_run_id, alignments } => {
                     if self.selected_run == Some(sequence_run_id) {
                         self.alignments = alignments;
@@ -307,10 +322,12 @@ impl NavigatorApp {
         self.str_profiles.clear();
         self.variant_sets.clear();
         self.chip_profiles.clear();
+        self.mtdna_sequences.clear();
         let _ = self.tx.send(Command::LoadRuns(guid));
         let _ = self.tx.send(Command::LoadStrProfiles(guid));
         let _ = self.tx.send(Command::LoadVariantSets(guid));
         let _ = self.tx.send(Command::LoadChipProfiles(guid));
+        let _ = self.tx.send(Command::LoadMtdna(guid));
     }
 
     fn select_run(&mut self, id: i64) {
@@ -388,6 +405,7 @@ impl eframe::App for NavigatorApp {
                     self.str_section(ui, guid);
                     self.variants_section(ui, guid);
                     self.chip_section(ui, guid);
+                    self.mtdna_section(ui, guid);
                     self.runs_section(ui);
                 }
                 if self.selected_run.is_some() {
@@ -651,6 +669,32 @@ impl NavigatorApp {
                 }
             }
             ui.label("23andMe / AncestryDNA / MyHeritage raw-data export.");
+        });
+    }
+
+    /// mtDNA FASTA sequences for the selected subject + an import form.
+    fn mtdna_section(&mut self, ui: &mut egui::Ui, guid: SampleGuid) {
+        ui.add_space(12.0);
+        ui.separator();
+        ui.heading("mtDNA sequences");
+        if self.mtdna_sequences.is_empty() {
+            ui.label("No mtDNA sequences yet.");
+        }
+        for m in &self.mtdna_sequences {
+            let name = m.source_file_name.as_deref().or(m.defline.as_deref()).unwrap_or("mtDNA");
+            ui.label(format!("{name} — {} bp, {} N", m.length(), m.n_count));
+        }
+
+        ui.add_space(6.0);
+        ui.collapsing("Import mtDNA FASTA", |ui| {
+            if ui.button("Choose FASTA…").clicked() {
+                if let Some(path) =
+                    rfd::FileDialog::new().add_filter("FASTA", &["fa", "fasta", "fna", "fas"]).pick_file()
+                {
+                    let _ = self.tx.send(Command::ImportMtdna { biosample_guid: guid, path });
+                }
+            }
+            ui.label("Full mtDNA sequence (~16,569 bp) aligned to rCRS.");
         });
     }
 

@@ -12,6 +12,7 @@ pub mod alignment;
 pub mod artifact;
 pub mod biosample;
 pub mod chip_profile;
+pub mod mtdna;
 pub mod error;
 pub mod panel;
 pub mod project;
