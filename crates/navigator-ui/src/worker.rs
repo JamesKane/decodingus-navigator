@@ -13,6 +13,7 @@ use std::sync::Arc;
 
 use navigator_app::{App, Coverage, DenovoCall, IbdComparison, IbdDetectorConfig, PanelGenotype, ProjectOverview};
 use navigator_domain::du_domain::ids::SampleGuid;
+use navigator_domain::chipprofile::ChipProfile;
 use navigator_domain::strprofile::StrProfile;
 use navigator_domain::variants::VariantSet;
 use navigator_domain::workspace::{
@@ -51,6 +52,8 @@ pub enum Command {
     },
     LoadVariantSets(SampleGuid),
     ImportVariants { biosample_guid: SampleGuid, path: PathBuf },
+    LoadChipProfiles(SampleGuid),
+    ImportChipProfile { biosample_guid: SampleGuid, provider: Option<String>, path: PathBuf },
     LoadAlignments(i64),
     AddAlignment(NewAlignment),
     LoadCoverage(i64),
@@ -97,6 +100,8 @@ pub enum Event {
     StrProfilesChanged(SampleGuid),
     VariantSets { biosample_guid: SampleGuid, sets: Vec<VariantSet> },
     VariantSetsChanged(SampleGuid),
+    ChipProfiles { biosample_guid: SampleGuid, profiles: Vec<ChipProfile> },
+    ChipProfilesChanged(SampleGuid),
     Alignments { sequence_run_id: i64, alignments: Vec<Alignment> },
     AlignmentsChanged(i64),
     Coverage { alignment_id: i64, result: Option<Coverage> },
@@ -171,6 +176,16 @@ pub async fn handle(app: &App, cmd: Command) -> Event {
         Command::ImportVariants { biosample_guid, path } => {
             match app.import_variants_from_file(biosample_guid, &path).await {
                 Ok(_) => Event::VariantSetsChanged(biosample_guid),
+                Err(e) => Event::Error(e.to_string()),
+            }
+        }
+        Command::LoadChipProfiles(guid) => match app.list_chip_profiles(guid).await {
+            Ok(profiles) => Event::ChipProfiles { biosample_guid: guid, profiles },
+            Err(e) => Event::Error(e.to_string()),
+        },
+        Command::ImportChipProfile { biosample_guid, provider, path } => {
+            match app.import_chip_profile_from_csv(biosample_guid, provider, None, &path).await {
+                Ok(_) => Event::ChipProfilesChanged(biosample_guid),
                 Err(e) => Event::Error(e.to_string()),
             }
         }

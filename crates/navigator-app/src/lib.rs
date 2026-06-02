@@ -47,10 +47,12 @@ use navigator_domain::workspace::{
     Alignment, AnalysisArtifact, Biosample, NewAlignment, NewProject, NewSequenceRun, Project,
     SequenceRun,
 };
+use navigator_domain::chipprofile::{self, ChipProfile, NewChipProfile};
 use navigator_domain::strprofile::{self, NewStrProfile, StrProfile};
 use navigator_domain::variants::{self, NewVariantSet, VariantSet};
 use navigator_store::{
-    alignment, artifact, biosample, project, sequence_run, str_profile, variant_set, Store, StoreError,
+    alignment, artifact, biosample, chip_profile, project, sequence_run, str_profile, variant_set,
+    Store, StoreError,
 };
 use serde::de::DeserializeOwned;
 use serde::Serialize;
@@ -519,6 +521,30 @@ impl App {
     /// All variant sets for a subject.
     pub async fn list_variant_sets(&self, biosample_guid: SampleGuid) -> Result<Vec<VariantSet>, AppError> {
         Ok(variant_set::list_for_biosample(self.store.pool(), biosample_guid).await?)
+    }
+
+    // ---- chip / array profiles ---------------------------------------------
+
+    /// Import a genotyping-array raw-data export (CSV/TSV) and store its QC summary.
+    /// `provider` overrides vendor detection when given; `chip_version` is optional.
+    pub async fn import_chip_profile_from_csv(
+        &self,
+        biosample_guid: SampleGuid,
+        provider: Option<String>,
+        chip_version: Option<String>,
+        path: &Path,
+    ) -> Result<ChipProfile, AppError> {
+        let text = std::fs::read_to_string(path)?;
+        let (summary, detected) = chipprofile::summarize(&text).map_err(AppError::Import)?;
+        let provider = provider.or(detected).unwrap_or_else(|| "OTHER".into());
+        let source_file_name = path.file_name().map(|s| s.to_string_lossy().into_owned());
+        let new = NewChipProfile { biosample_guid, provider, chip_version, summary, source_file_name };
+        Ok(chip_profile::create(self.store.pool(), &new).await?)
+    }
+
+    /// All chip profiles for a subject.
+    pub async fn list_chip_profiles(&self, biosample_guid: SampleGuid) -> Result<Vec<ChipProfile>, AppError> {
+        Ok(chip_profile::list_for_biosample(self.store.pool(), biosample_guid).await?)
     }
 
     pub async fn panel_site_count(&self, panel_id: i64) -> Result<i64, AppError> {

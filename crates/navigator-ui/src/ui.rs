@@ -8,6 +8,7 @@ use std::sync::mpsc::Receiver;
 use eframe::egui;
 use navigator_app::{Coverage, DenovoCall, IbdComparison, PanelGenotype, ProjectOverview};
 use navigator_domain::du_domain::ids::SampleGuid;
+use navigator_domain::chipprofile::{self, ChipProfile};
 use navigator_domain::strprofile::{self, StrProfile};
 use navigator_domain::testtype;
 use navigator_domain::variants::VariantSet;
@@ -36,6 +37,7 @@ struct Forms {
     str_panel: String,
     str_provider: String,
     str_source: String,
+    chip_provider: String,
 }
 
 pub struct NavigatorApp {
@@ -52,6 +54,8 @@ pub struct NavigatorApp {
     str_profiles: Vec<StrProfile>,
     /// SNP variant sets for the selected subject.
     variant_sets: Vec<VariantSet>,
+    /// Chip/array profiles for the selected subject.
+    chip_profiles: Vec<ChipProfile>,
     selected_run: Option<i64>,
     alignments: Vec<Alignment>,
     selected_alignment: Option<i64>,
@@ -76,6 +80,9 @@ pub struct NavigatorApp {
     forms: Forms,
     status: String,
 }
+
+/// Sentinel option in the chip-provider dropdown that means "let the parser guess".
+const AUTO_DETECT: &str = "(auto-detect)";
 
 fn opt(s: &str) -> Option<String> {
     let t = s.trim();
@@ -115,6 +122,7 @@ impl NavigatorApp {
             runs: Vec::new(),
             str_profiles: Vec::new(),
             variant_sets: Vec::new(),
+            chip_profiles: Vec::new(),
             selected_run: None,
             alignments: Vec::new(),
             selected_alignment: None,
@@ -141,6 +149,7 @@ impl NavigatorApp {
                 str_panel: "Y-37".into(),
                 str_provider: "FTDNA".into(),
                 str_source: "DIRECT_TEST".into(),
+                chip_provider: AUTO_DETECT.into(),
                 ..Forms::default()
             },
             status: "Loading…".into(),
@@ -202,6 +211,17 @@ impl NavigatorApp {
                         let _ = self.tx.send(Command::LoadVariantSets(guid));
                     }
                     self.status = "Variants imported".into();
+                }
+                Event::ChipProfiles { biosample_guid, profiles } => {
+                    if self.selected_sample == Some(biosample_guid) {
+                        self.chip_profiles = profiles;
+                    }
+                }
+                Event::ChipProfilesChanged(guid) => {
+                    if self.selected_sample == Some(guid) {
+                        let _ = self.tx.send(Command::LoadChipProfiles(guid));
+                    }
+                    self.status = "Chip data imported".into();
                 }
                 Event::Alignments { sequence_run_id, alignments } => {
                     if self.selected_run == Some(sequence_run_id) {
@@ -286,9 +306,11 @@ impl NavigatorApp {
         self.runs.clear();
         self.str_profiles.clear();
         self.variant_sets.clear();
+        self.chip_profiles.clear();
         let _ = self.tx.send(Command::LoadRuns(guid));
         let _ = self.tx.send(Command::LoadStrProfiles(guid));
         let _ = self.tx.send(Command::LoadVariantSets(guid));
+        let _ = self.tx.send(Command::LoadChipProfiles(guid));
     }
 
     fn select_run(&mut self, id: i64) {
@@ -365,6 +387,7 @@ impl eframe::App for NavigatorApp {
                     self.subject_header(ui);
                     self.str_section(ui, guid);
                     self.variants_section(ui, guid);
+                    self.chip_section(ui, guid);
                     self.runs_section(ui);
                 }
                 if self.selected_run.is_some() {
@@ -582,6 +605,52 @@ impl NavigatorApp {
                 }
             }
             ui.label("VCF, or rows of contig,position,ref,alt[,rsid][,genotype]. SNP-only.");
+        });
+    }
+
+    /// Genotyping-array (chip) profiles for the selected subject + an import form. The
+    /// parser computes the QC summary and guesses the vendor; the dropdown can override it.
+    fn chip_section(&mut self, ui: &mut egui::Ui, guid: SampleGuid) {
+        ui.add_space(12.0);
+        ui.separator();
+        ui.heading("Chip / array data");
+        if self.chip_profiles.is_empty() {
+            ui.label("No chip data imported yet.");
+        }
+        for p in &self.chip_profiles {
+            let s = &p.summary;
+            let call_rate = if s.total_markers_possible > 0 {
+                100.0 * s.total_markers_called as f64 / s.total_markers_possible as f64
+            } else {
+                0.0
+            };
+            let ver = p.chip_version.as_deref().map(|v| format!(" {v}")).unwrap_or_default();
+            ui.label(format!(
+                "{}{ver} — {} markers, {:.1}% call rate",
+                p.provider, s.total_markers_possible, call_rate
+            ));
+        }
+
+        ui.add_space(6.0);
+        ui.collapsing("Import chip data", |ui| {
+            ui.horizontal(|ui| {
+                ui.label("Provider:");
+                egui::ComboBox::from_id_salt("chip_provider")
+                    .selected_text(self.forms.chip_provider.clone())
+                    .show_ui(ui, |ui| {
+                        ui.selectable_value(&mut self.forms.chip_provider, AUTO_DETECT.to_string(), AUTO_DETECT);
+                        for p in chipprofile::KNOWN_PROVIDERS {
+                            ui.selectable_value(&mut self.forms.chip_provider, p.to_string(), *p);
+                        }
+                    });
+            });
+            if ui.button("Choose CSV/TXT…").clicked() {
+                if let Some(path) = rfd::FileDialog::new().add_filter("array data", &["csv", "txt", "tsv"]).pick_file() {
+                    let provider = (self.forms.chip_provider != AUTO_DETECT).then(|| self.forms.chip_provider.clone());
+                    let _ = self.tx.send(Command::ImportChipProfile { biosample_guid: guid, provider, path });
+                }
+            }
+            ui.label("23andMe / AncestryDNA / MyHeritage raw-data export.");
         });
     }
 
