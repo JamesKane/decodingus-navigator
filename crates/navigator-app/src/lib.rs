@@ -28,6 +28,12 @@ use uuid::Uuid;
 pub mod error;
 pub use error::AppError;
 
+/// Artifact kind for de-novo calls, keyed per contig so different contigs don't
+/// overwrite each other in the cache.
+fn denovo_kind(contig: &str) -> String {
+    format!("denovo_snps:{contig}")
+}
+
 /// A project plus a rolled-up count for list/dashboard views.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProjectOverview {
@@ -176,18 +182,37 @@ impl App {
         contig: String,
         params: HaploidCallerParams,
     ) -> Result<Vec<VariantCall>, AppError> {
+        let kind = denovo_kind(&contig);
         let calls = tokio::task::spawn_blocking(move || {
             caller::call_denovo(&bam, &reference, &contig, &params)
         })
         .await
         .map_err(|e| AppError::Join(e.to_string()))??;
-        self.save_analysis(alignment_id, "denovo_snps", caller::DENOVO_VERSION, &calls).await?;
+        self.save_analysis(alignment_id, &kind, caller::DENOVO_VERSION, &calls).await?;
         Ok(calls)
     }
 
-    /// Cached de-novo calls for the current caller version, if present.
-    pub async fn cached_denovo(&self, alignment_id: i64) -> Result<Option<Vec<VariantCall>>, AppError> {
-        self.load_analysis(alignment_id, "denovo_snps", caller::DENOVO_VERSION).await
+    /// Cached de-novo calls for `contig` at the current caller version, if present.
+    pub async fn cached_denovo(&self, alignment_id: i64, contig: &str) -> Result<Option<Vec<VariantCall>>, AppError> {
+        self.load_analysis(alignment_id, &denovo_kind(contig), caller::DENOVO_VERSION).await
+    }
+
+    /// Run de-novo calling on `contig` using the alignment's own stored paths.
+    pub async fn run_denovo_for_alignment(&self, alignment_id: i64, contig: String) -> Result<Vec<VariantCall>, AppError> {
+        let aln = alignment::get(self.store.pool(), alignment_id)
+            .await?
+            .ok_or_else(|| AppError::Store(StoreError::NotFound(format!("alignment {alignment_id}"))))?;
+        let (Some(bam), Some(reference)) = (aln.bam_path, aln.reference_path) else {
+            return Err(AppError::MissingPaths(alignment_id));
+        };
+        self.run_denovo_caller(
+            alignment_id,
+            PathBuf::from(bam),
+            PathBuf::from(reference),
+            contig,
+            HaploidCallerParams::default(),
+        )
+        .await
     }
 
     // ---- queries -----------------------------------------------------------

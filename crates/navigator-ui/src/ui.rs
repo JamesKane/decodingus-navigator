@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use std::sync::mpsc::Receiver;
 
 use eframe::egui;
-use navigator_app::{Coverage, ProjectOverview};
+use navigator_app::{Coverage, DenovoCall, ProjectOverview};
 use navigator_domain::du_domain::ids::SampleGuid;
 use navigator_domain::workspace::{Alignment, Biosample, NewAlignment, NewProject, NewSequenceRun, SequenceRun};
 use tokio::sync::mpsc::UnboundedSender;
@@ -26,6 +26,7 @@ struct Forms {
     aln_aligner: String,
     aln_bam: String,
     aln_reference: String,
+    denovo_contig: String,
 }
 
 pub struct NavigatorApp {
@@ -41,6 +42,8 @@ pub struct NavigatorApp {
     selected_alignment: Option<i64>,
     coverage: Option<Coverage>,
     running: bool,
+    denovo: Option<Vec<DenovoCall>>,
+    running_denovo: bool,
     forms: Forms,
     status: String,
 }
@@ -68,7 +71,9 @@ impl NavigatorApp {
             selected_alignment: None,
             coverage: None,
             running: false,
-            forms: Forms::default(),
+            denovo: None,
+            running_denovo: false,
+            forms: Forms { denovo_contig: "chrM".into(), ..Forms::default() },
             status: "Loading…".into(),
         }
     }
@@ -121,9 +126,16 @@ impl NavigatorApp {
                     }
                     self.running = false;
                 }
+                Event::Denovo { alignment_id, contig, result } => {
+                    if self.selected_alignment == Some(alignment_id) && self.forms.denovo_contig == contig {
+                        self.denovo = result;
+                    }
+                    self.running_denovo = false;
+                }
                 Event::Error(e) => {
                     self.status = format!("Error: {e}");
                     self.running = false;
+                    self.running_denovo = false;
                 }
             }
         }
@@ -154,7 +166,9 @@ impl NavigatorApp {
     fn select_alignment(&mut self, id: i64) {
         self.selected_alignment = Some(id);
         self.coverage = None;
+        self.denovo = None;
         let _ = self.tx.send(Command::LoadCoverage(id));
+        let _ = self.tx.send(Command::LoadDenovo { alignment_id: id, contig: self.forms.denovo_contig.clone() });
     }
 
     fn clear_sample_selection(&mut self) {
@@ -197,6 +211,7 @@ impl eframe::App for NavigatorApp {
                 }
                 if let Some(id) = self.selected_alignment {
                     self.coverage_section(ui, id);
+                    self.denovo_section(ui, id);
                 }
             });
         });
@@ -438,6 +453,65 @@ impl NavigatorApp {
                     row(ui, "% ≥10x", format!("{:.1}%", c.pct_10x * 100.0));
                     row(ui, "% ≥20x", format!("{:.1}%", c.pct_20x * 100.0));
                     row(ui, "% ≥30x", format!("{:.1}%", c.pct_30x * 100.0));
+                });
+            }
+        }
+    }
+
+    fn denovo_section(&mut self, ui: &mut egui::Ui, alignment_id: i64) {
+        ui.add_space(12.0);
+        ui.separator();
+        ui.heading("De-novo SNP calls (haploid)");
+
+        let has_paths = self
+            .alignments
+            .iter()
+            .find(|a| a.id == alignment_id)
+            .map(|a| a.bam_path.is_some() && a.reference_path.is_some())
+            .unwrap_or(false);
+
+        ui.horizontal(|ui| {
+            ui.label("Contig:");
+            ui.add(egui::TextEdit::singleline(&mut self.forms.denovo_contig).desired_width(80.0));
+            let contig = self.forms.denovo_contig.trim().to_string();
+            let ready = has_paths && !self.running_denovo && !contig.is_empty();
+            if ui.add_enabled(ready, egui::Button::new("Run de-novo")).clicked() {
+                self.running_denovo = true;
+                self.denovo = None;
+                self.status = format!("Calling {contig} on alignment #{alignment_id}…");
+                let _ = self.tx.send(Command::RunDenovo { alignment_id, contig });
+            }
+            if self.running_denovo {
+                ui.spinner();
+            }
+            if !has_paths {
+                ui.label("(no BAM/reference path recorded)");
+            }
+        });
+
+        match &self.denovo {
+            None if !self.running_denovo => {
+                ui.label("No calls yet — run for the contig above.");
+            }
+            None => {}
+            Some(calls) if calls.is_empty() => {
+                ui.label("0 SNP calls.");
+            }
+            Some(calls) => {
+                ui.label(format!("{} SNP call(s)", calls.len()));
+                egui::Grid::new("denovo_calls").striped(true).num_columns(4).show(ui, |ui| {
+                    ui.strong("Position");
+                    ui.strong("Change");
+                    ui.strong("Depth");
+                    ui.strong("AF");
+                    ui.end_row();
+                    for c in calls {
+                        ui.label(c.position.to_string());
+                        ui.label(format!("{}>{}", c.reference_allele, c.alternate_allele));
+                        ui.label(c.depth.to_string());
+                        ui.label(format!("{:.2}", c.allele_fraction));
+                        ui.end_row();
+                    }
                 });
             }
         }

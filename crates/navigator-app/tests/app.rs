@@ -186,6 +186,8 @@ async fn run_denovo_caller_persists_snp_calls() {
     // fixture: ref ACGT.. with all-A reads -> SNPs where ref != A at depth>=4
     assert_eq!(calls.iter().map(|c| c.position).collect::<Vec<_>>(), vec![2, 3, 4, 6, 7, 8, 10]);
 
-    let cached = app.cached_denovo(aln).await.unwrap().unwrap();
+    let cached = app.cached_denovo(aln, "chrM").await.unwrap().unwrap();
     assert_eq!(cached, calls);
+    // a different contig has no cached result
+    assert!(app.cached_denovo(aln, "chrY").await.unwrap().is_none());
 }

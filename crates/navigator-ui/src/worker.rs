@@ -11,7 +11,7 @@ use std::path::PathBuf;
 use std::sync::mpsc::{Receiver, Sender};
 use std::sync::Arc;
 
-use navigator_app::{App, Coverage, ProjectOverview};
+use navigator_app::{App, Coverage, DenovoCall, ProjectOverview};
 use navigator_domain::du_domain::ids::SampleGuid;
 use navigator_domain::workspace::{Alignment, Biosample, NewAlignment, NewProject, NewSequenceRun, Project, SequenceRun};
 use tokio::sync::mpsc::{unbounded_channel, UnboundedSender};
@@ -38,6 +38,8 @@ pub enum Command {
     AddAlignment(NewAlignment),
     LoadCoverage(i64),
     RunCoverage(i64),
+    LoadDenovo { alignment_id: i64, contig: String },
+    RunDenovo { alignment_id: i64, contig: String },
 }
 
 /// A result/notification from the worker to the UI.
@@ -53,6 +55,7 @@ pub enum Event {
     Alignments { sequence_run_id: i64, alignments: Vec<Alignment> },
     AlignmentsChanged(i64),
     Coverage { alignment_id: i64, result: Option<Coverage> },
+    Denovo { alignment_id: i64, contig: String, result: Option<Vec<DenovoCall>> },
     Error(String),
 }
 
@@ -104,6 +107,16 @@ pub async fn handle(app: &App, cmd: Command) -> Event {
             Ok(result) => Event::Coverage { alignment_id, result: Some(result) },
             Err(e) => Event::Error(e.to_string()),
         },
+        Command::LoadDenovo { alignment_id, contig } => match app.cached_denovo(alignment_id, &contig).await {
+            Ok(result) => Event::Denovo { alignment_id, contig, result },
+            Err(e) => Event::Error(e.to_string()),
+        },
+        Command::RunDenovo { alignment_id, contig } => {
+            match app.run_denovo_for_alignment(alignment_id, contig.clone()).await {
+                Ok(result) => Event::Denovo { alignment_id, contig, result: Some(result) },
+                Err(e) => Event::Error(e.to_string()),
+            }
+        }
     }
 }
 
@@ -259,6 +272,24 @@ mod tests {
         match handle(&app, Command::LoadCoverage(aln.id)).await {
             Event::Coverage { result, .. } => assert_eq!(result.unwrap().callable_bases, 10),
             other => panic!("expected cached Coverage, got {other:?}"),
+        }
+
+        // de-novo on the fixture contig (cold -> run -> cached), per-contig keyed
+        match handle(&app, Command::LoadDenovo { alignment_id: aln.id, contig: "chrM".into() }).await {
+            Event::Denovo { result, .. } => assert!(result.is_none()),
+            other => panic!("expected Denovo(None), got {other:?}"),
+        }
+        match handle(&app, Command::RunDenovo { alignment_id: aln.id, contig: "chrM".into() }).await {
+            Event::Denovo { contig, result, .. } => {
+                assert_eq!(contig, "chrM");
+                let calls = result.unwrap();
+                assert_eq!(calls.iter().map(|c| c.position).collect::<Vec<_>>(), vec![2, 3, 4, 6, 7, 8, 10]);
+            }
+            other => panic!("expected Denovo(Some), got {other:?}"),
+        }
+        match handle(&app, Command::LoadDenovo { alignment_id: aln.id, contig: "chrM".into() }).await {
+            Event::Denovo { result, .. } => assert_eq!(result.unwrap().len(), 7),
+            other => panic!("expected cached Denovo, got {other:?}"),
         }
     }
 
