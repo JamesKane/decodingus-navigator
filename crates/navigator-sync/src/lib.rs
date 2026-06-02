@@ -14,5 +14,8 @@ pub mod tokens;
 pub use error::SyncError;
 pub use oauth::{login, OAuthConfig};
 pub use publish::{dev_http_client, PdsClient, RecordRef};
-pub use records::{CoverageSummaryRecord, COVERAGE_SUMMARY_COLLECTION};
+pub use records::{
+    CoverageSummaryRecord, PrivateVariantsRecord, VariantCallEntry, COVERAGE_SUMMARY_COLLECTION,
+    PRIVATE_VARIANTS_COLLECTION,
+};
 pub use tokens::{Session, TokenStore};

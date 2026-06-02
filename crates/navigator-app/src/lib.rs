@@ -26,7 +26,10 @@ pub use navigator_analysis::ibd::{
     IbdDetectorConfig, IbdSegment as Segment, MatchSummary as IbdSummary, RelationshipEstimate,
 };
 // Sync/publish types the command API uses, re-exported so the UI depends only on navigator-app.
-pub use navigator_sync::{CoverageSummaryRecord, PdsClient, RecordRef, COVERAGE_SUMMARY_COLLECTION};
+pub use navigator_sync::{
+    CoverageSummaryRecord, PdsClient, PrivateVariantsRecord, RecordRef, VariantCallEntry,
+    COVERAGE_SUMMARY_COLLECTION, PRIVATE_VARIANTS_COLLECTION,
+};
 
 /// IBD comparison result between two genotyped alignments.
 #[derive(Debug, Clone, PartialEq)]
@@ -287,6 +290,27 @@ impl App {
         );
         let value = serde_json::to_value(&record)?;
         Ok(client.create_record(COVERAGE_SUMMARY_COLLECTION, value, None).await?)
+    }
+
+    /// Publish an alignment's cached de-novo SNP calls for `contig` to the PDS as a
+    /// private-variants record. Requires the de-novo caller to have been run for that contig.
+    pub async fn publish_private_variants(
+        &self,
+        client: &PdsClient,
+        alignment_id: i64,
+        contig: &str,
+    ) -> Result<RecordRef, AppError> {
+        let calls = self
+            .cached_denovo(alignment_id, contig)
+            .await?
+            .ok_or_else(|| AppError::Store(StoreError::NotFound(format!("de-novo calls for alignment {alignment_id} {contig}"))))?;
+        let variants = calls
+            .iter()
+            .map(|c| VariantCallEntry::new(c.position, c.reference_allele, c.alternate_allele, c.depth, c.alt_depth, c.allele_fraction))
+            .collect();
+        let record = PrivateVariantsRecord::new(contig, caller::DENOVO_VERSION, Utc::now().to_rfc3339(), variants);
+        let value = serde_json::to_value(&record)?;
+        Ok(client.create_record(PRIVATE_VARIANTS_COLLECTION, value, None).await?)
     }
 
     // ---- panels + IBD ------------------------------------------------------

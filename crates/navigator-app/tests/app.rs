@@ -253,6 +253,14 @@ async fn publish_coverage_summary_to_live_pds() {
         .await
         .expect("run_coverage");
 
+    let client = live_bearer_client(&pds).await;
+    let r = app.publish_coverage_summary(&client, aln).await.expect("publish coverage summary");
+    assert!(r.uri.starts_with("at://"), "uri: {}", r.uri);
+    eprintln!("✓ published coverage summary {}", r.uri);
+}
+
+/// Create a throwaway PDS account and return a Bearer client for it (live tests).
+async fn live_bearer_client(pds: &str) -> navigator_app::PdsClient {
     let http = reqwest::Client::new();
     let n = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos() % 1_000_000_000;
     let acct: serde_json::Value = http
@@ -264,11 +272,47 @@ async fn publish_coverage_summary_to_live_pds() {
         .json()
         .await
         .expect("createAccount json");
-    let client = navigator_app::PdsClient::bearer(http, &pds, acct["did"].as_str().unwrap(), acct["accessJwt"].as_str().unwrap());
+    navigator_app::PdsClient::bearer(http, pds, acct["did"].as_str().unwrap(), acct["accessJwt"].as_str().unwrap())
+}
 
-    let r = app.publish_coverage_summary(&client, aln).await.expect("publish coverage summary");
+#[tokio::test]
+async fn publish_private_variants_requires_cached_calls() {
+    let app = app().await;
+    let aln = diploid_alignment(&app).await; // no de-novo run
+    let client = navigator_app::PdsClient::bearer(reqwest::Client::new(), "http://127.0.0.1:1", "did:plc:x", "tok");
+    let err = app.publish_private_variants(&client, aln, "chrM").await;
+    assert!(
+        matches!(err, Err(navigator_app::AppError::Store(navigator_store::StoreError::NotFound(_)))),
+        "got {err:?}"
+    );
+}
+
+/// Full path: run de-novo on the fixture → publish the private-variants record (with
+/// allele_fraction as a string) to a live PDS, read it back.
+#[tokio::test]
+#[ignore = "requires PDS_TEST_URL (local atproto PDS container)"]
+async fn publish_private_variants_to_live_pds() {
+    let Ok(pds) = std::env::var("PDS_TEST_URL") else {
+        eprintln!("PDS_TEST_URL unset — skipping live private-variants publish test");
+        return;
+    };
+    let pds = pds.trim_end_matches('/').to_string();
+    let app = app().await;
+    let dir = fixtures();
+    let aln = alignment_id(&app).await;
+    app.run_denovo_caller(aln, dir.join("coverage.bam"), dir.join("ref.fa"), "chrM".into(), HaploidCallerParams::default())
+        .await
+        .expect("run de-novo");
+
+    let client = live_bearer_client(&pds).await;
+    let r = app.publish_private_variants(&client, aln, "chrM").await.expect("publish private variants");
     assert!(r.uri.starts_with("at://"), "uri: {}", r.uri);
-    eprintln!("✓ published coverage summary {}", r.uri);
+
+    let got = client.get_record(navigator_app::PRIVATE_VARIANTS_COLLECTION, r.rkey()).await.expect("getRecord");
+    assert_eq!(got["value"]["contig"], "chrM");
+    assert_eq!(got["value"]["variants"].as_array().unwrap().len(), 7); // fixture de-novo
+    assert!(got["value"]["variants"][0]["alleleFraction"].is_string());
+    eprintln!("✓ published private variants {}", r.uri);
 }
 
 #[tokio::test]

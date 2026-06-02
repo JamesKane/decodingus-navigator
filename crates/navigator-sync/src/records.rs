@@ -60,6 +60,64 @@ impl CoverageSummaryRecord {
     }
 }
 
+/// Collection NSID for a sample's de-novo / private variant calls on one contig.
+pub const PRIVATE_VARIANTS_COLLECTION: &str = "com.decodingus.navigator.privateVariants";
+
+/// One variant call. `allele_fraction` is a string (no floats); positions/depths integers.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VariantCallEntry {
+    pub position: i64,
+    pub reference: String,
+    pub alternate: String,
+    pub depth: i64,
+    pub alt_depth: i64,
+    pub allele_fraction: String,
+}
+
+impl VariantCallEntry {
+    pub fn new(position: i64, reference: char, alternate: char, depth: u32, alt_depth: u32, allele_fraction: f64) -> Self {
+        VariantCallEntry {
+            position,
+            reference: reference.to_string(),
+            alternate: alternate.to_string(),
+            depth: depth as i64,
+            alt_depth: alt_depth as i64,
+            allele_fraction: allele_fraction.to_string(),
+        }
+    }
+}
+
+/// A sample's de-novo / private variant calls for one contig (the writer-side payload;
+/// branch-creation *proposals* to the AppView curation API are a separate, later path).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PrivateVariantsRecord {
+    #[serde(rename = "$type")]
+    pub record_type: String,
+    pub contig: String,
+    pub caller_version: String,
+    pub created_at: String,
+    pub variants: Vec<VariantCallEntry>,
+}
+
+impl PrivateVariantsRecord {
+    pub fn new(
+        contig: impl Into<String>,
+        caller_version: impl Into<String>,
+        created_at: impl Into<String>,
+        variants: Vec<VariantCallEntry>,
+    ) -> Self {
+        PrivateVariantsRecord {
+            record_type: PRIVATE_VARIANTS_COLLECTION.to_string(),
+            contig: contig.into(),
+            caller_version: caller_version.into(),
+            created_at: created_at.into(),
+            variants,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -89,6 +147,29 @@ mod tests {
 
         // round-trips back to the same record.
         let back: CoverageSummaryRecord = serde_json::from_value(v).unwrap();
+        assert_eq!(back, rec);
+    }
+
+    #[test]
+    fn private_variants_encode_allele_fraction_as_string() {
+        let rec = PrivateVariantsRecord::new(
+            "chrM",
+            "haploid-denovo-2",
+            "2026-06-02T00:00:00Z",
+            vec![
+                VariantCallEntry::new(2, 'C', 'A', 4, 4, 1.0),
+                VariantCallEntry::new(16302, 'T', 'C', 66, 35, 0.5303030303030303),
+            ],
+        );
+        let v = serde_json::to_value(&rec).unwrap();
+        assert_eq!(v["$type"], PRIVATE_VARIANTS_COLLECTION);
+        assert_eq!(v["contig"], "chrM");
+        assert_eq!(v["variants"][0]["position"], 2); // integer
+        assert_eq!(v["variants"][0]["alleleFraction"], "1"); // string
+        assert_eq!(v["variants"][1]["alleleFraction"], "0.5303030303030303");
+        assert_no_floats(&v); // including inside the array
+
+        let back: PrivateVariantsRecord = serde_json::from_value(v).unwrap();
         assert_eq!(back, rec);
     }
 }
