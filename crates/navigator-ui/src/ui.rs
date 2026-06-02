@@ -391,6 +391,7 @@ impl NavigatorApp {
 impl eframe::App for NavigatorApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.drain_events();
+        self.handle_file_drops(ctx);
         self.account_panel(ctx);
         self.projects_panel(ctx);
         egui::TopBottomPanel::bottom("status").show(ctx, |ui| {
@@ -428,10 +429,57 @@ impl eframe::App for NavigatorApp {
                 }
             });
         });
+        self.paint_drop_hint(ctx);
     }
 }
 
 impl NavigatorApp {
+    /// Route files dropped onto the window through the unified importer, attaching them to
+    /// the selected subject (auto-detected). No-op when nothing was dropped.
+    fn handle_file_drops(&mut self, ctx: &egui::Context) {
+        let dropped = ctx.input(|i| i.raw.dropped_files.clone());
+        if dropped.is_empty() {
+            return;
+        }
+        let Some(guid) = self.selected_sample else {
+            self.status = "Select a subject before dropping data files.".into();
+            return;
+        };
+        let mut sent = 0;
+        for f in dropped {
+            if let Some(path) = f.path {
+                let _ = self.tx.send(Command::AddData { biosample_guid: guid, path });
+                sent += 1;
+            }
+        }
+        if sent > 0 {
+            self.status = format!("Importing {sent} dropped file(s)…");
+        }
+    }
+
+    /// While files are being dragged over the window, dim the screen and show whether the
+    /// drop will land on a subject.
+    fn paint_drop_hint(&self, ctx: &egui::Context) {
+        if ctx.input(|i| i.raw.hovered_files.is_empty()) {
+            return;
+        }
+        let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("drop_hint")));
+        let rect = ctx.screen_rect();
+        painter.rect_filled(rect, 0.0, egui::Color32::from_black_alpha(160));
+        let text = if self.selected_sample.is_some() {
+            "Drop to add data to this subject"
+        } else {
+            "Select a subject first, then drop"
+        };
+        painter.text(
+            rect.center(),
+            egui::Align2::CENTER_CENTER,
+            text,
+            egui::FontId::proportional(24.0),
+            egui::Color32::WHITE,
+        );
+    }
+
     fn account_panel(&mut self, ctx: &egui::Context) {
         egui::TopBottomPanel::top("account").show(ctx, |ui| {
             ui.horizontal(|ui| {
