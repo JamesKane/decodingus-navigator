@@ -96,6 +96,37 @@ fn hg002_chrm_denovo_smoke() {
     }
 }
 
+/// Whole-genome coverage over the full BAM (no allowlist). Only feasible because the
+/// walker streams a sliding window — the old dense version allocated per-position
+/// arrays for every main-assembly contig at once (~84 GB).
+#[test]
+#[ignore = "requires HG002_BAM + CHM13_REF (whole-genome streaming coverage)"]
+fn hg002_wgs_coverage_streams_all_contigs() {
+    let (Ok(bam), Ok(reference)) = (std::env::var("HG002_BAM"), std::env::var("CHM13_REF")) else {
+        eprintln!("set HG002_BAM and CHM13_REF to run this test");
+        return;
+    };
+    let result = collect_coverage_callable(
+        &PathBuf::from(bam),
+        &PathBuf::from(reference),
+        &CallableLociParams::default(),
+        None,
+    )
+    .expect("whole-genome coverage should succeed");
+
+    eprintln!(
+        "genome_territory={} mean_coverage={:.4} contigs={}",
+        result.genome_territory,
+        result.mean_coverage,
+        result.contig_coverage_stats.len()
+    );
+    // CHM13 main assembly: chr1-22, X, Y, M = 25 contigs, ~3.05 Gb.
+    assert_eq!(result.contig_coverage_stats.len(), 25);
+    assert!(result.genome_territory > 3_000_000_000, "territory {}", result.genome_territory);
+    assert_eq!(result.genome_territory, result.coverage_histogram.iter().sum::<u64>());
+    assert!(result.mean_coverage > 0.0);
+}
+
 /// Whole-BAM smoke tests for sex + read_metrics. Driven by HG002_BAM.
 #[test]
 #[ignore = "requires local HG002_BAM env var (full whole-genome BAM)"]

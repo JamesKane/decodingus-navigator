@@ -8,12 +8,15 @@
 //! are averaged **per base observation** (Σ quality / Σ depth), where samtools averages
 //! per read. See the crate fixture tests for hand-computed expected values.
 //!
-//! Memory: this slice accumulates dense per-position arrays for each tracked contig
-//! (fine for mtDNA/Y or any `contig_allowlist`-bounded run; a streaming pileup is the
-//! whole-genome optimization). BED-interval output and progress callbacks from the
-//! Scala walker are deferred.
+//! Memory: a **sliding-window pileup** finalizes each position once the read frontier
+//! passes it, so peak memory is the span of currently-open reads — not the contig
+//! length. The only contig-sized allocation is the reference bases of the contig being
+//! walked (one at a time, for N detection); whole-genome HG002 peaks ~2 GB vs the
+//! ~84 GB a dense per-contig-arrays approach would need. Requires a coordinate-sorted
+//! BAM. (Streaming the reference in windows too is a further optimization.) BED-interval
+//! output and progress callbacks from the Scala walker are deferred.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::Path;
 
 use noodles::bam;
@@ -117,35 +120,156 @@ pub struct CoverageResult {
 
 const HIST_LEN: usize = 256;
 
-/// Dense per-position accumulators for one contig.
-struct ContigAccum {
-    name: String,
-    length: usize,
-    depth: Vec<u32>,
-    base_q_sum: Vec<u64>,
-    map_q_sum: Vec<u64>,
-    qc_pass: Vec<u32>,
-    low_mapq: Vec<u32>,
-    read_count: u64,
+/// Per-position accumulator within the sliding pileup window.
+#[derive(Clone, Default)]
+struct Col {
+    depth: u32,
+    base_q_sum: u64,
+    map_q_sum: u64,
+    qc_pass: u32,
+    low_mapq: u32,
 }
 
-impl ContigAccum {
-    fn new(name: String, length: usize) -> Self {
-        ContigAccum {
-            name,
-            length,
-            depth: vec![0; length],
-            base_q_sum: vec![0; length],
-            map_q_sum: vec![0; length],
-            qc_pass: vec![0; length],
-            low_mapq: vec![0; length],
-            read_count: 0,
-        }
+/// Global accumulators, folded as positions finalize.
+struct Globals {
+    hist: Vec<u64>,
+    n: u64,
+    sum_depth: u128,
+    sum_sq: u128,
+}
+
+impl Globals {
+    fn new() -> Self {
+        Globals { hist: vec![0; HIST_LEN], n: 0, sum_depth: 0, sum_sq: 0 }
     }
 }
 
-/// Walk a coordinate-sorted BAM and collect coverage + callable metrics for the
-/// main-assembly contigs (optionally restricted to `contig_allowlist`).
+/// Finished per-contig output (kept tiny; assembled into the result in header order).
+struct ContigOut {
+    callable: ContigCallableMetrics,
+    stats: ContigCoverageStats,
+}
+
+/// Streaming state for the contig currently being walked. Memory is bounded by the
+/// sliding window (the span of currently-open reads), not the contig length.
+struct CurContig {
+    name: String,
+    length: usize,
+    ref_bases: Vec<u8>,
+    window: VecDeque<Col>,
+    emit_cursor: usize, // 1-based position next to finalize; window front aligns here
+    read_count: u64,
+    cm: ContigCallableMetrics,
+    covered: u64,
+    total_base_obs: u64,
+    base_q_total: u64,
+    map_q_total: u64,
+    sum_depth: u128,
+}
+
+impl CurContig {
+    fn new(name: String, length: usize, ref_bases: Vec<u8>) -> Self {
+        let cm = ContigCallableMetrics {
+            contig: name.clone(),
+            ref_n: 0,
+            callable: 0,
+            no_coverage: 0,
+            low_coverage: 0,
+            excessive_coverage: 0,
+            poor_mapping_quality: 0,
+        };
+        CurContig {
+            name,
+            length,
+            ref_bases,
+            window: VecDeque::new(),
+            emit_cursor: 1,
+            read_count: 0,
+            cm,
+            covered: 0,
+            total_base_obs: 0,
+            base_q_total: 0,
+            map_q_total: 0,
+            sum_depth: 0,
+        }
+    }
+
+    /// Fold one finalized column (covered or empty) into global + contig accumulators.
+    fn finalize_col(&mut self, pos: usize, col: Col, params: &CallableLociParams, g: &mut Globals) {
+        let depth = col.depth;
+        let clamped = depth.min(255) as usize;
+        g.hist[clamped] += 1;
+        g.n += 1;
+        g.sum_depth += depth as u128;
+        g.sum_sq += (depth as u128) * (depth as u128);
+        self.sum_depth += depth as u128;
+        if depth > 0 {
+            self.covered += 1;
+            self.total_base_obs += depth as u64;
+            self.base_q_total += col.base_q_sum;
+            self.map_q_total += col.map_q_sum;
+        }
+        let ref_base = self.ref_bases.get(pos - 1).copied().unwrap_or(b'N');
+        match determine_state(ref_base, depth, col.qc_pass, col.low_mapq, params) {
+            CallableState::RefN => self.cm.ref_n += 1,
+            CallableState::NoCoverage => self.cm.no_coverage += 1,
+            CallableState::PoorMappingQuality => self.cm.poor_mapping_quality += 1,
+            CallableState::LowCoverage => self.cm.low_coverage += 1,
+            CallableState::ExcessiveCoverage => self.cm.excessive_coverage += 1,
+            CallableState::Callable => self.cm.callable += 1,
+        }
+    }
+
+    /// Finalize all positions strictly before `target` (clamped to the contig end).
+    fn advance_to(&mut self, target: usize, params: &CallableLociParams, g: &mut Globals) {
+        while self.emit_cursor < target && self.emit_cursor <= self.length {
+            let col = self.window.pop_front().unwrap_or_default();
+            let pos = self.emit_cursor;
+            self.finalize_col(pos, col, params, g);
+            self.emit_cursor += 1;
+        }
+    }
+
+    /// Add one covered base at 1-based `pos` (>= `emit_cursor`) to the window.
+    fn add(&mut self, pos: usize, base_q: u8, mapq: u8, params: &CallableLociParams) {
+        let idx = pos - self.emit_cursor;
+        while self.window.len() <= idx {
+            self.window.push_back(Col::default());
+        }
+        let col = &mut self.window[idx];
+        col.depth += 1;
+        col.base_q_sum += base_q as u64;
+        col.map_q_sum += mapq as u64;
+        if mapq >= params.min_mapping_quality && base_q >= params.min_base_quality {
+            col.qc_pass += 1;
+        }
+        if mapq <= params.max_low_mapq {
+            col.low_mapq += 1;
+        }
+    }
+
+    /// Flush the remaining window + uncovered tail, then produce the contig output.
+    fn finish(mut self, params: &CallableLociParams, g: &mut Globals) -> ContigOut {
+        self.advance_to(self.length + 1, params, g);
+        let length = self.length as f64;
+        let stats = ContigCoverageStats {
+            contig: self.name.clone(),
+            start_pos: 1,
+            end_pos: self.length as u64,
+            num_reads: self.read_count,
+            cov_bases: self.covered,
+            coverage: if self.length == 0 { 0.0 } else { self.covered as f64 / length * 100.0 },
+            mean_depth: if self.length == 0 { 0.0 } else { self.sum_depth as f64 / length },
+            mean_base_q: if self.total_base_obs == 0 { 0.0 } else { self.base_q_total as f64 / self.total_base_obs as f64 },
+            mean_map_q: if self.total_base_obs == 0 { 0.0 } else { self.map_q_total as f64 / self.total_base_obs as f64 },
+        };
+        ContigOut { callable: self.cm, stats }
+    }
+}
+
+/// Single coordinate-ordered pass with a sliding pileup window: positions finalize once
+/// the read frontier passes them, so peak memory is the open-read span, not the contig
+/// length. Requires a coordinate-sorted BAM (the standard genomics layout).
 pub fn collect_coverage_callable(
     bam_path: &Path,
     reference_path: &Path,
@@ -155,21 +279,28 @@ pub fn collect_coverage_callable(
     let mut reader = bam::io::reader::Builder
         .build_from_path(bam_path)
         .map_err(|e| AnalysisError::io(bam_path, e))?;
-    let header = reader
-        .read_header()
-        .map_err(|e| AnalysisError::io(bam_path, e))?;
+    let header = reader.read_header().map_err(|e| AnalysisError::io(bam_path, e))?;
 
-    // Resolve which reference ids we track, and their names/lengths (header order).
-    let ref_seqs = header.reference_sequences();
-    let mut tracked: Vec<Option<ContigAccum>> = Vec::with_capacity(ref_seqs.len());
-    for (name_bytes, map) in ref_seqs.iter() {
-        let name = String::from_utf8_lossy(name_bytes.as_ref()).into_owned();
-        let keep = contig::is_main_assembly(&name)
-            && contig_allowlist.map_or(true, |set| set.contains(&name));
-        tracked.push(keep.then(|| ContigAccum::new(name, map.length().get())));
-    }
+    // ref_id -> (name, length) for tracked (main-assembly, allowlisted) contigs.
+    let tracked: Vec<Option<(String, usize)>> = header
+        .reference_sequences()
+        .iter()
+        .map(|(name_bytes, map)| {
+            let name = String::from_utf8_lossy(name_bytes.as_ref()).into_owned();
+            let keep = contig::is_main_assembly(&name)
+                && contig_allowlist.map_or(true, |set| set.contains(&name));
+            keep.then(|| (name, map.length().get()))
+        })
+        .collect();
 
-    // Single pass over records.
+    let mut fasta_reader = fasta::io::indexed_reader::Builder::default()
+        .build_from_path(reference_path)
+        .map_err(|e| AnalysisError::io(reference_path, e))?;
+
+    let mut g = Globals::new();
+    let mut finished: HashMap<usize, ContigOut> = HashMap::new();
+    let mut cur: Option<(usize, CurContig)> = None;
+
     for result in reader.records() {
         let record = result.map_err(|e| AnalysisError::io(bam_path, e))?;
         let flags = record.flags();
@@ -181,27 +312,41 @@ pub fn collect_coverage_callable(
         {
             continue;
         }
-
         let ref_id = match record.reference_sequence_id() {
             Some(r) => r.map_err(|e| AnalysisError::io(bam_path, e))?,
             None => continue,
         };
-        let accum = match tracked.get_mut(ref_id).and_then(|o| o.as_mut()) {
-            Some(a) => a,
-            None => continue,
+        let Some((name, length)) = tracked.get(ref_id).and_then(|o| o.as_ref()) else {
+            continue;
         };
+
+        // Contig transition: finalize the previous contig, load the new contig's ref.
+        if cur.as_ref().map(|(id, _)| *id) != Some(ref_id) {
+            if let Some((id, c)) = cur.take() {
+                finished.insert(id, c.finish(params, &mut g));
+            }
+            let region: Region = name
+                .parse()
+                .map_err(|_| AnalysisError::Message(format!("bad region for contig {name}")))?;
+            let rec = fasta_reader
+                .query(&region)
+                .map_err(|e| AnalysisError::io(reference_path, e))?;
+            let ref_bases = rec.sequence().as_ref().to_vec();
+            cur = Some((ref_id, CurContig::new(name.clone(), *length, ref_bases)));
+        }
 
         let start = match record.alignment_start() {
             Some(p) => p.map_err(|e| AnalysisError::io(bam_path, e))?.get(),
             None => continue,
         };
+        let (_, c) = cur.as_mut().unwrap();
+        c.advance_to(start, params, &mut g);
+        c.read_count += 1;
+
         let mapq = record.mapping_quality().map_or(255u8, |m| m.get());
         let quals = record.quality_scores();
         let quals = quals.as_ref();
 
-        accum.read_count += 1;
-
-        // Walk the CIGAR over reference positions; only M/=/X contribute a base.
         let mut ref_pos = start; // 1-based
         let mut query_off = 0usize;
         for op in record.cigar().iter() {
@@ -211,144 +356,99 @@ pub fn collect_coverage_callable(
             match (kind.consumes_reference(), kind.consumes_read()) {
                 (true, true) => {
                     for i in 0..len {
-                        let pos = ref_pos + i; // 1-based
-                        if pos >= 1 && pos <= accum.length {
-                            let idx = pos - 1;
+                        let pos = ref_pos + i;
+                        if pos >= 1 && pos <= c.length {
                             let base_q = quals.get(query_off + i).copied().unwrap_or(0);
-                            accum.depth[idx] += 1;
-                            accum.base_q_sum[idx] += base_q as u64;
-                            accum.map_q_sum[idx] += mapq as u64;
-                            if mapq >= params.min_mapping_quality
-                                && base_q >= params.min_base_quality
-                            {
-                                accum.qc_pass[idx] += 1;
-                            }
-                            if mapq <= params.max_low_mapq {
-                                accum.low_mapq[idx] += 1;
-                            }
+                            c.add(pos, base_q, mapq, params);
                         }
                     }
                     ref_pos += len;
                     query_off += len;
                 }
-                (true, false) => ref_pos += len,  // D / N
-                (false, true) => query_off += len, // I / S
-                (false, false) => {}               // H / P
+                (true, false) => ref_pos += len,
+                (false, true) => query_off += len,
+                (false, false) => {}
             }
         }
     }
+    if let Some((id, c)) = cur.take() {
+        finished.insert(id, c.finish(params, &mut g));
+    }
 
-    finalize(reference_path, params, tracked)
-}
-
-fn finalize(
-    reference_path: &Path,
-    params: &CallableLociParams,
-    tracked: Vec<Option<ContigAccum>>,
-) -> Result<CoverageResult, AnalysisError> {
-    let mut fasta_reader = fasta::io::indexed_reader::Builder::default()
-        .build_from_path(reference_path)
-        .map_err(|e| AnalysisError::io(reference_path, e))?;
-
-    let mut global_hist = vec![0u64; HIST_LEN];
-    let mut global_n: u64 = 0;
-    let mut global_sum_depth: u128 = 0;
-    let mut global_sum_sq: u128 = 0;
-
+    // Assemble in header (ref_id) order; tracked contigs with no reads are zero-coverage.
     let mut contig_callable = Vec::new();
     let mut contig_stats = Vec::new();
-
-    for accum in tracked.into_iter().flatten() {
-        // Load the contig reference bases (uppercased) for N detection.
-        let region: Region = format!("{}", accum.name)
-            .parse()
-            .map_err(|_| AnalysisError::Message(format!("bad region for contig {}", accum.name)))?;
-        let ref_record = fasta_reader
-            .query(&region)
-            .map_err(|e| AnalysisError::io(reference_path, e))?;
-        let ref_bases = ref_record.sequence().as_ref();
-
-        let mut cm = ContigCallableMetrics {
-            contig: accum.name.clone(),
-            ref_n: 0,
-            callable: 0,
-            no_coverage: 0,
-            low_coverage: 0,
-            excessive_coverage: 0,
-            poor_mapping_quality: 0,
-        };
-        let mut covered: u64 = 0;
-        let mut total_base_obs: u64 = 0;
-        let mut base_q_total: u64 = 0;
-        let mut map_q_total: u64 = 0;
-        let mut contig_sum_depth: u128 = 0;
-
-        for idx in 0..accum.length {
-            let depth = accum.depth[idx];
-            let clamped = depth.min(255) as usize;
-            global_hist[clamped] += 1;
-            global_n += 1;
-            global_sum_depth += depth as u128;
-            global_sum_sq += (depth as u128) * (depth as u128);
-            contig_sum_depth += depth as u128;
-
-            if depth > 0 {
-                covered += 1;
-                total_base_obs += depth as u64;
-                base_q_total += accum.base_q_sum[idx];
-                map_q_total += accum.map_q_sum[idx];
+    for (ref_id, opt) in tracked.iter().enumerate() {
+        let Some((name, length)) = opt else { continue };
+        if let Some(out) = finished.remove(&ref_id) {
+            contig_callable.push(out.callable);
+            contig_stats.push(out.stats);
+        } else {
+            // No reads: every position is depth 0 (RefN where the reference is N).
+            let region: Region = name
+                .parse()
+                .map_err(|_| AnalysisError::Message(format!("bad region for contig {name}")))?;
+            let rec = fasta_reader
+                .query(&region)
+                .map_err(|e| AnalysisError::io(reference_path, e))?;
+            let ref_bases = rec.sequence();
+            let ref_bases = ref_bases.as_ref();
+            let mut ref_n: u64 = 0;
+            for idx in 0..*length {
+                let b = ref_bases.get(idx).copied().unwrap_or(b'N');
+                if b == b'N' || b == b'n' {
+                    ref_n += 1;
+                }
             }
-
-            let ref_base = ref_bases.get(idx).copied().unwrap_or(b'N');
-            match determine_state(ref_base, depth, accum.qc_pass[idx], accum.low_mapq[idx], params) {
-                CallableState::RefN => cm.ref_n += 1,
-                CallableState::NoCoverage => cm.no_coverage += 1,
-                CallableState::PoorMappingQuality => cm.poor_mapping_quality += 1,
-                CallableState::LowCoverage => cm.low_coverage += 1,
-                CallableState::ExcessiveCoverage => cm.excessive_coverage += 1,
-                CallableState::Callable => cm.callable += 1,
-            }
+            g.hist[0] += *length as u64;
+            g.n += *length as u64;
+            contig_callable.push(ContigCallableMetrics {
+                contig: name.clone(),
+                ref_n,
+                callable: 0,
+                no_coverage: *length as u64 - ref_n,
+                low_coverage: 0,
+                excessive_coverage: 0,
+                poor_mapping_quality: 0,
+            });
+            contig_stats.push(ContigCoverageStats {
+                contig: name.clone(),
+                start_pos: 1,
+                end_pos: *length as u64,
+                num_reads: 0,
+                cov_bases: 0,
+                coverage: 0.0,
+                mean_depth: 0.0,
+                mean_base_q: 0.0,
+                mean_map_q: 0.0,
+            });
         }
-
-        let length = accum.length as f64;
-        contig_stats.push(ContigCoverageStats {
-            contig: accum.name.clone(),
-            start_pos: 1,
-            end_pos: accum.length as u64,
-            num_reads: accum.read_count,
-            cov_bases: covered,
-            coverage: if accum.length == 0 { 0.0 } else { covered as f64 / length * 100.0 },
-            mean_depth: if accum.length == 0 { 0.0 } else { contig_sum_depth as f64 / length },
-            mean_base_q: if total_base_obs == 0 { 0.0 } else { base_q_total as f64 / total_base_obs as f64 },
-            mean_map_q: if total_base_obs == 0 { 0.0 } else { map_q_total as f64 / total_base_obs as f64 },
-        });
-        contig_callable.push(cm);
     }
 
-    let mean = if global_n == 0 { 0.0 } else { global_sum_depth as f64 / global_n as f64 };
-    let sd = if global_n < 2 {
+    let mean = if g.n == 0 { 0.0 } else { g.sum_depth as f64 / g.n as f64 };
+    let sd = if g.n < 2 {
         0.0
     } else {
-        let var = global_sum_sq as f64 / global_n as f64 - mean * mean;
+        let var = g.sum_sq as f64 / g.n as f64 - mean * mean;
         var.max(0.0).sqrt()
     };
     let callable_bases = contig_callable.iter().map(|c| c.callable).sum();
 
     Ok(CoverageResult {
-        genome_territory: global_n,
+        genome_territory: g.n,
         mean_coverage: mean,
-        median_coverage: median_from_hist(&global_hist, global_n),
+        median_coverage: median_from_hist(&g.hist, g.n),
         sd_coverage: sd,
-        pct_1x: pct_at_least(&global_hist, global_n, 1),
-        pct_5x: pct_at_least(&global_hist, global_n, 5),
-        pct_10x: pct_at_least(&global_hist, global_n, 10),
-        pct_15x: pct_at_least(&global_hist, global_n, 15),
-        pct_20x: pct_at_least(&global_hist, global_n, 20),
-        pct_25x: pct_at_least(&global_hist, global_n, 25),
-        pct_30x: pct_at_least(&global_hist, global_n, 30),
-        pct_40x: pct_at_least(&global_hist, global_n, 40),
-        pct_50x: pct_at_least(&global_hist, global_n, 50),
-        coverage_histogram: global_hist,
+        pct_1x: pct_at_least(&g.hist, g.n, 1),
+        pct_5x: pct_at_least(&g.hist, g.n, 5),
+        pct_10x: pct_at_least(&g.hist, g.n, 10),
+        pct_15x: pct_at_least(&g.hist, g.n, 15),
+        pct_20x: pct_at_least(&g.hist, g.n, 20),
+        pct_25x: pct_at_least(&g.hist, g.n, 25),
+        pct_30x: pct_at_least(&g.hist, g.n, 30),
+        pct_40x: pct_at_least(&g.hist, g.n, 40),
+        pct_50x: pct_at_least(&g.hist, g.n, 50),
+        coverage_histogram: g.hist,
         callable_bases,
         contig_callable,
         contig_coverage_stats: contig_stats,
