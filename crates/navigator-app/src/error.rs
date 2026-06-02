@@ -21,6 +21,9 @@ pub enum AppError {
     #[error("alignment {0} has not been genotyped against this panel")]
     NotGenotyped(i64),
 
+    #[error("not signed in — log in to a PDS account first")]
+    NotAuthenticated,
+
     #[error(transparent)]
     Sync(#[from] navigator_sync::SyncError),
 }

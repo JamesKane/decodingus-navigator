@@ -12,7 +12,7 @@ pub mod records;
 pub mod tokens;
 
 pub use error::SyncError;
-pub use oauth::{login, OAuthConfig};
+pub use oauth::{login, login_default, OAuthConfig};
 pub use publish::{dev_http_client, PdsClient, RecordRef};
 pub use records::{
     CoverageSummaryRecord, PrivateVariantsRecord, VariantCallEntry, COVERAGE_SUMMARY_COLLECTION,

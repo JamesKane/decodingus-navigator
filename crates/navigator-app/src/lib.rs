@@ -6,6 +6,7 @@
 
 use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 
 use chrono::Utc;
 use du_domain::ids::SampleGuid;
@@ -30,6 +31,10 @@ pub use navigator_sync::{
     CoverageSummaryRecord, PdsClient, PrivateVariantsRecord, RecordRef, VariantCallEntry,
     COVERAGE_SUMMARY_COLLECTION, PRIVATE_VARIANTS_COLLECTION,
 };
+use navigator_sync::{dev_http_client, login_default, OAuthConfig, TokenStore};
+
+/// Keychain service namespace for stored sessions (plan §7).
+const KEYCHAIN_SERVICE: &str = "decodingus-navigator";
 
 /// IBD comparison result between two genotyped alignments.
 #[derive(Debug, Clone, PartialEq)]
@@ -85,15 +90,41 @@ pub struct ProjectOverview {
     pub sample_count: i64,
 }
 
+/// AT Proto auth state: keychain-backed sessions + the in-memory active account. Shared
+/// (cheaply cloned with the `App`); the active DID is the only mutable bit.
+#[derive(Clone)]
+struct Auth {
+    tokens: TokenStore,
+    config: OAuthConfig,
+    http: reqwest::Client,
+    /// The signed-in account's DID, or `None`. `Arc<Mutex>` so clones of `App` share it.
+    active: Arc<Mutex<Option<String>>>,
+}
+
+impl Auth {
+    fn new() -> Self {
+        let tokens = TokenStore::new(KEYCHAIN_SERVICE);
+        // Reload whoever was signed in last launch; a keychain error just means "nobody".
+        let active = tokens.active().ok().flatten();
+        Auth {
+            tokens,
+            config: OAuthConfig::loopback("atproto"),
+            http: dev_http_client(),
+            active: Arc::new(Mutex::new(active)),
+        }
+    }
+}
+
 /// The application. Cheap to clone (the store wraps a connection pool).
 #[derive(Clone)]
 pub struct App {
     store: Store,
+    auth: Auth,
 }
 
 impl App {
     pub fn new(store: Store) -> Self {
-        App { store }
+        App { store, auth: Auth::new() }
     }
 
     /// Open/create the workspace database and build the app.
@@ -311,6 +342,55 @@ impl App {
         let record = PrivateVariantsRecord::new(contig, caller::DENOVO_VERSION, Utc::now().to_rfc3339(), variants);
         let value = serde_json::to_value(&record)?;
         Ok(client.create_record(PRIVATE_VARIANTS_COLLECTION, value, None).await?)
+    }
+
+    // ---- authentication ----------------------------------------------------
+
+    /// Run the public-client OAuth login for `handle` (handle or DID): browser authorize →
+    /// loopback callback → token exchange. On success the DPoP-bound session is persisted
+    /// to the OS keychain and becomes the active account. Returns the authenticated DID.
+    pub async fn login(&self, handle: &str) -> Result<String, AppError> {
+        let session = login_default(&self.auth.http, &self.auth.config, handle).await?;
+        let did = session.did.clone();
+        self.auth.tokens.save(&did, &session)?;
+        self.auth.tokens.set_active(&did)?;
+        *self.auth.active.lock().unwrap() = Some(did.clone());
+        Ok(did)
+    }
+
+    /// The signed-in account's DID, or `None`.
+    pub fn current_account(&self) -> Option<String> {
+        self.auth.active.lock().unwrap().clone()
+    }
+
+    /// Sign out: drop the active account and delete its stored session.
+    pub async fn logout(&self) -> Result<(), AppError> {
+        let did = self.auth.active.lock().unwrap().take();
+        if let Some(did) = did {
+            self.auth.tokens.delete(&did)?;
+        }
+        self.auth.tokens.clear_active()?;
+        Ok(())
+    }
+
+    /// Build a DPoP-bound PDS client for the active account, loading its session from the
+    /// keychain. Errors with [`AppError::NotAuthenticated`] when no one is signed in.
+    fn pds_client(&self) -> Result<PdsClient, AppError> {
+        let did = self.current_account().ok_or(AppError::NotAuthenticated)?;
+        let session = self.auth.tokens.load(&did)?.ok_or(AppError::NotAuthenticated)?;
+        Ok(PdsClient::from_session(self.auth.http.clone(), &session)?)
+    }
+
+    /// Publish the alignment's coverage summary to the signed-in account's PDS.
+    pub async fn publish_coverage(&self, alignment_id: i64) -> Result<RecordRef, AppError> {
+        let client = self.pds_client()?;
+        self.publish_coverage_summary(&client, alignment_id).await
+    }
+
+    /// Publish the alignment's de-novo calls for `contig` to the signed-in account's PDS.
+    pub async fn publish_variants(&self, alignment_id: i64, contig: &str) -> Result<RecordRef, AppError> {
+        let client = self.pds_client()?;
+        self.publish_private_variants(&client, alignment_id, contig).await
     }
 
     // ---- panels + IBD ------------------------------------------------------

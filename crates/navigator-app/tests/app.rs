@@ -276,6 +276,18 @@ async fn live_bearer_client(pds: &str) -> navigator_app::PdsClient {
 }
 
 #[tokio::test]
+async fn publish_without_login_is_not_authenticated() {
+    let app = app().await;
+    assert_eq!(app.current_account(), None);
+    // Both convenience publishers refuse before sign-in (no keychain access needed).
+    assert!(matches!(app.publish_coverage(1).await, Err(navigator_app::AppError::NotAuthenticated)));
+    assert!(matches!(
+        app.publish_variants(1, "chrM").await,
+        Err(navigator_app::AppError::NotAuthenticated)
+    ));
+}
+
+#[tokio::test]
 async fn publish_private_variants_requires_cached_calls() {
     let app = app().await;
     let aln = diploid_alignment(&app).await; // no de-novo run

@@ -24,7 +24,13 @@ pub struct Session {
     pub scope: String,
 }
 
+/// Keychain account name under which the active-account DID is remembered, so the app
+/// can reload the right [`Session`] on the next launch. Not itself an account DID, so it
+/// can't collide with one.
+const ACTIVE_MARKER: &str = "__active__";
+
 /// Stores [`Session`]s in the OS keychain, keyed by account (typically the DID).
+#[derive(Clone)]
 pub struct TokenStore {
     service: String,
 }
@@ -32,6 +38,29 @@ pub struct TokenStore {
 impl TokenStore {
     pub fn new(service: impl Into<String>) -> Self {
         TokenStore { service: service.into() }
+    }
+
+    /// Remember `did` as the active account (so the next launch reloads its session).
+    pub fn set_active(&self, did: &str) -> Result<(), SyncError> {
+        Entry::new(&self.service, ACTIVE_MARKER)?.set_password(did)?;
+        Ok(())
+    }
+
+    /// The active account's DID, or `None` if no one is signed in.
+    pub fn active(&self) -> Result<Option<String>, SyncError> {
+        match Entry::new(&self.service, ACTIVE_MARKER)?.get_password() {
+            Ok(did) => Ok(Some(did)),
+            Err(keyring::Error::NoEntry) => Ok(None),
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    /// Forget the active account (sign-out); leaves any stored session untouched.
+    pub fn clear_active(&self) -> Result<(), SyncError> {
+        match Entry::new(&self.service, ACTIVE_MARKER)?.delete_credential() {
+            Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
+            Err(e) => Err(e.into()),
+        }
     }
 
     pub fn save(&self, account: &str, session: &Session) -> Result<(), SyncError> {

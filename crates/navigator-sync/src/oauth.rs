@@ -216,6 +216,16 @@ fn open_browser(url: &str) {
     }
 }
 
+/// [`login`] with a default [`Resolver`] (PLC directory + HTTPS handle resolution). The
+/// convenience the app layer calls so it needn't depend on `du-atproto` directly.
+pub async fn login_default(
+    http: &reqwest::Client,
+    config: &OAuthConfig,
+    handle: &str,
+) -> Result<Session, SyncError> {
+    login(http, &Resolver::new(), config, handle).await
+}
+
 /// Run the full public-client OAuth login for `handle` (a handle or DID): resolve →
 /// discover → PAR → browser authorize → loopback callback → token exchange. Returns the
 /// authenticated [`Session`] (the caller persists it via `TokenStore`).

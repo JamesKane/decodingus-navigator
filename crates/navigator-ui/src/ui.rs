@@ -29,6 +29,7 @@ struct Forms {
     denovo_contig: String,
     ploidy: String,
     panel_import_name: String,
+    login_handle: String,
 }
 
 pub struct NavigatorApp {
@@ -54,6 +55,10 @@ pub struct NavigatorApp {
     ibd_other: Option<i64>,
     ibd_result: Option<IbdComparison>,
     running_ibd: bool,
+    /// Signed-in account DID, or `None`. Gates the "Publish" actions.
+    account: Option<String>,
+    logging_in: bool,
+    publishing: bool,
     forms: Forms,
     status: String,
 }
@@ -70,6 +75,7 @@ impl NavigatorApp {
         let _ = tx.send(Command::LoadOverview);
         let _ = tx.send(Command::LoadPanels);
         let _ = tx.send(Command::LoadAllAlignments);
+        let _ = tx.send(Command::AuthStatus);
         NavigatorApp {
             tx,
             rx,
@@ -93,6 +99,9 @@ impl NavigatorApp {
             ibd_other: None,
             ibd_result: None,
             running_ibd: false,
+            account: None,
+            logging_in: false,
+            publishing: false,
             forms: Forms { denovo_contig: "chrM".into(), ploidy: "2".into(), ..Forms::default() },
             status: "Loading…".into(),
         }
@@ -172,12 +181,26 @@ impl NavigatorApp {
                     self.ibd_result = Some(cmp);
                     self.running_ibd = false;
                 }
+                Event::Authenticated(account) => {
+                    self.status = match &account {
+                        Some(did) => format!("Signed in as {did}"),
+                        None => "Signed out".into(),
+                    };
+                    self.account = account;
+                    self.logging_in = false;
+                }
+                Event::Published { kind, uri } => {
+                    self.status = format!("Published {kind}: {uri}");
+                    self.publishing = false;
+                }
                 Event::Error(e) => {
                     self.status = format!("Error: {e}");
                     self.running = false;
                     self.running_denovo = false;
                     self.running_genotype = false;
                     self.running_ibd = false;
+                    self.logging_in = false;
+                    self.publishing = false;
                 }
             }
         }
@@ -248,6 +271,7 @@ impl NavigatorApp {
 impl eframe::App for NavigatorApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.drain_events();
+        self.account_panel(ctx);
         self.projects_panel(ctx);
         egui::TopBottomPanel::bottom("status").show(ctx, |ui| {
             ui.horizontal(|ui| {
@@ -280,6 +304,42 @@ impl eframe::App for NavigatorApp {
 }
 
 impl NavigatorApp {
+    fn account_panel(&mut self, ctx: &egui::Context) {
+        egui::TopBottomPanel::top("account").show(ctx, |ui| {
+            ui.horizontal(|ui| {
+                ui.strong("DUNavigator");
+                ui.separator();
+                match &self.account {
+                    Some(did) => {
+                        ui.label(format!("Signed in: {did}"));
+                        if ui.button("Sign out").clicked() {
+                            let _ = self.tx.send(Command::Logout);
+                        }
+                    }
+                    None => {
+                        ui.label("PDS:");
+                        ui.add(
+                            egui::TextEdit::singleline(&mut self.forms.login_handle)
+                                .hint_text("handle or did")
+                                .desired_width(200.0),
+                        );
+                        let ready = !self.forms.login_handle.trim().is_empty() && !self.logging_in;
+                        if ui.add_enabled(ready, egui::Button::new("Sign in")).clicked() {
+                            self.logging_in = true;
+                            self.status = "Opening browser to authorize…".into();
+                            let _ = self.tx.send(Command::Login {
+                                handle: self.forms.login_handle.trim().to_string(),
+                            });
+                        }
+                        if self.logging_in {
+                            ui.spinner();
+                        }
+                    }
+                }
+            });
+        });
+    }
+
     fn projects_panel(&mut self, ctx: &egui::Context) {
         egui::SidePanel::left("projects").min_width(220.0).show(ctx, |ui| {
             ui.heading("Projects");
@@ -548,6 +608,28 @@ impl NavigatorApp {
                 });
             }
         }
+
+        if self.coverage.is_some() {
+            self.publish_row(ui, "Publish summary to PDS", Command::PublishCoverage(alignment_id));
+        }
+    }
+
+    /// A "Publish to PDS" button + sign-in hint/spinner, shared by the result sections.
+    fn publish_row(&mut self, ui: &mut egui::Ui, label: &str, cmd: Command) {
+        ui.horizontal(|ui| {
+            let ready = self.account.is_some() && !self.publishing;
+            if ui.add_enabled(ready, egui::Button::new(label)).clicked() {
+                self.publishing = true;
+                self.status = "Publishing to PDS…".into();
+                let _ = self.tx.send(cmd);
+            }
+            if self.account.is_none() {
+                ui.label("(sign in to publish)");
+            }
+            if self.publishing {
+                ui.spinner();
+            }
+        });
     }
 
     fn genotyping_section(&mut self, ui: &mut egui::Ui, alignment_id: i64) {
@@ -725,6 +807,12 @@ impl NavigatorApp {
                     }
                 });
             }
+        }
+
+        let has_calls = self.denovo.as_ref().map(|c| !c.is_empty()).unwrap_or(false);
+        let contig = self.forms.denovo_contig.trim().to_string();
+        if has_calls && !contig.is_empty() {
+            self.publish_row(ui, "Publish variants to PDS", Command::PublishVariants { alignment_id, contig });
         }
     }
 }

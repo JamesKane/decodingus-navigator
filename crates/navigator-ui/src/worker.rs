@@ -48,6 +48,13 @@ pub enum Command {
     GenotypePanel { alignment_id: i64, panel_id: i64, ploidy: u8 },
     LoadPanelGenotypes { alignment_id: i64, panel_id: i64, ploidy: u8 },
     CompareIbd { a: i64, b: i64, panel_id: i64, ploidy: u8 },
+    /// Report who's signed in (no side effects) — sent on startup.
+    AuthStatus,
+    /// Sign in to a PDS via OAuth (opens a browser); `handle` is a handle or DID.
+    Login { handle: String },
+    Logout,
+    PublishCoverage(i64),
+    PublishVariants { alignment_id: i64, contig: String },
 }
 
 /// A panel with its site count, for the panel list.
@@ -76,6 +83,10 @@ pub enum Event {
     AllAlignments(Vec<Alignment>),
     PanelGenotypes { alignment_id: i64, panel_id: i64, ploidy: u8, genotypes: Vec<PanelGenotype> },
     Ibd(IbdComparison),
+    /// Current signed-in account (DID), or `None` when signed out.
+    Authenticated(Option<String>),
+    /// A record was published; `kind` is a human label, `uri` the `at://` URI.
+    Published { kind: String, uri: String },
     Error(String),
 }
 
@@ -176,6 +187,25 @@ pub async fn handle(app: &App, cmd: Command) -> Event {
         Command::CompareIbd { a, b, panel_id, ploidy } => {
             match app.compare_ibd(a, b, panel_id, ploidy, IbdDetectorConfig::default()).await {
                 Ok(cmp) => Event::Ibd(cmp),
+                Err(e) => Event::Error(e.to_string()),
+            }
+        }
+        Command::AuthStatus => Event::Authenticated(app.current_account()),
+        Command::Login { handle } => match app.login(&handle).await {
+            Ok(did) => Event::Authenticated(Some(did)),
+            Err(e) => Event::Error(e.to_string()),
+        },
+        Command::Logout => match app.logout().await {
+            Ok(()) => Event::Authenticated(None),
+            Err(e) => Event::Error(e.to_string()),
+        },
+        Command::PublishCoverage(alignment_id) => match app.publish_coverage(alignment_id).await {
+            Ok(r) => Event::Published { kind: "coverage summary".into(), uri: r.uri },
+            Err(e) => Event::Error(e.to_string()),
+        },
+        Command::PublishVariants { alignment_id, contig } => {
+            match app.publish_variants(alignment_id, &contig).await {
+                Ok(r) => Event::Published { kind: format!("{contig} variants"), uri: r.uri },
                 Err(e) => Event::Error(e.to_string()),
             }
         }
