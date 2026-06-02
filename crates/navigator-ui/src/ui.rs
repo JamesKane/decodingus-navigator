@@ -12,7 +12,7 @@ use navigator_domain::chipprofile::{self, ChipProfile};
 use navigator_domain::mtdna::MtdnaSequence;
 use navigator_domain::strprofile::{self, StrProfile};
 use navigator_domain::testtype;
-use navigator_domain::variants::VariantSet;
+use navigator_domain::variants::{VariantCall, VariantSet};
 use navigator_domain::workspace::{Alignment, Biosample, NewAlignment, NewProject, NewSequenceRun, SequenceRun};
 use tokio::sync::mpsc::UnboundedSender;
 
@@ -88,6 +88,18 @@ pub struct NavigatorApp {
 
 /// Sentinel option in the chip-provider dropdown that means "let the parser guess".
 const AUTO_DETECT: &str = "(auto-detect)";
+
+/// A readable "change" string for a variant call, covering the indel forms the mtDNA
+/// derivation stores (one allele empty).
+fn variant_change(c: &VariantCall) -> String {
+    if c.alternate.is_empty() {
+        format!("{}del", c.reference) // deletion
+    } else if c.reference.is_empty() {
+        format!("ins{}", c.alternate) // insertion
+    } else {
+        format!("{}>{}", c.reference, c.alternate) // substitution
+    }
+}
 
 fn opt(s: &str) -> Option<String> {
     let t = s.trim();
@@ -650,7 +662,19 @@ impl NavigatorApp {
         }
         for p in &self.str_profiles {
             let provider = p.provider.as_deref().unwrap_or("—");
-            ui.label(format!("{} — {} markers  ({provider})", p.panel_name, p.markers.len()));
+            let header = format!("{} — {} markers  ({provider})", p.panel_name, p.markers.len());
+            egui::CollapsingHeader::new(header).id_salt(("str", p.id)).show(ui, |ui| {
+                egui::Grid::new(("str_markers", p.id)).striped(true).num_columns(2).show(ui, |ui| {
+                    ui.strong("Marker");
+                    ui.strong("Value");
+                    ui.end_row();
+                    for m in &p.markers {
+                        ui.label(&m.marker);
+                        ui.label(&m.value);
+                        ui.end_row();
+                    }
+                });
+            });
         }
 
         ui.add_space(6.0);
@@ -681,8 +705,27 @@ impl NavigatorApp {
         if self.variant_sets.is_empty() {
             ui.label("No variants imported yet.");
         }
+        const MAX_ROWS: usize = 500;
         for s in &self.variant_sets {
-            ui.label(format!("{} — {} SNP(s)", s.source_label, s.calls.len()));
+            let header = format!("{} — {} call(s)", s.source_label, s.calls.len());
+            egui::CollapsingHeader::new(header).id_salt(("vset", s.id)).show(ui, |ui| {
+                egui::Grid::new(("vcalls", s.id)).striped(true).num_columns(4).show(ui, |ui| {
+                    for h in ["Position", "Change", "rsID", "Genotype"] {
+                        ui.strong(h);
+                    }
+                    ui.end_row();
+                    for c in s.calls.iter().take(MAX_ROWS) {
+                        ui.label(format!("{} {}", c.contig, c.position));
+                        ui.label(variant_change(c));
+                        ui.label(c.rs_id.as_deref().unwrap_or("—"));
+                        ui.label(c.genotype.as_deref().unwrap_or("—"));
+                        ui.end_row();
+                    }
+                });
+                if s.calls.len() > MAX_ROWS {
+                    ui.label(format!("…and {} more", s.calls.len() - MAX_ROWS));
+                }
+            });
         }
 
         ui.add_space(6.0);
@@ -715,10 +758,26 @@ impl NavigatorApp {
                 0.0
             };
             let ver = p.chip_version.as_deref().map(|v| format!(" {v}")).unwrap_or_default();
-            ui.label(format!(
-                "{}{ver} — {} markers, {:.1}% call rate",
-                p.provider, s.total_markers_possible, call_rate
-            ));
+            let header = format!("{}{ver} — {} markers, {:.1}% call rate", p.provider, s.total_markers_possible, call_rate);
+            egui::CollapsingHeader::new(header).id_salt(("chip", p.id)).show(ui, |ui| {
+                egui::Grid::new(("chip_qc", p.id)).striped(true).num_columns(2).show(ui, |ui| {
+                    let row = |ui: &mut egui::Ui, k: &str, v: String| {
+                        ui.label(k);
+                        ui.label(v);
+                        ui.end_row();
+                    };
+                    row(ui, "Markers possible", s.total_markers_possible.to_string());
+                    row(ui, "Markers called", s.total_markers_called.to_string());
+                    row(ui, "No-call rate", format!("{:.2}%", s.no_call_rate * 100.0));
+                    row(ui, "Het rate (autosomal)", s.het_rate.map(|h| format!("{:.2}%", h * 100.0)).unwrap_or_else(|| "—".into()));
+                    row(ui, "Autosomal called", s.autosomal_markers_called.to_string());
+                    row(ui, "Y called", s.y_markers_called.to_string());
+                    row(ui, "MT called", s.mt_markers_called.to_string());
+                    if let Some(file) = &p.source_file_name {
+                        row(ui, "Source file", file.clone());
+                    }
+                });
+            });
         }
 
         ui.add_space(6.0);
