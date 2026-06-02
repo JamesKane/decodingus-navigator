@@ -8,6 +8,7 @@ use std::sync::mpsc::Receiver;
 use eframe::egui;
 use navigator_app::{Coverage, DenovoCall, IbdComparison, PanelGenotype, ProjectOverview};
 use navigator_domain::du_domain::ids::SampleGuid;
+use navigator_domain::testtype;
 use navigator_domain::workspace::{Alignment, Biosample, NewAlignment, NewProject, NewSequenceRun, SequenceRun};
 use tokio::sync::mpsc::UnboundedSender;
 
@@ -110,7 +111,12 @@ impl NavigatorApp {
             online: true,
             logging_in: false,
             publishing: false,
-            forms: Forms { denovo_contig: "chrM".into(), ploidy: "2".into(), ..Forms::default() },
+            forms: Forms {
+                denovo_contig: "chrM".into(),
+                ploidy: "2".into(),
+                run_test_type: "WGS".into(),
+                ..Forms::default()
+            },
             status: "Loading…".into(),
         }
     }
@@ -529,13 +535,18 @@ impl NavigatorApp {
         let guid = self.selected_sample.unwrap();
         ui.add_space(12.0);
         ui.separator();
-        ui.heading("Sequence runs");
+        ui.heading("Tests");
         if self.runs.is_empty() {
-            ui.label("No runs yet.");
+            ui.label("No tests yet.");
         }
         let mut pick = None;
         for r in &self.runs {
-            let label = format!("#{}  {} · {}", r.id, r.platform_name, r.test_type);
+            let platform = if r.platform_name.is_empty() || r.platform_name == "UNKNOWN" {
+                String::new()
+            } else {
+                format!("  ({})", r.platform_name)
+            };
+            let label = format!("#{}  {}{}", r.id, testtype::display_name(&r.test_type), platform);
             if ui.selectable_label(self.selected_run == Some(r.id), label).clicked() {
                 pick = Some(r.id);
             }
@@ -545,16 +556,29 @@ impl NavigatorApp {
         }
 
         ui.add_space(6.0);
-        ui.collapsing("Add run", |ui| {
-            ui.add(egui::TextEdit::singleline(&mut self.forms.run_platform).hint_text("platform (e.g. ILLUMINA)"));
-            ui.add(egui::TextEdit::singleline(&mut self.forms.run_test_type).hint_text("test type (e.g. WGS)"));
-            let ready = !self.forms.run_platform.trim().is_empty() && !self.forms.run_test_type.trim().is_empty();
-            if ui.add_enabled(ready, egui::Button::new("Add run")).clicked() {
+        ui.collapsing("Add test", |ui| {
+            ui.horizontal(|ui| {
+                ui.label("Test type:");
+                let current = testtype::display_name(&self.forms.run_test_type).to_string();
+                egui::ComboBox::from_id_salt("test_type").selected_text(current).show_ui(ui, |ui| {
+                    for t in testtype::CATALOG {
+                        ui.selectable_value(
+                            &mut self.forms.run_test_type,
+                            t.code.to_string(),
+                            format!("{}  ·  {}", t.display_name, t.target.label()),
+                        );
+                    }
+                });
+            });
+            ui.add(egui::TextEdit::singleline(&mut self.forms.run_platform).hint_text("platform (optional, e.g. ILLUMINA)"));
+            let ready = testtype::by_code(&self.forms.run_test_type).is_some();
+            if ui.add_enabled(ready, egui::Button::new("Add test")).clicked() {
+                let platform = opt(&self.forms.run_platform).unwrap_or_else(|| "UNKNOWN".into());
                 let _ = self.tx.send(Command::AddRun(NewSequenceRun {
                     biosample_guid: guid,
-                    platform_name: self.forms.run_platform.trim().to_string(),
+                    platform_name: platform,
                     instrument_model: None,
-                    test_type: self.forms.run_test_type.trim().to_string(),
+                    test_type: self.forms.run_test_type.clone(),
                     library_layout: None,
                     total_reads: None,
                     pf_reads_aligned: None,
@@ -562,7 +586,7 @@ impl NavigatorApp {
                     mean_insert_size: None,
                 }));
                 self.forms.run_platform.clear();
-                self.forms.run_test_type.clear();
+                // keep the selected test type for adding several of the same kind
             }
         });
     }

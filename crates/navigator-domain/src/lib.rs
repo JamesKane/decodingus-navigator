@@ -9,4 +9,5 @@
 
 pub use du_domain;
 
+pub mod testtype;
 pub mod workspace;
