@@ -1,0 +1,238 @@
+//! File-type detection for the unified "Add data" flow (Scala's `FileTypeDetector`).
+//! Binary/structured formats are detected by extension; ambiguous text tables (STR vs
+//! chip) are scored by content fingerprint. Pure: callers pass the name + a head sample.
+
+/// What a dropped/picked file looks like.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DetectedData {
+    /// BAM/CRAM aligned reads (attaches to a sequencing test, not directly to a subject).
+    Alignment,
+    /// VCF variant calls.
+    Variants,
+    /// Y-STR profile table.
+    StrProfile,
+    /// Genotyping-array (chip) export.
+    ChipData,
+    /// mtDNA FASTA sequence.
+    MtdnaFasta,
+    /// Unrecognized.
+    Unknown,
+}
+
+impl DetectedData {
+    pub fn description(self) -> &'static str {
+        match self {
+            DetectedData::Alignment => "Alignment file",
+            DetectedData::Variants => "VCF variants",
+            DetectedData::StrProfile => "Y-STR profile",
+            DetectedData::ChipData => "Chip / array data",
+            DetectedData::MtdnaFasta => "mtDNA FASTA",
+            DetectedData::Unknown => "Unknown format",
+        }
+    }
+}
+
+/// Detect a file's type from its `file_name` and a `head` sample of its text content
+/// (ignored for binary formats). Mirrors the Scala detector: extension first, then a
+/// STR-vs-chip content score with the same thresholds.
+pub fn detect(file_name: &str, head: &str) -> DetectedData {
+    let name = file_name.to_ascii_lowercase();
+    let ends = |s: &str| name.ends_with(s);
+
+    if ends(".bam") || ends(".cram") {
+        return DetectedData::Alignment;
+    }
+    if ends(".vcf") || ends(".vcf.gz") {
+        return DetectedData::Variants;
+    }
+    if ends(".fasta") || ends(".fa") || ends(".fna") || ends(".fas") || ends(".fasta.gz") || ends(".fa.gz") || ends(".fna.gz") {
+        return DetectedData::MtdnaFasta;
+    }
+
+    // Text content: score STR vs chip.
+    let lines: Vec<&str> = head.lines().take(50).collect();
+    let data_lines: Vec<&str> = lines
+        .iter()
+        .filter(|l| !l.trim_start().starts_with('#') && !l.trim().is_empty())
+        .copied()
+        .collect();
+    if data_lines.is_empty() {
+        return DetectedData::Unknown;
+    }
+
+    let str_score = str_score(&data_lines, &name);
+    let chip_score = chip_score(&lines, &data_lines, &name);
+    if str_score > chip_score && str_score >= 3 {
+        DetectedData::StrProfile
+    } else if chip_score > str_score && chip_score >= 3 {
+        DetectedData::ChipData
+    } else if str_score >= 2 {
+        DetectedData::StrProfile
+    } else if chip_score >= 2 {
+        DetectedData::ChipData
+    } else {
+        DetectedData::Unknown
+    }
+}
+
+fn split_line(line: &str) -> Vec<&str> {
+    let sep = if line.contains('\t') { '\t' } else { ',' };
+    line.split(sep).map(|s| s.trim().trim_matches('"')).collect()
+}
+
+/// Count occurrences of `prefix` immediately followed by `min_digits`–`max_digits` digits.
+fn count_token(haystack: &str, prefix: &str, min_digits: usize, max_digits: usize) -> usize {
+    let bytes = haystack.as_bytes();
+    let p = prefix.as_bytes();
+    let mut count = 0;
+    let mut i = 0;
+    while i + p.len() <= bytes.len() {
+        if bytes[i..].starts_with(p) {
+            let mut d = 0;
+            while i + p.len() + d < bytes.len() && bytes[i + p.len() + d].is_ascii_digit() {
+                d += 1;
+            }
+            if d >= min_digits && d <= max_digits {
+                count += 1;
+            }
+            i += p.len() + d.max(1);
+        } else {
+            i += 1;
+        }
+    }
+    count
+}
+
+fn str_score(data_lines: &[&str], file_name: &str) -> i32 {
+    let mut score = 0;
+    if file_name.contains("str") || file_name.contains("ystr") {
+        score += 2;
+    }
+    if file_name.contains("ftdna") || file_name.contains("yseq") {
+        score += 1;
+    }
+
+    let content = data_lines.join("\n").to_ascii_uppercase();
+    let dys = count_token(&content, "DYS", 2, 3);
+    score += match dys {
+        d if d >= 10 => 4,
+        d if d >= 5 => 3,
+        d if d >= 2 => 2,
+        d if d >= 1 => 1,
+        _ => 0,
+    };
+    if ["DYF", "GATA", "YCAII", "CDY"].iter().any(|m| content.contains(m)) {
+        score += 2;
+    }
+
+    // Two-column `marker,value` with a small-integer (or "a-b") value is STR-shaped.
+    if let Some(first) = data_lines.first() {
+        let cols = split_line(first);
+        if cols.len() == 2 {
+            let v = cols[1];
+            let small_int = !v.is_empty() && v.len() <= 2 && v.bytes().all(|b| b.is_ascii_digit());
+            let range = v.split_once('-').is_some_and(|(a, b)| {
+                !a.is_empty() && !b.is_empty() && a.bytes().chain(b.bytes()).all(|x| x.is_ascii_digit())
+            });
+            if small_int || range {
+                score += 1;
+            }
+        }
+    }
+    score
+}
+
+fn chip_score(lines: &[&str], data_lines: &[&str], file_name: &str) -> i32 {
+    let mut score = 0;
+    for (token, pts) in [("23andme", 3), ("ancestry", 3), ("myheritage", 3), ("livingdna", 3)] {
+        if file_name.contains(token) {
+            score += pts;
+        }
+    }
+    if file_name.contains("ftdna") && file_name.contains("raw") {
+        score += 2;
+    }
+    if file_name.contains("snp") || file_name.contains("chip") || file_name.contains("array") {
+        score += 1;
+    }
+
+    let comments: String = lines
+        .iter()
+        .filter(|l| l.trim_start().starts_with('#') || l.trim_start().starts_with("\"#"))
+        .map(|l| l.to_ascii_lowercase())
+        .collect::<Vec<_>>()
+        .join("\n");
+    for token in ["23andme", "ancestrydna", "ancestry dna", "myheritage", "living dna", "livingdna"] {
+        if comments.contains(token) {
+            score += 3;
+            break;
+        }
+    }
+
+    let content_lower = data_lines.iter().take(20).copied().collect::<Vec<_>>().join("\n").to_ascii_lowercase();
+    let rsid = count_token(&content_lower, "rs", 4, 12);
+    score += match rsid {
+        d if d >= 10 => 4,
+        d if d >= 5 => 3,
+        d if d >= 2 => 2,
+        d if d >= 1 => 1,
+        _ => 0,
+    };
+
+    let header = data_lines.first().map(|l| l.to_ascii_uppercase()).unwrap_or_default();
+    let indicators = ["CHROMOSOME", "CHROM", "CHR", "POSITION", "POS", "GENOTYPE", "ALLELE1", "ALLELE2", "RSID"];
+    let header_hits = indicators.iter().filter(|h| header.contains(*h)).count();
+    score += match header_hits {
+        h if h >= 3 => 3,
+        2 => 2,
+        1 => 1,
+        _ => 0,
+    };
+
+    // A 4–6 column row whose last field is a genotype-ish token.
+    if let Some(first) = data_lines.first() {
+        let cols = split_line(first);
+        if (4..=6).contains(&cols.len()) {
+            let last = cols.last().unwrap().to_ascii_uppercase();
+            let is_gt = (last.len() == 2 && last.bytes().all(|b| matches!(b, b'A' | b'C' | b'G' | b'T')))
+                || last == "--"
+                || last == "NC";
+            if is_gt {
+                score += 2;
+            }
+        }
+    }
+    score
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn extensions_win_first() {
+        assert_eq!(detect("HG002.bam", ""), DetectedData::Alignment);
+        assert_eq!(detect("x.cram", ""), DetectedData::Alignment);
+        assert_eq!(detect("calls.vcf", ""), DetectedData::Variants);
+        assert_eq!(detect("seq.fasta", ""), DetectedData::MtdnaFasta);
+        assert_eq!(detect("seq.fa", ""), DetectedData::MtdnaFasta);
+    }
+
+    #[test]
+    fn detects_23andme_chip_by_content() {
+        let head = "# This data file generated by 23andMe\nrsid\tchromosome\tposition\tgenotype\n\
+                    rs4477212\t1\t82154\tAA\nrs3094315\t1\t752566\tAG\n";
+        assert_eq!(detect("genome_data.txt", head), DetectedData::ChipData);
+    }
+
+    #[test]
+    fn detects_str_profile_by_content() {
+        let head = "Marker,Value\nDYS393,13\nDYS390,24\nDYS19,14\nDYS391,11\nDYS385,11-14\nDYS426,12\n";
+        assert_eq!(detect("markers.csv", head), DetectedData::StrProfile);
+    }
+
+    #[test]
+    fn junk_is_unknown() {
+        assert_eq!(detect("notes.txt", "hello world\nthis is not genetic data\n"), DetectedData::Unknown);
+    }
+}

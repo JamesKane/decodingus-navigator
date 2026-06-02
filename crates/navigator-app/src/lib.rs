@@ -48,6 +48,8 @@ use navigator_domain::workspace::{
     SequenceRun,
 };
 use navigator_domain::chipprofile::{self, ChipProfile, NewChipProfile};
+use navigator_domain::filetype;
+pub use navigator_domain::filetype::DetectedData;
 use navigator_domain::mtdna::{self, MtdnaSequence, NewMtdnaSequence};
 use navigator_domain::strprofile::{self, NewStrProfile, StrProfile};
 use navigator_domain::variants::{self, NewVariantSet, VariantSet};
@@ -66,6 +68,17 @@ pub use error::AppError;
 /// overwrite each other in the cache.
 fn denovo_kind(contig: &str) -> String {
     format!("denovo_snps:{contig}")
+}
+
+/// Read the first 64 KiB of a file as lossy UTF-8 — enough to fingerprint a text file's
+/// type without slurping a multi-MB chip export.
+fn read_head(path: &Path) -> Result<String, AppError> {
+    use std::io::Read;
+    let mut f = std::fs::File::open(path)?;
+    let mut buf = vec![0u8; 64 * 1024];
+    let n = f.read(&mut buf)?;
+    buf.truncate(n);
+    Ok(String::from_utf8_lossy(&buf).into_owned())
 }
 
 /// Artifact kind for panel genotypes, keyed by panel + ploidy.
@@ -573,6 +586,48 @@ impl App {
     /// All mtDNA sequences for a subject.
     pub async fn list_mtdna_sequences(&self, biosample_guid: SampleGuid) -> Result<Vec<MtdnaSequence>, AppError> {
         Ok(mtdna_store::list_for_biosample(self.store.pool(), biosample_guid).await?)
+    }
+
+    // ---- unified import ----------------------------------------------------
+
+    /// Detect a file's type and route it to the right subject importer (STR / variants /
+    /// chip / mtDNA), using sensible defaults. Returns the detected type. Alignment files
+    /// are rejected here — they attach to a sequencing test, not directly to a subject.
+    pub async fn add_data(&self, biosample_guid: SampleGuid, path: &Path) -> Result<DetectedData, AppError> {
+        let name = path.file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+        let lower = name.to_ascii_lowercase();
+        // Binary/structured formats are detected by extension; only text needs a sniff.
+        let by_ext = lower.ends_with(".bam")
+            || lower.ends_with(".cram")
+            || lower.ends_with(".vcf")
+            || lower.ends_with(".vcf.gz")
+            || [".fasta", ".fa", ".fna", ".fas", ".fasta.gz", ".fa.gz", ".fna.gz"].iter().any(|e| lower.ends_with(e));
+        let head = if by_ext { String::new() } else { read_head(path)? };
+        let detected = filetype::detect(&name, &head);
+
+        match detected {
+            DetectedData::Variants => {
+                self.import_variants_from_file(biosample_guid, path).await?;
+            }
+            DetectedData::StrProfile => {
+                self.import_str_profile_from_csv(biosample_guid, "CUSTOM", None, Some("IMPORTED".into()), path).await?;
+            }
+            DetectedData::ChipData => {
+                self.import_chip_profile_from_csv(biosample_guid, None, None, path).await?;
+            }
+            DetectedData::MtdnaFasta => {
+                self.import_mtdna_from_fasta(biosample_guid, path).await?;
+            }
+            DetectedData::Alignment => {
+                return Err(AppError::Import(
+                    "alignment files attach to a sequencing test — add it under that test".into(),
+                ));
+            }
+            DetectedData::Unknown => {
+                return Err(AppError::Import(format!("could not recognize the data in {name}")));
+            }
+        }
+        Ok(detected)
     }
 
     pub async fn panel_site_count(&self, panel_id: i64) -> Result<i64, AppError> {

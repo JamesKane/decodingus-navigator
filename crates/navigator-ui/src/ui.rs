@@ -238,6 +238,16 @@ impl NavigatorApp {
                     }
                     self.status = "mtDNA sequence imported".into();
                 }
+                Event::DataImported { biosample_guid, label } => {
+                    self.status = format!("Imported {label}");
+                    if self.selected_sample == Some(biosample_guid) {
+                        // Reload every data section — detection picked one of them.
+                        let _ = self.tx.send(Command::LoadStrProfiles(biosample_guid));
+                        let _ = self.tx.send(Command::LoadVariantSets(biosample_guid));
+                        let _ = self.tx.send(Command::LoadChipProfiles(biosample_guid));
+                        let _ = self.tx.send(Command::LoadMtdna(biosample_guid));
+                    }
+                }
                 Event::Alignments { sequence_run_id, alignments } => {
                     if self.selected_run == Some(sequence_run_id) {
                         self.alignments = alignments;
@@ -565,7 +575,18 @@ impl NavigatorApp {
             .unwrap_or_else(|| "subject".into());
         ui.add_space(12.0);
         ui.separator();
-        ui.heading(format!("Subject — {donor}"));
+        ui.horizontal(|ui| {
+            ui.heading(format!("Subject — {donor}"));
+            if ui.button("➕ Add data…").clicked() {
+                if let Some(path) = rfd::FileDialog::new()
+                    .add_filter("data files", &["vcf", "csv", "tsv", "txt", "fa", "fasta", "fna", "fas"])
+                    .pick_file()
+                {
+                    let _ = self.tx.send(Command::AddData { biosample_guid: guid, path });
+                }
+            }
+        });
+        ui.label("Auto-detects STR / SNP variants / chip array / mtDNA from the file.");
     }
 
     /// Y-STR profiles for the selected subject + an import form (CSV/TSV marker table).

@@ -121,6 +121,39 @@ async fn import_mtdna_fasta_round_trips() {
     let _ = std::fs::remove_file(&bad);
 }
 
+#[tokio::test]
+async fn add_data_detects_and_routes() {
+    use navigator_app::DetectedData;
+    let app = app().await;
+    let subject = app.add_biosample(None, "HG002", None, None).await.unwrap();
+    let dir = std::env::temp_dir();
+
+    // An STR table -> StrProfile, stored under the subject's STR profiles.
+    let str_path = dir.join(format!("data-str-{}.csv", subject.guid.0));
+    std::fs::write(&str_path, "Marker,Value\nDYS393,13\nDYS390,24\nDYS19,14\nDYS391,11\nDYS385,11-14\n").unwrap();
+    assert_eq!(app.add_data(subject.guid, &str_path).await.unwrap(), DetectedData::StrProfile);
+    assert_eq!(app.list_str_profiles(subject.guid).await.unwrap().len(), 1);
+
+    // A 23andMe-style export -> ChipData.
+    let chip_path = dir.join(format!("data-genome-{}.txt", subject.guid.0));
+    std::fs::write(
+        &chip_path,
+        "# 23andMe\nrsid\tchromosome\tposition\tgenotype\nrs4477212\t1\t82154\tAA\nrs3094315\t1\t752566\tAG\n",
+    )
+    .unwrap();
+    assert_eq!(app.add_data(subject.guid, &chip_path).await.unwrap(), DetectedData::ChipData);
+    assert_eq!(app.list_chip_profiles(subject.guid).await.unwrap().len(), 1);
+
+    // A BAM is rejected (it belongs to a sequencing test).
+    let bam = dir.join(format!("data-{}.bam", subject.guid.0));
+    std::fs::write(&bam, b"\x1f\x8b").unwrap();
+    assert!(matches!(app.add_data(subject.guid, &bam).await, Err(AppError::Import(_))));
+
+    for p in [str_path, chip_path, bam] {
+        let _ = std::fs::remove_file(p);
+    }
+}
+
 /// Create a sample → run → alignment chain and return the alignment id.
 async fn alignment_id(app: &App) -> i64 {
     let b = app.add_biosample(None, "HG002", None, None).await.unwrap();

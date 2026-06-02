@@ -57,6 +57,8 @@ pub enum Command {
     ImportChipProfile { biosample_guid: SampleGuid, provider: Option<String>, path: PathBuf },
     LoadMtdna(SampleGuid),
     ImportMtdna { biosample_guid: SampleGuid, path: PathBuf },
+    /// Unified import: detect the file's type and route it to the right importer.
+    AddData { biosample_guid: SampleGuid, path: PathBuf },
     LoadAlignments(i64),
     AddAlignment(NewAlignment),
     LoadCoverage(i64),
@@ -107,6 +109,9 @@ pub enum Event {
     ChipProfilesChanged(SampleGuid),
     MtdnaSequences { biosample_guid: SampleGuid, sequences: Vec<MtdnaSequence> },
     MtdnaChanged(SampleGuid),
+    /// A unified import succeeded; `label` describes the detected type. The UI should
+    /// reload the subject's data sections.
+    DataImported { biosample_guid: SampleGuid, label: String },
     Alignments { sequence_run_id: i64, alignments: Vec<Alignment> },
     AlignmentsChanged(i64),
     Coverage { alignment_id: i64, result: Option<Coverage> },
@@ -204,6 +209,10 @@ pub async fn handle(app: &App, cmd: Command) -> Event {
                 Err(e) => Event::Error(e.to_string()),
             }
         }
+        Command::AddData { biosample_guid, path } => match app.add_data(biosample_guid, &path).await {
+            Ok(detected) => Event::DataImported { biosample_guid, label: detected.description().to_string() },
+            Err(e) => Event::Error(e.to_string()),
+        },
         Command::LoadAlignments(sequence_run_id) => match app.list_alignments(sequence_run_id).await {
             Ok(alignments) => Event::Alignments { sequence_run_id, alignments },
             Err(e) => Event::Error(e.to_string()),
