@@ -122,6 +122,11 @@ Reusable `du-atproto` builders: `Pkce`, `dpop_proof`, `par_form_public`,
 
 ## 6. Full browser login loop over TLS (verified setup)
 
+> **decodingus ships a one-command bring-up** of this whole stack (Postgres + PDS
+> + Caddy + CA export + test account, then du-web): `make oauth-dev` (or
+> `make oauth-up` for just the stack), runtime-agnostic via `rust/scripts/oauth-dev.sh`
+> — Navigator can copy/adapt it. The manual steps below are what it automates.
+
 Discovery + PAR work over plain `http://<ip>:3000` **if** you sign the canonical
 `htu` (§5). The redirect → consent → `code` → token loop additionally needs the
 auth server reachable over **HTTPS at its canonical host** (`https://pds.test`) —
