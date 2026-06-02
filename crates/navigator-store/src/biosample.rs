@@ -71,6 +71,15 @@ pub async fn list_for_project(pool: &SqlitePool, project_id: i64) -> Result<Vec<
     rows.into_iter().map(Row::into_domain).collect()
 }
 
+/// Every biosample, regardless of project (biosamples are first-class — the project link
+/// is optional). Ordered by donor identifier for a stable subjects list.
+pub async fn list_all(pool: &SqlitePool) -> Result<Vec<Biosample>, StoreError> {
+    let rows: Vec<Row> = sqlx::query_as(&format!("SELECT {COLS} FROM biosample ORDER BY donor_identifier, guid"))
+        .fetch_all(pool)
+        .await?;
+    rows.into_iter().map(Row::into_domain).collect()
+}
+
 pub async fn count_for_project(pool: &SqlitePool, project_id: i64) -> Result<i64, StoreError> {
     let n: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM biosample WHERE project_id = ?")
         .bind(project_id)

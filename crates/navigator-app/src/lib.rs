@@ -554,6 +554,11 @@ impl App {
         Ok(biosample::list_for_project(self.store.pool(), project_id).await?)
     }
 
+    /// Every biosample (subject), regardless of project association.
+    pub async fn list_all_biosamples(&self) -> Result<Vec<Biosample>, AppError> {
+        Ok(biosample::list_all(self.store.pool()).await?)
+    }
+
     /// Sequence runs for a biosample.
     pub async fn list_sequence_runs(&self, biosample_guid: SampleGuid) -> Result<Vec<SequenceRun>, AppError> {
         Ok(sequence_run::list_for_biosample(self.store.pool(), biosample_guid).await?)

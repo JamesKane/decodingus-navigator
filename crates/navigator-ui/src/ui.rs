@@ -38,6 +38,8 @@ pub struct NavigatorApp {
     overview: Vec<ProjectOverview>,
     selected_project: Option<i64>,
     samples: Vec<Biosample>,
+    /// Every biosample (the project-independent subjects list).
+    all_biosamples: Vec<Biosample>,
     selected_sample: Option<SampleGuid>,
     runs: Vec<SequenceRun>,
     selected_run: Option<i64>,
@@ -75,6 +77,7 @@ impl NavigatorApp {
         let ctx = cc.egui_ctx.clone();
         let (tx, rx) = worker::spawn(db_path, move || ctx.request_repaint());
         let _ = tx.send(Command::LoadOverview);
+        let _ = tx.send(Command::LoadAllBiosamples);
         let _ = tx.send(Command::LoadPanels);
         let _ = tx.send(Command::LoadAllAlignments);
         let _ = tx.send(Command::AuthStatus);
@@ -85,6 +88,7 @@ impl NavigatorApp {
             overview: Vec::new(),
             selected_project: None,
             samples: Vec::new(),
+            all_biosamples: Vec::new(),
             selected_sample: None,
             runs: Vec::new(),
             selected_run: None,
@@ -127,11 +131,13 @@ impl NavigatorApp {
                         self.samples = samples;
                     }
                 }
-                Event::SamplesChanged(project_id) => {
-                    if self.selected_project == Some(project_id) {
-                        let _ = self.tx.send(Command::LoadSamples(project_id));
+                Event::AllBiosamples(v) => self.all_biosamples = v,
+                Event::BiosamplesChanged => {
+                    let _ = self.tx.send(Command::LoadAllBiosamples);
+                    if let Some(pid) = self.selected_project {
+                        let _ = self.tx.send(Command::LoadSamples(pid));
                     }
-                    let _ = self.tx.send(Command::LoadOverview); // sample counts changed
+                    let _ = self.tx.send(Command::LoadOverview); // project sample counts changed
                 }
                 Event::Runs { biosample_guid, runs } => {
                     if self.selected_sample == Some(biosample_guid) {
@@ -287,14 +293,18 @@ impl eframe::App for NavigatorApp {
             });
         });
         egui::CentralPanel::default().show(ctx, |ui| {
-            if self.selected_project.is_none() {
+            if self.selected_project.is_none() && self.selected_sample.is_none() {
                 ui.heading("DUNavigator");
-                ui.label("Select or create a project.");
+                ui.label("Select a subject, or create/select a project.");
                 return;
             }
             egui::ScrollArea::vertical().show(ui, |ui| {
-                self.samples_section(ui);
+                // A project (when open) shows its own samples as a filtered subview.
+                if self.selected_project.is_some() {
+                    self.samples_section(ui);
+                }
                 if self.selected_sample.is_some() {
+                    self.subject_header(ui);
                     self.runs_section(ui);
                 }
                 if self.selected_run.is_some() {
@@ -387,8 +397,74 @@ impl NavigatorApp {
 
             ui.add_space(12.0);
             ui.separator();
+            self.subjects_section(ui);
+
+            ui.add_space(12.0);
+            ui.separator();
             self.panels_section(ui);
         });
+    }
+
+    /// All biosamples, independent of any project (the project link is optional). Selecting
+    /// one drives the runs → alignments → analysis flow in the central panel; adding one
+    /// tags it to the open project if there is one, else leaves it project-less.
+    fn subjects_section(&mut self, ui: &mut egui::Ui) {
+        ui.label("Subjects");
+        if self.all_biosamples.is_empty() {
+            ui.label("No subjects yet.");
+        }
+        let mut pick = None;
+        for s in &self.all_biosamples {
+            let tag = if s.project_id.is_some() { "" } else { "  ·" }; // mark project-less
+            let label = format!("{}{}", s.donor_identifier, tag);
+            if ui.selectable_label(self.selected_sample == Some(s.guid), label).clicked() {
+                pick = Some(s.guid);
+            }
+        }
+        if let Some(guid) = pick {
+            self.select_sample(guid);
+        }
+
+        ui.collapsing("Add subject", |ui| {
+            ui.add(egui::TextEdit::singleline(&mut self.forms.sample_donor).hint_text("donor identifier"));
+            ui.add(egui::TextEdit::singleline(&mut self.forms.sample_accession).hint_text("accession (optional)"));
+            ui.add(egui::TextEdit::singleline(&mut self.forms.sample_sex).hint_text("sex (optional)"));
+            if let Some(pid) = self.selected_project {
+                let name = self.overview.iter().find(|o| o.project.id == pid).map(|o| o.project.name.as_str());
+                ui.label(format!("→ project: {}", name.unwrap_or("(open)")));
+            } else {
+                ui.label("→ no project");
+            }
+            if ui
+                .add_enabled(!self.forms.sample_donor.trim().is_empty(), egui::Button::new("Add subject"))
+                .clicked()
+            {
+                let _ = self.tx.send(Command::AddBiosample(NewBiosample {
+                    project_id: self.selected_project,
+                    donor_identifier: self.forms.sample_donor.trim().to_string(),
+                    sample_accession: opt(&self.forms.sample_accession),
+                    sex: opt(&self.forms.sample_sex),
+                }));
+                self.forms.sample_donor.clear();
+                self.forms.sample_accession.clear();
+                self.forms.sample_sex.clear();
+            }
+        });
+    }
+
+    /// Heading naming the selected subject above its runs.
+    fn subject_header(&mut self, ui: &mut egui::Ui) {
+        let Some(guid) = self.selected_sample else { return };
+        let donor = self
+            .all_biosamples
+            .iter()
+            .chain(self.samples.iter())
+            .find(|s| s.guid == guid)
+            .map(|s| s.donor_identifier.clone())
+            .unwrap_or_else(|| "subject".into());
+        ui.add_space(12.0);
+        ui.separator();
+        ui.heading(format!("Subject — {donor}"));
     }
 
     fn panels_section(&mut self, ui: &mut egui::Ui) {
@@ -446,27 +522,7 @@ impl NavigatorApp {
         if let Some(guid) = pick {
             self.select_sample(guid);
         }
-
-        ui.add_space(6.0);
-        ui.collapsing("Add sample", |ui| {
-            ui.add(egui::TextEdit::singleline(&mut self.forms.sample_donor).hint_text("donor identifier"));
-            ui.add(egui::TextEdit::singleline(&mut self.forms.sample_accession).hint_text("accession (optional)"));
-            ui.add(egui::TextEdit::singleline(&mut self.forms.sample_sex).hint_text("sex (optional)"));
-            if ui
-                .add_enabled(!self.forms.sample_donor.trim().is_empty(), egui::Button::new("Add sample"))
-                .clicked()
-            {
-                let _ = self.tx.send(Command::AddBiosample(NewBiosample {
-                    project_id: pid,
-                    donor_identifier: self.forms.sample_donor.trim().to_string(),
-                    sample_accession: opt(&self.forms.sample_accession),
-                    sex: opt(&self.forms.sample_sex),
-                }));
-                self.forms.sample_donor.clear();
-                self.forms.sample_accession.clear();
-                self.forms.sample_sex.clear();
-            }
-        });
+        ui.label("Add subjects from the sidebar (they tag to this open project).");
     }
 
     fn runs_section(&mut self, ui: &mut egui::Ui) {

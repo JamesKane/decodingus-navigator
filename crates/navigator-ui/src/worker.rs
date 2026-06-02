@@ -18,10 +18,11 @@ use navigator_domain::workspace::{
 };
 use tokio::sync::mpsc::{unbounded_channel, UnboundedSender};
 
-/// Fields for adding a biosample (the app assigns its `SampleGuid`).
+/// Fields for adding a biosample (the app assigns its `SampleGuid`). `project_id` is
+/// optional — biosamples are first-class and need not belong to a project.
 #[derive(Debug, Clone)]
 pub struct NewBiosample {
-    pub project_id: i64,
+    pub project_id: Option<i64>,
     pub donor_identifier: String,
     pub sample_accession: Option<String>,
     pub sex: Option<String>,
@@ -33,6 +34,8 @@ pub enum Command {
     LoadOverview,
     CreateProject(NewProject),
     LoadSamples(i64),
+    /// Load every biosample (subjects list), regardless of project.
+    LoadAllBiosamples,
     AddBiosample(NewBiosample),
     LoadRuns(SampleGuid),
     AddRun(NewSequenceRun),
@@ -72,8 +75,10 @@ pub enum Event {
     Overview(Vec<ProjectOverview>),
     ProjectCreated(Project),
     Samples { project_id: i64, samples: Vec<Biosample> },
-    /// A sample was added/changed under this project; the UI should reload.
-    SamplesChanged(i64),
+    /// All biosamples (the project-independent subjects list).
+    AllBiosamples(Vec<Biosample>),
+    /// A biosample was added/changed; reload the subjects list (and any open project view).
+    BiosamplesChanged,
     Runs { biosample_guid: SampleGuid, runs: Vec<SequenceRun> },
     RunsChanged(SampleGuid),
     Alignments { sequence_run_id: i64, alignments: Vec<Alignment> },
@@ -109,12 +114,16 @@ pub async fn handle(app: &App, cmd: Command) -> Event {
             Ok(samples) => Event::Samples { project_id, samples },
             Err(e) => Event::Error(e.to_string()),
         },
+        Command::LoadAllBiosamples => match app.list_all_biosamples().await {
+            Ok(samples) => Event::AllBiosamples(samples),
+            Err(e) => Event::Error(e.to_string()),
+        },
         Command::AddBiosample(b) => {
             match app
-                .add_biosample(Some(b.project_id), b.donor_identifier, b.sample_accession, b.sex)
+                .add_biosample(b.project_id, b.donor_identifier, b.sample_accession, b.sex)
                 .await
             {
-                Ok(_) => Event::SamplesChanged(b.project_id),
+                Ok(_) => Event::BiosamplesChanged,
                 Err(e) => Event::Error(e.to_string()),
             }
         }
@@ -406,22 +415,44 @@ mod tests {
             other => panic!("got {other:?}"),
         };
 
-        // add a sample -> SamplesChanged(project)
+        // add a sample (tagged to the project) -> BiosamplesChanged
         match handle(&app, Command::AddBiosample(NewBiosample {
-            project_id: pid,
+            project_id: Some(pid),
             donor_identifier: "HG002".into(),
             sample_accession: None,
             sex: Some("male".into()),
         }))
         .await
         {
-            Event::SamplesChanged(p) => assert_eq!(p, pid),
+            Event::BiosamplesChanged => {}
             other => panic!("got {other:?}"),
         }
+        // it shows up both under the project and in the all-subjects list
         let guid = match handle(&app, Command::LoadSamples(pid)).await {
             Event::Samples { samples, .. } => samples[0].guid,
             other => panic!("got {other:?}"),
         };
+        match handle(&app, Command::LoadAllBiosamples).await {
+            Event::AllBiosamples(all) => assert_eq!(all.len(), 1),
+            other => panic!("got {other:?}"),
+        }
+
+        // a project-less subject is also allowed
+        match handle(&app, Command::AddBiosample(NewBiosample {
+            project_id: None,
+            donor_identifier: "NA12878".into(),
+            sample_accession: None,
+            sex: None,
+        }))
+        .await
+        {
+            Event::BiosamplesChanged => {}
+            other => panic!("got {other:?}"),
+        }
+        match handle(&app, Command::LoadAllBiosamples).await {
+            Event::AllBiosamples(all) => assert_eq!(all.len(), 2),
+            other => panic!("got {other:?}"),
+        }
 
         // add a run -> RunsChanged(sample)
         match handle(&app, Command::AddRun(NewSequenceRun {
