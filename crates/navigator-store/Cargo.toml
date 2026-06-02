@@ -7,5 +7,12 @@ license.workspace = true
 
 # Local persistence: SQLite via sqlx (replaces H2/Slick). sqlx is added in phase 4.
 [dependencies]
+chrono = { version = "0.4.44", features = ["serde"] }
+du-domain = { workspace = true }
 navigator-domain = { workspace = true }
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.150"
+sqlx = { version = "0.8.6", default-features = false, features = ["sqlite", "runtime-tokio", "migrate", "macros", "chrono", "uuid"] }
 thiserror = { workspace = true }
+tokio = { version = "1.52.3", features = ["rt-multi-thread", "macros"] }
+uuid = { version = "1.20.0", features = ["v4", "serde"] }

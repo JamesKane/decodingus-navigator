@@ -8,3 +8,5 @@
 //! to one shared type. Types land in roadmap phase 4; this is the phase-1 skeleton.
 
 pub use du_domain;
+
+pub mod workspace;

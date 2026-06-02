@@ -12,4 +12,10 @@ navigator-domain = { workspace = true }
 navigator-store = { workspace = true }
 navigator-analysis = { workspace = true }
 navigator-sync = { workspace = true }
+du-domain = { workspace = true }
 thiserror = { workspace = true }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+chrono = { version = "0.4", features = ["serde"] }
+uuid = { version = "1", features = ["v4"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }

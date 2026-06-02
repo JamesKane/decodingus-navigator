@@ -1,0 +1,97 @@
+//! Analysis-artifact queries — a versioned result cache keyed by
+//! `(alignment_id, kind, algorithm_version)`. `upsert` replaces a stale entry so a
+//! changed algorithm version supersedes the old payload (plan §6 cache versioning).
+
+use chrono::{DateTime, Utc};
+use navigator_domain::workspace::AnalysisArtifact;
+use sqlx::SqlitePool;
+
+use crate::StoreError;
+
+#[derive(sqlx::FromRow)]
+struct Row {
+    id: i64,
+    alignment_id: i64,
+    kind: String,
+    algorithm_version: String,
+    created_at: String,
+    payload: String,
+}
+
+impl Row {
+    fn into_domain(self) -> Result<AnalysisArtifact, StoreError> {
+        let created_at = DateTime::parse_from_rfc3339(&self.created_at)
+            .map_err(|e| StoreError::Decode(format!("artifact created_at: {e}")))?
+            .with_timezone(&Utc);
+        Ok(AnalysisArtifact {
+            id: self.id,
+            alignment_id: self.alignment_id,
+            kind: self.kind,
+            algorithm_version: self.algorithm_version,
+            created_at,
+            payload: self.payload,
+        })
+    }
+}
+
+const COLS: &str = "id, alignment_id, kind, algorithm_version, created_at, payload";
+
+/// Insert or replace the artifact for `(alignment_id, kind, algorithm_version)`.
+pub async fn upsert(
+    pool: &SqlitePool,
+    alignment_id: i64,
+    kind: &str,
+    algorithm_version: &str,
+    created_at: DateTime<Utc>,
+    payload: &str,
+) -> Result<AnalysisArtifact, StoreError> {
+    let created = created_at.to_rfc3339();
+    let id: i64 = sqlx::query_scalar(
+        "INSERT INTO analysis_artifact (alignment_id, kind, algorithm_version, created_at, payload) \
+         VALUES (?, ?, ?, ?, ?) \
+         ON CONFLICT (alignment_id, kind, algorithm_version) \
+         DO UPDATE SET created_at = excluded.created_at, payload = excluded.payload \
+         RETURNING id",
+    )
+    .bind(alignment_id)
+    .bind(kind)
+    .bind(algorithm_version)
+    .bind(&created)
+    .bind(payload)
+    .fetch_one(pool)
+    .await?;
+    Ok(AnalysisArtifact {
+        id,
+        alignment_id,
+        kind: kind.to_string(),
+        algorithm_version: algorithm_version.to_string(),
+        created_at,
+        payload: payload.to_string(),
+    })
+}
+
+pub async fn get(
+    pool: &SqlitePool,
+    alignment_id: i64,
+    kind: &str,
+    algorithm_version: &str,
+) -> Result<Option<AnalysisArtifact>, StoreError> {
+    let row: Option<Row> = sqlx::query_as(&format!(
+        "SELECT {COLS} FROM analysis_artifact \
+         WHERE alignment_id = ? AND kind = ? AND algorithm_version = ?"
+    ))
+    .bind(alignment_id)
+    .bind(kind)
+    .bind(algorithm_version)
+    .fetch_optional(pool)
+    .await?;
+    row.map(Row::into_domain).transpose()
+}
+
+pub async fn list_for_alignment(pool: &SqlitePool, alignment_id: i64) -> Result<Vec<AnalysisArtifact>, StoreError> {
+    let rows: Vec<Row> = sqlx::query_as(&format!("SELECT {COLS} FROM analysis_artifact WHERE alignment_id = ? ORDER BY id"))
+        .bind(alignment_id)
+        .fetch_all(pool)
+        .await?;
+    rows.into_iter().map(Row::into_domain).collect()
+}

@@ -10,3 +10,6 @@ license.workspace = true
 [dependencies]
 du-domain = { workspace = true }
 thiserror = { workspace = true }
+serde = { version = "1", features = ["derive"] }
+chrono = { version = "0.4", features = ["serde"] }
+uuid = { version = "1", features = ["v4", "serde"] }
