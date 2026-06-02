@@ -155,6 +155,39 @@ async fn derive_mtdna_variants_vs_rcrs() {
 }
 
 #[tokio::test]
+async fn derive_mtdna_variants_detects_a_deletion() {
+    let app = app().await;
+    let subject = app.add_biosample(None, "HG002", None, None).await.unwrap();
+    let dir = std::env::temp_dir();
+
+    // rCRS: A-runs around a 9-base landmark at positions 301-309; the sample lacks it. The
+    // landmark is A-free so the flanking A-runs can't absorb any of it — the 9-base
+    // deletion is unambiguous.
+    let landmark = "CCCCCCCCC";
+    let reference = format!("{}{}{}", "A".repeat(300), landmark, "A".repeat(16_569 - 309));
+    let sample = "A".repeat(16_560);
+    assert_eq!(reference.len(), 16_569);
+    assert_eq!(sample.len(), 16_560);
+
+    let ref_path = dir.join(format!("rcrs-del-{}.fasta", subject.guid.0));
+    let samp_path = dir.join(format!("mt-del-{}.fasta", subject.guid.0));
+    std::fs::write(&ref_path, format!(">rCRS\n{reference}\n")).unwrap();
+    std::fs::write(&samp_path, format!(">sample\n{sample}\n")).unwrap();
+
+    let mt = app.import_mtdna_from_fasta(subject.guid, &samp_path).await.unwrap();
+    let set = app.derive_mtdna_variants(mt.id, &ref_path).await.unwrap();
+    assert_eq!(set.calls.len(), 1);
+    let del = &set.calls[0];
+    assert_eq!(del.position, 301);
+    assert_eq!(del.reference, landmark);
+    assert_eq!(del.alternate, ""); // deletion: empty alt
+
+    for p in [ref_path, samp_path] {
+        let _ = std::fs::remove_file(p);
+    }
+}
+
+#[tokio::test]
 async fn add_data_detects_and_routes() {
     use navigator_app::DetectedData;
     let app = app().await;
