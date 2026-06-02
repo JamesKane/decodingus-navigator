@@ -5,6 +5,13 @@ pub enum AppError {
     #[error(transparent)]
     Store(#[from] navigator_store::StoreError),
 
+    #[error(transparent)]
+    Analysis(#[from] navigator_analysis::AnalysisError),
+
     #[error("serialization error: {0}")]
     Serde(#[from] serde_json::Error),
+
+    /// A blocking analysis task failed to join (panicked or was cancelled).
+    #[error("analysis task failed: {0}")]
+    Join(String),
 }

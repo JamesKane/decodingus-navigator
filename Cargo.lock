@@ -1317,6 +1317,7 @@ dependencies = [
  "du-bio",
  "navigator-domain",
  "noodles",
+ "serde",
  "thiserror",
 ]
 

@@ -1,5 +1,9 @@
 //! App command/query layer tests against an in-memory store.
 
+use std::path::PathBuf;
+
+use navigator_analysis::caller::HaploidCallerParams;
+use navigator_analysis::coverage::CallableLociParams;
 use navigator_app::{App, AppError};
 use navigator_domain::workspace::{NewAlignment, NewProject, NewSequenceRun};
 use navigator_store::Store;
@@ -7,6 +11,39 @@ use serde::{Deserialize, Serialize};
 
 async fn app() -> App {
     App::new(Store::open_in_memory().await.unwrap())
+}
+
+/// Reuse the analysis crate's committed fixtures (workspace-relative).
+fn fixtures() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../navigator-analysis/tests/fixtures")
+}
+
+/// Create a sample → run → alignment chain and return the alignment id.
+async fn alignment_id(app: &App) -> i64 {
+    let b = app.add_biosample(None, "HG002", None, None).await.unwrap();
+    let run = app
+        .record_sequence_run(NewSequenceRun {
+            biosample_guid: b.guid,
+            platform_name: "ILLUMINA".into(),
+            instrument_model: None,
+            test_type: "WGS".into(),
+            library_layout: None,
+            total_reads: None,
+            pf_reads_aligned: None,
+            mean_read_length: None,
+            mean_insert_size: None,
+        })
+        .await
+        .unwrap();
+    app.record_alignment(NewAlignment {
+        sequence_run_id: run.id,
+        reference_build: "chrM-fixture".into(),
+        aligner: "synthetic".into(),
+        variant_caller: None,
+    })
+    .await
+    .unwrap()
+    .id
 }
 
 #[tokio::test]
@@ -102,4 +139,53 @@ async fn typed_analysis_artifact_round_trips_and_versions() {
     // a different version is absent until written
     let v2: Option<CoverageSummary> = app.load_analysis(aln.id, "coverage", "walker-v2").await.unwrap();
     assert!(v2.is_none());
+}
+
+#[tokio::test]
+async fn run_coverage_persists_and_reads_back_from_cache() {
+    let app = app().await;
+    let aln = alignment_id(&app).await;
+    let dir = fixtures();
+
+    assert!(app.cached_coverage(aln).await.unwrap().is_none()); // cold
+
+    let result = app
+        .run_coverage(aln, dir.join("coverage.bam"), dir.join("ref.fa"), None, CallableLociParams::default())
+        .await
+        .unwrap();
+    assert_eq!(result.genome_territory, 50); // chrM fixture
+    assert_eq!(result.callable_bases, 10);
+
+    // now cached for this version (integer fields exact; floats survive round-trip to
+    // ~1 ULP, so compare those approximately rather than with fragile float ==)
+    let cached = app.cached_coverage(aln).await.unwrap().unwrap();
+    assert_eq!(cached.genome_territory, result.genome_territory);
+    assert_eq!(cached.callable_bases, result.callable_bases);
+    assert_eq!(cached.contig_callable, result.contig_callable);
+    assert_eq!(cached.coverage_histogram, result.coverage_histogram);
+    assert!((cached.mean_coverage - result.mean_coverage).abs() < 1e-9);
+
+    // re-running is idempotent (upsert in place; store-layer test covers row count)
+    let rerun = app
+        .run_coverage(aln, dir.join("coverage.bam"), dir.join("ref.fa"), None, CallableLociParams::default())
+        .await
+        .unwrap();
+    assert_eq!(rerun, result);
+}
+
+#[tokio::test]
+async fn run_denovo_caller_persists_snp_calls() {
+    let app = app().await;
+    let aln = alignment_id(&app).await;
+    let dir = fixtures();
+
+    let calls = app
+        .run_denovo_caller(aln, dir.join("coverage.bam"), dir.join("ref.fa"), "chrM".into(), HaploidCallerParams::default())
+        .await
+        .unwrap();
+    // fixture: ref ACGT.. with all-A reads -> SNPs where ref != A at depth>=4
+    assert_eq!(calls.iter().map(|c| c.position).collect::<Vec<_>>(), vec![2, 3, 4, 6, 7, 8, 10]);
+
+    let cached = app.cached_denovo(aln).await.unwrap().unwrap();
+    assert_eq!(cached, calls);
 }

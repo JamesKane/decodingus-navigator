@@ -12,3 +12,4 @@ navigator-domain = { workspace = true }
 du-bio = { workspace = true }
 thiserror = { workspace = true }
 noodles = { version = "0.93.0", features = ["bam", "sam", "fasta", "core", "csi"] }
+serde = { version = "1", features = ["derive"] }

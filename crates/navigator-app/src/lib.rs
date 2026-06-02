@@ -4,8 +4,13 @@
 //! embedded (identity assignment, existence checks, result (de)serialization). The UI
 //! holds only view-state and dispatch — no DB calls or domain decisions in widgets.
 
+use std::collections::HashSet;
+use std::path::PathBuf;
+
 use chrono::Utc;
 use du_domain::ids::SampleGuid;
+use navigator_analysis::caller::{self, HaploidCallerParams, VariantCall};
+use navigator_analysis::coverage::{self, CallableLociParams, CoverageResult};
 use navigator_domain::workspace::{
     Alignment, AnalysisArtifact, Biosample, NewAlignment, NewProject, NewSequenceRun, Project,
     SequenceRun,
@@ -108,6 +113,57 @@ impl App {
             Some(a) => Ok(Some(serde_json::from_str(&a.payload)?)),
             None => Ok(None),
         }
+    }
+
+    // ---- analysis (compute + persist) --------------------------------------
+
+    /// Run the coverage + callable walker on an alignment's BAM and persist the result
+    /// as a versioned `coverage` artifact. The blocking noodles I/O runs on a blocking
+    /// thread so the async runtime is not stalled.
+    pub async fn run_coverage(
+        &self,
+        alignment_id: i64,
+        bam: PathBuf,
+        reference: PathBuf,
+        contig_allowlist: Option<HashSet<String>>,
+        params: CallableLociParams,
+    ) -> Result<CoverageResult, AppError> {
+        let result = tokio::task::spawn_blocking(move || {
+            coverage::collect_coverage_callable(&bam, &reference, &params, contig_allowlist.as_ref())
+        })
+        .await
+        .map_err(|e| AppError::Join(e.to_string()))??;
+        self.save_analysis(alignment_id, "coverage", coverage::COVERAGE_VERSION, &result).await?;
+        Ok(result)
+    }
+
+    /// Cached `coverage` result for the current algorithm version, if present.
+    pub async fn cached_coverage(&self, alignment_id: i64) -> Result<Option<CoverageResult>, AppError> {
+        self.load_analysis(alignment_id, "coverage", coverage::COVERAGE_VERSION).await
+    }
+
+    /// Run de-novo haploid calling on a contig and persist the SNP calls as a versioned
+    /// `denovo_snps` artifact.
+    pub async fn run_denovo_caller(
+        &self,
+        alignment_id: i64,
+        bam: PathBuf,
+        reference: PathBuf,
+        contig: String,
+        params: HaploidCallerParams,
+    ) -> Result<Vec<VariantCall>, AppError> {
+        let calls = tokio::task::spawn_blocking(move || {
+            caller::call_denovo(&bam, &reference, &contig, &params)
+        })
+        .await
+        .map_err(|e| AppError::Join(e.to_string()))??;
+        self.save_analysis(alignment_id, "denovo_snps", caller::DENOVO_VERSION, &calls).await?;
+        Ok(calls)
+    }
+
+    /// Cached de-novo calls for the current caller version, if present.
+    pub async fn cached_denovo(&self, alignment_id: i64) -> Result<Option<Vec<VariantCall>>, AppError> {
+        self.load_analysis(alignment_id, "denovo_snps", caller::DENOVO_VERSION).await
     }
 
     // ---- queries -----------------------------------------------------------

@@ -20,8 +20,14 @@ use noodles::bam;
 use noodles::core::Region;
 use noodles::fasta;
 
+use serde::{Deserialize, Serialize};
+
 use crate::contig;
 use crate::error::AnalysisError;
+
+/// Algorithm version for the coverage artifact cache key; bump on any change that
+/// alters output (plan §6 cache versioning).
+pub const COVERAGE_VERSION: &str = "coverage-1";
 
 /// Callable-loci parameters. Defaults match GATK `CallableLoci` (and the Scala walker).
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -49,7 +55,7 @@ impl Default for CallableLociParams {
 
 /// Per-position callable classification (GATK `CallableLoci` states). Hierarchical:
 /// the first failing condition wins.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum CallableState {
     RefN,
     NoCoverage,
@@ -60,7 +66,7 @@ pub enum CallableState {
 }
 
 /// Per-contig callable-state base counts.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ContigCallableMetrics {
     pub contig: String,
     pub ref_n: u64,
@@ -72,7 +78,7 @@ pub struct ContigCallableMetrics {
 }
 
 /// Per-contig samtools-`coverage`-style stats (averaged per base observation; see module docs).
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ContigCoverageStats {
     pub contig: String,
     pub start_pos: u64, // always 1
@@ -87,7 +93,7 @@ pub struct ContigCoverageStats {
 
 /// Combined coverage + callable result (replaces the Scala `CoverageCallableResult`'s
 /// global-metrics + callable-summary + samtools-stats fields).
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CoverageResult {
     pub genome_territory: u64,
     pub mean_coverage: f64,

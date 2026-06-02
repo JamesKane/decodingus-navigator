@@ -31,8 +31,14 @@ use noodles::core::Region;
 use noodles::fasta;
 use noodles::sam::alignment::record::cigar::op::Kind;
 
+use serde::{Deserialize, Serialize};
+
 use crate::error::AnalysisError;
 use crate::realign;
+
+/// Algorithm version for de-novo caller artifacts; bump on output-affecting changes
+/// (e.g. the local-realignment addition bumped this to -2).
+pub const DENOVO_VERSION: &str = "haploid-denovo-2";
 
 /// Parameters for haploid calling. Defaults are v1 starting points (gated by §4c).
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -78,7 +84,7 @@ pub struct Site {
 }
 
 /// The allele called at a force-call site (haploid → one allele).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum CalledAllele {
     Reference,
     Alternate,
@@ -87,7 +93,7 @@ pub enum CalledAllele {
 }
 
 /// Genotype at a known site.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct GenotypeCall {
     pub name: String,
     pub contig: String,
@@ -102,7 +108,7 @@ pub struct GenotypeCall {
 }
 
 /// A de-novo SNP call (consensus base differs from reference).
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct VariantCall {
     pub contig: String,
     pub position: i64, // 1-based
