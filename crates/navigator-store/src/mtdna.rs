@@ -57,6 +57,15 @@ pub async fn create(pool: &SqlitePool, new: &NewMtdnaSequence) -> Result<MtdnaSe
     })
 }
 
+/// Fetch one mtDNA sequence by id.
+pub async fn get(pool: &SqlitePool, id: i64) -> Result<Option<MtdnaSequence>, StoreError> {
+    let row: Option<Row> = sqlx::query_as(&format!("SELECT {COLS} FROM mtdna_sequence WHERE id = ?"))
+        .bind(id)
+        .fetch_optional(pool)
+        .await?;
+    row.map(Row::into_domain).transpose()
+}
+
 /// All mtDNA sequences for a biosample.
 pub async fn list_for_biosample(pool: &SqlitePool, guid: SampleGuid) -> Result<Vec<MtdnaSequence>, StoreError> {
     let rows: Vec<Row> = sqlx::query_as(&format!("SELECT {COLS} FROM mtdna_sequence WHERE biosample_guid = ? ORDER BY id"))

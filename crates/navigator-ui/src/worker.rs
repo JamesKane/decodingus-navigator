@@ -57,6 +57,8 @@ pub enum Command {
     ImportChipProfile { biosample_guid: SampleGuid, provider: Option<String>, path: PathBuf },
     LoadMtdna(SampleGuid),
     ImportMtdna { biosample_guid: SampleGuid, path: PathBuf },
+    /// Derive mtDNA variants for a stored sequence vs an rCRS reference FASTA.
+    DeriveMtdnaVariants { mtdna_id: i64, rcrs_path: PathBuf },
     /// Unified import: detect the file's type and route it to the right importer.
     AddData { biosample_guid: SampleGuid, path: PathBuf },
     LoadAlignments(i64),
@@ -206,6 +208,12 @@ pub async fn handle(app: &App, cmd: Command) -> Event {
         Command::ImportMtdna { biosample_guid, path } => {
             match app.import_mtdna_from_fasta(biosample_guid, &path).await {
                 Ok(_) => Event::MtdnaChanged(biosample_guid),
+                Err(e) => Event::Error(e.to_string()),
+            }
+        }
+        Command::DeriveMtdnaVariants { mtdna_id, rcrs_path } => {
+            match app.derive_mtdna_variants(mtdna_id, &rcrs_path).await {
+                Ok(set) => Event::VariantSetsChanged(set.biosample_guid),
                 Err(e) => Event::Error(e.to_string()),
             }
         }

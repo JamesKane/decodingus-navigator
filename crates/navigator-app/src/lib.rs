@@ -588,6 +588,33 @@ impl App {
         Ok(mtdna_store::list_for_biosample(self.store.pool(), biosample_guid).await?)
     }
 
+    /// Derive mtDNA variants for a stored sequence by comparing it to an rCRS reference
+    /// FASTA, and save them as a variant set (contig `rCRS`) so they appear alongside the
+    /// subject's other variants. The reference is validated as an mtDNA FASTA.
+    pub async fn derive_mtdna_variants(&self, mtdna_id: i64, rcrs_path: &Path) -> Result<VariantSet, AppError> {
+        let seq = mtdna_store::get(self.store.pool(), mtdna_id)
+            .await?
+            .ok_or_else(|| AppError::Store(StoreError::NotFound(format!("mtDNA sequence {mtdna_id}"))))?;
+        let rcrs_text = std::fs::read_to_string(rcrs_path)?;
+        let rcrs = mtdna::parse_fasta(&rcrs_text).map_err(|e| AppError::Import(format!("rCRS reference: {e}")))?;
+
+        let derived = navigator_analysis::mtvariants::derive(&rcrs.sequence, &seq.sequence);
+        let calls = derived
+            .iter()
+            .map(|v| variants::VariantCall {
+                contig: "rCRS".to_string(),
+                position: v.position,
+                reference: v.reference.to_string(),
+                alternate: v.alternate.to_string(),
+                rs_id: None,
+                genotype: None,
+            })
+            .collect();
+        let label = format!("mtDNA vs rCRS ({} variants)", derived.len());
+        let new = NewVariantSet { biosample_guid: seq.biosample_guid, source_label: label, calls };
+        Ok(variant_set::create(self.store.pool(), &new).await?)
+    }
+
     // ---- unified import ----------------------------------------------------
 
     /// Detect a file's type and route it to the right subject importer (STR / variants /

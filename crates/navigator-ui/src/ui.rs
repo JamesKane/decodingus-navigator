@@ -59,6 +59,8 @@ pub struct NavigatorApp {
     chip_profiles: Vec<ChipProfile>,
     /// mtDNA sequences for the selected subject.
     mtdna_sequences: Vec<MtdnaSequence>,
+    /// Chosen rCRS reference FASTA, reused across mtDNA variant derivations.
+    rcrs_path: Option<PathBuf>,
     selected_run: Option<i64>,
     alignments: Vec<Alignment>,
     selected_alignment: Option<i64>,
@@ -127,6 +129,7 @@ impl NavigatorApp {
             variant_sets: Vec::new(),
             chip_profiles: Vec::new(),
             mtdna_sequences: Vec::new(),
+            rcrs_path: None,
             selected_run: None,
             alignments: Vec::new(),
             selected_alignment: None,
@@ -741,7 +744,8 @@ impl NavigatorApp {
         });
     }
 
-    /// mtDNA FASTA sequences for the selected subject + an import form.
+    /// mtDNA FASTA sequences for the selected subject + an import form, and a
+    /// derive-variants-vs-rCRS action per sequence.
     fn mtdna_section(&mut self, ui: &mut egui::Ui, guid: SampleGuid) {
         ui.add_space(12.0);
         ui.separator();
@@ -749,9 +753,38 @@ impl NavigatorApp {
         if self.mtdna_sequences.is_empty() {
             ui.label("No mtDNA sequences yet.");
         }
+
+        // rCRS reference picker (reused for every derivation this session).
+        ui.horizontal(|ui| {
+            ui.label("rCRS reference:");
+            let label = self
+                .rcrs_path
+                .as_ref()
+                .and_then(|p| p.file_name())
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_else(|| "not set".into());
+            ui.label(label);
+            if ui.button("Choose rCRS…").clicked() {
+                if let Some(p) = rfd::FileDialog::new().add_filter("FASTA", &["fa", "fasta", "fna", "fas"]).pick_file() {
+                    self.rcrs_path = Some(p);
+                }
+            }
+        });
+
+        let rcrs = self.rcrs_path.clone();
         for m in &self.mtdna_sequences {
             let name = m.source_file_name.as_deref().or(m.defline.as_deref()).unwrap_or("mtDNA");
-            ui.label(format!("{name} — {} bp, {} N", m.length(), m.n_count));
+            ui.horizontal(|ui| {
+                ui.label(format!("{name} — {} bp, {} N", m.length(), m.n_count));
+                if ui
+                    .add_enabled(rcrs.is_some(), egui::Button::new("Derive variants vs rCRS"))
+                    .clicked()
+                {
+                    if let Some(path) = rcrs.clone() {
+                        let _ = self.tx.send(Command::DeriveMtdnaVariants { mtdna_id: m.id, rcrs_path: path });
+                    }
+                }
+            });
         }
 
         ui.add_space(6.0);

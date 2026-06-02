@@ -122,6 +122,39 @@ async fn import_mtdna_fasta_round_trips() {
 }
 
 #[tokio::test]
+async fn derive_mtdna_variants_vs_rcrs() {
+    let app = app().await;
+    let subject = app.add_biosample(None, "HG002", None, None).await.unwrap();
+    let dir = std::env::temp_dir();
+
+    // A synthetic 16,569 bp "rCRS"; the sample differs at two positions.
+    let reference = "A".repeat(16_569);
+    let mut sample = reference.clone().into_bytes();
+    sample[262] = b'G'; // position 263 A>G
+    sample[749] = b'C'; // position 750 A>C
+    let sample = String::from_utf8(sample).unwrap();
+
+    let ref_path = dir.join(format!("rcrs-{}.fasta", subject.guid.0));
+    let samp_path = dir.join(format!("mt-{}.fasta", subject.guid.0));
+    std::fs::write(&ref_path, format!(">rCRS\n{reference}\n")).unwrap();
+    std::fs::write(&samp_path, format!(">sample\n{sample}\n")).unwrap();
+
+    let mt = app.import_mtdna_from_fasta(subject.guid, &samp_path).await.unwrap();
+    let set = app.derive_mtdna_variants(mt.id, &ref_path).await.unwrap();
+    assert_eq!(set.calls.len(), 2);
+    assert_eq!(set.calls[0].contig, "rCRS");
+    assert_eq!((set.calls[0].position, set.calls[0].reference.as_str(), set.calls[0].alternate.as_str()), (263, "A", "G"));
+    assert_eq!((set.calls[1].position, set.calls[1].alternate.as_str()), (750, "C"));
+
+    // it lands in the subject's variant sets
+    assert_eq!(app.list_variant_sets(subject.guid).await.unwrap().len(), 1);
+
+    for p in [ref_path, samp_path] {
+        let _ = std::fs::remove_file(p);
+    }
+}
+
+#[tokio::test]
 async fn add_data_detects_and_routes() {
     use navigator_app::DetectedData;
     let app = app().await;
