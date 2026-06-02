@@ -170,6 +170,29 @@ fn up(b: u8) -> char {
     b.to_ascii_uppercase() as char
 }
 
+/// Right-align (3'-shift) a deletion of `len` reference bases starting at 0-based `start`,
+/// the mtDNA/Phylotree convention: slide through a tandem/homopolymer run to the rightmost
+/// equivalent position. Returns the new start and the (uppercased) deleted bases.
+fn right_align_deletion(r: &[u8], mut start: usize, len: usize) -> (usize, String) {
+    while start + len < r.len() && r[start].eq_ignore_ascii_case(&r[start + len]) {
+        start += 1;
+    }
+    let deleted = r[start..start + len].iter().map(|&b| up(b)).collect();
+    (start, deleted)
+}
+
+/// Right-align (3'-shift) an insertion of `ins` whose insertion point is before 0-based
+/// reference index `after`. Sliding right rotates the inserted string. Returns the new
+/// `after` (the rCRS position the insertion follows, 1-based) and the rotated bases.
+fn right_align_insertion(r: &[u8], mut after: usize, ins: &str) -> (usize, String) {
+    let mut bases: Vec<u8> = ins.bytes().map(|b| b.to_ascii_uppercase()).collect();
+    while after < r.len() && r[after].to_ascii_uppercase() == bases[0] {
+        bases.rotate_left(1);
+        after += 1;
+    }
+    (after, String::from_utf8(bases).expect("ascii"))
+}
+
 fn build_variants(r: &[u8], s: &[u8], ops: &[Op]) -> Vec<MtVariant> {
     let mut variants = Vec::new();
     let mut k = 0;
@@ -188,12 +211,13 @@ fn build_variants(r: &[u8], s: &[u8], ops: &[Op]) -> Vec<MtVariant> {
                 k += 1;
             }
             Op::Del { ri } => {
-                let start = ri;
-                let mut deleted = String::new();
-                while let Some(Op::Del { ri }) = ops.get(k) {
-                    deleted.push(up(r[*ri]));
+                let mut len = 0;
+                while let Some(Op::Del { .. }) = ops.get(k) {
+                    len += 1;
                     k += 1;
                 }
+                // Right-align through any tandem/homopolymer run (mtDNA convention).
+                let (start, deleted) = right_align_deletion(r, ri, len);
                 variants.push(MtVariant {
                     position: (start + 1) as i64,
                     reference: deleted,
@@ -208,8 +232,9 @@ fn build_variants(r: &[u8], s: &[u8], ops: &[Op]) -> Vec<MtVariant> {
                     inserted.push(up(s[*sj]));
                     k += 1;
                 }
+                let (after, inserted) = right_align_insertion(r, anchor, &inserted);
                 variants.push(MtVariant {
-                    position: anchor as i64,
+                    position: after as i64,
                     reference: String::new(),
                     alternate: inserted,
                     kind: MtVariantKind::Insertion,
@@ -260,6 +285,24 @@ mod tests {
         assert_eq!(v[0].kind, MtVariantKind::Deletion);
         assert_eq!(v[0].reference, "AC");
         assert_eq!(v[0].notation(), "5-6d");
+    }
+
+    #[test]
+    fn right_aligns_insertion_in_a_homopolymer() {
+        // C-run at positions 2-4; the extra C is reported after the last C (315.1C-style).
+        let v = derive("GCCCG", "GCCCCG");
+        assert_eq!(v.len(), 1);
+        assert_eq!(v[0].kind, MtVariantKind::Insertion);
+        assert_eq!(v[0].notation(), "4.1C"); // rightmost C of the run is position 4
+    }
+
+    #[test]
+    fn right_aligns_deletion_in_a_homopolymer() {
+        // deleting one C from the run is reported at the rightmost C.
+        let v = derive("GCCCG", "GCCG");
+        assert_eq!(v.len(), 1);
+        assert_eq!(v[0].kind, MtVariantKind::Deletion);
+        assert_eq!(v[0].notation(), "4d");
     }
 
     #[test]
