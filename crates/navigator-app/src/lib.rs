@@ -168,6 +168,11 @@ impl App {
 
     // ---- queries -----------------------------------------------------------
 
+    /// Biosamples belonging to a project.
+    pub async fn list_biosamples(&self, project_id: i64) -> Result<Vec<Biosample>, AppError> {
+        Ok(biosample::list_for_project(self.store.pool(), project_id).await?)
+    }
+
     /// Projects with their sample counts, for a dashboard/list view.
     pub async fn project_overview(&self) -> Result<Vec<ProjectOverview>, AppError> {
         let mut out = Vec::new();

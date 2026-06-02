@@ -12,5 +12,10 @@ name = "navigator"
 path = "src/main.rs"
 
 [dependencies]
+eframe = "0.30.0"
 navigator-app = { workspace = true }
 navigator-domain = { workspace = true }
+tokio = { version = "1.52.3", features = ["rt-multi-thread", "sync", "macros"] }
+
+[dev-dependencies]
+navigator-store = { workspace = true }
