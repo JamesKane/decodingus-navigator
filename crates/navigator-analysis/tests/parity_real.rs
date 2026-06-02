@@ -96,6 +96,24 @@ fn hg002_chrm_denovo_smoke() {
     }
 }
 
+/// De-novo calling on chrY (57 Mb) against the full BAM — exercises the chunked tally
+/// on a large contig. Memory is bounded by the chunk, not chrY's length.
+#[test]
+#[ignore = "requires HG002_BAM + CHM13_REF (chrY de-novo, chunked)"]
+fn hg002_chry_denovo_streams() {
+    let (Ok(bam), Ok(reference)) = (std::env::var("HG002_BAM"), std::env::var("CHM13_REF")) else {
+        eprintln!("set HG002_BAM and CHM13_REF to run this test");
+        return;
+    };
+    let calls = call_denovo(&PathBuf::from(bam), &PathBuf::from(reference), "chrY", &HaploidCallerParams::default())
+        .expect("chrY de-novo should succeed");
+    eprintln!("chrY de-novo calls: {}", calls.len());
+    // Shallow single lane -> few high-AF haploid calls; just assert it completed sanely.
+    for c in &calls {
+        assert!(c.allele_fraction >= 0.5 && c.depth >= 4);
+    }
+}
+
 /// Whole-genome coverage over the full BAM (no allowlist). Only feasible because the
 /// walker streams a sliding window — the old dense version allocated per-position
 /// arrays for every main-assembly contig at once (~84 GB).
@@ -182,8 +200,8 @@ fn hg002_chrm_gatk_parity() {
 
     let truth = parse_truth_vcf(&PathBuf::from(vcf)).expect("parse GATK VCF");
     let calls = call_denovo(
-        &PathBuf::from(bam),
-        &PathBuf::from(reference),
+        &PathBuf::from(&bam),
+        &PathBuf::from(&reference),
         "chrM",
         &HaploidCallerParams::default(),
     )
@@ -209,4 +227,22 @@ fn hg002_chrm_gatk_parity() {
     // risk) until local realignment lands.
     assert!(report.recall() >= 0.95, "recall {:.3} below gate", report.recall());
     assert!(report.precision() >= 0.80, "precision {:.3} below gate", report.precision());
+
+    // Chunked: a chunk boundary at 16300 splits the 16294 insertion (chunk 1) from the
+    // smeared 16302 position (chunk 2). Both-side overlap must keep realignment correct,
+    // so the call set is identical to the unchunked run.
+    let chunked = HaploidCallerParams { denovo_chunk: 16_300, denovo_overlap: 500, ..HaploidCallerParams::default() };
+    let chunked_calls = call_denovo(&PathBuf::from(&bam), &PathBuf::from(&reference), "chrM", &chunked).unwrap();
+    let chunked_report = compare_denovo_snps(&truth, &chunked_calls);
+    eprintln!(
+        "chunked SNP parity: precision={:.3} recall={:.3} FP={}",
+        chunked_report.precision(),
+        chunked_report.recall(),
+        chunked_report.rust_only.len()
+    );
+    assert_eq!(
+        chunked_calls.iter().map(|c| c.position).collect::<Vec<_>>(),
+        calls.iter().map(|c| c.position).collect::<Vec<_>>(),
+        "chunk boundary changed the call set"
+    );
 }

@@ -99,6 +99,18 @@ fn force_call_genotypes_known_sites() {
 }
 
 #[test]
+fn denovo_chunking_matches_unchunked() {
+    let dir = fixtures();
+    let base = call_denovo(&dir.join("coverage.bam"), &dir.join("ref.fa"), "chrM", &HaploidCallerParams::default())
+        .unwrap();
+    // Force many tiny chunks over the 50 bp fixture; result must be identical.
+    let chunked = HaploidCallerParams { denovo_chunk: 8, denovo_overlap: 3, ..HaploidCallerParams::default() };
+    let got = call_denovo(&dir.join("coverage.bam"), &dir.join("ref.fa"), "chrM", &chunked).unwrap();
+    assert_eq!(got, base);
+    assert_eq!(got.iter().map(|c| c.position).collect::<Vec<_>>(), vec![2, 3, 4, 6, 7, 8, 10]);
+}
+
+#[test]
 fn private_set_subtracts_known_tree_positions() {
     let dir = fixtures();
     let calls = call_denovo(

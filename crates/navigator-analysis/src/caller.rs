@@ -19,11 +19,12 @@
 //! alleles are skipped here and treated as advisory until the §4c parity harness
 //! validates them. Defaults are starting points the harness will tune.
 //!
-//! Memory: de-novo uses a dense per-position tally for the target contig (fine for
-//! mtDNA/Y; whole-genome streaming is a later opt). Force-call tallies only the target
-//! sites (sparse), so it is cheap regardless of contig size.
+//! Memory: de-novo processes the contig in overlapping chunks (`denovo_chunk`), so the
+//! dense per-position tally is bounded by the chunk, not the contig length. Both-side
+//! context overlap keeps realignment windows that straddle a chunk boundary fully
+//! visible. Force-call tallies only the target sites (sparse), cheap regardless of size.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 use noodles::bam;
@@ -57,6 +58,12 @@ pub struct HaploidCallerParams {
     pub realign_min_indel_reads: u32,
     /// Padding (bp) added around indel-evidence runs to form a realignment window.
     pub realign_pad: i64,
+    /// De-novo emit chunk size (bp). The contig is processed in chunks so memory is
+    /// bounded; a chunk holds dense arrays for `chunk + 2*overlap` positions.
+    pub denovo_chunk: usize,
+    /// Context overlap (bp) processed on each side of a chunk, so realignment windows
+    /// straddling a chunk boundary are still fully seen. Must exceed `realign_pad`.
+    pub denovo_overlap: usize,
 }
 
 impl Default for HaploidCallerParams {
@@ -69,6 +76,8 @@ impl Default for HaploidCallerParams {
             local_realign: true,
             realign_min_indel_reads: 3,
             realign_pad: 15,
+            denovo_chunk: 8_000_000,
+            denovo_overlap: 500,
         }
     }
 }
@@ -144,36 +153,13 @@ fn consensus(counts: &[u32; 4]) -> (usize, u32) {
     (bi, best)
 }
 
-/// Per-position A/C/G/T tallies, dense (whole contig) or sparse (target sites only).
-enum AlleleCounts {
-    Dense(Vec<[u32; 4]>),
-    Sparse(std::collections::HashMap<usize, [u32; 4]>),
-}
-
-impl AlleleCounts {
-    fn add(&mut self, idx: usize, base: usize) {
-        match self {
-            AlleleCounts::Dense(v) => v[idx][base] += 1,
-            AlleleCounts::Sparse(m) => m.entry(idx).or_insert([0; 4])[base] += 1,
-        }
+/// Read passes the de-novo/force-call filters (primary, not dup/qc-fail, MAPQ ok).
+fn passes(record: &bam::Record, params: &HaploidCallerParams) -> bool {
+    let f = record.flags();
+    if f.is_secondary() || f.is_supplementary() || f.is_duplicate() || f.is_qc_fail() {
+        return false;
     }
-
-    fn get(&self, idx: usize) -> [u32; 4] {
-        match self {
-            AlleleCounts::Dense(v) => v[idx],
-            AlleleCounts::Sparse(m) => m.get(&idx).copied().unwrap_or([0; 4]),
-        }
-    }
-
-    /// Overwrite the tally at a position (used by realignment to replace window counts).
-    fn set(&mut self, idx: usize, value: [u32; 4]) {
-        match self {
-            AlleleCounts::Dense(v) => v[idx] = value,
-            AlleleCounts::Sparse(m) => {
-                m.insert(idx, value);
-            }
-        }
-    }
+    record.mapping_quality().map_or(255u8, |m| m.get()) >= params.min_mapping_quality
 }
 
 /// Resolve a contig's length from the BAM header.
@@ -188,49 +174,30 @@ fn contig_length(header: &noodles::sam::Header, contig: &str) -> Option<usize> {
         .map(|(_, map)| map.length().get())
 }
 
-/// One indexed pass over `contig`, tallying passing A/C/G/T observations. When
-/// `targets` is `Some`, only those 1-based positions are tallied (sparse). When
-/// `track_indels` is set, also returns per-position indel-evidence counts (reads whose
-/// CIGAR has an I/D op at that position) for opening realignment windows.
-fn tally_alleles(
+/// Sparse A/C/G/T tally at the given 1-based target positions (force-call path), keyed
+/// by 0-based position. Also returns the contig length.
+fn tally_targets(
     bam_path: &Path,
     contig: &str,
     params: &HaploidCallerParams,
-    targets: Option<&HashSet<i64>>,
-    track_indels: bool,
-) -> Result<(usize, AlleleCounts, Vec<u32>), AnalysisError> {
+    targets: &HashSet<i64>,
+) -> Result<(usize, HashMap<usize, [u32; 4]>), AnalysisError> {
     let mut reader = bam::io::indexed_reader::Builder::default()
         .build_from_path(bam_path)
         .map_err(|e| AnalysisError::io(bam_path, e))?;
-    let header = reader
-        .read_header()
-        .map_err(|e| AnalysisError::io(bam_path, e))?;
-
+    let header = reader.read_header().map_err(|e| AnalysisError::io(bam_path, e))?;
     let length = contig_length(&header, contig)
         .ok_or_else(|| AnalysisError::Message(format!("contig {contig} not in BAM header")))?;
 
-    let mut counts = match targets {
-        Some(_) => AlleleCounts::Sparse(std::collections::HashMap::new()),
-        None => AlleleCounts::Dense(vec![[0u32; 4]; length]),
-    };
-    let mut indel_evidence = if track_indels { vec![0u32; length] } else { Vec::new() };
-
+    let mut counts: HashMap<usize, [u32; 4]> = HashMap::new();
     let region: Region = contig
         .parse()
         .map_err(|_| AnalysisError::Message(format!("bad region for contig {contig}")))?;
-    let query = reader
-        .query(&header, &region)
-        .map_err(|e| AnalysisError::io(bam_path, e))?;
-
+    let query = reader.query(&header, &region).map_err(|e| AnalysisError::io(bam_path, e))?;
     for result in query {
         let record = result.map_err(|e| AnalysisError::io(bam_path, e))?;
-        let flags = record.flags();
-        if flags.is_secondary() || flags.is_supplementary() || flags.is_duplicate() || flags.is_qc_fail() {
+        if !passes(&record, params) {
             continue;
-        }
-        let mapq = record.mapping_quality().map_or(255u8, |m| m.get());
-        if mapq < params.min_mapping_quality {
-            continue; // read-level MAPQ filter
         }
         let start = match record.alignment_start() {
             Some(p) => p.map_err(|e| AnalysisError::io(bam_path, e))?.get(),
@@ -239,8 +206,7 @@ fn tally_alleles(
         let seq = record.sequence();
         let quals = record.quality_scores();
         let quals = quals.as_ref();
-
-        let mut ref_pos = start; // 1-based
+        let mut ref_pos = start;
         let mut query_off = 0usize;
         for op in record.cigar().iter() {
             let op = op.map_err(|e| AnalysisError::io(bam_path, e))?;
@@ -249,15 +215,77 @@ fn tally_alleles(
             match (kind.consumes_reference(), kind.consumes_read()) {
                 (true, true) => {
                     for i in 0..len {
-                        let pos = ref_pos + i; // 1-based
-                        if pos >= 1 && pos <= length {
+                        let pos = ref_pos + i;
+                        if targets.contains(&(pos as i64)) {
                             let base_q = quals.get(query_off + i).copied().unwrap_or(0);
                             if base_q >= params.min_base_quality {
                                 if let Some(bi) = seq.get(query_off + i).and_then(base_index) {
-                                    let tracked = targets.map_or(true, |t| t.contains(&(pos as i64)));
-                                    if tracked {
-                                        counts.add(pos - 1, bi);
-                                    }
+                                    counts.entry(pos - 1).or_insert([0; 4])[bi] += 1;
+                                }
+                            }
+                        }
+                    }
+                    ref_pos += len;
+                    query_off += len;
+                }
+                (true, false) => ref_pos += len,
+                (false, true) => query_off += len,
+                (false, false) => {}
+            }
+        }
+    }
+    Ok((length, counts))
+}
+
+/// Dense A/C/G/T tally + per-position indel evidence for the 1-based inclusive region
+/// `[lo, hi]`, indexed by `pos - lo` (the chunked de-novo path).
+fn tally_region(
+    bam_path: &Path,
+    contig: &str,
+    params: &HaploidCallerParams,
+    lo: usize,
+    hi: usize,
+) -> Result<(Vec<[u32; 4]>, Vec<u32>), AnalysisError> {
+    let n = hi - lo + 1;
+    let mut counts = vec![[0u32; 4]; n];
+    let mut indel = vec![0u32; n];
+
+    let mut reader = bam::io::indexed_reader::Builder::default()
+        .build_from_path(bam_path)
+        .map_err(|e| AnalysisError::io(bam_path, e))?;
+    let header = reader.read_header().map_err(|e| AnalysisError::io(bam_path, e))?;
+    let region: Region = format!("{contig}:{lo}-{hi}")
+        .parse()
+        .map_err(|_| AnalysisError::Message(format!("bad region for {contig}")))?;
+    let query = reader.query(&header, &region).map_err(|e| AnalysisError::io(bam_path, e))?;
+
+    for result in query {
+        let record = result.map_err(|e| AnalysisError::io(bam_path, e))?;
+        if !passes(&record, params) {
+            continue;
+        }
+        let start = match record.alignment_start() {
+            Some(p) => p.map_err(|e| AnalysisError::io(bam_path, e))?.get(),
+            None => continue,
+        };
+        let seq = record.sequence();
+        let quals = record.quality_scores();
+        let quals = quals.as_ref();
+        let mut ref_pos = start;
+        let mut query_off = 0usize;
+        for op in record.cigar().iter() {
+            let op = op.map_err(|e| AnalysisError::io(bam_path, e))?;
+            let kind = op.kind();
+            let len = op.len();
+            match (kind.consumes_reference(), kind.consumes_read()) {
+                (true, true) => {
+                    for i in 0..len {
+                        let pos = ref_pos + i;
+                        if pos >= lo && pos <= hi {
+                            let base_q = quals.get(query_off + i).copied().unwrap_or(0);
+                            if base_q >= params.min_base_quality {
+                                if let Some(bi) = seq.get(query_off + i).and_then(base_index) {
+                                    counts[pos - lo][bi] += 1;
                                 }
                             }
                         }
@@ -266,22 +294,17 @@ fn tally_alleles(
                     query_off += len;
                 }
                 (true, false) => {
-                    // Deletion / skip: mark indel evidence over the gapped positions.
-                    if track_indels {
-                        for k in 0..len {
-                            if let Some(slot) = indel_evidence.get_mut(ref_pos - 1 + k) {
-                                *slot += 1;
-                            }
+                    for k in 0..len {
+                        let pos = ref_pos + k;
+                        if pos >= lo && pos <= hi {
+                            indel[pos - lo] += 1;
                         }
                     }
                     ref_pos += len;
                 }
                 (false, true) => {
-                    // Insertion / soft clip: mark indel evidence at the anchor position.
-                    if track_indels && kind == Kind::Insertion {
-                        if let Some(slot) = indel_evidence.get_mut(ref_pos.saturating_sub(1)) {
-                            *slot += 1;
-                        }
+                    if kind == Kind::Insertion && ref_pos >= lo && ref_pos <= hi {
+                        indel[ref_pos - lo] += 1;
                     }
                     query_off += len;
                 }
@@ -289,8 +312,7 @@ fn tally_alleles(
             }
         }
     }
-
-    Ok((length, counts, indel_evidence))
+    Ok((counts, indel))
 }
 
 /// Force-call (genotype-given-alleles) at known SNP sites on `contig`. Non-SNP sites
@@ -309,7 +331,7 @@ pub fn force_call_sites(
     if targets.is_empty() {
         return Ok(Vec::new());
     }
-    let (length, counts, _) = tally_alleles(bam_path, contig, params, Some(&targets), false)?;
+    let (length, counts) = tally_targets(bam_path, contig, params, &targets)?;
 
     let mut out = Vec::new();
     for site in sites.iter().filter(|s| s.contig == contig) {
@@ -320,7 +342,7 @@ pub fn force_call_sites(
             continue; // off-contig
         }
         let idx = (site.position - 1) as usize;
-        let c = counts.get(idx);
+        let c = counts.get(&idx).copied().unwrap_or([0; 4]);
         let depth: u32 = c.iter().sum();
         let ref_bi = base_index(site.reference_allele.as_bytes()[0]);
         let alt_bi = base_index(site.alternate_allele.as_bytes()[0]);
@@ -356,64 +378,82 @@ pub fn force_call_sites(
     Ok(out)
 }
 
-/// De-novo SNP discovery across `contig`: emit positions whose consensus base passes
-/// the depth/fraction filters and differs from the reference base.
+/// De-novo SNP discovery across `contig`, processed in overlapping chunks so memory is
+/// bounded by the chunk (not the contig length). Emits positions whose consensus base
+/// passes the depth/fraction filters and differs from the reference. Both-side context
+/// overlap keeps realignment windows that straddle a chunk boundary fully visible.
 pub fn call_denovo(
     bam_path: &Path,
     reference_path: &Path,
     contig: &str,
     params: &HaploidCallerParams,
 ) -> Result<Vec<VariantCall>, AnalysisError> {
-    let (length, mut counts, indel_evidence) =
-        tally_alleles(bam_path, contig, params, None, params.local_realign)?;
+    let length = {
+        let mut reader = bam::io::indexed_reader::Builder::default()
+            .build_from_path(bam_path)
+            .map_err(|e| AnalysisError::io(bam_path, e))?;
+        let header = reader.read_header().map_err(|e| AnalysisError::io(bam_path, e))?;
+        contig_length(&header, contig)
+            .ok_or_else(|| AnalysisError::Message(format!("contig {contig} not in BAM header")))?
+    };
 
-    // Load the contig reference bases for ref-vs-consensus comparison.
     let mut fasta_reader = fasta::io::indexed_reader::Builder::default()
         .build_from_path(reference_path)
         .map_err(|e| AnalysisError::io(reference_path, e))?;
-    let region: Region = contig
-        .parse()
-        .map_err(|_| AnalysisError::Message(format!("bad region for contig {contig}")))?;
-    let ref_record = fasta_reader
-        .query(&region)
-        .map_err(|e| AnalysisError::io(reference_path, e))?;
-    let ref_bases = ref_record.sequence().as_ref();
 
-    // Light local realignment: re-fit reads in indel-active windows so homopolymer
-    // indels stop smearing spurious SNPs onto neighbouring positions (§4b).
-    if params.local_realign {
-        realign_windows(bam_path, contig, ref_bases, &mut counts, &indel_evidence, params)?;
-    }
-
+    let chunk = params.denovo_chunk.max(1);
+    let overlap = params.denovo_overlap;
     let mut out = Vec::new();
-    for idx in 0..length {
-        let c = counts.get(idx);
-        let depth: u32 = c.iter().sum();
-        if depth < params.min_depth {
-            continue;
+    let mut emit_lo = 1usize;
+    while emit_lo <= length {
+        let emit_hi = (emit_lo + chunk - 1).min(length);
+        let proc_lo = emit_lo.saturating_sub(overlap).max(1);
+        let proc_hi = (emit_hi + overlap).min(length);
+
+        // Reference for [proc_lo, proc_hi], indexed relative to proc_lo.
+        let region: Region = format!("{contig}:{proc_lo}-{proc_hi}")
+            .parse()
+            .map_err(|_| AnalysisError::Message(format!("bad region for contig {contig}")))?;
+        let rec = fasta_reader
+            .query(&region)
+            .map_err(|e| AnalysisError::io(reference_path, e))?;
+        let ref_chunk = rec.sequence().as_ref().to_vec();
+
+        let (mut counts, indel) = tally_region(bam_path, contig, params, proc_lo, proc_hi)?;
+        if params.local_realign {
+            realign_region(bam_path, contig, &ref_chunk, proc_lo, &mut counts, &indel, params)?;
         }
-        let (top_bi, top_count) = consensus(&c);
-        if top_count == 0 {
-            continue;
+
+        for pos in emit_lo..=emit_hi {
+            let r = pos - proc_lo; // index into the chunk arrays
+            let c = counts[r];
+            let depth: u32 = c.iter().sum();
+            if depth < params.min_depth {
+                continue;
+            }
+            let (top_bi, top_count) = consensus(&c);
+            if top_count == 0 {
+                continue;
+            }
+            let frac = top_count as f64 / depth as f64;
+            if frac < params.min_allele_fraction {
+                continue;
+            }
+            let ref_base = ref_chunk.get(r).copied().unwrap_or(b'N');
+            if base_index(ref_base) == Some(top_bi) || base_index(ref_base).is_none() {
+                continue; // matches reference, or reference is N/ambiguous
+            }
+            out.push(VariantCall {
+                contig: contig.to_string(),
+                position: pos as i64,
+                reference_allele: ref_base.to_ascii_uppercase() as char,
+                alternate_allele: BASES[top_bi] as char,
+                depth,
+                alt_depth: top_count,
+                allele_fraction: frac,
+            });
         }
-        let frac = top_count as f64 / depth as f64;
-        if frac < params.min_allele_fraction {
-            continue;
-        }
-        let ref_base = ref_bases.get(idx).copied().unwrap_or(b'N');
-        // Skip non-ACGT reference (e.g. N) — not a confident SNP site.
-        if base_index(ref_base) == Some(top_bi) || base_index(ref_base).is_none() {
-            continue; // matches reference, or reference is N/ambiguous
-        }
-        out.push(VariantCall {
-            contig: contig.to_string(),
-            position: (idx + 1) as i64,
-            reference_allele: ref_base.to_ascii_uppercase() as char,
-            alternate_allele: BASES[top_bi] as char,
-            depth,
-            alt_depth: top_count,
-            allele_fraction: frac,
-        });
+        emit_lo = emit_hi + 1;
     }
     Ok(out)
 }
@@ -445,12 +485,13 @@ fn active_windows(indel_evidence: &[u32], min_reads: u32, pad: i64) -> Vec<(usiz
 }
 
 /// Re-fit reads in each indel-active window onto the reference and replace the tally
-/// over those windows, so ambiguous homopolymer indels stop producing spurious SNPs.
-fn realign_windows(
+/// over those windows. Arrays are indexed relative to `region_lo` (1-based).
+fn realign_region(
     bam_path: &Path,
     contig: &str,
-    ref_bases: &[u8],
-    counts: &mut AlleleCounts,
+    ref_chunk: &[u8],
+    region_lo: usize,
+    counts: &mut [[u32; 4]],
     indel_evidence: &[u32],
     params: &HaploidCallerParams,
 ) -> Result<(), AnalysisError> {
@@ -462,19 +503,19 @@ fn realign_windows(
     let mut reader = bam::io::indexed_reader::Builder::default()
         .build_from_path(bam_path)
         .map_err(|e| AnalysisError::io(bam_path, e))?;
-    let header = reader
-        .read_header()
-        .map_err(|e| AnalysisError::io(bam_path, e))?;
+    let header = reader.read_header().map_err(|e| AnalysisError::io(bam_path, e))?;
 
     for (w0, w1) in windows {
-        if w1 >= ref_bases.len() {
+        if w1 >= ref_chunk.len() {
             continue;
         }
-        let target = &ref_bases[w0..=w1];
+        let target = &ref_chunk[w0..=w1];
         let mut win_counts = vec![[0u32; 4]; w1 - w0 + 1];
 
-        // 1-based region for the window.
-        let region: Region = format!("{}:{}-{}", contig, w0 + 1, w1 + 1)
+        // 1-based absolute window bounds (rel index r <-> position region_lo + r).
+        let wlo_abs = region_lo + w0;
+        let whi_abs = region_lo + w1;
+        let region: Region = format!("{contig}:{wlo_abs}-{whi_abs}")
             .parse()
             .map_err(|_| AnalysisError::Message(format!("bad region for {contig}")))?;
         let query = reader
@@ -483,18 +524,14 @@ fn realign_windows(
 
         for result in query {
             let record = result.map_err(|e| AnalysisError::io(bam_path, e))?;
-            let flags = record.flags();
-            if flags.is_secondary() || flags.is_supplementary() || flags.is_duplicate() || flags.is_qc_fail() {
-                continue;
-            }
-            if record.mapping_quality().map_or(255u8, |m| m.get()) < params.min_mapping_quality {
+            if !passes(&record, params) {
                 continue;
             }
             let start = match record.alignment_start() {
                 Some(p) => p.map_err(|e| AnalysisError::io(bam_path, e))?.get(),
                 None => continue,
             };
-            let (qbases, qquals) = window_substring(&record, start, w0 + 1, w1 + 1, bam_path)?;
+            let (qbases, qquals) = window_substring(&record, start, wlo_abs, whi_abs, bam_path)?;
             if qbases.is_empty() {
                 continue;
             }
@@ -509,7 +546,7 @@ fn realign_windows(
         }
 
         for (k, c) in win_counts.into_iter().enumerate() {
-            counts.set(w0 + k, c);
+            counts[w0 + k] = c;
         }
     }
     Ok(())
