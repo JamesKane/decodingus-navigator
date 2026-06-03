@@ -14,7 +14,7 @@ use std::sync::Arc;
 use navigator_app::{
     App, AuditEntry, Consensus, Coverage, DenovoCall, DnaType, HaploAssignment, HeteroplasmySite,
     IbdComparison, IbdDetectorConfig, IdentityVerification, PanelGenotype, PrivateBucket,
-    ProjectImportSummary, ProjectOverview, ReconciledVariant, SourceType,
+    ProjectImportSummary, ProjectOverview, ProjectSampleReport, ReconciledVariant, SourceType,
 };
 use navigator_domain::du_domain::ids::SampleGuid;
 use navigator_domain::chipprofile::ChipProfile;
@@ -53,6 +53,8 @@ pub enum Command {
     LoadOverview,
     CreateProject(NewProject),
     LoadSamples(i64),
+    /// Load the per-sample coverage/haplogroup report for a project.
+    LoadProjectReport(i64),
     /// Load every biosample (subjects list), regardless of project.
     LoadAllBiosamples,
     AddBiosample(NewBiosample),
@@ -146,6 +148,8 @@ pub enum Event {
     ProjectCreated(Project),
     /// A batch project-directory import completed.
     ProjectImported(ProjectImportSummary),
+    /// Per-sample coverage/haplogroup report for a project.
+    ProjectReport { project_id: i64, rows: Vec<ProjectSampleReport> },
     Samples { project_id: i64, samples: Vec<Biosample> },
     /// All biosamples (the project-independent subjects list).
     AllBiosamples(Vec<Biosample>),
@@ -219,6 +223,10 @@ pub async fn handle(app: &App, cmd: Command) -> Event {
         }
         Command::LoadSamples(project_id) => match app.list_biosamples(project_id).await {
             Ok(samples) => Event::Samples { project_id, samples },
+            Err(e) => Event::Error(e.to_string()),
+        },
+        Command::LoadProjectReport(project_id) => match app.project_report(project_id).await {
+            Ok(rows) => Event::ProjectReport { project_id, rows },
             Err(e) => Event::Error(e.to_string()),
         },
         Command::LoadAllBiosamples => match app.list_all_biosamples().await {

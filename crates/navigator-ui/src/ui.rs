@@ -9,7 +9,7 @@ use eframe::egui;
 use navigator_app::{
     AuditEntry, CallState, CompatibilityLevel, Consensus, Coverage, DenovoCall, DnaType, HaploAssignment,
     HeteroplasmySite, IbdComparison, IdentityVerification, PanelGenotype, PrivateBucket, PrivateClass,
-    ProjectOverview, ReconciledVariant, SourceType, VariantStatus, VerificationStatus,
+    ProjectOverview, ProjectSampleReport, ReconciledVariant, SourceType, VariantStatus, VerificationStatus,
 };
 use navigator_domain::du_domain::ids::SampleGuid;
 use navigator_domain::chipprofile::{self, ChipProfile};
@@ -58,6 +58,8 @@ pub struct NavigatorApp {
     rx: Receiver<Event>,
     overview: Vec<ProjectOverview>,
     selected_project: Option<i64>,
+    /// Per-sample coverage/haplogroup report rows for the selected project.
+    project_report: Vec<ProjectSampleReport>,
     samples: Vec<Biosample>,
     /// Every biosample (the project-independent subjects list).
     all_biosamples: Vec<Biosample>,
@@ -125,6 +127,16 @@ pub struct NavigatorApp {
 
 /// Sentinel option in the chip-provider dropdown that means "let the parser guess".
 const AUTO_DETECT: &str = "(auto-detect)";
+
+/// Format an optional mean/median depth (one decimal), "—" when not computed.
+fn fmt_depth(o: Option<f64>) -> String {
+    o.map(|v| format!("{v:.1}")).unwrap_or_else(|| "—".into())
+}
+
+/// Format an optional fraction (0–1) as a percentage, "—" when not computed.
+fn fmt_pct(o: Option<f64>) -> String {
+    o.map(|v| format!("{:.1}%", v * 100.0)).unwrap_or_else(|| "—".into())
+}
 
 /// Render a haplogroup assignment: terminal + lineage + alternatives, then the child
 /// branches with per-SNP evidence that explains why descent stopped.
@@ -204,6 +216,7 @@ impl NavigatorApp {
             rx,
             overview: Vec::new(),
             selected_project: None,
+            project_report: Vec::new(),
             samples: Vec::new(),
             all_biosamples: Vec::new(),
             selected_sample: None,
@@ -292,6 +305,11 @@ impl NavigatorApp {
                 Event::Samples { project_id, samples } => {
                     if self.selected_project == Some(project_id) {
                         self.samples = samples;
+                    }
+                }
+                Event::ProjectReport { project_id, rows } => {
+                    if self.selected_project == Some(project_id) {
+                        self.project_report = rows;
                     }
                 }
                 Event::AllBiosamples(v) => self.all_biosamples = v,
@@ -437,6 +455,10 @@ impl NavigatorApp {
                         self.coverage = result;
                     }
                     self.running = false;
+                    // A recompute (possibly from the project report) may have filled a cell.
+                    if let Some(pid) = self.selected_project {
+                        let _ = self.tx.send(Command::LoadProjectReport(pid));
+                    }
                 }
                 Event::Denovo { alignment_id, contig, result } => {
                     if self.selected_alignment == Some(alignment_id) && self.forms.denovo_contig == contig {
@@ -499,8 +521,10 @@ impl NavigatorApp {
     fn select_project(&mut self, id: i64) {
         self.selected_project = Some(id);
         self.samples.clear();
+        self.project_report.clear();
         self.clear_sample_selection();
         let _ = self.tx.send(Command::LoadSamples(id));
+        let _ = self.tx.send(Command::LoadProjectReport(id));
     }
 
     fn select_sample(&mut self, guid: SampleGuid) {
@@ -603,6 +627,7 @@ impl eframe::App for NavigatorApp {
                 // A project (when open) shows its own samples as a filtered subview.
                 if self.selected_project.is_some() {
                     self.samples_section(ui);
+                    self.project_report_section(ui);
                 }
                 if let Some(guid) = self.selected_sample {
                     self.subject_header(ui);
@@ -1147,6 +1172,63 @@ impl NavigatorApp {
                 });
                 self.forms.panel_import_name.clear();
             }
+        }
+    }
+
+    /// A per-sample coverage/haplogroup table for the open project, with per-row coverage
+    /// recompute and a CSV export. Coverage/haplogroup cells show "—" until computed.
+    fn project_report_section(&mut self, ui: &mut egui::Ui) {
+        if self.project_report.is_empty() {
+            return;
+        }
+        ui.add_space(12.0);
+        ui.separator();
+        ui.horizontal(|ui| {
+            ui.heading("Project report");
+            if ui.button("Export CSV…").clicked() {
+                let csv = navigator_app::report_csv(&self.project_report);
+                if let Some(path) = rfd::FileDialog::new()
+                    .add_filter("CSV", &["csv"])
+                    .set_file_name("project_report.csv")
+                    .save_file()
+                {
+                    self.status = match std::fs::write(&path, csv) {
+                        Ok(()) => format!("Wrote {}", path.display()),
+                        Err(e) => format!("CSV write failed: {e}"),
+                    };
+                }
+            }
+        });
+
+        let running = self.running;
+        let mut recompute: Option<i64> = None;
+        egui::Grid::new("project_report_grid").striped(true).num_columns(10).show(ui, |ui| {
+            for h in ["Sample", "Alns", "Mean cov", "Median", "≥10x", "≥20x", "Callable", "Y", "mtDNA", ""] {
+                ui.strong(h);
+            }
+            ui.end_row();
+            for r in &self.project_report {
+                ui.label(&r.biosample.donor_identifier);
+                ui.label(r.alignment_count.to_string());
+                ui.label(fmt_depth(r.mean_coverage));
+                ui.label(fmt_depth(r.median_coverage));
+                ui.label(fmt_pct(r.pct_10x));
+                ui.label(fmt_pct(r.pct_20x));
+                ui.label(r.callable_bases.map(|v| v.to_string()).unwrap_or_else(|| "—".into()));
+                ui.label(r.y_haplogroup.clone().unwrap_or_else(|| "—".into()));
+                ui.label(r.mt_haplogroup.clone().unwrap_or_else(|| "—".into()));
+                if let Some(aln) = r.primary_alignment_id {
+                    if ui.add_enabled(!running, egui::Button::new("Recompute cov")).clicked() {
+                        recompute = Some(aln);
+                    }
+                }
+                ui.end_row();
+            }
+        });
+        if let Some(aln) = recompute {
+            self.running = true;
+            self.status = "Recomputing coverage…".into();
+            let _ = self.tx.send(Command::RunCoverage(aln));
         }
     }
 

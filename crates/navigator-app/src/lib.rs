@@ -279,6 +279,9 @@ pub struct ProjectOverview {
 #[derive(Debug, Clone)]
 pub struct ProjectSampleReport {
     pub biosample: Biosample,
+    /// An alignment to drive "recompute coverage" from (the coverage-bearing one if any,
+    /// else the first); `None` if the sample has no alignments.
+    pub primary_alignment_id: Option<i64>,
     pub alignment_count: usize,
     pub mean_coverage: Option<f64>,
     pub median_coverage: Option<f64>,
@@ -1659,15 +1662,20 @@ impl App {
         for biosample in biosample::list_for_project(self.store.pool(), project_id).await? {
             let alignments = alignment::list_for_biosample(self.store.pool(), biosample.guid).await?;
             let mut coverage = None;
+            let mut coverage_aln = None;
             for a in &alignments {
                 if let Some(c) = self.cached_coverage(a.id).await? {
                     coverage = Some(c);
+                    coverage_aln = Some(a.id);
                     break;
                 }
             }
+            // Prefer the coverage-bearing alignment; else fall back to the first.
+            let primary_alignment_id = coverage_aln.or_else(|| alignments.first().map(|a| a.id));
             let y_haplogroup = self.haplogroup_consensus(biosample.guid, DnaType::Y).await?.map(|c| c.haplogroup);
             let mt_haplogroup = self.haplogroup_consensus(biosample.guid, DnaType::Mt).await?.map(|c| c.haplogroup);
             out.push(ProjectSampleReport {
+                primary_alignment_id,
                 alignment_count: alignments.len(),
                 mean_coverage: coverage.as_ref().map(|c| c.mean_coverage),
                 median_coverage: coverage.as_ref().map(|c| c.median_coverage),
