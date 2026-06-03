@@ -13,7 +13,7 @@ use std::sync::Arc;
 
 use navigator_app::{
     App, Consensus, Coverage, DenovoCall, DnaType, HaploAssignment, IbdComparison, IbdDetectorConfig,
-    IdentityVerification, PanelGenotype, PrivateBucket, ProjectOverview,
+    IdentityVerification, PanelGenotype, PrivateBucket, ProjectOverview, ReconciledVariant,
 };
 use navigator_domain::du_domain::ids::SampleGuid;
 use navigator_domain::chipprofile::ChipProfile;
@@ -59,6 +59,8 @@ pub enum Command {
     AddRun(NewSequenceRun),
     /// Load the donor-level Y + mtDNA haplogroup consensus for a subject.
     LoadConsensus(SampleGuid),
+    /// Reconcile the subject's variant sets across sources.
+    LoadVariantConcordance(SampleGuid),
     LoadStrProfiles(SampleGuid),
     ImportStrProfile {
         biosample_guid: SampleGuid,
@@ -130,6 +132,8 @@ pub enum Event {
     RunsChanged(SampleGuid),
     /// Donor-level haplogroup consensus for a subject (Y, mtDNA).
     Consensus { biosample_guid: SampleGuid, y: Option<Consensus>, mt: Option<Consensus> },
+    /// Variant concordance across the subject's sources.
+    VariantConcordance { biosample_guid: SampleGuid, variants: Vec<ReconciledVariant> },
     StrProfiles { biosample_guid: SampleGuid, profiles: Vec<StrProfile> },
     StrProfilesChanged(SampleGuid),
     VariantSets { biosample_guid: SampleGuid, sets: Vec<VariantSet> },
@@ -208,6 +212,10 @@ pub async fn handle(app: &App, cmd: Command) -> Event {
             let mt = app.haplogroup_consensus(guid, DnaType::Mt).await.unwrap_or(None);
             Event::Consensus { biosample_guid: guid, y, mt }
         }
+        Command::LoadVariantConcordance(guid) => match app.reconcile_variants(guid).await {
+            Ok(variants) => Event::VariantConcordance { biosample_guid: guid, variants },
+            Err(e) => Event::Error(e.to_string()),
+        },
         Command::LoadStrProfiles(guid) => match app.list_str_profiles(guid).await {
             Ok(profiles) => Event::StrProfiles { biosample_guid: guid, profiles },
             Err(e) => Event::Error(e.to_string()),

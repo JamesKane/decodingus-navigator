@@ -99,7 +99,9 @@ use navigator_domain::filetype;
 pub use navigator_domain::filetype::DetectedData;
 use navigator_domain::mtdna::{self, MtdnaSequence, NewMtdnaSequence};
 use navigator_domain::reconciliation::{self, RunHaplogroupCall};
-pub use navigator_domain::reconciliation::{CompatibilityLevel, Consensus, DnaType, IdentityVerification, VerificationStatus};
+pub use navigator_domain::reconciliation::{
+    CompatibilityLevel, Consensus, DnaType, IdentityVerification, ReconciledVariant, VariantStatus, VerificationStatus,
+};
 use navigator_domain::strprofile::{self, NewStrProfile, StrProfile};
 use navigator_domain::variants::{self, NewVariantSet, VariantSet};
 use navigator_store::{
@@ -780,6 +782,16 @@ impl App {
     ) -> Result<Option<Consensus>, AppError> {
         let calls = haplogroup_call::list_for(self.store.pool(), biosample_guid, dna_type).await?;
         Ok(reconciliation::reconcile(&calls))
+    }
+
+    /// Reconcile the subject's variant sets at the variant level — which positions are
+    /// confirmed across sources, in conflict, or single-source (Sanger-confirmation
+    /// candidates).
+    pub async fn reconcile_variants(&self, biosample_guid: SampleGuid) -> Result<Vec<ReconciledVariant>, AppError> {
+        let sets = variant_set::list_for_biosample(self.store.pool(), biosample_guid).await?;
+        let sources: Vec<(String, &[variants::VariantCall])> =
+            sets.iter().map(|s| (s.source_label.clone(), s.calls.as_slice())).collect();
+        Ok(reconciliation::reconcile_variants(&sources))
     }
 
     /// All recorded per-source calls for a subject + DNA type (for display / audit).

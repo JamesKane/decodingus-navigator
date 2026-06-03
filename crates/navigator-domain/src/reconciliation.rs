@@ -6,7 +6,79 @@
 //! the app/store. Variant concordance, identity verification, and heteroplasmy are later
 //! phases.
 
+use std::collections::BTreeMap;
+
 use serde::{Deserialize, Serialize};
+
+use crate::variants::VariantCall;
+
+/// Whether a variant is corroborated across the subject's sources.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum VariantStatus {
+    /// Two or more sources agree on the allele.
+    Confirmed,
+    /// Sources report different alleles at the position.
+    Conflict,
+    /// Only one source reports the variant (awaiting confirmation — e.g. by Sanger).
+    SingleSource,
+}
+
+/// A position reconciled across the subject's variant sets.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReconciledVariant {
+    pub contig: String,
+    pub position: i64,
+    /// The consensus (most-reported) alternate allele.
+    pub allele: String,
+    pub status: VariantStatus,
+    /// Sources reporting the consensus allele.
+    pub support: usize,
+    /// Sources reporting any variant at this position.
+    pub total: usize,
+    pub sources: Vec<String>,
+}
+
+/// Reconcile a subject's variant sets at the variant level: per position, do the sources
+/// that report a variant agree on the allele? `Confirmed` (≥2 agree), `Conflict`
+/// (different alleles), or `SingleSource` (one source — a candidate for Sanger
+/// confirmation). Equal-vote for now; per-source weighting (Sanger gold standard) is a
+/// later phase. Note: a source *not* reporting a position is ambiguous (ancestral vs no
+/// coverage), so absence isn't counted as disagreement.
+pub fn reconcile_variants(sources: &[(String, &[VariantCall])]) -> Vec<ReconciledVariant> {
+    // (contig, position) -> [(source_label, allele)]
+    let mut by_pos: BTreeMap<(String, i64), Vec<(String, String)>> = BTreeMap::new();
+    for (label, calls) in sources {
+        for c in *calls {
+            by_pos
+                .entry((c.contig.clone(), c.position))
+                .or_default()
+                .push((label.clone(), c.alternate.to_ascii_uppercase()));
+        }
+    }
+
+    let mut out = Vec::with_capacity(by_pos.len());
+    for ((contig, position), entries) in by_pos {
+        // Tally alleles.
+        let mut counts: BTreeMap<&str, usize> = BTreeMap::new();
+        for (_, allele) in &entries {
+            *counts.entry(allele.as_str()).or_default() += 1;
+        }
+        let distinct = counts.len();
+        let (best_allele, support) =
+            counts.iter().max_by_key(|(_, n)| **n).map(|(a, n)| (a.to_string(), *n)).unwrap();
+        let total = entries.len();
+        let status = if total == 1 {
+            VariantStatus::SingleSource
+        } else if distinct > 1 {
+            VariantStatus::Conflict
+        } else {
+            VariantStatus::Confirmed
+        };
+        let sources = entries.into_iter().filter(|(_, a)| *a == best_allele).map(|(l, _)| l).collect();
+        out.push(ReconciledVariant { contig, position, allele: best_allele, status, support, total, sources });
+    }
+    out
+}
 
 /// Which uniparental lineage a call describes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -279,6 +351,30 @@ mod tests {
         assert_eq!(c.compatibility, CompatibilityLevel::MinorDivergence);
         assert_eq!(c.divergence_point.as_deref(), Some("R-L21"));
         assert_eq!(c.haplogroup, "R-L21");
+    }
+
+    #[test]
+    fn variant_concordance_status() {
+        use crate::variants::VariantCall;
+        let vc = |contig: &str, pos: i64, alt: &str| VariantCall {
+            contig: contig.into(),
+            position: pos,
+            reference: "A".into(),
+            alternate: alt.into(),
+            rs_id: None,
+            genotype: None,
+        };
+        let wgs = vec![vc("chr1", 1000, "G"), vc("chr1", 2000, "T")]; // 2000 only in wgs
+        let hifi = vec![vc("chr1", 1000, "G"), vc("chr1", 3000, "C")]; // 1000 agrees; 3000 only hifi
+        let sanger = vec![vc("chr1", 3000, "A")]; // disagrees with hifi at 3000
+        let sources = vec![("wgs".to_string(), wgs.as_slice()), ("hifi".to_string(), hifi.as_slice()), ("sanger".to_string(), sanger.as_slice())];
+        let r = reconcile_variants(&sources);
+
+        let at = |p: i64| r.iter().find(|v| v.position == p).unwrap();
+        assert_eq!(at(1000).status, VariantStatus::Confirmed); // wgs+hifi agree on G
+        assert_eq!(at(1000).support, 2);
+        assert_eq!(at(2000).status, VariantStatus::SingleSource); // only wgs
+        assert_eq!(at(3000).status, VariantStatus::Conflict); // hifi C vs sanger A
     }
 
     #[test]
