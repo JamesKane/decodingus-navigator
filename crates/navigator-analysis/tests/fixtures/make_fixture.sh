@@ -36,6 +36,8 @@ samtools faidx ref.fa
   for i in 1 2 3 4 5; do emit "mq0_$i" 26 0  5M  "$seq5"  "$qual5";  done
 } > coverage.sam
 samtools sort -o coverage.bam coverage.sam && samtools index coverage.bam
+# CRAM counterpart (same reads, ref-compressed) — proves the reader unification is parity-clean.
+samtools view -T ref.fa -C -o coverage.cram coverage.bam && samtools index coverage.cram
 
 # ---- paired.bam -----------------------------------------------------------
 # Two FR proper pairs on chrM. flags: /1 = 99 (paired+proper+mate_rev+first),

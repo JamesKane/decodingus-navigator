@@ -27,6 +27,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::contig;
 use crate::error::AnalysisError;
+use crate::reader;
 
 /// Algorithm version for the coverage artifact cache key; bump on any change that
 /// alters output (plan §6 cache versioning).
@@ -269,17 +270,15 @@ impl CurContig {
 
 /// Single coordinate-ordered pass with a sliding pileup window: positions finalize once
 /// the read frontier passes them, so peak memory is the open-read span, not the contig
-/// length. Requires a coordinate-sorted BAM (the standard genomics layout).
+/// length. Requires a coordinate-sorted BAM/CRAM (the standard genomics layout). The
+/// reference is needed both to detect reference-N positions and to decode CRAM.
 pub fn collect_coverage_callable(
     bam_path: &Path,
     reference_path: &Path,
     params: &CallableLociParams,
     contig_allowlist: Option<&HashSet<String>>,
 ) -> Result<CoverageResult, AnalysisError> {
-    let mut reader = bam::io::reader::Builder
-        .build_from_path(bam_path)
-        .map_err(|e| AnalysisError::io(bam_path, e))?;
-    let header = reader.read_header().map_err(|e| AnalysisError::io(bam_path, e))?;
+    let (header, mut reader) = reader::open_seq(bam_path, Some(reference_path))?;
 
     // ref_id -> (name, length) for tracked (main-assembly, allowlisted) contigs.
     let tracked: Vec<Option<(String, usize)>> = header
@@ -301,8 +300,8 @@ pub fn collect_coverage_callable(
     let mut finished: HashMap<usize, ContigOut> = HashMap::new();
     let mut cur: Option<(usize, CurContig)> = None;
 
-    for result in reader.records() {
-        let record = result.map_err(|e| AnalysisError::io(bam_path, e))?;
+    for result in reader.records(&header) {
+        let record = result?;
         let flags = record.flags();
         if flags.is_unmapped()
             || flags.is_secondary()
@@ -313,7 +312,7 @@ pub fn collect_coverage_callable(
             continue;
         }
         let ref_id = match record.reference_sequence_id() {
-            Some(r) => r.map_err(|e| AnalysisError::io(bam_path, e))?,
+            Some(r) => r,
             None => continue,
         };
         let Some((name, length)) = tracked.get(ref_id).and_then(|o| o.as_ref()) else {
@@ -336,7 +335,7 @@ pub fn collect_coverage_callable(
         }
 
         let start = match record.alignment_start() {
-            Some(p) => p.map_err(|e| AnalysisError::io(bam_path, e))?.get(),
+            Some(p) => p.get(),
             None => continue,
         };
         let (_, c) = cur.as_mut().unwrap();
@@ -349,8 +348,7 @@ pub fn collect_coverage_callable(
 
         let mut ref_pos = start; // 1-based
         let mut query_off = 0usize;
-        for op in record.cigar().iter() {
-            let op = op.map_err(|e| AnalysisError::io(bam_path, e))?;
+        for op in record.cigar().as_ref() {
             let kind = op.kind();
             let len = op.len();
             match (kind.consumes_reference(), kind.consumes_read()) {

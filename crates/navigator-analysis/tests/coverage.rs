@@ -77,6 +77,17 @@ fn coverage_matches_hand_computed_values() {
 }
 
 #[test]
+fn cram_coverage_matches_bam_field_for_field() {
+    // The CRAM is the same reads as coverage.bam, ref-compressed; the reader unification
+    // (both decoded to RecordBuf) must yield an identical CoverageResult.
+    let dir = fixtures();
+    let params = CallableLociParams::default();
+    let bam = collect_coverage_callable(&dir.join("coverage.bam"), &dir.join("ref.fa"), &params, None).unwrap();
+    let cram = collect_coverage_callable(&dir.join("coverage.cram"), &dir.join("ref.fa"), &params, None).unwrap();
+    assert_eq!(cram, bam, "CRAM coverage must equal BAM coverage");
+}
+
+#[test]
 fn contig_allowlist_excludes_unlisted_contigs() {
     let dir = fixtures();
     let allow = std::collections::HashSet::new(); // empty: chrM not listed
