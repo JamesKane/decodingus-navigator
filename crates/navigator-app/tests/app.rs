@@ -843,3 +843,42 @@ async fn import_project_dir_creates_rows_is_idempotent_and_coverage_runs_on_cram
 
     let _ = std::fs::remove_dir_all(&root);
 }
+
+#[tokio::test]
+async fn project_report_rolls_up_coverage_and_csv_round_trips() {
+    let app = app().await;
+    let fx = fixtures();
+
+    let root = std::env::temp_dir().join(format!("dun-report-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let sample = root.join("HG00096");
+    std::fs::create_dir_all(&sample).unwrap();
+    std::fs::copy(fx.join("coverage.cram"), sample.join("HG00096.chm13.cram")).unwrap();
+    std::fs::copy(fx.join("coverage.cram.crai"), sample.join("HG00096.chm13.cram.crai")).unwrap();
+
+    let summary = app.import_project_dir(&root, fx.join("ref.fa"), "tester".into()).await.unwrap();
+    let pid = summary.project.id;
+
+    // Before coverage runs: report has the sample, coverage cells empty, haplogroups none.
+    let before = app.project_report(pid).await.unwrap();
+    assert_eq!(before.len(), 1);
+    assert_eq!(before[0].alignment_count, 1);
+    assert!(before[0].mean_coverage.is_none());
+    assert!(before[0].y_haplogroup.is_none() && before[0].mt_haplogroup.is_none());
+
+    // Run coverage, then the report fills in.
+    let aln = app.list_all_alignments().await.unwrap();
+    app.run_coverage_for_alignment(aln[0].id).await.unwrap();
+    let after = app.project_report(pid).await.unwrap();
+    assert!(after[0].mean_coverage.is_some());
+    assert_eq!(after[0].callable_bases, Some(10)); // fixture: 10 callable bases
+
+    // CSV: header + one data row, sample id present.
+    let csv = navigator_app::report_csv(&after);
+    let lines: Vec<&str> = csv.lines().collect();
+    assert_eq!(lines.len(), 2);
+    assert!(lines[0].starts_with("sample_id,alignment_count,mean_coverage"));
+    assert!(lines[1].starts_with("HG00096,1,"));
+
+    let _ = std::fs::remove_dir_all(&root);
+}

@@ -273,6 +273,22 @@ pub struct ProjectOverview {
     pub sample_count: i64,
 }
 
+/// One row of a project's per-sample report: coverage roll-up + haplogroup consensus.
+/// Coverage fields are `None` when no coverage has been computed yet; haplogroup fields
+/// are `None` until calls are recorded (deferred this slice).
+#[derive(Debug, Clone)]
+pub struct ProjectSampleReport {
+    pub biosample: Biosample,
+    pub alignment_count: usize,
+    pub mean_coverage: Option<f64>,
+    pub median_coverage: Option<f64>,
+    pub pct_10x: Option<f64>,
+    pub pct_20x: Option<f64>,
+    pub callable_bases: Option<u64>,
+    pub y_haplogroup: Option<String>,
+    pub mt_haplogroup: Option<String>,
+}
+
 /// Outcome of a batch project-directory import (idempotent — counts only what's new).
 #[derive(Debug, Clone)]
 pub struct ProjectImportSummary {
@@ -1633,4 +1649,77 @@ impl App {
         }
         Ok(out)
     }
+
+    /// Per-sample report for a project: each biosample's alignment count, coverage roll-up
+    /// (the first alignment with cached coverage), and Y/mtDNA haplogroup consensus.
+    /// Composes existing per-subject queries (no new join) — coverage/haplogroup cells are
+    /// `None` until those analyses have run.
+    pub async fn project_report(&self, project_id: i64) -> Result<Vec<ProjectSampleReport>, AppError> {
+        let mut out = Vec::new();
+        for biosample in biosample::list_for_project(self.store.pool(), project_id).await? {
+            let alignments = alignment::list_for_biosample(self.store.pool(), biosample.guid).await?;
+            let mut coverage = None;
+            for a in &alignments {
+                if let Some(c) = self.cached_coverage(a.id).await? {
+                    coverage = Some(c);
+                    break;
+                }
+            }
+            let y_haplogroup = self.haplogroup_consensus(biosample.guid, DnaType::Y).await?.map(|c| c.haplogroup);
+            let mt_haplogroup = self.haplogroup_consensus(biosample.guid, DnaType::Mt).await?.map(|c| c.haplogroup);
+            out.push(ProjectSampleReport {
+                alignment_count: alignments.len(),
+                mean_coverage: coverage.as_ref().map(|c| c.mean_coverage),
+                median_coverage: coverage.as_ref().map(|c| c.median_coverage),
+                pct_10x: coverage.as_ref().map(|c| c.pct_10x),
+                pct_20x: coverage.as_ref().map(|c| c.pct_20x),
+                callable_bases: coverage.as_ref().map(|c| c.callable_bases),
+                y_haplogroup,
+                mt_haplogroup,
+                biosample,
+            });
+        }
+        Ok(out)
+    }
+}
+
+/// Render a project report as CSV (one header row + one row per sample). Empty cells for
+/// not-yet-computed coverage/haplogroup. Hand-formatted to avoid a CSV dependency; values
+/// containing a comma or quote are quoted.
+pub fn report_csv(rows: &[ProjectSampleReport]) -> String {
+    fn field(s: &str) -> String {
+        if s.contains([',', '"', '\n']) {
+            format!("\"{}\"", s.replace('"', "\"\""))
+        } else {
+            s.to_string()
+        }
+    }
+    fn num(o: Option<f64>) -> String {
+        o.map(|v| format!("{v:.4}")).unwrap_or_default()
+    }
+
+    let mut s = String::from(
+        "sample_id,alignment_count,mean_coverage,median_coverage,pct_10x,pct_20x,callable_bases,y_haplogroup,mt_haplogroup\n",
+    );
+    for r in rows {
+        s.push_str(&field(&r.biosample.donor_identifier));
+        s.push(',');
+        s.push_str(&r.alignment_count.to_string());
+        s.push(',');
+        s.push_str(&num(r.mean_coverage));
+        s.push(',');
+        s.push_str(&num(r.median_coverage));
+        s.push(',');
+        s.push_str(&num(r.pct_10x));
+        s.push(',');
+        s.push_str(&num(r.pct_20x));
+        s.push(',');
+        s.push_str(&r.callable_bases.map(|v| v.to_string()).unwrap_or_default());
+        s.push(',');
+        s.push_str(&field(r.y_haplogroup.as_deref().unwrap_or("")));
+        s.push(',');
+        s.push_str(&field(r.mt_haplogroup.as_deref().unwrap_or("")));
+        s.push('\n');
+    }
+    s
 }
