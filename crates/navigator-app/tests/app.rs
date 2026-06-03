@@ -193,15 +193,12 @@ async fn assign_mtdna_haplogroup_ranks_best() {
     let subject = app.add_biosample(None, "HG002", None, None).await.unwrap();
     let dir = std::env::temp_dir();
 
-    // rCRS: all A; sample carries derived G at 263 and 750 (a tiny H2-ish lineage).
-    let reference = "A".repeat(16_569);
-    let mut sample = reference.clone().into_bytes();
-    sample[262] = b'G'; // 263 A>G
-    sample[749] = b'G'; // 750 A>G
+    // Sample carries the tree's derived G at 263 and 750 (RSRS-anchored, no reference).
+    let mut sample = "A".repeat(16_569).into_bytes();
+    sample[262] = b'G'; // position 263
+    sample[749] = b'G'; // position 750
     let sample = String::from_utf8(sample).unwrap();
-    let ref_path = dir.join(format!("rcrs-hg-{}.fasta", subject.guid.0));
     let samp_path = dir.join(format!("mt-hg-{}.fasta", subject.guid.0));
-    std::fs::write(&ref_path, format!(">rCRS\n{reference}\n")).unwrap();
     std::fs::write(&samp_path, format!(">sample\n{sample}\n")).unwrap();
     let mt = app.import_mtdna_from_fasta(subject.guid, &samp_path).await.unwrap();
 
@@ -211,15 +208,13 @@ async fn assign_mtdna_haplogroup_ranks_best() {
         "3":{"haplogroupId":3,"name":"H2","isRoot":false,"variants":[{"variant":"A750G","position":750,"ancestral":"A","derived":"G"}],"children":[]}
     }}"#;
 
-    let ranked = app.assign_mtdna_haplogroup_with_tree(mt.id, &ref_path, tree).await.unwrap();
-    assert_eq!(ranked[0].name, "H2"); // both derived alleles -> deepest matching node
+    let ranked = app.assign_mtdna_haplogroup_with_tree(mt.id, tree).await.unwrap();
+    assert_eq!(ranked[0].name, "H2"); // carries both derived alleles -> deepest node
     assert_eq!(ranked[0].matched, 2);
     assert!((ranked[0].score - 1.0).abs() < 1e-9);
     assert_eq!(ranked[0].lineage, vec!["root", "H", "H2"]);
 
-    for p in [ref_path, samp_path] {
-        let _ = std::fs::remove_file(p);
-    }
+    let _ = std::fs::remove_file(&samp_path);
 }
 
 #[tokio::test]

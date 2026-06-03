@@ -5,14 +5,17 @@
 //!
 //! `score = ½·(|F∩E| / |E| + |F∩E| / |F|)` per node, equal site weights (a published
 //! per-site weight table can be layered on later). Pure: callers supply the parsed tree
-//! and the found set; fetching the FTDNA JSON lives in the app layer.
+//! and the sample's base calls; fetching the FTDNA JSON lives in the app layer.
 //!
-//! Caveat: `found` is the sample's variants vs rCRS, so rCRS's own haplogroup-defining
-//! sites aren't polymorphisms and the H backbone is under-supported (the classic
-//! rCRS-vs-RSRS anchoring issue). Adequate for ranking within the rCRS-similar space; an
-//! RSRS re-anchoring would be the next fidelity step.
+//! **RSRS-anchored, reference-free.** Rather than diffing the sample against rCRS (which
+//! would hide rCRS's own backbone mutations — the classic rCRS-vs-RSRS problem), we read
+//! the sample's *actual base* at each tree position and compare it to the node's derived
+//! allele. The FTDNA tree is RSRS-rooted, so a base equal to a node's derived allele is a
+//! genuine carried mutation, backbone included — no reference subtraction needed. `found`
+//! is then the set of tree sites where the sample carries the derived allele. (Assumes the
+//! sample is on rCRS coordinates, i.e. ~16,569 bp; indels would shift later positions.)
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use serde::Deserialize;
 
@@ -119,19 +122,32 @@ pub fn parse_ftdna_json(data: &str) -> Result<HaploTree, String> {
     Ok(HaploTree { nodes })
 }
 
-/// Rank every haplogroup in `tree` against the sample's `found` polymorphisms (position →
-/// uppercase base) by the Kulczynski measure. Best-first (highest score; shallower wins
-/// ties — a child that adds no matched mutation shouldn't outrank its parent).
-pub fn score(tree: &HaploTree, found: &HashMap<i64, char>) -> Vec<ScoredHaplogroup> {
+/// Rank every haplogroup in `tree` by the Kulczynski measure, given the sample's base at
+/// each position (`calls`: 1-based position → uppercase base, from the full sequence).
+/// `found` is the set of tree sites where the sample carries the derived allele; expected
+/// is the root→node derived loci. Best-first (highest score; shallower wins ties — a child
+/// that adds no matched mutation shouldn't outrank its parent).
+pub fn score(tree: &HaploTree, calls: &HashMap<i64, char>) -> Vec<ScoredHaplogroup> {
+    // |F| — distinct tree sites whose derived allele the sample carries.
+    let mut carried: HashSet<i64> = HashSet::new();
+    for node in tree.nodes.values() {
+        for locus in &node.loci {
+            if locus_carried(locus, calls) {
+                carried.insert(locus.position);
+            }
+        }
+    }
+    let total_found = carried.len();
+
     let mut out = Vec::new();
-    let mut expected: HashMap<i64, char> = HashMap::new();
-    let mut matched: usize = 0usize;
+    let mut on_path: HashSet<i64> = HashSet::new();
+    let mut matched: usize = 0;
     let mut lineage: Vec<String> = Vec::new();
 
     let mut roots: Vec<i64> = tree.nodes.values().filter(|n| n.is_root).map(|n| n.id).collect();
     roots.sort_unstable();
     for r in roots {
-        dfs(tree, r, found, &mut expected, &mut matched, 0, &mut lineage, &mut out);
+        dfs(tree, r, calls, total_found, &mut on_path, &mut matched, 0, &mut lineage, &mut out);
     }
 
     out.sort_by(|a, b| {
@@ -143,12 +159,21 @@ pub fn score(tree: &HaploTree, found: &HashMap<i64, char>) -> Vec<ScoredHaplogro
     out
 }
 
+/// Does the sample carry this locus's derived allele?
+fn locus_carried(locus: &Locus, calls: &HashMap<i64, char>) -> bool {
+    match locus.derived.chars().next() {
+        Some(d) => calls.get(&locus.position).is_some_and(|b| b.eq_ignore_ascii_case(&d)),
+        None => false,
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn dfs(
     tree: &HaploTree,
     id: i64,
-    found: &HashMap<i64, char>,
-    expected: &mut HashMap<i64, char>,
+    calls: &HashMap<i64, char>,
+    total_found: usize,
+    on_path: &mut HashSet<i64>,
     matched: &mut usize,
     depth: usize,
     lineage: &mut Vec<String>,
@@ -157,24 +182,23 @@ fn dfs(
     let Some(node) = tree.nodes.get(&id) else { return };
     lineage.push(node.name.clone());
 
-    // Add this node's loci to the path's expected set (skip recurrent positions).
-    let mut added: Vec<i64> = Vec::new();
+    // Add this node's loci to the path (skip positions already seen on the path).
+    let mut added: Vec<(i64, bool)> = Vec::new();
     for locus in &node.loci {
-        let Some(d) = locus.derived.chars().next().map(|c| c.to_ascii_uppercase()) else { continue };
-        if expected.contains_key(&locus.position) {
+        if locus.derived.is_empty() || !on_path.insert(locus.position) {
             continue;
         }
-        expected.insert(locus.position, d);
-        added.push(locus.position);
-        if found.get(&locus.position).is_some_and(|b| b.eq_ignore_ascii_case(&d)) {
+        let carried = locus_carried(locus, calls);
+        if carried {
             *matched += 1;
         }
+        added.push((locus.position, carried));
     }
 
-    let (e, f) = (expected.len(), found.len());
-    let kulczynski = if e > 0 && f > 0 {
+    let expected = on_path.len();
+    let kulczynski = if expected > 0 && total_found > 0 {
         let m = *matched as f64;
-        0.5 * (m / e as f64 + m / f as f64)
+        0.5 * (m / expected as f64 + m / total_found as f64)
     } else {
         0.0
     };
@@ -184,22 +208,21 @@ fn dfs(
         depth,
         lineage: lineage.clone(),
         matched: *matched,
-        expected: e,
-        found: f,
+        expected,
+        found: total_found,
     });
 
     let mut children = node.children.clone();
     children.sort_unstable();
     for c in children {
-        dfs(tree, c, found, expected, matched, depth + 1, lineage, out);
+        dfs(tree, c, calls, total_found, on_path, matched, depth + 1, lineage, out);
     }
 
     // Backtrack.
-    for p in added {
-        if let Some(d) = expected.remove(&p) {
-            if found.get(&p).is_some_and(|b| b.eq_ignore_ascii_case(&d)) {
-                *matched -= 1;
-            }
+    for (pos, carried) in added {
+        on_path.remove(&pos);
+        if carried {
+            *matched -= 1;
         }
     }
     lineage.pop();
@@ -222,7 +245,8 @@ mod tests {
       }
     }"#;
 
-    fn found(pairs: &[(i64, char)]) -> HashMap<i64, char> {
+    /// Sample base calls by position (the bases the sample carries at these positions).
+    fn calls(pairs: &[(i64, char)]) -> HashMap<i64, char> {
         pairs.iter().copied().collect()
     }
 
@@ -238,7 +262,7 @@ mod tests {
     fn perfect_match_picks_the_deepest_node() {
         // sample carries all three derived alleles -> H2a is the best (matched 3 of 3).
         let t = parse_ftdna_json(TREE).unwrap();
-        let ranked = score(&t, &found(&[(146, 'G'), (263, 'G'), (750, 'T')]));
+        let ranked = score(&t, &calls(&[(146, 'G'), (263, 'G'), (750, 'T')]));
         assert_eq!(ranked[0].name, "H2a");
         assert_eq!(ranked[0].matched, 3);
         assert_eq!(ranked[0].expected, 3);
@@ -249,7 +273,7 @@ mod tests {
     fn partial_match_stops_at_the_supported_node() {
         // only the first two derived alleles present -> H2 wins, H2a scores lower.
         let t = parse_ftdna_json(TREE).unwrap();
-        let ranked = score(&t, &found(&[(146, 'G'), (263, 'G')]));
+        let ranked = score(&t, &calls(&[(146, 'G'), (263, 'G')]));
         assert_eq!(ranked[0].name, "H2");
         assert!((ranked[0].score - 1.0).abs() < 1e-9); // matched 2, |E|=2, |F|=2
         let h2a = ranked.iter().find(|r| r.name == "H2a").unwrap();
@@ -259,7 +283,7 @@ mod tests {
     #[test]
     fn no_variants_yields_root() {
         let t = parse_ftdna_json(TREE).unwrap();
-        let ranked = score(&t, &found(&[]));
+        let ranked = score(&t, &calls(&[]));
         assert_eq!(ranked[0].score, 0.0);
     }
 }

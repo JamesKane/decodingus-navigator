@@ -854,11 +854,9 @@ impl NavigatorApp {
                         let _ = self.tx.send(Command::DeriveMtdnaVariants { mtdna_id: m.id, rcrs_path: path });
                     }
                 }
-                if ui.add_enabled(rcrs.is_some(), egui::Button::new("Assign haplogroup")).clicked() {
-                    if let Some(path) = rcrs.clone() {
-                        self.status = "Assigning haplogroup (fetching FTDNA tree)…".into();
-                        let _ = self.tx.send(Command::AssignMtdnaHaplogroup { mtdna_id: m.id, rcrs_path: path });
-                    }
+                if ui.button("Assign haplogroup").clicked() {
+                    self.status = "Assigning haplogroup (fetching FTDNA tree)…".into();
+                    let _ = self.tx.send(Command::AssignMtdnaHaplogroup { mtdna_id: m.id });
                 }
             });
             // Show the haplogroup result for this sequence, if any.

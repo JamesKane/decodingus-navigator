@@ -61,8 +61,8 @@ pub enum Command {
     ImportMtdna { biosample_guid: SampleGuid, path: PathBuf },
     /// Derive mtDNA variants for a stored sequence vs an rCRS reference FASTA.
     DeriveMtdnaVariants { mtdna_id: i64, rcrs_path: PathBuf },
-    /// Assign an mtDNA haplogroup (derive vs rCRS, fetch the FTDNA tree, rank).
-    AssignMtdnaHaplogroup { mtdna_id: i64, rcrs_path: PathBuf },
+    /// Assign an mtDNA haplogroup (fetch the FTDNA tree, rank by the sample's base calls).
+    AssignMtdnaHaplogroup { mtdna_id: i64 },
     /// Unified import: detect the file's type and route it to the right importer.
     AddData { biosample_guid: SampleGuid, path: PathBuf },
     LoadAlignments(i64),
@@ -223,12 +223,10 @@ pub async fn handle(app: &App, cmd: Command) -> Event {
                 Err(e) => Event::Error(e.to_string()),
             }
         }
-        Command::AssignMtdnaHaplogroup { mtdna_id, rcrs_path } => {
-            match app.assign_mtdna_haplogroup(mtdna_id, &rcrs_path).await {
-                Ok(ranked) => Event::Haplogroup { mtdna_id, ranked },
-                Err(e) => Event::Error(e.to_string()),
-            }
-        }
+        Command::AssignMtdnaHaplogroup { mtdna_id } => match app.assign_mtdna_haplogroup(mtdna_id).await {
+            Ok(ranked) => Event::Haplogroup { mtdna_id, ranked },
+            Err(e) => Event::Error(e.to_string()),
+        },
         Command::AddData { biosample_guid, path } => match app.add_data(biosample_guid, &path).await {
             Ok(detected) => Event::DataImported { biosample_guid, label: detected.description().to_string() },
             Err(e) => Event::Error(e.to_string()),

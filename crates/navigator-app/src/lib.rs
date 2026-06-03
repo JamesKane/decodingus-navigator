@@ -626,16 +626,12 @@ impl App {
         Ok(variant_set::create(self.store.pool(), &new).await?)
     }
 
-    /// Assign an mtDNA haplogroup to a stored sequence: derive its variants vs `rcrs_path`,
-    /// fetch (and cache) the FTDNA mt-DNA haplotree, and rank haplogroups by the Kulczynski
-    /// measure. Returns the ranked candidates (best first).
-    pub async fn assign_mtdna_haplogroup(
-        &self,
-        mtdna_id: i64,
-        rcrs_path: &Path,
-    ) -> Result<Vec<ScoredHaplogroup>, AppError> {
+    /// Assign an mtDNA haplogroup to a stored sequence: fetch (and cache) the FTDNA mt-DNA
+    /// haplotree and rank haplogroups by the Kulczynski measure over the sample's base
+    /// calls. RSRS-anchored and reference-free (no rCRS needed). Best first.
+    pub async fn assign_mtdna_haplogroup(&self, mtdna_id: i64) -> Result<Vec<ScoredHaplogroup>, AppError> {
         let tree_json = self.fetch_ftdna_mt_tree().await?;
-        self.assign_mtdna_haplogroup_with_tree(mtdna_id, rcrs_path, &tree_json).await
+        self.assign_mtdna_haplogroup_with_tree(mtdna_id, &tree_json).await
     }
 
     /// Like [`assign_mtdna_haplogroup`](Self::assign_mtdna_haplogroup) but with the tree
@@ -643,27 +639,23 @@ impl App {
     pub async fn assign_mtdna_haplogroup_with_tree(
         &self,
         mtdna_id: i64,
-        rcrs_path: &Path,
         tree_json: &str,
     ) -> Result<Vec<ScoredHaplogroup>, AppError> {
         let seq = mtdna_store::get(self.store.pool(), mtdna_id)
             .await?
             .ok_or_else(|| AppError::Store(StoreError::NotFound(format!("mtDNA sequence {mtdna_id}"))))?;
-        let rcrs_text = std::fs::read_to_string(rcrs_path)?;
-        let rcrs = mtdna::parse_fasta(&rcrs_text).map_err(|e| AppError::Import(format!("rCRS reference: {e}")))?;
 
-        // Found polymorphisms = substitutions vs rCRS (FTDNA mt loci are SNVs).
-        let mut found: HashMap<i64, char> = HashMap::new();
-        for v in navigator_analysis::mtvariants::derive(&rcrs.sequence, &seq.sequence) {
-            if v.kind == navigator_analysis::mtvariants::MtVariantKind::Substitution {
-                if let Some(c) = v.alternate.chars().next() {
-                    found.insert(v.position, c.to_ascii_uppercase());
-                }
+        // Sample base at each (rCRS-coordinate) position, straight from the full sequence.
+        let mut calls: HashMap<i64, char> = HashMap::new();
+        for (i, b) in seq.sequence.bytes().enumerate() {
+            let u = b.to_ascii_uppercase();
+            if matches!(u, b'A' | b'C' | b'G' | b'T') {
+                calls.insert((i + 1) as i64, u as char);
             }
         }
 
         let tree = navigator_analysis::haplo::parse_ftdna_json(tree_json).map_err(AppError::Import)?;
-        Ok(navigator_analysis::haplo::score(&tree, &found))
+        Ok(navigator_analysis::haplo::score(&tree, &calls))
     }
 
     /// FTDNA mt-DNA haplotree JSON, from the on-disk cache or freshly downloaded + cached.
