@@ -12,6 +12,7 @@ pub use du_domain;
 pub mod chipprofile;
 pub mod filetype;
 pub mod mtdna;
+pub mod reconciliation;
 pub mod strprofile;
 pub mod testtype;
 pub mod variants;

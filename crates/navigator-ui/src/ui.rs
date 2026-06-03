@@ -7,8 +7,8 @@ use std::sync::mpsc::Receiver;
 
 use eframe::egui;
 use navigator_app::{
-    CallState, Coverage, DenovoCall, HaploAssignment, IbdComparison, PanelGenotype, PrivateBucket, PrivateClass,
-    ProjectOverview,
+    CallState, CompatibilityLevel, Consensus, Coverage, DenovoCall, HaploAssignment, IbdComparison, PanelGenotype,
+    PrivateBucket, PrivateClass, ProjectOverview,
 };
 use navigator_domain::du_domain::ids::SampleGuid;
 use navigator_domain::chipprofile::{self, ChipProfile};
@@ -54,6 +54,9 @@ pub struct NavigatorApp {
     all_biosamples: Vec<Biosample>,
     selected_sample: Option<SampleGuid>,
     runs: Vec<SequenceRun>,
+    /// Donor-level haplogroup consensus for the selected subject (Y, mtDNA).
+    consensus_y: Option<Consensus>,
+    consensus_mt: Option<Consensus>,
     /// STR profiles for the selected subject.
     str_profiles: Vec<StrProfile>,
     /// SNP variant sets for the selected subject.
@@ -185,6 +188,8 @@ impl NavigatorApp {
             all_biosamples: Vec::new(),
             selected_sample: None,
             runs: Vec::new(),
+            consensus_y: None,
+            consensus_mt: None,
             str_profiles: Vec::new(),
             variant_sets: Vec::new(),
             chip_profiles: Vec::new(),
@@ -313,6 +318,9 @@ impl NavigatorApp {
                         None => "No haplogroup match".into(),
                     };
                     self.mtdna_haplogroup = Some((mtdna_id, assignment));
+                    if let Some(guid) = self.selected_sample {
+                        let _ = self.tx.send(Command::LoadConsensus(guid)); // a call was recorded
+                    }
                 }
                 Event::YHaplogroup { alignment_id, assignment } => {
                     self.status = match assignment.ranked.first() {
@@ -320,6 +328,15 @@ impl NavigatorApp {
                         None => "No Y haplogroup match".into(),
                     };
                     self.y_haplogroup = Some((alignment_id, assignment));
+                    if let Some(guid) = self.selected_sample {
+                        let _ = self.tx.send(Command::LoadConsensus(guid));
+                    }
+                }
+                Event::Consensus { biosample_guid, y, mt } => {
+                    if self.selected_sample == Some(biosample_guid) {
+                        self.consensus_y = y;
+                        self.consensus_mt = mt;
+                    }
                 }
                 Event::PrivateY { alignment_id, bucket } => {
                     self.status = format!("Private Y: {} novel, {} off-path", bucket.novel(), bucket.off_path());
@@ -423,6 +440,9 @@ impl NavigatorApp {
         self.chip_profiles.clear();
         self.mtdna_sequences.clear();
         self.mtdna_haplogroup = None;
+        self.consensus_y = None;
+        self.consensus_mt = None;
+        let _ = self.tx.send(Command::LoadConsensus(guid));
         let _ = self.tx.send(Command::LoadRuns(guid));
         let _ = self.tx.send(Command::LoadStrProfiles(guid));
         let _ = self.tx.send(Command::LoadVariantSets(guid));
@@ -505,6 +525,7 @@ impl eframe::App for NavigatorApp {
                 }
                 if let Some(guid) = self.selected_sample {
                     self.subject_header(ui);
+                    self.consensus_section(ui);
                     self.str_section(ui, guid);
                     self.variants_section(ui, guid);
                     self.chip_section(ui, guid);
@@ -1196,6 +1217,34 @@ impl NavigatorApp {
                 ui.spinner();
             }
         });
+    }
+
+    /// Donor-level haplogroup consensus across all recorded sources (runs, Sanger, …).
+    fn consensus_section(&mut self, ui: &mut egui::Ui) {
+        if self.consensus_y.is_none() && self.consensus_mt.is_none() {
+            return; // nothing assigned yet for this subject
+        }
+        ui.add_space(12.0);
+        ui.separator();
+        ui.heading("Haplogroup consensus");
+        for (dna, cons) in [("Y-DNA", &self.consensus_y), ("mtDNA", &self.consensus_mt)] {
+            if let Some(c) = cons {
+                let (compat, col) = match c.compatibility {
+                    CompatibilityLevel::Compatible => ("compatible", egui::Color32::from_rgb(60, 160, 60)),
+                    CompatibilityLevel::MinorDivergence => ("minor divergence", egui::Color32::from_rgb(170, 150, 40)),
+                    CompatibilityLevel::MajorDivergence => ("major divergence", egui::Color32::from_rgb(200, 120, 40)),
+                    CompatibilityLevel::Incompatible => ("incompatible", egui::Color32::from_rgb(200, 60, 60)),
+                };
+                ui.horizontal(|ui| {
+                    ui.strong(format!("{dna}: {}", c.haplogroup));
+                    ui.label(format!("({} source(s), conf {:.3})", c.run_count, c.confidence));
+                    ui.colored_label(col, compat);
+                });
+                for w in &c.warnings {
+                    ui.label(format!("  ⚠ {w}"));
+                }
+            }
+        }
     }
 
     /// Y-haplogroup assignment for an alignment (calls chrY tree positions; FTDNA tree).

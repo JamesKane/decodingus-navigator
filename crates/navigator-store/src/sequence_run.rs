@@ -43,6 +43,15 @@ impl Row {
 const COLS: &str = "id, biosample_guid, platform_name, instrument_model, test_type, \
     library_layout, total_reads, pf_reads_aligned, mean_read_length, mean_insert_size";
 
+/// Fetch one sequence run by id.
+pub async fn get(pool: &SqlitePool, id: i64) -> Result<Option<SequenceRun>, StoreError> {
+    let row: Option<Row> = sqlx::query_as(&format!("SELECT {COLS} FROM sequence_run WHERE id = ?"))
+        .bind(id)
+        .fetch_optional(pool)
+        .await?;
+    row.map(Row::into_domain).transpose()
+}
+
 pub async fn create(pool: &SqlitePool, r: &NewSequenceRun) -> Result<SequenceRun, StoreError> {
     let id: i64 = sqlx::query_scalar(
         "INSERT INTO sequence_run (biosample_guid, platform_name, instrument_model, test_type, \

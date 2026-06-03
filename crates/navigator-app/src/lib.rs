@@ -98,11 +98,13 @@ use navigator_domain::chipprofile::{self, ChipProfile, NewChipProfile};
 use navigator_domain::filetype;
 pub use navigator_domain::filetype::DetectedData;
 use navigator_domain::mtdna::{self, MtdnaSequence, NewMtdnaSequence};
+use navigator_domain::reconciliation::{self, RunHaplogroupCall};
+pub use navigator_domain::reconciliation::{CompatibilityLevel, Consensus, DnaType};
 use navigator_domain::strprofile::{self, NewStrProfile, StrProfile};
 use navigator_domain::variants::{self, NewVariantSet, VariantSet};
 use navigator_store::{
-    alignment, artifact, biosample, chip_profile, mtdna as mtdna_store, project, sequence_run,
-    str_profile, variant_set, Store, StoreError,
+    alignment, artifact, biosample, chip_profile, haplogroup_call, mtdna as mtdna_store, project,
+    sequence_run, str_profile, variant_set, Store, StoreError,
 };
 use serde::de::DeserializeOwned;
 use serde::Serialize;
@@ -699,7 +701,76 @@ impl App {
     /// calls. RSRS-anchored and reference-free (no rCRS needed). Best first.
     pub async fn assign_mtdna_haplogroup(&self, mtdna_id: i64) -> Result<HaploAssignment, AppError> {
         let tree_json = self.fetch_ftdna_mt_tree().await?;
-        self.assign_mtdna_haplogroup_with_tree(mtdna_id, &tree_json).await
+        let assignment = self.assign_mtdna_haplogroup_with_tree(mtdna_id, &tree_json).await?;
+        if let Some(seq) = mtdna_store::get(self.store.pool(), mtdna_id).await? {
+            self.record_call(seq.biosample_guid, DnaType::Mt, &format!("mtseq:{mtdna_id}"), format!("mtDNA seq #{mtdna_id}"), &assignment).await?;
+        }
+        Ok(assignment)
+    }
+
+    /// The biosample a alignment belongs to (alignment → sequencing run → biosample).
+    async fn biosample_of_alignment(&self, alignment_id: i64) -> Result<SampleGuid, AppError> {
+        let aln = alignment::get(self.store.pool(), alignment_id)
+            .await?
+            .ok_or_else(|| AppError::Store(StoreError::NotFound(format!("alignment {alignment_id}"))))?;
+        let run = sequence_run::get(self.store.pool(), aln.sequence_run_id)
+            .await?
+            .ok_or_else(|| AppError::Store(StoreError::NotFound(format!("sequence run {}", aln.sequence_run_id))))?;
+        Ok(run.biosample_guid)
+    }
+
+    /// Record (upsert) a source's haplogroup call for donor-level reconciliation.
+    pub async fn record_haplogroup_call(
+        &self,
+        biosample_guid: SampleGuid,
+        dna_type: DnaType,
+        source_key: &str,
+        call: &RunHaplogroupCall,
+    ) -> Result<(), AppError> {
+        haplogroup_call::upsert(self.store.pool(), biosample_guid, dna_type, source_key, call).await?;
+        Ok(())
+    }
+
+    /// Record an assignment's top candidate as a per-source call (no-op if no match).
+    async fn record_call(
+        &self,
+        biosample_guid: SampleGuid,
+        dna_type: DnaType,
+        source_key: &str,
+        source_label: String,
+        assignment: &HaploAssignment,
+    ) -> Result<(), AppError> {
+        if let Some(top) = assignment.ranked.first() {
+            let call = RunHaplogroupCall {
+                source_label,
+                haplogroup: top.name.clone(),
+                lineage: top.lineage.clone(),
+                score: top.score,
+                matched: top.matched as i64,
+                expected: top.expected as i64,
+            };
+            self.record_haplogroup_call(biosample_guid, dna_type, source_key, &call).await?;
+        }
+        Ok(())
+    }
+
+    /// The reconciled donor-level haplogroup consensus across all recorded sources.
+    pub async fn haplogroup_consensus(
+        &self,
+        biosample_guid: SampleGuid,
+        dna_type: DnaType,
+    ) -> Result<Option<Consensus>, AppError> {
+        let calls = haplogroup_call::list_for(self.store.pool(), biosample_guid, dna_type).await?;
+        Ok(reconciliation::reconcile(&calls))
+    }
+
+    /// All recorded per-source calls for a subject + DNA type (for display / audit).
+    pub async fn haplogroup_calls(
+        &self,
+        biosample_guid: SampleGuid,
+        dna_type: DnaType,
+    ) -> Result<Vec<RunHaplogroupCall>, AppError> {
+        Ok(haplogroup_call::list_for(self.store.pool(), biosample_guid, dna_type).await?)
     }
 
     /// Like [`assign_mtdna_haplogroup`](Self::assign_mtdna_haplogroup) but with the tree
@@ -772,7 +843,11 @@ impl App {
         alignment_id: i64,
     ) -> Result<HaploAssignment, AppError> {
         let tree_json = self.fetch_ftdna_mt_tree().await?;
-        self.assign_haplogroup_from_alignment(alignment_id, "chrM", &tree_json).await
+        let assignment = self.assign_haplogroup_from_alignment(alignment_id, "chrM", &tree_json).await?;
+        if let Ok(bio) = self.biosample_of_alignment(alignment_id).await {
+            self.record_call(bio, DnaType::Mt, &format!("aln:{alignment_id}:mt"), format!("aln #{alignment_id} mtDNA"), &assignment).await?;
+        }
+        Ok(assignment)
     }
 
     /// Assign a Y haplogroup to an alignment: fetch (and cache) the FTDNA Y-DNA haplotree,
@@ -780,7 +855,11 @@ impl App {
     /// first. Requires the alignment to have a recorded BAM/CRAM path.
     pub async fn assign_y_haplogroup(&self, alignment_id: i64) -> Result<HaploAssignment, AppError> {
         let tree_json = self.fetch_ftdna_y_tree().await?;
-        self.assign_haplogroup_from_alignment(alignment_id, "chrY", &tree_json).await
+        let assignment = self.assign_haplogroup_from_alignment(alignment_id, "chrY", &tree_json).await?;
+        if let Ok(bio) = self.biosample_of_alignment(alignment_id).await {
+            self.record_call(bio, DnaType::Y, &format!("aln:{alignment_id}"), format!("aln #{alignment_id} Y"), &assignment).await?;
+        }
+        Ok(assignment)
     }
 
     /// Genotype an alignment at a haplotree's positions on `contig` and rank haplogroups by

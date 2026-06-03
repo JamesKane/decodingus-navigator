@@ -12,8 +12,8 @@ use std::sync::mpsc::{Receiver, Sender};
 use std::sync::Arc;
 
 use navigator_app::{
-    App, Coverage, DenovoCall, HaploAssignment, IbdComparison, IbdDetectorConfig, PanelGenotype, PrivateBucket,
-    ProjectOverview,
+    App, Consensus, Coverage, DenovoCall, DnaType, HaploAssignment, IbdComparison, IbdDetectorConfig, PanelGenotype,
+    PrivateBucket, ProjectOverview,
 };
 use navigator_domain::du_domain::ids::SampleGuid;
 use navigator_domain::chipprofile::ChipProfile;
@@ -57,6 +57,8 @@ pub enum Command {
     AddBiosample(NewBiosample),
     LoadRuns(SampleGuid),
     AddRun(NewSequenceRun),
+    /// Load the donor-level Y + mtDNA haplogroup consensus for a subject.
+    LoadConsensus(SampleGuid),
     LoadStrProfiles(SampleGuid),
     ImportStrProfile {
         biosample_guid: SampleGuid,
@@ -124,6 +126,8 @@ pub enum Event {
     BiosamplesChanged,
     Runs { biosample_guid: SampleGuid, runs: Vec<SequenceRun> },
     RunsChanged(SampleGuid),
+    /// Donor-level haplogroup consensus for a subject (Y, mtDNA).
+    Consensus { biosample_guid: SampleGuid, y: Option<Consensus>, mt: Option<Consensus> },
     StrProfiles { biosample_guid: SampleGuid, profiles: Vec<StrProfile> },
     StrProfilesChanged(SampleGuid),
     VariantSets { biosample_guid: SampleGuid, sets: Vec<VariantSet> },
@@ -195,6 +199,11 @@ pub async fn handle(app: &App, cmd: Command) -> Event {
             Ok(run) => Event::RunsChanged(run.biosample_guid),
             Err(e) => Event::Error(e.to_string()),
         },
+        Command::LoadConsensus(guid) => {
+            let y = app.haplogroup_consensus(guid, DnaType::Y).await.unwrap_or(None);
+            let mt = app.haplogroup_consensus(guid, DnaType::Mt).await.unwrap_or(None);
+            Event::Consensus { biosample_guid: guid, y, mt }
+        }
         Command::LoadStrProfiles(guid) => match app.list_str_profiles(guid).await {
             Ok(profiles) => Event::StrProfiles { biosample_guid: guid, profiles },
             Err(e) => Event::Error(e.to_string()),

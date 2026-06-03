@@ -315,6 +315,42 @@ async fn validate_hg002_haplogroups() {
 }
 
 #[tokio::test]
+async fn haplogroup_consensus_combines_recorded_calls() {
+    use navigator_app::{CompatibilityLevel, DnaType};
+    use navigator_domain::reconciliation::RunHaplogroupCall;
+    let app = app().await;
+    let subject = app.add_biosample(None, "HG002", None, None).await.unwrap();
+
+    // Two sources on one path: confident short-read at R-FGC29067, tentative deeper HiFi.
+    for (key, label, hg, lineage, score) in [
+        ("aln:1", "wgs", "R-FGC29067", vec!["root", "R", "R-FGC29067"], 0.75),
+        ("aln:2", "hifi", "R-FGC29071", vec!["root", "R", "R-FGC29067", "R-FGC29071"], 0.54),
+    ] {
+        let call = RunHaplogroupCall {
+            source_label: label.into(),
+            haplogroup: hg.into(),
+            lineage: lineage.iter().map(|s| s.to_string()).collect(),
+            score,
+            matched: 0,
+            expected: 0,
+        };
+        app.record_haplogroup_call(subject.guid, DnaType::Y, key, &call).await.unwrap();
+    }
+
+    let c = app.haplogroup_consensus(subject.guid, DnaType::Y).await.unwrap().unwrap();
+    assert_eq!(c.haplogroup, "R-FGC29067"); // confident node, not the tentative deeper one
+    assert_eq!(c.compatibility, CompatibilityLevel::Compatible);
+    assert_eq!(c.run_count, 2);
+    assert_eq!(c.warnings.len(), 1); // flags the deeper HiFi placement
+
+    // re-recording the same source key replaces (no duplicate)
+    let calls = app.haplogroup_calls(subject.guid, DnaType::Y).await.unwrap();
+    assert_eq!(calls.len(), 2);
+    // mt has nothing recorded
+    assert!(app.haplogroup_consensus(subject.guid, DnaType::Mt).await.unwrap().is_none());
+}
+
+#[tokio::test]
 async fn assign_haplogroup_from_alignment_calls_and_ranks() {
     // Uses the chrM coverage fixture as a stand-in alignment; the reference is ACGTACGT…,
     // so the consensus base at positions 1 and 5 is 'A' (non-variant sites).
