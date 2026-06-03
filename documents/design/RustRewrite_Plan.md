@@ -153,6 +153,47 @@ If the caller's validation lags the rest of the rewrite, the JVM GATK can run as
 proceeds unblocked — explicitly temporary, removed once §4c passes. (This is *not* the
 shipped architecture; the end state is JVM-free.)
 
+### 4e. Self-referential callable loci (design note — not yet built)
+
+**Idea.** Derive the callable-region mask from *the sample's own alignment* (a per-sample
+callable-loci BED), rather than gating against a fixed external mask. The CallableLoci BED
+is already an artifact of the Scala/GATK pipeline; the rewrite currently only *summarizes*
+callability (per-position `CallableState` counts) — it should also **emit the CALLABLE
+runs as a stored BED artifact** per alignment, and consume *that* downstream.
+
+**Criterion.** Replace the fixed per-base aggregate (depth ≥ N) gate with a **run-length
+requirement proportional to molecule length**: a CALLABLE run counts only if its length
+`≥ f · fragment_length` (insert size for paired short reads; read length for single-end /
+long reads — both already estimated by the `read_metrics` walker; `f` tunable, start ≈1.0).
+A callable island shorter than the molecules covering it sits inside a repeat those
+molecules straddle ambiguously, so it's dropped — a mappability proxy with **no external
+mappability track**.
+
+**Why it matters.**
+- *Self-referential* — callability tracks the sample's real evidence and **sequencing tech**
+  automatically; supersedes external masks (e.g. `b38_sites.bed`, which is a ~143 k-site
+  allowlist — not discovery-capable). The per-sample callable *region* BED both removes Y
+  repeat noise from the private bucket **and** lets genuinely novel positions inside
+  reliable regions surface.
+- *Rewards long reads* — short reads (~150 bp / ~500 bp fragment) clear the proportional
+  bar over only modest stretches of chrY; **PacBio HiFi** (~15 kb molecules map uniquely
+  across the repeats that defeat short reads → long CALLABLE runs) clears it over far more,
+  so HiFi yields materially more callable Y and more callable SNPs. The advantage is
+  emergent from the criterion, not special-cased.
+- *Perf* — restricting the de-novo scan to the callable BED also collapses the whole-chrY
+  pass (~13 min observed) to the reliable subset.
+
+**Ingredients in place:** per-position `CallableState` classification (`coverage` walker);
+read/fragment-length estimates (`read_metrics` walker). **Missing:** coalesce CALLABLE
+runs → BED, the run-length gate, store as a per-alignment artifact, and route it into
+`private_y_variants` / de-novo region restriction / force-call site selection in place of
+external masks. `ExcessiveCoverage` (collapsed-repeat pileups) stays non-callable; the
+run-length gate is additive. Validation: compare callable-chrY size for a short-read vs a
+HiFi sample of the same individual.
+
+> Note: `combBED.b38.bed` (Poznik ∩ Big Y original design) is **only** for replicating
+> YFULL's age algorithms — not a general calling mask.
+
 ---
 
 ## 5. GUI — egui / eframe
