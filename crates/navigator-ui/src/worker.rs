@@ -13,7 +13,7 @@ use std::sync::Arc;
 
 use navigator_app::{
     App, Consensus, Coverage, DenovoCall, DnaType, HaploAssignment, IbdComparison, IbdDetectorConfig,
-    IdentityVerification, PanelGenotype, PrivateBucket, ProjectOverview, ReconciledVariant,
+    IdentityVerification, PanelGenotype, PrivateBucket, ProjectOverview, ReconciledVariant, SourceType,
 };
 use navigator_domain::du_domain::ids::SampleGuid;
 use navigator_domain::chipprofile::ChipProfile;
@@ -70,7 +70,9 @@ pub enum Command {
         path: PathBuf,
     },
     LoadVariantSets(SampleGuid),
-    ImportVariants { biosample_guid: SampleGuid, path: PathBuf },
+    ImportVariants { biosample_guid: SampleGuid, path: PathBuf, source_type: SourceType },
+    /// Manually-entered variant calls (e.g. Sanger/YSEQ confirmations): `contig,pos,ref,alt` rows.
+    AddVariants { biosample_guid: SampleGuid, source_label: String, source_type: SourceType, text: String },
     LoadChipProfiles(SampleGuid),
     ImportChipProfile { biosample_guid: SampleGuid, provider: Option<String>, path: PathBuf },
     LoadMtdna(SampleGuid),
@@ -233,8 +235,14 @@ pub async fn handle(app: &App, cmd: Command) -> Event {
             Ok(sets) => Event::VariantSets { biosample_guid: guid, sets },
             Err(e) => Event::Error(e.to_string()),
         },
-        Command::ImportVariants { biosample_guid, path } => {
-            match app.import_variants_from_file(biosample_guid, &path).await {
+        Command::ImportVariants { biosample_guid, path, source_type } => {
+            match app.import_variants_from_file(biosample_guid, &path, source_type).await {
+                Ok(_) => Event::VariantSetsChanged(biosample_guid),
+                Err(e) => Event::Error(e.to_string()),
+            }
+        }
+        Command::AddVariants { biosample_guid, source_label, source_type, text } => {
+            match app.add_variants(biosample_guid, &source_label, source_type, &text).await {
                 Ok(_) => Event::VariantSetsChanged(biosample_guid),
                 Err(e) => Event::Error(e.to_string()),
             }

@@ -38,43 +38,50 @@ pub struct ReconciledVariant {
     pub sources: Vec<String>,
 }
 
-/// Reconcile a subject's variant sets at the variant level: per position, do the sources
-/// that report a variant agree on the allele? `Confirmed` (≥2 agree), `Conflict`
-/// (different alleles), or `SingleSource` (one source — a candidate for Sanger
-/// confirmation). Equal-vote for now; per-source weighting (Sanger gold standard) is a
-/// later phase. Note: a source *not* reporting a position is ambiguous (ancestral vs no
-/// coverage), so absence isn't counted as disagreement.
-pub fn reconcile_variants(sources: &[(String, &[VariantCall])]) -> Vec<ReconciledVariant> {
-    // (contig, position) -> [(source_label, allele)]
-    let mut by_pos: BTreeMap<(String, i64), Vec<(String, String)>> = BTreeMap::new();
-    for (label, calls) in sources {
+/// Reconcile a subject's variant sets at the variant level by **quality-weighted** voting:
+/// per position, sources reporting a variant vote with their weight (Sanger 1.0 dominates),
+/// and the consensus is the highest-weighted allele. `Confirmed` (≥2 sources, weighted
+/// agreement), `Conflict` (>30% of the weighted votes disagree — Sanger still sets the
+/// consensus allele), or `SingleSource` (one source — a Sanger-confirmation candidate).
+/// A source *not* reporting a position is ambiguous (ancestral vs no coverage), so absence
+/// isn't counted as disagreement. Sources are `(label, weight, calls)`.
+pub fn reconcile_variants(sources: &[(String, f64, &[VariantCall])]) -> Vec<ReconciledVariant> {
+    // (contig, position) -> [(source_label, allele, weight)]
+    #[allow(clippy::type_complexity)]
+    let mut by_pos: BTreeMap<(String, i64), Vec<(String, String, f64)>> = BTreeMap::new();
+    for (label, weight, calls) in sources {
         for c in *calls {
             by_pos
                 .entry((c.contig.clone(), c.position))
                 .or_default()
-                .push((label.clone(), c.alternate.to_ascii_uppercase()));
+                .push((label.clone(), c.alternate.to_ascii_uppercase(), *weight));
         }
     }
 
     let mut out = Vec::with_capacity(by_pos.len());
     for ((contig, position), entries) in by_pos {
-        // Tally alleles.
-        let mut counts: BTreeMap<&str, usize> = BTreeMap::new();
-        for (_, allele) in &entries {
-            *counts.entry(allele.as_str()).or_default() += 1;
+        // Weighted tally per allele.
+        let mut weight_by_allele: BTreeMap<&str, f64> = BTreeMap::new();
+        for (_, allele, w) in &entries {
+            *weight_by_allele.entry(allele.as_str()).or_default() += *w;
         }
-        let distinct = counts.len();
-        let (best_allele, support) =
-            counts.iter().max_by_key(|(_, n)| **n).map(|(a, n)| (a.to_string(), *n)).unwrap();
+        let total_w: f64 = weight_by_allele.values().sum();
+        let (best_allele, best_w) = weight_by_allele
+            .iter()
+            .max_by(|a, b| a.1.partial_cmp(b.1).unwrap_or(std::cmp::Ordering::Equal))
+            .map(|(a, w)| (a.to_string(), *w))
+            .unwrap();
         let total = entries.len();
+        let disagree_frac = if total_w > 0.0 { (total_w - best_w) / total_w } else { 0.0 };
         let status = if total == 1 {
             VariantStatus::SingleSource
-        } else if distinct > 1 {
+        } else if disagree_frac > 0.30 {
             VariantStatus::Conflict
         } else {
             VariantStatus::Confirmed
         };
-        let sources = entries.into_iter().filter(|(_, a)| *a == best_allele).map(|(l, _)| l).collect();
+        let support = entries.iter().filter(|(_, a, _)| *a == best_allele).count();
+        let sources = entries.into_iter().filter(|(_, a, _)| *a == best_allele).map(|(l, _, _)| l).collect();
         out.push(ReconciledVariant { contig, position, allele: best_allele, status, support, total, sources });
     }
     out
@@ -367,14 +374,20 @@ mod tests {
         let wgs = vec![vc("chr1", 1000, "G"), vc("chr1", 2000, "T")]; // 2000 only in wgs
         let hifi = vec![vc("chr1", 1000, "G"), vc("chr1", 3000, "C")]; // 1000 agrees; 3000 only hifi
         let sanger = vec![vc("chr1", 3000, "A")]; // disagrees with hifi at 3000
-        let sources = vec![("wgs".to_string(), wgs.as_slice()), ("hifi".to_string(), hifi.as_slice()), ("sanger".to_string(), sanger.as_slice())];
+        let sources = vec![
+            ("wgs".to_string(), 0.85, wgs.as_slice()),
+            ("hifi".to_string(), 0.95, hifi.as_slice()),
+            ("sanger".to_string(), 1.0, sanger.as_slice()),
+        ];
         let r = reconcile_variants(&sources);
 
         let at = |p: i64| r.iter().find(|v| v.position == p).unwrap();
         assert_eq!(at(1000).status, VariantStatus::Confirmed); // wgs+hifi agree on G
         assert_eq!(at(1000).support, 2);
         assert_eq!(at(2000).status, VariantStatus::SingleSource); // only wgs
-        assert_eq!(at(3000).status, VariantStatus::Conflict); // hifi C vs sanger A
+        // hifi C (0.95) vs sanger A (1.0): disagreement > 30% -> Conflict, Sanger wins allele.
+        assert_eq!(at(3000).status, VariantStatus::Conflict);
+        assert_eq!(at(3000).allele, "A"); // Sanger's gold-standard allele is the consensus
     }
 
     #[test]

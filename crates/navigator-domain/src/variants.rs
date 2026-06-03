@@ -21,13 +21,79 @@ pub struct VariantCall {
     pub genotype: Option<String>,
 }
 
-/// A subject's variant calls from one import (a VCF or CSV export).
+/// The kind of source a variant set came from — carries the SNP-concordance weight used
+/// when reconciling across sources (Scala `YProfileSourceType`). Sanger is the gold
+/// standard (1.0); a low-confidence manual entry is 0.3.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SourceType {
+    Sanger,
+    WgsLongRead,
+    WgsShortRead,
+    TargetedNgs,
+    Chip,
+    Manual,
+    /// VCF/CSV of unknown provenance.
+    Imported,
+}
+
+impl SourceType {
+    /// SNP-concordance weight (0–1): reliability for SNP calls.
+    pub fn snp_weight(self) -> f64 {
+        match self {
+            SourceType::Sanger => 1.0,
+            SourceType::WgsLongRead => 0.95,
+            SourceType::WgsShortRead => 0.85,
+            SourceType::TargetedNgs => 0.75,
+            SourceType::Chip => 0.5,
+            SourceType::Manual => 0.3,
+            SourceType::Imported => 0.7,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            SourceType::Sanger => "SANGER",
+            SourceType::WgsLongRead => "WGS_LONG_READ",
+            SourceType::WgsShortRead => "WGS_SHORT_READ",
+            SourceType::TargetedNgs => "TARGETED_NGS",
+            SourceType::Chip => "CHIP",
+            SourceType::Manual => "MANUAL",
+            SourceType::Imported => "IMPORTED",
+        }
+    }
+
+    pub fn from_code(s: &str) -> SourceType {
+        match s {
+            "SANGER" => SourceType::Sanger,
+            "WGS_LONG_READ" => SourceType::WgsLongRead,
+            "WGS_SHORT_READ" => SourceType::WgsShortRead,
+            "TARGETED_NGS" => SourceType::TargetedNgs,
+            "CHIP" => SourceType::Chip,
+            "MANUAL" => SourceType::Manual,
+            _ => SourceType::Imported,
+        }
+    }
+
+    /// All types, for a UI dropdown.
+    pub const ALL: &'static [SourceType] = &[
+        SourceType::Sanger,
+        SourceType::WgsLongRead,
+        SourceType::WgsShortRead,
+        SourceType::TargetedNgs,
+        SourceType::Chip,
+        SourceType::Manual,
+        SourceType::Imported,
+    ];
+}
+
+/// A subject's variant calls from one import (a VCF, CSV export, YSEQ/Sanger panel, …).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct VariantSet {
     pub id: i64,
     pub biosample_guid: SampleGuid,
     /// A label for the source (typically the file name).
     pub source_label: String,
+    pub source_type: SourceType,
     pub calls: Vec<VariantCall>,
 }
 
@@ -36,6 +102,7 @@ pub struct VariantSet {
 pub struct NewVariantSet {
     pub biosample_guid: SampleGuid,
     pub source_label: String,
+    pub source_type: SourceType,
     pub calls: Vec<VariantCall>,
 }
 

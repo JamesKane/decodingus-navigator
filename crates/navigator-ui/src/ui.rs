@@ -8,7 +8,7 @@ use std::sync::mpsc::Receiver;
 use eframe::egui;
 use navigator_app::{
     CallState, CompatibilityLevel, Consensus, Coverage, DenovoCall, HaploAssignment, IbdComparison,
-    IdentityVerification, PanelGenotype, PrivateBucket, PrivateClass, ProjectOverview, ReconciledVariant,
+    IdentityVerification, PanelGenotype, PrivateBucket, PrivateClass, ProjectOverview, ReconciledVariant, SourceType,
     VariantStatus, VerificationStatus,
 };
 use navigator_domain::du_domain::ids::SampleGuid;
@@ -43,6 +43,9 @@ struct Forms {
     str_provider: String,
     str_source: String,
     chip_provider: String,
+    variant_source_type: String,
+    variant_manual_label: String,
+    variant_manual_text: String,
 }
 
 pub struct NavigatorApp {
@@ -235,6 +238,7 @@ impl NavigatorApp {
                 str_provider: "FTDNA".into(),
                 str_source: "DIRECT_TEST".into(),
                 chip_provider: AUTO_DETECT.into(),
+                variant_source_type: "IMPORTED".into(),
                 ..Forms::default()
             },
             status: "Loading…".into(),
@@ -878,15 +882,40 @@ impl NavigatorApp {
         }
 
         ui.add_space(6.0);
-        ui.collapsing("Import variants", |ui| {
-            if ui.button("Choose VCF/CSV/TSV…").clicked() {
+        ui.collapsing("Add / import variants", |ui| {
+            let labels: Vec<&str> = SourceType::ALL.iter().map(|t| t.as_str()).collect();
+            combo(ui, "Source:", "variant_source", &mut self.forms.variant_source_type, &labels);
+            let source_type = SourceType::from_code(&self.forms.variant_source_type);
+
+            if ui.button("Import VCF/CSV/TSV…").clicked() {
                 if let Some(path) =
                     rfd::FileDialog::new().add_filter("variants", &["vcf", "csv", "tsv", "txt"]).pick_file()
                 {
-                    let _ = self.tx.send(Command::ImportVariants { biosample_guid: guid, path });
+                    let _ = self.tx.send(Command::ImportVariants { biosample_guid: guid, path, source_type });
                 }
             }
             ui.label("VCF, or rows of contig,position,ref,alt[,rsid][,genotype]. SNP-only.");
+
+            ui.separator();
+            ui.label("Or paste calls (e.g. Sanger / YSEQ confirmation):");
+            ui.add(egui::TextEdit::singleline(&mut self.forms.variant_manual_label).hint_text("source label (e.g. YSEQ panel)"));
+            ui.add(
+                egui::TextEdit::multiline(&mut self.forms.variant_manual_text)
+                    .hint_text("contig,position,ref,alt per line")
+                    .desired_rows(3),
+            );
+            let ready = !self.forms.variant_manual_text.trim().is_empty();
+            if ui.add_enabled(ready, egui::Button::new("Add pasted calls")).clicked() {
+                let label = opt(&self.forms.variant_manual_label).unwrap_or_else(|| source_type.as_str().to_string());
+                let _ = self.tx.send(Command::AddVariants {
+                    biosample_guid: guid,
+                    source_label: label,
+                    source_type,
+                    text: self.forms.variant_manual_text.clone(),
+                });
+                self.forms.variant_manual_text.clear();
+                self.forms.variant_manual_label.clear();
+            }
         });
     }
 

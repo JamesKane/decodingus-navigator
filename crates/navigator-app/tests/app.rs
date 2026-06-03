@@ -51,8 +51,12 @@ async fn import_variants_from_csv_keeps_only_snps() {
     // header layout; one indel row that must be dropped (SNP-only)
     std::fs::write(&path, "contig,position,ref,alt,rsid,genotype\nchr1,1000,A,G,rs1,0/1\nchr1,2000,A,AT,rs2,0/1\nchrM,73,G,A,.,1/1\n").unwrap();
 
-    let set = app.import_variants_from_file(subject.guid, &path).await.unwrap();
+    let set = app
+        .import_variants_from_file(subject.guid, &path, navigator_app::SourceType::Imported)
+        .await
+        .unwrap();
     assert_eq!(set.source_label, path.file_name().unwrap().to_string_lossy());
+    assert_eq!(set.source_type, navigator_app::SourceType::Imported);
     assert_eq!(set.calls.len(), 2); // the A>AT indel dropped
 
     let listed = app.list_variant_sets(subject.guid).await.unwrap();

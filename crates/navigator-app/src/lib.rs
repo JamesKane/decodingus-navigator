@@ -104,6 +104,7 @@ pub use navigator_domain::reconciliation::{
 };
 use navigator_domain::strprofile::{self, NewStrProfile, StrProfile};
 use navigator_domain::variants::{self, NewVariantSet, VariantSet};
+pub use navigator_domain::variants::SourceType;
 use navigator_store::{
     alignment, artifact, biosample, chip_profile, haplogroup_call, mtdna as mtdna_store, project,
     sequence_run, str_profile, variant_set, Store, StoreError,
@@ -600,12 +601,13 @@ impl App {
 
     /// Import a subject's SNP variant calls from a file. `.vcf` is parsed as a VCF (reusing
     /// the shared column parser); `.csv`/`.tsv` as a `contig,position,ref,alt[,rsid][,gt]`
-    /// table. Indels/symbolic alleles are dropped (SNP-only). `source_label` defaults to the
-    /// file name.
+    /// table (a YSEQ/Sanger panel export fits this). Indels/symbolic alleles are dropped
+    /// (SNP-only). `source_type` sets the concordance weight (Sanger = gold standard).
     pub async fn import_variants_from_file(
         &self,
         biosample_guid: SampleGuid,
         path: &Path,
+        source_type: SourceType,
     ) -> Result<VariantSet, AppError> {
         let label = path.file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or_else(|| "variants".into());
         let is_vcf = path
@@ -629,7 +631,26 @@ impl App {
         if calls.is_empty() {
             return Err(AppError::Import("no SNP variants found in file".into()));
         }
-        let new = NewVariantSet { biosample_guid, source_label: label, calls };
+        let new = NewVariantSet { biosample_guid, source_label: label, source_type, calls };
+        Ok(variant_set::create(self.store.pool(), &new).await?)
+    }
+
+    /// Add a manually-entered variant set — paste `contig,position,ref,alt` rows (e.g.
+    /// Sanger/YSEQ confirmations). `source_type` sets the weight (Sanger = 1.0).
+    pub async fn add_variants(
+        &self,
+        biosample_guid: SampleGuid,
+        source_label: &str,
+        source_type: SourceType,
+        text: &str,
+    ) -> Result<VariantSet, AppError> {
+        let calls = variants::parse_csv(text).map_err(AppError::Import)?;
+        let new = NewVariantSet {
+            biosample_guid,
+            source_label: source_label.to_string(),
+            source_type,
+            calls,
+        };
         Ok(variant_set::create(self.store.pool(), &new).await?)
     }
 
@@ -712,7 +733,12 @@ impl App {
             })
             .collect();
         let label = format!("mtDNA vs rCRS ({} variants)", derived.len());
-        let new = NewVariantSet { biosample_guid: seq.biosample_guid, source_label: label, calls };
+        let new = NewVariantSet {
+            biosample_guid: seq.biosample_guid,
+            source_label: label,
+            source_type: variants::SourceType::Imported,
+            calls,
+        };
         Ok(variant_set::create(self.store.pool(), &new).await?)
     }
 
@@ -789,8 +815,10 @@ impl App {
     /// candidates).
     pub async fn reconcile_variants(&self, biosample_guid: SampleGuid) -> Result<Vec<ReconciledVariant>, AppError> {
         let sets = variant_set::list_for_biosample(self.store.pool(), biosample_guid).await?;
-        let sources: Vec<(String, &[variants::VariantCall])> =
-            sets.iter().map(|s| (s.source_label.clone(), s.calls.as_slice())).collect();
+        let sources: Vec<(String, f64, &[variants::VariantCall])> = sets
+            .iter()
+            .map(|s| (s.source_label.clone(), s.source_type.snp_weight(), s.calls.as_slice()))
+            .collect();
         Ok(reconciliation::reconcile_variants(&sources))
     }
 
@@ -1030,7 +1058,7 @@ impl App {
 
         match detected {
             DetectedData::Variants => {
-                self.import_variants_from_file(biosample_guid, path).await?;
+                self.import_variants_from_file(biosample_guid, path, variants::SourceType::Imported).await?;
             }
             DetectedData::StrProfile => {
                 self.import_str_profile_from_csv(biosample_guid, "CUSTOM", None, Some("IMPORTED".into()), path).await?;
