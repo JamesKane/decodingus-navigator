@@ -194,6 +194,29 @@ HiFi sample of the same individual.
 > Note: `combBED.b38.bed` (Poznik ∩ Big Y original design) is **only** for replicating
 > YFULL's age algorithms — not a general calling mask.
 
+**Built + validated (status update).** `coverage::callable_intervals` (run-length-gated
+CALLABLE BED, reference-free) + `estimate_molecule_lengths`; `app::callable_chr_intervals`
+derives tech-adaptive params; `private_y_variants_self_masked` consumes the sample's own
+BED; UI exposes self-referential / external-BED / none. The haploid **caller** depth is
+now tech-adaptive too (long reads → `min_depth 2`), mirroring the mask — the two no longer
+disagree.
+
+Real-data validation (same individual, GRCh38):
+- *Callable chrY:* WGS229 short-read ~13× → 13.9 Mb (3336 runs); GFX0457637 HiFi ~1.6× →
+  1.1 Mb (70 runs ≈ one ~11 kb read each).
+- *Private-Y bucket (WGS229), by mask:* none 4583 / external `b38_sites.bed` 177 /
+  self-referential 1151 novel — self sits between noise and the over-restrictive allowlist
+  and stays discovery-capable.
+- *Low-coverage CCS for haploid calling:* with the caller still at `min_depth 4`, HiFi Y
+  matched 283/1919 (score 0.306); after the adaptive `min_depth 2`, **1097/1919 (0.537)** —
+  ≈4× more backbone SNPs, supporting "≈1× CCS suffices on single-ploidy regions." mtDNA
+  resolved `U5a1b1g` exactly on both technologies.
+
+Open knobs: `f` (run-length proportion) is hardcoded 1.0 — at low-coverage HiFi the gate is
+coupled to coverage continuity, so `f < 1.0` may help; needs more HiFi data points (N is
+small, and the HiFi here is the same person as WGS229). A depth-1 floor for pure CCS is
+plausible but unvalidated.
+
 ---
 
 ## 5. GUI — egui / eframe
