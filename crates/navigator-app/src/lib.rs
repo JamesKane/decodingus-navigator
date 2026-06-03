@@ -800,17 +800,61 @@ impl App {
         Ok(assemble_assignment(&tree, &calls))
     }
 
+    /// Self-referential callable intervals (BED 0-based half-open) for `contig` from the
+    /// alignment's own reads. Parameters adapt to the sample: long reads (HiFi) earn
+    /// callability at lower depth, and the CALLABLE-run gate scales with molecule length
+    /// (`f`·fragment), so long molecules clear it over far more of chrY. Requires the BAM.
+    pub async fn callable_chr_intervals(&self, alignment_id: i64, contig: &str) -> Result<Vec<(i64, i64)>, AppError> {
+        let aln = alignment::get(self.store.pool(), alignment_id)
+            .await?
+            .ok_or_else(|| AppError::Store(StoreError::NotFound(format!("alignment {alignment_id}"))))?;
+        let bam = PathBuf::from(aln.bam_path.ok_or(AppError::MissingPaths(alignment_id))?);
+        let contig = contig.to_string();
+        tokio::task::spawn_blocking(move || {
+            let (read_len, frag_len) = coverage::estimate_molecule_lengths(&bam)?;
+            let molecule = frag_len.max(read_len);
+            let mut params = CallableLociParams::default();
+            // Long, accurate reads (HiFi) are callable at well under half the short-read depth.
+            if read_len > 1000.0 {
+                params.min_depth = (params.min_depth / 2).max(2);
+            }
+            let min_run_len = molecule.round().max(1.0) as u32; // f = 1.0
+            coverage::callable_intervals(&bam, &contig, &params, min_run_len)
+        })
+        .await
+        .map_err(|e| AppError::Join(e.to_string()))?
+        .map_err(Into::into)
+    }
+
     /// The **private bucket**: de-novo SNP calls on chrY that the Y placement doesn't
     /// explain (not on the assigned backbone), classified as off-path-known (a finer/
-    /// sibling FTDNA branch) or novel (a new-branch candidate). Runs the Y assignment to
-    /// find the terminal, then de-novo-calls chrY and subtracts the backbone. Requires the
-    /// alignment's recorded BAM + reference paths. When `callable_bed` is given (e.g. the
-    /// Poznik/1KG callable-Y mask `b38_sites.bed`), calls outside reliable regions are
-    /// dropped — essential to keep the novel bucket from drowning in Y repeat artifacts.
+    /// sibling FTDNA branch) or novel (a new-branch candidate). With `callable_bed` (e.g.
+    /// the Poznik/1KG `b38_sites.bed`), calls outside reliable regions are dropped.
     pub async fn private_y_variants(
         &self,
         alignment_id: i64,
         callable_bed: Option<&Path>,
+    ) -> Result<PrivateBucket, AppError> {
+        let mask = match callable_bed {
+            Some(p) => Some(navigator_analysis::mask::RegionMask::from_bed(p, "chrY")?),
+            None => None,
+        };
+        self.private_y_core(alignment_id, mask).await
+    }
+
+    /// [`private_y_variants`] using the sample's **own** callable-Y BED as the mask
+    /// (self-referential — adapts to the sample's depth and read tech; no external file).
+    pub async fn private_y_variants_self_masked(&self, alignment_id: i64) -> Result<PrivateBucket, AppError> {
+        let intervals = self.callable_chr_intervals(alignment_id, "chrY").await?;
+        let mask = navigator_analysis::mask::RegionMask::from_intervals(intervals);
+        self.private_y_core(alignment_id, Some(mask)).await
+    }
+
+    /// Shared core: assign Y, de-novo chrY, subtract the backbone, optionally mask, classify.
+    async fn private_y_core(
+        &self,
+        alignment_id: i64,
+        mask: Option<navigator_analysis::mask::RegionMask>,
     ) -> Result<PrivateBucket, AppError> {
         let tree_json = self.fetch_ftdna_y_tree().await?;
         let tree = navigator_analysis::haplo::parse_ftdna_json(&tree_json).map_err(AppError::Import)?;
@@ -822,12 +866,6 @@ impl App {
             .ok_or_else(|| AppError::Import("no Y haplogroup match".into()))?;
         let path = navigator_analysis::haplo::path_positions(&tree, terminal.id);
         let known = navigator_analysis::haplo::tree_positions(&tree);
-
-        // Optional callable-region mask (reliable Y regions only).
-        let mask = match callable_bed {
-            Some(p) => Some(navigator_analysis::mask::RegionMask::from_bed(p, "chrY")?),
-            None => None,
-        };
 
         // De-novo chrY (cached as an artifact), then keep only off-backbone, callable calls.
         let denovo = self.run_denovo_for_alignment(alignment_id, "chrY".to_string()).await?;

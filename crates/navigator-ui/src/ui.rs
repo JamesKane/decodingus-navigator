@@ -19,7 +19,7 @@ use navigator_domain::variants::{VariantCall, VariantSet};
 use navigator_domain::workspace::{Alignment, Biosample, NewAlignment, NewProject, NewSequenceRun, SequenceRun};
 use tokio::sync::mpsc::UnboundedSender;
 
-use crate::worker::{self, Command, Event, NewBiosample, PanelInfo};
+use crate::worker::{self, Command, Event, NewBiosample, PanelInfo, YMask};
 
 #[derive(Default)]
 struct Forms {
@@ -71,8 +71,10 @@ pub struct NavigatorApp {
     /// Last private Y bucket: (alignment id, bucket).
     private_y: Option<(i64, PrivateBucket)>,
     finding_private_y: bool,
-    /// Callable-region BED (Poznik/1KG callable-Y mask), reused across private-Y runs.
+    /// Callable-region BED (external mask), reused across private-Y runs.
     y_mask_path: Option<PathBuf>,
+    /// Use the sample's own callable-Y BED (self-referential) rather than an external mask.
+    y_self_mask: bool,
     selected_run: Option<i64>,
     alignments: Vec<Alignment>,
     selected_alignment: Option<i64>,
@@ -193,6 +195,7 @@ impl NavigatorApp {
             private_y: None,
             finding_private_y: false,
             y_mask_path: None,
+            y_self_mask: true,
             selected_run: None,
             alignments: Vec::new(),
             selected_alignment: None,
@@ -1234,24 +1237,34 @@ impl NavigatorApp {
         ui.add_space(6.0);
         ui.horizontal(|ui| {
             ui.label("Callable mask:");
-            let label = self
-                .y_mask_path
-                .as_ref()
-                .and_then(|p| p.file_name())
-                .map(|n| n.to_string_lossy().into_owned())
-                .unwrap_or_else(|| "none (noisy)".into());
-            ui.label(label);
-            if ui.button("Choose BED…").clicked() {
-                if let Some(p) = rfd::FileDialog::new().add_filter("BED", &["bed"]).pick_file() {
-                    self.y_mask_path = Some(p);
-                }
-            }
+            ui.checkbox(&mut self.y_self_mask, "self-referential (this sample)");
         });
+        if !self.y_self_mask {
+            ui.horizontal(|ui| {
+                let label = self
+                    .y_mask_path
+                    .as_ref()
+                    .and_then(|p| p.file_name())
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| "none (noisy)".into());
+                ui.label(format!("External BED: {label}"));
+                if ui.button("Choose BED…").clicked() {
+                    if let Some(p) = rfd::FileDialog::new().add_filter("BED", &["bed"]).pick_file() {
+                        self.y_mask_path = Some(p);
+                    }
+                }
+            });
+        }
         ui.horizontal(|ui| {
             if ui.add_enabled(has_ref && !self.finding_private_y, egui::Button::new("Find private Y variants")).clicked() {
                 self.finding_private_y = true;
                 self.status = "Finding private Y variants (de-novo chrY)…".into();
-                let _ = self.tx.send(Command::FindPrivateY { alignment_id, callable_bed: self.y_mask_path.clone() });
+                let mask = if self.y_self_mask {
+                    YMask::SelfReferential
+                } else {
+                    self.y_mask_path.clone().map(YMask::Bed).unwrap_or(YMask::None)
+                };
+                let _ = self.tx.send(Command::FindPrivateY { alignment_id, mask });
             }
             if self.finding_private_y {
                 ui.spinner();

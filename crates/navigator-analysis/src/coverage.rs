@@ -455,6 +455,153 @@ pub fn collect_coverage_callable(
     })
 }
 
+/// Mean read length and mean fragment (template) length, sampled from the first ~50k
+/// primary mapped reads. The molecule-length proxy for the self-referential callable
+/// run-length gate (long reads → long molecules → long callable runs). Fragment falls
+/// back to read length when templates are unpaired (e.g. long-read single-end).
+pub fn estimate_molecule_lengths(bam_path: &Path) -> Result<(f64, f64), AnalysisError> {
+    let mut reader = bam::io::reader::Builder
+        .build_from_path(bam_path)
+        .map_err(|e| AnalysisError::io(bam_path, e))?;
+    let _ = reader.read_header().map_err(|e| AnalysisError::io(bam_path, e))?;
+
+    let (mut n, mut read_sum, mut frag_n, mut frag_sum) = (0u64, 0u64, 0u64, 0u64);
+    for result in reader.records() {
+        let record = result.map_err(|e| AnalysisError::io(bam_path, e))?;
+        let f = record.flags();
+        if f.is_unmapped() || f.is_secondary() || f.is_supplementary() {
+            continue;
+        }
+        let len = record.sequence().len() as u64;
+        if len == 0 {
+            continue;
+        }
+        read_sum += len;
+        n += 1;
+        let tlen = record.template_length();
+        if tlen != 0 {
+            frag_sum += tlen.unsigned_abs() as u64;
+            frag_n += 1;
+        }
+        if n >= 50_000 {
+            break;
+        }
+    }
+    if n == 0 {
+        return Ok((0.0, 0.0));
+    }
+    let read_len = read_sum as f64 / n as f64;
+    let frag_len = if frag_n > 0 { frag_sum as f64 / frag_n as f64 } else { read_len };
+    Ok((read_len, frag_len))
+}
+
+/// CALLABLE intervals (BED 0-based half-open) on one `contig`, coalesced and kept only
+/// when the run is at least `min_run_len` bases. Reference-free: positions are classified
+/// by depth / QC / MAPQ via the GATK hierarchy (reference-N regions carry no reads and
+/// fall out as no-coverage). Memory is bounded by the open-read window; needs a BAM index.
+pub fn callable_intervals(
+    bam_path: &Path,
+    contig: &str,
+    params: &CallableLociParams,
+    min_run_len: u32,
+) -> Result<Vec<(i64, i64)>, AnalysisError> {
+    let mut reader = bam::io::indexed_reader::Builder::default()
+        .build_from_path(bam_path)
+        .map_err(|e| AnalysisError::io(bam_path, e))?;
+    let header = reader.read_header().map_err(|e| AnalysisError::io(bam_path, e))?;
+    let region: Region = contig
+        .parse()
+        .map_err(|_| AnalysisError::Message(format!("bad region for contig {contig}")))?;
+    let query = reader.query(&header, &region).map_err(|e| AnalysisError::io(bam_path, e))?;
+
+    let mut window: VecDeque<Col> = VecDeque::new();
+    let mut emit_cursor: usize = 1;
+    let mut intervals: Vec<(i64, i64)> = Vec::new();
+    let mut run_start: Option<usize> = None;
+    let mut run_end: usize = 0;
+
+    let mut step = |pos: usize, col: &Col| {
+        let callable = matches!(
+            determine_state(b'A', col.depth, col.qc_pass, col.low_mapq, params),
+            CallableState::Callable
+        );
+        if callable {
+            if run_start.is_none() {
+                run_start = Some(pos);
+            }
+            run_end = pos;
+        } else if let Some(s) = run_start.take() {
+            if (run_end - s + 1) as u32 >= min_run_len {
+                intervals.push(((s - 1) as i64, run_end as i64));
+            }
+        }
+    };
+
+    for result in query {
+        let record = result.map_err(|e| AnalysisError::io(bam_path, e))?;
+        let flags = record.flags();
+        if flags.is_unmapped() || flags.is_secondary() || flags.is_supplementary() || flags.is_duplicate() || flags.is_qc_fail() {
+            continue;
+        }
+        let start = match record.alignment_start() {
+            Some(p) => p.map_err(|e| AnalysisError::io(bam_path, e))?.get(),
+            None => continue,
+        };
+        while emit_cursor < start {
+            let col = window.pop_front().unwrap_or_default();
+            step(emit_cursor, &col);
+            emit_cursor += 1;
+        }
+        let mapq = record.mapping_quality().map_or(255u8, |m| m.get());
+        let quals = record.quality_scores();
+        let quals = quals.as_ref();
+        let mut ref_pos = start;
+        let mut query_off = 0usize;
+        for op in record.cigar().iter() {
+            let op = op.map_err(|e| AnalysisError::io(bam_path, e))?;
+            let kind = op.kind();
+            let len = op.len();
+            match (kind.consumes_reference(), kind.consumes_read()) {
+                (true, true) => {
+                    for i in 0..len {
+                        let pos = ref_pos + i;
+                        if pos >= emit_cursor {
+                            let idx = pos - emit_cursor;
+                            while window.len() <= idx {
+                                window.push_back(Col::default());
+                            }
+                            let col = &mut window[idx];
+                            let base_q = quals.get(query_off + i).copied().unwrap_or(0);
+                            col.depth += 1;
+                            if mapq >= params.min_mapping_quality && base_q >= params.min_base_quality {
+                                col.qc_pass += 1;
+                            }
+                            if mapq <= params.max_low_mapq {
+                                col.low_mapq += 1;
+                            }
+                        }
+                    }
+                    ref_pos += len;
+                    query_off += len;
+                }
+                (true, false) => ref_pos += len,
+                (false, true) => query_off += len,
+                (false, false) => {}
+            }
+        }
+    }
+    while let Some(col) = window.pop_front() {
+        step(emit_cursor, &col);
+        emit_cursor += 1;
+    }
+    if let Some(s) = run_start {
+        if (run_end - s + 1) as u32 >= min_run_len {
+            intervals.push(((s - 1) as i64, run_end as i64));
+        }
+    }
+    Ok(intervals)
+}
+
 /// GATK `CallableLoci` hierarchy — first failing condition wins. Mirrors the Scala
 /// `determineCallableState`.
 fn determine_state(
@@ -506,3 +653,41 @@ fn median_from_hist(hist: &[u64], total: u64) -> f64 {
     255.0
 }
 
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    fn fixture(name: &str) -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures").join(name)
+    }
+
+    #[test]
+    fn callable_intervals_cover_the_fixture_and_honor_run_length() {
+        let bam = fixture("coverage.bam"); // chrM, 50 bp, well covered
+        let params = CallableLociParams::default();
+
+        // No run-length gate: some callable bases, all within the 50 bp contig, intervals
+        // sorted and non-overlapping (BED 0-based half-open).
+        let ivs = callable_intervals(&bam, "chrM", &params, 1).unwrap();
+        assert!(!ivs.is_empty(), "expected callable intervals on the fixture");
+        let callable_bases: i64 = ivs.iter().map(|(s, e)| e - s).sum();
+        assert!((1..=50).contains(&callable_bases), "callable bases in range: {callable_bases}");
+        for w in ivs.windows(2) {
+            assert!(w[0].1 <= w[1].0, "intervals sorted & disjoint");
+        }
+        assert!(ivs.iter().all(|(s, e)| *s >= 0 && *e <= 50));
+
+        // An impossibly long run-length gate drops everything (fixture is only 50 bp).
+        let none = callable_intervals(&bam, "chrM", &params, 10_000).unwrap();
+        assert!(none.is_empty(), "no run clears a 10 kb gate on a 50 bp contig");
+    }
+
+    #[test]
+    fn estimate_molecule_lengths_on_fixture() {
+        let (read_len, frag_len) = estimate_molecule_lengths(&fixture("coverage.bam")).unwrap();
+        assert!(read_len > 0.0);
+        assert!(frag_len >= read_len || frag_len == read_len); // fragment >= read, or == when unpaired
+    }
+}

@@ -25,6 +25,17 @@ use navigator_domain::workspace::{
 };
 use tokio::sync::mpsc::{unbounded_channel, UnboundedSender};
 
+/// Callable-region mask choice for the private-Y bucket.
+#[derive(Debug, Clone)]
+pub enum YMask {
+    /// Self-referential: the sample's own callable-Y BED (adapts to depth + read tech).
+    SelfReferential,
+    /// An external callable BED (e.g. the Poznik/1KG `b38_sites.bed`).
+    Bed(PathBuf),
+    /// No mask (noisy — every off-backbone de-novo call).
+    None,
+}
+
 /// Fields for adding a biosample (the app assigns its `SampleGuid`). `project_id` is
 /// optional — biosamples are first-class and need not belong to a project.
 #[derive(Debug, Clone)]
@@ -66,9 +77,9 @@ pub enum Command {
     AssignMtdnaHaplogroup { mtdna_id: i64 },
     /// Assign a Y haplogroup from an alignment (call chrY tree positions, rank).
     AssignYHaplogroup { alignment_id: i64 },
-    /// Find the private bucket: de-novo chrY calls off the assigned Y backbone, optionally
-    /// restricted to a callable-region BED (the Poznik/1KG callable-Y mask).
-    FindPrivateY { alignment_id: i64, callable_bed: Option<PathBuf> },
+    /// Find the private bucket: de-novo chrY calls off the assigned Y backbone, restricted
+    /// by the chosen callable mask.
+    FindPrivateY { alignment_id: i64, mask: YMask },
     /// Unified import: detect the file's type and route it to the right importer.
     AddData { biosample_guid: SampleGuid, path: PathBuf },
     LoadAlignments(i64),
@@ -241,8 +252,13 @@ pub async fn handle(app: &App, cmd: Command) -> Event {
             Ok(assignment) => Event::YHaplogroup { alignment_id, assignment },
             Err(e) => Event::Error(e.to_string()),
         },
-        Command::FindPrivateY { alignment_id, callable_bed } => {
-            match app.private_y_variants(alignment_id, callable_bed.as_deref()).await {
+        Command::FindPrivateY { alignment_id, mask } => {
+            let result = match mask {
+                YMask::SelfReferential => app.private_y_variants_self_masked(alignment_id).await,
+                YMask::Bed(p) => app.private_y_variants(alignment_id, Some(&p)).await,
+                YMask::None => app.private_y_variants(alignment_id, None).await,
+            };
+            match result {
                 Ok(bucket) => Event::PrivateY { alignment_id, bucket },
                 Err(e) => Event::Error(e.to_string()),
             }
