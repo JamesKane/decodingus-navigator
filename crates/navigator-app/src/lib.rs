@@ -13,6 +13,7 @@ use chrono::Utc;
 use du_domain::ids::SampleGuid;
 use navigator_analysis::caller::{self, HaploidCallerParams, SiteGenotype, Site, VariantCall};
 use navigator_analysis::coverage::{self, CallableLociParams, CoverageResult};
+use navigator_analysis::heteroplasmy::{self, HeteroplasmyParams};
 use navigator_analysis::ibd::{
     ChromosomeGenotypes, GeneticMap, IbdSegment, MatchSummary, PairwiseIbdDetector,
 };
@@ -24,6 +25,7 @@ use navigator_store::panel;
 pub use navigator_analysis::caller::SiteGenotype as PanelGenotype;
 pub use navigator_analysis::caller::VariantCall as DenovoCall;
 pub use navigator_analysis::coverage::CoverageResult as Coverage;
+pub use navigator_analysis::heteroplasmy::HeteroplasmySite;
 pub use navigator_analysis::haplo::{BranchEvidence, CallState, ScoredHaplogroup, SnpEvidence};
 
 /// A haplogroup assignment: the ranked candidates plus, for the reported terminal, the
@@ -964,6 +966,23 @@ impl App {
             self.record_call(bio, DnaType::Mt, &format!("aln:{alignment_id}:mt"), format!("aln #{alignment_id} mtDNA"), &assignment).await?;
         }
         Ok(assignment)
+    }
+
+    /// Scan an alignment's chrM pileup for heteroplasmic positions — sites where a second
+    /// mitochondrial allele coexists above the noise floor. A screening pass for the
+    /// reconciliation view (a curator judges real heteroplasmy vs. artefacts); ascending
+    /// by position. Requires a chrM-bearing BAM.
+    pub async fn mtdna_heteroplasmy(&self, alignment_id: i64) -> Result<Vec<HeteroplasmySite>, AppError> {
+        let aln = alignment::get(self.store.pool(), alignment_id)
+            .await?
+            .ok_or_else(|| AppError::Store(StoreError::NotFound(format!("alignment {alignment_id}"))))?;
+        let bam = PathBuf::from(aln.bam_path.ok_or(AppError::MissingPaths(alignment_id))?);
+        tokio::task::spawn_blocking(move || {
+            heteroplasmy::detect_heteroplasmy(&bam, "chrM", &HeteroplasmyParams::default())
+        })
+        .await
+        .map_err(|e| AppError::Join(e.to_string()))?
+        .map_err(Into::into)
     }
 
     /// Assign a Y haplogroup to an alignment: fetch (and cache) the FTDNA Y-DNA haplotree,

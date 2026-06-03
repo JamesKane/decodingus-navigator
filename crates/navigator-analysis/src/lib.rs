@@ -15,6 +15,7 @@ pub mod coverage;
 pub mod error;
 pub mod genotype;
 pub mod haplo;
+pub mod heteroplasmy;
 pub mod ibd;
 pub mod mask;
 pub mod mtvariants;

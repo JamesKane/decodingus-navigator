@@ -153,7 +153,7 @@ pub struct VariantCall {
 
 const BASES: [u8; 4] = [b'A', b'C', b'G', b'T'];
 
-fn base_index(b: u8) -> Option<usize> {
+pub(crate) fn base_index(b: u8) -> Option<usize> {
     match b.to_ascii_uppercase() {
         b'A' => Some(0),
         b'C' => Some(1),
@@ -186,7 +186,7 @@ fn passes(record: &bam::Record, params: &HaploidCallerParams) -> bool {
 }
 
 /// Resolve a contig's length from the BAM header.
-fn contig_length(header: &noodles::sam::Header, contig: &str) -> Option<usize> {
+pub(crate) fn contig_length(header: &noodles::sam::Header, contig: &str) -> Option<usize> {
     header
         .reference_sequences()
         .iter()
@@ -195,6 +195,15 @@ fn contig_length(header: &noodles::sam::Header, contig: &str) -> Option<usize> {
             n == contig.as_bytes()
         })
         .map(|(_, map)| map.length().get())
+}
+
+/// Resolve a contig's length by opening the BAM header at `bam_path`.
+pub(crate) fn read_contig_length(bam_path: &Path, contig: &str) -> Result<usize, AnalysisError> {
+    let mut reader = bam::io::indexed_reader::Builder::default()
+        .build_from_path(bam_path)
+        .map_err(|e| AnalysisError::io(bam_path, e))?;
+    let header = reader.read_header().map_err(|e| AnalysisError::io(bam_path, e))?;
+    contig_length(&header, contig).ok_or_else(|| AnalysisError::Message(format!("contig {contig} not in BAM header")))
 }
 
 /// Sparse A/C/G/T tally at the given 1-based target positions (force-call path), keyed
@@ -289,7 +298,7 @@ pub fn call_bases_at(
 
 /// Dense A/C/G/T tally + per-position indel evidence for the 1-based inclusive region
 /// `[lo, hi]`, indexed by `pos - lo` (the chunked de-novo path).
-fn tally_region(
+pub(crate) fn tally_region(
     bam_path: &Path,
     contig: &str,
     params: &HaploidCallerParams,
