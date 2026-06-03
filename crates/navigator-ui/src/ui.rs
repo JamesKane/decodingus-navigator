@@ -7,9 +7,9 @@ use std::sync::mpsc::Receiver;
 
 use eframe::egui;
 use navigator_app::{
-    CallState, CompatibilityLevel, Consensus, Coverage, DenovoCall, HaploAssignment, IbdComparison,
-    IdentityVerification, PanelGenotype, PrivateBucket, PrivateClass, ProjectOverview, ReconciledVariant, SourceType,
-    VariantStatus, VerificationStatus,
+    AuditEntry, CallState, CompatibilityLevel, Consensus, Coverage, DenovoCall, DnaType, HaploAssignment,
+    HeteroplasmySite, IbdComparison, IdentityVerification, PanelGenotype, PrivateBucket, PrivateClass,
+    ProjectOverview, ReconciledVariant, SourceType, VariantStatus, VerificationStatus,
 };
 use navigator_domain::du_domain::ids::SampleGuid;
 use navigator_domain::chipprofile::{self, ChipProfile};
@@ -46,6 +46,11 @@ struct Forms {
     variant_source_type: String,
     variant_manual_label: String,
     variant_manual_text: String,
+    /// Manual-override inputs for the Y / mtDNA consensus (corrected haplogroup + reason).
+    override_y_haplogroup: String,
+    override_y_reason: String,
+    override_mt_haplogroup: String,
+    override_mt_reason: String,
 }
 
 pub struct NavigatorApp {
@@ -61,6 +66,11 @@ pub struct NavigatorApp {
     /// Donor-level haplogroup consensus for the selected subject (Y, mtDNA).
     consensus_y: Option<Consensus>,
     consensus_mt: Option<Consensus>,
+    /// Reconciliation audit log for the selected subject (Y, mtDNA).
+    audit_y: Vec<AuditEntry>,
+    audit_mt: Vec<AuditEntry>,
+    /// Last mtDNA heteroplasmy scan: (alignment id, sites).
+    heteroplasmy: Option<(i64, Vec<HeteroplasmySite>)>,
     /// STR profiles for the selected subject.
     str_profiles: Vec<StrProfile>,
     /// SNP variant sets for the selected subject.
@@ -198,6 +208,9 @@ impl NavigatorApp {
             runs: Vec::new(),
             consensus_y: None,
             consensus_mt: None,
+            audit_y: Vec::new(),
+            audit_mt: Vec::new(),
+            heteroplasmy: None,
             str_profiles: Vec::new(),
             variant_sets: Vec::new(),
             variant_concordance: Vec::new(),
@@ -355,6 +368,24 @@ impl NavigatorApp {
                         self.consensus_mt = mt;
                     }
                 }
+                Event::Audit { biosample_guid, dna_type, entries } => {
+                    if self.selected_sample == Some(biosample_guid) {
+                        match dna_type {
+                            DnaType::Y => self.audit_y = entries,
+                            DnaType::Mt => self.audit_mt = entries,
+                        }
+                    }
+                }
+                Event::Heteroplasmy { alignment_id, sites } => {
+                    self.status = format!("mtDNA heteroplasmy: {} site(s)", sites.len());
+                    self.heteroplasmy = Some((alignment_id, sites));
+                }
+                Event::ReconciliationChanged { biosample_guid, dna_type } => {
+                    if self.selected_sample == Some(biosample_guid) {
+                        let _ = self.tx.send(Command::LoadConsensus(biosample_guid));
+                        let _ = self.tx.send(Command::LoadAudit { biosample_guid, dna_type });
+                    }
+                }
                 Event::PrivateY { alignment_id, bucket } => {
                     self.status = format!("Private Y: {} novel, {} off-path", bucket.novel(), bucket.off_path());
                     self.private_y = Some((alignment_id, bucket));
@@ -464,7 +495,12 @@ impl NavigatorApp {
         self.mtdna_haplogroup = None;
         self.consensus_y = None;
         self.consensus_mt = None;
+        self.audit_y.clear();
+        self.audit_mt.clear();
+        self.heteroplasmy = None;
         let _ = self.tx.send(Command::LoadConsensus(guid));
+        let _ = self.tx.send(Command::LoadAudit { biosample_guid: guid, dna_type: DnaType::Y });
+        let _ = self.tx.send(Command::LoadAudit { biosample_guid: guid, dna_type: DnaType::Mt });
         let _ = self.tx.send(Command::LoadVariantConcordance(guid));
         let _ = self.tx.send(Command::LoadRuns(guid));
         let _ = self.tx.send(Command::LoadStrProfiles(guid));
@@ -564,6 +600,7 @@ impl eframe::App for NavigatorApp {
                     self.coverage_section(ui, id);
                     self.denovo_section(ui, id);
                     self.y_haplogroup_section(ui, id);
+                    self.heteroplasmy_section(ui, id);
                     self.genotyping_section(ui, id);
                 }
             });
@@ -1306,21 +1343,157 @@ impl NavigatorApp {
         ui.add_space(12.0);
         ui.separator();
         ui.heading("Haplogroup consensus");
-        for (dna, cons) in [("Y-DNA", &self.consensus_y), ("mtDNA", &self.consensus_mt)] {
-            if let Some(c) = cons {
-                let (compat, col) = match c.compatibility {
-                    CompatibilityLevel::Compatible => ("compatible", egui::Color32::from_rgb(60, 160, 60)),
-                    CompatibilityLevel::MinorDivergence => ("minor divergence", egui::Color32::from_rgb(170, 150, 40)),
-                    CompatibilityLevel::MajorDivergence => ("major divergence", egui::Color32::from_rgb(200, 120, 40)),
-                    CompatibilityLevel::Incompatible => ("incompatible", egui::Color32::from_rgb(200, 60, 60)),
-                };
-                ui.horizontal(|ui| {
-                    ui.strong(format!("{dna}: {}", c.haplogroup));
-                    ui.label(format!("({} source(s), conf {:.3})", c.run_count, c.confidence));
-                    ui.colored_label(col, compat);
+        self.consensus_block(ui, "Y-DNA", DnaType::Y);
+        self.consensus_block(ui, "mtDNA", DnaType::Mt);
+    }
+
+    /// One DNA type's consensus row plus its override controls, audit log, and publish
+    /// button. The consensus/audit are cloned up front so the form fields can be borrowed
+    /// mutably for the override inputs.
+    fn consensus_block(&mut self, ui: &mut egui::Ui, label: &str, dna_type: DnaType) {
+        let cons = match dna_type {
+            DnaType::Y => self.consensus_y.clone(),
+            DnaType::Mt => self.consensus_mt.clone(),
+        };
+        let Some(c) = cons else { return };
+        let Some(guid) = self.selected_sample else { return };
+
+        let (compat, col) = match c.compatibility {
+            CompatibilityLevel::Compatible => ("compatible", egui::Color32::from_rgb(60, 160, 60)),
+            CompatibilityLevel::MinorDivergence => ("minor divergence", egui::Color32::from_rgb(170, 150, 40)),
+            CompatibilityLevel::MajorDivergence => ("major divergence", egui::Color32::from_rgb(200, 120, 40)),
+            CompatibilityLevel::Incompatible => ("incompatible", egui::Color32::from_rgb(200, 60, 60)),
+        };
+        ui.horizontal(|ui| {
+            ui.strong(format!("{label}: {}", c.haplogroup));
+            ui.label(format!("({} source(s), conf {:.3})", c.run_count, c.confidence));
+            ui.colored_label(col, compat);
+            if c.overridden {
+                ui.colored_label(egui::Color32::from_rgb(120, 120, 220), "manual override");
+            }
+        });
+        for w in &c.warnings {
+            ui.label(format!("  ⚠ {w}"));
+        }
+
+        // Manual override: set a curator-corrected terminal (e.g. Sanger-confirmed), or clear.
+        let (hg_field, reason_field) = match dna_type {
+            DnaType::Y => (&mut self.forms.override_y_haplogroup, &mut self.forms.override_y_reason),
+            DnaType::Mt => (&mut self.forms.override_mt_haplogroup, &mut self.forms.override_mt_reason),
+        };
+        ui.horizontal(|ui| {
+            ui.label("Override:");
+            ui.add(egui::TextEdit::singleline(hg_field).hint_text("haplogroup").desired_width(140.0));
+            ui.add(egui::TextEdit::singleline(reason_field).hint_text("reason").desired_width(180.0));
+            let hg = hg_field.trim().to_string();
+            let reason = reason_field.trim().to_string();
+            if ui.add_enabled(!hg.is_empty(), egui::Button::new("Set")).clicked() {
+                self.status = format!("Overriding {label} consensus → {hg}");
+                let _ = self.tx.send(Command::SetHaploOverride {
+                    biosample_guid: guid,
+                    dna_type,
+                    haplogroup: hg,
+                    reason: (!reason.is_empty()).then_some(reason),
                 });
-                for w in &c.warnings {
-                    ui.label(format!("  ⚠ {w}"));
+            }
+            if ui.add_enabled(c.overridden, egui::Button::new("Clear")).clicked() {
+                self.status = format!("Clearing {label} override");
+                let _ = self.tx.send(Command::ClearHaploOverride { biosample_guid: guid, dna_type });
+            }
+        });
+
+        // mtDNA heteroplasmy observations from the last scan (folded into the published record).
+        let het: Vec<HeteroplasmySite> = if dna_type == DnaType::Mt {
+            self.heteroplasmy.as_ref().map(|(_, s)| s.clone()).unwrap_or_default()
+        } else {
+            Vec::new()
+        };
+        if dna_type == DnaType::Mt && !het.is_empty() {
+            egui::CollapsingHeader::new(format!("heteroplasmy — {} site(s)", het.len()))
+                .id_salt(("het", label))
+                .show(ui, |ui| {
+                    for h in &het {
+                        ui.label(format!(
+                            "  pos {}: {}/{} minor {:.1}% (depth {})",
+                            h.position, h.major_base, h.minor_base, h.minor_fraction * 100.0, h.depth
+                        ));
+                    }
+                });
+        }
+
+        // Audit log.
+        let audit = match dna_type {
+            DnaType::Y => &self.audit_y,
+            DnaType::Mt => &self.audit_mt,
+        };
+        if !audit.is_empty() {
+            egui::CollapsingHeader::new(format!("audit log — {} entr{}", audit.len(), if audit.len() == 1 { "y" } else { "ies" }))
+                .id_salt(("audit", label))
+                .show(ui, |ui| {
+                    for e in audit {
+                        ui.label(format!("  {} · {} — {}", e.timestamp, e.action, e.note));
+                    }
+                });
+        }
+
+        // Publish the donor-level reconciliation record (gated on sign-in).
+        ui.horizontal(|ui| {
+            let signed_in = self.account.is_some();
+            if ui
+                .add_enabled(signed_in && !self.publishing, egui::Button::new(format!("Publish {label} reconciliation")))
+                .clicked()
+            {
+                self.publishing = true;
+                self.status = format!("Publishing {label} reconciliation…");
+                let _ = self.tx.send(Command::PublishReconciliation {
+                    biosample_guid: guid,
+                    dna_type,
+                    heteroplasmy: het,
+                    identity: self.identity.clone(),
+                });
+            }
+            if !signed_in {
+                ui.label("(sign in to publish)");
+            }
+        });
+        ui.add_space(6.0);
+    }
+
+    /// mtDNA heteroplasmy scan for an alignment (chrM pileup → mixed positions). Results
+    /// feed the mtDNA reconciliation record's heteroplasmy observations.
+    fn heteroplasmy_section(&mut self, ui: &mut egui::Ui, alignment_id: i64) {
+        let has_bam = self
+            .alignments
+            .iter()
+            .find(|a| a.id == alignment_id)
+            .map(|a| a.bam_path.is_some())
+            .unwrap_or(false);
+
+        ui.add_space(12.0);
+        ui.separator();
+        ui.heading("mtDNA heteroplasmy");
+        ui.horizontal(|ui| {
+            if ui.add_enabled(has_bam, egui::Button::new("Scan chrM heteroplasmy")).clicked() {
+                self.status = "Scanning chrM pileup for heteroplasmy…".into();
+                let _ = self.tx.send(Command::LoadHeteroplasmy { alignment_id });
+            }
+            if !has_bam {
+                ui.label("(no BAM/CRAM path recorded)");
+            }
+        });
+
+        if let Some((id, sites)) = &self.heteroplasmy {
+            if *id == alignment_id {
+                if sites.is_empty() {
+                    ui.label("No heteroplasmic positions above the noise floor.");
+                } else {
+                    ui.label(format!("{} heteroplasmic position(s):", sites.len()));
+                    for h in sites {
+                        ui.label(format!(
+                            "  pos {}: {} (major) / {} (minor) — minor {:.1}%, depth {}",
+                            h.position, h.major_base, h.minor_base, h.minor_fraction * 100.0, h.depth
+                        ));
+                    }
                 }
             }
         }

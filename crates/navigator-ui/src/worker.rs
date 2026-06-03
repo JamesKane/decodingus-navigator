@@ -12,8 +12,9 @@ use std::sync::mpsc::{Receiver, Sender};
 use std::sync::Arc;
 
 use navigator_app::{
-    App, Consensus, Coverage, DenovoCall, DnaType, HaploAssignment, IbdComparison, IbdDetectorConfig,
-    IdentityVerification, PanelGenotype, PrivateBucket, ProjectOverview, ReconciledVariant, SourceType,
+    App, AuditEntry, Consensus, Coverage, DenovoCall, DnaType, HaploAssignment, HeteroplasmySite,
+    IbdComparison, IbdDetectorConfig, IdentityVerification, PanelGenotype, PrivateBucket,
+    ProjectOverview, ReconciledVariant, SourceType,
 };
 use navigator_domain::du_domain::ids::SampleGuid;
 use navigator_domain::chipprofile::ChipProfile;
@@ -111,6 +112,21 @@ pub enum Command {
     Logout,
     PublishCoverage(i64),
     PublishVariants { alignment_id: i64, contig: String },
+    /// Manually override the consensus haplogroup for a subject + DNA type.
+    SetHaploOverride { biosample_guid: SampleGuid, dna_type: DnaType, haplogroup: String, reason: Option<String> },
+    /// Clear a manual override.
+    ClearHaploOverride { biosample_guid: SampleGuid, dna_type: DnaType },
+    /// Load the reconciliation audit log for a subject + DNA type.
+    LoadAudit { biosample_guid: SampleGuid, dna_type: DnaType },
+    /// Scan an alignment's chrM pileup for heteroplasmic positions.
+    LoadHeteroplasmy { alignment_id: i64 },
+    /// Publish the subject's haplogroup reconciliation record to the signed-in PDS.
+    PublishReconciliation {
+        biosample_guid: SampleGuid,
+        dna_type: DnaType,
+        heteroplasmy: Vec<HeteroplasmySite>,
+        identity: Option<IdentityVerification>,
+    },
 }
 
 /// A panel with its site count, for the panel list.
@@ -164,6 +180,12 @@ pub enum Event {
     Ibd(IbdComparison),
     /// Identity-verification result between two alignments.
     Identity(IdentityVerification),
+    /// The reconciliation audit log for a subject + DNA type.
+    Audit { biosample_guid: SampleGuid, dna_type: DnaType, entries: Vec<AuditEntry> },
+    /// mtDNA heteroplasmy sites for an alignment.
+    Heteroplasmy { alignment_id: i64, sites: Vec<HeteroplasmySite> },
+    /// A reconciliation override/clear succeeded; the UI reloads consensus + audit.
+    ReconciliationChanged { biosample_guid: SampleGuid, dna_type: DnaType },
     /// Current signed-in account (DID), or `None` when signed out.
     Authenticated(Option<String>),
     /// A record was published; `kind` is a human label, `uri` the `at://` URI.
@@ -385,6 +407,32 @@ pub async fn handle(app: &App, cmd: Command) -> Event {
         Command::PublishVariants { alignment_id, contig } => {
             match app.publish_variants(alignment_id, &contig).await {
                 Ok(r) => Event::Published { kind: format!("{contig} variants"), uri: r.uri },
+                Err(e) => Event::Error(e.to_string()),
+            }
+        }
+        Command::SetHaploOverride { biosample_guid, dna_type, haplogroup, reason } => {
+            match app.set_manual_override(biosample_guid, dna_type, &haplogroup, reason.as_deref()).await {
+                Ok(()) => Event::ReconciliationChanged { biosample_guid, dna_type },
+                Err(e) => Event::Error(e.to_string()),
+            }
+        }
+        Command::ClearHaploOverride { biosample_guid, dna_type } => {
+            match app.clear_manual_override(biosample_guid, dna_type).await {
+                Ok(()) => Event::ReconciliationChanged { biosample_guid, dna_type },
+                Err(e) => Event::Error(e.to_string()),
+            }
+        }
+        Command::LoadAudit { biosample_guid, dna_type } => match app.reconciliation_audit(biosample_guid, dna_type).await {
+            Ok(entries) => Event::Audit { biosample_guid, dna_type, entries },
+            Err(e) => Event::Error(e.to_string()),
+        },
+        Command::LoadHeteroplasmy { alignment_id } => match app.mtdna_heteroplasmy(alignment_id).await {
+            Ok(sites) => Event::Heteroplasmy { alignment_id, sites },
+            Err(e) => Event::Error(e.to_string()),
+        },
+        Command::PublishReconciliation { biosample_guid, dna_type, heteroplasmy, identity } => {
+            match app.publish_reconciliation(biosample_guid, dna_type, &heteroplasmy, identity.as_ref()).await {
+                Ok(r) => Event::Published { kind: format!("{} reconciliation", dna_type.as_str()), uri: r.uri },
                 Err(e) => Event::Error(e.to_string()),
             }
         }
