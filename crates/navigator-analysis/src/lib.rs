@@ -21,6 +21,7 @@ pub mod mask;
 pub mod mtvariants;
 pub mod parity;
 pub mod read_metrics;
+pub mod reader;
 pub mod realign;
 pub mod sex;
 pub mod sv;
