@@ -1,6 +1,6 @@
 # Multi-source reconciliation — Y & mtDNA across runs + Sanger confirmation
 
-Status: **design** (not yet built). Scope: combine a donor's uniparental (Y, mtDNA)
+Status: **built** (all 6 phases landed on `rust-rewrite`). Scope: combine a donor's uniparental (Y, mtDNA)
 results from multiple sources — sequencing runs across platforms (short-read, HiFi),
 chip/array, STR panels, and **supplemental Sanger confirmations** — into a donor-level
 consensus with conflict detection, source weighting, identity verification, and a manual
@@ -109,18 +109,22 @@ MANUAL_OVERRIDE / CONFLICT_RESOLVED / RECOMPUTED).
 no-float rule) so it publishes through the same `navigator-sync` path as coverage/private
 variants.
 
-## Phasing (build order)
+## Phasing (build order) — ✅ all phases complete
 
-1. **Source model + per-source run calls.** `SourceType` (+ weights, incl. Sanger), a
+1. ✅ **Source model + per-source run calls.** `SourceType` (+ weights, incl. Sanger), a
    `Source` table, and capture each `assign_*` result as a `RunHaplogroupCall`.
-2. **Haplogroup consensus + compatibility.** Pure topology combine over `run_calls`;
+2. ✅ **Haplogroup consensus + compatibility.** Pure topology combine over `run_calls`;
    surface consensus + divergence in the subject view. (Highest value, smallest lift —
    directly answers "combine the two runs.")
-3. **Identity verification.** Wire IBD kinship + Y-STR distance; gate/flag merges.
-4. **Variant concordance + status.** Weighted voting; CONFIRMED/NOVEL/CONFLICT; feeds the
+3. ✅ **Identity verification.** Wire IBD kinship + Y-STR distance; gate/flag merges.
+4. ✅ **Variant concordance + status.** Weighted voting; CONFIRMED/NOVEL/CONFLICT; feeds the
    private/branch-proposal bucket with multi-source confidence.
-5. **Sanger / manual source entry.** UI to add confirmed calls at weight 1.0.
-6. **mtDNA heteroplasmy + manual override + audit + PDS record.**
+5. ✅ **Sanger / manual source entry.** UI to add confirmed calls at weight 1.0.
+6. ✅ **mtDNA heteroplasmy + manual override + audit + PDS record.** Heteroplasmy via a chrM
+   pileup scan (`navigator_analysis::heteroplasmy`); override + audit persisted in
+   `reconciliation_override`/`reconciliation_audit` (migration 0010); the aggregate
+   publishes as `com.decodingus.atmosphere.haplogroupReconciliation` (floats-as-strings).
+   UI: per-DNA-type override/clear, audit-log expander, heteroplasmy scan, publish button.
 
 ## Open questions
 
