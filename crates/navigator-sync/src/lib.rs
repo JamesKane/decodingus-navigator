@@ -17,7 +17,10 @@ pub use oauth::{login, login_default, refresh, OAuthConfig};
 pub use publish::{dev_http_client, PdsClient, RecordRef};
 pub use sync::{AsyncSync, RetryPolicy};
 pub use records::{
-    CoverageSummaryRecord, PrivateVariantsRecord, VariantCallEntry, COVERAGE_SUMMARY_COLLECTION,
+    AuditEntryRecord, CoverageSummaryRecord, HaplogroupReconciliationRecord,
+    HeteroplasmyObservationRecord, IdentityVerificationRecord, ManualOverrideRecord,
+    PrivateVariantsRecord, RecordMeta, ReconciliationStatusRecord, RunHaplogroupCallRecord,
+    VariantCallEntry, COVERAGE_SUMMARY_COLLECTION, HAPLOGROUP_RECONCILIATION_COLLECTION,
     PRIVATE_VARIANTS_COLLECTION,
 };
 pub use tokens::{Session, TokenStore};

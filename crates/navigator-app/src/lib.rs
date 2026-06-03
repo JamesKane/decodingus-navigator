@@ -82,6 +82,11 @@ pub use navigator_sync::{
     COVERAGE_SUMMARY_COLLECTION, PRIVATE_VARIANTS_COLLECTION,
 };
 use navigator_sync::{dev_http_client, login_default, AsyncSync, OAuthConfig, RetryPolicy, TokenStore};
+use navigator_sync::{
+    AuditEntryRecord, HaplogroupReconciliationRecord, HeteroplasmyObservationRecord,
+    IdentityVerificationRecord, ManualOverrideRecord, ReconciliationStatusRecord,
+    RunHaplogroupCallRecord, HAPLOGROUP_RECONCILIATION_COLLECTION,
+};
 
 /// Keychain service namespace for stored sessions (plan §7).
 const KEYCHAIN_SERVICE: &str = "decodingus-navigator";
@@ -157,6 +162,35 @@ fn adaptive_haploid_params(bam_path: &Path) -> HaploidCallerParams {
         }
     }
     params
+}
+
+/// The lexicon's UPPER_SNAKE compatibility level (matches the AppView's knownValues).
+fn compat_lexicon(c: CompatibilityLevel) -> &'static str {
+    match c {
+        CompatibilityLevel::Compatible => "COMPATIBLE",
+        CompatibilityLevel::MinorDivergence => "MINOR_DIVERGENCE",
+        CompatibilityLevel::MajorDivergence => "MAJOR_DIVERGENCE",
+        CompatibilityLevel::Incompatible => "INCOMPATIBLE",
+    }
+}
+
+/// The lexicon's DNA-type token for the reconciliation record (`Y_DNA`/`MT_DNA`).
+fn dna_type_lexicon(d: DnaType) -> &'static str {
+    match d {
+        DnaType::Y => "Y_DNA",
+        DnaType::Mt => "MT_DNA",
+    }
+}
+
+/// The lexicon's UPPER_SNAKE verification status.
+fn verification_lexicon(s: VerificationStatus) -> &'static str {
+    match s {
+        VerificationStatus::VerifiedSame => "VERIFIED_SAME",
+        VerificationStatus::LikelySame => "LIKELY_SAME",
+        VerificationStatus::Uncertain => "UNCERTAIN",
+        VerificationStatus::LikelyDifferent => "LIKELY_DIFFERENT",
+        VerificationStatus::VerifiedDifferent => "VERIFIED_DIFFERENT",
+    }
 }
 
 /// Read the first 64 KiB of a file as lossy UTF-8 — enough to fingerprint a text file's
@@ -880,6 +914,141 @@ impl App {
             .map(|s| (s.source_label.clone(), s.source_type.snp_weight(), s.calls.as_slice()))
             .collect();
         Ok(reconciliation::reconcile_variants(&sources))
+    }
+
+    /// Build the `com.decodingus.atmosphere.haplogroupReconciliation` record JSON for a
+    /// subject + DNA type from the stored consensus, per-run calls, manual override, and
+    /// audit log. mtDNA heteroplasmy observations and an optional identity-verification
+    /// result are passed in (the caller computes them from the relevant alignments).
+    async fn reconciliation_record(
+        &self,
+        biosample_guid: SampleGuid,
+        dna_type: DnaType,
+        heteroplasmy: &[HeteroplasmySite],
+        identity: Option<&IdentityVerification>,
+    ) -> Result<serde_json::Value, AppError> {
+        let consensus = self.haplogroup_consensus(biosample_guid, dna_type).await?.ok_or_else(|| {
+            AppError::Store(StoreError::NotFound(format!(
+                "no {} haplogroup calls for {}",
+                dna_type.as_str(),
+                biosample_guid.0
+            )))
+        })?;
+        let calls = haplogroup_call::list_for(self.store.pool(), biosample_guid, dna_type).await?;
+
+        let run_calls = calls
+            .iter()
+            .map(|c| RunHaplogroupCallRecord {
+                source_ref: c.source_label.clone(),
+                haplogroup: c.haplogroup.clone(),
+                confidence: c.score.to_string(),
+                call_method: "SNP_PHYLOGENETIC".into(),
+                score: Some(c.score.to_string()),
+                supporting_snps: Some(c.matched),
+                conflicting_snps: Some((c.expected - c.matched).max(0)),
+            })
+            .collect();
+
+        let status = ReconciliationStatusRecord {
+            compatibility_level: compat_lexicon(consensus.compatibility).into(),
+            consensus_haplogroup: consensus.haplogroup.clone(),
+            confidence: Some(consensus.confidence.to_string()),
+            divergence_point: consensus.divergence_point.clone(),
+            branch_compatibility_score: None,
+            snp_concordance: identity.and_then(|i| i.snp_concordance).map(|f| f.to_string()),
+            run_count: consensus.run_count as i64,
+            warnings: consensus.warnings.clone(),
+        };
+
+        // Heteroplasmy is mtDNA-only; major frequency is 1 − minor fraction.
+        let heteroplasmy_observations = if dna_type == DnaType::Mt {
+            heteroplasmy
+                .iter()
+                .map(|h| HeteroplasmyObservationRecord {
+                    position: h.position,
+                    major_allele: h.major_base.to_string(),
+                    minor_allele: h.minor_base.to_string(),
+                    major_allele_frequency: (1.0 - h.minor_fraction).to_string(),
+                    depth: Some(h.depth as i64),
+                    is_defining_snp: None,
+                    affected_haplogroup: None,
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
+
+        let identity_verification = identity.map(|i| IdentityVerificationRecord {
+            kinship_coefficient: None,
+            fingerprint_snp_concordance: i.snp_concordance.map(|f| f.to_string()),
+            y_str_distance: i.y_str_distance,
+            verification_status: Some(verification_lexicon(i.status).into()),
+            verification_method: Some(i.method.clone()),
+        });
+
+        let manual_override = recon_store::get_override(self.store.pool(), biosample_guid, dna_type)
+            .await?
+            .map(|(hg, reason)| ManualOverrideRecord {
+                overridden_haplogroup: hg,
+                reason,
+                overridden_at: Utc::now().to_rfc3339(),
+                overridden_by: self.current_account(),
+            });
+
+        let audit_log = self
+            .reconciliation_audit(biosample_guid, dna_type)
+            .await?
+            .into_iter()
+            .map(|a| AuditEntryRecord {
+                timestamp: a.timestamp,
+                action: a.action,
+                previous_consensus: None,
+                new_consensus: None,
+                run_ref: None,
+                notes: Some(a.note),
+            })
+            .collect();
+
+        let record = HaplogroupReconciliationRecord::new(
+            biosample_guid.0.to_string(),
+            dna_type_lexicon(dna_type),
+            Utc::now().to_rfc3339(),
+            status,
+            run_calls,
+            heteroplasmy_observations,
+            identity_verification,
+            manual_override,
+            audit_log,
+        );
+        Ok(serde_json::to_value(&record)?)
+    }
+
+    /// Publish a subject's haplogroup reconciliation using an explicit `client` (the
+    /// testable core; production callers use [`publish_reconciliation`](Self::publish_reconciliation)).
+    pub async fn publish_reconciliation_with(
+        &self,
+        client: &PdsClient,
+        biosample_guid: SampleGuid,
+        dna_type: DnaType,
+        heteroplasmy: &[HeteroplasmySite],
+        identity: Option<&IdentityVerification>,
+    ) -> Result<RecordRef, AppError> {
+        let value = self.reconciliation_record(biosample_guid, dna_type, heteroplasmy, identity).await?;
+        Ok(client.create_record(HAPLOGROUP_RECONCILIATION_COLLECTION, value, None).await?)
+    }
+
+    /// Publish a subject's haplogroup reconciliation record to the signed-in account's PDS
+    /// (with refresh-on-expiry and retry/backoff via [`AsyncSync`]).
+    pub async fn publish_reconciliation(
+        &self,
+        biosample_guid: SampleGuid,
+        dna_type: DnaType,
+        heteroplasmy: &[HeteroplasmySite],
+        identity: Option<&IdentityVerification>,
+    ) -> Result<RecordRef, AppError> {
+        let mut engine = self.sync_engine()?; // auth check before touching the DB
+        let value = self.reconciliation_record(biosample_guid, dna_type, heteroplasmy, identity).await?;
+        Ok(engine.push_create(HAPLOGROUP_RECONCILIATION_COLLECTION, value).await?)
     }
 
     /// All recorded per-source calls for a subject + DNA type (for display / audit).
