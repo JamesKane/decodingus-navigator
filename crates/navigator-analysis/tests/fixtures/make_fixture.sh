@@ -70,6 +70,10 @@ samtools view -T ref.fa -C -o paired.cram paired.bam && samtools index paired.cr
   sr "x_2" chrX 40
 } > sex.sam
 samtools sort -o sex.bam sex.sam && samtools index sex.bam
+# CRAM counterpart: reads are all "A", so a chr1+chrX reference of 100 A's each matches.
+{ echo ">chr1"; printf 'A%.0s' $(seq 1 100); echo; echo ">chrX"; printf 'A%.0s' $(seq 1 100); echo; } > sexref.fa
+samtools faidx sexref.fa
+samtools view -T sexref.fa -C -o sex.cram sex.bam && samtools index sex.cram
 
 # ---- sv.bam ---------------------------------------------------------------
 # chr1 + chr2 (5000 bp each, bin size 1000 -> 5 bins). Evidence:

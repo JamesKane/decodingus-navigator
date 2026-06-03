@@ -2,9 +2,10 @@
 //! the chrX:autosome coverage ratio: males (XY) sit near 0.5×, females (XX) near 1.0×.
 //! Drives per-contig ploidy for variant calling.
 //!
-//! Uses the **BAI index metadata** (per-reference aligned-record counts) — the Scala
-//! fast path — so it is O(contigs), not a read scan. An unindexed BAM is an error,
-//! matching the Scala behaviour.
+//! For BAM, uses the **BAI index metadata** (per-reference aligned-record counts) — the
+//! Scala fast path — so it is O(contigs), not a read scan; an unindexed BAM is an error.
+//! CRAM indexes (`.crai`) carry no per-reference counts, so CRAM falls back to a single
+//! record scan tallying mapped reads per chromosome (O(reads), `reference` required).
 
 use std::path::Path;
 
@@ -13,6 +14,7 @@ use noodles::csi::binning_index::ReferenceSequence as _;
 
 use crate::contig;
 use crate::error::AnalysisError;
+use crate::reader::{self, Format};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InferredSex {
@@ -43,50 +45,24 @@ const MALE_RATIO_THRESHOLD: f64 = 0.65;
 const FEMALE_RATIO_THRESHOLD: f64 = 0.85;
 const MIN_AUTOSOME_COVERAGE: f64 = 5.0;
 
-/// Infer sex from an indexed BAM by comparing chrX to autosome read density.
-pub fn infer_from_bam(bam_path: &Path) -> Result<SexInferenceResult, AnalysisError> {
-    let mut reader = bam::io::reader::Builder
-        .build_from_path(bam_path)
-        .map_err(|e| AnalysisError::io(bam_path, e))?;
-    let header = reader
-        .read_header()
-        .map_err(|e| AnalysisError::io(bam_path, e))?;
+/// Per-chromosome-class accumulators: (autosome reads, autosome length, chrX reads, chrX length).
+type Tally = (u64, u64, u64, Option<u64>);
 
-    // BAI reference sequences are in header order; zip names/lengths with counts.
-    let bai_path = bam_path.with_extension("bam.bai");
-    let index = bam::bai::read(&bai_path)
-        .map_err(|e| AnalysisError::io(&bai_path, e))?;
-    let counts: Vec<u64> = index
-        .reference_sequences()
-        .iter()
-        .map(|rs| rs.metadata().map_or(0, |m| m.mapped_record_count()))
-        .collect();
-
-    let mut autosome_reads: u64 = 0;
-    let mut autosome_length: u64 = 0;
-    let mut x_reads: u64 = 0;
-    let mut x_length: Option<u64> = None;
-
-    for (i, (name_bytes, map)) in header.reference_sequences().iter().enumerate() {
-        let name = String::from_utf8_lossy(name_bytes.as_ref());
-        let length = map.length().get() as u64;
-        let count = counts.get(i).copied().unwrap_or(0);
-        if contig::is_autosome(&name) {
-            autosome_reads += count;
-            autosome_length += length;
-        } else if contig::is_chr_x(&name) {
-            x_reads += count;
-            x_length = Some(length);
-        }
-    }
+/// Infer sex from an indexed BAM or CRAM by comparing chrX to autosome read density.
+/// `reference` is required for CRAM (the record-scan fallback decodes it).
+pub fn infer_from_bam(bam_path: &Path, reference: Option<&Path>) -> Result<SexInferenceResult, AnalysisError> {
+    let (autosome_reads, autosome_length, x_reads, x_length) = match reader::detect_format(bam_path) {
+        Format::Bam => tally_via_bai(bam_path)?,
+        Format::Cram => tally_via_scan(bam_path, reference)?,
+    };
 
     if autosome_length == 0 {
         return Err(AnalysisError::Message(
-            "no autosomal chromosomes found in BAM header".into(),
+            "no autosomal chromosomes found in alignment header".into(),
         ));
     }
     let Some(x_length) = x_length.filter(|&l| l > 0) else {
-        return Err(AnalysisError::Message("chrX not found in BAM header".into()));
+        return Err(AnalysisError::Message("chrX not found in alignment header".into()));
     };
     if autosome_reads == 0 {
         return Err(AnalysisError::Message(
@@ -111,6 +87,72 @@ pub fn infer_from_bam(bam_path: &Path) -> Result<SexInferenceResult, AnalysisErr
         x_coverage,
         confidence,
     })
+}
+
+/// BAM fast path: per-reference mapped-record counts from the BAI metadata (O(contigs)).
+fn tally_via_bai(bam_path: &Path) -> Result<Tally, AnalysisError> {
+    let header = reader::read_header(bam_path, None)?;
+    let bai_path = bam_path.with_extension("bam.bai");
+    let index = bam::bai::read(&bai_path).map_err(|e| AnalysisError::io(&bai_path, e))?;
+    let counts: Vec<u64> = index
+        .reference_sequences()
+        .iter()
+        .map(|rs| rs.metadata().map_or(0, |m| m.mapped_record_count()))
+        .collect();
+
+    let (mut autosome_reads, mut autosome_length, mut x_reads, mut x_length) = (0u64, 0u64, 0u64, None);
+    for (i, (name_bytes, map)) in header.reference_sequences().iter().enumerate() {
+        let name = String::from_utf8_lossy(name_bytes.as_ref());
+        let length = map.length().get() as u64;
+        let count = counts.get(i).copied().unwrap_or(0);
+        if contig::is_autosome(&name) {
+            autosome_reads += count;
+            autosome_length += length;
+        } else if contig::is_chr_x(&name) {
+            x_reads += count;
+            x_length = Some(length);
+        }
+    }
+    Ok((autosome_reads, autosome_length, x_reads, x_length))
+}
+
+/// CRAM fallback: a single record scan tallying mapped reads per chromosome class (CRAI
+/// has no per-reference counts). Lengths come from the header; reads from `reference_sequence_id`.
+fn tally_via_scan(bam_path: &Path, reference: Option<&Path>) -> Result<Tally, AnalysisError> {
+    let (header, mut reader) = reader::open_seq(bam_path, reference)?;
+
+    // Per-reference class (0 = other, 1 = autosome, 2 = chrX) + class lengths, from the header.
+    let mut class = Vec::with_capacity(header.reference_sequences().len());
+    let (mut autosome_length, mut x_length) = (0u64, None);
+    for (name_bytes, map) in header.reference_sequences() {
+        let name = String::from_utf8_lossy(name_bytes.as_ref());
+        let length = map.length().get() as u64;
+        if contig::is_autosome(&name) {
+            autosome_length += length;
+            class.push(1u8);
+        } else if contig::is_chr_x(&name) {
+            x_length = Some(length);
+            class.push(2u8);
+        } else {
+            class.push(0u8);
+        }
+    }
+
+    let (mut autosome_reads, mut x_reads) = (0u64, 0u64);
+    for result in reader.records(&header) {
+        let record = result?;
+        if record.flags().is_unmapped() {
+            continue;
+        }
+        if let Some(id) = record.reference_sequence_id() {
+            match class.get(id).copied().unwrap_or(0) {
+                1 => autosome_reads += 1,
+                2 => x_reads += 1,
+                _ => {}
+            }
+        }
+    }
+    Ok((autosome_reads, autosome_length, x_reads, x_length))
 }
 
 /// Classify the ratio into sex + confidence (pure; mirrors the Scala `determineSex`).

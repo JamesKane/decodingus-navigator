@@ -153,7 +153,7 @@ fn hg002_sex_smoke() {
         eprintln!("set HG002_BAM to run this test");
         return;
     };
-    let r = infer_from_bam(&PathBuf::from(bam)).expect("sex inference should succeed");
+    let r = infer_from_bam(&PathBuf::from(bam), None).expect("sex inference should succeed");
     eprintln!(
         "inferred {:?} ({:?}); ratio={:.3} autosome={:.1} chrX={:.1}",
         r.inferred_sex, r.confidence, r.x_autosome_ratio, r.autosome_mean_coverage, r.x_coverage
