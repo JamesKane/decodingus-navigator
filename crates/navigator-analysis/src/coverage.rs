@@ -478,10 +478,15 @@ pub fn estimate_molecule_lengths(bam_path: &Path) -> Result<(f64, f64), Analysis
         }
         read_sum += len;
         n += 1;
-        let tlen = record.template_length();
-        if tlen != 0 {
-            frag_sum += tlen.unsigned_abs() as u64;
-            frag_n += 1;
+        // Fragment length only from properly-paired reads, with a sanity cap — chimeric or
+        // improper pairs carry enormous |TLEN| that would otherwise blow up the mean (and
+        // the run-length gate). Single-end / long reads have no proper pairs -> read-length.
+        if f.is_properly_segmented() {
+            let tlen = record.template_length().unsigned_abs() as u64;
+            if tlen > 0 && tlen < 100_000 {
+                frag_sum += tlen;
+                frag_n += 1;
+            }
         }
         if n >= 50_000 {
             break;
