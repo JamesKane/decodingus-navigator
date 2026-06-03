@@ -137,6 +137,20 @@ fn assemble_assignment(tree: &navigator_analysis::haplo::HaploTree, calls: &Hash
     HaploAssignment { ranked, branches }
 }
 
+/// Haploid-caller params adapted to the sample's read tech: long, accurate reads (HiFi,
+/// mean read length > 1 kb) make confident haploid calls at much lower depth, so halve
+/// `min_depth` (floor 2). Sampled from the BAM head; falls back to defaults on any error.
+/// Blocking (reads the BAM) — call inside `spawn_blocking`.
+fn adaptive_haploid_params(bam_path: &Path) -> HaploidCallerParams {
+    let mut params = HaploidCallerParams::default();
+    if let Ok((read_len, _)) = coverage::estimate_molecule_lengths(bam_path) {
+        if read_len > 1000.0 {
+            params.min_depth = (params.min_depth / 2).max(2);
+        }
+    }
+    params
+}
+
 /// Read the first 64 KiB of a file as lossy UTF-8 — enough to fingerprint a text file's
 /// type without slurping a multi-MB chip export.
 fn read_head(path: &Path) -> Result<String, AppError> {
@@ -372,14 +386,12 @@ impl App {
         let (Some(bam), Some(reference)) = (aln.bam_path, aln.reference_path) else {
             return Err(AppError::MissingPaths(alignment_id));
         };
-        self.run_denovo_caller(
-            alignment_id,
-            PathBuf::from(bam),
-            PathBuf::from(reference),
-            contig,
-            HaploidCallerParams::default(),
-        )
-        .await
+        let bam = PathBuf::from(bam);
+        let probe = bam.clone();
+        let params = tokio::task::spawn_blocking(move || adaptive_haploid_params(&probe))
+            .await
+            .map_err(|e| AppError::Join(e.to_string()))?; // HiFi -> lower min_depth
+        self.run_denovo_caller(alignment_id, bam, PathBuf::from(reference), contig, params).await
     }
 
     // ---- publish -----------------------------------------------------------
@@ -792,7 +804,8 @@ impl App {
         let bam = PathBuf::from(bam);
         let contig_owned = contig.to_string();
         let calls = tokio::task::spawn_blocking(move || {
-            caller::call_bases_at(&bam, &contig_owned, &targets, &HaploidCallerParams::default())
+            let params = adaptive_haploid_params(&bam); // HiFi -> lower min_depth
+            caller::call_bases_at(&bam, &contig_owned, &targets, &params)
         })
         .await
         .map_err(|e| AppError::Join(e.to_string()))??;
