@@ -12,7 +12,8 @@ use std::sync::mpsc::{Receiver, Sender};
 use std::sync::Arc;
 
 use navigator_app::{
-    App, Coverage, DenovoCall, HaploAssignment, IbdComparison, IbdDetectorConfig, PanelGenotype, ProjectOverview,
+    App, Coverage, DenovoCall, HaploAssignment, IbdComparison, IbdDetectorConfig, PanelGenotype, PrivateBucket,
+    ProjectOverview,
 };
 use navigator_domain::du_domain::ids::SampleGuid;
 use navigator_domain::chipprofile::ChipProfile;
@@ -65,6 +66,8 @@ pub enum Command {
     AssignMtdnaHaplogroup { mtdna_id: i64 },
     /// Assign a Y haplogroup from an alignment (call chrY tree positions, rank).
     AssignYHaplogroup { alignment_id: i64 },
+    /// Find the private bucket: de-novo chrY calls off the assigned Y backbone.
+    FindPrivateY { alignment_id: i64 },
     /// Unified import: detect the file's type and route it to the right importer.
     AddData { biosample_guid: SampleGuid, path: PathBuf },
     LoadAlignments(i64),
@@ -124,6 +127,8 @@ pub enum Event {
     Haplogroup { mtdna_id: i64, assignment: HaploAssignment },
     /// Y haplogroup assignment for an alignment (ranked + terminal evidence).
     YHaplogroup { alignment_id: i64, assignment: HaploAssignment },
+    /// Private Y variants (off-backbone de-novo calls) for an alignment.
+    PrivateY { alignment_id: i64, bucket: PrivateBucket },
     Alignments { sequence_run_id: i64, alignments: Vec<Alignment> },
     AlignmentsChanged(i64),
     Coverage { alignment_id: i64, result: Option<Coverage> },
@@ -233,6 +238,10 @@ pub async fn handle(app: &App, cmd: Command) -> Event {
         },
         Command::AssignYHaplogroup { alignment_id } => match app.assign_y_haplogroup(alignment_id).await {
             Ok(assignment) => Event::YHaplogroup { alignment_id, assignment },
+            Err(e) => Event::Error(e.to_string()),
+        },
+        Command::FindPrivateY { alignment_id } => match app.private_y_variants(alignment_id).await {
+            Ok(bucket) => Event::PrivateY { alignment_id, bucket },
             Err(e) => Event::Error(e.to_string()),
         },
         Command::AddData { biosample_guid, path } => match app.add_data(biosample_guid, &path).await {

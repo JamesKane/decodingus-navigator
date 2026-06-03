@@ -34,6 +34,43 @@ pub struct HaploAssignment {
     pub ranked: Vec<ScoredHaplogroup>,
     pub branches: Vec<BranchEvidence>,
 }
+
+/// How a private (off-backbone) variant relates to the tree.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PrivateClass {
+    /// A known tree SNP off the assigned path — supports a finer/sibling branch.
+    OffPathKnown(String),
+    /// Not in the tree at all — a candidate for proposing a new branch.
+    Novel,
+}
+
+/// A derived variant the sample carries that the haplogroup placement doesn't explain.
+#[derive(Debug, Clone)]
+pub struct PrivateVariant {
+    pub position: i64,
+    pub reference: char,
+    pub alternate: char,
+    pub depth: u32,
+    pub allele_fraction: f64,
+    pub class: PrivateClass,
+}
+
+/// The private bucket for an alignment: de-novo Y calls not on the assigned backbone,
+/// split into off-path-known (finer branches) and novel (new-branch candidates).
+#[derive(Debug, Clone)]
+pub struct PrivateBucket {
+    pub terminal: String,
+    pub variants: Vec<PrivateVariant>,
+}
+
+impl PrivateBucket {
+    pub fn novel(&self) -> usize {
+        self.variants.iter().filter(|v| v.class == PrivateClass::Novel).count()
+    }
+    pub fn off_path(&self) -> usize {
+        self.variants.iter().filter(|v| matches!(v.class, PrivateClass::OffPathKnown(_))).count()
+    }
+}
 pub use navigator_analysis::ibd::{
     IbdDetectorConfig, IbdSegment as Segment, MatchSummary as IbdSummary, RelationshipEstimate,
 };
@@ -761,6 +798,44 @@ impl App {
         .map_err(|e| AppError::Join(e.to_string()))??;
 
         Ok(assemble_assignment(&tree, &calls))
+    }
+
+    /// The **private bucket**: de-novo SNP calls on chrY that the Y placement doesn't
+    /// explain (not on the assigned backbone), classified as off-path-known (a finer/
+    /// sibling FTDNA branch) or novel (a new-branch candidate). Runs the Y assignment to
+    /// find the terminal, then de-novo-calls chrY and subtracts the backbone. Requires the
+    /// alignment's recorded BAM + reference paths.
+    pub async fn private_y_variants(&self, alignment_id: i64) -> Result<PrivateBucket, AppError> {
+        let tree_json = self.fetch_ftdna_y_tree().await?;
+        let tree = navigator_analysis::haplo::parse_ftdna_json(&tree_json).map_err(AppError::Import)?;
+
+        let assignment = self.assign_haplogroup_from_alignment(alignment_id, "chrY", &tree_json).await?;
+        let terminal = assignment
+            .ranked
+            .first()
+            .ok_or_else(|| AppError::Import("no Y haplogroup match".into()))?;
+        let path = navigator_analysis::haplo::path_positions(&tree, terminal.id);
+        let known = navigator_analysis::haplo::tree_positions(&tree);
+
+        // De-novo chrY (cached as an artifact), then keep only off-backbone calls.
+        let denovo = self.run_denovo_for_alignment(alignment_id, "chrY".to_string()).await?;
+        let mut variants: Vec<PrivateVariant> = denovo
+            .iter()
+            .filter(|c| !path.contains(&c.position))
+            .map(|c| PrivateVariant {
+                position: c.position,
+                reference: c.reference_allele,
+                alternate: c.alternate_allele,
+                depth: c.depth,
+                allele_fraction: c.allele_fraction,
+                class: match known.get(&c.position) {
+                    Some(name) => PrivateClass::OffPathKnown(name.clone()),
+                    None => PrivateClass::Novel,
+                },
+            })
+            .collect();
+        variants.sort_by_key(|v| v.position);
+        Ok(PrivateBucket { terminal: terminal.name.clone(), variants })
     }
 
     // ---- unified import ----------------------------------------------------

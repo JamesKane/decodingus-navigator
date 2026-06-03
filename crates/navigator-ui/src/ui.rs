@@ -6,7 +6,10 @@ use std::path::PathBuf;
 use std::sync::mpsc::Receiver;
 
 use eframe::egui;
-use navigator_app::{CallState, Coverage, DenovoCall, HaploAssignment, IbdComparison, PanelGenotype, ProjectOverview};
+use navigator_app::{
+    CallState, Coverage, DenovoCall, HaploAssignment, IbdComparison, PanelGenotype, PrivateBucket, PrivateClass,
+    ProjectOverview,
+};
 use navigator_domain::du_domain::ids::SampleGuid;
 use navigator_domain::chipprofile::{self, ChipProfile};
 use navigator_domain::mtdna::MtdnaSequence;
@@ -65,6 +68,9 @@ pub struct NavigatorApp {
     mtdna_haplogroup: Option<(i64, HaploAssignment)>,
     /// Last Y haplogroup assignment: (alignment id, assignment).
     y_haplogroup: Option<(i64, HaploAssignment)>,
+    /// Last private Y bucket: (alignment id, bucket).
+    private_y: Option<(i64, PrivateBucket)>,
+    finding_private_y: bool,
     selected_run: Option<i64>,
     alignments: Vec<Alignment>,
     selected_alignment: Option<i64>,
@@ -182,6 +188,8 @@ impl NavigatorApp {
             rcrs_path: None,
             mtdna_haplogroup: None,
             y_haplogroup: None,
+            private_y: None,
+            finding_private_y: false,
             selected_run: None,
             alignments: Vec::new(),
             selected_alignment: None,
@@ -307,6 +315,11 @@ impl NavigatorApp {
                     };
                     self.y_haplogroup = Some((alignment_id, assignment));
                 }
+                Event::PrivateY { alignment_id, bucket } => {
+                    self.status = format!("Private Y: {} novel, {} off-path", bucket.novel(), bucket.off_path());
+                    self.private_y = Some((alignment_id, bucket));
+                    self.finding_private_y = false;
+                }
                 Event::DataImported { biosample_guid, label } => {
                     self.status = format!("Imported {label}");
                     if self.selected_sample == Some(biosample_guid) {
@@ -381,6 +394,7 @@ impl NavigatorApp {
                     self.running_ibd = false;
                     self.logging_in = false;
                     self.publishing = false;
+                    self.finding_private_y = false;
                     let _ = self.tx.send(Command::SyncStatus); // a failed publish may have gone offline
                 }
             }
@@ -425,6 +439,7 @@ impl NavigatorApp {
         self.panel_genotypes = None;
         self.ibd_result = None;
         self.y_haplogroup = None;
+        self.private_y = None;
         let _ = self.tx.send(Command::LoadCoverage(id));
         let _ = self.tx.send(Command::LoadDenovo { alignment_id: id, contig: self.forms.denovo_contig.clone() });
         if let Some(panel_id) = self.selected_panel {
@@ -1203,6 +1218,54 @@ impl NavigatorApp {
         if let Some((id, assignment)) = &self.y_haplogroup {
             if *id == alignment_id {
                 show_assignment(ui, assignment);
+            }
+        }
+
+        // Private bucket: de-novo chrY calls off the assigned backbone (branch candidates).
+        let has_ref = self
+            .alignments
+            .iter()
+            .find(|a| a.id == alignment_id)
+            .map(|a| a.bam_path.is_some() && a.reference_path.is_some())
+            .unwrap_or(false);
+        ui.add_space(6.0);
+        ui.horizontal(|ui| {
+            if ui.add_enabled(has_ref && !self.finding_private_y, egui::Button::new("Find private Y variants")).clicked() {
+                self.finding_private_y = true;
+                self.status = "Finding private Y variants (de-novo chrY)…".into();
+                let _ = self.tx.send(Command::FindPrivateY { alignment_id });
+            }
+            if self.finding_private_y {
+                ui.spinner();
+            }
+            if !has_ref {
+                ui.label("(needs BAM + reference path)");
+            }
+        });
+        if let Some((id, bucket)) = &self.private_y {
+            if *id == alignment_id {
+                ui.label(format!("{} novel + {} off-path, below {}", bucket.novel(), bucket.off_path(), bucket.terminal));
+                egui::CollapsingHeader::new("Private variants").id_salt(("privy", alignment_id)).show(ui, |ui| {
+                    egui::Grid::new(("privy_grid", alignment_id)).striped(true).num_columns(4).show(ui, |ui| {
+                        for h in ["Position", "Change", "Depth", "Class"] {
+                            ui.strong(h);
+                        }
+                        ui.end_row();
+                        for v in bucket.variants.iter().take(500) {
+                            ui.label(v.position.to_string());
+                            ui.label(format!("{}>{}", v.reference, v.alternate));
+                            ui.label(v.depth.to_string());
+                            match &v.class {
+                                PrivateClass::Novel => ui.colored_label(egui::Color32::from_rgb(60, 160, 60), "novel"),
+                                PrivateClass::OffPathKnown(name) => ui.label(format!("off-path: {name}")),
+                            };
+                            ui.end_row();
+                        }
+                    });
+                    if bucket.variants.len() > 500 {
+                        ui.label(format!("…and {} more", bucket.variants.len() - 500));
+                    }
+                });
             }
         }
     }

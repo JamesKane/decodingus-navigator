@@ -251,7 +251,7 @@ async fn validate_hg002_haplogroups() {
             aligner: "bwa-mem2".into(),
             variant_caller: None,
             bam_path: Some(bam),
-            reference_path: None,
+            reference_path: std::env::var("B38_REF").ok(), // needed for the private (de-novo) bucket
         })
         .await
         .unwrap()
@@ -287,6 +287,22 @@ async fn validate_hg002_haplogroups() {
         }
     }
     assert!(top.depth > 0 && top.matched > 0, "Y should resolve below root");
+
+    // Private bucket (de-novo chrY off the backbone) — gated separately (slow + needs ref).
+    if std::env::var("PRIVATE_Y").is_ok() {
+        use navigator_app::PrivateClass;
+        let bucket = app.private_y_variants(aln).await.expect("private Y");
+        eprintln!("Private Y below {}: {} novel, {} off-path", bucket.terminal, bucket.novel(), bucket.off_path());
+        for v in bucket.variants.iter().filter(|v| matches!(v.class, PrivateClass::OffPathKnown(_))).take(12) {
+            if let PrivateClass::OffPathKnown(n) = &v.class {
+                eprintln!("  off-path {} {}>{} d{} -> {}", v.position, v.reference, v.alternate, v.depth, n);
+            }
+        }
+        for v in bucket.variants.iter().filter(|v| v.class == PrivateClass::Novel).take(12) {
+            eprintln!("  novel    {} {}>{} d{}", v.position, v.reference, v.alternate, v.depth);
+        }
+        assert!(!bucket.variants.is_empty(), "expected some off-backbone calls");
+    }
 }
 
 #[tokio::test]

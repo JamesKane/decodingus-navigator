@@ -231,6 +231,40 @@ fn dfs(
     lineage.pop();
 }
 
+/// Every position that defines some branch → the name of a haplogroup that uses it (for
+/// annotating off-path private variants). Recurrent positions keep one name.
+pub fn tree_positions(tree: &HaploTree) -> HashMap<i64, String> {
+    let mut m = HashMap::new();
+    for n in tree.nodes.values() {
+        for l in &n.loci {
+            m.entry(l.position).or_insert_with(|| n.name.clone());
+        }
+    }
+    m
+}
+
+/// The defining-SNP positions on the root→`node_id` path (the placement's backbone).
+pub fn path_positions(tree: &HaploTree, node_id: i64) -> HashSet<i64> {
+    let mut parent: HashMap<i64, i64> = HashMap::new();
+    for n in tree.nodes.values() {
+        for &c in &n.children {
+            parent.insert(c, n.id);
+        }
+    }
+    let mut positions = HashSet::new();
+    let mut cur = Some(node_id);
+    while let Some(id) = cur {
+        match tree.nodes.get(&id) {
+            Some(node) => {
+                positions.extend(node.loci.iter().map(|l| l.position));
+                cur = parent.get(&id).copied();
+            }
+            None => break,
+        }
+    }
+    positions
+}
+
 /// The sample's state at a defining SNP.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CallState {
