@@ -100,14 +100,15 @@ pub use navigator_domain::filetype::DetectedData;
 use navigator_domain::mtdna::{self, MtdnaSequence, NewMtdnaSequence};
 use navigator_domain::reconciliation::{self, RunHaplogroupCall};
 pub use navigator_domain::reconciliation::{
-    CompatibilityLevel, Consensus, DnaType, IdentityVerification, ReconciledVariant, VariantStatus, VerificationStatus,
+    AuditEntry, CompatibilityLevel, Consensus, DnaType, IdentityVerification, ReconciledVariant, VariantStatus,
+    VerificationStatus,
 };
 use navigator_domain::strprofile::{self, NewStrProfile, StrProfile};
 use navigator_domain::variants::{self, NewVariantSet, VariantSet};
 pub use navigator_domain::variants::SourceType;
 use navigator_store::{
     alignment, artifact, biosample, chip_profile, haplogroup_call, mtdna as mtdna_store, project,
-    sequence_run, str_profile, variant_set, Store, StoreError,
+    reconciliation as recon_store, sequence_run, str_profile, variant_set, Store, StoreError,
 };
 use serde::de::DeserializeOwned;
 use serde::Serialize;
@@ -774,6 +775,7 @@ impl App {
         call: &RunHaplogroupCall,
     ) -> Result<(), AppError> {
         haplogroup_call::upsert(self.store.pool(), biosample_guid, dna_type, source_key, call).await?;
+        self.audit(biosample_guid, dna_type, "RUN_RECORDED", &format!("{source_key}: {}", call.haplogroup)).await?;
         Ok(())
     }
 
@@ -800,14 +802,70 @@ impl App {
         Ok(())
     }
 
-    /// The reconciled donor-level haplogroup consensus across all recorded sources.
+    /// The reconciled donor-level haplogroup consensus across all recorded sources. A user
+    /// manual override, when set, replaces the computed terminal (flagged `overridden`).
     pub async fn haplogroup_consensus(
         &self,
         biosample_guid: SampleGuid,
         dna_type: DnaType,
     ) -> Result<Option<Consensus>, AppError> {
         let calls = haplogroup_call::list_for(self.store.pool(), biosample_guid, dna_type).await?;
-        Ok(reconciliation::reconcile(&calls))
+        let mut consensus = reconciliation::reconcile(&calls);
+
+        if let Some((hg, reason)) = recon_store::get_override(self.store.pool(), biosample_guid, dna_type).await? {
+            let mut c = consensus.unwrap_or(Consensus {
+                haplogroup: hg.clone(),
+                lineage: vec![hg.clone()],
+                compatibility: CompatibilityLevel::Compatible,
+                divergence_point: None,
+                confidence: 1.0,
+                run_count: 0,
+                overridden: true,
+                warnings: Vec::new(),
+            });
+            c.haplogroup = hg;
+            c.overridden = true;
+            c.confidence = 1.0;
+            c.warnings.push(match reason {
+                Some(r) => format!("manual override: {r}"),
+                None => "manual override".to_string(),
+            });
+            consensus = Some(c);
+        }
+        Ok(consensus)
+    }
+
+    /// Manually override the consensus haplogroup for a subject + DNA type.
+    pub async fn set_manual_override(
+        &self,
+        biosample_guid: SampleGuid,
+        dna_type: DnaType,
+        haplogroup: &str,
+        reason: Option<&str>,
+    ) -> Result<(), AppError> {
+        recon_store::set_override(self.store.pool(), biosample_guid, dna_type, haplogroup, reason).await?;
+        self.audit(biosample_guid, dna_type, "MANUAL_OVERRIDE", &format!("override to {haplogroup}")).await
+    }
+
+    /// Clear a manual override.
+    pub async fn clear_manual_override(&self, biosample_guid: SampleGuid, dna_type: DnaType) -> Result<(), AppError> {
+        recon_store::clear_override(self.store.pool(), biosample_guid, dna_type).await?;
+        self.audit(biosample_guid, dna_type, "OVERRIDE_CLEARED", "cleared manual override").await
+    }
+
+    /// The reconciliation audit log for a subject + DNA type.
+    pub async fn reconciliation_audit(
+        &self,
+        biosample_guid: SampleGuid,
+        dna_type: DnaType,
+    ) -> Result<Vec<AuditEntry>, AppError> {
+        Ok(recon_store::list_audit(self.store.pool(), biosample_guid, dna_type).await?)
+    }
+
+    async fn audit(&self, biosample_guid: SampleGuid, dna_type: DnaType, action: &str, note: &str) -> Result<(), AppError> {
+        let entry = AuditEntry { timestamp: Utc::now().to_rfc3339(), action: action.to_string(), note: note.to_string() };
+        recon_store::append_audit(self.store.pool(), biosample_guid, dna_type, &entry).await?;
+        Ok(())
     }
 
     /// Reconcile the subject's variant sets at the variant level — which positions are

@@ -352,6 +352,24 @@ async fn haplogroup_consensus_combines_recorded_calls() {
     assert_eq!(calls.len(), 2);
     // mt has nothing recorded
     assert!(app.haplogroup_consensus(subject.guid, DnaType::Mt).await.unwrap().is_none());
+
+    // manual override replaces the computed consensus and is flagged + audited.
+    app.set_manual_override(subject.guid, DnaType::Y, "R-FGC29071", Some("Sanger-confirmed")).await.unwrap();
+    let o = app.haplogroup_consensus(subject.guid, DnaType::Y).await.unwrap().unwrap();
+    assert_eq!(o.haplogroup, "R-FGC29071");
+    assert!(o.overridden);
+    assert!(o.warnings.iter().any(|w| w.contains("Sanger-confirmed")));
+
+    app.clear_manual_override(subject.guid, DnaType::Y).await.unwrap();
+    let back = app.haplogroup_consensus(subject.guid, DnaType::Y).await.unwrap().unwrap();
+    assert_eq!(back.haplogroup, "R-FGC29067"); // back to computed
+    assert!(!back.overridden);
+
+    // audit recorded the recordings + override + clear
+    let audit = app.reconciliation_audit(subject.guid, DnaType::Y).await.unwrap();
+    assert!(audit.iter().any(|e| e.action == "MANUAL_OVERRIDE"));
+    assert!(audit.iter().any(|e| e.action == "OVERRIDE_CLEARED"));
+    assert!(audit.iter().filter(|e| e.action == "RUN_RECORDED").count() >= 2);
 }
 
 #[tokio::test]

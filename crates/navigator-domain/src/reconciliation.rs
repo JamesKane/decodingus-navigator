@@ -141,7 +141,19 @@ pub struct Consensus {
     pub divergence_point: Option<String>,
     pub confidence: f64,
     pub run_count: usize,
+    /// True when a user manual override replaced the computed consensus.
+    pub overridden: bool,
     pub warnings: Vec<String>,
+}
+
+/// An entry in the reconciliation audit log (Scala `AuditEntry`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AuditEntry {
+    /// RFC3339 timestamp.
+    pub timestamp: String,
+    /// INITIAL / RUN_RECORDED / MANUAL_OVERRIDE / OVERRIDE_CLEARED / RECOMPUTED.
+    pub action: String,
+    pub note: String,
 }
 
 /// Whether multiple sources come from the same individual (Scala `IdentityVerification`).
@@ -262,6 +274,7 @@ pub fn reconcile(calls: &[RunHaplogroupCall]) -> Option<Consensus> {
             divergence_point: None,
             confidence: best.score,
             run_count,
+            overridden: false,
             warnings,
         });
     }
@@ -300,6 +313,7 @@ pub fn reconcile(calls: &[RunHaplogroupCall]) -> Option<Consensus> {
         divergence_point,
         confidence,
         run_count,
+        overridden: false,
         warnings,
     })
 }
