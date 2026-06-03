@@ -23,6 +23,7 @@ pub mod parity;
 pub mod read_metrics;
 pub mod reader;
 pub mod realign;
+pub mod scan;
 pub mod sex;
 pub mod sv;
 
