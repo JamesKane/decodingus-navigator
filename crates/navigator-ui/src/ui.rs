@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use std::sync::mpsc::Receiver;
 
 use eframe::egui;
-use navigator_app::{Coverage, DenovoCall, IbdComparison, PanelGenotype, ProjectOverview, ScoredHaplogroup};
+use navigator_app::{CallState, Coverage, DenovoCall, HaploAssignment, IbdComparison, PanelGenotype, ProjectOverview};
 use navigator_domain::du_domain::ids::SampleGuid;
 use navigator_domain::chipprofile::{self, ChipProfile};
 use navigator_domain::mtdna::MtdnaSequence;
@@ -61,10 +61,10 @@ pub struct NavigatorApp {
     mtdna_sequences: Vec<MtdnaSequence>,
     /// Chosen rCRS reference FASTA, reused across mtDNA variant derivations.
     rcrs_path: Option<PathBuf>,
-    /// Last mtDNA haplogroup assignment: (sequence id, ranked candidates).
-    mtdna_haplogroup: Option<(i64, Vec<ScoredHaplogroup>)>,
-    /// Last Y haplogroup assignment: (alignment id, ranked candidates).
-    y_haplogroup: Option<(i64, Vec<ScoredHaplogroup>)>,
+    /// Last mtDNA haplogroup assignment: (sequence id, assignment).
+    mtdna_haplogroup: Option<(i64, HaploAssignment)>,
+    /// Last Y haplogroup assignment: (alignment id, assignment).
+    y_haplogroup: Option<(i64, HaploAssignment)>,
     selected_run: Option<i64>,
     alignments: Vec<Alignment>,
     selected_alignment: Option<i64>,
@@ -92,6 +92,40 @@ pub struct NavigatorApp {
 
 /// Sentinel option in the chip-provider dropdown that means "let the parser guess".
 const AUTO_DETECT: &str = "(auto-detect)";
+
+/// Render a haplogroup assignment: terminal + lineage + alternatives, then the child
+/// branches with per-SNP evidence that explains why descent stopped.
+fn show_assignment(ui: &mut egui::Ui, a: &HaploAssignment) {
+    let Some(top) = a.ranked.first() else {
+        ui.label("No match.");
+        return;
+    };
+    ui.label(format!("Haplogroup: {}   ({}/{} mutations, score {:.3})", top.name, top.matched, top.expected, top.score));
+    ui.label(format!("Lineage: {}", top.lineage.join(" › ")));
+    let alts: Vec<String> = a.ranked.iter().skip(1).take(3).map(|r| format!("{} ({:.3})", r.name, r.score)).collect();
+    if !alts.is_empty() {
+        ui.label(format!("Alternatives: {}", alts.join(", ")));
+    }
+    for b in &a.branches {
+        egui::CollapsingHeader::new(format!("child {} — {}/{} SNPs derived", b.name, b.derived, b.snps.len()))
+            .id_salt(("branch", &b.name))
+            .show(ui, |ui| {
+                egui::Grid::new(("branch_snps", &b.name)).striped(true).num_columns(3).show(ui, |ui| {
+                    for s in &b.snps {
+                        ui.label(&s.name);
+                        ui.label(format!("{}{}>{}", s.position, s.ancestral, s.derived));
+                        let (txt, col) = match s.state {
+                            CallState::Derived => ("derived", egui::Color32::from_rgb(60, 160, 60)),
+                            CallState::Ancestral => ("ancestral", egui::Color32::from_rgb(170, 120, 40)),
+                            CallState::NoCall => ("no-call", egui::Color32::GRAY),
+                        };
+                        ui.colored_label(col, txt);
+                        ui.end_row();
+                    }
+                });
+            });
+    }
+}
 
 /// A readable "change" string for a variant call, covering the indel forms the mtDNA
 /// derivation stores (one allele empty).
@@ -259,19 +293,19 @@ impl NavigatorApp {
                     }
                     self.status = "mtDNA sequence imported".into();
                 }
-                Event::Haplogroup { mtdna_id, ranked } => {
-                    self.status = match ranked.first() {
+                Event::Haplogroup { mtdna_id, assignment } => {
+                    self.status = match assignment.ranked.first() {
                         Some(top) => format!("mtDNA haplogroup: {} (score {:.3})", top.name, top.score),
                         None => "No haplogroup match".into(),
                     };
-                    self.mtdna_haplogroup = Some((mtdna_id, ranked));
+                    self.mtdna_haplogroup = Some((mtdna_id, assignment));
                 }
-                Event::YHaplogroup { alignment_id, ranked } => {
-                    self.status = match ranked.first() {
+                Event::YHaplogroup { alignment_id, assignment } => {
+                    self.status = match assignment.ranked.first() {
                         Some(top) => format!("Y haplogroup: {} (score {:.3})", top.name, top.score),
                         None => "No Y haplogroup match".into(),
                     };
-                    self.y_haplogroup = Some((alignment_id, ranked));
+                    self.y_haplogroup = Some((alignment_id, assignment));
                 }
                 Event::DataImported { biosample_guid, label } => {
                     self.status = format!("Imported {label}");
@@ -872,16 +906,9 @@ impl NavigatorApp {
                 }
             });
             // Show the haplogroup result for this sequence, if any.
-            if let Some((id, ranked)) = &self.mtdna_haplogroup {
+            if let Some((id, assignment)) = &self.mtdna_haplogroup {
                 if *id == m.id {
-                    if let Some(top) = ranked.first() {
-                        ui.label(format!("  Haplogroup: {}   ({}/{} mutations, score {:.3})", top.name, top.matched, top.expected, top.score));
-                        ui.label(format!("  Lineage: {}", top.lineage.join(" › ")));
-                        let alts: Vec<String> = ranked.iter().skip(1).take(3).map(|r| format!("{} ({:.3})", r.name, r.score)).collect();
-                        if !alts.is_empty() {
-                            ui.label(format!("  Alternatives: {}", alts.join(", ")));
-                        }
-                    }
+                    show_assignment(ui, assignment);
                 }
             }
         }
@@ -1173,16 +1200,9 @@ impl NavigatorApp {
             }
         });
 
-        if let Some((id, ranked)) = &self.y_haplogroup {
+        if let Some((id, assignment)) = &self.y_haplogroup {
             if *id == alignment_id {
-                if let Some(top) = ranked.first() {
-                    ui.label(format!("Haplogroup: {}   ({}/{} mutations, score {:.3})", top.name, top.matched, top.expected, top.score));
-                    ui.label(format!("Lineage: {}", top.lineage.join(" › ")));
-                    let alts: Vec<String> = ranked.iter().skip(1).take(3).map(|r| format!("{} ({:.3})", r.name, r.score)).collect();
-                    if !alts.is_empty() {
-                        ui.label(format!("Alternatives: {}", alts.join(", ")));
-                    }
-                }
+                show_assignment(ui, assignment);
             }
         }
     }

@@ -47,6 +47,8 @@ pub struct HaploTree {
 /// A scored candidate haplogroup, best-first after [`score`].
 #[derive(Debug, Clone, PartialEq)]
 pub struct ScoredHaplogroup {
+    /// Tree node id (for follow-up queries like [`child_evidence`]).
+    pub id: i64,
     pub name: String,
     pub score: f64,
     pub depth: usize,
@@ -203,6 +205,7 @@ fn dfs(
         0.0
     };
     out.push(ScoredHaplogroup {
+        id: node.id,
         name: node.name.clone(),
         score: kulczynski,
         depth,
@@ -226,6 +229,79 @@ fn dfs(
         }
     }
     lineage.pop();
+}
+
+/// The sample's state at a defining SNP.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CallState {
+    /// Carries the branch's derived allele.
+    Derived,
+    /// Carries the ancestral allele (this branch's split is not supported).
+    Ancestral,
+    /// No confident base call at this position.
+    NoCall,
+}
+
+/// One defining SNP of a branch, with the sample's state.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SnpEvidence {
+    pub name: String,
+    pub position: i64,
+    pub ancestral: String,
+    pub derived: String,
+    pub state: CallState,
+}
+
+/// A child branch below the reported terminal, with the per-SNP evidence that explains why
+/// descent did or didn't continue into it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BranchEvidence {
+    pub name: String,
+    pub snps: Vec<SnpEvidence>,
+    /// How many of this branch's defining SNPs the sample carries (derived).
+    pub derived: usize,
+}
+
+/// For the node `node_id` (typically the reported terminal), evaluate each child branch's
+/// defining SNPs against the sample `calls` — `Derived` / `Ancestral` / `NoCall` per SNP.
+/// This explains a stop: a child with all-`Ancestral` SNPs is an unsupported split; one
+/// with `NoCall` SNPs is unresolved for lack of coverage. Children without defining SNPs
+/// are omitted.
+pub fn child_evidence(tree: &HaploTree, calls: &HashMap<i64, char>, node_id: i64) -> Vec<BranchEvidence> {
+    let Some(node) = tree.nodes.get(&node_id) else { return Vec::new() };
+    let mut out = Vec::new();
+    let mut children = node.children.clone();
+    children.sort_unstable();
+    for cid in children {
+        let Some(child) = tree.nodes.get(&cid) else { continue };
+        if child.loci.is_empty() {
+            continue;
+        }
+        let mut snps = Vec::with_capacity(child.loci.len());
+        let mut derived = 0;
+        for l in &child.loci {
+            let d = l.derived.chars().next().map(|c| c.to_ascii_uppercase());
+            let a = l.ancestral.chars().next().map(|c| c.to_ascii_uppercase());
+            let state = match calls.get(&l.position).map(|c| c.to_ascii_uppercase()) {
+                Some(b) if Some(b) == d => CallState::Derived,
+                Some(b) if Some(b) == a => CallState::Ancestral,
+                Some(_) => CallState::Ancestral, // a third allele — not this branch's derived
+                None => CallState::NoCall,
+            };
+            if state == CallState::Derived {
+                derived += 1;
+            }
+            snps.push(SnpEvidence {
+                name: l.name.clone(),
+                position: l.position,
+                ancestral: l.ancestral.clone(),
+                derived: l.derived.clone(),
+                state,
+            });
+        }
+        out.push(BranchEvidence { name: child.name.clone(), snps, derived });
+    }
+    out
 }
 
 #[cfg(test)]
@@ -278,6 +354,21 @@ mod tests {
         assert!((ranked[0].score - 1.0).abs() < 1e-9); // matched 2, |E|=2, |F|=2
         let h2a = ranked.iter().find(|r| r.name == "H2a").unwrap();
         assert!(h2a.score < ranked[0].score); // H2a: matched 2, |E|=3 -> 0.5*(2/3+2/2) < 1
+    }
+
+    #[test]
+    fn child_evidence_explains_an_unsupported_split() {
+        // H2 has a child H2a (derived T@750). Sample is ancestral (C) at 750 -> the split
+        // into H2a is not supported, shown per-SNP.
+        let t = parse_ftdna_json(TREE).unwrap();
+        let ranked = score(&t, &calls(&[(146, 'G'), (263, 'G'), (750, 'C')]));
+        assert_eq!(ranked[0].name, "H2"); // stops at H2 (750 ancestral)
+        let ev = child_evidence(&t, &calls(&[(146, 'G'), (263, 'G'), (750, 'C')]), ranked[0].id);
+        assert_eq!(ev.len(), 1);
+        assert_eq!(ev[0].name, "H2a");
+        assert_eq!(ev[0].derived, 0);
+        assert_eq!(ev[0].snps[0].position, 750);
+        assert_eq!(ev[0].snps[0].state, CallState::Ancestral);
     }
 
     #[test]

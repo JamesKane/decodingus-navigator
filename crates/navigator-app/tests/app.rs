@@ -208,7 +208,7 @@ async fn assign_mtdna_haplogroup_ranks_best() {
         "3":{"haplogroupId":3,"name":"H2","isRoot":false,"variants":[{"variant":"A750G","position":750,"ancestral":"A","derived":"G"}],"children":[]}
     }}"#;
 
-    let ranked = app.assign_mtdna_haplogroup_with_tree(mt.id, tree).await.unwrap();
+    let ranked = app.assign_mtdna_haplogroup_with_tree(mt.id, tree).await.unwrap().ranked;
     assert_eq!(ranked[0].name, "H2"); // carries both derived alleles -> deepest node
     assert_eq!(ranked[0].matched, 2);
     assert!((ranked[0].score - 1.0).abs() < 1e-9);
@@ -257,7 +257,7 @@ async fn validate_hg002_haplogroups() {
         .unwrap()
         .id;
 
-    let mt = app.assign_mtdna_haplogroup_from_alignment(aln).await.expect("mt assign");
+    let mt = app.assign_mtdna_haplogroup_from_alignment(aln).await.expect("mt assign").ranked;
     let top = &mt[0];
     eprintln!("HG002 mtDNA: {}  ({}/{} mutations, score {:.3})", top.name, top.matched, top.expected, top.score);
     eprintln!("  lineage: {}", top.lineage.join(" › "));
@@ -267,11 +267,24 @@ async fn validate_hg002_haplogroups() {
     assert!(top.depth > 0 && top.matched > 0, "mt should resolve below root");
 
     let y = app.assign_y_haplogroup(aln).await.expect("Y assign");
-    let top = &y[0];
+    let top = &y.ranked[0];
     eprintln!("HG002 Y: {}  ({}/{} mutations, score {:.3})", top.name, top.matched, top.expected, top.score);
     eprintln!("  lineage: {}", top.lineage.join(" › "));
-    for r in y.iter().skip(1).take(3) {
+    for r in y.ranked.iter().skip(1).take(3) {
         eprintln!("  alt: {} ({:.3})", r.name, r.score);
+    }
+    // Why descent stopped: child branches and their defining-SNP states.
+    use navigator_app::CallState;
+    for b in &y.branches {
+        eprintln!("  child {} — {}/{} derived:", b.name, b.derived, b.snps.len());
+        for s in b.snps.iter().take(8) {
+            let st = match s.state {
+                CallState::Derived => "DERIVED",
+                CallState::Ancestral => "ancestral",
+                CallState::NoCall => "no-call",
+            };
+            eprintln!("      {} {}{}>{}  {}", s.name, s.position, s.ancestral, s.derived, st);
+        }
     }
     assert!(top.depth > 0 && top.matched > 0, "Y should resolve below root");
 }
@@ -317,7 +330,7 @@ async fn assign_haplogroup_from_alignment_calls_and_ranks() {
         "3":{"haplogroupId":3,"name":"N2","isRoot":false,"variants":[{"variant":"x5A","position":5,"ancestral":"C","derived":"A"}],"children":[]}
     }}"#;
 
-    let ranked = app.assign_haplogroup_from_alignment(aln, "chrM", tree).await.unwrap();
+    let ranked = app.assign_haplogroup_from_alignment(aln, "chrM", tree).await.unwrap().ranked;
     assert_eq!(ranked[0].name, "N2");
     assert_eq!(ranked[0].matched, 2);
     assert!((ranked[0].score - 1.0).abs() < 1e-9);

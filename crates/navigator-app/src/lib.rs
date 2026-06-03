@@ -24,7 +24,16 @@ use navigator_store::panel;
 pub use navigator_analysis::caller::SiteGenotype as PanelGenotype;
 pub use navigator_analysis::caller::VariantCall as DenovoCall;
 pub use navigator_analysis::coverage::CoverageResult as Coverage;
-pub use navigator_analysis::haplo::ScoredHaplogroup;
+pub use navigator_analysis::haplo::{BranchEvidence, CallState, ScoredHaplogroup, SnpEvidence};
+
+/// A haplogroup assignment: the ranked candidates plus, for the reported terminal, the
+/// child branches with per-SNP evidence (why descent stopped — unsupported splits show
+/// ancestral SNPs, unresolved ones show no-calls).
+#[derive(Debug, Clone)]
+pub struct HaploAssignment {
+    pub ranked: Vec<ScoredHaplogroup>,
+    pub branches: Vec<BranchEvidence>,
+}
 pub use navigator_analysis::ibd::{
     IbdDetectorConfig, IbdSegment as Segment, MatchSummary as IbdSummary, RelationshipEstimate,
 };
@@ -79,6 +88,16 @@ fn tree_cache_path(file: &str) -> PathBuf {
         PathBuf::from(home).join(".decodingus").join("trees")
     });
     dir.join(file)
+}
+
+/// Score a tree against the sample calls and attach the terminal's child-branch evidence.
+fn assemble_assignment(tree: &navigator_analysis::haplo::HaploTree, calls: &HashMap<i64, char>) -> HaploAssignment {
+    let ranked = navigator_analysis::haplo::score(tree, calls);
+    let branches = ranked
+        .first()
+        .map(|t| navigator_analysis::haplo::child_evidence(tree, calls, t.id))
+        .unwrap_or_default();
+    HaploAssignment { ranked, branches }
 }
 
 /// Read the first 64 KiB of a file as lossy UTF-8 — enough to fingerprint a text file's
@@ -629,7 +648,7 @@ impl App {
     /// Assign an mtDNA haplogroup to a stored sequence: fetch (and cache) the FTDNA mt-DNA
     /// haplotree and rank haplogroups by the Kulczynski measure over the sample's base
     /// calls. RSRS-anchored and reference-free (no rCRS needed). Best first.
-    pub async fn assign_mtdna_haplogroup(&self, mtdna_id: i64) -> Result<Vec<ScoredHaplogroup>, AppError> {
+    pub async fn assign_mtdna_haplogroup(&self, mtdna_id: i64) -> Result<HaploAssignment, AppError> {
         let tree_json = self.fetch_ftdna_mt_tree().await?;
         self.assign_mtdna_haplogroup_with_tree(mtdna_id, &tree_json).await
     }
@@ -640,7 +659,7 @@ impl App {
         &self,
         mtdna_id: i64,
         tree_json: &str,
-    ) -> Result<Vec<ScoredHaplogroup>, AppError> {
+    ) -> Result<HaploAssignment, AppError> {
         let seq = mtdna_store::get(self.store.pool(), mtdna_id)
             .await?
             .ok_or_else(|| AppError::Store(StoreError::NotFound(format!("mtDNA sequence {mtdna_id}"))))?;
@@ -655,7 +674,7 @@ impl App {
         }
 
         let tree = navigator_analysis::haplo::parse_ftdna_json(tree_json).map_err(AppError::Import)?;
-        Ok(navigator_analysis::haplo::score(&tree, &calls))
+        Ok(assemble_assignment(&tree, &calls))
     }
 
     /// FTDNA mt-DNA haplotree JSON, from the on-disk cache or freshly downloaded + cached.
@@ -702,7 +721,7 @@ impl App {
     pub async fn assign_mtdna_haplogroup_from_alignment(
         &self,
         alignment_id: i64,
-    ) -> Result<Vec<ScoredHaplogroup>, AppError> {
+    ) -> Result<HaploAssignment, AppError> {
         let tree_json = self.fetch_ftdna_mt_tree().await?;
         self.assign_haplogroup_from_alignment(alignment_id, "chrM", &tree_json).await
     }
@@ -710,7 +729,7 @@ impl App {
     /// Assign a Y haplogroup to an alignment: fetch (and cache) the FTDNA Y-DNA haplotree,
     /// call the sample's base at each tree position on chrY, and rank by Kulczynski. Best
     /// first. Requires the alignment to have a recorded BAM/CRAM path.
-    pub async fn assign_y_haplogroup(&self, alignment_id: i64) -> Result<Vec<ScoredHaplogroup>, AppError> {
+    pub async fn assign_y_haplogroup(&self, alignment_id: i64) -> Result<HaploAssignment, AppError> {
         let tree_json = self.fetch_ftdna_y_tree().await?;
         self.assign_haplogroup_from_alignment(alignment_id, "chrY", &tree_json).await
     }
@@ -723,7 +742,7 @@ impl App {
         alignment_id: i64,
         contig: &str,
         tree_json: &str,
-    ) -> Result<Vec<ScoredHaplogroup>, AppError> {
+    ) -> Result<HaploAssignment, AppError> {
         let aln = alignment::get(self.store.pool(), alignment_id)
             .await?
             .ok_or_else(|| AppError::Store(StoreError::NotFound(format!("alignment {alignment_id}"))))?;
@@ -741,7 +760,7 @@ impl App {
         .await
         .map_err(|e| AppError::Join(e.to_string()))??;
 
-        Ok(navigator_analysis::haplo::score(&tree, &calls))
+        Ok(assemble_assignment(&tree, &calls))
     }
 
     // ---- unified import ----------------------------------------------------

@@ -12,7 +12,7 @@ use std::sync::mpsc::{Receiver, Sender};
 use std::sync::Arc;
 
 use navigator_app::{
-    App, Coverage, DenovoCall, IbdComparison, IbdDetectorConfig, PanelGenotype, ProjectOverview, ScoredHaplogroup,
+    App, Coverage, DenovoCall, HaploAssignment, IbdComparison, IbdDetectorConfig, PanelGenotype, ProjectOverview,
 };
 use navigator_domain::du_domain::ids::SampleGuid;
 use navigator_domain::chipprofile::ChipProfile;
@@ -120,10 +120,10 @@ pub enum Event {
     /// A unified import succeeded; `label` describes the detected type. The UI should
     /// reload the subject's data sections.
     DataImported { biosample_guid: SampleGuid, label: String },
-    /// Ranked mtDNA haplogroup candidates for a sequence (best first).
-    Haplogroup { mtdna_id: i64, ranked: Vec<ScoredHaplogroup> },
-    /// Ranked Y haplogroup candidates for an alignment (best first).
-    YHaplogroup { alignment_id: i64, ranked: Vec<ScoredHaplogroup> },
+    /// mtDNA haplogroup assignment for a sequence (ranked + terminal evidence).
+    Haplogroup { mtdna_id: i64, assignment: HaploAssignment },
+    /// Y haplogroup assignment for an alignment (ranked + terminal evidence).
+    YHaplogroup { alignment_id: i64, assignment: HaploAssignment },
     Alignments { sequence_run_id: i64, alignments: Vec<Alignment> },
     AlignmentsChanged(i64),
     Coverage { alignment_id: i64, result: Option<Coverage> },
@@ -228,11 +228,11 @@ pub async fn handle(app: &App, cmd: Command) -> Event {
             }
         }
         Command::AssignMtdnaHaplogroup { mtdna_id } => match app.assign_mtdna_haplogroup(mtdna_id).await {
-            Ok(ranked) => Event::Haplogroup { mtdna_id, ranked },
+            Ok(assignment) => Event::Haplogroup { mtdna_id, assignment },
             Err(e) => Event::Error(e.to_string()),
         },
         Command::AssignYHaplogroup { alignment_id } => match app.assign_y_haplogroup(alignment_id).await {
-            Ok(ranked) => Event::YHaplogroup { alignment_id, ranked },
+            Ok(assignment) => Event::YHaplogroup { alignment_id, assignment },
             Err(e) => Event::Error(e.to_string()),
         },
         Command::AddData { biosample_guid, path } => match app.add_data(biosample_guid, &path).await {
