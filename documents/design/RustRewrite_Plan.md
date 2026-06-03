@@ -317,6 +317,9 @@ rollback.
 6. **Sync + OAuth.** Wire `du-atproto` OAuth; complete `navigator-sync` (the part that is
    stubbed today).
 7. **IBD + Y-profile.** Port detection/relationship math; simplified Y-profile aggregate.
+   IBD detection/relationship is done. The simplified Y/mtDNA **multi-source reconciliation**
+   aggregate (combine runs across platforms + Sanger confirmation, with identity
+   verification) is specified in `MultiSource_Reconciliation.md` — not yet built.
 8. **Cutover.** Feature-parity check against the golden harness; ship.
 
 ---
