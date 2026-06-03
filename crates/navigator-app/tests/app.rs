@@ -218,6 +218,54 @@ async fn assign_mtdna_haplogroup_ranks_best() {
 }
 
 #[tokio::test]
+async fn assign_haplogroup_from_alignment_calls_and_ranks() {
+    // Uses the chrM coverage fixture as a stand-in alignment; the reference is ACGTACGT…,
+    // so the consensus base at positions 1 and 5 is 'A' (non-variant sites).
+    let app = app().await;
+    let dir = fixtures();
+    let b = app.add_biosample(None, "HG002", None, None).await.unwrap();
+    let run = app
+        .record_sequence_run(NewSequenceRun {
+            biosample_guid: b.guid,
+            platform_name: "ILLUMINA".into(),
+            instrument_model: None,
+            test_type: "WGS".into(),
+            library_layout: None,
+            total_reads: None,
+            pf_reads_aligned: None,
+            mean_read_length: None,
+            mean_insert_size: None,
+        })
+        .await
+        .unwrap();
+    let aln = app
+        .record_alignment(NewAlignment {
+            sequence_run_id: run.id,
+            reference_build: "chrM".into(),
+            aligner: "synthetic".into(),
+            variant_caller: None,
+            bam_path: Some(dir.join("coverage.bam").to_string_lossy().into_owned()),
+            reference_path: Some(dir.join("ref.fa").to_string_lossy().into_owned()),
+        })
+        .await
+        .unwrap()
+        .id;
+
+    // root --A@1--> N1 --A@5--> N2 ; the sample carries 'A' at both -> N2 is best.
+    let tree = r#"{"allNodes":{
+        "1":{"haplogroupId":1,"name":"root","isRoot":true,"variants":[],"children":[2]},
+        "2":{"haplogroupId":2,"name":"N1","isRoot":false,"variants":[{"variant":"x1A","position":1,"ancestral":"C","derived":"A"}],"children":[3]},
+        "3":{"haplogroupId":3,"name":"N2","isRoot":false,"variants":[{"variant":"x5A","position":5,"ancestral":"C","derived":"A"}],"children":[]}
+    }}"#;
+
+    let ranked = app.assign_haplogroup_from_alignment(aln, "chrM", tree).await.unwrap();
+    assert_eq!(ranked[0].name, "N2");
+    assert_eq!(ranked[0].matched, 2);
+    assert!((ranked[0].score - 1.0).abs() < 1e-9);
+    assert_eq!(ranked[0].lineage, vec!["root", "N1", "N2"]);
+}
+
+#[tokio::test]
 async fn add_data_detects_and_routes() {
     use navigator_app::DetectedData;
     let app = app().await;

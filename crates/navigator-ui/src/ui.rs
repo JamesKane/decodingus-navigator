@@ -63,6 +63,8 @@ pub struct NavigatorApp {
     rcrs_path: Option<PathBuf>,
     /// Last mtDNA haplogroup assignment: (sequence id, ranked candidates).
     mtdna_haplogroup: Option<(i64, Vec<ScoredHaplogroup>)>,
+    /// Last Y haplogroup assignment: (alignment id, ranked candidates).
+    y_haplogroup: Option<(i64, Vec<ScoredHaplogroup>)>,
     selected_run: Option<i64>,
     alignments: Vec<Alignment>,
     selected_alignment: Option<i64>,
@@ -145,6 +147,7 @@ impl NavigatorApp {
             mtdna_sequences: Vec::new(),
             rcrs_path: None,
             mtdna_haplogroup: None,
+            y_haplogroup: None,
             selected_run: None,
             alignments: Vec::new(),
             selected_alignment: None,
@@ -263,6 +266,13 @@ impl NavigatorApp {
                     };
                     self.mtdna_haplogroup = Some((mtdna_id, ranked));
                 }
+                Event::YHaplogroup { alignment_id, ranked } => {
+                    self.status = match ranked.first() {
+                        Some(top) => format!("Y haplogroup: {} (score {:.3})", top.name, top.score),
+                        None => "No Y haplogroup match".into(),
+                    };
+                    self.y_haplogroup = Some((alignment_id, ranked));
+                }
                 Event::DataImported { biosample_guid, label } => {
                     self.status = format!("Imported {label}");
                     if self.selected_sample == Some(biosample_guid) {
@@ -380,6 +390,7 @@ impl NavigatorApp {
         self.denovo = None;
         self.panel_genotypes = None;
         self.ibd_result = None;
+        self.y_haplogroup = None;
         let _ = self.tx.send(Command::LoadCoverage(id));
         let _ = self.tx.send(Command::LoadDenovo { alignment_id: id, contig: self.forms.denovo_contig.clone() });
         if let Some(panel_id) = self.selected_panel {
@@ -451,6 +462,7 @@ impl eframe::App for NavigatorApp {
                 if let Some(id) = self.selected_alignment {
                     self.coverage_section(ui, id);
                     self.denovo_section(ui, id);
+                    self.y_haplogroup_section(ui, id);
                     self.genotyping_section(ui, id);
                 }
             });
@@ -1136,6 +1148,43 @@ impl NavigatorApp {
                 ui.spinner();
             }
         });
+    }
+
+    /// Y-haplogroup assignment for an alignment (calls chrY tree positions; FTDNA tree).
+    fn y_haplogroup_section(&mut self, ui: &mut egui::Ui, alignment_id: i64) {
+        ui.add_space(12.0);
+        ui.separator();
+        ui.heading("Y haplogroup");
+
+        let has_bam = self
+            .alignments
+            .iter()
+            .find(|a| a.id == alignment_id)
+            .map(|a| a.bam_path.is_some())
+            .unwrap_or(false);
+
+        ui.horizontal(|ui| {
+            if ui.add_enabled(has_bam, egui::Button::new("Assign Y haplogroup")).clicked() {
+                self.status = "Assigning Y haplogroup (fetching FTDNA tree)…".into();
+                let _ = self.tx.send(Command::AssignYHaplogroup { alignment_id });
+            }
+            if !has_bam {
+                ui.label("(no BAM/CRAM path recorded)");
+            }
+        });
+
+        if let Some((id, ranked)) = &self.y_haplogroup {
+            if *id == alignment_id {
+                if let Some(top) = ranked.first() {
+                    ui.label(format!("Haplogroup: {}   ({}/{} mutations, score {:.3})", top.name, top.matched, top.expected, top.score));
+                    ui.label(format!("Lineage: {}", top.lineage.join(" › ")));
+                    let alts: Vec<String> = ranked.iter().skip(1).take(3).map(|r| format!("{} ({:.3})", r.name, r.score)).collect();
+                    if !alts.is_empty() {
+                        ui.label(format!("Alternatives: {}", alts.join(", ")));
+                    }
+                }
+            }
+        }
     }
 
     fn genotyping_section(&mut self, ui: &mut egui::Ui, alignment_id: i64) {

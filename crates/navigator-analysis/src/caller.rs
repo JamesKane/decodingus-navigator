@@ -260,6 +260,33 @@ fn tally_targets(
     Ok((length, counts))
 }
 
+/// Call the consensus base at each 1-based `target` position on `contig` (haploid
+/// genotyping for haplogroup assignment). A position is called only when it clears
+/// `min_depth` passing reads and the consensus base is at least `min_allele_fraction` of
+/// that depth; uncalled positions are simply absent. Returns position → uppercase base.
+pub fn call_bases_at(
+    bam_path: &Path,
+    contig: &str,
+    targets: &HashSet<i64>,
+    params: &HaploidCallerParams,
+) -> Result<HashMap<i64, char>, AnalysisError> {
+    let (_len, counts) = tally_targets(bam_path, contig, params, targets)?;
+    const BASES: [char; 4] = ['A', 'C', 'G', 'T'];
+    let mut calls = HashMap::new();
+    for (pos0, c) in counts {
+        let depth: u32 = c.iter().sum();
+        if depth < params.min_depth {
+            continue;
+        }
+        let (bi, best) = consensus(&c);
+        if (best as f64) < params.min_allele_fraction * depth as f64 {
+            continue;
+        }
+        calls.insert((pos0 + 1) as i64, BASES[bi]);
+    }
+    Ok(calls)
+}
+
 /// Dense A/C/G/T tally + per-position indel evidence for the 1-based inclusive region
 /// `[lo, hi]`, indexed by `pos - lo` (the chunked de-novo path).
 fn tally_region(

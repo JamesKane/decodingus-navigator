@@ -63,6 +63,8 @@ pub enum Command {
     DeriveMtdnaVariants { mtdna_id: i64, rcrs_path: PathBuf },
     /// Assign an mtDNA haplogroup (fetch the FTDNA tree, rank by the sample's base calls).
     AssignMtdnaHaplogroup { mtdna_id: i64 },
+    /// Assign a Y haplogroup from an alignment (call chrY tree positions, rank).
+    AssignYHaplogroup { alignment_id: i64 },
     /// Unified import: detect the file's type and route it to the right importer.
     AddData { biosample_guid: SampleGuid, path: PathBuf },
     LoadAlignments(i64),
@@ -120,6 +122,8 @@ pub enum Event {
     DataImported { biosample_guid: SampleGuid, label: String },
     /// Ranked mtDNA haplogroup candidates for a sequence (best first).
     Haplogroup { mtdna_id: i64, ranked: Vec<ScoredHaplogroup> },
+    /// Ranked Y haplogroup candidates for an alignment (best first).
+    YHaplogroup { alignment_id: i64, ranked: Vec<ScoredHaplogroup> },
     Alignments { sequence_run_id: i64, alignments: Vec<Alignment> },
     AlignmentsChanged(i64),
     Coverage { alignment_id: i64, result: Option<Coverage> },
@@ -225,6 +229,10 @@ pub async fn handle(app: &App, cmd: Command) -> Event {
         }
         Command::AssignMtdnaHaplogroup { mtdna_id } => match app.assign_mtdna_haplogroup(mtdna_id).await {
             Ok(ranked) => Event::Haplogroup { mtdna_id, ranked },
+            Err(e) => Event::Error(e.to_string()),
+        },
+        Command::AssignYHaplogroup { alignment_id } => match app.assign_y_haplogroup(alignment_id).await {
+            Ok(ranked) => Event::YHaplogroup { alignment_id, ranked },
             Err(e) => Event::Error(e.to_string()),
         },
         Command::AddData { biosample_guid, path } => match app.add_data(biosample_guid, &path).await {

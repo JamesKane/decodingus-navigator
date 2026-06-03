@@ -660,29 +660,77 @@ impl App {
 
     /// FTDNA mt-DNA haplotree JSON, from the on-disk cache or freshly downloaded + cached.
     async fn fetch_ftdna_mt_tree(&self) -> Result<String, AppError> {
-        let path = tree_cache_path("ftdna-mttree.json");
+        self.fetch_tree("https://www.familytreedna.com/public/mt-dna-haplotree/get", "ftdna-mttree.json")
+            .await
+    }
+
+    /// FTDNA Y-DNA haplotree JSON, from the on-disk cache or freshly downloaded + cached.
+    async fn fetch_ftdna_y_tree(&self) -> Result<String, AppError> {
+        self.fetch_tree("https://www.familytreedna.com/public/y-dna-haplotree/get", "ftdna-ytree.json")
+            .await
+    }
+
+    /// A cached-or-downloaded haplotree JSON (cache hit short-circuits the network).
+    async fn fetch_tree(&self, url: &str, cache_file: &str) -> Result<String, AppError> {
+        let path = tree_cache_path(cache_file);
         if let Ok(cached) = std::fs::read_to_string(&path) {
             if !cached.trim().is_empty() {
                 return Ok(cached);
             }
         }
-        const URL: &str = "https://www.familytreedna.com/public/mt-dna-haplotree/get";
         let body = self
             .auth
             .http
-            .get(URL)
+            .get(url)
             .send()
             .await
             .and_then(|r| r.error_for_status())
-            .map_err(|e| AppError::Import(format!("downloading FTDNA mt tree: {e}")))?
+            .map_err(|e| AppError::Import(format!("downloading {url}: {e}")))?
             .text()
             .await
-            .map_err(|e| AppError::Import(format!("reading FTDNA mt tree: {e}")))?;
+            .map_err(|e| AppError::Import(format!("reading {url}: {e}")))?;
         if let Some(parent) = path.parent() {
             let _ = std::fs::create_dir_all(parent);
         }
         let _ = std::fs::write(&path, &body);
         Ok(body)
+    }
+
+    /// Assign a Y haplogroup to an alignment: fetch (and cache) the FTDNA Y-DNA haplotree,
+    /// call the sample's base at each tree position on chrY, and rank by Kulczynski. Best
+    /// first. Requires the alignment to have a recorded BAM/CRAM path.
+    pub async fn assign_y_haplogroup(&self, alignment_id: i64) -> Result<Vec<ScoredHaplogroup>, AppError> {
+        let tree_json = self.fetch_ftdna_y_tree().await?;
+        self.assign_haplogroup_from_alignment(alignment_id, "chrY", &tree_json).await
+    }
+
+    /// Genotype an alignment at a haplotree's positions on `contig` and rank haplogroups by
+    /// the Kulczynski measure. The networkless core shared by [`assign_y_haplogroup`] (also
+    /// directly testable with a local tree + contig).
+    pub async fn assign_haplogroup_from_alignment(
+        &self,
+        alignment_id: i64,
+        contig: &str,
+        tree_json: &str,
+    ) -> Result<Vec<ScoredHaplogroup>, AppError> {
+        let aln = alignment::get(self.store.pool(), alignment_id)
+            .await?
+            .ok_or_else(|| AppError::Store(StoreError::NotFound(format!("alignment {alignment_id}"))))?;
+        let bam = aln.bam_path.ok_or(AppError::MissingPaths(alignment_id))?;
+
+        let tree = navigator_analysis::haplo::parse_ftdna_json(tree_json).map_err(AppError::Import)?;
+        let targets: HashSet<i64> =
+            tree.nodes.values().flat_map(|n| n.loci.iter().map(|l| l.position)).collect();
+
+        let bam = PathBuf::from(bam);
+        let contig_owned = contig.to_string();
+        let calls = tokio::task::spawn_blocking(move || {
+            caller::call_bases_at(&bam, &contig_owned, &targets, &HaploidCallerParams::default())
+        })
+        .await
+        .map_err(|e| AppError::Join(e.to_string()))??;
+
+        Ok(navigator_analysis::haplo::score(&tree, &calls))
     }
 
     // ---- unified import ----------------------------------------------------
