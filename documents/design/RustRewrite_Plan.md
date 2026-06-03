@@ -217,6 +217,37 @@ coupled to coverage continuity, so `f < 1.0` may help; needs more HiFi data poin
 small, and the HiFi here is the same person as WGS229). A depth-1 floor for pure CCS is
 plausible but unvalidated.
 
+### 4f. Reference & liftover management (later phase — NOT yet built)
+
+**Prerequisite for haplogroups on CHM13-aligned data.** The batch-import + coverage slice
+(2026-06-03) reads CRAM and recomputes coverage given a user-supplied reference FASTA, but
+**haplogroup assignment is deferred** partly because of a coordinate-system gap: the FTDNA
+Y haplotree is in **GRCh38** coordinates and mtDNA is **rCRS**, while the sample CRAMs here
+are **T2T-CHM13v2.0** (and CHM13 `chrM` is not necessarily rCRS). Closing that needs either
+liftover of tree positions GRCh38→CHM13, or a CHM13 reference that carries rCRS mito for the
+mtDNA path.
+
+The chain-*application* algorithm exists (`du-bio::liftover`), but the **retrieval + on-disk
+cache** of chain files and reference FASTAs was **never ported** from Scala. That subsystem
+is the gap to fill:
+
+- **Scala originals to port** (`src/main/scala/com/decodingus/`): `refgenome/ReferenceGateway`
+  + `ReferenceCache` + `FileCache` (download/cache reference FASTAs), `refgenome/LiftoverGateway`
+  + `LiftoverCache` and `liftover/{LiftoverProcessor,GenotypeLiftover}` (chain retrieval/cache +
+  applying liftover), `refgenome/config/ReferenceConfig{,Service}` (source registry). Related
+  caches if/when ancestry lands: `AncestryReferenceGateway`/`Cache`, `TreeCache`, `AnalysisCache`.
+- **Rust shape:** a `ReferenceGateway` (likely in `navigator-app` or a new `navigator-refgenome`
+  crate) that resolves a build name (`chm13v2.0`, `GRCh38`, `hg19`) + artifact kind
+  (reference FASTA, `.fai`/`.gzi`, liftover chain, mask BED) to a cached local path, fetching
+  on miss into `~/.decodingus/...` and verifying. Anonymous HTTPS GET is sufficient (no AWS
+  creds). Wire it into `import_project_dir`/`run_coverage` so the reference no longer has to be
+  hand-supplied, and into the haplogroup path for chain lookup.
+- **Resource catalog:** `docs/chm13-reference-resources.md` lists the concrete CHM13v2.0 URLs —
+  reference FASTAs (incl. **`chm13v2.0_maskedY_rCRS.fa.gz`**, the most relevant for this app),
+  GRCh38↔CHM13 and hg19↔CHM13 **1:1 liftover chains** + `unique_to_*` BEDs (unliftable regions),
+  lifted variant catalogs (dbSNP155, ClinVar, gnomAD, 1000G/SGDP on CHM13), and accessibility/
+  repeat/censat masks. All on the public `human-pangenomics` bucket (CC0).
+
 ---
 
 ## 5. GUI — egui / eframe
@@ -319,8 +350,13 @@ rollback.
 7. **IBD + Y-profile.** Port detection/relationship math; simplified Y-profile aggregate.
    IBD detection/relationship is done. The simplified Y/mtDNA **multi-source reconciliation**
    aggregate (combine runs across platforms + Sanger confirmation, with identity
-   verification) is specified in `MultiSource_Reconciliation.md` — not yet built.
-8. **Cutover.** Feature-parity check against the golden harness; ship.
+   verification) is specified in `MultiSource_Reconciliation.md` — built (all 6 phases).
+8. **Reference & liftover management (§4f) — NOT yet built.** Port the Scala `refgenome`
+   retrieval/cache subsystem (reference FASTAs + liftover chains, on-disk cached, fetched
+   anonymously). Prerequisite for **haplogroups on CHM13** data (GRCh38/rCRS tree vs CHM13
+   coordinates). Resource URLs in `docs/chm13-reference-resources.md`. Batch import + coverage
+   recompute from CRAM is done (2026-06-03); haplogroup assignment on CHM13 waits on this.
+9. **Cutover.** Feature-parity check against the golden harness; ship.
 
 ---
 
