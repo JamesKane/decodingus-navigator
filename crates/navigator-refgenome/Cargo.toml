@@ -1,0 +1,19 @@
+[package]
+name = "navigator-refgenome"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+# Reference-genome + liftover-chain asset retrieval and on-disk cache (plan §4f). Resolves
+# a build name -> a cached, decompressed, indexed reference FASTA, fetching on a miss; caches
+# liftover chains for du-bio. No samtools/GATK: indexing is in-Rust via noodles-fasta.
+[dependencies]
+du-bio = { workspace = true }
+thiserror = { workspace = true }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
+flate2 = "1"
+noodles = { version = "0.93.0", features = ["fasta", "core"] }
+tokio = { version = "1", features = ["rt", "fs", "io-util", "sync"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"

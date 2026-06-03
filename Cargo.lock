@@ -2718,6 +2718,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "navigator-refgenome"
+version = "0.1.0"
+dependencies = [
+ "du-bio",
+ "flate2",
+ "noodles",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+]
+
+[[package]]
 name = "navigator-store"
 version = "0.1.0"
 dependencies = [

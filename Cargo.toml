@@ -23,6 +23,7 @@ navigator-domain   = { path = "crates/navigator-domain" }
 navigator-store    = { path = "crates/navigator-store" }
 navigator-analysis = { path = "crates/navigator-analysis" }
 navigator-sync     = { path = "crates/navigator-sync" }
+navigator-refgenome = { path = "crates/navigator-refgenome" }
 navigator-app      = { path = "crates/navigator-app" }
 
 # Common
