@@ -16,6 +16,7 @@ pub mod error;
 pub mod genotype;
 pub mod haplo;
 pub mod ibd;
+pub mod mask;
 pub mod mtvariants;
 pub mod parity;
 pub mod read_metrics;

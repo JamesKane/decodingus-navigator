@@ -71,6 +71,8 @@ pub struct NavigatorApp {
     /// Last private Y bucket: (alignment id, bucket).
     private_y: Option<(i64, PrivateBucket)>,
     finding_private_y: bool,
+    /// Callable-region BED (Poznik/1KG callable-Y mask), reused across private-Y runs.
+    y_mask_path: Option<PathBuf>,
     selected_run: Option<i64>,
     alignments: Vec<Alignment>,
     selected_alignment: Option<i64>,
@@ -190,6 +192,7 @@ impl NavigatorApp {
             y_haplogroup: None,
             private_y: None,
             finding_private_y: false,
+            y_mask_path: None,
             selected_run: None,
             alignments: Vec::new(),
             selected_alignment: None,
@@ -1230,10 +1233,25 @@ impl NavigatorApp {
             .unwrap_or(false);
         ui.add_space(6.0);
         ui.horizontal(|ui| {
+            ui.label("Callable mask:");
+            let label = self
+                .y_mask_path
+                .as_ref()
+                .and_then(|p| p.file_name())
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_else(|| "none (noisy)".into());
+            ui.label(label);
+            if ui.button("Choose BED…").clicked() {
+                if let Some(p) = rfd::FileDialog::new().add_filter("BED", &["bed"]).pick_file() {
+                    self.y_mask_path = Some(p);
+                }
+            }
+        });
+        ui.horizontal(|ui| {
             if ui.add_enabled(has_ref && !self.finding_private_y, egui::Button::new("Find private Y variants")).clicked() {
                 self.finding_private_y = true;
                 self.status = "Finding private Y variants (de-novo chrY)…".into();
-                let _ = self.tx.send(Command::FindPrivateY { alignment_id });
+                let _ = self.tx.send(Command::FindPrivateY { alignment_id, callable_bed: self.y_mask_path.clone() });
             }
             if self.finding_private_y {
                 ui.spinner();

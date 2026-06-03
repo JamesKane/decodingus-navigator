@@ -804,8 +804,14 @@ impl App {
     /// explain (not on the assigned backbone), classified as off-path-known (a finer/
     /// sibling FTDNA branch) or novel (a new-branch candidate). Runs the Y assignment to
     /// find the terminal, then de-novo-calls chrY and subtracts the backbone. Requires the
-    /// alignment's recorded BAM + reference paths.
-    pub async fn private_y_variants(&self, alignment_id: i64) -> Result<PrivateBucket, AppError> {
+    /// alignment's recorded BAM + reference paths. When `callable_bed` is given (e.g. the
+    /// Poznik/1KG callable-Y mask `b38_sites.bed`), calls outside reliable regions are
+    /// dropped — essential to keep the novel bucket from drowning in Y repeat artifacts.
+    pub async fn private_y_variants(
+        &self,
+        alignment_id: i64,
+        callable_bed: Option<&Path>,
+    ) -> Result<PrivateBucket, AppError> {
         let tree_json = self.fetch_ftdna_y_tree().await?;
         let tree = navigator_analysis::haplo::parse_ftdna_json(&tree_json).map_err(AppError::Import)?;
 
@@ -817,11 +823,18 @@ impl App {
         let path = navigator_analysis::haplo::path_positions(&tree, terminal.id);
         let known = navigator_analysis::haplo::tree_positions(&tree);
 
-        // De-novo chrY (cached as an artifact), then keep only off-backbone calls.
+        // Optional callable-region mask (reliable Y regions only).
+        let mask = match callable_bed {
+            Some(p) => Some(navigator_analysis::mask::RegionMask::from_bed(p, "chrY")?),
+            None => None,
+        };
+
+        // De-novo chrY (cached as an artifact), then keep only off-backbone, callable calls.
         let denovo = self.run_denovo_for_alignment(alignment_id, "chrY".to_string()).await?;
         let mut variants: Vec<PrivateVariant> = denovo
             .iter()
             .filter(|c| !path.contains(&c.position))
+            .filter(|c| mask.as_ref().map_or(true, |m| m.contains(c.position)))
             .map(|c| PrivateVariant {
                 position: c.position,
                 reference: c.reference_allele,

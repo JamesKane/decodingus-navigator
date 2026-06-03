@@ -291,7 +291,8 @@ async fn validate_hg002_haplogroups() {
     // Private bucket (de-novo chrY off the backbone) — gated separately (slow + needs ref).
     if std::env::var("PRIVATE_Y").is_ok() {
         use navigator_app::PrivateClass;
-        let bucket = app.private_y_variants(aln).await.expect("private Y");
+        let mask = std::env::var("Y_MASK_BED").ok().map(std::path::PathBuf::from);
+        let bucket = app.private_y_variants(aln, mask.as_deref()).await.expect("private Y");
         eprintln!("Private Y below {}: {} novel, {} off-path", bucket.terminal, bucket.novel(), bucket.off_path());
         for v in bucket.variants.iter().filter(|v| matches!(v.class, PrivateClass::OffPathKnown(_))).take(12) {
             if let PrivateClass::OffPathKnown(n) = &v.class {
