@@ -217,6 +217,65 @@ async fn assign_mtdna_haplogroup_ranks_best() {
     let _ = std::fs::remove_file(&samp_path);
 }
 
+/// Real-data validation: assign mt + Y haplogroups from a GRCh38-aligned HG002 BAM
+/// (chrM = rCRS, chrY = GRCh38 — matching the FTDNA trees). Needs network (live FTDNA
+/// fetch). Run: `HG002_B38_BAM=/path/HG002.b38.bam cargo test -p navigator-app --test app \
+/// validate_hg002 -- --ignored --nocapture`.
+#[tokio::test]
+#[ignore = "requires HG002_B38_BAM (GRCh38) + network"]
+async fn validate_hg002_haplogroups() {
+    let Ok(bam) = std::env::var("HG002_B38_BAM") else {
+        eprintln!("HG002_B38_BAM unset — skipping HG002 validation");
+        return;
+    };
+    let app = app().await;
+    let b = app.add_biosample(None, "HG002", None, Some("male".into())).await.unwrap();
+    let run = app
+        .record_sequence_run(NewSequenceRun {
+            biosample_guid: b.guid,
+            platform_name: "ILLUMINA".into(),
+            instrument_model: None,
+            test_type: "WGS".into(),
+            library_layout: None,
+            total_reads: None,
+            pf_reads_aligned: None,
+            mean_read_length: None,
+            mean_insert_size: None,
+        })
+        .await
+        .unwrap();
+    let aln = app
+        .record_alignment(NewAlignment {
+            sequence_run_id: run.id,
+            reference_build: "GRCh38".into(),
+            aligner: "bwa-mem2".into(),
+            variant_caller: None,
+            bam_path: Some(bam),
+            reference_path: None,
+        })
+        .await
+        .unwrap()
+        .id;
+
+    let mt = app.assign_mtdna_haplogroup_from_alignment(aln).await.expect("mt assign");
+    let top = &mt[0];
+    eprintln!("HG002 mtDNA: {}  ({}/{} mutations, score {:.3})", top.name, top.matched, top.expected, top.score);
+    eprintln!("  lineage: {}", top.lineage.join(" › "));
+    for r in mt.iter().skip(1).take(3) {
+        eprintln!("  alt: {} ({:.3})", r.name, r.score);
+    }
+    assert!(top.depth > 0 && top.matched > 0, "mt should resolve below root");
+
+    let y = app.assign_y_haplogroup(aln).await.expect("Y assign");
+    let top = &y[0];
+    eprintln!("HG002 Y: {}  ({}/{} mutations, score {:.3})", top.name, top.matched, top.expected, top.score);
+    eprintln!("  lineage: {}", top.lineage.join(" › "));
+    for r in y.iter().skip(1).take(3) {
+        eprintln!("  alt: {} ({:.3})", r.name, r.score);
+    }
+    assert!(top.depth > 0 && top.matched > 0, "Y should resolve below root");
+}
+
 #[tokio::test]
 async fn assign_haplogroup_from_alignment_calls_and_ranks() {
     // Uses the chrM coverage fixture as a stand-in alignment; the reference is ACGTACGT…,

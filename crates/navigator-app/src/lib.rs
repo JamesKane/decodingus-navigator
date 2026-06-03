@@ -696,6 +696,17 @@ impl App {
         Ok(body)
     }
 
+    /// Assign an mtDNA haplogroup directly from an alignment's chrM reads (FTDNA mt tree),
+    /// the BAM-based counterpart to [`assign_mtdna_haplogroup`]. Requires a GRCh38/rCRS
+    /// chrM (the tree is in rCRS coordinates).
+    pub async fn assign_mtdna_haplogroup_from_alignment(
+        &self,
+        alignment_id: i64,
+    ) -> Result<Vec<ScoredHaplogroup>, AppError> {
+        let tree_json = self.fetch_ftdna_mt_tree().await?;
+        self.assign_haplogroup_from_alignment(alignment_id, "chrM", &tree_json).await
+    }
+
     /// Assign a Y haplogroup to an alignment: fetch (and cache) the FTDNA Y-DNA haplotree,
     /// call the sample's base at each tree position on chrY, and rank by Kulczynski. Best
     /// first. Requires the alignment to have a recorded BAM/CRAM path.
