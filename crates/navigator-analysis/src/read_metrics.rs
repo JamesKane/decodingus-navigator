@@ -9,9 +9,10 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 
-use noodles::bam;
+use noodles::sam::alignment::RecordBuf;
 
 use crate::error::AnalysisError;
+use crate::reader;
 
 const MAX_INSERT_SIZE: i32 = 10_000;
 
@@ -122,13 +123,8 @@ fn median_from_hist(hist: &BTreeMap<u32, u64>, total: u64) -> f64 {
 }
 
 /// Single pass over the BAM collecting read-level metrics.
-pub fn collect_read_metrics(bam_path: &Path) -> Result<ReadMetrics, AnalysisError> {
-    let mut reader = bam::io::reader::Builder
-        .build_from_path(bam_path)
-        .map_err(|e| AnalysisError::io(bam_path, e))?;
-    let _header = reader
-        .read_header()
-        .map_err(|e| AnalysisError::io(bam_path, e))?;
+pub fn collect_read_metrics(bam_path: &Path, reference: Option<&Path>) -> Result<ReadMetrics, AnalysisError> {
+    let (header, mut reader) = reader::open_seq(bam_path, reference)?;
 
     let mut total_reads = 0u64;
     let mut pf_reads = 0u64;
@@ -144,8 +140,8 @@ pub fn collect_read_metrics(bam_path: &Path) -> Result<ReadMetrics, AnalysisErro
     let mut insert = DistAccum::default();
     let (mut fr, mut rf, mut tandem) = (0u64, 0u64, 0u64);
 
-    for result in reader.records() {
-        let record = result.map_err(|e| AnalysisError::io(bam_path, e))?;
+    for result in reader.records(&header) {
+        let record = result?;
         let flags = record.flags();
 
         // Primary metrics exclude secondary/supplementary.
@@ -183,7 +179,7 @@ pub fn collect_read_metrics(bam_path: &Path) -> Result<ReadMetrics, AnalysisErro
                 let isize = record.template_length().abs();
                 if isize > 0 && isize < MAX_INSERT_SIZE {
                     insert.add(isize as u32);
-                    match detect_orientation(&record, bam_path)? {
+                    match detect_orientation(&record) {
                         PairOrientation::Fr => fr += 1,
                         PairOrientation::Rf => rf += 1,
                         PairOrientation::Tandem => tandem += 1,
@@ -192,12 +188,8 @@ pub fn collect_read_metrics(bam_path: &Path) -> Result<ReadMetrics, AnalysisErro
             }
         }
 
-        if !flags.is_mate_unmapped() {
-            let r = opt_usize(record.reference_sequence_id(), bam_path)?;
-            let m = opt_usize(record.mate_reference_sequence_id(), bam_path)?;
-            if r != m {
-                chimeric_reads += 1;
-            }
+        if !flags.is_mate_unmapped() && record.reference_sequence_id() != record.mate_reference_sequence_id() {
+            chimeric_reads += 1;
         }
     }
 
@@ -247,38 +239,24 @@ fn ratio(num: u64, den: u64) -> f64 {
     }
 }
 
-fn opt_usize(
-    v: Option<std::io::Result<usize>>,
-    path: &Path,
-) -> Result<Option<usize>, AnalysisError> {
-    match v {
-        Some(r) => Ok(Some(r.map_err(|e| AnalysisError::io(path, e))?)),
-        None => Ok(None),
-    }
-}
-
 /// Pair orientation from a first-of-pair proper pair, mirroring the Scala logic.
-fn detect_orientation(record: &bam::Record, path: &Path) -> Result<PairOrientation, AnalysisError> {
+fn detect_orientation(record: &RecordBuf) -> PairOrientation {
     let read_neg = record.flags().is_reverse_complemented();
     let mate_neg = record.flags().is_mate_reverse_complemented();
     if read_neg == mate_neg {
-        return Ok(PairOrientation::Tandem);
+        return PairOrientation::Tandem;
     }
-    let start = record
-        .alignment_start()
-        .transpose()
-        .map_err(|e| AnalysisError::io(path, e))?
-        .map_or(0, |p| p.get());
-    let mate_start = record
-        .mate_alignment_start()
-        .transpose()
-        .map_err(|e| AnalysisError::io(path, e))?
-        .map_or(0, |p| p.get());
+    let start = record.alignment_start().map_or(0, |p| p.get());
+    let mate_start = record.mate_alignment_start().map_or(0, |p| p.get());
 
     let fr = if start < mate_start {
         !read_neg && mate_neg
     } else {
         read_neg && !mate_neg
     };
-    Ok(if fr { PairOrientation::Fr } else { PairOrientation::Rf })
+    if fr {
+        PairOrientation::Fr
+    } else {
+        PairOrientation::Rf
+    }
 }

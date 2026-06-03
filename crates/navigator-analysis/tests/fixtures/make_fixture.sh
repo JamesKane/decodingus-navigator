@@ -54,6 +54,8 @@ samtools view -T ref.fa -C -o coverage.cram coverage.bam && samtools index cover
   pe "pairA" 147 31 1  -40
 } > paired.sam
 samtools sort -o paired.bam paired.sam && samtools index paired.bam
+# CRAM counterpart for the read-metrics CRAM parity test.
+samtools view -T ref.fa -C -o paired.cram paired.bam && samtools index paired.cram
 
 # ---- sex.bam --------------------------------------------------------------
 # chr1 (100 bp) gets 10 reads, chrX (100 bp) gets 2 -> autosome cov 10x, X cov 2x,

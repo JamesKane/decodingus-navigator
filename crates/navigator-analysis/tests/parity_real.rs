@@ -169,7 +169,7 @@ fn hg002_read_metrics_smoke() {
         eprintln!("set HG002_BAM to run this test");
         return;
     };
-    let m = collect_read_metrics(&PathBuf::from(bam)).expect("read metrics should succeed");
+    let m = collect_read_metrics(&PathBuf::from(bam), None).expect("read metrics should succeed");
     eprintln!(
         "total={} pf_aligned={} ({:.3}) proper={:.3} chimera={:.4} orient={} \
          read_len mean={:.1} median={} insert mean={:.1} median={} mapq={:.1}",

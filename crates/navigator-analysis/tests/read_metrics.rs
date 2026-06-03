@@ -15,7 +15,7 @@ fn approx(a: f64, b: f64) {
 
 #[test]
 fn read_metrics_match_hand_computed_values() {
-    let m = collect_read_metrics(&fixtures().join("paired.bam")).expect("should succeed");
+    let m = collect_read_metrics(&fixtures().join("paired.bam"), None).expect("should succeed");
 
     // counts
     assert_eq!(m.total_reads, 4);
@@ -47,4 +47,13 @@ fn read_metrics_match_hand_computed_values() {
     assert_eq!(m.insert_size_histogram.get(&40), Some(&1));
 
     assert_eq!(m.pair_orientation, PairOrientation::Fr);
+}
+
+#[test]
+fn cram_read_metrics_match_bam() {
+    // Same pairs as paired.bam, ref-compressed — the unified reader must give identical metrics.
+    let dir = fixtures();
+    let bam = collect_read_metrics(&dir.join("paired.bam"), None).unwrap();
+    let cram = collect_read_metrics(&dir.join("paired.cram"), Some(&dir.join("ref.fa"))).unwrap();
+    assert_eq!(cram, bam, "CRAM read-metrics must equal BAM");
 }
