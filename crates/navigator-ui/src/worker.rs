@@ -14,7 +14,7 @@ use std::sync::Arc;
 use navigator_app::{
     App, AuditEntry, Consensus, Coverage, DenovoCall, DnaType, HaploAssignment, HeteroplasmySite,
     IbdComparison, IbdDetectorConfig, IdentityVerification, PanelGenotype, PrivateBucket,
-    ProjectOverview, ReconciledVariant, SourceType,
+    ProjectImportSummary, ProjectOverview, ReconciledVariant, SourceType,
 };
 use navigator_domain::du_domain::ids::SampleGuid;
 use navigator_domain::chipprofile::ChipProfile;
@@ -56,6 +56,9 @@ pub enum Command {
     /// Load every biosample (subjects list), regardless of project.
     LoadAllBiosamples,
     AddBiosample(NewBiosample),
+    /// Batch-import a NAS project directory (scan → Project/Biosample/Run/Alignment).
+    /// CRAM needs `reference_path` (FASTA, with a `.fai`).
+    ImportProjectDir { dir: PathBuf, reference_path: PathBuf },
     LoadRuns(SampleGuid),
     AddRun(NewSequenceRun),
     /// Load the donor-level Y + mtDNA haplogroup consensus for a subject.
@@ -141,6 +144,8 @@ pub struct PanelInfo {
 pub enum Event {
     Overview(Vec<ProjectOverview>),
     ProjectCreated(Project),
+    /// A batch project-directory import completed.
+    ProjectImported(ProjectImportSummary),
     Samples { project_id: i64, samples: Vec<Biosample> },
     /// All biosamples (the project-independent subjects list).
     AllBiosamples(Vec<Biosample>),
@@ -206,6 +211,12 @@ pub async fn handle(app: &App, cmd: Command) -> Event {
             Ok(p) => Event::ProjectCreated(p),
             Err(e) => Event::Error(e.to_string()),
         },
+        Command::ImportProjectDir { dir, reference_path } => {
+            match app.import_project_dir(&dir, reference_path, "unknown".into()).await {
+                Ok(summary) => Event::ProjectImported(summary),
+                Err(e) => Event::Error(e.to_string()),
+            }
+        }
         Command::LoadSamples(project_id) => match app.list_biosamples(project_id).await {
             Ok(samples) => Event::Samples { project_id, samples },
             Err(e) => Event::Error(e.to_string()),

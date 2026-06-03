@@ -117,6 +117,8 @@ pub struct NavigatorApp {
     online: bool,
     logging_in: bool,
     publishing: bool,
+    /// A batch project-directory import is in flight (disables the button).
+    importing: bool,
     forms: Forms,
     status: String,
 }
@@ -243,6 +245,7 @@ impl NavigatorApp {
             online: true,
             logging_in: false,
             publishing: false,
+            importing: false,
             forms: Forms {
                 denovo_contig: "chrM".into(),
                 ploidy: "2".into(),
@@ -268,6 +271,23 @@ impl NavigatorApp {
                 Event::ProjectCreated(p) => {
                     self.select_project(p.id);
                     let _ = self.tx.send(Command::LoadOverview);
+                }
+                Event::ProjectImported(summary) => {
+                    let mut msg = format!(
+                        "Imported {}: {} sample(s), {} alignment(s)",
+                        summary.project.name, summary.samples_total, summary.alignments_created
+                    );
+                    if summary.alignments_skipped > 0 {
+                        msg.push_str(&format!(" ({} already present)", summary.alignments_skipped));
+                    }
+                    if !summary.missing_index.is_empty() {
+                        msg.push_str(&format!("; {} sample(s) missing an index", summary.missing_index.len()));
+                    }
+                    self.status = msg;
+                    self.importing = false;
+                    self.select_project(summary.project.id);
+                    let _ = self.tx.send(Command::LoadOverview);
+                    let _ = self.tx.send(Command::LoadAllBiosamples);
                 }
                 Event::Samples { project_id, samples } => {
                     if self.selected_project == Some(project_id) {
@@ -728,6 +748,25 @@ impl NavigatorApp {
                 }));
                 self.forms.project_name.clear();
                 self.forms.project_admin.clear();
+            }
+
+            ui.add_space(8.0);
+            ui.label("Batch import a project folder (per-sample subdirs of BAM/CRAM):");
+            if ui
+                .add_enabled(!self.importing, egui::Button::new("Batch import project…"))
+                .clicked()
+            {
+                if let Some(dir) = rfd::FileDialog::new().pick_folder() {
+                    if let Some(reference) =
+                        rfd::FileDialog::new().add_filter("FASTA", &["fa", "fasta", "fna"]).pick_file()
+                    {
+                        self.importing = true;
+                        self.status = format!("Importing {}…", dir.display());
+                        let _ = self.tx.send(Command::ImportProjectDir { dir, reference_path: reference });
+                    } else {
+                        self.status = "Batch import needs a reference FASTA (for CRAM decode).".into();
+                    }
+                }
             }
 
             ui.add_space(12.0);

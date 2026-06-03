@@ -193,6 +193,27 @@ fn verification_lexicon(s: VerificationStatus) -> &'static str {
     }
 }
 
+/// Reference build inferred from an alignment filename (`*.chm13.*` → CHM13v2.0, else
+/// unknown). A best-effort label; the actual decode uses the supplied reference FASTA.
+fn reference_build_for(path: &Path) -> String {
+    let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("").to_ascii_lowercase();
+    if name.contains("chm13") {
+        "chm13v2.0".to_string()
+    } else {
+        "unknown".to_string()
+    }
+}
+
+/// Whether `<alignment>.crai`/`.bai` is present among the discovered index files.
+fn has_sibling_index(aln_path: &Path, index_files: &[PathBuf]) -> bool {
+    let Some(aln_name) = aln_path.file_name().and_then(|n| n.to_str()) else {
+        return false;
+    };
+    index_files.iter().filter_map(|i| i.file_name().and_then(|n| n.to_str())).any(|n| {
+        n == format!("{aln_name}.crai") || n == format!("{aln_name}.bai")
+    })
+}
+
 /// Read the first 64 KiB of a file as lossy UTF-8 — enough to fingerprint a text file's
 /// type without slurping a multi-MB chip export.
 fn read_head(path: &Path) -> Result<String, AppError> {
@@ -250,6 +271,18 @@ fn genotype_concordance(a: &[SiteGenotype], b: &[SiteGenotype]) -> (i64, i64) {
 pub struct ProjectOverview {
     pub project: Project,
     pub sample_count: i64,
+}
+
+/// Outcome of a batch project-directory import (idempotent — counts only what's new).
+#[derive(Debug, Clone)]
+pub struct ProjectImportSummary {
+    pub project: Project,
+    pub samples_total: usize,
+    pub samples_created: usize,
+    pub alignments_created: usize,
+    pub alignments_skipped: usize,
+    /// Sample ids whose alignment had no sibling index (.crai/.bai) — coverage needs one.
+    pub missing_index: Vec<String>,
 }
 
 /// AT Proto auth state: keychain-backed sessions + the in-memory active account. Shared
@@ -1325,6 +1358,113 @@ impl App {
             }
         }
         Ok(detected)
+    }
+
+    /// Batch-import a NAS project directory: scan `{dir}/{sample}/…` and create the Project
+    /// plus its Biosample → SequenceRun → Alignment rows. CRAM requires a reference, so
+    /// `reference_path` (validated up front, with its `.fai`) is stamped on every alignment.
+    /// Idempotent: an existing project (by name), biosample (by donor id), or alignment (by
+    /// path) is reused, so re-running only adds what's new. Coverage is NOT computed here —
+    /// it can be large; run it per alignment or via the project report afterwards.
+    pub async fn import_project_dir(
+        &self,
+        dir: &Path,
+        reference_path: PathBuf,
+        administrator: String,
+    ) -> Result<ProjectImportSummary, AppError> {
+        if !reference_path.exists() {
+            return Err(AppError::Import(format!("reference FASTA not found: {}", reference_path.display())));
+        }
+        let fai = PathBuf::from(format!("{}.fai", reference_path.display()));
+        if !fai.exists() {
+            return Err(AppError::Import(format!("reference FASTA index (.fai) not found: {}", fai.display())));
+        }
+
+        let scan_dir = dir.to_path_buf();
+        let discovered = tokio::task::spawn_blocking(move || navigator_analysis::scan::scan(&scan_dir))
+            .await
+            .map_err(|e| AppError::Join(e.to_string()))??;
+
+        // Project: reuse an existing one with the same name.
+        let project = match project::list(self.store.pool()).await?.into_iter().find(|p| p.name == discovered.project_id) {
+            Some(p) => p,
+            None => {
+                self.create_project(NewProject {
+                    name: discovered.project_id.clone(),
+                    description: None,
+                    administrator,
+                })
+                .await?
+            }
+        };
+
+        let ref_str = reference_path.to_string_lossy().into_owned();
+        let mut summary = ProjectImportSummary {
+            project: project.clone(),
+            samples_total: discovered.samples.len(),
+            samples_created: 0,
+            alignments_created: 0,
+            alignments_skipped: 0,
+            missing_index: Vec::new(),
+        };
+
+        for sample in &discovered.samples {
+            // Biosample: reuse by donor identifier within the project.
+            let biosample = match biosample::list_for_project(self.store.pool(), project.id)
+                .await?
+                .into_iter()
+                .find(|b| b.donor_identifier == sample.sample_id)
+            {
+                Some(b) => b,
+                None => {
+                    summary.samples_created += 1;
+                    self.add_biosample(Some(project.id), sample.sample_id.clone(), Some(sample.sample_id.clone()), None)
+                        .await?
+                }
+            };
+
+            // SequenceRun: reuse the first existing run, else create one (defaults to WGS).
+            let run = match sequence_run::list_for_biosample(self.store.pool(), biosample.guid).await?.into_iter().next() {
+                Some(r) => r,
+                None => {
+                    self.record_sequence_run(NewSequenceRun {
+                        biosample_guid: biosample.guid,
+                        platform_name: "UNKNOWN".into(),
+                        instrument_model: None,
+                        test_type: "WGS".into(),
+                        library_layout: None,
+                        total_reads: None,
+                        pf_reads_aligned: None,
+                        mean_read_length: None,
+                        mean_insert_size: None,
+                    })
+                    .await?
+                }
+            };
+
+            let existing = alignment::list_for_run(self.store.pool(), run.id).await?;
+            for aln_path in &sample.alignment_files {
+                let path_str = aln_path.to_string_lossy().into_owned();
+                if existing.iter().any(|a| a.bam_path.as_deref() == Some(path_str.as_str())) {
+                    summary.alignments_skipped += 1;
+                    continue;
+                }
+                if !has_sibling_index(aln_path, &sample.index_files) {
+                    summary.missing_index.push(sample.sample_id.clone());
+                }
+                self.record_alignment(NewAlignment {
+                    sequence_run_id: run.id,
+                    reference_build: reference_build_for(aln_path),
+                    aligner: "unknown".into(),
+                    variant_caller: None,
+                    bam_path: Some(path_str),
+                    reference_path: Some(ref_str.clone()),
+                })
+                .await?;
+                summary.alignments_created += 1;
+            }
+        }
+        Ok(summary)
     }
 
     pub async fn panel_site_count(&self, panel_id: i64) -> Result<i64, AppError> {

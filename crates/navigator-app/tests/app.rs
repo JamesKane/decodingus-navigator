@@ -799,3 +799,47 @@ async fn panel_genotyping_then_ibd_compare() {
     let other = diploid_alignment(&app).await;
     assert!(matches!(app.compare_ibd(aln, other, panel.id, 2, cfg).await, Err(AppError::NotGenotyped(_))));
 }
+
+#[tokio::test]
+async fn import_project_dir_creates_rows_is_idempotent_and_coverage_runs_on_cram() {
+    let app = app().await;
+    let fx = fixtures();
+
+    // Build a temp project tree: <root>/HG00096/HG00096.chm13.cram(+.crai), reusing the
+    // committed CRAM fixture (the .crai is index-by-offset, so the rename is fine).
+    let root = std::env::temp_dir().join(format!("dun-import-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let sample = root.join("HG00096");
+    std::fs::create_dir_all(&sample).unwrap();
+    std::fs::copy(fx.join("coverage.cram"), sample.join("HG00096.chm13.cram")).unwrap();
+    std::fs::copy(fx.join("coverage.cram.crai"), sample.join("HG00096.chm13.cram.crai")).unwrap();
+
+    let reference = fx.join("ref.fa");
+    let summary = app.import_project_dir(&root, reference.clone(), "tester".into()).await.unwrap();
+    assert_eq!(summary.samples_total, 1);
+    assert_eq!(summary.samples_created, 1);
+    assert_eq!(summary.alignments_created, 1);
+    assert_eq!(summary.alignments_skipped, 0);
+    assert!(summary.missing_index.is_empty());
+
+    let bios = app.list_biosamples(summary.project.id).await.unwrap();
+    assert_eq!(bios.len(), 1);
+    assert_eq!(bios[0].donor_identifier, "HG00096");
+
+    // Re-import: project/sample/alignment reused, nothing new created.
+    let again = app.import_project_dir(&root, reference, "tester".into()).await.unwrap();
+    assert_eq!(again.project.id, summary.project.id);
+    assert_eq!(again.samples_created, 0);
+    assert_eq!(again.alignments_created, 0);
+    assert_eq!(again.alignments_skipped, 1);
+    assert_eq!(app.project_overview().await.unwrap().len(), 1);
+
+    // Coverage recompute works on the imported CRAM (reference_path was stamped).
+    let aln = app.list_all_alignments().await.unwrap();
+    assert_eq!(aln.len(), 1);
+    assert_eq!(aln[0].reference_build, "chm13v2.0");
+    let cov = app.run_coverage_for_alignment(aln[0].id).await.unwrap();
+    assert_eq!(cov.genome_territory, 50); // the fixture chrM is 50 bp
+
+    let _ = std::fs::remove_dir_all(&root);
+}
