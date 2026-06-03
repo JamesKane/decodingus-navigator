@@ -65,6 +65,70 @@ pub struct Consensus {
     pub warnings: Vec<String>,
 }
 
+/// Whether multiple sources come from the same individual (Scala `IdentityVerification`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum VerificationStatus {
+    VerifiedSame,
+    LikelySame,
+    Uncertain,
+    LikelyDifferent,
+    VerifiedDifferent,
+}
+
+/// Identity evidence between two sources: autosomal genotype concordance (the primary
+/// signal — same individual ≈ 1.0, relatives notably lower) plus Y-STR corroboration.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct IdentityVerification {
+    pub status: VerificationStatus,
+    pub method: String,
+    /// Fraction of shared-called sites with identical dosage (0–1), if any compared.
+    pub snp_concordance: Option<f64>,
+    pub sites_compared: i64,
+    /// Differing Y-STR markers across shared markers, if STR profiles were available.
+    pub y_str_distance: Option<i64>,
+    pub y_str_markers: i64,
+}
+
+/// Classify identity from genotype concordance (primary) + optional Y-STR distance.
+/// Concordance thresholds are heuristic: a same-individual pair sits near 1.0 while even
+/// parent-child concordance (exact-dosage match) is well below; Y-STR distance corroborates
+/// (0 over many markers supports a shared paternal line, a mismatch flags a conflict).
+pub fn classify_identity(
+    concordance: Option<f64>,
+    sites_compared: i64,
+    y_str_distance: Option<i64>,
+    y_str_markers: i64,
+) -> IdentityVerification {
+    let (status, method) = match concordance {
+        Some(c) if sites_compared > 0 => {
+            let s = if c >= 0.95 {
+                VerificationStatus::VerifiedSame
+            } else if c >= 0.85 {
+                VerificationStatus::LikelySame
+            } else if c >= 0.65 {
+                VerificationStatus::Uncertain
+            } else if c >= 0.50 {
+                VerificationStatus::LikelyDifferent
+            } else {
+                VerificationStatus::VerifiedDifferent
+            };
+            let m = if y_str_markers > 0 { "SNP concordance + Y-STR" } else { "SNP concordance" };
+            (s, m.to_string())
+        }
+        // No shared genotypes: Y-STR alone is paternal-line only — never "verified".
+        _ if y_str_markers > 0 => {
+            let s = match y_str_distance {
+                Some(0) => VerificationStatus::LikelySame,
+                Some(_) => VerificationStatus::Uncertain,
+                None => VerificationStatus::Uncertain,
+            };
+            (s, "Y-STR only".to_string())
+        }
+        _ => (VerificationStatus::Uncertain, "no shared data".to_string()),
+    };
+    IdentityVerification { status, method, snp_concordance: concordance, sites_compared, y_str_distance, y_str_markers }
+}
+
 fn is_prefix(short: &[String], long: &[String]) -> bool {
     short.len() <= long.len() && short.iter().zip(long).all(|(a, b)| a == b)
 }
@@ -215,6 +279,16 @@ mod tests {
         assert_eq!(c.compatibility, CompatibilityLevel::MinorDivergence);
         assert_eq!(c.divergence_point.as_deref(), Some("R-L21"));
         assert_eq!(c.haplogroup, "R-L21");
+    }
+
+    #[test]
+    fn identity_from_concordance() {
+        assert_eq!(classify_identity(Some(0.995), 5000, Some(0), 37).status, VerificationStatus::VerifiedSame);
+        assert_eq!(classify_identity(Some(0.88), 5000, None, 0).status, VerificationStatus::LikelySame);
+        assert_eq!(classify_identity(Some(0.45), 5000, None, 0).status, VerificationStatus::VerifiedDifferent);
+        // no autosomal data -> Y-STR only, never "verified"
+        assert_eq!(classify_identity(None, 0, Some(0), 111).status, VerificationStatus::LikelySame);
+        assert_eq!(classify_identity(None, 0, None, 0).status, VerificationStatus::Uncertain);
     }
 
     #[test]

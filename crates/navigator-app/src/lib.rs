@@ -99,7 +99,7 @@ use navigator_domain::filetype;
 pub use navigator_domain::filetype::DetectedData;
 use navigator_domain::mtdna::{self, MtdnaSequence, NewMtdnaSequence};
 use navigator_domain::reconciliation::{self, RunHaplogroupCall};
-pub use navigator_domain::reconciliation::{CompatibilityLevel, Consensus, DnaType};
+pub use navigator_domain::reconciliation::{CompatibilityLevel, Consensus, DnaType, IdentityVerification, VerificationStatus};
 use navigator_domain::strprofile::{self, NewStrProfile, StrProfile};
 use navigator_domain::variants::{self, NewVariantSet, VariantSet};
 use navigator_store::{
@@ -185,6 +185,24 @@ fn group_chrom_genotypes(genotypes: &[SiteGenotype]) -> std::collections::HashMa
             (chrom.clone(), ChromosomeGenotypes { chromosome: chrom, positions, dosages })
         })
         .collect()
+}
+
+/// Autosomal genotype concordance between two genotyped alignments: (matched, compared)
+/// over sites both called (dosage within ploidy). ~1.0 ⇒ same individual; relatives lower.
+fn genotype_concordance(a: &[SiteGenotype], b: &[SiteGenotype]) -> (i64, i64) {
+    let called = |g: &SiteGenotype| (0..=g.ploidy as i32).contains(&g.dosage);
+    let idx: HashMap<(&str, i64), i32> =
+        b.iter().filter(|g| called(g)).map(|g| ((g.contig.as_str(), g.position), g.dosage)).collect();
+    let (mut matched, mut sites) = (0i64, 0i64);
+    for g in a.iter().filter(|g| called(g)) {
+        if let Some(&db) = idx.get(&(g.contig.as_str(), g.position)) {
+            sites += 1;
+            if db == g.dosage {
+                matched += 1;
+            }
+        }
+    }
+    (matched, sites)
 }
 
 /// A project plus a rolled-up count for list/dashboard views.
@@ -1115,6 +1133,42 @@ impl App {
         let segments = PairwiseIbdDetector::new(config).detect_segments(&sample_a, &sample_b, &gmap);
         let summary = MatchSummary::from_segments(&segments);
         Ok(IbdComparison { summary, segments })
+    }
+
+    /// Identity verification — are two alignments the same individual? Autosomal genotype
+    /// concordance at the panel sites (primary), corroborated by Y-STR distance when both
+    /// subjects have an STR profile. Both alignments must be genotyped against the panel.
+    pub async fn verify_identity(
+        &self,
+        alignment_a: i64,
+        alignment_b: i64,
+        panel_id: i64,
+        ploidy: u8,
+    ) -> Result<IdentityVerification, AppError> {
+        let ga = self
+            .cached_panel_genotypes(alignment_a, panel_id, ploidy)
+            .await?
+            .ok_or(AppError::NotGenotyped(alignment_a))?;
+        let gb = self
+            .cached_panel_genotypes(alignment_b, panel_id, ploidy)
+            .await?
+            .ok_or(AppError::NotGenotyped(alignment_b))?;
+        let (matched, sites) = genotype_concordance(&ga, &gb);
+        let concordance = (sites > 0).then(|| matched as f64 / sites as f64);
+
+        // Optional Y-STR corroboration from each subject's first STR profile.
+        let (mut y_dist, mut y_markers) = (None, 0i64);
+        if let (Ok(ba), Ok(bb)) = (self.biosample_of_alignment(alignment_a).await, self.biosample_of_alignment(alignment_b).await) {
+            let (pa, pb) = (self.list_str_profiles(ba).await?, self.list_str_profiles(bb).await?);
+            if let (Some(a), Some(b)) = (pa.first(), pb.first()) {
+                let (d, c) = strprofile::str_distance(&a.markers, &b.markers);
+                if c > 0 {
+                    y_dist = Some(d);
+                    y_markers = c;
+                }
+            }
+        }
+        Ok(reconciliation::classify_identity(concordance, sites, y_dist, y_markers))
     }
 
     // ---- queries -----------------------------------------------------------

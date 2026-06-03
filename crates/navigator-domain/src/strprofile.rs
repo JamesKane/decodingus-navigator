@@ -89,9 +89,37 @@ pub fn parse_csv(text: &str) -> Result<Vec<StrMarker>, String> {
     Ok(markers)
 }
 
+/// Y-STR distance between two profiles: differing marker values over markers present in
+/// both. Returns (differing, compared). Distance 0 over many shared markers is consistent
+/// with a shared paternal line (identity corroboration).
+pub fn str_distance(a: &[StrMarker], b: &[StrMarker]) -> (i64, i64) {
+    let mut differing = 0;
+    let mut compared = 0;
+    for ma in a {
+        if let Some(mb) = b.iter().find(|m| m.marker.eq_ignore_ascii_case(&ma.marker)) {
+            compared += 1;
+            if !ma.value.eq_ignore_ascii_case(&mb.value) {
+                differing += 1;
+            }
+        }
+    }
+    (differing, compared)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn m(marker: &str, value: &str) -> StrMarker {
+        StrMarker { marker: marker.into(), value: value.into() }
+    }
+
+    #[test]
+    fn str_distance_over_shared_markers() {
+        let a = [m("DYS393", "13"), m("DYS390", "24"), m("DYS19", "14")];
+        let b = [m("DYS393", "13"), m("DYS390", "25"), m("DYS388", "12")]; // DYS19 absent, DYS388 extra
+        assert_eq!(str_distance(&a, &b), (1, 2)); // DYS393 match, DYS390 differ; only 2 shared
+    }
 
     #[test]
     fn parses_csv_with_header() {

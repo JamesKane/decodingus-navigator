@@ -7,8 +7,8 @@ use std::sync::mpsc::Receiver;
 
 use eframe::egui;
 use navigator_app::{
-    CallState, CompatibilityLevel, Consensus, Coverage, DenovoCall, HaploAssignment, IbdComparison, PanelGenotype,
-    PrivateBucket, PrivateClass, ProjectOverview,
+    CallState, CompatibilityLevel, Consensus, Coverage, DenovoCall, HaploAssignment, IbdComparison,
+    IdentityVerification, PanelGenotype, PrivateBucket, PrivateClass, ProjectOverview, VerificationStatus,
 };
 use navigator_domain::du_domain::ids::SampleGuid;
 use navigator_domain::chipprofile::{self, ChipProfile};
@@ -93,6 +93,8 @@ pub struct NavigatorApp {
     ibd_other: Option<i64>,
     ibd_result: Option<IbdComparison>,
     running_ibd: bool,
+    /// Identity-verification result for the current IBD pair.
+    identity: Option<IdentityVerification>,
     /// Signed-in account DID, or `None`. Gates the "Publish" actions.
     account: Option<String>,
     /// Whether the last PDS write reached the server (offline indicator).
@@ -216,6 +218,7 @@ impl NavigatorApp {
             ibd_other: None,
             ibd_result: None,
             running_ibd: false,
+            identity: None,
             account: None,
             online: true,
             logging_in: false,
@@ -395,6 +398,10 @@ impl NavigatorApp {
                     self.ibd_result = Some(cmp);
                     self.running_ibd = false;
                 }
+                Event::Identity(v) => {
+                    self.status = format!("Identity: {:?} ({} sites)", v.status, v.sites_compared);
+                    self.identity = Some(v);
+                }
                 Event::Authenticated(account) => {
                     self.status = match &account {
                         Some(did) => format!("Signed in as {did}"),
@@ -464,6 +471,7 @@ impl NavigatorApp {
         self.denovo = None;
         self.panel_genotypes = None;
         self.ibd_result = None;
+        self.identity = None;
         self.y_haplogroup = None;
         self.private_y = None;
         let _ = self.tx.send(Command::LoadCoverage(id));
@@ -477,6 +485,7 @@ impl NavigatorApp {
         self.selected_panel = Some(panel_id);
         self.panel_genotypes = None;
         self.ibd_result = None;
+        self.identity = None;
         if let Some(aln) = self.selected_alignment {
             let _ = self.tx.send(Command::LoadPanelGenotypes { alignment_id: aln, panel_id, ploidy: self.ploidy() });
         }
@@ -1430,7 +1439,17 @@ impl NavigatorApp {
             if ui.add_enabled(ready, egui::Button::new("Compare")).clicked() {
                 self.running_ibd = true;
                 self.ibd_result = None;
+        self.identity = None;
                 let _ = self.tx.send(Command::CompareIbd {
+                    a: alignment_id,
+                    b: self.ibd_other.unwrap(),
+                    panel_id,
+                    ploidy: self.ploidy(),
+                });
+            }
+            if ui.add_enabled(self.ibd_other.is_some(), egui::Button::new("Verify same donor")).clicked() {
+                self.identity = None;
+                let _ = self.tx.send(Command::VerifyIdentity {
                     a: alignment_id,
                     b: self.ibd_other.unwrap(),
                     panel_id,
@@ -1441,6 +1460,26 @@ impl NavigatorApp {
                 ui.spinner();
             }
         });
+
+        if let Some(v) = &self.identity {
+            let (txt, col) = match v.status {
+                VerificationStatus::VerifiedSame => ("same individual", egui::Color32::from_rgb(60, 160, 60)),
+                VerificationStatus::LikelySame => ("likely same", egui::Color32::from_rgb(120, 160, 60)),
+                VerificationStatus::Uncertain => ("uncertain", egui::Color32::from_rgb(170, 150, 40)),
+                VerificationStatus::LikelyDifferent => ("likely different", egui::Color32::from_rgb(200, 120, 40)),
+                VerificationStatus::VerifiedDifferent => ("different individuals", egui::Color32::from_rgb(200, 60, 60)),
+            };
+            ui.horizontal(|ui| {
+                ui.label("Identity:");
+                ui.colored_label(col, txt);
+                if let Some(c) = v.snp_concordance {
+                    ui.label(format!("SNP concordance {:.3} over {} sites", c, v.sites_compared));
+                }
+                if v.y_str_markers > 0 {
+                    ui.label(format!("· Y-STR {}/{} differ", v.y_str_distance.unwrap_or(0), v.y_str_markers));
+                }
+            });
+        }
 
         if let Some(cmp) = &self.ibd_result {
             ui.label(format!(

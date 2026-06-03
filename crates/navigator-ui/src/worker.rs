@@ -12,8 +12,8 @@ use std::sync::mpsc::{Receiver, Sender};
 use std::sync::Arc;
 
 use navigator_app::{
-    App, Consensus, Coverage, DenovoCall, DnaType, HaploAssignment, IbdComparison, IbdDetectorConfig, PanelGenotype,
-    PrivateBucket, ProjectOverview,
+    App, Consensus, Coverage, DenovoCall, DnaType, HaploAssignment, IbdComparison, IbdDetectorConfig,
+    IdentityVerification, PanelGenotype, PrivateBucket, ProjectOverview,
 };
 use navigator_domain::du_domain::ids::SampleGuid;
 use navigator_domain::chipprofile::ChipProfile;
@@ -96,6 +96,8 @@ pub enum Command {
     GenotypePanel { alignment_id: i64, panel_id: i64, ploidy: u8 },
     LoadPanelGenotypes { alignment_id: i64, panel_id: i64, ploidy: u8 },
     CompareIbd { a: i64, b: i64, panel_id: i64, ploidy: u8 },
+    /// Verify two alignments are the same individual (genotype concordance + Y-STR).
+    VerifyIdentity { a: i64, b: i64, panel_id: i64, ploidy: u8 },
     /// Report who's signed in (no side effects) — sent on startup.
     AuthStatus,
     /// Report the current online/offline state (no side effects).
@@ -154,6 +156,8 @@ pub enum Event {
     AllAlignments(Vec<Alignment>),
     PanelGenotypes { alignment_id: i64, panel_id: i64, ploidy: u8, genotypes: Vec<PanelGenotype> },
     Ibd(IbdComparison),
+    /// Identity-verification result between two alignments.
+    Identity(IdentityVerification),
     /// Current signed-in account (DID), or `None` when signed out.
     Authenticated(Option<String>),
     /// A record was published; `kind` is a human label, `uri` the `at://` URI.
@@ -344,6 +348,10 @@ pub async fn handle(app: &App, cmd: Command) -> Event {
                 Err(e) => Event::Error(e.to_string()),
             }
         }
+        Command::VerifyIdentity { a, b, panel_id, ploidy } => match app.verify_identity(a, b, panel_id, ploidy).await {
+            Ok(v) => Event::Identity(v),
+            Err(e) => Event::Error(e.to_string()),
+        },
         Command::AuthStatus => Event::Authenticated(app.current_account()),
         Command::SyncStatus => Event::SyncOnline(app.is_online()),
         Command::Login { handle } => match app.login(&handle).await {
