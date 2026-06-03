@@ -75,6 +75,7 @@ fn force_call_genotypes_known_sites() {
         "chrM",
         &sites,
         &HaploidCallerParams::default(),
+        None,
     )
     .expect("force-call should succeed");
 

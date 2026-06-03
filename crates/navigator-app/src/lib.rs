@@ -154,9 +154,9 @@ fn assemble_assignment(tree: &navigator_analysis::haplo::HaploTree, calls: &Hash
 /// mean read length > 1 kb) make confident haploid calls at much lower depth, so halve
 /// `min_depth` (floor 2). Sampled from the BAM head; falls back to defaults on any error.
 /// Blocking (reads the BAM) — call inside `spawn_blocking`.
-fn adaptive_haploid_params(bam_path: &Path) -> HaploidCallerParams {
+fn adaptive_haploid_params(bam_path: &Path, reference: Option<&Path>) -> HaploidCallerParams {
     let mut params = HaploidCallerParams::default();
-    if let Ok((read_len, _)) = coverage::estimate_molecule_lengths(bam_path) {
+    if let Ok((read_len, _)) = coverage::estimate_molecule_lengths(bam_path, reference) {
         if read_len > 1000.0 {
             params.min_depth = (params.min_depth / 2).max(2);
         }
@@ -499,11 +499,13 @@ impl App {
             return Err(AppError::MissingPaths(alignment_id));
         };
         let bam = PathBuf::from(bam);
+        let reference = PathBuf::from(reference);
         let probe = bam.clone();
-        let params = tokio::task::spawn_blocking(move || adaptive_haploid_params(&probe))
+        let probe_ref = reference.clone();
+        let params = tokio::task::spawn_blocking(move || adaptive_haploid_params(&probe, Some(&probe_ref)))
             .await
             .map_err(|e| AppError::Join(e.to_string()))?; // HiFi -> lower min_depth
-        self.run_denovo_caller(alignment_id, bam, PathBuf::from(reference), contig, params).await
+        self.run_denovo_caller(alignment_id, bam, reference, contig, params).await
     }
 
     // ---- publish -----------------------------------------------------------
@@ -1198,8 +1200,9 @@ impl App {
             .await?
             .ok_or_else(|| AppError::Store(StoreError::NotFound(format!("alignment {alignment_id}"))))?;
         let bam = PathBuf::from(aln.bam_path.ok_or(AppError::MissingPaths(alignment_id))?);
+        let reference = aln.reference_path.map(PathBuf::from);
         tokio::task::spawn_blocking(move || {
-            heteroplasmy::detect_heteroplasmy(&bam, "chrM", &HeteroplasmyParams::default())
+            heteroplasmy::detect_heteroplasmy(&bam, "chrM", &HeteroplasmyParams::default(), reference.as_deref())
         })
         .await
         .map_err(|e| AppError::Join(e.to_string()))?
@@ -1237,10 +1240,11 @@ impl App {
             tree.nodes.values().flat_map(|n| n.loci.iter().map(|l| l.position)).collect();
 
         let bam = PathBuf::from(bam);
+        let reference = aln.reference_path.map(PathBuf::from);
         let contig_owned = contig.to_string();
         let calls = tokio::task::spawn_blocking(move || {
-            let params = adaptive_haploid_params(&bam); // HiFi -> lower min_depth
-            caller::call_bases_at(&bam, &contig_owned, &targets, &params)
+            let params = adaptive_haploid_params(&bam, reference.as_deref()); // HiFi -> lower min_depth
+            caller::call_bases_at(&bam, &contig_owned, &targets, &params, reference.as_deref())
         })
         .await
         .map_err(|e| AppError::Join(e.to_string()))??;
@@ -1257,9 +1261,10 @@ impl App {
             .await?
             .ok_or_else(|| AppError::Store(StoreError::NotFound(format!("alignment {alignment_id}"))))?;
         let bam = PathBuf::from(aln.bam_path.ok_or(AppError::MissingPaths(alignment_id))?);
+        let reference = aln.reference_path.map(PathBuf::from);
         let contig = contig.to_string();
         tokio::task::spawn_blocking(move || {
-            let (read_len, frag_len) = coverage::estimate_molecule_lengths(&bam)?;
+            let (read_len, frag_len) = coverage::estimate_molecule_lengths(&bam, reference.as_deref())?;
             let molecule = frag_len.max(read_len);
             let mut params = CallableLociParams::default();
             // Long, accurate reads (HiFi) are callable at well under half the short-read depth.
@@ -1267,7 +1272,7 @@ impl App {
                 params.min_depth = (params.min_depth / 2).max(2);
             }
             let min_run_len = molecule.round().max(1.0) as u32; // f = 1.0
-            coverage::callable_intervals(&bam, &contig, &params, min_run_len)
+            coverage::callable_intervals(&bam, &contig, &params, min_run_len, reference.as_deref())
         })
         .await
         .map_err(|e| AppError::Join(e.to_string()))?
@@ -1515,12 +1520,13 @@ impl App {
             .collect();
 
         let bam_pb = PathBuf::from(bam);
+        let reference = aln.reference_path.map(PathBuf::from);
         let params = HaploidCallerParams::default();
         let genotypes = tokio::task::spawn_blocking(move || {
             let contigs: std::collections::BTreeSet<&str> = sites.iter().map(|s| s.contig.as_str()).collect();
             let mut all = Vec::new();
             for contig in contigs {
-                all.extend(caller::genotype_sites(&bam_pb, contig, &sites, ploidy, &params)?);
+                all.extend(caller::genotype_sites(&bam_pb, contig, &sites, ploidy, &params, reference.as_deref())?);
             }
             Ok::<_, navigator_analysis::AnalysisError>(all)
         })

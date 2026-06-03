@@ -21,6 +21,7 @@ fn detects_the_two_mixed_sites_on_the_diploid_fixture() {
         &fixtures().join("diploid.bam"),
         "chr1",
         &HeteroplasmyParams::default(),
+        None,
     )
     .unwrap();
 
@@ -44,6 +45,6 @@ fn detects_the_two_mixed_sites_on_the_diploid_fixture() {
 fn min_minor_count_suppresses_low_support() {
     // Demanding more minor reads than the fixture supplies (10) yields nothing.
     let strict = HeteroplasmyParams { min_minor_count: 11, ..HeteroplasmyParams::default() };
-    let sites = detect_heteroplasmy(&fixtures().join("diploid.bam"), "chr1", &strict).unwrap();
+    let sites = detect_heteroplasmy(&fixtures().join("diploid.bam"), "chr1", &strict, None).unwrap();
     assert!(sites.is_empty());
 }

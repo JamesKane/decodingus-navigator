@@ -27,15 +27,16 @@
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
-use noodles::bam;
 use noodles::core::Region;
 use noodles::fasta;
 use noodles::sam::alignment::record::cigar::op::Kind;
+use noodles::sam::alignment::RecordBuf;
 
 use serde::{Deserialize, Serialize};
 
 use crate::error::AnalysisError;
 use crate::genotype::{self, GenotypeResult};
+use crate::reader;
 use crate::realign;
 
 /// Algorithm version for de-novo caller artifacts; bump on output-affecting changes
@@ -177,7 +178,7 @@ fn consensus(counts: &[u32; 4]) -> (usize, u32) {
 }
 
 /// Read passes the de-novo/force-call filters (primary, not dup/qc-fail, MAPQ ok).
-fn passes(record: &bam::Record, params: &HaploidCallerParams) -> bool {
+fn passes(record: &RecordBuf, params: &HaploidCallerParams) -> bool {
     let f = record.flags();
     if f.is_secondary() || f.is_supplementary() || f.is_duplicate() || f.is_qc_fail() {
         return false;
@@ -197,12 +198,10 @@ pub(crate) fn contig_length(header: &noodles::sam::Header, contig: &str) -> Opti
         .map(|(_, map)| map.length().get())
 }
 
-/// Resolve a contig's length by opening the BAM header at `bam_path`.
-pub(crate) fn read_contig_length(bam_path: &Path, contig: &str) -> Result<usize, AnalysisError> {
-    let mut reader = bam::io::indexed_reader::Builder::default()
-        .build_from_path(bam_path)
-        .map_err(|e| AnalysisError::io(bam_path, e))?;
-    let header = reader.read_header().map_err(|e| AnalysisError::io(bam_path, e))?;
+/// Resolve a contig's length by opening the alignment header at `bam_path`. `reference` is
+/// required for CRAM.
+pub(crate) fn read_contig_length(bam_path: &Path, contig: &str, reference: Option<&Path>) -> Result<usize, AnalysisError> {
+    let header = reader::read_header(bam_path, reference)?;
     contig_length(&header, contig).ok_or_else(|| AnalysisError::Message(format!("contig {contig} not in BAM header")))
 }
 
@@ -213,11 +212,9 @@ fn tally_targets(
     contig: &str,
     params: &HaploidCallerParams,
     targets: &HashSet<i64>,
+    reference: Option<&Path>,
 ) -> Result<(usize, HashMap<usize, [u32; 4]>), AnalysisError> {
-    let mut reader = bam::io::indexed_reader::Builder::default()
-        .build_from_path(bam_path)
-        .map_err(|e| AnalysisError::io(bam_path, e))?;
-    let header = reader.read_header().map_err(|e| AnalysisError::io(bam_path, e))?;
+    let (header, mut reader) = reader::open_indexed(bam_path, reference)?;
     let length = contig_length(&header, contig)
         .ok_or_else(|| AnalysisError::Message(format!("contig {contig} not in BAM header")))?;
 
@@ -225,14 +222,13 @@ fn tally_targets(
     let region: Region = contig
         .parse()
         .map_err(|_| AnalysisError::Message(format!("bad region for contig {contig}")))?;
-    let query = reader.query(&header, &region).map_err(|e| AnalysisError::io(bam_path, e))?;
-    for result in query {
-        let record = result.map_err(|e| AnalysisError::io(bam_path, e))?;
+    for result in reader.query(&header, &region)? {
+        let record = result?;
         if !passes(&record, params) {
             continue;
         }
         let start = match record.alignment_start() {
-            Some(p) => p.map_err(|e| AnalysisError::io(bam_path, e))?.get(),
+            Some(p) => p.get(),
             None => continue,
         };
         let seq = record.sequence();
@@ -240,8 +236,7 @@ fn tally_targets(
         let quals = quals.as_ref();
         let mut ref_pos = start;
         let mut query_off = 0usize;
-        for op in record.cigar().iter() {
-            let op = op.map_err(|e| AnalysisError::io(bam_path, e))?;
+        for op in record.cigar().as_ref() {
             let kind = op.kind();
             let len = op.len();
             match (kind.consumes_reference(), kind.consumes_read()) {
@@ -278,8 +273,9 @@ pub fn call_bases_at(
     contig: &str,
     targets: &HashSet<i64>,
     params: &HaploidCallerParams,
+    reference: Option<&Path>,
 ) -> Result<HashMap<i64, char>, AnalysisError> {
-    let (_len, counts) = tally_targets(bam_path, contig, params, targets)?;
+    let (_len, counts) = tally_targets(bam_path, contig, params, targets, reference)?;
     const BASES: [char; 4] = ['A', 'C', 'G', 'T'];
     let mut calls = HashMap::new();
     for (pos0, c) in counts {
@@ -304,27 +300,24 @@ pub(crate) fn tally_region(
     params: &HaploidCallerParams,
     lo: usize,
     hi: usize,
+    reference: Option<&Path>,
 ) -> Result<(Vec<[u32; 4]>, Vec<u32>), AnalysisError> {
     let n = hi - lo + 1;
     let mut counts = vec![[0u32; 4]; n];
     let mut indel = vec![0u32; n];
 
-    let mut reader = bam::io::indexed_reader::Builder::default()
-        .build_from_path(bam_path)
-        .map_err(|e| AnalysisError::io(bam_path, e))?;
-    let header = reader.read_header().map_err(|e| AnalysisError::io(bam_path, e))?;
+    let (header, mut reader) = reader::open_indexed(bam_path, reference)?;
     let region: Region = format!("{contig}:{lo}-{hi}")
         .parse()
         .map_err(|_| AnalysisError::Message(format!("bad region for {contig}")))?;
-    let query = reader.query(&header, &region).map_err(|e| AnalysisError::io(bam_path, e))?;
 
-    for result in query {
-        let record = result.map_err(|e| AnalysisError::io(bam_path, e))?;
+    for result in reader.query(&header, &region)? {
+        let record = result?;
         if !passes(&record, params) {
             continue;
         }
         let start = match record.alignment_start() {
-            Some(p) => p.map_err(|e| AnalysisError::io(bam_path, e))?.get(),
+            Some(p) => p.get(),
             None => continue,
         };
         let seq = record.sequence();
@@ -332,8 +325,7 @@ pub(crate) fn tally_region(
         let quals = quals.as_ref();
         let mut ref_pos = start;
         let mut query_off = 0usize;
-        for op in record.cigar().iter() {
-            let op = op.map_err(|e| AnalysisError::io(bam_path, e))?;
+        for op in record.cigar().as_ref() {
             let kind = op.kind();
             let len = op.len();
             match (kind.consumes_reference(), kind.consumes_read()) {
@@ -381,24 +373,21 @@ fn tally_site_observations(
     contig: &str,
     params: &HaploidCallerParams,
     targets: &HashSet<i64>,
+    reference: Option<&Path>,
 ) -> Result<HashMap<i64, Vec<(u8, u8)>>, AnalysisError> {
-    let mut reader = bam::io::indexed_reader::Builder::default()
-        .build_from_path(bam_path)
-        .map_err(|e| AnalysisError::io(bam_path, e))?;
-    let header = reader.read_header().map_err(|e| AnalysisError::io(bam_path, e))?;
+    let (header, mut reader) = reader::open_indexed(bam_path, reference)?;
 
     let mut obs: HashMap<i64, Vec<(u8, u8)>> = HashMap::new();
     let region: Region = contig
         .parse()
         .map_err(|_| AnalysisError::Message(format!("bad region for contig {contig}")))?;
-    let query = reader.query(&header, &region).map_err(|e| AnalysisError::io(bam_path, e))?;
-    for result in query {
-        let record = result.map_err(|e| AnalysisError::io(bam_path, e))?;
+    for result in reader.query(&header, &region)? {
+        let record = result?;
         if !passes(&record, params) {
             continue;
         }
         let start = match record.alignment_start() {
-            Some(p) => p.map_err(|e| AnalysisError::io(bam_path, e))?.get(),
+            Some(p) => p.get(),
             None => continue,
         };
         let seq = record.sequence();
@@ -406,8 +395,7 @@ fn tally_site_observations(
         let quals = quals.as_ref();
         let mut ref_pos = start;
         let mut query_off = 0usize;
-        for op in record.cigar().iter() {
-            let op = op.map_err(|e| AnalysisError::io(bam_path, e))?;
+        for op in record.cigar().as_ref() {
             let (cr, cq) = (op.kind().consumes_reference(), op.kind().consumes_read());
             let len = op.len();
             if cr && cq {
@@ -445,6 +433,7 @@ pub fn genotype_sites(
     sites: &[Site],
     ploidy: u8,
     params: &HaploidCallerParams,
+    reference: Option<&Path>,
 ) -> Result<Vec<SiteGenotype>, AnalysisError> {
     let targets: HashSet<i64> = sites
         .iter()
@@ -454,7 +443,7 @@ pub fn genotype_sites(
     if targets.is_empty() {
         return Ok(Vec::new());
     }
-    let obs = tally_site_observations(bam_path, contig, params, &targets)?;
+    let obs = tally_site_observations(bam_path, contig, params, &targets, reference)?;
 
     let empty: Vec<(u8, u8)> = Vec::new();
     let mut out = Vec::new();
@@ -495,6 +484,7 @@ pub fn force_call_sites(
     contig: &str,
     sites: &[Site],
     params: &HaploidCallerParams,
+    reference: Option<&Path>,
 ) -> Result<Vec<GenotypeCall>, AnalysisError> {
     let targets: HashSet<i64> = sites
         .iter()
@@ -504,7 +494,7 @@ pub fn force_call_sites(
     if targets.is_empty() {
         return Ok(Vec::new());
     }
-    let (length, counts) = tally_targets(bam_path, contig, params, &targets)?;
+    let (length, counts) = tally_targets(bam_path, contig, params, &targets, reference)?;
 
     let mut out = Vec::new();
     for site in sites.iter().filter(|s| s.contig == contig) {
@@ -561,14 +551,7 @@ pub fn call_denovo(
     contig: &str,
     params: &HaploidCallerParams,
 ) -> Result<Vec<VariantCall>, AnalysisError> {
-    let length = {
-        let mut reader = bam::io::indexed_reader::Builder::default()
-            .build_from_path(bam_path)
-            .map_err(|e| AnalysisError::io(bam_path, e))?;
-        let header = reader.read_header().map_err(|e| AnalysisError::io(bam_path, e))?;
-        contig_length(&header, contig)
-            .ok_or_else(|| AnalysisError::Message(format!("contig {contig} not in BAM header")))?
-    };
+    let length = read_contig_length(bam_path, contig, Some(reference_path))?;
 
     let mut fasta_reader = fasta::io::indexed_reader::Builder::default()
         .build_from_path(reference_path)
@@ -592,9 +575,9 @@ pub fn call_denovo(
             .map_err(|e| AnalysisError::io(reference_path, e))?;
         let ref_chunk = rec.sequence().as_ref().to_vec();
 
-        let (mut counts, indel) = tally_region(bam_path, contig, params, proc_lo, proc_hi)?;
+        let (mut counts, indel) = tally_region(bam_path, contig, params, proc_lo, proc_hi, Some(reference_path))?;
         if params.local_realign {
-            realign_region(bam_path, contig, &ref_chunk, proc_lo, &mut counts, &indel, params)?;
+            realign_region(bam_path, contig, &ref_chunk, proc_lo, &mut counts, &indel, params, Some(reference_path))?;
         }
 
         for pos in emit_lo..=emit_hi {
@@ -667,16 +650,14 @@ fn realign_region(
     counts: &mut [[u32; 4]],
     indel_evidence: &[u32],
     params: &HaploidCallerParams,
+    reference: Option<&Path>,
 ) -> Result<(), AnalysisError> {
     let windows = active_windows(indel_evidence, params.realign_min_indel_reads, params.realign_pad);
     if windows.is_empty() {
         return Ok(());
     }
 
-    let mut reader = bam::io::indexed_reader::Builder::default()
-        .build_from_path(bam_path)
-        .map_err(|e| AnalysisError::io(bam_path, e))?;
-    let header = reader.read_header().map_err(|e| AnalysisError::io(bam_path, e))?;
+    let (header, mut reader) = reader::open_indexed(bam_path, reference)?;
 
     for (w0, w1) in windows {
         if w1 >= ref_chunk.len() {
@@ -691,20 +672,16 @@ fn realign_region(
         let region: Region = format!("{contig}:{wlo_abs}-{whi_abs}")
             .parse()
             .map_err(|_| AnalysisError::Message(format!("bad region for {contig}")))?;
-        let query = reader
-            .query(&header, &region)
-            .map_err(|e| AnalysisError::io(bam_path, e))?;
-
-        for result in query {
-            let record = result.map_err(|e| AnalysisError::io(bam_path, e))?;
+        for result in reader.query(&header, &region)? {
+            let record = result?;
             if !passes(&record, params) {
                 continue;
             }
             let start = match record.alignment_start() {
-                Some(p) => p.map_err(|e| AnalysisError::io(bam_path, e))?.get(),
+                Some(p) => p.get(),
                 None => continue,
             };
-            let (qbases, qquals) = window_substring(&record, start, wlo_abs, whi_abs, bam_path)?;
+            let (qbases, qquals) = window_substring(&record, start, wlo_abs, whi_abs)?;
             if qbases.is_empty() {
                 continue;
             }
@@ -728,11 +705,10 @@ fn realign_region(
 /// Extract a read's bases + qualities over the 1-based reference window `[wlo, whi]`,
 /// in reference order, including any inserted bases anchored inside the window.
 fn window_substring(
-    record: &bam::Record,
+    record: &RecordBuf,
     start: usize,
     wlo: usize,
     whi: usize,
-    path: &Path,
 ) -> Result<(Vec<u8>, Vec<u8>), AnalysisError> {
     let seq = record.sequence();
     let quals = record.quality_scores();
@@ -741,8 +717,7 @@ fn window_substring(
     let mut q = Vec::new();
     let mut ref_pos = start; // 1-based
     let mut query_off = 0usize;
-    for op in record.cigar().iter() {
-        let op = op.map_err(|e| AnalysisError::io(path, e))?;
+    for op in record.cigar().as_ref() {
         let kind = op.kind();
         let len = op.len();
         match (kind.consumes_reference(), kind.consumes_read()) {

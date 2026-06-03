@@ -90,8 +90,9 @@ pub fn detect_heteroplasmy(
     bam_path: &Path,
     contig: &str,
     params: &HeteroplasmyParams,
+    reference: Option<&Path>,
 ) -> Result<Vec<HeteroplasmySite>, AnalysisError> {
-    let length = caller::read_contig_length(bam_path, contig)?;
+    let length = caller::read_contig_length(bam_path, contig, reference)?;
     // Reuse the caller's pileup with matching quality gates; allele-fraction/min-depth
     // gating here is heteroplasmy-specific, so the caller params stay permissive.
     let caller_params = HaploidCallerParams {
@@ -101,7 +102,7 @@ pub fn detect_heteroplasmy(
         min_allele_fraction: 0.0,
         ..HaploidCallerParams::default()
     };
-    let (counts, _indel) = caller::tally_region(bam_path, contig, &caller_params, 1, length)?;
+    let (counts, _indel) = caller::tally_region(bam_path, contig, &caller_params, 1, length, reference)?;
 
     let mut sites = Vec::new();
     for (offset, c) in counts.iter().enumerate() {

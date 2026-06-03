@@ -28,7 +28,7 @@ fn diploid_panel_genotyping_yields_dosages() {
         site("homalt", 8, "T", "A"),
         site("missing", 9999, "A", "C"), // off-contig -> no coverage -> no-call
     ];
-    let calls = genotype_sites(&dir.join("diploid.bam"), "chr1", &sites, 2, &HaploidCallerParams::default())
+    let calls = genotype_sites(&dir.join("diploid.bam"), "chr1", &sites, 2, &HaploidCallerParams::default(), None)
         .expect("genotyping should succeed");
 
     let homref = by_name(&calls, "homref");
@@ -58,7 +58,7 @@ fn haploid_genotyping_calls_zero_or_one() {
     let dir = fixtures();
     // ploidy 1: the hom-alt site reads as the alt allele (dosage 1); hom-ref as 0.
     let sites = vec![site("homref", 1, "A", "G"), site("homalt", 8, "T", "A")];
-    let calls = genotype_sites(&dir.join("diploid.bam"), "chr1", &sites, 1, &HaploidCallerParams::default()).unwrap();
+    let calls = genotype_sites(&dir.join("diploid.bam"), "chr1", &sites, 1, &HaploidCallerParams::default(), None).unwrap();
     assert_eq!(by_name(&calls, "homref").dosage, 0);
     assert_eq!(by_name(&calls, "homalt").dosage, 1);
     assert!(by_name(&calls, "homalt").pls.len() == 2); // ploidy 1 -> 2 genotypes

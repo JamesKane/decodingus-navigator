@@ -19,7 +19,6 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::Path;
 
-use noodles::bam;
 use noodles::core::Region;
 use noodles::fasta;
 
@@ -457,15 +456,12 @@ pub fn collect_coverage_callable(
 /// primary mapped reads. The molecule-length proxy for the self-referential callable
 /// run-length gate (long reads → long molecules → long callable runs). Fragment falls
 /// back to read length when templates are unpaired (e.g. long-read single-end).
-pub fn estimate_molecule_lengths(bam_path: &Path) -> Result<(f64, f64), AnalysisError> {
-    let mut reader = bam::io::reader::Builder
-        .build_from_path(bam_path)
-        .map_err(|e| AnalysisError::io(bam_path, e))?;
-    let _ = reader.read_header().map_err(|e| AnalysisError::io(bam_path, e))?;
+pub fn estimate_molecule_lengths(bam_path: &Path, reference: Option<&Path>) -> Result<(f64, f64), AnalysisError> {
+    let (header, mut reader) = reader::open_seq(bam_path, reference)?;
 
     let (mut n, mut read_sum, mut frag_n, mut frag_sum) = (0u64, 0u64, 0u64, 0u64);
-    for result in reader.records() {
-        let record = result.map_err(|e| AnalysisError::io(bam_path, e))?;
+    for result in reader.records(&header) {
+        let record = result?;
         let f = record.flags();
         if f.is_unmapped() || f.is_secondary() || f.is_supplementary() {
             continue;
@@ -507,15 +503,13 @@ pub fn callable_intervals(
     contig: &str,
     params: &CallableLociParams,
     min_run_len: u32,
+    reference: Option<&Path>,
 ) -> Result<Vec<(i64, i64)>, AnalysisError> {
-    let mut reader = bam::io::indexed_reader::Builder::default()
-        .build_from_path(bam_path)
-        .map_err(|e| AnalysisError::io(bam_path, e))?;
-    let header = reader.read_header().map_err(|e| AnalysisError::io(bam_path, e))?;
+    let (header, mut reader) = reader::open_indexed(bam_path, reference)?;
     let region: Region = contig
         .parse()
         .map_err(|_| AnalysisError::Message(format!("bad region for contig {contig}")))?;
-    let query = reader.query(&header, &region).map_err(|e| AnalysisError::io(bam_path, e))?;
+    let query = reader.query(&header, &region)?;
 
     let mut window: VecDeque<Col> = VecDeque::new();
     let mut emit_cursor: usize = 1;
@@ -541,13 +535,13 @@ pub fn callable_intervals(
     };
 
     for result in query {
-        let record = result.map_err(|e| AnalysisError::io(bam_path, e))?;
+        let record = result?;
         let flags = record.flags();
         if flags.is_unmapped() || flags.is_secondary() || flags.is_supplementary() || flags.is_duplicate() || flags.is_qc_fail() {
             continue;
         }
         let start = match record.alignment_start() {
-            Some(p) => p.map_err(|e| AnalysisError::io(bam_path, e))?.get(),
+            Some(p) => p.get(),
             None => continue,
         };
         while emit_cursor < start {
@@ -560,8 +554,7 @@ pub fn callable_intervals(
         let quals = quals.as_ref();
         let mut ref_pos = start;
         let mut query_off = 0usize;
-        for op in record.cigar().iter() {
-            let op = op.map_err(|e| AnalysisError::io(bam_path, e))?;
+        for op in record.cigar().as_ref() {
             let kind = op.kind();
             let len = op.len();
             match (kind.consumes_reference(), kind.consumes_read()) {
@@ -673,7 +666,7 @@ mod tests {
 
         // No run-length gate: some callable bases, all within the 50 bp contig, intervals
         // sorted and non-overlapping (BED 0-based half-open).
-        let ivs = callable_intervals(&bam, "chrM", &params, 1).unwrap();
+        let ivs = callable_intervals(&bam, "chrM", &params, 1, None).unwrap();
         assert!(!ivs.is_empty(), "expected callable intervals on the fixture");
         let callable_bases: i64 = ivs.iter().map(|(s, e)| e - s).sum();
         assert!((1..=50).contains(&callable_bases), "callable bases in range: {callable_bases}");
@@ -683,13 +676,13 @@ mod tests {
         assert!(ivs.iter().all(|(s, e)| *s >= 0 && *e <= 50));
 
         // An impossibly long run-length gate drops everything (fixture is only 50 bp).
-        let none = callable_intervals(&bam, "chrM", &params, 10_000).unwrap();
+        let none = callable_intervals(&bam, "chrM", &params, 10_000, None).unwrap();
         assert!(none.is_empty(), "no run clears a 10 kb gate on a 50 bp contig");
     }
 
     #[test]
     fn estimate_molecule_lengths_on_fixture() {
-        let (read_len, frag_len) = estimate_molecule_lengths(&fixture("coverage.bam")).unwrap();
+        let (read_len, frag_len) = estimate_molecule_lengths(&fixture("coverage.bam"), None).unwrap();
         assert!(read_len > 0.0);
         assert!(frag_len >= read_len || frag_len == read_len); // fragment >= read, or == when unpaired
     }
