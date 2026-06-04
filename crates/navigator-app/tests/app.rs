@@ -1411,6 +1411,12 @@ async fn validate_gfx_chm13_ancestry() {
             eprintln!("  {}: {:.1}%", c.super_population, c.percentage);
         }
     }
+    eprintln!("  -- fine populations --");
+    let mut fine: Vec<_> = result.components.iter().filter(|c| c.percentage >= 0.5).collect();
+    fine.sort_by(|a, b| b.percentage.total_cmp(&a.percentage));
+    for c in fine {
+        eprintln!("    {} ({}): {:.1}%", c.population_code, c.population_name, c.percentage);
+    }
     // Robust check: the top super-population is European (works for the super-pop panel and the
     // fine-grained panel, which rolls its 26 components up to the 5 super-populations).
     let top_super = result.super_population_summary.first().expect("a super-pop summary");

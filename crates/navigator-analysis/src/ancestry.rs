@@ -266,6 +266,76 @@ pub fn estimate_by_allele_frequency(
     )
 }
 
+/// Estimate the sample's **admixture proportions** over the panel populations by supervised
+/// ADMIXTURE: the reference allele frequencies `P` (the panel) are fixed and we estimate the
+/// mixture vector `Q` (on the simplex, summing to 1) that maximizes the genotype likelihood
+/// `∏_j P(g_j | f_j)`, where the mixed alt-allele frequency at site `j` is `f_j = Σ_k q_k·p_{k,j}`
+/// and `P(g_j|f_j)` is the diploid binomial under HWE.
+///
+/// Fitted by the frappe/ADMIXTURE EM: each allele copy has a latent source population; the E-step
+/// is its posterior given ref/alt, the M-step re-estimates `q_k` as the mean posterior. Unlike
+/// [`estimate_by_allele_frequency`] (which picks the single best-fitting population), this yields
+/// a 100%-summing composition — the shape of a consumer ancestry report.
+pub fn estimate_admixture(
+    genotypes: &[SiteGenotype],
+    panel: &AncestryPanel,
+    reference_version: &str,
+) -> AncestryResult {
+    let dosage: HashMap<(&str, i64), i32> = genotypes
+        .iter()
+        .filter(|g| g.dosage >= 0)
+        .map(|g| ((g.contig.as_str(), g.position), g.dosage))
+        .collect();
+
+    let k = panel.populations.len();
+    // Informative sites: (dosage 0/1/2, clamped per-pop alt frequencies).
+    let sites: Vec<(f64, Vec<f64>)> = panel
+        .sites
+        .iter()
+        .filter(|s| s.freqs.len() == k)
+        .filter_map(|s| {
+            dosage.get(&(s.contig.as_str(), s.position)).map(|&g| {
+                let f: Vec<f64> = s.freqs.iter().map(|&p| (p as f64).clamp(0.001, 0.999)).collect();
+                (g as f64, f)
+            })
+        })
+        .collect();
+    let snps_with_data = sites.len();
+
+    let mut q = vec![1.0 / k.max(1) as f64; k];
+    if snps_with_data > 0 {
+        // EM to convergence (monotone in the likelihood); cheap — O(sites·k) per iteration.
+        for _ in 0..500 {
+            let mut acc = vec![0.0f64; k];
+            for (g, freqs) in &sites {
+                let f: f64 = (0..k).map(|i| q[i] * freqs[i]).sum::<f64>().clamp(1e-9, 1.0 - 1e-9);
+                let alt = *g; // expected alt allele copies
+                let refc = 2.0 - g; // ref allele copies
+                for i in 0..k {
+                    acc[i] += alt * (q[i] * freqs[i] / f)
+                        + refc * (q[i] * (1.0 - freqs[i]) / (1.0 - f));
+                }
+            }
+            let total: f64 = acc.iter().sum(); // == 2·snps_with_data
+            let mut max_delta = 0.0f64;
+            if total > 0.0 {
+                for i in 0..k {
+                    let new = acc[i] / total;
+                    max_delta = max_delta.max((new - q[i]).abs());
+                    q[i] = new;
+                }
+            }
+            if max_delta < 1e-7 {
+                break;
+            }
+        }
+    }
+
+    let probs: Vec<(String, f64)> = panel.populations.iter().cloned().zip(q).collect();
+    let confidence = confidence_from_completeness(snps_with_data, panel.sites.len());
+    from_probabilities("admixture", panel.sites.len(), snps_with_data, &probs, confidence, reference_version)
+}
+
 /// Build an [`AncestryResult`] from raw per-population probabilities (need not be normalized).
 /// With the phase-1 super-population panel each component *is* a super-population, so the
 /// super-population summary is 1:1 with the components.
@@ -478,6 +548,52 @@ mod tests {
         let probs = classify_pca(&coords, &pca);
         let hi = probs.iter().find(|(c, _)| c == "HI").unwrap().1;
         assert!(hi > 0.99, "HI prob = {hi}");
+    }
+
+    /// Supervised admixture: a sample homozygous-alt where pop A is alt-rich and hom-ref where A
+    /// is alt-poor must resolve to ~100% A; the proportions sum to 100%.
+    #[test]
+    fn admixture_resolves_pure_population() {
+        let sites: Vec<PanelSite> = (1..=40)
+            .map(|pos| PanelSite {
+                contig: "chr1".to_string(),
+                position: pos,
+                reference_allele: 'A',
+                alternate_allele: 'G',
+                freqs: if pos % 2 == 0 { vec![0.95, 0.05] } else { vec![0.05, 0.95] },
+            })
+            .collect();
+        let panel = AncestryPanel { build: "t".into(), populations: vec!["A".into(), "B".into()], sites };
+        // Genotype to match A: hom-alt (2) at A-rich even sites, hom-ref (0) at A-poor odd sites.
+        let genos: Vec<SiteGenotype> =
+            (1..=40).map(|p| sg("chr1", p, if p % 2 == 0 { 2 } else { 0 })).collect();
+
+        let r = estimate_admixture(&genos, &panel, "t");
+        let a = r.components.iter().find(|c| c.population_code == "A").unwrap();
+        assert!(a.percentage > 95.0, "A% = {}", a.percentage);
+        let sum: f64 = r.components.iter().map(|c| c.percentage).sum();
+        assert!((sum - 100.0).abs() < 1e-6, "sum = {sum}");
+    }
+
+    /// A sample that is genotype-wise a 50/50 blend of two divergent populations yields roughly
+    /// balanced admixture proportions.
+    #[test]
+    fn admixture_detects_a_mixture() {
+        // Pop A fixed alt, pop B fixed ref. A 50/50 mix → every site heterozygous.
+        let sites: Vec<PanelSite> = (1..=60)
+            .map(|pos| PanelSite {
+                contig: "chr1".to_string(),
+                position: pos,
+                reference_allele: 'A',
+                alternate_allele: 'G',
+                freqs: vec![0.99, 0.01],
+            })
+            .collect();
+        let panel = AncestryPanel { build: "t".into(), populations: vec!["A".into(), "B".into()], sites };
+        let genos: Vec<SiteGenotype> = (1..=60).map(|p| sg("chr1", p, 1)).collect(); // all het
+        let r = estimate_admixture(&genos, &panel, "t");
+        let a = r.components.iter().find(|c| c.population_code == "A").unwrap().percentage;
+        assert!((40.0..=60.0).contains(&a), "A% = {a} (expected ~50)");
     }
 
     #[test]

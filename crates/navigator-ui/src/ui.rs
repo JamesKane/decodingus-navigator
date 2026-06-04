@@ -10,7 +10,7 @@ use navigator_app::{
     AncestryResult, AuditEntry, BuildNeed, CallState, CompatibilityLevel, Consensus, Coverage,
     DenovoCall, DnaType, HaploAssignment, HeteroplasmySite, IbdComparison, IdentityVerification,
     PanelGenotype, PrivateBucket, PrivateClass, ProjectOverview, ProjectSampleReport,
-    ReconciledVariant, SourceType, VariantStatus, VerificationStatus,
+    ReconciledVariant, SourceType, SuperPopulationSummary, VariantStatus, VerificationStatus,
 };
 use navigator_domain::ancestry::{population_color, population_super};
 use navigator_domain::du_domain::ids::SampleGuid;
@@ -156,6 +156,23 @@ fn fmt_depth(o: Option<f64>) -> String {
 /// Format an optional fraction (0–1) as a percentage, "—" when not computed.
 fn fmt_pct(o: Option<f64>) -> String {
     o.map(|v| format!("{:.1}%", v * 100.0)).unwrap_or_else(|| "—".into())
+}
+
+/// Draw the super-population composition as a single stacked horizontal bar (segment widths =
+/// proportions, colored by continent).
+fn draw_composition_bar(ui: &mut egui::Ui, summary: &[SuperPopulationSummary]) {
+    let w = ui.available_width().min(360.0);
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(w, 16.0), egui::Sense::hover());
+    let painter = ui.painter_at(rect);
+    painter.rect_filled(rect, 3.0, egui::Color32::from_gray(30));
+    let mut x = rect.left();
+    for s in summary {
+        let seg_w = rect.width() * (s.percentage as f32 / 100.0).clamp(0.0, 1.0);
+        let seg = egui::Rect::from_min_size(egui::pos2(x, rect.top()), egui::vec2(seg_w, rect.height()));
+        let code = s.populations.first().and_then(|c| population_super(c)).unwrap_or("");
+        painter.rect_filled(seg, 0.0, parse_hex_color(&population_color(code)));
+        x += seg_w;
+    }
 }
 
 /// Draw a small PCA scatter: each reference population's centroid (colored, labeled) plus the
@@ -1909,51 +1926,47 @@ impl NavigatorApp {
                     result.snps_analyzed,
                     result.confidence_level * 100.0
                 ));
-                ui.add_space(4.0);
-                egui::Grid::new("ancestry_components").striped(true).num_columns(3).show(ui, |ui| {
-                    ui.strong("Super-population");
-                    ui.strong("Share");
-                    ui.strong("");
-                    ui.end_row();
-                    for c in &result.super_population_summary {
-                        if c.percentage < 0.5 {
-                            continue; // hide trace amounts
+                // Composition bar — the super-population proportions as one stacked bar.
+                ui.add_space(6.0);
+                draw_composition_bar(ui, &result.super_population_summary);
+                ui.add_space(8.0);
+
+                // Indented hierarchy: each super-population, then its fine populations (if the
+                // panel is fine-grained). Proportions sum to 100% (supervised admixture).
+                egui::Grid::new("ancestry_hierarchy").num_columns(2).spacing([24.0, 4.0]).show(ui, |ui| {
+                    for s in &result.super_population_summary {
+                        if s.percentage < 0.5 {
+                            continue;
                         }
-                        ui.label(&c.super_population);
-                        ui.label(format!("{:.1}%", c.percentage));
-                        // A simple proportion bar tinted by the population's catalog color.
-                        let color = parse_hex_color(&population_color(
-                            c.populations.first().map(String::as_str).unwrap_or(""),
-                        ));
-                        let (rect, _) =
-                            ui.allocate_exact_size(egui::vec2(160.0, 12.0), egui::Sense::hover());
-                        let painter = ui.painter();
-                        painter.rect_filled(rect, 2.0, egui::Color32::from_gray(40));
-                        let mut filled = rect;
-                        filled.set_width(rect.width() * (c.percentage as f32 / 100.0).clamp(0.0, 1.0));
-                        painter.rect_filled(filled, 2.0, color);
+                        let super_code = s.populations.first().and_then(|c| population_super(c)).unwrap_or("");
+                        ui.horizontal(|ui| {
+                            let (r, _) = ui.allocate_exact_size(egui::vec2(12.0, 12.0), egui::Sense::hover());
+                            ui.painter().circle_filled(r.center(), 5.0, parse_hex_color(&population_color(super_code)));
+                            ui.strong(&s.super_population);
+                        });
+                        ui.strong(format!("{:.1}%", s.percentage));
                         ui.end_row();
+
+                        // Fine sub-populations under this super (skip the self-row of a super panel).
+                        let mut fine: Vec<&navigator_app::PopulationComponent> = result
+                            .components
+                            .iter()
+                            .filter(|c| population_super(&c.population_code) == Some(super_code))
+                            .filter(|c| c.population_code != super_code && c.percentage >= 0.5)
+                            .collect();
+                        fine.sort_by(|a, b| b.percentage.partial_cmp(&a.percentage).unwrap_or(std::cmp::Ordering::Equal));
+                        for c in fine {
+                            ui.horizontal(|ui| {
+                                ui.add_space(20.0);
+                                let (r, _) = ui.allocate_exact_size(egui::vec2(10.0, 10.0), egui::Sense::hover());
+                                ui.painter().circle_filled(r.center(), 3.5, parse_hex_color(&population_color(&c.population_code)));
+                                ui.label(&c.population_name);
+                            });
+                            ui.label(format!("{:.1}%", c.percentage));
+                            ui.end_row();
+                        }
                     }
                 });
-
-                // Top contributing fine-grained populations (only when the panel is fine — i.e.
-                // components roll up to a *different* super-population than their own code).
-                let is_fine = result
-                    .components
-                    .iter()
-                    .any(|c| population_super(&c.population_code) != Some(c.population_code.as_str()));
-                if is_fine {
-                    let top = result
-                        .components
-                        .iter()
-                        .filter(|c| c.percentage >= 1.0)
-                        .take(8)
-                        .map(|c| format!("{} {:.1}%", c.population_code, c.percentage))
-                        .collect::<Vec<_>>()
-                        .join(" · ");
-                    ui.add_space(4.0);
-                    ui.label(egui::RichText::new(format!("top populations: {top}")).small().weak());
-                }
 
                 // PCA scatter: reference population centroids (PC1×PC2) + this sample's point.
                 if let Some(coords) = &result.pca_coordinates {

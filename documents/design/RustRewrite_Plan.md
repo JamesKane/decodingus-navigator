@@ -388,7 +388,13 @@ rollback.
    summary. The UI leads with the (robust) super-population rollup and lists the top fine
    populations; the scatter shows all 26 centroids (colored by continent). Validated on
    GFX0457637: European 100% (rolled up), nearest fine centroid IBS — within-noise, as expected
-   for a continental-AIMs panel.
+   for a continental-AIMs panel. **Admixture report (2026-06-04):** `analysis::estimate_admixture`
+   estimates a 100%-summing composition by supervised ADMIXTURE (fix the panel allele freqs `P`,
+   estimate the sample's mixture `Q` by frappe/EM); the app uses it and the UI renders a
+   consumer-report-style indented super→fine hierarchy + a composition bar. GFX0457637 →
+   European 97.7% (TSI 44.8 / GBR 18.7 / FIN 16.8 / IBS 9.5 / CEU 7.9 …). Next levers toward a
+   23andMe-grade report: more reference panels (HGDP/SGDP) for granularity, and haplotype LAI
+   (Flare/Gnomix on the SHAPEIT5 panel + CHM13 maps) for DNA-painting + admixed accuracy.
 10. **Cutover.** Feature-parity check against the golden harness; ship.
 
 ---

@@ -1351,8 +1351,9 @@ impl App {
             let params = adaptive_haploid_params(&bam, Some(&reference));
             let genotypes =
                 ancestry_analysis::genotype_panel(&bam, Some(&reference), &panel, &params, &mut progress)?;
+            // Supervised admixture → 100%-summing composition (the consumer-report shape).
             let mut result =
-                ancestry_analysis::estimate_by_allele_frequency(&genotypes, &panel, &reference_version);
+                ancestry_analysis::estimate_admixture(&genotypes, &panel, &reference_version);
             if let Some(pca) = pca_bytes.and_then(|b| ancestry_analysis::PcaLoadings::from_bytes(&b).ok()) {
                 result.pca_coordinates = Some(ancestry_analysis::project_pca(&genotypes, &pca));
             }
