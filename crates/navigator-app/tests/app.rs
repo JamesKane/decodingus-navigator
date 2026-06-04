@@ -1142,3 +1142,85 @@ async fn analyze_project_runs_coverage_and_attempts_y_per_sample() {
     std::env::remove_var("NAVIGATOR_TREE_DIR");
     let _ = std::fs::remove_dir_all(&trees);
 }
+
+/// Exact GRCh38-vs-CHM13 mtDNA comparison on the SAME donor (GFX0457637): the GRCh38 BAM
+/// queries chrM directly (rCRS), the CHM13 BAM lifts via the self-generated rCRS↔chrM map.
+/// Prints both terminals and the per-SNP lineage states, and diffs them position-by-position
+/// so any difference is attributable (NoCall = coverage/unmapped vs Ancestral = different base).
+///   GFX_B38_BAM=/Users/jkane/Genomics/GFX0457637/GFX0457637.b38.bam \
+///   GFX_CHM13_BAM=/Users/jkane/Genomics/GFX0457637/GFX0457637.pbmm2.chm13v2.bam \
+///   cargo test -p navigator-app --test app compare_mt_grch38_vs_chm13 -- --ignored --nocapture
+#[tokio::test]
+#[ignore = "requires GFX_B38_BAM + GFX_CHM13_BAM (+ network for the mt tree / CHM13 reference)"]
+async fn compare_mt_grch38_vs_chm13() {
+    let (Ok(b38), Ok(chm13)) = (std::env::var("GFX_B38_BAM"), std::env::var("GFX_CHM13_BAM")) else {
+        eprintln!("GFX_B38_BAM / GFX_CHM13_BAM unset — skipping");
+        return;
+    };
+    let app = app().await;
+
+    async fn aln_for(app: &App, bam: String, build: &str, reference: Option<String>) -> i64 {
+        let b = app.add_biosample(None, "GFX0457637", None, Some("male".into())).await.unwrap();
+        let run = app
+            .record_sequence_run(NewSequenceRun {
+                biosample_guid: b.guid,
+                platform_name: "X".into(),
+                instrument_model: None,
+                test_type: "WGS".into(),
+                library_layout: None,
+                total_reads: None,
+                pf_reads_aligned: None,
+                mean_read_length: None,
+                mean_insert_size: None,
+            })
+            .await
+            .unwrap();
+        app.record_alignment(NewAlignment {
+            sequence_run_id: run.id,
+            reference_build: build.into(),
+            aligner: "x".into(),
+            variant_caller: None,
+            bam_path: Some(bam),
+            reference_path: reference,
+        })
+        .await
+        .unwrap()
+        .id
+    }
+
+    // GRCh38: chrM == rCRS → direct query (no reference needed for the mt path).
+    let a_b38 = aln_for(&app, b38, "GRCh38", std::env::var("GFX_B38_REF").ok()).await;
+    // CHM13: needs the reference to self-generate the rCRS↔chrM map.
+    let chm_ref = match std::env::var("GFX_CHM13_REF") {
+        Ok(p) => p,
+        Err(_) => app.resolve_reference("chm13v2.0", &mut |_, _| {}).await.unwrap().to_string_lossy().into_owned(),
+    };
+    let a_chm = aln_for(&app, chm13, "chm13v2.0", Some(chm_ref)).await;
+
+    let (g, g_lin, g_calls) = app.assign_mtdna_haplogroup_detail(a_b38).await.expect("b38 mt");
+    let (c, c_lin, c_calls) = app.assign_mtdna_haplogroup_detail(a_chm).await.expect("chm13 mt");
+    eprintln!("GRCh38 mtDNA: {}  ({}/{} matched)", g.ranked[0].name, g.ranked[0].matched, g.ranked[0].expected);
+    eprintln!("CHM13  mtDNA: {}  ({}/{} matched)", c.ranked[0].name, c.ranked[0].matched, c.ranked[0].expected);
+
+    // Compare the lineage element-wise (same tree + terminal → same ordered path). A position
+    // can RECUR with opposite polarity (e.g. C182T then a T182C reversal), so a position-keyed
+    // map would falsely diff the two occurrences against each other — match 1:1 by order.
+    let _ = (&g_calls, &c_calls);
+    assert_eq!(g_lin.len(), c_lin.len(), "lineage length differs → different terminal/path");
+    let mut diffs = 0;
+    eprintln!("--- per-SNP lineage differences (GRCh38 vs CHM13), matched 1:1 ---");
+    for (gs, cs) in g_lin.iter().zip(c_lin.iter()) {
+        assert_eq!((gs.position, &gs.derived), (cs.position, &cs.derived), "lineage diverged");
+        if gs.state != cs.state {
+            diffs += 1;
+            let gb = g_calls.get(&gs.position).copied().unwrap_or('-');
+            let cb = c_calls.get(&cs.position).copied().unwrap_or('-');
+            eprintln!(
+                "  {} {}{}>{}  GRCh38={:?}(read {})  CHM13={:?}(read {})",
+                gs.name, gs.position, gs.ancestral, gs.derived, gs.state, gb, cs.state, cb
+            );
+        }
+    }
+    eprintln!("total TRUE differing lineage SNPs: {diffs}  (lineage length {})", g_lin.len());
+    assert_eq!(diffs, 0, "GRCh38 and CHM13 mtDNA calls should be identical on the same reads");
+}

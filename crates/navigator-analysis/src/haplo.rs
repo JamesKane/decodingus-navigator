@@ -338,6 +338,49 @@ pub fn child_evidence(tree: &HaploTree, calls: &HashMap<i64, char>, node_id: i64
     out
 }
 
+/// Per-SNP evidence along the lineage root→`terminal_id`: every defining SNP of every node on
+/// the path, with the sample's `Derived`/`Ancestral`/`NoCall` state. Used to compare exactly
+/// which defining mutations a sample carries (e.g. GRCh38 vs a lifted CHM13 call).
+pub fn lineage_evidence(tree: &HaploTree, calls: &HashMap<i64, char>, terminal_id: i64) -> Vec<SnpEvidence> {
+    // child → parent, to walk the terminal back to the root.
+    let mut parent: HashMap<i64, i64> = HashMap::new();
+    for node in tree.nodes.values() {
+        for &c in &node.children {
+            parent.insert(c, node.id);
+        }
+    }
+    let mut path = Vec::new();
+    let mut cur = Some(terminal_id);
+    while let Some(id) = cur {
+        path.push(id);
+        cur = parent.get(&id).copied();
+    }
+    path.reverse();
+
+    let mut out = Vec::new();
+    for id in path {
+        let Some(node) = tree.nodes.get(&id) else { continue };
+        for l in &node.loci {
+            let d = l.derived.chars().next().map(|c| c.to_ascii_uppercase());
+            let a = l.ancestral.chars().next().map(|c| c.to_ascii_uppercase());
+            let state = match calls.get(&l.position).map(|c| c.to_ascii_uppercase()) {
+                Some(b) if Some(b) == d => CallState::Derived,
+                Some(b) if Some(b) == a => CallState::Ancestral,
+                Some(_) => CallState::Ancestral,
+                None => CallState::NoCall,
+            };
+            out.push(SnpEvidence {
+                name: l.name.clone(),
+                position: l.position,
+                ancestral: l.ancestral.clone(),
+                derived: l.derived.clone(),
+                state,
+            });
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

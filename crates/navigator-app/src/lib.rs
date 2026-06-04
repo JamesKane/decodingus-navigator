@@ -1236,6 +1236,15 @@ impl App {
         Ok(assignment)
     }
 
+    /// mtDNA assignment + per-SNP lineage evidence (for exact GRCh38-vs-CHM13 comparison).
+    pub async fn assign_mtdna_haplogroup_detail(
+        &self,
+        alignment_id: i64,
+    ) -> Result<(HaploAssignment, Vec<SnpEvidence>, HashMap<i64, char>), AppError> {
+        let tree_json = self.fetch_ftdna_mt_tree().await?;
+        self.assign_haplogroup_detail(alignment_id, "chrM", &tree_json).await
+    }
+
     /// Scan an alignment's chrM pileup for heteroplasmic positions — sites where a second
     /// mitochondrial allele coexists above the noise floor. A screening pass for the
     /// reconciliation view (a curator judges real heteroplasmy vs. artefacts); ascending
@@ -1275,6 +1284,36 @@ impl App {
         contig: &str,
         tree_json: &str,
     ) -> Result<HaploAssignment, AppError> {
+        let (tree, calls) = self.tree_base_calls(alignment_id, contig, tree_json).await?;
+        Ok(assemble_assignment(&tree, &calls))
+    }
+
+    /// Like [`assign_haplogroup_from_alignment`], but also returns the per-SNP evidence along
+    /// the called terminal's lineage (each defining mutation's Derived/Ancestral/NoCall state).
+    /// For exact comparisons (e.g. GRCh38 vs a lifted CHM13 call).
+    pub async fn assign_haplogroup_detail(
+        &self,
+        alignment_id: i64,
+        contig: &str,
+        tree_json: &str,
+    ) -> Result<(HaploAssignment, Vec<SnpEvidence>, HashMap<i64, char>), AppError> {
+        let (tree, calls) = self.tree_base_calls(alignment_id, contig, tree_json).await?;
+        let assignment = assemble_assignment(&tree, &calls);
+        let lineage = match assignment.ranked.first() {
+            Some(top) => navigator_analysis::haplo::lineage_evidence(&tree, &calls, top.id),
+            None => Vec::new(),
+        };
+        Ok((assignment, lineage, calls))
+    }
+
+    /// Parse the tree, build the per-position base calls (lifting onto the alignment's build
+    /// when needed), and return both. Shared by the assignment + detail entry points.
+    async fn tree_base_calls(
+        &self,
+        alignment_id: i64,
+        contig: &str,
+        tree_json: &str,
+    ) -> Result<(navigator_analysis::haplo::HaploTree, HashMap<i64, char>), AppError> {
         let aln = alignment::get(self.store.pool(), alignment_id)
             .await?
             .ok_or_else(|| AppError::Store(StoreError::NotFound(format!("alignment {alignment_id}"))))?;
@@ -1308,7 +1347,7 @@ impl App {
             }
         };
 
-        Ok(assemble_assignment(&tree, &calls))
+        Ok((tree, calls))
     }
 
     /// Lift the haplotree's positions onto the alignment's build, or `None` to query the tree
