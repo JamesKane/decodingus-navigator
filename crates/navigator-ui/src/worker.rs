@@ -12,10 +12,10 @@ use std::sync::mpsc::{Receiver, Sender};
 use std::sync::Arc;
 
 use navigator_app::{
-    App, AppError, AuditEntry, BuildNeed, Consensus, Coverage, DenovoCall, DnaType, HaploAssignment,
-    HeteroplasmySite, IbdComparison, IbdDetectorConfig, IdentityVerification, PanelGenotype,
-    PrivateBucket, ProjectImportSummary, ProjectOverview, ProjectSampleReport, ReconciledVariant,
-    SourceType,
+    AncestryResult, App, AppError, AuditEntry, BuildNeed, Consensus, Coverage, DenovoCall, DnaType,
+    HaploAssignment, HeteroplasmySite, IbdComparison, IbdDetectorConfig, IdentityVerification,
+    PanelGenotype, PrivateBucket, ProjectImportSummary, ProjectOverview, ProjectSampleReport,
+    ReconciledVariant, SourceType,
 };
 use navigator_domain::du_domain::ids::SampleGuid;
 use navigator_domain::chipprofile::ChipProfile;
@@ -95,6 +95,10 @@ pub enum Command {
     AssignMtdnaHaplogroup { mtdna_id: i64 },
     /// Assign a Y haplogroup from an alignment (call chrY tree positions, rank).
     AssignYHaplogroup { alignment_id: i64 },
+    /// Estimate ancestry (super-population proportions) from an alignment via the AIMs panel.
+    EstimateAncestry { alignment_id: i64 },
+    /// Load the persisted ancestry estimate for an alignment, if any.
+    LoadAncestry { alignment_id: i64 },
     /// Find the private bucket: de-novo chrY calls off the assigned Y backbone, restricted
     /// by the chosen callable mask.
     FindPrivateY { alignment_id: i64, mask: YMask },
@@ -191,6 +195,10 @@ pub enum Event {
     Haplogroup { mtdna_id: i64, assignment: HaploAssignment },
     /// Y haplogroup assignment for an alignment (ranked + terminal evidence).
     YHaplogroup { alignment_id: i64, assignment: HaploAssignment },
+    /// Progress of an ancestry genotyping pass: `done`/`total` contigs scanned.
+    AncestryProgress { alignment_id: i64, done: usize, total: usize },
+    /// Ancestry estimate for an alignment (`None` = not yet computed, for `LoadAncestry`).
+    Ancestry { alignment_id: i64, result: Option<AncestryResult> },
     /// Private Y variants (off-backbone de-novo calls) for an alignment.
     PrivateY { alignment_id: i64, bucket: PrivateBucket },
     Alignments { sequence_run_id: i64, alignments: Vec<Alignment> },
@@ -349,6 +357,15 @@ pub async fn handle(app: &App, cmd: Command) -> Event {
         },
         Command::AssignYHaplogroup { alignment_id } => match app.assign_y_haplogroup(alignment_id).await {
             Ok(assignment) => Event::YHaplogroup { alignment_id, assignment },
+            Err(e) => Event::Error(e.to_string()),
+        },
+        // EstimateAncestry is handled in the spawn loop (it streams AncestryProgress); reaching
+        // here would mean a routing bug.
+        Command::EstimateAncestry { alignment_id } => {
+            Event::Error(format!("internal: unrouted EstimateAncestry {alignment_id}"))
+        }
+        Command::LoadAncestry { alignment_id } => match app.ancestry_for_alignment(alignment_id).await {
+            Ok(result) => Event::Ancestry { alignment_id, result },
             Err(e) => Event::Error(e.to_string()),
         },
         Command::FindPrivateY { alignment_id, mask } => {
@@ -511,6 +528,30 @@ async fn resolve_reference_streaming(app: &App, build: String, evt_tx: &Sender<E
     wake();
 }
 
+/// Estimate ancestry, emitting `AncestryProgress` per genotyped contig (and waking the UI),
+/// then a final `Ancestry`/`Error`. Run from the spawn loop so it can stream.
+async fn estimate_ancestry_streaming(
+    app: &App,
+    alignment_id: i64,
+    evt_tx: &Sender<Event>,
+    wake: Arc<dyn Fn() + Send + Sync>,
+) {
+    // The progress closure runs on the blocking genotyping thread → must be Send + 'static:
+    // capture owned clones of the sender and wake, not borrows.
+    let tx = evt_tx.clone();
+    let wake_cb = wake.clone();
+    let progress = move |done: usize, total: usize| {
+        let _ = tx.send(Event::AncestryProgress { alignment_id, done, total });
+        wake_cb();
+    };
+    let event = match app.estimate_ancestry_with_progress(alignment_id, progress).await {
+        Ok(result) => Event::Ancestry { alignment_id, result: Some(result) },
+        Err(e) => Event::Error(e.to_string()),
+    };
+    let _ = evt_tx.send(event);
+    wake();
+}
+
 /// Spawn the worker thread: open the workspace at `db_path` inside the worker's runtime
 /// (so the connection pool lives there), then serve commands. `wake` is called after
 /// each event so the UI can `request_repaint`. Returns the command sender and event
@@ -552,6 +593,10 @@ pub fn spawn(
                             // Streams ReferenceProgress events as bytes arrive, then a final event.
                             Command::ResolveReference { build } => {
                                 resolve_reference_streaming(&app, build, &evt_tx, &*wake).await;
+                            }
+                            // Streams AncestryProgress per contig, then a final Ancestry/Error.
+                            Command::EstimateAncestry { alignment_id } => {
+                                estimate_ancestry_streaming(&app, alignment_id, &evt_tx, wake.clone()).await;
                             }
                             other => {
                                 let event = handle(&app, other).await;

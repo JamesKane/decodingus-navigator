@@ -7,11 +7,12 @@ use std::sync::mpsc::Receiver;
 
 use eframe::egui;
 use navigator_app::{
-    AuditEntry, BuildNeed, CallState, CompatibilityLevel, Consensus, Coverage, DenovoCall, DnaType,
-    HaploAssignment, HeteroplasmySite, IbdComparison, IdentityVerification, PanelGenotype, PrivateBucket,
-    PrivateClass, ProjectOverview, ProjectSampleReport, ReconciledVariant, SourceType, VariantStatus,
-    VerificationStatus,
+    AncestryResult, AuditEntry, BuildNeed, CallState, CompatibilityLevel, Consensus, Coverage,
+    DenovoCall, DnaType, HaploAssignment, HeteroplasmySite, IbdComparison, IdentityVerification,
+    PanelGenotype, PrivateBucket, PrivateClass, ProjectOverview, ProjectSampleReport,
+    ReconciledVariant, SourceType, VariantStatus, VerificationStatus,
 };
+use navigator_domain::ancestry::population_color;
 use navigator_domain::du_domain::ids::SampleGuid;
 use navigator_domain::chipprofile::{self, ChipProfile};
 use navigator_domain::mtdna::MtdnaSequence;
@@ -90,6 +91,11 @@ pub struct NavigatorApp {
     mtdna_haplogroup: Option<(i64, HaploAssignment)>,
     /// Last Y haplogroup assignment: (alignment id, assignment).
     y_haplogroup: Option<(i64, HaploAssignment)>,
+    /// Last ancestry estimate: (alignment id, result). `None` result = computed, no estimate.
+    ancestry: Option<(i64, Option<AncestryResult>)>,
+    estimating_ancestry: bool,
+    /// Live genotyping progress for the in-flight estimate: (alignment id, done, total) contigs.
+    ancestry_progress: Option<(i64, usize, usize)>,
     /// Last private Y bucket: (alignment id, bucket).
     private_y: Option<(i64, PrivateBucket)>,
     finding_private_y: bool,
@@ -145,6 +151,21 @@ fn fmt_depth(o: Option<f64>) -> String {
 /// Format an optional fraction (0–1) as a percentage, "—" when not computed.
 fn fmt_pct(o: Option<f64>) -> String {
     o.map(|v| format!("{:.1}%", v * 100.0)).unwrap_or_else(|| "—".into())
+}
+
+/// Parse a `#RRGGBB` hex color, falling back to grey on a malformed string.
+fn parse_hex_color(hex: &str) -> egui::Color32 {
+    let h = hex.trim_start_matches('#');
+    if h.len() == 6 {
+        if let (Ok(r), Ok(g), Ok(b)) = (
+            u8::from_str_radix(&h[0..2], 16),
+            u8::from_str_radix(&h[2..4], 16),
+            u8::from_str_radix(&h[4..6], 16),
+        ) {
+            return egui::Color32::from_rgb(r, g, b);
+        }
+    }
+    egui::Color32::from_gray(128)
 }
 
 /// Render a haplogroup assignment: terminal + lineage + alternatives, then the child
@@ -243,6 +264,9 @@ impl NavigatorApp {
             rcrs_path: None,
             mtdna_haplogroup: None,
             y_haplogroup: None,
+            ancestry: None,
+            estimating_ancestry: false,
+            ancestry_progress: None,
             private_y: None,
             finding_private_y: false,
             y_mask_path: None,
@@ -452,6 +476,25 @@ impl NavigatorApp {
                         let _ = self.tx.send(Command::LoadProjectReport(pid));
                     }
                 }
+                Event::AncestryProgress { alignment_id, done, total } => {
+                    self.ancestry_progress = Some((alignment_id, done, total));
+                    self.status = format!("Genotyping ancestry panel: {done}/{total} contigs…");
+                }
+                Event::Ancestry { alignment_id, result } => {
+                    self.estimating_ancestry = false;
+                    self.ancestry_progress = None;
+                    self.status = match &result {
+                        Some(r) => match r.primary() {
+                            Some(top) => format!(
+                                "Ancestry: {} {:.1}% ({}/{} SNPs)",
+                                top.population_name, top.percentage, r.snps_with_genotype, r.snps_analyzed
+                            ),
+                            None => "Ancestry: no estimate".into(),
+                        },
+                        None => "Ancestry: not yet computed".into(),
+                    };
+                    self.ancestry = Some((alignment_id, result));
+                }
                 Event::Consensus { biosample_guid, y, mt } => {
                     if self.selected_sample == Some(biosample_guid) {
                         self.consensus_y = y;
@@ -564,6 +607,8 @@ impl NavigatorApp {
                     self.logging_in = false;
                     self.publishing = false;
                     self.finding_private_y = false;
+                    self.estimating_ancestry = false;
+                    self.ancestry_progress = None;
                     let _ = self.tx.send(Command::SyncStatus); // a failed publish may have gone offline
                 }
             }
@@ -622,7 +667,11 @@ impl NavigatorApp {
         self.identity = None;
         self.y_haplogroup = None;
         self.private_y = None;
+        self.ancestry = None;
+        self.estimating_ancestry = false;
+        self.ancestry_progress = None;
         let _ = self.tx.send(Command::LoadCoverage(id));
+        let _ = self.tx.send(Command::LoadAncestry { alignment_id: id });
         let _ = self.tx.send(Command::LoadDenovo { alignment_id: id, contig: self.forms.denovo_contig.clone() });
         if let Some(panel_id) = self.selected_panel {
             let _ = self.tx.send(Command::LoadPanelGenotypes { alignment_id: id, panel_id, ploidy: self.ploidy() });
@@ -697,6 +746,7 @@ impl eframe::App for NavigatorApp {
                     self.coverage_section(ui, id);
                     self.denovo_section(ui, id);
                     self.y_haplogroup_section(ui, id);
+                    self.ancestry_section(ui, id);
                     self.heteroplasmy_section(ui, id);
                     self.genotyping_section(ui, id);
                 }
@@ -1730,6 +1780,96 @@ impl NavigatorApp {
                     }
                 }
             }
+        }
+    }
+
+    /// Ancestry estimate for an alignment: super-population proportions from the AIMs panel.
+    fn ancestry_section(&mut self, ui: &mut egui::Ui, alignment_id: i64) {
+        ui.add_space(12.0);
+        ui.separator();
+        ui.heading("Ancestry");
+
+        let has_bam = self
+            .alignments
+            .iter()
+            .find(|a| a.id == alignment_id)
+            .map(|a| a.bam_path.is_some())
+            .unwrap_or(false);
+
+        ui.horizontal(|ui| {
+            if ui
+                .add_enabled(has_bam && !self.estimating_ancestry, egui::Button::new("Estimate ancestry"))
+                .clicked()
+            {
+                self.estimating_ancestry = true;
+                self.status = "Estimating ancestry (genotyping AIMs panel)…".into();
+                let _ = self.tx.send(Command::EstimateAncestry { alignment_id });
+            }
+            if self.estimating_ancestry {
+                ui.spinner();
+            }
+            if !has_bam {
+                ui.label("(no BAM/CRAM path recorded)");
+            }
+        });
+
+        // Live genotyping progress (the slow per-contig pass over the BAM).
+        if self.estimating_ancestry {
+            match self.ancestry_progress {
+                Some((id, done, total)) if id == alignment_id && total > 0 => {
+                    ui.add(
+                        egui::ProgressBar::new(done as f32 / total as f32)
+                            .text(format!("genotyping contig {done}/{total}")),
+                    );
+                }
+                _ => {
+                    ui.add(egui::ProgressBar::new(0.0).text("preparing…"));
+                }
+            }
+        }
+
+        match &self.ancestry {
+            Some((id, Some(result))) if *id == alignment_id => {
+                ui.label(format!(
+                    "{}/{} panel SNPs genotyped · confidence {:.0}%",
+                    result.snps_with_genotype,
+                    result.snps_analyzed,
+                    result.confidence_level * 100.0
+                ));
+                ui.add_space(4.0);
+                egui::Grid::new("ancestry_components").striped(true).num_columns(3).show(ui, |ui| {
+                    ui.strong("Super-population");
+                    ui.strong("Share");
+                    ui.strong("");
+                    ui.end_row();
+                    for c in &result.super_population_summary {
+                        if c.percentage < 0.5 {
+                            continue; // hide trace amounts
+                        }
+                        ui.label(&c.super_population);
+                        ui.label(format!("{:.1}%", c.percentage));
+                        // A simple proportion bar tinted by the population's catalog color.
+                        let color = parse_hex_color(&population_color(
+                            c.populations.first().map(String::as_str).unwrap_or(""),
+                        ));
+                        let (rect, _) =
+                            ui.allocate_exact_size(egui::vec2(160.0, 12.0), egui::Sense::hover());
+                        let painter = ui.painter();
+                        painter.rect_filled(rect, 2.0, egui::Color32::from_gray(40));
+                        let mut filled = rect;
+                        filled.set_width(rect.width() * (c.percentage as f32 / 100.0).clamp(0.0, 1.0));
+                        painter.rect_filled(filled, 2.0, color);
+                        ui.end_row();
+                    }
+                });
+            }
+            Some((id, None)) if *id == alignment_id && !self.estimating_ancestry => {
+                ui.label("No ancestry estimate yet.");
+            }
+            _ if !self.estimating_ancestry => {
+                ui.label("No ancestry estimate yet.");
+            }
+            _ => {}
         }
     }
 

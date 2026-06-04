@@ -9,6 +9,7 @@ use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 use sqlx::SqlitePool;
 
 pub mod alignment;
+pub mod ancestry_result;
 pub mod artifact;
 pub mod biosample;
 pub mod chip_profile;

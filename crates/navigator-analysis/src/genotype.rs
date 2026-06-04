@@ -59,10 +59,10 @@ pub fn call_genotype(
         let b = base.to_ascii_uppercase();
         let p_ref = if b == r { 1.0 - e } else { e / 3.0 };
         let p_alt = if b == a { 1.0 - e } else { e / 3.0 };
-        for g in 0..=ploidy as usize {
+        for (g, slot) in logl.iter_mut().enumerate() {
             let gf = g as f64;
             let p_bg = ((p - gf) * p_ref + gf * p_alt) / p;
-            logl[g] += p_bg.max(1e-300).ln();
+            *slot += p_bg.max(1e-300).ln();
         }
     }
 

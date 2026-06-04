@@ -1,0 +1,20 @@
+[package]
+name = "navigator-panelbuild"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+# Offline tool: builds the ancestry reference panel (per-super-population allele
+# frequencies at ancestry-informative sites) from the 1000G-on-CHM13 VCFs. Not part of
+# the app — run once, commit/install the resulting panel.bin. See
+# documents/design/RustRewrite_Plan.md and docs/chm13-reference-resources.md.
+[dependencies]
+navigator-analysis = { workspace = true }
+clap = { version = "4", features = ["derive"] }
+anyhow = "1"
+flate2 = "1"
+
+[[bin]]
+name = "navigator-panelbuild"
+path = "src/main.rs"

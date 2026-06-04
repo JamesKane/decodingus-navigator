@@ -8,6 +8,9 @@ pub enum StoreError {
     #[error("migration failed: {0}")]
     Migrate(#[from] sqlx::migrate::MigrateError),
 
+    #[error("json error: {0}")]
+    Json(#[from] serde_json::Error),
+
     /// A column held data the domain can't decode (e.g. a malformed GUID).
     #[error("decode error: {0}")]
     Decode(String),

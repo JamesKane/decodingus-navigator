@@ -168,9 +168,9 @@ pub(crate) fn base_index(b: u8) -> Option<usize> {
 fn consensus(counts: &[u32; 4]) -> (usize, u32) {
     let mut bi = 0;
     let mut best = counts[0];
-    for i in 1..4 {
-        if counts[i] > best {
-            best = counts[i];
+    for (i, &count) in counts.iter().enumerate().skip(1) {
+        if count > best {
+            best = count;
             bi = i;
         }
     }
@@ -379,6 +379,46 @@ pub(crate) fn tally_region(
 
 /// Per-target-site passing `(base, qual)` observations (ACGT bases clearing the quality
 /// filters), keyed by 1-based position — the input the genotype-likelihood model needs.
+/// The `(base, base-quality)` a record carries at reference position `target` (1-based), or
+/// `None` if `target` falls in a deletion/skip/insertion/clip, past the read, below
+/// `min_base_quality`, or isn't A/C/G/T. Walks the CIGAR once from the alignment start.
+fn base_at_position(record: &RecordBuf, target: i64, min_base_quality: u8) -> Option<(u8, u8)> {
+    let start = record.alignment_start()?.get() as i64;
+    if target < start {
+        return None;
+    }
+    let seq = record.sequence();
+    let quals = record.quality_scores();
+    let quals = quals.as_ref();
+    let mut ref_pos = start;
+    let mut query_off = 0usize;
+    for op in record.cigar().as_ref() {
+        let (cr, cq) = (op.kind().consumes_reference(), op.kind().consumes_read());
+        let len = op.len() as i64;
+        if cr && cq {
+            if target < ref_pos + len {
+                let i = (target - ref_pos) as usize; // target >= ref_pos holds by construction
+                let base_q = quals.get(query_off + i).copied().unwrap_or(0);
+                if base_q < min_base_quality {
+                    return None;
+                }
+                let base = seq.get(query_off + i)?;
+                return base_index(base).is_some().then_some((base, base_q));
+            }
+            ref_pos += len;
+            query_off += len as usize;
+        } else if cr {
+            if target < ref_pos + len {
+                return None; // target falls inside a deletion/skip
+            }
+            ref_pos += len;
+        } else if cq {
+            query_off += len as usize;
+        }
+    }
+    None
+}
+
 fn tally_site_observations(
     bam_path: &Path,
     contig: &str,
@@ -388,47 +428,25 @@ fn tally_site_observations(
 ) -> Result<HashMap<i64, Vec<(u8, u8)>>, AnalysisError> {
     let (header, mut reader) = reader::open_indexed(bam_path, reference)?;
 
+    // A sparse panel (e.g. ~20k autosomal AIMs) makes a full per-contig scan pathological — it
+    // decodes every read on the contig (the whole genome, across contigs). Instead probe each
+    // target with a point query so the index hands back only the reads overlapping that base.
+    // Sorted for sequential index access.
+    let mut positions: Vec<i64> = targets.iter().copied().filter(|&p| p >= 1).collect();
+    positions.sort_unstable();
+
     let mut obs: HashMap<i64, Vec<(u8, u8)>> = HashMap::new();
-    let region: Region = contig
-        .parse()
-        .map_err(|_| AnalysisError::Message(format!("bad region for contig {contig}")))?;
-    for result in reader.query(&header, &region)? {
-        let record = result?;
-        if !passes(&record, params) {
-            continue;
-        }
-        let start = match record.alignment_start() {
-            Some(p) => p.get(),
-            None => continue,
-        };
-        let seq = record.sequence();
-        let quals = record.quality_scores();
-        let quals = quals.as_ref();
-        let mut ref_pos = start;
-        let mut query_off = 0usize;
-        for op in record.cigar().as_ref() {
-            let (cr, cq) = (op.kind().consumes_reference(), op.kind().consumes_read());
-            let len = op.len();
-            if cr && cq {
-                for i in 0..len {
-                    let pos = ref_pos + i;
-                    if targets.contains(&(pos as i64)) {
-                        let base_q = quals.get(query_off + i).copied().unwrap_or(0);
-                        if base_q >= params.min_base_quality {
-                            if let Some(base) = seq.get(query_off + i) {
-                                if base_index(base).is_some() {
-                                    obs.entry(pos as i64).or_default().push((base, base_q));
-                                }
-                            }
-                        }
-                    }
-                }
-                ref_pos += len;
-                query_off += len;
-            } else if cr {
-                ref_pos += len;
-            } else if cq {
-                query_off += len;
+    for pos in positions {
+        let region: Region = format!("{contig}:{pos}-{pos}")
+            .parse()
+            .map_err(|_| AnalysisError::Message(format!("bad region for {contig}:{pos}")))?;
+        for result in reader.query(&header, &region)? {
+            let record = result?;
+            if !passes(&record, params) {
+                continue;
+            }
+            if let Some((base, base_q)) = base_at_position(&record, pos, params.min_base_quality) {
+                obs.entry(pos).or_default().push((base, base_q));
             }
         }
     }
@@ -524,9 +542,10 @@ pub fn force_call_sites(
         let alt_depth = alt_bi.map_or(0, |i| c[i]);
 
         let (top_bi, top_count) = consensus(&c);
-        let called = if depth < params.min_depth || top_count == 0 {
-            CalledAllele::NoCall
-        } else if (top_count as f64 / depth as f64) < params.min_allele_fraction {
+        let called = if depth < params.min_depth
+            || top_count == 0
+            || (top_count as f64 / depth as f64) < params.min_allele_fraction
+        {
             CalledAllele::NoCall
         } else if Some(top_bi) == alt_bi {
             CalledAllele::Alternate
@@ -653,6 +672,7 @@ fn active_windows(indel_evidence: &[u32], min_reads: u32, pad: i64) -> Vec<(usiz
 
 /// Re-fit reads in each indel-active window onto the reference and replace the tally
 /// over those windows. Arrays are indexed relative to `region_lo` (1-based).
+#[allow(clippy::too_many_arguments)]
 fn realign_region(
     bam_path: &Path,
     contig: &str,

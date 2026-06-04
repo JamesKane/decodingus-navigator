@@ -161,8 +161,8 @@ pub fn to_sv_calls(segments: &[DepthSegment], config: &SvCallerConfig) -> Vec<Sv
             let quality = (seg.z_score.abs() * 10.0).min(99.0);
             let ci_size = (config.bin_size / 2).max(100) as i32;
             let genotype = match seg.sv_type {
-                SvType::Del => if seg.log2_ratio < -0.9 { "1/1" } else { "0/1" },
-                SvType::Dup => if seg.log2_ratio > 0.7 { "1/1" } else { "0/1" },
+                SvType::Del if seg.log2_ratio < -0.9 => "1/1",
+                SvType::Dup if seg.log2_ratio > 0.7 => "1/1",
                 _ => "0/1",
             };
             let sv_len = if seg.sv_type == SvType::Del {

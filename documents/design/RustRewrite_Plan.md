@@ -363,7 +363,18 @@ rollback.
    mtDNA** on CHM13: Y via the nuclear chain (reverse-complementing inverted tracts), mtDNA via
    a self-generated rotation-aware rCRS↔`chrM` map. GFX0457637 → R-FGC29071 + U5a1b1g, matching
    GRCh38.
-9. **Cutover.** Feature-parity check against the golden harness; ship.
+9. **Ancestry / PCA.** Phase 1 **built** (2026-06-04): allele-frequency likelihood at super-
+   population granularity (AFR/AMR/EAS/EUR/SAS). No GATK — `caller::genotype_sites` (diploid GL
+   model) genotypes the sample at an AIMs panel, `analysis::ancestry::estimate_by_allele_frequency`
+   scores each population by the binomial likelihood of the diploid genotypes. The panel
+   (per-population alt-allele frequencies at high-Fst sites) is built offline by the new
+   `navigator-panelbuild` binary from the 1000G-on-CHM13 VCFs (per-super-pop counts come straight
+   from INFO `AC_<POP>_unrel`/`AN_<POP>_unrel`); selected by Nei Fst (`--max-sites`/`--min-fst`).
+   `App::estimate_ancestry` loads the build-matched panel (`$NAVIGATOR_ANCESTRY_PANEL` or
+   `<cache>/ancestry/`), genotypes, estimates, persists (`ancestry_result` table); UI shows a
+   super-population proportion bar. **Phase 2 (not built):** PCA loadings (SVD over the 1KGP
+   genotype matrix) → projection + Mahalanobis → PCA scatter + fine-grained 26-population AFs.
+10. **Cutover.** Feature-parity check against the golden harness; ship.
 
 ---
 

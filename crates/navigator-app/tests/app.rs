@@ -1224,3 +1224,193 @@ async fn compare_mt_grch38_vs_chm13() {
     eprintln!("total TRUE differing lineage SNPs: {diffs}  (lineage length {})", g_lin.len());
     assert_eq!(diffs, 0, "GRCh38 and CHM13 mtDNA calls should be identical on the same reads");
 }
+
+// ---- ancestry --------------------------------------------------------------
+
+/// Serializes writes to the ancestry env vars (`NAVIGATOR_ANCESTRY_PANEL`, `…_MIN_SNPS`),
+/// which `estimate_ancestry` reads at call time.
+static ANCESTRY_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// End-to-end ancestry on the deterministic diploid fixture (dosages [0,1,1,2] at chr1:1,2,5,8).
+/// A panel engineered so EUR is the only population matching that genotype pattern must resolve
+/// EUR-dominant, and the result must persist + reload.
+#[tokio::test]
+#[allow(clippy::await_holding_lock)] // env guard must span the call (test-only serialization)
+async fn estimate_ancestry_resolves_dominant_population_and_persists() {
+    use navigator_app::{AncestryPanel, AncestryPanelSite};
+
+    // EUR is alt-poor where the sample is hom-ref (site 1) and alt-rich where it's hom-alt
+    // (site 8); the het sites are neutral (0.5 everywhere). Pop axis: AFR,AMR,EAS,EUR,SAS.
+    let s = |contig: &str, position: i64, r: char, a: char, freqs: [f32; 5]| AncestryPanelSite {
+        contig: contig.into(),
+        position,
+        reference_allele: r,
+        alternate_allele: a,
+        freqs: freqs.to_vec(),
+    };
+    let panel = AncestryPanel {
+        build: "chm13v2.0".into(),
+        populations: ["AFR", "AMR", "EAS", "EUR", "SAS"].iter().map(|s| s.to_string()).collect(),
+        sites: vec![
+            s("chr1", 1, 'A', 'G', [0.95, 0.95, 0.95, 0.05, 0.95]), // dosage 0 → favors low EUR f
+            s("chr1", 2, 'C', 'G', [0.5, 0.5, 0.5, 0.5, 0.5]),      // dosage 1 → neutral
+            s("chr1", 5, 'A', 'T', [0.5, 0.5, 0.5, 0.5, 0.5]),      // dosage 1 → neutral
+            s("chr1", 8, 'T', 'A', [0.05, 0.05, 0.05, 0.95, 0.05]), // dosage 2 → favors high EUR f
+        ],
+    };
+    let panel_path = std::env::temp_dir().join(format!("ancestry-panel-{}.bin", std::process::id()));
+    std::fs::write(&panel_path, panel.to_bytes().unwrap()).unwrap();
+
+    let app = app().await;
+    // diploid.bam is a BAM (reference unused for reading); set a build the panel matches and a
+    // reference path so the gateway is never consulted.
+    let b = app.add_biosample(None, "anc", None, None).await.unwrap();
+    let run = app
+        .record_sequence_run(NewSequenceRun {
+            biosample_guid: b.guid,
+            platform_name: "ILLUMINA".into(),
+            instrument_model: None,
+            test_type: "WGS".into(),
+            library_layout: None,
+            total_reads: None,
+            pf_reads_aligned: None,
+            mean_read_length: None,
+            mean_insert_size: None,
+        })
+        .await
+        .unwrap();
+    let aln = app
+        .record_alignment(NewAlignment {
+            sequence_run_id: run.id,
+            reference_build: "chm13v2.0".into(),
+            aligner: "synthetic".into(),
+            variant_caller: None,
+            bam_path: Some(fixtures().join("diploid.bam").to_string_lossy().into_owned()),
+            reference_path: Some(fixtures().join("ref.fa").to_string_lossy().into_owned()),
+        })
+        .await
+        .unwrap()
+        .id;
+
+    let result = {
+        let _g = ANCESTRY_ENV_LOCK.lock().unwrap();
+        std::env::set_var("NAVIGATOR_ANCESTRY_PANEL", &panel_path);
+        std::env::set_var("NAVIGATOR_ANCESTRY_MIN_SNPS", "1");
+        app.estimate_ancestry(aln).await.expect("estimate_ancestry")
+    };
+
+    assert_eq!(result.snps_analyzed, 4);
+    assert_eq!(result.snps_with_genotype, 4);
+    let top = result.primary().expect("a top component");
+    assert_eq!(top.population_code, "EUR", "components: {:?}", result.components);
+    assert!(top.percentage > 90.0, "EUR% = {}", top.percentage);
+
+    // Persisted and reloadable.
+    let reloaded = app.ancestry_for_alignment(aln).await.unwrap().expect("persisted result");
+    assert_eq!(reloaded.primary().unwrap().population_code, "EUR");
+
+    let _ = std::fs::remove_file(&panel_path);
+}
+
+/// A missing panel surfaces a clear error rather than a generic IO failure.
+#[tokio::test]
+#[allow(clippy::await_holding_lock)] // env guard must span the call (test-only serialization)
+async fn estimate_ancestry_without_a_panel_errors_clearly() {
+    let app = app().await;
+    let b = app.add_biosample(None, "noanc", None, None).await.unwrap();
+    let run = app
+        .record_sequence_run(NewSequenceRun {
+            biosample_guid: b.guid,
+            platform_name: "ILLUMINA".into(),
+            instrument_model: None,
+            test_type: "WGS".into(),
+            library_layout: None,
+            total_reads: None,
+            pf_reads_aligned: None,
+            mean_read_length: None,
+            mean_insert_size: None,
+        })
+        .await
+        .unwrap();
+    let aln = app
+        .record_alignment(NewAlignment {
+            sequence_run_id: run.id,
+            reference_build: "chm13v2.0".into(),
+            aligner: "synthetic".into(),
+            variant_caller: None,
+            bam_path: Some(fixtures().join("diploid.bam").to_string_lossy().into_owned()),
+            reference_path: Some(fixtures().join("ref.fa").to_string_lossy().into_owned()),
+        })
+        .await
+        .unwrap()
+        .id;
+
+    let missing = std::env::temp_dir().join(format!("no-such-panel-{}.bin", std::process::id()));
+    let err = {
+        let _g = ANCESTRY_ENV_LOCK.lock().unwrap();
+        std::env::set_var("NAVIGATOR_ANCESTRY_PANEL", &missing);
+        app.estimate_ancestry(aln).await
+    };
+    assert!(matches!(err, Err(AppError::AncestryPanelMissing(_))), "got {err:?}");
+}
+
+/// Live validation on the CHM13 HiFi sample (GFX0457637): the real AIMs panel should call the
+/// donor EUR-dominant, consistent with the Y (R-FGC29071) and mtDNA (U5a1b1g) results.
+/// Requires the built panel at `$NAVIGATOR_ANCESTRY_PANEL` and the BAM at `$GFX_CHM13_BAM`
+/// (optionally `$GFX_CHM13_REF` for the reference FASTA).
+#[tokio::test]
+#[ignore = "requires GFX_CHM13_BAM + NAVIGATOR_ANCESTRY_PANEL (real 1KGP-CHM13 panel)"]
+async fn validate_gfx_chm13_ancestry() {
+    let (Ok(bam), Ok(_panel)) = (
+        std::env::var("GFX_CHM13_BAM"),
+        std::env::var("NAVIGATOR_ANCESTRY_PANEL"),
+    ) else {
+        eprintln!("GFX_CHM13_BAM / NAVIGATOR_ANCESTRY_PANEL unset — skipping live ancestry test");
+        return;
+    };
+    let reference = std::env::var("GFX_CHM13_REF").ok();
+
+    let app = app().await;
+    let b = app.add_biosample(None, "GFX0457637", None, None).await.unwrap();
+    let run = app
+        .record_sequence_run(NewSequenceRun {
+            biosample_guid: b.guid,
+            platform_name: "PACBIO_SMRT".into(),
+            instrument_model: None,
+            test_type: "WGS".into(),
+            library_layout: None,
+            total_reads: None,
+            pf_reads_aligned: None,
+            mean_read_length: None,
+            mean_insert_size: None,
+        })
+        .await
+        .unwrap();
+    let aln = app
+        .record_alignment(NewAlignment {
+            sequence_run_id: run.id,
+            reference_build: "chm13v2.0".into(),
+            aligner: "pbmm2".into(),
+            variant_caller: None,
+            bam_path: Some(bam),
+            reference_path: reference,
+        })
+        .await
+        .unwrap()
+        .id;
+
+    let result = app.estimate_ancestry(aln).await.expect("estimate_ancestry");
+    eprintln!(
+        "GFX0457637 ancestry ({}/{} SNPs, confidence {:.0}%):",
+        result.snps_with_genotype,
+        result.snps_analyzed,
+        result.confidence_level * 100.0
+    );
+    for c in &result.super_population_summary {
+        if c.percentage >= 0.5 {
+            eprintln!("  {}: {:.1}%", c.super_population, c.percentage);
+        }
+    }
+    let top = result.primary().expect("a top component");
+    assert_eq!(top.population_code, "EUR", "expected EUR-dominant, got {:?}", result.components);
+}

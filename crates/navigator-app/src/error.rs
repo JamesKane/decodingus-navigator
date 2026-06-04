@@ -21,6 +21,19 @@ pub enum AppError {
     #[error("alignment {0} has not been genotyped against this panel")]
     NotGenotyped(i64),
 
+    /// The ancestry reference panel file is missing — build it with `navigator-panelbuild`
+    /// and install it (or set `$NAVIGATOR_ANCESTRY_PANEL`).
+    #[error("ancestry panel not found at {0} — build it with navigator-panelbuild")]
+    AncestryPanelMissing(std::path::PathBuf),
+
+    /// The bundled panel is for a different reference build than the alignment.
+    #[error("ancestry panel build {panel} does not match alignment build {alignment}")]
+    AncestryPanelBuildMismatch { panel: String, alignment: String },
+
+    /// Too few sites genotyped for a reliable ancestry estimate.
+    #[error("insufficient data for ancestry: {genotyped} SNPs genotyped, {required} required")]
+    InsufficientAncestryData { genotyped: usize, required: usize },
+
     #[error("not signed in — log in to a PDS account first")]
     NotAuthenticated,
 

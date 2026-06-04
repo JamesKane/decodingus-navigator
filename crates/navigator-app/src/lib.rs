@@ -11,6 +11,7 @@ use std::sync::{Arc, Mutex};
 
 use chrono::Utc;
 use du_domain::ids::SampleGuid;
+use navigator_analysis::ancestry::{self as ancestry_analysis};
 use navigator_analysis::caller::{self, HaploidCallerParams, SiteGenotype, Site, VariantCall};
 use navigator_analysis::coverage::{self, CallableLociParams, CoverageResult};
 use navigator_analysis::heteroplasmy::{self, HeteroplasmyParams};
@@ -27,6 +28,11 @@ pub use navigator_analysis::caller::VariantCall as DenovoCall;
 pub use navigator_analysis::coverage::CoverageResult as Coverage;
 pub use navigator_analysis::heteroplasmy::HeteroplasmySite;
 pub use navigator_analysis::haplo::{BranchEvidence, CallState, ScoredHaplogroup, SnpEvidence};
+pub use navigator_domain::ancestry::{
+    AncestryResult, ConfidenceInterval, PopulationComponent, SuperPopulationSummary,
+};
+// The ancestry panel format, re-exported so panel tooling/tests depend only on navigator-app.
+pub use navigator_analysis::ancestry::{AncestryPanel, PanelSite as AncestryPanelSite};
 
 /// A haplogroup assignment: the ranked candidates plus, for the reported terminal, the
 /// child branches with per-SNP evidence (why descent stopped — unsupported splits show
@@ -116,8 +122,9 @@ use navigator_domain::strprofile::{self, NewStrProfile, StrProfile};
 use navigator_domain::variants::{self, NewVariantSet, VariantSet};
 pub use navigator_domain::variants::SourceType;
 use navigator_store::{
-    alignment, artifact, biosample, chip_profile, haplogroup_call, mtdna as mtdna_store, project,
-    reconciliation as recon_store, sequence_run, str_profile, variant_set, Store, StoreError,
+    alignment, ancestry_result, artifact, biosample, chip_profile, haplogroup_call,
+    mtdna as mtdna_store, project, reconciliation as recon_store, sequence_run, str_profile,
+    variant_set, Store, StoreError,
 };
 use serde::de::DeserializeOwned;
 use serde::Serialize;
@@ -164,6 +171,27 @@ fn adaptive_haploid_params(bam_path: &Path, reference: Option<&Path>) -> Haploid
         }
     }
     params
+}
+
+/// Minimum genotyped sites for a reliable AIMs ancestry estimate (Scala `minSnpsAims`).
+/// Overridable via `$NAVIGATOR_ANCESTRY_MIN_SNPS` (tests use a small panel).
+fn ancestry_min_snps() -> usize {
+    std::env::var("NAVIGATOR_ANCESTRY_MIN_SNPS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(3000)
+}
+
+/// Where the ancestry panel for `build` lives: `$NAVIGATOR_ANCESTRY_PANEL` (override), else
+/// `<refgenome base>/ancestry/ancestry_panel_<build>.bin`. The offline `navigator-panelbuild`
+/// tool writes it; install/ship copies it into the cache dir.
+fn ancestry_panel_path(build: ReferenceBuild) -> PathBuf {
+    if let Ok(p) = std::env::var("NAVIGATOR_ANCESTRY_PANEL") {
+        return PathBuf::from(p);
+    }
+    refgenome_cache::base_dir()
+        .join("ancestry")
+        .join(format!("ancestry_panel_{}.bin", build.as_str()))
 }
 
 /// The lexicon's UPPER_SNAKE compatibility level (matches the AppView's knownValues).
@@ -1261,6 +1289,81 @@ impl App {
         .await
         .map_err(|e| AppError::Join(e.to_string()))?
         .map_err(Into::into)
+    }
+
+    /// Estimate the donor's ancestry for an alignment by the allele-frequency likelihood: load
+    /// the (build-matched) AIMs panel, genotype the sample at its sites with the GL caller, and
+    /// score each super-population's binomial likelihood. Persists the result; returns it for
+    /// display. Requires a recorded BAM/CRAM and a resolvable reference (CRAM/genotyping).
+    pub async fn estimate_ancestry(&self, alignment_id: i64) -> Result<AncestryResult, AppError> {
+        self.estimate_ancestry_with_progress(alignment_id, |_, _| {}).await
+    }
+
+    /// Like [`estimate_ancestry`], reporting `progress(contigs_done, contigs_total)` as the
+    /// per-contig genotyping pass advances — the slow step on a whole-genome BAM (minutes), so
+    /// the UI shows a bar. The callback runs on the blocking genotyping thread.
+    pub async fn estimate_ancestry_with_progress(
+        &self,
+        alignment_id: i64,
+        mut progress: impl FnMut(usize, usize) + Send + 'static,
+    ) -> Result<AncestryResult, AppError> {
+        let aln = alignment::get(self.store.pool(), alignment_id)
+            .await?
+            .ok_or_else(|| AppError::Store(StoreError::NotFound(format!("alignment {alignment_id}"))))?;
+        let bam = PathBuf::from(aln.bam_path.ok_or(AppError::MissingPaths(alignment_id))?);
+
+        // Load the panel for the alignment's build and verify they agree.
+        let build = canonical_build(&aln.reference_build)
+            .ok_or_else(|| AppError::Refgenome(navigator_refgenome::RefgenomeError::UnknownBuild(aln.reference_build.clone())))?;
+        let panel_path = ancestry_panel_path(build);
+        let panel_bytes = std::fs::read(&panel_path)
+            .map_err(|_| AppError::AncestryPanelMissing(panel_path.clone()))?;
+        let panel = AncestryPanel::from_bytes(&panel_bytes)?;
+        if canonical_build(&panel.build) != Some(build) {
+            return Err(AppError::AncestryPanelBuildMismatch {
+                panel: panel.build.clone(),
+                alignment: aln.reference_build.clone(),
+            });
+        }
+
+        // Resolve the reference (recorded path, else gateway — needed for CRAM + genotyping).
+        let reference = match aln.reference_path {
+            Some(p) => PathBuf::from(p),
+            None => self.gateway.resolve_reference(&aln.reference_build, &mut |_, _| {}).await?,
+        };
+        let reference_version = aln.reference_build.clone();
+
+        let result = tokio::task::spawn_blocking(move || {
+            let params = adaptive_haploid_params(&bam, Some(&reference));
+            let genotypes =
+                ancestry_analysis::genotype_panel(&bam, Some(&reference), &panel, &params, &mut progress)?;
+            Ok::<_, navigator_analysis::AnalysisError>(
+                ancestry_analysis::estimate_by_allele_frequency(&genotypes, &panel, &reference_version),
+            )
+        })
+        .await
+        .map_err(|e| AppError::Join(e.to_string()))??;
+
+        let required = ancestry_min_snps();
+        if result.snps_with_genotype < required {
+            return Err(AppError::InsufficientAncestryData {
+                genotyped: result.snps_with_genotype,
+                required,
+            });
+        }
+
+        if let Ok(bio) = self.biosample_of_alignment(alignment_id).await {
+            ancestry_result::upsert(self.store.pool(), bio, alignment_id, &result).await?;
+        }
+        Ok(result)
+    }
+
+    /// The persisted ancestry estimate for an alignment, if one has been computed.
+    pub async fn ancestry_for_alignment(
+        &self,
+        alignment_id: i64,
+    ) -> Result<Option<AncestryResult>, AppError> {
+        Ok(ancestry_result::get_for_alignment(self.store.pool(), alignment_id).await?)
     }
 
     /// Assign a Y haplogroup to an alignment: fetch (and cache) the FTDNA Y-DNA haplotree,

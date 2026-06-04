@@ -79,9 +79,9 @@ pub fn fitting_align(query: &[u8], target: &[u8]) -> (usize, Vec<Op>) {
     // Free trailing target gap: best score across the last query row.
     let mut end_j = 0;
     let mut best = i32::MIN;
-    for j in 0..=m {
-        if score[n][j] >= best {
-            best = score[n][j];
+    for (j, &s) in score[n].iter().enumerate() {
+        if s >= best {
+            best = s;
             end_j = j;
         }
     }

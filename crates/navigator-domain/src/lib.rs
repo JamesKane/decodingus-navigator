@@ -9,6 +9,7 @@
 
 pub use du_domain;
 
+pub mod ancestry;
 pub mod chipprofile;
 pub mod filetype;
 pub mod mtdna;
