@@ -217,7 +217,7 @@ coupled to coverage continuity, so `f < 1.0` may help; needs more HiFi data poin
 small, and the HiFi here is the same person as WGS229). A depth-1 floor for pure CCS is
 plausible but unvalidated.
 
-### 4f. Reference & liftover management (retrieval+cache BUILT; liftover *application* pending)
+### 4f. Reference & liftover management (BUILT — Y + mtDNA haplogroups validated on CHM13)
 
 **Prerequisite for haplogroups on CHM13-aligned data.** The FTDNA Y haplotree is in
 **GRCh38** coordinates and mtDNA is **rCRS**, while the sample CRAMs here are
@@ -235,15 +235,18 @@ miss it returns `AppError::ReferenceNeeded`, and the UI prompts → downloads wi
 bar → auto-retries. Registry defaults from `docs/chm13-reference-resources.md` (+ a
 `reference_sources.json` override); cache under `~/.decodingus` (`$NAVIGATOR_REFGENOME_DIR`).
 
-**Applying liftover — BUILT for Y (2026-06-03):** `assign_haplogroup_from_alignment` lifts
-the GRCh38 Y-tree positions to the alignment's build via the cached chain
-(`gateway.lift_positions`, auto-resolving GRCh38→CHM13 on a miss), queries the lifted coords,
-and maps observed bases back to tree positions so scoring is unchanged — Y haplogroups now
-come out correct on CHM13 CRAMs. **mtDNA** stays a direct `chrM` (rCRS) query — *provisional*:
-no rCRS↔CHM13 chain exists, so if a sample's CHM13 `chrM` isn't rCRS the call will be wrong;
-the existing match/score surfaces that. A future rCRS↔CHM13-`chrM` chain wires through the
-same `lift_positions` path. Related caches if/when ancestry lands:
-`AncestryReferenceGateway`/`Cache`, `TreeCache`, `AnalysisCache`.
+**Applying liftover — BUILT + validated for Y *and* mtDNA (2026-06-04):**
+`assign_haplogroup_from_alignment` lifts each tree's positions onto the alignment's build,
+queries the lifted coords, maps observed bases back to tree positions (scoring unchanged):
+- **chrY**: GRCh38→build via the cached, auto-downloaded nuclear chain (`gateway.lift_positions`).
+  Minus-strand lifts are reverse-complemented (large CHM13-Y tracts are inverted vs GRCh38).
+- **chrM**: no chrM chain exists (and CHM13's `chrM` is a *circular permutation* of rCRS —
+  origin at rCRS ~577), so we **self-generate** the map: `mtvariants::mt_position_map` detects
+  the rotation, rotates into the rCRS frame, banded-aligns (bundled rCRS vs this reference's
+  `chrM`), and composes the offset back. No chain, no download, no cache (~16.5 kb align).
+Validated live on GFX0457637 (CHM13 HiFi): **Y = R-FGC29071** (1092/1919) and
+**mtDNA = U5a1b1g** (53/55), both matching the GRCh38 truth. Related caches if/when ancestry
+lands: `AncestryReferenceGateway`/`Cache`, `TreeCache`, `AnalysisCache`.
 - **Resource catalog:** `docs/chm13-reference-resources.md` lists the concrete CHM13v2.0 URLs —
   reference FASTAs (incl. **`chm13v2.0_maskedY_rCRS.fa.gz`**, the most relevant for this app),
   GRCh38↔CHM13 and hg19↔CHM13 **1:1 liftover chains** + `unique_to_*` BEDs (unliftable regions),
@@ -356,9 +359,10 @@ rollback.
 8. **Reference & liftover management (§4f).** Retrieval + on-disk cache **built** as
    `navigator-refgenome` (2026-06-03): resolve a build → cached, in-Rust-indexed `.fa`
    (fetch/decompress/index on miss); chains cached for `du-bio`; import resolves references
-   from the cache with a download prompt. Applying liftover is **built for Y** (tree positions
-   GRCh38→CHM13 lifted at assign time); mtDNA stays a direct rCRS `chrM` query (provisional,
-   pending a possible rCRS↔CHM13 chain).
+   from the cache with a download prompt. Applying liftover is **built + validated for Y and
+   mtDNA** on CHM13: Y via the nuclear chain (reverse-complementing inverted tracts), mtDNA via
+   a self-generated rotation-aware rCRS↔`chrM` map. GFX0457637 → R-FGC29071 + U5a1b1g, matching
+   GRCh38.
 9. **Cutover.** Feature-parity check against the golden harness; ship.
 
 ---
