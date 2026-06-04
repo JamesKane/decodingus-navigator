@@ -26,6 +26,10 @@ pub fn super_populations() -> Vec<Population> {
         ("EAS", "East Asian", "#00CC00"),
         ("EUR", "European", "#0066CC"),
         ("SAS", "South Asian", "#9900CC"),
+        // Added with the SGDP diversity panel (continents 1000G doesn't cover).
+        ("MEA", "Middle Eastern", "#996633"),
+        ("CAS", "Central Asian & Siberian", "#66CCCC"),
+        ("OCE", "Oceanian", "#009999"),
     ]
     .into_iter()
     .map(|(code, name, color)| Population {
@@ -38,7 +42,7 @@ pub fn super_populations() -> Vec<Population> {
 
 /// The 26 fine-grained 1000 Genomes populations: `(code, name, super-population)`. Used for
 /// fine-grained ancestry; each rolls up to one of [`super_populations`] for the summary.
-const FINE_POPULATIONS: [(&str, &str, &str); 26] = [
+const FINE_POPULATIONS: [(&str, &str, &str); 29] = [
     // African
     ("YRI", "Yoruba (Nigeria)", "AFR"),
     ("LWK", "Luhya (Kenya)", "AFR"),
@@ -70,6 +74,10 @@ const FINE_POPULATIONS: [(&str, &str, &str); 26] = [
     ("BEB", "Bengali", "SAS"),
     ("STU", "Sri Lankan Tamil", "SAS"),
     ("ITU", "Indian Telugu", "SAS"),
+    // SGDP-backed continents (each is a single reference group = its own super-population).
+    ("MEA", "Middle Eastern", "MEA"),
+    ("CAS", "Central Asian & Siberian", "CAS"),
+    ("OCE", "Oceanian", "OCE"),
 ];
 
 /// The super-population a (fine or super) population code belongs to, or `None` if unknown.
@@ -81,7 +89,7 @@ pub fn population_super(code: &str) -> Option<&'static str> {
     FINE_POPULATIONS.iter().find(|(c, _, _)| *c == code).map(|(_, _, sp)| *sp)
 }
 
-const SUPER_CODES: [&str; 5] = ["AFR", "AMR", "EAS", "SAS", "EUR"];
+const SUPER_CODES: [&str; 8] = ["AFR", "AMR", "EAS", "SAS", "EUR", "MEA", "CAS", "OCE"];
 
 /// Display name for a fine or super population code, falling back to the code itself.
 pub fn population_name(code: &str) -> String {

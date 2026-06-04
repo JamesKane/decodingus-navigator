@@ -106,7 +106,9 @@ impl PcaLoadings {
 
 /// Project a sample's genotypes onto the reference PCA space: centre each site by its panel
 /// mean and accumulate `centered · loading` into each component. A missing genotype contributes
-/// 0 (mean-imputed). Returns the sample's coordinate in each principal component.
+/// 0 (mean-imputed), then the projection is rescaled by `total_sites / sites_used` so a sample
+/// with missing genotypes isn't shrunk toward the origin (which would pull it off its true
+/// cluster). Returns the sample's coordinate in each principal component.
 pub fn project_pca(genotypes: &[SiteGenotype], pca: &PcaLoadings) -> Vec<f64> {
     let dosage: HashMap<(&str, i64), i32> = genotypes
         .iter()
@@ -115,13 +117,22 @@ pub fn project_pca(genotypes: &[SiteGenotype], pca: &PcaLoadings) -> Vec<f64> {
         .collect();
 
     let mut coords = vec![0.0f64; pca.n_components];
+    let mut used = 0usize;
     for (i, (contig, pos)) in pca.sites.iter().enumerate() {
         let centered = match dosage.get(&(contig.as_str(), *pos)) {
             Some(&d) => d as f64 - pca.means[i] as f64,
-            None => continue, // mean-imputed → centred value 0, no contribution
+            None => continue,
         };
+        used += 1;
         for (c, coord) in coords.iter_mut().enumerate() {
             *coord += centered * pca.loading(i, c) as f64;
+        }
+    }
+    // Un-shrink: reference coords were built from all sites; scale up for the missing fraction.
+    if used > 0 {
+        let scale = pca.sites.len() as f64 / used as f64;
+        for coord in &mut coords {
+            *coord *= scale;
         }
     }
     coords

@@ -395,6 +395,16 @@ rollback.
    European 97.7% (TSI 44.8 / GBR 18.7 / FIN 16.8 / IBS 9.5 / CEU 7.9 …). Next levers toward a
    23andMe-grade report: more reference panels (HGDP/SGDP) for granularity, and haplotype LAI
    (Flare/Gnomix on the SHAPEIT5 panel + CHM13 maps) for DNA-painting + admixed accuracy.
+   **More reference panels (Phase B) — built (2026-06-04):** added **SGDP** (the CHM13 set;
+   HGDP isn't on the bucket) for the continents 1000G lacks — Middle East (MEA, carved from
+   WestEurasia by country), Central Asia & Siberia (CAS), Oceania (OCE) — as 3 new
+   super-populations (8 total, 29 fine pops). `navigator-panelbuild` now merges multiple
+   genotype matrices by site (`--matrix a,b --samples sa,sb`); the combined panel/PCA are built
+   from the archived 1000G matrix + a 78-sample SGDP extract (tabix on the SGDP VCFs, EC2).
+   The new continents place sensibly in PCA (MEA off Europe, CAS Europe↔EastAsia, OCE distinct).
+   Also fixed PCA projection of low-coverage samples: rescale by `total/used` sites so missing
+   genotypes don't shrink the point toward the origin (GFX0457637 PC1 36.4→42.5, lands on the
+   European cluster; AF stays European 97.9%).
 10. **Cutover.** Feature-parity check against the golden harness; ship.
 
 ---

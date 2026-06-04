@@ -23,13 +23,14 @@ use navigator_analysis::ancestry::{AncestryPanel, PanelSite, PcaLoadings};
 
 #[derive(Parser)]
 pub struct PcaArgs {
-    /// Genotype matrix `CHROM POS REF ALT GT...` per line (bcftools query), optionally .gz.
+    /// Genotype matrix/matrices `CHROM POS REF ALT GT...` per line (bcftools query), optionally
+    /// .gz. Comma-separated to merge several panels by site (e.g. 1000G + SGDP).
     #[arg(long)]
-    matrix: PathBuf,
-    /// Sample IDs, one per line, in the matrix's column order (bcftools query -l).
+    matrix: String,
+    /// Sample-ID files (one per line), comma-separated and parallel to `--matrix`.
     #[arg(long)]
-    samples: PathBuf,
-    /// `sample<TAB>population` (fine 1000G pop, e.g. CEU).
+    samples: String,
+    /// `sample<TAB>population` for every sample across the matrices.
     #[arg(long)]
     pops: PathBuf,
     /// Output PcaLoadings (bincode).
@@ -45,13 +46,14 @@ pub struct PcaArgs {
 
 #[derive(Parser)]
 pub struct FinePanelArgs {
-    /// Genotype matrix `CHROM POS REF ALT GT...` per line (bcftools query), optionally .gz.
+    /// Genotype matrix/matrices `CHROM POS REF ALT GT...` per line, optionally .gz.
+    /// Comma-separated to merge several panels by site.
     #[arg(long)]
-    matrix: PathBuf,
-    /// Sample IDs, one per line, in the matrix's column order.
+    matrix: String,
+    /// Sample-ID files (one per line), comma-separated and parallel to `--matrix`.
     #[arg(long)]
-    samples: PathBuf,
-    /// `sample<TAB>population` (fine 1000G pop).
+    samples: String,
+    /// `sample<TAB>population` for every sample across the matrices.
     #[arg(long)]
     pops: PathBuf,
     /// Output AncestryPanel (bincode) with per-fine-population allele frequencies.
@@ -61,6 +63,11 @@ pub struct FinePanelArgs {
     #[arg(long, default_value_t = 0.5)]
     min_call_rate: f64,
 }
+
+/// One matrix indexed by site: `(contig,pos) → (ref, alt, per-sample dosages)`.
+type SiteMap = HashMap<(String, i64), (char, char, Vec<i8>)>;
+/// Loaded + merged matrices: combined sample IDs, site metadata, and per-site dosage rows.
+type LoadedMatrix = (Vec<String>, Vec<SiteMeta>, Vec<Vec<i8>>);
 
 /// A genotyped site: coordinates + the biallelic ref/alt the genotypes are relative to.
 struct SiteMeta {
@@ -135,14 +142,14 @@ fn sample_pop_index(samples: &[String], fine: &HashMap<String, String>, pops: &[
         .collect()
 }
 
-/// Parse the matrix → site metadata + dosage rows (missing = -1), dedup by (contig,pos),
-/// keeping sites whose call rate clears `min_call_rate`.
-fn load_matrix(path: &Path, n_samples: usize, min_call_rate: f64) -> Result<(Vec<SiteMeta>, Vec<Vec<i8>>)> {
-    let mut metas: Vec<SiteMeta> = Vec::new();
-    let mut rows: Vec<Vec<i8>> = Vec::new();
-    let mut seen: HashMap<(String, i64), ()> = HashMap::new();
-    let mut dropped = 0usize;
+/// Split a comma-separated path list (`a.tsv,b.tsv`) into paths.
+fn split_paths(s: &str) -> Vec<PathBuf> {
+    s.split(',').map(|p| PathBuf::from(p.trim())).filter(|p| !p.as_os_str().is_empty()).collect()
+}
 
+/// Parse one matrix into `(contig,pos) → (ref, alt, dosages)`, dedup by position (keep first).
+fn load_one(path: &Path, n_samples: usize) -> Result<SiteMap> {
+    let mut map: HashMap<(String, i64), (char, char, Vec<i8>)> = HashMap::new();
     for line in open_maybe_gz(path)?.lines() {
         let line = line?;
         if line.is_empty() {
@@ -156,9 +163,6 @@ fn load_matrix(path: &Path, n_samples: usize, min_call_rate: f64) -> Result<(Vec
         };
         let ref_allele = first_base(f.next().unwrap_or("N"));
         let alt_allele = first_base(f.next().unwrap_or("N"));
-        if seen.insert((contig.clone(), pos), ()).is_some() {
-            continue; // multiallelic split → keep first row
-        }
         let row: Vec<i8> = f.map(parse_gt).collect();
         anyhow::ensure!(
             row.len() == n_samples,
@@ -168,27 +172,63 @@ fn load_matrix(path: &Path, n_samples: usize, min_call_rate: f64) -> Result<(Vec
             row.len(),
             n_samples
         );
-        let called = row.iter().filter(|&&d| d >= 0).count();
-        if (called as f64) < min_call_rate * n_samples as f64 {
-            dropped += 1;
+        map.entry((contig, pos)).or_insert((ref_allele, alt_allele, row));
+    }
+    Ok(map)
+}
+
+/// Load and merge one or more matrices by site: combined samples = concatenation of each file's
+/// samples (in order); sites = those present in **all** matrices with combined call rate ≥
+/// `min_call_rate`; dosages concatenated in the same order. Sorted by (contig, pos).
+fn load_combined(
+    matrices: &[PathBuf],
+    sample_files: &[PathBuf],
+    min_call_rate: f64,
+) -> Result<LoadedMatrix> {
+    anyhow::ensure!(
+        !matrices.is_empty() && matrices.len() == sample_files.len(),
+        "need an equal, non-zero number of --matrix and --samples entries"
+    );
+    let mut all_samples: Vec<String> = Vec::new();
+    let mut maps: Vec<SiteMap> = Vec::new();
+    for (m, s) in matrices.iter().zip(sample_files) {
+        let samples = load_samples(s)?;
+        let map = load_one(m, samples.len())?;
+        eprintln!("  {} → {} samples, {} sites", m.display(), samples.len(), map.len());
+        all_samples.extend(samples);
+        maps.push(map);
+    }
+    let total_n = all_samples.len();
+
+    let mut out: Vec<(SiteMeta, Vec<i8>)> = Vec::new();
+    'sites: for (key, (rf, alt, _)) in &maps[0] {
+        let mut combined = Vec::with_capacity(total_n);
+        for map in &maps {
+            match map.get(key) {
+                Some((_, _, row)) => combined.extend_from_slice(row),
+                None => continue 'sites, // not in every matrix
+            }
+        }
+        let called = combined.iter().filter(|&&d| d >= 0).count();
+        if (called as f64) < min_call_rate * total_n as f64 {
             continue;
         }
-        metas.push(SiteMeta { contig, pos, ref_allele, alt_allele });
-        rows.push(row);
+        out.push((SiteMeta { contig: key.0.clone(), pos: key.1, ref_allele: *rf, alt_allele: *alt }, combined));
     }
-    eprintln!("matrix: {} sites kept ({dropped} below call rate {min_call_rate})", metas.len());
-    Ok((metas, rows))
+    out.sort_by(|a, b| (a.0.contig.as_str(), a.0.pos).cmp(&(b.0.contig.as_str(), b.0.pos)));
+    eprintln!("combined: {} samples, {} sites (call rate ≥ {min_call_rate})", total_n, out.len());
+    let (metas, rows): (Vec<_>, Vec<_>) = out.into_iter().unzip();
+    Ok((all_samples, metas, rows))
 }
 
 pub fn build_pca(args: PcaArgs) -> Result<()> {
-    let samples = load_samples(&args.samples)?;
     let fine = load_fine_map(&args.pops)?;
+    let (samples, metas, rows) =
+        load_combined(&split_paths(&args.matrix), &split_paths(&args.samples), args.min_call_rate)?;
     let n_samples = samples.len();
     anyhow::ensure!(n_samples > 0, "no samples");
     let pops = distinct_fine_pops(&samples, &fine);
     let sample_pop = sample_pop_index(&samples, &fine, &pops);
-
-    let (metas, rows) = load_matrix(&args.matrix, n_samples, args.min_call_rate)?;
     let n_sites = metas.len();
     anyhow::ensure!(n_sites > 0, "no sites passed the call-rate filter");
     let k = args.components.min(n_samples - 1).min(n_sites);
@@ -278,14 +318,13 @@ pub fn build_pca(args: PcaArgs) -> Result<()> {
 }
 
 pub fn build_fine_panel(args: FinePanelArgs) -> Result<()> {
-    let samples = load_samples(&args.samples)?;
     let fine = load_fine_map(&args.pops)?;
+    let (samples, metas, rows) =
+        load_combined(&split_paths(&args.matrix), &split_paths(&args.samples), args.min_call_rate)?;
     let n_samples = samples.len();
     anyhow::ensure!(n_samples > 0, "no samples");
     let pops = distinct_fine_pops(&samples, &fine);
     let sample_pop = sample_pop_index(&samples, &fine, &pops);
-
-    let (metas, rows) = load_matrix(&args.matrix, n_samples, args.min_call_rate)?;
     anyhow::ensure!(!metas.is_empty(), "no sites passed the call-rate filter");
 
     // Per-site, per-population alt-allele frequency = Σ dosage / (2 · called) within the pop.
