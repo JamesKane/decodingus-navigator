@@ -1070,3 +1070,60 @@ async fn assign_y_haplogroup_lifts_grch38_tree_onto_chm13_alignment() {
 
     let _ = std::fs::remove_dir_all(&cache);
 }
+
+#[tokio::test]
+async fn analyze_project_runs_coverage_and_attempts_y_per_sample() {
+    // Seed the Y-tree cache so assign_y is offline; a root-only tree (no loci) means no query
+    // targets and no chain — exercises the orchestration without network.
+    let trees = std::env::temp_dir().join(format!("dun-trees-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&trees);
+    std::fs::create_dir_all(&trees).unwrap();
+    std::fs::write(
+        trees.join("ftdna-ytree.json"),
+        r#"{"allNodes":{"1":{"haplogroupId":1,"name":"root","isRoot":true,"variants":[],"children":[]}}}"#,
+    )
+    .unwrap();
+    std::env::set_var("NAVIGATOR_TREE_DIR", &trees);
+
+    let app = app().await;
+    let dir = fixtures();
+    let p = app.create_project(NewProject { name: "Proj".into(), description: None, administrator: "jk".into() }).await.unwrap();
+    let b = app.add_biosample(Some(p.id), "S1", None, None).await.unwrap();
+    let run = app
+        .record_sequence_run(NewSequenceRun {
+            biosample_guid: b.guid,
+            platform_name: "X".into(),
+            instrument_model: None,
+            test_type: "WGS".into(),
+            library_layout: None,
+            total_reads: None,
+            pf_reads_aligned: None,
+            mean_read_length: None,
+            mean_insert_size: None,
+        })
+        .await
+        .unwrap();
+    app.record_alignment(NewAlignment {
+        sequence_run_id: run.id,
+        reference_build: "chm13v2.0".into(),
+        aligner: "x".into(),
+        variant_caller: None,
+        bam_path: Some(dir.join("coverage.cram").to_string_lossy().into_owned()),
+        reference_path: Some(dir.join("ref.fa").to_string_lossy().into_owned()),
+    })
+    .await
+    .unwrap();
+
+    let s = app.analyze_project(p.id).await.unwrap();
+    assert_eq!(s.samples, 1);
+    assert_eq!(s.coverage_done, 1, "coverage computed on the CRAM");
+    // Y was attempted: recorded, or (here) errored on the chrM-only fixture lacking chrY.
+    assert_eq!(s.y_done + s.errors.iter().filter(|e| e.contains("Y:")).count(), 1);
+
+    // The report now shows coverage filled for the sample.
+    let report = app.project_report(p.id).await.unwrap();
+    assert!(report[0].mean_coverage.is_some());
+
+    std::env::remove_var("NAVIGATOR_TREE_DIR");
+    let _ = std::fs::remove_dir_all(&trees);
+}

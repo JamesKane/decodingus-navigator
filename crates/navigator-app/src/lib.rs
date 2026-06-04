@@ -324,6 +324,17 @@ pub struct BuildNeed {
     pub est_bytes: u64,
 }
 
+/// Outcome of a project-wide analyze pass (coverage + Y haplogroup per sample).
+#[derive(Debug, Clone)]
+pub struct AnalyzeSummary {
+    pub project_id: i64,
+    pub samples: usize,
+    pub coverage_done: usize,
+    pub y_done: usize,
+    /// Per-sample failures (best-effort: one sample's error doesn't abort the rest).
+    pub errors: Vec<String>,
+}
+
 /// Outcome of a batch project-directory import (idempotent — counts only what's new).
 #[derive(Debug, Clone)]
 pub struct ProjectImportSummary {
@@ -1279,7 +1290,8 @@ impl App {
         // build, query there, and map back. Otherwise query the tree positions directly
         // (Y-on-GRCh38, and mtDNA always — chrM stays a direct rCRS query).
         let lift_from = tree_build_for_contig(contig).filter(|src| {
-            matches!((canonical_build(src), canonical_build(&aln.reference_build)), (Some(s), Some(t)) if s != t)
+            !targets.is_empty()
+                && matches!((canonical_build(src), canonical_build(&aln.reference_build)), (Some(s), Some(t)) if s != t)
                 && self.gateway.chain_available(src, &aln.reference_build)
         });
 
@@ -1876,6 +1888,42 @@ impl App {
             });
         }
         Ok(out)
+    }
+
+    /// Analyze every sample in a project: compute coverage and assign the Y haplogroup on each
+    /// sample's primary (first BAM-bearing) alignment, so the project report fills in. Coverage
+    /// already cached and Y already recorded are skipped (idempotent re-run). Best-effort: one
+    /// sample's failure is recorded and the rest continue. mtDNA is intentionally not assigned
+    /// here (provisional on CHM13 — see the reconciliation/liftover notes).
+    pub async fn analyze_project(&self, project_id: i64) -> Result<AnalyzeSummary, AppError> {
+        let mut summary = AnalyzeSummary { project_id, samples: 0, coverage_done: 0, y_done: 0, errors: Vec::new() };
+        for biosample in biosample::list_for_project(self.store.pool(), project_id).await? {
+            let alignments = alignment::list_for_biosample(self.store.pool(), biosample.guid).await?;
+            let Some(aln) = alignments.iter().find(|a| a.bam_path.is_some()) else {
+                continue;
+            };
+            summary.samples += 1;
+            let label = &biosample.donor_identifier;
+
+            if self.cached_coverage(aln.id).await?.is_some() {
+                summary.coverage_done += 1;
+            } else {
+                match self.run_coverage_for_alignment(aln.id).await {
+                    Ok(_) => summary.coverage_done += 1,
+                    Err(e) => summary.errors.push(format!("{label} coverage: {e}")),
+                }
+            }
+
+            if self.haplogroup_consensus(biosample.guid, DnaType::Y).await?.is_some() {
+                summary.y_done += 1;
+            } else {
+                match self.assign_y_haplogroup(aln.id).await {
+                    Ok(_) => summary.y_done += 1,
+                    Err(e) => summary.errors.push(format!("{label} Y: {e}")),
+                }
+            }
+        }
+        Ok(summary)
     }
 }
 

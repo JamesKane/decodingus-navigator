@@ -56,6 +56,8 @@ pub enum Command {
     LoadSamples(i64),
     /// Load the per-sample coverage/haplogroup report for a project.
     LoadProjectReport(i64),
+    /// Analyze every sample in a project: coverage + Y haplogroup (fills the report).
+    AnalyzeProject(i64),
     /// Load every biosample (subjects list), regardless of project.
     LoadAllBiosamples,
     AddBiosample(NewBiosample),
@@ -161,6 +163,8 @@ pub enum Event {
     ReferenceReady { build: String, path: PathBuf },
     /// Per-sample coverage/haplogroup report for a project.
     ProjectReport { project_id: i64, rows: Vec<ProjectSampleReport> },
+    /// A project-wide analyze pass finished (coverage + Y per sample).
+    ProjectAnalyzed { project_id: i64, samples: usize, coverage_done: usize, y_done: usize, errors: usize },
     Samples { project_id: i64, samples: Vec<Biosample> },
     /// All biosamples (the project-independent subjects list).
     AllBiosamples(Vec<Biosample>),
@@ -242,6 +246,16 @@ pub async fn handle(app: &App, cmd: Command) -> Event {
         },
         Command::LoadProjectReport(project_id) => match app.project_report(project_id).await {
             Ok(rows) => Event::ProjectReport { project_id, rows },
+            Err(e) => Event::Error(e.to_string()),
+        },
+        Command::AnalyzeProject(project_id) => match app.analyze_project(project_id).await {
+            Ok(s) => Event::ProjectAnalyzed {
+                project_id,
+                samples: s.samples,
+                coverage_done: s.coverage_done,
+                y_done: s.y_done,
+                errors: s.errors.len(),
+            },
             Err(e) => Event::Error(e.to_string()),
         },
         Command::LoadAllBiosamples => match app.list_all_biosamples().await {

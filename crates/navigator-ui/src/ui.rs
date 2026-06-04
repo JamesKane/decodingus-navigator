@@ -128,6 +128,8 @@ pub struct NavigatorApp {
     reference_needs: Vec<BuildNeed>,
     /// In-flight reference download: (build, received, total).
     reference_progress: Option<(String, u64, Option<u64>)>,
+    /// A project-wide analyze pass is running (disables the report's analyze button).
+    analyzing: bool,
     forms: Forms,
     status: String,
 }
@@ -269,6 +271,7 @@ impl NavigatorApp {
             pending_import_dir: None,
             reference_needs: Vec::new(),
             reference_progress: None,
+            analyzing: false,
             forms: Forms {
                 denovo_contig: "chrM".into(),
                 ploidy: "2".into(),
@@ -344,6 +347,16 @@ impl NavigatorApp {
                 Event::ProjectReport { project_id, rows } => {
                     if self.selected_project == Some(project_id) {
                         self.project_report = rows;
+                    }
+                }
+                Event::ProjectAnalyzed { project_id, samples, coverage_done, y_done, errors } => {
+                    self.analyzing = false;
+                    self.status = format!(
+                        "Analyzed {samples} sample(s): {coverage_done} coverage, {y_done} Y{}",
+                        if errors > 0 { format!(", {errors} error(s)") } else { String::new() }
+                    );
+                    if self.selected_project == Some(project_id) {
+                        let _ = self.tx.send(Command::LoadProjectReport(project_id));
                     }
                 }
                 Event::AllBiosamples(v) => self.all_biosamples = v,
@@ -432,6 +445,11 @@ impl NavigatorApp {
                     self.y_haplogroup = Some((alignment_id, assignment));
                     if let Some(guid) = self.selected_sample {
                         let _ = self.tx.send(Command::LoadConsensus(guid));
+                    }
+                    // A per-row "Assign Y" from the project report just recorded a call —
+                    // refresh the report so its Y column fills in.
+                    if let Some(pid) = self.selected_project {
+                        let _ = self.tx.send(Command::LoadProjectReport(pid));
                     }
                 }
                 Event::Consensus { biosample_guid, y, mt } => {
@@ -1260,6 +1278,14 @@ impl NavigatorApp {
         ui.separator();
         ui.horizontal(|ui| {
             ui.heading("Project report");
+            let busy = self.analyzing || self.running;
+            if ui.add_enabled(!busy, egui::Button::new("Analyze all (coverage + Y)")).clicked() {
+                if let Some(pid) = self.selected_project {
+                    self.analyzing = true;
+                    self.status = "Analyzing project (coverage + Y per sample)…".into();
+                    let _ = self.tx.send(Command::AnalyzeProject(pid));
+                }
+            }
             if ui.button("Export CSV…").clicked() {
                 let csv = navigator_app::report_csv(&self.project_report);
                 if let Some(path) = rfd::FileDialog::new()
@@ -1275,10 +1301,11 @@ impl NavigatorApp {
             }
         });
 
-        let running = self.running;
+        let running = self.running || self.analyzing;
         let mut recompute: Option<i64> = None;
+        let mut assign_y: Option<i64> = None;
         egui::Grid::new("project_report_grid").striped(true).num_columns(10).show(ui, |ui| {
-            for h in ["Sample", "Alns", "Mean cov", "Median", "≥10x", "≥20x", "Callable", "Y", "mtDNA", ""] {
+            for h in ["Sample", "Alns", "Mean cov", "Median", "≥10x", "≥20x", "Callable", "Y", "mtDNA", "actions"] {
                 ui.strong(h);
             }
             ui.end_row();
@@ -1293,9 +1320,16 @@ impl NavigatorApp {
                 ui.label(r.y_haplogroup.clone().unwrap_or_else(|| "—".into()));
                 ui.label(r.mt_haplogroup.clone().unwrap_or_else(|| "—".into()));
                 if let Some(aln) = r.primary_alignment_id {
-                    if ui.add_enabled(!running, egui::Button::new("Recompute cov")).clicked() {
-                        recompute = Some(aln);
-                    }
+                    ui.horizontal(|ui| {
+                        if ui.add_enabled(!running, egui::Button::new("Cov")).clicked() {
+                            recompute = Some(aln);
+                        }
+                        if ui.add_enabled(!running, egui::Button::new("Y")).clicked() {
+                            assign_y = Some(aln);
+                        }
+                    });
+                } else {
+                    ui.label("—");
                 }
                 ui.end_row();
             }
@@ -1304,6 +1338,10 @@ impl NavigatorApp {
             self.running = true;
             self.status = "Recomputing coverage…".into();
             let _ = self.tx.send(Command::RunCoverage(aln));
+        }
+        if let Some(aln) = assign_y {
+            self.status = "Assigning Y haplogroup…".into();
+            let _ = self.tx.send(Command::AssignYHaplogroup { alignment_id: aln });
         }
     }
 
