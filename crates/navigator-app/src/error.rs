@@ -32,4 +32,12 @@ pub enum AppError {
 
     #[error(transparent)]
     Sync(#[from] navigator_sync::SyncError),
+
+    #[error(transparent)]
+    Refgenome(#[from] navigator_refgenome::RefgenomeError),
+
+    /// Import needs reference build(s) that aren't cached — the UI prompts, downloads via
+    /// the gateway, then retries. No DB writes happened.
+    #[error("reference download required: {0:?}")]
+    ReferenceNeeded(Vec<crate::BuildNeed>),
 }

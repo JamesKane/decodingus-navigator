@@ -2696,6 +2696,7 @@ dependencies = [
  "du-domain",
  "navigator-analysis",
  "navigator-domain",
+ "navigator-refgenome",
  "navigator-store",
  "navigator-sync",
  "reqwest",

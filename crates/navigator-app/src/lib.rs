@@ -82,6 +82,8 @@ pub use navigator_sync::{
     COVERAGE_SUMMARY_COLLECTION, PRIVATE_VARIANTS_COLLECTION,
 };
 use navigator_sync::{dev_http_client, login_default, AsyncSync, OAuthConfig, RetryPolicy, TokenStore};
+use navigator_refgenome::{cache as refgenome_cache, ReferenceGateway};
+pub use navigator_refgenome::RefStatus;
 use navigator_sync::{
     AuditEntryRecord, HaplogroupReconciliationRecord, HeteroplasmyObservationRecord,
     IdentityVerificationRecord, ManualOverrideRecord, ReconciliationStatusRecord,
@@ -292,6 +294,15 @@ pub struct ProjectSampleReport {
     pub mt_haplogroup: Option<String>,
 }
 
+/// A reference build an import needs but doesn't have cached — surfaced so the UI can
+/// prompt and download it before retrying.
+#[derive(Debug, Clone)]
+pub struct BuildNeed {
+    pub build: String,
+    pub url: String,
+    pub est_bytes: u64,
+}
+
 /// Outcome of a batch project-directory import (idempotent — counts only what's new).
 #[derive(Debug, Clone)]
 pub struct ProjectImportSummary {
@@ -338,11 +349,13 @@ impl Auth {
 pub struct App {
     store: Store,
     auth: Auth,
+    gateway: ReferenceGateway,
 }
 
 impl App {
     pub fn new(store: Store) -> Self {
-        App { store, auth: Auth::new() }
+        let gateway = ReferenceGateway::new(refgenome_cache::base_dir(), dev_http_client());
+        App { store, auth: Auth::new(), gateway }
     }
 
     /// Open/create the workspace database and build the app.
@@ -1385,29 +1398,70 @@ impl App {
     }
 
     /// Batch-import a NAS project directory: scan `{dir}/{sample}/…` and create the Project
-    /// plus its Biosample → SequenceRun → Alignment rows. CRAM requires a reference, so
-    /// `reference_path` (validated up front, with its `.fai`) is stamped on every alignment.
-    /// Idempotent: an existing project (by name), biosample (by donor id), or alignment (by
-    /// path) is reused, so re-running only adds what's new. Coverage is NOT computed here —
-    /// it can be large; run it per alignment or via the project report afterwards.
+    /// plus its Biosample → SequenceRun → Alignment rows. The reference is resolved per
+    /// alignment: pass `Some(fasta)` to use a specific FASTA (validated with its `.fai`) for
+    /// every alignment, or `None` to let the gateway resolve each file's inferred build from
+    /// the cache. If a needed build isn't cached, returns [`AppError::ReferenceNeeded`]
+    /// **before any DB writes** so the UI can prompt + download, then retry. Idempotent: an
+    /// existing project (by name), biosample (by donor id), or alignment (by path) is reused.
+    /// Coverage is NOT computed here — run it per alignment or via the project report.
     pub async fn import_project_dir(
         &self,
         dir: &Path,
-        reference_path: PathBuf,
+        reference: Option<PathBuf>,
         administrator: String,
     ) -> Result<ProjectImportSummary, AppError> {
-        if !reference_path.exists() {
-            return Err(AppError::Import(format!("reference FASTA not found: {}", reference_path.display())));
-        }
-        let fai = PathBuf::from(format!("{}.fai", reference_path.display()));
-        if !fai.exists() {
-            return Err(AppError::Import(format!("reference FASTA index (.fai) not found: {}", fai.display())));
+        // An explicit FASTA must exist and be indexed; it applies to every alignment.
+        if let Some(path) = &reference {
+            if !path.exists() {
+                return Err(AppError::Import(format!("reference FASTA not found: {}", path.display())));
+            }
+            let fai = PathBuf::from(format!("{}.fai", path.display()));
+            if !fai.exists() {
+                return Err(AppError::Import(format!("reference FASTA index (.fai) not found: {}", fai.display())));
+            }
         }
 
         let scan_dir = dir.to_path_buf();
         let discovered = tokio::task::spawn_blocking(move || navigator_analysis::scan::scan(&scan_dir))
             .await
             .map_err(|e| AppError::Join(e.to_string()))??;
+
+        // Resolve each alignment's reference build to a path (explicit FASTA, else the cache).
+        // Collect any builds that need downloading and bail before writing anything.
+        let explicit = reference.as_ref().map(|p| p.to_string_lossy().into_owned());
+        let mut resolved: HashMap<String, String> = HashMap::new();
+        let mut needs: Vec<BuildNeed> = Vec::new();
+        for sample in &discovered.samples {
+            for aln_path in &sample.alignment_files {
+                let build = reference_build_for(aln_path);
+                if resolved.contains_key(&build) || needs.iter().any(|n| n.build == build) {
+                    continue;
+                }
+                if let Some(ref path) = explicit {
+                    resolved.insert(build, path.clone());
+                } else if let Some(p) = self.gateway.cached_reference(&build) {
+                    resolved.insert(build, p.to_string_lossy().into_owned());
+                } else {
+                    match self.gateway.reference_status(&build) {
+                        RefStatus::NeedsDownload { url, est_bytes } => {
+                            needs.push(BuildNeed { build, url, est_bytes })
+                        }
+                        RefStatus::Unknown => {
+                            return Err(AppError::Import(format!(
+                                "unknown reference build '{build}' — supply a reference FASTA explicitly"
+                            )))
+                        }
+                        RefStatus::Cached(p) | RefStatus::LocalOverride(p) => {
+                            resolved.insert(build, p.to_string_lossy().into_owned());
+                        }
+                    }
+                }
+            }
+        }
+        if !needs.is_empty() {
+            return Err(AppError::ReferenceNeeded(needs));
+        }
 
         // Project: reuse an existing one with the same name.
         let project = match project::list(self.store.pool()).await?.into_iter().find(|p| p.name == discovered.project_id) {
@@ -1422,7 +1476,6 @@ impl App {
             }
         };
 
-        let ref_str = reference_path.to_string_lossy().into_owned();
         let mut summary = ProjectImportSummary {
             project: project.clone(),
             samples_total: discovered.samples.len(),
@@ -1476,19 +1529,47 @@ impl App {
                 if !has_sibling_index(aln_path, &sample.index_files) {
                     summary.missing_index.push(sample.sample_id.clone());
                 }
+                let build = reference_build_for(aln_path);
+                let reference_path = resolved.get(&build).cloned();
                 self.record_alignment(NewAlignment {
                     sequence_run_id: run.id,
-                    reference_build: reference_build_for(aln_path),
+                    reference_build: build,
                     aligner: "unknown".into(),
                     variant_caller: None,
                     bam_path: Some(path_str),
-                    reference_path: Some(ref_str.clone()),
+                    reference_path,
                 })
                 .await?;
                 summary.alignments_created += 1;
             }
         }
         Ok(summary)
+    }
+
+    /// Cache/override status of a reference build (no network).
+    pub fn reference_status(&self, build: &str) -> RefStatus {
+        self.gateway.reference_status(build)
+    }
+
+    /// Resolve a reference build to a cached, indexed `.fa`, downloading on a miss.
+    /// `progress(received, total)` is invoked as bytes arrive.
+    pub async fn resolve_reference(
+        &self,
+        build: &str,
+        progress: &mut (dyn FnMut(u64, Option<u64>) + Send),
+    ) -> Result<PathBuf, AppError> {
+        Ok(self.gateway.resolve_reference(build, progress).await?)
+    }
+
+    /// Resolve (and cache) a liftover chain for a build pair, downloading on a miss. The
+    /// cached `.chain` is then available for the haplogroup/liftover path.
+    pub async fn resolve_chain(
+        &self,
+        from: &str,
+        to: &str,
+        progress: &mut (dyn FnMut(u64, Option<u64>) + Send),
+    ) -> Result<PathBuf, AppError> {
+        Ok(self.gateway.resolve_chain(from, to, progress).await?)
     }
 
     pub async fn panel_site_count(&self, panel_id: i64) -> Result<i64, AppError> {

@@ -12,6 +12,7 @@ navigator-domain = { workspace = true }
 navigator-store = { workspace = true }
 navigator-analysis = { workspace = true }
 navigator-sync = { workspace = true }
+navigator-refgenome = { workspace = true }
 du-domain = { workspace = true }
 thiserror = { workspace = true }
 serde = { version = "1", features = ["derive"] }

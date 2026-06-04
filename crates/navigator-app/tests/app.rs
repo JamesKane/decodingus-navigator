@@ -815,7 +815,7 @@ async fn import_project_dir_creates_rows_is_idempotent_and_coverage_runs_on_cram
     std::fs::copy(fx.join("coverage.cram.crai"), sample.join("HG00096.chm13.cram.crai")).unwrap();
 
     let reference = fx.join("ref.fa");
-    let summary = app.import_project_dir(&root, reference.clone(), "tester".into()).await.unwrap();
+    let summary = app.import_project_dir(&root, Some(reference.clone()), "tester".into()).await.unwrap();
     assert_eq!(summary.samples_total, 1);
     assert_eq!(summary.samples_created, 1);
     assert_eq!(summary.alignments_created, 1);
@@ -827,7 +827,7 @@ async fn import_project_dir_creates_rows_is_idempotent_and_coverage_runs_on_cram
     assert_eq!(bios[0].donor_identifier, "HG00096");
 
     // Re-import: project/sample/alignment reused, nothing new created.
-    let again = app.import_project_dir(&root, reference, "tester".into()).await.unwrap();
+    let again = app.import_project_dir(&root, Some(reference), "tester".into()).await.unwrap();
     assert_eq!(again.project.id, summary.project.id);
     assert_eq!(again.samples_created, 0);
     assert_eq!(again.alignments_created, 0);
@@ -856,7 +856,7 @@ async fn project_report_rolls_up_coverage_and_csv_round_trips() {
     std::fs::copy(fx.join("coverage.cram"), sample.join("HG00096.chm13.cram")).unwrap();
     std::fs::copy(fx.join("coverage.cram.crai"), sample.join("HG00096.chm13.cram.crai")).unwrap();
 
-    let summary = app.import_project_dir(&root, fx.join("ref.fa"), "tester".into()).await.unwrap();
+    let summary = app.import_project_dir(&root, Some(fx.join("ref.fa")), "tester".into()).await.unwrap();
     let pid = summary.project.id;
 
     // Before coverage runs: report has the sample, coverage cells empty, haplogroups none.
@@ -881,4 +881,52 @@ async fn project_report_rolls_up_coverage_and_csv_round_trips() {
     assert!(lines[1].starts_with("HG00096,1,"));
 
     let _ = std::fs::remove_dir_all(&root);
+}
+
+#[tokio::test]
+async fn import_without_reference_resolves_from_cache_else_reports_needed() {
+    use navigator_app::AppError;
+
+    // Point the gateway cache at a temp dir; no network involved.
+    let cache = std::env::temp_dir().join(format!("dun-refcache-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&cache);
+    std::env::set_var("NAVIGATOR_REFGENOME_DIR", &cache);
+
+    let app = app().await;
+    let fx = fixtures();
+    let root = std::env::temp_dir().join(format!("dun-import-noref-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let sample = root.join("HG00096");
+    std::fs::create_dir_all(&sample).unwrap();
+    std::fs::copy(fx.join("coverage.cram"), sample.join("HG00096.chm13.cram")).unwrap();
+    std::fs::copy(fx.join("coverage.cram.crai"), sample.join("HG00096.chm13.cram.crai")).unwrap();
+
+    // Empty cache → import (no explicit reference) reports the chm13v2.0 build is needed, no writes.
+    match app.import_project_dir(&root, None, "tester".into()).await {
+        Err(AppError::ReferenceNeeded(needs)) => {
+            assert_eq!(needs.len(), 1);
+            assert_eq!(needs[0].build, "chm13v2.0");
+            assert!(needs[0].url.ends_with("chm13v2.0.fa.gz"));
+        }
+        other => panic!("expected ReferenceNeeded, got {other:?}"),
+    }
+    assert!(app.project_overview().await.unwrap().is_empty(), "no writes on ReferenceNeeded");
+
+    // Seed the cache as if a download had completed (reuse the fixture ref as chm13v2.0).
+    let refs = cache.join("references");
+    std::fs::create_dir_all(&refs).unwrap();
+    std::fs::copy(fx.join("ref.fa"), refs.join("chm13v2.0.fa")).unwrap();
+    std::fs::copy(fx.join("ref.fa.fai"), refs.join("chm13v2.0.fa.fai")).unwrap();
+
+    // Now import (no explicit reference) resolves from the cache and creates rows.
+    let summary = app.import_project_dir(&root, None, "tester".into()).await.unwrap();
+    assert_eq!(summary.alignments_created, 1);
+    let aln = app.list_all_alignments().await.unwrap();
+    assert_eq!(aln[0].reference_path.as_deref(), Some(refs.join("chm13v2.0.fa").to_string_lossy().as_ref()));
+    // Coverage runs on the CRAM using the cache-resolved reference.
+    app.run_coverage_for_alignment(aln[0].id).await.unwrap();
+
+    std::env::remove_var("NAVIGATOR_REFGENOME_DIR");
+    let _ = std::fs::remove_dir_all(&root);
+    let _ = std::fs::remove_dir_all(&cache);
 }
