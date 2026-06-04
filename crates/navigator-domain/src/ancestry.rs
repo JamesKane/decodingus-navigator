@@ -36,8 +36,58 @@ pub fn super_populations() -> Vec<Population> {
     .collect()
 }
 
-/// Display name for a (super-)population code, falling back to the code itself.
+/// The 26 fine-grained 1000 Genomes populations: `(code, name, super-population)`. Used for
+/// fine-grained ancestry; each rolls up to one of [`super_populations`] for the summary.
+const FINE_POPULATIONS: [(&str, &str, &str); 26] = [
+    // African
+    ("YRI", "Yoruba (Nigeria)", "AFR"),
+    ("LWK", "Luhya (Kenya)", "AFR"),
+    ("GWD", "Gambian", "AFR"),
+    ("MSL", "Mende (Sierra Leone)", "AFR"),
+    ("ESN", "Esan (Nigeria)", "AFR"),
+    ("ASW", "African-American (SW US)", "AFR"),
+    ("ACB", "African-Caribbean (Barbados)", "AFR"),
+    // Admixed American
+    ("MXL", "Mexican (LA)", "AMR"),
+    ("PUR", "Puerto Rican", "AMR"),
+    ("CLM", "Colombian", "AMR"),
+    ("PEL", "Peruvian", "AMR"),
+    // East Asian
+    ("CHB", "Han Chinese (Beijing)", "EAS"),
+    ("JPT", "Japanese (Tokyo)", "EAS"),
+    ("CHS", "Southern Han Chinese", "EAS"),
+    ("CDX", "Dai Chinese", "EAS"),
+    ("KHV", "Kinh (Vietnam)", "EAS"),
+    // European
+    ("CEU", "NW European (Utah)", "EUR"),
+    ("TSI", "Tuscan (Italy)", "EUR"),
+    ("FIN", "Finnish", "EUR"),
+    ("GBR", "British", "EUR"),
+    ("IBS", "Iberian (Spain)", "EUR"),
+    // South Asian
+    ("GIH", "Gujarati", "SAS"),
+    ("PJL", "Punjabi", "SAS"),
+    ("BEB", "Bengali", "SAS"),
+    ("STU", "Sri Lankan Tamil", "SAS"),
+    ("ITU", "Indian Telugu", "SAS"),
+];
+
+/// The super-population a (fine or super) population code belongs to, or `None` if unknown.
+pub fn population_super(code: &str) -> Option<&'static str> {
+    if super_populations().iter().any(|p| p.code == code) {
+        // A super-population code maps to itself.
+        return SUPER_CODES.iter().copied().find(|&c| c == code);
+    }
+    FINE_POPULATIONS.iter().find(|(c, _, _)| *c == code).map(|(_, _, sp)| *sp)
+}
+
+const SUPER_CODES: [&str; 5] = ["AFR", "AMR", "EAS", "SAS", "EUR"];
+
+/// Display name for a fine or super population code, falling back to the code itself.
 pub fn population_name(code: &str) -> String {
+    if let Some((_, name, _)) = FINE_POPULATIONS.iter().find(|(c, _, _)| *c == code) {
+        return name.to_string();
+    }
     super_populations()
         .into_iter()
         .find(|p| p.code == code)
@@ -45,11 +95,13 @@ pub fn population_name(code: &str) -> String {
         .unwrap_or_else(|| code.to_string())
 }
 
-/// Hex display color for a (super-)population code, falling back to a neutral grey.
+/// Hex display color for a population code. Fine populations inherit their super-population's
+/// color (so PCA clusters read by continent); falls back to neutral grey.
 pub fn population_color(code: &str) -> String {
+    let key = population_super(code).unwrap_or(code);
     super_populations()
         .into_iter()
-        .find(|p| p.code == code)
+        .find(|p| p.code == key)
         .map(|p| p.color)
         .unwrap_or_else(|| "#888888".to_string())
 }

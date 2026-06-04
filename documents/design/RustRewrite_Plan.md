@@ -381,7 +381,14 @@ rollback.
    (+`classify_pca`) projects a sample; `App::estimate_ancestry` fills `pca_coordinates`, and the
    UI draws a PC1×PC2 scatter (reference centroids + sample). Validated on GFX0457637: 18,634
    sites × 10 PCs, classic 1000G structure (PC1=AFR axis, PC2=EAS, PC3=SAS), sample projects
-   onto the EUR centroid. **Still deferred:** fine-grained 26-population AFs.
+   onto the EUR centroid. **Fine-grained (26-population) — built + validated (2026-06-04):**
+   `navigator-panelbuild fine-panel` computes per-fine-population AF from the genotype matrix, and
+   `pca` keys centroids on the 26 fine populations; the domain carries the fine catalog +
+   fine→super mapping, and the estimator rolls fine components up into the super-population
+   summary. The UI leads with the (robust) super-population rollup and lists the top fine
+   populations; the scatter shows all 26 centroids (colored by continent). Validated on
+   GFX0457637: European 100% (rolled up), nearest fine centroid IBS — within-noise, as expected
+   for a continental-AIMs panel.
 10. **Cutover.** Feature-parity check against the golden harness; ship.
 
 ---

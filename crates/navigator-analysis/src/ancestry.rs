@@ -14,8 +14,8 @@ use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
 
 use navigator_domain::ancestry::{
-    population_color, population_name, AncestryResult, ConfidenceInterval, PopulationComponent,
-    SuperPopulationSummary,
+    population_color, population_name, population_super, AncestryResult, ConfidenceInterval,
+    PopulationComponent, SuperPopulationSummary,
 };
 use serde::{Deserialize, Serialize};
 
@@ -302,14 +302,25 @@ fn from_probabilities(
         })
         .collect();
 
-    let super_population_summary: Vec<SuperPopulationSummary> = pct
-        .iter()
-        .map(|(code, p)| SuperPopulationSummary {
-            super_population: population_name(code),
-            percentage: *p,
-            populations: vec![code.clone()],
+    // Roll components up into super-population summaries. With a super-population panel each
+    // component is its own super-population; with a fine-grained (26-pop) panel several
+    // components aggregate into one super-population.
+    let mut by_super: BTreeMap<String, (f64, Vec<String>)> = BTreeMap::new();
+    for (code, p) in &pct {
+        let sp = population_super(code).unwrap_or(code.as_str()).to_string();
+        let e = by_super.entry(sp).or_insert((0.0, Vec::new()));
+        e.0 += *p;
+        e.1.push(code.clone());
+    }
+    let mut super_population_summary: Vec<SuperPopulationSummary> = by_super
+        .into_iter()
+        .map(|(sp, (pct, members))| SuperPopulationSummary {
+            super_population: population_name(&sp),
+            percentage: pct,
+            populations: members,
         })
         .collect();
+    super_population_summary.sort_by(|a, b| b.percentage.partial_cmp(&a.percentage).unwrap_or(std::cmp::Ordering::Equal));
 
     // Touch the catalog color path so the API stays cohesive; color is consumed by the UI.
     debug_assert!(!population_color("EUR").is_empty());

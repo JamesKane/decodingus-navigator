@@ -1411,11 +1411,14 @@ async fn validate_gfx_chm13_ancestry() {
             eprintln!("  {}: {:.1}%", c.super_population, c.percentage);
         }
     }
-    let top = result.primary().expect("a top component");
-    assert_eq!(top.population_code, "EUR", "expected EUR-dominant, got {:?}", result.components);
+    // Robust check: the top super-population is European (works for the super-pop panel and the
+    // fine-grained panel, which rolls its 26 components up to the 5 super-populations).
+    let top_super = result.super_population_summary.first().expect("a super-pop summary");
+    assert_eq!(top_super.super_population, "European", "expected European-dominant, got {:?}", result.super_population_summary);
 
     // If PCA loadings are installed ($NAVIGATOR_ANCESTRY_PCA), the sample should also project
-    // nearest the EUR reference centroid on (PC1, PC2).
+    // nearest a European reference centroid on (PC1, PC2) — "EUR" (super panel) or a European
+    // fine population like GBR/CEU (fine panel).
     if let Some(coords) = &result.pca_coordinates {
         let refs = app.ancestry_pca_reference(aln).await.expect("pca reference");
         if coords.len() >= 2 && !refs.is_empty() {
@@ -1429,7 +1432,9 @@ async fn validate_gfx_chm13_ancestry() {
                 })
                 .unwrap();
             eprintln!("nearest centroid: {} ({:.2},{:.2})", nearest.0, nearest.1, nearest.2);
-            assert_eq!(nearest.0, "EUR", "sample should project nearest EUR centroid");
+            let nearest_super =
+                navigator_domain::ancestry::population_super(&nearest.0).unwrap_or(nearest.0.as_str());
+            assert_eq!(nearest_super, "EUR", "sample should project nearest a European centroid");
         }
     }
 }

@@ -42,6 +42,8 @@ enum Cmd {
     Panel(PanelArgs),
     /// Build PCA loadings from a genotype matrix (bcftools query output) + sample/pop metadata.
     Pca(pca::PcaArgs),
+    /// Build a fine-grained (26-population) AF panel from a genotype matrix + sample/pop metadata.
+    FinePanel(pca::FinePanelArgs),
 }
 
 #[derive(Parser)]
@@ -99,6 +101,7 @@ fn main() -> Result<()> {
     match Cli::parse().cmd {
         Cmd::Panel(args) => build_panel(args),
         Cmd::Pca(args) => pca::build_pca(args),
+        Cmd::FinePanel(args) => pca::build_fine_panel(args),
     }
 }
 

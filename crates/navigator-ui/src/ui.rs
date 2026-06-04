@@ -12,7 +12,7 @@ use navigator_app::{
     PanelGenotype, PrivateBucket, PrivateClass, ProjectOverview, ProjectSampleReport,
     ReconciledVariant, SourceType, VariantStatus, VerificationStatus,
 };
-use navigator_domain::ancestry::population_color;
+use navigator_domain::ancestry::{population_color, population_super};
 use navigator_domain::du_domain::ids::SampleGuid;
 use navigator_domain::chipprofile::{self, ChipProfile};
 use navigator_domain::mtdna::MtdnaSequence;
@@ -549,11 +549,13 @@ impl NavigatorApp {
                 Event::Ancestry { alignment_id, result } => {
                     self.estimating_ancestry = false;
                     self.ancestry_progress = None;
+                    // Lead with the robust super-population rollup (fine-pop components are
+                    // indicative but noisier on a continental-AIMs panel).
                     self.status = match &result {
-                        Some(r) => match r.primary() {
+                        Some(r) => match r.super_population_summary.first() {
                             Some(top) => format!(
                                 "Ancestry: {} {:.1}% ({}/{} SNPs)",
-                                top.population_name, top.percentage, r.snps_with_genotype, r.snps_analyzed
+                                top.super_population, top.percentage, r.snps_with_genotype, r.snps_analyzed
                             ),
                             None => "Ancestry: no estimate".into(),
                         },
@@ -1933,6 +1935,25 @@ impl NavigatorApp {
                         ui.end_row();
                     }
                 });
+
+                // Top contributing fine-grained populations (only when the panel is fine — i.e.
+                // components roll up to a *different* super-population than their own code).
+                let is_fine = result
+                    .components
+                    .iter()
+                    .any(|c| population_super(&c.population_code) != Some(c.population_code.as_str()));
+                if is_fine {
+                    let top = result
+                        .components
+                        .iter()
+                        .filter(|c| c.percentage >= 1.0)
+                        .take(8)
+                        .map(|c| format!("{} {:.1}%", c.population_code, c.percentage))
+                        .collect::<Vec<_>>()
+                        .join(" · ");
+                    ui.add_space(4.0);
+                    ui.label(egui::RichText::new(format!("top populations: {top}")).small().weak());
+                }
 
                 // PCA scatter: reference population centroids (PC1×PC2) + this sample's point.
                 if let Some(coords) = &result.pca_coordinates {
