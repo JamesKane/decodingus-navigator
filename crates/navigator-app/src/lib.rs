@@ -29,7 +29,7 @@ pub use navigator_analysis::coverage::CoverageResult as Coverage;
 pub use navigator_analysis::heteroplasmy::HeteroplasmySite;
 pub use navigator_analysis::haplo::{BranchEvidence, CallState, ScoredHaplogroup, SnpEvidence};
 pub use navigator_domain::ancestry::{
-    AncestryResult, ConfidenceInterval, PopulationComponent, SuperPopulationSummary,
+    AncestryResult, AncestrySegment, ConfidenceInterval, PopulationComponent, SuperPopulationSummary,
 };
 // The ancestry panel format, re-exported so panel tooling/tests depend only on navigator-app.
 pub use navigator_analysis::ancestry::{AncestryPanel, PanelSite as AncestryPanelSite};
@@ -1405,6 +1405,66 @@ impl App {
                 (code.clone(), c.first().copied().unwrap_or(0.0) as f64, c.get(1).copied().unwrap_or(0.0) as f64)
             })
             .collect())
+    }
+
+    /// Paint each chromosome with local ancestry (the "DNA painting"): genotype the AIMs panel,
+    /// anchor on the genome-wide admixture composition, and run the per-chromosome HMM. Returns
+    /// the ancestry segments. `progress(contigs_done, total)` reports the genotyping pass.
+    pub async fn local_ancestry(&self, alignment_id: i64) -> Result<Vec<AncestrySegment>, AppError> {
+        self.local_ancestry_with_progress(alignment_id, |_, _| {}).await
+    }
+
+    /// [`local_ancestry`] with a genotyping-progress callback (for the UI bar).
+    pub async fn local_ancestry_with_progress(
+        &self,
+        alignment_id: i64,
+        mut progress: impl FnMut(usize, usize) + Send + 'static,
+    ) -> Result<Vec<AncestrySegment>, AppError> {
+        let aln = alignment::get(self.store.pool(), alignment_id)
+            .await?
+            .ok_or_else(|| AppError::Store(StoreError::NotFound(format!("alignment {alignment_id}"))))?;
+        let bam = PathBuf::from(aln.bam_path.ok_or(AppError::MissingPaths(alignment_id))?);
+        let build = canonical_build(&aln.reference_build)
+            .ok_or_else(|| AppError::Refgenome(navigator_refgenome::RefgenomeError::UnknownBuild(aln.reference_build.clone())))?;
+        let panel_path = ancestry_panel_path(build);
+        let panel_bytes = std::fs::read(&panel_path).map_err(|_| AppError::AncestryPanelMissing(panel_path.clone()))?;
+        let panel = AncestryPanel::from_bytes(&panel_bytes)?;
+        if canonical_build(&panel.build) != Some(build) {
+            return Err(AppError::AncestryPanelBuildMismatch {
+                panel: panel.build.clone(),
+                alignment: aln.reference_build.clone(),
+            });
+        }
+        let reference = match aln.reference_path {
+            Some(p) => PathBuf::from(p),
+            None => self.gateway.resolve_reference(&aln.reference_build, &mut |_, _| {}).await?,
+        };
+        let reference_version = aln.reference_build.clone();
+
+        let segments = tokio::task::spawn_blocking(move || {
+            let params = adaptive_haploid_params(&bam, Some(&reference));
+            let genotypes =
+                ancestry_analysis::genotype_panel(&bam, Some(&reference), &panel, &params, &mut progress)?;
+            // Genome-wide composition → the HMM's switch prior.
+            let composition =
+                ancestry_analysis::estimate_admixture(&genotypes, &panel, &reference_version);
+            let prior: Vec<(String, f64)> = composition
+                .components
+                .iter()
+                .map(|c| (c.population_code.clone(), c.percentage / 100.0))
+                .collect();
+            let segs = ancestry_analysis::paint_local_ancestry(
+                &genotypes,
+                &panel,
+                &prior,
+                &ancestry_analysis::PaintParams::default(),
+            );
+            Ok::<_, navigator_analysis::AnalysisError>(segs)
+        })
+        .await
+        .map_err(|e| AppError::Join(e.to_string()))??;
+
+        Ok(segments)
     }
 
     /// Assign a Y haplogroup to an alignment: fetch (and cache) the FTDNA Y-DNA haplotree,

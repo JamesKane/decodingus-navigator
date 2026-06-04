@@ -409,9 +409,18 @@ rollback.
    composition bar, the indented super→fine **hierarchy**, a schematic **geographic map** (each
    contributing population plotted at its homeland lon/lat, marker area ∝ share, colored by
    continent), and the PC1×PC2 scatter. All via the egui painter (no new deps / map assets); a
-   true country-polygon map would be a further enhancement. **Remaining lever:** haplotype LAI
-   (Flare/Gnomix on the SHAPEIT5 panel + CHM13 maps) for per-chromosome DNA-painting + admixed
-   accuracy.
+   true country-polygon map would be a further enhancement. **Local ancestry / DNA painting
+   (Phase C) — built (2026-06-04):** rather than the heavy haplotype-LAI pipeline (an ~11 GB
+   phased reference + phasing + Flare/Java — too much for an end-user), local ancestry is computed
+   **from the per-population allele frequencies we already bundle**: `analysis::paint_local_ancestry`
+   runs a per-chromosome HMM (states = super-populations, emission = diploid genotype likelihood
+   under each pop's AF, distance-based switch transition anchored to the genome-wide admixture as
+   the prior) → Viterbi segments + forward-backward posteriors → `AncestrySegment`s. Pure Rust, no
+   phased reference, no external tools; diploid single-ancestry-per-locus (not per-haplotype).
+   `App::local_ancestry`; UI draws per-chromosome ideogram bars (coloured by ancestry) + legend.
+   GFX0457637: 58 segments across 22 autosomes, EUR-dominant (87.5%) — an unadmixed European paints
+   ~one colour. Refinements: lower switch rate / denser panel / a real CHM13 genetic map (from
+   `phasing_T2T`) to reduce spurious short segments; a pair-state HMM for per-haplotype resolution.
 10. **Cutover.** Feature-parity check against the golden harness; ship.
 
 ---

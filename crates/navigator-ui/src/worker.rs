@@ -12,10 +12,10 @@ use std::sync::mpsc::{Receiver, Sender};
 use std::sync::Arc;
 
 use navigator_app::{
-    AncestryResult, App, AppError, AuditEntry, BuildNeed, Consensus, Coverage, DenovoCall, DnaType,
-    HaploAssignment, HeteroplasmySite, IbdComparison, IbdDetectorConfig, IdentityVerification,
-    PanelGenotype, PrivateBucket, ProjectImportSummary, ProjectOverview, ProjectSampleReport,
-    ReconciledVariant, SourceType,
+    AncestryResult, AncestrySegment, App, AppError, AuditEntry, BuildNeed, Consensus, Coverage,
+    DenovoCall, DnaType, HaploAssignment, HeteroplasmySite, IbdComparison, IbdDetectorConfig,
+    IdentityVerification, PanelGenotype, PrivateBucket, ProjectImportSummary, ProjectOverview,
+    ProjectSampleReport, ReconciledVariant, SourceType,
 };
 use navigator_domain::du_domain::ids::SampleGuid;
 use navigator_domain::chipprofile::ChipProfile;
@@ -101,6 +101,8 @@ pub enum Command {
     LoadAncestry { alignment_id: i64 },
     /// Load the reference population centroids (PC1,PC2) for the PCA scatter backdrop.
     LoadPcaReference { alignment_id: i64 },
+    /// Paint each chromosome with local ancestry (genotypes the BAM; streams progress).
+    PaintAncestry { alignment_id: i64 },
     /// Find the private bucket: de-novo chrY calls off the assigned Y backbone, restricted
     /// by the chosen callable mask.
     FindPrivateY { alignment_id: i64, mask: YMask },
@@ -203,6 +205,8 @@ pub enum Event {
     Ancestry { alignment_id: i64, result: Option<AncestryResult> },
     /// Reference population centroids (code, PC1, PC2) for the PCA scatter; empty if no loadings.
     PcaReference { alignment_id: i64, points: Vec<(String, f64, f64)> },
+    /// Local-ancestry segments per chromosome (the "DNA painting").
+    AncestryPainting { alignment_id: i64, segments: Vec<AncestrySegment> },
     /// Private Y variants (off-backbone de-novo calls) for an alignment.
     PrivateY { alignment_id: i64, bucket: PrivateBucket },
     Alignments { sequence_run_id: i64, alignments: Vec<Alignment> },
@@ -376,6 +380,11 @@ pub async fn handle(app: &App, cmd: Command) -> Event {
             Ok(points) => Event::PcaReference { alignment_id, points },
             Err(e) => Event::Error(e.to_string()),
         },
+        // PaintAncestry is handled in the spawn loop (it streams AncestryProgress); reaching here
+        // would mean a routing bug.
+        Command::PaintAncestry { alignment_id } => {
+            Event::Error(format!("internal: unrouted PaintAncestry {alignment_id}"))
+        }
         Command::FindPrivateY { alignment_id, mask } => {
             let result = match mask {
                 YMask::SelfReferential => app.private_y_variants_self_masked(alignment_id).await,
@@ -560,6 +569,28 @@ async fn estimate_ancestry_streaming(
     wake();
 }
 
+/// Paint local ancestry, emitting `AncestryProgress` per genotyped contig, then a final
+/// `AncestryPainting`/`Error`. Run from the spawn loop so it can stream.
+async fn paint_ancestry_streaming(
+    app: &App,
+    alignment_id: i64,
+    evt_tx: &Sender<Event>,
+    wake: Arc<dyn Fn() + Send + Sync>,
+) {
+    let tx = evt_tx.clone();
+    let wake_cb = wake.clone();
+    let progress = move |done: usize, total: usize| {
+        let _ = tx.send(Event::AncestryProgress { alignment_id, done, total });
+        wake_cb();
+    };
+    let event = match app.local_ancestry_with_progress(alignment_id, progress).await {
+        Ok(segments) => Event::AncestryPainting { alignment_id, segments },
+        Err(e) => Event::Error(e.to_string()),
+    };
+    let _ = evt_tx.send(event);
+    wake();
+}
+
 /// Spawn the worker thread: open the workspace at `db_path` inside the worker's runtime
 /// (so the connection pool lives there), then serve commands. `wake` is called after
 /// each event so the UI can `request_repaint`. Returns the command sender and event
@@ -605,6 +636,10 @@ pub fn spawn(
                             // Streams AncestryProgress per contig, then a final Ancestry/Error.
                             Command::EstimateAncestry { alignment_id } => {
                                 estimate_ancestry_streaming(&app, alignment_id, &evt_tx, wake.clone()).await;
+                            }
+                            // Streams AncestryProgress per contig, then a final AncestryPainting.
+                            Command::PaintAncestry { alignment_id } => {
+                                paint_ancestry_streaming(&app, alignment_id, &evt_tx, wake.clone()).await;
                             }
                             other => {
                                 let event = handle(&app, other).await;

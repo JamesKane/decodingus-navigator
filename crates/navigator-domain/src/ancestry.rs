@@ -164,6 +164,19 @@ pub fn population_lonlat(code: &str) -> Option<(f32, f32)> {
     Some(p)
 }
 
+/// A contiguous stretch of one chromosome assigned to a single ancestry — a segment of the
+/// per-chromosome "DNA painting" (local ancestry). `start`/`end` are 1-based inclusive bp.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AncestrySegment {
+    pub contig: String,
+    pub start: i64,
+    pub end: i64,
+    /// Super-population code (AFR/EUR/…) the segment is painted with.
+    pub population_code: String,
+    /// Mean posterior support for the assignment over the segment (0–1).
+    pub posterior: f64,
+}
+
 /// Confidence-interval bounds (percent) on a component estimate.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct ConfidenceInterval {

@@ -7,12 +7,13 @@ use std::sync::mpsc::Receiver;
 
 use eframe::egui;
 use navigator_app::{
-    AncestryResult, AuditEntry, BuildNeed, CallState, CompatibilityLevel, Consensus, Coverage,
-    DenovoCall, DnaType, HaploAssignment, HeteroplasmySite, IbdComparison, IdentityVerification,
-    PanelGenotype, PrivateBucket, PrivateClass, ProjectOverview, ProjectSampleReport,
-    ReconciledVariant, SourceType, SuperPopulationSummary, VariantStatus, VerificationStatus,
+    AncestryResult, AncestrySegment, AuditEntry, BuildNeed, CallState, CompatibilityLevel, Consensus,
+    Coverage, DenovoCall, DnaType, HaploAssignment, HeteroplasmySite, IbdComparison,
+    IdentityVerification, PanelGenotype, PrivateBucket, PrivateClass, ProjectOverview,
+    ProjectSampleReport, ReconciledVariant, SourceType, SuperPopulationSummary, VariantStatus,
+    VerificationStatus,
 };
-use navigator_domain::ancestry::{population_color, population_lonlat, population_super};
+use navigator_domain::ancestry::{population_color, population_lonlat, population_name, population_super};
 use navigator_domain::du_domain::ids::SampleGuid;
 use navigator_domain::chipprofile::{self, ChipProfile};
 use navigator_domain::mtdna::MtdnaSequence;
@@ -101,6 +102,9 @@ pub struct NavigatorApp {
     ancestry_progress: Option<(i64, usize, usize)>,
     /// Reference population centroids for the PCA scatter: (alignment id, [(code, pc1, pc2)]).
     pca_reference: Option<PcaReferenceState>,
+    /// Local-ancestry painting: (alignment id, segments). `painting_running` while genotyping.
+    painting: Option<(i64, Vec<AncestrySegment>)>,
+    painting_running: bool,
     /// Last private Y bucket: (alignment id, bucket).
     private_y: Option<(i64, PrivateBucket)>,
     finding_private_y: bool,
@@ -156,6 +160,54 @@ fn fmt_depth(o: Option<f64>) -> String {
 /// Format an optional fraction (0–1) as a percentage, "—" when not computed.
 fn fmt_pct(o: Option<f64>) -> String {
     o.map(|v| format!("{:.1}%", v * 100.0)).unwrap_or_else(|| "—".into())
+}
+
+/// Draw the per-chromosome local-ancestry painting: one horizontal bar per autosome (each
+/// normalized to full width), segments colored by ancestry, plus a legend of the ancestries shown.
+fn draw_chromosome_painting(ui: &mut egui::Ui, segments: &[AncestrySegment]) {
+    use std::collections::BTreeMap;
+    // Group by contig, ordered by chromosome number.
+    let mut by_contig: BTreeMap<i64, Vec<&AncestrySegment>> = BTreeMap::new();
+    for s in segments {
+        let n: i64 = s.contig.trim_start_matches("chr").parse().unwrap_or(99);
+        by_contig.entry(n).or_default().push(s);
+    }
+    let label_w = 42.0;
+    let bar_w = 300.0;
+    let bar_h = 13.0;
+    for (n, mut segs) in by_contig {
+        segs.sort_by_key(|s| s.start);
+        let (lo, hi) = (segs.first().unwrap().start, segs.last().unwrap().end.max(segs.first().unwrap().start + 1));
+        let span = (hi - lo).max(1) as f32;
+        ui.horizontal(|ui| {
+            ui.allocate_ui(egui::vec2(label_w, bar_h), |ui| ui.label(format!("chr{n}")));
+            let (rect, _) = ui.allocate_exact_size(egui::vec2(bar_w, bar_h), egui::Sense::hover());
+            let painter = ui.painter_at(rect);
+            painter.rect_filled(rect, 2.0, egui::Color32::from_gray(30));
+            for s in &segs {
+                let x0 = rect.left() + (s.start - lo) as f32 / span * rect.width();
+                let x1 = rect.left() + (s.end - lo) as f32 / span * rect.width();
+                let seg_rect = egui::Rect::from_min_max(egui::pos2(x0, rect.top()), egui::pos2(x1.max(x0 + 1.0), rect.bottom()));
+                painter.rect_filled(seg_rect, 0.0, parse_hex_color(&population_color(&s.population_code)));
+            }
+        });
+    }
+    // Legend: distinct ancestries present.
+    let mut seen: Vec<&str> = Vec::new();
+    for s in segments {
+        if !seen.contains(&s.population_code.as_str()) {
+            seen.push(&s.population_code);
+        }
+    }
+    ui.add_space(2.0);
+    ui.horizontal_wrapped(|ui| {
+        for code in seen {
+            let (r, _) = ui.allocate_exact_size(egui::vec2(10.0, 10.0), egui::Sense::hover());
+            ui.painter().circle_filled(r.center(), 4.0, parse_hex_color(&population_color(code)));
+            ui.label(egui::RichText::new(population_name(code)).small());
+            ui.add_space(6.0);
+        }
+    });
 }
 
 /// Points along a circle arc from angle `a0` to `a1` (radians), `steps`+1 samples.
@@ -428,6 +480,8 @@ impl NavigatorApp {
             estimating_ancestry: false,
             ancestry_progress: None,
             pca_reference: None,
+            painting: None,
+            painting_running: false,
             private_y: None,
             finding_private_y: false,
             y_mask_path: None,
@@ -661,6 +715,12 @@ impl NavigatorApp {
                 Event::PcaReference { alignment_id, points } => {
                     self.pca_reference = Some((alignment_id, points));
                 }
+                Event::AncestryPainting { alignment_id, segments } => {
+                    self.painting_running = false;
+                    self.ancestry_progress = None;
+                    self.status = format!("Painted {} ancestry segments", segments.len());
+                    self.painting = Some((alignment_id, segments));
+                }
                 Event::Consensus { biosample_guid, y, mt } => {
                     if self.selected_sample == Some(biosample_guid) {
                         self.consensus_y = y;
@@ -775,6 +835,7 @@ impl NavigatorApp {
                     self.finding_private_y = false;
                     self.estimating_ancestry = false;
                     self.ancestry_progress = None;
+                    self.painting_running = false;
                     let _ = self.tx.send(Command::SyncStatus); // a failed publish may have gone offline
                 }
             }
@@ -837,6 +898,8 @@ impl NavigatorApp {
         self.estimating_ancestry = false;
         self.ancestry_progress = None;
         self.pca_reference = None;
+        self.painting = None;
+        self.painting_running = false;
         let _ = self.tx.send(Command::LoadCoverage(id));
         let _ = self.tx.send(Command::LoadAncestry { alignment_id: id });
         let _ = self.tx.send(Command::LoadPcaReference { alignment_id: id });
@@ -1964,16 +2027,25 @@ impl NavigatorApp {
             .map(|a| a.bam_path.is_some())
             .unwrap_or(false);
 
+        let busy = self.estimating_ancestry || self.painting_running;
         ui.horizontal(|ui| {
             if ui
-                .add_enabled(has_bam && !self.estimating_ancestry, egui::Button::new("Estimate ancestry"))
+                .add_enabled(has_bam && !busy, egui::Button::new("Estimate ancestry"))
                 .clicked()
             {
                 self.estimating_ancestry = true;
                 self.status = "Estimating ancestry (genotyping AIMs panel)…".into();
                 let _ = self.tx.send(Command::EstimateAncestry { alignment_id });
             }
-            if self.estimating_ancestry {
+            if ui
+                .add_enabled(has_bam && !busy, egui::Button::new("Paint chromosomes"))
+                .clicked()
+            {
+                self.painting_running = true;
+                self.status = "Painting local ancestry (genotyping AIMs panel)…".into();
+                let _ = self.tx.send(Command::PaintAncestry { alignment_id });
+            }
+            if busy {
                 ui.spinner();
             }
             if !has_bam {
@@ -1982,7 +2054,7 @@ impl NavigatorApp {
         });
 
         // Live genotyping progress (the slow per-contig pass over the BAM).
-        if self.estimating_ancestry {
+        if busy {
             match self.ancestry_progress {
                 Some((id, done, total)) if id == alignment_id && total > 0 => {
                     ui.add(
@@ -2074,13 +2146,22 @@ impl NavigatorApp {
                     }
                 }
             }
-            Some((id, None)) if *id == alignment_id && !self.estimating_ancestry => {
+            Some((id, None)) if *id == alignment_id && !busy => {
                 ui.label("No ancestry estimate yet.");
             }
-            _ if !self.estimating_ancestry => {
+            _ if !busy => {
                 ui.label("No ancestry estimate yet.");
             }
             _ => {}
+        }
+
+        // Local-ancestry painting (independent of the global estimate).
+        if let Some((id, segments)) = &self.painting {
+            if *id == alignment_id && !segments.is_empty() {
+                ui.add_space(8.0);
+                ui.label("Local ancestry — chromosome painting:");
+                draw_chromosome_painting(ui, segments);
+            }
         }
     }
 

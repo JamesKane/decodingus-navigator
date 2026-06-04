@@ -14,8 +14,8 @@ use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
 
 use navigator_domain::ancestry::{
-    population_color, population_name, population_super, AncestryResult, ConfidenceInterval,
-    PopulationComponent, SuperPopulationSummary,
+    population_color, population_name, population_super, AncestryResult, AncestrySegment,
+    ConfidenceInterval, PopulationComponent, SuperPopulationSummary,
 };
 use serde::{Deserialize, Serialize};
 
@@ -175,6 +175,249 @@ pub fn classify_pca(coords: &[f64], pca: &PcaLoadings) -> Vec<(String, f64)> {
     } else {
         raw
     }
+}
+
+/// Parameters for [`paint_local_ancestry`].
+#[derive(Debug, Clone)]
+pub struct PaintParams {
+    /// Per-bp ancestry-switch rate (segment-length knob): switch prob over distance `d` bp is
+    /// `1 - exp(-d·rate)`. Smaller → longer segments. Default ≈ one switch per 20 Mb.
+    pub rate: f64,
+    /// Runs shorter than this many markers are merged into the neighbouring segment.
+    pub min_segment_sites: usize,
+}
+
+impl Default for PaintParams {
+    fn default() -> Self {
+        Self { rate: 1.0 / 20_000_000.0, min_segment_sites: 5 }
+    }
+}
+
+fn logsumexp(xs: &[f64]) -> f64 {
+    let m = xs.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+    if m == f64::NEG_INFINITY {
+        return m;
+    }
+    m + xs.iter().map(|&x| (x - m).exp()).sum::<f64>().ln()
+}
+
+/// Diploid genotype log-likelihood under alt-allele frequency `f` (HWE binomial).
+fn geno_loglik(g: i32, f: f64) -> f64 {
+    let f = f.clamp(1e-4, 1.0 - 1e-4);
+    match g {
+        0 => 2.0 * (1.0 - f).ln(),
+        1 => (2.0 * f * (1.0 - f)).ln(),
+        2 => 2.0 * f.ln(),
+        _ => 0.0, // missing → uniform (no information)
+    }
+}
+
+/// Paint each chromosome with local ancestry: an HMM over the panel sites whose hidden states are
+/// the super-populations, emissions are the diploid genotype likelihood under each population's
+/// allele frequency, and transitions penalise ancestry switches by physical distance. Viterbi
+/// gives the segment path; forward-backward gives per-site posteriors (segment confidence).
+///
+/// `prior` is the genome-wide composition `(population_code, weight)` (rolled to super-populations
+/// here) — the HMM's stationary/switch distribution, anchoring the painting to the global estimate.
+/// Diploid, single-ancestry-per-locus (not per-haplotype): an unadmixed sample paints one colour.
+pub fn paint_local_ancestry(
+    genotypes: &[SiteGenotype],
+    panel: &AncestryPanel,
+    prior: &[(String, f64)],
+    params: &PaintParams,
+) -> Vec<AncestrySegment> {
+    // Super-population states present in the panel (stable order), and each panel pop's state.
+    let pop_state: Vec<String> =
+        panel.populations.iter().map(|c| population_super(c).unwrap_or(c).to_string()).collect();
+    let mut states: Vec<String> = Vec::new();
+    for s in &pop_state {
+        if !states.contains(s) {
+            states.push(s.clone());
+        }
+    }
+    let k = states.len();
+    if k == 0 {
+        return Vec::new();
+    }
+    let state_idx = |s: &str| states.iter().position(|x| x == s);
+
+    // Prior π over states (roll the global composition up to super-pops; normalize; uniform fallback).
+    let mut pi = vec![0.0f64; k];
+    for (code, w) in prior {
+        let sp = population_super(code).unwrap_or(code);
+        if let Some(j) = state_idx(sp) {
+            pi[j] += w.max(0.0);
+        }
+    }
+    let tot: f64 = pi.iter().sum();
+    if tot > 0.0 {
+        pi.iter_mut().for_each(|p| *p /= tot);
+    } else {
+        pi.iter_mut().for_each(|p| *p = 1.0 / k as f64);
+    }
+
+    let dosage: HashMap<(&str, i64), i32> = genotypes
+        .iter()
+        .filter(|g| g.dosage >= 0)
+        .map(|g| ((g.contig.as_str(), g.position), g.dosage))
+        .collect();
+
+    // Per-contig sites with a genotype: (pos, per-state super-pop AF, dosage). Sorted by pos.
+    let mut by_contig: BTreeMap<String, Vec<(i64, Vec<f64>, i32)>> = BTreeMap::new();
+    for site in &panel.sites {
+        if site.freqs.len() != panel.populations.len() {
+            continue;
+        }
+        let Some(&g) = dosage.get(&(site.contig.as_str(), site.position)) else { continue };
+        // Mean fine-pop frequency within each super-population state.
+        let mut sum = vec![0.0f64; k];
+        let mut cnt = vec![0usize; k];
+        for (p, &f) in site.freqs.iter().enumerate() {
+            if let Some(j) = state_idx(&pop_state[p]) {
+                sum[j] += f as f64;
+                cnt[j] += 1;
+            }
+        }
+        let af: Vec<f64> = (0..k).map(|j| if cnt[j] > 0 { sum[j] / cnt[j] as f64 } else { 0.5 }).collect();
+        by_contig.entry(site.contig.clone()).or_default().push((site.position, af, g));
+    }
+
+    let mut segments = Vec::new();
+    for (contig, mut sites) in by_contig {
+        sites.sort_by_key(|s| s.0);
+        if sites.is_empty() {
+            continue;
+        }
+        let path = viterbi(&sites, &pi, params.rate);
+        let gamma = posteriors(&sites, &pi, params.rate, k);
+        segments.extend(collapse_segments(&contig, &sites, &path, &gamma, &states, params.min_segment_sites));
+    }
+    segments
+}
+
+/// Log transition prob `a → b` given switch probability `sw` and prior `pi`:
+/// stay with `1-sw`, else jump to `b` with `pi[b]`.
+fn ln_trans(a: usize, b: usize, sw: f64, pi: &[f64]) -> f64 {
+    let p = if a == b { (1.0 - sw) + sw * pi[b] } else { sw * pi[b] };
+    p.max(1e-300).ln()
+}
+
+fn switch_prob(d: i64, rate: f64) -> f64 {
+    (1.0 - (-(d.max(0) as f64) * rate).exp()).clamp(0.0, 0.999)
+}
+
+/// Viterbi MAP state path over the sites.
+fn viterbi(sites: &[(i64, Vec<f64>, i32)], pi: &[f64], rate: f64) -> Vec<usize> {
+    let k = pi.len();
+    let n = sites.len();
+    let mut v = vec![vec![f64::NEG_INFINITY; k]; n];
+    let mut bp = vec![vec![0usize; k]; n];
+    for s in 0..k {
+        v[0][s] = pi[s].max(1e-300).ln() + geno_loglik(sites[0].2, sites[0].1[s]);
+    }
+    for i in 1..n {
+        let sw = switch_prob(sites[i].0 - sites[i - 1].0, rate);
+        for s in 0..k {
+            let (mut best, mut arg) = (f64::NEG_INFINITY, 0usize);
+            for (a, &va) in v[i - 1].iter().enumerate() {
+                let val = va + ln_trans(a, s, sw, pi);
+                if val > best {
+                    best = val;
+                    arg = a;
+                }
+            }
+            v[i][s] = best + geno_loglik(sites[i].2, sites[i].1[s]);
+            bp[i][s] = arg;
+        }
+    }
+    let mut last = (0..k).max_by(|&a, &b| v[n - 1][a].total_cmp(&v[n - 1][b])).unwrap_or(0);
+    let mut path = vec![0usize; n];
+    path[n - 1] = last;
+    for i in (1..n).rev() {
+        last = bp[i][last];
+        path[i - 1] = last;
+    }
+    path
+}
+
+/// Per-site posterior of each state (forward-backward, returns γ[i][s]).
+fn posteriors(sites: &[(i64, Vec<f64>, i32)], pi: &[f64], rate: f64, k: usize) -> Vec<Vec<f64>> {
+    let n = sites.len();
+    let mut fwd = vec![vec![0.0f64; k]; n];
+    let mut bwd = vec![vec![0.0f64; k]; n];
+    for s in 0..k {
+        fwd[0][s] = pi[s].max(1e-300).ln() + geno_loglik(sites[0].2, sites[0].1[s]);
+    }
+    for i in 1..n {
+        let sw = switch_prob(sites[i].0 - sites[i - 1].0, rate);
+        for s in 0..k {
+            let terms: Vec<f64> = (0..k).map(|a| fwd[i - 1][a] + ln_trans(a, s, sw, pi)).collect();
+            fwd[i][s] = logsumexp(&terms) + geno_loglik(sites[i].2, sites[i].1[s]);
+        }
+    }
+    // bwd[n-1] is already 0 (log-space) from initialization.
+    for i in (0..n - 1).rev() {
+        let sw = switch_prob(sites[i + 1].0 - sites[i].0, rate);
+        for s in 0..k {
+            let terms: Vec<f64> = (0..k)
+                .map(|b| ln_trans(s, b, sw, pi) + geno_loglik(sites[i + 1].2, sites[i + 1].1[b]) + bwd[i + 1][b])
+                .collect();
+            bwd[i][s] = logsumexp(&terms);
+        }
+    }
+    let mut gamma = vec![vec![0.0f64; k]; n];
+    for i in 0..n {
+        let unn: Vec<f64> = (0..k).map(|s| fwd[i][s] + bwd[i][s]).collect();
+        let z = logsumexp(&unn);
+        for s in 0..k {
+            gamma[i][s] = (unn[s] - z).exp();
+        }
+    }
+    gamma
+}
+
+/// Collapse the Viterbi path into segments, merging runs shorter than `min_sites` into the
+/// previous segment (keeping its ancestry).
+fn collapse_segments(
+    contig: &str,
+    sites: &[(i64, Vec<f64>, i32)],
+    path: &[usize],
+    gamma: &[Vec<f64>],
+    states: &[String],
+    min_sites: usize,
+) -> Vec<AncestrySegment> {
+    // Runs of equal state: (state, first_idx, last_idx).
+    let mut runs: Vec<(usize, usize, usize)> = Vec::new();
+    for (i, &s) in path.iter().enumerate() {
+        match runs.last_mut() {
+            Some(r) if r.0 == s => r.2 = i,
+            _ => runs.push((s, i, i)),
+        }
+    }
+    // Merge short runs into the previous run.
+    let mut merged: Vec<(usize, usize, usize)> = Vec::new();
+    for r in runs {
+        if (r.2 - r.1 + 1) < min_sites {
+            if let Some(prev) = merged.last_mut() {
+                prev.2 = r.2;
+                continue;
+            }
+        }
+        merged.push(r);
+    }
+    merged
+        .into_iter()
+        .map(|(s, lo, hi)| {
+            let post: f64 = (lo..=hi).map(|i| gamma[i][s]).sum::<f64>() / (hi - lo + 1) as f64;
+            AncestrySegment {
+                contig: contig.to_string(),
+                start: sites[lo].0,
+                end: sites[hi].0,
+                population_code: states[s].clone(),
+                posterior: post,
+            }
+        })
+        .collect()
 }
 
 /// Genotype a BAM/CRAM at every panel site (diploid — the panel is autosomal AIMs). Groups
@@ -605,6 +848,41 @@ mod tests {
         let r = estimate_admixture(&genos, &panel, "t");
         let a = r.components.iter().find(|c| c.population_code == "A").unwrap().percentage;
         assert!((40.0..=60.0).contains(&a), "A% = {a} (expected ~50)");
+    }
+
+    /// A chromosome whose first half's genotypes match pop A and second half match pop B should
+    /// paint two segments (A then B) with a single switch; an all-A chromosome paints one segment.
+    #[test]
+    fn painting_finds_a_switch() {
+        // Two pops, A alt-rich / B alt-poor at every site (so genotype discriminates).
+        let n = 80;
+        let sites: Vec<PanelSite> = (0..n)
+            .map(|i| PanelSite {
+                contig: "chr1".to_string(),
+                position: 1 + i as i64 * 1_000_000, // 1 Mb spacing
+                reference_allele: 'A',
+                alternate_allele: 'G',
+                freqs: vec![0.95, 0.05],
+            })
+            .collect();
+        let panel = AncestryPanel { build: "t".into(), populations: vec!["A".into(), "B".into()], sites };
+        // First half hom-alt (matches A), second half hom-ref (matches B).
+        let genos: Vec<SiteGenotype> = (0..n)
+            .map(|i| sg("chr1", 1 + i as i64 * 1_000_000, if i < n / 2 { 2 } else { 0 }))
+            .collect();
+        let prior = vec![("A".to_string(), 0.5), ("B".to_string(), 0.5)];
+
+        let segs = paint_local_ancestry(&genos, &panel, &prior, &PaintParams::default());
+        assert_eq!(segs.len(), 2, "expected one switch: {segs:?}");
+        assert_eq!(segs[0].population_code, "A");
+        assert_eq!(segs[1].population_code, "B");
+        assert!(segs[0].end < segs[1].start);
+
+        // All hom-alt → a single A segment.
+        let all_a: Vec<SiteGenotype> = (0..n).map(|i| sg("chr1", 1 + i as i64 * 1_000_000, 2)).collect();
+        let one = paint_local_ancestry(&all_a, &panel, &prior, &PaintParams::default());
+        assert_eq!(one.len(), 1);
+        assert_eq!(one[0].population_code, "A");
     }
 
     #[test]

@@ -1451,3 +1451,130 @@ async fn validate_gfx_chm13_ancestry() {
         }
     }
 }
+
+// ---- local ancestry (DNA painting) ----------------------------------------
+
+/// Offline: the diploid fixture + a tiny EUR-engineered panel → local_ancestry returns at least
+/// one chr1 segment. Exercises the genotype → admixture-prior → HMM path end to end.
+#[tokio::test]
+#[allow(clippy::await_holding_lock)] // env guard must span the call (test-only serialization)
+async fn local_ancestry_returns_segments_offline() {
+    use navigator_app::{AncestryPanel, AncestryPanelSite};
+    let s = |contig: &str, position: i64, r: char, a: char, freqs: [f32; 5]| AncestryPanelSite {
+        contig: contig.into(),
+        position,
+        reference_allele: r,
+        alternate_allele: a,
+        freqs: freqs.to_vec(),
+    };
+    let panel = AncestryPanel {
+        build: "chm13v2.0".into(),
+        populations: ["AFR", "AMR", "EAS", "EUR", "SAS"].iter().map(|s| s.to_string()).collect(),
+        sites: vec![
+            s("chr1", 1, 'A', 'G', [0.95, 0.95, 0.95, 0.05, 0.95]),
+            s("chr1", 2, 'C', 'G', [0.5, 0.5, 0.5, 0.5, 0.5]),
+            s("chr1", 5, 'A', 'T', [0.5, 0.5, 0.5, 0.5, 0.5]),
+            s("chr1", 8, 'T', 'A', [0.05, 0.05, 0.05, 0.95, 0.05]),
+        ],
+    };
+    let panel_path = std::env::temp_dir().join(format!("paint-panel-{}.bin", std::process::id()));
+    std::fs::write(&panel_path, panel.to_bytes().unwrap()).unwrap();
+
+    let app = app().await;
+    let b = app.add_biosample(None, "paint", None, None).await.unwrap();
+    let run = app
+        .record_sequence_run(NewSequenceRun {
+            biosample_guid: b.guid,
+            platform_name: "ILLUMINA".into(),
+            instrument_model: None,
+            test_type: "WGS".into(),
+            library_layout: None,
+            total_reads: None,
+            pf_reads_aligned: None,
+            mean_read_length: None,
+            mean_insert_size: None,
+        })
+        .await
+        .unwrap();
+    let aln = app
+        .record_alignment(NewAlignment {
+            sequence_run_id: run.id,
+            reference_build: "chm13v2.0".into(),
+            aligner: "synthetic".into(),
+            variant_caller: None,
+            bam_path: Some(fixtures().join("diploid.bam").to_string_lossy().into_owned()),
+            reference_path: Some(fixtures().join("ref.fa").to_string_lossy().into_owned()),
+        })
+        .await
+        .unwrap()
+        .id;
+
+    let segments = {
+        let _g = ANCESTRY_ENV_LOCK.lock().unwrap();
+        std::env::set_var("NAVIGATOR_ANCESTRY_PANEL", &panel_path);
+        app.local_ancestry(aln).await.expect("local_ancestry")
+    };
+    assert!(!segments.is_empty(), "expected at least one segment");
+    assert!(segments.iter().all(|s| s.contig == "chr1"));
+    let _ = std::fs::remove_file(&panel_path);
+}
+
+/// Live: GFX0457637 should paint predominantly European across the autosomes (an unadmixed
+/// European → ~one colour). Requires GFX_CHM13_BAM + NAVIGATOR_ANCESTRY_PANEL.
+#[tokio::test]
+#[ignore = "requires GFX_CHM13_BAM + NAVIGATOR_ANCESTRY_PANEL"]
+async fn local_ancestry_paints_gfx() {
+    let (Ok(bam), Ok(_panel)) =
+        (std::env::var("GFX_CHM13_BAM"), std::env::var("NAVIGATOR_ANCESTRY_PANEL"))
+    else {
+        eprintln!("GFX_CHM13_BAM / NAVIGATOR_ANCESTRY_PANEL unset — skipping");
+        return;
+    };
+    let reference = std::env::var("GFX_CHM13_REF").ok();
+    let app = app().await;
+    let b = app.add_biosample(None, "GFX0457637", None, None).await.unwrap();
+    let run = app
+        .record_sequence_run(NewSequenceRun {
+            biosample_guid: b.guid,
+            platform_name: "PACBIO_SMRT".into(),
+            instrument_model: None,
+            test_type: "WGS".into(),
+            library_layout: None,
+            total_reads: None,
+            pf_reads_aligned: None,
+            mean_read_length: None,
+            mean_insert_size: None,
+        })
+        .await
+        .unwrap();
+    let aln = app
+        .record_alignment(NewAlignment {
+            sequence_run_id: run.id,
+            reference_build: "chm13v2.0".into(),
+            aligner: "pbmm2".into(),
+            variant_caller: None,
+            bam_path: Some(bam),
+            reference_path: reference,
+        })
+        .await
+        .unwrap()
+        .id;
+
+    let segments = app.local_ancestry(aln).await.expect("local_ancestry");
+    assert!(!segments.is_empty(), "no segments");
+    // Total painted span per super-population.
+    let mut span: std::collections::HashMap<String, i64> = std::collections::HashMap::new();
+    for s in &segments {
+        *span.entry(s.population_code.clone()).or_default() += (s.end - s.start).max(0);
+    }
+    let total: i64 = span.values().sum();
+    let mut by: Vec<_> = span.iter().collect();
+    by.sort_by_key(|(_, v)| -**v);
+    eprintln!("painted {} segments across {} chromosomes:", segments.len(),
+        segments.iter().map(|s| s.contig.as_str()).collect::<std::collections::HashSet<_>>().len());
+    for (code, bp) in &by {
+        eprintln!("  {code}: {:.1}%", **bp as f64 / total as f64 * 100.0);
+    }
+    let top = by.first().unwrap().0;
+    assert_eq!(top, "EUR", "expected European-dominant painting, got {top}");
+}
