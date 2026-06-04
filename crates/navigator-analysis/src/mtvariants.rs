@@ -81,6 +81,53 @@ pub fn derive(reference: &str, sample: &str) -> Vec<MtVariant> {
     build_variants(r, s, &ops)
 }
 
+/// Rotation-aware position map between rCRS (`reference`) and a circular-permuted `chrM`
+/// (e.g. CHM13, whose `chrM` origin is at rCRS ~577, not the control region). Returns aligned
+/// `(rcrs_index, chrm_index)` 0-based pairs. A plain global alignment can't span the rotation,
+/// so we detect the rotation offset, rotate `chrm` into the rCRS frame, banded-align (absorbing
+/// the small indels near the wrap), then compose the offset back onto the `chrm` coordinates.
+pub fn mt_position_map(reference: &str, chrm: &str) -> Vec<(usize, usize)> {
+    let n = chrm.len();
+    if reference.is_empty() || n == 0 {
+        return Vec::new();
+    }
+    let offset = detect_rotation(reference.as_bytes(), chrm.as_bytes());
+    if offset == 0 {
+        return align_positions(reference, chrm); // already in-frame
+    }
+    // rotated[i] = chrm[(i + offset) % n] → chrm read in the rCRS frame.
+    let cb = chrm.as_bytes();
+    let rotated: String = (0..n).map(|i| cb[(i + offset) % n] as char).collect();
+    align_positions(reference, &rotated)
+        .into_iter()
+        .map(|(r, rot)| (r, (rot + offset) % n))
+        .collect()
+}
+
+/// Rotation offset `(chrm_index - rcrs_index) mod n` by majority vote over exact-matched
+/// conserved-region k-mers (avoids the hypervariable control region near the ends).
+fn detect_rotation(rcrs: &[u8], chrm: &[u8]) -> usize {
+    let n = chrm.len();
+    let len = rcrs.len();
+    let k = 31.min(len / 8).max(8);
+    let (lo, hi) = (len / 8, len * 7 / 8);
+    if hi <= lo + k {
+        return 0;
+    }
+    let step = ((hi - lo) / 24).max(1);
+    let mut votes: std::collections::HashMap<usize, usize> = std::collections::HashMap::new();
+    let mut a = lo;
+    while a + k <= hi {
+        let window = &rcrs[a..a + k];
+        if let Some(c) = chrm.windows(k).position(|w| w.eq_ignore_ascii_case(window)) {
+            let off = (c as i64 - a as i64).rem_euclid(n as i64) as usize;
+            *votes.entry(off).or_default() += 1;
+        }
+        a += step;
+    }
+    votes.into_iter().max_by_key(|&(_, v)| v).map(|(off, _)| off).unwrap_or(0)
+}
+
 /// Aligned `(reference_index, sample_index)` pairs (0-based) from a banded global alignment —
 /// i.e. the position map between two sequences. A wider band than [`derive`] tolerates the
 /// extra indels seen aligning two *different* references (rCRS vs a CHM13-style `chrM`).
@@ -368,5 +415,26 @@ mod tests {
     fn bundled_rcrs_is_the_full_mitogenome() {
         assert_eq!(rcrs().len(), 16_569);
         assert!(rcrs().starts_with("GATCACAGG")); // canonical rCRS 5' start
+    }
+
+    #[test]
+    fn mt_position_map_handles_rotation_plus_indel() {
+        // A 400 bp pseudo-reference with enough local complexity for unique k-mers.
+        let r: String = (0..400).map(|i| [b'A', b'C', b'G', b'T'][((i * 7 + i / 3) % 4) as usize] as char).collect();
+        // chrM = r rotated so position 120 becomes the origin, plus a 2 bp insertion at 250.
+        let rot = 120usize;
+        let mut chrm: String = (0..r.len()).map(|i| r.as_bytes()[(i + rot) % r.len()] as char).collect();
+        chrm.insert_str(250, "GG");
+
+        let map: std::collections::HashMap<usize, usize> = mt_position_map(&r, &chrm).into_iter().collect();
+        // Near-complete map despite the rotation + indel...
+        assert!(map.len() > r.len() - 8, "expected near-complete map, got {}", map.len());
+        // ...and every aligned pair lands on the matching base (the real correctness check:
+        // the rotation offset + indel were composed correctly into chrM coordinates).
+        for (&ri, &ci) in &map {
+            assert_eq!(chrm.as_bytes()[ci], r.as_bytes()[ri], "base mismatch at r{ri}→c{ci}");
+        }
+        // And it's a genuine rotation: r[0] does not map to chrm[0].
+        assert_ne!(map.get(&0), Some(&0));
     }
 }

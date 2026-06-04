@@ -1345,7 +1345,8 @@ impl App {
             let map = tokio::task::spawn_blocking(move || {
                 navigator_analysis::reader::read_contig_sequence(&reference, "chrM").map(|chrm| {
                     let chrm = String::from_utf8_lossy(&chrm).into_owned();
-                    navigator_analysis::mtvariants::align_positions(navigator_analysis::mtvariants::rcrs(), &chrm)
+                    // Rotation-aware: CHM13's chrM is a circular permutation of rCRS.
+                    navigator_analysis::mtvariants::mt_position_map(navigator_analysis::mtvariants::rcrs(), &chrm)
                 })
             })
             .await
