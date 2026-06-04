@@ -1413,4 +1413,23 @@ async fn validate_gfx_chm13_ancestry() {
     }
     let top = result.primary().expect("a top component");
     assert_eq!(top.population_code, "EUR", "expected EUR-dominant, got {:?}", result.components);
+
+    // If PCA loadings are installed ($NAVIGATOR_ANCESTRY_PCA), the sample should also project
+    // nearest the EUR reference centroid on (PC1, PC2).
+    if let Some(coords) = &result.pca_coordinates {
+        let refs = app.ancestry_pca_reference(aln).await.expect("pca reference");
+        if coords.len() >= 2 && !refs.is_empty() {
+            eprintln!("sample PCA: PC1={:.2} PC2={:.2}", coords[0], coords[1]);
+            let nearest = refs
+                .iter()
+                .min_by(|a, b| {
+                    let da = (a.1 - coords[0]).powi(2) + (a.2 - coords[1]).powi(2);
+                    let db = (b.1 - coords[0]).powi(2) + (b.2 - coords[1]).powi(2);
+                    da.total_cmp(&db)
+                })
+                .unwrap();
+            eprintln!("nearest centroid: {} ({:.2},{:.2})", nearest.0, nearest.1, nearest.2);
+            assert_eq!(nearest.0, "EUR", "sample should project nearest EUR centroid");
+        }
+    }
 }

@@ -194,6 +194,18 @@ fn ancestry_panel_path(build: ReferenceBuild) -> PathBuf {
         .join(format!("ancestry_panel_{}.bin", build.as_str()))
 }
 
+/// Where the PCA loadings for `build` live: `$NAVIGATOR_ANCESTRY_PCA` (override), else
+/// `<refgenome base>/ancestry/ancestry_pca_<build>.bin`. Optional — absent means the
+/// AF-likelihood estimate runs without PCA coordinates.
+fn ancestry_pca_path(build: ReferenceBuild) -> PathBuf {
+    if let Ok(p) = std::env::var("NAVIGATOR_ANCESTRY_PCA") {
+        return PathBuf::from(p);
+    }
+    refgenome_cache::base_dir()
+        .join("ancestry")
+        .join(format!("ancestry_pca_{}.bin", build.as_str()))
+}
+
 /// The lexicon's UPPER_SNAKE compatibility level (matches the AppView's knownValues).
 fn compat_lexicon(c: CompatibilityLevel) -> &'static str {
     match c {
@@ -1332,14 +1344,19 @@ impl App {
             None => self.gateway.resolve_reference(&aln.reference_build, &mut |_, _| {}).await?,
         };
         let reference_version = aln.reference_build.clone();
+        // Optional PCA loadings (same build) → project the sample onto PC space for the scatter.
+        let pca_bytes = std::fs::read(ancestry_pca_path(build)).ok();
 
         let result = tokio::task::spawn_blocking(move || {
             let params = adaptive_haploid_params(&bam, Some(&reference));
             let genotypes =
                 ancestry_analysis::genotype_panel(&bam, Some(&reference), &panel, &params, &mut progress)?;
-            Ok::<_, navigator_analysis::AnalysisError>(
-                ancestry_analysis::estimate_by_allele_frequency(&genotypes, &panel, &reference_version),
-            )
+            let mut result =
+                ancestry_analysis::estimate_by_allele_frequency(&genotypes, &panel, &reference_version);
+            if let Some(pca) = pca_bytes.and_then(|b| ancestry_analysis::PcaLoadings::from_bytes(&b).ok()) {
+                result.pca_coordinates = Some(ancestry_analysis::project_pca(&genotypes, &pca));
+            }
+            Ok::<_, navigator_analysis::AnalysisError>(result)
         })
         .await
         .map_err(|e| AppError::Join(e.to_string()))??;
@@ -1364,6 +1381,29 @@ impl App {
         alignment_id: i64,
     ) -> Result<Option<AncestryResult>, AppError> {
         Ok(ancestry_result::get_for_alignment(self.store.pool(), alignment_id).await?)
+    }
+
+    /// Reference population centroids on (PC1, PC2) for the alignment's build — the backdrop
+    /// for the PCA scatter. `(population_code, pc1, pc2)`; empty if no PCA loadings are present.
+    pub async fn ancestry_pca_reference(
+        &self,
+        alignment_id: i64,
+    ) -> Result<Vec<(String, f64, f64)>, AppError> {
+        let aln = alignment::get(self.store.pool(), alignment_id)
+            .await?
+            .ok_or_else(|| AppError::Store(StoreError::NotFound(format!("alignment {alignment_id}"))))?;
+        let Some(build) = canonical_build(&aln.reference_build) else { return Ok(Vec::new()) };
+        let Ok(bytes) = std::fs::read(ancestry_pca_path(build)) else { return Ok(Vec::new()) };
+        let pca = navigator_analysis::ancestry::PcaLoadings::from_bytes(&bytes)?;
+        Ok(pca
+            .populations
+            .iter()
+            .enumerate()
+            .map(|(p, code)| {
+                let c = pca.centroid(p);
+                (code.clone(), c.first().copied().unwrap_or(0.0) as f64, c.get(1).copied().unwrap_or(0.0) as f64)
+            })
+            .collect())
     }
 
     /// Assign a Y haplogroup to an alignment: fetch (and cache) the FTDNA Y-DNA haplotree,

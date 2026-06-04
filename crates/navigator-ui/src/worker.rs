@@ -99,6 +99,8 @@ pub enum Command {
     EstimateAncestry { alignment_id: i64 },
     /// Load the persisted ancestry estimate for an alignment, if any.
     LoadAncestry { alignment_id: i64 },
+    /// Load the reference population centroids (PC1,PC2) for the PCA scatter backdrop.
+    LoadPcaReference { alignment_id: i64 },
     /// Find the private bucket: de-novo chrY calls off the assigned Y backbone, restricted
     /// by the chosen callable mask.
     FindPrivateY { alignment_id: i64, mask: YMask },
@@ -199,6 +201,8 @@ pub enum Event {
     AncestryProgress { alignment_id: i64, done: usize, total: usize },
     /// Ancestry estimate for an alignment (`None` = not yet computed, for `LoadAncestry`).
     Ancestry { alignment_id: i64, result: Option<AncestryResult> },
+    /// Reference population centroids (code, PC1, PC2) for the PCA scatter; empty if no loadings.
+    PcaReference { alignment_id: i64, points: Vec<(String, f64, f64)> },
     /// Private Y variants (off-backbone de-novo calls) for an alignment.
     PrivateY { alignment_id: i64, bucket: PrivateBucket },
     Alignments { sequence_run_id: i64, alignments: Vec<Alignment> },
@@ -366,6 +370,10 @@ pub async fn handle(app: &App, cmd: Command) -> Event {
         }
         Command::LoadAncestry { alignment_id } => match app.ancestry_for_alignment(alignment_id).await {
             Ok(result) => Event::Ancestry { alignment_id, result },
+            Err(e) => Event::Error(e.to_string()),
+        },
+        Command::LoadPcaReference { alignment_id } => match app.ancestry_pca_reference(alignment_id).await {
+            Ok(points) => Event::PcaReference { alignment_id, points },
             Err(e) => Event::Error(e.to_string()),
         },
         Command::FindPrivateY { alignment_id, mask } => {

@@ -19,16 +19,33 @@ use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
-use clap::Parser;
+use clap::{Parser, Subcommand};
 use flate2::read::MultiGzDecoder;
 use navigator_analysis::ancestry::{AncestryPanel, PanelSite};
+
+mod pca;
 
 /// The five 1000G super-populations, in panel-axis order.
 const POPS: [&str; 5] = ["AFR", "AMR", "EAS", "EUR", "SAS"];
 
 #[derive(Parser)]
-#[command(about = "Build an ancestry AIMs panel from the 1000G-on-CHM13 VCFs")]
-struct Args {
+#[command(about = "Build ancestry reference assets from the 1000G-on-CHM13 VCFs")]
+struct Cli {
+    #[command(subcommand)]
+    cmd: Cmd,
+}
+
+#[derive(Subcommand)]
+enum Cmd {
+    /// Build the AIMs panel (per-super-pop allele frequencies at high-Fst sites) from the
+    /// sites-only AF VCFs.
+    Panel(PanelArgs),
+    /// Build PCA loadings from a genotype matrix (bcftools query output) + sample/pop metadata.
+    Pca(pca::PcaArgs),
+}
+
+#[derive(Parser)]
+struct PanelArgs {
     /// Directory of `1KGP.CHM13v2.0.chr*.vcf.gz` files (a local mirror).
     #[arg(long)]
     vcf_dir: PathBuf,
@@ -79,7 +96,13 @@ impl Ord for Candidate {
 }
 
 fn main() -> Result<()> {
-    let args = Args::parse();
+    match Cli::parse().cmd {
+        Cmd::Panel(args) => build_panel(args),
+        Cmd::Pca(args) => pca::build_pca(args),
+    }
+}
+
+fn build_panel(args: PanelArgs) -> Result<()> {
     let want_chroms: Option<Vec<String>> = args
         .chroms
         .as_ref()

@@ -63,6 +63,109 @@ impl AncestryPanel {
     }
 }
 
+/// PCA loadings for projecting a sample onto the reference populations' principal-component
+/// space (Phase 2). Built offline by `navigator-panelbuild` from the 1000G genotype matrix:
+/// per-SNP loadings + means (for centering), plus each population's centroid and diagonal
+/// variance in PC space (for the Mahalanobis/Gaussian assignment and the scatter plot).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PcaLoadings {
+    pub build: String,
+    /// (contig, 1-based pos) per row, aligned with `means` and the rows of `loadings`.
+    pub sites: Vec<(String, i64)>,
+    /// Mean dosage per site (reference panel) — used to centre the sample before projecting.
+    pub means: Vec<f32>,
+    pub n_components: usize,
+    /// Row-major `sites.len() × n_components`.
+    pub loadings: Vec<f32>,
+    pub populations: Vec<String>,
+    /// Row-major `populations.len() × n_components`.
+    pub centroids: Vec<f32>,
+    /// Row-major `populations.len() × n_components` (diagonal covariance).
+    pub variances: Vec<f32>,
+}
+
+impl PcaLoadings {
+    pub fn from_bytes(bytes: &[u8]) -> Result<Self, AnalysisError> {
+        bincode::deserialize(bytes).map_err(|e| AnalysisError::Message(format!("pca decode: {e}")))
+    }
+    pub fn to_bytes(&self) -> Result<Vec<u8>, AnalysisError> {
+        bincode::serialize(self).map_err(|e| AnalysisError::Message(format!("pca encode: {e}")))
+    }
+    pub fn loading(&self, site_idx: usize, component: usize) -> f32 {
+        self.loadings[site_idx * self.n_components + component]
+    }
+    pub fn centroid(&self, pop_idx: usize) -> &[f32] {
+        let o = pop_idx * self.n_components;
+        &self.centroids[o..o + self.n_components]
+    }
+    pub fn variance(&self, pop_idx: usize) -> &[f32] {
+        let o = pop_idx * self.n_components;
+        &self.variances[o..o + self.n_components]
+    }
+}
+
+/// Project a sample's genotypes onto the reference PCA space: centre each site by its panel
+/// mean and accumulate `centered · loading` into each component. A missing genotype contributes
+/// 0 (mean-imputed). Returns the sample's coordinate in each principal component.
+pub fn project_pca(genotypes: &[SiteGenotype], pca: &PcaLoadings) -> Vec<f64> {
+    let dosage: HashMap<(&str, i64), i32> = genotypes
+        .iter()
+        .filter(|g| g.dosage >= 0)
+        .map(|g| ((g.contig.as_str(), g.position), g.dosage))
+        .collect();
+
+    let mut coords = vec![0.0f64; pca.n_components];
+    for (i, (contig, pos)) in pca.sites.iter().enumerate() {
+        let centered = match dosage.get(&(contig.as_str(), *pos)) {
+            Some(&d) => d as f64 - pca.means[i] as f64,
+            None => continue, // mean-imputed → centred value 0, no contribution
+        };
+        for (c, coord) in coords.iter_mut().enumerate() {
+            *coord += centered * pca.loading(i, c) as f64;
+        }
+    }
+    coords
+}
+
+/// Squared Mahalanobis distance (diagonal covariance) from `coords` to a population centroid.
+fn mahalanobis_sq(coords: &[f64], centroid: &[f32], variance: &[f32]) -> f64 {
+    coords
+        .iter()
+        .zip(centroid)
+        .zip(variance)
+        .map(|((&x, &mu), &v)| {
+            let d = x - mu as f64;
+            let v = v as f64;
+            if v > 1e-9 {
+                d * d / v
+            } else {
+                0.0
+            }
+        })
+        .sum()
+}
+
+/// Per-population probability that the sample's PCA `coords` belong to each population, by a
+/// diagonal-covariance Gaussian (`exp(-½ d²)`), normalized to sum 1. Useful as a PCA-based
+/// cross-check of the allele-frequency estimate.
+pub fn classify_pca(coords: &[f64], pca: &PcaLoadings) -> Vec<(String, f64)> {
+    let raw: Vec<(String, f64)> = pca
+        .populations
+        .iter()
+        .enumerate()
+        .map(|(p, code)| {
+            let d2 = mahalanobis_sq(coords, pca.centroid(p), pca.variance(p));
+            (code.clone(), (-0.5 * d2).exp())
+        })
+        .collect();
+    let total: f64 = raw.iter().map(|(_, p)| p).sum();
+    if total > 0.0 {
+        raw.into_iter().map(|(c, p)| (c, p / total)).collect()
+    } else {
+        raw
+    }
+}
+
 /// Genotype a BAM/CRAM at every panel site (diploid — the panel is autosomal AIMs). Groups
 /// sites by contig and runs the GL caller once per contig; returns the per-site genotypes
 /// (dosage 0/1/2, or -1 for a no-call). `reference` is required for CRAM.
@@ -338,5 +441,49 @@ mod tests {
         let bytes = panel.to_bytes().unwrap();
         let back = AncestryPanel::from_bytes(&bytes).unwrap();
         assert_eq!(panel, back);
+    }
+
+    /// A 1-component PCA where the loading is +1 at every site and the panel mean is 1.0
+    /// (a het reference): a hom-alt sample projects to +n_sites, a hom-ref sample to −n_sites.
+    #[test]
+    fn project_pca_centres_and_accumulates() {
+        let sites: Vec<(String, i64)> = (1..=4).map(|p| ("chr1".to_string(), p)).collect();
+        let pca = PcaLoadings {
+            build: "t".into(),
+            sites: sites.clone(),
+            means: vec![1.0; 4],
+            n_components: 1,
+            loadings: vec![1.0; 4],
+            populations: vec!["LO".into(), "HI".into()],
+            centroids: vec![-4.0, 4.0], // LO at -4, HI at +4 on PC1
+            variances: vec![1.0, 1.0],
+        };
+        let hom_alt: Vec<SiteGenotype> = (1..=4).map(|p| sg("chr1", p, 2)).collect();
+        let coords = project_pca(&hom_alt, &pca);
+        assert_eq!(coords.len(), 1);
+        assert!((coords[0] - 4.0).abs() < 1e-9, "coord = {}", coords[0]); // (2-1)*1 × 4 sites
+
+        // …and the Gaussian classifier places it with the HI population.
+        let probs = classify_pca(&coords, &pca);
+        let hi = probs.iter().find(|(c, _)| c == "HI").unwrap().1;
+        assert!(hi > 0.99, "HI prob = {hi}");
+    }
+
+    #[test]
+    fn pca_loadings_roundtrip_and_accessors() {
+        let pca = PcaLoadings {
+            build: "chm13v2.0".into(),
+            sites: vec![("chr1".into(), 10), ("chr2".into(), 20)],
+            means: vec![0.5, 1.5],
+            n_components: 2,
+            loadings: vec![0.1, 0.2, 0.3, 0.4],
+            populations: vec!["AFR".into(), "EUR".into()],
+            centroids: vec![1.0, 2.0, 3.0, 4.0],
+            variances: vec![0.5, 0.5, 0.5, 0.5],
+        };
+        let back = PcaLoadings::from_bytes(&pca.to_bytes().unwrap()).unwrap();
+        assert_eq!(pca, back);
+        assert_eq!(back.loading(1, 0), 0.3);
+        assert_eq!(back.centroid(1), &[3.0, 4.0]);
     }
 }

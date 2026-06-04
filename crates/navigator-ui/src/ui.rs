@@ -24,6 +24,9 @@ use tokio::sync::mpsc::UnboundedSender;
 
 use crate::worker::{self, Command, Event, NewBiosample, PanelInfo, YMask};
 
+/// PCA scatter backdrop: the alignment it was loaded for + reference centroids `(code, pc1, pc2)`.
+type PcaReferenceState = (i64, Vec<(String, f64, f64)>);
+
 #[derive(Default)]
 struct Forms {
     project_name: String,
@@ -96,6 +99,8 @@ pub struct NavigatorApp {
     estimating_ancestry: bool,
     /// Live genotyping progress for the in-flight estimate: (alignment id, done, total) contigs.
     ancestry_progress: Option<(i64, usize, usize)>,
+    /// Reference population centroids for the PCA scatter: (alignment id, [(code, pc1, pc2)]).
+    pca_reference: Option<PcaReferenceState>,
     /// Last private Y bucket: (alignment id, bucket).
     private_y: Option<(i64, PrivateBucket)>,
     finding_private_y: bool,
@@ -151,6 +156,66 @@ fn fmt_depth(o: Option<f64>) -> String {
 /// Format an optional fraction (0–1) as a percentage, "—" when not computed.
 fn fmt_pct(o: Option<f64>) -> String {
     o.map(|v| format!("{:.1}%", v * 100.0)).unwrap_or_else(|| "—".into())
+}
+
+/// Draw a small PCA scatter: each reference population's centroid (colored, labeled) plus the
+/// sample's projected point (white ○). Axes are PC1 (x) × PC2 (y), auto-scaled to the data.
+fn draw_pca_scatter(ui: &mut egui::Ui, sample: (f64, f64), refs: &[(String, f64, f64)]) {
+    let mut xs: Vec<f64> = refs.iter().map(|r| r.1).collect();
+    let mut ys: Vec<f64> = refs.iter().map(|r| r.2).collect();
+    xs.push(sample.0);
+    ys.push(sample.1);
+    let (mut xmin, mut xmax) = (f64::INFINITY, f64::NEG_INFINITY);
+    for &x in &xs {
+        xmin = xmin.min(x);
+        xmax = xmax.max(x);
+    }
+    let (mut ymin, mut ymax) = (f64::INFINITY, f64::NEG_INFINITY);
+    for &y in &ys {
+        ymin = ymin.min(y);
+        ymax = ymax.max(y);
+    }
+    // 8% padding; guard zero-range axes.
+    let xpad = ((xmax - xmin) * 0.08).max(1.0);
+    let ypad = ((ymax - ymin) * 0.08).max(1.0);
+    xmin -= xpad;
+    xmax += xpad;
+    ymin -= ypad;
+    ymax += ypad;
+
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(300.0, 240.0), egui::Sense::hover());
+    let painter = ui.painter_at(rect);
+    painter.rect_filled(rect, 4.0, egui::Color32::from_gray(18));
+    let inset = 10.0;
+    let map = |x: f64, y: f64| -> egui::Pos2 {
+        let fx = ((x - xmin) / (xmax - xmin)) as f32;
+        let fy = ((y - ymin) / (ymax - ymin)) as f32;
+        egui::pos2(
+            rect.left() + inset + fx * (rect.width() - 2.0 * inset),
+            rect.bottom() - inset - fy * (rect.height() - 2.0 * inset), // invert y
+        )
+    };
+    for (code, x, y) in refs {
+        let p = map(*x, *y);
+        let col = parse_hex_color(&population_color(code));
+        painter.circle_filled(p, 5.0, col);
+        painter.text(
+            p + egui::vec2(7.0, 0.0),
+            egui::Align2::LEFT_CENTER,
+            code,
+            egui::FontId::proportional(11.0),
+            col,
+        );
+    }
+    let sp = map(sample.0, sample.1);
+    painter.circle_stroke(sp, 6.0, egui::Stroke::new(2.0, egui::Color32::WHITE));
+    painter.text(
+        sp + egui::vec2(8.0, 0.0),
+        egui::Align2::LEFT_CENTER,
+        "sample",
+        egui::FontId::proportional(11.0),
+        egui::Color32::WHITE,
+    );
 }
 
 /// Parse a `#RRGGBB` hex color, falling back to grey on a malformed string.
@@ -267,6 +332,7 @@ impl NavigatorApp {
             ancestry: None,
             estimating_ancestry: false,
             ancestry_progress: None,
+            pca_reference: None,
             private_y: None,
             finding_private_y: false,
             y_mask_path: None,
@@ -495,6 +561,9 @@ impl NavigatorApp {
                     };
                     self.ancestry = Some((alignment_id, result));
                 }
+                Event::PcaReference { alignment_id, points } => {
+                    self.pca_reference = Some((alignment_id, points));
+                }
                 Event::Consensus { biosample_guid, y, mt } => {
                     if self.selected_sample == Some(biosample_guid) {
                         self.consensus_y = y;
@@ -670,8 +739,10 @@ impl NavigatorApp {
         self.ancestry = None;
         self.estimating_ancestry = false;
         self.ancestry_progress = None;
+        self.pca_reference = None;
         let _ = self.tx.send(Command::LoadCoverage(id));
         let _ = self.tx.send(Command::LoadAncestry { alignment_id: id });
+        let _ = self.tx.send(Command::LoadPcaReference { alignment_id: id });
         let _ = self.tx.send(Command::LoadDenovo { alignment_id: id, contig: self.forms.denovo_contig.clone() });
         if let Some(panel_id) = self.selected_panel {
             let _ = self.tx.send(Command::LoadPanelGenotypes { alignment_id: id, panel_id, ploidy: self.ploidy() });
@@ -1862,6 +1933,19 @@ impl NavigatorApp {
                         ui.end_row();
                     }
                 });
+
+                // PCA scatter: reference population centroids (PC1×PC2) + this sample's point.
+                if let Some(coords) = &result.pca_coordinates {
+                    let refs: &[(String, f64, f64)] = match &self.pca_reference {
+                        Some((rid, pts)) if *rid == alignment_id => pts,
+                        _ => &[],
+                    };
+                    if coords.len() >= 2 && !refs.is_empty() {
+                        ui.add_space(8.0);
+                        ui.label("PCA — reference populations (PC1 × PC2) + this sample (○):");
+                        draw_pca_scatter(ui, (coords[0], coords[1]), refs);
+                    }
+                }
             }
             Some((id, None)) if *id == alignment_id && !self.estimating_ancestry => {
                 ui.label("No ancestry estimate yet.");

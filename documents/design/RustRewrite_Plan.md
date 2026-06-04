@@ -372,8 +372,16 @@ rollback.
    from INFO `AC_<POP>_unrel`/`AN_<POP>_unrel`); selected by Nei Fst (`--max-sites`/`--min-fst`).
    `App::estimate_ancestry` loads the build-matched panel (`$NAVIGATOR_ANCESTRY_PANEL` or
    `<cache>/ancestry/`), genotypes, estimates, persists (`ancestry_result` table); UI shows a
-   super-population proportion bar. **Phase 2 (not built):** PCA loadings (SVD over the 1KGP
-   genotype matrix) → projection + Mahalanobis → PCA scatter + fine-grained 26-population AFs.
+   super-population proportion bar. **Phase 2 — PCA — built + validated (2026-06-04):**
+   `navigator-panelbuild pca` builds `PcaLoadings` (per-SNP loadings+means, per-pop
+   centroids+variances) from the 1KGP genotype matrix via a sample-space Gram eigendecomposition
+   (nalgebra, pure Rust). The genotype matrix is extracted with `bcftools query -R <panel sites>`
+   against the remote `unrelated_samples_2504` VCFs (run on an in-AWS EC2 instance — the ~1 TB
+   files are tabix-indexed, so only the ~20k panel sites are pulled). `analysis::project_pca`
+   (+`classify_pca`) projects a sample; `App::estimate_ancestry` fills `pca_coordinates`, and the
+   UI draws a PC1×PC2 scatter (reference centroids + sample). Validated on GFX0457637: 18,634
+   sites × 10 PCs, classic 1000G structure (PC1=AFR axis, PC2=EAS, PC3=SAS), sample projects
+   onto the EUR centroid. **Still deferred:** fine-grained 26-population AFs.
 10. **Cutover.** Feature-parity check against the golden harness; ship.
 
 ---
