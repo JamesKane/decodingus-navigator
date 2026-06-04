@@ -82,7 +82,7 @@ pub use navigator_sync::{
     COVERAGE_SUMMARY_COLLECTION, PRIVATE_VARIANTS_COLLECTION,
 };
 use navigator_sync::{dev_http_client, login_default, AsyncSync, OAuthConfig, RetryPolicy, TokenStore};
-use navigator_refgenome::{cache as refgenome_cache, canonical_build, ReferenceGateway};
+use navigator_refgenome::{cache as refgenome_cache, canonical_build, Build as ReferenceBuild, LiftedPos, ReferenceGateway};
 pub use navigator_refgenome::RefStatus;
 use navigator_sync::{
     AuditEntryRecord, HaplogroupReconciliationRecord, HeteroplasmyObservationRecord,
@@ -1285,20 +1285,15 @@ impl App {
         let targets: HashSet<i64> =
             tree.nodes.values().flat_map(|n| n.loci.iter().map(|l| l.position)).collect();
 
-        // The tree's positions are in its own build (Y → GRCh38). If the alignment is a
-        // different build with a registered chain, lift the positions to the alignment's
-        // build, query there, and map back. Otherwise query the tree positions directly
-        // (Y-on-GRCh38, and mtDNA always — chrM stays a direct rCRS query).
-        let lift_from = tree_build_for_contig(contig).filter(|src| {
-            !targets.is_empty()
-                && matches!((canonical_build(src), canonical_build(&aln.reference_build)), (Some(s), Some(t)) if s != t)
-                && self.gateway.chain_available(src, &aln.reference_build)
-        });
+        // The tree's positions are in its own build (Y → GRCh38, mt → rCRS). If the alignment
+        // is a different build, lift the positions onto it, query there, and map back;
+        // otherwise query directly (Y-on-GRCh38, mt-on-GRCh38/rCRS).
+        let lifted = self
+            .lifted_targets(&aln.reference_build, reference.as_deref(), contig, &targets)
+            .await?;
 
-        let calls = match lift_from {
-            Some(src) => {
-                self.lifted_base_calls(&bam, reference.as_deref(), contig, &aln.reference_build, src, &targets).await?
-            }
+        let calls = match lifted {
+            Some(lifted) => self.build_calls_from_lifted(&bam, reference.as_deref(), lifted).await?,
             None => {
                 let bam = bam.clone();
                 let reference = reference.clone();
@@ -1316,23 +1311,68 @@ impl App {
         Ok(assemble_assignment(&tree, &calls))
     }
 
-    /// Base-call the tree's positions after lifting them from `src_build` to the alignment's
-    /// build via the cached chain (auto-downloaded if absent). Queries each lifted contig
-    /// present in the BAM header, then maps observed bases back to the original tree
+    /// Lift the haplotree's positions onto the alignment's build, or `None` to query the tree
+    /// positions directly. **chrY**: uses the (auto-downloaded) GRCh38→build liftover chain.
+    /// **chrM**: a self-generated rCRS↔`chrM` map — bundled rCRS aligned to *this* reference's
+    /// `chrM` (CHM13 builds only; GRCh38/rCRS `chrM` is already rCRS → direct).
+    async fn lifted_targets(
+        &self,
+        reference_build: &str,
+        reference: Option<&Path>,
+        contig: &str,
+        targets: &HashSet<i64>,
+    ) -> Result<Option<Vec<LiftedPos>>, AppError> {
+        if targets.is_empty() {
+            return Ok(None);
+        }
+
+        // chrY: downloaded nuclear chain.
+        if let Some(src) = tree_build_for_contig(contig) {
+            let differ = matches!((canonical_build(src), canonical_build(reference_build)), (Some(s), Some(t)) if s != t);
+            if differ && self.gateway.chain_available(src, reference_build) {
+                self.gateway.resolve_chain(src, reference_build, &mut |_, _| {}).await?;
+                let targets_vec: Vec<i64> = targets.iter().copied().collect();
+                return Ok(Some(self.gateway.lift_positions(src, reference_build, contig, &targets_vec)?));
+            }
+            return Ok(None);
+        }
+
+        // chrM on CHM13: self-generated rCRS↔chrM alignment map (no chain exists).
+        if contig.eq_ignore_ascii_case("chrM") && canonical_build(reference_build) == Some(ReferenceBuild::Chm13v2) {
+            let Some(reference) = reference else { return Ok(None) };
+            let reference = reference.to_path_buf();
+            // Align bundled rCRS to this reference's chrM (cheap, ~16.5 kb) → (rcrs, chrM) pairs.
+            let map = tokio::task::spawn_blocking(move || {
+                navigator_analysis::reader::read_contig_sequence(&reference, "chrM").map(|chrm| {
+                    let chrm = String::from_utf8_lossy(&chrm).into_owned();
+                    navigator_analysis::mtvariants::align_positions(navigator_analysis::mtvariants::rcrs(), &chrm)
+                })
+            })
+            .await
+            .map_err(|e| AppError::Join(e.to_string()))?;
+            let Ok(pairs) = map else { return Ok(None) }; // chrM absent/unreadable → direct fallback
+            // rcrs_idx/chrm_idx are 0-based; tree + query positions are 1-based.
+            let by_rcrs: HashMap<i64, i64> = pairs.into_iter().map(|(r, c)| (r as i64 + 1, c as i64 + 1)).collect();
+            let lifted = targets
+                .iter()
+                .filter_map(|&t| by_rcrs.get(&t).map(|&c| LiftedPos { tree_pos: t, contig: "chrM".to_string(), pos: c, reverse: false }))
+                .collect();
+            return Ok(Some(lifted));
+        }
+
+        Ok(None)
+    }
+
+    /// Query the already-lifted positions and map observed bases back to the original tree
     /// positions so [`assemble_assignment`] (which keys on tree positions) scores unchanged.
-    async fn lifted_base_calls(
+    /// Queries each lifted contig present in the BAM header; minus-strand lifts are
+    /// reverse-complemented.
+    async fn build_calls_from_lifted(
         &self,
         bam: &Path,
         reference: Option<&Path>,
-        contig: &str,
-        target_build: &str,
-        src_build: &str,
-        targets: &HashSet<i64>,
+        lifted: Vec<LiftedPos>,
     ) -> Result<HashMap<i64, char>, AppError> {
-        self.gateway.resolve_chain(src_build, target_build, &mut |_, _| {}).await?; // cache (download) the chain
-        let targets_vec: Vec<i64> = targets.iter().copied().collect();
-        let lifted = self.gateway.lift_positions(src_build, target_build, contig, &targets_vec)?;
-
         // Group lifted positions by their target contig + a back-map (lifted → tree position,
         // plus whether the lift was to the minus strand → the base needs complementing).
         let mut by_contig: HashMap<String, HashSet<i64>> = HashMap::new();

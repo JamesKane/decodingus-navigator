@@ -362,27 +362,42 @@ async fn validate_gfx_chm13_haplogroups() {
         })
         .await
         .unwrap();
+    // mt now needs the CHM13 reference (to self-generate the rCRS↔chrM map): resolve it
+    // (downloads ~1 GB on first run, then cached), or take GFX_CHM13_REF if provided.
+    let reference = match std::env::var("GFX_CHM13_REF") {
+        Ok(p) => p,
+        Err(_) => app
+            .resolve_reference("chm13v2.0", &mut |_, _| {})
+            .await
+            .expect("resolve chm13v2.0 reference")
+            .to_string_lossy()
+            .into_owned(),
+    };
     let aln = app
         .record_alignment(NewAlignment {
             sequence_run_id: run.id,
-            reference_build: "chm13v2.0".into(), // triggers GRCh38→CHM13 liftover for chrY
+            reference_build: "chm13v2.0".into(), // triggers GRCh38→CHM13 liftover for chrY; rCRS↔chrM map for mt
             aligner: "pbmm2".into(),
             variant_caller: None,
             bam_path: Some(bam),
-            reference_path: None,
+            reference_path: Some(reference),
         })
         .await
         .unwrap()
         .id;
 
-    // mtDNA: direct chrM query. PROVISIONAL — informational only: CHM13's chrM is not
-    // rCRS-coordinate-compatible (even at 16,569 bp), so this is expected to mis-call until an
-    // rCRS↔CHM13-chrM chain is added (then it routes through the same lift path). The GRCh38
-    // expectation is U5a1b1g; a divergent result here documents the known gap, not a Y bug.
+    // mtDNA: now lifted via the self-generated rCRS↔CHM13-chrM map — expect the U5a1b1g lineage,
+    // matching the GRCh38 result.
     let mt = app.assign_mtdna_haplogroup_from_alignment(aln).await.expect("mt assign").ranked;
     let top = &mt[0];
-    eprintln!("GFX0457637 mtDNA (PROVISIONAL on CHM13): {}  ({}/{} mutations, score {:.3})", top.name, top.matched, top.expected, top.score);
-    eprintln!("  lineage: {}   [GRCh38 expectation: U5a1b1g — divergence here = known no-mt-chain gap]", top.lineage.join(" › "));
+    eprintln!("GFX0457637 mtDNA: {}  ({}/{} mutations, score {:.3})", top.name, top.matched, top.expected, top.score);
+    eprintln!("  lineage: {}", top.lineage.join(" › "));
+    assert!(top.matched > 0, "mt should resolve below root");
+    assert!(
+        top.lineage.iter().any(|h| h.starts_with("U5")),
+        "expected the U5 clade (known U5a1b1g) via the rCRS↔chrM map, got {}",
+        top.lineage.join(" › ")
+    );
 
     // Y: lifted GRCh38 tree → CHM13 chrY — expect the R-FGC29071 clade.
     let y = app.assign_y_haplogroup(aln).await.expect("Y assign");
