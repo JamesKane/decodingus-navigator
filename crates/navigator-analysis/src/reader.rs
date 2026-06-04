@@ -164,6 +164,19 @@ pub fn read_header(path: &Path, reference: Option<&Path>) -> Result<sam::Header,
     open_seq(path, reference).map(|(header, _)| header)
 }
 
+/// Read one contig's full sequence from an indexed FASTA (needs a `.fai`). Used to pull
+/// `chrM` out of a reference for the rCRS↔chrM mtDNA coordinate map.
+pub fn read_contig_sequence(reference: &Path, contig: &str) -> Result<Vec<u8>, AnalysisError> {
+    let mut reader = fasta::io::indexed_reader::Builder::default()
+        .build_from_path(reference)
+        .map_err(|e| AnalysisError::io(reference, e))?;
+    let region: Region = contig
+        .parse()
+        .map_err(|_| AnalysisError::Message(format!("bad region for contig {contig}")))?;
+    let record = reader.query(&region).map_err(|e| AnalysisError::io(reference, e))?;
+    Ok(record.sequence().as_ref().to_vec())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

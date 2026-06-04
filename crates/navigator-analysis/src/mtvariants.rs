@@ -63,18 +63,50 @@ enum Op {
     Ins { sj: usize, after: usize },
 }
 
+/// The revised Cambridge Reference Sequence (rCRS, NC_012920.1, 16,569 bp), bundled as the
+/// canonical mtDNA reference — used to self-generate a coordinate map onto a divergent
+/// assembly's `chrM` (e.g. CHM13) so the rCRS-coordinate haplotree can be lifted onto it.
+pub fn rcrs() -> &'static str {
+    include_str!("../resources/rcrs.seq").trim()
+}
+
 /// Derive variants of `sample` relative to `reference` via banded global alignment.
 pub fn derive(reference: &str, sample: &str) -> Vec<MtVariant> {
     let r = reference.as_bytes();
     let s = sample.as_bytes();
-    let m = r.len();
-    let n = s.len();
-    if m == 0 || n == 0 {
+    if r.is_empty() || s.is_empty() {
         return Vec::new();
     }
+    let ops = align_ops(r, s, 32);
+    build_variants(r, s, &ops)
+}
+
+/// Aligned `(reference_index, sample_index)` pairs (0-based) from a banded global alignment —
+/// i.e. the position map between two sequences. A wider band than [`derive`] tolerates the
+/// extra indels seen aligning two *different* references (rCRS vs a CHM13-style `chrM`).
+pub fn align_positions(reference: &str, sample: &str) -> Vec<(usize, usize)> {
+    let r = reference.as_bytes();
+    let s = sample.as_bytes();
+    if r.is_empty() || s.is_empty() {
+        return Vec::new();
+    }
+    align_ops(r, s, 256)
+        .into_iter()
+        .filter_map(|op| match op {
+            Op::Diag { ri, sj } => Some((ri, sj)),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Banded Needleman–Wunsch (unit edit costs) of `r` vs `s`; returns the forward (5'→3') op
+/// sequence. `slack` widens the band beyond the length difference to admit internal indels.
+fn align_ops(r: &[u8], s: &[u8], slack: usize) -> Vec<Op> {
+    let m = r.len();
+    let n = s.len();
 
     let diff = n as isize - m as isize;
-    let band = diff.unsigned_abs() + 32; // slack for internal indels
+    let band = diff.unsigned_abs() + slack; // slack for internal indels
     let dmin = diff.min(0) - band as isize;
     let dmax = diff.max(0) + band as isize;
     let width = (dmax - dmin + 1) as usize;
@@ -162,8 +194,7 @@ pub fn derive(reference: &str, sample: &str) -> Vec<MtVariant> {
         }
     }
     ops.reverse();
-
-    build_variants(r, s, &ops)
+    ops
 }
 
 fn up(b: u8) -> char {
@@ -314,5 +345,28 @@ mod tests {
         assert!(kinds.contains(&MtVariantKind::Deletion));
         assert!(v.iter().any(|x| x.notation() == "2C>T"));
         assert!(v.iter().any(|x| x.notation() == "6d"));
+    }
+
+    #[test]
+    fn align_positions_maps_coordinates_across_an_indel() {
+        // sample = ref with "TT" inserted after ref index 3 (0-based) → downstream shifts by 2.
+        //   ref:    A C G T A C G T   (idx 0..7)
+        //   sample: A C G T T T A C G T   (idx 0..9)
+        let pairs = align_positions("ACGTACGT", "ACGTTTACGT");
+        let map: std::collections::HashMap<usize, usize> = pairs.into_iter().collect();
+        // Before the insertion: identity. (The lone T at ref idx 3 is ambiguous within the
+        // inserted T-run, so it's not asserted.)
+        assert_eq!(map[&0], 0);
+        assert_eq!(map[&2], 2);
+        // After the 2-base insertion: downstream coordinates shift by +2.
+        assert_eq!(map[&4], 6); // 'A', uniquely placed right after the T-run
+        assert_eq!(map[&5], 7);
+        assert_eq!(map[&7], 9);
+    }
+
+    #[test]
+    fn bundled_rcrs_is_the_full_mitogenome() {
+        assert_eq!(rcrs().len(), 16_569);
+        assert!(rcrs().starts_with("GATCACAGG")); // canonical rCRS 5' start
     }
 }
