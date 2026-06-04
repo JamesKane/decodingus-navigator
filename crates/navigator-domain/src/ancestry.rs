@@ -114,6 +114,56 @@ pub fn population_color(code: &str) -> String {
         .unwrap_or_else(|| "#888888".to_string())
 }
 
+/// Approximate `(longitude, latitude)` of a population's homeland, for the geographic map.
+/// Representative points (degrees); fine populations are placed in-country, super-only groups
+/// (MEA/CAS/OCE) at a regional centroid.
+pub fn population_lonlat(code: &str) -> Option<(f32, f32)> {
+    let p = match code {
+        // African
+        "YRI" => (8.0, 8.0),
+        "ESN" => (6.0, 6.5),
+        "GWD" => (-15.5, 13.5),
+        "MSL" => (-12.0, 8.5),
+        "LWK" => (37.0, 0.3),
+        "ASW" => (-90.0, 33.0),
+        "ACB" => (-59.5, 13.2),
+        "AFR" => (20.0, 2.0),
+        // Admixed American
+        "MXL" => (-102.0, 23.0),
+        "PUR" => (-66.5, 18.2),
+        "CLM" => (-74.3, 4.6),
+        "PEL" => (-77.0, -12.0),
+        "AMR" => (-85.0, 5.0),
+        // East Asian
+        "CHB" => (116.4, 39.9),
+        "JPT" => (139.7, 35.7),
+        "CHS" => (113.3, 28.2),
+        "CDX" => (101.0, 22.0),
+        "KHV" => (106.7, 16.5),
+        "EAS" => (112.0, 35.0),
+        // European
+        "CEU" => (5.0, 52.0),
+        "GBR" => (-2.0, 54.0),
+        "FIN" => (26.0, 64.0),
+        "IBS" => (-4.0, 40.0),
+        "TSI" => (11.0, 43.5),
+        "EUR" => (10.0, 50.0),
+        // South Asian
+        "GIH" => (72.0, 23.0),
+        "PJL" => (74.3, 31.5),
+        "BEB" => (90.4, 23.8),
+        "STU" => (81.0, 7.0),
+        "ITU" => (79.0, 16.5),
+        "SAS" => (78.0, 22.0),
+        // SGDP-added regions
+        "MEA" => (45.0, 31.0),
+        "CAS" => (95.0, 62.0),
+        "OCE" => (143.0, -7.0),
+        _ => return None,
+    };
+    Some(p)
+}
+
 /// Confidence-interval bounds (percent) on a component estimate.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct ConfidenceInterval {

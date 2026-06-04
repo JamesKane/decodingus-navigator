@@ -404,7 +404,14 @@ rollback.
    The new continents place sensibly in PCA (MEA off Europe, CAS Europe↔EastAsia, OCE distinct).
    Also fixed PCA projection of low-coverage samples: rescale by `total/used` sites so missing
    genotypes don't shrink the point toward the origin (GFX0457637 PC1 36.4→42.5, lands on the
-   European cluster; AF stays European 97.9%).
+   European cluster; AF stays European 97.9%). **Visualization (Phase D) — built (2026-06-04):**
+   the ancestry UI now renders a consumer-style report — a super-population **donut** + headline +
+   composition bar, the indented super→fine **hierarchy**, a schematic **geographic map** (each
+   contributing population plotted at its homeland lon/lat, marker area ∝ share, colored by
+   continent), and the PC1×PC2 scatter. All via the egui painter (no new deps / map assets); a
+   true country-polygon map would be a further enhancement. **Remaining lever:** haplotype LAI
+   (Flare/Gnomix on the SHAPEIT5 panel + CHM13 maps) for per-chromosome DNA-painting + admixed
+   accuracy.
 10. **Cutover.** Feature-parity check against the golden harness; ship.
 
 ---

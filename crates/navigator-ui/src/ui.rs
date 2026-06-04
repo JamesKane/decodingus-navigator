@@ -12,7 +12,7 @@ use navigator_app::{
     PanelGenotype, PrivateBucket, PrivateClass, ProjectOverview, ProjectSampleReport,
     ReconciledVariant, SourceType, SuperPopulationSummary, VariantStatus, VerificationStatus,
 };
-use navigator_domain::ancestry::{population_color, population_super};
+use navigator_domain::ancestry::{population_color, population_lonlat, population_super};
 use navigator_domain::du_domain::ids::SampleGuid;
 use navigator_domain::chipprofile::{self, ChipProfile};
 use navigator_domain::mtdna::MtdnaSequence;
@@ -156,6 +156,84 @@ fn fmt_depth(o: Option<f64>) -> String {
 /// Format an optional fraction (0–1) as a percentage, "—" when not computed.
 fn fmt_pct(o: Option<f64>) -> String {
     o.map(|v| format!("{:.1}%", v * 100.0)).unwrap_or_else(|| "—".into())
+}
+
+/// Points along a circle arc from angle `a0` to `a1` (radians), `steps`+1 samples.
+fn arc_points(c: egui::Pos2, r: f32, a0: f32, a1: f32, steps: usize) -> Vec<egui::Pos2> {
+    (0..=steps)
+        .map(|i| {
+            let t = a0 + (a1 - a0) * (i as f32 / steps as f32);
+            egui::pos2(c.x + r * t.cos(), c.y + r * t.sin())
+        })
+        .collect()
+}
+
+/// Draw a donut chart of the super-population proportions (one wedge per super-population,
+/// colored by continent), with the dominant share in the centre.
+fn draw_ancestry_donut(ui: &mut egui::Ui, summary: &[SuperPopulationSummary]) {
+    let size = 120.0;
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(size, size), egui::Sense::hover());
+    let painter = ui.painter_at(rect);
+    let c = rect.center();
+    let (r_out, r_in) = (size * 0.46, size * 0.28);
+    let total: f32 = summary.iter().map(|s| s.percentage as f32).sum::<f32>().max(1.0);
+    let mut a0 = -std::f32::consts::FRAC_PI_2; // start at 12 o'clock
+    for s in summary {
+        if s.percentage < 0.5 {
+            continue;
+        }
+        let a1 = a0 + (s.percentage as f32 / total) * std::f32::consts::TAU;
+        let code = s.populations.first().and_then(|c| population_super(c)).unwrap_or("");
+        let mut pts = arc_points(c, r_out, a0, a1, 32);
+        pts.extend(arc_points(c, r_in, a1, a0, 32)); // inner arc, reversed → closed ring sector
+        painter.add(egui::epaint::PathShape {
+            points: pts,
+            closed: true,
+            fill: parse_hex_color(&population_color(code)),
+            stroke: egui::epaint::PathStroke::NONE,
+        });
+        a0 = a1;
+    }
+    if let Some(top) = summary.first() {
+        painter.text(
+            c,
+            egui::Align2::CENTER_CENTER,
+            format!("{:.0}%", top.percentage),
+            egui::FontId::proportional(18.0),
+            egui::Color32::WHITE,
+        );
+    }
+}
+
+/// Draw a schematic world map (equirectangular) with each contributing population plotted at its
+/// homeland, the marker area proportional to its share and colored by continent.
+fn draw_ancestry_map(ui: &mut egui::Ui, components: &[navigator_app::PopulationComponent]) {
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(360.0, 180.0), egui::Sense::hover());
+    let painter = ui.painter_at(rect);
+    painter.rect_filled(rect, 4.0, egui::Color32::from_gray(18));
+    let proj = |lon: f32, lat: f32| -> egui::Pos2 {
+        egui::pos2(
+            rect.left() + (lon + 180.0) / 360.0 * rect.width(),
+            rect.top() + (90.0 - lat) / 180.0 * rect.height(),
+        )
+    };
+    // Faint equator + prime meridian for orientation.
+    let grid = egui::Stroke::new(1.0, egui::Color32::from_gray(36));
+    painter.line_segment([proj(-180.0, 0.0), proj(180.0, 0.0)], grid);
+    painter.line_segment([proj(0.0, -90.0), proj(0.0, 90.0)], grid);
+    // Largest shares last, so they render on top.
+    let mut comps: Vec<&navigator_app::PopulationComponent> =
+        components.iter().filter(|c| c.percentage >= 1.0).collect();
+    comps.sort_by(|a, b| a.percentage.partial_cmp(&b.percentage).unwrap_or(std::cmp::Ordering::Equal));
+    for c in comps {
+        if let Some((lon, lat)) = population_lonlat(&c.population_code) {
+            let p = proj(lon, lat);
+            let radius = (2.5 + (c.percentage as f32).sqrt() * 2.4).clamp(2.5, 24.0);
+            let col = parse_hex_color(&population_color(&c.population_code));
+            painter.circle_filled(p, radius, col.gamma_multiply(0.55));
+            painter.circle_stroke(p, radius, egui::Stroke::new(1.5, col));
+        }
+    }
 }
 
 /// Draw the super-population composition as a single stacked horizontal bar (segment widths =
@@ -1920,15 +1998,24 @@ impl NavigatorApp {
 
         match &self.ancestry {
             Some((id, Some(result))) if *id == alignment_id => {
-                ui.label(format!(
-                    "{}/{} panel SNPs genotyped · confidence {:.0}%",
-                    result.snps_with_genotype,
-                    result.snps_analyzed,
-                    result.confidence_level * 100.0
-                ));
-                // Composition bar — the super-population proportions as one stacked bar.
-                ui.add_space(6.0);
-                draw_composition_bar(ui, &result.super_population_summary);
+                // Donut of super-population proportions, beside the headline + composition bar.
+                ui.horizontal(|ui| {
+                    draw_ancestry_donut(ui, &result.super_population_summary);
+                    ui.add_space(8.0);
+                    ui.vertical(|ui| {
+                        if let Some(top) = result.super_population_summary.first() {
+                            ui.heading(format!("{} {:.1}%", top.super_population, top.percentage));
+                        }
+                        ui.label(format!(
+                            "{}/{} panel SNPs · confidence {:.0}%",
+                            result.snps_with_genotype,
+                            result.snps_analyzed,
+                            result.confidence_level * 100.0
+                        ));
+                        ui.add_space(4.0);
+                        draw_composition_bar(ui, &result.super_population_summary);
+                    });
+                });
                 ui.add_space(8.0);
 
                 // Indented hierarchy: each super-population, then its fine populations (if the
@@ -1967,6 +2054,12 @@ impl NavigatorApp {
                         }
                     }
                 });
+
+                // Geographic distribution: each contributing population at its homeland,
+                // sized by proportion and colored by continent.
+                ui.add_space(8.0);
+                ui.label("Geographic distribution:");
+                draw_ancestry_map(ui, &result.components);
 
                 // PCA scatter: reference population centroids (PC1×PC2) + this sample's point.
                 if let Some(coords) = &result.pca_coordinates {
