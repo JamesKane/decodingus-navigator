@@ -9,8 +9,10 @@
 pub mod cache;
 pub mod download;
 pub mod error;
+pub mod gateway;
 pub mod index;
 pub mod registry;
 
 pub use error::RefgenomeError;
+pub use gateway::{ReferenceGateway, RefStatus};
 pub use registry::{canonical_build, Build};
