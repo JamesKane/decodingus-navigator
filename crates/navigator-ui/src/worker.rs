@@ -12,9 +12,10 @@ use std::sync::mpsc::{Receiver, Sender};
 use std::sync::Arc;
 
 use navigator_app::{
-    App, AuditEntry, Consensus, Coverage, DenovoCall, DnaType, HaploAssignment, HeteroplasmySite,
-    IbdComparison, IbdDetectorConfig, IdentityVerification, PanelGenotype, PrivateBucket,
-    ProjectImportSummary, ProjectOverview, ProjectSampleReport, ReconciledVariant, SourceType,
+    App, AppError, AuditEntry, BuildNeed, Consensus, Coverage, DenovoCall, DnaType, HaploAssignment,
+    HeteroplasmySite, IbdComparison, IbdDetectorConfig, IdentityVerification, PanelGenotype,
+    PrivateBucket, ProjectImportSummary, ProjectOverview, ProjectSampleReport, ReconciledVariant,
+    SourceType,
 };
 use navigator_domain::du_domain::ids::SampleGuid;
 use navigator_domain::chipprofile::ChipProfile;
@@ -59,8 +60,11 @@ pub enum Command {
     LoadAllBiosamples,
     AddBiosample(NewBiosample),
     /// Batch-import a NAS project directory (scan → Project/Biosample/Run/Alignment).
-    /// CRAM needs `reference_path` (FASTA, with a `.fai`).
-    ImportProjectDir { dir: PathBuf, reference_path: PathBuf },
+    /// `reference` is optional: `None` lets the gateway resolve each build from the cache
+    /// (and report `ReferenceNeeded` if a download is required); `Some` pins a FASTA.
+    ImportProjectDir { dir: PathBuf, reference: Option<PathBuf> },
+    /// Resolve (download + decompress + index) a reference build, streaming progress.
+    ResolveReference { build: String },
     LoadRuns(SampleGuid),
     AddRun(NewSequenceRun),
     /// Load the donor-level Y + mtDNA haplogroup consensus for a subject.
@@ -148,6 +152,13 @@ pub enum Event {
     ProjectCreated(Project),
     /// A batch project-directory import completed.
     ProjectImported(ProjectImportSummary),
+    /// Import needs reference build(s) downloaded first; `dir` lets the UI retry the import
+    /// after the user approves and the download finishes.
+    ReferenceNeeded { dir: PathBuf, builds: Vec<BuildNeed> },
+    /// Bytes received during a reference download (`total` from Content-Length, if known).
+    ReferenceProgress { build: String, received: u64, total: Option<u64> },
+    /// A reference build finished resolving (cached + indexed).
+    ReferenceReady { build: String, path: PathBuf },
     /// Per-sample coverage/haplogroup report for a project.
     ProjectReport { project_id: i64, rows: Vec<ProjectSampleReport> },
     Samples { project_id: i64, samples: Vec<Biosample> },
@@ -215,12 +226,16 @@ pub async fn handle(app: &App, cmd: Command) -> Event {
             Ok(p) => Event::ProjectCreated(p),
             Err(e) => Event::Error(e.to_string()),
         },
-        Command::ImportProjectDir { dir, reference_path } => {
-            match app.import_project_dir(&dir, Some(reference_path), "unknown".into()).await {
+        Command::ImportProjectDir { dir, reference } => {
+            match app.import_project_dir(&dir, reference, "unknown".into()).await {
                 Ok(summary) => Event::ProjectImported(summary),
+                Err(AppError::ReferenceNeeded(builds)) => Event::ReferenceNeeded { dir, builds },
                 Err(e) => Event::Error(e.to_string()),
             }
         }
+        // ResolveReference is handled in the spawn loop (it streams progress events); reaching
+        // here would mean a routing bug.
+        Command::ResolveReference { build } => Event::Error(format!("internal: unrouted ResolveReference {build}")),
         Command::LoadSamples(project_id) => match app.list_biosamples(project_id).await {
             Ok(samples) => Event::Samples { project_id, samples },
             Err(e) => Event::Error(e.to_string()),
@@ -458,6 +473,30 @@ pub async fn handle(app: &App, cmd: Command) -> Event {
     }
 }
 
+/// Resolve a reference build, emitting throttled `ReferenceProgress` events (and waking the
+/// UI) as bytes arrive, then a final `ReferenceReady`/`Error`. Run from the spawn loop so it
+/// can stream — `handle` returns only a single event.
+async fn resolve_reference_streaming(app: &App, build: String, evt_tx: &Sender<Event>, wake: &(dyn Fn() + Send + Sync)) {
+    // The progress closure must be Send (it runs in a task) — capture an owned Sender clone
+    // and a label, not borrows. Throttle to ~every 25 MB so a multi-GB pull doesn't flood.
+    let tx = evt_tx.clone();
+    let label = build.clone();
+    let mut last_sent = 0u64;
+    let mut progress = move |received: u64, total: Option<u64>| {
+        if received.saturating_sub(last_sent) >= 25_000_000 || total == Some(received) {
+            last_sent = received;
+            let _ = tx.send(Event::ReferenceProgress { build: label.clone(), received, total });
+            wake();
+        }
+    };
+    let event = match app.resolve_reference(&build, &mut progress).await {
+        Ok(path) => Event::ReferenceReady { build, path },
+        Err(e) => Event::Error(e.to_string()),
+    };
+    let _ = evt_tx.send(event);
+    wake();
+}
+
 /// Spawn the worker thread: open the workspace at `db_path` inside the worker's runtime
 /// (so the connection pool lives there), then serve commands. `wake` is called after
 /// each event so the UI can `request_repaint`. Returns the command sender and event
@@ -495,9 +534,17 @@ pub fn spawn(
                     let evt_tx: Sender<Event> = evt_tx.clone();
                     let wake = wake.clone();
                     tokio::spawn(async move {
-                        let event = handle(&app, cmd).await;
-                        let _ = evt_tx.send(event);
-                        wake();
+                        match cmd {
+                            // Streams ReferenceProgress events as bytes arrive, then a final event.
+                            Command::ResolveReference { build } => {
+                                resolve_reference_streaming(&app, build, &evt_tx, &*wake).await;
+                            }
+                            other => {
+                                let event = handle(&app, other).await;
+                                let _ = evt_tx.send(event);
+                                wake();
+                            }
+                        }
                     });
                 }
             });

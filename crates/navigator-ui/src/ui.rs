@@ -7,9 +7,10 @@ use std::sync::mpsc::Receiver;
 
 use eframe::egui;
 use navigator_app::{
-    AuditEntry, CallState, CompatibilityLevel, Consensus, Coverage, DenovoCall, DnaType, HaploAssignment,
-    HeteroplasmySite, IbdComparison, IdentityVerification, PanelGenotype, PrivateBucket, PrivateClass,
-    ProjectOverview, ProjectSampleReport, ReconciledVariant, SourceType, VariantStatus, VerificationStatus,
+    AuditEntry, BuildNeed, CallState, CompatibilityLevel, Consensus, Coverage, DenovoCall, DnaType,
+    HaploAssignment, HeteroplasmySite, IbdComparison, IdentityVerification, PanelGenotype, PrivateBucket,
+    PrivateClass, ProjectOverview, ProjectSampleReport, ReconciledVariant, SourceType, VariantStatus,
+    VerificationStatus,
 };
 use navigator_domain::du_domain::ids::SampleGuid;
 use navigator_domain::chipprofile::{self, ChipProfile};
@@ -121,6 +122,12 @@ pub struct NavigatorApp {
     publishing: bool,
     /// A batch project-directory import is in flight (disables the button).
     importing: bool,
+    /// The dir to retry importing once needed references are downloaded.
+    pending_import_dir: Option<PathBuf>,
+    /// Reference builds an import is waiting on (prompt the user to download).
+    reference_needs: Vec<BuildNeed>,
+    /// In-flight reference download: (build, received, total).
+    reference_progress: Option<(String, u64, Option<u64>)>,
     forms: Forms,
     status: String,
 }
@@ -259,6 +266,9 @@ impl NavigatorApp {
             logging_in: false,
             publishing: false,
             importing: false,
+            pending_import_dir: None,
+            reference_needs: Vec::new(),
+            reference_progress: None,
             forms: Forms {
                 denovo_contig: "chrM".into(),
                 ploidy: "2".into(),
@@ -298,9 +308,33 @@ impl NavigatorApp {
                     }
                     self.status = msg;
                     self.importing = false;
+                    self.pending_import_dir = None;
+                    self.reference_needs.clear();
                     self.select_project(summary.project.id);
                     let _ = self.tx.send(Command::LoadOverview);
                     let _ = self.tx.send(Command::LoadAllBiosamples);
+                }
+                Event::ReferenceNeeded { dir, builds } => {
+                    self.importing = false;
+                    self.pending_import_dir = Some(dir);
+                    self.status = format!("{} reference build(s) need downloading", builds.len());
+                    self.reference_needs = builds;
+                }
+                Event::ReferenceProgress { build, received, total } => {
+                    self.reference_progress = Some((build, received, total));
+                }
+                Event::ReferenceReady { build, path } => {
+                    self.status = format!("Reference {build} ready ({})", path.display());
+                    self.reference_progress = None;
+                    self.reference_needs.retain(|b| b.build != build);
+                    // When every needed build is in, retry the import automatically.
+                    if self.reference_needs.is_empty() {
+                        if let Some(dir) = self.pending_import_dir.take() {
+                            self.importing = true;
+                            self.status = format!("Importing {}…", dir.display());
+                            let _ = self.tx.send(Command::ImportProjectDir { dir, reference: None });
+                        }
+                    }
                 }
                 Event::Samples { project_id, samples } => {
                     if self.selected_project == Some(project_id) {
@@ -782,17 +816,15 @@ impl NavigatorApp {
                 .clicked()
             {
                 if let Some(dir) = rfd::FileDialog::new().pick_folder() {
-                    if let Some(reference) =
-                        rfd::FileDialog::new().add_filter("FASTA", &["fa", "fasta", "fna"]).pick_file()
-                    {
-                        self.importing = true;
-                        self.status = format!("Importing {}…", dir.display());
-                        let _ = self.tx.send(Command::ImportProjectDir { dir, reference_path: reference });
-                    } else {
-                        self.status = "Batch import needs a reference FASTA (for CRAM decode).".into();
-                    }
+                    self.importing = true;
+                    self.reference_needs.clear();
+                    self.status = format!("Importing {}…", dir.display());
+                    // No reference up front: the gateway resolves each build from the cache,
+                    // and reports ReferenceNeeded if a download is required.
+                    let _ = self.tx.send(Command::ImportProjectDir { dir, reference: None });
                 }
             }
+            self.reference_prompt(ui);
 
             ui.add_space(12.0);
             ui.separator();
@@ -1173,6 +1205,49 @@ impl NavigatorApp {
                 self.forms.panel_import_name.clear();
             }
         }
+    }
+
+    /// When an import is blocked on uncached reference builds, prompt to download them (with
+    /// a progress bar); on completion the import auto-retries (see the `ReferenceReady` event).
+    fn reference_prompt(&mut self, ui: &mut egui::Ui) {
+        if self.reference_needs.is_empty() && self.reference_progress.is_none() {
+            return;
+        }
+        ui.add_space(6.0);
+        egui::Frame::group(ui.style()).show(ui, |ui| {
+            if !self.reference_needs.is_empty() {
+                ui.label("Reference download required before import:");
+                for b in &self.reference_needs {
+                    ui.label(format!("  • {} (~{} MB)", b.build, b.est_bytes / 1_000_000));
+                }
+                if ui
+                    .add_enabled(self.reference_progress.is_none(), egui::Button::new("Download & continue"))
+                    .clicked()
+                {
+                    for build in self.reference_needs.iter().map(|b| b.build.clone()).collect::<Vec<_>>() {
+                        let _ = self.tx.send(Command::ResolveReference { build });
+                    }
+                    self.status = "Downloading reference(s)…".into();
+                }
+            }
+            if let Some((build, received, total)) = self.reference_progress.clone() {
+                let text = match total {
+                    Some(t) => format!("{build}: {} / {} MB", received / 1_000_000, t / 1_000_000),
+                    None => format!("{build}: {} MB", received / 1_000_000),
+                };
+                match total {
+                    Some(t) if t > 0 => {
+                        ui.add(egui::ProgressBar::new(received as f32 / t as f32).text(text));
+                    }
+                    _ => {
+                        ui.horizontal(|ui| {
+                            ui.spinner();
+                            ui.label(text);
+                        });
+                    }
+                }
+            }
+        });
     }
 
     /// A per-sample coverage/haplogroup table for the open project, with per-row coverage
