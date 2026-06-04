@@ -18,6 +18,20 @@ fn fixtures() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../navigator-analysis/tests/fixtures")
 }
 
+/// Serializes the `NAVIGATOR_REFGENOME_DIR` env write (read once in `App::new`) so
+/// parallel tests pointing the gateway cache at different temp dirs don't race.
+static REF_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// An `App` whose reference-gateway cache is `cache`. The store is opened first (async), then
+/// the env write + `App::new` happen synchronously under the lock so the gateway captures the
+/// right base dir without racing other tests.
+async fn app_with_ref_cache(cache: &std::path::Path) -> App {
+    let store = Store::open_in_memory().await.unwrap();
+    let _g = REF_ENV_LOCK.lock().unwrap();
+    std::env::set_var("NAVIGATOR_REFGENOME_DIR", cache);
+    App::new(store)
+}
+
 #[tokio::test]
 async fn import_str_profile_from_csv_round_trips() {
     let app = app().await;
@@ -890,9 +904,7 @@ async fn import_without_reference_resolves_from_cache_else_reports_needed() {
     // Point the gateway cache at a temp dir; no network involved.
     let cache = std::env::temp_dir().join(format!("dun-refcache-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&cache);
-    std::env::set_var("NAVIGATOR_REFGENOME_DIR", &cache);
-
-    let app = app().await;
+    let app = app_with_ref_cache(&cache).await;
     let fx = fixtures();
     let root = std::env::temp_dir().join(format!("dun-import-noref-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&root);
@@ -928,5 +940,65 @@ async fn import_without_reference_resolves_from_cache_else_reports_needed() {
 
     std::env::remove_var("NAVIGATOR_REFGENOME_DIR");
     let _ = std::fs::remove_dir_all(&root);
+    let _ = std::fs::remove_dir_all(&cache);
+}
+
+#[tokio::test]
+async fn assign_y_haplogroup_lifts_grch38_tree_onto_chm13_alignment() {
+    // Seed a GRCh38→chm13v2.0 chain: chrY t[100,200) → chrY q[0,100). So 1-based tree
+    // positions 101 & 105 lift (lift p-1, +1 back) to ychr.bam positions 1 & 5, where the
+    // fixture has 'A' callable. The chain is pre-seeded so resolve_chain is a cache hit.
+    let cache = std::env::temp_dir().join(format!("dun-lift-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&cache);
+    let chains = cache.join("liftover");
+    std::fs::create_dir_all(&chains).unwrap();
+    std::fs::write(
+        chains.join("GRCh38-to-chm13v2.0.chain"),
+        "chain 1 chrY 1000 + 100 200 chrY 1000 + 0 100 1\n100\n",
+    )
+    .unwrap();
+
+    let app = app_with_ref_cache(&cache).await;
+    let dir = fixtures();
+    let b = app.add_biosample(None, "HG002", None, None).await.unwrap();
+    let run = app
+        .record_sequence_run(NewSequenceRun {
+            biosample_guid: b.guid,
+            platform_name: "ILLUMINA".into(),
+            instrument_model: None,
+            test_type: "WGS".into(),
+            library_layout: None,
+            total_reads: None,
+            pf_reads_aligned: None,
+            mean_read_length: None,
+            mean_insert_size: None,
+        })
+        .await
+        .unwrap();
+    let aln = app
+        .record_alignment(NewAlignment {
+            sequence_run_id: run.id,
+            reference_build: "chm13v2.0".into(), // triggers GRCh38→CHM13 liftover for chrY
+            aligner: "synthetic".into(),
+            variant_caller: None,
+            bam_path: Some(dir.join("ychr.bam").to_string_lossy().into_owned()),
+            reference_path: None,
+        })
+        .await
+        .unwrap()
+        .id;
+
+    // GRCh38-coordinate tree: root --A@101--> N1 --A@105--> N2.
+    let tree = r#"{"allNodes":{
+        "1":{"haplogroupId":1,"name":"root","isRoot":true,"variants":[],"children":[2]},
+        "2":{"haplogroupId":2,"name":"N1","isRoot":false,"variants":[{"variant":"y101","position":101,"ancestral":"C","derived":"A"}],"children":[3]},
+        "3":{"haplogroupId":3,"name":"N2","isRoot":false,"variants":[{"variant":"y105","position":105,"ancestral":"C","derived":"A"}],"children":[]}
+    }}"#;
+
+    let ranked = app.assign_haplogroup_from_alignment(aln, "chrY", tree).await.unwrap().ranked;
+    assert_eq!(ranked[0].name, "N2", "lifted GRCh38 positions found the derived alleles on CHM13 chrY");
+    assert_eq!(ranked[0].matched, 2);
+    assert!((ranked[0].score - 1.0).abs() < 1e-9);
+
     let _ = std::fs::remove_dir_all(&cache);
 }

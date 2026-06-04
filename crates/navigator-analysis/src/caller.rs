@@ -205,6 +205,17 @@ pub(crate) fn read_contig_length(bam_path: &Path, contig: &str, reference: Optio
     contig_length(&header, contig).ok_or_else(|| AnalysisError::Message(format!("contig {contig} not in BAM header")))
 }
 
+/// The contig (reference-sequence) names in the alignment header. `reference` is required
+/// for CRAM. Used to skip lifted positions that land on contigs the alignment lacks.
+pub fn header_contig_names(bam_path: &Path, reference: Option<&Path>) -> Result<Vec<String>, AnalysisError> {
+    let header = reader::read_header(bam_path, reference)?;
+    Ok(header
+        .reference_sequences()
+        .keys()
+        .map(|name| String::from_utf8_lossy(name.as_ref()).into_owned())
+        .collect())
+}
+
 /// Sparse A/C/G/T tally at the given 1-based target positions (force-call path), keyed
 /// by 0-based position. Also returns the contig length.
 fn tally_targets(

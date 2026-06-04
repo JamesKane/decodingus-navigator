@@ -158,6 +158,15 @@ impl ReferenceGateway {
         du_bio::liftover::Liftover::parse(&text).map_err(|e| RefgenomeError::Message(e.to_string()))
     }
 
+    /// Whether a liftover chain is registered for this build pair (both names canonicalize
+    /// and a chain source exists). No I/O.
+    pub fn chain_available(&self, from: &str, to: &str) -> bool {
+        match (canonical_build(from), canonical_build(to)) {
+            (Some(f), Some(t)) => self.registry.chain_source(f, t).is_some(),
+            _ => false,
+        }
+    }
+
     /// Lift 1-based `positions` on `contig` from build `from` to build `to`, using the cached
     /// chain (call [`resolve_chain`](Self::resolve_chain) first). Positions in gaps /
     /// non-syntenic regions are dropped. UCSC chains are 0-based half-open while genomic

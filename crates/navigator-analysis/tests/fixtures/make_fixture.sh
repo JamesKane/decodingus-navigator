@@ -39,6 +39,17 @@ samtools sort -o coverage.bam coverage.sam && samtools index coverage.bam
 # CRAM counterpart (same reads, ref-compressed) — proves the reader unification is parity-clean.
 samtools view -T ref.fa -C -o coverage.cram coverage.bam && samtools index coverage.cram
 
+# ---- ychr.bam -------------------------------------------------------------
+# A chrY analogue of coverage.bam (chrY, 50 bp; 4 'A' reads at pos 1 → 'A' callable at 1-10).
+# Used by the haplogroup-liftover test: a seeded GRCh38→chm13 chain maps GRCh38 tree
+# positions onto these chrY positions, exercising lift → query → map-back → score.
+{
+  echo -e "@HD\tVN:1.6\tSO:coordinate"
+  echo -e "@SQ\tSN:chrY\tLN:50"
+  for i in 1 2 3 4; do echo -e "y$i\t0\tchrY\t1\t60\t10M\t*\t0\t0\t$seq10\t$qual10"; done
+} > ychr.sam
+samtools sort -o ychr.bam ychr.sam && samtools index ychr.bam
+
 # ---- paired.bam -----------------------------------------------------------
 # Two FR proper pairs on chrM. flags: /1 = 99 (paired+proper+mate_rev+first),
 # /2 = 147 (paired+proper+rev+last). Insert sizes 40 and 30 (first-of-pair TLEN).

@@ -82,7 +82,7 @@ pub use navigator_sync::{
     COVERAGE_SUMMARY_COLLECTION, PRIVATE_VARIANTS_COLLECTION,
 };
 use navigator_sync::{dev_http_client, login_default, AsyncSync, OAuthConfig, RetryPolicy, TokenStore};
-use navigator_refgenome::{cache as refgenome_cache, ReferenceGateway};
+use navigator_refgenome::{cache as refgenome_cache, canonical_build, ReferenceGateway};
 pub use navigator_refgenome::RefStatus;
 use navigator_sync::{
     AuditEntryRecord, HaplogroupReconciliationRecord, HeteroplasmyObservationRecord,
@@ -203,6 +203,16 @@ fn reference_build_for(path: &Path) -> String {
         "chm13v2.0".to_string()
     } else {
         "unknown".to_string()
+    }
+}
+
+/// The build a haplotree's positions are in, by contig: the FTDNA Y tree is GRCh38; mtDNA
+/// (`chrM`) is rCRS and stays a direct query (no chain), so it returns `None`.
+fn tree_build_for_contig(contig: &str) -> Option<&'static str> {
+    if contig.eq_ignore_ascii_case("chrY") {
+        Some("GRCh38")
+    } else {
+        None
     }
 }
 
@@ -1246,23 +1256,100 @@ impl App {
         let aln = alignment::get(self.store.pool(), alignment_id)
             .await?
             .ok_or_else(|| AppError::Store(StoreError::NotFound(format!("alignment {alignment_id}"))))?;
-        let bam = aln.bam_path.ok_or(AppError::MissingPaths(alignment_id))?;
+        let bam = PathBuf::from(aln.bam_path.ok_or(AppError::MissingPaths(alignment_id))?);
+        let reference = aln.reference_path.map(PathBuf::from);
 
         let tree = navigator_analysis::haplo::parse_ftdna_json(tree_json).map_err(AppError::Import)?;
         let targets: HashSet<i64> =
             tree.nodes.values().flat_map(|n| n.loci.iter().map(|l| l.position)).collect();
 
-        let bam = PathBuf::from(bam);
-        let reference = aln.reference_path.map(PathBuf::from);
-        let contig_owned = contig.to_string();
-        let calls = tokio::task::spawn_blocking(move || {
-            let params = adaptive_haploid_params(&bam, reference.as_deref()); // HiFi -> lower min_depth
-            caller::call_bases_at(&bam, &contig_owned, &targets, &params, reference.as_deref())
-        })
-        .await
-        .map_err(|e| AppError::Join(e.to_string()))??;
+        // The tree's positions are in its own build (Y → GRCh38). If the alignment is a
+        // different build with a registered chain, lift the positions to the alignment's
+        // build, query there, and map back. Otherwise query the tree positions directly
+        // (Y-on-GRCh38, and mtDNA always — chrM stays a direct rCRS query).
+        let lift_from = tree_build_for_contig(contig).filter(|src| {
+            matches!((canonical_build(src), canonical_build(&aln.reference_build)), (Some(s), Some(t)) if s != t)
+                && self.gateway.chain_available(src, &aln.reference_build)
+        });
+
+        let calls = match lift_from {
+            Some(src) => {
+                self.lifted_base_calls(&bam, reference.as_deref(), contig, &aln.reference_build, src, &targets).await?
+            }
+            None => {
+                let bam = bam.clone();
+                let reference = reference.clone();
+                let targets = targets.clone();
+                let contig_owned = contig.to_string();
+                tokio::task::spawn_blocking(move || {
+                    let params = adaptive_haploid_params(&bam, reference.as_deref()); // HiFi -> lower min_depth
+                    caller::call_bases_at(&bam, &contig_owned, &targets, &params, reference.as_deref())
+                })
+                .await
+                .map_err(|e| AppError::Join(e.to_string()))??
+            }
+        };
 
         Ok(assemble_assignment(&tree, &calls))
+    }
+
+    /// Base-call the tree's positions after lifting them from `src_build` to the alignment's
+    /// build via the cached chain (auto-downloaded if absent). Queries each lifted contig
+    /// present in the BAM header, then maps observed bases back to the original tree
+    /// positions so [`assemble_assignment`] (which keys on tree positions) scores unchanged.
+    async fn lifted_base_calls(
+        &self,
+        bam: &Path,
+        reference: Option<&Path>,
+        contig: &str,
+        target_build: &str,
+        src_build: &str,
+        targets: &HashSet<i64>,
+    ) -> Result<HashMap<i64, char>, AppError> {
+        self.gateway.resolve_chain(src_build, target_build, &mut |_, _| {}).await?; // cache (download) the chain
+        let targets_vec: Vec<i64> = targets.iter().copied().collect();
+        let lifted = self.gateway.lift_positions(src_build, target_build, contig, &targets_vec)?;
+
+        // Group lifted positions by their target contig + a back-map (lifted → tree position).
+        let mut by_contig: HashMap<String, HashSet<i64>> = HashMap::new();
+        let mut back: HashMap<(String, i64), i64> = HashMap::new();
+        for lp in lifted {
+            by_contig.entry(lp.contig.clone()).or_default().insert(lp.pos);
+            back.insert((lp.contig, lp.pos), lp.tree_pos);
+        }
+
+        // Only query contigs the alignment actually has (drop off-target lifts).
+        let header_contigs: HashSet<String> = {
+            let bam = bam.to_path_buf();
+            let reference = reference.map(|p| p.to_path_buf());
+            tokio::task::spawn_blocking(move || caller::header_contig_names(&bam, reference.as_deref()))
+                .await
+                .map_err(|e| AppError::Join(e.to_string()))??
+                .into_iter()
+                .collect()
+        };
+
+        let mut calls: HashMap<i64, char> = HashMap::new();
+        for (qcontig, set) in by_contig {
+            if !header_contigs.contains(&qcontig) {
+                continue;
+            }
+            let bam = bam.to_path_buf();
+            let reference = reference.map(|p| p.to_path_buf());
+            let qc = qcontig.clone();
+            let lifted_calls = tokio::task::spawn_blocking(move || {
+                let params = adaptive_haploid_params(&bam, reference.as_deref());
+                caller::call_bases_at(&bam, &qc, &set, &params, reference.as_deref())
+            })
+            .await
+            .map_err(|e| AppError::Join(e.to_string()))??;
+            for (lpos, base) in lifted_calls {
+                if let Some(&tree_pos) = back.get(&(qcontig.clone(), lpos)) {
+                    calls.insert(tree_pos, base);
+                }
+            }
+        }
+        Ok(calls)
     }
 
     /// Self-referential callable intervals (BED 0-based half-open) for `contig` from the
