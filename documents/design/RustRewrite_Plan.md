@@ -235,11 +235,15 @@ miss it returns `AppError::ReferenceNeeded`, and the UI prompts → downloads wi
 bar → auto-retries. Registry defaults from `docs/chm13-reference-resources.md` (+ a
 `reference_sources.json` override); cache under `~/.decodingus` (`$NAVIGATOR_REFGENOME_DIR`).
 
-**Still pending (the haplogroup phase):** *applying* liftover — porting the Scala
-`liftover/{LiftoverProcessor,GenotypeLiftover}` semantics (lift the FTDNA tree positions
-GRCh38→CHM13, or the variant set) so Y/mtDNA assignment runs against CHM13-aligned data.
-`load_liftover` already yields a parsed `du-bio::Liftover` for this. Related caches if/when
-ancestry lands: `AncestryReferenceGateway`/`Cache`, `TreeCache`, `AnalysisCache`.
+**Applying liftover — BUILT for Y (2026-06-03):** `assign_haplogroup_from_alignment` lifts
+the GRCh38 Y-tree positions to the alignment's build via the cached chain
+(`gateway.lift_positions`, auto-resolving GRCh38→CHM13 on a miss), queries the lifted coords,
+and maps observed bases back to tree positions so scoring is unchanged — Y haplogroups now
+come out correct on CHM13 CRAMs. **mtDNA** stays a direct `chrM` (rCRS) query — *provisional*:
+no rCRS↔CHM13 chain exists, so if a sample's CHM13 `chrM` isn't rCRS the call will be wrong;
+the existing match/score surfaces that. A future rCRS↔CHM13-`chrM` chain wires through the
+same `lift_positions` path. Related caches if/when ancestry lands:
+`AncestryReferenceGateway`/`Cache`, `TreeCache`, `AnalysisCache`.
 - **Resource catalog:** `docs/chm13-reference-resources.md` lists the concrete CHM13v2.0 URLs —
   reference FASTAs (incl. **`chm13v2.0_maskedY_rCRS.fa.gz`**, the most relevant for this app),
   GRCh38↔CHM13 and hg19↔CHM13 **1:1 liftover chains** + `unique_to_*` BEDs (unliftable regions),
@@ -352,8 +356,9 @@ rollback.
 8. **Reference & liftover management (§4f).** Retrieval + on-disk cache **built** as
    `navigator-refgenome` (2026-06-03): resolve a build → cached, in-Rust-indexed `.fa`
    (fetch/decompress/index on miss); chains cached for `du-bio`; import resolves references
-   from the cache with a download prompt. **Remaining:** *applying* liftover (tree positions
-   GRCh38→CHM13) so haplogroup assignment runs on CHM13 data.
+   from the cache with a download prompt. Applying liftover is **built for Y** (tree positions
+   GRCh38→CHM13 lifted at assign time); mtDNA stays a direct rCRS `chrM` query (provisional,
+   pending a possible rCRS↔CHM13 chain).
 9. **Cutover.** Feature-parity check against the golden harness; ship.
 
 ---
