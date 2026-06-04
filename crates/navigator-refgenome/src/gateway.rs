@@ -27,12 +27,15 @@ pub enum RefStatus {
 }
 
 /// A tree position lifted to another build: the original `tree_pos` plus its `(contig, pos)`
-/// in the target build (all 1-based).
+/// in the target build (all 1-based). `reverse` is true when the target chain is on the minus
+/// strand — the caller must reverse-complement the base it reads there (large tracts of the
+/// CHM13 Y are inverted relative to GRCh38).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LiftedPos {
     pub tree_pos: i64,
     pub contig: String,
     pub pos: i64,
+    pub reverse: bool,
 }
 
 #[derive(Clone)]
@@ -179,9 +182,20 @@ impl ReferenceGateway {
         positions: &[i64],
     ) -> Result<Vec<LiftedPos>, RefgenomeError> {
         let lo = self.load_liftover(from, to)?;
+        // Walk chains directly (rather than Liftover::lift) so we can capture the target
+        // strand, which the base-reader needs to reverse-complement inverted lifts.
         Ok(positions
             .iter()
-            .filter_map(|&p| lo.lift(contig, p - 1).map(|(c, q)| LiftedPos { tree_pos: p, contig: c, pos: q + 1 }))
+            .filter_map(|&p| {
+                lo.chains.iter().filter(|c| c.t_name == contig).find_map(|c| {
+                    c.lift(p - 1).map(|q| LiftedPos {
+                        tree_pos: p,
+                        contig: c.q_name.clone(),
+                        pos: q + 1,
+                        reverse: c.q_strand == '-',
+                    })
+                })
+            })
             .collect())
     }
 
@@ -273,10 +287,24 @@ mod tests {
         assert_eq!(
             lifted,
             vec![
-                LiftedPos { tree_pos: 50, contig: "chrY".into(), pos: 50 },
-                LiftedPos { tree_pos: 100, contig: "chrY".into(), pos: 100 },
+                LiftedPos { tree_pos: 50, contig: "chrY".into(), pos: 50, reverse: false },
+                LiftedPos { tree_pos: 100, contig: "chrY".into(), pos: 100, reverse: false },
             ]
         );
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn lift_positions_flags_minus_strand_targets() {
+        let base = scratch("liftrev");
+        let dir = base.join("liftover");
+        std::fs::create_dir_all(&dir).unwrap();
+        // chrY t[0,10) -> chrY q on the MINUS strand (q_size 100): pos 0 -> 100-1-0 = 99.
+        std::fs::write(dir.join("GRCh38-to-chm13v2.0.chain"), "chain 1 chrY 1000 + 0 10 chrY 100 - 0 10 1\n10\n").unwrap();
+        let g = gw(&base);
+        // 1-based tree 1 -> 0-based 0 -> q 99 -> 1-based 100, flagged reverse.
+        let lifted = g.lift_positions("GRCh38", "chm13v2.0", "chrY", &[1]).unwrap();
+        assert_eq!(lifted, vec![LiftedPos { tree_pos: 1, contig: "chrY".into(), pos: 100, reverse: true }]);
         let _ = std::fs::remove_dir_all(&base);
     }
 }

@@ -332,6 +332,74 @@ async fn validate_hg002_haplogroups() {
     }
 }
 
+/// Real-data validation that liftover gives the right answer: a CHM13-aligned HiFi BAM of a
+/// donor whose GRCh38 terminals are known (Y: R-FGC29071, mt: U5a1b1g). Y is assigned by
+/// lifting the GRCh38 tree positions onto CHM13 via the cached chain (auto-downloaded);
+/// mtDNA is a direct chrM query (this BAM's chrM is 16,569 bp = rCRS). The calls should match
+/// the GRCh38 result. Needs network (FTDNA tree + the GRCh38→CHM13 chain). Run:
+///   GFX_CHM13_BAM=/Users/jkane/Genomics/GFX0457637/GFX0457637.pbmm2.chm13v2.bam \
+///   cargo test -p navigator-app --test app validate_gfx_chm13 -- --ignored --nocapture
+#[tokio::test]
+#[ignore = "requires GFX_CHM13_BAM (CHM13) + network (FTDNA tree + liftover chain)"]
+async fn validate_gfx_chm13_haplogroups() {
+    let Ok(bam) = std::env::var("GFX_CHM13_BAM") else {
+        eprintln!("GFX_CHM13_BAM unset — skipping CHM13 liftover validation");
+        return;
+    };
+    let app = app().await; // default ~/.decodingus cache → the chain persists across runs
+    let b = app.add_biosample(None, "GFX0457637", None, Some("male".into())).await.unwrap();
+    let run = app
+        .record_sequence_run(NewSequenceRun {
+            biosample_guid: b.guid,
+            platform_name: "PACBIO".into(),
+            instrument_model: None,
+            test_type: "WGS".into(),
+            library_layout: None,
+            total_reads: None,
+            pf_reads_aligned: None,
+            mean_read_length: None,
+            mean_insert_size: None,
+        })
+        .await
+        .unwrap();
+    let aln = app
+        .record_alignment(NewAlignment {
+            sequence_run_id: run.id,
+            reference_build: "chm13v2.0".into(), // triggers GRCh38→CHM13 liftover for chrY
+            aligner: "pbmm2".into(),
+            variant_caller: None,
+            bam_path: Some(bam),
+            reference_path: None,
+        })
+        .await
+        .unwrap()
+        .id;
+
+    // mtDNA: direct chrM query. PROVISIONAL — informational only: CHM13's chrM is not
+    // rCRS-coordinate-compatible (even at 16,569 bp), so this is expected to mis-call until an
+    // rCRS↔CHM13-chrM chain is added (then it routes through the same lift path). The GRCh38
+    // expectation is U5a1b1g; a divergent result here documents the known gap, not a Y bug.
+    let mt = app.assign_mtdna_haplogroup_from_alignment(aln).await.expect("mt assign").ranked;
+    let top = &mt[0];
+    eprintln!("GFX0457637 mtDNA (PROVISIONAL on CHM13): {}  ({}/{} mutations, score {:.3})", top.name, top.matched, top.expected, top.score);
+    eprintln!("  lineage: {}   [GRCh38 expectation: U5a1b1g — divergence here = known no-mt-chain gap]", top.lineage.join(" › "));
+
+    // Y: lifted GRCh38 tree → CHM13 chrY — expect the R-FGC29071 clade.
+    let y = app.assign_y_haplogroup(aln).await.expect("Y assign");
+    let top = &y.ranked[0];
+    eprintln!("GFX0457637 Y: {}  ({}/{} mutations, score {:.3})", top.name, top.matched, top.expected, top.score);
+    eprintln!("  lineage: {}", top.lineage.join(" › "));
+    for r in y.ranked.iter().skip(1).take(3) {
+        eprintln!("  alt: {} ({:.3})", r.name, r.score);
+    }
+    assert!(top.matched > 0, "Y should resolve below root");
+    assert!(
+        top.lineage.iter().any(|h| h.starts_with("R-")),
+        "expected the R clade (known terminal R-FGC29071), got {}",
+        top.lineage.join(" › ")
+    );
+}
+
 #[tokio::test]
 async fn haplogroup_consensus_combines_recorded_calls() {
     use navigator_app::{CompatibilityLevel, DnaType};

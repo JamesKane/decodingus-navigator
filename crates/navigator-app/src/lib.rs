@@ -206,6 +206,17 @@ fn reference_build_for(path: &Path) -> String {
     }
 }
 
+/// Watson–Crick complement of a base (for reverse-strand lifts); non-ACGT passes through.
+fn complement_base(b: char) -> char {
+    match b.to_ascii_uppercase() {
+        'A' => 'T',
+        'T' => 'A',
+        'C' => 'G',
+        'G' => 'C',
+        other => other,
+    }
+}
+
 /// The build a haplotree's positions are in, by contig: the FTDNA Y tree is GRCh38; mtDNA
 /// (`chrM`) is rCRS and stays a direct query (no chain), so it returns `None`.
 fn tree_build_for_contig(contig: &str) -> Option<&'static str> {
@@ -1310,12 +1321,13 @@ impl App {
         let targets_vec: Vec<i64> = targets.iter().copied().collect();
         let lifted = self.gateway.lift_positions(src_build, target_build, contig, &targets_vec)?;
 
-        // Group lifted positions by their target contig + a back-map (lifted → tree position).
+        // Group lifted positions by their target contig + a back-map (lifted → tree position,
+        // plus whether the lift was to the minus strand → the base needs complementing).
         let mut by_contig: HashMap<String, HashSet<i64>> = HashMap::new();
-        let mut back: HashMap<(String, i64), i64> = HashMap::new();
+        let mut back: HashMap<(String, i64), (i64, bool)> = HashMap::new();
         for lp in lifted {
             by_contig.entry(lp.contig.clone()).or_default().insert(lp.pos);
-            back.insert((lp.contig, lp.pos), lp.tree_pos);
+            back.insert((lp.contig, lp.pos), (lp.tree_pos, lp.reverse));
         }
 
         // Only query contigs the alignment actually has (drop off-target lifts).
@@ -1344,8 +1356,10 @@ impl App {
             .await
             .map_err(|e| AppError::Join(e.to_string()))??;
             for (lpos, base) in lifted_calls {
-                if let Some(&tree_pos) = back.get(&(qcontig.clone(), lpos)) {
-                    calls.insert(tree_pos, base);
+                if let Some(&(tree_pos, reverse)) = back.get(&(qcontig.clone(), lpos)) {
+                    // Inverted tracts (common on the CHM13 Y): the tree allele is GRCh38-forward,
+                    // so complement the base read off the minus-strand-lifted CHM13 position.
+                    calls.insert(tree_pos, if reverse { complement_base(base) } else { base });
                 }
             }
         }
