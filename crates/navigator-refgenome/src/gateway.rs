@@ -26,6 +26,15 @@ pub enum RefStatus {
     Unknown,
 }
 
+/// A tree position lifted to another build: the original `tree_pos` plus its `(contig, pos)`
+/// in the target build (all 1-based).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LiftedPos {
+    pub tree_pos: i64,
+    pub contig: String,
+    pub pos: i64,
+}
+
 #[derive(Clone)]
 pub struct ReferenceGateway {
     base: PathBuf,
@@ -149,6 +158,24 @@ impl ReferenceGateway {
         du_bio::liftover::Liftover::parse(&text).map_err(|e| RefgenomeError::Message(e.to_string()))
     }
 
+    /// Lift 1-based `positions` on `contig` from build `from` to build `to`, using the cached
+    /// chain (call [`resolve_chain`](Self::resolve_chain) first). Positions in gaps /
+    /// non-syntenic regions are dropped. UCSC chains are 0-based half-open while genomic
+    /// positions are 1-based, so we lift `p - 1` and return `q + 1`.
+    pub fn lift_positions(
+        &self,
+        from: &str,
+        to: &str,
+        contig: &str,
+        positions: &[i64],
+    ) -> Result<Vec<LiftedPos>, RefgenomeError> {
+        let lo = self.load_liftover(from, to)?;
+        Ok(positions
+            .iter()
+            .filter_map(|&p| lo.lift(contig, p - 1).map(|(c, q)| LiftedPos { tree_pos: p, contig: c, pos: q + 1 }))
+            .collect())
+    }
+
     fn chain_builds(&self, from: &str, to: &str) -> Result<(Build, Build), RefgenomeError> {
         let f = canonical_build(from).ok_or_else(|| RefgenomeError::UnknownBuild(from.to_string()))?;
         let t = canonical_build(to).ok_or_else(|| RefgenomeError::UnknownBuild(to.to_string()))?;
@@ -219,6 +246,28 @@ mod tests {
         assert_eq!(lo.lift("chrZ", 50), Some(("chrZp".to_string(), 50)));
         // Not-yet-resolved pair errors clearly.
         assert!(g.load_liftover("chm13v2.0", "GRCh38").is_err());
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn lift_positions_is_one_based_in_and_out() {
+        let base = scratch("liftpos");
+        let dir = base.join("liftover");
+        std::fs::create_dir_all(&dir).unwrap();
+        // chrY t[0,100) -> chrY q[0,100) (identity over the first 100 bp).
+        std::fs::write(dir.join("GRCh38-to-chm13v2.0.chain"), "chain 1 chrY 1000 + 0 100 chrY 1000 + 0 100 1\n100\n").unwrap();
+        let g = gw(&base);
+
+        // 1-based 101 -> 0-based 100 -> outside the block -> dropped.
+        // 1-based 50 -> 0-based 49 -> q 49 -> 1-based 50; 1-based 100 -> 0-based 99 -> 1-based 100.
+        let lifted = g.lift_positions("GRCh38", "chm13v2.0", "chrY", &[50, 100, 101]).unwrap();
+        assert_eq!(
+            lifted,
+            vec![
+                LiftedPos { tree_pos: 50, contig: "chrY".into(), pos: 50 },
+                LiftedPos { tree_pos: 100, contig: "chrY".into(), pos: 100 },
+            ]
+        );
         let _ = std::fs::remove_dir_all(&base);
     }
 }

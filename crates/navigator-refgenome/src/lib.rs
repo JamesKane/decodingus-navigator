@@ -14,5 +14,5 @@ pub mod index;
 pub mod registry;
 
 pub use error::RefgenomeError;
-pub use gateway::{ReferenceGateway, RefStatus};
+pub use gateway::{LiftedPos, ReferenceGateway, RefStatus};
 pub use registry::{canonical_build, Build};
