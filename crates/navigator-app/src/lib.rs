@@ -211,11 +211,24 @@ fn ancestry_pca_path(build: ReferenceBuild) -> PathBuf {
         .join(format!("ancestry_pca_{}.bin", build.as_str()))
 }
 
+/// Where the **ancient** PCA loadings for `build` live: `$NAVIGATOR_ANCESTRY_PCA_ANCIENT`
+/// (override), else `<refgenome base>/ancestry/ancestry_pca_ancient_<build>.bin`. Optional —
+/// present means the PCA-projection GMM runs against ancient reference components
+/// (Steppe/EEF/WHG) instead of the modern super-populations. Must be built over the same panel
+/// sites the AF panel genotypes (so the single genotyping pass covers it).
+fn ancestry_pca_ancient_path(build: ReferenceBuild) -> PathBuf {
+    if let Ok(p) = std::env::var("NAVIGATOR_ANCESTRY_PCA_ANCIENT") {
+        return PathBuf::from(p);
+    }
+    refgenome_cache::base_dir()
+        .join("ancestry")
+        .join(format!("ancestry_pca_ancient_{}.bin", build.as_str()))
+}
+
 /// Map a computed [`AncestryResult`] onto the shared federated wire record. The analysis
-/// method is derived from the estimator path: PCA-projection (phase 2) when PCA coordinates
-/// are present, else the AF-likelihood (phase 1) path.
+/// method is carried verbatim from the estimator that produced the result (never inferred),
+/// so the published `analysisMethod` always matches the composition shown.
 fn population_breakdown_record(result: &AncestryResult) -> PopulationBreakdownRecord {
-    let method = if result.pca_coordinates.is_some() { "PCA_PROJECTION_GMM" } else { "AF_LIKELIHOOD" };
     let components = result
         .components
         .iter()
@@ -236,7 +249,7 @@ fn population_breakdown_record(result: &AncestryResult) -> PopulationBreakdownRe
         })
         .collect();
     PopulationBreakdownRecord::new(
-        method,
+        result.method.clone(),
         result.panel_type.clone(),
         Some(result.reference_version.clone()),
         result.snps_analyzed as i64,
@@ -248,6 +261,7 @@ fn population_breakdown_record(result: &AncestryResult) -> PopulationBreakdownRe
         result.pca_coordinates.clone(),
         Utc::now().to_rfc3339(),
     )
+    .with_fit_distance(result.fit_distance)
 }
 
 /// The lexicon's UPPER_SNAKE compatibility level (matches the AppView's knownValues).
@@ -773,13 +787,14 @@ impl App {
     /// Build the population-breakdown (ancestry) record JSON for an alignment from its
     /// persisted estimate — the shared `com.decodingus.atmosphere.populationBreakdown`
     /// contract the AppView ingests (floats as strings).
-    async fn ancestry_record(&self, alignment_id: i64) -> Result<serde_json::Value, AppError> {
-        let result = self
-            .ancestry_for_alignment(alignment_id)
-            .await?
-            .ok_or_else(|| AppError::Store(StoreError::NotFound(format!("ancestry for alignment {alignment_id}"))))?;
-        let record = population_breakdown_record(&result);
-        Ok(serde_json::to_value(&record)?)
+    /// The populationBreakdown record JSON for each persisted estimate of an alignment (one
+    /// per method — e.g. ADMIXTURE + PCA_PROJECTION_GMM). Empty if none computed.
+    async fn ancestry_records(&self, alignment_id: i64) -> Result<Vec<serde_json::Value>, AppError> {
+        let results = ancestry_result::list_for_alignment(self.store.pool(), alignment_id).await?;
+        results
+            .iter()
+            .map(|r| serde_json::to_value(population_breakdown_record(r)).map_err(AppError::from))
+            .collect()
     }
 
     /// Build the anonymized biosample record JSON — sex, center, and best-effort Y/mt
@@ -852,15 +867,19 @@ impl App {
         Ok(client.create_record(NS_ALIGNMENT, value, None).await?)
     }
 
-    /// Publish an alignment's ancestry (population-breakdown) estimate using an explicit
-    /// `client` (the testable core; production callers use [`publish_ancestry`](Self::publish_ancestry)).
+    /// Publish every persisted ancestry estimate for an alignment (one populationBreakdown per
+    /// method — admixture + PCA-GMM) using an explicit `client` (the testable core; production
+    /// callers use [`publish_ancestry`](Self::publish_ancestry)). Returns a ref per record.
     pub async fn publish_ancestry_with(
         &self,
         client: &PdsClient,
         alignment_id: i64,
-    ) -> Result<RecordRef, AppError> {
-        let value = self.ancestry_record(alignment_id).await?;
-        Ok(client.create_record(NS_POPULATION_BREAKDOWN, value, None).await?)
+    ) -> Result<Vec<RecordRef>, AppError> {
+        let mut refs = Vec::new();
+        for value in self.ancestry_records(alignment_id).await? {
+            refs.push(client.create_record(NS_POPULATION_BREAKDOWN, value, None).await?);
+        }
+        Ok(refs)
     }
 
     /// Publish the anonymized biosample summary using an explicit `client`.
@@ -953,12 +972,17 @@ impl App {
         Ok(engine.push_create(NS_ALIGNMENT, value).await?)
     }
 
-    /// Publish the alignment's ancestry estimate to the signed-in account's PDS. This is the
-    /// researcher opt-in act for the ancestry section — anonymized population proportions only.
-    pub async fn publish_ancestry(&self, alignment_id: i64) -> Result<RecordRef, AppError> {
+    /// Publish every persisted ancestry estimate (admixture + PCA-GMM) for the alignment to the
+    /// signed-in account's PDS — one populationBreakdown record per method. This is the researcher
+    /// opt-in act for the ancestry section — anonymized population proportions only.
+    pub async fn publish_ancestry(&self, alignment_id: i64) -> Result<Vec<RecordRef>, AppError> {
         let mut engine = self.sync_engine()?; // auth check before touching the DB
-        let value = self.ancestry_record(alignment_id).await?;
-        Ok(engine.push_create(NS_POPULATION_BREAKDOWN, value).await?)
+        let values = self.ancestry_records(alignment_id).await?;
+        let mut refs = Vec::new();
+        for value in values {
+            refs.push(engine.push_create(NS_POPULATION_BREAKDOWN, value).await?);
+        }
+        Ok(refs)
     }
 
     /// Publish the anonymized biosample summary to the signed-in account's PDS.
@@ -1605,20 +1629,39 @@ impl App {
             None => self.gateway.resolve_reference(&aln.reference_build, &mut |_, _| {}).await?,
         };
         let reference_version = aln.reference_build.clone();
-        // Optional PCA loadings (same build) → project the sample onto PC space for the scatter.
+        // Optional PCA loadings (same build): the modern asset projects the sample onto PC space
+        // for the scatter; the ancient asset (if present) drives a PCA-projection GMM over ancient
+        // components (Steppe/EEF/WHG). The GMM runs against the ancient asset when available, else
+        // the modern one — so PCA_PROJECTION_GMM is always over the best available reference.
         let pca_bytes = std::fs::read(ancestry_pca_path(build)).ok();
+        let ancient_pca_bytes = std::fs::read(ancestry_pca_ancient_path(build)).ok();
 
-        let result = tokio::task::spawn_blocking(move || {
+        // Returns (admixture estimate, optional PCA-GMM estimate, optional nMonte estimate).
+        let (result, pca_gmm, nmonte) = tokio::task::spawn_blocking(move || {
             let params = adaptive_haploid_params(&bam, Some(&reference));
             let genotypes =
                 ancestry_analysis::genotype_panel(&bam, Some(&reference), &panel, &params, &mut progress)?;
             // Supervised admixture → 100%-summing composition (the consumer-report shape).
             let mut result =
                 ancestry_analysis::estimate_admixture(&genotypes, &panel, &reference_version);
-            if let Some(pca) = pca_bytes.and_then(|b| ancestry_analysis::PcaLoadings::from_bytes(&b).ok()) {
-                result.pca_coordinates = Some(ancestry_analysis::project_pca(&genotypes, &pca));
+            let modern_pca = pca_bytes.and_then(|b| ancestry_analysis::PcaLoadings::from_bytes(&b).ok());
+            if let Some(pca) = &modern_pca {
+                result.pca_coordinates = Some(ancestry_analysis::project_pca(&genotypes, pca));
             }
-            Ok::<_, navigator_analysis::AnalysisError>(result)
+            // PCA-projection models: prefer the ancient reference asset, else the modern one.
+            // Both the GMM (cluster assignment) and the nMonte (distance-minimizing mixture fit)
+            // run against the same asset, so a richer/global asset widens both.
+            let gmm_pca = ancient_pca_bytes
+                .and_then(|b| ancestry_analysis::PcaLoadings::from_bytes(&b).ok())
+                .or(modern_pca);
+            let (pca_gmm, nmonte) = match &gmm_pca {
+                Some(pca) => (
+                    Some(ancestry_analysis::estimate_pca_gmm(&genotypes, pca, &reference_version)),
+                    Some(ancestry_analysis::estimate_nmonte(&genotypes, pca, &reference_version)),
+                ),
+                None => (None, None),
+            };
+            Ok::<_, navigator_analysis::AnalysisError>((result, pca_gmm, nmonte))
         })
         .await
         .map_err(|e| AppError::Join(e.to_string()))??;
@@ -1631,8 +1674,12 @@ impl App {
             });
         }
 
+        // Persist every estimate (keyed by method) so "publish both" can read each back.
         if let Ok(bio) = self.biosample_of_alignment(alignment_id).await {
             ancestry_result::upsert(self.store.pool(), bio, alignment_id, &result).await?;
+            for extra in [pca_gmm.as_ref(), nmonte.as_ref()].into_iter().flatten() {
+                ancestry_result::upsert(self.store.pool(), bio, alignment_id, extra).await?;
+            }
         }
         Ok(result)
     }

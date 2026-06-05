@@ -80,11 +80,25 @@ const FINE_POPULATIONS: [(&str, &str, &str); 29] = [
     ("OCE", "Oceanian", "OCE"),
 ];
 
+/// Ancient reference components for the PCA-projection GMM model: `(code, name, hex color)`.
+/// These are the labels of the ancient `PcaLoadings` asset (built by `navigator-panelbuild`
+/// from labelled ancient reference genomes); each is its own continental-equivalent group, so
+/// it rolls up to itself in the super-population summary.
+const ANCIENT_POPULATIONS: [(&str, &str, &str); 3] = [
+    ("Steppe", "Steppe pastoralist", "#4e79a7"),
+    ("EEF", "Early European Farmer", "#f28e2b"),
+    ("WHG", "Western Hunter-Gatherer", "#e15759"),
+];
+
 /// The super-population a (fine or super) population code belongs to, or `None` if unknown.
 pub fn population_super(code: &str) -> Option<&'static str> {
     if super_populations().iter().any(|p| p.code == code) {
         // A super-population code maps to itself.
         return SUPER_CODES.iter().copied().find(|&c| c == code);
+    }
+    if let Some((c, _, _)) = ANCIENT_POPULATIONS.iter().find(|(c, _, _)| *c == code) {
+        // Ancient components are their own super-group (rolled up 1:1).
+        return Some(c);
     }
     FINE_POPULATIONS.iter().find(|(c, _, _)| *c == code).map(|(_, _, sp)| *sp)
 }
@@ -93,6 +107,9 @@ const SUPER_CODES: [&str; 8] = ["AFR", "AMR", "EAS", "SAS", "EUR", "MEA", "CAS",
 
 /// Display name for a fine or super population code, falling back to the code itself.
 pub fn population_name(code: &str) -> String {
+    if let Some((_, name, _)) = ANCIENT_POPULATIONS.iter().find(|(c, _, _)| *c == code) {
+        return name.to_string();
+    }
     if let Some((_, name, _)) = FINE_POPULATIONS.iter().find(|(c, _, _)| *c == code) {
         return name.to_string();
     }
@@ -106,6 +123,9 @@ pub fn population_name(code: &str) -> String {
 /// Hex display color for a population code. Fine populations inherit their super-population's
 /// color (so PCA clusters read by continent); falls back to neutral grey.
 pub fn population_color(code: &str) -> String {
+    if let Some((_, _, color)) = ANCIENT_POPULATIONS.iter().find(|(c, _, _)| *c == code) {
+        return color.to_string();
+    }
     let key = population_super(code).unwrap_or(code);
     super_populations()
         .into_iter()
@@ -209,6 +229,10 @@ pub struct SuperPopulationSummary {
 /// A sample's ancestry estimate.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AncestryResult {
+    /// The estimator that produced this result: `"AF_LIKELIHOOD"` | `"ADMIXTURE"` |
+    /// `"PCA_PROJECTION_GMM"`. Carried verbatim into the published record's `analysisMethod`
+    /// (and the per-(alignment, method) store key) so the method is captured, never inferred.
+    pub method: String,
     /// "aims" | "genome-wide".
     pub panel_type: String,
     /// Total SNPs in the panel.
@@ -221,6 +245,9 @@ pub struct AncestryResult {
     pub super_population_summary: Vec<SuperPopulationSummary>,
     /// Overall confidence (0–1) from data completeness.
     pub confidence_level: f64,
+    /// Fit residual for distance-minimizing models (nMonte/G25): the Euclidean distance between
+    /// the sample and its fitted mixture in PC space. Lower is better; `None` for non-fit methods.
+    pub fit_distance: Option<f64>,
     pub pipeline_version: String,
     pub reference_version: String,
     /// First N PCA coordinates for visualization (phase 2; `None` for the AF-likelihood path).

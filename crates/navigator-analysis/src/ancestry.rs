@@ -511,6 +511,7 @@ pub fn estimate_by_allele_frequency(
 
     let confidence = confidence_from_completeness(snps_with_data, panel.sites.len());
     from_probabilities(
+        "AF_LIKELIHOOD",
         "aims",
         panel.sites.len(),
         snps_with_data,
@@ -587,13 +588,166 @@ pub fn estimate_admixture(
 
     let probs: Vec<(String, f64)> = panel.populations.iter().cloned().zip(q).collect();
     let confidence = confidence_from_completeness(snps_with_data, panel.sites.len());
-    from_probabilities("admixture", panel.sites.len(), snps_with_data, &probs, confidence, reference_version)
+    from_probabilities("ADMIXTURE", "genome-wide", panel.sites.len(), snps_with_data, &probs, confidence, reference_version)
+}
+
+/// Estimate ancestry by **PCA projection + a diagonal-covariance Gaussian mixture**: project the
+/// sample onto the reference PCA space ([`project_pca`]) and assign per-population responsibilities
+/// ([`classify_pca`]) — the `PCA_PROJECTION_GMM` method. Unlike the allele-frequency estimators,
+/// the composition comes entirely from the sample's position in PC space relative to each
+/// population's centroid/variance, so the `pca` asset's `populations` define the components
+/// (modern super-pops, or ancient Steppe/EEF/WHG when an ancient asset is supplied). The projected
+/// coordinates are attached for the scatter plot.
+pub fn estimate_pca_gmm(
+    genotypes: &[SiteGenotype],
+    pca: &PcaLoadings,
+    reference_version: &str,
+) -> AncestryResult {
+    let coords = project_pca(genotypes, pca);
+    let probs = classify_pca(&coords, pca);
+
+    // Coverage: how many of the PCA asset's sites this sample has a genotype for.
+    let genotyped: std::collections::HashSet<(&str, i64)> = genotypes
+        .iter()
+        .filter(|g| g.dosage >= 0)
+        .map(|g| (g.contig.as_str(), g.position))
+        .collect();
+    let snps_with_genotype = pca
+        .sites
+        .iter()
+        .filter(|(c, p)| genotyped.contains(&(c.as_str(), *p)))
+        .count();
+    let confidence = confidence_from_completeness(snps_with_genotype, pca.sites.len());
+
+    let mut result = from_probabilities(
+        "PCA_PROJECTION_GMM",
+        "genome-wide",
+        pca.sites.len(),
+        snps_with_genotype,
+        &probs,
+        confidence,
+        reference_version,
+    );
+    result.pca_coordinates = Some(coords);
+    result
+}
+
+/// Squared Euclidean distance between two equal-length coordinate vectors.
+fn euclid_sq(a: &[f64], b: &[f64]) -> f64 {
+    a.iter().zip(b).map(|(&x, &y)| (x - y) * (x - y)).sum()
+}
+
+/// Non-negative, sum-to-one mixture of `sources` (each a coordinate vector) that best
+/// reconstructs `target` in the Euclidean (least-squares) sense — the nMonte/Vahaduo
+/// "distance" model. Returns `(weights, fit_distance)` where `fit_distance` is the residual
+/// `‖target − Σ wᵢ·sourceᵢ‖`.
+///
+/// Solved by **Frank–Wolfe** (conditional gradient) on the probability simplex: start at the
+/// nearest single source, then repeatedly move toward the vertex (population) that most reduces
+/// the residual, with an exact line search. Deterministic, monotone, and projection-free — it
+/// stays on the simplex by construction, so weights are always valid proportions.
+fn nmonte_fit(target: &[f64], sources: &[Vec<f64>]) -> (Vec<f64>, f64) {
+    let k = sources.len();
+    if k == 0 {
+        return (Vec::new(), f64::INFINITY);
+    }
+    let dim = target.len();
+
+    // Initialize at the single nearest source vertex.
+    let (start, _) = sources
+        .iter()
+        .enumerate()
+        .map(|(i, s)| (i, euclid_sq(target, s)))
+        .min_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
+        .unwrap();
+    let mut w = vec![0.0f64; k];
+    w[start] = 1.0;
+    let mut mix = sources[start].clone(); // current mixture Σ wᵢ·sourceᵢ
+
+    for _ in 0..1000 {
+        // residual r = mix − target; gradient of ½‖r‖² wrt wⱼ is r·sourceⱼ.
+        let resid: Vec<f64> = (0..dim).map(|c| mix[c] - target[c]).collect();
+        // Pick the vertex j minimizing the linear approximation (steepest descent on simplex).
+        let (j, _) = sources
+            .iter()
+            .enumerate()
+            .map(|(i, s)| (i, resid.iter().zip(s).map(|(&r, &x)| r * x).sum::<f64>()))
+            .min_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
+            .unwrap();
+        // Direction d = sourceⱼ − mix; exact step γ = clamp(−r·d / ‖d‖², 0, 1).
+        let dvec: Vec<f64> = (0..dim).map(|c| sources[j][c] - mix[c]).collect();
+        let num = -resid.iter().zip(&dvec).map(|(&r, &d)| r * d).sum::<f64>();
+        let den = dvec.iter().map(|&d| d * d).sum::<f64>();
+        if den < 1e-12 {
+            break;
+        }
+        let gamma = (num / den).clamp(0.0, 1.0);
+        if gamma < 1e-9 {
+            break; // converged (no improving direction)
+        }
+        for x in w.iter_mut() {
+            *x *= 1.0 - gamma;
+        }
+        w[j] += gamma;
+        for c in 0..dim {
+            mix[c] += gamma * dvec[c];
+        }
+    }
+
+    (w, euclid_sq(&mix, target).sqrt())
+}
+
+/// Estimate ancestry by **PCA projection + a distance-minimizing mixture fit** (the
+/// nMonte/G25-style model) — the `G25_NMONTE` method. Projects the sample into PC space
+/// ([`project_pca`]) and fits the non-negative, sum-to-one mixture of the reference populations'
+/// centroids that best reconstructs that point ([`nmonte_fit`]). Unlike the GMM classifier (which
+/// assigns to the nearest cluster), this *decomposes* an admixed sample into source proportions
+/// and reports the fit residual as a quality score (`fit_distance`; lower is better). The `pca`
+/// asset's `populations` are the source library, so a richer/global asset yields wider admixtures.
+pub fn estimate_nmonte(
+    genotypes: &[SiteGenotype],
+    pca: &PcaLoadings,
+    reference_version: &str,
+) -> AncestryResult {
+    let coords = project_pca(genotypes, pca);
+    let sources: Vec<Vec<f64>> = (0..pca.populations.len())
+        .map(|p| pca.centroid(p).iter().map(|&x| x as f64).collect())
+        .collect();
+    let (weights, distance) = nmonte_fit(&coords, &sources);
+    let probs: Vec<(String, f64)> = pca.populations.iter().cloned().zip(weights).collect();
+
+    // Coverage: how many of the PCA asset's sites this sample has a genotype for.
+    let genotyped: std::collections::HashSet<(&str, i64)> = genotypes
+        .iter()
+        .filter(|g| g.dosage >= 0)
+        .map(|g| (g.contig.as_str(), g.position))
+        .collect();
+    let snps_with_genotype = pca
+        .sites
+        .iter()
+        .filter(|(c, p)| genotyped.contains(&(c.as_str(), *p)))
+        .count();
+    let confidence = confidence_from_completeness(snps_with_genotype, pca.sites.len());
+
+    let mut result = from_probabilities(
+        "G25_NMONTE",
+        "genome-wide",
+        pca.sites.len(),
+        snps_with_genotype,
+        &probs,
+        confidence,
+        reference_version,
+    );
+    result.pca_coordinates = Some(coords);
+    result.fit_distance = Some(distance);
+    result
 }
 
 /// Build an [`AncestryResult`] from raw per-population probabilities (need not be normalized).
 /// With the phase-1 super-population panel each component *is* a super-population, so the
 /// super-population summary is 1:1 with the components.
 fn from_probabilities(
+    method: &str,
     panel_type: &str,
     snps_analyzed: usize,
     snps_with_genotype: usize,
@@ -650,6 +804,7 @@ fn from_probabilities(
     debug_assert!(!population_color("EUR").is_empty());
 
     AncestryResult {
+        method: method.to_string(),
         panel_type: panel_type.to_string(),
         snps_analyzed,
         snps_with_genotype,
@@ -657,6 +812,7 @@ fn from_probabilities(
         components,
         super_population_summary,
         confidence_level,
+        fit_distance: None,
         pipeline_version: PIPELINE_VERSION.to_string(),
         reference_version: reference_version.to_string(),
         pca_coordinates: None,
@@ -802,6 +958,87 @@ mod tests {
         let probs = classify_pca(&coords, &pca);
         let hi = probs.iter().find(|(c, _)| c == "HI").unwrap().1;
         assert!(hi > 0.99, "HI prob = {hi}");
+    }
+
+    /// estimate_pca_gmm: stamps the method, builds a 100%-summing composition from the GMM
+    /// responsibilities, attaches the projected coordinates, and counts covered sites.
+    #[test]
+    fn pca_gmm_estimate_labels_and_composes() {
+        let sites: Vec<(String, i64)> = (1..=4).map(|p| ("chr1".to_string(), p)).collect();
+        let pca = PcaLoadings {
+            build: "t".into(),
+            sites,
+            means: vec![1.0; 4],
+            n_components: 1,
+            loadings: vec![1.0; 4],
+            populations: vec!["LO".into(), "HI".into()],
+            centroids: vec![-4.0, 4.0],
+            variances: vec![1.0, 1.0],
+        };
+        let hom_alt: Vec<SiteGenotype> = (1..=4).map(|p| sg("chr1", p, 2)).collect();
+        let r = estimate_pca_gmm(&hom_alt, &pca, "t");
+
+        assert_eq!(r.method, "PCA_PROJECTION_GMM");
+        assert_eq!(r.panel_type, "genome-wide");
+        assert_eq!(r.snps_with_genotype, 4); // all PCA sites covered
+        assert!(r.pca_coordinates.is_some());
+        let hi = r.components.iter().find(|c| c.population_code == "HI").unwrap();
+        assert!(hi.percentage > 99.0, "HI% = {}", hi.percentage);
+        let sum: f64 = r.components.iter().map(|c| c.percentage).sum();
+        assert!((sum - 100.0).abs() < 1e-6, "sum = {sum}");
+    }
+
+    /// nMonte fit: a target on a source vertex resolves to ~100% that source (distance ~0);
+    /// a target at the midpoint of two sources resolves to ~50/50.
+    #[test]
+    fn nmonte_fit_recovers_mixtures() {
+        let a = vec![0.0, 0.0];
+        let b = vec![10.0, 0.0];
+        let c = vec![0.0, 10.0];
+        let sources = vec![a.clone(), b.clone(), c.clone()];
+
+        // On a vertex → that source, ~zero distance.
+        let (w, d) = nmonte_fit(&b, &sources);
+        assert!(w[1] > 0.999, "w_b = {}", w[1]);
+        assert!(d < 1e-6, "distance = {d}");
+
+        // Midpoint of A and B → ~50/50, ~zero distance (it's in the convex hull).
+        let mid = vec![5.0, 0.0];
+        let (w, d) = nmonte_fit(&mid, &sources);
+        assert!((w[0] - 0.5).abs() < 1e-3 && (w[1] - 0.5).abs() < 1e-3, "w = {w:?}");
+        assert!(d < 1e-6, "distance = {d}");
+
+        // A point outside the hull → best projection, with a non-zero residual distance.
+        let outside = vec![-3.0, -3.0];
+        let (_w, d) = nmonte_fit(&outside, &sources);
+        assert!(d > 1.0, "distance = {d}");
+    }
+
+    /// estimate_nmonte: labels the method, attaches coords + a fit distance, and (for a sample
+    /// projecting onto a population centroid) puts ~all the weight there.
+    #[test]
+    fn nmonte_estimate_labels_and_fits() {
+        let sites: Vec<(String, i64)> = (1..=4).map(|p| ("chr1".to_string(), p)).collect();
+        let pca = PcaLoadings {
+            build: "t".into(),
+            sites,
+            means: vec![1.0; 4],
+            n_components: 1,
+            loadings: vec![1.0; 4],
+            populations: vec!["LO".into(), "HI".into()],
+            centroids: vec![-4.0, 4.0], // LO at -4, HI at +4 on PC1
+            variances: vec![1.0, 1.0],
+        };
+        // hom-alt projects to +4 → exactly the HI centroid.
+        let hom_alt: Vec<SiteGenotype> = (1..=4).map(|p| sg("chr1", p, 2)).collect();
+        let r = estimate_nmonte(&hom_alt, &pca, "t");
+
+        assert_eq!(r.method, "G25_NMONTE");
+        assert!(r.pca_coordinates.is_some());
+        let dist = r.fit_distance.expect("fit_distance set");
+        assert!(dist < 1e-6, "distance = {dist}");
+        let hi = r.components.iter().find(|c| c.population_code == "HI").unwrap();
+        assert!(hi.percentage > 99.0, "HI% = {}", hi.percentage);
     }
 
     /// Supervised admixture: a sample homozygous-alt where pop A is alt-rich and hom-ref where A
