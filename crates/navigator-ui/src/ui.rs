@@ -30,6 +30,8 @@ type PcaReferenceState = (i64, Vec<(String, f64, f64)>);
 
 #[derive(Default)]
 struct Forms {
+    /// Whether the inline "Add New Subject" form is expanded.
+    show_add_subject: bool,
     project_name: String,
     project_admin: String,
     sample_donor: String,
@@ -59,9 +61,47 @@ struct Forms {
     override_mt_reason: String,
 }
 
+/// Primary navigation tabs in the app bar.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Nav {
+    Dashboard,
+    Subjects,
+    Projects,
+}
+
+/// Sub-tabs of the subject detail panel.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum DetailTab {
+    Overview,
+    YDna,
+    MtDna,
+    Ancestry,
+    IbdMatches,
+    DataSources,
+}
+
+impl DetailTab {
+    const ALL: [(DetailTab, &'static str); 6] = [
+        (DetailTab::Overview, "Overview"),
+        (DetailTab::YDna, "Y-DNA"),
+        (DetailTab::MtDna, "mtDNA"),
+        (DetailTab::Ancestry, "Ancestry"),
+        (DetailTab::IbdMatches, "IBD Matches"),
+        (DetailTab::DataSources, "Data Sources"),
+    ];
+}
+
 pub struct NavigatorApp {
     tx: UnboundedSender<Command>,
     rx: Receiver<Event>,
+    /// Selected primary navigation tab.
+    nav: Nav,
+    /// Selected subject-detail sub-tab.
+    detail_tab: DetailTab,
+    /// Dark (default) vs light theme.
+    dark_mode: bool,
+    /// Subjects-list filter text.
+    subject_search: String,
     overview: Vec<ProjectOverview>,
     selected_project: Option<i64>,
     /// Per-sample coverage/haplogroup report rows for the selected project.
@@ -157,6 +197,149 @@ pub struct NavigatorApp {
 
 /// Sentinel option in the chip-provider dropdown that means "let the parser guess".
 const AUTO_DETECT: &str = "(auto-detect)";
+
+/// The workbench accent (primary buttons, selection, active tabs).
+const ACCENT: egui::Color32 = egui::Color32::from_rgb(45, 125, 246);
+/// Destructive-action red (Delete) — used by the subject header in Phase 2.
+#[allow(dead_code)]
+const DANGER: egui::Color32 = egui::Color32::from_rgb(220, 60, 60);
+
+/// Apply the Decoding-Us workbench look: a dark (or light) palette with the accent blue,
+/// rounded widgets, and roomier spacing — the visual base that closes most of the gap to the
+/// Scala Workbench. Re-applied on theme toggle.
+fn apply_theme(ctx: &egui::Context, dark: bool) {
+    use egui::{Color32, Rounding, Stroke};
+    let mut style = (*ctx.style()).clone();
+    let mut v = if dark { egui::Visuals::dark() } else { egui::Visuals::light() };
+
+    if dark {
+        v.panel_fill = Color32::from_gray(27);
+        v.window_fill = Color32::from_gray(32);
+        v.extreme_bg_color = Color32::from_gray(20); // text-edit / table body
+        v.faint_bg_color = Color32::from_gray(38); // striped rows / cards
+        v.override_text_color = Some(Color32::from_gray(224));
+        v.widgets.noninteractive.bg_fill = Color32::from_gray(32);
+        v.widgets.inactive.bg_fill = Color32::from_gray(52);
+        v.widgets.inactive.weak_bg_fill = Color32::from_gray(44);
+        v.widgets.hovered.bg_fill = Color32::from_gray(64);
+        v.widgets.active.bg_fill = ACCENT;
+        v.window_stroke = Stroke::new(1.0, Color32::from_gray(48));
+    }
+    v.hyperlink_color = ACCENT;
+    v.selection.bg_fill = ACCENT.gamma_multiply(0.55);
+    v.selection.stroke = Stroke::new(1.0, ACCENT);
+
+    let r = Rounding::same(6.0);
+    for w in [
+        &mut v.widgets.noninteractive,
+        &mut v.widgets.inactive,
+        &mut v.widgets.hovered,
+        &mut v.widgets.active,
+        &mut v.widgets.open,
+    ] {
+        w.rounding = r;
+    }
+    v.window_rounding = Rounding::same(10.0);
+    v.menu_rounding = r;
+
+    style.visuals = v;
+    style.spacing.item_spacing = egui::vec2(8.0, 8.0);
+    style.spacing.button_padding = egui::vec2(10.0, 6.0);
+    ctx.set_style(style);
+}
+
+/// Subjects-table columns: `(header, width)`.
+const SUBJECT_COLS: [(&str, f32); 7] =
+    [("ID", 150.0), ("Name", 150.0), ("Y-DNA", 80.0), ("mtDNA", 80.0), ("Sex", 70.0), ("Center", 130.0), ("Status", 90.0)];
+
+/// Short, stable subject id for the table's ID column (first 8 chars of the guid + ellipsis).
+fn short_guid(b: &Biosample) -> String {
+    let s = b.guid.0.to_string();
+    if s.len() > 9 {
+        format!("{}…", &s[..9])
+    } else {
+        s
+    }
+}
+
+/// Paint a table header row at the column offsets used by [`table_row`].
+fn table_header(ui: &mut egui::Ui, cols: &[(&str, f32)]) {
+    let total_w: f32 = cols.iter().map(|c| c.1).sum();
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(total_w, 24.0), egui::Sense::hover());
+    let painter = ui.painter_at(rect);
+    let mut x = rect.left() + 8.0;
+    let color = ui.visuals().weak_text_color();
+    for (name, w) in cols {
+        painter.text(
+            egui::pos2(x, rect.center().y),
+            egui::Align2::LEFT_CENTER,
+            name,
+            egui::FontId::proportional(12.5),
+            color,
+        );
+        x += w;
+    }
+    painter.hline(rect.x_range(), rect.bottom(), egui::Stroke::new(1.0, ui.visuals().widgets.noninteractive.bg_stroke.color));
+}
+
+/// Paint one clickable table row; returns true when clicked. `status_col` (if any) is rendered
+/// as a small accent-coloured badge (the "Status" cell).
+fn table_row(ui: &mut egui::Ui, cols: &[(&str, f32)], cells: &[String], selected: bool, status_col: Option<usize>) -> bool {
+    let total_w: f32 = cols.iter().map(|c| c.1).sum();
+    let (rect, resp) = ui.allocate_exact_size(egui::vec2(total_w, 28.0), egui::Sense::click());
+    let painter = ui.painter_at(rect);
+    if selected {
+        painter.rect_filled(rect, 4.0, ACCENT.gamma_multiply(0.6));
+    } else if resp.hovered() {
+        painter.rect_filled(rect, 4.0, ui.visuals().faint_bg_color);
+    }
+    let text_color = if selected { egui::Color32::WHITE } else { ui.visuals().text_color() };
+    let mut x = rect.left() + 8.0;
+    for (i, ((_, w), val)) in cols.iter().zip(cells).enumerate() {
+        let cy = rect.center().y;
+        if Some(i) == status_col && val != "-" {
+            // a muted pill behind the status text
+            let galley = painter.layout_no_wrap(val.clone(), egui::FontId::proportional(11.5), egui::Color32::from_rgb(225, 190, 90));
+            let pad = egui::vec2(7.0, 3.0);
+            let pill = egui::Rect::from_min_size(egui::pos2(x, cy - galley.size().y / 2.0 - pad.y), galley.size() + pad * 2.0);
+            painter.rect_filled(pill, 8.0, egui::Color32::from_rgb(70, 58, 28));
+            painter.galley(pill.min + pad, galley, egui::Color32::PLACEHOLDER);
+        } else {
+            painter.text(egui::pos2(x, cy), egui::Align2::LEFT_CENTER, val, egui::FontId::proportional(13.0), text_color);
+        }
+        x += w;
+    }
+    resp.clicked()
+}
+
+/// A centered empty-state placeholder for a work area with no selection.
+fn empty_state(ui: &mut egui::Ui, title: &str, hint: &str) {
+    ui.add_space(56.0);
+    ui.vertical_centered(|ui| {
+        ui.heading(title);
+        ui.label(egui::RichText::new(hint).weak());
+    });
+}
+
+/// Hint shown in an analysis tab when no alignment is selected.
+fn pick_alignment_hint(ui: &mut egui::Ui) {
+    ui.add_space(8.0);
+    ui.label(egui::RichText::new("Select a sequencing run + alignment under Data Sources to analyze.").weak());
+}
+
+/// A dashboard stat tile: a big number over a muted label, in a rounded card.
+fn stat_card(ui: &mut egui::Ui, label: &str, value: usize) {
+    egui::Frame::group(ui.style())
+        .fill(ui.visuals().faint_bg_color)
+        .inner_margin(egui::Margin::symmetric(18.0, 14.0))
+        .show(ui, |ui| {
+            ui.set_min_width(120.0);
+            ui.vertical(|ui| {
+                ui.label(egui::RichText::new(value.to_string()).size(28.0).strong());
+                ui.label(egui::RichText::new(label).weak());
+            });
+        });
+}
 
 /// Format an optional mean/median depth (one decimal), "—" when not computed.
 fn fmt_depth(o: Option<f64>) -> String {
@@ -459,9 +642,14 @@ impl NavigatorApp {
         let _ = tx.send(Command::LoadAllAlignments);
         let _ = tx.send(Command::AuthStatus);
         let _ = tx.send(Command::SyncStatus);
+        apply_theme(&cc.egui_ctx, true);
         NavigatorApp {
             tx,
             rx,
+            nav: Nav::Subjects,
+            detail_tab: DetailTab::Overview,
+            dark_mode: true,
+            subject_search: String::new(),
             overview: Vec::new(),
             selected_project: None,
             project_report: Vec::new(),
@@ -992,48 +1180,28 @@ impl eframe::App for NavigatorApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.drain_events();
         self.handle_file_drops(ctx);
-        self.account_panel(ctx);
-        self.projects_panel(ctx);
+        self.app_bar(ctx);
+        self.nav_bar(ctx);
         egui::TopBottomPanel::bottom("status").show(ctx, |ui| {
             ui.horizontal(|ui| {
-                ui.label("Status:");
+                if self.online {
+                    ui.colored_label(egui::Color32::from_rgb(80, 190, 120), "● Online");
+                } else {
+                    ui.colored_label(egui::Color32::from_rgb(220, 150, 60), "○ Offline");
+                }
+                ui.separator();
+                ui.label(egui::RichText::new("Status:").weak());
                 ui.label(&self.status);
             });
         });
-        egui::CentralPanel::default().show(ctx, |ui| {
-            if self.selected_project.is_none() && self.selected_sample.is_none() {
-                ui.heading("DUNavigator");
-                ui.label("Select a subject, or create/select a project.");
-                return;
-            }
-            egui::ScrollArea::vertical().show(ui, |ui| {
-                // A project (when open) shows its own samples as a filtered subview.
-                if self.selected_project.is_some() {
-                    self.samples_section(ui);
-                    self.project_report_section(ui);
-                }
-                if let Some(guid) = self.selected_sample {
-                    self.subject_header(ui);
-                    self.consensus_section(ui);
-                    self.str_section(ui, guid);
-                    self.variants_section(ui, guid);
-                    self.chip_section(ui, guid);
-                    self.mtdna_section(ui, guid);
-                    self.runs_section(ui);
-                }
-                if self.selected_run.is_some() {
-                    self.alignments_section(ui);
-                }
-                if let Some(id) = self.selected_alignment {
-                    self.coverage_section(ui, id);
-                    self.sex_metrics_section(ui, id);
-                    self.denovo_section(ui, id);
-                    self.y_haplogroup_section(ui, id);
-                    self.ancestry_section(ui, id);
-                    self.heteroplasmy_section(ui, id);
-                    self.genotyping_section(ui, id);
-                }
-            });
+        if self.nav == Nav::Subjects {
+            self.action_bar(ctx);
+        }
+        self.left_panel(ctx);
+        egui::CentralPanel::default().show(ctx, |ui| match self.nav {
+            Nav::Dashboard => self.dashboard_central(ui),
+            Nav::Subjects => self.subjects_central(ui),
+            Nav::Projects => self.projects_central(ui),
         });
         self.paint_drop_hint(ctx);
     }
@@ -1086,128 +1254,382 @@ impl NavigatorApp {
         );
     }
 
-    fn account_panel(&mut self, ctx: &egui::Context) {
-        egui::TopBottomPanel::top("account").show(ctx, |ui| {
-            ui.horizontal(|ui| {
-                ui.strong("DUNavigator");
-                ui.separator();
-                match &self.account {
-                    Some(did) => {
-                        ui.label(format!("Signed in: {did}"));
-                        if self.online {
-                            ui.colored_label(egui::Color32::from_rgb(60, 160, 60), "● online");
-                        } else {
-                            ui.colored_label(egui::Color32::from_rgb(200, 120, 40), "○ offline");
-                        }
-                        if ui.button("Sign out").clicked() {
-                            let _ = self.tx.send(Command::Logout);
-                        }
-                    }
-                    None => {
-                        ui.label("PDS:");
-                        ui.add(
-                            egui::TextEdit::singleline(&mut self.forms.login_handle)
-                                .hint_text("handle or did")
-                                .desired_width(200.0),
-                        );
-                        let ready = !self.forms.login_handle.trim().is_empty() && !self.logging_in;
-                        if ui.add_enabled(ready, egui::Button::new("Sign in")).clicked() {
-                            self.logging_in = true;
-                            self.status = "Opening browser to authorize…".into();
-                            let _ = self.tx.send(Command::Login {
-                                handle: self.forms.login_handle.trim().to_string(),
-                            });
-                        }
-                        if self.logging_in {
-                            ui.spinner();
-                        }
+    /// The Projects work area: the open project's samples + coverage/haplogroup report.
+    fn projects_central(&mut self, ui: &mut egui::Ui) {
+        if self.selected_project.is_none() {
+            empty_state(ui, "Projects", "Create or select a project from the left.");
+            return;
+        }
+        egui::ScrollArea::vertical().show(ui, |ui| {
+            self.samples_section(ui);
+            self.project_report_section(ui);
+        });
+    }
+
+    /// The Subjects work area: the selected subject's detail — header + sub-tabs.
+    fn subjects_central(&mut self, ui: &mut egui::Ui) {
+        let Some(guid) = self.selected_sample else {
+            empty_state(ui, "Subjects", "Select a subject from the left, or add a new one.");
+            return;
+        };
+        self.subject_detail_header(ui, guid);
+        ui.add_space(6.0);
+        ui.horizontal(|ui| {
+            for (tab, label) in DetailTab::ALL {
+                if ui.selectable_label(self.detail_tab == tab, egui::RichText::new(label).strong()).clicked() {
+                    self.detail_tab = tab;
+                }
+            }
+        });
+        ui.separator();
+        egui::ScrollArea::vertical().show(ui, |ui| match self.detail_tab {
+            DetailTab::Overview => {
+                self.consensus_section(ui);
+                if let Some(id) = self.selected_alignment {
+                    self.coverage_section(ui, id);
+                    self.sex_metrics_section(ui, id);
+                } else {
+                    pick_alignment_hint(ui);
+                }
+            }
+            DetailTab::YDna => {
+                if let Some(id) = self.selected_alignment {
+                    self.y_haplogroup_section(ui, id);
+                    self.denovo_section(ui, id);
+                } else {
+                    pick_alignment_hint(ui);
+                }
+                self.variants_section(ui, guid);
+            }
+            DetailTab::MtDna => {
+                self.mtdna_section(ui, guid);
+                if let Some(id) = self.selected_alignment {
+                    self.heteroplasmy_section(ui, id);
+                }
+            }
+            DetailTab::Ancestry => {
+                if let Some(id) = self.selected_alignment {
+                    self.ancestry_section(ui, id);
+                } else {
+                    pick_alignment_hint(ui);
+                }
+            }
+            DetailTab::IbdMatches => {
+                if let Some(id) = self.selected_alignment {
+                    self.genotyping_section(ui, id);
+                } else {
+                    pick_alignment_hint(ui);
+                }
+            }
+            DetailTab::DataSources => {
+                self.runs_section(ui);
+                if self.selected_run.is_some() {
+                    self.alignments_section(ui);
+                }
+                self.chip_section(ui, guid);
+                self.str_section(ui, guid);
+            }
+        });
+    }
+
+    /// The subject-detail header: big name, ID + sex, and Add Data / Edit / Delete actions.
+    fn subject_detail_header(&mut self, ui: &mut egui::Ui, guid: SampleGuid) {
+        let bio = self
+            .all_biosamples
+            .iter()
+            .chain(self.samples.iter())
+            .find(|b| b.guid == guid)
+            .cloned();
+        let Some(bio) = bio else { return };
+        ui.add_space(6.0);
+        ui.horizontal(|ui| {
+            ui.vertical(|ui| {
+                ui.heading(&bio.donor_identifier);
+                ui.label(
+                    egui::RichText::new(format!("ID: {} • {}", bio.guid.0, bio.sex.as_deref().unwrap_or("Unknown"))).weak(),
+                );
+            });
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui.add(egui::Button::new(egui::RichText::new("Delete").color(egui::Color32::WHITE)).fill(DANGER)).clicked() {
+                    self.status = "Delete is not wired yet.".into();
+                }
+                if ui.button("Edit").clicked() {
+                    self.status = "Edit is not wired yet.".into();
+                }
+                if ui.button("➕  Add Data").clicked() {
+                    if let Some(path) = rfd::FileDialog::new()
+                        .add_filter("data files", &["vcf", "csv", "tsv", "txt", "fa", "fasta", "fna", "fas", "bam", "cram"])
+                        .pick_file()
+                    {
+                        let _ = self.tx.send(Command::AddData { biosample_guid: guid, path });
                     }
                 }
             });
         });
     }
 
-    fn projects_panel(&mut self, ctx: &egui::Context) {
-        egui::SidePanel::left("projects").min_width(220.0).show(ctx, |ui| {
-            ui.heading("Projects");
-            ui.separator();
-            let mut pick = None;
-            for ov in &self.overview {
-                let label = format!("{}  ({})", ov.project.name, ov.sample_count);
-                if ui.selectable_label(self.selected_project == Some(ov.project.id), label).clicked() {
-                    pick = Some(ov.project.id);
-                }
-            }
-            if let Some(id) = pick {
-                self.select_project(id);
-            }
-
-            ui.add_space(12.0);
-            ui.separator();
-            ui.label("New project");
-            ui.add(egui::TextEdit::singleline(&mut self.forms.project_name).hint_text("name"));
-            ui.add(egui::TextEdit::singleline(&mut self.forms.project_admin).hint_text("administrator"));
-            if ui
-                .add_enabled(!self.forms.project_name.trim().is_empty(), egui::Button::new("Create project"))
-                .clicked()
-            {
-                let _ = self.tx.send(Command::CreateProject(NewProject {
-                    name: self.forms.project_name.trim().to_string(),
-                    description: None,
-                    administrator: opt(&self.forms.project_admin).unwrap_or_else(|| "unknown".into()),
-                }));
-                self.forms.project_name.clear();
-                self.forms.project_admin.clear();
-            }
-
-            ui.add_space(8.0);
-            ui.label("Batch import a project folder (per-sample subdirs of BAM/CRAM):");
-            if ui
-                .add_enabled(!self.importing, egui::Button::new("Batch import project…"))
-                .clicked()
-            {
-                if let Some(dir) = rfd::FileDialog::new().pick_folder() {
-                    self.importing = true;
-                    self.reference_needs.clear();
-                    self.status = format!("Importing {}…", dir.display());
-                    // No reference up front: the gateway resolves each build from the cache,
-                    // and reports ReferenceNeeded if a download is required.
-                    let _ = self.tx.send(Command::ImportProjectDir { dir, reference: None });
-                }
-            }
-            self.reference_prompt(ui);
-
-            ui.add_space(12.0);
-            ui.separator();
-            self.subjects_section(ui);
-
-            ui.add_space(12.0);
-            ui.separator();
-            self.panels_section(ui);
+    /// A simple at-a-glance dashboard: counts + account state.
+    fn dashboard_central(&mut self, ui: &mut egui::Ui) {
+        ui.add_space(8.0);
+        ui.heading("Dashboard");
+        ui.add_space(12.0);
+        ui.horizontal_wrapped(|ui| {
+            stat_card(ui, "Projects", self.overview.len());
+            stat_card(ui, "Subjects", self.all_biosamples.len());
+            stat_card(ui, "Alignments", self.all_alignments.len());
+            stat_card(ui, "Panels", self.panels.len());
         });
+        ui.add_space(16.0);
+        match &self.account {
+            Some(did) => {
+                ui.label(format!("Signed in as {did}"));
+                ui.label(if self.online { "● online" } else { "○ offline" });
+            }
+            None => {
+                ui.label(egui::RichText::new("Not signed in — connect a PDS from the top bar to publish.").weak());
+            }
+        }
+    }
+
+    /// The bottom action bar for the Subjects view: selection count + batch actions.
+    fn action_bar(&mut self, ctx: &egui::Context) {
+        egui::TopBottomPanel::bottom("actions").show(ctx, |ui| {
+            ui.add_space(2.0);
+            ui.horizontal(|ui| {
+                let selected = self.selected_sample.is_some();
+                ui.label(format!("{} selected", if selected { 1 } else { 0 }));
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui.add_enabled(selected, egui::Button::new("Add to Project")).clicked() {
+                        self.status = "Add to Project: not wired yet.".into();
+                    }
+                    if ui.add_enabled(selected, egui::Button::new("Batch Analyze")).clicked() {
+                        self.status = "Batch Analyze: not wired yet.".into();
+                    }
+                    // Compare needs a second subject (multi-select) — disabled for now.
+                    let _ = ui.add_enabled(false, egui::Button::new("Compare"));
+                });
+            });
+            ui.add_space(2.0);
+        });
+    }
+
+    /// The top app bar: product title (left), theme toggle + account controls (right).
+    fn app_bar(&mut self, ctx: &egui::Context) {
+        egui::TopBottomPanel::top("appbar").show(ctx, |ui| {
+            ui.add_space(2.0);
+            ui.horizontal(|ui| {
+                ui.heading("Decoding-Us Navigator");
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let icon = if self.dark_mode { "☀" } else { "🌙" };
+                    if ui.button(icon).on_hover_text("Toggle theme").clicked() {
+                        self.dark_mode = !self.dark_mode;
+                        apply_theme(ctx, self.dark_mode);
+                    }
+                    ui.separator();
+                    self.account_controls(ui);
+                });
+            });
+            ui.add_space(2.0);
+        });
+    }
+
+    /// The primary navigation strip (Dashboard / Subjects / Projects).
+    fn nav_bar(&mut self, ctx: &egui::Context) {
+        egui::TopBottomPanel::top("nav").show(ctx, |ui| {
+            ui.add_space(2.0);
+            ui.horizontal(|ui| {
+                for (nav, label) in
+                    [(Nav::Dashboard, "📊  Dashboard"), (Nav::Subjects, "👥  Subjects"), (Nav::Projects, "📁  Projects")]
+                {
+                    if ui.selectable_label(self.nav == nav, egui::RichText::new(label).strong()).clicked() {
+                        self.nav = nav;
+                    }
+                }
+            });
+            ui.add_space(2.0);
+        });
+    }
+
+    /// Account / sign-in controls (reused in the app bar).
+    fn account_controls(&mut self, ui: &mut egui::Ui) {
+        match &self.account {
+            Some(did) => {
+                if ui.button("Sign out").clicked() {
+                    let _ = self.tx.send(Command::Logout);
+                }
+                if self.online {
+                    ui.colored_label(egui::Color32::from_rgb(80, 190, 120), "● online");
+                } else {
+                    ui.colored_label(egui::Color32::from_rgb(220, 150, 60), "○ offline");
+                }
+                let short: String = did.chars().take(22).collect();
+                ui.label(egui::RichText::new(short).weak());
+            }
+            None => {
+                if self.logging_in {
+                    ui.spinner();
+                }
+                let ready = !self.forms.login_handle.trim().is_empty() && !self.logging_in;
+                if ui.add_enabled(ready, egui::Button::new("Sign in")).clicked() {
+                    self.logging_in = true;
+                    self.status = "Opening browser to authorize…".into();
+                    let _ = self.tx.send(Command::Login { handle: self.forms.login_handle.trim().to_string() });
+                }
+                ui.add(
+                    egui::TextEdit::singleline(&mut self.forms.login_handle)
+                        .hint_text("handle or did")
+                        .desired_width(180.0),
+                );
+                ui.label("PDS:");
+            }
+        }
+    }
+
+    /// The left panel, routed by the active nav tab. Hidden on the Dashboard.
+    fn left_panel(&mut self, ctx: &egui::Context) {
+        match self.nav {
+            Nav::Dashboard => {}
+            Nav::Projects => {
+                egui::SidePanel::left("left").min_width(240.0).show(ctx, |ui| self.projects_side(ui));
+            }
+            Nav::Subjects => {
+                egui::SidePanel::left("left")
+                    .resizable(true)
+                    .default_width(680.0)
+                    .min_width(420.0)
+                    .show(ctx, |ui| self.subjects_side(ui));
+            }
+        }
+    }
+
+    /// Project management: the projects list, new-project form, batch import, and panels.
+    fn projects_side(&mut self, ui: &mut egui::Ui) {
+        ui.add_space(6.0);
+        ui.heading("Projects");
+        ui.separator();
+        let mut pick = None;
+        for ov in &self.overview {
+            let label = format!("{}  ({})", ov.project.name, ov.sample_count);
+            if ui.selectable_label(self.selected_project == Some(ov.project.id), label).clicked() {
+                pick = Some(ov.project.id);
+            }
+        }
+        if let Some(id) = pick {
+            self.select_project(id);
+        }
+
+        ui.add_space(12.0);
+        ui.separator();
+        ui.label("New project");
+        ui.add(egui::TextEdit::singleline(&mut self.forms.project_name).hint_text("name"));
+        ui.add(egui::TextEdit::singleline(&mut self.forms.project_admin).hint_text("administrator"));
+        if ui
+            .add_enabled(!self.forms.project_name.trim().is_empty(), egui::Button::new("Create project"))
+            .clicked()
+        {
+            let _ = self.tx.send(Command::CreateProject(NewProject {
+                name: self.forms.project_name.trim().to_string(),
+                description: None,
+                administrator: opt(&self.forms.project_admin).unwrap_or_else(|| "unknown".into()),
+            }));
+            self.forms.project_name.clear();
+            self.forms.project_admin.clear();
+        }
+
+        ui.add_space(8.0);
+        ui.label("Batch import a project folder (per-sample subdirs of BAM/CRAM):");
+        if ui.add_enabled(!self.importing, egui::Button::new("Batch import project…")).clicked() {
+            if let Some(dir) = rfd::FileDialog::new().pick_folder() {
+                self.importing = true;
+                self.reference_needs.clear();
+                self.status = format!("Importing {}…", dir.display());
+                let _ = self.tx.send(Command::ImportProjectDir { dir, reference: None });
+            }
+        }
+        self.reference_prompt(ui);
+
+        ui.add_space(12.0);
+        ui.separator();
+        self.panels_section(ui);
+    }
+
+    /// Subjects browser: a search box + "Add New Subject" on one row, then the subjects table.
+    fn subjects_side(&mut self, ui: &mut egui::Ui) {
+        ui.add_space(6.0);
+        ui.horizontal(|ui| {
+            let btn_w = 160.0;
+            ui.add(
+                egui::TextEdit::singleline(&mut self.subject_search)
+                    .hint_text("Search name, ID, haplogroup…")
+                    .desired_width((ui.available_width() - btn_w).max(120.0)),
+            );
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui.add(egui::Button::new(egui::RichText::new("➕  Add New Subject").color(egui::Color32::WHITE)).fill(ACCENT)).clicked() {
+                    self.forms.show_add_subject = !self.forms.show_add_subject;
+                }
+            });
+        });
+        if self.forms.show_add_subject {
+            self.add_subject_form(ui);
+        }
+        ui.add_space(6.0);
+        self.subjects_table(ui);
     }
 
     /// All biosamples, independent of any project (the project link is optional). Selecting
     /// one drives the runs → alignments → analysis flow in the central panel; adding one
     /// tags it to the open project if there is one, else leaves it project-less.
-    fn subjects_section(&mut self, ui: &mut egui::Ui) {
-        ui.label("Subjects");
+    /// The subjects table: columns ID / Name / Y-DNA / mtDNA / Sex / Center / Status, with the
+    /// selected row highlighted. Clicking a row selects the subject.
+    fn subjects_table(&mut self, ui: &mut egui::Ui) {
         if self.all_biosamples.is_empty() {
-            ui.label("No subjects yet.");
+            ui.label(egui::RichText::new("No subjects yet.").weak());
+            return;
         }
+        let total_w: f32 = SUBJECT_COLS.iter().map(|c| c.1).sum();
+        let needle = self.subject_search.trim().to_lowercase();
         let mut pick = None;
-        for s in &self.all_biosamples {
-            let tag = if s.project_id.is_some() { "" } else { "  ·" }; // mark project-less
-            let label = format!("{}{}", s.donor_identifier, tag);
-            if ui.selectable_label(self.selected_sample == Some(s.guid), label).clicked() {
-                pick = Some(s.guid);
+        let mut shown = 0;
+        egui::ScrollArea::both().show(ui, |ui| {
+            ui.set_min_width(total_w);
+            table_header(ui, &SUBJECT_COLS);
+            for s in &self.all_biosamples {
+                if !needle.is_empty() {
+                    let hay = format!(
+                        "{} {}",
+                        s.donor_identifier.to_lowercase(),
+                        s.sample_accession.as_deref().unwrap_or("").to_lowercase()
+                    );
+                    if !hay.contains(&needle) {
+                        continue;
+                    }
+                }
+                shown += 1;
+                let cells = [
+                    short_guid(s),
+                    s.donor_identifier.clone(),
+                    "-".to_string(),
+                    "-".to_string(),
+                    s.sex.clone().unwrap_or_else(|| "-".into()),
+                    s.center_name.clone().unwrap_or_else(|| "-".into()),
+                    "Pending".to_string(),
+                ];
+                if table_row(ui, &SUBJECT_COLS, &cells, self.selected_sample == Some(s.guid), Some(6)) {
+                    pick = Some(s.guid);
+                }
             }
-        }
+            if shown == 0 {
+                ui.label(egui::RichText::new("No subjects match the search.").weak());
+            }
+        });
         if let Some(guid) = pick {
             self.select_sample(guid);
         }
+    }
 
-        ui.collapsing("Add subject", |ui| {
+    /// The inline new-subject form (toggled by the "Add New Subject" button).
+    fn add_subject_form(&mut self, ui: &mut egui::Ui) {
+        egui::Frame::group(ui.style()).show(ui, |ui| {
             ui.add(egui::TextEdit::singleline(&mut self.forms.sample_donor).hint_text("donor identifier"));
             ui.add(egui::TextEdit::singleline(&mut self.forms.sample_accession).hint_text("accession (optional)"));
             ui.add(egui::TextEdit::singleline(&mut self.forms.sample_sex).hint_text("sex (optional)"));
@@ -1217,47 +1639,27 @@ impl NavigatorApp {
             } else {
                 ui.label("→ no project");
             }
-            if ui
-                .add_enabled(!self.forms.sample_donor.trim().is_empty(), egui::Button::new("Add subject"))
-                .clicked()
-            {
-                let _ = self.tx.send(Command::AddBiosample(NewBiosample {
-                    project_id: self.selected_project,
-                    donor_identifier: self.forms.sample_donor.trim().to_string(),
-                    sample_accession: opt(&self.forms.sample_accession),
-                    sex: opt(&self.forms.sample_sex),
-                }));
-                self.forms.sample_donor.clear();
-                self.forms.sample_accession.clear();
-                self.forms.sample_sex.clear();
-            }
-        });
-    }
-
-    /// Heading naming the selected subject above its runs.
-    fn subject_header(&mut self, ui: &mut egui::Ui) {
-        let Some(guid) = self.selected_sample else { return };
-        let donor = self
-            .all_biosamples
-            .iter()
-            .chain(self.samples.iter())
-            .find(|s| s.guid == guid)
-            .map(|s| s.donor_identifier.clone())
-            .unwrap_or_else(|| "subject".into());
-        ui.add_space(12.0);
-        ui.separator();
-        ui.horizontal(|ui| {
-            ui.heading(format!("Subject — {donor}"));
-            if ui.button("➕ Add data…").clicked() {
-                if let Some(path) = rfd::FileDialog::new()
-                    .add_filter("data files", &["vcf", "csv", "tsv", "txt", "fa", "fasta", "fna", "fas"])
-                    .pick_file()
+            ui.horizontal(|ui| {
+                if ui
+                    .add_enabled(!self.forms.sample_donor.trim().is_empty(), egui::Button::new("Add subject").fill(ACCENT))
+                    .clicked()
                 {
-                    let _ = self.tx.send(Command::AddData { biosample_guid: guid, path });
+                    let _ = self.tx.send(Command::AddBiosample(NewBiosample {
+                        project_id: self.selected_project,
+                        donor_identifier: self.forms.sample_donor.trim().to_string(),
+                        sample_accession: opt(&self.forms.sample_accession),
+                        sex: opt(&self.forms.sample_sex),
+                    }));
+                    self.forms.sample_donor.clear();
+                    self.forms.sample_accession.clear();
+                    self.forms.sample_sex.clear();
+                    self.forms.show_add_subject = false;
                 }
-            }
+                if ui.button("Cancel").clicked() {
+                    self.forms.show_add_subject = false;
+                }
+            });
         });
-        ui.label("Auto-detects STR / SNP variants / chip array / mtDNA from the file.");
     }
 
     /// Y-STR profiles for the selected subject + an import form (CSV/TSV marker table).
