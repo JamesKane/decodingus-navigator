@@ -2,6 +2,13 @@
 
 Decoding-Us Navigator is an edge-computing companion application to [decoding-us.com](https://decoding-us.com). It leverages the Genome Analysis Toolkit (GATK) to analyze BAM/CRAM files directly on your local machine, empowering citizen scientists with advanced bioinformatics capabilities while preserving privacy.
 
+> **🦀 Rust rewrite in progress** (branch `rust-rewrite`). A ground-up port that replaces
+> GATK/HTSJDK with a pure-Rust analysis stack (noodles) and ScalaFX with an egui desktop UI —
+> no JVM, no external bioinformatics tooling. The sections below describe the current Scala app;
+> for the rewrite see **[`crates/README.md`](crates/README.md)**, the design in
+> **[`documents/design/RustRewrite_Plan.md`](documents/design/RustRewrite_Plan.md)**, and the
+> resume notes in **[`documents/design/HANDOFF.md`](documents/design/HANDOFF.md)**.
+
 ## Privacy-Preserving Analysis
 
 The application ensures user privacy by performing all analysis locally. Only anonymized summary information is optionally shared, including:
