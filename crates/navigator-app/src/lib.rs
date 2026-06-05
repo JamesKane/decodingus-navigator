@@ -28,6 +28,7 @@ pub use navigator_analysis::caller::VariantCall as DenovoCall;
 pub use navigator_analysis::coverage::CoverageResult as Coverage;
 pub use navigator_analysis::read_metrics::{PairOrientation, ReadMetrics};
 pub use navigator_analysis::sex::{Confidence as SexConfidence, InferredSex, SexInferenceResult};
+pub use navigator_analysis::sv::types::{SvAnalysisResult, SvCall, SvType};
 pub use navigator_analysis::heteroplasmy::HeteroplasmySite;
 pub use navigator_analysis::haplo::{BranchEvidence, CallState, ScoredHaplogroup, SnpEvidence};
 pub use navigator_domain::ancestry::{
@@ -363,6 +364,8 @@ pub struct ProjectSampleReport {
     pub pct_aligned: Option<f64>,
     /// Median insert size (read-metrics artifact).
     pub median_insert_size: Option<f64>,
+    /// Number of structural variants called (`sv` artifact); `None` if not run.
+    pub sv_count: Option<usize>,
 }
 
 /// A reference build an import needs but doesn't have cached — surfaced so the UI can
@@ -383,6 +386,7 @@ pub struct AnalyzeSummary {
     pub y_done: usize,
     pub sex_done: usize,
     pub metrics_done: usize,
+    pub sv_done: usize,
     /// Per-sample failures (best-effort: one sample's error doesn't abort the rest).
     pub errors: Vec<String>,
 }
@@ -597,6 +601,52 @@ impl App {
     /// Cached `read_metrics`, if present.
     pub async fn cached_read_metrics(&self, alignment_id: i64) -> Result<Option<navigator_analysis::read_metrics::ReadMetrics>, AppError> {
         self.load_analysis(alignment_id, "read_metrics", "1").await
+    }
+
+    /// Call structural variants (depth-segmentation + paired-end/split-read evidence) and
+    /// persist as an `sv` artifact. Needs coverage + insert-size inputs (computed/loaded here)
+    /// and **≥10× mean coverage** (the caller errors below that).
+    pub async fn run_sv(&self, alignment_id: i64) -> Result<navigator_analysis::sv::types::SvAnalysisResult, AppError> {
+        let aln = alignment::get(self.store.pool(), alignment_id)
+            .await?
+            .ok_or_else(|| AppError::Store(StoreError::NotFound(format!("alignment {alignment_id}"))))?;
+        let bam = PathBuf::from(aln.bam_path.ok_or(AppError::MissingPaths(alignment_id))?);
+        let reference = aln.reference_path.clone().map(PathBuf::from);
+        let reference_build = aln.reference_build.clone();
+
+        let cov = match self.cached_coverage(alignment_id).await? {
+            Some(c) => c,
+            None => self.run_coverage_for_alignment(alignment_id).await?,
+        };
+        let rm = match self.cached_read_metrics(alignment_id).await? {
+            Some(m) => m,
+            None => self.run_read_metrics(alignment_id).await?,
+        };
+        let (mean_cov, mean_ins, sd_ins, mean_rl) =
+            (cov.mean_coverage, rm.mean_insert_size, rm.std_insert_size, rm.mean_read_length);
+
+        let result = tokio::task::spawn_blocking(move || {
+            let lengths = caller::header_contig_lengths(&bam, reference.as_deref())?;
+            navigator_analysis::sv::caller::call_structural_variants(
+                &bam,
+                &lengths,
+                &reference_build,
+                mean_cov,
+                mean_ins,
+                sd_ins,
+                mean_rl,
+                &navigator_analysis::sv::types::SvCallerConfig::default(),
+            )
+        })
+        .await
+        .map_err(|e| AppError::Join(e.to_string()))??;
+        self.save_analysis(alignment_id, "sv", "1", &result).await?;
+        Ok(result)
+    }
+
+    /// Cached `sv` result, if present.
+    pub async fn cached_sv(&self, alignment_id: i64) -> Result<Option<navigator_analysis::sv::types::SvAnalysisResult>, AppError> {
+        self.load_analysis(alignment_id, "sv", "1").await
     }
 
     /// The alignment's BAM (required) + reference (optional; required only for CRAM).
@@ -2219,12 +2269,16 @@ impl App {
             // Sex + read-metrics from whichever alignment has them cached.
             let mut sex = None;
             let mut metrics = None;
+            let mut sv_count = None;
             for a in &alignments {
                 if sex.is_none() {
                     sex = self.cached_sex(a.id).await?;
                 }
                 if metrics.is_none() {
                     metrics = self.cached_read_metrics(a.id).await?;
+                }
+                if sv_count.is_none() {
+                    sv_count = self.cached_sv(a.id).await?.map(|s| s.sv_calls.len());
                 }
             }
             let sex = sex.map(|s| match s.inferred_sex {
@@ -2246,6 +2300,7 @@ impl App {
                 mean_read_length: metrics.as_ref().map(|m| m.mean_read_length),
                 pct_aligned: metrics.as_ref().map(|m| m.pct_pf_reads_aligned),
                 median_insert_size: metrics.as_ref().map(|m| m.median_insert_size),
+                sv_count,
                 biosample,
             });
         }
@@ -2265,6 +2320,7 @@ impl App {
             y_done: 0,
             sex_done: 0,
             metrics_done: 0,
+            sv_done: 0,
             errors: Vec::new(),
         };
         for biosample in biosample::list_for_project(self.store.pool(), project_id).await? {
@@ -2310,6 +2366,17 @@ impl App {
                     Err(e) => summary.errors.push(format!("{label} metrics: {e}")),
                 }
             }
+
+            // SV needs ≥10× — only attempt when coverage clears the threshold (avoids logging a
+            // "coverage too low" error for every low-coverage sample).
+            if self.cached_sv(aln.id).await?.is_some() {
+                summary.sv_done += 1;
+            } else if self.cached_coverage(aln.id).await?.map(|c| c.mean_coverage >= 10.0).unwrap_or(false) {
+                match self.run_sv(aln.id).await {
+                    Ok(_) => summary.sv_done += 1,
+                    Err(e) => summary.errors.push(format!("{label} SV: {e}")),
+                }
+            }
         }
         Ok(summary)
     }
@@ -2332,7 +2399,7 @@ pub fn report_csv(rows: &[ProjectSampleReport]) -> String {
 
     let mut s = String::from(
         "sample_id,alignment_count,mean_coverage,median_coverage,pct_10x,pct_20x,callable_bases,\
-         y_haplogroup,mt_haplogroup,sex,mean_read_length,pct_aligned,median_insert_size\n",
+         y_haplogroup,mt_haplogroup,sex,mean_read_length,pct_aligned,median_insert_size,sv_count\n",
     );
     for r in rows {
         s.push_str(&field(&r.biosample.donor_identifier));
@@ -2360,6 +2427,8 @@ pub fn report_csv(rows: &[ProjectSampleReport]) -> String {
         s.push_str(&num(r.pct_aligned));
         s.push(',');
         s.push_str(&num(r.median_insert_size));
+        s.push(',');
+        s.push_str(&r.sv_count.map(|v| v.to_string()).unwrap_or_default());
         s.push('\n');
     }
     s

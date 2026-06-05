@@ -11,7 +11,7 @@ use navigator_app::{
     Coverage, DenovoCall, DnaType, HaploAssignment, HeteroplasmySite, IbdComparison,
     IdentityVerification, PanelGenotype, PrivateBucket, PrivateClass, ProjectOverview,
     ProjectSampleReport, ReadMetrics, ReconciledVariant, SexInferenceResult, SourceType,
-    SuperPopulationSummary, VariantStatus, VerificationStatus,
+    SuperPopulationSummary, SvAnalysisResult, VariantStatus, VerificationStatus,
 };
 use navigator_domain::ancestry::{population_color, population_lonlat, population_name, population_super};
 use navigator_domain::du_domain::ids::SampleGuid;
@@ -118,8 +118,10 @@ pub struct NavigatorApp {
     coverage: Option<Coverage>,
     sex: Option<SexInferenceResult>,
     read_metrics: Option<ReadMetrics>,
+    sv: Option<SvAnalysisResult>,
     running_sex: bool,
     running_metrics: bool,
+    running_sv: bool,
     running: bool,
     denovo: Option<Vec<DenovoCall>>,
     running_denovo: bool,
@@ -496,8 +498,10 @@ impl NavigatorApp {
             coverage: None,
             sex: None,
             read_metrics: None,
+            sv: None,
             running_sex: false,
             running_metrics: false,
+            running_sv: false,
             running: false,
             denovo: None,
             running_denovo: false,
@@ -596,10 +600,10 @@ impl NavigatorApp {
                         self.project_report = rows;
                     }
                 }
-                Event::ProjectAnalyzed { project_id, samples, coverage_done, y_done, sex_done, metrics_done, errors } => {
+                Event::ProjectAnalyzed { project_id, samples, coverage_done, y_done, sex_done, metrics_done, sv_done, errors } => {
                     self.analyzing = false;
                     self.status = format!(
-                        "Analyzed {samples} sample(s): {coverage_done} coverage, {y_done} Y, {sex_done} sex, {metrics_done} metrics{}",
+                        "Analyzed {samples} sample(s): {coverage_done} coverage, {y_done} Y, {sex_done} sex, {metrics_done} metrics, {sv_done} SV{}",
                         if errors > 0 { format!(", {errors} error(s)") } else { String::new() }
                     );
                     if self.selected_project == Some(project_id) {
@@ -807,6 +811,15 @@ impl NavigatorApp {
                         let _ = self.tx.send(Command::LoadProjectReport(pid));
                     }
                 }
+                Event::Sv { alignment_id, result } => {
+                    if self.selected_alignment == Some(alignment_id) {
+                        self.sv = result;
+                    }
+                    self.running_sv = false;
+                    if let Some(pid) = self.selected_project {
+                        let _ = self.tx.send(Command::LoadProjectReport(pid));
+                    }
+                }
                 Event::Denovo { alignment_id, contig, result } => {
                     if self.selected_alignment == Some(alignment_id) && self.forms.denovo_contig == contig {
                         self.denovo = result;
@@ -864,6 +877,7 @@ impl NavigatorApp {
                     self.painting_running = false;
                     self.running_sex = false;
                     self.running_metrics = false;
+                    self.running_sv = false;
                     let _ = self.tx.send(Command::SyncStatus); // a failed publish may have gone offline
                 }
             }
@@ -918,8 +932,10 @@ impl NavigatorApp {
         self.coverage = None;
         self.sex = None;
         self.read_metrics = None;
+        self.sv = None;
         self.running_sex = false;
         self.running_metrics = false;
+        self.running_sv = false;
         self.denovo = None;
         self.panel_genotypes = None;
         self.ibd_result = None;
@@ -935,6 +951,7 @@ impl NavigatorApp {
         let _ = self.tx.send(Command::LoadCoverage(id));
         let _ = self.tx.send(Command::LoadSex(id));
         let _ = self.tx.send(Command::LoadReadMetrics(id));
+        let _ = self.tx.send(Command::LoadSv(id));
         let _ = self.tx.send(Command::LoadAncestry { alignment_id: id });
         let _ = self.tx.send(Command::LoadPcaReference { alignment_id: id });
         let _ = self.tx.send(Command::LoadDenovo { alignment_id: id, contig: self.forms.denovo_contig.clone() });
@@ -1620,8 +1637,8 @@ impl NavigatorApp {
         let running = self.running || self.analyzing;
         let mut recompute: Option<i64> = None;
         let mut assign_y: Option<i64> = None;
-        egui::Grid::new("project_report_grid").striped(true).num_columns(14).show(ui, |ui| {
-            for h in ["Sample", "Alns", "Mean cov", "Median", "≥10x", "≥20x", "Callable", "Y", "mtDNA", "Sex", "Read len", "%Aln", "Insert", "actions"] {
+        egui::Grid::new("project_report_grid").striped(true).num_columns(15).show(ui, |ui| {
+            for h in ["Sample", "Alns", "Mean cov", "Median", "≥10x", "≥20x", "Callable", "Y", "mtDNA", "Sex", "Read len", "%Aln", "Insert", "SV", "actions"] {
                 ui.strong(h);
             }
             ui.end_row();
@@ -1639,6 +1656,7 @@ impl NavigatorApp {
                 ui.label(fmt_depth(r.mean_read_length));
                 ui.label(fmt_pct(r.pct_aligned));
                 ui.label(fmt_depth(r.median_insert_size));
+                ui.label(r.sv_count.map(|v| v.to_string()).unwrap_or_else(|| "—".into()));
                 if let Some(aln) = r.primary_alignment_id {
                     ui.horizontal(|ui| {
                         if ui.add_enabled(!running, egui::Button::new("Cov")).clicked() {
@@ -1895,7 +1913,12 @@ impl NavigatorApp {
                 self.status = "Collecting read metrics…".into();
                 let _ = self.tx.send(Command::RunReadMetrics(alignment_id));
             }
-            if self.running_sex || self.running_metrics {
+            if ui.add_enabled(has_bam && !self.running_sv, egui::Button::new("Call SV")).clicked() {
+                self.running_sv = true;
+                self.status = "Calling structural variants (needs ≥10× coverage)…".into();
+                let _ = self.tx.send(Command::RunSv(alignment_id));
+            }
+            if self.running_sex || self.running_metrics || self.running_sv {
                 ui.spinner();
             }
             if !has_bam {
@@ -1929,6 +1952,24 @@ impl NavigatorApp {
                 row(ui, "Pair orientation", m.pair_orientation.as_str().to_string());
                 row(ui, "Mean MAPQ", format!("{:.1}", m.mean_mapping_quality));
             });
+        }
+        if let Some(sv) = &self.sv {
+            ui.label(format!(
+                "Structural variants: {} calls ({} CNV segments, {} discordant pairs)",
+                sv.sv_calls.len(),
+                sv.cnv_segments,
+                sv.total_discordant_pairs
+            ));
+            for c in sv.sv_calls.iter().take(8) {
+                ui.label(
+                    egui::RichText::new(format!(
+                        "  {} {}:{}-{} {}bp q{:.0}",
+                        c.sv_type.as_str(), c.chrom, c.start, c.end, c.sv_len, c.quality
+                    ))
+                    .small()
+                    .weak(),
+                );
+            }
         }
     }
 

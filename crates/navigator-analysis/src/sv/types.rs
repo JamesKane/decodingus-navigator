@@ -1,7 +1,9 @@
 //! SV core types — port of the Scala `SvTypes` (SvType, SvCall, config, confidence).
 
+use serde::{Deserialize, Serialize};
+
 /// Structural variant type.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SvType {
     Del, // deletion
     Dup, // duplication
@@ -23,7 +25,7 @@ impl SvType {
 }
 
 /// A called structural variant.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SvCall {
     pub id: String,
     pub chrom: String,
@@ -92,7 +94,7 @@ impl Default for SvCallerConfig {
 }
 
 /// Result of SV analysis (timestamp/VCF output handled by the orchestrator/caller).
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SvAnalysisResult {
     pub sv_calls: Vec<SvCall>,
     pub total_discordant_pairs: u64,

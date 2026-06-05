@@ -216,6 +216,21 @@ pub fn header_contig_names(bam_path: &Path, reference: Option<&Path>) -> Result<
         .collect())
 }
 
+/// Contig name → length from the alignment header (for whole-genome walkers like SV).
+pub fn header_contig_lengths(
+    bam_path: &Path,
+    reference: Option<&Path>,
+) -> Result<std::collections::BTreeMap<String, i64>, AnalysisError> {
+    let header = reader::read_header(bam_path, reference)?;
+    Ok(header
+        .reference_sequences()
+        .iter()
+        .map(|(name, seq)| {
+            (String::from_utf8_lossy(name.as_ref()).into_owned(), seq.length().get() as i64)
+        })
+        .collect())
+}
+
 /// Sparse A/C/G/T tally at the given 1-based target positions (force-call path), keyed
 /// by 0-based position. Also returns the contig length.
 fn tally_targets(

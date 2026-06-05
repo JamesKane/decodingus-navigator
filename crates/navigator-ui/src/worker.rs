@@ -16,6 +16,7 @@ use navigator_app::{
     DenovoCall, DnaType, HaploAssignment, HeteroplasmySite, IbdComparison, IbdDetectorConfig,
     IdentityVerification, PanelGenotype, PrivateBucket, ProjectImportSummary, ProjectOverview,
     ProjectSampleReport, ReadMetrics, ReconciledVariant, SexInferenceResult, SourceType,
+    SvAnalysisResult,
 };
 use navigator_domain::du_domain::ids::SampleGuid;
 use navigator_domain::chipprofile::ChipProfile;
@@ -116,6 +117,8 @@ pub enum Command {
     RunSex(i64),
     LoadReadMetrics(i64),
     RunReadMetrics(i64),
+    LoadSv(i64),
+    RunSv(i64),
     LoadDenovo { alignment_id: i64, contig: String },
     RunDenovo { alignment_id: i64, contig: String },
     LoadPanels,
@@ -183,6 +186,7 @@ pub enum Event {
         y_done: usize,
         sex_done: usize,
         metrics_done: usize,
+        sv_done: usize,
         errors: usize,
     },
     Samples { project_id: i64, samples: Vec<Biosample> },
@@ -226,6 +230,7 @@ pub enum Event {
     Coverage { alignment_id: i64, result: Option<Coverage> },
     Sex { alignment_id: i64, result: Option<SexInferenceResult> },
     ReadMetrics { alignment_id: i64, result: Option<ReadMetrics> },
+    Sv { alignment_id: i64, result: Option<SvAnalysisResult> },
     Denovo { alignment_id: i64, contig: String, result: Option<Vec<DenovoCall>> },
     Panels(Vec<PanelInfo>),
     PanelImported,
@@ -286,6 +291,7 @@ pub async fn handle(app: &App, cmd: Command) -> Event {
                 y_done: s.y_done,
                 sex_done: s.sex_done,
                 metrics_done: s.metrics_done,
+                sv_done: s.sv_done,
                 errors: s.errors.len(),
             },
             Err(e) => Event::Error(e.to_string()),
@@ -446,6 +452,14 @@ pub async fn handle(app: &App, cmd: Command) -> Event {
         },
         Command::RunReadMetrics(alignment_id) => match app.run_read_metrics(alignment_id).await {
             Ok(result) => Event::ReadMetrics { alignment_id, result: Some(result) },
+            Err(e) => Event::Error(e.to_string()),
+        },
+        Command::LoadSv(alignment_id) => match app.cached_sv(alignment_id).await {
+            Ok(result) => Event::Sv { alignment_id, result },
+            Err(e) => Event::Error(e.to_string()),
+        },
+        Command::RunSv(alignment_id) => match app.run_sv(alignment_id).await {
+            Ok(result) => Event::Sv { alignment_id, result: Some(result) },
             Err(e) => Event::Error(e.to_string()),
         },
         Command::LoadDenovo { alignment_id, contig } => match app.cached_denovo(alignment_id, &contig).await {
