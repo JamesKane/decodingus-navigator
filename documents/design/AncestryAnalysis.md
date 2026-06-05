@@ -309,20 +309,26 @@ the modern asset. The asset's `populations` become the components, so an ancient
 ancient labels. Catalog entries (name/color) for `Steppe`/`EEF`/`WHG` live in
 `navigator-domain::ancestry`.
 
-Build the ancient asset with the existing tool — no new builder is needed, since `pca` derives
-its populations from the sample→label map:
+Build the asset with `navigator-panelbuild pca`, which derives its populations from the
+sample→label map. Use **projection mode** (`--basis-pops`) so the sparse/biased ancient
+references are *projected* onto a modern PCA basis rather than shaping the axes:
 
 ```
 navigator-panelbuild pca \
-  --matrix  ancient_refs.<build>.matrix.gz \   # ancient ref genotypes, RESTRICTED TO the AF panel sites
-  --samples ancient_refs.samples \
-  --pops    ancient_refs.pops \                 # sample<TAB>{Steppe|EEF|WHG}
-  --out     ~/.decodingus/ancestry/ancestry_pca_ancient_<build>.bin
+  --matrix     refs.<build>.matrix.gz \   # modern + ancient genotypes, RESTRICTED TO the AF panel sites
+  --samples    refs.samples \
+  --pops       refs.pops \                # sample<TAB>{CEU|...|Steppe|ANF|WHG|EastAsian|...}
+  --basis-pops modern_pops.txt \          # one pop code per line: the basis (everything else is projected)
+  --out        ~/.decodingus/ancestry/ancestry_pca_<build>.bin
 ```
 
-The matrix **must be restricted to the AF panel's sites** so the app's single genotyping pass
-covers the projection. Source ancient reference genotypes from a curated set (e.g. the Allen
-Ancient DNA Resource) labelled by the three ancestry components.
+`--basis-pops` lists the populations that build the basis (the modern reference set); every other
+labelled sample is projected onto it via the basis loadings, centred by the basis means with the
+same `n_sites/used` un-shrink as the runtime `project_pca` (so a sparse ancient ref and a query
+sample share the basis scale). Omit `--basis-pops` to put all samples in the basis (the original
+behaviour). The matrix **must be restricted to the AF panel's sites** so the app's single
+genotyping pass covers the projection. The `scripts/ancestry-panel/` pipeline wires all of this
+(it derives `modern_pops.txt` as every labelled pop that isn't an ancient component).
 
 ## Future Enhancements
 

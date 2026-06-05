@@ -52,8 +52,9 @@ Plus this repo's `navigator-panelbuild` (run via `cargo run -p navigator-panelbu
   step — a missed strand flip silently corrupts dosages. Spot-check a known sample after a build.
 - **Pseudo-haploid ancient genotypes** (AADR 1240k) inflate centroid variance — fine for a
   first asset, worth modelling later.
-- **Projection-mode PCA** (basis = modern, project ancient) is a `navigator-panelbuild`
-  enhancement; until it lands, keep very-low-coverage ancient samples out of the pop map.
+- **Projection-mode PCA** (basis = modern, project ancient) is wired: stage 5 passes
+  `--basis-pops` so ancient deep components are projected onto the modern basis, not baked
+  into the axes. Still keep *extremely* low-coverage ancient samples out of the pop map.
 - **App asset wiring**: the app currently loads `ancestry_pca_<build>.bin` (+ optional
   `ancestry_pca_ancient_<build>.bin`). The combined global asset *is* `ancestry_pca_<build>.bin`,
   so all three methods use it; consuming `ancestry_freq_global` for fine admixture is a

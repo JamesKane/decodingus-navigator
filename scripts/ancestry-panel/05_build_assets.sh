@@ -13,14 +13,20 @@ MATRICES="$(cat "$TMP/matrices.list")"; SAMPLES="$(cat "$TMP/samples.list")"
 POPMAP="$TMP/pops.${BUILD}.tsv"
 [[ -n "$MATRICES" && -s "$POPMAP" ]] || die "missing matrices/pop map (run 04_build_matrices.sh)"
 
-# Global PCA loadings + per-population centroids/variances.
-# NOTE: this builds the PCA over ALL labelled samples. Projection-mode (basis = modern,
-# project ancient) is a navigator-panelbuild refinement (see AncestryAnalysis.md) — until it
-# lands, exclude very-low-coverage ancient samples from the pop map to limit axis distortion.
-log "navigator-panelbuild pca (k=$PCA_COMPONENTS) -> $PCA_OUT"
+# Global PCA loadings + per-population centroids/variances, in PROJECTION MODE: the modern
+# reference pops build the PCA basis and the sparse/biased ancient deep components are projected
+# onto it (so they don't distort the axes). Basis = every labelled pop that is NOT an ancient
+# component (the component-map's second column lists those).
+BASIS="$TMP/basis_pops.txt"
+awk -F'\t' '$0 !~ /^#/ && NF>=2 { print $2 }' "$AADR_COMPONENT_MAP" | sort -u > "$TMP/ancient_components.txt"
+cut -f2 "$POPMAP" | sort -u | grep -vxF -f "$TMP/ancient_components.txt" > "$BASIS" || true
+log "projection basis: $(wc -l < "$BASIS") modern pops; $(wc -l < "$TMP/ancient_components.txt") ancient components projected"
+
+log "navigator-panelbuild pca (k=$PCA_COMPONENTS, projection mode) -> $PCA_OUT"
 cargo run --release -q -p navigator-panelbuild -- pca \
   --matrix "$MATRICES" --samples "$SAMPLES" --pops "$POPMAP" \
-  --out "$PCA_OUT" --components "$PCA_COMPONENTS" --min-call-rate "$MIN_CALL_RATE"
+  --out "$PCA_OUT" --components "$PCA_COMPONENTS" --min-call-rate "$MIN_CALL_RATE" \
+  --basis-pops "$BASIS"
 
 # Global per-population allele-frequency panel (fine admixture over all labelled pops).
 log "navigator-panelbuild fine-panel -> $FINE_OUT"

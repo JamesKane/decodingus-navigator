@@ -10,7 +10,7 @@
 //! `V = Xᵀ·U·Σ⁻¹` and reference sample coordinates `R = U·Σ`, from which each population's
 //! centroid and per-component variance follow.
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::fs::{self, File};
 use std::io::{BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
@@ -42,6 +42,12 @@ pub struct PcaArgs {
     /// Drop sites whose call rate across samples is below this.
     #[arg(long, default_value_t = 0.9)]
     min_call_rate: f64,
+    /// Projection mode: a file of population codes (one per line) whose samples build the PCA
+    /// basis. All other labelled samples are *projected* onto that basis rather than shaping it
+    /// — use it to keep sparse/biased ancient references (which would distort the axes) out of
+    /// the decomposition while still placing them in PC space. Absent → every sample is basis.
+    #[arg(long)]
+    basis_pops: Option<PathBuf>,
 }
 
 #[derive(Parser)]
@@ -132,6 +138,44 @@ fn load_fine_map(path: &Path) -> Result<HashMap<String, String>> {
 fn distinct_fine_pops(samples: &[String], fine: &HashMap<String, String>) -> Vec<String> {
     let set: BTreeSet<String> = samples.iter().filter_map(|s| fine.get(s).cloned()).collect();
     set.into_iter().collect()
+}
+
+/// A set of population codes from a file (one per line; `#` comments and blanks skipped).
+fn load_pop_set(path: &Path) -> Result<HashSet<String>> {
+    let mut s = String::new();
+    open_maybe_gz(path)?.read_to_string(&mut s)?;
+    Ok(s.lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty() && !l.starts_with('#'))
+        .map(String::from)
+        .collect())
+}
+
+/// Project sample `s` onto the basis loadings `v` (sites × k), centring each site by the basis
+/// mean and accumulating `centered · loading`. Missing genotypes are skipped, then the result is
+/// un-shrunk by `n_sites / used` — mirroring the runtime `project_pca`, so a sparse ancient
+/// reference and a query sample land on the same scale as the basis coordinates.
+fn project_sample(rows: &[Vec<i8>], s: usize, basis_means: &[f64], v: &DMatrix<f64>, k: usize) -> Vec<f64> {
+    let mut coord = vec![0.0f64; k];
+    let mut used = 0usize;
+    for (j, row) in rows.iter().enumerate() {
+        let d = row[s];
+        if d < 0 {
+            continue;
+        }
+        let centered = d as f64 - basis_means[j];
+        used += 1;
+        for (c, value) in coord.iter_mut().enumerate() {
+            *value += centered * v[(j, c)];
+        }
+    }
+    if used > 0 {
+        let scale = rows.len() as f64 / used as f64;
+        for value in coord.iter_mut() {
+            *value *= scale;
+        }
+    }
+    coord
 }
 
 /// Per-sample index into `pops` (its fine population), or `None` if unmapped.
@@ -231,48 +275,96 @@ pub fn build_pca(args: PcaArgs) -> Result<()> {
     let sample_pop = sample_pop_index(&samples, &fine, &pops);
     let n_sites = metas.len();
     anyhow::ensure!(n_sites > 0, "no sites passed the call-rate filter");
-    let k = args.components.min(n_samples - 1).min(n_sites);
 
-    // Per-site mean dosage (over called samples); centred matrix X (samples × sites), imputing
-    // missing genotypes to the mean (→ centred 0).
-    let mut means = vec![0.0f32; n_sites];
-    let mut x = DMatrix::<f64>::zeros(n_samples, n_sites);
+    // Projection mode: only `basis_pops` samples build the PCA basis; all other labelled
+    // samples are projected onto it. Absent → every sample is basis (original behaviour).
+    let basis_set: Option<HashSet<String>> = match &args.basis_pops {
+        Some(p) => Some(load_pop_set(p)?),
+        None => None,
+    };
+    let is_basis = |s: usize| -> bool {
+        match (&basis_set, sample_pop[s]) {
+            (None, _) => true,
+            (Some(set), Some(p)) => set.contains(&pops[p]),
+            (Some(_), None) => false, // unlabelled samples can't anchor a basis
+        }
+    };
+    let basis_idx: Vec<usize> = (0..n_samples).filter(|&s| is_basis(s)).collect();
+    let n_basis = basis_idx.len();
+    anyhow::ensure!(n_basis > 1, "need >1 basis sample (does --basis-pops match the pop labels?)");
+    if basis_set.is_some() {
+        eprintln!("projection mode: {n_basis} basis samples, {} projected", n_samples - n_basis);
+    }
+    let k = args.components.min(n_basis - 1).min(n_sites);
+
+    // Per-site mean dosage over the BASIS samples only — the centring used both for the basis
+    // decomposition and (stored in the asset) for projecting query samples at runtime.
+    let mut basis_means = vec![0.0f64; n_sites];
     for (j, row) in rows.iter().enumerate() {
-        let (sum, cnt) = row.iter().filter(|&&d| d >= 0).fold((0.0f64, 0usize), |(s, c), &d| (s + d as f64, c + 1));
-        let mean = if cnt > 0 { sum / cnt as f64 } else { 0.0 };
-        means[j] = mean as f32;
-        for (i, &d) in row.iter().enumerate() {
-            x[(i, j)] = if d >= 0 { d as f64 - mean } else { 0.0 };
+        let (sum, cnt) = basis_idx
+            .iter()
+            .map(|&s| row[s])
+            .filter(|&d| d >= 0)
+            .fold((0.0f64, 0usize), |(s, c), d| (s + d as f64, c + 1));
+        basis_means[j] = if cnt > 0 { sum / cnt as f64 } else { 0.0 };
+    }
+    let means: Vec<f32> = basis_means.iter().map(|&m| m as f32).collect();
+
+    // Centred basis matrix X_b (n_basis × sites), missing imputed to the basis mean (→ 0).
+    let mut xb = DMatrix::<f64>::zeros(n_basis, n_sites);
+    for (bi, &s) in basis_idx.iter().enumerate() {
+        for (j, row) in rows.iter().enumerate() {
+            let d = row[s];
+            xb[(bi, j)] = if d >= 0 { d as f64 - basis_means[j] } else { 0.0 };
         }
     }
 
-    eprintln!("computing {n_samples}×{n_samples} Gram + eigendecomposition…");
-    let gram = &x * x.transpose();
+    eprintln!("computing {n_basis}×{n_basis} Gram + eigendecomposition…");
+    let gram = &xb * xb.transpose();
     let eig = SymmetricEigen::new(gram);
     let mut order: Vec<usize> = (0..eig.eigenvalues.len()).collect();
     order.sort_by(|&a, &b| eig.eigenvalues[b].total_cmp(&eig.eigenvalues[a]));
     order.truncate(k);
 
-    let mut uk = DMatrix::<f64>::zeros(n_samples, k);
+    let mut uk = DMatrix::<f64>::zeros(n_basis, k);
     let mut sigma = DVector::<f64>::zeros(k);
     for (c, &idx) in order.iter().enumerate() {
         sigma[c] = eig.eigenvalues[idx].max(0.0).sqrt();
         uk.set_column(c, &eig.eigenvectors.column(idx));
     }
 
-    // Loadings V = Xᵀ·U·Σ⁻¹ (sites × k); reference coords R = U·Σ (samples × k).
-    let mut v = x.transpose() * &uk;
+    // Loadings V = X_bᵀ·U·Σ⁻¹ (sites × k); basis coords R_b = U·Σ (n_basis × k).
+    let mut v = xb.transpose() * &uk;
     for c in 0..k {
         if sigma[c] > 1e-9 {
             v.column_mut(c).scale_mut(1.0 / sigma[c]);
         }
     }
-    let mut r = uk.clone();
+    let mut rb = uk.clone();
     for c in 0..k {
-        r.column_mut(c).scale_mut(sigma[c]);
+        rb.column_mut(c).scale_mut(sigma[c]);
     }
 
-    // Per-population centroid + diagonal variance over reference sample coordinates.
+    // Unified per-sample coordinates: basis samples take their decomposition rows; every other
+    // labelled sample is projected through V (centred by the basis means, with the same
+    // missing-data un-shrink as the runtime `project_pca`, so ancient/query coords share a scale).
+    let mut coords = DMatrix::<f64>::zeros(n_samples, k);
+    for (bi, &s) in basis_idx.iter().enumerate() {
+        for c in 0..k {
+            coords[(s, c)] = rb[(bi, c)];
+        }
+    }
+    for s in 0..n_samples {
+        if is_basis(s) || sample_pop[s].is_none() {
+            continue;
+        }
+        let projected = project_sample(&rows, s, &basis_means, &v, k);
+        for (c, &val) in projected.iter().enumerate() {
+            coords[(s, c)] = val;
+        }
+    }
+
+    // Per-population centroid + diagonal variance over the unified coordinates.
     let n_pops = pops.len();
     let mut centroids = vec![0.0f32; n_pops * k];
     let mut variances = vec![1.0f32; n_pops * k];
@@ -282,7 +374,7 @@ pub fn build_pca(args: PcaArgs) -> Result<()> {
             continue;
         }
         for c in 0..k {
-            let vals: Vec<f64> = members.iter().map(|&s| r[(s, c)]).collect();
+            let vals: Vec<f64> = members.iter().map(|&s| coords[(s, c)]).collect();
             let mean = vals.iter().sum::<f64>() / vals.len() as f64;
             let var = if vals.len() > 1 {
                 vals.iter().map(|&x| (x - mean).powi(2)).sum::<f64>() / (vals.len() as f64 - 1.0)
@@ -398,5 +490,33 @@ mod tests {
         assert_eq!(pops, vec!["CEU".to_string(), "YRI".to_string()]);
         let idx = sample_pop_index(&samples, &fine, &pops);
         assert_eq!(idx, vec![Some(0), Some(1), Some(0)]);
+    }
+
+    /// Projecting a sample onto a 1-component basis: with loadings all 1.0 and basis mean 1.0,
+    /// a fully-genotyped hom-alt sample lands at +n_sites; a half-missing one lands at the same
+    /// place after the n_sites/used un-shrink (not pulled toward the origin).
+    #[test]
+    fn project_sample_centres_and_unshrinks() {
+        // rows[site][sample]; one projected sample (index 0), 4 sites.
+        let rows: Vec<Vec<i8>> = vec![vec![2], vec![2], vec![2], vec![2]];
+        let means = vec![1.0; 4];
+        let v = DMatrix::<f64>::from_element(4, 1, 1.0); // sites × k, all loadings 1.0
+        let coord = project_sample(&rows, 0, &means, &v, 1);
+        assert!((coord[0] - 4.0).abs() < 1e-9, "coord = {}", coord[0]); // (2-1)*1 × 4
+
+        // Two of four sites missing → used=2, raw sum=2, scaled by 4/2 → 4 (same place).
+        let sparse: Vec<Vec<i8>> = vec![vec![2], vec![2], vec![-1], vec![-1]];
+        let coord = project_sample(&sparse, 0, &means, &v, 1);
+        assert!((coord[0] - 4.0).abs() < 1e-9, "coord = {}", coord[0]);
+    }
+
+    #[test]
+    fn pop_set_skips_comments_and_blanks() {
+        let path = std::env::temp_dir().join(format!("panelbuild_pops_{}.txt", std::process::id()));
+        fs::write(&path, "# header\nCEU\n\nYRI\n  TSI  \n").unwrap();
+        let set = load_pop_set(&path).unwrap();
+        let _ = fs::remove_file(&path);
+        assert!(set.contains("CEU") && set.contains("YRI") && set.contains("TSI"));
+        assert_eq!(set.len(), 3);
     }
 }
