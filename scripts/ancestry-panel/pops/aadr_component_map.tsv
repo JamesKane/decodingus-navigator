@@ -1,0 +1,37 @@
+# Curated AADR "Group ID" -> deep ancestral component map.
+# Two tab-separated columns: <AADR Group ID>	<component code>. Lines starting with #
+# are ignored. ONLY listed groups become source-population references; everything else in
+# the AADR is dropped. This file is the one expertise-driven artifact of the pipeline —
+# review/extend it against the current AADR .anno labels and the source set you intend.
+#
+# Component codes should match (or be added to) the ancestry catalog in
+# navigator-domain::ancestry (population_name / color / super rollup).
+#
+# Group ID	component
+# ── West-Eurasian deep ancestries ───────────────────────────────────────────────
+Russia_Yamnaya_Samara	Steppe
+Russia_Yamnaya_Kalmykia	Steppe
+Turkey_N	ANF
+Anatolia_N	ANF
+WHG	WHG
+Italy_North_Villabruna_HG	WHG
+Russia_HG_Karelia	EHG
+Russia_Karelia_HG	EHG
+Georgia_CHG	CHG
+Iran_GanjDareh_N	Iran_N
+Russia_MA1_HG.SG	ANE
+# ── South Asian ─────────────────────────────────────────────────────────────────
+India_Onge.DG	AASI
+Onge.DG	AASI
+# ── East Asian ──────────────────────────────────────────────────────────────────
+China_Han.DG	EastAsian
+Han.DG	EastAsian
+Russia_DevilsCave_N	EastAsian
+# ── Native American ─────────────────────────────────────────────────────────────
+USA_Anzick.SG	NativeAmerican
+Karitiana.DG	NativeAmerican
+# ── Oceanian ────────────────────────────────────────────────────────────────────
+Papuan.DG	Oceanian
+# ── Sub-Saharan African ─────────────────────────────────────────────────────────
+Mbuti.DG	African
+Yoruba.DG	African
