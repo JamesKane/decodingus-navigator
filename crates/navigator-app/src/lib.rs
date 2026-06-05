@@ -26,6 +26,8 @@ use navigator_store::panel;
 pub use navigator_analysis::caller::SiteGenotype as PanelGenotype;
 pub use navigator_analysis::caller::VariantCall as DenovoCall;
 pub use navigator_analysis::coverage::CoverageResult as Coverage;
+pub use navigator_analysis::read_metrics::{PairOrientation, ReadMetrics};
+pub use navigator_analysis::sex::{Confidence as SexConfidence, InferredSex, SexInferenceResult};
 pub use navigator_analysis::heteroplasmy::HeteroplasmySite;
 pub use navigator_analysis::haplo::{BranchEvidence, CallState, ScoredHaplogroup, SnpEvidence};
 pub use navigator_domain::ancestry::{
@@ -353,6 +355,14 @@ pub struct ProjectSampleReport {
     pub callable_bases: Option<u64>,
     pub y_haplogroup: Option<String>,
     pub mt_haplogroup: Option<String>,
+    /// Inferred sex (M/F/U) from the `sex` artifact, if computed.
+    pub sex: Option<String>,
+    /// Mean read length (read-metrics artifact).
+    pub mean_read_length: Option<f64>,
+    /// % PF reads aligned (read-metrics artifact).
+    pub pct_aligned: Option<f64>,
+    /// Median insert size (read-metrics artifact).
+    pub median_insert_size: Option<f64>,
 }
 
 /// A reference build an import needs but doesn't have cached — surfaced so the UI can
@@ -371,6 +381,8 @@ pub struct AnalyzeSummary {
     pub samples: usize,
     pub coverage_done: usize,
     pub y_done: usize,
+    pub sex_done: usize,
+    pub metrics_done: usize,
     /// Per-sample failures (best-effort: one sample's error doesn't abort the rest).
     pub errors: Vec<String>,
 }
@@ -548,6 +560,52 @@ impl App {
             CallableLociParams::default(),
         )
         .await
+    }
+
+    /// Infer biological sex from the alignment's chrX:autosome read-density ratio, persisting
+    /// the result as a `sex` artifact. Cheap (BAI fast-path for BAM). `reference` is used only
+    /// for CRAM decode.
+    pub async fn run_sex(&self, alignment_id: i64) -> Result<navigator_analysis::sex::SexInferenceResult, AppError> {
+        let (bam, reference) = self.alignment_paths(alignment_id).await?;
+        let result = tokio::task::spawn_blocking(move || {
+            navigator_analysis::sex::infer_from_bam(&bam, reference.as_deref())
+        })
+        .await
+        .map_err(|e| AppError::Join(e.to_string()))??;
+        self.save_analysis(alignment_id, "sex", "1", &result).await?;
+        Ok(result)
+    }
+
+    /// Cached `sex` inference, if present.
+    pub async fn cached_sex(&self, alignment_id: i64) -> Result<Option<navigator_analysis::sex::SexInferenceResult>, AppError> {
+        self.load_analysis(alignment_id, "sex", "1").await
+    }
+
+    /// Collect read-level QC metrics (alignment summary + read-length/insert-size distributions,
+    /// pair orientation, mean MAPQ) and persist as a `read_metrics` artifact.
+    pub async fn run_read_metrics(&self, alignment_id: i64) -> Result<navigator_analysis::read_metrics::ReadMetrics, AppError> {
+        let (bam, reference) = self.alignment_paths(alignment_id).await?;
+        let result = tokio::task::spawn_blocking(move || {
+            navigator_analysis::read_metrics::collect_read_metrics(&bam, reference.as_deref())
+        })
+        .await
+        .map_err(|e| AppError::Join(e.to_string()))??;
+        self.save_analysis(alignment_id, "read_metrics", "1", &result).await?;
+        Ok(result)
+    }
+
+    /// Cached `read_metrics`, if present.
+    pub async fn cached_read_metrics(&self, alignment_id: i64) -> Result<Option<navigator_analysis::read_metrics::ReadMetrics>, AppError> {
+        self.load_analysis(alignment_id, "read_metrics", "1").await
+    }
+
+    /// The alignment's BAM (required) + reference (optional; required only for CRAM).
+    async fn alignment_paths(&self, alignment_id: i64) -> Result<(PathBuf, Option<PathBuf>), AppError> {
+        let aln = alignment::get(self.store.pool(), alignment_id)
+            .await?
+            .ok_or_else(|| AppError::Store(StoreError::NotFound(format!("alignment {alignment_id}"))))?;
+        let bam = PathBuf::from(aln.bam_path.ok_or(AppError::MissingPaths(alignment_id))?);
+        Ok((bam, aln.reference_path.map(PathBuf::from)))
     }
 
     /// Run de-novo haploid calling on a contig and persist the SNP calls as a versioned
@@ -2158,6 +2216,22 @@ impl App {
             let primary_alignment_id = coverage_aln.or_else(|| alignments.first().map(|a| a.id));
             let y_haplogroup = self.haplogroup_consensus(biosample.guid, DnaType::Y).await?.map(|c| c.haplogroup);
             let mt_haplogroup = self.haplogroup_consensus(biosample.guid, DnaType::Mt).await?.map(|c| c.haplogroup);
+            // Sex + read-metrics from whichever alignment has them cached.
+            let mut sex = None;
+            let mut metrics = None;
+            for a in &alignments {
+                if sex.is_none() {
+                    sex = self.cached_sex(a.id).await?;
+                }
+                if metrics.is_none() {
+                    metrics = self.cached_read_metrics(a.id).await?;
+                }
+            }
+            let sex = sex.map(|s| match s.inferred_sex {
+                navigator_analysis::sex::InferredSex::Male => "M".to_string(),
+                navigator_analysis::sex::InferredSex::Female => "F".to_string(),
+                navigator_analysis::sex::InferredSex::Unknown => "U".to_string(),
+            });
             out.push(ProjectSampleReport {
                 primary_alignment_id,
                 alignment_count: alignments.len(),
@@ -2168,6 +2242,10 @@ impl App {
                 callable_bases: coverage.as_ref().map(|c| c.callable_bases),
                 y_haplogroup,
                 mt_haplogroup,
+                sex,
+                mean_read_length: metrics.as_ref().map(|m| m.mean_read_length),
+                pct_aligned: metrics.as_ref().map(|m| m.pct_pf_reads_aligned),
+                median_insert_size: metrics.as_ref().map(|m| m.median_insert_size),
                 biosample,
             });
         }
@@ -2180,7 +2258,15 @@ impl App {
     /// sample's failure is recorded and the rest continue. mtDNA is intentionally not assigned
     /// here (provisional on CHM13 — see the reconciliation/liftover notes).
     pub async fn analyze_project(&self, project_id: i64) -> Result<AnalyzeSummary, AppError> {
-        let mut summary = AnalyzeSummary { project_id, samples: 0, coverage_done: 0, y_done: 0, errors: Vec::new() };
+        let mut summary = AnalyzeSummary {
+            project_id,
+            samples: 0,
+            coverage_done: 0,
+            y_done: 0,
+            sex_done: 0,
+            metrics_done: 0,
+            errors: Vec::new(),
+        };
         for biosample in biosample::list_for_project(self.store.pool(), project_id).await? {
             let alignments = alignment::list_for_biosample(self.store.pool(), biosample.guid).await?;
             let Some(aln) = alignments.iter().find(|a| a.bam_path.is_some()) else {
@@ -2206,6 +2292,24 @@ impl App {
                     Err(e) => summary.errors.push(format!("{label} Y: {e}")),
                 }
             }
+
+            if self.cached_sex(aln.id).await?.is_some() {
+                summary.sex_done += 1;
+            } else {
+                match self.run_sex(aln.id).await {
+                    Ok(_) => summary.sex_done += 1,
+                    Err(e) => summary.errors.push(format!("{label} sex: {e}")),
+                }
+            }
+
+            if self.cached_read_metrics(aln.id).await?.is_some() {
+                summary.metrics_done += 1;
+            } else {
+                match self.run_read_metrics(aln.id).await {
+                    Ok(_) => summary.metrics_done += 1,
+                    Err(e) => summary.errors.push(format!("{label} metrics: {e}")),
+                }
+            }
         }
         Ok(summary)
     }
@@ -2227,7 +2331,8 @@ pub fn report_csv(rows: &[ProjectSampleReport]) -> String {
     }
 
     let mut s = String::from(
-        "sample_id,alignment_count,mean_coverage,median_coverage,pct_10x,pct_20x,callable_bases,y_haplogroup,mt_haplogroup\n",
+        "sample_id,alignment_count,mean_coverage,median_coverage,pct_10x,pct_20x,callable_bases,\
+         y_haplogroup,mt_haplogroup,sex,mean_read_length,pct_aligned,median_insert_size\n",
     );
     for r in rows {
         s.push_str(&field(&r.biosample.donor_identifier));
@@ -2247,6 +2352,14 @@ pub fn report_csv(rows: &[ProjectSampleReport]) -> String {
         s.push_str(&field(r.y_haplogroup.as_deref().unwrap_or("")));
         s.push(',');
         s.push_str(&field(r.mt_haplogroup.as_deref().unwrap_or("")));
+        s.push(',');
+        s.push_str(&field(r.sex.as_deref().unwrap_or("")));
+        s.push(',');
+        s.push_str(&num(r.mean_read_length));
+        s.push(',');
+        s.push_str(&num(r.pct_aligned));
+        s.push(',');
+        s.push_str(&num(r.median_insert_size));
         s.push('\n');
     }
     s

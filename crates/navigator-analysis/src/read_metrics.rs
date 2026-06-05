@@ -10,6 +10,7 @@ use std::collections::BTreeMap;
 use std::path::Path;
 
 use noodles::sam::alignment::RecordBuf;
+use serde::{Deserialize, Serialize};
 
 use crate::error::AnalysisError;
 use crate::reader;
@@ -17,7 +18,7 @@ use crate::reader;
 const MAX_INSERT_SIZE: i32 = 10_000;
 
 /// Dominant pair orientation.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum PairOrientation {
     Fr,
     Rf,
@@ -35,7 +36,7 @@ impl PairOrientation {
 }
 
 /// Read-level metrics (mirrors the Scala `ReadMetrics`).
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ReadMetrics {
     pub total_reads: u64,
     pub pf_reads: u64,

@@ -10,8 +10,8 @@ use navigator_app::{
     AncestryResult, AncestrySegment, AuditEntry, BuildNeed, CallState, CompatibilityLevel, Consensus,
     Coverage, DenovoCall, DnaType, HaploAssignment, HeteroplasmySite, IbdComparison,
     IdentityVerification, PanelGenotype, PrivateBucket, PrivateClass, ProjectOverview,
-    ProjectSampleReport, ReconciledVariant, SourceType, SuperPopulationSummary, VariantStatus,
-    VerificationStatus,
+    ProjectSampleReport, ReadMetrics, ReconciledVariant, SexInferenceResult, SourceType,
+    SuperPopulationSummary, VariantStatus, VerificationStatus,
 };
 use navigator_domain::ancestry::{population_color, population_lonlat, population_name, population_super};
 use navigator_domain::du_domain::ids::SampleGuid;
@@ -116,6 +116,10 @@ pub struct NavigatorApp {
     alignments: Vec<Alignment>,
     selected_alignment: Option<i64>,
     coverage: Option<Coverage>,
+    sex: Option<SexInferenceResult>,
+    read_metrics: Option<ReadMetrics>,
+    running_sex: bool,
+    running_metrics: bool,
     running: bool,
     denovo: Option<Vec<DenovoCall>>,
     running_denovo: bool,
@@ -490,6 +494,10 @@ impl NavigatorApp {
             alignments: Vec::new(),
             selected_alignment: None,
             coverage: None,
+            sex: None,
+            read_metrics: None,
+            running_sex: false,
+            running_metrics: false,
             running: false,
             denovo: None,
             running_denovo: false,
@@ -588,10 +596,10 @@ impl NavigatorApp {
                         self.project_report = rows;
                     }
                 }
-                Event::ProjectAnalyzed { project_id, samples, coverage_done, y_done, errors } => {
+                Event::ProjectAnalyzed { project_id, samples, coverage_done, y_done, sex_done, metrics_done, errors } => {
                     self.analyzing = false;
                     self.status = format!(
-                        "Analyzed {samples} sample(s): {coverage_done} coverage, {y_done} Y{}",
+                        "Analyzed {samples} sample(s): {coverage_done} coverage, {y_done} Y, {sex_done} sex, {metrics_done} metrics{}",
                         if errors > 0 { format!(", {errors} error(s)") } else { String::new() }
                     );
                     if self.selected_project == Some(project_id) {
@@ -781,6 +789,24 @@ impl NavigatorApp {
                         let _ = self.tx.send(Command::LoadProjectReport(pid));
                     }
                 }
+                Event::Sex { alignment_id, result } => {
+                    if self.selected_alignment == Some(alignment_id) {
+                        self.sex = result;
+                    }
+                    self.running_sex = false;
+                    if let Some(pid) = self.selected_project {
+                        let _ = self.tx.send(Command::LoadProjectReport(pid));
+                    }
+                }
+                Event::ReadMetrics { alignment_id, result } => {
+                    if self.selected_alignment == Some(alignment_id) {
+                        self.read_metrics = result;
+                    }
+                    self.running_metrics = false;
+                    if let Some(pid) = self.selected_project {
+                        let _ = self.tx.send(Command::LoadProjectReport(pid));
+                    }
+                }
                 Event::Denovo { alignment_id, contig, result } => {
                     if self.selected_alignment == Some(alignment_id) && self.forms.denovo_contig == contig {
                         self.denovo = result;
@@ -836,6 +862,8 @@ impl NavigatorApp {
                     self.estimating_ancestry = false;
                     self.ancestry_progress = None;
                     self.painting_running = false;
+                    self.running_sex = false;
+                    self.running_metrics = false;
                     let _ = self.tx.send(Command::SyncStatus); // a failed publish may have gone offline
                 }
             }
@@ -888,6 +916,10 @@ impl NavigatorApp {
     fn select_alignment(&mut self, id: i64) {
         self.selected_alignment = Some(id);
         self.coverage = None;
+        self.sex = None;
+        self.read_metrics = None;
+        self.running_sex = false;
+        self.running_metrics = false;
         self.denovo = None;
         self.panel_genotypes = None;
         self.ibd_result = None;
@@ -901,6 +933,8 @@ impl NavigatorApp {
         self.painting = None;
         self.painting_running = false;
         let _ = self.tx.send(Command::LoadCoverage(id));
+        let _ = self.tx.send(Command::LoadSex(id));
+        let _ = self.tx.send(Command::LoadReadMetrics(id));
         let _ = self.tx.send(Command::LoadAncestry { alignment_id: id });
         let _ = self.tx.send(Command::LoadPcaReference { alignment_id: id });
         let _ = self.tx.send(Command::LoadDenovo { alignment_id: id, contig: self.forms.denovo_contig.clone() });
@@ -975,6 +1009,7 @@ impl eframe::App for NavigatorApp {
                 }
                 if let Some(id) = self.selected_alignment {
                     self.coverage_section(ui, id);
+                    self.sex_metrics_section(ui, id);
                     self.denovo_section(ui, id);
                     self.y_haplogroup_section(ui, id);
                     self.ancestry_section(ui, id);
@@ -1585,8 +1620,8 @@ impl NavigatorApp {
         let running = self.running || self.analyzing;
         let mut recompute: Option<i64> = None;
         let mut assign_y: Option<i64> = None;
-        egui::Grid::new("project_report_grid").striped(true).num_columns(10).show(ui, |ui| {
-            for h in ["Sample", "Alns", "Mean cov", "Median", "≥10x", "≥20x", "Callable", "Y", "mtDNA", "actions"] {
+        egui::Grid::new("project_report_grid").striped(true).num_columns(14).show(ui, |ui| {
+            for h in ["Sample", "Alns", "Mean cov", "Median", "≥10x", "≥20x", "Callable", "Y", "mtDNA", "Sex", "Read len", "%Aln", "Insert", "actions"] {
                 ui.strong(h);
             }
             ui.end_row();
@@ -1600,6 +1635,10 @@ impl NavigatorApp {
                 ui.label(r.callable_bases.map(|v| v.to_string()).unwrap_or_else(|| "—".into()));
                 ui.label(r.y_haplogroup.clone().unwrap_or_else(|| "—".into()));
                 ui.label(r.mt_haplogroup.clone().unwrap_or_else(|| "—".into()));
+                ui.label(r.sex.clone().unwrap_or_else(|| "—".into()));
+                ui.label(fmt_depth(r.mean_read_length));
+                ui.label(fmt_pct(r.pct_aligned));
+                ui.label(fmt_depth(r.median_insert_size));
                 if let Some(aln) = r.primary_alignment_id {
                     ui.horizontal(|ui| {
                         if ui.add_enabled(!running, egui::Button::new("Cov")).clicked() {
@@ -1829,6 +1868,67 @@ impl NavigatorApp {
 
         if self.coverage.is_some() {
             self.publish_row(ui, "Publish summary to PDS", Command::PublishCoverage(alignment_id));
+        }
+    }
+
+    /// Inferred sex + read-level QC metrics for a single alignment.
+    fn sex_metrics_section(&mut self, ui: &mut egui::Ui, alignment_id: i64) {
+        ui.add_space(12.0);
+        ui.separator();
+        ui.heading("Sex & read metrics");
+
+        let has_bam = self
+            .alignments
+            .iter()
+            .find(|a| a.id == alignment_id)
+            .map(|a| a.bam_path.is_some())
+            .unwrap_or(false);
+
+        ui.horizontal(|ui| {
+            if ui.add_enabled(has_bam && !self.running_sex, egui::Button::new("Infer sex")).clicked() {
+                self.running_sex = true;
+                self.status = "Inferring sex…".into();
+                let _ = self.tx.send(Command::RunSex(alignment_id));
+            }
+            if ui.add_enabled(has_bam && !self.running_metrics, egui::Button::new("Read metrics")).clicked() {
+                self.running_metrics = true;
+                self.status = "Collecting read metrics…".into();
+                let _ = self.tx.send(Command::RunReadMetrics(alignment_id));
+            }
+            if self.running_sex || self.running_metrics {
+                ui.spinner();
+            }
+            if !has_bam {
+                ui.label("(no BAM/CRAM path recorded)");
+            }
+        });
+
+        if let Some(s) = &self.sex {
+            let sex = match s.inferred_sex {
+                navigator_app::InferredSex::Male => "Male",
+                navigator_app::InferredSex::Female => "Female",
+                navigator_app::InferredSex::Unknown => "Unknown",
+            };
+            ui.label(format!(
+                "Sex: {sex}  ·  chrX:autosome ratio {:.2}  ·  {:?} confidence",
+                s.x_autosome_ratio, s.confidence
+            ));
+        }
+        if let Some(m) = &self.read_metrics {
+            egui::Grid::new("read_metrics_grid").striped(true).num_columns(2).show(ui, |ui| {
+                let row = |ui: &mut egui::Ui, k: &str, v: String| {
+                    ui.label(k);
+                    ui.label(v);
+                    ui.end_row();
+                };
+                row(ui, "Total reads", m.total_reads.to_string());
+                row(ui, "% PF aligned", format!("{:.1}%", m.pct_pf_reads_aligned * 100.0));
+                row(ui, "% proper pairs", format!("{:.1}%", m.pct_proper_pairs * 100.0));
+                row(ui, "Mean read length", format!("{:.0}", m.mean_read_length));
+                row(ui, "Median insert size", format!("{:.0}", m.median_insert_size));
+                row(ui, "Pair orientation", m.pair_orientation.as_str().to_string());
+                row(ui, "Mean MAPQ", format!("{:.1}", m.mean_mapping_quality));
+            });
         }
     }
 

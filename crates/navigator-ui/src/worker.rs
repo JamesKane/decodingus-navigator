@@ -15,7 +15,7 @@ use navigator_app::{
     AncestryResult, AncestrySegment, App, AppError, AuditEntry, BuildNeed, Consensus, Coverage,
     DenovoCall, DnaType, HaploAssignment, HeteroplasmySite, IbdComparison, IbdDetectorConfig,
     IdentityVerification, PanelGenotype, PrivateBucket, ProjectImportSummary, ProjectOverview,
-    ProjectSampleReport, ReconciledVariant, SourceType,
+    ProjectSampleReport, ReadMetrics, ReconciledVariant, SexInferenceResult, SourceType,
 };
 use navigator_domain::du_domain::ids::SampleGuid;
 use navigator_domain::chipprofile::ChipProfile;
@@ -112,6 +112,10 @@ pub enum Command {
     AddAlignment(NewAlignment),
     LoadCoverage(i64),
     RunCoverage(i64),
+    LoadSex(i64),
+    RunSex(i64),
+    LoadReadMetrics(i64),
+    RunReadMetrics(i64),
     LoadDenovo { alignment_id: i64, contig: String },
     RunDenovo { alignment_id: i64, contig: String },
     LoadPanels,
@@ -172,7 +176,15 @@ pub enum Event {
     /// Per-sample coverage/haplogroup report for a project.
     ProjectReport { project_id: i64, rows: Vec<ProjectSampleReport> },
     /// A project-wide analyze pass finished (coverage + Y per sample).
-    ProjectAnalyzed { project_id: i64, samples: usize, coverage_done: usize, y_done: usize, errors: usize },
+    ProjectAnalyzed {
+        project_id: i64,
+        samples: usize,
+        coverage_done: usize,
+        y_done: usize,
+        sex_done: usize,
+        metrics_done: usize,
+        errors: usize,
+    },
     Samples { project_id: i64, samples: Vec<Biosample> },
     /// All biosamples (the project-independent subjects list).
     AllBiosamples(Vec<Biosample>),
@@ -212,6 +224,8 @@ pub enum Event {
     Alignments { sequence_run_id: i64, alignments: Vec<Alignment> },
     AlignmentsChanged(i64),
     Coverage { alignment_id: i64, result: Option<Coverage> },
+    Sex { alignment_id: i64, result: Option<SexInferenceResult> },
+    ReadMetrics { alignment_id: i64, result: Option<ReadMetrics> },
     Denovo { alignment_id: i64, contig: String, result: Option<Vec<DenovoCall>> },
     Panels(Vec<PanelInfo>),
     PanelImported,
@@ -270,6 +284,8 @@ pub async fn handle(app: &App, cmd: Command) -> Event {
                 samples: s.samples,
                 coverage_done: s.coverage_done,
                 y_done: s.y_done,
+                sex_done: s.sex_done,
+                metrics_done: s.metrics_done,
                 errors: s.errors.len(),
             },
             Err(e) => Event::Error(e.to_string()),
@@ -414,6 +430,22 @@ pub async fn handle(app: &App, cmd: Command) -> Event {
         },
         Command::RunCoverage(alignment_id) => match app.run_coverage_for_alignment(alignment_id).await {
             Ok(result) => Event::Coverage { alignment_id, result: Some(result) },
+            Err(e) => Event::Error(e.to_string()),
+        },
+        Command::LoadSex(alignment_id) => match app.cached_sex(alignment_id).await {
+            Ok(result) => Event::Sex { alignment_id, result },
+            Err(e) => Event::Error(e.to_string()),
+        },
+        Command::RunSex(alignment_id) => match app.run_sex(alignment_id).await {
+            Ok(result) => Event::Sex { alignment_id, result: Some(result) },
+            Err(e) => Event::Error(e.to_string()),
+        },
+        Command::LoadReadMetrics(alignment_id) => match app.cached_read_metrics(alignment_id).await {
+            Ok(result) => Event::ReadMetrics { alignment_id, result },
+            Err(e) => Event::Error(e.to_string()),
+        },
+        Command::RunReadMetrics(alignment_id) => match app.run_read_metrics(alignment_id).await {
+            Ok(result) => Event::ReadMetrics { alignment_id, result: Some(result) },
             Err(e) => Event::Error(e.to_string()),
         },
         Command::LoadDenovo { alignment_id, contig } => match app.cached_denovo(alignment_id, &contig).await {

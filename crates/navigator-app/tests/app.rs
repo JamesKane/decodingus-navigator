@@ -1578,3 +1578,88 @@ async fn local_ancestry_paints_gfx() {
     let top = by.first().unwrap().0;
     assert_eq!(top, "EUR", "expected European-dominant painting, got {top}");
 }
+
+// ---- sex + read metrics ----------------------------------------------------
+
+/// Offline: run_read_metrics + run_sex persist and round-trip. Uses sex.bam (autosome + chrX;
+/// sex inference requires chrX, which the chr1-only diploid fixture lacks).
+#[tokio::test]
+async fn sex_and_read_metrics_persist_and_reload() {
+    let app = app().await;
+    let b = app.add_biosample(None, "sx", None, None).await.unwrap();
+    let run = app
+        .record_sequence_run(NewSequenceRun {
+            biosample_guid: b.guid,
+            platform_name: "ILLUMINA".into(),
+            instrument_model: None,
+            test_type: "WGS".into(),
+            library_layout: None,
+            total_reads: None,
+            pf_reads_aligned: None,
+            mean_read_length: None,
+            mean_insert_size: None,
+        })
+        .await
+        .unwrap();
+    let aln = app
+        .record_alignment(NewAlignment {
+            sequence_run_id: run.id,
+            reference_build: "chm13v2.0".into(),
+            aligner: "synthetic".into(),
+            variant_caller: None,
+            bam_path: Some(fixtures().join("sex.bam").to_string_lossy().into_owned()),
+            reference_path: None,
+        })
+        .await
+        .unwrap()
+        .id;
+
+    let m = app.run_read_metrics(aln).await.expect("run_read_metrics");
+    assert!(m.total_reads > 0, "expected reads");
+    assert_eq!(app.cached_read_metrics(aln).await.unwrap(), Some(m));
+
+    let s = app.run_sex(aln).await.expect("run_sex");
+    assert_eq!(app.cached_sex(aln).await.unwrap(), Some(s));
+}
+
+/// Live: GFX0457637 carries a Y haplogroup (R-FGC29071), so sex inference should call Male.
+/// Uses the BAI fast-path, so it's quick. Requires GFX_CHM13_BAM.
+#[tokio::test]
+#[ignore = "requires GFX_CHM13_BAM"]
+async fn gfx_sex_is_male() {
+    let Ok(bam) = std::env::var("GFX_CHM13_BAM") else {
+        eprintln!("GFX_CHM13_BAM unset — skipping");
+        return;
+    };
+    let app = app().await;
+    let b = app.add_biosample(None, "GFX0457637", None, None).await.unwrap();
+    let run = app
+        .record_sequence_run(NewSequenceRun {
+            biosample_guid: b.guid,
+            platform_name: "PACBIO_SMRT".into(),
+            instrument_model: None,
+            test_type: "WGS".into(),
+            library_layout: None,
+            total_reads: None,
+            pf_reads_aligned: None,
+            mean_read_length: None,
+            mean_insert_size: None,
+        })
+        .await
+        .unwrap();
+    let aln = app
+        .record_alignment(NewAlignment {
+            sequence_run_id: run.id,
+            reference_build: "chm13v2.0".into(),
+            aligner: "pbmm2".into(),
+            variant_caller: None,
+            bam_path: Some(bam),
+            reference_path: std::env::var("GFX_CHM13_REF").ok(),
+        })
+        .await
+        .unwrap()
+        .id;
+    let s = app.run_sex(aln).await.expect("run_sex");
+    eprintln!("sex={:?} ratio={:.3} conf={:?}", s.inferred_sex, s.x_autosome_ratio, s.confidence);
+    assert_eq!(s.inferred_sex, navigator_app::InferredSex::Male);
+}

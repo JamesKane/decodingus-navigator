@@ -12,25 +12,27 @@ use std::path::Path;
 use noodles::bam;
 use noodles::csi::binning_index::ReferenceSequence as _;
 
+use serde::{Deserialize, Serialize};
+
 use crate::contig;
 use crate::error::AnalysisError;
 use crate::reader::{self, Format};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum InferredSex {
     Male,
     Female,
     Unknown,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Confidence {
     High,
     Medium,
     Low,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct SexInferenceResult {
     pub inferred_sex: InferredSex,
     pub x_autosome_ratio: f64,
