@@ -312,6 +312,52 @@ fn table_row(ui: &mut egui::Ui, cols: &[(&str, f32)], cells: &[String], selected
     resp.clicked()
 }
 
+/// A rounded section card with an optional bold title (the Data Sources look).
+fn card(ui: &mut egui::Ui, title: &str, body: impl FnOnce(&mut egui::Ui)) {
+    egui::Frame::group(ui.style())
+        .fill(ui.visuals().faint_bg_color)
+        .rounding(egui::Rounding::same(8.0))
+        .inner_margin(egui::Margin::same(14.0))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            if !title.is_empty() {
+                ui.label(egui::RichText::new(title).strong().size(15.0));
+                ui.add_space(8.0);
+            }
+            body(ui);
+        });
+}
+
+/// A small rounded chip/badge (provider tag, Y/mt badge).
+fn chip(ui: &mut egui::Ui, text: &str, bg: egui::Color32, fg: egui::Color32) {
+    let font = egui::FontId::proportional(11.5);
+    let galley = ui.painter().layout_no_wrap(text.to_string(), font, fg);
+    let pad = egui::vec2(7.0, 3.0);
+    let (rect, _) = ui.allocate_exact_size(galley.size() + pad * 2.0, egui::Sense::hover());
+    ui.painter().rect_filled(rect, 6.0, bg);
+    ui.painter().galley(rect.min + pad, galley, egui::Color32::PLACEHOLDER);
+}
+
+/// 3-letter provider abbreviation for the run chip (PACBIO → PAC).
+fn provider_abbrev(platform: &str) -> String {
+    let p = platform.trim();
+    if p.is_empty() || p.eq_ignore_ascii_case("unknown") {
+        "SEQ".into()
+    } else {
+        p.chars().take(3).collect::<String>().to_uppercase()
+    }
+}
+
+/// Compact read count: 9_900 → "9.9K", 1_200_000 → "1.2M".
+fn fmt_reads(n: Option<i64>) -> String {
+    match n {
+        None => "—".into(),
+        Some(v) if v >= 1_000_000 => format!("{:.1}M", v as f64 / 1e6),
+        Some(v) if v >= 1_000 => format!("{:.1}K", v as f64 / 1e3),
+        Some(v) => v.to_string(),
+    }
+}
+
 /// A centered empty-state placeholder for a work area with no selection.
 fn empty_state(ui: &mut egui::Ui, title: &str, hint: &str) {
     ui.add_space(56.0);
@@ -1321,14 +1367,7 @@ impl NavigatorApp {
                     pick_alignment_hint(ui);
                 }
             }
-            DetailTab::DataSources => {
-                self.runs_section(ui);
-                if self.selected_run.is_some() {
-                    self.alignments_section(ui);
-                }
-                self.chip_section(ui, guid);
-                self.str_section(ui, guid);
-            }
+            DetailTab::DataSources => self.data_sources_tab(ui, guid),
         });
     }
 
@@ -1664,12 +1703,6 @@ impl NavigatorApp {
 
     /// Y-STR profiles for the selected subject + an import form (CSV/TSV marker table).
     fn str_section(&mut self, ui: &mut egui::Ui, guid: SampleGuid) {
-        ui.add_space(12.0);
-        ui.separator();
-        ui.heading("STR profiles");
-        if self.str_profiles.is_empty() {
-            ui.label("No STR profiles yet.");
-        }
         for p in &self.str_profiles {
             let provider = p.provider.as_deref().unwrap_or("—");
             let header = format!("{} — {} markers  ({provider})", p.panel_name, p.markers.len());
@@ -1808,12 +1841,6 @@ impl NavigatorApp {
     /// Genotyping-array (chip) profiles for the selected subject + an import form. The
     /// parser computes the QC summary and guesses the vendor; the dropdown can override it.
     fn chip_section(&mut self, ui: &mut egui::Ui, guid: SampleGuid) {
-        ui.add_space(12.0);
-        ui.separator();
-        ui.heading("Chip / array data");
-        if self.chip_profiles.is_empty() {
-            ui.label("No chip data imported yet.");
-        }
         for p in &self.chip_profiles {
             let s = &p.summary;
             let call_rate = if s.total_markers_possible > 0 {
@@ -2116,31 +2143,140 @@ impl NavigatorApp {
         ui.label("Add subjects from the sidebar (they tag to this open project).");
     }
 
-    fn runs_section(&mut self, ui: &mut egui::Ui) {
-        let guid = self.selected_sample.unwrap();
-        ui.add_space(12.0);
-        ui.separator();
-        ui.heading("Tests");
-        if self.runs.is_empty() {
-            ui.label("No tests yet.");
-        }
-        let mut pick = None;
-        for r in &self.runs {
-            let platform = if r.platform_name.is_empty() || r.platform_name == "UNKNOWN" {
-                String::new()
-            } else {
-                format!("  ({})", r.platform_name)
-            };
-            let label = format!("#{}  {}{}", r.id, testtype::display_name(&r.test_type), platform);
-            if ui.selectable_label(self.selected_run == Some(r.id), label).clicked() {
-                pick = Some(r.id);
+    /// The Data Sources tab: sequencing runs (cards with expandable alignments), chip/array,
+    /// and STR profiles — each in a rounded card.
+    fn data_sources_tab(&mut self, ui: &mut egui::Ui, guid: SampleGuid) {
+        ui.add_space(4.0);
+        card(ui, "Sequencing Runs", |ui| self.runs_card(ui, guid));
+        ui.add_space(10.0);
+        card(ui, "Chip / Array Profiles", |ui| {
+            if self.chip_profiles.is_empty() {
+                ui.label(egui::RichText::new("No chip/array data").weak());
             }
+            self.chip_section(ui, guid);
+        });
+        ui.add_space(10.0);
+        card(ui, "STR Profiles", |ui| {
+            if self.str_profiles.is_empty() {
+                ui.label(egui::RichText::new("No STR profiles").weak());
+            }
+            self.str_section(ui, guid);
+        });
+    }
+
+    /// The sequencing-runs body: one card per run (provider chip, title, read meta, Y/mt
+    /// badges); the selected run expands to its alignment rows + the add-alignment form.
+    fn runs_card(&mut self, ui: &mut egui::Ui, guid: SampleGuid) {
+        if self.runs.is_empty() {
+            ui.label(egui::RichText::new("No sequencing runs yet.").weak());
         }
-        if let Some(id) = pick {
-            self.select_run(id);
+        // Clone the small lists so we can call &mut self methods (add forms) inside the loop.
+        let runs = self.runs.clone();
+        let alignments = self.alignments.clone();
+        let coverage = self.coverage.clone();
+        let mut pick_run = None;
+        let mut pick_aln = None;
+
+        for r in &runs {
+            let selected = self.selected_run == Some(r.id);
+            let frame = egui::Frame::group(ui.style())
+                .fill(if selected { ACCENT.gamma_multiply(0.18) } else { ui.visuals().extreme_bg_color })
+                .stroke(if selected { egui::Stroke::new(1.0, ACCENT) } else { egui::Stroke::NONE })
+                .rounding(egui::Rounding::same(6.0))
+                .inner_margin(egui::Margin::same(10.0));
+            let resp = frame
+                .show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        chip(ui, &provider_abbrev(&r.platform_name), ACCENT.gamma_multiply(0.3), ACCENT);
+                        ui.add_space(4.0);
+                        let tt = testtype::by_code(&r.test_type);
+                        ui.vertical(|ui| {
+                            let plat = if r.platform_name.is_empty() { "—" } else { r.platform_name.as_str() };
+                            let title = format!(
+                                "{}  ·  {}  ·  {}",
+                                testtype::display_name(&r.test_type),
+                                plat,
+                                r.instrument_model.as_deref().unwrap_or("—")
+                            );
+                            ui.label(egui::RichText::new(title).strong());
+                            ui.label(
+                                egui::RichText::new(format!(
+                                    "Reads: {}   Aligned: {}   {}",
+                                    fmt_reads(r.total_reads),
+                                    fmt_reads(r.pf_reads_aligned),
+                                    r.library_layout.as_deref().unwrap_or("SINGLE")
+                                ))
+                                .weak()
+                                .small(),
+                            );
+                        });
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if let Some(t) = tt {
+                                let mt = matches!(t.target, testtype::TargetType::WholeGenome | testtype::TargetType::MtDna);
+                                let y = matches!(t.target, testtype::TargetType::WholeGenome | testtype::TargetType::YChromosome);
+                                if mt {
+                                    chip(ui, "mt", egui::Color32::from_rgb(70, 60, 90), egui::Color32::from_rgb(200, 180, 230));
+                                }
+                                if y {
+                                    chip(ui, "Y", egui::Color32::from_rgb(40, 70, 55), egui::Color32::from_rgb(150, 220, 180));
+                                }
+                            }
+                        });
+                    });
+                })
+                .response;
+            if resp.interact(egui::Sense::click()).clicked() {
+                pick_run = Some(r.id);
+            }
+
+            // Selected run → its alignment rows + the add-alignment form.
+            if selected {
+                ui.indent(("alns", r.id), |ui| {
+                    for a in &alignments {
+                        let asel = self.selected_alignment == Some(a.id);
+                        let cov = if asel { coverage.as_ref() } else { None };
+                        let (cov_s, call_s) = match cov {
+                            Some(c) => (format!("{:.1}", c.mean_coverage), c.callable_bases.to_string()),
+                            None => ("–".to_string(), "–".to_string()),
+                        };
+                        let row = egui::Frame::group(ui.style())
+                            .fill(if asel { ACCENT.gamma_multiply(0.14) } else { ui.visuals().widgets.noninteractive.bg_fill })
+                            .rounding(egui::Rounding::same(6.0))
+                            .inner_margin(egui::Margin::symmetric(10.0, 8.0))
+                            .show(ui, |ui| {
+                                ui.horizontal(|ui| {
+                                    ui.label(egui::RichText::new(&a.reference_build).color(ACCENT).strong());
+                                    ui.label(egui::RichText::new(if a.bam_path.is_some() { a.aligner.as_str() } else { "Unknown" }).weak());
+                                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                        ui.label(egui::RichText::new(format!("Callable: {call_s}")).weak().small());
+                                        ui.add_space(10.0);
+                                        ui.label(egui::RichText::new(format!("Coverage: {cov_s}")).weak().small());
+                                    });
+                                });
+                            })
+                            .response;
+                        if row.interact(egui::Sense::click()).clicked() {
+                            pick_aln = Some(a.id);
+                        }
+                    }
+                    ui.add_space(4.0);
+                    self.add_alignment_form(ui, r.id);
+                });
+            }
+            ui.add_space(6.0);
         }
 
-        ui.add_space(6.0);
+        if let Some(id) = pick_run {
+            self.select_run(id);
+        }
+        if let Some(id) = pick_aln {
+            self.select_alignment(id);
+        }
+        self.add_test_form(ui, guid);
+    }
+
+    /// The "Add test" (sequencing run) form.
+    fn add_test_form(&mut self, ui: &mut egui::Ui, guid: SampleGuid) {
         ui.collapsing("Add test", |ui| {
             ui.horizontal(|ui| {
                 ui.label("Test type:");
@@ -2171,32 +2307,12 @@ impl NavigatorApp {
                     mean_insert_size: None,
                 }));
                 self.forms.run_platform.clear();
-                // keep the selected test type for adding several of the same kind
             }
         });
     }
 
-    fn alignments_section(&mut self, ui: &mut egui::Ui) {
-        let run_id = self.selected_run.unwrap();
-        ui.add_space(12.0);
-        ui.separator();
-        ui.heading("Alignments");
-        if self.alignments.is_empty() {
-            ui.label("No alignments yet.");
-        }
-        let mut pick = None;
-        for a in &self.alignments {
-            let files = if a.bam_path.is_some() { "" } else { "  (no files)" };
-            let label = format!("#{}  {} · {}{}", a.id, a.reference_build, a.aligner, files);
-            if ui.selectable_label(self.selected_alignment == Some(a.id), label).clicked() {
-                pick = Some(a.id);
-            }
-        }
-        if let Some(id) = pick {
-            self.select_alignment(id);
-        }
-
-        ui.add_space(6.0);
+    /// The "Add alignment" form for a run.
+    fn add_alignment_form(&mut self, ui: &mut egui::Ui, run_id: i64) {
         ui.collapsing("Add alignment", |ui| {
             ui.add(egui::TextEdit::singleline(&mut self.forms.aln_reference_build).hint_text("reference build (e.g. chm13v2.0)"));
             ui.add(egui::TextEdit::singleline(&mut self.forms.aln_aligner).hint_text("aligner (e.g. bwa-mem)"));
