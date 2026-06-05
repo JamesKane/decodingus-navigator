@@ -87,9 +87,11 @@ pub use navigator_analysis::ibd::{
 };
 // Sync/publish types the command API uses, re-exported so the UI depends only on navigator-app.
 pub use navigator_sync::{
-    CoverageSummaryRecord, PdsClient, PrivateVariantsRecord, RecordRef, VariantCallEntry,
-    COVERAGE_SUMMARY_COLLECTION, PRIVATE_VARIANTS_COLLECTION,
+    AlignmentRecord, BiosampleRecord, PdsClient, PopulationBreakdownRecord, PrivateVariantsRecord,
+    RecordRef, SequenceRunRecord, VariantCallEntry, NS_ALIGNMENT, NS_BIOSAMPLE,
+    NS_POPULATION_BREAKDOWN, NS_SEQUENCERUN, PRIVATE_VARIANTS_COLLECTION,
 };
+use navigator_sync::{FedPopulationComponent, FedSuperPopulationSummary};
 use navigator_sync::{dev_http_client, login_default, AsyncSync, OAuthConfig, RetryPolicy, TokenStore};
 use navigator_refgenome::{cache as refgenome_cache, canonical_build, Build as ReferenceBuild, LiftedPos, ReferenceGateway};
 pub use navigator_refgenome::RefStatus;
@@ -207,6 +209,45 @@ fn ancestry_pca_path(build: ReferenceBuild) -> PathBuf {
     refgenome_cache::base_dir()
         .join("ancestry")
         .join(format!("ancestry_pca_{}.bin", build.as_str()))
+}
+
+/// Map a computed [`AncestryResult`] onto the shared federated wire record. The analysis
+/// method is derived from the estimator path: PCA-projection (phase 2) when PCA coordinates
+/// are present, else the AF-likelihood (phase 1) path.
+fn population_breakdown_record(result: &AncestryResult) -> PopulationBreakdownRecord {
+    let method = if result.pca_coordinates.is_some() { "PCA_PROJECTION_GMM" } else { "AF_LIKELIHOOD" };
+    let components = result
+        .components
+        .iter()
+        .map(|c| FedPopulationComponent {
+            population: c.population_code.clone(),
+            population_name: Some(c.population_name.clone()),
+            percentage: c.percentage.into(),
+            rank: Some(c.rank as i64),
+        })
+        .collect();
+    let super_population_summary = result
+        .super_population_summary
+        .iter()
+        .map(|s| FedSuperPopulationSummary {
+            super_population: s.super_population.clone(),
+            percentage: s.percentage.into(),
+            populations: s.populations.clone(),
+        })
+        .collect();
+    PopulationBreakdownRecord::new(
+        method,
+        result.panel_type.clone(),
+        Some(result.reference_version.clone()),
+        result.snps_analyzed as i64,
+        result.snps_with_genotype as i64,
+        result.snps_missing as i64,
+        result.confidence_level,
+        components,
+        super_population_summary,
+        result.pca_coordinates.clone(),
+        Utc::now().to_rfc3339(),
+    )
 }
 
 /// The lexicon's UPPER_SNAKE compatibility level (matches the AppView's knownValues).
@@ -703,7 +744,8 @@ impl App {
 
     // ---- publish -----------------------------------------------------------
 
-    /// Build the coverage-summary record JSON for an alignment (floats encoded as strings).
+    /// Build the alignment (coverage) record JSON for an alignment — the shared
+    /// `com.decodingus.atmosphere.alignment` contract the AppView ingests (floats as strings).
     async fn coverage_record(&self, alignment_id: i64) -> Result<serde_json::Value, AppError> {
         let cov = self
             .cached_coverage(alignment_id)
@@ -712,8 +754,9 @@ impl App {
         let aln = alignment::get(self.store.pool(), alignment_id)
             .await?
             .ok_or_else(|| AppError::Store(StoreError::NotFound(format!("alignment {alignment_id}"))))?;
-        let record = CoverageSummaryRecord::new(
+        let record = AlignmentRecord::new(
             aln.reference_build,
+            Some(aln.aligner),
             cov.mean_coverage,
             cov.median_coverage,
             cov.sd_coverage,
@@ -725,6 +768,63 @@ impl App {
             Utc::now().to_rfc3339(),
         );
         Ok(serde_json::to_value(&record)?)
+    }
+
+    /// Build the population-breakdown (ancestry) record JSON for an alignment from its
+    /// persisted estimate — the shared `com.decodingus.atmosphere.populationBreakdown`
+    /// contract the AppView ingests (floats as strings).
+    async fn ancestry_record(&self, alignment_id: i64) -> Result<serde_json::Value, AppError> {
+        let result = self
+            .ancestry_for_alignment(alignment_id)
+            .await?
+            .ok_or_else(|| AppError::Store(StoreError::NotFound(format!("ancestry for alignment {alignment_id}"))))?;
+        let record = population_breakdown_record(&result);
+        Ok(serde_json::to_value(&record)?)
+    }
+
+    /// Build the anonymized biosample record JSON — sex, center, and best-effort Y/mt
+    /// haplogroup calls. Donor identifiers / accession / description are never carried.
+    async fn biosample_record(&self, biosample_guid: SampleGuid) -> Result<serde_json::Value, AppError> {
+        let bio = biosample::get(self.store.pool(), biosample_guid)
+            .await?
+            .ok_or_else(|| AppError::Store(StoreError::NotFound(format!("biosample {biosample_guid:?}"))))?;
+        let y = self.consensus_haplogroup(biosample_guid, DnaType::Y).await?;
+        let mt = self.consensus_haplogroup(biosample_guid, DnaType::Mt).await?;
+        let runs = self.list_sequence_runs(biosample_guid).await?;
+        let record = BiosampleRecord::new(bio.sex, y, mt, bio.center_name, Utc::now().to_rfc3339())
+            .with_refs(runs.iter().map(|r| r.id.to_string()).collect(), None, None);
+        Ok(serde_json::to_value(&record)?)
+    }
+
+    /// Build a sequence-run characterization record JSON (platform/instrument/test — no files).
+    async fn sequence_run_record(&self, run: &SequenceRun) -> Result<serde_json::Value, AppError> {
+        let record = SequenceRunRecord::new(
+            None,
+            Some(run.platform_name.clone()),
+            run.instrument_model.clone(),
+            None,
+            Some(run.test_type.clone()),
+            run.library_layout.clone(),
+            run.total_reads,
+            run.mean_read_length.map(|l| l.round() as i32),
+            run.mean_insert_size,
+            Utc::now().to_rfc3339(),
+        );
+        Ok(serde_json::to_value(&record)?)
+    }
+
+    /// Best-effort consensus haplogroup for a subject arm: the manual override if set,
+    /// else the first recorded per-source call. `None` when nothing has been called.
+    async fn consensus_haplogroup(
+        &self,
+        biosample_guid: SampleGuid,
+        dna_type: DnaType,
+    ) -> Result<Option<String>, AppError> {
+        if let Some((hg, _)) = recon_store::get_override(self.store.pool(), biosample_guid, dna_type).await? {
+            return Ok(Some(hg));
+        }
+        let calls = haplogroup_call::list_for(self.store.pool(), biosample_guid, dna_type).await?;
+        Ok(reconciliation::reconcile(&calls).map(|c| c.haplogroup))
     }
 
     /// Build the private-variants record JSON for an alignment's cached de-novo calls.
@@ -749,7 +849,38 @@ impl App {
         alignment_id: i64,
     ) -> Result<RecordRef, AppError> {
         let value = self.coverage_record(alignment_id).await?;
-        Ok(client.create_record(COVERAGE_SUMMARY_COLLECTION, value, None).await?)
+        Ok(client.create_record(NS_ALIGNMENT, value, None).await?)
+    }
+
+    /// Publish an alignment's ancestry (population-breakdown) estimate using an explicit
+    /// `client` (the testable core; production callers use [`publish_ancestry`](Self::publish_ancestry)).
+    pub async fn publish_ancestry_with(
+        &self,
+        client: &PdsClient,
+        alignment_id: i64,
+    ) -> Result<RecordRef, AppError> {
+        let value = self.ancestry_record(alignment_id).await?;
+        Ok(client.create_record(NS_POPULATION_BREAKDOWN, value, None).await?)
+    }
+
+    /// Publish the anonymized biosample summary using an explicit `client`.
+    pub async fn publish_biosample_with(
+        &self,
+        client: &PdsClient,
+        biosample_guid: SampleGuid,
+    ) -> Result<RecordRef, AppError> {
+        let value = self.biosample_record(biosample_guid).await?;
+        Ok(client.create_record(NS_BIOSAMPLE, value, None).await?)
+    }
+
+    /// Publish a sequence-run characterization using an explicit `client`.
+    pub async fn publish_sequence_run_with(
+        &self,
+        client: &PdsClient,
+        run: &SequenceRun,
+    ) -> Result<RecordRef, AppError> {
+        let value = self.sequence_run_record(run).await?;
+        Ok(client.create_record(NS_SEQUENCERUN, value, None).await?)
     }
 
     /// Publish an alignment's cached de-novo calls for `contig` using an explicit `client`
@@ -819,7 +950,29 @@ impl App {
     pub async fn publish_coverage(&self, alignment_id: i64) -> Result<RecordRef, AppError> {
         let mut engine = self.sync_engine()?; // auth check before touching the DB
         let value = self.coverage_record(alignment_id).await?;
-        Ok(engine.push_create(COVERAGE_SUMMARY_COLLECTION, value).await?)
+        Ok(engine.push_create(NS_ALIGNMENT, value).await?)
+    }
+
+    /// Publish the alignment's ancestry estimate to the signed-in account's PDS. This is the
+    /// researcher opt-in act for the ancestry section — anonymized population proportions only.
+    pub async fn publish_ancestry(&self, alignment_id: i64) -> Result<RecordRef, AppError> {
+        let mut engine = self.sync_engine()?; // auth check before touching the DB
+        let value = self.ancestry_record(alignment_id).await?;
+        Ok(engine.push_create(NS_POPULATION_BREAKDOWN, value).await?)
+    }
+
+    /// Publish the anonymized biosample summary to the signed-in account's PDS.
+    pub async fn publish_biosample(&self, biosample_guid: SampleGuid) -> Result<RecordRef, AppError> {
+        let mut engine = self.sync_engine()?; // auth check before touching the DB
+        let value = self.biosample_record(biosample_guid).await?;
+        Ok(engine.push_create(NS_BIOSAMPLE, value).await?)
+    }
+
+    /// Publish a sequence-run characterization to the signed-in account's PDS.
+    pub async fn publish_sequence_run(&self, run: &SequenceRun) -> Result<RecordRef, AppError> {
+        let mut engine = self.sync_engine()?; // auth check before touching the DB
+        let value = self.sequence_run_record(run).await?;
+        Ok(engine.push_create(NS_SEQUENCERUN, value).await?)
     }
 
     /// Publish the alignment's de-novo calls for `contig` to the signed-in account's PDS.

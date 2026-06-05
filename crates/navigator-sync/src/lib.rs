@@ -17,10 +17,20 @@ pub use oauth::{login, login_default, refresh, OAuthConfig};
 pub use publish::{dev_http_client, PdsClient, RecordRef};
 pub use sync::{AsyncSync, RetryPolicy};
 pub use records::{
-    AuditEntryRecord, CoverageSummaryRecord, HaplogroupReconciliationRecord,
-    HeteroplasmyObservationRecord, IdentityVerificationRecord, ManualOverrideRecord,
-    PrivateVariantsRecord, RecordMeta, ReconciliationStatusRecord, RunHaplogroupCallRecord,
-    VariantCallEntry, COVERAGE_SUMMARY_COLLECTION, HAPLOGROUP_RECONCILIATION_COLLECTION,
-    PRIVATE_VARIANTS_COLLECTION,
+    AuditEntryRecord, HaplogroupReconciliationRecord, HeteroplasmyObservationRecord,
+    IdentityVerificationRecord, ManualOverrideRecord, PrivateVariantsRecord, RecordMeta,
+    ReconciliationStatusRecord, RunHaplogroupCallRecord, VariantCallEntry,
+    HAPLOGROUP_RECONCILIATION_COLLECTION, PRIVATE_VARIANTS_COLLECTION,
 };
 pub use tokens::{Session, TokenStore};
+
+// Federated atproto wire records — the single source of truth lives in the shared
+// `du-domain::fed` module so the AppView's Jetstream consumer cannot drift from us.
+// (Its `RecordMeta` is intentionally not re-exported to avoid colliding with the
+// reconciliation record's `RecordMeta`; `::new` builds it internally.)
+pub use du_domain::fed::{
+    AlignmentRecord, BiosampleRecord, CoverageMetrics, PopulationBreakdownRecord,
+    PopulationComponent as FedPopulationComponent, SequenceRunRecord,
+    SuperPopulationSummary as FedSuperPopulationSummary, WireF64, NS_ALIGNMENT, NS_BIOSAMPLE,
+    NS_POPULATION_BREAKDOWN, NS_SEQUENCERUN,
+};

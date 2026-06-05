@@ -255,21 +255,22 @@ mod tests {
         let jwt = acct["accessJwt"].as_str().expect("accessJwt");
 
         let client = PdsClient::bearer(http, &pds, did, jwt);
-        // Publish the real typed coverage-summary record (floats as strings — atproto
-        // DAG-CBOR rejects floats).
-        let rec = crate::records::CoverageSummaryRecord::new(
-            "chm13v2.0", 178.81, 182.0, 28.9, 1.0, 1.0, 1.0, 16569, 16292, "2026-06-02T00:00:00Z",
+        // Publish the real typed alignment (coverage) record from the shared contract
+        // (floats as strings — atproto DAG-CBOR rejects floats).
+        let rec = du_domain::fed::AlignmentRecord::new(
+            "chm13v2.0", Some("bwa-mem2".into()), 178.81, 182.0, 28.9, 1.0, 1.0, 1.0, 16569, 16292,
+            "2026-06-02T00:00:00Z",
         );
         let record = serde_json::to_value(&rec).unwrap();
         let r = client
-            .create_record(crate::records::COVERAGE_SUMMARY_COLLECTION, record, None)
+            .create_record(du_domain::fed::NS_ALIGNMENT, record, None)
             .await
             .expect("createRecord");
         assert!(r.uri.starts_with("at://"), "uri: {}", r.uri);
 
-        let got = client.get_record(crate::records::COVERAGE_SUMMARY_COLLECTION, r.rkey()).await.expect("getRecord");
-        assert_eq!(got["value"]["meanCoverage"], "178.81");
-        assert_eq!(got["value"]["callableBases"], 16292);
+        let got = client.get_record(du_domain::fed::NS_ALIGNMENT, r.rkey()).await.expect("getRecord");
+        assert_eq!(got["value"]["metrics"]["meanCoverage"], "178.81");
+        assert_eq!(got["value"]["metrics"]["callableBases"], 16292);
         assert_eq!(got["value"]["referenceBuild"], "chm13v2.0");
         eprintln!("✓ wrote + read {}", r.uri);
     }

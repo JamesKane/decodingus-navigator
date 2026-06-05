@@ -9,6 +9,7 @@ license.workspace = true
 # OAuth (public/native client) reuses du-atproto. Implemented in phase 6.
 [dependencies]
 navigator-domain = { workspace = true }
+du-domain = { workspace = true }
 du-atproto = { workspace = true }
 thiserror = { workspace = true }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }

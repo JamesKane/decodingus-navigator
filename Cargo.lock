@@ -2921,6 +2921,7 @@ name = "navigator-sync"
 version = "0.1.0"
 dependencies = [
  "du-atproto",
+ "du-domain",
  "keyring",
  "navigator-domain",
  "reqwest",
