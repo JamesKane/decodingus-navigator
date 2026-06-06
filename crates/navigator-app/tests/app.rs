@@ -540,10 +540,17 @@ async fn add_data_detects_and_routes() {
     assert_eq!(app.add_data(subject.guid, &chip_path).await.unwrap(), DetectedData::ChipData);
     assert_eq!(app.list_chip_profiles(subject.guid).await.unwrap().len(), 1);
 
-    // A BAM is rejected (it belongs to a sequencing test).
+    // A BAM/CRAM auto-imports: it creates a sequencing run + alignment (header probed
+    // best-effort; here the bytes aren't a real BAM so detection falls back to defaults).
     let bam = dir.join(format!("data-{}.bam", subject.guid.0));
     std::fs::write(&bam, b"\x1f\x8b").unwrap();
-    assert!(matches!(app.add_data(subject.guid, &bam).await, Err(AppError::Import(_))));
+    assert_eq!(app.add_data(subject.guid, &bam).await.unwrap(), DetectedData::Alignment);
+    let runs = app.list_sequence_runs(subject.guid).await.unwrap();
+    assert_eq!(runs.len(), 1);
+    assert_eq!(app.list_alignments(runs[0].id).await.unwrap().len(), 1);
+    // Idempotent: re-adding the same path doesn't duplicate the run/alignment.
+    assert_eq!(app.add_data(subject.guid, &bam).await.unwrap(), DetectedData::Alignment);
+    assert_eq!(app.list_sequence_runs(subject.guid).await.unwrap().len(), 1);
 
     for p in [str_path, chip_path, bam] {
         let _ = std::fs::remove_file(p);

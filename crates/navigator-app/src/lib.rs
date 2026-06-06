@@ -649,6 +649,21 @@ impl App {
         .await
         .map_err(|e| AppError::Join(e.to_string()))??;
         self.save_analysis(alignment_id, "sex", "1", &result).await?;
+
+        // Write the inferred sex back to the biosample when the user didn't provide one, so it
+        // shows in the subjects table + header instead of "Unknown".
+        let label = match result.inferred_sex {
+            InferredSex::Male => Some("Male"),
+            InferredSex::Female => Some("Female"),
+            InferredSex::Unknown => None,
+        };
+        if let (Some(label), Ok(guid)) = (label, self.biosample_of_alignment(alignment_id).await) {
+            if let Ok(Some(bio)) = biosample::get(self.store.pool(), guid).await {
+                if bio.sex.as_deref().map(str::trim).unwrap_or("").is_empty() {
+                    biosample::set_sex(self.store.pool(), guid, label).await?;
+                }
+            }
+        }
         Ok(result)
     }
 
@@ -756,15 +771,24 @@ impl App {
     }
 
     /// Run de-novo calling on `contig` using the alignment's own stored paths.
-    pub async fn run_denovo_for_alignment(&self, alignment_id: i64, contig: String) -> Result<Vec<VariantCall>, AppError> {
+    /// The alignment's BAM + a usable reference FASTA: the stored path, else resolved from the
+    /// alignment's build via the gateway (cached, else downloaded). Errors only if no BAM is
+    /// recorded. Use this in steps that *require* the reference, so the user never has to supply
+    /// one (it follows from the header-detected build).
+    async fn alignment_bam_reference(&self, alignment_id: i64) -> Result<(PathBuf, PathBuf), AppError> {
         let aln = alignment::get(self.store.pool(), alignment_id)
             .await?
             .ok_or_else(|| AppError::Store(StoreError::NotFound(format!("alignment {alignment_id}"))))?;
-        let (Some(bam), Some(reference)) = (aln.bam_path, aln.reference_path) else {
-            return Err(AppError::MissingPaths(alignment_id));
+        let bam = PathBuf::from(aln.bam_path.ok_or(AppError::MissingPaths(alignment_id))?);
+        let reference = match aln.reference_path {
+            Some(p) => PathBuf::from(p),
+            None => self.gateway.resolve_reference(&aln.reference_build, &mut |_, _| {}).await?,
         };
-        let bam = PathBuf::from(bam);
-        let reference = PathBuf::from(reference);
+        Ok((bam, reference))
+    }
+
+    pub async fn run_denovo_for_alignment(&self, alignment_id: i64, contig: String) -> Result<Vec<VariantCall>, AppError> {
+        let (bam, reference) = self.alignment_bam_reference(alignment_id).await?;
         let probe = bam.clone();
         let probe_ref = reference.clone();
         let params = tokio::task::spawn_blocking(move || adaptive_haploid_params(&probe, Some(&probe_ref)))
@@ -2095,6 +2119,15 @@ impl App {
     /// asked. The reference FASTA is **not** required — it's resolved from the build on demand;
     /// if already cached it's stored so every analysis step has it immediately.
     async fn import_alignment_file(&self, biosample_guid: SampleGuid, path: &Path) -> Result<(), AppError> {
+        // Idempotent: skip if this exact BAM/CRAM is already recorded as an alignment.
+        let path_str = path.to_string_lossy().into_owned();
+        if alignment::list_all(self.store.pool())
+            .await?
+            .iter()
+            .any(|a| a.bam_path.as_deref() == Some(path_str.as_str()))
+        {
+            return Ok(());
+        }
         // Best-effort: a probe failure falls back to filename/defaults rather than aborting.
         let probe = self.probe_alignment(path.to_path_buf()).await.unwrap_or_default();
 

@@ -63,6 +63,16 @@ pub async fn get(pool: &SqlitePool, guid: SampleGuid) -> Result<Option<Biosample
     row.map(Row::into_domain).transpose()
 }
 
+/// Set the biosample's recorded sex (e.g. write back an inferred sex when the user left it blank).
+pub async fn set_sex(pool: &SqlitePool, guid: SampleGuid, sex: &str) -> Result<(), StoreError> {
+    sqlx::query("UPDATE biosample SET sex = ? WHERE guid = ?")
+        .bind(sex)
+        .bind(guid.0.to_string())
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
 pub async fn list_for_project(pool: &SqlitePool, project_id: i64) -> Result<Vec<Biosample>, StoreError> {
     let rows: Vec<Row> = sqlx::query_as(&format!("SELECT {COLS} FROM biosample WHERE project_id = ? ORDER BY guid"))
         .bind(project_id)

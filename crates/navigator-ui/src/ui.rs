@@ -42,7 +42,6 @@ struct Forms {
     aln_reference_build: String,
     aln_aligner: String,
     aln_bam: String,
-    denovo_contig: String,
     ploidy: String,
     panel_import_name: String,
     login_handle: String,
@@ -178,7 +177,8 @@ pub struct NavigatorApp {
     running_metrics: bool,
     running_sv: bool,
     running: bool,
-    denovo: Option<Vec<DenovoCall>>,
+    /// De-novo haploid SNP calls keyed by contig (chrY on the Y-DNA tab, chrM on the mtDNA tab).
+    denovo: std::collections::HashMap<String, Vec<DenovoCall>>,
     running_denovo: bool,
     panels: Vec<PanelInfo>,
     selected_panel: Option<i64>,
@@ -754,7 +754,7 @@ impl NavigatorApp {
             running_metrics: false,
             running_sv: false,
             running: false,
-            denovo: None,
+            denovo: std::collections::HashMap::new(),
             running_denovo: false,
             panels: Vec::new(),
             selected_panel: None,
@@ -775,7 +775,6 @@ impl NavigatorApp {
             reference_progress: None,
             analyzing: false,
             forms: Forms {
-                denovo_contig: "chrM".into(),
                 ploidy: "2".into(),
                 run_test_type: "WGS".into(),
                 str_panel: "Y-37".into(),
@@ -954,6 +953,15 @@ impl NavigatorApp {
                         let _ = self.tx.send(Command::LoadProjectReport(pid));
                     }
                 }
+                Event::MtHaplogroup { assignment } => {
+                    self.status = match assignment.ranked.first() {
+                        Some(top) => format!("mtDNA haplogroup: {} (score {:.3})", top.name, top.score),
+                        None => "No mtDNA haplogroup match".into(),
+                    };
+                    if let Some(guid) = self.selected_sample {
+                        let _ = self.tx.send(Command::LoadConsensus(guid)); // the mt call was recorded
+                    }
+                }
                 Event::AncestryProgress { alignment_id, done, total } => {
                     self.ancestry_progress = Some((alignment_id, done, total));
                     self.status = format!("Genotyping ancestry panel: {done}/{total} contigs…");
@@ -1064,6 +1072,9 @@ impl NavigatorApp {
                         self.sex = result;
                     }
                     self.running_sex = false;
+                    // Sex inference may have written the sex back to the biosample — reload the
+                    // subjects list so the table + header reflect it instead of "Unknown".
+                    let _ = self.tx.send(Command::LoadAllBiosamples);
                     if let Some(pid) = self.selected_project {
                         let _ = self.tx.send(Command::LoadProjectReport(pid));
                     }
@@ -1087,8 +1098,15 @@ impl NavigatorApp {
                     }
                 }
                 Event::Denovo { alignment_id, contig, result } => {
-                    if self.selected_alignment == Some(alignment_id) && self.forms.denovo_contig == contig {
-                        self.denovo = result;
+                    if self.selected_alignment == Some(alignment_id) {
+                        match result {
+                            Some(calls) => {
+                                self.denovo.insert(contig, calls);
+                            }
+                            None => {
+                                self.denovo.remove(&contig);
+                            }
+                        }
                     }
                     self.running_denovo = false;
                 }
@@ -1216,7 +1234,7 @@ impl NavigatorApp {
         self.running_sex = false;
         self.running_metrics = false;
         self.running_sv = false;
-        self.denovo = None;
+        self.denovo.clear();
         self.panel_genotypes = None;
         self.ibd_result = None;
         self.identity = None;
@@ -1234,7 +1252,9 @@ impl NavigatorApp {
         let _ = self.tx.send(Command::LoadSv(id));
         let _ = self.tx.send(Command::LoadAncestry { alignment_id: id });
         let _ = self.tx.send(Command::LoadPcaReference { alignment_id: id });
-        let _ = self.tx.send(Command::LoadDenovo { alignment_id: id, contig: self.forms.denovo_contig.clone() });
+        // Load cached de-novo for both haploid contigs (Y-DNA + mtDNA tabs).
+        let _ = self.tx.send(Command::LoadDenovo { alignment_id: id, contig: "chrY".into() });
+        let _ = self.tx.send(Command::LoadDenovo { alignment_id: id, contig: "chrM".into() });
         if let Some(panel_id) = self.selected_panel {
             let _ = self.tx.send(Command::LoadPanelGenotypes { alignment_id: id, panel_id, ploidy: self.ploidy() });
         }
@@ -1410,7 +1430,7 @@ impl NavigatorApp {
                     if let Some(id) = self.selected_alignment {
                         card(ui, "Y haplogroup", |ui| self.y_haplogroup_section(ui, id));
                         ui.add_space(10.0);
-                        card(ui, "De-novo SNP calls (haploid)", |ui| self.denovo_section(ui, id));
+                        card(ui, "Y de-novo SNP calls (chrY)", |ui| self.denovo_section(ui, id, "chrY"));
                         ui.add_space(10.0);
                     } else {
                         pick_alignment_hint(ui);
@@ -1419,8 +1439,15 @@ impl NavigatorApp {
                     card(ui, "SNP variants", |ui| self.variants_section(ui, guid));
                 }
                 DetailTab::MtDna => {
+                    // mtDNA haplogroup from the analysis (donor consensus), when assigned.
+                    if self.consensus_mt.is_some() {
+                        card(ui, "mtDNA haplogroup", |ui| self.consensus_block(ui, "mtDNA", DnaType::Mt));
+                        ui.add_space(10.0);
+                    }
                     card(ui, "mtDNA sequences", |ui| self.mtdna_section(ui, guid));
                     if let Some(id) = self.selected_alignment {
+                        ui.add_space(10.0);
+                        card(ui, "mtDNA de-novo SNP calls (chrM)", |ui| self.denovo_section(ui, id, "chrM"));
                         ui.add_space(10.0);
                         card(ui, "mtDNA heteroplasmy", |ui| self.heteroplasmy_section(ui, id));
                     }
@@ -1583,7 +1610,7 @@ impl NavigatorApp {
     fn start_full_analysis(&mut self, alignment_id: i64) {
         self.analysis = Some(AnalysisModal {
             step: 1,
-            total: 7,
+            total: 8,
             label: "Starting".into(),
             detail: "preparing pipeline".into(),
             fraction: 0.0,
@@ -1785,11 +1812,21 @@ impl NavigatorApp {
                     }
                 }
                 shown += 1;
+                // Y/mt haplogroups are only loaded for the selected subject (consensus_* state),
+                // so fill them in for that row; others stay "-" until selected/analyzed.
+                let (y, mt) = if self.selected_sample == Some(s.guid) {
+                    (
+                        self.consensus_y.as_ref().map(|c| c.haplogroup.clone()).unwrap_or_else(|| "-".into()),
+                        self.consensus_mt.as_ref().map(|c| c.haplogroup.clone()).unwrap_or_else(|| "-".into()),
+                    )
+                } else {
+                    ("-".into(), "-".into())
+                };
                 let cells = [
                     short_guid(s),
                     s.donor_identifier.clone(),
-                    "-".to_string(),
-                    "-".to_string(),
+                    y,
+                    mt,
                     s.sex.clone().unwrap_or_else(|| "-".into()),
                     s.center_name.clone().unwrap_or_else(|| "-".into()),
                     "Pending".to_string(),
@@ -3186,36 +3223,35 @@ impl NavigatorApp {
         }
     }
 
-    fn denovo_section(&mut self, ui: &mut egui::Ui, alignment_id: i64) {
-        let has_paths = self
+    /// De-novo haploid SNP calls for a specific `contig` (chrY on the Y-DNA tab, chrM on mtDNA).
+    fn denovo_section(&mut self, ui: &mut egui::Ui, alignment_id: i64, contig: &str) {
+        // Reference is resolved from the build on demand, so only the BAM is required.
+        let has_bam = self
             .alignments
             .iter()
             .find(|a| a.id == alignment_id)
-            .map(|a| a.bam_path.is_some() && a.reference_path.is_some())
+            .map(|a| a.bam_path.is_some())
             .unwrap_or(false);
 
         ui.horizontal(|ui| {
-            ui.label("Contig:");
-            ui.add(egui::TextEdit::singleline(&mut self.forms.denovo_contig).desired_width(80.0));
-            let contig = self.forms.denovo_contig.trim().to_string();
-            let ready = has_paths && !self.running_denovo && !contig.is_empty();
-            if ui.add_enabled(ready, egui::Button::new("Run de-novo")).clicked() {
+            let ready = has_bam && !self.running_denovo;
+            if ui.add_enabled(ready, egui::Button::new(format!("Run de-novo ({contig})"))).clicked() {
                 self.running_denovo = true;
-                self.denovo = None;
+                self.denovo.remove(contig);
                 self.status = format!("Calling {contig} on alignment #{alignment_id}…");
-                let _ = self.tx.send(Command::RunDenovo { alignment_id, contig });
+                let _ = self.tx.send(Command::RunDenovo { alignment_id, contig: contig.to_string() });
             }
             if self.running_denovo {
                 ui.spinner();
             }
-            if !has_paths {
-                ui.label("(no BAM/reference path recorded)");
+            if !has_bam {
+                ui.label(egui::RichText::new("(no BAM/CRAM recorded)").weak());
             }
         });
 
-        match &self.denovo {
+        match self.denovo.get(contig) {
             None if !self.running_denovo => {
-                ui.label("No calls yet — run for the contig above.");
+                ui.label(egui::RichText::new("No calls yet — run for this contig.").weak());
             }
             None => {}
             Some(calls) if calls.is_empty() => {
@@ -3223,7 +3259,7 @@ impl NavigatorApp {
             }
             Some(calls) => {
                 ui.label(format!("{} SNP call(s)", calls.len()));
-                egui::Grid::new("denovo_calls").striped(true).num_columns(4).show(ui, |ui| {
+                egui::Grid::new(("denovo_calls", contig)).striped(true).num_columns(4).show(ui, |ui| {
                     ui.strong("Position");
                     ui.strong("Change");
                     ui.strong("Depth");
@@ -3240,10 +3276,8 @@ impl NavigatorApp {
             }
         }
 
-        let has_calls = self.denovo.as_ref().map(|c| !c.is_empty()).unwrap_or(false);
-        let contig = self.forms.denovo_contig.trim().to_string();
-        if has_calls && !contig.is_empty() {
-            self.publish_row(ui, "Publish variants to PDS", Command::PublishVariants { alignment_id, contig });
+        if self.denovo.get(contig).map(|c| !c.is_empty()).unwrap_or(false) {
+            self.publish_row(ui, "Publish variants to PDS", Command::PublishVariants { alignment_id, contig: contig.to_string() });
         }
     }
 }

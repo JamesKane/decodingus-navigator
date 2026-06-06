@@ -97,6 +97,8 @@ pub enum Command {
     AssignMtdnaHaplogroup { mtdna_id: i64 },
     /// Assign a Y haplogroup from an alignment (call chrY tree positions, rank).
     AssignYHaplogroup { alignment_id: i64 },
+    /// Assign an mtDNA haplogroup directly from an alignment's chrM (records a donor call).
+    AssignMtdnaHaplogroupFromAlignment { alignment_id: i64 },
     /// Estimate ancestry (super-population proportions) from an alignment via the AIMs panel.
     EstimateAncestry { alignment_id: i64 },
     /// Load the persisted ancestry estimate for an alignment, if any.
@@ -224,6 +226,8 @@ pub enum Event {
     Haplogroup { mtdna_id: i64, assignment: HaploAssignment },
     /// Y haplogroup assignment for an alignment (ranked + terminal evidence).
     YHaplogroup { alignment_id: i64, assignment: HaploAssignment },
+    /// mtDNA haplogroup assignment from an alignment (records a donor call → reload consensus).
+    MtHaplogroup { assignment: HaploAssignment },
     /// Progress of an ancestry genotyping pass: `done`/`total` contigs scanned.
     AncestryProgress { alignment_id: i64, done: usize, total: usize },
     /// Ancestry estimate for an alignment (`None` = not yet computed, for `LoadAncestry`).
@@ -405,6 +409,12 @@ pub async fn handle(app: &App, cmd: Command) -> Event {
             Ok(assignment) => Event::YHaplogroup { alignment_id, assignment },
             Err(e) => Event::Error(e.to_string()),
         },
+        Command::AssignMtdnaHaplogroupFromAlignment { alignment_id } => {
+            match app.assign_mtdna_haplogroup_from_alignment(alignment_id).await {
+                Ok(assignment) => Event::MtHaplogroup { assignment },
+                Err(e) => Event::Error(e.to_string()),
+            }
+        }
         // EstimateAncestry is handled in the spawn loop (it streams AncestryProgress); reaching
         // here would mean a routing bug.
         Command::EstimateAncestry { alignment_id } => {
@@ -674,7 +684,7 @@ async fn run_full_analysis_streaming<W: Fn() + Send + Sync + 'static>(
     wake: Arc<W>,
 ) {
     cancel.store(false, Ordering::Relaxed);
-    let total = 7; // coverage + the 5 command steps + ancestry
+    let total = 8; // coverage + 6 command steps + ancestry
 
     // Step 1: coverage — the slow whole-genome pass. Stream per-contig sub-progress so the bar
     // advances chromosome by chromosome instead of sitting at 0% for minutes.
@@ -710,19 +720,21 @@ async fn run_full_analysis_streaming<W: Fn() + Send + Sync + 'static>(
         wake();
     }
 
-    // Steps 2–6: the cheaper command-driven steps (run via `handle`, which forwards their events).
-    let steps: [(&str, &str); 5] = [
+    // Steps 2–7: the cheaper command-driven steps (run via `handle`, which forwards their events).
+    // Some steps run more than one command (variant calling does chrM + chrY de-novo).
+    let steps: [(&str, &str); 6] = [
         ("Sex inference", "chrX:autosome ratio"),
         ("Read metrics", "alignment QC"),
         ("Structural variants", "CNV + discordant pairs (needs ≥10×)"),
-        ("Variant calling", "calling variants on chrM (ploidy=2)"),
+        ("Variant calling", "chrM + chrY de-novo (haploid)"),
         ("Y haplogroup", "placing on the Y tree"),
+        ("mtDNA haplogroup", "placing on the mt tree"),
     ];
     for (i, (label, detail)) in steps.iter().enumerate() {
         if cancel.load(Ordering::Relaxed) {
             break;
         }
-        let step = i + 2; // steps 2..=6
+        let step = i + 2; // steps 2..=7
         let _ = evt_tx.send(Event::AnalysisProgress {
             step,
             total,
@@ -731,16 +743,22 @@ async fn run_full_analysis_streaming<W: Fn() + Send + Sync + 'static>(
             fraction: (step as f32 - 1.0) / total as f32,
         });
         wake();
-        let cmd = match i {
-            0 => Command::RunSex(alignment_id),
-            1 => Command::RunReadMetrics(alignment_id),
-            2 => Command::RunSv(alignment_id),
-            3 => Command::RunDenovo { alignment_id, contig: "chrM".into() },
-            _ => Command::AssignYHaplogroup { alignment_id },
+        let cmds: Vec<Command> = match i {
+            0 => vec![Command::RunSex(alignment_id)],
+            1 => vec![Command::RunReadMetrics(alignment_id)],
+            2 => vec![Command::RunSv(alignment_id)],
+            3 => vec![
+                Command::RunDenovo { alignment_id, contig: "chrM".into() },
+                Command::RunDenovo { alignment_id, contig: "chrY".into() },
+            ],
+            4 => vec![Command::AssignYHaplogroup { alignment_id }],
+            _ => vec![Command::AssignMtdnaHaplogroupFromAlignment { alignment_id }],
         };
-        let ev = handle(app, cmd).await; // runs to completion, then we may cancel before the next
-        let _ = evt_tx.send(ev);
-        wake();
+        for cmd in cmds {
+            let ev = handle(app, cmd).await; // runs to completion; we may cancel before the next step
+            let _ = evt_tx.send(ev);
+            wake();
+        }
     }
 
     // Final step: ancestry (run directly — EstimateAncestry's command path streams separately).

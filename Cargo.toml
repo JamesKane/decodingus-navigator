@@ -5,6 +5,8 @@
 [workspace]
 resolver = "2"
 members = ["crates/*"]
+# `crates/*` globs any dir; exclude non-crate dirs (e.g. a stray .claude settings dir).
+exclude = ["crates/.claude"]
 
 [workspace.package]
 version = "0.1.0"
