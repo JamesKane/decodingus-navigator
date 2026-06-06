@@ -99,6 +99,8 @@ struct AnalysisModal {
     label: String,
     detail: String,
     fraction: f32,
+    /// egui time (seconds) when this step began — for the elapsed-time display.
+    started: f64,
 }
 
 pub struct NavigatorApp {
@@ -106,6 +108,8 @@ pub struct NavigatorApp {
     rx: Receiver<Event>,
     /// In-flight full-analysis progress (Some ⇒ the modal dialog is shown).
     analysis: Option<AnalysisModal>,
+    /// Current frame's egui time (seconds), captured at the top of `update`.
+    frame_time: f64,
     /// Selected primary navigation tab.
     nav: Nav,
     /// Selected subject-detail sub-tab.
@@ -705,6 +709,7 @@ impl NavigatorApp {
             tx,
             rx,
             analysis: None,
+            frame_time: 0.0,
             nav: Nav::Subjects,
             detail_tab: DetailTab::Overview,
             dark_mode: true,
@@ -1074,7 +1079,13 @@ impl NavigatorApp {
                     self.running_denovo = false;
                 }
                 Event::AnalysisProgress { step, total, label, detail, fraction } => {
-                    self.analysis = Some(AnalysisModal { step, total, label, detail, fraction });
+                    // Reset the elapsed timer only when the step changes (sub-progress within a
+                    // step keeps the same start time).
+                    let started = match &self.analysis {
+                        Some(a) if a.step == step => a.started,
+                        _ => self.frame_time,
+                    };
+                    self.analysis = Some(AnalysisModal { step, total, label, detail, fraction, started });
                 }
                 Event::AnalysisDone { cancelled } => {
                     self.analysis = None;
@@ -1245,6 +1256,12 @@ impl NavigatorApp {
 
 impl eframe::App for NavigatorApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        self.frame_time = ctx.input(|i| i.time);
+        // While an analysis runs, keep repainting so the spinner/elapsed timer animate even
+        // during a long step that emits no events (e.g. whole-genome coverage).
+        if self.analysis.is_some() {
+            ctx.request_repaint_after(std::time::Duration::from_millis(120));
+        }
         self.drain_events();
         self.handle_file_drops(ctx);
         self.app_bar(ctx);
@@ -1511,18 +1528,32 @@ impl NavigatorApp {
             .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
             .show(ctx, |ui| {
                 egui::Frame::window(ui.style()).inner_margin(egui::Margin::same(18.0)).show(ui, |ui| {
-                    ui.set_width(440.0);
+                    ui.set_width(460.0);
                     ui.label(egui::RichText::new("Full Analysis").strong().size(16.0));
                     ui.separator();
                     ui.add_space(6.0);
-                    ui.label(egui::RichText::new("Analysis in progress…").weak());
+                    ui.horizontal(|ui| {
+                        ui.spinner();
+                        ui.label(egui::RichText::new("Analysis in progress…").weak());
+                        let elapsed = (self.frame_time - p.started).max(0.0) as u64;
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            ui.label(egui::RichText::new(format!("{:02}:{:02}", elapsed / 60, elapsed % 60)).weak());
+                        });
+                    });
                     ui.add_space(10.0);
                     ui.label(format!("Step {}/{}: {} — {}", p.step, p.total, p.label, p.detail));
                     ui.add_space(10.0);
                     ui.horizontal(|ui| {
-                        ui.add(egui::ProgressBar::new(p.fraction).desired_width(330.0).rounding(4.0));
+                        // `animate` shimmers the bar so a long step reads as working, not stalled.
+                        ui.add(egui::ProgressBar::new(p.fraction).desired_width(360.0).rounding(4.0).animate(true));
                         ui.label(format!("{}%", (p.fraction * 100.0).round() as i32));
                     });
+                    ui.add_space(6.0);
+                    ui.label(
+                        egui::RichText::new("Whole-genome steps (coverage) can take several minutes on a WGS BAM.")
+                            .weak()
+                            .small(),
+                    );
                     ui.add_space(12.0);
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         if ui.button("Cancel").clicked() {
@@ -1542,6 +1573,7 @@ impl NavigatorApp {
             label: "Starting".into(),
             detail: "preparing pipeline".into(),
             fraction: 0.0,
+            started: self.frame_time,
         });
         self.status = format!("Running full analysis on alignment #{alignment_id}…");
         let _ = self.tx.send(Command::RunFullAnalysis { alignment_id });

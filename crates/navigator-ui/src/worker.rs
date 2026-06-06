@@ -658,7 +658,7 @@ async fn paint_ancestry_streaming(
 /// Run the full per-alignment analysis pipeline, emitting `AnalysisProgress` before each step
 /// and forwarding each step's own result event (so the detail tabs fill in live). `cancel` is
 /// checked between steps. Per-step errors are forwarded but don't abort the pipeline (best-effort).
-async fn run_full_analysis_streaming<W: Fn() + Send + Sync>(
+async fn run_full_analysis_streaming<W: Fn() + Send + Sync + 'static>(
     app: &App,
     alignment_id: i64,
     cancel: Arc<AtomicBool>,
@@ -666,22 +666,55 @@ async fn run_full_analysis_streaming<W: Fn() + Send + Sync>(
     wake: Arc<W>,
 ) {
     cancel.store(false, Ordering::Relaxed);
-    // (label, detail) for the command-driven steps; ancestry is the final, specially-run step.
-    let steps: [(&str, &str); 6] = [
-        ("Coverage", "computing depth & callable loci"),
+    let total = 7; // coverage + the 5 command steps + ancestry
+
+    // Step 1: coverage — the slow whole-genome pass. Stream per-contig sub-progress so the bar
+    // advances chromosome by chromosome instead of sitting at 0% for minutes.
+    if !cancel.load(Ordering::Relaxed) {
+        let _ = evt_tx.send(Event::AnalysisProgress {
+            step: 1,
+            total,
+            label: "Coverage".into(),
+            detail: "scanning contigs…".into(),
+            fraction: 0.0,
+        });
+        wake();
+        let evt = evt_tx.clone();
+        let wk = wake.clone();
+        let cov = app
+            .run_coverage_for_alignment_with_progress(alignment_id, move |done, tot| {
+                let within = if tot > 0 { done as f32 / tot as f32 } else { 0.0 };
+                let _ = evt.send(Event::AnalysisProgress {
+                    step: 1,
+                    total,
+                    label: "Coverage".into(),
+                    detail: format!("contig {done}/{tot}"),
+                    fraction: within / total as f32,
+                });
+                wk();
+            })
+            .await;
+        let ev = match cov {
+            Ok(result) => Event::Coverage { alignment_id, result: Some(result) },
+            Err(e) => Event::Error(e.to_string()),
+        };
+        let _ = evt_tx.send(ev);
+        wake();
+    }
+
+    // Steps 2–6: the cheaper command-driven steps (run via `handle`, which forwards their events).
+    let steps: [(&str, &str); 5] = [
         ("Sex inference", "chrX:autosome ratio"),
         ("Read metrics", "alignment QC"),
         ("Structural variants", "CNV + discordant pairs (needs ≥10×)"),
         ("Variant calling", "calling variants on chrM (ploidy=2)"),
         ("Y haplogroup", "placing on the Y tree"),
     ];
-    let total = steps.len() + 1; // + ancestry
-
     for (i, (label, detail)) in steps.iter().enumerate() {
         if cancel.load(Ordering::Relaxed) {
             break;
         }
-        let step = i + 1;
+        let step = i + 2; // steps 2..=6
         let _ = evt_tx.send(Event::AnalysisProgress {
             step,
             total,
@@ -691,11 +724,10 @@ async fn run_full_analysis_streaming<W: Fn() + Send + Sync>(
         });
         wake();
         let cmd = match i {
-            0 => Command::RunCoverage(alignment_id),
-            1 => Command::RunSex(alignment_id),
-            2 => Command::RunReadMetrics(alignment_id),
-            3 => Command::RunSv(alignment_id),
-            4 => Command::RunDenovo { alignment_id, contig: "chrM".into() },
+            0 => Command::RunSex(alignment_id),
+            1 => Command::RunReadMetrics(alignment_id),
+            2 => Command::RunSv(alignment_id),
+            3 => Command::RunDenovo { alignment_id, contig: "chrM".into() },
             _ => Command::AssignYHaplogroup { alignment_id },
         };
         let ev = handle(app, cmd).await; // runs to completion, then we may cancel before the next

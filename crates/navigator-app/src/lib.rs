@@ -605,20 +605,34 @@ impl App {
     /// Run coverage using the alignment's own stored BAM/reference paths, then persist.
     /// Errors if the alignment is unknown or has no paths recorded.
     pub async fn run_coverage_for_alignment(&self, alignment_id: i64) -> Result<CoverageResult, AppError> {
+        self.run_coverage_for_alignment_with_progress(alignment_id, |_, _| {}).await
+    }
+
+    /// Like [`run_coverage_for_alignment`], reporting `progress(contigs_done, contigs_total)` as
+    /// the whole-genome pass walks each contig (the slow step — minutes on a real WGS BAM — so a
+    /// progress bar can advance instead of sitting frozen). The callback runs on the blocking
+    /// thread.
+    pub async fn run_coverage_for_alignment_with_progress(
+        &self,
+        alignment_id: i64,
+        mut progress: impl FnMut(usize, usize) + Send + 'static,
+    ) -> Result<CoverageResult, AppError> {
         let aln = alignment::get(self.store.pool(), alignment_id)
             .await?
             .ok_or_else(|| AppError::Store(StoreError::NotFound(format!("alignment {alignment_id}"))))?;
         let (Some(bam), Some(reference)) = (aln.bam_path, aln.reference_path) else {
             return Err(AppError::MissingPaths(alignment_id));
         };
-        self.run_coverage(
-            alignment_id,
-            PathBuf::from(bam),
-            PathBuf::from(reference),
-            None,
-            CallableLociParams::default(),
-        )
+        let bam = PathBuf::from(bam);
+        let reference = PathBuf::from(reference);
+        let params = CallableLociParams::default();
+        let result = tokio::task::spawn_blocking(move || {
+            coverage::collect_coverage_callable_with_progress(&bam, &reference, &params, None, &mut progress)
+        })
         .await
+        .map_err(|e| AppError::Join(e.to_string()))??;
+        self.save_analysis(alignment_id, "coverage", coverage::COVERAGE_VERSION, &result).await?;
+        Ok(result)
     }
 
     /// Infer biological sex from the alignment's chrX:autosome read-density ratio, persisting

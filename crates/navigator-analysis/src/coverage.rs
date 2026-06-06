@@ -277,6 +277,19 @@ pub fn collect_coverage_callable(
     params: &CallableLociParams,
     contig_allowlist: Option<&HashSet<String>>,
 ) -> Result<CoverageResult, AnalysisError> {
+    collect_coverage_callable_with_progress(bam_path, reference_path, params, contig_allowlist, &mut |_, _| {})
+}
+
+/// Like [`collect_coverage_callable`], reporting `progress(contigs_done, contigs_total)` as each
+/// tracked contig is finalized — so a whole-genome pass (minutes on a real WGS BAM) can drive a
+/// progress bar instead of looking stalled. Assumes a coordinate-sorted BAM (contigs in order).
+pub fn collect_coverage_callable_with_progress(
+    bam_path: &Path,
+    reference_path: &Path,
+    params: &CallableLociParams,
+    contig_allowlist: Option<&HashSet<String>>,
+    progress: &mut dyn FnMut(usize, usize),
+) -> Result<CoverageResult, AnalysisError> {
     let (header, mut reader) = reader::open_seq(bam_path, Some(reference_path))?;
 
     // ref_id -> (name, length) for tracked (main-assembly, allowlisted) contigs.
@@ -290,6 +303,11 @@ pub fn collect_coverage_callable(
             keep.then(|| (name, map.length().get()))
         })
         .collect();
+
+    // Total contigs we'll walk, for the progress denominator.
+    let total_tracked = tracked.iter().filter(|o| o.is_some()).count();
+    let mut contigs_done = 0usize;
+    progress(0, total_tracked);
 
     let mut fasta_reader = fasta::io::indexed_reader::Builder::default()
         .build_from_path(reference_path)
@@ -322,6 +340,8 @@ pub fn collect_coverage_callable(
         if cur.as_ref().map(|(id, _)| *id) != Some(ref_id) {
             if let Some((id, c)) = cur.take() {
                 finished.insert(id, c.finish(params, &mut g));
+                contigs_done += 1;
+                progress(contigs_done, total_tracked);
             }
             let region: Region = name
                 .parse()
@@ -370,6 +390,8 @@ pub fn collect_coverage_callable(
     }
     if let Some((id, c)) = cur.take() {
         finished.insert(id, c.finish(params, &mut g));
+        contigs_done += 1;
+        progress(contigs_done, total_tracked);
     }
 
     // Assemble in header (ref_id) order; tracked contigs with no reads are zero-coverage.
