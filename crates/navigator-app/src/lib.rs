@@ -23,6 +23,7 @@ use navigator_store::panel;
 
 // Re-export the analysis result types the command API returns, so the UI depends only
 // on navigator-app (ui -> app), not directly on navigator-analysis.
+pub use navigator_analysis::probe::AlignmentProbe;
 pub use navigator_analysis::caller::SiteGenotype as PanelGenotype;
 pub use navigator_analysis::caller::VariantCall as DenovoCall;
 pub use navigator_analysis::coverage::CoverageResult as Coverage;
@@ -620,11 +621,13 @@ impl App {
         let aln = alignment::get(self.store.pool(), alignment_id)
             .await?
             .ok_or_else(|| AppError::Store(StoreError::NotFound(format!("alignment {alignment_id}"))))?;
-        let (Some(bam), Some(reference)) = (aln.bam_path, aln.reference_path) else {
-            return Err(AppError::MissingPaths(alignment_id));
+        let bam = PathBuf::from(aln.bam_path.ok_or(AppError::MissingPaths(alignment_id))?);
+        // The reference isn't asked for at import — resolve the alignment's build via the gateway
+        // (cached, else download) when no FASTA was stored.
+        let reference = match aln.reference_path {
+            Some(p) => PathBuf::from(p),
+            None => self.gateway.resolve_reference(&aln.reference_build, &mut |_, _| {}).await?,
         };
-        let bam = PathBuf::from(bam);
-        let reference = PathBuf::from(reference);
         let params = CallableLociParams::default();
         let result = tokio::task::spawn_blocking(move || {
             coverage::collect_coverage_callable_with_progress(&bam, &reference, &params, None, &mut progress)
@@ -2079,6 +2082,56 @@ impl App {
     /// Detect a file's type and route it to the right subject importer (STR / variants /
     /// chip / mtDNA), using sensible defaults. Returns the detected type. Alignment files
     /// are rejected here — they attach to a sequencing test, not directly to a subject.
+    /// Probe a BAM/CRAM header for the build/aligner/platform/test-type (best-effort).
+    pub async fn probe_alignment(&self, path: PathBuf) -> Result<AlignmentProbe, AppError> {
+        tokio::task::spawn_blocking(move || navigator_analysis::probe::probe_alignment(&path))
+            .await
+            .map_err(|e| AppError::Join(e.to_string()))?
+            .map_err(AppError::from)
+    }
+
+    /// Auto-import an alignment file by probing its header: create the sequencing run (test type
+    /// + platform/instrument) and the alignment (reference build + aligner) with no questions
+    /// asked. The reference FASTA is **not** required — it's resolved from the build on demand;
+    /// if already cached it's stored so every analysis step has it immediately.
+    async fn import_alignment_file(&self, biosample_guid: SampleGuid, path: &Path) -> Result<(), AppError> {
+        // Best-effort: a probe failure falls back to filename/defaults rather than aborting.
+        let probe = self.probe_alignment(path.to_path_buf()).await.unwrap_or_default();
+
+        let run = self
+            .record_sequence_run(NewSequenceRun {
+                biosample_guid,
+                platform_name: probe.platform.clone().unwrap_or_else(|| "UNKNOWN".into()),
+                instrument_model: probe.instrument_model.clone(),
+                test_type: probe.test_type.clone().unwrap_or_else(|| "WGS".into()),
+                library_layout: None,
+                total_reads: None,
+                pf_reads_aligned: None,
+                mean_read_length: None,
+                mean_insert_size: None,
+            })
+            .await?;
+
+        let reference_build = probe.reference_build.clone().unwrap_or_else(|| reference_build_for(path));
+        // Store the cached reference path if we have it; otherwise leave it unset (resolved on
+        // demand) — never block import on a download.
+        let reference_path = self
+            .gateway
+            .cached_reference(&reference_build)
+            .map(|p| p.to_string_lossy().into_owned());
+
+        self.record_alignment(NewAlignment {
+            sequence_run_id: run.id,
+            reference_build,
+            aligner: probe.aligner.clone().unwrap_or_else(|| "unknown".into()),
+            variant_caller: None,
+            bam_path: Some(path.to_string_lossy().into_owned()),
+            reference_path,
+        })
+        .await?;
+        Ok(())
+    }
+
     pub async fn add_data(&self, biosample_guid: SampleGuid, path: &Path) -> Result<DetectedData, AppError> {
         let name = path.file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
         let lower = name.to_ascii_lowercase();
@@ -2105,9 +2158,7 @@ impl App {
                 self.import_mtdna_from_fasta(biosample_guid, path).await?;
             }
             DetectedData::Alignment => {
-                return Err(AppError::Import(
-                    "alignment files attach to a sequencing test — add it under that test".into(),
-                ));
+                self.import_alignment_file(biosample_guid, path).await?;
             }
             DetectedData::Unknown => {
                 return Err(AppError::Import(format!("could not recognize the data in {name}")));

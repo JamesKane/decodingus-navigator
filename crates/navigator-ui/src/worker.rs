@@ -13,7 +13,7 @@ use std::sync::mpsc::{Receiver, Sender};
 use std::sync::Arc;
 
 use navigator_app::{
-    AncestryResult, AncestrySegment, App, AppError, AuditEntry, BuildNeed, Consensus, Coverage,
+    AlignmentProbe, AncestryResult, AncestrySegment, App, AppError, AuditEntry, BuildNeed, Consensus, Coverage,
     DenovoCall, DnaType, HaploAssignment, HeteroplasmySite, IbdComparison, IbdDetectorConfig,
     IdentityVerification, PanelGenotype, PrivateBucket, ProjectImportSummary, ProjectOverview,
     ProjectSampleReport, ReadMetrics, ReconciledVariant, SexInferenceResult, SourceType,
@@ -112,6 +112,8 @@ pub enum Command {
     AddData { biosample_guid: SampleGuid, path: PathBuf },
     LoadAlignments(i64),
     AddAlignment(NewAlignment),
+    /// Probe a BAM/CRAM header for build/aligner/platform/test-type (to auto-fill the form).
+    ProbeAlignment { path: PathBuf },
     LoadCoverage(i64),
     RunCoverage(i64),
     LoadSex(i64),
@@ -234,6 +236,8 @@ pub enum Event {
     PrivateY { alignment_id: i64, bucket: PrivateBucket },
     Alignments { sequence_run_id: i64, alignments: Vec<Alignment> },
     AlignmentsChanged(i64),
+    /// Header-probe result for the add-alignment form (build/aligner/platform/test-type).
+    AlignmentProbe(AlignmentProbe),
     Coverage { alignment_id: i64, result: Option<Coverage> },
     Sex { alignment_id: i64, result: Option<SexInferenceResult> },
     ReadMetrics { alignment_id: i64, result: Option<ReadMetrics> },
@@ -446,6 +450,10 @@ pub async fn handle(app: &App, cmd: Command) -> Event {
         },
         Command::AddAlignment(new) => match app.record_alignment(new).await {
             Ok(a) => Event::AlignmentsChanged(a.sequence_run_id),
+            Err(e) => Event::Error(e.to_string()),
+        },
+        Command::ProbeAlignment { path } => match app.probe_alignment(path).await {
+            Ok(probe) => Event::AlignmentProbe(probe),
             Err(e) => Event::Error(e.to_string()),
         },
         Command::LoadCoverage(alignment_id) => match app.cached_coverage(alignment_id).await {

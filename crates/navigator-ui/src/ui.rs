@@ -42,7 +42,6 @@ struct Forms {
     aln_reference_build: String,
     aln_aligner: String,
     aln_bam: String,
-    aln_reference: String,
     denovo_contig: String,
     ploidy: String,
     panel_import_name: String,
@@ -1017,7 +1016,9 @@ impl NavigatorApp {
                 Event::DataImported { biosample_guid, label } => {
                     self.status = format!("Imported {label}");
                     if self.selected_sample == Some(biosample_guid) {
-                        // Reload every data section — detection picked one of them.
+                        // Reload every data section — detection picked one of them (a BAM/CRAM
+                        // import auto-creates a sequencing run + alignment, so reload runs too).
+                        let _ = self.tx.send(Command::LoadRuns(biosample_guid));
                         let _ = self.tx.send(Command::LoadStrProfiles(biosample_guid));
                         let _ = self.tx.send(Command::LoadVariantSets(biosample_guid));
                         let _ = self.tx.send(Command::LoadChipProfiles(biosample_guid));
@@ -1027,6 +1028,19 @@ impl NavigatorApp {
                 Event::Alignments { sequence_run_id, alignments } => {
                     if self.selected_run == Some(sequence_run_id) {
                         self.alignments = alignments;
+                    }
+                }
+                Event::AlignmentProbe(p) => {
+                    // Auto-fill the add-alignment form from the BAM/CRAM header.
+                    if let Some(b) = p.reference_build {
+                        self.forms.aln_reference_build = b;
+                    }
+                    if let Some(a) = p.aligner {
+                        self.forms.aln_aligner = a;
+                    }
+                    let bits: Vec<String> = [p.platform, p.instrument_model, p.test_type].into_iter().flatten().collect();
+                    if !bits.is_empty() {
+                        self.status = format!("Detected from header: {}", bits.join(" · "));
                     }
                 }
                 Event::AlignmentsChanged(run_id) => {
@@ -2432,31 +2446,32 @@ impl NavigatorApp {
         });
     }
 
-    /// The "Add alignment" form for a run.
+    /// The "Add alignment" form for a run. Picking a BAM/CRAM probes its header to auto-fill the
+    /// reference build + aligner; the reference FASTA is never asked for (resolved from the build).
     fn add_alignment_form(&mut self, ui: &mut egui::Ui, run_id: i64) {
         ui.collapsing("Add alignment", |ui| {
-            ui.add(egui::TextEdit::singleline(&mut self.forms.aln_reference_build).hint_text("reference build (e.g. chm13v2.0)"));
-            ui.add(egui::TextEdit::singleline(&mut self.forms.aln_aligner).hint_text("aligner (e.g. bwa-mem)"));
             ui.horizontal(|ui| {
-                if ui.button("BAM/CRAM…").clicked() {
+                if ui.button("Pick BAM/CRAM…").clicked() {
                     if let Some(p) = rfd::FileDialog::new().add_filter("alignment", &["bam", "cram"]).pick_file() {
                         self.forms.aln_bam = p.to_string_lossy().into_owned();
+                        // Probe the header to auto-fill build + aligner.
+                        let _ = self.tx.send(Command::ProbeAlignment { path: p });
+                        self.status = "Reading header…".into();
                     }
                 }
                 ui.label(if self.forms.aln_bam.is_empty() { "—" } else { self.forms.aln_bam.as_str() });
             });
-            ui.horizontal(|ui| {
-                if ui.button("Reference…").clicked() {
-                    if let Some(p) = rfd::FileDialog::new().add_filter("fasta", &["fa", "fasta", "fna"]).pick_file() {
-                        self.forms.aln_reference = p.to_string_lossy().into_owned();
-                    }
-                }
-                ui.label(if self.forms.aln_reference.is_empty() { "—" } else { self.forms.aln_reference.as_str() });
-            });
+            ui.add(
+                egui::TextEdit::singleline(&mut self.forms.aln_reference_build)
+                    .hint_text("reference build (auto-detected; editable)"),
+            );
+            ui.add(
+                egui::TextEdit::singleline(&mut self.forms.aln_aligner).hint_text("aligner (auto-detected; editable)"),
+            );
+            ui.label(egui::RichText::new("Reference FASTA is resolved from the build automatically.").weak().small());
             let ready = !self.forms.aln_reference_build.trim().is_empty()
                 && !self.forms.aln_aligner.trim().is_empty()
-                && !self.forms.aln_bam.is_empty()
-                && !self.forms.aln_reference.is_empty();
+                && !self.forms.aln_bam.is_empty();
             if ui.add_enabled(ready, egui::Button::new("Add alignment")).clicked() {
                 let _ = self.tx.send(Command::AddAlignment(NewAlignment {
                     sequence_run_id: run_id,
@@ -2464,12 +2479,11 @@ impl NavigatorApp {
                     aligner: self.forms.aln_aligner.trim().to_string(),
                     variant_caller: None,
                     bam_path: opt(&self.forms.aln_bam),
-                    reference_path: opt(&self.forms.aln_reference),
+                    reference_path: None, // resolved on demand from the build
                 }));
                 self.forms.aln_reference_build.clear();
                 self.forms.aln_aligner.clear();
                 self.forms.aln_bam.clear();
-                self.forms.aln_reference.clear();
             }
         });
     }
