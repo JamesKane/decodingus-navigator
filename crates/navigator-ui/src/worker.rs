@@ -8,6 +8,7 @@
 //! is the thread/runtime/channel glue.
 
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, Sender};
 use std::sync::Arc;
 
@@ -153,6 +154,12 @@ pub enum Command {
         heteroplasmy: Vec<HeteroplasmySite>,
         identity: Option<IdentityVerification>,
     },
+    /// Run the full per-alignment analysis pipeline (coverage → sex → metrics → SV → variant
+    /// calling → Y haplogroup → ancestry), streaming `AnalysisProgress` per step. Each step's
+    /// own result event is forwarded too, so the detail tabs fill in as it runs.
+    RunFullAnalysis { alignment_id: i64 },
+    /// Request cancellation of the in-flight full analysis (checked between steps).
+    CancelAnalysis,
 }
 
 /// A panel with its site count, for the panel list.
@@ -232,6 +239,11 @@ pub enum Event {
     ReadMetrics { alignment_id: i64, result: Option<ReadMetrics> },
     Sv { alignment_id: i64, result: Option<SvAnalysisResult> },
     Denovo { alignment_id: i64, contig: String, result: Option<Vec<DenovoCall>> },
+    /// Full-analysis pipeline progress: starting `step` of `total` (1-based), with a `label`
+    /// + `detail` and the bar `fraction` (0..1).
+    AnalysisProgress { step: usize, total: usize, label: String, detail: String, fraction: f32 },
+    /// The full-analysis pipeline finished (or was cancelled).
+    AnalysisDone { cancelled: bool },
     Panels(Vec<PanelInfo>),
     PanelImported,
     AllAlignments(Vec<Alignment>),
@@ -407,6 +419,12 @@ pub async fn handle(app: &App, cmd: Command) -> Event {
         Command::PaintAncestry { alignment_id } => {
             Event::Error(format!("internal: unrouted PaintAncestry {alignment_id}"))
         }
+        // RunFullAnalysis streams AnalysisProgress from the spawn loop; CancelAnalysis sets the
+        // shared cancel flag there. Reaching here would mean a routing bug.
+        Command::RunFullAnalysis { alignment_id } => {
+            Event::Error(format!("internal: unrouted RunFullAnalysis {alignment_id}"))
+        }
+        Command::CancelAnalysis => Event::Error("internal: unrouted CancelAnalysis".into()),
         Command::FindPrivateY { alignment_id, mask } => {
             let result = match mask {
                 YMask::SelfReferential => app.private_y_variants_self_masked(alignment_id).await,
@@ -637,6 +655,76 @@ async fn paint_ancestry_streaming(
     wake();
 }
 
+/// Run the full per-alignment analysis pipeline, emitting `AnalysisProgress` before each step
+/// and forwarding each step's own result event (so the detail tabs fill in live). `cancel` is
+/// checked between steps. Per-step errors are forwarded but don't abort the pipeline (best-effort).
+async fn run_full_analysis_streaming<W: Fn() + Send + Sync>(
+    app: &App,
+    alignment_id: i64,
+    cancel: Arc<AtomicBool>,
+    evt_tx: &Sender<Event>,
+    wake: Arc<W>,
+) {
+    cancel.store(false, Ordering::Relaxed);
+    // (label, detail) for the command-driven steps; ancestry is the final, specially-run step.
+    let steps: [(&str, &str); 6] = [
+        ("Coverage", "computing depth & callable loci"),
+        ("Sex inference", "chrX:autosome ratio"),
+        ("Read metrics", "alignment QC"),
+        ("Structural variants", "CNV + discordant pairs (needs ≥10×)"),
+        ("Variant calling", "calling variants on chrM (ploidy=2)"),
+        ("Y haplogroup", "placing on the Y tree"),
+    ];
+    let total = steps.len() + 1; // + ancestry
+
+    for (i, (label, detail)) in steps.iter().enumerate() {
+        if cancel.load(Ordering::Relaxed) {
+            break;
+        }
+        let step = i + 1;
+        let _ = evt_tx.send(Event::AnalysisProgress {
+            step,
+            total,
+            label: (*label).to_string(),
+            detail: (*detail).to_string(),
+            fraction: (step as f32 - 1.0) / total as f32,
+        });
+        wake();
+        let cmd = match i {
+            0 => Command::RunCoverage(alignment_id),
+            1 => Command::RunSex(alignment_id),
+            2 => Command::RunReadMetrics(alignment_id),
+            3 => Command::RunSv(alignment_id),
+            4 => Command::RunDenovo { alignment_id, contig: "chrM".into() },
+            _ => Command::AssignYHaplogroup { alignment_id },
+        };
+        let ev = handle(app, cmd).await; // runs to completion, then we may cancel before the next
+        let _ = evt_tx.send(ev);
+        wake();
+    }
+
+    // Final step: ancestry (run directly — EstimateAncestry's command path streams separately).
+    if !cancel.load(Ordering::Relaxed) {
+        let _ = evt_tx.send(Event::AnalysisProgress {
+            step: total,
+            total,
+            label: "Ancestry".to_string(),
+            detail: "estimating population proportions".to_string(),
+            fraction: (total as f32 - 1.0) / total as f32,
+        });
+        wake();
+        let ev = match app.estimate_ancestry(alignment_id).await {
+            Ok(result) => Event::Ancestry { alignment_id, result: Some(result) },
+            Err(e) => Event::Error(e.to_string()),
+        };
+        let _ = evt_tx.send(ev);
+        wake();
+    }
+
+    let _ = evt_tx.send(Event::AnalysisDone { cancelled: cancel.load(Ordering::Relaxed) });
+    wake();
+}
+
 /// Spawn the worker thread: open the workspace at `db_path` inside the worker's runtime
 /// (so the connection pool lives there), then serve commands. `wake` is called after
 /// each event so the UI can `request_repaint`. Returns the command sender and event
@@ -669,10 +757,13 @@ pub fn spawn(
                         return;
                     }
                 };
+                // Shared cancel flag for the full-analysis pipeline (one runs at a time).
+                let cancel = Arc::new(AtomicBool::new(false));
                 while let Some(cmd) = cmd_rx.recv().await {
                     let app = app.clone();
                     let evt_tx: Sender<Event> = evt_tx.clone();
                     let wake = wake.clone();
+                    let cancel = cancel.clone();
                     tokio::spawn(async move {
                         match cmd {
                             // Streams ReferenceProgress events as bytes arrive, then a final event.
@@ -686,6 +777,14 @@ pub fn spawn(
                             // Streams AncestryProgress per contig, then a final AncestryPainting.
                             Command::PaintAncestry { alignment_id } => {
                                 paint_ancestry_streaming(&app, alignment_id, &evt_tx, wake.clone()).await;
+                            }
+                            // Streams AnalysisProgress per step (+ each step's result), then AnalysisDone.
+                            Command::RunFullAnalysis { alignment_id } => {
+                                run_full_analysis_streaming(&app, alignment_id, cancel, &evt_tx, wake.clone()).await;
+                            }
+                            // Signals the in-flight full analysis to stop between steps.
+                            Command::CancelAnalysis => {
+                                cancel.store(true, Ordering::Relaxed);
                             }
                             other => {
                                 let event = handle(&app, other).await;

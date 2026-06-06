@@ -91,9 +91,21 @@ impl DetailTab {
     ];
 }
 
+/// In-flight full-analysis state, driving the modal dialog.
+#[derive(Clone)]
+struct AnalysisModal {
+    step: usize,
+    total: usize,
+    label: String,
+    detail: String,
+    fraction: f32,
+}
+
 pub struct NavigatorApp {
     tx: UnboundedSender<Command>,
     rx: Receiver<Event>,
+    /// In-flight full-analysis progress (Some ⇒ the modal dialog is shown).
+    analysis: Option<AnalysisModal>,
     /// Selected primary navigation tab.
     nav: Nav,
     /// Selected subject-detail sub-tab.
@@ -692,6 +704,7 @@ impl NavigatorApp {
         NavigatorApp {
             tx,
             rx,
+            analysis: None,
             nav: Nav::Subjects,
             detail_tab: DetailTab::Overview,
             dark_mode: true,
@@ -1060,6 +1073,14 @@ impl NavigatorApp {
                     }
                     self.running_denovo = false;
                 }
+                Event::AnalysisProgress { step, total, label, detail, fraction } => {
+                    self.analysis = Some(AnalysisModal { step, total, label, detail, fraction });
+                }
+                Event::AnalysisDone { cancelled } => {
+                    self.analysis = None;
+                    self.status =
+                        if cancelled { "Full analysis cancelled.".into() } else { "Full analysis complete.".into() };
+                }
                 Event::Panels(p) => self.panels = p,
                 Event::PanelImported => {
                     self.status = "Panel imported".into();
@@ -1249,6 +1270,7 @@ impl eframe::App for NavigatorApp {
             Nav::Subjects => self.subjects_central(ui),
             Nav::Projects => self.projects_central(ui),
         });
+        self.analysis_modal(ctx);
         self.paint_drop_hint(ctx);
     }
 }
@@ -1330,6 +1352,15 @@ impl NavigatorApp {
         ui.separator();
         egui::ScrollArea::vertical().show(ui, |ui| match self.detail_tab {
             DetailTab::Overview => {
+                if let Some(id) = self.selected_alignment {
+                    if ui
+                        .add(egui::Button::new(egui::RichText::new("▶  Run Full Analysis").color(egui::Color32::WHITE)).fill(ACCENT))
+                        .clicked()
+                    {
+                        self.start_full_analysis(id);
+                    }
+                    ui.add_space(8.0);
+                }
                 self.consensus_section(ui);
                 if let Some(id) = self.selected_alignment {
                     self.coverage_section(ui, id);
@@ -1442,7 +1473,11 @@ impl NavigatorApp {
                         self.status = "Add to Project: not wired yet.".into();
                     }
                     if ui.add_enabled(selected, egui::Button::new("Batch Analyze")).clicked() {
-                        self.status = "Batch Analyze: not wired yet.".into();
+                        if let Some(id) = self.selected_alignment {
+                            self.start_full_analysis(id);
+                        } else {
+                            self.status = "Select an alignment (Data Sources) to run analysis.".into();
+                        }
                     }
                     // Compare needs a second subject (multi-select) — disabled for now.
                     let _ = ui.add_enabled(false, egui::Button::new("Compare"));
@@ -1450,6 +1485,55 @@ impl NavigatorApp {
             });
             ui.add_space(2.0);
         });
+    }
+
+    /// The "Full Analysis" progress modal: a dimmed backdrop + centered card with the current
+    /// step, a progress bar + percent, and a Cancel button. Shown while `self.analysis` is set.
+    fn analysis_modal(&mut self, ctx: &egui::Context) {
+        let Some(p) = self.analysis.clone() else { return };
+        // Dim everything behind the dialog.
+        let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("modal_dim")));
+        painter.rect_filled(ctx.screen_rect(), 0.0, egui::Color32::from_black_alpha(150));
+
+        egui::Area::new(egui::Id::new("analysis_modal"))
+            .order(egui::Order::Foreground)
+            .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+            .show(ctx, |ui| {
+                egui::Frame::window(ui.style()).inner_margin(egui::Margin::same(18.0)).show(ui, |ui| {
+                    ui.set_width(440.0);
+                    ui.label(egui::RichText::new("Full Analysis").strong().size(16.0));
+                    ui.separator();
+                    ui.add_space(6.0);
+                    ui.label(egui::RichText::new("Analysis in progress…").weak());
+                    ui.add_space(10.0);
+                    ui.label(format!("Step {}/{}: {} — {}", p.step, p.total, p.label, p.detail));
+                    ui.add_space(10.0);
+                    ui.horizontal(|ui| {
+                        ui.add(egui::ProgressBar::new(p.fraction).desired_width(330.0).rounding(4.0));
+                        ui.label(format!("{}%", (p.fraction * 100.0).round() as i32));
+                    });
+                    ui.add_space(12.0);
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui.button("Cancel").clicked() {
+                            let _ = self.tx.send(Command::CancelAnalysis);
+                            self.status = "Cancelling…".into();
+                        }
+                    });
+                });
+            });
+    }
+
+    /// Kick off the full-analysis pipeline for an alignment and show the modal immediately.
+    fn start_full_analysis(&mut self, alignment_id: i64) {
+        self.analysis = Some(AnalysisModal {
+            step: 1,
+            total: 7,
+            label: "Starting".into(),
+            detail: "preparing pipeline".into(),
+            fraction: 0.0,
+        });
+        self.status = format!("Running full analysis on alignment #{alignment_id}…");
+        let _ = self.tx.send(Command::RunFullAnalysis { alignment_id });
     }
 
     /// The top app bar: product title (left), theme toggle + account controls (right).
