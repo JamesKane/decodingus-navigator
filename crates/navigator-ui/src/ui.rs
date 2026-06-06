@@ -149,6 +149,8 @@ pub struct NavigatorApp {
     mtdna_haplogroup: Option<(i64, HaploAssignment)>,
     /// Last Y haplogroup assignment: (alignment id, assignment).
     y_haplogroup: Option<(i64, HaploAssignment)>,
+    /// Last mtDNA-from-alignment haplogroup assignment: (alignment id, assignment).
+    mt_haplogroup: Option<(i64, HaploAssignment)>,
     /// Last ancestry estimate: (alignment id, result). `None` result = computed, no estimate.
     ancestry: Option<(i64, Option<AncestryResult>)>,
     estimating_ancestry: bool,
@@ -733,6 +735,7 @@ impl NavigatorApp {
             rcrs_path: None,
             mtdna_haplogroup: None,
             y_haplogroup: None,
+            mt_haplogroup: None,
             ancestry: None,
             estimating_ancestry: false,
             ancestry_progress: None,
@@ -953,11 +956,12 @@ impl NavigatorApp {
                         let _ = self.tx.send(Command::LoadProjectReport(pid));
                     }
                 }
-                Event::MtHaplogroup { assignment } => {
+                Event::MtHaplogroup { alignment_id, assignment } => {
                     self.status = match assignment.ranked.first() {
                         Some(top) => format!("mtDNA haplogroup: {} (score {:.3})", top.name, top.score),
                         None => "No mtDNA haplogroup match".into(),
                     };
+                    self.mt_haplogroup = Some((alignment_id, assignment));
                     if let Some(guid) = self.selected_sample {
                         let _ = self.tx.send(Command::LoadConsensus(guid)); // the mt call was recorded
                     }
@@ -1239,6 +1243,7 @@ impl NavigatorApp {
         self.ibd_result = None;
         self.identity = None;
         self.y_haplogroup = None;
+        self.mt_haplogroup = None;
         self.private_y = None;
         self.ancestry = None;
         self.estimating_ancestry = false;
@@ -1439,8 +1444,12 @@ impl NavigatorApp {
                     card(ui, "SNP variants", |ui| self.variants_section(ui, guid));
                 }
                 DetailTab::MtDna => {
-                    // mtDNA haplogroup from the analysis (donor consensus), when assigned.
-                    if self.consensus_mt.is_some() {
+                    // mtDNA haplogroup: assign standalone from the selected alignment (like Y-DNA);
+                    // with no alignment selected, show the donor consensus if one was recorded.
+                    if let Some(id) = self.selected_alignment {
+                        card(ui, "mtDNA haplogroup", |ui| self.mt_haplogroup_section(ui, id));
+                        ui.add_space(10.0);
+                    } else if self.consensus_mt.is_some() {
                         card(ui, "mtDNA haplogroup", |ui| self.consensus_block(ui, "mtDNA", DnaType::Mt));
                         ui.add_space(10.0);
                     }
@@ -3219,6 +3228,31 @@ impl NavigatorApp {
                         ui.end_row();
                     }
                 });
+            }
+        }
+    }
+
+    /// mtDNA haplogroup assigned directly from the alignment's chrM — the standalone counterpart
+    /// to the Y-DNA section's "Assign Y haplogroup".
+    fn mt_haplogroup_section(&mut self, ui: &mut egui::Ui, alignment_id: i64) {
+        let has_bam = self
+            .alignments
+            .iter()
+            .find(|a| a.id == alignment_id)
+            .map(|a| a.bam_path.is_some())
+            .unwrap_or(false);
+        ui.horizontal(|ui| {
+            if ui.add_enabled(has_bam, egui::Button::new("Assign mtDNA haplogroup")).clicked() {
+                self.status = "Assigning mtDNA haplogroup (fetching FTDNA mt tree)…".into();
+                let _ = self.tx.send(Command::AssignMtdnaHaplogroupFromAlignment { alignment_id });
+            }
+            if !has_bam {
+                ui.label(egui::RichText::new("(no BAM/CRAM path recorded)").weak());
+            }
+        });
+        if let Some((id, assignment)) = &self.mt_haplogroup {
+            if *id == alignment_id {
+                show_assignment(ui, assignment);
             }
         }
     }

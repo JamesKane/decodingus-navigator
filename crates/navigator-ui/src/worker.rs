@@ -227,7 +227,7 @@ pub enum Event {
     /// Y haplogroup assignment for an alignment (ranked + terminal evidence).
     YHaplogroup { alignment_id: i64, assignment: HaploAssignment },
     /// mtDNA haplogroup assignment from an alignment (records a donor call → reload consensus).
-    MtHaplogroup { assignment: HaploAssignment },
+    MtHaplogroup { alignment_id: i64, assignment: HaploAssignment },
     /// Progress of an ancestry genotyping pass: `done`/`total` contigs scanned.
     AncestryProgress { alignment_id: i64, done: usize, total: usize },
     /// Ancestry estimate for an alignment (`None` = not yet computed, for `LoadAncestry`).
@@ -411,7 +411,7 @@ pub async fn handle(app: &App, cmd: Command) -> Event {
         },
         Command::AssignMtdnaHaplogroupFromAlignment { alignment_id } => {
             match app.assign_mtdna_haplogroup_from_alignment(alignment_id).await {
-                Ok(assignment) => Event::MtHaplogroup { assignment },
+                Ok(assignment) => Event::MtHaplogroup { alignment_id, assignment },
                 Err(e) => Event::Error(e.to_string()),
             }
         }
