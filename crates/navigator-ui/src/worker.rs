@@ -116,6 +116,8 @@ pub enum Command {
     AddData { biosample_guid: SampleGuid, path: PathBuf },
     LoadAlignments(i64),
     AddAlignment(NewAlignment),
+    /// Resolve the subject's default analysis alignment (highest-coverage, else first).
+    DefaultAlignment { biosample_guid: SampleGuid },
     /// Probe a BAM/CRAM header for build/aligner/platform/test-type (to auto-fill the form).
     ProbeAlignment { path: PathBuf },
     LoadCoverage(i64),
@@ -244,6 +246,8 @@ pub enum Event {
     PrivateY { alignment_id: i64, bucket: PrivateBucket },
     Alignments { sequence_run_id: i64, alignments: Vec<Alignment> },
     AlignmentsChanged(i64),
+    /// The subject's default analysis alignment, to auto-select on the detail tabs.
+    DefaultAlignment { run_id: i64, alignment_id: i64 },
     /// Header-probe result for the add-alignment form (build/aligner/platform/test-type).
     AlignmentProbe(AlignmentProbe),
     Coverage { alignment_id: i64, result: Option<Coverage> },
@@ -473,6 +477,11 @@ pub async fn handle(app: &App, cmd: Command) -> Event {
         },
         Command::ProbeAlignment { path } => match app.probe_alignment(path).await {
             Ok(probe) => Event::AlignmentProbe(probe),
+            Err(e) => Event::Error(e.to_string()),
+        },
+        Command::DefaultAlignment { biosample_guid } => match app.default_alignment_for_subject(biosample_guid).await {
+            Ok(Some((run_id, alignment_id))) => Event::DefaultAlignment { run_id, alignment_id },
+            Ok(None) => Event::Noop,
             Err(e) => Event::Error(e.to_string()),
         },
         Command::LoadCoverage(alignment_id) => match app.cached_coverage(alignment_id).await {

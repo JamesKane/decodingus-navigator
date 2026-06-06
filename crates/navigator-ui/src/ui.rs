@@ -171,6 +171,8 @@ pub struct NavigatorApp {
     selected_run: Option<i64>,
     alignments: Vec<Alignment>,
     selected_alignment: Option<i64>,
+    /// An alignment to auto-select once its run's alignments load (subject-centric default).
+    pending_alignment: Option<i64>,
     coverage: Option<Coverage>,
     sex: Option<SexInferenceResult>,
     read_metrics: Option<ReadMetrics>,
@@ -384,10 +386,14 @@ fn empty_state(ui: &mut egui::Ui, title: &str, hint: &str) {
     });
 }
 
-/// Hint shown in an analysis tab when no alignment is selected.
+/// Hint shown in an analysis tab when the subject has no analyzable alignment (the default is
+/// auto-selected when one exists, so this means "no sequencing data yet").
 fn pick_alignment_hint(ui: &mut egui::Ui) {
     ui.add_space(8.0);
-    ui.label(egui::RichText::new("Select a sequencing run + alignment under Data Sources to analyze.").weak());
+    ui.label(
+        egui::RichText::new("No sequencing alignment for this subject yet — add a BAM/CRAM under Data Sources.")
+            .weak(),
+    );
 }
 
 /// A dashboard stat tile: a big number over a muted label, in a rounded card.
@@ -749,6 +755,7 @@ impl NavigatorApp {
             selected_run: None,
             alignments: Vec::new(),
             selected_alignment: None,
+            pending_alignment: None,
             coverage: None,
             sex: None,
             read_metrics: None,
@@ -1038,9 +1045,23 @@ impl NavigatorApp {
                         let _ = self.tx.send(Command::LoadMtdna(biosample_guid));
                     }
                 }
+                Event::DefaultAlignment { run_id, alignment_id } => {
+                    // Only auto-select if the user hasn't already chosen an alignment.
+                    if self.selected_alignment.is_none() {
+                        self.pending_alignment = Some(alignment_id);
+                        self.select_run(run_id); // loads the run's alignments → applied below
+                    }
+                }
                 Event::Alignments { sequence_run_id, alignments } => {
                     if self.selected_run == Some(sequence_run_id) {
                         self.alignments = alignments;
+                        // Apply a queued subject-default alignment once its run's list is loaded.
+                        if let Some(pid) = self.pending_alignment {
+                            if self.alignments.iter().any(|a| a.id == pid) {
+                                self.pending_alignment = None;
+                                self.select_alignment(pid);
+                            }
+                        }
                     }
                 }
                 Event::AlignmentProbe(p) => {
@@ -1198,6 +1219,7 @@ impl NavigatorApp {
 
     fn select_sample(&mut self, guid: SampleGuid) {
         self.selected_sample = Some(guid);
+        self.pending_alignment = None;
         self.clear_run_selection();
         self.runs.clear();
         self.str_profiles.clear();
@@ -1220,6 +1242,9 @@ impl NavigatorApp {
         let _ = self.tx.send(Command::LoadVariantSets(guid));
         let _ = self.tx.send(Command::LoadChipProfiles(guid));
         let _ = self.tx.send(Command::LoadMtdna(guid));
+        // Subject-centric: auto-select the subject's default alignment so the analysis tabs work
+        // without navigating Data Sources.
+        let _ = self.tx.send(Command::DefaultAlignment { biosample_guid: guid });
     }
 
     fn select_run(&mut self, id: i64) {

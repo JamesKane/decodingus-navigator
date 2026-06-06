@@ -2532,6 +2532,33 @@ impl App {
     }
 
     /// Alignments for a sequence run.
+    /// The best alignment to drive a subject's analysis tabs (subject-centric default): the
+    /// highest mean-coverage alignment with a cached coverage result, else the first with a BAM,
+    /// else the first. Returns `(sequence_run_id, alignment_id)` so the UI can select the run then
+    /// the alignment without the user navigating Data Sources.
+    pub async fn default_alignment_for_subject(
+        &self,
+        biosample_guid: SampleGuid,
+    ) -> Result<Option<(i64, i64)>, AppError> {
+        let alignments = alignment::list_for_biosample(self.store.pool(), biosample_guid).await?;
+        if alignments.is_empty() {
+            return Ok(None);
+        }
+        let mut best: Option<(f64, &Alignment)> = None;
+        for a in &alignments {
+            if let Some(c) = self.cached_coverage(a.id).await? {
+                if best.as_ref().map_or(true, |(cov, _)| c.mean_coverage > *cov) {
+                    best = Some((c.mean_coverage, a));
+                }
+            }
+        }
+        let chosen = best
+            .map(|(_, a)| a)
+            .or_else(|| alignments.iter().find(|a| a.bam_path.is_some()))
+            .or_else(|| alignments.first());
+        Ok(chosen.map(|a| (a.sequence_run_id, a.id)))
+    }
+
     pub async fn list_alignments(&self, sequence_run_id: i64) -> Result<Vec<Alignment>, AppError> {
         Ok(alignment::list_for_run(self.store.pool(), sequence_run_id).await?)
     }
