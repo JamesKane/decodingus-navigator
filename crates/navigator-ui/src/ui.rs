@@ -1257,8 +1257,8 @@ impl NavigatorApp {
         let _ = self.tx.send(Command::LoadSv(id));
         let _ = self.tx.send(Command::LoadAncestry { alignment_id: id });
         let _ = self.tx.send(Command::LoadPcaReference { alignment_id: id });
-        // Load cached de-novo for both haploid contigs (Y-DNA + mtDNA tabs).
-        let _ = self.tx.send(Command::LoadDenovo { alignment_id: id, contig: "chrY".into() });
+        // Load cached chrM de-novo (mtDNA tab). chrY variant discovery is the masked private-Y
+        // pass, not a raw whole-chrY de-novo, so it isn't loaded here.
         let _ = self.tx.send(Command::LoadDenovo { alignment_id: id, contig: "chrM".into() });
         if let Some(panel_id) = self.selected_panel {
             let _ = self.tx.send(Command::LoadPanelGenotypes { alignment_id: id, panel_id, ploidy: self.ploidy() });
@@ -1435,7 +1435,8 @@ impl NavigatorApp {
                     if let Some(id) = self.selected_alignment {
                         card(ui, "Y haplogroup", |ui| self.y_haplogroup_section(ui, id));
                         ui.add_space(10.0);
-                        card(ui, "Y de-novo SNP calls (chrY)", |ui| self.denovo_section(ui, id, "chrY"));
+                    } else if self.consensus_y.is_some() {
+                        card(ui, "Y haplogroup", |ui| self.consensus_block(ui, "Y-DNA", DnaType::Y));
                         ui.add_space(10.0);
                     } else {
                         pick_alignment_hint(ui);
@@ -3007,6 +3008,20 @@ impl NavigatorApp {
             }
         });
 
+        // The persisted donor consensus (reloaded on select) — so the haplogroup stays visible
+        // without re-running. The fresh per-run assignment, when present, adds the SNP detail.
+        if let Some(c) = &self.consensus_y {
+            ui.label(
+                egui::RichText::new(format!(
+                    "Haplogroup: {}  ({} run(s), confidence {:.2})",
+                    c.haplogroup, c.run_count, c.confidence
+                ))
+                .strong(),
+            );
+            if !c.lineage.is_empty() {
+                ui.label(egui::RichText::new(c.lineage.join(" › ")).small().weak());
+            }
+        }
         if let Some((id, assignment)) = &self.y_haplogroup {
             if *id == alignment_id {
                 show_assignment(ui, assignment);

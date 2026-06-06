@@ -721,12 +721,13 @@ async fn run_full_analysis_streaming<W: Fn() + Send + Sync + 'static>(
     }
 
     // Steps 2–7: the cheaper command-driven steps (run via `handle`, which forwards their events).
-    // Some steps run more than one command (variant calling does chrM + chrY de-novo).
+    // Y variant discovery is the callable-masked "private Y" pass, NOT a raw whole-chrY de-novo
+    // (which is enormous + mostly artifacts); chrM de-novo is fine (small, fully callable).
     let steps: [(&str, &str); 6] = [
         ("Sex inference", "chrX:autosome ratio"),
         ("Read metrics", "alignment QC"),
         ("Structural variants", "CNV + discordant pairs (needs ≥10×)"),
-        ("Variant calling", "chrM + chrY de-novo (haploid)"),
+        ("Variant calling", "chrM de-novo (haploid)"),
         ("Y haplogroup", "placing on the Y tree"),
         ("mtDNA haplogroup", "placing on the mt tree"),
     ];
@@ -743,22 +744,17 @@ async fn run_full_analysis_streaming<W: Fn() + Send + Sync + 'static>(
             fraction: (step as f32 - 1.0) / total as f32,
         });
         wake();
-        let cmds: Vec<Command> = match i {
-            0 => vec![Command::RunSex(alignment_id)],
-            1 => vec![Command::RunReadMetrics(alignment_id)],
-            2 => vec![Command::RunSv(alignment_id)],
-            3 => vec![
-                Command::RunDenovo { alignment_id, contig: "chrM".into() },
-                Command::RunDenovo { alignment_id, contig: "chrY".into() },
-            ],
-            4 => vec![Command::AssignYHaplogroup { alignment_id }],
-            _ => vec![Command::AssignMtdnaHaplogroupFromAlignment { alignment_id }],
+        let cmd = match i {
+            0 => Command::RunSex(alignment_id),
+            1 => Command::RunReadMetrics(alignment_id),
+            2 => Command::RunSv(alignment_id),
+            3 => Command::RunDenovo { alignment_id, contig: "chrM".into() },
+            4 => Command::AssignYHaplogroup { alignment_id },
+            _ => Command::AssignMtdnaHaplogroupFromAlignment { alignment_id },
         };
-        for cmd in cmds {
-            let ev = handle(app, cmd).await; // runs to completion; we may cancel before the next step
-            let _ = evt_tx.send(ev);
-            wake();
-        }
+        let ev = handle(app, cmd).await; // runs to completion; we may cancel before the next step
+        let _ = evt_tx.send(ev);
+        wake();
     }
 
     // Final step: ancestry (run directly — EstimateAncestry's command path streams separately).
