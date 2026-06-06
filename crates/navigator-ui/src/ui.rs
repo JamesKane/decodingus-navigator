@@ -1350,55 +1350,66 @@ impl NavigatorApp {
             }
         });
         ui.separator();
-        egui::ScrollArea::vertical().show(ui, |ui| match self.detail_tab {
-            DetailTab::Overview => {
-                if let Some(id) = self.selected_alignment {
-                    if ui
-                        .add(egui::Button::new(egui::RichText::new("▶  Run Full Analysis").color(egui::Color32::WHITE)).fill(ACCENT))
-                        .clicked()
-                    {
-                        self.start_full_analysis(id);
+        egui::ScrollArea::vertical().show(ui, |ui| {
+            ui.add_space(4.0);
+            match self.detail_tab {
+                DetailTab::Overview => {
+                    if let Some(id) = self.selected_alignment {
+                        if ui
+                            .add(egui::Button::new(egui::RichText::new("▶  Run Full Analysis").color(egui::Color32::WHITE)).fill(ACCENT))
+                            .clicked()
+                        {
+                            self.start_full_analysis(id);
+                        }
+                        ui.add_space(10.0);
                     }
-                    ui.add_space(8.0);
+                    if self.consensus_y.is_some() || self.consensus_mt.is_some() {
+                        card(ui, "Haplogroup consensus", |ui| self.consensus_section(ui));
+                        ui.add_space(10.0);
+                    }
+                    if let Some(id) = self.selected_alignment {
+                        card(ui, "Coverage", |ui| self.coverage_section(ui, id));
+                        ui.add_space(10.0);
+                        card(ui, "Sex & read metrics", |ui| self.sex_metrics_section(ui, id));
+                    } else {
+                        pick_alignment_hint(ui);
+                    }
                 }
-                self.consensus_section(ui);
-                if let Some(id) = self.selected_alignment {
-                    self.coverage_section(ui, id);
-                    self.sex_metrics_section(ui, id);
-                } else {
-                    pick_alignment_hint(ui);
+                DetailTab::YDna => {
+                    if let Some(id) = self.selected_alignment {
+                        card(ui, "Y haplogroup", |ui| self.y_haplogroup_section(ui, id));
+                        ui.add_space(10.0);
+                        card(ui, "De-novo SNP calls (haploid)", |ui| self.denovo_section(ui, id));
+                        ui.add_space(10.0);
+                    } else {
+                        pick_alignment_hint(ui);
+                        ui.add_space(10.0);
+                    }
+                    card(ui, "SNP variants", |ui| self.variants_section(ui, guid));
                 }
+                DetailTab::MtDna => {
+                    card(ui, "mtDNA sequences", |ui| self.mtdna_section(ui, guid));
+                    if let Some(id) = self.selected_alignment {
+                        ui.add_space(10.0);
+                        card(ui, "mtDNA heteroplasmy", |ui| self.heteroplasmy_section(ui, id));
+                    }
+                }
+                DetailTab::Ancestry => {
+                    if let Some(id) = self.selected_alignment {
+                        card(ui, "Ancestry", |ui| self.ancestry_section(ui, id));
+                    } else {
+                        pick_alignment_hint(ui);
+                    }
+                }
+                DetailTab::IbdMatches => {
+                    if let Some(id) = self.selected_alignment {
+                        card(ui, "Panel genotyping & IBD", |ui| self.genotyping_section(ui, id));
+                    } else {
+                        pick_alignment_hint(ui);
+                    }
+                }
+                DetailTab::DataSources => self.data_sources_tab(ui, guid),
             }
-            DetailTab::YDna => {
-                if let Some(id) = self.selected_alignment {
-                    self.y_haplogroup_section(ui, id);
-                    self.denovo_section(ui, id);
-                } else {
-                    pick_alignment_hint(ui);
-                }
-                self.variants_section(ui, guid);
-            }
-            DetailTab::MtDna => {
-                self.mtdna_section(ui, guid);
-                if let Some(id) = self.selected_alignment {
-                    self.heteroplasmy_section(ui, id);
-                }
-            }
-            DetailTab::Ancestry => {
-                if let Some(id) = self.selected_alignment {
-                    self.ancestry_section(ui, id);
-                } else {
-                    pick_alignment_hint(ui);
-                }
-            }
-            DetailTab::IbdMatches => {
-                if let Some(id) = self.selected_alignment {
-                    self.genotyping_section(ui, id);
-                } else {
-                    pick_alignment_hint(ui);
-                }
-            }
-            DetailTab::DataSources => self.data_sources_tab(ui, guid),
         });
     }
 
@@ -1826,11 +1837,8 @@ impl NavigatorApp {
 
     /// SNP variant sets for the selected subject + an import form (VCF or CSV/TSV).
     fn variants_section(&mut self, ui: &mut egui::Ui, guid: SampleGuid) {
-        ui.add_space(12.0);
-        ui.separator();
-        ui.heading("SNP variants");
         if self.variant_sets.is_empty() {
-            ui.label("No variants imported yet.");
+            ui.label(egui::RichText::new("No variants imported yet.").weak());
         }
         const MAX_ROWS: usize = 500;
         for s in &self.variant_sets {
@@ -1981,11 +1989,8 @@ impl NavigatorApp {
     /// mtDNA FASTA sequences for the selected subject + an import form, and a
     /// derive-variants-vs-rCRS action per sequence.
     fn mtdna_section(&mut self, ui: &mut egui::Ui, guid: SampleGuid) {
-        ui.add_space(12.0);
-        ui.separator();
-        ui.heading("mtDNA sequences");
         if self.mtdna_sequences.is_empty() {
-            ui.label("No mtDNA sequences yet.");
+            ui.label(egui::RichText::new("No mtDNA sequences yet.").weak());
         }
 
         // rCRS reference picker (reused for every derivation this session).
@@ -2438,10 +2443,6 @@ impl NavigatorApp {
     }
 
     fn coverage_section(&mut self, ui: &mut egui::Ui, alignment_id: i64) {
-        ui.add_space(12.0);
-        ui.separator();
-        ui.heading("Coverage");
-
         let has_paths = self
             .alignments
             .iter()
@@ -2493,10 +2494,6 @@ impl NavigatorApp {
 
     /// Inferred sex + read-level QC metrics for a single alignment.
     fn sex_metrics_section(&mut self, ui: &mut egui::Ui, alignment_id: i64) {
-        ui.add_space(12.0);
-        ui.separator();
-        ui.heading("Sex & read metrics");
-
         let has_bam = self
             .alignments
             .iter()
@@ -2596,11 +2593,9 @@ impl NavigatorApp {
     /// Donor-level haplogroup consensus across all recorded sources (runs, Sanger, …).
     fn consensus_section(&mut self, ui: &mut egui::Ui) {
         if self.consensus_y.is_none() && self.consensus_mt.is_none() {
-            return; // nothing assigned yet for this subject
+            ui.label(egui::RichText::new("No haplogroup consensus yet.").weak());
+            return;
         }
-        ui.add_space(12.0);
-        ui.separator();
-        ui.heading("Haplogroup consensus");
         self.consensus_block(ui, "Y-DNA", DnaType::Y);
         self.consensus_block(ui, "mtDNA", DnaType::Mt);
     }
@@ -2727,9 +2722,6 @@ impl NavigatorApp {
             .map(|a| a.bam_path.is_some())
             .unwrap_or(false);
 
-        ui.add_space(12.0);
-        ui.separator();
-        ui.heading("mtDNA heteroplasmy");
         ui.horizontal(|ui| {
             if ui.add_enabled(has_bam, egui::Button::new("Scan chrM heteroplasmy")).clicked() {
                 self.status = "Scanning chrM pileup for heteroplasmy…".into();
@@ -2759,10 +2751,6 @@ impl NavigatorApp {
 
     /// Ancestry estimate for an alignment: super-population proportions from the AIMs panel.
     fn ancestry_section(&mut self, ui: &mut egui::Ui, alignment_id: i64) {
-        ui.add_space(12.0);
-        ui.separator();
-        ui.heading("Ancestry");
-
         let has_bam = self
             .alignments
             .iter()
@@ -2910,10 +2898,6 @@ impl NavigatorApp {
 
     /// Y-haplogroup assignment for an alignment (calls chrY tree positions; FTDNA tree).
     fn y_haplogroup_section(&mut self, ui: &mut egui::Ui, alignment_id: i64) {
-        ui.add_space(12.0);
-        ui.separator();
-        ui.heading("Y haplogroup");
-
         let has_bam = self
             .alignments
             .iter()
@@ -3012,10 +2996,6 @@ impl NavigatorApp {
     }
 
     fn genotyping_section(&mut self, ui: &mut egui::Ui, alignment_id: i64) {
-        ui.add_space(12.0);
-        ui.separator();
-        ui.heading("Panel genotyping & IBD");
-
         let Some(panel_id) = self.selected_panel else {
             ui.label("Select a panel in the sidebar.");
             return;
@@ -3161,10 +3141,6 @@ impl NavigatorApp {
     }
 
     fn denovo_section(&mut self, ui: &mut egui::Ui, alignment_id: i64) {
-        ui.add_space(12.0);
-        ui.separator();
-        ui.heading("De-novo SNP calls (haploid)");
-
         let has_paths = self
             .alignments
             .iter()
