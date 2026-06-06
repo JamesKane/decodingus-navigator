@@ -9,8 +9,8 @@ source "$HERE/config.sh"; source "$HERE/lib.sh"
 require_tool CrossMap "pip install CrossMap"
 require_tool awk
 
-SNP="$(ls "$RAW/${AADR_DATASET}"*.snp 2>/dev/null | head -1 || true)"
-[[ -n "$SNP" ]] || die "AADR .snp not found in $RAW (run 01_fetch.sh / unpack AADR). Looked for ${AADR_DATASET}*.snp"
+SNP="$(ls "$RAW/"*"${AADR_DATASET}"*.snp 2>/dev/null | head -1 || true)"
+[[ -n "$SNP" ]] || die "AADR .snp not found in $RAW (run 01_fetch.sh / download AADR). Looked for *${AADR_DATASET}*.snp (e.g. ${AADR_FILE_PREFIX}.snp)"
 
 CHAIN="$(chain_for hg19)"
 OUT="$TMP/1240k_sites.${BUILD}.bed"
@@ -29,5 +29,18 @@ CrossMap bed "$CHAIN" "$TMP/1240k_sites.hg19.bed" "$OUT" || die "CrossMap bed fa
 # panelbuild/bcftools want a tab-separated CHROM<TAB>POS regions file too (1-based).
 awk '{ split($4,a,"|"); printf "%s\t%d\n", $1, $3 }' "$OUT" | sort -k1,1 -k2,2n -u \
   > "$TMP/1240k_sites.${BUILD}.tsv"
+
+# Also project the 1240k universe into hg38 (only if the hg19->hg38 chain was fetched), so GRCh38
+# sources (gnomAD/SGDP) can be remote-sliced to just these sites in stage 04.
+HG38_CHAIN="$RAW/$(basename "$CHAIN_HG19_TO_HG38" .gz)"
+if [[ -s "$HG38_CHAIN" ]]; then
+  log "CrossMap bed -> hg38 (1240k universe for GRCh38 source slicing)"
+  if CrossMap bed "$HG38_CHAIN" "$TMP/1240k_sites.hg19.bed" "$TMP/1240k_sites.hg38.bed"; then
+    awk '{ printf "%s\t%d\n", $1, $3 }' "$TMP/1240k_sites.hg38.bed" | sort -k1,1 -k2,2n -u \
+      > "$TMP/1240k_sites.hg38.tsv"
+  else
+    log "WARN: hg38 projection failed — GRCh38 sources cannot be sliced in stage 04"
+  fi
+fi
 
 log "stage 2 complete: $(wc -l < "$OUT") sites lifted -> $OUT (+ .tsv regions)."

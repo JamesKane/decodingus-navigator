@@ -29,34 +29,69 @@ MIN_CALL_RATE="${MIN_CALL_RATE:-0.5}"   # ancient data is sparse; keep the floor
 
 # ── reference CHM13v2 FASTA + liftover chains ───────────────────────────────────
 # CHM13v2.0 analysis-set FASTA (CrossMap needs the *target* reference).
-CHM13_FASTA_URL="${CHM13_FASTA_URL:-https://s3.amazonaws.com/human-pangenomics/T2T/CHM13/assemblies/analysis_set/chm13v2.0.fa.gz}"
+# Virtual-hosted-style S3 (portable from any region; path-style 301-redirects outside us-east-1).
+CHM13_FASTA_URL="${CHM13_FASTA_URL:-https://human-pangenomics.s3.amazonaws.com/T2T/CHM13/assemblies/analysis_set/chm13v2.0.fa.gz}"
 # Liftover chains TO CHM13v2 (hs1). # VERIFY exact filenames at the base below.
 #   T2T chains: https://s3.amazonaws.com/human-pangenomics/T2T/CHM13/assemblies/chain/
 #   UCSC hub:   https://hgdownload.soe.ucsc.edu/hubs/GCA/009/914/755/GCA_009914755.4/liftOver/
 CHAIN_HG19_TO_CHM13="${CHAIN_HG19_TO_CHM13:-https://hgdownload.soe.ucsc.edu/hubs/GCA/009/914/755/GCA_009914755.4/liftOver/hg19-chm13v2.over.chain.gz}"   # VERIFY
 CHAIN_GRCH38_TO_CHM13="${CHAIN_GRCH38_TO_CHM13:-https://hgdownload.soe.ucsc.edu/hubs/GCA/009/914/755/GCA_009914755.4/liftOver/hg38-chm13v2.over.chain.gz}" # VERIFY
+# hg19 -> hg38 (standard UCSC chain) — used only to project the 1240k AIM universe into hg38 so
+# GRCh38 sources (gnomAD/SGDP) can be sliced to just those sites before download.
+CHAIN_HG19_TO_HG38="${CHAIN_HG19_TO_HG38:-https://hgdownload.soe.ucsc.edu/goldenPath/hg19/liftOver/hg19ToHg38.over.chain.gz}"
 
 # ── source datasets ─────────────────────────────────────────────────────────────
-# 1000 Genomes recalibrated on CHM13v2 (native build; the project already mirrors these).
-# Point at a LOCAL mirror if you have one; else the public bucket.
-# VERIFY: https://s3.amazonaws.com/human-pangenomics/T2T/CHM13/assemblies/variants/1000_Genomes_Project/chm13v2.0/
+# 1000 Genomes recalibrated on CHM13v2 (native build — no liftover). Two distinct roles:
+#   (a) PANEL (stage 03): per-super-pop AF in INFO (AC_<POP>_unrel/AN_<POP>_unrel). Those live
+#       in the sites-only `withafinfo` VCFs under unrelated_samples_2504/allele_freq/ — ~9.9 GB
+#       total, NOT the 1.6 TB per-genotype all_samples_3202 VCFs. panelbuild reads INFO only.
+#   (b) GENOTYPES (stage 04 PCA basis): the phased biallelic 3202 BCF (~13 GB, one whole-genome
+#       file). Stage 04 remote-slices it at the panel sites, so the actual pull is a fraction.
+KGP_S3_BASE="${KGP_S3_BASE:-https://human-pangenomics.s3.amazonaws.com/T2T/CHM13/assemblies/variants/1000_Genomes_Project/chm13v2.0}"
+# (a) AF files — downloaded whole into KGP_CHM13_DIR; stage 03 restricts them to the 1240k sites.
 KGP_CHM13_DIR="${KGP_CHM13_DIR:-$RAW/1kgp-chm13}"
-KGP_CHM13_BASE_URL="${KGP_CHM13_BASE_URL:-https://s3.amazonaws.com/human-pangenomics/T2T/CHM13/assemblies/variants/1000_Genomes_Project/chm13v2.0}" # VERIFY
+KGP_AF_BASE_URL="${KGP_AF_BASE_URL:-$KGP_S3_BASE/unrelated_samples_2504/allele_freq}"
+KGP_AF_PATTERN="${KGP_AF_PATTERN:-1KGP.CHM13v2.0.chr%s.recalibrated.snp_indel.pass.withafinfo.vcf.gz}"
+# (b) Whole-genome phased biallelic genotype BCF — remote-sliced at panel sites (set to a local
+#     path to use a mirror instead of streaming). Its .csi index sits next to it on S3.
+KGP_GT_BCF_URL="${KGP_GT_BCF_URL:-$KGP_S3_BASE/Phased_SHAPEIT5_v1.1/1KGP.CHM13v2.0.whole_genome.recalibrated.snp_indel.pass.phased.native_maps.biallelic.3202.bcf.gz}"
 
-# Allen Ancient DNA Resource (AADR) — ancient deep-component sources. EIGENSTRAT/packed.
-# Landing page (pick the current version + the 1240k set):
-#   https://reich.hms.harvard.edu/allen-ancient-dna-resource-aadr-downloadable-genotypes-present-day-and-ancient-dna-data
-AADR_VERSION="${AADR_VERSION:-v62.0}"   # VERIFY current release
-AADR_BASE_URL="${AADR_BASE_URL:-https://reichdata.hms.harvard.edu/pub/datasets/amh_repo/curated_releases}" # VERIFY
-AADR_DATASET="${AADR_DATASET:-1240k}"   # 1240k (~1.23M, the ancient-capture set) | HO (~600k)
+# Allen Ancient DNA Resource (AADR) — ancient deep-component sources. EIGENSTRAT.
+# Distributed via Harvard Dataverse (the old reichdata.hms.harvard.edu/.../curated_releases
+# flat path is gone / access-restricted). Each file is fetched by its numeric Dataverse file
+# id, pinned per release below. To move to a newer release, refresh AADR_VERSION + the id map:
+#   curl 'https://dataverse.harvard.edu/api/datasets/:persistentId/?persistentId='"$AADR_DATAVERSE_DOI"
+#   landing page: https://reich.hms.harvard.edu/allen-ancient-dna-resource-aadr-downloadable-genotypes-present-day-and-ancient-dna-data
+AADR_VERSION="${AADR_VERSION:-v66}"     # current Dataverse release (older notes said v62 — now superseded)
+AADR_DATASET="${AADR_DATASET:-1240K}"   # 1240K (~1.23M ancient-capture set, ~7.3 GB) | HO (~600k, ~4 GB)
+AADR_DATAVERSE_DOI="${AADR_DATAVERSE_DOI:-doi:10.7910/DVN/FFIDCW}"
+AADR_DOWNLOAD_BASE="${AADR_DOWNLOAD_BASE:-https://dataverse.harvard.edu/api/access/datafile}"
+# Dataverse numeric file ids for the v66 1240K quartet (geno/snp/ind/anno). Re-pin per release.
+AADR_ID_GENO="${AADR_ID_GENO:-13664080}"
+AADR_ID_SNP="${AADR_ID_SNP:-13664260}"
+AADR_ID_IND="${AADR_ID_IND:-13663698}"
+AADR_ID_ANNO="${AADR_ID_ANNO:-13663706}"
+# Local filename stem the downloaded quartet shares (matches AADR's own naming).
+AADR_FILE_PREFIX="${AADR_FILE_PREFIX:-${AADR_VERSION}.${AADR_DATASET}.aadr.PUB}"
 
-# HGDP + 1KG dense callset (modern global, non-European resolution). gnomAD v3, GRCh38.
+# HGDP + 1KG dense callset (modern global, non-European resolution). gnomAD v3.1.2, GRCh38.
+# OPTIONAL enhancement source. The per-chromosome callsets are ENORMOUS (~3.6 TB whole), so we
+# NEVER bulk-download them: stage 04 remote-slices each chromosome at the 1240k sites (lifted to
+# hg38), pulling only the panel-relevant records (~GB). Requires htslib with GCS support.
 # Landing: https://gnomad.broadinstitute.org/downloads#v3-hgdp-1kg
-HGDP_1KG_BASE_URL="${HGDP_1KG_BASE_URL:-https://storage.googleapis.com/gcp-public-data--gnomad/release/3.1.2/vcf/genomes}" # VERIFY subset filenames
+# CAVEAT: the bucket is "requester pays" — set HGDP_1KG_GCP_PROJECT to your billing project, and
+# point HGDP_1KG_BASE_URL at gs:// so bcftools can pass it through (https mirror won't authorise).
+HGDP_1KG_ENABLE="${HGDP_1KG_ENABLE:-0}"   # 1 to include (needs a GCP billing project)
+HGDP_1KG_GCP_PROJECT="${HGDP_1KG_GCP_PROJECT:-}"
+HGDP_1KG_BASE_URL="${HGDP_1KG_BASE_URL:-gs://gcp-public-data--gnomad/release/3.1.2/vcf/genomes}"
+HGDP_1KG_PATTERN="${HGDP_1KG_PATTERN:-gnomad.genomes.v3.1.2.hgdp_tgp.chr%s.vcf.bgz}"
 
-# Simons Genome Diversity Project (modern deep diversity). GRCh38.
-# Reich lab mirror: https://reichdata.hms.harvard.edu/pub/datasets/sgdp/
-SGDP_BASE_URL="${SGDP_BASE_URL:-https://reichdata.hms.harvard.edu/pub/datasets/sgdp}" # VERIFY
+# Simons Genome Diversity Project (modern deep diversity). GRCh38, distributed as PLINK by the
+# Reich lab. OPTIONAL. ~3 GB whole; small enough to fetch whole, then convert PLINK -> VCF in
+# stage 04 (like AADR). Reich host serves a broken TLS chain (lib.sh fetch adds -k for it).
+SGDP_ENABLE="${SGDP_ENABLE:-0}"           # 1 to include
+SGDP_BASE_URL="${SGDP_BASE_URL:-https://reichdata.hms.harvard.edu/pub/datasets/sgdp}"
+SGDP_PLINK_PREFIX="${SGDP_PLINK_PREFIX:-cteam_extended.v4.maf0.1perc}" # VERIFY current prefix on the host
 
 # Curated AADR population-label → deep-component map (edit this; ships in the repo).
 AADR_COMPONENT_MAP="${AADR_COMPONENT_MAP:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/pops/aadr_component_map.tsv}"
