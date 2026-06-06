@@ -110,6 +110,8 @@ pub enum Command {
     /// Find the private bucket: de-novo chrY calls off the assigned Y backbone, restricted
     /// by the chosen callable mask.
     FindPrivateY { alignment_id: i64, mask: YMask },
+    /// Load a previously-computed (self-masked) private-Y bucket from cache.
+    LoadPrivateY { alignment_id: i64 },
     /// Unified import: detect the file's type and route it to the right importer.
     AddData { biosample_guid: SampleGuid, path: PathBuf },
     LoadAlignments(i64),
@@ -176,6 +178,8 @@ pub struct PanelInfo {
 /// A result/notification from the worker to the UI.
 #[derive(Debug, Clone)]
 pub enum Event {
+    /// Nothing to report (e.g. a cache-load that missed) — the UI ignores it.
+    Noop,
     Overview(Vec<ProjectOverview>),
     ProjectCreated(Project),
     /// A batch project-directory import completed.
@@ -450,6 +454,11 @@ pub async fn handle(app: &App, cmd: Command) -> Event {
                 Err(e) => Event::Error(e.to_string()),
             }
         }
+        Command::LoadPrivateY { alignment_id } => match app.cached_private_y(alignment_id).await {
+            Ok(Some(bucket)) => Event::PrivateY { alignment_id, bucket },
+            Ok(None) => Event::Noop,
+            Err(e) => Event::Error(e.to_string()),
+        },
         Command::AddData { biosample_guid, path } => match app.add_data(biosample_guid, &path).await {
             Ok(detected) => Event::DataImported { biosample_guid, label: detected.description().to_string() },
             Err(e) => Event::Error(e.to_string()),
@@ -697,21 +706,26 @@ async fn run_full_analysis_streaming<W: Fn() + Send + Sync + 'static>(
             fraction: 0.0,
         });
         wake();
-        let evt = evt_tx.clone();
-        let wk = wake.clone();
-        let cov = app
-            .run_coverage_for_alignment_with_progress(alignment_id, move |done, tot| {
-                let within = if tot > 0 { done as f32 / tot as f32 } else { 0.0 };
-                let _ = evt.send(Event::AnalysisProgress {
-                    step: 1,
-                    total,
-                    label: "Coverage".into(),
-                    detail: format!("contig {done}/{tot}"),
-                    fraction: within / total as f32,
-                });
-                wk();
-            })
-            .await;
+        // Reuse a cached coverage result instead of re-scanning the whole genome (minutes).
+        let cov = match app.cached_coverage(alignment_id).await {
+            Ok(Some(c)) => Ok(c),
+            _ => {
+                let evt = evt_tx.clone();
+                let wk = wake.clone();
+                app.run_coverage_for_alignment_with_progress(alignment_id, move |done, tot| {
+                    let within = if tot > 0 { done as f32 / tot as f32 } else { 0.0 };
+                    let _ = evt.send(Event::AnalysisProgress {
+                        step: 1,
+                        total,
+                        label: "Coverage".into(),
+                        detail: format!("contig {done}/{tot}"),
+                        fraction: within / total as f32,
+                    });
+                    wk();
+                })
+                .await
+            }
+        };
         let ev = match cov {
             Ok(result) => Event::Coverage { alignment_id, result: Some(result) },
             Err(e) => Event::Error(e.to_string()),
@@ -767,7 +781,12 @@ async fn run_full_analysis_streaming<W: Fn() + Send + Sync + 'static>(
             fraction: (total as f32 - 1.0) / total as f32,
         });
         wake();
-        let ev = match app.estimate_ancestry(alignment_id).await {
+        // Reuse a cached estimate instead of re-genotyping the whole-genome panel (minutes).
+        let result = match app.ancestry_for_alignment(alignment_id).await {
+            Ok(Some(r)) => Ok(r),
+            _ => app.estimate_ancestry(alignment_id).await,
+        };
+        let ev = match result {
             Ok(result) => Event::Ancestry { alignment_id, result: Some(result) },
             Err(e) => Event::Error(e.to_string()),
         };

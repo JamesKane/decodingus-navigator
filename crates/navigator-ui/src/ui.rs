@@ -794,6 +794,7 @@ impl NavigatorApp {
     fn drain_events(&mut self) {
         while let Ok(event) = self.rx.try_recv() {
             match event {
+                Event::Noop => {}
                 Event::Overview(v) => {
                     self.status = format!("{} project(s)", v.len());
                     self.overview = v;
@@ -1260,6 +1261,7 @@ impl NavigatorApp {
         // Load cached chrM de-novo (mtDNA tab). chrY variant discovery is the masked private-Y
         // pass, not a raw whole-chrY de-novo, so it isn't loaded here.
         let _ = self.tx.send(Command::LoadDenovo { alignment_id: id, contig: "chrM".into() });
+        let _ = self.tx.send(Command::LoadPrivateY { alignment_id: id }); // reload cached private-Y
         if let Some(panel_id) = self.selected_panel {
             let _ = self.tx.send(Command::LoadPanelGenotypes { alignment_id: id, panel_id, ploidy: self.ploidy() });
         }

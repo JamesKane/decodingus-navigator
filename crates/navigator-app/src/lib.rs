@@ -48,7 +48,7 @@ pub struct HaploAssignment {
 }
 
 /// How a private (off-backbone) variant relates to the tree.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum PrivateClass {
     /// A known tree SNP off the assigned path — supports a finer/sibling branch.
     OffPathKnown(String),
@@ -57,7 +57,7 @@ pub enum PrivateClass {
 }
 
 /// A derived variant the sample carries that the haplogroup placement doesn't explain.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct PrivateVariant {
     pub position: i64,
     pub reference: char,
@@ -69,7 +69,7 @@ pub struct PrivateVariant {
 
 /// The private bucket for an alignment: de-novo Y calls not on the assigned backbone,
 /// split into off-path-known (finer branches) and novel (new-branch candidates).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct PrivateBucket {
     pub terminal: String,
     pub variants: Vec<PrivateVariant>,
@@ -2059,7 +2059,15 @@ impl App {
     pub async fn private_y_variants_self_masked(&self, alignment_id: i64) -> Result<PrivateBucket, AppError> {
         let intervals = self.callable_chr_intervals(alignment_id, "chrY").await?;
         let mask = navigator_analysis::mask::RegionMask::from_intervals(intervals);
-        self.private_y_core(alignment_id, Some(mask)).await
+        let bucket = self.private_y_core(alignment_id, Some(mask)).await?;
+        // Persist the self-masked bucket so it reloads instead of recomputing next session.
+        self.save_analysis(alignment_id, "private_y", "1", &bucket).await?;
+        Ok(bucket)
+    }
+
+    /// Cached self-masked private-Y bucket for an alignment, if previously computed.
+    pub async fn cached_private_y(&self, alignment_id: i64) -> Result<Option<PrivateBucket>, AppError> {
+        self.load_analysis(alignment_id, "private_y", "1").await
     }
 
     /// Shared core: assign Y, de-novo chrY, subtract the backbone, optionally mask, classify.
