@@ -153,6 +153,10 @@ pub struct NavigatorApp {
     mt_haplogroup: Option<(i64, HaploAssignment)>,
     /// Last ancestry estimate: (alignment id, result). `None` result = computed, no estimate.
     ancestry: Option<(i64, Option<AncestryResult>)>,
+    /// Donor-level ancestry (best across the subject's sources): (source alignment id, result).
+    donor_ancestry: Option<(i64, AncestryResult)>,
+    /// Donor-level private-Y union across the subject's sources.
+    donor_private_y: Option<PrivateBucket>,
     estimating_ancestry: bool,
     /// Live genotyping progress for the in-flight estimate: (alignment id, done, total) contigs.
     ancestry_progress: Option<(i64, usize, usize)>,
@@ -743,6 +747,8 @@ impl NavigatorApp {
             y_haplogroup: None,
             mt_haplogroup: None,
             ancestry: None,
+            donor_ancestry: None,
+            donor_private_y: None,
             estimating_ancestry: false,
             ancestry_progress: None,
             pca_reference: None,
@@ -994,6 +1000,10 @@ impl NavigatorApp {
                         None => "Ancestry: not yet computed".into(),
                     };
                     self.ancestry = Some((alignment_id, result));
+                    // A fresh estimate may change the donor's best — reload the donor rollup.
+                    if let Some(guid) = self.selected_sample {
+                        let _ = self.tx.send(Command::LoadDonorAncestry { biosample_guid: guid });
+                    }
                 }
                 Event::PcaReference { alignment_id, points } => {
                     self.pca_reference = Some((alignment_id, points));
@@ -1032,6 +1042,10 @@ impl NavigatorApp {
                     self.status = format!("Private Y: {} novel, {} off-path", bucket.novel(), bucket.off_path());
                     self.private_y = Some((alignment_id, bucket));
                     self.finding_private_y = false;
+                    // A fresh (self-masked) bucket was just cached — refresh the donor union.
+                    if let Some(guid) = self.selected_sample {
+                        let _ = self.tx.send(Command::LoadDonorPrivateY { biosample_guid: guid });
+                    }
                 }
                 Event::DataImported { biosample_guid, label } => {
                     self.status = format!("Imported {label}");
@@ -1051,6 +1065,12 @@ impl NavigatorApp {
                         self.pending_alignment = Some(alignment_id);
                         self.select_run(run_id); // loads the run's alignments → applied below
                     }
+                }
+                Event::DonorAncestry { alignment_id, result } => {
+                    self.donor_ancestry = Some((alignment_id, result));
+                }
+                Event::DonorPrivateY { bucket } => {
+                    self.donor_private_y = Some(bucket);
                 }
                 Event::Alignments { sequence_run_id, alignments } => {
                     if self.selected_run == Some(sequence_run_id) {
@@ -1220,6 +1240,8 @@ impl NavigatorApp {
     fn select_sample(&mut self, guid: SampleGuid) {
         self.selected_sample = Some(guid);
         self.pending_alignment = None;
+        self.donor_ancestry = None;
+        self.donor_private_y = None;
         self.clear_run_selection();
         self.runs.clear();
         self.str_profiles.clear();
@@ -1243,8 +1265,11 @@ impl NavigatorApp {
         let _ = self.tx.send(Command::LoadChipProfiles(guid));
         let _ = self.tx.send(Command::LoadMtdna(guid));
         // Subject-centric: auto-select the subject's default alignment so the analysis tabs work
-        // without navigating Data Sources.
+        // without navigating Data Sources, and load the donor-level aggregates (best ancestry +
+        // private-Y union across all sources).
         let _ = self.tx.send(Command::DefaultAlignment { biosample_guid: guid });
+        let _ = self.tx.send(Command::LoadDonorAncestry { biosample_guid: guid });
+        let _ = self.tx.send(Command::LoadDonorPrivateY { biosample_guid: guid });
     }
 
     fn select_run(&mut self, id: i64) {
@@ -1469,6 +1494,11 @@ impl NavigatorApp {
                         pick_alignment_hint(ui);
                         ui.add_space(10.0);
                     }
+                    if self.donor_private_y.is_some() {
+                        ui.add_space(10.0);
+                        card(ui, "Private Y (donor union)", |ui| self.donor_private_y_section(ui));
+                    }
+                    ui.add_space(10.0);
                     card(ui, "SNP variants", |ui| self.variants_section(ui, guid));
                     ui.add_space(10.0);
                     card(ui, "Y-STR profile (consensus)", |ui| self.str_consensus_section(ui));
@@ -1492,6 +1522,10 @@ impl NavigatorApp {
                     }
                 }
                 DetailTab::Ancestry => {
+                    if self.donor_ancestry.is_some() {
+                        card(ui, "Donor ancestry (best source)", |ui| self.donor_ancestry_summary(ui));
+                        ui.add_space(10.0);
+                    }
                     if let Some(id) = self.selected_alignment {
                         card(ui, "Ancestry", |ui| self.ancestry_section(ui, id));
                     } else {
@@ -1954,6 +1988,71 @@ impl NavigatorApp {
                 ui.end_row();
             }
         });
+    }
+
+    /// Donor-level ancestry headline (Phase 3): the best estimate across the subject's sources,
+    /// with which source + method it came from.
+    fn donor_ancestry_summary(&self, ui: &mut egui::Ui) {
+        let Some((aln, r)) = &self.donor_ancestry else {
+            ui.label(egui::RichText::new("No ancestry estimate for any source yet.").weak());
+            return;
+        };
+        ui.horizontal(|ui| {
+            draw_ancestry_donut(ui, &r.super_population_summary);
+            ui.add_space(8.0);
+            ui.vertical(|ui| {
+                if let Some(top) = r.super_population_summary.first() {
+                    ui.heading(format!("{} {:.1}%", top.super_population, top.percentage));
+                }
+                ui.label(format!(
+                    "{}/{} SNPs · confidence {:.0}%",
+                    r.snps_with_genotype,
+                    r.snps_analyzed,
+                    r.confidence_level * 100.0
+                ));
+                ui.label(
+                    egui::RichText::new(format!("best source: alignment #{aln} · {} · {}", r.method, r.reference_version))
+                        .small()
+                        .weak(),
+                );
+                ui.add_space(4.0);
+                draw_composition_bar(ui, &r.super_population_summary);
+            });
+        });
+    }
+
+    /// Donor-level private-Y union (Phase 3): off-backbone calls pooled + deduped across the
+    /// subject's Y-bearing sources.
+    fn donor_private_y_section(&self, ui: &mut egui::Ui) {
+        let Some(bucket) = &self.donor_private_y else {
+            ui.label(egui::RichText::new("No private-Y calls across sources yet — run \"Find private Y variants\".").weak());
+            return;
+        };
+        ui.label(format!(
+            "{} novel + {} off-path  (union across sources, terminal {})",
+            bucket.novel(),
+            bucket.off_path(),
+            bucket.terminal
+        ));
+        egui::Grid::new("donor_privy").striped(true).num_columns(4).show(ui, |ui| {
+            for h in ["Position", "Change", "Depth", "Class"] {
+                ui.strong(h);
+            }
+            ui.end_row();
+            for v in bucket.variants.iter().take(500) {
+                ui.label(v.position.to_string());
+                ui.label(format!("{}>{}", v.reference, v.alternate));
+                ui.label(v.depth.to_string());
+                match &v.class {
+                    PrivateClass::Novel => ui.colored_label(egui::Color32::from_rgb(60, 160, 60), "novel"),
+                    PrivateClass::OffPathKnown(name) => ui.label(format!("off-path: {name}")),
+                };
+                ui.end_row();
+            }
+        });
+        if bucket.variants.len() > 500 {
+            ui.label(format!("…and {} more", bucket.variants.len() - 500));
+        }
     }
 
     fn str_section(&mut self, ui: &mut egui::Ui, guid: SampleGuid) {

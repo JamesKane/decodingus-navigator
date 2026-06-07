@@ -2559,6 +2559,45 @@ impl App {
         Ok(chosen.map(|a| (a.sequence_run_id, a.id)))
     }
 
+    /// Donor-level ancestry: the best-quality persisted estimate across **all** of the subject's
+    /// alignments (most genotyped SNPs), with its source alignment id. Pick-best across sources —
+    /// genotype-level pooling (re-estimating over merged genotypes) is a future refinement.
+    pub async fn donor_ancestry(&self, biosample_guid: SampleGuid) -> Result<Option<(i64, AncestryResult)>, AppError> {
+        let all = ancestry_result::for_biosample(self.store.pool(), biosample_guid).await?;
+        Ok(all.into_iter().max_by_key(|(_, r)| r.snps_with_genotype))
+    }
+
+    /// Donor-level private-Y: the **union** of cached (self-masked) private-Y calls across all of
+    /// the subject's alignments, deduped by position (keeping the deepest observation). The
+    /// terminal is taken from the deepest-covered source bucket.
+    pub async fn donor_private_y(&self, biosample_guid: SampleGuid) -> Result<Option<PrivateBucket>, AppError> {
+        let alignments = alignment::list_for_biosample(self.store.pool(), biosample_guid).await?;
+        let mut by_pos: std::collections::HashMap<i64, PrivateVariant> = std::collections::HashMap::new();
+        let mut terminal: Option<String> = None;
+        let mut any = false;
+        for a in &alignments {
+            let Some(bucket) = self.cached_private_y(a.id).await? else { continue };
+            any = true;
+            terminal.get_or_insert_with(|| bucket.terminal.clone());
+            for v in bucket.variants {
+                by_pos
+                    .entry(v.position)
+                    .and_modify(|cur| {
+                        if v.depth > cur.depth {
+                            *cur = v.clone();
+                        }
+                    })
+                    .or_insert(v);
+            }
+        }
+        if !any {
+            return Ok(None);
+        }
+        let mut variants: Vec<PrivateVariant> = by_pos.into_values().collect();
+        variants.sort_by_key(|v| v.position);
+        Ok(Some(PrivateBucket { terminal: terminal.unwrap_or_default(), variants }))
+    }
+
     pub async fn list_alignments(&self, sequence_run_id: i64) -> Result<Vec<Alignment>, AppError> {
         Ok(alignment::list_for_run(self.store.pool(), sequence_run_id).await?)
     }

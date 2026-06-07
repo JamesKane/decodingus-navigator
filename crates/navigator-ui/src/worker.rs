@@ -118,6 +118,10 @@ pub enum Command {
     AddAlignment(NewAlignment),
     /// Resolve the subject's default analysis alignment (highest-coverage, else first).
     DefaultAlignment { biosample_guid: SampleGuid },
+    /// Load the subject's donor-level ancestry (best estimate across all sources).
+    LoadDonorAncestry { biosample_guid: SampleGuid },
+    /// Load the subject's donor-level private-Y union across all sources.
+    LoadDonorPrivateY { biosample_guid: SampleGuid },
     /// Probe a BAM/CRAM header for build/aligner/platform/test-type (to auto-fill the form).
     ProbeAlignment { path: PathBuf },
     LoadCoverage(i64),
@@ -248,6 +252,10 @@ pub enum Event {
     AlignmentsChanged(i64),
     /// The subject's default analysis alignment, to auto-select on the detail tabs.
     DefaultAlignment { run_id: i64, alignment_id: i64 },
+    /// Donor-level ancestry (best across sources) + the source alignment it came from.
+    DonorAncestry { alignment_id: i64, result: AncestryResult },
+    /// Donor-level private-Y union across the subject's sources.
+    DonorPrivateY { bucket: PrivateBucket },
     /// Header-probe result for the add-alignment form (build/aligner/platform/test-type).
     AlignmentProbe(AlignmentProbe),
     Coverage { alignment_id: i64, result: Option<Coverage> },
@@ -481,6 +489,16 @@ pub async fn handle(app: &App, cmd: Command) -> Event {
         },
         Command::DefaultAlignment { biosample_guid } => match app.default_alignment_for_subject(biosample_guid).await {
             Ok(Some((run_id, alignment_id))) => Event::DefaultAlignment { run_id, alignment_id },
+            Ok(None) => Event::Noop,
+            Err(e) => Event::Error(e.to_string()),
+        },
+        Command::LoadDonorAncestry { biosample_guid } => match app.donor_ancestry(biosample_guid).await {
+            Ok(Some((alignment_id, result))) => Event::DonorAncestry { alignment_id, result },
+            Ok(None) => Event::Noop,
+            Err(e) => Event::Error(e.to_string()),
+        },
+        Command::LoadDonorPrivateY { biosample_guid } => match app.donor_private_y(biosample_guid).await {
+            Ok(Some(bucket)) => Event::DonorPrivateY { bucket },
             Ok(None) => Event::Noop,
             Err(e) => Event::Error(e.to_string()),
         },
