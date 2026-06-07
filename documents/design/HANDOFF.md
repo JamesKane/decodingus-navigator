@@ -1,27 +1,66 @@
 # Rust rewrite — handoff / resume notes
 
-Last updated: 2026-06-04. Branch: `rust-rewrite`. Pick up here next session.
+Last updated: 2026-06-07. Branch: `rust-rewrite`. Pick up here next session.
+
+## Three-repo topology
+
+- **DUNavigator** (this repo, `rust-rewrite`) — the desktop edge app (egui). Pulls the shared
+  crates from the sibling repo by **path**, so working-tree changes are picked up immediately.
+- **decodingus-shared** (`/Development/decodingus-shared`, branch `feat/fed-report-records`,
+  pushed) — `du-domain` / `du-atproto` / `du-bio`. The federated record contracts live in
+  `du-domain::fed`.
+- **decodingus** (`/Development/decodingus`, the AppView, branch `rust-rewrite-foundation`) — the
+  PostgreSQL hub + web (`rust/` is the Rust rewrite of the Play app). Pulls the shared crates by
+  pinned **git rev** (`du-domain` currently pinned at `f975a08`). **Bump the rev (or add a local
+  `[patch]`) to pick up newer shared changes** — e.g. the `fitDistance` field added after f975a08
+  is NOT yet visible to the AppView.
 
 ## State
 
-Whole workspace builds; `cargo test --workspace` and `cargo clippy --all-targets -- -D warnings`
-are green. Recent work (newest first):
+Workspace builds clean (no warnings); `cargo test` green. Major work since 2026-06-04, by theme
+(newest first; all on `rust-rewrite` unless noted):
 
-- `d3d4b6e` Wire SV calling into app (single + bulk + report)
-- `cf85edd` Wire sex inference + read metrics (single + bulk + report)
-- `8e21c93` Ancestry Phase C — local-ancestry "DNA painting" (AF-based HMM)
-- `1ce7c95` Ancestry Phase D — donut + geographic map visuals
-- `5136efb` Ancestry Phase B — SGDP panel (Middle East, Central Asia/Siberia, Oceania)
-- `3595e05` Ancestry — supervised admixture composition + hierarchy
-- `4ed5d43` Ancestry — fine-grained 26-population resolution
-- `33c0353` Ancestry Phase 2 — PCA; `45e6506` Ancestry Phase 1 — AF-likelihood + panel tool
+- **i18n** — `0bb19e9` scaffolding (Lang En/Es, `key=value` catalogs in `crates/navigator-ui/
+  locales/`, `tr()` with active→En→key fallback, app-bar language switcher); `0cf412b` migrated
+  card titles, dashboard, empty states, primary buttons. Deeper forms/headers/status still English
+  (fall back fine). See `memory/navigator-i18n.md`.
+- **Subject-centric model** (`documents/design/SubjectCentricModel.md`, P1–P3 done) — `ba6ffc2`
+  auto-select default alignment; `9259f7a` donor STR consensus + ancestry provenance; `d928af8`
+  donor ancestry (best-of) + private-Y union. Tabs now present the **donor**, per-run detail in
+  Data Sources. Remaining: true genotype-level ancestry pooling.
+- **Analysis QoL / fixes** — `463e938` per-contig de-novo (Y-DNA=chrY / mtDNA=chrM), mtDNA
+  haplogroup in full analysis, inferred-sex write-back, table Y/mt/sex; `4d54a8d` standalone
+  "Assign mtDNA haplogroup"; `046b654` dropped the UNMASKED raw chrY de-novo (use "Find private Y
+  variants" instead) + Y card shows persisted consensus; `f258636` full analysis reuses cached
+  coverage+ancestry, private-Y persisted.
+- **Header auto-detect** — `9a2062b` `navigator-analysis::probe` reads BAM/CRAM headers → build /
+  aligner / platform / test-type; `add_data` auto-imports a BAM (creates run+alignment, no
+  questions); reference resolved from the build via the gateway (never asked).
+- **Full Analysis** — `e94f8ec` modal + `RunFullAnalysis` pipeline (8 steps, cancellable);
+  `dc48f98` per-contig coverage progress + alive modal (it was slow, not hung).
+- **UI Workbench redesign** — `c64cd50` dark theme + nav tabs + subjects table + detail sub-tabs;
+  `133dfdf` Data Sources cards; later all detail tabs carded. See `memory/ui-workbench-redesign.md`.
+- **Ancestry methods** — `7a67c22` `estimate_pca_gmm` + `estimate_nmonte` (Frank-Wolfe distance
+  fit, `fit_distance`); `method` field captured not inferred; estimate_ancestry computes+persists+
+  publishes 3 methods (ADMIXTURE / PCA_PROJECTION_GMM / G25_NMONTE). `e5b502f` projection-mode PCA
+  (`--basis-pops`). See `memory/ancestry-pca-gmm.md` + `documents/design/AncestryAnalysis.md`.
+- **Federated report records** — `du-domain::fed` (shared) defines the atproto wire contracts
+  (WireF64 strings + numeric storage projections); Navigator publishes alignment/biosample/
+  sequencerun/populationBreakdown (`7a67c22`/`dca5b5c`); AppView `du-jobs` ingests (`83bfc0f`).
+  Shared: `f975a08` + `0aa960c` (fitDistance). See `memory/fed-report-records.md`.
+- **Global ancestry panel pipeline** — `scripts/ancestry-panel/` (`67a5185`): fetch AADR/HGDP/
+  SGDP/1000G-CHM13 → liftover → 1240k-restricted AIMs → matrices → PCA+freq assets → CDN. Decoupled
+  from raw alignments (needs genotypes, not reads). URLs/scale verified (see
+  `memory/ancestry-panel-pipeline.md`): a naive pull is ~5 TB — slice panel sites, don't bulk-DL.
 
-Nothing uncommitted of note. Untracked: `CLAUDE.md`, `GEMINI.md`, `.claude/` (agent config — leave).
+Uncommitted of note: none. Untracked: `CLAUDE.md`, `GEMINI.md` (leave). A stray
+`crates/.claude/settings.local.json` is recreated by the environment and would break the cargo
+glob — handled by `exclude = ["crates/.claude"]` in the root `Cargo.toml`.
 
 ## Build / validate
 
 ```bash
-cargo build && cargo test --workspace && cargo clippy --all-targets -- -D warnings
+cargo build && cargo test --workspace
 cargo run -p navigator-ui            # desktop app
 ```
 
@@ -37,53 +76,82 @@ NAVIGATOR_ANCESTRY_PCA=/Users/jkane/.decodingus/ancestry/ancestry_pca_chm13v2.0.
   cargo test -p navigator-app --release \
   validate_gfx_chm13_ancestry local_ancestry_paints_gfx gfx_sex_is_male -- --ignored --nocapture
 ```
-Expected: European ~98% (admixture), DNA painting EUR-dominant, sex=Male. Other ignored live
-tests: `validate_gfx_chm13_haplogroups` (Y/mt), parity_real.rs (HG002 env), PDS publish (PDS_TEST_URL).
+Expected: European ~98% (admixture), DNA painting EUR-dominant, sex=Male. Other ignored live tests:
+`validate_gfx_chm13_haplogroups` (Y/mt), parity_real.rs (HG002 env), PDS publish (PDS_TEST_URL).
+`NAVIGATOR_ANCESTRY_PCA_ANCIENT` points the PCA-GMM at an ancient-component asset when present.
 
 ## Ancestry assets (regenerable; not committed)
 
 Installed at `~/.decodingus/ancestry/`:
-- `ancestry_panel_chm13v2.0.bin` — fine (29-pop) + SGDP AF panel (the default the app loads)
-- `ancestry_pca_chm13v2.0.bin` — PCA loadings (29 pops)
-- `*_super_*` / `*_fine_*` — earlier super-pop-only / 1000G-only backups
+- `ancestry_panel_chm13v2.0.bin` — AF panel (genotyping + admixture; the default the app loads)
+- `ancestry_pca_chm13v2.0.bin` — PCA loadings + per-pop centroids (drives PCA-GMM + nMonte)
 
-Rebuild from the archived genotype matrix `~/Genomics/archive/1kgp_chm13_pca_build/`
-(`gt_all.tsv.gz` 1000G + `sgdp_gt.tsv.gz` + `combined_pops.txt` + README with exact commands):
+Today's assets come from the archived genotype matrix `~/Genomics/archive/1kgp_chm13_pca_build/`
+(`gt_all.tsv.gz` 1000G + `sgdp_gt.tsv.gz` + `combined_pops.txt`):
 ```bash
 A=~/Genomics/archive/1kgp_chm13_pca_build; O=~/.decodingus/ancestry
 navigator-panelbuild fine-panel --matrix $A/gt_all.tsv.gz,$A/sgdp_gt.tsv.gz \
   --samples $A/samples.txt,$A/sgdp_subset_samples.txt --pops $A/combined_pops.txt --out $O/ancestry_panel_chm13v2.0.bin
 navigator-panelbuild pca        --matrix $A/gt_all.tsv.gz,$A/sgdp_gt.tsv.gz \
-  --samples $A/samples.txt,$A/sgdp_subset_samples.txt --pops $A/combined_pops.txt --out $O/ancestry_pca_chm13v2.0.bin
+  --samples $A/samples.txt,$A/sgdp_subset_samples.txt --pops $A/combined_pops.txt [--basis-pops modern.txt] --out $O/ancestry_pca_chm13v2.0.bin
 ```
-The super-pop AIMs panel itself was built from the sites-only 1KGP-CHM13 VCFs in
-`~/Genomics/1kgp_chm13_af/` (9 GB, re-downloadable from the human-pangenomics S3 bucket).
+The **next-gen** asset path is the global pipeline in `scripts/ancestry-panel/` (modern + ancient
+deep components over a 1240k-restricted panel, projection-mode PCA, CDN publish) — needs the
+datasets fetched (verify `# VERIFY` URLs; slice panel sites to avoid the multi-TB pull).
 
 ## EC2 (genotype extraction)
 
 `admin@ec2-3-132-31-28.us-east-2.compute.amazonaws.com`, key `~/Decoding-Us.pem` (chmod 600),
-Debian, bcftools installed. Used to tabix-fetch panel-site genotypes from the ~1 TB 1000G/SGDP
-genotype VCFs (in-AWS S3 is fast; a laptop fetch is .tbi/latency-bound). The recipe + region
-files are archived in `1kgp_chm13_pca_build/ancestry_build.tar.gz`. The matrices are already
-pulled, so re-extraction is only needed to add reference samples (e.g. a fine-Fst panel).
+Debian, bcftools. Used to tabix-fetch panel-site genotypes from the ~1 TB 1000G/SGDP VCFs (in-AWS
+S3 is fast). Recipe + region files archived in `1kgp_chm13_pca_build/ancestry_build.tar.gz`. The
+matrices are already pulled; re-extraction only needed to add reference samples.
 
 ## Key gotchas (also in agent memory)
 
-- CHM13 `chrM` is a circular permutation of rCRS → rotation-aware self-generated map.
-- CHM13 Y has inverted tracts → liftover reverse-complements minus-strand lifts.
-- `allele_freq/*withafinfo*` VCFs are **sites-only** (no genotypes despite the header); real
-  genotypes are in `unrelated_samples_2504/` + `SGDP/` (anonymized IDs → `SGDP_sample_info.txt`).
+- CHM13 `chrM` is a circular permutation of rCRS → rotation-aware self-generated map; CHM13 Y has
+  inverted tracts → liftover reverse-complements minus-strand lifts.
+- **Raw chrY de-novo is unmasked** — calls ~13k mostly-artifact variants. The validated Y discovery
+  is **"Find private Y variants"** (callable-mask + backbone-classified). chrM de-novo is fine (small,
+  fully callable). Don't re-add a raw chrY de-novo button.
+- Full Analysis **reuses cached** coverage + ancestry (the slow whole-genome steps); coverage is a
+  single-threaded full-genome pileup (minutes on WGS — slow, not hung; per-contig progress shows it).
 - PCA projection of a low-coverage sample is rescaled by `total/used` sites (else it shrinks toward
-  origin and mis-clusters).
-- SV needs ≥10× — won't run on the 4× GFX sample (gate returns "coverage too low").
-- AIMs were selected for 1000G **super-pop** Fst → within-continent fine resolution is noisy.
+  origin). SV needs ≥10× — won't run on 4× GFX. AIMs were super-pop-Fst selected → fine resolution noisy.
+- **i18n borrow gotcha**: `TextEdit::singleline(&mut self.x).hint_text(self.tr(k))` fails — bind
+  `let hint = self.tr(k);` first. `tr()` returns `&'static`.
+- **AppView pins the shared crate by git rev** — bump it (or `[patch]`) for new `du-domain::fed`
+  fields; additive optional fields keep the old rev compiling.
+
+## Architecture / design pointers
+
+- `documents/design/SubjectCentricModel.md` — donor-centric tab model (P1–P3 implemented).
+- `documents/design/AncestryAnalysis.md` — the 3 estimators + ancient-asset build + nMonte/G25.
+- `documents/atmosphere/` — the lexicon spec; `du-domain::fed` is the implemented write subset.
+- `documents/BACKLOG.md` — **Scala-era** feature inventory (March 2026, pre-rewrite); use as the
+  master feature list, not current status.
+- Agent memory (`~/.claude/projects/.../memory/`) is the most current running record.
+
+## Remaining gaps (from the 2026-06-07 audit)
+
+**Unported from Scala**: i18n (scaffolded, partial migration), feature toggles/config, the
+DecodingUs haplogroup tree provider (FTDNA-only today), haplogroup/comparison report export (CSV
+only), full Y-STR concordance subsystem.
+**Designed, not built**: IBD **network** matching (local detector + UI tab exist; consent/match-
+discovery/chromosome-browser/relationship records do not — the biggest remaining feature), Genome
+Regions API, Unified Quality Metrics Walker (would also fix slow coverage), sequence-run
+fingerprinting, academic-ENA / FTDNA-project / pangenome-GAM imports, imputation, instrument-
+observation + ancestral-STR records, interactive tree viz.
+**AppView side**: pick which ancestry method to surface; ingest `fitDistance` (needs rev bump);
+IBD-matching AppView backlog; AppView backfeed.
+**Small**: Edit/Delete + Add-to-Project UI stubs; Compare needs multi-select; table Y/mt only fills
+the selected subject; ancestry genotype-pooling deferred; global panel asset needs data.
 
 ## Recommended next steps (pick one)
 
-1. **IBD Matching + chromosome browser** — biggest remaining user-facing feature; detection +
-   identity math already built, the consent/match-discovery/browser UI is not.
-2. **Parity-harness automation** — make `parity_real.rs` a real CI gate (currently all `#[ignore]`),
-   the stated cutover criterion (§4c).
-3. Ancestry refinements — fine-Fst panel (sharpen sub-continental + SGDP continents), real CHM13
-   genetic map for the painting HMM, pair-state (per-haplotype) painting, country-polygon map.
-4. Validate SV on a ≥10× sample (e.g. HG002 in `~/Genomics/HG002`).
+1. **Unified Quality Metrics Walker** — one pass for coverage + read-metrics + sex; fixes the slow
+   full-genome coverage UX and is foundational. (`documents/design/UnifiedQualityMetricsWalker.md`.)
+2. **i18n** — keep migrating (forms, grid headers, status messages) and/or persist the chosen lang.
+3. **DecodingUs tree provider** — you control that tree; FTDNA-only is a real limitation for Y work.
+4. **IBD network matching** — biggest user-facing feature; detection + identity math built, the
+   consent/discovery/browser UI + records are not (needs AppView work too).
+5. **Edit/Delete + Add-to-Project** — small but visible UI stubs that need backend commands.
