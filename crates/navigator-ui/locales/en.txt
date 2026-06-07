@@ -53,3 +53,48 @@ theme.toggle=Toggle theme
 lang.label=Language
 lang.en=English
 lang.es=Español
+
+# Detail card titles
+card.haploConsensus=Haplogroup consensus
+card.coverage=Coverage
+card.sexMetrics=Sex & read metrics
+card.yHaplogroup=Y haplogroup
+card.privateYUnion=Private Y (donor union)
+card.snpVariants=SNP variants
+card.ystrConsensus=Y-STR profile (consensus)
+card.mtHaplogroup=mtDNA haplogroup
+card.mtSequences=mtDNA sequences
+card.mtDenovo=mtDNA de-novo SNP calls (chrM)
+card.mtHeteroplasmy=mtDNA heteroplasmy
+card.donorAncestry=Donor ancestry (best source)
+card.ancestry=Ancestry
+card.panelGenotypingIbd=Panel genotyping & IBD
+card.sequencingRuns=Sequencing Runs
+card.chipProfiles=Chip / Array Profiles
+card.strProfiles=STR Profiles
+
+# Dashboard
+dash.title=Dashboard
+dash.projects=Projects
+dash.subjects=Subjects
+dash.alignments=Alignments
+dash.panels=Panels
+
+# Empty states / hints
+empty.projects.title=Projects
+empty.projects.hint=Create or select a project from the left.
+empty.subjects.title=Subjects
+empty.subjects.hint=Select a subject from the left, or add a new one.
+hint.pickAlignment=No sequencing alignment for this subject yet — add a BAM/CRAM under Data Sources.
+
+# Primary analysis actions
+btn.assignY=Assign Y haplogroup
+btn.findPrivateY=Find private Y variants
+btn.assignMt=Assign mtDNA haplogroup
+btn.runCoverage=Run coverage
+btn.inferSex=Infer sex
+btn.readMetrics=Read metrics
+btn.callSv=Call SV
+btn.estimateAncestry=Estimate ancestry
+btn.runDenovo=Run de-novo
+btn.scanHeteroplasmy=Scan chrM heteroplasmy

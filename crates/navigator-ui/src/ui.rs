@@ -395,12 +395,9 @@ fn empty_state(ui: &mut egui::Ui, title: &str, hint: &str) {
 
 /// Hint shown in an analysis tab when the subject has no analyzable alignment (the default is
 /// auto-selected when one exists, so this means "no sequencing data yet").
-fn pick_alignment_hint(ui: &mut egui::Ui) {
+fn pick_alignment_hint(ui: &mut egui::Ui, msg: &str) {
     ui.add_space(8.0);
-    ui.label(
-        egui::RichText::new("No sequencing alignment for this subject yet — add a BAM/CRAM under Data Sources.")
-            .weak(),
-    );
+    ui.label(egui::RichText::new(msg).weak());
 }
 
 /// A dashboard stat tile: a big number over a muted label, in a rounded card.
@@ -1438,7 +1435,7 @@ impl NavigatorApp {
     /// The Projects work area: the open project's samples + coverage/haplogroup report.
     fn projects_central(&mut self, ui: &mut egui::Ui) {
         if self.selected_project.is_none() {
-            empty_state(ui, "Projects", "Create or select a project from the left.");
+            empty_state(ui, self.tr("empty.projects.title"), self.tr("empty.projects.hint"));
             return;
         }
         egui::ScrollArea::vertical().show(ui, |ui| {
@@ -1450,7 +1447,7 @@ impl NavigatorApp {
     /// The Subjects work area: the selected subject's detail — header + sub-tabs.
     fn subjects_central(&mut self, ui: &mut egui::Ui) {
         let Some(guid) = self.selected_sample else {
-            empty_state(ui, "Subjects", "Select a subject from the left, or add a new one.");
+            empty_state(ui, self.tr("empty.subjects.title"), self.tr("empty.subjects.hint"));
             return;
         };
         self.subject_detail_header(ui, guid);
@@ -1477,71 +1474,71 @@ impl NavigatorApp {
                         ui.add_space(10.0);
                     }
                     if self.consensus_y.is_some() || self.consensus_mt.is_some() {
-                        card(ui, "Haplogroup consensus", |ui| self.consensus_section(ui));
+                        card(ui, self.tr("card.haploConsensus"), |ui| self.consensus_section(ui));
                         ui.add_space(10.0);
                     }
                     if let Some(id) = self.selected_alignment {
-                        card(ui, "Coverage", |ui| self.coverage_section(ui, id));
+                        card(ui, self.tr("card.coverage"), |ui| self.coverage_section(ui, id));
                         ui.add_space(10.0);
-                        card(ui, "Sex & read metrics", |ui| self.sex_metrics_section(ui, id));
+                        card(ui, self.tr("card.sexMetrics"), |ui| self.sex_metrics_section(ui, id));
                     } else {
-                        pick_alignment_hint(ui);
+                        pick_alignment_hint(ui, self.tr("hint.pickAlignment"));
                     }
                 }
                 DetailTab::YDna => {
                     if let Some(id) = self.selected_alignment {
-                        card(ui, "Y haplogroup", |ui| self.y_haplogroup_section(ui, id));
+                        card(ui, self.tr("card.yHaplogroup"), |ui| self.y_haplogroup_section(ui, id));
                         ui.add_space(10.0);
                     } else if self.consensus_y.is_some() {
-                        card(ui, "Y haplogroup", |ui| self.consensus_block(ui, "Y-DNA", DnaType::Y));
+                        card(ui, self.tr("card.yHaplogroup"), |ui| self.consensus_block(ui, "Y-DNA", DnaType::Y));
                         ui.add_space(10.0);
                     } else {
-                        pick_alignment_hint(ui);
+                        pick_alignment_hint(ui, self.tr("hint.pickAlignment"));
                         ui.add_space(10.0);
                     }
                     if self.donor_private_y.is_some() {
                         ui.add_space(10.0);
-                        card(ui, "Private Y (donor union)", |ui| self.donor_private_y_section(ui));
+                        card(ui, self.tr("card.privateYUnion"), |ui| self.donor_private_y_section(ui));
                     }
                     ui.add_space(10.0);
-                    card(ui, "SNP variants", |ui| self.variants_section(ui, guid));
+                    card(ui, self.tr("card.snpVariants"), |ui| self.variants_section(ui, guid));
                     ui.add_space(10.0);
-                    card(ui, "Y-STR profile (consensus)", |ui| self.str_consensus_section(ui));
+                    card(ui, self.tr("card.ystrConsensus"), |ui| self.str_consensus_section(ui));
                 }
                 DetailTab::MtDna => {
                     // mtDNA haplogroup: assign standalone from the selected alignment (like Y-DNA);
                     // with no alignment selected, show the donor consensus if one was recorded.
                     if let Some(id) = self.selected_alignment {
-                        card(ui, "mtDNA haplogroup", |ui| self.mt_haplogroup_section(ui, id));
+                        card(ui, self.tr("card.mtHaplogroup"), |ui| self.mt_haplogroup_section(ui, id));
                         ui.add_space(10.0);
                     } else if self.consensus_mt.is_some() {
-                        card(ui, "mtDNA haplogroup", |ui| self.consensus_block(ui, "mtDNA", DnaType::Mt));
+                        card(ui, self.tr("card.mtHaplogroup"), |ui| self.consensus_block(ui, "mtDNA", DnaType::Mt));
                         ui.add_space(10.0);
                     }
-                    card(ui, "mtDNA sequences", |ui| self.mtdna_section(ui, guid));
+                    card(ui, self.tr("card.mtSequences"), |ui| self.mtdna_section(ui, guid));
                     if let Some(id) = self.selected_alignment {
                         ui.add_space(10.0);
-                        card(ui, "mtDNA de-novo SNP calls (chrM)", |ui| self.denovo_section(ui, id, "chrM"));
+                        card(ui, self.tr("card.mtDenovo"), |ui| self.denovo_section(ui, id, "chrM"));
                         ui.add_space(10.0);
-                        card(ui, "mtDNA heteroplasmy", |ui| self.heteroplasmy_section(ui, id));
+                        card(ui, self.tr("card.mtHeteroplasmy"), |ui| self.heteroplasmy_section(ui, id));
                     }
                 }
                 DetailTab::Ancestry => {
                     if self.donor_ancestry.is_some() {
-                        card(ui, "Donor ancestry (best source)", |ui| self.donor_ancestry_summary(ui));
+                        card(ui, self.tr("card.donorAncestry"), |ui| self.donor_ancestry_summary(ui));
                         ui.add_space(10.0);
                     }
                     if let Some(id) = self.selected_alignment {
-                        card(ui, "Ancestry", |ui| self.ancestry_section(ui, id));
+                        card(ui, self.tr("card.ancestry"), |ui| self.ancestry_section(ui, id));
                     } else {
-                        pick_alignment_hint(ui);
+                        pick_alignment_hint(ui, self.tr("hint.pickAlignment"));
                     }
                 }
                 DetailTab::IbdMatches => {
                     if let Some(id) = self.selected_alignment {
-                        card(ui, "Panel genotyping & IBD", |ui| self.genotyping_section(ui, id));
+                        card(ui, self.tr("card.panelGenotypingIbd"), |ui| self.genotyping_section(ui, id));
                     } else {
-                        pick_alignment_hint(ui);
+                        pick_alignment_hint(ui, self.tr("hint.pickAlignment"));
                     }
                 }
                 DetailTab::DataSources => self.data_sources_tab(ui, guid),
@@ -1591,13 +1588,17 @@ impl NavigatorApp {
     /// A simple at-a-glance dashboard: counts + account state.
     fn dashboard_central(&mut self, ui: &mut egui::Ui) {
         ui.add_space(8.0);
-        ui.heading("Dashboard");
+        ui.heading(self.tr("dash.title"));
         ui.add_space(12.0);
+        let (projects, subjects, alignments, panels) =
+            (self.overview.len(), self.all_biosamples.len(), self.all_alignments.len(), self.panels.len());
+        let (lp, ls, la, lpn) =
+            (self.tr("dash.projects"), self.tr("dash.subjects"), self.tr("dash.alignments"), self.tr("dash.panels"));
         ui.horizontal_wrapped(|ui| {
-            stat_card(ui, "Projects", self.overview.len());
-            stat_card(ui, "Subjects", self.all_biosamples.len());
-            stat_card(ui, "Alignments", self.all_alignments.len());
-            stat_card(ui, "Panels", self.panels.len());
+            stat_card(ui, lp, projects);
+            stat_card(ui, ls, subjects);
+            stat_card(ui, la, alignments);
+            stat_card(ui, lpn, panels);
         });
         ui.add_space(16.0);
         match &self.account {
@@ -2525,16 +2526,16 @@ impl NavigatorApp {
     /// and STR profiles — each in a rounded card.
     fn data_sources_tab(&mut self, ui: &mut egui::Ui, guid: SampleGuid) {
         ui.add_space(4.0);
-        card(ui, "Sequencing Runs", |ui| self.runs_card(ui, guid));
+        card(ui, self.tr("card.sequencingRuns"), |ui| self.runs_card(ui, guid));
         ui.add_space(10.0);
-        card(ui, "Chip / Array Profiles", |ui| {
+        card(ui, self.tr("card.chipProfiles"), |ui| {
             if self.chip_profiles.is_empty() {
                 ui.label(egui::RichText::new("No chip/array data").weak());
             }
             self.chip_section(ui, guid);
         });
         ui.add_space(10.0);
-        card(ui, "STR Profiles", |ui| {
+        card(ui, self.tr("card.strProfiles"), |ui| {
             if self.str_profiles.is_empty() {
                 ui.label(egui::RichText::new("No STR profiles").weak());
             }
@@ -2740,7 +2741,7 @@ impl NavigatorApp {
             .unwrap_or(false);
 
         ui.horizontal(|ui| {
-            if ui.add_enabled(has_paths && !self.running, egui::Button::new("Run coverage")).clicked() {
+            if ui.add_enabled(has_paths && !self.running, egui::Button::new(self.tr("btn.runCoverage"))).clicked() {
                 self.running = true;
                 self.status = format!("Running coverage on alignment #{alignment_id}…");
                 let _ = self.tx.send(Command::RunCoverage(alignment_id));
@@ -2791,17 +2792,17 @@ impl NavigatorApp {
             .unwrap_or(false);
 
         ui.horizontal(|ui| {
-            if ui.add_enabled(has_bam && !self.running_sex, egui::Button::new("Infer sex")).clicked() {
+            if ui.add_enabled(has_bam && !self.running_sex, egui::Button::new(self.tr("btn.inferSex"))).clicked() {
                 self.running_sex = true;
                 self.status = "Inferring sex…".into();
                 let _ = self.tx.send(Command::RunSex(alignment_id));
             }
-            if ui.add_enabled(has_bam && !self.running_metrics, egui::Button::new("Read metrics")).clicked() {
+            if ui.add_enabled(has_bam && !self.running_metrics, egui::Button::new(self.tr("btn.readMetrics"))).clicked() {
                 self.running_metrics = true;
                 self.status = "Collecting read metrics…".into();
                 let _ = self.tx.send(Command::RunReadMetrics(alignment_id));
             }
-            if ui.add_enabled(has_bam && !self.running_sv, egui::Button::new("Call SV")).clicked() {
+            if ui.add_enabled(has_bam && !self.running_sv, egui::Button::new(self.tr("btn.callSv"))).clicked() {
                 self.running_sv = true;
                 self.status = "Calling structural variants (needs ≥10× coverage)…".into();
                 let _ = self.tx.send(Command::RunSv(alignment_id));
@@ -3012,7 +3013,7 @@ impl NavigatorApp {
             .unwrap_or(false);
 
         ui.horizontal(|ui| {
-            if ui.add_enabled(has_bam, egui::Button::new("Scan chrM heteroplasmy")).clicked() {
+            if ui.add_enabled(has_bam, egui::Button::new(self.tr("btn.scanHeteroplasmy"))).clicked() {
                 self.status = "Scanning chrM pileup for heteroplasmy…".into();
                 let _ = self.tx.send(Command::LoadHeteroplasmy { alignment_id });
             }
@@ -3050,7 +3051,7 @@ impl NavigatorApp {
         let busy = self.estimating_ancestry || self.painting_running;
         ui.horizontal(|ui| {
             if ui
-                .add_enabled(has_bam && !busy, egui::Button::new("Estimate ancestry"))
+                .add_enabled(has_bam && !busy, egui::Button::new(self.tr("btn.estimateAncestry")))
                 .clicked()
             {
                 self.estimating_ancestry = true;
@@ -3201,7 +3202,7 @@ impl NavigatorApp {
             .unwrap_or(false);
 
         ui.horizontal(|ui| {
-            if ui.add_enabled(has_bam, egui::Button::new("Assign Y haplogroup")).clicked() {
+            if ui.add_enabled(has_bam, egui::Button::new(self.tr("btn.assignY"))).clicked() {
                 self.status = "Assigning Y haplogroup (fetching FTDNA tree)…".into();
                 let _ = self.tx.send(Command::AssignYHaplogroup { alignment_id });
             }
@@ -3259,7 +3260,7 @@ impl NavigatorApp {
             });
         }
         ui.horizontal(|ui| {
-            if ui.add_enabled(has_ref && !self.finding_private_y, egui::Button::new("Find private Y variants")).clicked() {
+            if ui.add_enabled(has_ref && !self.finding_private_y, egui::Button::new(self.tr("btn.findPrivateY"))).clicked() {
                 self.finding_private_y = true;
                 self.status = "Finding private Y variants (de-novo chrY)…".into();
                 let mask = if self.y_self_mask {
@@ -3459,7 +3460,7 @@ impl NavigatorApp {
             .map(|a| a.bam_path.is_some())
             .unwrap_or(false);
         ui.horizontal(|ui| {
-            if ui.add_enabled(has_bam, egui::Button::new("Assign mtDNA haplogroup")).clicked() {
+            if ui.add_enabled(has_bam, egui::Button::new(self.tr("btn.assignMt"))).clicked() {
                 self.status = "Assigning mtDNA haplogroup (fetching FTDNA mt tree)…".into();
                 let _ = self.tx.send(Command::AssignMtdnaHaplogroupFromAlignment { alignment_id });
             }
@@ -3486,7 +3487,8 @@ impl NavigatorApp {
 
         ui.horizontal(|ui| {
             let ready = has_bam && !self.running_denovo;
-            if ui.add_enabled(ready, egui::Button::new(format!("Run de-novo ({contig})"))).clicked() {
+            let label = format!("{} ({contig})", self.tr("btn.runDenovo"));
+            if ui.add_enabled(ready, egui::Button::new(label)).clicked() {
                 self.running_denovo = true;
                 self.denovo.remove(contig);
                 self.status = format!("Calling {contig} on alignment #{alignment_id}…");

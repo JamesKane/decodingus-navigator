@@ -44,3 +44,44 @@ theme.toggle=Cambiar tema
 lang.label=Idioma
 lang.en=English
 lang.es=Español
+
+card.haploConsensus=Consenso de haplogrupo
+card.coverage=Cobertura
+card.sexMetrics=Sexo y métricas de lectura
+card.yHaplogroup=Haplogrupo Y
+card.privateYUnion=Y privado (unión del donante)
+card.snpVariants=Variantes SNP
+card.ystrConsensus=Perfil Y-STR (consenso)
+card.mtHaplogroup=Haplogrupo ADNmt
+card.mtSequences=Secuencias ADNmt
+card.mtDenovo=Llamadas SNP de novo ADNmt (chrM)
+card.mtHeteroplasmy=Heteroplasmia ADNmt
+card.donorAncestry=Ascendencia del donante (mejor fuente)
+card.ancestry=Ascendencia
+card.panelGenotypingIbd=Genotipado de panel e IBD
+card.sequencingRuns=Secuenciaciones
+card.chipProfiles=Perfiles de chip / array
+card.strProfiles=Perfiles STR
+
+dash.title=Panel
+dash.projects=Proyectos
+dash.subjects=Sujetos
+dash.alignments=Alineamientos
+dash.panels=Paneles
+
+empty.projects.title=Proyectos
+empty.projects.hint=Cree o seleccione un proyecto a la izquierda.
+empty.subjects.title=Sujetos
+empty.subjects.hint=Seleccione un sujeto a la izquierda o añada uno nuevo.
+hint.pickAlignment=Aún no hay alineamiento de secuenciación para este sujeto — añada un BAM/CRAM en Fuentes de datos.
+
+btn.assignY=Asignar haplogrupo Y
+btn.findPrivateY=Buscar variantes Y privadas
+btn.assignMt=Asignar haplogrupo ADNmt
+btn.runCoverage=Calcular cobertura
+btn.inferSex=Inferir sexo
+btn.readMetrics=Métricas de lectura
+btn.callSv=Llamar SV
+btn.estimateAncestry=Estimar ascendencia
+btn.runDenovo=Ejecutar de novo
+btn.scanHeteroplasmy=Escanear heteroplasmia chrM
