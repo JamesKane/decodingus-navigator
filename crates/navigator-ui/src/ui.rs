@@ -1470,6 +1470,8 @@ impl NavigatorApp {
                         ui.add_space(10.0);
                     }
                     card(ui, "SNP variants", |ui| self.variants_section(ui, guid));
+                    ui.add_space(10.0);
+                    card(ui, "Y-STR profile (consensus)", |ui| self.str_consensus_section(ui));
                 }
                 DetailTab::MtDna => {
                     // mtDNA haplogroup: assign standalone from the selected alignment (like Y-DNA);
@@ -1917,6 +1919,43 @@ impl NavigatorApp {
     }
 
     /// Y-STR profiles for the selected subject + an import form (CSV/TSV marker table).
+    /// Donor-level Y-STR consensus across all of the subject's panels (Phase 2 rollup): the modal
+    /// value per marker, with cross-panel disagreements flagged.
+    fn str_consensus_section(&mut self, ui: &mut egui::Ui) {
+        if self.str_profiles.is_empty() {
+            ui.label(egui::RichText::new("No STR profiles yet — import one under Data Sources.").weak());
+            return;
+        }
+        let consensus = strprofile::consensus_markers(&self.str_profiles);
+        ui.label(
+            egui::RichText::new(format!("{} markers from {} panel(s)", consensus.len(), self.str_profiles.len()))
+                .weak(),
+        );
+        let conflicts = consensus.iter().filter(|m| m.conflict).count();
+        if conflicts > 0 {
+            ui.colored_label(
+                egui::Color32::from_rgb(220, 150, 60),
+                format!("⚠ {conflicts} marker(s) disagree across panels"),
+            );
+        }
+        egui::Grid::new("str_consensus").striped(true).num_columns(3).show(ui, |ui| {
+            ui.strong("Marker");
+            ui.strong("Value");
+            ui.strong("Panels");
+            ui.end_row();
+            for m in &consensus {
+                ui.label(&m.marker);
+                if m.conflict {
+                    ui.colored_label(egui::Color32::from_rgb(220, 150, 60), &m.value);
+                } else {
+                    ui.label(&m.value);
+                }
+                ui.label(m.panels.to_string());
+                ui.end_row();
+            }
+        });
+    }
+
     fn str_section(&mut self, ui: &mut egui::Ui, guid: SampleGuid) {
         for p in &self.str_profiles {
             let provider = p.provider.as_deref().unwrap_or("—");
@@ -2935,6 +2974,12 @@ impl NavigatorApp {
                             result.snps_analyzed,
                             result.confidence_level * 100.0
                         ));
+                        // Donor provenance: which method + reference build produced this estimate.
+                        ui.label(
+                            egui::RichText::new(format!("{} · {}", result.method, result.reference_version))
+                                .small()
+                                .weak(),
+                        );
                         ui.add_space(4.0);
                         draw_composition_bar(ui, &result.super_population_summary);
                     });

@@ -15,6 +15,57 @@ pub struct StrMarker {
     pub value: String,
 }
 
+/// One marker's donor consensus across all of a subject's panels: the modal value, how many
+/// panels reported it, and whether the panels disagreed.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ConsensusStrMarker {
+    pub marker: String,
+    pub value: String,
+    /// Panels that reported a (non-null) value for this marker.
+    pub panels: usize,
+    /// True when panels reported differing values (a conflict to surface).
+    pub conflict: bool,
+}
+
+/// Merge a subject's STR panels into one **donor consensus** profile: per marker, the modal
+/// (most common) value across panels, flagged when panels disagree. Null/palindromic-null
+/// values are skipped. Markers keep their first-seen order.
+pub fn consensus_markers(profiles: &[StrProfile]) -> Vec<ConsensusStrMarker> {
+    use std::collections::HashMap;
+    let mut order: Vec<String> = Vec::new();
+    let mut by_marker: HashMap<String, Vec<String>> = HashMap::new();
+    for p in profiles {
+        for m in &p.markers {
+            let v = m.value.trim();
+            if v.is_empty() || v == "-" {
+                continue;
+            }
+            if !by_marker.contains_key(&m.marker) {
+                order.push(m.marker.clone());
+            }
+            by_marker.entry(m.marker.clone()).or_default().push(v.to_string());
+        }
+    }
+    order
+        .into_iter()
+        .map(|marker| {
+            let vals = &by_marker[&marker];
+            let mut counts: HashMap<&str, usize> = HashMap::new();
+            for v in vals {
+                *counts.entry(v.as_str()).or_default() += 1;
+            }
+            let conflict = counts.len() > 1;
+            // Modal value; ties broken by the lexicographically smallest for determinism.
+            let value = counts
+                .iter()
+                .max_by(|a, b| a.1.cmp(b.1).then_with(|| b.0.cmp(a.0)))
+                .map(|(v, _)| (*v).to_string())
+                .unwrap_or_default();
+            ConsensusStrMarker { marker, value, panels: vals.len(), conflict }
+        })
+        .collect()
+}
+
 /// A subject's Y-STR profile from one panel/source.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StrProfile {
@@ -140,5 +191,37 @@ mod tests {
     #[test]
     fn empty_input_errors() {
         assert!(parse_csv("\n\n# nothing\n").is_err());
+    }
+
+    #[test]
+    fn consensus_merges_and_flags_conflicts() {
+        let guid = SampleGuid(uuid::Uuid::nil());
+        let mk = |panel: &str, pairs: &[(&str, &str)]| StrProfile {
+            id: 0,
+            biosample_guid: guid,
+            panel_name: panel.into(),
+            provider: None,
+            source: None,
+            markers: pairs.iter().map(|(m, v)| StrMarker { marker: (*m).into(), value: (*v).into() }).collect(),
+        };
+        let profiles = vec![
+            mk("Y-37", &[("DYS393", "13"), ("DYS390", "24"), ("DYS385", "-")]),
+            mk("Y-111", &[("DYS393", "13"), ("DYS390", "25"), ("DYS19", "14")]),
+        ];
+        let c = consensus_markers(&profiles);
+        let by = |name: &str| c.iter().find(|m| m.marker == name).cloned();
+
+        // Agreement: one value, 2 panels, no conflict.
+        let d393 = by("DYS393").unwrap();
+        assert_eq!(d393.value, "13");
+        assert_eq!(d393.panels, 2);
+        assert!(!d393.conflict);
+
+        // Disagreement: flagged conflict.
+        assert!(by("DYS390").unwrap().conflict);
+
+        // Null ("-") is skipped; single-panel marker still appears.
+        assert!(by("DYS385").is_none());
+        assert_eq!(by("DYS19").unwrap().panels, 1);
     }
 }
