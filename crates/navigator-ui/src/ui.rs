@@ -79,13 +79,14 @@ enum DetailTab {
 }
 
 impl DetailTab {
+    /// `(tab, i18n key)` in display order.
     const ALL: [(DetailTab, &'static str); 6] = [
-        (DetailTab::Overview, "Overview"),
-        (DetailTab::YDna, "Y-DNA"),
-        (DetailTab::MtDna, "mtDNA"),
-        (DetailTab::Ancestry, "Ancestry"),
-        (DetailTab::IbdMatches, "IBD Matches"),
-        (DetailTab::DataSources, "Data Sources"),
+        (DetailTab::Overview, "detail.overview"),
+        (DetailTab::YDna, "detail.ydna"),
+        (DetailTab::MtDna, "detail.mtdna"),
+        (DetailTab::Ancestry, "detail.ancestry"),
+        (DetailTab::IbdMatches, "detail.ibd"),
+        (DetailTab::DataSources, "detail.datasources"),
     ];
 }
 
@@ -112,6 +113,8 @@ pub struct NavigatorApp {
     nav: Nav,
     /// Selected subject-detail sub-tab.
     detail_tab: DetailTab,
+    /// Active UI language.
+    lang: crate::i18n::Lang,
     /// Dark (default) vs light theme.
     dark_mode: bool,
     /// Subjects-list filter text.
@@ -723,6 +726,8 @@ impl NavigatorApp {
             frame_time: 0.0,
             nav: Nav::Subjects,
             detail_tab: DetailTab::Overview,
+            // Default English; honor $LANG (e.g. "es_ES.UTF-8") when it names a supported locale.
+            lang: std::env::var("LANG").ok().and_then(|l| crate::i18n::Lang::parse(&l)).unwrap_or(crate::i18n::Lang::En),
             dark_mode: true,
             subject_search: String::new(),
             overview: Vec::new(),
@@ -1360,12 +1365,12 @@ impl eframe::App for NavigatorApp {
         egui::TopBottomPanel::bottom("status").show(ctx, |ui| {
             ui.horizontal(|ui| {
                 if self.online {
-                    ui.colored_label(egui::Color32::from_rgb(80, 190, 120), "● Online");
+                    ui.colored_label(egui::Color32::from_rgb(80, 190, 120), self.tr("status.online"));
                 } else {
-                    ui.colored_label(egui::Color32::from_rgb(220, 150, 60), "○ Offline");
+                    ui.colored_label(egui::Color32::from_rgb(220, 150, 60), self.tr("status.offline"));
                 }
                 ui.separator();
-                ui.label(egui::RichText::new("Status:").weak());
+                ui.label(egui::RichText::new(self.tr("status.label")).weak());
                 ui.label(&self.status);
             });
         });
@@ -1451,8 +1456,8 @@ impl NavigatorApp {
         self.subject_detail_header(ui, guid);
         ui.add_space(6.0);
         ui.horizontal(|ui| {
-            for (tab, label) in DetailTab::ALL {
-                if ui.selectable_label(self.detail_tab == tab, egui::RichText::new(label).strong()).clicked() {
+            for (tab, key) in DetailTab::ALL {
+                if ui.selectable_label(self.detail_tab == tab, egui::RichText::new(self.tr(key)).strong()).clicked() {
                     self.detail_tab = tab;
                 }
             }
@@ -1464,7 +1469,7 @@ impl NavigatorApp {
                 DetailTab::Overview => {
                     if let Some(id) = self.selected_alignment {
                         if ui
-                            .add(egui::Button::new(egui::RichText::new("▶  Run Full Analysis").color(egui::Color32::WHITE)).fill(ACCENT))
+                            .add(egui::Button::new(egui::RichText::new(self.tr("action.runFullAnalysis")).color(egui::Color32::WHITE)).fill(ACCENT))
                             .clicked()
                         {
                             self.start_full_analysis(id);
@@ -1562,13 +1567,16 @@ impl NavigatorApp {
                 );
             });
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ui.add(egui::Button::new(egui::RichText::new("Delete").color(egui::Color32::WHITE)).fill(DANGER)).clicked() {
+                if ui
+                    .add(egui::Button::new(egui::RichText::new(self.tr("common.delete")).color(egui::Color32::WHITE)).fill(DANGER))
+                    .clicked()
+                {
                     self.status = "Delete is not wired yet.".into();
                 }
-                if ui.button("Edit").clicked() {
+                if ui.button(self.tr("common.edit")).clicked() {
                     self.status = "Edit is not wired yet.".into();
                 }
-                if ui.button("➕  Add Data").clicked() {
+                if ui.button(self.tr("detail.addData")).clicked() {
                     if let Some(path) = rfd::FileDialog::new()
                         .add_filter("data files", &["vcf", "csv", "tsv", "txt", "fa", "fasta", "fna", "fas", "bam", "cram"])
                         .pick_file()
@@ -1609,12 +1617,12 @@ impl NavigatorApp {
             ui.add_space(2.0);
             ui.horizontal(|ui| {
                 let selected = self.selected_sample.is_some();
-                ui.label(format!("{} selected", if selected { 1 } else { 0 }));
+                ui.label(format!("{} {}", if selected { 1 } else { 0 }, self.tr("action.selected")));
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui.add_enabled(selected, egui::Button::new("Add to Project")).clicked() {
+                    if ui.add_enabled(selected, egui::Button::new(self.tr("action.addToProject"))).clicked() {
                         self.status = "Add to Project: not wired yet.".into();
                     }
-                    if ui.add_enabled(selected, egui::Button::new("Batch Analyze")).clicked() {
+                    if ui.add_enabled(selected, egui::Button::new(self.tr("action.batchAnalyze"))).clicked() {
                         if let Some(id) = self.selected_alignment {
                             self.start_full_analysis(id);
                         } else {
@@ -1622,7 +1630,7 @@ impl NavigatorApp {
                         }
                     }
                     // Compare needs a second subject (multi-select) — disabled for now.
-                    let _ = ui.add_enabled(false, egui::Button::new("Compare"));
+                    let _ = ui.add_enabled(false, egui::Button::new(self.tr("action.compare")));
                 });
             });
             ui.add_space(2.0);
@@ -1693,18 +1701,32 @@ impl NavigatorApp {
         let _ = self.tx.send(Command::RunFullAnalysis { alignment_id });
     }
 
-    /// The top app bar: product title (left), theme toggle + account controls (right).
+    /// Translate a catalog key for the active language. Returns `&'static str` (catalogs are
+    /// embedded), so it never borrows `self` — convenient inside egui closures.
+    fn tr(&self, key: &'static str) -> &'static str {
+        crate::i18n::tr(self.lang, key)
+    }
+
+    /// The top app bar: product title (left), theme + language + account controls (right).
     fn app_bar(&mut self, ctx: &egui::Context) {
         egui::TopBottomPanel::top("appbar").show(ctx, |ui| {
             ui.add_space(2.0);
             ui.horizontal(|ui| {
-                ui.heading("Decoding-Us Navigator");
+                ui.heading(self.tr("app.name"));
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     let icon = if self.dark_mode { "☀" } else { "🌙" };
-                    if ui.button(icon).on_hover_text("Toggle theme").clicked() {
+                    if ui.button(icon).on_hover_text(self.tr("theme.toggle")).clicked() {
                         self.dark_mode = !self.dark_mode;
                         apply_theme(ctx, self.dark_mode);
                     }
+                    ui.separator();
+                    egui::ComboBox::from_id_salt("lang")
+                        .selected_text(self.lang.label())
+                        .show_ui(ui, |ui| {
+                            for &l in crate::i18n::Lang::all() {
+                                ui.selectable_value(&mut self.lang, l, l.label());
+                            }
+                        });
                     ui.separator();
                     self.account_controls(ui);
                 });
@@ -1718,9 +1740,12 @@ impl NavigatorApp {
         egui::TopBottomPanel::top("nav").show(ctx, |ui| {
             ui.add_space(2.0);
             ui.horizontal(|ui| {
-                for (nav, label) in
-                    [(Nav::Dashboard, "📊  Dashboard"), (Nav::Subjects, "👥  Subjects"), (Nav::Projects, "📁  Projects")]
-                {
+                for (nav, icon, key) in [
+                    (Nav::Dashboard, "📊", "nav.dashboard"),
+                    (Nav::Subjects, "👥", "nav.subjects"),
+                    (Nav::Projects, "📁", "nav.projects"),
+                ] {
+                    let label = format!("{icon}  {}", self.tr(key));
                     if ui.selectable_label(self.nav == nav, egui::RichText::new(label).strong()).clicked() {
                         self.nav = nav;
                     }
@@ -1734,13 +1759,14 @@ impl NavigatorApp {
     fn account_controls(&mut self, ui: &mut egui::Ui) {
         match &self.account {
             Some(did) => {
-                if ui.button("Sign out").clicked() {
+                let did = did.clone();
+                if ui.button(self.tr("account.signOut")).clicked() {
                     let _ = self.tx.send(Command::Logout);
                 }
                 if self.online {
-                    ui.colored_label(egui::Color32::from_rgb(80, 190, 120), "● online");
+                    ui.colored_label(egui::Color32::from_rgb(80, 190, 120), self.tr("account.online"));
                 } else {
-                    ui.colored_label(egui::Color32::from_rgb(220, 150, 60), "○ offline");
+                    ui.colored_label(egui::Color32::from_rgb(220, 150, 60), self.tr("account.offline"));
                 }
                 let short: String = did.chars().take(22).collect();
                 ui.label(egui::RichText::new(short).weak());
@@ -1750,17 +1776,18 @@ impl NavigatorApp {
                     ui.spinner();
                 }
                 let ready = !self.forms.login_handle.trim().is_empty() && !self.logging_in;
-                if ui.add_enabled(ready, egui::Button::new("Sign in")).clicked() {
+                if ui.add_enabled(ready, egui::Button::new(self.tr("account.signIn"))).clicked() {
                     self.logging_in = true;
                     self.status = "Opening browser to authorize…".into();
                     let _ = self.tx.send(Command::Login { handle: self.forms.login_handle.trim().to_string() });
                 }
+                let hint = self.tr("account.handleHint");
                 ui.add(
                     egui::TextEdit::singleline(&mut self.forms.login_handle)
-                        .hint_text("handle or did")
+                        .hint_text(hint)
                         .desired_width(180.0),
                 );
-                ui.label("PDS:");
+                ui.label(self.tr("account.pds"));
             }
         }
     }
@@ -1838,13 +1865,17 @@ impl NavigatorApp {
         ui.add_space(6.0);
         ui.horizontal(|ui| {
             let btn_w = 160.0;
+            let hint = self.tr("subjects.search");
             ui.add(
                 egui::TextEdit::singleline(&mut self.subject_search)
-                    .hint_text("Search name, ID, haplogroup…")
+                    .hint_text(hint)
                     .desired_width((ui.available_width() - btn_w).max(120.0)),
             );
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ui.add(egui::Button::new(egui::RichText::new("➕  Add New Subject").color(egui::Color32::WHITE)).fill(ACCENT)).clicked() {
+                if ui
+                    .add(egui::Button::new(egui::RichText::new(self.tr("subjects.addNew")).color(egui::Color32::WHITE)).fill(ACCENT))
+                    .clicked()
+                {
                     self.forms.show_add_subject = !self.forms.show_add_subject;
                 }
             });
@@ -1863,7 +1894,7 @@ impl NavigatorApp {
     /// selected row highlighted. Clicking a row selects the subject.
     fn subjects_table(&mut self, ui: &mut egui::Ui) {
         if self.all_biosamples.is_empty() {
-            ui.label(egui::RichText::new("No subjects yet.").weak());
+            ui.label(egui::RichText::new(self.tr("subjects.none")).weak());
             return;
         }
         let total_w: f32 = SUBJECT_COLS.iter().map(|c| c.1).sum();
@@ -1909,7 +1940,7 @@ impl NavigatorApp {
                 }
             }
             if shown == 0 {
-                ui.label(egui::RichText::new("No subjects match the search.").weak());
+                ui.label(egui::RichText::new(self.tr("subjects.noMatch")).weak());
             }
         });
         if let Some(guid) = pick {

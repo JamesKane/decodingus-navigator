@@ -1,0 +1,46 @@
+# Spanish message catalog for the Navigator UI. Partial (chrome) — missing keys fall back to
+# English. Review by a native speaker recommended.
+
+app.name=Decoding-Us Navigator
+
+nav.dashboard=Panel
+nav.subjects=Sujetos
+nav.projects=Proyectos
+
+detail.overview=Resumen
+detail.ydna=ADN-Y
+detail.mtdna=ADNmt
+detail.ancestry=Ascendencia
+detail.ibd=Coincidencias IBD
+detail.datasources=Fuentes de datos
+
+subjects.addNew=➕  Añadir sujeto
+subjects.search=Buscar nombre, ID, haplogrupo…
+subjects.none=Aún no hay sujetos.
+subjects.noMatch=Ningún sujeto coincide con la búsqueda.
+
+detail.addData=➕  Añadir datos
+common.edit=Editar
+common.delete=Eliminar
+
+action.selected=seleccionado(s)
+action.compare=Comparar
+action.batchAnalyze=Analizar lote
+action.addToProject=Añadir al proyecto
+action.runFullAnalysis=▶  Ejecutar análisis completo
+
+account.signIn=Iniciar sesión
+account.signOut=Cerrar sesión
+account.pds=PDS:
+account.handleHint=handle o did
+account.online=● en línea
+account.offline=○ sin conexión
+
+status.label=Estado:
+status.online=● En línea
+status.offline=○ Sin conexión
+
+theme.toggle=Cambiar tema
+lang.label=Idioma
+lang.en=English
+lang.es=Español

@@ -4,6 +4,7 @@
 
 use std::path::PathBuf;
 
+mod i18n;
 mod ui;
 mod worker;
 

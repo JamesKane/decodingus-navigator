@@ -1,0 +1,55 @@
+# English message catalog for the Navigator UI. key=value, '#' comments.
+# Scaffolding scope: the app chrome (bars, tabs, primary actions). Deeper section strings
+# migrate to t() incrementally — anything missing here falls back to English then the key.
+
+app.name=Decoding-Us Navigator
+
+# Primary navigation
+nav.dashboard=Dashboard
+nav.subjects=Subjects
+nav.projects=Projects
+
+# Subject detail sub-tabs
+detail.overview=Overview
+detail.ydna=Y-DNA
+detail.mtdna=mtDNA
+detail.ancestry=Ancestry
+detail.ibd=IBD Matches
+detail.datasources=Data Sources
+
+# Subjects browser
+subjects.addNew=➕  Add New Subject
+subjects.search=Search name, ID, haplogroup…
+subjects.none=No subjects yet.
+subjects.noMatch=No subjects match the search.
+
+# Subject detail header
+detail.addData=➕  Add Data
+common.edit=Edit
+common.delete=Delete
+
+# Bottom action bar
+action.selected=selected
+action.compare=Compare
+action.batchAnalyze=Batch Analyze
+action.addToProject=Add to Project
+action.runFullAnalysis=▶  Run Full Analysis
+
+# Account / sign-in
+account.signIn=Sign in
+account.signOut=Sign out
+account.pds=PDS:
+account.handleHint=handle or did
+account.online=● online
+account.offline=○ offline
+
+# Status bar
+status.label=Status:
+status.online=● Online
+status.offline=○ Offline
+
+# Theme + language
+theme.toggle=Toggle theme
+lang.label=Language
+lang.en=English
+lang.es=Español
