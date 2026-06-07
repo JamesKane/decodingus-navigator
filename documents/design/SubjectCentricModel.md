@@ -1,7 +1,8 @@
 # Subject-centric analysis model (design)
 
-Status: **proposal / plan only** (no code yet). Captures the shift from run-centric tabs to
-donor-level aggregate reports.
+Status: **P1–P3 implemented** (commits ba6ffc2 / 9259f7a / d928af8). The remaining open item is
+true genotype-level pooling for ancestry (see Phasing/Open decisions). Captures the shift from
+run-centric tabs to donor-level aggregate reports.
 
 ## Problem
 
