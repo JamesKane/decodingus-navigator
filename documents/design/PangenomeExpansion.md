@@ -25,7 +25,7 @@ Legend: 🟢 **here** (built, in the current codebase) · 🟡 **planned/partial
 |---|---|---|
 | Path-supported parsimony placement | 🟢 | **Built + validated 2026-06-10** (`haplo::path_admissible`, wired at `assemble_assignment`). Shipped as a *guard over the Kulczynski ranking*, not a standalone descent: report the best-ranked candidate whose root→node lineage crosses no **contradicted** branch (sample net-ancestral, `a > d`; no-calls/stray errors pass). Fixes the distal-Y tunnel artifact without disturbing the proportional placement. **Validated on GFX0457637/CHM13 → Y `R-FGC29071`, mt `U5a1b1g`** (both correct). *Note:* a descent router ("follow the most-derived subtree") was tried first and **regressed** GFX to a bushier wrong fork (`R-Z17665`) — absolute derived count favours long/bushy paths; reverted. Catching paralog *false-derived* calls (not honest ancestral ones) still needs the allele-balance filter below. |
 | Marker-less node collapse (recursive splice of indel-only nodes) | 🟡 | Handled inline by parsimony descent (SNP-less nodes are pass-through via look-ahead). A standalone recursive tree-rewrite/re-parent pass is still net-new but no longer blocks placement. |
-| Haploid allele-balance / paralog filter (near-monoallelic gate) | 🟡 | `caller.rs` has `min_allele_fraction` (default 0.5, a *consensus* threshold). The "mixed-VAF ⇒ paralog ⇒ drop" filter (~0.9 monoallelic) is not a distinct gate yet. |
+| Haploid allele-balance / paralog filter (near-monoallelic gate) | 🟢 | **Built + validated 2026-06-10.** `caller::is_paralogous` — drops a haploid call when the *second* allele has both `>= min_paralog_minor_reads` reads AND a fraction `> max_minor_allele_fraction` (defaults 2 / 0.20); a lone error read doesn't trip it. Applied at all three haploid call sites (`call_bases_at`, `genotype_sites`, `call_denovo`); diploid ancestry path untouched. GFX0457637/CHM13 holds (Y `R-FGC29071`, mt `U5a1b1g`; Y score 0.546→0.548). |
 | Callable-region / paralog mask (BED) infrastructure | 🟢 | `mask.rs` `RegionMask::from_bed` — sorted/coalesced interval mask, binary-search `contains`. Built. |
 | Mask wired into Y profile / region-aware quality | 🔴 | `RegionMask` has **no consumer** outside its own module (`mask` is exported but unused by `haplo`/`caller`/`unified`). Wiring is net-new. |
 | Canonical `chm13v2.0_maskedY_rCRS` analysis reference | 🔴 | `registry.rs` `Build` enum is `Grch38`/`Grch37`/`Chm13v2` only; reference is plain `chm13v2.0.fa`. No masked+rCRS analysis-set variant. |
@@ -39,8 +39,9 @@ Legend: 🟢 **here** (built, in the current codebase) · 🟡 **planned/partial
 
 **One-line read:** the *linear-first substrate* the doc depends on is largely
 🟢 here (placement scaffolding, mask loader, rCRS path, reconciliation records).
-Phase 1's specific algorithms (parsimony descent, node collapse, paralog gate)
-are 🟡 partial. Everything touching the **graph/provenance/reference-set/polarity
+Phase 1's core algorithms are now 🟢 built + validated (parsimony placement guard,
+paralog allele-balance filter); only standalone marker-less collapse remains 🟡.
+Everything touching the **graph/provenance/reference-set/polarity
 schema** (Phases 2–3) is 🔴 net-new design.
 
 ---
@@ -287,9 +288,9 @@ SV output is still unvalidated per HANDOFF; when validated, note the
   `haplo::path_admissible` guard over the Kulczynski ranking, wired at
   `assemble_assignment`; GFX0457637/CHM13 → `R-FGC29071` + `U5a1b1g`) + marker-less-node
   collapse (🟡 — handled inline: no-call/marker-less nodes pass the guard; standalone
-  recursive collapse still net-new) + haploid allele-balance filter (🟡 — distinct gate
-  atop `caller.min_allele_fraction`, still to do; this is the paralog *false-derived*
-  defence the guard intentionally leaves open). *Pure win, no pangenome.*
+  recursive collapse still net-new) + haploid allele-balance filter (🟢 **done +
+  validated** — `caller::is_paralogous` at all three haploid call sites; the paralog
+  *false-derived* defence the guard intentionally left open). *Pure win, no pangenome.*
 - 🔴 Adopt `chm13v2.0_maskedY_rCRS` as the canonical short-read analysis reference
   (new `Build` variant + download entry in `navigator-refgenome/registry.rs`).
 - 🔴 Reference-polarity metadata + guard (CHM13 Y = HG002 = J; anc/der from tree only).
