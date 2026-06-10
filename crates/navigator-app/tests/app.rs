@@ -407,10 +407,81 @@ async fn validate_gfx_chm13_haplogroups() {
     for r in y.ranked.iter().skip(1).take(3) {
         eprintln!("  alt: {} ({:.3})", r.name, r.score);
     }
+    // DIAGNOSTIC: per-SNP evidence for each child branch below the called terminal — shows
+    // whether a deeper node (e.g. R-FGC29071 below R-FGC29067) has strong-but-partial support.
+    for b in &y.branches {
+        use navigator_app::CallState;
+        let d = b.snps.iter().filter(|s| s.state == CallState::Derived).count();
+        let a = b.snps.iter().filter(|s| s.state == CallState::Ancestral).count();
+        let n = b.snps.iter().filter(|s| s.state == CallState::NoCall).count();
+        eprintln!("  child {}: derived {d} / ancestral {a} / nocall {n} (of {})", b.name, b.snps.len());
+        for s in &b.snps {
+            eprintln!("      {} @{} {}->{} : {:?}", s.name, s.position, s.ancestral, s.derived, s.state);
+        }
+    }
     assert!(top.matched > 0, "Y should resolve below root");
     assert!(
         top.lineage.iter().any(|h| h.starts_with("R-")),
         "expected the R clade (known terminal R-FGC29071), got {}",
+        top.lineage.join(" › ")
+    );
+}
+
+/// End-to-end DecodingUs Y-tree provider against a locally-running AppView. The DecodingUs
+/// tree carries native CHM13 (`hs1`) coordinates, so this places the CHM13 BAM directly with
+/// **no liftover** and should reach the same R-FGC29071 clade as the FTDNA+liftover path.
+/// Gated on a reachable AppView. Run (with the AppView up on :9000, default URL):
+///   GFX_CHM13_BAM=/Users/jkane/Genomics/GFX0457637/GFX0457637.pbmm2.chm13v2.bam \
+///   GFX_CHM13_REF=/Users/jkane/Genomics/chm13v2.0/chm13v2.0.fa \
+///   DECODINGUS_APPVIEW_URL=http://localhost:9000 \
+///   cargo test -p navigator-app --test app validate_gfx_decodingus_y -- --ignored --nocapture
+#[tokio::test]
+#[ignore = "requires GFX_CHM13_BAM + a running DecodingUs AppView (DECODINGUS_APPVIEW_URL)"]
+async fn validate_gfx_decodingus_y() {
+    let (Ok(bam), Ok(reference)) = (std::env::var("GFX_CHM13_BAM"), std::env::var("GFX_CHM13_REF")) else {
+        eprintln!("set GFX_CHM13_BAM + GFX_CHM13_REF (+ DECODINGUS_APPVIEW_URL) to run this");
+        return;
+    };
+    // Force the DecodingUs provider (it's the default, but be explicit); host from env or :9000.
+    std::env::set_var("NAVIGATOR_Y_TREE_PROVIDER", "decodingus");
+
+    let app = app().await;
+    let b = app.add_biosample(None, "GFX0457637", None, Some("male".into())).await.unwrap();
+    let run = app
+        .record_sequence_run(NewSequenceRun {
+            biosample_guid: b.guid,
+            platform_name: "PACBIO".into(),
+            instrument_model: None,
+            test_type: "WGS".into(),
+            library_layout: None,
+            total_reads: None,
+            pf_reads_aligned: None,
+            mean_read_length: None,
+            mean_insert_size: None,
+        })
+        .await
+        .unwrap();
+    let aln = app
+        .record_alignment(NewAlignment {
+            sequence_run_id: run.id,
+            reference_build: "chm13v2.0".into(), // DecodingUs hs1 coords → native, no liftover
+            aligner: "pbmm2".into(),
+            variant_caller: None,
+            bam_path: Some(bam),
+            reference_path: Some(reference),
+        })
+        .await
+        .unwrap()
+        .id;
+
+    let y = app.assign_y_haplogroup(aln).await.expect("Y assign via DecodingUs");
+    let top = &y.ranked[0];
+    eprintln!("GFX0457637 Y (DecodingUs): {}  ({}/{} mutations, score {:.3})", top.name, top.matched, top.expected, top.score);
+    eprintln!("  lineage: {}", top.lineage.join(" › "));
+    assert!(top.matched > 0, "Y should resolve below root via DecodingUs");
+    assert!(
+        top.lineage.iter().any(|h| h.starts_with("R-")),
+        "expected the R clade (known terminal R-FGC29071) via DecodingUs, got {}",
         top.lineage.join(" › ")
     );
 }

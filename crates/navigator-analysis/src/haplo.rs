@@ -124,6 +124,76 @@ pub fn parse_ftdna_json(data: &str) -> Result<HaploTree, String> {
     Ok(HaploTree { nodes })
 }
 
+// ---- DecodingUs tree JSON (the AppView `/api/v1/y-tree/full` shape) -----------
+
+#[derive(Deserialize)]
+struct DuCoord {
+    position: i64,
+    #[serde(default)]
+    ancestral: Option<String>,
+    #[serde(default)]
+    derived: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct DuVariant {
+    #[serde(default)]
+    canonical_name: String,
+    /// Coordinates keyed by build label (`"hs1"`, `"GRCh38"`, `"GRCh37"`).
+    #[serde(default)]
+    coordinates: HashMap<String, DuCoord>,
+}
+
+#[derive(Deserialize)]
+struct DuNode {
+    id: i64,
+    name: String,
+    #[serde(default)]
+    variants: Vec<DuVariant>,
+    #[serde(default)]
+    children: Vec<DuNode>,
+}
+
+#[derive(Deserialize)]
+struct DuTreeJson {
+    roots: Vec<DuNode>,
+}
+
+/// Parse the DecodingUs AppView Y-tree (`/api/v1/y-tree/full`) into a [`HaploTree`], taking
+/// each variant's coordinate for `build_key` (`"hs1"` for CHM13, `"GRCh38"`, `"GRCh37"`).
+/// Because positions are read in the *alignment's own build*, no liftover is needed —
+/// variants without a coordinate on `build_key` are dropped (they can't be placed there).
+/// Node ids come from the AppView (unique); the nested `children` flatten into child-id lists.
+pub fn parse_decodingus_json(data: &str, build_key: &str) -> Result<HaploTree, String> {
+    let raw: DuTreeJson = serde_json::from_str(data).map_err(|e| e.to_string())?;
+    let mut nodes = HashMap::new();
+    for root in &raw.roots {
+        flatten_du_node(root, true, build_key, &mut nodes);
+    }
+    Ok(HaploTree { nodes })
+}
+
+fn flatten_du_node(n: &DuNode, is_root: bool, build_key: &str, out: &mut HashMap<i64, HaploNode>) {
+    let loci = n
+        .variants
+        .iter()
+        .filter_map(|v| {
+            let c = v.coordinates.get(build_key)?;
+            Some(Locus {
+                position: c.position.abs(),
+                ancestral: c.ancestral.clone().unwrap_or_default(),
+                derived: c.derived.clone().unwrap_or_default(),
+                name: v.canonical_name.clone(),
+            })
+        })
+        .collect();
+    let children = n.children.iter().map(|c| c.id).collect();
+    out.insert(n.id, HaploNode { id: n.id, name: n.name.clone(), is_root, loci, children });
+    for c in &n.children {
+        flatten_du_node(c, false, build_key, out);
+    }
+}
+
 /// Rank every haplogroup in `tree` by the Kulczynski measure, given the sample's base at
 /// each position (`calls`: 1-based position → uppercase base, from the full sequence).
 /// `found` is the set of tree sites where the sample carries the derived allele; expected
@@ -481,6 +551,44 @@ mod tests {
         assert_eq!(t.nodes.len(), 4);
         assert_eq!(t.nodes[&2].loci[0].position, 146);
         assert_eq!(t.nodes[&2].loci[0].derived, "G");
+    }
+
+    // The DecodingUs AppView `/api/v1/y-tree/full` shape (snake_case, nested children,
+    // multi-build coordinates). R-M207 → R1 with an `hs1` (CHM13) and a GRCh38 coordinate.
+    const DU_TREE: &str = r#"{
+      "roots": [
+        {"id": 10, "name": "R-M207", "haplogroup_type": "Y_DNA", "variants": [
+            {"canonical_name": "M207", "coordinates": {
+                "hs1": {"contig":"chrY","position":2800000,"ancestral":"A","derived":"G"},
+                "GRCh38": {"contig":"chrY","position":2900000,"ancestral":"A","derived":"G"}}}],
+         "children": [
+            {"id": 11, "name": "R-M173", "haplogroup_type": "Y_DNA", "variants": [
+                {"canonical_name": "M173", "coordinates": {
+                    "hs1": {"contig":"chrY","position":2810000,"ancestral":"C","derived":"T"}}},
+                {"canonical_name": "GRCh38only", "coordinates": {
+                    "GRCh38": {"contig":"chrY","position":2999999,"ancestral":"G","derived":"A"}}}],
+             "children": []}]}
+      ]
+    }"#;
+
+    #[test]
+    fn parse_decodingus_picks_target_build_and_flattens() {
+        // hs1: both M207 and M173 resolve; the GRCh38-only variant is dropped.
+        let t = parse_decodingus_json(DU_TREE, "hs1").unwrap();
+        assert_eq!(t.nodes.len(), 2);
+        assert!(t.nodes[&10].is_root && !t.nodes[&11].is_root);
+        assert_eq!(t.nodes[&10].children, vec![11]);
+        assert_eq!(t.nodes[&10].loci[0].position, 2800000);
+        assert_eq!(t.nodes[&10].loci[0].name, "M207");
+        // R-M173 keeps only the hs1-coordinated M173 (GRCh38only dropped).
+        assert_eq!(t.nodes[&11].loci.len(), 1);
+        assert_eq!(t.nodes[&11].loci[0].position, 2810000);
+
+        // GRCh38: M207 uses its GRCh38 position; M173's hs1-only locus drops, GRCh38only stays.
+        let g = parse_decodingus_json(DU_TREE, "GRCh38").unwrap();
+        assert_eq!(g.nodes[&10].loci[0].position, 2900000);
+        let names: Vec<&str> = g.nodes[&11].loci.iter().map(|l| l.name.as_str()).collect();
+        assert_eq!(names, vec!["GRCh38only"]);
     }
 
     #[test]

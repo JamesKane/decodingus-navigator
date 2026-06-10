@@ -355,6 +355,45 @@ fn tree_build_for_contig(contig: &str) -> Option<&'static str> {
     }
 }
 
+/// Which Y-DNA haplogroup tree to place against.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum YTreeProvider {
+    /// The DecodingUs tree served by our AppView (native multi-build coords incl. CHM13/`hs1`).
+    DecodingUs,
+    /// FTDNA's public Y-DNA haplotree (GRCh38; lifted onto the alignment build).
+    Ftdna,
+}
+
+/// Selected Y-tree provider. Defaults to **DecodingUs** (our tree; native CHM13 coordinates →
+/// no liftover). Override with `NAVIGATOR_Y_TREE_PROVIDER=ftdna|decodingus`.
+fn y_tree_provider() -> YTreeProvider {
+    match std::env::var("NAVIGATOR_Y_TREE_PROVIDER").ok().as_deref().map(str::trim) {
+        Some(v) if v.eq_ignore_ascii_case("ftdna") => YTreeProvider::Ftdna,
+        _ => YTreeProvider::DecodingUs,
+    }
+}
+
+/// Base URL of the DecodingUs AppView serving the tree API. Local by default for testing;
+/// switch with `DECODINGUS_APPVIEW_URL` (e.g. the production host at cutover).
+fn decodingus_appview_url() -> String {
+    std::env::var("DECODINGUS_APPVIEW_URL")
+        .ok()
+        .map(|s| s.trim_end_matches('/').to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "http://localhost:9000".to_string())
+}
+
+/// Map an alignment's reference build to the DecodingUs coordinate key (`"hs1"` for CHM13,
+/// `"GRCh38"`, `"GRCh37"`). `None` for builds the tree has no coordinates for.
+fn decodingus_build_key(reference_build: &str) -> Option<&'static str> {
+    match canonical_build(reference_build) {
+        Some(ReferenceBuild::Grch38) => Some("GRCh38"),
+        Some(ReferenceBuild::Grch37) => Some("GRCh37"),
+        Some(ReferenceBuild::Chm13v2) | Some(ReferenceBuild::Chm13v2MaskedRcrs) => Some("hs1"),
+        None => None,
+    }
+}
+
 /// Whether `<alignment>.crai`/`.bai` is present among the discovered index files.
 fn has_sibling_index(aln_path: &Path, index_files: &[PathBuf]) -> bool {
     let Some(aln_name) = aln_path.file_name().and_then(|n| n.to_str()) else {
@@ -1653,6 +1692,13 @@ impl App {
             .await
     }
 
+    /// DecodingUs Y-DNA tree-with-variants JSON from our AppView (`/api/v1/y-tree/full`),
+    /// host from [`decodingus_appview_url`]. On-disk cached like the FTDNA tree.
+    async fn fetch_decodingus_y_tree(&self) -> Result<String, AppError> {
+        let url = format!("{}/api/v1/y-tree/full", decodingus_appview_url());
+        self.fetch_tree(&url, "decodingus-ytree.json").await
+    }
+
     /// FTDNA Y-DNA haplotree JSON, from the on-disk cache or freshly downloaded + cached.
     async fn fetch_ftdna_y_tree(&self) -> Result<String, AppError> {
         self.fetch_tree("https://www.familytreedna.com/public/y-dna-haplotree/get", "ftdna-ytree.json")
@@ -1914,16 +1960,46 @@ impl App {
         Ok(segments)
     }
 
-    /// Assign a Y haplogroup to an alignment: fetch (and cache) the FTDNA Y-DNA haplotree,
-    /// call the sample's base at each tree position on chrY, and rank by Kulczynski. Best
-    /// first. Requires the alignment to have a recorded BAM/CRAM path.
+    /// Assign a Y haplogroup to an alignment: place the sample against the configured Y tree
+    /// (DecodingUs by default — our tree, native CHM13 coords, no liftover — falling back to
+    /// FTDNA if the AppView is unreachable), call the sample's base at each tree position on
+    /// chrY, and rank by Kulczynski. Requires a recorded BAM/CRAM path.
     pub async fn assign_y_haplogroup(&self, alignment_id: i64) -> Result<HaploAssignment, AppError> {
-        let tree_json = self.fetch_ftdna_y_tree().await?;
-        let assignment = self.assign_haplogroup_from_alignment(alignment_id, "chrY", &tree_json).await?;
+        let assignment = match y_tree_provider() {
+            YTreeProvider::DecodingUs => match self.assign_y_decodingus(alignment_id).await {
+                Ok(a) => a,
+                Err(e) => {
+                    // AppView unreachable / build unsupported / parse failure → FTDNA fallback.
+                    eprintln!("DecodingUs Y tree unavailable ({e}); falling back to FTDNA");
+                    let tree_json = self.fetch_ftdna_y_tree().await?;
+                    self.assign_haplogroup_from_alignment(alignment_id, "chrY", &tree_json).await?
+                }
+            },
+            YTreeProvider::Ftdna => {
+                let tree_json = self.fetch_ftdna_y_tree().await?;
+                self.assign_haplogroup_from_alignment(alignment_id, "chrY", &tree_json).await?
+            }
+        };
         if let Ok(bio) = self.biosample_of_alignment(alignment_id).await {
             self.record_call(bio, DnaType::Y, &format!("aln:{alignment_id}"), format!("aln #{alignment_id} Y"), &assignment).await?;
         }
         Ok(assignment)
+    }
+
+    /// Place against the DecodingUs Y tree from our AppView. Parses the tree in the alignment's
+    /// own build (`hs1`/GRCh38/GRCh37) so positions are native — queried directly, no liftover.
+    async fn assign_y_decodingus(&self, alignment_id: i64) -> Result<HaploAssignment, AppError> {
+        let aln = alignment::get(self.store.pool(), alignment_id)
+            .await?
+            .ok_or_else(|| AppError::Store(StoreError::NotFound(format!("alignment {alignment_id}"))))?;
+        let build_key = decodingus_build_key(&aln.reference_build).ok_or_else(|| {
+            AppError::Import(format!("no DecodingUs tree coordinates for build {}", aln.reference_build))
+        })?;
+        let tree_json = self.fetch_decodingus_y_tree().await?;
+        let tree = navigator_analysis::haplo::parse_decodingus_json(&tree_json, build_key).map_err(AppError::Import)?;
+        // Native build → no liftover (tree_source_build = None → direct query).
+        let calls = self.base_calls(alignment_id, "chrY", &tree, None).await?;
+        Ok(assemble_assignment(&tree, &calls))
     }
 
     /// Genotype an alignment at a haplotree's positions on `contig` and rank haplogroups by
@@ -1965,21 +2041,35 @@ impl App {
         contig: &str,
         tree_json: &str,
     ) -> Result<(navigator_analysis::haplo::HaploTree, HashMap<i64, char>), AppError> {
+        let tree = navigator_analysis::haplo::parse_ftdna_json(tree_json).map_err(AppError::Import)?;
+        // FTDNA tree positions are in the tree's own build (Y → GRCh38, mt → rCRS/direct).
+        let source_build = tree_build_for_contig(contig);
+        let calls = self.base_calls(alignment_id, contig, &tree, source_build).await?;
+        Ok((tree, calls))
+    }
+
+    /// Base-call an alignment at a parsed tree's positions on `contig`. `tree_source_build` is
+    /// the build the tree's positions are in: when it differs from the alignment build the
+    /// positions are lifted (chrY chain), queried there, and mapped back; `None` (e.g. a
+    /// DecodingUs tree already in the alignment's build, or mt/rCRS-direct) queries directly.
+    async fn base_calls(
+        &self,
+        alignment_id: i64,
+        contig: &str,
+        tree: &navigator_analysis::haplo::HaploTree,
+        tree_source_build: Option<&str>,
+    ) -> Result<HashMap<i64, char>, AppError> {
         let aln = alignment::get(self.store.pool(), alignment_id)
             .await?
             .ok_or_else(|| AppError::Store(StoreError::NotFound(format!("alignment {alignment_id}"))))?;
         let bam = PathBuf::from(aln.bam_path.ok_or(AppError::MissingPaths(alignment_id))?);
         let reference = aln.reference_path.map(PathBuf::from);
 
-        let tree = navigator_analysis::haplo::parse_ftdna_json(tree_json).map_err(AppError::Import)?;
         let targets: HashSet<i64> =
             tree.nodes.values().flat_map(|n| n.loci.iter().map(|l| l.position)).collect();
 
-        // The tree's positions are in its own build (Y → GRCh38, mt → rCRS). If the alignment
-        // is a different build, lift the positions onto it, query there, and map back;
-        // otherwise query directly (Y-on-GRCh38, mt-on-GRCh38/rCRS).
         let lifted = self
-            .lifted_targets(&aln.reference_build, reference.as_deref(), contig, &targets)
+            .lifted_targets(&aln.reference_build, reference.as_deref(), contig, &targets, tree_source_build)
             .await?;
 
         let calls = match lifted {
@@ -1997,8 +2087,7 @@ impl App {
                 .map_err(|e| AppError::Join(e.to_string()))??
             }
         };
-
-        Ok((tree, calls))
+        Ok(calls)
     }
 
     /// Lift the haplotree's positions onto the alignment's build, or `None` to query the tree
@@ -2011,13 +2100,14 @@ impl App {
         reference: Option<&Path>,
         contig: &str,
         targets: &HashSet<i64>,
+        tree_source_build: Option<&str>,
     ) -> Result<Option<Vec<LiftedPos>>, AppError> {
         if targets.is_empty() {
             return Ok(None);
         }
 
-        // chrY: downloaded nuclear chain.
-        if let Some(src) = tree_build_for_contig(contig) {
+        // chrY: downloaded nuclear chain (when the tree build differs from the alignment).
+        if let Some(src) = tree_source_build {
             let differ = matches!((canonical_build(src), canonical_build(reference_build)), (Some(s), Some(t)) if s != t);
             if differ && self.gateway.chain_available(src, reference_build) {
                 self.gateway.resolve_chain(src, reference_build, &mut |_, _| {}).await?;
