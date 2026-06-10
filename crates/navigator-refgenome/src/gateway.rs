@@ -145,6 +145,36 @@ impl ReferenceGateway {
         Ok(path)
     }
 
+    /// Resolve a named annotation mask (see [`registry::Y_STRUCTURAL_MASKS`]) to a cached BED,
+    /// downloading on a miss. Cached under `<base>/masks/<name>.bed` — pull once, use many.
+    pub async fn resolve_mask(
+        &self,
+        name: &str,
+        progress: &mut (dyn FnMut(u64, Option<u64>) + Send),
+    ) -> Result<PathBuf, RefgenomeError> {
+        let path = cache::mask_path(&self.base, name);
+        if cache::is_present(&path) {
+            return Ok(path);
+        }
+        let lock = self.lock_for(&format!("mask:{name}"));
+        let _guard = lock.lock().await;
+        if cache::is_present(&path) {
+            return Ok(path);
+        }
+        let src = self
+            .registry
+            .mask_source(name)
+            .ok_or_else(|| RefgenomeError::Message(format!("unknown mask {name}")))?;
+        download::download(&self.http, &src.url, &path, progress).await?;
+        Ok(path)
+    }
+
+    /// Whether a named annotation mask is already cached (no I/O beyond a stat).
+    pub fn cached_mask(&self, name: &str) -> Option<PathBuf> {
+        let path = cache::mask_path(&self.base, name);
+        cache::is_present(&path).then_some(path)
+    }
+
     /// Parse the cached chain for a build pair into a `du-bio` `Liftover` (call
     /// [`resolve_chain`](Self::resolve_chain) first to ensure it's present).
     pub fn load_liftover(&self, from_name: &str, to_name: &str) -> Result<du_bio::liftover::Liftover, RefgenomeError> {

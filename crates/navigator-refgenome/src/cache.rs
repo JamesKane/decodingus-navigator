@@ -30,6 +30,12 @@ pub fn chain_path(base: &Path, from: Build, to: Build) -> PathBuf {
     base.join("liftover").join(format!("{}-to-{}.chain", from.as_str(), to.as_str()))
 }
 
+/// The cached annotation-mask BED path for a named mask (e.g. the curated CHM13 Y palindrome /
+/// amplicon BEDs). Stored under `<base>/masks/<name>.bed`.
+pub fn mask_path(base: &Path, name: &str) -> PathBuf {
+    base.join("masks").join(format!("{name}.bed"))
+}
+
 /// Whether `path` exists and is non-empty (the cache-hit predicate).
 pub fn is_present(path: &Path) -> bool {
     std::fs::metadata(path).map(|m| m.len() > 0).unwrap_or(false)

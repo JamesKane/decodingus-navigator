@@ -33,6 +33,7 @@ pub use navigator_analysis::sex::{Confidence as SexConfidence, InferredSex, SexI
 pub use navigator_analysis::sv::types::{SvAnalysisResult, SvCall, SvType};
 pub use navigator_analysis::heteroplasmy::HeteroplasmySite;
 pub use navigator_analysis::haplo::{BranchEvidence, CallState, ScoredHaplogroup, SnpEvidence};
+pub use navigator_analysis::mask::YRegionClass;
 pub use navigator_domain::ancestry::{
     AncestryResult, AncestrySegment, ConfidenceInterval, PopulationComponent, SuperPopulationSummary,
 };
@@ -66,6 +67,11 @@ pub struct PrivateVariant {
     pub depth: u32,
     pub allele_fraction: f64,
     pub class: PrivateClass,
+    /// Curated CHM13 chrY structural class at this position (palindrome / amplicon / AZF-DYZ),
+    /// if any — a paralog-prone zone where short-read mapping is unreliable, so the call is
+    /// suspect (annotation only; not dropped). `None` = unique sequence, or a non-CHM13 build.
+    #[serde(default)]
+    pub region: Option<navigator_analysis::mask::YRegionClass>,
 }
 
 /// The private bucket for an alignment: de-novo Y calls not on the assigned backbone,
@@ -82,6 +88,16 @@ impl PrivateBucket {
     }
     pub fn off_path(&self) -> usize {
         self.variants.iter().filter(|v| matches!(v.class, PrivateClass::OffPathKnown(_))).count()
+    }
+    /// Calls that fall in a curated chrY structural (paralog-prone) region — suspect, to be
+    /// down-weighted in reports rather than treated as confident new variants.
+    pub fn in_structural_region(&self) -> usize {
+        self.variants.iter().filter(|v| v.region.is_some()).count()
+    }
+    /// Novel calls in *unique* sequence (no structural-region flag) — the high-confidence
+    /// new-branch candidates, separated from the paralog-zone noise.
+    pub fn novel_in_unique_sequence(&self) -> usize {
+        self.variants.iter().filter(|v| v.class == PrivateClass::Novel && v.region.is_none()).count()
     }
 }
 pub use navigator_analysis::ibd::{
@@ -389,7 +405,8 @@ fn decodingus_appview_url() -> String {
 }
 
 /// Map an alignment's reference build to the DecodingUs coordinate key (`"hs1"` for CHM13,
-/// `"GRCh38"`, `"GRCh37"`). `None` for builds the tree has no coordinates for.
+/// `"GRCh38"`, `"GRCh37"`). `None` for builds the tree has no coordinates for. Drives the
+/// native-build (no-liftover) placement in `assign_y_decodingus`.
 fn decodingus_build_key(reference_build: &str) -> Option<&'static str> {
     match canonical_build(reference_build) {
         Some(ReferenceBuild::Grch38) => Some("GRCh38"),
@@ -1991,8 +2008,12 @@ impl App {
         Ok(assignment)
     }
 
-    /// Place against the DecodingUs Y tree from our AppView. Parses the tree in the alignment's
-    /// own build (`hs1`/GRCh38/GRCh37) so positions are native — queried directly, no liftover.
+    /// Place against the DecodingUs Y tree from our AppView, using the alignment's **native**
+    /// build coordinates (`hs1` for CHM13, `GRCh38`, `GRCh37`) — queried directly, **no
+    /// liftover**. This is the intended architecture (the AppView owns multi-build coordinates;
+    /// Navigator stays liftover-free). Today the AppView's `hs1` coords cover the decoding-us
+    /// backbone but not the FTDNA-grafted tips, so deep CHM13 placement is limited until the
+    /// AppView enriches `hs1` for every variant (lift GRCh38→hs1 at ingest or on the fly).
     async fn assign_y_decodingus(&self, alignment_id: i64) -> Result<HaploAssignment, AppError> {
         let aln = alignment::get(self.store.pool(), alignment_id)
             .await?
@@ -2262,6 +2283,16 @@ impl App {
     }
 
     /// Shared core: assign Y, de-novo chrY, subtract the backbone, optionally mask, classify.
+    /// The curated CHM13 chrY structural regions (palindrome/amplicon/AZF-DYZ), resolving +
+    /// caching the three BEDs on first use. Best-effort: any download/parse failure yields
+    /// `None` so the annotation never blocks the analysis.
+    async fn y_structural_regions(&self) -> Option<navigator_analysis::mask::YStructuralRegions> {
+        let amplicon = self.gateway.resolve_mask("chm13v2.0Y_amplicons_v1", &mut |_, _| {}).await.ok()?;
+        let palindrome = self.gateway.resolve_mask("chm13v2.0Y_inverted_repeats_v1", &mut |_, _| {}).await.ok()?;
+        let azf_dyz = self.gateway.resolve_mask("chm13v2.0Y_AZF_DYZ_v1", &mut |_, _| {}).await.ok()?;
+        navigator_analysis::mask::YStructuralRegions::from_beds(&amplicon, &palindrome, &azf_dyz).ok()
+    }
+
     async fn private_y_core(
         &self,
         alignment_id: i64,
@@ -2277,6 +2308,16 @@ impl App {
             .ok_or_else(|| AppError::Import("no Y haplogroup match".into()))?;
         let path = navigator_analysis::haplo::path_positions(&tree, terminal.id);
         let known = navigator_analysis::haplo::tree_positions(&tree);
+
+        // The structural BEDs are in CHM13 chrY coordinates, so they only apply to a CHM13
+        // alignment (the de-novo positions are in the alignment's build). Best-effort.
+        let aln = alignment::get(self.store.pool(), alignment_id)
+            .await?
+            .ok_or_else(|| AppError::Store(StoreError::NotFound(format!("alignment {alignment_id}"))))?;
+        let regions = match canonical_build(&aln.reference_build) {
+            Some(ReferenceBuild::Chm13v2 | ReferenceBuild::Chm13v2MaskedRcrs) => self.y_structural_regions().await,
+            _ => None,
+        };
 
         // De-novo chrY (cached as an artifact), then keep only off-backbone, callable calls.
         let denovo = self.run_denovo_for_alignment(alignment_id, "chrY".to_string()).await?;
@@ -2294,6 +2335,7 @@ impl App {
                     Some(name) => PrivateClass::OffPathKnown(name.clone()),
                     None => PrivateClass::Novel,
                 },
+                region: regions.as_ref().and_then(|r| r.classify(c.position)),
             })
             .collect();
         variants.sort_by_key(|v| v.position);

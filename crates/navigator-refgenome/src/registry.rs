@@ -116,6 +116,23 @@ pub struct ChainSource {
     pub url: String,
 }
 
+/// Where a named annotation-mask BED is fetched from (e.g. the curated CHM13 Y structural
+/// regions). `name` is the cache key / filename stem.
+#[derive(Debug, Clone)]
+pub struct MaskSource {
+    pub name: String,
+    pub url: String,
+}
+
+/// The curated CHM13v2.0 chrY structural-region BEDs (marbl/CHM13, Rhie et al. 2023) — the
+/// paralog-prone zones used to flag unreliable Y calls. Keyed by cache-stable name. All are
+/// on the human-pangenomics bucket alongside the references and chains.
+pub const Y_STRUCTURAL_MASKS: &[(&str, &str)] = &[
+    ("chm13v2.0Y_inverted_repeats_v1", "chm13v2.0Y_inverted_repeats_v1.bed"),
+    ("chm13v2.0Y_amplicons_v1", "chm13v2.0Y_amplicons_v1.bed"),
+    ("chm13v2.0Y_AZF_DYZ_v1", "chm13v2.0Y_AZF_DYZ_v1.bed"),
+];
+
 const GB: u64 = 1_000_000_000;
 const CHM13_FA: &str =
     "https://s3-us-west-2.amazonaws.com/human-pangenomics/T2T/CHM13/assemblies/analysis_set/chm13v2.0.fa.gz";
@@ -126,6 +143,8 @@ const GRCH38_FA: &str =
 const GRCH37_FA: &str =
     "https://storage.googleapis.com/genomics-public-data/references/hg19/v0/Homo_sapiens_assembly19.fasta.gz";
 const CHAIN_BASE: &str = "https://s3-us-west-2.amazonaws.com/human-pangenomics/T2T/CHM13/assemblies/chain/v1_nflo";
+const ANNOTATION_BASE: &str =
+    "https://s3-us-west-2.amazonaws.com/human-pangenomics/T2T/CHM13/assemblies/annotation";
 
 /// Per-build user override loaded from `reference_sources.json`.
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -204,6 +223,19 @@ impl Registry {
         };
         Some(ChainSource { from, to, url: format!("{CHAIN_BASE}/{file}") })
     }
+
+    /// The annotation-mask source for a registered name (see [`Y_STRUCTURAL_MASKS`]), or `None`
+    /// if unknown. A user URL override under `references[name]` is honored.
+    pub fn mask_source(&self, name: &str) -> Option<MaskSource> {
+        let file = Y_STRUCTURAL_MASKS.iter().find(|(n, _)| *n == name).map(|(_, f)| *f)?;
+        let url = self
+            .config
+            .references
+            .get(name)
+            .and_then(|o| o.url.clone())
+            .unwrap_or_else(|| format!("{ANNOTATION_BASE}/{file}"));
+        Some(MaskSource { name: name.to_string(), url })
+    }
 }
 
 #[cfg(test)]
@@ -279,6 +311,19 @@ mod tests {
         assert_eq!(masked.url, direct.url);
         assert_eq!(masked.to, Build::Chm13v2); // normalized for cache-key reuse
         assert!(reg.chain_source(Build::Chm13v2MaskedRcrs, Build::Grch38).unwrap().url.ends_with("chm13v2-grch38.chain"));
+    }
+
+    #[test]
+    fn y_structural_mask_sources_resolve() {
+        let reg = Registry::new(UserConfig::default());
+        let m = reg.mask_source("chm13v2.0Y_amplicons_v1").unwrap();
+        assert_eq!(m.name, "chm13v2.0Y_amplicons_v1");
+        assert!(m.url.ends_with("/annotation/chm13v2.0Y_amplicons_v1.bed"), "{}", m.url);
+        assert!(reg.mask_source("chm13v2.0Y_inverted_repeats_v1").is_some());
+        assert!(reg.mask_source("chm13v2.0Y_AZF_DYZ_v1").is_some());
+        assert!(reg.mask_source("not_a_mask").is_none());
+        // All registered masks resolve.
+        assert!(Y_STRUCTURAL_MASKS.iter().all(|(n, _)| reg.mask_source(n).is_some()));
     }
 
     #[test]
