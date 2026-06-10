@@ -18,8 +18,7 @@ pub enum Lang {
 }
 
 impl Lang {
-    /// Language code (e.g. for persisting the chosen locale to settings later).
-    #[allow(dead_code)]
+    /// Language code (used to persist the chosen locale; see [`save_lang`]).
     pub fn code(self) -> &'static str {
         match self {
             Lang::En => "en",
@@ -48,6 +47,27 @@ impl Lang {
     pub fn all() -> &'static [Lang] {
         &[Lang::En, Lang::Es]
     }
+}
+
+/// Path of the persisted-language file (`~/.decodingus/navigator-lang`), matching the
+/// `~/.decodingus` convention used for the workspace DB.
+fn lang_file() -> std::path::PathBuf {
+    let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+    std::path::PathBuf::from(home).join(".decodingus").join("navigator-lang")
+}
+
+/// The previously chosen UI language, if one was saved.
+pub fn load_lang() -> Option<Lang> {
+    std::fs::read_to_string(lang_file()).ok().and_then(|s| Lang::parse(s.trim()))
+}
+
+/// Persist the chosen UI language so it survives a restart (best-effort; I/O errors ignored).
+pub fn save_lang(lang: Lang) {
+    let path = lang_file();
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    let _ = std::fs::write(path, lang.code());
 }
 
 const EN_SRC: &str = include_str!("../locales/en.txt");

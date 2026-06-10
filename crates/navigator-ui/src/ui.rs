@@ -646,7 +646,7 @@ fn parse_hex_color(hex: &str) -> egui::Color32 {
 /// branches with per-SNP evidence that explains why descent stopped.
 fn show_assignment(ui: &mut egui::Ui, a: &HaploAssignment) {
     let Some(top) = a.ranked.first() else {
-        ui.label("No match.");
+        ui.label("No match."); // free helper (no `self`); i18n when it takes a `lang` param
         return;
     };
     ui.label(format!("Haplogroup: {}   ({}/{} mutations, score {:.3})", top.name, top.matched, top.expected, top.score));
@@ -723,8 +723,11 @@ impl NavigatorApp {
             frame_time: 0.0,
             nav: Nav::Subjects,
             detail_tab: DetailTab::Overview,
-            // Default English; honor $LANG (e.g. "es_ES.UTF-8") when it names a supported locale.
-            lang: std::env::var("LANG").ok().and_then(|l| crate::i18n::Lang::parse(&l)).unwrap_or(crate::i18n::Lang::En),
+            // Persisted choice wins; else honor $LANG (e.g. "es_ES.UTF-8") when it names a
+            // supported locale; else English.
+            lang: crate::i18n::load_lang()
+                .or_else(|| std::env::var("LANG").ok().and_then(|l| crate::i18n::Lang::parse(&l)))
+                .unwrap_or(crate::i18n::Lang::En),
             dark_mode: true,
             subject_search: String::new(),
             overview: Vec::new(),
@@ -1679,7 +1682,7 @@ impl NavigatorApp {
                     );
                     ui.add_space(12.0);
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if ui.button("Cancel").clicked() {
+                        if ui.button(self.tr("common.cancel")).clicked() {
                             let _ = self.tx.send(Command::CancelAnalysis);
                             self.status = "Cancelling…".into();
                         }
@@ -1721,6 +1724,7 @@ impl NavigatorApp {
                         apply_theme(ctx, self.dark_mode);
                     }
                     ui.separator();
+                    let prev_lang = self.lang;
                     egui::ComboBox::from_id_salt("lang")
                         .selected_text(self.lang.label())
                         .show_ui(ui, |ui| {
@@ -1728,6 +1732,9 @@ impl NavigatorApp {
                                 ui.selectable_value(&mut self.lang, l, l.label());
                             }
                         });
+                    if self.lang != prev_lang {
+                        crate::i18n::save_lang(self.lang); // persist across restarts
+                    }
                     ui.separator();
                     self.account_controls(ui);
                 });
@@ -1813,7 +1820,7 @@ impl NavigatorApp {
     /// Project management: the projects list, new-project form, batch import, and panels.
     fn projects_side(&mut self, ui: &mut egui::Ui) {
         ui.add_space(6.0);
-        ui.heading("Projects");
+        ui.heading(self.tr("projects.heading"));
         ui.separator();
         let mut pick = None;
         for ov in &self.overview {
@@ -1828,11 +1835,11 @@ impl NavigatorApp {
 
         ui.add_space(12.0);
         ui.separator();
-        ui.label("New project");
+        ui.label(self.tr("projects.new"));
         ui.add(egui::TextEdit::singleline(&mut self.forms.project_name).hint_text("name"));
         ui.add(egui::TextEdit::singleline(&mut self.forms.project_admin).hint_text("administrator"));
         if ui
-            .add_enabled(!self.forms.project_name.trim().is_empty(), egui::Button::new("Create project"))
+            .add_enabled(!self.forms.project_name.trim().is_empty(), egui::Button::new(self.tr("projects.create")))
             .clicked()
         {
             let _ = self.tx.send(Command::CreateProject(NewProject {
@@ -1845,8 +1852,8 @@ impl NavigatorApp {
         }
 
         ui.add_space(8.0);
-        ui.label("Batch import a project folder (per-sample subdirs of BAM/CRAM):");
-        if ui.add_enabled(!self.importing, egui::Button::new("Batch import project…")).clicked() {
+        ui.label(self.tr("projects.batchImportHint"));
+        if ui.add_enabled(!self.importing, egui::Button::new(self.tr("projects.batchImport"))).clicked() {
             if let Some(dir) = rfd::FileDialog::new().pick_folder() {
                 self.importing = true;
                 self.reference_needs.clear();
@@ -1959,11 +1966,11 @@ impl NavigatorApp {
                 let name = self.overview.iter().find(|o| o.project.id == pid).map(|o| o.project.name.as_str());
                 ui.label(format!("→ project: {}", name.unwrap_or("(open)")));
             } else {
-                ui.label("→ no project");
+                ui.label(self.tr("projects.noProject"));
             }
             ui.horizontal(|ui| {
                 if ui
-                    .add_enabled(!self.forms.sample_donor.trim().is_empty(), egui::Button::new("Add subject").fill(ACCENT))
+                    .add_enabled(!self.forms.sample_donor.trim().is_empty(), egui::Button::new(self.tr("projects.addSubject")).fill(ACCENT))
                     .clicked()
                 {
                     let _ = self.tx.send(Command::AddBiosample(NewBiosample {
@@ -1977,7 +1984,7 @@ impl NavigatorApp {
                     self.forms.sample_sex.clear();
                     self.forms.show_add_subject = false;
                 }
-                if ui.button("Cancel").clicked() {
+                if ui.button(self.tr("common.cancel")).clicked() {
                     self.forms.show_add_subject = false;
                 }
             });
@@ -2005,9 +2012,9 @@ impl NavigatorApp {
             );
         }
         egui::Grid::new("str_consensus").striped(true).num_columns(3).show(ui, |ui| {
-            ui.strong("Marker");
-            ui.strong("Value");
-            ui.strong("Panels");
+            ui.strong(self.tr("table.marker"));
+            ui.strong(self.tr("table.value"));
+            ui.strong(self.tr("table.panels"));
             ui.end_row();
             for m in &consensus {
                 ui.label(&m.marker);
@@ -2067,8 +2074,8 @@ impl NavigatorApp {
             bucket.terminal
         ));
         egui::Grid::new("donor_privy").striped(true).num_columns(4).show(ui, |ui| {
-            for h in ["Position", "Change", "Depth", "Class"] {
-                ui.strong(h);
+            for h in ["table.position", "table.change", "table.depth", "table.class"] {
+                ui.strong(self.tr(h));
             }
             ui.end_row();
             for v in bucket.variants.iter().take(500) {
@@ -2093,8 +2100,8 @@ impl NavigatorApp {
             let header = format!("{} — {} markers  ({provider})", p.panel_name, p.markers.len());
             egui::CollapsingHeader::new(header).id_salt(("str", p.id)).show(ui, |ui| {
                 egui::Grid::new(("str_markers", p.id)).striped(true).num_columns(2).show(ui, |ui| {
-                    ui.strong("Marker");
-                    ui.strong("Value");
+                    ui.strong(self.tr("table.marker"));
+                    ui.strong(self.tr("table.value"));
                     ui.end_row();
                     for m in &p.markers {
                         ui.label(&m.marker);
@@ -2106,11 +2113,15 @@ impl NavigatorApp {
         }
 
         ui.add_space(6.0);
-        ui.collapsing("Import STR profile", |ui| {
-            combo(ui, "Panel:", "str_panel", &mut self.forms.str_panel, strprofile::KNOWN_PANELS);
-            combo(ui, "Provider:", "str_provider", &mut self.forms.str_provider, strprofile::KNOWN_PROVIDERS);
-            combo(ui, "Source:", "str_source", &mut self.forms.str_source, strprofile::KNOWN_SOURCES);
-            if ui.button("Choose CSV/TSV…").clicked() {
+        ui.collapsing(self.tr("str.import"), |ui| {
+            // Bind labels first — `self.tr()` (immutable) can't share the statement with the
+            // `&mut self.forms.*` below (the i18n borrow gotcha).
+            let (panel_lbl, provider_lbl, source_lbl) =
+                (self.tr("form.panel"), self.tr("form.provider"), self.tr("form.source"));
+            combo(ui, panel_lbl, "str_panel", &mut self.forms.str_panel, strprofile::KNOWN_PANELS);
+            combo(ui, provider_lbl, "str_provider", &mut self.forms.str_provider, strprofile::KNOWN_PROVIDERS);
+            combo(ui, source_lbl, "str_source", &mut self.forms.str_source, strprofile::KNOWN_SOURCES);
+            if ui.button(self.tr("str.chooseCsv")).clicked() {
                 if let Some(path) = rfd::FileDialog::new().add_filter("STR table", &["csv", "tsv", "txt"]).pick_file() {
                     let _ = self.tx.send(Command::ImportStrProfile {
                         biosample_guid: guid,
@@ -2121,7 +2132,7 @@ impl NavigatorApp {
                     });
                 }
             }
-            ui.label("Expects rows of marker,value (e.g. DYS393,13).");
+            ui.label(self.tr("str.expectsRows"));
         });
     }
 
@@ -2135,8 +2146,8 @@ impl NavigatorApp {
             let header = format!("{} — {} call(s)", s.source_label, s.calls.len());
             egui::CollapsingHeader::new(header).id_salt(("vset", s.id)).show(ui, |ui| {
                 egui::Grid::new(("vcalls", s.id)).striped(true).num_columns(4).show(ui, |ui| {
-                    for h in ["Position", "Change", "rsID", "Genotype"] {
-                        ui.strong(h);
+                    for h in ["table.position", "table.change", "table.rsid", "table.genotype"] {
+                        ui.strong(self.tr(h));
                     }
                     ui.end_row();
                     for c in s.calls.iter().take(MAX_ROWS) {
@@ -2162,8 +2173,8 @@ impl NavigatorApp {
                 .id_salt(("vconc", guid.0))
                 .show(ui, |ui| {
                     egui::Grid::new(("vconc_grid", guid.0)).striped(true).num_columns(4).show(ui, |ui| {
-                        for h in ["Position", "Allele", "Status", "Sources"] {
-                            ui.strong(h);
+                        for h in ["table.position", "table.allele", "table.status", "table.sources"] {
+                            ui.strong(self.tr(h));
                         }
                         ui.end_row();
                         for v in self.variant_concordance.iter().take(MAX_ROWS) {
@@ -2183,22 +2194,23 @@ impl NavigatorApp {
         }
 
         ui.add_space(6.0);
-        ui.collapsing("Add / import variants", |ui| {
+        ui.collapsing(self.tr("variants.import"), |ui| {
             let labels: Vec<&str> = SourceType::ALL.iter().map(|t| t.as_str()).collect();
-            combo(ui, "Source:", "variant_source", &mut self.forms.variant_source_type, &labels);
+            let source_lbl = self.tr("form.source");
+            combo(ui, source_lbl, "variant_source", &mut self.forms.variant_source_type, &labels);
             let source_type = SourceType::from_code(&self.forms.variant_source_type);
 
-            if ui.button("Import VCF/CSV/TSV…").clicked() {
+            if ui.button(self.tr("chip.import")).clicked() {
                 if let Some(path) =
                     rfd::FileDialog::new().add_filter("variants", &["vcf", "csv", "tsv", "txt"]).pick_file()
                 {
                     let _ = self.tx.send(Command::ImportVariants { biosample_guid: guid, path, source_type });
                 }
             }
-            ui.label("VCF, or rows of contig,position,ref,alt[,rsid][,genotype]. SNP-only.");
+            ui.label(self.tr("chip.formatHint"));
 
             ui.separator();
-            ui.label("Or paste calls (e.g. Sanger / YSEQ confirmation):");
+            ui.label(self.tr("str.pasteCalls"));
             ui.add(egui::TextEdit::singleline(&mut self.forms.variant_manual_label).hint_text("source label (e.g. YSEQ panel)"));
             ui.add(
                 egui::TextEdit::multiline(&mut self.forms.variant_manual_text)
@@ -2206,7 +2218,7 @@ impl NavigatorApp {
                     .desired_rows(3),
             );
             let ready = !self.forms.variant_manual_text.trim().is_empty();
-            if ui.add_enabled(ready, egui::Button::new("Add pasted calls")).clicked() {
+            if ui.add_enabled(ready, egui::Button::new(self.tr("str.addPasted"))).clicked() {
                 let label = opt(&self.forms.variant_manual_label).unwrap_or_else(|| source_type.as_str().to_string());
                 let _ = self.tx.send(Command::AddVariants {
                     biosample_guid: guid,
@@ -2254,9 +2266,9 @@ impl NavigatorApp {
         }
 
         ui.add_space(6.0);
-        ui.collapsing("Import chip data", |ui| {
+        ui.collapsing(self.tr("chip.section"), |ui| {
             ui.horizontal(|ui| {
-                ui.label("Provider:");
+                ui.label(self.tr("form.provider"));
                 egui::ComboBox::from_id_salt("chip_provider")
                     .selected_text(self.forms.chip_provider.clone())
                     .show_ui(ui, |ui| {
@@ -2266,13 +2278,13 @@ impl NavigatorApp {
                         }
                     });
             });
-            if ui.button("Choose CSV/TXT…").clicked() {
+            if ui.button(self.tr("chip.chooseCsv")).clicked() {
                 if let Some(path) = rfd::FileDialog::new().add_filter("array data", &["csv", "txt", "tsv"]).pick_file() {
                     let provider = (self.forms.chip_provider != AUTO_DETECT).then(|| self.forms.chip_provider.clone());
                     let _ = self.tx.send(Command::ImportChipProfile { biosample_guid: guid, provider, path });
                 }
             }
-            ui.label("23andMe / AncestryDNA / MyHeritage raw-data export.");
+            ui.label(self.tr("chip.rawHint"));
         });
     }
 
@@ -2285,7 +2297,7 @@ impl NavigatorApp {
 
         // rCRS reference picker (reused for every derivation this session).
         ui.horizontal(|ui| {
-            ui.label("rCRS reference:");
+            ui.label(self.tr("mt.rcrsRef"));
             let label = self
                 .rcrs_path
                 .as_ref()
@@ -2293,7 +2305,7 @@ impl NavigatorApp {
                 .map(|n| n.to_string_lossy().into_owned())
                 .unwrap_or_else(|| "not set".into());
             ui.label(label);
-            if ui.button("Choose rCRS…").clicked() {
+            if ui.button(self.tr("mt.chooseRcrs")).clicked() {
                 if let Some(p) = rfd::FileDialog::new().add_filter("FASTA", &["fa", "fasta", "fna", "fas"]).pick_file() {
                     self.rcrs_path = Some(p);
                 }
@@ -2301,19 +2313,22 @@ impl NavigatorApp {
         });
 
         let rcrs = self.rcrs_path.clone();
+        // Bind before the &self loop borrow — used inside the per-row closure.
+        let assign_lbl = self.tr("common.assignHaplogroup");
+        let derive_lbl = self.tr("mt.deriveVariants");
         for m in &self.mtdna_sequences {
             let name = m.source_file_name.as_deref().or(m.defline.as_deref()).unwrap_or("mtDNA");
             ui.horizontal(|ui| {
                 ui.label(format!("{name} — {} bp, {} N", m.length(), m.n_count));
                 if ui
-                    .add_enabled(rcrs.is_some(), egui::Button::new("Derive variants vs rCRS"))
+                    .add_enabled(rcrs.is_some(), egui::Button::new(derive_lbl))
                     .clicked()
                 {
                     if let Some(path) = rcrs.clone() {
                         let _ = self.tx.send(Command::DeriveMtdnaVariants { mtdna_id: m.id, rcrs_path: path });
                     }
                 }
-                if ui.button("Assign haplogroup").clicked() {
+                if ui.button(assign_lbl).clicked() {
                     self.status = "Assigning haplogroup (fetching FTDNA tree)…".into();
                     let _ = self.tx.send(Command::AssignMtdnaHaplogroup { mtdna_id: m.id });
                 }
@@ -2327,20 +2342,20 @@ impl NavigatorApp {
         }
 
         ui.add_space(6.0);
-        ui.collapsing("Import mtDNA FASTA", |ui| {
-            if ui.button("Choose FASTA…").clicked() {
+        ui.collapsing(self.tr("mt.importFasta"), |ui| {
+            if ui.button(self.tr("mt.chooseFasta")).clicked() {
                 if let Some(path) =
                     rfd::FileDialog::new().add_filter("FASTA", &["fa", "fasta", "fna", "fas"]).pick_file()
                 {
                     let _ = self.tx.send(Command::ImportMtdna { biosample_guid: guid, path });
                 }
             }
-            ui.label("Full mtDNA sequence (~16,569 bp) aligned to rCRS.");
+            ui.label(self.tr("mt.fullSeq"));
         });
     }
 
     fn panels_section(&mut self, ui: &mut egui::Ui) {
-        ui.label("Panels");
+        ui.label(self.tr("table.panels"));
         let mut pick = None;
         for info in &self.panels {
             let label = format!("{}  ({} sites)", info.panel.name, info.site_count);
@@ -2353,7 +2368,7 @@ impl NavigatorApp {
         }
         ui.add(egui::TextEdit::singleline(&mut self.forms.panel_import_name).hint_text("new panel name"));
         if ui
-            .add_enabled(!self.forms.panel_import_name.trim().is_empty(), egui::Button::new("Import sites VCF…"))
+            .add_enabled(!self.forms.panel_import_name.trim().is_empty(), egui::Button::new(self.tr("mt.importSitesVcf")))
             .clicked()
         {
             if let Some(path) = rfd::FileDialog::new().add_filter("VCF", &["vcf"]).pick_file() {
@@ -2375,12 +2390,12 @@ impl NavigatorApp {
         ui.add_space(6.0);
         egui::Frame::group(ui.style()).show(ui, |ui| {
             if !self.reference_needs.is_empty() {
-                ui.label("Reference download required before import:");
+                ui.label(self.tr("refdl.required"));
                 for b in &self.reference_needs {
                     ui.label(format!("  • {} (~{} MB)", b.build, b.est_bytes / 1_000_000));
                 }
                 if ui
-                    .add_enabled(self.reference_progress.is_none(), egui::Button::new("Download & continue"))
+                    .add_enabled(self.reference_progress.is_none(), egui::Button::new(self.tr("common.downloadContinue")))
                     .clicked()
                 {
                     for build in self.reference_needs.iter().map(|b| b.build.clone()).collect::<Vec<_>>() {
@@ -2418,16 +2433,16 @@ impl NavigatorApp {
         ui.add_space(12.0);
         ui.separator();
         ui.horizontal(|ui| {
-            ui.heading("Project report");
+            ui.heading(self.tr("projects.report"));
             let busy = self.analyzing || self.running;
-            if ui.add_enabled(!busy, egui::Button::new("Analyze all (coverage + Y)")).clicked() {
+            if ui.add_enabled(!busy, egui::Button::new(self.tr("projects.analyzeAll"))).clicked() {
                 if let Some(pid) = self.selected_project {
                     self.analyzing = true;
                     self.status = "Analyzing project (coverage + Y per sample)…".into();
                     let _ = self.tx.send(Command::AnalyzeProject(pid));
                 }
             }
-            if ui.button("Export CSV…").clicked() {
+            if ui.button(self.tr("projects.exportCsv")).clicked() {
                 let csv = navigator_app::report_csv(&self.project_report);
                 if let Some(path) = rfd::FileDialog::new()
                     .add_filter("CSV", &["csv"])
@@ -2446,8 +2461,8 @@ impl NavigatorApp {
         let mut recompute: Option<i64> = None;
         let mut assign_y: Option<i64> = None;
         egui::Grid::new("project_report_grid").striped(true).num_columns(15).show(ui, |ui| {
-            for h in ["Sample", "Alns", "Mean cov", "Median", "≥10x", "≥20x", "Callable", "Y", "mtDNA", "Sex", "Read len", "%Aln", "Insert", "SV", "actions"] {
-                ui.strong(h);
+            for h in ["report.sample", "report.alns", "report.meanCov", "report.median", "report.cov10x", "report.cov20x", "report.callable", "report.y", "report.mtdna", "report.sex", "report.readLen", "report.pctAln", "report.insert", "report.sv", "report.actions"] {
+                ui.strong(self.tr(h));
             }
             ui.end_row();
             for r in &self.project_report {
@@ -2467,10 +2482,10 @@ impl NavigatorApp {
                 ui.label(r.sv_count.map(|v| v.to_string()).unwrap_or_else(|| "—".into()));
                 if let Some(aln) = r.primary_alignment_id {
                     ui.horizontal(|ui| {
-                        if ui.add_enabled(!running, egui::Button::new("Cov")).clicked() {
+                        if ui.add_enabled(!running, egui::Button::new(self.tr("btn.cov"))).clicked() {
                             recompute = Some(aln);
                         }
-                        if ui.add_enabled(!running, egui::Button::new("Y")).clicked() {
+                        if ui.add_enabled(!running, egui::Button::new(self.tr("report.y"))).clicked() {
                             assign_y = Some(aln);
                         }
                     });
@@ -2502,7 +2517,7 @@ impl NavigatorApp {
         ui.heading(format!("Samples — {name}"));
         ui.separator();
         if self.samples.is_empty() {
-            ui.label("No samples yet.");
+            ui.label(self.tr("projects.noSamples"));
         }
         let mut pick = None;
         for s in &self.samples {
@@ -2519,7 +2534,7 @@ impl NavigatorApp {
         if let Some(guid) = pick {
             self.select_sample(guid);
         }
-        ui.label("Add subjects from the sidebar (they tag to this open project).");
+        ui.label(self.tr("projects.addSubjectsHint"));
     }
 
     /// The Data Sources tab: sequencing runs (cards with expandable alignments), chip/array,
@@ -2656,9 +2671,9 @@ impl NavigatorApp {
 
     /// The "Add test" (sequencing run) form.
     fn add_test_form(&mut self, ui: &mut egui::Ui, guid: SampleGuid) {
-        ui.collapsing("Add test", |ui| {
+        ui.collapsing(self.tr("run.addTest"), |ui| {
             ui.horizontal(|ui| {
-                ui.label("Test type:");
+                ui.label(self.tr("form.testType"));
                 let current = testtype::display_name(&self.forms.run_test_type).to_string();
                 egui::ComboBox::from_id_salt("test_type").selected_text(current).show_ui(ui, |ui| {
                     for t in testtype::CATALOG {
@@ -2672,7 +2687,7 @@ impl NavigatorApp {
             });
             ui.add(egui::TextEdit::singleline(&mut self.forms.run_platform).hint_text("platform (optional, e.g. ILLUMINA)"));
             let ready = testtype::by_code(&self.forms.run_test_type).is_some();
-            if ui.add_enabled(ready, egui::Button::new("Add test")).clicked() {
+            if ui.add_enabled(ready, egui::Button::new(self.tr("run.addTest"))).clicked() {
                 let platform = opt(&self.forms.run_platform).unwrap_or_else(|| "UNKNOWN".into());
                 let _ = self.tx.send(Command::AddRun(NewSequenceRun {
                     biosample_guid: guid,
@@ -2693,9 +2708,9 @@ impl NavigatorApp {
     /// The "Add alignment" form for a run. Picking a BAM/CRAM probes its header to auto-fill the
     /// reference build + aligner; the reference FASTA is never asked for (resolved from the build).
     fn add_alignment_form(&mut self, ui: &mut egui::Ui, run_id: i64) {
-        ui.collapsing("Add alignment", |ui| {
+        ui.collapsing(self.tr("aln.add"), |ui| {
             ui.horizontal(|ui| {
-                if ui.button("Pick BAM/CRAM…").clicked() {
+                if ui.button(self.tr("common.pickBamCram")).clicked() {
                     if let Some(p) = rfd::FileDialog::new().add_filter("alignment", &["bam", "cram"]).pick_file() {
                         self.forms.aln_bam = p.to_string_lossy().into_owned();
                         // Probe the header to auto-fill build + aligner.
@@ -2716,7 +2731,7 @@ impl NavigatorApp {
             let ready = !self.forms.aln_reference_build.trim().is_empty()
                 && !self.forms.aln_aligner.trim().is_empty()
                 && !self.forms.aln_bam.is_empty();
-            if ui.add_enabled(ready, egui::Button::new("Add alignment")).clicked() {
+            if ui.add_enabled(ready, egui::Button::new(self.tr("aln.add"))).clicked() {
                 let _ = self.tx.send(Command::AddAlignment(NewAlignment {
                     sequence_run_id: run_id,
                     reference_build: self.forms.aln_reference_build.trim().to_string(),
@@ -2750,13 +2765,13 @@ impl NavigatorApp {
                 ui.spinner();
             }
             if !has_paths {
-                ui.label("(no BAM/reference path recorded)");
+                ui.label(self.tr("hint.noBamRefPath"));
             }
         });
 
         match &self.coverage {
             None if !self.running => {
-                ui.label("No coverage result yet.");
+                ui.label(self.tr("coverage.none"));
             }
             None => {}
             Some(c) => {
@@ -2811,7 +2826,7 @@ impl NavigatorApp {
                 ui.spinner();
             }
             if !has_bam {
-                ui.label("(no BAM/CRAM path recorded)");
+                ui.label(self.tr("hint.noBamPath"));
             }
         });
 
@@ -2872,7 +2887,7 @@ impl NavigatorApp {
                 let _ = self.tx.send(cmd);
             }
             if self.account.is_none() {
-                ui.label("(sign in to publish)");
+                ui.label(self.tr("hint.signInToPublish"));
             }
             if self.publishing {
                 ui.spinner();
@@ -2920,17 +2935,21 @@ impl NavigatorApp {
         }
 
         // Manual override: set a curator-corrected terminal (e.g. Sanger-confirmed), or clear.
+        // Bind before the &mut self.forms borrow below (used inside the closure).
+        let override_lbl = self.tr("form.override");
+        let set_lbl = self.tr("common.set");
+        let clear_lbl = self.tr("common.clear");
         let (hg_field, reason_field) = match dna_type {
             DnaType::Y => (&mut self.forms.override_y_haplogroup, &mut self.forms.override_y_reason),
             DnaType::Mt => (&mut self.forms.override_mt_haplogroup, &mut self.forms.override_mt_reason),
         };
         ui.horizontal(|ui| {
-            ui.label("Override:");
+            ui.label(override_lbl);
             ui.add(egui::TextEdit::singleline(hg_field).hint_text("haplogroup").desired_width(140.0));
             ui.add(egui::TextEdit::singleline(reason_field).hint_text("reason").desired_width(180.0));
             let hg = hg_field.trim().to_string();
             let reason = reason_field.trim().to_string();
-            if ui.add_enabled(!hg.is_empty(), egui::Button::new("Set")).clicked() {
+            if ui.add_enabled(!hg.is_empty(), egui::Button::new(set_lbl)).clicked() {
                 self.status = format!("Overriding {label} consensus → {hg}");
                 let _ = self.tx.send(Command::SetHaploOverride {
                     biosample_guid: guid,
@@ -2939,7 +2958,7 @@ impl NavigatorApp {
                     reason: (!reason.is_empty()).then_some(reason),
                 });
             }
-            if ui.add_enabled(c.overridden, egui::Button::new("Clear")).clicked() {
+            if ui.add_enabled(c.overridden, egui::Button::new(clear_lbl)).clicked() {
                 self.status = format!("Clearing {label} override");
                 let _ = self.tx.send(Command::ClearHaploOverride { biosample_guid: guid, dna_type });
             }
@@ -2996,7 +3015,7 @@ impl NavigatorApp {
                 });
             }
             if !signed_in {
-                ui.label("(sign in to publish)");
+                ui.label(self.tr("hint.signInToPublish"));
             }
         });
         ui.add_space(6.0);
@@ -3018,14 +3037,14 @@ impl NavigatorApp {
                 let _ = self.tx.send(Command::LoadHeteroplasmy { alignment_id });
             }
             if !has_bam {
-                ui.label("(no BAM/CRAM path recorded)");
+                ui.label(self.tr("hint.noBamPath"));
             }
         });
 
         if let Some((id, sites)) = &self.heteroplasmy {
             if *id == alignment_id {
                 if sites.is_empty() {
-                    ui.label("No heteroplasmic positions above the noise floor.");
+                    ui.label(self.tr("mt.noHeteroplasmy"));
                 } else {
                     ui.label(format!("{} heteroplasmic position(s):", sites.len()));
                     for h in sites {
@@ -3059,7 +3078,7 @@ impl NavigatorApp {
                 let _ = self.tx.send(Command::EstimateAncestry { alignment_id });
             }
             if ui
-                .add_enabled(has_bam && !busy, egui::Button::new("Paint chromosomes"))
+                .add_enabled(has_bam && !busy, egui::Button::new(self.tr("ancestry.paint")))
                 .clicked()
             {
                 self.painting_running = true;
@@ -3070,7 +3089,7 @@ impl NavigatorApp {
                 ui.spinner();
             }
             if !has_bam {
-                ui.label("(no BAM/CRAM path recorded)");
+                ui.label(self.tr("hint.noBamPath"));
             }
         });
 
@@ -3157,7 +3176,7 @@ impl NavigatorApp {
                 // Geographic distribution: each contributing population at its homeland,
                 // sized by proportion and colored by continent.
                 ui.add_space(8.0);
-                ui.label("Geographic distribution:");
+                ui.label(self.tr("ancestry.geo"));
                 draw_ancestry_map(ui, &result.components);
 
                 // PCA scatter: reference population centroids (PC1×PC2) + this sample's point.
@@ -3168,16 +3187,16 @@ impl NavigatorApp {
                     };
                     if coords.len() >= 2 && !refs.is_empty() {
                         ui.add_space(8.0);
-                        ui.label("PCA — reference populations (PC1 × PC2) + this sample (○):");
+                        ui.label(self.tr("ancestry.pca"));
                         draw_pca_scatter(ui, (coords[0], coords[1]), refs);
                     }
                 }
             }
             Some((id, None)) if *id == alignment_id && !busy => {
-                ui.label("No ancestry estimate yet.");
+                ui.label(self.tr("ancestry.none"));
             }
             _ if !busy => {
-                ui.label("No ancestry estimate yet.");
+                ui.label(self.tr("ancestry.none"));
             }
             _ => {}
         }
@@ -3186,7 +3205,7 @@ impl NavigatorApp {
         if let Some((id, segments)) = &self.painting {
             if *id == alignment_id && !segments.is_empty() {
                 ui.add_space(8.0);
-                ui.label("Local ancestry — chromosome painting:");
+                ui.label(self.tr("ancestry.local"));
                 draw_chromosome_painting(ui, segments);
             }
         }
@@ -3207,7 +3226,7 @@ impl NavigatorApp {
                 let _ = self.tx.send(Command::AssignYHaplogroup { alignment_id });
             }
             if !has_bam {
-                ui.label("(no BAM/CRAM path recorded)");
+                ui.label(self.tr("hint.noBamPath"));
             }
         });
 
@@ -3240,7 +3259,7 @@ impl NavigatorApp {
             .unwrap_or(false);
         ui.add_space(6.0);
         ui.horizontal(|ui| {
-            ui.label("Callable mask:");
+            ui.label(self.tr("form.callableMask"));
             ui.checkbox(&mut self.y_self_mask, "self-referential (this sample)");
         });
         if !self.y_self_mask {
@@ -3252,7 +3271,7 @@ impl NavigatorApp {
                     .map(|n| n.to_string_lossy().into_owned())
                     .unwrap_or_else(|| "none (noisy)".into());
                 ui.label(format!("External BED: {label}"));
-                if ui.button("Choose BED…").clicked() {
+                if ui.button(self.tr("form.chooseBed")).clicked() {
                     if let Some(p) = rfd::FileDialog::new().add_filter("BED", &["bed"]).pick_file() {
                         self.y_mask_path = Some(p);
                     }
@@ -3274,7 +3293,7 @@ impl NavigatorApp {
                 ui.spinner();
             }
             if !has_ref {
-                ui.label("(needs BAM + reference path)");
+                ui.label(self.tr("hint.needsBamRef"));
             }
         });
         if let Some((id, bucket)) = &self.private_y {
@@ -3282,8 +3301,8 @@ impl NavigatorApp {
                 ui.label(format!("{} novel + {} off-path, below {}", bucket.novel(), bucket.off_path(), bucket.terminal));
                 egui::CollapsingHeader::new("Private variants").id_salt(("privy", alignment_id)).show(ui, |ui| {
                     egui::Grid::new(("privy_grid", alignment_id)).striped(true).num_columns(4).show(ui, |ui| {
-                        for h in ["Position", "Change", "Depth", "Class"] {
-                            ui.strong(h);
+                        for h in ["table.position", "table.change", "table.depth", "table.class"] {
+                            ui.strong(self.tr(h));
                         }
                         ui.end_row();
                         for v in bucket.variants.iter().take(500) {
@@ -3307,7 +3326,7 @@ impl NavigatorApp {
 
     fn genotyping_section(&mut self, ui: &mut egui::Ui, alignment_id: i64) {
         let Some(panel_id) = self.selected_panel else {
-            ui.label("Select a panel in the sidebar.");
+            ui.label(self.tr("panel.selectInSidebar"));
             return;
         };
         let panel_name = self
@@ -3324,7 +3343,7 @@ impl NavigatorApp {
             .unwrap_or(false);
 
         ui.horizontal(|ui| {
-            ui.label("Ploidy:");
+            ui.label(self.tr("form.ploidy"));
             ui.add(egui::TextEdit::singleline(&mut self.forms.ploidy).desired_width(32.0));
             if ui
                 .add_enabled(has_bam && !self.running_genotype, egui::Button::new(format!("Genotype vs {panel_name}")))
@@ -3355,7 +3374,7 @@ impl NavigatorApp {
                 ));
             }
             None if !self.running_genotype => {
-                ui.label("Not genotyped against this panel.");
+                ui.label(self.tr("panel.notGenotyped"));
             }
             None => {}
         }
@@ -3363,7 +3382,7 @@ impl NavigatorApp {
         // IBD compare against another genotyped alignment.
         ui.add_space(8.0);
         ui.horizontal(|ui| {
-            ui.label("IBD vs:");
+            ui.label(self.tr("ibd.vs"));
             let current = self
                 .all_alignments
                 .iter()
@@ -3378,7 +3397,7 @@ impl NavigatorApp {
                 }
             });
             let ready = self.ibd_other.is_some() && !self.running_ibd;
-            if ui.add_enabled(ready, egui::Button::new("Compare")).clicked() {
+            if ui.add_enabled(ready, egui::Button::new(self.tr("action.compare"))).clicked() {
                 self.running_ibd = true;
                 self.ibd_result = None;
         self.identity = None;
@@ -3389,7 +3408,7 @@ impl NavigatorApp {
                     ploidy: self.ploidy(),
                 });
             }
-            if ui.add_enabled(self.ibd_other.is_some(), egui::Button::new("Verify same donor")).clicked() {
+            if ui.add_enabled(self.ibd_other.is_some(), egui::Button::new(self.tr("ibd.verify"))).clicked() {
                 self.identity = None;
                 let _ = self.tx.send(Command::VerifyIdentity {
                     a: alignment_id,
@@ -3412,7 +3431,7 @@ impl NavigatorApp {
                 VerificationStatus::VerifiedDifferent => ("different individuals", egui::Color32::from_rgb(200, 60, 60)),
             };
             ui.horizontal(|ui| {
-                ui.label("Identity:");
+                ui.label(self.tr("ibd.identity"));
                 ui.colored_label(col, txt);
                 if let Some(c) = v.snp_concordance {
                     ui.label(format!("SNP concordance {:.3} over {} sites", c, v.sites_compared));
@@ -3433,10 +3452,10 @@ impl NavigatorApp {
             ));
             if !cmp.segments.is_empty() {
                 egui::Grid::new("ibd_segments").striped(true).num_columns(4).show(ui, |ui| {
-                    ui.strong("Chr");
-                    ui.strong("Start");
-                    ui.strong("End");
-                    ui.strong("cM");
+                    ui.strong(self.tr("table.chr"));
+                    ui.strong(self.tr("table.start"));
+                    ui.strong(self.tr("table.end"));
+                    ui.strong(self.tr("table.cm"));
                     ui.end_row();
                     for s in &cmp.segments {
                         ui.label(&s.chromosome);
@@ -3508,15 +3527,15 @@ impl NavigatorApp {
             }
             None => {}
             Some(calls) if calls.is_empty() => {
-                ui.label("0 SNP calls.");
+                ui.label(self.tr("denovo.noCalls"));
             }
             Some(calls) => {
                 ui.label(format!("{} SNP call(s)", calls.len()));
                 egui::Grid::new(("denovo_calls", contig)).striped(true).num_columns(4).show(ui, |ui| {
-                    ui.strong("Position");
-                    ui.strong("Change");
-                    ui.strong("Depth");
-                    ui.strong("AF");
+                    ui.strong(self.tr("table.position"));
+                    ui.strong(self.tr("table.change"));
+                    ui.strong(self.tr("table.depth"));
+                    ui.strong(self.tr("table.af"));
                     ui.end_row();
                     for c in calls {
                         ui.label(c.position.to_string());
