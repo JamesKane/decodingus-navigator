@@ -141,12 +141,17 @@ discovery/chromosome-browser/relationship records do not — the biggest remaini
 Regions API, sequence-run fingerprinting, academic-ENA / FTDNA-project / pangenome-GAM imports,
 imputation, instrument-observation + ancestral-STR records, interactive tree viz.
 
-**Done since this audit**: **Unified Quality Metrics Walker** (2026-06-10, uncommitted) — fused
-coverage + read-metrics + sex into one record-loop pass (`navigator-analysis::unified`); BAM 2→1 /
-CRAM 3→1 file reads; full-analysis steps 8→6. Shared `pub(crate)` `*State` accept/finish helpers in
-coverage/read_metrics/sex → byte-identical numbers (standalone fns are now wrappers). Live
-whole-genome parity validated on the GFX BAM. See `documents/design/UnifiedQualityMetricsWalker_RustPort.md`
-+ `memory/uqmw-rust-port.md`. (Multi-threaded per-contig parallelism is the remaining speedup, deferred.)
+**Done since this audit**: **Unified Quality Metrics Walker** (2026-06-10, committed 842b2bb) —
+fused coverage + read-metrics + sex into one record-loop pass (`navigator-analysis::unified`); BAM
+2→1 / CRAM 3→1 file reads; full-analysis steps 8→6. Shared `pub(crate)` `*State` accept/finish
+helpers in coverage/read_metrics/sex → byte-identical numbers (standalone fns are now wrappers).
+**Threaded** (committed 900381d + 7a9d7f2): MT bgzf decompression (~8% — decode isn't the
+bottleneck), then a **per-contig parallel walker** (rayon) — **5.15× on the GFX BAM (64.7s→12.6s),
+peak 2.8 GB, byte-identical** to sequential. Reference N-mask (1 bit/base) + a load semaphore bound
+memory; `NAVIGATOR_ANALYSIS_THREADS` / `NAVIGATOR_BGZF_THREADS` tune it. BAM+indexed uses the
+parallel path; CRAM / unindexed BAM fall back to sequential. Live parity + perf-smoke tests in
+`tests/parity_real.rs`. See `documents/design/UnifiedQualityMetricsWalker_RustPort.md` +
+`memory/uqmw-rust-port.md`.
 **AppView side**: pick which ancestry method to surface; ingest `fitDistance` (needs rev bump);
 IBD-matching AppView backlog; AppView backfeed.
 **Small**: Edit/Delete + Add-to-Project UI stubs; Compare needs multi-select; table Y/mt only fills
@@ -154,8 +159,8 @@ the selected subject; ancestry genotype-pooling deferred; global panel asset nee
 
 ## Recommended next steps (pick one)
 
-1. ~~**Unified Quality Metrics Walker**~~ — DONE 2026-06-10 (uncommitted); see "Done since this
-   audit" above. Next adjacent win: multi-threaded per-contig coverage (deferred Phase 4).
+1. ~~**Unified Quality Metrics Walker**~~ — DONE 2026-06-10 (committed, incl. per-contig
+   parallelism — 5.15× on the GFX BAM); see "Done since this audit" above.
 2. **i18n** — keep migrating (forms, grid headers, status messages) and/or persist the chosen lang.
 3. **DecodingUs tree provider** — you control that tree; FTDNA-only is a real limitation for Y work.
 4. **IBD network matching** — biggest user-facing feature; detection + identity math built, the

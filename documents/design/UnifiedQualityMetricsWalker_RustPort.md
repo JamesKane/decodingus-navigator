@@ -140,3 +140,37 @@ per-contig parallelism (Scala Phase 4), direct SVG binning, CRAM reference-cache
 ~1 new module + 3 small refactors (extract per-record helpers) + 1 lib method + 1 worker
 edit + 2 test files. No new deps, no schema/artifact changes, no metric changes. The risk is
 entirely in the refactor preserving exact numbers — the equality tests are the guardrail.
+
+---
+
+## Update — threading (implemented 2026-06-10)
+
+Two layers, both byte-identical to the sequential walker (guarded by live parity tests in
+`crates/navigator-analysis/tests/parity_real.rs`):
+
+1. **MT bgzf decompression** (`reader.rs`, commit 900381d). BAM sequential reads wrap the file
+   in `bgzf::MultithreadedReader` — parallel block inflation, sequential record parsing. Only
+   ~8% on the GFX BAM: **decompression is not the bottleneck, the per-position pileup compute
+   is.** `NAVIGATOR_BGZF_THREADS` (default cores−1, cap 6; 1 disables).
+
+2. **Per-contig parallel walker** (`unified::collect_unified_metrics_parallel`, commit 7a9d7f2).
+   Coverage is independent per contig, so fan out over contigs with rayon, each running the same
+   `CoverageState`/`ReadMetricsState`/sex accumulators, then merge (commutative folds +
+   header-ordered per-contig outputs). Read-metrics covers **every** contig (region queries) plus
+   an **unmapped-tail sweep** (`query_unmapped`) so totals equal the sequential pass exactly.
+   **BAM + `.bai` only** (region + unmapped queries); CRAM (no `.crai` unmapped query) and
+   unindexed BAM transparently fall back to the sequential walker.
+
+   Memory (the parallel path's real constraint, since each contig task would otherwise pin its
+   full reference): a **1-bit-per-base reference N-mask** replaces the raw bytes (coverage only
+   needs N-detection) — ~31 MB for chr1 vs ~248 MB — and a **load semaphore** caps concurrent
+   full-reference loads (≤4) independently of compute threads (default `min(cores, 12)` — the
+   knee; past it wall time is floored by chr1 + the serial unmapped sweep).
+   `NAVIGATOR_ANALYSIS_THREADS` tunes it.
+
+   **Measured on the real 9 GB GFX0457637 pbmm2 CHM13 BAM: unified 64.7s → 12.6s (5.15×), peak
+   RSS 2.8 GB** (≈ the sequential walker's footprint).
+
+Further headroom (not done): the serial unmapped sweep and the single largest contig bound the
+tail; splitting big contigs into sub-regions (with per-region coverage merge) or parallelizing
+the unmapped sweep would push past ~5×, at more complexity.
