@@ -32,6 +32,7 @@ use noodles::fasta;
 use noodles::sam::alignment::record::cigar::op::Kind;
 use noodles::sam::alignment::RecordBuf;
 
+use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
 use crate::error::AnalysisError;
@@ -634,66 +635,110 @@ pub fn call_denovo(
 ) -> Result<Vec<VariantCall>, AnalysisError> {
     let length = read_contig_length(bam_path, contig, Some(reference_path))?;
 
-    let mut fasta_reader = fasta::io::indexed_reader::Builder::default()
-        .build_from_path(reference_path)
-        .map_err(|e| AnalysisError::io(reference_path, e))?;
+    // Load the contig's reference once (one FASTA query), shared read-only across chunks — each
+    // chunk slices its own window instead of re-querying the FASTA.
+    let ref_seq: Vec<u8> = {
+        let mut fasta_reader = fasta::io::indexed_reader::Builder::default()
+            .build_from_path(reference_path)
+            .map_err(|e| AnalysisError::io(reference_path, e))?;
+        let region: Region = format!("{contig}:1-{length}")
+            .parse()
+            .map_err(|_| AnalysisError::Message(format!("bad region for contig {contig}")))?;
+        fasta_reader
+            .query(&region)
+            .map_err(|e| AnalysisError::io(reference_path, e))?
+            .sequence()
+            .as_ref()
+            .to_vec()
+    };
 
+    // Disjoint emit ranges, in order, each processed independently with its own indexed BAM
+    // region query. Chunks stay large (`denovo_chunk`, default 8 MB): a CRAM container spans
+    // several MB, so chunks smaller than a container would re-decode it in every overlapping
+    // chunk. rayon caps in-flight chunks at the pool size, so peak memory is bounded.
+    let threads = crate::unified::analysis_thread_count();
     let chunk = params.denovo_chunk.max(1);
-    let overlap = params.denovo_overlap;
-    let mut out = Vec::new();
+    let mut ranges: Vec<(usize, usize)> = Vec::new();
     let mut emit_lo = 1usize;
     while emit_lo <= length {
         let emit_hi = (emit_lo + chunk - 1).min(length);
-        let proc_lo = emit_lo.saturating_sub(overlap).max(1);
-        let proc_hi = (emit_hi + overlap).min(length);
-
-        // Reference for [proc_lo, proc_hi], indexed relative to proc_lo.
-        let region: Region = format!("{contig}:{proc_lo}-{proc_hi}")
-            .parse()
-            .map_err(|_| AnalysisError::Message(format!("bad region for contig {contig}")))?;
-        let rec = fasta_reader
-            .query(&region)
-            .map_err(|e| AnalysisError::io(reference_path, e))?;
-        let ref_chunk = rec.sequence().as_ref().to_vec();
-
-        let (mut counts, indel) = tally_region(bam_path, contig, params, proc_lo, proc_hi, Some(reference_path))?;
-        if params.local_realign {
-            realign_region(bam_path, contig, &ref_chunk, proc_lo, &mut counts, &indel, params, Some(reference_path))?;
-        }
-
-        for pos in emit_lo..=emit_hi {
-            let r = pos - proc_lo; // index into the chunk arrays
-            let c = counts[r];
-            let depth: u32 = c.iter().sum();
-            if depth < params.min_depth {
-                continue;
-            }
-            let (top_bi, top_count) = consensus(&c);
-            if top_count == 0 {
-                continue;
-            }
-            let frac = top_count as f64 / depth as f64;
-            if frac < params.min_allele_fraction {
-                continue;
-            }
-            if is_paralogous(&c, depth, params) {
-                continue; // bi-allelic at a haploid site — paralog/mismapping, not a private call
-            }
-            let ref_base = ref_chunk.get(r).copied().unwrap_or(b'N');
-            if base_index(ref_base) == Some(top_bi) || base_index(ref_base).is_none() {
-                continue; // matches reference, or reference is N/ambiguous
-            }
-            out.push(VariantCall {
-                contig: contig.to_string(),
-                position: pos as i64,
-                reference_allele: ref_base.to_ascii_uppercase() as char,
-                alternate_allele: BASES[top_bi] as char,
-                depth,
-                alt_depth: top_count,
-                allele_fraction: frac,
-            });
-        }
+        ranges.push((emit_lo, emit_hi));
         emit_lo = emit_hi + 1;
+    }
+
+    let pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(threads)
+        .build()
+        .map_err(|e| AnalysisError::Message(format!("rayon pool: {e}")))?;
+    let nested: Vec<Vec<VariantCall>> = pool.install(|| {
+        ranges
+            .par_iter()
+            .map(|&(lo, hi)| denovo_chunk(bam_path, reference_path, contig, params, &ref_seq, length, lo, hi))
+            .collect::<Result<Vec<_>, AnalysisError>>()
+    })?;
+    // Ranges are disjoint and collected in order, so flattening preserves global position order.
+    Ok(nested.into_iter().flatten().collect())
+}
+
+/// De-novo SNP calls for one emit range `[emit_lo, emit_hi]` (1-based inclusive). Tallies a
+/// `denovo_overlap`-padded window so realignment windows straddling the boundary are fully
+/// seen, but emits only `[emit_lo, emit_hi]`. `ref_seq` is the full contig reference (index 0 =
+/// position 1). Each call opens its own BAM reader, so it is independent and thread-safe.
+#[allow(clippy::too_many_arguments)]
+fn denovo_chunk(
+    bam_path: &Path,
+    reference_path: &Path,
+    contig: &str,
+    params: &HaploidCallerParams,
+    ref_seq: &[u8],
+    length: usize,
+    emit_lo: usize,
+    emit_hi: usize,
+) -> Result<Vec<VariantCall>, AnalysisError> {
+    let overlap = params.denovo_overlap;
+    let proc_lo = emit_lo.saturating_sub(overlap).max(1);
+    let proc_hi = (emit_hi + overlap).min(length);
+    // Reference window [proc_lo, proc_hi], indexed relative to proc_lo (clamped to what the
+    // FASTA actually returned, so a short contig tail reads as 'N' like before).
+    let ref_chunk = &ref_seq[(proc_lo - 1).min(ref_seq.len())..proc_hi.min(ref_seq.len())];
+
+    let (mut counts, indel) = tally_region(bam_path, contig, params, proc_lo, proc_hi, Some(reference_path))?;
+    if params.local_realign {
+        realign_region(bam_path, contig, ref_chunk, proc_lo, &mut counts, &indel, params, Some(reference_path))?;
+    }
+
+    let mut out = Vec::new();
+    for pos in emit_lo..=emit_hi {
+        let r = pos - proc_lo; // index into the chunk arrays
+        let c = counts[r];
+        let depth: u32 = c.iter().sum();
+        if depth < params.min_depth {
+            continue;
+        }
+        let (top_bi, top_count) = consensus(&c);
+        if top_count == 0 {
+            continue;
+        }
+        let frac = top_count as f64 / depth as f64;
+        if frac < params.min_allele_fraction {
+            continue;
+        }
+        if is_paralogous(&c, depth, params) {
+            continue; // bi-allelic at a haploid site — paralog/mismapping, not a private call
+        }
+        let ref_base = ref_chunk.get(r).copied().unwrap_or(b'N');
+        if base_index(ref_base) == Some(top_bi) || base_index(ref_base).is_none() {
+            continue; // matches reference, or reference is N/ambiguous
+        }
+        out.push(VariantCall {
+            contig: contig.to_string(),
+            position: pos as i64,
+            reference_allele: ref_base.to_ascii_uppercase() as char,
+            alternate_allele: BASES[top_bi] as char,
+            depth,
+            alt_depth: top_count,
+            allele_fraction: frac,
+        });
     }
     Ok(out)
 }
@@ -738,49 +783,65 @@ fn realign_region(
     reference: Option<&Path>,
 ) -> Result<(), AnalysisError> {
     let windows = active_windows(indel_evidence, params.realign_min_indel_reads, params.realign_pad);
+    // Keep only in-range windows; they stay sorted + disjoint, so by both `w0` and `w1`.
+    let windows: Vec<(usize, usize)> = windows.into_iter().filter(|&(_, w1)| w1 < ref_chunk.len()).collect();
     if windows.is_empty() {
         return Ok(());
     }
+    let mut win_counts: Vec<Vec<[u32; 4]>> = windows.iter().map(|&(w0, w1)| vec![[0u32; 4]; w1 - w0 + 1]).collect();
 
+    // ONE indexed query spanning all active windows: decode the region's reads once and route
+    // each read to the window(s) it overlaps. The previous code re-queried per window, which on
+    // a repeat-rich contig (thousands of indel windows) re-decoded the same CRAM containers over
+    // and over — the de-novo hot path. Reads are short, so each overlaps only a window or two,
+    // found by binary search over the sorted windows.
+    let span_lo = region_lo + windows.first().unwrap().0;
+    let span_hi = region_lo + windows.last().unwrap().1;
+    let region: Region = format!("{contig}:{span_lo}-{span_hi}")
+        .parse()
+        .map_err(|_| AnalysisError::Message(format!("bad region for {contig}")))?;
     let (header, mut reader) = reader::open_indexed(bam_path, reference)?;
-
-    for (w0, w1) in windows {
-        if w1 >= ref_chunk.len() {
+    for result in reader.query(&header, &region)? {
+        let record = result?;
+        if !passes(&record, params) {
             continue;
         }
-        let target = &ref_chunk[w0..=w1];
-        let mut win_counts = vec![[0u32; 4]; w1 - w0 + 1];
+        let start = match record.alignment_start() {
+            Some(p) => p.get(),
+            None => continue,
+        };
+        let ref_span: usize = record.cigar().as_ref().iter().filter(|op| op.kind().consumes_reference()).map(|op| op.len()).sum();
+        let read_end = start + ref_span.saturating_sub(1); // 1-based inclusive
 
-        // 1-based absolute window bounds (rel index r <-> position region_lo + r).
-        let wlo_abs = region_lo + w0;
-        let whi_abs = region_lo + w1;
-        let region: Region = format!("{contig}:{wlo_abs}-{whi_abs}")
-            .parse()
-            .map_err(|_| AnalysisError::Message(format!("bad region for {contig}")))?;
-        for result in reader.query(&header, &region)? {
-            let record = result?;
-            if !passes(&record, params) {
-                continue;
+        // First window whose end reaches the read's start, then walk while its start is still
+        // within the read (windows are disjoint + sorted).
+        let start_rel = start as i64 - region_lo as i64;
+        let mut iw = windows.partition_point(|&(_, w1)| (w1 as i64) < start_rel);
+        while iw < windows.len() {
+            let (w0, w1) = windows[iw];
+            let wlo_abs = region_lo + w0;
+            if wlo_abs > read_end {
+                break;
             }
-            let start = match record.alignment_start() {
-                Some(p) => p.get(),
-                None => continue,
-            };
+            let whi_abs = region_lo + w1;
+            let target = &ref_chunk[w0..=w1];
             let (qbases, qquals) = window_substring(&record, start, wlo_abs, whi_abs)?;
-            if qbases.is_empty() {
-                continue;
-            }
-            let (tstart, ops) = realign::fitting_align(&qbases, target);
-            for (ref_idx, base, qual) in realign::project(&qbases, &qquals, w0, tstart, &ops) {
-                if qual >= params.min_base_quality {
-                    if let Some(bi) = base_index(base) {
-                        win_counts[ref_idx - w0][bi] += 1;
+            if !qbases.is_empty() {
+                let (tstart, ops) = realign::fitting_align(&qbases, target);
+                for (ref_idx, base, qual) in realign::project(&qbases, &qquals, w0, tstart, &ops) {
+                    if qual >= params.min_base_quality {
+                        if let Some(bi) = base_index(base) {
+                            win_counts[iw][ref_idx - w0][bi] += 1;
+                        }
                     }
                 }
             }
+            iw += 1;
         }
+    }
 
-        for (k, c) in win_counts.into_iter().enumerate() {
+    for (iw, &(w0, _)) in windows.iter().enumerate() {
+        for (k, c) in std::mem::take(&mut win_counts[iw]).into_iter().enumerate() {
             counts[w0 + k] = c;
         }
     }

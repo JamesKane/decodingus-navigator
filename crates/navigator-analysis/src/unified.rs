@@ -119,8 +119,9 @@ pub fn collect_unified_metrics_parallel(
 
 /// Worker threads for the per-contig fan-out. Defaults to all available cores capped at 12 —
 /// past that the wall time is floored by the largest contig + the unmapped sweep, so more
-/// threads only add memory. Override with `NAVIGATOR_ANALYSIS_THREADS`.
-fn analysis_thread_count() -> usize {
+/// threads only add memory. Override with `NAVIGATOR_ANALYSIS_THREADS`. Shared with the
+/// de-novo caller's region fan-out.
+pub(crate) fn analysis_thread_count() -> usize {
     std::env::var("NAVIGATOR_ANALYSIS_THREADS")
         .ok()
         .and_then(|s| s.parse::<usize>().ok())
