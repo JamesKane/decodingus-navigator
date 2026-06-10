@@ -42,6 +42,12 @@ delete.note=The subject must have no sequencing runs or imported profiles; remov
 delete.dataTitle=Delete Data Source
 delete.dataNote=This permanently removes the record and any analysis results derived from it.
 delete.thisProfile=🗑 Delete this
+editProject.title=Edit Project
+editProject.name=Name
+editProject.admin=Administrator
+editProject.description=Description
+editProject.deleteTitle=Delete Project
+editProject.deleteNote=The project must have no subjects; reassign them first.
 
 # Bottom action bar
 action.selected=selected

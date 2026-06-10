@@ -102,6 +102,15 @@ struct AnalysisModal {
     started: f64,
 }
 
+/// Editable copy of a project, driving the project Edit modal (Some ⇒ the dialog is shown).
+#[derive(Clone)]
+struct EditProject {
+    id: i64,
+    name: String,
+    description: String,
+    administrator: String,
+}
+
 /// Editable copy of a subject, driving the Edit modal (Some ⇒ the dialog is shown).
 #[derive(Clone)]
 struct EditSubject {
@@ -162,6 +171,10 @@ pub struct NavigatorApp {
     confirm_data_delete: Option<DataDelete>,
     /// Subject being assigned to a project: (subject, selected project or None). Some ⇒ picker shown.
     assign_project: Option<(SampleGuid, Option<i64>)>,
+    /// Project being edited (Some ⇒ the project Edit modal is shown).
+    edit_project: Option<EditProject>,
+    /// Project pending delete confirmation: (id, name). Some ⇒ the confirm dialog is shown.
+    confirm_delete_project: Option<(i64, String)>,
     /// Current frame's egui time (seconds), captured at the top of `update`.
     frame_time: f64,
     /// Selected primary navigation tab.
@@ -779,6 +792,8 @@ impl NavigatorApp {
             confirm_delete: None,
             confirm_data_delete: None,
             assign_project: None,
+            edit_project: None,
+            confirm_delete_project: None,
             frame_time: 0.0,
             nav: Nav::Subjects,
             detail_tab: DetailTab::Overview,
@@ -879,6 +894,10 @@ impl NavigatorApp {
                 Event::ProjectCreated(p) => {
                     self.select_project(p.id);
                     let _ = self.tx.send(Command::LoadOverview);
+                }
+                Event::ProjectsChanged => {
+                    let _ = self.tx.send(Command::LoadOverview);
+                    let _ = self.tx.send(Command::LoadAllBiosamples); // a deleted project clears assignments
                 }
                 Event::ProjectImported(summary) => {
                     let mut msg = format!(
@@ -1447,6 +1466,8 @@ impl eframe::App for NavigatorApp {
         self.delete_subject_modal(ctx);
         self.data_delete_modal(ctx);
         self.assign_project_modal(ctx);
+        self.edit_project_modal(ctx);
+        self.delete_project_modal(ctx);
         self.paint_drop_hint(ctx);
     }
 }
@@ -1500,9 +1521,39 @@ impl NavigatorApp {
 
     /// The Projects work area: the open project's samples + coverage/haplogroup report.
     fn projects_central(&mut self, ui: &mut egui::Ui) {
-        if self.selected_project.is_none() {
+        let Some(pid) = self.selected_project else {
             empty_state(ui, self.tr("empty.projects.title"), self.tr("empty.projects.hint"));
             return;
+        };
+        if let Some(ov) = self.overview.iter().find(|o| o.project.id == pid) {
+            let proj = ov.project.clone();
+            ui.add_space(6.0);
+            ui.horizontal(|ui| {
+                ui.vertical(|ui| {
+                    ui.heading(&proj.name);
+                    ui.label(egui::RichText::new(format!("Administrator: {}", proj.administrator)).weak());
+                    if let Some(d) = &proj.description {
+                        ui.label(egui::RichText::new(d).weak().small());
+                    }
+                });
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui
+                        .add(egui::Button::new(egui::RichText::new(self.tr("common.delete")).color(egui::Color32::WHITE)).fill(DANGER))
+                        .clicked()
+                    {
+                        self.confirm_delete_project = Some((proj.id, proj.name.clone()));
+                    }
+                    if ui.button(self.tr("common.edit")).clicked() {
+                        self.edit_project = Some(EditProject {
+                            id: proj.id,
+                            name: proj.name.clone(),
+                            description: proj.description.clone().unwrap_or_default(),
+                            administrator: proj.administrator.clone(),
+                        });
+                    }
+                });
+            });
+            ui.separator();
         }
         egui::ScrollArea::vertical().show(ui, |ui| {
             self.samples_section(ui);
@@ -1973,6 +2024,100 @@ impl NavigatorApp {
             self.assign_project = None;
         } else {
             self.assign_project = Some((guid, chosen));
+        }
+    }
+
+    /// The Edit-project modal: name / administrator / description. Save sends `UpdateProject`.
+    fn edit_project_modal(&mut self, ctx: &egui::Context) {
+        let Some(mut edit) = self.edit_project.clone() else { return };
+        let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("edit_proj_dim")));
+        painter.rect_filled(ctx.screen_rect(), 0.0, egui::Color32::from_black_alpha(150));
+
+        let mut close = false;
+        egui::Area::new(egui::Id::new("edit_project_modal"))
+            .order(egui::Order::Foreground)
+            .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+            .show(ctx, |ui| {
+                egui::Frame::window(ui.style()).inner_margin(egui::Margin::same(18.0)).show(ui, |ui| {
+                    ui.set_width(400.0);
+                    ui.label(egui::RichText::new(self.tr("editProject.title")).strong().size(16.0));
+                    ui.separator();
+                    ui.add_space(6.0);
+                    ui.label(self.tr("editProject.name"));
+                    ui.add(egui::TextEdit::singleline(&mut edit.name).hint_text("name").desired_width(f32::INFINITY));
+                    ui.add_space(4.0);
+                    ui.label(self.tr("editProject.admin"));
+                    ui.add(egui::TextEdit::singleline(&mut edit.administrator).hint_text("administrator").desired_width(f32::INFINITY));
+                    ui.add_space(4.0);
+                    ui.label(self.tr("editProject.description"));
+                    ui.add(egui::TextEdit::multiline(&mut edit.description).hint_text("description (optional)").desired_width(f32::INFINITY));
+                    ui.add_space(10.0);
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui
+                            .add_enabled(!edit.name.trim().is_empty(), egui::Button::new(self.tr("common.save")).fill(ACCENT))
+                            .clicked()
+                        {
+                            let _ = self.tx.send(Command::UpdateProject {
+                                id: edit.id,
+                                name: edit.name.trim().to_string(),
+                                description: opt(&edit.description),
+                                administrator: opt(&edit.administrator).unwrap_or_else(|| "unknown".into()),
+                            });
+                            close = true;
+                        }
+                        if ui.button(self.tr("common.cancel")).clicked() {
+                            close = true;
+                        }
+                    });
+                });
+            });
+        if close {
+            self.edit_project = None;
+        } else {
+            self.edit_project = Some(edit);
+        }
+    }
+
+    /// The Delete-project confirmation modal. Confirm sends `DeleteProject`; the app layer
+    /// refuses (surfaced via the status bar) while subjects still belong to the project.
+    fn delete_project_modal(&mut self, ctx: &egui::Context) {
+        let Some((id, name)) = self.confirm_delete_project.clone() else { return };
+        let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("del_proj_dim")));
+        painter.rect_filled(ctx.screen_rect(), 0.0, egui::Color32::from_black_alpha(150));
+
+        let mut close = false;
+        egui::Area::new(egui::Id::new("delete_project_modal"))
+            .order(egui::Order::Foreground)
+            .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+            .show(ctx, |ui| {
+                egui::Frame::window(ui.style()).inner_margin(egui::Margin::same(18.0)).show(ui, |ui| {
+                    ui.set_width(400.0);
+                    ui.label(egui::RichText::new(self.tr("editProject.deleteTitle")).strong().size(16.0));
+                    ui.separator();
+                    ui.add_space(8.0);
+                    ui.label(format!("{} “{}”?", self.tr("delete.confirm"), name));
+                    ui.add_space(6.0);
+                    ui.label(egui::RichText::new(self.tr("editProject.deleteNote")).weak().small());
+                    ui.add_space(12.0);
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui
+                            .add(egui::Button::new(egui::RichText::new(self.tr("common.delete")).color(egui::Color32::WHITE)).fill(DANGER))
+                            .clicked()
+                        {
+                            let _ = self.tx.send(Command::DeleteProject(id));
+                            if self.selected_project == Some(id) {
+                                self.selected_project = None;
+                            }
+                            close = true;
+                        }
+                        if ui.button(self.tr("common.cancel")).clicked() {
+                            close = true;
+                        }
+                    });
+                });
+            });
+        if close {
+            self.confirm_delete_project = None;
         }
     }
 

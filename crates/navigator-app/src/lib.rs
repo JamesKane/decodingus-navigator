@@ -603,6 +603,46 @@ impl App {
         Ok(project::create(self.store.pool(), &new).await?)
     }
 
+    /// Update a project's editable fields (name required; description optional; administrator
+    /// defaults to "unknown" when blank). Returns the updated record.
+    pub async fn update_project(
+        &self,
+        id: i64,
+        name: String,
+        description: Option<String>,
+        administrator: String,
+    ) -> Result<Project, AppError> {
+        let name = name.trim();
+        if name.is_empty() {
+            return Err(AppError::Conflict("project name cannot be empty".into()));
+        }
+        let desc = description.map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
+        let admin = administrator.trim();
+        let admin = if admin.is_empty() { "unknown" } else { admin };
+        let updated = project::update(self.store.pool(), id, name, desc.as_deref(), admin).await?;
+        if !updated {
+            return Err(AppError::Store(StoreError::NotFound(format!("project {id}"))));
+        }
+        project::get(self.store.pool(), id)
+            .await?
+            .ok_or_else(|| AppError::Store(StoreError::NotFound(format!("project {id}"))))
+    }
+
+    /// Delete a project. Refused (with a clear message) while subjects still belong to it, so
+    /// the user reassigns them first rather than orphaning the rows.
+    pub async fn delete_project(&self, id: i64) -> Result<(), AppError> {
+        let members = biosample::count_for_project(self.store.pool(), id).await?;
+        if members > 0 {
+            return Err(AppError::Conflict(format!(
+                "cannot delete project: {members} subject(s) still belong to it — reassign them first"
+            )));
+        }
+        if !project::delete(self.store.pool(), id).await? {
+            return Err(AppError::Store(StoreError::NotFound(format!("project {id}"))));
+        }
+        Ok(())
+    }
+
     /// Register a biosample, assigning its stable `SampleGuid` here (identity is an
     /// app-layer decision, not the UI's). Verifies the target project exists first so
     /// the caller gets a clear `NotFound` rather than a raw foreign-key error.

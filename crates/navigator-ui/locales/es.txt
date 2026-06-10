@@ -37,6 +37,12 @@ delete.note=El sujeto no debe tener secuenciaciones ni perfiles importados; elim
 delete.dataTitle=Eliminar fuente de datos
 delete.dataNote=Esto elimina permanentemente el registro y cualquier resultado de análisis derivado de él.
 delete.thisProfile=🗑 Eliminar esto
+editProject.title=Editar proyecto
+editProject.name=Nombre
+editProject.admin=Administrador
+editProject.description=Descripción
+editProject.deleteTitle=Eliminar proyecto
+editProject.deleteNote=El proyecto no debe tener sujetos; reasígnelos primero.
 
 action.selected=seleccionado(s)
 action.compare=Comparar

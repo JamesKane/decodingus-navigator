@@ -199,6 +199,10 @@ pub enum Command {
     DeleteMtdnaSequence { id: i64, biosample_guid: SampleGuid },
     /// Assign a subject to a project (`None` clears it). The app layer validates the project.
     AssignBiosampleProject { guid: SampleGuid, project_id: Option<i64> },
+    /// Update a project's editable fields.
+    UpdateProject { id: i64, name: String, description: Option<String>, administrator: String },
+    /// Delete a project. Refused by the app layer while subjects still belong to it.
+    DeleteProject(i64),
 }
 
 /// A panel with its site count, for the panel list.
@@ -215,6 +219,8 @@ pub enum Event {
     Noop,
     Overview(Vec<ProjectOverview>),
     ProjectCreated(Project),
+    /// A project was updated or deleted; reload the overview.
+    ProjectsChanged,
     /// A batch project-directory import completed.
     ProjectImported(ProjectImportSummary),
     /// Import needs reference build(s) downloaded first; `dir` lets the UI retry the import
@@ -415,6 +421,16 @@ pub async fn handle(app: &App, cmd: Command) -> Event {
                 Err(e) => Event::Error(e.to_string()),
             }
         }
+        Command::UpdateProject { id, name, description, administrator } => {
+            match app.update_project(id, name, description, administrator).await {
+                Ok(_) => Event::ProjectsChanged,
+                Err(e) => Event::Error(e.to_string()),
+            }
+        }
+        Command::DeleteProject(id) => match app.delete_project(id).await {
+            Ok(()) => Event::ProjectsChanged,
+            Err(e) => Event::Error(e.to_string()),
+        },
         Command::LoadRuns(biosample_guid) => match app.list_sequence_runs(biosample_guid).await {
             Ok(runs) => Event::Runs { biosample_guid, runs },
             Err(e) => Event::Error(e.to_string()),
@@ -1379,6 +1395,75 @@ mod tests {
         }
         match handle(&app, Command::LoadSamples(pid)).await {
             Event::Samples { samples, .. } => assert!(samples.is_empty()),
+            other => panic!("got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn update_and_delete_project_commands() {
+        let app = app().await;
+        let pid = match handle(&app, Command::CreateProject(NewProject {
+            name: "Old".into(),
+            description: None,
+            administrator: "jk".into(),
+        }))
+        .await
+        {
+            Event::ProjectCreated(p) => p.id,
+            other => panic!("got {other:?}"),
+        };
+
+        // edit name/admin/description
+        match handle(&app, Command::UpdateProject {
+            id: pid,
+            name: "Renamed".into(),
+            description: Some("a study".into()),
+            administrator: "curator".into(),
+        })
+        .await
+        {
+            Event::ProjectsChanged => {}
+            other => panic!("got {other:?}"),
+        }
+        match handle(&app, Command::LoadOverview).await {
+            Event::Overview(v) => {
+                let p = &v.iter().find(|o| o.project.id == pid).unwrap().project;
+                assert_eq!(p.name, "Renamed");
+                assert_eq!(p.description.as_deref(), Some("a study"));
+                assert_eq!(p.administrator, "curator");
+            }
+            other => panic!("got {other:?}"),
+        }
+
+        // a project with members refuses delete
+        match handle(&app, Command::AddBiosample(NewBiosample {
+            project_id: Some(pid),
+            donor_identifier: "member".into(),
+            sample_accession: None,
+            sex: None,
+        }))
+        .await
+        {
+            Event::BiosamplesChanged => {}
+            other => panic!("got {other:?}"),
+        }
+        match handle(&app, Command::DeleteProject(pid)).await {
+            Event::Error(msg) => assert!(msg.contains("subject"), "unexpected message: {msg}"),
+            other => panic!("expected conflict Error, got {other:?}"),
+        }
+
+        // reassigning the member away clears the conflict, so delete succeeds
+        let guid = match handle(&app, Command::LoadSamples(pid)).await {
+            Event::Samples { samples, .. } => samples[0].guid,
+            other => panic!("got {other:?}"),
+        };
+        let _ = handle(&app, Command::AssignBiosampleProject { guid, project_id: None }).await;
+        match handle(&app, Command::DeleteProject(pid)).await {
+            Event::ProjectsChanged => {}
+            other => panic!("expected clean delete, got {other:?}"),
+        }
+        match handle(&app, Command::LoadOverview).await {
+            Event::Overview(v) => assert!(v.iter().all(|o| o.project.id != pid)),
             other => panic!("got {other:?}"),
         }
     }
