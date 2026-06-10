@@ -545,6 +545,29 @@ mod tests {
     }
 
     #[test]
+    fn reference_polarity_comes_from_the_tree_not_the_reference() {
+        // The CHM13 trap: at a Y-SNP the tree calls ancestral=A, derived=G, and the analysis
+        // reference (CHM13 chrY = HG002, haplogroup J) carries the DERIVED base G. Polarity
+        // must come from comparing the SAMPLE's base to the tree — never from the reference.
+        let locus = Locus { position: 146, ancestral: "A".into(), derived: "G".into(), name: "M-test".into() };
+
+        // Sample carries the ANCESTRAL allele (A). A "reference base = ancestral" assumption
+        // (ref here is G) would see A ≠ G and wrongly flip this to Derived. Tree-driven: Ancestral.
+        assert_eq!(locus_state(&locus, &calls(&[(146, 'A')])), CallState::Ancestral);
+        // Sample carries the DERIVED allele (G, == the reference here): Derived, from the tree.
+        assert_eq!(locus_state(&locus, &calls(&[(146, 'G')])), CallState::Derived);
+
+        // End-to-end: a sample ANCESTRAL at the J-derived backbone site 146 does not carry H's
+        // defining mutation, so it must not be placed into H — even though the CHM13 reference
+        // base there is the derived G. A REF-as-ancestral assumption would flip 146 and wrongly
+        // descend; tree-driven, H is contradicted and the call stays at root.
+        let t = parse_ftdna_json(TREE).unwrap(); // root→H(146 A→G)→H2(263)→H2a(750)
+        let c = calls(&[(146, 'A'), (263, 'G'), (750, 'T')]);
+        assert!(!path_admissible(&t, &c, id_of(&t, "H")), "H is contradicted (sample ancestral at 146)");
+        assert_eq!(guarded_terminal(&t, &c), "root");
+    }
+
+    #[test]
     fn guard_admits_a_clean_lineage() {
         let t = parse_ftdna_json(TREE).unwrap();
         let c = calls(&[(146, 'G'), (263, 'G'), (750, 'T')]);

@@ -45,6 +45,46 @@ impl Build {
             other => other,
         }
     }
+
+    /// Provenance of this reference's haploid sequences — a standing reminder that the
+    /// reference allele is a *coordinate system*, never a source of ancestral/derived
+    /// polarity. See [`ReferencePolarity`].
+    pub fn reference_polarity(self) -> ReferencePolarity {
+        const RCRS_M: &str =
+            "rCRS (NC_012920.1, haplogroup H2a2a1) — itself derived from the RSRS root, not ancestral";
+        match self {
+            Build::Chm13v2 => ReferencePolarity {
+                chr_y: "HG002 Y, haplogroup J — the reference base is the DERIVED allele at many Y-SNP sites",
+                chr_m: "CHM13's own mitochondrion (NOT rCRS) — handled via the rotation-aware rCRS↔chrM map",
+            },
+            Build::Chm13v2MaskedRcrs => ReferencePolarity {
+                chr_y: "HG002 Y, haplogroup J (PAR hard-masked) — the reference base is the DERIVED allele at many Y-SNP sites",
+                chr_m: RCRS_M,
+            },
+            Build::Grch38 => ReferencePolarity {
+                chr_y: "GRCh38 chrY — a specific donor's Y, not the ancestral root",
+                chr_m: RCRS_M,
+            },
+            Build::Grch37 => ReferencePolarity {
+                chr_y: "GRCh37 chrY — a specific donor's Y, not the ancestral root",
+                chr_m: RCRS_M,
+            },
+        }
+    }
+}
+
+/// The provenance of a reference's haploid (chrY / chrM) sequences. It exists to make one
+/// invariant explicit and discoverable: **ancestral/derived polarity must always come from
+/// the haplotree, compared against the sample's own called base — never from "is the sample's
+/// base equal to the reference (REF) or not (ALT)."** The canonical trap is CHM13v2.0, whose
+/// chrY is HG002 (a haplogroup-J Y): the reference base is the *derived* allele at many Y-SNP
+/// sites, so a REF-as-ancestral assumption would invert those calls.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ReferencePolarity {
+    /// What the reference's chrY is, and why its allele is not a polarity source.
+    pub chr_y: &'static str,
+    /// What the reference's mitochondrion is, and its polarity caveat.
+    pub chr_m: &'static str,
 }
 
 /// Map any common spelling of a build to its canonical [`Build`] (case-insensitive).
@@ -205,6 +245,24 @@ mod tests {
 
         let reg = Registry::new(UserConfig::default());
         assert!(reg.reference_source(Build::Chm13v2MaskedRcrs).url.ends_with("chm13v2.0_maskedY_rCRS.fa.gz"));
+    }
+
+    #[test]
+    fn reference_polarity_records_the_chm13_y_is_j_trap() {
+        // CHM13 (and the masked variant) carry HG002's haplogroup-J Y: the reference base is
+        // derived, so the metadata must flag it as not-ancestral.
+        for b in [Build::Chm13v2, Build::Chm13v2MaskedRcrs] {
+            let p = b.reference_polarity();
+            assert!(p.chr_y.contains("HG002") && p.chr_y.contains('J'), "{}: {}", b.as_str(), p.chr_y);
+            assert!(p.chr_y.contains("DERIVED"));
+        }
+        // The masked variant's mito is rCRS; plain CHM13's is its own (not rCRS).
+        assert!(Build::Chm13v2MaskedRcrs.reference_polarity().chr_m.contains("rCRS"));
+        assert!(Build::Chm13v2.reference_polarity().chr_m.contains("NOT rCRS"));
+        // Every reference documents an mt polarity caveat (rCRS is itself derived).
+        for b in [Build::Grch38, Build::Grch37, Build::Chm13v2MaskedRcrs] {
+            assert!(b.reference_polarity().chr_m.contains("rCRS"));
+        }
     }
 
     #[test]
