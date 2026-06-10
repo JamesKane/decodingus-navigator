@@ -133,9 +133,8 @@ matrices are already pulled; re-extraction only needed to add reference samples.
 
 ## Remaining gaps (from the 2026-06-07 audit)
 
-**Unported from Scala**: i18n (scaffolded, partial migration), feature toggles/config, the
-DecodingUs haplogroup tree provider (FTDNA-only today), haplogroup/comparison report export (CSV
-only), full Y-STR concordance subsystem.
+**Unported from Scala**: i18n (scaffolded, partial migration), feature toggles/config,
+haplogroup/comparison report export (CSV only), full Y-STR concordance subsystem.
 **Designed, not built**: IBD **network** matching (local detector + UI tab exist; consent/match-
 discovery/chromosome-browser/relationship records do not — the biggest remaining feature), Genome
 Regions API, sequence-run fingerprinting, academic-ENA / FTDNA-project / pangenome-GAM imports,
@@ -152,6 +151,12 @@ memory; `NAVIGATOR_ANALYSIS_THREADS` / `NAVIGATOR_BGZF_THREADS` tune it. BAM+ind
 parallel path; CRAM / unindexed BAM fall back to sequential. Live parity + perf-smoke tests in
 `tests/parity_real.rs`. See `documents/design/UnifiedQualityMetricsWalker_RustPort.md` +
 `memory/uqmw-rust-port.md`.
+**Done since this audit (cont.)**: **DecodingUs Y-tree provider** (2026-06-10, Navigator 114e450
++ AppView cd97864) — Y placement against our AppView's new `/api/v1/y-tree/full` (native CHM13
+`hs1` coords → no liftover), default with FTDNA fallback; env-configurable host/provider. Y-only;
+private-Y still FTDNA. Live e2e (`validate_gfx_decodingus_y`) pending a locally-running AppView. See
+`documents/design/DecodingUsTreeProvider.md` + `memory/decodingus-tree-provider.md`.
+
 **AppView side**: pick which ancestry method to surface; ingest `fitDistance` (needs rev bump);
 IBD-matching AppView backlog; AppView backfeed.
 **Small**: Edit/Delete + Add-to-Project UI stubs; Compare needs multi-select; table Y/mt only fills
