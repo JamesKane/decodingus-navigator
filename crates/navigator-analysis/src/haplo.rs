@@ -169,6 +169,23 @@ fn locus_carried(locus: &Locus, calls: &HashMap<i64, char>) -> bool {
     }
 }
 
+/// The sample's state at one defining SNP: carries the derived allele, carries the
+/// ancestral allele (or any non-derived base — a contradiction of the branch), or has no
+/// confident call. A locus with no derived allele (indel-only / marker-less) is `NoCall`.
+fn locus_state(locus: &Locus, calls: &HashMap<i64, char>) -> CallState {
+    let d = locus.derived.chars().next().map(|c| c.to_ascii_uppercase());
+    let a = locus.ancestral.chars().next().map(|c| c.to_ascii_uppercase());
+    if d.is_none() {
+        return CallState::NoCall;
+    }
+    match calls.get(&locus.position).map(|c| c.to_ascii_uppercase()) {
+        Some(b) if Some(b) == d => CallState::Derived,
+        Some(b) if Some(b) == a => CallState::Ancestral,
+        Some(_) => CallState::Ancestral, // a third allele — not this branch's derived
+        None => CallState::NoCall,
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn dfs(
     tree: &HaploTree,
@@ -314,14 +331,7 @@ pub fn child_evidence(tree: &HaploTree, calls: &HashMap<i64, char>, node_id: i64
         let mut snps = Vec::with_capacity(child.loci.len());
         let mut derived = 0;
         for l in &child.loci {
-            let d = l.derived.chars().next().map(|c| c.to_ascii_uppercase());
-            let a = l.ancestral.chars().next().map(|c| c.to_ascii_uppercase());
-            let state = match calls.get(&l.position).map(|c| c.to_ascii_uppercase()) {
-                Some(b) if Some(b) == d => CallState::Derived,
-                Some(b) if Some(b) == a => CallState::Ancestral,
-                Some(_) => CallState::Ancestral, // a third allele — not this branch's derived
-                None => CallState::NoCall,
-            };
+            let state = locus_state(l, calls);
             if state == CallState::Derived {
                 derived += 1;
             }
@@ -361,14 +371,7 @@ pub fn lineage_evidence(tree: &HaploTree, calls: &HashMap<i64, char>, terminal_i
     for id in path {
         let Some(node) = tree.nodes.get(&id) else { continue };
         for l in &node.loci {
-            let d = l.derived.chars().next().map(|c| c.to_ascii_uppercase());
-            let a = l.ancestral.chars().next().map(|c| c.to_ascii_uppercase());
-            let state = match calls.get(&l.position).map(|c| c.to_ascii_uppercase()) {
-                Some(b) if Some(b) == d => CallState::Derived,
-                Some(b) if Some(b) == a => CallState::Ancestral,
-                Some(_) => CallState::Ancestral,
-                None => CallState::NoCall,
-            };
+            let state = locus_state(l, calls);
             out.push(SnpEvidence {
                 name: l.name.clone(),
                 position: l.position,
@@ -379,6 +382,75 @@ pub fn lineage_evidence(tree: &HaploTree, calls: &HashMap<i64, char>, terminal_i
         }
     }
     out
+}
+
+// ---- path-supported parsimony guard ------------------------------------------
+//
+// The Kulczynski `score` ranks every node by *proportional* set-similarity, and on real
+// data that places the terminal well (validated: GFX0457637 → R-FGC29071). Its one weakness
+// is the distal-Y paralog artifact: a deep node reached only by *tunnelling through a branch
+// the sample contradicts* can still score highly off a few coincidental matches.
+//
+// Parsimony guards exactly that failure — it rejects any candidate whose root→node lineage
+// crosses a contradicted branch — without disturbing the proportional ranking that gets the
+// clean case right. (A descent-style "follow the most-derived subtree" router was tried and
+// derailed onto a bushier wrong fork on the 4× GFX sample: absolute derived count favours
+// long/bushy paths, where Kulczynski's proportion does not. The proportional rank + this
+// guard is the validated combination. The remaining paralog *false-positive* defence — when
+// the wrong branch carries spurious derived calls rather than honest ancestral ones — is the
+// haploid allele-balance filter, a separate Phase-1 item.) See PangenomeExpansion.md.
+
+/// Per-node tally over evaluable defining SNPs (loci with a derived allele): how many the
+/// sample calls derived, ancestral (a contradiction), or has no confident base for.
+fn node_counts(node: &HaploNode, calls: &HashMap<i64, char>) -> (usize, usize, usize) {
+    let (mut d, mut a, mut n) = (0usize, 0usize, 0usize);
+    for l in &node.loci {
+        if l.derived.is_empty() {
+            continue; // marker-less locus — not evaluable by a SNP caller
+        }
+        match locus_state(l, calls) {
+            CallState::Derived => d += 1,
+            CallState::Ancestral => a += 1,
+            CallState::NoCall => n += 1,
+        }
+    }
+    (d, a, n)
+}
+
+/// A node is *contradicted* when the sample carries the ancestral allele at more of the
+/// node's defining SNPs than the derived allele — it confidently does **not** belong to this
+/// branch. A no-evidence node (all no-call, `d == a == 0`) is *not* contradicted: it is a
+/// pass-through, so low coverage never blocks a lineage. A stray ancestral at an otherwise
+/// well-supported node (`d > a`) is tolerated for the same reason.
+fn is_contradicted(node: &HaploNode, calls: &HashMap<i64, char>) -> bool {
+    let (d, a, _) = node_counts(node, calls);
+    a > d
+}
+
+/// Is the root→`node_id` lineage free of any contradicted branch? An off-path paralog
+/// artifact sits below a branch the sample is ancestral for, so it fails this guard; the
+/// genuine lineage (derived or merely no-call along its length) passes. Used to veto
+/// otherwise high-scoring tunnel artifacts from the [`score`] ranking.
+pub fn path_admissible(tree: &HaploTree, calls: &HashMap<i64, char>, node_id: i64) -> bool {
+    let mut parent: HashMap<i64, i64> = HashMap::new();
+    for node in tree.nodes.values() {
+        for &c in &node.children {
+            parent.insert(c, node.id);
+        }
+    }
+    let mut cur = Some(node_id);
+    while let Some(id) = cur {
+        match tree.nodes.get(&id) {
+            Some(node) => {
+                if is_contradicted(node, calls) {
+                    return false;
+                }
+                cur = parent.get(&id).copied();
+            }
+            None => break,
+        }
+    }
+    true
 }
 
 #[cfg(test)]
@@ -453,5 +525,128 @@ mod tests {
         let t = parse_ftdna_json(TREE).unwrap();
         let ranked = score(&t, &calls(&[]));
         assert_eq!(ranked[0].score, 0.0);
+    }
+
+    // ---- parsimony admissibility guard ----
+
+    /// The terminal `assemble_assignment` reports: the best-ranked candidate whose lineage
+    /// the parsimony guard admits (mirrors the app-layer integration).
+    fn guarded_terminal(t: &HaploTree, c: &HashMap<i64, char>) -> String {
+        let ranked = score(t, c);
+        ranked
+            .iter()
+            .find(|r| path_admissible(t, c, r.id))
+            .map(|r| r.name.clone())
+            .unwrap()
+    }
+
+    fn id_of(t: &HaploTree, name: &str) -> i64 {
+        t.nodes.values().find(|n| n.name == name).unwrap().id
+    }
+
+    #[test]
+    fn guard_admits_a_clean_lineage() {
+        let t = parse_ftdna_json(TREE).unwrap();
+        let c = calls(&[(146, 'G'), (263, 'G'), (750, 'T')]);
+        assert!(path_admissible(&t, &c, id_of(&t, "H2a")));
+        assert_eq!(guarded_terminal(&t, &c), "H2a");
+    }
+
+    #[test]
+    fn guard_rejects_a_contradicted_terminal_but_admits_its_parent() {
+        // Ancestral (C) at 750 -> H2a is contradicted; the report falls back to H2.
+        let t = parse_ftdna_json(TREE).unwrap();
+        let c = calls(&[(146, 'G'), (263, 'G'), (750, 'C')]);
+        assert!(!path_admissible(&t, &c, id_of(&t, "H2a")));
+        assert!(path_admissible(&t, &c, id_of(&t, "H2")));
+        assert_eq!(guarded_terminal(&t, &c), "H2");
+    }
+
+    #[test]
+    fn no_calls_admit_the_whole_tree() {
+        // Empty calls: nothing is contradicted, so every lineage is admissible (the guard is
+        // a veto, not a selector — Kulczynski still picks root for lack of matches).
+        let t = parse_ftdna_json(TREE).unwrap();
+        let c = calls(&[]);
+        assert!(path_admissible(&t, &c, id_of(&t, "H2a")));
+        assert_eq!(guarded_terminal(&t, &c), "root");
+    }
+
+    // root -> H(146) -> B(500, contradicted) -> Bdeep(900, coincidental derived).
+    // Kulczynski is lured to Bdeep (matches 146 + 900); the guard must veto it (tunnels
+    // through the contradicted B) and fall back to H.
+    const TUNNEL_TREE: &str = r#"{
+      "allNodes": {
+        "1": {"haplogroupId": 1, "name": "root", "isRoot": true, "variants": [], "children": [2]},
+        "2": {"haplogroupId": 2, "name": "H", "isRoot": false,
+              "variants": [{"variant":"A146G","position":146,"ancestral":"A","derived":"G"}], "children": [3]},
+        "3": {"haplogroupId": 3, "name": "B", "isRoot": false,
+              "variants": [{"variant":"C500T","position":500,"ancestral":"C","derived":"T"}], "children": [4]},
+        "4": {"haplogroupId": 4, "name": "Bdeep", "isRoot": false,
+              "variants": [{"variant":"G900A","position":900,"ancestral":"G","derived":"A"}], "children": []}
+      }
+    }"#;
+
+    #[test]
+    fn guard_vetoes_the_tunnel_artifact() {
+        let t = parse_ftdna_json(TUNNEL_TREE).unwrap();
+        // Carries 146 (H) and a coincidental 900 (Bdeep) but is ANCESTRAL (C) at 500.
+        let c = calls(&[(146, 'G'), (500, 'C'), (900, 'A')]);
+        // Kulczynski alone is lured deeper by the coincidental match...
+        assert_eq!(score(&t, &c)[0].name, "Bdeep");
+        // ...but Bdeep tunnels through the contradicted B, so the guard reports H.
+        assert!(!path_admissible(&t, &c, id_of(&t, "Bdeep")));
+        assert_eq!(guarded_terminal(&t, &c), "H");
+    }
+
+    // root -> H(146) -> M(marker-less / no SNPs) -> D(263). The guard must pass through M.
+    const MARKERLESS_TREE: &str = r#"{
+      "allNodes": {
+        "1": {"haplogroupId": 1, "name": "root", "isRoot": true, "variants": [], "children": [2]},
+        "2": {"haplogroupId": 2, "name": "H", "isRoot": false,
+              "variants": [{"variant":"A146G","position":146,"ancestral":"A","derived":"G"}], "children": [3]},
+        "3": {"haplogroupId": 3, "name": "M", "isRoot": false, "variants": [], "children": [4]},
+        "4": {"haplogroupId": 4, "name": "D", "isRoot": false,
+              "variants": [{"variant":"A263G","position":263,"ancestral":"A","derived":"G"}], "children": []}
+      }
+    }"#;
+
+    #[test]
+    fn guard_passes_through_marker_less_and_no_call_nodes() {
+        let t = parse_ftdna_json(MARKERLESS_TREE).unwrap();
+        // 146 + 263 derived: D is admissible through the marker-less M, and is the call.
+        let full = calls(&[(146, 'G'), (263, 'G')]);
+        assert!(path_admissible(&t, &full, id_of(&t, "D")));
+        assert_eq!(guarded_terminal(&t, &full), "D");
+        // 263 no-call (low coverage): D is *still* admissible (a no-call is not a
+        // contradiction) — the guard never blocks for lack of coverage. Kulczynski stops at H.
+        let sparse = calls(&[(146, 'G')]);
+        assert!(path_admissible(&t, &sparse, id_of(&t, "D")));
+        assert_eq!(guarded_terminal(&t, &sparse), "H");
+    }
+
+    // root -> H(146) -> D with three defining SNPs, used to exercise the net contradiction rule.
+    const NET_TREE: &str = r#"{
+      "allNodes": {
+        "1": {"haplogroupId": 1, "name": "root", "isRoot": true, "variants": [], "children": [2]},
+        "2": {"haplogroupId": 2, "name": "H", "isRoot": false,
+              "variants": [{"variant":"A146G","position":146,"ancestral":"A","derived":"G"}], "children": [3]},
+        "3": {"haplogroupId": 3, "name": "D", "isRoot": false, "variants": [
+                {"variant":"A263G","position":263,"ancestral":"A","derived":"G"},
+                {"variant":"A600G","position":600,"ancestral":"A","derived":"G"},
+                {"variant":"C500T","position":500,"ancestral":"C","derived":"T"}
+              ], "children": []}
+      }
+    }"#;
+
+    #[test]
+    fn guard_tolerates_a_stray_contradiction_but_blocks_a_net_one() {
+        let t = parse_ftdna_json(NET_TREE).unwrap();
+        // d=2 (263,600), a=1 (500 ancestral): derived outweighs -> D admitted (stray error).
+        let tolerated = calls(&[(146, 'G'), (263, 'G'), (600, 'G'), (500, 'C')]);
+        assert!(path_admissible(&t, &tolerated, id_of(&t, "D")));
+        // d=1 (263), a=2 (600,500 ancestral): contradictions dominate -> D blocked.
+        let blocked = calls(&[(146, 'G'), (263, 'G'), (600, 'A'), (500, 'C')]);
+        assert!(!path_admissible(&t, &blocked, id_of(&t, "D")));
     }
 }

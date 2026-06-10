@@ -158,17 +158,20 @@ fn tree_cache_path(file: &str) -> PathBuf {
 
 /// Score a tree against the sample calls and attach the terminal's child-branch evidence.
 ///
-/// The Kulczynski `score` supplies the ranked candidate list (alternatives shown to the
-/// user), but the *reported terminal* comes from path-supported parsimony placement, which
-/// refuses to tunnel into branches the sample contradicts (the distal-Y paralog artifact —
-/// see `documents/design/PangenomeExpansion.md`). We move the parsimony-chosen node to the
-/// front so every `ranked.first()` consumer transparently gets the trustworthy terminal.
+/// The Kulczynski `score` ranks the candidates by proportional similarity (and supplies the
+/// alternatives list), but the *reported terminal* is the best-ranked candidate the
+/// path-supported parsimony guard admits — i.e. whose lineage doesn't tunnel through a
+/// branch the sample contradicts (the distal-Y paralog artifact, see
+/// `documents/design/PangenomeExpansion.md`). Usually that's `ranked[0]`; when it isn't, we
+/// move the first admissible candidate to the front so every `ranked.first()` consumer
+/// transparently gets the trustworthy terminal.
 fn assemble_assignment(tree: &navigator_analysis::haplo::HaploTree, calls: &HashMap<i64, char>) -> HaploAssignment {
     let mut ranked = navigator_analysis::haplo::score(tree, calls);
-    if let Some(placement) =
-        navigator_analysis::haplo::place_parsimony(tree, calls, &Default::default())
+    if let Some(idx) = ranked
+        .iter()
+        .position(|r| navigator_analysis::haplo::path_admissible(tree, calls, r.id))
     {
-        if let Some(idx) = ranked.iter().position(|r| r.id == placement.terminal_id) {
+        if idx != 0 {
             let chosen = ranked.remove(idx);
             ranked.insert(0, chosen);
         }
