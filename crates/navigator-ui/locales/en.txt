@@ -48,6 +48,14 @@ editProject.admin=Administrator
 editProject.description=Description
 editProject.deleteTitle=Delete Project
 editProject.deleteNote=The project must have no subjects; reassign them first.
+editRun.title=Edit Run
+editRun.platform=Platform
+editRun.instrument=Instrument
+editRun.layout=Library layout
+editAln.title=Edit Alignment
+editAln.build=Reference build
+editAln.aligner=Aligner
+editAln.caller=Variant caller
 
 # Bottom action bar
 action.selected=selected

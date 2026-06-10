@@ -749,6 +749,65 @@ impl App {
         Ok(alignment::create(self.store.pool(), &aln).await?)
     }
 
+    /// Update a sequence run's descriptive fields (test type required; platform defaults to
+    /// "UNKNOWN" when blank; instrument/layout optional). Read metrics are preserved. Returns
+    /// the updated record.
+    pub async fn update_sequence_run(
+        &self,
+        id: i64,
+        platform_name: String,
+        instrument_model: Option<String>,
+        test_type: String,
+        library_layout: Option<String>,
+    ) -> Result<SequenceRun, AppError> {
+        let test_type = test_type.trim();
+        if test_type.is_empty() {
+            return Err(AppError::Conflict("test type cannot be empty".into()));
+        }
+        let norm = |o: Option<String>| o.map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
+        let platform = platform_name.trim();
+        let platform = if platform.is_empty() { "UNKNOWN" } else { platform };
+        let updated = sequence_run::update(
+            self.store.pool(),
+            id,
+            platform,
+            norm(instrument_model).as_deref(),
+            test_type,
+            norm(library_layout).as_deref(),
+        )
+        .await?;
+        if !updated {
+            return Err(AppError::Store(StoreError::NotFound(format!("sequence run {id}"))));
+        }
+        sequence_run::get(self.store.pool(), id)
+            .await?
+            .ok_or_else(|| AppError::Store(StoreError::NotFound(format!("sequence run {id}"))))
+    }
+
+    /// Update an alignment's descriptive fields (reference build + aligner required; variant
+    /// caller optional). File paths are managed by import/probe. Returns the updated record.
+    pub async fn update_alignment(
+        &self,
+        id: i64,
+        reference_build: String,
+        aligner: String,
+        variant_caller: Option<String>,
+    ) -> Result<Alignment, AppError> {
+        let build = reference_build.trim();
+        let aligner = aligner.trim();
+        if build.is_empty() || aligner.is_empty() {
+            return Err(AppError::Conflict("reference build and aligner are required".into()));
+        }
+        let caller = variant_caller.map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
+        let updated = alignment::update(self.store.pool(), id, build, aligner, caller.as_deref()).await?;
+        if !updated {
+            return Err(AppError::Store(StoreError::NotFound(format!("alignment {id}"))));
+        }
+        alignment::get(self.store.pool(), id)
+            .await?
+            .ok_or_else(|| AppError::Store(StoreError::NotFound(format!("alignment {id}"))))
+    }
+
     /// Delete a sequence run and everything beneath it (its alignments + cached analysis
     /// artifacts). This is how a mistaken BAM/CRAM import is undone.
     pub async fn delete_sequence_run(&self, id: i64) -> Result<(), AppError> {

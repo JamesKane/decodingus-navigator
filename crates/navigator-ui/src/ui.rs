@@ -111,6 +111,28 @@ struct EditProject {
     administrator: String,
 }
 
+/// Editable copy of a sequence run, driving the run Edit modal (Some ⇒ the dialog is shown).
+/// Read-metric columns are not editable here, so they're not carried.
+#[derive(Clone)]
+struct EditRun {
+    id: i64,
+    guid: SampleGuid,
+    test_type: String,
+    platform_name: String,
+    instrument_model: String,
+    library_layout: String,
+}
+
+/// Editable copy of an alignment, driving the alignment Edit modal (Some ⇒ the dialog is shown).
+#[derive(Clone)]
+struct EditAlignment {
+    id: i64,
+    run_id: i64,
+    reference_build: String,
+    aligner: String,
+    variant_caller: String,
+}
+
 /// Editable copy of a subject, driving the Edit modal (Some ⇒ the dialog is shown).
 #[derive(Clone)]
 struct EditSubject {
@@ -175,6 +197,10 @@ pub struct NavigatorApp {
     edit_project: Option<EditProject>,
     /// Project pending delete confirmation: (id, name). Some ⇒ the confirm dialog is shown.
     confirm_delete_project: Option<(i64, String)>,
+    /// Sequence run being edited (Some ⇒ the run Edit modal is shown).
+    edit_run: Option<EditRun>,
+    /// Alignment being edited (Some ⇒ the alignment Edit modal is shown).
+    edit_alignment: Option<EditAlignment>,
     /// Current frame's egui time (seconds), captured at the top of `update`.
     frame_time: f64,
     /// Selected primary navigation tab.
@@ -794,6 +820,8 @@ impl NavigatorApp {
             assign_project: None,
             edit_project: None,
             confirm_delete_project: None,
+            edit_run: None,
+            edit_alignment: None,
             frame_time: 0.0,
             nav: Nav::Subjects,
             detail_tab: DetailTab::Overview,
@@ -1468,6 +1496,8 @@ impl eframe::App for NavigatorApp {
         self.assign_project_modal(ctx);
         self.edit_project_modal(ctx);
         self.delete_project_modal(ctx);
+        self.edit_run_modal(ctx);
+        self.edit_alignment_modal(ctx);
         self.paint_drop_hint(ctx);
     }
 }
@@ -2118,6 +2148,121 @@ impl NavigatorApp {
             });
         if close {
             self.confirm_delete_project = None;
+        }
+    }
+
+    /// The Edit-run modal: test type (dropdown) + platform / instrument / library layout. Read
+    /// metrics are analysis-derived and not editable here. Save sends `UpdateSequenceRun`.
+    fn edit_run_modal(&mut self, ctx: &egui::Context) {
+        let Some(mut edit) = self.edit_run.clone() else { return };
+        let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("edit_run_dim")));
+        painter.rect_filled(ctx.screen_rect(), 0.0, egui::Color32::from_black_alpha(150));
+
+        let mut close = false;
+        egui::Area::new(egui::Id::new("edit_run_modal"))
+            .order(egui::Order::Foreground)
+            .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+            .show(ctx, |ui| {
+                egui::Frame::window(ui.style()).inner_margin(egui::Margin::same(18.0)).show(ui, |ui| {
+                    ui.set_width(400.0);
+                    ui.label(egui::RichText::new(self.tr("editRun.title")).strong().size(16.0));
+                    ui.separator();
+                    ui.add_space(6.0);
+                    ui.label(self.tr("form.testType"));
+                    let current = testtype::display_name(&edit.test_type).to_string();
+                    egui::ComboBox::from_id_salt("edit_run_test_type").selected_text(current).width(360.0).show_ui(ui, |ui| {
+                        for t in testtype::CATALOG {
+                            ui.selectable_value(
+                                &mut edit.test_type,
+                                t.code.to_string(),
+                                format!("{}  ·  {}", t.display_name, t.target.label()),
+                            );
+                        }
+                    });
+                    ui.add_space(4.0);
+                    ui.label(self.tr("editRun.platform"));
+                    ui.add(egui::TextEdit::singleline(&mut edit.platform_name).hint_text("platform (e.g. ILLUMINA)").desired_width(f32::INFINITY));
+                    ui.add_space(4.0);
+                    ui.label(self.tr("editRun.instrument"));
+                    ui.add(egui::TextEdit::singleline(&mut edit.instrument_model).hint_text("instrument model (optional)").desired_width(f32::INFINITY));
+                    ui.add_space(4.0);
+                    ui.label(self.tr("editRun.layout"));
+                    ui.add(egui::TextEdit::singleline(&mut edit.library_layout).hint_text("library layout (optional, e.g. PAIRED)").desired_width(f32::INFINITY));
+                    ui.add_space(10.0);
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        let ready = testtype::by_code(&edit.test_type).is_some();
+                        if ui.add_enabled(ready, egui::Button::new(self.tr("common.save")).fill(ACCENT)).clicked() {
+                            let _ = self.tx.send(Command::UpdateSequenceRun {
+                                id: edit.id,
+                                biosample_guid: edit.guid,
+                                platform_name: edit.platform_name.trim().to_string(),
+                                instrument_model: opt(&edit.instrument_model),
+                                test_type: edit.test_type.clone(),
+                                library_layout: opt(&edit.library_layout),
+                            });
+                            close = true;
+                        }
+                        if ui.button(self.tr("common.cancel")).clicked() {
+                            close = true;
+                        }
+                    });
+                });
+            });
+        if close {
+            self.edit_run = None;
+        } else {
+            self.edit_run = Some(edit);
+        }
+    }
+
+    /// The Edit-alignment modal: reference build / aligner / variant caller. File paths are
+    /// managed by import/probe. Save sends `UpdateAlignment`.
+    fn edit_alignment_modal(&mut self, ctx: &egui::Context) {
+        let Some(mut edit) = self.edit_alignment.clone() else { return };
+        let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("edit_aln_dim")));
+        painter.rect_filled(ctx.screen_rect(), 0.0, egui::Color32::from_black_alpha(150));
+
+        let mut close = false;
+        egui::Area::new(egui::Id::new("edit_alignment_modal"))
+            .order(egui::Order::Foreground)
+            .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+            .show(ctx, |ui| {
+                egui::Frame::window(ui.style()).inner_margin(egui::Margin::same(18.0)).show(ui, |ui| {
+                    ui.set_width(400.0);
+                    ui.label(egui::RichText::new(self.tr("editAln.title")).strong().size(16.0));
+                    ui.separator();
+                    ui.add_space(6.0);
+                    ui.label(self.tr("editAln.build"));
+                    ui.add(egui::TextEdit::singleline(&mut edit.reference_build).hint_text("reference build").desired_width(f32::INFINITY));
+                    ui.add_space(4.0);
+                    ui.label(self.tr("editAln.aligner"));
+                    ui.add(egui::TextEdit::singleline(&mut edit.aligner).hint_text("aligner").desired_width(f32::INFINITY));
+                    ui.add_space(4.0);
+                    ui.label(self.tr("editAln.caller"));
+                    ui.add(egui::TextEdit::singleline(&mut edit.variant_caller).hint_text("variant caller (optional)").desired_width(f32::INFINITY));
+                    ui.add_space(10.0);
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        let ready = !edit.reference_build.trim().is_empty() && !edit.aligner.trim().is_empty();
+                        if ui.add_enabled(ready, egui::Button::new(self.tr("common.save")).fill(ACCENT)).clicked() {
+                            let _ = self.tx.send(Command::UpdateAlignment {
+                                id: edit.id,
+                                sequence_run_id: edit.run_id,
+                                reference_build: edit.reference_build.trim().to_string(),
+                                aligner: edit.aligner.trim().to_string(),
+                                variant_caller: opt(&edit.variant_caller),
+                            });
+                            close = true;
+                        }
+                        if ui.button(self.tr("common.cancel")).clicked() {
+                            close = true;
+                        }
+                    });
+                });
+            });
+        if close {
+            self.edit_alignment = None;
+        } else {
+            self.edit_alignment = Some(edit);
         }
     }
 
@@ -3030,6 +3175,8 @@ impl NavigatorApp {
         let mut pick_run = None;
         let mut pick_aln = None;
         let mut want_delete: Option<DataDelete> = None;
+        let mut want_edit_run: Option<EditRun> = None;
+        let mut want_edit_aln: Option<EditAlignment> = None;
 
         for r in &runs {
             let selected = self.selected_run == Some(r.id);
@@ -3070,6 +3217,16 @@ impl NavigatorApp {
                                     id: r.id,
                                     guid,
                                     label: format!("run “{}”", testtype::display_name(&r.test_type)),
+                                });
+                            }
+                            if ui.small_button("✏").on_hover_text("Edit run").clicked() {
+                                want_edit_run = Some(EditRun {
+                                    id: r.id,
+                                    guid,
+                                    test_type: r.test_type.clone(),
+                                    platform_name: r.platform_name.clone(),
+                                    instrument_model: r.instrument_model.clone().unwrap_or_default(),
+                                    library_layout: r.library_layout.clone().unwrap_or_default(),
                                 });
                             }
                             if let Some(t) = tt {
@@ -3116,6 +3273,15 @@ impl NavigatorApp {
                                                 label: format!("alignment {} ({})", a.id, a.reference_build),
                                             });
                                         }
+                                        if ui.small_button("✏").on_hover_text("Edit alignment").clicked() {
+                                            want_edit_aln = Some(EditAlignment {
+                                                id: a.id,
+                                                run_id: r.id,
+                                                reference_build: a.reference_build.clone(),
+                                                aligner: a.aligner.clone(),
+                                                variant_caller: a.variant_caller.clone().unwrap_or_default(),
+                                            });
+                                        }
                                         ui.add_space(10.0);
                                         ui.label(egui::RichText::new(format!("Callable: {call_s}")).weak().small());
                                         ui.add_space(10.0);
@@ -3143,6 +3309,12 @@ impl NavigatorApp {
         }
         if want_delete.is_some() {
             self.confirm_data_delete = want_delete;
+        }
+        if want_edit_run.is_some() {
+            self.edit_run = want_edit_run;
+        }
+        if want_edit_aln.is_some() {
+            self.edit_alignment = want_edit_aln;
         }
         self.add_test_form(ui, guid);
     }

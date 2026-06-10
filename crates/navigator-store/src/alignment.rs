@@ -81,6 +81,26 @@ pub async fn list_all(pool: &SqlitePool) -> Result<Vec<Alignment>, StoreError> {
     Ok(rows.into_iter().map(Row::into_domain).collect())
 }
 
+/// Update an alignment's descriptive fields (reference build, aligner, variant caller). The
+/// file paths are managed by import/probe, not here. Returns whether a row was affected.
+pub async fn update(
+    pool: &SqlitePool,
+    id: i64,
+    reference_build: &str,
+    aligner: &str,
+    variant_caller: Option<&str>,
+) -> Result<bool, StoreError> {
+    let affected = sqlx::query("UPDATE alignment SET reference_build = ?, aligner = ?, variant_caller = ? WHERE id = ?")
+        .bind(reference_build)
+        .bind(aligner)
+        .bind(variant_caller)
+        .bind(id)
+        .execute(pool)
+        .await?
+        .rows_affected();
+    Ok(affected > 0)
+}
+
 /// Delete an alignment and its cached analysis artifacts (FKs are enforced, so the
 /// `analysis_artifact` children go first). Returns whether the alignment row was removed.
 pub async fn delete(pool: &SqlitePool, id: i64) -> Result<bool, StoreError> {

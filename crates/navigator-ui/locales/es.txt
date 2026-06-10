@@ -43,6 +43,14 @@ editProject.admin=Administrador
 editProject.description=Descripción
 editProject.deleteTitle=Eliminar proyecto
 editProject.deleteNote=El proyecto no debe tener sujetos; reasígnelos primero.
+editRun.title=Editar secuenciación
+editRun.platform=Plataforma
+editRun.instrument=Instrumento
+editRun.layout=Disposición de biblioteca
+editAln.title=Editar alineamiento
+editAln.build=Genoma de referencia
+editAln.aligner=Alineador
+editAln.caller=Identificador de variantes
 
 action.selected=seleccionado(s)
 action.compare=Comparar

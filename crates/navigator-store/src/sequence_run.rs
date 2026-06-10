@@ -83,6 +83,32 @@ pub async fn create(pool: &SqlitePool, r: &NewSequenceRun) -> Result<SequenceRun
     })
 }
 
+/// Update a run's descriptive fields. The analysis-derived read-metric columns (total_reads,
+/// pf_reads_aligned, mean_read_length, mean_insert_size) are left untouched. Returns whether a
+/// row was affected.
+pub async fn update(
+    pool: &SqlitePool,
+    id: i64,
+    platform_name: &str,
+    instrument_model: Option<&str>,
+    test_type: &str,
+    library_layout: Option<&str>,
+) -> Result<bool, StoreError> {
+    let affected = sqlx::query(
+        "UPDATE sequence_run SET platform_name = ?, instrument_model = ?, test_type = ?, \
+         library_layout = ? WHERE id = ?",
+    )
+    .bind(platform_name)
+    .bind(instrument_model)
+    .bind(test_type)
+    .bind(library_layout)
+    .bind(id)
+    .execute(pool)
+    .await?
+    .rows_affected();
+    Ok(affected > 0)
+}
+
 /// Delete a sequence run and everything beneath it (its alignments and their cached analysis
 /// artifacts), children-first since FKs are enforced. Returns whether the run row was removed.
 pub async fn delete(pool: &SqlitePool, id: i64) -> Result<bool, StoreError> {

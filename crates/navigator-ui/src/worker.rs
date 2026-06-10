@@ -203,6 +203,25 @@ pub enum Command {
     UpdateProject { id: i64, name: String, description: Option<String>, administrator: String },
     /// Delete a project. Refused by the app layer while subjects still belong to it.
     DeleteProject(i64),
+    /// Update a sequence run's descriptive fields (read metrics preserved). `biosample_guid` is
+    /// the owner so the UI can refresh that subject's run list.
+    UpdateSequenceRun {
+        id: i64,
+        biosample_guid: SampleGuid,
+        platform_name: String,
+        instrument_model: Option<String>,
+        test_type: String,
+        library_layout: Option<String>,
+    },
+    /// Update an alignment's descriptive fields. `sequence_run_id` is the owner so the UI can
+    /// refresh that run's alignment list.
+    UpdateAlignment {
+        id: i64,
+        sequence_run_id: i64,
+        reference_build: String,
+        aligner: String,
+        variant_caller: Option<String>,
+    },
 }
 
 /// A panel with its site count, for the panel list.
@@ -431,6 +450,21 @@ pub async fn handle(app: &App, cmd: Command) -> Event {
             Ok(()) => Event::ProjectsChanged,
             Err(e) => Event::Error(e.to_string()),
         },
+        Command::UpdateSequenceRun { id, biosample_guid, platform_name, instrument_model, test_type, library_layout } => {
+            match app
+                .update_sequence_run(id, platform_name, instrument_model, test_type, library_layout)
+                .await
+            {
+                Ok(_) => Event::RunsChanged(biosample_guid),
+                Err(e) => Event::Error(e.to_string()),
+            }
+        }
+        Command::UpdateAlignment { id, sequence_run_id, reference_build, aligner, variant_caller } => {
+            match app.update_alignment(id, reference_build, aligner, variant_caller).await {
+                Ok(_) => Event::AlignmentsChanged(sequence_run_id),
+                Err(e) => Event::Error(e.to_string()),
+            }
+        }
         Command::LoadRuns(biosample_guid) => match app.list_sequence_runs(biosample_guid).await {
             Ok(runs) => Event::Runs { biosample_guid, runs },
             Err(e) => Event::Error(e.to_string()),
@@ -1464,6 +1498,112 @@ mod tests {
         }
         match handle(&app, Command::LoadOverview).await {
             Event::Overview(v) => assert!(v.iter().all(|o| o.project.id != pid)),
+            other => panic!("got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn update_run_and_alignment_commands() {
+        use navigator_domain::workspace::{NewAlignment, NewSequenceRun};
+
+        let app = app().await;
+        match handle(&app, Command::AddBiosample(NewBiosample {
+            project_id: None,
+            donor_identifier: "subj".into(),
+            sample_accession: None,
+            sex: None,
+        }))
+        .await
+        {
+            Event::BiosamplesChanged => {}
+            other => panic!("got {other:?}"),
+        }
+        let guid = match handle(&app, Command::LoadAllBiosamples).await {
+            Event::AllBiosamples(all) => all[0].guid,
+            other => panic!("got {other:?}"),
+        };
+        match handle(&app, Command::AddRun(NewSequenceRun {
+            biosample_guid: guid,
+            platform_name: "ILLUMINA".into(),
+            instrument_model: None,
+            test_type: "WGS".into(),
+            library_layout: None,
+            total_reads: Some(1_000),
+            pf_reads_aligned: None,
+            mean_read_length: None,
+            mean_insert_size: None,
+        }))
+        .await
+        {
+            Event::RunsChanged(_) => {}
+            other => panic!("got {other:?}"),
+        }
+        let run = match handle(&app, Command::LoadRuns(guid)).await {
+            Event::Runs { runs, .. } => runs[0].clone(),
+            other => panic!("got {other:?}"),
+        };
+
+        // edit the run's descriptive fields; the read metric is preserved
+        match handle(&app, Command::UpdateSequenceRun {
+            id: run.id,
+            biosample_guid: guid,
+            platform_name: "MGI".into(),
+            instrument_model: Some("DNBSEQ-T7".into()),
+            test_type: "WGS".into(),
+            library_layout: Some("PAIRED".into()),
+        })
+        .await
+        {
+            Event::RunsChanged(g) => assert_eq!(g, guid),
+            other => panic!("got {other:?}"),
+        }
+        match handle(&app, Command::LoadRuns(guid)).await {
+            Event::Runs { runs, .. } => {
+                let r = &runs[0];
+                assert_eq!(r.platform_name, "MGI");
+                assert_eq!(r.instrument_model.as_deref(), Some("DNBSEQ-T7"));
+                assert_eq!(r.library_layout.as_deref(), Some("PAIRED"));
+                assert_eq!(r.total_reads, Some(1_000)); // metric untouched
+            }
+            other => panic!("got {other:?}"),
+        }
+
+        match handle(&app, Command::AddAlignment(NewAlignment {
+            sequence_run_id: run.id,
+            reference_build: "grch38".into(),
+            aligner: "bwa".into(),
+            variant_caller: None,
+            bam_path: None,
+            reference_path: None,
+        }))
+        .await
+        {
+            Event::AlignmentsChanged(_) => {}
+            other => panic!("got {other:?}"),
+        }
+        let aln_id = match handle(&app, Command::LoadAlignments(run.id)).await {
+            Event::Alignments { alignments, .. } => alignments[0].id,
+            other => panic!("got {other:?}"),
+        };
+        match handle(&app, Command::UpdateAlignment {
+            id: aln_id,
+            sequence_run_id: run.id,
+            reference_build: "chm13v2.0".into(),
+            aligner: "minimap2".into(),
+            variant_caller: Some("deepvariant".into()),
+        })
+        .await
+        {
+            Event::AlignmentsChanged(r) => assert_eq!(r, run.id),
+            other => panic!("got {other:?}"),
+        }
+        match handle(&app, Command::LoadAlignments(run.id)).await {
+            Event::Alignments { alignments, .. } => {
+                let a = &alignments[0];
+                assert_eq!(a.reference_build, "chm13v2.0");
+                assert_eq!(a.aligner, "minimap2");
+                assert_eq!(a.variant_caller.as_deref(), Some("deepvariant"));
+            }
             other => panic!("got {other:?}"),
         }
     }
