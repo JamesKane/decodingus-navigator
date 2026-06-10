@@ -160,6 +160,8 @@ pub struct NavigatorApp {
     confirm_delete: Option<SampleGuid>,
     /// Data-source row pending delete confirmation (Some ⇒ the confirm dialog is shown).
     confirm_data_delete: Option<DataDelete>,
+    /// Subject being assigned to a project: (subject, selected project or None). Some ⇒ picker shown.
+    assign_project: Option<(SampleGuid, Option<i64>)>,
     /// Current frame's egui time (seconds), captured at the top of `update`.
     frame_time: f64,
     /// Selected primary navigation tab.
@@ -776,6 +778,7 @@ impl NavigatorApp {
             edit_subject: None,
             confirm_delete: None,
             confirm_data_delete: None,
+            assign_project: None,
             frame_time: 0.0,
             nav: Nav::Subjects,
             detail_tab: DetailTab::Overview,
@@ -1443,6 +1446,7 @@ impl eframe::App for NavigatorApp {
         self.edit_subject_modal(ctx);
         self.delete_subject_modal(ctx);
         self.data_delete_modal(ctx);
+        self.assign_project_modal(ctx);
         self.paint_drop_hint(ctx);
     }
 }
@@ -1690,7 +1694,15 @@ impl NavigatorApp {
                 ui.label(format!("{} {}", if selected { 1 } else { 0 }, self.tr("action.selected")));
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if ui.add_enabled(selected, egui::Button::new(self.tr("action.addToProject"))).clicked() {
-                        self.status = "Add to Project: not wired yet.".into();
+                        if let Some(guid) = self.selected_sample {
+                            let current = self
+                                .all_biosamples
+                                .iter()
+                                .chain(self.samples.iter())
+                                .find(|b| b.guid == guid)
+                                .and_then(|b| b.project_id);
+                            self.assign_project = Some((guid, current));
+                        }
                     }
                     if ui.add_enabled(selected, egui::Button::new(self.tr("action.batchAnalyze"))).clicked() {
                         if let Some(id) = self.selected_alignment {
@@ -1903,6 +1915,64 @@ impl NavigatorApp {
             });
         if close {
             self.confirm_data_delete = None;
+        }
+    }
+
+    /// The Add-to-Project picker: a dropdown of projects (plus "no project"). Save sends
+    /// `AssignBiosampleProject`; the resulting `BiosamplesChanged` event refreshes the lists.
+    fn assign_project_modal(&mut self, ctx: &egui::Context) {
+        let Some((guid, mut chosen)) = self.assign_project else { return };
+        let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("assign_dim")));
+        painter.rect_filled(ctx.screen_rect(), 0.0, egui::Color32::from_black_alpha(150));
+
+        let selected_text = match chosen {
+            Some(pid) => self
+                .overview
+                .iter()
+                .find(|o| o.project.id == pid)
+                .map(|o| o.project.name.clone())
+                .unwrap_or_else(|| format!("project {pid}")),
+            None => self.tr("projects.noProject").to_string(),
+        };
+        let mut close = false;
+        let mut commit = false;
+        egui::Area::new(egui::Id::new("assign_project_modal"))
+            .order(egui::Order::Foreground)
+            .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+            .show(ctx, |ui| {
+                egui::Frame::window(ui.style()).inner_margin(egui::Margin::same(18.0)).show(ui, |ui| {
+                    ui.set_width(360.0);
+                    ui.label(egui::RichText::new(self.tr("action.addToProject")).strong().size(16.0));
+                    ui.separator();
+                    ui.add_space(8.0);
+                    egui::ComboBox::from_id_salt("assign_project_combo")
+                        .selected_text(selected_text)
+                        .width(300.0)
+                        .show_ui(ui, |ui| {
+                            ui.selectable_value(&mut chosen, None, self.tr("projects.noProject"));
+                            for o in &self.overview {
+                                ui.selectable_value(&mut chosen, Some(o.project.id), &o.project.name);
+                            }
+                        });
+                    ui.add_space(12.0);
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui.add(egui::Button::new(self.tr("common.save")).fill(ACCENT)).clicked() {
+                            commit = true;
+                            close = true;
+                        }
+                        if ui.button(self.tr("common.cancel")).clicked() {
+                            close = true;
+                        }
+                    });
+                });
+            });
+        if commit {
+            let _ = self.tx.send(Command::AssignBiosampleProject { guid, project_id: chosen });
+        }
+        if close {
+            self.assign_project = None;
+        } else {
+            self.assign_project = Some((guid, chosen));
         }
     }
 

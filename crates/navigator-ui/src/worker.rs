@@ -197,6 +197,8 @@ pub enum Command {
     DeleteChipProfile { id: i64, biosample_guid: SampleGuid },
     /// Delete an imported mtDNA sequence.
     DeleteMtdnaSequence { id: i64, biosample_guid: SampleGuid },
+    /// Assign a subject to a project (`None` clears it). The app layer validates the project.
+    AssignBiosampleProject { guid: SampleGuid, project_id: Option<i64> },
 }
 
 /// A panel with its site count, for the panel list.
@@ -407,6 +409,12 @@ pub async fn handle(app: &App, cmd: Command) -> Event {
             Ok(()) => Event::MtdnaChanged(biosample_guid),
             Err(e) => Event::Error(e.to_string()),
         },
+        Command::AssignBiosampleProject { guid, project_id } => {
+            match app.add_biosample_to_project(guid, project_id).await {
+                Ok(()) => Event::BiosamplesChanged,
+                Err(e) => Event::Error(e.to_string()),
+            }
+        }
         Command::LoadRuns(biosample_guid) => match app.list_sequence_runs(biosample_guid).await {
             Ok(runs) => Event::Runs { biosample_guid, runs },
             Err(e) => Event::Error(e.to_string()),
@@ -1315,6 +1323,62 @@ mod tests {
         }
         match handle(&app, Command::LoadAllBiosamples).await {
             Event::AllBiosamples(all) => assert!(all.iter().all(|b| b.guid != spare)),
+            other => panic!("got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn assign_biosample_project_command() {
+        let app = app().await;
+        let pid = match handle(&app, Command::CreateProject(NewProject {
+            name: "P".into(),
+            description: None,
+            administrator: "jk".into(),
+        }))
+        .await
+        {
+            Event::ProjectCreated(p) => p.id,
+            other => panic!("got {other:?}"),
+        };
+        match handle(&app, Command::AddBiosample(NewBiosample {
+            project_id: None,
+            donor_identifier: "loose".into(),
+            sample_accession: None,
+            sex: None,
+        }))
+        .await
+        {
+            Event::BiosamplesChanged => {}
+            other => panic!("got {other:?}"),
+        }
+        let guid = match handle(&app, Command::LoadAllBiosamples).await {
+            Event::AllBiosamples(all) => all[0].guid,
+            other => panic!("got {other:?}"),
+        };
+
+        // assign into the project
+        match handle(&app, Command::AssignBiosampleProject { guid, project_id: Some(pid) }).await {
+            Event::BiosamplesChanged => {}
+            other => panic!("got {other:?}"),
+        }
+        match handle(&app, Command::LoadSamples(pid)).await {
+            Event::Samples { samples, .. } => assert_eq!(samples.len(), 1),
+            other => panic!("got {other:?}"),
+        }
+
+        // assigning to a non-existent project is refused
+        match handle(&app, Command::AssignBiosampleProject { guid, project_id: Some(9999) }).await {
+            Event::Error(_) => {}
+            other => panic!("expected Error, got {other:?}"),
+        }
+
+        // clearing the project (None) removes it from the project list
+        match handle(&app, Command::AssignBiosampleProject { guid, project_id: None }).await {
+            Event::BiosamplesChanged => {}
+            other => panic!("got {other:?}"),
+        }
+        match handle(&app, Command::LoadSamples(pid)).await {
+            Event::Samples { samples, .. } => assert!(samples.is_empty()),
             other => panic!("got {other:?}"),
         }
     }
