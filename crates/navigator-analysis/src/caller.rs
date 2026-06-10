@@ -57,6 +57,15 @@ pub struct HaploidCallerParams {
     pub min_base_quality: u8,
     /// The consensus base must be at least this fraction of passing depth to call.
     pub min_allele_fraction: f64,
+    /// Allele-balance (paralog) filter for haploid sites. A true Y/mt-haploid site is
+    /// near-monoallelic; a substantial *second* allele signals paralog/mismapping (two loci
+    /// piled together) and the site is dropped. Tripped only when the second-most-common
+    /// allele has both at least `min_paralog_minor_reads` reads AND a fraction strictly above
+    /// `max_minor_allele_fraction` — a lone discordant read (sequencing error) does not trip
+    /// it. Set the fraction `>= 1.0` to disable. See PangenomeExpansion.md (Phase 1).
+    pub max_minor_allele_fraction: f64,
+    /// Minimum second-allele read count for the paralog filter to engage (guards low depth).
+    pub min_paralog_minor_reads: u32,
     /// Run light local realignment around candidate indels before de-novo calling.
     pub local_realign: bool,
     /// Minimum reads with indel evidence at a position to open a realignment window.
@@ -78,6 +87,8 @@ impl Default for HaploidCallerParams {
             min_mapping_quality: 20,
             min_base_quality: 20,
             min_allele_fraction: 0.5,
+            max_minor_allele_fraction: 0.2,
+            min_paralog_minor_reads: 2,
             local_realign: true,
             realign_min_indel_reads: 3,
             realign_pad: 15,
@@ -175,6 +186,27 @@ fn consensus(counts: &[u32; 4]) -> (usize, u32) {
         }
     }
     (bi, best)
+}
+
+/// Allele-balance / paralog filter for a haploid pileup. A true haploid site is near-
+/// monoallelic; when the second-most-common allele carries both enough reads
+/// (`min_paralog_minor_reads`) and enough fraction (strictly above `max_minor_allele_fraction`)
+/// the site looks bi-allelic — a paralog/mismapping artifact — and the caller should drop it.
+/// A single discordant read (likely sequencing error) does not trip it.
+fn is_paralogous(counts: &[u32; 4], depth: u32, params: &HaploidCallerParams) -> bool {
+    if depth == 0 {
+        return false;
+    }
+    let (bi, _) = consensus(counts);
+    let second = counts
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| *i != bi)
+        .map(|(_, &v)| v)
+        .max()
+        .unwrap_or(0);
+    second >= params.min_paralog_minor_reads
+        && (second as f64 / depth as f64) > params.max_minor_allele_fraction
 }
 
 /// Read passes the de-novo/force-call filters (primary, not dup/qc-fail, MAPQ ok).
@@ -312,6 +344,9 @@ pub fn call_bases_at(
         let (bi, best) = consensus(&c);
         if (best as f64) < params.min_allele_fraction * depth as f64 {
             continue;
+        }
+        if is_paralogous(&c, depth, params) {
+            continue; // bi-allelic at a haploid site — paralog/mismapping, drop the call
         }
         calls.insert((pos0 + 1) as i64, BASES[bi]);
     }
@@ -560,8 +595,9 @@ pub fn force_call_sites(
         let called = if depth < params.min_depth
             || top_count == 0
             || (top_count as f64 / depth as f64) < params.min_allele_fraction
+            || is_paralogous(&c, depth, params)
         {
-            CalledAllele::NoCall
+            CalledAllele::NoCall // includes the paralog/mismapping (bi-allelic) drop
         } else if Some(top_bi) == alt_bi {
             CalledAllele::Alternate
         } else if Some(top_bi) == ref_bi {
@@ -639,6 +675,9 @@ pub fn call_denovo(
             let frac = top_count as f64 / depth as f64;
             if frac < params.min_allele_fraction {
                 continue;
+            }
+            if is_paralogous(&c, depth, params) {
+                continue; // bi-allelic at a haploid site — paralog/mismapping, not a private call
             }
             let ref_base = ref_chunk.get(r).copied().unwrap_or(b'N');
             if base_index(ref_base) == Some(top_bi) || base_index(ref_base).is_none() {
@@ -831,6 +870,34 @@ mod tests {
         assert_eq!(consensus(&[3, 3, 0, 0]), (0, 3)); // A wins tie vs C
         assert_eq!(consensus(&[0, 1, 5, 2]), (2, 5)); // G
         assert_eq!(consensus(&[0, 0, 0, 0]), (0, 0)); // empty -> A, count 0
+    }
+
+    #[test]
+    fn paralog_filter_drops_only_bi_allelic_haploid_sites() {
+        let p = HaploidCallerParams::default(); // max_minor 0.20, min_minor_reads 2
+        let para = |c: [u32; 4]| is_paralogous(&c, c.iter().sum(), &p);
+
+        // Clean monoallelic call (HiFi-like): not paralogous.
+        assert!(!para([11, 0, 0, 0]));
+        // One discordant read at low depth — a sequencing error, kept.
+        assert!(!para([3, 1, 0, 0])); // second=1 (< 2 reads)
+        // Scattered errors across other bases, none reaching 2 reads — kept.
+        assert!(!para([18, 1, 1, 0])); // second=1
+        // Genuine bi-allelic pileup (7 derived / 4 ancestral) — paralog, dropped.
+        assert!(para([7, 4, 0, 0])); // second=4, 0.36 > 0.20
+        // Boundary: 2/10 = 0.20 is not strictly above the threshold — kept.
+        assert!(!para([8, 2, 0, 0]));
+        // 3/10 = 0.30 > 0.20 with 3 reads — dropped.
+        assert!(para([7, 3, 0, 0]));
+        // Empty pileup is never paralogous.
+        assert!(!para([0, 0, 0, 0]));
+    }
+
+    #[test]
+    fn paralog_filter_disables_at_fraction_one() {
+        let p = HaploidCallerParams { max_minor_allele_fraction: 1.0, ..Default::default() };
+        // Even a 50/50 split is not flagged when the filter is disabled.
+        assert!(!is_paralogous(&[5, 5, 0, 0], 10, &p));
     }
 
     #[test]
