@@ -156,6 +156,11 @@ parallel path; CRAM / unindexed BAM fall back to sequential. Live parity + perf-
 IBD-matching AppView backlog; AppView backfeed.
 **Small**: Edit/Delete + Add-to-Project UI stubs; Compare needs multi-select; table Y/mt only fills
 the selected subject; ancestry genotype-pooling deferred; global panel asset needs data.
+**Perf backlog** (unified walker, 2026-06-10): the per-contig parallel walker plateaus at ~5×
+(knee ~12 threads) because the serial **unmapped-tail sweep** and the **single largest contig**
+(chr1) floor the wall time. To push further: split big contigs into sub-regions with a per-region
+coverage merge, and/or parallelize the unmapped sweep. Lower priority than functional gaps. See the
+"Further headroom" note in `documents/design/UnifiedQualityMetricsWalker_RustPort.md`.
 
 ## Recommended next steps (pick one)
 
