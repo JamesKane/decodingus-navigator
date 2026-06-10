@@ -657,8 +657,12 @@ impl App {
             Some(p) => PathBuf::from(p),
             None => self.gateway.resolve_reference(&aln.reference_build, &mut |_, _| {}).await?,
         };
-        let params = CallableLociParams::default();
+        let mut params = CallableLociParams::default();
         let result = tokio::task::spawn_blocking(move || {
+            // Adapt the callable threshold to read tech (HiFi → 1×; see adaptive_min_depth).
+            if let Ok((read_len, _)) = coverage::estimate_molecule_lengths(&bam, Some(&reference)) {
+                params.min_depth = adaptive_min_depth(params.min_depth, read_len);
+            }
             coverage::collect_coverage_callable_with_progress(&bam, &reference, &params, None, &mut progress)
         })
         .await
@@ -757,8 +761,12 @@ impl App {
             Some(p) => PathBuf::from(p),
             None => self.gateway.resolve_reference(&aln.reference_build, &mut |_, _| {}).await?,
         };
-        let params = CallableLociParams::default();
+        let mut params = CallableLociParams::default();
         let result = tokio::task::spawn_blocking(move || {
+            // Adapt the callable threshold to read tech (HiFi → 1×; see adaptive_min_depth).
+            if let Ok((read_len, _)) = coverage::estimate_molecule_lengths(&bam, Some(&reference)) {
+                params.min_depth = adaptive_min_depth(params.min_depth, read_len);
+            }
             navigator_analysis::unified::collect_unified_metrics_parallel_with_progress(
                 &bam,
                 &reference,
