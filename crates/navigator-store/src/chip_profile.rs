@@ -82,6 +82,16 @@ pub async fn create(pool: &SqlitePool, new: &NewChipProfile) -> Result<ChipProfi
     })
 }
 
+/// Delete a chip profile (no child rows). Returns whether the row was removed.
+pub async fn delete(pool: &SqlitePool, id: i64) -> Result<bool, StoreError> {
+    let affected = sqlx::query("DELETE FROM chip_profile WHERE id = ?")
+        .bind(id)
+        .execute(pool)
+        .await?
+        .rows_affected();
+    Ok(affected > 0)
+}
+
 /// All chip profiles for a biosample.
 pub async fn list_for_biosample(pool: &SqlitePool, guid: SampleGuid) -> Result<Vec<ChipProfile>, StoreError> {
     let rows: Vec<Row> = sqlx::query_as(&format!("SELECT {COLS} FROM chip_profile WHERE biosample_guid = ? ORDER BY id"))

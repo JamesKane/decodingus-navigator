@@ -81,6 +81,23 @@ pub async fn list_all(pool: &SqlitePool) -> Result<Vec<Alignment>, StoreError> {
     Ok(rows.into_iter().map(Row::into_domain).collect())
 }
 
+/// Delete an alignment and its cached analysis artifacts (FKs are enforced, so the
+/// `analysis_artifact` children go first). Returns whether the alignment row was removed.
+pub async fn delete(pool: &SqlitePool, id: i64) -> Result<bool, StoreError> {
+    let mut tx = pool.begin().await?;
+    sqlx::query("DELETE FROM analysis_artifact WHERE alignment_id = ?")
+        .bind(id)
+        .execute(&mut *tx)
+        .await?;
+    let affected = sqlx::query("DELETE FROM alignment WHERE id = ?")
+        .bind(id)
+        .execute(&mut *tx)
+        .await?
+        .rows_affected();
+    tx.commit().await?;
+    Ok(affected > 0)
+}
+
 /// All alignments for a biosample (joined through its sequence runs).
 pub async fn list_for_biosample(pool: &SqlitePool, guid: SampleGuid) -> Result<Vec<Alignment>, StoreError> {
     let rows: Vec<Row> = sqlx::query_as(&format!(

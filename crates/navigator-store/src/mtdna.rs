@@ -66,6 +66,16 @@ pub async fn get(pool: &SqlitePool, id: i64) -> Result<Option<MtdnaSequence>, St
     row.map(Row::into_domain).transpose()
 }
 
+/// Delete an mtDNA sequence (no child rows). Returns whether the row was removed.
+pub async fn delete(pool: &SqlitePool, id: i64) -> Result<bool, StoreError> {
+    let affected = sqlx::query("DELETE FROM mtdna_sequence WHERE id = ?")
+        .bind(id)
+        .execute(pool)
+        .await?
+        .rows_affected();
+    Ok(affected > 0)
+}
+
 /// All mtDNA sequences for a biosample.
 pub async fn list_for_biosample(pool: &SqlitePool, guid: SampleGuid) -> Result<Vec<MtdnaSequence>, StoreError> {
     let rows: Vec<Row> = sqlx::query_as(&format!("SELECT {COLS} FROM mtdna_sequence WHERE biosample_guid = ? ORDER BY id"))

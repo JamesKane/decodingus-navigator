@@ -156,3 +156,56 @@ async fn artifact_upsert_replaces_same_version_and_keeps_distinct_versions() {
     artifact::upsert(s.pool(), aln.id, "coverage", "v2", Utc::now(), r#"{"mean":3.0}"#).await.unwrap();
     assert_eq!(artifact::list_for_alignment(s.pool(), aln.id).await.unwrap().len(), 2);
 }
+
+#[tokio::test]
+async fn delete_cascades_run_to_alignments_and_artifacts() {
+    let s = store().await;
+    let b = sample(None);
+    biosample::create(s.pool(), &b).await.unwrap();
+    let run = sequence_run::create(
+        s.pool(),
+        &NewSequenceRun {
+            biosample_guid: b.guid,
+            platform_name: "ILLUMINA".into(),
+            instrument_model: None,
+            test_type: "WGS".into(),
+            library_layout: None,
+            total_reads: None,
+            pf_reads_aligned: None,
+            mean_read_length: None,
+            mean_insert_size: None,
+        },
+    )
+    .await
+    .unwrap();
+    let aln = alignment::create(
+        s.pool(),
+        &NewAlignment { sequence_run_id: run.id, reference_build: "chm13v2.0".into(), aligner: "bwa".into(), variant_caller: None, bam_path: None, reference_path: None },
+    )
+    .await
+    .unwrap();
+    artifact::upsert(s.pool(), aln.id, "coverage", "v1", Utc::now(), r#"{"mean":1.0}"#).await.unwrap();
+
+    // Deleting a single alignment removes its artifacts but leaves the run.
+    let aln2 = alignment::create(
+        s.pool(),
+        &NewAlignment { sequence_run_id: run.id, reference_build: "grch38".into(), aligner: "bwa".into(), variant_caller: None, bam_path: None, reference_path: None },
+    )
+    .await
+    .unwrap();
+    artifact::upsert(s.pool(), aln2.id, "coverage", "v1", Utc::now(), r#"{"mean":2.0}"#).await.unwrap();
+    assert!(alignment::delete(s.pool(), aln2.id).await.unwrap());
+    assert!(artifact::get(s.pool(), aln2.id, "coverage", "v1").await.unwrap().is_none());
+    assert_eq!(alignment::list_for_run(s.pool(), run.id).await.unwrap(), vec![aln.clone()]);
+    assert!(sequence_run::get(s.pool(), run.id).await.unwrap().is_some());
+
+    // Deleting the run removes the remaining alignment + artifact (FK-enforced cascade).
+    assert!(sequence_run::delete(s.pool(), run.id).await.unwrap());
+    assert!(sequence_run::get(s.pool(), run.id).await.unwrap().is_none());
+    assert!(alignment::list_for_run(s.pool(), run.id).await.unwrap().is_empty());
+    assert!(artifact::get(s.pool(), aln.id, "coverage", "v1").await.unwrap().is_none());
+
+    // Deleting a non-existent row reports false rather than erroring.
+    assert!(!sequence_run::delete(s.pool(), 9999).await.unwrap());
+    assert!(!alignment::delete(s.pool(), 9999).await.unwrap());
+}

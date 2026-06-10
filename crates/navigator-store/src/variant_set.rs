@@ -86,6 +86,23 @@ async fn calls_for(pool: &SqlitePool, set_id: i64) -> Result<Vec<VariantCall>, S
     Ok(rows.into_iter().map(CallRow::into_domain).collect())
 }
 
+/// Delete a variant set and its calls (children-first; FKs are enforced). Returns whether the
+/// set row was removed.
+pub async fn delete(pool: &SqlitePool, id: i64) -> Result<bool, StoreError> {
+    let mut tx = pool.begin().await?;
+    sqlx::query("DELETE FROM variant_call WHERE variant_set_id = ?")
+        .bind(id)
+        .execute(&mut *tx)
+        .await?;
+    let affected = sqlx::query("DELETE FROM variant_set WHERE id = ?")
+        .bind(id)
+        .execute(&mut *tx)
+        .await?
+        .rows_affected();
+    tx.commit().await?;
+    Ok(affected > 0)
+}
+
 /// All variant sets for a biosample, with their calls.
 pub async fn list_for_biosample(pool: &SqlitePool, guid: SampleGuid) -> Result<Vec<VariantSet>, StoreError> {
     let rows: Vec<SetRow> = sqlx::query_as(

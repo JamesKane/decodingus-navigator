@@ -83,6 +83,30 @@ pub async fn create(pool: &SqlitePool, r: &NewSequenceRun) -> Result<SequenceRun
     })
 }
 
+/// Delete a sequence run and everything beneath it (its alignments and their cached analysis
+/// artifacts), children-first since FKs are enforced. Returns whether the run row was removed.
+pub async fn delete(pool: &SqlitePool, id: i64) -> Result<bool, StoreError> {
+    let mut tx = pool.begin().await?;
+    sqlx::query(
+        "DELETE FROM analysis_artifact WHERE alignment_id IN \
+         (SELECT id FROM alignment WHERE sequence_run_id = ?)",
+    )
+    .bind(id)
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query("DELETE FROM alignment WHERE sequence_run_id = ?")
+        .bind(id)
+        .execute(&mut *tx)
+        .await?;
+    let affected = sqlx::query("DELETE FROM sequence_run WHERE id = ?")
+        .bind(id)
+        .execute(&mut *tx)
+        .await?
+        .rows_affected();
+    tx.commit().await?;
+    Ok(affected > 0)
+}
+
 pub async fn list_for_biosample(pool: &SqlitePool, guid: SampleGuid) -> Result<Vec<SequenceRun>, StoreError> {
     let rows: Vec<Row> = sqlx::query_as(&format!("SELECT {COLS} FROM sequence_run WHERE biosample_guid = ? ORDER BY id"))
         .bind(guid.0.to_string())

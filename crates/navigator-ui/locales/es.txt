@@ -32,8 +32,11 @@ edit.description=Descripción
 edit.center=Centro
 edit.sex=Sexo
 delete.title=Eliminar sujeto
-delete.confirm=Eliminar sujeto
+delete.confirm=Eliminar
 delete.note=El sujeto no debe tener secuenciaciones ni perfiles importados; elimine sus datos primero.
+delete.dataTitle=Eliminar fuente de datos
+delete.dataNote=Esto elimina permanentemente el registro y cualquier resultado de análisis derivado de él.
+delete.thisProfile=🗑 Eliminar esto
 
 action.selected=seleccionado(s)
 action.compare=Comparar

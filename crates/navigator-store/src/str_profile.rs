@@ -70,6 +70,23 @@ async fn markers_for(pool: &SqlitePool, profile_id: i64) -> Result<Vec<StrMarker
     Ok(rows.into_iter().map(MarkerRow::into_domain).collect())
 }
 
+/// Delete an STR profile and its markers (children-first; FKs are enforced). Returns whether
+/// the profile row was removed.
+pub async fn delete(pool: &SqlitePool, id: i64) -> Result<bool, StoreError> {
+    let mut tx = pool.begin().await?;
+    sqlx::query("DELETE FROM str_marker WHERE str_profile_id = ?")
+        .bind(id)
+        .execute(&mut *tx)
+        .await?;
+    let affected = sqlx::query("DELETE FROM str_profile WHERE id = ?")
+        .bind(id)
+        .execute(&mut *tx)
+        .await?
+        .rows_affected();
+    tx.commit().await?;
+    Ok(affected > 0)
+}
+
 /// All STR profiles for a biosample, with their markers.
 pub async fn list_for_biosample(pool: &SqlitePool, guid: SampleGuid) -> Result<Vec<StrProfile>, StoreError> {
     let rows: Vec<ProfileRow> = sqlx::query_as(

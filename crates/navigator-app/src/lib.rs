@@ -709,6 +709,55 @@ impl App {
         Ok(alignment::create(self.store.pool(), &aln).await?)
     }
 
+    /// Delete a sequence run and everything beneath it (its alignments + cached analysis
+    /// artifacts). This is how a mistaken BAM/CRAM import is undone.
+    pub async fn delete_sequence_run(&self, id: i64) -> Result<(), AppError> {
+        if !sequence_run::delete(self.store.pool(), id).await? {
+            return Err(AppError::Store(StoreError::NotFound(format!("sequence run {id}"))));
+        }
+        Ok(())
+    }
+
+    /// Delete a single alignment and its cached analysis artifacts (the parent run is kept).
+    pub async fn delete_alignment(&self, id: i64) -> Result<(), AppError> {
+        if !alignment::delete(self.store.pool(), id).await? {
+            return Err(AppError::Store(StoreError::NotFound(format!("alignment {id}"))));
+        }
+        Ok(())
+    }
+
+    /// Delete an imported STR profile (and its markers).
+    pub async fn delete_str_profile(&self, id: i64) -> Result<(), AppError> {
+        if !str_profile::delete(self.store.pool(), id).await? {
+            return Err(AppError::Store(StoreError::NotFound(format!("STR profile {id}"))));
+        }
+        Ok(())
+    }
+
+    /// Delete an imported variant set (and its calls).
+    pub async fn delete_variant_set(&self, id: i64) -> Result<(), AppError> {
+        if !variant_set::delete(self.store.pool(), id).await? {
+            return Err(AppError::Store(StoreError::NotFound(format!("variant set {id}"))));
+        }
+        Ok(())
+    }
+
+    /// Delete an imported chip/array profile.
+    pub async fn delete_chip_profile(&self, id: i64) -> Result<(), AppError> {
+        if !chip_profile::delete(self.store.pool(), id).await? {
+            return Err(AppError::Store(StoreError::NotFound(format!("chip profile {id}"))));
+        }
+        Ok(())
+    }
+
+    /// Delete an imported mtDNA sequence.
+    pub async fn delete_mtdna_sequence(&self, id: i64) -> Result<(), AppError> {
+        if !mtdna_store::delete(self.store.pool(), id).await? {
+            return Err(AppError::Store(StoreError::NotFound(format!("mtDNA sequence {id}"))));
+        }
+        Ok(())
+    }
+
     /// Persist a typed analysis result as a versioned artifact (JSON payload). The
     /// `algorithm_version` is part of the cache key, so a newer version supersedes the
     /// old entry. Pair with [`App::load_analysis`].

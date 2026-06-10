@@ -113,6 +113,42 @@ struct EditSubject {
     sex: String,
 }
 
+/// A data-source row pending delete confirmation. The `label` is shown in the confirm dialog;
+/// the variant carries the ids the worker command needs (and the parent id to refresh).
+#[derive(Clone)]
+enum DataDelete {
+    Run { id: i64, guid: SampleGuid, label: String },
+    Alignment { id: i64, run_id: i64, label: String },
+    Str { id: i64, guid: SampleGuid, label: String },
+    Variant { id: i64, guid: SampleGuid, label: String },
+    Chip { id: i64, guid: SampleGuid, label: String },
+    Mtdna { id: i64, guid: SampleGuid, label: String },
+}
+
+impl DataDelete {
+    fn label(&self) -> &str {
+        match self {
+            DataDelete::Run { label, .. }
+            | DataDelete::Alignment { label, .. }
+            | DataDelete::Str { label, .. }
+            | DataDelete::Variant { label, .. }
+            | DataDelete::Chip { label, .. }
+            | DataDelete::Mtdna { label, .. } => label,
+        }
+    }
+
+    fn command(&self) -> Command {
+        match *self {
+            DataDelete::Run { id, guid, .. } => Command::DeleteSequenceRun { id, biosample_guid: guid },
+            DataDelete::Alignment { id, run_id, .. } => Command::DeleteAlignment { id, sequence_run_id: run_id },
+            DataDelete::Str { id, guid, .. } => Command::DeleteStrProfile { id, biosample_guid: guid },
+            DataDelete::Variant { id, guid, .. } => Command::DeleteVariantSet { id, biosample_guid: guid },
+            DataDelete::Chip { id, guid, .. } => Command::DeleteChipProfile { id, biosample_guid: guid },
+            DataDelete::Mtdna { id, guid, .. } => Command::DeleteMtdnaSequence { id, biosample_guid: guid },
+        }
+    }
+}
+
 pub struct NavigatorApp {
     tx: UnboundedSender<Command>,
     rx: Receiver<Event>,
@@ -122,6 +158,8 @@ pub struct NavigatorApp {
     edit_subject: Option<EditSubject>,
     /// Subject pending delete confirmation (Some ⇒ the confirm dialog is shown).
     confirm_delete: Option<SampleGuid>,
+    /// Data-source row pending delete confirmation (Some ⇒ the confirm dialog is shown).
+    confirm_data_delete: Option<DataDelete>,
     /// Current frame's egui time (seconds), captured at the top of `update`.
     frame_time: f64,
     /// Selected primary navigation tab.
@@ -737,6 +775,7 @@ impl NavigatorApp {
             analysis: None,
             edit_subject: None,
             confirm_delete: None,
+            confirm_data_delete: None,
             frame_time: 0.0,
             nav: Nav::Subjects,
             detail_tab: DetailTab::Overview,
@@ -1403,6 +1442,7 @@ impl eframe::App for NavigatorApp {
         self.analysis_modal(ctx);
         self.edit_subject_modal(ctx);
         self.delete_subject_modal(ctx);
+        self.data_delete_modal(ctx);
         self.paint_drop_hint(ctx);
     }
 }
@@ -1826,6 +1866,46 @@ impl NavigatorApp {
         }
     }
 
+    /// Confirmation modal for deleting a data-source row (run/alignment/profile). Confirm sends
+    /// the variant's worker command; the resulting change event refreshes the affected list.
+    fn data_delete_modal(&mut self, ctx: &egui::Context) {
+        let Some(target) = self.confirm_data_delete.clone() else { return };
+        let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("data_delete_dim")));
+        painter.rect_filled(ctx.screen_rect(), 0.0, egui::Color32::from_black_alpha(150));
+
+        let mut close = false;
+        egui::Area::new(egui::Id::new("data_delete_modal"))
+            .order(egui::Order::Foreground)
+            .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+            .show(ctx, |ui| {
+                egui::Frame::window(ui.style()).inner_margin(egui::Margin::same(18.0)).show(ui, |ui| {
+                    ui.set_width(400.0);
+                    ui.label(egui::RichText::new(self.tr("delete.dataTitle")).strong().size(16.0));
+                    ui.separator();
+                    ui.add_space(8.0);
+                    ui.label(format!("{} {}?", self.tr("delete.confirm"), target.label()));
+                    ui.add_space(6.0);
+                    ui.label(egui::RichText::new(self.tr("delete.dataNote")).weak().small());
+                    ui.add_space(12.0);
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui
+                            .add(egui::Button::new(egui::RichText::new(self.tr("common.delete")).color(egui::Color32::WHITE)).fill(DANGER))
+                            .clicked()
+                        {
+                            let _ = self.tx.send(target.command());
+                            close = true;
+                        }
+                        if ui.button(self.tr("common.cancel")).clicked() {
+                            close = true;
+                        }
+                    });
+                });
+            });
+        if close {
+            self.confirm_data_delete = None;
+        }
+    }
+
     /// Kick off the full-analysis pipeline for an alignment and show the modal immediately.
     fn start_full_analysis(&mut self, alignment_id: i64) {
         self.analysis = Some(AnalysisModal {
@@ -2230,10 +2310,14 @@ impl NavigatorApp {
     }
 
     fn str_section(&mut self, ui: &mut egui::Ui, guid: SampleGuid) {
+        let mut want_delete: Option<DataDelete> = None;
         for p in &self.str_profiles {
             let provider = p.provider.as_deref().unwrap_or("—");
             let header = format!("{} — {} markers  ({provider})", p.panel_name, p.markers.len());
             egui::CollapsingHeader::new(header).id_salt(("str", p.id)).show(ui, |ui| {
+                if ui.small_button(self.tr("delete.thisProfile")).clicked() {
+                    want_delete = Some(DataDelete::Str { id: p.id, guid, label: format!("STR profile “{}”", p.panel_name) });
+                }
                 egui::Grid::new(("str_markers", p.id)).striped(true).num_columns(2).show(ui, |ui| {
                     ui.strong(self.tr("table.marker"));
                     ui.strong(self.tr("table.value"));
@@ -2245,6 +2329,9 @@ impl NavigatorApp {
                     }
                 });
             });
+        }
+        if want_delete.is_some() {
+            self.confirm_data_delete = want_delete;
         }
 
         ui.add_space(6.0);
@@ -2277,9 +2364,13 @@ impl NavigatorApp {
             ui.label(egui::RichText::new("No variants imported yet.").weak());
         }
         const MAX_ROWS: usize = 500;
+        let mut want_delete: Option<DataDelete> = None;
         for s in &self.variant_sets {
             let header = format!("{} — {} call(s)", s.source_label, s.calls.len());
             egui::CollapsingHeader::new(header).id_salt(("vset", s.id)).show(ui, |ui| {
+                if ui.small_button(self.tr("delete.thisProfile")).clicked() {
+                    want_delete = Some(DataDelete::Variant { id: s.id, guid, label: format!("variant set “{}”", s.source_label) });
+                }
                 egui::Grid::new(("vcalls", s.id)).striped(true).num_columns(4).show(ui, |ui| {
                     for h in ["table.position", "table.change", "table.rsid", "table.genotype"] {
                         ui.strong(self.tr(h));
@@ -2297,6 +2388,9 @@ impl NavigatorApp {
                     ui.label(format!("…and {} more", s.calls.len() - MAX_ROWS));
                 }
             });
+        }
+        if want_delete.is_some() {
+            self.confirm_data_delete = want_delete;
         }
 
         // Cross-source concordance (shown once ≥2 sources exist).
@@ -2370,6 +2464,7 @@ impl NavigatorApp {
     /// Genotyping-array (chip) profiles for the selected subject + an import form. The
     /// parser computes the QC summary and guesses the vendor; the dropdown can override it.
     fn chip_section(&mut self, ui: &mut egui::Ui, guid: SampleGuid) {
+        let mut want_delete: Option<DataDelete> = None;
         for p in &self.chip_profiles {
             let s = &p.summary;
             let call_rate = if s.total_markers_possible > 0 {
@@ -2380,6 +2475,9 @@ impl NavigatorApp {
             let ver = p.chip_version.as_deref().map(|v| format!(" {v}")).unwrap_or_default();
             let header = format!("{}{ver} — {} markers, {:.1}% call rate", p.provider, s.total_markers_possible, call_rate);
             egui::CollapsingHeader::new(header).id_salt(("chip", p.id)).show(ui, |ui| {
+                if ui.small_button(self.tr("delete.thisProfile")).clicked() {
+                    want_delete = Some(DataDelete::Chip { id: p.id, guid, label: format!("chip profile ({})", p.provider) });
+                }
                 egui::Grid::new(("chip_qc", p.id)).striped(true).num_columns(2).show(ui, |ui| {
                     let row = |ui: &mut egui::Ui, k: &str, v: String| {
                         ui.label(k);
@@ -2398,6 +2496,9 @@ impl NavigatorApp {
                     }
                 });
             });
+        }
+        if want_delete.is_some() {
+            self.confirm_data_delete = want_delete;
         }
 
         ui.add_space(6.0);
@@ -2451,6 +2552,8 @@ impl NavigatorApp {
         // Bind before the &self loop borrow — used inside the per-row closure.
         let assign_lbl = self.tr("common.assignHaplogroup");
         let derive_lbl = self.tr("mt.deriveVariants");
+        let delete_lbl = self.tr("common.delete");
+        let mut want_delete: Option<DataDelete> = None;
         for m in &self.mtdna_sequences {
             let name = m.source_file_name.as_deref().or(m.defline.as_deref()).unwrap_or("mtDNA");
             ui.horizontal(|ui| {
@@ -2467,6 +2570,9 @@ impl NavigatorApp {
                     self.status = "Assigning haplogroup (fetching FTDNA tree)…".into();
                     let _ = self.tx.send(Command::AssignMtdnaHaplogroup { mtdna_id: m.id });
                 }
+                if ui.button(delete_lbl).clicked() {
+                    want_delete = Some(DataDelete::Mtdna { id: m.id, guid, label: format!("mtDNA sequence “{name}”") });
+                }
             });
             // Show the haplogroup result for this sequence, if any.
             if let Some((id, assignment)) = &self.mtdna_haplogroup {
@@ -2474,6 +2580,9 @@ impl NavigatorApp {
                     show_assignment(ui, assignment);
                 }
             }
+        }
+        if want_delete.is_some() {
+            self.confirm_data_delete = want_delete;
         }
 
         ui.add_space(6.0);
@@ -2705,6 +2814,7 @@ impl NavigatorApp {
         let coverage = self.coverage.clone();
         let mut pick_run = None;
         let mut pick_aln = None;
+        let mut want_delete: Option<DataDelete> = None;
 
         for r in &runs {
             let selected = self.selected_run == Some(r.id);
@@ -2740,6 +2850,13 @@ impl NavigatorApp {
                             );
                         });
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if ui.small_button("🗑").on_hover_text("Delete run + its alignments").clicked() {
+                                want_delete = Some(DataDelete::Run {
+                                    id: r.id,
+                                    guid,
+                                    label: format!("run “{}”", testtype::display_name(&r.test_type)),
+                                });
+                            }
                             if let Some(t) = tt {
                                 let mt = matches!(t.target, testtype::TargetType::WholeGenome | testtype::TargetType::MtDna);
                                 let y = matches!(t.target, testtype::TargetType::WholeGenome | testtype::TargetType::YChromosome);
@@ -2777,6 +2894,14 @@ impl NavigatorApp {
                                     ui.label(egui::RichText::new(&a.reference_build).color(ACCENT).strong());
                                     ui.label(egui::RichText::new(if a.bam_path.is_some() { a.aligner.as_str() } else { "Unknown" }).weak());
                                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                        if ui.small_button("🗑").on_hover_text("Delete alignment").clicked() {
+                                            want_delete = Some(DataDelete::Alignment {
+                                                id: a.id,
+                                                run_id: r.id,
+                                                label: format!("alignment {} ({})", a.id, a.reference_build),
+                                            });
+                                        }
+                                        ui.add_space(10.0);
                                         ui.label(egui::RichText::new(format!("Callable: {call_s}")).weak().small());
                                         ui.add_space(10.0);
                                         ui.label(egui::RichText::new(format!("Coverage: {cov_s}")).weak().small());
@@ -2800,6 +2925,9 @@ impl NavigatorApp {
         }
         if let Some(id) = pick_aln {
             self.select_alignment(id);
+        }
+        if want_delete.is_some() {
+            self.confirm_data_delete = want_delete;
         }
         self.add_test_form(ui, guid);
     }

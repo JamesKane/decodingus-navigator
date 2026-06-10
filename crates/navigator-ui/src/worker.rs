@@ -183,6 +183,20 @@ pub enum Command {
     },
     /// Delete a subject. Refused by the app layer if it still has dependent data.
     DeleteBiosample(SampleGuid),
+    /// Delete a sequence run (cascades to its alignments + artifacts). `biosample_guid` is the
+    /// owner, so the UI can refresh that subject's run list.
+    DeleteSequenceRun { id: i64, biosample_guid: SampleGuid },
+    /// Delete a single alignment (cascades to its artifacts). `sequence_run_id` is the owner,
+    /// so the UI can refresh that run's alignment list.
+    DeleteAlignment { id: i64, sequence_run_id: i64 },
+    /// Delete an imported STR profile (and its markers).
+    DeleteStrProfile { id: i64, biosample_guid: SampleGuid },
+    /// Delete an imported variant set (and its calls).
+    DeleteVariantSet { id: i64, biosample_guid: SampleGuid },
+    /// Delete an imported chip/array profile.
+    DeleteChipProfile { id: i64, biosample_guid: SampleGuid },
+    /// Delete an imported mtDNA sequence.
+    DeleteMtdnaSequence { id: i64, biosample_guid: SampleGuid },
 }
 
 /// A panel with its site count, for the panel list.
@@ -367,6 +381,30 @@ pub async fn handle(app: &App, cmd: Command) -> Event {
         }
         Command::DeleteBiosample(guid) => match app.delete_biosample(guid).await {
             Ok(()) => Event::BiosamplesChanged,
+            Err(e) => Event::Error(e.to_string()),
+        },
+        Command::DeleteSequenceRun { id, biosample_guid } => match app.delete_sequence_run(id).await {
+            Ok(()) => Event::RunsChanged(biosample_guid),
+            Err(e) => Event::Error(e.to_string()),
+        },
+        Command::DeleteAlignment { id, sequence_run_id } => match app.delete_alignment(id).await {
+            Ok(()) => Event::AlignmentsChanged(sequence_run_id),
+            Err(e) => Event::Error(e.to_string()),
+        },
+        Command::DeleteStrProfile { id, biosample_guid } => match app.delete_str_profile(id).await {
+            Ok(()) => Event::StrProfilesChanged(biosample_guid),
+            Err(e) => Event::Error(e.to_string()),
+        },
+        Command::DeleteVariantSet { id, biosample_guid } => match app.delete_variant_set(id).await {
+            Ok(()) => Event::VariantSetsChanged(biosample_guid),
+            Err(e) => Event::Error(e.to_string()),
+        },
+        Command::DeleteChipProfile { id, biosample_guid } => match app.delete_chip_profile(id).await {
+            Ok(()) => Event::ChipProfilesChanged(biosample_guid),
+            Err(e) => Event::Error(e.to_string()),
+        },
+        Command::DeleteMtdnaSequence { id, biosample_guid } => match app.delete_mtdna_sequence(id).await {
+            Ok(()) => Event::MtdnaChanged(biosample_guid),
             Err(e) => Event::Error(e.to_string()),
         },
         Command::LoadRuns(biosample_guid) => match app.list_sequence_runs(biosample_guid).await {
@@ -1233,6 +1271,25 @@ mod tests {
         // still present
         match handle(&app, Command::LoadAllBiosamples).await {
             Event::AllBiosamples(all) => assert_eq!(all.len(), 1),
+            other => panic!("got {other:?}"),
+        }
+
+        // removing the run clears the conflict, so the subject can then be deleted (the
+        // end-to-end 'remove data first' path)
+        let run_id = match handle(&app, Command::LoadRuns(guid)).await {
+            Event::Runs { runs, .. } => runs[0].id,
+            other => panic!("got {other:?}"),
+        };
+        match handle(&app, Command::DeleteSequenceRun { id: run_id, biosample_guid: guid }).await {
+            Event::RunsChanged(g) => assert_eq!(g, guid),
+            other => panic!("got {other:?}"),
+        }
+        match handle(&app, Command::DeleteBiosample(guid)).await {
+            Event::BiosamplesChanged => {}
+            other => panic!("expected clean delete, got {other:?}"),
+        }
+        match handle(&app, Command::LoadAllBiosamples).await {
+            Event::AllBiosamples(all) => assert!(all.iter().all(|b| b.guid != guid)),
             other => panic!("got {other:?}"),
         }
 

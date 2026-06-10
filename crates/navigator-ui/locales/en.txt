@@ -37,8 +37,11 @@ edit.description=Description
 edit.center=Center
 edit.sex=Sex
 delete.title=Delete Subject
-delete.confirm=Delete subject
+delete.confirm=Delete
 delete.note=The subject must have no sequencing runs or imported profiles; remove its data first.
+delete.dataTitle=Delete Data Source
+delete.dataNote=This permanently removes the record and any analysis results derived from it.
+delete.thisProfile=🗑 Delete this
 
 # Bottom action bar
 action.selected=selected
