@@ -133,8 +133,9 @@ matrices are already pulled; re-extraction only needed to add reference samples.
 
 ## Remaining gaps (from the 2026-06-07 audit)
 
-**Unported from Scala**: i18n (scaffolded, partial migration), feature toggles/config,
-haplogroup/comparison report export (CSV only), full Y-STR concordance subsystem.
+**Unported from Scala**: i18n (en/es at full parity, 173 keys, language persisted — remaining:
+`self.status` transient messages, `format!` dynamic strings, the `show_assignment` free helper),
+feature toggles/config, haplogroup/comparison report export (CSV only), full Y-STR concordance subsystem.
 **Designed, not built**: IBD **network** matching (local detector + UI tab exist; consent/match-
 discovery/chromosome-browser/relationship records do not — the biggest remaining feature), Genome
 Regions API, sequence-run fingerprinting, academic-ENA / FTDNA-project / pangenome-GAM imports,
@@ -171,7 +172,8 @@ coverage merge, and/or parallelize the unmapped sweep. Lower priority than funct
 
 1. ~~**Unified Quality Metrics Walker**~~ — DONE 2026-06-10 (committed, incl. per-contig
    parallelism — 5.15× on the GFX BAM); see "Done since this audit" above.
-2. **i18n** — keep migrating (forms, grid headers, status messages) and/or persist the chosen lang.
+2. ~~**i18n**~~ — big pass done 2026-06-10 (203f91f): 72→173 keys, en/es parity, language persisted,
+   forms/grid-headers/buttons migrated. Remaining: `self.status` transient strings + `format!` dynamics.
 3. **DecodingUs tree provider** — you control that tree; FTDNA-only is a real limitation for Y work.
 4. **IBD network matching** — biggest user-facing feature; detection + identity math built, the
    consent/discovery/browser UI + records are not (needs AppView work too).
