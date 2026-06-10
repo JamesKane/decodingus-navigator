@@ -28,6 +28,7 @@ pub use navigator_analysis::caller::SiteGenotype as PanelGenotype;
 pub use navigator_analysis::caller::VariantCall as DenovoCall;
 pub use navigator_analysis::coverage::CoverageResult as Coverage;
 pub use navigator_analysis::read_metrics::{PairOrientation, ReadMetrics};
+pub use navigator_analysis::unified::UnifiedMetricsResult;
 pub use navigator_analysis::sex::{Confidence as SexConfidence, InferredSex, SexInferenceResult};
 pub use navigator_analysis::sv::types::{SvAnalysisResult, SvCall, SvType};
 pub use navigator_analysis::heteroplasmy::HeteroplasmySite;
@@ -156,8 +157,22 @@ fn tree_cache_path(file: &str) -> PathBuf {
 }
 
 /// Score a tree against the sample calls and attach the terminal's child-branch evidence.
+///
+/// The Kulczynski `score` supplies the ranked candidate list (alternatives shown to the
+/// user), but the *reported terminal* comes from path-supported parsimony placement, which
+/// refuses to tunnel into branches the sample contradicts (the distal-Y paralog artifact —
+/// see `documents/design/PangenomeExpansion.md`). We move the parsimony-chosen node to the
+/// front so every `ranked.first()` consumer transparently gets the trustworthy terminal.
 fn assemble_assignment(tree: &navigator_analysis::haplo::HaploTree, calls: &HashMap<i64, char>) -> HaploAssignment {
-    let ranked = navigator_analysis::haplo::score(tree, calls);
+    let mut ranked = navigator_analysis::haplo::score(tree, calls);
+    if let Some(placement) =
+        navigator_analysis::haplo::place_parsimony(tree, calls, &Default::default())
+    {
+        if let Some(idx) = ranked.iter().position(|r| r.id == placement.terminal_id) {
+            let chosen = ranked.remove(idx);
+            ranked.insert(0, chosen);
+        }
+    }
     let branches = ranked
         .first()
         .map(|t| navigator_analysis::haplo::child_evidence(tree, calls, t.id))
@@ -649,9 +664,18 @@ impl App {
         .await
         .map_err(|e| AppError::Join(e.to_string()))??;
         self.save_analysis(alignment_id, "sex", "1", &result).await?;
+        self.write_back_inferred_sex(alignment_id, &result).await?;
+        Ok(result)
+    }
 
-        // Write the inferred sex back to the biosample when the user didn't provide one, so it
-        // shows in the subjects table + header instead of "Unknown".
+    /// Write the inferred sex back to the biosample when the user didn't provide one, so it
+    /// shows in the subjects table + header instead of "Unknown". No-op for Unknown sex or
+    /// when the biosample already carries a sex.
+    async fn write_back_inferred_sex(
+        &self,
+        alignment_id: i64,
+        result: &navigator_analysis::sex::SexInferenceResult,
+    ) -> Result<(), AppError> {
         let label = match result.inferred_sex {
             InferredSex::Male => Some("Male"),
             InferredSex::Female => Some("Female"),
@@ -664,7 +688,7 @@ impl App {
                 }
             }
         }
-        Ok(result)
+        Ok(())
     }
 
     /// Cached `sex` inference, if present.
@@ -688,6 +712,57 @@ impl App {
     /// Cached `read_metrics`, if present.
     pub async fn cached_read_metrics(&self, alignment_id: i64) -> Result<Option<navigator_analysis::read_metrics::ReadMetrics>, AppError> {
         self.load_analysis(alignment_id, "read_metrics", "1").await
+    }
+
+    /// Run the unified quality-metrics walker — coverage + callable, read-level QC metrics, and
+    /// sex inference in **one pass** over the alignment's BAM/CRAM (vs. the separate passes
+    /// `run_coverage` + `run_read_metrics` + `run_sex` cost: 2 reads for BAM, 3 for CRAM). All
+    /// three sub-results are persisted under their existing artifact keys (`coverage`/
+    /// `COVERAGE_VERSION`, `read_metrics`/`"1"`, `sex`/`"1"`), so `cached_coverage`/
+    /// `cached_read_metrics`/`cached_sex` and the SV step's reuse logic keep working unchanged.
+    pub async fn run_unified_metrics(&self, alignment_id: i64) -> Result<UnifiedMetricsResult, AppError> {
+        self.run_unified_metrics_with_progress(alignment_id, |_, _| {}).await
+    }
+
+    /// Like [`run_unified_metrics`], reporting `progress(contigs_done, contigs_total)` as the
+    /// (slow) whole-genome coverage portion finalizes each contig. The callback runs on the
+    /// blocking thread.
+    pub async fn run_unified_metrics_with_progress(
+        &self,
+        alignment_id: i64,
+        mut progress: impl FnMut(usize, usize) + Send + 'static,
+    ) -> Result<UnifiedMetricsResult, AppError> {
+        let aln = alignment::get(self.store.pool(), alignment_id)
+            .await?
+            .ok_or_else(|| AppError::Store(StoreError::NotFound(format!("alignment {alignment_id}"))))?;
+        let bam = PathBuf::from(aln.bam_path.ok_or(AppError::MissingPaths(alignment_id))?);
+        // The walker requires a reference (CRAM decode + reference-N detection); resolve the
+        // build via the gateway when no FASTA was stored at import.
+        let reference = match aln.reference_path {
+            Some(p) => PathBuf::from(p),
+            None => self.gateway.resolve_reference(&aln.reference_build, &mut |_, _| {}).await?,
+        };
+        let params = CallableLociParams::default();
+        let result = tokio::task::spawn_blocking(move || {
+            navigator_analysis::unified::collect_unified_metrics_with_progress(
+                &bam,
+                &reference,
+                &params,
+                None,
+                &mut progress,
+            )
+        })
+        .await
+        .map_err(|e| AppError::Join(e.to_string()))??;
+
+        // Persist each sub-result under its own existing cache key.
+        self.save_analysis(alignment_id, "coverage", coverage::COVERAGE_VERSION, &result.coverage).await?;
+        self.save_analysis(alignment_id, "read_metrics", "1", &result.read_metrics).await?;
+        if let Some(sex) = &result.sex {
+            self.save_analysis(alignment_id, "sex", "1", sex).await?;
+            self.write_back_inferred_sex(alignment_id, sex).await?;
+        }
+        Ok(result)
     }
 
     /// Call structural variants (depth-segmentation + paired-end/split-read evidence) and

@@ -126,110 +126,124 @@ fn median_from_hist(hist: &BTreeMap<u32, u64>, total: u64) -> f64 {
 /// Single pass over the BAM collecting read-level metrics.
 pub fn collect_read_metrics(bam_path: &Path, reference: Option<&Path>) -> Result<ReadMetrics, AnalysisError> {
     let (header, mut reader) = reader::open_seq(bam_path, reference)?;
-
-    let mut total_reads = 0u64;
-    let mut pf_reads = 0u64;
-    let mut pf_reads_aligned = 0u64;
-    let mut reads_aligned_in_pairs = 0u64;
-    let mut proper_pairs = 0u64;
-    let mut chimeric_reads = 0u64;
-
-    let mut total_mapq = 0u64;
-    let mut mapped_for_mq = 0u64;
-
-    let mut read_len = DistAccum::default();
-    let mut insert = DistAccum::default();
-    let (mut fr, mut rf, mut tandem) = (0u64, 0u64, 0u64);
-
+    let mut state = ReadMetricsState::default();
     for result in reader.records(&header) {
-        let record = result?;
+        state.accept(&result?);
+    }
+    Ok(state.finish())
+}
+
+/// Read-level metrics accumulator shared by the standalone walker and the fused
+/// [`crate::unified`] walker (one source of truth → byte-identical numbers). Feed every
+/// record via [`ReadMetricsState::accept`], then call [`ReadMetricsState::finish`].
+#[derive(Default)]
+pub(crate) struct ReadMetricsState {
+    total_reads: u64,
+    pf_reads: u64,
+    pf_reads_aligned: u64,
+    reads_aligned_in_pairs: u64,
+    proper_pairs: u64,
+    chimeric_reads: u64,
+    total_mapq: u64,
+    mapped_for_mq: u64,
+    read_len: DistAccum,
+    insert: DistAccum,
+    fr: u64,
+    rf: u64,
+    tandem: u64,
+}
+
+impl ReadMetricsState {
+    pub(crate) fn accept(&mut self, record: &RecordBuf) {
         let flags = record.flags();
 
         // Primary metrics exclude secondary/supplementary.
         if flags.is_secondary() || flags.is_supplementary() {
-            continue;
+            return;
         }
-        total_reads += 1;
+        self.total_reads += 1;
         if flags.is_qc_fail() {
-            continue;
+            return;
         }
-        pf_reads += 1;
+        self.pf_reads += 1;
 
-        read_len.add(record.sequence().len() as u32);
+        self.read_len.add(record.sequence().len() as u32);
 
         if flags.is_unmapped() {
-            continue;
+            return;
         }
-        pf_reads_aligned += 1;
+        self.pf_reads_aligned += 1;
 
         if let Some(mq) = record.mapping_quality() {
-            total_mapq += mq.get() as u64; // None == 255 (unavailable), excluded
-            mapped_for_mq += 1;
+            self.total_mapq += mq.get() as u64; // None == 255 (unavailable), excluded
+            self.mapped_for_mq += 1;
         }
 
         if !flags.is_segmented() {
-            continue; // not paired
+            return; // not paired
         }
         if !flags.is_mate_unmapped() {
-            reads_aligned_in_pairs += 1;
+            self.reads_aligned_in_pairs += 1;
         }
 
         if flags.is_properly_segmented() {
-            proper_pairs += 1;
+            self.proper_pairs += 1;
             if flags.is_first_segment() {
                 let isize = record.template_length().abs();
                 if isize > 0 && isize < MAX_INSERT_SIZE {
-                    insert.add(isize as u32);
-                    match detect_orientation(&record) {
-                        PairOrientation::Fr => fr += 1,
-                        PairOrientation::Rf => rf += 1,
-                        PairOrientation::Tandem => tandem += 1,
+                    self.insert.add(isize as u32);
+                    match detect_orientation(record) {
+                        PairOrientation::Fr => self.fr += 1,
+                        PairOrientation::Rf => self.rf += 1,
+                        PairOrientation::Tandem => self.tandem += 1,
                     }
                 }
             }
         }
 
         if !flags.is_mate_unmapped() && record.reference_sequence_id() != record.mate_reference_sequence_id() {
-            chimeric_reads += 1;
+            self.chimeric_reads += 1;
         }
     }
 
-    let (median_rl, mean_rl, std_rl) = read_len.stats();
-    let (median_is, mean_is, std_is) = insert.stats();
+    pub(crate) fn finish(self) -> ReadMetrics {
+        let (median_rl, mean_rl, std_rl) = self.read_len.stats();
+        let (median_is, mean_is, std_is) = self.insert.stats();
 
-    let pair_orientation = if fr >= rf && fr >= tandem {
-        PairOrientation::Fr
-    } else if rf >= tandem {
-        PairOrientation::Rf
-    } else {
-        PairOrientation::Tandem
-    };
+        let pair_orientation = if self.fr >= self.rf && self.fr >= self.tandem {
+            PairOrientation::Fr
+        } else if self.rf >= self.tandem {
+            PairOrientation::Rf
+        } else {
+            PairOrientation::Tandem
+        };
 
-    Ok(ReadMetrics {
-        total_reads,
-        pf_reads,
-        pf_reads_aligned,
-        reads_aligned_in_pairs,
-        proper_pairs,
-        pct_pf_reads_aligned: ratio(pf_reads_aligned, pf_reads),
-        pct_reads_aligned_in_pairs: ratio(reads_aligned_in_pairs, pf_reads_aligned),
-        pct_proper_pairs: ratio(proper_pairs, pf_reads_aligned),
-        median_read_length: median_rl,
-        mean_read_length: mean_rl,
-        std_read_length: std_rl,
-        min_read_length: read_len.min,
-        max_read_length: read_len.max,
-        read_length_histogram: read_len.hist,
-        median_insert_size: median_is,
-        mean_insert_size: mean_is,
-        std_insert_size: std_is,
-        min_insert_size: insert.min,
-        max_insert_size: insert.max,
-        insert_size_histogram: insert.hist,
-        pair_orientation,
-        pct_chimeras: ratio(chimeric_reads, reads_aligned_in_pairs),
-        mean_mapping_quality: ratio(total_mapq, mapped_for_mq),
-    })
+        ReadMetrics {
+            total_reads: self.total_reads,
+            pf_reads: self.pf_reads,
+            pf_reads_aligned: self.pf_reads_aligned,
+            reads_aligned_in_pairs: self.reads_aligned_in_pairs,
+            proper_pairs: self.proper_pairs,
+            pct_pf_reads_aligned: ratio(self.pf_reads_aligned, self.pf_reads),
+            pct_reads_aligned_in_pairs: ratio(self.reads_aligned_in_pairs, self.pf_reads_aligned),
+            pct_proper_pairs: ratio(self.proper_pairs, self.pf_reads_aligned),
+            median_read_length: median_rl,
+            mean_read_length: mean_rl,
+            std_read_length: std_rl,
+            min_read_length: self.read_len.min,
+            max_read_length: self.read_len.max,
+            read_length_histogram: self.read_len.hist,
+            median_insert_size: median_is,
+            mean_insert_size: mean_is,
+            std_insert_size: std_is,
+            min_insert_size: self.insert.min,
+            max_insert_size: self.insert.max,
+            insert_size_histogram: self.insert.hist,
+            pair_orientation,
+            pct_chimeras: ratio(self.chimeric_reads, self.reads_aligned_in_pairs),
+            mean_mapping_quality: ratio(self.total_mapq, self.mapped_for_mq),
+        }
+    }
 }
 
 fn ratio(num: u64, den: u64) -> f64 {

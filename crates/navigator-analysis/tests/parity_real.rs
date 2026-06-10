@@ -16,6 +16,7 @@ use navigator_analysis::coverage::{collect_coverage_callable, CallableLociParams
 use navigator_analysis::parity::{compare_denovo_snps, parse_truth_vcf};
 use navigator_analysis::read_metrics::collect_read_metrics;
 use navigator_analysis::sex::{infer_from_bam, InferredSex};
+use navigator_analysis::unified::collect_unified_metrics;
 
 fn real_data() -> Option<(String, String)> {
     match (std::env::var("HG002_CHRM_BAM"), std::env::var("CHM13_REF")) {
@@ -180,6 +181,37 @@ fn hg002_read_metrics_smoke() {
     assert!(m.total_reads > 0);
     assert!(m.pct_pf_reads_aligned > 0.5);
     assert!(m.proper_pairs > 0);
+}
+
+/// The fused unified walker must produce, in one whole-genome pass, exactly what the three
+/// standalone walkers produce separately — coverage, read-metrics, and sex, field for field.
+/// This is the parity guard for the single-pass optimization on real data.
+#[test]
+#[ignore = "requires HG002_BAM + CHM13_REF (whole-genome single-pass parity)"]
+fn hg002_unified_matches_standalone() {
+    let (Ok(bam), Ok(reference)) = (std::env::var("HG002_BAM"), std::env::var("CHM13_REF")) else {
+        eprintln!("set HG002_BAM and CHM13_REF to run this test");
+        return;
+    };
+    let bam = PathBuf::from(bam);
+    let reference = PathBuf::from(reference);
+    let params = CallableLociParams::default();
+
+    let unified = collect_unified_metrics(&bam, &reference, &params, None)
+        .expect("unified walker should succeed");
+
+    let cov = collect_coverage_callable(&bam, &reference, &params, None).unwrap();
+    let rm = collect_read_metrics(&bam, Some(&reference)).unwrap();
+    let sex = infer_from_bam(&bam, None).unwrap();
+
+    assert_eq!(unified.coverage, cov, "coverage diverged from standalone");
+    assert_eq!(unified.read_metrics, rm, "read metrics diverged from standalone");
+    // Standalone BAM sex uses the BAI fast path; the fused path tallies from the record stream.
+    // They classify identically; the read-density floats can differ in the last ULP if the BAI
+    // mapped-record count differs from the streamed mapped-read count, so compare the call.
+    let fused_sex = unified.sex.expect("HG002 has autosomes + chrX");
+    assert_eq!(fused_sex.inferred_sex, sex.inferred_sex, "sex call diverged");
+    assert_eq!(fused_sex.inferred_sex, InferredSex::Male);
 }
 
 /// §4c parity gate: Rust de-novo SNP calls vs a GATK truth VCF on HG002 chrM.

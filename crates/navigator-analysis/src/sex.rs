@@ -11,6 +11,8 @@ use std::path::Path;
 
 use noodles::bam;
 use noodles::csi::binning_index::ReferenceSequence as _;
+use noodles::sam;
+use noodles::sam::alignment::RecordBuf;
 
 use serde::{Deserialize, Serialize};
 
@@ -53,10 +55,17 @@ type Tally = (u64, u64, u64, Option<u64>);
 /// Infer sex from an indexed BAM or CRAM by comparing chrX to autosome read density.
 /// `reference` is required for CRAM (the record-scan fallback decodes it).
 pub fn infer_from_bam(bam_path: &Path, reference: Option<&Path>) -> Result<SexInferenceResult, AnalysisError> {
-    let (autosome_reads, autosome_length, x_reads, x_length) = match reader::detect_format(bam_path) {
+    let tally = match reader::detect_format(bam_path) {
         Format::Bam => tally_via_bai(bam_path)?,
         Format::Cram => tally_via_scan(bam_path, reference)?,
     };
+    result_from_tally(tally)
+}
+
+/// Turn a per-class read/length tally into the inferred-sex result (reads-per-100bp →
+/// chrX:autosome ratio → classification). Shared by every tally source.
+fn result_from_tally(tally: Tally) -> Result<SexInferenceResult, AnalysisError> {
+    let (autosome_reads, autosome_length, x_reads, x_length) = tally;
 
     if autosome_length == 0 {
         return Err(AnalysisError::Message(
@@ -91,6 +100,61 @@ pub fn infer_from_bam(bam_path: &Path, reference: Option<&Path>) -> Result<SexIn
     })
 }
 
+/// Per-chromosome-class read tally over a record stream, shared by the standalone CRAM
+/// scan and the fused [`crate::unified`] walker (which already touches every record, so it
+/// tallies sex directly rather than depending on BAI). Build with [`SexState::new`] from
+/// the header, feed every record via [`SexState::accept`], then [`SexState::finish`].
+pub(crate) struct SexState {
+    /// ref_id -> class: 0 = other, 1 = autosome, 2 = chrX.
+    class: Vec<u8>,
+    autosome_length: u64,
+    x_length: Option<u64>,
+    autosome_reads: u64,
+    x_reads: u64,
+}
+
+impl SexState {
+    pub(crate) fn new(header: &sam::Header) -> Self {
+        let mut class = Vec::with_capacity(header.reference_sequences().len());
+        let (mut autosome_length, mut x_length) = (0u64, None);
+        for (name_bytes, map) in header.reference_sequences() {
+            let name = String::from_utf8_lossy(name_bytes.as_ref());
+            let length = map.length().get() as u64;
+            if contig::is_autosome(&name) {
+                autosome_length += length;
+                class.push(1u8);
+            } else if contig::is_chr_x(&name) {
+                x_length = Some(length);
+                class.push(2u8);
+            } else {
+                class.push(0u8);
+            }
+        }
+        SexState { class, autosome_length, x_length, autosome_reads: 0, x_reads: 0 }
+    }
+
+    pub(crate) fn accept(&mut self, record: &RecordBuf) {
+        if record.flags().is_unmapped() {
+            return;
+        }
+        if let Some(id) = record.reference_sequence_id() {
+            match self.class.get(id).copied().unwrap_or(0) {
+                1 => self.autosome_reads += 1,
+                2 => self.x_reads += 1,
+                _ => {}
+            }
+        }
+    }
+
+    fn tally(&self) -> Tally {
+        (self.autosome_reads, self.autosome_length, self.x_reads, self.x_length)
+    }
+
+    pub(crate) fn finish(&self) -> Result<SexInferenceResult, AnalysisError> {
+        result_from_tally(self.tally())
+    }
+}
+
 /// BAM fast path: per-reference mapped-record counts from the BAI metadata (O(contigs)).
 fn tally_via_bai(bam_path: &Path) -> Result<Tally, AnalysisError> {
     let header = reader::read_header(bam_path, None)?;
@@ -122,39 +186,11 @@ fn tally_via_bai(bam_path: &Path) -> Result<Tally, AnalysisError> {
 /// has no per-reference counts). Lengths come from the header; reads from `reference_sequence_id`.
 fn tally_via_scan(bam_path: &Path, reference: Option<&Path>) -> Result<Tally, AnalysisError> {
     let (header, mut reader) = reader::open_seq(bam_path, reference)?;
-
-    // Per-reference class (0 = other, 1 = autosome, 2 = chrX) + class lengths, from the header.
-    let mut class = Vec::with_capacity(header.reference_sequences().len());
-    let (mut autosome_length, mut x_length) = (0u64, None);
-    for (name_bytes, map) in header.reference_sequences() {
-        let name = String::from_utf8_lossy(name_bytes.as_ref());
-        let length = map.length().get() as u64;
-        if contig::is_autosome(&name) {
-            autosome_length += length;
-            class.push(1u8);
-        } else if contig::is_chr_x(&name) {
-            x_length = Some(length);
-            class.push(2u8);
-        } else {
-            class.push(0u8);
-        }
-    }
-
-    let (mut autosome_reads, mut x_reads) = (0u64, 0u64);
+    let mut state = SexState::new(&header);
     for result in reader.records(&header) {
-        let record = result?;
-        if record.flags().is_unmapped() {
-            continue;
-        }
-        if let Some(id) = record.reference_sequence_id() {
-            match class.get(id).copied().unwrap_or(0) {
-                1 => autosome_reads += 1,
-                2 => x_reads += 1,
-                _ => {}
-            }
-        }
+        state.accept(&result?);
     }
-    Ok((autosome_reads, autosome_length, x_reads, x_length))
+    Ok(state.tally())
 }
 
 /// Classify the ratio into sex + confidence (pure; mirrors the Scala `determineSex`).

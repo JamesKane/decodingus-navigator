@@ -720,53 +720,69 @@ async fn run_full_analysis_streaming<W: Fn() + Send + Sync + 'static>(
     wake: Arc<W>,
 ) {
     cancel.store(false, Ordering::Relaxed);
-    let total = 8; // coverage + 6 command steps + ancestry
+    let total = 6; // unified metrics + 4 command steps + ancestry
 
-    // Step 1: coverage — the slow whole-genome pass. Stream per-contig sub-progress so the bar
-    // advances chromosome by chromosome instead of sitting at 0% for minutes.
+    // Step 1: unified quality metrics — coverage + callable, read-level QC, and sex inference in
+    // ONE pass over the alignment (was three separate steps reading the file 2–3×). The slow
+    // whole-genome read; stream per-contig sub-progress so the bar advances chromosome by
+    // chromosome instead of sitting at 0% for minutes.
     if !cancel.load(Ordering::Relaxed) {
         let _ = evt_tx.send(Event::AnalysisProgress {
             step: 1,
             total,
-            label: "Coverage".into(),
+            label: "Quality metrics".into(),
             detail: "scanning contigs…".into(),
             fraction: 0.0,
         });
         wake();
-        // Reuse a cached coverage result instead of re-scanning the whole genome (minutes).
-        let cov = match app.cached_coverage(alignment_id).await {
-            Ok(Some(c)) => Ok(c),
-            _ => {
+        // Reuse cached sub-results instead of re-scanning the whole genome (minutes) — only when
+        // all three are present, since they're persisted together by the unified walker.
+        let cached = match (
+            app.cached_coverage(alignment_id).await,
+            app.cached_read_metrics(alignment_id).await,
+            app.cached_sex(alignment_id).await,
+        ) {
+            (Ok(Some(cov)), Ok(Some(rm)), Ok(Some(sex))) => Some((cov, rm, Some(sex))),
+            _ => None,
+        };
+        let outcome = match cached {
+            Some(triple) => Ok(triple),
+            None => {
                 let evt = evt_tx.clone();
                 let wk = wake.clone();
-                app.run_coverage_for_alignment_with_progress(alignment_id, move |done, tot| {
+                app.run_unified_metrics_with_progress(alignment_id, move |done, tot| {
                     let within = if tot > 0 { done as f32 / tot as f32 } else { 0.0 };
                     let _ = evt.send(Event::AnalysisProgress {
                         step: 1,
                         total,
-                        label: "Coverage".into(),
+                        label: "Quality metrics".into(),
                         detail: format!("contig {done}/{tot}"),
                         fraction: within / total as f32,
                     });
                     wk();
                 })
                 .await
+                .map(|r| (r.coverage, r.read_metrics, r.sex))
             }
         };
-        let ev = match cov {
-            Ok(result) => Event::Coverage { alignment_id, result: Some(result) },
-            Err(e) => Event::Error(e.to_string()),
-        };
-        let _ = evt_tx.send(ev);
+        // Emit the same per-result events the old separate steps did, so the UI updates identically.
+        match outcome {
+            Ok((cov, rm, sex)) => {
+                let _ = evt_tx.send(Event::Coverage { alignment_id, result: Some(cov) });
+                let _ = evt_tx.send(Event::ReadMetrics { alignment_id, result: Some(rm) });
+                let _ = evt_tx.send(Event::Sex { alignment_id, result: sex });
+            }
+            Err(e) => {
+                let _ = evt_tx.send(Event::Error(e.to_string()));
+            }
+        }
         wake();
     }
 
-    // Steps 2–7: the cheaper command-driven steps (run via `handle`, which forwards their events).
+    // Steps 2–5: the cheaper command-driven steps (run via `handle`, which forwards their events).
     // Y variant discovery is the callable-masked "private Y" pass, NOT a raw whole-chrY de-novo
     // (which is enormous + mostly artifacts); chrM de-novo is fine (small, fully callable).
-    let steps: [(&str, &str); 6] = [
-        ("Sex inference", "chrX:autosome ratio"),
-        ("Read metrics", "alignment QC"),
+    let steps: [(&str, &str); 4] = [
         ("Structural variants", "CNV + discordant pairs (needs ≥10×)"),
         ("Variant calling", "chrM de-novo (haploid)"),
         ("Y haplogroup", "placing on the Y tree"),
@@ -776,7 +792,7 @@ async fn run_full_analysis_streaming<W: Fn() + Send + Sync + 'static>(
         if cancel.load(Ordering::Relaxed) {
             break;
         }
-        let step = i + 2; // steps 2..=7
+        let step = i + 2; // steps 2..=5
         let _ = evt_tx.send(Event::AnalysisProgress {
             step,
             total,
@@ -786,11 +802,9 @@ async fn run_full_analysis_streaming<W: Fn() + Send + Sync + 'static>(
         });
         wake();
         let cmd = match i {
-            0 => Command::RunSex(alignment_id),
-            1 => Command::RunReadMetrics(alignment_id),
-            2 => Command::RunSv(alignment_id),
-            3 => Command::RunDenovo { alignment_id, contig: "chrM".into() },
-            4 => Command::AssignYHaplogroup { alignment_id },
+            0 => Command::RunSv(alignment_id),
+            1 => Command::RunDenovo { alignment_id, contig: "chrM".into() },
+            2 => Command::AssignYHaplogroup { alignment_id },
             _ => Command::AssignMtdnaHaplogroupFromAlignment { alignment_id },
         };
         let ev = handle(app, cmd).await; // runs to completion; we may cancel before the next step

@@ -28,5 +28,6 @@ pub mod realign;
 pub mod scan;
 pub mod sex;
 pub mod sv;
+pub mod unified;
 
 pub use error::AnalysisError;
