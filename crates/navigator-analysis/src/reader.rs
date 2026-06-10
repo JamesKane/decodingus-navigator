@@ -9,11 +9,26 @@
 //! that knows about CRAM's reference-sequence repository.
 
 use std::fs::File;
+use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
 
 use noodles::core::Region;
 use noodles::sam::alignment::RecordBuf;
 use noodles::{bam, bgzf, cram, fasta, sam};
+
+/// Worker threads for multithreaded bgzf decompression of BAM sequential reads. bgzf is a
+/// block-gzip stream, so block inflation parallelizes while record parsing stays sequential
+/// (output is byte-identical — only decompression is threaded). Defaults to the available
+/// parallelism minus one (the record-parsing consumer), capped at 6 — beyond a handful of
+/// inflate workers the single consumer thread is the limit. Override with
+/// `NAVIGATOR_BGZF_THREADS` (clamped to >= 1; set to 1 to disable threading).
+fn bgzf_worker_count() -> NonZeroUsize {
+    if let Some(n) = std::env::var("NAVIGATOR_BGZF_THREADS").ok().and_then(|s| s.parse::<usize>().ok()) {
+        return NonZeroUsize::new(n.max(1)).unwrap();
+    }
+    let cores = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1);
+    NonZeroUsize::new(cores.saturating_sub(1).clamp(1, 6)).unwrap()
+}
 
 use crate::error::AnalysisError;
 
@@ -48,9 +63,11 @@ fn require_reference<'a>(path: &Path, reference: Option<&'a Path>) -> Result<&'a
 
 // ---- sequential (whole-file) reading --------------------------------------
 
-/// A whole-file reader over BAM or CRAM. Hold it and call [`SeqReader::records`].
+/// A whole-file reader over BAM or CRAM. Hold it and call [`SeqReader::records`]. The BAM
+/// path uses a multithreaded bgzf reader so block decompression runs on a worker pool while
+/// records are parsed sequentially (see [`bgzf_worker_count`]).
 pub enum SeqReader {
-    Bam { inner: bam::io::Reader<bgzf::Reader<File>>, path: PathBuf },
+    Bam { inner: bam::io::Reader<bgzf::MultithreadedReader<File>>, path: PathBuf },
     Cram { inner: cram::io::Reader<File>, path: PathBuf },
 }
 
@@ -59,9 +76,9 @@ pub enum SeqReader {
 pub fn open_seq(path: &Path, reference: Option<&Path>) -> Result<(sam::Header, SeqReader), AnalysisError> {
     match detect_format(path) {
         Format::Bam => {
-            let mut inner = bam::io::reader::Builder
-                .build_from_path(path)
-                .map_err(|e| AnalysisError::io(path, e))?;
+            let file = File::open(path).map_err(|e| AnalysisError::io(path, e))?;
+            let mt = bgzf::MultithreadedReader::with_worker_count(bgzf_worker_count(), file);
+            let mut inner = bam::io::Reader::from(mt);
             let header = inner.read_header().map_err(|e| AnalysisError::io(path, e))?;
             Ok((header, SeqReader::Bam { inner, path: path.to_path_buf() }))
         }
