@@ -27,6 +27,18 @@ subjects.noMatch=No subjects match the search.
 detail.addData=➕  Add Data
 common.edit=Edit
 common.delete=Delete
+common.save=Save
+
+# Edit / delete subject dialogs
+edit.title=Edit Subject
+edit.identifier=Identifier
+edit.accession=Accession
+edit.description=Description
+edit.center=Center
+edit.sex=Sex
+delete.title=Delete Subject
+delete.confirm=Delete subject
+delete.note=The subject must have no sequencing runs or imported profiles; remove its data first.
 
 # Bottom action bar
 action.selected=selected

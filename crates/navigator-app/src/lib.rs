@@ -631,6 +631,76 @@ impl App {
         Ok(b)
     }
 
+    /// Update a subject's editable fields (identity, accession, description, center, sex).
+    /// Empty strings are normalized to NULL. Returns the updated record.
+    pub async fn update_biosample(
+        &self,
+        guid: SampleGuid,
+        donor_identifier: String,
+        sample_accession: Option<String>,
+        description: Option<String>,
+        center_name: Option<String>,
+        sex: Option<String>,
+    ) -> Result<Biosample, AppError> {
+        let donor = donor_identifier.trim();
+        if donor.is_empty() {
+            return Err(AppError::Conflict("subject identifier cannot be empty".into()));
+        }
+        let norm = |o: Option<String>| o.map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
+        let (acc, desc, center, sex) = (norm(sample_accession), norm(description), norm(center_name), norm(sex));
+        let updated = biosample::update(
+            self.store.pool(),
+            guid,
+            donor,
+            acc.as_deref(),
+            desc.as_deref(),
+            center.as_deref(),
+            sex.as_deref(),
+        )
+        .await?;
+        if !updated {
+            return Err(AppError::Store(StoreError::NotFound(format!("biosample {}", guid.0))));
+        }
+        biosample::get(self.store.pool(), guid)
+            .await?
+            .ok_or_else(|| AppError::Store(StoreError::NotFound(format!("biosample {}", guid.0))))
+    }
+
+    /// Assign a subject to a project (validating the project exists). `None` clears it.
+    pub async fn add_biosample_to_project(&self, guid: SampleGuid, project_id: Option<i64>) -> Result<(), AppError> {
+        if let Some(pid) = project_id {
+            if project::get(self.store.pool(), pid).await?.is_none() {
+                return Err(AppError::Store(StoreError::NotFound(format!("project {pid}"))));
+            }
+        }
+        if !biosample::set_project(self.store.pool(), guid, project_id).await? {
+            return Err(AppError::Store(StoreError::NotFound(format!("biosample {}", guid.0))));
+        }
+        Ok(())
+    }
+
+    /// Delete a subject. Refused (with a clear message) when it still has dependent data —
+    /// sequencing runs or any imported profile — so the user removes data first rather than
+    /// silently orphaning rows.
+    pub async fn delete_biosample(&self, guid: SampleGuid) -> Result<(), AppError> {
+        let runs = self.list_sequence_runs(guid).await?.len();
+        let strs = self.list_str_profiles(guid).await?.len();
+        let variants = self.list_variant_sets(guid).await?.len();
+        let chips = self.list_chip_profiles(guid).await?.len();
+        let mt = self.list_mtdna_sequences(guid).await?.len();
+        let total = runs + strs + variants + chips + mt;
+        if total > 0 {
+            return Err(AppError::Conflict(format!(
+                "cannot delete subject: it still has {runs} sequencing run(s), {strs} STR, \
+                 {variants} variant-set, {chips} chip, {mt} mtDNA record(s) — remove its data first"
+            )));
+        }
+        if !biosample::delete(self.store.pool(), guid).await? {
+            return Err(AppError::Store(StoreError::NotFound(format!("biosample {}", guid.0))));
+        }
+        Ok(())
+    }
+
     pub async fn record_sequence_run(&self, run: NewSequenceRun) -> Result<SequenceRun, AppError> {
         Ok(sequence_run::create(self.store.pool(), &run).await?)
     }

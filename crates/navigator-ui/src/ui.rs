@@ -102,11 +102,26 @@ struct AnalysisModal {
     started: f64,
 }
 
+/// Editable copy of a subject, driving the Edit modal (Some ⇒ the dialog is shown).
+#[derive(Clone)]
+struct EditSubject {
+    guid: SampleGuid,
+    donor_identifier: String,
+    sample_accession: String,
+    description: String,
+    center_name: String,
+    sex: String,
+}
+
 pub struct NavigatorApp {
     tx: UnboundedSender<Command>,
     rx: Receiver<Event>,
     /// In-flight full-analysis progress (Some ⇒ the modal dialog is shown).
     analysis: Option<AnalysisModal>,
+    /// Subject being edited (Some ⇒ the Edit modal is shown).
+    edit_subject: Option<EditSubject>,
+    /// Subject pending delete confirmation (Some ⇒ the confirm dialog is shown).
+    confirm_delete: Option<SampleGuid>,
     /// Current frame's egui time (seconds), captured at the top of `update`.
     frame_time: f64,
     /// Selected primary navigation tab.
@@ -720,6 +735,8 @@ impl NavigatorApp {
             tx,
             rx,
             analysis: None,
+            edit_subject: None,
+            confirm_delete: None,
             frame_time: 0.0,
             nav: Nav::Subjects,
             detail_tab: DetailTab::Overview,
@@ -1384,6 +1401,8 @@ impl eframe::App for NavigatorApp {
             Nav::Projects => self.projects_central(ui),
         });
         self.analysis_modal(ctx);
+        self.edit_subject_modal(ctx);
+        self.delete_subject_modal(ctx);
         self.paint_drop_hint(ctx);
     }
 }
@@ -1571,10 +1590,17 @@ impl NavigatorApp {
                     .add(egui::Button::new(egui::RichText::new(self.tr("common.delete")).color(egui::Color32::WHITE)).fill(DANGER))
                     .clicked()
                 {
-                    self.status = "Delete is not wired yet.".into();
+                    self.confirm_delete = Some(guid);
                 }
                 if ui.button(self.tr("common.edit")).clicked() {
-                    self.status = "Edit is not wired yet.".into();
+                    self.edit_subject = Some(EditSubject {
+                        guid,
+                        donor_identifier: bio.donor_identifier.clone(),
+                        sample_accession: bio.sample_accession.clone().unwrap_or_default(),
+                        description: bio.description.clone().unwrap_or_default(),
+                        center_name: bio.center_name.clone().unwrap_or_default(),
+                        sex: bio.sex.clone().unwrap_or_default(),
+                    });
                 }
                 if ui.button(self.tr("detail.addData")).clicked() {
                     if let Some(path) = rfd::FileDialog::new()
@@ -1689,6 +1715,115 @@ impl NavigatorApp {
                     });
                 });
             });
+    }
+
+    /// The Edit-subject modal: editable fields over a dimmed backdrop. Save sends an
+    /// `UpdateBiosample` command; the resulting `BiosamplesChanged` event refreshes the lists.
+    fn edit_subject_modal(&mut self, ctx: &egui::Context) {
+        let Some(mut edit) = self.edit_subject.clone() else { return };
+        let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("edit_dim")));
+        painter.rect_filled(ctx.screen_rect(), 0.0, egui::Color32::from_black_alpha(150));
+
+        let mut close = false;
+        egui::Area::new(egui::Id::new("edit_subject_modal"))
+            .order(egui::Order::Foreground)
+            .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+            .show(ctx, |ui| {
+                egui::Frame::window(ui.style()).inner_margin(egui::Margin::same(18.0)).show(ui, |ui| {
+                    ui.set_width(420.0);
+                    ui.label(egui::RichText::new(self.tr("edit.title")).strong().size(16.0));
+                    ui.separator();
+                    ui.add_space(6.0);
+                    let field = |ui: &mut egui::Ui, label: &str, value: &mut String, hint: &str| {
+                        ui.label(label);
+                        ui.add(egui::TextEdit::singleline(value).hint_text(hint).desired_width(f32::INFINITY));
+                        ui.add_space(4.0);
+                    };
+                    field(ui, self.tr("edit.identifier"), &mut edit.donor_identifier, "donor identifier");
+                    field(ui, self.tr("edit.accession"), &mut edit.sample_accession, "accession (optional)");
+                    field(ui, self.tr("edit.description"), &mut edit.description, "description (optional)");
+                    field(ui, self.tr("edit.center"), &mut edit.center_name, "center (optional)");
+                    field(ui, self.tr("edit.sex"), &mut edit.sex, "sex (optional)");
+                    ui.add_space(10.0);
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui
+                            .add_enabled(
+                                !edit.donor_identifier.trim().is_empty(),
+                                egui::Button::new(self.tr("common.save")).fill(ACCENT),
+                            )
+                            .clicked()
+                        {
+                            let _ = self.tx.send(Command::UpdateBiosample {
+                                guid: edit.guid,
+                                donor_identifier: edit.donor_identifier.trim().to_string(),
+                                sample_accession: opt(&edit.sample_accession),
+                                description: opt(&edit.description),
+                                center_name: opt(&edit.center_name),
+                                sex: opt(&edit.sex),
+                            });
+                            close = true;
+                        }
+                        if ui.button(self.tr("common.cancel")).clicked() {
+                            close = true;
+                        }
+                    });
+                });
+            });
+        if close {
+            self.edit_subject = None;
+        } else {
+            self.edit_subject = Some(edit);
+        }
+    }
+
+    /// The Delete-subject confirmation modal. Confirm sends a `DeleteBiosample` command; the app
+    /// layer refuses (surfaced via the status bar) when the subject still has dependent data.
+    fn delete_subject_modal(&mut self, ctx: &egui::Context) {
+        let Some(guid) = self.confirm_delete else { return };
+        let name = self
+            .all_biosamples
+            .iter()
+            .chain(self.samples.iter())
+            .find(|b| b.guid == guid)
+            .map(|b| b.donor_identifier.clone())
+            .unwrap_or_else(|| guid.0.to_string());
+        let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("delete_dim")));
+        painter.rect_filled(ctx.screen_rect(), 0.0, egui::Color32::from_black_alpha(150));
+
+        let mut close = false;
+        egui::Area::new(egui::Id::new("delete_subject_modal"))
+            .order(egui::Order::Foreground)
+            .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+            .show(ctx, |ui| {
+                egui::Frame::window(ui.style()).inner_margin(egui::Margin::same(18.0)).show(ui, |ui| {
+                    ui.set_width(400.0);
+                    ui.label(egui::RichText::new(self.tr("delete.title")).strong().size(16.0));
+                    ui.separator();
+                    ui.add_space(8.0);
+                    ui.label(format!("{} “{}”?", self.tr("delete.confirm"), name));
+                    ui.add_space(6.0);
+                    ui.label(egui::RichText::new(self.tr("delete.note")).weak().small());
+                    ui.add_space(12.0);
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui
+                            .add(egui::Button::new(egui::RichText::new(self.tr("common.delete")).color(egui::Color32::WHITE)).fill(DANGER))
+                            .clicked()
+                        {
+                            let _ = self.tx.send(Command::DeleteBiosample(guid));
+                            if self.selected_sample == Some(guid) {
+                                self.selected_sample = None;
+                            }
+                            close = true;
+                        }
+                        if ui.button(self.tr("common.cancel")).clicked() {
+                            close = true;
+                        }
+                    });
+                });
+            });
+        if close {
+            self.confirm_delete = None;
+        }
     }
 
     /// Kick off the full-analysis pipeline for an alignment and show the modal immediately.

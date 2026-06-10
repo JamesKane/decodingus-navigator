@@ -172,6 +172,17 @@ pub enum Command {
     RunFullAnalysis { alignment_id: i64 },
     /// Request cancellation of the in-flight full analysis (checked between steps).
     CancelAnalysis,
+    /// Update a subject's editable fields. Empty optional values clear the column.
+    UpdateBiosample {
+        guid: SampleGuid,
+        donor_identifier: String,
+        sample_accession: Option<String>,
+        description: Option<String>,
+        center_name: Option<String>,
+        sex: Option<String>,
+    },
+    /// Delete a subject. Refused by the app layer if it still has dependent data.
+    DeleteBiosample(SampleGuid),
 }
 
 /// A panel with its site count, for the panel list.
@@ -345,6 +356,19 @@ pub async fn handle(app: &App, cmd: Command) -> Event {
                 Err(e) => Event::Error(e.to_string()),
             }
         }
+        Command::UpdateBiosample { guid, donor_identifier, sample_accession, description, center_name, sex } => {
+            match app
+                .update_biosample(guid, donor_identifier, sample_accession, description, center_name, sex)
+                .await
+            {
+                Ok(_) => Event::BiosamplesChanged,
+                Err(e) => Event::Error(e.to_string()),
+            }
+        }
+        Command::DeleteBiosample(guid) => match app.delete_biosample(guid).await {
+            Ok(()) => Event::BiosamplesChanged,
+            Err(e) => Event::Error(e.to_string()),
+        },
         Command::LoadRuns(biosample_guid) => match app.list_sequence_runs(biosample_guid).await {
             Ok(runs) => Event::Runs { biosample_guid, runs },
             Err(e) => Event::Error(e.to_string()),
@@ -1132,6 +1156,108 @@ mod tests {
         .await
         {
             Event::AlignmentsChanged(r) => assert_eq!(r, run_id),
+            other => panic!("got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn edit_and_delete_subject_commands() {
+        use navigator_domain::workspace::NewSequenceRun;
+
+        let app = app().await;
+
+        // a project-less subject we can freely edit and delete
+        match handle(&app, Command::AddBiosample(NewBiosample {
+            project_id: None,
+            donor_identifier: "draft".into(),
+            sample_accession: None,
+            sex: None,
+        }))
+        .await
+        {
+            Event::BiosamplesChanged => {}
+            other => panic!("got {other:?}"),
+        }
+        let guid = match handle(&app, Command::LoadAllBiosamples).await {
+            Event::AllBiosamples(all) => all[0].guid,
+            other => panic!("got {other:?}"),
+        };
+
+        // edit: set the identifier + a few optional fields
+        match handle(&app, Command::UpdateBiosample {
+            guid,
+            donor_identifier: "HG002".into(),
+            sample_accession: Some("SAMN123".into()),
+            description: Some("trio son".into()),
+            center_name: None,
+            sex: Some("male".into()),
+        })
+        .await
+        {
+            Event::BiosamplesChanged => {}
+            other => panic!("got {other:?}"),
+        }
+        match handle(&app, Command::LoadAllBiosamples).await {
+            Event::AllBiosamples(all) => {
+                let b = &all[0];
+                assert_eq!(b.donor_identifier, "HG002");
+                assert_eq!(b.sample_accession.as_deref(), Some("SAMN123"));
+                assert_eq!(b.description.as_deref(), Some("trio son"));
+                assert_eq!(b.center_name, None);
+                assert_eq!(b.sex.as_deref(), Some("male"));
+            }
+            other => panic!("got {other:?}"),
+        }
+
+        // adding dependent data makes delete refuse with a conflict
+        match handle(&app, Command::AddRun(NewSequenceRun {
+            biosample_guid: guid,
+            platform_name: "ILLUMINA".into(),
+            instrument_model: None,
+            test_type: "WGS".into(),
+            library_layout: None,
+            total_reads: None,
+            pf_reads_aligned: None,
+            mean_read_length: None,
+            mean_insert_size: None,
+        }))
+        .await
+        {
+            Event::RunsChanged(_) => {}
+            other => panic!("got {other:?}"),
+        }
+        match handle(&app, Command::DeleteBiosample(guid)).await {
+            Event::Error(msg) => assert!(msg.contains("sequencing run"), "unexpected message: {msg}"),
+            other => panic!("expected conflict Error, got {other:?}"),
+        }
+        // still present
+        match handle(&app, Command::LoadAllBiosamples).await {
+            Event::AllBiosamples(all) => assert_eq!(all.len(), 1),
+            other => panic!("got {other:?}"),
+        }
+
+        // a subject with no dependents deletes cleanly
+        match handle(&app, Command::AddBiosample(NewBiosample {
+            project_id: None,
+            donor_identifier: "spare".into(),
+            sample_accession: None,
+            sex: None,
+        }))
+        .await
+        {
+            Event::BiosamplesChanged => {}
+            other => panic!("got {other:?}"),
+        }
+        let spare = match handle(&app, Command::LoadAllBiosamples).await {
+            Event::AllBiosamples(all) => all.iter().find(|b| b.donor_identifier == "spare").unwrap().guid,
+            other => panic!("got {other:?}"),
+        };
+        match handle(&app, Command::DeleteBiosample(spare)).await {
+            Event::BiosamplesChanged => {}
+            other => panic!("got {other:?}"),
+        }
+        match handle(&app, Command::LoadAllBiosamples).await {
+            Event::AllBiosamples(all) => assert!(all.iter().all(|b| b.guid != spare)),
             other => panic!("got {other:?}"),
         }
     }

@@ -73,6 +73,55 @@ pub async fn set_sex(pool: &SqlitePool, guid: SampleGuid, sex: &str) -> Result<(
     Ok(())
 }
 
+/// Update the user-editable biosample fields. `donor_identifier` is required; the rest are
+/// nullable (an empty value clears them). Returns whether a row was affected.
+pub async fn update(
+    pool: &SqlitePool,
+    guid: SampleGuid,
+    donor_identifier: &str,
+    sample_accession: Option<&str>,
+    description: Option<&str>,
+    center_name: Option<&str>,
+    sex: Option<&str>,
+) -> Result<bool, StoreError> {
+    let affected = sqlx::query(
+        "UPDATE biosample SET donor_identifier = ?, sample_accession = ?, description = ?, \
+         center_name = ?, sex = ? WHERE guid = ?",
+    )
+    .bind(donor_identifier)
+    .bind(sample_accession)
+    .bind(description)
+    .bind(center_name)
+    .bind(sex)
+    .bind(guid.0.to_string())
+    .execute(pool)
+    .await?
+    .rows_affected();
+    Ok(affected > 0)
+}
+
+/// Assign (or clear, with `None`) the biosample's project. Returns whether a row was affected.
+pub async fn set_project(pool: &SqlitePool, guid: SampleGuid, project_id: Option<i64>) -> Result<bool, StoreError> {
+    let affected = sqlx::query("UPDATE biosample SET project_id = ? WHERE guid = ?")
+        .bind(project_id)
+        .bind(guid.0.to_string())
+        .execute(pool)
+        .await?
+        .rows_affected();
+    Ok(affected > 0)
+}
+
+/// Delete a biosample row. Returns whether a row was removed. Callers must ensure no
+/// dependent rows reference it (sequence runs, profiles, etc.) — the app layer guards this.
+pub async fn delete(pool: &SqlitePool, guid: SampleGuid) -> Result<bool, StoreError> {
+    let affected = sqlx::query("DELETE FROM biosample WHERE guid = ?")
+        .bind(guid.0.to_string())
+        .execute(pool)
+        .await?
+        .rows_affected();
+    Ok(affected > 0)
+}
+
 pub async fn list_for_project(pool: &SqlitePool, project_id: i64) -> Result<Vec<Biosample>, StoreError> {
     let rows: Vec<Row> = sqlx::query_as(&format!("SELECT {COLS} FROM biosample WHERE project_id = ? ORDER BY guid"))
         .bind(project_id)

@@ -22,6 +22,18 @@ subjects.noMatch=Ningún sujeto coincide con la búsqueda.
 detail.addData=➕  Añadir datos
 common.edit=Editar
 common.delete=Eliminar
+common.save=Guardar
+
+# Diálogos de editar / eliminar sujeto
+edit.title=Editar sujeto
+edit.identifier=Identificador
+edit.accession=Número de acceso
+edit.description=Descripción
+edit.center=Centro
+edit.sex=Sexo
+delete.title=Eliminar sujeto
+delete.confirm=Eliminar sujeto
+delete.note=El sujeto no debe tener secuenciaciones ni perfiles importados; elimine sus datos primero.
 
 action.selected=seleccionado(s)
 action.compare=Comparar

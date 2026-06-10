@@ -53,4 +53,9 @@ pub enum AppError {
     /// the gateway, then retries. No DB writes happened.
     #[error("reference download required: {0:?}")]
     ReferenceNeeded(Vec<crate::BuildNeed>),
+
+    /// A requested mutation is refused because of current state (e.g. deleting a subject that
+    /// still has sequencing data or profiles).
+    #[error("{0}")]
+    Conflict(String),
 }
