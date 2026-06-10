@@ -199,10 +199,13 @@ impl ReferenceGateway {
             .collect())
     }
 
+    /// Resolve a `(from, to)` build-name pair for **chain** purposes, normalized to nuclear
+    /// coordinates — so the masked+rCRS variant resolves to (and reuses the cache of) CHM13's
+    /// chains rather than a duplicate keyed by its own name.
     fn chain_builds(&self, from: &str, to: &str) -> Result<(Build, Build), RefgenomeError> {
         let f = canonical_build(from).ok_or_else(|| RefgenomeError::UnknownBuild(from.to_string()))?;
         let t = canonical_build(to).ok_or_else(|| RefgenomeError::UnknownBuild(to.to_string()))?;
-        Ok((f, t))
+        Ok((f.nuclear(), t.nuclear()))
     }
 }
 
@@ -250,6 +253,26 @@ mod tests {
             other => panic!("expected Cached, got {other:?}"),
         }
         assert!(g.cached_reference("chm13v2.0").is_some());
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn masked_rcrs_reuses_the_chm13_chain_cache() {
+        let base = scratch("maskedchain");
+        let dir = base.join("liftover");
+        std::fs::create_dir_all(&dir).unwrap();
+        // Only the plain-CHM13 chain file exists on disk.
+        std::fs::write(
+            dir.join("GRCh38-to-chm13v2.0.chain"),
+            "chain 1000 chrZ 1000 + 0 100 chrZp 1000 + 0 100 1\n100\n",
+        )
+        .unwrap();
+        let g = gw(&base);
+        // A chain is "available" for the masked variant, and loading it reuses the CHM13 file
+        // (normalized to nuclear coords) rather than a missing masked-named one.
+        assert!(g.chain_available("GRCh38", "chm13v2.0_maskedY_rCRS"));
+        let lo = g.load_liftover("GRCh38", "chm13v2.0_maskedY_rCRS").unwrap();
+        assert_eq!(lo.lift("chrZ", 50), Some(("chrZp".to_string(), 50)));
         let _ = std::fs::remove_dir_all(&base);
     }
 

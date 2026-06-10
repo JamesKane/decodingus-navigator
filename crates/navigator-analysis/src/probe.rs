@@ -57,6 +57,12 @@ fn s<T: AsRef<[u8]>>(v: &T) -> String {
 
 /// Reference build from `@SQ`: prefer the assembly (`AS`) tag, else the chr1 length signature.
 fn detect_build(header: &sam::Header) -> Option<String> {
+    // The Y-PAR-masked + rCRS CHM13 analysis set is indistinguishable from plain chm13v2.0
+    // by `@SQ` (same contig names/lengths), so check the reference filename the aligner
+    // recorded (`@PG CL` / `@SQ UR`) first. Plain chm13 won't match this signature.
+    if header_mentions_masked_rcrs(header) {
+        return Some("chm13v2.0_maskedY_rCRS".into());
+    }
     let seqs = header.reference_sequences();
     for map in seqs.values() {
         if let Some(asm) = map.other_fields().get(&reference_sequence::tag::ASSEMBLY_ID) {
@@ -77,6 +83,28 @@ fn detect_build(header: &sam::Header) -> Option<String> {
         }
     }
     None
+}
+
+/// Does the header name the masked+rCRS analysis-set FASTA (`chm13v2.0_maskedY_rCRS`)? The
+/// aligner records the reference path in `@PG CL`, and some pipelines stamp it as the `@SQ`
+/// URI (`UR`). Case-insensitive match on the distinctive `maskedY_rCRS` token.
+fn header_mentions_masked_rcrs(header: &sam::Header) -> bool {
+    const NEEDLE: &str = "maskedy_rcrs";
+    for (_id, map) in header.programs().as_ref().iter() {
+        if let Some(cl) = map.other_fields().get(&program::tag::COMMAND_LINE) {
+            if s(cl).to_lowercase().contains(NEEDLE) {
+                return true;
+            }
+        }
+    }
+    for map in header.reference_sequences().values() {
+        if let Some(uri) = map.other_fields().get(&reference_sequence::tag::URI) {
+            if s(uri).to_lowercase().contains(NEEDLE) {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 /// Map an assembly label (`AS` tag) onto a canonical build, or `None` if unrecognized.
@@ -157,6 +185,29 @@ mod tests {
         assert_eq!(normalize_build("T2T-CHM13v2.0"), Some("chm13v2.0".into()));
         assert_eq!(normalize_build("hg19"), Some("GRCh37".into()));
         assert_eq!(normalize_build("mystery"), None);
+    }
+
+    fn header_from_sam(text: &str) -> sam::Header {
+        sam::io::Reader::new(text.as_bytes()).read_header().unwrap()
+    }
+
+    #[test]
+    fn detects_masked_rcrs_from_the_reference_filename() {
+        // Same @SQ as plain chm13 (chr1 length), but the aligner's @PG names the masked FASTA.
+        let masked = header_from_sam(
+            "@HD\tVN:1.6\n\
+             @SQ\tSN:chr1\tLN:248387328\n\
+             @PG\tID:bwa-mem2\tPN:bwa-mem2\tCL:bwa-mem2 mem /refs/chm13v2.0_maskedY_rCRS.fa r.fq\n",
+        );
+        assert_eq!(detect_build(&masked), Some("chm13v2.0_maskedY_rCRS".into()));
+
+        // Without that signature the same @SQ falls back to plain chm13 (chr1 length).
+        let plain = header_from_sam(
+            "@HD\tVN:1.6\n\
+             @SQ\tSN:chr1\tLN:248387328\n\
+             @PG\tID:bwa-mem2\tPN:bwa-mem2\tCL:bwa-mem2 mem /refs/chm13v2.0.fa r.fq\n",
+        );
+        assert_eq!(detect_build(&plain), Some("chm13v2.0".into()));
     }
 
     #[test]

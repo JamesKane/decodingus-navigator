@@ -14,6 +14,12 @@ pub enum Build {
     Grch38,
     Grch37,
     Chm13v2,
+    /// The CHM13v2.0 analysis set with the Y PAR hard-masked and the mitochondrion replaced
+    /// by rCRS — the recommended short-read calling reference (PAR-masking removes X/Y
+    /// multi-mapping artifacts; rCRS chrM matches the haplotree coordinates). Its **nuclear**
+    /// coordinates are identical to [`Build::Chm13v2`] (see [`Build::nuclear`]); only chrY is
+    /// N-masked in the PAR and chrM is swapped — so it reuses CHM13's liftover chains.
+    Chm13v2MaskedRcrs,
 }
 
 impl Build {
@@ -24,6 +30,19 @@ impl Build {
             Build::Grch38 => "GRCh38",
             Build::Grch37 => "GRCh37",
             Build::Chm13v2 => "chm13v2.0",
+            Build::Chm13v2MaskedRcrs => "chm13v2.0_maskedY_rCRS",
+        }
+    }
+
+    /// The build whose **nuclear coordinate system** this one shares — itself for the plain
+    /// assemblies, and [`Build::Chm13v2`] for the masked+rCRS variant (PAR-masking is N's, not
+    /// a coordinate change). Liftover chains key off this, so the masked variant reuses
+    /// CHM13's chains instead of duplicating them. (chrM differs — masked chrM is rCRS — but
+    /// mtDNA is never lifted via a chain; it is a direct rCRS query.)
+    pub fn nuclear(self) -> Build {
+        match self {
+            Build::Chm13v2MaskedRcrs => Build::Chm13v2,
+            other => other,
         }
     }
 }
@@ -34,6 +53,8 @@ pub fn canonical_build(name: &str) -> Option<Build> {
     match n.as_str() {
         "grch38" | "hg38" | "b38" | "grch38.p14" => Some(Build::Grch38),
         "grch37" | "hg19" | "b37" | "grch37.p13" => Some(Build::Grch37),
+        "chm13v2.0_maskedy_rcrs" | "chm13v2_maskedy_rcrs" | "chm13_maskedy_rcrs"
+        | "chm13v2.0-maskedy-rcrs" | "chm13v2.0_masked_rcrs" => Some(Build::Chm13v2MaskedRcrs),
         "chm13" | "chm13v2" | "chm13v2.0" | "t2t" | "hs1" | "t2t-chm13v2.0" => Some(Build::Chm13v2),
         _ => None,
     }
@@ -58,6 +79,8 @@ pub struct ChainSource {
 const GB: u64 = 1_000_000_000;
 const CHM13_FA: &str =
     "https://s3-us-west-2.amazonaws.com/human-pangenomics/T2T/CHM13/assemblies/analysis_set/chm13v2.0.fa.gz";
+const CHM13_MASKED_RCRS_FA: &str =
+    "https://s3-us-west-2.amazonaws.com/human-pangenomics/T2T/CHM13/assemblies/analysis_set/chm13v2.0_maskedY_rCRS.fa.gz";
 const GRCH38_FA: &str =
     "https://storage.googleapis.com/genomics-public-data/resources/broad/hg38/v0/Homo_sapiens_assembly38.fasta";
 const GRCH37_FA: &str =
@@ -117,6 +140,7 @@ impl Registry {
             Build::Grch38 => (GRCH38_FA, 3 * GB + GB / 10),
             Build::Grch37 => (GRCH37_FA, 9 * GB / 10),
             Build::Chm13v2 => (CHM13_FA, GB),
+            Build::Chm13v2MaskedRcrs => (CHM13_MASKED_RCRS_FA, GB),
         };
         let url = self
             .config
@@ -126,8 +150,11 @@ impl Registry {
         ReferenceSource { build, url, est_bytes }
     }
 
-    /// The liftover chain source for a build pair, if one is registered.
+    /// The liftover chain source for a build pair, if one is registered. Builds are
+    /// normalized to their nuclear coordinate system first, so the masked+rCRS variant reuses
+    /// CHM13's chains (its nuclear coordinates are identical).
     pub fn chain_source(&self, from: Build, to: Build) -> Option<ChainSource> {
+        let (from, to) = (from.nuclear(), to.nuclear());
         let file = match (from, to) {
             (Build::Grch38, Build::Chm13v2) => "grch38-chm13v2.chain",
             (Build::Chm13v2, Build::Grch38) => "chm13v2-grch38.chain",
@@ -162,6 +189,38 @@ mod tests {
         let chain = reg.chain_source(Build::Grch38, Build::Chm13v2).unwrap();
         assert!(chain.url.ends_with("grch38-chm13v2.chain"));
         assert!(reg.chain_source(Build::Grch38, Build::Grch37).is_none());
+    }
+
+    #[test]
+    fn masked_rcrs_is_a_resolvable_cacheable_build() {
+        // Aliases canonicalize to the masked variant, and its as_str round-trips (so the cache
+        // file is `chm13v2.0_maskedY_rCRS.fa` — distinct from plain chm13).
+        for alias in ["chm13v2.0_maskedY_rCRS", "chm13_maskedY_rcrs", "CHM13V2.0_MASKEDY_RCRS"] {
+            assert_eq!(canonical_build(alias), Some(Build::Chm13v2MaskedRcrs), "alias {alias}");
+        }
+        assert_eq!(Build::Chm13v2MaskedRcrs.as_str(), "chm13v2.0_maskedY_rCRS");
+        assert_eq!(canonical_build(Build::Chm13v2MaskedRcrs.as_str()), Some(Build::Chm13v2MaskedRcrs));
+        // Plain chm13 spellings still map to plain chm13.
+        assert_eq!(canonical_build("chm13v2.0"), Some(Build::Chm13v2));
+
+        let reg = Registry::new(UserConfig::default());
+        assert!(reg.reference_source(Build::Chm13v2MaskedRcrs).url.ends_with("chm13v2.0_maskedY_rCRS.fa.gz"));
+    }
+
+    #[test]
+    fn masked_rcrs_shares_chm13_nuclear_coords_and_chains() {
+        // Nuclear coordinate system is CHM13's; chrM (rCRS) is never chain-lifted.
+        assert_eq!(Build::Chm13v2MaskedRcrs.nuclear(), Build::Chm13v2);
+        assert_eq!(Build::Chm13v2.nuclear(), Build::Chm13v2);
+
+        // So the masked variant reuses CHM13's chains — same file, normalized endpoints (no
+        // duplicate keyed by the masked name).
+        let reg = Registry::new(UserConfig::default());
+        let direct = reg.chain_source(Build::Grch38, Build::Chm13v2).unwrap();
+        let masked = reg.chain_source(Build::Grch38, Build::Chm13v2MaskedRcrs).unwrap();
+        assert_eq!(masked.url, direct.url);
+        assert_eq!(masked.to, Build::Chm13v2); // normalized for cache-key reuse
+        assert!(reg.chain_source(Build::Chm13v2MaskedRcrs, Build::Grch38).unwrap().url.ends_with("chm13v2-grch38.chain"));
     }
 
     #[test]
