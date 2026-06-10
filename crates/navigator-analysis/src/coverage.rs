@@ -21,6 +21,7 @@ use std::path::Path;
 
 use noodles::core::Region;
 use noodles::fasta;
+use noodles::sam::alignment::RecordBuf;
 
 use serde::{Deserialize, Serialize};
 
@@ -150,12 +151,38 @@ struct ContigOut {
     stats: ContigCoverageStats,
 }
 
+/// Reference-N mask for one contig: one bit per base (set = the reference base is N), so
+/// callable classification needs ~1/8 the memory of holding the raw reference bytes. That
+/// matters for the parallel walker, where each concurrent contig task would otherwise pin its
+/// full reference (chr1 ≈ 248 MB) for the whole pileup.
+struct NMask {
+    bits: Vec<u64>,
+}
+
+impl NMask {
+    fn from_bases(bases: &[u8]) -> Self {
+        let mut bits = vec![0u64; bases.len().div_ceil(64)];
+        for (i, &b) in bases.iter().enumerate() {
+            if b == b'N' || b == b'n' {
+                bits[i >> 6] |= 1u64 << (i & 63);
+            }
+        }
+        NMask { bits }
+    }
+
+    /// Whether the reference base at 0-based `idx` is N. Out-of-range reads as N, matching the
+    /// old `ref_bases.get(..).unwrap_or(b'N')` defensiveness.
+    fn is_n(&self, idx: usize) -> bool {
+        self.bits.get(idx >> 6).map_or(true, |w| (w >> (idx & 63)) & 1 == 1)
+    }
+}
+
 /// Streaming state for the contig currently being walked. Memory is bounded by the
 /// sliding window (the span of currently-open reads), not the contig length.
 struct CurContig {
     name: String,
     length: usize,
-    ref_bases: Vec<u8>,
+    ref_n_mask: NMask,
     window: VecDeque<Col>,
     emit_cursor: usize, // 1-based position next to finalize; window front aligns here
     read_count: u64,
@@ -168,6 +195,8 @@ struct CurContig {
 }
 
 impl CurContig {
+    /// Builds from the contig's raw reference bytes, retaining only the compact N-mask (the
+    /// `ref_bases` buffer can be dropped by the caller right after).
     fn new(name: String, length: usize, ref_bases: Vec<u8>) -> Self {
         let cm = ContigCallableMetrics {
             contig: name.clone(),
@@ -181,7 +210,7 @@ impl CurContig {
         CurContig {
             name,
             length,
-            ref_bases,
+            ref_n_mask: NMask::from_bases(&ref_bases),
             window: VecDeque::new(),
             emit_cursor: 1,
             read_count: 0,
@@ -209,8 +238,8 @@ impl CurContig {
             self.base_q_total += col.base_q_sum;
             self.map_q_total += col.map_q_sum;
         }
-        let ref_base = self.ref_bases.get(pos - 1).copied().unwrap_or(b'N');
-        match determine_state(ref_base, depth, col.qc_pass, col.low_mapq, params) {
+        let ref_is_n = self.ref_n_mask.is_n(pos - 1);
+        match determine_state(ref_is_n, depth, col.qc_pass, col.low_mapq, params) {
             CallableState::RefN => self.cm.ref_n += 1,
             CallableState::NoCoverage => self.cm.no_coverage += 1,
             CallableState::PoorMappingQuality => self.cm.poor_mapping_quality += 1,
@@ -361,16 +390,10 @@ impl CoverageState {
     /// walker can hand every record here unfiltered. Fires `progress` on contig finalization.
     pub(crate) fn accept(
         &mut self,
-        record: &noodles::sam::alignment::RecordBuf,
+        record: &RecordBuf,
         progress: &mut dyn FnMut(usize, usize),
     ) -> Result<(), AnalysisError> {
-        let flags = record.flags();
-        if flags.is_unmapped()
-            || flags.is_secondary()
-            || flags.is_supplementary()
-            || flags.is_duplicate()
-            || flags.is_qc_fail()
-        {
+        if !coverage_passes_filter(record) {
             return Ok(());
         }
         let ref_id = match record.reference_sequence_id() {
@@ -403,40 +426,8 @@ impl CoverageState {
             self.cur = Some((ref_id, CurContig::new(name, length, ref_bases)));
         }
 
-        let start = match record.alignment_start() {
-            Some(p) => p.get(),
-            None => return Ok(()),
-        };
         let (_, c) = self.cur.as_mut().unwrap();
-        c.advance_to(start, &self.params, &mut self.g);
-        c.read_count += 1;
-
-        let mapq = record.mapping_quality().map_or(255u8, |m| m.get());
-        let quals = record.quality_scores();
-        let quals = quals.as_ref();
-
-        let mut ref_pos = start; // 1-based
-        let mut query_off = 0usize;
-        for op in record.cigar().as_ref() {
-            let kind = op.kind();
-            let len = op.len();
-            match (kind.consumes_reference(), kind.consumes_read()) {
-                (true, true) => {
-                    for i in 0..len {
-                        let pos = ref_pos + i;
-                        if pos >= 1 && pos <= c.length {
-                            let base_q = quals.get(query_off + i).copied().unwrap_or(0);
-                            c.add(pos, base_q, mapq, &self.params);
-                        }
-                    }
-                    ref_pos += len;
-                    query_off += len;
-                }
-                (true, false) => ref_pos += len,
-                (false, true) => query_off += len,
-                (false, false) => {}
-            }
-        }
+        feed_into_contig(c, record, &self.params, &mut self.g);
         Ok(())
     }
 
@@ -499,37 +490,175 @@ impl CoverageState {
             }
         }
 
-        let n = self.g.n;
-        let mean = if n == 0 { 0.0 } else { self.g.sum_depth as f64 / n as f64 };
-        let sd = if n < 2 {
-            0.0
-        } else {
-            let var = self.g.sum_sq as f64 / n as f64 - mean * mean;
-            var.max(0.0).sqrt()
-        };
-        let callable_bases = contig_callable.iter().map(|c| c.callable).sum();
-        let hist = self.g.hist; // moved out last; use &hist for the percentile reads below
-
-        Ok(CoverageResult {
-            genome_territory: n,
-            mean_coverage: mean,
-            median_coverage: median_from_hist(&hist, n),
-            sd_coverage: sd,
-            pct_1x: pct_at_least(&hist, n, 1),
-            pct_5x: pct_at_least(&hist, n, 5),
-            pct_10x: pct_at_least(&hist, n, 10),
-            pct_15x: pct_at_least(&hist, n, 15),
-            pct_20x: pct_at_least(&hist, n, 20),
-            pct_25x: pct_at_least(&hist, n, 25),
-            pct_30x: pct_at_least(&hist, n, 30),
-            pct_40x: pct_at_least(&hist, n, 40),
-            pct_50x: pct_at_least(&hist, n, 50),
-            coverage_histogram: hist,
-            callable_bases,
+        Ok(assemble_coverage_result(
+            self.g.hist,
+            self.g.n,
+            self.g.sum_depth,
+            self.g.sum_sq,
             contig_callable,
-            contig_coverage_stats: contig_stats,
-        })
+            contig_stats,
+        ))
     }
+}
+
+/// Coverage's read filter — skip unmapped / secondary / supplementary / duplicate / qc-fail.
+/// Shared by the sequential [`CoverageState`] and the per-contig [`ContigCoverageAccum`] so
+/// both pileups see the identical read set.
+fn coverage_passes_filter(record: &RecordBuf) -> bool {
+    let f = record.flags();
+    !(f.is_unmapped() || f.is_secondary() || f.is_supplementary() || f.is_duplicate() || f.is_qc_fail())
+}
+
+/// Feed one (already filter-passing) record into a contig's sliding-window pileup: advance
+/// the finalize frontier to the read's start, then add each reference-consuming base. Shared
+/// by the sequential and per-contig coverage paths so the per-base accounting is identical.
+fn feed_into_contig(c: &mut CurContig, record: &RecordBuf, params: &CallableLociParams, g: &mut Globals) {
+    let start = match record.alignment_start() {
+        Some(p) => p.get(),
+        None => return,
+    };
+    c.advance_to(start, params, g);
+    c.read_count += 1;
+
+    let mapq = record.mapping_quality().map_or(255u8, |m| m.get());
+    let quals = record.quality_scores();
+    let quals = quals.as_ref();
+
+    let mut ref_pos = start; // 1-based
+    let mut query_off = 0usize;
+    for op in record.cigar().as_ref() {
+        let kind = op.kind();
+        let len = op.len();
+        match (kind.consumes_reference(), kind.consumes_read()) {
+            (true, true) => {
+                for i in 0..len {
+                    let pos = ref_pos + i;
+                    if pos >= 1 && pos <= c.length {
+                        let base_q = quals.get(query_off + i).copied().unwrap_or(0);
+                        c.add(pos, base_q, mapq, params);
+                    }
+                }
+                ref_pos += len;
+                query_off += len;
+            }
+            (true, false) => ref_pos += len,
+            (false, true) => query_off += len,
+            (false, false) => {}
+        }
+    }
+}
+
+/// Assemble the genome-wide [`CoverageResult`] from merged histogram/territory/depth sums and
+/// per-contig outputs (already in header order). Single source of truth for the result tail,
+/// used by both the sequential `finish` and the parallel `merge_coverage_partials`.
+fn assemble_coverage_result(
+    hist: Vec<u64>,
+    n: u64,
+    sum_depth: u128,
+    sum_sq: u128,
+    contig_callable: Vec<ContigCallableMetrics>,
+    contig_coverage_stats: Vec<ContigCoverageStats>,
+) -> CoverageResult {
+    let mean = if n == 0 { 0.0 } else { sum_depth as f64 / n as f64 };
+    let sd = if n < 2 {
+        0.0
+    } else {
+        (sum_sq as f64 / n as f64 - mean * mean).max(0.0).sqrt()
+    };
+    let callable_bases = contig_callable.iter().map(|c| c.callable).sum();
+    CoverageResult {
+        genome_territory: n,
+        mean_coverage: mean,
+        median_coverage: median_from_hist(&hist, n),
+        sd_coverage: sd,
+        pct_1x: pct_at_least(&hist, n, 1),
+        pct_5x: pct_at_least(&hist, n, 5),
+        pct_10x: pct_at_least(&hist, n, 10),
+        pct_15x: pct_at_least(&hist, n, 15),
+        pct_20x: pct_at_least(&hist, n, 20),
+        pct_25x: pct_at_least(&hist, n, 25),
+        pct_30x: pct_at_least(&hist, n, 30),
+        pct_40x: pct_at_least(&hist, n, 40),
+        pct_50x: pct_at_least(&hist, n, 50),
+        coverage_histogram: hist,
+        callable_bases,
+        contig_callable,
+        contig_coverage_stats: contig_coverage_stats,
+    }
+}
+
+/// Per-contig coverage accumulator for the parallel walker — one contig's sliding-window
+/// pileup with a local copy of the genome-wide accumulators (summed across contigs at merge
+/// time). Built per contig in the rayon fan-out; feed it that contig's region-query records.
+pub(crate) struct ContigCoverageAccum {
+    c: CurContig,
+    g: Globals,
+    params: CallableLociParams,
+}
+
+/// One contig's finished coverage contribution: its per-contig output plus this contig's
+/// share of the genome-wide histogram / territory / depth sums.
+pub(crate) struct ContigCoveragePartial {
+    ref_id: usize,
+    callable: ContigCallableMetrics,
+    stats: ContigCoverageStats,
+    hist: Vec<u64>,
+    n: u64,
+    sum_depth: u128,
+    sum_sq: u128,
+}
+
+impl ContigCoverageAccum {
+    pub(crate) fn new(name: String, length: usize, ref_bases: Vec<u8>, params: CallableLociParams) -> Self {
+        ContigCoverageAccum { c: CurContig::new(name, length, ref_bases), g: Globals::new(), params }
+    }
+
+    /// Feed one record; the coverage read filter is applied internally, so off-filter records
+    /// are ignored and the caller can pass every record from the contig's region query.
+    pub(crate) fn accept(&mut self, record: &RecordBuf) {
+        if coverage_passes_filter(record) {
+            feed_into_contig(&mut self.c, record, &self.params, &mut self.g);
+        }
+    }
+
+    /// Finalize the contig (flushing its window + uncovered tail) into a partial tagged with
+    /// `ref_id` for header-order reassembly. A contig that saw no reads still finalizes every
+    /// position at depth 0 — counting ref-N and no-coverage exactly as the sequential walker's
+    /// zero-coverage branch does.
+    pub(crate) fn finish(mut self, ref_id: usize) -> ContigCoveragePartial {
+        let out = self.c.finish(&self.params, &mut self.g);
+        ContigCoveragePartial {
+            ref_id,
+            callable: out.callable,
+            stats: out.stats,
+            hist: self.g.hist,
+            n: self.g.n,
+            sum_depth: self.g.sum_depth,
+            sum_sq: self.g.sum_sq,
+        }
+    }
+}
+
+/// Merge per-contig coverage partials into the genome-wide [`CoverageResult`]: sum the
+/// histogram/territory/depth accumulators and order the per-contig outputs by `ref_id` (header
+/// order), so the result is byte-identical to the sequential walker's.
+pub(crate) fn merge_coverage_partials(mut partials: Vec<ContigCoveragePartial>) -> CoverageResult {
+    partials.sort_by_key(|p| p.ref_id);
+    let mut hist = vec![0u64; HIST_LEN];
+    let (mut n, mut sum_depth, mut sum_sq) = (0u64, 0u128, 0u128);
+    let mut contig_callable = Vec::with_capacity(partials.len());
+    let mut contig_stats = Vec::with_capacity(partials.len());
+    for p in partials {
+        for (i, v) in p.hist.iter().enumerate() {
+            hist[i] += v;
+        }
+        n += p.n;
+        sum_depth += p.sum_depth;
+        sum_sq += p.sum_sq;
+        contig_callable.push(p.callable);
+        contig_stats.push(p.stats);
+    }
+    assemble_coverage_result(hist, n, sum_depth, sum_sq, contig_callable, contig_stats)
 }
 
 /// Mean read length and mean fragment (template) length, sampled from the first ~50k
@@ -599,7 +728,7 @@ pub fn callable_intervals(
 
     let mut step = |pos: usize, col: &Col| {
         let callable = matches!(
-            determine_state(b'A', col.depth, col.qc_pass, col.low_mapq, params),
+            determine_state(false, col.depth, col.qc_pass, col.low_mapq, params),
             CallableState::Callable
         );
         if callable {
@@ -679,15 +808,15 @@ pub fn callable_intervals(
 }
 
 /// GATK `CallableLoci` hierarchy — first failing condition wins. Mirrors the Scala
-/// `determineCallableState`.
+/// `determineCallableState`. `ref_is_n` is whether the reference base is N (non-callable).
 fn determine_state(
-    ref_base: u8,
+    ref_is_n: bool,
     depth: u32,
     qc_pass: u32,
     low_mapq: u32,
     params: &CallableLociParams,
 ) -> CallableState {
-    if ref_base == b'N' || ref_base == b'n' {
+    if ref_is_n {
         return CallableState::RefN;
     }
     if depth == 0 {

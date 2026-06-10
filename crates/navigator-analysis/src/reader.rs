@@ -171,6 +171,41 @@ impl IdxReader {
             }
         }
     }
+
+    /// Iterate the unplaced unmapped records (the BAM tail) as `RecordBuf`s. BAM only —
+    /// CRAM's `.crai` exposes no unmapped query, so it returns an error (callers needing the
+    /// unmapped tail for CRAM should take a sequential pass instead).
+    pub fn query_unmapped<'a>(
+        &'a mut self,
+        header: &'a sam::Header,
+    ) -> Result<Box<dyn Iterator<Item = Result<RecordBuf, AnalysisError>> + 'a>, AnalysisError> {
+        match self {
+            IdxReader::Bam { inner, path } => {
+                let path = path.clone();
+                let q = inner.query_unmapped().map_err(|e| AnalysisError::io(&path, e))?;
+                Ok(Box::new(q.map(move |r| {
+                    let rec = r.map_err(|e| AnalysisError::io(&path, e))?;
+                    RecordBuf::try_from_alignment_record(header, &rec).map_err(|e| AnalysisError::io(&path, e))
+                })))
+            }
+            IdxReader::Cram { path, .. } => Err(AnalysisError::Message(format!(
+                "unmapped-record query unsupported for CRAM {}",
+                path.display()
+            ))),
+        }
+    }
+}
+
+/// Whether a sibling BAM index (`.bai`, as `foo.bam.bai` or `foo.bai`) exists for `path`.
+/// The per-contig parallel walker needs one for region queries; callers fall back to a
+/// sequential pass when this is false. CRAM is excluded (its `.crai` has no unmapped query).
+pub fn has_bai_index(path: &Path) -> bool {
+    if detect_format(path) != Format::Bam {
+        return false;
+    }
+    let dotted = path.with_extension("bam.bai"); // foo.bam -> foo.bam.bai
+    let replaced = path.with_extension("bai"); // foo.bam -> foo.bai
+    dotted.exists() || replaced.exists()
 }
 
 // ---- header-only ----------------------------------------------------------

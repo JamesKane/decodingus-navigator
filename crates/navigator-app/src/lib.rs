@@ -183,16 +183,27 @@ fn assemble_assignment(tree: &navigator_analysis::haplo::HaploTree, calls: &Hash
     HaploAssignment { ranked, branches }
 }
 
-/// Haploid-caller params adapted to the sample's read tech: long, accurate reads (HiFi,
-/// mean read length > 1 kb) make confident haploid calls at much lower depth, so halve
-/// `min_depth` (floor 2). Sampled from the BAM head; falls back to defaults on any error.
-/// Blocking (reads the BAM) — call inside `spawn_blocking`.
+/// Minimum callable/calling depth adapted to read technology. The default (4) is a
+/// short-read assumption — ~4 reads to call a base confidently. Long, accurate reads (HiFi,
+/// mean read length > 1 kb) make a confident haploid observation from a *single* read, so a
+/// ~4× HiFi sample is callable at 1×; clamping the floor at 2 needlessly threw away half its
+/// already-shallow coverage. (ONT long reads are less accurate — revisit if we ever adapt by
+/// platform rather than read length.)
+fn adaptive_min_depth(base: u32, read_len: f64) -> u32 {
+    if read_len > 1000.0 {
+        1
+    } else {
+        base
+    }
+}
+
+/// Haploid-caller params adapted to the sample's read tech (see [`adaptive_min_depth`]).
+/// Sampled from the BAM head; falls back to defaults on any error. Blocking (reads the BAM)
+/// — call inside `spawn_blocking`.
 fn adaptive_haploid_params(bam_path: &Path, reference: Option<&Path>) -> HaploidCallerParams {
     let mut params = HaploidCallerParams::default();
     if let Ok((read_len, _)) = coverage::estimate_molecule_lengths(bam_path, reference) {
-        if read_len > 1000.0 {
-            params.min_depth = (params.min_depth / 2).max(2);
-        }
+        params.min_depth = adaptive_min_depth(params.min_depth, read_len);
     }
     params
 }
@@ -728,12 +739,13 @@ impl App {
     }
 
     /// Like [`run_unified_metrics`], reporting `progress(contigs_done, contigs_total)` as the
-    /// (slow) whole-genome coverage portion finalizes each contig. The callback runs on the
-    /// blocking thread.
+    /// (slow) whole-genome coverage portion finalizes each contig. Uses the per-contig parallel
+    /// walker (falling back to a sequential pass for CRAM / unindexed BAM); the callback is
+    /// `Fn + Sync` because it's invoked concurrently from the fan-out's worker threads.
     pub async fn run_unified_metrics_with_progress(
         &self,
         alignment_id: i64,
-        mut progress: impl FnMut(usize, usize) + Send + 'static,
+        progress: impl Fn(usize, usize) + Send + Sync + 'static,
     ) -> Result<UnifiedMetricsResult, AppError> {
         let aln = alignment::get(self.store.pool(), alignment_id)
             .await?
@@ -747,12 +759,12 @@ impl App {
         };
         let params = CallableLociParams::default();
         let result = tokio::task::spawn_blocking(move || {
-            navigator_analysis::unified::collect_unified_metrics_with_progress(
+            navigator_analysis::unified::collect_unified_metrics_parallel_with_progress(
                 &bam,
                 &reference,
                 &params,
                 None,
-                &mut progress,
+                &progress,
             )
         })
         .await
@@ -2104,10 +2116,8 @@ impl App {
             let (read_len, frag_len) = coverage::estimate_molecule_lengths(&bam, reference.as_deref())?;
             let molecule = frag_len.max(read_len);
             let mut params = CallableLociParams::default();
-            // Long, accurate reads (HiFi) are callable at well under half the short-read depth.
-            if read_len > 1000.0 {
-                params.min_depth = (params.min_depth / 2).max(2);
-            }
+            // Long, accurate reads (HiFi) are callable from a single read (see adaptive_min_depth).
+            params.min_depth = adaptive_min_depth(params.min_depth, read_len);
             let min_run_len = molecule.round().max(1.0) as u32; // f = 1.0
             coverage::callable_intervals(&bam, &contig, &params, min_run_len, reference.as_deref())
         })

@@ -93,6 +93,27 @@ impl DistAccum {
         self.count += 1;
     }
 
+    /// Fold another accumulator in (for the parallel per-contig merge). All fields are
+    /// commutative sums / set-min-max / histogram unions, so the merged distribution is
+    /// independent of how records were partitioned across contigs.
+    fn merge(&mut self, other: DistAccum) {
+        for (value, count) in other.hist {
+            *self.hist.entry(value).or_insert(0) += count;
+        }
+        self.sum += other.sum;
+        self.sum_sq += other.sum_sq;
+        if other.count > 0 {
+            if self.count == 0 {
+                self.min = other.min;
+                self.max = other.max;
+            } else {
+                self.min = self.min.min(other.min);
+                self.max = self.max.max(other.max);
+            }
+        }
+        self.count += other.count;
+    }
+
     /// (median, mean, std) using population variance, matching the Scala walker.
     fn stats(&self) -> (f64, f64, f64) {
         if self.count == 0 {
@@ -154,6 +175,25 @@ pub(crate) struct ReadMetricsState {
 }
 
 impl ReadMetricsState {
+    /// Fold another state in (parallel per-contig + unmapped-sweep merge). Every field is a
+    /// commutative count / histogram union, so the result equals a single sequential pass
+    /// regardless of how records were split across contigs.
+    pub(crate) fn merge(&mut self, other: ReadMetricsState) {
+        self.total_reads += other.total_reads;
+        self.pf_reads += other.pf_reads;
+        self.pf_reads_aligned += other.pf_reads_aligned;
+        self.reads_aligned_in_pairs += other.reads_aligned_in_pairs;
+        self.proper_pairs += other.proper_pairs;
+        self.chimeric_reads += other.chimeric_reads;
+        self.total_mapq += other.total_mapq;
+        self.mapped_for_mq += other.mapped_for_mq;
+        self.fr += other.fr;
+        self.rf += other.rf;
+        self.tandem += other.tandem;
+        self.read_len.merge(other.read_len);
+        self.insert.merge(other.insert);
+    }
+
     pub(crate) fn accept(&mut self, record: &RecordBuf) {
         let flags = record.flags();
 

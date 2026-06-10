@@ -10,7 +10,7 @@
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, Sender};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use navigator_app::{
     AlignmentProbe, AncestryResult, AncestrySegment, App, AppError, AuditEntry, BuildNeed, Consensus, Coverage,
@@ -748,17 +748,21 @@ async fn run_full_analysis_streaming<W: Fn() + Send + Sync + 'static>(
         let outcome = match cached {
             Some(triple) => Ok(triple),
             None => {
-                let evt = evt_tx.clone();
+                // The parallel walker invokes progress from worker threads, so the callback must
+                // be Fn + Sync; the event Sender is !Sync, so guard it with a Mutex.
+                let evt = Arc::new(Mutex::new(evt_tx.clone()));
                 let wk = wake.clone();
                 app.run_unified_metrics_with_progress(alignment_id, move |done, tot| {
                     let within = if tot > 0 { done as f32 / tot as f32 } else { 0.0 };
-                    let _ = evt.send(Event::AnalysisProgress {
-                        step: 1,
-                        total,
-                        label: "Quality metrics".into(),
-                        detail: format!("contig {done}/{tot}"),
-                        fraction: within / total as f32,
-                    });
+                    if let Ok(tx) = evt.lock() {
+                        let _ = tx.send(Event::AnalysisProgress {
+                            step: 1,
+                            total,
+                            label: "Quality metrics".into(),
+                            detail: format!("contig {done}/{tot}"),
+                            fraction: within / total as f32,
+                        });
+                    }
                     wk();
                 })
                 .await

@@ -62,9 +62,11 @@ pub fn infer_from_bam(bam_path: &Path, reference: Option<&Path>) -> Result<SexIn
     result_from_tally(tally)
 }
 
-/// Turn a per-class read/length tally into the inferred-sex result (reads-per-100bp →
-/// chrX:autosome ratio → classification). Shared by every tally source.
-fn result_from_tally(tally: Tally) -> Result<SexInferenceResult, AnalysisError> {
+/// Turn a per-class read/length tally `(autosome_reads, autosome_length, x_reads, x_length)`
+/// into the inferred-sex result (reads-per-100bp → chrX:autosome ratio → classification).
+/// Shared by every tally source (BAI fast path, CRAM scan, and the parallel walker's summed
+/// per-contig counts).
+pub(crate) fn result_from_tally(tally: Tally) -> Result<SexInferenceResult, AnalysisError> {
     let (autosome_reads, autosome_length, x_reads, x_length) = tally;
 
     if autosome_length == 0 {

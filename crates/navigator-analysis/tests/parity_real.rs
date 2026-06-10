@@ -16,7 +16,7 @@ use navigator_analysis::coverage::{collect_coverage_callable, CallableLociParams
 use navigator_analysis::parity::{compare_denovo_snps, parse_truth_vcf};
 use navigator_analysis::read_metrics::collect_read_metrics;
 use navigator_analysis::sex::{infer_from_bam, InferredSex};
-use navigator_analysis::unified::collect_unified_metrics;
+use navigator_analysis::unified::{collect_unified_metrics, collect_unified_metrics_parallel};
 
 fn real_data() -> Option<(String, String)> {
     match (std::env::var("HG002_CHRM_BAM"), std::env::var("CHM13_REF")) {
@@ -212,6 +212,56 @@ fn hg002_unified_matches_standalone() {
     let fused_sex = unified.sex.expect("HG002 has autosomes + chrX");
     assert_eq!(fused_sex.inferred_sex, sex.inferred_sex, "sex call diverged");
     assert_eq!(fused_sex.inferred_sex, InferredSex::Male);
+}
+
+/// The per-contig parallel walker must produce a result byte-identical to the sequential one.
+/// Needs an indexed BAM (else it falls back to sequential and the test is trivially true).
+#[test]
+#[ignore = "requires indexed HG002_BAM + CHM13_REF (parallel == sequential parity)"]
+fn hg002_unified_parallel_matches_sequential() {
+    let (Ok(bam), Ok(reference)) = (std::env::var("HG002_BAM"), std::env::var("CHM13_REF")) else {
+        eprintln!("set HG002_BAM and CHM13_REF to run this test");
+        return;
+    };
+    let bam = PathBuf::from(bam);
+    let reference = PathBuf::from(reference);
+    let params = CallableLociParams::default();
+
+    let seq = collect_unified_metrics(&bam, &reference, &params, None).unwrap();
+    let par = collect_unified_metrics_parallel(&bam, &reference, &params, None).unwrap();
+
+    // Whole struct equality: coverage (incl. per-contig + histogram), read-metrics, sex.
+    assert_eq!(par.coverage, seq.coverage, "parallel coverage diverged");
+    assert_eq!(par.read_metrics, seq.read_metrics, "parallel read-metrics diverged");
+    assert_eq!(par.sex, seq.sex, "parallel sex diverged");
+}
+
+/// Wall-clock comparison of sequential vs per-contig parallel unified metrics (not a
+/// correctness assertion — see the parity test for that). Prints both times + speedup.
+#[test]
+#[ignore = "perf smoke: requires indexed HG002_BAM + CHM13_REF"]
+fn hg002_unified_parallel_timing() {
+    let (Ok(bam), Ok(reference)) = (std::env::var("HG002_BAM"), std::env::var("CHM13_REF")) else {
+        eprintln!("set HG002_BAM and CHM13_REF to run this test");
+        return;
+    };
+    let bam = PathBuf::from(bam);
+    let reference = PathBuf::from(reference);
+    let params = CallableLociParams::default();
+
+    let t0 = std::time::Instant::now();
+    let seq = collect_unified_metrics(&bam, &reference, &params, None).unwrap();
+    let seq_secs = t0.elapsed().as_secs_f64();
+
+    let t1 = std::time::Instant::now();
+    let par = collect_unified_metrics_parallel(&bam, &reference, &params, None).unwrap();
+    let par_secs = t1.elapsed().as_secs_f64();
+
+    assert_eq!(par.coverage.genome_territory, seq.coverage.genome_territory);
+    eprintln!(
+        "unified sequential = {seq_secs:.1}s, parallel = {par_secs:.1}s, speedup = {:.2}x",
+        seq_secs / par_secs
+    );
 }
 
 /// §4c parity gate: Rust de-novo SNP calls vs a GATK truth VCF on HG002 chrM.

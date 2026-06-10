@@ -20,14 +20,21 @@
 
 use std::collections::HashSet;
 use std::path::Path;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
+use noodles::core::Region;
+use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
-use crate::coverage::{CallableLociParams, CoverageResult, CoverageState};
+use crate::contig;
+use crate::coverage::{
+    merge_coverage_partials, CallableLociParams, ContigCoverageAccum, ContigCoveragePartial, CoverageResult,
+    CoverageState,
+};
 use crate::error::AnalysisError;
 use crate::read_metrics::{ReadMetrics, ReadMetricsState};
 use crate::reader;
-use crate::sex::{SexInferenceResult, SexState};
+use crate::sex::{self, SexInferenceResult, SexState};
 
 /// Algorithm version for the unified artifact cache key; bump on any change that alters output.
 /// (The three sub-results are persisted under their own existing keys; this is for completeness.)
@@ -86,6 +93,220 @@ pub fn collect_unified_metrics_with_progress(
     // Sex inference is best-effort: `None` (not a hard error) when the input lacks the
     // autosomes/chrX it needs, so coverage + read-metrics still come back.
     let sex = sx.finish().ok();
+    Ok(UnifiedMetricsResult { coverage, read_metrics, sex })
+}
+
+/// Per-contig parallel unified metrics — the same result as [`collect_unified_metrics`] but
+/// computed concurrently across contigs. Coverage is embarrassingly parallel per contig; the
+/// per-position pileup compute (not decompression) is the bottleneck a sequential pass hits.
+///
+/// Requires an **indexed BAM** (per-contig region queries + an unmapped-tail sweep). Anything
+/// else — CRAM (no `.crai` unmapped query), or a BAM without a `.bai` — transparently falls
+/// back to the sequential [`collect_unified_metrics`], so callers can always prefer this.
+///
+/// Output is byte-identical to the sequential walker: per contig it runs the same `*State`
+/// accumulators, and the merge is over commutative sums / header-ordered per-contig outputs.
+/// Read-metrics covers **every** contig (not just main-assembly) plus the unmapped tail — the
+/// same record set the sequential pass sees — so totals match exactly.
+pub fn collect_unified_metrics_parallel(
+    bam_path: &Path,
+    reference_path: &Path,
+    params: &CallableLociParams,
+    contig_allowlist: Option<&HashSet<String>>,
+) -> Result<UnifiedMetricsResult, AnalysisError> {
+    collect_unified_metrics_parallel_with_progress(bam_path, reference_path, params, contig_allowlist, &|_, _| {})
+}
+
+/// Worker threads for the per-contig fan-out. Defaults to all available cores capped at 12 —
+/// past that the wall time is floored by the largest contig + the unmapped sweep, so more
+/// threads only add memory. Override with `NAVIGATOR_ANALYSIS_THREADS`.
+fn analysis_thread_count() -> usize {
+    std::env::var("NAVIGATOR_ANALYSIS_THREADS")
+        .ok()
+        .and_then(|s| s.parse::<usize>().ok())
+        .unwrap_or_else(|| std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1).min(12))
+        .max(1)
+}
+
+/// A token from the reference-load semaphore; returns itself to the pool on drop (including on
+/// the error path). Bounds how many contigs hold their full reference buffer at once — the peak
+/// memory driver, since the per-contig N-mask is tiny once built.
+struct LoadPermit<'a> {
+    tx: &'a std::sync::mpsc::Sender<()>,
+}
+
+impl Drop for LoadPermit<'_> {
+    fn drop(&mut self) {
+        let _ = self.tx.send(());
+    }
+}
+
+/// One contig's partial result from the parallel fan-out.
+struct ContigPartial {
+    rm: ReadMetricsState,
+    cov: Option<ContigCoveragePartial>,
+    autosome_reads: u64,
+    x_reads: u64,
+}
+
+/// Like [`collect_unified_metrics_parallel`], reporting `progress(contigs_done, contigs_total)`
+/// as each tracked (main-assembly) contig finishes. The progress callback is `Fn + Sync`
+/// because it's invoked concurrently from worker threads.
+pub fn collect_unified_metrics_parallel_with_progress(
+    bam_path: &Path,
+    reference_path: &Path,
+    params: &CallableLociParams,
+    contig_allowlist: Option<&HashSet<String>>,
+    progress: &(dyn Fn(usize, usize) + Sync),
+) -> Result<UnifiedMetricsResult, AnalysisError> {
+    // The parallel path needs an indexed BAM; everything else takes the sequential walker.
+    if !reader::has_bai_index(bam_path) {
+        return collect_unified_metrics_with_progress(
+            bam_path,
+            reference_path,
+            params,
+            contig_allowlist,
+            &mut |d, t| progress(d, t),
+        );
+    }
+
+    let header = reader::read_header(bam_path, Some(reference_path))?;
+
+    // Work items: one per reference sequence (read-metrics + sex span all contigs). Coverage
+    // runs only for tracked = main-assembly ∩ allowlist contigs (matching the sequential walker).
+    struct Work {
+        ref_id: usize,
+        name: String,
+        length: usize,
+        tracked: bool,
+        class: u8, // 0 = other, 1 = autosome, 2 = chrX (for the sex tally)
+    }
+    let mut works: Vec<Work> = Vec::new();
+    let (mut autosome_length, mut x_length) = (0u64, None);
+    for (ref_id, (name_bytes, map)) in header.reference_sequences().iter().enumerate() {
+        let name = String::from_utf8_lossy(name_bytes.as_ref()).into_owned();
+        let length = map.length().get();
+        let tracked = contig::is_main_assembly(&name)
+            && contig_allowlist.map_or(true, |s| s.contains(&name));
+        let class = if contig::is_autosome(&name) {
+            autosome_length += length as u64;
+            1
+        } else if contig::is_chr_x(&name) {
+            x_length = Some(length as u64);
+            2
+        } else {
+            0
+        };
+        works.push(Work { ref_id, name, length, tracked, class });
+    }
+
+    let total_cov = works.iter().filter(|w| w.tracked).count();
+    let done = AtomicUsize::new(0);
+    progress(0, total_cov);
+
+    let n_threads = analysis_thread_count();
+    // Bound concurrent full-reference loads (the peak-memory driver) independently of compute
+    // parallelism: at most a few contigs hold their raw reference at once while building the
+    // compact N-mask. A token pool implements the counting semaphore.
+    let load_permits = n_threads.min(4);
+    let (perm_tx, perm_rx) = std::sync::mpsc::channel::<()>();
+    for _ in 0..load_permits {
+        let _ = perm_tx.send(());
+    }
+    let perm_rx = std::sync::Mutex::new(perm_rx);
+
+    let process_contig = |w: &Work| -> Result<ContigPartial, AnalysisError> {
+        let (h, mut idx) = reader::open_indexed(bam_path, Some(reference_path))?;
+        let region = Region::new(w.name.as_bytes().to_vec(), ..); // whole contig
+
+        let mut cov_accum = if w.tracked {
+            // Hold a load permit only across the raw-reference load + mask build; release before
+            // the long pileup (which keeps just the small mask).
+            let _permit = {
+                let _ = perm_rx.lock().unwrap().recv();
+                LoadPermit { tx: &perm_tx }
+            };
+            let ref_bases = reader::read_contig_sequence(reference_path, &w.name)?;
+            Some(ContigCoverageAccum::new(w.name.clone(), w.length, ref_bases, *params))
+        } else {
+            None
+        };
+        let mut rm = ReadMetricsState::default();
+        let (mut autosome_reads, mut x_reads) = (0u64, 0u64);
+
+        {
+            let q = idx.query(&h, &region)?;
+            for r in q {
+                let record = r?;
+                rm.accept(&record);
+                if let Some(acc) = cov_accum.as_mut() {
+                    acc.accept(&record);
+                }
+                if w.class != 0 && !record.flags().is_unmapped() {
+                    if w.class == 1 {
+                        autosome_reads += 1;
+                    } else {
+                        x_reads += 1;
+                    }
+                }
+            }
+        }
+
+        let cov = cov_accum.map(|a| a.finish(w.ref_id));
+        if w.tracked {
+            let d = done.fetch_add(1, Ordering::Relaxed) + 1;
+            progress(d, total_cov);
+        }
+        Ok(ContigPartial { rm, cov, autosome_reads, x_reads })
+    };
+
+    // The unmapped tail (no reference position) is invisible to region queries but the
+    // sequential read-metrics counts it (total/pf reads, read-length) — sweep it separately.
+    let process_unmapped = || -> Result<ReadMetricsState, AnalysisError> {
+        let (h, mut idx) = reader::open_indexed(bam_path, Some(reference_path))?;
+        let mut rm = ReadMetricsState::default();
+        {
+            let q = idx.query_unmapped(&h)?;
+            for r in q {
+                rm.accept(&r?);
+            }
+        }
+        Ok(rm)
+    };
+
+    let pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(n_threads)
+        .build()
+        .map_err(|e| AnalysisError::Message(format!("thread pool: {e}")))?;
+
+    let (contig_results, unmapped_rm) = pool.install(|| {
+        rayon::join(
+            || works.par_iter().map(&process_contig).collect::<Result<Vec<_>, AnalysisError>>(),
+            process_unmapped,
+        )
+    });
+    let contig_results = contig_results?;
+    let unmapped_rm = unmapped_rm?;
+
+    // Merge: read-metrics is a commutative fold; coverage merges per-contig (header order);
+    // sex sums per-contig class counts into one tally.
+    let mut rm_total = ReadMetricsState::default();
+    let mut cov_partials: Vec<ContigCoveragePartial> = Vec::new();
+    let (mut autosome_reads, mut x_reads) = (0u64, 0u64);
+    for p in contig_results {
+        rm_total.merge(p.rm);
+        if let Some(c) = p.cov {
+            cov_partials.push(c);
+        }
+        autosome_reads += p.autosome_reads;
+        x_reads += p.x_reads;
+    }
+    rm_total.merge(unmapped_rm);
+
+    let coverage = merge_coverage_partials(cov_partials);
+    let read_metrics = rm_total.finish();
+    let sex = sex::result_from_tally((autosome_reads, autosome_length, x_reads, x_length)).ok();
+    progress(total_cov, total_cov);
     Ok(UnifiedMetricsResult { coverage, read_metrics, sex })
 }
 
