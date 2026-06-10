@@ -159,26 +159,31 @@ fn tree_cache_path(file: &str) -> PathBuf {
 /// Score a tree against the sample calls and attach the terminal's child-branch evidence.
 ///
 /// The Kulczynski `score` ranks the candidates by proportional similarity (and supplies the
-/// alternatives list), but the *reported terminal* is the best-ranked candidate the
-/// path-supported parsimony guard admits — i.e. whose lineage doesn't tunnel through a
-/// branch the sample contradicts (the distal-Y paralog artifact, see
-/// `documents/design/PangenomeExpansion.md`). Usually that's `ranked[0]`; when it isn't, we
-/// move the first admissible candidate to the front so every `ranked.first()` consumer
-/// transparently gets the trustworthy terminal.
+/// alternatives list), but the *reported terminal* is chosen in two steps: (1) the best-ranked
+/// candidate the path-supported parsimony guard admits — i.e. whose lineage doesn't tunnel
+/// through a branch the sample contradicts (the distal-Y paralog artifact); then (2)
+/// [`haplo::deepen_terminal`] descends further into any child the sample clearly entered,
+/// correcting under-calls at **unsplit tree nodes** (a half-ancestral SNP block scores below
+/// its parent). The chosen node is moved to the front so every `ranked.first()` consumer
+/// transparently gets it. See `documents/design/PangenomeExpansion.md`.
 fn assemble_assignment(tree: &navigator_analysis::haplo::HaploTree, calls: &HashMap<i64, char>) -> HaploAssignment {
-    let mut ranked = navigator_analysis::haplo::score(tree, calls);
-    if let Some(idx) = ranked
+    use navigator_analysis::haplo;
+    let mut ranked = haplo::score(tree, calls);
+    let terminal_id = ranked
         .iter()
-        .position(|r| navigator_analysis::haplo::path_admissible(tree, calls, r.id))
-    {
-        if idx != 0 {
-            let chosen = ranked.remove(idx);
-            ranked.insert(0, chosen);
+        .find(|r| haplo::path_admissible(tree, calls, r.id))
+        .map(|r| haplo::deepen_terminal(tree, calls, r.id));
+    if let Some(tid) = terminal_id {
+        if let Some(idx) = ranked.iter().position(|r| r.id == tid) {
+            if idx != 0 {
+                let chosen = ranked.remove(idx);
+                ranked.insert(0, chosen);
+            }
         }
     }
     let branches = ranked
         .first()
-        .map(|t| navigator_analysis::haplo::child_evidence(tree, calls, t.id))
+        .map(|t| haplo::child_evidence(tree, calls, t.id))
         .unwrap_or_default();
     HaploAssignment { ranked, branches }
 }

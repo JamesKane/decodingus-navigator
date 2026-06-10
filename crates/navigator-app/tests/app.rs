@@ -407,18 +407,6 @@ async fn validate_gfx_chm13_haplogroups() {
     for r in y.ranked.iter().skip(1).take(3) {
         eprintln!("  alt: {} ({:.3})", r.name, r.score);
     }
-    // DIAGNOSTIC: per-SNP evidence for each child branch below the called terminal — shows
-    // whether a deeper node (e.g. R-FGC29071 below R-FGC29067) has strong-but-partial support.
-    for b in &y.branches {
-        use navigator_app::CallState;
-        let d = b.snps.iter().filter(|s| s.state == CallState::Derived).count();
-        let a = b.snps.iter().filter(|s| s.state == CallState::Ancestral).count();
-        let n = b.snps.iter().filter(|s| s.state == CallState::NoCall).count();
-        eprintln!("  child {}: derived {d} / ancestral {a} / nocall {n} (of {})", b.name, b.snps.len());
-        for s in &b.snps {
-            eprintln!("      {} @{} {}->{} : {:?}", s.name, s.position, s.ancestral, s.derived, s.state);
-        }
-    }
     assert!(top.matched > 0, "Y should resolve below root");
     assert!(
         top.lineage.iter().any(|h| h.starts_with("R-")),

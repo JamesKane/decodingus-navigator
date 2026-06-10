@@ -523,6 +523,49 @@ pub fn path_admissible(tree: &HaploTree, calls: &HashMap<i64, char>, node_id: i6
     true
 }
 
+/// Minimum derived defining-SNPs of a child the sample must carry for [`deepen_terminal`] to
+/// descend into it. Two independent shared-derived mutations confirm membership while staying
+/// robust to a lone recurrent/artefactual match.
+const MIN_DERIVED_TO_DEEPEN: usize = 2;
+
+/// From the guard-selected `start`, descend further into any child the sample has *clearly
+/// entered* — carries at least [`MIN_DERIVED_TO_DEEPEN`] of its derived SNPs and is not
+/// contradicted (`ancestral ≤ derived`). Routes by derived count (ties → lower id).
+///
+/// This corrects under-calling at **unsplit tree nodes** — a common case in published trees
+/// (FTDNA especially): when a node's SNP block has not yet been divided into sub-branches, a
+/// sample on one sub-lineage is derived for the SNPs defining its own line and ancestral for
+/// the SNPs of the *other* (not-yet-split) sub-lineages. The node then looks "half ancestral",
+/// so its proportional [`score`] falls just below its parent's and the guard stops one node
+/// too shallow — even though the sample genuinely carries several of the node's mutations. The
+/// ancestral SNPs are an unresolved downstream split, not a contradiction.
+pub fn deepen_terminal(tree: &HaploTree, calls: &HashMap<i64, char>, start: i64) -> i64 {
+    let mut current = start;
+    while let Some(node) = tree.nodes.get(&current) {
+        let mut children = node.children.clone();
+        children.sort_unstable();
+        let mut best: Option<(i64, usize)> = None; // (child id, derived count)
+        for cid in children {
+            let Some(child) = tree.nodes.get(&cid) else { continue };
+            if is_contradicted(child, calls) {
+                continue; // the sample is net-ancestral here — not below this branch
+            }
+            let (d, _, _) = node_counts(child, calls);
+            if d < MIN_DERIVED_TO_DEEPEN {
+                continue;
+            }
+            if best.map_or(true, |(_, bd)| d > bd) {
+                best = Some((cid, d));
+            }
+        }
+        match best {
+            Some((cid, _)) => current = cid,
+            None => break,
+        }
+    }
+    current
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -769,6 +812,58 @@ mod tests {
               ], "children": []}
       }
     }"#;
+
+    // root → P (2 derived SNPs) → C, an UNSPLIT node: 3 SNPs that define it + 3 SNPs of a
+    // not-yet-split sub-branch. A sample on C's trunk is derived for the first 3 and ancestral
+    // for the other 3 — so C looks half-ancestral and Kulczynski can rank it below P.
+    const UNSPLIT_TREE: &str = r#"{
+      "allNodes": {
+        "1": {"haplogroupId": 1, "name": "root", "isRoot": true, "variants": [], "children": [2]},
+        "2": {"haplogroupId": 2, "name": "P", "isRoot": false, "variants": [
+                {"variant":"P1","position":100,"ancestral":"A","derived":"G"},
+                {"variant":"P2","position":200,"ancestral":"A","derived":"G"}
+              ], "children": [3]},
+        "3": {"haplogroupId": 3, "name": "C", "isRoot": false, "variants": [
+                {"variant":"C1","position":300,"ancestral":"A","derived":"G"},
+                {"variant":"C2","position":400,"ancestral":"A","derived":"G"},
+                {"variant":"C3","position":500,"ancestral":"A","derived":"G"},
+                {"variant":"M1","position":600,"ancestral":"A","derived":"G"},
+                {"variant":"M2","position":700,"ancestral":"A","derived":"G"},
+                {"variant":"M3","position":800,"ancestral":"A","derived":"G"}
+              ], "children": []}
+      }
+    }"#;
+
+    #[test]
+    fn deepen_enters_an_unsplit_node_the_sample_clearly_carries() {
+        let t = parse_ftdna_json(UNSPLIT_TREE).unwrap();
+        // Derived for P (100,200) and 3 of C's SNPs (300,400,500); ancestral for the other 3.
+        let c = calls(&[(100, 'G'), (200, 'G'), (300, 'G'), (400, 'G'), (500, 'G'), (600, 'A'), (700, 'A'), (800, 'A')]);
+        // Deepen enters C from P: it carries 3 derived (≥2) and isn't contradicted (3 anc ≤ 3 der).
+        // (The "Kulczynski stops at the parent" condition needs a long backbone — validated on
+        // the real WGS229 short-read sample, where the guard stops at R-FGC29067 and deepen
+        // recovers R-FGC29071.)
+        assert_eq!(deepen_terminal(&t, &c, id_of(&t, "P")), id_of(&t, "C"));
+    }
+
+    #[test]
+    fn deepen_does_not_enter_on_a_lone_match_or_a_net_ancestral_child() {
+        let t = parse_ftdna_json(UNSPLIT_TREE).unwrap();
+        // Only one of C's SNPs derived → below the ≥2 threshold (and net-ancestral): stay at P.
+        let lone = calls(&[(100, 'G'), (200, 'G'), (300, 'G'), (400, 'A'), (500, 'A'), (600, 'A'), (700, 'A'), (800, 'A')]);
+        assert_eq!(deepen_terminal(&t, &lone, id_of(&t, "P")), id_of(&t, "P"));
+        // 2 derived but 4 ancestral → contradicted (a > d), don't enter even at ≥2 derived.
+        let net_anc = calls(&[(100, 'G'), (200, 'G'), (300, 'G'), (400, 'G'), (500, 'A'), (600, 'A'), (700, 'A'), (800, 'A')]);
+        assert_eq!(deepen_terminal(&t, &net_anc, id_of(&t, "P")), id_of(&t, "P"));
+    }
+
+    #[test]
+    fn deepen_is_a_no_op_at_a_true_terminal() {
+        // On the clean linear TREE, a perfect sample already reaches H2a; deepen adds nothing.
+        let t = parse_ftdna_json(TREE).unwrap();
+        let c = calls(&[(146, 'G'), (263, 'G'), (750, 'T')]);
+        assert_eq!(deepen_terminal(&t, &c, id_of(&t, "H2a")), id_of(&t, "H2a"));
+    }
 
     #[test]
     fn guard_tolerates_a_stray_contradiction_but_blocks_a_net_one() {
