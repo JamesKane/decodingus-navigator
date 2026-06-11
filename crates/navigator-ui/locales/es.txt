@@ -105,6 +105,7 @@ empty.subjects.hint=Seleccione un sujeto a la izquierda o añada uno nuevo.
 hint.pickAlignment=Aún no hay alineamiento de secuenciación para este sujeto — añada un BAM/CRAM en Fuentes de datos.
 
 btn.assignY=Asignar haplogrupo Y
+ysnp.placeHaplogroup=Asignar haplogrupo Y (panel)
 btn.findPrivateY=Buscar variantes Y privadas
 btn.assignMt=Asignar haplogrupo ADNmt
 btn.runCoverage=Calcular cobertura

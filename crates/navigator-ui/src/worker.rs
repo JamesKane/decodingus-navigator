@@ -97,6 +97,9 @@ pub enum Command {
     AssignMtdnaHaplogroup { mtdna_id: i64 },
     /// Assign a Y haplogroup from an alignment (call chrY tree positions, rank).
     AssignYHaplogroup { alignment_id: i64 },
+    /// Assign a Y haplogroup from the subject's imported BISDNA / Y-SNP-panel calls (no
+    /// alignment) — records a donor call.
+    AssignYBisdna { biosample_guid: SampleGuid },
     /// Assign an mtDNA haplogroup directly from an alignment's chrM (records a donor call).
     AssignMtdnaHaplogroupFromAlignment { alignment_id: i64 },
     /// Estimate ancestry (super-population proportions) from an alignment via the AIMs panel.
@@ -288,6 +291,8 @@ pub enum Event {
     Haplogroup { mtdna_id: i64, assignment: HaploAssignment },
     /// Y haplogroup assignment for an alignment (ranked + terminal evidence).
     YHaplogroup { alignment_id: i64, assignment: HaploAssignment },
+    /// Y haplogroup assignment from the subject's BISDNA / Y-SNP panel (records a donor call).
+    YBisdnaHaplogroup { biosample_guid: SampleGuid, assignment: HaploAssignment },
     /// mtDNA haplogroup assignment from an alignment (records a donor call → reload consensus).
     MtHaplogroup { alignment_id: i64, assignment: HaploAssignment },
     /// Progress of an ancestry genotyping pass: `done`/`total` contigs scanned.
@@ -539,6 +544,10 @@ pub async fn handle(app: &App, cmd: Command) -> Event {
         }
         Command::AssignMtdnaHaplogroup { mtdna_id } => match app.assign_mtdna_haplogroup(mtdna_id).await {
             Ok(assignment) => Event::Haplogroup { mtdna_id, assignment },
+            Err(e) => Event::Error(e.to_string()),
+        },
+        Command::AssignYBisdna { biosample_guid } => match app.assign_y_bisdna(biosample_guid, None).await {
+            Ok(assignment) => Event::YBisdnaHaplogroup { biosample_guid, assignment },
             Err(e) => Event::Error(e.to_string()),
         },
         Command::AssignYHaplogroup { alignment_id } => match app.assign_y_haplogroup(alignment_id).await {

@@ -14,6 +14,7 @@ struct SetRow {
     biosample_guid: String,
     source_label: String,
     source_type: String,
+    reference_build: Option<String>,
 }
 
 #[derive(sqlx::FromRow)]
@@ -43,11 +44,13 @@ impl CallRow {
 pub async fn create(pool: &SqlitePool, new: &NewVariantSet) -> Result<VariantSet, StoreError> {
     let mut tx = pool.begin().await?;
     let id: i64 = sqlx::query_scalar(
-        "INSERT INTO variant_set (biosample_guid, source_label, source_type) VALUES (?, ?, ?) RETURNING id",
+        "INSERT INTO variant_set (biosample_guid, source_label, source_type, reference_build) \
+         VALUES (?, ?, ?, ?) RETURNING id",
     )
     .bind(new.biosample_guid.0.to_string())
     .bind(&new.source_label)
     .bind(new.source_type.as_str())
+    .bind(&new.reference_build)
     .fetch_one(&mut *tx)
     .await?;
     for c in &new.calls {
@@ -71,6 +74,7 @@ pub async fn create(pool: &SqlitePool, new: &NewVariantSet) -> Result<VariantSet
         biosample_guid: new.biosample_guid,
         source_label: new.source_label.clone(),
         source_type: new.source_type,
+        reference_build: new.reference_build.clone(),
         calls: new.calls.clone(),
     })
 }
@@ -106,7 +110,8 @@ pub async fn delete(pool: &SqlitePool, id: i64) -> Result<bool, StoreError> {
 /// All variant sets for a biosample, with their calls.
 pub async fn list_for_biosample(pool: &SqlitePool, guid: SampleGuid) -> Result<Vec<VariantSet>, StoreError> {
     let rows: Vec<SetRow> = sqlx::query_as(
-        "SELECT id, biosample_guid, source_label, source_type FROM variant_set WHERE biosample_guid = ? ORDER BY id",
+        "SELECT id, biosample_guid, source_label, source_type, reference_build FROM variant_set \
+         WHERE biosample_guid = ? ORDER BY id",
     )
     .bind(guid.0.to_string())
     .fetch_all(pool)
@@ -122,6 +127,7 @@ pub async fn list_for_biosample(pool: &SqlitePool, guid: SampleGuid) -> Result<V
             biosample_guid: SampleGuid(uuid),
             source_label: r.source_label,
             source_type: SourceType::from_code(&r.source_type),
+            reference_build: r.reference_build,
             calls,
         });
     }

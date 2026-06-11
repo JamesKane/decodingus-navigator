@@ -94,6 +94,10 @@ pub struct VariantSet {
     /// A label for the source (typically the file name).
     pub source_label: String,
     pub source_type: SourceType,
+    /// Reference build the call positions are on (`"hs1"`, `"GRCh38"`, …), when known. `None`
+    /// for sources of unknown build (a generic VCF/CSV import). Lets build-specific consumers
+    /// (e.g. Y-SNP-panel placement) read the build directly instead of re-deriving it.
+    pub reference_build: Option<String>,
     pub calls: Vec<VariantCall>,
 }
 
@@ -103,6 +107,8 @@ pub struct NewVariantSet {
     pub biosample_guid: SampleGuid,
     pub source_label: String,
     pub source_type: SourceType,
+    /// Reference build the calls are on, when known (see [`VariantSet::reference_build`]).
+    pub reference_build: Option<String>,
     pub calls: Vec<VariantCall>,
 }
 

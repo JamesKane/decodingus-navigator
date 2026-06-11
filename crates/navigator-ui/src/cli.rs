@@ -222,11 +222,14 @@ async fn ingest(args: IngestArgs) -> i32 {
         return 1;
     }
 
-    let (mut ok, mut failed) = (0usize, 0usize);
+    let (mut ok, mut failed, mut ysnp_panels) = (0usize, 0usize, 0usize);
     for path in &files {
         match app.add_data(guid, path).await {
             Ok(detected) => {
                 ok += 1;
+                if detected == navigator_app::DetectedData::YSnpPanel {
+                    ysnp_panels += 1;
+                }
                 println!("OK   {:<18} {}", detected.description(), path.display());
             }
             Err(e) => {
@@ -236,6 +239,21 @@ async fn ingest(args: IngestArgs) -> i32 {
         }
     }
     println!("\ningested {ok} file(s), {failed} failed, into subject \"{}\"", args.subject);
+
+    // A Y-SNP panel (BISDNA) was imported — place a Y haplogroup from its derived calls and
+    // report the terminal (the call is recorded for the donor consensus).
+    if ysnp_panels > 0 {
+        match app.assign_y_bisdna(guid, None).await {
+            Ok(a) => match a.ranked.first() {
+                Some(top) => println!(
+                    "Y-DNA (panel): {} (score {:.3}, {}/{} defining SNPs)",
+                    top.name, top.score, top.matched, top.expected
+                ),
+                None => println!("Y-DNA (panel): no haplogroup match"),
+            },
+            Err(e) => eprintln!("warning: Y-SNP panel placement failed: {e}"),
+        }
+    }
     if failed > 0 {
         1
     } else {

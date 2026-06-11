@@ -118,6 +118,7 @@ hint.pickAlignment=No sequencing alignment for this subject yet — add a BAM/CR
 
 # Primary analysis actions
 btn.assignY=Assign Y haplogroup
+ysnp.placeHaplogroup=Place Y haplogroup
 btn.findPrivateY=Find private Y variants
 btn.assignMt=Assign mtDNA haplogroup
 btn.runCoverage=Run coverage

@@ -10,6 +10,7 @@
 pub use du_domain;
 
 pub mod ancestry;
+pub mod bisdna;
 pub mod chipprofile;
 pub mod filetype;
 pub mod mtdna;
@@ -18,3 +19,4 @@ pub mod strprofile;
 pub mod testtype;
 pub mod variants;
 pub mod workspace;
+pub mod ysnp_dict;

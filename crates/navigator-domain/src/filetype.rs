@@ -11,6 +11,8 @@ pub enum DetectedData {
     Variants,
     /// Y-STR profile table.
     StrProfile,
+    /// Named Y-SNP panel (e.g. BISDNA chromo2) — name + genotype + positive/negative verdict.
+    YSnpPanel,
     /// Genotyping-array (chip) export.
     ChipData,
     /// mtDNA FASTA sequence.
@@ -25,6 +27,7 @@ impl DetectedData {
             DetectedData::Alignment => "Alignment file",
             DetectedData::Variants => "VCF variants",
             DetectedData::StrProfile => "Y-STR profile",
+            DetectedData::YSnpPanel => "Y-SNP panel",
             DetectedData::ChipData => "Chip / array data",
             DetectedData::MtdnaFasta => "mtDNA FASTA",
             DetectedData::Unknown => "Unknown format",
@@ -58,6 +61,12 @@ pub fn detect(file_name: &str, head: &str) -> DetectedData {
         .collect();
     if data_lines.is_empty() {
         return DetectedData::Unknown;
+    }
+
+    // A named Y-SNP panel (BISDNA chromo2) is unambiguous — check it before the STR/chip
+    // scorer, which would otherwise mis-score it as chip.
+    if looks_like_ysnp_panel(&lines) {
+        return DetectedData::YSnpPanel;
     }
 
     let str_score = str_score(&data_lines, &name);
@@ -101,6 +110,34 @@ fn count_token(haystack: &str, prefix: &str, min_digits: usize, max_digits: usiz
         }
     }
     count
+}
+
+/// Recognize a named Y-SNP panel (BISDNA chromo2): either the exact
+/// `SNPID<TAB>genotype<TAB>result` header, or — lacking it — several tab rows whose third
+/// column is a positive/negative/no_call/back-mutated verdict. Tolerant of the multi-line
+/// prose preamble BISDNA prepends (those lines aren't tab-delimited and never match).
+fn looks_like_ysnp_panel(lines: &[&str]) -> bool {
+    let is_verdict = |s: &str| {
+        let v = s.trim().trim_matches(|c| c == '"').to_ascii_lowercase();
+        let core = v.trim_matches(|c| c == '(' || c == ')');
+        matches!(core, "positive" | "negative" | "no_call" | "back-mutated")
+    };
+
+    let mut verdict_rows = 0;
+    for line in lines {
+        let cols: Vec<&str> = line.split('\t').collect();
+        if cols.len() < 3 {
+            continue;
+        }
+        let (a, b, c) = (cols[0].trim(), cols[1].trim(), cols[2].trim());
+        if a.eq_ignore_ascii_case("snpid") && b.eq_ignore_ascii_case("genotype") && c.eq_ignore_ascii_case("result") {
+            return true; // exact header — unambiguous
+        }
+        if is_verdict(c) {
+            verdict_rows += 1;
+        }
+    }
+    verdict_rows >= 3
 }
 
 fn str_score(data_lines: &[&str], file_name: &str) -> i32 {
@@ -229,6 +266,28 @@ mod tests {
     fn detects_str_profile_by_content() {
         let head = "Marker,Value\nDYS393,13\nDYS390,24\nDYS19,14\nDYS391,11\nDYS385,11-14\nDYS426,12\n";
         assert_eq!(detect("markers.csv", head), DetectedData::StrProfile);
+    }
+
+    #[test]
+    fn detects_bisdna_by_header_after_preamble() {
+        let head = "This is your Y chromosome raw data for the chromo2 chip. Expert use only.\n\
+                    SNPID\tgenotype\tresult\nApt\tGG\tnegative\nCTS10149\tGG\tpositive\nCTS3281\t00\tno_call\n";
+        assert_eq!(detect("results.txt", head), DetectedData::YSnpPanel);
+    }
+
+    #[test]
+    fn detects_bisdna_by_verdict_column_without_header() {
+        let head = "M269\tCC\tpositive\nCTS10003\tGG\tnegative\nL21\tAA\t(positive)\nDF27\tTT\tnegative\n";
+        assert_eq!(detect("snps.txt", head), DetectedData::YSnpPanel);
+    }
+
+    #[test]
+    fn ysnp_panel_not_confused_with_chip_or_str() {
+        // A real 23andMe chip and an STR table must NOT read as a Y-SNP panel.
+        let chip = "# 23andMe\nrsid\tchromosome\tposition\tgenotype\nrs1\t1\t100\tAA\nrs2\t1\t200\tAG\n";
+        assert_eq!(detect("genome.txt", chip), DetectedData::ChipData);
+        let str_tbl = "DYS393,13\nDYS390,24\nDYS19,14\nDYS391,11\n";
+        assert_eq!(detect("markers.csv", str_tbl), DetectedData::StrProfile);
     }
 
     #[test]

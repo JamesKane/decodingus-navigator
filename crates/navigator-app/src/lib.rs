@@ -144,6 +144,8 @@ pub use navigator_domain::reconciliation::{
 use navigator_domain::strprofile::{self, NewStrProfile, StrProfile};
 use navigator_domain::variants::{self, NewVariantSet, VariantSet};
 pub use navigator_domain::variants::SourceType;
+use navigator_domain::bisdna;
+use navigator_domain::ysnp_dict::{self, YsnpDictionary};
 use navigator_store::{
     alignment, ancestry_result, artifact, biosample, chip_profile, haplogroup_call,
     mtdna as mtdna_store, project, reconciliation as recon_store, sequence_run, str_profile,
@@ -213,6 +215,37 @@ fn assemble_assignment(tree: &navigator_analysis::haplo::HaploTree, calls: &Hash
         .map(|r| haplo::deepen_terminal(tree, calls, r.id));
     if let Some(tid) = terminal_id {
         if let Some(idx) = ranked.iter().position(|r| r.id == tid) {
+            if idx != 0 {
+                let chosen = ranked.remove(idx);
+                ranked.insert(0, chosen);
+            }
+        }
+    }
+    let branches = ranked
+        .first()
+        .map(|t| haplo::child_evidence(tree, calls, t.id))
+        .unwrap_or_default();
+    HaploAssignment { ranked, branches }
+}
+
+/// Terminal selection for **named Y-SNP panel** data (BISDNA chip), as opposed to the
+/// alignment-tuned [`assemble_assignment`]. Such panels give confident but sparse genotype
+/// calls: a handful of recurrent or mis-probed ancestral calls on backbone nodes can make the
+/// strict `path_admissible` guard (designed to kill distal tunnel artifacts in *coverage-
+/// limited* alignment data) veto the genuine deep lineage, dropping the call to a shallow node
+/// (e.g. A1). With confident chip calls that failure mode dominates, so here we trust the
+/// proportional Kulczynski top — robust to a few stray calls — then [`deepen_terminal`] into
+/// clearly-entered children. (Validated: this kit's chromo2 export → R-S1121 on both the
+/// DecodingUs/hs1 and FTDNA/GRCh38 trees, on the lineage to its WGS-confirmed R-FGC29071.)
+fn assemble_assignment_robust(
+    tree: &navigator_analysis::haplo::HaploTree,
+    calls: &HashMap<i64, char>,
+) -> HaploAssignment {
+    use navigator_analysis::haplo;
+    let mut ranked = haplo::score(tree, calls);
+    if let Some(top_id) = ranked.first().map(|r| r.id) {
+        let terminal_id = haplo::deepen_terminal(tree, calls, top_id);
+        if let Some(idx) = ranked.iter().position(|r| r.id == terminal_id) {
             if idx != 0 {
                 let chosen = ranked.remove(idx);
                 ranked.insert(0, chosen);
@@ -620,6 +653,32 @@ pub struct AnalyzeSummary {
     pub sv_done: usize,
     /// Per-sample failures (best-effort: one sample's error doesn't abort the rest).
     pub errors: Vec<String>,
+}
+
+/// Outcome of a BISDNA chromo2 Y-SNP import: the variant set created plus a per-category
+/// tally so the UI/CLI can surface coverage and any names the dictionary couldn't place.
+#[derive(Debug, Clone)]
+pub struct BisdnaImportSummary {
+    pub variant_set: VariantSet,
+    /// Reference build the calls were emitted on (e.g. `"hs1"`).
+    pub build: String,
+    /// Total marker rows parsed from the file.
+    pub total_markers: usize,
+    /// Positive (derived) calls resolved to a locus and emitted as variant calls.
+    pub derived_calls: usize,
+    /// Negative (ancestral) markers — not variants, so not emitted (still counted).
+    pub ancestral: usize,
+    /// `no_call` markers (genotype `00`).
+    pub no_call: usize,
+    /// Back-mutated markers — flagged and excluded from placement.
+    pub back_mutated: usize,
+    /// Markers whose name was absent from the dictionary on this build (cannot be placed).
+    pub unresolved: usize,
+    /// A sample of unresolved names for diagnostics (capped).
+    pub unresolved_names: Vec<String>,
+    /// Positive calls whose genotype disagreed with the dictionary alleles on either strand
+    /// (a QC signal — the call is still emitted, trusting the file's verdict).
+    pub strand_mismatches: usize,
 }
 
 /// Outcome of a batch project-directory import (idempotent — counts only what's new).
@@ -1595,7 +1654,7 @@ impl App {
         if calls.is_empty() {
             return Err(AppError::Import("no SNP variants found in file".into()));
         }
-        let new = NewVariantSet { biosample_guid, source_label: label, source_type, calls };
+        let new = NewVariantSet { biosample_guid, source_label: label, source_type, reference_build: None, calls };
         Ok(variant_set::create(self.store.pool(), &new).await?)
     }
 
@@ -1613,9 +1672,104 @@ impl App {
             biosample_guid,
             source_label: source_label.to_string(),
             source_type,
+            reference_build: None,
             calls,
         };
         Ok(variant_set::create(self.store.pool(), &new).await?)
+    }
+
+    /// The build to emit a subject's BISDNA calls on: the first of its alignments whose
+    /// reference build maps to a dictionary key, else `"hs1"` (the project default).
+    async fn bisdna_target_build(&self, biosample_guid: SampleGuid) -> String {
+        if let Ok(aligns) = alignment::list_for_biosample(self.store.pool(), biosample_guid).await {
+            for a in &aligns {
+                if let Some(key) = decodingus_build_key(&a.reference_build) {
+                    return key.to_string();
+                }
+            }
+        }
+        "hs1".to_string()
+    }
+
+    /// Import a BISDNA chromo2 Y-SNP export. Each named marker is resolved to a locus via the
+    /// Y-SNP dictionary on `build` (when `None`, the subject's alignment build, else `"hs1"`).
+    /// Only **positive** (derived) calls become variant calls: a negative is not a variant, and
+    /// [`reconciliation::reconcile_variants`] weights every stored call as a carried allele.
+    /// `no_call`, back-mutated, and dictionary-unresolved markers are tallied but not emitted.
+    /// The genotype is a QC cross-check only — the file's verdict (independent of the Illumina
+    /// TOP strand) decides derived/ancestral. Stored as a `Chip`-weighted [`VariantSet`].
+    pub async fn import_bisdna_from_file(
+        &self,
+        biosample_guid: SampleGuid,
+        path: &Path,
+        build: Option<&str>,
+    ) -> Result<BisdnaImportSummary, AppError> {
+        let text = std::fs::read_to_string(path)?;
+        let calls = bisdna::parse(&text).map_err(AppError::Import)?;
+        let build = match build {
+            Some(b) => b.to_string(),
+            None => self.bisdna_target_build(biosample_guid).await,
+        };
+
+        let dict_dir = ysnp_dict::asset_dir();
+        let dict = YsnpDictionary::load(&dict_dir).map_err(|e| {
+            AppError::Import(format!(
+                "{e}. Build the Y-SNP dictionary with scripts/ysnp-dictionary (expected under {})",
+                dict_dir.display()
+            ))
+        })?;
+
+        const UNRESOLVED_SAMPLE_CAP: usize = 25;
+        let outcome = bisdna::resolve_calls(&calls, &dict, &build, UNRESOLVED_SAMPLE_CAP);
+
+        let derived_calls = outcome.calls.len();
+        let label =
+            path.file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or_else(|| "BISDNA".into());
+
+        // Also record an array QC summary so the chromo2 chip appears under Data Sources →
+        // Chip / Array Profiles (the placeable per-SNP calls live in the variant set below; a
+        // genotyping array legitimately has both a QC/provenance summary and its calls). BISDNA
+        // is a Y-only haploid panel: every called marker is a Y marker, heterozygosity is n/a.
+        let total = calls.len() as i64;
+        let called = total - outcome.no_call as i64;
+        let chip = NewChipProfile {
+            biosample_guid,
+            provider: "BISDNA".into(),
+            chip_version: Some("chromo2".into()),
+            summary: chipprofile::ChipSummary {
+                total_markers_possible: total,
+                total_markers_called: called,
+                no_call_rate: if total > 0 { outcome.no_call as f64 / total as f64 } else { 0.0 },
+                het_rate: None,
+                y_markers_called: called,
+                mt_markers_called: 0,
+                autosomal_markers_called: 0,
+            },
+            source_file_name: Some(label.clone()),
+        };
+        chip_profile::create(self.store.pool(), &chip).await?;
+
+        let new = NewVariantSet {
+            biosample_guid,
+            source_label: label,
+            source_type: SourceType::Chip,
+            reference_build: Some(build.clone()),
+            calls: outcome.calls,
+        };
+        let variant_set = variant_set::create(self.store.pool(), &new).await?;
+
+        Ok(BisdnaImportSummary {
+            variant_set,
+            build,
+            total_markers: calls.len(),
+            derived_calls,
+            ancestral: outcome.ancestral,
+            no_call: outcome.no_call,
+            back_mutated: outcome.back_mutated,
+            unresolved: outcome.unresolved,
+            unresolved_names: outcome.unresolved_names,
+            strand_mismatches: outcome.strand_mismatches,
+        })
     }
 
     /// All variant sets for a subject.
@@ -1701,6 +1855,7 @@ impl App {
             biosample_guid: seq.biosample_guid,
             source_label: label,
             source_type: variants::SourceType::Imported,
+            reference_build: None,
             calls,
         };
         Ok(variant_set::create(self.store.pool(), &new).await?)
@@ -2439,6 +2594,69 @@ impl App {
         Ok(assemble_assignment(&tree, &calls))
     }
 
+    /// Assign a Y haplogroup from the subject's imported **BISDNA / Y-SNP-panel** calls — no
+    /// alignment required. Builds a derived-allele call map from the subject's `Chip`-sourced
+    /// variant sets (the panel's positive calls, each `position → derived base`) and scores it
+    /// against the Y tree on `build` (the subject's alignment build, else `"hs1"`). Uses the
+    /// DecodingUs tree at the native build (FTDNA fallback only on GRCh38, where positions
+    /// match), and the chip-robust terminal selection ([`assemble_assignment_robust`]). The
+    /// call is recorded as a reconciliation source. Only derived (positive) calls drive the
+    /// Kulczynski ranking, so the stored positives-only variant set is sufficient.
+    pub async fn assign_y_bisdna(
+        &self,
+        biosample_guid: SampleGuid,
+        build: Option<&str>,
+    ) -> Result<HaploAssignment, AppError> {
+        // Derived-allele calls from the subject's chip-sourced variant sets (BISDNA positives).
+        let sets = variant_set::list_for_biosample(self.store.pool(), biosample_guid).await?;
+
+        // Placement build: explicit override, else the build stored on a chip set at import,
+        // else (pre-migration sets with no stored build) re-derive from the subject's alignment.
+        let build = match build {
+            Some(b) => b.to_string(),
+            None => match sets.iter().filter(|s| s.source_type == SourceType::Chip).find_map(|s| s.reference_build.clone()) {
+                Some(b) => b,
+                None => self.bisdna_target_build(biosample_guid).await,
+            },
+        };
+
+        let mut calls: HashMap<i64, char> = HashMap::new();
+        for s in &sets {
+            if s.source_type != SourceType::Chip {
+                continue;
+            }
+            for c in &s.calls {
+                if !c.contig.eq_ignore_ascii_case("chrY") && !c.contig.eq_ignore_ascii_case("y") {
+                    continue;
+                }
+                if let Some(b) = c.alternate.chars().next() {
+                    calls.insert(c.position, b.to_ascii_uppercase());
+                }
+            }
+        }
+        if calls.is_empty() {
+            return Err(AppError::Import(
+                "no Y-SNP panel calls to place — import a BISDNA file for this subject first".into(),
+            ));
+        }
+
+        // Tree on the placement build. DecodingUs is native multi-build (no liftover); the
+        // FTDNA tree is GRCh38-only, so it's a fallback only when the calls are on GRCh38.
+        let tree = match self.fetch_decodingus_y_tree().await {
+            Ok(json) => navigator_analysis::haplo::parse_decodingus_json(&json, &build).map_err(AppError::Import)?,
+            Err(e) if build == "GRCh38" => {
+                eprintln!("DecodingUs Y tree unavailable ({e}); falling back to FTDNA (GRCh38)");
+                let json = self.fetch_ftdna_y_tree().await?;
+                navigator_analysis::haplo::parse_ftdna_json(&json).map_err(AppError::Import)?
+            }
+            Err(e) => return Err(e),
+        };
+
+        let assignment = assemble_assignment_robust(&tree, &calls);
+        self.record_call(biosample_guid, DnaType::Y, "bisdna", "BISDNA Y-SNP panel".into(), &assignment).await?;
+        Ok(assignment)
+    }
+
     /// Genotype an alignment at a haplotree's positions on `contig` and rank haplogroups by
     /// the Kulczynski measure. The networkless core shared by [`assign_y_haplogroup`] (also
     /// directly testable with a local tree + contig).
@@ -2839,6 +3057,10 @@ impl App {
             }
             DetectedData::StrProfile => {
                 self.import_str_profile_from_csv(biosample_guid, "CUSTOM", None, Some("IMPORTED".into()), path).await?;
+            }
+            DetectedData::YSnpPanel => {
+                // Build resolved from the subject's alignment, else "hs1" (project default).
+                self.import_bisdna_from_file(biosample_guid, path, None).await?;
             }
             DetectedData::ChipData => {
                 self.import_chip_profile_from_csv(biosample_guid, None, None, path).await?;
@@ -3455,4 +3677,47 @@ pub fn report_csv(rows: &[ProjectSampleReport]) -> String {
         s.push('\n');
     }
     s
+}
+
+#[cfg(test)]
+mod placement_tests {
+    use super::{assemble_assignment, assemble_assignment_robust};
+    use navigator_analysis::haplo::parse_ftdna_json;
+    use std::collections::HashMap;
+
+    // root → A(146) → B(263) → C(750) → D(1000). A single defining SNP per node.
+    const TREE: &str = r#"{ "allNodes": {
+      "1": {"haplogroupId":1,"name":"root","isRoot":true,"variants":[],"children":[2]},
+      "2": {"haplogroupId":2,"name":"A","isRoot":false,"variants":[{"variant":"a","position":146,"ancestral":"A","derived":"G"}],"children":[3]},
+      "3": {"haplogroupId":3,"name":"B","isRoot":false,"variants":[{"variant":"b","position":263,"ancestral":"A","derived":"G"}],"children":[4]},
+      "4": {"haplogroupId":4,"name":"C","isRoot":false,"variants":[{"variant":"c","position":750,"ancestral":"C","derived":"T"}],"children":[5]},
+      "5": {"haplogroupId":5,"name":"D","isRoot":false,"variants":[{"variant":"d","position":1000,"ancestral":"G","derived":"A"}],"children":[]}
+    }}"#;
+
+    /// A deep lineage with a single stray ancestral call on a backbone node (C) — the sparse-
+    /// chip failure mode. Strict selection vetoes the whole lineage and stops shallow (B);
+    /// robust selection trusts the proportional top and reaches the deep terminal (D).
+    #[test]
+    fn robust_selection_survives_a_backbone_contradiction() {
+        let tree = parse_ftdna_json(TREE).unwrap();
+        // Derived at 146, 263, 1000; but ANCESTRAL (C) at 750 — a lone contradiction on node C.
+        let calls: HashMap<i64, char> = [(146, 'G'), (263, 'G'), (750, 'C'), (1000, 'A')].into_iter().collect();
+
+        let strict = assemble_assignment(&tree, &calls);
+        let robust = assemble_assignment_robust(&tree, &calls);
+
+        // Strict stops above the contradicted node C → terminal B (shallow).
+        assert_eq!(strict.ranked.first().unwrap().name, "B");
+        // Robust reaches the genuine deep terminal D despite the stray ancestral.
+        assert_eq!(robust.ranked.first().unwrap().name, "D");
+    }
+
+    /// With a clean lineage (no contradiction) both selectors agree on the deep terminal.
+    #[test]
+    fn robust_and_strict_agree_when_path_is_clean() {
+        let tree = parse_ftdna_json(TREE).unwrap();
+        let calls: HashMap<i64, char> = [(146, 'G'), (263, 'G'), (750, 'T'), (1000, 'A')].into_iter().collect();
+        assert_eq!(assemble_assignment(&tree, &calls).ranked.first().unwrap().name, "D");
+        assert_eq!(assemble_assignment_robust(&tree, &calls).ranked.first().unwrap().name, "D");
+    }
 }

@@ -1081,6 +1081,14 @@ impl NavigatorApp {
                         let _ = self.tx.send(Command::LoadProjectReport(pid));
                     }
                 }
+                Event::YBisdnaHaplogroup { biosample_guid, assignment } => {
+                    self.status = match assignment.ranked.first() {
+                        Some(top) => format!("Y haplogroup (panel): {} (score {:.3})", top.name, top.score),
+                        None => "No Y haplogroup match from the panel".into(),
+                    };
+                    // The call was recorded — refresh the donor consensus so the Y-DNA card fills in.
+                    let _ = self.tx.send(Command::LoadConsensus(biosample_guid));
+                }
                 Event::MtHaplogroup { alignment_id, assignment } => {
                     self.status = match assignment.ranked.first() {
                         Some(top) => format!("mtDNA haplogroup: {} (score {:.3})", top.name, top.score),
@@ -2726,11 +2734,20 @@ impl NavigatorApp {
         const MAX_ROWS: usize = 500;
         let mut want_delete: Option<DataDelete> = None;
         for s in &self.variant_sets {
-            let header = format!("{} — {} call(s)", s.source_label, s.calls.len());
+            let build = s.reference_build.as_deref().map(|b| format!(" · {b}")).unwrap_or_default();
+            let header = format!("{} — {} call(s){build}", s.source_label, s.calls.len());
             egui::CollapsingHeader::new(header).id_salt(("vset", s.id)).show(ui, |ui| {
-                if ui.small_button(self.tr("delete.thisProfile")).clicked() {
-                    want_delete = Some(DataDelete::Variant { id: s.id, guid, label: format!("variant set “{}”", s.source_label) });
-                }
+                ui.horizontal(|ui| {
+                    if ui.small_button(self.tr("delete.thisProfile")).clicked() {
+                        want_delete = Some(DataDelete::Variant { id: s.id, guid, label: format!("variant set “{}”", s.source_label) });
+                    }
+                    // A Y-SNP panel (BISDNA): place a Y haplogroup from its derived calls.
+                    let is_y_panel = s.source_type == SourceType::Chip
+                        && s.calls.iter().any(|c| c.contig.eq_ignore_ascii_case("chrY") || c.contig.eq_ignore_ascii_case("y"));
+                    if is_y_panel && ui.small_button(self.tr("ysnp.placeHaplogroup")).clicked() {
+                        let _ = self.tx.send(Command::AssignYBisdna { biosample_guid: guid });
+                    }
+                });
                 egui::Grid::new(("vcalls", s.id)).striped(true).num_columns(4).show(ui, |ui| {
                     for h in ["table.position", "table.change", "table.rsid", "table.genotype"] {
                         ui.strong(self.tr(h));
