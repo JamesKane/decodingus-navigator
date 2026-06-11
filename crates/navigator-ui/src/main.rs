@@ -30,7 +30,14 @@ fn main() -> eframe::Result<()> {
     }
 
     let db_path = default_db_path();
-    let options = eframe::NativeOptions::default();
+    // The reworked layout (subjects table + detail panel + action bar) needs room; the eframe
+    // default window is far too small for it. Open at a comfortable size with a sane floor.
+    let options = eframe::NativeOptions {
+        viewport: eframe::egui::ViewportBuilder::default()
+            .with_inner_size([1360.0, 900.0])
+            .with_min_inner_size([1024.0, 680.0]),
+        ..Default::default()
+    };
     eframe::run_native(
         "DUNavigator",
         options,
