@@ -1113,6 +1113,7 @@ mod tests {
                 variant_caller: None,
                 bam_path: Some(fixtures.join("coverage.bam").to_string_lossy().into_owned()),
                 reference_path: Some(fixtures.join("ref.fa").to_string_lossy().into_owned()),
+                content_sha256: None,
             })
             .await
             .unwrap();
@@ -1248,6 +1249,7 @@ mod tests {
             variant_caller: None,
             bam_path: None,
             reference_path: None,
+            content_sha256: None,
         }))
         .await
         {
@@ -1575,6 +1577,7 @@ mod tests {
             variant_caller: None,
             bam_path: None,
             reference_path: None,
+            content_sha256: None,
         }))
         .await
         {

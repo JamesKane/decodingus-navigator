@@ -35,23 +35,25 @@ impl Row {
     }
 }
 
-/// Insert or replace the call from `source_key` for this biosample + DNA type.
+/// Insert or replace the call from `source_key` for this biosample + DNA type. `fingerprint`
+/// stamps the inputs (file + tree content hashes) so a later run can skip re-scoring.
 pub async fn upsert(
     pool: &SqlitePool,
     biosample_guid: SampleGuid,
     dna_type: DnaType,
     source_key: &str,
     call: &RunHaplogroupCall,
+    fingerprint: Option<&str>,
 ) -> Result<(), StoreError> {
     let lineage = call.lineage.join("\t");
     sqlx::query(
         "INSERT INTO haplogroup_call \
-         (biosample_guid, dna_type, source_key, source_label, haplogroup, lineage, score, matched, expected) \
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) \
+         (biosample_guid, dna_type, source_key, source_label, haplogroup, lineage, score, matched, expected, source_fingerprint) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) \
          ON CONFLICT(biosample_guid, dna_type, source_key) DO UPDATE SET \
          source_label = excluded.source_label, haplogroup = excluded.haplogroup, \
          lineage = excluded.lineage, score = excluded.score, matched = excluded.matched, \
-         expected = excluded.expected",
+         expected = excluded.expected, source_fingerprint = excluded.source_fingerprint",
     )
     .bind(biosample_guid.0.to_string())
     .bind(dna_type.as_str())
@@ -62,9 +64,49 @@ pub async fn upsert(
     .bind(call.score)
     .bind(call.matched)
     .bind(call.expected)
+    .bind(fingerprint)
     .execute(pool)
     .await?;
     Ok(())
+}
+
+/// The stored input-fingerprint for one source's call, if recorded. Used to decide whether a
+/// re-score is needed (the inputs are unchanged when this matches the current fingerprint).
+pub async fn stored_fingerprint(
+    pool: &SqlitePool,
+    biosample_guid: SampleGuid,
+    dna_type: DnaType,
+    source_key: &str,
+) -> Result<Option<String>, StoreError> {
+    let fp: Option<Option<String>> = sqlx::query_scalar(
+        "SELECT source_fingerprint FROM haplogroup_call \
+         WHERE biosample_guid = ? AND dna_type = ? AND source_key = ?",
+    )
+    .bind(biosample_guid.0.to_string())
+    .bind(dna_type.as_str())
+    .bind(source_key)
+    .fetch_optional(pool)
+    .await?;
+    Ok(fp.flatten())
+}
+
+/// One source's recorded call (for returning a cached result without re-scoring).
+pub async fn get_one(
+    pool: &SqlitePool,
+    biosample_guid: SampleGuid,
+    dna_type: DnaType,
+    source_key: &str,
+) -> Result<Option<RunHaplogroupCall>, StoreError> {
+    let row: Option<Row> = sqlx::query_as(
+        "SELECT source_label, haplogroup, lineage, score, matched, expected FROM haplogroup_call \
+         WHERE biosample_guid = ? AND dna_type = ? AND source_key = ?",
+    )
+    .bind(biosample_guid.0.to_string())
+    .bind(dna_type.as_str())
+    .bind(source_key)
+    .fetch_optional(pool)
+    .await?;
+    Ok(row.map(Row::into_domain))
 }
 
 /// All recorded calls for a biosample + DNA type.

@@ -172,6 +172,28 @@ fn tree_cache_path(file: &str) -> PathBuf {
     dir.join(file)
 }
 
+/// How long a cached haplotree is trusted before [`App::fetch_tree`] re-downloads it. The
+/// AppView's curated tree changes slowly (curator review, periodic builds), so a weekly
+/// refresh keeps placements current without hitting the network on every run. Override with
+/// `NAVIGATOR_TREE_TTL_DAYS` (0 = always refetch).
+const TREE_CACHE_TTL_DAYS_DEFAULT: u64 = 7;
+
+/// Is the cached tree at `path` still within its TTL (default 7 days; `NAVIGATOR_TREE_TTL_DAYS`
+/// overrides)? Unknown mtime / unreadable metadata → not fresh (forces a refresh attempt).
+fn tree_cache_is_fresh(path: &Path) -> bool {
+    let days = std::env::var("NAVIGATOR_TREE_TTL_DAYS")
+        .ok()
+        .and_then(|v| v.trim().parse::<u64>().ok())
+        .unwrap_or(TREE_CACHE_TTL_DAYS_DEFAULT);
+    let ttl = std::time::Duration::from_secs(days * 24 * 3600);
+    std::fs::metadata(path)
+        .and_then(|m| m.modified())
+        .ok()
+        .and_then(|mtime| std::time::SystemTime::now().duration_since(mtime).ok())
+        .map(|age| age < ttl)
+        .unwrap_or(false)
+}
+
 /// Score a tree against the sample calls and attach the terminal's child-branch evidence.
 ///
 /// The Kulczynski `score` ranks the candidates by proportional similarity (and supplies the
@@ -352,6 +374,69 @@ fn reference_build_for(path: &Path) -> String {
         "chm13v2.0".to_string()
     } else {
         "unknown".to_string()
+    }
+}
+
+/// Stream a file through SHA-256 and return the lowercase hex digest. Blocking (reads the
+/// whole file in 1 MiB chunks) — call via [`sha256_file_async`] for large alignments.
+fn sha256_file(path: &Path) -> std::io::Result<String> {
+    use sha2::{Digest, Sha256};
+    use std::io::Read;
+    let mut file = std::fs::File::open(path)?;
+    let mut hasher = Sha256::new();
+    let mut buf = vec![0u8; 1 << 20];
+    loop {
+        let n = file.read(&mut buf)?;
+        if n == 0 {
+            break;
+        }
+        hasher.update(&buf[..n]);
+    }
+    let digest = hasher.finalize();
+    let mut hex = String::with_capacity(digest.len() * 2);
+    for b in digest {
+        use std::fmt::Write;
+        let _ = write!(hex, "{b:02x}");
+    }
+    Ok(hex)
+}
+
+/// SHA-256 of a file's content (hex), computed off the async runtime.
+async fn sha256_file_async(path: PathBuf) -> Result<String, AppError> {
+    let hash = tokio::task::spawn_blocking(move || sha256_file(&path))
+        .await
+        .map_err(|e| AppError::Join(e.to_string()))??;
+    Ok(hash)
+}
+
+/// SHA-256 of an in-memory string (hex) — for hashing tree JSON / small content.
+fn sha256_str(s: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let digest = Sha256::digest(s.as_bytes());
+    let mut hex = String::with_capacity(digest.len() * 2);
+    for b in digest {
+        use std::fmt::Write;
+        let _ = write!(hex, "{b:02x}");
+    }
+    hex
+}
+
+/// Reconstruct a minimal [`HaploAssignment`] from a recorded call — the terminal + lineage,
+/// without the full ranked list or branch evidence. Returned on a scoring cache hit (the
+/// recorded call is the source of truth; the detail is only needed on a fresh score).
+fn assignment_from_call(call: &navigator_domain::reconciliation::RunHaplogroupCall) -> HaploAssignment {
+    HaploAssignment {
+        ranked: vec![navigator_analysis::haplo::ScoredHaplogroup {
+            id: 0,
+            name: call.haplogroup.clone(),
+            score: call.score,
+            depth: call.lineage.len(),
+            lineage: call.lineage.clone(),
+            matched: call.matched.max(0) as usize,
+            expected: call.expected.max(0) as usize,
+            found: 0,
+        }],
+        branches: Vec::new(),
     }
 }
 
@@ -1652,7 +1737,20 @@ impl App {
         source_key: &str,
         call: &RunHaplogroupCall,
     ) -> Result<(), AppError> {
-        haplogroup_call::upsert(self.store.pool(), biosample_guid, dna_type, source_key, call).await?;
+        self.record_haplogroup_call_fp(biosample_guid, dna_type, source_key, call, None).await
+    }
+
+    /// Like [`record_haplogroup_call`](Self::record_haplogroup_call) but stamps the input
+    /// fingerprint (file + tree content hashes) so a later run can skip re-scoring.
+    async fn record_haplogroup_call_fp(
+        &self,
+        biosample_guid: SampleGuid,
+        dna_type: DnaType,
+        source_key: &str,
+        call: &RunHaplogroupCall,
+        fingerprint: Option<&str>,
+    ) -> Result<(), AppError> {
+        haplogroup_call::upsert(self.store.pool(), biosample_guid, dna_type, source_key, call, fingerprint).await?;
         self.audit(biosample_guid, dna_type, "RUN_RECORDED", &format!("{source_key}: {}", call.haplogroup)).await?;
         Ok(())
     }
@@ -1666,6 +1764,19 @@ impl App {
         source_label: String,
         assignment: &HaploAssignment,
     ) -> Result<(), AppError> {
+        self.record_call_fp(biosample_guid, dna_type, source_key, source_label, assignment, None).await
+    }
+
+    /// Like [`record_call`](Self::record_call) but stamps the input fingerprint.
+    async fn record_call_fp(
+        &self,
+        biosample_guid: SampleGuid,
+        dna_type: DnaType,
+        source_key: &str,
+        source_label: String,
+        assignment: &HaploAssignment,
+        fingerprint: Option<&str>,
+    ) -> Result<(), AppError> {
         if let Some(top) = assignment.ranked.first() {
             let call = RunHaplogroupCall {
                 source_label,
@@ -1675,7 +1786,7 @@ impl App {
                 matched: top.matched as i64,
                 expected: top.expected as i64,
             };
-            self.record_haplogroup_call(biosample_guid, dna_type, source_key, &call).await?;
+            self.record_haplogroup_call_fp(biosample_guid, dna_type, source_key, &call, fingerprint).await?;
         }
         Ok(())
     }
@@ -1945,30 +2056,46 @@ impl App {
             .await
     }
 
-    /// A cached-or-downloaded haplotree JSON (cache hit short-circuits the network).
+    /// A cached-or-downloaded haplotree JSON. The on-disk cache has a **7-day life** (see
+    /// [`TREE_CACHE_TTL`]): a fresh cache short-circuits the network; a stale or missing cache
+    /// triggers a re-download (and refresh). If the re-download fails (e.g. the AppView is
+    /// unreachable) but a stale copy exists, the stale copy is used rather than failing — so the
+    /// app keeps working offline, just on an older tree. (A server-side ETag/version would let us
+    /// revalidate without a full re-download; tracked as an AppView backlog item.)
     async fn fetch_tree(&self, url: &str, cache_file: &str) -> Result<String, AppError> {
         let path = tree_cache_path(cache_file);
-        if let Ok(cached) = std::fs::read_to_string(&path) {
-            if !cached.trim().is_empty() {
-                return Ok(cached);
+        let cached = std::fs::read_to_string(&path).ok().filter(|c| !c.trim().is_empty());
+        if let Some(cached) = &cached {
+            if tree_cache_is_fresh(&path) {
+                return Ok(cached.clone());
             }
         }
-        let body = self
+        // Stale or absent → (re)download, falling back to a stale copy on network failure.
+        let downloaded = self
             .auth
             .http
             .get(url)
             .send()
             .await
             .and_then(|r| r.error_for_status())
-            .map_err(|e| AppError::Import(format!("downloading {url}: {e}")))?
-            .text()
-            .await
-            .map_err(|e| AppError::Import(format!("reading {url}: {e}")))?;
-        if let Some(parent) = path.parent() {
-            let _ = std::fs::create_dir_all(parent);
+            .map_err(|e| AppError::Import(format!("downloading {url}: {e}")));
+        match downloaded {
+            Ok(resp) => {
+                let body = resp.text().await.map_err(|e| AppError::Import(format!("reading {url}: {e}")))?;
+                if let Some(parent) = path.parent() {
+                    let _ = std::fs::create_dir_all(parent);
+                }
+                let _ = std::fs::write(&path, &body);
+                Ok(body)
+            }
+            Err(e) => match cached {
+                Some(stale) => {
+                    eprintln!("tree refresh failed ({e}); using the cached copy at {}", path.display());
+                    Ok(stale)
+                }
+                None => Err(e),
+            },
         }
-        let _ = std::fs::write(&path, &body);
-        Ok(body)
     }
 
     /// Assign an mtDNA haplogroup directly from an alignment's chrM reads (FTDNA mt tree),
@@ -1978,10 +2105,29 @@ impl App {
         &self,
         alignment_id: i64,
     ) -> Result<HaploAssignment, AppError> {
+        let bio = self.biosample_of_alignment(alignment_id).await.ok();
+        let source_key = format!("aln:{alignment_id}:mt");
         let tree_json = self.fetch_ftdna_mt_tree().await?;
+
+        // Cache: skip re-scoring when the file and the mt tree are unchanged.
+        let fingerprint = self
+            .alignment_content_hash(alignment_id)
+            .await
+            .ok()
+            .map(|file_hash| format!("f:{}|mt:{}", &file_hash[..16], &sha256_str(&tree_json)[..16]));
+        if let (Some(bio), Some(fp)) = (bio, fingerprint.as_deref()) {
+            if haplogroup_call::stored_fingerprint(self.store.pool(), bio, DnaType::Mt, &source_key).await?.as_deref()
+                == Some(fp)
+            {
+                if let Some(call) = haplogroup_call::get_one(self.store.pool(), bio, DnaType::Mt, &source_key).await? {
+                    return Ok(assignment_from_call(&call));
+                }
+            }
+        }
+
         let assignment = self.assign_haplogroup_from_alignment(alignment_id, "chrM", &tree_json).await?;
-        if let Ok(bio) = self.biosample_of_alignment(alignment_id).await {
-            self.record_call(bio, DnaType::Mt, &format!("aln:{alignment_id}:mt"), format!("aln #{alignment_id} mtDNA"), &assignment).await?;
+        if let Some(bio) = bio {
+            self.record_call_fp(bio, DnaType::Mt, &source_key, format!("aln #{alignment_id} mtDNA"), &assignment, fingerprint.as_deref()).await?;
         }
         Ok(assignment)
     }
@@ -2200,11 +2346,58 @@ impl App {
         Ok(segments)
     }
 
+    /// An alignment's content SHA-256, computed once at import. Read from the record if present,
+    /// else computed now (hashing the file) and stored — so batch-imported alignments are hashed
+    /// lazily on first analysis, then cached on the row.
+    async fn alignment_content_hash(&self, alignment_id: i64) -> Result<String, AppError> {
+        let aln = alignment::get(self.store.pool(), alignment_id)
+            .await?
+            .ok_or_else(|| AppError::Store(StoreError::NotFound(format!("alignment {alignment_id}"))))?;
+        if let Some(h) = aln.content_sha256 {
+            return Ok(h);
+        }
+        let bam = aln.bam_path.ok_or(AppError::MissingPaths(alignment_id))?;
+        let hash = sha256_file_async(PathBuf::from(bam)).await?;
+        let _ = alignment::set_content_hash(self.store.pool(), alignment_id, &hash).await;
+        Ok(hash)
+    }
+
+    /// Fingerprint of the inputs to a Y-haplogroup score: the alignment's content hash + the
+    /// active Y-tree's content hash. Unchanged inputs → a re-score is unnecessary. Errors (e.g.
+    /// the tree is unreachable and uncached) disable caching for this run rather than failing.
+    async fn y_score_fingerprint(&self, alignment_id: i64) -> Result<String, AppError> {
+        let file_hash = self.alignment_content_hash(alignment_id).await?;
+        let tree_json = match y_tree_provider() {
+            YTreeProvider::DecodingUs => self.fetch_decodingus_y_tree().await?,
+            YTreeProvider::Ftdna => self.fetch_ftdna_y_tree().await?,
+        };
+        let tree_hash = sha256_str(&tree_json);
+        Ok(format!("f:{}|yt:{}", &file_hash[..16], &tree_hash[..16]))
+    }
+
     /// Assign a Y haplogroup to an alignment: place the sample against the configured Y tree
     /// (DecodingUs by default — our tree, native CHM13 coords, no liftover — falling back to
     /// FTDNA if the AppView is unreachable), call the sample's base at each tree position on
-    /// chrY, and rank by Kulczynski. Requires a recorded BAM/CRAM path.
+    /// chrY, and rank by Kulczynski. Requires a recorded BAM/CRAM path. Skips re-scoring when
+    /// the alignment file and tree are unchanged since the last run (see [`Self::y_score_fingerprint`]).
     pub async fn assign_y_haplogroup(&self, alignment_id: i64) -> Result<HaploAssignment, AppError> {
+        let bio = self.biosample_of_alignment(alignment_id).await.ok();
+        let source_key = format!("aln:{alignment_id}");
+
+        // Input fingerprint = alignment content hash + active Y-tree content hash. If it matches
+        // the recorded call's stamp, neither the file nor the tree changed → return the recorded
+        // call without re-scoring (the expensive BAM genotyping).
+        let fingerprint = self.y_score_fingerprint(alignment_id).await.ok();
+        if let (Some(bio), Some(fp)) = (bio, fingerprint.as_deref()) {
+            if haplogroup_call::stored_fingerprint(self.store.pool(), bio, DnaType::Y, &source_key).await?.as_deref()
+                == Some(fp)
+            {
+                if let Some(call) = haplogroup_call::get_one(self.store.pool(), bio, DnaType::Y, &source_key).await? {
+                    return Ok(assignment_from_call(&call));
+                }
+            }
+        }
+
         let assignment = match y_tree_provider() {
             YTreeProvider::DecodingUs => match self.assign_y_decodingus(alignment_id).await {
                 Ok(a) => a,
@@ -2220,8 +2413,8 @@ impl App {
                 self.assign_haplogroup_from_alignment(alignment_id, "chrY", &tree_json).await?
             }
         };
-        if let Ok(bio) = self.biosample_of_alignment(alignment_id).await {
-            self.record_call(bio, DnaType::Y, &format!("aln:{alignment_id}"), format!("aln #{alignment_id} Y"), &assignment).await?;
+        if let Some(bio) = bio {
+            self.record_call_fp(bio, DnaType::Y, &source_key, format!("aln #{alignment_id} Y"), &assignment, fingerprint.as_deref()).await?;
         }
         Ok(assignment)
     }
@@ -2612,6 +2805,9 @@ impl App {
             .cached_reference(&reference_build)
             .map(|p| p.to_string_lossy().into_owned());
 
+        // Content hash at import (Scala parity) — the file's identity, used to invalidate
+        // cached analyses only when the file changes.
+        let content_sha256 = sha256_file_async(path.to_path_buf()).await.ok();
         self.record_alignment(NewAlignment {
             sequence_run_id: run.id,
             reference_build,
@@ -2619,6 +2815,7 @@ impl App {
             variant_caller: None,
             bam_path: Some(path.to_string_lossy().into_owned()),
             reference_path,
+            content_sha256,
         })
         .await?;
         Ok(())
@@ -2800,6 +2997,9 @@ impl App {
                     variant_caller: None,
                     bam_path: Some(path_str),
                     reference_path,
+                    // Batch import: hash lazily on first analysis (don't stall a bulk NAS import
+                    // hashing every multi-GB file up front).
+                    content_sha256: None,
                 })
                 .await?;
                 summary.alignments_created += 1;

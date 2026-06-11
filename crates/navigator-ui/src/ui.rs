@@ -3389,6 +3389,7 @@ impl NavigatorApp {
                     variant_caller: None,
                     bam_path: opt(&self.forms.aln_bam),
                     reference_path: None, // resolved on demand from the build
+                    content_sha256: None,
                 }));
                 self.forms.aln_reference_build.clear();
                 self.forms.aln_aligner.clear();

@@ -15,6 +15,7 @@ struct Row {
     variant_caller: Option<String>,
     bam_path: Option<String>,
     reference_path: Option<String>,
+    content_sha256: Option<String>,
 }
 
 impl Row {
@@ -27,16 +28,18 @@ impl Row {
             variant_caller: self.variant_caller,
             bam_path: self.bam_path,
             reference_path: self.reference_path,
+            content_sha256: self.content_sha256,
         }
     }
 }
 
-const COLS: &str = "id, sequence_run_id, reference_build, aligner, variant_caller, bam_path, reference_path";
+const COLS: &str =
+    "id, sequence_run_id, reference_build, aligner, variant_caller, bam_path, reference_path, content_sha256";
 
 pub async fn create(pool: &SqlitePool, a: &NewAlignment) -> Result<Alignment, StoreError> {
     let id: i64 = sqlx::query_scalar(
-        "INSERT INTO alignment (sequence_run_id, reference_build, aligner, variant_caller, bam_path, reference_path) \
-         VALUES (?, ?, ?, ?, ?, ?) RETURNING id",
+        "INSERT INTO alignment (sequence_run_id, reference_build, aligner, variant_caller, bam_path, reference_path, content_sha256) \
+         VALUES (?, ?, ?, ?, ?, ?, ?) RETURNING id",
     )
     .bind(a.sequence_run_id)
     .bind(&a.reference_build)
@@ -44,6 +47,7 @@ pub async fn create(pool: &SqlitePool, a: &NewAlignment) -> Result<Alignment, St
     .bind(&a.variant_caller)
     .bind(&a.bam_path)
     .bind(&a.reference_path)
+    .bind(&a.content_sha256)
     .fetch_one(pool)
     .await?;
     Ok(Alignment {
@@ -54,7 +58,19 @@ pub async fn create(pool: &SqlitePool, a: &NewAlignment) -> Result<Alignment, St
         variant_caller: a.variant_caller.clone(),
         bam_path: a.bam_path.clone(),
         reference_path: a.reference_path.clone(),
+        content_sha256: a.content_sha256.clone(),
     })
+}
+
+/// Set (or update) an alignment's content SHA-256, computed lazily after import.
+pub async fn set_content_hash(pool: &SqlitePool, id: i64, sha256: &str) -> Result<bool, StoreError> {
+    let affected = sqlx::query("UPDATE alignment SET content_sha256 = ? WHERE id = ?")
+        .bind(sha256)
+        .bind(id)
+        .execute(pool)
+        .await?
+        .rows_affected();
+    Ok(affected > 0)
 }
 
 pub async fn get(pool: &SqlitePool, id: i64) -> Result<Option<Alignment>, StoreError> {

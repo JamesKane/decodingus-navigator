@@ -110,6 +110,7 @@ async fn run_alignment_chain_persists() {
             variant_caller: Some("navigator-haploid".into()),
             bam_path: None,
             reference_path: None,
+            content_sha256: None,
         },
     )
     .await
@@ -140,7 +141,7 @@ async fn artifact_upsert_replaces_same_version_and_keeps_distinct_versions() {
     .unwrap();
     let aln = alignment::create(
         s.pool(),
-        &NewAlignment { sequence_run_id: run.id, reference_build: "chm13v2.0".into(), aligner: "bwa".into(), variant_caller: None, bam_path: None, reference_path: None },
+        &NewAlignment { sequence_run_id: run.id, reference_build: "chm13v2.0".into(), aligner: "bwa".into(), variant_caller: None, bam_path: None, reference_path: None, content_sha256: None },
     )
     .await
     .unwrap();
@@ -180,7 +181,7 @@ async fn delete_cascades_run_to_alignments_and_artifacts() {
     .unwrap();
     let aln = alignment::create(
         s.pool(),
-        &NewAlignment { sequence_run_id: run.id, reference_build: "chm13v2.0".into(), aligner: "bwa".into(), variant_caller: None, bam_path: None, reference_path: None },
+        &NewAlignment { sequence_run_id: run.id, reference_build: "chm13v2.0".into(), aligner: "bwa".into(), variant_caller: None, bam_path: None, reference_path: None, content_sha256: None },
     )
     .await
     .unwrap();
@@ -189,7 +190,7 @@ async fn delete_cascades_run_to_alignments_and_artifacts() {
     // Deleting a single alignment removes its artifacts but leaves the run.
     let aln2 = alignment::create(
         s.pool(),
-        &NewAlignment { sequence_run_id: run.id, reference_build: "grch38".into(), aligner: "bwa".into(), variant_caller: None, bam_path: None, reference_path: None },
+        &NewAlignment { sequence_run_id: run.id, reference_build: "grch38".into(), aligner: "bwa".into(), variant_caller: None, bam_path: None, reference_path: None, content_sha256: None },
     )
     .await
     .unwrap();
@@ -208,4 +209,43 @@ async fn delete_cascades_run_to_alignments_and_artifacts() {
     // Deleting a non-existent row reports false rather than erroring.
     assert!(!sequence_run::delete(s.pool(), 9999).await.unwrap());
     assert!(!alignment::delete(s.pool(), 9999).await.unwrap());
+}
+
+#[tokio::test]
+async fn haplogroup_call_fingerprint_round_trips() {
+    use navigator_domain::reconciliation::{DnaType, RunHaplogroupCall};
+    use navigator_store::haplogroup_call;
+
+    let s = store().await;
+    let b = sample(None);
+    biosample::create(s.pool(), &b).await.unwrap();
+
+    let call = RunHaplogroupCall {
+        source_label: "aln #1 Y".into(),
+        haplogroup: "R-FGC29071".into(),
+        lineage: vec!["Y".into(), "R".into(), "R-FGC29071".into()],
+        score: 0.9,
+        matched: 80,
+        expected: 100,
+    };
+    // Upsert stamps the fingerprint; stored_fingerprint reads it back.
+    haplogroup_call::upsert(s.pool(), b.guid, DnaType::Y, "aln:1", &call, Some("f:abc|yt:def")).await.unwrap();
+    assert_eq!(
+        haplogroup_call::stored_fingerprint(s.pool(), b.guid, DnaType::Y, "aln:1").await.unwrap().as_deref(),
+        Some("f:abc|yt:def")
+    );
+    let got = haplogroup_call::get_one(s.pool(), b.guid, DnaType::Y, "aln:1").await.unwrap().unwrap();
+    assert_eq!(got.haplogroup, "R-FGC29071");
+    assert_eq!(got.lineage, vec!["Y".to_string(), "R".to_string(), "R-FGC29071".to_string()]);
+
+    // Re-upsert with a new fingerprint (e.g. the tree changed) replaces it.
+    haplogroup_call::upsert(s.pool(), b.guid, DnaType::Y, "aln:1", &call, Some("f:abc|yt:NEW")).await.unwrap();
+    assert_eq!(
+        haplogroup_call::stored_fingerprint(s.pool(), b.guid, DnaType::Y, "aln:1").await.unwrap().as_deref(),
+        Some("f:abc|yt:NEW")
+    );
+
+    // Unknown source → no fingerprint / no call.
+    assert!(haplogroup_call::stored_fingerprint(s.pool(), b.guid, DnaType::Y, "nope").await.unwrap().is_none());
+    assert!(haplogroup_call::get_one(s.pool(), b.guid, DnaType::Y, "nope").await.unwrap().is_none());
 }

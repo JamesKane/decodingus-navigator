@@ -270,6 +270,7 @@ async fn validate_hg002_haplogroups() {
             variant_caller: None,
             bam_path: Some(bam),
             reference_path: std::env::var("B38_REF").ok(), // needed for the private (de-novo) bucket
+            content_sha256: None,
         })
         .await
         .unwrap()
@@ -381,6 +382,7 @@ async fn validate_gfx_chm13_haplogroups() {
             variant_caller: None,
             bam_path: Some(bam),
             reference_path: Some(reference),
+            content_sha256: None,
         })
         .await
         .unwrap()
@@ -475,6 +477,7 @@ async fn validate_gfx_decodingus_y() {
             variant_caller: None,
             bam_path: Some(bam),
             reference_path: Some(reference),
+            content_sha256: None,
         })
         .await
         .unwrap()
@@ -578,6 +581,7 @@ async fn assign_haplogroup_from_alignment_calls_and_ranks() {
             variant_caller: None,
             bam_path: Some(dir.join("coverage.bam").to_string_lossy().into_owned()),
             reference_path: Some(dir.join("ref.fa").to_string_lossy().into_owned()),
+            content_sha256: None,
         })
         .await
         .unwrap()
@@ -658,7 +662,7 @@ async fn alignment_id(app: &App) -> i64 {
         sequence_run_id: run.id,
         reference_build: "chrM-fixture".into(),
         aligner: "synthetic".into(),
-        variant_caller: None, bam_path: None, reference_path: None,
+        variant_caller: None, bam_path: None, reference_path: None, content_sha256: None,
     })
     .await
     .unwrap()
@@ -701,7 +705,7 @@ async fn command_flow_and_overview() {
             sequence_run_id: run.id,
             reference_build: "chm13v2.0".into(),
             aligner: "bwa".into(),
-            variant_caller: None, bam_path: None, reference_path: None,
+            variant_caller: None, bam_path: None, reference_path: None, content_sha256: None,
         })
         .await
         .unwrap();
@@ -744,7 +748,7 @@ async fn typed_analysis_artifact_round_trips_and_versions() {
             sequence_run_id: run.id,
             reference_build: "chm13v2.0".into(),
             aligner: "bwa".into(),
-            variant_caller: None, bam_path: None, reference_path: None,
+            variant_caller: None, bam_path: None, reference_path: None, content_sha256: None,
         })
         .await
         .unwrap();
@@ -836,6 +840,7 @@ async fn diploid_alignment(app: &App) -> i64 {
         variant_caller: None,
         bam_path: Some(bam),
         reference_path: None,
+        content_sha256: None,
     })
     .await
     .unwrap()
@@ -1153,6 +1158,7 @@ async fn assign_y_haplogroup_lifts_grch38_tree_onto_chm13_alignment() {
             variant_caller: None,
             bam_path: Some(dir.join("ychr.bam").to_string_lossy().into_owned()),
             reference_path: None,
+            content_sha256: None,
         })
         .await
         .unwrap()
@@ -1212,6 +1218,7 @@ async fn analyze_project_runs_coverage_and_attempts_y_per_sample() {
         variant_caller: None,
         bam_path: Some(dir.join("coverage.cram").to_string_lossy().into_owned()),
         reference_path: Some(dir.join("ref.fa").to_string_lossy().into_owned()),
+        content_sha256: None,
     })
     .await
     .unwrap();
@@ -1269,6 +1276,7 @@ async fn compare_mt_grch38_vs_chm13() {
             variant_caller: None,
             bam_path: Some(bam),
             reference_path: reference,
+            content_sha256: None,
         })
         .await
         .unwrap()
@@ -1374,6 +1382,7 @@ async fn estimate_ancestry_resolves_dominant_population_and_persists() {
             variant_caller: None,
             bam_path: Some(fixtures().join("diploid.bam").to_string_lossy().into_owned()),
             reference_path: Some(fixtures().join("ref.fa").to_string_lossy().into_owned()),
+            content_sha256: None,
         })
         .await
         .unwrap()
@@ -1427,6 +1436,7 @@ async fn estimate_ancestry_without_a_panel_errors_clearly() {
             variant_caller: None,
             bam_path: Some(fixtures().join("diploid.bam").to_string_lossy().into_owned()),
             reference_path: Some(fixtures().join("ref.fa").to_string_lossy().into_owned()),
+            content_sha256: None,
         })
         .await
         .unwrap()
@@ -1481,6 +1491,7 @@ async fn validate_gfx_chm13_ancestry() {
             variant_caller: None,
             bam_path: Some(bam),
             reference_path: reference,
+            content_sha256: None,
         })
         .await
         .unwrap()
@@ -1591,6 +1602,7 @@ async fn local_ancestry_returns_segments_offline() {
             variant_caller: None,
             bam_path: Some(fixtures().join("diploid.bam").to_string_lossy().into_owned()),
             reference_path: Some(fixtures().join("ref.fa").to_string_lossy().into_owned()),
+            content_sha256: None,
         })
         .await
         .unwrap()
@@ -1642,6 +1654,7 @@ async fn local_ancestry_paints_gfx() {
             variant_caller: None,
             bam_path: Some(bam),
             reference_path: reference,
+            content_sha256: None,
         })
         .await
         .unwrap()
@@ -1696,6 +1709,7 @@ async fn sex_and_read_metrics_persist_and_reload() {
             variant_caller: None,
             bam_path: Some(fixtures().join("sex.bam").to_string_lossy().into_owned()),
             reference_path: None,
+            content_sha256: None,
         })
         .await
         .unwrap()
@@ -1742,6 +1756,7 @@ async fn gfx_sex_is_male() {
             variant_caller: None,
             bam_path: Some(bam),
             reference_path: std::env::var("GFX_CHM13_REF").ok(),
+            content_sha256: None,
         })
         .await
         .unwrap()

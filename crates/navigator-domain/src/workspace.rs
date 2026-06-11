@@ -76,6 +76,10 @@ pub struct Alignment {
     pub variant_caller: Option<String>,
     pub bam_path: Option<String>,
     pub reference_path: Option<String>,
+    /// SHA-256 of the alignment file's content (hex), computed at import (lazily on first
+    /// analysis for batch-imported files). The file's content identity — used to invalidate
+    /// cached analyses only when the file actually changes. `None` until computed.
+    pub content_sha256: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -86,6 +90,8 @@ pub struct NewAlignment {
     pub variant_caller: Option<String>,
     pub bam_path: Option<String>,
     pub reference_path: Option<String>,
+    /// Content SHA-256 if already known at creation (else `None`; filled in lazily).
+    pub content_sha256: Option<String>,
 }
 
 /// A named set of genotyping sites (ancestry-informative SNPs / IBD markers).
