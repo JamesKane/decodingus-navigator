@@ -101,20 +101,87 @@ pub const KNOWN_PROVIDERS: &[&str] = &["FTDNA", "YSEQ", "NEBULA", "DANTE", "WGS_
 pub const KNOWN_SOURCES: &[&str] =
     &["DIRECT_TEST", "WGS_DERIVED", "BIG_Y_DERIVED", "IMPORTED", "MANUAL_ENTRY"];
 
-/// Parse an exported STR marker table into markers. Accepts comma- or tab-separated text
-/// with a `marker,value` (a.k.a. `locus`/`allele`/`result`) layout, with or without a
-/// header row; blank lines and a leading `#` comment are ignored. Markers with an empty
-/// value are skipped. Errors only if no usable marker rows are found.
+/// Trim whitespace and one layer of surrounding double-quotes from a cell (FTDNA/YSEQ pad
+/// values like `" 13"`), then trim again.
+fn clean_cell(s: &str) -> &str {
+    s.trim().trim_matches('"').trim()
+}
+
+/// A value is "missing" when it's blank or a placeholder dash.
+fn is_blank_value(v: &str) -> bool {
+    v.is_empty() || v == "-"
+}
+
+/// A marker-name row reads as names: most non-empty cells contain a letter (DYS393, FTY10,
+/// Y-GATA-H4, YCAII, CDY…).
+fn looks_like_names(cells: &[&str]) -> bool {
+    let non_empty: Vec<&&str> = cells.iter().filter(|c| !c.is_empty()).collect();
+    if non_empty.is_empty() {
+        return false;
+    }
+    let with_letter = non_empty.iter().filter(|c| c.bytes().any(|b| b.is_ascii_alphabetic())).count();
+    with_letter * 10 >= non_empty.len() * 8 // ≥80%
+}
+
+/// A value row reads as STR allele values: most non-empty cells are digits, with optional
+/// `-`/`.`/`/` (multi-copy like `11-15`, microvariants like `10.2`).
+fn looks_like_values(cells: &[&str]) -> bool {
+    let non_empty: Vec<&&str> = cells.iter().filter(|c| !is_blank_value(c)).collect();
+    if non_empty.is_empty() {
+        return false;
+    }
+    let numeric = non_empty
+        .iter()
+        .filter(|c| {
+            c.bytes().any(|b| b.is_ascii_digit())
+                && c.bytes().all(|b| b.is_ascii_digit() || matches!(b, b'-' | b'.' | b'/'))
+        })
+        .count();
+    numeric * 10 >= non_empty.len() * 8 // ≥80%
+}
+
+/// Parse an exported STR marker table into markers. Two layouts are accepted:
+///
+/// * **Tall**: one `marker,value` (a.k.a. `locus`/`allele`/`result`) row per line, with or
+///   without a header row.
+/// * **Wide**: the FTDNA / YSEQ export shape — a single header row of marker names and a
+///   single parallel row of values (often quoted and space-padded, e.g. `" 13"`).
+///
+/// Comma- or tab-separated; blank lines and leading `#` comments are ignored; markers with an
+/// empty/`-` value are skipped. Errors only if no usable markers are found.
 pub fn parse_csv(text: &str) -> Result<Vec<StrMarker>, String> {
+    let content: Vec<&str> = text
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty() && !l.starts_with('#'))
+        .collect();
+
+    // Wide layout: exactly two rows — a header of marker names and a parallel row of values.
+    // Guard against a 2-row tall file by requiring several columns and confirming the first
+    // row reads as names (mostly letters) and the second as values (mostly digits/dashes).
+    if content.len() == 2 {
+        let sep = if content[0].contains('\t') { '\t' } else { ',' };
+        let names: Vec<&str> = content[0].split(sep).map(clean_cell).collect();
+        let values: Vec<&str> = content[1].split(sep).map(clean_cell).collect();
+        if names.len() >= 5 && values.len() >= 5 && looks_like_names(&names) && looks_like_values(&values) {
+            let markers: Vec<StrMarker> = names
+                .iter()
+                .zip(values.iter())
+                .filter(|(name, value)| !name.is_empty() && !is_blank_value(value))
+                .map(|(name, value)| StrMarker { marker: (*name).to_string(), value: (*value).to_string() })
+                .collect();
+            if !markers.is_empty() {
+                return Ok(markers);
+            }
+        }
+    }
+
+    // Tall layout: one marker per row.
     let mut markers = Vec::new();
     let mut header_checked = false;
-    for raw in text.lines() {
-        let line = raw.trim();
-        if line.is_empty() || line.starts_with('#') {
-            continue;
-        }
+    for line in content {
         let sep = if line.contains('\t') { '\t' } else { ',' };
-        let mut cols = line.splitn(3, sep).map(str::trim);
+        let mut cols = line.splitn(3, sep).map(clean_cell);
         let (Some(marker), Some(value)) = (cols.next(), cols.next()) else {
             continue;
         };
@@ -129,13 +196,13 @@ pub fn parse_csv(text: &str) -> Result<Vec<StrMarker>, String> {
                 continue;
             }
         }
-        if marker.is_empty() || value.is_empty() || value == "-" {
+        if marker.is_empty() || is_blank_value(value) {
             continue;
         }
         markers.push(StrMarker { marker: marker.to_string(), value: value.to_string() });
     }
     if markers.is_empty() {
-        return Err("no STR markers found (expected `marker,value` rows)".into());
+        return Err("no STR markers found (expected `marker,value` rows or a wide FTDNA/YSEQ table)".into());
     }
     Ok(markers)
 }
@@ -191,6 +258,28 @@ mod tests {
     #[test]
     fn empty_input_errors() {
         assert!(parse_csv("\n\n# nothing\n").is_err());
+    }
+
+    #[test]
+    fn parses_wide_ftdna_layout_with_quotes_and_padding() {
+        // FTDNA/YSEQ shape: a row of marker names + a parallel row of quoted, space-padded
+        // values; multi-copy markers stay dash-joined; empty cells are skipped.
+        let csv = "DYS393,DYS390,DYS385,DYS459,DYS464\n\" 13\",\" 24\",\" 11-15\",\" \",\" 14-15-17-17\"\n";
+        let m = parse_csv(csv).unwrap();
+        assert_eq!(m.len(), 4); // DYS459 (blank) skipped
+        assert_eq!(m[0], StrMarker { marker: "DYS393".into(), value: "13".into() });
+        assert_eq!(m[2], StrMarker { marker: "DYS385".into(), value: "11-15".into() });
+        assert_eq!(m[3], StrMarker { marker: "DYS464".into(), value: "14-15-17-17".into() });
+    }
+
+    #[test]
+    fn two_row_tall_file_is_not_mistaken_for_wide() {
+        // Two data rows, two columns each — still tall (the wide path needs ≥5 name columns).
+        let csv = "DYS393,13\nDYS390,24\n";
+        let m = parse_csv(csv).unwrap();
+        assert_eq!(m.len(), 2);
+        assert_eq!(m[0], StrMarker { marker: "DYS393".into(), value: "13".into() });
+        assert_eq!(m[1], StrMarker { marker: "DYS390".into(), value: "24".into() });
     }
 
     #[test]
