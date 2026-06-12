@@ -67,8 +67,11 @@ sequencing_lab` — the redesign re-added a preseeded `lab_id` FK). Navigator wi
 - `App::backfill_run_labs` (worker `Command::BackfillLabs`, run on startup) fills any run with an
   `instrument_id` but no facility, so runs imported before D8 landed pick up associations.
 
-**Still open — the contribution side:** Navigator does not yet **publish `instrument_id` on the
-`sequencerun` fed record**, which is the AppView's `instrument_observation`→proposal→accept consensus
-source (`fed.sequencerun.instrument_id`). Today the AppView map is preseeded/curator-driven; closing
-the crowd-source loop means emitting that field when the sequencerun record is published. Pinned in
-the AppView roadmap (`design-roadmap-rust-rewrite.md` §6, D8).
+**Contribution side — DONE (commit 2feffbd).** `sequence_run_record` now publishes
+`run.instrument_id` (it had been hardcoded to `None`). The fed `SequenceRunRecord` field + the
+AppView ingest (`fed.sequencerun.instrument_id`) already existed, so published sequence-run
+records now feed the AppView's `instrument_observation`→proposal→accept consensus. Navigator both
+**reads** (lab lookup) and **contributes** to the crowd-sourced instrument→lab map. The serial
+identifies the physical sequencer, not the donor — no PII (anonymized fed-record posture). Full
+loop: import infers `instrument_id` → publish carries it → AppView consensus seeds the map →
+`lookup_lab_by_instrument`/`backfill_run_labs` resolve `sequencing_facility`.
