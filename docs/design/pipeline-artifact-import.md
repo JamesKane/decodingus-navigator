@@ -130,17 +130,37 @@ plumbing — `du_bio::vcf` for line parsing, noodles tabix for the index — to 
 full-file scan. Targets outside the GVCF's region (e.g. PAR, off-mito) simply never
 match → no-call, which is correct.
 
-**Assembly into `calls: HashMap<i64,char>` (app side).** For each tree position `t`
-with ancestral allele `a` (from the tree `Locus`):
+**Assembly into `calls: HashMap<i64,char>` (app side).** For each tree position `t`:
 - `variant_bases[t]` present → `calls[t] = variant_bases[t]` (derived observed)
-- else `t ∈ callable` → `calls[t] = a` (ancestral observed — reference base == tree
-  ancestral on the native build, so no FASTA lookup needed)
+- else `t ∈ callable` → `calls[t] = ref_base[t]` — the **reference genome base** at `t`
 - else omit (`no-call`)
 
-This reconstructs exactly what `caller::call_bases_at` yields, FASTA-free, **for
-native-build placement** (DecodingUs tree on `hs1`, mt FTDNA tree rCRS/direct — both
-liftover-free for these chm13 GVCFs). Cross-build (GVCF build ≠ tree build) falls back
-to the existing CRAM path; we don't lift GVCF coordinates in v1.
+> **Correction (validated against the real HG00096 GVCF).** The first design assumed a
+> callable hom-ref site could take the tree's *ancestral* allele "because the reference
+> base == ancestral on the native build, so no FASTA is needed." **This is wrong.** A
+> reference genome is a *real* human Y deep in the tree — CHM13's Y is HG002 (haplogroup
+> J1). At every backbone SNP that J1 and the sample both carry as derived, the sample
+> matches the reference → the GVCF emits a ref block (hom-ref), and the true base there
+> is the *derived* allele, not ancestral. Assuming ancestral mis-set the whole shared
+> backbone and collapsed placement to the root. So the fast path **does** read the
+> reference FASTA at the callable tree positions (`App::reference_bases`, one off-thread
+> contig read) — exactly the base `caller::call_bases_at` reads off the reads. The
+> reference is therefore required (recorded path, else gateway-resolved/cached).
+
+This reconstructs exactly what `caller::call_bases_at` yields **for native-build
+placement** (DecodingUs tree on `hs1`, mt FTDNA tree rCRS/direct — liftover-free for
+these chm13 GVCFs). Cross-build (GVCF build ≠ tree build) falls back to the existing
+CRAM path; we don't lift GVCF coordinates in v1. The CHM13 mt case *does* lift (tree
+rCRS → `chrM`), reusing the existing rCRS↔chrM map and reading the reference base at the
+lifted positions.
+
+**Terminal selection — robust, not strict.** A joint-genotyped GVCF gives confident
+calls that include a few stray ancestral contradictions on the deep backbone (recurrent
+sites, the J1 reference, joint hard-filters). The strict `path_admissible` guard then
+vetoes the genuine deep lineage and drops to a shallow node (HG00096 → A1b instead of
+its true R1b1a1b1a1a, which `score` ranks top at 344/364). Same regime as BISDNA chip
+data, so the GVCF path uses `assemble_assignment_robust`. **Validated: HG00096 →
+R1b1a1b1a1a (344/364) in ~5 s vs a ~22 min CRAM walk.**
 
 ### 3. Sidecar metric parsers (`navigator-analysis/src/sidecar.rs`, new)
 
