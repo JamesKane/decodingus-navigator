@@ -147,14 +147,14 @@ async fn artifact_upsert_replaces_same_version_and_keeps_distinct_versions() {
     .unwrap();
 
     // Same (kind, version) upserts in place.
-    artifact::upsert(s.pool(), aln.id, "coverage", "v1", Utc::now(), r#"{"mean":1.0}"#).await.unwrap();
-    let updated = artifact::upsert(s.pool(), aln.id, "coverage", "v1", Utc::now(), r#"{"mean":2.0}"#).await.unwrap();
+    artifact::upsert(s.pool(), aln.id, "coverage", "v1", Utc::now(), r#"{"mean":1.0}"#, "navigator-walk", "full").await.unwrap();
+    let updated = artifact::upsert(s.pool(), aln.id, "coverage", "v1", Utc::now(), r#"{"mean":2.0}"#, "navigator-walk", "full").await.unwrap();
     let got = artifact::get(s.pool(), aln.id, "coverage", "v1").await.unwrap().unwrap();
     assert_eq!(got.id, updated.id);
     assert_eq!(got.payload, r#"{"mean":2.0}"#);
 
     // A new algorithm version is a distinct entry.
-    artifact::upsert(s.pool(), aln.id, "coverage", "v2", Utc::now(), r#"{"mean":3.0}"#).await.unwrap();
+    artifact::upsert(s.pool(), aln.id, "coverage", "v2", Utc::now(), r#"{"mean":3.0}"#, "navigator-walk", "full").await.unwrap();
     assert_eq!(artifact::list_for_alignment(s.pool(), aln.id).await.unwrap().len(), 2);
 }
 
@@ -185,7 +185,7 @@ async fn delete_cascades_run_to_alignments_and_artifacts() {
     )
     .await
     .unwrap();
-    artifact::upsert(s.pool(), aln.id, "coverage", "v1", Utc::now(), r#"{"mean":1.0}"#).await.unwrap();
+    artifact::upsert(s.pool(), aln.id, "coverage", "v1", Utc::now(), r#"{"mean":1.0}"#, "navigator-walk", "full").await.unwrap();
 
     // Deleting a single alignment removes its artifacts but leaves the run.
     let aln2 = alignment::create(
@@ -194,7 +194,7 @@ async fn delete_cascades_run_to_alignments_and_artifacts() {
     )
     .await
     .unwrap();
-    artifact::upsert(s.pool(), aln2.id, "coverage", "v1", Utc::now(), r#"{"mean":2.0}"#).await.unwrap();
+    artifact::upsert(s.pool(), aln2.id, "coverage", "v1", Utc::now(), r#"{"mean":2.0}"#, "navigator-walk", "full").await.unwrap();
     assert!(alignment::delete(s.pool(), aln2.id).await.unwrap());
     assert!(artifact::get(s.pool(), aln2.id, "coverage", "v1").await.unwrap().is_none());
     assert_eq!(alignment::list_for_run(s.pool(), run.id).await.unwrap(), vec![aln.clone()]);

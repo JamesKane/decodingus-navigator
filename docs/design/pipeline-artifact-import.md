@@ -184,18 +184,22 @@ Pure text parsers → the existing result structs, so caching/UI/report are unch
 
 ### 4. Provenance on cached analyses (`navigator-store`)
 
-Add two nullable columns to the analysis cache (migration `0017`):
+**Built (P5).** Two nullable columns on the analysis cache (migration `0017`):
 `source TEXT` (`"pipeline-sidecar"` | `"navigator-walk"`) and
-`completeness TEXT` (`"full"` | `"partial"`). `save_analysis` gains an overload taking
-them (default `navigator-walk`/`full` to keep existing call-sites). This lets:
+`completeness TEXT` (`"full"` | `"partial"`). `save_analysis_with_provenance` writes
+them; `save_analysis` defaults to `navigator-walk`/`full` (existing call-sites
+unchanged); `analysis_provenance(aln, kind, version)` reads them, defaulting `None`
+columns (pre-provenance rows) to `navigator-walk`/`full`. This lets:
 - the UI badge a "lite" coverage ("from pipeline; run deep coverage for histograms"),
-- the deep pass know a `partial` coverage is upgradeable while a `full` one is not,
-- a re-analyze leave fast-path haplogroups untouched.
+- the deep pass know a `partial` coverage is upgradeable while a `full` one is not.
 
-Haplogroup calls already carry a `source_fingerprint`; extend the fingerprint formula
-so a GVCF-sourced Y call fingerprints on `(gvcf content hash ⊕ tree hash)` rather than
-the CRAM hash — re-analyze with the CRAM then recognizes "already placed from the
-sidecar, inputs unchanged" and skips.
+**Additive haplogroups — via the consensus gate, not cross-source fingerprints.** The
+fast path records the Y/mt call (P4) with a `gv:`-prefixed fingerprint. The deep pass
+(`analyze_project`) already skips Y when `haplogroup_consensus(Y).is_some()`, so a
+sidecar-placed Y/mt is never re-walked. (We deliberately do *not* teach the CRAM-path
+`assign_y_haplogroup` to recognize the `gv:` fingerprint — it has no GVCF path to
+re-hash; a direct, explicit CRAM Y assignment is *meant* to supersede.) So the
+fingerprint distinguishes provenance for the UI/audit; the skip is structural.
 
 ### 5. App orchestration (`navigator-app/src/lib.rs`)
 
@@ -213,11 +217,12 @@ New entry points, composing the pieces:
   sidecars and the alignment build matches the GVCF build, call `ingest_sidecars`
   inline (it's cheap — small text/GVCF reads, no CRAM, no hashing). Gated by a param
   `fast_path: bool` (default on) so the old behavior is still reachable.
-- `analyze_project` (the deep pass) becomes fingerprint-aware: for each result, if a
-  `full`/up-to-date cached value exists, skip; only walk the CRAM for what's missing or
-  `partial` (the coverage histogram, ancestry, SV, IBD). Haplogroups already placed
-  from a sidecar with an unchanged fingerprint are skipped — the deep pass never
-  re-walks the CRAM just to reconfirm them.
+- `analyze_project` (the deep pass) is additive (P5): coverage is re-run only when the
+  cached result is `partial` (the lite sidecar coverage) — `analysis_provenance` gates
+  it; a `full` walk is skipped. Y is skipped when a consensus call already exists (so a
+  sidecar-placed Y is not re-walked); sex/read-metrics from sidecars are `full` and
+  skipped; SV/ancestry/IBD are never sidecar-sourced so they always run. The lite
+  coverage is overwritten in place by the full walk (same key, provenance → `full`).
 
 ### 6. Worker / non-blocking (`navigator-ui/src/worker.rs`)
 

@@ -1076,8 +1076,42 @@ impl App {
         algorithm_version: &str,
         result: &T,
     ) -> Result<AnalysisArtifact, AppError> {
+        // Default provenance: a full result from a Navigator CRAM walk.
+        self.save_analysis_with_provenance(alignment_id, kind, algorithm_version, result, "navigator-walk", "full")
+            .await
+    }
+
+    /// Like [`save_analysis`] but stamps provenance: `source` (`navigator-walk` |
+    /// `pipeline-sidecar`) and `completeness` (`full` | `partial`). The fast-path sidecar
+    /// ingest uses this so the manual deep pass can tell a sidecar/partial result apart from a
+    /// full walk and upgrade it rather than skip it.
+    pub async fn save_analysis_with_provenance<T: Serialize>(
+        &self,
+        alignment_id: i64,
+        kind: &str,
+        algorithm_version: &str,
+        result: &T,
+        source: &str,
+        completeness: &str,
+    ) -> Result<AnalysisArtifact, AppError> {
         let payload = serde_json::to_string(result)?;
-        Ok(artifact::upsert(self.store.pool(), alignment_id, kind, algorithm_version, Utc::now(), &payload).await?)
+        Ok(artifact::upsert(self.store.pool(), alignment_id, kind, algorithm_version, Utc::now(), &payload, source, completeness).await?)
+    }
+
+    /// `(source, completeness)` of a cached artifact, defaulting `None` columns to
+    /// `("navigator-walk", "full")` (pre-provenance rows). `None` when no artifact exists.
+    pub async fn analysis_provenance(
+        &self,
+        alignment_id: i64,
+        kind: &str,
+        algorithm_version: &str,
+    ) -> Result<Option<(String, String)>, AppError> {
+        Ok(artifact::get(self.store.pool(), alignment_id, kind, algorithm_version).await?.map(|a| {
+            (
+                a.source.unwrap_or_else(|| "navigator-walk".into()),
+                a.completeness.unwrap_or_else(|| "full".into()),
+            )
+        }))
     }
 
     /// Load and deserialize a stored analysis result, if present for this version.
@@ -3193,7 +3227,7 @@ impl App {
     async fn ingest_sex_sidecar(&self, alignment_id: i64, path: &Path) -> Result<String, AppError> {
         let text = tokio::fs::read_to_string(path).await.map_err(|e| AppError::Import(format!("{}: {e}", path.display())))?;
         let result = sidecar::parse_sex(&text);
-        self.save_analysis(alignment_id, "sex", "1", &result).await?;
+        self.save_analysis_with_provenance(alignment_id, "sex", "1", &result, "pipeline-sidecar", "full").await?;
         self.write_back_inferred_sex(alignment_id, &result).await?;
         Ok(match result.inferred_sex {
             InferredSex::Male => "M",
@@ -3206,7 +3240,7 @@ impl App {
     async fn ingest_stats_sidecar(&self, alignment_id: i64, path: &Path) -> Result<(), AppError> {
         let text = tokio::fs::read_to_string(path).await.map_err(|e| AppError::Import(format!("{}: {e}", path.display())))?;
         let metrics = sidecar::parse_samtools_stats(&text);
-        self.save_analysis(alignment_id, "read_metrics", "1", &metrics).await?;
+        self.save_analysis_with_provenance(alignment_id, "read_metrics", "1", &metrics, "pipeline-sidecar", "full").await?;
         Ok(())
     }
 
@@ -3225,9 +3259,10 @@ impl App {
         };
         let result = sidecar::lite_coverage(&cov, summary.as_deref());
         // Lite coverage: real mean depth + callable counts, zeroed histogram/pct_Nx. Stored
-        // under the standard coverage key so the report/UI read it unchanged; the deep pass
-        // overwrites it with the full per-base walk (phase: provenance/partial flag).
-        self.save_analysis(alignment_id, "coverage", coverage::COVERAGE_VERSION, &result).await?;
+        // under the standard coverage key (so the report/UI read it unchanged) but flagged
+        // `partial` — the deep pass detects that and overwrites it with the full per-base walk.
+        self.save_analysis_with_provenance(alignment_id, "coverage", coverage::COVERAGE_VERSION, &result, "pipeline-sidecar", "partial")
+            .await?;
         Ok(())
     }
 
@@ -3985,7 +4020,13 @@ impl App {
             summary.samples += 1;
             let label = &biosample.donor_identifier;
 
-            if self.cached_coverage(aln.id).await?.is_some() {
+            // Coverage: skip only when a *full* result is already cached. A `partial` (lite
+            // sidecar) coverage is upgraded by the per-base walk, which overwrites it.
+            let coverage_full = matches!(
+                self.analysis_provenance(aln.id, "coverage", coverage::COVERAGE_VERSION).await?,
+                Some((_, ref c)) if c == "full"
+            );
+            if coverage_full {
                 summary.coverage_done += 1;
             } else {
                 match self.run_coverage_for_alignment(aln.id).await {

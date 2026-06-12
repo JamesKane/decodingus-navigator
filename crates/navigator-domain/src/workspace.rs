@@ -122,4 +122,10 @@ pub struct AnalysisArtifact {
     pub algorithm_version: String,
     pub created_at: DateTime<Utc>,
     pub payload: String,
+    /// How this result was produced: `navigator-walk` (CRAM walk) or `pipeline-sidecar`
+    /// (fast-path ingest). `None` for pre-provenance rows → treated as `navigator-walk`.
+    pub source: Option<String>,
+    /// `full` or `partial` (e.g. lite coverage from sidecars, upgradeable by the deep pass).
+    /// `None` → treated as `full`.
+    pub completeness: Option<String>,
 }

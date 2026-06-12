@@ -632,6 +632,58 @@ async fn gvcf_fast_path_matches_cram_walk() {
 }
 
 #[tokio::test]
+async fn analysis_provenance_roundtrips_and_defaults_full_walk() {
+    let app = app().await;
+    let b = app.add_biosample(None, "PROV", None, None).await.unwrap();
+    let run = app
+        .record_sequence_run(NewSequenceRun {
+            biosample_guid: b.guid,
+            platform_name: "ILLUMINA".into(),
+            instrument_model: None,
+            test_type: "WGS".into(),
+            library_layout: None,
+            total_reads: None,
+            pf_reads_aligned: None,
+            mean_read_length: None,
+            mean_insert_size: None,
+        })
+        .await
+        .unwrap();
+    let aln = app
+        .record_alignment(NewAlignment {
+            sequence_run_id: run.id,
+            reference_build: "chm13v2.0".into(),
+            aligner: "x".into(),
+            variant_caller: None,
+            bam_path: Some("/x.cram".into()),
+            reference_path: None,
+            content_sha256: None,
+        })
+        .await
+        .unwrap()
+        .id;
+
+    // No artifact yet → no provenance.
+    assert_eq!(app.analysis_provenance(aln, "coverage", "v1").await.unwrap(), None);
+
+    // A fast-path sidecar result is partial.
+    app.save_analysis_with_provenance(aln, "coverage", "v1", &serde_json::json!({"m": 1}), "pipeline-sidecar", "partial")
+        .await
+        .unwrap();
+    assert_eq!(
+        app.analysis_provenance(aln, "coverage", "v1").await.unwrap(),
+        Some(("pipeline-sidecar".into(), "partial".into()))
+    );
+
+    // The deep walk overwrites it → full / navigator-walk (the default save_analysis).
+    app.save_analysis(aln, "coverage", "v1", &serde_json::json!({"m": 2})).await.unwrap();
+    assert_eq!(
+        app.analysis_provenance(aln, "coverage", "v1").await.unwrap(),
+        Some(("navigator-walk".into(), "full".into()))
+    );
+}
+
+#[tokio::test]
 async fn haplogroup_consensus_combines_recorded_calls() {
     use navigator_app::{CompatibilityLevel, DnaType};
     use navigator_domain::reconciliation::RunHaplogroupCall;

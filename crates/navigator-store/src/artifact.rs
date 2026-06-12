@@ -16,6 +16,8 @@ struct Row {
     algorithm_version: String,
     created_at: String,
     payload: String,
+    source: Option<String>,
+    completeness: Option<String>,
 }
 
 impl Row {
@@ -30,13 +32,16 @@ impl Row {
             algorithm_version: self.algorithm_version,
             created_at,
             payload: self.payload,
+            source: self.source,
+            completeness: self.completeness,
         })
     }
 }
 
-const COLS: &str = "id, alignment_id, kind, algorithm_version, created_at, payload";
+const COLS: &str = "id, alignment_id, kind, algorithm_version, created_at, payload, source, completeness";
 
-/// Insert or replace the artifact for `(alignment_id, kind, algorithm_version)`.
+/// Insert or replace the artifact for `(alignment_id, kind, algorithm_version)`, recording its
+/// provenance (`source` = how produced, `completeness` = full/partial).
 pub async fn upsert(
     pool: &SqlitePool,
     alignment_id: i64,
@@ -44,13 +49,16 @@ pub async fn upsert(
     algorithm_version: &str,
     created_at: DateTime<Utc>,
     payload: &str,
+    source: &str,
+    completeness: &str,
 ) -> Result<AnalysisArtifact, StoreError> {
     let created = created_at.to_rfc3339();
     let id: i64 = sqlx::query_scalar(
-        "INSERT INTO analysis_artifact (alignment_id, kind, algorithm_version, created_at, payload) \
-         VALUES (?, ?, ?, ?, ?) \
+        "INSERT INTO analysis_artifact (alignment_id, kind, algorithm_version, created_at, payload, source, completeness) \
+         VALUES (?, ?, ?, ?, ?, ?, ?) \
          ON CONFLICT (alignment_id, kind, algorithm_version) \
-         DO UPDATE SET created_at = excluded.created_at, payload = excluded.payload \
+         DO UPDATE SET created_at = excluded.created_at, payload = excluded.payload, \
+                       source = excluded.source, completeness = excluded.completeness \
          RETURNING id",
     )
     .bind(alignment_id)
@@ -58,6 +66,8 @@ pub async fn upsert(
     .bind(algorithm_version)
     .bind(&created)
     .bind(payload)
+    .bind(source)
+    .bind(completeness)
     .fetch_one(pool)
     .await?;
     Ok(AnalysisArtifact {
@@ -67,6 +77,8 @@ pub async fn upsert(
         algorithm_version: algorithm_version.to_string(),
         created_at,
         payload: payload.to_string(),
+        source: Some(source.to_string()),
+        completeness: Some(completeness.to_string()),
     })
 }
 
