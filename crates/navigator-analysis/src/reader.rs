@@ -31,6 +31,7 @@ fn bgzf_worker_count() -> NonZeroUsize {
 }
 
 use crate::error::AnalysisError;
+use crate::readview::AlnRead;
 
 /// On-disk alignment container, by extension.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -187,6 +188,64 @@ impl IdxReader {
                     let rec = r.map_err(|e| AnalysisError::io(&path, e))?;
                     RecordBuf::try_from_alignment_record(header, &rec).map_err(|e| AnalysisError::io(&path, e))
                 })))
+            }
+            IdxReader::Cram { path, .. } => Err(AnalysisError::Message(format!(
+                "unmapped-record query unsupported for CRAM {}",
+                path.display()
+            ))),
+        }
+    }
+}
+
+/// A per-record consumer the indexed reader drives over a region. The `accept` method is generic
+/// over [`AlnRead`], so it monomorphizes for each record type: the BAM path hands it the **lazy,
+/// zero-copy** `bam::Record` (no per-read owned `RecordBuf` allocation — the hot-path win) and the
+/// CRAM path hands it the decoded `RecordBuf`. A single sink serves both.
+pub trait RecordSink {
+    fn accept(&mut self, record: &impl AlnRead);
+}
+
+impl IdxReader {
+    /// Drive `sink` over every record overlapping `region` (BAM: lazy record; CRAM: `RecordBuf`).
+    /// A record that fails to read aborts with an error. The allocation-free counterpart to
+    /// [`IdxReader::query`] (which copies each record into an owned `RecordBuf`).
+    pub fn for_each<S: RecordSink>(
+        &mut self,
+        header: &sam::Header,
+        region: &Region,
+        sink: &mut S,
+    ) -> Result<(), AnalysisError> {
+        match self {
+            IdxReader::Bam { inner, path } => {
+                let path = path.clone();
+                let q = inner.query(header, region).map_err(|e| AnalysisError::io(&path, e))?;
+                for r in q {
+                    sink.accept(&r.map_err(|e| AnalysisError::io(&path, e))?);
+                }
+                Ok(())
+            }
+            IdxReader::Cram { inner, path } => {
+                let path = path.clone();
+                let q = inner.query(header, region).map_err(|e| AnalysisError::io(&path, e))?;
+                for r in q {
+                    sink.accept(&r.map_err(|e| AnalysisError::io(&path, e))?);
+                }
+                Ok(())
+            }
+        }
+    }
+
+    /// Drive `sink` over the unplaced unmapped records (BAM only; CRAM errors, as in
+    /// [`IdxReader::query_unmapped`]).
+    pub fn for_each_unmapped<S: RecordSink>(&mut self, sink: &mut S) -> Result<(), AnalysisError> {
+        match self {
+            IdxReader::Bam { inner, path } => {
+                let path = path.clone();
+                let q = inner.query_unmapped().map_err(|e| AnalysisError::io(&path, e))?;
+                for r in q {
+                    sink.accept(&r.map_err(|e| AnalysisError::io(&path, e))?);
+                }
+                Ok(())
             }
             IdxReader::Cram { path, .. } => Err(AnalysisError::Message(format!(
                 "unmapped-record query unsupported for CRAM {}",

@@ -9,10 +9,10 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 
-use noodles::sam::alignment::RecordBuf;
 use serde::{Deserialize, Serialize};
 
 use crate::error::AnalysisError;
+use crate::readview::AlnRead;
 use crate::reader;
 
 const MAX_INSERT_SIZE: i32 = 10_000;
@@ -194,7 +194,7 @@ impl ReadMetricsState {
         self.insert.merge(other.insert);
     }
 
-    pub(crate) fn accept(&mut self, record: &RecordBuf) {
+    pub(crate) fn accept(&mut self, record: &impl AlnRead) {
         let flags = record.flags();
 
         // Primary metrics exclude secondary/supplementary.
@@ -207,7 +207,7 @@ impl ReadMetricsState {
         }
         self.pf_reads += 1;
 
-        self.read_len.add(record.sequence().len() as u32);
+        self.read_len.add(record.sequence_len() as u32);
 
         if flags.is_unmapped() {
             return;
@@ -215,7 +215,7 @@ impl ReadMetricsState {
         self.pf_reads_aligned += 1;
 
         if let Some(mq) = record.mapping_quality() {
-            self.total_mapq += mq.get() as u64; // None == 255 (unavailable), excluded
+            self.total_mapq += mq as u64; // None == 255 (unavailable), excluded
             self.mapped_for_mq += 1;
         }
 
@@ -295,14 +295,14 @@ fn ratio(num: u64, den: u64) -> f64 {
 }
 
 /// Pair orientation from a first-of-pair proper pair, mirroring the Scala logic.
-fn detect_orientation(record: &RecordBuf) -> PairOrientation {
+fn detect_orientation(record: &impl AlnRead) -> PairOrientation {
     let read_neg = record.flags().is_reverse_complemented();
     let mate_neg = record.flags().is_mate_reverse_complemented();
     if read_neg == mate_neg {
         return PairOrientation::Tandem;
     }
-    let start = record.alignment_start().map_or(0, |p| p.get());
-    let mate_start = record.mate_alignment_start().map_or(0, |p| p.get());
+    let start = record.alignment_start().unwrap_or(0);
+    let mate_start = record.mate_alignment_start().unwrap_or(0);
 
     let fr = if start < mate_start {
         !read_neg && mate_neg

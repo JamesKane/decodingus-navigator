@@ -21,13 +21,13 @@ use std::path::Path;
 
 use noodles::core::Region;
 use noodles::fasta;
-use noodles::sam::alignment::RecordBuf;
 
 use serde::{Deserialize, Serialize};
 
 use crate::contig;
 use crate::error::AnalysisError;
 use crate::reader;
+use crate::readview::AlnRead;
 
 /// Algorithm version for the coverage artifact cache key; bump on any change that
 /// alters output (plan §6 cache versioning).
@@ -390,7 +390,7 @@ impl CoverageState {
     /// walker can hand every record here unfiltered. Fires `progress` on contig finalization.
     pub(crate) fn accept(
         &mut self,
-        record: &RecordBuf,
+        record: &impl AlnRead,
         progress: &mut dyn FnMut(usize, usize),
     ) -> Result<(), AnalysisError> {
         if !coverage_passes_filter(record) {
@@ -504,7 +504,7 @@ impl CoverageState {
 /// Coverage's read filter — skip unmapped / secondary / supplementary / duplicate / qc-fail.
 /// Shared by the sequential [`CoverageState`] and the per-contig [`ContigCoverageAccum`] so
 /// both pileups see the identical read set.
-fn coverage_passes_filter(record: &RecordBuf) -> bool {
+fn coverage_passes_filter(record: &impl AlnRead) -> bool {
     let f = record.flags();
     !(f.is_unmapped() || f.is_secondary() || f.is_supplementary() || f.is_duplicate() || f.is_qc_fail())
 }
@@ -512,40 +512,37 @@ fn coverage_passes_filter(record: &RecordBuf) -> bool {
 /// Feed one (already filter-passing) record into a contig's sliding-window pileup: advance
 /// the finalize frontier to the read's start, then add each reference-consuming base. Shared
 /// by the sequential and per-contig coverage paths so the per-base accounting is identical.
-fn feed_into_contig(c: &mut CurContig, record: &RecordBuf, params: &CallableLociParams, g: &mut Globals) {
+fn feed_into_contig(c: &mut CurContig, record: &impl AlnRead, params: &CallableLociParams, g: &mut Globals) {
     let start = match record.alignment_start() {
-        Some(p) => p.get(),
+        Some(p) => p,
         None => return,
     };
     c.advance_to(start, params, g);
     c.read_count += 1;
 
-    let mapq = record.mapping_quality().map_or(255u8, |m| m.get());
-    let quals = record.quality_scores();
-    let quals = quals.as_ref();
-
-    let mut ref_pos = start; // 1-based
-    let mut query_off = 0usize;
-    for op in record.cigar().as_ref() {
-        let kind = op.kind();
-        let len = op.len();
-        match (kind.consumes_reference(), kind.consumes_read()) {
-            (true, true) => {
-                for i in 0..len {
-                    let pos = ref_pos + i;
-                    if pos >= 1 && pos <= c.length {
-                        let base_q = quals.get(query_off + i).copied().unwrap_or(0);
-                        c.add(pos, base_q, mapq, params);
+    let mapq = record.mapping_quality().unwrap_or(255u8);
+    record.pileup_with(|quals, ops| {
+        let mut ref_pos = start; // 1-based
+        let mut query_off = 0usize;
+        for (kind, len) in ops {
+            match (kind.consumes_reference(), kind.consumes_read()) {
+                (true, true) => {
+                    for i in 0..len {
+                        let pos = ref_pos + i;
+                        if pos >= 1 && pos <= c.length {
+                            let base_q = quals.get(query_off + i).copied().unwrap_or(0);
+                            c.add(pos, base_q, mapq, params);
+                        }
                     }
+                    ref_pos += len;
+                    query_off += len;
                 }
-                ref_pos += len;
-                query_off += len;
+                (true, false) => ref_pos += len,
+                (false, true) => query_off += len,
+                (false, false) => {}
             }
-            (true, false) => ref_pos += len,
-            (false, true) => query_off += len,
-            (false, false) => {}
         }
-    }
+    });
 }
 
 /// Assemble the genome-wide [`CoverageResult`] from merged histogram/territory/depth sums and
@@ -615,7 +612,7 @@ impl ContigCoverageAccum {
 
     /// Feed one record; the coverage read filter is applied internally, so off-filter records
     /// are ignored and the caller can pass every record from the contig's region query.
-    pub(crate) fn accept(&mut self, record: &RecordBuf) {
+    pub(crate) fn accept(&mut self, record: &impl AlnRead) {
         if coverage_passes_filter(record) {
             feed_into_contig(&mut self.c, record, &self.params, &mut self.g);
         }

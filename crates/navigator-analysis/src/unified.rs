@@ -33,8 +33,47 @@ use crate::coverage::{
 };
 use crate::error::AnalysisError;
 use crate::read_metrics::{ReadMetrics, ReadMetricsState};
-use crate::reader;
+use crate::reader::{self, RecordSink};
+use crate::readview::AlnRead;
 use crate::sex::{self, SexInferenceResult, SexState};
+
+/// Per-contig record consumer: feeds each record to read-metrics + coverage and tallies the
+/// per-contig mapped counts the sex inference needs. `class`: 1 = autosome, 2 = chrX, 0 = other.
+/// Operates on borrowed accumulators so it serves the zero-copy BAM record path.
+struct ContigSink<'a> {
+    rm: &'a mut ReadMetricsState,
+    cov: &'a mut Option<ContigCoverageAccum>,
+    class: u8,
+    autosome_reads: u64,
+    x_reads: u64,
+}
+
+impl RecordSink for ContigSink<'_> {
+    fn accept(&mut self, record: &impl AlnRead) {
+        self.rm.accept(record);
+        if let Some(acc) = self.cov.as_mut() {
+            acc.accept(record);
+        }
+        if self.class != 0 && !record.flags().is_unmapped() {
+            if self.class == 1 {
+                self.autosome_reads += 1;
+            } else {
+                self.x_reads += 1;
+            }
+        }
+    }
+}
+
+/// Record consumer for the unmapped tail: read-metrics only (no reference position).
+struct MetricsSink {
+    rm: ReadMetricsState,
+}
+
+impl RecordSink for MetricsSink {
+    fn accept(&mut self, record: &impl AlnRead) {
+        self.rm.accept(record);
+    }
+}
 
 /// Algorithm version for the unified artifact cache key; bump on any change that alters output.
 /// (The three sub-results are persisted under their own existing keys; this is for completeness.)
@@ -233,25 +272,18 @@ pub fn collect_unified_metrics_parallel_with_progress(
             None
         };
         let mut rm = ReadMetricsState::default();
-        let (mut autosome_reads, mut x_reads) = (0u64, 0u64);
-
-        {
-            let q = idx.query(&h, &region)?;
-            for r in q {
-                let record = r?;
-                rm.accept(&record);
-                if let Some(acc) = cov_accum.as_mut() {
-                    acc.accept(&record);
-                }
-                if w.class != 0 && !record.flags().is_unmapped() {
-                    if w.class == 1 {
-                        autosome_reads += 1;
-                    } else {
-                        x_reads += 1;
-                    }
-                }
-            }
-        }
+        // Drive the records through a sink over the lazy (zero-copy on BAM) record path.
+        let (autosome_reads, x_reads) = {
+            let mut sink = ContigSink {
+                rm: &mut rm,
+                cov: &mut cov_accum,
+                class: w.class,
+                autosome_reads: 0,
+                x_reads: 0,
+            };
+            idx.for_each(&h, &region, &mut sink)?;
+            (sink.autosome_reads, sink.x_reads)
+        };
 
         let cov = cov_accum.map(|a| a.finish(w.ref_id));
         if w.tracked {
@@ -264,15 +296,10 @@ pub fn collect_unified_metrics_parallel_with_progress(
     // The unmapped tail (no reference position) is invisible to region queries but the
     // sequential read-metrics counts it (total/pf reads, read-length) — sweep it separately.
     let process_unmapped = || -> Result<ReadMetricsState, AnalysisError> {
-        let (h, mut idx) = reader::open_indexed(bam_path, Some(reference_path))?;
-        let mut rm = ReadMetricsState::default();
-        {
-            let q = idx.query_unmapped(&h)?;
-            for r in q {
-                rm.accept(&r?);
-            }
-        }
-        Ok(rm)
+        let (_h, mut idx) = reader::open_indexed(bam_path, Some(reference_path))?;
+        let mut sink = MetricsSink { rm: ReadMetricsState::default() };
+        idx.for_each_unmapped(&mut sink)?;
+        Ok(sink.rm)
     };
 
     let pool = rayon::ThreadPoolBuilder::new()
@@ -309,6 +336,126 @@ pub fn collect_unified_metrics_parallel_with_progress(
     let sex = sex::result_from_tally((autosome_reads, autosome_length, x_reads, x_length)).ok();
     progress(total_cov, total_cov);
     Ok(UnifiedMetricsResult { coverage, read_metrics, sex })
+}
+
+/// Per-pass timings from [`profile_contig`] over one contig.
+#[doc(hidden)]
+#[derive(Debug, Clone, Copy)]
+pub struct ContigProfile {
+    pub reads: u64,
+    /// Raw decode only: BGZF + BAM record decode, minimal lazy field touch (no `RecordBuf`).
+    pub raw: std::time::Duration,
+    /// Raw decode + `RecordBuf::try_from_alignment_record` (the owned per-read copy).
+    pub recordbuf: std::time::Duration,
+    /// The full production work: `RecordBuf` + read-metrics + coverage pileup.
+    pub full: std::time::Duration,
+}
+
+/// Diagnostic: time the per-read loop over a **single** contig in three passes so the cost splits
+/// out — raw decode vs the `RecordBuf` owned copy vs the metrics/pileup work. Profiles the hot loop
+/// without walking the whole genome. Not used in production.
+#[doc(hidden)]
+pub fn profile_contig(
+    bam_path: &Path,
+    reference_path: &Path,
+    contig: &str,
+    params: &CallableLociParams,
+) -> Result<ContigProfile, AnalysisError> {
+    use noodles::bam;
+
+    let region = Region::new(contig.as_bytes().to_vec(), ..);
+
+    // Pass 1 — raw decode: iterate the lazy bam::Record, touch flags + sequence length, no RecordBuf.
+    let mut raw_reads = 0u64;
+    let raw = {
+        let mut inner = bam::io::indexed_reader::Builder::default()
+            .build_from_path(bam_path)
+            .map_err(|e| AnalysisError::io(bam_path, e))?;
+        let header = inner.read_header().map_err(|e| AnalysisError::io(bam_path, e))?;
+        let start = std::time::Instant::now();
+        let q = inner.query(&header, &region).map_err(|e| AnalysisError::io(bam_path, e))?;
+        for r in q {
+            let rec = r.map_err(|e| AnalysisError::io(bam_path, e))?;
+            std::hint::black_box(rec.flags());
+            std::hint::black_box(rec.sequence().len());
+            raw_reads += 1;
+        }
+        start.elapsed()
+    };
+
+    // Pass 2 — + RecordBuf conversion (no accepts).
+    let recordbuf = {
+        let (h, mut idx) = reader::open_indexed(bam_path, Some(reference_path))?;
+        let start = std::time::Instant::now();
+        let q = idx.query(&h, &region)?;
+        for r in q {
+            std::hint::black_box(r?);
+        }
+        start.elapsed()
+    };
+
+    // Pass 3 — the full production per-read work.
+    let length = {
+        let (h, _) = reader::open_indexed(bam_path, Some(reference_path))?;
+        h.reference_sequences()
+            .get(contig.as_bytes())
+            .map(|m| m.length().get())
+            .ok_or_else(|| AnalysisError::Message(format!("contig {contig} not in header")))?
+    };
+    let ref_bases = reader::read_contig_sequence(reference_path, contig)?;
+    let full = {
+        let (h, mut idx) = reader::open_indexed(bam_path, Some(reference_path))?;
+        let mut cov = ContigCoverageAccum::new(contig.to_string(), length, ref_bases, *params);
+        let mut rm = ReadMetricsState::default();
+        let start = std::time::Instant::now();
+        let q = idx.query(&h, &region)?;
+        for r in q {
+            let record = r?;
+            rm.accept(&record);
+            cov.accept(&record);
+        }
+        start.elapsed()
+    };
+
+    Ok(ContigProfile { reads: raw_reads, raw, recordbuf, full })
+}
+
+/// Diagnostic: run the full per-read work on each of `contigs` concurrently (mirroring the real
+/// parallel walker's per-contig fan-out) and return `(total_reads, wall_clock)`. Comparing the
+/// aggregate throughput against the single-threaded [`profile_contig`] rate exposes contention
+/// (e.g. allocator thrash on per-read `RecordBuf` allocations). Not used in production.
+#[doc(hidden)]
+pub fn profile_contigs_parallel(
+    bam_path: &Path,
+    reference_path: &Path,
+    contigs: &[String],
+    params: &CallableLociParams,
+) -> Result<(u64, std::time::Duration), AnalysisError> {
+    let start = std::time::Instant::now();
+    let counts: Result<Vec<u64>, AnalysisError> = contigs
+        .par_iter()
+        .map(|contig| {
+            let (h, mut idx) = reader::open_indexed(bam_path, Some(reference_path))?;
+            let length = h
+                .reference_sequences()
+                .get(contig.as_bytes())
+                .map(|m| m.length().get())
+                .ok_or_else(|| AnalysisError::Message(format!("contig {contig} not in header")))?;
+            let ref_bases = reader::read_contig_sequence(reference_path, contig)?;
+            let mut cov = ContigCoverageAccum::new(contig.clone(), length, ref_bases, *params);
+            let mut rm = ReadMetricsState::default();
+            let region = Region::new(contig.as_bytes().to_vec(), ..);
+            let mut n = 0u64;
+            for r in idx.query(&h, &region)? {
+                let record = r?;
+                rm.accept(&record);
+                cov.accept(&record);
+                n += 1;
+            }
+            Ok(n)
+        })
+        .collect();
+    Ok((counts?.into_iter().sum(), start.elapsed()))
 }
 
 #[cfg(test)]
