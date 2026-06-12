@@ -1,6 +1,6 @@
 # Pipeline-artifact batch import (fast-path ingest)
 
-Status: design / proposed
+Status: implemented (phases 1–6 on `rust-rewrite`)
 Scope: `navigator-analysis` (scan + new `gvcf`/`sidecar` readers), `navigator-app`
 (import + analyze orchestration), `navigator-ui` (worker job model), `navigator-store`
 (provenance on cached analyses). Branch `rust-rewrite`.
@@ -274,6 +274,15 @@ New entry points, composing the pieces:
    behind `fast_path`.
 5. Provenance columns + fingerprint extension; make `analyze_project` additive.
 6. Worker background deep-analyze job + UI summary/badges.
+
+All six phases landed. Phase 6 (`navigator-ui`): `App::analyze_biosample` is the
+per-sample unit shared by the one-shot `analyze_project` (headless/tests) and a new
+streaming `Command::DeepAnalyzeProject` — a cancellable spawn-loop job that emits a
+`DeepAnalyzeProgress` per sample, reuses the `CancelAnalysis` flag, and `await`s between
+samples so quick UI queries interleave. The report's "Analyze All" button drives it
+(progress bar + Cancel); `ProjectImported` surfaces the `FastPathSummary`; the report's
+mean-coverage cell shows a **lite** badge when `coverage_partial` (the per-row coverage
+button upgrades it to a full walk). `ProjectAnalyzed` gained a `cancelled` flag.
 
 Each phase is independently testable and commits cleanly; phases 1–4 already deliver
 the headline win (haplogroups + sex + metrics with no CRAM walk) before any of the

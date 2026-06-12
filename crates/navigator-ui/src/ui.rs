@@ -313,6 +313,8 @@ pub struct NavigatorApp {
     reference_progress: Option<(String, u64, Option<u64>)>,
     /// A project-wide analyze pass is running (disables the report's analyze button).
     analyzing: bool,
+    /// Streaming deep-analyze progress: `(done, total, current_sample, fraction)` while running.
+    deep_progress: Option<(usize, usize, String, f32)>,
     forms: Forms,
     status: String,
 }
@@ -913,6 +915,7 @@ impl NavigatorApp {
             reference_needs: Vec::new(),
             reference_progress: None,
             analyzing: false,
+            deep_progress: None,
             forms: Forms {
                 ploidy: "2".into(),
                 run_test_type: "WGS".into(),
@@ -954,6 +957,18 @@ impl NavigatorApp {
                     if !summary.missing_index.is_empty() {
                         msg.push_str(&format!("; {} sample(s) missing an index", summary.missing_index.len()));
                     }
+                    // Fast path: what the pipeline sidecars filled without walking the CRAM.
+                    let fp = &summary.fast_path;
+                    if fp.samples_with_sidecars > 0 {
+                        msg.push_str(&format!(
+                            ". Fast path on {} sample(s): {} Y, {} mt, {} sex, {} metrics, {} coverage",
+                            fp.samples_with_sidecars, fp.y_placed, fp.mt_placed, fp.sex_filled,
+                            fp.metrics_filled, fp.coverage_filled,
+                        ));
+                        if !fp.errors.is_empty() {
+                            msg.push_str(&format!(" ({} fast-path error(s))", fp.errors.len()));
+                        }
+                    }
                     self.status = msg;
                     self.importing = false;
                     self.pending_import_dir = None;
@@ -994,14 +1009,21 @@ impl NavigatorApp {
                         self.project_report = rows;
                     }
                 }
-                Event::ProjectAnalyzed { project_id, samples, coverage_done, y_done, sex_done, metrics_done, sv_done, errors } => {
+                Event::ProjectAnalyzed { project_id, samples, coverage_done, y_done, sex_done, metrics_done, sv_done, errors, cancelled } => {
                     self.analyzing = false;
+                    self.deep_progress = None;
                     self.status = format!(
-                        "Analyzed {samples} sample(s): {coverage_done} coverage, {y_done} Y, {sex_done} sex, {metrics_done} metrics, {sv_done} SV{}",
+                        "{} {samples} sample(s): {coverage_done} coverage, {y_done} Y, {sex_done} sex, {metrics_done} metrics, {sv_done} SV{}",
+                        if cancelled { "Deep analysis cancelled after" } else { "Analyzed" },
                         if errors > 0 { format!(", {errors} error(s)") } else { String::new() }
                     );
                     if self.selected_project == Some(project_id) {
                         let _ = self.tx.send(Command::LoadProjectReport(project_id));
+                    }
+                }
+                Event::DeepAnalyzeProgress { project_id, done, total, sample, fraction } => {
+                    if self.selected_project == Some(project_id) {
+                        self.deep_progress = Some((done, total, sample, fraction));
                     }
                 }
                 Event::AllBiosamples(v) => {
@@ -3085,9 +3107,14 @@ impl NavigatorApp {
             if ui.add_enabled(!busy, egui::Button::new(self.tr("projects.analyzeAll"))).clicked() {
                 if let Some(pid) = self.selected_project {
                     self.analyzing = true;
-                    self.status = "Analyzing project (coverage + Y per sample)…".into();
-                    let _ = self.tx.send(Command::AnalyzeProject(pid));
+                    self.deep_progress = None;
+                    self.status = "Deep-analyzing project (per sample; runs in the background)…".into();
+                    let _ = self.tx.send(Command::DeepAnalyzeProject(pid));
                 }
+            }
+            if self.analyzing && ui.button(self.tr("common.cancel")).clicked() {
+                let _ = self.tx.send(Command::CancelAnalysis);
+                self.status = "Cancelling deep analysis…".into();
             }
             if ui.button(self.tr("projects.exportCsv")).clicked() {
                 let csv = navigator_app::report_csv(&self.project_report);
@@ -3104,6 +3131,14 @@ impl NavigatorApp {
             }
         });
 
+        // Streaming deep-analyze progress (sample N of M, current donor).
+        if let Some((done, total, sample, fraction)) = self.deep_progress.clone() {
+            ui.add(
+                egui::ProgressBar::new(fraction)
+                    .text(format!("Analyzing {}/{} — {sample}", done + 1, total)),
+            );
+        }
+
         let running = self.running || self.analyzing;
         let mut recompute: Option<i64> = None;
         let mut assign_y: Option<i64> = None;
@@ -3115,7 +3150,19 @@ impl NavigatorApp {
             for r in &self.project_report {
                 ui.label(&r.biosample.donor_identifier);
                 ui.label(r.alignment_count.to_string());
-                ui.label(fmt_depth(r.mean_coverage));
+                // Mean coverage, with a "lite" badge when it's a partial sidecar estimate that a
+                // deep walk (the per-row coverage button) would upgrade.
+                if r.coverage_partial {
+                    ui.horizontal(|ui| {
+                        ui.label(fmt_depth(r.mean_coverage));
+                        ui.add(egui::Label::new(
+                            egui::RichText::new("lite").small().color(egui::Color32::from_rgb(180, 140, 40)),
+                        ))
+                        .on_hover_text("Lite coverage from the pipeline sidecar — run coverage to compute the full per-base distribution.");
+                    });
+                } else {
+                    ui.label(fmt_depth(r.mean_coverage));
+                }
                 ui.label(fmt_depth(r.median_coverage));
                 ui.label(fmt_pct(r.pct_10x));
                 ui.label(fmt_pct(r.pct_20x));

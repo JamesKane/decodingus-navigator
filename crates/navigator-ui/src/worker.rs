@@ -58,8 +58,11 @@ pub enum Command {
     LoadSamples(i64),
     /// Load the per-sample coverage/haplogroup report for a project.
     LoadProjectReport(i64),
-    /// Analyze every sample in a project: coverage + Y haplogroup (fills the report).
-    AnalyzeProject(i64),
+    /// Deep-analyze every sample in a project as a cancellable background job, streaming
+    /// per-sample `DeepAnalyzeProgress` and yielding between samples so the UI stays responsive.
+    /// Skips what the fast path already filled; cancelled via [`Command::CancelAnalysis`].
+    /// (The one-shot `App::analyze_project` is still used headless/by tests.)
+    DeepAnalyzeProject(i64),
     /// Load every biosample (subjects list), regardless of project.
     LoadAllBiosamples,
     /// Load donor-level Y/mt terminal haplogroups for every subject (fills the list columns).
@@ -256,7 +259,8 @@ pub enum Event {
     ReferenceReady { build: String, path: PathBuf },
     /// Per-sample coverage/haplogroup report for a project.
     ProjectReport { project_id: i64, rows: Vec<ProjectSampleReport> },
-    /// A project-wide analyze pass finished (coverage + Y per sample).
+    /// A project-wide analyze pass finished (coverage + Y per sample). `cancelled` is true when a
+    /// streaming deep-analyze was stopped early (counts reflect what completed before the stop).
     ProjectAnalyzed {
         project_id: i64,
         samples: usize,
@@ -266,7 +270,11 @@ pub enum Event {
         metrics_done: usize,
         sv_done: usize,
         errors: usize,
+        cancelled: bool,
     },
+    /// Per-sample progress of a streaming deep-analyze pass: `done` of `total` samples processed,
+    /// `sample` is the donor id currently being analyzed, `fraction` drives the bar (0..1).
+    DeepAnalyzeProgress { project_id: i64, done: usize, total: usize, sample: String, fraction: f32 },
     Samples { project_id: i64, samples: Vec<Biosample> },
     /// All biosamples (the project-independent subjects list).
     AllBiosamples(Vec<Biosample>),
@@ -380,19 +388,10 @@ pub async fn handle(app: &App, cmd: Command) -> Event {
             Ok(rows) => Event::ProjectReport { project_id, rows },
             Err(e) => Event::Error(e.to_string()),
         },
-        Command::AnalyzeProject(project_id) => match app.analyze_project(project_id).await {
-            Ok(s) => Event::ProjectAnalyzed {
-                project_id,
-                samples: s.samples,
-                coverage_done: s.coverage_done,
-                y_done: s.y_done,
-                sex_done: s.sex_done,
-                metrics_done: s.metrics_done,
-                sv_done: s.sv_done,
-                errors: s.errors.len(),
-            },
-            Err(e) => Event::Error(e.to_string()),
-        },
+        // DeepAnalyzeProject streams DeepAnalyzeProgress from the spawn loop; reaching here is a bug.
+        Command::DeepAnalyzeProject(project_id) => {
+            Event::Error(format!("internal: unrouted DeepAnalyzeProject {project_id}"))
+        }
         Command::LoadHaploSummary => match app.haplogroup_terminals().await {
             Ok(map) => Event::HaploSummary(map),
             Err(e) => Event::Error(e.to_string()),
@@ -980,6 +979,77 @@ async fn run_full_analysis_streaming<W: Fn() + Send + Sync + 'static>(
     wake();
 }
 
+/// Deep-analyze every sample in a project one at a time, emitting `DeepAnalyzeProgress` before
+/// each sample (so the bar advances sample by sample) and a final `ProjectAnalyzed`. `cancel` is
+/// checked before each sample — a stop leaves the already-computed artifacts in place (the pass is
+/// additive and idempotent). Each `analyze_biosample` awaits internally, so the worker runtime
+/// stays free for quick UI queries between samples.
+async fn deep_analyze_project_streaming(
+    app: &App,
+    project_id: i64,
+    cancel: Arc<AtomicBool>,
+    evt_tx: &Sender<Event>,
+    wake: Arc<dyn Fn() + Send + Sync>,
+) {
+    cancel.store(false, Ordering::Relaxed);
+    let biosamples = match app.list_biosamples(project_id).await {
+        Ok(v) => v,
+        Err(e) => {
+            let _ = evt_tx.send(Event::Error(e.to_string()));
+            wake();
+            return;
+        }
+    };
+    let total = biosamples.len();
+    let (mut samples, mut coverage_done, mut y_done, mut sex_done, mut metrics_done, mut sv_done, mut errors) =
+        (0usize, 0usize, 0usize, 0usize, 0usize, 0usize, 0usize);
+
+    for (i, biosample) in biosamples.iter().enumerate() {
+        if cancel.load(Ordering::Relaxed) {
+            break;
+        }
+        let _ = evt_tx.send(Event::DeepAnalyzeProgress {
+            project_id,
+            done: i,
+            total,
+            sample: biosample.donor_identifier.clone(),
+            fraction: if total > 0 { i as f32 / total as f32 } else { 0.0 },
+        });
+        wake();
+        match app.analyze_biosample(biosample).await {
+            Ok(o) if o.had_alignment => {
+                samples += 1;
+                coverage_done += o.coverage_done as usize;
+                y_done += o.y_done as usize;
+                sex_done += o.sex_done as usize;
+                metrics_done += o.metrics_done as usize;
+                sv_done += o.sv_done as usize;
+                errors += o.errors.len();
+            }
+            Ok(_) => {} // no BAM-bearing alignment — not counted
+            Err(e) => {
+                // A structural (DB/IO) failure on one sample: count it, surface it, keep going.
+                errors += 1;
+                let _ = evt_tx.send(Event::Error(format!("{}: {e}", biosample.donor_identifier)));
+                wake();
+            }
+        }
+    }
+
+    let _ = evt_tx.send(Event::ProjectAnalyzed {
+        project_id,
+        samples,
+        coverage_done,
+        y_done,
+        sex_done,
+        metrics_done,
+        sv_done,
+        errors,
+        cancelled: cancel.load(Ordering::Relaxed),
+    });
+    wake();
+}
+
 /// Spawn the worker thread: open the workspace at `db_path` inside the worker's runtime
 /// (so the connection pool lives there), then serve commands. `wake` is called after
 /// each event so the UI can `request_repaint`. Returns the command sender and event
@@ -1037,7 +1107,11 @@ pub fn spawn(
                             Command::RunFullAnalysis { alignment_id } => {
                                 run_full_analysis_streaming(&app, alignment_id, cancel, &evt_tx, wake.clone()).await;
                             }
-                            // Signals the in-flight full analysis to stop between steps.
+                            // Streams DeepAnalyzeProgress per sample, then a final ProjectAnalyzed.
+                            Command::DeepAnalyzeProject(project_id) => {
+                                deep_analyze_project_streaming(&app, project_id, cancel, &evt_tx, wake.clone()).await;
+                            }
+                            // Signals the in-flight full analysis / deep-analyze to stop between steps.
                             Command::CancelAnalysis => {
                                 cancel.store(true, Ordering::Relaxed);
                             }
@@ -1625,6 +1699,69 @@ mod tests {
                 assert_eq!(a.variant_caller.as_deref(), Some("deepvariant"));
             }
             other => panic!("got {other:?}"),
+        }
+    }
+
+    /// The streaming deep-analyze emits one progress event per sample and a final `ProjectAnalyzed`.
+    /// Samples without a BAM-bearing alignment are walked (so the bar advances) but not counted —
+    /// keeping the test free of any reference/network/tree dependency.
+    #[tokio::test]
+    async fn deep_analyze_streams_progress_then_a_final_summary() {
+        let app = app().await;
+        let p = app
+            .create_project(NewProject { name: "P".into(), description: None, administrator: "jk".into() })
+            .await
+            .unwrap();
+        app.add_biosample(Some(p.id), "S1", None, None).await.unwrap();
+        app.add_biosample(Some(p.id), "S2", None, None).await.unwrap();
+
+        let (tx, rx) = std::sync::mpsc::channel::<Event>();
+        let cancel = Arc::new(AtomicBool::new(false));
+        let wake: Arc<dyn Fn() + Send + Sync> = Arc::new(|| {});
+        deep_analyze_project_streaming(&app, p.id, cancel, &tx, wake).await;
+
+        let events: Vec<Event> = rx.try_iter().collect();
+        let progress = events
+            .iter()
+            .filter(|e| matches!(e, Event::DeepAnalyzeProgress { .. }))
+            .count();
+        assert_eq!(progress, 2, "one progress event per sample");
+        match events.last() {
+            Some(Event::ProjectAnalyzed { project_id, samples, cancelled, errors, .. }) => {
+                assert_eq!(*project_id, p.id);
+                assert_eq!(*samples, 0, "no BAM-bearing alignments → nothing counted");
+                assert_eq!(*errors, 0);
+                assert!(!*cancelled);
+            }
+            other => panic!("expected a final ProjectAnalyzed, got {other:?}"),
+        }
+    }
+
+    /// A cancel raised mid-run stops the loop before the next sample and reports `cancelled`.
+    #[tokio::test]
+    async fn deep_analyze_honors_a_mid_run_cancel() {
+        let app = app().await;
+        let p = app
+            .create_project(NewProject { name: "P".into(), description: None, administrator: "jk".into() })
+            .await
+            .unwrap();
+        app.add_biosample(Some(p.id), "S1", None, None).await.unwrap();
+        app.add_biosample(Some(p.id), "S2", None, None).await.unwrap();
+
+        // The function clears the flag at entry, so re-arm it via a wake hook fired on the first
+        // progress emission — simulating the user hitting Cancel after the first sample starts.
+        let (tx, rx) = std::sync::mpsc::channel::<Event>();
+        let cancel = Arc::new(AtomicBool::new(false));
+        let armed = cancel.clone();
+        let wake: Arc<dyn Fn() + Send + Sync> = Arc::new(move || armed.store(true, Ordering::Relaxed));
+        deep_analyze_project_streaming(&app, p.id, cancel, &tx, wake).await;
+
+        let events: Vec<Event> = rx.try_iter().collect();
+        let progress = events.iter().filter(|e| matches!(e, Event::DeepAnalyzeProgress { .. })).count();
+        assert_eq!(progress, 1, "cancel after S1 skips S2's progress");
+        match events.last() {
+            Some(Event::ProjectAnalyzed { cancelled, .. }) => assert!(*cancelled),
+            other => panic!("expected a cancelled ProjectAnalyzed, got {other:?}"),
         }
     }
 }

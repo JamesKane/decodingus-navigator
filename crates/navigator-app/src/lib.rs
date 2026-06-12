@@ -667,6 +667,9 @@ pub struct ProjectSampleReport {
     pub median_insert_size: Option<f64>,
     /// Number of structural variants called (`sv` artifact); `None` if not run.
     pub sv_count: Option<usize>,
+    /// The coverage shown is a `partial` (lite sidecar) result — upgradeable by a deep walk.
+    /// `false` when full (or no coverage yet).
+    pub coverage_partial: bool,
 }
 
 /// A reference build an import needs but doesn't have cached — surfaced so the UI can
@@ -689,6 +692,21 @@ pub struct AnalyzeSummary {
     pub metrics_done: usize,
     pub sv_done: usize,
     /// Per-sample failures (best-effort: one sample's error doesn't abort the rest).
+    pub errors: Vec<String>,
+}
+
+/// What the deep analyze pass filled (or skipped as already-present) for one biosample.
+/// `had_alignment` is false when the sample has no BAM-bearing alignment to walk — the
+/// caller skips it without counting. Each `*_done` is true when that artifact is now present
+/// (freshly computed or already cached); failures land in `errors`.
+#[derive(Debug, Clone, Default)]
+pub struct SampleAnalyzeOutcome {
+    pub had_alignment: bool,
+    pub coverage_done: bool,
+    pub y_done: bool,
+    pub sex_done: bool,
+    pub metrics_done: bool,
+    pub sv_done: bool,
     pub errors: Vec<String>,
 }
 
@@ -3951,6 +3969,14 @@ impl App {
                     break;
                 }
             }
+            // A lite (sidecar) coverage is flagged so the UI can badge it and offer a deep walk.
+            let coverage_partial = match coverage_aln {
+                Some(id) => matches!(
+                    self.analysis_provenance(id, "coverage", coverage::COVERAGE_VERSION).await?,
+                    Some((_, ref c)) if c == "partial"
+                ),
+                None => false,
+            };
             // Prefer the coverage-bearing alignment; else fall back to the first.
             let primary_alignment_id = coverage_aln.or_else(|| alignments.first().map(|a| a.id));
             let y_haplogroup = self.haplogroup_consensus(biosample.guid, DnaType::Y).await?.map(|c| c.haplogroup);
@@ -3990,6 +4016,7 @@ impl App {
                 pct_aligned: metrics.as_ref().map(|m| m.pct_pf_reads_aligned),
                 median_insert_size: metrics.as_ref().map(|m| m.median_insert_size),
                 sv_count,
+                coverage_partial,
                 biosample,
             });
         }
@@ -4013,67 +4040,87 @@ impl App {
             errors: Vec::new(),
         };
         for biosample in biosample::list_for_project(self.store.pool(), project_id).await? {
-            let alignments = alignment::list_for_biosample(self.store.pool(), biosample.guid).await?;
-            let Some(aln) = alignments.iter().find(|a| a.bam_path.is_some()) else {
+            let o = self.analyze_biosample(&biosample).await?;
+            if !o.had_alignment {
                 continue;
-            };
+            }
             summary.samples += 1;
-            let label = &biosample.donor_identifier;
-
-            // Coverage: skip only when a *full* result is already cached. A `partial` (lite
-            // sidecar) coverage is upgraded by the per-base walk, which overwrites it.
-            let coverage_full = matches!(
-                self.analysis_provenance(aln.id, "coverage", coverage::COVERAGE_VERSION).await?,
-                Some((_, ref c)) if c == "full"
-            );
-            if coverage_full {
-                summary.coverage_done += 1;
-            } else {
-                match self.run_coverage_for_alignment(aln.id).await {
-                    Ok(_) => summary.coverage_done += 1,
-                    Err(e) => summary.errors.push(format!("{label} coverage: {e}")),
-                }
-            }
-
-            if self.haplogroup_consensus(biosample.guid, DnaType::Y).await?.is_some() {
-                summary.y_done += 1;
-            } else {
-                match self.assign_y_haplogroup(aln.id).await {
-                    Ok(_) => summary.y_done += 1,
-                    Err(e) => summary.errors.push(format!("{label} Y: {e}")),
-                }
-            }
-
-            if self.cached_sex(aln.id).await?.is_some() {
-                summary.sex_done += 1;
-            } else {
-                match self.run_sex(aln.id).await {
-                    Ok(_) => summary.sex_done += 1,
-                    Err(e) => summary.errors.push(format!("{label} sex: {e}")),
-                }
-            }
-
-            if self.cached_read_metrics(aln.id).await?.is_some() {
-                summary.metrics_done += 1;
-            } else {
-                match self.run_read_metrics(aln.id).await {
-                    Ok(_) => summary.metrics_done += 1,
-                    Err(e) => summary.errors.push(format!("{label} metrics: {e}")),
-                }
-            }
-
-            // SV needs ≥10× — only attempt when coverage clears the threshold (avoids logging a
-            // "coverage too low" error for every low-coverage sample).
-            if self.cached_sv(aln.id).await?.is_some() {
-                summary.sv_done += 1;
-            } else if self.cached_coverage(aln.id).await?.map(|c| c.mean_coverage >= 10.0).unwrap_or(false) {
-                match self.run_sv(aln.id).await {
-                    Ok(_) => summary.sv_done += 1,
-                    Err(e) => summary.errors.push(format!("{label} SV: {e}")),
-                }
-            }
+            summary.coverage_done += o.coverage_done as usize;
+            summary.y_done += o.y_done as usize;
+            summary.sex_done += o.sex_done as usize;
+            summary.metrics_done += o.metrics_done as usize;
+            summary.sv_done += o.sv_done as usize;
+            summary.errors.extend(o.errors);
         }
         Ok(summary)
+    }
+
+    /// Deep-analyze one biosample's primary (first BAM-bearing) alignment: coverage, Y
+    /// haplogroup, sex, read metrics, and SV (≥10× only). Idempotent — a *full* coverage and a
+    /// recorded Y/sex/metrics/SV are skipped; a `partial` (lite sidecar) coverage is upgraded by
+    /// the per-base walk, which overwrites it. Best-effort: a per-step failure is recorded in
+    /// `errors` (prefixed with the donor id) and the remaining steps still run. This is the
+    /// per-sample unit the project pass and the streaming deep-analyze job both drive.
+    pub async fn analyze_biosample(&self, biosample: &Biosample) -> Result<SampleAnalyzeOutcome, AppError> {
+        let mut o = SampleAnalyzeOutcome::default();
+        let alignments = alignment::list_for_biosample(self.store.pool(), biosample.guid).await?;
+        let Some(aln) = alignments.iter().find(|a| a.bam_path.is_some()) else {
+            return Ok(o); // had_alignment stays false
+        };
+        o.had_alignment = true;
+        let label = &biosample.donor_identifier;
+
+        let coverage_full = matches!(
+            self.analysis_provenance(aln.id, "coverage", coverage::COVERAGE_VERSION).await?,
+            Some((_, ref c)) if c == "full"
+        );
+        if coverage_full {
+            o.coverage_done = true;
+        } else {
+            match self.run_coverage_for_alignment(aln.id).await {
+                Ok(_) => o.coverage_done = true,
+                Err(e) => o.errors.push(format!("{label} coverage: {e}")),
+            }
+        }
+
+        if self.haplogroup_consensus(biosample.guid, DnaType::Y).await?.is_some() {
+            o.y_done = true;
+        } else {
+            match self.assign_y_haplogroup(aln.id).await {
+                Ok(_) => o.y_done = true,
+                Err(e) => o.errors.push(format!("{label} Y: {e}")),
+            }
+        }
+
+        if self.cached_sex(aln.id).await?.is_some() {
+            o.sex_done = true;
+        } else {
+            match self.run_sex(aln.id).await {
+                Ok(_) => o.sex_done = true,
+                Err(e) => o.errors.push(format!("{label} sex: {e}")),
+            }
+        }
+
+        if self.cached_read_metrics(aln.id).await?.is_some() {
+            o.metrics_done = true;
+        } else {
+            match self.run_read_metrics(aln.id).await {
+                Ok(_) => o.metrics_done = true,
+                Err(e) => o.errors.push(format!("{label} metrics: {e}")),
+            }
+        }
+
+        // SV needs ≥10× — only attempt when coverage clears the threshold (avoids logging a
+        // "coverage too low" error for every low-coverage sample).
+        if self.cached_sv(aln.id).await?.is_some() {
+            o.sv_done = true;
+        } else if self.cached_coverage(aln.id).await?.map(|c| c.mean_coverage >= 10.0).unwrap_or(false) {
+            match self.run_sv(aln.id).await {
+                Ok(_) => o.sv_done = true,
+                Err(e) => o.errors.push(format!("{label} SV: {e}")),
+            }
+        }
+        Ok(o)
     }
 }
 

@@ -1240,11 +1240,28 @@ async fn project_report_rolls_up_coverage_and_csv_round_trips() {
     assert!(before[0].mean_coverage.is_none());
     assert!(before[0].y_haplogroup.is_none() && before[0].mt_haplogroup.is_none());
 
-    // Run coverage, then the report fills in.
     let aln = app.list_all_alignments().await.unwrap();
+
+    // A lite (sidecar) coverage is flagged `partial` in the report so the UI can badge it.
+    let lite = app.run_coverage_for_alignment(aln[0].id).await.unwrap();
+    app.save_analysis_with_provenance(
+        aln[0].id,
+        "coverage",
+        navigator_analysis::coverage::COVERAGE_VERSION,
+        &lite,
+        "pipeline-sidecar",
+        "partial",
+    )
+    .await
+    .unwrap();
+    let partial = app.project_report(pid).await.unwrap();
+    assert!(partial[0].coverage_partial, "sidecar coverage shows as lite/partial");
+
+    // Run the full coverage walk, then the report fills in and the partial flag clears.
     app.run_coverage_for_alignment(aln[0].id).await.unwrap();
     let after = app.project_report(pid).await.unwrap();
     assert!(after[0].mean_coverage.is_some());
+    assert!(!after[0].coverage_partial, "a full walk upgrades the partial flag");
     assert_eq!(after[0].callable_bases, Some(10)); // fixture: 10 callable bases
 
     // CSV: header + one data row, sample id present.
