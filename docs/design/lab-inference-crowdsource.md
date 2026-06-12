@@ -1,6 +1,7 @@
 # Sequencing lab + platform inference (read-name crowd-source)
 
-Status: implemented (Navigator side, phases 1–4); live lab lookup blocked on AppView D8.
+Status: implemented (Navigator side, phases 1–4 + live AppView lab lookup). AppView D8 endpoints
+shipped (decodingus 9c28b6d); resolution wired Navigator-side (commit c0dfae7).
 Scope: `navigator-domain` (SequenceRun fields, `labs` catalog), `navigator-store` (mig 0018),
 `navigator-analysis` (`library_stats`), `navigator-app` (import wiring), `navigator-ui` (lab
 chip + edit-run dropdown). Branch `rust-rewrite`.
@@ -50,12 +51,24 @@ Real 43 GB BAM (`WGS229.b38.bam`) via the CLI, ~1.6 s: `platform=ILLUMINA`,
 `flowcell_id=H5WLTDMXX`. Unit tests cover the qname matchers/model map + the labs catalog;
 store + worker tests cover the column round-trip + the manual lab edit.
 
-## Deferred — AppView D8 (backlog)
+## Live lab lookup — DONE (AppView D8 shipped)
 
-`sequencing_facility` is **manual** until the AppView ships the read endpoints from
-`sequencer-lab-inference-system.md`: `GET /api/v1/sequencer/lab?instrument_id=…` (+ the bulk
-`/lab-instruments` cache seed). Navigator already collects + stores `instrument_id`; it must
-also **publish it on the `sequencerun` fed record** to feed the
-`instrument_observation`→proposal→accept consensus (`fed.sequencerun.instrument_id`). Pinned
-as a cross-repo contract in the AppView roadmap (`design-roadmap-rust-rewrite.md` §6, D8).
-Once live, resolve the facility from `instrument_id` at import / on a backfill pass.
+The AppView shipped the endpoints (`decodingus` 9c28b6d): `GET /api/v1/sequencer/lab?instrument_id=…`
+→ `SequencerLabDto {instrument_id, lab_name, is_d2c, manufacturer, model_name, website_url}`, and the
+bulk `GET /api/v1/sequencer/lab-instruments` (join `genomics.sequencer_instrument.lab_id →
+sequencing_lab` — the redesign re-added a preseeded `lab_id` FK). Navigator wiring (commit c0dfae7):
+
+- `App::fetch_lab_instruments` GETs the bulk list, on-disk cached via the same `fetch_tree` path
+  (7-day TTL + offline fallback) → one network call per batch.
+- `App::lookup_lab_by_instrument` resolves + normalizes the name to the local catalog's canonical
+  display name (unlisted labs pass through).
+- `import_alignment_file` auto-resolves the lab inline after inferring `instrument_id` (best-effort:
+  an unreachable AppView leaves it unset — no error, no blocking).
+- `App::backfill_run_labs` (worker `Command::BackfillLabs`, run on startup) fills any run with an
+  `instrument_id` but no facility, so runs imported before D8 landed pick up associations.
+
+**Still open — the contribution side:** Navigator does not yet **publish `instrument_id` on the
+`sequencerun` fed record**, which is the AppView's `instrument_observation`→proposal→accept consensus
+source (`fed.sequencerun.instrument_id`). Today the AppView map is preseeded/curator-driven; closing
+the crowd-source loop means emitting that field when the sequencerun record is published. Pinned in
+the AppView roadmap (`design-roadmap-rust-rewrite.md` §6, D8).
