@@ -16,6 +16,7 @@ pub mod filetype;
 pub mod labs;
 pub mod mtdna;
 pub mod reconciliation;
+pub mod strpanel;
 pub mod strprofile;
 pub mod testtype;
 pub mod variants;

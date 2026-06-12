@@ -224,6 +224,82 @@ pub fn str_distance(a: &[StrMarker], b: &[StrMarker]) -> (i64, i64) {
     (differing, compared)
 }
 
+/// One marker where providers disagree, with each provider's reported value.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MarkerConflict {
+    pub marker: String,
+    /// `(provider, value)` per provider, provider order as first seen.
+    pub by_provider: Vec<(String, String)>,
+}
+
+/// Cross-provider comparison of a subject's STR profiles (e.g. FTDNA vs YSEQ).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct StrComparison {
+    /// Markers reported by ≥2 providers with disagreeing values.
+    pub conflicts: Vec<MarkerConflict>,
+    /// Markers reported by ≥2 providers that agree.
+    pub agreement_count: usize,
+    /// Distinct provider labels seen.
+    pub providers: Vec<String>,
+}
+
+/// Whether two STR values represent the same allele(s). Multi-copy values (`"16-15"`) are compared
+/// order-independently (`"16-15"` ≡ `"15-16"`); everything else is a trimmed string match.
+pub fn values_match(a: &str, b: &str) -> bool {
+    let norm = |s: &str| {
+        let mut parts: Vec<&str> = s.split('-').map(|p| p.trim()).filter(|p| !p.is_empty()).collect();
+        parts.sort_unstable();
+        parts.join("-")
+    };
+    norm(a) == norm(b)
+}
+
+/// Compare a subject's STR profiles across providers: flag markers where providers disagree, count
+/// agreements, and list the providers. Mirrors the Scala `StrMarkerComparator.compare`. A profile's
+/// provider defaults to `"UNKNOWN"` when unset; multiple profiles from the same provider collapse to
+/// that provider's first-seen value for a marker.
+pub fn compare_profiles(profiles: &[StrProfile]) -> StrComparison {
+    // Normalized marker -> ordered list of (provider, value), one entry per provider.
+    let mut by_marker: Vec<(String, Vec<(String, String)>)> = Vec::new();
+    let mut index: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    let mut providers: Vec<String> = Vec::new();
+
+    for p in profiles {
+        let provider = p.provider.clone().unwrap_or_else(|| "UNKNOWN".to_string());
+        if !providers.contains(&provider) {
+            providers.push(provider.clone());
+        }
+        for mk in &p.markers {
+            let key = mk.marker.trim().to_uppercase();
+            let slot = *index.entry(key.clone()).or_insert_with(|| {
+                by_marker.push((mk.marker.clone(), Vec::new()));
+                by_marker.len() - 1
+            });
+            let entries = &mut by_marker[slot].1;
+            if !entries.iter().any(|(prov, _)| prov == &provider) {
+                entries.push((provider.clone(), mk.value.clone()));
+            }
+        }
+    }
+
+    let mut conflicts = Vec::new();
+    let mut agreement_count = 0;
+    for (marker, entries) in by_marker {
+        if entries.len() < 2 {
+            continue; // need ≥2 providers to agree or conflict
+        }
+        let first = &entries[0].1;
+        if entries.iter().all(|(_, v)| values_match(first, v)) {
+            agreement_count += 1;
+        } else {
+            conflicts.push(MarkerConflict { marker, by_provider: entries });
+        }
+    }
+    conflicts.sort_by(|a, b| a.marker.cmp(&b.marker));
+
+    StrComparison { conflicts, agreement_count, providers }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -312,5 +388,43 @@ mod tests {
         // Null ("-") is skipped; single-panel marker still appears.
         assert!(by("DYS385").is_none());
         assert_eq!(by("DYS19").unwrap().panels, 1);
+    }
+
+    #[test]
+    fn values_match_handles_multicopy_order() {
+        assert!(values_match("16-15", "15-16")); // order-independent
+        assert!(values_match("14-15-17-17", "17-14-17-15"));
+        assert!(values_match("13", "13"));
+        assert!(!values_match("13", "14"));
+        assert!(!values_match("16-15", "16-16"));
+    }
+
+    #[test]
+    fn compare_flags_conflicts_and_agreements() {
+        let guid = SampleGuid(uuid::Uuid::nil());
+        let mk = |provider: &str, pairs: &[(&str, &str)]| StrProfile {
+            id: 0,
+            biosample_guid: guid,
+            panel_name: "X".into(),
+            provider: Some(provider.into()),
+            source: None,
+            markers: pairs.iter().map(|(m, v)| StrMarker { marker: (*m).into(), value: (*v).into() }).collect(),
+        };
+        let profiles = vec![
+            mk("FTDNA", &[("DYS393", "13"), ("DYS390", "24"), ("DYS385", "11-15"), ("DYS19", "14")]),
+            mk("YSEQ", &[("DYS393", "13"), ("DYS390", "25"), ("DYS385", "15-11")]), // DYS390 differs; DYS385 multi-copy reorder
+        ];
+        let c = compare_profiles(&profiles);
+
+        assert_eq!(c.providers, vec!["FTDNA".to_string(), "YSEQ".to_string()]);
+        // DYS390 is the only conflict; DYS393 + DYS385 agree (DYS385 order-independent).
+        assert_eq!(c.conflicts.len(), 1);
+        assert_eq!(c.conflicts[0].marker, "DYS390");
+        assert_eq!(
+            c.conflicts[0].by_provider,
+            vec![("FTDNA".into(), "24".into()), ("YSEQ".into(), "25".into())]
+        );
+        assert_eq!(c.agreement_count, 2); // DYS393, DYS385
+        // DYS19 is single-provider → neither conflict nor agreement.
     }
 }

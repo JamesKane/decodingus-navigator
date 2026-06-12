@@ -17,7 +17,8 @@ use navigator_domain::ancestry::{population_color, population_lonlat, population
 use navigator_domain::du_domain::ids::SampleGuid;
 use navigator_domain::chipprofile::{self, ChipProfile};
 use navigator_domain::mtdna::MtdnaSequence;
-use navigator_domain::strprofile::{self, StrProfile};
+use navigator_domain::strpanel;
+use navigator_domain::strprofile::{self, StrComparison, StrProfile};
 use navigator_domain::testtype;
 use navigator_domain::variants::{VariantCall, VariantSet};
 use navigator_domain::workspace::{Alignment, Biosample, NewAlignment, NewProject, NewSequenceRun, SequenceRun};
@@ -88,6 +89,18 @@ impl DetailTab {
         (DetailTab::IbdMatches, "detail.ibd"),
         (DetailTab::DataSources, "detail.datasources"),
     ];
+}
+
+/// Which Y-STR report view is shown in the Y-DNA tab.
+#[derive(Clone, Copy, PartialEq, Eq, Default)]
+enum StrReportView {
+    /// FTDNA/YSEQ-style tier-grouped marker table.
+    #[default]
+    ByPanel,
+    /// Flat, filterable marker table.
+    AllMarkers,
+    /// Cross-panel consensus value per marker.
+    Consensus,
 }
 
 /// In-flight full-analysis state, driving the modal dialog.
@@ -235,6 +248,10 @@ pub struct NavigatorApp {
     heteroplasmy: Option<(i64, Vec<HeteroplasmySite>)>,
     /// STR profiles for the selected subject.
     str_profiles: Vec<StrProfile>,
+    /// Y-STR report view-state: which view, which provider (when multiple), and the marker filter.
+    str_report_view: StrReportView,
+    str_provider: Option<String>,
+    str_marker_filter: String,
     /// SNP variant sets for the selected subject.
     variant_sets: Vec<VariantSet>,
     /// Cross-source variant concordance for the selected subject.
@@ -869,6 +886,9 @@ impl NavigatorApp {
             audit_mt: Vec::new(),
             heteroplasmy: None,
             str_profiles: Vec::new(),
+            str_report_view: StrReportView::default(),
+            str_provider: None,
+            str_marker_filter: String::new(),
             variant_sets: Vec::new(),
             variant_concordance: Vec::new(),
             chip_profiles: Vec::new(),
@@ -1058,6 +1078,9 @@ impl NavigatorApp {
                 Event::StrProfiles { biosample_guid, profiles } => {
                     if self.selected_sample == Some(biosample_guid) {
                         self.str_profiles = profiles;
+                        // Reset the report view-state for the new subject's data.
+                        self.str_provider = None;
+                        self.str_marker_filter.clear();
                     }
                 }
                 Event::StrProfilesChanged(guid) => {
@@ -1723,7 +1746,7 @@ impl NavigatorApp {
                     ui.add_space(10.0);
                     card(ui, self.tr("card.snpVariants"), |ui| self.variants_section(ui, guid));
                     ui.add_space(10.0);
-                    card(ui, self.tr("card.ystrConsensus"), |ui| self.str_consensus_section(ui));
+                    card(ui, self.tr("card.ystrConsensus"), |ui| self.ystr_report_section(ui));
                 }
                 DetailTab::MtDna => {
                     // mtDNA haplogroup: assign standalone from the selected alignment (like Y-DNA);
@@ -2661,6 +2684,100 @@ impl NavigatorApp {
     /// Y-STR profiles for the selected subject + an import form (CSV/TSV marker table).
     /// Donor-level Y-STR consensus across all of the subject's panels (Phase 2 rollup): the modal
     /// value per marker, with cross-panel disagreements flagged.
+    /// Y-STR report (FTDNA/YSEQ style): summary header (provider toggle, tier badges, conflict
+    /// count) + a By-Panel / All-Markers / Consensus view, rendered from the already-loaded
+    /// `str_profiles`.
+    fn ystr_report_section(&mut self, ui: &mut egui::Ui) {
+        if self.str_profiles.is_empty() {
+            ui.label(egui::RichText::new("No STR profiles yet — import one under Data Sources.").weak());
+            return;
+        }
+
+        let comparison = strprofile::compare_profiles(&self.str_profiles);
+        let multi_provider = comparison.providers.len() > 1;
+
+        // Working copies (written back after rendering) so row clicks can mutate selection while
+        // `self.str_profiles` is borrowed immutably.
+        let mut sel_provider = self.str_provider.clone().unwrap_or_else(|| {
+            self.str_profiles
+                .iter()
+                .max_by_key(|p| p.markers.len())
+                .and_then(|p| p.provider.clone())
+                .unwrap_or_else(|| "FTDNA".to_string())
+        });
+        let mut view = self.str_report_view;
+        let mut filter = std::mem::take(&mut self.str_marker_filter);
+
+        // Provider toggle (only when >1 provider).
+        if multi_provider {
+            ui.horizontal(|ui| {
+                ui.label("Provider:");
+                for prov in &comparison.providers {
+                    if ui.selectable_label(&sel_provider == prov, prov).clicked() {
+                        sel_provider = prov.clone();
+                    }
+                }
+            });
+        }
+
+        // The profile to display: the most-complete one for the selected provider.
+        let canon = strpanel::canonical_provider(&sel_provider);
+        let profile_idx = self
+            .str_profiles
+            .iter()
+            .enumerate()
+            .filter(|(_, p)| strpanel::canonical_provider(p.provider.as_deref().unwrap_or("FTDNA")) == canon)
+            .max_by_key(|(_, p)| p.markers.len())
+            .or_else(|| self.str_profiles.iter().enumerate().max_by_key(|(_, p)| p.markers.len()))
+            .map(|(i, _)| i);
+        let Some(idx) = profile_idx else { return };
+        let marker_count = self.str_profiles[idx].markers.len();
+
+        let amber = egui::Color32::from_rgb(220, 150, 60);
+        ui.horizontal(|ui| {
+            ui.heading(marker_count.to_string());
+            ui.label(egui::RichText::new("markers").weak());
+            if !comparison.conflicts.is_empty() {
+                ui.colored_label(amber, format!("⚠ {} conflict(s)", comparison.conflicts.len()));
+            }
+        });
+
+        // Tier "reached" badges.
+        ui.horizontal_wrapped(|ui| {
+            for (name, filled) in strpanel::tier_badges(&sel_provider, marker_count) {
+                let (glyph, color) = if filled {
+                    ("●", egui::Color32::from_rgb(120, 180, 120))
+                } else {
+                    ("○", egui::Color32::from_gray(110))
+                };
+                ui.colored_label(color, format!("{glyph} {name}"))
+                    .on_hover_text(if filled { "reached" } else { "not reached" });
+            }
+        });
+
+        // View selector.
+        ui.horizontal(|ui| {
+            ui.selectable_value(&mut view, StrReportView::ByPanel, "By panel");
+            ui.selectable_value(&mut view, StrReportView::AllMarkers, "All markers");
+            ui.selectable_value(&mut view, StrReportView::Consensus, "Consensus");
+        });
+        ui.separator();
+
+        match view {
+            StrReportView::ByPanel => {
+                str_by_panel_view(ui, &self.str_profiles[idx], &sel_provider, &comparison);
+            }
+            StrReportView::AllMarkers => {
+                str_all_markers_view(ui, &self.str_profiles[idx], &sel_provider, &comparison, &mut filter);
+            }
+            StrReportView::Consensus => self.str_consensus_section(ui),
+        }
+
+        self.str_report_view = view;
+        self.str_provider = Some(sel_provider);
+        self.str_marker_filter = filter;
+    }
+
     fn str_consensus_section(&mut self, ui: &mut egui::Ui) {
         if self.str_profiles.is_empty() {
             ui.label(egui::RichText::new("No STR profiles yet — import one under Data Sources.").weak());
@@ -4462,4 +4579,116 @@ fn coverage_histogram_chart(ui: &mut egui::Ui, hist: &[u64], title: &str) {
     Plot::new(format!("coverage_histogram_{title}"))
         .height(180.0)
         .show(ui, |plot_ui| plot_ui.bar_chart(chart));
+}
+
+const STR_CONFLICT: egui::Color32 = egui::Color32::from_rgb(220, 150, 60);
+
+/// FTDNA/YSEQ-style By-Panel view: markers grouped into tiers (Y-12 / Y-25 / …), each tier rendered
+/// as transposed mini-grids (marker-name row over value row, ≤12 markers wide). Conflicting markers
+/// are amber.
+fn str_by_panel_view(ui: &mut egui::Ui, profile: &StrProfile, provider: &str, comparison: &StrComparison) {
+    let conflicts: std::collections::HashSet<String> =
+        comparison.conflicts.iter().map(|c| c.marker.trim().to_uppercase()).collect();
+    let groups = strpanel::assign_markers_to_panels(&profile.markers, provider);
+    if groups.is_empty() {
+        ui.label(egui::RichText::new("No markers.").weak());
+        return;
+    }
+    let canon = strpanel::canonical_provider(provider);
+    egui::ScrollArea::vertical().max_height(360.0).id_salt("str_by_panel").show(ui, |ui| {
+        for (tier, markers) in &groups {
+            ui.add_space(6.0);
+            ui.label(egui::RichText::new(format!("{canon} {tier}  ({} markers)", markers.len())).strong());
+            for (ci, chunk) in markers.chunks(12).enumerate() {
+                egui::Grid::new(format!("str_tier_{tier}_{ci}")).num_columns(chunk.len()).show(ui, |ui| {
+                    for mk in chunk {
+                        let t = egui::RichText::new(&mk.marker).small();
+                        let c = conflicts.contains(&mk.marker.trim().to_uppercase());
+                        ui.label(if c { t.color(STR_CONFLICT) } else { t.weak() });
+                    }
+                    ui.end_row();
+                    for mk in chunk {
+                        let t = egui::RichText::new(&mk.value).monospace().strong();
+                        let c = conflicts.contains(&mk.marker.trim().to_uppercase());
+                        ui.label(if c { t.color(STR_CONFLICT) } else { t });
+                    }
+                    ui.end_row();
+                });
+            }
+        }
+    });
+}
+
+/// Flat, filterable marker table: Marker | Panel | Value, plus ⚠ | Other when >1 provider (the
+/// other provider's disagreeing value). Conflicting values are amber.
+fn str_all_markers_view(
+    ui: &mut egui::Ui,
+    profile: &StrProfile,
+    provider: &str,
+    comparison: &StrComparison,
+    filter: &mut String,
+) {
+    use std::collections::HashMap;
+    let conflict_map: HashMap<String, &strprofile::MarkerConflict> =
+        comparison.conflicts.iter().map(|c| (c.marker.trim().to_uppercase(), c)).collect();
+    let mut tier_of: HashMap<String, String> = HashMap::new();
+    for (tier, ms) in strpanel::assign_markers_to_panels(&profile.markers, provider) {
+        for mk in ms {
+            tier_of.insert(mk.marker.trim().to_uppercase(), tier.clone());
+        }
+    }
+    let multi = comparison.providers.len() > 1;
+    let this_provider = profile.provider.clone().unwrap_or_default();
+
+    ui.horizontal(|ui| {
+        ui.label("Filter:");
+        ui.add(egui::TextEdit::singleline(filter).hint_text("marker").desired_width(120.0));
+        if !filter.is_empty() && ui.button("✕").clicked() {
+            filter.clear();
+        }
+    });
+    let f = filter.trim().to_uppercase();
+    let cols = if multi { 5 } else { 3 };
+    egui::ScrollArea::vertical().max_height(360.0).id_salt("str_all_markers").show(ui, |ui| {
+        egui::Grid::new("str_all_grid").striped(true).num_columns(cols).show(ui, |ui| {
+            ui.strong("Marker");
+            ui.strong("Panel");
+            ui.strong("Value");
+            if multi {
+                ui.strong("⚠");
+                ui.strong("Other");
+            }
+            ui.end_row();
+            for mk in &profile.markers {
+                let norm = mk.marker.trim().to_uppercase();
+                if !f.is_empty() && !norm.contains(&f) {
+                    continue;
+                }
+                let conflict = conflict_map.get(&norm).copied();
+                ui.label(&mk.marker);
+                ui.label(egui::RichText::new(tier_of.get(&norm).map(|s| s.as_str()).unwrap_or("—")).weak());
+                let v = egui::RichText::new(&mk.value).monospace();
+                ui.label(if conflict.is_some() { v.color(STR_CONFLICT) } else { v });
+                if multi {
+                    match conflict {
+                        Some(c) => {
+                            ui.colored_label(STR_CONFLICT, "⚠");
+                            let others: Vec<String> = c
+                                .by_provider
+                                .iter()
+                                .filter(|(p, _)| p != &this_provider)
+                                .map(|(p, val)| format!("{p}:{val}"))
+                                .collect();
+                            ui.label(egui::RichText::new(others.join(", ")).monospace().weak());
+                        }
+                        None => {
+                            ui.label("");
+                            ui.label("");
+                        }
+                    }
+                }
+                ui.end_row();
+            }
+        });
+    });
 }
