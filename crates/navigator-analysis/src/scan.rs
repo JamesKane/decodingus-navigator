@@ -62,6 +62,77 @@ pub struct DiscoveredFile {
     pub kind: DiscoveredFileType,
 }
 
+/// The `ytree` pipeline's per-sample sidecars, matched by name suffix. Present only when the
+/// sample was processed by that workflow; absent for a plain alignment-only directory. The
+/// app's fast-path ingest reads these instead of walking the CRAM.
+#[derive(Debug, Clone, Default)]
+pub struct SampleSidecars {
+    /// `*.chrY.g.vcf.gz` — ploidy-1 chrY GVCF (males).
+    pub chr_y_gvcf: Option<PathBuf>,
+    /// `*.chrM.g.vcf.gz` — ploidy-1 chrM GVCF.
+    pub chr_m_gvcf: Option<PathBuf>,
+    /// `*.callable.bed` — CallableLoci track.
+    pub callable_bed: Option<PathBuf>,
+    /// `*.callable.summary.txt` — per-state base counts.
+    pub callable_summary: Option<PathBuf>,
+    /// `*.sex` — `male` / `female`.
+    pub sex: Option<PathBuf>,
+    /// `coverage.txt` — samtools coverage.
+    pub coverage: Option<PathBuf>,
+    /// `stats.txt` — samtools stats.
+    pub stats: Option<PathBuf>,
+    /// Build token parsed from the GVCF name (e.g. `chm13`), for confirming the GVCF and the
+    /// alignment share a build before the liftover-free fast path is taken.
+    pub build_hint: Option<String>,
+}
+
+impl SampleSidecars {
+    /// True when the haplogroup fast path is available (at least one GVCF present).
+    pub fn has_haplogroup_gvcf(&self) -> bool {
+        self.chr_y_gvcf.is_some() || self.chr_m_gvcf.is_some()
+    }
+}
+
+/// Detect pipeline sidecars among a sample's files by (case-insensitive) name. Specific
+/// multi-part suffixes are matched against the full file name, so `*.chrY.g.vcf.gz.tbi`
+/// (an index) does not match `*.chrY.g.vcf.gz`.
+fn detect_sidecars(files: &[DiscoveredFile]) -> SampleSidecars {
+    let by_suffix = |suffix: &str| {
+        files
+            .iter()
+            .find(|f| f.path.file_name().and_then(|n| n.to_str()).is_some_and(|n| n.to_ascii_lowercase().ends_with(suffix)))
+            .map(|f| f.path.clone())
+    };
+    let by_name = |name: &str| {
+        files
+            .iter()
+            .find(|f| f.path.file_name().and_then(|n| n.to_str()).is_some_and(|n| n.eq_ignore_ascii_case(name)))
+            .map(|f| f.path.clone())
+    };
+
+    let chr_y_gvcf = by_suffix(".chry.g.vcf.gz");
+    let chr_m_gvcf = by_suffix(".chrm.g.vcf.gz");
+    let build_hint = chr_y_gvcf.as_ref().or(chr_m_gvcf.as_ref()).and_then(|p| build_token(p));
+
+    SampleSidecars {
+        chr_y_gvcf,
+        chr_m_gvcf,
+        callable_bed: by_suffix(".callable.bed"),
+        callable_summary: by_suffix(".callable.summary.txt"),
+        sex: by_suffix(".sex"),
+        coverage: by_name("coverage.txt"),
+        stats: by_name("stats.txt"),
+        build_hint,
+    }
+}
+
+/// The build segment of a GVCF name, e.g. `HG00096.chm13.chrY.g.vcf.gz` → `chm13`.
+fn build_token(gvcf: &Path) -> Option<String> {
+    let name = gvcf.file_name()?.to_str()?.to_ascii_lowercase();
+    let stem = name.strip_suffix(".chry.g.vcf.gz").or_else(|| name.strip_suffix(".chrm.g.vcf.gz"))?;
+    stem.rsplit('.').next().filter(|s| !s.is_empty()).map(|s| s.to_string())
+}
+
 /// A sample subdirectory holding at least one alignment or variant file.
 #[derive(Debug, Clone)]
 pub struct DiscoveredSample {
@@ -72,6 +143,8 @@ pub struct DiscoveredSample {
     pub index_files: Vec<PathBuf>,
     pub variant_files: Vec<PathBuf>,
     pub all_files: Vec<DiscoveredFile>,
+    /// Pipeline sidecars for this sample, if present (drives the fast-path ingest).
+    pub sidecars: SampleSidecars,
 }
 
 /// A project directory and its discovered samples.
@@ -121,6 +194,7 @@ fn scan_sample(dir: &Path) -> DiscoveredSample {
         all_files.iter().filter(|f| f.kind == k).map(|f| f.path.clone()).collect::<Vec<_>>()
     };
 
+    let sidecars = detect_sidecars(&all_files);
     DiscoveredSample {
         sample_id: dir.file_name().and_then(|n| n.to_str()).unwrap_or_default().to_string(),
         directory: dir.to_path_buf(),
@@ -128,6 +202,7 @@ fn scan_sample(dir: &Path) -> DiscoveredSample {
         index_files: collect(DiscoveredFileType::Index),
         variant_files: collect(DiscoveredFileType::Variant),
         all_files,
+        sidecars,
     }
 }
 
@@ -226,6 +301,54 @@ mod tests {
         assert!(s.all_files.iter().any(|f| f.kind == DiscoveredFileType::Coverage));
         assert!(s.all_files.iter().any(|f| f.kind == DiscoveredFileType::Stats));
 
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn detects_pipeline_sidecars() {
+        let root = scratch("sidecars");
+        let s = "HG00096";
+        let d = root.join(s);
+        for f in [
+            "HG00096.chm13.cram",
+            "HG00096.chm13.cram.crai",
+            "HG00096.chm13.chrY.g.vcf.gz",
+            "HG00096.chm13.chrY.g.vcf.gz.tbi",
+            "HG00096.chm13.chrM.g.vcf.gz",
+            "HG00096.chm13.chrM.g.vcf.gz.tbi",
+            "HG00096.chm13.chrYM.callable.bed",
+            "HG00096.chm13.chrYM.callable.summary.txt",
+            "HG00096.chm13.sex",
+            "coverage.txt",
+            "stats.txt",
+        ] {
+            touch(d.join(f));
+        }
+
+        let project = scan(&root).unwrap();
+        let sc = &project.samples[0].sidecars;
+        assert!(sc.has_haplogroup_gvcf());
+        // The GVCF is matched, not its .tbi index.
+        assert!(sc.chr_y_gvcf.as_ref().unwrap().to_str().unwrap().ends_with("chrY.g.vcf.gz"));
+        assert!(sc.chr_m_gvcf.as_ref().unwrap().to_str().unwrap().ends_with("chrM.g.vcf.gz"));
+        assert!(sc.callable_bed.is_some());
+        assert!(sc.callable_summary.is_some());
+        assert!(sc.sex.is_some());
+        assert!(sc.coverage.is_some());
+        assert!(sc.stats.is_some());
+        assert_eq!(sc.build_hint.as_deref(), Some("chm13"));
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn no_sidecars_for_plain_alignment_dir() {
+        let root = scratch("plain");
+        touch(root.join("S1").join("S1.cram"));
+        touch(root.join("S1").join("S1.cram.crai"));
+        let project = scan(&root).unwrap();
+        assert!(!project.samples[0].sidecars.has_haplogroup_gvcf());
+        assert!(project.samples[0].sidecars.build_hint.is_none());
         let _ = fs::remove_dir_all(&root);
     }
 
