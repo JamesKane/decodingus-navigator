@@ -138,10 +138,13 @@ const CHM13_FA: &str =
     "https://s3-us-west-2.amazonaws.com/human-pangenomics/T2T/CHM13/assemblies/analysis_set/chm13v2.0.fa.gz";
 const CHM13_MASKED_RCRS_FA: &str =
     "https://s3-us-west-2.amazonaws.com/human-pangenomics/T2T/CHM13/assemblies/analysis_set/chm13v2.0_maskedY_rCRS.fa.gz";
+// Broad's public reference bucket. The older `genomics-public-data` bucket now 403s; this
+// `gcp-public-data--broad-references` bucket is the current canonical home and serves the same
+// assemblies as plain (uncompressed) FASTA — there is no `.gz` variant there.
 const GRCH38_FA: &str =
-    "https://storage.googleapis.com/genomics-public-data/resources/broad/hg38/v0/Homo_sapiens_assembly38.fasta";
+    "https://storage.googleapis.com/gcp-public-data--broad-references/hg38/v0/Homo_sapiens_assembly38.fasta";
 const GRCH37_FA: &str =
-    "https://storage.googleapis.com/genomics-public-data/references/hg19/v0/Homo_sapiens_assembly19.fasta.gz";
+    "https://storage.googleapis.com/gcp-public-data--broad-references/hg19/v0/Homo_sapiens_assembly19.fasta";
 const CHAIN_BASE: &str = "https://s3-us-west-2.amazonaws.com/human-pangenomics/T2T/CHM13/assemblies/chain/v1_nflo";
 const ANNOTATION_BASE: &str =
     "https://s3-us-west-2.amazonaws.com/human-pangenomics/T2T/CHM13/assemblies/annotation";
@@ -196,8 +199,8 @@ impl Registry {
     /// The download source for a build (user URL override else the built-in default).
     pub fn reference_source(&self, build: Build) -> ReferenceSource {
         let (default_url, est_bytes) = match build {
-            Build::Grch38 => (GRCH38_FA, 3 * GB + GB / 10),
-            Build::Grch37 => (GRCH37_FA, 9 * GB / 10),
+            Build::Grch38 => (GRCH38_FA, 3 * GB + GB / 4), // ~3.25 GB plain FASTA
+            Build::Grch37 => (GRCH37_FA, 3 * GB + GB / 7), // ~3.14 GB plain FASTA (was gzipped)
             Build::Chm13v2 => (CHM13_FA, GB),
             Build::Chm13v2MaskedRcrs => (CHM13_MASKED_RCRS_FA, GB),
         };
