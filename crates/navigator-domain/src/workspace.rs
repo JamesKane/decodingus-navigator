@@ -38,6 +38,12 @@ pub struct Biosample {
 }
 
 /// A sequencing run for a biosample, with summary read metrics as flat fields.
+///
+/// The lab/instrument identity block (`instrument_id`/`sample_name`/`library_id`/`platform_unit`/
+/// `flowcell_id`) is inferred from the alignment at import (read-name scan + `@RG` tags) and is the
+/// crowd-source input for resolving the sequencing facility. `sequencing_facility` is the lab
+/// (FGC/FTDNA/YSEQ/Dante/Nebula…) — set manually for now, resolved from `instrument_id` once the
+/// AppView lookup endpoint ships (roadmap D8). All `None` until populated.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SequenceRun {
     pub id: i64,
@@ -50,6 +56,18 @@ pub struct SequenceRun {
     pub pf_reads_aligned: Option<i64>,
     pub mean_read_length: Option<f64>,
     pub mean_insert_size: Option<f64>,
+    /// The sequencing laboratory (a [`crate::labs`] display name), e.g. "YSEQ", "Dante Labs".
+    pub sequencing_facility: Option<String>,
+    /// Most-frequent instrument serial from the read names / `@RG` (e.g. `A00123`, `m84…`).
+    pub instrument_id: Option<String>,
+    /// `@RG SM` — sample name as tagged in the alignment (may differ from the biosample).
+    pub sample_name: Option<String>,
+    /// `@RG LB` — library id (stable across re-alignments).
+    pub library_id: Option<String>,
+    /// `@RG PU` — platform unit (flowcell.lane.barcode).
+    pub platform_unit: Option<String>,
+    /// Most-frequent flowcell id from the read names.
+    pub flowcell_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

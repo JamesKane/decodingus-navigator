@@ -121,6 +121,7 @@ struct EditRun {
     platform_name: String,
     instrument_model: String,
     library_layout: String,
+    sequencing_facility: String,
 }
 
 /// Editable copy of an alignment, driving the alignment Edit modal (Some ⇒ the dialog is shown).
@@ -466,13 +467,14 @@ fn card(ui: &mut egui::Ui, title: &str, body: impl FnOnce(&mut egui::Ui)) {
 }
 
 /// A small rounded chip/badge (provider tag, Y/mt badge).
-fn chip(ui: &mut egui::Ui, text: &str, bg: egui::Color32, fg: egui::Color32) {
+fn chip(ui: &mut egui::Ui, text: &str, bg: egui::Color32, fg: egui::Color32) -> egui::Response {
     let font = egui::FontId::proportional(11.5);
     let galley = ui.painter().layout_no_wrap(text.to_string(), font, fg);
     let pad = egui::vec2(7.0, 3.0);
-    let (rect, _) = ui.allocate_exact_size(galley.size() + pad * 2.0, egui::Sense::hover());
+    let (rect, response) = ui.allocate_exact_size(galley.size() + pad * 2.0, egui::Sense::hover());
     ui.painter().rect_filled(rect, 6.0, bg);
     ui.painter().galley(rect.min + pad, galley, egui::Color32::PLACEHOLDER);
+    response
 }
 
 /// 3-letter provider abbreviation for the run chip (PACBIO → PAC).
@@ -2246,6 +2248,18 @@ impl NavigatorApp {
                     ui.add_space(4.0);
                     ui.label(self.tr("editRun.layout"));
                     ui.add(egui::TextEdit::singleline(&mut edit.library_layout).hint_text("library layout (optional, e.g. PAIRED)").desired_width(f32::INFINITY));
+                    ui.add_space(4.0);
+                    // Lab / sequencing facility — a dropdown from the labs catalog ("(none)" clears
+                    // it). Resolved automatically from the instrument id once the AppView lookup
+                    // ships (roadmap D8); set manually here meanwhile.
+                    ui.label(self.tr("editRun.lab"));
+                    let lab_text = if edit.sequencing_facility.is_empty() { "(none)".to_string() } else { edit.sequencing_facility.clone() };
+                    egui::ComboBox::from_id_salt("edit_run_lab").selected_text(lab_text).width(360.0).show_ui(ui, |ui| {
+                        ui.selectable_value(&mut edit.sequencing_facility, String::new(), "(none)");
+                        for name in navigator_domain::labs::sequence_run_lab_names() {
+                            ui.selectable_value(&mut edit.sequencing_facility, name.to_string(), name);
+                        }
+                    });
                     ui.add_space(10.0);
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         let ready = testtype::by_code(&edit.test_type).is_some();
@@ -2257,6 +2271,7 @@ impl NavigatorApp {
                                 instrument_model: opt(&edit.instrument_model),
                                 test_type: edit.test_type.clone(),
                                 library_layout: opt(&edit.library_layout),
+                                sequencing_facility: opt(&edit.sequencing_facility),
                             });
                             close = true;
                         }
@@ -3286,6 +3301,12 @@ impl NavigatorApp {
                 let mut del_btn: Option<egui::Response> = None;
                 ui.horizontal(|ui| {
                     chip(ui, &provider_abbrev(&r.platform_name), ACCENT.gamma_multiply(0.3), ACCENT);
+                    // Lab chip (FGC/FTDNA/YSEQ/Dante/Nebula…) when the sequencing facility is known.
+                    if let Some(lab) = r.sequencing_facility.as_deref().filter(|s| !s.is_empty()) {
+                        let abbr = navigator_domain::labs::abbreviation(lab, 6);
+                        chip(ui, &abbr, egui::Color32::from_rgb(40, 70, 55), egui::Color32::from_rgb(150, 220, 180))
+                            .on_hover_text(format!("Sequencing lab: {}", navigator_domain::labs::display_name(lab)));
+                    }
                     ui.add_space(4.0);
                     let tt = testtype::by_code(&r.test_type);
                     ui.vertical(|ui| {
@@ -3297,12 +3318,19 @@ impl NavigatorApp {
                             r.instrument_model.as_deref().unwrap_or("—")
                         );
                         ui.label(egui::RichText::new(title).strong());
+                        // Instrument serial (the lab crowd-source key) + flowcell, when inferred.
+                        let inst = match (r.instrument_id.as_deref(), r.flowcell_id.as_deref()) {
+                            (Some(i), Some(f)) => format!("   Instr: {i} · FC: {f}"),
+                            (Some(i), None) => format!("   Instr: {i}"),
+                            _ => String::new(),
+                        };
                         ui.label(
                             egui::RichText::new(format!(
-                                "Reads: {}   Aligned: {}   {}",
+                                "Reads: {}   Aligned: {}   {}{}",
                                 fmt_reads(r.total_reads),
                                 fmt_reads(r.pf_reads_aligned),
-                                r.library_layout.as_deref().unwrap_or("SINGLE")
+                                r.library_layout.as_deref().unwrap_or("SINGLE"),
+                                inst,
                             ))
                             .weak()
                             .small(),
@@ -3341,6 +3369,7 @@ impl NavigatorApp {
                     platform_name: r.platform_name.clone(),
                     instrument_model: r.instrument_model.clone().unwrap_or_default(),
                     library_layout: r.library_layout.clone().unwrap_or_default(),
+                    sequencing_facility: r.sequencing_facility.clone().unwrap_or_default(),
                 });
             } else if hit(&del_btn) {
                 want_delete = Some(DataDelete::Run {

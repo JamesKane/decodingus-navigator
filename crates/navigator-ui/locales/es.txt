@@ -47,6 +47,7 @@ editRun.title=Editar secuenciación
 editRun.platform=Plataforma
 editRun.instrument=Instrumento
 editRun.layout=Disposición de biblioteca
+editRun.lab=Laboratorio de secuenciación
 editAln.title=Editar alineamiento
 editAln.build=Genoma de referencia
 editAln.aligner=Alineador

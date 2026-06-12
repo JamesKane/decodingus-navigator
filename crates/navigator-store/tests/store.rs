@@ -100,6 +100,24 @@ async fn run_alignment_chain_persists() {
     .unwrap();
     assert_eq!(sequence_run::list_for_biosample(s.pool(), b.guid).await.unwrap()[0], run);
     assert_eq!(run.mean_insert_size, Some(580.7)); // flat metric column round-trips
+    // The lab/instrument identity block is None at create, then filled by set_library_stats.
+    assert_eq!(run.instrument_id, None);
+    sequence_run::set_library_stats(
+        s.pool(),
+        run.id,
+        Some("A00182"),
+        Some("WGS229"),
+        Some("WGS229_Lib1"),
+        Some("CeGaT_NovaSeq"),
+        Some("H5WLTDMXX"),
+    )
+    .await
+    .unwrap();
+    let reloaded = sequence_run::get(s.pool(), run.id).await.unwrap().unwrap();
+    assert_eq!(reloaded.instrument_id.as_deref(), Some("A00182"));
+    assert_eq!(reloaded.sample_name.as_deref(), Some("WGS229"));
+    assert_eq!(reloaded.platform_unit.as_deref(), Some("CeGaT_NovaSeq"));
+    assert_eq!(reloaded.flowcell_id.as_deref(), Some("H5WLTDMXX"));
 
     let aln = alignment::create(
         s.pool(),

@@ -19,6 +19,7 @@ pub mod gvcf;
 pub mod haplo;
 pub mod heteroplasmy;
 pub mod ibd;
+pub mod library_stats;
 pub mod mask;
 pub mod mtvariants;
 pub mod parity;

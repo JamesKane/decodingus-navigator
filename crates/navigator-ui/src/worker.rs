@@ -220,6 +220,8 @@ pub enum Command {
         instrument_model: Option<String>,
         test_type: String,
         library_layout: Option<String>,
+        /// The sequencing lab (a `labs` display name); `None` clears it.
+        sequencing_facility: Option<String>,
     },
     /// Update an alignment's descriptive fields. `sequence_run_id` is the owner so the UI can
     /// refresh that run's alignment list.
@@ -462,9 +464,9 @@ pub async fn handle(app: &App, cmd: Command) -> Event {
             Ok(()) => Event::ProjectsChanged,
             Err(e) => Event::Error(e.to_string()),
         },
-        Command::UpdateSequenceRun { id, biosample_guid, platform_name, instrument_model, test_type, library_layout } => {
+        Command::UpdateSequenceRun { id, biosample_guid, platform_name, instrument_model, test_type, library_layout, sequencing_facility } => {
             match app
-                .update_sequence_run(id, platform_name, instrument_model, test_type, library_layout)
+                .update_sequence_run(id, platform_name, instrument_model, test_type, library_layout, sequencing_facility)
                 .await
             {
                 Ok(_) => Event::RunsChanged(biosample_guid),
@@ -1644,6 +1646,7 @@ mod tests {
             instrument_model: Some("DNBSEQ-T7".into()),
             test_type: "WGS".into(),
             library_layout: Some("PAIRED".into()),
+            sequencing_facility: Some("Dante Labs".into()),
         })
         .await
         {
@@ -1656,6 +1659,7 @@ mod tests {
                 assert_eq!(r.platform_name, "MGI");
                 assert_eq!(r.instrument_model.as_deref(), Some("DNBSEQ-T7"));
                 assert_eq!(r.library_layout.as_deref(), Some("PAIRED"));
+                assert_eq!(r.sequencing_facility.as_deref(), Some("Dante Labs")); // lab persisted
                 assert_eq!(r.total_reads, Some(1_000)); // metric untouched
             }
             other => panic!("got {other:?}"),

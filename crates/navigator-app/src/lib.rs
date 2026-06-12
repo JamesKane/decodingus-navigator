@@ -1097,6 +1097,7 @@ impl App {
         instrument_model: Option<String>,
         test_type: String,
         library_layout: Option<String>,
+        sequencing_facility: Option<String>,
     ) -> Result<SequenceRun, AppError> {
         let test_type = test_type.trim();
         if test_type.is_empty() {
@@ -1112,6 +1113,7 @@ impl App {
             norm(instrument_model).as_deref(),
             test_type,
             norm(library_layout).as_deref(),
+            norm(sequencing_facility).as_deref(),
         )
         .await?;
         if !updated {
@@ -3623,6 +3625,27 @@ impl App {
             .map_err(AppError::from)
     }
 
+    /// Scan a bounded prefix of an alignment's reads to infer the instrument/library identity —
+    /// the `@RG SM/LB/PU` tags plus the most-frequent instrument/flowcell/platform from read names
+    /// (the crowd-source input for resolving the lab). Off-thread (blocking IO + CRAM decode);
+    /// `reference` is required for CRAM. Best-effort — callers tolerate an error.
+    pub async fn library_stats(
+        &self,
+        path: PathBuf,
+        reference: Option<PathBuf>,
+    ) -> Result<navigator_analysis::library_stats::LibraryStats, AppError> {
+        tokio::task::spawn_blocking(move || {
+            navigator_analysis::library_stats::scan_library_stats(
+                &path,
+                reference.as_deref(),
+                navigator_analysis::library_stats::DEFAULT_MAX_READS,
+            )
+        })
+        .await
+        .map_err(|e| AppError::Join(e.to_string()))?
+        .map_err(AppError::from)
+    }
+
     /// Auto-import an alignment file by probing its header: create the sequencing run (test type
     /// + platform/instrument) and the alignment (reference build + aligner) with no questions
     /// asked. The reference FASTA is **not** required — it's resolved from the build on demand;
@@ -3640,11 +3663,40 @@ impl App {
         // Best-effort: a probe failure falls back to filename/defaults rather than aborting.
         let probe = self.probe_alignment(path.to_path_buf()).await.unwrap_or_default();
 
+        // Resolve the reference first — the read-name scan needs it to decode a CRAM.
+        let reference_build = probe.reference_build.clone().unwrap_or_else(|| reference_build_for(path));
+        // Store the cached reference path if we have it; otherwise leave it unset (resolved on
+        // demand) — never block import on a download.
+        let reference_path = self
+            .gateway
+            .cached_reference(&reference_build)
+            .map(|p| p.to_string_lossy().into_owned());
+
+        // Read-name scan → instrument/library identity (the lab crowd-source input). Best-effort:
+        // it fills the platform/model the header `@RG` left blank, and the instrument/flowcell that
+        // never live in the header. Skipped silently if the file can't be read (e.g. CRAM with no
+        // resolved reference yet).
+        let stats = self
+            .library_stats(path.to_path_buf(), reference_path.as_deref().map(PathBuf::from))
+            .await
+            .ok();
+
+        // Platform/model: prefer the header `@RG` (PL/PM); fall back to the read-name inference.
+        let platform_name = probe
+            .platform
+            .clone()
+            .or_else(|| stats.as_ref().and_then(|s| s.platform.clone()).map(|p| p.to_uppercase()))
+            .unwrap_or_else(|| "UNKNOWN".into());
+        let instrument_model = probe
+            .instrument_model
+            .clone()
+            .or_else(|| stats.as_ref().and_then(|s| s.instrument_model.clone()));
+
         let run = self
             .record_sequence_run(NewSequenceRun {
                 biosample_guid,
-                platform_name: probe.platform.clone().unwrap_or_else(|| "UNKNOWN".into()),
-                instrument_model: probe.instrument_model.clone(),
+                platform_name,
+                instrument_model,
                 test_type: probe.test_type.clone().unwrap_or_else(|| "WGS".into()),
                 library_layout: None,
                 total_reads: None,
@@ -3654,13 +3706,21 @@ impl App {
             })
             .await?;
 
-        let reference_build = probe.reference_build.clone().unwrap_or_else(|| reference_build_for(path));
-        // Store the cached reference path if we have it; otherwise leave it unset (resolved on
-        // demand) — never block import on a download.
-        let reference_path = self
-            .gateway
-            .cached_reference(&reference_build)
-            .map(|p| p.to_string_lossy().into_owned());
+        // Persist the inferred lab/instrument identity block (the crowd-source key). The lab
+        // (`sequencing_facility`) stays unset — set manually, or resolved from `instrument_id`
+        // once the AppView lookup ships (roadmap D8).
+        if let Some(s) = &stats {
+            let _ = sequence_run::set_library_stats(
+                self.store.pool(),
+                run.id,
+                s.instrument_id.as_deref(),
+                s.sample_name.as_deref(),
+                s.library_id.as_deref(),
+                s.platform_unit.as_deref(),
+                s.flowcell_id.as_deref(),
+            )
+            .await;
+        }
 
         // Defer the content hash (the file's identity, used to invalidate cached analyses): a
         // whole-file SHA-256 of a multi-GB alignment would block this import for minutes with no

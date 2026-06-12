@@ -52,6 +52,7 @@ editRun.title=Edit Run
 editRun.platform=Platform
 editRun.instrument=Instrument
 editRun.layout=Library layout
+editRun.lab=Sequencing lab
 editAln.title=Edit Alignment
 editAln.build=Reference build
 editAln.aligner=Aligner

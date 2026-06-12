@@ -13,6 +13,7 @@ pub mod ancestry;
 pub mod bisdna;
 pub mod chipprofile;
 pub mod filetype;
+pub mod labs;
 pub mod mtdna;
 pub mod reconciliation;
 pub mod strprofile;

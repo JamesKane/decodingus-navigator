@@ -19,6 +19,12 @@ struct Row {
     pf_reads_aligned: Option<i64>,
     mean_read_length: Option<f64>,
     mean_insert_size: Option<f64>,
+    sequencing_facility: Option<String>,
+    instrument_id: Option<String>,
+    sample_name: Option<String>,
+    library_id: Option<String>,
+    platform_unit: Option<String>,
+    flowcell_id: Option<String>,
 }
 
 impl Row {
@@ -36,12 +42,19 @@ impl Row {
             pf_reads_aligned: self.pf_reads_aligned,
             mean_read_length: self.mean_read_length,
             mean_insert_size: self.mean_insert_size,
+            sequencing_facility: self.sequencing_facility,
+            instrument_id: self.instrument_id,
+            sample_name: self.sample_name,
+            library_id: self.library_id,
+            platform_unit: self.platform_unit,
+            flowcell_id: self.flowcell_id,
         })
     }
 }
 
 const COLS: &str = "id, biosample_guid, platform_name, instrument_model, test_type, \
-    library_layout, total_reads, pf_reads_aligned, mean_read_length, mean_insert_size";
+    library_layout, total_reads, pf_reads_aligned, mean_read_length, mean_insert_size, \
+    sequencing_facility, instrument_id, sample_name, library_id, platform_unit, flowcell_id";
 
 /// Fetch one sequence run by id.
 pub async fn get(pool: &SqlitePool, id: i64) -> Result<Option<SequenceRun>, StoreError> {
@@ -80,7 +93,43 @@ pub async fn create(pool: &SqlitePool, r: &NewSequenceRun) -> Result<SequenceRun
         pf_reads_aligned: r.pf_reads_aligned,
         mean_read_length: r.mean_read_length,
         mean_insert_size: r.mean_insert_size,
+        // The lab/instrument identity block is filled in post-create by `set_library_stats`.
+        sequencing_facility: None,
+        instrument_id: None,
+        sample_name: None,
+        library_id: None,
+        platform_unit: None,
+        flowcell_id: None,
     })
+}
+
+/// Persist the lab/instrument identity block inferred from the alignment at import (read-name
+/// scan + `@RG` tags). Does not touch `sequencing_facility` (set separately via [`update`], or by
+/// a later instrument→lab resolution). Returns whether a row was affected.
+#[allow(clippy::too_many_arguments)]
+pub async fn set_library_stats(
+    pool: &SqlitePool,
+    id: i64,
+    instrument_id: Option<&str>,
+    sample_name: Option<&str>,
+    library_id: Option<&str>,
+    platform_unit: Option<&str>,
+    flowcell_id: Option<&str>,
+) -> Result<bool, StoreError> {
+    let affected = sqlx::query(
+        "UPDATE sequence_run SET instrument_id = ?, sample_name = ?, library_id = ?, \
+         platform_unit = ?, flowcell_id = ? WHERE id = ?",
+    )
+    .bind(instrument_id)
+    .bind(sample_name)
+    .bind(library_id)
+    .bind(platform_unit)
+    .bind(flowcell_id)
+    .bind(id)
+    .execute(pool)
+    .await?
+    .rows_affected();
+    Ok(affected > 0)
 }
 
 /// Update a run's descriptive fields. The analysis-derived read-metric columns (total_reads,
@@ -93,15 +142,17 @@ pub async fn update(
     instrument_model: Option<&str>,
     test_type: &str,
     library_layout: Option<&str>,
+    sequencing_facility: Option<&str>,
 ) -> Result<bool, StoreError> {
     let affected = sqlx::query(
         "UPDATE sequence_run SET platform_name = ?, instrument_model = ?, test_type = ?, \
-         library_layout = ? WHERE id = ?",
+         library_layout = ?, sequencing_facility = ? WHERE id = ?",
     )
     .bind(platform_name)
     .bind(instrument_model)
     .bind(test_type)
     .bind(library_layout)
+    .bind(sequencing_facility)
     .bind(id)
     .execute(pool)
     .await?
