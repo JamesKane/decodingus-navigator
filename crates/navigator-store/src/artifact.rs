@@ -42,6 +42,7 @@ const COLS: &str = "id, alignment_id, kind, algorithm_version, created_at, paylo
 
 /// Insert or replace the artifact for `(alignment_id, kind, algorithm_version)`, recording its
 /// provenance (`source` = how produced, `completeness` = full/partial).
+#[allow(clippy::too_many_arguments)] // one parameter per artifact column — a DB row, not a refactor target
 pub async fn upsert(
     pool: &SqlitePool,
     alignment_id: i64,

@@ -30,6 +30,7 @@ pub use navigator_analysis::probe::AlignmentProbe;
 pub use navigator_analysis::caller::SiteGenotype as PanelGenotype;
 pub use navigator_analysis::caller::VariantCall as DenovoCall;
 pub use navigator_analysis::coverage::CoverageResult as Coverage;
+pub use navigator_analysis::coverage::{ContigCallableMetrics, ContigCoverageStats};
 pub use navigator_analysis::read_metrics::{PairOrientation, ReadMetrics};
 pub use navigator_analysis::unified::UnifiedMetricsResult;
 pub use navigator_analysis::sex::{Confidence as SexConfidence, InferredSex, SexInferenceResult};
@@ -3714,8 +3715,8 @@ impl App {
         .map_err(AppError::from)
     }
 
-    /// Auto-import an alignment file by probing its header: create the sequencing run (test type
-    /// + platform/instrument) and the alignment (reference build + aligner) with no questions
+    /// Auto-import an alignment file by probing its header: create the sequencing run (test type,
+    /// platform, instrument) and the alignment (reference build + aligner) with no questions
     /// asked. The reference FASTA is **not** required — it's resolved from the build on demand;
     /// if already cached it's stored so every analysis step has it immediately.
     async fn import_alignment_file(&self, biosample_guid: SampleGuid, path: &Path) -> Result<(), AppError> {

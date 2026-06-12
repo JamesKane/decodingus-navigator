@@ -184,6 +184,7 @@ pub fn parse_samtools_coverage(text: &str) -> (f64, u64, Vec<ContigCoverageStats
             mean_depth,
             mean_base_q: parse_f(7),
             mean_map_q: parse_f(8),
+            histogram: Vec::new(), // fast-path: samtools coverage has no per-depth histogram
         });
     }
     let mean_coverage = if territory == 0 { 0.0 } else { weighted_depth / territory as f64 };

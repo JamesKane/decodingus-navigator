@@ -1391,6 +1391,9 @@ async fn assign_y_haplogroup_lifts_grch38_tree_onto_chm13_alignment() {
 }
 
 #[tokio::test]
+// Holds TREE_DIR_ENV_LOCK across awaits on purpose — it serializes tests that mutate the
+// process-global NAVIGATOR_TREE_DIR env var; the guard must outlive the async body.
+#[allow(clippy::await_holding_lock)]
 async fn analyze_project_runs_coverage_and_attempts_y_per_sample() {
     let _env = TREE_DIR_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     // Seed the Y-tree cache so assign_y is offline; a root-only tree (no loci) means no query
@@ -1454,6 +1457,7 @@ async fn analyze_project_runs_coverage_and_attempts_y_per_sample() {
 /// normalized to the local labs catalog's canonical display name when it matches; unknown labs
 /// pass through; an unassociated instrument resolves to `None`.
 #[tokio::test]
+#[allow(clippy::await_holding_lock)] // see analyze_project_* — env-var serialization guard held across awaits
 async fn lookup_lab_by_instrument_resolves_and_normalizes_from_cache() {
     let _env = TREE_DIR_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let trees = std::env::temp_dir().join(format!("dun-labs-{}", std::process::id()));
@@ -1485,6 +1489,7 @@ async fn lookup_lab_by_instrument_resolves_and_normalizes_from_cache() {
 /// BOTH a Y and an mtDNA haplogroup on import (best-effort), offline against seeded FTDNA trees.
 /// The file declares build 38 so Y placement uses the FTDNA fallback (no DecodingUs AppView).
 #[tokio::test]
+#[allow(clippy::await_holding_lock)] // see analyze_project_* — env-var serialization guard held across awaits
 async fn import_23andme_stores_calls_and_places_y_and_mt() {
     use navigator_app::DnaType;
     let _env = TREE_DIR_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());

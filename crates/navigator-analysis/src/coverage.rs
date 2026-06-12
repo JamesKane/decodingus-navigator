@@ -93,6 +93,13 @@ pub struct ContigCoverageStats {
     pub mean_depth: f64,
     pub mean_base_q: f64,
     pub mean_map_q: f64,
+    /// This contig's depth histogram (bin `d` = bases at depth `d`, clamped at index 255 — same
+    /// convention as the genome-wide [`CoverageResult::coverage_histogram`]). Empty for fast-path
+    /// (pipeline-sidecar) imports, which have no per-depth histogram. `#[serde(default)]` keeps
+    /// coverage blobs cached before this field was added loading (the histogram repopulates on the
+    /// next analysis) — so `COVERAGE_VERSION` does not need a bump.
+    #[serde(default)]
+    pub histogram: Vec<u64>,
 }
 
 /// Combined coverage + callable result (replaces the Scala `CoverageCallableResult`'s
@@ -187,6 +194,9 @@ struct CurContig {
     emit_cursor: usize, // 1-based position next to finalize; window front aligns here
     read_count: u64,
     cm: ContigCallableMetrics,
+    /// This contig's own depth histogram (kept alongside the global `Globals::hist` so the
+    /// per-contig histogram can be surfaced; both walker paths finalize through here).
+    hist: Vec<u64>,
     covered: u64,
     total_base_obs: u64,
     base_q_total: u64,
@@ -215,6 +225,7 @@ impl CurContig {
             emit_cursor: 1,
             read_count: 0,
             cm,
+            hist: vec![0; HIST_LEN],
             covered: 0,
             total_base_obs: 0,
             base_q_total: 0,
@@ -228,6 +239,7 @@ impl CurContig {
         let depth = col.depth;
         let clamped = depth.min(255) as usize;
         g.hist[clamped] += 1;
+        self.hist[clamped] += 1;
         g.n += 1;
         g.sum_depth += depth as u128;
         g.sum_sq += (depth as u128) * (depth as u128);
@@ -291,6 +303,7 @@ impl CurContig {
             mean_depth: if self.length == 0 { 0.0 } else { self.sum_depth as f64 / length },
             mean_base_q: if self.total_base_obs == 0 { 0.0 } else { self.base_q_total as f64 / self.total_base_obs as f64 },
             mean_map_q: if self.total_base_obs == 0 { 0.0 } else { self.map_q_total as f64 / self.total_base_obs as f64 },
+            histogram: std::mem::take(&mut self.hist),
         };
         ContigOut { callable: self.cm, stats }
     }
@@ -467,6 +480,10 @@ impl CoverageState {
                 }
                 self.g.hist[0] += length as u64;
                 self.g.n += length as u64;
+                // Per-contig histogram: every position at depth 0 (matches the parallel path,
+                // where an unseen contig finalizes all positions at depth 0 via CurContig::finish).
+                let mut hist = vec![0u64; HIST_LEN];
+                hist[0] = length as u64;
                 contig_callable.push(ContigCallableMetrics {
                     contig: name.clone(),
                     ref_n,
@@ -486,6 +503,7 @@ impl CoverageState {
                     mean_depth: 0.0,
                     mean_base_q: 0.0,
                     mean_map_q: 0.0,
+                    histogram: hist,
                 });
             }
         }
@@ -884,6 +902,44 @@ mod tests {
         // An impossibly long run-length gate drops everything (fixture is only 50 bp).
         let none = callable_intervals(&bam, "chrM", &params, 10_000, None).unwrap();
         assert!(none.is_empty(), "no run clears a 10 kb gate on a 50 bp contig");
+    }
+
+    #[test]
+    fn per_contig_histograms_sum_to_genome_wide() {
+        let params = CallableLociParams::default();
+
+        // chrM-only and a multi-contig (autosomes + chrX) fixture, so the sum invariant is
+        // exercised across more than one contig.
+        for (bam_name, ref_name) in [("coverage.bam", "ref.fa"), ("sex.bam", "sexref.fa")] {
+            let cov =
+                collect_coverage_callable(&fixture(bam_name), &fixture(ref_name), &params, None).unwrap();
+            assert!(!cov.contig_coverage_stats.is_empty(), "{bam_name}: expected tracked contigs");
+
+            let width = cov.coverage_histogram.len();
+            let mut summed = vec![0u64; width];
+            for s in &cov.contig_coverage_stats {
+                // Every contig carries a full-width histogram...
+                assert_eq!(s.histogram.len(), width, "{bam_name}/{}: histogram width", s.contig);
+                // ...and every finalized position lands in exactly one depth bin, so the bins
+                // total the contig length.
+                let contig_total: u64 = s.histogram.iter().sum();
+                assert_eq!(
+                    contig_total, s.end_pos,
+                    "{bam_name}/{}: histogram bins should total the contig length",
+                    s.contig
+                );
+                for (acc, v) in summed.iter_mut().zip(&s.histogram) {
+                    *acc += v;
+                }
+            }
+
+            // The strong invariant: per-contig histograms reconstruct the genome-wide histogram
+            // exactly (the genome-wide one is just their bin-wise sum).
+            assert_eq!(
+                summed, cov.coverage_histogram,
+                "{bam_name}: per-contig histograms must sum bin-for-bin to the genome-wide histogram"
+            );
+        }
     }
 
     #[test]

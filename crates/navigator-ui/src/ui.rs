@@ -278,6 +278,9 @@ pub struct NavigatorApp {
     /// An alignment to auto-select once its run's alignments load (subject-centric default).
     pending_alignment: Option<i64>,
     coverage: Option<Coverage>,
+    /// Which contig's depth histogram the coverage view charts: `None` = whole-genome histogram,
+    /// `Some(i)` = `coverage.contig_coverage_stats[i]`.
+    coverage_hist_contig: Option<usize>,
     sex: Option<SexInferenceResult>,
     read_metrics: Option<ReadMetrics>,
     sv: Option<SvAnalysisResult>,
@@ -891,6 +894,7 @@ impl NavigatorApp {
             selected_alignment: None,
             pending_alignment: None,
             coverage: None,
+            coverage_hist_contig: None,
             sex: None,
             read_metrics: None,
             sv: None,
@@ -1283,6 +1287,7 @@ impl NavigatorApp {
                 Event::Coverage { alignment_id, result } => {
                     if self.selected_alignment == Some(alignment_id) {
                         self.coverage = result;
+                        self.coverage_hist_contig = None; // reset histogram selection to whole-genome
                     }
                     self.running = false;
                     // A recompute (possibly from the project report) may have filled a cell.
@@ -3571,6 +3576,9 @@ impl NavigatorApp {
             }
         });
 
+        // Local copy so the table's row clicks can update the histogram selection without
+        // borrowing `self` mutably while `&self.coverage` is held; written back after the match.
+        let mut sel = self.coverage_hist_contig;
         match &self.coverage {
             None if !self.running => {
                 ui.label(self.tr("coverage.none"));
@@ -3591,8 +3599,84 @@ impl NavigatorApp {
                     row(ui, "% ≥20x", format!("{:.1}%", c.pct_20x * 100.0));
                     row(ui, "% ≥30x", format!("{:.1}%", c.pct_30x * 100.0));
                 });
+
+                // Drop a stale selection (e.g. fewer contigs than a prior result).
+                if let Some(i) = sel {
+                    if i >= c.contig_coverage_stats.len() {
+                        sel = None;
+                    }
+                }
+
+                ui.separator();
+                ui.strong("Per-contig coverage");
+                ui.horizontal(|ui| {
+                    ui.label("Histogram:");
+                    if ui.selectable_label(sel.is_none(), "Whole genome").clicked() {
+                        sel = None;
+                    }
+                    ui.weak("or click a contig row");
+                });
+
+                // Per-contig table: stats joined with the GATK/callable breakdown by header order.
+                egui::ScrollArea::vertical().max_height(240.0).id_salt("cov_contig_table").show(ui, |ui| {
+                    egui::Grid::new("coverage_contig_grid").striped(true).num_columns(12).show(ui, |ui| {
+                        for h in [
+                            "Contig", "Length", "Reads", "Mean depth", "Cov %", "Callable",
+                            "NoCov", "LowCov", "ExcessCov", "PoorMQ", "Mean BQ", "Mean MQ",
+                        ] {
+                            ui.strong(h);
+                        }
+                        ui.end_row();
+
+                        for (i, s) in c.contig_coverage_stats.iter().enumerate() {
+                            if ui.selectable_label(sel == Some(i), &s.contig).clicked() {
+                                sel = Some(i);
+                            }
+                            ui.label(s.end_pos.to_string());
+                            ui.label(s.num_reads.to_string());
+                            ui.label(format!("{:.2}", s.mean_depth));
+                            ui.label(format!("{:.1}%", s.coverage));
+                            match c.contig_callable.get(i) {
+                                Some(cm) => {
+                                    ui.label(cm.callable.to_string());
+                                    ui.label(cm.no_coverage.to_string());
+                                    ui.label(cm.low_coverage.to_string());
+                                    ui.label(cm.excessive_coverage.to_string());
+                                    ui.label(cm.poor_mapping_quality.to_string());
+                                }
+                                None => {
+                                    for _ in 0..5 {
+                                        ui.label("–");
+                                    }
+                                }
+                            }
+                            ui.label(format!("{:.1}", s.mean_base_q));
+                            ui.label(format!("{:.1}", s.mean_map_q));
+                            ui.end_row();
+                        }
+                    });
+                });
+
+                // Histogram chart for the current selection (whole-genome or a contig).
+                ui.separator();
+                let (title, hist): (String, &[u64]) = match sel {
+                    None => ("whole genome".to_string(), c.coverage_histogram.as_slice()),
+                    Some(i) => (
+                        c.contig_coverage_stats[i].contig.clone(),
+                        c.contig_coverage_stats[i].histogram.as_slice(),
+                    ),
+                };
+                if hist.iter().any(|&v| v > 0) {
+                    coverage_histogram_chart(ui, hist, &title);
+                } else {
+                    ui.label(format!(
+                        "Per-contig depth histogram unavailable for {title} (pipeline-sidecar import) — \
+                         the GATK CallableLoci breakdown is shown in the table above."
+                    ));
+                }
             }
         }
+        self.coverage_hist_contig = sel;
 
         if self.coverage.is_some() {
             self.publish_row(ui, "Publish summary to PDS", Command::PublishCoverage(alignment_id));
@@ -4354,4 +4438,22 @@ impl NavigatorApp {
             self.publish_row(ui, "Publish variants to PDS", Command::PublishVariants { alignment_id, contig: contig.to_string() });
         }
     }
+}
+
+/// Render a depth histogram (`bin d` = bases observed at depth `d`, top bin = ≥255) as an
+/// egui_plot bar chart. Shared by the whole-genome and per-contig coverage views.
+fn coverage_histogram_chart(ui: &mut egui::Ui, hist: &[u64], title: &str) {
+    use egui_plot::{Bar, BarChart, Plot};
+    ui.label(format!(
+        "Depth histogram — {title}  (x = depth, y = bases; drag to zoom, double-click to reset)"
+    ));
+    let bars: Vec<Bar> = hist
+        .iter()
+        .enumerate()
+        .map(|(depth, &count)| Bar::new(depth as f64, count as f64).width(0.9))
+        .collect();
+    let chart = BarChart::new(bars).name("bases");
+    Plot::new(format!("coverage_histogram_{title}"))
+        .height(180.0)
+        .show(ui, |plot_ui| plot_ui.bar_chart(chart));
 }
