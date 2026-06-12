@@ -1788,6 +1788,8 @@ impl NavigatorApp {
                         .add_filter("data files", &["vcf", "csv", "tsv", "txt", "fa", "fasta", "fna", "fas", "bam", "cram"])
                         .pick_file()
                     {
+                        let name = path.file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+                        self.status = format!("Importing {name}…");
                         let _ = self.tx.send(Command::AddData { biosample_guid: guid, path });
                     }
                 }

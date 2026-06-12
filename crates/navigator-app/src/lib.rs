@@ -3662,9 +3662,10 @@ impl App {
             .cached_reference(&reference_build)
             .map(|p| p.to_string_lossy().into_owned());
 
-        // Content hash at import (Scala parity) — the file's identity, used to invalidate
-        // cached analyses only when the file changes.
-        let content_sha256 = sha256_file_async(path.to_path_buf()).await.ok();
+        // Defer the content hash (the file's identity, used to invalidate cached analyses): a
+        // whole-file SHA-256 of a multi-GB alignment would block this import for minutes with no
+        // feedback. Like the batch path, leave it `None` — `alignment_content_hash` computes and
+        // caches it lazily on the first analysis that needs it.
         self.record_alignment(NewAlignment {
             sequence_run_id: run.id,
             reference_build,
@@ -3672,7 +3673,7 @@ impl App {
             variant_caller: None,
             bam_path: Some(path.to_string_lossy().into_owned()),
             reference_path,
-            content_sha256,
+            content_sha256: None,
         })
         .await?;
         Ok(())

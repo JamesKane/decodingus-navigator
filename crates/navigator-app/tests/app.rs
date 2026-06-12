@@ -13,6 +13,11 @@ async fn app() -> App {
     App::new(Store::open_in_memory().await.unwrap())
 }
 
+/// Serializes tests that mutate the process-global `NAVIGATOR_TREE_DIR`: one test's `remove_var`
+/// would otherwise yank the seeded tree dir out from under another running concurrently. Held for
+/// the whole test body; ignores poisoning so a panicking test doesn't wedge the rest.
+static TREE_DIR_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 /// Reuse the analysis crate's committed fixtures (workspace-relative).
 fn fixtures() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../navigator-analysis/tests/fixtures")
@@ -816,7 +821,11 @@ async fn add_data_detects_and_routes() {
     assert_eq!(app.add_data(subject.guid, &bam).await.unwrap(), DetectedData::Alignment);
     let runs = app.list_sequence_runs(subject.guid).await.unwrap();
     assert_eq!(runs.len(), 1);
-    assert_eq!(app.list_alignments(runs[0].id).await.unwrap().len(), 1);
+    let alns = app.list_alignments(runs[0].id).await.unwrap();
+    assert_eq!(alns.len(), 1);
+    // The content hash is deferred (not computed at import) so a multi-GB alignment imports
+    // instantly; it's filled in lazily on the first analysis that needs it.
+    assert_eq!(alns[0].content_sha256, None, "content hash is deferred at import");
     // Idempotent: re-adding the same path doesn't duplicate the run/alignment.
     assert_eq!(app.add_data(subject.guid, &bam).await.unwrap(), DetectedData::Alignment);
     assert_eq!(app.list_sequence_runs(subject.guid).await.unwrap().len(), 1);
@@ -1383,6 +1392,7 @@ async fn assign_y_haplogroup_lifts_grch38_tree_onto_chm13_alignment() {
 
 #[tokio::test]
 async fn analyze_project_runs_coverage_and_attempts_y_per_sample() {
+    let _env = TREE_DIR_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     // Seed the Y-tree cache so assign_y is offline; a root-only tree (no loci) means no query
     // targets and no chain — exercises the orchestration without network.
     let trees = std::env::temp_dir().join(format!("dun-trees-{}", std::process::id()));
@@ -1445,6 +1455,7 @@ async fn analyze_project_runs_coverage_and_attempts_y_per_sample() {
 #[tokio::test]
 async fn import_23andme_stores_calls_and_places_y_and_mt() {
     use navigator_app::DnaType;
+    let _env = TREE_DIR_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
 
     // Seed the FTDNA Y + mt trees so both placements run with no network.
     let trees = std::env::temp_dir().join(format!("dun-chip-trees-{}", std::process::id()));
