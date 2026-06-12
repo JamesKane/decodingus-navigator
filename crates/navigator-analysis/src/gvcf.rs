@@ -170,17 +170,24 @@ pub fn read_called_bases_from<R: BufRead>(
 }
 
 /// Assemble the `position → observed base` map [`crate::haplo::score`] consumes from the
-/// decoded GVCF facts. A variant base wins; otherwise a callable site takes the tree's
-/// ancestral allele (reference base on the native build); otherwise the position is a
-/// no-call and is omitted. `ancestral` is the per-position ancestral allele from the tree.
-pub fn assemble_calls(called: &CalledBases, ancestral: &HashMap<i64, char>) -> HashMap<i64, char> {
+/// decoded GVCF facts. A variant (derived) base wins; otherwise a callable hom-ref site takes
+/// the **reference genome base** at that position (`ref_base`); otherwise the position is a
+/// no-call and is omitted.
+///
+/// `ref_base` must be the *reference* base, not the tree ancestral — the two differ wherever
+/// the reference itself carries a derived allele. CHM13's Y is HG002 (haplogroup J1, deep in
+/// the tree), so at every backbone SNP shared by J1 and the sample the GVCF emits a ref block
+/// (hom-ref == reference == *derived*), and assuming ancestral there would silently break the
+/// descent. This mirrors [`crate::caller::call_bases_at`], which reads the actual base off the
+/// reads (== the reference base at a hom-ref site).
+pub fn assemble_calls(called: &CalledBases, ref_base: &HashMap<i64, char>) -> HashMap<i64, char> {
     let mut calls: HashMap<i64, char> = HashMap::with_capacity(called.callable.len());
     for &pos in &called.callable {
-        if let Some(&a) = ancestral.get(&pos) {
-            calls.insert(pos, a);
+        if let Some(&r) = ref_base.get(&pos) {
+            calls.insert(pos, r);
         }
     }
-    // Variant (derived) observations override the ancestral default.
+    // Variant (derived) observations override the reference default.
     for (&pos, &base) in &called.variant_bases {
         calls.insert(pos, base);
     }
@@ -276,15 +283,16 @@ chrM\t100\t.\tC\tT,<NON_REF>\t500\t.\tDP=30\tGT:AD:DP:GQ:PL\t1:0,30,0:30:99:510,
     }
 
     #[test]
-    fn assemble_prefers_variant_then_ancestral() {
+    fn assemble_prefers_variant_then_reference() {
         let mut called = CalledBases::default();
         called.variant_bases.insert(2459921, 'A');
         called.callable.insert(2459921);
-        called.callable.insert(2459000); // ancestral-only
-        let ancestral: HashMap<i64, char> = [(2459921, 'G'), (2459000, 'G'), (700, 'C')].into_iter().collect();
-        let calls = assemble_calls(&called, &ancestral);
-        assert_eq!(calls.get(&2459921), Some(&'A'), "variant (derived) wins");
-        assert_eq!(calls.get(&2459000), Some(&'G'), "callable-only takes ancestral");
+        called.callable.insert(2459000); // hom-ref-only → takes the reference base
+        // The reference base at a hom-ref site can be the *derived* allele (CHM13 = J1 Y).
+        let ref_base: HashMap<i64, char> = [(2459921, 'G'), (2459000, 'T'), (700, 'C')].into_iter().collect();
+        let calls = assemble_calls(&called, &ref_base);
+        assert_eq!(calls.get(&2459921), Some(&'A'), "variant (derived) wins over reference");
+        assert_eq!(calls.get(&2459000), Some(&'T'), "callable hom-ref takes the reference base");
         assert!(!calls.contains_key(&700), "no-call position is omitted");
     }
 

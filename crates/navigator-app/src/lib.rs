@@ -14,7 +14,10 @@ use du_domain::ids::SampleGuid;
 use navigator_analysis::ancestry::{self as ancestry_analysis};
 use navigator_analysis::caller::{self, HaploidCallerParams, SiteGenotype, Site, VariantCall};
 use navigator_analysis::coverage::{self, CallableLociParams, CoverageResult};
+use navigator_analysis::gvcf;
 use navigator_analysis::heteroplasmy::{self, HeteroplasmyParams};
+use navigator_analysis::scan::SampleSidecars;
+use navigator_analysis::sidecar;
 use navigator_analysis::ibd::{
     ChromosomeGenotypes, GeneticMap, IbdSegment, MatchSummary, PairwiseIbdDetector,
 };
@@ -257,6 +260,30 @@ fn assemble_assignment_robust(
         .map(|t| haplo::child_evidence(tree, calls, t.id))
         .unwrap_or_default();
     HaploAssignment { ranked, branches }
+}
+
+/// Map GVCF-decoded bases at *lifted* positions back to tree positions (the GVCF-sourced
+/// analogue of [`App::build_calls_from_lifted`]). A variant base wins; otherwise a callable
+/// hom-ref lifted site takes the **reference base** at that lifted position — both reverse-
+/// complemented for a minus-strand lift; otherwise the position is a no-call. `ref_base` is
+/// keyed by lifted position (the GVCF/reference coordinate), not the tree position.
+fn assemble_calls_lifted(
+    called: &gvcf::CalledBases,
+    lifted: &[LiftedPos],
+    ref_base: &HashMap<i64, char>,
+) -> HashMap<i64, char> {
+    let mut calls = HashMap::new();
+    for lp in lifted {
+        let base = called
+            .variant_bases
+            .get(&lp.pos)
+            .copied()
+            .or_else(|| called.callable.contains(&lp.pos).then(|| ref_base.get(&lp.pos).copied()).flatten());
+        if let Some(b) = base {
+            calls.insert(lp.tree_pos, if lp.reverse { complement_base(b) } else { b });
+        }
+    }
+    calls
 }
 
 /// Minimum callable/calling depth adapted to read technology. The default (4) is a
@@ -534,6 +561,16 @@ fn decodingus_build_key(reference_build: &str) -> Option<&'static str> {
     }
 }
 
+/// Whether an alignment's reference build matches a GVCF name's build token (e.g. `chm13`),
+/// compared on the canonical build so `chm13`/`chm13v2`/`hs1` all agree. A token that doesn't
+/// resolve to a known build is treated as a non-match (fall back to the first alignment).
+fn build_hint_matches(reference_build: &str, hint: &str) -> bool {
+    match (canonical_build(reference_build), canonical_build(hint)) {
+        (Some(a), Some(b)) => a == b,
+        _ => false,
+    }
+}
+
 /// Whether `<alignment>.crai`/`.bai` is present among the discovered index files.
 fn has_sibling_index(aln_path: &Path, index_files: &[PathBuf]) -> bool {
     let Some(aln_name) = aln_path.file_name().and_then(|n| n.to_str()) else {
@@ -691,6 +728,34 @@ pub struct ProjectImportSummary {
     pub alignments_skipped: usize,
     /// Sample ids whose alignment had no sibling index (.crai/.bai) — coverage needs one.
     pub missing_index: Vec<String>,
+    /// Roll-up of the fast-path sidecar ingest across the imported samples.
+    pub fast_path: FastPathSummary,
+}
+
+/// What the fast-path sidecar ingest filled across a project import (one tally per result
+/// kind), so the import returns immediately with the report already populated.
+#[derive(Debug, Clone, Default)]
+pub struct FastPathSummary {
+    /// Samples that had pipeline sidecars to ingest.
+    pub samples_with_sidecars: usize,
+    pub y_placed: usize,
+    pub mt_placed: usize,
+    pub sex_filled: usize,
+    pub metrics_filled: usize,
+    pub coverage_filled: usize,
+    /// Per-sample ingest errors (`"<sample>: <detail>"`), non-fatal.
+    pub errors: Vec<String>,
+}
+
+/// What [`App::ingest_sidecars`] managed to fill for one alignment.
+#[derive(Debug, Clone, Default)]
+pub struct SidecarIngest {
+    pub y_haplogroup: Option<String>,
+    pub mt_haplogroup: Option<String>,
+    pub sex: Option<String>,
+    pub read_metrics: bool,
+    pub lite_coverage: bool,
+    pub errors: Vec<String>,
 }
 
 /// AT Proto auth state: keychain-backed sessions + the in-memory active account. Shared
@@ -2886,6 +2951,276 @@ impl App {
         Ok(calls)
     }
 
+    // ---- fast path: place haplogroups from precomputed pipeline GVCFs ---------
+
+    /// Build a tree's per-position base calls for an alignment from a **precomputed GVCF**
+    /// (the fast path — no CRAM pileup). Lifts tree positions onto the GVCF's build when the
+    /// tree's coordinates differ (mt rCRS-tree vs CHM13 `chrM`), exactly as the CRAM path does,
+    /// then reads the GVCF instead of walking reads.
+    async fn gvcf_base_calls(
+        &self,
+        alignment_id: i64,
+        contig: &str,
+        gvcf: &Path,
+        tree: &navigator_analysis::haplo::HaploTree,
+        tree_source_build: Option<&str>,
+    ) -> Result<HashMap<i64, char>, AppError> {
+        let aln = alignment::get(self.store.pool(), alignment_id)
+            .await?
+            .ok_or_else(|| AppError::Store(StoreError::NotFound(format!("alignment {alignment_id}"))))?;
+        // The reference is required: a GVCF hom-ref site means "the sample's base == the
+        // reference base" — and the reference (e.g. CHM13 = HG002/J1 Y) is itself deep in the
+        // tree, so its base there is often the *derived* allele, not the ancestral. We read the
+        // reference base at every callable tree position (exactly what call_bases_at observes).
+        let reference = match aln.reference_path {
+            Some(p) => PathBuf::from(p),
+            None => self.gateway.resolve_reference(&aln.reference_build, &mut |_, _| {}).await?,
+        };
+        let targets: HashSet<i64> =
+            tree.nodes.values().flat_map(|n| n.loci.iter().map(|l| l.position)).collect();
+        if targets.is_empty() {
+            return Ok(HashMap::new());
+        }
+        let params = gvcf::GvcfReadParams::default();
+
+        let lifted = self
+            .lifted_targets(&aln.reference_build, Some(&reference), contig, &targets, tree_source_build)
+            .await?;
+
+        match lifted {
+            // Native: tree positions are already in the GVCF's coordinates → direct read, then
+            // resolve hom-ref bases from the reference at the same positions.
+            None => {
+                let gvcf = gvcf.to_path_buf();
+                let contig_s = contig.to_string();
+                let targets2 = targets.clone();
+                let called = tokio::task::spawn_blocking(move || {
+                    gvcf::read_called_bases(&gvcf, &contig_s, &targets2, &params)
+                })
+                .await
+                .map_err(|e| AppError::Join(e.to_string()))??;
+                let ref_base = self.reference_bases(&reference, contig, &called.callable).await?;
+                Ok(gvcf::assemble_calls(&called, &ref_base))
+            }
+            // Lifted: read the GVCF at each lifted contig + the reference bases there, then map
+            // observations back to tree positions (reverse-complementing minus-strand lifts).
+            Some(lifted) => {
+                let mut by_contig: HashMap<String, HashSet<i64>> = HashMap::new();
+                for lp in &lifted {
+                    by_contig.entry(lp.contig.clone()).or_default().insert(lp.pos);
+                }
+                let mut all = gvcf::CalledBases::default();
+                let mut ref_base: HashMap<i64, char> = HashMap::new();
+                for (qcontig, set) in by_contig {
+                    let gvcf = gvcf.to_path_buf();
+                    let qc = qcontig.clone();
+                    let set2 = set.clone();
+                    let called = tokio::task::spawn_blocking(move || {
+                        gvcf::read_called_bases(&gvcf, &qc, &set2, &params)
+                    })
+                    .await
+                    .map_err(|e| AppError::Join(e.to_string()))??;
+                    ref_base.extend(self.reference_bases(&reference, &qcontig, &called.callable).await?);
+                    all.variant_bases.extend(called.variant_bases);
+                    all.callable.extend(called.callable);
+                }
+                Ok(assemble_calls_lifted(&all, &lifted, &ref_base))
+            }
+        }
+    }
+
+    /// Reference genome bases (uppercase A/C/G/T) at `positions` on `contig`. Reads the contig
+    /// sequence once off-thread; positions are 1-based. Non-ACGT / out-of-range positions are
+    /// omitted. Used by the GVCF fast path to resolve hom-ref tree sites to the actual base.
+    async fn reference_bases(
+        &self,
+        reference: &Path,
+        contig: &str,
+        positions: &HashSet<i64>,
+    ) -> Result<HashMap<i64, char>, AppError> {
+        if positions.is_empty() {
+            return Ok(HashMap::new());
+        }
+        let reference = reference.to_path_buf();
+        let contig = contig.to_string();
+        let positions: Vec<i64> = positions.iter().copied().collect();
+        let map = tokio::task::spawn_blocking(move || -> Result<HashMap<i64, char>, navigator_analysis::AnalysisError> {
+            let seq = navigator_analysis::reader::read_contig_sequence(&reference, &contig)?;
+            let mut m = HashMap::with_capacity(positions.len());
+            for p in positions {
+                if p >= 1 && (p as usize) <= seq.len() {
+                    let b = seq[p as usize - 1].to_ascii_uppercase();
+                    if matches!(b, b'A' | b'C' | b'G' | b'T') {
+                        m.insert(p, b as char);
+                    }
+                }
+            }
+            Ok(m)
+        })
+        .await
+        .map_err(|e| AppError::Join(e.to_string()))??;
+        Ok(map)
+    }
+
+    /// Fingerprint of a GVCF-sourced placement: the GVCF's content hash ⊕ the tree's hash.
+    /// Distinct from the CRAM-based [`Self::y_score_fingerprint`] (`gv:` vs `f:` prefix) so a
+    /// later deep analyze can tell the call came from a sidecar (phase: deep-pass skip logic).
+    async fn gvcf_fingerprint(&self, gvcf: &Path, tree_json: &str, tag: &str) -> Result<String, AppError> {
+        let h = sha256_file_async(gvcf.to_path_buf()).await?;
+        Ok(format!("gv:{}|{}:{}", &h[..16], tag, &sha256_str(tree_json)[..16]))
+    }
+
+    /// Assign a Y haplogroup from a precomputed chrY GVCF — no CRAM walk. Places against the
+    /// DecodingUs tree at the alignment's native build (liftover-free), records the call under
+    /// the same source key as the CRAM path (`aln:{id}`) with a `gv:`-prefixed fingerprint.
+    /// Errors if the build has no DecodingUs coordinates or the tree is unreachable; the caller
+    /// (`ingest_sidecars`) treats that as "leave Y for the deep pass".
+    pub async fn assign_y_from_gvcf(&self, alignment_id: i64, gvcf: &Path) -> Result<HaploAssignment, AppError> {
+        let aln = alignment::get(self.store.pool(), alignment_id)
+            .await?
+            .ok_or_else(|| AppError::Store(StoreError::NotFound(format!("alignment {alignment_id}"))))?;
+        let build_key = decodingus_build_key(&aln.reference_build).ok_or_else(|| {
+            AppError::Import(format!("no DecodingUs tree coordinates for build {}", aln.reference_build))
+        })?;
+        let tree_json = self.fetch_decodingus_y_tree().await?;
+        let tree = navigator_analysis::haplo::parse_decodingus_json(&tree_json, build_key).map_err(AppError::Import)?;
+        let calls = self.gvcf_base_calls(alignment_id, "chrY", gvcf, &tree, None).await?;
+        // Robust (proportional-top) selection, not the strict alignment-tuned guard. A
+        // joint-genotyped GVCF gives confident calls that include a few stray ancestral
+        // contradictions on the deep backbone (recurrent sites, the CHM13=J1 reference, joint
+        // hard-filters); strict `path_admissible` then vetoes the genuine deep lineage and
+        // drops to a shallow node (HG00096 → A1b instead of its true R1b1a1b1a1a, which `score`
+        // ranks top at 344/364). This is the same confident-but-sparse-contradiction regime as
+        // BISDNA chip data — see [`assemble_assignment_robust`].
+        let assignment = assemble_assignment_robust(&tree, &calls);
+        if let Ok(bio) = self.biosample_of_alignment(alignment_id).await {
+            let fp = self.gvcf_fingerprint(gvcf, &tree_json, "yt").await.ok();
+            self.record_call_fp(
+                bio,
+                DnaType::Y,
+                &format!("aln:{alignment_id}"),
+                format!("aln #{alignment_id} Y (pipeline GVCF)"),
+                &assignment,
+                fp.as_deref(),
+            )
+            .await?;
+        }
+        Ok(assignment)
+    }
+
+    /// Assign an mtDNA haplogroup from a precomputed chrM GVCF — no CRAM walk. Places against
+    /// the FTDNA mt tree; on CHM13 the tree's rCRS positions are lifted onto `chrM` (the cheap
+    /// self-generated rCRS↔chrM map), on GRCh38 they're read directly. Recorded under the CRAM
+    /// path's mt source key (`aln:{id}:mt`) with a `gv:`-prefixed fingerprint.
+    pub async fn assign_mt_from_gvcf(&self, alignment_id: i64, gvcf: &Path) -> Result<HaploAssignment, AppError> {
+        let tree_json = self.fetch_ftdna_mt_tree().await?;
+        let tree = navigator_analysis::haplo::parse_ftdna_json(&tree_json).map_err(AppError::Import)?;
+        let source_build = tree_build_for_contig("chrM"); // None → rCRS-direct / chrM lift
+        let calls = self.gvcf_base_calls(alignment_id, "chrM", gvcf, &tree, source_build).await?;
+        // Robust selection, as for Y (see assign_y_from_gvcf) — the GVCF's confident calls fit
+        // the proportional-top regime better than the strict alignment guard.
+        let assignment = assemble_assignment_robust(&tree, &calls);
+        if let Ok(bio) = self.biosample_of_alignment(alignment_id).await {
+            let fp = self.gvcf_fingerprint(gvcf, &tree_json, "mt").await.ok();
+            self.record_call_fp(
+                bio,
+                DnaType::Mt,
+                &format!("aln:{alignment_id}:mt"),
+                format!("aln #{alignment_id} mtDNA (pipeline GVCF)"),
+                &assignment,
+                fp.as_deref(),
+            )
+            .await?;
+        }
+        Ok(assignment)
+    }
+
+    /// Fast-path ingest of a sample's pipeline sidecars onto one alignment: place Y + mt from
+    /// the GVCFs, and fill sex / read-metrics / lite-coverage from the text sidecars — all
+    /// without touching the CRAM. Each step is independent and best-effort: a failure is
+    /// recorded in the returned report and the rest proceed (a missing/!matching sidecar just
+    /// leaves that result for the deep pass). Returns what it managed to fill.
+    pub async fn ingest_sidecars(
+        &self,
+        alignment_id: i64,
+        sidecars: &SampleSidecars,
+    ) -> Result<SidecarIngest, AppError> {
+        let mut out = SidecarIngest::default();
+
+        if let Some(gvcf) = &sidecars.chr_y_gvcf {
+            match self.assign_y_from_gvcf(alignment_id, gvcf).await {
+                Ok(a) => out.y_haplogroup = a.ranked.first().map(|r| r.name.clone()),
+                Err(e) => out.errors.push(format!("Y from GVCF: {e}")),
+            }
+        }
+        if let Some(gvcf) = &sidecars.chr_m_gvcf {
+            match self.assign_mt_from_gvcf(alignment_id, gvcf).await {
+                Ok(a) => out.mt_haplogroup = a.ranked.first().map(|r| r.name.clone()),
+                Err(e) => out.errors.push(format!("mt from GVCF: {e}")),
+            }
+        }
+        if let Some(path) = &sidecars.sex {
+            match self.ingest_sex_sidecar(alignment_id, path).await {
+                Ok(s) => out.sex = Some(s),
+                Err(e) => out.errors.push(format!("sex: {e}")),
+            }
+        }
+        if let Some(path) = &sidecars.stats {
+            match self.ingest_stats_sidecar(alignment_id, path).await {
+                Ok(()) => out.read_metrics = true,
+                Err(e) => out.errors.push(format!("read metrics: {e}")),
+            }
+        }
+        if let Some(path) = &sidecars.coverage {
+            match self.ingest_coverage_sidecar(alignment_id, path, sidecars.callable_summary.as_deref()).await {
+                Ok(()) => out.lite_coverage = true,
+                Err(e) => out.errors.push(format!("coverage: {e}")),
+            }
+        }
+        Ok(out)
+    }
+
+    async fn ingest_sex_sidecar(&self, alignment_id: i64, path: &Path) -> Result<String, AppError> {
+        let text = tokio::fs::read_to_string(path).await.map_err(|e| AppError::Import(format!("{}: {e}", path.display())))?;
+        let result = sidecar::parse_sex(&text);
+        self.save_analysis(alignment_id, "sex", "1", &result).await?;
+        self.write_back_inferred_sex(alignment_id, &result).await?;
+        Ok(match result.inferred_sex {
+            InferredSex::Male => "M",
+            InferredSex::Female => "F",
+            InferredSex::Unknown => "U",
+        }
+        .to_string())
+    }
+
+    async fn ingest_stats_sidecar(&self, alignment_id: i64, path: &Path) -> Result<(), AppError> {
+        let text = tokio::fs::read_to_string(path).await.map_err(|e| AppError::Import(format!("{}: {e}", path.display())))?;
+        let metrics = sidecar::parse_samtools_stats(&text);
+        self.save_analysis(alignment_id, "read_metrics", "1", &metrics).await?;
+        Ok(())
+    }
+
+    async fn ingest_coverage_sidecar(
+        &self,
+        alignment_id: i64,
+        coverage_path: &Path,
+        callable_summary: Option<&Path>,
+    ) -> Result<(), AppError> {
+        let cov = tokio::fs::read_to_string(coverage_path)
+            .await
+            .map_err(|e| AppError::Import(format!("{}: {e}", coverage_path.display())))?;
+        let summary = match callable_summary {
+            Some(p) => Some(tokio::fs::read_to_string(p).await.map_err(|e| AppError::Import(format!("{}: {e}", p.display())))?),
+            None => None,
+        };
+        let result = sidecar::lite_coverage(&cov, summary.as_deref());
+        // Lite coverage: real mean depth + callable counts, zeroed histogram/pct_Nx. Stored
+        // under the standard coverage key so the report/UI read it unchanged; the deep pass
+        // overwrites it with the full per-base walk (phase: provenance/partial flag).
+        self.save_analysis(alignment_id, "coverage", coverage::COVERAGE_VERSION, &result).await?;
+        Ok(())
+    }
+
     /// Self-referential callable intervals (BED 0-based half-open) for `contig` from the
     /// alignment's own reads. Parameters adapt to the sample: long reads (HiFi) earn
     /// callability at lower depth, and the CALLABLE-run gate scales with molecule length
@@ -3123,6 +3458,7 @@ impl App {
         dir: &Path,
         reference: Option<PathBuf>,
         administrator: String,
+        fast_path: bool,
     ) -> Result<ProjectImportSummary, AppError> {
         // An explicit FASTA must exist and be indexed; it applies to every alignment.
         if let Some(path) = &reference {
@@ -3196,6 +3532,7 @@ impl App {
             alignments_created: 0,
             alignments_skipped: 0,
             missing_index: Vec::new(),
+            fast_path: FastPathSummary::default(),
         };
 
         for sample in &discovered.samples {
@@ -3257,6 +3594,36 @@ impl App {
                 })
                 .await?;
                 summary.alignments_created += 1;
+            }
+
+            // Fast path: ingest the pipeline sidecars onto the build-matching alignment —
+            // places Y + mt from the GVCFs and fills sex/metrics/lite-coverage from the text
+            // sidecars, no CRAM walk. Best-effort; a failure is tallied and import continues.
+            if fast_path && sample.sidecars.has_haplogroup_gvcf() {
+                let alns = alignment::list_for_run(self.store.pool(), run.id).await?;
+                let chosen = sample
+                    .sidecars
+                    .build_hint
+                    .as_deref()
+                    .and_then(|hint| alns.iter().find(|a| build_hint_matches(&a.reference_build, hint)))
+                    .or_else(|| alns.iter().find(|a| a.bam_path.is_some()))
+                    .or_else(|| alns.first());
+                if let Some(a) = chosen {
+                    summary.fast_path.samples_with_sidecars += 1;
+                    match self.ingest_sidecars(a.id, &sample.sidecars).await {
+                        Ok(ing) => {
+                            summary.fast_path.y_placed += ing.y_haplogroup.is_some() as usize;
+                            summary.fast_path.mt_placed += ing.mt_haplogroup.is_some() as usize;
+                            summary.fast_path.sex_filled += ing.sex.is_some() as usize;
+                            summary.fast_path.metrics_filled += ing.read_metrics as usize;
+                            summary.fast_path.coverage_filled += ing.lite_coverage as usize;
+                            for e in ing.errors {
+                                summary.fast_path.errors.push(format!("{}: {e}", sample.sample_id));
+                            }
+                        }
+                        Err(e) => summary.fast_path.errors.push(format!("{}: {e}", sample.sample_id)),
+                    }
+                }
             }
         }
         Ok(summary)
@@ -3751,5 +4118,58 @@ mod placement_tests {
         let calls: HashMap<i64, char> = [(146, 'G'), (263, 'G'), (750, 'T'), (1000, 'A')].into_iter().collect();
         assert_eq!(assemble_assignment(&tree, &calls).ranked.first().unwrap().name, "D");
         assert_eq!(assemble_assignment_robust(&tree, &calls).ranked.first().unwrap().name, "D");
+    }
+
+    /// The GVCF fast path reconstructs exactly the `calls` a pileup would yield. A fully
+    /// derived path (every defining SNP a variant) places to the deep terminal D.
+    #[test]
+    fn gvcf_derived_path_places_deep() {
+        use navigator_analysis::gvcf;
+        let tree = parse_ftdna_json(TREE).unwrap();
+        let mut called = gvcf::CalledBases::default();
+        called.variant_bases.extend([(146, 'G'), (263, 'G'), (750, 'T'), (1000, 'A')]);
+        called.callable.extend([146, 263, 750, 1000]);
+        // Reference bases are irrelevant here (every site is a variant).
+        let calls = gvcf::assemble_calls(&called, &HashMap::new());
+        let expected: HashMap<i64, char> = [(146, 'G'), (263, 'G'), (750, 'T'), (1000, 'A')].into_iter().collect();
+        assert_eq!(calls, expected);
+        assert_eq!(assemble_assignment(&tree, &calls).ranked.first().unwrap().name, "D");
+    }
+
+    /// A hom-ref (callable, no variant) tree SNP reconstructs as the **reference base** — which
+    /// on a real reference can be the *derived* allele (CHM13 Y = J1). Here position 750's
+    /// reference base is the derived T, so node C is supported and placement reaches D — the
+    /// exact case the old "assume ancestral" logic got wrong (it stopped at B).
+    #[test]
+    fn gvcf_homref_site_takes_reference_base_not_ancestral() {
+        use navigator_analysis::gvcf;
+        let tree = parse_ftdna_json(TREE).unwrap();
+        let mut called = gvcf::CalledBases::default();
+        called.variant_bases.extend([(146, 'G'), (263, 'G'), (1000, 'A')]);
+        called.callable.extend([146, 263, 750, 1000]); // 750 hom-ref → its reference base
+        // The reference carries the *derived* T at 750 (shared backbone the sample also has).
+        let ref_base: HashMap<i64, char> = [(750, 'T')].into_iter().collect();
+        let calls = gvcf::assemble_calls(&called, &ref_base);
+        assert_eq!(calls.get(&750), Some(&'T'), "hom-ref site takes the reference base (derived here)");
+        assert_eq!(assemble_assignment(&tree, &calls).ranked.first().unwrap().name, "D");
+    }
+
+    /// Lifted assembly maps GVCF observations back to tree positions, reverse-complementing a
+    /// minus-strand lift; hom-ref lifted sites take the reference base at the lifted position.
+    #[test]
+    fn lifted_assembly_maps_back_and_revcomps() {
+        use navigator_analysis::gvcf;
+        use navigator_refgenome::LiftedPos;
+        let mut called = gvcf::CalledBases::default();
+        called.variant_bases.insert(500, 'G'); // tree 146 → derived G (forward)
+        called.callable.extend([500, 900]); // 900 hom-ref → reference base, minus strand
+        let ref_base: HashMap<i64, char> = [(900, 'C')].into_iter().collect();
+        let lifted = vec![
+            LiftedPos { tree_pos: 146, contig: "chrM".into(), pos: 500, reverse: false },
+            LiftedPos { tree_pos: 263, contig: "chrM".into(), pos: 900, reverse: true },
+        ];
+        let calls = super::assemble_calls_lifted(&called, &lifted, &ref_base);
+        assert_eq!(calls.get(&146), Some(&'G'));
+        assert_eq!(calls.get(&263), Some(&'G'), "minus-strand reference C → complement G");
     }
 }

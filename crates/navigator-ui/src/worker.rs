@@ -363,7 +363,7 @@ pub async fn handle(app: &App, cmd: Command) -> Event {
             Err(e) => Event::Error(e.to_string()),
         },
         Command::ImportProjectDir { dir, reference } => {
-            match app.import_project_dir(&dir, reference, "unknown".into()).await {
+            match app.import_project_dir(&dir, reference, "unknown".into(), true).await {
                 Ok(summary) => Event::ProjectImported(summary),
                 Err(AppError::ReferenceNeeded(builds)) => Event::ReferenceNeeded { dir, builds },
                 Err(e) => Event::Error(e.to_string()),

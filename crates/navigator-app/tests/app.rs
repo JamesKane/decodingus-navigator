@@ -498,6 +498,139 @@ async fn validate_gfx_decodingus_y() {
     );
 }
 
+/// Fast-path-only smoke test: place HG00096's Y from the precomputed GVCF (no CRAM walk),
+/// against the DecodingUs tree (warm cache or AppView). Prints the terminal + lineage so we
+/// can eyeball that the GVCF path produces a sensible deep placement.
+///   GVCF_SMOKE_Y_GVCF (+ optional GVCF_SMOKE_M_GVCF)
+#[tokio::test]
+#[ignore = "requires a chrY GVCF + DecodingUs tree (AppView/cache)"]
+async fn gvcf_y_placement_smoke() {
+    let Ok(y_gvcf) = std::env::var("GVCF_SMOKE_Y_GVCF") else {
+        eprintln!("set GVCF_SMOKE_Y_GVCF to run this");
+        return;
+    };
+    std::env::set_var("NAVIGATOR_Y_TREE_PROVIDER", "decodingus");
+    let app = app().await;
+    let b = app.add_biosample(None, "SMOKE", None, Some("male".into())).await.unwrap();
+    let run = app
+        .record_sequence_run(NewSequenceRun {
+            biosample_guid: b.guid,
+            platform_name: "ILLUMINA".into(),
+            instrument_model: None,
+            test_type: "WGS".into(),
+            library_layout: None,
+            total_reads: None,
+            pf_reads_aligned: None,
+            mean_read_length: None,
+            mean_insert_size: None,
+        })
+        .await
+        .unwrap();
+    let aln = app
+        .record_alignment(NewAlignment {
+            sequence_run_id: run.id,
+            reference_build: "chm13v2.0".into(),
+            aligner: "bwa-mem".into(),
+            variant_caller: None,
+            bam_path: Some("/nonexistent.cram".into()), // native Y path never reads the CRAM
+            reference_path: None,
+            content_sha256: None,
+        })
+        .await
+        .unwrap()
+        .id;
+    let y = app.assign_y_from_gvcf(aln, std::path::Path::new(&y_gvcf)).await.expect("Y from GVCF");
+    let top = &y.ranked[0];
+    eprintln!("HG00096 Y (GVCF): {} ({}/{} mutations, score {:.3})", top.name, top.matched, top.expected, top.score);
+    eprintln!("  lineage: {}", top.lineage.join(" › "));
+    // HG00096 is a 1000G GBR sample → deep R1b. Confirm the GVCF places it deep on the R
+    // backbone (not a shallow veto), with a substantial match count.
+    assert!(top.matched >= 100, "expected a deep match count from the GVCF, got {}", top.matched);
+    assert!(
+        top.lineage.iter().any(|h| h == "R" || h.starts_with("R1")),
+        "expected HG00096 to place on the R lineage, got {}",
+        top.lineage.join(" › ")
+    );
+}
+
+/// **The fast-path correctness gate.** Placing a sample's Y (and mt) from the precomputed
+/// pipeline GVCF must reach the same terminal as walking the CRAM — otherwise the fast path
+/// is silently wrong. Set the env to a sample dir that has BOTH the CRAM and the GVCFs
+/// (the ytree layout), with a running DecodingUs AppView (or a warm tree cache).
+///   GVCF_PARITY_CRAM, GVCF_PARITY_REF, GVCF_PARITY_Y_GVCF[, GVCF_PARITY_M_GVCF]
+#[tokio::test]
+#[ignore = "requires a ytree sample dir (CRAM + GVCFs) + DecodingUs tree (AppView/cache)"]
+async fn gvcf_fast_path_matches_cram_walk() {
+    let (Ok(cram), Ok(reference), Ok(y_gvcf)) = (
+        std::env::var("GVCF_PARITY_CRAM"),
+        std::env::var("GVCF_PARITY_REF"),
+        std::env::var("GVCF_PARITY_Y_GVCF"),
+    ) else {
+        eprintln!("set GVCF_PARITY_CRAM + GVCF_PARITY_REF + GVCF_PARITY_Y_GVCF to run this");
+        return;
+    };
+    std::env::set_var("NAVIGATOR_Y_TREE_PROVIDER", "decodingus");
+
+    let app = app().await;
+    let b = app.add_biosample(None, "PARITY", None, Some("male".into())).await.unwrap();
+    let run = app
+        .record_sequence_run(NewSequenceRun {
+            biosample_guid: b.guid,
+            platform_name: "ILLUMINA".into(),
+            instrument_model: None,
+            test_type: "WGS".into(),
+            library_layout: None,
+            total_reads: None,
+            pf_reads_aligned: None,
+            mean_read_length: None,
+            mean_insert_size: None,
+        })
+        .await
+        .unwrap();
+    let aln = app
+        .record_alignment(NewAlignment {
+            sequence_run_id: run.id,
+            reference_build: "chm13v2.0".into(),
+            aligner: "bwa-mem".into(),
+            variant_caller: None,
+            bam_path: Some(cram),
+            reference_path: Some(reference),
+            content_sha256: None,
+        })
+        .await
+        .unwrap()
+        .id;
+
+    // Fast path (reads the ~MB GVCF) vs. the CRAM walk (genotypes the multi-GB CRAM).
+    let fast = app.assign_y_from_gvcf(aln, std::path::Path::new(&y_gvcf)).await.expect("Y from GVCF");
+    let slow = app.assign_y_haplogroup(aln).await.expect("Y from CRAM");
+    let (ft, st) = (&fast.ranked[0], &slow.ranked[0]);
+    eprintln!("Y  GVCF: {} ({}/{})   CRAM: {} ({}/{})", ft.name, ft.matched, ft.expected, st.name, st.matched, st.expected);
+    // Same-lineage consistency, not exact-terminal equality: the GVCF path uses robust
+    // (proportional-top) selection and the CRAM path the strict guard, so they can stop at
+    // different depths on the *same* path. The gate is that neither places on a different
+    // branch — one lineage must contain the other's terminal.
+    assert!(
+        ft.lineage.contains(&st.name) || st.lineage.contains(&ft.name),
+        "GVCF and CRAM placed on different Y branches: {} vs {}",
+        ft.lineage.join(">"),
+        st.lineage.join(">")
+    );
+
+    if let Ok(m_gvcf) = std::env::var("GVCF_PARITY_M_GVCF") {
+        let fast_mt = app.assign_mt_from_gvcf(aln, std::path::Path::new(&m_gvcf)).await.expect("mt from GVCF");
+        let slow_mt = app.assign_mtdna_haplogroup_from_alignment(aln).await.expect("mt from CRAM");
+        let (fm, sm) = (&fast_mt.ranked[0], &slow_mt.ranked[0]);
+        eprintln!("mt GVCF: {}   CRAM: {}", fm.name, sm.name);
+        assert!(
+            fm.lineage.contains(&sm.name) || sm.lineage.contains(&fm.name),
+            "GVCF and CRAM placed on different mt branches: {} vs {}",
+            fm.lineage.join(">"),
+            sm.lineage.join(">")
+        );
+    }
+}
+
 #[tokio::test]
 async fn haplogroup_consensus_combines_recorded_calls() {
     use navigator_app::{CompatibilityLevel, DnaType};
@@ -1004,7 +1137,7 @@ async fn import_project_dir_creates_rows_is_idempotent_and_coverage_runs_on_cram
     std::fs::copy(fx.join("coverage.cram.crai"), sample.join("HG00096.chm13.cram.crai")).unwrap();
 
     let reference = fx.join("ref.fa");
-    let summary = app.import_project_dir(&root, Some(reference.clone()), "tester".into()).await.unwrap();
+    let summary = app.import_project_dir(&root, Some(reference.clone()), "tester".into(), false).await.unwrap();
     assert_eq!(summary.samples_total, 1);
     assert_eq!(summary.samples_created, 1);
     assert_eq!(summary.alignments_created, 1);
@@ -1016,7 +1149,7 @@ async fn import_project_dir_creates_rows_is_idempotent_and_coverage_runs_on_cram
     assert_eq!(bios[0].donor_identifier, "HG00096");
 
     // Re-import: project/sample/alignment reused, nothing new created.
-    let again = app.import_project_dir(&root, Some(reference), "tester".into()).await.unwrap();
+    let again = app.import_project_dir(&root, Some(reference), "tester".into(), false).await.unwrap();
     assert_eq!(again.project.id, summary.project.id);
     assert_eq!(again.samples_created, 0);
     assert_eq!(again.alignments_created, 0);
@@ -1045,7 +1178,7 @@ async fn project_report_rolls_up_coverage_and_csv_round_trips() {
     std::fs::copy(fx.join("coverage.cram"), sample.join("HG00096.chm13.cram")).unwrap();
     std::fs::copy(fx.join("coverage.cram.crai"), sample.join("HG00096.chm13.cram.crai")).unwrap();
 
-    let summary = app.import_project_dir(&root, Some(fx.join("ref.fa")), "tester".into()).await.unwrap();
+    let summary = app.import_project_dir(&root, Some(fx.join("ref.fa")), "tester".into(), false).await.unwrap();
     let pid = summary.project.id;
 
     // Before coverage runs: report has the sample, coverage cells empty, haplogroups none.
@@ -1089,7 +1222,7 @@ async fn import_without_reference_resolves_from_cache_else_reports_needed() {
     std::fs::copy(fx.join("coverage.cram.crai"), sample.join("HG00096.chm13.cram.crai")).unwrap();
 
     // Empty cache → import (no explicit reference) reports the chm13v2.0 build is needed, no writes.
-    match app.import_project_dir(&root, None, "tester".into()).await {
+    match app.import_project_dir(&root, None, "tester".into(), false).await {
         Err(AppError::ReferenceNeeded(needs)) => {
             assert_eq!(needs.len(), 1);
             assert_eq!(needs[0].build, "chm13v2.0");
@@ -1106,7 +1239,7 @@ async fn import_without_reference_resolves_from_cache_else_reports_needed() {
     std::fs::copy(fx.join("ref.fa.fai"), refs.join("chm13v2.0.fa.fai")).unwrap();
 
     // Now import (no explicit reference) resolves from the cache and creates rows.
-    let summary = app.import_project_dir(&root, None, "tester".into()).await.unwrap();
+    let summary = app.import_project_dir(&root, None, "tester".into(), false).await.unwrap();
     assert_eq!(summary.alignments_created, 1);
     let aln = app.list_all_alignments().await.unwrap();
     assert_eq!(aln[0].reference_path.as_deref(), Some(refs.join("chm13v2.0.fa").to_string_lossy().as_ref()));
