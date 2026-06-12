@@ -1846,6 +1846,16 @@ impl App {
 
     /// Import a genotyping-array raw-data export (CSV/TSV) and store its QC summary.
     /// `provider` overrides vendor detection when given; `chip_version` is optional.
+    // TODO(haplogroup-from-array): compute Y-DNA (and where present, mtDNA) haplogroups on
+    // import for consumer genotyping arrays, like the BISDNA path already does for chromo2.
+    //   - 23andMe raw data carries BOTH Y-DNA and mtDNA SNP calls (`MT`/`Y` chromosome rows):
+    //     resolve the Y rows to Y-SNP loci via the YsnpDictionary (reuse `assign_y_bisdna`) and
+    //     place mtDNA against the FTDNA mt tree from the MT genotype rows.
+    //   - AncestryDNA raw data has SOME Y-DNA SNPs (usable for a coarse Y placement) but no
+    //     usable mtDNA — Y only.
+    // Both should flow through the same positives→VariantCall(Chip) → assemble_assignment_robust
+    // pipeline as BISDNA (see `import_bisdna_from_file` / `assign_y_bisdna`), not just store a QC
+    // summary. The strand-resolution column differs per vendor — handle per `detected` provider.
     pub async fn import_chip_profile_from_csv(
         &self,
         biosample_guid: SampleGuid,
