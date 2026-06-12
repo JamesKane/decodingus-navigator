@@ -1620,12 +1620,16 @@ impl App {
     }
 
     /// Build a sequence-run characterization record JSON (platform/instrument/test — no files).
+    /// `instrument_id` (the sequencer serial inferred from read names) is published so the AppView
+    /// can grow its crowd-sourced instrument→lab map (`fed.sequencerun.instrument_id` → the
+    /// `instrument_observation`→proposal→accept consensus). It identifies the physical sequencer,
+    /// not the donor — no PII, consistent with the anonymized fed-record posture.
     async fn sequence_run_record(&self, run: &SequenceRun) -> Result<serde_json::Value, AppError> {
         let record = SequenceRunRecord::new(
             None,
             Some(run.platform_name.clone()),
             run.instrument_model.clone(),
-            None,
+            run.instrument_id.clone(),
             Some(run.test_type.clone()),
             run.library_layout.clone(),
             run.total_reads,
@@ -4668,5 +4672,43 @@ mod placement_tests {
         let calls = super::assemble_calls_lifted(&called, &lifted, &ref_base);
         assert_eq!(calls.get(&146), Some(&'G'));
         assert_eq!(calls.get(&263), Some(&'G'), "minus-strand reference C → complement G");
+    }
+}
+
+#[cfg(test)]
+mod publish_tests {
+    use super::*;
+    use navigator_domain::workspace::NewSequenceRun;
+    use navigator_store::Store;
+
+    /// The published sequence-run record carries the inferred `instrumentId` (camelCase) so the
+    /// AppView can crowd-source the instrument→lab map. Regression guard: this field was hardcoded
+    /// to `None` while the lab inference was being restored.
+    #[tokio::test]
+    async fn sequence_run_record_publishes_instrument_id() {
+        let app = App::new(Store::open_in_memory().await.unwrap());
+        let b = app.add_biosample(None, "S1", None, None).await.unwrap();
+        let run = app
+            .record_sequence_run(NewSequenceRun {
+                biosample_guid: b.guid,
+                platform_name: "ILLUMINA".into(),
+                instrument_model: Some("NovaSeq".into()),
+                test_type: "WGS".into(),
+                library_layout: None,
+                total_reads: None,
+                pf_reads_aligned: None,
+                mean_read_length: None,
+                mean_insert_size: None,
+            })
+            .await
+            .unwrap();
+        sequence_run::set_library_stats(app.store.pool(), run.id, Some("A00182"), None, None, None, Some("H5WLTDMXX"))
+            .await
+            .unwrap();
+        let reloaded = sequence_run::get(app.store.pool(), run.id).await.unwrap().unwrap();
+
+        let value = app.sequence_run_record(&reloaded).await.unwrap();
+        assert_eq!(value.get("instrumentId").and_then(|v| v.as_str()), Some("A00182"));
+        assert_eq!(value.get("$type").and_then(|v| v.as_str()), Some(NS_SEQUENCERUN));
     }
 }
