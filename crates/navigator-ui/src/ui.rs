@@ -3666,13 +3666,16 @@ impl NavigatorApp {
                         c.contig_coverage_stats[i].histogram.as_slice(),
                     ),
                 };
-                if hist.iter().any(|&v| v > 0) {
-                    coverage_histogram_chart(ui, hist, &title);
-                } else {
+                if hist.is_empty() {
+                    // No histogram persisted (fast-path / pipeline-sidecar import).
                     ui.label(format!(
                         "Per-contig depth histogram unavailable for {title} (pipeline-sidecar import) — \
                          the GATK CallableLoci breakdown is shown in the table above."
                     ));
+                } else if hist.iter().skip(1).any(|&v| v > 0) {
+                    coverage_histogram_chart(ui, hist, &title);
+                } else {
+                    ui.label(format!("{title}: no covered positions (every base at depth 0)."));
                 }
             }
         }
@@ -4445,11 +4448,14 @@ impl NavigatorApp {
 fn coverage_histogram_chart(ui: &mut egui::Ui, hist: &[u64], title: &str) {
     use egui_plot::{Bar, BarChart, Plot};
     ui.label(format!(
-        "Depth histogram — {title}  (x = depth, y = bases; drag to zoom, double-click to reset)"
+        "Depth histogram — {title}  (depth ≥1; x = depth, y = bases; drag to zoom, double-click to reset)"
     ));
+    // Skip depth 0 (uncovered + reference-N): it typically dwarfs the coverage peak and would
+    // flatten the rest of the distribution. That count is the table's NoCov / callable breakdown.
     let bars: Vec<Bar> = hist
         .iter()
         .enumerate()
+        .skip(1)
         .map(|(depth, &count)| Bar::new(depth as f64, count as f64).width(0.9))
         .collect();
     let chart = BarChart::new(bars).name("bases");

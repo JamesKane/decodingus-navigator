@@ -30,7 +30,6 @@ pub use navigator_analysis::probe::AlignmentProbe;
 pub use navigator_analysis::caller::SiteGenotype as PanelGenotype;
 pub use navigator_analysis::caller::VariantCall as DenovoCall;
 pub use navigator_analysis::coverage::CoverageResult as Coverage;
-pub use navigator_analysis::coverage::{ContigCallableMetrics, ContigCoverageStats};
 pub use navigator_analysis::read_metrics::{PairOrientation, ReadMetrics};
 pub use navigator_analysis::unified::UnifiedMetricsResult;
 pub use navigator_analysis::sex::{Confidence as SexConfidence, InferredSex, SexInferenceResult};
