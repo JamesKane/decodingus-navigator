@@ -28,6 +28,7 @@ pub mod reader;
 pub mod realign;
 pub mod scan;
 pub mod sex;
+pub mod sidecar;
 pub mod sv;
 pub mod unified;
 
