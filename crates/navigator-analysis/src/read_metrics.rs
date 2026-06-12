@@ -148,7 +148,7 @@ fn median_from_hist(hist: &BTreeMap<u32, u64>, total: u64) -> f64 {
 pub fn collect_read_metrics(bam_path: &Path, reference: Option<&Path>) -> Result<ReadMetrics, AnalysisError> {
     let (header, mut reader) = reader::open_seq(bam_path, reference)?;
     let mut state = ReadMetricsState::default();
-    for result in reader.records(&header) {
+    for result in reader.records_lazy(&header) {
         state.accept(&result?);
     }
     Ok(state.finish())

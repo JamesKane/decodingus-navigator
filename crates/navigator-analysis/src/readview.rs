@@ -100,3 +100,71 @@ impl AlnRead for noodles::bam::Record {
         f(quals.as_ref(), &mut ops)
     }
 }
+
+/// A record yielded by a **sequential** (whole-file, no index) walk over either format: the
+/// **lazy, zero-copy** `bam::Record` on the BAM path (no owned `RecordBuf` decode/tag-parse — the
+/// hot-path win) and the decoded `RecordBuf` on the CRAM path (CRAM has no cheaper lazy form). It
+/// implements [`AlnRead`] by delegating to the per-type impls above, so the same accumulator code
+/// (`CoverageState`/`ReadMetricsState`/`SexState`) drives both with no allocation on the BAM path —
+/// the sequential counterpart to the indexed [`crate::reader::RecordSink`] fan-out.
+pub enum SeqRecord {
+    Bam(noodles::bam::Record),
+    Cram(RecordBuf),
+}
+
+impl AlnRead for SeqRecord {
+    fn flags(&self) -> Flags {
+        match self {
+            SeqRecord::Bam(r) => AlnRead::flags(r),
+            SeqRecord::Cram(r) => AlnRead::flags(r),
+        }
+    }
+    fn reference_sequence_id(&self) -> Option<usize> {
+        match self {
+            SeqRecord::Bam(r) => AlnRead::reference_sequence_id(r),
+            SeqRecord::Cram(r) => AlnRead::reference_sequence_id(r),
+        }
+    }
+    fn mate_reference_sequence_id(&self) -> Option<usize> {
+        match self {
+            SeqRecord::Bam(r) => AlnRead::mate_reference_sequence_id(r),
+            SeqRecord::Cram(r) => AlnRead::mate_reference_sequence_id(r),
+        }
+    }
+    fn alignment_start(&self) -> Option<usize> {
+        match self {
+            SeqRecord::Bam(r) => AlnRead::alignment_start(r),
+            SeqRecord::Cram(r) => AlnRead::alignment_start(r),
+        }
+    }
+    fn mate_alignment_start(&self) -> Option<usize> {
+        match self {
+            SeqRecord::Bam(r) => AlnRead::mate_alignment_start(r),
+            SeqRecord::Cram(r) => AlnRead::mate_alignment_start(r),
+        }
+    }
+    fn mapping_quality(&self) -> Option<u8> {
+        match self {
+            SeqRecord::Bam(r) => AlnRead::mapping_quality(r),
+            SeqRecord::Cram(r) => AlnRead::mapping_quality(r),
+        }
+    }
+    fn template_length(&self) -> i32 {
+        match self {
+            SeqRecord::Bam(r) => AlnRead::template_length(r),
+            SeqRecord::Cram(r) => AlnRead::template_length(r),
+        }
+    }
+    fn sequence_len(&self) -> usize {
+        match self {
+            SeqRecord::Bam(r) => AlnRead::sequence_len(r),
+            SeqRecord::Cram(r) => AlnRead::sequence_len(r),
+        }
+    }
+    fn pileup_with<T>(&self, f: impl FnOnce(&[u8], &mut dyn Iterator<Item = (Kind, usize)>) -> T) -> T {
+        match self {
+            SeqRecord::Bam(r) => AlnRead::pileup_with(r, f),
+            SeqRecord::Cram(r) => AlnRead::pileup_with(r, f),
+        }
+    }
+}

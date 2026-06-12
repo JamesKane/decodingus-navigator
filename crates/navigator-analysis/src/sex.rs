@@ -12,13 +12,13 @@ use std::path::Path;
 use noodles::bam;
 use noodles::csi::binning_index::ReferenceSequence as _;
 use noodles::sam;
-use noodles::sam::alignment::RecordBuf;
 
 use serde::{Deserialize, Serialize};
 
 use crate::contig;
 use crate::error::AnalysisError;
 use crate::reader::{self, Format};
+use crate::readview::AlnRead;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum InferredSex {
@@ -135,7 +135,7 @@ impl SexState {
         SexState { class, autosome_length, x_length, autosome_reads: 0, x_reads: 0 }
     }
 
-    pub(crate) fn accept(&mut self, record: &RecordBuf) {
+    pub(crate) fn accept(&mut self, record: &impl AlnRead) {
         if record.flags().is_unmapped() {
             return;
         }
@@ -189,7 +189,7 @@ fn tally_via_bai(bam_path: &Path) -> Result<Tally, AnalysisError> {
 fn tally_via_scan(bam_path: &Path, reference: Option<&Path>) -> Result<Tally, AnalysisError> {
     let (header, mut reader) = reader::open_seq(bam_path, reference)?;
     let mut state = SexState::new(&header);
-    for result in reader.records(&header) {
+    for result in reader.records_lazy(&header) {
         state.accept(&result?);
     }
     Ok(state.tally())

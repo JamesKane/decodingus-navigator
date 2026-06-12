@@ -119,7 +119,7 @@ pub fn collect_unified_metrics_with_progress(
     let mut sx = SexState::new(&header);
     progress(0, cov.total_tracked());
 
-    for result in reader.records(&header) {
+    for result in reader.records_lazy(&header) {
         let record = result?;
         // Every record to all three; each state filters internally (see module docs).
         rm.accept(&record);

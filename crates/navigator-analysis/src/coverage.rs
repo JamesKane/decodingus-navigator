@@ -322,7 +322,7 @@ pub fn collect_coverage_callable_with_progress(
     let (header, mut reader) = reader::open_seq(bam_path, Some(reference_path))?;
     let mut state = CoverageState::new(&header, reference_path, *params, contig_allowlist)?;
     progress(0, state.total_tracked());
-    for result in reader.records(&header) {
+    for result in reader.records_lazy(&header) {
         let record = result?;
         state.accept(&record, progress)?;
     }
@@ -580,7 +580,7 @@ fn assemble_coverage_result(
         coverage_histogram: hist,
         callable_bases,
         contig_callable,
-        contig_coverage_stats: contig_coverage_stats,
+        contig_coverage_stats,
     }
 }
 

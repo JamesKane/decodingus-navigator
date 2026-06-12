@@ -31,7 +31,7 @@ fn bgzf_worker_count() -> NonZeroUsize {
 }
 
 use crate::error::AnalysisError;
-use crate::readview::AlnRead;
+use crate::readview::{AlnRead, SeqRecord};
 
 /// On-disk alignment container, by extension.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -113,6 +113,26 @@ impl SeqReader {
             SeqReader::Cram { inner, path } => {
                 let path = path.clone();
                 Box::new(inner.records(header).map(move |r| r.map_err(|e| AnalysisError::io(&path, e))))
+            }
+        }
+    }
+
+    /// Iterate every record as a [`SeqRecord`] — the **lazy** counterpart to [`SeqReader::records`].
+    /// The BAM path yields the zero-copy `bam::Record` (no owned `RecordBuf` decode/tag-parse, the
+    /// hot-path win); the CRAM path yields the decoded `RecordBuf` (no cheaper form). The walkers
+    /// consume `&impl AlnRead`, so `SeqRecord` drives them with no allocation on the BAM path.
+    pub fn records_lazy<'a>(
+        &'a mut self,
+        header: &'a sam::Header,
+    ) -> Box<dyn Iterator<Item = Result<SeqRecord, AnalysisError>> + 'a> {
+        match self {
+            SeqReader::Bam { inner, path } => {
+                let path = path.clone();
+                Box::new(inner.records().map(move |r| r.map(SeqRecord::Bam).map_err(|e| AnalysisError::io(&path, e))))
+            }
+            SeqReader::Cram { inner, path } => {
+                let path = path.clone();
+                Box::new(inner.records(header).map(move |r| r.map(SeqRecord::Cram).map_err(|e| AnalysisError::io(&path, e))))
             }
         }
     }
