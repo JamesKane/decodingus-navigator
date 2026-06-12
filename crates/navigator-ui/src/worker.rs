@@ -150,6 +150,9 @@ pub enum Command {
     CompareIbd { a: i64, b: i64, panel_id: i64, ploidy: u8 },
     /// Verify two alignments are the same individual (genotype concordance + Y-STR).
     VerifyIdentity { a: i64, b: i64, panel_id: i64, ploidy: u8 },
+    /// Resolve the sequencing lab for runs that have an inferred instrument id but no facility,
+    /// via the AppView instrument→lab map (best-effort, cached). Sent on startup + after imports.
+    BackfillLabs,
     /// Report who's signed in (no side effects) — sent on startup.
     AuthStatus,
     /// Report the current online/offline state (no side effects).
@@ -358,6 +361,8 @@ pub enum Event {
     Published { kind: String, uri: String },
     /// Whether the last PDS write reached the server (offline indicator).
     SyncOnline(bool),
+    /// How many runs had their sequencing lab filled in by the AppView backfill (`0` ⇒ quiet).
+    LabsResolved(usize),
     Error(String),
 }
 
@@ -726,6 +731,10 @@ pub async fn handle(app: &App, cmd: Command) -> Event {
         }
         Command::VerifyIdentity { a, b, panel_id, ploidy } => match app.verify_identity(a, b, panel_id, ploidy).await {
             Ok(v) => Event::Identity(v),
+            Err(e) => Event::Error(e.to_string()),
+        },
+        Command::BackfillLabs => match app.backfill_run_labs().await {
+            Ok(count) => Event::LabsResolved(count),
             Err(e) => Event::Error(e.to_string()),
         },
         Command::AuthStatus => Event::Authenticated(app.current_account()),

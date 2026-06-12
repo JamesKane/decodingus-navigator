@@ -660,6 +660,22 @@ fn decodingus_appview_url() -> String {
         .unwrap_or_else(|| "http://localhost:9000".to_string())
 }
 
+/// One instrument→lab association from the AppView `sequencer` endpoints (D8). Mirrors the
+/// `SequencerLabDto` shape; extra fields are tolerated.
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct SequencerLabInfo {
+    pub instrument_id: String,
+    pub lab_name: String,
+    #[serde(default)]
+    pub is_d2c: bool,
+    #[serde(default)]
+    pub manufacturer: Option<String>,
+    #[serde(default)]
+    pub model_name: Option<String>,
+    #[serde(default)]
+    pub website_url: Option<String>,
+}
+
 /// Map an alignment's reference build to the DecodingUs coordinate key (`"hs1"` for CHM13,
 /// `"GRCh38"`, `"GRCh37"`). `None` for builds the tree has no coordinates for. Drives the
 /// native-build (no-liftover) placement in `assign_y_decodingus`.
@@ -2540,6 +2556,54 @@ impl App {
             .await
     }
 
+    /// The AppView's full instrument→lab map (`GET /api/v1/sequencer/lab-instruments`), on-disk
+    /// cached like the trees (7-day TTL + offline fallback). Looked up locally so a batch import
+    /// makes one network call, not one per sample.
+    async fn fetch_lab_instruments(&self) -> Result<Vec<SequencerLabInfo>, AppError> {
+        let url = format!("{}/api/v1/sequencer/lab-instruments", decodingus_appview_url());
+        let json = self.fetch_tree(&url, "sequencer-lab-instruments.json").await?;
+        serde_json::from_str(&json).map_err(|e| AppError::Import(format!("parsing lab-instruments: {e}")))
+    }
+
+    /// Resolve an instrument id to a lab display name via the AppView (cached). Normalizes the
+    /// returned name to the local [`labs`] catalog's canonical display name when it matches.
+    /// `None` if the instrument has no association or the AppView is unreachable (best-effort).
+    pub async fn lookup_lab_by_instrument(&self, instrument_id: &str) -> Option<String> {
+        let id = instrument_id.trim();
+        if id.is_empty() {
+            return None;
+        }
+        let list = self.fetch_lab_instruments().await.ok()?;
+        let raw = list.into_iter().find(|l| l.instrument_id == id)?.lab_name;
+        Some(navigator_domain::labs::find(&raw).map(|l| l.display_name.to_string()).unwrap_or(raw))
+    }
+
+    /// Resolve the sequencing lab for every run that has an inferred `instrument_id` but no facility
+    /// yet, via the AppView (one cached fetch). Best-effort; returns how many were filled. Run after
+    /// import and on startup so pre-existing runs pick up newly-seeded associations.
+    pub async fn backfill_run_labs(&self) -> Result<usize, AppError> {
+        // One network/cache fetch, then resolve locally.
+        let Ok(list) = self.fetch_lab_instruments().await else { return Ok(0) };
+        let by_instrument: HashMap<&str, &str> =
+            list.iter().map(|l| (l.instrument_id.as_str(), l.lab_name.as_str())).collect();
+        let mut filled = 0usize;
+        for biosample in biosample::list_all(self.store.pool()).await? {
+            for run in sequence_run::list_for_biosample(self.store.pool(), biosample.guid).await? {
+                if run.sequencing_facility.is_some() {
+                    continue;
+                }
+                let Some(inst) = run.instrument_id.as_deref() else { continue };
+                if let Some(raw) = by_instrument.get(inst.trim()) {
+                    let lab = navigator_domain::labs::find(raw).map(|l| l.display_name).unwrap_or(raw);
+                    if sequence_run::set_facility(self.store.pool(), run.id, lab).await.unwrap_or(false) {
+                        filled += 1;
+                    }
+                }
+            }
+        }
+        Ok(filled)
+    }
+
     /// A cached-or-downloaded haplotree JSON. The on-disk cache has a **7-day life** (see
     /// [`TREE_CACHE_TTL`]): a fresh cache short-circuits the network; a stale or missing cache
     /// triggers a re-download (and refresh). If the re-download fails (e.g. the AppView is
@@ -3720,6 +3784,12 @@ impl App {
                 s.flowcell_id.as_deref(),
             )
             .await;
+            // Resolve the lab from the instrument id via the AppView (best-effort, cached).
+            if let Some(inst) = s.instrument_id.as_deref() {
+                if let Some(lab) = self.lookup_lab_by_instrument(inst).await {
+                    let _ = sequence_run::set_facility(self.store.pool(), run.id, &lab).await;
+                }
+            }
         }
 
         // Defer the content hash (the file's identity, used to invalidate cached analyses): a

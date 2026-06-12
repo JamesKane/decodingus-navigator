@@ -132,6 +132,18 @@ pub async fn set_library_stats(
     Ok(affected > 0)
 }
 
+/// Set only the sequencing facility (the lab) — used by the AppView instrument→lab resolution,
+/// which leaves the analysis-derived columns untouched. Returns whether a row was affected.
+pub async fn set_facility(pool: &SqlitePool, id: i64, facility: &str) -> Result<bool, StoreError> {
+    let affected = sqlx::query("UPDATE sequence_run SET sequencing_facility = ? WHERE id = ?")
+        .bind(facility)
+        .bind(id)
+        .execute(pool)
+        .await?
+        .rows_affected();
+    Ok(affected > 0)
+}
+
 /// Update a run's descriptive fields. The analysis-derived read-metric columns (total_reads,
 /// pf_reads_aligned, mean_read_length, mean_insert_size) are left untouched. Returns whether a
 /// row was affected.

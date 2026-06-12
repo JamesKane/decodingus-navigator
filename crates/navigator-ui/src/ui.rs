@@ -828,6 +828,7 @@ impl NavigatorApp {
         let _ = tx.send(Command::LoadAllAlignments);
         let _ = tx.send(Command::AuthStatus);
         let _ = tx.send(Command::SyncStatus);
+        let _ = tx.send(Command::BackfillLabs); // resolve labs for runs imported before D8 landed
         apply_theme(&cc.egui_ctx, true);
         NavigatorApp {
             tx,
@@ -1212,6 +1213,15 @@ impl NavigatorApp {
                     // A fresh (self-masked) bucket was just cached — refresh the donor union.
                     if let Some(guid) = self.selected_sample {
                         let _ = self.tx.send(Command::LoadDonorPrivateY { biosample_guid: guid });
+                    }
+                }
+                Event::LabsResolved(count) => {
+                    if count > 0 {
+                        self.status = format!("Resolved {count} sequencing lab(s) from instrument ids");
+                        // Refresh the open subject's run cards so the new lab chips appear.
+                        if let Some(guid) = self.selected_sample {
+                            let _ = self.tx.send(Command::LoadRuns(guid));
+                        }
                     }
                 }
                 Event::DataImported { biosample_guid, label } => {

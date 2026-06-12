@@ -1449,6 +1449,38 @@ async fn analyze_project_runs_coverage_and_attempts_y_per_sample() {
     let _ = std::fs::remove_dir_all(&trees);
 }
 
+/// The AppView instrument→lab lookup (D8): a seeded `sequencer-lab-instruments.json` cache stands
+/// in for the live endpoint (a fresh cache short-circuits the network). The returned lab name is
+/// normalized to the local labs catalog's canonical display name when it matches; unknown labs
+/// pass through; an unassociated instrument resolves to `None`.
+#[tokio::test]
+async fn lookup_lab_by_instrument_resolves_and_normalizes_from_cache() {
+    let _env = TREE_DIR_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let trees = std::env::temp_dir().join(format!("dun-labs-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&trees);
+    std::fs::create_dir_all(&trees).unwrap();
+    std::fs::write(
+        trees.join("sequencer-lab-instruments.json"),
+        r#"[
+            {"instrument_id":"A00182","lab_name":"FTDNA","is_d2c":true,"manufacturer":"Illumina","model_name":"NovaSeq 6000","website_url":null},
+            {"instrument_id":"m84005","lab_name":"Acme Genomics","is_d2c":false}
+        ]"#,
+    )
+    .unwrap();
+    std::env::set_var("NAVIGATOR_TREE_DIR", &trees);
+
+    let app = app().await;
+    // "FTDNA" is a catalog alias → normalized to the canonical display name.
+    assert_eq!(app.lookup_lab_by_instrument("A00182").await.as_deref(), Some("FamilyTreeDNA"));
+    // An unlisted lab passes through unchanged.
+    assert_eq!(app.lookup_lab_by_instrument("m84005").await.as_deref(), Some("Acme Genomics"));
+    // No association → None (best-effort; the caller leaves the facility unset).
+    assert_eq!(app.lookup_lab_by_instrument("UNASSOCIATED").await, None);
+
+    std::env::remove_var("NAVIGATOR_TREE_DIR");
+    let _ = std::fs::remove_dir_all(&trees);
+}
+
 /// A 23andMe import stores the haploid Y/MT genotype rows as a `Chip` variant set and places
 /// BOTH a Y and an mtDNA haplogroup on import (best-effort), offline against seeded FTDNA trees.
 /// The file declares build 38 so Y placement uses the FTDNA fallback (no DecodingUs AppView).
