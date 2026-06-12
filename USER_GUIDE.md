@@ -94,6 +94,55 @@ Navigator auto-detects the type of any file you import and routes it appropriate
 
 To import in the desktop app: select a subject, open the **Data Sources** tab, and add a file. Navigator computes a checksum, detects the platform/test type, and files the data under the right run, alignment, or profile.
 
+### Project Import (batch, with the sidecar fast path)
+When you have many samples to load — for example a whole sequencing project staged on a NAS — use **Project Import** in the desktop app to ingest an entire directory tree in one pass. Navigator scans the folder, creates the project and one subject per sample, and attaches each sample's files.
+
+#### Expected directory layout
+Project Import expects a **two-level** layout: a project folder whose immediate subfolders are each one sample.
+
+```
+MyProject/                              ← project (named after this folder)
+├── HG00096/                            ← one subject (named after this folder)
+│   ├── HG00096.chm13.cram              ← alignment (+ HG00096.chm13.cram.crai)
+│   ├── HG00096.chm13.chrY.g.vcf.gz     ← Y sidecar (+ .tbi)
+│   ├── HG00096.chm13.chrM.g.vcf.gz     ← mtDNA sidecar (+ .tbi)
+│   ├── HG00096.chm13.chrYM.callable.summary.txt
+│   ├── HG00096.chm13.sex
+│   ├── coverage.txt
+│   └── stats.txt
+├── HG00097/
+│   └── ...
+```
+
+- The **project name** is the top folder's name; **each immediate subfolder is one subject**, named after the folder.
+- Files inside a sample folder are found up to two levels deep. Hidden (dot) folders are skipped, and a subfolder with no alignment or variant file is ignored.
+
+#### The sidecar "hot path"
+Walking a 10–12 GB CRAM to place a haplogroup takes many minutes. If the pipeline that produced the alignment also left its per-sample intermediate ("sidecar") files **next to the CRAM**, Navigator reads those instead of touching the CRAM — turning per-sample placement from minutes into seconds (HG00096 places to R1b1a1b1a1a in ~5 s versus a ~22-minute CRAM walk). The fast path is **on by default**; it runs during import and returns quickly.
+
+Recognized sidecars (matched by file-name suffix, case-insensitive — the sample-name prefix can be anything):
+
+| Sidecar file | What it provides | Completeness |
+|--------------|------------------|--------------|
+| `*.chrY.g.vcf.gz` (+ `.tbi`) | Y-DNA haplogroup | Full |
+| `*.chrM.g.vcf.gz` (+ `.tbi`) | mtDNA haplogroup | Full |
+| `*.sex` (contains `male`/`female`) | Genetic sex | Full |
+| `stats.txt` (`samtools stats` output) | Read metrics (counts, mean read length, insert size) | Full |
+| `coverage.txt` (`samtools coverage`) + `*.callable.summary.txt` | Coverage roll-up (genome-wide mean depth, per-contig stats, callable bases) | Partial ("lite") |
+
+Notes and requirements:
+- **GVCFs must be ploidy-1 (haploid) chrY/chrM GVCFs**, and the matching `.tbi` tabix index must sit beside each one so Navigator can read just the needed positions.
+- **The build must match.** Navigator reads the build token from the GVCF file name (e.g. the `chm13` in `HG00096.chm13.chrY.g.vcf.gz`) and only takes the fast path when it matches the alignment's reference build. `chm13`, `chm13v2`, and `hs1` are treated as the same build. If the builds differ, Navigator falls back to walking the CRAM (it will not lift GVCF coordinates).
+- **A reference genome is still required.** Even on the fast path, Navigator reads the reference FASTA at the relevant positions. Let Navigator resolve/download the reference from the detected build, or point it at an explicit FASTA — which must have its `.fai` index alongside.
+- `coverage.txt` and `stats.txt` are matched by exact name; the GVCF/`.sex`/`.callable.summary` files are matched by suffix.
+
+The lite coverage roll-up is the only **partial** result: median depth, the `pct_Nx` thresholds, and the full depth histogram are not in `coverage.txt` and are filled in later by deep analysis.
+
+#### What the fast path does *not* cover
+Some analyses always need the CRAM and are **not** produced from sidecars: autosomal **ancestry**, the **full coverage histogram** (median, `pct_10x`/`pct_20x`, depth distribution), **structural variants**, and **IBD** panel genotyping. These run only when you trigger **deep analysis** — use **Analyze All** on the project (or run analysis on a subject). Deep analysis is additive: haplogroups, sex, and read metrics already placed by the fast path are **not** recomputed, and the lite coverage is upgraded in place to the full result.
+
+> **Where to find it:** Project Import and the sidecar fast path are available in the **desktop app**. The headless `navigator ingest` command imports individual files via auto-detection and does not use the project scanner or the sidecar fast path.
+
 ### Running Analyses
 Open a subject's detail panel and run any module from the relevant tab, or use **Full Analyze** to run a complete pass over all of a subject's data. Results are cached, so re-running is instant when nothing has changed.
 

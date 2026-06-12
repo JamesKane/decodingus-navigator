@@ -49,6 +49,8 @@ A single native binary runs on macOS, Windows, and Linux with no runtime depende
 
 Imports automatically compute a checksum and detect platform (Illumina, PacBio, Oxford Nanopore, MGI, Ion Torrent, Complete Genomics) and test type (WGS, WES, HiFi, CLR, Nanopore, Targeted Panel).
 
+**Project Import (batch + sidecar fast path):** import a whole `project/sample/…` directory tree at once. When per-sample pipeline "sidecar" files (`*.chrY.g.vcf.gz`, `*.chrM.g.vcf.gz`, `*.sex`, `stats.txt`, `coverage.txt`) sit next to the CRAM, Navigator places haplogroups, sex, read metrics, and a lite coverage roll-up from them — no multi-GB CRAM walk (seconds instead of minutes per sample). See the [User Guide](USER_GUIDE.md#project-import-batch-with-the-sidecar-fast-path) for the required layout and rules.
+
 ### Analysis Capabilities
 - **Coverage / Callable Loci** — mean depth, coverage distribution, callable bases per contig (1×–100×)
 - **Read Metrics** — read length, insert size, platform detection, library orientation
