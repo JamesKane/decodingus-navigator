@@ -62,6 +62,8 @@ pub enum Command {
     AnalyzeProject(i64),
     /// Load every biosample (subjects list), regardless of project.
     LoadAllBiosamples,
+    /// Load donor-level Y/mt terminal haplogroups for every subject (fills the list columns).
+    LoadHaploSummary,
     AddBiosample(NewBiosample),
     /// Batch-import a NAS project directory (scan → Project/Biosample/Run/Alignment).
     /// `reference` is optional: `None` lets the gateway resolve each build from the cache
@@ -268,6 +270,8 @@ pub enum Event {
     Samples { project_id: i64, samples: Vec<Biosample> },
     /// All biosamples (the project-independent subjects list).
     AllBiosamples(Vec<Biosample>),
+    /// Per-subject Y/mt terminal haplogroups for the subjects list (`guid → (Y, mt)`).
+    HaploSummary(std::collections::HashMap<SampleGuid, (Option<String>, Option<String>)>),
     /// A biosample was added/changed; reload the subjects list (and any open project view).
     BiosamplesChanged,
     Runs { biosample_guid: SampleGuid, runs: Vec<SequenceRun> },
@@ -387,6 +391,10 @@ pub async fn handle(app: &App, cmd: Command) -> Event {
                 sv_done: s.sv_done,
                 errors: s.errors.len(),
             },
+            Err(e) => Event::Error(e.to_string()),
+        },
+        Command::LoadHaploSummary => match app.haplogroup_terminals().await {
+            Ok(map) => Event::HaploSummary(map),
             Err(e) => Event::Error(e.to_string()),
         },
         Command::LoadAllBiosamples => match app.list_all_biosamples().await {

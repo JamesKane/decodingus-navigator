@@ -1979,6 +1979,38 @@ impl App {
         Ok(consensus)
     }
 
+    /// Donor-level Y and mtDNA terminal haplogroups for **every** subject, for the subjects
+    /// list. Reconciles each subject's recorded calls (and applies any manual override) in
+    /// memory from two bulk queries. `(guid → (Y terminal, mt terminal))`; either is `None`
+    /// when nothing is recorded.
+    pub async fn haplogroup_terminals(
+        &self,
+    ) -> Result<HashMap<SampleGuid, (Option<String>, Option<String>)>, AppError> {
+        let mut groups: HashMap<(SampleGuid, DnaType), Vec<RunHaplogroupCall>> = HashMap::new();
+        for (guid, dna_type, call) in haplogroup_call::list_all(self.store.pool()).await? {
+            groups.entry((guid, dna_type)).or_default().push(call);
+        }
+        let mut out: HashMap<SampleGuid, (Option<String>, Option<String>)> = HashMap::new();
+        for ((guid, dna_type), calls) in groups {
+            if let Some(c) = reconciliation::reconcile(&calls) {
+                let entry = out.entry(guid).or_default();
+                match dna_type {
+                    DnaType::Y => entry.0 = Some(c.haplogroup),
+                    DnaType::Mt => entry.1 = Some(c.haplogroup),
+                }
+            }
+        }
+        // Manual overrides win over the reconciled terminal.
+        for (guid, dna_type, hg) in recon_store::list_all_overrides(self.store.pool()).await? {
+            let entry = out.entry(guid).or_default();
+            match dna_type {
+                DnaType::Y => entry.0 = Some(hg),
+                DnaType::Mt => entry.1 = Some(hg),
+            }
+        }
+        Ok(out)
+    }
+
     /// Manually override the consensus haplogroup for a subject + DNA type.
     pub async fn set_manual_override(
         &self,

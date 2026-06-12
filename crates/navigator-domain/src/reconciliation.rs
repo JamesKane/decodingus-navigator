@@ -88,7 +88,7 @@ pub fn reconcile_variants(sources: &[(String, f64, &[VariantCall])]) -> Vec<Reco
 }
 
 /// Which uniparental lineage a call describes.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum DnaType {
     Y,
     Mt,

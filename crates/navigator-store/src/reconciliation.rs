@@ -44,6 +44,26 @@ pub async fn get_override(
     Ok(row)
 }
 
+/// Every manual override as `(guid, dna_type, haplogroup)` — for the subjects-list summary.
+pub async fn list_all_overrides(pool: &SqlitePool) -> Result<Vec<(SampleGuid, DnaType, String)>, StoreError> {
+    let rows: Vec<(String, String, String)> =
+        sqlx::query_as("SELECT biosample_guid, dna_type, haplogroup FROM reconciliation_override")
+            .fetch_all(pool)
+            .await?;
+    let mut out = Vec::with_capacity(rows.len());
+    for (g, dt, hg) in rows {
+        let guid = uuid::Uuid::parse_str(&g)
+            .map_err(|e| StoreError::Decode(format!("override guid {g:?}: {e}")))?;
+        let dna_type = match dt.as_str() {
+            "Y" => DnaType::Y,
+            "Mt" => DnaType::Mt,
+            other => return Err(StoreError::Decode(format!("override dna_type {other:?}"))),
+        };
+        out.push((SampleGuid(guid), dna_type, hg));
+    }
+    Ok(out)
+}
+
 /// Remove a manual override.
 pub async fn clear_override(pool: &SqlitePool, biosample_guid: SampleGuid, dna_type: DnaType) -> Result<(), StoreError> {
     sqlx::query("DELETE FROM reconciliation_override WHERE biosample_guid = ? AND dna_type = ?")

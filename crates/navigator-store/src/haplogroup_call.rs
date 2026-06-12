@@ -125,3 +125,50 @@ pub async fn list_for(
     .await?;
     Ok(rows.into_iter().map(Row::into_domain).collect())
 }
+
+#[derive(sqlx::FromRow)]
+struct AllRow {
+    biosample_guid: String,
+    dna_type: String,
+    source_label: String,
+    haplogroup: String,
+    lineage: String,
+    score: f64,
+    matched: i64,
+    expected: i64,
+}
+
+/// Every recorded call across all subjects, as `(guid, dna_type, call)` — for building a
+/// donor-level haplogroup summary (the subjects list) in one query.
+pub async fn list_all(pool: &SqlitePool) -> Result<Vec<(SampleGuid, DnaType, RunHaplogroupCall)>, StoreError> {
+    let rows: Vec<AllRow> = sqlx::query_as(
+        "SELECT biosample_guid, dna_type, source_label, haplogroup, lineage, score, matched, expected \
+         FROM haplogroup_call ORDER BY id",
+    )
+    .fetch_all(pool)
+    .await?;
+    let mut out = Vec::with_capacity(rows.len());
+    for r in rows {
+        let guid = uuid::Uuid::parse_str(&r.biosample_guid)
+            .map_err(|e| StoreError::Decode(format!("haplogroup_call guid {:?}: {e}", r.biosample_guid)))?;
+        let dna_type = match r.dna_type.as_str() {
+            "Y" => DnaType::Y,
+            "Mt" => DnaType::Mt,
+            other => return Err(StoreError::Decode(format!("haplogroup_call dna_type {other:?}"))),
+        };
+        let lineage = if r.lineage.is_empty() { Vec::new() } else { r.lineage.split('\t').map(str::to_string).collect() };
+        out.push((
+            SampleGuid(guid),
+            dna_type,
+            RunHaplogroupCall {
+                source_label: r.source_label,
+                haplogroup: r.haplogroup,
+                lineage,
+                score: r.score,
+                matched: r.matched,
+                expected: r.expected,
+            },
+        ));
+    }
+    Ok(out)
+}

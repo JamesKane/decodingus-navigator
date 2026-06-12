@@ -220,6 +220,8 @@ pub struct NavigatorApp {
     samples: Vec<Biosample>,
     /// Every biosample (the project-independent subjects list).
     all_biosamples: Vec<Biosample>,
+    /// Per-subject Y/mt terminal haplogroups for the list columns (`guid → (Y, mt)`).
+    haplo_summary: std::collections::HashMap<SampleGuid, (Option<String>, Option<String>)>,
     selected_sample: Option<SampleGuid>,
     runs: Vec<SequenceRun>,
     /// Donor-level haplogroup consensus for the selected subject (Y, mtDNA).
@@ -370,7 +372,7 @@ fn apply_theme(ctx: &egui::Context, dark: bool) {
 
 /// Subjects-table columns: `(header, width)`.
 const SUBJECT_COLS: [(&str, f32); 7] =
-    [("ID", 150.0), ("Name", 150.0), ("Y-DNA", 80.0), ("mtDNA", 80.0), ("Sex", 70.0), ("Center", 130.0), ("Status", 90.0)];
+    [("ID", 150.0), ("Name", 150.0), ("Y-DNA", 150.0), ("mtDNA", 110.0), ("Sex", 70.0), ("Center", 130.0), ("Status", 90.0)];
 
 /// Short, stable subject id for the table's ID column (first 8 chars of the guid + ellipsis).
 fn short_guid(b: &Biosample) -> String {
@@ -425,7 +427,20 @@ fn table_row(ui: &mut egui::Ui, cols: &[(&str, f32)], cells: &[String], selected
             painter.rect_filled(pill, 8.0, egui::Color32::from_rgb(70, 58, 28));
             painter.galley(pill.min + pad, galley, egui::Color32::PLACEHOLDER);
         } else {
-            painter.text(egui::pos2(x, cy), egui::Align2::LEFT_CENTER, val, egui::FontId::proportional(13.0), text_color);
+            // Elide to the column width (single line, trailing …) so long values — e.g. an
+            // ISOGG-longhand Y haplogroup — can't spill into the next column.
+            let mut job = egui::text::LayoutJob::single_section(
+                val.clone(),
+                egui::TextFormat { font_id: egui::FontId::proportional(13.0), color: text_color, ..Default::default() },
+            );
+            job.wrap = egui::text::TextWrapping {
+                max_width: (w - 12.0).max(0.0),
+                max_rows: 1,
+                overflow_character: Some('…'),
+                ..Default::default()
+            };
+            let galley = ui.fonts(|f| f.layout_job(job));
+            painter.galley(egui::pos2(x, cy - galley.size().y / 2.0), galley, text_color);
         }
         x += w;
     }
@@ -837,6 +852,7 @@ impl NavigatorApp {
             project_report: Vec::new(),
             samples: Vec::new(),
             all_biosamples: Vec::new(),
+            haplo_summary: std::collections::HashMap::new(),
             selected_sample: None,
             runs: Vec::new(),
             consensus_y: None,
@@ -988,7 +1004,11 @@ impl NavigatorApp {
                         let _ = self.tx.send(Command::LoadProjectReport(project_id));
                     }
                 }
-                Event::AllBiosamples(v) => self.all_biosamples = v,
+                Event::AllBiosamples(v) => {
+                    self.all_biosamples = v;
+                    let _ = self.tx.send(Command::LoadHaploSummary); // fill the Y/mt columns
+                }
+                Event::HaploSummary(map) => self.haplo_summary = map,
                 Event::BiosamplesChanged => {
                     let _ = self.tx.send(Command::LoadAllBiosamples);
                     if let Some(pid) = self.selected_project {
@@ -1375,6 +1395,8 @@ impl NavigatorApp {
         self.audit_mt.clear();
         self.heteroplasmy = None;
         let _ = self.tx.send(Command::LoadConsensus(guid));
+        // Refresh the list's Y/mt columns (picks up an assignment made on another row).
+        let _ = self.tx.send(Command::LoadHaploSummary);
         let _ = self.tx.send(Command::LoadAudit { biosample_guid: guid, dna_type: DnaType::Y });
         let _ = self.tx.send(Command::LoadAudit { biosample_guid: guid, dna_type: DnaType::Mt });
         let _ = self.tx.send(Command::LoadVariantConcordance(guid));
@@ -2507,16 +2529,20 @@ impl NavigatorApp {
                     }
                 }
                 shown += 1;
-                // Y/mt haplogroups are only loaded for the selected subject (consensus_* state),
-                // so fill them in for that row; others stay "-" until selected/analyzed.
-                let (y, mt) = if self.selected_sample == Some(s.guid) {
-                    (
-                        self.consensus_y.as_ref().map(|c| c.haplogroup.clone()).unwrap_or_else(|| "-".into()),
-                        self.consensus_mt.as_ref().map(|c| c.haplogroup.clone()).unwrap_or_else(|| "-".into()),
-                    )
-                } else {
-                    ("-".into(), "-".into())
-                };
+                // Y/mt from the bulk per-subject summary; the selected row prefers the freshly
+                // loaded consensus (reflects a just-run assignment before the summary reloads).
+                let sel = self.selected_sample == Some(s.guid);
+                let summary = self.haplo_summary.get(&s.guid);
+                let y = sel
+                    .then(|| self.consensus_y.as_ref().map(|c| c.haplogroup.clone()))
+                    .flatten()
+                    .or_else(|| summary.and_then(|(y, _)| y.clone()))
+                    .unwrap_or_else(|| "-".into());
+                let mt = sel
+                    .then(|| self.consensus_mt.as_ref().map(|c| c.haplogroup.clone()))
+                    .flatten()
+                    .or_else(|| summary.and_then(|(_, m)| m.clone()))
+                    .unwrap_or_else(|| "-".into());
                 let cells = [
                     short_guid(s),
                     s.donor_identifier.clone(),
