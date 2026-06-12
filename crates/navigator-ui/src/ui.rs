@@ -1084,7 +1084,11 @@ impl NavigatorApp {
                 Event::ChipProfilesChanged(guid) => {
                     if self.selected_sample == Some(guid) {
                         let _ = self.tx.send(Command::LoadChipProfiles(guid));
+                        // A chip import also places Y (and, for 23andMe, mtDNA) haplogroups —
+                        // refresh the consensus so they appear without a manual reload.
+                        let _ = self.tx.send(Command::LoadConsensus(guid));
                     }
+                    let _ = self.tx.send(Command::LoadHaploSummary); // subjects-list Y/mt columns
                     self.status = "Chip data imported".into();
                 }
                 Event::MtdnaSequences { biosample_guid, sequences } => {

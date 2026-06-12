@@ -262,6 +262,38 @@ fn assemble_assignment_robust(
     HaploAssignment { ranked, branches }
 }
 
+/// Reconcile chip genotype calls to a haplotree's strand. Consumer arrays report alleles on the
+/// reference plus strand, but a subset of sites sit on the opposite strand from the tree's
+/// ancestral/derived convention. For each call at a tree position: keep the observed base if it
+/// already equals the ancestral or derived allele; else substitute its complement when *that*
+/// matches; else keep it (a genuine no-match the scorer will count against the branch). Positions
+/// absent from the tree pass through unchanged (they don't affect scoring). This is a no-op for
+/// dictionary-reconciled BISDNA calls (their base is always the derived allele), so it's safe to
+/// apply on the shared chip-placement path.
+fn strand_reconcile_to_tree(
+    tree: &navigator_analysis::haplo::HaploTree,
+    calls: HashMap<i64, char>,
+) -> HashMap<i64, char> {
+    let mut allowed: HashMap<i64, (char, char)> = HashMap::new();
+    for node in tree.nodes.values() {
+        for l in &node.loci {
+            if let (Some(a), Some(d)) = (l.ancestral.chars().next(), l.derived.chars().next()) {
+                allowed.entry(l.position).or_insert((a.to_ascii_uppercase(), d.to_ascii_uppercase()));
+            }
+        }
+    }
+    calls
+        .into_iter()
+        .map(|(pos, base)| match allowed.get(&pos) {
+            Some(&(a, d)) if base != a && base != d => {
+                let c = complement_base(base);
+                if c == a || c == d { (pos, c) } else { (pos, base) }
+            }
+            _ => (pos, base),
+        })
+        .collect()
+}
+
 /// Map GVCF-decoded bases at *lifted* positions back to tree positions (the GVCF-sourced
 /// analogue of [`App::build_calls_from_lifted`]). A variant base wins; otherwise a callable
 /// hom-ref lifted site takes the **reference base** at that lifted position — both reverse-
@@ -1898,16 +1930,15 @@ impl App {
 
     /// Import a genotyping-array raw-data export (CSV/TSV) and store its QC summary.
     /// `provider` overrides vendor detection when given; `chip_version` is optional.
-    // TODO(haplogroup-from-array): compute Y-DNA (and where present, mtDNA) haplogroups on
-    // import for consumer genotyping arrays, like the BISDNA path already does for chromo2.
-    //   - 23andMe raw data carries BOTH Y-DNA and mtDNA SNP calls (`MT`/`Y` chromosome rows):
-    //     resolve the Y rows to Y-SNP loci via the YsnpDictionary (reuse `assign_y_bisdna`) and
-    //     place mtDNA against the FTDNA mt tree from the MT genotype rows.
-    //   - AncestryDNA raw data has SOME Y-DNA SNPs (usable for a coarse Y placement) but no
-    //     usable mtDNA — Y only.
-    // Both should flow through the same positives→VariantCall(Chip) → assemble_assignment_robust
-    // pipeline as BISDNA (see `import_bisdna_from_file` / `assign_y_bisdna`), not just store a QC
-    // summary. The strand-resolution column differs per vendor — handle per `detected` provider.
+    /// Import a genotyping-array raw-data export and (1) store its QC summary as a [`ChipProfile`],
+    /// (2) store the haploid Y/MT genotype rows as a `Chip`-source [`VariantSet`], and (3)
+    /// best-effort place the Y (and, where present, mtDNA) haplogroup on import — the consumer-array
+    /// counterpart to BISDNA's chromo2 path. 23andMe carries both Y and MT rows; AncestryDNA carries
+    /// Y but no usable mtDNA. The stored observed bases flow through the same
+    /// [`assign_y_bisdna`](Self::assign_y_bisdna) / [`assign_mt_chip`](Self::assign_mt_chip) +
+    /// `assemble_assignment_robust` placement as BISDNA, with plus-strand reconciliation to the tree.
+    /// Placement is best-effort: an unreachable tree (offline) leaves the calls stored for a later
+    /// manual "Assign … (panel)" — it does not fail the import.
     pub async fn import_chip_profile_from_csv(
         &self,
         biosample_guid: SampleGuid,
@@ -1919,8 +1950,66 @@ impl App {
         let (summary, detected) = chipprofile::summarize(&text).map_err(AppError::Import)?;
         let provider = provider.or(detected).unwrap_or_else(|| "OTHER".into());
         let source_file_name = path.file_name().map(|s| s.to_string_lossy().into_owned());
-        let new = NewChipProfile { biosample_guid, provider, chip_version, summary, source_file_name };
-        Ok(chip_profile::create(self.store.pool(), &new).await?)
+        let label = source_file_name.clone().unwrap_or_else(|| provider.clone());
+        let new = NewChipProfile {
+            biosample_guid,
+            provider: provider.clone(),
+            chip_version,
+            summary,
+            source_file_name,
+        };
+        let profile = chip_profile::create(self.store.pool(), &new).await?;
+
+        // Pull the haploid Y/MT genotype rows and store them as Chip-source variant calls so the
+        // haplogroup placement (and later re-placement) has them without re-reading the file. The
+        // observed allele goes in both `reference` and `alternate` (we don't know the ancestral);
+        // the placement reads `alternate`.
+        let haplo = chipprofile::haplo_calls(&text);
+        if !haplo.is_empty() {
+            let build = chipprofile::detect_build(&text);
+            let (mut y_count, mut mt_count) = (0usize, 0usize);
+            let mut variant_calls = Vec::with_capacity(haplo.len());
+            for c in &haplo {
+                let (contig, is_y) = match c.dna {
+                    chipprofile::ChipDna::Y => ("chrY", true),
+                    chipprofile::ChipDna::Mt => ("chrM", false),
+                };
+                let b = c.base.to_string();
+                if let Some(call) = variants::snp_call(contig, c.position, &b, &b, Some(c.rsid.clone()), Some("1".into())) {
+                    if is_y {
+                        y_count += 1;
+                    } else {
+                        mt_count += 1;
+                    }
+                    variant_calls.push(call);
+                }
+            }
+            let set = NewVariantSet {
+                biosample_guid,
+                source_label: format!("{label} Y/MT calls"),
+                source_type: SourceType::Chip,
+                reference_build: Some(build.clone()),
+                calls: variant_calls,
+            };
+            variant_set::create(self.store.pool(), &set).await?;
+
+            // Compute the haplogroups on import (best-effort; an offline tree just leaves the calls).
+            if y_count > 0 {
+                if let Err(e) = self.assign_y_bisdna(biosample_guid, Some(&build)).await {
+                    eprintln!("chip Y placement deferred ({e})");
+                }
+            }
+            // AncestryDNA's stray MT rows aren't a usable mtDNA panel — only place mtDNA when the
+            // array carries a real MT marker set (23andMe has thousands; the threshold filters noise).
+            const MIN_MT_CALLS: usize = 20;
+            if mt_count >= MIN_MT_CALLS {
+                if let Err(e) = self.assign_mt_chip(biosample_guid).await {
+                    eprintln!("chip mtDNA placement deferred ({e})");
+                }
+            }
+        }
+
+        Ok(profile)
     }
 
     /// All chip profiles for a subject.
@@ -2811,8 +2900,49 @@ impl App {
             Err(e) => return Err(e),
         };
 
+        // Chip alleles (BISDNA + consumer arrays) are plus-strand; flip the minority recorded on
+        // the tree's opposite strand so they score against the right allele. No-op for BISDNA.
+        let calls = strand_reconcile_to_tree(&tree, calls);
         let assignment = assemble_assignment_robust(&tree, &calls);
-        self.record_call(biosample_guid, DnaType::Y, "bisdna", "BISDNA Y-SNP panel".into(), &assignment).await?;
+        self.record_call(biosample_guid, DnaType::Y, "bisdna", "Chip Y-SNP panel".into(), &assignment).await?;
+        Ok(assignment)
+    }
+
+    /// Place an mtDNA haplogroup from the subject's chip-sourced MT genotype calls (e.g. 23andMe
+    /// `MT` rows) against the FTDNA mt tree. Consumer-array MT positions are rCRS coordinates,
+    /// which the tree uses directly (no liftover). Reads every `Chip`-source variant set's chrM
+    /// calls, reconciles strand, and uses the robust (sparse-chip) terminal selection. Records a
+    /// donor call. The counterpart to [`assign_y_bisdna`](Self::assign_y_bisdna) for mtDNA.
+    pub async fn assign_mt_chip(&self, biosample_guid: SampleGuid) -> Result<HaploAssignment, AppError> {
+        let sets = variant_set::list_for_biosample(self.store.pool(), biosample_guid).await?;
+        let mut calls: HashMap<i64, char> = HashMap::new();
+        for s in &sets {
+            if s.source_type != SourceType::Chip {
+                continue;
+            }
+            for c in &s.calls {
+                let mt = c.contig.eq_ignore_ascii_case("chrM")
+                    || c.contig.eq_ignore_ascii_case("chrMT")
+                    || c.contig.eq_ignore_ascii_case("mt")
+                    || c.contig.eq_ignore_ascii_case("m");
+                if !mt {
+                    continue;
+                }
+                if let Some(b) = c.alternate.chars().next() {
+                    calls.insert(c.position, b.to_ascii_uppercase());
+                }
+            }
+        }
+        if calls.is_empty() {
+            return Err(AppError::Import(
+                "no chip mtDNA calls to place — import a 23andMe raw-data file for this subject first".into(),
+            ));
+        }
+        let tree_json = self.fetch_ftdna_mt_tree().await?;
+        let tree = navigator_analysis::haplo::parse_ftdna_json(&tree_json).map_err(AppError::Import)?;
+        let calls = strand_reconcile_to_tree(&tree, calls);
+        let assignment = assemble_assignment_robust(&tree, &calls);
+        self.record_call(biosample_guid, DnaType::Mt, "chip-mt", "Chip mtDNA panel".into(), &assignment).await?;
         Ok(assignment)
     }
 
@@ -4178,9 +4308,34 @@ pub fn report_csv(rows: &[ProjectSampleReport]) -> String {
 
 #[cfg(test)]
 mod placement_tests {
-    use super::{assemble_assignment, assemble_assignment_robust};
+    use super::{assemble_assignment, assemble_assignment_robust, strand_reconcile_to_tree};
     use navigator_analysis::haplo::parse_ftdna_json;
     use std::collections::HashMap;
+
+    /// Chip alleles on the tree's opposite strand are flipped to the matching ancestral/derived
+    /// allele; in-tree matches and out-of-tree positions are untouched. A flipped derived call
+    /// then places as deep as the forward one would.
+    #[test]
+    fn strand_reconcile_flips_only_opposite_strand_calls() {
+        let tree = parse_ftdna_json(TREE).unwrap();
+        // 146 der=G observed as C (= complement of G) → flips to G; 263 der=G observed forward;
+        // 999 absent from the tree → passthrough unchanged.
+        let calls: HashMap<i64, char> = [(146, 'C'), (263, 'G'), (999, 'C')].into_iter().collect();
+        let fixed = strand_reconcile_to_tree(&tree, calls);
+        assert_eq!(fixed[&146], 'G', "complement matched the derived allele");
+        assert_eq!(fixed[&263], 'G', "already matched → unchanged");
+        assert_eq!(fixed[&999], 'C', "not in the tree → passthrough");
+
+        // The reconciled calls place to B (derived at 146 + 263), same as forward-strand input.
+        assert_eq!(
+            assemble_assignment_robust(&tree, &strand_reconcile_to_tree(&tree, [(146, 'C'), (263, 'G')].into_iter().collect()))
+                .ranked
+                .first()
+                .unwrap()
+                .name,
+            "B"
+        );
+    }
 
     // root → A(146) → B(263) → C(750) → D(1000). A single defining SNP per node.
     const TREE: &str = r#"{ "allNodes": {

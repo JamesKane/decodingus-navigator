@@ -202,6 +202,85 @@ pub fn summarize(text: &str) -> Result<(ChipSummary, Option<String>), String> {
     Ok((summary, detect_provider(&header_lower)))
 }
 
+/// Which haploid lineage a [`ChipHaploCall`] belongs to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChipDna {
+    Y,
+    Mt,
+}
+
+/// A single haploid Y or mtDNA genotype pulled from a chip export — the raw observed allele on
+/// the vendor's reference build, for on-import haplogroup placement. (Consumer arrays report
+/// Y/MT as a single haploid base; we keep only unambiguous single-base calls.)
+#[derive(Debug, Clone, PartialEq)]
+pub struct ChipHaploCall {
+    pub dna: ChipDna,
+    pub rsid: String,
+    pub position: i64,
+    /// Observed allele, uppercase A/C/G/T.
+    pub base: char,
+}
+
+/// The single haploid base of a genotype token, or `None` if it's a no-call, an indel
+/// (`I`/`D`), or heterozygous (two different bases — on a true haploid Y/MT that's
+/// contamination, so we drop it rather than guess).
+fn haploid_base(genotype: &str) -> Option<char> {
+    let mut bases = genotype
+        .bytes()
+        .map(|b| b.to_ascii_uppercase())
+        .filter(|b| matches!(b, b'A' | b'C' | b'G' | b'T'));
+    let first = bases.next()?;
+    bases.all(|b| b == first).then_some(first as char)
+}
+
+/// Extract the Y and mtDNA haploid calls from a vendor raw-data export, for on-import
+/// haplogroup placement. Skips autosomal/X rows, no-calls, indels, and heterozygous calls.
+/// Positions are on the vendor build (consumer arrays are GRCh37 — see [`detect_build`]).
+/// Pairs with [`summarize`]: same row layouts (tab/comma, optional `#` header, then
+/// `rsid,chrom,pos,genotype` or `rsid,chrom,pos,allele1,allele2`).
+pub fn haplo_calls(text: &str) -> Vec<ChipHaploCall> {
+    let mut out = Vec::new();
+    for raw in text.lines() {
+        let line = raw.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let sep = if line.contains('\t') { '\t' } else { ',' };
+        let cols: Vec<&str> = line.split(sep).map(|s| s.trim().trim_matches('"')).collect();
+        if cols.len() < 4 || is_header(cols[0]) {
+            continue;
+        }
+        let dna = match region(cols[1]) {
+            Region::Y => ChipDna::Y,
+            Region::Mt => ChipDna::Mt,
+            _ => continue,
+        };
+        let Ok(position) = cols[2].parse::<i64>() else { continue };
+        let genotype = if cols.len() >= 5 { format!("{}{}", cols[3], cols[4]) } else { cols[3].to_string() };
+        let Some(base) = haploid_base(&genotype) else { continue };
+        out.push(ChipHaploCall { dna, rsid: cols[0].to_string(), position, base });
+    }
+    out
+}
+
+/// The reference build a vendor export is reported on. Consumer arrays (23andMe v4/v5,
+/// AncestryDNA v1/v2) are GRCh37, so that's the default; a header naming build 38 / GRCh38 /
+/// hg38 overrides it. Scans only the comment header.
+pub fn detect_build(text: &str) -> String {
+    for raw in text.lines() {
+        let line = raw.trim();
+        if line.starts_with('#') {
+            let lc = line.to_ascii_lowercase();
+            if lc.contains("build 38") || lc.contains("grch38") || lc.contains("hg38") {
+                return "GRCh38".into();
+            }
+        } else if !line.is_empty() {
+            break; // past the header block
+        }
+    }
+    "GRCh37".into()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -235,5 +314,43 @@ mod tests {
     #[test]
     fn empty_errors() {
         assert!(summarize("# only comments\n\n").is_err());
+    }
+
+    #[test]
+    fn haplo_calls_extracts_y_and_mt_haploid_bases() {
+        // autosomal + X rows ignored; Y/MT haploid kept; het Y dropped; no-call/indel dropped.
+        let f = "# 23andMe\nrsid\tchromosome\tposition\tgenotype\n\
+                 rs1\t1\t100\tAG\n\
+                 rs2\tX\t200\tA\n\
+                 rsY1\tY\t2800000\tG\n\
+                 rsY2\t24\t2900000\tCC\n\
+                 rsYhet\tY\t3000000\tAT\n\
+                 rsYnc\tY\t3100000\t--\n\
+                 rsM1\tMT\t263\tG\n\
+                 rsM2\t26\t750\tA\n\
+                 rsMii\tMT\t900\tII\n";
+        let calls = haplo_calls(f);
+        let ys: Vec<_> = calls.iter().filter(|c| c.dna == ChipDna::Y).collect();
+        let mts: Vec<_> = calls.iter().filter(|c| c.dna == ChipDna::Mt).collect();
+        assert_eq!(ys.len(), 2, "two valid Y haploid calls (chr Y + chr 24)");
+        assert_eq!(ys[0], &ChipHaploCall { dna: ChipDna::Y, rsid: "rsY1".into(), position: 2_800_000, base: 'G' });
+        assert_eq!(ys[1].base, 'C'); // "CC" homozygous → C
+        assert_eq!(mts.len(), 2, "two valid MT haploid calls (chr MT + chr 26)");
+        assert_eq!(mts[0], &ChipHaploCall { dna: ChipDna::Mt, rsid: "rsM1".into(), position: 263, base: 'G' });
+    }
+
+    #[test]
+    fn haplo_calls_handles_ancestry_allele_columns() {
+        let f = "#AncestryDNA\nrsid\tchromosome\tposition\tallele1\tallele2\n\
+                 rsY\t24\t2800000\tA\tA\nrsX\t23\t100\tC\tT\n";
+        let calls = haplo_calls(f);
+        assert_eq!(calls, vec![ChipHaploCall { dna: ChipDna::Y, rsid: "rsY".into(), position: 2_800_000, base: 'A' }]);
+    }
+
+    #[test]
+    fn detect_build_defaults_grch37_and_honors_header() {
+        assert_eq!(detect_build("# This data file generated by 23andMe\nrsid\t..\n"), "GRCh37");
+        assert_eq!(detect_build("# reference human assembly build 38\nrsid\t..\n"), "GRCh38");
+        assert_eq!(detect_build("#GRCh38 export\n"), "GRCh38");
     }
 }
