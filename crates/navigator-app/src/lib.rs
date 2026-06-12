@@ -248,7 +248,11 @@ fn assemble_assignment_robust(
     let mut ranked = haplo::score(tree, calls);
     if let Some(top_id) = ranked.first().map(|r| r.id) {
         let terminal_id = haplo::deepen_terminal(tree, calls, top_id);
-        if let Some(idx) = ranked.iter().position(|r| r.id == terminal_id) {
+        // Parsimony back-off: don't report a deeper terminal than the evidence supports. Trim any
+        // net-contradicted tail of the lineage (sparse-panel / damaged-aDNA over-deepening) while
+        // a lone contradiction outweighed by deeper derived support still reaches the deep terminal.
+        let chosen_id = support_backoff_terminal(tree, calls, terminal_id);
+        if let Some(idx) = ranked.iter().position(|r| r.id == chosen_id) {
             if idx != 0 {
                 let chosen = ranked.remove(idx);
                 ranked.insert(0, chosen);
@@ -260,6 +264,81 @@ fn assemble_assignment_robust(
         .map(|t| haplo::child_evidence(tree, calls, t.id))
         .unwrap_or_default();
     HaploAssignment { ranked, branches }
+}
+
+/// The root→`target` path of node ids (inclusive), or empty if `target` isn't reachable.
+fn lineage_ids(tree: &navigator_analysis::haplo::HaploTree, target: i64) -> Vec<i64> {
+    fn dfs(tree: &navigator_analysis::haplo::HaploTree, id: i64, target: i64, acc: &mut Vec<i64>) -> bool {
+        let Some(node) = tree.nodes.get(&id) else { return false };
+        acc.push(id);
+        if id == target {
+            return true;
+        }
+        for &c in &node.children {
+            if dfs(tree, c, target, acc) {
+                return true;
+            }
+        }
+        acc.pop();
+        false
+    }
+    let mut roots: Vec<i64> = tree.nodes.values().filter(|n| n.is_root).map(|n| n.id).collect();
+    roots.sort_unstable();
+    for r in roots {
+        let mut acc = Vec::new();
+        if dfs(tree, r, target, &mut acc) {
+            return acc;
+        }
+    }
+    Vec::new()
+}
+
+/// Back off an over-deepened terminal to the node that maximizes running support along its
+/// lineage. Walking root→terminal, each node contributes `(covered derived − covered ancestral)`
+/// over its defining SNPs the sample has a call for; the chosen terminal is the deepest node at
+/// which that running balance peaks. A net-contradicted tail (more ancestral than derived calls —
+/// a sparse chip or degraded aDNA sample tunnelling into a wrong sub-clade) is trimmed, but a tail
+/// whose deeper derived calls outweigh a shallow contradiction is kept (ties favour the deeper
+/// node, preserving the robust "survive a lone backbone contradiction" behaviour). Returns
+/// `terminal_id` unchanged when its lineage can't be traced.
+fn support_backoff_terminal(
+    tree: &navigator_analysis::haplo::HaploTree,
+    calls: &HashMap<i64, char>,
+    terminal_id: i64,
+) -> i64 {
+    let path = lineage_ids(tree, terminal_id);
+    if path.is_empty() {
+        return terminal_id;
+    }
+    let (mut balance, mut best_balance, mut best_id) = (0i32, i32::MIN, terminal_id);
+    for &id in &path {
+        let mut node_derived = false;
+        if let Some(node) = tree.nodes.get(&id) {
+            for l in &node.loci {
+                let (Some(der), Some(anc)) = (l.derived.chars().next(), l.ancestral.chars().next()) else {
+                    continue;
+                };
+                match calls.get(&l.position).map(|c| c.to_ascii_uppercase()) {
+                    Some(b) if b == der.to_ascii_uppercase() => {
+                        balance += 1;
+                        node_derived = true;
+                    }
+                    Some(b) if b == anc.to_ascii_uppercase() => balance -= 1,
+                    Some(_) => balance -= 1, // a third allele contradicts this branch
+                    None => {}
+                }
+            }
+        }
+        // Deepen on strictly more support, or on a tie *only* when this node is itself
+        // derived-supported. So a contradiction recovered by a deeper derived call still reaches
+        // the deep terminal, while a net-negative tail or a flat run of marker-less nodes (the
+        // sparse-panel / aDNA tunnel) is trimmed back to the last positively-supported node.
+        if balance > best_balance || (balance == best_balance && node_derived) {
+            best_balance = balance;
+            best_id = id;
+        }
+    }
+    best_id
 }
 
 /// Reconcile chip genotype calls to a haplotree's strand. Consumer arrays report alleles on the
@@ -4308,9 +4387,43 @@ pub fn report_csv(rows: &[ProjectSampleReport]) -> String {
 
 #[cfg(test)]
 mod placement_tests {
-    use super::{assemble_assignment, assemble_assignment_robust, strand_reconcile_to_tree};
+    use super::{assemble_assignment, assemble_assignment_robust, strand_reconcile_to_tree, support_backoff_terminal};
     use navigator_analysis::haplo::parse_ftdna_json;
     use std::collections::HashMap;
+
+    // A six-node spine for the back-off tests: root(1) → A(2,@146) → B(3,@263) → C(4,@750)
+    // → D(5,@1000) → F(6,@1100), one defining SNP per node.
+    const SPINE6: &str = r#"{ "allNodes": {
+      "1": {"haplogroupId":1,"name":"root","isRoot":true,"variants":[],"children":[2]},
+      "2": {"haplogroupId":2,"name":"A","isRoot":false,"variants":[{"variant":"a","position":146,"ancestral":"A","derived":"G"}],"children":[3]},
+      "3": {"haplogroupId":3,"name":"B","isRoot":false,"variants":[{"variant":"b","position":263,"ancestral":"A","derived":"G"}],"children":[4]},
+      "4": {"haplogroupId":4,"name":"C","isRoot":false,"variants":[{"variant":"c","position":750,"ancestral":"C","derived":"T"}],"children":[5]},
+      "5": {"haplogroupId":5,"name":"D","isRoot":false,"variants":[{"variant":"d","position":1000,"ancestral":"G","derived":"A"}],"children":[6]},
+      "6": {"haplogroupId":6,"name":"F","isRoot":false,"variants":[{"variant":"f","position":1100,"ancestral":"C","derived":"T"}],"children":[]}
+    }}"#;
+
+    /// The parsimony back-off trims a net-contradicted deep tail (the sparse-panel / aDNA
+    /// over-deepening) to the node where running (derived − ancestral) support peaks, but keeps a
+    /// clean deep path and tolerates a lone contradiction outweighed by deeper support.
+    #[test]
+    fn support_backoff_trims_net_negative_tail_but_keeps_supported_depth() {
+        let tree = parse_ftdna_json(SPINE6).unwrap();
+        // Derived A+B (peak at B), then below B: ancestral@750, contradiction@1000 (G≠der A),
+        // a lone derived@1100 — tail net −1. Should back off F(6) → B(3).
+        let sparse: HashMap<i64, char> =
+            [(146, 'G'), (263, 'G'), (750, 'C'), (1000, 'G'), (1100, 'T')].into_iter().collect();
+        assert_eq!(support_backoff_terminal(&tree, &sparse, 6), 3, "net-negative tail trimmed to B");
+
+        // A clean fully-derived path keeps the deepest terminal F.
+        let clean: HashMap<i64, char> =
+            [(146, 'G'), (263, 'G'), (750, 'T'), (1000, 'A'), (1100, 'T')].into_iter().collect();
+        assert_eq!(support_backoff_terminal(&tree, &clean, 6), 6, "clean path keeps the terminal");
+
+        // A lone contradiction (@750) outweighed by deeper derived calls still reaches F.
+        let recovered: HashMap<i64, char> =
+            [(146, 'G'), (263, 'G'), (750, 'C'), (1000, 'A'), (1100, 'T')].into_iter().collect();
+        assert_eq!(support_backoff_terminal(&tree, &recovered, 6), 6, "deeper support recovers depth");
+    }
 
     /// Chip alleles on the tree's opposite strand are flipped to the matching ancestral/derived
     /// allele; in-tree matches and out-of-tree positions are untouched. A flipped derived call
