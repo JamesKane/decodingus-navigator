@@ -1,8 +1,8 @@
 # Unified Quality Metrics Walker — Rust port plan
 
-Last updated: 2026-06-10. Branch: `rust-rewrite`. Companion to the Scala-era
-`UnifiedQualityMetricsWalker.md` (which describes the *old* htsjdk implementation —
-Phases 1–3 "complete" refer to the Scala codebase, not this rewrite).
+Last updated: 2026-06-10. Branch: `rust-rewrite`. This supersedes the Scala-era
+htsjdk metrics-walker design (removed at cutover); the notes below describe the Rust
+rewrite only.
 
 ## Why (the actual gap in the rewrite)
 

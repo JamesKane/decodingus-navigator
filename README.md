@@ -1,30 +1,32 @@
 # Decoding-Us Navigator
 
-Decoding-Us Navigator is an edge-computing companion application to [decoding-us.com](https://decoding-us.com). It leverages the Genome Analysis Toolkit (GATK) to analyze BAM/CRAM files directly on your local machine, empowering citizen scientists with advanced bioinformatics capabilities while preserving privacy.
+Decoding-Us Navigator is an edge-computing companion application to [decoding-us.com](https://decoding-us.com). It analyzes BAM/CRAM files and consumer DNA data directly on your local machine, empowering citizen scientists with advanced bioinformatics while preserving privacy.
 
-> **🦀 Rust rewrite in progress** (branch `rust-rewrite`). A ground-up port that replaces
-> GATK/HTSJDK with a pure-Rust analysis stack (noodles) and ScalaFX with an egui desktop UI —
-> no JVM, no external bioinformatics tooling. The sections below describe the current Scala app;
-> for the rewrite see **[`crates/README.md`](crates/README.md)**, the design in
-> **[`documents/design/RustRewrite_Plan.md`](documents/design/RustRewrite_Plan.md)**, and the
-> resume notes in **[`documents/design/HANDOFF.md`](documents/design/HANDOFF.md)**.
+Navigator is a **single self-contained Rust application**: a pure-Rust analysis stack ([noodles](https://github.com/zaeleus/noodles)) and an [egui](https://github.com/emilk/egui) desktop UI — **no JVM, no GATK, no samtools/bcftools** to install. The same binary doubles as a scriptable command-line tool.
+
+> **Repository note:** active development is on the `rust-rewrite` branch. The original Scala/ScalaFX
+> implementation is preserved in history; the design of the rewrite is documented in
+> **[`crates/README.md`](crates/README.md)**,
+> **[`documents/design/RustRewrite_Plan.md`](documents/design/RustRewrite_Plan.md)**, and the resume
+> notes in **[`documents/design/HANDOFF.md`](documents/design/HANDOFF.md)**.
 
 ## Privacy-Preserving Analysis
 
-The application ensures user privacy by performing all analysis locally. Only anonymized summary information is optionally shared, including:
+All analysis runs locally. Your raw genomic files never leave your machine. Only anonymized summaries are optionally shared, with your consent:
 - Haplogroup assignments
 - General coverage statistics for quality control
+- Ancestry estimates
 - Autosomal DNA matches with other researchers in the Federation (coming soon)
 
 Data sharing uses the AT Protocol Personal Data Store (PDS) for user-controlled data ownership.
 
 ## Goal
 
-Decoding-Us Navigator simplifies complex bioinformatics command-line tools by wrapping them in an intuitive interface. It is designed for hobbyists and citizen scientists, making advanced genetic analysis accessible without requiring programming expertise.
+Decoding-Us Navigator wraps complex bioinformatics in an intuitive interface. It is designed for hobbyists and citizen scientists, making advanced genetic analysis accessible without requiring programming expertise — while remaining fully scriptable for power users.
 
-## Cross-Platform Compatibility
+## Cross-Platform
 
-Built on the Java Virtual Machine (JVM) with ScalaFX, Decoding-Us Navigator runs on macOS, Windows, and Linux with a consistent user experience.
+A single native binary runs on macOS, Windows, and Linux with no runtime dependencies to install.
 
 ## The Workbench
 ![Workbench Screenshot](documents/images/MainWorkbench.png)
@@ -32,123 +34,98 @@ Built on the Java Virtual Machine (JVM) with ScalaFX, Decoding-Us Navigator runs
 ## Features
 
 ### Workspace Management
-- Create and manage multiple projects and biosamples
-- Drag-and-drop project membership management
-- Persistent workspace saved locally
+- Create and manage multiple projects and subjects (biosamples)
+- Subject-centric detail view: Overview, Y-DNA, mtDNA, Ancestry, IBD Matches, and Data Sources
+- Persistent workspace stored locally in SQLite
 - Search and filter across projects and subjects
 
-### Sequencing Data Management
-- Import BAM/CRAM files via file picker or drag-and-drop
-- Support for local files and cloud URLs (HTTP/S3)
-- Automatic SHA-256 checksum calculation
-- Platform detection (Illumina, PacBio, Oxford Nanopore, MGI, Ion Torrent, Complete Genomics)
-- Test type classification (WGS, WES, HiFi, CLR, Nanopore, Targeted Panel)
+### Data Import (auto-detected)
+- **BAM / CRAM** aligned reads
+- **VCF / GVCF** variant calls (GVCF carries callable-region context for a fast haplogroup path)
+- **mtDNA FASTA** sequences
+- **Consumer chip raw data** — 23andMe, AncestryDNA, MyHeritage, Living DNA, FTDNA (Y and mtDNA haplogroups placed on import)
+- **Y-STR profiles** — FTDNA/YSEQ-style CSV/TSV exports
+- **Y-SNP panels** — BISDNA chromo2 genotyped exports
+
+Imports automatically compute a checksum and detect platform (Illumina, PacBio, Oxford Nanopore, MGI, Ion Torrent, Complete Genomics) and test type (WGS, WES, HiFi, CLR, Nanopore, Targeted Panel).
 
 ### Analysis Capabilities
-- **Library Statistics**: Rapid BAM/CRAM scanning for sample metadata, reference build detection, read length distribution, and insert size metrics
-- **WGS Metrics**: Comprehensive coverage analysis including mean coverage, coverage distribution, and depth thresholds (1x-100x)
-- **Callable Loci**: Per-contig analysis identifying callable bases, coverage gaps, and mapping quality issues with SVG visualizations
-- **Haplogroup Determination**: Y-DNA and MT-DNA haplogroup analysis with multiple tree providers (FTDNA, DecodingUs)
-- **Private SNP Detection**: Identify novel SNPs unique to an individual after haplogroup determination
-- **Liftover**: Automatic coordinate conversion between reference builds (GRCh38, GRCh37, CHM13v2)
+- **Coverage / Callable Loci** — mean depth, coverage distribution, callable bases per contig (1×–100×)
+- **Read Metrics** — read length, insert size, platform detection, library orientation
+- **Sex Inference** — genetic sex with a confidence score
+- **Y-DNA & mtDNA Haplogroups** — terminal assignment with ranked candidates, across FTDNA and DecodingUs tree providers; multi-source reconciliation across runs
+- **mtDNA Heteroplasmy** — site-level depth and allele fraction
+- **Private Y Variants** — off-backbone calls (finer branches + novel candidates)
+- **Ancestry** — admixture (26 fine populations / 8 continents), PCA projection, geographic map, DNA-painting local ancestry
+- **IBD Detection** — shared-segment detection and relationship estimates (match-discovery UI in progress)
+- **Structural Variants** — deletions, inversions, CNVs (output unvalidated; needs ≥10× coverage)
+- **Liftover** — automatic coordinate conversion between GRCh38, GRCh37, and CHM13v2
 
 ### Reference Genome Management
-- Automatic reference genome download and caching
-- Support for GRCh38, GRCh37, and CHM13v2
-- Configurable local paths and cache directory
-- Download prompts with size estimates
+- Automatic reference download and caching (GRCh38, GRCh37, CHM13v2)
+- Configurable cache directory and on-demand retrieval with size estimates
 
 ### Analysis Caching
-- SHA-256 based result caching to prevent redundant analysis
-- Cached results for coverage, WGS metrics, library stats, and contig summaries
+- Result caching keyed by input file hash to avoid redundant work
 - Subject-organized artifact storage for intermediate analysis files
 
-### Data Storage Structure
+### Data Storage
 
 All application data is stored under `~/.decodingus/`:
 
 ```
 ~/.decodingus/
-├── config/
-│   └── reference_config.json       # Reference genome configuration
-│
-├── data/
-│   └── workspace.mv.db             # H2 database (workspace state)
-│
-└── cache/
-    ├── references/                 # Downloaded reference genomes (.fa.gz)
-    ├── liftover/                   # Liftover chain files
-    ├── trees/                      # Haplogroup tree data and sites VCFs
-    │   ├── ftdna-ytree.json        # FTDNA Y-DNA tree cache
-    │   ├── ftdna-mttree.json       # FTDNA MT-DNA tree cache
-    │   ├── decodingus-ytree.json   # Decoding-Us Y-DNA tree cache
-    │   ├── *-GRCh38-sites.vcf      # Full tree sites VCF (all positions)
-    │   └── *-path-R1b-U152-*.vcf   # Path-optimized sites VCF (reference haplogroup path only)
-    ├── {sha256}.json               # Analysis results cache (by file hash)
-    └── subjects/                   # Subject-specific analysis artifacts
-        └── {sampleAccession}/
-            └── runs/{runId}/
-                └── alignments/{alignmentId}/
-                    ├── wgs_metrics.txt
-                    ├── callable_loci/
-                    │   ├── chr*.callable.bed
-                    │   ├── chr*.table.txt
-                    │   └── chr*.callable.svg
-                    └── haplogroup/
-                        ├── ydna_tree_sites.vcf      # Called tree sites (pass 1)
-                        ├── ydna_private_variants.vcf # Private variants (pass 2)
-                        ├── ydna_report.txt          # Haplogroup report
-                        ├── mtdna_tree_sites.vcf
-                        ├── mtdna_private_variants.vcf
-                        └── mtdna_report.txt
+├── navigator-rs.db      # Workspace database (SQLite): subjects, projects, runs, alignments, profiles
+├── references/          # Downloaded reference genomes (indexed FASTA)
+├── liftover/            # Chain files for build-to-build coordinate conversion
+├── masks/               # Callable-region BED masks
+├── trees/               # Cached Y-DNA / mtDNA haplotrees (JSON)
+├── ysnp/                # Y-SNP dictionary assets
+├── ancestry/            # Pre-built ancestry panels and PCA loadings
+└── navigator-lang       # Saved UI language choice
 ```
 
-### Local Database
+The database is created automatically on first launch. No configuration is required. Query it directly with any SQLite tool (close the app first):
 
-Your workspace data (biosamples, projects, sequence runs, and alignments) is stored in a local H2 database for fast, reliable storage.
-
-The database is created automatically on first launch. No configuration is required.
-
-### Connecting to the Database
-
-You can query your workspace data directly using any H2-compatible database tool (DBeaver, IntelliJ Database Tools, or the H2 Console).
-
-**Connection details:**
-- **JDBC URL:** `jdbc:h2:file:~/.decodingus/data/workspace`
-- **Username:** `sa`
-- **Password:** *(empty)*
-- **Driver:** H2 (download from [h2database.com](https://h2database.com))
-
-**Important:** Close the Navigator application before connecting, as H2 only allows one connection at a time by default.
-
-**Example tables:**
-- `biosample` - Research subjects
-- `project` - Project groupings
-- `sequence_run` - Sequencing sessions
-- `alignment` - Reference alignments and metrics
+```bash
+sqlite3 ~/.decodingus/navigator-rs.db ".tables"
+```
 
 ### Optional Cloud Integration
-- AT Protocol authentication and PDS integration
-- Workspace sync from personal data store
+- AT Protocol OAuth (PKCE/DPoP) and PDS record publishing
 - Optional upload of summary data with user consent
+- AppView endpoint configured via `DECODINGUS_APPVIEW_URL`
 
 ## Requirements
 
-- Java 17 or later
-- 4GB RAM minimum (8GB recommended for large BAM files)
+- No runtime dependencies to install (no Java, no external bioinformatics tools)
+- 4 GB RAM minimum (8 GB recommended for large BAM files)
+- A [Rust toolchain](https://www.rust-lang.org/tools/install) to build from source
 
-## Building
+## Building & Running
 
 ```bash
-# Compile
-sbt compile
+# Build the whole workspace (release = optimized)
+cargo build --release
 
-# Run
-sbt run
-
-# Create fat JAR
-sbt assembly
+# Run the desktop app
+cargo run -p navigator-ui
+# ...or run the built binary directly
+./target/release/navigator
 
 # Run tests
-sbt test
+cargo test --workspace
 ```
+
+### Command-line use
+
+The same `navigator` binary runs headless when given a subcommand, against the same workspace database:
+
+```bash
+navigator ingest --subject "Jane Doe" --project "Family Study" --recursive /path/to/files
+navigator subjects --json
+navigator show --subject "Jane Doe"
+navigator projects
+```
+
+See the **[User Guide](USER_GUIDE.md)** for full usage, and **[`crates/README.md`](crates/README.md)** for the crate topology and developer setup.

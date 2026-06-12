@@ -5,7 +5,7 @@ Last reviewed: 2026-03-07
 Source documents: `Edge_Client_Implementation_Status.md`, `UI_Redesign_Proposal.md`,
 `HaplogroupReconciliation_Implementation.md`, `GenomeRegionsAPI_Specification.md`,
 `UI_i18n_Guidelines.md`, `documents/atmosphere/` (multi-file Atmosphere Lexicon),
-`Atmosphere_Lexicon_Alignment_Plan.md`, `YProfile_and_RegionAnnotations.md`
+`YProfile_and_RegionAnnotations.md`
 
 ---
 
@@ -43,7 +43,7 @@ Source documents: `Edge_Client_Implementation_Status.md`, `UI_Redesign_Proposal.
 - **Scope:** Per-record PDS CRUD, conflict resolution, end-to-end sync flow
 
 ### 1.6 Atmosphere Lexicon Alignment
-- **Source:** `documents/atmosphere/`, `Atmosphere_Lexicon_Alignment_Plan.md`
+- **Source:** `documents/atmosphere/`
 - **Status:** Complete (all phases A–D)
 - **Scope:**
   - [x] Phase A: ChipProfile alignment (`vendor`→`provider`, new fields, V009 migration)
