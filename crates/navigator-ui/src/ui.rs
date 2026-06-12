@@ -1813,7 +1813,7 @@ impl NavigatorApp {
     fn analysis_modal(&mut self, ctx: &egui::Context) {
         let Some(p) = self.analysis.clone() else { return };
         // Dim everything behind the dialog.
-        let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("modal_dim")));
+        let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Middle, egui::Id::new("modal_dim")));
         painter.rect_filled(ctx.screen_rect(), 0.0, egui::Color32::from_black_alpha(150));
 
         egui::Area::new(egui::Id::new("analysis_modal"))
@@ -1862,7 +1862,7 @@ impl NavigatorApp {
     /// `UpdateBiosample` command; the resulting `BiosamplesChanged` event refreshes the lists.
     fn edit_subject_modal(&mut self, ctx: &egui::Context) {
         let Some(mut edit) = self.edit_subject.clone() else { return };
-        let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("edit_dim")));
+        let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Middle, egui::Id::new("edit_dim")));
         painter.rect_filled(ctx.screen_rect(), 0.0, egui::Color32::from_black_alpha(150));
 
         let mut close = false;
@@ -1928,7 +1928,7 @@ impl NavigatorApp {
             .find(|b| b.guid == guid)
             .map(|b| b.donor_identifier.clone())
             .unwrap_or_else(|| guid.0.to_string());
-        let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("delete_dim")));
+        let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Middle, egui::Id::new("delete_dim")));
         painter.rect_filled(ctx.screen_rect(), 0.0, egui::Color32::from_black_alpha(150));
 
         let mut close = false;
@@ -1971,7 +1971,7 @@ impl NavigatorApp {
     /// the variant's worker command; the resulting change event refreshes the affected list.
     fn data_delete_modal(&mut self, ctx: &egui::Context) {
         let Some(target) = self.confirm_data_delete.clone() else { return };
-        let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("data_delete_dim")));
+        let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Middle, egui::Id::new("data_delete_dim")));
         painter.rect_filled(ctx.screen_rect(), 0.0, egui::Color32::from_black_alpha(150));
 
         let mut close = false;
@@ -2011,7 +2011,7 @@ impl NavigatorApp {
     /// `AssignBiosampleProject`; the resulting `BiosamplesChanged` event refreshes the lists.
     fn assign_project_modal(&mut self, ctx: &egui::Context) {
         let Some((guid, mut chosen)) = self.assign_project else { return };
-        let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("assign_dim")));
+        let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Middle, egui::Id::new("assign_dim")));
         painter.rect_filled(ctx.screen_rect(), 0.0, egui::Color32::from_black_alpha(150));
 
         let selected_text = match chosen {
@@ -2068,7 +2068,7 @@ impl NavigatorApp {
     /// The Edit-project modal: name / administrator / description. Save sends `UpdateProject`.
     fn edit_project_modal(&mut self, ctx: &egui::Context) {
         let Some(mut edit) = self.edit_project.clone() else { return };
-        let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("edit_proj_dim")));
+        let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Middle, egui::Id::new("edit_proj_dim")));
         painter.rect_filled(ctx.screen_rect(), 0.0, egui::Color32::from_black_alpha(150));
 
         let mut close = false;
@@ -2120,7 +2120,7 @@ impl NavigatorApp {
     /// refuses (surfaced via the status bar) while subjects still belong to the project.
     fn delete_project_modal(&mut self, ctx: &egui::Context) {
         let Some((id, name)) = self.confirm_delete_project.clone() else { return };
-        let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("del_proj_dim")));
+        let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Middle, egui::Id::new("del_proj_dim")));
         painter.rect_filled(ctx.screen_rect(), 0.0, egui::Color32::from_black_alpha(150));
 
         let mut close = false;
@@ -2163,7 +2163,7 @@ impl NavigatorApp {
     /// metrics are analysis-derived and not editable here. Save sends `UpdateSequenceRun`.
     fn edit_run_modal(&mut self, ctx: &egui::Context) {
         let Some(mut edit) = self.edit_run.clone() else { return };
-        let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("edit_run_dim")));
+        let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Middle, egui::Id::new("edit_run_dim")));
         painter.rect_filled(ctx.screen_rect(), 0.0, egui::Color32::from_black_alpha(150));
 
         let mut close = false;
@@ -2227,7 +2227,7 @@ impl NavigatorApp {
     /// managed by import/probe. Save sends `UpdateAlignment`.
     fn edit_alignment_modal(&mut self, ctx: &egui::Context) {
         let Some(mut edit) = self.edit_alignment.clone() else { return };
-        let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("edit_aln_dim")));
+        let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Middle, egui::Id::new("edit_aln_dim")));
         painter.rect_filled(ctx.screen_rect(), 0.0, egui::Color32::from_black_alpha(150));
 
         let mut close = false;
@@ -3202,65 +3202,74 @@ impl NavigatorApp {
                 .stroke(if selected { egui::Stroke::new(1.0, ACCENT) } else { egui::Stroke::NONE })
                 .rounding(egui::Rounding::same(6.0))
                 .inner_margin(egui::Margin::same(10.0));
-            let resp = frame
-                .show(ui, |ui| {
-                    ui.horizontal(|ui| {
-                        chip(ui, &provider_abbrev(&r.platform_name), ACCENT.gamma_multiply(0.3), ACCENT);
-                        ui.add_space(4.0);
-                        let tt = testtype::by_code(&r.test_type);
-                        ui.vertical(|ui| {
-                            let plat = if r.platform_name.is_empty() { "—" } else { r.platform_name.as_str() };
-                            let title = format!(
-                                "{}  ·  {}  ·  {}",
-                                testtype::display_name(&r.test_type),
-                                plat,
-                                r.instrument_model.as_deref().unwrap_or("—")
-                            );
-                            ui.label(egui::RichText::new(title).strong());
-                            ui.label(
-                                egui::RichText::new(format!(
-                                    "Reads: {}   Aligned: {}   {}",
-                                    fmt_reads(r.total_reads),
-                                    fmt_reads(r.pf_reads_aligned),
-                                    r.library_layout.as_deref().unwrap_or("SINGLE")
-                                ))
-                                .weak()
-                                .small(),
-                            );
-                        });
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            if ui.small_button("🗑").on_hover_text("Delete run + its alignments").clicked() {
-                                want_delete = Some(DataDelete::Run {
-                                    id: r.id,
-                                    guid,
-                                    label: format!("run “{}”", testtype::display_name(&r.test_type)),
-                                });
-                            }
-                            if ui.small_button("✏").on_hover_text("Edit run").clicked() {
-                                want_edit_run = Some(EditRun {
-                                    id: r.id,
-                                    guid,
-                                    test_type: r.test_type.clone(),
-                                    platform_name: r.platform_name.clone(),
-                                    instrument_model: r.instrument_model.clone().unwrap_or_default(),
-                                    library_layout: r.library_layout.clone().unwrap_or_default(),
-                                });
-                            }
-                            if let Some(t) = tt {
-                                let mt = matches!(t.target, testtype::TargetType::WholeGenome | testtype::TargetType::MtDna);
-                                let y = matches!(t.target, testtype::TargetType::WholeGenome | testtype::TargetType::YChromosome);
-                                if mt {
-                                    chip(ui, "mt", egui::Color32::from_rgb(70, 60, 90), egui::Color32::from_rgb(200, 180, 230));
-                                }
-                                if y {
-                                    chip(ui, "Y", egui::Color32::from_rgb(40, 70, 55), egui::Color32::from_rgb(150, 220, 180));
-                                }
-                            }
-                        });
+            let inner = frame.show(ui, |ui| {
+                let mut edit_btn: Option<egui::Response> = None;
+                let mut del_btn: Option<egui::Response> = None;
+                ui.horizontal(|ui| {
+                    chip(ui, &provider_abbrev(&r.platform_name), ACCENT.gamma_multiply(0.3), ACCENT);
+                    ui.add_space(4.0);
+                    let tt = testtype::by_code(&r.test_type);
+                    ui.vertical(|ui| {
+                        let plat = if r.platform_name.is_empty() { "—" } else { r.platform_name.as_str() };
+                        let title = format!(
+                            "{}  ·  {}  ·  {}",
+                            testtype::display_name(&r.test_type),
+                            plat,
+                            r.instrument_model.as_deref().unwrap_or("—")
+                        );
+                        ui.label(egui::RichText::new(title).strong());
+                        ui.label(
+                            egui::RichText::new(format!(
+                                "Reads: {}   Aligned: {}   {}",
+                                fmt_reads(r.total_reads),
+                                fmt_reads(r.pf_reads_aligned),
+                                r.library_layout.as_deref().unwrap_or("SINGLE")
+                            ))
+                            .weak()
+                            .small(),
+                        );
                     });
-                })
-                .response;
-            if resp.interact(egui::Sense::click()).clicked() {
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        del_btn = Some(ui.small_button("🗑").on_hover_text("Delete run + its alignments"));
+                        edit_btn = Some(ui.small_button("✏").on_hover_text("Edit run"));
+                        if let Some(t) = tt {
+                            let mt = matches!(t.target, testtype::TargetType::WholeGenome | testtype::TargetType::MtDna);
+                            let y = matches!(t.target, testtype::TargetType::WholeGenome | testtype::TargetType::YChromosome);
+                            if mt {
+                                chip(ui, "mt", egui::Color32::from_rgb(70, 60, 90), egui::Color32::from_rgb(200, 180, 230));
+                            }
+                            if y {
+                                chip(ui, "Y", egui::Color32::from_rgb(40, 70, 55), egui::Color32::from_rgb(150, 220, 180));
+                            }
+                        }
+                    });
+                });
+                (edit_btn, del_btn)
+            });
+            let (edit_btn, del_btn) = inner.inner;
+            // Row selection is sensed on the whole frame, which can swallow the inner buttons'
+            // clicks; treat a button as hit when it was clicked OR the row swallowed the click
+            // while the pointer was over it.
+            let row_clicked = inner.response.interact(egui::Sense::click()).clicked();
+            let hit = |b: &Option<egui::Response>| {
+                b.as_ref().is_some_and(|r| r.clicked() || (row_clicked && r.contains_pointer()))
+            };
+            if hit(&edit_btn) {
+                want_edit_run = Some(EditRun {
+                    id: r.id,
+                    guid,
+                    test_type: r.test_type.clone(),
+                    platform_name: r.platform_name.clone(),
+                    instrument_model: r.instrument_model.clone().unwrap_or_default(),
+                    library_layout: r.library_layout.clone().unwrap_or_default(),
+                });
+            } else if hit(&del_btn) {
+                want_delete = Some(DataDelete::Run {
+                    id: r.id,
+                    guid,
+                    label: format!("run “{}”", testtype::display_name(&r.test_type)),
+                });
+            } else if row_clicked {
                 pick_run = Some(r.id);
             }
 
@@ -3279,35 +3288,42 @@ impl NavigatorApp {
                             .rounding(egui::Rounding::same(6.0))
                             .inner_margin(egui::Margin::symmetric(10.0, 8.0))
                             .show(ui, |ui| {
+                                let mut edit_btn: Option<egui::Response> = None;
+                                let mut del_btn: Option<egui::Response> = None;
                                 ui.horizontal(|ui| {
                                     ui.label(egui::RichText::new(&a.reference_build).color(ACCENT).strong());
                                     ui.label(egui::RichText::new(if a.bam_path.is_some() { a.aligner.as_str() } else { "Unknown" }).weak());
                                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                        if ui.small_button("🗑").on_hover_text("Delete alignment").clicked() {
-                                            want_delete = Some(DataDelete::Alignment {
-                                                id: a.id,
-                                                run_id: r.id,
-                                                label: format!("alignment {} ({})", a.id, a.reference_build),
-                                            });
-                                        }
-                                        if ui.small_button("✏").on_hover_text("Edit alignment").clicked() {
-                                            want_edit_aln = Some(EditAlignment {
-                                                id: a.id,
-                                                run_id: r.id,
-                                                reference_build: a.reference_build.clone(),
-                                                aligner: a.aligner.clone(),
-                                                variant_caller: a.variant_caller.clone().unwrap_or_default(),
-                                            });
-                                        }
+                                        del_btn = Some(ui.small_button("🗑").on_hover_text("Delete alignment"));
+                                        edit_btn = Some(ui.small_button("✏").on_hover_text("Edit alignment"));
                                         ui.add_space(10.0);
                                         ui.label(egui::RichText::new(format!("Callable: {call_s}")).weak().small());
                                         ui.add_space(10.0);
                                         ui.label(egui::RichText::new(format!("Coverage: {cov_s}")).weak().small());
                                     });
                                 });
-                            })
-                            .response;
-                        if row.interact(egui::Sense::click()).clicked() {
+                                (edit_btn, del_btn)
+                            });
+                        let (edit_btn, del_btn) = row.inner;
+                        let row_clicked = row.response.interact(egui::Sense::click()).clicked();
+                        let hit = |b: &Option<egui::Response>| {
+                            b.as_ref().is_some_and(|r| r.clicked() || (row_clicked && r.contains_pointer()))
+                        };
+                        if hit(&edit_btn) {
+                            want_edit_aln = Some(EditAlignment {
+                                id: a.id,
+                                run_id: r.id,
+                                reference_build: a.reference_build.clone(),
+                                aligner: a.aligner.clone(),
+                                variant_caller: a.variant_caller.clone().unwrap_or_default(),
+                            });
+                        } else if hit(&del_btn) {
+                            want_delete = Some(DataDelete::Alignment {
+                                id: a.id,
+                                run_id: r.id,
+                                label: format!("alignment {} ({})", a.id, a.reference_build),
+                            });
+                        } else if row_clicked {
                             pick_aln = Some(a.id);
                         }
                     }
