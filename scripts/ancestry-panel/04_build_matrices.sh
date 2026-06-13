@@ -111,6 +111,7 @@ if [[ "$SGDP_ENABLE" == 1 ]]; then
 fi
 
 # Record the comma-joined argument lists the asset build consumes.
-( IFS=,; echo "${MATRICES[*]}" ) > "$TMP/matrices.list"
-( IFS=,; echo "${SAMPLES[*]}"  ) > "$TMP/samples.list"
+# The ${arr[*]+…} guard keeps an empty array safe under `set -u` on bash 3.2 (macOS default).
+( IFS=,; echo "${MATRICES[*]+"${MATRICES[*]}"}" ) > "$TMP/matrices.list"
+( IFS=,; echo "${SAMPLES[*]+"${SAMPLES[*]}"}"  ) > "$TMP/samples.list"
 log "stage 4 complete: $(wc -l < "$POPMAP") labelled samples; matrices in $TMP/matrices.list"

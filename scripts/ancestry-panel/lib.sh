@@ -23,8 +23,9 @@ fetch() {
   if [[ -s "$dest" ]]; then log "have $name (skip)"; return 0; fi
   log "fetch $name <- $url"
   # reichdata.hms.harvard.edu serves a broken TLS chain — allow insecure for that host only.
+  # Expand with the ${arr[@]+…} guard so an empty array is safe under `set -u` on bash 3.2 (macOS default).
   local insecure=(); [[ "$url" == *reichdata.hms.harvard.edu* ]] && insecure=(-k)
-  if ! curl -fL "${insecure[@]}" --retry 3 --retry-delay 5 -C - -o "$dest.part" "$url"; then
+  if ! curl -fL --no-progress-meter ${insecure[@]+"${insecure[@]}"} --retry 3 --retry-delay 5 -C - -o "$dest.part" "$url"; then
     log "download failed: $url"; rm -f "$dest.part"; return 1
   fi
   mv "$dest.part" "$dest"
