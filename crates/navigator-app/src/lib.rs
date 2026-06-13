@@ -2890,11 +2890,35 @@ impl App {
             }
         }
 
-        // One combined source for chip/BISDNA Y-SNP panels (per-panel split is a Phase-2 refinement).
-        if let Ok(assignment) = self.assign_y_bisdna(biosample_guid, None).await {
-            let obs = snp_obs_from_assignment(&assignment, true);
-            if !obs.is_empty() {
-                sources.push(("consumer tests".to_string(), SourceType::Chip, obs));
+        // One source *per chip/BISDNA panel* (a distinct VariantSet per import — 23andMe,
+        // AncestryDNA, BISDNA chromo2, …), so the profile shows which test confirmed each SNP and a
+        // single mistyped panel surfaces as a conflict rather than being averaged into "consumer tests".
+        let vsets = variant_set::list_for_biosample(self.store.pool(), biosample_guid).await?;
+        let chip_sets: Vec<&VariantSet> = vsets.iter().filter(|s| s.source_type == SourceType::Chip).collect();
+        if !chip_sets.is_empty() {
+            // Resolve the placement build once (a chip set's stored build, else the alignment's), and
+            // fetch the tree once for all panels.
+            let build = chip_sets
+                .iter()
+                .find_map(|s| s.reference_build.clone())
+                .unwrap_or(self.bisdna_target_build(biosample_guid).await);
+            if let Ok(tree) = self.chip_y_tree(&build).await {
+                for set in &chip_sets {
+                    let calls: HashMap<i64, char> = set
+                        .calls
+                        .iter()
+                        .filter(|c| c.contig.eq_ignore_ascii_case("chrY") || c.contig.eq_ignore_ascii_case("y"))
+                        .filter_map(|c| c.alternate.chars().next().map(|b| (c.position, b.to_ascii_uppercase())))
+                        .collect();
+                    if calls.is_empty() {
+                        continue;
+                    }
+                    let assignment = Self::place_chip_panel(&tree, calls);
+                    let obs = snp_obs_from_assignment(&assignment, true);
+                    if !obs.is_empty() {
+                        sources.push((set.source_label.clone(), SourceType::Chip, obs));
+                    }
+                }
             }
         }
 
@@ -3710,24 +3734,36 @@ impl App {
             ));
         }
 
-        // Tree on the placement build. DecodingUs is native multi-build (no liftover); the
-        // FTDNA tree is GRCh38-only, so it's a fallback only when the calls are on GRCh38.
-        let tree = match self.fetch_decodingus_y_tree().await {
-            Ok(json) => navigator_analysis::haplo::parse_decodingus_json(&json, &build).map_err(AppError::Import)?,
-            Err(e) if build == "GRCh38" => {
-                eprintln!("DecodingUs Y tree unavailable ({e}); falling back to FTDNA (GRCh38)");
-                let json = self.fetch_ftdna_y_tree().await?;
-                navigator_analysis::haplo::parse_ftdna_json(&json).map_err(AppError::Import)?
-            }
-            Err(e) => return Err(e),
-        };
-
+        let tree = self.chip_y_tree(&build).await?;
         // Chip alleles (BISDNA + consumer arrays) are plus-strand; flip the minority recorded on
         // the tree's opposite strand so they score against the right allele. No-op for BISDNA.
         let calls = strand_reconcile_to_tree(&tree, calls);
         let assignment = assemble_assignment_robust(&tree, &calls);
         self.record_call(biosample_guid, DnaType::Y, "bisdna", "Chip Y-SNP panel".into(), &assignment).await?;
         Ok(assignment)
+    }
+
+    /// Fetch + parse the Y haplotree for a chip placement on `build`. DecodingUs is native multi-build
+    /// (no liftover); the FTDNA tree is GRCh38-only, so it's a fallback only when the calls are GRCh38.
+    /// Shared by the combined [`assign_y_bisdna`](Self::assign_y_bisdna) placement and the per-panel
+    /// Y-profile sources, so the tree is fetched once.
+    async fn chip_y_tree(&self, build: &str) -> Result<navigator_analysis::haplo::HaploTree, AppError> {
+        match self.fetch_decodingus_y_tree().await {
+            Ok(json) => navigator_analysis::haplo::parse_decodingus_json(&json, build).map_err(AppError::Import),
+            Err(e) if build == "GRCh38" => {
+                eprintln!("DecodingUs Y tree unavailable ({e}); falling back to FTDNA (GRCh38)");
+                let json = self.fetch_ftdna_y_tree().await?;
+                navigator_analysis::haplo::parse_ftdna_json(&json).map_err(AppError::Import)
+            }
+            Err(e) => Err(e),
+        }
+    }
+
+    /// Place one chip/BISDNA panel's chrY calls on `tree` (strand-reconciled), without persisting —
+    /// for assembling the per-panel sources of the Y-variant profile.
+    fn place_chip_panel(tree: &navigator_analysis::haplo::HaploTree, calls: HashMap<i64, char>) -> HaploAssignment {
+        let calls = strand_reconcile_to_tree(tree, calls);
+        assemble_assignment_robust(tree, &calls)
     }
 
     /// Place an mtDNA haplogroup from the subject's chip-sourced MT genotype calls (e.g. 23andMe
