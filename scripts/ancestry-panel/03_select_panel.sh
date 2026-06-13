@@ -30,7 +30,7 @@ cargo run --release -q -p navigator-panelbuild -- panel \
   --out "$PANEL_OUT" \
   --max-sites "$MAX_SITES" \
   --min-fst "$MIN_FST" \
-  --tsv "$TMP/panel_sites.tsv"
+  --sites-tsv "$TMP/panel_sites.tsv"
 
 # The chosen panel's (CHROM,POS) regions — every downstream matrix is cut to exactly these.
 awk 'NR>1 { printf "%s\t%s\n", $1, $2 }' "$TMP/panel_sites.tsv" | sort -k1,1 -k2,2n -u \
