@@ -1378,8 +1378,10 @@ impl NavigatorApp {
                 Event::YProfile { biosample_guid, profile } => {
                     self.y_profile_loading = false;
                     if self.selected_sample == Some(biosample_guid) {
-                        self.y_profile = Some(profile);
-                        self.status = format!("Y variant profile: {} variants", self.y_profile.as_ref().unwrap().summary.total);
+                        if let Some(p) = &profile {
+                            self.status = format!("Y variant profile: {} variants", p.summary.total);
+                        }
+                        self.y_profile = profile;
                     }
                 }
                 Event::Alignments { sequence_run_id, alignments } => {
@@ -1603,7 +1605,9 @@ impl NavigatorApp {
         let _ = self.tx.send(Command::DefaultAlignment { biosample_guid: guid });
         let _ = self.tx.send(Command::LoadDonorAncestry { biosample_guid: guid });
         let _ = self.tx.send(Command::LoadDonorPrivateY { biosample_guid: guid });
-        // Y-variant profile is built on explicit request (it re-genotypes each alignment).
+        // The Y-variant profile is *built* on explicit request (re-genotypes each alignment), but a
+        // previously-built snapshot loads cheaply — fetch it so the Y-DNA tab shows it immediately.
+        let _ = self.tx.send(Command::LoadYProfile { biosample_guid: guid });
     }
 
     fn select_run(&mut self, id: i64) {
@@ -3167,7 +3171,7 @@ impl NavigatorApp {
             if ui.add_enabled(!self.y_profile_loading, egui::Button::new(label)).clicked() {
                 self.y_profile_loading = true;
                 self.status = "Building Y variant profile…".into();
-                let _ = self.tx.send(Command::LoadYProfile { biosample_guid: guid });
+                let _ = self.tx.send(Command::BuildYProfile { biosample_guid: guid });
             }
             if self.y_profile_loading {
                 ui.spinner();
@@ -3187,13 +3191,23 @@ impl NavigatorApp {
         }
         let s = &profile.summary;
         let mut header = format!(
-            "{} confirmed · {} novel · {} conflict · {} single-source",
-            s.confirmed, s.novel, s.conflict, s.single_source
+            "{} confirmed · {} novel · {} conflict · {} single-source · confidence {:.0}%",
+            s.confirmed, s.novel, s.conflict, s.single_source, s.overall_confidence * 100.0
         );
         if let Some(t) = &profile.terminal {
             header = format!("terminal {t}   —   {header}");
         }
         ui.label(egui::RichText::new(header).weak());
+        // Provenance: which tests contributed (label · type · SNP count).
+        if !profile.sources.is_empty() {
+            let prov = profile
+                .sources
+                .iter()
+                .map(|src| format!("{} ({})", src.label, src.variant_count))
+                .collect::<Vec<_>>()
+                .join(" · ");
+            ui.label(egui::RichText::new(format!("sources: {prov}")).weak().small());
+        }
 
         let amber = egui::Color32::from_rgb(220, 150, 60);
         let mut filter = self.y_profile_filter;
@@ -3231,6 +3245,8 @@ impl NavigatorApp {
                         YVariantStatus::Novel => ("novel", egui::Color32::from_rgb(120, 150, 220)),
                         YVariantStatus::Conflict => ("conflict", amber),
                         YVariantStatus::SingleSource => ("single", egui::Color32::from_gray(150)),
+                        YVariantStatus::Pending => ("pending", egui::Color32::from_gray(150)),
+                        YVariantStatus::NoCoverage => ("no-cov", egui::Color32::from_gray(110)),
                     };
                     ui.colored_label(color, format!("{label} ({}/{})", v.support, v.total));
                     ui.horizontal(|ui| {

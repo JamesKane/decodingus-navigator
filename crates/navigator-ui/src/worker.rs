@@ -136,7 +136,10 @@ pub enum Command {
     /// Load the subject's donor-level private-Y union across all sources.
     LoadDonorPrivateY { biosample_guid: SampleGuid },
     /// Load the subject's multi-source Y-variant profile (concordance across all Y sources).
+    /// Load the persisted Y-profile snapshot (cheap; no genotyping).
     LoadYProfile { biosample_guid: SampleGuid },
+    /// Recompute the Y-profile from all sources and persist the snapshot (expensive — re-genotypes).
+    BuildYProfile { biosample_guid: SampleGuid },
     /// Probe a BAM/CRAM header for build/aligner/platform/test-type (to auto-fill the form).
     ProbeAlignment { path: PathBuf },
     LoadCoverage(i64),
@@ -351,7 +354,7 @@ pub enum Event {
     /// Donor-level private-Y union across the subject's sources.
     DonorPrivateY { bucket: PrivateBucket },
     /// The subject's multi-source Y-variant profile.
-    YProfile { biosample_guid: SampleGuid, profile: navigator_app::YProfile },
+    YProfile { biosample_guid: SampleGuid, profile: Option<navigator_app::YProfile> },
     /// Header-probe result for the add-alignment form (build/aligner/platform/test-type).
     AlignmentProbe(AlignmentProbe),
     Coverage { alignment_id: i64, result: Option<Coverage> },
@@ -686,8 +689,12 @@ pub async fn handle(app: &App, cmd: Command) -> Event {
             Ok(None) => Event::Noop,
             Err(e) => Event::Error(e.to_string()),
         },
-        Command::LoadYProfile { biosample_guid } => match app.y_profile(biosample_guid).await {
+        Command::LoadYProfile { biosample_guid } => match app.cached_y_profile(biosample_guid).await {
             Ok(profile) => Event::YProfile { biosample_guid, profile },
+            Err(e) => Event::Error(e.to_string()),
+        },
+        Command::BuildYProfile { biosample_guid } => match app.build_y_profile(biosample_guid).await {
+            Ok(profile) => Event::YProfile { biosample_guid, profile: Some(profile) },
             Err(e) => Event::Error(e.to_string()),
         },
         Command::LoadCoverage(alignment_id) => match app.cached_coverage(alignment_id).await {

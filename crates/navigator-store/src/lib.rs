@@ -22,6 +22,7 @@ pub mod reconciliation;
 pub mod sequence_run;
 pub mod str_profile;
 pub mod variant_set;
+pub mod y_profile;
 
 pub use error::StoreError;
 

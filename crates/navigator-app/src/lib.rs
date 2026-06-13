@@ -858,13 +858,26 @@ fn decodingus_appview_url() -> String {
     resolve_appview_url(std::env::var("DECODINGUS_APPVIEW_URL").ok(), AppSettings::load().appview_url)
 }
 
-/// A subject's multi-source Y-variant profile (Phase 1, on-demand).
-#[derive(Debug, Clone, PartialEq)]
+/// A subject's multi-source Y-variant profile. Computed by [`App::build_y_profile`] and persisted as
+/// a snapshot (serialized to the `y_profile` table's payload) so [`App::cached_y_profile`] can reload
+/// it without re-genotyping.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct YProfile {
     pub variants: Vec<YProfileVariant>,
     pub summary: YProfileSummary,
     /// Consensus terminal Y haplogroup across sources, if any.
     pub terminal: Option<String>,
+    /// Per-source provenance (which tests contributed, and how many SNPs each).
+    #[serde(default)]
+    pub sources: Vec<YSourceSummary>,
+}
+
+/// One contributing source in a [`YProfile`] (provenance display).
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct YSourceSummary {
+    pub label: String,
+    pub source_type: SourceType,
+    pub variant_count: usize,
 }
 
 /// Flatten a placement's branch SNP evidence into per-SNP observations (deduped by name; a SNP
@@ -878,13 +891,8 @@ fn snp_obs_from_assignment(assignment: &HaploAssignment, in_tree: bool) -> Vec<Y
                 CallState::Ancestral => YState::Ancestral,
                 CallState::NoCall => YState::NoCall,
             };
-            by_name.entry(snp.name.clone()).or_insert(YObsInput {
-                name: snp.name.clone(),
-                position: snp.position,
-                ancestral: snp.ancestral.clone(),
-                derived: snp.derived.clone(),
-                state,
-                in_tree,
+            by_name.entry(snp.name.clone()).or_insert_with(|| {
+                YObsInput::snp(snp.name.clone(), snp.position, snp.ancestral.clone(), snp.derived.clone(), state, in_tree)
             });
         }
     }
@@ -2851,11 +2859,23 @@ impl App {
         Ok(reconciliation::reconcile_variants(&sources))
     }
 
-    /// Multi-source Y-variant profile (on-demand, Phase 1): reconcile each Y-bearing source's
+    /// The persisted Y-profile snapshot for a subject, if one has been built — cheap (no
+    /// genotyping). `None` until [`build_y_profile`](Self::build_y_profile) runs.
+    pub async fn cached_y_profile(&self, biosample_guid: SampleGuid) -> Result<Option<YProfile>, AppError> {
+        match navigator_store::y_profile::get(self.store.pool(), biosample_guid).await? {
+            Some(row) => Ok(Some(serde_json::from_str(&row.payload)?)),
+            None => Ok(None),
+        }
+    }
+
+    /// Build (and persist) the multi-source Y-variant profile: reconcile each Y-bearing source's
     /// per-SNP calls — every alignment's haplogroup placement, the combined chip/BISDNA placement,
     /// and the private-Y bucket — into one concordance view (confirmed / novel / conflict /
-    /// single-source per SNP, with per-source provenance). Sources without Y data are skipped.
-    pub async fn y_profile(&self, biosample_guid: SampleGuid) -> Result<YProfile, AppError> {
+    /// single-source per SNP, with per-source provenance + per-observation quality weighting).
+    /// Expensive (re-genotypes each alignment), so it's an explicit action; the result is persisted
+    /// so [`cached_y_profile`](Self::cached_y_profile) reloads it instantly. Sources without Y data
+    /// are skipped.
+    pub async fn build_y_profile(&self, biosample_guid: SampleGuid) -> Result<YProfile, AppError> {
         let mut sources: Vec<(String, SourceType, Vec<YObsInput>)> = Vec::new();
 
         // One source per alignment — a *fresh* placement (the cached terminal-only path lacks the
@@ -2883,16 +2903,17 @@ impl App {
             let obs: Vec<YObsInput> = bucket
                 .variants
                 .iter()
-                .map(|v| YObsInput {
-                    name: match &v.class {
+                .map(|v| {
+                    let name = match &v.class {
                         PrivateClass::OffPathKnown(n) => n.clone(),
                         PrivateClass::Novel => String::new(), // keyed by position
-                    },
-                    position: v.position,
-                    ancestral: v.reference.to_string(),
-                    derived: v.alternate.to_string(),
-                    state: YState::Derived,
-                    in_tree: false,
+                    };
+                    let mut o = YObsInput::snp(name, v.position, v.reference.to_string(), v.alternate.to_string(), YState::Derived, false);
+                    // De-novo calls carry read depth; a structural-region (palindrome/amplicon) call
+                    // is paralog-suspect → down-weight via the region modifier.
+                    o.depth = Some(v.depth);
+                    o.region_modifier = if v.region.is_some() { 0.3 } else { 1.0 };
+                    o
                 })
                 .collect();
             if !obs.is_empty() {
@@ -2900,13 +2921,40 @@ impl App {
             }
         }
 
+        // Provenance: one entry per contributing source (label, type, SNP count).
+        let source_summaries: Vec<YSourceSummary> = sources
+            .iter()
+            .map(|(label, st, obs)| YSourceSummary { label: label.clone(), source_type: *st, variant_count: obs.len() })
+            .collect();
+
         let variants = yprofile::reconcile_y(&sources);
         let summary = yprofile::summarize(&variants);
         let terminal = self
             .haplogroup_consensus(biosample_guid, DnaType::Y)
             .await?
             .map(|c| c.haplogroup);
-        Ok(YProfile { variants, summary, terminal })
+        let profile = YProfile { variants, summary, terminal, sources: source_summaries };
+
+        // Persist the snapshot so the tab reloads it without re-genotyping.
+        let stored = navigator_store::y_profile::StoredYProfile {
+            biosample_guid: biosample_guid.0.to_string(),
+            consensus_haplogroup: profile.terminal.clone(),
+            overall_confidence: profile.summary.overall_confidence,
+            source_count: profile.sources.len() as i64,
+            total: profile.summary.total as i64,
+            confirmed: profile.summary.confirmed as i64,
+            novel: profile.summary.novel as i64,
+            conflict: profile.summary.conflict as i64,
+            single_source: profile.summary.single_source as i64,
+            tree_provider: Some(match y_tree_provider() {
+                YTreeProvider::DecodingUs => "decodingus".to_string(),
+                YTreeProvider::Ftdna => "ftdna".to_string(),
+            }),
+            payload: serde_json::to_string(&profile)?,
+            last_reconciled_at: Utc::now().to_rfc3339(),
+        };
+        navigator_store::y_profile::upsert(self.store.pool(), biosample_guid, &stored).await?;
+        Ok(profile)
     }
 
     /// Build the `com.decodingus.atmosphere.haplogroupReconciliation` record JSON for a

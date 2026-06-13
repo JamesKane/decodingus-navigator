@@ -88,6 +88,23 @@ async fn import_variants_from_csv_keeps_only_snps() {
 }
 
 #[tokio::test]
+async fn y_profile_build_persists_and_reloads() {
+    let app = app().await;
+    let subject = app.add_biosample(None, "HG002", None, None).await.unwrap();
+
+    // No Y sources yet → cached is empty until built.
+    assert!(app.cached_y_profile(subject.guid).await.unwrap().is_none());
+
+    // Build (no alignments/chip/private → an empty but valid, persisted snapshot).
+    let built = app.build_y_profile(subject.guid).await.unwrap();
+    assert!(built.variants.is_empty());
+
+    // The snapshot reloads cheaply and equals the built profile (round-trips through the table).
+    let cached = app.cached_y_profile(subject.guid).await.unwrap().expect("snapshot persisted");
+    assert_eq!(cached, built);
+}
+
+#[tokio::test]
 async fn import_vendor_big_y_vcf_is_tagged() {
     let app = app().await;
     let subject = app.add_biosample(None, "HG002", None, None).await.unwrap();
