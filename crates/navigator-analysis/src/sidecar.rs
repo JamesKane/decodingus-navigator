@@ -15,11 +15,20 @@
 //! Unknown numeric fields are `0.0` (not `NaN`) because the cache round-trips through
 //! `serde_json`, which encodes `NaN` as `null` and then fails to read it back.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 
 use crate::coverage::{ContigCallableMetrics, ContigCoverageStats, CoverageResult};
 use crate::read_metrics::{PairOrientation, ReadMetrics};
 use crate::sex::{Confidence, InferredSex, SexInferenceResult};
+
+/// Percentage `100·num/den` (the `ReadMetrics` pct convention; 0 when `den == 0`).
+fn pct100(num: u64, den: u64) -> f64 {
+    if den == 0 {
+        0.0
+    } else {
+        100.0 * num as f64 / den as f64
+    }
+}
 
 // ---- .sex --------------------------------------------------------------------
 
@@ -288,9 +297,198 @@ pub fn lite_coverage(coverage_txt: &str, callable_summary: Option<&str>) -> Cove
     }
 }
 
+// ---- samtools flagstat -------------------------------------------------------
+
+/// Parse `samtools flagstat` into a [`ReadMetrics`] — **scalar counts only**. flagstat carries no
+/// read-length / insert-size distributions or mapping quality, so those stay 0 (an alternative
+/// `ReadMetrics` source when `stats.txt` is absent). Lines are `<n> + <qc_failed> <category> [(…)]`;
+/// the first number is the QC-passed count, the category is the text before any `(`.
+pub fn parse_flagstat(text: &str) -> ReadMetrics {
+    let mut cats: Vec<(String, u64)> = Vec::new();
+    for line in text.lines() {
+        // Split on the first '+' (a later '+' appears inside "(QC-passed + QC-failed)").
+        let Some((n_str, rest)) = line.split_once('+') else { continue };
+        let Ok(n) = n_str.trim().parse::<u64>() else { continue };
+        // rest = "<qc_failed> <category> (pct…)" — drop the qc-failed number, strip the "(…)" tail.
+        let category = rest
+            .trim()
+            .split_once(char::is_whitespace)
+            .map(|(_, after)| after)
+            .unwrap_or("")
+            .split('(')
+            .next()
+            .unwrap_or("")
+            .trim()
+            .to_ascii_lowercase();
+        cats.push((category, n));
+    }
+    let find = |needle: &str| cats.iter().find(|(c, _)| c == needle).map(|&(_, n)| n).unwrap_or(0);
+
+    let total = find("in total");
+    let mapped = find("mapped");
+    let proper_pairs = find("properly paired");
+    let in_pairs = find("with itself and mate mapped");
+    ReadMetrics {
+        total_reads: total,
+        pf_reads: total, // the QC-passed count is the PF set
+        pf_reads_aligned: mapped,
+        reads_aligned_in_pairs: in_pairs,
+        proper_pairs,
+        pct_pf_reads_aligned: pct100(mapped, total),
+        pct_reads_aligned_in_pairs: pct100(in_pairs, mapped),
+        pct_proper_pairs: pct100(proper_pairs, total),
+        ..Default::default()
+    }
+}
+
+// ---- Picard metrics (CollectWgsMetrics / CollectAlignmentSummaryMetrics) ------
+
+/// Parse a Picard metrics table: skip to the header line beginning with `header_key`, then read the
+/// tab-separated data rows until a blank line (Picard appends a histogram section after a blank).
+/// Returns `(headers, rows)`. `None` if the header isn't found.
+fn parse_picard_rows(text: &str, header_key: &str) -> Option<(Vec<String>, Vec<Vec<String>>)> {
+    let mut lines = text.lines();
+    let header = lines.by_ref().find(|l| l.trim_start().starts_with(header_key))?;
+    let keys: Vec<String> = header.trim().split('\t').map(str::to_string).collect();
+    let mut rows = Vec::new();
+    for l in lines {
+        if l.trim().is_empty() {
+            break;
+        }
+        rows.push(l.trim().split('\t').map(str::to_string).collect());
+    }
+    Some((keys, rows))
+}
+
+/// Zip a header + value row into a name→value lookup.
+fn row_map<'a>(keys: &'a [String], row: &'a [String]) -> HashMap<&'a str, &'a str> {
+    keys.iter().map(String::as_str).zip(row.iter().map(String::as_str)).collect()
+}
+
+/// Parse Picard `CollectWgsMetrics` → the genome-wide depth distribution of a [`CoverageResult`]
+/// (mean/median/sd/MAD, the MAPQ/baseQ exclusion fractions, and the `pct_Nx` depth thresholds — the
+/// fields the lite samtools-coverage path leaves at 0). Per-contig stats / histogram stay empty
+/// (Picard is genome-wide); the ingest overlays this onto the lite result's contig breakdown.
+/// Picard `PCT_*` are 0–1 fractions, matching `CoverageResult`'s convention. `None` if no table.
+pub fn parse_wgs_metrics(text: &str) -> Option<CoverageResult> {
+    let (keys, rows) = parse_picard_rows(text, "GENOME_TERRITORY")?;
+    let row = rows.first()?;
+    let m = row_map(&keys, row);
+    let f = |k: &str| m.get(k).and_then(|v| v.parse::<f64>().ok()).unwrap_or(0.0);
+    let u = |k: &str| m.get(k).and_then(|v| v.parse::<u64>().ok()).unwrap_or(0);
+    Some(CoverageResult {
+        genome_territory: u("GENOME_TERRITORY"),
+        mean_coverage: f("MEAN_COVERAGE"),
+        median_coverage: f("MEDIAN_COVERAGE"),
+        sd_coverage: f("SD_COVERAGE"),
+        mad_coverage: f("MAD_COVERAGE"),
+        pct_exc_mapq: f("PCT_EXC_MAPQ"),
+        pct_exc_baseq: f("PCT_EXC_BASEQ"),
+        pct_1x: f("PCT_1X"),
+        pct_5x: f("PCT_5X"),
+        pct_10x: f("PCT_10X"),
+        pct_15x: f("PCT_15X"),
+        pct_20x: f("PCT_20X"),
+        pct_25x: f("PCT_25X"),
+        pct_30x: f("PCT_30X"),
+        pct_40x: f("PCT_40X"),
+        pct_50x: f("PCT_50X"),
+        ..Default::default()
+    })
+}
+
+/// Parse Picard `CollectAlignmentSummaryMetrics` → a [`ReadMetrics`] (the `PAIR` summary row,
+/// else `UNPAIRED`, else the first). Counts + alignment percentages + mean read length + chimera
+/// rate; read-length / insert-size histograms aren't in this metrics class, so they stay 0. Picard
+/// `PCT_*` are 0–1 fractions → scaled to the `ReadMetrics` 0–100 convention. `None` if no table.
+pub fn parse_alignment_summary(text: &str) -> Option<ReadMetrics> {
+    let (keys, rows) = parse_picard_rows(text, "CATEGORY")?;
+    let cat = keys.iter().position(|k| k == "CATEGORY")?;
+    let row = rows
+        .iter()
+        .find(|r| r.get(cat).is_some_and(|c| c == "PAIR"))
+        .or_else(|| rows.iter().find(|r| r.get(cat).is_some_and(|c| c == "UNPAIRED")))
+        .or_else(|| rows.first())?;
+    let m = row_map(&keys, row);
+    let f = |k: &str| m.get(k).and_then(|v| v.parse::<f64>().ok());
+    let u = |k: &str| m.get(k).and_then(|v| v.parse::<u64>().ok()).unwrap_or(0);
+    let aligned = u("PF_READS_ALIGNED");
+    let in_pairs = u("READS_ALIGNED_IN_PAIRS");
+    Some(ReadMetrics {
+        total_reads: u("TOTAL_READS"),
+        pf_reads: u("PF_READS"),
+        pf_reads_aligned: aligned,
+        reads_aligned_in_pairs: in_pairs,
+        proper_pairs: 0, // not a direct count in this metrics class
+        pct_pf_reads_aligned: f("PCT_PF_READS_ALIGNED").unwrap_or(0.0) * 100.0,
+        pct_reads_aligned_in_pairs: pct100(in_pairs, aligned),
+        // Picard reports the *improper* fraction; the proper fraction is its complement.
+        pct_proper_pairs: f("PCT_PF_READS_IMPROPER_PAIRS").map(|i| (1.0 - i) * 100.0).unwrap_or(0.0),
+        mean_read_length: f("MEAN_READ_LENGTH").unwrap_or(0.0),
+        pct_chimeras: f("PCT_CHIMERAS").unwrap_or(0.0) * 100.0,
+        ..Default::default()
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn flagstat_parses_counts() {
+        let f = "49876543 + 0 in total (QC-passed reads + QC-failed reads)\n\
+                 123456 + 0 secondary\n\
+                 2345678 + 0 duplicates\n\
+                 48500000 + 0 mapped (97.24% : N/A)\n\
+                 49674186 + 0 paired in sequencing\n\
+                 46000000 + 0 properly paired (92.60% : N/A)\n\
+                 47000000 + 0 with itself and mate mapped\n\
+                 100000 + 0 with mate mapped to a different chr\n";
+        let m = parse_flagstat(f);
+        assert_eq!(m.total_reads, 49_876_543);
+        assert_eq!(m.pf_reads_aligned, 48_500_000);
+        assert_eq!(m.proper_pairs, 46_000_000);
+        assert_eq!(m.reads_aligned_in_pairs, 47_000_000);
+        assert!((m.pct_pf_reads_aligned - 97.24).abs() < 0.01); // computed, ≈ the reported %
+        assert!(m.read_length_histogram.is_empty()); // flagstat carries no distributions
+    }
+
+    #[test]
+    fn wgs_metrics_fills_the_depth_distribution() {
+        let f = "## htsjdk.samtools.metrics.StringHeader\n\
+                 GENOME_TERRITORY\tMEAN_COVERAGE\tSD_COVERAGE\tMEDIAN_COVERAGE\tMAD_COVERAGE\tPCT_EXC_MAPQ\tPCT_EXC_BASEQ\tPCT_1X\tPCT_10X\tPCT_30X\n\
+                 3000000000\t30.5\t8.1\t31\t4\t0.012\t0.034\t0.991\t0.95\t0.6\n\n\
+                 ## HISTOGRAM\ncoverage\thigh_quality_coverage_count\n0\t12345\n";
+        let c = parse_wgs_metrics(f).unwrap();
+        assert_eq!(c.genome_territory, 3_000_000_000);
+        assert!((c.mean_coverage - 30.5).abs() < 1e-9);
+        assert!((c.mad_coverage - 4.0).abs() < 1e-9);
+        assert!((c.pct_exc_mapq - 0.012).abs() < 1e-9); // 0–1 fraction, as CoverageResult wants
+        assert!((c.pct_1x - 0.991).abs() < 1e-9);
+        assert!((c.pct_30x - 0.6).abs() < 1e-9);
+        assert!(c.contig_coverage_stats.is_empty()); // Picard is genome-wide
+    }
+
+    #[test]
+    fn alignment_summary_prefers_the_pair_row() {
+        let f = "## METRICS CLASS\n\
+                 CATEGORY\tTOTAL_READS\tPF_READS\tPF_READS_ALIGNED\tPCT_PF_READS_ALIGNED\tREADS_ALIGNED_IN_PAIRS\tMEAN_READ_LENGTH\tPCT_CHIMERAS\tPCT_PF_READS_IMPROPER_PAIRS\n\
+                 FIRST_OF_PAIR\t100\t100\t98\t0.98\t96\t150\t0.001\t0.02\n\
+                 SECOND_OF_PAIR\t100\t100\t97\t0.97\t96\t150\t0.001\t0.02\n\
+                 PAIR\t200\t200\t195\t0.975\t192\t150.5\t0.0012\t0.02\n";
+        let m = parse_alignment_summary(f).unwrap();
+        assert_eq!(m.total_reads, 200); // the PAIR row, not FIRST/SECOND
+        assert_eq!(m.pf_reads_aligned, 195);
+        assert!((m.pct_pf_reads_aligned - 97.5).abs() < 1e-6); // 0.975 → 97.5%
+        assert!((m.pct_proper_pairs - 98.0).abs() < 1e-6); // 1 - 0.02 → 98%
+        assert!((m.mean_read_length - 150.5).abs() < 1e-9);
+    }
+
+    #[test]
+    fn picard_parsers_return_none_without_a_table() {
+        assert!(parse_wgs_metrics("no table here\n").is_none());
+        assert!(parse_alignment_summary("nope\n").is_none());
+    }
 
     #[test]
     fn sex_parses_label_and_confidence() {

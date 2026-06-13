@@ -18,8 +18,9 @@ use crate::reader;
 const MAX_INSERT_SIZE: i32 = 10_000;
 
 /// Dominant pair orientation.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum PairOrientation {
+    #[default]
     Fr,
     Rf,
     Tandem,
@@ -36,7 +37,7 @@ impl PairOrientation {
 }
 
 /// Read-level metrics (mirrors the Scala `ReadMetrics`).
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct ReadMetrics {
     pub total_reads: u64,
     pub pf_reads: u64,

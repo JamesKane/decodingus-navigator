@@ -4131,14 +4131,18 @@ impl App {
                 Err(e) => out.errors.push(format!("sex: {e}")),
             }
         }
-        if let Some(path) = &sidecars.stats {
-            match self.ingest_stats_sidecar(alignment_id, path).await {
-                Ok(()) => out.read_metrics = true,
-                Err(e) => out.errors.push(format!("read metrics: {e}")),
-            }
+        // Read metrics: richest source wins — samtools `stats` (full, with histograms) > Picard
+        // AlignmentSummaryMetrics > samtools `flagstat` (counts only).
+        match self.ingest_read_metrics(alignment_id, sidecars).await {
+            Ok(true) => out.read_metrics = true,
+            Ok(false) => {}
+            Err(e) => out.errors.push(format!("read metrics: {e}")),
         }
-        if let Some(path) = &sidecars.coverage {
-            match self.ingest_coverage_sidecar(alignment_id, path, sidecars.callable_summary.as_deref()).await {
+        // Coverage: samtools `coverage` gives per-contig stats; Picard CollectWgsMetrics gives the
+        // genome-wide depth distribution (median/sd/MAD, exclusion fractions, pct_Nx). Use whichever
+        // are present, overlaying the distribution onto the per-contig breakdown.
+        if sidecars.coverage.is_some() || sidecars.wgs_metrics.is_some() {
+            match self.ingest_coverage_sidecar(alignment_id, sidecars).await {
                 Ok(()) => out.lite_coverage = true,
                 Err(e) => out.errors.push(format!("coverage: {e}")),
             }
@@ -4159,30 +4163,70 @@ impl App {
         .to_string())
     }
 
-    async fn ingest_stats_sidecar(&self, alignment_id: i64, path: &Path) -> Result<(), AppError> {
-        let text = tokio::fs::read_to_string(path).await.map_err(|e| AppError::Import(format!("{}: {e}", path.display())))?;
-        let metrics = sidecar::parse_samtools_stats(&text);
-        self.save_analysis_with_provenance(alignment_id, "read_metrics", "1", &metrics, "pipeline-sidecar", "full").await?;
-        Ok(())
+    /// Ingest read metrics from the best available sidecar (priority: samtools `stats` →
+    /// Picard AlignmentSummaryMetrics → samtools `flagstat`). Returns whether one was found.
+    async fn ingest_read_metrics(&self, alignment_id: i64, sidecars: &SampleSidecars) -> Result<bool, AppError> {
+        let read = |p: &Path| {
+            let p = p.to_path_buf();
+            async move { tokio::fs::read_to_string(&p).await.map_err(|e| AppError::Import(format!("{}: {e}", p.display()))) }
+        };
+        // (metrics, completeness): samtools stats is full (carries histograms); the others are
+        // counts/scalars only, so `partial` lets a deep read-metrics walk upgrade them later.
+        let (metrics, completeness) = if let Some(p) = &sidecars.stats {
+            (sidecar::parse_samtools_stats(&read(p).await?), "full")
+        } else if let Some(p) = &sidecars.alignment_summary {
+            match sidecar::parse_alignment_summary(&read(p).await?) {
+                Some(m) => (m, "partial"),
+                None => return Ok(false),
+            }
+        } else if let Some(p) = &sidecars.flagstat {
+            (sidecar::parse_flagstat(&read(p).await?), "partial")
+        } else {
+            return Ok(false);
+        };
+        self.save_analysis_with_provenance(alignment_id, "read_metrics", "1", &metrics, "pipeline-sidecar", completeness).await?;
+        Ok(true)
     }
 
-    async fn ingest_coverage_sidecar(
-        &self,
-        alignment_id: i64,
-        coverage_path: &Path,
-        callable_summary: Option<&Path>,
-    ) -> Result<(), AppError> {
-        let cov = tokio::fs::read_to_string(coverage_path)
-            .await
-            .map_err(|e| AppError::Import(format!("{}: {e}", coverage_path.display())))?;
-        let summary = match callable_summary {
-            Some(p) => Some(tokio::fs::read_to_string(p).await.map_err(|e| AppError::Import(format!("{}: {e}", p.display())))?),
-            None => None,
+    async fn ingest_coverage_sidecar(&self, alignment_id: i64, sidecars: &SampleSidecars) -> Result<(), AppError> {
+        let read = |p: &Path| {
+            let p = p.to_path_buf();
+            async move { tokio::fs::read_to_string(&p).await.map_err(|e| AppError::Import(format!("{}: {e}", p.display()))) }
         };
-        let result = sidecar::lite_coverage(&cov, summary.as_deref());
-        // Lite coverage: real mean depth + callable counts, zeroed histogram/pct_Nx. Stored
-        // under the standard coverage key (so the report/UI read it unchanged) but flagged
-        // `partial` — the deep pass detects that and overwrites it with the full per-base walk.
+        // Per-contig stats + callable counts from samtools coverage (empty base if absent).
+        let lite = match &sidecars.coverage {
+            Some(cp) => {
+                let cov = read(cp).await?;
+                let summary = match &sidecars.callable_summary {
+                    Some(p) => Some(read(p).await?),
+                    None => None,
+                };
+                sidecar::lite_coverage(&cov, summary.as_deref())
+            }
+            None => CoverageResult::default(),
+        };
+        // Overlay Picard's genome-wide depth distribution onto the per-contig breakdown: start from
+        // the Picard result (median/sd/MAD, exclusion fractions, pct_Nx) and graft the contig stats.
+        let result = match &sidecars.wgs_metrics {
+            Some(wp) => match sidecar::parse_wgs_metrics(&read(wp).await?) {
+                Some(mut w) => {
+                    w.contig_coverage_stats = lite.contig_coverage_stats;
+                    w.contig_callable = lite.contig_callable;
+                    w.callable_bases = lite.callable_bases;
+                    if w.genome_territory == 0 {
+                        w.genome_territory = lite.genome_territory;
+                    }
+                    if w.mean_coverage == 0.0 {
+                        w.mean_coverage = lite.mean_coverage;
+                    }
+                    w
+                }
+                None => lite,
+            },
+            None => lite,
+        };
+        // Still `partial`: no per-base depth histogram (only the deep walk produces that), so the
+        // deep pass still upgrades this. Stored under the standard coverage key.
         self.save_analysis_with_provenance(alignment_id, "coverage", coverage::COVERAGE_VERSION, &result, "pipeline-sidecar", "partial")
             .await?;
         Ok(())

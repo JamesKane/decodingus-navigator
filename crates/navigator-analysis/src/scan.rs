@@ -81,6 +81,12 @@ pub struct SampleSidecars {
     pub coverage: Option<PathBuf>,
     /// `stats.txt` — samtools stats.
     pub stats: Option<PathBuf>,
+    /// `*.flagstat[.txt]` — samtools flagstat (an alternative read-metrics source).
+    pub flagstat: Option<PathBuf>,
+    /// Picard `CollectWgsMetrics` output (`*wgs*metric*`) — the genome-wide depth distribution.
+    pub wgs_metrics: Option<PathBuf>,
+    /// Picard `CollectAlignmentSummaryMetrics` (`*alignment_summary*`).
+    pub alignment_summary: Option<PathBuf>,
     /// Build token parsed from the GVCF name (e.g. `chm13`), for confirming the GVCF and the
     /// alignment share a build before the liftover-free fast path is taken.
     pub build_hint: Option<String>,
@@ -109,6 +115,14 @@ fn detect_sidecars(files: &[DiscoveredFile]) -> SampleSidecars {
             .find(|f| f.path.file_name().and_then(|n| n.to_str()).is_some_and(|n| n.eq_ignore_ascii_case(name)))
             .map(|f| f.path.clone())
     };
+    // Picard/flagstat outputs have no fixed name — match a substring of the (lower-cased) filename
+    // (mirrors the Scala scanner's loose patterns).
+    let by_pred = |pred: &dyn Fn(&str) -> bool| {
+        files
+            .iter()
+            .find(|f| f.path.file_name().and_then(|n| n.to_str()).is_some_and(|n| pred(&n.to_ascii_lowercase())))
+            .map(|f| f.path.clone())
+    };
 
     let chr_y_gvcf = by_suffix(".chry.g.vcf.gz");
     let chr_m_gvcf = by_suffix(".chrm.g.vcf.gz");
@@ -122,6 +136,9 @@ fn detect_sidecars(files: &[DiscoveredFile]) -> SampleSidecars {
         sex: by_suffix(".sex"),
         coverage: by_name("coverage.txt"),
         stats: by_name("stats.txt"),
+        flagstat: by_pred(&|n| n.contains("flagstat")),
+        wgs_metrics: by_pred(&|n| n.contains("wgs") && n.contains("metric")),
+        alignment_summary: by_pred(&|n| n.contains("alignment_summary")),
         build_hint,
     }
 }

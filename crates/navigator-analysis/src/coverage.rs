@@ -104,7 +104,7 @@ pub struct ContigCoverageStats {
 
 /// Combined coverage + callable result (replaces the Scala `CoverageCallableResult`'s
 /// global-metrics + callable-summary + samtools-stats fields).
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct CoverageResult {
     pub genome_territory: u64,
     pub mean_coverage: f64,
