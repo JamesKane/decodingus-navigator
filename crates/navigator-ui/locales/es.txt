@@ -219,3 +219,27 @@ common.clear=Limpiar
 ancestry.paint=Pintar cromosomas
 ibd.verify=Verificar mismo donante
 dash.addPinned=Añadir sujeto fijado
+
+# Settings dialog
+settings.title=Configuración
+settings.connection=Conexión
+settings.appviewUrl=URL de AppView
+settings.yTreeProvider=Proveedor de árbol Y
+settings.appearance=Apariencia
+settings.theme=Tema
+settings.dark=Oscuro
+settings.light=Claro
+settings.language=Idioma
+settings.treeTtl=Caché del árbol (días)
+settings.references=Genomas de referencia
+settings.promptDownload=Preguntar antes de descargar referencias grandes
+settings.build=Ensamblaje
+settings.status=Estado
+settings.localFasta=FASTA local
+settings.autoDownload=Auto-descarga
+settings.browse=Buscar un archivo FASTA
+settings.loadingRefs=Cargando estado de referencias…
+settings.advanced=Avanzado
+settings.cacheDir=Directorio de caché
+settings.advancedEnv=Los hilos de análisis se configuran con NAVIGATOR_ANALYSIS_THREADS / NAVIGATOR_BGZF_THREADS.
+settings.saved=Configuración guardada

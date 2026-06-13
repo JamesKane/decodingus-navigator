@@ -16,7 +16,7 @@ use navigator_app::{
     AlignmentProbe, AncestryResult, AncestrySegment, App, AppError, AuditEntry, BuildNeed, Consensus, Coverage,
     DenovoCall, DnaType, HaploAssignment, HeteroplasmySite, IbdComparison, IbdDetectorConfig,
     IdentityVerification, PanelGenotype, PrivateBucket, ProjectImportSummary, ProjectOverview,
-    ProjectSampleReport, ReadMetrics, ReconciledVariant, SexInferenceResult, SourceType,
+    ProjectSampleReport, ReadMetrics, ReconciledVariant, RefBuildStatus, SexInferenceResult, SourceType,
     SvAnalysisResult,
 };
 use navigator_domain::du_domain::ids::SampleGuid;
@@ -235,6 +235,10 @@ pub enum Command {
         aligner: String,
         variant_caller: Option<String>,
     },
+    /// Load per-build reference-genome settings + cache status for the Settings dialog.
+    LoadReferenceSettings,
+    /// Set a build's local-FASTA override + auto-download flag (persists reference_sources.json).
+    SetReferenceOverride { build: String, local_path: Option<String>, auto_download: bool },
 }
 
 /// A panel with its site count, for the panel list.
@@ -363,6 +367,10 @@ pub enum Event {
     SyncOnline(bool),
     /// How many runs had their sequencing lab filled in by the AppView backfill (`0` ⇒ quiet).
     LabsResolved(usize),
+    /// Per-build reference-genome settings + cache status for the Settings dialog.
+    ReferenceSettings(Vec<RefBuildStatus>),
+    /// A reference override was saved; the UI may reload the settings rows.
+    ReferenceSettingsChanged,
     Error(String),
 }
 
@@ -441,6 +449,13 @@ pub async fn handle(app: &App, cmd: Command) -> Event {
             Ok(()) => Event::StrProfilesChanged(biosample_guid),
             Err(e) => Event::Error(e.to_string()),
         },
+        Command::LoadReferenceSettings => Event::ReferenceSettings(app.reference_settings()),
+        Command::SetReferenceOverride { build, local_path, auto_download } => {
+            match app.set_reference_override(&build, local_path, auto_download) {
+                Ok(()) => Event::ReferenceSettingsChanged,
+                Err(e) => Event::Error(e.to_string()),
+            }
+        }
         Command::DeleteVariantSet { id, biosample_guid } => match app.delete_variant_set(id).await {
             Ok(()) => Event::VariantSetsChanged(biosample_guid),
             Err(e) => Event::Error(e.to_string()),

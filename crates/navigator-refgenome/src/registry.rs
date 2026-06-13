@@ -6,7 +6,7 @@
 use std::collections::HashMap;
 use std::path::Path;
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 /// A reference assembly Navigator can resolve.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -23,6 +23,11 @@ pub enum Build {
 }
 
 impl Build {
+    /// Every supported build, in display order.
+    pub fn all() -> &'static [Build] {
+        &[Build::Grch38, Build::Grch37, Build::Chm13v2, Build::Chm13v2MaskedRcrs]
+    }
+
     /// Canonical label, also the cache filename stem and the value `reference_build_for`
     /// stamps on alignments.
     pub fn as_str(self) -> &'static str {
@@ -150,16 +155,25 @@ const ANNOTATION_BASE: &str =
     "https://s3-us-west-2.amazonaws.com/human-pangenomics/T2T/CHM13/assemblies/annotation";
 
 /// Per-build user override loaded from `reference_sources.json`.
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Eq)]
 pub struct BuildOverride {
     /// Use this local FASTA as-is (already decompressed + indexed); never download.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
     pub local_path: Option<String>,
     /// Override the download URL.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
     pub url: Option<String>,
+    /// Whether a missing reference may be auto-downloaded for this build (default `true`).
+    #[serde(default = "default_true")]
+    pub auto_download: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 /// The optional user config at `~/.decodingus/config/reference_sources.json`.
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Eq)]
 pub struct UserConfig {
     #[serde(default)]
     pub references: HashMap<String, BuildOverride>,
@@ -175,7 +189,17 @@ impl UserConfig {
             .unwrap_or_default()
     }
 
-    fn for_build(&self, build: Build) -> Option<&BuildOverride> {
+    /// Persist to `path` (creating the parent `config/` dir), pretty-printed.
+    pub fn save(&self, path: &Path) -> std::io::Result<()> {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let json = serde_json::to_string_pretty(self).map_err(std::io::Error::other)?;
+        std::fs::write(path, json)
+    }
+
+    /// The override for `build`, if any.
+    pub fn for_build(&self, build: Build) -> Option<&BuildOverride> {
         self.references.get(build.as_str())
     }
 }
@@ -334,9 +358,31 @@ mod tests {
         let mut references = HashMap::new();
         references.insert(
             "chm13v2.0".to_string(),
-            BuildOverride { local_path: Some("/data/chm13.fa".into()), url: None },
+            BuildOverride { local_path: Some("/data/chm13.fa".into()), url: None, auto_download: true },
         );
         let reg = Registry::new(UserConfig { references });
         assert_eq!(reg.local_override(Build::Chm13v2), Some("/data/chm13.fa"));
+    }
+
+    #[test]
+    fn user_config_round_trips_with_auto_download() {
+        let dir = std::env::temp_dir().join(format!("dun-refcfg-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let path = dir.join("config").join("reference_sources.json");
+
+        let mut references = HashMap::new();
+        references.insert(
+            "GRCh38".to_string(),
+            BuildOverride { local_path: Some("/refs/grch38.fa".into()), url: None, auto_download: false },
+        );
+        let cfg = UserConfig { references };
+        cfg.save(&path).unwrap();
+
+        let loaded = UserConfig::load(&path);
+        assert_eq!(loaded, cfg);
+        let ov = loaded.for_build(Build::Grch38).unwrap();
+        assert_eq!(ov.local_path.as_deref(), Some("/refs/grch38.fa"));
+        assert!(!ov.auto_download);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

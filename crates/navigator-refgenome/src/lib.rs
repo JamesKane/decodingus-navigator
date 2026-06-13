@@ -15,4 +15,4 @@ pub mod registry;
 
 pub use error::RefgenomeError;
 pub use gateway::{LiftedPos, ReferenceGateway, RefStatus};
-pub use registry::{canonical_build, Build, ReferencePolarity};
+pub use registry::{canonical_build, Build, BuildOverride, ReferencePolarity, UserConfig};

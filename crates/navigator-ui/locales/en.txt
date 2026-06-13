@@ -232,3 +232,27 @@ common.clear=Clear
 ancestry.paint=Paint chromosomes
 ibd.verify=Verify same donor
 dash.addPinned=Add pinned subject
+
+# Settings dialog
+settings.title=Settings
+settings.connection=Connection
+settings.appviewUrl=AppView URL
+settings.yTreeProvider=Y-tree provider
+settings.appearance=Appearance
+settings.theme=Theme
+settings.dark=Dark
+settings.light=Light
+settings.language=Language
+settings.treeTtl=Tree cache TTL (days)
+settings.references=Reference genomes
+settings.promptDownload=Ask before downloading large references
+settings.build=Build
+settings.status=Status
+settings.localFasta=Local FASTA
+settings.autoDownload=Auto-download
+settings.browse=Browse for a FASTA file
+settings.loadingRefs=Loading reference status…
+settings.advanced=Advanced
+settings.cacheDir=Cache directory
+settings.advancedEnv=Analysis thread counts are set via NAVIGATOR_ANALYSIS_THREADS / NAVIGATOR_BGZF_THREADS.
+settings.saved=Settings saved

@@ -42,20 +42,29 @@ pub struct LiftedPos {
 pub struct ReferenceGateway {
     base: PathBuf,
     http: reqwest::Client,
-    registry: Registry,
     locks: Arc<StdMutex<HashMap<String, Arc<Mutex<()>>>>>,
 }
 
 impl ReferenceGateway {
-    /// Build a gateway rooted at `base` (the cache dir), loading any user source overrides.
+    /// Build a gateway rooted at `base` (the cache dir).
     pub fn new(base: PathBuf, http: reqwest::Client) -> Self {
-        let config = UserConfig::load(&base.join("config").join("reference_sources.json"));
         ReferenceGateway {
             base,
             http,
-            registry: Registry::new(config),
             locks: Arc::new(StdMutex::new(HashMap::new())),
         }
+    }
+
+    /// Path to the user reference-source overrides file.
+    pub fn config_path(&self) -> PathBuf {
+        self.base.join("config").join("reference_sources.json")
+    }
+
+    /// A registry over the **current** on-disk overrides — re-read each call so edits made via the
+    /// Settings UI apply without rebuilding the gateway. Resolution is per-analysis, so the small
+    /// JSON read is negligible.
+    fn registry(&self) -> Registry {
+        Registry::new(UserConfig::load(&self.config_path()))
     }
 
     fn lock_for(&self, key: &str) -> Arc<Mutex<()>> {
@@ -68,7 +77,8 @@ impl ReferenceGateway {
         let Some(build) = canonical_build(build_name) else {
             return RefStatus::Unknown;
         };
-        if let Some(local) = self.registry.local_override(build) {
+        let registry = self.registry();
+        if let Some(local) = registry.local_override(build) {
             let p = PathBuf::from(local);
             if cache::is_present(&p) {
                 return RefStatus::LocalOverride(p);
@@ -78,7 +88,7 @@ impl ReferenceGateway {
         if cache::is_present(&fa) && cache::is_present(&cache::reference_fai(&self.base, build)) {
             return RefStatus::Cached(fa);
         }
-        let src = self.registry.reference_source(build);
+        let src = registry.reference_source(build);
         RefStatus::NeedsDownload { url: src.url, est_bytes: src.est_bytes }
     }
 
@@ -108,7 +118,7 @@ impl ReferenceGateway {
             return Ok(p); // another caller finished while we waited
         }
 
-        let src = self.registry.reference_source(build);
+        let src = self.registry().reference_source(build);
         let fa = cache::reference_path(&self.base, build);
         let dl = download_target(&fa, &src.url);
         download::download(&self.http, &src.url, &dl, progress).await?;
@@ -138,7 +148,7 @@ impl ReferenceGateway {
             return Ok(path);
         }
         let src = self
-            .registry
+            .registry()
             .chain_source(from, to)
             .ok_or_else(|| RefgenomeError::NoChain { from: from.as_str().into(), to: to.as_str().into() })?;
         download::download(&self.http, &src.url, &path, progress).await?;
@@ -162,7 +172,7 @@ impl ReferenceGateway {
             return Ok(path);
         }
         let src = self
-            .registry
+            .registry()
             .mask_source(name)
             .ok_or_else(|| RefgenomeError::Message(format!("unknown mask {name}")))?;
         download::download(&self.http, &src.url, &path, progress).await?;
@@ -195,7 +205,7 @@ impl ReferenceGateway {
     /// and a chain source exists). No I/O.
     pub fn chain_available(&self, from: &str, to: &str) -> bool {
         match (canonical_build(from), canonical_build(to)) {
-            (Some(f), Some(t)) => self.registry.chain_source(f, t).is_some(),
+            (Some(f), Some(t)) => self.registry().chain_source(f, t).is_some(),
             _ => false,
         }
     }

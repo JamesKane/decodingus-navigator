@@ -10,8 +10,8 @@ use navigator_app::{
     AncestryResult, AncestrySegment, AuditEntry, BuildNeed, CallState, CompatibilityLevel, Consensus,
     Coverage, DenovoCall, DnaType, HaploAssignment, HeteroplasmySite, IbdComparison,
     IdentityVerification, PanelGenotype, PrivateBucket, PrivateClass, ProjectOverview,
-    ProjectSampleReport, ReadMetrics, ReconciledVariant, SexInferenceResult, SourceType,
-    SuperPopulationSummary, SvAnalysisResult, VariantStatus, VerificationStatus,
+    AppSettings, ProjectSampleReport, ReadMetrics, ReconciledVariant, RefBuildStatus, SexInferenceResult,
+    SourceType, SuperPopulationSummary, SvAnalysisResult, VariantStatus, VerificationStatus,
 };
 use navigator_domain::ancestry::{population_color, population_lonlat, population_name, population_super};
 use navigator_domain::du_domain::ids::SampleGuid;
@@ -101,6 +101,40 @@ enum StrReportView {
     AllMarkers,
     /// Cross-panel consensus value per marker.
     Consensus,
+}
+
+/// One editable reference-genome row in the Settings dialog.
+#[derive(Clone)]
+struct RefRow {
+    build: String,
+    status: String,
+    local_path: String,
+    auto_download: bool,
+}
+
+/// Editable Settings-dialog state (loaded from `AppSettings`; reference rows arrive via
+/// `Event::ReferenceSettings`).
+#[derive(Clone)]
+struct SettingsForm {
+    appview_url: String,
+    y_tree_provider: String, // "decodingus" | "ftdna"
+    tree_ttl_days: String,
+    prompt_before_download: bool,
+    references: Vec<RefRow>,
+}
+
+impl SettingsForm {
+    /// Scalar fields from the persisted `AppSettings` (reference rows filled later by the worker).
+    fn from_settings() -> Self {
+        let s = AppSettings::load();
+        SettingsForm {
+            appview_url: s.appview_url.unwrap_or_default(),
+            y_tree_provider: s.y_tree_provider.unwrap_or_else(|| "decodingus".to_string()),
+            tree_ttl_days: s.tree_ttl_days.map(|d| d.to_string()).unwrap_or_else(|| "7".to_string()),
+            prompt_before_download: s.prompt_before_download.unwrap_or(true),
+            references: Vec::new(),
+        }
+    }
 }
 
 /// In-flight full-analysis state, driving the modal dialog.
@@ -225,6 +259,9 @@ pub struct NavigatorApp {
     lang: crate::i18n::Lang,
     /// Dark (default) vs light theme.
     dark_mode: bool,
+    /// Settings dialog open + its editable form.
+    show_settings: bool,
+    settings_form: SettingsForm,
     /// Subjects-list filter text.
     subject_search: String,
     overview: Vec<ProjectOverview>,
@@ -870,7 +907,10 @@ impl NavigatorApp {
             lang: crate::i18n::load_lang()
                 .or_else(|| std::env::var("LANG").ok().and_then(|l| crate::i18n::Lang::parse(&l)))
                 .unwrap_or(crate::i18n::Lang::En),
-            dark_mode: true,
+            // Persisted theme wins; default dark.
+            dark_mode: !matches!(AppSettings::load().theme.as_deref(), Some("light")),
+            show_settings: false,
+            settings_form: SettingsForm::from_settings(),
             subject_search: String::new(),
             overview: Vec::new(),
             selected_project: None,
@@ -1251,6 +1291,21 @@ impl NavigatorApp {
                         }
                     }
                 }
+                Event::ReferenceSettings(rows) => {
+                    self.settings_form.references = rows
+                        .into_iter()
+                        .map(|r: RefBuildStatus| RefRow {
+                            build: r.build,
+                            status: r.status,
+                            local_path: r.local_path.unwrap_or_default(),
+                            auto_download: r.auto_download,
+                        })
+                        .collect();
+                }
+                Event::ReferenceSettingsChanged => {
+                    self.status = "Reference settings saved".into();
+                    let _ = self.tx.send(Command::LoadReferenceSettings); // refresh statuses
+                }
                 Event::DataImported { biosample_guid, label } => {
                     self.status = format!("Imported {label}");
                     if self.selected_sample == Some(biosample_guid) {
@@ -1594,6 +1649,7 @@ impl eframe::App for NavigatorApp {
         self.delete_project_modal(ctx);
         self.edit_run_modal(ctx);
         self.edit_alignment_modal(ctx);
+        self.settings_modal(ctx);
         self.paint_drop_hint(ctx);
     }
 }
@@ -2007,6 +2063,169 @@ impl NavigatorApp {
         }
     }
 
+    /// The Settings / Preferences modal: connection (AppView URL, Y-tree provider), appearance
+    /// (theme, language, tree-cache TTL), reference genomes (local FASTA + auto-download per build),
+    /// and a read-only advanced section. Self-mutation/dispatch is deferred until after the closure
+    /// so only `self.tr` (immutable) is used inside it.
+    fn settings_modal(&mut self, ctx: &egui::Context) {
+        if !self.show_settings {
+            return;
+        }
+        let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Middle, egui::Id::new("settings_dim")));
+        painter.rect_filled(ctx.screen_rect(), 0.0, egui::Color32::from_black_alpha(150));
+
+        let mut form = self.settings_form.clone();
+        let mut theme_dark = self.dark_mode;
+        let mut lang = self.lang;
+        let prev_lang = self.lang;
+        let (mut close, mut save) = (false, false);
+
+        egui::Area::new(egui::Id::new("settings_modal"))
+            .order(egui::Order::Foreground)
+            .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+            .show(ctx, |ui| {
+                egui::Frame::window(ui.style()).inner_margin(egui::Margin::same(18.0)).show(ui, |ui| {
+                    ui.set_width(580.0);
+                    ui.label(egui::RichText::new(self.tr("settings.title")).strong().size(16.0));
+                    ui.separator();
+                    egui::ScrollArea::vertical().max_height(460.0).show(ui, |ui| {
+                        // --- Connection ---
+                        ui.label(egui::RichText::new(self.tr("settings.connection")).strong());
+                        ui.horizontal(|ui| {
+                            ui.label(self.tr("settings.appviewUrl"));
+                            ui.add(
+                                egui::TextEdit::singleline(&mut form.appview_url)
+                                    .hint_text("http://localhost:9000")
+                                    .desired_width(320.0),
+                            );
+                        });
+                        ui.horizontal(|ui| {
+                            ui.label(self.tr("settings.yTreeProvider"));
+                            let cur = if form.y_tree_provider.eq_ignore_ascii_case("ftdna") { "FTDNA" } else { "Decoding-Us" };
+                            egui::ComboBox::from_id_salt("settings_y_provider").selected_text(cur).show_ui(ui, |ui| {
+                                ui.selectable_value(&mut form.y_tree_provider, "decodingus".to_string(), "Decoding-Us");
+                                ui.selectable_value(&mut form.y_tree_provider, "ftdna".to_string(), "FTDNA");
+                            });
+                        });
+                        ui.add_space(8.0);
+
+                        // --- Appearance ---
+                        ui.label(egui::RichText::new(self.tr("settings.appearance")).strong());
+                        ui.horizontal(|ui| {
+                            ui.label(self.tr("settings.theme"));
+                            ui.selectable_value(&mut theme_dark, true, self.tr("settings.dark"));
+                            ui.selectable_value(&mut theme_dark, false, self.tr("settings.light"));
+                        });
+                        ui.horizontal(|ui| {
+                            ui.label(self.tr("settings.language"));
+                            egui::ComboBox::from_id_salt("settings_lang").selected_text(lang.label()).show_ui(ui, |ui| {
+                                for &l in crate::i18n::Lang::all() {
+                                    ui.selectable_value(&mut lang, l, l.label());
+                                }
+                            });
+                        });
+                        ui.horizontal(|ui| {
+                            ui.label(self.tr("settings.treeTtl"));
+                            ui.add(egui::TextEdit::singleline(&mut form.tree_ttl_days).desired_width(60.0));
+                        });
+                        ui.add_space(8.0);
+
+                        // --- Reference genomes ---
+                        ui.label(egui::RichText::new(self.tr("settings.references")).strong());
+                        ui.checkbox(&mut form.prompt_before_download, self.tr("settings.promptDownload"));
+                        egui::Grid::new("settings_refs").striped(true).num_columns(4).show(ui, |ui| {
+                            for h in ["settings.build", "settings.status", "settings.localFasta", "settings.autoDownload"] {
+                                ui.strong(self.tr(h));
+                            }
+                            ui.end_row();
+                            for row in &mut form.references {
+                                ui.label(&row.build);
+                                ui.label(egui::RichText::new(&row.status).weak());
+                                ui.horizontal(|ui| {
+                                    ui.add(
+                                        egui::TextEdit::singleline(&mut row.local_path)
+                                            .hint_text("(none)")
+                                            .desired_width(200.0),
+                                    );
+                                    if ui.button("📂").on_hover_text(self.tr("settings.browse")).clicked() {
+                                        if let Some(p) = rfd::FileDialog::new()
+                                            .add_filter("FASTA", &["fa", "fasta", "fna", "gz"])
+                                            .pick_file()
+                                        {
+                                            row.local_path = p.display().to_string();
+                                        }
+                                    }
+                                });
+                                ui.checkbox(&mut row.auto_download, "");
+                                ui.end_row();
+                            }
+                        });
+                        if form.references.is_empty() {
+                            ui.label(egui::RichText::new(self.tr("settings.loadingRefs")).weak());
+                        }
+                        ui.add_space(8.0);
+
+                        // --- Advanced (read-only) ---
+                        ui.label(egui::RichText::new(self.tr("settings.advanced")).strong());
+                        ui.label(
+                            egui::RichText::new(format!("{}: {}", self.tr("settings.cacheDir"), AppSettings::cache_base_dir().display()))
+                                .weak(),
+                        );
+                        ui.label(egui::RichText::new(self.tr("settings.advancedEnv")).weak());
+                    });
+                    ui.separator();
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui.button(egui::RichText::new(self.tr("common.save")).strong()).clicked() {
+                            save = true;
+                            close = true;
+                        }
+                        if ui.button(self.tr("common.cancel")).clicked() {
+                            close = true;
+                        }
+                    });
+                });
+            });
+
+        // Live-apply theme + language (immediate feedback).
+        if theme_dark != self.dark_mode {
+            self.dark_mode = theme_dark;
+            apply_theme(ctx, self.dark_mode);
+        }
+        if lang != prev_lang {
+            self.lang = lang;
+            crate::i18n::save_lang(lang);
+        }
+
+        if save {
+            let appview = form.appview_url.trim().to_string();
+            let settings = AppSettings {
+                y_tree_provider: Some(form.y_tree_provider.clone()),
+                appview_url: (!appview.is_empty()).then_some(appview),
+                tree_ttl_days: form.tree_ttl_days.trim().parse::<u64>().ok(),
+                theme: Some(if self.dark_mode { "dark".to_string() } else { "light".to_string() }),
+                prompt_before_download: Some(form.prompt_before_download),
+            };
+            match settings.save() {
+                Ok(()) => self.status = self.tr("settings.saved").to_string(),
+                Err(e) => self.status = format!("Could not save settings: {e}"),
+            }
+            for row in &form.references {
+                let local = row.local_path.trim().to_string();
+                let _ = self.tx.send(Command::SetReferenceOverride {
+                    build: row.build.clone(),
+                    local_path: (!local.is_empty()).then_some(local),
+                    auto_download: row.auto_download,
+                });
+            }
+        }
+
+        if close {
+            self.show_settings = false;
+        } else {
+            self.settings_form = form;
+        }
+    }
+
     /// The Delete-subject confirmation modal. Confirm sends a `DeleteBiosample` command; the app
     /// layer refuses (surfaced via the status bar) when the subject still has dependent data.
     fn delete_subject_modal(&mut self, ctx: &egui::Context) {
@@ -2404,6 +2623,12 @@ impl NavigatorApp {
             ui.horizontal(|ui| {
                 ui.heading(self.tr("app.name"));
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui.button("⚙").on_hover_text(self.tr("settings.title")).clicked() {
+                        self.settings_form = SettingsForm::from_settings();
+                        self.show_settings = true;
+                        let _ = self.tx.send(Command::LoadReferenceSettings);
+                    }
+                    ui.separator();
                     let icon = if self.dark_mode { "☀" } else { "🌙" };
                     if ui.button(icon).on_hover_text(self.tr("theme.toggle")).clicked() {
                         self.dark_mode = !self.dark_mode;

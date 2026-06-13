@@ -160,6 +160,8 @@ use uuid::Uuid;
 
 pub mod error;
 pub use error::AppError;
+pub mod settings;
+pub use settings::AppSettings;
 
 /// Artifact kind for de-novo calls, keyed per contig so different contigs don't
 /// overwrite each other in the cache.
@@ -189,6 +191,7 @@ fn tree_cache_is_fresh(path: &Path) -> bool {
     let days = std::env::var("NAVIGATOR_TREE_TTL_DAYS")
         .ok()
         .and_then(|v| v.trim().parse::<u64>().ok())
+        .or_else(|| AppSettings::load().tree_ttl_days)
         .unwrap_or(TREE_CACHE_TTL_DAYS_DEFAULT);
     let ttl = std::time::Duration::from_secs(days * 24 * 3600);
     std::fs::metadata(path)
@@ -643,21 +646,96 @@ enum YTreeProvider {
 
 /// Selected Y-tree provider. Defaults to **DecodingUs** (our tree; native CHM13 coordinates →
 /// no liftover). Override with `NAVIGATOR_Y_TREE_PROVIDER=ftdna|decodingus`.
-fn y_tree_provider() -> YTreeProvider {
-    match std::env::var("NAVIGATOR_Y_TREE_PROVIDER").ok().as_deref().map(str::trim) {
+/// Resolve the Y-tree provider given the env override and the settings value (pure; env wins →
+/// settings → default DecodingUs).
+fn resolve_y_provider(env: Option<&str>, settings: Option<&str>) -> YTreeProvider {
+    match env.or(settings).map(str::trim) {
         Some(v) if v.eq_ignore_ascii_case("ftdna") => YTreeProvider::Ftdna,
         _ => YTreeProvider::DecodingUs,
     }
 }
 
+fn y_tree_provider() -> YTreeProvider {
+    let env = std::env::var("NAVIGATOR_Y_TREE_PROVIDER").ok();
+    let settings = AppSettings::load().y_tree_provider;
+    resolve_y_provider(env.as_deref(), settings.as_deref())
+}
+
 /// Base URL of the DecodingUs AppView serving the tree API. Local by default for testing;
 /// switch with `DECODINGUS_APPVIEW_URL` (e.g. the production host at cutover).
-fn decodingus_appview_url() -> String {
-    std::env::var("DECODINGUS_APPVIEW_URL")
-        .ok()
+/// Resolve the AppView base URL (pure; env wins → settings → default localhost; trailing slash
+/// trimmed; blank values ignored).
+fn resolve_appview_url(env: Option<String>, settings: Option<String>) -> String {
+    env.or(settings)
         .map(|s| s.trim_end_matches('/').to_string())
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| "http://localhost:9000".to_string())
+}
+
+fn decodingus_appview_url() -> String {
+    resolve_appview_url(std::env::var("DECODINGUS_APPVIEW_URL").ok(), AppSettings::load().appview_url)
+}
+
+/// Per-build reference-genome status + override for the Settings UI.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RefBuildStatus {
+    /// Canonical build label (e.g. "GRCh38").
+    pub build: String,
+    /// Human-readable cache/override status.
+    pub status: String,
+    /// User-pinned local FASTA, if any.
+    pub local_path: Option<String>,
+    /// Whether a missing reference may be auto-downloaded.
+    pub auto_download: bool,
+}
+
+impl App {
+    /// Reference-genome settings + cache status, one row per supported build.
+    pub fn reference_settings(&self) -> Vec<RefBuildStatus> {
+        let cfg = navigator_refgenome::UserConfig::load(&self.gateway.config_path());
+        ReferenceBuild::all()
+            .iter()
+            .map(|&b| {
+                let name = b.as_str();
+                let ov = cfg.references.get(name);
+                let status = match self.gateway.reference_status(name) {
+                    RefStatus::LocalOverride(p) => format!("local file: {}", p.display()),
+                    RefStatus::Cached(_) => "in cache".to_string(),
+                    RefStatus::NeedsDownload { est_bytes, .. } => {
+                        format!("not downloaded (~{} MB)", est_bytes / 1_000_000)
+                    }
+                    RefStatus::Unknown => "unknown".to_string(),
+                };
+                RefBuildStatus {
+                    build: name.to_string(),
+                    status,
+                    local_path: ov.and_then(|o| o.local_path.clone()),
+                    auto_download: ov.map(|o| o.auto_download).unwrap_or(true),
+                }
+            })
+            .collect()
+    }
+
+    /// Set the local-FASTA override + auto-download flag for a build, persisting
+    /// `reference_sources.json`. Applies on the next reference resolve (no restart needed — the
+    /// gateway re-reads the file).
+    pub fn set_reference_override(
+        &self,
+        build: &str,
+        local_path: Option<String>,
+        auto_download: bool,
+    ) -> Result<(), AppError> {
+        let path = self.gateway.config_path();
+        let mut cfg = navigator_refgenome::UserConfig::load(&path);
+        let key = canonical_build(build)
+            .map(|b| b.as_str().to_string())
+            .unwrap_or_else(|| build.to_string());
+        let entry = cfg.references.entry(key).or_default();
+        entry.local_path = local_path.map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
+        entry.auto_download = auto_download;
+        cfg.save(&path)?;
+        Ok(())
+    }
 }
 
 /// One instrument→lab association from the AppView `sequencer` endpoints (D8). Mirrors the
@@ -4710,5 +4788,51 @@ mod publish_tests {
         let value = app.sequence_run_record(&reloaded).await.unwrap();
         assert_eq!(value.get("instrumentId").and_then(|v| v.as_str()), Some("A00182"));
         assert_eq!(value.get("$type").and_then(|v| v.as_str()), Some(NS_SEQUENCERUN));
+    }
+}
+
+#[cfg(test)]
+mod settings_tests {
+    use super::*;
+
+    #[test]
+    fn y_provider_precedence_env_then_settings_then_default() {
+        // env wins even when settings disagree
+        assert!(matches!(resolve_y_provider(Some("ftdna"), Some("decodingus")), YTreeProvider::Ftdna));
+        assert!(matches!(resolve_y_provider(Some("decodingus"), Some("ftdna")), YTreeProvider::DecodingUs));
+        // settings used when env absent
+        assert!(matches!(resolve_y_provider(None, Some("ftdna")), YTreeProvider::Ftdna));
+        // default when neither
+        assert!(matches!(resolve_y_provider(None, None), YTreeProvider::DecodingUs));
+        // unrecognized value falls back to default
+        assert!(matches!(resolve_y_provider(Some("bogus"), None), YTreeProvider::DecodingUs));
+    }
+
+    #[test]
+    fn appview_url_precedence_and_normalization() {
+        assert_eq!(resolve_appview_url(Some("https://av.example/".into()), Some("http://x".into())), "https://av.example");
+        assert_eq!(resolve_appview_url(None, Some("http://host:9000".into())), "http://host:9000");
+        assert_eq!(resolve_appview_url(None, None), "http://localhost:9000");
+        // blank values are ignored (fall through to default)
+        assert_eq!(resolve_appview_url(Some("".into()), None), "http://localhost:9000");
+    }
+
+    #[test]
+    fn app_settings_serde_round_trip_and_defaults() {
+        let s = AppSettings {
+            y_tree_provider: Some("ftdna".into()),
+            appview_url: Some("https://av.example".into()),
+            tree_ttl_days: Some(3),
+            theme: Some("light".into()),
+            prompt_before_download: Some(false),
+        };
+        let json = serde_json::to_string(&s).unwrap();
+        assert_eq!(serde_json::from_str::<AppSettings>(&json).unwrap(), s);
+
+        // Missing/partial fields default to None (forward/backward compatible).
+        let partial: AppSettings = serde_json::from_str(r#"{"appview_url":"http://h"}"#).unwrap();
+        assert_eq!(partial.appview_url.as_deref(), Some("http://h"));
+        assert_eq!(partial.y_tree_provider, None);
+        assert_eq!(AppSettings::default(), serde_json::from_str::<AppSettings>("{}").unwrap());
     }
 }
