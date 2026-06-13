@@ -49,6 +49,18 @@ produce our own.
 a `feature/str-calling` branch from the Scala era; this is a coherent, self-contained subsystem to
 port. The *caller* depends on the STR reference gateway (HipSTR BEDs, §7) landing first.
 
+> **Attempted 2026-06-12 → not vendor-grade; reverted.** A faithful length÷period port (the Scala
+> algorithm) + a bundled 24-locus catalog (verified GRCh38 + CHM13 coords lifted via the Y chain)
+> was built and validated against James Kane's own FTDNA/YSEQ results on his GFX alignment. It
+> **fails**: the catalog coordinates are genomic *feature* regions, not tight repeat tracts, so
+> length÷period is systematically offset per marker (DYS389II 75 vs 29, DYS390 20 vs 24); only ~4/19
+> matched exactly. Calibrating by **motif-detection on the reference FASTA** (to find the true tract)
+> also failed — a naive longest-periodic-run lands on flank/homopolymer noise, not the STR. This is
+> the same wall the Scala app hit (its caller was experimental/display-only). **Vendor-grade Y-STR
+> calling needs a real STR genotyper (HipSTR/GangSTR-class) or §7's curated tight-tract reference
+> BED + an FTDNA-convention mapping** — a dedicated subsystem, not a clean increment. HiFi (~4×) depth
+> also keeps most loci LOW-confidence; the value is highest for 20–30× short-read WGS.
+
 **Decoupled near-term win — STR reporting.** The FTDNA/YSEQ-style tables (summary card + the
 By-Panel grouped marker view) and the underlying panel config (`str-panels.conf`: tier definitions,
 marketing-vs-actual counts for multi-value markers like DYS385×2 / DYS464×4 / YCAII×2 / CDY×2,
