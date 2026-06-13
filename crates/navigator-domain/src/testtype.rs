@@ -51,6 +51,11 @@ pub const CATALOG: &[TestType] = &[
     TestType { code: "BIG_Y_500", display_name: "FTDNA Big Y-500", target: YChromosome },
     TestType { code: "BIG_Y_700", display_name: "FTDNA Big Y-700", target: YChromosome },
     TestType { code: "Y_ELITE", display_name: "Full Genomes Y Elite", target: YChromosome },
+    TestType { code: "Y_PRIME", display_name: "YSEQ Y Prime", target: YChromosome },
+    // Targeted tests recognized by coverage shape when the vendor can't be pinned down (see
+    // `navigator-analysis::testtype::infer_test_type`) — honest generics, not a guessed product.
+    TestType { code: "TARGETED_Y", display_name: "Targeted Y (vendor unknown)", target: YChromosome },
+    TestType { code: "TARGETED_MT", display_name: "Targeted mtDNA (vendor unknown)", target: MtDna },
     TestType { code: "MT_FULL_SEQUENCE", display_name: "mtDNA Full Sequence", target: MtDna },
     TestType { code: "MT_PLUS", display_name: "FTDNA mtDNA Plus", target: MtDna },
     TestType { code: "MT_CR_ONLY", display_name: "mtDNA Control Region (HVR1/HVR2)", target: MtDna },

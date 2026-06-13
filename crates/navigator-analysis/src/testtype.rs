@@ -15,43 +15,9 @@ use noodles::csi::binning_index::ReferenceSequence as _;
 
 use crate::contig;
 
-/// What body of the genome a test targets — drives the coverage-shape decision.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Target {
-    Autosomal,
-    YChromosome,
-    MtDna,
-}
-
-/// One catalog entry. `code` is the persisted `SequenceRun.test_type` string.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct TestType {
-    pub code: &'static str,
-    pub display: &'static str,
-    pub vendor: Option<&'static str>,
-    pub target: Target,
-}
-
-// The catalog. Codes match the Scala `TestTypeDefinition`s (plus honest generic `TARGETED_*`
-// fallbacks the Scala lacked — it defaulted unknown targeted-Y to Big Y, which mislabels Y Elite).
-pub const WGS: TestType = TestType { code: "WGS", display: "Whole Genome (short-read)", vendor: None, target: Target::Autosomal };
-pub const WGS_HIFI: TestType = TestType { code: "WGS_HIFI", display: "Whole Genome (PacBio HiFi)", vendor: None, target: Target::Autosomal };
-pub const WGS_NANOPORE: TestType =
-    TestType { code: "WGS_NANOPORE", display: "Whole Genome (Nanopore)", vendor: None, target: Target::Autosomal };
-pub const WGS_LOW_PASS: TestType =
-    TestType { code: "WGS_LOW_PASS", display: "Low-pass Whole Genome", vendor: None, target: Target::Autosomal };
-pub const WES: TestType = TestType { code: "WES", display: "Whole Exome", vendor: None, target: Target::Autosomal };
-pub const BIG_Y_700: TestType =
-    TestType { code: "BIG_Y_700", display: "FTDNA Big Y-700", vendor: Some("FamilyTreeDNA"), target: Target::YChromosome };
-pub const Y_ELITE: TestType =
-    TestType { code: "Y_ELITE", display: "Full Genomes Y Elite", vendor: Some("Full Genomes"), target: Target::YChromosome };
-pub const Y_PRIME: TestType = TestType { code: "Y_PRIME", display: "YSEQ Y Prime", vendor: Some("YSEQ"), target: Target::YChromosome };
-pub const TARGETED_Y: TestType =
-    TestType { code: "TARGETED_Y", display: "Targeted Y (vendor unknown)", vendor: None, target: Target::YChromosome };
-pub const MT_FULL_SEQUENCE: TestType =
-    TestType { code: "MT_FULL_SEQUENCE", display: "mtDNA Full Sequence", vendor: None, target: Target::MtDna };
-pub const TARGETED_MT: TestType =
-    TestType { code: "TARGETED_MT", display: "Targeted mtDNA (vendor unknown)", vendor: None, target: Target::MtDna };
+// Test-type codes are the canonical `navigator_domain::testtype` catalog strings — display names,
+// target region, and the UI picker live there. This module only decides *which* code a BAM's
+// coverage shape implies, emitting those code literals (validated against the catalog by a test).
 
 /// Per-chromosome-group coverage proxies (reads × read-length ÷ group length), the same estimate
 /// the Scala `ChromosomeCoverageStats` used. `None` group ⇒ no such contig in the reference.
@@ -125,28 +91,28 @@ pub fn coverage_profile_from_bai(bam_path: &Path, mean_read_length: Option<u64>)
     })
 }
 
-/// Map a free-text vendor hint to a specific targeted-Y test (else the honest generic).
-fn targeted_y_for_vendor(vendor_hint: Option<&str>) -> TestType {
+/// Map a free-text vendor hint to a specific targeted-Y test code (else the honest generic).
+fn targeted_y_for_vendor(vendor_hint: Option<&str>) -> &'static str {
     match vendor_hint.map(|v| v.to_lowercase()) {
-        Some(v) if v.contains("ftdna") || v.contains("familytreedna") => BIG_Y_700,
-        Some(v) if v.contains("full genomes") || v.contains("fullgenomes") => Y_ELITE,
-        Some(v) if v.contains("yseq") => Y_PRIME,
+        Some(v) if v.contains("ftdna") || v.contains("familytreedna") => "BIG_Y_700",
+        Some(v) if v.contains("full genomes") || v.contains("fullgenomes") => "Y_ELITE",
+        Some(v) if v.contains("yseq") => "Y_PRIME",
         // Scala defaulted to BIG_Y_700; we return TARGETED_Y so an unknown vendor isn't mislabeled.
-        _ => TARGETED_Y,
+        _ => "TARGETED_Y",
     }
 }
 
-/// Pick a WGS subtype from the platform.
-fn wgs_for_platform(platform: Option<&str>, mean_read_length: Option<u64>) -> TestType {
+/// Pick a WGS subtype code from the platform.
+fn wgs_for_platform(platform: Option<&str>, mean_read_length: Option<u64>) -> &'static str {
     if platform.is_some_and(|p| p.to_uppercase().contains("PACBIO")) || mean_read_length.is_some_and(|l| l > LONG_READ_LEN) {
-        WGS_HIFI
+        "WGS_HIFI"
     } else if platform.is_some_and(|p| {
         let u = p.to_uppercase();
         u.contains("NANOPORE") || u == "ONT"
     }) {
-        WGS_NANOPORE
+        "WGS_NANOPORE"
     } else {
-        WGS
+        "WGS"
     }
 }
 
@@ -162,7 +128,7 @@ pub fn infer_test_type(
 ) -> Option<String> {
     let Some(p) = profile else {
         // No coverage shape available: platform-only, matching the old probe.
-        return platform.map(|_| wgs_for_platform(platform, mean_read_length).code.to_string());
+        return platform.map(|_| wgs_for_platform(platform, mean_read_length).to_string());
     };
 
     // "Autosomal coverage present" = depth above the floor AND autosomal contigs exist at all.
@@ -177,19 +143,19 @@ pub fn infer_test_type(
     // high-copy, so a WGS sample shows huge mt depth without being an mtFull test).
     let targeted_mt = !targeted_y && p.mt_depth > MT_PRESENT && !has_autosome && p.y_depth <= Y_PRESENT;
 
-    let tt = if targeted_y {
+    let code = if targeted_y {
         targeted_y_for_vendor(vendor_hint)
     } else if targeted_mt {
-        MT_FULL_SEQUENCE
+        "MT_FULL_SEQUENCE"
     } else if has_autosome && p.y_depth <= Y_PRESENT && p.autosome_depth > WES_AUTOSOME_DEPTH {
         // Very high autosomal depth with no Y signal — exome capture.
-        WES
+        "WES"
     } else if has_autosome && p.autosome_depth < LOW_PASS_AUTOSOME_DEPTH {
-        WGS_LOW_PASS
+        "WGS_LOW_PASS"
     } else {
         wgs_for_platform(platform, mean_read_length)
     };
-    Some(tt.code.to_string())
+    Some(code.to_string())
 }
 
 #[cfg(test)]
@@ -252,6 +218,30 @@ mod tests {
         assert_eq!(infer_test_type(Some(&prof(2.0, 0.5, 4.0, true)), Some("ILLUMINA"), None, None).as_deref(), Some("WGS_LOW_PASS"));
         // High autosomal, no Y/MT contigs → exome.
         assert_eq!(infer_test_type(Some(&prof(80.0, 0.0, 0.0, true)), Some("ILLUMINA"), None, None).as_deref(), Some("WES"));
+    }
+
+    #[test]
+    fn every_emitted_code_is_in_the_domain_catalog() {
+        // The codes we emit must be recognized by the canonical catalog (else the UI picker /
+        // display_name would show a raw code). Exercise every branch's output.
+        let shapes = [
+            (prof(0.0, 35.0, 0.0, false), Some("FamilyTreeDNA")),
+            (prof(0.0, 35.0, 0.0, false), Some("Full Genomes")),
+            (prof(0.0, 35.0, 0.0, false), Some("YSEQ")),
+            (prof(0.0, 35.0, 0.0, false), None),
+            (prof(0.0, 0.0, 800.0, false), None),
+            (prof(29.4, 8.5, 1155.0, true), None),
+            (prof(2.0, 0.5, 4.0, true), None),
+            (prof(80.0, 0.0, 0.0, true), None),
+        ];
+        for (p, vendor) in shapes {
+            let code = infer_test_type(Some(&p), Some("ILLUMINA"), vendor, None).unwrap();
+            assert!(navigator_domain::testtype::by_code(&code).is_some(), "code {code} not in catalog");
+        }
+        for plat in ["PACBIO", "ILLUMINA", "NANOPORE"] {
+            let code = infer_test_type(None, Some(plat), None, None).unwrap();
+            assert!(navigator_domain::testtype::by_code(&code).is_some(), "code {code} not in catalog");
+        }
     }
 
     #[test]
