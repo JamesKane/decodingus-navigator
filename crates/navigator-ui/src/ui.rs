@@ -5032,28 +5032,29 @@ fn str_by_panel_view(ui: &mut egui::Ui, profile: &StrProfile, provider: &str, co
         return;
     }
     let canon = strpanel::canonical_provider(provider);
-    egui::ScrollArea::vertical().max_height(360.0).id_salt("str_by_panel").show(ui, |ui| {
-        for (tier, markers) in &groups {
-            ui.add_space(6.0);
-            ui.label(egui::RichText::new(format!("{canon} {tier}  ({} markers)", markers.len())).strong());
-            for (ci, chunk) in markers.chunks(12).enumerate() {
-                egui::Grid::new(format!("str_tier_{tier}_{ci}")).num_columns(chunk.len()).show(ui, |ui| {
-                    for mk in chunk {
-                        let t = egui::RichText::new(&mk.marker).small();
-                        let c = conflicts.contains(&mk.marker.trim().to_uppercase());
-                        ui.label(if c { t.color(STR_CONFLICT) } else { t.weak() });
-                    }
-                    ui.end_row();
-                    for mk in chunk {
-                        let t = egui::RichText::new(&mk.value).monospace().strong();
-                        let c = conflicts.contains(&mk.marker.trim().to_uppercase());
-                        ui.label(if c { t.color(STR_CONFLICT) } else { t });
-                    }
-                    ui.end_row();
-                });
-            }
+    // No inner scroll area here — the detail panel is already wrapped in one vertical
+    // ScrollArea, and nesting a second (fixed-height) one clips the panel tables and
+    // captures the wheel so the page can't scroll. Let the tiers flow into the page scroll.
+    for (tier, markers) in &groups {
+        ui.add_space(6.0);
+        ui.label(egui::RichText::new(format!("{canon} {tier}  ({} markers)", markers.len())).strong());
+        for (ci, chunk) in markers.chunks(12).enumerate() {
+            egui::Grid::new(format!("str_tier_{tier}_{ci}")).num_columns(chunk.len()).show(ui, |ui| {
+                for mk in chunk {
+                    let t = egui::RichText::new(&mk.marker).small();
+                    let c = conflicts.contains(&mk.marker.trim().to_uppercase());
+                    ui.label(if c { t.color(STR_CONFLICT) } else { t.weak() });
+                }
+                ui.end_row();
+                for mk in chunk {
+                    let t = egui::RichText::new(&mk.value).monospace().strong();
+                    let c = conflicts.contains(&mk.marker.trim().to_uppercase());
+                    ui.label(if c { t.color(STR_CONFLICT) } else { t });
+                }
+                ui.end_row();
+            });
         }
-    });
+    }
 }
 
 /// Flat, filterable marker table: Marker | Panel | Value, plus ⚠ | Other when >1 provider (the
@@ -5086,47 +5087,47 @@ fn str_all_markers_view(
     });
     let f = filter.trim().to_uppercase();
     let cols = if multi { 5 } else { 3 };
-    egui::ScrollArea::vertical().max_height(360.0).id_salt("str_all_markers").show(ui, |ui| {
-        egui::Grid::new("str_all_grid").striped(true).num_columns(cols).show(ui, |ui| {
-            ui.strong("Marker");
-            ui.strong("Panel");
-            ui.strong("Value");
-            if multi {
-                ui.strong("⚠");
-                ui.strong("Other");
+    // Flow into the detail panel's outer ScrollArea (no nested vertical scroll — it clips
+    // the table and steals the wheel).
+    egui::Grid::new("str_all_grid").striped(true).num_columns(cols).show(ui, |ui| {
+        ui.strong("Marker");
+        ui.strong("Panel");
+        ui.strong("Value");
+        if multi {
+            ui.strong("⚠");
+            ui.strong("Other");
+        }
+        ui.end_row();
+        for mk in &profile.markers {
+            let norm = mk.marker.trim().to_uppercase();
+            if !f.is_empty() && !norm.contains(&f) {
+                continue;
             }
-            ui.end_row();
-            for mk in &profile.markers {
-                let norm = mk.marker.trim().to_uppercase();
-                if !f.is_empty() && !norm.contains(&f) {
-                    continue;
-                }
-                let conflict = conflict_map.get(&norm).copied();
-                ui.label(&mk.marker);
-                ui.label(egui::RichText::new(tier_of.get(&norm).map(|s| s.as_str()).unwrap_or("—")).weak());
-                let v = egui::RichText::new(&mk.value).monospace();
-                ui.label(if conflict.is_some() { v.color(STR_CONFLICT) } else { v });
-                if multi {
-                    match conflict {
-                        Some(c) => {
-                            ui.colored_label(STR_CONFLICT, "⚠");
-                            let others: Vec<String> = c
-                                .by_provider
-                                .iter()
-                                .filter(|(p, _)| p != &this_provider)
-                                .map(|(p, val)| format!("{p}:{val}"))
-                                .collect();
-                            ui.label(egui::RichText::new(others.join(", ")).monospace().weak());
-                        }
-                        None => {
-                            ui.label("");
-                            ui.label("");
-                        }
+            let conflict = conflict_map.get(&norm).copied();
+            ui.label(&mk.marker);
+            ui.label(egui::RichText::new(tier_of.get(&norm).map(|s| s.as_str()).unwrap_or("—")).weak());
+            let v = egui::RichText::new(&mk.value).monospace();
+            ui.label(if conflict.is_some() { v.color(STR_CONFLICT) } else { v });
+            if multi {
+                match conflict {
+                    Some(c) => {
+                        ui.colored_label(STR_CONFLICT, "⚠");
+                        let others: Vec<String> = c
+                            .by_provider
+                            .iter()
+                            .filter(|(p, _)| p != &this_provider)
+                            .map(|(p, val)| format!("{p}:{val}"))
+                            .collect();
+                        ui.label(egui::RichText::new(others.join(", ")).monospace().weak());
+                    }
+                    None => {
+                        ui.label("");
+                        ui.label("");
                     }
                 }
-                ui.end_row();
             }
-        });
+            ui.end_row();
+        }
     });
 }
 
