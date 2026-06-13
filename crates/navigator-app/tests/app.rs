@@ -118,6 +118,28 @@ async fn import_vendor_big_y_vcf_is_tagged() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// Live chip→ancestry check (ignored; needs the CHM13 AIMs panel asset + network for the
+/// hg19-chm13v2 chain). Run: `CHIP_FILE=/path/to/23andme.txt cargo test -p navigator-app --test app
+/// estimate_ancestry_from_chip_live -- --ignored --nocapture`.
+#[tokio::test]
+#[ignore]
+async fn estimate_ancestry_from_chip_live() {
+    let Ok(chip_file) = std::env::var("CHIP_FILE") else {
+        eprintln!("set CHIP_FILE to run");
+        return;
+    };
+    let app = app().await;
+    let subject = app.add_biosample(None, "CHIP", None, None).await.unwrap();
+    let profile = app
+        .import_chip_profile_from_csv(subject.guid, None, None, std::path::Path::new(&chip_file))
+        .await
+        .unwrap();
+    let result = app.estimate_ancestry_from_chip(profile.id).await.unwrap();
+    println!("snps_with_genotype: {}", result.snps_with_genotype);
+    println!("composition: {:?}", result.components);
+    assert!(result.snps_with_genotype >= 100, "too few intersected AIMs: {}", result.snps_with_genotype);
+}
+
 #[tokio::test]
 async fn import_mtdna_fasta_derives_variants() {
     let app = app().await;

@@ -21,6 +21,7 @@ struct Row {
     mt_markers_called: i64,
     autosomal_markers_called: i64,
     source_file_name: Option<String>,
+    source_path: Option<String>,
 }
 
 impl Row {
@@ -42,13 +43,14 @@ impl Row {
                 autosomal_markers_called: self.autosomal_markers_called,
             },
             source_file_name: self.source_file_name,
+            source_path: self.source_path,
         })
     }
 }
 
 const COLS: &str = "id, biosample_guid, provider, chip_version, total_markers_possible, \
     total_markers_called, no_call_rate, het_rate, y_markers_called, mt_markers_called, \
-    autosomal_markers_called, source_file_name";
+    autosomal_markers_called, source_file_name, source_path";
 
 /// Insert a chip profile (the store assigns the id).
 pub async fn create(pool: &SqlitePool, new: &NewChipProfile) -> Result<ChipProfile, StoreError> {
@@ -56,8 +58,8 @@ pub async fn create(pool: &SqlitePool, new: &NewChipProfile) -> Result<ChipProfi
     let id: i64 = sqlx::query_scalar(
         "INSERT INTO chip_profile (biosample_guid, provider, chip_version, total_markers_possible, \
          total_markers_called, no_call_rate, het_rate, y_markers_called, mt_markers_called, \
-         autosomal_markers_called, source_file_name) \
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id",
+         autosomal_markers_called, source_file_name, source_path) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id",
     )
     .bind(new.biosample_guid.0.to_string())
     .bind(&new.provider)
@@ -70,6 +72,7 @@ pub async fn create(pool: &SqlitePool, new: &NewChipProfile) -> Result<ChipProfi
     .bind(s.mt_markers_called)
     .bind(s.autosomal_markers_called)
     .bind(&new.source_file_name)
+    .bind(&new.source_path)
     .fetch_one(pool)
     .await?;
     Ok(ChipProfile {
@@ -79,6 +82,7 @@ pub async fn create(pool: &SqlitePool, new: &NewChipProfile) -> Result<ChipProfi
         chip_version: new.chip_version.clone(),
         summary: new.summary,
         source_file_name: new.source_file_name.clone(),
+        source_path: new.source_path.clone(),
     })
 }
 
@@ -90,6 +94,15 @@ pub async fn delete(pool: &SqlitePool, id: i64) -> Result<bool, StoreError> {
         .await?
         .rows_affected();
     Ok(affected > 0)
+}
+
+/// A single chip profile by id.
+pub async fn get(pool: &SqlitePool, id: i64) -> Result<Option<ChipProfile>, StoreError> {
+    let row: Option<Row> = sqlx::query_as(&format!("SELECT {COLS} FROM chip_profile WHERE id = ?"))
+        .bind(id)
+        .fetch_optional(pool)
+        .await?;
+    row.map(Row::into_domain).transpose()
 }
 
 /// All chip profiles for a biosample.

@@ -311,6 +311,10 @@ pub struct NavigatorApp {
     mt_haplogroup: Option<(i64, HaploAssignment)>,
     /// Last ancestry estimate: (alignment id, result). `None` result = computed, no estimate.
     ancestry: Option<(i64, Option<AncestryResult>)>,
+    /// On-demand chip ancestry: (chip profile id, result).
+    chip_ancestry: Option<(i64, AncestryResult)>,
+    /// Whether a chip-ancestry estimate is in flight.
+    estimating_chip_ancestry: bool,
     /// Donor-level ancestry (best across the subject's sources): (source alignment id, result).
     donor_ancestry: Option<(i64, AncestryResult)>,
     /// Donor-level private-Y union across the subject's sources.
@@ -949,6 +953,8 @@ impl NavigatorApp {
             variant_sets: Vec::new(),
             variant_concordance: Vec::new(),
             chip_profiles: Vec::new(),
+            chip_ancestry: None,
+            estimating_chip_ancestry: false,
             mtdna_sequences: Vec::new(),
             mtdna_variants: std::collections::HashMap::new(),
             mtdna_haplogroup: None,
@@ -1267,6 +1273,17 @@ impl NavigatorApp {
                         let _ = self.tx.send(Command::LoadDonorAncestry { biosample_guid: guid });
                     }
                 }
+                Event::ChipAncestry { chip_profile_id, result } => {
+                    self.estimating_chip_ancestry = false;
+                    self.status = match result.super_population_summary.first() {
+                        Some(top) => format!(
+                            "Chip ancestry: {} {:.1}% ({} AIMs)",
+                            top.super_population, top.percentage, result.snps_with_genotype
+                        ),
+                        None => "Chip ancestry: no estimate".into(),
+                    };
+                    self.chip_ancestry = Some((chip_profile_id, result));
+                }
                 Event::PcaReference { alignment_id, points } => {
                     self.pca_reference = Some((alignment_id, points));
                 }
@@ -1526,6 +1543,7 @@ impl NavigatorApp {
                     self.publishing = false;
                     self.finding_private_y = false;
                     self.estimating_ancestry = false;
+                    self.estimating_chip_ancestry = false;
                     self.y_profile_loading = false;
                     self.ancestry_progress = None;
                     self.painting_running = false;
@@ -1885,8 +1903,14 @@ impl NavigatorApp {
                     }
                     if let Some(id) = self.selected_alignment {
                         card(ui, self.tr("card.ancestry"), |ui| self.ancestry_section(ui, id));
-                    } else {
+                    } else if self.chip_profiles.is_empty() {
                         pick_alignment_hint(ui, self.tr("hint.pickAlignment"));
+                    }
+                    // Chip-based ancestry: available whenever the subject has a chip profile, with
+                    // or without an alignment (it's the only ancestry path for a chip-only subject).
+                    if !self.chip_profiles.is_empty() {
+                        ui.add_space(10.0);
+                        card(ui, self.tr("card.chipAncestry"), |ui| self.chip_ancestry_section(ui));
                     }
                 }
                 DetailTab::IbdMatches => {
@@ -4439,6 +4463,68 @@ impl NavigatorApp {
     }
 
     /// Ancestry estimate for an alignment: super-population proportions from the AIMs panel.
+    /// Autosomal ancestry estimated from an imported chip (23andMe/AncestryDNA). One button per
+    /// chip profile; lifts the chip's GRCh37 SNPs onto the AIMs panel and runs admixture. Renders
+    /// the same donut + composition + hierarchy + map as the alignment estimate (no PCA scatter —
+    /// chip carries no per-build PCA reference here).
+    fn chip_ancestry_section(&mut self, ui: &mut egui::Ui) {
+        let profiles: Vec<(i64, String)> =
+            self.chip_profiles.iter().map(|p| (p.id, p.provider.clone())).collect();
+        ui.horizontal(|ui| {
+            for (id, provider) in &profiles {
+                let label = if profiles.len() > 1 {
+                    format!("{} — {provider}", self.tr("btn.estimateChipAncestry"))
+                } else {
+                    self.tr("btn.estimateChipAncestry").to_string()
+                };
+                if ui.add_enabled(!self.estimating_chip_ancestry, egui::Button::new(label)).clicked() {
+                    self.estimating_chip_ancestry = true;
+                    self.chip_ancestry = None;
+                    self.status = self.tr("chipAncestry.estimating").to_string();
+                    let _ = self.tx.send(Command::EstimateAncestryFromChip { chip_profile_id: *id });
+                }
+            }
+            if self.estimating_chip_ancestry {
+                ui.spinner();
+            }
+        });
+
+        if let Some((_, result)) = &self.chip_ancestry {
+            ui.add_space(8.0);
+            ui.horizontal(|ui| {
+                draw_ancestry_donut(ui, &result.super_population_summary);
+                ui.add_space(8.0);
+                ui.vertical(|ui| {
+                    if let Some(top) = result.super_population_summary.first() {
+                        ui.heading(format!("{} {:.1}%", top.super_population, top.percentage));
+                    }
+                    ui.label(format!("{} AIMs · {}", result.snps_with_genotype, result.reference_version));
+                    ui.add_space(4.0);
+                    draw_composition_bar(ui, &result.super_population_summary);
+                });
+            });
+            ui.add_space(8.0);
+            // Fine populations ≥0.5%, sorted, with continent color dots.
+            let mut fine: Vec<&navigator_app::PopulationComponent> =
+                result.components.iter().filter(|c| c.percentage >= 0.5).collect();
+            fine.sort_by(|a, b| b.percentage.partial_cmp(&a.percentage).unwrap_or(std::cmp::Ordering::Equal));
+            egui::Grid::new("chip_ancestry_components").num_columns(2).spacing([24.0, 4.0]).show(ui, |ui| {
+                for c in fine {
+                    ui.horizontal(|ui| {
+                        let (r, _) = ui.allocate_exact_size(egui::vec2(10.0, 10.0), egui::Sense::hover());
+                        ui.painter().circle_filled(r.center(), 3.5, parse_hex_color(&population_color(&c.population_code)));
+                        ui.label(&c.population_name);
+                    });
+                    ui.label(format!("{:.1}%", c.percentage));
+                    ui.end_row();
+                }
+            });
+            ui.add_space(8.0);
+            ui.label(self.tr("ancestry.geo"));
+            draw_ancestry_map(ui, &result.components);
+        }
+    }
+
     fn ancestry_section(&mut self, ui: &mut egui::Ui, alignment_id: i64) {
         let has_bam = self
             .alignments

@@ -31,6 +31,9 @@ pub struct ChipProfile {
     pub chip_version: Option<String>,
     pub summary: ChipSummary,
     pub source_file_name: Option<String>,
+    /// Absolute path of the imported raw-data file, for re-reading the autosomal genotypes on
+    /// demand (ancestry). `None` for older rows imported before this was tracked.
+    pub source_path: Option<String>,
 }
 
 /// Fields for creating a chip profile (the store assigns the id).
@@ -41,6 +44,7 @@ pub struct NewChipProfile {
     pub chip_version: Option<String>,
     pub summary: ChipSummary,
     pub source_file_name: Option<String>,
+    pub source_path: Option<String>,
 }
 
 /// Known array vendors (for the import form's dropdown).
@@ -263,6 +267,58 @@ pub fn haplo_calls(text: &str) -> Vec<ChipHaploCall> {
     out
 }
 
+/// A single autosomal diploid genotype from a chip export — the two observed alleles at a SNP, on
+/// the vendor build (GRCh37). Fed (after liftover to the panel build) into the ancestry estimators.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ChipAutosomalCall {
+    /// Chromosome, normalized to `chr1`..`chr22`.
+    pub contig: String,
+    pub position: i64,
+    pub a1: char,
+    pub a2: char,
+}
+
+/// The two A/C/G/T bases of a diploid genotype token (`"AG"`, or two allele columns joined), or
+/// `None` for a no-call / indel / not-exactly-two-bases token.
+fn diploid_bases(genotype: &str) -> Option<(char, char)> {
+    let bases: Vec<char> = genotype
+        .bytes()
+        .map(|b| b.to_ascii_uppercase())
+        .filter(|b| matches!(b, b'A' | b'C' | b'G' | b'T'))
+        .map(|b| b as char)
+        .collect();
+    (bases.len() == 2).then(|| (bases[0], bases[1]))
+}
+
+/// Extract the **autosomal** diploid SNP calls from a vendor raw-data export, for ancestry. Keeps
+/// only chr1–22, called, biallelic-SNP rows (drops Y/MT/X, no-calls, indels). Same row layouts as
+/// [`summarize`]/[`haplo_calls`]. Positions are on the vendor build (GRCh37 — see [`detect_build`]).
+pub fn autosomal_calls(text: &str) -> Vec<ChipAutosomalCall> {
+    let mut out = Vec::new();
+    for raw in text.lines() {
+        let line = raw.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let sep = if line.contains('\t') { '\t' } else { ',' };
+        let cols: Vec<&str> = line.split(sep).map(|s| s.trim().trim_matches('"')).collect();
+        if cols.len() < 4 || is_header(cols[0]) {
+            continue;
+        }
+        if !matches!(region(cols[1]), Region::Autosomal) {
+            continue;
+        }
+        // Normalize the chromosome to chrN (1..22) — matches the CHM13 panel + liftover contig naming.
+        let core = cols[1].trim().trim_matches('"').to_ascii_lowercase();
+        let core = core.strip_prefix("chr").unwrap_or(&core);
+        let Ok(position) = cols[2].parse::<i64>() else { continue };
+        let genotype = if cols.len() >= 5 { format!("{}{}", cols[3], cols[4]) } else { cols[3].to_string() };
+        let Some((a1, a2)) = diploid_bases(&genotype) else { continue };
+        out.push(ChipAutosomalCall { contig: format!("chr{core}"), position, a1, a2 });
+    }
+    out
+}
+
 /// The reference build a vendor export is reported on. Consumer arrays (23andMe v4/v5,
 /// AncestryDNA v1/v2) are GRCh37, so that's the default; a header naming build 38 / GRCh38 /
 /// hg38 overrides it. Scans only the comment header.
@@ -314,6 +370,32 @@ mod tests {
     #[test]
     fn empty_errors() {
         assert!(summarize("# only comments\n\n").is_err());
+    }
+
+    #[test]
+    fn autosomal_calls_keeps_only_called_autosomal_snps() {
+        // 23andMe 4-col + AncestryDNA 5-col rows, mixed with Y/MT/X/no-call/indel to drop.
+        let f = "rsid\tchromosome\tposition\tgenotype\n\
+                 rs1\t1\t100\tAG\n\
+                 rs2\t22\t200\tCC\n\
+                 rs3\t1\t300\t--\n\
+                 rs4\tY\t400\tG\n\
+                 rs5\tMT\t500\tT\n\
+                 rs6\t23\t600\tAA\n\
+                 rsI\t2\t700\tII\n";
+        let calls = autosomal_calls(f);
+        assert_eq!(calls.len(), 2);
+        assert_eq!(calls[0], ChipAutosomalCall { contig: "chr1".into(), position: 100, a1: 'A', a2: 'G' });
+        assert_eq!(calls[1], ChipAutosomalCall { contig: "chr22".into(), position: 200, a1: 'C', a2: 'C' });
+    }
+
+    #[test]
+    fn autosomal_calls_ancestry_allele_columns() {
+        let f = "#AncestryDNA\nrsid\tchromosome\tposition\tallele1\tallele2\n\
+                 rs1\t5\t1000\tA\tG\nrs2\t5\t2000\t0\t0\n";
+        let calls = autosomal_calls(f);
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0], ChipAutosomalCall { contig: "chr5".into(), position: 1000, a1: 'A', a2: 'G' });
     }
 
     #[test]

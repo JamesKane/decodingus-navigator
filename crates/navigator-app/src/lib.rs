@@ -2424,6 +2424,7 @@ impl App {
                 autosomal_markers_called: 0,
             },
             source_file_name: Some(label.clone()),
+            source_path: None, // BISDNA is a Y-only panel — no autosomal genotypes for ancestry
         };
         chip_profile::create(self.store.pool(), &chip).await?;
 
@@ -2480,12 +2481,18 @@ impl App {
         let provider = provider.or(detected).unwrap_or_else(|| "OTHER".into());
         let source_file_name = path.file_name().map(|s| s.to_string_lossy().into_owned());
         let label = source_file_name.clone().unwrap_or_else(|| provider.clone());
+        // Record the absolute path so ancestry-from-chip can re-read the autosomal genotypes later
+        // (like alignments re-read bam_path). Canonicalize best-effort; fall back to the given path.
+        let source_path = Some(
+            std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf()).to_string_lossy().into_owned(),
+        );
         let new = NewChipProfile {
             biosample_guid,
             provider: provider.clone(),
             chip_version,
             summary,
             source_file_name,
+            source_path,
         };
         let profile = chip_profile::create(self.store.pool(), &new).await?;
 
@@ -3332,6 +3339,87 @@ impl App {
             for extra in [pca_gmm.as_ref(), nmonte.as_ref()].into_iter().flatten() {
                 ancestry_result::upsert(self.store.pool(), bio, alignment_id, extra).await?;
             }
+        }
+        Ok(result)
+    }
+
+    /// Estimate autosomal ancestry from an imported **chip** (23andMe / AncestryDNA), reusing the
+    /// same estimators as the alignment path. The chip's GRCh37 SNP genotypes are lifted to the AIMs
+    /// panel's CHM13 coordinates (`gateway.lift_positions`, the `hg19-chm13v2` chain) and intersected
+    /// with the panel; the per-site alt-allele dosage feeds `estimate_admixture` (+ PCA-GMM / nMonte
+    /// when those assets exist). Computed on demand and returned (not persisted — the
+    /// `ancestry_result` table is alignment-keyed; chip persistence is a follow-on).
+    pub async fn estimate_ancestry_from_chip(&self, chip_profile_id: i64) -> Result<AncestryResult, AppError> {
+        let chip = chip_profile::get(self.store.pool(), chip_profile_id)
+            .await?
+            .ok_or_else(|| AppError::Store(StoreError::NotFound(format!("chip profile {chip_profile_id}"))))?;
+        let path = chip
+            .source_path
+            .clone()
+            .ok_or_else(|| AppError::Import("this chip has no stored raw-data file — re-import it to enable ancestry".into()))?;
+        let text = std::fs::read_to_string(&path).map_err(|e| AppError::Import(format!("chip file {path}: {e}")))?;
+        let from_build = chipprofile::detect_build(&text);
+        let calls = chipprofile::autosomal_calls(&text);
+
+        // The chip-ancestry target is the CHM13 AIMs panel.
+        let build = ReferenceBuild::Chm13v2;
+        let panel_path = ancestry_panel_path(build);
+        let panel_bytes = std::fs::read(&panel_path).map_err(|_| AppError::AncestryPanelMissing(panel_path.clone()))?;
+        let panel = AncestryPanel::from_bytes(&panel_bytes)?;
+        let reference_version = panel.build.clone();
+
+        // Ensure the GRCh37→CHM13 chain is cached (downloads on first use), then index panel sites.
+        self.gateway.resolve_chain(&from_build, &panel.build, &mut |_, _| {}).await?;
+        let site_index: HashMap<(&str, i64), &navigator_analysis::ancestry::PanelSite> =
+            panel.sites.iter().map(|s| ((s.contig.as_str(), s.position), s)).collect();
+
+        // Group chip calls by contig, lift each contig's positions in one batch, then intersect.
+        let mut by_contig: HashMap<String, HashMap<i64, (char, char)>> = HashMap::new();
+        for c in &calls {
+            by_contig.entry(c.contig.clone()).or_default().insert(c.position, (c.a1, c.a2));
+        }
+        let mut genotypes: Vec<navigator_analysis::caller::SiteGenotype> = Vec::new();
+        for (contig, alleles) in &by_contig {
+            let positions: Vec<i64> = alleles.keys().copied().collect();
+            let lifted = self.gateway.lift_positions(&from_build, &panel.build, contig, &positions)?;
+            for lp in lifted {
+                let Some(site) = site_index.get(&(lp.contig.as_str(), lp.pos)) else { continue };
+                let Some(&(a1, a2)) = alleles.get(&lp.tree_pos) else { continue };
+                // `dosage_from_alleles` rev-comps as a fallback, so an inverted lift resolves too.
+                let Some(dosage) =
+                    ancestry_analysis::dosage_from_alleles(a1, a2, site.reference_allele, site.alternate_allele)
+                else {
+                    continue;
+                };
+                genotypes.push(navigator_analysis::caller::SiteGenotype {
+                    name: format!("{}:{}", site.contig, site.position),
+                    contig: site.contig.clone(),
+                    position: site.position,
+                    reference_allele: site.reference_allele.to_string(),
+                    alternate_allele: site.alternate_allele.to_string(),
+                    ploidy: 2,
+                    dosage,
+                    gq: 0,
+                    depth: 0,
+                    ref_depth: 0,
+                    alt_depth: 0,
+                    pls: Vec::new(),
+                });
+            }
+        }
+
+        // A chip intersects far fewer AIMs than a WGS BAM, so a lower floor than the WGS minimum.
+        const CHIP_ANCESTRY_MIN_SNPS: usize = 100;
+        if genotypes.len() < CHIP_ANCESTRY_MIN_SNPS {
+            return Err(AppError::InsufficientAncestryData { genotyped: genotypes.len(), required: CHIP_ANCESTRY_MIN_SNPS });
+        }
+
+        let mut result = ancestry_analysis::estimate_admixture(&genotypes, &panel, &reference_version);
+        // Project onto PC space for the scatter when the modern PCA asset is present.
+        let modern_pca =
+            std::fs::read(ancestry_pca_path(build)).ok().and_then(|b| ancestry_analysis::PcaLoadings::from_bytes(&b).ok());
+        if let Some(pca) = &modern_pca {
+            result.pca_coordinates = Some(ancestry_analysis::project_pca(&genotypes, pca));
         }
         Ok(result)
     }

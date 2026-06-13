@@ -116,6 +116,9 @@ btn.inferSex=Inferir sexo
 btn.readMetrics=Métricas de lectura
 btn.callSv=Llamar SV
 btn.estimateAncestry=Estimar ascendencia
+card.chipAncestry=Ascendencia desde chip
+btn.estimateChipAncestry=Estimar desde chip
+chipAncestry.estimating=Estimando ascendencia desde el chip (transponiendo AIMs a CHM13)…
 btn.runDenovo=Ejecutar de novo
 btn.scanHeteroplasmy=Escanear heteroplasmia chrM
 

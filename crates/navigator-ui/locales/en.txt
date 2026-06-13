@@ -129,6 +129,9 @@ btn.inferSex=Infer sex
 btn.readMetrics=Read metrics
 btn.callSv=Call SV
 btn.estimateAncestry=Estimate ancestry
+card.chipAncestry=Ancestry from chip
+btn.estimateChipAncestry=Estimate from chip
+chipAncestry.estimating=Estimating ancestry from chip (lifting AIMs to CHM13)…
 btn.runDenovo=Run de-novo
 btn.scanHeteroplasmy=Scan chrM heteroplasmy
 

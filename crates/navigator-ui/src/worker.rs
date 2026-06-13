@@ -111,6 +111,9 @@ pub enum Command {
     AssignMtdnaHaplogroupFromAlignment { alignment_id: i64 },
     /// Estimate ancestry (super-population proportions) from an alignment via the AIMs panel.
     EstimateAncestry { alignment_id: i64 },
+    /// Estimate autosomal ancestry from an imported chip (23andMe/AncestryDNA) — lifts the chip's
+    /// GRCh37 SNPs to the AIMs panel and runs the admixture estimator. On-demand (not persisted).
+    EstimateAncestryFromChip { chip_profile_id: i64 },
     /// Load the persisted ancestry estimate for an alignment, if any.
     LoadAncestry { alignment_id: i64 },
     /// Load the reference population centroids (PC1,PC2) for the PCA scatter backdrop.
@@ -331,6 +334,8 @@ pub enum Event {
     AncestryProgress { alignment_id: i64, done: usize, total: usize },
     /// Ancestry estimate for an alignment (`None` = not yet computed, for `LoadAncestry`).
     Ancestry { alignment_id: i64, result: Option<AncestryResult> },
+    /// On-demand autosomal ancestry estimated from a chip profile (not persisted).
+    ChipAncestry { chip_profile_id: i64, result: AncestryResult },
     /// Reference population centroids (code, PC1, PC2) for the PCA scatter; empty if no loadings.
     PcaReference { alignment_id: i64, points: Vec<(String, f64, f64)> },
     /// Local-ancestry segments per chromosome (the "DNA painting").
@@ -613,6 +618,12 @@ pub async fn handle(app: &App, cmd: Command) -> Event {
             Ok(result) => Event::Ancestry { alignment_id, result },
             Err(e) => Event::Error(e.to_string()),
         },
+        Command::EstimateAncestryFromChip { chip_profile_id } => {
+            match app.estimate_ancestry_from_chip(chip_profile_id).await {
+                Ok(result) => Event::ChipAncestry { chip_profile_id, result },
+                Err(e) => Event::Error(e.to_string()),
+            }
+        }
         Command::LoadPcaReference { alignment_id } => match app.ancestry_pca_reference(alignment_id).await {
             Ok(points) => Event::PcaReference { alignment_id, points },
             Err(e) => Event::Error(e.to_string()),

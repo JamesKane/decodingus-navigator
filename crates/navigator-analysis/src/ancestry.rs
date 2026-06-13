@@ -420,6 +420,31 @@ fn collapse_segments(
         .collect()
 }
 
+/// Reverse-complement a single base (for strand reconciliation; non-ACGT passes through).
+fn revcomp_base(b: char) -> char {
+    match b.to_ascii_uppercase() {
+        'A' => 'T',
+        'T' => 'A',
+        'C' => 'G',
+        'G' => 'C',
+        other => other,
+    }
+}
+
+/// Alt-allele dosage (0/1/2) for a chip diploid call `(a1,a2)` against a panel site's
+/// `ref_allele`/`alt_allele`. When the call's alleles don't both lie in `{ref,alt}`, retry once on
+/// the **reverse-complemented** call (the array reported the other strand); `None` if it still
+/// doesn't match (no-call / multi-allelic mismatch). The minimal strand-flip logic chip→panel needs.
+pub fn dosage_from_alleles(a1: char, a2: char, ref_allele: char, alt_allele: char) -> Option<i32> {
+    let (r, alt) = (ref_allele.to_ascii_uppercase(), alt_allele.to_ascii_uppercase());
+    let count = |x: char, y: char| -> Option<i32> {
+        let (x, y) = (x.to_ascii_uppercase(), y.to_ascii_uppercase());
+        let ok = |b: char| b == r || b == alt;
+        (ok(x) && ok(y)).then(|| (x == alt) as i32 + (y == alt) as i32)
+    };
+    count(a1, a2).or_else(|| count(revcomp_base(a1), revcomp_base(a2)))
+}
+
 /// Genotype a BAM/CRAM at every panel site (diploid — the panel is autosomal AIMs). Groups
 /// sites by contig and runs the GL caller once per contig; returns the per-site genotypes
 /// (dosage 0/1/2, or -1 for a no-call). `reference` is required for CRAM.
@@ -848,6 +873,19 @@ fn confidence_from_completeness(snps_with_data: usize, total_snps: usize) -> f64
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn dosage_from_alleles_counts_alt_with_strand_flip() {
+        // ref=A alt=G: hom-ref, het, hom-alt.
+        assert_eq!(dosage_from_alleles('A', 'A', 'A', 'G'), Some(0));
+        assert_eq!(dosage_from_alleles('A', 'G', 'A', 'G'), Some(1));
+        assert_eq!(dosage_from_alleles('G', 'G', 'A', 'G'), Some(2));
+        // Opposite strand (chip reported C/T for an A/G site) → rev-comp matches: T→A, C→G.
+        assert_eq!(dosage_from_alleles('T', 'C', 'A', 'G'), Some(1));
+        assert_eq!(dosage_from_alleles('C', 'C', 'A', 'G'), Some(2));
+        // A genuine mismatch (neither strand fits) → no-call.
+        assert_eq!(dosage_from_alleles('A', 'C', 'A', 'G'), None);
+    }
 
     fn sg(contig: &str, pos: i64, dosage: i32) -> SiteGenotype {
         SiteGenotype {
