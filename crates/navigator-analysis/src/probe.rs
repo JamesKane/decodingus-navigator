@@ -199,10 +199,37 @@ fn detect_aligner(header: &sam::Header) -> Option<String> {
     None
 }
 
-/// Platform (`PL`, upper-cased) + instrument model (`PM`) from the first informative `@RG`.
+/// A recognized SAM `@RG PL` value, upper-cased — or `None` for a missing / non-standard string
+/// (e.g. Dante/DRAGEN's `PL0` placeholder), so the caller falls back to read-name inference rather
+/// than recording a bogus platform. SAM spec values + the common `NANOPORE` alias for `ONT`.
+fn normalize_platform(raw: &str) -> Option<String> {
+    let u = raw.trim().to_uppercase();
+    matches!(
+        u.as_str(),
+        "ILLUMINA"
+            | "PACBIO"
+            | "ONT"
+            | "NANOPORE"
+            | "LS454"
+            | "IONTORRENT"
+            | "SOLID"
+            | "HELICOS"
+            | "CAPILLARY"
+            | "DNBSEQ"
+            | "MGI"
+            | "BGI"
+            | "ELEMENT"
+            | "ULTIMA"
+    )
+    .then_some(u)
+}
+
+/// Platform (`PL`, validated against the SAM platform vocabulary) + instrument model (`PM`) from the
+/// first informative `@RG`. A non-standard `PL` is dropped so read-name inference can supply the
+/// real platform.
 fn detect_platform(header: &sam::Header) -> (Option<String>, Option<String>) {
     for map in header.read_groups().values() {
-        let pl = map.other_fields().get(&read_group::tag::PLATFORM).map(|v| s(v).to_uppercase());
+        let pl = map.other_fields().get(&read_group::tag::PLATFORM).and_then(|v| normalize_platform(&s(v)));
         let pm = map.other_fields().get(&read_group::tag::PLATFORM_MODEL).map(s);
         if pl.is_some() || pm.is_some() {
             return (pl, pm);
@@ -269,6 +296,18 @@ mod tests {
         // No vendor token.
         let plain = header_from_sam("@HD\tVN:1.6\n@SQ\tSN:chr1\tLN:248387328\n@RG\tID:r1\tPL:PACBIO\n");
         assert_eq!(detect_vendor_hint(&plain), None);
+    }
+
+    #[test]
+    fn nonstandard_platform_is_dropped() {
+        // Dante/DRAGEN writes PL:PL0 (not a SAM platform); the probe drops it so read-name
+        // inference can recover the real platform instead of recording "PL0".
+        let h = header_from_sam("@HD\tVN:1.6\n@SQ\tSN:chr1\tLN:248956422\n@RG\tID:1\tPL:PL0\n");
+        let (pl, _) = detect_platform(&h);
+        assert_eq!(pl, None);
+        // A valid platform passes through (upper-cased).
+        let ok = header_from_sam("@HD\tVN:1.6\n@SQ\tSN:chr1\tLN:248956422\n@RG\tID:1\tPL:illumina\n");
+        assert_eq!(detect_platform(&ok).0.as_deref(), Some("ILLUMINA"));
     }
 
     #[test]
