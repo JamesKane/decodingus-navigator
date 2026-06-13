@@ -21,5 +21,6 @@ pub mod strprofile;
 pub mod yprofile;
 pub mod testtype;
 pub mod variants;
+pub mod vendorvcf;
 pub mod workspace;
 pub mod ysnp_dict;

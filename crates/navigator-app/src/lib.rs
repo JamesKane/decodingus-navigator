@@ -654,6 +654,73 @@ fn reference_build_for(path: &Path) -> String {
     }
 }
 
+/// Cheap VCF header peek: the `##` meta block (joined) + the contig names from `##contig=<ID=…>`.
+/// Reads only the header (stops at the first data line). Plain text — matches the import parser,
+/// which doesn't decompress either; a gzipped VCF simply yields an empty peek (→ generic).
+fn peek_vcf_header(path: &Path) -> (String, Vec<String>) {
+    use std::io::BufRead;
+    let Ok(file) = std::fs::File::open(path) else { return (String::new(), Vec::new()) };
+    let mut meta = String::new();
+    let mut contigs = Vec::new();
+    for line in std::io::BufReader::new(file).lines().map_while(Result::ok) {
+        if let Some(rest) = line.strip_prefix("##") {
+            meta.push_str(&line);
+            meta.push('\n');
+            // ##contig=<ID=chrY,length=…>
+            if let Some(after) = rest.strip_prefix("contig=<ID=") {
+                let id: String = after.chars().take_while(|&c| c != ',' && c != '>').collect();
+                if !id.is_empty() {
+                    contigs.push(id);
+                }
+            }
+        } else if line.starts_with('#') {
+            continue; // the #CHROM column line — header still, no useful meta
+        } else {
+            break; // first data record → header done
+        }
+    }
+    (meta, contigs)
+}
+
+/// Detect the reference build from VCF meta lines (`##reference=…`, `##contig assembly=…`).
+fn detect_vcf_build(meta: &str) -> Option<String> {
+    let l = meta.to_lowercase();
+    if l.contains("chm13") || l.contains("t2t") || l.contains("hs1") {
+        Some("chm13v2.0".into())
+    } else if l.contains("hg38") || l.contains("grch38") {
+        Some("GRCh38".into())
+    } else if l.contains("hg19") || l.contains("grch37") {
+        Some("GRCh37".into())
+    } else {
+        None
+    }
+}
+
+/// Read a sibling `readme.txt` (FTDNA Big Y bundles one beside `variants.vcf`), if present.
+fn sibling_readme(path: &Path) -> Option<String> {
+    let dir = path.parent()?;
+    for name in ["readme.txt", "README.txt", "README"] {
+        if let Ok(text) = std::fs::read_to_string(dir.join(name)) {
+            return Some(text);
+        }
+    }
+    None
+}
+
+/// A disambiguating label context for a vendor VCF: the parent directory when the file name is the
+/// generic vendor name (`variants.vcf`), else the file name itself.
+fn vcf_label_context(path: &Path, filename: &str) -> String {
+    let generic = matches!(filename.to_ascii_lowercase().as_str(), "variants.vcf" | "variants.vcf.gz");
+    if generic {
+        if let Some(parent) = path.parent().and_then(|p| p.file_name()).and_then(|n| n.to_str()) {
+            if !parent.is_empty() {
+                return parent.to_string();
+            }
+        }
+    }
+    filename.to_string()
+}
+
 /// Stream a file through SHA-256 and return the lowercase hex digest. Blocking (reads the
 /// whole file in 1 MiB chunks) — call via [`sha256_file_async`] for large alignments.
 fn sha256_file(path: &Path) -> std::io::Result<String> {
@@ -2235,7 +2302,25 @@ impl App {
         if calls.is_empty() {
             return Err(AppError::Import("no SNP variants found in file".into()));
         }
-        let new = NewVariantSet { biosample_guid, source_label: label, source_type, reference_build: None, calls };
+
+        // Vendor-aware tagging for VCFs: recognize FTDNA Big Y / Y Elite / YSEQ / mtFull from the
+        // header + filename + sibling readme, and record the vendor label, a meaningful SourceType,
+        // and the reference build (feeds Y/mt placement liftover). A generic VCF keeps the caller's
+        // label/source_type. CSV imports are unchanged.
+        let (source_label, source_type, reference_build) = if is_vcf {
+            let (meta, contigs) = peek_vcf_header(path);
+            let vendor = navigator_domain::vendorvcf::classify(&meta, &contigs, &label, sibling_readme(path).as_deref());
+            let build = detect_vcf_build(&meta);
+            if vendor.is_recognized() {
+                (format!("{} ({})", vendor.display(), vcf_label_context(path, &label)), vendor.source_type(), build)
+            } else {
+                (label, source_type, build)
+            }
+        } else {
+            (label, source_type, None)
+        };
+
+        let new = NewVariantSet { biosample_guid, source_label, source_type, reference_build, calls };
         Ok(variant_set::create(self.store.pool(), &new).await?)
     }
 

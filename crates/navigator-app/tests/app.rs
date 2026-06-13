@@ -88,6 +88,37 @@ async fn import_variants_from_csv_keeps_only_snps() {
 }
 
 #[tokio::test]
+async fn import_vendor_big_y_vcf_is_tagged() {
+    let app = app().await;
+    let subject = app.add_biosample(None, "HG002", None, None).await.unwrap();
+
+    // A Big Y bundle: a generically-named variants.vcf with the FTDNA aengine signature + a
+    // sibling readme, in a per-sample directory (the parent dir disambiguates the label).
+    let dir = std::env::temp_dir().join(format!("bigy-{}", subject.guid.0));
+    std::fs::create_dir_all(&dir).unwrap();
+    let vcf = dir.join("variants.vcf");
+    std::fs::write(
+        &vcf,
+        "##fileformat=VCFv4.1\n##reference=ucsc.hg38.fasta\n##source=aengine\n\
+         ##contig=<ID=chrY,length=57227415,assembly=ucsc.hg38>\n\
+         #CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tsample\n\
+         chrY\t2781339\t.\tC\tT\t.\tPASS\t.\tGT\t1\n",
+    )
+    .unwrap();
+    std::fs::write(dir.join("readme.txt"), "…the BigY raw data files…").unwrap();
+
+    let set =
+        app.import_variants_from_file(subject.guid, &vcf, navigator_app::SourceType::Imported).await.unwrap();
+    assert!(set.source_label.starts_with("FTDNA Big Y"), "label was {}", set.source_label);
+    assert!(set.source_label.contains(&format!("bigy-{}", subject.guid.0)), "label disambiguated by dir");
+    assert_eq!(set.source_type, navigator_app::SourceType::TargetedNgs);
+    assert_eq!(set.reference_build.as_deref(), Some("GRCh38"));
+    assert_eq!(set.calls.len(), 1);
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
 async fn import_chip_profile_detects_vendor_and_summarizes() {
     let app = app().await;
     let subject = app.add_biosample(None, "HG002", None, None).await.unwrap();
