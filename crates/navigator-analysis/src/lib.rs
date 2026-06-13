@@ -32,6 +32,7 @@ pub mod scan;
 pub mod sex;
 pub mod sidecar;
 pub mod sv;
+pub mod testtype;
 pub mod unified;
 
 pub use error::AnalysisError;

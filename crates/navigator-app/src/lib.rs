@@ -4167,12 +4167,34 @@ impl App {
             .clone()
             .or_else(|| stats.as_ref().and_then(|s| s.instrument_model.clone()));
 
+        // Test type: refine the header/platform guess with coverage *shape* from the BAI index —
+        // a targeted-Y pile-up (autosomes empty) → Big Y / Y Elite / YSEQ; an mtDNA pile-up →
+        // mtFull. Best-effort and cheap (O(contigs), no read scan); CRAM / unindexed BAMs have no
+        // profile and keep the platform-based guess.
+        let test_type = {
+            let p = path.to_path_buf();
+            let profile = tokio::task::spawn_blocking(move || {
+                navigator_analysis::testtype::coverage_profile_from_bai(&p, None)
+            })
+            .await
+            .ok()
+            .flatten();
+            navigator_analysis::testtype::infer_test_type(
+                profile.as_ref(),
+                probe.platform.as_deref(),
+                probe.vendor_hint.as_deref(),
+                None,
+            )
+            .or_else(|| probe.test_type.clone())
+            .unwrap_or_else(|| "WGS".into())
+        };
+
         let run = self
             .record_sequence_run(NewSequenceRun {
                 biosample_guid,
                 platform_name,
                 instrument_model,
-                test_type: probe.test_type.clone().unwrap_or_else(|| "WGS".into()),
+                test_type,
                 library_layout: None,
                 total_reads: None,
                 pf_reads_aligned: None,

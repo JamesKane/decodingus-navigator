@@ -24,6 +24,10 @@ pub struct AlignmentProbe {
     pub instrument_model: Option<String>,
     /// Best-guess test type code from the catalog, e.g. `"WGS_HIFI"`, `"WGS"`.
     pub test_type: Option<String>,
+    /// Vendor hint scraped from the header (`@RG CN` center / `@PG` / `@CO`), e.g. `"FamilyTreeDNA"`,
+    /// `"Full Genomes"`, `"YSEQ"` — refines a coverage-detected targeted-Y test into the specific
+    /// vendor product. `None` when no recognizable vendor token appears.
+    pub vendor_hint: Option<String>,
 }
 
 /// Probe `path`'s header. Reads only the SAM header (no records / no reference needed).
@@ -33,7 +37,51 @@ pub fn probe_alignment(path: &Path) -> Result<AlignmentProbe, AnalysisError> {
     let aligner = detect_aligner(&header);
     let (platform, instrument_model) = detect_platform(&header);
     let test_type = detect_test_type(platform.as_deref(), aligner.as_deref(), &header);
-    Ok(AlignmentProbe { reference_build, aligner, platform, instrument_model, test_type })
+    let vendor_hint = detect_vendor_hint(&header);
+    Ok(AlignmentProbe { reference_build, aligner, platform, instrument_model, test_type, vendor_hint })
+}
+
+/// Recognizable sequencing-vendor tokens, mapped to a canonical display the test-type catalog
+/// keys on (`testtype::targeted_y_for_vendor`).
+const VENDOR_TOKENS: &[(&str, &str)] = &[
+    ("familytreedna", "FamilyTreeDNA"),
+    ("family tree dna", "FamilyTreeDNA"),
+    ("ftdna", "FamilyTreeDNA"),
+    ("big y", "FamilyTreeDNA"),
+    ("full genomes", "Full Genomes"),
+    ("fullgenomes", "Full Genomes"),
+    ("y elite", "Full Genomes"),
+    ("yseq", "YSEQ"),
+];
+
+/// Scrape a vendor hint from the `@RG CN` (sequencing center), `@PG` (program id/name/command),
+/// and `@CO` (free-text comment) header lines. First recognizable token wins.
+fn detect_vendor_hint(header: &sam::Header) -> Option<String> {
+    let mut hay = String::new();
+    for map in header.read_groups().values() {
+        if let Some(cn) = map.other_fields().get(&read_group::tag::SEQUENCING_CENTER) {
+            hay.push_str(&s(cn));
+            hay.push(' ');
+        }
+    }
+    for (id, map) in header.programs().as_ref().iter() {
+        hay.push_str(&s(id));
+        hay.push(' ');
+        if let Some(pn) = map.other_fields().get(&program::tag::NAME) {
+            hay.push_str(&s(pn));
+            hay.push(' ');
+        }
+        if let Some(cl) = map.other_fields().get(&program::tag::COMMAND_LINE) {
+            hay.push_str(&s(cl));
+            hay.push(' ');
+        }
+    }
+    for comment in header.comments() {
+        hay.push_str(&s(comment));
+        hay.push(' ');
+    }
+    let hay = hay.to_lowercase();
+    VENDOR_TOKENS.iter().find(|(tok, _)| hay.contains(tok)).map(|(_, canon)| (*canon).to_string())
 }
 
 /// Read just the SAM header from a BAM or CRAM (CRAM's header doesn't need the reference).
@@ -208,6 +256,19 @@ mod tests {
              @PG\tID:bwa-mem2\tPN:bwa-mem2\tCL:bwa-mem2 mem /refs/chm13v2.0.fa r.fq\n",
         );
         assert_eq!(detect_build(&plain), Some("chm13v2.0".into()));
+    }
+
+    #[test]
+    fn vendor_hint_from_center_program_or_comment() {
+        // @RG CN (sequencing center).
+        let rg = header_from_sam("@HD\tVN:1.6\n@SQ\tSN:chrY\tLN:57227415\n@RG\tID:r1\tCN:FamilyTreeDNA\tPL:ILLUMINA\n");
+        assert_eq!(detect_vendor_hint(&rg).as_deref(), Some("FamilyTreeDNA"));
+        // @CO free-text comment naming the product.
+        let co = header_from_sam("@HD\tVN:1.6\n@SQ\tSN:chrY\tLN:57227415\n@CO\tFull Genomes Y Elite v2\n");
+        assert_eq!(detect_vendor_hint(&co).as_deref(), Some("Full Genomes"));
+        // No vendor token.
+        let plain = header_from_sam("@HD\tVN:1.6\n@SQ\tSN:chr1\tLN:248387328\n@RG\tID:r1\tPL:PACBIO\n");
+        assert_eq!(detect_vendor_hint(&plain), None);
     }
 
     #[test]
