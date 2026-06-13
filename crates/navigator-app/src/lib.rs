@@ -147,6 +147,8 @@ pub use navigator_domain::reconciliation::{
 use navigator_domain::strprofile::{self, NewStrProfile, StrProfile};
 use navigator_domain::variants::{self, NewVariantSet, VariantSet};
 pub use navigator_domain::variants::SourceType;
+use navigator_domain::yprofile::{self, YObsInput};
+pub use navigator_domain::yprofile::{YProfileSummary, YProfileVariant, YSourceObs, YState, YVariantStatus};
 use navigator_domain::bisdna;
 use navigator_domain::ysnp_dict::{self, YsnpDictionary};
 use navigator_store::{
@@ -674,6 +676,39 @@ fn resolve_appview_url(env: Option<String>, settings: Option<String>) -> String 
 
 fn decodingus_appview_url() -> String {
     resolve_appview_url(std::env::var("DECODINGUS_APPVIEW_URL").ok(), AppSettings::load().appview_url)
+}
+
+/// A subject's multi-source Y-variant profile (Phase 1, on-demand).
+#[derive(Debug, Clone, PartialEq)]
+pub struct YProfile {
+    pub variants: Vec<YProfileVariant>,
+    pub summary: YProfileSummary,
+    /// Consensus terminal Y haplogroup across sources, if any.
+    pub terminal: Option<String>,
+}
+
+/// Flatten a placement's branch SNP evidence into per-SNP observations (deduped by name; a SNP
+/// defines one branch, but guard against duplicates). `in_tree` is true for tree-defining SNPs.
+fn snp_obs_from_assignment(assignment: &HaploAssignment, in_tree: bool) -> Vec<YObsInput> {
+    let mut by_name: std::collections::HashMap<String, YObsInput> = std::collections::HashMap::new();
+    for branch in &assignment.branches {
+        for snp in &branch.snps {
+            let state = match snp.state {
+                CallState::Derived => YState::Derived,
+                CallState::Ancestral => YState::Ancestral,
+                CallState::NoCall => YState::NoCall,
+            };
+            by_name.entry(snp.name.clone()).or_insert(YObsInput {
+                name: snp.name.clone(),
+                position: snp.position,
+                ancestral: snp.ancestral.clone(),
+                derived: snp.derived.clone(),
+                state,
+                in_tree,
+            });
+        }
+    }
+    by_name.into_values().collect()
 }
 
 /// Per-build reference-genome status + override for the Settings UI.
@@ -2451,6 +2486,64 @@ impl App {
         Ok(reconciliation::reconcile_variants(&sources))
     }
 
+    /// Multi-source Y-variant profile (on-demand, Phase 1): reconcile each Y-bearing source's
+    /// per-SNP calls — every alignment's haplogroup placement, the combined chip/BISDNA placement,
+    /// and the private-Y bucket — into one concordance view (confirmed / novel / conflict /
+    /// single-source per SNP, with per-source provenance). Sources without Y data are skipped.
+    pub async fn y_profile(&self, biosample_guid: SampleGuid) -> Result<YProfile, AppError> {
+        let mut sources: Vec<(String, SourceType, Vec<YObsInput>)> = Vec::new();
+
+        // One source per alignment — a *fresh* placement (the cached terminal-only path lacks the
+        // per-SNP branch evidence we reconcile here). Expensive; this is why the profile is built
+        // on explicit request. Alignments that error / lack chrY are skipped.
+        let alignments = alignment::list_for_biosample(self.store.pool(), biosample_guid).await?;
+        for a in &alignments {
+            let Ok(assignment) = self.y_assignment_full(a.id).await else { continue };
+            let obs = snp_obs_from_assignment(&assignment, true);
+            if !obs.is_empty() {
+                sources.push((format!("aln #{} · {}", a.id, a.aligner), SourceType::WgsShortRead, obs));
+            }
+        }
+
+        // One combined source for chip/BISDNA Y-SNP panels (per-panel split is a Phase-2 refinement).
+        if let Ok(assignment) = self.assign_y_bisdna(biosample_guid, None).await {
+            let obs = snp_obs_from_assignment(&assignment, true);
+            if !obs.is_empty() {
+                sources.push(("consumer tests".to_string(), SourceType::Chip, obs));
+            }
+        }
+
+        // Private-Y union: off-path / novel calls (not in the tree).
+        if let Some(bucket) = self.donor_private_y(biosample_guid).await? {
+            let obs: Vec<YObsInput> = bucket
+                .variants
+                .iter()
+                .map(|v| YObsInput {
+                    name: match &v.class {
+                        PrivateClass::OffPathKnown(n) => n.clone(),
+                        PrivateClass::Novel => String::new(), // keyed by position
+                    },
+                    position: v.position,
+                    ancestral: v.reference.to_string(),
+                    derived: v.alternate.to_string(),
+                    state: YState::Derived,
+                    in_tree: false,
+                })
+                .collect();
+            if !obs.is_empty() {
+                sources.push(("private".to_string(), SourceType::WgsShortRead, obs));
+            }
+        }
+
+        let variants = yprofile::reconcile_y(&sources);
+        let summary = yprofile::summarize(&variants);
+        let terminal = self
+            .haplogroup_consensus(biosample_guid, DnaType::Y)
+            .await?
+            .map(|c| c.haplogroup);
+        Ok(YProfile { variants, summary, terminal })
+    }
+
     /// Build the `com.decodingus.atmosphere.haplogroupReconciliation` record JSON for a
     /// subject + DNA type from the stored consensus, per-run calls, manual override, and
     /// audit log. mtDNA heteroplasmy observations and an optional identity-verification
@@ -3028,25 +3121,33 @@ impl App {
             }
         }
 
-        let assignment = match y_tree_provider() {
-            YTreeProvider::DecodingUs => match self.assign_y_decodingus(alignment_id).await {
-                Ok(a) => a,
-                Err(e) => {
-                    // AppView unreachable / build unsupported / parse failure → FTDNA fallback.
-                    eprintln!("DecodingUs Y tree unavailable ({e}); falling back to FTDNA");
-                    let tree_json = self.fetch_ftdna_y_tree().await?;
-                    self.assign_haplogroup_from_alignment(alignment_id, "chrY", &tree_json).await?
-                }
-            },
-            YTreeProvider::Ftdna => {
-                let tree_json = self.fetch_ftdna_y_tree().await?;
-                self.assign_haplogroup_from_alignment(alignment_id, "chrY", &tree_json).await?
-            }
-        };
+        let assignment = self.y_assignment_full(alignment_id).await?;
         if let Some(bio) = bio {
             self.record_call_fp(bio, DnaType::Y, &source_key, format!("aln #{alignment_id} Y"), &assignment, fingerprint.as_deref()).await?;
         }
         Ok(assignment)
+    }
+
+    /// Freshly place an alignment against the configured Y tree, returning the **full** assignment
+    /// **including per-branch SNP evidence** (the cached [`assign_y_haplogroup`] path returns only
+    /// the terminal). Expensive (genotypes chrY tree sites in the BAM) — used by the Y-variant
+    /// profile, which the user builds explicitly.
+    async fn y_assignment_full(&self, alignment_id: i64) -> Result<HaploAssignment, AppError> {
+        match y_tree_provider() {
+            YTreeProvider::DecodingUs => match self.assign_y_decodingus(alignment_id).await {
+                Ok(a) => Ok(a),
+                Err(e) => {
+                    // AppView unreachable / build unsupported / parse failure → FTDNA fallback.
+                    eprintln!("DecodingUs Y tree unavailable ({e}); falling back to FTDNA");
+                    let tree_json = self.fetch_ftdna_y_tree().await?;
+                    self.assign_haplogroup_from_alignment(alignment_id, "chrY", &tree_json).await
+                }
+            },
+            YTreeProvider::Ftdna => {
+                let tree_json = self.fetch_ftdna_y_tree().await?;
+                self.assign_haplogroup_from_alignment(alignment_id, "chrY", &tree_json).await
+            }
+        }
     }
 
     /// Place against the DecodingUs Y tree from our AppView, using the alignment's **native**

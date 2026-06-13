@@ -11,7 +11,8 @@ use navigator_app::{
     Coverage, DenovoCall, DnaType, HaploAssignment, HeteroplasmySite, IbdComparison,
     IdentityVerification, PanelGenotype, PrivateBucket, PrivateClass, ProjectOverview,
     AppSettings, ProjectSampleReport, ReadMetrics, ReconciledVariant, RefBuildStatus, SexInferenceResult,
-    SourceType, SuperPopulationSummary, SvAnalysisResult, VariantStatus, VerificationStatus,
+    SourceType, SuperPopulationSummary, SvAnalysisResult, VariantStatus, VerificationStatus, YProfile,
+    YState, YVariantStatus,
 };
 use navigator_domain::ancestry::{population_color, population_lonlat, population_name, population_super};
 use navigator_domain::du_domain::ids::SampleGuid;
@@ -311,6 +312,12 @@ pub struct NavigatorApp {
     donor_ancestry: Option<(i64, AncestryResult)>,
     /// Donor-level private-Y union across the subject's sources.
     donor_private_y: Option<PrivateBucket>,
+    /// The selected subject's multi-source Y-variant profile.
+    y_profile: Option<YProfile>,
+    /// Y-variant profile status filter (None = all).
+    y_profile_filter: Option<YVariantStatus>,
+    /// True while the (expensive) Y-variant profile is being built.
+    y_profile_loading: bool,
     estimating_ancestry: bool,
     /// Live genotyping progress for the in-flight estimate: (alignment id, done, total) contigs.
     ancestry_progress: Option<(i64, usize, usize)>,
@@ -940,6 +947,9 @@ impl NavigatorApp {
             ancestry: None,
             donor_ancestry: None,
             donor_private_y: None,
+            y_profile: None,
+            y_profile_filter: None,
+            y_profile_loading: false,
             estimating_ancestry: false,
             ancestry_progress: None,
             pca_reference: None,
@@ -1331,6 +1341,13 @@ impl NavigatorApp {
                 Event::DonorPrivateY { bucket } => {
                     self.donor_private_y = Some(bucket);
                 }
+                Event::YProfile { biosample_guid, profile } => {
+                    self.y_profile_loading = false;
+                    if self.selected_sample == Some(biosample_guid) {
+                        self.y_profile = Some(profile);
+                        self.status = format!("Y variant profile: {} variants", self.y_profile.as_ref().unwrap().summary.total);
+                    }
+                }
                 Event::Alignments { sequence_run_id, alignments } => {
                     if self.selected_run == Some(sequence_run_id) {
                         self.alignments = alignments;
@@ -1477,6 +1494,7 @@ impl NavigatorApp {
                     self.publishing = false;
                     self.finding_private_y = false;
                     self.estimating_ancestry = false;
+                    self.y_profile_loading = false;
                     self.ancestry_progress = None;
                     self.painting_running = false;
                     self.running_sex = false;
@@ -1502,6 +1520,8 @@ impl NavigatorApp {
         self.pending_alignment = None;
         self.donor_ancestry = None;
         self.donor_private_y = None;
+        self.y_profile = None;
+        self.y_profile_loading = false;
         self.clear_run_selection();
         self.runs.clear();
         self.str_profiles.clear();
@@ -1532,6 +1552,7 @@ impl NavigatorApp {
         let _ = self.tx.send(Command::DefaultAlignment { biosample_guid: guid });
         let _ = self.tx.send(Command::LoadDonorAncestry { biosample_guid: guid });
         let _ = self.tx.send(Command::LoadDonorPrivateY { biosample_guid: guid });
+        // Y-variant profile is built on explicit request (it re-genotypes each alignment).
     }
 
     fn select_run(&mut self, id: i64) {
@@ -1795,6 +1816,8 @@ impl NavigatorApp {
                         pick_alignment_hint(ui, self.tr("hint.pickAlignment"));
                         ui.add_space(10.0);
                     }
+                    ui.add_space(10.0);
+                    card(ui, self.tr("card.yVariantProfile"), |ui| self.y_variant_profile_section(ui, guid));
                     if self.donor_private_y.is_some() {
                         ui.add_space(10.0);
                         card(ui, self.tr("card.privateYUnion"), |ui| self.donor_private_y_section(ui));
@@ -3067,6 +3090,106 @@ impl NavigatorApp {
                 draw_composition_bar(ui, &r.super_population_summary);
             });
         });
+    }
+
+    /// Multi-source Y-variant profile: per-SNP concordance across the subject's Y sources, with
+    /// status (confirmed/novel/conflict/single) and per-source provenance.
+    fn y_variant_profile_section(&mut self, ui: &mut egui::Ui, guid: SampleGuid) {
+        // Build/refresh control first (it mutates self / dispatches), before borrowing the profile.
+        ui.horizontal(|ui| {
+            let label = if self.y_profile.is_some() { self.tr("common.refresh") } else { self.tr("btn.buildYProfile") };
+            if ui.add_enabled(!self.y_profile_loading, egui::Button::new(label)).clicked() {
+                self.y_profile_loading = true;
+                self.status = "Building Y variant profile…".into();
+                let _ = self.tx.send(Command::LoadYProfile { biosample_guid: guid });
+            }
+            if self.y_profile_loading {
+                ui.spinner();
+            }
+            ui.label(egui::RichText::new(self.tr("hint.yProfileCost")).weak().small());
+        });
+
+        let Some(profile) = &self.y_profile else {
+            if !self.y_profile_loading {
+                ui.label(egui::RichText::new(self.tr("hint.yProfileBuild")).weak());
+            }
+            return;
+        };
+        if profile.variants.is_empty() {
+            ui.label(egui::RichText::new("No Y variants across sources.").weak());
+            return;
+        }
+        let s = &profile.summary;
+        let mut header = format!(
+            "{} confirmed · {} novel · {} conflict · {} single-source",
+            s.confirmed, s.novel, s.conflict, s.single_source
+        );
+        if let Some(t) = &profile.terminal {
+            header = format!("terminal {t}   —   {header}");
+        }
+        ui.label(egui::RichText::new(header).weak());
+
+        let amber = egui::Color32::from_rgb(220, 150, 60);
+        let mut filter = self.y_profile_filter;
+        ui.horizontal(|ui| {
+            ui.label("Show:");
+            ui.selectable_value(&mut filter, None, "All");
+            ui.selectable_value(&mut filter, Some(YVariantStatus::Conflict), "Conflicts");
+            ui.selectable_value(&mut filter, Some(YVariantStatus::Novel), "Novel");
+            ui.selectable_value(&mut filter, Some(YVariantStatus::Confirmed), "Confirmed");
+        });
+
+        let state_label = |st: YState| match st {
+            YState::Derived => "derived",
+            YState::Ancestral => "ancestral",
+            YState::NoCall => "no-call",
+        };
+        egui::ScrollArea::vertical().max_height(320.0).id_salt("y_variant_profile").show(ui, |ui| {
+            egui::Grid::new("y_variant_grid").striped(true).num_columns(5).show(ui, |ui| {
+                for h in ["SNP", "Pos", "State", "Status", "Sources"] {
+                    ui.strong(h);
+                }
+                ui.end_row();
+                for v in &profile.variants {
+                    if filter.is_some_and(|f| v.status != f) {
+                        continue;
+                    }
+                    let conflict = v.status == YVariantStatus::Conflict;
+                    let name = if v.name.is_empty() { format!("novel@{}", v.position) } else { v.name.clone() };
+                    let name_txt = egui::RichText::new(name).strong();
+                    ui.label(if conflict { name_txt.color(amber) } else { name_txt });
+                    ui.label(egui::RichText::new(v.position.to_string()).weak());
+                    ui.label(state_label(v.consensus));
+                    let (label, color) = match v.status {
+                        YVariantStatus::Confirmed => ("confirmed", egui::Color32::from_rgb(120, 180, 120)),
+                        YVariantStatus::Novel => ("novel", egui::Color32::from_rgb(120, 150, 220)),
+                        YVariantStatus::Conflict => ("conflict", amber),
+                        YVariantStatus::SingleSource => ("single", egui::Color32::from_gray(150)),
+                    };
+                    ui.colored_label(color, format!("{label} ({}/{})", v.support, v.total));
+                    ui.horizontal(|ui| {
+                        for src in &v.sources {
+                            let short = match src.source_type {
+                                SourceType::Chip => "chip",
+                                SourceType::WgsShortRead | SourceType::WgsLongRead => "WGS",
+                                SourceType::Sanger => "Sanger",
+                                _ => "src",
+                            };
+                            let glyph = match src.state {
+                                YState::Derived => "✓",
+                                YState::Ancestral => "·",
+                                YState::NoCall => "?",
+                            };
+                            ui.label(egui::RichText::new(format!("{short}{glyph}")).small().weak())
+                                .on_hover_text(format!("{}: {}", src.label, state_label(src.state)));
+                        }
+                    });
+                    ui.end_row();
+                }
+            });
+        });
+
+        self.y_profile_filter = filter;
     }
 
     /// Donor-level private-Y union (Phase 3): off-backbone calls pooled + deduped across the
