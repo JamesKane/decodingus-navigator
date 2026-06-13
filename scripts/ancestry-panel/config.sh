@@ -62,15 +62,16 @@ KGP_GT_BCF_URL="${KGP_GT_BCF_URL:-$KGP_S3_BASE/Phased_SHAPEIT5_v1.1/1KGP.CHM13v2
 # id, pinned per release below. To move to a newer release, refresh AADR_VERSION + the id map:
 #   curl 'https://dataverse.harvard.edu/api/datasets/:persistentId/?persistentId='"$AADR_DATAVERSE_DOI"
 #   landing page: https://reich.hms.harvard.edu/allen-ancient-dna-resource-aadr-downloadable-genotypes-present-day-and-ancient-dna-data
-AADR_VERSION="${AADR_VERSION:-v66}"     # current Dataverse release (older notes said v62 — now superseded)
+AADR_VERSION="${AADR_VERSION:-v66.p1}"  # current Dataverse release (v66.p1 = Dataverse dataset version 14; older notes said v62/v66 — now superseded)
 AADR_DATASET="${AADR_DATASET:-1240K}"   # 1240K (~1.23M ancient-capture set, ~7.3 GB) | HO (~600k, ~4 GB)
 AADR_DATAVERSE_DOI="${AADR_DATAVERSE_DOI:-doi:10.7910/DVN/FFIDCW}"
 AADR_DOWNLOAD_BASE="${AADR_DOWNLOAD_BASE:-https://dataverse.harvard.edu/api/access/datafile}"
-# Dataverse numeric file ids for the v66 1240K quartet (geno/snp/ind/anno). Re-pin per release.
-AADR_ID_GENO="${AADR_ID_GENO:-13664080}"
-AADR_ID_SNP="${AADR_ID_SNP:-13664260}"
-AADR_ID_IND="${AADR_ID_IND:-13663698}"
-AADR_ID_ANNO="${AADR_ID_ANNO:-13663706}"
+# Dataverse numeric file ids for the 1240K quartet (geno/snp/ind/anno). Re-pin per release —
+# stale ids 403 via the access API. Verified against dataset version 14 (v66.p1) on 2026-06-13.
+AADR_ID_GENO="${AADR_ID_GENO:-13994829}"
+AADR_ID_SNP="${AADR_ID_SNP:-13994514}"
+AADR_ID_IND="${AADR_ID_IND:-13994513}"
+AADR_ID_ANNO="${AADR_ID_ANNO:-13994515}"
 # Local filename stem the downloaded quartet shares (matches AADR's own naming).
 AADR_FILE_PREFIX="${AADR_FILE_PREFIX:-${AADR_VERSION}.${AADR_DATASET}.aadr.PUB}"
 
