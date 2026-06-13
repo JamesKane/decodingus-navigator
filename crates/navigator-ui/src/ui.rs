@@ -10,9 +10,9 @@ use navigator_app::{
     AncestryResult, AncestrySegment, AuditEntry, BuildNeed, CallState, CompatibilityLevel, Consensus,
     Coverage, DenovoCall, DnaType, HaploAssignment, HeteroplasmySite, IbdComparison,
     IdentityVerification, PanelGenotype, PrivateBucket, PrivateClass, ProjectOverview,
-    AppSettings, ProjectSampleReport, ReadMetrics, ReconciledVariant, RefBuildStatus, SexInferenceResult,
-    SourceType, SuperPopulationSummary, SvAnalysisResult, VariantStatus, VerificationStatus, YProfile,
-    YState, YVariantStatus,
+    AppSettings, MtRegion, MtVariant, ProjectSampleReport, ReadMetrics, ReconciledVariant, RefBuildStatus,
+    SexInferenceResult, SourceType, SuperPopulationSummary, SvAnalysisResult, VariantStatus,
+    VerificationStatus, YProfile, YState, YVariantStatus,
 };
 use navigator_domain::ancestry::{population_color, population_lonlat, population_name, population_super};
 use navigator_domain::du_domain::ids::SampleGuid;
@@ -298,8 +298,8 @@ pub struct NavigatorApp {
     chip_profiles: Vec<ChipProfile>,
     /// mtDNA sequences for the selected subject.
     mtdna_sequences: Vec<MtdnaSequence>,
-    /// Chosen rCRS reference FASTA, reused across mtDNA variant derivations.
-    rcrs_path: Option<PathBuf>,
+    /// rCRS-relative mutation lists per mtDNA sequence id (loaded on demand).
+    mtdna_variants: std::collections::HashMap<i64, Vec<MtVariant>>,
     /// Last mtDNA haplogroup assignment: (sequence id, assignment).
     mtdna_haplogroup: Option<(i64, HaploAssignment)>,
     /// Last Y haplogroup assignment: (alignment id, assignment).
@@ -940,7 +940,7 @@ impl NavigatorApp {
             variant_concordance: Vec::new(),
             chip_profiles: Vec::new(),
             mtdna_sequences: Vec::new(),
-            rcrs_path: None,
+            mtdna_variants: std::collections::HashMap::new(),
             mtdna_haplogroup: None,
             y_haplogroup: None,
             mt_haplogroup: None,
@@ -1181,6 +1181,10 @@ impl NavigatorApp {
                         let _ = self.tx.send(Command::LoadMtdna(guid));
                     }
                     self.status = "mtDNA sequence imported".into();
+                }
+                Event::MtdnaVariants { mtdna_id, variants } => {
+                    self.status = format!("mtDNA: {} mutations vs rCRS", variants.len());
+                    self.mtdna_variants.insert(mtdna_id, variants);
                 }
                 Event::Haplogroup { mtdna_id, assignment } => {
                     self.status = match assignment.ranked.first() {
@@ -1529,6 +1533,7 @@ impl NavigatorApp {
         self.variant_concordance.clear();
         self.chip_profiles.clear();
         self.mtdna_sequences.clear();
+        self.mtdna_variants.clear();
         self.mtdna_haplogroup = None;
         self.consensus_y = None;
         self.consensus_mt = None;
@@ -3450,47 +3455,24 @@ impl NavigatorApp {
         });
     }
 
-    /// mtDNA FASTA sequences for the selected subject + an import form, and a
-    /// derive-variants-vs-rCRS action per sequence.
+    /// mtDNA FASTA sequences for the selected subject + an import form. Per sequence: place the
+    /// haplogroup, or show its rCRS-relative mutation list (derived against the bundled rCRS).
     fn mtdna_section(&mut self, ui: &mut egui::Ui, guid: SampleGuid) {
         if self.mtdna_sequences.is_empty() {
             ui.label(egui::RichText::new("No mtDNA sequences yet.").weak());
         }
 
-        // rCRS reference picker (reused for every derivation this session).
-        ui.horizontal(|ui| {
-            ui.label(self.tr("mt.rcrsRef"));
-            let label = self
-                .rcrs_path
-                .as_ref()
-                .and_then(|p| p.file_name())
-                .map(|n| n.to_string_lossy().into_owned())
-                .unwrap_or_else(|| "not set".into());
-            ui.label(label);
-            if ui.button(self.tr("mt.chooseRcrs")).clicked() {
-                if let Some(p) = rfd::FileDialog::new().add_filter("FASTA", &["fa", "fasta", "fna", "fas"]).pick_file() {
-                    self.rcrs_path = Some(p);
-                }
-            }
-        });
-
-        let rcrs = self.rcrs_path.clone();
-        // Bind before the &self loop borrow — used inside the per-row closure.
+        // Bind before the &self loop borrow — used inside the per-row closures.
         let assign_lbl = self.tr("common.assignHaplogroup");
-        let derive_lbl = self.tr("mt.deriveVariants");
+        let mutations_lbl = self.tr("btn.showMtMutations");
         let delete_lbl = self.tr("common.delete");
         let mut want_delete: Option<DataDelete> = None;
         for m in &self.mtdna_sequences {
             let name = m.source_file_name.as_deref().or(m.defline.as_deref()).unwrap_or("mtDNA");
             ui.horizontal(|ui| {
                 ui.label(format!("{name} — {} bp, {} N", m.length(), m.n_count));
-                if ui
-                    .add_enabled(rcrs.is_some(), egui::Button::new(derive_lbl))
-                    .clicked()
-                {
-                    if let Some(path) = rcrs.clone() {
-                        let _ = self.tx.send(Command::DeriveMtdnaVariants { mtdna_id: m.id, rcrs_path: path });
-                    }
+                if ui.button(mutations_lbl).clicked() {
+                    let _ = self.tx.send(Command::LoadMtdnaVariants { mtdna_id: m.id });
                 }
                 if ui.button(assign_lbl).clicked() {
                     self.status = "Assigning haplogroup (fetching FTDNA tree)…".into();
@@ -3505,6 +3487,10 @@ impl NavigatorApp {
                 if *id == m.id {
                     show_assignment(ui, assignment);
                 }
+            }
+            // Show the rCRS mutation list for this sequence, if loaded.
+            if let Some(variants) = self.mtdna_variants.get(&m.id) {
+                mtdna_mutations_view(ui, m.id, variants);
             }
         }
         if want_delete.is_some() {
@@ -5038,5 +5024,49 @@ fn str_all_markers_view(
                 ui.end_row();
             }
         });
+    });
+}
+
+/// The rCRS-relative mtDNA mutation list, grouped by region (HVR2 / Coding / HVR1) — the classic
+/// mtDNA result. `variants` are derived against the bundled rCRS; notation is standard mtDNA form.
+fn mtdna_mutations_view(ui: &mut egui::Ui, mtdna_id: i64, variants: &[MtVariant]) {
+    if variants.is_empty() {
+        ui.label(egui::RichText::new("Identical to rCRS (no mutations).").weak());
+        return;
+    }
+    let (mut hvr1, mut hvr2, mut coding) = (0usize, 0usize, 0usize);
+    for v in variants {
+        match v.region() {
+            MtRegion::Hvr1 => hvr1 += 1,
+            MtRegion::Hvr2 => hvr2 += 1,
+            MtRegion::Coding => coding += 1,
+        }
+    }
+    ui.label(
+        egui::RichText::new(format!(
+            "{} mutations vs rCRS  (HVR1 {hvr1} · HVR2 {hvr2} · Coding {coding})",
+            variants.len()
+        ))
+        .weak(),
+    );
+    egui::ScrollArea::vertical().max_height(300.0).id_salt(("mt_mut", mtdna_id)).show(ui, |ui| {
+        for region in [MtRegion::Hvr2, MtRegion::Coding, MtRegion::Hvr1] {
+            let group: Vec<&MtVariant> = variants.iter().filter(|v| v.region() == region).collect();
+            if group.is_empty() {
+                continue;
+            }
+            ui.add_space(4.0);
+            ui.label(egui::RichText::new(format!("{} ({})", region.label(), group.len())).strong());
+            egui::Grid::new(("mt_mut_grid", mtdna_id, region.label())).striped(true).num_columns(2).show(ui, |ui| {
+                ui.strong("Mutation");
+                ui.strong("Position");
+                ui.end_row();
+                for v in group {
+                    ui.label(egui::RichText::new(v.notation()).monospace());
+                    ui.label(v.position.to_string());
+                    ui.end_row();
+                }
+            });
+        }
     });
 }

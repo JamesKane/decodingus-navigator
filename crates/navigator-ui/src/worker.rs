@@ -97,7 +97,8 @@ pub enum Command {
     LoadMtdna(SampleGuid),
     ImportMtdna { biosample_guid: SampleGuid, path: PathBuf },
     /// Derive mtDNA variants for a stored sequence vs an rCRS reference FASTA.
-    DeriveMtdnaVariants { mtdna_id: i64, rcrs_path: PathBuf },
+    /// Derive the mtDNA mutation list (vs the bundled rCRS) for display.
+    LoadMtdnaVariants { mtdna_id: i64 },
     /// Assign an mtDNA haplogroup (fetch the FTDNA tree, rank by the sample's base calls).
     AssignMtdnaHaplogroup { mtdna_id: i64 },
     /// Assign a Y haplogroup from an alignment (call chrY tree positions, rank).
@@ -307,6 +308,8 @@ pub enum Event {
     ChipProfilesChanged(SampleGuid),
     MtdnaSequences { biosample_guid: SampleGuid, sequences: Vec<MtdnaSequence> },
     MtdnaChanged(SampleGuid),
+    /// The rCRS-relative mutation list for an mtDNA sequence.
+    MtdnaVariants { mtdna_id: i64, variants: Vec<navigator_app::MtVariant> },
     /// A unified import succeeded; `label` describes the detected type. The UI should
     /// reload the subject's data sections.
     DataImported { biosample_guid: SampleGuid, label: String },
@@ -569,12 +572,10 @@ pub async fn handle(app: &App, cmd: Command) -> Event {
                 Err(e) => Event::Error(e.to_string()),
             }
         }
-        Command::DeriveMtdnaVariants { mtdna_id, rcrs_path } => {
-            match app.derive_mtdna_variants(mtdna_id, &rcrs_path).await {
-                Ok(set) => Event::VariantSetsChanged(set.biosample_guid),
-                Err(e) => Event::Error(e.to_string()),
-            }
-        }
+        Command::LoadMtdnaVariants { mtdna_id } => match app.mtdna_variants(mtdna_id).await {
+            Ok(variants) => Event::MtdnaVariants { mtdna_id, variants },
+            Err(e) => Event::Error(e.to_string()),
+        },
         Command::AssignMtdnaHaplogroup { mtdna_id } => match app.assign_mtdna_haplogroup(mtdna_id).await {
             Ok(assignment) => Event::Haplogroup { mtdna_id, assignment },
             Err(e) => Event::Error(e.to_string()),

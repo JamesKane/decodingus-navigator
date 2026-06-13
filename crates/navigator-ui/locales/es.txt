@@ -248,3 +248,4 @@ common.refresh=Actualizar
 btn.buildYProfile=Construir perfil de variantes Y
 hint.yProfileCost=vuelve a genotipar los sitios del árbol chrY de cada alineamiento
 hint.yProfileBuild=Construye el perfil para reconciliar los SNP de Y entre las fuentes de este sujeto.
+btn.showMtMutations=Mostrar mutaciones

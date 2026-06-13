@@ -45,6 +45,43 @@ impl MtVariant {
             }
         }
     }
+
+    /// The mtDNA region this variant falls in (by rCRS position).
+    pub fn region(&self) -> MtRegion {
+        region(self.position)
+    }
+}
+
+/// A control-region / coding-region classification of an rCRS position, following the standard
+/// PhyloTree/MITOMAP boundaries: HVR2 (HVS-II) 1–576, the coding region 577–16023, and HVR1
+/// (HVS-I) 16024–16569. The two hypervariable regions flank the coding region around the circle.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum MtRegion {
+    /// HVR1 / HVS-I (16024–16569).
+    Hvr1,
+    /// HVR2 / HVS-II (1–576).
+    Hvr2,
+    /// Coding region (577–16023).
+    Coding,
+}
+
+impl MtRegion {
+    pub fn label(self) -> &'static str {
+        match self {
+            MtRegion::Hvr1 => "HVR1",
+            MtRegion::Hvr2 => "HVR2",
+            MtRegion::Coding => "Coding",
+        }
+    }
+}
+
+/// Classify an rCRS position (1-based) into its mtDNA region.
+pub fn region(position: i64) -> MtRegion {
+    match position {
+        16024..=16569 => MtRegion::Hvr1,
+        1..=576 => MtRegion::Hvr2,
+        _ => MtRegion::Coding,
+    }
 }
 
 fn is_base(b: u8) -> bool {
@@ -344,6 +381,39 @@ mod tests {
     #[test]
     fn identical_sequences_have_no_variants() {
         assert!(derive("ACGTACGT", "acgtacgt").is_empty()); // case-insensitive
+    }
+
+    #[test]
+    fn bundled_rcrs_well_formed_and_derive_against_it() {
+        // The bundled rCRS asset (NC_012920.1) — exactly what App::mtdna_variants derives against.
+        let r = rcrs();
+        assert_eq!(r.len(), 16569, "rCRS is 16,569 bp");
+        assert!(r.starts_with("GATCACAGGT"), "rCRS control-region start");
+        assert!(derive(r, r).is_empty(), "rCRS vs itself has no mutations");
+
+        // Plant the classic 263A>G (rCRS carries A at 263).
+        assert_eq!(r.as_bytes()[262], b'A');
+        let mut bytes: Vec<u8> = r.bytes().collect();
+        bytes[262] = b'G';
+        let sample = String::from_utf8(bytes).unwrap();
+        let v = derive(r, &sample);
+        assert_eq!(v.len(), 1);
+        assert_eq!(v[0].notation(), "263A>G");
+        assert_eq!(v[0].region(), MtRegion::Hvr2);
+    }
+
+    #[test]
+    fn region_boundaries() {
+        assert_eq!(region(1), MtRegion::Hvr2);
+        assert_eq!(region(576), MtRegion::Hvr2);
+        assert_eq!(region(577), MtRegion::Coding);
+        assert_eq!(region(16023), MtRegion::Coding);
+        assert_eq!(region(16024), MtRegion::Hvr1);
+        assert_eq!(region(16569), MtRegion::Hvr1);
+        // 263A>G is an HVR2 control-region site; 7028 is coding; 16519 is HVR1.
+        assert_eq!(sub(263, "A", "G").region(), MtRegion::Hvr2);
+        assert_eq!(sub(7028, "C", "T").region(), MtRegion::Coding);
+        assert_eq!(sub(16519, "T", "C").region(), MtRegion::Hvr1);
     }
 
     #[test]

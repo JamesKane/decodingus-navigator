@@ -261,3 +261,4 @@ common.refresh=Refresh
 btn.buildYProfile=Build Y variant profile
 hint.yProfileCost=re-genotypes each alignment's chrY tree sites
 hint.yProfileBuild=Build the profile to reconcile Y SNPs across this subject's sources.
+btn.showMtMutations=Show mutations

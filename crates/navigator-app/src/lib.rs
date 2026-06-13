@@ -35,6 +35,7 @@ pub use navigator_analysis::unified::UnifiedMetricsResult;
 pub use navigator_analysis::sex::{Confidence as SexConfidence, InferredSex, SexInferenceResult};
 pub use navigator_analysis::sv::types::{SvAnalysisResult, SvCall, SvType};
 pub use navigator_analysis::heteroplasmy::HeteroplasmySite;
+pub use navigator_analysis::mtvariants::{MtRegion, MtVariant, MtVariantKind};
 pub use navigator_analysis::haplo::{BranchEvidence, CallState, ScoredHaplogroup, SnpEvidence};
 pub use navigator_analysis::mask::YRegionClass;
 pub use navigator_domain::ancestry::{
@@ -2261,6 +2262,16 @@ impl App {
     /// Derive mtDNA variants for a stored sequence by comparing it to an rCRS reference
     /// FASTA, and save them as a variant set (contig `rCRS`) so they appear alongside the
     /// subject's other variants. The reference is validated as an mtDNA FASTA.
+    /// The mtDNA mutation list for a stored sequence: variants relative to the **bundled** rCRS
+    /// (NC_012920.1), via banded alignment — substitutions, insertions, and deletions in standard
+    /// mtDNA notation. On-demand (one ~16.5 kb alignment), not stored. The classic mtDNA result.
+    pub async fn mtdna_variants(&self, mtdna_id: i64) -> Result<Vec<MtVariant>, AppError> {
+        let seq = mtdna_store::get(self.store.pool(), mtdna_id)
+            .await?
+            .ok_or_else(|| AppError::Store(StoreError::NotFound(format!("mtDNA sequence {mtdna_id}"))))?;
+        Ok(navigator_analysis::mtvariants::derive(navigator_analysis::mtvariants::rcrs(), &seq.sequence))
+    }
+
     pub async fn derive_mtdna_variants(&self, mtdna_id: i64, rcrs_path: &Path) -> Result<VariantSet, AppError> {
         let seq = mtdna_store::get(self.store.pool(), mtdna_id)
             .await?
