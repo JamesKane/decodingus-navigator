@@ -15,6 +15,7 @@ use std::sync::{Arc, Mutex};
 use navigator_app::{
     AlignmentProbe, AncestryResult, AncestrySegment, App, AppError, AuditEntry, BuildNeed, Consensus, Coverage,
     DenovoCall, DnaType, HaploAssignment, HeteroplasmySite, IbdComparison, IbdDetectorConfig,
+    IbdSuggestion,
     IdentityVerification, PanelGenotype, PrivateBucket, ProjectImportSummary, ProjectOverview,
     ProjectSampleReport, ReadMetrics, ReconciledVariant, RefBuildStatus, SexInferenceResult, SourceType,
     SvAnalysisResult,
@@ -153,6 +154,11 @@ pub enum Command {
     CompareIbd { a: i64, b: i64, panel_id: i64, ploidy: u8 },
     /// Verify two alignments are the same individual (genotype concordance + Y-STR).
     VerifyIdentity { a: i64, b: i64, panel_id: i64, ploidy: u8 },
+    /// Federated IBD step 1: fetch the AppView's pseudonymous match suggestions for the
+    /// signed-in account (registers the device key on first use).
+    LoadIbdSuggestions,
+    /// Federated IBD step 2: request an introduction to a suggested candidate.
+    IbdIntroduce { suggested_sample_guid: String },
     /// Resolve the sequencing lab for runs that have an inferred instrument id but no facility,
     /// via the AppView instrument→lab map (best-effort, cached). Sent on startup + after imports.
     BackfillLabs,
@@ -358,6 +364,10 @@ pub enum Event {
     AllAlignments(Vec<Alignment>),
     PanelGenotypes { alignment_id: i64, panel_id: i64, ploidy: u8, genotypes: Vec<PanelGenotype> },
     Ibd(IbdComparison),
+    /// Federated IBD match suggestions from the AppView (may be empty in a single-user dev AppView).
+    IbdSuggestions(Vec<IbdSuggestion>),
+    /// An introduction request was opened for a candidate (status initially `PENDING`).
+    IbdIntroduced { suggested_sample_guid: String, request_uri: String, status: String },
     /// Identity-verification result between two alignments.
     Identity(IdentityVerification),
     /// The reconciliation audit log for a subject + DNA type.
@@ -757,6 +767,20 @@ pub async fn handle(app: &App, cmd: Command) -> Event {
             Ok(v) => Event::Identity(v),
             Err(e) => Event::Error(e.to_string()),
         },
+        Command::LoadIbdSuggestions => match app.ibd_suggestions().await {
+            Ok(items) => Event::IbdSuggestions(items),
+            Err(e) => Event::Error(e.to_string()),
+        },
+        Command::IbdIntroduce { suggested_sample_guid } => {
+            match app.ibd_introduce(&suggested_sample_guid).await {
+                Ok(r) => Event::IbdIntroduced {
+                    suggested_sample_guid,
+                    request_uri: r.request_uri,
+                    status: r.status,
+                },
+                Err(e) => Event::Error(e.to_string()),
+            }
+        }
         Command::BackfillLabs => match app.backfill_run_labs().await {
             Ok(count) => Event::LabsResolved(count),
             Err(e) => Event::Error(e.to_string()),

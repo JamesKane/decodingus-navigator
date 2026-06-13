@@ -37,6 +37,11 @@ pub enum AppError {
     #[error("not signed in — log in to a PDS account first")]
     NotAuthenticated,
 
+    /// An AppView API call failed (e.g. federated IBD). 403 → the device key isn't
+    /// registered/verified yet; 422 → clock skew; otherwise the server's reason.
+    #[error("appview error: {0}")]
+    AppView(String),
+
     #[error("could not read file: {0}")]
     Io(#[from] std::io::Error),
 

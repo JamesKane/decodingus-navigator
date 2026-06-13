@@ -2882,6 +2882,7 @@ name = "navigator-app"
 version = "0.1.0"
 dependencies = [
  "chrono",
+ "du-atproto",
  "du-domain",
  "navigator-analysis",
  "navigator-domain",
@@ -2952,10 +2953,13 @@ dependencies = [
 name = "navigator-sync"
 version = "0.1.0"
 dependencies = [
+ "base64",
  "du-atproto",
  "du-domain",
+ "ed25519-dalek",
  "keyring",
  "navigator-domain",
+ "rand_core 0.6.4",
  "reqwest",
  "serde",
  "serde_json",

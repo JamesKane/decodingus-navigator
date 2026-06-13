@@ -82,11 +82,32 @@ impl AsyncSync {
         collection: &str,
         record: serde_json::Value,
     ) -> Result<RecordRef, SyncError> {
+        self.push_create_inner(collection, record, None).await
+    }
+
+    /// Like [`push_create`](Self::push_create) but with an explicit record key — for
+    /// idempotent singleton-style records (e.g. the per-device signing key, keyed by its
+    /// own `did:key` so re-registration overwrites rather than duplicates).
+    pub async fn push_create_rkey(
+        &mut self,
+        collection: &str,
+        record: serde_json::Value,
+        rkey: &str,
+    ) -> Result<RecordRef, SyncError> {
+        self.push_create_inner(collection, record, Some(rkey)).await
+    }
+
+    async fn push_create_inner(
+        &mut self,
+        collection: &str,
+        record: serde_json::Value,
+        rkey: Option<&str>,
+    ) -> Result<RecordRef, SyncError> {
         let mut refreshed = false;
         let mut attempt = 0u32;
         loop {
             let client = PdsClient::from_session(self.http.clone(), &self.session)?;
-            match client.create_record(collection, record.clone(), None).await {
+            match client.create_record(collection, record.clone(), rkey).await {
                 Ok(r) => {
                     self.online.store(true, Ordering::Relaxed);
                     return Ok(r);

@@ -114,7 +114,7 @@ pub use navigator_sync::{
     NS_POPULATION_BREAKDOWN, NS_SEQUENCERUN, PRIVATE_VARIANTS_COLLECTION,
 };
 use navigator_sync::{FedPopulationComponent, FedSuperPopulationSummary};
-use navigator_sync::{dev_http_client, login_default, AsyncSync, OAuthConfig, RetryPolicy, TokenStore};
+use navigator_sync::{dev_http_client, login_default, AsyncSync, DeviceKey, OAuthConfig, RetryPolicy, TokenStore, DEVICE_KEY_COLLECTION};
 use navigator_refgenome::{cache as refgenome_cache, canonical_build, Build as ReferenceBuild, LiftedPos, ReferenceGateway};
 pub use navigator_refgenome::RefStatus;
 use navigator_sync::{
@@ -131,6 +131,111 @@ const KEYCHAIN_SERVICE: &str = "decodingus-navigator";
 pub struct IbdComparison {
     pub summary: MatchSummary,
     pub segments: Vec<IbdSegment>,
+}
+
+/// A pseudonymous federated-IBD candidate from the AppView's match engine. The
+/// `suggested_sample_guid` is the AppView's opaque handle for the counterpart (not a DID,
+/// not PII) — used to request an introduction. `signals` are the per-source contributions
+/// (population overlap, shared haplogroup, shared matches) behind the composite `score`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct IbdSuggestion {
+    pub suggested_sample_guid: String,
+    pub suggestion_type: String,
+    pub score: f64,
+    pub signals: Vec<(String, f64)>,
+}
+
+/// Result of requesting an introduction to a candidate: the AppView's request URI and its
+/// status (initially `PENDING`, awaiting the not-yet-built consent round-trip).
+#[derive(Debug, Clone, PartialEq)]
+pub struct IbdIntroResult {
+    pub request_uri: String,
+    pub status: String,
+}
+
+/// Jetstream-ingest retry budget for a freshly-published device key: a 403 right after
+/// publishing means the AppView hasn't ingested our `deviceKey` record yet. Exponential
+/// backoff 1+2+4+8 s ≈ 15 s total before giving up.
+const DEVICE_KEY_INGEST_RETRIES: u32 = 4;
+
+/// Parse the AppView's `/api/v1/ibd/suggestions` body into [`IbdSuggestion`]s. Lenient on
+/// field casing (camel/snake) and on the `signals` shape (object map or array) so a minor
+/// contract drift degrades gracefully rather than dropping every candidate.
+fn parse_ibd_suggestions(body: &serde_json::Value) -> Vec<IbdSuggestion> {
+    let Some(items) = body
+        .get("items")
+        .or_else(|| body.get("suggestions"))
+        .and_then(|v| v.as_array())
+    else {
+        return Vec::new();
+    };
+    items
+        .iter()
+        .filter_map(|it| {
+            let suggested_sample_guid = it
+                .get("suggestedSampleGuid")
+                .or_else(|| it.get("suggested_sample_guid"))
+                .or_else(|| it.get("sampleGuid"))
+                .and_then(|v| v.as_str())?
+                .to_string();
+            let suggestion_type = it
+                .get("suggestionType")
+                .or_else(|| it.get("suggestion_type"))
+                .or_else(|| it.get("type"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown")
+                .to_string();
+            let score = it.get("score").and_then(|v| v.as_f64()).unwrap_or(0.0);
+            let signals = it
+                .get("metadata")
+                .and_then(|m| m.get("signals"))
+                .or_else(|| it.get("signals"))
+                .map(parse_ibd_signals)
+                .unwrap_or_default();
+            Some(IbdSuggestion { suggested_sample_guid, suggestion_type, score, signals })
+        })
+        .collect()
+}
+
+/// Signals as either `{ "population": 0.4, … }` or `[ { "name": …, "score": … }, … ]`.
+fn parse_ibd_signals(v: &serde_json::Value) -> Vec<(String, f64)> {
+    if let Some(obj) = v.as_object() {
+        obj.iter().filter_map(|(k, val)| val.as_f64().map(|f| (k.clone(), f))).collect()
+    } else if let Some(arr) = v.as_array() {
+        arr.iter()
+            .filter_map(|s| {
+                let name = s
+                    .get("name")
+                    .or_else(|| s.get("source"))
+                    .and_then(|x| x.as_str())?
+                    .to_string();
+                let score = s
+                    .get("score")
+                    .or_else(|| s.get("value"))
+                    .and_then(|x| x.as_f64())
+                    .unwrap_or(0.0);
+                Some((name, score))
+            })
+            .collect()
+    } else {
+        Vec::new()
+    }
+}
+
+/// Classify a non-2xx AppView response into a user-facing [`AppError::AppView`]. Consumes
+/// `resp` to read the body (so capture the status first at the call site if also needed).
+async fn appview_status_error(api: &str, resp: reqwest::Response) -> AppError {
+    let status = resp.status();
+    let body = resp.text().await.unwrap_or_default();
+    match status.as_u16() {
+        403 => AppError::AppView(format!(
+            "{api}: device key not yet registered or verified by the AppView (403)"
+        )),
+        422 => AppError::AppView(format!(
+            "{api}: request rejected, likely clock skew (422) — check the system clock"
+        )),
+        _ => AppError::AppView(format!("{api}: {status}: {body}")),
+    }
 }
 use navigator_domain::workspace::{
     Alignment, AnalysisArtifact, Biosample, NewAlignment, NewProject, NewSequenceRun, Project,
@@ -1888,6 +1993,121 @@ impl App {
     /// optimistic (`true`) until a transient write failure.
     pub fn is_online(&self) -> bool {
         self.auth.online.load(Ordering::Relaxed)
+    }
+
+    /// Load (or, on first use, generate + publish) this installation's Ed25519 **device key**
+    /// — the signing key that authenticates Edge→AppView calls (federated IBD and, later, the
+    /// whole signed surface). The key seed lives in the OS keychain scoped to the signed-in
+    /// DID; its public half is published once to the user's PDS as a
+    /// [`DEVICE_KEY_COLLECTION`] record so the AppView (which ingests it via Jetstream) can
+    /// verify our signatures. Idempotent: the record is keyed by its own `did:key`, so a
+    /// re-publish overwrites rather than duplicates, and an already-present record is left
+    /// alone. Errors [`AppError::NotAuthenticated`] when signed out.
+    ///
+    /// This does *not* wait for ingest — the signed AppView calls absorb the 403→200 lag with
+    /// bounded retries (see the IBD client).
+    pub async fn ensure_device_key(&self) -> Result<DeviceKey, AppError> {
+        let did = self.current_account().ok_or(AppError::NotAuthenticated)?;
+        let key = DeviceKey::load_or_generate(KEYCHAIN_SERVICE, &did)?;
+
+        // Publish the public key once. A public getRecord on the deterministic rkey tells us
+        // whether it already exists; only create it when absent (keeps re-launches quiet).
+        let rkey = key.record_rkey();
+        let session = self.auth.tokens.load(&did)?.ok_or(AppError::NotAuthenticated)?;
+        let client = PdsClient::from_session(self.auth.http.clone(), &session)?;
+        let already_published = client.get_record(DEVICE_KEY_COLLECTION, &rkey).await.is_ok();
+        if !already_published {
+            let record = serde_json::json!({
+                "publicKey": key.did_key(),
+                "createdAt": Utc::now().to_rfc3339(),
+            });
+            let mut engine = self.sync_engine()?;
+            engine.push_create_rkey(DEVICE_KEY_COLLECTION, record, &rkey).await?;
+        }
+        Ok(key)
+    }
+
+    /// Federated IBD — **Step 1**: fetch this account's pseudonymous match suggestions from
+    /// the AppView (`GET /api/v1/ibd/suggestions`).
+    ///
+    /// The AppView mines our already-published `fed.*` records into a top-K candidate list;
+    /// no genotypes leave the device here. The call is authenticated by signing
+    /// `"ibd-poll\n<DID>\n<ts>"` with the device key (registered on first use). A 403 right
+    /// after first-time registration means the AppView hasn't ingested the device-key record
+    /// yet, so it's retried with exponential backoff.
+    pub async fn ibd_suggestions(&self) -> Result<Vec<IbdSuggestion>, AppError> {
+        let did = self.current_account().ok_or(AppError::NotAuthenticated)?;
+        let key = self.ensure_device_key().await?;
+        let url = format!("{}/api/v1/ibd/suggestions", decodingus_appview_url());
+
+        let mut attempt = 0u32;
+        loop {
+            let ts = Utc::now().timestamp().to_string();
+            let sig = key.sign(&format!("ibd-poll\n{did}\n{ts}"));
+            // reqwest URL-encodes query values, so the STANDARD-base64 sig (`+` `/` `=`) is
+            // safely escaped.
+            let resp = self
+                .auth
+                .http
+                .get(&url)
+                .query(&[("did", did.as_str()), ("ts", ts.as_str()), ("sig", sig.as_str())])
+                .send()
+                .await
+                .map_err(|e| AppError::Sync(navigator_sync::SyncError::from(e)))?;
+            let status = resp.status();
+            if status.is_success() {
+                let body: serde_json::Value =
+                    resp.json().await.map_err(|e| AppError::Sync(navigator_sync::SyncError::from(e)))?;
+                return Ok(parse_ibd_suggestions(&body));
+            }
+            if status.as_u16() == 403 && attempt < DEVICE_KEY_INGEST_RETRIES {
+                tokio::time::sleep(std::time::Duration::from_secs(1u64 << attempt)).await;
+                attempt += 1;
+                continue;
+            }
+            return Err(appview_status_error("ibd/suggestions", resp).await);
+        }
+    }
+
+    /// Federated IBD — **Step 2**: request an introduction to a suggested candidate
+    /// (`POST /api/v1/ibd/introduce`).
+    ///
+    /// Signs `"ibd-introduce\n<DID>\n<suggested_sample_guid>"` and posts
+    /// `{ did, suggestedSampleGuid, signature }`. Returns the AppView's `request_uri` and
+    /// status (`PENDING`). The downstream consent round-trip + key exchange are deferred
+    /// (gated on the AppView's symmetric-blind counterpart discovery), so this only opens the
+    /// request — it does not exchange any genetic data.
+    pub async fn ibd_introduce(&self, suggested_sample_guid: &str) -> Result<IbdIntroResult, AppError> {
+        let did = self.current_account().ok_or(AppError::NotAuthenticated)?;
+        let key = self.ensure_device_key().await?;
+        let url = format!("{}/api/v1/ibd/introduce", decodingus_appview_url());
+        let sig = key.sign(&format!("ibd-introduce\n{did}\n{suggested_sample_guid}"));
+        let body = serde_json::json!({
+            "did": did,
+            "suggestedSampleGuid": suggested_sample_guid,
+            "signature": sig,
+        });
+        let resp = self
+            .auth
+            .http
+            .post(&url)
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| AppError::Sync(navigator_sync::SyncError::from(e)))?;
+        if !resp.status().is_success() {
+            return Err(appview_status_error("ibd/introduce", resp).await);
+        }
+        let v: serde_json::Value =
+            resp.json().await.map_err(|e| AppError::Sync(navigator_sync::SyncError::from(e)))?;
+        let request_uri = v
+            .get("requestUri")
+            .or_else(|| v.get("request_uri"))
+            .and_then(|x| x.as_str())
+            .unwrap_or_default()
+            .to_string();
+        let status = v.get("status").and_then(|x| x.as_str()).unwrap_or("PENDING").to_string();
+        Ok(IbdIntroResult { request_uri, status })
     }
 
     /// Publish the alignment's coverage summary to the signed-in account's PDS (with
@@ -4900,6 +5120,82 @@ mod publish_tests {
         let value = app.sequence_run_record(&reloaded).await.unwrap();
         assert_eq!(value.get("instrumentId").and_then(|v| v.as_str()), Some("A00182"));
         assert_eq!(value.get("$type").and_then(|v| v.as_str()), Some(NS_SEQUENCERUN));
+    }
+}
+
+#[cfg(test)]
+mod ibd_federated_tests {
+    use super::*;
+    use navigator_sync::DeviceKey;
+
+    #[test]
+    fn ibd_poll_message_signs_and_verifies() {
+        // The exact canonical bytes a device signs for the suggestions poll, end-to-end
+        // verifiable by the AppView's own verifier (proves the wire contract).
+        let key = DeviceKey::generate();
+        let msg = format!("ibd-poll\n{}\n{}", "did:plc:abc123", "1718000000");
+        assert_eq!(msg, "ibd-poll\ndid:plc:abc123\n1718000000");
+        let sig = key.sign(&msg);
+        assert!(du_atproto::verify_did_key(&key.did_key(), msg.as_bytes(), &sig).is_ok());
+    }
+
+    #[test]
+    fn ibd_introduce_message_shape() {
+        let msg = format!("ibd-introduce\n{}\n{}", "did:plc:abc123", "sample-xyz");
+        assert_eq!(msg, "ibd-introduce\ndid:plc:abc123\nsample-xyz");
+    }
+
+    #[test]
+    fn query_sig_is_url_encoded() {
+        // STANDARD base64 (`+` `/` `=`) must be percent-escaped in the GET query string.
+        let req = reqwest::Client::new()
+            .get("http://x/api")
+            .query(&[("sig", "a+b/c=")])
+            .build()
+            .unwrap();
+        let q = req.url().query().unwrap();
+        assert!(q.contains("a%2Bb%2Fc%3D"), "sig not URL-encoded: {q}");
+    }
+
+    #[test]
+    fn parse_suggestions_object_signals_camel_case() {
+        let body = serde_json::json!({
+            "items": [{
+                "suggestedSampleGuid": "g1",
+                "suggestionType": "POPULATION",
+                "score": 0.82,
+                "metadata": { "signals": { "population": 0.5, "haplogroup": 0.32 } }
+            }]
+        });
+        let out = parse_ibd_suggestions(&body);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].suggested_sample_guid, "g1");
+        assert_eq!(out[0].suggestion_type, "POPULATION");
+        assert!((out[0].score - 0.82).abs() < 1e-9);
+        assert_eq!(out[0].signals.len(), 2);
+    }
+
+    #[test]
+    fn parse_suggestions_array_signals_and_snake_case() {
+        let body = serde_json::json!({
+            "suggestions": [{
+                "suggested_sample_guid": "g2",
+                "type": "SHARED_MATCH",
+                "score": 1.0,
+                "signals": [{ "name": "sharedMatches", "score": 3.0 }]
+            }]
+        });
+        let out = parse_ibd_suggestions(&body);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].suggested_sample_guid, "g2");
+        assert_eq!(out[0].suggestion_type, "SHARED_MATCH");
+        assert_eq!(out[0].signals, vec![("sharedMatches".to_string(), 3.0)]);
+    }
+
+    #[test]
+    fn parse_suggestions_empty_or_malformed_is_empty() {
+        assert!(parse_ibd_suggestions(&serde_json::json!({})).is_empty());
+        assert!(parse_ibd_suggestions(&serde_json::json!({ "items": "nope" })).is_empty());
     }
 }
 

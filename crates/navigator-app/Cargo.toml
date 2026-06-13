@@ -28,3 +28,5 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "rus
 
 [dev-dependencies]
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+# Verify our device-key signatures with the same code the AppView runs (federated IBD test).
+du-atproto = { workspace = true }

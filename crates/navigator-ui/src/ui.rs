@@ -8,7 +8,7 @@ use std::sync::mpsc::Receiver;
 use eframe::egui;
 use navigator_app::{
     AncestryResult, AncestrySegment, AuditEntry, BuildNeed, CallState, CompatibilityLevel, Consensus,
-    Coverage, DenovoCall, DnaType, HaploAssignment, HeteroplasmySite, IbdComparison,
+    Coverage, DenovoCall, DnaType, HaploAssignment, HeteroplasmySite, IbdComparison, IbdSuggestion,
     IdentityVerification, PanelGenotype, PrivateBucket, PrivateClass, ProjectOverview,
     AppSettings, MtRegion, MtVariant, ProjectSampleReport, ReadMetrics, ReconciledVariant, RefBuildStatus,
     SexInferenceResult, SourceType, SuperPopulationSummary, SvAnalysisResult, VariantStatus,
@@ -362,6 +362,12 @@ pub struct NavigatorApp {
     running_ibd: bool,
     /// Identity-verification result for the current IBD pair.
     identity: Option<IdentityVerification>,
+    /// Federated IBD: pseudonymous match suggestions fetched from the AppView.
+    ibd_suggestions: Vec<IbdSuggestion>,
+    /// Whether a suggestions fetch is in flight (drives the spinner).
+    loading_ibd_suggestions: bool,
+    /// Per-candidate introduction status, keyed by `suggested_sample_guid` (e.g. "PENDING").
+    ibd_intros: std::collections::HashMap<String, String>,
     /// Signed-in account DID, or `None`. Gates the "Publish" actions.
     account: Option<String>,
     /// Whether the last PDS write reached the server (offline indicator).
@@ -983,6 +989,9 @@ impl NavigatorApp {
             ibd_result: None,
             running_ibd: false,
             identity: None,
+            ibd_suggestions: Vec::new(),
+            loading_ibd_suggestions: false,
+            ibd_intros: std::collections::HashMap::new(),
             account: None,
             online: true,
             logging_in: false,
@@ -1470,6 +1479,20 @@ impl NavigatorApp {
                     self.ibd_result = Some(cmp);
                     self.running_ibd = false;
                 }
+                Event::IbdSuggestions(items) => {
+                    self.status = format!("{} network match suggestion(s)", items.len());
+                    self.ibd_suggestions = items;
+                    self.loading_ibd_suggestions = false;
+                }
+                Event::IbdIntroduced { suggested_sample_guid, request_uri, status } => {
+                    self.status = format!("Introduction requested: {status} ({request_uri})");
+                    let label = if request_uri.is_empty() {
+                        status
+                    } else {
+                        format!("{status} · {request_uri}")
+                    };
+                    self.ibd_intros.insert(suggested_sample_guid, label);
+                }
                 Event::Identity(v) => {
                     self.status = format!("Identity: {:?} ({} sites)", v.status, v.sites_compared);
                     self.identity = Some(v);
@@ -1494,6 +1517,7 @@ impl NavigatorApp {
                     self.running_denovo = false;
                     self.running_genotype = false;
                     self.running_ibd = false;
+                    self.loading_ibd_suggestions = false;
                     self.logging_in = false;
                     self.publishing = false;
                     self.finding_private_y = false;
@@ -1864,6 +1888,7 @@ impl NavigatorApp {
                 DetailTab::IbdMatches => {
                     if let Some(id) = self.selected_alignment {
                         card(ui, self.tr("card.panelGenotypingIbd"), |ui| self.genotyping_section(ui, id));
+                        card(ui, self.tr("card.networkSuggestions"), |ui| self.network_suggestions_section(ui));
                     } else {
                         pick_alignment_hint(ui, self.tr("hint.pickAlignment"));
                     }
@@ -4809,6 +4834,91 @@ impl NavigatorApp {
                     }
                 });
             }
+        }
+    }
+
+    /// Federated IBD: the AppView's pseudonymous "people who may share DNA with you" list,
+    /// mined from the records we've published. Distinct from the local 1:1 compare above —
+    /// these are network candidates we haven't exchanged any genotypes with. Requesting an
+    /// introduction opens a PENDING request; the consent round-trip + actual segment detection
+    /// are a later phase (the AppView's symmetric counterpart-discovery is still being speced).
+    fn network_suggestions_section(&mut self, ui: &mut egui::Ui) {
+        if self.account.is_none() {
+            ui.label(self.tr("network.signInRequired"));
+            return;
+        }
+        ui.horizontal(|ui| {
+            if ui
+                .add_enabled(!self.loading_ibd_suggestions, egui::Button::new(self.tr("network.find")))
+                .clicked()
+            {
+                self.loading_ibd_suggestions = true;
+                self.status = self.tr("network.finding").to_string();
+                let _ = self.tx.send(Command::LoadIbdSuggestions);
+            }
+            if self.loading_ibd_suggestions {
+                ui.spinner();
+            }
+        });
+        ui.label(self.tr("network.note"));
+
+        if self.ibd_suggestions.is_empty() {
+            if !self.loading_ibd_suggestions {
+                ui.add_space(4.0);
+                ui.weak(self.tr("network.empty"));
+            }
+            return;
+        }
+
+        ui.add_space(6.0);
+        // Collect the rows first so the table closure doesn't borrow `self` immutably while we
+        // also need `self.tx` / `self.ibd_intros` (and to send commands without a borrow clash).
+        let rows: Vec<(String, String, f64, String, Option<String>)> = self
+            .ibd_suggestions
+            .iter()
+            .map(|s| {
+                let signals = s
+                    .signals
+                    .iter()
+                    .map(|(k, v)| format!("{k} {v:.2}"))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                (
+                    s.suggested_sample_guid.clone(),
+                    s.suggestion_type.clone(),
+                    s.score,
+                    signals,
+                    self.ibd_intros.get(&s.suggested_sample_guid).cloned(),
+                )
+            })
+            .collect();
+
+        let mut introduce: Option<String> = None;
+        egui::Grid::new("ibd_suggestions").striped(true).num_columns(5).show(ui, |ui| {
+            ui.strong(self.tr("network.col.candidate"));
+            ui.strong(self.tr("network.col.type"));
+            ui.strong(self.tr("network.col.score"));
+            ui.strong(self.tr("network.col.signals"));
+            ui.strong("");
+            ui.end_row();
+            for (guid, ty, score, signals, intro) in &rows {
+                // Pseudonymous guid, shown truncated (it's an opaque AppView handle, not PII).
+                let short: String = guid.chars().take(12).collect();
+                ui.label(short).on_hover_text(guid);
+                ui.label(ty);
+                ui.label(format!("{score:.2}"));
+                ui.label(signals);
+                if let Some(status) = intro {
+                    ui.label(status);
+                } else if ui.button(self.tr("network.introduce")).clicked() {
+                    introduce = Some(guid.clone());
+                }
+                ui.end_row();
+            }
+        });
+        if let Some(guid) = introduce {
+            self.status = self.tr("network.introducing").to_string();
+            let _ = self.tx.send(Command::IbdIntroduce { suggested_sample_guid: guid });
         }
     }
 

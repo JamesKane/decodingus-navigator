@@ -20,6 +20,10 @@ pub enum SyncError {
     #[error("oauth error: {0}")]
     Oauth(String),
 
+    /// A device-key crypto/encoding fault (bad seed length, corrupt base64).
+    #[error("device key error: {0}")]
+    Crypto(String),
+
     /// The access token was rejected (HTTP 401) — refresh and retry.
     #[error("unauthorized (token expired or revoked)")]
     Unauthorized,
