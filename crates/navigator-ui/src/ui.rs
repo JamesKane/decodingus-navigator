@@ -4045,10 +4045,13 @@ impl NavigatorApp {
                     row(ui, "Genome territory", c.genome_territory.to_string());
                     row(ui, "Mean coverage", format!("{:.2}", c.mean_coverage));
                     row(ui, "Median coverage", format!("{:.0}", c.median_coverage));
+                    row(ui, "MAD coverage", format!("{:.0}", c.mad_coverage));
                     row(ui, "Callable bases", c.callable_bases.to_string());
                     row(ui, "% ≥10x", format!("{:.1}%", c.pct_10x * 100.0));
                     row(ui, "% ≥20x", format!("{:.1}%", c.pct_20x * 100.0));
                     row(ui, "% ≥30x", format!("{:.1}%", c.pct_30x * 100.0));
+                    row(ui, "% excl. low MAPQ", format!("{:.1}%", c.pct_exc_mapq * 100.0));
+                    row(ui, "% excl. low base-Q", format!("{:.1}%", c.pct_exc_baseq * 100.0));
                 });
 
                 // Drop a stale selection (e.g. fewer contigs than a prior result).

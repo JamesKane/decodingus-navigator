@@ -110,6 +110,16 @@ pub struct CoverageResult {
     pub mean_coverage: f64,
     pub median_coverage: f64,
     pub sd_coverage: f64,
+    /// Median absolute deviation of depth (Picard MAD_COVERAGE). `#[serde(default)]` → coverage
+    /// blobs cached before this field load with 0.0 and repopulate on the next analysis.
+    #[serde(default)]
+    pub mad_coverage: f64,
+    /// Fraction of observed bases excluded for low mapping quality (Picard PCT_EXC_MAPQ).
+    #[serde(default)]
+    pub pct_exc_mapq: f64,
+    /// Fraction of observed bases excluded for low base quality, MAPQ having passed (PCT_EXC_BASEQ).
+    #[serde(default)]
+    pub pct_exc_baseq: f64,
     /// Depth histogram, clamped at index 255.
     pub coverage_histogram: Vec<u64>,
     pub pct_1x: f64,
@@ -136,6 +146,10 @@ struct Col {
     map_q_sum: u64,
     qc_pass: u32,
     low_mapq: u32,
+    /// Bases excluded for low mapping quality (mutually exclusive with `exc_baseq`; MAPQ checked first).
+    exc_mapq: u32,
+    /// Bases that passed MAPQ but were excluded for low base quality.
+    exc_baseq: u32,
 }
 
 /// Global accumulators, folded as positions finalize.
@@ -144,11 +158,14 @@ struct Globals {
     n: u64,
     sum_depth: u128,
     sum_sq: u128,
+    /// Total observed bases excluded for low MAPQ / low base-Q (Picard PCT_EXC_{MAPQ,BASEQ}).
+    sum_exc_mapq: u128,
+    sum_exc_baseq: u128,
 }
 
 impl Globals {
     fn new() -> Self {
-        Globals { hist: vec![0; HIST_LEN], n: 0, sum_depth: 0, sum_sq: 0 }
+        Globals { hist: vec![0; HIST_LEN], n: 0, sum_depth: 0, sum_sq: 0, sum_exc_mapq: 0, sum_exc_baseq: 0 }
     }
 }
 
@@ -243,6 +260,8 @@ impl CurContig {
         g.n += 1;
         g.sum_depth += depth as u128;
         g.sum_sq += (depth as u128) * (depth as u128);
+        g.sum_exc_mapq += col.exc_mapq as u128;
+        g.sum_exc_baseq += col.exc_baseq as u128;
         self.sum_depth += depth as u128;
         if depth > 0 {
             self.covered += 1;
@@ -281,7 +300,12 @@ impl CurContig {
         col.depth += 1;
         col.base_q_sum += base_q as u64;
         col.map_q_sum += mapq as u64;
-        if mapq >= params.min_mapping_quality && base_q >= params.min_base_quality {
+        // Mutually-exclusive exclusion attribution (MAPQ first, then base-Q), mirroring Picard.
+        if mapq < params.min_mapping_quality {
+            col.exc_mapq += 1;
+        } else if base_q < params.min_base_quality {
+            col.exc_baseq += 1;
+        } else {
             col.qc_pass += 1;
         }
         if mapq <= params.max_low_mapq {
@@ -513,6 +537,8 @@ impl CoverageState {
             self.g.n,
             self.g.sum_depth,
             self.g.sum_sq,
+            self.g.sum_exc_mapq,
+            self.g.sum_exc_baseq,
             contig_callable,
             contig_stats,
         ))
@@ -566,11 +592,14 @@ fn feed_into_contig(c: &mut CurContig, record: &impl AlnRead, params: &CallableL
 /// Assemble the genome-wide [`CoverageResult`] from merged histogram/territory/depth sums and
 /// per-contig outputs (already in header order). Single source of truth for the result tail,
 /// used by both the sequential `finish` and the parallel `merge_coverage_partials`.
+#[allow(clippy::too_many_arguments)] // one accumulator per metric — a coverage roll-up, not a refactor target
 fn assemble_coverage_result(
     hist: Vec<u64>,
     n: u64,
     sum_depth: u128,
     sum_sq: u128,
+    sum_exc_mapq: u128,
+    sum_exc_baseq: u128,
     contig_callable: Vec<ContigCallableMetrics>,
     contig_coverage_stats: Vec<ContigCoverageStats>,
 ) -> CoverageResult {
@@ -580,12 +609,24 @@ fn assemble_coverage_result(
     } else {
         (sum_sq as f64 / n as f64 - mean * mean).max(0.0).sqrt()
     };
+    let median = median_from_hist(&hist, n);
+    // Exclusion fractions over total observed bases (Picard PCT_EXC_{MAPQ,BASEQ}). `sum_depth`
+    // already counts every observed base (excluded ones included), so it is the denominator. Other
+    // exclusion reasons (dup/unpaired/overlap/capped) aren't tallied, so these don't sum to a total.
+    let (pct_exc_mapq, pct_exc_baseq) = if sum_depth == 0 {
+        (0.0, 0.0)
+    } else {
+        (sum_exc_mapq as f64 / sum_depth as f64, sum_exc_baseq as f64 / sum_depth as f64)
+    };
     let callable_bases = contig_callable.iter().map(|c| c.callable).sum();
     CoverageResult {
         genome_territory: n,
         mean_coverage: mean,
-        median_coverage: median_from_hist(&hist, n),
+        median_coverage: median,
         sd_coverage: sd,
+        mad_coverage: mad_from_hist(&hist, n, median),
+        pct_exc_mapq,
+        pct_exc_baseq,
         pct_1x: pct_at_least(&hist, n, 1),
         pct_5x: pct_at_least(&hist, n, 5),
         pct_10x: pct_at_least(&hist, n, 10),
@@ -621,6 +662,8 @@ pub(crate) struct ContigCoveragePartial {
     n: u64,
     sum_depth: u128,
     sum_sq: u128,
+    sum_exc_mapq: u128,
+    sum_exc_baseq: u128,
 }
 
 impl ContigCoverageAccum {
@@ -650,6 +693,8 @@ impl ContigCoverageAccum {
             n: self.g.n,
             sum_depth: self.g.sum_depth,
             sum_sq: self.g.sum_sq,
+            sum_exc_mapq: self.g.sum_exc_mapq,
+            sum_exc_baseq: self.g.sum_exc_baseq,
         }
     }
 }
@@ -661,6 +706,7 @@ pub(crate) fn merge_coverage_partials(mut partials: Vec<ContigCoveragePartial>) 
     partials.sort_by_key(|p| p.ref_id);
     let mut hist = vec![0u64; HIST_LEN];
     let (mut n, mut sum_depth, mut sum_sq) = (0u64, 0u128, 0u128);
+    let (mut sum_exc_mapq, mut sum_exc_baseq) = (0u128, 0u128);
     let mut contig_callable = Vec::with_capacity(partials.len());
     let mut contig_stats = Vec::with_capacity(partials.len());
     for p in partials {
@@ -670,10 +716,12 @@ pub(crate) fn merge_coverage_partials(mut partials: Vec<ContigCoveragePartial>) 
         n += p.n;
         sum_depth += p.sum_depth;
         sum_sq += p.sum_sq;
+        sum_exc_mapq += p.sum_exc_mapq;
+        sum_exc_baseq += p.sum_exc_baseq;
         contig_callable.push(p.callable);
         contig_stats.push(p.stats);
     }
-    assemble_coverage_result(hist, n, sum_depth, sum_sq, contig_callable, contig_stats)
+    assemble_coverage_result(hist, n, sum_depth, sum_sq, sum_exc_mapq, sum_exc_baseq, contig_callable, contig_stats)
 }
 
 /// Mean read length and mean fragment (template) length, sampled from the first ~50k
@@ -858,6 +906,22 @@ fn pct_at_least(hist: &[u64], total: u64, min_depth: usize) -> f64 {
     at_least as f64 / total as f64
 }
 
+/// Median absolute deviation of depth: the median of `|depth − median|` over the depth histogram.
+/// Depths are clamped at index 255 in the histogram, so deviations in that tail are lower bounds
+/// (negligible for typical WGS coverage).
+fn mad_from_hist(hist: &[u64], total: u64, median: f64) -> f64 {
+    if total == 0 {
+        return 0.0;
+    }
+    // Histogram of absolute deviations (same 0..=255 domain bound as depth).
+    let mut dev: Vec<u64> = vec![0; hist.len()];
+    for (depth, &count) in hist.iter().enumerate() {
+        let d = (depth as f64 - median).abs().round() as usize;
+        dev[d.min(hist.len() - 1)] += count;
+    }
+    median_from_hist(&dev, total)
+}
+
 fn median_from_hist(hist: &[u64], total: u64) -> f64 {
     if total == 0 {
         return 0.0;
@@ -902,6 +966,24 @@ mod tests {
         // An impossibly long run-length gate drops everything (fixture is only 50 bp).
         let none = callable_intervals(&bam, "chrM", &params, 10_000, None).unwrap();
         assert!(none.is_empty(), "no run clears a 10 kb gate on a 50 bp contig");
+    }
+
+    #[test]
+    fn mad_from_histogram() {
+        // Depths {0,2,10,12}, one position each. median_from_hist uses the lower-median (cumulative
+        // ≥ total/2) convention → median 2. |0-2|,|2-2|,|10-2|,|12-2| = {2,0,8,10}; sorted {0,2,8,10},
+        // lower-median → 2.
+        let mut hist = vec![0u64; HIST_LEN];
+        for d in [0usize, 2, 10, 12] {
+            hist[d] += 1;
+        }
+        let median = median_from_hist(&hist, 4);
+        assert_eq!(median, 2.0);
+        assert_eq!(mad_from_hist(&hist, 4, median), 2.0);
+        // Constant depth → MAD 0.
+        let mut flat = vec![0u64; HIST_LEN];
+        flat[30] = 100;
+        assert_eq!(mad_from_hist(&flat, 100, median_from_hist(&flat, 100)), 0.0);
     }
 
     #[test]
