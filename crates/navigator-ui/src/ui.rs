@@ -2669,7 +2669,7 @@ impl NavigatorApp {
         crate::i18n::tr(self.lang, key)
     }
 
-    /// The top app bar: product title (left), theme + language + account controls (right).
+    /// The top app bar: product title (left), settings + language + account controls (right).
     fn app_bar(&mut self, ctx: &egui::Context) {
         egui::TopBottomPanel::top("appbar").show(ctx, |ui| {
             ui.add_space(2.0);
@@ -2682,12 +2682,7 @@ impl NavigatorApp {
                         let _ = self.tx.send(Command::LoadReferenceSettings);
                     }
                     ui.separator();
-                    let icon = if self.dark_mode { "☀" } else { "🌙" };
-                    if ui.button(icon).on_hover_text(self.tr("theme.toggle")).clicked() {
-                        self.dark_mode = !self.dark_mode;
-                        apply_theme(ctx, self.dark_mode);
-                    }
-                    ui.separator();
+                    // Theme toggle lives in Settings → Appearance (no duplicate app-bar control).
                     let prev_lang = self.lang;
                     egui::ComboBox::from_id_salt("lang")
                         .selected_text(self.lang.label())
