@@ -265,6 +265,9 @@ pub struct NavigatorApp {
     settings_form: SettingsForm,
     /// Subjects-list filter text.
     subject_search: String,
+    /// Collapse the subjects side panel to a thin strip so the detail panel (charts/tables)
+    /// gets the full width.
+    subjects_collapsed: bool,
     overview: Vec<ProjectOverview>,
     selected_project: Option<i64>,
     /// Per-sample coverage/haplogroup report rows for the selected project.
@@ -925,6 +928,7 @@ impl NavigatorApp {
             show_settings: false,
             settings_form: SettingsForm::from_settings(),
             subject_search: String::new(),
+            subjects_collapsed: false,
             overview: Vec::new(),
             selected_project: None,
             project_report: Vec::new(),
@@ -2766,6 +2770,16 @@ impl NavigatorApp {
             Nav::Projects => {
                 egui::SidePanel::left("left").min_width(240.0).show(ctx, |ui| self.projects_side(ui));
             }
+            Nav::Subjects if self.subjects_collapsed => {
+                // Collapsed: a thin strip with just an expand button, handing the detail panel
+                // the full width for charts/tables.
+                egui::SidePanel::left("left").resizable(false).exact_width(34.0).show(ctx, |ui| {
+                    ui.add_space(6.0);
+                    if ui.button("▶").on_hover_text(self.tr("subjects.expand")).clicked() {
+                        self.subjects_collapsed = false;
+                    }
+                });
+            }
             Nav::Subjects => {
                 egui::SidePanel::left("left")
                     .resizable(true)
@@ -2831,6 +2845,9 @@ impl NavigatorApp {
     fn subjects_side(&mut self, ui: &mut egui::Ui) {
         ui.add_space(6.0);
         ui.horizontal(|ui| {
+            if ui.button("◀").on_hover_text(self.tr("subjects.collapse")).clicked() {
+                self.subjects_collapsed = true;
+            }
             let btn_w = 160.0;
             let hint = self.tr("subjects.search");
             ui.add(

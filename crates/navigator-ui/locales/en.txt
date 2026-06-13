@@ -20,6 +20,8 @@ detail.datasources=Data Sources
 # Subjects browser
 subjects.addNew=➕  Add New Subject
 subjects.search=Search name, ID, haplogroup…
+subjects.collapse=Collapse the subjects list
+subjects.expand=Show the subjects list
 subjects.none=No subjects yet.
 subjects.noMatch=No subjects match the search.
 

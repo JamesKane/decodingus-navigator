@@ -16,6 +16,8 @@ detail.datasources=Fuentes de datos
 
 subjects.addNew=➕  Añadir sujeto
 subjects.search=Buscar nombre, ID, haplogrupo…
+subjects.collapse=Contraer la lista de sujetos
+subjects.expand=Mostrar la lista de sujetos
 subjects.none=Aún no hay sujetos.
 subjects.noMatch=Ningún sujeto coincide con la búsqueda.
 
