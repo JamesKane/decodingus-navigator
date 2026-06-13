@@ -4877,12 +4877,7 @@ impl NavigatorApp {
             .ibd_suggestions
             .iter()
             .map(|s| {
-                let signals = s
-                    .signals
-                    .iter()
-                    .map(|(k, v)| format!("{k} {v:.2}"))
-                    .collect::<Vec<_>>()
-                    .join(", ");
+                let signals = s.signals.join(", ");
                 (
                     s.suggested_sample_guid.clone(),
                     s.suggestion_type.clone(),

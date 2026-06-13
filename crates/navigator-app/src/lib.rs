@@ -135,14 +135,14 @@ pub struct IbdComparison {
 
 /// A pseudonymous federated-IBD candidate from the AppView's match engine. The
 /// `suggested_sample_guid` is the AppView's opaque handle for the counterpart (not a DID,
-/// not PII) — used to request an introduction. `signals` are the per-source contributions
-/// (population overlap, shared haplogroup, shared matches) behind the composite `score`.
+/// not PII) — used to request an introduction. `signals` names the sources that contributed
+/// (e.g. `POPULATION_OVERLAP`, `HAPLOGROUP`, `SHARED_MATCH`) behind the composite `score`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct IbdSuggestion {
     pub suggested_sample_guid: String,
     pub suggestion_type: String,
     pub score: f64,
-    pub signals: Vec<(String, f64)>,
+    pub signals: Vec<String>,
 }
 
 /// Result of requesting an introduction to a candidate: the AppView's request URI and its
@@ -197,26 +197,21 @@ fn parse_ibd_suggestions(body: &serde_json::Value) -> Vec<IbdSuggestion> {
         .collect()
 }
 
-/// Signals as either `{ "population": 0.4, … }` or `[ { "name": …, "score": … }, … ]`.
-fn parse_ibd_signals(v: &serde_json::Value) -> Vec<(String, f64)> {
-    if let Some(obj) = v.as_object() {
-        obj.iter().filter_map(|(k, val)| val.as_f64().map(|f| (k.clone(), f))).collect()
-    } else if let Some(arr) = v.as_array() {
+/// Signal names. The AppView emits an array of plain strings
+/// (`["POPULATION_OVERLAP", "HAPLOGROUP"]`); also tolerate an array of `{name|source}`
+/// objects or an object map (keys) so a contract tweak degrades gracefully.
+fn parse_ibd_signals(v: &serde_json::Value) -> Vec<String> {
+    if let Some(arr) = v.as_array() {
         arr.iter()
             .filter_map(|s| {
-                let name = s
-                    .get("name")
-                    .or_else(|| s.get("source"))
-                    .and_then(|x| x.as_str())?
-                    .to_string();
-                let score = s
-                    .get("score")
-                    .or_else(|| s.get("value"))
-                    .and_then(|x| x.as_f64())
-                    .unwrap_or(0.0);
-                Some((name, score))
+                s.as_str()
+                    .or_else(|| s.get("name").and_then(|x| x.as_str()))
+                    .or_else(|| s.get("source").and_then(|x| x.as_str()))
+                    .map(str::to_string)
             })
             .collect()
+    } else if let Some(obj) = v.as_object() {
+        obj.keys().cloned().collect()
     } else {
         Vec::new()
     }
@@ -2082,9 +2077,11 @@ impl App {
         let key = self.ensure_device_key().await?;
         let url = format!("{}/api/v1/ibd/introduce", decodingus_appview_url());
         let sig = key.sign(&format!("ibd-introduce\n{did}\n{suggested_sample_guid}"));
+        // The AppView's IntroduceBody deserializes plain snake_case (no serde rename), and
+        // parses the guid as a UUID — send it verbatim from the suggestion.
         let body = serde_json::json!({
             "did": did,
-            "suggestedSampleGuid": suggested_sample_guid,
+            "suggested_sample_guid": suggested_sample_guid,
             "signature": sig,
         });
         let resp = self
@@ -5158,38 +5155,40 @@ mod ibd_federated_tests {
     }
 
     #[test]
-    fn parse_suggestions_object_signals_camel_case() {
+    fn parse_suggestions_appview_snake_case_string_signals() {
+        // The exact shape the AppView emits: snake_case keys, metadata.signals as a
+        // plain string array.
         let body = serde_json::json!({
             "items": [{
-                "suggestedSampleGuid": "g1",
-                "suggestionType": "POPULATION",
+                "suggested_sample_guid": "g1",
+                "suggestion_type": "POPULATION_OVERLAP",
                 "score": 0.82,
-                "metadata": { "signals": { "population": 0.5, "haplogroup": 0.32 } }
+                "metadata": { "signals": ["POPULATION_OVERLAP", "HAPLOGROUP"] }
             }]
         });
         let out = parse_ibd_suggestions(&body);
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].suggested_sample_guid, "g1");
-        assert_eq!(out[0].suggestion_type, "POPULATION");
+        assert_eq!(out[0].suggestion_type, "POPULATION_OVERLAP");
         assert!((out[0].score - 0.82).abs() < 1e-9);
-        assert_eq!(out[0].signals.len(), 2);
+        assert_eq!(out[0].signals, vec!["POPULATION_OVERLAP".to_string(), "HAPLOGROUP".to_string()]);
     }
 
     #[test]
-    fn parse_suggestions_array_signals_and_snake_case() {
+    fn parse_suggestions_camel_case_and_object_signals_tolerated() {
         let body = serde_json::json!({
             "suggestions": [{
-                "suggested_sample_guid": "g2",
+                "suggestedSampleGuid": "g2",
                 "type": "SHARED_MATCH",
                 "score": 1.0,
-                "signals": [{ "name": "sharedMatches", "score": 3.0 }]
+                "signals": { "sharedMatches": 3.0 }
             }]
         });
         let out = parse_ibd_suggestions(&body);
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].suggested_sample_guid, "g2");
         assert_eq!(out[0].suggestion_type, "SHARED_MATCH");
-        assert_eq!(out[0].signals, vec![("sharedMatches".to_string(), 3.0)]);
+        assert_eq!(out[0].signals, vec!["sharedMatches".to_string()]);
     }
 
     #[test]
