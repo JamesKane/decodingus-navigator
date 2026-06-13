@@ -30,3 +30,5 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "rus
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 # Verify our device-key signatures with the same code the AppView runs (federated IBD test).
 du-atproto = { workspace = true }
+# Build a synthetic mtDNA FASTA from the bundled rCRS for the import test.
+navigator-analysis = { workspace = true }

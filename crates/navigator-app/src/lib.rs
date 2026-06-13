@@ -707,6 +707,18 @@ fn sibling_readme(path: &Path) -> Option<String> {
     None
 }
 
+/// Best-effort vendor label for an mtDNA FASTA, from the file name + defline (FTDNA mtFull / YSEQ).
+fn mt_vendor_label(filename: Option<&str>, defline: Option<&str>) -> &'static str {
+    let hay = format!("{} {}", filename.unwrap_or(""), defline.unwrap_or("")).to_lowercase();
+    if hay.contains("ftdna") || hay.contains("familytreedna") || hay.contains("mtfull") {
+        "FTDNA mtFull Sequence"
+    } else if hay.contains("yseq") {
+        "YSEQ mtDNA"
+    } else {
+        "mtDNA FASTA"
+    }
+}
+
 /// A disambiguating label context for a vendor VCF: the parent directory when the file name is the
 /// generic vendor name (`variants.vcf`), else the file name itself.
 fn vcf_label_context(path: &Path, filename: &str) -> String {
@@ -2553,7 +2565,40 @@ impl App {
             n_count: parsed.n_count,
             source_file_name,
         };
-        Ok(mtdna_store::create(self.store.pool(), &new).await?)
+        let seq = mtdna_store::create(self.store.pool(), &new).await?;
+
+        // Derive rCRS-relative variants and persist them, so an mtDNA FASTA yields a variant set on
+        // import (not only on the on-demand "show mutations" view) — like a chip/VCF import does.
+        let derived = navigator_analysis::mtvariants::derive(navigator_analysis::mtvariants::rcrs(), &seq.sequence);
+        if !derived.is_empty() {
+            let label = mt_vendor_label(seq.source_file_name.as_deref(), seq.defline.as_deref());
+            let calls = derived
+                .iter()
+                .map(|v| variants::VariantCall {
+                    contig: "rCRS".to_string(),
+                    position: v.position,
+                    reference: v.reference.to_string(),
+                    alternate: v.alternate.to_string(),
+                    rs_id: None,
+                    genotype: None,
+                })
+                .collect();
+            let set = NewVariantSet {
+                biosample_guid,
+                source_label: format!("{label} ({} variants vs rCRS)", derived.len()),
+                // A full-mtDNA consensus is authoritative for its calls (gold-standard weight).
+                source_type: variants::SourceType::Sanger,
+                reference_build: None, // calls are rCRS-relative (contig "rCRS"), not a nuclear build
+                calls,
+            };
+            // Best-effort: a variant-set hiccup must not lose the stored sequence.
+            let _ = variant_set::create(self.store.pool(), &set).await;
+        }
+
+        // Haplogroup placement is intentionally NOT run here: it needs the mt haplotree (network),
+        // and coupling a deterministic import to a network fetch is what the alignment import
+        // deliberately avoids too. The mtDNA tab's "Assign mtDNA haplogroup" places it on demand.
+        Ok(seq)
     }
 
     /// All mtDNA sequences for a subject.

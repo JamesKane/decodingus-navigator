@@ -119,6 +119,32 @@ async fn import_vendor_big_y_vcf_is_tagged() {
 }
 
 #[tokio::test]
+async fn import_mtdna_fasta_derives_variants() {
+    let app = app().await;
+    let subject = app.add_biosample(None, "HG002", None, None).await.unwrap();
+
+    // Bundled rCRS with two substitutions → an mtDNA FASTA with exactly those diffs.
+    let mut seq: Vec<u8> = navigator_analysis::mtvariants::rcrs().bytes().collect();
+    seq[262] = if seq[262] == b'G' { b'A' } else { b'G' }; // 1-based 263 (classic 263A>G site)
+    seq[749] = if seq[749] == b'G' { b'A' } else { b'G' }; // 1-based 750
+    let body = String::from_utf8(seq).unwrap();
+    let path = std::env::temp_dir().join(format!("mt-{}.fasta", subject.guid.0));
+    std::fs::write(&path, format!(">sample mtDNA\n{body}\n")).unwrap();
+
+    app.import_mtdna_from_fasta(subject.guid, &path).await.unwrap();
+
+    // The import derived + persisted an rCRS-relative variant set (haplogroup placement needs the
+    // network, so it's best-effort and not asserted here).
+    let sets = app.list_variant_sets(subject.guid).await.unwrap();
+    let mt = sets.iter().find(|s| s.source_label.contains("vs rCRS")).expect("mtDNA variant set");
+    assert_eq!(mt.source_type, navigator_app::SourceType::Sanger);
+    assert!(mt.calls.iter().any(|c| c.position == 263), "expected the 263 substitution");
+    assert!(mt.calls.iter().all(|c| c.contig == "rCRS"));
+
+    let _ = std::fs::remove_file(&path);
+}
+
+#[tokio::test]
 async fn import_chip_profile_detects_vendor_and_summarizes() {
     let app = app().await;
     let subject = app.add_biosample(None, "HG002", None, None).await.unwrap();
@@ -200,8 +226,9 @@ async fn derive_mtdna_variants_vs_rcrs() {
     assert_eq!((set.calls[0].position, set.calls[0].reference.as_str(), set.calls[0].alternate.as_str()), (263, "A", "G"));
     assert_eq!((set.calls[1].position, set.calls[1].alternate.as_str()), (750, "C"));
 
-    // it lands in the subject's variant sets
-    assert_eq!(app.list_variant_sets(subject.guid).await.unwrap().len(), 1);
+    // Two sets now: import auto-derives one vs the bundled rCRS, plus this explicit
+    // derive_mtdna_variants against the provided reference.
+    assert_eq!(app.list_variant_sets(subject.guid).await.unwrap().len(), 2);
 
     for p in [ref_path, samp_path] {
         let _ = std::fs::remove_file(p);
