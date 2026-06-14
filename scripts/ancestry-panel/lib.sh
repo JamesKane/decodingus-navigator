@@ -52,19 +52,29 @@ chain_for() {
 #   liftover_vcf <in.vcf[.gz]> <source-build> <out.vcf.gz>
 liftover_vcf() {
   local in="$1" src="$2" out="$3" chain; chain="$(chain_for "$src")"
-  local fa="$RAW/chm13v2.0.fa"
+  local fa="$RAW/chm13v2.0.fa" dict="$RAW/chm13v2.0.dict"
   [[ -s "$fa" ]] || die "CHM13 FASTA not unpacked at $fa (run 01_fetch.sh)"
-  log "liftover $(basename "$in") ($src -> $BUILD)"
-  CrossMap vcf "$chain" "$in" "$fa" "$TMP/$(basename "$out" .gz)" \
-    || die "CrossMap failed on $in"
-  # Align alleles to the CHM13 reference (-c s swaps/flips ref-mismatched records, drops what can't
-  # be reconciled; ancient pseudo-haploid GTs pass through), then SORT — liftover does not preserve
-  # coordinate order (a lifted position can precede an earlier one), so the raw output is unsorted
-  # and tabix would reject it. bcftools sort fixes the order before indexing.
-  bcftools norm -c s -f "$fa" "$TMP/$(basename "$out" .gz)" -Ou \
-    | bcftools sort -Oz -o "$out" \
-    || die "bcftools norm/sort failed on $in"
-  tabix -f -p vcf "$out"
+  [[ -s "$dict" ]] || samtools dict "$fa" -o "$dict" || die "samtools dict failed for $fa"
+  # Allele-aware liftover via GATK/Picard LiftoverVcf — NOT CrossMap. CrossMap's `vcf` mode blanks
+  # the ALT allele whenever the target (CHM13) reference base differs from the source REF (i.e. most
+  # polymorphic sites, and CHM13's inverted/rearranged segments), silently destroying ~3/4 of the
+  # genotypes. LiftoverVcf reverse-complements alleles on minus-strand chain blocks and, with
+  # RECOVER_SWAPPED_REF_ALT, swaps REF<->ALT and flips the genotypes when the target ref equals the
+  # ALT (rather than dropping it); irreconcilable sites go to a REJECT file. Output is already
+  # target-ref-correct and coordinate-sorted.
+  log "liftover $(basename "$in") ($src -> $BUILD) via GATK LiftoverVcf"
+  local lift="$TMP/$(basename "$out" .gz).lift.vcf.gz"
+  # MAX_RECORDS_IN_RAM bounds the in-memory sort so it spills to disk — without it LiftoverVcf holds
+  # every record (here ~20k x 23k genotypes) in RAM and OOMs. Heap + spill dir are overridable.
+  gatk --java-options "${GATK_JAVA_OPTS:--Xmx16g}" LiftoverVcf -I "$in" -O "$lift" -C "$chain" -R "$fa" \
+    --REJECT "$TMP/$(basename "$out" .gz).reject.vcf.gz" \
+    --RECOVER_SWAPPED_REF_ALT true --WARN_ON_MISSING_CONTIG true \
+    --MAX_RECORDS_IN_RAM "${GATK_MAX_RECORDS_IN_RAM:-2000}" --TMP_DIR "$TMP" \
+    --CREATE_INDEX false > "$LOG/liftover_$(basename "$in").log" 2>&1 \
+    || die "GATK LiftoverVcf failed on $in (see $LOG/liftover_$(basename "$in").log)"
+  bcftools view "$lift" -Oz -o "$out" && tabix -f -p vcf "$out" \
+    || die "bcftools index failed on $in"
+  rm -f "$lift"
 }
 
 # Slice a (possibly remote) VCF/BCF down to <regions> (a CHROM<TAB>POS tsv or BED), writing a

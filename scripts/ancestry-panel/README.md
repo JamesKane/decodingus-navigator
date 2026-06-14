@@ -47,12 +47,20 @@ default** (modern global resolution is an enhancement; 1000G-CHM13 + AADR give a
 
 ## Prerequisites
 
-External tools (not bundled): `curl`, `bcftools` + `tabix`, `CrossMap` (`pip install CrossMap`),
-`plink2`, and **AdmixTools' `convertf`** (AADR packed→VCF), `awk`, and `aws` **or** `rclone`
-(publish). Use AdmixTools' convertf, not EIGENSOFT's — recent AADR `.geno` ships as TGENO
-(transposed packed), which AdmixTools convertf reads but EIGENSOFT's does not. Both are on bioconda
-(`admixtools`, `eigensoft`); install via conda/micromamba. Plus this repo's `navigator-panelbuild`
-(`cargo run -p navigator-panelbuild`).
+External tools (not bundled): `curl`, `bcftools` + `tabix`, `samtools`, `CrossMap`
+(`pip install CrossMap`), `plink2`, **AdmixTools' `convertf`**, **GATK** (`gatk` ≥4), `awk`, and
+`aws` **or** `rclone` (publish). Plus this repo's `navigator-panelbuild`
+(`cargo run -p navigator-panelbuild`). Notes:
+- **convertf** must be AdmixTools', not EIGENSOFT's — recent AADR `.geno` ships as TGENO
+  (transposed packed), which AdmixTools convertf reads but EIGENSOFT's does not.
+- **VCF liftover uses GATK `LiftoverVcf`, not CrossMap** — it is allele-aware (reverse-complements
+  on inverted/minus-strand chain blocks and swaps REF↔ALT + flips genotypes via
+  `RECOVER_SWAPPED_REF_ALT`). CrossMap's `vcf` mode silently blanks the ALT wherever the CHM13 base
+  differs from the source REF (most AIMs), corrupting ~3/4 of the lifted genotypes. CrossMap is
+  still used for the allele-free **BED** site-lift in stage 02. Tune heap/spill with
+  `GATK_JAVA_OPTS` / `GATK_MAX_RECORDS_IN_RAM` (defaults `-Xmx16g` / `2000`, sized for wide
+  many-sample VCFs).
+- bioconda has `admixtools` and `eigensoft`; install via conda/micromamba.
 
 ## You must provide / curate
 
