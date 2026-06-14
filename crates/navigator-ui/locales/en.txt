@@ -79,6 +79,8 @@ account.offline=○ offline
 status.label=Status:
 status.online=● Online
 status.offline=○ Offline
+status.pending=pending
+status.pendingHint=Publishes waiting to reach the PDS — they retry automatically (and after reconnect).
 
 # Theme + language
 theme.toggle=Toggle theme

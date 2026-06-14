@@ -179,6 +179,8 @@ pub enum Command {
     Logout,
     PublishCoverage(i64),
     PublishVariants { alignment_id: i64, contig: String },
+    /// Attempt to push the ready outbox rows now (also runs periodically + after a publish).
+    DrainOutbox,
     /// Manually override the consensus haplogroup for a subject + DNA type.
     SetHaploOverride { biosample_guid: SampleGuid, dna_type: DnaType, haplogroup: String, reason: Option<String> },
     /// Clear a manual override.
@@ -392,6 +394,10 @@ pub enum Event {
     Authenticated(Option<String>),
     /// A record was published; `kind` is a human label, `uri` the `at://` URI.
     Published { kind: String, uri: String },
+    /// A publish was enqueued to the durable outbox (it'll send now if online, else on reconnect).
+    Queued { kind: String },
+    /// Outbox rows still awaiting a successful push (the "N pending" indicator).
+    SyncPending(i64),
     /// Whether the last PDS write reached the server (offline indicator).
     SyncOnline(bool),
     /// How many runs had their sequencing lab filled in by the AppView backfill (`0` ⇒ quiet).
@@ -821,16 +827,13 @@ pub async fn handle(app: &App, cmd: Command) -> Event {
             Ok(()) => Event::Authenticated(None),
             Err(e) => Event::Error(e.to_string()),
         },
-        Command::PublishCoverage(alignment_id) => match app.publish_coverage(alignment_id).await {
-            Ok(r) => Event::Published { kind: "coverage summary".into(), uri: r.uri },
-            Err(e) => Event::Error(e.to_string()),
-        },
-        Command::PublishVariants { alignment_id, contig } => {
-            match app.publish_variants(alignment_id, &contig).await {
-                Ok(r) => Event::Published { kind: format!("{contig} variants"), uri: r.uri },
-                Err(e) => Event::Error(e.to_string()),
-            }
+        // Publishes enqueue to the durable outbox then drain — handled in the spawn loop (they emit
+        // multiple events: Queued + per-row Published + SyncPending). Reaching here is a routing bug.
+        Command::PublishCoverage(id) => Event::Error(format!("internal: unrouted PublishCoverage {id}")),
+        Command::PublishVariants { alignment_id, .. } => {
+            Event::Error(format!("internal: unrouted PublishVariants {alignment_id}"))
         }
+        Command::DrainOutbox => Event::Error("internal: unrouted DrainOutbox".into()),
         Command::SetHaploOverride { biosample_guid, dna_type, haplogroup, reason } => {
             match app.set_manual_override(biosample_guid, dna_type, &haplogroup, reason.as_deref()).await {
                 Ok(()) => Event::ReconciliationChanged { biosample_guid, dna_type },
@@ -851,11 +854,8 @@ pub async fn handle(app: &App, cmd: Command) -> Event {
             Ok(sites) => Event::Heteroplasmy { alignment_id, sites },
             Err(e) => Event::Error(e.to_string()),
         },
-        Command::PublishReconciliation { biosample_guid, dna_type, heteroplasmy, identity } => {
-            match app.publish_reconciliation(biosample_guid, dna_type, &heteroplasmy, identity.as_ref()).await {
-                Ok(r) => Event::Published { kind: format!("{} reconciliation", dna_type.as_str()), uri: r.uri },
-                Err(e) => Event::Error(e.to_string()),
-            }
+        Command::PublishReconciliation { biosample_guid, .. } => {
+            Event::Error(format!("internal: unrouted PublishReconciliation {biosample_guid:?}"))
         }
     }
 }
@@ -1135,6 +1135,46 @@ async fn deep_analyze_project_streaming(
     wake();
 }
 
+/// Report an enqueue result (`Queued`/`Error`), then drain the outbox so an online publish sends
+/// immediately. `kind` is the human label for the queued feedback.
+async fn publish_then_drain(
+    app: &App,
+    enqueue: Result<(), navigator_app::AppError>,
+    kind: &str,
+    evt_tx: &Sender<Event>,
+    wake: &(dyn Fn() + Send + Sync),
+) {
+    match enqueue {
+        Ok(()) => {
+            let _ = evt_tx.send(Event::Queued { kind: kind.to_string() });
+            wake();
+            emit_drain(app, evt_tx, wake).await;
+        }
+        Err(e) => {
+            let _ = evt_tx.send(Event::Error(e.to_string()));
+            wake();
+        }
+    }
+}
+
+/// Drain the outbox once and emit the outcome: a `Published` per sent row, the online flag, and the
+/// remaining pending count.
+async fn emit_drain(app: &App, evt_tx: &Sender<Event>, wake: &(dyn Fn() + Send + Sync)) {
+    match app.drain_outbox().await {
+        Ok(outcome) => {
+            for (kind, uri) in outcome.published {
+                let _ = evt_tx.send(Event::Published { kind, uri });
+            }
+            let _ = evt_tx.send(Event::SyncOnline(app.is_online()));
+            let _ = evt_tx.send(Event::SyncPending(outcome.pending));
+        }
+        Err(e) => {
+            let _ = evt_tx.send(Event::Error(e.to_string()));
+        }
+    }
+    wake();
+}
+
 /// Spawn the worker thread: open the workspace at `db_path` inside the worker's runtime
 /// (so the connection pool lives there), then serve commands. `wake` is called after
 /// each event so the UI can `request_repaint`. Returns the command sender and event
@@ -1169,6 +1209,25 @@ pub fn spawn(
                 };
                 // Shared cancel flag for the full-analysis pipeline (one runs at a time).
                 let cancel = Arc::new(AtomicBool::new(false));
+
+                // Background outbox drain: retry pending PDS publishes every 30s (catches
+                // offline→online without a user action). Skips work when the queue is empty.
+                {
+                    let app = app.clone();
+                    let evt_tx = evt_tx.clone();
+                    let wake = wake.clone();
+                    tokio::spawn(async move {
+                        let mut tick = tokio::time::interval(std::time::Duration::from_secs(30));
+                        tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+                        loop {
+                            tick.tick().await;
+                            if app.outbox_pending_count().await.unwrap_or(0) > 0 {
+                                emit_drain(&app, &evt_tx, &*wake).await;
+                            }
+                        }
+                    });
+                }
+
                 while let Some(cmd) = cmd_rx.recv().await {
                     let app = app.clone();
                     let evt_tx: Sender<Event> = evt_tx.clone();
@@ -1199,6 +1258,25 @@ pub fn spawn(
                             // Signals the in-flight full analysis / deep-analyze to stop between steps.
                             Command::CancelAnalysis => {
                                 cancel.store(true, Ordering::Relaxed);
+                            }
+                            // Publishes enqueue durably, then drain (send-now-if-online). The drain
+                            // emits Published per row + SyncPending; we emit Queued for instant feedback.
+                            Command::PublishCoverage(id) => {
+                                publish_then_drain(&app, app.publish_coverage(id).await, "coverage summary", &evt_tx, &*wake).await;
+                            }
+                            Command::PublishVariants { alignment_id, contig } => {
+                                let r = app.publish_variants(alignment_id, &contig).await;
+                                publish_then_drain(&app, r, &format!("{contig} variants"), &evt_tx, &*wake).await;
+                            }
+                            Command::PublishReconciliation { biosample_guid, dna_type, heteroplasmy, identity } => {
+                                let r = app
+                                    .publish_reconciliation(biosample_guid, dna_type, &heteroplasmy, identity.as_ref())
+                                    .await;
+                                publish_then_drain(&app, r, &format!("{} reconciliation", dna_type.as_str()), &evt_tx, &*wake).await;
+                            }
+                            // Periodic / on-reconnect drain of the outbox.
+                            Command::DrainOutbox => {
+                                emit_drain(&app, &evt_tx, &*wake).await;
                             }
                             other => {
                                 let event = handle(&app, other).await;

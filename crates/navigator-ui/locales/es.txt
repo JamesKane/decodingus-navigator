@@ -71,6 +71,8 @@ account.offline=○ sin conexión
 status.label=Estado:
 status.online=● En línea
 status.offline=○ Sin conexión
+status.pending=pendiente(s)
+status.pendingHint=Publicaciones esperando llegar al PDS — se reintentan automáticamente (y tras reconectar).
 
 theme.toggle=Cambiar tema
 lang.label=Idioma

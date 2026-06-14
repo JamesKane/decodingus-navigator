@@ -21,6 +21,8 @@ pub mod project;
 pub mod reconciliation;
 pub mod sequence_run;
 pub mod str_profile;
+pub mod sync_history;
+pub mod sync_outbox;
 pub mod variant_set;
 pub mod y_profile;
 

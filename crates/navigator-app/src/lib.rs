@@ -255,7 +255,7 @@ use navigator_domain::ysnp_dict::{self, YsnpDictionary};
 use navigator_store::{
     alignment, ancestry_result, artifact, biosample, chip_profile, haplogroup_call,
     mtdna as mtdna_store, project, reconciliation as recon_store, sequence_run, str_profile,
-    variant_set, Store, StoreError,
+    sync_history, sync_outbox, variant_set, Store, StoreError,
 };
 use serde::de::DeserializeOwned;
 use serde::Serialize;
@@ -578,6 +578,29 @@ fn ancestry_pca_ancient_path(build: ReferenceBuild) -> PathBuf {
 /// Map a computed [`AncestryResult`] onto the shared federated wire record. The analysis
 /// method is carried verbatim from the estimator that produced the result (never inferred),
 /// so the published `analysisMethod` always matches the composition shown.
+/// How many outbox rows a single [`App::drain_outbox`] pass attempts.
+const OUTBOX_BATCH: i64 = 16;
+
+/// Exponential backoff for a transient publish failure: `2^attempt` minutes, capped at 1 hour
+/// (mirrors the legacy Scala sync queue). `attempt` is the 1-based retry count.
+fn backoff_secs(attempt: i64) -> i64 {
+    let minutes = 1i64.checked_shl(attempt.clamp(0, 16) as u32).unwrap_or(i64::MAX);
+    (minutes.saturating_mul(60)).min(3600)
+}
+
+/// The result of one [`App::drain_outbox`] pass — what the UI reports / shows in its indicator.
+#[derive(Debug, Clone, Default)]
+pub struct DrainOutcome {
+    /// `(kind, at-uri)` of each row published this pass.
+    pub published: Vec<(String, String)>,
+    /// Rows that hit a non-transient error and were marked FAILED.
+    pub failed: usize,
+    /// Whether a transient failure rescheduled a row (i.e. we're likely offline).
+    pub retry_scheduled: usize,
+    /// Rows still awaiting a successful push after this pass.
+    pub pending: i64,
+}
+
 fn population_breakdown_record(result: &AncestryResult) -> PopulationBreakdownRecord {
     let components = result
         .components
@@ -2076,6 +2099,12 @@ impl App {
         self.auth.active.lock().unwrap().clone()
     }
 
+    /// The signed-in account's DID, or [`AppError::NotAuthenticated`] — the cheap auth guard publish
+    /// methods run before building a record / touching the DB.
+    fn require_account(&self) -> Result<String, AppError> {
+        self.current_account().ok_or(AppError::NotAuthenticated)
+    }
+
     /// Sign out: drop the active account and delete its stored session.
     pub async fn logout(&self) -> Result<(), AppError> {
         let did = self.auth.active.lock().unwrap().take();
@@ -2105,6 +2134,130 @@ impl App {
     /// optimistic (`true`) until a transient write failure.
     pub fn is_online(&self) -> bool {
         self.auth.online.load(Ordering::Relaxed)
+    }
+
+    // ---- sync durability: outbox enqueue + drain (gap §5) -------------------
+
+    /// Enqueue a built record for publishing to the signed-in account's PDS. The publish becomes
+    /// durable: it survives restart and retries automatically (with backoff) on a transient/offline
+    /// failure instead of being lost. Re-enqueuing the same `entity_ref` coalesces (newest wins).
+    /// Errors [`AppError::NotAuthenticated`] when signed out (we need the destination DID).
+    async fn enqueue_publish(
+        &self,
+        kind: &str,
+        entity_ref: &str,
+        collection: &str,
+        rkey: Option<&str>,
+        value: serde_json::Value,
+    ) -> Result<(), AppError> {
+        let did = self.current_account().ok_or(AppError::NotAuthenticated)?;
+        let entry = sync_outbox::NewOutboxEntry {
+            account_did: did,
+            kind: kind.to_string(),
+            entity_ref: entity_ref.to_string(),
+            collection: collection.to_string(),
+            rkey: rkey.map(str::to_string),
+            payload: serde_json::to_string(&value)?,
+        };
+        sync_outbox::enqueue(self.store.pool(), &entry, &Utc::now().to_rfc3339()).await?;
+        Ok(())
+    }
+
+    /// Pending (not-yet-published) outbox rows for the signed-in account — drives the UI's
+    /// "N pending" indicator. `0` when signed out.
+    pub async fn outbox_pending_count(&self) -> Result<i64, AppError> {
+        let Some(did) = self.current_account() else { return Ok(0) };
+        Ok(sync_outbox::pending_count(self.store.pool(), &did).await?)
+    }
+
+    /// All non-completed outbox rows (PENDING + FAILED) for the signed-in account — a sync detail view.
+    pub async fn outbox_entries(&self) -> Result<Vec<sync_outbox::OutboxEntry>, AppError> {
+        let Some(did) = self.current_account() else { return Ok(Vec::new()) };
+        Ok(sync_outbox::list(self.store.pool(), &did).await?)
+    }
+
+    /// Recent publish outcomes (success/failure) for the signed-in account — the audit trail.
+    pub async fn sync_history(&self, limit: i64) -> Result<Vec<sync_history::HistoryEntry>, AppError> {
+        let Some(did) = self.current_account() else { return Ok(Vec::new()) };
+        Ok(sync_history::recent(self.store.pool(), &did, limit).await?)
+    }
+
+    /// Attempt to publish the ready outbox rows for the signed-in account. Each success is logged to
+    /// history and its row removed; a transient failure reschedules the row with exponential backoff
+    /// and stops the batch (we're likely offline); a non-transient failure marks the row `FAILED`.
+    /// A no-op (and `Ok`) when signed out. Safe to call repeatedly (periodically + after a publish).
+    pub async fn drain_outbox(&self) -> Result<DrainOutcome, AppError> {
+        let Some(did) = self.current_account() else { return Ok(DrainOutcome::default()) };
+        let mut outcome = DrainOutcome::default();
+        // Build the resilient engine once (loads the session). Signed-out / no session → nothing to do.
+        let mut engine = match self.sync_engine() {
+            Ok(e) => e,
+            Err(_) => return Ok(outcome),
+        };
+        let now = Utc::now();
+        let batch = sync_outbox::ready(self.store.pool(), &did, &now.to_rfc3339(), OUTBOX_BATCH).await?;
+        for entry in batch {
+            let value: serde_json::Value = serde_json::from_str(&entry.payload)?;
+            let result = match &entry.rkey {
+                Some(rk) => engine.push_create_rkey(&entry.collection, value, rk).await,
+                None => engine.push_create(&entry.collection, value).await,
+            };
+            let attempt = entry.attempt_count + 1;
+            match result {
+                Ok(rref) => {
+                    self.log_history(&entry, "SUCCESS", Some(&rref), attempt, None).await?;
+                    sync_outbox::complete(self.store.pool(), entry.id).await?;
+                    outcome.published.push((entry.kind.clone(), rref.uri));
+                }
+                Err(e) if e.is_transient() => {
+                    // Offline / 5xx / timeout: back off and stop — the rest of the batch will wait too.
+                    let next = now + chrono::Duration::seconds(backoff_secs(attempt));
+                    sync_outbox::reschedule(
+                        self.store.pool(),
+                        entry.id,
+                        attempt,
+                        &next.to_rfc3339(),
+                        &e.to_string(),
+                        &now.to_rfc3339(),
+                    )
+                    .await?;
+                    outcome.retry_scheduled += 1;
+                    break;
+                }
+                Err(e) => {
+                    // Validation / auth / other terminal error: give up on this row (visible as FAILED).
+                    self.log_history(&entry, "FAILED", None, attempt, Some(&e.to_string())).await?;
+                    sync_outbox::mark_failed(self.store.pool(), entry.id, attempt, &e.to_string(), &now.to_rfc3339()).await?;
+                    outcome.failed += 1;
+                }
+            }
+        }
+        outcome.pending = sync_outbox::pending_count(self.store.pool(), &did).await?;
+        Ok(outcome)
+    }
+
+    /// Append a sync-history row for a finished push attempt.
+    async fn log_history(
+        &self,
+        entry: &sync_outbox::OutboxEntry,
+        status: &str,
+        rref: Option<&RecordRef>,
+        attempt_count: i64,
+        error: Option<&str>,
+    ) -> Result<(), AppError> {
+        let h = sync_history::NewHistoryEntry {
+            account_did: entry.account_did.clone(),
+            kind: entry.kind.clone(),
+            entity_ref: entry.entity_ref.clone(),
+            collection: entry.collection.clone(),
+            status: status.to_string(),
+            at_uri: rref.map(|r| r.uri.clone()),
+            at_cid: rref.map(|r| r.cid.clone()),
+            attempt_count,
+            error: error.map(str::to_string),
+        };
+        sync_history::record(self.store.pool(), &h, &Utc::now().to_rfc3339()).await?;
+        Ok(())
     }
 
     /// Load (or, on first use, generate + publish) this installation's Ed25519 **device key**
@@ -2226,44 +2379,47 @@ impl App {
 
     /// Publish the alignment's coverage summary to the signed-in account's PDS (with
     /// refresh-on-expiry and retry/backoff via [`AsyncSync`]).
-    pub async fn publish_coverage(&self, alignment_id: i64) -> Result<RecordRef, AppError> {
-        let mut engine = self.sync_engine()?; // auth check before touching the DB
+    pub async fn publish_coverage(&self, alignment_id: i64) -> Result<(), AppError> {
+        self.require_account()?; // auth check before touching the DB
         let value = self.coverage_record(alignment_id).await?;
-        Ok(engine.push_create(NS_ALIGNMENT, value).await?)
+        self.enqueue_publish("coverage", &format!("alignment:{alignment_id}"), NS_ALIGNMENT, None, value).await
     }
 
     /// Publish every persisted ancestry estimate (admixture + PCA-GMM) for the alignment to the
     /// signed-in account's PDS — one populationBreakdown record per method. This is the researcher
     /// opt-in act for the ancestry section — anonymized population proportions only.
-    pub async fn publish_ancestry(&self, alignment_id: i64) -> Result<Vec<RecordRef>, AppError> {
-        let mut engine = self.sync_engine()?; // auth check before touching the DB
-        let values = self.ancestry_records(alignment_id).await?;
-        let mut refs = Vec::new();
-        for value in values {
-            refs.push(engine.push_create(NS_POPULATION_BREAKDOWN, value).await?);
+    pub async fn publish_ancestry(&self, alignment_id: i64) -> Result<(), AppError> {
+        self.require_account()?; // auth check before touching the DB
+        // One outbox row per method, keyed by method so re-publishing coalesces per estimate.
+        let results = ancestry_result::list_for_alignment(self.store.pool(), alignment_id).await?;
+        for r in &results {
+            let value = serde_json::to_value(population_breakdown_record(r))?;
+            let entity_ref = format!("ancestry:{alignment_id}:{}", r.method);
+            self.enqueue_publish("ancestry", &entity_ref, NS_POPULATION_BREAKDOWN, None, value).await?;
         }
-        Ok(refs)
+        Ok(())
     }
 
     /// Publish the anonymized biosample summary to the signed-in account's PDS.
-    pub async fn publish_biosample(&self, biosample_guid: SampleGuid) -> Result<RecordRef, AppError> {
-        let mut engine = self.sync_engine()?; // auth check before touching the DB
+    pub async fn publish_biosample(&self, biosample_guid: SampleGuid) -> Result<(), AppError> {
+        self.require_account()?; // auth check before touching the DB
         let value = self.biosample_record(biosample_guid).await?;
-        Ok(engine.push_create(NS_BIOSAMPLE, value).await?)
+        self.enqueue_publish("biosample", &format!("biosample:{biosample_guid}"), NS_BIOSAMPLE, None, value).await
     }
 
     /// Publish a sequence-run characterization to the signed-in account's PDS.
-    pub async fn publish_sequence_run(&self, run: &SequenceRun) -> Result<RecordRef, AppError> {
-        let mut engine = self.sync_engine()?; // auth check before touching the DB
+    pub async fn publish_sequence_run(&self, run: &SequenceRun) -> Result<(), AppError> {
+        self.require_account()?; // auth check before touching the DB
         let value = self.sequence_run_record(run).await?;
-        Ok(engine.push_create(NS_SEQUENCERUN, value).await?)
+        self.enqueue_publish("seqrun", &format!("seqrun:{}", run.id), NS_SEQUENCERUN, None, value).await
     }
 
     /// Publish the alignment's de-novo calls for `contig` to the signed-in account's PDS.
-    pub async fn publish_variants(&self, alignment_id: i64, contig: &str) -> Result<RecordRef, AppError> {
-        let mut engine = self.sync_engine()?; // auth check before touching the DB
+    pub async fn publish_variants(&self, alignment_id: i64, contig: &str) -> Result<(), AppError> {
+        self.require_account()?; // auth check before touching the DB
         let value = self.variants_record(alignment_id, contig).await?;
-        Ok(engine.push_create(PRIVATE_VARIANTS_COLLECTION, value).await?)
+        let entity_ref = format!("variants:{alignment_id}:{contig}");
+        self.enqueue_publish("variants", &entity_ref, PRIVATE_VARIANTS_COLLECTION, None, value).await
     }
 
     // ---- panels + IBD ------------------------------------------------------
@@ -3140,10 +3296,11 @@ impl App {
         dna_type: DnaType,
         heteroplasmy: &[HeteroplasmySite],
         identity: Option<&IdentityVerification>,
-    ) -> Result<RecordRef, AppError> {
-        let mut engine = self.sync_engine()?; // auth check before touching the DB
+    ) -> Result<(), AppError> {
+        self.require_account()?; // auth check before touching the DB
         let value = self.reconciliation_record(biosample_guid, dna_type, heteroplasmy, identity).await?;
-        Ok(engine.push_create(HAPLOGROUP_RECONCILIATION_COLLECTION, value).await?)
+        let entity_ref = format!("reconciliation:{biosample_guid}:{dna_type:?}");
+        self.enqueue_publish("reconciliation", &entity_ref, HAPLOGROUP_RECONCILIATION_COLLECTION, None, value).await
     }
 
     /// All recorded per-source calls for a subject + DNA type (for display / audit).
@@ -5630,6 +5787,36 @@ mod ibd_federated_tests {
     fn parse_suggestions_empty_or_malformed_is_empty() {
         assert!(parse_ibd_suggestions(&serde_json::json!({})).is_empty());
         assert!(parse_ibd_suggestions(&serde_json::json!({ "items": "nope" })).is_empty());
+    }
+}
+
+#[cfg(test)]
+mod outbox_tests {
+    use super::*;
+
+    #[test]
+    fn backoff_doubles_per_attempt_and_caps_at_one_hour() {
+        assert_eq!(backoff_secs(1), 120); // 2 min
+        assert_eq!(backoff_secs(2), 240); // 4 min
+        assert_eq!(backoff_secs(3), 480); // 8 min
+        assert_eq!(backoff_secs(5), 1920); // 32 min
+        assert_eq!(backoff_secs(6), 3600); // 64 min → capped at 1 h
+        assert_eq!(backoff_secs(40), 3600); // huge attempt → still capped, no overflow
+        assert_eq!(backoff_secs(0), 60); // defensive: 1 min
+    }
+
+    #[tokio::test]
+    async fn publish_while_signed_out_is_not_authenticated_and_queues_nothing() {
+        let app = App::new(Store::open_in_memory().await.unwrap());
+        assert!(matches!(app.publish_coverage(1).await, Err(AppError::NotAuthenticated)));
+        // No account → nothing enqueued, and the accessors degrade gracefully.
+        assert_eq!(app.outbox_pending_count().await.unwrap(), 0);
+        assert!(app.outbox_entries().await.unwrap().is_empty());
+        assert!(app.sync_history(10).await.unwrap().is_empty());
+        // Draining without an account is a harmless no-op.
+        let outcome = app.drain_outbox().await.unwrap();
+        assert_eq!(outcome.pending, 0);
+        assert!(outcome.published.is_empty());
     }
 }
 

@@ -382,6 +382,8 @@ pub struct NavigatorApp {
     account: Option<String>,
     /// Whether the last PDS write reached the server (offline indicator).
     online: bool,
+    /// Outbox rows still awaiting a successful push (the "N pending" sync indicator).
+    sync_pending: i64,
     logging_in: bool,
     publishing: bool,
     /// A batch project-directory import is in flight (disables the button).
@@ -1014,6 +1016,7 @@ impl NavigatorApp {
             ibd_intros: std::collections::HashMap::new(),
             account: None,
             online: true,
+            sync_pending: 0,
             logging_in: false,
             publishing: false,
             importing: false,
@@ -1557,14 +1560,26 @@ impl NavigatorApp {
                         Some(did) => format!("Signed in as {did}"),
                         None => "Signed out".into(),
                     };
+                    let signed_in = account.is_some();
                     self.account = account;
                     self.logging_in = false;
+                    if signed_in {
+                        // Flush anything queued while signed out / on a previous session.
+                        let _ = self.tx.send(Command::DrainOutbox);
+                    } else {
+                        self.sync_pending = 0;
+                    }
                 }
                 Event::Published { kind, uri } => {
                     self.status = format!("Published {kind}: {uri}");
                     self.publishing = false;
-                    let _ = self.tx.send(Command::SyncStatus); // refresh the online dot
                 }
+                Event::Queued { kind } => {
+                    // The publish is durably queued; it sends now if online, else on reconnect.
+                    self.status = format!("Queued {kind} for publish");
+                    self.publishing = false;
+                }
+                Event::SyncPending(n) => self.sync_pending = n,
                 Event::SyncOnline(online) => self.online = online,
                 Event::Error(e) => {
                     self.status = format!("Error: {e}");
@@ -1735,6 +1750,14 @@ impl eframe::App for NavigatorApp {
                     ui.colored_label(egui::Color32::from_rgb(80, 190, 120), self.tr("status.online"));
                 } else {
                     ui.colored_label(egui::Color32::from_rgb(220, 150, 60), self.tr("status.offline"));
+                }
+                if self.sync_pending > 0 {
+                    ui.separator();
+                    ui.colored_label(
+                        egui::Color32::from_rgb(220, 150, 60),
+                        format!("⟳ {} {}", self.sync_pending, self.tr("status.pending")),
+                    )
+                    .on_hover_text(self.tr("status.pendingHint"));
                 }
                 ui.separator();
                 ui.label(egui::RichText::new(self.tr("status.label")).weak());
@@ -4341,7 +4364,7 @@ impl NavigatorApp {
             let ready = self.account.is_some() && !self.publishing;
             if ui.add_enabled(ready, egui::Button::new(label)).clicked() {
                 self.publishing = true;
-                self.status = "Publishing to PDS…".into();
+                self.status = "Queueing for publish…".into();
                 let _ = self.tx.send(cmd);
             }
             if self.account.is_none() {
