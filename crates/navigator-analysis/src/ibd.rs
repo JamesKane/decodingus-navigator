@@ -12,6 +12,8 @@ use std::collections::{BTreeSet, HashMap};
 
 use serde::{Deserialize, Serialize};
 
+use crate::error::AnalysisError;
+
 /// Relationship category from total shared cM (mirrors the Scala enum).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum RelationshipEstimate {
@@ -158,6 +160,7 @@ pub fn normalize_chromosome(chr: &str) -> String {
 }
 
 /// Sorted position/cM arrays for one chromosome; linear interpolation with end extrapolation.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 struct ChromosomeMap {
     positions: Vec<i32>,
     cm: Vec<f64>,
@@ -197,11 +200,22 @@ impl ChromosomeMap {
 }
 
 /// bp -> cM genetic map, keyed by normalized chromosome.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct GeneticMap {
     maps: HashMap<String, ChromosomeMap>,
 }
 
 impl GeneticMap {
+    /// Deserialize a built genetic-map asset (bincode), as written by `panelbuild genetic-map`.
+    pub fn from_bytes(bytes: &[u8]) -> Result<Self, AnalysisError> {
+        bincode::deserialize(bytes).map_err(|e| AnalysisError::Message(format!("genetic map decode: {e}")))
+    }
+
+    /// Serialize to the binary asset form (bincode).
+    pub fn to_bytes(&self) -> Result<Vec<u8>, AnalysisError> {
+        bincode::serialize(self).map_err(|e| AnalysisError::Message(format!("genetic map encode: {e}")))
+    }
+
     /// Build from per-chromosome `(name, positions, cm)` marker arrays.
     pub fn from_markers(markers: impl IntoIterator<Item = (String, Vec<i32>, Vec<f64>)>) -> Self {
         let maps = markers
@@ -456,6 +470,19 @@ mod tests {
         // extrapolation past the last marker uses the last rate (1 cM / 1000 bp).
         assert_eq!(m.position_to_cm("1", 4_000), Some(3.0));
         assert!(m.position_to_cm("9", 1).is_none());
+    }
+
+    #[test]
+    fn genetic_map_round_trips_through_bincode() {
+        let m = GeneticMap::from_markers([
+            ("1".to_string(), vec![1_000, 2_000, 3_000], vec![0.0, 1.0, 2.5]),
+            ("X".to_string(), vec![5_000, 9_000], vec![0.0, 4.0]),
+        ]);
+        let back = GeneticMap::from_bytes(&m.to_bytes().unwrap()).unwrap();
+        assert_eq!(back, m);
+        // The reloaded map interpolates identically.
+        assert_eq!(back.position_to_cm("chr1", 1_500), Some(0.5));
+        assert_eq!(back.position_to_cm("X", 7_000), Some(2.0));
     }
 
     /// Build a chromosome of `n` SNPs spaced `step` bp apart, dosages from `f(i)`.

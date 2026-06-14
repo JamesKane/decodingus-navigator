@@ -23,6 +23,7 @@ use clap::{Parser, Subcommand};
 use flate2::read::MultiGzDecoder;
 use navigator_analysis::ancestry::{AncestryPanel, PanelSite};
 
+mod genetic_map;
 mod pca;
 
 /// The five 1000G super-populations, in panel-axis order.
@@ -44,6 +45,8 @@ enum Cmd {
     Pca(pca::PcaArgs),
     /// Build a fine-grained (26-population) AF panel from a genotype matrix + sample/pop metadata.
     FinePanel(pca::FinePanelArgs),
+    /// Build the IBD genetic-map asset from a CHM13-lifted recombination map.
+    GeneticMap(genetic_map::GeneticMapArgs),
 }
 
 #[derive(Parser)]
@@ -102,6 +105,7 @@ fn main() -> Result<()> {
         Cmd::Panel(args) => build_panel(args),
         Cmd::Pca(args) => pca::build_pca(args),
         Cmd::FinePanel(args) => pca::build_fine_panel(args),
+        Cmd::GeneticMap(args) => genetic_map::build_genetic_map(args),
     }
 }
 

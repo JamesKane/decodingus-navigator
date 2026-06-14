@@ -625,6 +625,34 @@ fn ancestry_pca_ancient_path(build: ReferenceBuild) -> PathBuf {
         .join(format!("ancestry_pca_ancient_{}.bin", build.as_str()))
 }
 
+/// The genetic-map asset path for a build (`$NAVIGATOR_GENETIC_MAP` override, else
+/// `<base>/ancestry/genetic_map_<build>.bin`). Optional — IBD falls back to a uniform map if absent.
+fn genetic_map_path(build: ReferenceBuild) -> PathBuf {
+    if let Ok(p) = std::env::var("NAVIGATOR_GENETIC_MAP") {
+        return PathBuf::from(p);
+    }
+    refgenome_cache::base_dir()
+        .join("ancestry")
+        .join(format!("genetic_map_{}.bin", build.as_str()))
+}
+
+/// Load the real recombination map for IBD if the asset is present, else fall back to a uniform
+/// 1 cM/Mb map over `lengths` (logged). `lengths` is the observed `(chromosome, max_bp)` per the
+/// compared samples — used only for the uniform fallback.
+fn load_genetic_map(build: ReferenceBuild, lengths: &[(&str, i32)]) -> GeneticMap {
+    let path = genetic_map_path(build);
+    match std::fs::read(&path).ok().and_then(|b| GeneticMap::from_bytes(&b).ok()) {
+        Some(m) => m,
+        None => {
+            eprintln!(
+                "genetic map {} not found — IBD using uniform 1 cM/Mb (segment cM + relationship bands are approximate)",
+                path.display()
+            );
+            GeneticMap::uniform(1.0, lengths)
+        }
+    }
+}
+
 /// Map a computed [`AncestryResult`] onto the shared federated wire record. The analysis
 /// method is carried verbatim from the estimator that produced the result (never inferred),
 /// so the published `analysisMethod` always matches the composition shown.
@@ -5536,8 +5564,12 @@ impl App {
         let sample_a = group_chrom_genotypes(&ga);
         let sample_b = group_chrom_genotypes(&gb);
 
-        // Uniform 1 cM/Mb map over the chromosomes present (max observed position as the
-        // length). A real HapMap genetic map can replace this later.
+        // Load the real recombination map for the sample build (CHM13 unless the alignment says
+        // otherwise), falling back to a uniform 1 cM/Mb map over the observed chromosome spans.
+        let build = alignment::get(self.store.pool(), alignment_a)
+            .await?
+            .and_then(|a| canonical_build(&a.reference_build))
+            .unwrap_or(ReferenceBuild::Chm13v2);
         let mut lengths: BTreeMap<String, i32> = BTreeMap::new();
         for sample in [&sample_a, &sample_b] {
             for (chr, cg) in sample {
@@ -5546,7 +5578,7 @@ impl App {
             }
         }
         let pairs: Vec<(&str, i32)> = lengths.iter().map(|(k, v)| (k.as_str(), *v)).collect();
-        let gmap = GeneticMap::uniform(1.0, &pairs);
+        let gmap = load_genetic_map(build, &pairs);
 
         let segments = PairwiseIbdDetector::new(config).detect_segments(&sample_a, &sample_b, &gmap);
         let summary = MatchSummary::from_segments(&segments);
