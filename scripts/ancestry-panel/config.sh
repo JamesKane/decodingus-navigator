@@ -80,19 +80,26 @@ AADR_FILE_PREFIX="${AADR_FILE_PREFIX:-${AADR_VERSION}.${AADR_DATASET}.aadr.PUB}"
 # NEVER bulk-download them: stage 04 remote-slices each chromosome at the 1240k sites (lifted to
 # hg38), pulling only the panel-relevant records (~GB). Requires htslib with GCS support.
 # Landing: https://gnomad.broadinstitute.org/downloads#v3-hgdp-1kg
-# CAVEAT: the bucket is "requester pays" — set HGDP_1KG_GCP_PROJECT to your billing project, and
-# point HGDP_1KG_BASE_URL at gs:// so bcftools can pass it through (https mirror won't authorise).
-HGDP_1KG_ENABLE="${HGDP_1KG_ENABLE:-0}"   # 1 to include (needs a GCP billing project)
+# NOTE: anonymous gs:// reads of this public bucket work with a GCS-enabled htslib — no GCP billing
+# project or auth required (verified 2026-06-13: header + region slice succeed unauthenticated).
+# HGDP_1KG_GCP_PROJECT is only needed if Google ever flips the bucket to requester-pays. The sample
+# -> population map (hgdp1kg.pops.tsv) is the gnomAD HGDP+1KG meta `hgdp_tgp_meta.Population` column.
+# Caveat: this callset re-includes the 1KG samples, which overlap our 1000G source — label only the
+# HGDP samples (or accept the 1KG double-count) when wiring it into the basis.
+HGDP_1KG_ENABLE="${HGDP_1KG_ENABLE:-0}"   # 1 to include
 HGDP_1KG_GCP_PROJECT="${HGDP_1KG_GCP_PROJECT:-}"
 HGDP_1KG_BASE_URL="${HGDP_1KG_BASE_URL:-gs://gcp-public-data--gnomad/release/3.1.2/vcf/genomes}"
 HGDP_1KG_PATTERN="${HGDP_1KG_PATTERN:-gnomad.genomes.v3.1.2.hgdp_tgp.chr%s.vcf.bgz}"
 
 # Simons Genome Diversity Project (modern deep diversity). GRCh38, distributed as PLINK by the
-# Reich lab. OPTIONAL. ~3 GB whole; small enough to fetch whole, then convert PLINK -> VCF in
-# stage 04 (like AADR). Reich host serves a broken TLS chain (lib.sh fetch adds -k for it).
+# Reich lab. OPTIONAL. Now served from sharehost.hms.harvard.edu (valid TLS — the old
+# reichdata.hms.harvard.edu path 404s; the -k hack no longer applies). NOTE: at this host the .bim
+# ships zipped as `${SGDP_PLINK_PREFIX}.bim.zip`, so stage 01's plain bed/bim/fam fetch must unzip
+# it before plink2 can read the set. sgdp.pops.tsv is keyed on SGDP_ID (SGDP metadata col 5) ->
+# Population_ID; verify that matches the PLINK .fam IID after download.
 SGDP_ENABLE="${SGDP_ENABLE:-0}"           # 1 to include
-SGDP_BASE_URL="${SGDP_BASE_URL:-https://reichdata.hms.harvard.edu/pub/datasets/sgdp}"
-SGDP_PLINK_PREFIX="${SGDP_PLINK_PREFIX:-cteam_extended.v4.maf0.1perc}" # VERIFY current prefix on the host
+SGDP_BASE_URL="${SGDP_BASE_URL:-https://sharehost.hms.harvard.edu/genetics/reich_lab/sgdp/variant_set}"
+SGDP_PLINK_PREFIX="${SGDP_PLINK_PREFIX:-cteam_extended.v4.maf0.1perc}" # verified at sharehost 2026-06-13 (.bim is .bim.zip)
 
 # Curated AADR population-label → deep-component map (edit this; ships in the repo).
 AADR_COMPONENT_MAP="${AADR_COMPONENT_MAP:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/pops/aadr_component_map.tsv}"
