@@ -346,6 +346,9 @@ pub struct NavigatorApp {
     /// An alignment to auto-select once its run's alignments load (subject-centric default).
     pending_alignment: Option<i64>,
     coverage: Option<Coverage>,
+    /// Cached coverage per alignment for the selected run's Data Sources rows (so each row shows
+    /// coverage/callable without first selecting that alignment). Keyed by alignment id.
+    coverage_by_aln: std::collections::HashMap<i64, Coverage>,
     /// Which contig's depth histogram the coverage view charts: `None` = whole-genome histogram,
     /// `Some(i)` = `coverage.contig_coverage_stats[i]`.
     coverage_hist_contig: Option<usize>,
@@ -411,6 +414,10 @@ const DANGER: egui::Color32 = egui::Color32::from_rgb(220, 60, 60);
 /// Scala Workbench. Re-applied on theme toggle.
 fn apply_theme(ctx: &egui::Context, dark: bool) {
     use egui::{Color32, Rounding, Stroke};
+    // Pin the preference so egui stops following the OS theme — otherwise `theme_preference`
+    // defaults to `System` and our styled visuals get clobbered by the host (e.g. a light macOS
+    // would show light even with Dark selected in Settings).
+    ctx.set_theme(if dark { egui::ThemePreference::Dark } else { egui::ThemePreference::Light });
     let mut style = (*ctx.style()).clone();
     let mut v = if dark { egui::Visuals::dark() } else { egui::Visuals::light() };
 
@@ -906,7 +913,9 @@ impl NavigatorApp {
         let _ = tx.send(Command::AuthStatus);
         let _ = tx.send(Command::SyncStatus);
         let _ = tx.send(Command::BackfillLabs); // resolve labs for runs imported before D8 landed
-        apply_theme(&cc.egui_ctx, true);
+        // Persisted theme wins; default dark. (Must match `dark_mode` below.)
+        let dark = !matches!(AppSettings::load().theme.as_deref(), Some("light"));
+        apply_theme(&cc.egui_ctx, dark);
         NavigatorApp {
             tx,
             rx,
@@ -980,6 +989,7 @@ impl NavigatorApp {
             selected_alignment: None,
             pending_alignment: None,
             coverage: None,
+            coverage_by_aln: std::collections::HashMap::new(),
             coverage_hist_contig: None,
             sex: None,
             read_metrics: None,
@@ -1387,12 +1397,25 @@ impl NavigatorApp {
                 Event::Alignments { sequence_run_id, alignments } => {
                     if self.selected_run == Some(sequence_run_id) {
                         self.alignments = alignments;
+                        // Load cached coverage for every alignment so each Data Sources row shows
+                        // coverage/callable without first being selected.
+                        let ids: Vec<i64> = self.alignments.iter().map(|a| a.id).collect();
+                        if !ids.is_empty() {
+                            let _ = self.tx.send(Command::LoadCoverageBulk(ids));
+                        }
                         // Apply a queued subject-default alignment once its run's list is loaded.
                         if let Some(pid) = self.pending_alignment {
                             if self.alignments.iter().any(|a| a.id == pid) {
                                 self.pending_alignment = None;
                                 self.select_alignment(pid);
                             }
+                        }
+                    }
+                }
+                Event::CoverageBulk(results) => {
+                    for (id, result) in results {
+                        if let Some(c) = result {
+                            self.coverage_by_aln.insert(id, c);
                         }
                     }
                 }
@@ -1417,8 +1440,17 @@ impl NavigatorApp {
                 }
                 Event::Coverage { alignment_id, result } => {
                     if self.selected_alignment == Some(alignment_id) {
-                        self.coverage = result;
+                        self.coverage = result.clone();
                         self.coverage_hist_contig = None; // reset histogram selection to whole-genome
+                    }
+                    // Keep the per-row map current after a (re)compute.
+                    match result {
+                        Some(c) => {
+                            self.coverage_by_aln.insert(alignment_id, c);
+                        }
+                        None => {
+                            self.coverage_by_aln.remove(&alignment_id);
+                        }
                     }
                     self.running = false;
                     // A recompute (possibly from the project report) may have filled a cell.
@@ -1585,6 +1617,7 @@ impl NavigatorApp {
         self.mtdna_haplogroup = None;
         self.consensus_y = None;
         self.consensus_mt = None;
+        self.coverage_by_aln.clear();
         self.audit_y.clear();
         self.audit_mt.clear();
         self.heteroplasmy = None;
@@ -1615,6 +1648,7 @@ impl NavigatorApp {
         self.alignments.clear();
         self.selected_alignment = None;
         self.coverage = None;
+        self.coverage_by_aln.clear();
         let _ = self.tx.send(Command::LoadAlignments(id));
     }
 
@@ -3825,7 +3859,7 @@ impl NavigatorApp {
         // Clone the small lists so we can call &mut self methods (add forms) inside the loop.
         let runs = self.runs.clone();
         let alignments = self.alignments.clone();
-        let coverage = self.coverage.clone();
+        let coverage_by_aln = self.coverage_by_aln.clone();
         let mut pick_run = None;
         let mut pick_aln = None;
         let mut want_delete: Option<DataDelete> = None;
@@ -3867,11 +3901,16 @@ impl NavigatorApp {
                             (Some(i), None) => format!("   Instr: {i}"),
                             _ => String::new(),
                         };
+                        // Library-level metrics: total reads + read/insert length (reads *aligned*
+                        // is a per-alignment stat, shown on the alignment row, not here).
+                        let read_len = r.mean_read_length.map(|v| format!("{v:.0} bp")).unwrap_or_else(|| "—".into());
+                        let insert = r.mean_insert_size.map(|v| format!("{v:.0} bp")).unwrap_or_else(|| "—".into());
                         ui.label(
                             egui::RichText::new(format!(
-                                "Reads: {}   Aligned: {}   {}{}",
+                                "Reads: {}   Read len: {}   Insert: {}   {}{}",
                                 fmt_reads(r.total_reads),
-                                fmt_reads(r.pf_reads_aligned),
+                                read_len,
+                                insert,
                                 r.library_layout.as_deref().unwrap_or("SINGLE"),
                                 inst,
                             ))
@@ -3929,8 +3968,7 @@ impl NavigatorApp {
                 ui.indent(("alns", r.id), |ui| {
                     for a in &alignments {
                         let asel = self.selected_alignment == Some(a.id);
-                        let cov = if asel { coverage.as_ref() } else { None };
-                        let (cov_s, call_s) = match cov {
+                        let (cov_s, call_s) = match coverage_by_aln.get(&a.id) {
                             Some(c) => (format!("{:.1}", c.mean_coverage), c.callable_bases.to_string()),
                             None => ("–".to_string(), "–".to_string()),
                         };
@@ -5120,9 +5158,7 @@ impl NavigatorApp {
 /// egui_plot bar chart. Shared by the whole-genome and per-contig coverage views.
 fn coverage_histogram_chart(ui: &mut egui::Ui, hist: &[u64], title: &str) {
     use egui_plot::{Bar, BarChart, Plot};
-    ui.label(format!(
-        "Depth histogram — {title}  (depth ≥1; x = depth, y = bases; drag to zoom, double-click to reset)"
-    ));
+    ui.label(format!("Depth histogram — {title}  (depth ≥1; x = depth, y = bases)"));
     // Skip depth 0 (uncovered + reference-N): it typically dwarfs the coverage peak and would
     // flatten the rest of the distribution. That count is the table's NoCov / callable breakdown.
     let bars: Vec<Bar> = hist
@@ -5131,9 +5167,23 @@ fn coverage_histogram_chart(ui: &mut egui::Ui, hist: &[u64], title: &str) {
         .skip(1)
         .map(|(depth, &count)| Bar::new(depth as f64, count as f64).width(0.9))
         .collect();
+    let max_depth = hist.len().max(2) as f64;
+    let max_count = hist.iter().skip(1).copied().max().unwrap_or(1) as f64;
     let chart = BarChart::new(bars).name("bases");
+    // Fixed, non-interactive view: lock pan/zoom/scroll and pin the bounds to the data so the
+    // axes can't drift into negative space or be dragged off-screen.
     Plot::new(format!("coverage_histogram_{title}"))
         .height(180.0)
+        .allow_drag(false)
+        .allow_zoom(false)
+        .allow_scroll(false)
+        .allow_boxed_zoom(false)
+        .clamp_grid(true)
+        .set_margin_fraction(egui::vec2(0.0, 0.05))
+        .include_x(0.0)
+        .include_x(max_depth)
+        .include_y(0.0)
+        .include_y(max_count)
         .show(ui, |plot_ui| plot_ui.bar_chart(chart));
 }
 

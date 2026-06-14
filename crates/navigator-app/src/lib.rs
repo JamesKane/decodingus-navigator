@@ -1694,7 +1694,31 @@ impl App {
         .await
         .map_err(|e| AppError::Join(e.to_string()))??;
         self.save_analysis(alignment_id, "read_metrics", "1", &result).await?;
+        self.write_back_read_stats(alignment_id, &result).await?;
         Ok(result)
+    }
+
+    /// Mirror an alignment's library-level read stats onto its owning sequence run (`total_reads`,
+    /// `mean_read_length`, `mean_insert_size`) so the Data Sources run card shows them without
+    /// re-walking. Best-effort: a missing alignment/run is ignored. When a run has several
+    /// alignments the last write wins — these are per-library properties, so any pass is
+    /// representative.
+    async fn write_back_read_stats(
+        &self,
+        alignment_id: i64,
+        m: &navigator_analysis::read_metrics::ReadMetrics,
+    ) -> Result<(), AppError> {
+        if let Some(aln) = alignment::get(self.store.pool(), alignment_id).await? {
+            sequence_run::set_read_stats(
+                self.store.pool(),
+                aln.sequence_run_id,
+                Some(m.total_reads as i64),
+                (m.mean_read_length > 0.0).then_some(m.mean_read_length),
+                (m.mean_insert_size > 0.0).then_some(m.mean_insert_size),
+            )
+            .await?;
+        }
+        Ok(())
     }
 
     /// Cached `read_metrics`, if present.
@@ -1751,6 +1775,7 @@ impl App {
         // Persist each sub-result under its own existing cache key.
         self.save_analysis(alignment_id, "coverage", coverage::COVERAGE_VERSION, &result.coverage).await?;
         self.save_analysis(alignment_id, "read_metrics", "1", &result.read_metrics).await?;
+        self.write_back_read_stats(alignment_id, &result.read_metrics).await?;
         if let Some(sex) = &result.sex {
             self.save_analysis(alignment_id, "sex", "1", sex).await?;
             self.write_back_inferred_sex(alignment_id, sex).await?;
@@ -4982,7 +5007,39 @@ impl App {
 
     /// Sequence runs for a biosample.
     pub async fn list_sequence_runs(&self, biosample_guid: SampleGuid) -> Result<Vec<SequenceRun>, AppError> {
-        Ok(sequence_run::list_for_biosample(self.store.pool(), biosample_guid).await?)
+        let mut runs = sequence_run::list_for_biosample(self.store.pool(), biosample_guid).await?;
+        // One-time backfill: runs analyzed before read stats were mirrored onto the run carry no
+        // `total_reads`. Recover them from a cached `read_metrics` artifact on any of the run's
+        // alignments and persist, so the card shows library stats without a re-walk.
+        for run in &mut runs {
+            if run.total_reads.is_some() {
+                continue;
+            }
+            let alns = alignment::list_for_run(self.store.pool(), run.id).await?;
+            for a in &alns {
+                if let Some(m) = self.cached_read_metrics(a.id).await? {
+                    self.write_back_read_stats(a.id, &m).await?;
+                    run.total_reads = Some(m.total_reads as i64);
+                    run.mean_read_length = (m.mean_read_length > 0.0).then_some(m.mean_read_length);
+                    run.mean_insert_size = (m.mean_insert_size > 0.0).then_some(m.mean_insert_size);
+                    break;
+                }
+            }
+        }
+        Ok(runs)
+    }
+
+    /// Cached coverage for several alignments at once (Data Sources alignment rows). `None` for any
+    /// alignment without a persisted coverage artifact. No genotyping/walking — pure cache reads.
+    pub async fn cached_coverage_bulk(
+        &self,
+        alignment_ids: &[i64],
+    ) -> Result<Vec<(i64, Option<CoverageResult>)>, AppError> {
+        let mut out = Vec::with_capacity(alignment_ids.len());
+        for &id in alignment_ids {
+            out.push((id, self.cached_coverage(id).await?));
+        }
+        Ok(out)
     }
 
     /// Alignments for a sequence run.

@@ -143,6 +143,8 @@ pub enum Command {
     /// Probe a BAM/CRAM header for build/aligner/platform/test-type (to auto-fill the form).
     ProbeAlignment { path: PathBuf },
     LoadCoverage(i64),
+    /// Cached coverage for several alignments at once (Data Sources alignment rows).
+    LoadCoverageBulk(Vec<i64>),
     RunCoverage(i64),
     LoadSex(i64),
     RunSex(i64),
@@ -358,6 +360,8 @@ pub enum Event {
     /// Header-probe result for the add-alignment form (build/aligner/platform/test-type).
     AlignmentProbe(AlignmentProbe),
     Coverage { alignment_id: i64, result: Option<Coverage> },
+    /// Cached coverage for several alignments (Data Sources rows): `(alignment_id, result)`.
+    CoverageBulk(Vec<(i64, Option<Coverage>)>),
     Sex { alignment_id: i64, result: Option<SexInferenceResult> },
     ReadMetrics { alignment_id: i64, result: Option<ReadMetrics> },
     Sv { alignment_id: i64, result: Option<SvAnalysisResult> },
@@ -699,6 +703,10 @@ pub async fn handle(app: &App, cmd: Command) -> Event {
         },
         Command::LoadCoverage(alignment_id) => match app.cached_coverage(alignment_id).await {
             Ok(result) => Event::Coverage { alignment_id, result },
+            Err(e) => Event::Error(e.to_string()),
+        },
+        Command::LoadCoverageBulk(ids) => match app.cached_coverage_bulk(&ids).await {
+            Ok(results) => Event::CoverageBulk(results),
             Err(e) => Event::Error(e.to_string()),
         },
         Command::RunCoverage(alignment_id) => match app.run_coverage_for_alignment(alignment_id).await {

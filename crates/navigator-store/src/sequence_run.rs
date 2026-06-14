@@ -132,6 +132,30 @@ pub async fn set_library_stats(
     Ok(affected > 0)
 }
 
+/// Set the library-level read stats (`total_reads`, `mean_read_length`, `mean_insert_size`) —
+/// populated after a read-metrics / unified-walker pass (or backfilled from a cached artifact).
+/// These describe the run's library; per-alignment counts (e.g. reads aligned) live on the
+/// alignment. Leaves the descriptive + lab columns untouched. Returns whether a row was affected.
+pub async fn set_read_stats(
+    pool: &SqlitePool,
+    id: i64,
+    total_reads: Option<i64>,
+    mean_read_length: Option<f64>,
+    mean_insert_size: Option<f64>,
+) -> Result<bool, StoreError> {
+    let affected = sqlx::query(
+        "UPDATE sequence_run SET total_reads = ?, mean_read_length = ?, mean_insert_size = ? WHERE id = ?",
+    )
+    .bind(total_reads)
+    .bind(mean_read_length)
+    .bind(mean_insert_size)
+    .bind(id)
+    .execute(pool)
+    .await?
+    .rows_affected();
+    Ok(affected > 0)
+}
+
 /// Set only the sequencing facility (the lab) — used by the AppView instrument→lab resolution,
 /// which leaves the analysis-derived columns untouched. Returns whether a row was affected.
 pub async fn set_facility(pool: &SqlitePool, id: i64, facility: &str) -> Result<bool, StoreError> {

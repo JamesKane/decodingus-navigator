@@ -119,6 +119,15 @@ async fn run_alignment_chain_persists() {
     assert_eq!(reloaded.platform_unit.as_deref(), Some("CeGaT_NovaSeq"));
     assert_eq!(reloaded.flowcell_id.as_deref(), Some("H5WLTDMXX"));
 
+    // Library-level read stats can be (re)written from an analysis pass / backfill.
+    sequence_run::set_read_stats(s.pool(), run.id, Some(9_000_000), Some(150.0), Some(602.5)).await.unwrap();
+    let reloaded = sequence_run::get(s.pool(), run.id).await.unwrap().unwrap();
+    assert_eq!(reloaded.total_reads, Some(9_000_000));
+    assert_eq!(reloaded.mean_read_length, Some(150.0));
+    assert_eq!(reloaded.mean_insert_size, Some(602.5));
+    // The descriptive + identity columns are untouched by the read-stats write.
+    assert_eq!(reloaded.instrument_id.as_deref(), Some("A00182"));
+
     let aln = alignment::create(
         s.pool(),
         &NewAlignment {
