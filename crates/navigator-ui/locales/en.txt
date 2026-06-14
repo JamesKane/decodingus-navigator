@@ -14,6 +14,7 @@ detail.overview=Overview
 detail.ydna=Y-DNA
 detail.mtdna=mtDNA
 detail.ancestry=Ancestry
+detail.ideogram=Ideogram
 detail.ibd=IBD Matches
 detail.datasources=Data Sources
 
@@ -93,6 +94,10 @@ lang.es=Español
 # Detail card titles
 card.haploConsensus=Haplogroup consensus
 card.coverage=Coverage
+card.ideogram=Chromosome ideogram
+ideogram.noBuild=Select an alignment to view its build's ideogram.
+ideogram.loading=Loading genome regions…
+ideogram.unavailable=Genome regions unavailable (needs a one-time online fetch of the cytoband table).
 card.sexMetrics=Sex & read metrics
 card.yHaplogroup=Y haplogroup
 card.privateYUnion=Private Y (donor union)

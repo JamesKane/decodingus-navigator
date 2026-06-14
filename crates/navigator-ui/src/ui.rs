@@ -76,17 +76,19 @@ enum DetailTab {
     YDna,
     MtDna,
     Ancestry,
+    Ideogram,
     IbdMatches,
     DataSources,
 }
 
 impl DetailTab {
     /// `(tab, i18n key)` in display order.
-    const ALL: [(DetailTab, &'static str); 6] = [
+    const ALL: [(DetailTab, &'static str); 7] = [
         (DetailTab::Overview, "detail.overview"),
         (DetailTab::YDna, "detail.ydna"),
         (DetailTab::MtDna, "detail.mtdna"),
         (DetailTab::Ancestry, "detail.ancestry"),
+        (DetailTab::Ideogram, "detail.ideogram"),
         (DetailTab::IbdMatches, "detail.ibd"),
         (DetailTab::DataSources, "detail.datasources"),
     ];
@@ -349,6 +351,14 @@ pub struct NavigatorApp {
     /// Cached coverage per alignment for the selected run's Data Sources rows (so each row shows
     /// coverage/callable without first selecting that alignment). Keyed by alignment id.
     coverage_by_aln: std::collections::HashMap<i64, Coverage>,
+    /// Genome-region metadata (cytoband ideogram) for the selected alignment's build, `(alignment_id,
+    /// regions)`. Lazily fetched when the Ideogram tab is opened.
+    genome_regions: Option<(i64, std::sync::Arc<navigator_app::GenomeRegions>)>,
+    /// True while the cytoBand fetch is in flight.
+    loading_regions: bool,
+    /// The alignment we've already kicked off (or completed) a region load for — avoids re-firing
+    /// the fetch every frame, including after a failure.
+    regions_attempted: Option<i64>,
     /// Which contig's depth histogram the coverage view charts: `None` = whole-genome histogram,
     /// `Some(i)` = `coverage.contig_coverage_stats[i]`.
     coverage_hist_contig: Option<usize>,
@@ -841,6 +851,111 @@ fn parse_hex_color(hex: &str) -> egui::Color32 {
     egui::Color32::from_gray(128)
 }
 
+/// Giemsa-stain → color for the cytoband ideogram (the standard UCSC palette, tuned for the dark
+/// theme): `gneg` light → `gpos100` near-black, `acen` (centromere) red, `gvar`/`stalk` tinted.
+fn stain_color(stain: &str) -> egui::Color32 {
+    match stain {
+        "gneg" => egui::Color32::from_gray(225),
+        "gpos25" => egui::Color32::from_gray(170),
+        "gpos50" => egui::Color32::from_gray(120),
+        "gpos75" => egui::Color32::from_gray(80),
+        "gpos100" => egui::Color32::from_gray(45),
+        "acen" => egui::Color32::from_rgb(200, 70, 70),
+        "gvar" => egui::Color32::from_rgb(120, 140, 185),
+        "stalk" => egui::Color32::from_rgb(110, 165, 160),
+        _ => egui::Color32::from_gray(140),
+    }
+}
+
+/// The chromosomes to draw, in karyotype order (1–22, X, Y); non-nuclear / alt / random contigs
+/// are skipped. Tolerates a `chr` prefix on the names.
+fn karyotype_order(
+    regions: &navigator_app::GenomeRegions,
+) -> Vec<(&String, &navigator_app::ChromosomeRegions)> {
+    fn rank(name: &str) -> Option<u32> {
+        let s = name.strip_prefix("chr").unwrap_or(name);
+        match s {
+            "X" => Some(23),
+            "Y" => Some(24),
+            _ => s.parse::<u32>().ok().filter(|n| (1..=22).contains(n)),
+        }
+    }
+    let mut v: Vec<(u32, &String, &navigator_app::ChromosomeRegions)> =
+        regions.chromosomes.iter().filter_map(|(n, c)| rank(n).map(|r| (r, n, c))).collect();
+    v.sort_by_key(|(r, _, _)| *r);
+    v.into_iter().map(|(_, n, c)| (n, c)).collect()
+}
+
+/// A compact legend mapping Giemsa stains to their ideogram colors.
+fn ideogram_legend(ui: &mut egui::Ui) {
+    ui.horizontal_wrapped(|ui| {
+        for (label, stain) in
+            [("gneg", "gneg"), ("gpos50", "gpos50"), ("gpos100", "gpos100"), ("centromere", "acen"), ("gvar", "gvar")]
+        {
+            let (r, _) = ui.allocate_exact_size(egui::vec2(12.0, 12.0), egui::Sense::hover());
+            ui.painter().rect_filled(r, 2.0, stain_color(stain));
+            ui.label(egui::RichText::new(label).small().weak());
+            ui.add_space(8.0);
+        }
+    });
+}
+
+/// Draw the chromosome ideogram: one horizontal bar per chromosome (scaled to the longest), its
+/// cytobands as Giemsa-stained segments, with a hover tooltip naming the band under the cursor.
+fn draw_ideogram(ui: &mut egui::Ui, regions: &navigator_app::GenomeRegions) {
+    let order = karyotype_order(regions);
+    if order.is_empty() {
+        ui.label(egui::RichText::new("No chromosome data.").weak());
+        return;
+    }
+    let max_len = order.iter().map(|(_, c)| c.length).max().unwrap_or(1).max(1) as f32;
+    let label_w = 30.0;
+    let row_h = 16.0;
+    let full_w = ui.available_width().min(760.0);
+    let bar_area = (full_w - label_w - 6.0).max(60.0);
+    let text_color = ui.visuals().text_color();
+
+    for (name, c) in &order {
+        if c.length <= 0 {
+            continue;
+        }
+        let (rect, resp) = ui.allocate_exact_size(egui::vec2(full_w, row_h), egui::Sense::hover());
+        let painter = ui.painter_at(rect);
+        let short = name.strip_prefix("chr").unwrap_or(name);
+        painter.text(
+            egui::pos2(rect.left() + 2.0, rect.center().y),
+            egui::Align2::LEFT_CENTER,
+            short,
+            egui::FontId::proportional(11.0),
+            text_color,
+        );
+
+        let x0 = rect.left() + label_w;
+        let bar_w = bar_area * (c.length as f32 / max_len);
+        let bar = egui::Rect::from_min_size(egui::pos2(x0, rect.top() + 2.0), egui::vec2(bar_w, row_h - 4.0));
+        painter.rect_filled(bar, 3.0, egui::Color32::from_gray(28));
+        let len = c.length as f32;
+        for b in &c.cytobands {
+            let bx0 = x0 + bar_w * (b.start as f32 / len);
+            let bx1 = x0 + bar_w * (b.end as f32 / len);
+            let seg = egui::Rect::from_min_max(egui::pos2(bx0, bar.top()), egui::pos2(bx1.max(bx0 + 0.5), bar.bottom()));
+            painter.rect_filled(seg, 0.0, stain_color(&b.stain));
+        }
+        painter.rect_stroke(bar, 3.0, egui::Stroke::new(1.0, egui::Color32::from_gray(70)));
+
+        // Hover → the band (and Mb position) under the cursor.
+        if let Some(pos) = resp.hover_pos() {
+            if pos.x >= x0 && pos.x <= x0 + bar_w && bar_w > 0.0 {
+                let g = (((pos.x - x0) / bar_w).clamp(0.0, 1.0) * len) as i64;
+                let band = c.cytobands.iter().find(|b| b.start <= g && g < b.end);
+                let name = band.map(|b| format!("{short}{}", b.name)).unwrap_or_else(|| short.to_string());
+                let stain = band.map(|b| b.stain.as_str()).unwrap_or("");
+                resp.on_hover_text(format!("{name}  ·  {stain}  ·  {:.1} Mb", g as f64 / 1e6));
+            }
+        }
+    }
+}
+
 /// Render a haplogroup assignment: terminal + lineage + alternatives, then the child
 /// branches with per-SNP evidence that explains why descent stopped.
 fn show_assignment(ui: &mut egui::Ui, a: &HaploAssignment) {
@@ -992,6 +1107,9 @@ impl NavigatorApp {
             pending_alignment: None,
             coverage: None,
             coverage_by_aln: std::collections::HashMap::new(),
+            genome_regions: None,
+            loading_regions: false,
+            regions_attempted: None,
             coverage_hist_contig: None,
             sex: None,
             read_metrics: None,
@@ -1422,6 +1540,12 @@ impl NavigatorApp {
                         }
                     }
                 }
+                Event::GenomeRegions { alignment_id, regions } => {
+                    self.loading_regions = false;
+                    if self.selected_alignment == Some(alignment_id) {
+                        self.genome_regions = regions.map(|r| (alignment_id, r));
+                    }
+                }
                 Event::AlignmentProbe(p) => {
                     // Auto-fill the add-alignment form from the BAM/CRAM header.
                     if let Some(b) = p.reference_build {
@@ -1602,6 +1726,7 @@ impl NavigatorApp {
                     self.running_sex = false;
                     self.running_metrics = false;
                     self.running_sv = false;
+                    self.loading_regions = false;
                     let _ = self.tx.send(Command::SyncStatus); // a failed publish may have gone offline
                 }
             }
@@ -1673,6 +1798,10 @@ impl NavigatorApp {
     fn select_alignment(&mut self, id: i64) {
         self.selected_alignment = Some(id);
         self.coverage = None;
+        // Ideogram regions are fetched lazily when its tab opens; reset for the new alignment.
+        self.genome_regions = None;
+        self.loading_regions = false;
+        self.regions_attempted = None;
         self.sex = None;
         self.read_metrics = None;
         self.sv = None;
@@ -1975,6 +2104,13 @@ impl NavigatorApp {
                     if !self.chip_profiles.is_empty() {
                         ui.add_space(10.0);
                         card(ui, self.tr("card.chipAncestry"), |ui| self.chip_ancestry_section(ui));
+                    }
+                }
+                DetailTab::Ideogram => {
+                    if let Some(id) = self.selected_alignment {
+                        card(ui, self.tr("card.ideogram"), |ui| self.ideogram_section(ui, id));
+                    } else {
+                        pick_alignment_hint(ui, self.tr("hint.pickAlignment"));
                     }
                 }
                 DetailTab::IbdMatches => {
@@ -4161,6 +4297,52 @@ impl NavigatorApp {
                 self.forms.aln_bam.clear();
             }
         });
+    }
+
+    /// Chromosome ideogram for the selected alignment's build — cytoband bars (Giemsa-stained) with
+    /// the centromere shown as the red `acen` segments. Region data is fetched lazily (cytoBand) and
+    /// cached; a hover shows the band under the cursor.
+    fn ideogram_section(&mut self, ui: &mut egui::Ui, alignment_id: i64) {
+        let Some(build) = self.alignments.iter().find(|a| a.id == alignment_id).map(|a| a.reference_build.clone())
+        else {
+            ui.label(egui::RichText::new(self.tr("ideogram.noBuild")).weak());
+            return;
+        };
+        let loaded = matches!(&self.genome_regions, Some((aid, _)) if *aid == alignment_id);
+        // Lazy, once-per-alignment fetch (a cold cache downloads the UCSC cytoBand table).
+        if !loaded && self.regions_attempted != Some(alignment_id) {
+            self.regions_attempted = Some(alignment_id);
+            self.loading_regions = true;
+            self.status = format!("Loading {build} genome regions…");
+            let _ = self.tx.send(Command::LoadGenomeRegions { alignment_id, build: build.clone() });
+        }
+
+        let reload = self.tr("common.refresh");
+        ui.horizontal(|ui| {
+            ui.label(egui::RichText::new(&build).strong());
+            if ui.small_button(reload).clicked() {
+                self.genome_regions = None;
+                self.regions_attempted = None; // re-fetch on the next frame
+            }
+            if self.loading_regions {
+                ui.spinner();
+            }
+        });
+        ui.add_space(6.0);
+
+        match &self.genome_regions {
+            Some((aid, regions)) if *aid == alignment_id => {
+                ideogram_legend(ui);
+                ui.add_space(4.0);
+                draw_ideogram(ui, regions);
+            }
+            _ if self.loading_regions => {
+                ui.label(self.tr("ideogram.loading"));
+            }
+            _ => {
+                ui.label(egui::RichText::new(self.tr("ideogram.unavailable")).weak());
+            }
+        }
     }
 
     fn coverage_section(&mut self, ui: &mut egui::Ui, alignment_id: i64) {

@@ -11,6 +11,7 @@ detail.overview=Resumen
 detail.ydna=ADN-Y
 detail.mtdna=ADNmt
 detail.ancestry=Ascendencia
+detail.ideogram=Ideograma
 detail.ibd=Coincidencias IBD
 detail.datasources=Fuentes de datos
 
@@ -83,6 +84,10 @@ lang.es=Español
 
 card.haploConsensus=Consenso de haplogrupo
 card.coverage=Cobertura
+card.ideogram=Ideograma cromosómico
+ideogram.noBuild=Seleccione un alineamiento para ver el ideograma de su ensamblaje.
+ideogram.loading=Cargando regiones del genoma…
+ideogram.unavailable=Regiones del genoma no disponibles (requiere una descarga única en línea de la tabla cytoband).
 card.sexMetrics=Sexo y métricas de lectura
 card.yHaplogroup=Haplogrupo Y
 card.privateYUnion=Y privado (unión del donante)

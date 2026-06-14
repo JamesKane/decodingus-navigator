@@ -145,6 +145,8 @@ pub enum Command {
     LoadCoverage(i64),
     /// Cached coverage for several alignments at once (Data Sources alignment rows).
     LoadCoverageBulk(Vec<i64>),
+    /// Genome-region metadata (cytoband ideogram) for an alignment's build (Ideogram tab).
+    LoadGenomeRegions { alignment_id: i64, build: String },
     RunCoverage(i64),
     LoadSex(i64),
     RunSex(i64),
@@ -366,6 +368,8 @@ pub enum Event {
     Coverage { alignment_id: i64, result: Option<Coverage> },
     /// Cached coverage for several alignments (Data Sources rows): `(alignment_id, result)`.
     CoverageBulk(Vec<(i64, Option<Coverage>)>),
+    /// Genome-region metadata (cytoband ideogram) for an alignment's build.
+    GenomeRegions { alignment_id: i64, regions: Option<std::sync::Arc<navigator_app::GenomeRegions>> },
     Sex { alignment_id: i64, result: Option<SexInferenceResult> },
     ReadMetrics { alignment_id: i64, result: Option<ReadMetrics> },
     Sv { alignment_id: i64, result: Option<SvAnalysisResult> },
@@ -717,6 +721,10 @@ pub async fn handle(app: &App, cmd: Command) -> Event {
         },
         Command::LoadCoverageBulk(ids) => match app.cached_coverage_bulk(&ids).await {
             Ok(results) => Event::CoverageBulk(results),
+            Err(e) => Event::Error(e.to_string()),
+        },
+        Command::LoadGenomeRegions { alignment_id, build } => match app.genome_regions(&build).await {
+            Ok(regions) => Event::GenomeRegions { alignment_id, regions: Some(regions) },
             Err(e) => Event::Error(e.to_string()),
         },
         Command::RunCoverage(alignment_id) => match app.run_coverage_for_alignment(alignment_id).await {
