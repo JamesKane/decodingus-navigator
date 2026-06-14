@@ -181,6 +181,8 @@ pub enum Command {
     PublishVariants { alignment_id: i64, contig: String },
     /// Attempt to push the ready outbox rows now (also runs periodically + after a publish).
     DrainOutbox,
+    /// Export a cached result to `path` (TSV/HTML/BED). `request` carries the kind + source id.
+    Export { request: navigator_app::ExportRequest, path: PathBuf },
     /// Manually override the consensus haplogroup for a subject + DNA type.
     SetHaploOverride { biosample_guid: SampleGuid, dna_type: DnaType, haplogroup: String, reason: Option<String> },
     /// Clear a manual override.
@@ -398,6 +400,8 @@ pub enum Event {
     Queued { kind: String },
     /// Outbox rows still awaiting a successful push (the "N pending" indicator).
     SyncPending(i64),
+    /// A result was exported to `path`; `label` is the human kind (e.g. "coverage (TSV)").
+    Exported { label: String, path: PathBuf },
     /// Whether the last PDS write reached the server (offline indicator).
     SyncOnline(bool),
     /// How many runs had their sequencing lab filled in by the AppView backfill (`0` ⇒ quiet).
@@ -834,6 +838,13 @@ pub async fn handle(app: &App, cmd: Command) -> Event {
             Event::Error(format!("internal: unrouted PublishVariants {alignment_id}"))
         }
         Command::DrainOutbox => Event::Error("internal: unrouted DrainOutbox".into()),
+        Command::Export { request, path } => match app.export_content(&request).await {
+            Ok(content) => match std::fs::write(&path, content) {
+                Ok(()) => Event::Exported { label: request.label().to_string(), path },
+                Err(e) => Event::Error(format!("write {}: {e}", path.display())),
+            },
+            Err(e) => Event::Error(e.to_string()),
+        },
         Command::SetHaploOverride { biosample_guid, dna_type, haplogroup, reason } => {
             match app.set_manual_override(biosample_guid, dna_type, &haplogroup, reason.as_deref()).await {
                 Ok(()) => Event::ReconciliationChanged { biosample_guid, dna_type },

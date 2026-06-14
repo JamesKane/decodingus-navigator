@@ -263,6 +263,7 @@ use uuid::Uuid;
 
 pub mod error;
 pub use error::AppError;
+pub mod export;
 pub mod settings;
 pub use settings::AppSettings;
 
@@ -586,6 +587,56 @@ const OUTBOX_BATCH: i64 = 16;
 fn backoff_secs(attempt: i64) -> i64 {
     let minutes = 1i64.checked_shl(attempt.clamp(0, 16) as u32).unwrap_or(i64::MAX);
     (minutes.saturating_mul(60)).min(3600)
+}
+
+/// A request to export a cached result as a file body (gap §6). The id is the alignment id, except
+/// [`Self::MtdnaTsv`] whose id is the mtDNA-sequence id. Carries enough for the UI to suggest a
+/// filename + dialog filter.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExportRequest {
+    CoverageTsv(i64),
+    CoverageHtml(i64),
+    ReadMetricsTsv(i64),
+    AncestryTsv(i64),
+    AncestryHtml(i64),
+    CallableBed(i64),
+    MtdnaTsv(i64),
+}
+
+impl ExportRequest {
+    /// File extension (no dot) for the save dialog + filter.
+    pub fn extension(&self) -> &'static str {
+        match self {
+            ExportRequest::CoverageHtml(_) | ExportRequest::AncestryHtml(_) => "html",
+            ExportRequest::CallableBed(_) => "bed",
+            _ => "tsv",
+        }
+    }
+
+    /// A short human label for the kind of export (status messages).
+    pub fn label(&self) -> &'static str {
+        match self {
+            ExportRequest::CoverageTsv(_) => "coverage (TSV)",
+            ExportRequest::CoverageHtml(_) => "coverage (HTML)",
+            ExportRequest::ReadMetricsTsv(_) => "read metrics (TSV)",
+            ExportRequest::AncestryTsv(_) => "ancestry (TSV)",
+            ExportRequest::AncestryHtml(_) => "ancestry (HTML)",
+            ExportRequest::CallableBed(_) => "callable loci (BED)",
+            ExportRequest::MtdnaTsv(_) => "mtDNA variants (TSV)",
+        }
+    }
+
+    /// A suggested default filename (`<stem>_<id>.<ext>`) for the save dialog.
+    pub fn default_filename(&self) -> String {
+        let (stem, id) = match self {
+            ExportRequest::CoverageTsv(id) | ExportRequest::CoverageHtml(id) => ("coverage", id),
+            ExportRequest::ReadMetricsTsv(id) => ("read_metrics", id),
+            ExportRequest::AncestryTsv(id) | ExportRequest::AncestryHtml(id) => ("ancestry", id),
+            ExportRequest::CallableBed(id) => ("callable", id),
+            ExportRequest::MtdnaTsv(id) => ("mtdna_variants", id),
+        };
+        format!("{stem}_{id}.{}", self.extension())
+    }
 }
 
 /// The result of one [`App::drain_outbox`] pass — what the UI reports / shows in its indicator.
@@ -2818,6 +2869,74 @@ impl App {
             .await?
             .ok_or_else(|| AppError::Store(StoreError::NotFound(format!("mtDNA sequence {mtdna_id}"))))?;
         Ok(navigator_analysis::mtvariants::derive(navigator_analysis::mtvariants::rcrs(), &seq.sequence))
+    }
+
+    // ---- result exports (gap §6) -------------------------------------------
+
+    /// Format a cached result as a shareable file body (TSV / HTML / BED). The UI writes the
+    /// returned string to the user-chosen path. Errors when the source result hasn't been computed
+    /// yet (`NotFound`). [`ExportRequest::CallableBed`] re-walks the BAM (no cached intervals).
+    pub async fn export_content(&self, req: &ExportRequest) -> Result<String, AppError> {
+        match req {
+            ExportRequest::CoverageTsv(id) => Ok(export::coverage_tsv(&self.require_coverage(*id).await?)),
+            ExportRequest::CoverageHtml(id) => {
+                Ok(export::coverage_html(&self.require_coverage(*id).await?, &format!("alignment {id}")))
+            }
+            ExportRequest::ReadMetricsTsv(id) => {
+                let m = self
+                    .cached_read_metrics(*id)
+                    .await?
+                    .ok_or_else(|| AppError::Store(StoreError::NotFound(format!("read metrics for alignment {id}"))))?;
+                Ok(export::read_metrics_tsv(&m))
+            }
+            ExportRequest::AncestryTsv(id) => Ok(export::ancestry_tsv(&self.require_ancestry(*id).await?)),
+            ExportRequest::AncestryHtml(id) => Ok(export::ancestry_html(&self.require_ancestry(*id).await?)),
+            ExportRequest::MtdnaTsv(id) => Ok(export::mtdna_variants_tsv(&self.mtdna_variants(*id).await?)),
+            ExportRequest::CallableBed(id) => {
+                let per_contig = self.callable_intervals_all(*id).await?;
+                Ok(export::callable_bed(&per_contig))
+            }
+        }
+    }
+
+    async fn require_coverage(&self, alignment_id: i64) -> Result<CoverageResult, AppError> {
+        self.cached_coverage(alignment_id)
+            .await?
+            .ok_or_else(|| AppError::Store(StoreError::NotFound(format!("coverage for alignment {alignment_id}"))))
+    }
+
+    async fn require_ancestry(&self, alignment_id: i64) -> Result<AncestryResult, AppError> {
+        self.ancestry_for_alignment(alignment_id)
+            .await?
+            .ok_or_else(|| AppError::Store(StoreError::NotFound(format!("ancestry for alignment {alignment_id}"))))
+    }
+
+    /// Walk each analyzed contig for its CALLABLE intervals (BED export). Re-reads the BAM — the
+    /// coverage artifact stores only per-contig callable *counts*, not the intervals. Uses the
+    /// contig list from the cached coverage result, so coverage must have been run first.
+    async fn callable_intervals_all(&self, alignment_id: i64) -> Result<Vec<(String, Vec<(i64, i64)>)>, AppError> {
+        let cov = self.require_coverage(alignment_id).await?;
+        let contigs: Vec<String> = cov.contig_coverage_stats.iter().map(|s| s.contig.clone()).collect();
+        let (bam, reference) = self.alignment_paths(alignment_id).await?;
+        let out = tokio::task::spawn_blocking(move || {
+            let mut params = CallableLociParams::default();
+            if let Ok((read_len, _)) = coverage::estimate_molecule_lengths(&bam, reference.as_deref()) {
+                params.min_depth = adaptive_min_depth(params.min_depth, read_len);
+            }
+            let mut per_contig = Vec::new();
+            for contig in contigs {
+                // A contig with no aligned reads / bad region just contributes no intervals.
+                let intervals =
+                    coverage::callable_intervals(&bam, &contig, &params, 1, reference.as_deref()).unwrap_or_default();
+                if !intervals.is_empty() {
+                    per_contig.push((contig, intervals));
+                }
+            }
+            per_contig
+        })
+        .await
+        .map_err(|e| AppError::Join(e.to_string()))?;
+        Ok(out)
     }
 
     pub async fn derive_mtdna_variants(&self, mtdna_id: i64, rcrs_path: &Path) -> Result<VariantSet, AppError> {

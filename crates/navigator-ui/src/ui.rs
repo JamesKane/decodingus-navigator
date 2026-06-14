@@ -1580,6 +1580,9 @@ impl NavigatorApp {
                     self.publishing = false;
                 }
                 Event::SyncPending(n) => self.sync_pending = n,
+                Event::Exported { label, path } => {
+                    self.status = format!("Exported {label} → {}", path.display());
+                }
                 Event::SyncOnline(online) => self.online = online,
                 Event::Error(e) => {
                     self.status = format!("Error: {e}");
@@ -3600,7 +3603,10 @@ impl NavigatorApp {
         let assign_lbl = self.tr("common.assignHaplogroup");
         let mutations_lbl = self.tr("btn.showMtMutations");
         let delete_lbl = self.tr("common.delete");
+        let export_lbl = self.tr("mt.exportVariants");
         let mut want_delete: Option<DataDelete> = None;
+        // Status to apply after the &self loop (the loop borrow blocks &mut self).
+        let mut export_status: Option<String> = None;
         for m in &self.mtdna_sequences {
             let name = m.source_file_name.as_deref().or(m.defline.as_deref()).unwrap_or("mtDNA");
             ui.horizontal(|ui| {
@@ -3625,7 +3631,21 @@ impl NavigatorApp {
             // Show the rCRS mutation list for this sequence, if loaded.
             if let Some(variants) = self.mtdna_variants.get(&m.id) {
                 mtdna_mutations_view(ui, m.id, variants);
+                if !variants.is_empty() && ui.button(export_lbl).clicked() {
+                    let req = navigator_app::ExportRequest::MtdnaTsv(m.id);
+                    if let Some(path) = rfd::FileDialog::new()
+                        .set_file_name(req.default_filename())
+                        .add_filter("TSV", &["tsv"])
+                        .save_file()
+                    {
+                        let _ = self.tx.send(Command::Export { request: req, path });
+                        export_status = Some(format!("Exporting {}…", req.label()));
+                    }
+                }
             }
+        }
+        if let Some(s) = export_status {
+            self.status = s;
         }
         if want_delete.is_some() {
             self.confirm_data_delete = want_delete;
@@ -4274,6 +4294,14 @@ impl NavigatorApp {
         self.coverage_hist_contig = sel;
 
         if self.coverage.is_some() {
+            self.export_row(
+                ui,
+                &[
+                    navigator_app::ExportRequest::CoverageTsv(alignment_id),
+                    navigator_app::ExportRequest::CoverageHtml(alignment_id),
+                    navigator_app::ExportRequest::CallableBed(alignment_id),
+                ],
+            );
             self.publish_row(ui, "Publish summary to PDS", Command::PublishCoverage(alignment_id));
         }
     }
@@ -4356,6 +4384,9 @@ impl NavigatorApp {
                 );
             }
         }
+        if self.read_metrics.is_some() {
+            self.export_row(ui, &[navigator_app::ExportRequest::ReadMetricsTsv(alignment_id)]);
+        }
     }
 
     /// A "Publish to PDS" button + sign-in hint/spinner, shared by the result sections.
@@ -4372,6 +4403,26 @@ impl NavigatorApp {
             }
             if self.publishing {
                 ui.spinner();
+            }
+        });
+    }
+
+    /// One or more "Export" buttons in a row. Each opens a native save dialog (suggested filename +
+    /// extension filter); on confirm it dispatches the export to the worker, which writes the file.
+    fn export_row(&mut self, ui: &mut egui::Ui, requests: &[navigator_app::ExportRequest]) {
+        ui.horizontal(|ui| {
+            ui.label(egui::RichText::new(self.tr("export.label")).weak());
+            for req in requests {
+                if ui.button(req.label()).clicked() {
+                    if let Some(path) = rfd::FileDialog::new()
+                        .set_file_name(req.default_filename())
+                        .add_filter(req.extension().to_uppercase(), &[req.extension()])
+                        .save_file()
+                    {
+                        self.status = format!("Exporting {}…", req.label());
+                        let _ = self.tx.send(Command::Export { request: *req, path });
+                    }
+                }
             }
         });
     }
@@ -4742,6 +4793,16 @@ impl NavigatorApp {
                 ui.label(self.tr("ancestry.none"));
             }
             _ => {}
+        }
+
+        if matches!(&self.ancestry, Some((id, Some(_))) if *id == alignment_id) {
+            self.export_row(
+                ui,
+                &[
+                    navigator_app::ExportRequest::AncestryTsv(alignment_id),
+                    navigator_app::ExportRequest::AncestryHtml(alignment_id),
+                ],
+            );
         }
 
         // Local-ancestry painting (independent of the global estimate).

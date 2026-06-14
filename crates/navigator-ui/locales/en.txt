@@ -81,6 +81,8 @@ status.online=● Online
 status.offline=○ Offline
 status.pending=pending
 status.pendingHint=Publishes waiting to reach the PDS — they retry automatically (and after reconnect).
+export.label=Export:
+mt.exportVariants=Export variants (TSV)
 
 # Theme + language
 theme.toggle=Toggle theme
