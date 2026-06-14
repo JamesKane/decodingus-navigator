@@ -22,7 +22,9 @@ CHM13 alignment effort — it runs entirely off published call sets.
 | 6 | `06_publish_cdn.sh` | sha256 + upload assets + manifest to the CDN (`--apply` to actually upload) |
 
 Run in order: `for s in 01 02 03 04 05; do ./"$s"_*.sh; done` then `./06_publish_cdn.sh --apply`.
-Every stage is idempotent; intermediates live under `$WORK` (default `~/.decodingus/ancestry-build`).
+Run **`./derive_modern_pops.sh`** once before stage 04 (it needs no stage-1 output — it pulls its
+own public metadata) so the modern sources get labelled. Every stage is idempotent; intermediates
+live under `$WORK` (default `~/.decodingus/ancestry-build`).
 
 ## Download footprint
 
@@ -54,10 +56,15 @@ Plus this repo's `navigator-panelbuild` (run via `cargo run -p navigator-panelbu
 - **`pops/aadr_component_map.tsv`** — AADR Group ID → deep-component map (the one
   expertise-driven artifact; a starter set is included — review it).
 - **`$RAW/<src>.pops.tsv`** — `sample<TAB>population` for each modern source (1000G/HGDP/SGDP).
-- **`# VERIFY` URLs in `config.sh`** — dataset versions/filenames roll forward. AADR is now on
-  Harvard Dataverse (release **v66**, fetched by numeric file id — re-pin `AADR_ID_*` from the
-  Dataverse API when bumping `AADR_VERSION`). Confirm the SGDP PLINK prefix and CHM13 chains too.
-  (All current URLs were web-verified 2026-06-06.)
+  Generate them from public metadata with **`./derive_modern_pops.sh`** (idempotent; `--force` to
+  rebuild). It writes `1kgp.pops.tsv` (required — the 2504 unrelated → 26 fine pops), plus
+  `sgdp.pops.tsv` and `hgdp1kg.pops.tsv` (only consumed when those optional sources are enabled).
+  Columns are resolved by header name, so upstream reordering won't silently mis-map.
+- **`# VERIFY` URLs in `config.sh`** — dataset versions/filenames roll forward. AADR is on
+  Harvard Dataverse (release **v66.p1** = Dataverse version 14, fetched by numeric file id — re-pin
+  `AADR_ID_*` from the Dataverse API when bumping `AADR_VERSION`). SGDP moved to
+  `sharehost.hms.harvard.edu/.../variant_set` (its `.bim` ships as `.bim.zip`). (URLs web-verified
+  2026-06-13.)
 
 ## Outputs (in `$ASSETS`, default `~/.decodingus/ancestry`)
 
