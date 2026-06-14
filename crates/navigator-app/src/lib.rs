@@ -115,6 +115,7 @@ pub use navigator_sync::{
 };
 use navigator_sync::{FedPopulationComponent, FedSuperPopulationSummary};
 use navigator_sync::{dev_http_client, login_default, AsyncSync, DeviceKey, OAuthConfig, RetryPolicy, TokenStore, DEVICE_KEY_COLLECTION};
+use navigator_sync::exchange::{self, ExchangeKey};
 use navigator_refgenome::{cache as refgenome_cache, canonical_build, Build as ReferenceBuild, LiftedPos, ReferenceGateway};
 pub use navigator_refgenome::RefStatus;
 pub use navigator_refgenome::{ChromosomeRegions, Cytoband, GenomeRegions, RegionAnnotation};
@@ -147,11 +148,58 @@ pub struct IbdSuggestion {
 }
 
 /// Result of requesting an introduction to a candidate: the AppView's request URI and its
-/// status (initially `PENDING`, awaiting the not-yet-built consent round-trip).
+/// status (initially `PENDING`, awaiting the consent round-trip).
 #[derive(Debug, Clone, PartialEq)]
 pub struct IbdIntroResult {
     pub request_uri: String,
     pub status: String,
+}
+
+/// An inbound, **symmetric-blind** exchange request awaiting this account's consent (the initiator
+/// is hidden until both parties consent). From `GET /api/v1/exchange/incoming`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct IncomingRequest {
+    pub request_uri: String,
+    pub purpose: String,
+    pub created_at: String,
+}
+
+/// A consent-ready exchange session (both parties consented): the partner's DID and their published
+/// X25519 key URI are now revealed. From `GET /api/v1/exchange/pending`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ExchangeSessionInfo {
+    pub session_id: String,
+    pub request_uri: String,
+    pub purpose: String,
+    pub partner_did: String,
+    pub partner_key_uri: Option<String>,
+}
+
+/// Outcome of `POST /api/v1/exchange/consent`: `CONSENTED` (with the opened `session_id`),
+/// `DECLINED`, or `PENDING` (recorded, awaiting the counterpart).
+#[derive(Debug, Clone, PartialEq)]
+pub struct ConsentOutcome {
+    pub status: String,
+    pub session_id: Option<String>,
+}
+
+/// A pulled relay envelope: the opaque ciphertext `blob` plus its routing (`from_did`/`seq`) and the
+/// broker `id` to ack. From `GET /api/v1/exchange/relay/pull`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RelayEnvelope {
+    pub id: i64,
+    pub from_did: String,
+    pub seq: i32,
+    pub blob: String,
+}
+
+/// A live exchange session with a derived shared key, ready to seal/open payloads. Holds key
+/// material, so it is deliberately not `Debug`/`Serialize` and should be kept in memory only.
+#[derive(Clone)]
+pub struct EstablishedSession {
+    pub session_id: String,
+    pub partner_did: String,
+    key: [u8; 32],
 }
 
 /// Jetstream-ingest retry budget for a freshly-published device key: a 403 right after
@@ -2427,6 +2475,258 @@ impl App {
             .to_string();
         let status = v.get("status").and_then(|x| x.as_str()).unwrap_or("PENDING").to_string();
         Ok(IbdIntroResult { request_uri, status })
+    }
+
+    // ---- IBD Phase 2: encrypted edge-to-edge exchange (D1 substrate) -------
+    //
+    // The AppView brokers discovery/consent + relays opaque ciphertext (never decrypts). These
+    // wrap the `/api/v1/exchange/*` endpoints; the crypto (X25519/X3DH-lite/AES-GCM) lives in
+    // `navigator_sync::exchange`. All calls are device-key-signed (no per-call OAuth).
+
+    /// The signed-in account's X25519 identity key (load-or-generate), with its public half
+    /// published to the AppView (`POST /exchange/key`, idempotent upsert) so partners can fetch it.
+    pub async fn ensure_exchange_key(&self) -> Result<ExchangeKey, AppError> {
+        let did = self.current_account().ok_or(AppError::NotAuthenticated)?;
+        let dev = self.ensure_device_key().await?;
+        let ik = ExchangeKey::load_or_generate(KEYCHAIN_SERVICE, &did)?;
+        let pub_b64 = ik.public_b64();
+        let sig = dev.sign(&exchange::messages::publickey(&did, &pub_b64, None));
+        let body = serde_json::json!({ "did": did, "x25519_pub": pub_b64, "signature": sig });
+        let v = self.exchange_post("exchange/key", body).await?;
+        let _ = v; // { did, status: "published" }
+        Ok(ik)
+    }
+
+    /// Fetch a peer's published X25519 public key (STANDARD base64), or `None` if they haven't
+    /// published one. Public read — no signature.
+    pub async fn fetch_exchange_key(&self, did: &str) -> Result<Option<String>, AppError> {
+        let url = format!("{}/api/v1/exchange/key", decodingus_appview_url());
+        let resp = self
+            .auth
+            .http
+            .get(&url)
+            .query(&[("did", did)])
+            .send()
+            .await
+            .map_err(|e| AppError::Sync(navigator_sync::SyncError::from(e)))?;
+        if resp.status().as_u16() == 404 {
+            return Ok(None);
+        }
+        if !resp.status().is_success() {
+            return Err(appview_status_error("exchange/key", resp).await);
+        }
+        let v: serde_json::Value = resp.json().await.map_err(|e| AppError::Sync(navigator_sync::SyncError::from(e)))?;
+        Ok(v.get("x25519_pub").and_then(|x| x.as_str()).map(str::to_string))
+    }
+
+    /// Consent to (or decline) an exchange request. On mutual consent the AppView opens a session
+    /// and returns its id.
+    pub async fn exchange_consent(&self, request_uri: &str, given: bool) -> Result<ConsentOutcome, AppError> {
+        let did = self.current_account().ok_or(AppError::NotAuthenticated)?;
+        let dev = self.ensure_device_key().await?;
+        let sig = dev.sign(&exchange::messages::consent(request_uri, &did, given));
+        let body = serde_json::json!({
+            "request_uri": request_uri,
+            "consenting_did": did,
+            "consent_given": given,
+            "signature": sig,
+        });
+        let v = self.exchange_post("exchange/consent", body).await?;
+        Ok(ConsentOutcome {
+            status: v.get("status").and_then(|x| x.as_str()).unwrap_or("PENDING").to_string(),
+            session_id: v.get("session_id").and_then(|x| x.as_str()).map(str::to_string),
+        })
+    }
+
+    /// Poll for inbound (symmetric-blind) exchange requests awaiting this account's consent.
+    pub async fn exchange_incoming(&self) -> Result<Vec<IncomingRequest>, AppError> {
+        let v = self.exchange_get_poll("exchange/incoming", &[]).await?;
+        Ok(v.get("items")
+            .and_then(|x| x.as_array())
+            .map(|items| {
+                items
+                    .iter()
+                    .map(|i| IncomingRequest {
+                        request_uri: i.get("request_uri").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
+                        purpose: i.get("purpose").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
+                        created_at: i.get("created_at").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
+                    })
+                    .collect()
+            })
+            .unwrap_or_default())
+    }
+
+    /// Poll for consent-ready sessions (both parties consented; partner identity now revealed).
+    pub async fn exchange_pending(&self) -> Result<Vec<ExchangeSessionInfo>, AppError> {
+        let v = self.exchange_get_poll("exchange/pending", &[]).await?;
+        Ok(v.get("items")
+            .and_then(|x| x.as_array())
+            .map(|items| {
+                items
+                    .iter()
+                    .map(|i| ExchangeSessionInfo {
+                        session_id: i.get("session_id").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
+                        request_uri: i.get("request_uri").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
+                        purpose: i.get("purpose").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
+                        partner_did: i.get("partner_did").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
+                        partner_key_uri: i.get("partner_key_uri").and_then(|x| x.as_str()).map(str::to_string),
+                    })
+                    .collect()
+            })
+            .unwrap_or_default())
+    }
+
+    /// Relay an opaque ciphertext `blob` to `to_did` in a session. The signed hash binds the blob to
+    /// its routing (the broker stores ciphertext only). Returns the broker envelope id.
+    pub async fn exchange_relay(&self, session_id: &str, to_did: &str, seq: i32, blob: &str) -> Result<i64, AppError> {
+        let did = self.current_account().ok_or(AppError::NotAuthenticated)?;
+        let dev = self.ensure_device_key().await?;
+        let hash = exchange::blob_sha256_b64(blob).map_err(AppError::Sync)?;
+        let sig = dev.sign(&exchange::messages::relay(session_id, &did, to_did, seq, &hash));
+        let body = serde_json::json!({
+            "session_id": session_id,
+            "from_did": did,
+            "to_did": to_did,
+            "seq": seq,
+            "blob": blob,
+            "signature": sig,
+        });
+        let v = self.exchange_post("exchange/relay", body).await?;
+        Ok(v.get("id").and_then(|x| x.as_i64()).unwrap_or_default())
+    }
+
+    /// Pull undelivered relay envelopes for a session (ordered by seq).
+    pub async fn exchange_relay_pull(&self, session_id: &str) -> Result<Vec<RelayEnvelope>, AppError> {
+        let v = self.exchange_get_poll("exchange/relay/pull", &[("session_id", session_id)]).await?;
+        Ok(v.get("items")
+            .and_then(|x| x.as_array())
+            .map(|items| {
+                items
+                    .iter()
+                    .map(|i| RelayEnvelope {
+                        id: i.get("id").and_then(|x| x.as_i64()).unwrap_or_default(),
+                        from_did: i.get("from_did").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
+                        seq: i.get("seq").and_then(|x| x.as_i64()).unwrap_or_default() as i32,
+                        blob: i.get("blob").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
+                    })
+                    .collect()
+            })
+            .unwrap_or_default())
+    }
+
+    /// Acknowledge a delivered relay envelope (the broker drops it).
+    pub async fn exchange_relay_ack(&self, envelope_id: i64) -> Result<(), AppError> {
+        let did = self.current_account().ok_or(AppError::NotAuthenticated)?;
+        let dev = self.ensure_device_key().await?;
+        let sig = dev.sign(&exchange::messages::ack(&did, envelope_id));
+        let body = serde_json::json!({ "envelope_id": envelope_id, "did": did, "signature": sig });
+        self.exchange_post("exchange/ack", body).await.map(|_| ())
+    }
+
+    /// Establish a shared session key for a consent-ready session: publish/load our identity key,
+    /// fetch the partner's, exchange ephemeral keys via the relay (handshake, seq 0), and derive the
+    /// X3DH-lite session key. Polls the relay up to ~15s for the partner's handshake. The returned
+    /// [`EstablishedSession`] then seals/opens payloads. (Live-only — needs a running AppView + the
+    /// partner edge online to complete the handshake.)
+    pub async fn open_exchange_session(&self, info: &ExchangeSessionInfo) -> Result<EstablishedSession, AppError> {
+        let did = self.current_account().ok_or(AppError::NotAuthenticated)?;
+        let ik = self.ensure_exchange_key().await?;
+        let partner_ik = self
+            .fetch_exchange_key(&info.partner_did)
+            .await?
+            .ok_or_else(|| AppError::AppView(format!("partner {} has not published an X25519 key", info.partner_did)))?;
+
+        let ek = exchange::EphemeralKey::generate();
+        let hs = exchange::Envelope::handshake(&ek).to_blob().map_err(AppError::Sync)?;
+        self.exchange_relay(&info.session_id, &info.partner_did, 0, &hs).await?;
+
+        // Wait for the partner's handshake (seq 0 / a Handshake envelope), acking just it.
+        let mut their_ek: Option<String> = None;
+        for _ in 0..15 {
+            for env in self.exchange_relay_pull(&info.session_id).await? {
+                if let Ok(exchange::Envelope::Handshake { ek, .. }) = exchange::Envelope::from_blob(&env.blob) {
+                    their_ek = Some(ek);
+                    let _ = self.exchange_relay_ack(env.id).await;
+                    break;
+                }
+            }
+            if their_ek.is_some() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+        }
+        let their_ek = their_ek.ok_or_else(|| AppError::AppView("partner handshake not received (peer offline?)".into()))?;
+
+        let key = exchange::derive_session_key(&ik, &ek, &partner_ik, &their_ek, exchange::role_is_a(&did, &info.partner_did))
+            .map_err(AppError::Sync)?;
+        Ok(EstablishedSession { session_id: info.session_id.clone(), partner_did: info.partner_did.clone(), key })
+    }
+
+    /// Seal `plaintext` and relay it on an established session (data starts at seq 1).
+    pub async fn exchange_send(&self, session: &EstablishedSession, seq: i32, plaintext: &[u8]) -> Result<i64, AppError> {
+        let did = self.current_account().ok_or(AppError::NotAuthenticated)?;
+        let aad = exchange::relay_aad(&session.session_id, &did, &session.partner_did, seq);
+        let blob = exchange::seal(&session.key, &aad, plaintext).and_then(|e| e.to_blob()).map_err(AppError::Sync)?;
+        self.exchange_relay(&session.session_id, &session.partner_did, seq, &blob).await
+    }
+
+    /// Pull + decrypt + ack the data payloads waiting on an established session (returns plaintexts
+    /// in pull order). Non-data / undecryptable envelopes are left un-acked.
+    pub async fn exchange_receive(&self, session: &EstablishedSession) -> Result<Vec<Vec<u8>>, AppError> {
+        let did = self.current_account().ok_or(AppError::NotAuthenticated)?;
+        let mut out = Vec::new();
+        for env in self.exchange_relay_pull(&session.session_id).await? {
+            let Ok(parsed) = exchange::Envelope::from_blob(&env.blob) else { continue };
+            // AAD binds the sender's routing: from = the partner (sender), to = us.
+            let aad = exchange::relay_aad(&session.session_id, &env.from_did, &did, env.seq);
+            if let Ok(pt) = exchange::open(&session.key, &aad, &parsed) {
+                out.push(pt);
+                let _ = self.exchange_relay_ack(env.id).await;
+            }
+        }
+        Ok(out)
+    }
+
+    /// POST a JSON body to an `/api/v1/<path>` exchange endpoint, mapping non-2xx to an AppView error.
+    async fn exchange_post(&self, path: &str, body: serde_json::Value) -> Result<serde_json::Value, AppError> {
+        let url = format!("{}/api/v1/{path}", decodingus_appview_url());
+        let resp = self
+            .auth
+            .http
+            .post(&url)
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| AppError::Sync(navigator_sync::SyncError::from(e)))?;
+        if !resp.status().is_success() {
+            return Err(appview_status_error(path, resp).await);
+        }
+        resp.json().await.map_err(|e| AppError::Sync(navigator_sync::SyncError::from(e)))
+    }
+
+    /// Issue a device-key-signed `exchange-poll` GET to an `/api/v1/<path>` endpoint, with `extra`
+    /// query params appended. Shared by incoming / pending / relay-pull.
+    async fn exchange_get_poll(&self, path: &str, extra: &[(&str, &str)]) -> Result<serde_json::Value, AppError> {
+        let did = self.current_account().ok_or(AppError::NotAuthenticated)?;
+        let dev = self.ensure_device_key().await?;
+        let url = format!("{}/api/v1/{path}", decodingus_appview_url());
+        let ts = Utc::now().timestamp();
+        let sig = dev.sign(&exchange::messages::poll(&did, ts));
+        let ts_s = ts.to_string();
+        let mut query: Vec<(&str, &str)> = vec![("did", did.as_str()), ("ts", ts_s.as_str()), ("sig", sig.as_str())];
+        query.extend_from_slice(extra);
+        let resp = self
+            .auth
+            .http
+            .get(&url)
+            .query(&query)
+            .send()
+            .await
+            .map_err(|e| AppError::Sync(navigator_sync::SyncError::from(e)))?;
+        if !resp.status().is_success() {
+            return Err(appview_status_error(path, resp).await);
+        }
+        resp.json().await.map_err(|e| AppError::Sync(navigator_sync::SyncError::from(e)))
     }
 
     /// Publish the alignment's coverage summary to the signed-in account's PDS (with

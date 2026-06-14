@@ -7,6 +7,7 @@
 
 pub mod device_key;
 pub mod error;
+pub mod exchange;
 pub mod oauth;
 pub mod publish;
 pub mod records;
@@ -15,6 +16,7 @@ pub mod tokens;
 
 pub use device_key::{DeviceKey, DEVICE_KEY_COLLECTION};
 pub use error::SyncError;
+pub use exchange::{Envelope, EphemeralKey, ExchangeKey};
 pub use oauth::{login, login_default, refresh, OAuthConfig};
 pub use publish::{dev_http_client, PdsClient, RecordRef};
 pub use sync::{AsyncSync, RetryPolicy};
