@@ -636,6 +636,17 @@ fn ancestry_freq_global_path(build: ReferenceBuild) -> PathBuf {
         .join(format!("ancestry_freq_global_{}.bin", build.as_str()))
 }
 
+/// The chip-compatible IBD panel asset path (`$NAVIGATOR_IBD_PANEL` override, else
+/// `<base>/ancestry/ibd_panel_<build>.bin`).
+fn ibd_panel_path(build: ReferenceBuild) -> PathBuf {
+    if let Ok(p) = std::env::var("NAVIGATOR_IBD_PANEL") {
+        return PathBuf::from(p);
+    }
+    refgenome_cache::base_dir()
+        .join("ancestry")
+        .join(format!("ibd_panel_{}.bin", build.as_str()))
+}
+
 /// The genetic-map asset path for a build (`$NAVIGATOR_GENETIC_MAP` override, else
 /// `<base>/ancestry/genetic_map_<build>.bin`). Optional — IBD falls back to a uniform map if absent.
 fn genetic_map_path(build: ReferenceBuild) -> PathBuf {
@@ -5568,6 +5579,33 @@ impl App {
         ploidy: u8,
     ) -> Result<Option<Vec<SiteGenotype>>, AppError> {
         self.load_analysis(alignment_id, &panel_kind(panel_id, ploidy), caller::GENOTYPE_VERSION).await
+    }
+
+    /// Resolve an imported chip's genotypes to canonical CHM13 **IBD-panel** dosages — the chip→IBD
+    /// path (no alignment, no runtime liftover: the multi-build panel pre-computes coordinates). The
+    /// output [`SiteGenotype`]s are over the same CHM13 sites a WGS caller would hit, so a chip and a
+    /// WGS sample compare uniformly. Errors if the IBD panel asset isn't built yet.
+    pub async fn chip_ibd_dosages(&self, chip_profile_id: i64) -> Result<Vec<SiteGenotype>, AppError> {
+        let chip = chip_profile::get(self.store.pool(), chip_profile_id)
+            .await?
+            .ok_or_else(|| AppError::Store(StoreError::NotFound(format!("chip profile {chip_profile_id}"))))?;
+        let path = chip
+            .source_path
+            .clone()
+            .ok_or_else(|| AppError::Import("this chip has no stored raw-data file — re-import it to enable IBD".into()))?;
+        let text = std::fs::read_to_string(&path).map_err(|e| AppError::Import(format!("chip file {path}: {e}")))?;
+        let from_build = chipprofile::detect_build(&text);
+        let calls = chipprofile::autosomal_calls(&text);
+
+        let panel_path = ibd_panel_path(ReferenceBuild::Chm13v2);
+        let bytes = std::fs::read(&panel_path).map_err(|_| {
+            AppError::Import(format!("IBD panel asset not found at {} — build it with `panelbuild ibd-panel`", panel_path.display()))
+        })?;
+        let panel = navigator_analysis::ibd_panel::IbdPanel::from_bytes(&bytes)?;
+
+        let tuples: Vec<(String, i64, char, char)> =
+            calls.into_iter().map(|c| (c.contig, c.position, c.a1, c.a2)).collect();
+        Ok(panel.resolve_chip(&from_build, &tuples))
     }
 
     /// Compare two alignments for IBD, using each one's cached panel genotypes. Both must
