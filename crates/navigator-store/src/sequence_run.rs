@@ -132,23 +132,28 @@ pub async fn set_library_stats(
     Ok(affected > 0)
 }
 
-/// Set the library-level read stats (`total_reads`, `mean_read_length`, `mean_insert_size`) —
-/// populated after a read-metrics / unified-walker pass (or backfilled from a cached artifact).
-/// These describe the run's library; per-alignment counts (e.g. reads aligned) live on the
-/// alignment. Leaves the descriptive + lab columns untouched. Returns whether a row was affected.
+/// Set the library-level read stats (`total_reads`, `mean_read_length`, `mean_insert_size`,
+/// `library_layout`) — populated after a read-metrics / unified-walker pass (or backfilled from a
+/// cached artifact). These describe the run's library; per-alignment counts (e.g. reads aligned)
+/// live on the alignment. A `None` `library_layout` leaves the existing value (set at import from
+/// the BAM flags). Leaves the descriptive + lab columns untouched. Returns whether a row was
+/// affected.
 pub async fn set_read_stats(
     pool: &SqlitePool,
     id: i64,
     total_reads: Option<i64>,
     mean_read_length: Option<f64>,
     mean_insert_size: Option<f64>,
+    library_layout: Option<&str>,
 ) -> Result<bool, StoreError> {
     let affected = sqlx::query(
-        "UPDATE sequence_run SET total_reads = ?, mean_read_length = ?, mean_insert_size = ? WHERE id = ?",
+        "UPDATE sequence_run SET total_reads = ?, mean_read_length = ?, mean_insert_size = ?, \
+         library_layout = COALESCE(?, library_layout) WHERE id = ?",
     )
     .bind(total_reads)
     .bind(mean_read_length)
     .bind(mean_insert_size)
+    .bind(library_layout)
     .bind(id)
     .execute(pool)
     .await?

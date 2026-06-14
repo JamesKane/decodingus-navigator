@@ -1709,12 +1709,17 @@ impl App {
         m: &navigator_analysis::read_metrics::ReadMetrics,
     ) -> Result<(), AppError> {
         if let Some(aln) = alignment::get(self.store.pool(), alignment_id).await? {
+            // Paired-end evidence: any reads aligned in pairs ⇒ PAIRED. Only overrides the stored
+            // layout when we have aligned reads to judge (else leave the import-time flag value).
+            let layout = (m.pf_reads_aligned > 0)
+                .then_some(if m.reads_aligned_in_pairs > 0 { "PAIRED" } else { "SINGLE" });
             sequence_run::set_read_stats(
                 self.store.pool(),
                 aln.sequence_run_id,
                 Some(m.total_reads as i64),
                 (m.mean_read_length > 0.0).then_some(m.mean_read_length),
                 (m.mean_insert_size > 0.0).then_some(m.mean_insert_size),
+                layout,
             )
             .await?;
         }
@@ -4566,7 +4571,7 @@ impl App {
                 platform_name,
                 instrument_model,
                 test_type,
-                library_layout: None,
+                library_layout: stats.as_ref().and_then(|s| s.library_layout.clone()),
                 total_reads: None,
                 pf_reads_aligned: None,
                 mean_read_length: None,
@@ -5009,10 +5014,11 @@ impl App {
     pub async fn list_sequence_runs(&self, biosample_guid: SampleGuid) -> Result<Vec<SequenceRun>, AppError> {
         let mut runs = sequence_run::list_for_biosample(self.store.pool(), biosample_guid).await?;
         // One-time backfill: runs analyzed before read stats were mirrored onto the run carry no
-        // `total_reads`. Recover them from a cached `read_metrics` artifact on any of the run's
-        // alignments and persist, so the card shows library stats without a re-walk.
+        // `total_reads` (and older imports no `library_layout`). Recover them from a cached
+        // `read_metrics` artifact on any of the run's alignments and persist, so the card shows
+        // library stats + PE/SE without a re-walk.
         for run in &mut runs {
-            if run.total_reads.is_some() {
+            if run.total_reads.is_some() && run.library_layout.is_some() {
                 continue;
             }
             let alns = alignment::list_for_run(self.store.pool(), run.id).await?;
@@ -5022,6 +5028,10 @@ impl App {
                     run.total_reads = Some(m.total_reads as i64);
                     run.mean_read_length = (m.mean_read_length > 0.0).then_some(m.mean_read_length);
                     run.mean_insert_size = (m.mean_insert_size > 0.0).then_some(m.mean_insert_size);
+                    if m.pf_reads_aligned > 0 {
+                        run.library_layout =
+                            Some(if m.reads_aligned_in_pairs > 0 { "PAIRED" } else { "SINGLE" }.into());
+                    }
                     break;
                 }
             }

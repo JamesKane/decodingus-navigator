@@ -3911,7 +3911,7 @@ impl NavigatorApp {
                                 fmt_reads(r.total_reads),
                                 read_len,
                                 insert,
-                                r.library_layout.as_deref().unwrap_or("SINGLE"),
+                                r.library_layout.as_deref().unwrap_or("—"),
                                 inst,
                             ))
                             .weak()

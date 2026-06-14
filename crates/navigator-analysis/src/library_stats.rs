@@ -39,6 +39,9 @@ pub struct LibraryStats {
     pub instrument_model: Option<String>,
     /// Most-frequent flowcell id from read names.
     pub flowcell_id: Option<String>,
+    /// `PAIRED` if the scanned reads carry the SAM segmented (0x1) flag, else `SINGLE`; `None`
+    /// when no primary reads were scanned.
+    pub library_layout: Option<String>,
 }
 
 /// Scan up to `max_reads` records of `path` (CRAM needs `reference`) and infer library/instrument
@@ -65,6 +68,7 @@ pub fn scan_library_stats(
     }
 
     let mut read_count = 0usize;
+    let mut segmented_count = 0usize;
     let mut platform_counts: HashMap<&'static str, usize> = HashMap::new();
     let mut instruments: HashMap<String, usize> = HashMap::new();
     let mut flowcells: HashMap<String, usize> = HashMap::new();
@@ -80,6 +84,9 @@ pub fn scan_library_stats(
             continue;
         }
         read_count += 1;
+        if flags.is_segmented() {
+            segmented_count += 1; // SAM 0x1 = part of a paired/multi-segment template
+        }
         let Some(qname) = record.name().map(|n| n.to_string()) else { continue };
 
         let platform = detect_platform_from_qname(&qname);
@@ -101,6 +108,10 @@ pub fn scan_library_stats(
         _ => None,
     };
 
+    // Majority vote: PAIRED if most scanned reads are segmented (handles a few stray flags).
+    let library_layout = (read_count > 0)
+        .then(|| if segmented_count * 2 >= read_count { "PAIRED" } else { "SINGLE" }.to_string());
+
     Ok(LibraryStats {
         read_count,
         sample_name,
@@ -110,6 +121,7 @@ pub fn scan_library_stats(
         instrument_id,
         instrument_model,
         flowcell_id,
+        library_layout,
     })
 }
 
@@ -311,6 +323,19 @@ mod tests {
             parse_instrument_and_flowcell("m84005_230101_000000/1234/ccs", "PacBio"),
             (Some("m84005".into()), None)
         );
+    }
+
+    #[test]
+    fn library_layout_majority_vote() {
+        // Helper mirrors the in-scan rule: PAIRED iff segmented*2 >= total.
+        let layout = |segmented: usize, total: usize| {
+            (total > 0).then(|| if segmented * 2 >= total { "PAIRED" } else { "SINGLE" }.to_string())
+        };
+        assert_eq!(layout(0, 0), None); // nothing scanned
+        assert_eq!(layout(100, 100).as_deref(), Some("PAIRED"));
+        assert_eq!(layout(0, 100).as_deref(), Some("SINGLE"));
+        assert_eq!(layout(60, 100).as_deref(), Some("PAIRED")); // majority paired
+        assert_eq!(layout(40, 100).as_deref(), Some("SINGLE"));
     }
 
     #[test]
