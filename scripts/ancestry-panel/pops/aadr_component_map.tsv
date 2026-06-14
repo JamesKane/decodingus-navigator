@@ -35,3 +35,32 @@ Papuan.DG	Oceanian
 # ── Sub-Saharan African ─────────────────────────────────────────────────────────
 Mbuti.DG	African
 Yoruba.DG	African
+
+# ════════════════════════════════════════════════════════════════════════════════
+# v66.p1-verified Group IDs (the labels above pre-date v66.p1 and mostly no longer match;
+# auto-surfaced from the v66.p1 .anno — see pops/aadr_v66p1_ancient_groupids.tsv). These are the
+# canonical, well-sampled deep references actually present in this release. Reviewed counts shown.
+# ════════════════════════════════════════════════════════════════════════════════
+# Steppe (Yamnaya / Afanasievo EBA)
+Russia_Samara_EBA_Yamnaya	Steppe
+Russia_Kalmykia_EBA_Yamnaya	Steppe
+Russia_Rostov_EBA_Don_Yamnaya	Steppe
+Russia_Khakassia_Afanasievo	Steppe
+Moldova_EBA_Yamnaya	Steppe
+# ANF — Anatolian Neolithic (Turkey_N above already matches, n=68)
+# WHG — Western hunter-gatherer
+France_Mesolithic	WHG
+# EHG — Eastern hunter-gatherer
+Russia_Karelia_Mesolithic	EHG
+Russia_Karelia_Mesolithic_HG	EHG
+# Iran Neolithic (Iran_GanjDareh_N above already matches, n=17)
+Iran_HajjiFiruz_N	Iran_N
+#
+# ── EXPERT-DECISION TODO (left unmapped on purpose) ──────────────────────────────
+# CHG: no clean high-N Caucasus HG in v66.p1 (Kotias/Satsurblia are single genomes). Later/admixed
+#   candidates only: Russia_Eneolithic_Caucasus (n=7), Georgia_Arukhlo2_N_Caucasus (n=6).
+# WHG cline: Serbia_IronGates_Mesolithic (n=73) / Romania_IronGates_Mesolithic (n=10) are
+#   WHG–EHG-admixed — add to WHG only if you want the Iron Gates cline included.
+# ANE: only single genomes (n=1, e.g. Russia_MA1_HG.SG) — too sparse for a stable centroid.
+# Natufian / Levant_N: Israel_Natufian (n=17), Jordan_PPNB (n=17) are strong deep refs but need a
+#   new component code added to navigator-domain::ancestry before mapping here.
