@@ -24,7 +24,11 @@ emit_source() {  # <tag> <vcf-on-CHM13.gz>
 }
 
 # ── AADR (ancient deep components) ──────────────────────────────────────────────
-# EIGENSTRAT/packed -> VCF (convertf to PED, then plink2 to VCF), liftover hg19 -> CHM13.
+# packed/EIGENSTRAT .geno -> PACKEDPED (convertf) -> VCF (plink2) -> liftover hg19 -> CHM13.
+# NOTE: recent AADR releases (v66.p1) ship the .geno as TGENO (transposed packed). Use AdmixTools'
+# convertf, which reads TGENO; EIGENSOFT's convertf reads only GENO/EIGENSTRAT and aborts on TGENO.
+# We just try convertf and skip gracefully on failure — so the build is convertf-implementation
+# agnostic (works if convertf can read the format, builds modern-only if not).
 AADR_PREFIX="$(ls "$RAW/"*"${AADR_DATASET}"*.geno 2>/dev/null | head -1 | sed 's/\.geno$//' || true)"
 aadr_ready=0
 if [[ -z "$AADR_PREFIX" ]]; then
@@ -32,15 +36,9 @@ if [[ -z "$AADR_PREFIX" ]]; then
 elif [[ -s "$TMP/aadr.chm13.vcf.gz" ]]; then
   aadr_ready=1
 elif ! { command -v convertf >/dev/null 2>&1 && command -v plink2 >/dev/null 2>&1; }; then
-  log "WARN: convertf/plink2 not found — skipping ancient sources (install EIGENSOFT + plink2)."
-elif [[ "$(head -c5 "${AADR_PREFIX}.geno" 2>/dev/null)" == "TGENO" ]]; then
-  # convertf reads PACKEDANCESTRYMAP ("GENO") / EIGENSTRAT only. Recent AADR releases (v66.p1)
-  # ship the *transposed* packed format ("TGENO"), which the stock convertf cannot read. Skip the
-  # ancient source rather than abort the whole build; the modern (1000G) panel still builds.
-  log "WARN: AADR .geno is TGENO (transposed packed) — this convertf can't read it; skipping ancient sources."
-  log "      Fix: use a TGENO-capable convertf, or a non-transposed AADR distribution, then re-run stage 4."
+  log "WARN: convertf/plink2 not found — skipping ancient sources (install AdmixTools + plink2)."
 else
-  log "AADR EIGENSTRAT -> VCF"
+  log "AADR packed/EIGENSTRAT -> VCF (convertf: $(command -v convertf))"
   cat > "$TMP/convertf.par" <<EOF
 genotypename:    ${AADR_PREFIX}.geno
 snpname:         ${AADR_PREFIX}.snp
@@ -50,12 +48,24 @@ genotypeoutname: $TMP/aadr.bed
 snpoutname:      $TMP/aadr.bim
 indivoutname:    $TMP/aadr.fam
 EOF
+  # Map the panel's CHM13 sites back to AADR SNP ids (via the stage-2 lifted BED) so we recode +
+  # lift only the ~20k panel SNPs, not all ~1.23M — converting/lifting the full 23k-sample matrix
+  # would be tens of GB and hours of CrossMap, and the matrix is cut to the panel anyway.
+  awk 'NR==FNR { p[$1"\t"$2]=1; next } { split($4,a,"|"); if (($1"\t"$3) in p) print a[1] }' \
+    "$REGIONS" "$TMP/1240k_sites.${BUILD}.bed" > "$TMP/aadr_panel_ids.txt"
+  log "AADR: $(wc -l < "$TMP/aadr_panel_ids.txt" | tr -d ' ') panel SNP ids to extract"
+  # id-paste=iid: emit only the IID (the AADR genetic ID) as the VCF sample name. Default plink2
+  # pastes FID_IID (here "1_Loschbour.AG"), which then won't match the .anno Genetic ID used by
+  # derive_aadr_pops.sh — so the ancient labels would silently come out empty.
   if convertf -p "$TMP/convertf.par" \
-     && plink2 --bfile "$TMP/aadr" --recode vcf bgz --out "$TMP/aadr.hg19" --output-chr chrM; then
+     && plink2 --bfile "$TMP/aadr" --extract "$TMP/aadr_panel_ids.txt" \
+               --export vcf bgz id-paste=iid --out "$TMP/aadr.hg19" --output-chr chrM; then
     liftover_vcf "$TMP/aadr.hg19.vcf.gz" hg19 "$TMP/aadr.chm13.vcf.gz"
     aadr_ready=1
   else
-    log "WARN: AADR convertf/plink2 conversion failed — skipping ancient sources."
+    log "WARN: AADR convert/recode failed — skipping ancient sources."
+    [[ "$(head -c5 "${AADR_PREFIX}.geno" 2>/dev/null)" == "TGENO" ]] && \
+      log "      (.geno is TGENO transposed packed — needs AdmixTools convertf; EIGENSOFT's can't read it)"
   fi
 fi
 if [[ "$aadr_ready" == 1 ]]; then

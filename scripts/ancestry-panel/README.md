@@ -48,8 +48,11 @@ default** (modern global resolution is an enhancement; 1000G-CHM13 + AADR give a
 ## Prerequisites
 
 External tools (not bundled): `curl`, `bcftools` + `tabix`, `CrossMap` (`pip install CrossMap`),
-`convertf` + `plink2` (AADR EIGENSTRAT → VCF), `awk`, and `aws` **or** `rclone` (publish).
-Plus this repo's `navigator-panelbuild` (run via `cargo run -p navigator-panelbuild`).
+`plink2`, and **AdmixTools' `convertf`** (AADR packed→VCF), `awk`, and `aws` **or** `rclone`
+(publish). Use AdmixTools' convertf, not EIGENSOFT's — recent AADR `.geno` ships as TGENO
+(transposed packed), which AdmixTools convertf reads but EIGENSOFT's does not. Both are on bioconda
+(`admixtools`, `eigensoft`); install via conda/micromamba. Plus this repo's `navigator-panelbuild`
+(`cargo run -p navigator-panelbuild`).
 
 ## You must provide / curate
 

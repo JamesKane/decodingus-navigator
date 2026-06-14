@@ -57,10 +57,13 @@ liftover_vcf() {
   log "liftover $(basename "$in") ($src -> $BUILD)"
   CrossMap vcf "$chain" "$in" "$fa" "$TMP/$(basename "$out" .gz)" \
     || die "CrossMap failed on $in"
-  # Align alleles to the CHM13 reference; -c s swaps/flips ref-mismatched records,
-  # drops what can't be reconciled. Ancient pseudo-haploid GTs pass through.
-  bcftools norm -c s -f "$fa" "$TMP/$(basename "$out" .gz)" -Oz -o "$out" \
-    || die "bcftools norm failed on $in"
+  # Align alleles to the CHM13 reference (-c s swaps/flips ref-mismatched records, drops what can't
+  # be reconciled; ancient pseudo-haploid GTs pass through), then SORT — liftover does not preserve
+  # coordinate order (a lifted position can precede an earlier one), so the raw output is unsorted
+  # and tabix would reject it. bcftools sort fixes the order before indexing.
+  bcftools norm -c s -f "$fa" "$TMP/$(basename "$out" .gz)" -Ou \
+    | bcftools sort -Oz -o "$out" \
+    || die "bcftools norm/sort failed on $in"
   tabix -f -p vcf "$out"
 }
 
