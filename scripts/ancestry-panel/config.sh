@@ -76,27 +76,28 @@ AADR_ID_ANNO="${AADR_ID_ANNO:-13994515}"
 AADR_FILE_PREFIX="${AADR_FILE_PREFIX:-${AADR_VERSION}.${AADR_DATASET}.aadr.PUB}"
 
 # HGDP + 1KG dense callset (modern global, non-European resolution). gnomAD v3.1.2, GRCh38.
-# OPTIONAL enhancement source. The per-chromosome callsets are ENORMOUS (~3.6 TB whole), so we
-# NEVER bulk-download them: stage 04 remote-slices each chromosome at the 1240k sites (lifted to
-# hg38), pulling only the panel-relevant records (~GB). Requires htslib with GCS support.
-# Landing: https://gnomad.broadinstitute.org/downloads#v3-hgdp-1kg
-# NOTE: anonymous gs:// reads of this public bucket work with a GCS-enabled htslib — no GCP billing
-# project or auth required (verified 2026-06-13: header + region slice succeed unauthenticated).
-# HGDP_1KG_GCP_PROJECT is only needed if Google ever flips the bucket to requester-pays. The sample
-# -> population map (hgdp1kg.pops.tsv) is the gnomAD HGDP+1KG meta `hgdp_tgp_meta.Population` column.
-# Caveat: this callset re-includes the 1KG samples, which overlap our 1000G source — label only the
-# HGDP samples (or accept the 1KG double-count) when wiring it into the basis.
-HGDP_1KG_ENABLE="${HGDP_1KG_ENABLE:-0}"   # 1 to include
+# OPTIONAL — but IMPRACTICAL on a workstation, off by default (see below). Anonymous gs:// reads of
+# the public bucket DO work (no GCP project/auth needed; HGDP_1KG_GCP_PROJECT only if it ever flips
+# to requester-pays). BUT: the per-chromosome callsets are dense whole-genome (chr22 alone is
+# ~60 GB → ~2 TB total, so bulk download is out), and remote `-R` slicing is latency-bound at
+# ~5 s/site over gs:// — ~28 h for the 20k-site panel and fragile (measured 2026-06-14). It also
+# re-includes the 1KG samples (overlap with our 1000G source). RECOMMENDATION: leave disabled;
+# 1000G + AADR + SGDP already give modern + ancient global coverage. If you truly need HGDP, source
+# it from a smaller distribution (e.g. AADR present-day HGDP samples, already local) rather than the
+# gnomAD gs:// callset. The pop map (hgdp1kg.pops.tsv) is the gnomAD meta `hgdp_tgp_meta.Population`.
+HGDP_1KG_ENABLE="${HGDP_1KG_ENABLE:-0}"   # 1 to include (impractical via gnomAD gs://; see above)
 HGDP_1KG_GCP_PROJECT="${HGDP_1KG_GCP_PROJECT:-}"
 HGDP_1KG_BASE_URL="${HGDP_1KG_BASE_URL:-gs://gcp-public-data--gnomad/release/3.1.2/vcf/genomes}"
 HGDP_1KG_PATTERN="${HGDP_1KG_PATTERN:-gnomad.genomes.v3.1.2.hgdp_tgp.chr%s.vcf.bgz}"
 
-# Simons Genome Diversity Project (modern deep diversity). GRCh38, distributed as PLINK by the
-# Reich lab. OPTIONAL. Now served from sharehost.hms.harvard.edu (valid TLS — the old
+# Simons Genome Diversity Project (modern deep diversity). cteam_extended is **GRCh37/hg19**
+# (verified by 1240k position overlap — NOT GRCh38), distributed as PLINK by the Reich lab.
+# OPTIONAL and tractable (works). Served from sharehost.hms.harvard.edu (valid TLS — the old
 # reichdata.hms.harvard.edu path 404s; the -k hack no longer applies). NOTE: at this host the .bim
-# ships zipped as `${SGDP_PLINK_PREFIX}.bim.zip`, so stage 01's plain bed/bim/fam fetch must unzip
-# it before plink2 can read the set. sgdp.pops.tsv is keyed on SGDP_ID (SGDP metadata col 5) ->
-# Population_ID; verify that matches the PLINK .fam IID after download.
+# ships zipped as `${SGDP_PLINK_PREFIX}.bim.zip` (stage 01 unzips it). The cteam .fam IID is the
+# metadata's `Sample_ID(Aliases)` (HGDP*/SGDP ids), NOT `SGDP_ID` — sgdp.pops.tsv is keyed on the
+# alias accordingly. Stage 04 restricts to the panel SNPs (hg19 `chrom_pos` .bim ids) and lifts
+# hg19->CHM13 before genotyping.
 SGDP_ENABLE="${SGDP_ENABLE:-0}"           # 1 to include
 SGDP_BASE_URL="${SGDP_BASE_URL:-https://sharehost.hms.harvard.edu/genetics/reich_lab/sgdp/variant_set}"
 SGDP_PLINK_PREFIX="${SGDP_PLINK_PREFIX:-cteam_extended.v4.maf0.1perc}" # verified at sharehost 2026-06-13 (.bim is .bim.zip)

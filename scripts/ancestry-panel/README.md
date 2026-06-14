@@ -34,15 +34,15 @@ genomes. The naive "download everything" pull would be ~5 TB; the default build 
 | Source | What's pulled | Size |
 |--------|---------------|------|
 | 1000G-CHM13 AF (`unrelated_samples_2504/allele_freq`) | per-chrom `withafinfo` VCFs (carry `AC_<POP>_unrel` for the panel) | ~9.9 GB |
-| 1000G-CHM13 genotypes (phased biallelic 3202 BCF) | remote-sliced at panel sites (stage 04) | ~MBs |
-| AADR v66 1240K (Harvard Dataverse) | geno/snp/ind/anno | ~7.3 GB |
+| 1000G-CHM13 genotypes (phased biallelic 3202 BCF) | **downloaded whole (~13 GB)** then sliced locally — remote `-R` over S3 is unreliable ("Illegal seek") | ~13 GB |
+| AADR v66.p1 1240K (Harvard Dataverse) | geno/snp/ind/anno | ~7.3 GB |
 | CHM13 FASTA + chains | reference + liftover | ~1 GB |
-| **gnomAD HGDP+1KG** (`HGDP_1KG_ENABLE=1`) | remote-sliced at 1240k-in-hg38 — full set is ~3.6 TB, **requester-pays** (needs `HGDP_1KG_GCP_PROJECT`) | ~GBs |
-| **SGDP** (`SGDP_ENABLE=1`) | PLINK, fetched whole | ~3 GB |
+| **gnomAD HGDP+1KG** (`HGDP_1KG_ENABLE=1`) | **IMPRACTICAL** — chr22 alone ~60 GB (~2 TB total, no bulk DL); remote `-R` ~5 s/site (~28 h, fragile). Off; prefer SGDP/AADR | — |
+| **SGDP** (`SGDP_ENABLE=1`) | GRCh37 PLINK fetched whole, panel-restricted + lifted hg19→CHM13 | ~3 GB |
 
-Avoid the multi-TB trap: never point 1000G/gnomAD at the per-genotype whole-chromosome VCFs.
-The phased biallelic BCF (`KGP_GT_BCF_URL`) is one ~13 GB whole-genome file we never fully
-download — htslib streams only the indexed panel-site byte ranges. gnomAD/SGDP are **off by
+The phased biallelic BCF (`KGP_GT_BCF_URL`) is one ~13 GB whole-genome file: point it at a local
+mirror, or the pipeline downloads it once (htslib remote `-R` slicing of thousands of scattered
+sites over the network is too slow/fragile). gnomAD/SGDP are **off by
 default** (modern global resolution is an enhancement; 1000G-CHM13 + AADR give a working build).
 
 ## Prerequisites

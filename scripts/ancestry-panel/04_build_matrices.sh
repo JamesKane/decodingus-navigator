@@ -119,17 +119,29 @@ if [[ "$HGDP_1KG_ENABLE" == 1 ]]; then
   fi
 fi
 
-# ── SGDP (GRCh38 PLINK) — OPTIONAL ──────────────────────────────────────────────
+# ── SGDP (cteam_extended PLINK, GRCh37/hg19) — OPTIONAL ──────────────────────────
+# NB: the cteam set is GRCh37/hg19 (verified by 1240k position overlap), NOT GRCh38, and is
+# genome-wide (~34M SNPs). Restrict to the panel SNPs (as hg19 `chrom_pos` .bim ids — chrom without
+# the 'chr' prefix to match the cteam .bim) and emit IID-only sample names before lifting hg19->CHM13.
 if [[ "$SGDP_ENABLE" == 1 ]]; then
   merged="$TMP/sgdp.chm13.vcf.gz"
   if [[ -s "$merged" ]]; then
     emit_source sgdp "$merged"; add_popmap sgdp
   elif [[ -s "$RAW/${SGDP_PLINK_PREFIX}.bed" ]]; then
     require_tool plink2
-    log "SGDP PLINK -> VCF"
-    plink2 --bfile "$RAW/$SGDP_PLINK_PREFIX" --recode vcf bgz --out "$TMP/sgdp.hg38" --output-chr chrM
-    liftover_vcf "$TMP/sgdp.hg38.vcf.gz" grch38 "$merged"
-    emit_source sgdp "$merged"; add_popmap sgdp
+    awk '
+      FILENAME ~ /panel_regions/ { p[$1"\t"$2]=1; next }
+      FILENAME ~ /[.]chm13.*[.]bed$/ { split($4,a,"|"); if (($1"\t"$3) in p) keep[a[1]]=1; next }
+      FILENAME ~ /hg19[.]bed$/ { split($4,a,"|"); if (a[1] in keep) { c=$1; sub(/^chr/,"",c); print c"_"$3 } }
+    ' "$REGIONS" "$TMP/1240k_sites.${BUILD}.bed" "$TMP/1240k_sites.hg19.bed" | sort -u > "$TMP/sgdp_panel_varids.txt"
+    log "SGDP: $(wc -l < "$TMP/sgdp_panel_varids.txt" | tr -d ' ') panel SNP ids to extract"
+    if plink2 --bfile "$RAW/$SGDP_PLINK_PREFIX" --extract "$TMP/sgdp_panel_varids.txt" \
+              --export vcf bgz id-paste=iid --out "$TMP/sgdp.hg19" --output-chr chrM; then
+      liftover_vcf "$TMP/sgdp.hg19.vcf.gz" hg19 "$merged"
+      emit_source sgdp "$merged"; add_popmap sgdp
+    else
+      log "WARN: SGDP plink2 recode failed — skipping SGDP."
+    fi
   else
     log "sgdp: PLINK $RAW/${SGDP_PLINK_PREFIX}.bed not found (run stage 01 with SGDP_ENABLE=1) — skip"
   fi

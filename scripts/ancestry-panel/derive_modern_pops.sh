@@ -53,11 +53,12 @@ if have "$RAW/1kgp.pops.tsv"; then log "have 1kgp.pops.tsv (skip; --force to reb
   log "  note: 2504 unrelated samples (the right PCA basis); the 698 related samples in the BCF stay unlabelled."
 fi
 
-# ── SGDP: SGDP_ID -> Population_ID ───────────────────────────────────────────────
+# ── SGDP: Sample_ID(Aliases) -> Population_ID ────────────────────────────────────
+# Keyed on the alias column, which is what the cteam_extended PLINK .fam uses as the IID
+# (HGDP*/SGDP sample ids) — NOT SGDP_ID (e.g. "B_Australian-3"), which the .fam does not carry.
 if have "$RAW/sgdp.pops.tsv"; then log "have sgdp.pops.tsv (skip)"; else
   fetch "$SGDP_META_URL" "sgdp_metadata.samples.txt" || die "fetch SGDP meta failed"
-  build_map "$RAW/sgdp_metadata.samples.txt" SGDP_ID Population_ID "$RAW/sgdp.pops.tsv"
-  log "  note: keyed on SGDP_ID — verify it matches the PLINK .fam IID after the SGDP fetch."
+  build_map "$RAW/sgdp_metadata.samples.txt" "Sample_ID(Aliases)" Population_ID "$RAW/sgdp.pops.tsv"
 fi
 
 # ── gnomAD HGDP+1KG: sample 's' -> hgdp_tgp_meta.Population ───────────────────────

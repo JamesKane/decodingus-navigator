@@ -57,20 +57,25 @@ fi
 # ── HGDP + 1KG (gnomAD, modern global) — OPTIONAL, sliced in stage 04 ────────────
 # Not fetched whole (~3.6 TB). Stage 04 remote-slices each chromosome at the 1240k-in-hg38 sites.
 if [[ "$HGDP_1KG_ENABLE" == 1 ]]; then
-  [[ -n "$HGDP_1KG_GCP_PROJECT" ]] \
-    || log "WARN: HGDP_1KG_ENABLE=1 but HGDP_1KG_GCP_PROJECT is unset — requester-pays slicing in stage 04 will fail."
-  log "HGDP+1KG: enabled — stage 04 will slice $HGDP_1KG_BASE_URL at panel sites (no bulk download)."
+  log "HGDP+1KG: enabled — stage 04 will slice $HGDP_1KG_BASE_URL at the 1240k-in-hg38 sites."
+  log "  (anonymous gs:// reads of the public gnomAD bucket work; HGDP_1KG_GCP_PROJECT only needed if it ever flips to requester-pays)"
 else
-  log "HGDP+1KG: disabled (set HGDP_1KG_ENABLE=1 + HGDP_1KG_GCP_PROJECT to include)."
+  log "HGDP+1KG: disabled (set HGDP_1KG_ENABLE=1 to include)."
 fi
 
 # ── SGDP (modern deep diversity) — OPTIONAL, PLINK fetched whole (~3 GB) ─────────
 if [[ "$SGDP_ENABLE" == 1 ]]; then
+  require_tool unzip
   sgdp_ok=1
-  for ext in bed bim fam; do
-    fetch "$SGDP_BASE_URL/${SGDP_PLINK_PREFIX}.$ext" "${SGDP_PLINK_PREFIX}.$ext" || { sgdp_ok=0; break; }
-  done
-  [[ "$sgdp_ok" == 1 ]] || log "NOTE: SGDP fetch failed — VERIFY SGDP_PLINK_PREFIX/SGDP_BASE_URL (Reich host PLINK names roll forward)."
+  fetch "$SGDP_BASE_URL/${SGDP_PLINK_PREFIX}.bed" "${SGDP_PLINK_PREFIX}.bed" || sgdp_ok=0
+  fetch "$SGDP_BASE_URL/${SGDP_PLINK_PREFIX}.fam" "${SGDP_PLINK_PREFIX}.fam" || sgdp_ok=0
+  # The .bim ships zipped at sharehost — fetch + unzip to the plain .bim plink2 expects.
+  if [[ ! -s "$RAW/${SGDP_PLINK_PREFIX}.bim" ]]; then
+    if fetch "$SGDP_BASE_URL/${SGDP_PLINK_PREFIX}.bim.zip" "${SGDP_PLINK_PREFIX}.bim.zip"; then
+      ( cd "$RAW" && unzip -o "${SGDP_PLINK_PREFIX}.bim.zip" >/dev/null ) || sgdp_ok=0
+    else sgdp_ok=0; fi
+  fi
+  [[ "$sgdp_ok" == 1 ]] || log "NOTE: SGDP fetch failed — VERIFY SGDP_BASE_URL/SGDP_PLINK_PREFIX (host paths roll forward; .bim is zipped)."
 else
   log "SGDP: disabled (set SGDP_ENABLE=1 to include)."
 fi
