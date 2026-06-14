@@ -528,7 +528,7 @@ async fn validate_gfx_chm13_haplogroups() {
         eprintln!(
             "private Y: {} calls — {} novel, {} off-path; structural {} (amp {}, palindrome {}, azf/dyz {}); novel-in-unique {}",
             bucket.variants.len(), bucket.novel(), bucket.off_path(), bucket.in_structural_region(),
-            count(YRegionClass::Amplicon), count(YRegionClass::Palindrome), count(YRegionClass::AzfDyz),
+            count(YRegionClass::Amplicon), count(YRegionClass::Palindrome), count(YRegionClass::Heterochromatin),
             bucket.novel_in_unique_sequence(),
         );
         assert!(bucket.in_structural_region() > 0, "expected some calls flagged in CHM13 Y structural regions");

@@ -62,6 +62,18 @@ impl RegionMask {
         self.intervals.iter().map(|(s, e)| e - s).sum()
     }
 
+    /// Whether this mask has no intervals.
+    pub fn is_empty(&self) -> bool {
+        self.intervals.is_empty()
+    }
+
+    /// Return a new mask with `extra` `[start, end)` intervals added (re-sorted + coalesced).
+    pub fn union(&self, extra: &[(i64, i64)]) -> Self {
+        let mut all = self.intervals.clone();
+        all.extend_from_slice(extra);
+        Self::from_intervals(all)
+    }
+
     /// Is the 1-based `position` inside a callable interval?
     pub fn contains(&self, position: i64) -> bool {
         let b = position - 1; // 0-based
@@ -73,60 +85,119 @@ impl RegionMask {
     }
 }
 
-/// The structural class of a chrY region — for *annotating* (not dropping) Y calls that fall
-/// in paralog-prone zones, where short-read mapping is unreliable. Ordered most-specific first.
+/// The structural class of a chrY region — for *down-weighting* (not dropping) Y calls by how
+/// reliably short reads map there. Each class carries a **quality modifier** in `(0, 1]` (a port of
+/// the Scala `YRegionAnnotator` ladder): unique / X-degenerate sequence is full weight (no class,
+/// modifier 1.0); paralog-prone and repeat zones get progressively lower weight. A position not in
+/// any class is treated as unique (modifier 1.0).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum YRegionClass {
-    /// Ampliconic block — near-identical repeat copies, the highest paralog risk.
-    Amplicon,
-    /// Palindrome / inverted repeat (the ampliconic mirror structure).
+    /// Pseudoautosomal region (recombines with X) — modifier 0.5.
+    Par,
+    /// Palindrome / inverted repeat (gene-conversion + mapping risk) — modifier 0.4.
     Palindrome,
-    /// AZFa/b/c or DYZ heterochromatic / satellite region.
-    AzfDyz,
+    /// X-transposed region (~99% X-identical, contamination risk) — modifier 0.3.
+    Xtr,
+    /// Ampliconic block — near-identical repeat copies, high paralog risk — modifier 0.3.
+    Amplicon,
+    /// Short-tandem-repeat region (recLOH / stutter risk) — modifier 0.25.
+    Str,
+    /// Centromeric region (nearly unmappable) — modifier 0.1.
+    Centromere,
+    /// Yq12 heterochromatin / AZF-DYZ satellite (unmappable) — modifier 0.1. (Was `AzfDyz`.)
+    #[serde(alias = "AzfDyz")]
+    Heterochromatin,
 }
 
 impl YRegionClass {
     pub fn as_str(self) -> &'static str {
         match self {
-            YRegionClass::Amplicon => "amplicon",
+            YRegionClass::Par => "par",
             YRegionClass::Palindrome => "palindrome",
-            YRegionClass::AzfDyz => "azf_dyz",
+            YRegionClass::Xtr => "xtr",
+            YRegionClass::Amplicon => "amplicon",
+            YRegionClass::Str => "str",
+            YRegionClass::Centromere => "centromere",
+            YRegionClass::Heterochromatin => "heterochromatin",
+        }
+    }
+
+    /// Quality modifier in `(0, 1]`: how much a call here counts in haplogroup concordance scoring
+    /// (lower = more paralog-/mapping-suspect). Unique sequence (no class) is 1.0.
+    pub fn modifier(self) -> f64 {
+        match self {
+            YRegionClass::Par => 0.5,
+            YRegionClass::Palindrome => 0.4,
+            YRegionClass::Xtr | YRegionClass::Amplicon => 0.3,
+            YRegionClass::Str => 0.25,
+            YRegionClass::Centromere | YRegionClass::Heterochromatin => 0.1,
         }
     }
 }
 
-/// Curated CHM13 chrY structural regions (the T2T palindrome / amplicon / AZF-DYZ BEDs),
-/// for flagging calls in paralog-prone zones. [`classify`](Self::classify) returns the
-/// most-specific class containing a position (amplicon ⊂ palindrome ⊂ the larger AZF/DYZ).
+/// CHM13v2.0 chrY PAR1 (`chrY:1–2,458,320`), as a 0-based half-open interval. The pseudoautosomal
+/// regions recombine with X, so Y-SNP placement never lives here — flagged for QC, not dropped.
+const CHM13_PAR1: (i64, i64) = (0, 2_458_320);
+/// CHM13v2.0 chrY PAR2 (`chrY:62,122,809–62,460,029`), 0-based half-open.
+const CHM13_PAR2: (i64, i64) = (62_122_808, 62_460_029);
+/// CHM13v2.0 chrY Yq12 heterochromatin bound (`chrY:26,637,971–62,122,809`), 0-based half-open —
+/// the validated constant carried over from the Scala port (mostly satellite, unmappable).
+const CHM13_YQ12_HET: (i64, i64) = (26_637_970, 62_122_809);
+
+/// Curated CHM13 chrY structural regions with quality modifiers, for down-weighting calls in
+/// paralog-prone / unmappable zones. [`classify`](Self::classify) returns the **most-impactful**
+/// (lowest-modifier) class containing a position; [`quality_modifier`](Self::quality_modifier)
+/// returns its modifier (1.0 for unique sequence).
 #[derive(Debug, Clone)]
 pub struct YStructuralRegions {
-    amplicon: RegionMask,
+    par: RegionMask,
     palindrome: RegionMask,
-    azf_dyz: RegionMask,
+    amplicon: RegionMask,
+    /// Yq12 / AZF-DYZ satellite + the hardcoded heterochromatin bound.
+    heterochromatin: RegionMask,
 }
 
 impl YStructuralRegions {
-    /// Load from the three CHM13 chrY BEDs (amplicons, inverted-repeats/palindromes, AZF/DYZ).
+    /// Load from the three CHM13 chrY BEDs (amplicons, inverted-repeats/palindromes, AZF/DYZ),
+    /// adding the hardcoded CHM13 PAR1/PAR2 and Yq12-heterochromatin constants (the AZF/DYZ BED
+    /// covers the satellite arrays; the constant fills the broader heterochromatic q-arm).
     pub fn from_beds(amplicon: &Path, palindrome: &Path, azf_dyz: &Path) -> Result<Self, AnalysisError> {
-        Ok(YStructuralRegions {
-            amplicon: RegionMask::from_bed(amplicon, "chrY")?,
-            palindrome: RegionMask::from_bed(palindrome, "chrY")?,
-            azf_dyz: RegionMask::from_bed(azf_dyz, "chrY")?,
-        })
+        Ok(Self::from_masks(
+            RegionMask::from_intervals(vec![CHM13_PAR1, CHM13_PAR2]),
+            RegionMask::from_bed(palindrome, "chrY")?,
+            RegionMask::from_bed(amplicon, "chrY")?,
+            RegionMask::from_bed(azf_dyz, "chrY")?.union(&[CHM13_YQ12_HET]),
+        ))
     }
 
-    /// The most-specific structural class containing the 1-based `position`, or `None` if it is
-    /// in unique (reliably-mappable) sequence.
+    /// Build from explicit masks (the seam the BED loader + unit tests share). XTR/STR/centromere
+    /// masks aren't sourced yet — those tiers exist in [`YRegionClass`] for when their data lands.
+    pub fn from_masks(par: RegionMask, palindrome: RegionMask, amplicon: RegionMask, heterochromatin: RegionMask) -> Self {
+        YStructuralRegions { par, palindrome, amplicon, heterochromatin }
+    }
+
+    /// The most-impactful (lowest-modifier) structural class containing the 1-based `position`, or
+    /// `None` if it is in unique (reliably-mappable / X-degenerate) sequence.
     pub fn classify(&self, position: i64) -> Option<YRegionClass> {
-        if self.amplicon.contains(position) {
+        // Checked in ascending-modifier (most-impactful-first) order so overlaps resolve to the
+        // strongest down-weight (e.g. an amplicon inside the heterochromatic arm → Heterochromatin).
+        if self.heterochromatin.contains(position) {
+            Some(YRegionClass::Heterochromatin)
+        } else if self.amplicon.contains(position) {
             Some(YRegionClass::Amplicon)
         } else if self.palindrome.contains(position) {
             Some(YRegionClass::Palindrome)
-        } else if self.azf_dyz.contains(position) {
-            Some(YRegionClass::AzfDyz)
+        } else if self.par.contains(position) {
+            Some(YRegionClass::Par)
         } else {
             None
         }
+    }
+
+    /// The quality modifier for the 1-based `position` (the most-impactful class's, or 1.0 if the
+    /// position is in unique sequence).
+    pub fn quality_modifier(&self, position: i64) -> f64 {
+        self.classify(position).map_or(1.0, |c| c.modifier())
     }
 }
 
@@ -150,8 +221,27 @@ mod tests {
     }
 
     #[test]
-    fn y_structural_classifies_most_specific_first() {
-        // Nested regions: amplicon ⊂ palindrome ⊂ azf_dyz, all on chrY (a chrX line is ignored).
+    fn region_modifier_ladder() {
+        // Unique sequence is full weight; the ladder descends to the most-suspect zones.
+        assert_eq!(YRegionClass::Par.modifier(), 0.5);
+        assert_eq!(YRegionClass::Palindrome.modifier(), 0.4);
+        assert_eq!(YRegionClass::Amplicon.modifier(), 0.3);
+        assert_eq!(YRegionClass::Str.modifier(), 0.25);
+        assert_eq!(YRegionClass::Heterochromatin.modifier(), 0.1);
+        assert_eq!(YRegionClass::Centromere.modifier(), 0.1);
+    }
+
+    #[test]
+    fn azf_dyz_alias_still_deserializes() {
+        // Cached private-Y blobs stored the old "AzfDyz" name → must load as Heterochromatin.
+        let c: YRegionClass = serde_json::from_str("\"AzfDyz\"").unwrap();
+        assert_eq!(c, YRegionClass::Heterochromatin);
+    }
+
+    #[test]
+    fn y_structural_classifies_most_impactful_first() {
+        // Disjoint synthetic regions (the BED loader keys on chrY; a chrX line is ignored). The
+        // production constructor also bakes in CHM13 PAR1/PAR2 + the Yq12 heterochromatin bound.
         let dir = std::env::temp_dir().join(format!("dun-ymask-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let write = |name: &str, body: &str| {
@@ -159,15 +249,22 @@ mod tests {
             std::fs::write(&p, body).unwrap();
             p
         };
-        let amp = write("amp.bed", "chrY\t100\t200\tA1\nchrX\t0\t999\n");
-        let pal = write("pal.bed", "chrY\t100\t300\tIR1\n");
-        let azf = write("azf.bed", "chrY\t100\t500\tAZFa\n");
+        let amp = write("amp.bed", "chrY\t3000000\t3000200\tA1\nchrX\t0\t999\n");
+        let pal = write("pal.bed", "chrY\t3000300\t3000400\tIR1\n");
+        let azf = write("azf.bed", "chrY\t3000500\t3000600\tAZFa\n");
         let r = YStructuralRegions::from_beds(&amp, &pal, &azf).unwrap();
 
-        assert_eq!(r.classify(150), Some(YRegionClass::Amplicon)); // in all → most specific
-        assert_eq!(r.classify(250), Some(YRegionClass::Palindrome)); // palindrome+azf only
-        assert_eq!(r.classify(400), Some(YRegionClass::AzfDyz)); // azf only
-        assert_eq!(r.classify(600), None); // unique sequence
+        // Positions are >PAR1 (2,458,320) so they isolate the BED regions.
+        assert_eq!(r.classify(3_000_150), Some(YRegionClass::Amplicon));
+        assert_eq!(r.classify(3_000_350), Some(YRegionClass::Palindrome));
+        assert_eq!(r.classify(3_000_550), Some(YRegionClass::Heterochromatin)); // AZF/DYZ tier
+        assert_eq!(r.classify(3_000_700), None); // unique sequence → full weight
+        assert_eq!(r.quality_modifier(3_000_700), 1.0);
+
+        // Hardcoded CHM13 constants: PAR1 → Par; the Yq12 arm → Heterochromatin.
+        assert_eq!(r.classify(1_000_000), Some(YRegionClass::Par));
+        assert_eq!(r.quality_modifier(1_000_000), 0.5);
+        assert_eq!(r.classify(30_000_000), Some(YRegionClass::Heterochromatin));
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

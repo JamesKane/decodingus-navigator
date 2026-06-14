@@ -3241,7 +3241,9 @@ impl App {
                     // De-novo calls carry read depth; a structural-region (palindrome/amplicon) call
                     // is paralog-suspect → down-weight via the region modifier.
                     o.depth = Some(v.depth);
-                    o.region_modifier = if v.region.is_some() { 0.3 } else { 1.0 };
+                    // Down-weight by the structural-region quality modifier (palindrome 0.4,
+                    // ampliconic 0.3, heterochromatin/centromere 0.1…); unique sequence = 1.0.
+                    o.region_modifier = v.region.map_or(1.0, |c| c.modifier());
                     o
                 })
                 .collect();
