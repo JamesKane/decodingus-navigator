@@ -26,12 +26,22 @@ emit_source() {  # <tag> <vcf-on-CHM13.gz>
 # ── AADR (ancient deep components) ──────────────────────────────────────────────
 # EIGENSTRAT/packed -> VCF (convertf to PED, then plink2 to VCF), liftover hg19 -> CHM13.
 AADR_PREFIX="$(ls "$RAW/"*"${AADR_DATASET}"*.geno 2>/dev/null | head -1 | sed 's/\.geno$//' || true)"
-if [[ -n "$AADR_PREFIX" ]]; then
-  if [[ ! -s "$TMP/aadr.chm13.vcf.gz" ]]; then
-    require_tool convertf "EIGENSOFT/ADMIXTOOLS"
-    require_tool plink2
-    log "AADR EIGENSTRAT -> VCF"
-    cat > "$TMP/convertf.par" <<EOF
+aadr_ready=0
+if [[ -z "$AADR_PREFIX" ]]; then
+  log "AADR genotypes not found — skipping ancient sources (download/unpack AADR first)."
+elif [[ -s "$TMP/aadr.chm13.vcf.gz" ]]; then
+  aadr_ready=1
+elif ! { command -v convertf >/dev/null 2>&1 && command -v plink2 >/dev/null 2>&1; }; then
+  log "WARN: convertf/plink2 not found — skipping ancient sources (install EIGENSOFT + plink2)."
+elif [[ "$(head -c5 "${AADR_PREFIX}.geno" 2>/dev/null)" == "TGENO" ]]; then
+  # convertf reads PACKEDANCESTRYMAP ("GENO") / EIGENSTRAT only. Recent AADR releases (v66.p1)
+  # ship the *transposed* packed format ("TGENO"), which the stock convertf cannot read. Skip the
+  # ancient source rather than abort the whole build; the modern (1000G) panel still builds.
+  log "WARN: AADR .geno is TGENO (transposed packed) — this convertf can't read it; skipping ancient sources."
+  log "      Fix: use a TGENO-capable convertf, or a non-transposed AADR distribution, then re-run stage 4."
+else
+  log "AADR EIGENSTRAT -> VCF"
+  cat > "$TMP/convertf.par" <<EOF
 genotypename:    ${AADR_PREFIX}.geno
 snpname:         ${AADR_PREFIX}.snp
 indivname:       ${AADR_PREFIX}.ind
@@ -40,16 +50,21 @@ genotypeoutname: $TMP/aadr.bed
 snpoutname:      $TMP/aadr.bim
 indivoutname:    $TMP/aadr.fam
 EOF
-    convertf -p "$TMP/convertf.par"
-    plink2 --bfile "$TMP/aadr" --recode vcf bgz --out "$TMP/aadr.hg19" --output-chr chrM
+  if convertf -p "$TMP/convertf.par" \
+     && plink2 --bfile "$TMP/aadr" --recode vcf bgz --out "$TMP/aadr.hg19" --output-chr chrM; then
     liftover_vcf "$TMP/aadr.hg19.vcf.gz" hg19 "$TMP/aadr.chm13.vcf.gz"
+    aadr_ready=1
+  else
+    log "WARN: AADR convertf/plink2 conversion failed — skipping ancient sources."
   fi
+fi
+if [[ "$aadr_ready" == 1 ]]; then
   emit_source aadr "$TMP/aadr.chm13.vcf.gz"
   # Ancient labels: AADR .anno "Group ID" -> deep component, via the curated map.
   log "deriving ancient sample->component map from .anno + $AADR_COMPONENT_MAP"
   "$HERE/derive_aadr_pops.sh" "$RAW" "$AADR_COMPONENT_MAP" "$TMP/aadr.samples.txt" >> "$POPMAP"
 else
-  log "AADR genotypes not found — skipping ancient sources (download/unpack AADR first)."
+  log "building WITHOUT ancient deep components (1000G modern sources only)."
 fi
 
 # Append a source's sample->population map (or note that it's missing).

@@ -15,12 +15,22 @@ SITES="$TMP/1240k_sites.${BUILD}.tsv"
 FILTERED="$TMP/1kgp-chm13-1240k"; mkdir -p "$FILTERED"
 
 # Restrict each 1000G-CHM13 VCF to the lifted 1240k sites (keeps the INFO AF the panel needs).
+# NOTE: the upstream `withafinfo` VCFs are sites-only in the body, but their #CHROM line still
+# declares all 2504 samples — so bcftools rejects every (8-column) record ("number of columns …
+# does not match the number of samples"). tabix doesn't validate columns, but bcftools does, so we
+# first reheader to a true sites-only header (truncate #CHROM to the 8 fixed columns) and then
+# stream-filter with -T (targets work on a non-indexed stream, so no temp index is needed).
 log "restricting 1000G-CHM13 to 1240k sites"
 for vcf in "$KGP_CHM13_DIR"/*.vcf.gz; do
   [[ -e "$vcf" ]] || die "no 1000G-CHM13 VCFs in $KGP_CHM13_DIR (run 01_fetch.sh)"
   out="$FILTERED/$(basename "$vcf")"
   [[ -s "$out" ]] && { log "  have $(basename "$out")"; continue; }
-  bcftools view -R "$SITES" -Oz -o "$out" "$vcf" && tabix -f -p vcf "$out"
+  log "  $(basename "$vcf")"
+  hdr="$TMP/$(basename "$vcf").sites.hdr"
+  bcftools view -h "$vcf" | awk 'BEGIN{FS=OFS="\t"} /^#CHROM/{NF=8} {print}' > "$hdr"
+  bcftools reheader -h "$hdr" "$vcf" | bcftools view -T "$SITES" -Oz -o "$out" -
+  tabix -f -p vcf "$out"
+  rm -f "$hdr"
 done
 
 # Build the AIMs panel from the restricted VCF dir.
