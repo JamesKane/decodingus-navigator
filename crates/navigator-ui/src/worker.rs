@@ -116,6 +116,8 @@ pub enum Command {
     EstimateAncestryFromChip { chip_profile_id: i64 },
     /// Load the persisted ancestry estimate for an alignment, if any.
     LoadAncestry { alignment_id: i64 },
+    /// Load the persisted fine-population (FINE_ADMIXTURE) result for the super→fine hierarchy.
+    LoadFineAncestry { alignment_id: i64 },
     /// Load the reference population centroids (PC1,PC2) for the PCA scatter backdrop.
     LoadPcaReference { alignment_id: i64 },
     /// Paint each chromosome with local ancestry (genotypes the BAM; streams progress).
@@ -345,6 +347,8 @@ pub enum Event {
     AncestryProgress { alignment_id: i64, done: usize, total: usize },
     /// Ancestry estimate for an alignment (`None` = not yet computed, for `LoadAncestry`).
     Ancestry { alignment_id: i64, result: Option<AncestryResult> },
+    /// The fine-population (FINE_ADMIXTURE) result for an alignment (super→fine hierarchy rows).
+    FineAncestry { alignment_id: i64, result: Option<AncestryResult> },
     /// On-demand autosomal ancestry estimated from a chip profile (not persisted).
     ChipAncestry { chip_profile_id: i64, result: AncestryResult },
     /// Reference population centroids (code, PC1, PC2) for the PCA scatter; empty if no loadings.
@@ -635,6 +639,10 @@ pub async fn handle(app: &App, cmd: Command) -> Event {
         Command::EstimateAncestry { alignment_id } => {
             Event::Error(format!("internal: unrouted EstimateAncestry {alignment_id}"))
         }
+        Command::LoadFineAncestry { alignment_id } => match app.fine_ancestry_for_alignment(alignment_id).await {
+            Ok(result) => Event::FineAncestry { alignment_id, result },
+            Err(e) => Event::Error(e.to_string()),
+        },
         Command::LoadAncestry { alignment_id } => match app.ancestry_for_alignment(alignment_id).await {
             Ok(result) => Event::Ancestry { alignment_id, result },
             Err(e) => Event::Error(e.to_string()),

@@ -625,6 +625,17 @@ fn ancestry_pca_ancient_path(build: ReferenceBuild) -> PathBuf {
         .join(format!("ancestry_pca_ancient_{}.bin", build.as_str()))
 }
 
+/// The fine-population frequency asset path (`$NAVIGATOR_ANCESTRY_FREQ` override, else
+/// `<base>/ancestry/ancestry_freq_global_<build>.bin`). Optional — fine admixture is skipped if absent.
+fn ancestry_freq_global_path(build: ReferenceBuild) -> PathBuf {
+    if let Ok(p) = std::env::var("NAVIGATOR_ANCESTRY_FREQ") {
+        return PathBuf::from(p);
+    }
+    refgenome_cache::base_dir()
+        .join("ancestry")
+        .join(format!("ancestry_freq_global_{}.bin", build.as_str()))
+}
+
 /// The genetic-map asset path for a build (`$NAVIGATOR_GENETIC_MAP` override, else
 /// `<base>/ancestry/genetic_map_<build>.bin`). Optional — IBD falls back to a uniform map if absent.
 fn genetic_map_path(build: ReferenceBuild) -> PathBuf {
@@ -4003,15 +4014,22 @@ impl App {
         // the modern one — so PCA_PROJECTION_GMM is always over the best available reference.
         let pca_bytes = std::fs::read(ancestry_pca_path(build)).ok();
         let ancient_pca_bytes = std::fs::read(ancestry_pca_ancient_path(build)).ok();
+        // Optional fine-population frequencies (same panel sites) → a fine modern admixture over a
+        // curated subset. Absent ⇒ silently skipped.
+        let fine_bytes = std::fs::read(ancestry_freq_global_path(build)).ok();
 
-        // Returns (admixture estimate, optional PCA-GMM estimate, optional nMonte estimate).
-        let (result, pca_gmm, nmonte) = tokio::task::spawn_blocking(move || {
+        // Returns (admixture, optional PCA-GMM, optional nMonte, optional fine admixture).
+        let (result, pca_gmm, nmonte, fine) = tokio::task::spawn_blocking(move || {
             let params = adaptive_haploid_params(&bam, Some(&reference));
             let genotypes =
                 ancestry_analysis::genotype_panel(&bam, Some(&reference), &panel, &params, &mut progress)?;
             // Supervised admixture → 100%-summing composition (the consumer-report shape).
             let mut result =
                 ancestry_analysis::estimate_admixture(&genotypes, &panel, &reference_version);
+            // Fine modern admixture over the same genotypes (fine asset shares the AIM sites).
+            let fine = fine_bytes
+                .and_then(|b| ancestry_analysis::AncestryPanel::from_bytes(&b).ok())
+                .map(|fp| ancestry_analysis::estimate_fine_admixture(&genotypes, &fp, &reference_version));
             let modern_pca = pca_bytes.and_then(|b| ancestry_analysis::PcaLoadings::from_bytes(&b).ok());
             if let Some(pca) = &modern_pca {
                 result.pca_coordinates = Some(ancestry_analysis::project_pca(&genotypes, pca));
@@ -4029,7 +4047,7 @@ impl App {
                 ),
                 None => (None, None),
             };
-            Ok::<_, navigator_analysis::AnalysisError>((result, pca_gmm, nmonte))
+            Ok::<_, navigator_analysis::AnalysisError>((result, pca_gmm, nmonte, fine))
         })
         .await
         .map_err(|e| AppError::Join(e.to_string()))??;
@@ -4045,7 +4063,7 @@ impl App {
         // Persist every estimate (keyed by method) so "publish both" can read each back.
         if let Ok(bio) = self.biosample_of_alignment(alignment_id).await {
             ancestry_result::upsert(self.store.pool(), bio, alignment_id, &result).await?;
-            for extra in [pca_gmm.as_ref(), nmonte.as_ref()].into_iter().flatten() {
+            for extra in [pca_gmm.as_ref(), nmonte.as_ref(), fine.as_ref()].into_iter().flatten() {
                 ancestry_result::upsert(self.store.pool(), bio, alignment_id, extra).await?;
             }
         }
@@ -4139,6 +4157,16 @@ impl App {
         alignment_id: i64,
     ) -> Result<Option<AncestryResult>, AppError> {
         Ok(ancestry_result::get_for_alignment(self.store.pool(), alignment_id).await?)
+    }
+
+    /// The persisted **fine-population** admixture estimate for an alignment, if one was computed
+    /// (the `ancestry_freq_global` asset was present at estimation time). Drives the super→fine
+    /// hierarchy rows; the super-pop donut keeps using the primary ([`ancestry_for_alignment`]).
+    pub async fn fine_ancestry_for_alignment(
+        &self,
+        alignment_id: i64,
+    ) -> Result<Option<AncestryResult>, AppError> {
+        Ok(ancestry_result::get_for_alignment_method(self.store.pool(), alignment_id, "FINE_ADMIXTURE").await?)
     }
 
     /// Reference population centroids on (PC1, PC2) for the alignment's build — the backdrop

@@ -14,8 +14,8 @@ use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
 
 use navigator_domain::ancestry::{
-    population_color, population_name, population_super, AncestryResult, AncestrySegment,
-    ConfidenceInterval, PopulationComponent, SuperPopulationSummary,
+    fine_population_codes, population_color, population_name, population_super, AncestryResult,
+    AncestrySegment, ConfidenceInterval, PopulationComponent, SuperPopulationSummary,
 };
 use serde::{Deserialize, Serialize};
 
@@ -53,6 +53,27 @@ impl AncestryPanel {
     /// Serialize to the binary form the builder writes and the app bundles.
     pub fn to_bytes(&self) -> Result<Vec<u8>, AnalysisError> {
         bincode::serialize(self).map_err(|e| AnalysisError::Message(format!("panel encode: {e}")))
+    }
+
+    /// A panel restricted to `codes` (those present, in `codes` order), projecting each site's
+    /// per-population frequencies down to the kept columns. Used to run a well-conditioned
+    /// admixture EM over a curated subset of a large fine-frequency panel.
+    pub fn subset(&self, codes: &[&str]) -> AncestryPanel {
+        let keep: Vec<usize> =
+            codes.iter().filter_map(|c| self.populations.iter().position(|p| p == c)).collect();
+        let populations = keep.iter().map(|&i| self.populations[i].clone()).collect();
+        let sites = self
+            .sites
+            .iter()
+            .map(|s| PanelSite {
+                contig: s.contig.clone(),
+                position: s.position,
+                reference_allele: s.reference_allele,
+                alternate_allele: s.alternate_allele,
+                freqs: keep.iter().map(|&i| s.freqs.get(i).copied().unwrap_or(0.0)).collect(),
+            })
+            .collect();
+        AncestryPanel { build: self.build.clone(), populations, sites }
     }
 
     pub fn len(&self) -> usize {
@@ -616,6 +637,23 @@ pub fn estimate_admixture(
     from_probabilities("ADMIXTURE", "genome-wide", panel.sites.len(), snps_with_data, &probs, confidence, reference_version)
 }
 
+/// Fine-population admixture: the same supervised EM as [`estimate_admixture`], run over a curated
+/// **modern subset** of a large fine-frequency panel (the `freq_global` asset carries all reference
+/// populations incl. ancient; a flat 173-way EM is ill-posed, so we restrict to `modern_codes`).
+/// Reuses the *same* genotypes (the fine panel shares the AIM panel's sites). The result is labeled
+/// `FINE_ADMIXTURE`; its components roll up to the super-pops via the domain `population_super` map.
+pub fn estimate_fine_admixture(
+    genotypes: &[SiteGenotype],
+    fine_panel: &AncestryPanel,
+    reference_version: &str,
+) -> AncestryResult {
+    let subset = fine_panel.subset(&fine_population_codes());
+    let mut result = estimate_admixture(genotypes, &subset, reference_version);
+    result.method = "FINE_ADMIXTURE".to_string();
+    result.panel_type = "fine".to_string();
+    result
+}
+
 /// Estimate ancestry by **PCA projection + a diagonal-covariance Gaussian mixture**: project the
 /// sample onto the reference PCA space ([`project_pca`]) and assign per-population responsibilities
 /// ([`classify_pca`]) — the `PCA_PROJECTION_GMM` method. Unlike the allele-frequency estimators,
@@ -1123,6 +1161,51 @@ mod tests {
         let r = estimate_admixture(&genos, &panel, "t");
         let a = r.components.iter().find(|c| c.population_code == "A").unwrap().percentage;
         assert!((40.0..=60.0).contains(&a), "A% = {a} (expected ~50)");
+    }
+
+    #[test]
+    fn panel_subset_projects_and_reorders_columns() {
+        let sites = vec![PanelSite {
+            contig: "chr1".into(),
+            position: 1,
+            reference_allele: 'A',
+            alternate_allele: 'G',
+            freqs: vec![0.1, 0.2, 0.3],
+        }];
+        let p = AncestryPanel { build: "t".into(), populations: vec!["GBR".into(), "YRI".into(), "Steppe".into()], sites };
+        let s = p.subset(&["YRI", "GBR"]); // reorder + drop the absent-from-list "Steppe"
+        assert_eq!(s.populations, vec!["YRI".to_string(), "GBR".to_string()]);
+        assert_eq!(s.sites[0].freqs, vec![0.2, 0.1]); // columns follow the requested order
+    }
+
+    #[test]
+    fn fine_admixture_restricts_to_modern_subset_and_labels_method() {
+        // A fine panel with two modern pops + one ancient (Steppe). The modern subset must drop the
+        // ancient column, and the result is labeled FINE_ADMIXTURE rolling up to super-pops.
+        let sites: Vec<PanelSite> = (1..=40)
+            .map(|pos| PanelSite {
+                contig: "chr1".into(),
+                position: pos,
+                reference_allele: 'A',
+                alternate_allele: 'G',
+                freqs: vec![0.98, 0.02, 0.5], // GBR alt-rich, YRI alt-poor, Steppe middling
+            })
+            .collect();
+        let fine = AncestryPanel {
+            build: "t".into(),
+            populations: vec!["GBR".into(), "YRI".into(), "Steppe".into()],
+            sites,
+        };
+        let genos: Vec<SiteGenotype> = (1..=40).map(|p| sg("chr1", p, 2)).collect(); // all hom-alt → GBR
+        let r = estimate_fine_admixture(&genos, &fine, "t");
+        assert_eq!(r.method, "FINE_ADMIXTURE");
+        assert_eq!(r.panel_type, "fine");
+        // Ancient component excluded (not in the modern fine-code list).
+        assert!(r.components.iter().all(|c| c.population_code != "Steppe"));
+        let gbr = r.components.iter().find(|c| c.population_code == "GBR").unwrap();
+        assert!(gbr.percentage > 90.0, "GBR% = {}", gbr.percentage);
+        // Fine codes roll up to their super-pop (GBR → EUR).
+        assert!(r.super_population_summary.iter().any(|s| s.populations.contains(&"GBR".to_string())));
     }
 
     /// A chromosome whose first half's genotypes match pop A and second half match pop B should

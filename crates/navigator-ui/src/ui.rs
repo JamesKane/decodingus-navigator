@@ -313,6 +313,9 @@ pub struct NavigatorApp {
     mt_haplogroup: Option<(i64, HaploAssignment)>,
     /// Last ancestry estimate: (alignment id, result). `None` result = computed, no estimate.
     ancestry: Option<(i64, Option<AncestryResult>)>,
+    /// Fine-population (FINE_ADMIXTURE) result for the selected alignment, when computed — drives
+    /// the super→fine hierarchy rows. `(alignment id, result)`.
+    fine_ancestry: Option<(i64, Option<AncestryResult>)>,
     /// On-demand chip ancestry: (chip profile id, result).
     chip_ancestry: Option<(i64, AncestryResult)>,
     /// Whether a chip-ancestry estimate is in flight.
@@ -1087,6 +1090,7 @@ impl NavigatorApp {
             y_haplogroup: None,
             mt_haplogroup: None,
             ancestry: None,
+            fine_ancestry: None,
             donor_ancestry: None,
             donor_private_y: None,
             y_profile: None,
@@ -1399,10 +1403,15 @@ impl NavigatorApp {
                         None => "Ancestry: not yet computed".into(),
                     };
                     self.ancestry = Some((alignment_id, result));
+                    // The fine-pop result is persisted alongside; (re)load it for the hierarchy rows.
+                    let _ = self.tx.send(Command::LoadFineAncestry { alignment_id });
                     // A fresh estimate may change the donor's best — reload the donor rollup.
                     if let Some(guid) = self.selected_sample {
                         let _ = self.tx.send(Command::LoadDonorAncestry { biosample_guid: guid });
                     }
+                }
+                Event::FineAncestry { alignment_id, result } => {
+                    self.fine_ancestry = Some((alignment_id, result));
                 }
                 Event::ChipAncestry { chip_profile_id, result } => {
                     self.estimating_chip_ancestry = false;
@@ -1816,6 +1825,7 @@ impl NavigatorApp {
         self.mt_haplogroup = None;
         self.private_y = None;
         self.ancestry = None;
+        self.fine_ancestry = None;
         self.estimating_ancestry = false;
         self.ancestry_progress = None;
         self.pca_reference = None;
@@ -1826,6 +1836,7 @@ impl NavigatorApp {
         let _ = self.tx.send(Command::LoadReadMetrics(id));
         let _ = self.tx.send(Command::LoadSv(id));
         let _ = self.tx.send(Command::LoadAncestry { alignment_id: id });
+        let _ = self.tx.send(Command::LoadFineAncestry { alignment_id: id });
         let _ = self.tx.send(Command::LoadPcaReference { alignment_id: id });
         // Load cached chrM de-novo (mtDNA tab). chrY variant discovery is the masked private-Y
         // pass, not a raw whole-chrY de-novo, so it isn't loaded here.
@@ -4914,6 +4925,13 @@ impl NavigatorApp {
 
                 // Indented hierarchy: each super-population, then its fine populations (if the
                 // panel is fine-grained). Proportions sum to 100% (supervised admixture).
+                // Fine sub-populations come from the FINE_ADMIXTURE result (26 1000G pops) when it's
+                // been computed for this alignment; the donut + super rows stay on the primary
+                // (super-pop) result. Absent ⇒ no fine children (unchanged behavior).
+                let fine_comps: &[navigator_app::PopulationComponent] = match &self.fine_ancestry {
+                    Some((fid, Some(fr))) if *fid == alignment_id => &fr.components,
+                    _ => &[],
+                };
                 egui::Grid::new("ancestry_hierarchy").num_columns(2).spacing([24.0, 4.0]).show(ui, |ui| {
                     for s in &result.super_population_summary {
                         if s.percentage < 0.5 {
@@ -4928,9 +4946,8 @@ impl NavigatorApp {
                         ui.strong(format!("{:.1}%", s.percentage));
                         ui.end_row();
 
-                        // Fine sub-populations under this super (skip the self-row of a super panel).
-                        let mut fine: Vec<&navigator_app::PopulationComponent> = result
-                            .components
+                        // Fine sub-populations under this super (from the fine result).
+                        let mut fine: Vec<&navigator_app::PopulationComponent> = fine_comps
                             .iter()
                             .filter(|c| population_super(&c.population_code) == Some(super_code))
                             .filter(|c| c.population_code != super_code && c.percentage >= 0.5)

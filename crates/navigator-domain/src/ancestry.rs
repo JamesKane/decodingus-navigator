@@ -90,6 +90,14 @@ const ANCIENT_POPULATIONS: [(&str, &str, &str); 3] = [
     ("WHG", "Western Hunter-Gatherer", "#e15759"),
 ];
 
+/// The curated **modern** fine-population codes (1000G fine pops + SGDP-backed continents) — the
+/// reference subset a fine admixture EM runs over. Excludes ancient components (which are handled by
+/// the distance/PCA estimators, not the modern EM). The fine-frequency asset may carry more
+/// populations; the estimator restricts to this set to stay well-conditioned.
+pub fn fine_population_codes() -> Vec<&'static str> {
+    FINE_POPULATIONS.iter().map(|(c, _, _)| *c).collect()
+}
+
 /// The super-population a (fine or super) population code belongs to, or `None` if unknown.
 pub fn population_super(code: &str) -> Option<&'static str> {
     if super_populations().iter().any(|p| p.code == code) {
