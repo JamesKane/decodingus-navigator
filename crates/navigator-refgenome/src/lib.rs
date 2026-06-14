@@ -11,8 +11,10 @@ pub mod download;
 pub mod error;
 pub mod gateway;
 pub mod index;
+pub mod regions;
 pub mod registry;
 
 pub use error::RefgenomeError;
 pub use gateway::{LiftedPos, ReferenceGateway, RefStatus};
+pub use regions::{ChromosomeRegions, Cytoband, GenomeRegions, RegionAnnotation};
 pub use registry::{canonical_build, Build, BuildOverride, ReferencePolarity, UserConfig};

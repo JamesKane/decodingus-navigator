@@ -36,6 +36,19 @@ pub fn mask_path(base: &Path, name: &str) -> PathBuf {
     base.join("masks").join(format!("{name}.bed"))
 }
 
+/// The parsed genome-regions JSON for a build, under `<base>/regions/<build>.json`.
+pub fn regions_path(base: &Path, build: Build) -> PathBuf {
+    base.join("regions").join(format!("{}.json", build.as_str()))
+}
+
+/// Age of a cached file in days (for TTL checks); `None` if it doesn't exist or its mtime is
+/// unreadable / in the future.
+pub fn age_days(path: &Path) -> Option<f64> {
+    let modified = std::fs::metadata(path).ok()?.modified().ok()?;
+    let elapsed = std::time::SystemTime::now().duration_since(modified).ok()?;
+    Some(elapsed.as_secs_f64() / 86_400.0)
+}
+
 /// Whether `path` exists and is non-empty (the cache-hit predicate).
 pub fn is_present(path: &Path) -> bool {
     std::fs::metadata(path).map(|m| m.len() > 0).unwrap_or(false)

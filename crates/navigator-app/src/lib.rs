@@ -117,6 +117,7 @@ use navigator_sync::{FedPopulationComponent, FedSuperPopulationSummary};
 use navigator_sync::{dev_http_client, login_default, AsyncSync, DeviceKey, OAuthConfig, RetryPolicy, TokenStore, DEVICE_KEY_COLLECTION};
 use navigator_refgenome::{cache as refgenome_cache, canonical_build, Build as ReferenceBuild, LiftedPos, ReferenceGateway};
 pub use navigator_refgenome::RefStatus;
+pub use navigator_refgenome::{ChromosomeRegions, Cytoband, GenomeRegions, RegionAnnotation};
 use navigator_sync::{
     AuditEntryRecord, HaplogroupReconciliationRecord, HeteroplasmyObservationRecord,
     IdentityVerificationRecord, ManualOverrideRecord, ReconciliationStatusRecord,
@@ -4685,6 +4686,18 @@ impl App {
     /// The curated CHM13 chrY structural regions (palindrome/amplicon/AZF-DYZ), resolving +
     /// caching the three BEDs on first use. Best-effort: any download/parse failure yields
     /// `None` so the annotation never blocks the analysis.
+    /// Genome-region metadata (centromere/telomere/cytoband/PAR) for a build, via the gateway's
+    /// 2-layer cache (fetches the UCSC cytoBand table on a cold miss). For QC / display context.
+    pub async fn genome_regions(&self, build: &str) -> Result<std::sync::Arc<GenomeRegions>, AppError> {
+        Ok(self.gateway.genome_regions(build, &mut |_, _| {}).await?)
+    }
+
+    /// Region annotation for a 1-based `position` on `contig` in `build` (centromere/telomere/PAR
+    /// membership + cytoband name). Uses the cached regions only — `None` if not yet fetched.
+    pub fn region_annotation(&self, build: &str, contig: &str, position: i64) -> Option<RegionAnnotation> {
+        self.gateway.cached_genome_regions(build).map(|r| r.annotate(contig, position))
+    }
+
     async fn y_structural_regions(&self) -> Option<navigator_analysis::mask::YStructuralRegions> {
         let amplicon = self.gateway.resolve_mask("chm13v2.0Y_amplicons_v1", &mut |_, _| {}).await.ok()?;
         let palindrome = self.gateway.resolve_mask("chm13v2.0Y_inverted_repeats_v1", &mut |_, _| {}).await.ok()?;

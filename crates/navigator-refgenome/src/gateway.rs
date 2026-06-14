@@ -43,6 +43,8 @@ pub struct ReferenceGateway {
     base: PathBuf,
     http: reqwest::Client,
     locks: Arc<StdMutex<HashMap<String, Arc<Mutex<()>>>>>,
+    /// In-memory (layer-1) cache of parsed genome regions, shared across clones.
+    regions_cache: Arc<StdMutex<HashMap<Build, Arc<crate::regions::GenomeRegions>>>>,
 }
 
 impl ReferenceGateway {
@@ -52,6 +54,7 @@ impl ReferenceGateway {
             base,
             http,
             locks: Arc::new(StdMutex::new(HashMap::new())),
+            regions_cache: Arc::new(StdMutex::new(HashMap::new())),
         }
     }
 
@@ -185,6 +188,90 @@ impl ReferenceGateway {
         cache::is_present(&path).then_some(path)
     }
 
+    /// Resolve a build's genome-region metadata (centromere/telomere/cytoband/PAR) through a
+    /// 2-layer cache: in-memory (parsed) over a disk JSON (`<base>/regions/<build>.json`), refreshed
+    /// from the UCSC `cytoBand` table on a miss/expiry. If the refresh fails but a (possibly stale)
+    /// disk copy exists, that copy is used — region data is stable, so stale beats nothing.
+    pub async fn genome_regions(
+        &self,
+        build_name: &str,
+        progress: &mut (dyn FnMut(u64, Option<u64>) + Send),
+    ) -> Result<Arc<crate::regions::GenomeRegions>, RefgenomeError> {
+        let build = canonical_build(build_name)
+            .ok_or_else(|| RefgenomeError::UnknownBuild(build_name.to_string()))?
+            .nuclear();
+
+        // Layer 1: in-memory.
+        if let Some(r) = self.regions_cache.lock().unwrap().get(&build).cloned() {
+            return Ok(r);
+        }
+
+        let lock = self.lock_for(&format!("regions:{}", build.as_str()));
+        let _guard = lock.lock().await;
+        if let Some(r) = self.regions_cache.lock().unwrap().get(&build).cloned() {
+            return Ok(r); // another caller finished while we waited
+        }
+
+        let json_path = cache::regions_path(&self.base, build);
+        // Layer 2: a fresh, version-matching disk copy.
+        if let Some(age) = cache::age_days(&json_path) {
+            if age < REGIONS_TTL_DAYS {
+                if let Some(r) = load_regions_json(&json_path) {
+                    return Ok(self.memo_regions(build, r));
+                }
+            }
+        }
+
+        // Refresh from UCSC cytoBand; fall back to a stale disk copy if the fetch fails.
+        match self.fetch_regions(build, progress).await {
+            Ok(regions) => {
+                let json = serde_json::to_string(&regions).map_err(|e| RefgenomeError::Message(e.to_string()))?;
+                if let Some(parent) = json_path.parent() {
+                    let _ = std::fs::create_dir_all(parent);
+                }
+                std::fs::write(&json_path, json).map_err(|e| RefgenomeError::io(&json_path, e))?;
+                Ok(self.memo_regions(build, regions))
+            }
+            Err(e) => match load_regions_json(&json_path) {
+                Some(r) => Ok(self.memo_regions(build, r)), // stale, but usable offline
+                None => Err(e),
+            },
+        }
+    }
+
+    /// Cached genome regions without any network — in-memory, else a disk copy (any age). `None`
+    /// when neither is present.
+    pub fn cached_genome_regions(&self, build_name: &str) -> Option<Arc<crate::regions::GenomeRegions>> {
+        let build = canonical_build(build_name)?.nuclear();
+        if let Some(r) = self.regions_cache.lock().unwrap().get(&build).cloned() {
+            return Some(r);
+        }
+        let r = load_regions_json(&cache::regions_path(&self.base, build))?;
+        Some(self.memo_regions(build, r))
+    }
+
+    fn memo_regions(&self, build: Build, regions: crate::regions::GenomeRegions) -> Arc<crate::regions::GenomeRegions> {
+        let arc = Arc::new(regions);
+        self.regions_cache.lock().unwrap().insert(build, arc.clone());
+        arc
+    }
+
+    /// Download + gunzip + parse the UCSC cytoBand table for a build.
+    async fn fetch_regions(
+        &self,
+        build: Build,
+        progress: &mut (dyn FnMut(u64, Option<u64>) + Send),
+    ) -> Result<crate::regions::GenomeRegions, RefgenomeError> {
+        let url = self
+            .registry()
+            .cytoband_source(build)
+            .ok_or_else(|| RefgenomeError::Message(format!("no cytoBand source for {}", build.as_str())))?;
+        let gz = self.base.join("regions").join(format!("{}.cytoband.txt.gz", build.as_str()));
+        download::download(&self.http, &url, &gz, progress).await?;
+        let text = read_gz_to_string(&gz)?;
+        Ok(crate::regions::GenomeRegions::from_cytoband(build.as_str(), &text))
+    }
+
     /// Parse the cached chain for a build pair into a `du-bio` `Liftover` (call
     /// [`resolve_chain`](Self::resolve_chain) first to ensure it's present).
     pub fn load_liftover(&self, from_name: &str, to_name: &str) -> Result<du_bio::liftover::Liftover, RefgenomeError> {
@@ -247,6 +334,29 @@ impl ReferenceGateway {
         let t = canonical_build(to).ok_or_else(|| RefgenomeError::UnknownBuild(to.to_string()))?;
         Ok((f.nuclear(), t.nuclear()))
     }
+}
+
+/// Genome-region cache freshness window. Region metadata (cytoband/centromere) is effectively
+/// static per assembly, so a long TTL avoids needless refetches; a stale copy is still used if a
+/// refetch fails.
+const REGIONS_TTL_DAYS: f64 = 90.0;
+
+/// Load + deserialize a cached genome-regions JSON, dropping it if it predates the current schema
+/// version (so a parser/overlay change invalidates stale caches).
+fn load_regions_json(path: &Path) -> Option<crate::regions::GenomeRegions> {
+    let text = std::fs::read_to_string(path).ok()?;
+    let regions: crate::regions::GenomeRegions = serde_json::from_str(&text).ok()?;
+    (regions.version == crate::regions::REGIONS_VERSION).then_some(regions)
+}
+
+/// gunzip a downloaded `.gz` into a UTF-8 string (cytoBand tables are small).
+fn read_gz_to_string(path: &Path) -> Result<String, RefgenomeError> {
+    use std::io::Read;
+    let file = std::fs::File::open(path).map_err(|e| RefgenomeError::io(path, e))?;
+    let mut dec = flate2::read::MultiGzDecoder::new(std::io::BufReader::new(file));
+    let mut s = String::new();
+    dec.read_to_string(&mut s).map_err(|e| RefgenomeError::io(path, e))?;
+    Ok(s)
 }
 
 /// Where to stream a download before decompression: `<fa>.gz` for gzipped sources, else a
@@ -368,6 +478,37 @@ mod tests {
         // 1-based tree 1 -> 0-based 0 -> q 99 -> 1-based 100, flagged reverse.
         let lifted = g.lift_positions("GRCh38", "chm13v2.0", "chrY", &[1]).unwrap();
         assert_eq!(lifted, vec![LiftedPos { tree_pos: 1, contig: "chrY".into(), pos: 100, reverse: true }]);
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn genome_regions_load_from_disk_then_memory_and_reject_stale_version() {
+        let base = scratch("regions");
+        let dir = base.join("regions");
+        std::fs::create_dir_all(&dir).unwrap();
+        // Seed a parsed regions JSON (no network). Build key normalizes to chm13v2.0.
+        let regions = crate::regions::GenomeRegions::from_cytoband(
+            "chm13v2.0",
+            "chrY\t0\t300000\tp11.32\tgneg\nchrY\t300000\t62460029\tq11\tgpos50\n",
+        );
+        std::fs::write(
+            cache::regions_path(&base, Build::Chm13v2),
+            serde_json::to_string(&regions).unwrap(),
+        )
+        .unwrap();
+
+        let g = gw(&base);
+        // Disk hit (any alias / the masked variant share CHM13's regions).
+        let r = g.cached_genome_regions("hs1").expect("disk-cached regions");
+        assert!(r.chromosome("chrY").unwrap().par.len() == 2); // PAR overlaid by the parser
+        // Second call is an in-memory hit (same Arc).
+        let r2 = g.cached_genome_regions("chm13v2.0_maskedY_rCRS").unwrap();
+        assert!(Arc::ptr_eq(&r, &r2));
+
+        // A wrong-version JSON is rejected (forces a refetch path), so cold-cache load is None.
+        let g2 = gw(&base);
+        std::fs::write(cache::regions_path(&base, Build::Chm13v2), r#"{"build":"chm13v2.0","version":"OLD","chromosomes":{}}"#).unwrap();
+        assert!(g2.cached_genome_regions("chm13v2.0").is_none());
         let _ = std::fs::remove_dir_all(&base);
     }
 }

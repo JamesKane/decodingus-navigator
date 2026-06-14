@@ -251,6 +251,24 @@ impl Registry {
         Some(ChainSource { from, to, url: format!("{CHAIN_BASE}/{file}") })
     }
 
+    /// The UCSC `cytoBand` table URL for a build (gzipped) — the source for genome-region
+    /// metadata (centromere/telomere/cytoband). A user URL override under `references["<build>:cytoband"]`
+    /// is honored. `None` for builds without a known table.
+    pub fn cytoband_source(&self, build: Build) -> Option<String> {
+        let default = match build.nuclear() {
+            Build::Grch38 => Some("https://hgdownload.soe.ucsc.edu/goldenPath/hg38/database/cytoBand.txt.gz"),
+            Build::Grch37 => Some("https://hgdownload.soe.ucsc.edu/goldenPath/hg19/database/cytoBand.txt.gz"),
+            Build::Chm13v2 => Some("https://hgdownload.soe.ucsc.edu/goldenPath/hs1/database/cytoBandMapped.txt.gz"),
+            Build::Chm13v2MaskedRcrs => unreachable!("nuclear() collapses the masked variant"),
+        };
+        let key = format!("{}:cytoband", build.as_str());
+        self.config
+            .references
+            .get(&key)
+            .and_then(|o| o.url.clone())
+            .or_else(|| default.map(str::to_string))
+    }
+
     /// The annotation-mask source for a registered name (see [`Y_STRUCTURAL_MASKS`]), or `None`
     /// if unknown. A user URL override under `references[name]` is honored.
     pub fn mask_source(&self, name: &str) -> Option<MaskSource> {
