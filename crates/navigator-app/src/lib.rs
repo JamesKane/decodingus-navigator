@@ -128,11 +128,24 @@ use navigator_sync::{
 /// Keychain service namespace for stored sessions (plan §7).
 const KEYCHAIN_SERVICE: &str = "decodingus-navigator";
 
-/// IBD comparison result between two genotyped alignments.
+/// IBD comparison result between two samples.
 #[derive(Debug, Clone, PartialEq)]
 pub struct IbdComparison {
     pub summary: MatchSummary,
     pub segments: Vec<IbdSegment>,
+    /// Sites called in **both** samples — the effective comparison size. Sparse overlap (a
+    /// chip↔chip pair, or chip↔WGS limited to the chip's sites) weakens short-segment calls, so
+    /// it's surfaced rather than hidden.
+    pub overlapping_sites: usize,
+}
+
+/// A sample for an IBD comparison — either a WGS/CRAM **alignment** (genotyped at the IBD-panel
+/// sites) or an imported **chip** profile (resolved to the same CHM13 sites). Both yield dosages
+/// over the canonical IBD panel, so the comparison is data-type-agnostic.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IbdSource {
+    Alignment(i64),
+    Chip(i64),
 }
 
 /// A pseudonymous federated-IBD candidate from the AppView's match engine. The
@@ -1200,6 +1213,42 @@ fn panel_kind(panel_id: i64, ploidy: u8) -> String {
 
 /// Group per-site genotypes into per-chromosome dosage arrays (sorted by position) for
 /// the IBD detector.
+/// Artifact kind for an alignment's cached IBD-panel genotypes (distinct from the store-panel
+/// genotype cache, which is keyed by `panel_kind(panel_id, ploidy)`).
+const IBD_PANEL_KIND: &str = "ibd_panel_genotypes";
+
+/// Count of sites called (dosage within ploidy) in **both** samples — the effective IBD comparison
+/// size, surfaced so a sparse chip↔chip / chip↔WGS overlap isn't mistaken for a confident result.
+fn overlapping_called_sites(a: &[SiteGenotype], b: &[SiteGenotype]) -> usize {
+    let called = |g: &SiteGenotype| (0..=g.ploidy as i32).contains(&g.dosage);
+    let set: std::collections::HashSet<(&str, i64)> =
+        a.iter().filter(|g| called(g)).map(|g| (g.contig.as_str(), g.position)).collect();
+    b.iter()
+        .filter(|g| called(g))
+        .filter(|g| set.contains(&(g.contig.as_str(), g.position)))
+        .count()
+}
+
+/// Group two samples' dosages, load the genetic map for `build`, detect IBD segments, and record
+/// the overlapping-site count. Shared by the alignment-pair and chip-or-WGS compare paths.
+fn detect_ibd(ga: &[SiteGenotype], gb: &[SiteGenotype], build: ReferenceBuild, config: IbdDetectorConfig) -> IbdComparison {
+    let overlapping_sites = overlapping_called_sites(ga, gb);
+    let sample_a = group_chrom_genotypes(ga);
+    let sample_b = group_chrom_genotypes(gb);
+    let mut lengths: BTreeMap<String, i32> = BTreeMap::new();
+    for sample in [&sample_a, &sample_b] {
+        for (chr, cg) in sample {
+            let m = cg.positions.last().copied().unwrap_or(1);
+            lengths.entry(chr.clone()).and_modify(|e| *e = (*e).max(m)).or_insert(m);
+        }
+    }
+    let pairs: Vec<(&str, i32)> = lengths.iter().map(|(k, v)| (k.as_str(), *v)).collect();
+    let gmap = load_genetic_map(build, &pairs);
+    let segments = PairwiseIbdDetector::new(config).detect_segments(&sample_a, &sample_b, &gmap);
+    let summary = MatchSummary::from_segments(&segments);
+    IbdComparison { summary, segments, overlapping_sites }
+}
+
 fn group_chrom_genotypes(genotypes: &[SiteGenotype]) -> std::collections::HashMap<String, ChromosomeGenotypes> {
     let mut by_contig: BTreeMap<String, Vec<(i64, i32)>> = BTreeMap::new();
     for g in genotypes {
@@ -5627,28 +5676,75 @@ impl App {
             .await?
             .ok_or_else(|| AppError::NotGenotyped(alignment_b))?;
 
-        let sample_a = group_chrom_genotypes(&ga);
-        let sample_b = group_chrom_genotypes(&gb);
-
-        // Load the real recombination map for the sample build (CHM13 unless the alignment says
-        // otherwise), falling back to a uniform 1 cM/Mb map over the observed chromosome spans.
         let build = alignment::get(self.store.pool(), alignment_a)
             .await?
             .and_then(|a| canonical_build(&a.reference_build))
             .unwrap_or(ReferenceBuild::Chm13v2);
-        let mut lengths: BTreeMap<String, i32> = BTreeMap::new();
-        for sample in [&sample_a, &sample_b] {
-            for (chr, cg) in sample {
-                let m = cg.positions.last().copied().unwrap_or(1);
-                lengths.entry(chr.clone()).and_modify(|e| *e = (*e).max(m)).or_insert(m);
+        Ok(detect_ibd(&ga, &gb, build, config))
+    }
+
+    /// IBD comparison over the **chip-compatible IBD panel** for two samples that may each be a
+    /// WGS alignment *or* an imported chip (the volume case). Each source resolves to dosages over
+    /// the canonical CHM13 IBD-panel sites ([`Self::ibd_panel_dosages`]); the comparison is then
+    /// data-type-agnostic. Requires the IBD panel asset (for the WGS-genotyping / chip-resolve path).
+    pub async fn compare_ibd_sources(
+        &self,
+        a: IbdSource,
+        b: IbdSource,
+        config: IbdDetectorConfig,
+    ) -> Result<IbdComparison, AppError> {
+        let ga = self.ibd_panel_dosages(a).await?;
+        let gb = self.ibd_panel_dosages(b).await?;
+        // The IBD panel is CHM13-coordinate, so the CHM13 genetic map applies to both sources.
+        Ok(detect_ibd(&ga, &gb, ReferenceBuild::Chm13v2, config))
+    }
+
+    /// Dosages over the canonical CHM13 IBD-panel sites for a comparison source. A chip resolves
+    /// directly ([`Self::chip_ibd_dosages`]); an alignment genotypes the panel's CHM13 sites from
+    /// its BAM (cached per alignment, ploidy-2 autosomal).
+    pub async fn ibd_panel_dosages(&self, source: IbdSource) -> Result<Vec<SiteGenotype>, AppError> {
+        match source {
+            IbdSource::Chip(id) => self.chip_ibd_dosages(id).await,
+            IbdSource::Alignment(id) => {
+                if let Some(g) = self.load_analysis(id, IBD_PANEL_KIND, caller::GENOTYPE_VERSION).await? {
+                    return Ok(g);
+                }
+                let aln = alignment::get(self.store.pool(), id)
+                    .await?
+                    .ok_or_else(|| AppError::Store(StoreError::NotFound(format!("alignment {id}"))))?;
+                let bam = PathBuf::from(aln.bam_path.ok_or(AppError::MissingPaths(id))?);
+                let reference = aln.reference_path.map(PathBuf::from);
+                let panel_path = ibd_panel_path(ReferenceBuild::Chm13v2);
+                let bytes = std::fs::read(&panel_path).map_err(|_| {
+                    AppError::Import(format!("IBD panel asset not found at {} — build it with `panelbuild ibd-panel`", panel_path.display()))
+                })?;
+                let panel = navigator_analysis::ibd_panel::IbdPanel::from_bytes(&bytes)?;
+                let sites: Vec<Site> = panel
+                    .sites
+                    .iter()
+                    .map(|s| Site {
+                        name: s.rsid.clone(),
+                        contig: s.chm13.contig.clone(),
+                        position: s.chm13.position,
+                        reference_allele: s.chm13.reference.to_string(),
+                        alternate_allele: s.chm13.alternate.to_string(),
+                    })
+                    .collect();
+                let genotypes = tokio::task::spawn_blocking(move || {
+                    let params = HaploidCallerParams::default();
+                    let contigs: std::collections::BTreeSet<&str> = sites.iter().map(|s| s.contig.as_str()).collect();
+                    let mut all = Vec::new();
+                    for contig in contigs {
+                        all.extend(caller::genotype_sites(&bam, contig, &sites, 2, &params, reference.as_deref())?);
+                    }
+                    Ok::<_, navigator_analysis::AnalysisError>(all)
+                })
+                .await
+                .map_err(|e| AppError::Join(e.to_string()))??;
+                self.save_analysis(id, IBD_PANEL_KIND, caller::GENOTYPE_VERSION, &genotypes).await?;
+                Ok(genotypes)
             }
         }
-        let pairs: Vec<(&str, i32)> = lengths.iter().map(|(k, v)| (k.as_str(), *v)).collect();
-        let gmap = load_genetic_map(build, &pairs);
-
-        let segments = PairwiseIbdDetector::new(config).detect_segments(&sample_a, &sample_b, &gmap);
-        let summary = MatchSummary::from_segments(&segments);
-        Ok(IbdComparison { summary, segments })
     }
 
     /// Identity verification — are two alignments the same individual? Autosomal genotype
@@ -6319,6 +6415,37 @@ mod ibd_federated_tests {
     fn parse_suggestions_empty_or_malformed_is_empty() {
         assert!(parse_ibd_suggestions(&serde_json::json!({})).is_empty());
         assert!(parse_ibd_suggestions(&serde_json::json!({ "items": "nope" })).is_empty());
+    }
+}
+
+#[cfg(test)]
+mod ibd_tests {
+    use super::*;
+
+    fn sg(contig: &str, pos: i64, dosage: i32) -> SiteGenotype {
+        SiteGenotype {
+            name: String::new(),
+            contig: contig.into(),
+            position: pos,
+            reference_allele: "A".into(),
+            alternate_allele: "G".into(),
+            ploidy: 2,
+            dosage,
+            gq: 0,
+            depth: 0,
+            ref_depth: 0,
+            alt_depth: 0,
+            pls: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn overlapping_sites_counts_both_called_intersection() {
+        let a = vec![sg("chr1", 100, 0), sg("chr1", 200, 1), sg("chr1", 300, -1)]; // 300 no-call
+        let b = vec![sg("chr1", 100, 2), sg("chr1", 200, 1), sg("chr1", 300, 0), sg("chr1", 400, 0)];
+        // Shared & called in both: 100, 200 (300 is a no-call in a; 400 absent in a).
+        assert_eq!(overlapping_called_sites(&a, &b), 2);
+        assert_eq!(overlapping_called_sites(&a, &[]), 0);
     }
 }
 

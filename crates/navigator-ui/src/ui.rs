@@ -5247,11 +5247,12 @@ impl NavigatorApp {
 
         if let Some(cmp) = &self.ibd_result {
             ui.label(format!(
-                "{:?} — total {:.1} cM, {} segment(s), longest {:.1} cM",
+                "{:?} — total {:.1} cM, {} segment(s), longest {:.1} cM  ·  {} overlapping sites",
                 cmp.summary.relationship,
                 cmp.summary.total_shared_cm,
                 cmp.summary.segment_count,
                 cmp.summary.longest_segment_cm,
+                cmp.overlapping_sites,
             ));
             if !cmp.segments.is_empty() {
                 egui::Grid::new("ibd_segments").striped(true).num_columns(4).show(ui, |ui| {
