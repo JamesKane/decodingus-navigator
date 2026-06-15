@@ -889,6 +889,39 @@ enum IndelAllele {
     Del(u32),
 }
 
+/// Left-align an indel within the reference repeat structure (VCF normalization): an aligner may
+/// place an indel anywhere within a homopolymer/STR run, but the canonical representation is the
+/// leftmost. Returns the normalized `anchor` (1-based) and allele. A deletion of `len` bases at
+/// `[anchor, anchor+len-1]` shifts left while `ref[anchor-1] == ref[anchor+len-1]`; an insertion
+/// before `anchor` shifts left while `ref[anchor-1]` equals its last base (rotating the bases).
+/// Bounded by `proc_lo` (the loaded reference window start, 1-based).
+fn left_normalize(anchor: i64, allele: &IndelAllele, ref_chunk: &[u8], proc_lo: usize) -> (i64, IndelAllele) {
+    let at = |p: i64| -> Option<u8> {
+        let i = p - proc_lo as i64;
+        (i >= 0 && (i as usize) < ref_chunk.len()).then(|| ref_chunk[i as usize].to_ascii_uppercase())
+    };
+    match allele {
+        IndelAllele::Del(len) => {
+            let l = *len as i64;
+            let mut a = anchor;
+            while a > proc_lo as i64 && at(a - 1).is_some() && at(a - 1) == at(a + l - 1) {
+                a -= 1;
+            }
+            (a, IndelAllele::Del(*len))
+        }
+        IndelAllele::Ins(seq) => {
+            let mut a = anchor;
+            let mut s: Vec<u8> = seq.iter().map(|b| b.to_ascii_uppercase()).collect();
+            while a > proc_lo as i64 && !s.is_empty() && at(a - 1) == s.last().copied() {
+                let last = s.pop().unwrap();
+                s.insert(0, last); // rotate right: the inserted unit slides left by one ref base
+                a -= 1;
+            }
+            (a, IndelAllele::Ins(s))
+        }
+    }
+}
+
 /// Build a diploid indel [`SiteGenotype`] (VCF-style, left-anchored at `emit_pos`) from ref-vs-indel
 /// read support, genotyped at ploidy 2 via the sentinel-byte GL (`b'R'` ref-spanning, `b'A'`
 /// indel-carrying). `ref_byte` is the reference base at `emit_pos`; `deleted` is the deleted
@@ -1036,9 +1069,22 @@ fn indels_in_chunk(
             }
         }
 
-        for (emit_pos, (anchor, al, locus_end, alt_count)) in best {
-            if emit_pos < emit_lo as i64 || emit_pos > emit_hi as i64 || alt_count < params.realign_min_indel_reads {
+        for (_, (anchor, al, locus_end, alt_count)) in best {
+            if alt_count < params.realign_min_indel_reads {
                 continue;
+            }
+            // Ref support uses the reads' *actual* indel locus; normalization only changes the VCF
+            // representation, not which reads support the allele.
+            let spanning = reads.iter().filter(|r| r.start < anchor && r.ref_end >= locus_end).count() as u32;
+            let ref_count = spanning.saturating_sub(alt_count);
+            if ref_count + alt_count < params.min_depth {
+                continue;
+            }
+            // Left-align the indel within the reference repeat for the canonical VCF position/alleles.
+            let (na, nal) = left_normalize(anchor, &al, ref_chunk, proc_lo);
+            let emit_pos = na - 1;
+            if emit_pos < emit_lo as i64 || emit_pos > emit_hi as i64 {
+                continue; // assigned to whichever chunk owns the normalized position (no dup/loss)
             }
             let idx = emit_pos - proc_lo as i64;
             if idx < 0 || idx as usize >= ref_chunk.len() {
@@ -1048,8 +1094,8 @@ fn indels_in_chunk(
             if base_index(ref_byte).is_none() {
                 continue; // ambiguous anchor base
             }
-            let deleted: Vec<u8> = if let IndelAllele::Del(_) = al {
-                let (s, e) = ((anchor - proc_lo as i64).max(0) as usize, (locus_end - proc_lo as i64 + 1).max(0) as usize);
+            let deleted: Vec<u8> = if let IndelAllele::Del(len) = &nal {
+                let (s, e) = ((na - proc_lo as i64).max(0) as usize, (na - proc_lo as i64 + *len as i64).max(0) as usize);
                 if s < e && e <= ref_chunk.len() {
                     ref_chunk[s..e].to_vec()
                 } else {
@@ -1058,13 +1104,7 @@ fn indels_in_chunk(
             } else {
                 Vec::new()
             };
-            // Ref support: reads spanning the whole locus that don't carry the indel.
-            let spanning = reads.iter().filter(|r| r.start <= emit_pos && r.ref_end >= locus_end).count() as u32;
-            let ref_count = spanning.saturating_sub(alt_count);
-            if ref_count + alt_count < params.min_depth {
-                continue;
-            }
-            if let Some(g) = indel_site_genotype(contig, emit_pos, ref_byte, &al, &deleted, ref_count, alt_count, params) {
+            if let Some(g) = indel_site_genotype(contig, emit_pos, ref_byte, &nal, &deleted, ref_count, alt_count, params) {
                 out.push(g);
             }
         }
@@ -1241,6 +1281,21 @@ pub fn subtract_known(calls: &[VariantCall], known_positions: &HashSet<i64>) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn left_normalize_shifts_indels_into_repeats() {
+        // ref_chunk starts at proc_lo=1 (1-based). "GAAAAC" → positions 1G 2A 3A 4A 5A 6C.
+        let refc = b"GAAAAC";
+        // A 1bp deletion reported at the last A (anchor 5) left-aligns to the first A (anchor 2).
+        let (a, al) = left_normalize(5, &IndelAllele::Del(1), refc, 1);
+        assert_eq!((a, al), (2, IndelAllele::Del(1)));
+        // An insertion of "A" before anchor 5 (in the A-run) left-aligns to anchor 2.
+        let (a, al) = left_normalize(5, &IndelAllele::Ins(b"A".to_vec()), refc, 1);
+        assert_eq!((a, al), (2, IndelAllele::Ins(b"A".to_vec())));
+        // A non-repeat deletion doesn't move: "ACGTC", delete the G (anchor 3).
+        let (a, _) = left_normalize(3, &IndelAllele::Del(1), b"ACGTC", 1);
+        assert_eq!(a, 3);
+    }
 
     #[test]
     fn indel_site_genotype_builds_left_anchored_alleles() {
