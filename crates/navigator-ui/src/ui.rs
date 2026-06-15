@@ -14,7 +14,7 @@ use navigator_app::{
     SexInferenceResult, SourceType, SuperPopulationSummary, SvAnalysisResult, VariantStatus,
     VerificationStatus, YProfile, YState, YVariantStatus,
 };
-use navigator_domain::ancestry::{population_color, population_lonlat, population_name, population_super};
+use navigator_domain::ancestry::{population_color, population_name, population_super};
 use navigator_domain::du_domain::ids::SampleGuid;
 use navigator_domain::chipprofile::{self, ChipProfile};
 use navigator_domain::mtdna::MtdnaSequence;
@@ -26,9 +26,6 @@ use navigator_domain::workspace::{Alignment, Biosample, NewAlignment, NewProject
 use tokio::sync::mpsc::UnboundedSender;
 
 use crate::worker::{self, Command, Event, NewBiosample, PanelInfo, YMask};
-
-/// PCA scatter backdrop: the alignment it was loaded for + reference centroids `(code, pc1, pc2)`.
-type PcaReferenceState = (i64, Vec<(String, f64, f64)>);
 
 #[derive(Default)]
 struct Forms {
@@ -349,17 +346,8 @@ pub struct NavigatorApp {
     y_haplogroup: Option<(i64, HaploAssignment)>,
     /// Last mtDNA-from-alignment haplogroup assignment: (alignment id, assignment).
     mt_haplogroup: Option<(i64, HaploAssignment)>,
-    /// Last ancestry estimate: (alignment id, result). `None` result = computed, no estimate.
-    ancestry: Option<(i64, Option<AncestryResult>)>,
-    /// Fine-population (FINE_ADMIXTURE) result for the selected alignment, when computed — drives
-    /// the super→fine hierarchy rows. `(alignment id, result)`.
-    fine_ancestry: Option<(i64, Option<AncestryResult>)>,
-    /// On-demand chip ancestry: (chip profile id, result).
-    chip_ancestry: Option<(i64, AncestryResult)>,
     /// Ancestry/IBD reference-asset presence + integrity (the "data sources" line). Loaded once.
     asset_status: Vec<navigator_app::AssetStatus>,
-    /// Whether a chip-ancestry estimate is in flight.
-    estimating_chip_ancestry: bool,
     /// Donor-level ancestry (best across the subject's sources): (source alignment id, result).
     donor_ancestry: Option<(i64, AncestryResult)>,
     /// Donor-level private-Y union across the subject's sources.
@@ -382,13 +370,8 @@ pub struct NavigatorApp {
     auto_profile_filter: Option<YVariantStatus>,
     /// True while the (expensive) autosomal consensus profile is being built.
     auto_profile_loading: bool,
-    estimating_ancestry: bool,
     /// Whether the consensus-driven donor ancestry estimate is in flight.
     estimating_donor_ancestry: bool,
-    /// Live genotyping progress for the in-flight estimate: (alignment id, done, total) contigs.
-    ancestry_progress: Option<(i64, usize, usize)>,
-    /// Reference population centroids for the PCA scatter: (alignment id, [(code, pc1, pc2)]).
-    pca_reference: Option<PcaReferenceState>,
     /// Local-ancestry painting: (alignment id, segments). `painting_running` while genotyping.
     painting: Option<(i64, Vec<AncestrySegment>)>,
     painting_running: bool,
@@ -781,37 +764,6 @@ fn draw_ancestry_donut(ui: &mut egui::Ui, summary: &[SuperPopulationSummary]) {
     }
 }
 
-/// Draw a schematic world map (equirectangular) with each contributing population plotted at its
-/// homeland, the marker area proportional to its share and colored by continent.
-fn draw_ancestry_map(ui: &mut egui::Ui, components: &[navigator_app::PopulationComponent]) {
-    let (rect, _) = ui.allocate_exact_size(egui::vec2(360.0, 180.0), egui::Sense::hover());
-    let painter = ui.painter_at(rect);
-    painter.rect_filled(rect, 4.0, egui::Color32::from_gray(18));
-    let proj = |lon: f32, lat: f32| -> egui::Pos2 {
-        egui::pos2(
-            rect.left() + (lon + 180.0) / 360.0 * rect.width(),
-            rect.top() + (90.0 - lat) / 180.0 * rect.height(),
-        )
-    };
-    // Faint equator + prime meridian for orientation.
-    let grid = egui::Stroke::new(1.0, egui::Color32::from_gray(36));
-    painter.line_segment([proj(-180.0, 0.0), proj(180.0, 0.0)], grid);
-    painter.line_segment([proj(0.0, -90.0), proj(0.0, 90.0)], grid);
-    // Largest shares last, so they render on top.
-    let mut comps: Vec<&navigator_app::PopulationComponent> =
-        components.iter().filter(|c| c.percentage >= 1.0).collect();
-    comps.sort_by(|a, b| a.percentage.partial_cmp(&b.percentage).unwrap_or(std::cmp::Ordering::Equal));
-    for c in comps {
-        if let Some((lon, lat)) = population_lonlat(&c.population_code) {
-            let p = proj(lon, lat);
-            let radius = (2.5 + (c.percentage as f32).sqrt() * 2.4).clamp(2.5, 24.0);
-            let col = parse_hex_color(&population_color(&c.population_code));
-            painter.circle_filled(p, radius, col.gamma_multiply(0.55));
-            painter.circle_stroke(p, radius, egui::Stroke::new(1.5, col));
-        }
-    }
-}
-
 /// Draw the super-population composition as a single stacked horizontal bar (segment widths =
 /// proportions, colored by continent).
 fn draw_composition_bar(ui: &mut egui::Ui, summary: &[SuperPopulationSummary]) {
@@ -827,66 +779,6 @@ fn draw_composition_bar(ui: &mut egui::Ui, summary: &[SuperPopulationSummary]) {
         painter.rect_filled(seg, 0.0, parse_hex_color(&population_color(code)));
         x += seg_w;
     }
-}
-
-/// Draw a small PCA scatter: each reference population's centroid (colored, labeled) plus the
-/// sample's projected point (white ○). Axes are PC1 (x) × PC2 (y), auto-scaled to the data.
-fn draw_pca_scatter(ui: &mut egui::Ui, sample: (f64, f64), refs: &[(String, f64, f64)]) {
-    let mut xs: Vec<f64> = refs.iter().map(|r| r.1).collect();
-    let mut ys: Vec<f64> = refs.iter().map(|r| r.2).collect();
-    xs.push(sample.0);
-    ys.push(sample.1);
-    let (mut xmin, mut xmax) = (f64::INFINITY, f64::NEG_INFINITY);
-    for &x in &xs {
-        xmin = xmin.min(x);
-        xmax = xmax.max(x);
-    }
-    let (mut ymin, mut ymax) = (f64::INFINITY, f64::NEG_INFINITY);
-    for &y in &ys {
-        ymin = ymin.min(y);
-        ymax = ymax.max(y);
-    }
-    // 8% padding; guard zero-range axes.
-    let xpad = ((xmax - xmin) * 0.08).max(1.0);
-    let ypad = ((ymax - ymin) * 0.08).max(1.0);
-    xmin -= xpad;
-    xmax += xpad;
-    ymin -= ypad;
-    ymax += ypad;
-
-    let (rect, _) = ui.allocate_exact_size(egui::vec2(300.0, 240.0), egui::Sense::hover());
-    let painter = ui.painter_at(rect);
-    painter.rect_filled(rect, 4.0, egui::Color32::from_gray(18));
-    let inset = 10.0;
-    let map = |x: f64, y: f64| -> egui::Pos2 {
-        let fx = ((x - xmin) / (xmax - xmin)) as f32;
-        let fy = ((y - ymin) / (ymax - ymin)) as f32;
-        egui::pos2(
-            rect.left() + inset + fx * (rect.width() - 2.0 * inset),
-            rect.bottom() - inset - fy * (rect.height() - 2.0 * inset), // invert y
-        )
-    };
-    for (code, x, y) in refs {
-        let p = map(*x, *y);
-        let col = parse_hex_color(&population_color(code));
-        painter.circle_filled(p, 5.0, col);
-        painter.text(
-            p + egui::vec2(7.0, 0.0),
-            egui::Align2::LEFT_CENTER,
-            code,
-            egui::FontId::proportional(11.0),
-            col,
-        );
-    }
-    let sp = map(sample.0, sample.1);
-    painter.circle_stroke(sp, 6.0, egui::Stroke::new(2.0, egui::Color32::WHITE));
-    painter.text(
-        sp + egui::vec2(8.0, 0.0),
-        egui::Align2::LEFT_CENTER,
-        "sample",
-        egui::FontId::proportional(11.0),
-        egui::Color32::WHITE,
-    );
 }
 
 /// Parse a `#RRGGBB` hex color, falling back to grey on a malformed string.
@@ -1160,16 +1052,12 @@ impl NavigatorApp {
             variant_sets: Vec::new(),
             variant_concordance: Vec::new(),
             chip_profiles: Vec::new(),
-            chip_ancestry: None,
             asset_status: Vec::new(),
-            estimating_chip_ancestry: false,
             mtdna_sequences: Vec::new(),
             mtdna_variants: std::collections::HashMap::new(),
             mtdna_haplogroup: None,
             y_haplogroup: None,
             mt_haplogroup: None,
-            ancestry: None,
-            fine_ancestry: None,
             donor_ancestry: None,
             donor_private_y: None,
             y_profile: None,
@@ -1181,10 +1069,7 @@ impl NavigatorApp {
             auto_profile: None,
             auto_profile_filter: None,
             auto_profile_loading: false,
-            estimating_ancestry: false,
             estimating_donor_ancestry: false,
-            ancestry_progress: None,
-            pca_reference: None,
             painting: None,
             painting_running: false,
             private_y: None,
@@ -1472,53 +1357,8 @@ impl NavigatorApp {
                         let _ = self.tx.send(Command::LoadConsensus(guid)); // the mt call was recorded
                     }
                 }
-                Event::AncestryProgress { alignment_id, done, total } => {
-                    self.ancestry_progress = Some((alignment_id, done, total));
-                    self.status = format!("Genotyping ancestry panel: {done}/{total} contigs…");
-                }
-                Event::Ancestry { alignment_id, result } => {
-                    self.estimating_ancestry = false;
-                    self.ancestry_progress = None;
-                    // Lead with the robust super-population rollup (fine-pop components are
-                    // indicative but noisier on a continental-AIMs panel).
-                    self.status = match &result {
-                        Some(r) => match r.super_population_summary.first() {
-                            Some(top) => format!(
-                                "Ancestry: {} {:.1}% ({}/{} SNPs)",
-                                top.super_population, top.percentage, r.snps_with_genotype, r.snps_analyzed
-                            ),
-                            None => "Ancestry: no estimate".into(),
-                        },
-                        None => "Ancestry: not yet computed".into(),
-                    };
-                    self.ancestry = Some((alignment_id, result));
-                    // The fine-pop result is persisted alongside; (re)load it for the hierarchy rows.
-                    let _ = self.tx.send(Command::LoadFineAncestry { alignment_id });
-                    // A fresh estimate may change the donor's best — reload the donor rollup.
-                    if let Some(guid) = self.selected_sample {
-                        let _ = self.tx.send(Command::LoadDonorAncestry { biosample_guid: guid });
-                    }
-                }
-                Event::FineAncestry { alignment_id, result } => {
-                    self.fine_ancestry = Some((alignment_id, result));
-                }
-                Event::ChipAncestry { chip_profile_id, result } => {
-                    self.estimating_chip_ancestry = false;
-                    self.status = match result.super_population_summary.first() {
-                        Some(top) => format!(
-                            "Chip ancestry: {} {:.1}% ({} AIMs)",
-                            top.super_population, top.percentage, result.snps_with_genotype
-                        ),
-                        None => "Chip ancestry: no estimate".into(),
-                    };
-                    self.chip_ancestry = Some((chip_profile_id, result));
-                }
-                Event::PcaReference { alignment_id, points } => {
-                    self.pca_reference = Some((alignment_id, points));
-                }
                 Event::AncestryPainting { alignment_id, segments } => {
                     self.painting_running = false;
-                    self.ancestry_progress = None;
                     self.status = format!("Painted {} ancestry segments", segments.len());
                     self.painting = Some((alignment_id, segments));
                 }
@@ -1835,10 +1675,8 @@ impl NavigatorApp {
                     self.logging_in = false;
                     self.publishing = false;
                     self.finding_private_y = false;
-                    self.estimating_ancestry = false;
-                    self.estimating_chip_ancestry = false;
+                    self.estimating_donor_ancestry = false;
                     self.y_profile_loading = false;
-                    self.ancestry_progress = None;
                     self.painting_running = false;
                     self.running_sex = false;
                     self.running_metrics = false;
@@ -1943,20 +1781,10 @@ impl NavigatorApp {
         self.y_haplogroup = None;
         self.mt_haplogroup = None;
         self.private_y = None;
-        self.ancestry = None;
-        self.fine_ancestry = None;
-        self.estimating_ancestry = false;
-        self.ancestry_progress = None;
-        self.pca_reference = None;
-        self.painting = None;
-        self.painting_running = false;
         let _ = self.tx.send(Command::LoadCoverage(id));
         let _ = self.tx.send(Command::LoadSex(id));
         let _ = self.tx.send(Command::LoadReadMetrics(id));
         let _ = self.tx.send(Command::LoadSv(id));
-        let _ = self.tx.send(Command::LoadAncestry { alignment_id: id });
-        let _ = self.tx.send(Command::LoadFineAncestry { alignment_id: id });
-        let _ = self.tx.send(Command::LoadPcaReference { alignment_id: id });
         // Load cached chrM de-novo (mtDNA tab). chrY variant discovery is the masked private-Y
         // pass, not a raw whole-chrY de-novo, so it isn't loaded here.
         let _ = self.tx.send(Command::LoadDenovo { alignment_id: id, contig: "chrM".into() });
@@ -2217,6 +2045,7 @@ impl NavigatorApp {
                             }
                             ui.label(egui::RichText::new(self.tr("hint.ancestryConsensus")).weak().small());
                         });
+                        asset_status_line(ui, &self.asset_status);
                         self.donor_ancestry_summary(ui);
                         // The consensus chromosome painting (keyed on the consensus pseudo-source).
                         if let Some((id, segs)) = &self.painting {
@@ -2224,18 +2053,6 @@ impl NavigatorApp {
                                 ui.add_space(8.0);
                                 draw_chromosome_painting(ui, segs);
                             }
-                        }
-                    });
-                    // Per-source estimators (legacy BAM AIM walk + chip lift) — advanced/optional.
-                    ui.add_space(10.0);
-                    let per_source = self.tr("card.ancestryPerSource");
-                    egui::CollapsingHeader::new(per_source).id_salt("ancestry_per_source").show(ui, |ui| {
-                        if let Some(id) = self.selected_alignment {
-                            self.ancestry_section(ui, id);
-                            ui.add_space(6.0);
-                        }
-                        if !self.chip_profiles.is_empty() {
-                            self.chip_ancestry_section(ui);
                         }
                     });
                 }
@@ -4967,239 +4784,6 @@ impl NavigatorApp {
                         ));
                     }
                 }
-            }
-        }
-    }
-
-    /// Ancestry estimate for an alignment: super-population proportions from the AIMs panel.
-    /// Autosomal ancestry estimated from an imported chip (23andMe/AncestryDNA). One button per
-    /// chip profile; lifts the chip's GRCh37 SNPs onto the AIMs panel and runs admixture. Renders
-    /// the same donut + composition + hierarchy + map as the alignment estimate (no PCA scatter —
-    /// chip carries no per-build PCA reference here).
-    fn chip_ancestry_section(&mut self, ui: &mut egui::Ui) {
-        let profiles: Vec<(i64, String)> =
-            self.chip_profiles.iter().map(|p| (p.id, p.provider.clone())).collect();
-        ui.horizontal(|ui| {
-            for (id, provider) in &profiles {
-                let label = if profiles.len() > 1 {
-                    format!("{} — {provider}", self.tr("btn.estimateChipAncestry"))
-                } else {
-                    self.tr("btn.estimateChipAncestry").to_string()
-                };
-                if ui.add_enabled(!self.estimating_chip_ancestry, egui::Button::new(label)).clicked() {
-                    self.estimating_chip_ancestry = true;
-                    self.chip_ancestry = None;
-                    self.status = self.tr("chipAncestry.estimating").to_string();
-                    let _ = self.tx.send(Command::EstimateAncestryFromChip { chip_profile_id: *id });
-                }
-            }
-            if self.estimating_chip_ancestry {
-                ui.spinner();
-            }
-        });
-
-        if let Some((_, result)) = &self.chip_ancestry {
-            ui.add_space(8.0);
-            ui.horizontal(|ui| {
-                draw_ancestry_donut(ui, &result.super_population_summary);
-                ui.add_space(8.0);
-                ui.vertical(|ui| {
-                    if let Some(top) = result.super_population_summary.first() {
-                        ui.heading(format!("{} {:.1}%", top.super_population, top.percentage));
-                    }
-                    ui.label(format!("{} AIMs · {}", result.snps_with_genotype, result.reference_version));
-                    ui.add_space(4.0);
-                    draw_composition_bar(ui, &result.super_population_summary);
-                });
-            });
-            ui.add_space(8.0);
-            // Fine populations ≥0.5%, sorted, with continent color dots.
-            let mut fine: Vec<&navigator_app::PopulationComponent> =
-                result.components.iter().filter(|c| c.percentage >= 0.5).collect();
-            fine.sort_by(|a, b| b.percentage.partial_cmp(&a.percentage).unwrap_or(std::cmp::Ordering::Equal));
-            egui::Grid::new("chip_ancestry_components").num_columns(2).spacing([24.0, 4.0]).show(ui, |ui| {
-                for c in fine {
-                    ui.horizontal(|ui| {
-                        let (r, _) = ui.allocate_exact_size(egui::vec2(10.0, 10.0), egui::Sense::hover());
-                        ui.painter().circle_filled(r.center(), 3.5, parse_hex_color(&population_color(&c.population_code)));
-                        ui.label(&c.population_name);
-                    });
-                    ui.label(format!("{:.1}%", c.percentage));
-                    ui.end_row();
-                }
-            });
-            ui.add_space(8.0);
-            ui.label(self.tr("ancestry.geo"));
-            draw_ancestry_map(ui, &result.components);
-        }
-    }
-
-    fn ancestry_section(&mut self, ui: &mut egui::Ui, alignment_id: i64) {
-        asset_status_line(ui, &self.asset_status);
-        ui.add_space(4.0);
-        let has_bam = self
-            .alignments
-            .iter()
-            .find(|a| a.id == alignment_id)
-            .map(|a| a.bam_path.is_some())
-            .unwrap_or(false);
-
-        let busy = self.estimating_ancestry || self.painting_running;
-        ui.horizontal(|ui| {
-            if ui
-                .add_enabled(has_bam && !busy, egui::Button::new(self.tr("btn.estimateAncestry")))
-                .clicked()
-            {
-                self.estimating_ancestry = true;
-                self.status = "Estimating ancestry (genotyping AIMs panel)…".into();
-                let _ = self.tx.send(Command::EstimateAncestry { alignment_id });
-            }
-            if ui
-                .add_enabled(has_bam && !busy, egui::Button::new(self.tr("ancestry.paint")))
-                .clicked()
-            {
-                self.painting_running = true;
-                self.status = "Painting local ancestry (genotyping AIMs panel)…".into();
-                let _ = self.tx.send(Command::PaintAncestry { alignment_id });
-            }
-            if busy {
-                ui.spinner();
-            }
-            if !has_bam {
-                ui.label(self.tr("hint.noBamPath"));
-            }
-        });
-
-        // Live genotyping progress (the slow per-contig pass over the BAM).
-        if busy {
-            match self.ancestry_progress {
-                Some((id, done, total)) if id == alignment_id && total > 0 => {
-                    ui.add(
-                        egui::ProgressBar::new(done as f32 / total as f32)
-                            .text(format!("genotyping contig {done}/{total}")),
-                    );
-                }
-                _ => {
-                    ui.add(egui::ProgressBar::new(0.0).text("preparing…"));
-                }
-            }
-        }
-
-        match &self.ancestry {
-            Some((id, Some(result))) if *id == alignment_id => {
-                // Donut of super-population proportions, beside the headline + composition bar.
-                ui.horizontal(|ui| {
-                    draw_ancestry_donut(ui, &result.super_population_summary);
-                    ui.add_space(8.0);
-                    ui.vertical(|ui| {
-                        if let Some(top) = result.super_population_summary.first() {
-                            ui.heading(format!("{} {:.1}%", top.super_population, top.percentage));
-                        }
-                        ui.label(format!(
-                            "{}/{} panel SNPs · confidence {:.0}%",
-                            result.snps_with_genotype,
-                            result.snps_analyzed,
-                            result.confidence_level * 100.0
-                        ));
-                        // Donor provenance: which method + reference build produced this estimate.
-                        ui.label(
-                            egui::RichText::new(format!("{} · {}", result.method, result.reference_version))
-                                .small()
-                                .weak(),
-                        );
-                        ui.add_space(4.0);
-                        draw_composition_bar(ui, &result.super_population_summary);
-                    });
-                });
-                ui.add_space(8.0);
-
-                // Indented hierarchy: each super-population, then its fine populations (if the
-                // panel is fine-grained). Proportions sum to 100% (supervised admixture).
-                // Fine sub-populations come from the FINE_ADMIXTURE result (26 1000G pops) when it's
-                // been computed for this alignment; the donut + super rows stay on the primary
-                // (super-pop) result. Absent ⇒ no fine children (unchanged behavior).
-                let fine_comps: &[navigator_app::PopulationComponent] = match &self.fine_ancestry {
-                    Some((fid, Some(fr))) if *fid == alignment_id => &fr.components,
-                    _ => &[],
-                };
-                egui::Grid::new("ancestry_hierarchy").num_columns(2).spacing([24.0, 4.0]).show(ui, |ui| {
-                    for s in &result.super_population_summary {
-                        if s.percentage < 0.5 {
-                            continue;
-                        }
-                        let super_code = s.populations.first().and_then(|c| population_super(c)).unwrap_or("");
-                        ui.horizontal(|ui| {
-                            let (r, _) = ui.allocate_exact_size(egui::vec2(12.0, 12.0), egui::Sense::hover());
-                            ui.painter().circle_filled(r.center(), 5.0, parse_hex_color(&population_color(super_code)));
-                            ui.strong(&s.super_population);
-                        });
-                        ui.strong(format!("{:.1}%", s.percentage));
-                        ui.end_row();
-
-                        // Fine sub-populations under this super (from the fine result).
-                        let mut fine: Vec<&navigator_app::PopulationComponent> = fine_comps
-                            .iter()
-                            .filter(|c| population_super(&c.population_code) == Some(super_code))
-                            .filter(|c| c.population_code != super_code && c.percentage >= 0.5)
-                            .collect();
-                        fine.sort_by(|a, b| b.percentage.partial_cmp(&a.percentage).unwrap_or(std::cmp::Ordering::Equal));
-                        for c in fine {
-                            ui.horizontal(|ui| {
-                                ui.add_space(20.0);
-                                let (r, _) = ui.allocate_exact_size(egui::vec2(10.0, 10.0), egui::Sense::hover());
-                                ui.painter().circle_filled(r.center(), 3.5, parse_hex_color(&population_color(&c.population_code)));
-                                ui.label(&c.population_name);
-                            });
-                            ui.label(format!("{:.1}%", c.percentage));
-                            ui.end_row();
-                        }
-                    }
-                });
-
-                // Geographic distribution: each contributing population at its homeland,
-                // sized by proportion and colored by continent.
-                ui.add_space(8.0);
-                ui.label(self.tr("ancestry.geo"));
-                draw_ancestry_map(ui, &result.components);
-
-                // PCA scatter: reference population centroids (PC1×PC2) + this sample's point.
-                if let Some(coords) = &result.pca_coordinates {
-                    let refs: &[(String, f64, f64)] = match &self.pca_reference {
-                        Some((rid, pts)) if *rid == alignment_id => pts,
-                        _ => &[],
-                    };
-                    if coords.len() >= 2 && !refs.is_empty() {
-                        ui.add_space(8.0);
-                        ui.label(self.tr("ancestry.pca"));
-                        draw_pca_scatter(ui, (coords[0], coords[1]), refs);
-                    }
-                }
-            }
-            Some((id, None)) if *id == alignment_id && !busy => {
-                ui.label(self.tr("ancestry.none"));
-            }
-            _ if !busy => {
-                ui.label(self.tr("ancestry.none"));
-            }
-            _ => {}
-        }
-
-        if matches!(&self.ancestry, Some((id, Some(_))) if *id == alignment_id) {
-            self.export_row(
-                ui,
-                &[
-                    navigator_app::ExportRequest::AncestryTsv(alignment_id),
-                    navigator_app::ExportRequest::AncestryHtml(alignment_id),
-                ],
-            );
-        }
-
-        // Local-ancestry painting (independent of the global estimate).
-        if let Some((id, segments)) = &self.painting {
-            if *id == alignment_id && !segments.is_empty() {
-                ui.add_space(8.0);
-                ui.label(self.tr("ancestry.local"));
-                draw_chromosome_painting(ui, segments);
             }
         }
     }

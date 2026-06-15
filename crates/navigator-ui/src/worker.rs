@@ -111,23 +111,10 @@ pub enum Command {
     AssignYBisdna { biosample_guid: SampleGuid },
     /// Assign an mtDNA haplogroup directly from an alignment's chrM (records a donor call).
     AssignMtdnaHaplogroupFromAlignment { alignment_id: i64 },
-    /// Estimate ancestry (super-population proportions) from an alignment via the AIMs panel.
-    EstimateAncestry { alignment_id: i64 },
-    /// Estimate autosomal ancestry from an imported chip (23andMe/AncestryDNA) — lifts the chip's
-    /// GRCh37 SNPs to the AIMs panel and runs the admixture estimator. On-demand (not persisted).
-    EstimateAncestryFromChip { chip_profile_id: i64 },
     /// Estimate autosomal ancestry from the subject's CONSENSUS (no BAM walk) — the default path.
     EstimateAncestryFromConsensus { biosample_guid: SampleGuid },
     /// Paint local ancestry from the subject's CONSENSUS (no BAM walk).
     PaintAncestryFromConsensus { biosample_guid: SampleGuid },
-    /// Load the persisted ancestry estimate for an alignment, if any.
-    LoadAncestry { alignment_id: i64 },
-    /// Load the persisted fine-population (FINE_ADMIXTURE) result for the super→fine hierarchy.
-    LoadFineAncestry { alignment_id: i64 },
-    /// Load the reference population centroids (PC1,PC2) for the PCA scatter backdrop.
-    LoadPcaReference { alignment_id: i64 },
-    /// Paint each chromosome with local ancestry (genotypes the BAM; streams progress).
-    PaintAncestry { alignment_id: i64 },
     /// Find the private bucket: de-novo chrY calls off the assigned Y backbone, restricted
     /// by the chosen callable mask.
     FindPrivateY { alignment_id: i64, mask: YMask },
@@ -362,16 +349,6 @@ pub enum Event {
     YBisdnaHaplogroup { biosample_guid: SampleGuid, assignment: HaploAssignment },
     /// mtDNA haplogroup assignment from an alignment (records a donor call → reload consensus).
     MtHaplogroup { alignment_id: i64, assignment: HaploAssignment },
-    /// Progress of an ancestry genotyping pass: `done`/`total` contigs scanned.
-    AncestryProgress { alignment_id: i64, done: usize, total: usize },
-    /// Ancestry estimate for an alignment (`None` = not yet computed, for `LoadAncestry`).
-    Ancestry { alignment_id: i64, result: Option<AncestryResult> },
-    /// The fine-population (FINE_ADMIXTURE) result for an alignment (super→fine hierarchy rows).
-    FineAncestry { alignment_id: i64, result: Option<AncestryResult> },
-    /// On-demand autosomal ancestry estimated from a chip profile (not persisted).
-    ChipAncestry { chip_profile_id: i64, result: AncestryResult },
-    /// Reference population centroids (code, PC1, PC2) for the PCA scatter; empty if no loadings.
-    PcaReference { alignment_id: i64, points: Vec<(String, f64, f64)> },
     /// Local-ancestry segments per chromosome (the "DNA painting").
     AncestryPainting { alignment_id: i64, segments: Vec<AncestrySegment> },
     /// Private Y variants (off-backbone de-novo calls) for an alignment.
@@ -658,25 +635,6 @@ pub async fn handle(app: &App, cmd: Command) -> Event {
                 Err(e) => Event::Error(e.to_string()),
             }
         }
-        // EstimateAncestry is handled in the spawn loop (it streams AncestryProgress); reaching
-        // here would mean a routing bug.
-        Command::EstimateAncestry { alignment_id } => {
-            Event::Error(format!("internal: unrouted EstimateAncestry {alignment_id}"))
-        }
-        Command::LoadFineAncestry { alignment_id } => match app.fine_ancestry_for_alignment(alignment_id).await {
-            Ok(result) => Event::FineAncestry { alignment_id, result },
-            Err(e) => Event::Error(e.to_string()),
-        },
-        Command::LoadAncestry { alignment_id } => match app.ancestry_for_alignment(alignment_id).await {
-            Ok(result) => Event::Ancestry { alignment_id, result },
-            Err(e) => Event::Error(e.to_string()),
-        },
-        Command::EstimateAncestryFromChip { chip_profile_id } => {
-            match app.estimate_ancestry_from_chip(chip_profile_id).await {
-                Ok(result) => Event::ChipAncestry { chip_profile_id, result },
-                Err(e) => Event::Error(e.to_string()),
-            }
-        }
         Command::EstimateAncestryFromConsensus { biosample_guid } => {
             // Estimate from the pooled consensus, then surface it as the donor-level result.
             match app.estimate_ancestry_from_consensus(biosample_guid).await {
@@ -690,15 +648,6 @@ pub async fn handle(app: &App, cmd: Command) -> Event {
                 Ok(segments) => Event::AncestryPainting { alignment_id: navigator_app::CONSENSUS_SOURCE_ID, segments },
                 Err(e) => Event::Error(e.to_string()),
             }
-        }
-        Command::LoadPcaReference { alignment_id } => match app.ancestry_pca_reference(alignment_id).await {
-            Ok(points) => Event::PcaReference { alignment_id, points },
-            Err(e) => Event::Error(e.to_string()),
-        },
-        // PaintAncestry is handled in the spawn loop (it streams AncestryProgress); reaching here
-        // would mean a routing bug.
-        Command::PaintAncestry { alignment_id } => {
-            Event::Error(format!("internal: unrouted PaintAncestry {alignment_id}"))
         }
         // RunFullAnalysis streams AnalysisProgress from the spawn loop; CancelAnalysis sets the
         // shared cancel flag there. Reaching here would mean a routing bug.
@@ -969,52 +918,6 @@ async fn resolve_reference_streaming(app: &App, build: String, evt_tx: &Sender<E
     wake();
 }
 
-/// Estimate ancestry, emitting `AncestryProgress` per genotyped contig (and waking the UI),
-/// then a final `Ancestry`/`Error`. Run from the spawn loop so it can stream.
-async fn estimate_ancestry_streaming(
-    app: &App,
-    alignment_id: i64,
-    evt_tx: &Sender<Event>,
-    wake: Arc<dyn Fn() + Send + Sync>,
-) {
-    // The progress closure runs on the blocking genotyping thread → must be Send + 'static:
-    // capture owned clones of the sender and wake, not borrows.
-    let tx = evt_tx.clone();
-    let wake_cb = wake.clone();
-    let progress = move |done: usize, total: usize| {
-        let _ = tx.send(Event::AncestryProgress { alignment_id, done, total });
-        wake_cb();
-    };
-    let event = match app.estimate_ancestry_with_progress(alignment_id, progress).await {
-        Ok(result) => Event::Ancestry { alignment_id, result: Some(result) },
-        Err(e) => Event::Error(e.to_string()),
-    };
-    let _ = evt_tx.send(event);
-    wake();
-}
-
-/// Paint local ancestry, emitting `AncestryProgress` per genotyped contig, then a final
-/// `AncestryPainting`/`Error`. Run from the spawn loop so it can stream.
-async fn paint_ancestry_streaming(
-    app: &App,
-    alignment_id: i64,
-    evt_tx: &Sender<Event>,
-    wake: Arc<dyn Fn() + Send + Sync>,
-) {
-    let tx = evt_tx.clone();
-    let wake_cb = wake.clone();
-    let progress = move |done: usize, total: usize| {
-        let _ = tx.send(Event::AncestryProgress { alignment_id, done, total });
-        wake_cb();
-    };
-    let event = match app.local_ancestry_with_progress(alignment_id, progress).await {
-        Ok(segments) => Event::AncestryPainting { alignment_id, segments },
-        Err(e) => Event::Error(e.to_string()),
-    };
-    let _ = evt_tx.send(event);
-    wake();
-}
-
 /// Run the full per-alignment analysis pipeline, emitting `AnalysisProgress` before each step
 /// and forwarding each step's own result event (so the detail tabs fill in live). `cancel` is
 /// checked between steps. Per-step errors are forwarded but don't abort the pipeline (best-effort).
@@ -1026,7 +929,7 @@ async fn run_full_analysis_streaming<W: Fn() + Send + Sync + 'static>(
     wake: Arc<W>,
 ) {
     cancel.store(false, Ordering::Relaxed);
-    let total = 6; // unified metrics + 4 command steps + ancestry
+    let total = 5; // unified metrics + 4 command steps
 
     // Step 1: unified quality metrics — coverage + callable, read-level QC, and sex inference in
     // ONE pass over the alignment (was three separate steps reading the file 2–3×). The slow
@@ -1118,29 +1021,6 @@ async fn run_full_analysis_streaming<W: Fn() + Send + Sync + 'static>(
             _ => Command::AssignMtdnaHaplogroupFromAlignment { alignment_id },
         };
         let ev = handle(app, cmd).await; // runs to completion; we may cancel before the next step
-        let _ = evt_tx.send(ev);
-        wake();
-    }
-
-    // Final step: ancestry (run directly — EstimateAncestry's command path streams separately).
-    if !cancel.load(Ordering::Relaxed) {
-        let _ = evt_tx.send(Event::AnalysisProgress {
-            step: total,
-            total,
-            label: "Ancestry".to_string(),
-            detail: "estimating population proportions".to_string(),
-            fraction: (total as f32 - 1.0) / total as f32,
-        });
-        wake();
-        // Reuse a cached estimate instead of re-genotyping the whole-genome panel (minutes).
-        let result = match app.ancestry_for_alignment(alignment_id).await {
-            Ok(Some(r)) => Ok(r),
-            _ => app.estimate_ancestry(alignment_id).await,
-        };
-        let ev = match result {
-            Ok(result) => Event::Ancestry { alignment_id, result: Some(result) },
-            Err(e) => Event::Error(e.to_string()),
-        };
         let _ = evt_tx.send(ev);
         wake();
     }
@@ -1323,14 +1203,6 @@ pub fn spawn(
                             // Streams ReferenceProgress events as bytes arrive, then a final event.
                             Command::ResolveReference { build } => {
                                 resolve_reference_streaming(&app, build, &evt_tx, &*wake).await;
-                            }
-                            // Streams AncestryProgress per contig, then a final Ancestry/Error.
-                            Command::EstimateAncestry { alignment_id } => {
-                                estimate_ancestry_streaming(&app, alignment_id, &evt_tx, wake.clone()).await;
-                            }
-                            // Streams AncestryProgress per contig, then a final AncestryPainting.
-                            Command::PaintAncestry { alignment_id } => {
-                                paint_ancestry_streaming(&app, alignment_id, &evt_tx, wake.clone()).await;
                             }
                             // Streams AnalysisProgress per step (+ each step's result), then AnalysisDone.
                             Command::RunFullAnalysis { alignment_id } => {

@@ -11,7 +11,6 @@
 //! ([`AncestryResult::pca_coordinates`]) is phase 2.
 
 use std::collections::{BTreeMap, HashMap};
-use std::path::Path;
 
 use navigator_domain::ancestry::{
     fine_population_codes, population_color, population_name, population_super, AncestryResult,
@@ -19,7 +18,7 @@ use navigator_domain::ancestry::{
 };
 use serde::{Deserialize, Serialize};
 
-use crate::caller::{self, HaploidCallerParams, Site, SiteGenotype};
+use crate::caller::SiteGenotype;
 use crate::AnalysisError;
 
 /// One ancestry-informative site with its per-population alt-allele frequencies. `freqs[i]`
@@ -464,42 +463,6 @@ pub fn dosage_from_alleles(a1: char, a2: char, ref_allele: char, alt_allele: cha
         (ok(x) && ok(y)).then(|| (x == alt) as i32 + (y == alt) as i32)
     };
     count(a1, a2).or_else(|| count(revcomp_base(a1), revcomp_base(a2)))
-}
-
-/// Genotype a BAM/CRAM at every panel site (diploid — the panel is autosomal AIMs). Groups
-/// sites by contig and runs the GL caller once per contig; returns the per-site genotypes
-/// (dosage 0/1/2, or -1 for a no-call). `reference` is required for CRAM.
-///
-/// Each contig is one full read-scan, so on a whole-genome BAM this is the slow step (minutes);
-/// `progress(contigs_done, contigs_total)` is invoked after each contig so the UI can show a
-/// bar. Contigs are processed in sorted order so progress is monotonic.
-pub fn genotype_panel(
-    bam: &Path,
-    reference: Option<&Path>,
-    panel: &AncestryPanel,
-    params: &HaploidCallerParams,
-    progress: &mut dyn FnMut(usize, usize),
-) -> Result<Vec<SiteGenotype>, AnalysisError> {
-    // contig -> caller sites (BTreeMap → deterministic, monotonic progress order)
-    let mut by_contig: BTreeMap<String, Vec<Site>> = BTreeMap::new();
-    for s in &panel.sites {
-        by_contig.entry(s.contig.clone()).or_default().push(Site {
-            name: format!("{}:{}", s.contig, s.position),
-            contig: s.contig.clone(),
-            position: s.position,
-            reference_allele: s.reference_allele.to_string(),
-            alternate_allele: s.alternate_allele.to_string(),
-        });
-    }
-
-    let total = by_contig.len();
-    let mut out = Vec::with_capacity(panel.sites.len());
-    for (done, (contig, sites)) in by_contig.into_iter().enumerate() {
-        let calls = caller::genotype_sites(bam, &contig, &sites, 2, params, reference)?;
-        out.extend(calls);
-        progress(done + 1, total);
-    }
-    Ok(out)
 }
 
 const PIPELINE_VERSION: &str = "1.0.0-af";
