@@ -166,6 +166,7 @@ form.callableMask=Callable mask:
 form.chooseBed=Choose BED…
 ibd.identity=Identity:
 ibd.vs=IBD vs:
+ibd.chipCompatible=Chip-compatible IBD:
 card.networkSuggestions=Network match suggestions
 network.signInRequired=Sign in to a PDS account to see network match suggestions.
 network.find=Find suggestions

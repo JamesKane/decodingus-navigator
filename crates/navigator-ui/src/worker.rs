@@ -164,6 +164,9 @@ pub enum Command {
     GenotypePanel { alignment_id: i64, panel_id: i64, ploidy: u8 },
     LoadPanelGenotypes { alignment_id: i64, panel_id: i64, ploidy: u8 },
     CompareIbd { a: i64, b: i64, panel_id: i64, ploidy: u8 },
+    /// Compare two samples (each a WGS alignment or an imported chip) over the chip-compatible IBD
+    /// panel — the volume-case path (chip↔chip / chip↔WGS).
+    CompareIbdSources { a: navigator_app::IbdSource, b: navigator_app::IbdSource },
     /// Verify two alignments are the same individual (genotype concordance + Y-STR).
     VerifyIdentity { a: i64, b: i64, panel_id: i64, ploidy: u8 },
     /// Federated IBD step 1: fetch the AppView's pseudonymous match suggestions for the
@@ -815,6 +818,10 @@ pub async fn handle(app: &App, cmd: Command) -> Event {
                 Err(e) => Event::Error(e.to_string()),
             }
         }
+        Command::CompareIbdSources { a, b } => match app.compare_ibd_sources(a, b, IbdDetectorConfig::default()).await {
+            Ok(cmp) => Event::Ibd(cmp),
+            Err(e) => Event::Error(e.to_string()),
+        },
         Command::VerifyIdentity { a, b, panel_id, ploidy } => match app.verify_identity(a, b, panel_id, ploidy).await {
             Ok(v) => Event::Identity(v),
             Err(e) => Event::Error(e.to_string()),

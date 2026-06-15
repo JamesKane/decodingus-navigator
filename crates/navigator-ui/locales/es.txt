@@ -153,6 +153,7 @@ form.callableMask=Máscara invocable:
 form.chooseBed=Elegir BED…
 ibd.identity=Identidad:
 ibd.vs=IBD vs:
+ibd.chipCompatible=IBD compatible con chip:
 card.networkSuggestions=Sugerencias de coincidencias de la red
 network.signInRequired=Inicia sesión en una cuenta PDS para ver sugerencias de coincidencias de la red.
 network.find=Buscar sugerencias

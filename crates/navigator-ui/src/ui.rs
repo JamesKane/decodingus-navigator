@@ -381,6 +381,9 @@ pub struct NavigatorApp {
     panel_genotypes: Option<Vec<PanelGenotype>>,
     running_genotype: bool,
     ibd_other: Option<i64>,
+    /// Chip-compatible IBD compare: the two picked sources (each a WGS alignment or an imported chip).
+    ibd_src_a: Option<navigator_app::IbdSource>,
+    ibd_src_b: Option<navigator_app::IbdSource>,
     ibd_result: Option<IbdComparison>,
     running_ibd: bool,
     /// Identity-verification result for the current IBD pair.
@@ -1130,6 +1133,8 @@ impl NavigatorApp {
             panel_genotypes: None,
             running_genotype: false,
             ibd_other: None,
+            ibd_src_a: None,
+            ibd_src_b: None,
             ibd_result: None,
             running_ibd: false,
             identity: None,
@@ -5222,6 +5227,46 @@ impl NavigatorApp {
             }
             if self.running_ibd {
                 ui.spinner();
+            }
+        });
+
+        // Chip-compatible IBD: pick two sources (each a WGS alignment or an imported chip) and
+        // compare over the multi-build IBD panel — the chip↔WGS / chip↔chip volume path. Needs the
+        // `ibd_panel` asset built; a chip source needs its raw file (source_path).
+        let mut sources: Vec<(navigator_app::IbdSource, String)> = Vec::new();
+        for a in &self.all_alignments {
+            sources.push((navigator_app::IbdSource::Alignment(a.id), format!("WGS #{} {}", a.id, a.reference_build)));
+        }
+        for c in self.chip_profiles.iter().filter(|c| c.source_path.is_some()) {
+            sources.push((navigator_app::IbdSource::Chip(c.id), format!("{} chip #{}", c.provider, c.id)));
+        }
+        let label_of = |src: Option<navigator_app::IbdSource>| -> String {
+            src.and_then(|s| sources.iter().find(|(x, _)| *x == s).map(|(_, l)| l.clone()))
+                .unwrap_or_else(|| "(pick source)".into())
+        };
+        ui.add_space(8.0);
+        ui.horizontal(|ui| {
+            ui.label(self.tr("ibd.chipCompatible"));
+            egui::ComboBox::from_id_salt("ibd_src_a").selected_text(label_of(self.ibd_src_a)).show_ui(ui, |ui| {
+                for (s, l) in &sources {
+                    ui.selectable_value(&mut self.ibd_src_a, Some(*s), l);
+                }
+            });
+            ui.label(self.tr("ibd.vs"));
+            egui::ComboBox::from_id_salt("ibd_src_b").selected_text(label_of(self.ibd_src_b)).show_ui(ui, |ui| {
+                for (s, l) in &sources {
+                    ui.selectable_value(&mut self.ibd_src_b, Some(*s), l);
+                }
+            });
+            let ready =
+                self.ibd_src_a.is_some() && self.ibd_src_b.is_some() && self.ibd_src_a != self.ibd_src_b && !self.running_ibd;
+            if ui.add_enabled(ready, egui::Button::new(self.tr("action.compare"))).clicked() {
+                self.running_ibd = true;
+                self.ibd_result = None;
+                self.identity = None;
+                let _ = self
+                    .tx
+                    .send(Command::CompareIbdSources { a: self.ibd_src_a.unwrap(), b: self.ibd_src_b.unwrap() });
             }
         });
 
