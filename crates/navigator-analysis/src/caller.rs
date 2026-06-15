@@ -436,48 +436,67 @@ pub(crate) fn tally_region(
     Ok((counts, indel))
 }
 
-/// Per-target-site passing `(base, qual)` observations (ACGT bases clearing the quality
-/// filters), keyed by 1-based position — the input the genotype-likelihood model needs.
-/// The `(base, base-quality)` a record carries at reference position `target` (1-based), or
-/// `None` if `target` falls in a deletion/skip/insertion/clip, past the read, below
-/// `min_base_quality`, or isn't A/C/G/T. Walks the CIGAR once from the alignment start.
-fn base_at_position(record: &RecordBuf, target: i64, min_base_quality: u8) -> Option<(u8, u8)> {
-    let start = record.alignment_start()?.get() as i64;
-    if target < start {
-        return None;
-    }
+/// Record one read's passing `(base, qual)` at each of `targets` (sorted, 1-based) that it covers,
+/// in a **single** CIGAR walk from the alignment start. Targets in a deletion/skip/insertion/clip,
+/// past the read, below `min_base_quality`, or non-ACGT are skipped. This is the multi-target
+/// generalization of a per-site probe — one walk feeds many sites, so a long read shared by several
+/// nearby panel sites is decoded + walked once instead of once per site.
+fn collect_bases(record: &RecordBuf, targets: &[i64], min_base_quality: u8, obs: &mut HashMap<i64, Vec<(u8, u8)>>) {
+    let Some(start) = record.alignment_start() else { return };
+    let start = start.get() as i64;
     let seq = record.sequence();
     let quals = record.quality_scores();
     let quals = quals.as_ref();
+
+    // First target at/after the read's start; advance through the window as the CIGAR consumes ref.
+    let mut ti = targets.partition_point(|&t| t < start);
     let mut ref_pos = start;
     let mut query_off = 0usize;
     for op in record.cigar().as_ref() {
+        if ti >= targets.len() {
+            break;
+        }
         let (cr, cq) = (op.kind().consumes_reference(), op.kind().consumes_read());
         let len = op.len() as i64;
         if cr && cq {
-            if target < ref_pos + len {
-                let i = (target - ref_pos) as usize; // target >= ref_pos holds by construction
-                let base_q = quals.get(query_off + i).copied().unwrap_or(0);
-                if base_q < min_base_quality {
-                    return None;
+            let end = ref_pos + len; // exclusive
+            while ti < targets.len() && targets[ti] < end {
+                let t = targets[ti];
+                let off = query_off + (t - ref_pos) as usize;
+                let base_q = quals.get(off).copied().unwrap_or(0);
+                if base_q >= min_base_quality {
+                    if let Some(base) = seq.get(off) {
+                        if base_index(base).is_some() {
+                            obs.entry(t).or_default().push((base, base_q));
+                        }
+                    }
                 }
-                let base = seq.get(query_off + i)?;
-                return base_index(base).is_some().then_some((base, base_q));
+                ti += 1;
             }
-            ref_pos += len;
+            ref_pos = end;
             query_off += len as usize;
         } else if cr {
-            if target < ref_pos + len {
-                return None; // target falls inside a deletion/skip
+            // Deletion / ref-skip — targets inside the gap carry no base.
+            let end = ref_pos + len;
+            while ti < targets.len() && targets[ti] < end {
+                ti += 1;
             }
-            ref_pos += len;
+            ref_pos = end;
         } else if cq {
             query_off += len as usize;
         }
     }
-    None
 }
 
+/// Per-target-site passing `(base, qual)` observations (ACGT bases clearing the quality filters),
+/// keyed by 1-based position — the input the genotype-likelihood model needs.
+///
+/// The targets are grouped into contiguous runs (split only where the gap between adjacent sites
+/// exceeds a read length), and each run is fetched with a **single** streaming index query. So we
+/// seek straight to the regions that hold targets — never scanning the whole contig — and decode
+/// each read once (a point query per site re-fetches + re-converts the long HiFi reads that span
+/// several nearby sites). Within a run, [`collect_bases`] distributes each read's bases to every
+/// target it covers in one CIGAR walk.
 fn tally_site_observations(
     bam_path: &Path,
     contig: &str,
@@ -485,29 +504,38 @@ fn tally_site_observations(
     targets: &HashSet<i64>,
     reference: Option<&Path>,
 ) -> Result<HashMap<i64, Vec<(u8, u8)>>, AnalysisError> {
-    let (header, mut reader) = reader::open_indexed(bam_path, reference)?;
-
-    // A sparse panel (e.g. ~20k autosomal AIMs) makes a full per-contig scan pathological — it
-    // decodes every read on the contig (the whole genome, across contigs). Instead probe each
-    // target with a point query so the index hands back only the reads overlapping that base.
-    // Sorted for sequential index access.
     let mut positions: Vec<i64> = targets.iter().copied().filter(|&p| p >= 1).collect();
     positions.sort_unstable();
+    if positions.is_empty() {
+        return Ok(HashMap::new());
+    }
 
-    let mut obs: HashMap<i64, Vec<(u8, u8)>> = HashMap::new();
-    for pos in positions {
-        let region: Region = format!("{contig}:{pos}-{pos}")
+    // Split into runs where consecutive sites are within MAX_GAP — beyond a read length no read can
+    // span the gap, so splitting there is free (no shared reads lost) and skips read-free spans.
+    const MAX_GAP: i64 = 50_000;
+
+    let (header, mut reader) = reader::open_indexed(bam_path, reference)?;
+    let mut obs: HashMap<i64, Vec<(u8, u8)>> = HashMap::with_capacity(positions.len());
+
+    let mut i = 0;
+    while i < positions.len() {
+        let mut j = i + 1;
+        while j < positions.len() && positions[j] - positions[j - 1] <= MAX_GAP {
+            j += 1;
+        }
+        let (lo, hi) = (positions[i], positions[j - 1]);
+        let run = &positions[i..j];
+        let region: Region = format!("{contig}:{lo}-{hi}")
             .parse()
-            .map_err(|_| AnalysisError::Message(format!("bad region for {contig}:{pos}")))?;
+            .map_err(|_| AnalysisError::Message(format!("bad region for {contig}:{lo}-{hi}")))?;
         for result in reader.query(&header, &region)? {
             let record = result?;
             if !passes(&record, params) {
                 continue;
             }
-            if let Some((base, base_q)) = base_at_position(&record, pos, params.min_base_quality) {
-                obs.entry(pos).or_default().push((base, base_q));
-            }
+            collect_bases(&record, run, params.min_base_quality, &mut obs);
         }
+        i = j;
     }
     Ok(obs)
 }
@@ -565,6 +593,27 @@ pub fn genotype_sites(
         });
     }
     Ok(out)
+}
+
+/// Genotype `sites` across **every** contig they span, one contig per rayon task. The panel-genotyping
+/// entry point for whole-genome panels (the per-contig [`genotype_sites`] is independent + IO-bound on
+/// its own index region, so contigs parallelize cleanly). Results are concatenated (order across
+/// contigs is unspecified — downstream consumers key by site, not order).
+pub fn genotype_sites_all_contigs(
+    bam_path: &Path,
+    sites: &[Site],
+    ploidy: u8,
+    params: &HaploidCallerParams,
+    reference: Option<&Path>,
+) -> Result<Vec<SiteGenotype>, AnalysisError> {
+    let contigs: std::collections::BTreeSet<&str> = sites.iter().map(|s| s.contig.as_str()).collect();
+    let per_contig: Result<Vec<Vec<SiteGenotype>>, AnalysisError> = contigs
+        .into_iter()
+        .collect::<Vec<_>>()
+        .into_par_iter()
+        .map(|contig| genotype_sites(bam_path, contig, sites, ploidy, params, reference))
+        .collect();
+    Ok(per_contig?.into_iter().flatten().collect())
 }
 
 /// Force-call (genotype-given-alleles) at known SNP sites on `contig`. Non-SNP sites

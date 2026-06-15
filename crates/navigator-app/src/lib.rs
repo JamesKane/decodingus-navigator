@@ -5963,12 +5963,7 @@ impl App {
         let reference = aln.reference_path.map(PathBuf::from);
         let params = HaploidCallerParams::default();
         let genotypes = tokio::task::spawn_blocking(move || {
-            let contigs: std::collections::BTreeSet<&str> = sites.iter().map(|s| s.contig.as_str()).collect();
-            let mut all = Vec::new();
-            for contig in contigs {
-                all.extend(caller::genotype_sites(&bam_pb, contig, &sites, ploidy, &params, reference.as_deref())?);
-            }
-            Ok::<_, navigator_analysis::AnalysisError>(all)
+            caller::genotype_sites_all_contigs(&bam_pb, &sites, ploidy, &params, reference.as_deref())
         })
         .await
         .map_err(|e| AppError::Join(e.to_string()))??;
