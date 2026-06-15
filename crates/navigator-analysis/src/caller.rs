@@ -846,43 +846,73 @@ fn denovo_chunk_diploid(
         }
         let ref_base = ref_chunk.get(r).copied().unwrap_or(b'N');
         let Some(ref_bi) = base_index(ref_base) else { continue }; // reference N/ambiguous
-        // The top non-reference base is the candidate alt (biallelic v1).
-        let (mut alt_bi, mut alt_count) = (None, 0u32);
-        for (bi, &n) in c.iter().enumerate() {
-            if bi != ref_bi && n > alt_count {
-                alt_count = n;
-                alt_bi = Some(bi);
-            }
+        let ref_byte = BASES[ref_bi];
+        let ref_count = c[ref_bi];
+        // All non-reference bases clearing the support floor are candidate alts (dominant first).
+        let mut alts: Vec<(usize, u32)> =
+            c.iter().enumerate().filter(|&(bi, &n)| bi != ref_bi && n >= DENOVO_MIN_ALT_READS).map(|(bi, &n)| (bi, n)).collect();
+        if alts.is_empty() {
+            continue; // hom-ref (no alt above the floor) — not emitted
         }
-        let Some(alt_bi) = alt_bi else { continue }; // no alt observed → hom-ref, not emitted
-        if alt_count < DENOVO_MIN_ALT_READS {
+        alts.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+
+        if alts.len() == 1 {
+            // Biallelic: synthesize observations at a nominal quality (see DENOVO_DIPLOID_Q).
+            let (alt_bi, alt_count) = alts[0];
+            let alt_byte = BASES[alt_bi];
+            let mut obs: Vec<(u8, u8)> = Vec::with_capacity((ref_count + alt_count) as usize);
+            obs.extend(std::iter::repeat((ref_byte, DENOVO_DIPLOID_Q)).take(ref_count as usize));
+            obs.extend(std::iter::repeat((alt_byte, DENOVO_DIPLOID_Q)).take(alt_count as usize));
+            let g = genotype::call_genotype(&obs, ref_byte, alt_byte, 2, params.min_depth);
+            if g.dosage < 1 {
+                continue; // hom-ref or no-call — not a variant record
+            }
+            out.push(SiteGenotype {
+                name: String::new(),
+                contig: contig.to_string(),
+                position: pos as i64,
+                reference_allele: (ref_byte as char).to_string(),
+                alternate_allele: (alt_byte as char).to_string(),
+                ploidy: 2,
+                dosage: g.dosage,
+                gq: g.gq,
+                depth,
+                ref_depth: ref_count,
+                alt_depth: alt_count,
+                pls: g.pls,
+                gt: None,
+                allele_depths: None,
+            });
             continue;
         }
-        let ref_count = c[ref_bi];
-        let (ref_byte, alt_byte) = (BASES[ref_bi], BASES[alt_bi]);
-        // Synthesize biallelic observations at a nominal quality (see DENOVO_DIPLOID_Q) and genotype.
-        let mut obs: Vec<(u8, u8)> = Vec::with_capacity((ref_count + alt_count) as usize);
-        obs.extend(std::iter::repeat((ref_byte, DENOVO_DIPLOID_Q)).take(ref_count as usize));
-        obs.extend(std::iter::repeat((alt_byte, DENOVO_DIPLOID_Q)).take(alt_count as usize));
-        let g = genotype::call_genotype(&obs, ref_byte, alt_byte, 2, params.min_depth);
-        if g.dosage < 1 {
-            continue; // hom-ref or no-call — not a variant record
+
+        // Multiallelic SNV: ref = allele 0, each candidate alt = 1.. (in `alts` order).
+        let mut obs: Vec<(usize, u8)> = Vec::with_capacity(depth as usize);
+        obs.extend(std::iter::repeat((0usize, DENOVO_DIPLOID_Q)).take(ref_count as usize));
+        for (k, &(_, n)) in alts.iter().enumerate() {
+            obs.extend(std::iter::repeat((k + 1, DENOVO_DIPLOID_Q)).take(n as usize));
         }
+        let mg = genotype::call_genotype_multi(&obs, alts.len() + 1, params.min_depth);
+        if mg.gt == (0, 0) {
+            continue; // hom-ref — not a variant record
+        }
+        let alt_depth: u32 = mg.allele_depths.iter().skip(1).sum();
+        let dosage = (mg.gt.0 > 0) as i32 + (mg.gt.1 > 0) as i32; // alt-allele count fallback
         out.push(SiteGenotype {
             name: String::new(),
             contig: contig.to_string(),
             position: pos as i64,
             reference_allele: (ref_byte as char).to_string(),
-            alternate_allele: (alt_byte as char).to_string(),
+            alternate_allele: alts.iter().map(|&(bi, _)| (BASES[bi] as char).to_string()).collect::<Vec<_>>().join(","),
             ploidy: 2,
-            dosage: g.dosage,
-            gq: g.gq,
+            dosage,
+            gq: mg.gq,
             depth,
-            ref_depth: ref_count,
-            alt_depth: alt_count,
-            pls: g.pls,
-            gt: None,
-            allele_depths: None,
+            ref_depth: *mg.allele_depths.first().unwrap_or(&0),
+            alt_depth,
+            pls: mg.pls.clone(),
+            gt: Some(format!("{}/{}", mg.gt.0, mg.gt.1)),
+            allele_depths: Some(mg.allele_depths),
         });
     }
 

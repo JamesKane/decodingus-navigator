@@ -117,6 +117,29 @@ fn denovo_diploid_calls_a_heterozygous_deletion() {
 }
 
 #[test]
+fn denovo_diploid_calls_a_multiallelic_snv() {
+    // snv_multi.bam (chr1): 10 reads carry G at pos 2, 10 carry T (ref C) → compound het 1/2.
+    let dir = fixtures();
+    // A private chr1 reference dir (distinct from chr1_reference()'s, so parallel tests don't race).
+    let refdir = std::env::temp_dir().join(format!("dun-snvmulti-ref-{}", std::process::id()));
+    std::fs::create_dir_all(&refdir).unwrap();
+    let reference = refdir.join("chr1.fa");
+    std::fs::write(&reference, b">chr1\nACGTACGTAC\n").unwrap();
+    std::fs::write(refdir.join("chr1.fa.fai"), b"chr1\t10\t6\t10\t11\n").unwrap();
+    let calls =
+        call_denovo_diploid(&dir.join("snv_multi.bam"), &reference, "chr1", &HaploidCallerParams::default()).unwrap();
+    let site = calls.iter().find(|c| c.position == 2).expect("a multiallelic SNV at pos 2");
+    assert_eq!(site.reference_allele, "C");
+    assert_eq!(site.alternate_allele, "G,T"); // equal counts → base order A<C<G<T
+    assert_eq!(site.gt.as_deref(), Some("1/2"));
+    assert_eq!(site.allele_depths, Some(vec![0, 10, 10])); // ref, G, T
+    let vcf = write_diploid_vcf("FIX", &calls);
+    assert!(vcf.contains("chr1\t2\t.\tC\tG,T\t"), "{vcf}");
+    assert!(vcf.contains("\t1/2:0,10,10:"), "{vcf}");
+    let _ = std::fs::remove_dir_all(&refdir);
+}
+
+#[test]
 fn denovo_diploid_calls_a_multiallelic_indel() {
     // indel_multi.bam (chrM): 8 reads delete ref pos 6-7 (2 bp) + 6 reads delete pos 6-8 (3 bp),
     // both left-normalizing to emit pos 5. ref ACGTAC… → REF=ACGT, ALTs AT (2 bp del) and A (3 bp

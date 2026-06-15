@@ -151,5 +151,18 @@ QDEL3=$(printf 'I%.0s' $(seq 1 47))
 } > indel_multi.sam
 samtools sort -o indel_multi.bam indel_multi.sam && samtools index indel_multi.bam
 
-rm -f coverage.sam paired.sam sex.sam sv.sam diploid.sam indel.sam indel_multi.sam
-echo "wrote ref.fa(.fai), coverage.bam, paired.bam, sex.bam, sv.bam, diploid.bam, indel.bam, indel_multi.bam (+ .bai)"
+# ---- snv_multi.bam ----------------------------------------------------------
+# chr1 over reference ACGTACGTAC (10 bp), depth 20 at pos 2 with two alt alleles:
+#   10 reads carry G at pos 2, 10 reads carry T at pos 2 (ref is C) -> compound het 1/2.
+# REF=C, ALT=G,T (dominant-first; equal counts break ties by base order A<C<G<T -> G,T).
+{
+  echo -e "@HD\tVN:1.6\tSO:coordinate"
+  echo -e "@SQ\tSN:chr1\tLN:10"
+  dr() { echo -e "$1\t0\tchr1\t1\t60\t10M\t*\t0\t0\t$2\tIIIIIIIIII"; }
+  for i in $(seq 1 10); do dr "g_$i" AGGTACGTAC; done  # pos2 C->G
+  for i in $(seq 1 10); do dr "t_$i" ATGTACGTAC; done  # pos2 C->T
+} > snv_multi.sam
+samtools sort -o snv_multi.bam snv_multi.sam && samtools index snv_multi.bam
+
+rm -f coverage.sam paired.sam sex.sam sv.sam diploid.sam indel.sam indel_multi.sam snv_multi.sam
+echo "wrote ref.fa(.fai), coverage.bam, paired.bam, sex.bam, sv.bam, diploid.bam, indel.bam, indel_multi.bam, snv_multi.bam (+ .bai)"
