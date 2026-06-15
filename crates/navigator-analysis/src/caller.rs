@@ -150,6 +150,14 @@ pub struct SiteGenotype {
     pub ref_depth: u32,
     pub alt_depth: u32,
     pub pls: Vec<u8>,
+    /// Explicit VCF genotype string (e.g. `"1/2"`) for multiallelic sites. When `None`, the
+    /// genotype is derived from `dosage` (biallelic). Additive — old cached blobs decode to `None`.
+    #[serde(default)]
+    pub gt: Option<String>,
+    /// Per-allele read depths `[ref, alt1, alt2, …]` for multiallelic sites; `None` → biallelic
+    /// (use `ref_depth`/`alt_depth`).
+    #[serde(default)]
+    pub allele_depths: Option<Vec<u32>>,
 }
 
 /// A de-novo SNP call (consensus base differs from reference).
@@ -552,6 +560,8 @@ pub fn genotype_sites(
             ref_depth,
             alt_depth,
             pls,
+            gt: None,
+            allele_depths: None,
         });
     }
     Ok(out)
@@ -871,6 +881,8 @@ fn denovo_chunk_diploid(
             ref_depth: ref_count,
             alt_depth: alt_count,
             pls: g.pls,
+            gt: None,
+            allele_depths: None,
         });
     }
 
@@ -968,6 +980,8 @@ fn indel_site_genotype(
         ref_depth: ref_count,
         alt_depth: alt_count,
         pls: g.pls,
+        gt: None,
+        allele_depths: None,
     })
 }
 
@@ -1050,42 +1064,42 @@ fn indels_in_chunk(
             reads.push(ReadSpan { start, ref_end: ref_pos - 1, events });
         }
 
-        // Tally candidate alleles, then keep the best-supported per emit position (biallelic v1).
+        // Tally candidate alleles, normalize each, and group by normalized VCF position so that
+        // co-located alleles (compound-het indels) become a single multiallelic record.
         let mut tally: HashMap<(i64, IndelAllele), u32> = HashMap::new();
         for r in &reads {
             for (anchor, al, _) in &r.events {
                 *tally.entry((*anchor, al.clone())).or_insert(0) += 1;
             }
         }
-        let mut best: HashMap<i64, (i64, IndelAllele, i64, u32)> = HashMap::new();
+        /// A normalized candidate allele grouped at its emit position. `anchor`/`allele` are the
+        /// *original* (pre-normalization) key used to match reads; `nal` is the canonical allele.
+        struct Cand {
+            anchor: i64,
+            allele: IndelAllele,
+            nal: IndelAllele,
+            locus_end: i64, // original locus end — for ref-span support
+            count: u32,
+        }
+        let mut groups: HashMap<i64, Vec<Cand>> = HashMap::new();
         for ((anchor, al), &count) in &tally {
+            if count < params.realign_min_indel_reads {
+                continue; // sub-threshold noise allele
+            }
             let locus_end = match al {
                 IndelAllele::Del(l) => anchor + *l as i64 - 1,
                 IndelAllele::Ins(_) => *anchor,
             };
-            let entry = best.entry(anchor - 1).or_insert((*anchor, al.clone(), locus_end, 0));
-            if count > entry.3 {
-                *entry = (*anchor, al.clone(), locus_end, count);
-            }
-        }
-
-        for (_, (anchor, al, locus_end, alt_count)) in best {
-            if alt_count < params.realign_min_indel_reads {
-                continue;
-            }
-            // Ref support uses the reads' *actual* indel locus; normalization only changes the VCF
-            // representation, not which reads support the allele.
-            let spanning = reads.iter().filter(|r| r.start < anchor && r.ref_end >= locus_end).count() as u32;
-            let ref_count = spanning.saturating_sub(alt_count);
-            if ref_count + alt_count < params.min_depth {
-                continue;
-            }
-            // Left-align the indel within the reference repeat for the canonical VCF position/alleles.
-            let (na, nal) = left_normalize(anchor, &al, ref_chunk, proc_lo);
+            // Left-align within the reference repeat for the canonical VCF position/alleles.
+            let (na, nal) = left_normalize(*anchor, al, ref_chunk, proc_lo);
             let emit_pos = na - 1;
             if emit_pos < emit_lo as i64 || emit_pos > emit_hi as i64 {
                 continue; // assigned to whichever chunk owns the normalized position (no dup/loss)
             }
+            groups.entry(emit_pos).or_default().push(Cand { anchor: *anchor, allele: al.clone(), nal, locus_end, count });
+        }
+
+        for (emit_pos, mut cands) in groups {
             let idx = emit_pos - proc_lo as i64;
             if idx < 0 || idx as usize >= ref_chunk.len() {
                 continue;
@@ -1094,19 +1108,105 @@ fn indels_in_chunk(
             if base_index(ref_byte).is_none() {
                 continue; // ambiguous anchor base
             }
-            let deleted: Vec<u8> = if let IndelAllele::Del(len) = &nal {
-                let (s, e) = ((na - proc_lo as i64).max(0) as usize, (na - proc_lo as i64 + *len as i64).max(0) as usize);
-                if s < e && e <= ref_chunk.len() {
-                    ref_chunk[s..e].to_vec()
-                } else {
-                    continue; // deleted span runs off the loaded reference window
+            let na = emit_pos + 1;
+
+            if cands.len() == 1 {
+                // Biallelic: ref support uses the reads' *actual* indel locus (normalization only
+                // changes the VCF representation, not which reads support the allele).
+                let c = &cands[0];
+                let spanning = reads.iter().filter(|r| r.start < c.anchor && r.ref_end >= c.locus_end).count() as u32;
+                let ref_count = spanning.saturating_sub(c.count);
+                if ref_count + c.count < params.min_depth {
+                    continue;
                 }
-            } else {
-                Vec::new()
-            };
-            if let Some(g) = indel_site_genotype(contig, emit_pos, ref_byte, &nal, &deleted, ref_count, alt_count, params) {
-                out.push(g);
+                let deleted: Vec<u8> = if let IndelAllele::Del(len) = &c.nal {
+                    let (s, e) = ((na - proc_lo as i64).max(0) as usize, (na - proc_lo as i64 + *len as i64).max(0) as usize);
+                    if s < e && e <= ref_chunk.len() {
+                        ref_chunk[s..e].to_vec()
+                    } else {
+                        continue; // deleted span runs off the loaded reference window
+                    }
+                } else {
+                    Vec::new()
+                };
+                if let Some(g) = indel_site_genotype(contig, emit_pos, ref_byte, &c.nal, &deleted, ref_count, c.count, params) {
+                    out.push(g);
+                }
+                continue;
             }
+
+            // Multiallelic: one common REF spanning the largest deletion, one ALT per allele.
+            cands.sort_by(|a, b| b.count.cmp(&a.count).then(a.anchor.cmp(&b.anchor))); // dominant first, deterministic
+            let maxdel = cands
+                .iter()
+                .filter_map(|c| if let IndelAllele::Del(l) = &c.nal { Some(*l as usize) } else { None })
+                .max()
+                .unwrap_or(0);
+            let ref_lo = idx as usize;
+            let ref_hi = ref_lo + 1 + maxdel;
+            if ref_hi > ref_chunk.len() {
+                continue; // REF span runs off the loaded reference window
+            }
+            let common_ref = ref_chunk[ref_lo..ref_hi].to_ascii_uppercase();
+            let tail = &common_ref[1..]; // the `maxdel` reference bases after the anchor
+            let anchor_byte = ref_byte.to_ascii_uppercase();
+            let alts: Vec<String> = cands
+                .iter()
+                .map(|c| {
+                    let mut v = vec![anchor_byte];
+                    match &c.nal {
+                        IndelAllele::Ins(seq) => {
+                            v.extend(seq.iter().map(|b| b.to_ascii_uppercase()));
+                            v.extend_from_slice(tail); // keep the bases a co-located deletion would remove
+                        }
+                        IndelAllele::Del(l) => v.extend_from_slice(&tail[(*l as usize).min(tail.len())..]),
+                    }
+                    String::from_utf8_lossy(&v).into_owned()
+                })
+                .collect();
+
+            // Assign each read to ref (0) or a candidate allele (k+1); synthesize observations.
+            let anchor_min = cands.iter().map(|c| c.anchor).min().unwrap();
+            let locus_end_max = cands.iter().map(|c| c.locus_end).max().unwrap();
+            let mut obs: Vec<(usize, u8)> = Vec::new();
+            for r in &reads {
+                let carried = r.events.iter().find_map(|(a, al, _)| cands.iter().position(|c| c.anchor == *a && &c.allele == al));
+                match carried {
+                    Some(k) => obs.push((k + 1, DENOVO_DIPLOID_Q)),
+                    None => {
+                        // Ref only if it spans the locus and carries no (other) indel here.
+                        let other_indel = r.events.iter().any(|(a, _, le)| *a <= locus_end_max && *le >= anchor_min);
+                        if !other_indel && r.start < anchor_min && r.ref_end >= locus_end_max {
+                            obs.push((0, DENOVO_DIPLOID_Q));
+                        }
+                    }
+                }
+            }
+            if (obs.len() as u32) < params.min_depth {
+                continue;
+            }
+            let mg = genotype::call_genotype_multi(&obs, cands.len() + 1, params.min_depth);
+            if mg.gt == (0, 0) {
+                continue; // hom-ref — not a variant record
+            }
+            let alt_depth: u32 = mg.allele_depths.iter().skip(1).sum();
+            let dosage = (mg.gt.0 > 0) as i32 + (mg.gt.1 > 0) as i32; // alt-allele count fallback for biallelic consumers
+            out.push(SiteGenotype {
+                name: String::new(),
+                contig: contig.to_string(),
+                position: emit_pos,
+                reference_allele: String::from_utf8_lossy(&common_ref).into_owned(),
+                alternate_allele: alts.join(","),
+                ploidy: 2,
+                dosage,
+                gq: mg.gq,
+                depth: obs.len() as u32,
+                ref_depth: *mg.allele_depths.first().unwrap_or(&0),
+                alt_depth,
+                pls: mg.pls.clone(),
+                gt: Some(format!("{}/{}", mg.gt.0, mg.gt.1)),
+                allele_depths: Some(mg.allele_depths),
+            });
         }
     }
     Ok(out)

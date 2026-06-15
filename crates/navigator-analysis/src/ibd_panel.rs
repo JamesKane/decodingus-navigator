@@ -116,6 +116,8 @@ impl IbdPanel {
                 ref_depth: 0,
                 alt_depth: 0,
                 pls: Vec::new(),
+                gt: None,
+                allele_depths: None,
             });
         }
         out

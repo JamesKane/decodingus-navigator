@@ -83,6 +83,56 @@ pub fn call_genotype(
     GenotypeResult { dosage, pls, gq, depth, ref_depth, alt_depth }
 }
 
+/// A diploid multiallelic genotype call over `n` alleles (index 0 = reference).
+#[derive(Debug, Clone, PartialEq)]
+pub struct MultiGenotype {
+    /// The called unordered allele pair, e.g. `(0,1)` = 0/1, `(1,2)` = 1/2.
+    pub gt: (usize, usize),
+    pub gq: u8,
+    pub depth: u32,
+    /// Reads supporting each allele index (0 = ref).
+    pub allele_depths: Vec<u32>,
+    /// Phred-scaled per-genotype likelihoods in VCF order (`for j: for i in 0..=j`); best = 0.
+    pub pls: Vec<u8>,
+}
+
+/// Diploid genotype likelihood over `n_alleles` (index 0 = reference). Observations are
+/// `(allele_index, phred_qual)`; an index `>= n_alleles` is a non-supporting read. Same per-base
+/// error model as [`call_genotype`], generalized to a pooled diploid allele pair
+/// `P(obs|{i,j}) = ½·P(obs|i) + ½·P(obs|j)`. Returns the best allele pair, per-allele depths,
+/// per-genotype PLs (VCF order), and GQ (second-smallest PL).
+pub fn call_genotype_multi(observations: &[(usize, u8)], n_alleles: usize, min_depth: u32) -> MultiGenotype {
+    let n = n_alleles.max(1);
+    let mut allele_depths = vec![0u32; n];
+    for &(a, _) in observations {
+        if a < n {
+            allele_depths[a] += 1;
+        }
+    }
+    let depth = observations.len() as u32;
+    // Diploid genotypes in VCF order: for j in 0..n, for i in 0..=j.
+    let genos: Vec<(usize, usize)> = (0..n).flat_map(|j| (0..=j).map(move |i| (i, j))).collect();
+    if depth < min_depth || n < 2 {
+        return MultiGenotype { gt: (0, 0), gq: 0, depth, allele_depths, pls: vec![0; genos.len()] };
+    }
+    let mut logl = vec![0.0f64; genos.len()];
+    for &(a, qual) in observations {
+        let e = 10f64.powf(-(qual as f64) / 10.0);
+        let p_allele = |y: usize| if a == y { 1.0 - e } else { e / 3.0 };
+        for (gi, &(i, j)) in genos.iter().enumerate() {
+            logl[gi] += (0.5 * p_allele(i) + 0.5 * p_allele(j)).max(1e-300).ln();
+        }
+    }
+    let max = logl.iter().cloned().fold(f64::MIN, f64::max);
+    let ln10 = std::f64::consts::LN_10;
+    let pls: Vec<u8> = logl.iter().map(|&l| ((-10.0 * (l - max) / ln10).round()).clamp(0.0, MAX_PL) as u8).collect();
+    let best = pls.iter().position(|&p| p == 0).unwrap_or(0);
+    let mut sorted = pls.clone();
+    sorted.sort_unstable();
+    let gq = (*sorted.get(1).unwrap_or(&0)).min(MAX_GQ);
+    MultiGenotype { gt: genos[best], gq, depth, allele_depths, pls }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -132,6 +182,33 @@ mod tests {
         let r = call_genotype(&obs(b'A', 2), b'A', b'G', 2, 4);
         assert_eq!(r.dosage, -1);
         assert_eq!(r.gq, 0);
+    }
+
+    #[test]
+    fn multiallelic_calls_a_compound_heterozygote() {
+        // 3 alleles (ref + 2 alts), equal support for the two alts, none for ref → 1/2.
+        let mut o: Vec<(usize, u8)> = vec![(1, 40); 10];
+        o.extend(vec![(2usize, 40u8); 10]);
+        let g = call_genotype_multi(&o, 3, 4);
+        assert_eq!(g.gt, (1, 2));
+        assert_eq!(g.allele_depths, vec![0, 10, 10]);
+        assert_eq!(g.pls.len(), 6); // (0,0)(0,1)(1,1)(0,2)(1,2)(2,2)
+        assert!(g.gq > 50, "gq {}", g.gq);
+    }
+
+    #[test]
+    fn multiallelic_het_against_reference() {
+        let mut o: Vec<(usize, u8)> = vec![(0, 40); 10]; // ref
+        o.extend(vec![(2usize, 40u8); 10]); // alt #2
+        let g = call_genotype_multi(&o, 3, 4);
+        assert_eq!(g.gt, (0, 2));
+    }
+
+    #[test]
+    fn multiallelic_low_depth_is_a_no_call() {
+        let g = call_genotype_multi(&[(1, 40), (2, 40)], 3, 4);
+        assert_eq!(g.gt, (0, 0));
+        assert_eq!(g.gq, 0);
     }
 
     #[test]

@@ -117,6 +117,26 @@ fn denovo_diploid_calls_a_heterozygous_deletion() {
 }
 
 #[test]
+fn denovo_diploid_calls_a_multiallelic_indel() {
+    // indel_multi.bam (chrM): 8 reads delete ref pos 6-7 (2 bp) + 6 reads delete pos 6-8 (3 bp),
+    // both left-normalizing to emit pos 5. ref ACGTAC… → REF=ACGT, ALTs AT (2 bp del) and A (3 bp
+    // del), a compound het 1/2.
+    let dir = fixtures();
+    let calls =
+        call_denovo_diploid(&dir.join("indel_multi.bam"), &dir.join("ref.fa"), "chrM", &HaploidCallerParams::default())
+            .unwrap();
+    let site = calls.iter().find(|c| c.position == 5).expect("a multiallelic call at pos 5");
+    assert_eq!(site.reference_allele, "ACGT");
+    assert_eq!(site.alternate_allele, "AT,A"); // dominant (8-read, 2 bp) allele first
+    assert_eq!(site.gt.as_deref(), Some("1/2"));
+    assert_eq!(site.allele_depths, Some(vec![0, 8, 6])); // ref, AT, A
+    // It renders as a multiallelic VCF record (3-value AD, 1/2 GT).
+    let vcf = write_diploid_vcf("FIX", &calls);
+    assert!(vcf.contains("chrM\t5\t.\tACGT\tAT,A\t"), "{vcf}");
+    assert!(vcf.contains("\t1/2:0,8,6:"), "{vcf}");
+}
+
+#[test]
 fn haploid_genotyping_calls_zero_or_one() {
     let dir = fixtures();
     // ploidy 1: the hom-alt site reads as the alt allele (dosage 1); hom-ref as 0.

@@ -34,19 +34,16 @@ pub fn write_diploid_vcf(sample: &str, calls: &[SiteGenotype]) -> String {
         } else {
             c.pls.iter().map(|p| p.to_string()).collect::<Vec<_>>().join(",")
         };
+        // Multiallelic sites carry an explicit GT string + per-allele AD; biallelic sites derive
+        // both from `dosage` / `ref_depth,alt_depth`.
+        let gt = c.gt.clone().unwrap_or_else(|| genotype_field(c.dosage).to_string());
+        let ad = match &c.allele_depths {
+            Some(d) => d.iter().map(|x| x.to_string()).collect::<Vec<_>>().join(","),
+            None => format!("{},{}", c.ref_depth, c.alt_depth),
+        };
         out.push_str(&format!(
-            "{}\t{}\t.\t{}\t{}\t{}\t.\t.\tGT:AD:DP:GQ:PL\t{}:{},{}:{}:{}:{}\n",
-            c.contig,
-            c.position,
-            c.reference_allele,
-            c.alternate_allele,
-            qual,
-            genotype_field(c.dosage),
-            c.ref_depth,
-            c.alt_depth,
-            c.depth,
-            c.gq,
-            pl,
+            "{}\t{}\t.\t{}\t{}\t{}\t.\t.\tGT:AD:DP:GQ:PL\t{}:{}:{}:{}:{}\n",
+            c.contig, c.position, c.reference_allele, c.alternate_allele, qual, gt, ad, c.depth, c.gq, pl,
         ));
     }
     out
@@ -70,6 +67,8 @@ mod tests {
             ref_depth: ref_d,
             alt_depth: alt_d,
             pls,
+            gt: None,
+            allele_depths: None,
         }
     }
 
@@ -86,6 +85,17 @@ mod tests {
         assert!(vcf.contains("chr1\t2\t.\tC\tG\t120\t.\t.\tGT:AD:DP:GQ:PL\t0/1:10,10:20:99:120,0,130\n"));
         // hom-alt: GT 1/1.
         assert!(vcf.contains("chr1\t8\t.\tT\tA\t200\t.\t.\tGT:AD:DP:GQ:PL\t1/1:0,20:20:99:200,90,0\n"));
+    }
+
+    #[test]
+    fn writes_a_multiallelic_record() {
+        // A 1/2 site (two indel alleles): explicit GT + 3-value AD + PL over the 6 diploid genotypes.
+        let mut c = call(5, "ACG", "A,AT", -1, 0, 0, vec![200, 90, 0, 95, 5, 0]);
+        c.gt = Some("1/2".into());
+        c.allele_depths = Some(vec![0, 9, 8]);
+        c.depth = 17;
+        let vcf = write_diploid_vcf("S", &[c]);
+        assert!(vcf.contains("chr1\t5\t.\tACG\tA,AT\t200\t.\t.\tGT:AD:DP:GQ:PL\t1/2:0,9,8:17:99:200,90,0,95,5,0\n"), "{vcf}");
     }
 
     #[test]

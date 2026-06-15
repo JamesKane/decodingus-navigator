@@ -939,6 +939,8 @@ mod tests {
             ref_depth: 0,
             alt_depth: 0,
             pls: vec![0, 50, 99],
+            gt: None,
+            allele_depths: None,
         }
     }
 

@@ -135,5 +135,21 @@ QREF=$(printf 'I%.0s' $(seq 1 50)); QDEL=$(printf 'I%.0s' $(seq 1 48))
 } > indel.sam
 samtools sort -o indel.bam indel.sam && samtools index indel.bam
 
-rm -f coverage.sam paired.sam sex.sam sv.sam diploid.sam indel.sam
-echo "wrote ref.fa(.fai), coverage.bam, paired.bam, sex.bam, sv.bam, diploid.bam, indel.bam (+ .bai)"
+# ---- indel_multi.bam --------------------------------------------------------
+# chrM: a compound-heterozygous pair of co-located deletions at anchor pos 6 (no ref reads):
+#   8 reads delete pos 6-7 (C,G)   -> 5M2D43M
+#   6 reads delete pos 6-8 (C,G,T) -> 5M3D42M
+# Both left-normalize to emit pos 5; the multiallelic caller emits REF=ACGT, ALT=AT,A, GT 1/2.
+DEL2="${REF:0:5}${REF:7:43}"   # delete 2 bp (pos 6-7)
+DEL3="${REF:0:5}${REF:8:42}"   # delete 3 bp (pos 6-8)
+QDEL3=$(printf 'I%.0s' $(seq 1 47))
+{
+  echo -e "@HD\tVN:1.6\tSO:coordinate"
+  echo -e "@SQ\tSN:chrM\tLN:50"
+  for i in $(seq 1 8); do echo -e "d2_$i\t0\tchrM\t1\t60\t5M2D43M\t*\t0\t0\t$DEL2\t$QDEL"; done
+  for i in $(seq 1 6); do echo -e "d3_$i\t0\tchrM\t1\t60\t5M3D42M\t*\t0\t0\t$DEL3\t$QDEL3"; done
+} > indel_multi.sam
+samtools sort -o indel_multi.bam indel_multi.sam && samtools index indel_multi.bam
+
+rm -f coverage.sam paired.sam sex.sam sv.sam diploid.sam indel.sam indel_multi.sam
+echo "wrote ref.fa(.fai), coverage.bam, paired.bam, sex.bam, sv.bam, diploid.bam, indel.bam, indel_multi.bam (+ .bai)"
