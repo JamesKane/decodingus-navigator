@@ -369,6 +369,12 @@ pub struct NavigatorApp {
     y_profile_filter: Option<YVariantStatus>,
     /// True while the (expensive) Y-variant profile is being built.
     y_profile_loading: bool,
+    /// The selected subject's multi-source mtDNA consensus profile.
+    mt_profile: Option<navigator_app::ConsensusProfile>,
+    /// mtDNA consensus-profile status filter (None = all).
+    mt_profile_filter: Option<YVariantStatus>,
+    /// True while the (expensive) mtDNA consensus profile is being built.
+    mt_profile_loading: bool,
     estimating_ancestry: bool,
     /// Live genotyping progress for the in-flight estimate: (alignment id, done, total) contigs.
     ancestry_progress: Option<(i64, usize, usize)>,
@@ -1167,6 +1173,9 @@ impl NavigatorApp {
             y_profile: None,
             y_profile_filter: None,
             y_profile_loading: false,
+            mt_profile: None,
+            mt_profile_filter: None,
+            mt_profile_loading: false,
             estimating_ancestry: false,
             ancestry_progress: None,
             pca_reference: None,
@@ -1598,6 +1607,15 @@ impl NavigatorApp {
                         self.y_profile = profile;
                     }
                 }
+                Event::MtProfile { biosample_guid, profile } => {
+                    self.mt_profile_loading = false;
+                    if self.selected_sample == Some(biosample_guid) {
+                        if let Some(p) = &profile {
+                            self.status = format!("mtDNA consensus profile: {} mutations", p.summary.total);
+                        }
+                        self.mt_profile = profile;
+                    }
+                }
                 Event::Alignments { sequence_run_id, alignments } => {
                     if self.selected_run == Some(sequence_run_id) {
                         self.alignments = alignments;
@@ -1832,6 +1850,8 @@ impl NavigatorApp {
         self.donor_private_y = None;
         self.y_profile = None;
         self.y_profile_loading = false;
+        self.mt_profile = None;
+        self.mt_profile_loading = false;
         self.clear_run_selection();
         self.runs.clear();
         self.str_profiles.clear();
@@ -1867,6 +1887,8 @@ impl NavigatorApp {
         // The Y-variant profile is *built* on explicit request (re-genotypes each alignment), but a
         // previously-built snapshot loads cheaply — fetch it so the Y-DNA tab shows it immediately.
         let _ = self.tx.send(Command::LoadYProfile { biosample_guid: guid });
+        // Likewise the mtDNA consensus profile (cheap cached snapshot for the mtDNA tab).
+        let _ = self.tx.send(Command::LoadMtProfile { biosample_guid: guid });
     }
 
     fn select_run(&mut self, id: i64) {
@@ -3478,93 +3500,37 @@ impl NavigatorApp {
             }
             return;
         };
-        if profile.variants.is_empty() {
-            ui.label(egui::RichText::new("No Y variants across sources.").weak());
-            return;
-        }
-        let s = &profile.summary;
-        let mut header = format!(
-            "{} confirmed · {} novel · {} conflict · {} single-source · confidence {:.0}%",
-            s.confirmed, s.novel, s.conflict, s.single_source, s.overall_confidence * 100.0
-        );
-        if let Some(t) = &profile.terminal {
-            header = format!("terminal {t}   —   {header}");
-        }
-        ui.label(egui::RichText::new(header).weak());
-        // Provenance: which tests contributed (label · type · SNP count).
-        if !profile.sources.is_empty() {
-            let prov = profile
-                .sources
-                .iter()
-                .map(|src| format!("{} ({})", src.label, src.variant_count))
-                .collect::<Vec<_>>()
-                .join(" · ");
-            ui.label(egui::RichText::new(format!("sources: {prov}")).weak().small());
-        }
-
-        let amber = egui::Color32::from_rgb(220, 150, 60);
         let mut filter = self.y_profile_filter;
-        ui.horizontal(|ui| {
-            ui.label("Show:");
-            ui.selectable_value(&mut filter, None, "All");
-            ui.selectable_value(&mut filter, Some(YVariantStatus::Conflict), "Conflicts");
-            ui.selectable_value(&mut filter, Some(YVariantStatus::Novel), "Novel");
-            ui.selectable_value(&mut filter, Some(YVariantStatus::Confirmed), "Confirmed");
-        });
-
-        let state_label = |st: YState| match st {
-            YState::Derived => "derived",
-            YState::Ancestral => "ancestral",
-            YState::NoCall => "no-call",
-        };
-        egui::ScrollArea::vertical().max_height(320.0).id_salt("y_variant_profile").show(ui, |ui| {
-            egui::Grid::new("y_variant_grid").striped(true).num_columns(5).show(ui, |ui| {
-                for h in ["SNP", "Pos", "State", "Status", "Sources"] {
-                    ui.strong(h);
-                }
-                ui.end_row();
-                for v in &profile.variants {
-                    if filter.is_some_and(|f| v.status != f) {
-                        continue;
-                    }
-                    let conflict = v.status == YVariantStatus::Conflict;
-                    let name = if v.name.is_empty() { format!("novel@{}", v.position) } else { v.name.clone() };
-                    let name_txt = egui::RichText::new(name).strong();
-                    ui.label(if conflict { name_txt.color(amber) } else { name_txt });
-                    ui.label(egui::RichText::new(v.position.to_string()).weak());
-                    ui.label(state_label(v.consensus));
-                    let (label, color) = match v.status {
-                        YVariantStatus::Confirmed => ("confirmed", egui::Color32::from_rgb(120, 180, 120)),
-                        YVariantStatus::Novel => ("novel", egui::Color32::from_rgb(120, 150, 220)),
-                        YVariantStatus::Conflict => ("conflict", amber),
-                        YVariantStatus::SingleSource => ("single", egui::Color32::from_gray(150)),
-                        YVariantStatus::Pending => ("pending", egui::Color32::from_gray(150)),
-                        YVariantStatus::NoCoverage => ("no-cov", egui::Color32::from_gray(110)),
-                    };
-                    ui.colored_label(color, format!("{label} ({}/{})", v.support, v.total));
-                    ui.horizontal(|ui| {
-                        for src in &v.sources {
-                            let short = match src.source_type {
-                                SourceType::Chip => "chip",
-                                SourceType::WgsShortRead | SourceType::WgsLongRead => "WGS",
-                                SourceType::Sanger => "Sanger",
-                                _ => "src",
-                            };
-                            let glyph = match src.state {
-                                YState::Derived => "✓",
-                                YState::Ancestral => "·",
-                                YState::NoCall => "?",
-                            };
-                            ui.label(egui::RichText::new(format!("{short}{glyph}")).small().weak())
-                                .on_hover_text(format!("{}: {}", src.label, state_label(src.state)));
-                        }
-                    });
-                    ui.end_row();
-                }
-            });
-        });
-
+        draw_consensus_profile(ui, profile, &mut filter, "SNP", "Y variants", "y_variant_profile");
         self.y_profile_filter = filter;
+    }
+
+    /// Multi-source mtDNA consensus profile: per-mutation concordance across the subject's mt
+    /// sources (alignments' chrM placement, imported mtDNA sequences, the chip mt panel). Mirrors
+    /// the Y-variant card over the same generic consensus engine.
+    fn mt_variant_profile_section(&mut self, ui: &mut egui::Ui, guid: SampleGuid) {
+        ui.horizontal(|ui| {
+            let label = if self.mt_profile.is_some() { self.tr("common.refresh") } else { self.tr("btn.buildMtProfile") };
+            if ui.add_enabled(!self.mt_profile_loading, egui::Button::new(label)).clicked() {
+                self.mt_profile_loading = true;
+                self.status = "Building mtDNA consensus profile…".into();
+                let _ = self.tx.send(Command::BuildMtProfile { biosample_guid: guid });
+            }
+            if self.mt_profile_loading {
+                ui.spinner();
+            }
+            ui.label(egui::RichText::new(self.tr("hint.mtProfileCost")).weak().small());
+        });
+
+        let Some(profile) = &self.mt_profile else {
+            if !self.mt_profile_loading {
+                ui.label(egui::RichText::new(self.tr("hint.mtProfileBuild")).weak());
+            }
+            return;
+        };
+        let mut filter = self.mt_profile_filter;
+        draw_consensus_profile(ui, profile, &mut filter, "Mutation", "mtDNA mutations", "mt_variant_profile");
+        self.mt_profile_filter = filter;
     }
 
     /// Donor-level private-Y union (Phase 3): off-backbone calls pooled + deduped across the
@@ -3895,6 +3861,12 @@ impl NavigatorApp {
             }
             ui.label(self.tr("mt.fullSeq"));
         });
+
+        // Multi-source mtDNA consensus profile (the mtDNA adapter over the shared consensus engine).
+        ui.add_space(8.0);
+        ui.separator();
+        ui.strong(self.tr("mt.consensusProfile"));
+        self.mt_variant_profile_section(ui, guid);
     }
 
     fn panels_section(&mut self, ui: &mut egui::Ui) {
@@ -5710,6 +5682,100 @@ fn str_all_markers_view(
             }
             ui.end_row();
         }
+    });
+}
+
+/// Shared renderer for a multi-source consensus profile (Y or mtDNA — same generic engine): header
+/// (counts + lineage label + provenance), a status filter, and the per-variant grid. `variant_col`
+/// names the identity column ("SNP" / "Mutation"); `kind` labels the empty state; `id_salt` keeps the
+/// two cards' scroll/grid ids distinct.
+fn draw_consensus_profile(
+    ui: &mut egui::Ui,
+    profile: &navigator_app::ConsensusProfile,
+    filter: &mut Option<YVariantStatus>,
+    variant_col: &str,
+    kind: &str,
+    id_salt: &str,
+) {
+    if profile.variants.is_empty() {
+        ui.label(egui::RichText::new(format!("No {kind} across sources.")).weak());
+        return;
+    }
+    let s = &profile.summary;
+    let mut header = format!(
+        "{} confirmed · {} novel · {} conflict · {} single-source · confidence {:.0}%",
+        s.confirmed, s.novel, s.conflict, s.single_source, s.overall_confidence * 100.0
+    );
+    if let Some(t) = &profile.terminal {
+        header = format!("terminal {t}   —   {header}");
+    }
+    ui.label(egui::RichText::new(header).weak());
+    // Provenance: which tests contributed (label · count).
+    if !profile.sources.is_empty() {
+        let prov = profile.sources.iter().map(|src| format!("{} ({})", src.label, src.variant_count)).collect::<Vec<_>>().join(" · ");
+        ui.label(egui::RichText::new(format!("sources: {prov}")).weak().small());
+    }
+
+    let amber = egui::Color32::from_rgb(220, 150, 60);
+    ui.horizontal(|ui| {
+        ui.label("Show:");
+        ui.selectable_value(filter, None, "All");
+        ui.selectable_value(filter, Some(YVariantStatus::Conflict), "Conflicts");
+        ui.selectable_value(filter, Some(YVariantStatus::Novel), "Novel");
+        ui.selectable_value(filter, Some(YVariantStatus::Confirmed), "Confirmed");
+    });
+
+    let state_label = |st: YState| match st {
+        YState::Derived => "derived",
+        YState::Ancestral => "ancestral",
+        YState::NoCall => "no-call",
+    };
+    egui::ScrollArea::vertical().max_height(320.0).id_salt(id_salt).show(ui, |ui| {
+        egui::Grid::new(format!("{id_salt}_grid")).striped(true).num_columns(5).show(ui, |ui| {
+            for h in [variant_col, "Pos", "State", "Status", "Sources"] {
+                ui.strong(h);
+            }
+            ui.end_row();
+            for v in &profile.variants {
+                if filter.is_some_and(|f| v.status != f) {
+                    continue;
+                }
+                let conflict = v.status == YVariantStatus::Conflict;
+                let name = if v.name.is_empty() { format!("novel@{}", v.position) } else { v.name.clone() };
+                let name_txt = egui::RichText::new(name).strong();
+                ui.label(if conflict { name_txt.color(amber) } else { name_txt });
+                ui.label(egui::RichText::new(v.position.to_string()).weak());
+                ui.label(state_label(v.consensus));
+                let (label, color) = match v.status {
+                    YVariantStatus::Confirmed => ("confirmed", egui::Color32::from_rgb(120, 180, 120)),
+                    YVariantStatus::Novel => ("novel", egui::Color32::from_rgb(120, 150, 220)),
+                    YVariantStatus::Conflict => ("conflict", amber),
+                    YVariantStatus::SingleSource => ("single", egui::Color32::from_gray(150)),
+                    YVariantStatus::Pending => ("pending", egui::Color32::from_gray(150)),
+                    YVariantStatus::NoCoverage => ("no-cov", egui::Color32::from_gray(110)),
+                };
+                ui.colored_label(color, format!("{label} ({}/{})", v.support, v.total));
+                ui.horizontal(|ui| {
+                    for src in &v.sources {
+                        let short = match src.source_type {
+                            SourceType::Chip => "chip",
+                            SourceType::WgsShortRead | SourceType::WgsLongRead => "WGS",
+                            SourceType::Sanger => "Sanger",
+                            SourceType::Imported => "seq",
+                            _ => "src",
+                        };
+                        let glyph = match src.state {
+                            YState::Derived => "✓",
+                            YState::Ancestral => "·",
+                            YState::NoCall => "?",
+                        };
+                        ui.label(egui::RichText::new(format!("{short}{glyph}")).small().weak())
+                            .on_hover_text(format!("{}: {}", src.label, state_label(src.state)));
+                    }
+                });
+                ui.end_row();
+            }
+        });
     });
 }
 

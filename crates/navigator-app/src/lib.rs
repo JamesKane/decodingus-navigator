@@ -3837,6 +3837,79 @@ impl App {
         Ok(profile)
     }
 
+    /// Fresh mtDNA placement against the FTDNA mt tree (chrM) with full branch evidence — the mt
+    /// counterpart to [`y_assignment_full`](Self::y_assignment_full). Bypasses
+    /// [`assign_mtdna_haplogroup_from_alignment`](Self::assign_mtdna_haplogroup_from_alignment)'s
+    /// cached terminal-only path (which has `branches: []`) so the consensus has per-mutation evidence.
+    async fn mt_assignment_full(&self, alignment_id: i64) -> Result<HaploAssignment, AppError> {
+        let tree_json = self.fetch_ftdna_mt_tree().await?;
+        self.assign_haplogroup_from_alignment(alignment_id, "chrM", &tree_json).await
+    }
+
+    /// The persisted mtDNA consensus-profile snapshot for a subject, if one has been built — cheap
+    /// (no genotyping). `None` until [`build_mt_profile`](Self::build_mt_profile) runs.
+    pub async fn cached_mt_profile(&self, biosample_guid: SampleGuid) -> Result<Option<ConsensusProfile>, AppError> {
+        self.cached_consensus_profile(biosample_guid, DnaType::Mt).await
+    }
+
+    /// Build (and persist) the multi-source mtDNA consensus profile — the mtDNA adapter over the
+    /// generic [`navigator_domain::consensus`] engine. Reconciles each mt-bearing source's
+    /// defining-mutation calls (every alignment's chrM placement, each imported mtDNA FASTA
+    /// sequence's placement, and the combined chip mtDNA placement) into one concordance view,
+    /// keyed by phylotree **mutation name** (rCRS-coordinate, build-independent). Persisted with
+    /// `dna_type='Mt'` so [`cached_mt_profile`](Self::cached_mt_profile) reloads it instantly.
+    /// Expensive (re-places each alignment's chrM), so it's an explicit action; mt-less sources skip.
+    pub async fn build_mt_profile(&self, biosample_guid: SampleGuid) -> Result<ConsensusProfile, AppError> {
+        let mut sources: Vec<(String, SourceType, Vec<YObsInput>)> = Vec::new();
+
+        // One source per alignment with chrM — a fresh placement (branch evidence, not the cached
+        // terminal). Alignments that error / lack chrM are skipped.
+        let alignments = alignment::list_for_biosample(self.store.pool(), biosample_guid).await?;
+        for a in &alignments {
+            let Ok(assignment) = self.mt_assignment_full(a.id).await else { continue };
+            let obs = snp_obs_from_assignment(&assignment, true);
+            if !obs.is_empty() {
+                sources.push((format!("aln #{} · {}", a.id, a.aligner), SourceType::WgsShortRead, obs));
+            }
+        }
+
+        // One source per imported mtDNA FASTA sequence (FTDNA mtFull / YSEQ) — a finished consensus
+        // sequence we ingested, so weight it as `Imported` (provenance/method not ours to vouch for).
+        let seqs = self.list_mtdna_sequences(biosample_guid).await?;
+        for s in &seqs {
+            let Ok(assignment) = self.assign_mtdna_haplogroup(s.id).await else { continue };
+            let obs = snp_obs_from_assignment(&assignment, true);
+            if !obs.is_empty() {
+                let vendor = mt_vendor_label(s.source_file_name.as_deref(), s.defline.as_deref());
+                sources.push((format!("{vendor} (mt seq #{})", s.id), SourceType::Imported, obs));
+            }
+        }
+
+        // The combined chip mtDNA panel (23andMe carries a sparse mt panel). One source — the
+        // per-panel split is a deferred follow-on (same as the Y profile).
+        if let Ok(assignment) = self.assign_mt_chip(biosample_guid).await {
+            let obs = snp_obs_from_assignment(&assignment, true);
+            if !obs.is_empty() {
+                sources.push(("Chip mtDNA panel".to_string(), SourceType::Chip, obs));
+            }
+        }
+
+        // Provenance: one entry per contributing source (label, type, mutation count).
+        let source_summaries: Vec<YSourceSummary> = sources
+            .iter()
+            .map(|(label, st, obs)| YSourceSummary { label: label.clone(), source_type: *st, variant_count: obs.len() })
+            .collect();
+
+        let variants = yprofile::reconcile_y(&sources);
+        let summary = yprofile::summarize(&variants);
+        let terminal = self.haplogroup_consensus(biosample_guid, DnaType::Mt).await?.map(|c| c.haplogroup);
+        let profile = ConsensusProfile { variants, summary, terminal, sources: source_summaries };
+
+        // Persist (keyed dna_type='Mt'); the mt tree is FTDNA-sourced.
+        self.persist_consensus_profile(biosample_guid, DnaType::Mt, &profile, Some("ftdna".to_string())).await?;
+        Ok(profile)
+    }
+
     /// Build the `com.decodingus.atmosphere.haplogroupReconciliation` record JSON for a
     /// subject + DNA type from the stored consensus, per-run calls, manual override, and
     /// audit log. mtDNA heteroplasmy observations and an optional identity-verification
