@@ -781,6 +781,9 @@ pub enum ExportRequest {
     AncestryHtml(i64),
     CallableBed(i64),
     MtdnaTsv(i64),
+    /// Whole-genome diploid variant calls (SNV + indel) for an alignment, as a VCF. Heavy — re-walks
+    /// the BAM per primary chromosome (cached).
+    DiploidVcf(i64),
 }
 
 impl ExportRequest {
@@ -789,6 +792,7 @@ impl ExportRequest {
         match self {
             ExportRequest::CoverageHtml(_) | ExportRequest::AncestryHtml(_) => "html",
             ExportRequest::CallableBed(_) => "bed",
+            ExportRequest::DiploidVcf(_) => "vcf",
             _ => "tsv",
         }
     }
@@ -803,6 +807,7 @@ impl ExportRequest {
             ExportRequest::AncestryHtml(_) => "ancestry (HTML)",
             ExportRequest::CallableBed(_) => "callable loci (BED)",
             ExportRequest::MtdnaTsv(_) => "mtDNA variants (TSV)",
+            ExportRequest::DiploidVcf(_) => "diploid variants (VCF)",
         }
     }
 
@@ -814,9 +819,17 @@ impl ExportRequest {
             ExportRequest::AncestryTsv(id) | ExportRequest::AncestryHtml(id) => ("ancestry", id),
             ExportRequest::CallableBed(id) => ("callable", id),
             ExportRequest::MtdnaTsv(id) => ("mtdna_variants", id),
+            ExportRequest::DiploidVcf(id) => ("diploid_variants", id),
         };
         format!("{stem}_{id}.{}", self.extension())
     }
+}
+
+/// Whether `name` is a primary chromosome (1–22, X, Y, M/MT), with or without a `chr` prefix —
+/// the contigs the whole-genome diploid caller runs over (skipping alts / decoys / unplaced).
+fn is_primary_contig(name: &str) -> bool {
+    let s = name.strip_prefix("chr").unwrap_or(name).to_ascii_uppercase();
+    matches!(s.as_str(), "X" | "Y" | "M" | "MT") || s.parse::<u32>().map(|n| (1..=22).contains(&n)).unwrap_or(false)
 }
 
 /// The result of one [`App::drain_outbox`] pass — what the UI reports / shows in its indicator.
@@ -2182,6 +2195,21 @@ impl App {
         Ok(navigator_analysis::vcf::write_diploid_vcf(&format!("aln{alignment_id}"), &calls))
     }
 
+    /// A **whole-genome** diploid VCF: de-novo SNV + indel calls over every primary chromosome
+    /// (1–22, X, Y, M) of the alignment, per-contig cached. Heavy (a real WGS calling pass); the
+    /// caller runs it off the UI thread (the export path).
+    pub async fn diploid_vcf_genome(&self, alignment_id: i64) -> Result<String, AppError> {
+        let (bam, reference) = self.alignment_bam_reference(alignment_id).await?;
+        let contigs = tokio::task::spawn_blocking(move || caller::header_contig_names(&bam, Some(&reference)))
+            .await
+            .map_err(|e| AppError::Join(e.to_string()))??;
+        let mut all = Vec::new();
+        for contig in contigs.into_iter().filter(|c| is_primary_contig(c)) {
+            all.extend(self.run_diploid_calls(alignment_id, contig).await?);
+        }
+        Ok(navigator_analysis::vcf::write_diploid_vcf(&format!("aln{alignment_id}"), &all))
+    }
+
     /// Run de-novo calling on `contig` using the alignment's own stored paths.
     /// The alignment's BAM + a usable reference FASTA: the stored path, else resolved from the
     /// alignment's build via the gateway (cached, else downloaded). Errors only if no BAM is
@@ -3388,6 +3416,7 @@ impl App {
                 let per_contig = self.callable_intervals_all(*id).await?;
                 Ok(export::callable_bed(&per_contig))
             }
+            ExportRequest::DiploidVcf(id) => self.diploid_vcf_genome(*id).await,
         }
     }
 
@@ -6510,6 +6539,29 @@ mod ibd_federated_tests {
     fn parse_suggestions_empty_or_malformed_is_empty() {
         assert!(parse_ibd_suggestions(&serde_json::json!({})).is_empty());
         assert!(parse_ibd_suggestions(&serde_json::json!({ "items": "nope" })).is_empty());
+    }
+}
+
+#[cfg(test)]
+mod export_tests {
+    use super::*;
+
+    #[test]
+    fn primary_contig_filter() {
+        for ok in ["chr1", "1", "chr22", "22", "chrX", "X", "chrY", "Y", "chrM", "MT"] {
+            assert!(is_primary_contig(ok), "{ok} should be primary");
+        }
+        for no in ["chr23", "chrUn_KI270302v1", "chr1_KI270706v1_random", "HLA-A", "GL000220.1", ""] {
+            assert!(!is_primary_contig(no), "{no} should not be primary");
+        }
+    }
+
+    #[test]
+    fn diploid_vcf_export_metadata() {
+        let r = ExportRequest::DiploidVcf(7);
+        assert_eq!(r.extension(), "vcf");
+        assert_eq!(r.default_filename(), "diploid_variants_7.vcf");
+        assert!(r.label().contains("VCF"));
     }
 }
 

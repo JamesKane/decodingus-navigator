@@ -4579,6 +4579,7 @@ impl NavigatorApp {
                     navigator_app::ExportRequest::CoverageTsv(alignment_id),
                     navigator_app::ExportRequest::CoverageHtml(alignment_id),
                     navigator_app::ExportRequest::CallableBed(alignment_id),
+                    navigator_app::ExportRequest::DiploidVcf(alignment_id),
                 ],
             );
             self.publish_row(ui, "Publish summary to PDS", Command::PublishCoverage(alignment_id));
