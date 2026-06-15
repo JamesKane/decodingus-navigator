@@ -121,5 +121,19 @@ samtools sort -o sv.bam sv.sam && samtools index sv.bam
 } > diploid.sam
 samtools sort -o diploid.bam diploid.sam && samtools index diploid.bam
 
-rm -f coverage.sam paired.sam sex.sam sv.sam diploid.sam
-echo "wrote ref.fa(.fai), coverage.bam, paired.bam, sex.bam, sv.bam, diploid.bam (+ .bai)"
+# ---- indel.bam --------------------------------------------------------------
+# chrM: a heterozygous 2 bp deletion of ref pos 6-7 (C,G). 10 ref reads (50M) + 10 deletion reads
+# (5M2D43M), depth 20 -> the de-novo diploid caller emits REF=ACG / ALT=A, GT 0/1 at pos 5.
+REF="ACGTACGTACGTACGTACGTACGTNACGTACGTACGTACGTACGTACGTA"
+DEL="${REF:0:5}${REF:7:43}"
+QREF=$(printf 'I%.0s' $(seq 1 50)); QDEL=$(printf 'I%.0s' $(seq 1 48))
+{
+  echo -e "@HD\tVN:1.6\tSO:coordinate"
+  echo -e "@SQ\tSN:chrM\tLN:50"
+  for i in $(seq 1 10); do echo -e "ref$i\t0\tchrM\t1\t60\t50M\t*\t0\t0\t$REF\t$QREF"; done
+  for i in $(seq 1 10); do echo -e "del$i\t0\tchrM\t1\t60\t5M2D43M\t*\t0\t0\t$DEL\t$QDEL"; done
+} > indel.sam
+samtools sort -o indel.bam indel.sam && samtools index indel.bam
+
+rm -f coverage.sam paired.sam sex.sam sv.sam diploid.sam indel.sam
+echo "wrote ref.fa(.fai), coverage.bam, paired.bam, sex.bam, sv.bam, diploid.bam, indel.bam (+ .bai)"

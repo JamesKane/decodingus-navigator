@@ -97,6 +97,26 @@ fn denovo_diploid_calls_het_and_hom_alt_then_writes_vcf() {
 }
 
 #[test]
+fn denovo_diploid_calls_a_heterozygous_deletion() {
+    // indel.bam (chrM): 10 reads 50M (ref) + 10 reads 5M2D43M (2bp deletion of ref pos 6-7 = C,G).
+    // The bundled ref.fa chrM is ACGTACGTAC… so pos5=A, pos6=C, pos7=G → REF=ACG, ALT=A, het 0/1.
+    let dir = fixtures();
+    let calls = call_denovo_diploid(&dir.join("indel.bam"), &dir.join("ref.fa"), "chrM", &HaploidCallerParams::default())
+        .unwrap();
+    let del = calls
+        .iter()
+        .find(|c| c.position == 5 && c.reference_allele.len() > c.alternate_allele.len())
+        .expect("a deletion call at pos 5");
+    assert_eq!((del.reference_allele.as_str(), del.alternate_allele.as_str()), ("ACG", "A"));
+    assert_eq!(del.dosage, 1); // 10 deletion-reads / 10 ref-reads → heterozygous
+    assert_eq!(del.alt_depth, 10);
+    // It renders as a standard indel VCF record.
+    let vcf = write_diploid_vcf("FIX", &calls);
+    assert!(vcf.contains("chrM\t5\t.\tACG\tA\t"));
+    assert!(vcf.contains("\t0/1:"));
+}
+
+#[test]
 fn haploid_genotyping_calls_zero_or_one() {
     let dir = fixtures();
     // ploidy 1: the hom-alt site reads as the alt allele (dosage 1); hom-ref as 0.
