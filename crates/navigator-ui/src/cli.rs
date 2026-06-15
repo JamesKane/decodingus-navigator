@@ -33,6 +33,8 @@ pub enum Command {
     Show(ShowArgs),
     /// List projects with their subject counts.
     Projects(ProbeArgs),
+    /// De-novo diploid variant calling → VCF (whole-genome, or a single `--contig`).
+    Call(CallArgs),
 }
 
 #[derive(Args)]
@@ -80,6 +82,25 @@ pub struct ShowArgs {
     json: bool,
 }
 
+#[derive(Args)]
+pub struct CallArgs {
+    /// Subject donor identifier (used to resolve the alignment when `--alignment` is omitted).
+    #[arg(long, short)]
+    subject: Option<String>,
+    /// Alignment id to call (from `show --json`). If omitted, the subject's sole alignment is used.
+    #[arg(long, short)]
+    alignment: Option<i64>,
+    /// Restrict to a single contig (e.g. chrM, chr21). Default: every primary chromosome.
+    #[arg(long, short)]
+    contig: Option<String>,
+    /// Write the VCF here instead of stdout.
+    #[arg(long, short)]
+    out: Option<PathBuf>,
+    /// Workspace database path (defaults to the GUI's ~/.decodingus/navigator-rs.db).
+    #[arg(long)]
+    db: Option<PathBuf>,
+}
+
 /// Run a CLI subcommand to completion, returning a process exit code. Spins its own tokio
 /// runtime so `main` (which must keep the GUI on the main thread) stays sync.
 pub fn run(command: Command) -> i32 {
@@ -96,6 +117,7 @@ pub fn run(command: Command) -> i32 {
             Command::Subjects(a) => subjects(a).await,
             Command::Show(a) => show(a).await,
             Command::Projects(a) => projects(a).await,
+            Command::Call(a) => call(a).await,
         }
     })
 }
@@ -407,6 +429,86 @@ async fn show(args: ShowArgs) -> i32 {
     }
     for m in &mt {
         println!("  MT   #{} ({} bp)", m.id, m.length());
+    }
+    0
+}
+
+/// Resolve the alignment id to call: the explicit `--alignment`, else the subject's sole alignment.
+async fn resolve_alignment(app: &App, subject: Option<&str>, explicit: Option<i64>) -> Result<i64, i32> {
+    if let Some(id) = explicit {
+        return Ok(id);
+    }
+    let Some(donor) = subject else {
+        eprintln!("error: pass --alignment <id> or --subject <donor>");
+        return Err(1);
+    };
+    let guid = match find_subject(app, donor).await? {
+        Some(g) => g,
+        None => {
+            eprintln!("error: no subject with identifier \"{donor}\"");
+            return Err(1);
+        }
+    };
+    let runs = app.list_sequence_runs(guid).await.map_err(report)?;
+    let mut alns = Vec::new();
+    for r in &runs {
+        alns.extend(app.list_alignments(r.id).await.map_err(report)?);
+    }
+    match alns.as_slice() {
+        [] => {
+            eprintln!("error: subject \"{donor}\" has no alignments");
+            Err(1)
+        }
+        [a] => Ok(a.id),
+        many => {
+            eprintln!(
+                "error: subject \"{donor}\" has {} alignments — pass --alignment <id> (one of: {})",
+                many.len(),
+                many.iter().map(|a| a.id.to_string()).collect::<Vec<_>>().join(", ")
+            );
+            Err(1)
+        }
+    }
+}
+
+async fn call(args: CallArgs) -> i32 {
+    let app = match open(args.db).await {
+        Ok(a) => a,
+        Err(c) => return c,
+    };
+    let alignment_id = match resolve_alignment(&app, args.subject.as_deref(), args.alignment).await {
+        Ok(id) => id,
+        Err(c) => return c,
+    };
+
+    let scope = args.contig.clone().unwrap_or_else(|| "whole genome".into());
+    eprintln!("calling de-novo diploid variants on alignment #{alignment_id} ({scope})…");
+    let vcf = match args.contig {
+        Some(contig) => app.diploid_vcf(alignment_id, contig).await,
+        None => app.diploid_vcf_genome(alignment_id).await,
+    };
+    let vcf = match vcf {
+        Ok(v) => v,
+        Err(e) => return report(e),
+    };
+
+    // Summary to stderr (records, of which multiallelic) so a redirected stdout stays pure VCF.
+    let records: Vec<&str> = vcf.lines().filter(|l| !l.starts_with('#')).collect();
+    let multiallelic = records
+        .iter()
+        .filter(|l| l.split('\t').nth(4).is_some_and(|alt| alt.contains(',')))
+        .count();
+    eprintln!("{} variant record(s), {multiallelic} multiallelic", records.len());
+
+    match &args.out {
+        Some(path) => {
+            if let Err(e) = std::fs::write(path, &vcf) {
+                eprintln!("error: writing {}: {e}", path.display());
+                return 1;
+            }
+            eprintln!("wrote {}", path.display());
+        }
+        None => print!("{vcf}"),
     }
     0
 }
