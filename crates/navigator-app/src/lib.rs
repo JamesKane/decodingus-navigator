@@ -5922,6 +5922,30 @@ impl App {
         Ok(detect_ibd(&ga, &gb, ReferenceBuild::Chm13v2, config))
     }
 
+    /// IBD comparison between two **subjects** from their autosomal consensuses — each subject's
+    /// pooled best genotype per site (across all its WGS + chip sources), no per-source genotyping.
+    /// This is the subject-level IBD path (consensus-driven); both subjects must have a built
+    /// autosomal consensus. A near-complete genome-wide match is the cross-subject identity (dedup)
+    /// signal — read it off the returned [`MatchSummary`]'s relationship estimate.
+    pub async fn compare_ibd_consensus(
+        &self,
+        a: SampleGuid,
+        b: SampleGuid,
+        config: IbdDetectorConfig,
+    ) -> Result<IbdComparison, AppError> {
+        let pa = self
+            .cached_autosomal_profile(a)
+            .await?
+            .ok_or_else(|| AppError::Import("the first subject has no autosomal consensus yet — build it (Autosomal tab) first".into()))?;
+        let pb = self
+            .cached_autosomal_profile(b)
+            .await?
+            .ok_or_else(|| AppError::Import("the second subject has no autosomal consensus yet — build it (Autosomal tab) first".into()))?;
+        let ga = consensus_genotypes(&pa);
+        let gb = consensus_genotypes(&pb);
+        Ok(detect_ibd(&ga, &gb, ReferenceBuild::Chm13v2, config))
+    }
+
     /// Dosages over the canonical CHM13 IBD-panel sites for a comparison source. A chip resolves
     /// directly ([`Self::chip_ibd_dosages`]); an alignment genotypes the panel's CHM13 sites from
     /// its BAM (cached per alignment, ploidy-2 autosomal).

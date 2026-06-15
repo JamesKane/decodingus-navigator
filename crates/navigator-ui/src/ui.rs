@@ -421,6 +421,8 @@ pub struct NavigatorApp {
     /// Chip-compatible IBD compare: the two picked sources (each a WGS alignment or an imported chip).
     ibd_src_a: Option<navigator_app::IbdSource>,
     ibd_src_b: Option<navigator_app::IbdSource>,
+    /// Subject-level (consensus) IBD compare: the other subject picked for comparison.
+    ibd_other_subject: Option<SampleGuid>,
     ibd_result: Option<IbdComparison>,
     running_ibd: bool,
     /// Identity-verification result for the current IBD pair.
@@ -1103,6 +1105,7 @@ impl NavigatorApp {
             ibd_other: None,
             ibd_src_a: None,
             ibd_src_b: None,
+            ibd_other_subject: None,
             ibd_result: None,
             running_ibd: false,
             identity: None,
@@ -2058,10 +2061,15 @@ impl NavigatorApp {
                 }
                 DetailTab::Sources => self.sources_tab(ui, guid),
                 DetailTab::IbdMatches => {
+                    // Subject-level IBD over the pooled consensus is the primary path.
+                    card(ui, self.tr("card.consensusIbd"), |ui| self.consensus_ibd_section(ui, guid));
+                    ui.add_space(10.0);
                     card(ui, self.tr("card.networkSuggestions"), |ui| self.network_suggestions_section(ui));
+                    // Per-source compare + within-subject identity (the QC gate) — advanced.
                     if let Some(id) = self.selected_alignment {
                         ui.add_space(10.0);
-                        card(ui, self.tr("card.panelGenotypingIbd"), |ui| self.genotyping_section(ui, id));
+                        let per_source = self.tr("card.panelGenotypingIbd");
+                        egui::CollapsingHeader::new(per_source).id_salt("ibd_per_source").show(ui, |ui| self.genotyping_section(ui, id));
                     }
                 }
             }
@@ -5059,32 +5067,77 @@ impl NavigatorApp {
             });
         }
 
-        if let Some(cmp) = &self.ibd_result {
-            ui.label(format!(
-                "{:?} — total {:.1} cM, {} segment(s), longest {:.1} cM  ·  {} overlapping sites",
-                cmp.summary.relationship,
-                cmp.summary.total_shared_cm,
-                cmp.summary.segment_count,
-                cmp.summary.longest_segment_cm,
-                cmp.overlapping_sites,
-            ));
-            if !cmp.segments.is_empty() {
-                egui::Grid::new("ibd_segments").striped(true).num_columns(4).show(ui, |ui| {
-                    ui.strong(self.tr("table.chr"));
-                    ui.strong(self.tr("table.start"));
-                    ui.strong(self.tr("table.end"));
-                    ui.strong(self.tr("table.cm"));
+        self.render_ibd_result(ui);
+    }
+
+    /// Render the current IBD comparison result (summary line + segment table), if any. Shared by the
+    /// per-source picker and the subject-level consensus comparison.
+    fn render_ibd_result(&self, ui: &mut egui::Ui) {
+        let Some(cmp) = &self.ibd_result else { return };
+        ui.label(format!(
+            "{:?} — total {:.1} cM, {} segment(s), longest {:.1} cM  ·  {} overlapping sites",
+            cmp.summary.relationship,
+            cmp.summary.total_shared_cm,
+            cmp.summary.segment_count,
+            cmp.summary.longest_segment_cm,
+            cmp.overlapping_sites,
+        ));
+        if !cmp.segments.is_empty() {
+            egui::Grid::new("ibd_segments").striped(true).num_columns(4).show(ui, |ui| {
+                ui.strong(self.tr("table.chr"));
+                ui.strong(self.tr("table.start"));
+                ui.strong(self.tr("table.end"));
+                ui.strong(self.tr("table.cm"));
+                ui.end_row();
+                for s in &cmp.segments {
+                    ui.label(&s.chromosome);
+                    ui.label(s.start_position.to_string());
+                    ui.label(s.end_position.to_string());
+                    ui.label(format!("{:.1}", s.length_cm));
                     ui.end_row();
-                    for s in &cmp.segments {
-                        ui.label(&s.chromosome);
-                        ui.label(s.start_position.to_string());
-                        ui.label(s.end_position.to_string());
-                        ui.label(format!("{:.1}", s.length_cm));
-                        ui.end_row();
-                    }
-                });
-            }
+                }
+            });
         }
+    }
+
+    /// Subject-level IBD: compare this subject's autosomal consensus against another subject's — the
+    /// pooled-genotype path (no per-source genotyping). A near-complete match is the dedup/identity
+    /// signal (read off the relationship).
+    fn consensus_ibd_section(&mut self, ui: &mut egui::Ui, guid: SampleGuid) {
+        let others: Vec<(SampleGuid, String)> = self
+            .all_biosamples
+            .iter()
+            .filter(|b| b.guid != guid)
+            .map(|b| (b.guid, b.donor_identifier.clone()))
+            .collect();
+        if others.is_empty() {
+            ui.label(egui::RichText::new(self.tr("hint.ibdNoOtherSubjects")).weak());
+            return;
+        }
+        let sel = self
+            .ibd_other_subject
+            .and_then(|g| others.iter().find(|(og, _)| *og == g).map(|(_, l)| l.clone()))
+            .unwrap_or_else(|| "—".to_string());
+        ui.horizontal(|ui| {
+            ui.label(self.tr("ibd.otherSubject"));
+            egui::ComboBox::from_id_salt("ibd_subject").selected_text(sel).show_ui(ui, |ui| {
+                for (og, l) in &others {
+                    ui.selectable_value(&mut self.ibd_other_subject, Some(*og), l);
+                }
+            });
+            let ready = self.ibd_other_subject.is_some() && !self.running_ibd;
+            if ui.add_enabled(ready, egui::Button::new(self.tr("ibd.compare"))).clicked() {
+                self.running_ibd = true;
+                self.ibd_result = None;
+                self.status = "Comparing consensuses…".into();
+                let _ = self.tx.send(Command::CompareIbdConsensus { a: guid, b: self.ibd_other_subject.unwrap() });
+            }
+            if self.running_ibd {
+                ui.spinner();
+            }
+        });
+        ui.label(egui::RichText::new(self.tr("hint.ibdConsensus")).weak().small());
+        self.render_ibd_result(ui);
     }
 
     /// Federated IBD: the AppView's pseudonymous "people who may share DNA with you" list,
