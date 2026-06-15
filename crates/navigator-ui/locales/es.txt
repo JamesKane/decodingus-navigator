@@ -284,6 +284,7 @@ hint.ancestryConsensus=del consenso combinado de todas las fuentes — primero c
 card.ancestryPerSource=Estimadores por fuente (avanzado)
 card.ancestryModern=Poblaciones detalladas (modernas)
 card.ancestryAncient=Componentes de ascendencia antigua
+card.ancestryNmonte=Modelo de mezcla (G25 / nMonte)
 card.consensusIbd=IBD — comparación de sujetos (consenso)
 ibd.otherSubject=Comparar con:
 ibd.compare=Comparar

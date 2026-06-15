@@ -353,6 +353,7 @@ pub struct NavigatorApp {
     /// Detailed consensus ancestry reports: modern fine-population + ancient-component breakdowns.
     fine_ancestry: Option<AncestryResult>,
     ancient_ancestry: Option<AncestryResult>,
+    nmonte_ancestry: Option<AncestryResult>,
     /// Donor-level private-Y union across the subject's sources.
     donor_private_y: Option<PrivateBucket>,
     /// The selected subject's multi-source Y-variant profile.
@@ -1100,6 +1101,7 @@ impl NavigatorApp {
             donor_ancestry: None,
             fine_ancestry: None,
             ancient_ancestry: None,
+            nmonte_ancestry: None,
             donor_private_y: None,
             y_profile: None,
             y_profile_filter: None,
@@ -1488,10 +1490,11 @@ impl NavigatorApp {
                         let _ = self.tx.send(Command::LoadConsensusAncestryDetail { biosample_guid: g });
                     }
                 }
-                Event::ConsensusAncestryDetail { biosample_guid, fine, ancient } => {
+                Event::ConsensusAncestryDetail { biosample_guid, fine, ancient, nmonte } => {
                     if self.selected_sample == Some(biosample_guid) {
-                        self.fine_ancestry = fine;
-                        self.ancient_ancestry = ancient;
+                        self.fine_ancestry = fine.map(|b| *b);
+                        self.ancient_ancestry = ancient.map(|b| *b);
+                        self.nmonte_ancestry = nmonte.map(|b| *b);
                     }
                 }
                 Event::DonorPrivateY { bucket } => {
@@ -1755,6 +1758,7 @@ impl NavigatorApp {
         self.donor_ancestry = None;
         self.fine_ancestry = None;
         self.ancient_ancestry = None;
+        self.nmonte_ancestry = None;
         self.estimating_donor_ancestry = false;
         self.painting = None;
         self.painting_running = false;
@@ -2119,6 +2123,10 @@ impl NavigatorApp {
                     if let Some(r) = &self.ancient_ancestry {
                         ui.add_space(10.0);
                         card(ui, self.tr("card.ancestryAncient"), |ui| draw_population_components(ui, r, "anc_ancient", 18));
+                    }
+                    if let Some(r) = &self.nmonte_ancestry {
+                        ui.add_space(10.0);
+                        card(ui, self.tr("card.ancestryNmonte"), |ui| draw_population_components(ui, r, "anc_nmonte", 18));
                     }
                 }
                 DetailTab::Sources => self.sources_tab(ui, guid),

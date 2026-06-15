@@ -297,6 +297,7 @@ hint.ancestryConsensus=from the pooled consensus across all sources — build th
 card.ancestryPerSource=Per-source estimators (advanced)
 card.ancestryModern=Detailed populations (modern)
 card.ancestryAncient=Ancient ancestry components
+card.ancestryNmonte=Mixture model (G25 / nMonte)
 card.consensusIbd=IBD — subject comparison (consensus)
 ibd.otherSubject=Compare against:
 ibd.compare=Compare

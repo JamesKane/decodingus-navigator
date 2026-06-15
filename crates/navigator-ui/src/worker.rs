@@ -374,8 +374,10 @@ pub enum Event {
     /// Detailed consensus ancestry reports: modern fine-population + ancient-component breakdowns.
     ConsensusAncestryDetail {
         biosample_guid: SampleGuid,
-        fine: Option<navigator_app::AncestryResult>,
-        ancient: Option<navigator_app::AncestryResult>,
+        // Boxed: AncestryResult is large, and three of them would bloat the Event enum's size.
+        fine: Option<Box<navigator_app::AncestryResult>>,
+        ancient: Option<Box<navigator_app::AncestryResult>>,
+        nmonte: Option<Box<navigator_app::AncestryResult>>,
     },
     /// Header-probe result for the add-alignment form (build/aligner/platform/test-type).
     AlignmentProbe(AlignmentProbe),
@@ -660,9 +662,10 @@ pub async fn handle(app: &App, cmd: Command) -> Event {
             }
         }
         Command::LoadConsensusAncestryDetail { biosample_guid } => {
-            let fine = app.consensus_ancestry(biosample_guid, "FINE_ADMIXTURE").await.unwrap_or(None);
-            let ancient = app.consensus_ancestry(biosample_guid, "PCA_PROJECTION_GMM").await.unwrap_or(None);
-            Event::ConsensusAncestryDetail { biosample_guid, fine, ancient }
+            let fine = app.consensus_ancestry(biosample_guid, "FINE_ADMIXTURE").await.unwrap_or(None).map(Box::new);
+            let ancient = app.consensus_ancestry(biosample_guid, "PCA_PROJECTION_GMM").await.unwrap_or(None).map(Box::new);
+            let nmonte = app.consensus_ancestry(biosample_guid, "G25_NMONTE").await.unwrap_or(None).map(Box::new);
+            Event::ConsensusAncestryDetail { biosample_guid, fine, ancient, nmonte }
         }
         // RunFullAnalysis streams AnalysisProgress from the spawn loop; CancelAnalysis sets the
         // shared cancel flag there. Reaching here would mean a routing bug.
