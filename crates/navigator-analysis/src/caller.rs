@@ -743,6 +743,139 @@ fn denovo_chunk(
     Ok(out)
 }
 
+/// Nominal base quality for the de-novo **diploid** genotype likelihood. The chunked pileup keeps
+/// only A/C/G/T counts (per-base quals would blow up WGS memory), and every counted base already
+/// cleared `min_base_quality`, so the GL is evaluated at this representative phred. The resulting
+/// genotype (0/1 vs 1/1 vs 0/0) is robust to the exact value; PL/GQ are approximate (the per-site
+/// [`genotype_sites`] path keeps true per-read quals when exact likelihoods matter).
+const DENOVO_DIPLOID_Q: u8 = 30;
+/// Minimum reads supporting the alt allele before a site is even considered a candidate variant —
+/// suppresses singleton sequencing-error "hets".
+const DENOVO_MIN_ALT_READS: u32 = 2;
+
+/// Whole-contig **de-novo diploid** SNV calling: the same chunked, parallel pileup as
+/// [`call_denovo`], but each variant site is genotyped at ploidy 2 via the genotype-likelihood model
+/// ([`genotype::call_genotype`]) — emitting heterozygous (0/1) and homozygous-alt (1/1) calls, not
+/// just a haploid consensus. Biallelic (REF + the top non-REF base) for v1; indels are not called
+/// here. Output is in ascending position order, as [`SiteGenotype`] (ploidy 2) — feed it to
+/// [`crate::vcf::write_diploid_vcf`].
+pub fn call_denovo_diploid(
+    bam_path: &Path,
+    reference_path: &Path,
+    contig: &str,
+    params: &HaploidCallerParams,
+) -> Result<Vec<SiteGenotype>, AnalysisError> {
+    let length = read_contig_length(bam_path, contig, Some(reference_path))?;
+    let ref_seq: Vec<u8> = {
+        let mut fasta_reader = fasta::io::indexed_reader::Builder::default()
+            .build_from_path(reference_path)
+            .map_err(|e| AnalysisError::io(reference_path, e))?;
+        let region: Region = format!("{contig}:1-{length}")
+            .parse()
+            .map_err(|_| AnalysisError::Message(format!("bad region for contig {contig}")))?;
+        fasta_reader
+            .query(&region)
+            .map_err(|e| AnalysisError::io(reference_path, e))?
+            .sequence()
+            .as_ref()
+            .to_vec()
+    };
+
+    let threads = crate::unified::analysis_thread_count();
+    let chunk = params.denovo_chunk.max(1);
+    let mut ranges: Vec<(usize, usize)> = Vec::new();
+    let mut emit_lo = 1usize;
+    while emit_lo <= length {
+        let emit_hi = (emit_lo + chunk - 1).min(length);
+        ranges.push((emit_lo, emit_hi));
+        emit_lo = emit_hi + 1;
+    }
+
+    let pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(threads)
+        .build()
+        .map_err(|e| AnalysisError::Message(format!("rayon pool: {e}")))?;
+    let nested: Vec<Vec<SiteGenotype>> = pool.install(|| {
+        ranges
+            .par_iter()
+            .map(|&(lo, hi)| denovo_chunk_diploid(bam_path, reference_path, contig, params, &ref_seq, length, lo, hi))
+            .collect::<Result<Vec<_>, AnalysisError>>()
+    })?;
+    Ok(nested.into_iter().flatten().collect())
+}
+
+/// De-novo diploid SNV calls for one emit range (mirrors [`denovo_chunk`], but genotypes ploidy 2).
+#[allow(clippy::too_many_arguments)]
+fn denovo_chunk_diploid(
+    bam_path: &Path,
+    reference_path: &Path,
+    contig: &str,
+    params: &HaploidCallerParams,
+    ref_seq: &[u8],
+    length: usize,
+    emit_lo: usize,
+    emit_hi: usize,
+) -> Result<Vec<SiteGenotype>, AnalysisError> {
+    let overlap = params.denovo_overlap;
+    let proc_lo = emit_lo.saturating_sub(overlap).max(1);
+    let proc_hi = (emit_hi + overlap).min(length);
+    let ref_chunk = &ref_seq[(proc_lo - 1).min(ref_seq.len())..proc_hi.min(ref_seq.len())];
+
+    let (mut counts, indel) = tally_region(bam_path, contig, params, proc_lo, proc_hi, Some(reference_path))?;
+    if params.local_realign {
+        realign_region(bam_path, contig, ref_chunk, proc_lo, &mut counts, &indel, params, Some(reference_path))?;
+    }
+
+    let mut out = Vec::new();
+    for pos in emit_lo..=emit_hi {
+        let r = pos - proc_lo;
+        let c = counts[r];
+        let depth: u32 = c.iter().sum();
+        if depth < params.min_depth {
+            continue;
+        }
+        let ref_base = ref_chunk.get(r).copied().unwrap_or(b'N');
+        let Some(ref_bi) = base_index(ref_base) else { continue }; // reference N/ambiguous
+        // The top non-reference base is the candidate alt (biallelic v1).
+        let (mut alt_bi, mut alt_count) = (None, 0u32);
+        for (bi, &n) in c.iter().enumerate() {
+            if bi != ref_bi && n > alt_count {
+                alt_count = n;
+                alt_bi = Some(bi);
+            }
+        }
+        let Some(alt_bi) = alt_bi else { continue }; // no alt observed → hom-ref, not emitted
+        if alt_count < DENOVO_MIN_ALT_READS {
+            continue;
+        }
+        let ref_count = c[ref_bi];
+        let (ref_byte, alt_byte) = (BASES[ref_bi], BASES[alt_bi]);
+        // Synthesize biallelic observations at a nominal quality (see DENOVO_DIPLOID_Q) and genotype.
+        let mut obs: Vec<(u8, u8)> = Vec::with_capacity((ref_count + alt_count) as usize);
+        obs.extend(std::iter::repeat((ref_byte, DENOVO_DIPLOID_Q)).take(ref_count as usize));
+        obs.extend(std::iter::repeat((alt_byte, DENOVO_DIPLOID_Q)).take(alt_count as usize));
+        let g = genotype::call_genotype(&obs, ref_byte, alt_byte, 2, params.min_depth);
+        if g.dosage < 1 {
+            continue; // hom-ref or no-call — not a variant record
+        }
+        out.push(SiteGenotype {
+            name: String::new(),
+            contig: contig.to_string(),
+            position: pos as i64,
+            reference_allele: (ref_byte as char).to_string(),
+            alternate_allele: (alt_byte as char).to_string(),
+            ploidy: 2,
+            dosage: g.dosage,
+            gq: g.gq,
+            depth,
+            ref_depth: ref_count,
+            alt_depth: alt_count,
+            pls: g.pls,
+        });
+    }
+    Ok(out)
+}
+
 /// Maximal runs of positions with enough indel evidence, each padded by `pad` and
 /// merged where they touch. Returns 0-based inclusive `(start, end)` reference windows.
 fn active_windows(indel_evidence: &[u32], min_reads: u32, pad: i64) -> Vec<(usize, usize)> {

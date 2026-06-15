@@ -2158,6 +2158,30 @@ impl App {
         self.load_analysis(alignment_id, &denovo_kind(contig), caller::DENOVO_VERSION).await
     }
 
+    /// Whole-contig **de-novo diploid** SNV calling (het 0/1 + hom-alt 1/1) on `contig`, cached per
+    /// alignment+contig. Reuses the alignment's BAM + reference (resolved from the build). Returns
+    /// [`SiteGenotype`]s in position order — feed to [`Self::diploid_vcf`].
+    pub async fn run_diploid_calls(&self, alignment_id: i64, contig: String) -> Result<Vec<SiteGenotype>, AppError> {
+        let kind = format!("diploid_denovo:{contig}");
+        if let Some(c) = self.load_analysis(alignment_id, &kind, caller::GENOTYPE_VERSION).await? {
+            return Ok(c);
+        }
+        let (bam, reference) = self.alignment_bam_reference(alignment_id).await?;
+        let params = adaptive_haploid_params(&bam, Some(&reference));
+        let calls = tokio::task::spawn_blocking(move || caller::call_denovo_diploid(&bam, &reference, &contig, &params))
+            .await
+            .map_err(|e| AppError::Join(e.to_string()))??;
+        self.save_analysis(alignment_id, &kind, caller::GENOTYPE_VERSION, &calls).await?;
+        Ok(calls)
+    }
+
+    /// A diploid VCF (VCFv4.2, `GT:AD:DP:GQ:PL`) of the de-novo diploid SNV calls for `contig`
+    /// (computing + caching them if needed). The sample column is `aln<id>`.
+    pub async fn diploid_vcf(&self, alignment_id: i64, contig: String) -> Result<String, AppError> {
+        let calls = self.run_diploid_calls(alignment_id, contig).await?;
+        Ok(navigator_analysis::vcf::write_diploid_vcf(&format!("aln{alignment_id}"), &calls))
+    }
+
     /// Run de-novo calling on `contig` using the alignment's own stored paths.
     /// The alignment's BAM + a usable reference FASTA: the stored path, else resolved from the
     /// alignment's build via the gateway (cached, else downloaded). Errors only if no BAM is

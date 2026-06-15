@@ -3,11 +3,24 @@
 
 use std::path::PathBuf;
 
-use navigator_analysis::caller::{genotype_sites, Site, SiteGenotype};
+use navigator_analysis::caller::{call_denovo_diploid, genotype_sites, Site, SiteGenotype};
 use navigator_analysis::caller::HaploidCallerParams;
+use navigator_analysis::vcf::write_diploid_vcf;
 
 fn fixtures() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures")
+}
+
+/// The diploid fixture is chr1 over reference `ACGTACGTAC` (10 bp). Write that reference + its `.fai`
+/// to a temp dir (the bundled `ref.fa` is chrM-only) so the de-novo caller can read it.
+fn chr1_reference() -> PathBuf {
+    let dir = std::env::temp_dir().join(format!("dun-diploid-ref-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let fa = dir.join("chr1.fa");
+    std::fs::write(&fa, b">chr1\nACGTACGTAC\n").unwrap();
+    // .fai: name, length, offset-of-first-base, bases-per-line, bytes-per-line.
+    std::fs::write(dir.join("chr1.fa.fai"), b"chr1\t10\t6\t10\t11\n").unwrap();
+    fa
 }
 
 fn site(name: &str, pos: i64, r: &str, a: &str) -> Site {
@@ -51,6 +64,36 @@ fn diploid_panel_genotyping_yields_dosages() {
     let missing = by_name(&calls, "missing");
     assert_eq!(missing.dosage, -1); // no-call
     assert_eq!(missing.depth, 0);
+}
+
+#[test]
+fn denovo_diploid_calls_het_and_hom_alt_then_writes_vcf() {
+    let dir = fixtures();
+    let reference = chr1_reference();
+    let calls =
+        call_denovo_diploid(&dir.join("diploid.bam"), &reference, "chr1", &HaploidCallerParams::default()).unwrap();
+
+    // Only the variant sites are emitted (the 7 hom-ref positions are not), in position order.
+    let by_pos = |p: i64| calls.iter().find(|c| c.position == p).cloned();
+    assert_eq!(calls.len(), 3, "expected pos 2/5/8 only, got {:?}", calls.iter().map(|c| c.position).collect::<Vec<_>>());
+
+    let p2 = by_pos(2).expect("het at pos 2");
+    assert_eq!((p2.reference_allele.as_str(), p2.alternate_allele.as_str()), ("C", "G"));
+    assert_eq!(p2.dosage, 1); // 10 C / 10 G → 0/1
+    assert_eq!((p2.ref_depth, p2.alt_depth), (10, 10));
+
+    assert_eq!(by_pos(5).expect("het at pos 5").dosage, 1); // A/T het
+
+    let p8 = by_pos(8).expect("hom-alt at pos 8");
+    assert_eq!((p8.reference_allele.as_str(), p8.alternate_allele.as_str()), ("T", "A"));
+    assert_eq!(p8.dosage, 2); // 20 A → 1/1
+
+    // VCF round-trips the genotypes.
+    let vcf = write_diploid_vcf("FIX", &calls);
+    assert!(vcf.contains("chr1\t2\t.\tC\tG\t"));
+    assert!(vcf.contains("\t0/1:10,10:20:"));
+    assert!(vcf.contains("\t1/1:0,20:20:"));
+    let _ = std::fs::remove_dir_all(reference.parent().unwrap());
 }
 
 #[test]
