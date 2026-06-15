@@ -115,6 +115,8 @@ pub enum Command {
     EstimateAncestryFromConsensus { biosample_guid: SampleGuid },
     /// Paint local ancestry from the subject's CONSENSUS (no BAM walk).
     PaintAncestryFromConsensus { biosample_guid: SampleGuid },
+    /// Load the cached detailed consensus ancestry reports (modern fine + ancient components).
+    LoadConsensusAncestryDetail { biosample_guid: SampleGuid },
     /// Find the private bucket: de-novo chrY calls off the assigned Y backbone, restricted
     /// by the chosen callable mask.
     FindPrivateY { alignment_id: i64, mask: YMask },
@@ -369,6 +371,12 @@ pub enum Event {
     MtProfile { biosample_guid: SampleGuid, profile: Option<navigator_app::ConsensusProfile> },
     /// The subject's multi-source autosomal consensus profile (diploid 0/1/2).
     AutosomalProfile { biosample_guid: SampleGuid, profile: Option<navigator_app::DiploidProfile> },
+    /// Detailed consensus ancestry reports: modern fine-population + ancient-component breakdowns.
+    ConsensusAncestryDetail {
+        biosample_guid: SampleGuid,
+        fine: Option<navigator_app::AncestryResult>,
+        ancient: Option<navigator_app::AncestryResult>,
+    },
     /// Header-probe result for the add-alignment form (build/aligner/platform/test-type).
     AlignmentProbe(AlignmentProbe),
     Coverage { alignment_id: i64, result: Option<Coverage> },
@@ -650,6 +658,11 @@ pub async fn handle(app: &App, cmd: Command) -> Event {
                 Ok(segments) => Event::AncestryPainting { alignment_id: navigator_app::CONSENSUS_SOURCE_ID, segments },
                 Err(e) => Event::Error(e.to_string()),
             }
+        }
+        Command::LoadConsensusAncestryDetail { biosample_guid } => {
+            let fine = app.consensus_ancestry(biosample_guid, "FINE_ADMIXTURE").await.unwrap_or(None);
+            let ancient = app.consensus_ancestry(biosample_guid, "PCA_PROJECTION_GMM").await.unwrap_or(None);
+            Event::ConsensusAncestryDetail { biosample_guid, fine, ancient }
         }
         // RunFullAnalysis streams AnalysisProgress from the spawn loop; CancelAnalysis sets the
         // shared cancel flag there. Reaching here would mean a routing bug.

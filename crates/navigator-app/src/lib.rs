@@ -6137,6 +6137,14 @@ impl App {
         Ok(all.into_iter().max_by_key(|(_, r)| r.snps_with_genotype))
     }
 
+    /// A specific persisted consensus ancestry estimate (keyed on the consensus pseudo-source +
+    /// `method`) — e.g. `"FINE_ADMIXTURE"` (detailed modern populations) or `"PCA_PROJECTION_GMM"`
+    /// (ancient components). Filtered per-subject (alignment_id 0 isn't biosample-unique on its own).
+    pub async fn consensus_ancestry(&self, biosample_guid: SampleGuid, method: &str) -> Result<Option<AncestryResult>, AppError> {
+        let all = ancestry_result::for_biosample(self.store.pool(), biosample_guid).await?;
+        Ok(all.into_iter().find(|(id, r)| *id == CONSENSUS_SOURCE_ID && r.method == method).map(|(_, r)| r))
+    }
+
     /// Donor-level private-Y: the **union** of cached (self-masked) private-Y calls across all of
     /// the subject's alignments, deduped by position (keeping the deepest observation). The
     /// terminal is taken from the deepest-covered source bucket.

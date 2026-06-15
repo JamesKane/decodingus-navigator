@@ -350,6 +350,9 @@ pub struct NavigatorApp {
     asset_status: Vec<navigator_app::AssetStatus>,
     /// Donor-level ancestry (best across the subject's sources): (source alignment id, result).
     donor_ancestry: Option<(i64, AncestryResult)>,
+    /// Detailed consensus ancestry reports: modern fine-population + ancient-component breakdowns.
+    fine_ancestry: Option<AncestryResult>,
+    ancient_ancestry: Option<AncestryResult>,
     /// Donor-level private-Y union across the subject's sources.
     donor_private_y: Option<PrivateBucket>,
     /// The selected subject's multi-source Y-variant profile.
@@ -766,6 +769,40 @@ fn draw_ancestry_donut(ui: &mut egui::Ui, summary: &[SuperPopulationSummary]) {
     }
 }
 
+/// Draw a detailed ancestry breakdown (the fine-population or ancient-component report): the
+/// estimate's `components`, sorted by share, as a name/percentage grid with a proportion bar, plus a
+/// provenance line (method + SNP count). `id_salt` keeps each report's grid distinct.
+fn draw_population_components(ui: &mut egui::Ui, result: &navigator_app::AncestryResult, id_salt: &str, top_n: usize) {
+    let mut comps: Vec<(&str, f64)> =
+        result.components.iter().filter(|c| c.percentage >= 0.05).map(|c| (c.population_code.as_str(), c.percentage)).collect();
+    comps.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+    if comps.is_empty() {
+        ui.label(egui::RichText::new("No components above 0.05%.").weak());
+        return;
+    }
+    let max = comps.first().map(|c| c.1).unwrap_or(1.0).max(1e-6);
+    egui::Grid::new(format!("{id_salt}_grid")).striped(true).num_columns(3).show(ui, |ui| {
+        for (name, pct) in comps.iter().take(top_n) {
+            ui.label(*name);
+            ui.label(egui::RichText::new(format!("{pct:.1}%")).strong());
+            // A small proportion bar (relative to the top component) for at-a-glance ranking.
+            let (rect, _) = ui.allocate_exact_size(egui::vec2(120.0, 10.0), egui::Sense::hover());
+            let p = ui.painter_at(rect);
+            p.rect_filled(rect, 2.0, ui.visuals().faint_bg_color);
+            let mut fill = rect;
+            fill.set_width(rect.width() * (pct / max) as f32);
+            p.rect_filled(fill, 2.0, ACCENT.gamma_multiply(0.7));
+            ui.end_row();
+        }
+    });
+    ui.add_space(4.0);
+    ui.label(
+        egui::RichText::new(format!("{} · {}/{} SNPs · confidence {:.0}%", result.method, result.snps_with_genotype, result.snps_analyzed, result.confidence_level * 100.0))
+            .weak()
+            .small(),
+    );
+}
+
 /// Draw the super-population composition as a single stacked horizontal bar (segment widths =
 /// proportions, colored by continent).
 fn draw_composition_bar(ui: &mut egui::Ui, summary: &[SuperPopulationSummary]) {
@@ -1061,6 +1098,8 @@ impl NavigatorApp {
             y_haplogroup: None,
             mt_haplogroup: None,
             donor_ancestry: None,
+            fine_ancestry: None,
+            ancient_ancestry: None,
             donor_private_y: None,
             y_profile: None,
             y_profile_filter: None,
@@ -1444,6 +1483,16 @@ impl NavigatorApp {
                 Event::DonorAncestry { alignment_id, result } => {
                     self.estimating_donor_ancestry = false;
                     self.donor_ancestry = Some((alignment_id, result));
+                    // A fresh consensus estimate persisted the detailed methods too — refresh them.
+                    if let Some(g) = self.selected_sample {
+                        let _ = self.tx.send(Command::LoadConsensusAncestryDetail { biosample_guid: g });
+                    }
+                }
+                Event::ConsensusAncestryDetail { biosample_guid, fine, ancient } => {
+                    if self.selected_sample == Some(biosample_guid) {
+                        self.fine_ancestry = fine;
+                        self.ancient_ancestry = ancient;
+                    }
                 }
                 Event::DonorPrivateY { bucket } => {
                     self.donor_private_y = Some(bucket);
@@ -1704,6 +1753,8 @@ impl NavigatorApp {
         self.selected_sample = Some(guid);
         self.pending_alignment = None;
         self.donor_ancestry = None;
+        self.fine_ancestry = None;
+        self.ancient_ancestry = None;
         self.estimating_donor_ancestry = false;
         self.painting = None;
         self.painting_running = false;
@@ -1745,6 +1796,7 @@ impl NavigatorApp {
         // private-Y union across all sources).
         let _ = self.tx.send(Command::DefaultAlignment { biosample_guid: guid });
         let _ = self.tx.send(Command::LoadDonorAncestry { biosample_guid: guid });
+        let _ = self.tx.send(Command::LoadConsensusAncestryDetail { biosample_guid: guid });
         let _ = self.tx.send(Command::LoadDonorPrivateY { biosample_guid: guid });
         // The Y-variant profile is *built* on explicit request (re-genotypes each alignment), but a
         // previously-built snapshot loads cheaply — fetch it so the Y-DNA tab shows it immediately.
@@ -2058,6 +2110,16 @@ impl NavigatorApp {
                             }
                         }
                     });
+                    // Detailed reports from the same consensus estimate (persisted alongside the
+                    // super-population ADMIXTURE): modern fine populations + ancient components.
+                    if let Some(r) = &self.fine_ancestry {
+                        ui.add_space(10.0);
+                        card(ui, self.tr("card.ancestryModern"), |ui| draw_population_components(ui, r, "anc_fine", 18));
+                    }
+                    if let Some(r) = &self.ancient_ancestry {
+                        ui.add_space(10.0);
+                        card(ui, self.tr("card.ancestryAncient"), |ui| draw_population_components(ui, r, "anc_ancient", 18));
+                    }
                 }
                 DetailTab::Sources => self.sources_tab(ui, guid),
                 DetailTab::IbdMatches => {
