@@ -13,6 +13,7 @@ pub mod ancestry_result;
 pub mod artifact;
 pub mod biosample;
 pub mod chip_profile;
+pub mod consensus_profile;
 pub mod haplogroup_call;
 pub mod mtdna;
 pub mod error;
@@ -24,7 +25,6 @@ pub mod str_profile;
 pub mod sync_history;
 pub mod sync_outbox;
 pub mod variant_set;
-pub mod y_profile;
 
 pub use error::StoreError;
 

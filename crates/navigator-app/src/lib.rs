@@ -1125,21 +1125,27 @@ fn decodingus_appview_url() -> String {
     resolve_appview_url(std::env::var("DECODINGUS_APPVIEW_URL").ok(), AppSettings::load().appview_url)
 }
 
-/// A subject's multi-source Y-variant profile. Computed by [`App::build_y_profile`] and persisted as
-/// a snapshot (serialized to the `y_profile` table's payload) so [`App::cached_y_profile`] can reload
-/// it without re-genotyping.
+/// A subject's multi-source variant **consensus profile** for one DNA type (Y today; mtDNA /
+/// autosomal adapters reuse this aggregate + the generic engine). Persisted as a snapshot (serialized
+/// to the `consensus_profile` table's payload, keyed by `(biosample, dna_type)`) so
+/// [`App::cached_consensus_profile`] can reload it without re-genotyping.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
-pub struct YProfile {
+pub struct ConsensusProfile {
     pub variants: Vec<YProfileVariant>,
     pub summary: YProfileSummary,
-    /// Consensus terminal Y haplogroup across sources, if any.
+    /// Consensus lineage label (terminal Y/mt haplogroup) across sources, if any. `None` for DNA
+    /// types without a lineage label (e.g. autosomal).
     pub terminal: Option<String>,
-    /// Per-source provenance (which tests contributed, and how many SNPs each).
+    /// Per-source provenance (which tests contributed, and how many variants each).
     #[serde(default)]
     pub sources: Vec<YSourceSummary>,
 }
 
-/// One contributing source in a [`YProfile`] (provenance display).
+/// The Y-DNA view of a [`ConsensusProfile`] — the Y adapter is the first consumer of the generic
+/// consensus aggregate; the name is kept for the Y-DNA tab + worker contract.
+pub type YProfile = ConsensusProfile;
+
+/// One contributing source in a [`ConsensusProfile`] (provenance display).
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct YSourceSummary {
     pub label: String,
@@ -3685,13 +3691,48 @@ impl App {
         Ok(reconciliation::reconcile_variants(&sources))
     }
 
-    /// The persisted Y-profile snapshot for a subject, if one has been built — cheap (no
-    /// genotyping). `None` until [`build_y_profile`](Self::build_y_profile) runs.
-    pub async fn cached_y_profile(&self, biosample_guid: SampleGuid) -> Result<Option<YProfile>, AppError> {
-        match navigator_store::y_profile::get(self.store.pool(), biosample_guid).await? {
+    /// The persisted consensus-profile snapshot for a subject + DNA type, if built — cheap (no
+    /// genotyping). The shared loader behind [`cached_y_profile`](Self::cached_y_profile); the future
+    /// mtDNA / autosomal tabs reuse it with a different [`DnaType`]. `None` until a build runs.
+    pub async fn cached_consensus_profile(&self, biosample_guid: SampleGuid, dna_type: DnaType) -> Result<Option<ConsensusProfile>, AppError> {
+        match navigator_store::consensus_profile::get(self.store.pool(), biosample_guid, dna_type.as_str()).await? {
             Some(row) => Ok(Some(serde_json::from_str(&row.payload)?)),
             None => Ok(None),
         }
+    }
+
+    /// Persist a reconciled consensus profile snapshot (the scalar columns mirror the summary header;
+    /// the full profile is JSON in `payload`). Shared by the Y / mt / autosomal build paths.
+    async fn persist_consensus_profile(
+        &self,
+        biosample_guid: SampleGuid,
+        dna_type: DnaType,
+        profile: &ConsensusProfile,
+        tree_provider: Option<String>,
+    ) -> Result<(), AppError> {
+        let stored = navigator_store::consensus_profile::StoredConsensusProfile {
+            biosample_guid: biosample_guid.0.to_string(),
+            dna_type: dna_type.as_str().to_string(),
+            consensus_label: profile.terminal.clone(),
+            overall_confidence: profile.summary.overall_confidence,
+            source_count: profile.sources.len() as i64,
+            total: profile.summary.total as i64,
+            confirmed: profile.summary.confirmed as i64,
+            novel: profile.summary.novel as i64,
+            conflict: profile.summary.conflict as i64,
+            single_source: profile.summary.single_source as i64,
+            tree_provider,
+            payload: serde_json::to_string(profile)?,
+            last_reconciled_at: Utc::now().to_rfc3339(),
+        };
+        navigator_store::consensus_profile::upsert(self.store.pool(), &stored).await?;
+        Ok(())
+    }
+
+    /// The persisted Y-profile snapshot for a subject, if one has been built — cheap (no
+    /// genotyping). `None` until [`build_y_profile`](Self::build_y_profile) runs.
+    pub async fn cached_y_profile(&self, biosample_guid: SampleGuid) -> Result<Option<YProfile>, AppError> {
+        self.cached_consensus_profile(biosample_guid, DnaType::Y).await
     }
 
     /// Build (and persist) the multi-source Y-variant profile: reconcile each Y-bearing source's
@@ -3785,27 +3826,14 @@ impl App {
             .haplogroup_consensus(biosample_guid, DnaType::Y)
             .await?
             .map(|c| c.haplogroup);
-        let profile = YProfile { variants, summary, terminal, sources: source_summaries };
+        let profile = ConsensusProfile { variants, summary, terminal, sources: source_summaries };
 
-        // Persist the snapshot so the tab reloads it without re-genotyping.
-        let stored = navigator_store::y_profile::StoredYProfile {
-            biosample_guid: biosample_guid.0.to_string(),
-            consensus_haplogroup: profile.terminal.clone(),
-            overall_confidence: profile.summary.overall_confidence,
-            source_count: profile.sources.len() as i64,
-            total: profile.summary.total as i64,
-            confirmed: profile.summary.confirmed as i64,
-            novel: profile.summary.novel as i64,
-            conflict: profile.summary.conflict as i64,
-            single_source: profile.summary.single_source as i64,
-            tree_provider: Some(match y_tree_provider() {
-                YTreeProvider::DecodingUs => "decodingus".to_string(),
-                YTreeProvider::Ftdna => "ftdna".to_string(),
-            }),
-            payload: serde_json::to_string(&profile)?,
-            last_reconciled_at: Utc::now().to_rfc3339(),
-        };
-        navigator_store::y_profile::upsert(self.store.pool(), biosample_guid, &stored).await?;
+        // Persist the snapshot (keyed dna_type='Y') so the tab reloads it without re-genotyping.
+        let provider = Some(match y_tree_provider() {
+            YTreeProvider::DecodingUs => "decodingus".to_string(),
+            YTreeProvider::Ftdna => "ftdna".to_string(),
+        });
+        self.persist_consensus_profile(biosample_guid, DnaType::Y, &profile, provider).await?;
         Ok(profile)
     }
 
