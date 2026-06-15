@@ -87,10 +87,17 @@ impl IbdPanel {
     }
 
     /// Resolve chip calls (on `build`, as `(contig, pos, a1, a2)`) to canonical CHM13 dosages.
-    /// Indexes the panel by the build's `(contig, position)`, reconciles each observed pair against
-    /// that build's `(REF, ALT)` — direct or reverse-complement ([`dosage_from_alleles`]) — and emits
-    /// the ALT dosage as a [`SiteGenotype`] at the CHM13 locus. No runtime liftover; no alignment.
-    /// Unmatched / no-call / non-reconciling calls are dropped.
+    /// Indexes the panel by the build's `(contig, position)`, then counts copies of the **canonical
+    /// CHM13 ALT** directly from each observed pair — direct or reverse-complement
+    /// ([`dosage_from_alleles`]) — and emits it as a [`SiteGenotype`] at the CHM13 locus. No runtime
+    /// liftover; no alignment. Unmatched / no-call / non-reconciling calls are dropped.
+    ///
+    /// We deliberately score against the **CHM13** `(REF, ALT)`, not the build locus's: chip allele
+    /// letters are absolute, and the asset's per-build `(REF, ALT)` labels are *not* reliably oriented
+    /// to the CHM13 ALT (a large fraction are ref/alt-swapped relative to CHM13 — the GRCh37 reference
+    /// allele is often the CHM13 ALT), so scoring against the build ALT flips the dosage 0↔2 at those
+    /// sites. Comparing the chip alleles to the CHM13 alleles (with the rc retry for strand) is
+    /// orientation-bug-proof; the build locus is used only to look the site up by position.
     pub fn resolve_chip(&self, build: &str, calls: &[(String, i64, char, char)]) -> Vec<SiteGenotype> {
         let mut index: HashMap<(&str, i64), &IbdPanelSite> = HashMap::new();
         for s in &self.sites {
@@ -101,8 +108,7 @@ impl IbdPanel {
         let mut out = Vec::new();
         for (contig, pos, a1, a2) in calls {
             let Some(site) = index.get(&(contig.as_str(), *pos)) else { continue };
-            let l = site.locus(build).unwrap(); // present (it's how the site got indexed)
-            let Some(dosage) = dosage_from_alleles(*a1, *a2, l.reference, l.alternate) else { continue };
+            let Some(dosage) = dosage_from_alleles(*a1, *a2, site.chm13.reference, site.chm13.alternate) else { continue };
             out.push(SiteGenotype {
                 name: site.rsid.clone(),
                 contig: site.chm13.contig.clone(),
@@ -191,6 +197,20 @@ mod tests {
         assert_eq!(by_pos.get(&100), Some(&1)); // AG → one ALT(G)
         assert_eq!(by_pos.get(&200), Some(&1)); // TC == rc(AG) → one ALT
         assert!(g.iter().all(|s| s.contig == "chr1")); // canonical CHM13 contig
+    }
+
+    #[test]
+    fn resolve_chip_ref_alt_swapped_against_chm13() {
+        // The asset's GRCh37 locus is ref/alt-SWAPPED vs CHM13: chm13 chr1:100 G/T (ALT=T) but
+        // grch37 1:500 T/G (ALT=G). A chip hom for G is hom-CHM13-REF → dosage 0. Scoring against the
+        // build ALT (G) would wrongly give 2; scoring against the CHM13 ALT (T) gives the correct 0.
+        let (panel, _) = IbdPanel::from_sites("chm13v2.0", vec![site("rs_swap", (100, 'G', 'T'), Some((500, 'T', 'G')))]);
+        let g = panel.resolve_chip("GRCh37", &[("1".to_string(), 500, 'G', 'G')]);
+        assert_eq!(g.len(), 1);
+        assert_eq!(g[0].dosage, 0); // hom CHM13-ref, not 2
+        assert_eq!((g[0].reference_allele.as_str(), g[0].alternate_allele.as_str()), ("G", "T")); // canonical CHM13 alleles
+        // The other homozygote (T/T) is hom CHM13-ALT → dosage 2.
+        assert_eq!(panel.resolve_chip("GRCh37", &[("1".to_string(), 500, 'T', 'T')])[0].dosage, 2);
     }
 
     #[test]
