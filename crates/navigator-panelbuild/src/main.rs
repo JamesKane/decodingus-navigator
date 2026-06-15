@@ -25,6 +25,7 @@ use navigator_analysis::ancestry::{AncestryPanel, PanelSite};
 
 mod genetic_map;
 mod ibd_panel;
+mod manifest;
 mod pca;
 
 /// The five 1000G super-populations, in panel-axis order.
@@ -50,6 +51,8 @@ enum Cmd {
     GeneticMap(genetic_map::GeneticMapArgs),
     /// Build the chip-compatible IBD panel (multi-build, palindrome-free) from a sites table.
     IbdPanel(ibd_panel::IbdPanelArgs),
+    /// Build the asset integrity manifest (sha256 of every `*_<build>.bin`). Run last.
+    Manifest(manifest::ManifestArgs),
 }
 
 #[derive(Parser)]
@@ -110,6 +113,7 @@ fn main() -> Result<()> {
         Cmd::FinePanel(args) => pca::build_fine_panel(args),
         Cmd::GeneticMap(args) => genetic_map::build_genetic_map(args),
         Cmd::IbdPanel(args) => ibd_panel::build_ibd_panel(args),
+        Cmd::Manifest(args) => manifest::build_manifest(args),
     }
 }
 

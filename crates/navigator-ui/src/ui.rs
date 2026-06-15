@@ -318,6 +318,8 @@ pub struct NavigatorApp {
     fine_ancestry: Option<(i64, Option<AncestryResult>)>,
     /// On-demand chip ancestry: (chip profile id, result).
     chip_ancestry: Option<(i64, AncestryResult)>,
+    /// Ancestry/IBD reference-asset presence + integrity (the "data sources" line). Loaded once.
+    asset_status: Vec<navigator_app::AssetStatus>,
     /// Whether a chip-ancestry estimate is in flight.
     estimating_chip_ancestry: bool,
     /// Donor-level ancestry (best across the subject's sources): (source alignment id, result).
@@ -906,6 +908,28 @@ fn ideogram_legend(ui: &mut egui::Ui) {
     });
 }
 
+/// A compact "data sources" line: which ancestry/IBD reference assets are present and
+/// integrity-verified (✓ verified · • present-but-unverified · ✗ absent).
+fn asset_status_line(ui: &mut egui::Ui, assets: &[navigator_app::AssetStatus]) {
+    if assets.is_empty() {
+        return;
+    }
+    ui.horizontal_wrapped(|ui| {
+        ui.label(egui::RichText::new("Data sources:").small().weak());
+        for a in assets {
+            let (mark, col, hover) = if a.verified {
+                ("✓", egui::Color32::from_rgb(80, 170, 90), "present, integrity-verified")
+            } else if a.present {
+                ("•", egui::Color32::from_gray(150), "present (no manifest to verify)")
+            } else {
+                ("✗", egui::Color32::from_rgb(170, 90, 90), "not installed")
+            };
+            ui.colored_label(col, egui::RichText::new(format!("{} {mark}", a.name)).small()).on_hover_text(hover);
+            ui.add_space(4.0);
+        }
+    });
+}
+
 /// Draw the chromosome ideogram: one horizontal bar per chromosome (scaled to the longest), its
 /// cytobands as Giemsa-stained segments, with a hover tooltip naming the band under the cursor.
 fn draw_ideogram(ui: &mut egui::Ui, regions: &navigator_app::GenomeRegions) {
@@ -1036,6 +1060,7 @@ impl NavigatorApp {
         let _ = tx.send(Command::AuthStatus);
         let _ = tx.send(Command::SyncStatus);
         let _ = tx.send(Command::BackfillLabs); // resolve labs for runs imported before D8 landed
+        let _ = tx.send(Command::LoadAssetStatus); // ancestry/IBD "data sources" line
         // Persisted theme wins; default dark. (Must match `dark_mode` below.)
         let dark = !matches!(AppSettings::load().theme.as_deref(), Some("light"));
         apply_theme(&cc.egui_ctx, dark);
@@ -1086,6 +1111,7 @@ impl NavigatorApp {
             variant_concordance: Vec::new(),
             chip_profiles: Vec::new(),
             chip_ancestry: None,
+            asset_status: Vec::new(),
             estimating_chip_ancestry: false,
             mtdna_sequences: Vec::new(),
             mtdna_variants: std::collections::HashMap::new(),
@@ -1174,6 +1200,7 @@ impl NavigatorApp {
                     self.status = format!("{} project(s)", v.len());
                     self.overview = v;
                 }
+                Event::AssetStatus(v) => self.asset_status = v,
                 Event::ProjectCreated(p) => {
                     self.select_project(p.id);
                     let _ = self.tx.send(Command::LoadOverview);
@@ -4852,6 +4879,8 @@ impl NavigatorApp {
     }
 
     fn ancestry_section(&mut self, ui: &mut egui::Ui, alignment_id: i64) {
+        asset_status_line(ui, &self.asset_status);
+        ui.add_space(4.0);
         let has_bam = self
             .alignments
             .iter()

@@ -148,6 +148,15 @@ pub enum IbdSource {
     Chip(i64),
 }
 
+/// Presence + integrity of one ancestry/IBD reference asset, for the "data sources" transparency
+/// affordance. `verified` is true only when a manifest lists the file and its SHA-256 matches.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AssetStatus {
+    pub name: String,
+    pub present: bool,
+    pub verified: bool,
+}
+
 /// A pseudonymous federated-IBD candidate from the AppView's match engine. The
 /// `suggested_sample_guid` is the AppView's opaque handle for the counterpart (not a DID,
 /// not PII) — used to request an introduction. `signals` names the sources that contributed
@@ -660,6 +669,61 @@ fn ibd_panel_path(build: ReferenceBuild) -> PathBuf {
         .join(format!("ibd_panel_{}.bin", build.as_str()))
 }
 
+/// The ancestry/IBD reference assets for the analysis build (CHM13), each with presence + manifest
+/// verification — the "data sources" transparency line. Pure filesystem inspection (no analysis).
+pub fn ancestry_asset_status() -> Vec<AssetStatus> {
+    let build = ReferenceBuild::Chm13v2;
+    let manifest = load_asset_manifest(build);
+    [
+        ("super-pop panel", ancestry_panel_path(build)),
+        ("PCA (modern)", ancestry_pca_path(build)),
+        ("PCA (ancient)", ancestry_pca_ancient_path(build)),
+        ("fine frequencies", ancestry_freq_global_path(build)),
+        ("genetic map", genetic_map_path(build)),
+        ("IBD panel", ibd_panel_path(build)),
+    ]
+    .into_iter()
+    .map(|(name, path)| {
+        let bytes = std::fs::read(&path).ok();
+        let verified = match (&manifest, &bytes, path.file_name().and_then(|n| n.to_str())) {
+            (Some(m), Some(b), Some(fname)) => m.assets.contains_key(fname) && m.verify(fname, b).is_ok(),
+            _ => false,
+        };
+        AssetStatus { name: name.to_string(), present: bytes.is_some(), verified }
+    })
+    .collect()
+}
+
+/// The asset integrity manifest path for a build (`<base>/ancestry/ancestry_manifest_<build>.json`).
+fn ancestry_manifest_path(build: ReferenceBuild) -> PathBuf {
+    refgenome_cache::base_dir().join("ancestry").join(format!("ancestry_manifest_{}.json", build.as_str()))
+}
+
+/// Load the build's asset manifest, if one is published. `None` (absent / unparseable) ⇒ integrity
+/// checks are skipped (advisory).
+fn load_asset_manifest(build: ReferenceBuild) -> Option<navigator_analysis::manifest::AssetManifest> {
+    std::fs::read_to_string(ancestry_manifest_path(build))
+        .ok()
+        .and_then(|s| navigator_analysis::manifest::AssetManifest::from_json(&s).ok())
+}
+
+/// Read an asset file (`None` if absent), verifying its SHA-256 against the build manifest when one
+/// is present. A **checksum mismatch is a hard error** — refuse a corrupt / truncated asset rather
+/// than analyze against it. A missing manifest (or an unlisted file) passes through unverified.
+fn read_verified_asset(build: ReferenceBuild, path: &Path) -> Result<Option<Vec<u8>>, AppError> {
+    let Ok(bytes) = std::fs::read(path) else { return Ok(None) };
+    if let Some(manifest) = load_asset_manifest(build) {
+        if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+            if let Err((expected, got)) = manifest.verify(name, &bytes) {
+                return Err(AppError::Import(format!(
+                    "asset {name} failed its integrity check (manifest sha256 {expected}, file {got}) — re-download it"
+                )));
+            }
+        }
+    }
+    Ok(Some(bytes))
+}
+
 /// The genetic-map asset path for a build (`$NAVIGATOR_GENETIC_MAP` override, else
 /// `<base>/ancestry/genetic_map_<build>.bin`). Optional — IBD falls back to a uniform map if absent.
 fn genetic_map_path(build: ReferenceBuild) -> PathBuf {
@@ -676,7 +740,11 @@ fn genetic_map_path(build: ReferenceBuild) -> PathBuf {
 /// compared samples — used only for the uniform fallback.
 fn load_genetic_map(build: ReferenceBuild, lengths: &[(&str, i32)]) -> GeneticMap {
     let path = genetic_map_path(build);
-    match std::fs::read(&path).ok().and_then(|b| GeneticMap::from_bytes(&b).ok()) {
+    let bytes = read_verified_asset(build, &path).unwrap_or_else(|e| {
+        eprintln!("{e}"); // integrity mismatch on an optional asset → fall through to uniform
+        None
+    });
+    match bytes.and_then(|b| GeneticMap::from_bytes(&b).ok()) {
         Some(m) => m,
         None => {
             eprintln!(
@@ -4052,8 +4120,8 @@ impl App {
         let build = canonical_build(&aln.reference_build)
             .ok_or_else(|| AppError::Refgenome(navigator_refgenome::RefgenomeError::UnknownBuild(aln.reference_build.clone())))?;
         let panel_path = ancestry_panel_path(build);
-        let panel_bytes = std::fs::read(&panel_path)
-            .map_err(|_| AppError::AncestryPanelMissing(panel_path.clone()))?;
+        let panel_bytes = read_verified_asset(build, &panel_path)?
+            .ok_or_else(|| AppError::AncestryPanelMissing(panel_path.clone()))?;
         let panel = AncestryPanel::from_bytes(&panel_bytes)?;
         if canonical_build(&panel.build) != Some(build) {
             return Err(AppError::AncestryPanelBuildMismatch {
@@ -4072,11 +4140,13 @@ impl App {
         // for the scatter; the ancient asset (if present) drives a PCA-projection GMM over ancient
         // components (Steppe/EEF/WHG). The GMM runs against the ancient asset when available, else
         // the modern one — so PCA_PROJECTION_GMM is always over the best available reference.
-        let pca_bytes = std::fs::read(ancestry_pca_path(build)).ok();
-        let ancient_pca_bytes = std::fs::read(ancestry_pca_ancient_path(build)).ok();
+        // Optional assets: an integrity mismatch on any drops it (logged) rather than failing the run.
+        let optional = |path: PathBuf| read_verified_asset(build, &path).unwrap_or_else(|e| { eprintln!("{e}"); None });
+        let pca_bytes = optional(ancestry_pca_path(build));
+        let ancient_pca_bytes = optional(ancestry_pca_ancient_path(build));
         // Optional fine-population frequencies (same panel sites) → a fine modern admixture over a
         // curated subset. Absent ⇒ silently skipped.
-        let fine_bytes = std::fs::read(ancestry_freq_global_path(build)).ok();
+        let fine_bytes = optional(ancestry_freq_global_path(build));
 
         // Returns (admixture, optional PCA-GMM, optional nMonte, optional fine admixture).
         let (result, pca_gmm, nmonte, fine) = tokio::task::spawn_blocking(move || {
@@ -4151,7 +4221,8 @@ impl App {
         // The chip-ancestry target is the CHM13 AIMs panel.
         let build = ReferenceBuild::Chm13v2;
         let panel_path = ancestry_panel_path(build);
-        let panel_bytes = std::fs::read(&panel_path).map_err(|_| AppError::AncestryPanelMissing(panel_path.clone()))?;
+        let panel_bytes =
+            read_verified_asset(build, &panel_path)?.ok_or_else(|| AppError::AncestryPanelMissing(panel_path.clone()))?;
         let panel = AncestryPanel::from_bytes(&panel_bytes)?;
         let reference_version = panel.build.clone();
 
@@ -5647,7 +5718,7 @@ impl App {
         let calls = chipprofile::autosomal_calls(&text);
 
         let panel_path = ibd_panel_path(ReferenceBuild::Chm13v2);
-        let bytes = std::fs::read(&panel_path).map_err(|_| {
+        let bytes = read_verified_asset(ReferenceBuild::Chm13v2, &panel_path)?.ok_or_else(|| {
             AppError::Import(format!("IBD panel asset not found at {} — build it with `panelbuild ibd-panel`", panel_path.display()))
         })?;
         let panel = navigator_analysis::ibd_panel::IbdPanel::from_bytes(&bytes)?;
@@ -5715,7 +5786,7 @@ impl App {
                 let bam = PathBuf::from(aln.bam_path.ok_or(AppError::MissingPaths(id))?);
                 let reference = aln.reference_path.map(PathBuf::from);
                 let panel_path = ibd_panel_path(ReferenceBuild::Chm13v2);
-                let bytes = std::fs::read(&panel_path).map_err(|_| {
+                let bytes = read_verified_asset(ReferenceBuild::Chm13v2, &panel_path)?.ok_or_else(|| {
                     AppError::Import(format!("IBD panel asset not found at {} — build it with `panelbuild ibd-panel`", panel_path.display()))
                 })?;
                 let panel = navigator_analysis::ibd_panel::IbdPanel::from_bytes(&bytes)?;

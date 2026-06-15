@@ -55,6 +55,8 @@ pub struct NewBiosample {
 #[derive(Debug, Clone)]
 pub enum Command {
     LoadOverview,
+    /// Load the ancestry/IBD asset presence + integrity status (the "data sources" line).
+    LoadAssetStatus,
     CreateProject(NewProject),
     LoadSamples(i64),
     /// Load the per-sample coverage/haplogroup report for a project.
@@ -282,6 +284,8 @@ pub enum Event {
     /// Nothing to report (e.g. a cache-load that missed) — the UI ignores it.
     Noop,
     Overview(Vec<ProjectOverview>),
+    /// Ancestry/IBD asset presence + integrity (the "data sources" transparency line).
+    AssetStatus(Vec<navigator_app::AssetStatus>),
     ProjectCreated(Project),
     /// A project was updated or deleted; reload the overview.
     ProjectsChanged,
@@ -431,6 +435,7 @@ pub async fn handle(app: &App, cmd: Command) -> Event {
             Ok(v) => Event::Overview(v),
             Err(e) => Event::Error(e.to_string()),
         },
+        Command::LoadAssetStatus => Event::AssetStatus(navigator_app::ancestry_asset_status()),
         Command::CreateProject(new) => match app.create_project(new).await {
             Ok(p) => Event::ProjectCreated(p),
             Err(e) => Event::Error(e.to_string()),
