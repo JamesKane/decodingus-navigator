@@ -14,11 +14,11 @@ CHM13 alignment effort — it runs entirely off published call sets.
 | Stage | Script | Does |
 |-------|--------|------|
 | 0 | `config.sh` | all paths, versions, URLs, panel params, CDN target (override via env) |
-| 1 | `01_fetch.sh` | download CHM13 FASTA + chains, AADR (Dataverse), 1000G-CHM13 **AF** files; optionally SGDP. Big genotype sets are NOT bulk-pulled (see Download footprint) |
+| 1 | `01_fetch.sh` | download CHM13 FASTA + chains, AADR (Dataverse), 1000G-CHM13 **AF** files, the recombination map, and (for the IBD panel's GRCh38 column) the hg38 FASTA; optionally SGDP. Big genotype sets are NOT bulk-pulled (see Download footprint) |
 | 2 | `02_liftover_panel_sites.sh` | lift the AADR 1240k site universe hg19 → CHM13 (and → hg38 if GRCh38 sources are enabled) |
 | 3 | `03_select_panel.sh` | restrict 1000G-CHM13 AF to 1240k∩CHM13, Fst-select AIMs → `ancestry_panel_<build>.bin` |
 | 4 | `04_build_matrices.sh` | per source: get genotypes (slice 1000G BCF / slice gnomAD remotely / convert AADR+SGDP), liftover, align to CHM13 ref, cut to panel sites → matrices + pop map |
-| 5 | `05_build_assets.sh` | `panelbuild pca` + `fine-panel` → global PCA + freq assets + provenance manifest |
+| 5 | `05_build_assets.sh` | build all asset `.bin`s: `pca` **modern** + **ancient** (projection), `fine-panel`, `genetic-map` (GRCh38→CHM13 recombination map), `ibd-panel` (chip-compatible multi-build), then the `manifest` |
 | 6 | `06_publish_cdn.sh` | sha256 + upload assets + manifest to the CDN (`--apply` to actually upload) |
 
 Run in order: `for s in 01 02 03 04 05; do ./"$s"_*.sh; done` then `./06_publish_cdn.sh --apply`.
@@ -37,6 +37,8 @@ genomes. The naive "download everything" pull would be ~5 TB; the default build 
 | 1000G-CHM13 genotypes (phased biallelic 3202 BCF) | **downloaded whole (~13 GB)** then sliced locally — remote `-R` over S3 is unreliable ("Illegal seek") | ~13 GB |
 | AADR v66.p1 1240K (Harvard Dataverse) | geno/snp/ind/anno | ~7.3 GB |
 | CHM13 FASTA + chains | reference + liftover | ~1 GB |
+| Recombination map (Beagle/deCODE GRCh38) | for the IBD genetic-map asset | ~45 MB |
+| hg38 FASTA (`IBD_GRCH38=1`, default) | UCSC hg38 — for the IBD panel's GRCh38 allele column (GRCh38 chips); set `IBD_GRCH38=0` to skip | ~1 GB |
 | **gnomAD HGDP+1KG** (`HGDP_1KG_ENABLE=1`) | **IMPRACTICAL** — chr22 alone ~60 GB (~2 TB total, no bulk DL); remote `-R` ~5 s/site (~28 h, fragile). Off; prefer SGDP/AADR | — |
 | **SGDP** (`SGDP_ENABLE=1`) | GRCh37 PLINK fetched whole, panel-restricted + lifted hg19→CHM13 | ~3 GB |
 
@@ -80,9 +82,15 @@ External tools (not bundled): `curl`, `bcftools` + `tabix`, `samtools`, `CrossMa
 ## Outputs (in `$ASSETS`, default `~/.decodingus/ancestry`)
 
 - `ancestry_panel_<build>.bin` — AIMs AF panel (genotyping + super-pop admixture)
-- `ancestry_pca_<build>.bin` — global PCA loadings + per-population centroids (GMM + nMonte)
+- `ancestry_pca_<build>.bin` — **modern** PCA loadings + per-population centroids (PC1×PC2 scatter)
+- `ancestry_pca_ancient_<build>.bin` — PCA with the **ancient deep components** projected (GMM + nMonte)
 - `ancestry_freq_global_<build>.bin` — global per-population AF (fine admixture)
+- `genetic_map_<build>.bin` — IBD recombination map (bp→cM per chromosome)
+- `ibd_panel_<build>.bin` — chip-compatible **multi-build** IBD SNP panel (CHM13 + GRCh37 [+ GRCh38 if `IBD_GRCH38=1`], palindrome-free)
 - `ancestry_manifest_<build>.json` — provenance + sha256 (published; clients verify against it)
+
+These are exactly the six data sources the Navigator Ancestry tab reports (super-pop panel · PCA
+modern · PCA ancient · fine frequencies · genetic map · IBD panel).
 
 ## Known refinements (tracked in `documents/design/AncestryAnalysis.md`)
 

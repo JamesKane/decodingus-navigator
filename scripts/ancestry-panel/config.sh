@@ -100,6 +100,16 @@ HGDP_1KG_PATTERN="${HGDP_1KG_PATTERN:-gnomad.genomes.v3.1.2.hgdp_tgp.chr%s.vcf.b
 # hg19->CHM13 before genotyping.
 SGDP_ENABLE="${SGDP_ENABLE:-0}"           # 1 to include
 SGDP_BASE_URL="${SGDP_BASE_URL:-https://sharehost.hms.harvard.edu/genetics/reich_lab/sgdp/variant_set}"
+
+# ── IBD asset inputs (genetic map + GRCh38 FASTA) ────────────────────────────────
+# Recombination map (deCODE-derived, GRCh38 PLINK format) for the IBD genetic-map asset. Stage 01
+# downloads + unzips it; stage 05 lifts GRCh38->CHM13 (coordinate-only) and serializes.
+GMAP_URL="${GMAP_URL:-https://bochet.gcc.biostat.washington.edu/beagle/genetic_maps/plink.GRCh38.map.zip}"
+# GRCh38 FASTA (UCSC hg38 — matches the hg19->hg38 chain) for the IBD panel's GRCh38 allele column,
+# so GRCh38 consumer chips resolve. OPTIONAL: set IBD_GRCH38=0 to skip the ~1 GB download; the IBD
+# panel then carries CHM13 + GRCh37 only (covers GRCh37 chips like 23andMe v5 / AncestryDNA + WGS).
+IBD_GRCH38="${IBD_GRCH38:-1}"
+GRCH38_FASTA_URL="${GRCH38_FASTA_URL:-https://hgdownload.soe.ucsc.edu/goldenPath/hg38/bigZips/hg38.fa.gz}"
 SGDP_PLINK_PREFIX="${SGDP_PLINK_PREFIX:-cteam_extended.v4.maf0.1perc}" # verified at sharehost 2026-06-13 (.bim is .bim.zip)
 
 # Curated AADR population-label → deep-component map (edit this; ships in the repo).
@@ -113,7 +123,10 @@ CDN_PREFIX="${CDN_PREFIX:-ancestry/$BUILD}"
 ASSET_VERSION="${ASSET_VERSION:-1}"   # bump per published asset revision
 
 # ── outputs (asset filenames the app/CDN expect) ────────────────────────────────
-PANEL_OUT="$ASSETS/ancestry_panel_${BUILD}.bin"        # AF panel (genotyping + admixture)
-PCA_OUT="$ASSETS/ancestry_pca_${BUILD}.bin"            # global PCA loadings + centroids
-FINE_OUT="$ASSETS/ancestry_freq_global_${BUILD}.bin"   # global per-pop AF (fine admixture)
-MANIFEST="$ASSETS/ancestry_manifest_${BUILD}.json"     # provenance + checksums
+PANEL_OUT="$ASSETS/ancestry_panel_${BUILD}.bin"            # AF panel (genotyping + admixture)
+PCA_OUT="$ASSETS/ancestry_pca_${BUILD}.bin"                # modern PCA loadings + centroids (scatter)
+PCA_ANCIENT_OUT="$ASSETS/ancestry_pca_ancient_${BUILD}.bin" # PCA w/ ancient deep components (GMM/nMonte)
+FINE_OUT="$ASSETS/ancestry_freq_global_${BUILD}.bin"       # global per-pop AF (fine admixture)
+GMAP_OUT="$ASSETS/genetic_map_${BUILD}.bin"               # IBD recombination map (bp->cM)
+IBD_PANEL_OUT="$ASSETS/ibd_panel_${BUILD}.bin"            # chip-compatible multi-build IBD SNP panel
+MANIFEST="$ASSETS/ancestry_manifest_${BUILD}.json"         # provenance + checksums

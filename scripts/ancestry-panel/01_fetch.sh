@@ -80,4 +80,33 @@ else
   log "SGDP: disabled (set SGDP_ENABLE=1 to include)."
 fi
 
+# ── IBD assets: recombination map (genetic map) + optional GRCh38 FASTA ──────────
+# Genetic map (GRCh38 PLINK recombination map) for the IBD genetic-map asset (stage 05 lifts it).
+if [[ -d "$RAW/gmap_grch38" ]]; then
+  log "genetic map: present (skip)"
+elif fetch "$GMAP_URL" "plink.GRCh38.map.zip"; then
+  require_tool unzip
+  ( cd "$RAW" && unzip -o -q plink.GRCh38.map.zip -d gmap_grch38 ) || log "NOTE: genetic-map unzip failed"
+else
+  log "NOTE: genetic-map fetch failed — IBD genetic map will fall back to uniform 1 cM/Mb."
+fi
+
+# GRCh38 FASTA (+ .fai/.dict) and the hg19->hg38 chain, so the IBD panel can carry a GRCh38 allele
+# column (lets GRCh38 consumer chips resolve). ~1 GB download; set IBD_GRCH38=0 to skip.
+if [[ "$IBD_GRCH38" == 1 ]]; then
+  fetch "$CHAIN_HG19_TO_HG38" "$(basename "$CHAIN_HG19_TO_HG38")" || log "NOTE: hg19->hg38 chain fetch failed"
+  hgc="$RAW/$(basename "$CHAIN_HG19_TO_HG38")"; [[ -s "$hgc" && "$hgc" == *.gz ]] && gunzip -kf "$hgc" || true
+  if fetch "$GRCH38_FASTA_URL" "$(basename "$GRCH38_FASTA_URL")"; then
+    require_tool samtools
+    hg38gz="$RAW/$(basename "$GRCH38_FASTA_URL")"; hg38fa="${hg38gz%.gz}"
+    [[ -s "$hg38fa" ]] || { log "gunzip GRCh38 FASTA"; gunzip -kf "$hg38gz"; }
+    [[ -s "$hg38fa.fai" ]] || samtools faidx "$hg38fa"
+    [[ -s "${hg38fa%.fa}.dict" ]] || samtools dict "$hg38fa" -o "${hg38fa%.fa}.dict"
+  else
+    log "NOTE: GRCh38 FASTA fetch failed — IBD panel grch38 column will be omitted."
+  fi
+else
+  log "IBD GRCh38 column disabled (IBD_GRCH38=0) — IBD panel will be CHM13 + GRCh37 only."
+fi
+
 log "stage 1 complete. Inputs under $RAW (+ 1000G AF in $KGP_CHM13_DIR)."
