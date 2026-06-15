@@ -1348,6 +1348,21 @@ fn panel_kind(panel_id: i64, ploidy: u8) -> String {
 /// genotype cache, which is keyed by `panel_kind(panel_id, ploidy)`).
 const IBD_PANEL_KIND: &str = "ibd_panel_genotypes";
 
+/// The IBD-panel genotype cache kind, salted with the CHM13 panel asset's manifest sha256 (first 16
+/// hex chars) so regenerating the panel auto-invalidates stale per-alignment genotypes. Falls back to
+/// the bare kind when no manifest is published (genotypes then keyed only by `GENOTYPE_VERSION`).
+fn ibd_panel_cache_kind() -> String {
+    let build = ReferenceBuild::Chm13v2;
+    let name = ibd_panel_path(build).file_name().and_then(|n| n.to_str()).map(String::from);
+    match (load_asset_manifest(build), name) {
+        (Some(m), Some(n)) => match m.assets.get(&n) {
+            Some(e) => format!("{IBD_PANEL_KIND}:{}", &e.sha256[..16.min(e.sha256.len())]),
+            None => IBD_PANEL_KIND.to_string(),
+        },
+        _ => IBD_PANEL_KIND.to_string(),
+    }
+}
+
 /// Count of sites called (dosage within ploidy) in **both** samples — the effective IBD comparison
 /// size, surfaced so a sparse chip↔chip / chip↔WGS overlap isn't mistaken for a confident result.
 fn overlapping_called_sites(a: &[SiteGenotype], b: &[SiteGenotype]) -> usize {
@@ -5953,7 +5968,11 @@ impl App {
         match source {
             IbdSource::Chip(id) => self.chip_ibd_dosages(id).await,
             IbdSource::Alignment(id) => {
-                if let Some(g) = self.load_analysis(id, IBD_PANEL_KIND, caller::GENOTYPE_VERSION).await? {
+                // Salt the cache key with the panel asset's manifest hash, so regenerating the panel
+                // (e.g. the probe superset) auto-invalidates stale per-alignment genotypes instead of
+                // silently serving genotypes taken over an older site set.
+                let kind = ibd_panel_cache_kind();
+                if let Some(g) = self.load_analysis(id, &kind, caller::GENOTYPE_VERSION).await? {
                     return Ok(g);
                 }
                 let aln = alignment::get(self.store.pool(), id)
@@ -5983,7 +6002,7 @@ impl App {
                 })
                 .await
                 .map_err(|e| AppError::Join(e.to_string()))??;
-                self.save_analysis(id, IBD_PANEL_KIND, caller::GENOTYPE_VERSION, &genotypes).await?;
+                self.save_analysis(id, &kind, caller::GENOTYPE_VERSION, &genotypes).await?;
                 Ok(genotypes)
             }
         }
