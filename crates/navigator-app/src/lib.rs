@@ -1166,6 +1166,37 @@ pub struct DiploidProfile {
     pub sources: Vec<YSourceSummary>,
 }
 
+/// `ancestry_result.alignment_id` sentinel marking a result derived from the subject's autosomal
+/// **consensus** (pooled across all sources) rather than a single sequencing alignment.
+pub const CONSENSUS_SOURCE_ID: i64 = 0;
+
+/// Bridge the autosomal consensus to the genotype carrier the ancestry estimators + IBD detector
+/// consume. Each reconciled site becomes a [`SiteGenotype`] with the consensus dosage (count of the
+/// CHM13 ALT — the canonical orientation the AIM freq / PCA assets are keyed against). No-calls
+/// (dosage -1) are carried through and ignored downstream like any missing genotype.
+pub fn consensus_genotypes(profile: &DiploidProfile) -> Vec<SiteGenotype> {
+    profile
+        .variants
+        .iter()
+        .map(|v| SiteGenotype {
+            name: v.name.clone(),
+            contig: v.contig.clone(),
+            position: v.position,
+            reference_allele: v.reference.clone(),
+            alternate_allele: v.alternate.clone(),
+            ploidy: 2,
+            dosage: v.consensus_dosage as i32,
+            gq: 0,
+            depth: 0,
+            ref_depth: 0,
+            alt_depth: 0,
+            pls: Vec::new(),
+            gt: None,
+            allele_depths: None,
+        })
+        .collect()
+}
+
 /// Flatten a placement's branch SNP evidence into per-SNP observations (deduped by name; a SNP
 /// defines one branch, but guard against duplicates). `in_tree` is true for tree-defining SNPs.
 fn snp_obs_from_assignment(assignment: &HaploAssignment, in_tree: bool) -> Vec<YObsInput> {
@@ -4383,6 +4414,65 @@ impl App {
     /// the (build-matched) AIMs panel, genotype the sample at its sites with the GL caller, and
     /// score each super-population's binomial likelihood. Persists the result; returns it for
     /// display. Requires a recorded BAM/CRAM and a resolvable reference (CRAM/genotyping).
+    /// Estimate autosomal ancestry from the subject's **consensus** — no BAM genotyping. Reads the
+    /// cached autosomal [`DiploidProfile`] (reconciled 0/1/2 dosages over the probe panel, pooled
+    /// across all WGS + chip sources), bridges it to genotypes, and runs the same estimators as the
+    /// per-alignment path used to. Persisted under the consensus pseudo-source
+    /// ([`CONSENSUS_SOURCE_ID`]). Errors if the autosomal consensus hasn't been built yet.
+    pub async fn estimate_ancestry_from_consensus(&self, biosample_guid: SampleGuid) -> Result<AncestryResult, AppError> {
+        let profile = self
+            .cached_autosomal_profile(biosample_guid)
+            .await?
+            .ok_or_else(|| AppError::Import("build the autosomal consensus first (Autosomal tab) before estimating ancestry".into()))?;
+        let genotypes = consensus_genotypes(&profile);
+
+        // The consensus is canonical CHM13; the AIM freq / PCA assets are keyed by (contig,pos) there.
+        let build = ReferenceBuild::Chm13v2;
+        let reference_version = "chm13v2.0".to_string();
+        let panel_path = ancestry_panel_path(build);
+        let panel_bytes =
+            read_verified_asset(build, &panel_path)?.ok_or_else(|| AppError::AncestryPanelMissing(panel_path.clone()))?;
+        let panel = AncestryPanel::from_bytes(&panel_bytes)?;
+        let optional = |path: PathBuf| read_verified_asset(build, &path).unwrap_or_else(|e| { eprintln!("{e}"); None });
+        let pca_bytes = optional(ancestry_pca_path(build));
+        let ancient_pca_bytes = optional(ancestry_pca_ancient_path(build));
+        let fine_bytes = optional(ancestry_freq_global_path(build));
+
+        let (result, pca_gmm, nmonte, fine) = tokio::task::spawn_blocking(move || {
+            let mut result = ancestry_analysis::estimate_admixture(&genotypes, &panel, &reference_version);
+            let fine = fine_bytes
+                .and_then(|b| ancestry_analysis::AncestryPanel::from_bytes(&b).ok())
+                .map(|fp| ancestry_analysis::estimate_fine_admixture(&genotypes, &fp, &reference_version));
+            let modern_pca = pca_bytes.and_then(|b| ancestry_analysis::PcaLoadings::from_bytes(&b).ok());
+            if let Some(pca) = &modern_pca {
+                result.pca_coordinates = Some(ancestry_analysis::project_pca(&genotypes, pca));
+            }
+            let gmm_pca = ancient_pca_bytes
+                .and_then(|b| ancestry_analysis::PcaLoadings::from_bytes(&b).ok())
+                .or(modern_pca);
+            let (pca_gmm, nmonte) = match &gmm_pca {
+                Some(pca) => (
+                    Some(ancestry_analysis::estimate_pca_gmm(&genotypes, pca, &reference_version)),
+                    Some(ancestry_analysis::estimate_nmonte(&genotypes, pca, &reference_version)),
+                ),
+                None => (None, None),
+            };
+            (result, pca_gmm, nmonte, fine)
+        })
+        .await
+        .map_err(|e| AppError::Join(e.to_string()))?;
+
+        let required = ancestry_min_snps();
+        if result.snps_with_genotype < required {
+            return Err(AppError::InsufficientAncestryData { genotyped: result.snps_with_genotype, required });
+        }
+        ancestry_result::upsert(self.store.pool(), biosample_guid, CONSENSUS_SOURCE_ID, &result).await?;
+        for extra in [pca_gmm.as_ref(), nmonte.as_ref(), fine.as_ref()].into_iter().flatten() {
+            ancestry_result::upsert(self.store.pool(), biosample_guid, CONSENSUS_SOURCE_ID, extra).await?;
+        }
+        Ok(result)
+    }
+
     pub async fn estimate_ancestry(&self, alignment_id: i64) -> Result<AncestryResult, AppError> {
         self.estimate_ancestry_with_progress(alignment_id, |_, _| {}).await
     }
@@ -6217,11 +6307,14 @@ impl App {
         Ok(chosen.map(|a| (a.sequence_run_id, a.id)))
     }
 
-    /// Donor-level ancestry: the best-quality persisted estimate across **all** of the subject's
-    /// alignments (most genotyped SNPs), with its source alignment id. Pick-best across sources —
-    /// genotype-level pooling (re-estimating over merged genotypes) is a future refinement.
+    /// Donor-level ancestry: the **consensus** estimate ([`CONSENSUS_SOURCE_ID`]) when present —
+    /// it pools all sources, so it's authoritative — else the best-quality per-alignment estimate
+    /// (most genotyped SNPs) for back-compat with results predating the consensus path.
     pub async fn donor_ancestry(&self, biosample_guid: SampleGuid) -> Result<Option<(i64, AncestryResult)>, AppError> {
         let all = ancestry_result::for_biosample(self.store.pool(), biosample_guid).await?;
+        if let Some(c) = all.iter().find(|(id, _)| *id == CONSENSUS_SOURCE_ID) {
+            return Ok(Some(c.clone()));
+        }
         Ok(all.into_iter().max_by_key(|(_, r)| r.snps_with_genotype))
     }
 
