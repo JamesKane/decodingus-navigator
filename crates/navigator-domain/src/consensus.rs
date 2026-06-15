@@ -324,6 +324,167 @@ pub fn summarize(variants: &[ConsensusVariant]) -> ConsensusSummary {
     s
 }
 
+// ---------------------------------------------------------------------------------------------
+// Diploid (autosomal) reconciler — the same quality-weighting + status taxonomy + summary, but
+// voting a three-class genotype (alt-allele dosage 0/1/2) instead of a binary derived/ancestral
+// state. The autosomal adapter genotypes each source over a fixed site panel and reconciles here.
+// ---------------------------------------------------------------------------------------------
+
+/// One source's diploid call at an autosomal site, fed into [`reconcile_diploid`]. `dosage` is the
+/// alt-allele count 0/1/2, or -1 for a no-call. `depth` drives the per-call weight bonus.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DiploidObs {
+    pub name: String,
+    pub contig: String,
+    pub position: i64,
+    pub reference: String,
+    pub alternate: String,
+    pub dosage: i8,
+    pub depth: Option<u32>,
+}
+
+/// One source's diploid observation at a site (for provenance display).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DiploidSourceObs {
+    pub label: String,
+    pub source_type: SourceType,
+    pub dosage: i8,
+}
+
+/// A reconciled autosomal site across the subject's sources — a voted diploid genotype.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DiploidVariant {
+    pub name: String,
+    pub contig: String,
+    pub position: i64,
+    pub reference: String,
+    pub alternate: String,
+    /// Consensus alt-allele dosage 0/1/2, or -1 when no source made a call.
+    pub consensus_dosage: i8,
+    pub status: ConsensusStatus,
+    /// Sources matching the consensus dosage.
+    pub support: usize,
+    /// Sources with any call (excludes no-calls).
+    pub total: usize,
+    #[serde(default)]
+    pub confidence_score: f64,
+    pub sources: Vec<DiploidSourceObs>,
+}
+
+/// Reconcile per-source diploid genotype calls into one profile, keyed by site name (rsID —
+/// build-independent). Mirrors [`reconcile`] but votes a three-class genotype (dosage 0/1/2)
+/// instead of a binary derived/ancestral state. `Novel` never applies — every site is a known
+/// panel site.
+pub fn reconcile_diploid(sources: &[(String, SourceType, Vec<DiploidObs>)]) -> Vec<DiploidVariant> {
+    struct ObsRec {
+        label: String,
+        source_type: SourceType,
+        dosage: i8,
+        weight: f64,
+    }
+    struct Acc {
+        repr: DiploidObs,
+        obs: Vec<ObsRec>,
+    }
+    let mut groups: BTreeMap<String, Acc> = BTreeMap::new();
+
+    for (label, source_type, observations) in sources {
+        for o in observations {
+            let key = o.name.trim().to_uppercase(); // rsID — panel sites are always named
+            let acc = groups.entry(key).or_insert_with(|| Acc { repr: o.clone(), obs: Vec::new() });
+            // Depth-bonus only (chips have depth 0 → bare method weight; deep WGS earns the bonus).
+            let weight = obs_weight(*source_type, o.depth, None, None, 1.0);
+            acc.obs.push(ObsRec { label: label.clone(), source_type: *source_type, dosage: o.dosage, weight });
+        }
+    }
+
+    let mut out: Vec<DiploidVariant> = groups
+        .into_values()
+        .map(|acc| {
+            let repr = acc.repr;
+            // Weighted vote over the three dosage classes {0,1,2}; no-calls (-1) excluded.
+            let mut w = [0.0f64; 3];
+            let mut counts = [0usize; 3];
+            let mut total = 0usize;
+            for o in &acc.obs {
+                if (0..=2).contains(&o.dosage) {
+                    w[o.dosage as usize] += o.weight;
+                    counts[o.dosage as usize] += 1;
+                    total += 1;
+                }
+            }
+            // argmax weight; tie → more raw supporting sources, then the lower dosage.
+            let mut best = 0usize;
+            for d in 1..3 {
+                if w[d] > w[best] || (w[d] == w[best] && counts[d] > counts[best]) {
+                    best = d;
+                }
+            }
+            let consensus_dosage: i8 = if total == 0 { -1 } else { best as i8 };
+
+            let total_weight: f64 = w.iter().sum();
+            let confidence_score = if total_weight > 0.0 { w[best] / total_weight } else { 0.0 };
+            let minority_fraction = 1.0 - confidence_score;
+
+            let status = if total == 0 {
+                ConsensusStatus::NoCoverage
+            } else if minority_fraction > CONFLICT_FRACTION {
+                ConsensusStatus::Conflict
+            } else if total == 1 {
+                ConsensusStatus::SingleSource
+            } else if confidence_score >= CONFIRMATION_FRACTION {
+                ConsensusStatus::Confirmed
+            } else {
+                ConsensusStatus::Pending
+            };
+
+            let support = acc.obs.iter().filter(|o| consensus_dosage >= 0 && o.dosage == consensus_dosage).count();
+            let sources = acc
+                .obs
+                .iter()
+                .map(|o| DiploidSourceObs { label: o.label.clone(), source_type: o.source_type, dosage: o.dosage })
+                .collect();
+
+            DiploidVariant {
+                name: repr.name,
+                contig: repr.contig,
+                position: repr.position,
+                reference: repr.reference,
+                alternate: repr.alternate,
+                consensus_dosage,
+                status,
+                support,
+                total,
+                confidence_score,
+                sources,
+            }
+        })
+        .collect();
+
+    out.sort_by(|a, b| status_rank(a.status).cmp(&status_rank(b.status)).then_with(|| a.name.cmp(&b.name)));
+    out
+}
+
+/// Per-status counts + overall confidence over a reconciled diploid variant list. `Novel` doesn't
+/// apply to autosomal sites, so the confidence is `(confirmed − 0.5·conflict) / total`.
+pub fn summarize_diploid(variants: &[DiploidVariant]) -> ConsensusSummary {
+    let mut s = ConsensusSummary { total: variants.len(), ..Default::default() };
+    for v in variants {
+        match v.status {
+            ConsensusStatus::Confirmed => s.confirmed += 1,
+            ConsensusStatus::Conflict => s.conflict += 1,
+            ConsensusStatus::SingleSource => s.single_source += 1,
+            ConsensusStatus::Novel | ConsensusStatus::Pending | ConsensusStatus::NoCoverage => {}
+        }
+    }
+    s.overall_confidence = if s.total == 0 {
+        0.0
+    } else {
+        ((s.confirmed as f64 - 0.5 * s.conflict as f64) / s.total as f64).clamp(0.0, 1.0)
+    };
+    s
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -430,5 +591,62 @@ mod tests {
         assert_eq!(s.confirmed, 1); // M269 (2 sources agree, in tree)
         assert_eq!(s.novel, 1); // FT1 (derived, not in tree → novel even single-source)
         assert_eq!(s.single_source, 0);
+    }
+
+    fn dobs(name: &str, dosage: i8, depth: Option<u32>) -> DiploidObs {
+        DiploidObs { name: name.into(), contig: "chr1".into(), position: 100, reference: "A".into(), alternate: "G".into(), dosage, depth }
+    }
+
+    #[test]
+    fn diploid_two_sources_agree_is_confirmed() {
+        let v = reconcile_diploid(&[
+            ("aln #1".into(), SourceType::WgsShortRead, vec![dobs("rs1", 1, Some(30))]),
+            ("chip".into(), SourceType::Chip, vec![dobs("rs1", 1, None)]),
+        ]);
+        assert_eq!(v.len(), 1);
+        assert_eq!(v[0].consensus_dosage, 1); // both het
+        assert_eq!(v[0].status, ConsensusStatus::Confirmed);
+        assert!((v[0].confidence_score - 1.0).abs() < 1e-9);
+        assert_eq!((v[0].support, v[0].total), (2, 2));
+    }
+
+    #[test]
+    fn diploid_comparable_weight_disagreement_is_conflict() {
+        // Two equal-weight WGS sources, hom-ref vs hom-alt → minority 0.5 > 0.30 → conflict; the
+        // tie resolves to the lower dosage.
+        let v = reconcile_diploid(&[
+            ("aln #1".into(), SourceType::WgsShortRead, vec![dobs("rs1", 0, None)]),
+            ("aln #2".into(), SourceType::WgsShortRead, vec![dobs("rs1", 2, None)]),
+        ]);
+        assert_eq!(v[0].status, ConsensusStatus::Conflict);
+        assert_eq!(v[0].consensus_dosage, 0);
+    }
+
+    #[test]
+    fn diploid_single_source_and_nocall() {
+        // One het call + one no-call → counted as a single source (no-call excluded from the vote),
+        // but the no-call is still shown for provenance.
+        let v = reconcile_diploid(&[
+            ("aln #1".into(), SourceType::WgsShortRead, vec![dobs("rs1", 1, Some(30))]),
+            ("chip".into(), SourceType::Chip, vec![dobs("rs1", -1, None)]),
+        ]);
+        assert_eq!(v[0].total, 1);
+        assert_eq!(v[0].status, ConsensusStatus::SingleSource);
+        assert_eq!(v[0].consensus_dosage, 1);
+        assert_eq!(v[0].sources.len(), 2);
+    }
+
+    #[test]
+    fn diploid_summary_counts_and_confidence() {
+        let v = reconcile_diploid(&[
+            ("a".into(), SourceType::WgsShortRead, vec![dobs("rs1", 2, None), dobs("rs2", 0, None)]),
+            ("b".into(), SourceType::WgsShortRead, vec![dobs("rs1", 2, None), dobs("rs2", 2, None)]),
+        ]);
+        let s = summarize_diploid(&v);
+        assert_eq!(s.total, 2);
+        assert_eq!(s.confirmed, 1); // rs1 (both hom-alt)
+        assert_eq!(s.conflict, 1); // rs2 (0 vs 2)
+        // (1 confirmed − 0.5·1 conflict) / 2 = 0.25
+        assert!((s.overall_confidence - 0.25).abs() < 1e-9);
     }
 }

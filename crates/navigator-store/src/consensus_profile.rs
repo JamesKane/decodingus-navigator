@@ -125,6 +125,14 @@ mod tests {
         assert_eq!(got.confirmed, 8);
         // A different DNA type is a distinct row (no collision).
         assert!(get(pool.pool(), g, "Mt").await.unwrap().is_none());
+        // An autosomal ('Auto') snapshot coexists with the Y row for the same biosample.
+        let mut auto = sample(&g.0.to_string());
+        auto.dna_type = "Auto".into();
+        auto.consensus_label = None; // autosomes have no lineage label
+        auto.confirmed = 42;
+        upsert(pool.pool(), &auto).await.unwrap();
+        assert_eq!(get(pool.pool(), g, "Auto").await.unwrap().unwrap().confirmed, 42);
+        assert_eq!(get(pool.pool(), g, "Y").await.unwrap().unwrap().confirmed, 8); // Y row untouched
         // Upsert replaces (same biosample + dna_type).
         let mut updated = sample(&g.0.to_string());
         updated.confirmed = 9;
@@ -132,5 +140,6 @@ mod tests {
         assert_eq!(get(pool.pool(), g, "Y").await.unwrap().unwrap().confirmed, 9);
         assert!(delete(pool.pool(), g, "Y").await.unwrap());
         assert!(get(pool.pool(), g, "Y").await.unwrap().is_none());
+        assert!(get(pool.pool(), g, "Auto").await.unwrap().is_some()); // deleting Y leaves Auto
     }
 }

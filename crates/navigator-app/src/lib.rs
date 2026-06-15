@@ -321,6 +321,7 @@ use navigator_domain::variants::{self, NewVariantSet, VariantSet};
 pub use navigator_domain::variants::SourceType;
 use navigator_domain::yprofile::{self, YObsInput};
 pub use navigator_domain::yprofile::{YProfileSummary, YProfileVariant, YSourceObs, YState, YVariantStatus};
+pub use navigator_domain::consensus::{DiploidSourceObs, DiploidVariant};
 use navigator_domain::bisdna;
 use navigator_domain::ysnp_dict::{self, YsnpDictionary};
 use navigator_store::{
@@ -1151,6 +1152,18 @@ pub struct YSourceSummary {
     pub label: String,
     pub source_type: SourceType,
     pub variant_count: usize,
+}
+
+/// A subject's **autosomal** multi-source consensus profile — the diploid (0/1/2) sibling of
+/// [`ConsensusProfile`], over the canonical CHM13 IBD-panel sites. Persisted in the same
+/// `consensus_profile` table under `dna_type='Auto'`. No lineage label (autosomes have no haplogroup).
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct DiploidProfile {
+    pub variants: Vec<DiploidVariant>,
+    pub summary: YProfileSummary,
+    /// Per-source provenance (which tests contributed, and how many sites each).
+    #[serde(default)]
+    pub sources: Vec<YSourceSummary>,
 }
 
 /// Flatten a placement's branch SNP evidence into per-SNP observations (deduped by name; a SNP
@@ -3701,8 +3714,40 @@ impl App {
         }
     }
 
-    /// Persist a reconciled consensus profile snapshot (the scalar columns mirror the summary header;
-    /// the full profile is JSON in `payload`). Shared by the Y / mt / autosomal build paths.
+    /// Persist a reconciled consensus snapshot — the low-level row writer shared by every DNA type
+    /// (Y / mt key on [`DnaType`], autosomal keys on `"Auto"`; the payload is whatever profile shape
+    /// that type uses). The scalar columns mirror the summary header for quick listing.
+    #[allow(clippy::too_many_arguments)]
+    async fn persist_consensus_row(
+        &self,
+        biosample_guid: SampleGuid,
+        dna_type: &str,
+        consensus_label: Option<String>,
+        summary: &navigator_domain::consensus::ConsensusSummary,
+        source_count: usize,
+        tree_provider: Option<String>,
+        payload: String,
+    ) -> Result<(), AppError> {
+        let stored = navigator_store::consensus_profile::StoredConsensusProfile {
+            biosample_guid: biosample_guid.0.to_string(),
+            dna_type: dna_type.to_string(),
+            consensus_label,
+            overall_confidence: summary.overall_confidence,
+            source_count: source_count as i64,
+            total: summary.total as i64,
+            confirmed: summary.confirmed as i64,
+            novel: summary.novel as i64,
+            conflict: summary.conflict as i64,
+            single_source: summary.single_source as i64,
+            tree_provider,
+            payload,
+            last_reconciled_at: Utc::now().to_rfc3339(),
+        };
+        navigator_store::consensus_profile::upsert(self.store.pool(), &stored).await?;
+        Ok(())
+    }
+
+    /// Persist a Y/mt [`ConsensusProfile`] snapshot via [`persist_consensus_row`].
     async fn persist_consensus_profile(
         &self,
         biosample_guid: SampleGuid,
@@ -3710,23 +3755,16 @@ impl App {
         profile: &ConsensusProfile,
         tree_provider: Option<String>,
     ) -> Result<(), AppError> {
-        let stored = navigator_store::consensus_profile::StoredConsensusProfile {
-            biosample_guid: biosample_guid.0.to_string(),
-            dna_type: dna_type.as_str().to_string(),
-            consensus_label: profile.terminal.clone(),
-            overall_confidence: profile.summary.overall_confidence,
-            source_count: profile.sources.len() as i64,
-            total: profile.summary.total as i64,
-            confirmed: profile.summary.confirmed as i64,
-            novel: profile.summary.novel as i64,
-            conflict: profile.summary.conflict as i64,
-            single_source: profile.summary.single_source as i64,
+        self.persist_consensus_row(
+            biosample_guid,
+            dna_type.as_str(),
+            profile.terminal.clone(),
+            &profile.summary,
+            profile.sources.len(),
             tree_provider,
-            payload: serde_json::to_string(profile)?,
-            last_reconciled_at: Utc::now().to_rfc3339(),
-        };
-        navigator_store::consensus_profile::upsert(self.store.pool(), &stored).await?;
-        Ok(())
+            serde_json::to_string(profile)?,
+        )
+        .await
     }
 
     /// The persisted Y-profile snapshot for a subject, if one has been built — cheap (no
@@ -3907,6 +3945,98 @@ impl App {
 
         // Persist (keyed dna_type='Mt'); the mt tree is FTDNA-sourced.
         self.persist_consensus_profile(biosample_guid, DnaType::Mt, &profile, Some("ftdna".to_string())).await?;
+        Ok(profile)
+    }
+
+    /// The persisted autosomal consensus-profile snapshot for a subject, if built — cheap (no
+    /// genotyping). `None` until [`build_autosomal_profile`](Self::build_autosomal_profile) runs.
+    pub async fn cached_autosomal_profile(&self, biosample_guid: SampleGuid) -> Result<Option<DiploidProfile>, AppError> {
+        match navigator_store::consensus_profile::get(self.store.pool(), biosample_guid, "Auto").await? {
+            Some(row) => Ok(Some(serde_json::from_str(&row.payload)?)),
+            None => Ok(None),
+        }
+    }
+
+    /// Build (and persist) the multi-source **autosomal** consensus profile — the diploid (0/1/2)
+    /// adapter over the generic [`navigator_domain::consensus`] engine. Genotypes every WGS alignment
+    /// and imported chip over the canonical CHM13 **IBD panel** ([`ibd_panel_dosages`](Self::ibd_panel_dosages))
+    /// and reconciles the per-site dosages into a voted genotype (confirmed where sources agree,
+    /// conflict where they don't), keyed by rsID. Persisted with `dna_type='Auto'`. Requires the IBD
+    /// panel asset (built with `panelbuild ibd-panel`); errors if it's missing.
+    pub async fn build_autosomal_profile(&self, biosample_guid: SampleGuid) -> Result<DiploidProfile, AppError> {
+        use navigator_domain::consensus::{reconcile_diploid, summarize_diploid, DiploidObs};
+
+        let to_obs = |gts: Vec<SiteGenotype>| -> Vec<DiploidObs> {
+            gts.into_iter()
+                .map(|g| DiploidObs {
+                    name: g.name,
+                    contig: g.contig,
+                    position: g.position,
+                    reference: g.reference_allele,
+                    alternate: g.alternate_allele,
+                    dosage: g.dosage as i8,
+                    depth: (g.depth > 0).then_some(g.depth),
+                })
+                .collect()
+        };
+
+        let mut sources: Vec<(String, SourceType, Vec<DiploidObs>)> = Vec::new();
+        // Remember the last source error: if *every* source fails (e.g. the panel asset is missing),
+        // surface it rather than silently returning an empty profile; a one-off per-source failure
+        // (a chip with no stored raw file, an alignment lacking a BAM) is just skipped.
+        let mut last_err: Option<AppError> = None;
+
+        // One source per WGS alignment (panel-genotyped, cached per alignment). The IBD panel is
+        // CHM13-coordinate and the alignment path has no liftover, so only CHM13 alignments can be
+        // genotyped directly — non-CHM13 builds reach the panel via the chip path (multi-build
+        // coordinates) or a future lift, and are skipped here rather than yielding wrong-locus calls.
+        let alignments = alignment::list_for_biosample(self.store.pool(), biosample_guid).await?;
+        for a in &alignments {
+            if !matches!(canonical_build(&a.reference_build), Some(ReferenceBuild::Chm13v2 | ReferenceBuild::Chm13v2MaskedRcrs)) {
+                continue;
+            }
+            match self.ibd_panel_dosages(IbdSource::Alignment(a.id)).await {
+                Ok(gts) => {
+                    let obs = to_obs(gts);
+                    if !obs.is_empty() {
+                        sources.push((format!("aln #{} · {}", a.id, a.aligner), SourceType::WgsShortRead, obs));
+                    }
+                }
+                Err(e) => last_err = Some(e),
+            }
+        }
+
+        // One source per imported chip (resolved to canonical panel dosages, no alignment needed).
+        let chips = self.list_chip_profiles(biosample_guid).await?;
+        for c in &chips {
+            match self.ibd_panel_dosages(IbdSource::Chip(c.id)).await {
+                Ok(gts) => {
+                    let obs = to_obs(gts);
+                    if !obs.is_empty() {
+                        sources.push((format!("{} (chip #{})", c.provider, c.id), SourceType::Chip, obs));
+                    }
+                }
+                Err(e) => last_err = Some(e),
+            }
+        }
+
+        if sources.is_empty() {
+            if let Some(e) = last_err {
+                return Err(e); // e.g. the IBD panel asset isn't built yet
+            }
+        }
+
+        let source_summaries: Vec<YSourceSummary> = sources
+            .iter()
+            .map(|(label, st, obs)| YSourceSummary { label: label.clone(), source_type: *st, variant_count: obs.len() })
+            .collect();
+        let variants = reconcile_diploid(&sources);
+        let summary = summarize_diploid(&variants);
+        let profile = DiploidProfile { variants, summary, sources: source_summaries };
+
+        // Persist (keyed dna_type='Auto'; no lineage label, no tree provider).
+        self.persist_consensus_row(biosample_guid, "Auto", None, &profile.summary, profile.sources.len(), None, serde_json::to_string(&profile)?)
+            .await?;
         Ok(profile)
     }
 
