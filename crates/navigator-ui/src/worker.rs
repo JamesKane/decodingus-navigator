@@ -116,6 +116,8 @@ pub enum Command {
     /// Estimate autosomal ancestry from an imported chip (23andMe/AncestryDNA) — lifts the chip's
     /// GRCh37 SNPs to the AIMs panel and runs the admixture estimator. On-demand (not persisted).
     EstimateAncestryFromChip { chip_profile_id: i64 },
+    /// Estimate autosomal ancestry from the subject's CONSENSUS (no BAM walk) — the default path.
+    EstimateAncestryFromConsensus { biosample_guid: SampleGuid },
     /// Load the persisted ancestry estimate for an alignment, if any.
     LoadAncestry { alignment_id: i64 },
     /// Load the persisted fine-population (FINE_ADMIXTURE) result for the super→fine hierarchy.
@@ -670,6 +672,13 @@ pub async fn handle(app: &App, cmd: Command) -> Event {
         Command::EstimateAncestryFromChip { chip_profile_id } => {
             match app.estimate_ancestry_from_chip(chip_profile_id).await {
                 Ok(result) => Event::ChipAncestry { chip_profile_id, result },
+                Err(e) => Event::Error(e.to_string()),
+            }
+        }
+        Command::EstimateAncestryFromConsensus { biosample_guid } => {
+            // Estimate from the pooled consensus, then surface it as the donor-level result.
+            match app.estimate_ancestry_from_consensus(biosample_guid).await {
+                Ok(result) => Event::DonorAncestry { alignment_id: navigator_app::CONSENSUS_SOURCE_ID, result },
                 Err(e) => Event::Error(e.to_string()),
             }
         }

@@ -383,6 +383,8 @@ pub struct NavigatorApp {
     /// True while the (expensive) autosomal consensus profile is being built.
     auto_profile_loading: bool,
     estimating_ancestry: bool,
+    /// Whether the consensus-driven donor ancestry estimate is in flight.
+    estimating_donor_ancestry: bool,
     /// Live genotyping progress for the in-flight estimate: (alignment id, done, total) contigs.
     ancestry_progress: Option<(i64, usize, usize)>,
     /// Reference population centroids for the PCA scatter: (alignment id, [(code, pc1, pc2)]).
@@ -1180,6 +1182,7 @@ impl NavigatorApp {
             auto_profile_filter: None,
             auto_profile_loading: false,
             estimating_ancestry: false,
+            estimating_donor_ancestry: false,
             ancestry_progress: None,
             pca_reference: None,
             painting: None,
@@ -1596,6 +1599,7 @@ impl NavigatorApp {
                     }
                 }
                 Event::DonorAncestry { alignment_id, result } => {
+                    self.estimating_donor_ancestry = false;
                     self.donor_ancestry = Some((alignment_id, result));
                 }
                 Event::DonorPrivateY { bucket } => {
@@ -1859,6 +1863,7 @@ impl NavigatorApp {
         self.selected_sample = Some(guid);
         self.pending_alignment = None;
         self.donor_ancestry = None;
+        self.estimating_donor_ancestry = false;
         self.donor_private_y = None;
         self.y_profile = None;
         self.y_profile_loading = false;
@@ -2189,21 +2194,35 @@ impl NavigatorApp {
                     card(ui, self.tr("card.autosomalConsensus"), |ui| self.autosomal_profile_section(ui, guid));
                 }
                 DetailTab::Ancestry => {
-                    if self.donor_ancestry.is_some() {
-                        card(ui, self.tr("card.donorAncestry"), |ui| self.donor_ancestry_summary(ui));
-                        ui.add_space(10.0);
-                    }
-                    // Per-source ancestry drill-down (the source picked under Sources); the chip path
-                    // is always available (the only ancestry path for a chip-only subject).
-                    if let Some(id) = self.selected_alignment {
-                        card(ui, self.tr("card.ancestry"), |ui| self.ancestry_section(ui, id));
-                        ui.add_space(10.0);
-                    } else if self.donor_ancestry.is_none() && self.chip_profiles.is_empty() {
-                        ui.label(egui::RichText::new(self.tr("hint.ancestryNoData")).weak());
-                    }
-                    if !self.chip_profiles.is_empty() {
-                        card(ui, self.tr("card.chipAncestry"), |ui| self.chip_ancestry_section(ui));
-                    }
+                    // Consensus is the source of truth: estimate from the subject's pooled autosomal
+                    // consensus (no per-alignment BAM walk), decoupled from any selected source.
+                    card(ui, self.tr("card.donorAncestry"), |ui| {
+                        ui.horizontal(|ui| {
+                            let label = if self.donor_ancestry.is_some() { self.tr("common.refresh") } else { self.tr("btn.estimateAncestry") };
+                            if ui.add_enabled(!self.estimating_donor_ancestry, egui::Button::new(label)).clicked() {
+                                self.estimating_donor_ancestry = true;
+                                self.status = "Estimating ancestry from consensus…".into();
+                                let _ = self.tx.send(Command::EstimateAncestryFromConsensus { biosample_guid: guid });
+                            }
+                            if self.estimating_donor_ancestry {
+                                ui.spinner();
+                            }
+                            ui.label(egui::RichText::new(self.tr("hint.ancestryConsensus")).weak().small());
+                        });
+                        self.donor_ancestry_summary(ui);
+                    });
+                    // Per-source estimators (legacy BAM AIM walk + chip lift) — advanced/optional.
+                    ui.add_space(10.0);
+                    let per_source = self.tr("card.ancestryPerSource");
+                    egui::CollapsingHeader::new(per_source).id_salt("ancestry_per_source").show(ui, |ui| {
+                        if let Some(id) = self.selected_alignment {
+                            self.ancestry_section(ui, id);
+                            ui.add_space(6.0);
+                        }
+                        if !self.chip_profiles.is_empty() {
+                            self.chip_ancestry_section(ui);
+                        }
+                    });
                 }
                 DetailTab::Sources => self.sources_tab(ui, guid),
                 DetailTab::IbdMatches => {
