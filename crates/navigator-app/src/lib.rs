@@ -4699,6 +4699,32 @@ impl App {
             .collect())
     }
 
+    /// Paint each chromosome with local ancestry from the subject's **consensus** — no BAM walk.
+    /// Reads the cached autosomal [`DiploidProfile`], anchors on the genome-wide admixture
+    /// composition (estimated from the same consensus dosages), and runs the per-chromosome HMM.
+    pub async fn paint_local_ancestry_from_consensus(&self, biosample_guid: SampleGuid) -> Result<Vec<AncestrySegment>, AppError> {
+        let profile = self
+            .cached_autosomal_profile(biosample_guid)
+            .await?
+            .ok_or_else(|| AppError::Import("build the autosomal consensus first (Autosomal tab) before painting".into()))?;
+        let genotypes = consensus_genotypes(&profile);
+        let build = ReferenceBuild::Chm13v2;
+        let reference_version = "chm13v2.0".to_string();
+        let panel_path = ancestry_panel_path(build);
+        let panel_bytes =
+            read_verified_asset(build, &panel_path)?.ok_or_else(|| AppError::AncestryPanelMissing(panel_path.clone()))?;
+        let panel = AncestryPanel::from_bytes(&panel_bytes)?;
+        let segments = tokio::task::spawn_blocking(move || {
+            let composition = ancestry_analysis::estimate_admixture(&genotypes, &panel, &reference_version);
+            let prior: Vec<(String, f64)> =
+                composition.components.iter().map(|c| (c.population_code.clone(), c.percentage / 100.0)).collect();
+            ancestry_analysis::paint_local_ancestry(&genotypes, &panel, &prior, &ancestry_analysis::PaintParams::default())
+        })
+        .await
+        .map_err(|e| AppError::Join(e.to_string()))?;
+        Ok(segments)
+    }
+
     /// Paint each chromosome with local ancestry (the "DNA painting"): genotype the AIMs panel,
     /// anchor on the genome-wide admixture composition, and run the per-chromosome HMM. Returns
     /// the ancestry segments. `progress(contigs_done, total)` reports the genotyping pass.

@@ -1864,6 +1864,8 @@ impl NavigatorApp {
         self.pending_alignment = None;
         self.donor_ancestry = None;
         self.estimating_donor_ancestry = false;
+        self.painting = None;
+        self.painting_running = false;
         self.donor_private_y = None;
         self.y_profile = None;
         self.y_profile_loading = false;
@@ -2204,12 +2206,25 @@ impl NavigatorApp {
                                 self.status = "Estimating ancestry from consensus…".into();
                                 let _ = self.tx.send(Command::EstimateAncestryFromConsensus { biosample_guid: guid });
                             }
-                            if self.estimating_donor_ancestry {
+                            // Chromosome painting, also from the consensus (no BAM walk).
+                            if ui.add_enabled(!self.painting_running, egui::Button::new(self.tr("ancestry.paint"))).clicked() {
+                                self.painting_running = true;
+                                self.status = "Painting local ancestry from consensus…".into();
+                                let _ = self.tx.send(Command::PaintAncestryFromConsensus { biosample_guid: guid });
+                            }
+                            if self.estimating_donor_ancestry || self.painting_running {
                                 ui.spinner();
                             }
                             ui.label(egui::RichText::new(self.tr("hint.ancestryConsensus")).weak().small());
                         });
                         self.donor_ancestry_summary(ui);
+                        // The consensus chromosome painting (keyed on the consensus pseudo-source).
+                        if let Some((id, segs)) = &self.painting {
+                            if *id == navigator_app::CONSENSUS_SOURCE_ID && !segs.is_empty() {
+                                ui.add_space(8.0);
+                                draw_chromosome_painting(ui, segs);
+                            }
+                        }
                     });
                     // Per-source estimators (legacy BAM AIM walk + chip lift) — advanced/optional.
                     ui.add_space(10.0);

@@ -118,6 +118,8 @@ pub enum Command {
     EstimateAncestryFromChip { chip_profile_id: i64 },
     /// Estimate autosomal ancestry from the subject's CONSENSUS (no BAM walk) — the default path.
     EstimateAncestryFromConsensus { biosample_guid: SampleGuid },
+    /// Paint local ancestry from the subject's CONSENSUS (no BAM walk).
+    PaintAncestryFromConsensus { biosample_guid: SampleGuid },
     /// Load the persisted ancestry estimate for an alignment, if any.
     LoadAncestry { alignment_id: i64 },
     /// Load the persisted fine-population (FINE_ADMIXTURE) result for the super→fine hierarchy.
@@ -679,6 +681,13 @@ pub async fn handle(app: &App, cmd: Command) -> Event {
             // Estimate from the pooled consensus, then surface it as the donor-level result.
             match app.estimate_ancestry_from_consensus(biosample_guid).await {
                 Ok(result) => Event::DonorAncestry { alignment_id: navigator_app::CONSENSUS_SOURCE_ID, result },
+                Err(e) => Event::Error(e.to_string()),
+            }
+        }
+        Command::PaintAncestryFromConsensus { biosample_guid } => {
+            // Painting from the consensus needs no genotyping pass — fast, no progress stream.
+            match app.paint_local_ancestry_from_consensus(biosample_guid).await {
+                Ok(segments) => Event::AncestryPainting { alignment_id: navigator_app::CONSENSUS_SOURCE_ID, segments },
                 Err(e) => Event::Error(e.to_string()),
             }
         }
