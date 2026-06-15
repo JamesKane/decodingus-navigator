@@ -254,6 +254,7 @@ settings.appviewUrl=URL de AppView
 settings.yTreeProvider=Proveedor de árbol Y
 settings.appearance=Apariencia
 settings.theme=Tema
+settings.uiScale=Escala de interfaz
 settings.dark=Oscuro
 settings.light=Claro
 settings.language=Idioma

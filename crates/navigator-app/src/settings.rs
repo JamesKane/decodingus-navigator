@@ -8,7 +8,7 @@
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[derive(Debug, Clone, Default, PartialEq, Deserialize, Serialize)]
 pub struct AppSettings {
     /// Y-tree provider: `"decodingus"` or `"ftdna"`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -25,6 +25,10 @@ pub struct AppSettings {
     /// Ask before downloading large reference files.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prompt_before_download: Option<bool>,
+    /// UI scale (egui zoom factor) — raise it on a native-4K / HiDPI display where the OS reports a
+    /// 1.0 scale factor and the default text is tiny. `None` = 1.0.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ui_scale: Option<f32>,
 }
 
 impl AppSettings {

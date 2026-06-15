@@ -123,6 +123,8 @@ struct SettingsForm {
     y_tree_provider: String, // "decodingus" | "ftdna"
     tree_ttl_days: String,
     prompt_before_download: bool,
+    /// UI scale (egui zoom factor); 1.0 = native.
+    ui_scale: f32,
     references: Vec<RefRow>,
 }
 
@@ -135,8 +137,41 @@ impl SettingsForm {
             y_tree_provider: s.y_tree_provider.unwrap_or_else(|| "decodingus".to_string()),
             tree_ttl_days: s.tree_ttl_days.map(|d| d.to_string()).unwrap_or_else(|| "7".to_string()),
             prompt_before_download: s.prompt_before_download.unwrap_or(true),
+            ui_scale: s.ui_scale.unwrap_or(1.0),
             references: Vec::new(),
         }
+    }
+}
+
+/// The persisted UI scale (egui zoom factor), clamped to a sane range; `1.0` when unset.
+fn resolved_ui_scale() -> f32 {
+    AppSettings::load().ui_scale.unwrap_or(1.0).clamp(0.5, 3.0)
+}
+
+/// One-shot auto UI-scale probe (the "behave like a native app" default). On the first frame the
+/// monitor size is known, derive a zoom when the OS reports a ~1.0 scale factor on a clearly
+/// high-resolution panel (e.g. native-4K, where macOS itself doesn't up-scale). A Retina / scaled
+/// display (native ppp > 1) is already handled by egui's native scaling, so it's left at 1.0. Skipped
+/// entirely when a manual scale is persisted (`probed` starts `true`). The result fills the Settings
+/// slider but is not persisted until the user saves — re-probed each launch otherwise.
+fn run_auto_scale(probed: &mut bool, form: &mut SettingsForm, ctx: &egui::Context) {
+    if *probed {
+        return;
+    }
+    let Some(monitor_w) = ctx.input(|i| i.viewport().monitor_size).map(|s| s.x) else {
+        return; // monitor size not reported yet — try again next frame
+    };
+    *probed = true;
+    let native_ppp = ctx.native_pixels_per_point().unwrap_or(1.0);
+    let physical_w = monitor_w * native_ppp; // monitor_size is logical points → ×ppp = physical px
+    let auto = if native_ppp > 1.05 || physical_w < 3000.0 {
+        1.0 // OS already HiDPI-scales, or the panel isn't hi-res enough to need help
+    } else {
+        (physical_w / 1920.0).clamp(1.0, 2.0) // ~2.0 on a 3840-wide 4K reported at scale 1.0
+    };
+    if (auto - 1.0).abs() > 0.01 {
+        ctx.set_zoom_factor(auto);
+        form.ui_scale = auto;
     }
 }
 
@@ -262,6 +297,8 @@ pub struct NavigatorApp {
     lang: crate::i18n::Lang,
     /// Dark (default) vs light theme.
     dark_mode: bool,
+    /// Whether the one-shot auto-UI-scale probe has run (skipped when a manual scale is persisted).
+    scale_probed: bool,
     /// Settings dialog open + its editable form.
     show_settings: bool,
     settings_form: SettingsForm,
@@ -1064,6 +1101,9 @@ impl NavigatorApp {
         // Persisted theme wins; default dark. (Must match `dark_mode` below.)
         let dark = !matches!(AppSettings::load().theme.as_deref(), Some("light"));
         apply_theme(&cc.egui_ctx, dark);
+        // Persisted UI scale (egui zoom) — fixes tiny text on a native-4K display the OS reports at
+        // scale factor 1.0. egui's keyboard zoom (Cmd +/-/0) also works but isn't persisted.
+        cc.egui_ctx.set_zoom_factor(resolved_ui_scale());
         NavigatorApp {
             tx,
             rx,
@@ -1086,6 +1126,8 @@ impl NavigatorApp {
                 .unwrap_or(crate::i18n::Lang::En),
             // Persisted theme wins; default dark.
             dark_mode: !matches!(AppSettings::load().theme.as_deref(), Some("light")),
+            // A persisted manual scale takes precedence; otherwise probe the monitor on frame 1.
+            scale_probed: AppSettings::load().ui_scale.is_some(),
             show_settings: false,
             settings_form: SettingsForm::from_settings(),
             subject_search: String::new(),
@@ -1910,6 +1952,7 @@ impl NavigatorApp {
 impl eframe::App for NavigatorApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.frame_time = ctx.input(|i| i.time);
+        run_auto_scale(&mut self.scale_probed, &mut self.settings_form, ctx);
         // While an analysis runs, keep repainting so the spinner/elapsed timer animate even
         // during a long step that emits no events (e.g. whole-genome coverage).
         if self.analysis.is_some() {
@@ -2441,6 +2484,13 @@ impl NavigatorApp {
                             ui.selectable_value(&mut theme_dark, false, self.tr("settings.light"));
                         });
                         ui.horizontal(|ui| {
+                            ui.label(self.tr("settings.uiScale"));
+                            ui.add(egui::Slider::new(&mut form.ui_scale, 0.8..=2.5).step_by(0.05).fixed_decimals(2));
+                            if ui.small_button("100%").clicked() {
+                                form.ui_scale = 1.0;
+                            }
+                        });
+                        ui.horizontal(|ui| {
                             ui.label(self.tr("settings.language"));
                             egui::ComboBox::from_id_salt("settings_lang").selected_text(lang.label()).show_ui(ui, |ui| {
                                 for &l in crate::i18n::Lang::all() {
@@ -2510,10 +2560,13 @@ impl NavigatorApp {
                 });
             });
 
-        // Live-apply theme + language (immediate feedback).
+        // Live-apply theme + UI scale + language (immediate feedback).
         if theme_dark != self.dark_mode {
             self.dark_mode = theme_dark;
             apply_theme(ctx, self.dark_mode);
+        }
+        if (ctx.zoom_factor() - form.ui_scale).abs() > f32::EPSILON {
+            ctx.set_zoom_factor(form.ui_scale.clamp(0.5, 3.0));
         }
         if lang != prev_lang {
             self.lang = lang;
@@ -2528,6 +2581,7 @@ impl NavigatorApp {
                 tree_ttl_days: form.tree_ttl_days.trim().parse::<u64>().ok(),
                 theme: Some(if self.dark_mode { "dark".to_string() } else { "light".to_string() }),
                 prompt_before_download: Some(form.prompt_before_download),
+                ui_scale: Some(form.ui_scale),
             };
             match settings.save() {
                 Ok(()) => self.status = self.tr("settings.saved").to_string(),

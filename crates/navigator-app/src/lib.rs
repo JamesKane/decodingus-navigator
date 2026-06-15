@@ -6584,6 +6584,7 @@ mod settings_tests {
             tree_ttl_days: Some(3),
             theme: Some("light".into()),
             prompt_before_download: Some(false),
+            ui_scale: Some(1.5),
         };
         let json = serde_json::to_string(&s).unwrap();
         assert_eq!(serde_json::from_str::<AppSettings>(&json).unwrap(), s);
