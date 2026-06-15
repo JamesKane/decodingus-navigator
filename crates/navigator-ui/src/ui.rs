@@ -5907,43 +5907,66 @@ fn draw_diploid_profile(ui: &mut egui::Ui, profile: &navigator_app::DiploidProfi
         2 => "1/1",
         _ => "./.",
     };
-    egui::ScrollArea::vertical().max_height(320.0).id_salt(id_salt).show(ui, |ui| {
-        egui::Grid::new(format!("{id_salt}_grid")).striped(true).num_columns(4).show(ui, |ui| {
-            for h in ["Site", "GT", "Status", "Sources"] {
-                ui.strong(h);
-            }
-            ui.end_row();
-            for v in &profile.variants {
-                if filter.is_some_and(|f| v.status != f) {
-                    continue;
-                }
-                let conflict = v.status == YVariantStatus::Conflict;
-                let name = if v.name.is_empty() { format!("{}:{}", v.contig, v.position) } else { v.name.clone() };
-                let name_txt = egui::RichText::new(name).strong();
-                ui.label(if conflict { name_txt.color(amber) } else { name_txt });
-                ui.label(gt(v.consensus_dosage));
-                let (label, color) = match v.status {
-                    YVariantStatus::Confirmed => ("confirmed", egui::Color32::from_rgb(120, 180, 120)),
-                    YVariantStatus::Conflict => ("conflict", amber),
-                    YVariantStatus::SingleSource => ("single", egui::Color32::from_gray(150)),
-                    _ => ("pending", egui::Color32::from_gray(150)),
+    // The panel has ~1.2M sites — a non-virtualized Grid lays out every row per frame and beach-balls.
+    // Render fixed-width columns through ScrollArea::show_rows, which only builds the visible slice.
+    const W_SITE: f32 = 150.0;
+    const W_GT: f32 = 44.0;
+    const W_STATUS: f32 = 130.0;
+    let row_h = ui.text_style_height(&egui::TextStyle::Body) + 4.0;
+    let status_view = |st: YVariantStatus| -> (&'static str, egui::Color32) {
+        match st {
+            YVariantStatus::Confirmed => ("confirmed", egui::Color32::from_rgb(120, 180, 120)),
+            YVariantStatus::Conflict => ("conflict", amber),
+            YVariantStatus::SingleSource => ("single", egui::Color32::from_gray(150)),
+            _ => ("pending", egui::Color32::from_gray(150)),
+        }
+    };
+    ui.horizontal(|ui| {
+        ui.add_sized([W_SITE, row_h], egui::Label::new(egui::RichText::new("Site").strong()));
+        ui.add_sized([W_GT, row_h], egui::Label::new(egui::RichText::new("GT").strong()));
+        ui.add_sized([W_STATUS, row_h], egui::Label::new(egui::RichText::new("Status").strong()));
+        ui.label(egui::RichText::new("Sources").strong());
+    });
+    let render_row = |ui: &mut egui::Ui, v: &navigator_app::DiploidVariant| {
+        let conflict = v.status == YVariantStatus::Conflict;
+        let name = if v.name.is_empty() { format!("{}:{}", v.contig, v.position) } else { v.name.clone() };
+        let name_txt = egui::RichText::new(name).strong();
+        ui.horizontal(|ui| {
+            ui.add_sized([W_SITE, row_h], egui::Label::new(if conflict { name_txt.color(amber) } else { name_txt }).truncate());
+            ui.add_sized([W_GT, row_h], egui::Label::new(gt(v.consensus_dosage)));
+            let (lbl, color) = status_view(v.status);
+            ui.add_sized([W_STATUS, row_h], egui::Label::new(egui::RichText::new(format!("{lbl} ({}/{})", v.support, v.total)).color(color)));
+            for src in &v.sources {
+                let short = match src.source_type {
+                    SourceType::Chip => "chip",
+                    SourceType::WgsShortRead | SourceType::WgsLongRead => "WGS",
+                    _ => "src",
                 };
-                ui.colored_label(color, format!("{label} ({}/{})", v.support, v.total));
-                ui.horizontal(|ui| {
-                    for src in &v.sources {
-                        let short = match src.source_type {
-                            SourceType::Chip => "chip",
-                            SourceType::WgsShortRead | SourceType::WgsLongRead => "WGS",
-                            _ => "src",
-                        };
-                        ui.label(egui::RichText::new(format!("{short}{}", gt(src.dosage))).small().weak())
-                            .on_hover_text(format!("{}: {}", src.label, gt(src.dosage)));
-                    }
-                });
-                ui.end_row();
+                ui.label(egui::RichText::new(format!("{short}{}", gt(src.dosage))).small().weak())
+                    .on_hover_text(format!("{}: {}", src.label, gt(src.dosage)));
             }
         });
-    });
+    };
+    let area = egui::ScrollArea::vertical().max_height(360.0).id_salt(id_salt).auto_shrink([false, false]);
+    match *filter {
+        None => {
+            area.show_rows(ui, row_h, profile.variants.len(), |ui, range| {
+                for i in range {
+                    render_row(ui, &profile.variants[i]);
+                }
+            });
+        }
+        Some(f) => {
+            // Collect matching indices once. The filtered sets the user picks (conflicts, confirmed)
+            // are far smaller than the full panel, so this avoids a 1.2M-element alloc for "All".
+            let idx: Vec<usize> = profile.variants.iter().enumerate().filter(|(_, v)| v.status == f).map(|(i, _)| i).collect();
+            area.show_rows(ui, row_h, idx.len(), |ui, range| {
+                for k in range {
+                    render_row(ui, &profile.variants[idx[k]]);
+                }
+            });
+        }
+    }
 }
 
 /// The rCRS-relative mtDNA mutation list, grouped by region (HVR2 / Coding / HVR1) — the classic
