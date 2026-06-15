@@ -148,6 +148,10 @@ pub enum Command {
     LoadMtProfile { biosample_guid: SampleGuid },
     /// Recompute the mtDNA consensus profile from all sources and persist (expensive — re-places).
     BuildMtProfile { biosample_guid: SampleGuid },
+    /// Load the persisted autosomal consensus-profile snapshot (cheap; no genotyping).
+    LoadAutosomalProfile { biosample_guid: SampleGuid },
+    /// Recompute the autosomal consensus from all sources and persist (expensive — panel-genotypes).
+    BuildAutosomalProfile { biosample_guid: SampleGuid },
     /// Probe a BAM/CRAM header for build/aligner/platform/test-type (to auto-fill the form).
     ProbeAlignment { path: PathBuf },
     LoadCoverage(i64),
@@ -380,6 +384,8 @@ pub enum Event {
     YProfile { biosample_guid: SampleGuid, profile: Option<navigator_app::YProfile> },
     /// The subject's multi-source mtDNA consensus profile.
     MtProfile { biosample_guid: SampleGuid, profile: Option<navigator_app::ConsensusProfile> },
+    /// The subject's multi-source autosomal consensus profile (diploid 0/1/2).
+    AutosomalProfile { biosample_guid: SampleGuid, profile: Option<navigator_app::DiploidProfile> },
     /// Header-probe result for the add-alignment form (build/aligner/platform/test-type).
     AlignmentProbe(AlignmentProbe),
     Coverage { alignment_id: i64, result: Option<Coverage> },
@@ -743,6 +749,14 @@ pub async fn handle(app: &App, cmd: Command) -> Event {
         },
         Command::BuildMtProfile { biosample_guid } => match app.build_mt_profile(biosample_guid).await {
             Ok(profile) => Event::MtProfile { biosample_guid, profile: Some(profile) },
+            Err(e) => Event::Error(e.to_string()),
+        },
+        Command::LoadAutosomalProfile { biosample_guid } => match app.cached_autosomal_profile(biosample_guid).await {
+            Ok(profile) => Event::AutosomalProfile { biosample_guid, profile },
+            Err(e) => Event::Error(e.to_string()),
+        },
+        Command::BuildAutosomalProfile { biosample_guid } => match app.build_autosomal_profile(biosample_guid).await {
+            Ok(profile) => Event::AutosomalProfile { biosample_guid, profile: Some(profile) },
             Err(e) => Event::Error(e.to_string()),
         },
         Command::LoadCoverage(alignment_id) => match app.cached_coverage(alignment_id).await {

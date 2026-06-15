@@ -75,22 +75,23 @@ enum DetailTab {
     Overview,
     YDna,
     MtDna,
+    Autosomal,
     Ancestry,
-    Ideogram,
+    Sources,
     IbdMatches,
-    DataSources,
 }
 
 impl DetailTab {
-    /// `(tab, i18n key)` in display order.
+    /// `(tab, i18n key)` in display order. The DNA-type tabs (Y / mt / Autosomal / Ancestry) show the
+    /// subject's *consensus* across all sources; `Sources` is the per-sequencing-result hub.
     const ALL: [(DetailTab, &'static str); 7] = [
         (DetailTab::Overview, "detail.overview"),
         (DetailTab::YDna, "detail.ydna"),
         (DetailTab::MtDna, "detail.mtdna"),
+        (DetailTab::Autosomal, "detail.autosomal"),
         (DetailTab::Ancestry, "detail.ancestry"),
-        (DetailTab::Ideogram, "detail.ideogram"),
+        (DetailTab::Sources, "detail.sources"),
         (DetailTab::IbdMatches, "detail.ibd"),
-        (DetailTab::DataSources, "detail.datasources"),
     ];
 }
 
@@ -375,6 +376,12 @@ pub struct NavigatorApp {
     mt_profile_filter: Option<YVariantStatus>,
     /// True while the (expensive) mtDNA consensus profile is being built.
     mt_profile_loading: bool,
+    /// The selected subject's multi-source autosomal (diploid 0/1/2) consensus profile.
+    auto_profile: Option<navigator_app::DiploidProfile>,
+    /// Autosomal consensus status filter (None = all).
+    auto_profile_filter: Option<YVariantStatus>,
+    /// True while the (expensive) autosomal consensus profile is being built.
+    auto_profile_loading: bool,
     estimating_ancestry: bool,
     /// Live genotyping progress for the in-flight estimate: (alignment id, done, total) contigs.
     ancestry_progress: Option<(i64, usize, usize)>,
@@ -651,13 +658,6 @@ fn empty_state(ui: &mut egui::Ui, title: &str, hint: &str) {
         ui.heading(title);
         ui.label(egui::RichText::new(hint).weak());
     });
-}
-
-/// Hint shown in an analysis tab when the subject has no analyzable alignment (the default is
-/// auto-selected when one exists, so this means "no sequencing data yet").
-fn pick_alignment_hint(ui: &mut egui::Ui, msg: &str) {
-    ui.add_space(8.0);
-    ui.label(egui::RichText::new(msg).weak());
 }
 
 /// A dashboard stat tile: a big number over a muted label, in a rounded card.
@@ -1176,6 +1176,9 @@ impl NavigatorApp {
             mt_profile: None,
             mt_profile_filter: None,
             mt_profile_loading: false,
+            auto_profile: None,
+            auto_profile_filter: None,
+            auto_profile_loading: false,
             estimating_ancestry: false,
             ancestry_progress: None,
             pca_reference: None,
@@ -1616,6 +1619,15 @@ impl NavigatorApp {
                         self.mt_profile = profile;
                     }
                 }
+                Event::AutosomalProfile { biosample_guid, profile } => {
+                    self.auto_profile_loading = false;
+                    if self.selected_sample == Some(biosample_guid) {
+                        if let Some(p) = &profile {
+                            self.status = format!("autosomal consensus profile: {} sites", p.summary.total);
+                        }
+                        self.auto_profile = profile;
+                    }
+                }
                 Event::Alignments { sequence_run_id, alignments } => {
                     if self.selected_run == Some(sequence_run_id) {
                         self.alignments = alignments;
@@ -1852,6 +1864,8 @@ impl NavigatorApp {
         self.y_profile_loading = false;
         self.mt_profile = None;
         self.mt_profile_loading = false;
+        self.auto_profile = None;
+        self.auto_profile_loading = false;
         self.clear_run_selection();
         self.runs.clear();
         self.str_profiles.clear();
@@ -1889,6 +1903,8 @@ impl NavigatorApp {
         let _ = self.tx.send(Command::LoadYProfile { biosample_guid: guid });
         // Likewise the mtDNA consensus profile (cheap cached snapshot for the mtDNA tab).
         let _ = self.tx.send(Command::LoadMtProfile { biosample_guid: guid });
+        // And the autosomal (diploid) consensus snapshot for the Autosomal tab.
+        let _ = self.tx.send(Command::LoadAutosomalProfile { biosample_guid: guid });
     }
 
     fn select_run(&mut self, id: i64) {
@@ -2135,39 +2151,16 @@ impl NavigatorApp {
         egui::ScrollArea::vertical().show(ui, |ui| {
             ui.add_space(4.0);
             match self.detail_tab {
-                DetailTab::Overview => {
-                    if let Some(id) = self.selected_alignment {
-                        if ui
-                            .add(egui::Button::new(egui::RichText::new(self.tr("action.runFullAnalysis")).color(egui::Color32::WHITE)).fill(ACCENT))
-                            .clicked()
-                        {
-                            self.start_full_analysis(id);
-                        }
-                        ui.add_space(10.0);
-                    }
-                    if self.consensus_y.is_some() || self.consensus_mt.is_some() {
-                        card(ui, self.tr("card.haploConsensus"), |ui| self.consensus_section(ui));
-                        ui.add_space(10.0);
-                    }
-                    if let Some(id) = self.selected_alignment {
-                        card(ui, self.tr("card.coverage"), |ui| self.coverage_section(ui, id));
-                        ui.add_space(10.0);
-                        card(ui, self.tr("card.sexMetrics"), |ui| self.sex_metrics_section(ui, id));
-                    } else {
-                        pick_alignment_hint(ui, self.tr("hint.pickAlignment"));
-                    }
-                }
+                DetailTab::Overview => self.overview_dashboard(ui, guid),
                 DetailTab::YDna => {
-                    if let Some(id) = self.selected_alignment {
-                        card(ui, self.tr("card.yHaplogroup"), |ui| self.y_haplogroup_section(ui, id));
-                        ui.add_space(10.0);
-                    } else if self.consensus_y.is_some() {
-                        card(ui, self.tr("card.yHaplogroup"), |ui| self.consensus_block(ui, "Y-DNA", DnaType::Y));
-                        ui.add_space(10.0);
-                    } else {
-                        pick_alignment_hint(ui, self.tr("hint.pickAlignment"));
-                        ui.add_space(10.0);
-                    }
+                    // The subject's Y consensus is the source of truth — independent of any one source.
+                    card(ui, self.tr("card.yHaplogroup"), |ui| {
+                        if self.consensus_y.is_some() {
+                            self.consensus_block(ui, "Y-DNA", DnaType::Y);
+                        } else {
+                            ui.label(egui::RichText::new(self.tr("hint.noConsensusYet")).weak());
+                        }
+                    });
                     ui.add_space(10.0);
                     card(ui, self.tr("card.yVariantProfile"), |ui| self.y_variant_profile_section(ui, guid));
                     if self.donor_private_y.is_some() {
@@ -2180,56 +2173,46 @@ impl NavigatorApp {
                     card(ui, self.tr("card.ystrConsensus"), |ui| self.ystr_report_section(ui));
                 }
                 DetailTab::MtDna => {
-                    // mtDNA haplogroup: assign standalone from the selected alignment (like Y-DNA);
-                    // with no alignment selected, show the donor consensus if one was recorded.
-                    if let Some(id) = self.selected_alignment {
-                        card(ui, self.tr("card.mtHaplogroup"), |ui| self.mt_haplogroup_section(ui, id));
-                        ui.add_space(10.0);
-                    } else if self.consensus_mt.is_some() {
-                        card(ui, self.tr("card.mtHaplogroup"), |ui| self.consensus_block(ui, "mtDNA", DnaType::Mt));
-                        ui.add_space(10.0);
-                    }
+                    card(ui, self.tr("card.mtHaplogroup"), |ui| {
+                        if self.consensus_mt.is_some() {
+                            self.consensus_block(ui, "mtDNA", DnaType::Mt);
+                        } else {
+                            ui.label(egui::RichText::new(self.tr("hint.noConsensusYet")).weak());
+                        }
+                    });
+                    ui.add_space(10.0);
+                    card(ui, self.tr("card.mtVariantProfile"), |ui| self.mt_variant_profile_section(ui, guid));
+                    ui.add_space(10.0);
                     card(ui, self.tr("card.mtSequences"), |ui| self.mtdna_section(ui, guid));
-                    if let Some(id) = self.selected_alignment {
-                        ui.add_space(10.0);
-                        card(ui, self.tr("card.mtDenovo"), |ui| self.denovo_section(ui, id, "chrM"));
-                        ui.add_space(10.0);
-                        card(ui, self.tr("card.mtHeteroplasmy"), |ui| self.heteroplasmy_section(ui, id));
-                    }
+                }
+                DetailTab::Autosomal => {
+                    card(ui, self.tr("card.autosomalConsensus"), |ui| self.autosomal_profile_section(ui, guid));
                 }
                 DetailTab::Ancestry => {
                     if self.donor_ancestry.is_some() {
                         card(ui, self.tr("card.donorAncestry"), |ui| self.donor_ancestry_summary(ui));
                         ui.add_space(10.0);
                     }
+                    // Per-source ancestry drill-down (the source picked under Sources); the chip path
+                    // is always available (the only ancestry path for a chip-only subject).
                     if let Some(id) = self.selected_alignment {
                         card(ui, self.tr("card.ancestry"), |ui| self.ancestry_section(ui, id));
-                    } else if self.chip_profiles.is_empty() {
-                        pick_alignment_hint(ui, self.tr("hint.pickAlignment"));
-                    }
-                    // Chip-based ancestry: available whenever the subject has a chip profile, with
-                    // or without an alignment (it's the only ancestry path for a chip-only subject).
-                    if !self.chip_profiles.is_empty() {
                         ui.add_space(10.0);
+                    } else if self.donor_ancestry.is_none() && self.chip_profiles.is_empty() {
+                        ui.label(egui::RichText::new(self.tr("hint.ancestryNoData")).weak());
+                    }
+                    if !self.chip_profiles.is_empty() {
                         card(ui, self.tr("card.chipAncestry"), |ui| self.chip_ancestry_section(ui));
                     }
                 }
-                DetailTab::Ideogram => {
-                    if let Some(id) = self.selected_alignment {
-                        card(ui, self.tr("card.ideogram"), |ui| self.ideogram_section(ui, id));
-                    } else {
-                        pick_alignment_hint(ui, self.tr("hint.pickAlignment"));
-                    }
-                }
+                DetailTab::Sources => self.sources_tab(ui, guid),
                 DetailTab::IbdMatches => {
+                    card(ui, self.tr("card.networkSuggestions"), |ui| self.network_suggestions_section(ui));
                     if let Some(id) = self.selected_alignment {
+                        ui.add_space(10.0);
                         card(ui, self.tr("card.panelGenotypingIbd"), |ui| self.genotyping_section(ui, id));
-                        card(ui, self.tr("card.networkSuggestions"), |ui| self.network_suggestions_section(ui));
-                    } else {
-                        pick_alignment_hint(ui, self.tr("hint.pickAlignment"));
                     }
                 }
-                DetailTab::DataSources => self.data_sources_tab(ui, guid),
             }
         });
     }
@@ -3533,6 +3516,128 @@ impl NavigatorApp {
         self.mt_profile_filter = filter;
     }
 
+    /// Multi-source autosomal (diploid 0/1/2) consensus over the canonical IBD-panel sites. Build/
+    /// Refresh recomputes (panel-genotypes every WGS + chip source); the cached snapshot loads instantly.
+    fn autosomal_profile_section(&mut self, ui: &mut egui::Ui, guid: SampleGuid) {
+        ui.horizontal(|ui| {
+            let label = if self.auto_profile.is_some() { self.tr("common.refresh") } else { self.tr("btn.buildAutosomalProfile") };
+            if ui.add_enabled(!self.auto_profile_loading, egui::Button::new(label)).clicked() {
+                self.auto_profile_loading = true;
+                self.status = "Building autosomal consensus profile…".into();
+                let _ = self.tx.send(Command::BuildAutosomalProfile { biosample_guid: guid });
+            }
+            if self.auto_profile_loading {
+                ui.spinner();
+            }
+            ui.label(egui::RichText::new(self.tr("hint.autoProfileCost")).weak().small());
+        });
+
+        let Some(profile) = &self.auto_profile else {
+            if !self.auto_profile_loading {
+                ui.label(egui::RichText::new(self.tr("hint.autoProfileBuild")).weak());
+            }
+            return;
+        };
+        let mut filter = self.auto_profile_filter;
+        draw_diploid_profile(ui, profile, &mut filter, "autosomal_profile");
+        self.auto_profile_filter = filter;
+    }
+
+    /// Consensus dashboard (Overview): the subject's source-of-truth at a glance — consensus Y/mt
+    /// haplogroups, top ancestry, the autosomal concordance one-liner, and a source inventory.
+    fn overview_dashboard(&mut self, ui: &mut egui::Ui, _guid: SampleGuid) {
+        let none = self.tr("hint.noConsensusYet");
+        card(ui, self.tr("card.consensusSummary"), |ui| {
+            let line = |ui: &mut egui::Ui, label: &str, cons: &Option<navigator_app::Consensus>| {
+                ui.horizontal(|ui| {
+                    ui.strong(label);
+                    match cons {
+                        Some(c) => {
+                            ui.label(&c.haplogroup);
+                            ui.label(egui::RichText::new(format!("({} source(s), conf {:.2})", c.run_count, c.confidence)).weak().small());
+                        }
+                        None => {
+                            ui.label(egui::RichText::new(none).weak());
+                        }
+                    }
+                });
+            };
+            line(ui, "Y-DNA:", &self.consensus_y);
+            line(ui, "mtDNA:", &self.consensus_mt);
+            ui.horizontal(|ui| {
+                ui.strong("Ancestry:");
+                match self.donor_ancestry.as_ref().and_then(|(_, r)| r.super_population_summary.first()) {
+                    Some(top) => {
+                        ui.label(format!("{} {:.1}%", top.super_population, top.percentage));
+                    }
+                    None => {
+                        ui.label(egui::RichText::new(none).weak());
+                    }
+                }
+            });
+            ui.horizontal(|ui| {
+                ui.strong("Autosomal:");
+                match &self.auto_profile {
+                    Some(p) => {
+                        ui.label(format!(
+                            "{} sites · {} confirmed · {} conflict · {:.0}% confidence",
+                            p.summary.total, p.summary.confirmed, p.summary.conflict, p.summary.overall_confidence * 100.0
+                        ));
+                    }
+                    None => {
+                        ui.label(egui::RichText::new(none).weak());
+                    }
+                }
+            });
+        });
+        ui.add_space(10.0);
+        card(ui, self.tr("card.sourceInventory"), |ui| {
+            ui.label(format!("{} sequencing run(s)", self.runs.len()));
+            ui.label(format!("{} chip/array profile(s)", self.chip_profiles.len()));
+            ui.label(format!("{} STR profile(s)", self.str_profiles.len()));
+            ui.label(format!("{} mtDNA sequence(s)", self.mtdna_sequences.len()));
+            ui.add_space(4.0);
+            ui.label(egui::RichText::new(self.tr("hint.sourcesTabHint")).weak().small());
+        });
+    }
+
+    /// The per-sequencing-result hub: the source lists (runs/alignments/chips/STR/mtDNA) plus, for the
+    /// selected source, the inherently-per-result views (coverage, sex/metrics/SV, ideogram,
+    /// heteroplasmy, chrM de-novo) and that source's own Y/mt haplogroup placement.
+    fn sources_tab(&mut self, ui: &mut egui::Ui, guid: SampleGuid) {
+        self.data_sources_tab(ui, guid);
+        ui.add_space(10.0);
+        ui.separator();
+        let Some(id) = self.selected_alignment else {
+            ui.add_space(4.0);
+            ui.label(egui::RichText::new(self.tr("sources.pickHint")).weak());
+            return;
+        };
+        ui.add_space(6.0);
+        ui.strong(self.tr("sources.selectedDetail"));
+        ui.add_space(4.0);
+        if ui
+            .add(egui::Button::new(egui::RichText::new(self.tr("action.runFullAnalysis")).color(egui::Color32::WHITE)).fill(ACCENT))
+            .clicked()
+        {
+            self.start_full_analysis(id);
+        }
+        ui.add_space(8.0);
+        card(ui, self.tr("card.coverage"), |ui| self.coverage_section(ui, id));
+        ui.add_space(10.0);
+        card(ui, self.tr("card.sexMetrics"), |ui| self.sex_metrics_section(ui, id));
+        ui.add_space(10.0);
+        card(ui, self.tr("card.ideogram"), |ui| self.ideogram_section(ui, id));
+        ui.add_space(10.0);
+        card(ui, self.tr("card.yHaplogroup"), |ui| self.y_haplogroup_section(ui, id));
+        ui.add_space(10.0);
+        card(ui, self.tr("card.mtHaplogroup"), |ui| self.mt_haplogroup_section(ui, id));
+        ui.add_space(10.0);
+        card(ui, self.tr("card.mtDenovo"), |ui| self.denovo_section(ui, id, "chrM"));
+        ui.add_space(10.0);
+        card(ui, self.tr("card.mtHeteroplasmy"), |ui| self.heteroplasmy_section(ui, id));
+    }
+
     /// Donor-level private-Y union (Phase 3): off-backbone calls pooled + deduped across the
     /// subject's Y-bearing sources.
     fn donor_private_y_section(&self, ui: &mut egui::Ui) {
@@ -4679,16 +4784,6 @@ impl NavigatorApp {
         });
     }
 
-    /// Donor-level haplogroup consensus across all recorded sources (runs, Sanger, …).
-    fn consensus_section(&mut self, ui: &mut egui::Ui) {
-        if self.consensus_y.is_none() && self.consensus_mt.is_none() {
-            ui.label(egui::RichText::new("No haplogroup consensus yet.").weak());
-            return;
-        }
-        self.consensus_block(ui, "Y-DNA", DnaType::Y);
-        self.consensus_block(ui, "mtDNA", DnaType::Mt);
-    }
-
     /// One DNA type's consensus row plus its override controls, audit log, and publish
     /// button. The consensus/audit are cloned up front so the form fields can be borrowed
     /// mutably for the override inputs.
@@ -5771,6 +5866,78 @@ fn draw_consensus_profile(
                         };
                         ui.label(egui::RichText::new(format!("{short}{glyph}")).small().weak())
                             .on_hover_text(format!("{}: {}", src.label, state_label(src.state)));
+                    }
+                });
+                ui.end_row();
+            }
+        });
+    });
+}
+
+/// Renderer for the autosomal diploid consensus profile — the 0/1/2 sibling of
+/// [`draw_consensus_profile`]. Header (confirmed/conflict/single + confidence), a status filter, and a
+/// per-site grid `Site (rsID) | GT (0/0,0/1,1/1) | Status | Sources (per-source dosage)`.
+fn draw_diploid_profile(ui: &mut egui::Ui, profile: &navigator_app::DiploidProfile, filter: &mut Option<YVariantStatus>, id_salt: &str) {
+    if profile.variants.is_empty() {
+        ui.label(egui::RichText::new("No autosomal sites across sources.").weak());
+        return;
+    }
+    let s = &profile.summary;
+    ui.label(egui::RichText::new(format!(
+        "{} sites · {} confirmed · {} conflict · {} single-source · confidence {:.0}%",
+        s.total, s.confirmed, s.conflict, s.single_source, s.overall_confidence * 100.0
+    )).weak());
+    if !profile.sources.is_empty() {
+        let prov = profile.sources.iter().map(|src| format!("{} ({})", src.label, src.variant_count)).collect::<Vec<_>>().join(" · ");
+        ui.label(egui::RichText::new(format!("sources: {prov}")).weak().small());
+    }
+
+    let amber = egui::Color32::from_rgb(220, 150, 60);
+    ui.horizontal(|ui| {
+        ui.label("Show:");
+        ui.selectable_value(filter, None, "All");
+        ui.selectable_value(filter, Some(YVariantStatus::Conflict), "Conflicts");
+        ui.selectable_value(filter, Some(YVariantStatus::Confirmed), "Confirmed");
+    });
+
+    // Dosage 0/1/2 → diploid genotype string; -1 = no-call.
+    let gt = |d: i8| match d {
+        0 => "0/0",
+        1 => "0/1",
+        2 => "1/1",
+        _ => "./.",
+    };
+    egui::ScrollArea::vertical().max_height(320.0).id_salt(id_salt).show(ui, |ui| {
+        egui::Grid::new(format!("{id_salt}_grid")).striped(true).num_columns(4).show(ui, |ui| {
+            for h in ["Site", "GT", "Status", "Sources"] {
+                ui.strong(h);
+            }
+            ui.end_row();
+            for v in &profile.variants {
+                if filter.is_some_and(|f| v.status != f) {
+                    continue;
+                }
+                let conflict = v.status == YVariantStatus::Conflict;
+                let name = if v.name.is_empty() { format!("{}:{}", v.contig, v.position) } else { v.name.clone() };
+                let name_txt = egui::RichText::new(name).strong();
+                ui.label(if conflict { name_txt.color(amber) } else { name_txt });
+                ui.label(gt(v.consensus_dosage));
+                let (label, color) = match v.status {
+                    YVariantStatus::Confirmed => ("confirmed", egui::Color32::from_rgb(120, 180, 120)),
+                    YVariantStatus::Conflict => ("conflict", amber),
+                    YVariantStatus::SingleSource => ("single", egui::Color32::from_gray(150)),
+                    _ => ("pending", egui::Color32::from_gray(150)),
+                };
+                ui.colored_label(color, format!("{label} ({}/{})", v.support, v.total));
+                ui.horizontal(|ui| {
+                    for src in &v.sources {
+                        let short = match src.source_type {
+                            SourceType::Chip => "chip",
+                            SourceType::WgsShortRead | SourceType::WgsLongRead => "WGS",
+                            _ => "src",
+                        };
+                        ui.label(egui::RichText::new(format!("{short}{}", gt(src.dosage))).small().weak())
+                            .on_hover_text(format!("{}: {}", src.label, gt(src.dosage)));
                     }
                 });
                 ui.end_row();
