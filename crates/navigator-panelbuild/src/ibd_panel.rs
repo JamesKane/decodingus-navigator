@@ -1,12 +1,13 @@
 //! Build the chip-compatible IBD panel asset (`ibd_panel_<build>.bin`) — a multi-build,
-//! palindrome-free SNP set (ancestry-ibd-asset-wiring B2).
+//! probe SNP set (ancestry-ibd-asset-wiring B2). Palindromes are RETAINED so WGS/ancestry can use
+//! them; only the chip path skips them (at resolve time) since an array's strand can't be oriented.
 //!
 //! Input is a tab-separated table with a **named header**; required columns are the rsID and the
 //! CHM13 locus; the GRCh37/GRCh38 loci are optional per row (blank ⇒ that build absent for the
 //! site). The multi-build coordinates must come from an **allele-aware** liftover (GATK
 //! `LiftoverVcf`, which reverse-complements + swaps REF/ALT on inverted chain blocks) so each
 //! build's `(REF, ALT)` are the same biological alleles — a CrossMap lift would silently corrupt
-//! ~3/4 of sites. This step parses that table, drops strand-ambiguous palindromes, and serializes.
+//! ~3/4 of sites. This step parses that table and serializes (palindromes retained; resolve_chip skips them).
 //!
 //! ```text
 //! rsid  chm13_contig chm13_pos chm13_ref chm13_alt  grch37_contig grch37_pos grch37_ref grch37_alt  grch38_contig grch38_pos grch38_ref grch38_alt
@@ -92,7 +93,7 @@ pub fn build_ibd_panel(args: IbdPanelArgs) -> Result<()> {
     let with37 = panel.sites.iter().filter(|s| s.grch37.is_some()).count();
     let with38 = panel.sites.iter().filter(|s| s.grch38.is_some()).count();
     eprintln!(
-        "wrote {} ({} sites; {with37} with GRCh37, {with38} with GRCh38; {palindromes} palindromes dropped, {skipped} rows skipped)",
+        "wrote {} ({} sites; {with37} with GRCh37, {with38} with GRCh38; {palindromes} palindromes retained — chip path skips them, WGS/ancestry use them; {skipped} rows skipped)",
         args.out.display(),
         panel.sites.len()
     );

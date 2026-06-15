@@ -76,14 +76,14 @@ impl IbdPanel {
         bincode::serialize(self).map_err(|e| AnalysisError::Message(format!("ibd panel encode: {e}")))
     }
 
-    /// Build from sites, dropping strand-ambiguous palindromes (A/T, C/G) on the CHM13 alleles —
-    /// the chip-compatibility filter. Returns `(panel, n_dropped)`.
+    /// Build from sites, **retaining** strand-ambiguous palindromes (A/T, C/G). The panel is a probe
+    /// superset: WGS + ancestry genotype palindromic sites fine (a read gives the reference-strand
+    /// base), and only the CHIP path can't orient them — so [`resolve_chip`] skips palindromes at
+    /// resolve time rather than excluding them from the panel here. Returns `(panel, n_palindromic)`
+    /// (the retained palindrome count, for the build log).
     pub fn from_sites(build: impl Into<String>, sites: Vec<IbdPanelSite>) -> (Self, usize) {
-        let before = sites.len();
-        let sites: Vec<IbdPanelSite> =
-            sites.into_iter().filter(|s| !is_palindromic(s.chm13.reference, s.chm13.alternate)).collect();
-        let dropped = before - sites.len();
-        (IbdPanel { build: build.into(), sites }, dropped)
+        let palindromic = sites.iter().filter(|s| is_palindromic(s.chm13.reference, s.chm13.alternate)).count();
+        (IbdPanel { build: build.into(), sites }, palindromic)
     }
 
     /// Resolve chip calls (on `build`, as `(contig, pos, a1, a2)`) to canonical CHM13 dosages.
@@ -108,6 +108,12 @@ impl IbdPanel {
         let mut out = Vec::new();
         for (contig, pos, a1, a2) in calls {
             let Some(site) = index.get(&(contig.as_str(), *pos)) else { continue };
+            // Strand-ambiguous palindromes (A/T, C/G) can't be oriented from a chip's reported
+            // alleles — skip them for the chip path (WGS/ancestry still use them via direct base
+            // calls). The probe panel retains them; this is where the chip-only exclusion lives.
+            if is_palindromic(site.chm13.reference, site.chm13.alternate) {
+                continue;
+            }
             let Some(dosage) = dosage_from_alleles(*a1, *a2, site.chm13.reference, site.chm13.alternate) else { continue };
             out.push(SiteGenotype {
                 name: site.rsid.clone(),
@@ -159,18 +165,25 @@ mod tests {
     }
 
     #[test]
-    fn palindrome_filter_drops_at_cg() {
+    fn palindromes_retained_in_panel_skipped_for_chip() {
         assert!(is_palindromic('A', 'T') && is_palindromic('C', 'G') && is_palindromic('g', 'c'));
         assert!(!is_palindromic('A', 'G') && !is_palindromic('C', 'T'));
         let sites = vec![
-            site("rs1", (100, 'A', 'G'), None), // keep
-            site("rs2", (200, 'A', 'T'), None), // palindrome → drop
-            site("rs3", (300, 'C', 'G'), None), // palindrome → drop
+            site("rs1", (100, 'A', 'G'), Some((500, 'A', 'G'))), // non-palindromic
+            site("rs2", (200, 'A', 'T'), Some((600, 'A', 'T'))), // palindrome
+            site("rs3", (300, 'C', 'G'), Some((700, 'C', 'G'))), // palindrome
         ];
-        let (panel, dropped) = IbdPanel::from_sites("chm13v2.0", sites);
-        assert_eq!(dropped, 2);
-        assert_eq!(panel.sites.len(), 1);
-        assert_eq!(panel.sites[0].rsid, "rs1");
+        // The probe panel RETAINS palindromes (count reported); WGS/ancestry use them.
+        let (panel, palindromic) = IbdPanel::from_sites("chm13v2.0", sites);
+        assert_eq!(palindromic, 2);
+        assert_eq!(panel.sites.len(), 3);
+        // The chip path skips palindromes (can't orient strand) but resolves the non-palindromic one.
+        let g = panel.resolve_chip(
+            "GRCh37",
+            &[("1".into(), 500, 'A', 'G'), ("1".into(), 600, 'A', 'T'), ("1".into(), 700, 'C', 'G')],
+        );
+        assert_eq!(g.len(), 1);
+        assert_eq!(g[0].name, "rs1");
     }
 
     #[test]
