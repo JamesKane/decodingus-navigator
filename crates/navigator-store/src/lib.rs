@@ -13,6 +13,7 @@ pub mod ancestry_result;
 pub mod artifact;
 pub mod biosample;
 pub mod chip_profile;
+pub mod consensus_painting;
 pub mod consensus_profile;
 pub mod haplogroup_call;
 pub mod mtdna;

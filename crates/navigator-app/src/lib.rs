@@ -325,7 +325,7 @@ pub use navigator_domain::consensus::{DiploidSourceObs, DiploidVariant};
 use navigator_domain::bisdna;
 use navigator_domain::ysnp_dict::{self, YsnpDictionary};
 use navigator_store::{
-    alignment, ancestry_result, artifact, biosample, chip_profile, haplogroup_call,
+    alignment, ancestry_result, artifact, biosample, chip_profile, consensus_painting, consensus_profile, haplogroup_call,
     mtdna as mtdna_store, project, reconciliation as recon_store, sequence_run, str_profile,
     sync_history, sync_outbox, variant_set, Store, StoreError,
 };
@@ -4529,14 +4529,41 @@ impl App {
             .collect())
     }
 
-    /// Paint each chromosome with local ancestry from the subject's **consensus** — no BAM walk.
-    /// Reads the cached autosomal [`DiploidProfile`], anchors on the genome-wide admixture
-    /// composition (estimated from the same consensus dosages), and runs the per-chromosome HMM.
+    /// The cached chromosome painting for a subject, if one was painted from the **current** autosomal
+    /// consensus (signature = the consensus's `last_reconciled_at`). `None` if absent or stale (the
+    /// consensus was rebuilt since). Cheap — a cache read, no genotyping or HMM.
+    pub async fn cached_painting(&self, biosample_guid: SampleGuid) -> Result<Option<Vec<AncestrySegment>>, AppError> {
+        let Some(row) = consensus_profile::get(self.store.pool(), biosample_guid, "Auto").await? else {
+            return Ok(None);
+        };
+        let Some(p) = consensus_painting::get(self.store.pool(), biosample_guid).await? else {
+            return Ok(None);
+        };
+        if p.consensus_sig == row.last_reconciled_at {
+            Ok(Some(serde_json::from_str(&p.segments)?))
+        } else {
+            Ok(None) // painted from an older consensus — stale
+        }
+    }
+
+    /// Paint each chromosome with diploid local ancestry from the subject's **consensus** — no BAM
+    /// walk. Returns the cached painting when it matches the current consensus signature; otherwise
+    /// runs the diploid pair-state HMM over the consensus genotypes (anchored on the admixture prior)
+    /// and caches it keyed to the consensus's `last_reconciled_at`.
     pub async fn paint_local_ancestry_from_consensus(&self, biosample_guid: SampleGuid) -> Result<Vec<AncestrySegment>, AppError> {
-        let profile = self
-            .cached_autosomal_profile(biosample_guid)
+        let row = consensus_profile::get(self.store.pool(), biosample_guid, "Auto")
             .await?
             .ok_or_else(|| AppError::Import("build the autosomal consensus first (Autosomal tab) before painting".into()))?;
+        let sig = row.last_reconciled_at.clone();
+
+        // Cache hit (same consensus signature) → return without recomputing.
+        if let Some(p) = consensus_painting::get(self.store.pool(), biosample_guid).await? {
+            if p.consensus_sig == sig {
+                return Ok(serde_json::from_str(&p.segments)?);
+            }
+        }
+
+        let profile: DiploidProfile = serde_json::from_str(&row.payload)?;
         let genotypes = consensus_genotypes(&profile);
         let build = ReferenceBuild::Chm13v2;
         let reference_version = "chm13v2.0".to_string();
@@ -4552,6 +4579,9 @@ impl App {
         })
         .await
         .map_err(|e| AppError::Join(e.to_string()))?;
+
+        // Cache keyed to the consensus signature so it's reused until the consensus is rebuilt.
+        consensus_painting::upsert(self.store.pool(), biosample_guid, &sig, &serde_json::to_string(&segments)?, &Utc::now().to_rfc3339()).await?;
         Ok(segments)
     }
 

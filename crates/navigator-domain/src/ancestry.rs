@@ -203,6 +203,10 @@ pub struct AncestrySegment {
     pub population_code: String,
     /// Mean posterior support for the assignment over the segment (0–1).
     pub posterior: f64,
+    /// Which of the two (sorted, unphased) genome copies this segment belongs to: 0 or 1.
+    /// Diploid painting emits both copies; older single-track paintings decode to copy 0.
+    #[serde(default)]
+    pub copy: u8,
 }
 
 /// Confidence-interval bounds (percent) on a component estimate.

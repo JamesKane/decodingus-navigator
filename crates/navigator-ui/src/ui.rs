@@ -679,29 +679,39 @@ fn fmt_pct(o: Option<f64>) -> String {
 /// normalized to full width), segments colored by ancestry, plus a legend of the ancestries shown.
 fn draw_chromosome_painting(ui: &mut egui::Ui, segments: &[AncestrySegment]) {
     use std::collections::BTreeMap;
-    // Group by contig, ordered by chromosome number.
-    let mut by_contig: BTreeMap<i64, Vec<&AncestrySegment>> = BTreeMap::new();
+    // Group by autosome number → the two copies' segments. Non-autosomes (X/Y/M / the chr99 fallback)
+    // are skipped — this is autosomal local ancestry.
+    let mut by_chr: BTreeMap<i64, [Vec<&AncestrySegment>; 2]> = BTreeMap::new();
     for s in segments {
-        let n: i64 = s.contig.trim_start_matches("chr").parse().unwrap_or(99);
-        by_contig.entry(n).or_default().push(s);
+        let Ok(n) = s.contig.trim_start_matches("chr").parse::<i64>() else { continue };
+        if !(1..=22).contains(&n) {
+            continue;
+        }
+        by_chr.entry(n).or_default()[(s.copy as usize).min(1)].push(s);
     }
     let label_w = 42.0;
     let bar_w = 300.0;
-    let bar_h = 13.0;
-    for (n, mut segs) in by_contig {
-        segs.sort_by_key(|s| s.start);
-        let (lo, hi) = (segs.first().unwrap().start, segs.last().unwrap().end.max(segs.first().unwrap().start + 1));
+    let copy_h = 7.0; // each of the two copy tracks
+    let gap = 2.0;
+    for (n, copies) in by_chr {
+        // Shared bp span across both copies so the two tracks align.
+        let lo = copies.iter().flatten().map(|s| s.start).min().unwrap_or(1);
+        let hi = copies.iter().flatten().map(|s| s.end).max().unwrap_or(lo + 1).max(lo + 1);
         let span = (hi - lo).max(1) as f32;
         ui.horizontal(|ui| {
-            ui.allocate_ui(egui::vec2(label_w, bar_h), |ui| ui.label(format!("chr{n}")));
-            let (rect, _) = ui.allocate_exact_size(egui::vec2(bar_w, bar_h), egui::Sense::hover());
+            ui.allocate_ui(egui::vec2(label_w, copy_h * 2.0 + gap), |ui| ui.label(format!("chr{n}")));
+            let (rect, _) = ui.allocate_exact_size(egui::vec2(bar_w, copy_h * 2.0 + gap), egui::Sense::hover());
             let painter = ui.painter_at(rect);
-            painter.rect_filled(rect, 2.0, egui::Color32::from_gray(30));
-            for s in &segs {
-                let x0 = rect.left() + (s.start - lo) as f32 / span * rect.width();
-                let x1 = rect.left() + (s.end - lo) as f32 / span * rect.width();
-                let seg_rect = egui::Rect::from_min_max(egui::pos2(x0, rect.top()), egui::pos2(x1.max(x0 + 1.0), rect.bottom()));
-                painter.rect_filled(seg_rect, 0.0, parse_hex_color(&population_color(&s.population_code)));
+            for (c, segs) in copies.iter().enumerate() {
+                let top = rect.top() + c as f32 * (copy_h + gap);
+                let track = egui::Rect::from_min_size(egui::pos2(rect.left(), top), egui::vec2(rect.width(), copy_h));
+                painter.rect_filled(track, 2.0, egui::Color32::from_gray(30));
+                for s in segs {
+                    let x0 = track.left() + (s.start - lo) as f32 / span * track.width();
+                    let x1 = track.left() + (s.end - lo) as f32 / span * track.width();
+                    let seg_rect = egui::Rect::from_min_max(egui::pos2(x0, track.top()), egui::pos2(x1.max(x0 + 1.0), track.bottom()));
+                    painter.rect_filled(seg_rect, 0.0, parse_hex_color(&population_color(&s.population_code)));
+                }
             }
         });
     }
@@ -1801,6 +1811,8 @@ impl NavigatorApp {
         let _ = self.tx.send(Command::DefaultAlignment { biosample_guid: guid });
         let _ = self.tx.send(Command::LoadDonorAncestry { biosample_guid: guid });
         let _ = self.tx.send(Command::LoadConsensusAncestryDetail { biosample_guid: guid });
+        // A cached chromosome painting (current for the consensus signature) shows without a click.
+        let _ = self.tx.send(Command::LoadPainting { biosample_guid: guid });
         let _ = self.tx.send(Command::LoadDonorPrivateY { biosample_guid: guid });
         // The Y-variant profile is *built* on explicit request (re-genotypes each alignment), but a
         // previously-built snapshot loads cheaply — fetch it so the Y-DNA tab shows it immediately.
@@ -2093,26 +2105,13 @@ impl NavigatorApp {
                                 self.status = "Estimating ancestry from consensus…".into();
                                 let _ = self.tx.send(Command::EstimateAncestryFromConsensus { biosample_guid: guid });
                             }
-                            // Chromosome painting, also from the consensus (no BAM walk).
-                            if ui.add_enabled(!self.painting_running, egui::Button::new(self.tr("ancestry.paint"))).clicked() {
-                                self.painting_running = true;
-                                self.status = "Painting local ancestry from consensus…".into();
-                                let _ = self.tx.send(Command::PaintAncestryFromConsensus { biosample_guid: guid });
-                            }
-                            if self.estimating_donor_ancestry || self.painting_running {
+                            if self.estimating_donor_ancestry {
                                 ui.spinner();
                             }
                             ui.label(egui::RichText::new(self.tr("hint.ancestryConsensus")).weak().small());
                         });
                         asset_status_line(ui, &self.asset_status);
                         self.donor_ancestry_summary(ui);
-                        // The consensus chromosome painting (keyed on the consensus pseudo-source).
-                        if let Some((id, segs)) = &self.painting {
-                            if *id == navigator_app::CONSENSUS_SOURCE_ID && !segs.is_empty() {
-                                ui.add_space(8.0);
-                                draw_chromosome_painting(ui, segs);
-                            }
-                        }
                     });
                     // Detailed reports from the same consensus estimate (persisted alongside the
                     // super-population ADMIXTURE): modern fine populations + ancient components.
@@ -2128,6 +2127,29 @@ impl NavigatorApp {
                         ui.add_space(10.0);
                         card(ui, self.tr("card.ancestryNmonte"), |ui| draw_population_components(ui, r, "anc_nmonte", 18));
                     }
+                    // Chromosome painting (diploid local ancestry) — its own section, from the consensus.
+                    ui.add_space(10.0);
+                    card(ui, self.tr("card.chromosomePainting"), |ui| {
+                        ui.horizontal(|ui| {
+                            let painted = matches!(&self.painting, Some((id, s)) if *id == navigator_app::CONSENSUS_SOURCE_ID && !s.is_empty());
+                            let label = if painted { self.tr("common.refresh") } else { self.tr("ancestry.paint") };
+                            if ui.add_enabled(!self.painting_running, egui::Button::new(label)).clicked() {
+                                self.painting_running = true;
+                                self.status = "Painting local ancestry from consensus…".into();
+                                let _ = self.tx.send(Command::PaintAncestryFromConsensus { biosample_guid: guid });
+                            }
+                            if self.painting_running {
+                                ui.spinner();
+                            }
+                            ui.label(egui::RichText::new(self.tr("hint.chromosomePainting")).weak().small());
+                        });
+                        if let Some((id, segs)) = &self.painting {
+                            if *id == navigator_app::CONSENSUS_SOURCE_ID && !segs.is_empty() {
+                                ui.add_space(8.0);
+                                draw_chromosome_painting(ui, segs);
+                            }
+                        }
+                    });
                 }
                 DetailTab::Sources => self.sources_tab(ui, guid),
                 DetailTab::IbdMatches => {

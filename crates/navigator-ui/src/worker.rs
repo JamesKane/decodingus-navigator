@@ -115,6 +115,8 @@ pub enum Command {
     EstimateAncestryFromConsensus { biosample_guid: SampleGuid },
     /// Paint local ancestry from the subject's CONSENSUS (no BAM walk).
     PaintAncestryFromConsensus { biosample_guid: SampleGuid },
+    /// Load the cached chromosome painting (if current for the consensus signature) — cheap.
+    LoadPainting { biosample_guid: SampleGuid },
     /// Load the cached detailed consensus ancestry reports (modern fine + ancient components).
     LoadConsensusAncestryDetail { biosample_guid: SampleGuid },
     /// Find the private bucket: de-novo chrY calls off the assigned Y backbone, restricted
@@ -661,6 +663,13 @@ pub async fn handle(app: &App, cmd: Command) -> Event {
                 Err(e) => Event::Error(e.to_string()),
             }
         }
+        Command::LoadPainting { biosample_guid } => match app.cached_painting(biosample_guid).await {
+            Ok(segments) => Event::AncestryPainting {
+                alignment_id: navigator_app::CONSENSUS_SOURCE_ID,
+                segments: segments.unwrap_or_default(),
+            },
+            Err(e) => Event::Error(e.to_string()),
+        },
         Command::LoadConsensusAncestryDetail { biosample_guid } => {
             let fine = app.consensus_ancestry(biosample_guid, "FINE_ADMIXTURE").await.unwrap_or(None).map(Box::new);
             let ancient = app.consensus_ancestry(biosample_guid, "PCA_PROJECTION_GMM").await.unwrap_or(None).map(Box::new);

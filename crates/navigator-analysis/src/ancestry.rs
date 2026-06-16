@@ -213,23 +213,19 @@ impl Default for PaintParams {
     }
 }
 
-fn logsumexp(xs: &[f64]) -> f64 {
-    let m = xs.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
-    if m == f64::NEG_INFINITY {
-        return m;
-    }
-    m + xs.iter().map(|&x| (x - m).exp()).sum::<f64>().ln()
-}
-
-/// Diploid genotype log-likelihood under alt-allele frequency `f` (HWE binomial).
-fn geno_loglik(g: i32, f: f64) -> f64 {
-    let f = f.clamp(1e-4, 1.0 - 1e-4);
-    match g {
-        0 => 2.0 * (1.0 - f).ln(),
-        1 => (2.0 * f * (1.0 - f)).ln(),
-        2 => 2.0 * f.ln(),
-        _ => 0.0, // missing → uniform (no information)
-    }
+/// Diploid genotype log-likelihood when the two genome copies draw their alt allele from frequencies
+/// `fa` and `fb` (one copy per ancestry): `P(0)=(1-fa)(1-fb)`, `P(1)=fa(1-fb)+(1-fa)fb`, `P(2)=fa·fb`.
+/// Missing dosage → uniform. This is the proper diploid (two-copy) emission the pair-state HMM needs.
+fn emit_diploid_ln(g: i32, fa: f64, fb: f64) -> f64 {
+    let fa = fa.clamp(1e-4, 1.0 - 1e-4);
+    let fb = fb.clamp(1e-4, 1.0 - 1e-4);
+    let p = match g {
+        0 => (1.0 - fa) * (1.0 - fb),
+        1 => fa * (1.0 - fb) + (1.0 - fa) * fb,
+        2 => fa * fb,
+        _ => return 0.0, // missing → uniform
+    };
+    p.max(1e-300).ln()
 }
 
 /// Paint each chromosome with local ancestry: an HMM over the panel sites whose hidden states are
@@ -239,7 +235,9 @@ fn geno_loglik(g: i32, f: f64) -> f64 {
 ///
 /// `prior` is the genome-wide composition `(population_code, weight)` (rolled to super-populations
 /// here) — the HMM's stationary/switch distribution, anchoring the painting to the global estimate.
-/// Diploid, single-ancestry-per-locus (not per-haplotype): an unadmixed sample paints one colour.
+/// **Diploid pair-state HMM**: the hidden state is an ancestry pair (both genome copies), so a region
+/// where the two copies differ (e.g. EUR/SAS) is shown, not collapsed. Output is two sorted, unphased
+/// copies per chromosome (segments tagged `copy` 0/1) — not maternal/paternal (no phasing).
 pub fn paint_local_ancestry(
     genotypes: &[SiteGenotype],
     panel: &AncestryPanel,
@@ -308,9 +306,13 @@ pub fn paint_local_ancestry(
         if sites.is_empty() {
             continue;
         }
-        let path = viterbi(&sites, &pi, params.rate);
-        let gamma = posteriors(&sites, &pi, params.rate, k);
-        segments.extend(collapse_segments(&contig, &sites, &path, &gamma, &states, params.min_segment_sites));
+        // Diploid MAP path: one ancestry PAIR per locus, canonicalized (min,max) into two sorted,
+        // coherent copies (copy 0 = lower-index ancestry, copy 1 = higher). Unphased.
+        let pairs = diploid_viterbi(&sites, &pi, params.rate, k);
+        let copy0: Vec<usize> = pairs.iter().map(|&(a, b)| a.min(b)).collect();
+        let copy1: Vec<usize> = pairs.iter().map(|&(a, b)| a.max(b)).collect();
+        segments.extend(collapse_copy(&contig, &sites, &copy0, &states, params.min_segment_sites, 0));
+        segments.extend(collapse_copy(&contig, &sites, &copy1, &states, params.min_segment_sites, 1));
     }
     segments
 }
@@ -326,85 +328,63 @@ fn switch_prob(d: i64, rate: f64) -> f64 {
     (1.0 - (-(d.max(0) as f64) * rate).exp()).clamp(0.0, 0.999)
 }
 
-/// Viterbi MAP state path over the sites.
-fn viterbi(sites: &[(i64, Vec<f64>, i32)], pi: &[f64], rate: f64) -> Vec<usize> {
-    let k = pi.len();
+/// Diploid Viterbi: the MAP ancestry **pair** `(a1, a2)` per site. Hidden state = an ordered pair of
+/// ancestries (the two genome copies, independent Markov chains), so transitions factorize as
+/// `ln_trans(a1,b1) + ln_trans(a2,b2)` and the emission is the two-copy [`emit_diploid_ln`]. Returns
+/// one `(a1, a2)` per site (state index `a1*k + a2`).
+fn diploid_viterbi(sites: &[(i64, Vec<f64>, i32)], pi: &[f64], rate: f64, k: usize) -> Vec<(usize, usize)> {
     let n = sites.len();
-    let mut v = vec![vec![f64::NEG_INFINITY; k]; n];
-    let mut bp = vec![vec![0usize; k]; n];
-    for s in 0..k {
-        v[0][s] = pi[s].max(1e-300).ln() + geno_loglik(sites[0].2, sites[0].1[s]);
+    let ns = k * k;
+    let lnpi: Vec<f64> = (0..k).map(|s| pi[s].max(1e-300).ln()).collect();
+    let mut v = vec![vec![f64::NEG_INFINITY; ns]; n];
+    let mut bp = vec![vec![0usize; ns]; n];
+    for a1 in 0..k {
+        for a2 in 0..k {
+            v[0][a1 * k + a2] = lnpi[a1] + lnpi[a2] + emit_diploid_ln(sites[0].2, sites[0].1[a1], sites[0].1[a2]);
+        }
     }
     for i in 1..n {
         let sw = switch_prob(sites[i].0 - sites[i - 1].0, rate);
-        for s in 0..k {
-            let (mut best, mut arg) = (f64::NEG_INFINITY, 0usize);
-            for (a, &va) in v[i - 1].iter().enumerate() {
-                let val = va + ln_trans(a, s, sw, pi);
-                if val > best {
-                    best = val;
-                    arg = a;
+        // Per-chain best predecessor for each target chain-state (factorized, so the pair step is
+        // O(k²) not O(k⁴)): for chain value b, max over a of v_chain[a] + ln_trans(a,b).
+        for b1 in 0..k {
+            for b2 in 0..k {
+                let (mut best, mut arg) = (f64::NEG_INFINITY, 0usize);
+                for a1 in 0..k {
+                    let t1 = ln_trans(a1, b1, sw, pi);
+                    for a2 in 0..k {
+                        let val = v[i - 1][a1 * k + a2] + t1 + ln_trans(a2, b2, sw, pi);
+                        if val > best {
+                            best = val;
+                            arg = a1 * k + a2;
+                        }
+                    }
                 }
+                v[i][b1 * k + b2] = best + emit_diploid_ln(sites[i].2, sites[i].1[b1], sites[i].1[b2]);
+                bp[i][b1 * k + b2] = arg;
             }
-            v[i][s] = best + geno_loglik(sites[i].2, sites[i].1[s]);
-            bp[i][s] = arg;
         }
     }
-    let mut last = (0..k).max_by(|&a, &b| v[n - 1][a].total_cmp(&v[n - 1][b])).unwrap_or(0);
-    let mut path = vec![0usize; n];
-    path[n - 1] = last;
+    let mut last = (0..ns).max_by(|&a, &b| v[n - 1][a].total_cmp(&v[n - 1][b])).unwrap_or(0);
+    let mut path = vec![(0usize, 0usize); n];
+    path[n - 1] = (last / k, last % k);
     for i in (1..n).rev() {
         last = bp[i][last];
-        path[i - 1] = last;
+        path[i - 1] = (last / k, last % k);
     }
     path
 }
 
-/// Per-site posterior of each state (forward-backward, returns γ[i][s]).
-fn posteriors(sites: &[(i64, Vec<f64>, i32)], pi: &[f64], rate: f64, k: usize) -> Vec<Vec<f64>> {
-    let n = sites.len();
-    let mut fwd = vec![vec![0.0f64; k]; n];
-    let mut bwd = vec![vec![0.0f64; k]; n];
-    for s in 0..k {
-        fwd[0][s] = pi[s].max(1e-300).ln() + geno_loglik(sites[0].2, sites[0].1[s]);
-    }
-    for i in 1..n {
-        let sw = switch_prob(sites[i].0 - sites[i - 1].0, rate);
-        for s in 0..k {
-            let terms: Vec<f64> = (0..k).map(|a| fwd[i - 1][a] + ln_trans(a, s, sw, pi)).collect();
-            fwd[i][s] = logsumexp(&terms) + geno_loglik(sites[i].2, sites[i].1[s]);
-        }
-    }
-    // bwd[n-1] is already 0 (log-space) from initialization.
-    for i in (0..n - 1).rev() {
-        let sw = switch_prob(sites[i + 1].0 - sites[i].0, rate);
-        for s in 0..k {
-            let terms: Vec<f64> = (0..k)
-                .map(|b| ln_trans(s, b, sw, pi) + geno_loglik(sites[i + 1].2, sites[i + 1].1[b]) + bwd[i + 1][b])
-                .collect();
-            bwd[i][s] = logsumexp(&terms);
-        }
-    }
-    let mut gamma = vec![vec![0.0f64; k]; n];
-    for i in 0..n {
-        let unn: Vec<f64> = (0..k).map(|s| fwd[i][s] + bwd[i][s]).collect();
-        let z = logsumexp(&unn);
-        for s in 0..k {
-            gamma[i][s] = (unn[s] - z).exp();
-        }
-    }
-    gamma
-}
-
-/// Collapse the Viterbi path into segments, merging runs shorter than `min_sites` into the
-/// previous segment (keeping its ancestry).
-fn collapse_segments(
+/// Collapse one copy's per-site ancestry path into segments, merging runs shorter than `min_sites`
+/// into the previous segment (keeping its ancestry). Each segment is tagged with the `copy` index.
+/// `posterior` is set to 1.0 (the MAP path; per-copy posterior shading is a future refinement).
+fn collapse_copy(
     contig: &str,
     sites: &[(i64, Vec<f64>, i32)],
     path: &[usize],
-    gamma: &[Vec<f64>],
     states: &[String],
     min_sites: usize,
+    copy: u8,
 ) -> Vec<AncestrySegment> {
     // Runs of equal state: (state, first_idx, last_idx).
     let mut runs: Vec<(usize, usize, usize)> = Vec::new();
@@ -427,15 +407,13 @@ fn collapse_segments(
     }
     merged
         .into_iter()
-        .map(|(s, lo, hi)| {
-            let post: f64 = (lo..=hi).map(|i| gamma[i][s]).sum::<f64>() / (hi - lo + 1) as f64;
-            AncestrySegment {
-                contig: contig.to_string(),
-                start: sites[lo].0,
-                end: sites[hi].0,
-                population_code: states[s].clone(),
-                posterior: post,
-            }
+        .map(|(s, lo, hi)| AncestrySegment {
+            contig: contig.to_string(),
+            start: sites[lo].0,
+            end: sites[hi].0,
+            population_code: states[s].clone(),
+            posterior: 1.0,
+            copy,
         })
         .collect()
 }
@@ -1173,12 +1151,8 @@ mod tests {
         assert!(r.super_population_summary.iter().any(|s| s.populations.contains(&"GBR".to_string())));
     }
 
-    /// A chromosome whose first half's genotypes match pop A and second half match pop B should
-    /// paint two segments (A then B) with a single switch; an all-A chromosome paints one segment.
-    #[test]
-    fn painting_finds_a_switch() {
-        // Two pops, A alt-rich / B alt-poor at every site (so genotype discriminates).
-        let n = 80;
+    // A 2-pop panel (A alt-rich / B alt-poor) for the diploid painting tests.
+    fn two_pop_panel(n: usize) -> AncestryPanel {
         let sites: Vec<PanelSite> = (0..n)
             .map(|i| PanelSite {
                 contig: "chr1".to_string(),
@@ -1188,24 +1162,43 @@ mod tests {
                 freqs: vec![0.95, 0.05],
             })
             .collect();
-        let panel = AncestryPanel { build: "t".into(), populations: vec!["A".into(), "B".into()], sites };
-        // First half hom-alt (matches A), second half hom-ref (matches B).
-        let genos: Vec<SiteGenotype> = (0..n)
-            .map(|i| sg("chr1", 1 + i as i64 * 1_000_000, if i < n / 2 { 2 } else { 0 }))
-            .collect();
+        AncestryPanel { build: "t".into(), populations: vec!["A".into(), "B".into()], sites }
+    }
+
+    /// Ancestry-HOMOZYGOUS sample: hom-alt (→ both copies A) first half, hom-ref (→ both copies B)
+    /// second half. Diploid painting emits two copies, each switching A→B at the midpoint.
+    #[test]
+    fn painting_diploid_homozygous_switch() {
+        let n = 80;
+        let panel = two_pop_panel(n);
+        let genos: Vec<SiteGenotype> =
+            (0..n).map(|i| sg("chr1", 1 + i as i64 * 1_000_000, if i < n / 2 { 2 } else { 0 })).collect();
         let prior = vec![("A".to_string(), 0.5), ("B".to_string(), 0.5)];
-
         let segs = paint_local_ancestry(&genos, &panel, &prior, &PaintParams::default());
-        assert_eq!(segs.len(), 2, "expected one switch: {segs:?}");
-        assert_eq!(segs[0].population_code, "A");
-        assert_eq!(segs[1].population_code, "B");
-        assert!(segs[0].end < segs[1].start);
+        for copy in [0u8, 1u8] {
+            let c: Vec<&AncestrySegment> = segs.iter().filter(|s| s.copy == copy).collect();
+            assert_eq!(c.len(), 2, "copy {copy}: expected A→B switch, got {c:?}");
+            assert_eq!((c[0].population_code.as_str(), c[1].population_code.as_str()), ("A", "B"));
+        }
+    }
 
-        // All hom-alt → a single A segment.
-        let all_a: Vec<SiteGenotype> = (0..n).map(|i| sg("chr1", 1 + i as i64 * 1_000_000, 2)).collect();
-        let one = paint_local_ancestry(&all_a, &panel, &prior, &PaintParams::default());
-        assert_eq!(one.len(), 1);
-        assert_eq!(one[0].population_code, "A");
+    /// Ancestry-HETEROZYGOUS sample: every site het (one copy A, one copy B). Diploid painting must
+    /// put A on one copy and B on the other across the whole chromosome (the case a single-track
+    /// painter cannot express).
+    #[test]
+    fn painting_diploid_heterozygous_copies_differ() {
+        let n = 60;
+        let panel = two_pop_panel(n);
+        let genos: Vec<SiteGenotype> = (0..n).map(|i| sg("chr1", 1 + i as i64 * 1_000_000, 1)).collect();
+        let prior = vec![("A".to_string(), 0.5), ("B".to_string(), 0.5)];
+        let segs = paint_local_ancestry(&genos, &panel, &prior, &PaintParams::default());
+        let copy0: Vec<&AncestrySegment> = segs.iter().filter(|s| s.copy == 0).collect();
+        let copy1: Vec<&AncestrySegment> = segs.iter().filter(|s| s.copy == 1).collect();
+        assert_eq!(copy0.len(), 1);
+        assert_eq!(copy1.len(), 1);
+        // Sorted copies: copy 0 = lower-index ancestry (A), copy 1 = higher (B).
+        assert_eq!(copy0[0].population_code, "A");
+        assert_eq!(copy1[0].population_code, "B");
     }
 
     #[test]
