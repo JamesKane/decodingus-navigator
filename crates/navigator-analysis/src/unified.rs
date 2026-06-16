@@ -20,7 +20,7 @@
 
 use std::collections::HashSet;
 use std::path::Path;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use noodles::core::Region;
 use rayon::prelude::*;
@@ -37,15 +37,32 @@ use crate::reader::{self, RecordSink};
 use crate::readview::AlnRead;
 use crate::sex::{self, SexInferenceResult, SexState};
 
+/// Flush accumulated base-pair progress to the shared counter every this many bp of advance.
+/// Small enough that the bar moves smoothly (~1500 ticks over a 3.1 Gb genome) yet coarse enough
+/// that the atomic add + progress callback (a mutex-guarded channel send in the GUI) is cheap.
+const PROGRESS_FLUSH_BP: u64 = 2_000_000;
+
 /// Per-contig record consumer: feeds each record to read-metrics + coverage and tallies the
 /// per-contig mapped counts the sex inference needs. `class`: 1 = autosome, 2 = chrX, 0 = other.
 /// Operates on borrowed accumulators so it serves the zero-copy BAM record path.
+///
+/// It also drives **base-pair progress**: reads are coordinate-sorted within a contig, so the
+/// alignment start advances monotonically — the delta between successive starts is bp walked.
+/// Deltas accumulate locally and flush to the shared `processed_bp` counter (and the progress
+/// callback) every [`PROGRESS_FLUSH_BP`], so the bar advances continuously *within* a contig
+/// instead of only when one finishes (the big autosomes otherwise sit frozen for minutes).
 struct ContigSink<'a> {
     rm: &'a mut ReadMetricsState,
     cov: &'a mut Option<ContigCoverageAccum>,
     class: u8,
     autosome_reads: u64,
     x_reads: u64,
+    // Base-pair progress.
+    progress: &'a (dyn Fn(usize, usize) + Sync),
+    processed_bp: &'a AtomicU64,
+    total_mb: usize,
+    last_pos: usize,
+    local_bp: u64,
 }
 
 impl RecordSink for ContigSink<'_> {
@@ -59,6 +76,17 @@ impl RecordSink for ContigSink<'_> {
                 self.autosome_reads += 1;
             } else {
                 self.x_reads += 1;
+            }
+        }
+        if let Some(pos) = record.alignment_start() {
+            if pos > self.last_pos {
+                self.local_bp += (pos - self.last_pos) as u64;
+                self.last_pos = pos;
+                if self.local_bp >= PROGRESS_FLUSH_BP {
+                    let g = self.processed_bp.fetch_add(self.local_bp, Ordering::Relaxed) + self.local_bp;
+                    self.local_bp = 0;
+                    (self.progress)((g / 1_000_000) as usize, self.total_mb);
+                }
             }
         }
     }
@@ -189,9 +217,11 @@ struct ContigPartial {
     x_reads: u64,
 }
 
-/// Like [`collect_unified_metrics_parallel`], reporting `progress(contigs_done, contigs_total)`
-/// as each tracked (main-assembly) contig finishes. The progress callback is `Fn + Sync`
-/// because it's invoked concurrently from worker threads.
+/// Like [`collect_unified_metrics_parallel`], reporting `progress(megabases_done, megabases_total)`
+/// — base-pair position walked across all contigs, so the bar advances continuously rather than
+/// stepping once per finished contig (the big autosomes run first and finish in a late burst,
+/// freezing a contig-count bar at 0 for ~half the run). The callback is `Fn + Sync` because it's
+/// invoked concurrently from worker threads.
 pub fn collect_unified_metrics_parallel_with_progress(
     bam_path: &Path,
     reference_path: &Path,
@@ -244,9 +274,15 @@ pub fn collect_unified_metrics_parallel_with_progress(
         works.push(Work { ref_id, name, length, tracked, class });
     }
 
-    let total_cov = works.iter().filter(|w| w.tracked).count();
-    let done = AtomicUsize::new(0);
-    progress(0, total_cov);
+    // Progress is reported in **megabases of reference walked** rather than contigs finished, so
+    // the bar advances continuously from the first seconds — the big autosomes (scheduled first by
+    // rayon) otherwise complete in a late burst, leaving the bar frozen at 0 for ~half the run.
+    // Denominator = every walked contig's length (read-metrics covers all contigs); the dominant
+    // main-assembly contigs make the count track genomic position closely enough.
+    let total_bp: u64 = works.iter().map(|w| w.length as u64).sum();
+    let total_mb = (total_bp / 1_000_000).max(1) as usize;
+    let processed_bp = AtomicU64::new(0);
+    progress(0, total_mb);
 
     let n_threads = analysis_thread_count();
     // Bound concurrent full-reference loads (the peak-memory driver) independently of compute
@@ -277,23 +313,29 @@ pub fn collect_unified_metrics_parallel_with_progress(
         };
         let mut rm = ReadMetricsState::default();
         // Drive the records through a sink over the lazy (zero-copy on BAM) record path.
-        let (autosome_reads, x_reads) = {
+        let (autosome_reads, x_reads, leftover_bp) = {
             let mut sink = ContigSink {
                 rm: &mut rm,
                 cov: &mut cov_accum,
                 class: w.class,
                 autosome_reads: 0,
                 x_reads: 0,
+                progress,
+                processed_bp: &processed_bp,
+                total_mb,
+                last_pos: 0,
+                local_bp: 0,
             };
             idx.for_each(&h, &region, &mut sink)?;
-            (sink.autosome_reads, sink.x_reads)
+            (sink.autosome_reads, sink.x_reads, sink.local_bp)
         };
+        // Flush this contig's unflushed bp tail so the counter reflects the whole contig walked.
+        if leftover_bp > 0 {
+            let g = processed_bp.fetch_add(leftover_bp, Ordering::Relaxed) + leftover_bp;
+            progress((g / 1_000_000) as usize, total_mb);
+        }
 
         let cov = cov_accum.map(|a| a.finish(w.ref_id));
-        if w.tracked {
-            let d = done.fetch_add(1, Ordering::Relaxed) + 1;
-            progress(d, total_cov);
-        }
         Ok(ContigPartial { rm, cov, autosome_reads, x_reads })
     };
 
@@ -338,7 +380,7 @@ pub fn collect_unified_metrics_parallel_with_progress(
     let coverage = merge_coverage_partials(cov_partials);
     let read_metrics = rm_total.finish();
     let sex = sex::result_from_tally((autosome_reads, autosome_length, x_reads, x_length)).ok();
-    progress(total_cov, total_cov);
+    progress(total_mb, total_mb);
     Ok(UnifiedMetricsResult { coverage, read_metrics, sex })
 }
 

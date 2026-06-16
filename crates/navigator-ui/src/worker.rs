@@ -999,7 +999,7 @@ async fn run_full_analysis_streaming<W: Fn() + Send + Sync + 'static>(
                             step: 1,
                             total,
                             label: "Quality metrics".into(),
-                            detail: format!("contig {done}/{tot}"),
+                            detail: format!("scanning genome — {:.0}%", within * 100.0),
                             fraction: within / total as f32,
                         });
                     }
