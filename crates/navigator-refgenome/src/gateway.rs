@@ -38,6 +38,19 @@ pub struct LiftedPos {
     pub reverse: bool,
 }
 
+/// Lift/drop counts from [`ReferenceGateway::lift_hipstr_bed`].
+#[derive(Debug, Default, Clone, Copy)]
+pub struct LiftStats {
+    pub total: usize,
+    pub lifted: usize,
+    /// An endpoint fell in a chain gap / non-syntenic region.
+    pub dropped_unmapped: usize,
+    /// The two endpoints lifted to different target contigs.
+    pub dropped_split: usize,
+    /// The lifted span was implausible vs the source (likely a bad lift through the repeat).
+    pub dropped_span: usize,
+}
+
 #[derive(Clone)]
 pub struct ReferenceGateway {
     base: PathBuf,
@@ -324,6 +337,89 @@ impl ReferenceGateway {
                 })
             })
             .collect())
+    }
+
+    /// Lift a HipSTR-format reference BED from `from` build to `to` build via the cached chain
+    /// (call [`resolve_chain`](Self::resolve_chain) first), writing a new gzipped BED in the target
+    /// coordinates. Each tract's endpoints (`[start+1, end+1]`, 1-based, end-inclusive — the HipSTR
+    /// convention) are lifted; a locus is kept only when both endpoints map to the **same** target
+    /// contig with a plausible span (0.5×–2× the source span — guards against bad lifts through the
+    /// repeat). `ref_copies` is recomputed from the lifted span (the target assembly's own repeat
+    /// count); period / name / motif carry over. `only_contig` (matched `chr`-prefix-insensitively)
+    /// restricts the lift, e.g. `Some("chrY")` for a Y-only reference. Returns lift/drop counts.
+    pub fn lift_hipstr_bed(
+        &self,
+        from: &str,
+        to: &str,
+        in_bed_gz: &Path,
+        out_bed_gz: &Path,
+        only_contig: Option<&str>,
+    ) -> Result<LiftStats, RefgenomeError> {
+        use std::io::{BufRead, BufReader, Write};
+
+        let lo = self.load_liftover(from, to)?;
+        let strip = |s: &str| s.strip_prefix("chr").unwrap_or(s).to_ascii_uppercase();
+        let want = only_contig.map(strip);
+
+        // Lift one 1-based position on a chr-prefixed source contig → (target contig, 1-based pos).
+        let lift1 = |tname: &str, p: i64| -> Option<(String, i64)> {
+            lo.chains
+                .iter()
+                .filter(|c| c.t_name == tname)
+                .find_map(|c| c.lift(p - 1).map(|q| (c.q_name.clone(), q + 1)))
+        };
+
+        let file = std::fs::File::open(in_bed_gz).map_err(|e| RefgenomeError::io(in_bed_gz, e))?;
+        let rd = BufReader::new(flate2::read::MultiGzDecoder::new(file));
+        let out = std::fs::File::create(out_bed_gz).map_err(|e| RefgenomeError::io(out_bed_gz, e))?;
+        let mut enc = flate2::write::GzEncoder::new(out, flate2::Compression::default());
+        let mut stats = LiftStats::default();
+
+        for line in rd.lines() {
+            let line = line.map_err(|e| RefgenomeError::io(in_bed_gz, e))?;
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+            let f: Vec<&str> = line.split('\t').collect();
+            if f.len() < 5 {
+                continue;
+            }
+            let (Ok(start), Ok(end)) = (f[1].parse::<i64>(), f[2].parse::<i64>()) else { continue };
+            let contig = f[0];
+            if let Some(w) = &want {
+                if strip(contig) != *w {
+                    continue;
+                }
+            }
+            stats.total += 1;
+            let period = f[3];
+            let period_n: f64 = period.parse().unwrap_or(0.0);
+            let name = f.get(5).copied().unwrap_or("");
+            let motif = f.get(6).copied().unwrap_or("");
+
+            let tname = format!("chr{}", strip(contig));
+            let (Some(a), Some(b)) = (lift1(&tname, start + 1), lift1(&tname, end + 1)) else {
+                stats.dropped_unmapped += 1;
+                continue;
+            };
+            if a.0 != b.0 {
+                stats.dropped_split += 1; // endpoints lifted to different contigs
+                continue;
+            }
+            let (lo_pos, hi_pos) = (a.1.min(b.1), a.1.max(b.1));
+            let (src_span, dst_span) = (end - start + 1, hi_pos - lo_pos + 1);
+            if dst_span <= 0 || (dst_span as f64) < 0.5 * src_span as f64 || (dst_span as f64) > 2.0 * src_span as f64 {
+                stats.dropped_span += 1; // implausible span — likely a bad lift through the repeat
+                continue;
+            }
+            let ref_copies = if period_n > 0.0 { dst_span as f64 / period_n } else { 0.0 };
+            // Back to BED (0-based-inclusive [lo-1, hi-1]); bare contig, matching the HipSTR format.
+            writeln!(enc, "{}\t{}\t{}\t{period}\t{ref_copies}\t{name}\t{motif}", strip(&a.0), lo_pos - 1, hi_pos - 1)
+                .map_err(|e| RefgenomeError::io(out_bed_gz, e))?;
+            stats.lifted += 1;
+        }
+        enc.finish().map_err(|e| RefgenomeError::io(out_bed_gz, e))?;
+        Ok(stats)
     }
 
     /// Resolve a `(from, to)` build-name pair for **chain** purposes, normalized to nuclear
