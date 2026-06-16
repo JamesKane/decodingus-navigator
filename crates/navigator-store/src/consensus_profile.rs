@@ -69,6 +69,19 @@ pub async fn get(pool: &SqlitePool, guid: SampleGuid, dna_type: &str) -> Result<
     Ok(row)
 }
 
+/// All persisted `(biosample_guid, dna_type, consensus_label)` rows that carry a non-null label —
+/// the genome-level placed terminal per subject + arm, for the subjects-list bulk path (one query
+/// instead of a `get` per subject).
+pub async fn list_labels(pool: &SqlitePool) -> Result<Vec<(String, String, String)>, StoreError> {
+    let rows: Vec<(String, String, String)> = sqlx::query_as(
+        "SELECT biosample_guid, dna_type, consensus_label FROM consensus_profile \
+         WHERE consensus_label IS NOT NULL AND consensus_label <> ''",
+    )
+    .fetch_all(pool)
+    .await?;
+    Ok(rows)
+}
+
 /// Remove a biosample's snapshot for one DNA type. Returns whether a row was removed.
 pub async fn delete(pool: &SqlitePool, guid: SampleGuid, dna_type: &str) -> Result<bool, StoreError> {
     let affected = sqlx::query("DELETE FROM consensus_profile WHERE biosample_guid = ? AND dna_type = ?")

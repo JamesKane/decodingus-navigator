@@ -388,6 +388,36 @@ fn tree_cache_is_fresh(path: &Path) -> bool {
 /// correcting under-calls at **unsplit tree nodes** (a half-ancestral SNP block scores below
 /// its parent). The chosen node is moved to the front so every `ranked.first()` consumer
 /// transparently gets it. See `documents/design/PangenomeExpansion.md`.
+/// Pool every source's vote into one consensus map by a `SourceType`-weighted majority, keyed by
+/// `K` (SNP **name** for Y — build-portable; rCRS **position** for mt) over value `V` (a per-SNP
+/// **state** for Y — strand-/build-independent, since CHM13 vs GRCh38 can flip a base but not
+/// "carries the derived allele"; a **base** for mt, which has one coordinate system). The weight
+/// matches the variant reconcile's [`navigator_domain::consensus::obs_weight`] `SourceType` term;
+/// the highest-weight value wins per key. The pooled set is placed on the tree **once** (genome-
+/// level placement) instead of voting among per-run terminal labels.
+fn pool_votes<K, V>(sources: &[(SourceType, HashMap<K, V>)]) -> HashMap<K, V>
+where
+    K: std::hash::Hash + Eq + Clone,
+    V: std::hash::Hash + Eq + Clone,
+{
+    let mut tally: HashMap<K, HashMap<V, f64>> = HashMap::new();
+    for (st, calls) in sources {
+        let w = st.snp_weight();
+        for (k, v) in calls {
+            *tally.entry(k.clone()).or_default().entry(v.clone()).or_insert(0.0) += w;
+        }
+    }
+    tally
+        .into_iter()
+        .filter_map(|(k, votes)| {
+            votes
+                .into_iter()
+                .max_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
+                .map(|(v, _)| (k, v))
+        })
+        .collect()
+}
+
 fn assemble_assignment(tree: &navigator_analysis::haplo::HaploTree, calls: &HashMap<i64, char>) -> HaploAssignment {
     use navigator_analysis::haplo;
     let mut ranked = haplo::score(tree, calls);
@@ -2378,18 +2408,15 @@ impl App {
         Ok(serde_json::to_value(&record)?)
     }
 
-    /// Best-effort consensus haplogroup for a subject arm: the manual override if set,
-    /// else the first recorded per-source call. `None` when nothing has been called.
+    /// Best-effort consensus haplogroup for a subject arm, for the federated biosample record:
+    /// manual override > genome-level placed terminal > per-run label reconciliation (all via
+    /// [`haplogroup_consensus`](Self::haplogroup_consensus)). `None` when nothing has been called.
     async fn consensus_haplogroup(
         &self,
         biosample_guid: SampleGuid,
         dna_type: DnaType,
     ) -> Result<Option<String>, AppError> {
-        if let Some((hg, _)) = recon_store::get_override(self.store.pool(), biosample_guid, dna_type).await? {
-            return Ok(Some(hg));
-        }
-        let calls = haplogroup_call::list_for(self.store.pool(), biosample_guid, dna_type).await?;
-        Ok(reconciliation::reconcile(&calls).map(|c| c.haplogroup))
+        Ok(self.haplogroup_consensus(biosample_guid, dna_type).await?.map(|c| c.haplogroup))
     }
 
     /// Build the private-variants record JSON for an alignment's cached de-novo calls.
@@ -3648,7 +3675,37 @@ impl App {
         dna_type: DnaType,
     ) -> Result<Option<Consensus>, AppError> {
         let calls = haplogroup_call::list_for(self.store.pool(), biosample_guid, dna_type).await?;
+        // Per-run label reconciliation supplies the lineage / compatibility / divergence warnings…
         let mut consensus = reconciliation::reconcile(&calls);
+
+        // …but the authoritative terminal is the genome-level PLACED call persisted by
+        // build_{y,mt}_profile (consensus_profile.consensus_label) — cheap to read, no genotyping.
+        // When it disagrees with the per-run vote, keep the placed call and record why.
+        if matches!(dna_type, DnaType::Y | DnaType::Mt) {
+            if let Some(stored) =
+                navigator_store::consensus_profile::get(self.store.pool(), biosample_guid, dna_type.as_str()).await?
+            {
+                if let Some(placed) = stored.consensus_label.filter(|s| !s.is_empty()) {
+                    let mut c = consensus.unwrap_or_else(|| Consensus {
+                        haplogroup: placed.clone(),
+                        lineage: vec![placed.clone()],
+                        compatibility: CompatibilityLevel::Compatible,
+                        divergence_point: None,
+                        confidence: 1.0,
+                        run_count: calls.len(),
+                        overridden: false,
+                        warnings: Vec::new(),
+                    });
+                    if c.haplogroup != placed {
+                        c.warnings.push(format!(
+                            "per-run calls vary; genome-consensus placement → {placed}"
+                        ));
+                        c.haplogroup = placed;
+                    }
+                    consensus = Some(c);
+                }
+            }
+        }
 
         if let Some((hg, reason)) = recon_store::get_override(self.store.pool(), biosample_guid, dna_type).await? {
             let mut c = consensus.unwrap_or(Consensus {
@@ -3694,7 +3751,18 @@ impl App {
                 }
             }
         }
-        // Manual overrides win over the reconciled terminal.
+        // The genome-level placed terminal (build_{y,mt}_profile) wins over the per-run label vote,
+        // so the subjects table matches the detail tab.
+        for (guid_s, dna_type_s, label) in navigator_store::consensus_profile::list_labels(self.store.pool()).await? {
+            let Ok(uuid) = guid_s.parse::<uuid::Uuid>() else { continue };
+            let entry = out.entry(SampleGuid(uuid)).or_default();
+            match dna_type_s.as_str() {
+                "Y" => entry.0 = Some(label),
+                "Mt" => entry.1 = Some(label),
+                _ => {}
+            }
+        }
+        // Manual overrides win over everything.
         for (guid, dna_type, hg) in recon_store::list_all_overrides(self.store.pool()).await? {
             let entry = out.entry(guid).or_default();
             match dna_type {
@@ -3906,10 +3974,12 @@ impl App {
 
         let variants = yprofile::reconcile_y(&sources);
         let summary = yprofile::summarize(&variants);
-        let terminal = self
-            .haplogroup_consensus(biosample_guid, DnaType::Y)
-            .await?
-            .map(|c| c.haplogroup);
+        // Genome-level placement: place the pooled call set on the tree once (not a vote among the
+        // per-run terminal labels). Falls back to the label reconciliation when nothing places.
+        let terminal = match self.place_y_consensus(biosample_guid).await? {
+            Some(a) => a.ranked.first().map(|r| r.name.clone()),
+            None => self.haplogroup_consensus(biosample_guid, DnaType::Y).await?.map(|c| c.haplogroup),
+        };
         let profile = ConsensusProfile { variants, summary, terminal, sources: source_summaries };
 
         // Persist the snapshot (keyed dna_type='Y') so the tab reloads it without re-genotyping.
@@ -3986,12 +4056,125 @@ impl App {
 
         let variants = yprofile::reconcile_y(&sources);
         let summary = yprofile::summarize(&variants);
-        let terminal = self.haplogroup_consensus(biosample_guid, DnaType::Mt).await?.map(|c| c.haplogroup);
+        // Genome-level placement of the pooled chrM call set (see place_mt_consensus); label vote
+        // is the fallback when nothing places.
+        let terminal = match self.place_mt_consensus(biosample_guid).await? {
+            Some(a) => a.ranked.first().map(|r| r.name.clone()),
+            None => self.haplogroup_consensus(biosample_guid, DnaType::Mt).await?.map(|c| c.haplogroup),
+        };
         let profile = ConsensusProfile { variants, summary, terminal, sources: source_summaries };
 
         // Persist (keyed dna_type='Mt'); the mt tree is FTDNA-sourced.
         self.persist_consensus_profile(biosample_guid, DnaType::Mt, &profile, Some("ftdna".to_string())).await?;
         Ok(profile)
+    }
+
+    /// **Genome-level Y placement**: pool every source's tree-locus genotype (each alignment's
+    /// native-build placement calls + each chip/BISDNA panel's chrY calls) into one call set by a
+    /// weighted [`pool_bases`] vote — keyed by SNP **name** so sources on different builds merge —
+    /// then place that pooled set on one canonical tree **once** via [`assemble_assignment`]. This
+    /// replaces voting among the per-run terminal *labels*: a sparse run no longer drags the call
+    /// shallow, and a branch confirmed by any source informs the placement. `Ok(None)` when the
+    /// subject has no Y-bearing source. Re-genotypes each source (like [`build_y_profile`]), so it's
+    /// only run as part of that explicit action.
+    pub async fn place_y_consensus(&self, biosample_guid: SampleGuid) -> Result<Option<HaploAssignment>, AppError> {
+        // Genotype every WGS alignment against **one** tree in **one** coordinate system — the FTDNA
+        // GRCh38 Y tree, with the existing base_calls liftover for CHM13/GRCh37 sources — then pool
+        // by **position** and place once. A single tree+coordinate space keeps allele polarity and
+        // coverage consistent across sources; pooling across the DecodingUs hs1 and GRCh38 trees (which
+        // can disagree on a SNP's polarity / hs1 coverage) corrupts the backbone and the parsimony
+        // guard then vetoes the true deep clade. Chips (sparse, various builds) stay in the variant
+        // profile + label reconciliation; the genome placement pools the dense WGS evidence.
+        let tree_json = self.fetch_ftdna_y_tree().await?;
+        let tree = navigator_analysis::haplo::parse_ftdna_json(&tree_json).map_err(AppError::Import)?;
+
+        let mut sources: Vec<(SourceType, HashMap<i64, char>)> = Vec::new();
+        let alignments = alignment::list_for_biosample(self.store.pool(), biosample_guid).await?;
+        for a in &alignments {
+            // assign_haplogroup_detail returns the GRCh38-coordinate calls (lifted from the
+            // alignment's build); sources that lack chrY / a reference are skipped.
+            let Ok((_, _, calls)) = self.assign_haplogroup_detail(a.id, "chrY", &tree_json).await else { continue };
+            if !calls.is_empty() {
+                sources.push((SourceType::WgsShortRead, calls));
+            }
+        }
+
+        if sources.is_empty() {
+            return Ok(None);
+        }
+        let pooled = pool_votes(&sources);
+        Ok(Some(assemble_assignment(&tree, &pooled)))
+    }
+
+    /// **Genome-level mtDNA placement**: the mt counterpart to [`place_y_consensus`]. Pools every
+    /// source's rCRS-coordinate genotype (each alignment's chrM placement calls, each imported mtDNA
+    /// FASTA sequence, the chip mt panel) by [`pool_bases`] vote keyed by **position** (rCRS is the
+    /// only mt coordinate system → no name indirection), then places the pooled set on the FTDNA mt
+    /// tree once. `Ok(None)` when the subject has no mt-bearing source.
+    pub async fn place_mt_consensus(&self, biosample_guid: SampleGuid) -> Result<Option<HaploAssignment>, AppError> {
+        let tree_json = self.fetch_ftdna_mt_tree().await?;
+        let tree = navigator_analysis::haplo::parse_ftdna_json(&tree_json).map_err(AppError::Import)?;
+
+        let mut sources: Vec<(SourceType, HashMap<i64, char>)> = Vec::new();
+        let mut has_wgs = false;
+
+        // Each alignment's chrM genotype (rCRS coordinates; base_calls maps a CHM13 chrM back to rCRS).
+        let alignments = alignment::list_for_biosample(self.store.pool(), biosample_guid).await?;
+        for a in &alignments {
+            let Ok((_, _, calls)) = self.assign_haplogroup_detail(a.id, "chrM", &tree_json).await else { continue };
+            if !calls.is_empty() {
+                sources.push((SourceType::WgsShortRead, calls));
+                has_wgs = true;
+            }
+        }
+
+        // Each imported mtDNA FASTA — the full sequence sampled at every rCRS position.
+        for s in &self.list_mtdna_sequences(biosample_guid).await? {
+            let Some(seq) = mtdna_store::get(self.store.pool(), s.id).await? else { continue };
+            let calls: HashMap<i64, char> = seq
+                .sequence
+                .bytes()
+                .enumerate()
+                .filter_map(|(i, b)| {
+                    let u = b.to_ascii_uppercase();
+                    matches!(u, b'A' | b'C' | b'G' | b'T').then_some(((i + 1) as i64, u as char))
+                })
+                .collect();
+            if !calls.is_empty() {
+                sources.push((SourceType::Imported, calls));
+            }
+        }
+
+        // The chip mt panel (consumer arrays carry a sparse rCRS MT panel), strand-reconciled.
+        let sets = variant_set::list_for_biosample(self.store.pool(), biosample_guid).await?;
+        let chip_mt: HashMap<i64, char> = sets
+            .iter()
+            .filter(|s| s.source_type == SourceType::Chip)
+            .flat_map(|s| s.calls.iter())
+            .filter(|c| {
+                c.contig.eq_ignore_ascii_case("chrM")
+                    || c.contig.eq_ignore_ascii_case("chrMT")
+                    || c.contig.eq_ignore_ascii_case("mt")
+                    || c.contig.eq_ignore_ascii_case("m")
+            })
+            .filter_map(|c| c.alternate.chars().next().map(|b| (c.position, b.to_ascii_uppercase())))
+            .collect();
+        if !chip_mt.is_empty() {
+            sources.push((SourceType::Chip, strand_reconcile_to_tree(&tree, chip_mt)));
+        }
+
+        if sources.is_empty() {
+            return Ok(None);
+        }
+
+        // mt is single-coordinate (rCRS) across all sources, so a base vote is strand-safe here.
+        let pooled = pool_votes(&sources);
+        let assignment = if has_wgs {
+            assemble_assignment(&tree, &pooled)
+        } else {
+            assemble_assignment_robust(&tree, &pooled)
+        };
+        Ok(Some(assignment))
     }
 
     /// The persisted autosomal consensus-profile snapshot for a subject, if built — cheap (no
@@ -4673,6 +4856,17 @@ impl App {
     /// backbone but not the FTDNA-grafted tips, so deep CHM13 placement is limited until the
     /// AppView enriches `hs1` for every variant (lift GRCh38→hs1 at ingest or on the fly).
     async fn assign_y_decodingus(&self, alignment_id: i64) -> Result<HaploAssignment, AppError> {
+        let (tree, calls) = self.y_decodingus_tree_calls(alignment_id).await?;
+        Ok(assemble_assignment(&tree, &calls))
+    }
+
+    /// The (DecodingUs tree at the alignment's **native** build, full tree-locus base calls) for one
+    /// alignment — the genotype [`assign_y_decodingus`] scores. Factored so the consensus pool can
+    /// re-key it by SNP name and merge it with other sources.
+    async fn y_decodingus_tree_calls(
+        &self,
+        alignment_id: i64,
+    ) -> Result<(navigator_analysis::haplo::HaploTree, HashMap<i64, char>), AppError> {
         let aln = alignment::get(self.store.pool(), alignment_id)
             .await?
             .ok_or_else(|| AppError::Store(StoreError::NotFound(format!("alignment {alignment_id}"))))?;
@@ -4683,8 +4877,9 @@ impl App {
         let tree = navigator_analysis::haplo::parse_decodingus_json(&tree_json, build_key).map_err(AppError::Import)?;
         // Native build → no liftover (tree_source_build = None → direct query).
         let calls = self.base_calls(alignment_id, "chrY", &tree, None).await?;
-        Ok(assemble_assignment(&tree, &calls))
+        Ok((tree, calls))
     }
+
 
     /// Assign a Y haplogroup from the subject's imported **BISDNA / Y-SNP-panel** calls — no
     /// alignment required. Builds a derived-allele call map from the subject's `Chip`-sourced
@@ -6451,7 +6646,8 @@ pub fn report_csv(rows: &[ProjectSampleReport]) -> String {
 
 #[cfg(test)]
 mod placement_tests {
-    use super::{assemble_assignment, assemble_assignment_robust, strand_reconcile_to_tree, support_backoff_terminal};
+    use super::{assemble_assignment, assemble_assignment_robust, pool_votes, strand_reconcile_to_tree, support_backoff_terminal};
+    use super::SourceType;
     use navigator_analysis::haplo::parse_ftdna_json;
     use std::collections::HashMap;
 
@@ -6487,6 +6683,35 @@ mod placement_tests {
         let recovered: HashMap<i64, char> =
             [(146, 'G'), (263, 'G'), (750, 'C'), (1000, 'A'), (1100, 'T')].into_iter().collect();
         assert_eq!(support_backoff_terminal(&tree, &recovered, 6), 6, "deeper support recovers depth");
+    }
+
+    /// Genome-level pooling: a sparse source that alone stops shallow, combined with a dense source
+    /// that confirms the deep branches, places the *pooled* call set (by position on one tree) at
+    /// the deep terminal — a per-run sparse call no longer drags the consensus shallow.
+    #[test]
+    fn pooled_consensus_places_deeper_than_a_sparse_source_alone() {
+        let tree = parse_ftdna_json(SPINE6).unwrap();
+        // Sparse chip: only the shallow A SNP derived (146). Alone → A(2).
+        let sparse: HashMap<i64, char> = [(146, 'G')].into_iter().collect();
+        let sparse_only = assemble_assignment_robust(&tree, &sparse);
+        assert_eq!(sparse_only.ranked.first().unwrap().name, "A");
+
+        // Dense WGS: every spine SNP derived. Pool the two by position → the deep terminal F(6).
+        let dense: HashMap<i64, char> =
+            [(146, 'G'), (263, 'G'), (750, 'T'), (1000, 'A'), (1100, 'T')].into_iter().collect();
+        let pooled = pool_votes(&[(SourceType::Chip, sparse), (SourceType::WgsShortRead, dense)]);
+        let placed = assemble_assignment(&tree, &pooled);
+        assert_eq!(placed.ranked.first().unwrap().name, "F", "pooled evidence reaches the deep terminal");
+    }
+
+    /// A higher-weight source wins the per-position vote: WGS (0.85) derived outvotes a Chip
+    /// ancestral call at the same SNP.
+    #[test]
+    fn pool_vote_prefers_the_higher_weight_source() {
+        let wgs: HashMap<i64, char> = [(750, 'T')].into_iter().collect(); // derived
+        let chip: HashMap<i64, char> = [(750, 'C')].into_iter().collect(); // ancestral
+        let pooled = pool_votes(&[(SourceType::WgsShortRead, wgs), (SourceType::Chip, chip)]);
+        assert_eq!(pooled.get(&750), Some(&'T'), "WGS derived outweighs chip ancestral");
     }
 
     /// Chip alleles on the tree's opposite strand are flipped to the matching ancestral/derived
