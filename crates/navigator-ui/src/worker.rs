@@ -193,6 +193,8 @@ pub enum Command {
     Logout,
     PublishCoverage(i64),
     PublishVariants { alignment_id: i64, contig: String },
+    /// Publish the subject's consensus ancestry breakdown (one record per method) to the signed-in PDS.
+    PublishAncestry { biosample_guid: SampleGuid },
     /// Attempt to push the ready outbox rows now (also runs periodically + after a publish).
     DrainOutbox,
     /// Export a cached result to `path` (TSV/HTML/BED). `request` carries the kind + source id.
@@ -891,6 +893,9 @@ pub async fn handle(app: &App, cmd: Command) -> Event {
         Command::PublishVariants { alignment_id, .. } => {
             Event::Error(format!("internal: unrouted PublishVariants {alignment_id}"))
         }
+        Command::PublishAncestry { biosample_guid } => {
+            Event::Error(format!("internal: unrouted PublishAncestry {biosample_guid}"))
+        }
         Command::DrainOutbox => Event::Error("internal: unrouted DrainOutbox".into()),
         Command::Export { request, path } => match app.export_content(&request).await {
             Ok(content) => match std::fs::write(&path, content) {
@@ -1255,6 +1260,10 @@ pub fn spawn(
                             Command::PublishVariants { alignment_id, contig } => {
                                 let r = app.publish_variants(alignment_id, &contig).await;
                                 publish_then_drain(&app, r, &format!("{contig} variants"), &evt_tx, &*wake).await;
+                            }
+                            Command::PublishAncestry { biosample_guid } => {
+                                let r = app.publish_ancestry(biosample_guid).await;
+                                publish_then_drain(&app, r, "ancestry breakdown", &evt_tx, &*wake).await;
                             }
                             Command::PublishReconciliation { biosample_guid, dna_type, heteroplasmy, identity } => {
                                 let r = app

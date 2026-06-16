@@ -2360,16 +2360,26 @@ impl App {
         Ok(serde_json::to_value(&record)?)
     }
 
-    /// Build the population-breakdown (ancestry) record JSON for an alignment from its
-    /// persisted estimate — the shared `com.decodingus.atmosphere.populationBreakdown`
-    /// contract the AppView ingests (floats as strings).
-    /// The populationBreakdown record JSON for each persisted estimate of an alignment (one
-    /// per method — e.g. ADMIXTURE + PCA_PROJECTION_GMM). Empty if none computed.
-    async fn ancestry_records(&self, alignment_id: i64) -> Result<Vec<serde_json::Value>, AppError> {
-        let results = ancestry_result::list_for_alignment(self.store.pool(), alignment_id).await?;
-        results
+    /// The subject's persisted **consensus** ancestry estimates ([`CONSENSUS_SOURCE_ID`]) — one per
+    /// method (ADMIXTURE / PCA_PROJECTION_GMM / FINE_ADMIXTURE / G25_NMONTE), newest-first. Ancestry
+    /// is estimated from the pooled autosomal consensus (not per alignment), so this is the subject's
+    /// authoritative breakdown. Empty until the consensus ancestry has been estimated.
+    async fn consensus_ancestry_results(&self, biosample_guid: SampleGuid) -> Result<Vec<AncestryResult>, AppError> {
+        let all = ancestry_result::for_biosample(self.store.pool(), biosample_guid).await?;
+        Ok(all.into_iter().filter(|(id, _)| *id == CONSENSUS_SOURCE_ID).map(|(_, r)| r).collect())
+    }
+
+    /// The populationBreakdown record JSON for each consensus ancestry estimate of a subject (one
+    /// per method), linked to the biosample — the shared `com.decodingus.atmosphere.populationBreakdown`
+    /// contract the AppView ingests (floats as strings). Empty if none computed.
+    async fn consensus_ancestry_records(&self, biosample_guid: SampleGuid) -> Result<Vec<serde_json::Value>, AppError> {
+        self.consensus_ancestry_results(biosample_guid)
+            .await?
             .iter()
-            .map(|r| serde_json::to_value(population_breakdown_record(r)).map_err(AppError::from))
+            .map(|r| {
+                let rec = population_breakdown_record(r).with_biosample_ref(Some(biosample_guid.to_string()));
+                serde_json::to_value(rec).map_err(AppError::from)
+            })
             .collect()
     }
 
@@ -2444,16 +2454,16 @@ impl App {
         Ok(client.create_record(NS_ALIGNMENT, value, None).await?)
     }
 
-    /// Publish every persisted ancestry estimate for an alignment (one populationBreakdown per
-    /// method — admixture + PCA-GMM) using an explicit `client` (the testable core; production
-    /// callers use [`publish_ancestry`](Self::publish_ancestry)). Returns a ref per record.
+    /// Publish a subject's **consensus** ancestry estimates (one populationBreakdown per method)
+    /// using an explicit `client` (the testable core; production callers use
+    /// [`publish_ancestry`](Self::publish_ancestry)). Returns a ref per record.
     pub async fn publish_ancestry_with(
         &self,
         client: &PdsClient,
-        alignment_id: i64,
+        biosample_guid: SampleGuid,
     ) -> Result<Vec<RecordRef>, AppError> {
         let mut refs = Vec::new();
-        for value in self.ancestry_records(alignment_id).await? {
+        for value in self.consensus_ancestry_records(biosample_guid).await? {
             refs.push(client.create_record(NS_POPULATION_BREAKDOWN, value, None).await?);
         }
         Ok(refs)
@@ -3048,16 +3058,19 @@ impl App {
         self.enqueue_publish("coverage", &format!("alignment:{alignment_id}"), NS_ALIGNMENT, None, value).await
     }
 
-    /// Publish every persisted ancestry estimate (admixture + PCA-GMM) for the alignment to the
-    /// signed-in account's PDS — one populationBreakdown record per method. This is the researcher
-    /// opt-in act for the ancestry section — anonymized population proportions only.
-    pub async fn publish_ancestry(&self, alignment_id: i64) -> Result<(), AppError> {
+    /// Publish a subject's **consensus** ancestry estimate to the signed-in account's PDS — one
+    /// populationBreakdown record per method (ADMIXTURE / PCA_PROJECTION_GMM / FINE_ADMIXTURE /
+    /// G25_NMONTE), each linked to the biosample. Subject-level (the breakdown is computed from the
+    /// pooled autosomal consensus, not per alignment), so one authoritative record set per subject
+    /// rather than a conflicting set per sequencing run. The researcher opt-in act for the ancestry
+    /// section — anonymized population proportions only.
+    pub async fn publish_ancestry(&self, biosample_guid: SampleGuid) -> Result<(), AppError> {
         self.require_account()?; // auth check before touching the DB
-        // One outbox row per method, keyed by method so re-publishing coalesces per estimate.
-        let results = ancestry_result::list_for_alignment(self.store.pool(), alignment_id).await?;
-        for r in &results {
-            let value = serde_json::to_value(population_breakdown_record(r))?;
-            let entity_ref = format!("ancestry:{alignment_id}:{}", r.method);
+        // One outbox row per method, keyed by subject+method so re-publishing coalesces per estimate.
+        for r in &self.consensus_ancestry_results(biosample_guid).await? {
+            let value =
+                serde_json::to_value(population_breakdown_record(r).with_biosample_ref(Some(biosample_guid.to_string())))?;
+            let entity_ref = format!("ancestry:{biosample_guid}:{}", r.method);
             self.enqueue_publish("ancestry", &entity_ref, NS_POPULATION_BREAKDOWN, None, value).await?;
         }
         Ok(())

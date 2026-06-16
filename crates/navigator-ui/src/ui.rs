@@ -2112,6 +2112,11 @@ impl NavigatorApp {
                         });
                         asset_status_line(ui, &self.asset_status);
                         self.donor_ancestry_summary(ui);
+                        // Publish the subject's consensus ancestry breakdown (one record per method)
+                        // — available once it's been estimated.
+                        if self.donor_ancestry.is_some() {
+                            self.publish_row(ui, "Publish ancestry to PDS", Command::PublishAncestry { biosample_guid: guid });
+                        }
                     });
                     // Detailed reports from the same consensus estimate (persisted alongside the
                     // super-population ADMIXTURE): modern fine populations + ancient components.
