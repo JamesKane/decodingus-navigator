@@ -166,7 +166,7 @@ STR/VCF-workflow enablers).
 | Ideogram / cytoband visualization | `YChromosomeIdeogramPanel.scala` | **DONE** (5682976) karyotype ideogram tab |
 | Chromosome painting track (local ancestry) | — | **DONE** diploid two-copy painting (consensus-driven) |
 | Consensus-driven Y/mt/Autosomal/Ancestry/IBD tabs | — | **DONE** (this arc) |
-| **Batch / project-bundle / vendor-VCF / vendor-FASTA import dialogs** (multi-file, drag-drop, auto-detect) | `{BatchImport,ProjectImport,ImportVendorVcf,ImportVendorFasta}Dialog.scala` | **MISSING** (single-file add only; backends all exist → high ROI) |
+| **Batch / project-bundle / vendor-VCF / vendor-FASTA import dialogs** (multi-file, drag-drop, auto-detect) | `{BatchImport,ProjectImport,ImportVendorVcf,ImportVendorFasta}Dialog.scala` | **DONE** (59b5696) — per-subject Add Data is now a multi-file + folder picker; drag-drop routes files+folders through one batch (`add_data_batch`, auto-detect each) → import-summary modal. Project-bundle import (`import_project_dir`) already had a folder picker. *Remaining:* explicit vendor presets (FTDNA Big Y / mtFull labels) are cosmetic — auto-detect already routes those formats |
 | Y-profile management/detail + source-reconciliation dialogs | `YProfile*Dialog.scala`, `SourceReconciliationPanel.scala` | PARTIAL (Y-profile card + consensus block exist; no dedicated management/audit dialog) |
 | IBD match-detail browser — chromosome ideogram with segment painting; segment CSV export | `MatchDetailDialog.scala`, `ChromosomeBrowserPanel.scala` | MISSING (downstream of §4) |
 | **PCA scatter** (PC1×PC2 projection plot) | `ui/…` | **MISSING** (loadings/projection computed; donut + composition + map exist; no scatter widget) |
@@ -184,8 +184,8 @@ fingerprint/merge dialogs.
 
 | # | Subsystem | Impact | Size | Notes |
 |---|---|---|---|---|
-| 8-import | **Import UX dialogs** (batch / drag-drop / vendor VCF+FASTA / auto-detect) | **High** | **Small-Med** | **Top near-term win** — all backends exist; pure GUI surfacing of shipped ingest |
-| 6-resume | **Analysis checkpoint/resume** + BAM-mtime invalidation | Med-High | Medium | High value now that consensus/diploid passes are heavy; avoids recompute |
+| ~~8-import~~ | ~~Import UX dialogs~~ | — | — | **DONE 59b5696** — multi-file + folder Add Data, drag-drop, auto-detect, summary modal |
+| 6-resume | **Analysis checkpoint/resume** + BAM-mtime invalidation | Med-High | Medium | **Now top** — high value as consensus/diploid passes are heavy; avoids recompute |
 | 1b | STR calling from sequence (+ §7 STR reference) | High | **Large** | Biggest functional gap; needs a real STR genotyper or curated tight-tract BED — not a clean increment (reverted once) |
 | 2-match | Cross-subject Y matching (shared-SNP/novel ranking, genetic distance/TMRCA) | Med | Medium | Between-subjects layer atop the done single-subject Y profile; relates to §4 |
 | 5-p2 | Sync conflict detection + PULL + `source_file` table | Med | Medium | Ties to AppView design |
@@ -193,10 +193,8 @@ fingerprint/merge dialogs.
 | 7 | VCF liftover orchestration + reference-download checksums | Low-Med | Medium | STR/VCF-workflow enablers |
 | 8-misc | PCA scatter, Y-profile management dialog, IBD match browser, fingerprint/merge dialogs | Low-Med | Mixed | Several small; IBD browser downstream of §4 |
 
-**Cheapest meaningful win:** **import UX dialogs (§8-import)** — high visibility, no backend risk,
-exposes a lot of already-shipped ingest capability.
-**Highest-leverage infrastructure:** **analysis checkpoint/resume (§6-resume)** — directly improves
-the now-heavy consensus/diploid workflows.
+**Highest-leverage infrastructure (now top):** **analysis checkpoint/resume (§6-resume)** — directly
+improves the now-heavy consensus/diploid workflows (import UX shipped 59b5696).
 **Biggest coherent feature:** **§1b STR calling** — still the standout functional gap, still hard.
 **Verify-before-building:** §4 (IBD live) and §5-p2 (sync conflict/PULL) must be scoped against the
 current AppView-mediated architecture, not ported verbatim.
