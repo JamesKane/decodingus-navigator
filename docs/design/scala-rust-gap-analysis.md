@@ -199,7 +199,7 @@ fingerprint/merge dialogs.
 | ~~8-import~~ | ~~Import UX dialogs~~ | — | — | **DONE 59b5696** — multi-file + folder Add Data, drag-drop, auto-detect, summary modal |
 | ~~6-resume~~ | ~~Analysis checkpoint/resume~~ | — | — | **DONE 192a939** — source-sig invalidation + cache-first SV/denovo |
 | 1b-caller | ~~STR calling from sequence~~ | — | — | **DONE 986e00b** — enclosing-read genotyper + HipSTR-reference parse, validated on GRCh38 chrY |
-| 1b-vendor | **STR vendor bridge** — FTDNA DYS-name mapping + §1a panel integration + ref gateway/liftover + UI | High | Medium | The remaining STR work: turn coordinate-level counts into a Y-12/25/37/67/111 view comparable to an FTDNA export |
+| 1b-vendor | STR vendor bridge — convention layer + concordance | High | — | **CORE DONE 5fc6641** — corpus-calibrated (14 Big Y kits) FTDNA offset table + `str_concordance`; 34/34 calibrated markers agree on James's chrY. *Remaining:* §1a By-Panel **UI** rendering, multi-copy aggregation, ref gateway/non-GRCh38 |
 | 2-match | Cross-subject Y matching (shared-SNP/novel ranking, genetic distance/TMRCA) | Med | Medium | Between-subjects layer atop the done single-subject Y profile; relates to §4 |
 | 5-p2 | Sync conflict detection + PULL + `source_file` table | Med | Medium | Ties to AppView design |
 | 4-live | IBD live exchange (segment exchange + attestation) + consent/request/result | Med | Large | Gated on running AppView + PII-posture decision; don't port P2P verbatim |
