@@ -61,17 +61,17 @@ Native STR calling now exists via the **enclosing-read** model (HipSTR/GangSTR),
 | STR reference **gateway** — download + per-build liftover + cache | `refgenome/StrReferenceGateway.scala`, `StrReferenceCache.scala` | **PARTIAL** — cross-build **liftover DONE** (b9a7eed: `ReferenceGateway::lift_hipstr_bed`; GRCh38→CHM13 chrY validated on a real CHM13 CRAM, offsets build-independent); reads via `NAVIGATOR_STR_REFERENCE` / `~/.decodingus/str/{build}.hipstr_reference.bed.gz`. *Remaining:* auto-download of the GRCh38 HipSTR BED |
 | STR marker comparison (Simple/MultiCopy/Complex value matching) | `str/StrMarkerComparator.scala` | PARTIAL (panel compare done in §1a) |
 
-**Remaining (the vendor-grade bridge) — researched + validated, TABLED pending corpus on NAS:** the
-DYS→coordinate mapping turned out to be **free** — the HipSTR BED already names ~206 chrY DYS markers
-(`strref` parses the name). Validated against a real Big Y kit (FTDNA 27520, hg38): the caller
-recovers ~100 single-copy markers, **59/102 exact** vs FTDNA; the rest are small fixed convention
-offsets (DYS19 −1, DYS438 +2…) or large tract-mismatches to exclude (Y-GATA-H4, DYS484…). What's
-left: a **corpus-calibrated offset table** (offsets are conventions only if constant across samples —
-needs ~50 Big Y kits, not n=1), then the convention layer (name-normalize + single-copy offset +
-multi-copy aggregation + DYS389 nesting) + §1a By-Panel report join + UI. Multi-copy/palindromic
-(DYS385/DYS464/CDY) mostly not callable by the enclosing-read method (tracts exceed read length).
-Plus a download/cache gateway + CHM13/GRCh37 ref or liftover. **Blocked on:** moving the few-hundred
-Big Y corpus to the NAS. (Resume plan in project memory `str-caller`.)
+**Vendor bridge (§1b-vendor) — BUILT + VALIDATED + WIRED.** The DYS→coordinate mapping was **free**
+(the HipSTR BED names ~206 chrY DYS markers; `strref` parses them). The FTDNA *convention* is
+calibrated in `strmarker.rs` (5fc6641) against a **14-kit Big Y corpus**: 70 reliable (offset 0) + 22
+convention-offset (±1–3, constant across kits) + 29 excluded (tract mismatch / multi-copy). `examples/
+str_calibrate.rs` is the harness. `str_concordance` joins caller→convention→imported vendor profile;
+**34/34 calibrated markers agree** on James's GRCh38 chrY. CHM13 support via the lifted reference
+(b9a7eed) — validated on his CHM13 CRAM, offsets build-independent. **UI wired** (c142ae7): Y-DNA tab
+"Y-STR from sequence (HipSTR)" card. *Remaining:* widen the offset table with the ~300-kit CHM13 corpus
+(+ harness QC: build/naming, BAM↔CSV swap detection, coverage) when it lands on the NAS; multi-copy/
+nested aggregation (DYS385/DYS464/CDY/DYS389II — mostly uncallable anyway, tracts exceed read length);
+auto-download the GRCh38 HipSTR BED. (Full status in project memory `str-caller`.)
 
 > **History:** a 2026-06-12 length÷period port over *feature regions* (a bundled 24-locus catalog)
 > was reverted — feature coords aren't tight tracts, so it was systematically offset. **Resolved
