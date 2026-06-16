@@ -11,7 +11,7 @@
 //! than the old `RecordBuf` conversion, which would have errored the whole pass on a bad record.
 
 use noodles::sam::alignment::record::cigar::op::Kind;
-use noodles::sam::alignment::record::Flags;
+use noodles::sam::alignment::record::{Cigar as _, Flags, QualityScores as _, Sequence as _};
 use noodles::sam::alignment::RecordBuf;
 
 /// The fields the coverage / read-metrics / sex walkers read from an alignment record.
@@ -98,6 +98,65 @@ impl AlnRead for noodles::bam::Record {
         let cigar = self.cigar();
         let mut ops = cigar.iter().filter_map(|op| op.ok().map(|o| (o.kind(), o.len())));
         f(quals.as_ref(), &mut ops)
+    }
+}
+
+/// A borrowed view over a decoded **CRAM** record (`noodles::cram::Record`) paired with the header,
+/// implementing [`AlnRead`] by delegating to the `sam::alignment::Record` trait. CRAM stores the
+/// sequence as deltas against the reference, so a `cram::Record` already holds the per-read data in
+/// borrowed/lightweight form — driving the walkers off it directly skips the per-read
+/// `RecordBuf::try_from_alignment_record` copy (sequence + quals + cigar + name + *every* tag into
+/// owned form), measured at ~1.74× the per-read decode cost on a 30× short-read WGS CRAM. The
+/// header is only needed by the trait's `reference_sequence_id` accessors (which, for CRAM, ignore
+/// it and return the record's stored id — but the signature requires one).
+pub struct CramRead<'a, 'c> {
+    pub rec: &'a noodles::cram::Record<'c>,
+    pub header: &'a noodles::sam::Header,
+}
+
+impl AlnRead for CramRead<'_, '_> {
+    fn flags(&self) -> Flags {
+        use noodles::sam::alignment::Record as _;
+        self.rec.flags().unwrap_or(Flags::UNMAPPED)
+    }
+    fn reference_sequence_id(&self) -> Option<usize> {
+        use noodles::sam::alignment::Record as _;
+        self.rec.reference_sequence_id(self.header).and_then(|r| r.ok())
+    }
+    fn mate_reference_sequence_id(&self) -> Option<usize> {
+        use noodles::sam::alignment::Record as _;
+        self.rec.mate_reference_sequence_id(self.header).and_then(|r| r.ok())
+    }
+    fn alignment_start(&self) -> Option<usize> {
+        use noodles::sam::alignment::Record as _;
+        self.rec.alignment_start().and_then(|r| r.ok()).map(|p| p.get())
+    }
+    fn mate_alignment_start(&self) -> Option<usize> {
+        use noodles::sam::alignment::Record as _;
+        self.rec.mate_alignment_start().and_then(|r| r.ok()).map(|p| p.get())
+    }
+    fn mapping_quality(&self) -> Option<u8> {
+        use noodles::sam::alignment::Record as _;
+        self.rec.mapping_quality().and_then(|r| r.ok()).map(|m| m.get())
+    }
+    fn template_length(&self) -> i32 {
+        use noodles::sam::alignment::Record as _;
+        self.rec.template_length().unwrap_or(0)
+    }
+    fn sequence_len(&self) -> usize {
+        use noodles::sam::alignment::Record as _;
+        self.rec.sequence().len()
+    }
+    fn pileup_with<T>(&self, f: impl FnOnce(&[u8], &mut dyn Iterator<Item = (Kind, usize)>) -> T) -> T {
+        use noodles::sam::alignment::Record as _;
+        // CRAM exposes qualities only via an iterator (not a contiguous slice), so collect them
+        // once per read — a small (~read-length) allocation, still far cheaper than the full
+        // `RecordBuf` materialization the high-level reader would do. The cigar is a lazy view over
+        // the record's features, iterated directly with no allocation.
+        let quals: Vec<u8> = self.rec.quality_scores().iter().map(|r| r.unwrap_or(0)).collect();
+        let cigar = self.rec.cigar();
+        let mut ops = cigar.iter().filter_map(|op| op.ok().map(|o| (o.kind(), o.len())));
+        f(&quals, &mut ops)
     }
 }
 

@@ -143,7 +143,7 @@ impl SeqReader {
 /// An indexed reader over BAM or CRAM. Hold it and call [`IdxReader::query`].
 pub enum IdxReader {
     Bam { inner: bam::io::IndexedReader<bgzf::Reader<File>>, path: PathBuf },
-    Cram { inner: cram::io::IndexedReader<File>, path: PathBuf },
+    Cram { inner: cram::io::IndexedReader<File>, repo: fasta::Repository, path: PathBuf },
 }
 
 /// Open `path` for indexed region queries (autoloads the `.bai`/`.crai`). `reference` is
@@ -160,11 +160,11 @@ pub fn open_indexed(path: &Path, reference: Option<&Path>) -> Result<(sam::Heade
         Format::Cram => {
             let repo = build_repository(require_reference(path, reference)?)?;
             let mut inner = cram::io::indexed_reader::Builder::default()
-                .set_reference_sequence_repository(repo)
+                .set_reference_sequence_repository(repo.clone())
                 .build_from_path(path)
                 .map_err(|e| AnalysisError::io(path, e))?;
             let header = inner.read_header().map_err(|e| AnalysisError::io(path, e))?;
-            Ok((header, IdxReader::Cram { inner, path: path.to_path_buf() }))
+            Ok((header, IdxReader::Cram { inner, repo, path: path.to_path_buf() }))
         }
     }
 }
@@ -185,7 +185,7 @@ impl IdxReader {
                     RecordBuf::try_from_alignment_record(header, &rec).map_err(|e| AnalysisError::io(&path, e))
                 })))
             }
-            IdxReader::Cram { inner, path } => {
+            IdxReader::Cram { inner, path, .. } => {
                 let path = path.clone();
                 let q = inner.query(header, region).map_err(|e| AnalysisError::io(&path, e))?;
                 Ok(Box::new(q.map(move |r| r.map_err(|e| AnalysisError::io(&path, e)))))
@@ -244,11 +244,68 @@ impl IdxReader {
                 }
                 Ok(())
             }
-            IdxReader::Cram { inner, path } => {
+            IdxReader::Cram { inner, repo, path } => {
+                // Decode the region's CRAM containers down to borrowed `cram::Record`s and drive the
+                // sink off them directly — skipping the per-read `RecordBuf` copy the high-level
+                // `query` iterator pays (~1.74× the per-read decode on a 30× WGS CRAM). This mirrors
+                // noodles' own `Query`: seek each `.crai` container whose reference matches, decode
+                // its slices, and keep the records overlapping the query interval.
+                use std::io::{Seek, SeekFrom};
+
+                use noodles::sam::alignment::Record as _; // alignment_start/_end on cram::Record
+
+                use crate::readview::CramRead;
+
                 let path = path.clone();
-                let q = inner.query(header, region).map_err(|e| AnalysisError::io(&path, e))?;
-                for r in q {
-                    sink.accept(&r.map_err(|e| AnalysisError::io(&path, e))?);
+                let repo = repo.clone();
+                let io_err = |e| AnalysisError::io(&path, e);
+
+                // Resolve the query contig to its @SQ index, and capture the query interval.
+                let ref_id = header
+                    .reference_sequences()
+                    .get_index_of(region.name())
+                    .ok_or_else(|| {
+                        AnalysisError::Message(format!(
+                            "contig {} not in {} header",
+                            String::from_utf8_lossy(region.name()),
+                            path.display()
+                        ))
+                    })?;
+                let interval = region.interval();
+
+                // Collect the file offsets of this contig's containers before borrowing `inner`
+                // mutably to seek/read (the `.crai` index borrow can't overlap the read borrow).
+                let offsets: Vec<u64> = inner
+                    .index()
+                    .iter()
+                    .filter(|r| r.reference_sequence_id() == Some(ref_id))
+                    .map(|r| r.offset())
+                    .collect();
+
+                let mut container = cram::io::reader::Container::default();
+                for offset in offsets {
+                    inner.get_mut().seek(SeekFrom::Start(offset)).map_err(io_err)?;
+                    if inner.read_container(&mut container).map_err(io_err)? == 0 {
+                        continue;
+                    }
+                    let compression_header = container.compression_header().map_err(io_err)?;
+                    for slice in container.slices() {
+                        let slice = slice.map_err(io_err)?;
+                        let (core, external) = slice.decode_blocks().map_err(io_err)?;
+                        let records = slice
+                            .records(repo.clone(), header, &compression_header, &core, &external)
+                            .map_err(io_err)?;
+                        for rec in &records {
+                            // Same overlap test noodles' `Query` applies post-decode.
+                            if let (Some(Ok(start)), Some(Ok(end))) =
+                                (rec.alignment_start(), rec.alignment_end())
+                            {
+                                if interval.intersects((start..=end).into()) {
+                                    sink.accept(&CramRead { rec, header });
+                                }
+                            }
+                        }
+                    }
                 }
                 Ok(())
             }
@@ -333,5 +390,72 @@ mod tests {
         assert_eq!(detect_format(Path::new("x/HG00096.CRAM")), Format::Cram);
         assert_eq!(detect_format(Path::new("x/sample.bam")), Format::Bam);
         assert_eq!(detect_format(Path::new("x/sample")), Format::Bam);
+    }
+
+    /// The fields a walker reads off a record, captured comparably from any [`AlnRead`].
+    #[derive(Debug, PartialEq)]
+    struct Captured {
+        flags: u16,
+        start: Option<usize>,
+        mate_start: Option<usize>,
+        ref_id: Option<usize>,
+        mate_ref_id: Option<usize>,
+        mapq: Option<u8>,
+        tlen: i32,
+        seq_len: usize,
+        quals: Vec<u8>,
+        cigar: Vec<(u8, usize)>,
+    }
+
+    fn capture(r: &impl AlnRead) -> Captured {
+        let (quals, cigar) = r.pileup_with(|q, ops| {
+            (q.to_vec(), ops.map(|(k, l)| (k as u8, l)).collect::<Vec<_>>())
+        });
+        Captured {
+            flags: r.flags().bits(),
+            start: r.alignment_start(),
+            mate_start: r.mate_alignment_start(),
+            ref_id: r.reference_sequence_id(),
+            mate_ref_id: r.mate_reference_sequence_id(),
+            mapq: r.mapping_quality(),
+            tlen: r.template_length(),
+            seq_len: r.sequence_len(),
+            quals,
+            cigar,
+        }
+    }
+
+    /// The new slice-level CRAM `for_each` path (borrowed `cram::Record`) must yield records
+    /// field-identical to the high-level `query` path (owned `RecordBuf`) — guards the noodles
+    /// internal-API replication (crai seek + slice decode) against version drift.
+    #[test]
+    fn cram_for_each_matches_query_recordbuf() {
+        struct CollectSink(Vec<Captured>);
+        impl RecordSink for CollectSink {
+            fn accept(&mut self, record: &impl AlnRead) {
+                self.0.push(capture(record));
+            }
+        }
+
+        let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
+        let cram = dir.join("coverage.cram");
+        let reference = dir.join("ref.fa");
+        let region = Region::new(b"chrM".to_vec(), ..);
+
+        // New path: for_each over borrowed cram::Record.
+        let (header, mut idx) = open_indexed(&cram, Some(&reference)).expect("open");
+        let mut sink = CollectSink(Vec::new());
+        idx.for_each(&header, &region, &mut sink).expect("for_each");
+
+        // Old path: query yields RecordBuf.
+        let (header2, mut idx2) = open_indexed(&cram, Some(&reference)).expect("open2");
+        let via_query: Vec<Captured> = idx2
+            .query(&header2, &region)
+            .expect("query")
+            .map(|r| capture(&r.expect("rec")))
+            .collect();
+
+        assert!(!sink.0.is_empty(), "fixture should have chrM records");
+        assert_eq!(sink.0, via_query, "cram::Record path must match RecordBuf path");
     }
 }
