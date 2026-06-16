@@ -137,7 +137,7 @@ consent/request/result lifecycle — both gated on a running AppView + the PII-p
 | Diploid / indel variant calling, whole-genome diploid VCF | `WholeGenomeVariantCaller.scala` | **DONE** (598226a/50ecaa7/06fae27); + consensus joint genotype (98adfe5) |
 | Report/exports — TSV/HTML (ancestry, metrics), callable BED | `*ReportWriter` | **DONE** (ec3c3e1) |
 | WGS-metrics completeness — MAD coverage, per-base exclusion fractions | `WgsMetricsProcessor.scala` | PARTIAL→mostly (83ea6d0: MAD + pct_exc_mapq/baseq; dup/unpaired/overlap/capped deferred) |
-| **Multi-step checkpoint/resume** (skip completed steps; BAM-mtime invalidation) | `AnalysisCheckpoint.scala`, `AnalysisCache.scala` | **PARTIAL** (per-artifact `algorithm_version` cache; no cross-step resume / mtime invalidation) |
+| **Multi-step checkpoint/resume** (skip completed steps; BAM-mtime invalidation) | `AnalysisCheckpoint.scala`, `AnalysisCache.scala` | **DONE** (192a939) — artifacts carry a `source_sig` (BAM/CRAM `mtime:size`, mig 0024); `load_analysis` invalidates on source change so every `cached_*` is stale-aware; `run_sv`/`run_denovo` now cache-first → full-analysis resumes fresh steps. *Remaining:* content-hash (vs mtime) option; a "resumed N/5" progress readout |
 | Multiallelic indel calling, left-normalization edge cases | — | PARTIAL (multiallelic SNV done; multiallelic indel deferred) |
 | Callable-loci **SVG track** + haplogroup-report CSV | `BioVisualizationUtil.scala` | MISSING (BED + tables done; no SVG) |
 
@@ -185,16 +185,18 @@ fingerprint/merge dialogs.
 | # | Subsystem | Impact | Size | Notes |
 |---|---|---|---|---|
 | ~~8-import~~ | ~~Import UX dialogs~~ | — | — | **DONE 59b5696** — multi-file + folder Add Data, drag-drop, auto-detect, summary modal |
-| 6-resume | **Analysis checkpoint/resume** + BAM-mtime invalidation | Med-High | Medium | **Now top** — high value as consensus/diploid passes are heavy; avoids recompute |
-| 1b | STR calling from sequence (+ §7 STR reference) | High | **Large** | Biggest functional gap; needs a real STR genotyper or curated tight-tract BED — not a clean increment (reverted once) |
+| ~~6-resume~~ | ~~Analysis checkpoint/resume~~ | — | — | **DONE 192a939** — source-sig invalidation + cache-first SV/denovo |
+| 1b | STR calling from sequence (+ §7 STR reference) | High | **Large** | **Now the standout** — biggest functional gap; needs a real STR genotyper or curated tight-tract BED — not a clean increment (reverted once) |
 | 2-match | Cross-subject Y matching (shared-SNP/novel ranking, genetic distance/TMRCA) | Med | Medium | Between-subjects layer atop the done single-subject Y profile; relates to §4 |
 | 5-p2 | Sync conflict detection + PULL + `source_file` table | Med | Medium | Ties to AppView design |
 | 4-live | IBD live exchange (segment exchange + attestation) + consent/request/result | Med | Large | Gated on running AppView + PII-posture decision; don't port P2P verbatim |
 | 7 | VCF liftover orchestration + reference-download checksums | Low-Med | Medium | STR/VCF-workflow enablers |
 | 8-misc | PCA scatter, Y-profile management dialog, IBD match browser, fingerprint/merge dialogs | Low-Med | Mixed | Several small; IBD browser downstream of §4 |
 
-**Highest-leverage infrastructure (now top):** **analysis checkpoint/resume (§6-resume)** — directly
-improves the now-heavy consensus/diploid workflows (import UX shipped 59b5696).
+**Biggest remaining feature:** **§1b STR calling** — the standout functional gap (import UX shipped
+59b5696, checkpoint/resume shipped 192a939). Still hard: needs a real STR genotyper or a curated
+tight-tract reference BED (a length÷period port was reverted as not vendor-grade). Next-cheapest
+coherent work: **§2-match cross-subject Y matching** (medium, builds on the done Y profile).
 **Biggest coherent feature:** **§1b STR calling** — still the standout functional gap, still hard.
 **Verify-before-building:** §4 (IBD live) and §5-p2 (sync conflict/PULL) must be scoped against the
 current AppView-mediated architecture, not ported verbatim.
