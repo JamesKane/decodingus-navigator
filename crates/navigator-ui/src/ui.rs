@@ -3408,42 +3408,42 @@ impl NavigatorApp {
                 .small(),
         );
         ui.add_space(4.0);
-        egui::ScrollArea::vertical().max_height(360.0).id_salt(("ystr_seq", guid)).auto_shrink([false, false]).show(ui, |ui| {
-            egui::Grid::new(("ystr_seq_grid", guid)).num_columns(4).striped(true).spacing([14.0, 2.0]).show(ui, |ui| {
-                for h in ["Marker", "Called", "Vendor", ""] {
-                    ui.label(egui::RichText::new(h).strong().small());
+        // No inner ScrollArea — the tab is already one vertical scroll; nesting clips + captures the
+        // wheel (see str_by_panel_view). Flow the (filtered) grid into the page; the filter narrows it.
+        egui::Grid::new(("ystr_seq_grid", guid)).num_columns(4).striped(true).spacing([14.0, 2.0]).show(ui, |ui| {
+            for h in ["Marker", "Called", "Vendor", ""] {
+                ui.label(egui::RichText::new(h).strong().small());
+            }
+            ui.end_row();
+            for r in rows
+                .iter()
+                .filter(|r| r.called.is_some() || r.imported.is_some())
+                .filter(|r| q.is_empty() || r.marker.to_ascii_lowercase().contains(&q))
+            {
+                ui.label(&r.marker);
+                // Colour the called value by calibration status.
+                let (txt, col) = match (r.called, r.status.as_str()) {
+                    (Some(v), "Reliable" | "ConventionOffset") => (v.to_string(), None),
+                    (Some(v), _) => (v.to_string(), Some(egui::Color32::from_rgb(150, 150, 150))), // excluded/uncalibrated
+                    (None, _) => ("—".to_string(), Some(egui::Color32::from_rgb(150, 150, 150))),
+                };
+                match col {
+                    Some(c) => ui.colored_label(c, txt),
+                    None => ui.label(txt),
+                };
+                ui.label(r.imported.clone().unwrap_or_else(|| "—".into()));
+                // Agreement marker only for calibrated, comparable rows.
+                if r.calibrated && r.called.is_some() && r.imported.is_some() {
+                    if r.agree {
+                        ui.colored_label(egui::Color32::from_rgb(60, 160, 60), "✓");
+                    } else {
+                        ui.colored_label(egui::Color32::from_rgb(200, 90, 90), "✗");
+                    }
+                } else {
+                    ui.label("");
                 }
                 ui.end_row();
-                for r in rows
-                    .iter()
-                    .filter(|r| r.called.is_some() || r.imported.is_some())
-                    .filter(|r| q.is_empty() || r.marker.to_ascii_lowercase().contains(&q))
-                {
-                    ui.label(&r.marker);
-                    // Colour the called value by calibration status.
-                    let (txt, col) = match (r.called, r.status.as_str()) {
-                        (Some(v), "Reliable" | "ConventionOffset") => (v.to_string(), None),
-                        (Some(v), _) => (v.to_string(), Some(egui::Color32::from_rgb(150, 150, 150))), // excluded/uncalibrated
-                        (None, _) => ("—".to_string(), Some(egui::Color32::from_rgb(150, 150, 150))),
-                    };
-                    match col {
-                        Some(c) => ui.colored_label(c, txt),
-                        None => ui.label(txt),
-                    };
-                    ui.label(r.imported.clone().unwrap_or_else(|| "—".into()));
-                    // Agreement marker only for calibrated, comparable rows.
-                    if r.calibrated && r.called.is_some() && r.imported.is_some() {
-                        if r.agree {
-                            ui.colored_label(egui::Color32::from_rgb(60, 160, 60), "✓");
-                        } else {
-                            ui.colored_label(egui::Color32::from_rgb(200, 90, 90), "✗");
-                        }
-                    } else {
-                        ui.label("");
-                    }
-                    ui.end_row();
-                }
-            });
+            }
         });
     }
 
@@ -3688,7 +3688,7 @@ impl NavigatorApp {
         };
         let mut filter = self.auto_profile_filter;
         let mut query = std::mem::take(&mut self.auto_profile_query);
-        draw_diploid_profile(ui, profile, &mut filter, &mut query, "autosomal_profile");
+        draw_diploid_profile(ui, profile, &mut filter, &mut query);
         self.auto_profile_filter = filter;
         self.auto_profile_query = query;
     }
@@ -3808,12 +3808,14 @@ impl NavigatorApp {
         });
         let q = self.private_y_query.to_ascii_lowercase();
         let bucket = self.donor_private_y.as_ref().unwrap();
-        // Filter to matching indices (position or off-path name / "novel"), then virtualize.
-        let idx: Vec<usize> = bucket
+        // Filter to matching variants (position or off-path name / "novel"). Flow into the page scroll
+        // (no nested ScrollArea — it clips + captures the wheel; see str_by_panel_view); the filter
+        // narrows the list, and a hard cap keeps a pathological bucket from flooding the page.
+        const CAP: usize = 1000;
+        let matched: Vec<_> = bucket
             .variants
             .iter()
-            .enumerate()
-            .filter(|(_, v)| {
+            .filter(|v| {
                 q.is_empty()
                     || v.position.to_string().contains(&q)
                     || match &v.class {
@@ -3821,39 +3823,28 @@ impl NavigatorApp {
                         PrivateClass::Novel => "novel".contains(q.as_str()),
                     }
             })
-            .map(|(i, _)| i)
             .collect();
-        ui.label(egui::RichText::new(format!("{} shown", idx.len())).weak().small());
-
-        const W_POS: f32 = 110.0;
-        const W_CHG: f32 = 80.0;
-        const W_DEP: f32 = 60.0;
-        let row_h = ui.text_style_height(&egui::TextStyle::Body) + 4.0;
-        ui.horizontal(|ui| {
-            ui.add_sized([W_POS, row_h], egui::Label::new(egui::RichText::new(pos_h).strong()));
-            ui.add_sized([W_CHG, row_h], egui::Label::new(egui::RichText::new(chg_h).strong()));
-            ui.add_sized([W_DEP, row_h], egui::Label::new(egui::RichText::new(dep_h).strong()));
-            ui.label(egui::RichText::new(cls_h).strong());
+        ui.label(egui::RichText::new(format!("{} shown", matched.len())).weak().small());
+        egui::Grid::new("donor_privy").striped(true).num_columns(4).show(ui, |ui| {
+            ui.strong(pos_h);
+            ui.strong(chg_h);
+            ui.strong(dep_h);
+            ui.strong(cls_h);
+            ui.end_row();
+            for v in matched.iter().take(CAP) {
+                ui.label(v.position.to_string());
+                ui.label(format!("{}>{}", v.reference, v.alternate));
+                ui.label(v.depth.to_string());
+                match &v.class {
+                    PrivateClass::Novel => ui.colored_label(egui::Color32::from_rgb(60, 160, 60), "novel"),
+                    PrivateClass::OffPathKnown(name) => ui.label(format!("off-path: {name}")),
+                };
+                ui.end_row();
+            }
         });
-        egui::ScrollArea::vertical().max_height(320.0).id_salt("donor_privy").auto_shrink([false, false]).show_rows(
-            ui,
-            row_h,
-            idx.len(),
-            |ui, range| {
-                for k in range {
-                    let v = &bucket.variants[idx[k]];
-                    ui.horizontal(|ui| {
-                        ui.add_sized([W_POS, row_h], egui::Label::new(v.position.to_string()));
-                        ui.add_sized([W_CHG, row_h], egui::Label::new(format!("{}>{}", v.reference, v.alternate)));
-                        ui.add_sized([W_DEP, row_h], egui::Label::new(v.depth.to_string()));
-                        match &v.class {
-                            PrivateClass::Novel => ui.colored_label(egui::Color32::from_rgb(60, 160, 60), "novel"),
-                            PrivateClass::OffPathKnown(name) => ui.label(format!("off-path: {name}")),
-                        };
-                    });
-                }
-            },
-        );
+        if matched.len() > CAP {
+            ui.label(egui::RichText::new(format!("…and {} more — filter to narrow", matched.len() - CAP)).weak());
+        }
     }
 
     fn str_section(&mut self, ui: &mut egui::Ui, guid: SampleGuid) {
@@ -5827,19 +5818,28 @@ fn draw_consensus_profile(
         YState::Ancestral => "ancestral",
         YState::NoCall => "no-call",
     };
-    egui::ScrollArea::vertical().max_height(320.0).id_salt(id_salt).auto_shrink([false, false]).show(ui, |ui| {
-        egui::Grid::new(format!("{id_salt}_grid")).striped(true).num_columns(5).show(ui, |ui| {
-            for h in [variant_col, "Pos", "State", "Status", "Sources"] {
-                ui.strong(h);
+    // Flow into the page scroll (no nested ScrollArea — it clips + captures the wheel; see
+    // str_by_panel_view). Status/text filters narrow the list; a cap bounds a pathological profile.
+    const CAP: usize = 2000;
+    let (mut shown, mut total_match) = (0usize, 0usize);
+    egui::Grid::new(format!("{id_salt}_grid")).striped(true).num_columns(5).show(ui, |ui| {
+        for h in [variant_col, "Pos", "State", "Status", "Sources"] {
+            ui.strong(h);
+        }
+        ui.end_row();
+        for v in &profile.variants {
+            if filter.is_some_and(|f| v.status != f) {
+                continue;
             }
-            ui.end_row();
-            for v in &profile.variants {
-                if filter.is_some_and(|f| v.status != f) {
-                    continue;
-                }
-                if !q.is_empty() && !v.name.to_ascii_lowercase().contains(&q) && !v.position.to_string().contains(&q) {
-                    continue;
-                }
+            if !q.is_empty() && !v.name.to_ascii_lowercase().contains(&q) && !v.position.to_string().contains(&q) {
+                continue;
+            }
+            total_match += 1;
+            if shown >= CAP {
+                continue;
+            }
+            shown += 1;
+            {
                 let conflict = v.status == YVariantStatus::Conflict;
                 let name = if v.name.is_empty() { format!("novel@{}", v.position) } else { v.name.clone() };
                 let name_txt = egui::RichText::new(name).strong();
@@ -5875,14 +5875,17 @@ fn draw_consensus_profile(
                 });
                 ui.end_row();
             }
-        });
+        }
     });
+    if total_match > CAP {
+        ui.label(egui::RichText::new(format!("…and {} more — filter to narrow", total_match - CAP)).weak());
+    }
 }
 
 /// Renderer for the autosomal diploid consensus profile — the 0/1/2 sibling of
 /// [`draw_consensus_profile`]. Header (confirmed/conflict/single + confidence), a status filter, and a
 /// per-site grid `Site (rsID) | GT (0/0,0/1,1/1) | Status | Sources (per-source dosage)`.
-fn draw_diploid_profile(ui: &mut egui::Ui, profile: &navigator_app::DiploidProfile, filter: &mut Option<YVariantStatus>, query: &mut String, id_salt: &str) {
+fn draw_diploid_profile(ui: &mut egui::Ui, profile: &navigator_app::DiploidProfile, filter: &mut Option<YVariantStatus>, query: &mut String) {
     if profile.variants.is_empty() {
         ui.label(egui::RichText::new("No autosomal sites across sources.").weak());
         return;
@@ -5960,29 +5963,24 @@ fn draw_diploid_profile(ui: &mut egui::Ui, profile: &navigator_app::DiploidProfi
             }
         });
     };
-    let area = egui::ScrollArea::vertical().max_height(360.0).id_salt(id_salt).auto_shrink([false, false]);
-    if filter.is_none() && q.is_empty() {
-        // Fast path: no filtering → virtualize directly over the full (1.2M-site) panel.
-        area.show_rows(ui, row_h, profile.variants.len(), |ui, range| {
-            for i in range {
-                render_row(ui, &profile.variants[i]);
-            }
-        });
-    } else {
-        // Collect matching indices once (the picked subset is far smaller than the full panel, so
-        // this avoids a 1.2M-element alloc for the unfiltered case above).
-        let idx: Vec<usize> = profile
-            .variants
-            .iter()
-            .enumerate()
-            .filter(|(_, v)| filter.map_or(true, |f| v.status == f) && matches(v))
-            .map(|(i, _)| i)
-            .collect();
-        area.show_rows(ui, row_h, idx.len(), |ui, range| {
-            for k in range {
-                render_row(ui, &profile.variants[idx[k]]);
-            }
-        });
+    // Flow into the page scroll (no nested ScrollArea — it clips + captures the wheel; see
+    // str_by_panel_view). The panel is ~1.2M sites, so cap the rendered rows hard and lean on the
+    // status/text filters to narrow — only `shown` widgets are built, never the full panel.
+    const CAP: usize = 2000;
+    let (mut shown, mut total_match) = (0usize, 0usize);
+    for v in &profile.variants {
+        if !(filter.map_or(true, |f| v.status == f) && matches(v)) {
+            continue;
+        }
+        total_match += 1;
+        if shown >= CAP {
+            continue;
+        }
+        shown += 1;
+        render_row(ui, v);
+    }
+    if total_match > CAP {
+        ui.label(egui::RichText::new(format!("…and {} more — filter to narrow", total_match - CAP)).weak());
     }
 }
 
