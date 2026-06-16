@@ -616,6 +616,89 @@ pub fn genotype_sites_all_contigs(
     Ok(per_contig?.into_iter().flatten().collect())
 }
 
+/// Reconcile per-alignment force-call genotypes at a shared site set into one **consensus** diploid
+/// genotype per site — the subject-level joint genotype across a person's WGS runs. Each input is
+/// one alignment's [`SiteGenotype`]s at the *union* of variant sites (all on the same reference
+/// build, so `(contig, position, ref, alt)` align). Per site, a depth-weighted vote over the dosage
+/// classes {0,1,2}: an alignment whose depth is below `min_depth` is its no-call (excluded), so a
+/// site absent-as-hom-ref in one run is a real vote (resolving "run A het vs run B hom-ref") while a
+/// genuinely uncovered run abstains. Only **variant** consensus sites (het/hom-alt) are returned;
+/// hom-ref / no-call consensus is not a variant. Depth/AD are summed and GQ is the max over the
+/// supporting alignments; PLs are dropped (the per-run likelihoods don't compose into one PL here).
+pub fn reconcile_site_genotypes(per_alignment: &[Vec<SiteGenotype>], min_depth: u32) -> Vec<SiteGenotype> {
+    use std::collections::BTreeMap;
+    struct Acc {
+        repr: SiteGenotype,
+        w: [f64; 3],
+        counts: [usize; 3],
+        depth: u64,
+        ref_d: u64,
+        alt_d: u64,
+        gq: u8,
+    }
+    let mut groups: BTreeMap<(String, i64, String), Acc> = BTreeMap::new();
+    for aln in per_alignment {
+        for g in aln {
+            let key = (g.contig.clone(), g.position, g.alternate_allele.clone());
+            let acc = groups.entry(key).or_insert_with(|| Acc {
+                repr: g.clone(),
+                w: [0.0; 3],
+                counts: [0; 3],
+                depth: 0,
+                ref_d: 0,
+                alt_d: 0,
+                gq: 0,
+            });
+            if g.depth < min_depth {
+                continue; // under-covered in this run → abstain (not a hom-ref vote)
+            }
+            let d = g.dosage;
+            if (0..=2).contains(&d) {
+                // Depth-bonus weight, mirroring consensus::obs_weight's WGS term (constant method
+                // factor drops out of the argmax).
+                let weight = 1.0 + ((g.depth as f64).sqrt() / 10.0).min(1.0);
+                w_add(&mut acc.w, &mut acc.counts, d as usize, weight);
+                acc.depth += g.depth as u64;
+                acc.ref_d += g.ref_depth as u64;
+                acc.alt_d += g.alt_depth as u64;
+                acc.gq = acc.gq.max(g.gq);
+            }
+        }
+    }
+    let mut out = Vec::new();
+    for (_, acc) in groups {
+        // argmax weight; tie → more raw supporting runs, then the lower dosage.
+        let mut best = 0usize;
+        for d in 1..3 {
+            if acc.w[d] > acc.w[best] || (acc.w[d] == acc.w[best] && acc.counts[d] > acc.counts[best]) {
+                best = d;
+            }
+        }
+        let total: usize = acc.counts.iter().sum();
+        if total == 0 || best == 0 {
+            continue; // no-call or hom-ref consensus → not a variant
+        }
+        let mut g = acc.repr;
+        g.name = String::new();
+        g.dosage = best as i32;
+        g.depth = acc.depth.min(u32::MAX as u64) as u32;
+        g.ref_depth = acc.ref_d.min(u32::MAX as u64) as u32;
+        g.alt_depth = acc.alt_d.min(u32::MAX as u64) as u32;
+        g.gq = acc.gq;
+        g.pls = Vec::new();
+        g.gt = None;
+        g.allele_depths = None;
+        out.push(g);
+    }
+    out
+}
+
+#[inline]
+fn w_add(w: &mut [f64; 3], counts: &mut [usize; 3], d: usize, weight: f64) {
+    w[d] += weight;
+    counts[d] += 1;
+}
+
 /// Force-call (genotype-given-alleles) at known SNP sites on `contig`. Non-SNP sites
 /// (multi-base ref/alt) are skipped — v1 is SNP-only.
 pub fn force_call_sites(
@@ -1460,6 +1543,46 @@ pub fn subtract_known(calls: &[VariantCall], known_positions: &HashSet<i64>) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn sg(contig: &str, pos: i64, alt: &str, dosage: i32, depth: u32, gq: u8) -> SiteGenotype {
+        SiteGenotype {
+            name: String::new(),
+            contig: contig.into(),
+            position: pos,
+            reference_allele: "A".into(),
+            alternate_allele: alt.into(),
+            ploidy: 2,
+            dosage,
+            gq,
+            depth,
+            ref_depth: depth.saturating_sub(depth * dosage as u32 / 2),
+            alt_depth: depth * dosage as u32 / 2,
+            pls: vec![],
+            gt: None,
+            allele_depths: None,
+        }
+    }
+
+    #[test]
+    fn consensus_reconcile_resolves_homref_and_abstains_on_no_call() {
+        // Site 100: run A het (0/1, deep), run B hom-ref (0/0, deep) → real disagreement; depth-
+        // weighted vote, both deep, equal weight → tie broken by lower dosage = hom-ref → NOT emitted.
+        // Site 200: run A het (deep), run B no-call (depth 1 < min 4) → B abstains, A wins → het.
+        // Site 300: both hom-alt (1/1) → hom-alt, depths summed.
+        let a = vec![sg("chr1", 100, "G", 1, 30, 50), sg("chr1", 200, "G", 1, 30, 50), sg("chr1", 300, "T", 2, 20, 60)];
+        let b = vec![sg("chr1", 100, "G", 0, 30, 50), sg("chr1", 200, "G", 0, 1, 0), sg("chr1", 300, "T", 2, 25, 55)];
+        let out = reconcile_site_genotypes(&[a, b], 4);
+
+        // 100 → hom-ref consensus, not a variant (absent).
+        assert!(!out.iter().any(|g| g.position == 100));
+        // 200 → het (B abstained, only A's deep het counts).
+        let s200 = out.iter().find(|g| g.position == 200).expect("200 emitted");
+        assert_eq!(s200.dosage, 1);
+        // 300 → hom-alt with summed depth.
+        let s300 = out.iter().find(|g| g.position == 300).expect("300 emitted");
+        assert_eq!(s300.dosage, 2);
+        assert_eq!(s300.depth, 45);
+    }
 
     #[test]
     fn left_normalize_shifts_indels_into_repeats() {

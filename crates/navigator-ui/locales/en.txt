@@ -297,6 +297,7 @@ hint.ancestryConsensus=from the pooled consensus across all sources — build th
 card.ancestryPerSource=Per-source estimators (advanced)
 card.chromosomePainting=Chromosome painting (local ancestry)
 hint.chromosomePainting=diploid: two sorted copies per chromosome (unphased); cached until the consensus changes
+hint.consensusVcf=Joint genotype across the subject's same-build WGS alignments. Heavy — calls + force-calls each alignment genome-wide.
 card.ancestryModern=Detailed populations (modern)
 card.ancestryAncient=Ancient ancestry components
 card.ancestryNmonte=Mixture model (G25 / nMonte)

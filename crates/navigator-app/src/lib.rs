@@ -815,6 +815,9 @@ pub enum ExportRequest {
     /// Whole-genome diploid variant calls (SNV + indel) for an alignment, as a VCF. Heavy — re-walks
     /// the BAM per primary chromosome (cached).
     DiploidVcf(i64),
+    /// The subject-level **consensus** diploid VCF — the joint genotype across the subject's
+    /// same-build alignments. Heavy (call + force-call per alignment).
+    ConsensusDiploidVcf(SampleGuid),
 }
 
 impl ExportRequest {
@@ -823,7 +826,7 @@ impl ExportRequest {
         match self {
             ExportRequest::CoverageHtml(_) | ExportRequest::AncestryHtml(_) => "html",
             ExportRequest::CallableBed(_) => "bed",
-            ExportRequest::DiploidVcf(_) => "vcf",
+            ExportRequest::DiploidVcf(_) | ExportRequest::ConsensusDiploidVcf(_) => "vcf",
             _ => "tsv",
         }
     }
@@ -839,6 +842,7 @@ impl ExportRequest {
             ExportRequest::CallableBed(_) => "callable loci (BED)",
             ExportRequest::MtdnaTsv(_) => "mtDNA variants (TSV)",
             ExportRequest::DiploidVcf(_) => "diploid variants (VCF)",
+            ExportRequest::ConsensusDiploidVcf(_) => "consensus diploid (VCF)",
         }
     }
 
@@ -851,6 +855,7 @@ impl ExportRequest {
             ExportRequest::CallableBed(id) => ("callable", id),
             ExportRequest::MtdnaTsv(id) => ("mtdna_variants", id),
             ExportRequest::DiploidVcf(id) => ("diploid_variants", id),
+            ExportRequest::ConsensusDiploidVcf(_) => return format!("consensus_diploid.{}", self.extension()),
         };
         format!("{stem}_{id}.{}", self.extension())
     }
@@ -2305,6 +2310,116 @@ impl App {
         Ok(navigator_analysis::vcf::write_diploid_vcf(&format!("aln{alignment_id}"), &all))
     }
 
+    /// The subject's alignments on the **dominant reference build** (the build the most alignments
+    /// share, compared on the canonical build so `chm13v2`/`hs1` agree). The consensus diploid
+    /// genotype pools only same-build alignments — de-novo variant coordinates can't be merged
+    /// across builds by position without genome-wide liftover (out of scope). `None` if no alignments.
+    async fn consensus_diploid_alignments(&self, biosample_guid: SampleGuid) -> Result<Vec<i64>, AppError> {
+        let alns = alignment::list_for_biosample(self.store.pool(), biosample_guid).await?;
+        if alns.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut counts: HashMap<Option<ReferenceBuild>, usize> = HashMap::new();
+        for a in &alns {
+            *counts.entry(canonical_build(&a.reference_build)).or_default() += 1;
+        }
+        let dominant = counts.into_iter().max_by_key(|(_, n)| *n).map(|(b, _)| b).unwrap_or(None);
+        Ok(alns
+            .into_iter()
+            .filter(|a| canonical_build(&a.reference_build) == dominant)
+            .map(|a| a.id)
+            .collect())
+    }
+
+    /// **Subject-level consensus** diploid genotype across the subject's same-build WGS alignments —
+    /// the joint genotype (opportunity #3). Per [`reconcile_site_genotypes`]: call each alignment's
+    /// variants (cached [`run_diploid_calls`]), union the SNV sites, force-genotype **every**
+    /// alignment at the union (so a site absent from one run is its real hom-ref / no-call), and vote
+    /// a depth-weighted 0/1/2 dosage per site. Returns the variant (het/hom-alt) consensus sites.
+    /// `contigs` limits the scan (None = all primary chromosomes). Heavy (a call pass + a force-call
+    /// pass per alignment) — an explicit export action; nothing is persisted.
+    pub async fn consensus_diploid_calls(
+        &self,
+        biosample_guid: SampleGuid,
+        contigs: Option<Vec<String>>,
+    ) -> Result<Vec<SiteGenotype>, AppError> {
+        let aln_ids = self.consensus_diploid_alignments(biosample_guid).await?;
+        if aln_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        // (bam, reference) per same-build alignment, resolved once.
+        let mut paths = Vec::new();
+        for id in &aln_ids {
+            paths.push((*id, self.alignment_bam_reference(*id).await?));
+        }
+
+        // 1–2. Call each alignment's variants and union the SNV sites (force-call is SNP-only).
+        let mut union: HashMap<(String, i64, String), navigator_analysis::caller::Site> = HashMap::new();
+        for (id, (bam, reference)) in &paths {
+            let clist = match &contigs {
+                Some(c) => c.clone(),
+                None => {
+                    let bam = bam.clone();
+                    let reference = reference.clone();
+                    tokio::task::spawn_blocking(move || caller::header_contig_names(&bam, Some(&reference)))
+                        .await
+                        .map_err(|e| AppError::Join(e.to_string()))??
+                        .into_iter()
+                        .filter(|c| is_primary_contig(c))
+                        .collect()
+                }
+            };
+            for contig in clist {
+                // Tolerate a contig absent from this alignment's header (heterogeneous inputs) —
+                // skip it for this source rather than aborting the whole consensus.
+                let Ok(variants) = self.run_diploid_calls(*id, contig).await else { continue };
+                for v in variants {
+                    if v.reference_allele.len() == 1 && v.alternate_allele.len() == 1 {
+                        union
+                            .entry((v.contig.clone(), v.position, v.alternate_allele.clone()))
+                            .or_insert(navigator_analysis::caller::Site {
+                                name: String::new(),
+                                contig: v.contig,
+                                position: v.position,
+                                reference_allele: v.reference_allele,
+                                alternate_allele: v.alternate_allele,
+                            });
+                    }
+                }
+            }
+        }
+        if union.is_empty() {
+            return Ok(Vec::new());
+        }
+        let sites: Vec<navigator_analysis::caller::Site> = union.into_values().collect();
+
+        // 3. Force-genotype every alignment at the union (each emits hom-ref / no-call too).
+        let mut per_aln: Vec<Vec<SiteGenotype>> = Vec::new();
+        for (_, (bam, reference)) in &paths {
+            let params = adaptive_haploid_params(bam, Some(reference));
+            let (bam, reference, sites) = (bam.clone(), reference.clone(), sites.clone());
+            let g = tokio::task::spawn_blocking(move || {
+                caller::genotype_sites_all_contigs(&bam, &sites, 2, &params, Some(&reference))
+            })
+            .await
+            .map_err(|e| AppError::Join(e.to_string()))??;
+            per_aln.push(g);
+        }
+
+        // 4. Vote per site → consensus. min_depth = 2: a run abstains only when essentially
+        // uncovered; depth-weighting lets deep runs dominate the rest.
+        Ok(caller::reconcile_site_genotypes(&per_aln, 2))
+    }
+
+    /// A **consensus** diploid VCF (VCFv4.2) for the subject — the joint genotype across same-build
+    /// alignments (see [`consensus_diploid_calls`]), sample column `consensus`. Heavy; the export
+    /// path runs it off the UI thread.
+    pub async fn consensus_diploid_vcf(&self, biosample_guid: SampleGuid) -> Result<String, AppError> {
+        let calls = self.consensus_diploid_calls(biosample_guid, None).await?;
+        Ok(navigator_analysis::vcf::write_diploid_vcf("consensus", &calls))
+    }
+
     /// Run de-novo calling on `contig` using the alignment's own stored paths.
     /// The alignment's BAM + a usable reference FASTA: the stored path, else resolved from the
     /// alignment's build via the gateway (cached, else downloaded). Errors only if no BAM is
@@ -3522,6 +3637,7 @@ impl App {
                 Ok(export::callable_bed(&per_contig))
             }
             ExportRequest::DiploidVcf(id) => self.diploid_vcf_genome(*id).await,
+            ExportRequest::ConsensusDiploidVcf(guid) => self.consensus_diploid_vcf(*guid).await,
         }
     }
 

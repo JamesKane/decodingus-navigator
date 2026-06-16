@@ -2092,7 +2092,14 @@ impl NavigatorApp {
                     card(ui, self.tr("card.mtSequences"), |ui| self.mtdna_section(ui, guid));
                 }
                 DetailTab::Autosomal => {
-                    card(ui, self.tr("card.autosomalConsensus"), |ui| self.autosomal_profile_section(ui, guid));
+                    card(ui, self.tr("card.autosomalConsensus"), |ui| {
+                        self.autosomal_profile_section(ui, guid);
+                        ui.add_space(6.0);
+                        ui.label(
+                            egui::RichText::new(self.tr("hint.consensusVcf")).weak().small(),
+                        );
+                        self.export_row(ui, &[navigator_app::ExportRequest::ConsensusDiploidVcf(guid)]);
+                    });
                 }
                 DetailTab::Ancestry => {
                     // Consensus is the source of truth: estimate from the subject's pooled autosomal

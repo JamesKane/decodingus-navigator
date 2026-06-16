@@ -284,6 +284,7 @@ hint.ancestryConsensus=del consenso combinado de todas las fuentes — primero c
 card.ancestryPerSource=Estimadores por fuente (avanzado)
 card.chromosomePainting=Pintado cromosómico (ascendencia local)
 hint.chromosomePainting=diploide: dos copias ordenadas por cromosoma (sin fase); en caché hasta que cambie el consenso
+hint.consensusVcf=Genotipo conjunto entre las alineaciones WGS del mismo ensamblaje del sujeto. Pesado — llama y fuerza-llama cada alineación en todo el genoma.
 card.ancestryModern=Poblaciones detalladas (modernas)
 card.ancestryAncient=Componentes de ascendencia antigua
 card.ancestryNmonte=Modelo de mezcla (G25 / nMonte)
