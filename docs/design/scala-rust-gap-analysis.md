@@ -5,6 +5,13 @@ A systematic pass over the legacy Scala/ScalaFX source (`src/main/scala/com/deco
 **capabilities present in Scala that are absent or incomplete in Rust**, grouped by subsystem and
 prioritized.
 
+> **Revised 2026-06-16.** Much of the original (2026-06-12) backlog has since landed. This revision
+> reconciles every section against the current tree + project memory, marks completed work with its
+> commit, and re-derives the priority summary from what genuinely remains. Net: §1a, §3, §5(P1),
+> §8a fully done; §2, §4, §6, §7, §8 substantially advanced. The standing big gap is **§1b STR
+> calling from sequence**; the freshest remaining slices are **import UX dialogs (§8)**, **analysis
+> checkpoint/resume (§6)**, and **sync conflict/PULL (§5 P2)**.
+
 ## Method & exclusions
 
 Six parallel sweeps (analysis, haplogroup/Y/STR, ancestry/IBD, workspace/sync, UI, refgenome),
@@ -14,183 +21,182 @@ then reality-checked against the tree. **Deliberately excluded** (not gaps — b
   (`CLAUDE.md`). So `GatkRunner`, `GatkToolProcessor`, GATK `HaplotypeCaller`/`Mutect2`/`LiftoverVcf`
   orchestration, `samtools faidx`/`flagstat` shelling, etc. are **not** counted as missing — the
   Rust caller/walkers/noodles replace them. Where a wrapper produced a real *output capability* the
-  Rust side lacks (e.g. diploid/indel calling, VCF liftover), that capability is listed below.
-- **Already ported** (per project memory): coverage+callable (+per-contig histograms), read
-  metrics, sex, SV, unified quality-metrics walker, haploid caller (force-call + de-novo SNP),
-  heteroplasmy, header probe, lab/instrument/library-stats inference, pipeline-sidecar fast-path
-  import, Y+mt haplogroup placement (parsimony guard, FTDNA+DecodingUs providers), **chip-raw-data
-  haplogroups** (23andMe/AncestryDNA), BISDNA Y-SNP import, ancestry (AF-likelihood / PCA-GMM /
-  nMonte / ADMIXTURE / local-ancestry painting — ~95%), refgenome retrieval+cache, Y/mt
-  rotation-aware liftover, masked-rCRS build. The **local** IBD math (segment detection, genetic
-  map, relationship estimation) is also ported.
+  Rust side lacked (diploid/indel calling, VCF liftover), that capability is tracked below.
+- **Already ported.** coverage+callable (+per-contig histograms, MAD + per-base exclusion
+  fractions), read metrics, sex, SV, the unified quality-metrics walker (parallel, CRAM zero-copy,
+  smooth bp-progress), the haploid caller, **diploid SNV+indel calling + whole-genome diploid VCF**,
+  **subject-level consensus joint diploid genotype** (force-call merge), heteroplasmy, header probe,
+  lab/instrument/library-stats inference, pipeline-sidecar fast-path import, **flagstat/Picard
+  metrics importers**, Y+mt haplogroup placement (parsimony guard, FTDNA+DecodingUs providers) +
+  **genome-level consensus placement**, chip-raw-data haplogroups (23andMe/AncestryDNA), BISDNA
+  Y-SNP import, **vendor VCF/mtFull-FASTA → variant import**, **chip → autosomal ancestry**, ancestry
+  (AF-likelihood / PCA-GMM / nMonte / ADMIXTURE / fine-admixture / local-ancestry painting — now
+  **consensus-driven** + diploid pair-state painting; federated **from the consensus**), refgenome
+  retrieval+cache, Y/mt rotation-aware liftover, masked-rCRS build, the **local** IBD math + chip
+  panel + genetic map + manifest verification, **genome-region service + ideogram tab**, **Y-region
+  quality modifiers**, **settings UI**, **report/TSV/HTML/BED exports**, **persistent sync outbox +
+  history**, **federated IBD device-key signing + encrypted exchange channel (X25519/AES-GCM)**.
 
-Status legend: **MISSING** = no Rust equivalent · **PARTIAL** = some behavior, notable holes.
+Status legend: **MISSING** = no Rust equivalent · **PARTIAL** = some behavior, notable holes · **DONE**.
 
 ---
 
-## 1. STR calling & reference — MISSING (largest clean gap)
+## 1. STR calling & reference
 
-The whole Y-STR pipeline *from sequence data* is absent. Only vendor-CSV parsing has landed
-(`strprofile`, the wide FTDNA/YSEQ layout) — i.e. we can read someone else's STR results but can't
-produce our own.
+### §1a STR reporting + panel classification — **DONE** (committed e5977cd)
+`strpanel.rs` ports `str-panels.conf` (FTDNA Y-12..Y-111 + YSEQ tiers, classify/badges, multi-copy
+order-independent match); `compare_profiles` conflict detection; `ystr_report_section` Y-DNA tab
+(By-Panel transposed grid + filterable All-Markers + Consensus). Validated on real FTDNA(→Y-111)/
+YSEQ(→Alpha) exports. *Remaining:* Big-Y Y-500/700 enumeration; Y-STR genetic distance / TMRCA /
+match ranking (→ §2 cross-subject).
+
+### §1b STR calling from BAM/CRAM — **MISSING** (largest clean gap)
 
 | Capability | Scala | Status |
 |---|---|---|
 | STR repeat-count **calling from BAM/CRAM** (CIGAR-aware span, stutter filtering, HIGH/MED/LOW tiers) | `analysis/StrCaller.scala` | MISSING |
 | STR reference gateway — HipSTR BED download + per-build liftover + cache | `refgenome/StrReferenceGateway.scala`, `StrReferenceCache.scala` | MISSING |
 | STR annotator — position → locus name/period (indexed BED, binary search) | `refgenome/StrAnnotator.scala` | MISSING |
-| STR panel config (FTDNA/YSEQ tiers, marketing-vs-actual counts, multi-copy markers, cumulative/exclusive) | `str/StrPanelConfig.scala` + `resources/str-panels.conf` | MISSING |
-| STR panel classification + cumulative-threshold matching (FTDNA Y-12⊂Y-25⊂… vs YSEQ non-cumulative) | `str/StrPanelService.scala` | PARTIAL (CSV parse only) |
-| STR marker comparison (Simple/MultiCopy/Complex value matching, conflict detect) | `str/StrMarkerComparator.scala` | MISSING |
-| **Y-STR reporting tables (FTDNA/YSEQ style)** — summary card (provider toggle, tier badges, conflict badge) + detail dialog (All-Markers searchable table + By-Panel grouped Y-12/25/37/67/111 view, conflict highlighting) | `ui/components/YStrSummaryPanel.scala`, `YStrDetailDialog.scala` | MISSING |
-| Y-STR genetic distance / TMRCA / match ranking | `yprofile/YProfileService.scala` | MISSING |
+| STR marker comparison (Simple/MultiCopy/Complex value matching) | `str/StrMarkerComparator.scala` | PARTIAL (panel compare done in §1a) |
 
-**Impact:** high — blocks native Y-STR profiling and STR-based matching for the WGS cohort. There is
-a `feature/str-calling` branch from the Scala era; this is a coherent, self-contained subsystem to
-port. The *caller* depends on the STR reference gateway (HipSTR BEDs, §7) landing first.
+> **Attempted 2026-06-12 → not vendor-grade; reverted.** A faithful length÷period port + a bundled
+> 24-locus catalog (GRCh38 + CHM13-lifted) fails: catalog coords are feature regions not tight tracts,
+> so length÷period is systematically offset (DYS389II 75 vs 29); only ~4/19 matched. Motif-detection
+> calibration also failed (lands on flank/homopolymer noise). Same wall the Scala caller hit (it was
+> experimental/display-only). **Needs a real STR genotyper (HipSTR/GangSTR-class) or §7's curated
+> tight-tract reference BED + FTDNA-convention mapping** — a dedicated subsystem, not a clean
+> increment. HiFi (~4×) keeps most loci LOW; value is highest for 20–30× short-read WGS.
 
-> **Attempted 2026-06-12 → not vendor-grade; reverted.** A faithful length÷period port (the Scala
-> algorithm) + a bundled 24-locus catalog (verified GRCh38 + CHM13 coords lifted via the Y chain)
-> was built and validated against James Kane's own FTDNA/YSEQ results on his GFX alignment. It
-> **fails**: the catalog coordinates are genomic *feature* regions, not tight repeat tracts, so
-> length÷period is systematically offset per marker (DYS389II 75 vs 29, DYS390 20 vs 24); only ~4/19
-> matched exactly. Calibrating by **motif-detection on the reference FASTA** (to find the true tract)
-> also failed — a naive longest-periodic-run lands on flank/homopolymer noise, not the STR. This is
-> the same wall the Scala app hit (its caller was experimental/display-only). **Vendor-grade Y-STR
-> calling needs a real STR genotyper (HipSTR/GangSTR-class) or §7's curated tight-tract reference
-> BED + an FTDNA-convention mapping** — a dedicated subsystem, not a clean increment. HiFi (~4×) depth
-> also keeps most loci LOW-confidence; the value is highest for 20–30× short-read WGS.
+## 2. Y-chromosome profile management (variant-level, multi-source) — **PARTIAL** (was MISSING)
 
-**Decoupled near-term win — STR reporting.** The FTDNA/YSEQ-style tables (summary card + the
-By-Panel grouped marker view) and the underlying panel config (`str-panels.conf`: tier definitions,
-marketing-vs-actual counts for multi-value markers like DYS385×2 / DYS464×4 / YCAII×2 / CDY×2,
-cumulative + exclusive-marker rules) render from **vendor-CSV data we already parse** (`strprofile`).
-They do **not** need the BAM caller or the STR reference gateway. So STR reporting + panel
-classification can land independently and immediately, giving users a real Y-STR view from their
-FTDNA/YSEQ exports while native calling is still pending.
-
-## 2. Y-chromosome profile management (variant-level, multi-source) — MISSING
-
-Distinct from haplogroup *placement* (done) and run-level haplogroup *reconciliation* (the
-`0010_reconciliation` migration, present). This is the per-variant, multi-source Y profile: combine
-Sanger/WGS/chip/STR observations of the same Y position, vote a consensus, track provenance/audit,
-detect concordance conflicts, persist as a first-class profile.
+The multi-source Y variant profile (combine WGS/chip/STR/private observations of the same position,
+quality-weighted consensus, provenance, conflict detection, persistence) **is now built**:
 
 | Capability | Scala | Status |
 |---|---|---|
-| Y-variant concordance / quality-weighted consensus (SNP + STR tiers, callable-state modifiers) | `yprofile/concordance/YVariantConcordance.scala` | MISSING |
-| Y-profile persistence (profile, sources, variant calls, novel variants) + write API | `yprofile/…`, `HaplogroupProcessor.populateYProfile` | MISSING (no store tables) |
-| Y-SNP profile comparison / FTDNA-Big-Y-style match list | `yprofile/YProfileService.scala` | MISSING |
-| Y-profile source-type weighting (method tiers × SNP/STR weights) | `yprofile/YProfileSourceType` | PARTIAL (enum sketched in `navigator-domain/variants.rs`) |
+| Y-variant concordance / quality-weighted consensus (callable-state + region modifiers) | `yprofile/concordance/YVariantConcordance.scala` | **DONE** — `navigator-domain/consensus.rs` (`reconcile`/`obs_weight`) + `yprofile.rs` adapter; weighted by SourceType × depth × mapq × callable × region modifier |
+| Y-profile persistence (profile, sources, variant calls, novel) | `HaplogroupProcessor.populateYProfile` | **DONE** — `consensus_profile` table (mig 0022), `build_y_profile`/`cached_y_profile`; private-Y union persisted |
+| Genome-level consensus **placement** (pool all sources, place once) | — | **DONE** (fd599d9) — `place_y_consensus`, one tree/coord, authoritative terminal |
+| Y-profile source-type weighting (method tiers × SNP/STR weights) | `yprofile/YProfileSourceType` | **DONE** — `SourceType::snp_weight` |
+| Y-SNP profile **comparison / FTDNA-Big-Y-style match list** (cross-subject) | `yprofile/YProfileService.scala` | **MISSING** — no shared-SNP / shared-novel match ranking between subjects |
+| Y-STR genetic distance / TMRCA / match ranking | `yprofile/YProfileService.scala` | **MISSING** |
 
-**Impact:** high — this is the backbone for serious Y research (multi-test integration, private
-variants, match attribution) and underpins much of the missing Y UI (§8). Large: ~13 Scala files +
-dialogs.
+**Remaining (medium):** cross-subject Y matching — shared-derived/shared-novel ranking, genetic
+distance / TMRCA. The single-subject profile backbone is complete; this is the *between-subjects*
+layer (relates to §4 federated matching + the AppView IBD hub).
 
-## 3. Vendor & mtDNA data import — PARTIAL/MISSING
-
-| Capability | Scala | Status |
-|---|---|---|
-| Vendor VCF import (FTDNA Big Y, YSEQ) with BED target regions + metadata tracking | `analysis/VcfCache.scala` (vendor ops) | MISSING |
-| mtDNA FASTA → variant extraction vs rCRS → haplogroup/VCF | `analysis/MtDnaFastaProcessor.scala` | PARTIAL (`mtdna.rs` validates FASTA shape only; no variant calling) |
-| Vendor mtDNA FASTA import (FTDNA mtFull, YSEQ) | `analysis/MtDnaFastaProcessor.scala` | MISSING |
-| Chip genotypes → ancestry (autosomal) | `analysis/ChipAncestryAdapter.scala` | MISSING (chip → *haplogroup* is done; chip → *ancestry* is not) |
-| Pre-computed metrics importers — samtools `flagstat`, Picard `CollectWgsMetrics`/`AlignmentSummaryMetrics` | `analysis/MetricsFileLoader.scala`, `FlagstatParser.scala` | MISSING (sidecar path covers samtools `coverage` + GATK `CallableLoci` only) |
-
-**Impact:** medium-high — many users arrive with vendor exports (Big Y VCF, mtFull FASTA) rather
-than BAMs; today those can't be ingested as variants.
-
-## 4. Federated IBD matching — MISSING (local math present)
-
-Only the *pure math* is ported (segment detection, genetic map, relationship estimation). The entire
-**federated matching protocol** is absent: ECDH (X25519) key exchange, AES-256-GCM payload
-encryption, Ed25519 attestations, the WebSocket relay client, the protocol state machine, and the
-consent/request/result storage + service.
+## 3. Vendor & mtDNA data import — **DONE** (committed; §3 complete per memory)
 
 | Capability | Scala | Status |
 |---|---|---|
-| IBD crypto (X25519 / AES-256-GCM / Ed25519) | `ibd/IbdCryptoService.scala` | MISSING |
-| Match protocol coordinator + state machine + relay client | `ibd/IbdMatchingCoordinator.scala`, `MatchingProtocolState.scala`, `IbdRelayClient.scala` | MISSING |
-| Attestation sign/verify + deterministic match-hash | `ibd/IbdAttestation.scala`, `MatchSummary.scala` | MISSING |
-| Consent / request / result storage + service | `repository/Match{Consent,Request,Result}Repository.scala`, `service/IbdMatchService.scala` | MISSING (no tables) |
-| Local refinements: ROH detection, HalfSibling category, HapMap genetic-map loader, compact binary encode | `ibd/PairwiseIbdDetector.scala`, `RelationshipEstimator.scala`, `GeneticMap.scala` | PARTIAL |
+| Vendor VCF import (FTDNA Big Y, YSEQ) + metadata/source tagging | `analysis/VcfCache.scala` | **DONE** (`##source=aengine` tagging; generic VCF → variant import) |
+| mtDNA FASTA → variants vs rCRS → haplogroup | `analysis/MtDnaFastaProcessor.scala` | **DONE** (`mtvariants::derive`; FASTA import on add) |
+| Vendor mtDNA FASTA import (FTDNA mtFull, YSEQ) | `analysis/MtDnaFastaProcessor.scala` | **DONE** |
+| Chip genotypes → autosomal ancestry | `analysis/ChipAncestryAdapter.scala` | **DONE** (3eb9a07; liftover GRCh37→CHM13 AIMs; ~99% EUR on real 23andMe) |
+| Pre-computed metrics importers — flagstat, Picard CollectWgsMetrics/AlignmentSummaryMetrics | `analysis/MetricsFileLoader.scala` | **DONE** (a92d29e) |
+| Vendor test-type ID from BAI coverage shape (Big Y / Y Elite enrichment) | — | **DONE** |
 
-**Architectural caveat:** the federated design was deliberately reworked toward an **AppView-mediated**
-model (see project memory: writes-only spec, relay cut, AppView is the IBD-suggestion hub). The Scala
-peer-to-peer crypto/relay stack should **not** be ported verbatim — re-derive the consent/request/
-result + attestation pieces against the current AppView design. The *local* refinements (ROH,
-HalfSibling, HapMap loader) are straight ports.
+**Remaining:** only the *import-UX dialogs* (multi-file / drag-drop / vendor-VCF/FASTA pickers) — the
+backend ingests all of these, but the GUI is single-file-add only → tracked under §8.
 
-## 5. Sync durability — MISSING
+## 4. Federated IBD matching — **PARTIAL** (Phase 1+2 built; was MISSING)
 
-`navigator-sync` has the publish engine + retry, but only in-memory. The Scala durability layer is
-absent.
+Re-derived against the **AppView-mediated** model (not the Scala P2P relay). Device-key identity +
+the encrypted edge-to-edge channel are in place.
+
+| Capability | Scala equiv | Status |
+|---|---|---|
+| Ed25519 device-key signing (published, verified via did:key) | — | **DONE** (a289f7a) `navigator-sync/device_key.rs` |
+| Encrypted channel (X25519 IK/EK + X3DH-lite → HKDF → AES-256-GCM Envelope) | `ibd/IbdCryptoService.scala` | **DONE** (df988c0) `navigator-sync/exchange.rs` + app `/exchange/*` driver |
+| Signed AppView `ibd_suggestions` / `ibd_introduce` + UI card | `IbdMatchingCoordinator.scala` | **DONE** (a289f7a) |
+| Local refinements: chip IBD panel, real genetic map, compare over panel | `PairwiseIbdDetector.scala` | **DONE** (533b6ef/02cdfb7); consensus-driven `compare_ibd_consensus` |
+| IBD **segment detection over the exchange** + attestation sign/verify | `IbdAttestation.scala` | **MISSING/deferred** (channel exists; the match-segment exchange + attest not wired) |
+| Consent / request / result storage + lifecycle | `Match{Consent,Request,Result}Repository.scala` | **MISSING** (no tables; AppView-side decision pending) |
+| ROH detection, HalfSibling category | `RelationshipEstimator.scala` | PARTIAL |
+
+**Remaining (medium-large):** the live two-peer exchange flow (segment exchange + attestation) and
+consent/request/result lifecycle — both gated on a running AppView + the PII-posture decision.
+
+## 5. Sync durability — **PARTIAL** (Phase 1 done; was MISSING)
 
 | Capability | Scala | Status |
 |---|---|---|
-| Persistent outbox/queue (survive restart/offline→online, batched, backoff-capped) | `repository/SyncQueueRepository.scala`, `sync/AsyncSyncService.scala` | MISSING |
-| Conflict detection + resolution state (local↔remote divergence, suggested strategy, snapshots) | `repository/SyncConflictRepository.scala`, `pds/PdsSyncValidation.scala` | MISSING |
-| Sync history / audit trail (direction, result, version/CID before-after) | `repository/SyncHistoryRepository.scala` | MISSING |
-| Source-file tracking by checksum (stable identity if path moves; analyzed-state) | `repository/SourceFileRepository.scala` | PARTIAL (deferred content-hash exists, no `source_file` table) |
-| Per-entity sync metadata (atUri/atCid, SyncStatus) columns | `repository/Repository.scala` | PARTIAL |
+| Persistent outbox (survive restart/offline, batched, backoff-capped) + drain | `SyncQueueRepository.scala`, `AsyncSyncService.scala` | **DONE** (7213269) `sync_outbox` (mig 0021) + background drain |
+| Sync history / audit trail | `SyncHistoryRepository.scala` | **DONE** (`sync_history`) |
+| Conflict detection + resolution state (local↔remote divergence, strategy, snapshots) | `SyncConflictRepository.scala`, `PdsSyncValidation.scala` | **MISSING** |
+| PULL (ingest own PDS records back; reconcile) | — | **MISSING** (publishes are write-only today) |
+| Source-file tracking by checksum (stable identity if path moves) | `SourceFileRepository.scala` | PARTIAL (deferred content-hash; no `source_file` table) |
+| Per-entity at-uri/at-cid columns | `Repository.scala` | PARTIAL (outbox carries at_uri; not per-entity) |
 
-**Impact:** medium — edit-offline-then-reconnect currently loses pending syncs; no "why did sync
-fail" visibility. Ties to the AppView design decision.
+**Remaining (medium):** conflict detection + PULL + the `source_file` table. Ties to the AppView design.
 
-## 6. Analysis caching/resume & report completeness — PARTIAL
-
-| Capability | Scala | Status |
-|---|---|---|
-| Multi-step checkpoint/resume (skip completed steps; BAM-mtime invalidation) | `analysis/AnalysisCheckpoint.scala`, `AnalysisCache.scala` | PARTIAL (artifact store caches per `algorithm_version`; no cross-step resume) |
-| Diploid / indel variant calling, whole-genome diploid VCF | `analysis/WholeGenomeVariantCaller.scala` | MISSING (caller is haploid SNP-only by design; indels/diploid are a real capability gap) |
-| WGS-metrics completeness — MAD coverage, exclusion fractions (`pctExcMapq/Dupe/Unpaired/Baseq/Overlap/Capped`) | `analysis/WgsMetricsProcessor.scala` | PARTIAL |
-| Report/exports — text/HTML/TSV (ancestry, metrics), callable-loci BED + SVG track | `analysis/*ReportWriter`, `BioVisualizationUtil.scala` | PARTIAL (JSON only) |
-
-## 7. refgenome breadth — PARTIAL
-
-Core retrieval/cache/liftover is done; the breadth pieces below are missing.
+## 6. Analysis caching/resume & report completeness — **PARTIAL**
 
 | Capability | Scala | Status |
 |---|---|---|
-| Genotype liftover (single-position SNP/STR lift, strand-flip + rev-comp) | `liftover/GenotypeLiftover.scala` | PARTIAL (haplo placement lifts via du-bio; no general batch API) |
-| VCF liftover orchestration (contig UCSC↔NCBI normalization, PAR filtering, REF/ALT swap recovery) | `liftover/LiftoverProcessor.scala` | MISSING |
-| Genome-region API + 2-layer cache (centromere/telomere/Y regions, versioned, offline fallback) | `refgenome/GenomeRegionService.scala` | MISSING |
-| Full Y-region annotation (PAR/XTR/STR/ampliconic/cytoband + quality modifiers + overlap consolidation) | `refgenome/YRegion{Gateway,Annotator}.scala` | PARTIAL (curated CHM13 masks: amplicon/palindrome/AZF only) |
-| Download checksum/integrity verification | `refgenome/ReferenceGateway.scala` | MISSING |
+| Diploid / indel variant calling, whole-genome diploid VCF | `WholeGenomeVariantCaller.scala` | **DONE** (598226a/50ecaa7/06fae27); + consensus joint genotype (98adfe5) |
+| Report/exports — TSV/HTML (ancestry, metrics), callable BED | `*ReportWriter` | **DONE** (ec3c3e1) |
+| WGS-metrics completeness — MAD coverage, per-base exclusion fractions | `WgsMetricsProcessor.scala` | PARTIAL→mostly (83ea6d0: MAD + pct_exc_mapq/baseq; dup/unpaired/overlap/capped deferred) |
+| **Multi-step checkpoint/resume** (skip completed steps; BAM-mtime invalidation) | `AnalysisCheckpoint.scala`, `AnalysisCache.scala` | **PARTIAL** (per-artifact `algorithm_version` cache; no cross-step resume / mtime invalidation) |
+| Multiallelic indel calling, left-normalization edge cases | — | PARTIAL (multiallelic SNV done; multiallelic indel deferred) |
+| Callable-loci **SVG track** + haplogroup-report CSV | `BioVisualizationUtil.scala` | MISSING (BED + tables done; no SVG) |
 
-## 8. UI — MISSING (much of it downstream of §1–4)
+**Remaining (small-medium):** cross-step checkpoint/resume + BAM-mtime invalidation (high value now
+that consensus/diploid passes are heavy — avoids recompute); SVG track; multiallelic indels.
 
-No charting/visualization beyond the new coverage histogram, and **no settings UI at all**.
+## 7. refgenome breadth — **PARTIAL**
 
 | Capability | Scala | Status |
 |---|---|---|
-| **Settings/preferences dialog** — tree-provider select, reference config, cache management | `ui/components/SettingsDialog.scala`, `ReferenceConfigDialog.scala` | MISSING (config is startup/env/CLI only) |
-| Batch import + project-bundle import + vendor VCF/FASTA import dialogs (multi-file, drag-drop, auto-detect) | `ui/components/{BatchImport,ProjectImport,ImportVendorVcf,ImportVendorFasta}Dialog.scala` | MISSING (single-file add only) |
-| Y-profile management/detail + Y-STR detail dialogs; Y-ideogram; source-reconciliation panel | `ui/components/YProfile*Dialog.scala`, `YChromosomeIdeogramPanel.scala`, `SourceReconciliationPanel.scala` | MISSING (downstream of §2) |
-| IBD match-detail browser — chromosome ideogram with segment painting; segment CSV export | `ui/components/MatchDetailDialog.scala`, `ChromosomeBrowserPanel.scala` | MISSING (downstream of §4) |
-| **Y-STR reporting tables (FTDNA/YSEQ style)** — see §1; summary card + By-Panel grouped table. Renders from already-parsed vendor CSV, no backend dependency | `ui/components/YStrSummaryPanel.scala`, `YStrDetailDialog.scala` | MISSING |
-| Haplogroup report dialog (scored candidates / lineage / SNPs / private), mtDNA-variants export, callable-loci result dialog | `ui/components/{HaplogroupReport,MtdnaVariants,CallableLociResult}Dialog.scala` | MISSING/PARTIAL |
-| Fingerprint-match / merge-sequence-runs dialogs | `ui/components/{FingerprintMatch,MergeSequenceRuns}Dialog.scala` | MISSING |
-| PCA scatter / chromosome-painting / ancestry-pie visualizations | `ui/…` | PARTIAL (donut + composition bar + map exist; no PCA scatter / painting track) |
+| Genome-region API + 2-layer cache (centromere/telomere/Y regions, offline fallback) | `refgenome/GenomeRegionService.scala` | **DONE** (99351de) + ideogram tab (5682976) |
+| Full Y-region annotation (PAR/ampliconic/palindrome + quality modifiers) | `refgenome/YRegion*.scala` | **PARTIAL→mostly** (4de7ff8: PAR/palindrome/amplicon/heterochromatin + modifier ladder; XTR/STR/centromere data still thin) |
+| Asset integrity (sha256 manifest verify) for ancestry/IBD assets | — | **DONE** (4ec09be) |
+| Genotype liftover (single-position SNP/STR, strand-flip + rev-comp) | `liftover/GenotypeLiftover.scala` | PARTIAL (haplo placement lifts via du-bio; no general batch API) |
+| **VCF liftover orchestration** (contig UCSC↔NCBI norm, PAR filtering, REF/ALT swap recovery) | `liftover/LiftoverProcessor.scala` | **MISSING** |
+| **Reference download checksum/integrity verification** | `refgenome/ReferenceGateway.scala` | **MISSING** (asset manifests verified; raw reference/chain downloads not) |
+
+**Remaining (low-medium):** VCF liftover orchestration + reference-download checksums (both mostly
+STR/VCF-workflow enablers).
+
+## 8. UI — **PARTIAL** (settings + ideogram + painting + consensus tabs landed)
+
+| Capability | Scala | Status |
+|---|---|---|
+| Settings/preferences dialog (tree-provider, reference config, cache) | `SettingsDialog.scala` | **DONE** (d221b34) |
+| Ideogram / cytoband visualization | `YChromosomeIdeogramPanel.scala` | **DONE** (5682976) karyotype ideogram tab |
+| Chromosome painting track (local ancestry) | — | **DONE** diploid two-copy painting (consensus-driven) |
+| Consensus-driven Y/mt/Autosomal/Ancestry/IBD tabs | — | **DONE** (this arc) |
+| **Batch / project-bundle / vendor-VCF / vendor-FASTA import dialogs** (multi-file, drag-drop, auto-detect) | `{BatchImport,ProjectImport,ImportVendorVcf,ImportVendorFasta}Dialog.scala` | **MISSING** (single-file add only; backends all exist → high ROI) |
+| Y-profile management/detail + source-reconciliation dialogs | `YProfile*Dialog.scala`, `SourceReconciliationPanel.scala` | PARTIAL (Y-profile card + consensus block exist; no dedicated management/audit dialog) |
+| IBD match-detail browser — chromosome ideogram with segment painting; segment CSV export | `MatchDetailDialog.scala`, `ChromosomeBrowserPanel.scala` | MISSING (downstream of §4) |
+| **PCA scatter** (PC1×PC2 projection plot) | `ui/…` | **MISSING** (loadings/projection computed; donut + composition + map exist; no scatter widget) |
+| Haplogroup report dialog (scored candidates / lineage / SNPs / private) | `HaplogroupReportDialog.scala` | PARTIAL (Y-DNA tab shows terminal + branches; no full scored-candidate dialog) |
+| Fingerprint-match / merge-sequence-runs dialogs | `{FingerprintMatch,MergeSequenceRuns}Dialog.scala` | MISSING |
+
+**Remaining:** the **import dialogs** are the standout — every backend (batch `import_project_dir`,
+vendor VCF, mtFull FASTA, sidecar/Picard) already exists, so this is pure UX surfacing of shipped
+capability. Plus PCA scatter (small), Y-profile management dialog, IBD match browser (→§4),
+fingerprint/merge dialogs.
 
 ---
 
-## Priority summary
+## Priority summary (2026-06-16)
 
 | # | Subsystem | Impact | Size | Notes |
 |---|---|---|---|---|
-| 1a | **STR reporting + panel classification** | Med-High | **Small** | **Near-term win** — FTDNA/YSEQ tables render from already-parsed vendor CSV (`strprofile`); no caller/reference dependency |
-| 1b | STR calling & reference (from BAM) | High | Large | Self-contained; needs HipSTR BED gateway first. `feature/str-calling` branch exists |
-| 2 | Y-profile (multi-source variant) management | High | Large | Backbone for Y research; unlocks much Y UI |
-| 3 | Vendor/mtDNA import (Big Y VCF, mtFull FASTA, flagstat/Picard) | Med-High | Medium | Many users arrive with vendor exports |
-| 8a | Settings/config UI | Med | Small | Cheapest high-visibility win — no settings dialog today |
-| 4 | Federated IBD matching | Med | Large | **Re-derive vs AppView design, don't port P2P crypto/relay** |
-| 5 | Sync durability (outbox/conflict/history) | Med | Medium | Ties to AppView design |
-| 6 | Diploid/indel calling, metrics & report completeness | Med | Medium | Indels/diploid are the real caller gap |
-| 7 | refgenome breadth (VCF liftover, region API, checksums) | Low-Med | Medium | Mostly STR/VCF-workflow enablers |
+| 8-import | **Import UX dialogs** (batch / drag-drop / vendor VCF+FASTA / auto-detect) | **High** | **Small-Med** | **Top near-term win** — all backends exist; pure GUI surfacing of shipped ingest |
+| 6-resume | **Analysis checkpoint/resume** + BAM-mtime invalidation | Med-High | Medium | High value now that consensus/diploid passes are heavy; avoids recompute |
+| 1b | STR calling from sequence (+ §7 STR reference) | High | **Large** | Biggest functional gap; needs a real STR genotyper or curated tight-tract BED — not a clean increment (reverted once) |
+| 2-match | Cross-subject Y matching (shared-SNP/novel ranking, genetic distance/TMRCA) | Med | Medium | Between-subjects layer atop the done single-subject Y profile; relates to §4 |
+| 5-p2 | Sync conflict detection + PULL + `source_file` table | Med | Medium | Ties to AppView design |
+| 4-live | IBD live exchange (segment exchange + attestation) + consent/request/result | Med | Large | Gated on running AppView + PII-posture decision; don't port P2P verbatim |
+| 7 | VCF liftover orchestration + reference-download checksums | Low-Med | Medium | STR/VCF-workflow enablers |
+| 8-misc | PCA scatter, Y-profile management dialog, IBD match browser, fingerprint/merge dialogs | Low-Med | Mixed | Several small; IBD browser downstream of §4 |
 
-**Cheapest meaningful wins:** §8a settings/config UI and §1a STR reporting tables (both small, high
-visibility, no backend dependency — STR reporting rides the vendor CSV we already parse).
-**Biggest coherent feature:** §1b STR calling (+ §7 STR reference) — a clean, self-contained subsystem.
-**Verify-before-building:** §4 IBD and §5 sync must be re-scoped against the current AppView-mediated
-architecture, not ported verbatim from the Scala peer-to-peer design.
+**Cheapest meaningful win:** **import UX dialogs (§8-import)** — high visibility, no backend risk,
+exposes a lot of already-shipped ingest capability.
+**Highest-leverage infrastructure:** **analysis checkpoint/resume (§6-resume)** — directly improves
+the now-heavy consensus/diploid workflows.
+**Biggest coherent feature:** **§1b STR calling** — still the standout functional gap, still hard.
+**Verify-before-building:** §4 (IBD live) and §5-p2 (sync conflict/PULL) must be scoped against the
+current AppView-mediated architecture, not ported verbatim.
