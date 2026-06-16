@@ -2339,6 +2339,63 @@ impl App {
         self.load_analysis(alignment_id, "sv", "1").await
     }
 
+    /// The HipSTR-format STR reference BED for `reference_build`, if available: the explicit
+    /// `NAVIGATOR_STR_REFERENCE` path (env override), else `~/.decodingus/str/{build}.hipstr_reference.bed.gz`.
+    /// `None` → the caller surfaces a "configure the STR reference" error.
+    fn str_reference_path(reference_build: &str) -> Option<PathBuf> {
+        if let Ok(p) = std::env::var("NAVIGATOR_STR_REFERENCE") {
+            let p = PathBuf::from(p);
+            return p.exists().then_some(p);
+        }
+        let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+        let p = PathBuf::from(home)
+            .join(".decodingus")
+            .join("str")
+            .join(format!("{reference_build}.hipstr_reference.bed.gz"));
+        p.exists().then_some(p)
+    }
+
+    /// Genotype short tandem repeats on `contig` from the alignment, via the enclosing-read caller
+    /// over the HipSTR reference tracts (haploid for chrY/chrM, diploid elsewhere). Persisted as a
+    /// `str:{contig}` artifact (so it's cached + source-invalidated like other analyses). Errors if
+    /// no STR reference is configured for the alignment's build (the tracts are build-specific —
+    /// CHM13/GRCh37 need their own reference or liftover, not yet wired).
+    pub async fn run_str_calls(&self, alignment_id: i64, contig: String) -> Result<Vec<navigator_analysis::strcaller::StrGenotype>, AppError> {
+        let kind = format!("str:{contig}");
+        if let Some(c) = self.load_analysis(alignment_id, &kind, "str-1").await? {
+            return Ok(c);
+        }
+        let aln = alignment::get(self.store.pool(), alignment_id)
+            .await?
+            .ok_or_else(|| AppError::Store(StoreError::NotFound(format!("alignment {alignment_id}"))))?;
+        let build = aln.reference_build.clone();
+        let bed = Self::str_reference_path(&build).ok_or_else(|| {
+            AppError::Import(format!(
+                "no STR reference for build {build} — set NAVIGATOR_STR_REFERENCE to a HipSTR BED, \
+                 or place it at ~/.decodingus/str/{build}.hipstr_reference.bed.gz"
+            ))
+        })?;
+        // Region queries need the reference only for CRAM; use the stored paths directly (don't
+        // trigger a gateway reference download for a BAM).
+        let bam = PathBuf::from(aln.bam_path.clone().ok_or(AppError::MissingPaths(alignment_id))?);
+        let reference = aln.reference_path.clone().map(PathBuf::from);
+        // chrY / chrM are haploid (one allele); autosomes + chrX (in a female) are diploid. We
+        // genotype chrY/chrM haploid and everything else diploid — sex-aware chrX is a refinement.
+        let ploidy: u8 = {
+            let c = contig.strip_prefix("chr").unwrap_or(&contig).to_ascii_uppercase();
+            if c == "Y" || c == "M" || c == "MT" { 1 } else { 2 }
+        };
+        let params = navigator_analysis::strcaller::StrCallerParams::default();
+        let genos = tokio::task::spawn_blocking(move || {
+            let loci = navigator_analysis::strref::load_hipstr_contig(&bed, &contig, 2)?;
+            navigator_analysis::strcaller::genotype_str_loci(&bam, &contig, &loci, ploidy, &params, reference.as_deref())
+        })
+        .await
+        .map_err(|e| AppError::Join(e.to_string()))??;
+        self.save_analysis(alignment_id, &kind, "str-1", &genos).await?;
+        Ok(genos)
+    }
+
     /// The alignment's BAM (required) + reference (optional; required only for CRAM).
     async fn alignment_paths(&self, alignment_id: i64) -> Result<(PathBuf, Option<PathBuf>), AppError> {
         let aln = alignment::get(self.store.pool(), alignment_id)

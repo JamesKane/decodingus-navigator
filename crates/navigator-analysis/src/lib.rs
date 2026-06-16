@@ -33,6 +33,8 @@ pub mod realign;
 pub mod scan;
 pub mod sex;
 pub mod sidecar;
+pub mod strcaller;
+pub mod strref;
 pub mod sv;
 pub mod testtype;
 pub mod unified;
