@@ -61,10 +61,17 @@ Native STR calling now exists via the **enclosing-read** model (HipSTR/GangSTR),
 | STR reference **gateway** — download + per-build liftover + cache | `refgenome/StrReferenceGateway.scala`, `StrReferenceCache.scala` | **MISSING** — currently `NAVIGATOR_STR_REFERENCE` / `~/.decodingus/str/{build}.hipstr_reference.bed.gz`; no download/liftover (GRCh38-only; CHM13/GRCh37 need their own ref) |
 | STR marker comparison (Simple/MultiCopy/Complex value matching) | `str/StrMarkerComparator.scala` | PARTIAL (panel compare done in §1a) |
 
-**Remaining (the vendor-grade bridge):** the **FTDNA-convention DYS-name mapping** (HipSTR coordinate
-locus → `DYS###`, nested DYS389I/II, multi-copy DYS385/DYS464/YCAII/CDY) + wiring the called counts
-into the §1a By-Panel report; a download/cache gateway + CHM13/GRCh37 reference (or liftover); UI
-surfacing. The caller itself (the hard, twice-attempted part) is done and validated.
+**Remaining (the vendor-grade bridge) — researched + validated, TABLED pending corpus on NAS:** the
+DYS→coordinate mapping turned out to be **free** — the HipSTR BED already names ~206 chrY DYS markers
+(`strref` parses the name). Validated against a real Big Y kit (FTDNA 27520, hg38): the caller
+recovers ~100 single-copy markers, **59/102 exact** vs FTDNA; the rest are small fixed convention
+offsets (DYS19 −1, DYS438 +2…) or large tract-mismatches to exclude (Y-GATA-H4, DYS484…). What's
+left: a **corpus-calibrated offset table** (offsets are conventions only if constant across samples —
+needs ~50 Big Y kits, not n=1), then the convention layer (name-normalize + single-copy offset +
+multi-copy aggregation + DYS389 nesting) + §1a By-Panel report join + UI. Multi-copy/palindromic
+(DYS385/DYS464/CDY) mostly not callable by the enclosing-read method (tracts exceed read length).
+Plus a download/cache gateway + CHM13/GRCh37 ref or liftover. **Blocked on:** moving the few-hundred
+Big Y corpus to the NAS. (Resume plan in project memory `str-caller`.)
 
 > **History:** a 2026-06-12 length÷period port over *feature regions* (a bundled 24-locus catalog)
 > was reverted — feature coords aren't tight tracts, so it was systematically offset. **Resolved
