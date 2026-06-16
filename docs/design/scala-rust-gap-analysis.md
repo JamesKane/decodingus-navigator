@@ -58,7 +58,7 @@ Native STR calling now exists via the **enclosing-read** model (HipSTR/GangSTR),
 |---|---|---|
 | STR repeat-count **calling from BAM/CRAM** (CIGAR-aware span, stutter model, HIGH/MED/LOW tiers) | `analysis/StrCaller.scala` | **DONE** — `strcaller.rs` enclosing-read genotyper (per-read count off the CIGAR, geometric stutter ML, haploid chrY / diploid elsewhere). Validated on GRCh38 chrY (4581 genotypes, ref loci measure ref_copies exactly) |
 | STR reference parse — HipSTR BED → tract loci (period, ref_copies, motif) | `refgenome/StrAnnotator.scala` | **DONE** — `strref.rs` (end-inclusive tracts; per-contig + min-period filter) |
-| STR reference **gateway** — download + per-build liftover + cache | `refgenome/StrReferenceGateway.scala`, `StrReferenceCache.scala` | **MISSING** — currently `NAVIGATOR_STR_REFERENCE` / `~/.decodingus/str/{build}.hipstr_reference.bed.gz`; no download/liftover (GRCh38-only; CHM13/GRCh37 need their own ref) |
+| STR reference **gateway** — download + per-build liftover + cache | `refgenome/StrReferenceGateway.scala`, `StrReferenceCache.scala` | **PARTIAL** — cross-build **liftover DONE** (b9a7eed: `ReferenceGateway::lift_hipstr_bed`; GRCh38→CHM13 chrY validated on a real CHM13 CRAM, offsets build-independent); reads via `NAVIGATOR_STR_REFERENCE` / `~/.decodingus/str/{build}.hipstr_reference.bed.gz`. *Remaining:* auto-download of the GRCh38 HipSTR BED |
 | STR marker comparison (Simple/MultiCopy/Complex value matching) | `str/StrMarkerComparator.scala` | PARTIAL (panel compare done in §1a) |
 
 **Remaining (the vendor-grade bridge) — researched + validated, TABLED pending corpus on NAS:** the
@@ -199,7 +199,7 @@ fingerprint/merge dialogs.
 | ~~8-import~~ | ~~Import UX dialogs~~ | — | — | **DONE 59b5696** — multi-file + folder Add Data, drag-drop, auto-detect, summary modal |
 | ~~6-resume~~ | ~~Analysis checkpoint/resume~~ | — | — | **DONE 192a939** — source-sig invalidation + cache-first SV/denovo |
 | 1b-caller | ~~STR calling from sequence~~ | — | — | **DONE 986e00b** — enclosing-read genotyper + HipSTR-reference parse, validated on GRCh38 chrY |
-| 1b-vendor | STR vendor bridge — convention layer + concordance | High | — | **CORE DONE 5fc6641** — corpus-calibrated (14 Big Y kits) FTDNA offset table + `str_concordance`; 34/34 calibrated markers agree on James's chrY. *Remaining:* §1a By-Panel **UI** rendering, multi-copy aggregation, ref gateway/non-GRCh38 |
+| 1b-vendor | STR vendor bridge — convention layer + concordance + CHM13 ref | High | — | **CORE DONE** (5fc6641 convention layer; b9a7eed cross-build lift). 34/34 calibrated markers agree on James's GRCh38 chrY; CHM13-lifted ref validated on his CHM13 CRAM (49 markers, offsets build-independent). *Remaining:* §1a By-Panel **UI**, multi-copy aggregation, widen offset table with the ~300-kit CHM13 corpus + harness QC, auto-download |
 | 2-match | Cross-subject Y matching (shared-SNP/novel ranking, genetic distance/TMRCA) | Med | Medium | Between-subjects layer atop the done single-subject Y profile; relates to §4 |
 | 5-p2 | Sync conflict detection + PULL + `source_file` table | Med | Medium | Ties to AppView design |
 | 4-live | IBD live exchange (segment exchange + attestation) + consent/request/result | Med | Large | Gated on running AppView + PII-posture decision; don't port P2P verbatim |
