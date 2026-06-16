@@ -367,6 +367,12 @@ pub struct NavigatorApp {
     y_profile: Option<YProfile>,
     /// Y-variant profile status filter (None = all).
     y_profile_filter: Option<YVariantStatus>,
+    /// Text search across the variant/SNP tables (by SNP name / site), per table.
+    y_profile_query: String,
+    mt_profile_query: String,
+    auto_profile_query: String,
+    private_y_query: String,
+    str_seq_query: String,
     /// True while the (expensive) Y-variant profile is being built.
     y_profile_loading: bool,
     /// The selected subject's multi-source mtDNA consensus profile.
@@ -1125,6 +1131,11 @@ impl NavigatorApp {
             donor_private_y: None,
             y_profile: None,
             y_profile_filter: None,
+            y_profile_query: String::new(),
+            mt_profile_query: String::new(),
+            auto_profile_query: String::new(),
+            private_y_query: String::new(),
+            str_seq_query: String::new(),
             y_profile_loading: false,
             mt_profile: None,
             mt_profile_filter: None,
@@ -1812,6 +1823,11 @@ impl NavigatorApp {
         self.consensus_mt = None;
         self.str_concordance = None;
         self.str_running = false;
+        self.y_profile_query.clear();
+        self.mt_profile_query.clear();
+        self.auto_profile_query.clear();
+        self.private_y_query.clear();
+        self.str_seq_query.clear();
         self.coverage_by_aln.clear();
         self.audit_y.clear();
         self.audit_mt.clear();
@@ -3367,6 +3383,17 @@ impl NavigatorApp {
             ui.label(egui::RichText::new(self.tr("hint.ystrSequence")).weak().small());
         });
 
+        let have = matches!(&self.str_concordance, Some((g, _, _)) if *g == guid);
+        if have {
+            ui.horizontal(|ui| {
+                ui.add(egui::TextEdit::singleline(&mut self.str_seq_query).hint_text("filter marker").desired_width(140.0));
+                if !self.str_seq_query.is_empty() && ui.small_button("✕").clicked() {
+                    self.str_seq_query.clear();
+                }
+            });
+        }
+        let q = self.str_seq_query.to_ascii_lowercase();
+
         let Some((g, aln, rows)) = &self.str_concordance else { return };
         if *g != guid {
             return;
@@ -3381,13 +3408,17 @@ impl NavigatorApp {
                 .small(),
         );
         ui.add_space(4.0);
-        egui::ScrollArea::vertical().max_height(360.0).show(ui, |ui| {
+        egui::ScrollArea::vertical().max_height(360.0).id_salt(("ystr_seq", guid)).auto_shrink([false, false]).show(ui, |ui| {
             egui::Grid::new(("ystr_seq_grid", guid)).num_columns(4).striped(true).spacing([14.0, 2.0]).show(ui, |ui| {
                 for h in ["Marker", "Called", "Vendor", ""] {
                     ui.label(egui::RichText::new(h).strong().small());
                 }
                 ui.end_row();
-                for r in rows.iter().filter(|r| r.called.is_some() || r.imported.is_some()) {
+                for r in rows
+                    .iter()
+                    .filter(|r| r.called.is_some() || r.imported.is_some())
+                    .filter(|r| q.is_empty() || r.marker.to_ascii_lowercase().contains(&q))
+                {
                     ui.label(&r.marker);
                     // Colour the called value by calibration status.
                     let (txt, col) = match (r.called, r.status.as_str()) {
@@ -3597,8 +3628,10 @@ impl NavigatorApp {
             return;
         };
         let mut filter = self.y_profile_filter;
-        draw_consensus_profile(ui, profile, &mut filter, "SNP", "Y variants", "y_variant_profile");
+        let mut query = std::mem::take(&mut self.y_profile_query);
+        draw_consensus_profile(ui, profile, &mut filter, &mut query, "SNP", "Y variants", "y_variant_profile");
         self.y_profile_filter = filter;
+        self.y_profile_query = query;
     }
 
     /// Multi-source mtDNA consensus profile: per-mutation concordance across the subject's mt
@@ -3625,8 +3658,10 @@ impl NavigatorApp {
             return;
         };
         let mut filter = self.mt_profile_filter;
-        draw_consensus_profile(ui, profile, &mut filter, "Mutation", "mtDNA mutations", "mt_variant_profile");
+        let mut query = std::mem::take(&mut self.mt_profile_query);
+        draw_consensus_profile(ui, profile, &mut filter, &mut query, "Mutation", "mtDNA mutations", "mt_variant_profile");
         self.mt_profile_filter = filter;
+        self.mt_profile_query = query;
     }
 
     /// Multi-source autosomal (diploid 0/1/2) consensus over the canonical IBD-panel sites. Build/
@@ -3652,8 +3687,10 @@ impl NavigatorApp {
             return;
         };
         let mut filter = self.auto_profile_filter;
-        draw_diploid_profile(ui, profile, &mut filter, "autosomal_profile");
+        let mut query = std::mem::take(&mut self.auto_profile_query);
+        draw_diploid_profile(ui, profile, &mut filter, &mut query, "autosomal_profile");
         self.auto_profile_filter = filter;
+        self.auto_profile_query = query;
     }
 
     /// Consensus dashboard (Overview): the subject's source-of-truth at a glance — consensus Y/mt
@@ -3753,36 +3790,70 @@ impl NavigatorApp {
 
     /// Donor-level private-Y union (Phase 3): off-backbone calls pooled + deduped across the
     /// subject's Y-bearing sources.
-    fn donor_private_y_section(&self, ui: &mut egui::Ui) {
-        let Some(bucket) = &self.donor_private_y else {
+    fn donor_private_y_section(&mut self, ui: &mut egui::Ui) {
+        if self.donor_private_y.is_none() {
             ui.label(egui::RichText::new("No private-Y calls across sources yet — run \"Find private Y variants\".").weak());
             return;
-        };
-        ui.label(format!(
-            "{} novel + {} off-path  (union across sources, terminal {})",
-            bucket.novel(),
-            bucket.off_path(),
-            bucket.terminal
-        ));
-        egui::Grid::new("donor_privy").striped(true).num_columns(4).show(ui, |ui| {
-            for h in ["table.position", "table.change", "table.depth", "table.class"] {
-                ui.strong(self.tr(h));
-            }
-            ui.end_row();
-            for v in bucket.variants.iter().take(500) {
-                ui.label(v.position.to_string());
-                ui.label(format!("{}>{}", v.reference, v.alternate));
-                ui.label(v.depth.to_string());
-                match &v.class {
-                    PrivateClass::Novel => ui.colored_label(egui::Color32::from_rgb(60, 160, 60), "novel"),
-                    PrivateClass::OffPathKnown(name) => ui.label(format!("off-path: {name}")),
-                };
-                ui.end_row();
+        }
+        let (pos_h, chg_h, dep_h, cls_h) =
+            (self.tr("table.position"), self.tr("table.change"), self.tr("table.depth"), self.tr("table.class"));
+        if let Some(b) = &self.donor_private_y {
+            ui.label(format!("{} novel + {} off-path  (union across sources, terminal {})", b.novel(), b.off_path(), b.terminal));
+        }
+        ui.horizontal(|ui| {
+            ui.add(egui::TextEdit::singleline(&mut self.private_y_query).hint_text("filter pos / name").desired_width(160.0));
+            if !self.private_y_query.is_empty() && ui.small_button("✕").clicked() {
+                self.private_y_query.clear();
             }
         });
-        if bucket.variants.len() > 500 {
-            ui.label(format!("…and {} more", bucket.variants.len() - 500));
-        }
+        let q = self.private_y_query.to_ascii_lowercase();
+        let bucket = self.donor_private_y.as_ref().unwrap();
+        // Filter to matching indices (position or off-path name / "novel"), then virtualize.
+        let idx: Vec<usize> = bucket
+            .variants
+            .iter()
+            .enumerate()
+            .filter(|(_, v)| {
+                q.is_empty()
+                    || v.position.to_string().contains(&q)
+                    || match &v.class {
+                        PrivateClass::OffPathKnown(n) => n.to_ascii_lowercase().contains(&q),
+                        PrivateClass::Novel => "novel".contains(q.as_str()),
+                    }
+            })
+            .map(|(i, _)| i)
+            .collect();
+        ui.label(egui::RichText::new(format!("{} shown", idx.len())).weak().small());
+
+        const W_POS: f32 = 110.0;
+        const W_CHG: f32 = 80.0;
+        const W_DEP: f32 = 60.0;
+        let row_h = ui.text_style_height(&egui::TextStyle::Body) + 4.0;
+        ui.horizontal(|ui| {
+            ui.add_sized([W_POS, row_h], egui::Label::new(egui::RichText::new(pos_h).strong()));
+            ui.add_sized([W_CHG, row_h], egui::Label::new(egui::RichText::new(chg_h).strong()));
+            ui.add_sized([W_DEP, row_h], egui::Label::new(egui::RichText::new(dep_h).strong()));
+            ui.label(egui::RichText::new(cls_h).strong());
+        });
+        egui::ScrollArea::vertical().max_height(320.0).id_salt("donor_privy").auto_shrink([false, false]).show_rows(
+            ui,
+            row_h,
+            idx.len(),
+            |ui, range| {
+                for k in range {
+                    let v = &bucket.variants[idx[k]];
+                    ui.horizontal(|ui| {
+                        ui.add_sized([W_POS, row_h], egui::Label::new(v.position.to_string()));
+                        ui.add_sized([W_CHG, row_h], egui::Label::new(format!("{}>{}", v.reference, v.alternate)));
+                        ui.add_sized([W_DEP, row_h], egui::Label::new(v.depth.to_string()));
+                        match &v.class {
+                            PrivateClass::Novel => ui.colored_label(egui::Color32::from_rgb(60, 160, 60), "novel"),
+                            PrivateClass::OffPathKnown(name) => ui.label(format!("off-path: {name}")),
+                        };
+                    });
+                }
+            },
+        );
     }
 
     fn str_section(&mut self, ui: &mut egui::Ui, guid: SampleGuid) {
@@ -5713,6 +5784,7 @@ fn draw_consensus_profile(
     ui: &mut egui::Ui,
     profile: &navigator_app::ConsensusProfile,
     filter: &mut Option<YVariantStatus>,
+    query: &mut String,
     variant_col: &str,
     kind: &str,
     id_salt: &str,
@@ -5743,14 +5815,19 @@ fn draw_consensus_profile(
         ui.selectable_value(filter, Some(YVariantStatus::Conflict), "Conflicts");
         ui.selectable_value(filter, Some(YVariantStatus::Novel), "Novel");
         ui.selectable_value(filter, Some(YVariantStatus::Confirmed), "Confirmed");
+        ui.add(egui::TextEdit::singleline(query).hint_text("filter SNP / pos").desired_width(140.0));
+        if !query.is_empty() && ui.small_button("✕").clicked() {
+            query.clear();
+        }
     });
+    let q = query.to_ascii_lowercase();
 
     let state_label = |st: YState| match st {
         YState::Derived => "derived",
         YState::Ancestral => "ancestral",
         YState::NoCall => "no-call",
     };
-    egui::ScrollArea::vertical().max_height(320.0).id_salt(id_salt).show(ui, |ui| {
+    egui::ScrollArea::vertical().max_height(320.0).id_salt(id_salt).auto_shrink([false, false]).show(ui, |ui| {
         egui::Grid::new(format!("{id_salt}_grid")).striped(true).num_columns(5).show(ui, |ui| {
             for h in [variant_col, "Pos", "State", "Status", "Sources"] {
                 ui.strong(h);
@@ -5758,6 +5835,9 @@ fn draw_consensus_profile(
             ui.end_row();
             for v in &profile.variants {
                 if filter.is_some_and(|f| v.status != f) {
+                    continue;
+                }
+                if !q.is_empty() && !v.name.to_ascii_lowercase().contains(&q) && !v.position.to_string().contains(&q) {
                     continue;
                 }
                 let conflict = v.status == YVariantStatus::Conflict;
@@ -5802,7 +5882,7 @@ fn draw_consensus_profile(
 /// Renderer for the autosomal diploid consensus profile — the 0/1/2 sibling of
 /// [`draw_consensus_profile`]. Header (confirmed/conflict/single + confidence), a status filter, and a
 /// per-site grid `Site (rsID) | GT (0/0,0/1,1/1) | Status | Sources (per-source dosage)`.
-fn draw_diploid_profile(ui: &mut egui::Ui, profile: &navigator_app::DiploidProfile, filter: &mut Option<YVariantStatus>, id_salt: &str) {
+fn draw_diploid_profile(ui: &mut egui::Ui, profile: &navigator_app::DiploidProfile, filter: &mut Option<YVariantStatus>, query: &mut String, id_salt: &str) {
     if profile.variants.is_empty() {
         ui.label(egui::RichText::new("No autosomal sites across sources.").weak());
         return;
@@ -5823,7 +5903,15 @@ fn draw_diploid_profile(ui: &mut egui::Ui, profile: &navigator_app::DiploidProfi
         ui.selectable_value(filter, None, "All");
         ui.selectable_value(filter, Some(YVariantStatus::Conflict), "Conflicts");
         ui.selectable_value(filter, Some(YVariantStatus::Confirmed), "Confirmed");
+        ui.add(egui::TextEdit::singleline(query).hint_text("filter rsID / site").desired_width(140.0));
+        if !query.is_empty() && ui.small_button("✕").clicked() {
+            query.clear();
+        }
     });
+    let q = query.to_ascii_lowercase();
+    let matches = |v: &navigator_app::DiploidVariant| {
+        q.is_empty() || v.name.to_ascii_lowercase().contains(&q) || format!("{}:{}", v.contig, v.position).contains(&q)
+    };
 
     // Dosage 0/1/2 → diploid genotype string; -1 = no-call.
     let gt = |d: i8| match d {
@@ -5873,24 +5961,28 @@ fn draw_diploid_profile(ui: &mut egui::Ui, profile: &navigator_app::DiploidProfi
         });
     };
     let area = egui::ScrollArea::vertical().max_height(360.0).id_salt(id_salt).auto_shrink([false, false]);
-    match *filter {
-        None => {
-            area.show_rows(ui, row_h, profile.variants.len(), |ui, range| {
-                for i in range {
-                    render_row(ui, &profile.variants[i]);
-                }
-            });
-        }
-        Some(f) => {
-            // Collect matching indices once. The filtered sets the user picks (conflicts, confirmed)
-            // are far smaller than the full panel, so this avoids a 1.2M-element alloc for "All".
-            let idx: Vec<usize> = profile.variants.iter().enumerate().filter(|(_, v)| v.status == f).map(|(i, _)| i).collect();
-            area.show_rows(ui, row_h, idx.len(), |ui, range| {
-                for k in range {
-                    render_row(ui, &profile.variants[idx[k]]);
-                }
-            });
-        }
+    if filter.is_none() && q.is_empty() {
+        // Fast path: no filtering → virtualize directly over the full (1.2M-site) panel.
+        area.show_rows(ui, row_h, profile.variants.len(), |ui, range| {
+            for i in range {
+                render_row(ui, &profile.variants[i]);
+            }
+        });
+    } else {
+        // Collect matching indices once (the picked subset is far smaller than the full panel, so
+        // this avoids a 1.2M-element alloc for the unfiltered case above).
+        let idx: Vec<usize> = profile
+            .variants
+            .iter()
+            .enumerate()
+            .filter(|(_, v)| filter.map_or(true, |f| v.status == f) && matches(v))
+            .map(|(i, _)| i)
+            .collect();
+        area.show_rows(ui, row_h, idx.len(), |ui, range| {
+            for k in range {
+                render_row(ui, &profile.variants[idx[k]]);
+            }
+        });
     }
 }
 
