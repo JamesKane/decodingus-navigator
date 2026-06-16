@@ -11,6 +11,7 @@ use navigator_app::{
     Coverage, DenovoCall, DnaType, HaploAssignment, HeteroplasmySite, IbdComparison, IbdSuggestion,
     IdentityVerification, PanelGenotype, PrivateBucket, PrivateClass, ProjectOverview,
     AppSettings, BatchImportSummary, MtRegion, MtVariant, ProjectSampleReport, ReadMetrics, ReconciledVariant, RefBuildStatus,
+    StrConcordanceRow,
     SexInferenceResult, SourceType, SuperPopulationSummary, SvAnalysisResult, VariantStatus,
     VerificationStatus, YProfile, YState, YVariantStatus,
 };
@@ -275,6 +276,10 @@ pub struct NavigatorApp {
     confirm_delete: Option<SampleGuid>,
     /// The last batch-import summary, shown in a modal until dismissed.
     batch_import: Option<BatchImportSummary>,
+    /// Y-STR-from-sequence concordance for the selected subject: `(guid, source alignment, rows)`.
+    str_concordance: Option<(SampleGuid, i64, Vec<StrConcordanceRow>)>,
+    /// Whether a Y-STR-from-sequence call is in flight (the heavy first pass).
+    str_running: bool,
     /// Data-source row pending delete confirmation (Some ⇒ the confirm dialog is shown).
     confirm_data_delete: Option<DataDelete>,
     /// Subject being assigned to a project: (subject, selected project or None). Some ⇒ picker shown.
@@ -1063,6 +1068,8 @@ impl NavigatorApp {
             edit_subject: None,
             confirm_delete: None,
             batch_import: None,
+            str_concordance: None,
+            str_running: false,
             confirm_data_delete: None,
             assign_project: None,
             edit_project: None,
@@ -1491,6 +1498,13 @@ impl NavigatorApp {
                         let _ = self.tx.send(Command::LoadMtdna(biosample_guid));
                     }
                 }
+                Event::StrConcordance { biosample_guid, alignment_id, rows } => {
+                    self.str_running = false;
+                    let calls = rows.iter().filter(|r| r.called.is_some()).count();
+                    let agree = rows.iter().filter(|r| r.agree).count();
+                    self.status = format!("Y-STR from sequence: {calls} markers called, {agree} agree with vendor");
+                    self.str_concordance = Some((biosample_guid, alignment_id, rows));
+                }
                 Event::DefaultAlignment { run_id, alignment_id } => {
                     // Only auto-select if the user hasn't already chosen an alignment.
                     if self.selected_alignment.is_none() {
@@ -1796,6 +1810,8 @@ impl NavigatorApp {
         self.mtdna_haplogroup = None;
         self.consensus_y = None;
         self.consensus_mt = None;
+        self.str_concordance = None;
+        self.str_running = false;
         self.coverage_by_aln.clear();
         self.audit_y.clear();
         self.audit_mt.clear();
@@ -2081,6 +2097,8 @@ impl NavigatorApp {
                     card(ui, self.tr("card.snpVariants"), |ui| self.variants_section(ui, guid));
                     ui.add_space(10.0);
                     card(ui, self.tr("card.ystrConsensus"), |ui| self.ystr_report_section(ui));
+                    ui.add_space(10.0);
+                    card(ui, self.tr("card.ystrSequence"), |ui| self.ystr_sequence_section(ui, guid));
                 }
                 DetailTab::MtDna => {
                     card(ui, self.tr("card.mtHaplogroup"), |ui| {
@@ -3333,6 +3351,71 @@ impl NavigatorApp {
     /// Y-STR report (FTDNA/YSEQ style): summary header (provider toggle, tier badges, conflict
     /// count) + a By-Panel / All-Markers / Consensus view, rendered from the already-loaded
     /// `str_profiles`.
+    /// Y-STR called from sequence (HipSTR caller → FTDNA convention) vs the imported vendor profile.
+    fn ystr_sequence_section(&mut self, ui: &mut egui::Ui, guid: SampleGuid) {
+        ui.horizontal(|ui| {
+            let have = matches!(&self.str_concordance, Some((g, _, _)) if *g == guid);
+            let label = if have { self.tr("common.refresh") } else { self.tr("ystr.callFromSequence") };
+            if ui.add_enabled(!self.str_running, egui::Button::new(label)).clicked() {
+                self.str_running = true;
+                self.status = "Calling Y-STRs from sequence (first run scans chrY)…".into();
+                let _ = self.tx.send(Command::StrConcordance { biosample_guid: guid });
+            }
+            if self.str_running {
+                ui.spinner();
+            }
+            ui.label(egui::RichText::new(self.tr("hint.ystrSequence")).weak().small());
+        });
+
+        let Some((g, aln, rows)) = &self.str_concordance else { return };
+        if *g != guid {
+            return;
+        }
+        let called = rows.iter().filter(|r| r.called.is_some()).count();
+        let agree = rows.iter().filter(|r| r.agree).count();
+        let compared = rows.iter().filter(|r| r.called.is_some() && r.imported.is_some() && r.calibrated).count();
+        ui.add_space(4.0);
+        ui.label(
+            egui::RichText::new(format!("aln #{aln}: {called} markers called · {agree}/{compared} calibrated agree with vendor"))
+                .weak()
+                .small(),
+        );
+        ui.add_space(4.0);
+        egui::ScrollArea::vertical().max_height(360.0).show(ui, |ui| {
+            egui::Grid::new(("ystr_seq_grid", guid)).num_columns(4).striped(true).spacing([14.0, 2.0]).show(ui, |ui| {
+                for h in ["Marker", "Called", "Vendor", ""] {
+                    ui.label(egui::RichText::new(h).strong().small());
+                }
+                ui.end_row();
+                for r in rows.iter().filter(|r| r.called.is_some() || r.imported.is_some()) {
+                    ui.label(&r.marker);
+                    // Colour the called value by calibration status.
+                    let (txt, col) = match (r.called, r.status.as_str()) {
+                        (Some(v), "Reliable" | "ConventionOffset") => (v.to_string(), None),
+                        (Some(v), _) => (v.to_string(), Some(egui::Color32::from_rgb(150, 150, 150))), // excluded/uncalibrated
+                        (None, _) => ("—".to_string(), Some(egui::Color32::from_rgb(150, 150, 150))),
+                    };
+                    match col {
+                        Some(c) => ui.colored_label(c, txt),
+                        None => ui.label(txt),
+                    };
+                    ui.label(r.imported.clone().unwrap_or_else(|| "—".into()));
+                    // Agreement marker only for calibrated, comparable rows.
+                    if r.calibrated && r.called.is_some() && r.imported.is_some() {
+                        if r.agree {
+                            ui.colored_label(egui::Color32::from_rgb(60, 160, 60), "✓");
+                        } else {
+                            ui.colored_label(egui::Color32::from_rgb(200, 90, 90), "✗");
+                        }
+                    } else {
+                        ui.label("");
+                    }
+                    ui.end_row();
+                }
+            });
+        });
+    }
+
     fn ystr_report_section(&mut self, ui: &mut egui::Ui) {
         if self.str_profiles.is_empty() {
             ui.label(egui::RichText::new("No STR profiles yet — import one under Data Sources.").weak());

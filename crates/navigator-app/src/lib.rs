@@ -2475,6 +2475,42 @@ impl App {
         Ok(out)
     }
 
+    /// Pick the subject's best STR-capable alignment and run the Y-STR concordance on chrY — the
+    /// entry point the UI calls. "STR-capable" = an alignment whose reference build has a HipSTR
+    /// reference present ([`str_reference_path`](Self::str_reference_path)) and that's readable
+    /// (a BAM, or a CRAM with a stored reference for decode); highest mean coverage wins. Errors
+    /// with guidance when none qualifies (no reference / no suitable alignment).
+    pub async fn str_concordance_for_subject(
+        &self,
+        biosample_guid: SampleGuid,
+    ) -> Result<(i64, Vec<StrConcordanceRow>), AppError> {
+        let alns = alignment::list_for_biosample(self.store.pool(), biosample_guid).await?;
+        let mut best: Option<(i64, f64)> = None;
+        for a in &alns {
+            if Self::str_reference_path(&a.reference_build).is_none() {
+                continue; // no HipSTR reference for this build
+            }
+            let is_cram = a.bam_path.as_deref().is_some_and(|p| p.to_ascii_lowercase().ends_with(".cram"));
+            if is_cram && a.reference_path.is_none() {
+                continue; // CRAM with no reference can't be decoded
+            }
+            let cov = self.cached_coverage(a.id).await.ok().flatten().map(|c| c.mean_coverage).unwrap_or(0.0);
+            if best.as_ref().map_or(true, |(_, bc)| cov > *bc) {
+                best = Some((a.id, cov));
+            }
+        }
+        let (aln_id, _) = best.ok_or_else(|| {
+            AppError::Import(
+                "no STR-capable alignment — need a GRCh38/CHM13 BAM (or CRAM with reference) and the \
+                 HipSTR reference at ~/.decodingus/str/{build}.hipstr_reference.bed.gz (or \
+                 NAVIGATOR_STR_REFERENCE)"
+                    .into(),
+            )
+        })?;
+        let rows = self.str_concordance(aln_id, "chrY".into()).await?;
+        Ok((aln_id, rows))
+    }
+
     /// The alignment's BAM (required) + reference (optional; required only for CRAM).
     async fn alignment_paths(&self, alignment_id: i64) -> Result<(PathBuf, Option<PathBuf>), AppError> {
         let aln = alignment::get(self.store.pool(), alignment_id)

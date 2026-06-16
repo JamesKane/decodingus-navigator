@@ -14,7 +14,7 @@ use std::sync::{Arc, Mutex};
 
 use navigator_app::{
     AlignmentProbe, AncestryResult, AncestrySegment, App, AppError, AuditEntry, BatchImportSummary, BuildNeed,
-    Consensus, Coverage,
+    Consensus, Coverage, StrConcordanceRow,
     DenovoCall, DnaType, HaploAssignment, HeteroplasmySite, IbdComparison, IbdDetectorConfig,
     IbdSuggestion,
     IdentityVerification, PanelGenotype, PrivateBucket, ProjectImportSummary, ProjectOverview,
@@ -85,6 +85,9 @@ pub enum Command {
     /// Reconcile the subject's variant sets across sources.
     LoadVariantConcordance(SampleGuid),
     LoadStrProfiles(SampleGuid),
+    /// Call Y-STRs from the subject's best sequence alignment and compare to the imported vendor
+    /// profile (the By-Panel concordance). Heavy on first call (a chrY pass); cached after.
+    StrConcordance { biosample_guid: SampleGuid },
     ImportStrProfile {
         biosample_guid: SampleGuid,
         panel_name: String,
@@ -348,6 +351,9 @@ pub enum Event {
     MtdnaChanged(SampleGuid),
     /// The rCRS-relative mutation list for an mtDNA sequence.
     MtdnaVariants { mtdna_id: i64, variants: Vec<navigator_app::MtVariant> },
+    /// Y-STR concordance: markers called from sequence (FTDNA-convention) vs the imported vendor
+    /// profile, for the By-Panel view. `alignment_id` is the source alignment chosen.
+    StrConcordance { biosample_guid: SampleGuid, alignment_id: i64, rows: Vec<StrConcordanceRow> },
     /// A batch import finished; the summary lists per-file imported/skipped outcomes. The UI
     /// shows it in a modal and reloads the subject's data sections.
     DataBatchImported { biosample_guid: SampleGuid, summary: BatchImportSummary },
@@ -580,6 +586,10 @@ pub async fn handle(app: &App, cmd: Command) -> Event {
         }
         Command::LoadVariantConcordance(guid) => match app.reconcile_variants(guid).await {
             Ok(variants) => Event::VariantConcordance { biosample_guid: guid, variants },
+            Err(e) => Event::Error(e.to_string()),
+        },
+        Command::StrConcordance { biosample_guid } => match app.str_concordance_for_subject(biosample_guid).await {
+            Ok((alignment_id, rows)) => Event::StrConcordance { biosample_guid, alignment_id, rows },
             Err(e) => Event::Error(e.to_string()),
         },
         Command::LoadStrProfiles(guid) => match app.list_str_profiles(guid).await {
