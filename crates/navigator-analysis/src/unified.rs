@@ -199,8 +199,11 @@ pub fn collect_unified_metrics_parallel_with_progress(
     contig_allowlist: Option<&HashSet<String>>,
     progress: &(dyn Fn(usize, usize) + Sync),
 ) -> Result<UnifiedMetricsResult, AnalysisError> {
-    // The parallel path needs an indexed BAM; everything else takes the sequential walker.
-    if !reader::has_bai_index(bam_path) {
+    // The parallel path needs a coordinate index for per-contig region queries — a BAM `.bai` or a
+    // CRAM `.crai`. Without one (unindexed BAM/CRAM) fall back to the sequential walker. A CRAM can't
+    // region-query its unmapped tail, so its read-metrics totals exclude unmapped-only reads (those
+    // carry no coverage/sex signal) — the per-contig coverage + mapped read-metrics still parallelize.
+    if !reader::has_region_index(bam_path) {
         return collect_unified_metrics_with_progress(
             bam_path,
             reference_path,
@@ -209,6 +212,7 @@ pub fn collect_unified_metrics_parallel_with_progress(
             &mut |d, t| progress(d, t),
         );
     }
+    let skip_unmapped = reader::has_crai_index(bam_path); // CRAM: no unmapped-region query
 
     let header = reader::read_header(bam_path, Some(reference_path))?;
 
@@ -310,7 +314,7 @@ pub fn collect_unified_metrics_parallel_with_progress(
     let (contig_results, unmapped_rm) = pool.install(|| {
         rayon::join(
             || works.par_iter().map(&process_contig).collect::<Result<Vec<_>, AnalysisError>>(),
-            process_unmapped,
+            || if skip_unmapped { Ok(ReadMetricsState::default()) } else { process_unmapped() },
         )
     });
     let contig_results = contig_results?;

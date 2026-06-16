@@ -287,6 +287,21 @@ pub fn has_bai_index(path: &Path) -> bool {
     dotted.exists() || replaced.exists()
 }
 
+/// Whether a CRAM `.crai` coordinate index is present (`foo.cram.crai` or `foo.crai`).
+pub fn has_crai_index(path: &Path) -> bool {
+    if detect_format(path) != Format::Cram {
+        return false;
+    }
+    path.with_extension("cram.crai").exists() || path.with_extension("crai").exists()
+}
+
+/// Whether the file has a coordinate index supporting **per-contig region queries** — a BAM `.bai`
+/// or a CRAM `.crai`. The prerequisite for the parallel per-contig walker (CRAM additionally can't
+/// region-query the unmapped tail; callers handle that separately).
+pub fn has_region_index(path: &Path) -> bool {
+    has_bai_index(path) || has_crai_index(path)
+}
+
 // ---- header-only ----------------------------------------------------------
 
 /// Read just the SAM header (e.g. to resolve a contig length). `reference` is required
