@@ -34,6 +34,7 @@ pub mod scan;
 pub mod sex;
 pub mod sidecar;
 pub mod strcaller;
+pub mod strmarker;
 pub mod strref;
 pub mod sv;
 pub mod testtype;

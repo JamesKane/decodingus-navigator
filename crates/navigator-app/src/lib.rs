@@ -861,6 +861,24 @@ impl ExportRequest {
     }
 }
 
+/// One row of the Y-STR concordance view: a marker called from sequence (FTDNA-convention value +
+/// calibration status) alongside the subject's imported vendor value, and whether they agree.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct StrConcordanceRow {
+    pub marker: String,
+    /// Called FTDNA-convention value, or `None` if the marker wasn't called from sequence.
+    pub called: Option<i32>,
+    /// Calibration status: `Reliable` | `ConventionOffset` | `Excluded` | `Uncalibrated` | `NotCalled`.
+    pub status: String,
+    /// Whether the called value is corpus-calibrated (Reliable/ConventionOffset) — i.e. comparable.
+    pub calibrated: bool,
+    /// Imported vendor value (e.g. `"13"`, or a multi-copy `"11-15"`), or `None` if not in the profile.
+    pub imported: Option<String>,
+    pub depth: u32,
+    /// Calibrated call whose value matches the imported single value.
+    pub agree: bool,
+}
+
 /// Outcome of a batch [`App::add_data_batch`] run over multiple files / folders — for the import
 /// summary the GUI shows after a multi-file Add Data or a drag-and-drop.
 #[derive(Debug, Clone, Default)]
@@ -2394,6 +2412,67 @@ impl App {
         .map_err(|e| AppError::Join(e.to_string()))??;
         self.save_analysis(alignment_id, &kind, "str-1", &genos).await?;
         Ok(genos)
+    }
+
+    /// Compare the STR markers called from sequence (mapped to the FTDNA convention via the
+    /// corpus-calibrated [`navigator_analysis::strmarker`] table) against the subject's imported
+    /// vendor Y-STR profile — the By-Panel concordance view. One row per marker present in either
+    /// source: the called value + its calibration status, the imported value, and whether they agree.
+    /// `contig` is typically `chrY`. Reuses the cached `str:{contig}` calls.
+    pub async fn str_concordance(&self, alignment_id: i64, contig: String) -> Result<Vec<StrConcordanceRow>, AppError> {
+        use navigator_analysis::strmarker::{called_markers, normalize_marker, MarkerStatus};
+
+        let genos = self.run_str_calls(alignment_id, contig).await?;
+        let called = called_markers(&genos);
+
+        // Imported vendor markers (FTDNA preferred, else the first profile), keyed by normalized name.
+        let biosample = self.biosample_of_alignment(alignment_id).await?;
+        let profiles = self.list_str_profiles(biosample).await?;
+        let chosen = profiles
+            .iter()
+            .find(|p| p.provider.as_deref().is_some_and(|v| v.eq_ignore_ascii_case("FTDNA")))
+            .or_else(|| profiles.first());
+        let imported: HashMap<String, String> = chosen
+            .map(|p| p.markers.iter().map(|m| (normalize_marker(&m.marker), m.value.clone())).collect())
+            .unwrap_or_default();
+
+        let mut rows: HashMap<String, StrConcordanceRow> = HashMap::new();
+        for c in &called {
+            rows.insert(
+                c.marker.clone(),
+                StrConcordanceRow {
+                    marker: c.marker.clone(),
+                    called: Some(c.value),
+                    status: format!("{:?}", c.status),
+                    calibrated: matches!(c.status, MarkerStatus::Reliable | MarkerStatus::ConventionOffset),
+                    imported: imported.get(&c.marker).cloned(),
+                    depth: c.depth,
+                    agree: false,
+                },
+            );
+        }
+        for (m, v) in &imported {
+            rows.entry(m.clone()).or_insert_with(|| StrConcordanceRow {
+                marker: m.clone(),
+                called: None,
+                status: "NotCalled".into(),
+                calibrated: false,
+                imported: Some(v.clone()),
+                depth: 0,
+                agree: false,
+            });
+        }
+        // Agreement: a calibrated call whose value matches the imported single value.
+        let mut out: Vec<StrConcordanceRow> = rows
+            .into_values()
+            .map(|mut r| {
+                r.agree = r.calibrated
+                    && matches!((&r.called, &r.imported), (Some(c), Some(i)) if i.trim() == c.to_string());
+                r
+            })
+            .collect();
+        out.sort_by(|a, b| a.marker.cmp(&b.marker));
+        Ok(out)
     }
 
     /// The alignment's BAM (required) + reference (optional; required only for CRAM).
