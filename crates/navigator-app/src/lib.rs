@@ -861,6 +861,55 @@ impl ExportRequest {
     }
 }
 
+/// Outcome of a batch [`App::add_data_batch`] run over multiple files / folders — for the import
+/// summary the GUI shows after a multi-file Add Data or a drag-and-drop.
+#[derive(Debug, Clone, Default)]
+pub struct BatchImportSummary {
+    /// `(filename, detected-type description)` for each successfully imported file.
+    pub imported: Vec<(String, String)>,
+    /// `(filename, reason)` for each file skipped or errored (unrecognized / import failure).
+    pub skipped: Vec<(String, String)>,
+}
+
+/// A recognized data-file extension — the pre-filter for directory expansion (a dropped folder is
+/// walked for these). `add_data` re-sniffs text files (csv/tsv/txt) to route chip / STR / variants.
+fn is_recognized_data_file(path: &Path) -> bool {
+    let n = path.file_name().map(|s| s.to_string_lossy().to_ascii_lowercase()).unwrap_or_default();
+    [
+        ".bam", ".cram", ".vcf", ".vcf.gz", ".fasta", ".fa", ".fna", ".fas", ".fasta.gz", ".fa.gz",
+        ".fna.gz", ".csv", ".tsv", ".txt",
+    ]
+    .iter()
+    .any(|e| n.ends_with(e))
+}
+
+/// Collect recognized data files from `path`: a file yields itself (if recognized); a directory is
+/// walked recursively. Bounded depth + file count so dropping a large tree can't run away.
+fn collect_data_files(path: &Path, out: &mut Vec<PathBuf>, depth: usize) {
+    const MAX_DEPTH: usize = 4;
+    const MAX_FILES: usize = 2000;
+    if out.len() >= MAX_FILES {
+        return;
+    }
+    if path.is_dir() {
+        if depth > MAX_DEPTH {
+            return;
+        }
+        if let Ok(rd) = std::fs::read_dir(path) {
+            let mut entries: Vec<PathBuf> = rd.filter_map(|e| e.ok().map(|e| e.path())).collect();
+            entries.sort();
+            for e in entries {
+                collect_data_files(&e, out, depth + 1);
+                if out.len() >= MAX_FILES {
+                    break;
+                }
+            }
+        }
+    } else if is_recognized_data_file(path) {
+        out.push(path.to_path_buf());
+    }
+}
+
 /// Whether `name` is a primary chromosome (1–22, X, Y, M/MT), with or without a `chr` prefix —
 /// the contigs the whole-genome diploid caller runs over (skipping alts / decoys / unplaced).
 fn is_primary_contig(name: &str) -> bool {
@@ -5961,6 +6010,37 @@ impl App {
         Ok(detected)
     }
 
+    /// Batch [`add_data`]: expand any directories among `paths` into their recognized data files,
+    /// then auto-detect + import each into the subject, collecting a [`BatchImportSummary`]. A
+    /// failed/unrecognized file is recorded (not propagated) so one bad file doesn't abort the
+    /// batch. `progress(done, total)` ticks per file. The unified multi-file / folder importer
+    /// behind the GUI's Add Data button + drag-and-drop. (Distinct from [`import_project_dir`],
+    /// which builds a *new* multi-subject project from a NAS layout; this adds to *this* subject.)
+    pub async fn add_data_batch(
+        &self,
+        biosample_guid: SampleGuid,
+        paths: Vec<PathBuf>,
+        progress: impl Fn(usize, usize),
+    ) -> Result<BatchImportSummary, AppError> {
+        let mut files = Vec::new();
+        for p in &paths {
+            collect_data_files(p, &mut files, 0);
+        }
+        files.dedup();
+        let total = files.len();
+        let mut summary = BatchImportSummary::default();
+        for (i, f) in files.iter().enumerate() {
+            progress(i, total);
+            let name = f.file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+            match self.add_data(biosample_guid, f).await {
+                Ok(d) => summary.imported.push((name, d.description().to_string())),
+                Err(e) => summary.skipped.push((name, e.to_string())),
+            }
+        }
+        progress(total, total);
+        Ok(summary)
+    }
+
     /// Batch-import a NAS project directory: scan `{dir}/{sample}/…` and create the Project
     /// plus its Biosample → SequenceRun → Alignment rows. The reference is resolved per
     /// alignment: pass `Some(fasta)` to use a specific FASTA (validated with its `.fai`) for
@@ -7204,5 +7284,50 @@ mod settings_tests {
         assert_eq!(partial.appview_url.as_deref(), Some("http://h"));
         assert_eq!(partial.y_tree_provider, None);
         assert_eq!(AppSettings::default(), serde_json::from_str::<AppSettings>("{}").unwrap());
+    }
+}
+
+#[cfg(test)]
+mod import_tests {
+    use super::{collect_data_files, is_recognized_data_file};
+    use std::path::Path;
+
+    #[test]
+    fn recognizes_data_extensions() {
+        for ok in ["x.bam", "x.cram", "x.vcf", "x.vcf.gz", "x.fasta", "x.fa", "x.csv", "x.tsv", "x.txt"] {
+            assert!(is_recognized_data_file(Path::new(ok)), "{ok} should be recognized");
+        }
+        for no in ["x.png", "x.pdf", "x", "x.bai", "x.crai"] {
+            assert!(!is_recognized_data_file(Path::new(no)), "{no} should not be recognized");
+        }
+    }
+
+    #[test]
+    fn collect_walks_dir_and_filters() {
+        // A temp tree: top-level a.bam + ignore.png, nested sub/b.vcf + sub/c.txt.
+        let dir = std::env::temp_dir().join(format!("dun-import-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("sub")).unwrap();
+        for f in ["a.bam", "ignore.png"] {
+            std::fs::write(dir.join(f), b"x").unwrap();
+        }
+        std::fs::write(dir.join("sub/b.vcf"), b"x").unwrap();
+        std::fs::write(dir.join("sub/c.txt"), b"x").unwrap();
+
+        let mut out = Vec::new();
+        collect_data_files(&dir, &mut out, 0);
+        let names: std::collections::BTreeSet<String> =
+            out.iter().map(|p| p.file_name().unwrap().to_string_lossy().into_owned()).collect();
+        assert_eq!(names, ["a.bam", "b.vcf", "c.txt"].iter().map(|s| s.to_string()).collect());
+
+        // A single recognized file yields itself; an unrecognized file yields nothing.
+        let mut one = Vec::new();
+        collect_data_files(&dir.join("a.bam"), &mut one, 0);
+        assert_eq!(one.len(), 1);
+        let mut none = Vec::new();
+        collect_data_files(&dir.join("ignore.png"), &mut none, 0);
+        assert!(none.is_empty());
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

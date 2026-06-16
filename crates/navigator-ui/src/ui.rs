@@ -10,7 +10,7 @@ use navigator_app::{
     AncestryResult, AncestrySegment, AuditEntry, BuildNeed, CallState, CompatibilityLevel, Consensus,
     Coverage, DenovoCall, DnaType, HaploAssignment, HeteroplasmySite, IbdComparison, IbdSuggestion,
     IdentityVerification, PanelGenotype, PrivateBucket, PrivateClass, ProjectOverview,
-    AppSettings, MtRegion, MtVariant, ProjectSampleReport, ReadMetrics, ReconciledVariant, RefBuildStatus,
+    AppSettings, BatchImportSummary, MtRegion, MtVariant, ProjectSampleReport, ReadMetrics, ReconciledVariant, RefBuildStatus,
     SexInferenceResult, SourceType, SuperPopulationSummary, SvAnalysisResult, VariantStatus,
     VerificationStatus, YProfile, YState, YVariantStatus,
 };
@@ -273,6 +273,8 @@ pub struct NavigatorApp {
     edit_subject: Option<EditSubject>,
     /// Subject pending delete confirmation (Some ⇒ the confirm dialog is shown).
     confirm_delete: Option<SampleGuid>,
+    /// The last batch-import summary, shown in a modal until dismissed.
+    batch_import: Option<BatchImportSummary>,
     /// Data-source row pending delete confirmation (Some ⇒ the confirm dialog is shown).
     confirm_data_delete: Option<DataDelete>,
     /// Subject being assigned to a project: (subject, selected project or None). Some ⇒ picker shown.
@@ -1060,6 +1062,7 @@ impl NavigatorApp {
             analysis: None,
             edit_subject: None,
             confirm_delete: None,
+            batch_import: None,
             confirm_data_delete: None,
             assign_project: None,
             edit_project: None,
@@ -1473,11 +1476,14 @@ impl NavigatorApp {
                     self.status = "Reference settings saved".into();
                     let _ = self.tx.send(Command::LoadReferenceSettings); // refresh statuses
                 }
-                Event::DataImported { biosample_guid, label } => {
-                    self.status = format!("Imported {label}");
+                Event::DataBatchImported { biosample_guid, summary } => {
+                    self.status = format!(
+                        "Imported {} file(s){}",
+                        summary.imported.len(),
+                        if summary.skipped.is_empty() { String::new() } else { format!(", {} skipped", summary.skipped.len()) }
+                    );
+                    self.batch_import = Some(summary);
                     if self.selected_sample == Some(biosample_guid) {
-                        // Reload every data section — detection picked one of them (a BAM/CRAM
-                        // import auto-creates a sequencing run + alignment, so reload runs too).
                         let _ = self.tx.send(Command::LoadRuns(biosample_guid));
                         let _ = self.tx.send(Command::LoadStrProfiles(biosample_guid));
                         let _ = self.tx.send(Command::LoadVariantSets(biosample_guid));
@@ -1945,6 +1951,7 @@ impl eframe::App for NavigatorApp {
         self.edit_run_modal(ctx);
         self.edit_alignment_modal(ctx);
         self.settings_modal(ctx);
+        self.batch_import_modal(ctx);
         self.paint_drop_hint(ctx);
     }
 }
@@ -1961,15 +1968,12 @@ impl NavigatorApp {
             self.status = "Select a subject before dropping data files.".into();
             return;
         };
-        let mut sent = 0;
-        for f in dropped {
-            if let Some(path) = f.path {
-                let _ = self.tx.send(Command::AddData { biosample_guid: guid, path });
-                sent += 1;
-            }
-        }
-        if sent > 0 {
-            self.status = format!("Importing {sent} dropped file(s)…");
+        // Route every dropped path (files and/or folders) through the batch importer in one go —
+        // folders are walked for data files; the result comes back as a single summary modal.
+        let paths: Vec<std::path::PathBuf> = dropped.into_iter().filter_map(|f| f.path).collect();
+        if !paths.is_empty() {
+            self.status = format!("Importing {} dropped item(s)…", paths.len());
+            let _ = self.tx.send(Command::AddDataBatch { biosample_guid: guid, paths });
         }
     }
 
@@ -2214,16 +2218,25 @@ impl NavigatorApp {
                         sex: bio.sex.clone().unwrap_or_default(),
                     });
                 }
-                if ui.button(self.tr("detail.addData")).clicked() {
-                    if let Some(path) = rfd::FileDialog::new()
-                        .add_filter("data files", &["vcf", "csv", "tsv", "txt", "fa", "fasta", "fna", "fas", "bam", "cram"])
-                        .pick_file()
-                    {
-                        let name = path.file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
-                        self.status = format!("Importing {name}…");
-                        let _ = self.tx.send(Command::AddData { biosample_guid: guid, path });
+                ui.menu_button(self.tr("detail.addData"), |ui| {
+                    if ui.button(self.tr("detail.addFiles")).clicked() {
+                        ui.close_menu();
+                        if let Some(paths) = rfd::FileDialog::new()
+                            .add_filter("data files", &["vcf", "gz", "csv", "tsv", "txt", "fa", "fasta", "fna", "fas", "bam", "cram"])
+                            .pick_files()
+                        {
+                            self.status = format!("Importing {} file(s)…", paths.len());
+                            let _ = self.tx.send(Command::AddDataBatch { biosample_guid: guid, paths });
+                        }
                     }
-                }
+                    if ui.button(self.tr("detail.addFolder")).clicked() {
+                        ui.close_menu();
+                        if let Some(dir) = rfd::FileDialog::new().pick_folder() {
+                            self.status = format!("Scanning {}…", dir.display());
+                            let _ = self.tx.send(Command::AddDataBatch { biosample_guid: guid, paths: vec![dir] });
+                        }
+                    }
+                });
             });
         });
     }
@@ -2619,6 +2632,60 @@ impl NavigatorApp {
             });
         if close {
             self.confirm_delete = None;
+        }
+    }
+
+    /// Summary modal after a batch Add Data / drag-and-drop: per-file detected type + any skipped
+    /// files with the reason. Dismissed with Close.
+    fn batch_import_modal(&mut self, ctx: &egui::Context) {
+        let Some(summary) = self.batch_import.clone() else { return };
+        let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Middle, egui::Id::new("import_dim")));
+        painter.rect_filled(ctx.screen_rect(), 0.0, egui::Color32::from_black_alpha(150));
+
+        let mut close = false;
+        egui::Area::new(egui::Id::new("batch_import_modal"))
+            .order(egui::Order::Foreground)
+            .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+            .show(ctx, |ui| {
+                egui::Frame::window(ui.style()).inner_margin(egui::Margin::same(18.0)).show(ui, |ui| {
+                    ui.set_width(460.0);
+                    ui.label(egui::RichText::new(self.tr("import.title")).strong().size(16.0));
+                    ui.label(
+                        egui::RichText::new(format!(
+                            "{} imported · {} skipped",
+                            summary.imported.len(),
+                            summary.skipped.len()
+                        ))
+                        .weak(),
+                    );
+                    ui.separator();
+                    if summary.imported.is_empty() && summary.skipped.is_empty() {
+                        ui.label(self.tr("import.none"));
+                    }
+                    egui::ScrollArea::vertical().max_height(320.0).show(ui, |ui| {
+                        egui::Grid::new("batch_import_grid").num_columns(2).striped(true).show(ui, |ui| {
+                            for (name, kind) in &summary.imported {
+                                ui.colored_label(egui::Color32::from_rgb(60, 160, 60), "✓");
+                                ui.label(format!("{name} — {kind}"));
+                                ui.end_row();
+                            }
+                            for (name, reason) in &summary.skipped {
+                                ui.colored_label(egui::Color32::from_rgb(190, 140, 40), "•");
+                                ui.label(egui::RichText::new(format!("{name} — {reason}")).weak());
+                                ui.end_row();
+                            }
+                        });
+                    });
+                    ui.add_space(12.0);
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui.button(self.tr("common.close")).clicked() {
+                            close = true;
+                        }
+                    });
+                });
+            });
+        if close {
+            self.batch_import = None;
         }
     }
 

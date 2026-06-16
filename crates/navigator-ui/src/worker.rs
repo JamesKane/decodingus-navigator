@@ -13,7 +13,8 @@ use std::sync::mpsc::{Receiver, Sender};
 use std::sync::{Arc, Mutex};
 
 use navigator_app::{
-    AlignmentProbe, AncestryResult, AncestrySegment, App, AppError, AuditEntry, BuildNeed, Consensus, Coverage,
+    AlignmentProbe, AncestryResult, AncestrySegment, App, AppError, AuditEntry, BatchImportSummary, BuildNeed,
+    Consensus, Coverage,
     DenovoCall, DnaType, HaploAssignment, HeteroplasmySite, IbdComparison, IbdDetectorConfig,
     IbdSuggestion,
     IdentityVerification, PanelGenotype, PrivateBucket, ProjectImportSummary, ProjectOverview,
@@ -124,8 +125,9 @@ pub enum Command {
     FindPrivateY { alignment_id: i64, mask: YMask },
     /// Load a previously-computed (self-masked) private-Y bucket from cache.
     LoadPrivateY { alignment_id: i64 },
-    /// Unified import: detect the file's type and route it to the right importer.
-    AddData { biosample_guid: SampleGuid, path: PathBuf },
+    /// Unified import: multiple files and/or folders (folders walked for data files), each
+    /// auto-detected + routed; returns one [`Event::DataBatchImported`] summary.
+    AddDataBatch { biosample_guid: SampleGuid, paths: Vec<PathBuf> },
     LoadAlignments(i64),
     AddAlignment(NewAlignment),
     /// Resolve the subject's default analysis alignment (highest-coverage, else first).
@@ -346,9 +348,9 @@ pub enum Event {
     MtdnaChanged(SampleGuid),
     /// The rCRS-relative mutation list for an mtDNA sequence.
     MtdnaVariants { mtdna_id: i64, variants: Vec<navigator_app::MtVariant> },
-    /// A unified import succeeded; `label` describes the detected type. The UI should
-    /// reload the subject's data sections.
-    DataImported { biosample_guid: SampleGuid, label: String },
+    /// A batch import finished; the summary lists per-file imported/skipped outcomes. The UI
+    /// shows it in a modal and reloads the subject's data sections.
+    DataBatchImported { biosample_guid: SampleGuid, summary: BatchImportSummary },
     /// mtDNA haplogroup assignment for a sequence (ranked + terminal evidence).
     Haplogroup { mtdna_id: i64, assignment: HaploAssignment },
     /// Y haplogroup assignment for an alignment (ranked + terminal evidence).
@@ -700,10 +702,12 @@ pub async fn handle(app: &App, cmd: Command) -> Event {
             Ok(None) => Event::Noop,
             Err(e) => Event::Error(e.to_string()),
         },
-        Command::AddData { biosample_guid, path } => match app.add_data(biosample_guid, &path).await {
-            Ok(detected) => Event::DataImported { biosample_guid, label: detected.description().to_string() },
-            Err(e) => Event::Error(e.to_string()),
-        },
+        Command::AddDataBatch { biosample_guid, paths } => {
+            match app.add_data_batch(biosample_guid, paths, |_, _| {}).await {
+                Ok(summary) => Event::DataBatchImported { biosample_guid, summary },
+                Err(e) => Event::Error(e.to_string()),
+            }
+        }
         Command::LoadAlignments(sequence_run_id) => match app.list_alignments(sequence_run_id).await {
             Ok(alignments) => Event::Alignments { sequence_run_id, alignments },
             Err(e) => Event::Error(e.to_string()),

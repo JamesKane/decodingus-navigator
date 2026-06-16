@@ -28,6 +28,10 @@ subjects.noMatch=No subjects match the search.
 
 # Subject detail header
 detail.addData=➕  Add Data
+detail.addFiles=Add files…
+detail.addFolder=Add folder…
+import.title=Import summary
+import.none=No recognized data files found.
 common.edit=Edit
 common.delete=Delete
 common.save=Save
@@ -154,6 +158,7 @@ projects.exportCsv=Export CSV…
 projects.addSubjectsHint=Add subjects from the sidebar (they tag to this open project).
 projects.noSamples=No samples yet.
 common.cancel=Cancel
+common.close=Close
 common.start=Start
 common.change=Change
 common.assignHaplogroup=Assign haplogroup
