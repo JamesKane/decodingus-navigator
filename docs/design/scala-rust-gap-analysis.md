@@ -50,22 +50,27 @@ order-independent match); `compare_profiles` conflict detection; `ystr_report_se
 YSEQ(→Alpha) exports. *Remaining:* Big-Y Y-500/700 enumeration; Y-STR genetic distance / TMRCA /
 match ranking (→ §2 cross-subject).
 
-### §1b STR calling from BAM/CRAM — **MISSING** (largest clean gap)
+### §1b STR calling from BAM/CRAM — **PARTIAL** (caller foundation DONE; was MISSING)
+
+Native STR calling now exists via the **enclosing-read** model (HipSTR/GangSTR), committed 986e00b:
 
 | Capability | Scala | Status |
 |---|---|---|
-| STR repeat-count **calling from BAM/CRAM** (CIGAR-aware span, stutter filtering, HIGH/MED/LOW tiers) | `analysis/StrCaller.scala` | MISSING |
-| STR reference gateway — HipSTR BED download + per-build liftover + cache | `refgenome/StrReferenceGateway.scala`, `StrReferenceCache.scala` | MISSING |
-| STR annotator — position → locus name/period (indexed BED, binary search) | `refgenome/StrAnnotator.scala` | MISSING |
+| STR repeat-count **calling from BAM/CRAM** (CIGAR-aware span, stutter model, HIGH/MED/LOW tiers) | `analysis/StrCaller.scala` | **DONE** — `strcaller.rs` enclosing-read genotyper (per-read count off the CIGAR, geometric stutter ML, haploid chrY / diploid elsewhere). Validated on GRCh38 chrY (4581 genotypes, ref loci measure ref_copies exactly) |
+| STR reference parse — HipSTR BED → tract loci (period, ref_copies, motif) | `refgenome/StrAnnotator.scala` | **DONE** — `strref.rs` (end-inclusive tracts; per-contig + min-period filter) |
+| STR reference **gateway** — download + per-build liftover + cache | `refgenome/StrReferenceGateway.scala`, `StrReferenceCache.scala` | **MISSING** — currently `NAVIGATOR_STR_REFERENCE` / `~/.decodingus/str/{build}.hipstr_reference.bed.gz`; no download/liftover (GRCh38-only; CHM13/GRCh37 need their own ref) |
 | STR marker comparison (Simple/MultiCopy/Complex value matching) | `str/StrMarkerComparator.scala` | PARTIAL (panel compare done in §1a) |
 
-> **Attempted 2026-06-12 → not vendor-grade; reverted.** A faithful length÷period port + a bundled
-> 24-locus catalog (GRCh38 + CHM13-lifted) fails: catalog coords are feature regions not tight tracts,
-> so length÷period is systematically offset (DYS389II 75 vs 29); only ~4/19 matched. Motif-detection
-> calibration also failed (lands on flank/homopolymer noise). Same wall the Scala caller hit (it was
-> experimental/display-only). **Needs a real STR genotyper (HipSTR/GangSTR-class) or §7's curated
-> tight-tract reference BED + FTDNA-convention mapping** — a dedicated subsystem, not a clean
-> increment. HiFi (~4×) keeps most loci LOW; value is highest for 20–30× short-read WGS.
+**Remaining (the vendor-grade bridge):** the **FTDNA-convention DYS-name mapping** (HipSTR coordinate
+locus → `DYS###`, nested DYS389I/II, multi-copy DYS385/DYS464/YCAII/CDY) + wiring the called counts
+into the §1a By-Panel report; a download/cache gateway + CHM13/GRCh37 reference (or liftover); UI
+surfacing. The caller itself (the hard, twice-attempted part) is done and validated.
+
+> **History:** a 2026-06-12 length÷period port over *feature regions* (a bundled 24-locus catalog)
+> was reverted — feature coords aren't tight tracts, so it was systematically offset. **Resolved
+> 2026-06-16** by using the HipSTR reference's tight, end-inclusive tracts + the enclosing-read CIGAR
+> model (measure each read against the known ref allele). HiFi (~4×) still keeps most loci LOW; the
+> value is highest on 20–30× short-read WGS (validated there).
 
 ## 2. Y-chromosome profile management (variant-level, multi-source) — **PARTIAL** (was MISSING)
 
@@ -186,17 +191,18 @@ fingerprint/merge dialogs.
 |---|---|---|---|---|
 | ~~8-import~~ | ~~Import UX dialogs~~ | — | — | **DONE 59b5696** — multi-file + folder Add Data, drag-drop, auto-detect, summary modal |
 | ~~6-resume~~ | ~~Analysis checkpoint/resume~~ | — | — | **DONE 192a939** — source-sig invalidation + cache-first SV/denovo |
-| 1b | STR calling from sequence (+ §7 STR reference) | High | **Large** | **Now the standout** — biggest functional gap; needs a real STR genotyper or curated tight-tract BED — not a clean increment (reverted once) |
+| 1b-caller | ~~STR calling from sequence~~ | — | — | **DONE 986e00b** — enclosing-read genotyper + HipSTR-reference parse, validated on GRCh38 chrY |
+| 1b-vendor | **STR vendor bridge** — FTDNA DYS-name mapping + §1a panel integration + ref gateway/liftover + UI | High | Medium | The remaining STR work: turn coordinate-level counts into a Y-12/25/37/67/111 view comparable to an FTDNA export |
 | 2-match | Cross-subject Y matching (shared-SNP/novel ranking, genetic distance/TMRCA) | Med | Medium | Between-subjects layer atop the done single-subject Y profile; relates to §4 |
 | 5-p2 | Sync conflict detection + PULL + `source_file` table | Med | Medium | Ties to AppView design |
 | 4-live | IBD live exchange (segment exchange + attestation) + consent/request/result | Med | Large | Gated on running AppView + PII-posture decision; don't port P2P verbatim |
 | 7 | VCF liftover orchestration + reference-download checksums | Low-Med | Medium | STR/VCF-workflow enablers |
 | 8-misc | PCA scatter, Y-profile management dialog, IBD match browser, fingerprint/merge dialogs | Low-Med | Mixed | Several small; IBD browser downstream of §4 |
 
-**Biggest remaining feature:** **§1b STR calling** — the standout functional gap (import UX shipped
-59b5696, checkpoint/resume shipped 192a939). Still hard: needs a real STR genotyper or a curated
-tight-tract reference BED (a length÷period port was reverted as not vendor-grade). Next-cheapest
-coherent work: **§2-match cross-subject Y matching** (medium, builds on the done Y profile).
+**Recently shipped:** import UX (59b5696), checkpoint/resume (192a939), **STR caller foundation**
+(986e00b — the hard, twice-attempted part). **Best next steps:** finish STR as a user feature
+(**§1b-vendor**: DYS-name mapping + §1a panel integration + UI), or **§2-match cross-subject Y
+matching** (medium, builds on the done Y profile). Both are medium and high-value.
 **Biggest coherent feature:** **§1b STR calling** — still the standout functional gap, still hard.
 **Verify-before-building:** §4 (IBD live) and §5-p2 (sync conflict/PULL) must be scoped against the
 current AppView-mediated architecture, not ported verbatim.
