@@ -18,6 +18,7 @@ struct Row {
     payload: String,
     source: Option<String>,
     completeness: Option<String>,
+    source_sig: Option<String>,
 }
 
 impl Row {
@@ -34,11 +35,12 @@ impl Row {
             payload: self.payload,
             source: self.source,
             completeness: self.completeness,
+            source_sig: self.source_sig,
         })
     }
 }
 
-const COLS: &str = "id, alignment_id, kind, algorithm_version, created_at, payload, source, completeness";
+const COLS: &str = "id, alignment_id, kind, algorithm_version, created_at, payload, source, completeness, source_sig";
 
 /// Insert or replace the artifact for `(alignment_id, kind, algorithm_version)`, recording its
 /// provenance (`source` = how produced, `completeness` = full/partial).
@@ -52,14 +54,16 @@ pub async fn upsert(
     payload: &str,
     source: &str,
     completeness: &str,
+    source_sig: Option<&str>,
 ) -> Result<AnalysisArtifact, StoreError> {
     let created = created_at.to_rfc3339();
     let id: i64 = sqlx::query_scalar(
-        "INSERT INTO analysis_artifact (alignment_id, kind, algorithm_version, created_at, payload, source, completeness) \
-         VALUES (?, ?, ?, ?, ?, ?, ?) \
+        "INSERT INTO analysis_artifact (alignment_id, kind, algorithm_version, created_at, payload, source, completeness, source_sig) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?) \
          ON CONFLICT (alignment_id, kind, algorithm_version) \
          DO UPDATE SET created_at = excluded.created_at, payload = excluded.payload, \
-                       source = excluded.source, completeness = excluded.completeness \
+                       source = excluded.source, completeness = excluded.completeness, \
+                       source_sig = excluded.source_sig \
          RETURNING id",
     )
     .bind(alignment_id)
@@ -69,6 +73,7 @@ pub async fn upsert(
     .bind(payload)
     .bind(source)
     .bind(completeness)
+    .bind(source_sig)
     .fetch_one(pool)
     .await?;
     Ok(AnalysisArtifact {
@@ -80,6 +85,7 @@ pub async fn upsert(
         payload: payload.to_string(),
         source: Some(source.to_string()),
         completeness: Some(completeness.to_string()),
+        source_sig: source_sig.map(str::to_string),
     })
 }
 

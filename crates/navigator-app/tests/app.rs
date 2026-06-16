@@ -1808,3 +1808,59 @@ async fn gfx_sex_is_male() {
     eprintln!("sex={:?} ratio={:.3} conf={:?}", s.inferred_sex, s.x_autosome_ratio, s.confidence);
     assert_eq!(s.inferred_sex, navigator_app::InferredSex::Male);
 }
+
+/// Analysis-cache staleness: a cached artifact is reused while the source file is unchanged, and
+/// invalidated (recomputed) once the file's signature changes (BAM-mtime invalidation, §6).
+#[tokio::test]
+async fn cached_artifact_invalidated_when_source_file_changes() {
+    let app = app().await;
+    let b = app.add_biosample(None, "HG002", None, Some("male".into())).await.unwrap();
+    let run = app
+        .record_sequence_run(NewSequenceRun {
+            biosample_guid: b.guid,
+            platform_name: "ILLUMINA".into(),
+            instrument_model: None,
+            test_type: "WGS".into(),
+            library_layout: None,
+            total_reads: None,
+            pf_reads_aligned: None,
+            mean_read_length: None,
+            mean_insert_size: None,
+        })
+        .await
+        .unwrap();
+
+    // A stand-in "BAM" file whose mtime/size we control.
+    let bam = std::env::temp_dir().join(format!("dun-cache-{}.bam", std::process::id()));
+    std::fs::write(&bam, b"original").unwrap();
+    let aln = app
+        .record_alignment(NewAlignment {
+            sequence_run_id: run.id,
+            reference_build: "GRCh38".into(),
+            aligner: "bwa-mem2".into(),
+            variant_caller: None,
+            bam_path: Some(bam.to_string_lossy().into_owned()),
+            reference_path: None,
+            content_sha256: None,
+        })
+        .await
+        .unwrap()
+        .id;
+
+    // Save → load round-trips while the source is unchanged.
+    app.save_analysis(aln, "testkind", "v1", &vec![1u32, 2, 3]).await.unwrap();
+    let got: Option<Vec<u32>> = app.load_analysis(aln, "testkind", "v1").await.unwrap();
+    assert_eq!(got, Some(vec![1, 2, 3]), "fresh cache is served");
+
+    // Change the source file's content (size differs → signature differs) → cache goes stale.
+    std::fs::write(&bam, b"re-aligned, different content").unwrap();
+    let stale: Option<Vec<u32>> = app.load_analysis(aln, "testkind", "v1").await.unwrap();
+    assert_eq!(stale, None, "changed source invalidates the cached artifact");
+
+    // Recomputing re-stamps the new signature → served again.
+    app.save_analysis(aln, "testkind", "v1", &vec![9u32]).await.unwrap();
+    let fresh: Option<Vec<u32>> = app.load_analysis(aln, "testkind", "v1").await.unwrap();
+    assert_eq!(fresh, Some(vec![9]), "recomputed cache is fresh again");
+
+    let _ = std::fs::remove_file(&bam);
+}

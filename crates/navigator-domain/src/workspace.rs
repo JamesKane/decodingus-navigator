@@ -146,4 +146,8 @@ pub struct AnalysisArtifact {
     /// `full` or `partial` (e.g. lite coverage from sidecars, upgradeable by the deep pass).
     /// `None` → treated as `full`.
     pub completeness: Option<String>,
+    /// The source file's signature (`mtime:size`) when this artifact was computed, for staleness
+    /// checks — a changed BAM/CRAM invalidates it. `None` for pre-feature rows / non-file sources
+    /// (treated as fresh).
+    pub source_sig: Option<String>,
 }

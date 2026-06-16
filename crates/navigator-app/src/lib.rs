@@ -871,6 +871,24 @@ pub struct BatchImportSummary {
     pub skipped: Vec<(String, String)>,
 }
 
+/// A file's cheap signature (`mtime_secs:size`) for analysis-cache staleness — no content read.
+/// `None` if the file is missing / unstattable.
+fn file_signature(path: &Path) -> Option<String> {
+    let meta = std::fs::metadata(path).ok()?;
+    let mtime = meta.modified().ok()?.duration_since(std::time::UNIX_EPOCH).ok()?.as_secs();
+    Some(format!("{mtime}:{}", meta.len()))
+}
+
+/// Whether a cached artifact is still fresh for the current source signature: a stale entry (both
+/// signatures known and differing) is rejected; an unknown stored sig (legacy / non-file source) or
+/// an unknown current sig (file gone → nothing to recompute against) is trusted.
+fn artifact_is_fresh(stored: Option<&str>, current: Option<&str>) -> bool {
+    match (stored, current) {
+        (Some(s), Some(c)) => s == c,
+        _ => true,
+    }
+}
+
 /// A recognized data-file extension — the pre-filter for directory expansion (a dropped folder is
 /// walked for these). `add_data` re-sniffs text files (csv/tsv/txt) to route chip / STR / variants.
 fn is_recognized_data_file(path: &Path) -> bool {
@@ -1995,7 +2013,30 @@ impl App {
         completeness: &str,
     ) -> Result<AnalysisArtifact, AppError> {
         let payload = serde_json::to_string(result)?;
-        Ok(artifact::upsert(self.store.pool(), alignment_id, kind, algorithm_version, Utc::now(), &payload, source, completeness).await?)
+        // Stamp the source file's current signature so a later re-align (same path, new content)
+        // invalidates this cached result (see `load_analysis`).
+        let sig = self.bam_source_sig(alignment_id).await;
+        Ok(artifact::upsert(
+            self.store.pool(),
+            alignment_id,
+            kind,
+            algorithm_version,
+            Utc::now(),
+            &payload,
+            source,
+            completeness,
+            sig.as_deref(),
+        )
+        .await?)
+    }
+
+    /// The alignment's source-file signature (`mtime:size`) for cache staleness. `None` when the
+    /// alignment / its path is gone or unstattable — then the cache is trusted (nothing to
+    /// recompute against). Cheap: a metadata stat, no file read (content hashing is the separate,
+    /// deferred federation-identity path).
+    async fn bam_source_sig(&self, alignment_id: i64) -> Option<String> {
+        let aln = alignment::get(self.store.pool(), alignment_id).await.ok().flatten()?;
+        file_signature(Path::new(&aln.bam_path?))
     }
 
     /// `(source, completeness)` of a cached artifact, defaulting `None` columns to
@@ -2022,7 +2063,15 @@ impl App {
         algorithm_version: &str,
     ) -> Result<Option<T>, AppError> {
         match artifact::get(self.store.pool(), alignment_id, kind, algorithm_version).await? {
-            Some(a) => Ok(Some(serde_json::from_str(&a.payload)?)),
+            Some(a) => {
+                // Treat a cached result as a miss when the source file changed since it was computed
+                // (BAM-mtime invalidation) — the caller then recomputes + re-stamps it.
+                let current = self.bam_source_sig(alignment_id).await;
+                if !artifact_is_fresh(a.source_sig.as_deref(), current.as_deref()) {
+                    return Ok(None);
+                }
+                Ok(Some(serde_json::from_str(&a.payload)?))
+            }
             None => Ok(None),
         }
     }
@@ -2244,6 +2293,10 @@ impl App {
     /// persist as an `sv` artifact. Needs coverage + insert-size inputs (computed/loaded here)
     /// and **≥10× mean coverage** (the caller errors below that).
     pub async fn run_sv(&self, alignment_id: i64) -> Result<navigator_analysis::sv::types::SvAnalysisResult, AppError> {
+        // Resume: a fresh cached SV result (source unchanged) is reused rather than recomputed.
+        if let Some(c) = self.cached_sv(alignment_id).await? {
+            return Ok(c);
+        }
         let aln = alignment::get(self.store.pool(), alignment_id)
             .await?
             .ok_or_else(|| AppError::Store(StoreError::NotFound(format!("alignment {alignment_id}"))))?;
@@ -2305,6 +2358,10 @@ impl App {
         contig: String,
         params: HaploidCallerParams,
     ) -> Result<Vec<VariantCall>, AppError> {
+        // Resume: reuse a fresh cached de-novo result for this contig (source unchanged).
+        if let Some(c) = self.cached_denovo(alignment_id, &contig).await? {
+            return Ok(c);
+        }
         let kind = denovo_kind(&contig);
         let calls = tokio::task::spawn_blocking(move || {
             caller::call_denovo(&bam, &reference, &contig, &params)
@@ -7289,8 +7346,29 @@ mod settings_tests {
 
 #[cfg(test)]
 mod import_tests {
-    use super::{collect_data_files, is_recognized_data_file};
+    use super::{artifact_is_fresh, collect_data_files, file_signature, is_recognized_data_file};
     use std::path::Path;
+
+    #[test]
+    fn artifact_freshness_only_rejects_a_known_mismatch() {
+        assert!(artifact_is_fresh(Some("100:5"), Some("100:5")), "matching sig → fresh");
+        assert!(!artifact_is_fresh(Some("100:5"), Some("200:5")), "changed mtime → stale");
+        assert!(!artifact_is_fresh(Some("100:5"), Some("100:9")), "changed size → stale");
+        assert!(artifact_is_fresh(None, Some("100:5")), "legacy row (no stored sig) → trusted");
+        assert!(artifact_is_fresh(Some("100:5"), None), "source gone (no current sig) → trusted");
+    }
+
+    #[test]
+    fn file_signature_changes_when_content_grows() {
+        let p = std::env::temp_dir().join(format!("dun-sig-{}.bin", std::process::id()));
+        std::fs::write(&p, b"abc").unwrap();
+        let s1 = file_signature(&p).expect("sig");
+        std::fs::write(&p, b"abcdef").unwrap(); // size changes → signature changes
+        let s2 = file_signature(&p).expect("sig");
+        assert_ne!(s1, s2);
+        assert!(file_signature(Path::new("/no/such/file/xyz")).is_none());
+        let _ = std::fs::remove_file(&p);
+    }
 
     #[test]
     fn recognizes_data_extensions() {
