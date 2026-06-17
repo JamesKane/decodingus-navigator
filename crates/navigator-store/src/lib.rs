@@ -16,6 +16,7 @@ pub mod chip_profile;
 pub mod consensus_painting;
 pub mod consensus_profile;
 pub mod haplogroup_call;
+pub mod ibd_exchange;
 pub mod mtdna;
 pub mod error;
 pub mod panel;

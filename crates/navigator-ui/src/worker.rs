@@ -16,7 +16,7 @@ use navigator_app::{
     AlignmentProbe, AncestryResult, AncestrySegment, App, AppError, AuditEntry, BatchImportSummary, BuildNeed,
     Consensus, Coverage, StrConcordanceRow,
     DenovoCall, DnaType, HaploAssignment, HeteroplasmySite, IbdComparison, IbdDetectorConfig,
-    IbdSuggestion,
+    IbdSuggestion, IncomingRequest, ExchangeSessionInfo, StoredIbdExchange,
     IdentityVerification, PanelGenotype, PrivateBucket, ProjectImportSummary, ProjectOverview,
     ProjectSampleReport, ReadMetrics, RefBuildStatus, SexInferenceResult, SourceType,
     SvAnalysisResult, YMatch,
@@ -187,6 +187,17 @@ pub enum Command {
     LoadIbdSuggestions,
     /// Federated IBD step 2: request an introduction to a suggested candidate.
     IbdIntroduce { suggested_sample_guid: String },
+    /// Adopt a local self-certifying did:key identity (desktop bootstrap — no PDS/OAuth).
+    UseLocalIdentity,
+    /// Poll the AppView for inbound exchange requests + consent-ready sessions (the exchange inbox).
+    ExchangeInbox,
+    /// Consent to (or decline) an inbound exchange request.
+    ExchangeConsent { request_uri: String, given: bool },
+    /// Run a full IBD exchange for a subject over a consent-ready session (handshake → dosage
+    /// exchange → signed attestations → persist). Long-running; needs the peer online.
+    RunIbdExchange { info: ExchangeSessionInfo, biosample_guid: SampleGuid },
+    /// Load the subject's persisted IBD exchange results.
+    LoadIbdExchanges { biosample_guid: SampleGuid },
     /// Resolve the sequencing lab for runs that have an inferred instrument id but no facility,
     /// via the AppView instrument→lab map (best-effort, cached). Sent on startup + after imports.
     BackfillLabs,
@@ -417,6 +428,14 @@ pub enum Event {
     IbdSuggestions(Vec<IbdSuggestion>),
     /// An introduction request was opened for a candidate (status initially `PENDING`).
     IbdIntroduced { suggested_sample_guid: String, request_uri: String, status: String },
+    /// The exchange inbox: inbound requests awaiting our consent + consent-ready sessions.
+    ExchangeInbox { incoming: Vec<IncomingRequest>, ready: Vec<ExchangeSessionInfo> },
+    /// A consent was recorded (the UI refreshes the inbox).
+    ExchangeConsented,
+    /// A full IBD exchange completed for a subject (the UI reloads its results).
+    IbdExchangeDone { biosample_guid: SampleGuid, total_shared_cm: f64, segment_count: usize, relationship: String, agreed: bool },
+    /// The subject's persisted IBD exchange results.
+    IbdExchanges { biosample_guid: SampleGuid, rows: Vec<StoredIbdExchange> },
     /// Identity-verification result between two alignments.
     Identity(IdentityVerification),
     /// The reconciliation audit log for a subject + DNA type.
@@ -888,6 +907,43 @@ pub async fn handle(app: &App, cmd: Command) -> Event {
                 Err(e) => Event::Error(e.to_string()),
             }
         }
+        Command::UseLocalIdentity => match app.use_local_identity() {
+            Ok(did) => Event::Authenticated(Some(did)),
+            Err(e) => Event::Error(e.to_string()),
+        },
+        Command::ExchangeInbox => {
+            match (app.exchange_incoming().await, app.exchange_pending().await) {
+                (Ok(incoming), Ok(ready)) => Event::ExchangeInbox { incoming, ready },
+                (Err(e), _) | (_, Err(e)) => Event::Error(e.to_string()),
+            }
+        }
+        Command::ExchangeConsent { request_uri, given } => match app.exchange_consent(&request_uri, given).await {
+            Ok(_) => Event::ExchangeConsented,
+            Err(e) => Event::Error(e.to_string()),
+        },
+        Command::RunIbdExchange { info, biosample_guid } => {
+            let cfg = IbdDetectorConfig::default();
+            match app.open_exchange_session(&info).await {
+                Ok(session) => match app
+                    .exchange_ibd_for_subject(&session, biosample_guid, &info.request_uri, None, cfg)
+                    .await
+                {
+                    Ok(r) => Event::IbdExchangeDone {
+                        biosample_guid,
+                        total_shared_cm: r.summary.total_shared_cm,
+                        segment_count: r.summary.segment_count,
+                        relationship: format!("{:?}", r.summary.relationship),
+                        agreed: r.agreed,
+                    },
+                    Err(e) => Event::Error(e.to_string()),
+                },
+                Err(e) => Event::Error(e.to_string()),
+            }
+        }
+        Command::LoadIbdExchanges { biosample_guid } => match app.list_ibd_exchanges_for_subject(biosample_guid).await {
+            Ok(rows) => Event::IbdExchanges { biosample_guid, rows },
+            Err(e) => Event::Error(e.to_string()),
+        },
         Command::BackfillLabs => match app.backfill_run_labs().await {
             Ok(count) => Event::LabsResolved(count),
             Err(e) => Event::Error(e.to_string()),

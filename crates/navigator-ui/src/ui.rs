@@ -463,6 +463,13 @@ pub struct NavigatorApp {
     loading_ibd_suggestions: bool,
     /// Per-candidate introduction status, keyed by `suggested_sample_guid` (e.g. "PENDING").
     ibd_intros: std::collections::HashMap<String, String>,
+    /// Encrypted-exchange inbox: inbound requests awaiting consent + consent-ready sessions.
+    exchange_incoming: Vec<navigator_app::IncomingRequest>,
+    exchange_ready: Vec<navigator_app::ExchangeSessionInfo>,
+    /// The selected subject's persisted IBD exchange results.
+    exchange_results: Vec<navigator_app::StoredIbdExchange>,
+    /// True while an inbox refresh / consent / exchange run is in flight.
+    exchange_busy: bool,
     /// Signed-in account DID, or `None`. Gates the "Publish" actions.
     account: Option<String>,
     /// Whether the last PDS write reached the server (offline indicator).
@@ -686,6 +693,10 @@ impl NavigatorApp {
             ibd_suggestions: Vec::new(),
             loading_ibd_suggestions: false,
             ibd_intros: std::collections::HashMap::new(),
+            exchange_incoming: Vec::new(),
+            exchange_ready: Vec::new(),
+            exchange_results: Vec::new(),
+            exchange_busy: false,
             account: None,
             online: true,
             sync_pending: 0,
@@ -1229,6 +1240,30 @@ impl NavigatorApp {
                     };
                     self.ibd_intros.insert(suggested_sample_guid, label);
                 }
+                Event::ExchangeInbox { incoming, ready } => {
+                    self.exchange_busy = false;
+                    self.status = format!("Exchange inbox: {} request(s), {} ready session(s)", incoming.len(), ready.len());
+                    self.exchange_incoming = incoming;
+                    self.exchange_ready = ready;
+                }
+                Event::ExchangeConsented => {
+                    self.exchange_busy = false;
+                    self.status = "Consent recorded".into();
+                    let _ = self.tx.send(Command::ExchangeInbox); // refresh
+                }
+                Event::IbdExchangeDone { biosample_guid, total_shared_cm, segment_count, relationship, agreed } => {
+                    self.exchange_busy = false;
+                    self.status = format!(
+                        "IBD exchange: {total_shared_cm:.1} cM, {segment_count} segment(s), {relationship}{}",
+                        if agreed { " · agreed" } else { " · NOT agreed" }
+                    );
+                    let _ = self.tx.send(Command::LoadIbdExchanges { biosample_guid });
+                }
+                Event::IbdExchanges { biosample_guid, rows } => {
+                    if self.selected_sample == Some(biosample_guid) {
+                        self.exchange_results = rows;
+                    }
+                }
                 Event::Identity(v) => {
                     self.status = format!("Identity: {:?} ({} sites)", v.status, v.sites_compared);
                     self.identity = Some(v);
@@ -1331,6 +1366,7 @@ impl NavigatorApp {
         self.auto_profile_query.clear();
         self.private_y_query.clear();
         self.str_seq_query.clear();
+        self.exchange_results.clear();
         self.coverage_by_aln.clear();
         self.audit_y.clear();
         self.audit_mt.clear();
@@ -1359,6 +1395,8 @@ impl NavigatorApp {
         let _ = self.tx.send(Command::LoadYProfile { biosample_guid: guid });
         // Likewise the mtDNA consensus profile (cheap cached snapshot for the mtDNA tab).
         let _ = self.tx.send(Command::LoadMtProfile { biosample_guid: guid });
+        // The subject's persisted federated IBD exchange results (cheap; shown in the IBD tab).
+        let _ = self.tx.send(Command::LoadIbdExchanges { biosample_guid: guid });
         // And the autosomal (diploid) consensus snapshot for the Autosomal tab.
         let _ = self.tx.send(Command::LoadAutosomalProfile { biosample_guid: guid });
     }
@@ -1711,6 +1749,8 @@ impl NavigatorApp {
                     card(ui, self.tr("card.consensusIbd"), |ui| self.consensus_ibd_section(ui, guid));
                     ui.add_space(10.0);
                     card(ui, self.tr("card.networkSuggestions"), |ui| self.network_suggestions_section(ui));
+                    ui.add_space(10.0);
+                    card(ui, self.tr("card.encryptedExchange"), |ui| self.exchange_section(ui, guid));
                     // Per-source compare + within-subject identity (the QC gate) — advanced.
                     if let Some(id) = self.selected_alignment {
                         ui.add_space(10.0);
@@ -2628,7 +2668,11 @@ impl NavigatorApp {
                 if ui.button(self.tr("account.signOut")).clicked() {
                     let _ = self.tx.send(Command::Logout);
                 }
-                if self.online {
+                // A local did:key identity self-certifies (no PDS) — show a "local" chip; a real PDS
+                // account shows online/offline.
+                if did.starts_with("did:key:") {
+                    ui.colored_label(egui::Color32::from_rgb(150, 160, 220), self.tr("account.localIdentity"));
+                } else if self.online {
                     ui.colored_label(egui::Color32::from_rgb(80, 190, 120), self.tr("account.online"));
                 } else {
                     ui.colored_label(egui::Color32::from_rgb(220, 150, 60), self.tr("account.offline"));
@@ -2653,6 +2697,10 @@ impl NavigatorApp {
                         .desired_width(180.0),
                 );
                 ui.label(self.tr("account.pds"));
+                // Self-certifying did:key identity — works against the AppView with no PDS/OAuth.
+                if ui.add_enabled(!self.logging_in, egui::Button::new(self.tr("account.useLocal"))).clicked() {
+                    let _ = self.tx.send(Command::UseLocalIdentity);
+                }
             }
         }
     }
@@ -5141,6 +5189,110 @@ impl NavigatorApp {
         if let Some(guid) = introduce {
             self.status = self.tr("network.introducing").to_string();
             let _ = self.tx.send(Command::IbdIntroduce { suggested_sample_guid: guid });
+        }
+    }
+
+    /// The encrypted edge-to-edge exchange (gap §4): inbound requests awaiting consent, consent-ready
+    /// sessions to run an IBD exchange over, and this subject's saved results. Requires an active
+    /// account (real PDS or did:key). Flows into the page scroll (no nested ScrollArea).
+    fn exchange_section(&mut self, ui: &mut egui::Ui, guid: SampleGuid) {
+        if self.account.is_none() {
+            ui.label(self.tr("network.signInRequired"));
+            return;
+        }
+        ui.horizontal(|ui| {
+            if ui.add_enabled(!self.exchange_busy, egui::Button::new(self.tr("exchange.refresh"))).clicked() {
+                self.exchange_busy = true;
+                let _ = self.tx.send(Command::ExchangeInbox);
+            }
+            if self.exchange_busy {
+                ui.spinner();
+            }
+            ui.label(egui::RichText::new(self.tr("hint.encryptedExchange")).weak().small());
+        });
+
+        // Inbound requests awaiting our consent (symmetric-blind: no initiator DID until consent).
+        let incoming: Vec<(String, String, String)> = self
+            .exchange_incoming
+            .iter()
+            .map(|r| (r.request_uri.clone(), r.purpose.clone(), r.created_at.clone()))
+            .collect();
+        if !incoming.is_empty() {
+            ui.add_space(6.0);
+            ui.label(egui::RichText::new(self.tr("exchange.incoming")).strong());
+            let mut consent: Option<(String, bool)> = None;
+            egui::Grid::new(("exchange_incoming", guid)).striped(true).num_columns(4).spacing([12.0, 2.0]).show(ui, |ui| {
+                for (req, purpose, created) in &incoming {
+                    let short: String = req.chars().take(16).collect();
+                    ui.label(short).on_hover_text(req);
+                    ui.label(purpose);
+                    ui.label(egui::RichText::new(created).weak().small());
+                    ui.horizontal(|ui| {
+                        if ui.button(self.tr("exchange.accept")).clicked() {
+                            consent = Some((req.clone(), true));
+                        }
+                        if ui.button(self.tr("exchange.decline")).clicked() {
+                            consent = Some((req.clone(), false));
+                        }
+                    });
+                    ui.end_row();
+                }
+            });
+            if let Some((request_uri, given)) = consent {
+                self.exchange_busy = true;
+                let _ = self.tx.send(Command::ExchangeConsent { request_uri, given });
+            }
+        }
+
+        // Consent-ready sessions → run the IBD exchange (handshake + dosage exchange + attestation).
+        let ready: Vec<navigator_app::ExchangeSessionInfo> = self.exchange_ready.clone();
+        if !ready.is_empty() {
+            ui.add_space(6.0);
+            ui.label(egui::RichText::new(self.tr("exchange.ready")).strong());
+            let mut run: Option<navigator_app::ExchangeSessionInfo> = None;
+            egui::Grid::new(("exchange_ready", guid)).striped(true).num_columns(3).spacing([12.0, 2.0]).show(ui, |ui| {
+                for info in &ready {
+                    let short: String = info.partner_did.chars().take(20).collect();
+                    ui.label(short).on_hover_text(&info.partner_did);
+                    ui.label(&info.purpose);
+                    if ui.add_enabled(!self.exchange_busy, egui::Button::new(self.tr("exchange.run"))).clicked() {
+                        run = Some(info.clone());
+                    }
+                    ui.end_row();
+                }
+            });
+            if let Some(info) = run {
+                self.exchange_busy = true;
+                self.status = self.tr("exchange.running").to_string();
+                let _ = self.tx.send(Command::RunIbdExchange { info, biosample_guid: guid });
+            }
+        }
+
+        // This subject's saved results.
+        ui.add_space(6.0);
+        if self.exchange_results.is_empty() {
+            ui.weak(self.tr("exchange.noResults"));
+        } else {
+            ui.label(egui::RichText::new(self.tr("exchange.results")).strong());
+            egui::Grid::new(("exchange_results", guid)).striped(true).num_columns(4).spacing([14.0, 2.0]).show(ui, |ui| {
+                ui.strong(self.tr("exchange.col.partner"));
+                ui.strong(self.tr("exchange.col.shared"));
+                ui.strong(self.tr("exchange.col.relationship"));
+                ui.strong(self.tr("exchange.col.agreed"));
+                ui.end_row();
+                for r in &self.exchange_results {
+                    let short: String = r.partner_did.chars().take(20).collect();
+                    ui.label(short).on_hover_text(&r.partner_did);
+                    ui.label(format!("{:.1} cM · {} seg", r.total_shared_cm, r.segment_count));
+                    ui.label(&r.relationship);
+                    if r.agreed {
+                        ui.colored_label(egui::Color32::from_rgb(60, 160, 60), self.tr("exchange.agreedYes"));
+                    } else {
+                        ui.colored_label(egui::Color32::from_rgb(200, 90, 90), self.tr("exchange.agreedNo"));
+                    }
+                    ui.end_row();
+                }
+            });
         }
     }
 

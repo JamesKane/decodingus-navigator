@@ -245,6 +245,25 @@ const DEVICE_KEY_INGEST_RETRIES: u32 = 4;
 /// Poll rounds (≈1s each) an IBD exchange waits for the partner's dosages / attestation.
 const EXCHANGE_POLL_ROUNDS: u32 = 30;
 
+/// PDS collection NSID for a published IBD match attestation (the AppView indexes these via Jetstream).
+const IBD_ATTESTATION_COLLECTION: &str = "com.decodingus.atmosphere.ibdAttestation";
+
+/// Above this many sites, the exchanged dosage vector is decimated to fit the relay's 1 MiB envelope.
+const EXCHANGE_SITE_BUDGET: usize = 100_000;
+/// Decimation stride when over budget: keep sites at `position % N == 0`. A **position-based** rule
+/// (not index) so both peers keep the *same physical sites* — preserving the IBD intersection — even
+/// when their panels differ in size (WGS vs chip). Yields ~1/N of the canonical panel.
+const EXCHANGE_DECIMATE: i64 = 16;
+
+/// Downsample a dosage vector to fit the relay envelope, deterministically + cross-peer-aligned.
+/// Small sets (synthetic tests, sparse chips) pass through untouched.
+fn decimate_for_exchange(sites: Vec<IbdSite>) -> Vec<IbdSite> {
+    if sites.len() <= EXCHANGE_SITE_BUDGET {
+        return sites;
+    }
+    sites.into_iter().filter(|s| s.position % EXCHANGE_DECIMATE == 0).collect()
+}
+
 /// Parse the AppView's `/api/v1/ibd/suggestions` body into [`IbdSuggestion`]s. Lenient on
 /// field casing (camel/snake) and on the `signals` shape (object map or array) so a minor
 /// contract drift degrades gracefully rather than dropping every candidate.
@@ -339,6 +358,7 @@ pub use navigator_domain::yprofile::{YProfileSummary, YProfileVariant, YSourceOb
 pub use navigator_domain::consensus::{DiploidSourceObs, DiploidVariant};
 pub use navigator_domain::ymatch::{Tmrca, YMatch, YSignal};
 pub use navigator_analysis::ibd_attest::{IbdAttestation, IbdExchangeMsg, IbdSite};
+pub use navigator_store::ibd_exchange::StoredIbdExchange;
 use navigator_domain::bisdna;
 use navigator_domain::ysnp_dict::{self, YsnpDictionary};
 use navigator_store::{
@@ -3552,6 +3572,10 @@ impl App {
         let did = self.current_account().ok_or(AppError::NotAuthenticated)?;
         let dev = self.ensure_device_key().await?;
 
+        // Fit the relay's 1 MiB envelope: decimate a large panel (both peers apply the same
+        // position-based rule, so the intersection is preserved). Detect on the decimated set we send.
+        let my_sites = decimate_for_exchange(my_sites);
+
         // 1. Send our dosages (the IBD panel is on CHM13 / hs1).
         let dos = IbdExchangeMsg::Dosages { build: "hs1".into(), sites: my_sites.clone() };
         self.exchange_send(session, 1, &dos.to_bytes().map_err(AppError::Import)?).await?;
@@ -3628,6 +3652,111 @@ impl App {
             partner_attestation: partner_att,
             agreed,
         })
+    }
+
+    /// The subject's best IBD data source: the highest-coverage alignment (the
+    /// [`default_alignment_for_subject`](Self::default_alignment_for_subject) pattern), else its first
+    /// chip profile. `Ok(None)` when the subject has neither.
+    pub async fn best_ibd_source_for_subject(&self, guid: SampleGuid) -> Result<Option<IbdSource>, AppError> {
+        let alignments = alignment::list_for_biosample(self.store.pool(), guid).await?;
+        let mut best: Option<(f64, i64)> = None;
+        for a in &alignments {
+            let cov = self.cached_coverage(a.id).await.ok().flatten().map(|c| c.mean_coverage).unwrap_or(0.0);
+            if best.as_ref().map_or(true, |(bc, _)| cov > *bc) {
+                best = Some((cov, a.id));
+            }
+        }
+        if let Some((_, id)) = best {
+            return Ok(Some(IbdSource::Alignment(id)));
+        }
+        Ok(self.list_chip_profiles(guid).await?.first().map(|c| IbdSource::Chip(c.id)))
+    }
+
+    /// The subject's IBD-panel dosages from its best source (panel-restricted — only the canonical IBD
+    /// sites, not the whole genome, so that's all that can leave the device).
+    pub async fn ibd_dosages_for_subject(&self, guid: SampleGuid) -> Result<Vec<SiteGenotype>, AppError> {
+        let source = self
+            .best_ibd_source_for_subject(guid)
+            .await?
+            .ok_or_else(|| AppError::Import("no IBD-capable data for this subject (need an alignment or a chip profile)".into()))?;
+        self.ibd_panel_dosages(source).await
+    }
+
+    /// Run a federated IBD exchange for a **subject** (resolves its real IBD-panel dosages), persists
+    /// the result, and best-effort publishes our attestation. The UI entry point.
+    pub async fn exchange_ibd_for_subject(
+        &self,
+        session: &EstablishedSession,
+        guid: SampleGuid,
+        request_uri: &str,
+        partner_sample_ref: Option<String>,
+        config: IbdDetectorConfig,
+    ) -> Result<IbdExchangeResult, AppError> {
+        let dosages = self.ibd_dosages_for_subject(guid).await?;
+        let sites = dosages
+            .into_iter()
+            .map(|g| IbdSite { contig: g.contig, position: g.position, dosage: g.dosage })
+            .collect();
+        let result = self
+            .exchange_ibd_with_dosages(session, sites, request_uri, Some(guid.to_string()), partner_sample_ref, config)
+            .await?;
+        self.record_ibd_exchange(guid, session, request_uri, &result).await?;
+        // Best-effort: publish our attestation to the PDS (skipped for did:key; never fails the exchange).
+        let _ = self.publish_ibd_attestation(&result.my_attestation).await;
+        Ok(result)
+    }
+
+    /// Persist an exchange result (upsert by session id).
+    async fn record_ibd_exchange(
+        &self,
+        guid: SampleGuid,
+        session: &EstablishedSession,
+        request_uri: &str,
+        r: &IbdExchangeResult,
+    ) -> Result<(), AppError> {
+        let row = navigator_store::ibd_exchange::StoredIbdExchange {
+            session_id: session.session_id.clone(),
+            request_uri: request_uri.to_string(),
+            my_did: self.current_account().unwrap_or_default(),
+            partner_did: session.partner_did.clone(),
+            biosample_guid: guid.to_string(),
+            partner_sample_ref: r.partner_attestation.attesting_sample_ref.clone(),
+            total_shared_cm: r.summary.total_shared_cm,
+            segment_count: r.summary.segment_count as i64,
+            longest_segment_cm: r.summary.longest_segment_cm,
+            relationship: format!("{:?}", r.summary.relationship),
+            agreed: r.agreed,
+            segments: serde_json::to_string(&r.segments).unwrap_or_else(|_| "[]".into()),
+            my_attestation: serde_json::to_string(&r.my_attestation).unwrap_or_else(|_| "{}".into()),
+            partner_attestation: serde_json::to_string(&r.partner_attestation).unwrap_or_else(|_| "{}".into()),
+            created_at: Utc::now().to_rfc3339(),
+        };
+        navigator_store::ibd_exchange::upsert(self.store.pool(), &row).await?;
+        Ok(())
+    }
+
+    /// All persisted IBD exchange results (newest first).
+    pub async fn list_ibd_exchanges(&self) -> Result<Vec<StoredIbdExchange>, AppError> {
+        Ok(navigator_store::ibd_exchange::list(self.store.pool()).await?)
+    }
+
+    /// Persisted IBD exchange results for one subject (newest first).
+    pub async fn list_ibd_exchanges_for_subject(&self, guid: SampleGuid) -> Result<Vec<StoredIbdExchange>, AppError> {
+        Ok(navigator_store::ibd_exchange::list_for_biosample(self.store.pool(), guid).await?)
+    }
+
+    /// Publish a signed attestation to the PDS (the AppView indexes it via Jetstream). No-op for a
+    /// did:key local identity (self-certifying, no repo to write). Idempotent via a session-derived rkey.
+    pub async fn publish_ibd_attestation(&self, att: &IbdAttestation) -> Result<(), AppError> {
+        let did = self.current_account().ok_or(AppError::NotAuthenticated)?;
+        if did.starts_with("did:key:") {
+            return Ok(()); // did:key has no PDS repo
+        }
+        let rkey: String = att.session_id.chars().filter(|c| c.is_ascii_alphanumeric()).take(64).collect();
+        let record = serde_json::to_value(att).map_err(|e| AppError::Import(e.to_string()))?;
+        let mut engine = self.sync_engine()?;
+        engine.push_create_rkey(IBD_ATTESTATION_COLLECTION, record, &rkey).await?;
+        Ok(())
     }
 
     /// POST a JSON body to an `/api/v1/<path>` exchange endpoint, mapping non-2xx to an AppView error.
@@ -7691,6 +7820,29 @@ mod ibd_attest_tests {
         use navigator_analysis::ibd_attest::summary_hash;
         assert_eq!(summary_hash(&summary(42.0)), summary_hash(&summary(42.0)));
         assert_ne!(summary_hash(&summary(42.0)), summary_hash(&summary(7.0)));
+    }
+
+    /// An exchange result persists and reads back per subject (the UI's saved-results path).
+    #[tokio::test]
+    async fn exchange_result_persists_and_lists() {
+        use navigator_store::Store;
+        let app = App::new(Store::open_in_memory().await.unwrap());
+        let b = app.add_biosample(None, "S1", None, None).await.unwrap();
+        let session = EstablishedSession { session_id: "sess-x".into(), partner_did: "did:key:zB".into(), key: [0u8; 32] };
+        let result = IbdExchangeResult {
+            summary: summary(75.0),
+            segments: vec![],
+            overlapping_sites: 100,
+            my_attestation: IbdAttestation::unsigned("exchange:r", "sess-x", "did:key:zA", Some(b.guid.to_string()), Some("bio-B".into()), &summary(75.0), "t"),
+            partner_attestation: IbdAttestation::unsigned("exchange:r", "sess-x", "did:key:zB", Some("bio-B".into()), Some(b.guid.to_string()), &summary(75.0), "t"),
+            agreed: true,
+        };
+        app.record_ibd_exchange(b.guid, &session, "exchange:r", &result).await.unwrap();
+        let rows = app.list_ibd_exchanges_for_subject(b.guid).await.unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].total_shared_cm, 75.0);
+        assert!(rows[0].agreed);
+        assert_eq!(rows[0].partner_did, "did:key:zB");
     }
 }
 

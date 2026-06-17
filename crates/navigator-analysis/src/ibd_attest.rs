@@ -122,12 +122,23 @@ pub enum IbdExchangeMsg {
 }
 
 impl IbdExchangeMsg {
-    /// JSON bytes for the channel.
+    /// Gzipped JSON bytes for the channel. The dosage payload is large (a panel of sites), and the
+    /// relay caps an envelope at 1 MiB, so it's compressed (the dosage vector compresses well).
     pub fn to_bytes(&self) -> Result<Vec<u8>, String> {
-        serde_json::to_vec(self).map_err(|e| e.to_string())
+        use flate2::{write::GzEncoder, Compression};
+        use std::io::Write;
+        let json = serde_json::to_vec(self).map_err(|e| e.to_string())?;
+        let mut enc = GzEncoder::new(Vec::new(), Compression::default());
+        enc.write_all(&json).map_err(|e| e.to_string())?;
+        enc.finish().map_err(|e| e.to_string())
     }
     pub fn from_bytes(b: &[u8]) -> Result<Self, String> {
-        serde_json::from_slice(b).map_err(|e| e.to_string())
+        use flate2::read::GzDecoder;
+        use std::io::Read;
+        let mut dec = GzDecoder::new(b);
+        let mut json = Vec::new();
+        dec.read_to_end(&mut json).map_err(|e| e.to_string())?;
+        serde_json::from_slice(&json).map_err(|e| e.to_string())
     }
 }
 
