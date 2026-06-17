@@ -2915,6 +2915,32 @@ impl App {
         self.current_account().ok_or(AppError::NotAuthenticated)
     }
 
+    /// Adopt a **local `did:key` identity** as the active account: the device key *is* the identity,
+    /// so AppView calls self-certify (`verify_signed` accepts `did:key` directly — no PDS record).
+    /// This is the desktop bootstrap for the federated edge: device-key-signed calls (IBD suggestions,
+    /// the encrypted exchange) work with no OAuth/PDS. Reuses an existing local identity if one is
+    /// active; otherwise generates + persists a fresh device key. Returns the `did:key`.
+    pub fn use_local_identity(&self) -> Result<String, AppError> {
+        if let Some(did) = self.current_account() {
+            if did.starts_with("did:key:") && DeviceKey::load(KEYCHAIN_SERVICE, &did)?.is_some() {
+                return Ok(did);
+            }
+        }
+        let key = DeviceKey::generate();
+        let did = key.did_key();
+        key.save(KEYCHAIN_SERVICE, &did)?;
+        let _ = self.auth.tokens.set_active(&did);
+        *self.auth.active.lock().unwrap() = Some(did.clone());
+        Ok(did)
+    }
+
+    /// Switch the active account to an already-known DID (in-memory; the keychain marker too). For
+    /// multi-identity flows — e.g. driving both sides of an exchange from one process.
+    pub fn set_active_account(&self, did: &str) {
+        let _ = self.auth.tokens.set_active(did);
+        *self.auth.active.lock().unwrap() = Some(did.to_string());
+    }
+
     /// Sign out: drop the active account and delete its stored session.
     pub async fn logout(&self) -> Result<(), AppError> {
         let did = self.auth.active.lock().unwrap().take();
@@ -3085,6 +3111,12 @@ impl App {
         let did = self.current_account().ok_or(AppError::NotAuthenticated)?;
         let key = DeviceKey::load_or_generate(KEYCHAIN_SERVICE, &did)?;
 
+        // A local did:key identity self-certifies (the AppView verifies the signature against the DID
+        // itself), so there is no PDS record to publish — and no OAuth session to do it with.
+        if did.starts_with("did:key:") {
+            return Ok(key);
+        }
+
         // Publish the public key once. A public getRecord on the deterministic rkey tells us
         // whether it already exists; only create it when absent (keeps re-launches quiet).
         let rkey = key.record_rkey();
@@ -3227,6 +3259,33 @@ impl App {
         }
         let v: serde_json::Value = resp.json().await.map_err(|e| AppError::Sync(navigator_sync::SyncError::from(e)))?;
         Ok(v.get("x25519_pub").and_then(|x| x.as_str()).map(str::to_string))
+    }
+
+    /// Open an exchange request to a specific partner DID — the direct counterpart to the
+    /// suggestion-mediated [`ibd_introduce`] (`POST /api/v1/exchange/request`). Generates an opaque
+    /// request URI, signs the canonical request message, and posts it. The partner discovers it via
+    /// [`exchange_incoming`] (symmetric-blind) and consents; on mutual consent a session opens. Returns
+    /// the request URI to track. `scope` carries an optional project scope (team-ACL-gated server-side).
+    pub async fn exchange_request(
+        &self,
+        partner_did: &str,
+        purpose: &str,
+        scope: Option<&str>,
+    ) -> Result<String, AppError> {
+        let did = self.current_account().ok_or(AppError::NotAuthenticated)?;
+        let dev = self.ensure_device_key().await?;
+        let request_uri = format!("exchange:{}", Uuid::new_v4());
+        let sig = dev.sign(&exchange::messages::request(&request_uri, &did, partner_did, purpose, scope));
+        let body = serde_json::json!({
+            "request_uri": request_uri,
+            "initiator_did": did,
+            "partner_did": partner_did,
+            "purpose": purpose,
+            "scope": scope,
+            "signature": sig,
+        });
+        self.exchange_post("exchange/request", body).await?;
+        Ok(request_uri)
     }
 
     /// Consent to (or decline) an exchange request. On mutual consent the AppView opens a session
