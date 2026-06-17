@@ -113,7 +113,7 @@ federated match surface stays under §4 (the AppView IBD hub).
 **Remaining:** only the *import-UX dialogs* (multi-file / drag-drop / vendor-VCF/FASTA pickers) — the
 backend ingests all of these, but the GUI is single-file-add only → tracked under §8.
 
-## 4. Federated IBD matching — **PARTIAL** (transport validated live; payload + UI remain)
+## 4. Federated IBD matching — **DONE** (transport + payload + UI, validated live; AppView-side indexing remains)
 
 Re-derived against the **AppView-mediated** model (not the Scala P2P relay). Device-key identity +
 the encrypted edge-to-edge channel are in place and **validated end-to-end against a live AppView**
@@ -129,13 +129,17 @@ discovery → dual consent → X3DH-lite handshake → AES-GCM round-trip. The w
 | Signed AppView `ibd_suggestions` / `ibd_introduce` + UI card | `IbdMatchingCoordinator.scala` | **DONE** (a289f7a); `ibd_suggestions` signed poll validated live |
 | Local refinements: chip IBD panel, real genetic map, compare over panel | `PairwiseIbdDetector.scala` | **DONE** (533b6ef/02cdfb7); consensus-driven `compare_ibd_consensus` |
 | IBD **segment detection over the exchange** + attestation sign/verify | `IbdAttestation.scala` | **DONE** (816fcea) — `ibd_attest.rs` (IbdSite/IbdAttestation/IbdExchangeMsg) + app `exchange_ibd`; dosages over the channel → symmetric detect → signed dual-hash attestations. **Validated live** (two did:key peers: identical 75 cM / ThirdCousin, both verified + agreed) |
-| Consent / request / result storage + lifecycle | `Match{Consent,Request,Result}Repository.scala` | **PARTIAL** — AppView brokers request/consent/session live; Navigator-side **persistence** of results/attestations + PDS publish + UI not wired |
+| Consent / request / result storage + lifecycle | `Match{Consent,Request,Result}Repository.scala` | **DONE** (02efee5) — `ibd_exchange_result` (mig 0025) persists results + both attestations; `exchange_ibd_for_subject` (real panel dosages, gzip + decimation to fit the 1 MiB envelope) + best-effort PDS publish; **Encrypted-exchange UI** (consent → run → results) + a did:key local-identity button. Validated live on James's 1.23M real sites |
 | ROH detection, HalfSibling category | `RelationshipEstimator.scala` | PARTIAL |
 
-**Remaining (medium):** the IBD segment exchange + attestation is **DONE + validated live** (816fcea).
-What's left: wire **real consensus dosages** into `exchange_ibd` (vs the synthetic test panels),
-**persist + PDS-publish** the resulting attestations (→ AppView Jetstream index), and the **UI** for the
-request/consent/exchange flow. The PII-posture decision still governs what content rides the channel.
+**Done (1e43f12, 816fcea, 02efee5), all validated live:** transport (did:key auth + X3DH + AES-GCM),
+segment exchange + dual-hash attestation, real-data resolver (`ibd_dosages_for_subject`, panel-
+restricted, gzip + decimation to fit the 1 MiB envelope), persistence (`ibd_exchange_result`,
+mig 0025) + best-effort PDS publish, and the **Encrypted-exchange UI** + did:key bootstrap button.
+**Remaining (Navigator-side, small):** the AppView consuming the published attestations (Jetstream
+index → discovery), and surfacing the initiator side in the UI (today the UI consents/runs; requests
+are opened via the existing network-suggestions `ibd_introduce`). The PII-posture decision still
+governs what content rides the channel.
 
 ## 5. Sync durability — **PARTIAL** (Phase 1 done; was MISSING)
 
@@ -210,16 +214,16 @@ fingerprint/merge dialogs.
 | 1b-vendor | STR vendor bridge — convention layer + concordance + CHM13 ref | High | — | **DONE** (5fc6641 convention layer; b9a7eed cross-build lift; c142ae7 UI; **b631d79 216-kit CHM13 recalibration**). Offset table rebuilt on 216 CHM13 Big Y kits (swap-QC + per-kit panic isolation in the harness); 6 build-dependent markers handled via `StrBuild`+`GRCH38_DELTA`. Validated held-out: CHM13 1001615 44/44+14/14, GRCh38 27520 55/55+15/15, zero mismatches. *Remaining (low):* the CHM13 lift dropped 33 named chrY markers (incl DYS19/391/426 — table retains their GRCh38 values for the BAM path); multi-copy aggregation; auto-download |
 | ~~2-match~~ | ~~Cross-subject Y matching~~ | — | — | **DONE e0e44bf** — `ymatch.rs` (shared-SNP/novel ranking, divergence LCA, STR-GD, SNP+STR TMRCA) + app `y_matches` one-vs-all + Y-DNA-tab match card. Local v1; federated surface under §4 |
 | 5-p2 | Sync conflict detection + PULL + `source_file` table | Med | Medium | Ties to AppView design |
-| 4-live | IBD live exchange — **transport + segment payload + attestation DONE/validated live** (1e43f12, 816fcea); remaining = real-data wiring + PDS publish/index + UI | Med | Medium | Full two-peer flow proven vs live AppView (did:key → request→consent→session→dosage exchange→symmetric detect→signed dual-hash attestation→verify+agree). Payload content governed by the PII-posture decision |
+| ~~4-live~~ | ~~IBD live exchange~~ | — | — | **DONE** (1e43f12, 816fcea, 02efee5) — transport + segment payload + attestation + real-data resolver + persistence + Encrypted-exchange UI + did:key bootstrap, validated live (James's 1.23M sites → ParentChild, verified+agreed). Remaining: AppView attestation indexing |
 | 7 | VCF liftover orchestration + reference-download checksums | Low-Med | Medium | STR/VCF-workflow enablers |
 | 8-misc | PCA scatter, Y-profile management dialog, IBD match browser, fingerprint/merge dialogs | Low-Med | Mixed | Several small; IBD browser downstream of §4 |
 
 **Recently shipped:** import UX (59b5696), checkpoint/resume (192a939), **STR caller foundation**
 (986e00b — the hard, twice-attempted part), **STR vendor bridge fully landed** (b631d79 — 216-kit
-CHM13 recalibration + build-aware offsets), **§2 cross-subject Y matching** (e0e44bf), **§4 federated
-transport + did:key bootstrap** (1e43f12) **and IBD segment exchange + attestation** (816fcea), both
-validated live. **Best next steps:** **§4 finish** (real consensus dosages into `exchange_ibd` + PDS
-publish/index + exchange UI), **§5-p2** sync conflict/PULL, or the **§8-misc** small UI items
+CHM13 recalibration + build-aware offsets), **§2 cross-subject Y matching** (e0e44bf), and **§4
+federated IBD end-to-end** (1e43f12 / 816fcea / 02efee5 — transport, attestation, real-data exchange,
+persistence, UI; validated live). **Best next steps:** **§5-p2** sync conflict/PULL, the **§8-misc**
+small UI items (PCA scatter, IBD match browser), or §7 VCF-liftover orchestration.
 (PCA scatter, IBD match browser). **Biggest coherent feature now:** the live federated arc (§4) —
 STR calling and cross-subject Y matching, the prior standout local gaps, are done end-to-end.
 **Verify-before-building:** §4 (IBD live) and §5-p2 (sync conflict/PULL) must be scoped against the
