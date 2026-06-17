@@ -8,6 +8,8 @@ use navigator_domain::ancestry::{population_color, population_name, population_s
 
 use crate::ui::ACCENT;
 
+/// Draw the per-chromosome local-ancestry painting: one horizontal bar per autosome (each
+/// normalized to full width), segments colored by ancestry, plus a legend of the ancestries shown.
 pub(crate) fn draw_chromosome_painting(ui: &mut egui::Ui, segments: &[AncestrySegment]) {
     use std::collections::BTreeMap;
     // Group by autosome number → the two copies' segments. Non-autosomes (X/Y/M / the chr99 fallback)
