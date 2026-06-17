@@ -303,3 +303,35 @@ pub(crate) fn draw_ideogram(ui: &mut egui::Ui, regions: &GenomeRegions) {
         }
     }
 }
+
+/// egui_plot bar chart. Shared by the whole-genome and per-contig coverage views.
+pub(crate) fn coverage_histogram_chart(ui: &mut egui::Ui, hist: &[u64], title: &str) {
+    use egui_plot::{Bar, BarChart, Plot};
+    ui.label(format!("Depth histogram — {title}  (depth ≥1; x = depth, y = bases)"));
+    // Skip depth 0 (uncovered + reference-N): it typically dwarfs the coverage peak and would
+    // flatten the rest of the distribution. That count is the table's NoCov / callable breakdown.
+    let bars: Vec<Bar> = hist
+        .iter()
+        .enumerate()
+        .skip(1)
+        .map(|(depth, &count)| Bar::new(depth as f64, count as f64).width(0.9))
+        .collect();
+    let max_depth = hist.len().max(2) as f64;
+    let max_count = hist.iter().skip(1).copied().max().unwrap_or(1) as f64;
+    let chart = BarChart::new(bars).name("bases");
+    // Fixed, non-interactive view: lock pan/zoom/scroll and pin the bounds to the data so the
+    // axes can't drift into negative space or be dragged off-screen.
+    Plot::new(format!("coverage_histogram_{title}"))
+        .height(180.0)
+        .allow_drag(false)
+        .allow_zoom(false)
+        .allow_scroll(false)
+        .allow_boxed_zoom(false)
+        .clamp_grid(true)
+        .set_margin_fraction(egui::vec2(0.0, 0.05))
+        .include_x(0.0)
+        .include_x(max_depth)
+        .include_y(0.0)
+        .include_y(max_count)
+        .show(ui, |plot_ui| plot_ui.bar_chart(chart));
+}
