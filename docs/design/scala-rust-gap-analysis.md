@@ -5,12 +5,12 @@ A systematic pass over the legacy Scala/ScalaFX source (`src/main/scala/com/deco
 **capabilities present in Scala that are absent or incomplete in Rust**, grouped by subsystem and
 prioritized.
 
-> **Revised 2026-06-16.** Much of the original (2026-06-12) backlog has since landed. This revision
+> **Revised 2026-06-17.** Much of the original (2026-06-12) backlog has since landed. This revision
 > reconciles every section against the current tree + project memory, marks completed work with its
-> commit, and re-derives the priority summary from what genuinely remains. Net: §1a, §3, §5(P1),
-> §8a fully done; §2, §4, §6, §7, §8 substantially advanced. The standing big gap is **§1b STR
-> calling from sequence**; the freshest remaining slices are **import UX dialogs (§8)**, **analysis
-> checkpoint/resume (§6)**, and **sync conflict/PULL (§5 P2)**.
+> commit, and re-derives the priority summary from what genuinely remains. Net: §1 (STR), §2, §3,
+> §5(P1), §8a fully done; §4, §6, §7, §8 substantially advanced. The freshest remaining slices are
+> **the live federated arc (§4 IBD exchange / segment attestation)** and **sync conflict/PULL (§5
+> P2)** — both to be scoped against the running AppView — plus small §8-misc UI items.
 
 ## Method & exclusions
 
@@ -79,7 +79,7 @@ auto-download the GRCh38 HipSTR BED. (Full status in project memory `str-caller`
 > model (measure each read against the known ref allele). HiFi (~4×) still keeps most loci LOW; the
 > value is highest on 20–30× short-read WGS (validated there).
 
-## 2. Y-chromosome profile management (variant-level, multi-source) — **PARTIAL** (was MISSING)
+## 2. Y-chromosome profile management (variant-level, multi-source) — **DONE** (was MISSING)
 
 The multi-source Y variant profile (combine WGS/chip/STR/private observations of the same position,
 quality-weighted consensus, provenance, conflict detection, persistence) **is now built**:
@@ -90,12 +90,14 @@ quality-weighted consensus, provenance, conflict detection, persistence) **is no
 | Y-profile persistence (profile, sources, variant calls, novel) | `HaplogroupProcessor.populateYProfile` | **DONE** — `consensus_profile` table (mig 0022), `build_y_profile`/`cached_y_profile`; private-Y union persisted |
 | Genome-level consensus **placement** (pool all sources, place once) | — | **DONE** (fd599d9) — `place_y_consensus`, one tree/coord, authoritative terminal |
 | Y-profile source-type weighting (method tiers × SNP/STR weights) | `yprofile/YProfileSourceType` | **DONE** — `SourceType::snp_weight` |
-| Y-SNP profile **comparison / FTDNA-Big-Y-style match list** (cross-subject) | `yprofile/YProfileService.scala` | **MISSING** — no shared-SNP / shared-novel match ranking between subjects |
-| Y-STR genetic distance / TMRCA / match ranking | `yprofile/YProfileService.scala` | **MISSING** |
+| Y-SNP profile **comparison / FTDNA-Big-Y-style match list** (cross-subject) | `yprofile/YProfileService.scala` | **DONE** (e0e44bf) — `navigator-domain/ymatch.rs` shared-derived/novel ranking; app `y_matches` one-vs-all over cached profiles; Y-DNA-tab match card |
+| Y-STR genetic distance / TMRCA / match ranking | `yprofile/YProfileService.scala` | **DONE** (e0e44bf) — STR-GD via `values_match` (multi-copy aware); SNP TMRCA (~83 yr/SNP) + STR TMRCA (stepwise), shown with caveats |
 
-**Remaining (medium):** cross-subject Y matching — shared-derived/shared-novel ranking, genetic
-distance / TMRCA. The single-subject profile backbone is complete; this is the *between-subjects*
-layer (relates to §4 federated matching + the AppView IBD hub).
+**DONE (e0e44bf):** cross-subject Y matching — `navigator-domain/ymatch.rs` (pure: shared-derived/
+novel set ranking, divergence = longest-common-prefix of lineages, STR-GD via `values_match`, SNP +
+STR TMRCA) + app `y_matches(query, project_id)` (one-vs-all over **cached** profiles, no re-genotype;
+tree-fetch degrades gracefully) + worker/UI "Y matches (workspace)" card. Local-only v1; the
+federated match surface stays under §4 (the AppView IBD hub).
 
 ## 3. Vendor & mtDNA data import — **DONE** (committed; §3 complete per memory)
 
@@ -200,7 +202,7 @@ fingerprint/merge dialogs.
 | ~~6-resume~~ | ~~Analysis checkpoint/resume~~ | — | — | **DONE 192a939** — source-sig invalidation + cache-first SV/denovo |
 | 1b-caller | ~~STR calling from sequence~~ | — | — | **DONE 986e00b** — enclosing-read genotyper + HipSTR-reference parse, validated on GRCh38 chrY |
 | 1b-vendor | STR vendor bridge — convention layer + concordance + CHM13 ref | High | — | **DONE** (5fc6641 convention layer; b9a7eed cross-build lift; c142ae7 UI; **b631d79 216-kit CHM13 recalibration**). Offset table rebuilt on 216 CHM13 Big Y kits (swap-QC + per-kit panic isolation in the harness); 6 build-dependent markers handled via `StrBuild`+`GRCH38_DELTA`. Validated held-out: CHM13 1001615 44/44+14/14, GRCh38 27520 55/55+15/15, zero mismatches. *Remaining (low):* the CHM13 lift dropped 33 named chrY markers (incl DYS19/391/426 — table retains their GRCh38 values for the BAM path); multi-copy aggregation; auto-download |
-| 2-match | Cross-subject Y matching (shared-SNP/novel ranking, genetic distance/TMRCA) | Med | Medium | Between-subjects layer atop the done single-subject Y profile; relates to §4 |
+| ~~2-match~~ | ~~Cross-subject Y matching~~ | — | — | **DONE e0e44bf** — `ymatch.rs` (shared-SNP/novel ranking, divergence LCA, STR-GD, SNP+STR TMRCA) + app `y_matches` one-vs-all + Y-DNA-tab match card. Local v1; federated surface under §4 |
 | 5-p2 | Sync conflict detection + PULL + `source_file` table | Med | Medium | Ties to AppView design |
 | 4-live | IBD live exchange (segment exchange + attestation) + consent/request/result | Med | Large | Gated on running AppView + PII-posture decision; don't port P2P verbatim |
 | 7 | VCF liftover orchestration + reference-download checksums | Low-Med | Medium | STR/VCF-workflow enablers |
@@ -208,9 +210,9 @@ fingerprint/merge dialogs.
 
 **Recently shipped:** import UX (59b5696), checkpoint/resume (192a939), **STR caller foundation**
 (986e00b — the hard, twice-attempted part), **STR vendor bridge fully landed** (b631d79 — 216-kit
-CHM13 recalibration + build-aware offsets). **Best next steps:** **§2-match cross-subject Y matching**
-(medium, builds on the done single-subject Y profile), or **§4-live / §5-p2** once scoped against a
-running AppView. **Biggest coherent feature now:** §2 cross-subject matching and the live federated
-arc (§4) — STR calling, the prior standout gap, is done end-to-end.
+CHM13 recalibration + build-aware offsets), **§2 cross-subject Y matching** (e0e44bf). **Best next
+steps:** **§4-live / §5-p2** once scoped against a running AppView, or the **§8-misc** small UI items
+(PCA scatter, IBD match browser). **Biggest coherent feature now:** the live federated arc (§4) —
+STR calling and cross-subject Y matching, the prior standout local gaps, are done end-to-end.
 **Verify-before-building:** §4 (IBD live) and §5-p2 (sync conflict/PULL) must be scoped against the
 current AppView-mediated architecture, not ported verbatim.
