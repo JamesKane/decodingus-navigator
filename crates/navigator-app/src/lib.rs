@@ -1948,6 +1948,12 @@ impl App {
         if !updated {
             return Err(AppError::Store(StoreError::NotFound(format!("alignment {id}"))));
         }
+        self.alignment_or_err(id).await
+    }
+
+    /// Fetch an alignment by id, mapping a missing row to a `NotFound` error. The standard way
+    /// the analysis/query methods resolve an `alignment_id` before touching its BAM/CRAM.
+    async fn alignment_or_err(&self, id: i64) -> Result<Alignment, AppError> {
         alignment::get(self.store.pool(), id)
             .await?
             .ok_or_else(|| AppError::Store(StoreError::NotFound(format!("alignment {id}"))))
@@ -2136,9 +2142,7 @@ impl App {
         alignment_id: i64,
         mut progress: impl FnMut(usize, usize) + Send + 'static,
     ) -> Result<CoverageResult, AppError> {
-        let aln = alignment::get(self.store.pool(), alignment_id)
-            .await?
-            .ok_or_else(|| AppError::Store(StoreError::NotFound(format!("alignment {alignment_id}"))))?;
+        let aln = self.alignment_or_err(alignment_id).await?;
         let bam = PathBuf::from(aln.bam_path.ok_or(AppError::MissingPaths(alignment_id))?);
         // The reference isn't asked for at import — resolve the alignment's build via the gateway
         // (cached, else download) when no FASTA was stored.
@@ -2269,9 +2273,7 @@ impl App {
         alignment_id: i64,
         progress: impl Fn(usize, usize) + Send + Sync + 'static,
     ) -> Result<UnifiedMetricsResult, AppError> {
-        let aln = alignment::get(self.store.pool(), alignment_id)
-            .await?
-            .ok_or_else(|| AppError::Store(StoreError::NotFound(format!("alignment {alignment_id}"))))?;
+        let aln = self.alignment_or_err(alignment_id).await?;
         let bam = PathBuf::from(aln.bam_path.ok_or(AppError::MissingPaths(alignment_id))?);
         // The walker requires a reference (CRAM decode + reference-N detection); resolve the
         // build via the gateway when no FASTA was stored at import.
@@ -2315,9 +2317,7 @@ impl App {
         if let Some(c) = self.cached_sv(alignment_id).await? {
             return Ok(c);
         }
-        let aln = alignment::get(self.store.pool(), alignment_id)
-            .await?
-            .ok_or_else(|| AppError::Store(StoreError::NotFound(format!("alignment {alignment_id}"))))?;
+        let aln = self.alignment_or_err(alignment_id).await?;
         let bam = PathBuf::from(aln.bam_path.ok_or(AppError::MissingPaths(alignment_id))?);
         let reference = aln.reference_path.clone().map(PathBuf::from);
         let reference_build = aln.reference_build.clone();
@@ -2383,9 +2383,7 @@ impl App {
         if let Some(c) = self.load_analysis(alignment_id, &kind, "str-1").await? {
             return Ok(c);
         }
-        let aln = alignment::get(self.store.pool(), alignment_id)
-            .await?
-            .ok_or_else(|| AppError::Store(StoreError::NotFound(format!("alignment {alignment_id}"))))?;
+        let aln = self.alignment_or_err(alignment_id).await?;
         let build = aln.reference_build.clone();
         let bed = Self::str_reference_path(&build).ok_or_else(|| {
             AppError::Import(format!(
@@ -2513,9 +2511,7 @@ impl App {
 
     /// The alignment's BAM (required) + reference (optional; required only for CRAM).
     async fn alignment_paths(&self, alignment_id: i64) -> Result<(PathBuf, Option<PathBuf>), AppError> {
-        let aln = alignment::get(self.store.pool(), alignment_id)
-            .await?
-            .ok_or_else(|| AppError::Store(StoreError::NotFound(format!("alignment {alignment_id}"))))?;
+        let aln = self.alignment_or_err(alignment_id).await?;
         let bam = PathBuf::from(aln.bam_path.ok_or(AppError::MissingPaths(alignment_id))?);
         Ok((bam, aln.reference_path.map(PathBuf::from)))
     }
@@ -2704,9 +2700,7 @@ impl App {
     /// recorded. Use this in steps that *require* the reference, so the user never has to supply
     /// one (it follows from the header-detected build).
     async fn alignment_bam_reference(&self, alignment_id: i64) -> Result<(PathBuf, PathBuf), AppError> {
-        let aln = alignment::get(self.store.pool(), alignment_id)
-            .await?
-            .ok_or_else(|| AppError::Store(StoreError::NotFound(format!("alignment {alignment_id}"))))?;
+        let aln = self.alignment_or_err(alignment_id).await?;
         let bam = PathBuf::from(aln.bam_path.ok_or(AppError::MissingPaths(alignment_id))?);
         let reference = match aln.reference_path {
             Some(p) => PathBuf::from(p),
@@ -2734,9 +2728,7 @@ impl App {
             .cached_coverage(alignment_id)
             .await?
             .ok_or_else(|| AppError::Store(StoreError::NotFound(format!("coverage for alignment {alignment_id}"))))?;
-        let aln = alignment::get(self.store.pool(), alignment_id)
-            .await?
-            .ok_or_else(|| AppError::Store(StoreError::NotFound(format!("alignment {alignment_id}"))))?;
+        let aln = self.alignment_or_err(alignment_id).await?;
         let record = AlignmentRecord::new(
             aln.reference_build,
             Some(aln.aligner),
@@ -4003,9 +3995,7 @@ impl App {
 
     /// The biosample a alignment belongs to (alignment → sequencing run → biosample).
     async fn biosample_of_alignment(&self, alignment_id: i64) -> Result<SampleGuid, AppError> {
-        let aln = alignment::get(self.store.pool(), alignment_id)
-            .await?
-            .ok_or_else(|| AppError::Store(StoreError::NotFound(format!("alignment {alignment_id}"))))?;
+        let aln = self.alignment_or_err(alignment_id).await?;
         let run = sequence_run::get(self.store.pool(), aln.sequence_run_id)
             .await?
             .ok_or_else(|| AppError::Store(StoreError::NotFound(format!("sequence run {}", aln.sequence_run_id))))?;
@@ -5002,9 +4992,7 @@ impl App {
     /// reconciliation view (a curator judges real heteroplasmy vs. artefacts); ascending
     /// by position. Requires a chrM-bearing BAM.
     pub async fn mtdna_heteroplasmy(&self, alignment_id: i64) -> Result<Vec<HeteroplasmySite>, AppError> {
-        let aln = alignment::get(self.store.pool(), alignment_id)
-            .await?
-            .ok_or_else(|| AppError::Store(StoreError::NotFound(format!("alignment {alignment_id}"))))?;
+        let aln = self.alignment_or_err(alignment_id).await?;
         let bam = PathBuf::from(aln.bam_path.ok_or(AppError::MissingPaths(alignment_id))?);
         let reference = aln.reference_path.map(PathBuf::from);
         tokio::task::spawn_blocking(move || {
@@ -5102,9 +5090,7 @@ impl App {
         &self,
         alignment_id: i64,
     ) -> Result<Vec<(String, f64, f64)>, AppError> {
-        let aln = alignment::get(self.store.pool(), alignment_id)
-            .await?
-            .ok_or_else(|| AppError::Store(StoreError::NotFound(format!("alignment {alignment_id}"))))?;
+        let aln = self.alignment_or_err(alignment_id).await?;
         let Some(build) = canonical_build(&aln.reference_build) else { return Ok(Vec::new()) };
         let Ok(bytes) = std::fs::read(ancestry_pca_path(build)) else { return Ok(Vec::new()) };
         let pca = navigator_analysis::ancestry::PcaLoadings::from_bytes(&bytes)?;
@@ -5179,9 +5165,7 @@ impl App {
     /// else computed now (hashing the file) and stored — so batch-imported alignments are hashed
     /// lazily on first analysis, then cached on the row.
     async fn alignment_content_hash(&self, alignment_id: i64) -> Result<String, AppError> {
-        let aln = alignment::get(self.store.pool(), alignment_id)
-            .await?
-            .ok_or_else(|| AppError::Store(StoreError::NotFound(format!("alignment {alignment_id}"))))?;
+        let aln = self.alignment_or_err(alignment_id).await?;
         if let Some(h) = aln.content_sha256 {
             return Ok(h);
         }
@@ -5274,9 +5258,7 @@ impl App {
         &self,
         alignment_id: i64,
     ) -> Result<(navigator_analysis::haplo::HaploTree, HashMap<i64, char>), AppError> {
-        let aln = alignment::get(self.store.pool(), alignment_id)
-            .await?
-            .ok_or_else(|| AppError::Store(StoreError::NotFound(format!("alignment {alignment_id}"))))?;
+        let aln = self.alignment_or_err(alignment_id).await?;
         let build_key = decodingus_build_key(&aln.reference_build).ok_or_else(|| {
             AppError::Import(format!("no DecodingUs tree coordinates for build {}", aln.reference_build))
         })?;
@@ -5461,9 +5443,7 @@ impl App {
         tree: &navigator_analysis::haplo::HaploTree,
         tree_source_build: Option<&str>,
     ) -> Result<HashMap<i64, char>, AppError> {
-        let aln = alignment::get(self.store.pool(), alignment_id)
-            .await?
-            .ok_or_else(|| AppError::Store(StoreError::NotFound(format!("alignment {alignment_id}"))))?;
+        let aln = self.alignment_or_err(alignment_id).await?;
         let bam = PathBuf::from(aln.bam_path.ok_or(AppError::MissingPaths(alignment_id))?);
         let reference = aln.reference_path.map(PathBuf::from);
 
@@ -5615,9 +5595,7 @@ impl App {
         tree: &navigator_analysis::haplo::HaploTree,
         tree_source_build: Option<&str>,
     ) -> Result<HashMap<i64, char>, AppError> {
-        let aln = alignment::get(self.store.pool(), alignment_id)
-            .await?
-            .ok_or_else(|| AppError::Store(StoreError::NotFound(format!("alignment {alignment_id}"))))?;
+        let aln = self.alignment_or_err(alignment_id).await?;
         // The reference is required: a GVCF hom-ref site means "the sample's base == the
         // reference base" — and the reference (e.g. CHM13 = HG002/J1 Y) is itself deep in the
         // tree, so its base there is often the *derived* allele, not the ancestral. We read the
@@ -5726,9 +5704,7 @@ impl App {
     /// Errors if the build has no DecodingUs coordinates or the tree is unreachable; the caller
     /// (`ingest_sidecars`) treats that as "leave Y for the deep pass".
     pub async fn assign_y_from_gvcf(&self, alignment_id: i64, gvcf: &Path) -> Result<HaploAssignment, AppError> {
-        let aln = alignment::get(self.store.pool(), alignment_id)
-            .await?
-            .ok_or_else(|| AppError::Store(StoreError::NotFound(format!("alignment {alignment_id}"))))?;
+        let aln = self.alignment_or_err(alignment_id).await?;
         let build_key = decodingus_build_key(&aln.reference_build).ok_or_else(|| {
             AppError::Import(format!("no DecodingUs tree coordinates for build {}", aln.reference_build))
         })?;
@@ -5921,9 +5897,7 @@ impl App {
     /// callability at lower depth, and the CALLABLE-run gate scales with molecule length
     /// (`f`·fragment), so long molecules clear it over far more of chrY. Requires the BAM.
     pub async fn callable_chr_intervals(&self, alignment_id: i64, contig: &str) -> Result<Vec<(i64, i64)>, AppError> {
-        let aln = alignment::get(self.store.pool(), alignment_id)
-            .await?
-            .ok_or_else(|| AppError::Store(StoreError::NotFound(format!("alignment {alignment_id}"))))?;
+        let aln = self.alignment_or_err(alignment_id).await?;
         let bam = PathBuf::from(aln.bam_path.ok_or(AppError::MissingPaths(alignment_id))?);
         let reference = aln.reference_path.map(PathBuf::from);
         let contig = contig.to_string();
@@ -6014,9 +5988,7 @@ impl App {
 
         // The structural BEDs are in CHM13 chrY coordinates, so they only apply to a CHM13
         // alignment (the de-novo positions are in the alignment's build). Best-effort.
-        let aln = alignment::get(self.store.pool(), alignment_id)
-            .await?
-            .ok_or_else(|| AppError::Store(StoreError::NotFound(format!("alignment {alignment_id}"))))?;
+        let aln = self.alignment_or_err(alignment_id).await?;
         let regions = match canonical_build(&aln.reference_build) {
             Some(ReferenceBuild::Chm13v2 | ReferenceBuild::Chm13v2MaskedRcrs) => self.y_structural_regions().await,
             _ => None,
@@ -6492,9 +6464,7 @@ impl App {
         panel_id: i64,
         ploidy: u8,
     ) -> Result<Vec<SiteGenotype>, AppError> {
-        let aln = alignment::get(self.store.pool(), alignment_id)
-            .await?
-            .ok_or_else(|| AppError::Store(StoreError::NotFound(format!("alignment {alignment_id}"))))?;
+        let aln = self.alignment_or_err(alignment_id).await?;
         let bam = aln.bam_path.ok_or(AppError::MissingPaths(alignment_id))?;
         let sites: Vec<Site> = panel::sites(self.store.pool(), panel_id)
             .await?
@@ -6638,9 +6608,7 @@ impl App {
                 if let Some(g) = self.load_analysis(id, &kind, caller::GENOTYPE_VERSION).await? {
                     return Ok(g);
                 }
-                let aln = alignment::get(self.store.pool(), id)
-                    .await?
-                    .ok_or_else(|| AppError::Store(StoreError::NotFound(format!("alignment {id}"))))?;
+                let aln = self.alignment_or_err(id).await?;
                 let bam = PathBuf::from(aln.bam_path.ok_or(AppError::MissingPaths(id))?);
                 let reference = aln.reference_path.map(PathBuf::from);
                 let panel_path = ibd_panel_path(ReferenceBuild::Chm13v2);
