@@ -330,14 +330,20 @@ pub fn tree_positions(tree: &HaploTree) -> HashMap<i64, String> {
     m
 }
 
-/// The defining-SNP positions on the root→`node_id` path (the placement's backbone).
-pub fn path_positions(tree: &HaploTree, node_id: i64) -> HashSet<i64> {
+/// child → parent map, used to walk any node back to the root.
+fn build_parent_map(tree: &HaploTree) -> HashMap<i64, i64> {
     let mut parent: HashMap<i64, i64> = HashMap::new();
     for n in tree.nodes.values() {
         for &c in &n.children {
             parent.insert(c, n.id);
         }
     }
+    parent
+}
+
+/// The defining-SNP positions on the root→`node_id` path (the placement's backbone).
+pub fn path_positions(tree: &HaploTree, node_id: i64) -> HashSet<i64> {
+    let parent = build_parent_map(tree);
     let mut positions = HashSet::new();
     let mut cur = Some(node_id);
     while let Some(id) = cur {
@@ -423,12 +429,7 @@ pub fn child_evidence(tree: &HaploTree, calls: &HashMap<i64, char>, node_id: i64
 /// which defining mutations a sample carries (e.g. GRCh38 vs a lifted CHM13 call).
 pub fn lineage_evidence(tree: &HaploTree, calls: &HashMap<i64, char>, terminal_id: i64) -> Vec<SnpEvidence> {
     // child → parent, to walk the terminal back to the root.
-    let mut parent: HashMap<i64, i64> = HashMap::new();
-    for node in tree.nodes.values() {
-        for &c in &node.children {
-            parent.insert(c, node.id);
-        }
-    }
+    let parent = build_parent_map(tree);
     let mut path = Vec::new();
     let mut cur = Some(terminal_id);
     while let Some(id) = cur {
@@ -502,12 +503,7 @@ fn is_contradicted(node: &HaploNode, calls: &HashMap<i64, char>) -> bool {
 /// genuine lineage (derived or merely no-call along its length) passes. Used to veto
 /// otherwise high-scoring tunnel artifacts from the [`score`] ranking.
 pub fn path_admissible(tree: &HaploTree, calls: &HashMap<i64, char>, node_id: i64) -> bool {
-    let mut parent: HashMap<i64, i64> = HashMap::new();
-    for node in tree.nodes.values() {
-        for &c in &node.children {
-            parent.insert(c, node.id);
-        }
-    }
+    let parent = build_parent_map(tree);
     let mut cur = Some(node_id);
     while let Some(id) = cur {
         match tree.nodes.get(&id) {
