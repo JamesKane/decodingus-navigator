@@ -2420,10 +2420,16 @@ impl App {
     /// source: the called value + its calibration status, the imported value, and whether they agree.
     /// `contig` is typically `chrY`. Reuses the cached `str:{contig}` calls.
     pub async fn str_concordance(&self, alignment_id: i64, contig: String) -> Result<Vec<StrConcordanceRow>, AppError> {
-        use navigator_analysis::strmarker::{called_markers, normalize_marker, MarkerStatus};
+        use navigator_analysis::strmarker::{called_markers_build, normalize_marker, MarkerStatus, StrBuild};
 
+        // The FTDNA convention offset is build-dependent for a few markers (the CHM13 liftover shifted
+        // some tract boundaries) — select the offsets for this alignment's build.
+        let build = alignment::get(self.store.pool(), alignment_id)
+            .await?
+            .map(|a| StrBuild::from_build_str(&a.reference_build))
+            .unwrap_or_default();
         let genos = self.run_str_calls(alignment_id, contig).await?;
-        let called = called_markers(&genos);
+        let called = called_markers_build(&genos, build);
 
         // Imported vendor markers (FTDNA preferred, else the first profile), keyed by normalized name.
         let biosample = self.biosample_of_alignment(alignment_id).await?;
