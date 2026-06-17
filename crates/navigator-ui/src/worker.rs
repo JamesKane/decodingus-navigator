@@ -19,7 +19,7 @@ use navigator_app::{
     IbdSuggestion,
     IdentityVerification, PanelGenotype, PrivateBucket, ProjectImportSummary, ProjectOverview,
     ProjectSampleReport, ReadMetrics, RefBuildStatus, SexInferenceResult, SourceType,
-    SvAnalysisResult,
+    SvAnalysisResult, YMatch,
 };
 use navigator_domain::du_domain::ids::SampleGuid;
 use navigator_domain::chipprofile::ChipProfile;
@@ -86,6 +86,9 @@ pub enum Command {
     /// Call Y-STRs from the subject's best sequence alignment and compare to the imported vendor
     /// profile (the By-Panel concordance). Heavy on first call (a chrY pass); cached after.
     StrConcordance { biosample_guid: SampleGuid },
+    /// Rank every other workspace subject against this one by Y relatedness (gap §2). One-vs-all
+    /// over the workspace, or one project when `project_id` is set. Consumes cached profiles.
+    YMatches { biosample_guid: SampleGuid, project_id: Option<i64> },
     ImportStrProfile {
         biosample_guid: SampleGuid,
         panel_name: String,
@@ -350,6 +353,8 @@ pub enum Event {
     /// Y-STR concordance: markers called from sequence (FTDNA-convention) vs the imported vendor
     /// profile, for the By-Panel view. `alignment_id` is the source alignment chosen.
     StrConcordance { biosample_guid: SampleGuid, alignment_id: i64, rows: Vec<StrConcordanceRow> },
+    /// Cross-subject Y matches for a subject, ranked best-first (gap §2).
+    YMatches { biosample_guid: SampleGuid, matches: Vec<YMatch> },
     /// A batch import finished; the summary lists per-file imported/skipped outcomes. The UI
     /// shows it in a modal and reloads the subject's data sections.
     DataBatchImported { biosample_guid: SampleGuid, summary: BatchImportSummary },
@@ -582,6 +587,10 @@ pub async fn handle(app: &App, cmd: Command) -> Event {
         }
         Command::StrConcordance { biosample_guid } => match app.str_concordance_for_subject(biosample_guid).await {
             Ok((alignment_id, rows)) => Event::StrConcordance { biosample_guid, alignment_id, rows },
+            Err(e) => Event::Error(e.to_string()),
+        },
+        Command::YMatches { biosample_guid, project_id } => match app.y_matches(biosample_guid, project_id).await {
+            Ok(matches) => Event::YMatches { biosample_guid, matches },
             Err(e) => Event::Error(e.to_string()),
         },
         Command::LoadStrProfiles(guid) => match app.list_str_profiles(guid).await {

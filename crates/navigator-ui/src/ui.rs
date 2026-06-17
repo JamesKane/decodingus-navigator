@@ -13,7 +13,7 @@ use navigator_app::{
     AppSettings, BatchImportSummary, MtRegion, MtVariant, ProjectSampleReport, ReadMetrics, RefBuildStatus,
     StrConcordanceRow,
     SexInferenceResult, SourceType, SvAnalysisResult,
-    VerificationStatus, YProfile, YState, YVariantStatus,
+    VerificationStatus, YMatch, YProfile, YSignal, YState, YVariantStatus,
 };
 use crate::charts::{
     asset_status_line, coverage_histogram_chart, draw_ancestry_donut, draw_chromosome_painting, draw_composition_bar,
@@ -287,6 +287,14 @@ pub struct NavigatorApp {
     str_concordance: Option<(SampleGuid, i64, Vec<StrConcordanceRow>)>,
     /// Whether a Y-STR-from-sequence call is in flight (the heavy first pass).
     str_running: bool,
+    /// Cross-subject Y matches for the selected subject: `(guid, ranked matches)`. Gap §2.
+    y_matches: Option<(SampleGuid, Vec<YMatch>)>,
+    /// Whether a Y-match search is in flight.
+    y_matches_running: bool,
+    /// Project filter for the Y-match search (None ⇒ whole workspace).
+    y_match_project: Option<i64>,
+    /// Text filter over the Y-match table (by donor / haplogroup).
+    y_match_query: String,
     /// Data-source row pending delete confirmation (Some ⇒ the confirm dialog is shown).
     confirm_data_delete: Option<DataDelete>,
     /// Subject being assigned to a project: (subject, selected project or None). Some ⇒ picker shown.
@@ -567,6 +575,10 @@ impl NavigatorApp {
             batch_import: None,
             str_concordance: None,
             str_running: false,
+            y_matches: None,
+            y_matches_running: false,
+            y_match_project: None,
+            y_match_query: String::new(),
             confirm_data_delete: None,
             assign_project: None,
             edit_project: None,
@@ -1000,6 +1012,11 @@ impl NavigatorApp {
                     self.status = format!("Y-STR from sequence: {calls} markers called, {agree} agree with vendor");
                     self.str_concordance = Some((biosample_guid, alignment_id, rows));
                 }
+                Event::YMatches { biosample_guid, matches } => {
+                    self.y_matches_running = false;
+                    self.status = format!("Y matches: {} ranked", matches.len());
+                    self.y_matches = Some((biosample_guid, matches));
+                }
                 Event::DefaultAlignment { run_id, alignment_id } => {
                     // Only auto-select if the user hasn't already chosen an alignment.
                     if self.selected_alignment.is_none() {
@@ -1306,6 +1323,9 @@ impl NavigatorApp {
         self.consensus_mt = None;
         self.str_concordance = None;
         self.str_running = false;
+        self.y_matches = None;
+        self.y_matches_running = false;
+        self.y_match_query.clear();
         self.y_profile_query.clear();
         self.mt_profile_query.clear();
         self.auto_profile_query.clear();
@@ -1597,6 +1617,8 @@ impl NavigatorApp {
                     card(ui, self.tr("card.ystrConsensus"), |ui| self.ystr_report_section(ui));
                     ui.add_space(10.0);
                     card(ui, self.tr("card.ystrSequence"), |ui| self.ystr_sequence_section(ui, guid));
+                    ui.add_space(10.0);
+                    card(ui, self.tr("card.yMatches"), |ui| self.ymatch_section(ui, guid));
                 }
                 DetailTab::MtDna => {
                     card(ui, self.tr("card.mtHaplogroup"), |ui| {
@@ -2923,6 +2945,111 @@ impl NavigatorApp {
                     }
                 } else {
                     ui.label("");
+                }
+                ui.end_row();
+            }
+        });
+    }
+
+    /// Cross-subject Y matches (gap §2): rank every other workspace subject by Y relatedness. Button-
+    /// driven (reads cached profiles); flows into the page scroll + filter (no nested ScrollArea).
+    fn ymatch_section(&mut self, ui: &mut egui::Ui, guid: SampleGuid) {
+        // Controls: project filter + find button (mirror the assign-project picker's local-copy idiom).
+        let whole = self.tr("ymatch.wholeWorkspace").to_string();
+        let projects: Vec<(i64, String)> =
+            self.overview.iter().map(|o| (o.project.id, o.project.name.clone())).collect();
+        let mut chosen = self.y_match_project;
+        let sel_text = match chosen {
+            Some(pid) => projects.iter().find(|(id, _)| *id == pid).map(|(_, n)| n.clone()).unwrap_or_else(|| format!("project {pid}")),
+            None => whole.clone(),
+        };
+        let find_label = self.tr("ymatch.find").to_string();
+        let hint = self.tr("hint.yMatches").to_string();
+        let mut do_find = false;
+        ui.horizontal(|ui| {
+            egui::ComboBox::from_id_salt(("ymatch_project", guid))
+                .selected_text(sel_text)
+                .width(220.0)
+                .show_ui(ui, |ui| {
+                    ui.selectable_value(&mut chosen, None, &whole);
+                    for (id, name) in &projects {
+                        ui.selectable_value(&mut chosen, Some(*id), name);
+                    }
+                });
+            if ui.add_enabled(!self.y_matches_running, egui::Button::new(find_label)).clicked() {
+                do_find = true;
+            }
+            if self.y_matches_running {
+                ui.spinner();
+            }
+            ui.label(egui::RichText::new(hint).weak().small());
+        });
+        self.y_match_project = chosen;
+        if do_find {
+            self.y_matches_running = true;
+            self.status = "Finding Y matches across the workspace…".into();
+            let _ = self.tx.send(Command::YMatches { biosample_guid: guid, project_id: chosen });
+        }
+
+        let have = matches!(&self.y_matches, Some((g, _)) if *g == guid);
+        if have {
+            ui.horizontal(|ui| {
+                ui.add(egui::TextEdit::singleline(&mut self.y_match_query).hint_text("filter").desired_width(140.0));
+                if !self.y_match_query.is_empty() && ui.small_button("✕").clicked() {
+                    self.y_match_query.clear();
+                }
+            });
+        }
+        let q = self.y_match_query.to_ascii_lowercase();
+        let caveat = self.tr("ymatch.tmrcaCaveat").to_string();
+
+        let Some((g, matches)) = &self.y_matches else { return };
+        if *g != guid {
+            return;
+        }
+        if matches.is_empty() {
+            ui.add_space(4.0);
+            ui.label(egui::RichText::new(self.tr("ymatch.none")).weak());
+            return;
+        }
+        ui.add_space(4.0);
+        ui.label(egui::RichText::new(format!("{} matches", matches.len())).weak().small());
+        ui.add_space(4.0);
+        // No inner ScrollArea — the tab is already one vertical scroll (see str_by_panel_view).
+        egui::Grid::new(("ymatch_grid", guid)).num_columns(7).striped(true).spacing([14.0, 2.0]).show(ui, |ui| {
+            for h in ["Subject", "Shared", "Novel", "Divergence", "STR-GD", "Signal", "TMRCA"] {
+                ui.label(egui::RichText::new(h).strong().small());
+            }
+            ui.end_row();
+            for m in matches.iter().filter(|m| {
+                q.is_empty()
+                    || m.donor.to_ascii_lowercase().contains(&q)
+                    || m.terminal.as_deref().is_some_and(|t| t.to_ascii_lowercase().contains(&q))
+            }) {
+                ui.label(&m.donor);
+                let snp_backed = m.signal != YSignal::Str;
+                ui.label(if snp_backed { m.shared_derived.to_string() } else { "—".into() });
+                ui.label(if snp_backed { m.shared_novel.to_string() } else { "—".into() });
+                ui.label(m.divergence.clone().unwrap_or_else(|| "—".into()));
+                ui.label(match m.str_gd {
+                    Some(gd) => format!("{gd} / {}", m.str_markers),
+                    None => "—".into(),
+                });
+                let sig = match m.signal {
+                    YSignal::SnpStr => "SNP+STR",
+                    YSignal::Snp => "SNP",
+                    YSignal::Str => "STR",
+                    YSignal::None => "—",
+                };
+                ui.label(egui::RichText::new(sig).small());
+                let tmrca = m.snp_tmrca.as_ref().or(m.str_tmrca.as_ref());
+                match tmrca {
+                    Some(t) => {
+                        ui.label(format!("~{:.0} gen / ~{:.0} yr", t.generations, t.years)).on_hover_text(&caveat);
+                    }
+                    None => {
+                        ui.label("—");
+                    }
                 }
                 ui.end_row();
             }

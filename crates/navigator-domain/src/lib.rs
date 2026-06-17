@@ -19,6 +19,7 @@ pub mod mtdna;
 pub mod reconciliation;
 pub mod strpanel;
 pub mod strprofile;
+pub mod ymatch;
 pub mod yprofile;
 pub mod testtype;
 pub mod variants;

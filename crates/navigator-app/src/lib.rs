@@ -321,6 +321,7 @@ pub use navigator_domain::variants::SourceType;
 use navigator_domain::yprofile::{self, YObsInput};
 pub use navigator_domain::yprofile::{YProfileSummary, YProfileVariant, YSourceObs, YState, YVariantStatus};
 pub use navigator_domain::consensus::{DiploidSourceObs, DiploidVariant};
+pub use navigator_domain::ymatch::{Tmrca, YMatch, YSignal};
 use navigator_domain::bisdna;
 use navigator_domain::ysnp_dict::{self, YsnpDictionary};
 use navigator_store::{
@@ -499,6 +500,18 @@ fn lineage_ids(tree: &navigator_analysis::haplo::HaploTree, target: i64) -> Vec<
         }
     }
     Vec::new()
+}
+
+/// Root→`name` lineage of haplogroup names from the tree (empty if the name isn't found). Used to
+/// derive a placed terminal's lineage path for cross-subject divergence/LCA without re-genotyping.
+fn lineage_names(tree: &navigator_analysis::haplo::HaploTree, name: &str) -> Vec<String> {
+    let Some(id) = tree.nodes.values().find(|n| n.name == name).map(|n| n.id) else {
+        return Vec::new();
+    };
+    lineage_ids(tree, id)
+        .into_iter()
+        .filter_map(|i| tree.nodes.get(&i).map(|n| n.name.clone()))
+        .collect()
 }
 
 /// Back off an over-deepened terminal to the node that maximizes running support along its
@@ -4480,6 +4493,109 @@ impl App {
         Ok(Some(assemble_assignment(&tree, &pooled)))
     }
 
+    /// Assemble a subject's lightweight [`YMatchProfile`] from **cached** data only (no re-genotyping):
+    /// the persisted consensus Y profile (derived/novel SNP-name sets + terminal), the terminal's
+    /// root→tip lineage from `tree`, and the first imported Y-STR panel's markers. `Ok(None)` when the
+    /// subject has neither a placed Y profile nor an STR panel — nothing to match on.
+    async fn y_match_profile(
+        &self,
+        b: &Biosample,
+        tree: Option<&navigator_analysis::haplo::HaploTree>,
+    ) -> Result<Option<navigator_domain::ymatch::YMatchProfile>, AppError> {
+        use navigator_domain::consensus::ConsensusState;
+
+        let str_markers = self
+            .list_str_profiles(b.guid)
+            .await?
+            .first()
+            .map(|p| p.markers.clone())
+            .unwrap_or_default();
+
+        let (terminal, lineage, derived, novel) = match self.cached_y_profile(b.guid).await? {
+            Some(p) => {
+                // Lineage (for divergence/LCA) needs the tree; without it, SNP-name sets + STR still match.
+                let lineage = match (tree, p.terminal.as_deref()) {
+                    (Some(t), Some(term)) => lineage_names(t, term),
+                    _ => Vec::new(),
+                };
+                let mut derived = std::collections::HashSet::new();
+                let mut novel = std::collections::HashSet::new();
+                for v in &p.variants {
+                    if v.consensus == ConsensusState::Derived {
+                        if v.in_tree {
+                            derived.insert(v.name.clone());
+                        } else {
+                            novel.insert(v.name.clone());
+                        }
+                    }
+                }
+                (p.terminal, lineage, derived, novel)
+            }
+            None => (None, Vec::new(), std::collections::HashSet::new(), std::collections::HashSet::new()),
+        };
+
+        // Nothing matchable: no Y-SNP calls and no STR markers (lineage alone never matches).
+        if derived.is_empty() && novel.is_empty() && str_markers.is_empty() {
+            return Ok(None);
+        }
+        Ok(Some(navigator_domain::ymatch::YMatchProfile {
+            guid: b.guid,
+            donor: b.donor_identifier.clone(),
+            terminal,
+            lineage,
+            derived,
+            novel,
+            str_markers,
+        }))
+    }
+
+    /// Rank every other workspace subject against `query_guid` by Y relatedness (gap §2) — shared
+    /// derived/novel SNPs, divergence haplogroup, Y-STR genetic distance, and rough SNP/STR TMRCA.
+    /// One-vs-all over the workspace (or one project when `project_id` is set); local-only. Consumes
+    /// **cached** profiles so it's cheap over hundreds of subjects (no re-genotyping). `Ok(vec![])`
+    /// when the query subject has no matchable Y data.
+    pub async fn y_matches(
+        &self,
+        query_guid: SampleGuid,
+        project_id: Option<i64>,
+    ) -> Result<Vec<YMatch>, AppError> {
+        // The tree only supplies the divergence haplogroup; shared-SNP and STR matching work without
+        // it, so a fetch failure degrades gracefully rather than failing the whole search.
+        let tree = match self.fetch_ftdna_y_tree().await {
+            Ok(json) => navigator_analysis::haplo::parse_ftdna_json(&json).ok(),
+            Err(_) => None,
+        };
+
+        let candidates = match project_id {
+            Some(pid) => self.list_biosamples(pid).await?,
+            None => self.list_all_biosamples().await?,
+        };
+
+        // The query subject may sit outside the chosen project — load it directly if so.
+        let query_bio = match candidates.iter().find(|b| b.guid == query_guid).cloned() {
+            Some(b) => b,
+            None => biosample::get(self.store.pool(), query_guid)
+                .await?
+                .ok_or_else(|| AppError::Store(StoreError::NotFound(format!("biosample {query_guid}"))))?,
+        };
+        let Some(query) = self.y_match_profile(&query_bio, tree.as_ref()).await? else {
+            return Ok(Vec::new());
+        };
+
+        let mut profiles = Vec::new();
+        for b in &candidates {
+            if b.guid == query_guid {
+                continue;
+            }
+            if let Some(p) = self.y_match_profile(b, tree.as_ref()).await? {
+                profiles.push(p);
+            }
+        }
+        let mut ranked = navigator_domain::ymatch::rank(&query, &profiles);
+        ranked.truncate(200);
+        Ok(ranked)
+    }
+
     /// **Genome-level mtDNA placement**: the mt counterpart to [`place_y_consensus`]. Pools every
     /// source's rCRS-coordinate genotype (each alignment's chrM placement calls, each imported mtDNA
     /// FASTA sequence, the chip mt panel) by [`pool_bases`] vote keyed by **position** (rCRS is the
@@ -7231,6 +7347,68 @@ mod publish_tests {
         let value = app.sequence_run_record(&reloaded).await.unwrap();
         assert_eq!(value.get("instrumentId").and_then(|v| v.as_str()), Some("A00182"));
         assert_eq!(value.get("$type").and_then(|v| v.as_str()), Some(NS_SEQUENCERUN));
+    }
+}
+
+#[cfg(test)]
+mod ymatch_tests {
+    use super::*;
+    use navigator_domain::strprofile::StrMarker;
+    use navigator_store::Store;
+
+    async fn seed_str(app: &App, guid: SampleGuid, markers: &[(&str, &str)]) {
+        let new = NewStrProfile {
+            biosample_guid: guid,
+            panel_name: "Y-37".into(),
+            provider: Some("FTDNA".into()),
+            source: None,
+            markers: markers.iter().map(|(m, v)| StrMarker { marker: (*m).into(), value: (*v).into() }).collect(),
+        };
+        str_profile::create(app.store.pool(), &new).await.unwrap();
+    }
+
+    /// End-to-end app orchestration for STR-only subjects: enumerate the workspace, assemble each
+    /// subject's match profile from cached data, and rank by ascending Y-STR genetic distance. (No
+    /// Y tree / SNP profiles → exercises the offline, graceful-degradation path.)
+    #[tokio::test]
+    async fn y_matches_ranks_str_only_by_distance() {
+        let app = App::new(Store::open_in_memory().await.unwrap());
+        let q = app.add_biosample(None, "Query", None, None).await.unwrap();
+        let near = app.add_biosample(None, "Near", None, None).await.unwrap();
+        let mid = app.add_biosample(None, "Mid", None, None).await.unwrap();
+        let far = app.add_biosample(None, "Far", None, None).await.unwrap();
+
+        let base = [("DYS393", "13"), ("DYS390", "24"), ("DYS19", "14")];
+        seed_str(&app, q.guid, &base).await;
+        seed_str(&app, near.guid, &base).await; // GD 0
+        seed_str(&app, mid.guid, &[("DYS393", "13"), ("DYS390", "25"), ("DYS19", "14")]).await; // GD 1
+        seed_str(&app, far.guid, &[("DYS393", "12"), ("DYS390", "26"), ("DYS19", "14")]).await; // GD 2
+
+        let matches = app.y_matches(q.guid, None).await.unwrap();
+        assert_eq!(matches.len(), 3, "query is excluded; three candidates ranked");
+        assert_eq!(matches.iter().map(|m| m.donor.as_str()).collect::<Vec<_>>(), ["Near", "Mid", "Far"]);
+        assert_eq!(matches[0].str_gd, Some(0));
+        assert_eq!(matches[2].str_gd, Some(2));
+        assert!(matches.iter().all(|m| m.signal == YSignal::Str));
+        // STR TMRCA present and monotonic with distance.
+        assert!(matches[0].str_tmrca.is_some());
+        assert!(matches[2].str_tmrca.unwrap().generations > matches[0].str_tmrca.unwrap().generations);
+    }
+
+    /// A subject with no comparable Y data is dropped; an empty workspace yields no matches.
+    #[tokio::test]
+    async fn y_matches_drops_incomparable_and_self() {
+        let app = App::new(Store::open_in_memory().await.unwrap());
+        let q = app.add_biosample(None, "Query", None, None).await.unwrap();
+        seed_str(&app, q.guid, &[("DYS393", "13")]).await;
+        // A subject with no STR / Y data at all.
+        let _empty = app.add_biosample(None, "Empty", None, None).await.unwrap();
+        // A subject whose markers don't overlap the query's.
+        let other = app.add_biosample(None, "Other", None, None).await.unwrap();
+        seed_str(&app, other.guid, &[("DYS999", "10")]).await;
+
+        let matches = app.y_matches(q.guid, None).await.unwrap();
+        assert!(matches.is_empty(), "no comparable candidates");
     }
 }
 
