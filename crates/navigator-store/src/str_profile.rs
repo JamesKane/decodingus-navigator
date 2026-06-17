@@ -4,8 +4,8 @@
 use du_domain::ids::SampleGuid;
 use navigator_domain::strprofile::{NewStrProfile, StrMarker, StrProfile};
 use sqlx::SqlitePool;
-use uuid::Uuid;
 
+use crate::error::parse_sample_guid;
 use crate::StoreError;
 
 #[derive(sqlx::FromRow)]
@@ -99,12 +99,11 @@ pub async fn list_for_biosample(pool: &SqlitePool, guid: SampleGuid) -> Result<V
 
     let mut profiles = Vec::with_capacity(rows.len());
     for r in rows {
-        let uuid = Uuid::parse_str(&r.biosample_guid)
-            .map_err(|e| StoreError::Decode(format!("str_profile guid {:?}: {e}", r.biosample_guid)))?;
+        let biosample_guid = parse_sample_guid(&r.biosample_guid, "str_profile")?;
         let markers = markers_for(pool, r.id).await?;
         profiles.push(StrProfile {
             id: r.id,
-            biosample_guid: SampleGuid(uuid),
+            biosample_guid,
             panel_name: r.panel_name,
             provider: r.provider,
             source: r.source,

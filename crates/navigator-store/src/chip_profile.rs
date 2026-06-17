@@ -3,8 +3,8 @@
 use du_domain::ids::SampleGuid;
 use navigator_domain::chipprofile::{ChipProfile, ChipSummary, NewChipProfile};
 use sqlx::SqlitePool;
-use uuid::Uuid;
 
+use crate::error::parse_sample_guid;
 use crate::StoreError;
 
 #[derive(sqlx::FromRow)]
@@ -26,11 +26,10 @@ struct Row {
 
 impl Row {
     fn into_domain(self) -> Result<ChipProfile, StoreError> {
-        let uuid = Uuid::parse_str(&self.biosample_guid)
-            .map_err(|e| StoreError::Decode(format!("chip_profile guid {:?}: {e}", self.biosample_guid)))?;
+        let biosample_guid = parse_sample_guid(&self.biosample_guid, "chip_profile")?;
         Ok(ChipProfile {
             id: self.id,
-            biosample_guid: SampleGuid(uuid),
+            biosample_guid,
             provider: self.provider,
             chip_version: self.chip_version,
             summary: ChipSummary {

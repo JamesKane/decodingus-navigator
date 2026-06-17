@@ -64,3 +64,9 @@ pub enum AppError {
     #[error("{0}")]
     Conflict(String),
 }
+
+impl From<tokio::task::JoinError> for AppError {
+    fn from(e: tokio::task::JoinError) -> Self {
+        AppError::Join(e.to_string())
+    }
+}

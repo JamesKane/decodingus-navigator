@@ -7,22 +7,29 @@ use std::sync::mpsc::Receiver;
 
 use eframe::egui;
 use navigator_app::{
-    AncestryResult, AncestrySegment, AuditEntry, BuildNeed, CallState, CompatibilityLevel, Consensus,
+    AncestryResult, AncestrySegment, AuditEntry, BuildNeed, CompatibilityLevel, Consensus,
     Coverage, DenovoCall, DnaType, HaploAssignment, HeteroplasmySite, IbdComparison, IbdSuggestion,
     IdentityVerification, PanelGenotype, PrivateBucket, PrivateClass, ProjectOverview,
-    AppSettings, BatchImportSummary, MtRegion, MtVariant, ProjectSampleReport, ReadMetrics, ReconciledVariant, RefBuildStatus,
+    AppSettings, BatchImportSummary, MtRegion, MtVariant, ProjectSampleReport, ReadMetrics, RefBuildStatus,
     StrConcordanceRow,
-    SexInferenceResult, SourceType, SuperPopulationSummary, SvAnalysisResult, VariantStatus,
+    SexInferenceResult, SourceType, SvAnalysisResult,
     VerificationStatus, YProfile, YState, YVariantStatus,
 };
-use navigator_domain::ancestry::{population_color, population_name, population_super};
+use crate::charts::{
+    asset_status_line, coverage_histogram_chart, draw_ancestry_donut, draw_chromosome_painting, draw_composition_bar,
+    draw_ideogram, draw_population_components, ideogram_legend,
+};
+use crate::widgets::{
+    card, chip, combo, empty_state, fmt_depth, fmt_pct, fmt_reads, opt, provider_abbrev, short_guid, show_assignment,
+    stat_card, table_header, table_row, variant_change,
+};
 use navigator_domain::du_domain::ids::SampleGuid;
 use navigator_domain::chipprofile::{self, ChipProfile};
 use navigator_domain::mtdna::MtdnaSequence;
 use navigator_domain::strpanel;
 use navigator_domain::strprofile::{self, StrComparison, StrProfile};
 use navigator_domain::testtype;
-use navigator_domain::variants::{VariantCall, VariantSet};
+use navigator_domain::variants::VariantSet;
 use navigator_domain::workspace::{Alignment, Biosample, NewAlignment, NewProject, NewSequenceRun, SequenceRun};
 use tokio::sync::mpsc::UnboundedSender;
 
@@ -339,8 +346,6 @@ pub struct NavigatorApp {
     str_marker_filter: String,
     /// SNP variant sets for the selected subject.
     variant_sets: Vec<VariantSet>,
-    /// Cross-source variant concordance for the selected subject.
-    variant_concordance: Vec<ReconciledVariant>,
     /// Chip/array profiles for the selected subject.
     chip_profiles: Vec<ChipProfile>,
     /// mtDNA sequences for the selected subject.
@@ -478,7 +483,7 @@ pub struct NavigatorApp {
 const AUTO_DETECT: &str = "(auto-detect)";
 
 /// The workbench accent (primary buttons, selection, active tabs).
-const ACCENT: egui::Color32 = egui::Color32::from_rgb(45, 125, 246);
+pub(crate) const ACCENT: egui::Color32 = egui::Color32::from_rgb(45, 125, 246);
 /// Destructive-action red (Delete) — used by the subject header in Phase 2.
 #[allow(dead_code)]
 const DANGER: egui::Color32 = egui::Color32::from_rgb(220, 60, 60);
@@ -534,520 +539,6 @@ fn apply_theme(ctx: &egui::Context, dark: bool) {
 /// Subjects-table columns: `(header, width)`.
 const SUBJECT_COLS: [(&str, f32); 7] =
     [("ID", 150.0), ("Name", 150.0), ("Y-DNA", 150.0), ("mtDNA", 110.0), ("Sex", 70.0), ("Center", 130.0), ("Status", 90.0)];
-
-/// Short, stable subject id for the table's ID column (first 8 chars of the guid + ellipsis).
-fn short_guid(b: &Biosample) -> String {
-    let s = b.guid.0.to_string();
-    if s.len() > 9 {
-        format!("{}…", &s[..9])
-    } else {
-        s
-    }
-}
-
-/// Paint a table header row at the column offsets used by [`table_row`].
-fn table_header(ui: &mut egui::Ui, cols: &[(&str, f32)]) {
-    let total_w: f32 = cols.iter().map(|c| c.1).sum();
-    let (rect, _) = ui.allocate_exact_size(egui::vec2(total_w, 24.0), egui::Sense::hover());
-    let painter = ui.painter_at(rect);
-    let mut x = rect.left() + 8.0;
-    let color = ui.visuals().weak_text_color();
-    for (name, w) in cols {
-        painter.text(
-            egui::pos2(x, rect.center().y),
-            egui::Align2::LEFT_CENTER,
-            name,
-            egui::FontId::proportional(12.5),
-            color,
-        );
-        x += w;
-    }
-    painter.hline(rect.x_range(), rect.bottom(), egui::Stroke::new(1.0, ui.visuals().widgets.noninteractive.bg_stroke.color));
-}
-
-/// Paint one clickable table row; returns true when clicked. `status_col` (if any) is rendered
-/// as a small accent-coloured badge (the "Status" cell).
-fn table_row(ui: &mut egui::Ui, cols: &[(&str, f32)], cells: &[String], selected: bool, status_col: Option<usize>) -> bool {
-    let total_w: f32 = cols.iter().map(|c| c.1).sum();
-    let (rect, resp) = ui.allocate_exact_size(egui::vec2(total_w, 28.0), egui::Sense::click());
-    let painter = ui.painter_at(rect);
-    if selected {
-        painter.rect_filled(rect, 4.0, ACCENT.gamma_multiply(0.6));
-    } else if resp.hovered() {
-        painter.rect_filled(rect, 4.0, ui.visuals().faint_bg_color);
-    }
-    let text_color = if selected { egui::Color32::WHITE } else { ui.visuals().text_color() };
-    let mut x = rect.left() + 8.0;
-    for (i, ((_, w), val)) in cols.iter().zip(cells).enumerate() {
-        let cy = rect.center().y;
-        if Some(i) == status_col && val != "-" {
-            // a muted pill behind the status text
-            let galley = painter.layout_no_wrap(val.clone(), egui::FontId::proportional(11.5), egui::Color32::from_rgb(225, 190, 90));
-            let pad = egui::vec2(7.0, 3.0);
-            let pill = egui::Rect::from_min_size(egui::pos2(x, cy - galley.size().y / 2.0 - pad.y), galley.size() + pad * 2.0);
-            painter.rect_filled(pill, 8.0, egui::Color32::from_rgb(70, 58, 28));
-            painter.galley(pill.min + pad, galley, egui::Color32::PLACEHOLDER);
-        } else {
-            // Elide to the column width (single line, trailing …) so long values — e.g. an
-            // ISOGG-longhand Y haplogroup — can't spill into the next column.
-            let mut job = egui::text::LayoutJob::single_section(
-                val.clone(),
-                egui::TextFormat { font_id: egui::FontId::proportional(13.0), color: text_color, ..Default::default() },
-            );
-            job.wrap = egui::text::TextWrapping {
-                max_width: (w - 12.0).max(0.0),
-                max_rows: 1,
-                overflow_character: Some('…'),
-                ..Default::default()
-            };
-            let galley = ui.fonts(|f| f.layout_job(job));
-            painter.galley(egui::pos2(x, cy - galley.size().y / 2.0), galley, text_color);
-        }
-        x += w;
-    }
-    resp.clicked()
-}
-
-/// A rounded section card with an optional bold title (the Data Sources look).
-fn card(ui: &mut egui::Ui, title: &str, body: impl FnOnce(&mut egui::Ui)) {
-    egui::Frame::group(ui.style())
-        .fill(ui.visuals().faint_bg_color)
-        .rounding(egui::Rounding::same(8.0))
-        .inner_margin(egui::Margin::same(14.0))
-        .show(ui, |ui| {
-            ui.set_width(ui.available_width());
-            if !title.is_empty() {
-                ui.label(egui::RichText::new(title).strong().size(15.0));
-                ui.add_space(8.0);
-            }
-            body(ui);
-        });
-}
-
-/// A small rounded chip/badge (provider tag, Y/mt badge).
-fn chip(ui: &mut egui::Ui, text: &str, bg: egui::Color32, fg: egui::Color32) -> egui::Response {
-    let font = egui::FontId::proportional(11.5);
-    let galley = ui.painter().layout_no_wrap(text.to_string(), font, fg);
-    let pad = egui::vec2(7.0, 3.0);
-    let (rect, response) = ui.allocate_exact_size(galley.size() + pad * 2.0, egui::Sense::hover());
-    ui.painter().rect_filled(rect, 6.0, bg);
-    ui.painter().galley(rect.min + pad, galley, egui::Color32::PLACEHOLDER);
-    response
-}
-
-/// 3-letter provider abbreviation for the run chip (PACBIO → PAC).
-fn provider_abbrev(platform: &str) -> String {
-    let p = platform.trim();
-    if p.is_empty() || p.eq_ignore_ascii_case("unknown") {
-        "SEQ".into()
-    } else {
-        p.chars().take(3).collect::<String>().to_uppercase()
-    }
-}
-
-/// Compact read count: 9_900 → "9.9K", 1_200_000 → "1.2M".
-fn fmt_reads(n: Option<i64>) -> String {
-    match n {
-        None => "—".into(),
-        Some(v) if v >= 1_000_000 => format!("{:.1}M", v as f64 / 1e6),
-        Some(v) if v >= 1_000 => format!("{:.1}K", v as f64 / 1e3),
-        Some(v) => v.to_string(),
-    }
-}
-
-/// A centered empty-state placeholder for a work area with no selection.
-fn empty_state(ui: &mut egui::Ui, title: &str, hint: &str) {
-    ui.add_space(56.0);
-    ui.vertical_centered(|ui| {
-        ui.heading(title);
-        ui.label(egui::RichText::new(hint).weak());
-    });
-}
-
-/// A dashboard stat tile: a big number over a muted label, in a rounded card.
-fn stat_card(ui: &mut egui::Ui, label: &str, value: usize) {
-    egui::Frame::group(ui.style())
-        .fill(ui.visuals().faint_bg_color)
-        .inner_margin(egui::Margin::symmetric(18.0, 14.0))
-        .show(ui, |ui| {
-            ui.set_min_width(120.0);
-            ui.vertical(|ui| {
-                ui.label(egui::RichText::new(value.to_string()).size(28.0).strong());
-                ui.label(egui::RichText::new(label).weak());
-            });
-        });
-}
-
-/// Format an optional mean/median depth (one decimal), "—" when not computed.
-fn fmt_depth(o: Option<f64>) -> String {
-    o.map(|v| format!("{v:.1}")).unwrap_or_else(|| "—".into())
-}
-
-/// Format an optional fraction (0–1) as a percentage, "—" when not computed.
-fn fmt_pct(o: Option<f64>) -> String {
-    o.map(|v| format!("{:.1}%", v * 100.0)).unwrap_or_else(|| "—".into())
-}
-
-/// Draw the per-chromosome local-ancestry painting: one horizontal bar per autosome (each
-/// normalized to full width), segments colored by ancestry, plus a legend of the ancestries shown.
-fn draw_chromosome_painting(ui: &mut egui::Ui, segments: &[AncestrySegment]) {
-    use std::collections::BTreeMap;
-    // Group by autosome number → the two copies' segments. Non-autosomes (X/Y/M / the chr99 fallback)
-    // are skipped — this is autosomal local ancestry.
-    let mut by_chr: BTreeMap<i64, [Vec<&AncestrySegment>; 2]> = BTreeMap::new();
-    for s in segments {
-        let Ok(n) = s.contig.trim_start_matches("chr").parse::<i64>() else { continue };
-        if !(1..=22).contains(&n) {
-            continue;
-        }
-        by_chr.entry(n).or_default()[(s.copy as usize).min(1)].push(s);
-    }
-    let label_w = 42.0;
-    let bar_w = 300.0;
-    let copy_h = 7.0; // each of the two copy tracks
-    let gap = 2.0;
-    for (n, copies) in by_chr {
-        // Shared bp span across both copies so the two tracks align.
-        let lo = copies.iter().flatten().map(|s| s.start).min().unwrap_or(1);
-        let hi = copies.iter().flatten().map(|s| s.end).max().unwrap_or(lo + 1).max(lo + 1);
-        let span = (hi - lo).max(1) as f32;
-        ui.horizontal(|ui| {
-            ui.allocate_ui(egui::vec2(label_w, copy_h * 2.0 + gap), |ui| ui.label(format!("chr{n}")));
-            let (rect, _) = ui.allocate_exact_size(egui::vec2(bar_w, copy_h * 2.0 + gap), egui::Sense::hover());
-            let painter = ui.painter_at(rect);
-            for (c, segs) in copies.iter().enumerate() {
-                let top = rect.top() + c as f32 * (copy_h + gap);
-                let track = egui::Rect::from_min_size(egui::pos2(rect.left(), top), egui::vec2(rect.width(), copy_h));
-                painter.rect_filled(track, 2.0, egui::Color32::from_gray(30));
-                for s in segs {
-                    let x0 = track.left() + (s.start - lo) as f32 / span * track.width();
-                    let x1 = track.left() + (s.end - lo) as f32 / span * track.width();
-                    let seg_rect = egui::Rect::from_min_max(egui::pos2(x0, track.top()), egui::pos2(x1.max(x0 + 1.0), track.bottom()));
-                    painter.rect_filled(seg_rect, 0.0, parse_hex_color(&population_color(&s.population_code)));
-                }
-            }
-        });
-    }
-    // Legend: distinct ancestries present.
-    let mut seen: Vec<&str> = Vec::new();
-    for s in segments {
-        if !seen.contains(&s.population_code.as_str()) {
-            seen.push(&s.population_code);
-        }
-    }
-    ui.add_space(2.0);
-    ui.horizontal_wrapped(|ui| {
-        for code in seen {
-            let (r, _) = ui.allocate_exact_size(egui::vec2(10.0, 10.0), egui::Sense::hover());
-            ui.painter().circle_filled(r.center(), 4.0, parse_hex_color(&population_color(code)));
-            ui.label(egui::RichText::new(population_name(code)).small());
-            ui.add_space(6.0);
-        }
-    });
-}
-
-/// Points along a circle arc from angle `a0` to `a1` (radians), `steps`+1 samples.
-fn arc_points(c: egui::Pos2, r: f32, a0: f32, a1: f32, steps: usize) -> Vec<egui::Pos2> {
-    (0..=steps)
-        .map(|i| {
-            let t = a0 + (a1 - a0) * (i as f32 / steps as f32);
-            egui::pos2(c.x + r * t.cos(), c.y + r * t.sin())
-        })
-        .collect()
-}
-
-/// Draw a donut chart of the super-population proportions (one wedge per super-population,
-/// colored by continent), with the dominant share in the centre.
-fn draw_ancestry_donut(ui: &mut egui::Ui, summary: &[SuperPopulationSummary]) {
-    let size = 120.0;
-    let (rect, _) = ui.allocate_exact_size(egui::vec2(size, size), egui::Sense::hover());
-    let painter = ui.painter_at(rect);
-    let c = rect.center();
-    let (r_out, r_in) = (size * 0.46, size * 0.28);
-    let total: f32 = summary.iter().map(|s| s.percentage as f32).sum::<f32>().max(1.0);
-    let mut a0 = -std::f32::consts::FRAC_PI_2; // start at 12 o'clock
-    for s in summary {
-        if s.percentage < 0.5 {
-            continue;
-        }
-        let a1 = a0 + (s.percentage as f32 / total) * std::f32::consts::TAU;
-        let code = s.populations.first().and_then(|c| population_super(c)).unwrap_or("");
-        let mut pts = arc_points(c, r_out, a0, a1, 32);
-        pts.extend(arc_points(c, r_in, a1, a0, 32)); // inner arc, reversed → closed ring sector
-        painter.add(egui::epaint::PathShape {
-            points: pts,
-            closed: true,
-            fill: parse_hex_color(&population_color(code)),
-            stroke: egui::epaint::PathStroke::NONE,
-        });
-        a0 = a1;
-    }
-    if let Some(top) = summary.first() {
-        painter.text(
-            c,
-            egui::Align2::CENTER_CENTER,
-            format!("{:.0}%", top.percentage),
-            egui::FontId::proportional(18.0),
-            egui::Color32::WHITE,
-        );
-    }
-}
-
-/// Draw a detailed ancestry breakdown (the fine-population or ancient-component report): the
-/// estimate's `components`, sorted by share, as a name/percentage grid with a proportion bar, plus a
-/// provenance line (method + SNP count). `id_salt` keeps each report's grid distinct.
-fn draw_population_components(ui: &mut egui::Ui, result: &navigator_app::AncestryResult, id_salt: &str, top_n: usize) {
-    let mut comps: Vec<(&str, f64)> =
-        result.components.iter().filter(|c| c.percentage >= 0.05).map(|c| (c.population_code.as_str(), c.percentage)).collect();
-    comps.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-    if comps.is_empty() {
-        ui.label(egui::RichText::new("No components above 0.05%.").weak());
-        return;
-    }
-    let max = comps.first().map(|c| c.1).unwrap_or(1.0).max(1e-6);
-    egui::Grid::new(format!("{id_salt}_grid")).striped(true).num_columns(3).show(ui, |ui| {
-        for (name, pct) in comps.iter().take(top_n) {
-            ui.label(*name);
-            ui.label(egui::RichText::new(format!("{pct:.1}%")).strong());
-            // A small proportion bar (relative to the top component) for at-a-glance ranking.
-            let (rect, _) = ui.allocate_exact_size(egui::vec2(120.0, 10.0), egui::Sense::hover());
-            let p = ui.painter_at(rect);
-            p.rect_filled(rect, 2.0, ui.visuals().faint_bg_color);
-            let mut fill = rect;
-            fill.set_width(rect.width() * (pct / max) as f32);
-            p.rect_filled(fill, 2.0, ACCENT.gamma_multiply(0.7));
-            ui.end_row();
-        }
-    });
-    ui.add_space(4.0);
-    ui.label(
-        egui::RichText::new(format!("{} · {}/{} SNPs · confidence {:.0}%", result.method, result.snps_with_genotype, result.snps_analyzed, result.confidence_level * 100.0))
-            .weak()
-            .small(),
-    );
-}
-
-/// Draw the super-population composition as a single stacked horizontal bar (segment widths =
-/// proportions, colored by continent).
-fn draw_composition_bar(ui: &mut egui::Ui, summary: &[SuperPopulationSummary]) {
-    let w = ui.available_width().min(360.0);
-    let (rect, _) = ui.allocate_exact_size(egui::vec2(w, 16.0), egui::Sense::hover());
-    let painter = ui.painter_at(rect);
-    painter.rect_filled(rect, 3.0, egui::Color32::from_gray(30));
-    let mut x = rect.left();
-    for s in summary {
-        let seg_w = rect.width() * (s.percentage as f32 / 100.0).clamp(0.0, 1.0);
-        let seg = egui::Rect::from_min_size(egui::pos2(x, rect.top()), egui::vec2(seg_w, rect.height()));
-        let code = s.populations.first().and_then(|c| population_super(c)).unwrap_or("");
-        painter.rect_filled(seg, 0.0, parse_hex_color(&population_color(code)));
-        x += seg_w;
-    }
-}
-
-/// Parse a `#RRGGBB` hex color, falling back to grey on a malformed string.
-fn parse_hex_color(hex: &str) -> egui::Color32 {
-    let h = hex.trim_start_matches('#');
-    if h.len() == 6 {
-        if let (Ok(r), Ok(g), Ok(b)) = (
-            u8::from_str_radix(&h[0..2], 16),
-            u8::from_str_radix(&h[2..4], 16),
-            u8::from_str_radix(&h[4..6], 16),
-        ) {
-            return egui::Color32::from_rgb(r, g, b);
-        }
-    }
-    egui::Color32::from_gray(128)
-}
-
-/// Giemsa-stain → color for the cytoband ideogram (the standard UCSC palette, tuned for the dark
-/// theme): `gneg` light → `gpos100` near-black, `acen` (centromere) red, `gvar`/`stalk` tinted.
-fn stain_color(stain: &str) -> egui::Color32 {
-    match stain {
-        "gneg" => egui::Color32::from_gray(225),
-        "gpos25" => egui::Color32::from_gray(170),
-        "gpos50" => egui::Color32::from_gray(120),
-        "gpos75" => egui::Color32::from_gray(80),
-        "gpos100" => egui::Color32::from_gray(45),
-        "acen" => egui::Color32::from_rgb(200, 70, 70),
-        "gvar" => egui::Color32::from_rgb(120, 140, 185),
-        "stalk" => egui::Color32::from_rgb(110, 165, 160),
-        _ => egui::Color32::from_gray(140),
-    }
-}
-
-/// The chromosomes to draw, in karyotype order (1–22, X, Y); non-nuclear / alt / random contigs
-/// are skipped. Tolerates a `chr` prefix on the names.
-fn karyotype_order(
-    regions: &navigator_app::GenomeRegions,
-) -> Vec<(&String, &navigator_app::ChromosomeRegions)> {
-    fn rank(name: &str) -> Option<u32> {
-        let s = name.strip_prefix("chr").unwrap_or(name);
-        match s {
-            "X" => Some(23),
-            "Y" => Some(24),
-            _ => s.parse::<u32>().ok().filter(|n| (1..=22).contains(n)),
-        }
-    }
-    let mut v: Vec<(u32, &String, &navigator_app::ChromosomeRegions)> =
-        regions.chromosomes.iter().filter_map(|(n, c)| rank(n).map(|r| (r, n, c))).collect();
-    v.sort_by_key(|(r, _, _)| *r);
-    v.into_iter().map(|(_, n, c)| (n, c)).collect()
-}
-
-/// A compact legend mapping Giemsa stains to their ideogram colors.
-fn ideogram_legend(ui: &mut egui::Ui) {
-    ui.horizontal_wrapped(|ui| {
-        for (label, stain) in
-            [("gneg", "gneg"), ("gpos50", "gpos50"), ("gpos100", "gpos100"), ("centromere", "acen"), ("gvar", "gvar")]
-        {
-            let (r, _) = ui.allocate_exact_size(egui::vec2(12.0, 12.0), egui::Sense::hover());
-            ui.painter().rect_filled(r, 2.0, stain_color(stain));
-            ui.label(egui::RichText::new(label).small().weak());
-            ui.add_space(8.0);
-        }
-    });
-}
-
-/// A compact "data sources" line: which ancestry/IBD reference assets are present and
-/// integrity-verified (✓ verified · • present-but-unverified · ✗ absent).
-fn asset_status_line(ui: &mut egui::Ui, assets: &[navigator_app::AssetStatus]) {
-    if assets.is_empty() {
-        return;
-    }
-    ui.horizontal_wrapped(|ui| {
-        ui.label(egui::RichText::new("Data sources:").small().weak());
-        for a in assets {
-            let (mark, col, hover) = if a.verified {
-                ("✓", egui::Color32::from_rgb(80, 170, 90), "present, integrity-verified")
-            } else if a.present {
-                ("•", egui::Color32::from_gray(150), "present (no manifest to verify)")
-            } else {
-                ("✗", egui::Color32::from_rgb(170, 90, 90), "not installed")
-            };
-            ui.colored_label(col, egui::RichText::new(format!("{} {mark}", a.name)).small()).on_hover_text(hover);
-            ui.add_space(4.0);
-        }
-    });
-}
-
-/// Draw the chromosome ideogram: one horizontal bar per chromosome (scaled to the longest), its
-/// cytobands as Giemsa-stained segments, with a hover tooltip naming the band under the cursor.
-fn draw_ideogram(ui: &mut egui::Ui, regions: &navigator_app::GenomeRegions) {
-    let order = karyotype_order(regions);
-    if order.is_empty() {
-        ui.label(egui::RichText::new("No chromosome data.").weak());
-        return;
-    }
-    let max_len = order.iter().map(|(_, c)| c.length).max().unwrap_or(1).max(1) as f32;
-    let label_w = 30.0;
-    let row_h = 16.0;
-    let full_w = ui.available_width().min(760.0);
-    let bar_area = (full_w - label_w - 6.0).max(60.0);
-    let text_color = ui.visuals().text_color();
-
-    for (name, c) in &order {
-        if c.length <= 0 {
-            continue;
-        }
-        let (rect, resp) = ui.allocate_exact_size(egui::vec2(full_w, row_h), egui::Sense::hover());
-        let painter = ui.painter_at(rect);
-        let short = name.strip_prefix("chr").unwrap_or(name);
-        painter.text(
-            egui::pos2(rect.left() + 2.0, rect.center().y),
-            egui::Align2::LEFT_CENTER,
-            short,
-            egui::FontId::proportional(11.0),
-            text_color,
-        );
-
-        let x0 = rect.left() + label_w;
-        let bar_w = bar_area * (c.length as f32 / max_len);
-        let bar = egui::Rect::from_min_size(egui::pos2(x0, rect.top() + 2.0), egui::vec2(bar_w, row_h - 4.0));
-        painter.rect_filled(bar, 3.0, egui::Color32::from_gray(28));
-        let len = c.length as f32;
-        for b in &c.cytobands {
-            let bx0 = x0 + bar_w * (b.start as f32 / len);
-            let bx1 = x0 + bar_w * (b.end as f32 / len);
-            let seg = egui::Rect::from_min_max(egui::pos2(bx0, bar.top()), egui::pos2(bx1.max(bx0 + 0.5), bar.bottom()));
-            painter.rect_filled(seg, 0.0, stain_color(&b.stain));
-        }
-        painter.rect_stroke(bar, 3.0, egui::Stroke::new(1.0, egui::Color32::from_gray(70)));
-
-        // Hover → the band (and Mb position) under the cursor.
-        if let Some(pos) = resp.hover_pos() {
-            if pos.x >= x0 && pos.x <= x0 + bar_w && bar_w > 0.0 {
-                let g = (((pos.x - x0) / bar_w).clamp(0.0, 1.0) * len) as i64;
-                let band = c.cytobands.iter().find(|b| b.start <= g && g < b.end);
-                let name = band.map(|b| format!("{short}{}", b.name)).unwrap_or_else(|| short.to_string());
-                let stain = band.map(|b| b.stain.as_str()).unwrap_or("");
-                resp.on_hover_text(format!("{name}  ·  {stain}  ·  {:.1} Mb", g as f64 / 1e6));
-            }
-        }
-    }
-}
-
-/// Render a haplogroup assignment: terminal + lineage + alternatives, then the child
-/// branches with per-SNP evidence that explains why descent stopped.
-fn show_assignment(ui: &mut egui::Ui, a: &HaploAssignment) {
-    let Some(top) = a.ranked.first() else {
-        ui.label("No match."); // free helper (no `self`); i18n when it takes a `lang` param
-        return;
-    };
-    ui.label(format!("Haplogroup: {}   ({}/{} mutations, score {:.3})", top.name, top.matched, top.expected, top.score));
-    ui.label(format!("Lineage: {}", top.lineage.join(" › ")));
-    let alts: Vec<String> = a.ranked.iter().skip(1).take(3).map(|r| format!("{} ({:.3})", r.name, r.score)).collect();
-    if !alts.is_empty() {
-        ui.label(format!("Alternatives: {}", alts.join(", ")));
-    }
-    for b in &a.branches {
-        egui::CollapsingHeader::new(format!("child {} — {}/{} SNPs derived", b.name, b.derived, b.snps.len()))
-            .id_salt(("branch", &b.name))
-            .show(ui, |ui| {
-                egui::Grid::new(("branch_snps", &b.name)).striped(true).num_columns(3).show(ui, |ui| {
-                    for s in &b.snps {
-                        ui.label(&s.name);
-                        ui.label(format!("{}{}>{}", s.position, s.ancestral, s.derived));
-                        let (txt, col) = match s.state {
-                            CallState::Derived => ("derived", egui::Color32::from_rgb(60, 160, 60)),
-                            CallState::Ancestral => ("ancestral", egui::Color32::from_rgb(170, 120, 40)),
-                            CallState::NoCall => ("no-call", egui::Color32::GRAY),
-                        };
-                        ui.colored_label(col, txt);
-                        ui.end_row();
-                    }
-                });
-            });
-    }
-}
-
-/// A readable "change" string for a variant call, covering the indel forms the mtDNA
-/// derivation stores (one allele empty).
-fn variant_change(c: &VariantCall) -> String {
-    if c.alternate.is_empty() {
-        format!("{}del", c.reference) // deletion
-    } else if c.reference.is_empty() {
-        format!("ins{}", c.alternate) // insertion
-    } else {
-        format!("{}>{}", c.reference, c.alternate) // substitution
-    }
-}
-
-fn opt(s: &str) -> Option<String> {
-    let t = s.trim();
-    (!t.is_empty()).then(|| t.to_string())
-}
-
-/// A labeled dropdown that sets `value` to one of `options` (string codes).
-fn combo(ui: &mut egui::Ui, label: &str, id: &str, value: &mut String, options: &[&str]) {
-    ui.horizontal(|ui| {
-        ui.label(label);
-        egui::ComboBox::from_id_salt(id).selected_text(value.clone()).show_ui(ui, |ui| {
-            for opt in options {
-                ui.selectable_value(value, opt.to_string(), *opt);
-            }
-        });
-    });
-}
 
 impl NavigatorApp {
     pub fn new(cc: &eframe::CreationContext<'_>, db_path: PathBuf) -> Self {
@@ -1116,7 +607,6 @@ impl NavigatorApp {
             str_provider: None,
             str_marker_filter: String::new(),
             variant_sets: Vec::new(),
-            variant_concordance: Vec::new(),
             chip_profiles: Vec::new(),
             asset_status: Vec::new(),
             mtdna_sequences: Vec::new(),
@@ -1350,14 +840,8 @@ impl NavigatorApp {
                 Event::VariantSetsChanged(guid) => {
                     if self.selected_sample == Some(guid) {
                         let _ = self.tx.send(Command::LoadVariantSets(guid));
-                        let _ = self.tx.send(Command::LoadVariantConcordance(guid)); // sources changed
                     }
                     self.status = "Variants imported".into();
-                }
-                Event::VariantConcordance { biosample_guid, variants } => {
-                    if self.selected_sample == Some(biosample_guid) {
-                        self.variant_concordance = variants;
-                    }
                 }
                 Event::ChipProfiles { biosample_guid, profiles } => {
                     if self.selected_sample == Some(biosample_guid) {
@@ -1814,7 +1298,6 @@ impl NavigatorApp {
         self.runs.clear();
         self.str_profiles.clear();
         self.variant_sets.clear();
-        self.variant_concordance.clear();
         self.chip_profiles.clear();
         self.mtdna_sequences.clear();
         self.mtdna_variants.clear();
@@ -1837,7 +1320,6 @@ impl NavigatorApp {
         let _ = self.tx.send(Command::LoadHaploSummary);
         let _ = self.tx.send(Command::LoadAudit { biosample_guid: guid, dna_type: DnaType::Y });
         let _ = self.tx.send(Command::LoadAudit { biosample_guid: guid, dna_type: DnaType::Mt });
-        let _ = self.tx.send(Command::LoadVariantConcordance(guid));
         let _ = self.tx.send(Command::LoadRuns(guid));
         let _ = self.tx.send(Command::LoadStrProfiles(guid));
         let _ = self.tx.send(Command::LoadVariantSets(guid));
@@ -3604,22 +3086,52 @@ impl NavigatorApp {
         });
     }
 
+    /// The build/refresh control shared by the Y/mt/autosomal consensus cards: a button that
+    /// reads "Refresh" once a profile exists (else `build_label_key`), an inline spinner while
+    /// `loading`, and a weak cost hint. On click it sets `status` and dispatches `command`;
+    /// returns whether it was clicked so the caller can set its own loading flag.
+    #[allow(clippy::too_many_arguments)]
+    fn profile_build_control(
+        &mut self,
+        ui: &mut egui::Ui,
+        has_profile: bool,
+        loading: bool,
+        build_label_key: &'static str,
+        cost_hint_key: &'static str,
+        status: &str,
+        command: Command,
+    ) -> bool {
+        let mut clicked = false;
+        ui.horizontal(|ui| {
+            let label = if has_profile { self.tr("common.refresh") } else { self.tr(build_label_key) };
+            if ui.add_enabled(!loading, egui::Button::new(label)).clicked() {
+                self.status = status.into();
+                let _ = self.tx.send(command);
+                clicked = true;
+            }
+            if loading {
+                ui.spinner();
+            }
+            ui.label(egui::RichText::new(self.tr(cost_hint_key)).weak().small());
+        });
+        clicked
+    }
+
     /// Multi-source Y-variant profile: per-SNP concordance across the subject's Y sources, with
     /// status (confirmed/novel/conflict/single) and per-source provenance.
     fn y_variant_profile_section(&mut self, ui: &mut egui::Ui, guid: SampleGuid) {
         // Build/refresh control first (it mutates self / dispatches), before borrowing the profile.
-        ui.horizontal(|ui| {
-            let label = if self.y_profile.is_some() { self.tr("common.refresh") } else { self.tr("btn.buildYProfile") };
-            if ui.add_enabled(!self.y_profile_loading, egui::Button::new(label)).clicked() {
-                self.y_profile_loading = true;
-                self.status = "Building Y variant profile…".into();
-                let _ = self.tx.send(Command::BuildYProfile { biosample_guid: guid });
-            }
-            if self.y_profile_loading {
-                ui.spinner();
-            }
-            ui.label(egui::RichText::new(self.tr("hint.yProfileCost")).weak().small());
-        });
+        if self.profile_build_control(
+            ui,
+            self.y_profile.is_some(),
+            self.y_profile_loading,
+            "btn.buildYProfile",
+            "hint.yProfileCost",
+            "Building Y variant profile…",
+            Command::BuildYProfile { biosample_guid: guid },
+        ) {
+            self.y_profile_loading = true;
+        }
 
         let Some(profile) = &self.y_profile else {
             if !self.y_profile_loading {
@@ -3638,18 +3150,17 @@ impl NavigatorApp {
     /// sources (alignments' chrM placement, imported mtDNA sequences, the chip mt panel). Mirrors
     /// the Y-variant card over the same generic consensus engine.
     fn mt_variant_profile_section(&mut self, ui: &mut egui::Ui, guid: SampleGuid) {
-        ui.horizontal(|ui| {
-            let label = if self.mt_profile.is_some() { self.tr("common.refresh") } else { self.tr("btn.buildMtProfile") };
-            if ui.add_enabled(!self.mt_profile_loading, egui::Button::new(label)).clicked() {
-                self.mt_profile_loading = true;
-                self.status = "Building mtDNA consensus profile…".into();
-                let _ = self.tx.send(Command::BuildMtProfile { biosample_guid: guid });
-            }
-            if self.mt_profile_loading {
-                ui.spinner();
-            }
-            ui.label(egui::RichText::new(self.tr("hint.mtProfileCost")).weak().small());
-        });
+        if self.profile_build_control(
+            ui,
+            self.mt_profile.is_some(),
+            self.mt_profile_loading,
+            "btn.buildMtProfile",
+            "hint.mtProfileCost",
+            "Building mtDNA consensus profile…",
+            Command::BuildMtProfile { biosample_guid: guid },
+        ) {
+            self.mt_profile_loading = true;
+        }
 
         let Some(profile) = &self.mt_profile else {
             if !self.mt_profile_loading {
@@ -3667,18 +3178,17 @@ impl NavigatorApp {
     /// Multi-source autosomal (diploid 0/1/2) consensus over the canonical IBD-panel sites. Build/
     /// Refresh recomputes (panel-genotypes every WGS + chip source); the cached snapshot loads instantly.
     fn autosomal_profile_section(&mut self, ui: &mut egui::Ui, guid: SampleGuid) {
-        ui.horizontal(|ui| {
-            let label = if self.auto_profile.is_some() { self.tr("common.refresh") } else { self.tr("btn.buildAutosomalProfile") };
-            if ui.add_enabled(!self.auto_profile_loading, egui::Button::new(label)).clicked() {
-                self.auto_profile_loading = true;
-                self.status = "Building autosomal consensus profile…".into();
-                let _ = self.tx.send(Command::BuildAutosomalProfile { biosample_guid: guid });
-            }
-            if self.auto_profile_loading {
-                ui.spinner();
-            }
-            ui.label(egui::RichText::new(self.tr("hint.autoProfileCost")).weak().small());
-        });
+        if self.profile_build_control(
+            ui,
+            self.auto_profile.is_some(),
+            self.auto_profile_loading,
+            "btn.buildAutosomalProfile",
+            "hint.autoProfileCost",
+            "Building autosomal consensus profile…",
+            Command::BuildAutosomalProfile { biosample_guid: guid },
+        ) {
+            self.auto_profile_loading = true;
+        }
 
         let Some(profile) = &self.auto_profile else {
             if !self.auto_profile_loading {
@@ -3938,35 +3448,6 @@ impl NavigatorApp {
         }
         if want_delete.is_some() {
             self.confirm_data_delete = want_delete;
-        }
-
-        // Cross-source concordance (shown once ≥2 sources exist).
-        if self.variant_sets.len() >= 2 && !self.variant_concordance.is_empty() {
-            let confirmed = self.variant_concordance.iter().filter(|v| v.status == VariantStatus::Confirmed).count();
-            let conflict = self.variant_concordance.iter().filter(|v| v.status == VariantStatus::Conflict).count();
-            let single = self.variant_concordance.iter().filter(|v| v.status == VariantStatus::SingleSource).count();
-            egui::CollapsingHeader::new(format!("Cross-source: {confirmed} confirmed · {conflict} conflict · {single} single"))
-                .id_salt(("vconc", guid.0))
-                .show(ui, |ui| {
-                    egui::Grid::new(("vconc_grid", guid.0)).striped(true).num_columns(4).show(ui, |ui| {
-                        for h in ["table.position", "table.allele", "table.status", "table.sources"] {
-                            ui.strong(self.tr(h));
-                        }
-                        ui.end_row();
-                        for v in self.variant_concordance.iter().take(MAX_ROWS) {
-                            ui.label(format!("{} {}", v.contig, v.position));
-                            ui.label(&v.allele);
-                            let (txt, col) = match v.status {
-                                VariantStatus::Confirmed => ("confirmed", egui::Color32::from_rgb(60, 160, 60)),
-                                VariantStatus::Conflict => ("conflict", egui::Color32::from_rgb(200, 60, 60)),
-                                VariantStatus::SingleSource => ("single", egui::Color32::from_rgb(170, 150, 40)),
-                            };
-                            ui.colored_label(col, txt);
-                            ui.label(format!("{}/{}", v.support, v.total));
-                            ui.end_row();
-                        }
-                    });
-                });
         }
 
         ui.add_space(6.0);
@@ -5622,38 +5103,6 @@ impl NavigatorApp {
 }
 
 /// Render a depth histogram (`bin d` = bases observed at depth `d`, top bin = ≥255) as an
-/// egui_plot bar chart. Shared by the whole-genome and per-contig coverage views.
-fn coverage_histogram_chart(ui: &mut egui::Ui, hist: &[u64], title: &str) {
-    use egui_plot::{Bar, BarChart, Plot};
-    ui.label(format!("Depth histogram — {title}  (depth ≥1; x = depth, y = bases)"));
-    // Skip depth 0 (uncovered + reference-N): it typically dwarfs the coverage peak and would
-    // flatten the rest of the distribution. That count is the table's NoCov / callable breakdown.
-    let bars: Vec<Bar> = hist
-        .iter()
-        .enumerate()
-        .skip(1)
-        .map(|(depth, &count)| Bar::new(depth as f64, count as f64).width(0.9))
-        .collect();
-    let max_depth = hist.len().max(2) as f64;
-    let max_count = hist.iter().skip(1).copied().max().unwrap_or(1) as f64;
-    let chart = BarChart::new(bars).name("bases");
-    // Fixed, non-interactive view: lock pan/zoom/scroll and pin the bounds to the data so the
-    // axes can't drift into negative space or be dragged off-screen.
-    Plot::new(format!("coverage_histogram_{title}"))
-        .height(180.0)
-        .allow_drag(false)
-        .allow_zoom(false)
-        .allow_scroll(false)
-        .allow_boxed_zoom(false)
-        .clamp_grid(true)
-        .set_margin_fraction(egui::vec2(0.0, 0.05))
-        .include_x(0.0)
-        .include_x(max_depth)
-        .include_y(0.0)
-        .include_y(max_count)
-        .show(ui, |plot_ui| plot_ui.bar_chart(chart));
-}
-
 const STR_CONFLICT: egui::Color32 = egui::Color32::from_rgb(220, 150, 60);
 
 /// FTDNA/YSEQ-style By-Panel view: markers grouped into tiers (Y-12 / Y-25 / …), each tier rendered
@@ -5767,6 +5216,21 @@ fn str_all_markers_view(
     });
 }
 
+/// Canonical short label + badge color for a consensus status, shared by the Y/mt consensus card
+/// and the autosomal diploid card. `Novel` can't arise on the diploid (panel-site) path — see
+/// [`navigator_domain::consensus::reconcile_diploid`] — but is mapped here for completeness.
+fn consensus_status_badge(status: YVariantStatus) -> (&'static str, egui::Color32) {
+    let amber = egui::Color32::from_rgb(220, 150, 60);
+    match status {
+        YVariantStatus::Confirmed => ("confirmed", egui::Color32::from_rgb(120, 180, 120)),
+        YVariantStatus::Novel => ("novel", egui::Color32::from_rgb(120, 150, 220)),
+        YVariantStatus::Conflict => ("conflict", amber),
+        YVariantStatus::SingleSource => ("single", egui::Color32::from_gray(150)),
+        YVariantStatus::Pending => ("pending", egui::Color32::from_gray(150)),
+        YVariantStatus::NoCoverage => ("no-cov", egui::Color32::from_gray(110)),
+    }
+}
+
 /// Shared renderer for a multi-source consensus profile (Y or mtDNA — same generic engine): header
 /// (counts + lineage label + provenance), a status filter, and the per-variant grid. `variant_col`
 /// names the identity column ("SNP" / "Mutation"); `kind` labels the empty state; `id_salt` keeps the
@@ -5846,14 +5310,7 @@ fn draw_consensus_profile(
                 ui.label(if conflict { name_txt.color(amber) } else { name_txt });
                 ui.label(egui::RichText::new(v.position.to_string()).weak());
                 ui.label(state_label(v.consensus));
-                let (label, color) = match v.status {
-                    YVariantStatus::Confirmed => ("confirmed", egui::Color32::from_rgb(120, 180, 120)),
-                    YVariantStatus::Novel => ("novel", egui::Color32::from_rgb(120, 150, 220)),
-                    YVariantStatus::Conflict => ("conflict", amber),
-                    YVariantStatus::SingleSource => ("single", egui::Color32::from_gray(150)),
-                    YVariantStatus::Pending => ("pending", egui::Color32::from_gray(150)),
-                    YVariantStatus::NoCoverage => ("no-cov", egui::Color32::from_gray(110)),
-                };
+                let (label, color) = consensus_status_badge(v.status);
                 ui.colored_label(color, format!("{label} ({}/{})", v.support, v.total));
                 ui.horizontal(|ui| {
                     for src in &v.sources {
@@ -5929,14 +5386,6 @@ fn draw_diploid_profile(ui: &mut egui::Ui, profile: &navigator_app::DiploidProfi
     const W_GT: f32 = 44.0;
     const W_STATUS: f32 = 130.0;
     let row_h = ui.text_style_height(&egui::TextStyle::Body) + 4.0;
-    let status_view = |st: YVariantStatus| -> (&'static str, egui::Color32) {
-        match st {
-            YVariantStatus::Confirmed => ("confirmed", egui::Color32::from_rgb(120, 180, 120)),
-            YVariantStatus::Conflict => ("conflict", amber),
-            YVariantStatus::SingleSource => ("single", egui::Color32::from_gray(150)),
-            _ => ("pending", egui::Color32::from_gray(150)),
-        }
-    };
     ui.horizontal(|ui| {
         ui.add_sized([W_SITE, row_h], egui::Label::new(egui::RichText::new("Site").strong()));
         ui.add_sized([W_GT, row_h], egui::Label::new(egui::RichText::new("GT").strong()));
@@ -5950,7 +5399,7 @@ fn draw_diploid_profile(ui: &mut egui::Ui, profile: &navigator_app::DiploidProfi
         ui.horizontal(|ui| {
             ui.add_sized([W_SITE, row_h], egui::Label::new(if conflict { name_txt.color(amber) } else { name_txt }).truncate());
             ui.add_sized([W_GT, row_h], egui::Label::new(gt(v.consensus_dosage)));
-            let (lbl, color) = status_view(v.status);
+            let (lbl, color) = consensus_status_badge(v.status);
             ui.add_sized([W_STATUS, row_h], egui::Label::new(egui::RichText::new(format!("{lbl} ({}/{})", v.support, v.total)).color(color)));
             for src in &v.sources {
                 let short = match src.source_type {

@@ -6,9 +6,11 @@ use std::path::PathBuf;
 
 use clap::Parser;
 
+mod charts;
 mod cli;
 mod i18n;
 mod ui;
+mod widgets;
 mod worker;
 
 use ui::NavigatorApp;

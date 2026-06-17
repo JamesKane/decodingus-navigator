@@ -3,8 +3,8 @@
 use du_domain::ids::SampleGuid;
 use navigator_domain::mtdna::{MtdnaSequence, NewMtdnaSequence};
 use sqlx::SqlitePool;
-use uuid::Uuid;
 
+use crate::error::parse_sample_guid;
 use crate::StoreError;
 
 #[derive(sqlx::FromRow)]
@@ -19,11 +19,10 @@ struct Row {
 
 impl Row {
     fn into_domain(self) -> Result<MtdnaSequence, StoreError> {
-        let uuid = Uuid::parse_str(&self.biosample_guid)
-            .map_err(|e| StoreError::Decode(format!("mtdna_sequence guid {:?}: {e}", self.biosample_guid)))?;
+        let biosample_guid = parse_sample_guid(&self.biosample_guid, "mtdna_sequence")?;
         Ok(MtdnaSequence {
             id: self.id,
-            biosample_guid: SampleGuid(uuid),
+            biosample_guid,
             defline: self.defline,
             sequence: self.sequence,
             n_count: self.n_count,

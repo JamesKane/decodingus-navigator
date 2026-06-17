@@ -18,7 +18,7 @@ use navigator_app::{
     DenovoCall, DnaType, HaploAssignment, HeteroplasmySite, IbdComparison, IbdDetectorConfig,
     IbdSuggestion,
     IdentityVerification, PanelGenotype, PrivateBucket, ProjectImportSummary, ProjectOverview,
-    ProjectSampleReport, ReadMetrics, ReconciledVariant, RefBuildStatus, SexInferenceResult, SourceType,
+    ProjectSampleReport, ReadMetrics, RefBuildStatus, SexInferenceResult, SourceType,
     SvAnalysisResult,
 };
 use navigator_domain::du_domain::ids::SampleGuid;
@@ -82,8 +82,6 @@ pub enum Command {
     AddRun(NewSequenceRun),
     /// Load the donor-level Y + mtDNA haplogroup consensus for a subject.
     LoadConsensus(SampleGuid),
-    /// Reconcile the subject's variant sets across sources.
-    LoadVariantConcordance(SampleGuid),
     LoadStrProfiles(SampleGuid),
     /// Call Y-STRs from the subject's best sequence alignment and compare to the imported vendor
     /// profile (the By-Panel concordance). Heavy on first call (a chrY pass); cached after.
@@ -339,8 +337,6 @@ pub enum Event {
     RunsChanged(SampleGuid),
     /// Donor-level haplogroup consensus for a subject (Y, mtDNA).
     Consensus { biosample_guid: SampleGuid, y: Option<Consensus>, mt: Option<Consensus> },
-    /// Variant concordance across the subject's sources.
-    VariantConcordance { biosample_guid: SampleGuid, variants: Vec<ReconciledVariant> },
     StrProfiles { biosample_guid: SampleGuid, profiles: Vec<StrProfile> },
     StrProfilesChanged(SampleGuid),
     VariantSets { biosample_guid: SampleGuid, sets: Vec<VariantSet> },
@@ -584,10 +580,6 @@ pub async fn handle(app: &App, cmd: Command) -> Event {
             let mt = app.haplogroup_consensus(guid, DnaType::Mt).await.unwrap_or(None);
             Event::Consensus { biosample_guid: guid, y, mt }
         }
-        Command::LoadVariantConcordance(guid) => match app.reconcile_variants(guid).await {
-            Ok(variants) => Event::VariantConcordance { biosample_guid: guid, variants },
-            Err(e) => Event::Error(e.to_string()),
-        },
         Command::StrConcordance { biosample_guid } => match app.str_concordance_for_subject(biosample_guid).await {
             Ok((alignment_id, rows)) => Event::StrConcordance { biosample_guid, alignment_id, rows },
             Err(e) => Event::Error(e.to_string()),

@@ -313,8 +313,7 @@ pub use navigator_domain::filetype::DetectedData;
 use navigator_domain::mtdna::{self, MtdnaSequence, NewMtdnaSequence};
 use navigator_domain::reconciliation::{self, RunHaplogroupCall};
 pub use navigator_domain::reconciliation::{
-    AuditEntry, CompatibilityLevel, Consensus, DnaType, IdentityVerification, ReconciledVariant, VariantStatus,
-    VerificationStatus,
+    AuditEntry, CompatibilityLevel, Consensus, DnaType, IdentityVerification, VerificationStatus,
 };
 use navigator_domain::strprofile::{self, NewStrProfile, StrProfile};
 use navigator_domain::variants::{self, NewVariantSet, VariantSet};
@@ -1148,8 +1147,7 @@ fn sha256_file(path: &Path) -> std::io::Result<String> {
 /// SHA-256 of a file's content (hex), computed off the async runtime.
 async fn sha256_file_async(path: PathBuf) -> Result<String, AppError> {
     let hash = tokio::task::spawn_blocking(move || sha256_file(&path))
-        .await
-        .map_err(|e| AppError::Join(e.to_string()))??;
+        .await??;
     Ok(hash)
 }
 
@@ -1948,6 +1946,12 @@ impl App {
         if !updated {
             return Err(AppError::Store(StoreError::NotFound(format!("alignment {id}"))));
         }
+        self.alignment_or_err(id).await
+    }
+
+    /// Fetch an alignment by id, mapping a missing row to a `NotFound` error. The standard way
+    /// the analysis/query methods resolve an `alignment_id` before touching its BAM/CRAM.
+    async fn alignment_or_err(&self, id: i64) -> Result<Alignment, AppError> {
         alignment::get(self.store.pool(), id)
             .await?
             .ok_or_else(|| AppError::Store(StoreError::NotFound(format!("alignment {id}"))))
@@ -2110,8 +2114,7 @@ impl App {
         let result = tokio::task::spawn_blocking(move || {
             coverage::collect_coverage_callable(&bam, &reference, &params, contig_allowlist.as_ref())
         })
-        .await
-        .map_err(|e| AppError::Join(e.to_string()))??;
+        .await??;
         self.save_analysis(alignment_id, "coverage", coverage::COVERAGE_VERSION, &result).await?;
         Ok(result)
     }
@@ -2136,9 +2139,7 @@ impl App {
         alignment_id: i64,
         mut progress: impl FnMut(usize, usize) + Send + 'static,
     ) -> Result<CoverageResult, AppError> {
-        let aln = alignment::get(self.store.pool(), alignment_id)
-            .await?
-            .ok_or_else(|| AppError::Store(StoreError::NotFound(format!("alignment {alignment_id}"))))?;
+        let aln = self.alignment_or_err(alignment_id).await?;
         let bam = PathBuf::from(aln.bam_path.ok_or(AppError::MissingPaths(alignment_id))?);
         // The reference isn't asked for at import — resolve the alignment's build via the gateway
         // (cached, else download) when no FASTA was stored.
@@ -2154,8 +2155,7 @@ impl App {
             }
             coverage::collect_coverage_callable_with_progress(&bam, &reference, &params, None, &mut progress)
         })
-        .await
-        .map_err(|e| AppError::Join(e.to_string()))??;
+        .await??;
         self.save_analysis(alignment_id, "coverage", coverage::COVERAGE_VERSION, &result).await?;
         Ok(result)
     }
@@ -2168,8 +2168,7 @@ impl App {
         let result = tokio::task::spawn_blocking(move || {
             navigator_analysis::sex::infer_from_bam(&bam, reference.as_deref())
         })
-        .await
-        .map_err(|e| AppError::Join(e.to_string()))??;
+        .await??;
         self.save_analysis(alignment_id, "sex", "1", &result).await?;
         self.write_back_inferred_sex(alignment_id, &result).await?;
         Ok(result)
@@ -2210,8 +2209,7 @@ impl App {
         let result = tokio::task::spawn_blocking(move || {
             navigator_analysis::read_metrics::collect_read_metrics(&bam, reference.as_deref())
         })
-        .await
-        .map_err(|e| AppError::Join(e.to_string()))??;
+        .await??;
         self.save_analysis(alignment_id, "read_metrics", "1", &result).await?;
         self.write_back_read_stats(alignment_id, &result).await?;
         Ok(result)
@@ -2269,9 +2267,7 @@ impl App {
         alignment_id: i64,
         progress: impl Fn(usize, usize) + Send + Sync + 'static,
     ) -> Result<UnifiedMetricsResult, AppError> {
-        let aln = alignment::get(self.store.pool(), alignment_id)
-            .await?
-            .ok_or_else(|| AppError::Store(StoreError::NotFound(format!("alignment {alignment_id}"))))?;
+        let aln = self.alignment_or_err(alignment_id).await?;
         let bam = PathBuf::from(aln.bam_path.ok_or(AppError::MissingPaths(alignment_id))?);
         // The walker requires a reference (CRAM decode + reference-N detection); resolve the
         // build via the gateway when no FASTA was stored at import.
@@ -2293,8 +2289,7 @@ impl App {
                 &progress,
             )
         })
-        .await
-        .map_err(|e| AppError::Join(e.to_string()))??;
+        .await??;
 
         // Persist each sub-result under its own existing cache key.
         self.save_analysis(alignment_id, "coverage", coverage::COVERAGE_VERSION, &result.coverage).await?;
@@ -2315,9 +2310,7 @@ impl App {
         if let Some(c) = self.cached_sv(alignment_id).await? {
             return Ok(c);
         }
-        let aln = alignment::get(self.store.pool(), alignment_id)
-            .await?
-            .ok_or_else(|| AppError::Store(StoreError::NotFound(format!("alignment {alignment_id}"))))?;
+        let aln = self.alignment_or_err(alignment_id).await?;
         let bam = PathBuf::from(aln.bam_path.ok_or(AppError::MissingPaths(alignment_id))?);
         let reference = aln.reference_path.clone().map(PathBuf::from);
         let reference_build = aln.reference_build.clone();
@@ -2346,8 +2339,7 @@ impl App {
                 &navigator_analysis::sv::types::SvCallerConfig::default(),
             )
         })
-        .await
-        .map_err(|e| AppError::Join(e.to_string()))??;
+        .await??;
         self.save_analysis(alignment_id, "sv", "1", &result).await?;
         Ok(result)
     }
@@ -2383,9 +2375,7 @@ impl App {
         if let Some(c) = self.load_analysis(alignment_id, &kind, "str-1").await? {
             return Ok(c);
         }
-        let aln = alignment::get(self.store.pool(), alignment_id)
-            .await?
-            .ok_or_else(|| AppError::Store(StoreError::NotFound(format!("alignment {alignment_id}"))))?;
+        let aln = self.alignment_or_err(alignment_id).await?;
         let build = aln.reference_build.clone();
         let bed = Self::str_reference_path(&build).ok_or_else(|| {
             AppError::Import(format!(
@@ -2408,8 +2398,7 @@ impl App {
             let loci = navigator_analysis::strref::load_hipstr_contig(&bed, &contig, 2)?;
             navigator_analysis::strcaller::genotype_str_loci(&bam, &contig, &loci, ploidy, &params, reference.as_deref())
         })
-        .await
-        .map_err(|e| AppError::Join(e.to_string()))??;
+        .await??;
         self.save_analysis(alignment_id, &kind, "str-1", &genos).await?;
         Ok(genos)
     }
@@ -2519,9 +2508,7 @@ impl App {
 
     /// The alignment's BAM (required) + reference (optional; required only for CRAM).
     async fn alignment_paths(&self, alignment_id: i64) -> Result<(PathBuf, Option<PathBuf>), AppError> {
-        let aln = alignment::get(self.store.pool(), alignment_id)
-            .await?
-            .ok_or_else(|| AppError::Store(StoreError::NotFound(format!("alignment {alignment_id}"))))?;
+        let aln = self.alignment_or_err(alignment_id).await?;
         let bam = PathBuf::from(aln.bam_path.ok_or(AppError::MissingPaths(alignment_id))?);
         Ok((bam, aln.reference_path.map(PathBuf::from)))
     }
@@ -2544,8 +2531,7 @@ impl App {
         let calls = tokio::task::spawn_blocking(move || {
             caller::call_denovo(&bam, &reference, &contig, &params)
         })
-        .await
-        .map_err(|e| AppError::Join(e.to_string()))??;
+        .await??;
         self.save_analysis(alignment_id, &kind, caller::DENOVO_VERSION, &calls).await?;
         Ok(calls)
     }
@@ -2566,8 +2552,7 @@ impl App {
         let (bam, reference) = self.alignment_bam_reference(alignment_id).await?;
         let params = adaptive_haploid_params(&bam, Some(&reference));
         let calls = tokio::task::spawn_blocking(move || caller::call_denovo_diploid(&bam, &reference, &contig, &params))
-            .await
-            .map_err(|e| AppError::Join(e.to_string()))??;
+            .await??;
         self.save_analysis(alignment_id, &kind, caller::GENOTYPE_VERSION, &calls).await?;
         Ok(calls)
     }
@@ -2585,8 +2570,7 @@ impl App {
     pub async fn diploid_vcf_genome(&self, alignment_id: i64) -> Result<String, AppError> {
         let (bam, reference) = self.alignment_bam_reference(alignment_id).await?;
         let contigs = tokio::task::spawn_blocking(move || caller::header_contig_names(&bam, Some(&reference)))
-            .await
-            .map_err(|e| AppError::Join(e.to_string()))??;
+            .await??;
         let mut all = Vec::new();
         for contig in contigs.into_iter().filter(|c| is_primary_contig(c)) {
             all.extend(self.run_diploid_calls(alignment_id, contig).await?);
@@ -2647,8 +2631,7 @@ impl App {
                     let bam = bam.clone();
                     let reference = reference.clone();
                     tokio::task::spawn_blocking(move || caller::header_contig_names(&bam, Some(&reference)))
-                        .await
-                        .map_err(|e| AppError::Join(e.to_string()))??
+                        .await??
                         .into_iter()
                         .filter(|c| is_primary_contig(c))
                         .collect()
@@ -2686,8 +2669,7 @@ impl App {
             let g = tokio::task::spawn_blocking(move || {
                 caller::genotype_sites_all_contigs(&bam, &sites, 2, &params, Some(&reference))
             })
-            .await
-            .map_err(|e| AppError::Join(e.to_string()))??;
+            .await??;
             per_aln.push(g);
         }
 
@@ -2710,9 +2692,7 @@ impl App {
     /// recorded. Use this in steps that *require* the reference, so the user never has to supply
     /// one (it follows from the header-detected build).
     async fn alignment_bam_reference(&self, alignment_id: i64) -> Result<(PathBuf, PathBuf), AppError> {
-        let aln = alignment::get(self.store.pool(), alignment_id)
-            .await?
-            .ok_or_else(|| AppError::Store(StoreError::NotFound(format!("alignment {alignment_id}"))))?;
+        let aln = self.alignment_or_err(alignment_id).await?;
         let bam = PathBuf::from(aln.bam_path.ok_or(AppError::MissingPaths(alignment_id))?);
         let reference = match aln.reference_path {
             Some(p) => PathBuf::from(p),
@@ -2726,8 +2706,7 @@ impl App {
         let probe = bam.clone();
         let probe_ref = reference.clone();
         let params = tokio::task::spawn_blocking(move || adaptive_haploid_params(&probe, Some(&probe_ref)))
-            .await
-            .map_err(|e| AppError::Join(e.to_string()))?; // HiFi -> lower min_depth
+            .await?; // HiFi -> lower min_depth
         self.run_denovo_caller(alignment_id, bam, reference, contig, params).await
     }
 
@@ -2740,9 +2719,7 @@ impl App {
             .cached_coverage(alignment_id)
             .await?
             .ok_or_else(|| AppError::Store(StoreError::NotFound(format!("coverage for alignment {alignment_id}"))))?;
-        let aln = alignment::get(self.store.pool(), alignment_id)
-            .await?
-            .ok_or_else(|| AppError::Store(StoreError::NotFound(format!("alignment {alignment_id}"))))?;
+        let aln = self.alignment_or_err(alignment_id).await?;
         let record = AlignmentRecord::new(
             aln.reference_build,
             Some(aln.aligner),
@@ -3640,8 +3617,7 @@ impl App {
 
     /// Import a BISDNA chromo2 Y-SNP export. Each named marker is resolved to a locus via the
     /// Y-SNP dictionary on `build` (when `None`, the subject's alignment build, else `"hs1"`).
-    /// Only **positive** (derived) calls become variant calls: a negative is not a variant, and
-    /// [`reconciliation::reconcile_variants`] weights every stored call as a carried allele.
+    /// Only **positive** (derived) calls become variant calls: a negative is not a variant.
     /// `no_call`, back-mutated, and dictionary-unresolved markers are tallied but not emitted.
     /// The genotype is a QC cross-check only — the file's verdict (independent of the Illumina
     /// TOP strand) decides derived/ancestral. Stored as a `Chip`-weighted [`VariantSet`].
@@ -3960,8 +3936,7 @@ impl App {
             }
             per_contig
         })
-        .await
-        .map_err(|e| AppError::Join(e.to_string()))?;
+        .await?;
         Ok(out)
     }
 
@@ -4009,9 +3984,7 @@ impl App {
 
     /// The biosample a alignment belongs to (alignment → sequencing run → biosample).
     async fn biosample_of_alignment(&self, alignment_id: i64) -> Result<SampleGuid, AppError> {
-        let aln = alignment::get(self.store.pool(), alignment_id)
-            .await?
-            .ok_or_else(|| AppError::Store(StoreError::NotFound(format!("alignment {alignment_id}"))))?;
+        let aln = self.alignment_or_err(alignment_id).await?;
         let run = sequence_run::get(self.store.pool(), aln.sequence_run_id)
             .await?
             .ok_or_else(|| AppError::Store(StoreError::NotFound(format!("sequence run {}", aln.sequence_run_id))))?;
@@ -4217,18 +4190,6 @@ impl App {
         let entry = AuditEntry { timestamp: Utc::now().to_rfc3339(), action: action.to_string(), note: note.to_string() };
         recon_store::append_audit(self.store.pool(), biosample_guid, dna_type, &entry).await?;
         Ok(())
-    }
-
-    /// Reconcile the subject's variant sets at the variant level — which positions are
-    /// confirmed across sources, in conflict, or single-source (Sanger-confirmation
-    /// candidates).
-    pub async fn reconcile_variants(&self, biosample_guid: SampleGuid) -> Result<Vec<ReconciledVariant>, AppError> {
-        let sets = variant_set::list_for_biosample(self.store.pool(), biosample_guid).await?;
-        let sources: Vec<(String, f64, &[variants::VariantCall])> = sets
-            .iter()
-            .map(|s| (s.source_label.clone(), s.source_type.snp_weight(), s.calls.as_slice()))
-            .collect();
-        Ok(reconciliation::reconcile_variants(&sources))
     }
 
     /// The persisted consensus-profile snapshot for a subject + DNA type, if built — cheap (no
@@ -5008,16 +4969,13 @@ impl App {
     /// reconciliation view (a curator judges real heteroplasmy vs. artefacts); ascending
     /// by position. Requires a chrM-bearing BAM.
     pub async fn mtdna_heteroplasmy(&self, alignment_id: i64) -> Result<Vec<HeteroplasmySite>, AppError> {
-        let aln = alignment::get(self.store.pool(), alignment_id)
-            .await?
-            .ok_or_else(|| AppError::Store(StoreError::NotFound(format!("alignment {alignment_id}"))))?;
+        let aln = self.alignment_or_err(alignment_id).await?;
         let bam = PathBuf::from(aln.bam_path.ok_or(AppError::MissingPaths(alignment_id))?);
         let reference = aln.reference_path.map(PathBuf::from);
         tokio::task::spawn_blocking(move || {
             heteroplasmy::detect_heteroplasmy(&bam, "chrM", &HeteroplasmyParams::default(), reference.as_deref())
         })
-        .await
-        .map_err(|e| AppError::Join(e.to_string()))?
+        .await?
         .map_err(Into::into)
     }
 
@@ -5070,8 +5028,7 @@ impl App {
             };
             (result, pca_gmm, nmonte, fine)
         })
-        .await
-        .map_err(|e| AppError::Join(e.to_string()))?;
+        .await?;
 
         let required = ancestry_min_snps();
         if result.snps_with_genotype < required {
@@ -5108,9 +5065,7 @@ impl App {
         &self,
         alignment_id: i64,
     ) -> Result<Vec<(String, f64, f64)>, AppError> {
-        let aln = alignment::get(self.store.pool(), alignment_id)
-            .await?
-            .ok_or_else(|| AppError::Store(StoreError::NotFound(format!("alignment {alignment_id}"))))?;
+        let aln = self.alignment_or_err(alignment_id).await?;
         let Some(build) = canonical_build(&aln.reference_build) else { return Ok(Vec::new()) };
         let Ok(bytes) = std::fs::read(ancestry_pca_path(build)) else { return Ok(Vec::new()) };
         let pca = navigator_analysis::ancestry::PcaLoadings::from_bytes(&bytes)?;
@@ -5173,8 +5128,7 @@ impl App {
                 composition.components.iter().map(|c| (c.population_code.clone(), c.percentage / 100.0)).collect();
             ancestry_analysis::paint_local_ancestry(&genotypes, &panel, &prior, &ancestry_analysis::PaintParams::default())
         })
-        .await
-        .map_err(|e| AppError::Join(e.to_string()))?;
+        .await?;
 
         // Cache keyed to the consensus signature so it's reused until the consensus is rebuilt.
         consensus_painting::upsert(self.store.pool(), biosample_guid, &sig, &serde_json::to_string(&segments)?, &Utc::now().to_rfc3339()).await?;
@@ -5185,9 +5139,7 @@ impl App {
     /// else computed now (hashing the file) and stored — so batch-imported alignments are hashed
     /// lazily on first analysis, then cached on the row.
     async fn alignment_content_hash(&self, alignment_id: i64) -> Result<String, AppError> {
-        let aln = alignment::get(self.store.pool(), alignment_id)
-            .await?
-            .ok_or_else(|| AppError::Store(StoreError::NotFound(format!("alignment {alignment_id}"))))?;
+        let aln = self.alignment_or_err(alignment_id).await?;
         if let Some(h) = aln.content_sha256 {
             return Ok(h);
         }
@@ -5280,9 +5232,7 @@ impl App {
         &self,
         alignment_id: i64,
     ) -> Result<(navigator_analysis::haplo::HaploTree, HashMap<i64, char>), AppError> {
-        let aln = alignment::get(self.store.pool(), alignment_id)
-            .await?
-            .ok_or_else(|| AppError::Store(StoreError::NotFound(format!("alignment {alignment_id}"))))?;
+        let aln = self.alignment_or_err(alignment_id).await?;
         let build_key = decodingus_build_key(&aln.reference_build).ok_or_else(|| {
             AppError::Import(format!("no DecodingUs tree coordinates for build {}", aln.reference_build))
         })?;
@@ -5467,9 +5417,7 @@ impl App {
         tree: &navigator_analysis::haplo::HaploTree,
         tree_source_build: Option<&str>,
     ) -> Result<HashMap<i64, char>, AppError> {
-        let aln = alignment::get(self.store.pool(), alignment_id)
-            .await?
-            .ok_or_else(|| AppError::Store(StoreError::NotFound(format!("alignment {alignment_id}"))))?;
+        let aln = self.alignment_or_err(alignment_id).await?;
         let bam = PathBuf::from(aln.bam_path.ok_or(AppError::MissingPaths(alignment_id))?);
         let reference = aln.reference_path.map(PathBuf::from);
 
@@ -5491,8 +5439,7 @@ impl App {
                     let params = adaptive_haploid_params(&bam, reference.as_deref()); // HiFi -> lower min_depth
                     caller::call_bases_at(&bam, &contig_owned, &targets, &params, reference.as_deref())
                 })
-                .await
-                .map_err(|e| AppError::Join(e.to_string()))??
+                .await??
             }
         };
         Ok(calls)
@@ -5537,8 +5484,7 @@ impl App {
                     navigator_analysis::mtvariants::mt_position_map(navigator_analysis::mtvariants::rcrs(), &chrm)
                 })
             })
-            .await
-            .map_err(|e| AppError::Join(e.to_string()))?;
+            .await?;
             let Ok(pairs) = map else { return Ok(None) }; // chrM absent/unreadable → direct fallback
             // rcrs_idx/chrm_idx are 0-based; tree + query positions are 1-based.
             let by_rcrs: HashMap<i64, i64> = pairs.into_iter().map(|(r, c)| (r as i64 + 1, c as i64 + 1)).collect();
@@ -5576,8 +5522,7 @@ impl App {
             let bam = bam.to_path_buf();
             let reference = reference.map(|p| p.to_path_buf());
             tokio::task::spawn_blocking(move || caller::header_contig_names(&bam, reference.as_deref()))
-                .await
-                .map_err(|e| AppError::Join(e.to_string()))??
+                .await??
                 .into_iter()
                 .collect()
         };
@@ -5594,8 +5539,7 @@ impl App {
                 let params = adaptive_haploid_params(&bam, reference.as_deref());
                 caller::call_bases_at(&bam, &qc, &set, &params, reference.as_deref())
             })
-            .await
-            .map_err(|e| AppError::Join(e.to_string()))??;
+            .await??;
             for (lpos, base) in lifted_calls {
                 if let Some(&(tree_pos, reverse)) = back.get(&(qcontig.clone(), lpos)) {
                     // Inverted tracts (common on the CHM13 Y): the tree allele is GRCh38-forward,
@@ -5621,9 +5565,7 @@ impl App {
         tree: &navigator_analysis::haplo::HaploTree,
         tree_source_build: Option<&str>,
     ) -> Result<HashMap<i64, char>, AppError> {
-        let aln = alignment::get(self.store.pool(), alignment_id)
-            .await?
-            .ok_or_else(|| AppError::Store(StoreError::NotFound(format!("alignment {alignment_id}"))))?;
+        let aln = self.alignment_or_err(alignment_id).await?;
         // The reference is required: a GVCF hom-ref site means "the sample's base == the
         // reference base" — and the reference (e.g. CHM13 = HG002/J1 Y) is itself deep in the
         // tree, so its base there is often the *derived* allele, not the ancestral. We read the
@@ -5653,8 +5595,7 @@ impl App {
                 let called = tokio::task::spawn_blocking(move || {
                     gvcf::read_called_bases(&gvcf, &contig_s, &targets2, &params)
                 })
-                .await
-                .map_err(|e| AppError::Join(e.to_string()))??;
+                .await??;
                 let ref_base = self.reference_bases(&reference, contig, &called.callable).await?;
                 Ok(gvcf::assemble_calls(&called, &ref_base))
             }
@@ -5674,8 +5615,7 @@ impl App {
                     let called = tokio::task::spawn_blocking(move || {
                         gvcf::read_called_bases(&gvcf, &qc, &set2, &params)
                     })
-                    .await
-                    .map_err(|e| AppError::Join(e.to_string()))??;
+                    .await??;
                     ref_base.extend(self.reference_bases(&reference, &qcontig, &called.callable).await?);
                     all.variant_bases.extend(called.variant_bases);
                     all.callable.extend(called.callable);
@@ -5713,8 +5653,7 @@ impl App {
             }
             Ok(m)
         })
-        .await
-        .map_err(|e| AppError::Join(e.to_string()))??;
+        .await??;
         Ok(map)
     }
 
@@ -5732,9 +5671,7 @@ impl App {
     /// Errors if the build has no DecodingUs coordinates or the tree is unreachable; the caller
     /// (`ingest_sidecars`) treats that as "leave Y for the deep pass".
     pub async fn assign_y_from_gvcf(&self, alignment_id: i64, gvcf: &Path) -> Result<HaploAssignment, AppError> {
-        let aln = alignment::get(self.store.pool(), alignment_id)
-            .await?
-            .ok_or_else(|| AppError::Store(StoreError::NotFound(format!("alignment {alignment_id}"))))?;
+        let aln = self.alignment_or_err(alignment_id).await?;
         let build_key = decodingus_build_key(&aln.reference_build).ok_or_else(|| {
             AppError::Import(format!("no DecodingUs tree coordinates for build {}", aln.reference_build))
         })?;
@@ -5927,9 +5864,7 @@ impl App {
     /// callability at lower depth, and the CALLABLE-run gate scales with molecule length
     /// (`f`·fragment), so long molecules clear it over far more of chrY. Requires the BAM.
     pub async fn callable_chr_intervals(&self, alignment_id: i64, contig: &str) -> Result<Vec<(i64, i64)>, AppError> {
-        let aln = alignment::get(self.store.pool(), alignment_id)
-            .await?
-            .ok_or_else(|| AppError::Store(StoreError::NotFound(format!("alignment {alignment_id}"))))?;
+        let aln = self.alignment_or_err(alignment_id).await?;
         let bam = PathBuf::from(aln.bam_path.ok_or(AppError::MissingPaths(alignment_id))?);
         let reference = aln.reference_path.map(PathBuf::from);
         let contig = contig.to_string();
@@ -5942,8 +5877,7 @@ impl App {
             let min_run_len = molecule.round().max(1.0) as u32; // f = 1.0
             coverage::callable_intervals(&bam, &contig, &params, min_run_len, reference.as_deref())
         })
-        .await
-        .map_err(|e| AppError::Join(e.to_string()))?
+        .await?
         .map_err(Into::into)
     }
 
@@ -6020,9 +5954,7 @@ impl App {
 
         // The structural BEDs are in CHM13 chrY coordinates, so they only apply to a CHM13
         // alignment (the de-novo positions are in the alignment's build). Best-effort.
-        let aln = alignment::get(self.store.pool(), alignment_id)
-            .await?
-            .ok_or_else(|| AppError::Store(StoreError::NotFound(format!("alignment {alignment_id}"))))?;
+        let aln = self.alignment_or_err(alignment_id).await?;
         let regions = match canonical_build(&aln.reference_build) {
             Some(ReferenceBuild::Chm13v2 | ReferenceBuild::Chm13v2MaskedRcrs) => self.y_structural_regions().await,
             _ => None,
@@ -6059,8 +5991,7 @@ impl App {
     /// Probe a BAM/CRAM header for the build/aligner/platform/test-type (best-effort).
     pub async fn probe_alignment(&self, path: PathBuf) -> Result<AlignmentProbe, AppError> {
         tokio::task::spawn_blocking(move || navigator_analysis::probe::probe_alignment(&path))
-            .await
-            .map_err(|e| AppError::Join(e.to_string()))?
+            .await?
             .map_err(AppError::from)
     }
 
@@ -6080,8 +6011,7 @@ impl App {
                 navigator_analysis::library_stats::DEFAULT_MAX_READS,
             )
         })
-        .await
-        .map_err(|e| AppError::Join(e.to_string()))?
+        .await?
         .map_err(AppError::from)
     }
 
@@ -6304,8 +6234,7 @@ impl App {
 
         let scan_dir = dir.to_path_buf();
         let discovered = tokio::task::spawn_blocking(move || navigator_analysis::scan::scan(&scan_dir))
-            .await
-            .map_err(|e| AppError::Join(e.to_string()))??;
+            .await??;
 
         // Resolve each alignment's reference build to a path (explicit FASTA, else the cache).
         // Collect any builds that need downloading and bail before writing anything.
@@ -6498,9 +6427,7 @@ impl App {
         panel_id: i64,
         ploidy: u8,
     ) -> Result<Vec<SiteGenotype>, AppError> {
-        let aln = alignment::get(self.store.pool(), alignment_id)
-            .await?
-            .ok_or_else(|| AppError::Store(StoreError::NotFound(format!("alignment {alignment_id}"))))?;
+        let aln = self.alignment_or_err(alignment_id).await?;
         let bam = aln.bam_path.ok_or(AppError::MissingPaths(alignment_id))?;
         let sites: Vec<Site> = panel::sites(self.store.pool(), panel_id)
             .await?
@@ -6520,8 +6447,7 @@ impl App {
         let genotypes = tokio::task::spawn_blocking(move || {
             caller::genotype_sites_all_contigs(&bam_pb, &sites, ploidy, &params, reference.as_deref())
         })
-        .await
-        .map_err(|e| AppError::Join(e.to_string()))??;
+        .await??;
 
         self.save_analysis(alignment_id, &panel_kind(panel_id, ploidy), caller::GENOTYPE_VERSION, &genotypes).await?;
         Ok(genotypes)
@@ -6644,9 +6570,7 @@ impl App {
                 if let Some(g) = self.load_analysis(id, &kind, caller::GENOTYPE_VERSION).await? {
                     return Ok(g);
                 }
-                let aln = alignment::get(self.store.pool(), id)
-                    .await?
-                    .ok_or_else(|| AppError::Store(StoreError::NotFound(format!("alignment {id}"))))?;
+                let aln = self.alignment_or_err(id).await?;
                 let bam = PathBuf::from(aln.bam_path.ok_or(AppError::MissingPaths(id))?);
                 let reference = aln.reference_path.map(PathBuf::from);
                 let panel_path = ibd_panel_path(ReferenceBuild::Chm13v2);
@@ -6669,8 +6593,7 @@ impl App {
                     let params = HaploidCallerParams::default();
                     caller::genotype_sites_all_contigs(&bam, &sites, 2, &params, reference.as_deref())
                 })
-                .await
-                .map_err(|e| AppError::Join(e.to_string()))??;
+                .await??;
                 self.save_analysis(id, &kind, caller::GENOTYPE_VERSION, &genotypes).await?;
                 Ok(genotypes)
             }

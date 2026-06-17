@@ -52,14 +52,13 @@ pub async fn list_all_overrides(pool: &SqlitePool) -> Result<Vec<(SampleGuid, Dn
             .await?;
     let mut out = Vec::with_capacity(rows.len());
     for (g, dt, hg) in rows {
-        let guid = uuid::Uuid::parse_str(&g)
-            .map_err(|e| StoreError::Decode(format!("override guid {g:?}: {e}")))?;
+        let guid = crate::error::parse_sample_guid(&g, "override")?;
         let dna_type = match dt.as_str() {
             "Y" => DnaType::Y,
             "Mt" => DnaType::Mt,
             other => return Err(StoreError::Decode(format!("override dna_type {other:?}"))),
         };
-        out.push((SampleGuid(guid), dna_type, hg));
+        out.push((guid, dna_type, hg));
     }
     Ok(out)
 }
