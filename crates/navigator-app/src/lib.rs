@@ -148,6 +148,19 @@ pub enum IbdSource {
     Chip(i64),
 }
 
+/// The outcome of a federated IBD exchange over the encrypted channel (gap §4): the locally computed
+/// match plus both signed [`IbdAttestation`]s. `agreed` ⇒ the partner's signature verified AND both
+/// peers' summary hashes match (they computed the same result).
+#[derive(Debug, Clone, PartialEq)]
+pub struct IbdExchangeResult {
+    pub summary: MatchSummary,
+    pub segments: Vec<IbdSegment>,
+    pub overlapping_sites: usize,
+    pub my_attestation: IbdAttestation,
+    pub partner_attestation: IbdAttestation,
+    pub agreed: bool,
+}
+
 /// Presence + integrity of one ancestry/IBD reference asset, for the "data sources" transparency
 /// affordance. `verified` is true only when a manifest lists the file and its SHA-256 matches.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -228,6 +241,9 @@ pub struct EstablishedSession {
 /// publishing means the AppView hasn't ingested our `deviceKey` record yet. Exponential
 /// backoff 1+2+4+8 s ≈ 15 s total before giving up.
 const DEVICE_KEY_INGEST_RETRIES: u32 = 4;
+
+/// Poll rounds (≈1s each) an IBD exchange waits for the partner's dosages / attestation.
+const EXCHANGE_POLL_ROUNDS: u32 = 30;
 
 /// Parse the AppView's `/api/v1/ibd/suggestions` body into [`IbdSuggestion`]s. Lenient on
 /// field casing (camel/snake) and on the `signals` shape (object map or array) so a minor
@@ -322,6 +338,7 @@ use navigator_domain::yprofile::{self, YObsInput};
 pub use navigator_domain::yprofile::{YProfileSummary, YProfileVariant, YSourceObs, YState, YVariantStatus};
 pub use navigator_domain::consensus::{DiploidSourceObs, DiploidVariant};
 pub use navigator_domain::ymatch::{Tmrca, YMatch, YSignal};
+pub use navigator_analysis::ibd_attest::{IbdAttestation, IbdExchangeMsg, IbdSite};
 use navigator_domain::bisdna;
 use navigator_domain::ysnp_dict::{self, YsnpDictionary};
 use navigator_store::{
@@ -1540,6 +1557,48 @@ fn group_chrom_genotypes(genotypes: &[SiteGenotype]) -> std::collections::HashMa
             (chrom.clone(), ChromosomeGenotypes { chromosome: chrom, positions, dosages })
         })
         .collect()
+}
+
+/// IBD detection over two [`IbdSite`] dosage vectors (the federated-exchange path — the partner's
+/// dosages arrive as `IbdSite`, not [`SiteGenotype`]). Mirrors [`detect_ibd`] but groups directly
+/// from the compact wire type.
+fn detect_ibd_sites(my: &[IbdSite], partner: &[IbdSite], build: ReferenceBuild, config: IbdDetectorConfig) -> IbdComparison {
+    let group = |sites: &[IbdSite]| -> std::collections::HashMap<String, ChromosomeGenotypes> {
+        let mut by: BTreeMap<String, Vec<(i64, i32)>> = BTreeMap::new();
+        for s in sites {
+            by.entry(s.contig.clone()).or_default().push((s.position, s.dosage));
+        }
+        by.into_iter()
+            .map(|(chrom, mut v)| {
+                v.sort_by_key(|(p, _)| *p);
+                let positions = v.iter().map(|(p, _)| *p as i32).collect();
+                let dosages = v.iter().map(|(_, d)| *d as i8).collect();
+                (chrom.clone(), ChromosomeGenotypes { chromosome: chrom, positions, dosages })
+            })
+            .collect()
+    };
+    // Overlapping called sites (dosage 0..=2 in both).
+    let partner_called: HashMap<(&str, i64), ()> =
+        partner.iter().filter(|s| (0..=2).contains(&s.dosage)).map(|s| ((s.contig.as_str(), s.position), ())).collect();
+    let overlapping_sites = my
+        .iter()
+        .filter(|s| (0..=2).contains(&s.dosage) && partner_called.contains_key(&(s.contig.as_str(), s.position)))
+        .count();
+
+    let sample_a = group(my);
+    let sample_b = group(partner);
+    let mut lengths: BTreeMap<String, i32> = BTreeMap::new();
+    for sample in [&sample_a, &sample_b] {
+        for (chr, cg) in sample {
+            let m = cg.positions.last().copied().unwrap_or(1);
+            lengths.entry(chr.clone()).and_modify(|e| *e = (*e).max(m)).or_insert(m);
+        }
+    }
+    let pairs: Vec<(&str, i32)> = lengths.iter().map(|(k, v)| (k.as_str(), *v)).collect();
+    let gmap = load_genetic_map(build, &pairs);
+    let segments = PairwiseIbdDetector::new(config).detect_segments(&sample_a, &sample_b, &gmap);
+    let summary = MatchSummary::from_segments(&segments);
+    IbdComparison { summary, segments, overlapping_sites }
 }
 
 /// Autosomal genotype concordance between two genotyped alignments: (matched, compared)
@@ -3454,6 +3513,121 @@ impl App {
             }
         }
         Ok(out)
+    }
+
+    /// Run a **federated IBD exchange** over an established session (gap §4): send our IBD-panel
+    /// dosages, receive the partner's, detect IBD locally (both peers run the symmetric detector →
+    /// identical summary), then exchange + verify signed [`IbdAttestation`]s. `agreed` ⇒ the partner's
+    /// signature verified and both summary hashes match. Only panel dosages cross the wire (encrypted;
+    /// the broker never sees them). `my_source` supplies our dosages; the refs are opaque biosample
+    /// pointers carried in the attestation. Live-only — needs the partner edge online.
+    pub async fn exchange_ibd(
+        &self,
+        session: &EstablishedSession,
+        my_source: IbdSource,
+        request_uri: &str,
+        my_sample_ref: Option<String>,
+        partner_sample_ref: Option<String>,
+        config: IbdDetectorConfig,
+    ) -> Result<IbdExchangeResult, AppError> {
+        let dosages = self.ibd_panel_dosages(my_source).await?;
+        let sites = dosages
+            .into_iter()
+            .map(|g| IbdSite { contig: g.contig, position: g.position, dosage: g.dosage })
+            .collect();
+        self.exchange_ibd_with_dosages(session, sites, request_uri, my_sample_ref, partner_sample_ref, config).await
+    }
+
+    /// The dosage-level core of [`exchange_ibd`] — takes the panel dosages directly (e.g. from a
+    /// consensus profile, or synthetic vectors in tests) rather than resolving an [`IbdSource`].
+    pub async fn exchange_ibd_with_dosages(
+        &self,
+        session: &EstablishedSession,
+        my_sites: Vec<IbdSite>,
+        request_uri: &str,
+        my_sample_ref: Option<String>,
+        partner_sample_ref: Option<String>,
+        config: IbdDetectorConfig,
+    ) -> Result<IbdExchangeResult, AppError> {
+        let did = self.current_account().ok_or(AppError::NotAuthenticated)?;
+        let dev = self.ensure_device_key().await?;
+
+        // 1. Send our dosages (the IBD panel is on CHM13 / hs1).
+        let dos = IbdExchangeMsg::Dosages { build: "hs1".into(), sites: my_sites.clone() };
+        self.exchange_send(session, 1, &dos.to_bytes().map_err(AppError::Import)?).await?;
+
+        // 2. Receive the partner's dosages (buffering any attestation that arrives early).
+        let mut partner_sites: Option<Vec<IbdSite>> = None;
+        let mut partner_att: Option<IbdAttestation> = None;
+        for _ in 0..EXCHANGE_POLL_ROUNDS {
+            for pt in self.exchange_receive(session).await? {
+                match IbdExchangeMsg::from_bytes(&pt) {
+                    Ok(IbdExchangeMsg::Dosages { sites, .. }) => partner_sites = Some(sites),
+                    Ok(IbdExchangeMsg::Attest(a)) => partner_att = Some(*a),
+                    Err(_) => {}
+                }
+            }
+            if partner_sites.is_some() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+        }
+        let partner_sites = partner_sites.ok_or_else(|| AppError::AppView("partner IBD dosages not received (peer offline?)".into()))?;
+
+        // 3. Detect IBD locally (symmetric — the partner computes the same summary).
+        let comparison = detect_ibd_sites(&my_sites, &partner_sites, ReferenceBuild::Chm13v2, config);
+
+        // 4. Sign our attestation over the computed summary.
+        let mut att = IbdAttestation::unsigned(
+            request_uri,
+            &session.session_id,
+            &did,
+            my_sample_ref,
+            partner_sample_ref,
+            &comparison.summary,
+            Utc::now().to_rfc3339(),
+        );
+        att.signature = dev.sign(&att.canonical());
+        att.signing_public_key = dev.did_key();
+
+        // 5. Send our attestation.
+        let att_msg = IbdExchangeMsg::Attest(Box::new(att.clone()));
+        self.exchange_send(session, 2, &att_msg.to_bytes().map_err(AppError::Import)?).await?;
+
+        // 6. Receive the partner's attestation.
+        for _ in 0..EXCHANGE_POLL_ROUNDS {
+            if partner_att.is_some() {
+                break;
+            }
+            for pt in self.exchange_receive(session).await? {
+                if let Ok(IbdExchangeMsg::Attest(a)) = IbdExchangeMsg::from_bytes(&pt) {
+                    partner_att = Some(*a);
+                }
+            }
+            if partner_att.is_some() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+        }
+        let partner_att = partner_att.ok_or_else(|| AppError::AppView("partner attestation not received (peer offline?)".into()))?;
+
+        // 7. Verify the partner's signature + summary-hash agreement.
+        let sig_ok = du_atproto::verify_did_key(
+            &partner_att.signing_public_key,
+            partner_att.canonical().as_bytes(),
+            &partner_att.signature,
+        )
+        .is_ok();
+        let agreed = sig_ok && partner_att.summary_hash == att.summary_hash;
+
+        Ok(IbdExchangeResult {
+            summary: comparison.summary,
+            segments: comparison.segments,
+            overlapping_sites: comparison.overlapping_sites,
+            my_attestation: att,
+            partner_attestation: partner_att,
+            agreed,
+        })
     }
 
     /// POST a JSON body to an `/api/v1/<path>` exchange endpoint, mapping non-2xx to an AppView error.
@@ -7468,6 +7642,55 @@ mod ymatch_tests {
 
         let matches = app.y_matches(q.guid, None).await.unwrap();
         assert!(matches.is_empty(), "no comparable candidates");
+    }
+}
+
+#[cfg(test)]
+mod ibd_attest_tests {
+    use super::*;
+    use navigator_analysis::ibd::{IbdSegment, MatchSummary};
+    use navigator_sync::DeviceKey;
+
+    fn summary(cm: f64) -> MatchSummary {
+        MatchSummary::from_segments(&[IbdSegment {
+            chromosome: "chr1".into(),
+            start_position: 1,
+            end_position: 10_000_000,
+            length_cm: cm,
+            snp_count: Some(500),
+            is_half_identical: None,
+        }])
+    }
+
+    /// A signed attestation verifies with the same code path the AppView runs; tampering breaks it.
+    #[test]
+    fn attestation_signs_and_verifies() {
+        let key = DeviceKey::generate();
+        let mut att = IbdAttestation::unsigned(
+            "exchange:r1",
+            "sess-1",
+            key.did_key(),
+            Some("bio-a".into()),
+            Some("bio-b".into()),
+            &summary(42.0),
+            "2026-06-17T00:00:00Z",
+        );
+        att.signature = key.sign(&att.canonical());
+        att.signing_public_key = key.did_key();
+
+        assert!(du_atproto::verify_did_key(&att.signing_public_key, att.canonical().as_bytes(), &att.signature).is_ok());
+        // Tamper a signed field → canonical changes → verification fails.
+        let mut bad = att.clone();
+        bad.total_shared_cm = 999.0;
+        assert!(du_atproto::verify_did_key(&bad.signing_public_key, bad.canonical().as_bytes(), &att.signature).is_err());
+    }
+
+    /// Two peers computing the same summary produce the same agreement hash; different summaries don't.
+    #[test]
+    fn summary_hash_drives_agreement() {
+        use navigator_analysis::ibd_attest::summary_hash;
+        assert_eq!(summary_hash(&summary(42.0)), summary_hash(&summary(42.0)));
+        assert_ne!(summary_hash(&summary(42.0)), summary_hash(&summary(7.0)));
     }
 }
 
