@@ -3604,22 +3604,52 @@ impl NavigatorApp {
         });
     }
 
+    /// The build/refresh control shared by the Y/mt/autosomal consensus cards: a button that
+    /// reads "Refresh" once a profile exists (else `build_label_key`), an inline spinner while
+    /// `loading`, and a weak cost hint. On click it sets `status` and dispatches `command`;
+    /// returns whether it was clicked so the caller can set its own loading flag.
+    #[allow(clippy::too_many_arguments)]
+    fn profile_build_control(
+        &mut self,
+        ui: &mut egui::Ui,
+        has_profile: bool,
+        loading: bool,
+        build_label_key: &'static str,
+        cost_hint_key: &'static str,
+        status: &str,
+        command: Command,
+    ) -> bool {
+        let mut clicked = false;
+        ui.horizontal(|ui| {
+            let label = if has_profile { self.tr("common.refresh") } else { self.tr(build_label_key) };
+            if ui.add_enabled(!loading, egui::Button::new(label)).clicked() {
+                self.status = status.into();
+                let _ = self.tx.send(command);
+                clicked = true;
+            }
+            if loading {
+                ui.spinner();
+            }
+            ui.label(egui::RichText::new(self.tr(cost_hint_key)).weak().small());
+        });
+        clicked
+    }
+
     /// Multi-source Y-variant profile: per-SNP concordance across the subject's Y sources, with
     /// status (confirmed/novel/conflict/single) and per-source provenance.
     fn y_variant_profile_section(&mut self, ui: &mut egui::Ui, guid: SampleGuid) {
         // Build/refresh control first (it mutates self / dispatches), before borrowing the profile.
-        ui.horizontal(|ui| {
-            let label = if self.y_profile.is_some() { self.tr("common.refresh") } else { self.tr("btn.buildYProfile") };
-            if ui.add_enabled(!self.y_profile_loading, egui::Button::new(label)).clicked() {
-                self.y_profile_loading = true;
-                self.status = "Building Y variant profile…".into();
-                let _ = self.tx.send(Command::BuildYProfile { biosample_guid: guid });
-            }
-            if self.y_profile_loading {
-                ui.spinner();
-            }
-            ui.label(egui::RichText::new(self.tr("hint.yProfileCost")).weak().small());
-        });
+        if self.profile_build_control(
+            ui,
+            self.y_profile.is_some(),
+            self.y_profile_loading,
+            "btn.buildYProfile",
+            "hint.yProfileCost",
+            "Building Y variant profile…",
+            Command::BuildYProfile { biosample_guid: guid },
+        ) {
+            self.y_profile_loading = true;
+        }
 
         let Some(profile) = &self.y_profile else {
             if !self.y_profile_loading {
@@ -3638,18 +3668,17 @@ impl NavigatorApp {
     /// sources (alignments' chrM placement, imported mtDNA sequences, the chip mt panel). Mirrors
     /// the Y-variant card over the same generic consensus engine.
     fn mt_variant_profile_section(&mut self, ui: &mut egui::Ui, guid: SampleGuid) {
-        ui.horizontal(|ui| {
-            let label = if self.mt_profile.is_some() { self.tr("common.refresh") } else { self.tr("btn.buildMtProfile") };
-            if ui.add_enabled(!self.mt_profile_loading, egui::Button::new(label)).clicked() {
-                self.mt_profile_loading = true;
-                self.status = "Building mtDNA consensus profile…".into();
-                let _ = self.tx.send(Command::BuildMtProfile { biosample_guid: guid });
-            }
-            if self.mt_profile_loading {
-                ui.spinner();
-            }
-            ui.label(egui::RichText::new(self.tr("hint.mtProfileCost")).weak().small());
-        });
+        if self.profile_build_control(
+            ui,
+            self.mt_profile.is_some(),
+            self.mt_profile_loading,
+            "btn.buildMtProfile",
+            "hint.mtProfileCost",
+            "Building mtDNA consensus profile…",
+            Command::BuildMtProfile { biosample_guid: guid },
+        ) {
+            self.mt_profile_loading = true;
+        }
 
         let Some(profile) = &self.mt_profile else {
             if !self.mt_profile_loading {
@@ -3667,18 +3696,17 @@ impl NavigatorApp {
     /// Multi-source autosomal (diploid 0/1/2) consensus over the canonical IBD-panel sites. Build/
     /// Refresh recomputes (panel-genotypes every WGS + chip source); the cached snapshot loads instantly.
     fn autosomal_profile_section(&mut self, ui: &mut egui::Ui, guid: SampleGuid) {
-        ui.horizontal(|ui| {
-            let label = if self.auto_profile.is_some() { self.tr("common.refresh") } else { self.tr("btn.buildAutosomalProfile") };
-            if ui.add_enabled(!self.auto_profile_loading, egui::Button::new(label)).clicked() {
-                self.auto_profile_loading = true;
-                self.status = "Building autosomal consensus profile…".into();
-                let _ = self.tx.send(Command::BuildAutosomalProfile { biosample_guid: guid });
-            }
-            if self.auto_profile_loading {
-                ui.spinner();
-            }
-            ui.label(egui::RichText::new(self.tr("hint.autoProfileCost")).weak().small());
-        });
+        if self.profile_build_control(
+            ui,
+            self.auto_profile.is_some(),
+            self.auto_profile_loading,
+            "btn.buildAutosomalProfile",
+            "hint.autoProfileCost",
+            "Building autosomal consensus profile…",
+            Command::BuildAutosomalProfile { biosample_guid: guid },
+        ) {
+            self.auto_profile_loading = true;
+        }
 
         let Some(profile) = &self.auto_profile else {
             if !self.auto_profile_loading {
