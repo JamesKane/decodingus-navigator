@@ -5755,6 +5755,21 @@ fn str_all_markers_view(
     });
 }
 
+/// Canonical short label + badge color for a consensus status, shared by the Y/mt consensus card
+/// and the autosomal diploid card. `Novel` can't arise on the diploid (panel-site) path — see
+/// [`navigator_domain::consensus::reconcile_diploid`] — but is mapped here for completeness.
+fn consensus_status_badge(status: YVariantStatus) -> (&'static str, egui::Color32) {
+    let amber = egui::Color32::from_rgb(220, 150, 60);
+    match status {
+        YVariantStatus::Confirmed => ("confirmed", egui::Color32::from_rgb(120, 180, 120)),
+        YVariantStatus::Novel => ("novel", egui::Color32::from_rgb(120, 150, 220)),
+        YVariantStatus::Conflict => ("conflict", amber),
+        YVariantStatus::SingleSource => ("single", egui::Color32::from_gray(150)),
+        YVariantStatus::Pending => ("pending", egui::Color32::from_gray(150)),
+        YVariantStatus::NoCoverage => ("no-cov", egui::Color32::from_gray(110)),
+    }
+}
+
 /// Shared renderer for a multi-source consensus profile (Y or mtDNA — same generic engine): header
 /// (counts + lineage label + provenance), a status filter, and the per-variant grid. `variant_col`
 /// names the identity column ("SNP" / "Mutation"); `kind` labels the empty state; `id_salt` keeps the
@@ -5834,14 +5849,7 @@ fn draw_consensus_profile(
                 ui.label(if conflict { name_txt.color(amber) } else { name_txt });
                 ui.label(egui::RichText::new(v.position.to_string()).weak());
                 ui.label(state_label(v.consensus));
-                let (label, color) = match v.status {
-                    YVariantStatus::Confirmed => ("confirmed", egui::Color32::from_rgb(120, 180, 120)),
-                    YVariantStatus::Novel => ("novel", egui::Color32::from_rgb(120, 150, 220)),
-                    YVariantStatus::Conflict => ("conflict", amber),
-                    YVariantStatus::SingleSource => ("single", egui::Color32::from_gray(150)),
-                    YVariantStatus::Pending => ("pending", egui::Color32::from_gray(150)),
-                    YVariantStatus::NoCoverage => ("no-cov", egui::Color32::from_gray(110)),
-                };
+                let (label, color) = consensus_status_badge(v.status);
                 ui.colored_label(color, format!("{label} ({}/{})", v.support, v.total));
                 ui.horizontal(|ui| {
                     for src in &v.sources {
@@ -5917,14 +5925,6 @@ fn draw_diploid_profile(ui: &mut egui::Ui, profile: &navigator_app::DiploidProfi
     const W_GT: f32 = 44.0;
     const W_STATUS: f32 = 130.0;
     let row_h = ui.text_style_height(&egui::TextStyle::Body) + 4.0;
-    let status_view = |st: YVariantStatus| -> (&'static str, egui::Color32) {
-        match st {
-            YVariantStatus::Confirmed => ("confirmed", egui::Color32::from_rgb(120, 180, 120)),
-            YVariantStatus::Conflict => ("conflict", amber),
-            YVariantStatus::SingleSource => ("single", egui::Color32::from_gray(150)),
-            _ => ("pending", egui::Color32::from_gray(150)),
-        }
-    };
     ui.horizontal(|ui| {
         ui.add_sized([W_SITE, row_h], egui::Label::new(egui::RichText::new("Site").strong()));
         ui.add_sized([W_GT, row_h], egui::Label::new(egui::RichText::new("GT").strong()));
@@ -5938,7 +5938,7 @@ fn draw_diploid_profile(ui: &mut egui::Ui, profile: &navigator_app::DiploidProfi
         ui.horizontal(|ui| {
             ui.add_sized([W_SITE, row_h], egui::Label::new(if conflict { name_txt.color(amber) } else { name_txt }).truncate());
             ui.add_sized([W_GT, row_h], egui::Label::new(gt(v.consensus_dosage)));
-            let (lbl, color) = status_view(v.status);
+            let (lbl, color) = consensus_status_badge(v.status);
             ui.add_sized([W_STATUS, row_h], egui::Label::new(egui::RichText::new(format!("{lbl} ({}/{})", v.support, v.total)).color(color)));
             for src in &v.sources {
                 let short = match src.source_type {
