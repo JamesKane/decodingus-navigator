@@ -192,14 +192,14 @@ fingerprint/merge dialogs.
 
 ---
 
-## Priority summary (2026-06-16)
+## Priority summary (2026-06-17)
 
 | # | Subsystem | Impact | Size | Notes |
 |---|---|---|---|---|
 | ~~8-import~~ | ~~Import UX dialogs~~ | — | — | **DONE 59b5696** — multi-file + folder Add Data, drag-drop, auto-detect, summary modal |
 | ~~6-resume~~ | ~~Analysis checkpoint/resume~~ | — | — | **DONE 192a939** — source-sig invalidation + cache-first SV/denovo |
 | 1b-caller | ~~STR calling from sequence~~ | — | — | **DONE 986e00b** — enclosing-read genotyper + HipSTR-reference parse, validated on GRCh38 chrY |
-| 1b-vendor | STR vendor bridge — convention layer + concordance + CHM13 ref | High | — | **CORE DONE** (5fc6641 convention layer; b9a7eed cross-build lift). 34/34 calibrated markers agree on James's GRCh38 chrY; CHM13-lifted ref validated on his CHM13 CRAM (49 markers, offsets build-independent). **UI DONE** (c142ae7: Y-DNA tab "Y-STR from sequence" card). *Remaining:* multi-copy aggregation, widen offset table with the ~300-kit CHM13 corpus + harness QC, auto-download |
+| 1b-vendor | STR vendor bridge — convention layer + concordance + CHM13 ref | High | — | **DONE** (5fc6641 convention layer; b9a7eed cross-build lift; c142ae7 UI; **b631d79 216-kit CHM13 recalibration**). Offset table rebuilt on 216 CHM13 Big Y kits (swap-QC + per-kit panic isolation in the harness); 6 build-dependent markers handled via `StrBuild`+`GRCH38_DELTA`. Validated held-out: CHM13 1001615 44/44+14/14, GRCh38 27520 55/55+15/15, zero mismatches. *Remaining (low):* the CHM13 lift dropped 33 named chrY markers (incl DYS19/391/426 — table retains their GRCh38 values for the BAM path); multi-copy aggregation; auto-download |
 | 2-match | Cross-subject Y matching (shared-SNP/novel ranking, genetic distance/TMRCA) | Med | Medium | Between-subjects layer atop the done single-subject Y profile; relates to §4 |
 | 5-p2 | Sync conflict detection + PULL + `source_file` table | Med | Medium | Ties to AppView design |
 | 4-live | IBD live exchange (segment exchange + attestation) + consent/request/result | Med | Large | Gated on running AppView + PII-posture decision; don't port P2P verbatim |
@@ -207,9 +207,10 @@ fingerprint/merge dialogs.
 | 8-misc | PCA scatter, Y-profile management dialog, IBD match browser, fingerprint/merge dialogs | Low-Med | Mixed | Several small; IBD browser downstream of §4 |
 
 **Recently shipped:** import UX (59b5696), checkpoint/resume (192a939), **STR caller foundation**
-(986e00b — the hard, twice-attempted part). **Best next steps:** finish STR as a user feature
-(**§1b-vendor**: DYS-name mapping + §1a panel integration + UI), or **§2-match cross-subject Y
-matching** (medium, builds on the done Y profile). Both are medium and high-value.
-**Biggest coherent feature:** **§1b STR calling** — still the standout functional gap, still hard.
+(986e00b — the hard, twice-attempted part), **STR vendor bridge fully landed** (b631d79 — 216-kit
+CHM13 recalibration + build-aware offsets). **Best next steps:** **§2-match cross-subject Y matching**
+(medium, builds on the done single-subject Y profile), or **§4-live / §5-p2** once scoped against a
+running AppView. **Biggest coherent feature now:** §2 cross-subject matching and the live federated
+arc (§4) — STR calling, the prior standout gap, is done end-to-end.
 **Verify-before-building:** §4 (IBD live) and §5-p2 (sync conflict/PULL) must be scoped against the
 current AppView-mediated architecture, not ported verbatim.
