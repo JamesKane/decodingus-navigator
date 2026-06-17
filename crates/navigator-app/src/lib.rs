@@ -1148,8 +1148,7 @@ fn sha256_file(path: &Path) -> std::io::Result<String> {
 /// SHA-256 of a file's content (hex), computed off the async runtime.
 async fn sha256_file_async(path: PathBuf) -> Result<String, AppError> {
     let hash = tokio::task::spawn_blocking(move || sha256_file(&path))
-        .await
-        .map_err(|e| AppError::Join(e.to_string()))??;
+        .await??;
     Ok(hash)
 }
 
@@ -2116,8 +2115,7 @@ impl App {
         let result = tokio::task::spawn_blocking(move || {
             coverage::collect_coverage_callable(&bam, &reference, &params, contig_allowlist.as_ref())
         })
-        .await
-        .map_err(|e| AppError::Join(e.to_string()))??;
+        .await??;
         self.save_analysis(alignment_id, "coverage", coverage::COVERAGE_VERSION, &result).await?;
         Ok(result)
     }
@@ -2158,8 +2156,7 @@ impl App {
             }
             coverage::collect_coverage_callable_with_progress(&bam, &reference, &params, None, &mut progress)
         })
-        .await
-        .map_err(|e| AppError::Join(e.to_string()))??;
+        .await??;
         self.save_analysis(alignment_id, "coverage", coverage::COVERAGE_VERSION, &result).await?;
         Ok(result)
     }
@@ -2172,8 +2169,7 @@ impl App {
         let result = tokio::task::spawn_blocking(move || {
             navigator_analysis::sex::infer_from_bam(&bam, reference.as_deref())
         })
-        .await
-        .map_err(|e| AppError::Join(e.to_string()))??;
+        .await??;
         self.save_analysis(alignment_id, "sex", "1", &result).await?;
         self.write_back_inferred_sex(alignment_id, &result).await?;
         Ok(result)
@@ -2214,8 +2210,7 @@ impl App {
         let result = tokio::task::spawn_blocking(move || {
             navigator_analysis::read_metrics::collect_read_metrics(&bam, reference.as_deref())
         })
-        .await
-        .map_err(|e| AppError::Join(e.to_string()))??;
+        .await??;
         self.save_analysis(alignment_id, "read_metrics", "1", &result).await?;
         self.write_back_read_stats(alignment_id, &result).await?;
         Ok(result)
@@ -2295,8 +2290,7 @@ impl App {
                 &progress,
             )
         })
-        .await
-        .map_err(|e| AppError::Join(e.to_string()))??;
+        .await??;
 
         // Persist each sub-result under its own existing cache key.
         self.save_analysis(alignment_id, "coverage", coverage::COVERAGE_VERSION, &result.coverage).await?;
@@ -2346,8 +2340,7 @@ impl App {
                 &navigator_analysis::sv::types::SvCallerConfig::default(),
             )
         })
-        .await
-        .map_err(|e| AppError::Join(e.to_string()))??;
+        .await??;
         self.save_analysis(alignment_id, "sv", "1", &result).await?;
         Ok(result)
     }
@@ -2406,8 +2399,7 @@ impl App {
             let loci = navigator_analysis::strref::load_hipstr_contig(&bed, &contig, 2)?;
             navigator_analysis::strcaller::genotype_str_loci(&bam, &contig, &loci, ploidy, &params, reference.as_deref())
         })
-        .await
-        .map_err(|e| AppError::Join(e.to_string()))??;
+        .await??;
         self.save_analysis(alignment_id, &kind, "str-1", &genos).await?;
         Ok(genos)
     }
@@ -2534,8 +2526,7 @@ impl App {
         let calls = tokio::task::spawn_blocking(move || {
             caller::call_denovo(&bam, &reference, &contig, &params)
         })
-        .await
-        .map_err(|e| AppError::Join(e.to_string()))??;
+        .await??;
         self.save_analysis(alignment_id, &kind, caller::DENOVO_VERSION, &calls).await?;
         Ok(calls)
     }
@@ -2556,8 +2547,7 @@ impl App {
         let (bam, reference) = self.alignment_bam_reference(alignment_id).await?;
         let params = adaptive_haploid_params(&bam, Some(&reference));
         let calls = tokio::task::spawn_blocking(move || caller::call_denovo_diploid(&bam, &reference, &contig, &params))
-            .await
-            .map_err(|e| AppError::Join(e.to_string()))??;
+            .await??;
         self.save_analysis(alignment_id, &kind, caller::GENOTYPE_VERSION, &calls).await?;
         Ok(calls)
     }
@@ -2575,8 +2565,7 @@ impl App {
     pub async fn diploid_vcf_genome(&self, alignment_id: i64) -> Result<String, AppError> {
         let (bam, reference) = self.alignment_bam_reference(alignment_id).await?;
         let contigs = tokio::task::spawn_blocking(move || caller::header_contig_names(&bam, Some(&reference)))
-            .await
-            .map_err(|e| AppError::Join(e.to_string()))??;
+            .await??;
         let mut all = Vec::new();
         for contig in contigs.into_iter().filter(|c| is_primary_contig(c)) {
             all.extend(self.run_diploid_calls(alignment_id, contig).await?);
@@ -2637,8 +2626,7 @@ impl App {
                     let bam = bam.clone();
                     let reference = reference.clone();
                     tokio::task::spawn_blocking(move || caller::header_contig_names(&bam, Some(&reference)))
-                        .await
-                        .map_err(|e| AppError::Join(e.to_string()))??
+                        .await??
                         .into_iter()
                         .filter(|c| is_primary_contig(c))
                         .collect()
@@ -2676,8 +2664,7 @@ impl App {
             let g = tokio::task::spawn_blocking(move || {
                 caller::genotype_sites_all_contigs(&bam, &sites, 2, &params, Some(&reference))
             })
-            .await
-            .map_err(|e| AppError::Join(e.to_string()))??;
+            .await??;
             per_aln.push(g);
         }
 
@@ -2714,8 +2701,7 @@ impl App {
         let probe = bam.clone();
         let probe_ref = reference.clone();
         let params = tokio::task::spawn_blocking(move || adaptive_haploid_params(&probe, Some(&probe_ref)))
-            .await
-            .map_err(|e| AppError::Join(e.to_string()))?; // HiFi -> lower min_depth
+            .await?; // HiFi -> lower min_depth
         self.run_denovo_caller(alignment_id, bam, reference, contig, params).await
     }
 
@@ -3946,8 +3932,7 @@ impl App {
             }
             per_contig
         })
-        .await
-        .map_err(|e| AppError::Join(e.to_string()))?;
+        .await?;
         Ok(out)
     }
 
@@ -4998,8 +4983,7 @@ impl App {
         tokio::task::spawn_blocking(move || {
             heteroplasmy::detect_heteroplasmy(&bam, "chrM", &HeteroplasmyParams::default(), reference.as_deref())
         })
-        .await
-        .map_err(|e| AppError::Join(e.to_string()))?
+        .await?
         .map_err(Into::into)
     }
 
@@ -5052,8 +5036,7 @@ impl App {
             };
             (result, pca_gmm, nmonte, fine)
         })
-        .await
-        .map_err(|e| AppError::Join(e.to_string()))?;
+        .await?;
 
         let required = ancestry_min_snps();
         if result.snps_with_genotype < required {
@@ -5153,8 +5136,7 @@ impl App {
                 composition.components.iter().map(|c| (c.population_code.clone(), c.percentage / 100.0)).collect();
             ancestry_analysis::paint_local_ancestry(&genotypes, &panel, &prior, &ancestry_analysis::PaintParams::default())
         })
-        .await
-        .map_err(|e| AppError::Join(e.to_string()))?;
+        .await?;
 
         // Cache keyed to the consensus signature so it's reused until the consensus is rebuilt.
         consensus_painting::upsert(self.store.pool(), biosample_guid, &sig, &serde_json::to_string(&segments)?, &Utc::now().to_rfc3339()).await?;
@@ -5465,8 +5447,7 @@ impl App {
                     let params = adaptive_haploid_params(&bam, reference.as_deref()); // HiFi -> lower min_depth
                     caller::call_bases_at(&bam, &contig_owned, &targets, &params, reference.as_deref())
                 })
-                .await
-                .map_err(|e| AppError::Join(e.to_string()))??
+                .await??
             }
         };
         Ok(calls)
@@ -5511,8 +5492,7 @@ impl App {
                     navigator_analysis::mtvariants::mt_position_map(navigator_analysis::mtvariants::rcrs(), &chrm)
                 })
             })
-            .await
-            .map_err(|e| AppError::Join(e.to_string()))?;
+            .await?;
             let Ok(pairs) = map else { return Ok(None) }; // chrM absent/unreadable → direct fallback
             // rcrs_idx/chrm_idx are 0-based; tree + query positions are 1-based.
             let by_rcrs: HashMap<i64, i64> = pairs.into_iter().map(|(r, c)| (r as i64 + 1, c as i64 + 1)).collect();
@@ -5550,8 +5530,7 @@ impl App {
             let bam = bam.to_path_buf();
             let reference = reference.map(|p| p.to_path_buf());
             tokio::task::spawn_blocking(move || caller::header_contig_names(&bam, reference.as_deref()))
-                .await
-                .map_err(|e| AppError::Join(e.to_string()))??
+                .await??
                 .into_iter()
                 .collect()
         };
@@ -5568,8 +5547,7 @@ impl App {
                 let params = adaptive_haploid_params(&bam, reference.as_deref());
                 caller::call_bases_at(&bam, &qc, &set, &params, reference.as_deref())
             })
-            .await
-            .map_err(|e| AppError::Join(e.to_string()))??;
+            .await??;
             for (lpos, base) in lifted_calls {
                 if let Some(&(tree_pos, reverse)) = back.get(&(qcontig.clone(), lpos)) {
                     // Inverted tracts (common on the CHM13 Y): the tree allele is GRCh38-forward,
@@ -5625,8 +5603,7 @@ impl App {
                 let called = tokio::task::spawn_blocking(move || {
                     gvcf::read_called_bases(&gvcf, &contig_s, &targets2, &params)
                 })
-                .await
-                .map_err(|e| AppError::Join(e.to_string()))??;
+                .await??;
                 let ref_base = self.reference_bases(&reference, contig, &called.callable).await?;
                 Ok(gvcf::assemble_calls(&called, &ref_base))
             }
@@ -5646,8 +5623,7 @@ impl App {
                     let called = tokio::task::spawn_blocking(move || {
                         gvcf::read_called_bases(&gvcf, &qc, &set2, &params)
                     })
-                    .await
-                    .map_err(|e| AppError::Join(e.to_string()))??;
+                    .await??;
                     ref_base.extend(self.reference_bases(&reference, &qcontig, &called.callable).await?);
                     all.variant_bases.extend(called.variant_bases);
                     all.callable.extend(called.callable);
@@ -5685,8 +5661,7 @@ impl App {
             }
             Ok(m)
         })
-        .await
-        .map_err(|e| AppError::Join(e.to_string()))??;
+        .await??;
         Ok(map)
     }
 
@@ -5910,8 +5885,7 @@ impl App {
             let min_run_len = molecule.round().max(1.0) as u32; // f = 1.0
             coverage::callable_intervals(&bam, &contig, &params, min_run_len, reference.as_deref())
         })
-        .await
-        .map_err(|e| AppError::Join(e.to_string()))?
+        .await?
         .map_err(Into::into)
     }
 
@@ -6025,8 +5999,7 @@ impl App {
     /// Probe a BAM/CRAM header for the build/aligner/platform/test-type (best-effort).
     pub async fn probe_alignment(&self, path: PathBuf) -> Result<AlignmentProbe, AppError> {
         tokio::task::spawn_blocking(move || navigator_analysis::probe::probe_alignment(&path))
-            .await
-            .map_err(|e| AppError::Join(e.to_string()))?
+            .await?
             .map_err(AppError::from)
     }
 
@@ -6046,8 +6019,7 @@ impl App {
                 navigator_analysis::library_stats::DEFAULT_MAX_READS,
             )
         })
-        .await
-        .map_err(|e| AppError::Join(e.to_string()))?
+        .await?
         .map_err(AppError::from)
     }
 
@@ -6270,8 +6242,7 @@ impl App {
 
         let scan_dir = dir.to_path_buf();
         let discovered = tokio::task::spawn_blocking(move || navigator_analysis::scan::scan(&scan_dir))
-            .await
-            .map_err(|e| AppError::Join(e.to_string()))??;
+            .await??;
 
         // Resolve each alignment's reference build to a path (explicit FASTA, else the cache).
         // Collect any builds that need downloading and bail before writing anything.
@@ -6484,8 +6455,7 @@ impl App {
         let genotypes = tokio::task::spawn_blocking(move || {
             caller::genotype_sites_all_contigs(&bam_pb, &sites, ploidy, &params, reference.as_deref())
         })
-        .await
-        .map_err(|e| AppError::Join(e.to_string()))??;
+        .await??;
 
         self.save_analysis(alignment_id, &panel_kind(panel_id, ploidy), caller::GENOTYPE_VERSION, &genotypes).await?;
         Ok(genotypes)
@@ -6631,8 +6601,7 @@ impl App {
                     let params = HaploidCallerParams::default();
                     caller::genotype_sites_all_contigs(&bam, &sites, 2, &params, reference.as_deref())
                 })
-                .await
-                .map_err(|e| AppError::Join(e.to_string()))??;
+                .await??;
                 self.save_analysis(id, &kind, caller::GENOTYPE_VERSION, &genotypes).await?;
                 Ok(genotypes)
             }
