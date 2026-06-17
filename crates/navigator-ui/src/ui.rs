@@ -10,9 +10,9 @@ use navigator_app::{
     AncestryResult, AncestrySegment, AuditEntry, BuildNeed, CallState, CompatibilityLevel, Consensus,
     Coverage, DenovoCall, DnaType, HaploAssignment, HeteroplasmySite, IbdComparison, IbdSuggestion,
     IdentityVerification, PanelGenotype, PrivateBucket, PrivateClass, ProjectOverview,
-    AppSettings, BatchImportSummary, MtRegion, MtVariant, ProjectSampleReport, ReadMetrics, ReconciledVariant, RefBuildStatus,
+    AppSettings, BatchImportSummary, MtRegion, MtVariant, ProjectSampleReport, ReadMetrics, RefBuildStatus,
     StrConcordanceRow,
-    SexInferenceResult, SourceType, SuperPopulationSummary, SvAnalysisResult, VariantStatus,
+    SexInferenceResult, SourceType, SuperPopulationSummary, SvAnalysisResult,
     VerificationStatus, YProfile, YState, YVariantStatus,
 };
 use navigator_domain::ancestry::{population_color, population_name, population_super};
@@ -339,8 +339,6 @@ pub struct NavigatorApp {
     str_marker_filter: String,
     /// SNP variant sets for the selected subject.
     variant_sets: Vec<VariantSet>,
-    /// Cross-source variant concordance for the selected subject.
-    variant_concordance: Vec<ReconciledVariant>,
     /// Chip/array profiles for the selected subject.
     chip_profiles: Vec<ChipProfile>,
     /// mtDNA sequences for the selected subject.
@@ -1116,7 +1114,6 @@ impl NavigatorApp {
             str_provider: None,
             str_marker_filter: String::new(),
             variant_sets: Vec::new(),
-            variant_concordance: Vec::new(),
             chip_profiles: Vec::new(),
             asset_status: Vec::new(),
             mtdna_sequences: Vec::new(),
@@ -1350,14 +1347,8 @@ impl NavigatorApp {
                 Event::VariantSetsChanged(guid) => {
                     if self.selected_sample == Some(guid) {
                         let _ = self.tx.send(Command::LoadVariantSets(guid));
-                        let _ = self.tx.send(Command::LoadVariantConcordance(guid)); // sources changed
                     }
                     self.status = "Variants imported".into();
-                }
-                Event::VariantConcordance { biosample_guid, variants } => {
-                    if self.selected_sample == Some(biosample_guid) {
-                        self.variant_concordance = variants;
-                    }
                 }
                 Event::ChipProfiles { biosample_guid, profiles } => {
                     if self.selected_sample == Some(biosample_guid) {
@@ -1814,7 +1805,6 @@ impl NavigatorApp {
         self.runs.clear();
         self.str_profiles.clear();
         self.variant_sets.clear();
-        self.variant_concordance.clear();
         self.chip_profiles.clear();
         self.mtdna_sequences.clear();
         self.mtdna_variants.clear();
@@ -1837,7 +1827,6 @@ impl NavigatorApp {
         let _ = self.tx.send(Command::LoadHaploSummary);
         let _ = self.tx.send(Command::LoadAudit { biosample_guid: guid, dna_type: DnaType::Y });
         let _ = self.tx.send(Command::LoadAudit { biosample_guid: guid, dna_type: DnaType::Mt });
-        let _ = self.tx.send(Command::LoadVariantConcordance(guid));
         let _ = self.tx.send(Command::LoadRuns(guid));
         let _ = self.tx.send(Command::LoadStrProfiles(guid));
         let _ = self.tx.send(Command::LoadVariantSets(guid));
@@ -3966,35 +3955,6 @@ impl NavigatorApp {
         }
         if want_delete.is_some() {
             self.confirm_data_delete = want_delete;
-        }
-
-        // Cross-source concordance (shown once ≥2 sources exist).
-        if self.variant_sets.len() >= 2 && !self.variant_concordance.is_empty() {
-            let confirmed = self.variant_concordance.iter().filter(|v| v.status == VariantStatus::Confirmed).count();
-            let conflict = self.variant_concordance.iter().filter(|v| v.status == VariantStatus::Conflict).count();
-            let single = self.variant_concordance.iter().filter(|v| v.status == VariantStatus::SingleSource).count();
-            egui::CollapsingHeader::new(format!("Cross-source: {confirmed} confirmed · {conflict} conflict · {single} single"))
-                .id_salt(("vconc", guid.0))
-                .show(ui, |ui| {
-                    egui::Grid::new(("vconc_grid", guid.0)).striped(true).num_columns(4).show(ui, |ui| {
-                        for h in ["table.position", "table.allele", "table.status", "table.sources"] {
-                            ui.strong(self.tr(h));
-                        }
-                        ui.end_row();
-                        for v in self.variant_concordance.iter().take(MAX_ROWS) {
-                            ui.label(format!("{} {}", v.contig, v.position));
-                            ui.label(&v.allele);
-                            let (txt, col) = match v.status {
-                                VariantStatus::Confirmed => ("confirmed", egui::Color32::from_rgb(60, 160, 60)),
-                                VariantStatus::Conflict => ("conflict", egui::Color32::from_rgb(200, 60, 60)),
-                                VariantStatus::SingleSource => ("single", egui::Color32::from_rgb(170, 150, 40)),
-                            };
-                            ui.colored_label(col, txt);
-                            ui.label(format!("{}/{}", v.support, v.total));
-                            ui.end_row();
-                        }
-                    });
-                });
         }
 
         ui.add_space(6.0);

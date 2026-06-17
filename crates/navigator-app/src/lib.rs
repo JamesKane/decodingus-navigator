@@ -313,8 +313,7 @@ pub use navigator_domain::filetype::DetectedData;
 use navigator_domain::mtdna::{self, MtdnaSequence, NewMtdnaSequence};
 use navigator_domain::reconciliation::{self, RunHaplogroupCall};
 pub use navigator_domain::reconciliation::{
-    AuditEntry, CompatibilityLevel, Consensus, DnaType, IdentityVerification, ReconciledVariant, VariantStatus,
-    VerificationStatus,
+    AuditEntry, CompatibilityLevel, Consensus, DnaType, IdentityVerification, VerificationStatus,
 };
 use navigator_domain::strprofile::{self, NewStrProfile, StrProfile};
 use navigator_domain::variants::{self, NewVariantSet, VariantSet};
@@ -3612,8 +3611,7 @@ impl App {
 
     /// Import a BISDNA chromo2 Y-SNP export. Each named marker is resolved to a locus via the
     /// Y-SNP dictionary on `build` (when `None`, the subject's alignment build, else `"hs1"`).
-    /// Only **positive** (derived) calls become variant calls: a negative is not a variant, and
-    /// [`reconciliation::reconcile_variants`] weights every stored call as a carried allele.
+    /// Only **positive** (derived) calls become variant calls: a negative is not a variant.
     /// `no_call`, back-mutated, and dictionary-unresolved markers are tallied but not emitted.
     /// The genotype is a QC cross-check only — the file's verdict (independent of the Illumina
     /// TOP strand) decides derived/ancestral. Stored as a `Chip`-weighted [`VariantSet`].
@@ -4186,18 +4184,6 @@ impl App {
         let entry = AuditEntry { timestamp: Utc::now().to_rfc3339(), action: action.to_string(), note: note.to_string() };
         recon_store::append_audit(self.store.pool(), biosample_guid, dna_type, &entry).await?;
         Ok(())
-    }
-
-    /// Reconcile the subject's variant sets at the variant level — which positions are
-    /// confirmed across sources, in conflict, or single-source (Sanger-confirmation
-    /// candidates).
-    pub async fn reconcile_variants(&self, biosample_guid: SampleGuid) -> Result<Vec<ReconciledVariant>, AppError> {
-        let sets = variant_set::list_for_biosample(self.store.pool(), biosample_guid).await?;
-        let sources: Vec<(String, f64, &[variants::VariantCall])> = sets
-            .iter()
-            .map(|s| (s.source_label.clone(), s.source_type.snp_weight(), s.calls.as_slice()))
-            .collect();
-        Ok(reconciliation::reconcile_variants(&sources))
     }
 
     /// The persisted consensus-profile snapshot for a subject + DNA type, if built — cheap (no

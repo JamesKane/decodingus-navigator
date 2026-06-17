@@ -3,89 +3,10 @@
 //! per-source [`RunHaplogroupCall`]s combine into a [`Consensus`] by tree topology.
 //!
 //! Pure types + the consensus algorithm; persistence and the per-source recording live in
-//! the app/store. Variant concordance, identity verification, and heteroplasmy are later
-//! phases.
-
-use std::collections::BTreeMap;
+//! the app/store. Per-variant concordance (all DNA types) lives in [`crate::consensus`];
+//! identity verification and heteroplasmy are later phases.
 
 use serde::{Deserialize, Serialize};
-
-use crate::variants::VariantCall;
-
-/// Whether a variant is corroborated across the subject's sources.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum VariantStatus {
-    /// Two or more sources agree on the allele.
-    Confirmed,
-    /// Sources report different alleles at the position.
-    Conflict,
-    /// Only one source reports the variant (awaiting confirmation — e.g. by Sanger).
-    SingleSource,
-}
-
-/// A position reconciled across the subject's variant sets.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ReconciledVariant {
-    pub contig: String,
-    pub position: i64,
-    /// The consensus (most-reported) alternate allele.
-    pub allele: String,
-    pub status: VariantStatus,
-    /// Sources reporting the consensus allele.
-    pub support: usize,
-    /// Sources reporting any variant at this position.
-    pub total: usize,
-    pub sources: Vec<String>,
-}
-
-/// Reconcile a subject's variant sets at the variant level by **quality-weighted** voting:
-/// per position, sources reporting a variant vote with their weight (Sanger 1.0 dominates),
-/// and the consensus is the highest-weighted allele. `Confirmed` (≥2 sources, weighted
-/// agreement), `Conflict` (>30% of the weighted votes disagree — Sanger still sets the
-/// consensus allele), or `SingleSource` (one source — a Sanger-confirmation candidate).
-/// A source *not* reporting a position is ambiguous (ancestral vs no coverage), so absence
-/// isn't counted as disagreement. Sources are `(label, weight, calls)`.
-pub fn reconcile_variants(sources: &[(String, f64, &[VariantCall])]) -> Vec<ReconciledVariant> {
-    // (contig, position) -> [(source_label, allele, weight)]
-    #[allow(clippy::type_complexity)]
-    let mut by_pos: BTreeMap<(String, i64), Vec<(String, String, f64)>> = BTreeMap::new();
-    for (label, weight, calls) in sources {
-        for c in *calls {
-            by_pos
-                .entry((c.contig.clone(), c.position))
-                .or_default()
-                .push((label.clone(), c.alternate.to_ascii_uppercase(), *weight));
-        }
-    }
-
-    let mut out = Vec::with_capacity(by_pos.len());
-    for ((contig, position), entries) in by_pos {
-        // Weighted tally per allele.
-        let mut weight_by_allele: BTreeMap<&str, f64> = BTreeMap::new();
-        for (_, allele, w) in &entries {
-            *weight_by_allele.entry(allele.as_str()).or_default() += *w;
-        }
-        let total_w: f64 = weight_by_allele.values().sum();
-        let (best_allele, best_w) = weight_by_allele
-            .iter()
-            .max_by(|a, b| a.1.partial_cmp(b.1).unwrap_or(std::cmp::Ordering::Equal))
-            .map(|(a, w)| (a.to_string(), *w))
-            .unwrap();
-        let total = entries.len();
-        let disagree_frac = if total_w > 0.0 { (total_w - best_w) / total_w } else { 0.0 };
-        let status = if total == 1 {
-            VariantStatus::SingleSource
-        } else if disagree_frac > 0.30 {
-            VariantStatus::Conflict
-        } else {
-            VariantStatus::Confirmed
-        };
-        let support = entries.iter().filter(|(_, a, _)| *a == best_allele).count();
-        let sources = entries.into_iter().filter(|(_, a, _)| *a == best_allele).map(|(l, _, _)| l).collect();
-        out.push(ReconciledVariant { contig, position, allele: best_allele, status, support, total, sources });
-    }
-    out
-}
 
 /// Which uniparental lineage a call describes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -372,36 +293,6 @@ mod tests {
         assert_eq!(c.compatibility, CompatibilityLevel::MinorDivergence);
         assert_eq!(c.divergence_point.as_deref(), Some("R-L21"));
         assert_eq!(c.haplogroup, "R-L21");
-    }
-
-    #[test]
-    fn variant_concordance_status() {
-        use crate::variants::VariantCall;
-        let vc = |contig: &str, pos: i64, alt: &str| VariantCall {
-            contig: contig.into(),
-            position: pos,
-            reference: "A".into(),
-            alternate: alt.into(),
-            rs_id: None,
-            genotype: None,
-        };
-        let wgs = vec![vc("chr1", 1000, "G"), vc("chr1", 2000, "T")]; // 2000 only in wgs
-        let hifi = vec![vc("chr1", 1000, "G"), vc("chr1", 3000, "C")]; // 1000 agrees; 3000 only hifi
-        let sanger = vec![vc("chr1", 3000, "A")]; // disagrees with hifi at 3000
-        let sources = vec![
-            ("wgs".to_string(), 0.85, wgs.as_slice()),
-            ("hifi".to_string(), 0.95, hifi.as_slice()),
-            ("sanger".to_string(), 1.0, sanger.as_slice()),
-        ];
-        let r = reconcile_variants(&sources);
-
-        let at = |p: i64| r.iter().find(|v| v.position == p).unwrap();
-        assert_eq!(at(1000).status, VariantStatus::Confirmed); // wgs+hifi agree on G
-        assert_eq!(at(1000).support, 2);
-        assert_eq!(at(2000).status, VariantStatus::SingleSource); // only wgs
-        // hifi C (0.95) vs sanger A (1.0): disagreement > 30% -> Conflict, Sanger wins allele.
-        assert_eq!(at(3000).status, VariantStatus::Conflict);
-        assert_eq!(at(3000).allele, "A"); // Sanger's gold-standard allele is the consensus
     }
 
     #[test]
