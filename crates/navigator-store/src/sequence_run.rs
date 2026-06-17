@@ -3,8 +3,8 @@
 use du_domain::ids::SampleGuid;
 use navigator_domain::workspace::{NewSequenceRun, SequenceRun};
 use sqlx::SqlitePool;
-use uuid::Uuid;
 
+use crate::error::parse_sample_guid;
 use crate::StoreError;
 
 #[derive(sqlx::FromRow)]
@@ -29,11 +29,10 @@ struct Row {
 
 impl Row {
     fn into_domain(self) -> Result<SequenceRun, StoreError> {
-        let uuid = Uuid::parse_str(&self.biosample_guid)
-            .map_err(|e| StoreError::Decode(format!("sequence_run biosample_guid: {e}")))?;
+        let biosample_guid = parse_sample_guid(&self.biosample_guid, "sequence_run")?;
         Ok(SequenceRun {
             id: self.id,
-            biosample_guid: SampleGuid(uuid),
+            biosample_guid,
             platform_name: self.platform_name,
             instrument_model: self.instrument_model,
             test_type: self.test_type,

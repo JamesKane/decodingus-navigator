@@ -3,8 +3,8 @@
 use du_domain::ids::SampleGuid;
 use navigator_domain::workspace::Biosample;
 use sqlx::SqlitePool;
-use uuid::Uuid;
 
+use crate::error::parse_sample_guid;
 use crate::StoreError;
 
 #[derive(sqlx::FromRow)]
@@ -20,10 +20,9 @@ struct Row {
 
 impl Row {
     fn into_domain(self) -> Result<Biosample, StoreError> {
-        let uuid = Uuid::parse_str(&self.guid)
-            .map_err(|e| StoreError::Decode(format!("biosample guid {:?}: {e}", self.guid)))?;
+        let guid = parse_sample_guid(&self.guid, "biosample")?;
         Ok(Biosample {
-            guid: SampleGuid(uuid),
+            guid,
             sample_accession: self.sample_accession,
             donor_identifier: self.donor_identifier,
             description: self.description,

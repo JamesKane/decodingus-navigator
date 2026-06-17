@@ -149,8 +149,7 @@ pub async fn list_all(pool: &SqlitePool) -> Result<Vec<(SampleGuid, DnaType, Run
     .await?;
     let mut out = Vec::with_capacity(rows.len());
     for r in rows {
-        let guid = uuid::Uuid::parse_str(&r.biosample_guid)
-            .map_err(|e| StoreError::Decode(format!("haplogroup_call guid {:?}: {e}", r.biosample_guid)))?;
+        let guid = crate::error::parse_sample_guid(&r.biosample_guid, "haplogroup_call")?;
         let dna_type = match r.dna_type.as_str() {
             "Y" => DnaType::Y,
             "Mt" => DnaType::Mt,
@@ -158,7 +157,7 @@ pub async fn list_all(pool: &SqlitePool) -> Result<Vec<(SampleGuid, DnaType, Run
         };
         let lineage = if r.lineage.is_empty() { Vec::new() } else { r.lineage.split('\t').map(str::to_string).collect() };
         out.push((
-            SampleGuid(guid),
+            guid,
             dna_type,
             RunHaplogroupCall {
                 source_label: r.source_label,

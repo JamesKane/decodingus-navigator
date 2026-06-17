@@ -4,8 +4,8 @@
 use du_domain::ids::SampleGuid;
 use navigator_domain::variants::{NewVariantSet, SourceType, VariantCall, VariantSet};
 use sqlx::SqlitePool;
-use uuid::Uuid;
 
+use crate::error::parse_sample_guid;
 use crate::StoreError;
 
 #[derive(sqlx::FromRow)]
@@ -119,12 +119,11 @@ pub async fn list_for_biosample(pool: &SqlitePool, guid: SampleGuid) -> Result<V
 
     let mut sets = Vec::with_capacity(rows.len());
     for r in rows {
-        let uuid = Uuid::parse_str(&r.biosample_guid)
-            .map_err(|e| StoreError::Decode(format!("variant_set guid {:?}: {e}", r.biosample_guid)))?;
+        let biosample_guid = parse_sample_guid(&r.biosample_guid, "variant_set")?;
         let calls = calls_for(pool, r.id).await?;
         sets.push(VariantSet {
             id: r.id,
-            biosample_guid: SampleGuid(uuid),
+            biosample_guid,
             source_label: r.source_label,
             source_type: SourceType::from_code(&r.source_type),
             reference_build: r.reference_build,
