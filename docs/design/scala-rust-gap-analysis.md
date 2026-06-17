@@ -128,14 +128,14 @@ discovery → dual consent → X3DH-lite handshake → AES-GCM round-trip. The w
 | Direct `exchange_request(partner_did)` initiator | — | **DONE** (1e43f12) — the counterpart to suggestion-based `ibd_introduce`; live request→consent→session confirmed |
 | Signed AppView `ibd_suggestions` / `ibd_introduce` + UI card | `IbdMatchingCoordinator.scala` | **DONE** (a289f7a); `ibd_suggestions` signed poll validated live |
 | Local refinements: chip IBD panel, real genetic map, compare over panel | `PairwiseIbdDetector.scala` | **DONE** (533b6ef/02cdfb7); consensus-driven `compare_ibd_consensus` |
-| IBD **segment detection over the exchange** + attestation sign/verify | `IbdAttestation.scala` | **MISSING/deferred** (channel proven live; the match-segment payload + attest not wired) |
-| Consent / request / result storage + lifecycle | `Match{Consent,Request,Result}Repository.scala` | **PARTIAL** — AppView brokers request/consent/session live; Navigator-side persistence + UI not wired |
+| IBD **segment detection over the exchange** + attestation sign/verify | `IbdAttestation.scala` | **DONE** (816fcea) — `ibd_attest.rs` (IbdSite/IbdAttestation/IbdExchangeMsg) + app `exchange_ibd`; dosages over the channel → symmetric detect → signed dual-hash attestations. **Validated live** (two did:key peers: identical 75 cM / ThirdCousin, both verified + agreed) |
+| Consent / request / result storage + lifecycle | `Match{Consent,Request,Result}Repository.scala` | **PARTIAL** — AppView brokers request/consent/session live; Navigator-side **persistence** of results/attestations + PDS publish + UI not wired |
 | ROH detection, HalfSibling category | `RelationshipEstimator.scala` | PARTIAL |
 
-**Remaining (medium):** the application layer on the now-proven channel — exchange **IBD segments**
-as the payload + sign/verify attestations, plus the **UI** for the request/consent/exchange flow.
-The transport + device-key auth are validated live; the PII-posture decision still governs what
-content rides the channel.
+**Remaining (medium):** the IBD segment exchange + attestation is **DONE + validated live** (816fcea).
+What's left: wire **real consensus dosages** into `exchange_ibd` (vs the synthetic test panels),
+**persist + PDS-publish** the resulting attestations (→ AppView Jetstream index), and the **UI** for the
+request/consent/exchange flow. The PII-posture decision still governs what content rides the channel.
 
 ## 5. Sync durability — **PARTIAL** (Phase 1 done; was MISSING)
 
@@ -210,15 +210,16 @@ fingerprint/merge dialogs.
 | 1b-vendor | STR vendor bridge — convention layer + concordance + CHM13 ref | High | — | **DONE** (5fc6641 convention layer; b9a7eed cross-build lift; c142ae7 UI; **b631d79 216-kit CHM13 recalibration**). Offset table rebuilt on 216 CHM13 Big Y kits (swap-QC + per-kit panic isolation in the harness); 6 build-dependent markers handled via `StrBuild`+`GRCH38_DELTA`. Validated held-out: CHM13 1001615 44/44+14/14, GRCh38 27520 55/55+15/15, zero mismatches. *Remaining (low):* the CHM13 lift dropped 33 named chrY markers (incl DYS19/391/426 — table retains their GRCh38 values for the BAM path); multi-copy aggregation; auto-download |
 | ~~2-match~~ | ~~Cross-subject Y matching~~ | — | — | **DONE e0e44bf** — `ymatch.rs` (shared-SNP/novel ranking, divergence LCA, STR-GD, SNP+STR TMRCA) + app `y_matches` one-vs-all + Y-DNA-tab match card. Local v1; federated surface under §4 |
 | 5-p2 | Sync conflict detection + PULL + `source_file` table | Med | Medium | Ties to AppView design |
-| 4-live | IBD live exchange — **transport DONE/validated live** (1e43f12); remaining = segment payload + attestation + UI | Med | Medium | Channel proven end-to-end vs live AppView (did:key, request→consent→session→AES-GCM round-trip). Payload content governed by the PII-posture decision |
+| 4-live | IBD live exchange — **transport + segment payload + attestation DONE/validated live** (1e43f12, 816fcea); remaining = real-data wiring + PDS publish/index + UI | Med | Medium | Full two-peer flow proven vs live AppView (did:key → request→consent→session→dosage exchange→symmetric detect→signed dual-hash attestation→verify+agree). Payload content governed by the PII-posture decision |
 | 7 | VCF liftover orchestration + reference-download checksums | Low-Med | Medium | STR/VCF-workflow enablers |
 | 8-misc | PCA scatter, Y-profile management dialog, IBD match browser, fingerprint/merge dialogs | Low-Med | Mixed | Several small; IBD browser downstream of §4 |
 
 **Recently shipped:** import UX (59b5696), checkpoint/resume (192a939), **STR caller foundation**
 (986e00b — the hard, twice-attempted part), **STR vendor bridge fully landed** (b631d79 — 216-kit
 CHM13 recalibration + build-aware offsets), **§2 cross-subject Y matching** (e0e44bf), **§4 federated
-transport validated live + did:key bootstrap** (1e43f12). **Best next
-steps:** **§4 segment payload + attestation + exchange UI** (the channel is proven), **§5-p2** once scoped against a running AppView, or the **§8-misc** small UI items
+transport + did:key bootstrap** (1e43f12) **and IBD segment exchange + attestation** (816fcea), both
+validated live. **Best next steps:** **§4 finish** (real consensus dosages into `exchange_ibd` + PDS
+publish/index + exchange UI), **§5-p2** sync conflict/PULL, or the **§8-misc** small UI items
 (PCA scatter, IBD match browser). **Biggest coherent feature now:** the live federated arc (§4) —
 STR calling and cross-subject Y matching, the prior standout local gaps, are done end-to-end.
 **Verify-before-building:** §4 (IBD live) and §5-p2 (sync conflict/PULL) must be scoped against the
