@@ -562,6 +562,11 @@ pub(crate) const ACCENT: egui::Color32 = egui::Color32::from_rgb(45, 125, 246);
 #[allow(dead_code)]
 const DANGER: egui::Color32 = egui::Color32::from_rgb(220, 60, 60);
 
+/// Max height (px) for the heavy variant/site tables (Y/mt/autosomal consensus profiles, private-Y,
+/// de-novo SNPs). On a WGS these run thousands of rows; bounding them to a scroll pane keeps the
+/// detail page navigable instead of forcing endless scrolling.
+const PROFILE_TABLE_H: f32 = 360.0;
+
 /// Apply the Decoding-Us workbench look: a dark (or light) palette with the accent blue,
 /// rounded widgets, and roomier spacing — the visual base that closes most of the gap to the
 /// Scala Workbench. Re-applied on theme toggle.
@@ -3711,9 +3716,9 @@ impl NavigatorApp {
         });
         let q = self.private_y_query.to_ascii_lowercase();
         let bucket = self.donor_private_y.as_ref().unwrap();
-        // Filter to matching variants (position or off-path name / "novel"). Flow into the page scroll
-        // (no nested ScrollArea — it clips + captures the wheel; see str_by_panel_view); the filter
-        // narrows the list, and a hard cap keeps a pathological bucket from flooding the page.
+        // Filter to matching variants (position or off-path name / "novel"); the table is bounded to a
+        // fixed-height scroll pane (a WGS bucket runs to thousands of rows). A hard cap keeps a
+        // pathological bucket from flooding even the pane.
         const CAP: usize = 1000;
         let matched: Vec<_> = bucket
             .variants
@@ -3728,22 +3733,24 @@ impl NavigatorApp {
             })
             .collect();
         ui.label(egui::RichText::new(format!("{} shown", matched.len())).weak().small());
-        egui::Grid::new("donor_privy").striped(true).num_columns(4).show(ui, |ui| {
-            ui.strong(pos_h);
-            ui.strong(chg_h);
-            ui.strong(dep_h);
-            ui.strong(cls_h);
-            ui.end_row();
-            for v in matched.iter().take(CAP) {
-                ui.label(v.position.to_string());
-                ui.label(format!("{}>{}", v.reference, v.alternate));
-                ui.label(v.depth.to_string());
-                match &v.class {
-                    PrivateClass::Novel => ui.colored_label(egui::Color32::from_rgb(60, 160, 60), "novel"),
-                    PrivateClass::OffPathKnown(name) => ui.label(format!("off-path: {name}")),
-                };
+        egui::ScrollArea::vertical().id_salt("donor_privy_scroll").max_height(PROFILE_TABLE_H).auto_shrink([false, true]).show(ui, |ui| {
+            egui::Grid::new("donor_privy").striped(true).num_columns(4).show(ui, |ui| {
+                ui.strong(pos_h);
+                ui.strong(chg_h);
+                ui.strong(dep_h);
+                ui.strong(cls_h);
                 ui.end_row();
-            }
+                for v in matched.iter().take(CAP) {
+                    ui.label(v.position.to_string());
+                    ui.label(format!("{}>{}", v.reference, v.alternate));
+                    ui.label(v.depth.to_string());
+                    match &v.class {
+                        PrivateClass::Novel => ui.colored_label(egui::Color32::from_rgb(60, 160, 60), "novel"),
+                        PrivateClass::OffPathKnown(name) => ui.label(format!("off-path: {name}")),
+                    };
+                    ui.end_row();
+                }
+            });
         });
         if matched.len() > CAP {
             ui.label(egui::RichText::new(format!("…and {} more — filter to narrow", matched.len() - CAP)).weak());
@@ -3821,18 +3828,20 @@ impl NavigatorApp {
                         let _ = self.tx.send(Command::AssignYBisdna { biosample_guid: guid });
                     }
                 });
-                egui::Grid::new(("vcalls", s.id)).striped(true).num_columns(4).show(ui, |ui| {
-                    for h in ["table.position", "table.change", "table.rsid", "table.genotype"] {
-                        ui.strong(self.tr(h));
-                    }
-                    ui.end_row();
-                    for c in s.calls.iter().take(MAX_ROWS) {
-                        ui.label(format!("{} {}", c.contig, c.position));
-                        ui.label(variant_change(c));
-                        ui.label(c.rs_id.as_deref().unwrap_or("—"));
-                        ui.label(c.genotype.as_deref().unwrap_or("—"));
+                egui::ScrollArea::vertical().id_salt(("vcalls_scroll", s.id)).max_height(PROFILE_TABLE_H).auto_shrink([false, true]).show(ui, |ui| {
+                    egui::Grid::new(("vcalls", s.id)).striped(true).num_columns(4).show(ui, |ui| {
+                        for h in ["table.position", "table.change", "table.rsid", "table.genotype"] {
+                            ui.strong(self.tr(h));
+                        }
                         ui.end_row();
-                    }
+                        for c in s.calls.iter().take(MAX_ROWS) {
+                            ui.label(format!("{} {}", c.contig, c.position));
+                            ui.label(variant_change(c));
+                            ui.label(c.rs_id.as_deref().unwrap_or("—"));
+                            ui.label(c.genotype.as_deref().unwrap_or("—"));
+                            ui.end_row();
+                        }
+                    });
                 });
                 if s.calls.len() > MAX_ROWS {
                     ui.label(format!("…and {} more", s.calls.len() - MAX_ROWS));
@@ -5894,58 +5903,62 @@ fn draw_consensus_profile(
         YState::Ancestral => "ancestral",
         YState::NoCall => "no-call",
     };
-    // Flow into the page scroll (no nested ScrollArea — it clips + captures the wheel; see
-    // str_by_panel_view). Status/text filters narrow the list; a cap bounds a pathological profile.
+    // Bound the table to a fixed-height scroll pane — on a WGS these run thousands of rows and would
+    // otherwise force endless page scrolling. Status/text filters narrow the list; a cap bounds a
+    // pathological profile. The header/filter row above stays fixed; only the grid scrolls.
     const CAP: usize = 2000;
     let (mut shown, mut total_match) = (0usize, 0usize);
-    egui::Grid::new(format!("{id_salt}_grid")).striped(true).num_columns(5).show(ui, |ui| {
-        for h in [variant_col, "Pos", "State", "Status", "Sources"] {
-            ui.strong(h);
-        }
-        ui.end_row();
-        for v in &profile.variants {
-            if filter.is_some_and(|f| v.status != f) {
-                continue;
+    egui::ScrollArea::vertical().id_salt(format!("{id_salt}_scroll")).max_height(PROFILE_TABLE_H).auto_shrink([false, true]).show(ui, |ui| {
+        egui::Grid::new(format!("{id_salt}_grid")).striped(true).num_columns(5).show(ui, |ui| {
+            for h in [variant_col, "Pos", "State", "Status", "Sources"] {
+                ui.strong(h);
             }
-            if !q.is_empty() && !v.name.to_ascii_lowercase().contains(&q) && !v.position.to_string().contains(&q) {
-                continue;
+            ui.end_row();
+            for v in &profile.variants {
+                if filter.is_some_and(|f| v.status != f) {
+                    continue;
+                }
+                if !q.is_empty() && !v.name.to_ascii_lowercase().contains(&q) && !v.position.to_string().contains(&q) {
+                    continue;
+                }
+                total_match += 1;
+                if shown >= CAP {
+                    continue;
+                }
+                shown += 1;
+                {
+                    let conflict = v.status == YVariantStatus::Conflict;
+                    let name = if v.name.is_empty() { format!("novel@{}", v.position) } else { v.name.clone() };
+                    let name_txt = egui::RichText::new(name).strong();
+                    ui.label(if conflict { name_txt.color(amber) } else { name_txt });
+                    ui.label(egui::RichText::new(v.position.to_string()).weak());
+                    ui.label(state_label(v.consensus));
+                    let (label, color) = consensus_status_badge(v.status);
+                    ui.colored_label(color, format!("{label} ({}/{})", v.support, v.total));
+                    ui.horizontal(|ui| {
+                        for src in &v.sources {
+                            let short = match src.source_type {
+                                SourceType::Chip => "chip",
+                                SourceType::WgsShortRead | SourceType::WgsLongRead => "WGS",
+                                SourceType::Sanger => "Sanger",
+                                SourceType::Imported => "seq",
+                                _ => "src",
+                            };
+                            let glyph = match src.state {
+                                YState::Derived => "✓",
+                                YState::Ancestral => "·",
+                                YState::NoCall => "?",
+                            };
+                            ui.label(egui::RichText::new(format!("{short}{glyph}")).small().weak())
+                                .on_hover_text(format!("{}: {}", src.label, state_label(src.state)));
+                        }
+                    });
+                    ui.end_row();
+                }
             }
-            total_match += 1;
-            if shown >= CAP {
-                continue;
-            }
-            shown += 1;
-            {
-                let conflict = v.status == YVariantStatus::Conflict;
-                let name = if v.name.is_empty() { format!("novel@{}", v.position) } else { v.name.clone() };
-                let name_txt = egui::RichText::new(name).strong();
-                ui.label(if conflict { name_txt.color(amber) } else { name_txt });
-                ui.label(egui::RichText::new(v.position.to_string()).weak());
-                ui.label(state_label(v.consensus));
-                let (label, color) = consensus_status_badge(v.status);
-                ui.colored_label(color, format!("{label} ({}/{})", v.support, v.total));
-                ui.horizontal(|ui| {
-                    for src in &v.sources {
-                        let short = match src.source_type {
-                            SourceType::Chip => "chip",
-                            SourceType::WgsShortRead | SourceType::WgsLongRead => "WGS",
-                            SourceType::Sanger => "Sanger",
-                            SourceType::Imported => "seq",
-                            _ => "src",
-                        };
-                        let glyph = match src.state {
-                            YState::Derived => "✓",
-                            YState::Ancestral => "·",
-                            YState::NoCall => "?",
-                        };
-                        ui.label(egui::RichText::new(format!("{short}{glyph}")).small().weak())
-                            .on_hover_text(format!("{}: {}", src.label, state_label(src.state)));
-                    }
-                });
-                ui.end_row();
-            }
-        }
+        });
     });
+    ui.label(egui::RichText::new(format!("{} of {} matching variants", shown.min(total_match), total_match)).weak().small());
     if total_match > CAP {
         ui.label(egui::RichText::new(format!("…and {} more — filter to narrow", total_match - CAP)).weak());
     }
@@ -6024,22 +6037,24 @@ fn draw_diploid_profile(ui: &mut egui::Ui, profile: &navigator_app::DiploidProfi
             }
         });
     };
-    // Flow into the page scroll (no nested ScrollArea — it clips + captures the wheel; see
-    // str_by_panel_view). The panel is ~1.2M sites, so cap the rendered rows hard and lean on the
-    // status/text filters to narrow — only `shown` widgets are built, never the full panel.
+    // Bound the rows to a fixed-height scroll pane (the panel is ~1.2M sites). A hard cap keeps only
+    // `shown` widgets built per frame, never the full panel; the status/text filters narrow further.
     const CAP: usize = 2000;
     let (mut shown, mut total_match) = (0usize, 0usize);
-    for v in &profile.variants {
-        if !(filter.map_or(true, |f| v.status == f) && matches(v)) {
-            continue;
+    egui::ScrollArea::vertical().id_salt("diploid_profile_scroll").max_height(PROFILE_TABLE_H).auto_shrink([false, true]).show(ui, |ui| {
+        for v in &profile.variants {
+            if !(filter.map_or(true, |f| v.status == f) && matches(v)) {
+                continue;
+            }
+            total_match += 1;
+            if shown >= CAP {
+                continue;
+            }
+            shown += 1;
+            render_row(ui, v);
         }
-        total_match += 1;
-        if shown >= CAP {
-            continue;
-        }
-        shown += 1;
-        render_row(ui, v);
-    }
+    });
+    ui.label(egui::RichText::new(format!("{} of {} matching sites", shown.min(total_match), total_match)).weak().small());
     if total_match > CAP {
         ui.label(egui::RichText::new(format!("…and {} more — filter to narrow", total_match - CAP)).weak());
     }
