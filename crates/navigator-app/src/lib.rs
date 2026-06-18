@@ -5690,12 +5690,13 @@ impl App {
 
     /// Reference population centroids on (PC1, PC2) for the alignment's build — the backdrop
     /// for the PCA scatter. `(population_code, pc1, pc2)`; empty if no PCA loadings are present.
-    pub async fn ancestry_pca_reference(
-        &self,
-        alignment_id: i64,
-    ) -> Result<Vec<(String, f64, f64)>, AppError> {
-        let aln = self.alignment_or_err(alignment_id).await?;
-        let Some(build) = canonical_build(&aln.reference_build) else { return Ok(Vec::new()) };
+    /// Reference population centroids in the **consensus** PC frame for the PCA scatter. The donor's
+    /// projected coordinate (`AncestryResult::pca_coordinates`) is always computed against the CHM13
+    /// PCA asset (the canonical consensus frame — see [`estimate_ancestry_from_consensus`]), so the
+    /// backdrop centroids must come from that same asset regardless of which source is selected.
+    /// Returns an empty vec when the asset isn't installed (the caller shows "reference not built").
+    pub async fn ancestry_pca_reference(&self) -> Result<Vec<(String, f64, f64)>, AppError> {
+        let build = ReferenceBuild::Chm13v2;
         let Ok(bytes) = std::fs::read(ancestry_pca_path(build)) else { return Ok(Vec::new()) };
         let pca = navigator_analysis::ancestry::PcaLoadings::from_bytes(&bytes)?;
         Ok(pca

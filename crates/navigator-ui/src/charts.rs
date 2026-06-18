@@ -3,7 +3,7 @@
 //! the view code that calls them.
 
 use eframe::egui;
-use navigator_app::{AncestryResult, AncestrySegment, AssetStatus, ChromosomeRegions, GenomeRegions, IbdSegment, SuperPopulationSummary};
+use navigator_app::{AncestryResult, AncestrySegment, AssetStatus, GenomeRegions, IbdSegment, SuperPopulationSummary};
 use navigator_domain::ancestry::{population_color, population_name, population_super};
 
 use crate::ui::ACCENT;
@@ -256,53 +256,6 @@ fn parse_hex_color(hex: &str) -> egui::Color32 {
     egui::Color32::from_gray(128)
 }
 
-/// Giemsa-stain → color for the cytoband ideogram (the standard UCSC palette, tuned for the dark
-/// theme): `gneg` light → `gpos100` near-black, `acen` (centromere) red, `gvar`/`stalk` tinted.
-fn stain_color(stain: &str) -> egui::Color32 {
-    match stain {
-        "gneg" => egui::Color32::from_gray(225),
-        "gpos25" => egui::Color32::from_gray(170),
-        "gpos50" => egui::Color32::from_gray(120),
-        "gpos75" => egui::Color32::from_gray(80),
-        "gpos100" => egui::Color32::from_gray(45),
-        "acen" => egui::Color32::from_rgb(200, 70, 70),
-        "gvar" => egui::Color32::from_rgb(120, 140, 185),
-        "stalk" => egui::Color32::from_rgb(110, 165, 160),
-        _ => egui::Color32::from_gray(140),
-    }
-}
-
-/// The chromosomes to draw, in karyotype order (1–22, X, Y); non-nuclear / alt / random contigs
-/// are skipped. Tolerates a `chr` prefix on the names.
-fn karyotype_order(regions: &GenomeRegions) -> Vec<(&String, &ChromosomeRegions)> {
-    fn rank(name: &str) -> Option<u32> {
-        let s = name.strip_prefix("chr").unwrap_or(name);
-        match s {
-            "X" => Some(23),
-            "Y" => Some(24),
-            _ => s.parse::<u32>().ok().filter(|n| (1..=22).contains(n)),
-        }
-    }
-    let mut v: Vec<(u32, &String, &ChromosomeRegions)> =
-        regions.chromosomes.iter().filter_map(|(n, c)| rank(n).map(|r| (r, n, c))).collect();
-    v.sort_by_key(|(r, _, _)| *r);
-    v.into_iter().map(|(_, n, c)| (n, c)).collect()
-}
-
-/// A compact legend mapping Giemsa stains to their ideogram colors.
-pub(crate) fn ideogram_legend(ui: &mut egui::Ui) {
-    ui.horizontal_wrapped(|ui| {
-        for (label, stain) in
-            [("gneg", "gneg"), ("gpos50", "gpos50"), ("gpos100", "gpos100"), ("centromere", "acen"), ("gvar", "gvar")]
-        {
-            let (r, _) = ui.allocate_exact_size(egui::vec2(12.0, 12.0), egui::Sense::hover());
-            ui.painter().rect_filled(r, 2.0, stain_color(stain));
-            ui.label(egui::RichText::new(label).small().weak());
-            ui.add_space(8.0);
-        }
-    });
-}
-
 /// A compact "data sources" line: which ancestry/IBD reference assets are present and
 /// integrity-verified (✓ verified · • present-but-unverified · ✗ absent).
 pub(crate) fn asset_status_line(ui: &mut egui::Ui, assets: &[AssetStatus]) {
@@ -325,59 +278,101 @@ pub(crate) fn asset_status_line(ui: &mut egui::Ui, assets: &[AssetStatus]) {
     });
 }
 
-/// Draw the chromosome ideogram: one horizontal bar per chromosome (scaled to the longest), its
-/// cytobands as Giemsa-stained segments, with a hover tooltip naming the band under the cursor.
-pub(crate) fn draw_ideogram(ui: &mut egui::Ui, regions: &GenomeRegions) {
-    let order = karyotype_order(regions);
-    if order.is_empty() {
-        ui.label(egui::RichText::new("No chromosome data.").weak());
+/// A single variant tick on a [`draw_variant_track`] chromosome bar.
+pub(crate) struct VariantMark {
+    pub name: String,
+    pub position: i64,
+    pub color: egui::Color32,
+    /// Human-readable state for the hover tooltip (e.g. "in-tree derived", "novel").
+    pub state: &'static str,
+}
+
+/// A shaded background region on a variant track (chrY PAR/heterochromatin, chrM HVR/coding).
+pub(crate) struct TrackRegion {
+    pub start: i64,
+    pub end: i64,
+    pub color: egui::Color32,
+    pub label: String,
+}
+
+/// Draw a single-chromosome **variant track**: one horizontal bar scaled to `length`, optional
+/// shaded background regions, and a vertical tick per variant colored by its consensus state. Hover
+/// over the bar surfaces the nearest variant (`name · pos · state`) and any region under the cursor.
+/// Replaces the genome-wide karyotype ideogram for the Y/mt variant views. Mirrors the
+/// [`draw_ibd_segments`] painter approach (no `egui_plot`).
+pub(crate) fn draw_variant_track(
+    ui: &mut egui::Ui,
+    chrom_label: &str,
+    length: i64,
+    regions: &[TrackRegion],
+    variants: &[VariantMark],
+) {
+    if length <= 0 {
+        ui.label(egui::RichText::new("Chromosome length unavailable.").weak());
         return;
     }
-    let max_len = order.iter().map(|(_, c)| c.length).max().unwrap_or(1).max(1) as f32;
-    let label_w = 30.0;
-    let row_h = 16.0;
-    let full_w = ui.available_width().min(760.0);
-    let bar_area = (full_w - label_w - 6.0).max(60.0);
-    let text_color = ui.visuals().text_color();
+    let len = length as f32;
+    let bar_h = 22.0f32;
+    let full_w = ui.available_width().min(720.0);
 
-    for (name, c) in &order {
-        if c.length <= 0 {
-            continue;
-        }
-        let (rect, resp) = ui.allocate_exact_size(egui::vec2(full_w, row_h), egui::Sense::hover());
-        let painter = ui.painter_at(rect);
-        let short = name.strip_prefix("chr").unwrap_or(name);
-        painter.text(
-            egui::pos2(rect.left() + 2.0, rect.center().y),
-            egui::Align2::LEFT_CENTER,
-            short,
-            egui::FontId::proportional(11.0),
-            text_color,
+    let (rect, resp) = ui.allocate_exact_size(egui::vec2(full_w, bar_h), egui::Sense::hover());
+    let painter = ui.painter_at(rect);
+    painter.rect_filled(rect, 3.0, egui::Color32::from_gray(28));
+
+    // Background region shading.
+    for r in regions {
+        let x0 = rect.left() + (r.start.max(0) as f32 / len).clamp(0.0, 1.0) * rect.width();
+        let x1 = rect.left() + (r.end.max(0) as f32 / len).clamp(0.0, 1.0) * rect.width();
+        let seg = egui::Rect::from_min_max(egui::pos2(x0, rect.top()), egui::pos2(x1.max(x0 + 1.0), rect.bottom()));
+        painter.rect_filled(seg, 0.0, r.color);
+    }
+    painter.rect_stroke(rect, 3.0, egui::Stroke::new(1.0, egui::Color32::from_gray(70)));
+
+    // Variant ticks.
+    let hover_x = resp.hover_pos().map(|p| p.x);
+    let mut nearest: Option<(f32, String)> = None;
+    for v in variants {
+        let x = rect.left() + (v.position.max(0) as f32 / len).clamp(0.0, 1.0) * rect.width();
+        painter.line_segment(
+            [egui::pos2(x, rect.top() + 1.0), egui::pos2(x, rect.bottom() - 1.0)],
+            egui::Stroke::new(1.5, v.color),
         );
-
-        let x0 = rect.left() + label_w;
-        let bar_w = bar_area * (c.length as f32 / max_len);
-        let bar = egui::Rect::from_min_size(egui::pos2(x0, rect.top() + 2.0), egui::vec2(bar_w, row_h - 4.0));
-        painter.rect_filled(bar, 3.0, egui::Color32::from_gray(28));
-        let len = c.length as f32;
-        for b in &c.cytobands {
-            let bx0 = x0 + bar_w * (b.start as f32 / len);
-            let bx1 = x0 + bar_w * (b.end as f32 / len);
-            let seg = egui::Rect::from_min_max(egui::pos2(bx0, bar.top()), egui::pos2(bx1.max(bx0 + 0.5), bar.bottom()));
-            painter.rect_filled(seg, 0.0, stain_color(&b.stain));
-        }
-        painter.rect_stroke(bar, 3.0, egui::Stroke::new(1.0, egui::Color32::from_gray(70)));
-
-        // Hover → the band (and Mb position) under the cursor.
-        if let Some(pos) = resp.hover_pos() {
-            if pos.x >= x0 && pos.x <= x0 + bar_w && bar_w > 0.0 {
-                let g = (((pos.x - x0) / bar_w).clamp(0.0, 1.0) * len) as i64;
-                let band = c.cytobands.iter().find(|b| b.start <= g && g < b.end);
-                let name = band.map(|b| format!("{short}{}", b.name)).unwrap_or_else(|| short.to_string());
-                let stain = band.map(|b| b.stain.as_str()).unwrap_or("");
-                resp.on_hover_text(format!("{name}  ·  {stain}  ·  {:.1} Mb", g as f64 / 1e6));
+        if let Some(hx) = hover_x {
+            let d = (hx - x).abs();
+            if d <= 6.0 && nearest.as_ref().map_or(true, |(bd, _)| d < *bd) {
+                nearest = Some((d, format!("{} · {} · {}", v.name, v.position, v.state)));
             }
         }
+    }
+
+    if let Some((_, text)) = nearest {
+        resp.on_hover_text(text);
+    } else if let (Some(hx), false) = (hover_x, regions.is_empty()) {
+        // No tick nearby → report the region under the cursor, if any.
+        let g = (((hx - rect.left()) / rect.width()).clamp(0.0, 1.0) * len) as i64;
+        if let Some(r) = regions.iter().find(|r| r.start <= g && g < r.end) {
+            resp.on_hover_text(format!("{} · {:.0} bp", r.label, g as f64));
+        }
+    }
+
+    ui.add_space(2.0);
+    ui.label(egui::RichText::new(format!("{chrom_label} · {} variants · {:.0} kb", variants.len(), len / 1000.0)).small().weak());
+
+    // Region legend.
+    if !regions.is_empty() {
+        let mut seen: Vec<&str> = Vec::new();
+        ui.horizontal_wrapped(|ui| {
+            for r in regions {
+                if seen.contains(&r.label.as_str()) {
+                    continue;
+                }
+                seen.push(&r.label);
+                let (rr, _) = ui.allocate_exact_size(egui::vec2(10.0, 10.0), egui::Sense::hover());
+                ui.painter().rect_filled(rr, 2.0, r.color);
+                ui.label(egui::RichText::new(r.label.as_str()).small().weak());
+                ui.add_space(6.0);
+            }
+        });
     }
 }
 

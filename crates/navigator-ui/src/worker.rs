@@ -225,7 +225,7 @@ pub enum Command {
     /// Write the IBD match's segments to a CSV/TSV at `path` (the match-browser export).
     ExportIbdSegments { segments: Vec<navigator_app::IbdSegment>, path: PathBuf },
     /// Load the reference population PC1/PC2 centroids for an alignment's build (PCA scatter backdrop).
-    LoadPcaReference { alignment_id: i64 },
+    LoadPcaReference,
     /// Export a cached result to `path` (TSV/HTML/BED). `request` carries the kind + source id.
     Export { request: navigator_app::ExportRequest, path: PathBuf },
     /// Manually override the consensus haplogroup for a subject + DNA type.
@@ -1023,8 +1023,8 @@ pub async fn handle(app: &App, cmd: Command) -> Event {
                 Err(e) => Event::Error(format!("write {}: {e}", path.display())),
             }
         }
-        Command::LoadPcaReference { alignment_id } => match app.ancestry_pca_reference(alignment_id).await {
-            Ok(points) => Event::PcaReference { alignment_id, points },
+        Command::LoadPcaReference => match app.ancestry_pca_reference().await {
+            Ok(points) => Event::PcaReference { alignment_id: navigator_app::CONSENSUS_SOURCE_ID, points },
             Err(e) => Event::Error(e.to_string()),
         },
         Command::SetHaploOverride { biosample_guid, dna_type, haplogroup, reason } => {

@@ -17,7 +17,7 @@ use navigator_app::{
 };
 use crate::charts::{
     asset_status_line, coverage_histogram_chart, draw_ancestry_donut, draw_chromosome_painting, draw_composition_bar,
-    draw_ibd_segments, draw_ideogram, draw_pca_scatter, draw_population_components, ideogram_legend,
+    draw_ibd_segments, draw_pca_scatter, draw_population_components, draw_variant_track, TrackRegion, VariantMark,
 };
 use crate::widgets::{
     card, chip, combo, empty_state, fmt_depth, fmt_pct, fmt_reads, opt, provider_abbrev, short_guid, show_assignment,
@@ -98,6 +98,41 @@ impl DetailTab {
         (DetailTab::Sources, "detail.sources"),
         (DetailTab::IbdMatches, "detail.ibd"),
     ];
+}
+
+/// Y-DNA sub-tabs: compact haplogroup landing, the heavy SNP surface, and STR (separated from SNP).
+#[derive(Clone, Copy, PartialEq, Eq, Default)]
+enum YSub {
+    #[default]
+    Haplogroup,
+    Snp,
+    Str,
+}
+impl YSub {
+    const ALL: [(YSub, &'static str); 3] =
+        [(YSub::Haplogroup, "detail.sub.haplogroup"), (YSub::Snp, "detail.sub.snp"), (YSub::Str, "detail.sub.str")];
+}
+
+/// mtDNA sub-tabs.
+#[derive(Clone, Copy, PartialEq, Eq, Default)]
+enum MtSub {
+    #[default]
+    Summary,
+    Variants,
+}
+impl MtSub {
+    const ALL: [(MtSub, &'static str); 2] = [(MtSub::Summary, "detail.sub.summary"), (MtSub::Variants, "detail.sub.variants")];
+}
+
+/// Autosomal sub-tabs: compact summary vs the heavy diploid profile table.
+#[derive(Clone, Copy, PartialEq, Eq, Default)]
+enum AutoSub {
+    #[default]
+    Summary,
+    Profile,
+}
+impl AutoSub {
+    const ALL: [(AutoSub, &'static str); 2] = [(AutoSub::Summary, "detail.sub.summary"), (AutoSub::Profile, "detail.sub.profile")];
 }
 
 /// Which Y-STR report view is shown in the Y-DNA tab.
@@ -374,6 +409,10 @@ pub struct NavigatorApp {
     mtdna_haplogroup: Option<(i64, HaploAssignment)>,
     /// Last Y haplogroup assignment: (alignment id, assignment).
     y_haplogroup: Option<(i64, HaploAssignment)>,
+    /// Active sub-tab within the Y-DNA / mtDNA / Autosomal detail tabs.
+    y_sub: YSub,
+    mt_sub: MtSub,
+    auto_sub: AutoSub,
     /// Full Y placement report (ranked candidates + lineage SNP evidence) for an alignment.
     y_report: Option<YReport>,
     /// True while the haplogroup report is being built.
@@ -390,6 +429,8 @@ pub struct NavigatorApp {
     nmonte_ancestry: Option<AncestryResult>,
     /// Reference PC1/PC2 centroids for the PCA scatter, keyed by alignment_id (lazy-loaded).
     pca_reference: Option<(i64, PcaCentroids)>,
+    /// Which PCA-reference key we've already dispatched a load for (avoids re-sending every frame).
+    pca_reference_attempted: Option<i64>,
     /// Donor-level private-Y union across the subject's sources.
     donor_private_y: Option<PrivateBucket>,
     /// The selected subject's multi-source Y-variant profile.
@@ -651,6 +692,9 @@ impl NavigatorApp {
             mtdna_variants: std::collections::HashMap::new(),
             mtdna_haplogroup: None,
             y_haplogroup: None,
+            y_sub: YSub::default(),
+            mt_sub: MtSub::default(),
+            auto_sub: AutoSub::default(),
             y_report: None,
             y_report_running: false,
             mt_haplogroup: None,
@@ -659,6 +703,7 @@ impl NavigatorApp {
             ancient_ancestry: None,
             nmonte_ancestry: None,
             pca_reference: None,
+            pca_reference_attempted: None,
             donor_private_y: None,
             y_profile: None,
             y_profile_filter: None,
@@ -1375,12 +1420,16 @@ impl NavigatorApp {
 
     fn select_sample(&mut self, guid: SampleGuid) {
         self.selected_sample = Some(guid);
+        self.y_sub = YSub::default();
+        self.mt_sub = MtSub::default();
+        self.auto_sub = AutoSub::default();
         self.pending_alignment = None;
         self.donor_ancestry = None;
         self.fine_ancestry = None;
         self.ancient_ancestry = None;
         self.nmonte_ancestry = None;
-        self.pca_reference = None;
+        // pca_reference is the global CHM13 centroid cloud (subject-independent) — keep it loaded
+        // across subject switches rather than re-fetching the asset each time.
         self.estimating_donor_ancestry = false;
         self.painting = None;
         self.painting_running = false;
@@ -1679,6 +1728,20 @@ impl NavigatorApp {
     }
 
     /// The Subjects work area: the selected subject's detail — header + sub-tabs.
+    /// A segmented sub-tab bar (one row of selectable labels + a separator). Takes the current
+    /// selection by value and returns the new one, so callers avoid a `&mut self.field` borrow clash
+    /// with `self.tr` inside the row.
+    fn sub_bar<T: Copy + PartialEq>(&self, ui: &mut egui::Ui, current: T, items: &[(T, &'static str)]) -> T {
+        let mut sel = current;
+        ui.horizontal(|ui| {
+            for (variant, key) in items {
+                ui.selectable_value(&mut sel, *variant, self.tr(key));
+            }
+        });
+        ui.separator();
+        sel
+    }
+
     fn subjects_central(&mut self, ui: &mut egui::Ui) {
         let Some(guid) = self.selected_sample else {
             empty_state(ui, self.tr("empty.subjects.title"), self.tr("empty.subjects.hint"));
@@ -1699,51 +1762,78 @@ impl NavigatorApp {
             match self.detail_tab {
                 DetailTab::Overview => self.overview_dashboard(ui, guid),
                 DetailTab::YDna => {
-                    // The subject's Y consensus is the source of truth — independent of any one source.
-                    card(ui, self.tr("card.yHaplogroup"), |ui| {
-                        if self.consensus_y.is_some() {
-                            self.consensus_block(ui, "Y-DNA", DnaType::Y);
-                        } else {
-                            ui.label(egui::RichText::new(self.tr("hint.noConsensusYet")).weak());
+                    self.y_sub = self.sub_bar(ui, self.y_sub, &YSub::ALL);
+                    match self.y_sub {
+                        // Compact landing: the subject's Y consensus (source of truth across sources).
+                        YSub::Haplogroup => {
+                            card(ui, self.tr("card.yHaplogroup"), |ui| {
+                                if self.consensus_y.is_some() {
+                                    self.consensus_block(ui, "Y-DNA", DnaType::Y);
+                                } else {
+                                    ui.label(egui::RichText::new(self.tr("hint.noConsensusYet")).weak());
+                                }
+                            });
                         }
-                    });
-                    ui.add_space(10.0);
-                    card(ui, self.tr("card.yVariantProfile"), |ui| self.y_variant_profile_section(ui, guid));
-                    if self.donor_private_y.is_some() {
-                        ui.add_space(10.0);
-                        card(ui, self.tr("card.privateYUnion"), |ui| self.donor_private_y_section(ui));
+                        // The heavy SNP surface: a chrY variant track + the multi-source profile + private-Y + de-novo.
+                        YSub::Snp => {
+                            card(ui, self.tr("card.variantTrack"), |ui| self.y_variant_track(ui));
+                            ui.add_space(10.0);
+                            card(ui, self.tr("card.yVariantProfile"), |ui| self.y_variant_profile_section(ui, guid));
+                            if self.donor_private_y.is_some() {
+                                ui.add_space(10.0);
+                                card(ui, self.tr("card.privateYUnion"), |ui| self.donor_private_y_section(ui));
+                            }
+                            ui.add_space(10.0);
+                            card(ui, self.tr("card.snpVariants"), |ui| self.variants_section(ui, guid));
+                        }
+                        // STR analysis, separated from SNP.
+                        YSub::Str => {
+                            card(ui, self.tr("card.ystrConsensus"), |ui| self.ystr_report_section(ui));
+                            ui.add_space(10.0);
+                            card(ui, self.tr("card.ystrSequence"), |ui| self.ystr_sequence_section(ui, guid));
+                            ui.add_space(10.0);
+                            card(ui, self.tr("card.yMatches"), |ui| self.ymatch_section(ui, guid));
+                        }
                     }
-                    ui.add_space(10.0);
-                    card(ui, self.tr("card.snpVariants"), |ui| self.variants_section(ui, guid));
-                    ui.add_space(10.0);
-                    card(ui, self.tr("card.ystrConsensus"), |ui| self.ystr_report_section(ui));
-                    ui.add_space(10.0);
-                    card(ui, self.tr("card.ystrSequence"), |ui| self.ystr_sequence_section(ui, guid));
-                    ui.add_space(10.0);
-                    card(ui, self.tr("card.yMatches"), |ui| self.ymatch_section(ui, guid));
                 }
                 DetailTab::MtDna => {
-                    card(ui, self.tr("card.mtHaplogroup"), |ui| {
-                        if self.consensus_mt.is_some() {
-                            self.consensus_block(ui, "mtDNA", DnaType::Mt);
-                        } else {
-                            ui.label(egui::RichText::new(self.tr("hint.noConsensusYet")).weak());
+                    self.mt_sub = self.sub_bar(ui, self.mt_sub, &MtSub::ALL);
+                    match self.mt_sub {
+                        MtSub::Summary => {
+                            card(ui, self.tr("card.mtHaplogroup"), |ui| {
+                                if self.consensus_mt.is_some() {
+                                    self.consensus_block(ui, "mtDNA", DnaType::Mt);
+                                } else {
+                                    ui.label(egui::RichText::new(self.tr("hint.noConsensusYet")).weak());
+                                }
+                            });
                         }
-                    });
-                    ui.add_space(10.0);
-                    card(ui, self.tr("card.mtVariantProfile"), |ui| self.mt_variant_profile_section(ui, guid));
-                    ui.add_space(10.0);
-                    card(ui, self.tr("card.mtSequences"), |ui| self.mtdna_section(ui, guid));
+                        MtSub::Variants => {
+                            card(ui, self.tr("card.variantTrack"), |ui| self.mt_variant_track(ui));
+                            ui.add_space(10.0);
+                            card(ui, self.tr("card.mtVariantProfile"), |ui| self.mt_variant_profile_section(ui, guid));
+                            ui.add_space(10.0);
+                            card(ui, self.tr("card.mtSequences"), |ui| self.mtdna_section(ui, guid));
+                        }
+                    }
                 }
                 DetailTab::Autosomal => {
-                    card(ui, self.tr("card.autosomalConsensus"), |ui| {
-                        self.autosomal_profile_section(ui, guid);
-                        ui.add_space(6.0);
-                        ui.label(
-                            egui::RichText::new(self.tr("hint.consensusVcf")).weak().small(),
-                        );
-                        self.export_row(ui, &[navigator_app::ExportRequest::ConsensusDiploidVcf(guid)]);
-                    });
+                    self.auto_sub = self.sub_bar(ui, self.auto_sub, &AutoSub::ALL);
+                    match self.auto_sub {
+                        AutoSub::Summary => {
+                            card(ui, self.tr("card.autosomalConsensus"), |ui| {
+                                self.autosomal_summary_section(ui, guid);
+                                ui.add_space(6.0);
+                                ui.label(
+                                    egui::RichText::new(self.tr("hint.consensusVcf")).weak().small(),
+                                );
+                                self.export_row(ui, &[navigator_app::ExportRequest::ConsensusDiploidVcf(guid)]);
+                            });
+                        }
+                        AutoSub::Profile => {
+                            card(ui, self.tr("card.autosomalConsensus"), |ui| self.autosomal_profile_table(ui));
+                        }
+                    }
                 }
                 DetailTab::Ancestry => {
                     // Consensus is the source of truth: estimate from the subject's pooled autosomal
@@ -3321,17 +3411,26 @@ impl NavigatorApp {
         })
     }
 
-    /// PCA scatter: the donor's PC1×PC2 against the reference population centroids (lazy-loaded for the
-    /// selected alignment's build).
+    /// PCA scatter: the donor's PC1×PC2 against the reference population centroids. The donor's
+    /// coordinate is always projected in the CHM13 consensus PCA frame, so the reference centroids are
+    /// loaded from that same asset (once, guarded) — not the selected source's build, which would mix
+    /// frames (or miss the asset entirely) and collapse the plot onto the lone donor point.
     fn pca_scatter_section(&mut self, ui: &mut egui::Ui) {
-        if let Some(aid) = self.selected_alignment {
-            if !matches!(&self.pca_reference, Some((a, _)) if *a == aid) {
-                let _ = self.tx.send(Command::LoadPcaReference { alignment_id: aid });
-            }
+        let key = navigator_app::CONSENSUS_SOURCE_ID;
+        let loaded = matches!(&self.pca_reference, Some((a, _)) if *a == key);
+        if !loaded && self.pca_reference_attempted != Some(key) {
+            self.pca_reference_attempted = Some(key);
+            let _ = self.tx.send(Command::LoadPcaReference);
         }
-        let sample = self.sample_pca();
-        let reference: &[(String, f64, f64)] = self.pca_reference.as_ref().map(|(_, r)| r.as_slice()).unwrap_or(&[]);
-        draw_pca_scatter(ui, sample, reference);
+        let reference: &[(String, f64, f64)] =
+            self.pca_reference.as_ref().filter(|(a, _)| *a == key).map(|(_, r)| r.as_slice()).unwrap_or(&[]);
+        // Don't render a degenerate one-point plot: without the reference cloud the scatter
+        // auto-zooms onto the donor alone and is meaningless. Surface the missing asset instead.
+        if reference.is_empty() {
+            ui.label(egui::RichText::new(self.tr("pca.referenceMissing")).weak());
+            return;
+        }
+        draw_pca_scatter(ui, self.sample_pca(), reference);
     }
 
     fn donor_ancestry_summary(&self, ui: &mut egui::Ui) {
@@ -3454,7 +3553,10 @@ impl NavigatorApp {
 
     /// Multi-source autosomal (diploid 0/1/2) consensus over the canonical IBD-panel sites. Build/
     /// Refresh recomputes (panel-genotypes every WGS + chip source); the cached snapshot loads instantly.
-    fn autosomal_profile_section(&mut self, ui: &mut egui::Ui, guid: SampleGuid) {
+    /// Autosomal-consensus **Summary** sub-tab: the build/refresh control plus a one-line digest
+    /// (site count + overall confidence) once the profile exists. The heavy per-site table lives on
+    /// the Profile sub-tab ([`autosomal_profile_table`]).
+    fn autosomal_summary_section(&mut self, ui: &mut egui::Ui, guid: SampleGuid) {
         if self.profile_build_control(
             ui,
             self.auto_profile.is_some(),
@@ -3471,6 +3573,22 @@ impl NavigatorApp {
             if !self.auto_profile_loading {
                 ui.label(egui::RichText::new(self.tr("hint.autoProfileBuild")).weak());
             }
+            return;
+        };
+        let s = &profile.summary;
+        ui.label(format!(
+            "{} sites · {:.0}% confidence",
+            s.total,
+            s.overall_confidence * 100.0
+        ));
+        ui.label(egui::RichText::new(self.tr("hint.autoProfileTable")).weak().small());
+    }
+
+    /// Autosomal-consensus **Profile** sub-tab: the full per-site reconciled table. Renders nothing
+    /// until the profile has been built from the Summary sub-tab.
+    fn autosomal_profile_table(&mut self, ui: &mut egui::Ui) {
+        let Some(profile) = &self.auto_profile else {
+            ui.label(egui::RichText::new(self.tr("hint.autoProfileBuild")).weak());
             return;
         };
         let mut filter = self.auto_profile_filter;
@@ -3563,8 +3681,6 @@ impl NavigatorApp {
         card(ui, self.tr("card.coverage"), |ui| self.coverage_section(ui, id));
         ui.add_space(10.0);
         card(ui, self.tr("card.sexMetrics"), |ui| self.sex_metrics_section(ui, id));
-        ui.add_space(10.0);
-        card(ui, self.tr("card.ideogram"), |ui| self.ideogram_section(ui, id));
         ui.add_space(10.0);
         card(ui, self.tr("card.yHaplogroup"), |ui| self.y_haplogroup_section(ui, id));
         ui.add_space(10.0);
@@ -4406,50 +4522,81 @@ impl NavigatorApp {
         });
     }
 
-    /// Chromosome ideogram for the selected alignment's build — cytoband bars (Giemsa-stained) with
-    /// the centromere shown as the red `acen` segments. Region data is fetched lazily (cytoBand) and
-    /// cached; a hover shows the band under the cursor.
-    fn ideogram_section(&mut self, ui: &mut egui::Ui, alignment_id: i64) {
-        let Some(build) = self.alignments.iter().find(|a| a.id == alignment_id).map(|a| a.reference_build.clone())
-        else {
-            ui.label(egui::RichText::new(self.tr("ideogram.noBuild")).weak());
+    /// Map a consensus variant's state to a tick color + hover label for the variant track.
+    fn variant_mark(v: &navigator_app::YProfileVariant) -> Option<VariantMark> {
+        use navigator_domain::consensus::ConsensusState;
+        let (color, state) = match (&v.consensus, v.in_tree) {
+            (ConsensusState::Derived, true) => (egui::Color32::from_rgb(90, 180, 110), "in-tree derived"),
+            (ConsensusState::Derived, false) => (egui::Color32::from_rgb(210, 150, 60), "novel / private"),
+            (ConsensusState::Ancestral, _) => (egui::Color32::from_gray(120), "ancestral"),
+            (ConsensusState::NoCall, _) => return None,
+        };
+        Some(VariantMark { name: v.name.clone(), position: v.position, color, state })
+    }
+
+    /// chrY **variant track**: the Y consensus profile's called variants plotted along chromosome Y,
+    /// PAR/centromere regions shaded from the selected alignment's genome regions when loaded.
+    /// Replaces the genome-wide karyotype ideogram on the Y-DNA → SNP variants sub-tab.
+    fn y_variant_track(&mut self, ui: &mut egui::Ui) {
+        let Some(profile) = &self.y_profile else {
+            ui.label(egui::RichText::new(self.tr("hint.yProfileBuild")).weak());
             return;
         };
-        let loaded = matches!(&self.genome_regions, Some((aid, _)) if *aid == alignment_id);
-        // Lazy, once-per-alignment fetch (a cold cache downloads the UCSC cytoBand table).
-        if !loaded && self.regions_attempted != Some(alignment_id) {
-            self.regions_attempted = Some(alignment_id);
-            self.loading_regions = true;
-            self.status = format!("Loading {build} genome regions…");
-            let _ = self.tx.send(Command::LoadGenomeRegions { alignment_id, build: build.clone() });
+        let marks: Vec<VariantMark> = profile.variants.iter().filter_map(Self::variant_mark).collect();
+        if marks.is_empty() {
+            ui.label(egui::RichText::new(self.tr("hint.noVariantsTrack")).weak());
+            return;
         }
 
-        let reload = self.tr("common.refresh");
-        ui.horizontal(|ui| {
-            ui.label(egui::RichText::new(&build).strong());
-            if ui.small_button(reload).clicked() {
-                self.genome_regions = None;
-                self.regions_attempted = None; // re-fetch on the next frame
+        // chrY length + PAR shading from the selected alignment's genome regions (lazily fetched).
+        let (mut length, mut regions): (i64, Vec<TrackRegion>) = (62_460_029, Vec::new()); // CHM13 chrY fallback
+        if let Some(id) = self.selected_alignment {
+            if let Some(build) = self.alignments.iter().find(|a| a.id == id).map(|a| a.reference_build.clone()) {
+                let loaded = matches!(&self.genome_regions, Some((aid, _)) if *aid == id);
+                if !loaded && self.regions_attempted != Some(id) {
+                    self.regions_attempted = Some(id);
+                    self.loading_regions = true;
+                    let _ = self.tx.send(Command::LoadGenomeRegions { alignment_id: id, build });
+                }
             }
-            if self.loading_regions {
-                ui.spinner();
-            }
-        });
-        ui.add_space(6.0);
-
-        match &self.genome_regions {
-            Some((aid, regions)) if *aid == alignment_id => {
-                ideogram_legend(ui);
-                ui.add_space(4.0);
-                draw_ideogram(ui, regions);
-            }
-            _ if self.loading_regions => {
-                ui.label(self.tr("ideogram.loading"));
-            }
-            _ => {
-                ui.label(egui::RichText::new(self.tr("ideogram.unavailable")).weak());
+            if let Some((aid, gr)) = &self.genome_regions {
+                if *aid == id {
+                    if let Some(chr_y) = gr.chromosomes.get("chrY").or_else(|| gr.chromosomes.get("Y")) {
+                        if chr_y.length > 0 {
+                            length = chr_y.length;
+                        }
+                        for (s, e) in &chr_y.par {
+                            regions.push(TrackRegion { start: *s, end: *e, color: egui::Color32::from_rgb(40, 60, 90), label: "PAR".into() });
+                        }
+                        if let Some((s, e)) = chr_y.centromere {
+                            regions.push(TrackRegion { start: s, end: e, color: egui::Color32::from_rgb(90, 45, 45), label: "centromere".into() });
+                        }
+                    }
+                }
             }
         }
+        // Guard against build-mismatched positions overrunning the bar.
+        length = length.max(marks.iter().map(|m| m.position).max().unwrap_or(0) + 1);
+        draw_variant_track(ui, "chrY", length, &regions, &marks);
+    }
+
+    /// chrM **variant track**: the mtDNA consensus profile's mutations plotted along the 16,569 bp
+    /// mitochondrial genome, with HVR1/HVR2 control regions shaded. On the mtDNA → Variants sub-tab.
+    fn mt_variant_track(&mut self, ui: &mut egui::Ui) {
+        let Some(profile) = &self.mt_profile else {
+            ui.label(egui::RichText::new(self.tr("hint.mtProfileBuild")).weak());
+            return;
+        };
+        let marks: Vec<VariantMark> = profile.variants.iter().filter_map(Self::variant_mark).collect();
+        if marks.is_empty() {
+            ui.label(egui::RichText::new(self.tr("hint.noVariantsTrack")).weak());
+            return;
+        }
+        let regions = vec![
+            TrackRegion { start: 16_024, end: 16_569, color: egui::Color32::from_rgb(50, 70, 50), label: "HVR1".into() },
+            TrackRegion { start: 1, end: 576, color: egui::Color32::from_rgb(50, 70, 50), label: "HVR2".into() },
+        ];
+        draw_variant_track(ui, "chrM", 16_569, &regions, &marks);
     }
 
     fn coverage_section(&mut self, ui: &mut egui::Ui, alignment_id: i64) {
