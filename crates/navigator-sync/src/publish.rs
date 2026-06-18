@@ -52,6 +52,21 @@ impl RecordRef {
     }
 }
 
+/// One record returned by `listRecords` during a PULL — its at-uri, CID, and value.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RemoteRecord {
+    pub uri: String,
+    pub cid: String,
+    pub value: serde_json::Value,
+}
+
+impl RemoteRecord {
+    /// The record key (last at-uri segment).
+    pub fn rkey(&self) -> &str {
+        self.uri.rsplit('/').next().unwrap_or("")
+    }
+}
+
 /// How a PDS request authenticates.
 enum Auth {
     /// OAuth DPoP-bound access token (the production path).
@@ -106,6 +121,65 @@ impl PdsClient {
             .to_string();
         let cid = v.get("cid").and_then(|x| x.as_str()).unwrap_or_default().to_string();
         Ok(RecordRef { uri, cid })
+    }
+
+    /// `com.atproto.repo.putRecord` — upsert `record` at a known `rkey` (the idempotent update path:
+    /// re-publishing an entity overwrites its existing record instead of creating a duplicate).
+    pub async fn put_record(
+        &self,
+        collection: &str,
+        rkey: &str,
+        record: serde_json::Value,
+    ) -> Result<RecordRef, SyncError> {
+        let body = serde_json::json!({ "repo": self.did, "collection": collection, "rkey": rkey, "record": record });
+        let v = self.post("com.atproto.repo.putRecord", &body).await?;
+        let uri = v
+            .get("uri")
+            .and_then(|x| x.as_str())
+            .ok_or_else(|| SyncError::Oauth("putRecord response missing uri".into()))?
+            .to_string();
+        let cid = v.get("cid").and_then(|x| x.as_str()).unwrap_or_default().to_string();
+        Ok(RecordRef { uri, cid })
+    }
+
+    /// `com.atproto.repo.listRecords` — one page of a repo's records in `collection` (public read).
+    /// Returns the records + the next cursor (None when exhausted).
+    pub async fn list_records(
+        &self,
+        collection: &str,
+        cursor: Option<&str>,
+    ) -> Result<(Vec<RemoteRecord>, Option<String>), SyncError> {
+        let url = format!("{}/xrpc/com.atproto.repo.listRecords", self.pds_base);
+        let mut q: Vec<(&str, String)> = vec![
+            ("repo", self.did.clone()),
+            ("collection", collection.to_string()),
+            ("limit", "100".to_string()),
+        ];
+        if let Some(c) = cursor {
+            q.push(("cursor", c.to_string()));
+        }
+        let resp = self.http.get(&url).query(&q).send().await?;
+        if !resp.status().is_success() {
+            return Err(xrpc_error("listRecords", resp).await);
+        }
+        let v: serde_json::Value = resp.json().await?;
+        let next = v.get("cursor").and_then(|x| x.as_str()).map(String::from);
+        let records = v
+            .get("records")
+            .and_then(|x| x.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|r| {
+                        Some(RemoteRecord {
+                            uri: r.get("uri")?.as_str()?.to_string(),
+                            cid: r.get("cid").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
+                            value: r.get("value").cloned().unwrap_or(serde_json::Value::Null),
+                        })
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        Ok((records, next))
     }
 
     /// `com.atproto.repo.getRecord` — read a record's value (public read).

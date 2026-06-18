@@ -476,6 +476,8 @@ pub struct NavigatorApp {
     online: bool,
     /// Outbox rows still awaiting a successful push (the "N pending" sync indicator).
     sync_pending: i64,
+    /// True while a PULL reconcile is in flight.
+    pulling: bool,
     logging_in: bool,
     publishing: bool,
     /// A batch project-directory import is in flight (disables the button).
@@ -566,6 +568,7 @@ impl NavigatorApp {
         let _ = tx.send(Command::AuthStatus);
         let _ = tx.send(Command::SyncStatus);
         let _ = tx.send(Command::BackfillLabs); // resolve labs for runs imported before D8 landed
+        let _ = tx.send(Command::VerifySourceFiles); // flag any imported file that moved/disappeared
         let _ = tx.send(Command::LoadAssetStatus); // ancestry/IBD "data sources" line
         // Persisted theme wins; default dark. (Must match `dark_mode` below.)
         let dark = !matches!(AppSettings::load().theme.as_deref(), Some("light"));
@@ -700,6 +703,7 @@ impl NavigatorApp {
             account: None,
             online: true,
             sync_pending: 0,
+            pulling: false,
             logging_in: false,
             publishing: false,
             importing: false,
@@ -1297,6 +1301,19 @@ impl NavigatorApp {
                     self.status = format!("Exported {label} → {}", path.display());
                 }
                 Event::SyncOnline(online) => self.online = online,
+                Event::PullDone { in_sync, applied, adopted, repushed, conflicts } => {
+                    self.pulling = false;
+                    self.status = format!(
+                        "Pull: {in_sync} in sync, {applied} applied, {adopted} remote-only, {repushed} to re-publish, {conflicts} conflict(s)"
+                    );
+                }
+                Event::SourceFilesVerified { missing } => {
+                    self.status = if missing == 0 {
+                        "All source files present".into()
+                    } else {
+                        format!("{missing} source file(s) moved or missing")
+                    };
+                }
                 Event::Error(e) => {
                     self.status = format!("Error: {e}");
                     self.running = false;
@@ -1498,6 +1515,18 @@ impl eframe::App for NavigatorApp {
                         format!("⟳ {} {}", self.sync_pending, self.tr("status.pending")),
                     )
                     .on_hover_text(self.tr("status.pendingHint"));
+                }
+                // PULL reconcile — fetch + reconcile our PDS records (needs a signed-in account).
+                if self.account.is_some() {
+                    ui.separator();
+                    if ui.add_enabled(!self.pulling, egui::Button::new(self.tr("sync.pull")).small()).on_hover_text(self.tr("sync.pullHint")).clicked() {
+                        self.pulling = true;
+                        self.status = self.tr("sync.pulling").to_string();
+                        let _ = self.tx.send(Command::PullSync);
+                    }
+                    if self.pulling {
+                        ui.spinner();
+                    }
                 }
                 ui.separator();
                 ui.label(egui::RichText::new(self.tr("status.label")).weak());

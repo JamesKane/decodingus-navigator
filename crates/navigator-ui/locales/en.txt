@@ -88,6 +88,9 @@ status.online=● Online
 status.offline=○ Offline
 status.pending=pending
 status.pendingHint=Publishes waiting to reach the PDS — they retry automatically (and after reconnect).
+sync.pull=Pull
+sync.pullHint=Fetch your records from the PDS and reconcile with local (remote-authoritative on divergence).
+sync.pulling=Pulling records from the PDS…
 export.label=Export:
 mt.exportVariants=Export variants (TSV)
 

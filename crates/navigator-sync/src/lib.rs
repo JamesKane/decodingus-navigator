@@ -18,7 +18,7 @@ pub use device_key::{DeviceKey, DEVICE_KEY_COLLECTION};
 pub use error::SyncError;
 pub use exchange::{Envelope, EphemeralKey, ExchangeKey};
 pub use oauth::{login, login_default, refresh, OAuthConfig};
-pub use publish::{dev_http_client, PdsClient, RecordRef};
+pub use publish::{dev_http_client, PdsClient, RecordRef, RemoteRecord};
 pub use sync::{AsyncSync, RetryPolicy};
 pub use records::{
     AuditEntryRecord, HaplogroupReconciliationRecord, HeteroplasmyObservationRecord,

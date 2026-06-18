@@ -214,6 +214,10 @@ pub enum Command {
     PublishAncestry { biosample_guid: SampleGuid },
     /// Attempt to push the ready outbox rows now (also runs periodically + after a publish).
     DrainOutbox,
+    /// PULL reconcile: fetch the account's PDS records and reconcile against local (gap §5-p2).
+    PullSync,
+    /// Re-check tracked source files' accessibility (moved/missing).
+    VerifySourceFiles,
     /// Export a cached result to `path` (TSV/HTML/BED). `request` carries the kind + source id.
     Export { request: navigator_app::ExportRequest, path: PathBuf },
     /// Manually override the consensus haplogroup for a subject + DNA type.
@@ -456,6 +460,10 @@ pub enum Event {
     Exported { label: String, path: PathBuf },
     /// Whether the last PDS write reached the server (offline indicator).
     SyncOnline(bool),
+    /// A PULL reconcile finished (gap §5-p2): the per-action tallies.
+    PullDone { in_sync: usize, applied: usize, adopted: usize, repushed: usize, conflicts: usize },
+    /// Source-file accessibility re-check finished; `missing` files are moved/deleted.
+    SourceFilesVerified { missing: usize },
     /// How many runs had their sequencing lab filled in by the AppView backfill (`0` ⇒ quiet).
     LabsResolved(usize),
     /// Per-build reference-genome settings + cache status for the Settings dialog.
@@ -950,6 +958,20 @@ pub async fn handle(app: &App, cmd: Command) -> Event {
         },
         Command::AuthStatus => Event::Authenticated(app.current_account()),
         Command::SyncStatus => Event::SyncOnline(app.is_online()),
+        Command::PullSync => match app.pull_sync().await {
+            Ok(o) => Event::PullDone {
+                in_sync: o.in_sync,
+                applied: o.applied,
+                adopted: o.adopted,
+                repushed: o.repushed,
+                conflicts: o.conflicts,
+            },
+            Err(e) => Event::Error(e.to_string()),
+        },
+        Command::VerifySourceFiles => match app.verify_source_files().await {
+            Ok(missing) => Event::SourceFilesVerified { missing },
+            Err(e) => Event::Error(e.to_string()),
+        },
         Command::Login { handle } => match app.login(&handle).await {
             Ok(did) => Event::Authenticated(Some(did)),
             Err(e) => Event::Error(e.to_string()),

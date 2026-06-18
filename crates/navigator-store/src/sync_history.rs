@@ -37,18 +37,24 @@ pub struct NewHistoryEntry {
     pub error: Option<String>,
 }
 
-/// Append an outcome row (direction is always `PUSH` for now).
+/// Append a `PUSH` outcome row (the publish/drain path).
 pub async fn record(pool: &SqlitePool, e: &NewHistoryEntry, now: &str) -> Result<(), StoreError> {
+    record_dir(pool, e, "PUSH", now).await
+}
+
+/// Append an outcome row with an explicit `direction` (`PUSH` / `PULL` / `CONFLICT`).
+pub async fn record_dir(pool: &SqlitePool, e: &NewHistoryEntry, direction: &str, now: &str) -> Result<(), StoreError> {
     sqlx::query(
         "INSERT INTO sync_history \
          (account_did, kind, entity_ref, collection, direction, status, at_uri, at_cid, \
           attempt_count, error, created_at) \
-         VALUES (?, ?, ?, ?, 'PUSH', ?, ?, ?, ?, ?, ?)",
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(&e.account_did)
     .bind(&e.kind)
     .bind(&e.entity_ref)
     .bind(&e.collection)
+    .bind(direction)
     .bind(&e.status)
     .bind(&e.at_uri)
     .bind(&e.at_cid)

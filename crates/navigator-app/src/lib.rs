@@ -245,6 +245,17 @@ const DEVICE_KEY_INGEST_RETRIES: u32 = 4;
 /// Poll rounds (≈1s each) an IBD exchange waits for the partner's dosages / attestation.
 const EXCHANGE_POLL_ROUNDS: u32 = 30;
 
+/// The fed-record collections this client publishes — a PULL reconcile scans each (mirrors the
+/// `publish_*` NSIDs). Derived-summary collections are tracked but not overwritten locally.
+const PUBLISHED_COLLECTIONS: &[&str] = &[
+    NS_BIOSAMPLE,
+    NS_ALIGNMENT,
+    NS_POPULATION_BREAKDOWN,
+    NS_SEQUENCERUN,
+    PRIVATE_VARIANTS_COLLECTION,
+    HAPLOGROUP_RECONCILIATION_COLLECTION,
+];
+
 /// PDS collection NSID for a published IBD match attestation (the AppView indexes these via Jetstream).
 const IBD_ATTESTATION_COLLECTION: &str = "com.decodingus.atmosphere.ibdAttestation";
 
@@ -359,12 +370,13 @@ pub use navigator_domain::consensus::{DiploidSourceObs, DiploidVariant};
 pub use navigator_domain::ymatch::{Tmrca, YMatch, YSignal};
 pub use navigator_analysis::ibd_attest::{IbdAttestation, IbdExchangeMsg, IbdSite};
 pub use navigator_store::ibd_exchange::StoredIbdExchange;
+pub use navigator_store::source_file::SourceFile;
 use navigator_domain::bisdna;
 use navigator_domain::ysnp_dict::{self, YsnpDictionary};
 use navigator_store::{
     alignment, ancestry_result, artifact, biosample, chip_profile, consensus_painting, consensus_profile, haplogroup_call,
-    mtdna as mtdna_store, project, reconciliation as recon_store, sequence_run, str_profile,
-    sync_history, sync_outbox, variant_set, Store, StoreError,
+    mtdna as mtdna_store, project, reconciliation as recon_store, sequence_run, source_file, str_profile,
+    sync_history, sync_outbox, sync_state, variant_set, Store, StoreError,
 };
 use serde::de::DeserializeOwned;
 use serde::Serialize;
@@ -374,6 +386,7 @@ pub mod error;
 pub use error::AppError;
 pub mod export;
 pub mod settings;
+pub mod sync_reconcile;
 pub use settings::AppSettings;
 
 /// Artifact kind for de-novo calls, keyed per contig so different contigs don't
@@ -1013,6 +1026,21 @@ pub struct DrainOutcome {
     pub retry_scheduled: usize,
     /// Rows still awaiting a successful push after this pass.
     pub pending: i64,
+}
+
+/// The result of a [`App::pull_sync`] reconcile pass over the account's PDS records.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct PullOutcome {
+    /// Records unchanged since our last push.
+    pub in_sync: usize,
+    /// Records changed on the PDS and applied locally (where applicable).
+    pub applied: usize,
+    /// Remote records with no local mapping (PII-free summaries — tracked, not reconstructed).
+    pub adopted: usize,
+    /// Locally-published records missing on the PDS — flagged for re-publish.
+    pub repushed: usize,
+    /// Records that diverged on both sides (remote won, logged).
+    pub conflicts: usize,
 }
 
 fn population_breakdown_record(result: &AncestryResult) -> PopulationBreakdownRecord {
@@ -3113,13 +3141,31 @@ impl App {
         let batch = sync_outbox::ready(self.store.pool(), &did, &now.to_rfc3339(), OUTBOX_BATCH).await?;
         for entry in batch {
             let value: serde_json::Value = serde_json::from_str(&entry.payload)?;
-            let result = match &entry.rkey {
-                Some(rk) => engine.push_create_rkey(&entry.collection, value, rk).await,
-                None => engine.push_create(&entry.collection, value).await,
+            // Idempotency: if we've published this entity before, update the PDS-assigned record in
+            // place (putRecord at the kept rkey) instead of creating a duplicate.
+            let known = sync_state::get(self.store.pool(), &did, &entry.entity_ref).await?;
+            let result = match (&known, &entry.rkey) {
+                (Some(ss), _) => engine.push_put(&entry.collection, &ss.rkey, value).await,
+                (None, Some(rk)) => engine.push_put(&entry.collection, rk, value).await,
+                (None, None) => engine.push_create(&entry.collection, value).await,
             };
             let attempt = entry.attempt_count + 1;
             match result {
                 Ok(rref) => {
+                    // Record the PDS-assigned identity + payload fingerprint, so the next publish
+                    // updates this record and a PULL can detect divergence.
+                    let state = sync_state::StoredSyncState {
+                        account_did: did.clone(),
+                        entity_ref: entry.entity_ref.clone(),
+                        kind: entry.kind.clone(),
+                        collection: entry.collection.clone(),
+                        rkey: rref.rkey().to_string(),
+                        at_uri: rref.uri.clone(),
+                        at_cid: rref.cid.clone(),
+                        payload_hash: sha256_str(&entry.payload),
+                        pushed_at: now.to_rfc3339(),
+                    };
+                    sync_state::upsert(self.store.pool(), &state).await?;
                     self.log_history(&entry, "SUCCESS", Some(&rref), attempt, None).await?;
                     sync_outbox::complete(self.store.pool(), entry.id).await?;
                     outcome.published.push((entry.kind.clone(), rref.uri));
@@ -3172,6 +3218,104 @@ impl App {
             error: error.map(str::to_string),
         };
         sync_history::record(self.store.pool(), &h, &Utc::now().to_rfc3339()).await?;
+        Ok(())
+    }
+
+    /// **PULL reconcile** (gap §5-p2): fetch the account's own records from the PDS and reconcile
+    /// against what we published (`sync_state`), last-write-wins / remote-authoritative. For records
+    /// we recognise (via the kept rkey) that changed on the PDS, apply remote→local where the data
+    /// model allows (today: a biosample's sex / center) and re-track the CID. Records missing remotely
+    /// are flagged for re-publish; remote records with no local mapping are counted (the fed records
+    /// are PII-free *summaries* and carry no local guid, so they can't reconstruct a local entity).
+    pub async fn pull_sync(&self) -> Result<PullOutcome, AppError> {
+        let did = self.current_account().ok_or(AppError::NotAuthenticated)?;
+        let mut engine = self.sync_engine()?;
+        let mut out = PullOutcome::default();
+        for &collection in PUBLISHED_COLLECTIONS {
+            // Page through the account's records in this collection.
+            let mut remote = Vec::new();
+            let mut cursor: Option<String> = None;
+            loop {
+                let (recs, next) = engine.pull_list(collection, cursor.as_deref()).await.map_err(AppError::Sync)?;
+                remote.extend(recs);
+                match next {
+                    Some(c) => cursor = Some(c),
+                    None => break,
+                }
+            }
+            let local: Vec<_> = sync_state::list_for_collection(self.store.pool(), &did, collection)
+                .await?
+                .into_iter()
+                .map(|s| (s, None)) // local-hash recompute is future work — treat local as clean for now
+                .collect();
+            for action in sync_reconcile::plan(&local, &remote) {
+                use sync_reconcile::ReconcileAction::*;
+                match action {
+                    InSync { .. } => out.in_sync += 1,
+                    RePush { .. } => out.repushed += 1,
+                    AdoptRemote { .. } => out.adopted += 1,
+                    ApplyRemote { entity_ref, collection, remote, conflict } => {
+                        self.apply_remote(&collection, &entity_ref, &remote.value).await?;
+                        self.track_remote(&did, &entity_ref, &remote).await?;
+                        out.applied += 1;
+                        if conflict {
+                            self.log_conflict(&did, &entity_ref, &collection).await?;
+                            out.conflicts += 1;
+                        }
+                    }
+                }
+            }
+        }
+        Ok(out)
+    }
+
+    /// Apply a remote record onto local state. Only the editable, locally-authoritative bits the
+    /// PII-free fed record carries can be applied; derived-summary collections are recomputed locally,
+    /// so they're tracked but not overwritten.
+    async fn apply_remote(&self, collection: &str, entity_ref: &str, value: &serde_json::Value) -> Result<(), AppError> {
+        if collection == NS_BIOSAMPLE {
+            if let Some(guid) = entity_ref.strip_prefix("biosample:").and_then(|s| Uuid::parse_str(s).ok()).map(SampleGuid) {
+                if let Some(bio) = biosample::get(self.store.pool(), guid).await? {
+                    let sex = value.get("sex").and_then(|v| v.as_str()).map(String::from).or(bio.sex);
+                    let center = value
+                        .get("center_name")
+                        .or_else(|| value.get("centerName"))
+                        .and_then(|v| v.as_str())
+                        .map(String::from)
+                        .or(bio.center_name);
+                    self.update_biosample(guid, bio.donor_identifier, bio.sample_accession, bio.description, center, sex).await?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Re-track a reconciled record's PDS identity so the next PULL sees it in sync.
+    async fn track_remote(&self, did: &str, entity_ref: &str, remote: &navigator_sync::RemoteRecord) -> Result<(), AppError> {
+        if let Some(mut ss) = sync_state::get(self.store.pool(), did, entity_ref).await? {
+            ss.at_cid = remote.cid.clone();
+            ss.at_uri = remote.uri.clone();
+            ss.payload_hash = sha256_str(&remote.value.to_string());
+            ss.pushed_at = Utc::now().to_rfc3339();
+            sync_state::upsert(self.store.pool(), &ss).await?;
+        }
+        Ok(())
+    }
+
+    /// Log a both-sides-diverged conflict (remote won) to the sync history.
+    async fn log_conflict(&self, did: &str, entity_ref: &str, collection: &str) -> Result<(), AppError> {
+        let h = sync_history::NewHistoryEntry {
+            account_did: did.to_string(),
+            kind: "pull".into(),
+            entity_ref: entity_ref.to_string(),
+            collection: collection.to_string(),
+            status: "RESOLVED_REMOTE".into(),
+            at_uri: None,
+            at_cid: None,
+            attempt_count: 0,
+            error: Some("local and remote both changed since last push; remote applied".into()),
+        };
+        sync_history::record_dir(self.store.pool(), &h, "CONFLICT", &Utc::now().to_rfc3339()).await?;
         Ok(())
     }
 
@@ -5618,13 +5762,48 @@ impl App {
     /// lazily on first analysis, then cached on the row.
     async fn alignment_content_hash(&self, alignment_id: i64) -> Result<String, AppError> {
         let aln = self.alignment_or_err(alignment_id).await?;
-        if let Some(h) = aln.content_sha256 {
-            return Ok(h);
+        let bam = aln.bam_path.clone();
+        let hash = match aln.content_sha256.clone() {
+            Some(h) => h,
+            None => {
+                let path = bam.clone().ok_or(AppError::MissingPaths(alignment_id))?;
+                let h = sha256_file_async(PathBuf::from(path)).await?;
+                let _ = alignment::set_content_hash(self.store.pool(), alignment_id, &h).await;
+                h
+            }
+        };
+        // Register the file by its content hash (gap §5-p2): stable identity across moves, and the
+        // dedup/accessibility registry. Idempotent — a moved file just updates its path here.
+        if let Some(path) = bam {
+            let size = std::fs::metadata(&path).ok().map(|m| m.len() as i64);
+            let now = Utc::now().to_rfc3339();
+            if source_file::upsert_by_checksum(self.store.pool(), &hash, Some(&path), size, Some("BAM"), &now).await.is_ok() {
+                let _ = source_file::link_to_alignment(self.store.pool(), &hash, alignment_id, &now).await;
+            }
         }
-        let bam = aln.bam_path.ok_or(AppError::MissingPaths(alignment_id))?;
-        let hash = sha256_file_async(PathBuf::from(bam)).await?;
-        let _ = alignment::set_content_hash(self.store.pool(), alignment_id, &hash).await;
         Ok(hash)
+    }
+
+    /// All tracked source files (content-hash identity) — for the Data Sources view.
+    pub async fn list_source_files(&self) -> Result<Vec<SourceFile>, AppError> {
+        Ok(source_file::list(self.store.pool()).await?)
+    }
+
+    /// Re-check each tracked file's path on disk and update its accessibility flag. Returns how many
+    /// are now missing (moved/deleted) — surfaced as a "file missing" marker in the UI.
+    pub async fn verify_source_files(&self) -> Result<usize, AppError> {
+        let now = Utc::now().to_rfc3339();
+        let mut missing = 0;
+        for f in source_file::list(self.store.pool()).await? {
+            let ok = f.file_path.as_deref().map(|p| std::path::Path::new(p).exists()).unwrap_or(false);
+            if !ok {
+                missing += 1;
+            }
+            if ok != f.is_accessible {
+                let _ = source_file::set_accessible(self.store.pool(), f.id, ok, &now).await;
+            }
+        }
+        Ok(missing)
     }
 
     /// Fingerprint of the inputs to a Y-haplogroup score: the alignment's content hash + the
@@ -7771,6 +7950,34 @@ mod ymatch_tests {
 
         let matches = app.y_matches(q.guid, None).await.unwrap();
         assert!(matches.is_empty(), "no comparable candidates");
+    }
+}
+
+#[cfg(test)]
+mod sync_pull_tests {
+    use super::*;
+    use navigator_store::Store;
+
+    /// PULL applies a remote biosample record's editable summary fields (sex / center) onto the local
+    /// subject. (The fed record is PII-free, so only these fields are present to apply.)
+    #[tokio::test]
+    async fn apply_remote_updates_biosample_fields() {
+        let app = App::new(Store::open_in_memory().await.unwrap());
+        let b = app.add_biosample(None, "S1", None, Some("F".into())).await.unwrap();
+        let value = serde_json::json!({ "sex": "M", "center_name": "LabX" });
+        app.apply_remote(NS_BIOSAMPLE, &format!("biosample:{}", b.guid), &value).await.unwrap();
+        let updated = app.list_all_biosamples().await.unwrap().into_iter().find(|x| x.guid == b.guid).unwrap();
+        assert_eq!(updated.sex.as_deref(), Some("M"));
+        assert_eq!(updated.center_name.as_deref(), Some("LabX"));
+        assert_eq!(updated.donor_identifier, "S1", "identity (donor_identifier) is preserved — not in the PII-free record");
+    }
+
+    /// A derived-summary collection is a no-op on apply (recomputed locally, never overwritten).
+    #[tokio::test]
+    async fn apply_remote_derived_is_noop() {
+        let app = App::new(Store::open_in_memory().await.unwrap());
+        // No panic / no error for a collection we only track.
+        app.apply_remote(NS_ALIGNMENT, "alignment:1", &serde_json::json!({})).await.unwrap();
     }
 }
 

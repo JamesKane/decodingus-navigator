@@ -14,7 +14,7 @@ use std::time::Duration;
 
 use crate::error::SyncError;
 use crate::oauth::refresh;
-use crate::publish::{PdsClient, RecordRef};
+use crate::publish::{PdsClient, RecordRef, RemoteRecord};
 use crate::tokens::{Session, TokenStore};
 
 /// Retry/backoff schedule for transient failures.
@@ -95,6 +95,79 @@ impl AsyncSync {
         rkey: &str,
     ) -> Result<RecordRef, SyncError> {
         self.push_create_inner(collection, record, Some(rkey)).await
+    }
+
+    /// Upsert a record at a known `rkey` (`putRecord`) — the idempotent re-publish path. Same
+    /// refresh-on-401 + transient backoff as [`push_create`](Self::push_create).
+    pub async fn push_put(
+        &mut self,
+        collection: &str,
+        rkey: &str,
+        record: serde_json::Value,
+    ) -> Result<RecordRef, SyncError> {
+        let mut refreshed = false;
+        let mut attempt = 0u32;
+        loop {
+            let client = PdsClient::from_session(self.http.clone(), &self.session)?;
+            match client.put_record(collection, rkey, record.clone()).await {
+                Ok(r) => {
+                    self.online.store(true, Ordering::Relaxed);
+                    return Ok(r);
+                }
+                Err(SyncError::Unauthorized) if !refreshed => {
+                    self.session = refresh(&self.http, &self.session).await?;
+                    self.tokens.save(&self.did, &self.session)?;
+                    refreshed = true;
+                }
+                Err(e) if e.is_transient() && attempt < self.policy.max_retries => {
+                    self.online.store(false, Ordering::Relaxed);
+                    tokio::time::sleep(self.policy.backoff(attempt)).await;
+                    attempt += 1;
+                }
+                Err(e) => {
+                    if e.is_transient() {
+                        self.online.store(false, Ordering::Relaxed);
+                    }
+                    return Err(e);
+                }
+            }
+        }
+    }
+
+    /// Fetch one page of the account's own records in `collection` (`listRecords`, for a PULL). Same
+    /// refresh/backoff discipline. Returns the records + the next cursor.
+    pub async fn pull_list(
+        &mut self,
+        collection: &str,
+        cursor: Option<&str>,
+    ) -> Result<(Vec<RemoteRecord>, Option<String>), SyncError> {
+        let mut refreshed = false;
+        let mut attempt = 0u32;
+        loop {
+            let client = PdsClient::from_session(self.http.clone(), &self.session)?;
+            match client.list_records(collection, cursor).await {
+                Ok(r) => {
+                    self.online.store(true, Ordering::Relaxed);
+                    return Ok(r);
+                }
+                Err(SyncError::Unauthorized) if !refreshed => {
+                    self.session = refresh(&self.http, &self.session).await?;
+                    self.tokens.save(&self.did, &self.session)?;
+                    refreshed = true;
+                }
+                Err(e) if e.is_transient() && attempt < self.policy.max_retries => {
+                    self.online.store(false, Ordering::Relaxed);
+                    tokio::time::sleep(self.policy.backoff(attempt)).await;
+                    attempt += 1;
+                }
+                Err(e) => {
+                    if e.is_transient() {
+                        self.online.store(false, Ordering::Relaxed);
+                    }
+                    return Err(e);
+                }
+            }
+        }
     }
 
     async fn push_create_inner(
