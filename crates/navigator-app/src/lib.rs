@@ -3229,6 +3229,12 @@ impl App {
     /// are PII-free *summaries* and carry no local guid, so they can't reconstruct a local entity).
     pub async fn pull_sync(&self) -> Result<PullOutcome, AppError> {
         let did = self.current_account().ok_or(AppError::NotAuthenticated)?;
+        if did.starts_with("did:key:") {
+            // A local did:key identity has no PDS repo — PULL/publish need a real OAuth (did:plc) account.
+            return Err(AppError::Import(
+                "PDS sync needs a signed-in PDS account — the local did:key identity has no PDS repo".into(),
+            ));
+        }
         let mut engine = self.sync_engine()?;
         let mut out = PullOutcome::default();
         for &collection in PUBLISHED_COLLECTIONS {

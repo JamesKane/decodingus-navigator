@@ -1516,10 +1516,15 @@ impl eframe::App for NavigatorApp {
                     )
                     .on_hover_text(self.tr("status.pendingHint"));
                 }
-                // PULL reconcile — fetch + reconcile our PDS records (needs a signed-in account).
-                if self.account.is_some() {
+                // PULL reconcile — a PDS-repo op, so it needs a real PDS (OAuth) account. A local
+                // did:key identity (federation/exchange only) has no PDS repo → show it disabled with
+                // a reason rather than letting it fail with a confusing "not signed in".
+                if let Some(acct) = self.account.clone() {
+                    let is_pds = !acct.starts_with("did:key:");
                     ui.separator();
-                    if ui.add_enabled(!self.pulling, egui::Button::new(self.tr("sync.pull")).small()).on_hover_text(self.tr("sync.pullHint")).clicked() {
+                    let btn = ui.add_enabled(is_pds && !self.pulling, egui::Button::new(self.tr("sync.pull")).small());
+                    let btn = btn.on_hover_text(self.tr(if is_pds { "sync.pullHint" } else { "sync.pullNeedsPds" }));
+                    if is_pds && btn.clicked() {
                         self.pulling = true;
                         self.status = self.tr("sync.pulling").to_string();
                         let _ = self.tx.send(Command::PullSync);
