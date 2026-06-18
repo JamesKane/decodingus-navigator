@@ -154,8 +154,12 @@ governs what content rides the channel.
 | Per-entity at-uri/at-cid columns | `Repository.scala` | **DONE** — `sync_state` carries rkey/at_uri/at_cid/payload_hash per entity |
 
 **Done (e38f0b3):** idempotent publish, PULL reconcile, conflict detection, `source_file`, per-entity
-at-uri. **NB live-PDS validation deferred** — putRecord/listRecords need a real did:plc repo (did:key
-has none; dev PDS down); the reconcile logic stands on unit tests. The fed records are PII-free
+at-uri. **PROTOCOL validated against the live dev PDS** (alice.pds.test, via curl): createRecord
+(PDS-assigned TID) → putRecord at that TID is idempotent (listRecords stays at one record, cid
+updates); listRecords (PULL fetch) works. The Navigator *binary* couldn't run against it from this
+environment (raw sockets to the Apple-container subnet get EHOSTUNREACH — only curl passes), so the
+App code paths still rest on unit tests + this protocol check; `from_session` now falls back to Bearer
+(4b4bd58) so a createSession session can drive them once reachable. The fed records are PII-free
 *summaries* (no local guid), so remote→local apply is inherently limited to the fields they carry — a
 real per-entity remote→local mirror would need richer records (an AppView-contract decision).
 
@@ -231,6 +235,7 @@ persistence, UI; validated live), and **§5 sync durability Phase 2** (e38f0b3 �
 PULL reconcile + source_file). **Best next steps:** the **§8-misc** small UI items (PCA scatter, IBD
 match browser), §7 VCF-liftover orchestration + reference checksums, or §3-style polish. The big
 functional gaps (STR, cross-subject Y, federated IBD, sync) are now all closed.
-**Live-PDS-gated:** §5-p2's putRecord/listRecords + §4's attestation publish both need a running dev
-PDS + a did:plc account to validate end-to-end; until then they rest on unit tests + the did:key
-AppView validation.
+**Live-PDS:** §5's idempotent putRecord-at-TID + listRecords and §4's attestation publish are
+**protocol-confirmed against the running dev PDS** (curl); the Navigator binary can't reach the
+Apple-container subnet from the agent environment (raw-socket EHOSTUNREACH), so the over-the-wire run
+of the App code is environment-blocked, not code-blocked — it rests on unit tests + the protocol check.
