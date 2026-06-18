@@ -141,18 +141,23 @@ index → discovery), and surfacing the initiator side in the UI (today the UI c
 are opened via the existing network-suggestions `ibd_introduce`). The PII-posture decision still
 governs what content rides the channel.
 
-## 5. Sync durability — **PARTIAL** (Phase 1 done; was MISSING)
+## 5. Sync durability — **DONE** (Phase 1 + Phase 2; live-PDS validation pending)
 
 | Capability | Scala | Status |
 |---|---|---|
 | Persistent outbox (survive restart/offline, batched, backoff-capped) + drain | `SyncQueueRepository.scala`, `AsyncSyncService.scala` | **DONE** (7213269) `sync_outbox` (mig 0021) + background drain |
-| Sync history / audit trail | `SyncHistoryRepository.scala` | **DONE** (`sync_history`) |
-| Conflict detection + resolution state (local↔remote divergence, strategy, snapshots) | `SyncConflictRepository.scala`, `PdsSyncValidation.scala` | **MISSING** |
-| PULL (ingest own PDS records back; reconcile) | — | **MISSING** (publishes are write-only today) |
-| Source-file tracking by checksum (stable identity if path moves) | `SourceFileRepository.scala` | PARTIAL (deferred content-hash; no `source_file` table) |
-| Per-entity at-uri/at-cid columns | `Repository.scala` | PARTIAL (outbox carries at_uri; not per-entity) |
+| Sync history / audit trail | `SyncHistoryRepository.scala` | **DONE** (`sync_history`; `record_dir` adds PULL/CONFLICT) |
+| **Idempotent publish** (no duplicate PDS records on re-publish) | — | **DONE** (e38f0b3) — `sync_state` (mig 0026) keeps the PDS-assigned TID; drain `putRecord`s at it |
+| Conflict detection + resolution (local↔remote divergence, LWW) | `SyncConflictRepository.scala`, `PdsSyncValidation.scala` | **DONE** (e38f0b3) — pure `sync_reconcile::plan` (CID compare, remote-wins LWW, conflict logged) |
+| PULL (ingest own PDS records back; reconcile) | — | **DONE** (e38f0b3) — `list_records`/`pull_list` + `pull_sync`; apply remote→local for biosample (the PII-free summaries limit apply to the fields they carry); derived summaries tracked |
+| Source-file tracking by checksum (stable identity if path moves) | `SourceFileRepository.scala` | **DONE** (e38f0b3) — `source_file` (mig 0027) + registration on content-hash + `verify_source_files` |
+| Per-entity at-uri/at-cid columns | `Repository.scala` | **DONE** — `sync_state` carries rkey/at_uri/at_cid/payload_hash per entity |
 
-**Remaining (medium):** conflict detection + PULL + the `source_file` table. Ties to the AppView design.
+**Done (e38f0b3):** idempotent publish, PULL reconcile, conflict detection, `source_file`, per-entity
+at-uri. **NB live-PDS validation deferred** — putRecord/listRecords need a real did:plc repo (did:key
+has none; dev PDS down); the reconcile logic stands on unit tests. The fed records are PII-free
+*summaries* (no local guid), so remote→local apply is inherently limited to the fields they carry — a
+real per-entity remote→local mirror would need richer records (an AppView-contract decision).
 
 ## 6. Analysis caching/resume & report completeness — **PARTIAL**
 
@@ -213,7 +218,7 @@ fingerprint/merge dialogs.
 | 1b-caller | ~~STR calling from sequence~~ | — | — | **DONE 986e00b** — enclosing-read genotyper + HipSTR-reference parse, validated on GRCh38 chrY |
 | 1b-vendor | STR vendor bridge — convention layer + concordance + CHM13 ref | High | — | **DONE** (5fc6641 convention layer; b9a7eed cross-build lift; c142ae7 UI; **b631d79 216-kit CHM13 recalibration**). Offset table rebuilt on 216 CHM13 Big Y kits (swap-QC + per-kit panic isolation in the harness); 6 build-dependent markers handled via `StrBuild`+`GRCH38_DELTA`. Validated held-out: CHM13 1001615 44/44+14/14, GRCh38 27520 55/55+15/15, zero mismatches. *Remaining (low):* the CHM13 lift dropped 33 named chrY markers (incl DYS19/391/426 — table retains their GRCh38 values for the BAM path); multi-copy aggregation; auto-download |
 | ~~2-match~~ | ~~Cross-subject Y matching~~ | — | — | **DONE e0e44bf** — `ymatch.rs` (shared-SNP/novel ranking, divergence LCA, STR-GD, SNP+STR TMRCA) + app `y_matches` one-vs-all + Y-DNA-tab match card. Local v1; federated surface under §4 |
-| 5-p2 | Sync conflict detection + PULL + `source_file` table | Med | Medium | Ties to AppView design |
+| ~~5-p2~~ | ~~Sync conflict detection + PULL + `source_file`~~ | — | — | **DONE e38f0b3** — idempotent publish (sync_state keeps the PDS TID → putRecord), pure reconcile planner + pull_sync, source_file (mig 0027). Live-PDS validation pending (needs did:plc repo) |
 | ~~4-live~~ | ~~IBD live exchange~~ | — | — | **DONE** (1e43f12, 816fcea, 02efee5) — transport + segment payload + attestation + real-data resolver + persistence + Encrypted-exchange UI + did:key bootstrap, validated live (James's 1.23M sites → ParentChild, verified+agreed). Remaining: AppView attestation indexing |
 | 7 | VCF liftover orchestration + reference-download checksums | Low-Med | Medium | STR/VCF-workflow enablers |
 | 8-misc | PCA scatter, Y-profile management dialog, IBD match browser, fingerprint/merge dialogs | Low-Med | Mixed | Several small; IBD browser downstream of §4 |
@@ -222,9 +227,10 @@ fingerprint/merge dialogs.
 (986e00b — the hard, twice-attempted part), **STR vendor bridge fully landed** (b631d79 — 216-kit
 CHM13 recalibration + build-aware offsets), **§2 cross-subject Y matching** (e0e44bf), and **§4
 federated IBD end-to-end** (1e43f12 / 816fcea / 02efee5 — transport, attestation, real-data exchange,
-persistence, UI; validated live). **Best next steps:** **§5-p2** sync conflict/PULL, the **§8-misc**
-small UI items (PCA scatter, IBD match browser), or §7 VCF-liftover orchestration.
-(PCA scatter, IBD match browser). **Biggest coherent feature now:** the live federated arc (§4) —
-STR calling and cross-subject Y matching, the prior standout local gaps, are done end-to-end.
-**Verify-before-building:** §4 (IBD live) and §5-p2 (sync conflict/PULL) must be scoped against the
-current AppView-mediated architecture, not ported verbatim.
+persistence, UI; validated live), and **§5 sync durability Phase 2** (e38f0b3 — idempotent publish +
+PULL reconcile + source_file). **Best next steps:** the **§8-misc** small UI items (PCA scatter, IBD
+match browser), §7 VCF-liftover orchestration + reference checksums, or §3-style polish. The big
+functional gaps (STR, cross-subject Y, federated IBD, sync) are now all closed.
+**Live-PDS-gated:** §5-p2's putRecord/listRecords + §4's attestation publish both need a running dev
+PDS + a did:plc account to validate end-to-end; until then they rest on unit tests + the did:key
+AppView validation.
