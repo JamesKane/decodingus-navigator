@@ -111,6 +111,8 @@ pub enum Command {
     AssignMtdnaHaplogroup { mtdna_id: i64 },
     /// Assign a Y haplogroup from an alignment (call chrY tree positions, rank).
     AssignYHaplogroup { alignment_id: i64 },
+    /// Full Y placement report: ranked candidates + lineage SNP evidence (gap §8 haplogroup report).
+    YHaploReport { alignment_id: i64 },
     /// Assign a Y haplogroup from the subject's imported BISDNA / Y-SNP-panel calls (no
     /// alignment) — records a donor call.
     AssignYBisdna { biosample_guid: SampleGuid },
@@ -381,6 +383,8 @@ pub enum Event {
     Haplogroup { mtdna_id: i64, assignment: HaploAssignment },
     /// Y haplogroup assignment for an alignment (ranked + terminal evidence).
     YHaplogroup { alignment_id: i64, assignment: HaploAssignment },
+    /// Full Y placement report: ranked candidates + lineage SNP evidence.
+    YHaploReport { alignment_id: i64, assignment: HaploAssignment, lineage: Vec<navigator_app::SnpEvidence> },
     /// Y haplogroup assignment from the subject's BISDNA / Y-SNP panel (records a donor call).
     YBisdnaHaplogroup { biosample_guid: SampleGuid, assignment: HaploAssignment },
     /// mtDNA haplogroup assignment from an alignment (records a donor call → reload consensus).
@@ -685,6 +689,10 @@ pub async fn handle(app: &App, cmd: Command) -> Event {
         },
         Command::AssignYBisdna { biosample_guid } => match app.assign_y_bisdna(biosample_guid, None).await {
             Ok(assignment) => Event::YBisdnaHaplogroup { biosample_guid, assignment },
+            Err(e) => Event::Error(e.to_string()),
+        },
+        Command::YHaploReport { alignment_id } => match app.y_haplogroup_report(alignment_id).await {
+            Ok((assignment, lineage)) => Event::YHaploReport { alignment_id, assignment, lineage },
             Err(e) => Event::Error(e.to_string()),
         },
         Command::AssignYHaplogroup { alignment_id } => match app.assign_y_haplogroup(alignment_id).await {

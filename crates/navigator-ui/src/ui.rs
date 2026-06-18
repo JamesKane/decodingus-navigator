@@ -8,7 +8,7 @@ use std::sync::mpsc::Receiver;
 use eframe::egui;
 use navigator_app::{
     AncestryResult, AncestrySegment, AuditEntry, BuildNeed, CompatibilityLevel, Consensus,
-    Coverage, DenovoCall, DnaType, HaploAssignment, HeteroplasmySite, IbdComparison, IbdSuggestion,
+    CallState, Coverage, DenovoCall, DnaType, HaploAssignment, HeteroplasmySite, IbdComparison, IbdSuggestion, SnpEvidence,
     IdentityVerification, PanelGenotype, PrivateBucket, PrivateClass, ProjectOverview,
     AppSettings, BatchImportSummary, MtRegion, MtVariant, ProjectSampleReport, ReadMetrics, RefBuildStatus,
     StrConcordanceRow,
@@ -275,6 +275,13 @@ impl DataDelete {
 /// Reference population PC1/PC2 centroids for the PCA scatter: `(population_code, pc1, pc2)`.
 type PcaCentroids = Vec<(String, f64, f64)>;
 
+/// A full Y-haplogroup placement report for one alignment: ranked candidates + lineage SNP evidence.
+struct YReport {
+    alignment_id: i64,
+    assignment: HaploAssignment,
+    lineage: Vec<SnpEvidence>,
+}
+
 pub struct NavigatorApp {
     tx: UnboundedSender<Command>,
     rx: Receiver<Event>,
@@ -367,6 +374,10 @@ pub struct NavigatorApp {
     mtdna_haplogroup: Option<(i64, HaploAssignment)>,
     /// Last Y haplogroup assignment: (alignment id, assignment).
     y_haplogroup: Option<(i64, HaploAssignment)>,
+    /// Full Y placement report (ranked candidates + lineage SNP evidence) for an alignment.
+    y_report: Option<YReport>,
+    /// True while the haplogroup report is being built.
+    y_report_running: bool,
     /// Last mtDNA-from-alignment haplogroup assignment: (alignment id, assignment).
     mt_haplogroup: Option<(i64, HaploAssignment)>,
     /// Ancestry/IBD reference-asset presence + integrity (the "data sources" line). Loaded once.
@@ -640,6 +651,8 @@ impl NavigatorApp {
             mtdna_variants: std::collections::HashMap::new(),
             mtdna_haplogroup: None,
             y_haplogroup: None,
+            y_report: None,
+            y_report_running: false,
             mt_haplogroup: None,
             donor_ancestry: None,
             fine_ancestry: None,
@@ -930,6 +943,11 @@ impl NavigatorApp {
                     if let Some(pid) = self.selected_project {
                         let _ = self.tx.send(Command::LoadProjectReport(pid));
                     }
+                }
+                Event::YHaploReport { alignment_id, assignment, lineage } => {
+                    self.y_report_running = false;
+                    self.status = format!("Haplogroup report: {} candidate(s), {} lineage SNP(s)", assignment.ranked.len(), lineage.len());
+                    self.y_report = Some(YReport { alignment_id, assignment, lineage });
                 }
                 Event::YBisdnaHaplogroup { biosample_guid, assignment } => {
                     self.status = match assignment.ranked.first() {
@@ -1455,6 +1473,8 @@ impl NavigatorApp {
         self.ibd_result = None;
         self.identity = None;
         self.y_haplogroup = None;
+        self.y_report = None;
+        self.y_report_running = false;
         self.mt_haplogroup = None;
         self.private_y = None;
         let _ = self.tx.send(Command::LoadCoverage(id));
@@ -4864,6 +4884,14 @@ impl NavigatorApp {
                 self.status = "Assigning Y haplogroup (fetching FTDNA tree)…".into();
                 let _ = self.tx.send(Command::AssignYHaplogroup { alignment_id });
             }
+            if ui.add_enabled(has_bam && !self.y_report_running, egui::Button::new(self.tr("haplo.fullReport"))).clicked() {
+                self.y_report_running = true;
+                self.status = "Building haplogroup report…".into();
+                let _ = self.tx.send(Command::YHaploReport { alignment_id });
+            }
+            if self.y_report_running {
+                ui.spinner();
+            }
             if !has_bam {
                 ui.label(self.tr("hint.noBamPath"));
             }
@@ -4888,6 +4916,7 @@ impl NavigatorApp {
                 show_assignment(ui, assignment);
             }
         }
+        self.haplo_report_section(ui, alignment_id);
 
         // Private bucket: de-novo chrY calls off the assigned backbone (branch candidates).
         let has_ref = self
@@ -4961,6 +4990,48 @@ impl NavigatorApp {
                 });
             }
         }
+    }
+
+    /// The full Y-haplogroup placement report (gap §8): the ranked candidate haplogroups + the
+    /// defining-SNP evidence along the reported lineage. Shown once "Full report" is run, flowing into
+    /// the page scroll (no nested ScrollArea).
+    fn haplo_report_section(&self, ui: &mut egui::Ui, alignment_id: i64) {
+        let Some(r) = &self.y_report else { return };
+        if r.alignment_id != alignment_id {
+            return;
+        }
+        ui.add_space(4.0);
+        egui::CollapsingHeader::new(self.tr("haplo.report")).id_salt(("haplo_report", alignment_id)).default_open(true).show(ui, |ui| {
+            ui.label(egui::RichText::new(self.tr("haplo.candidates")).strong().small());
+            egui::Grid::new(("haplo_ranked", alignment_id)).striped(true).num_columns(4).spacing([14.0, 2.0]).show(ui, |ui| {
+                for h in ["Haplogroup", "Score", "Depth", "Matched/Expected"] {
+                    ui.label(egui::RichText::new(h).strong().small());
+                }
+                ui.end_row();
+                for c in r.assignment.ranked.iter().take(12) {
+                    ui.label(&c.name);
+                    ui.label(format!("{:.3}", c.score));
+                    ui.label(c.depth.to_string());
+                    ui.label(format!("{}/{}", c.matched, c.expected));
+                    ui.end_row();
+                }
+            });
+            ui.add_space(6.0);
+            ui.label(egui::RichText::new(format!("{} ({})", self.tr("haplo.lineageSnps"), r.lineage.len())).strong().small());
+            egui::Grid::new(("haplo_lineage", alignment_id)).striped(true).num_columns(3).spacing([14.0, 2.0]).show(ui, |ui| {
+                for s in &r.lineage {
+                    ui.label(&s.name);
+                    ui.label(format!("{}{}>{}", s.position, s.ancestral, s.derived));
+                    let (txt, col) = match s.state {
+                        CallState::Derived => ("derived", egui::Color32::from_rgb(60, 160, 60)),
+                        CallState::Ancestral => ("ancestral", egui::Color32::from_rgb(170, 120, 40)),
+                        CallState::NoCall => ("no-call", egui::Color32::GRAY),
+                    };
+                    ui.colored_label(col, txt);
+                    ui.end_row();
+                }
+            });
+        });
     }
 
     fn genotyping_section(&mut self, ui: &mut egui::Ui, alignment_id: i64) {

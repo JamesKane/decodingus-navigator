@@ -6040,6 +6040,19 @@ impl App {
     /// Like [`assign_haplogroup_from_alignment`], but also returns the per-SNP evidence along
     /// the called terminal's lineage (each defining mutation's Derived/Ancestral/NoCall state).
     /// For exact comparisons (e.g. GRCh38 vs a lifted CHM13 call).
+    /// Full Y-haplogroup placement **report** for an alignment (gap §8): the ranked candidate
+    /// haplogroups (with score / matched-vs-expected) + the defining-SNP evidence along the reported
+    /// lineage (each SNP's derived / ancestral / no-call state). A fresh placement against the
+    /// configured provider tree — heavier than the cached terminal label, so it's button-driven.
+    pub async fn y_haplogroup_report(&self, alignment_id: i64) -> Result<(HaploAssignment, Vec<SnpEvidence>), AppError> {
+        let tree_json = match y_tree_provider() {
+            YTreeProvider::DecodingUs => self.fetch_decodingus_y_tree().await?,
+            YTreeProvider::Ftdna => self.fetch_ftdna_y_tree().await?,
+        };
+        let (assignment, lineage, _calls) = self.assign_haplogroup_detail(alignment_id, "chrY", &tree_json).await?;
+        Ok((assignment, lineage))
+    }
+
     pub async fn assign_haplogroup_detail(
         &self,
         alignment_id: i64,
