@@ -51,6 +51,11 @@ pub use navigator_analysis::ancestry::{AncestryPanel, PanelSite as AncestryPanel
 pub struct HaploAssignment {
     pub ranked: Vec<ScoredHaplogroup>,
     pub branches: Vec<BranchEvidence>,
+    /// Per-SNP evidence along the placed lineage (root→terminal): every defining mutation the
+    /// sample carries (or doesn't), Derived/Ancestral/NoCall. This is the set the multi-source
+    /// variant/mutation **profile** reconciles — distinct from `branches`, which is the *untaken*
+    /// child branches (explaining why descent stopped, hence largely ancestral/no-call).
+    pub lineage: Vec<SnpEvidence>,
 }
 
 /// How a private (off-backbone) variant relates to the tree.
@@ -484,11 +489,10 @@ fn assemble_assignment(tree: &navigator_analysis::haplo::HaploTree, calls: &Hash
             }
         }
     }
-    let branches = ranked
-        .first()
-        .map(|t| haplo::child_evidence(tree, calls, t.id))
-        .unwrap_or_default();
-    HaploAssignment { ranked, branches }
+    let top = ranked.first().map(|t| t.id);
+    let branches = top.map(|id| haplo::child_evidence(tree, calls, id)).unwrap_or_default();
+    let lineage = top.map(|id| haplo::lineage_evidence(tree, calls, id)).unwrap_or_default();
+    HaploAssignment { ranked, branches, lineage }
 }
 
 /// Terminal selection for **named Y-SNP panel** data (BISDNA chip), as opposed to the
@@ -519,11 +523,10 @@ fn assemble_assignment_robust(
             }
         }
     }
-    let branches = ranked
-        .first()
-        .map(|t| haplo::child_evidence(tree, calls, t.id))
-        .unwrap_or_default();
-    HaploAssignment { ranked, branches }
+    let top = ranked.first().map(|t| t.id);
+    let branches = top.map(|id| haplo::child_evidence(tree, calls, id)).unwrap_or_default();
+    let lineage = top.map(|id| haplo::lineage_evidence(tree, calls, id)).unwrap_or_default();
+    HaploAssignment { ranked, branches, lineage }
 }
 
 /// The root→`target` path of node ids (inclusive), or empty if `target` isn't reachable.
@@ -1258,6 +1261,7 @@ fn assignment_from_call(call: &navigator_domain::reconciliation::RunHaplogroupCa
             found: 0,
         }],
         branches: Vec::new(),
+        lineage: Vec::new(),
     }
 }
 
@@ -1396,19 +1400,21 @@ pub fn consensus_genotypes(profile: &DiploidProfile) -> Vec<SiteGenotype> {
 
 /// Flatten a placement's branch SNP evidence into per-SNP observations (deduped by name; a SNP
 /// defines one branch, but guard against duplicates). `in_tree` is true for tree-defining SNPs.
+/// Build per-SNP observations for the multi-source consensus profile from a placement's **lineage**
+/// (root→terminal defining mutations the sample carries) — not its child branches, which are the
+/// *untaken* deeper splits and are by construction ancestral/no-call. (Using `branches` made a
+/// single-source profile read as all-no-call even when the terminal placed cleanly.)
 fn snp_obs_from_assignment(assignment: &HaploAssignment, in_tree: bool) -> Vec<YObsInput> {
     let mut by_name: std::collections::HashMap<String, YObsInput> = std::collections::HashMap::new();
-    for branch in &assignment.branches {
-        for snp in &branch.snps {
-            let state = match snp.state {
-                CallState::Derived => YState::Derived,
-                CallState::Ancestral => YState::Ancestral,
-                CallState::NoCall => YState::NoCall,
-            };
-            by_name.entry(snp.name.clone()).or_insert_with(|| {
-                YObsInput::snp(snp.name.clone(), snp.position, snp.ancestral.clone(), snp.derived.clone(), state, in_tree)
-            });
-        }
+    for snp in &assignment.lineage {
+        let state = match snp.state {
+            CallState::Derived => YState::Derived,
+            CallState::Ancestral => YState::Ancestral,
+            CallState::NoCall => YState::NoCall,
+        };
+        by_name.entry(snp.name.clone()).or_insert_with(|| {
+            YObsInput::snp(snp.name.clone(), snp.position, snp.ancestral.clone(), snp.derived.clone(), state, in_tree)
+        });
     }
     by_name.into_values().collect()
 }
@@ -7748,7 +7754,7 @@ pub fn report_csv(rows: &[ProjectSampleReport]) -> String {
 
 #[cfg(test)]
 mod placement_tests {
-    use super::{assemble_assignment, assemble_assignment_robust, pool_votes, strand_reconcile_to_tree, support_backoff_terminal};
+    use super::{assemble_assignment, assemble_assignment_robust, pool_votes, snp_obs_from_assignment, strand_reconcile_to_tree, support_backoff_terminal};
     use super::SourceType;
     use navigator_analysis::haplo::parse_ftdna_json;
     use std::collections::HashMap;
@@ -7763,6 +7769,24 @@ mod placement_tests {
       "5": {"haplogroupId":5,"name":"D","isRoot":false,"variants":[{"variant":"d","position":1000,"ancestral":"G","derived":"A"}],"children":[6]},
       "6": {"haplogroupId":6,"name":"F","isRoot":false,"variants":[{"variant":"f","position":1100,"ancestral":"C","derived":"T"}],"children":[]}
     }}"#;
+
+    /// The consensus-profile observations come from the placed **lineage** (the derived mutations
+    /// root→terminal), not the untaken child branches. Regression for the all-no-call profile: a
+    /// clean single-source placement at C must yield Derived obs for a/b/c, and must NOT carry the
+    /// child branch D's defining SNP `d` (which is no-call because descent stopped).
+    #[test]
+    fn profile_obs_follow_the_lineage_not_the_untaken_children() {
+        let tree = parse_ftdna_json(SPINE6).unwrap();
+        // Derived A+B+C; D/F not covered → terminal C(4), child D(5,@1000) is no-call.
+        let calls: HashMap<i64, char> = [(146, 'G'), (263, 'G'), (750, 'T')].into_iter().collect();
+        let assignment = assemble_assignment(&tree, &calls);
+        // The lineage carries a,b,c (derived); the child branch D carries d.
+        assert!(assignment.branches.iter().any(|b| b.snps.iter().any(|s| s.name == "d")), "D is a child branch");
+        let obs = snp_obs_from_assignment(&assignment, true);
+        let mut names: Vec<&str> = obs.iter().map(|o| o.name.as_str()).collect();
+        names.sort_unstable();
+        assert_eq!(names, ["a", "b", "c"], "obs are the lineage mutations, not the untaken child d");
+    }
 
     /// The parsimony back-off trims a net-contradicted deep tail (the sparse-panel / aDNA
     /// over-deepening) to the node where running (derived − ancestral) support peaks, but keeps a
