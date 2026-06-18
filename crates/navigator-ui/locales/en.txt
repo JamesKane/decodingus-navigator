@@ -343,7 +343,6 @@ hint.yProfileBuild=Build the profile to reconcile Y SNPs across this subject's s
 btn.buildMtProfile=Build mtDNA consensus profile
 hint.mtProfileCost=re-places each alignment's chrM against the mt tree
 hint.mtProfileBuild=Build the profile to reconcile mtDNA mutations across this subject's sources.
-mt.consensusProfile=mtDNA consensus profile
 hint.ancestryConsensus=from the pooled consensus across all sources — build the Autosomal consensus first
 card.ancestryPerSource=Per-source estimators (advanced)
 card.chromosomePainting=Chromosome painting (local ancestry)

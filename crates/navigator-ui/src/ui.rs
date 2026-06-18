@@ -4076,12 +4076,6 @@ impl NavigatorApp {
             }
             ui.label(self.tr("mt.fullSeq"));
         });
-
-        // Multi-source mtDNA consensus profile (the mtDNA adapter over the shared consensus engine).
-        ui.add_space(8.0);
-        ui.separator();
-        ui.strong(self.tr("mt.consensusProfile"));
-        self.mt_variant_profile_section(ui, guid);
     }
 
     fn panels_section(&mut self, ui: &mut egui::Ui) {

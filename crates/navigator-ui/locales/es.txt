@@ -330,7 +330,6 @@ hint.yProfileBuild=Construye el perfil para reconciliar los SNP de Y entre las f
 btn.buildMtProfile=Construir perfil de consenso ADNmt
 hint.mtProfileCost=vuelve a ubicar el chrM de cada alineamiento en el árbol ADNmt
 hint.mtProfileBuild=Construye el perfil para reconciliar las mutaciones del ADNmt entre las fuentes de este sujeto.
-mt.consensusProfile=Perfil de consenso ADNmt
 hint.ancestryConsensus=del consenso combinado de todas las fuentes — primero construye el consenso autosómico
 card.ancestryPerSource=Estimadores por fuente (avanzado)
 card.chromosomePainting=Pintado cromosómico (ascendencia local)
