@@ -113,6 +113,23 @@ impl YSub {
         [(YSub::Haplogroup, "detail.sub.haplogroup"), (YSub::Snp, "detail.sub.snp"), (YSub::Str, "detail.sub.str")];
 }
 
+/// Y-DNA → SNP variants nested sub-tabs: the heavy tables, one at a time (each runs to thousands of
+/// rows on a WGS). The compact variant track stays above the bar as shared context.
+#[derive(Clone, Copy, PartialEq, Eq, Default)]
+enum YSnpSub {
+    #[default]
+    Profile,
+    Private,
+    Imported,
+}
+impl YSnpSub {
+    const ALL: [(YSnpSub, &'static str); 3] = [
+        (YSnpSub::Profile, "detail.sub.yProfile"),
+        (YSnpSub::Private, "detail.sub.privateY"),
+        (YSnpSub::Imported, "detail.sub.imported"),
+    ];
+}
+
 /// mtDNA sub-tabs.
 #[derive(Clone, Copy, PartialEq, Eq, Default)]
 enum MtSub {
@@ -411,6 +428,7 @@ pub struct NavigatorApp {
     y_haplogroup: Option<(i64, HaploAssignment)>,
     /// Active sub-tab within the Y-DNA / mtDNA / Autosomal detail tabs.
     y_sub: YSub,
+    y_snp_sub: YSnpSub,
     mt_sub: MtSub,
     auto_sub: AutoSub,
     /// Full Y placement report (ranked candidates + lineage SNP evidence) for an alignment.
@@ -698,6 +716,7 @@ impl NavigatorApp {
             mtdna_haplogroup: None,
             y_haplogroup: None,
             y_sub: YSub::default(),
+            y_snp_sub: YSnpSub::default(),
             mt_sub: MtSub::default(),
             auto_sub: AutoSub::default(),
             y_report: None,
@@ -1426,6 +1445,7 @@ impl NavigatorApp {
     fn select_sample(&mut self, guid: SampleGuid) {
         self.selected_sample = Some(guid);
         self.y_sub = YSub::default();
+        self.y_snp_sub = YSnpSub::default();
         self.mt_sub = MtSub::default();
         self.auto_sub = AutoSub::default();
         self.pending_alignment = None;
@@ -1779,17 +1799,23 @@ impl NavigatorApp {
                                 }
                             });
                         }
-                        // The heavy SNP surface: a chrY variant track + the multi-source profile + private-Y + de-novo.
+                        // The heavy SNP surface: a compact chrY variant track as shared context, then
+                        // the heavy tables one at a time (each runs to thousands of rows on a WGS).
                         YSub::Snp => {
                             card(ui, self.tr("card.variantTrack"), |ui| self.y_variant_track(ui));
                             ui.add_space(10.0);
-                            card(ui, self.tr("card.yVariantProfile"), |ui| self.y_variant_profile_section(ui, guid));
-                            if self.donor_private_y.is_some() {
-                                ui.add_space(10.0);
-                                card(ui, self.tr("card.privateYUnion"), |ui| self.donor_private_y_section(ui));
+                            self.y_snp_sub = self.sub_bar(ui, self.y_snp_sub, &YSnpSub::ALL);
+                            match self.y_snp_sub {
+                                YSnpSub::Profile => {
+                                    card(ui, self.tr("card.yVariantProfile"), |ui| self.y_variant_profile_section(ui, guid));
+                                }
+                                YSnpSub::Private => {
+                                    card(ui, self.tr("card.privateYUnion"), |ui| self.donor_private_y_section(ui));
+                                }
+                                YSnpSub::Imported => {
+                                    card(ui, self.tr("card.snpVariants"), |ui| self.variants_section(ui, guid));
+                                }
                             }
-                            ui.add_space(10.0);
-                            card(ui, self.tr("card.snpVariants"), |ui| self.variants_section(ui, guid));
                         }
                         // STR analysis, separated from SNP.
                         YSub::Str => {
