@@ -346,6 +346,7 @@ card.ancestryNmonte=Mixture model (G25 / nMonte)
 card.consensusIbd=IBD — subject comparison (consensus)
 ibd.otherSubject=Compare against:
 ibd.compare=Compare
+ibd.verifyIdentity=Verify identity
 ibd.segmentMap=Shared segments by chromosome
 ibd.exportSegments=Export segments CSV
 ibd.segmentTable=Segment table

@@ -5172,27 +5172,30 @@ impl NavigatorApp {
             }
         });
 
-        if let Some(v) = &self.identity {
-            let (txt, col) = match v.status {
-                VerificationStatus::VerifiedSame => ("same individual", egui::Color32::from_rgb(60, 160, 60)),
-                VerificationStatus::LikelySame => ("likely same", egui::Color32::from_rgb(120, 160, 60)),
-                VerificationStatus::Uncertain => ("uncertain", egui::Color32::from_rgb(170, 150, 40)),
-                VerificationStatus::LikelyDifferent => ("likely different", egui::Color32::from_rgb(200, 120, 40)),
-                VerificationStatus::VerifiedDifferent => ("different individuals", egui::Color32::from_rgb(200, 60, 60)),
-            };
-            ui.horizontal(|ui| {
-                ui.label(self.tr("ibd.identity"));
-                ui.colored_label(col, txt);
-                if let Some(c) = v.snp_concordance {
-                    ui.label(format!("SNP concordance {:.3} over {} sites", c, v.sites_compared));
-                }
-                if v.y_str_markers > 0 {
-                    ui.label(format!("· Y-STR {}/{} differ", v.y_str_distance.unwrap_or(0), v.y_str_markers));
-                }
-            });
-        }
-
+        self.render_identity(ui);
         self.render_ibd_result(ui);
+    }
+
+    /// The identity-verification verdict (shared by the per-source + subject-level compare paths).
+    fn render_identity(&self, ui: &mut egui::Ui) {
+        let Some(v) = &self.identity else { return };
+        let (txt, col) = match v.status {
+            VerificationStatus::VerifiedSame => ("same individual", egui::Color32::from_rgb(60, 160, 60)),
+            VerificationStatus::LikelySame => ("likely same", egui::Color32::from_rgb(120, 160, 60)),
+            VerificationStatus::Uncertain => ("uncertain", egui::Color32::from_rgb(170, 150, 40)),
+            VerificationStatus::LikelyDifferent => ("likely different", egui::Color32::from_rgb(200, 120, 40)),
+            VerificationStatus::VerifiedDifferent => ("different individuals", egui::Color32::from_rgb(200, 60, 60)),
+        };
+        ui.horizontal(|ui| {
+            ui.label(self.tr("ibd.identity"));
+            ui.colored_label(col, txt);
+            if let Some(c) = v.snp_concordance {
+                ui.label(format!("SNP concordance {:.3} over {} sites", c, v.sites_compared));
+            }
+            if v.y_str_markers > 0 {
+                ui.label(format!("· Y-STR {}/{} differ", v.y_str_distance.unwrap_or(0), v.y_str_markers));
+            }
+        });
     }
 
     /// Render the current IBD comparison result (summary line + segment table), if any. Shared by the
@@ -5280,11 +5283,18 @@ impl NavigatorApp {
                 self.status = "Comparing consensuses…".into();
                 let _ = self.tx.send(Command::CompareIbdConsensus { a: guid, b: self.ibd_other_subject.unwrap() });
             }
+            // Same-individual check (duplicate detection) over the same pooled consensus — no panel.
+            if ui.add_enabled(ready, egui::Button::new(self.tr("ibd.verifyIdentity"))).clicked() {
+                self.identity = None;
+                self.status = "Verifying identity…".into();
+                let _ = self.tx.send(Command::VerifyIdentityConsensus { a: guid, b: self.ibd_other_subject.unwrap() });
+            }
             if self.running_ibd {
                 ui.spinner();
             }
         });
         ui.label(egui::RichText::new(self.tr("hint.ibdConsensus")).weak().small());
+        self.render_identity(ui);
         self.render_ibd_result(ui);
     }
 

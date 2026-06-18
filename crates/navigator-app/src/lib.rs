@@ -7313,6 +7313,36 @@ impl App {
         Ok(reconciliation::classify_identity(concordance, sites, y_dist, y_markers))
     }
 
+    /// Subject-level identity verification (gap §8) — "are these two subjects the same individual?"
+    /// (duplicate detection). The consensus counterpart to [`verify_identity`]: pooled autosomal
+    /// consensus genotype concordance (no panel selection), corroborated by Y-STR distance. Both
+    /// subjects need a built autosomal consensus.
+    pub async fn verify_identity_consensus(&self, a: SampleGuid, b: SampleGuid) -> Result<IdentityVerification, AppError> {
+        let pa = self
+            .cached_autosomal_profile(a)
+            .await?
+            .ok_or_else(|| AppError::Import("the first subject has no autosomal consensus yet — build it (Autosomal tab) first".into()))?;
+        let pb = self
+            .cached_autosomal_profile(b)
+            .await?
+            .ok_or_else(|| AppError::Import("the second subject has no autosomal consensus yet — build it (Autosomal tab) first".into()))?;
+        let (ga, gb) = (consensus_genotypes(&pa), consensus_genotypes(&pb));
+        let (matched, sites) = genotype_concordance(&ga, &gb);
+        let concordance = (sites > 0).then(|| matched as f64 / sites as f64);
+
+        // Y-STR corroboration from each subject's first STR profile.
+        let (mut y_dist, mut y_markers) = (None, 0i64);
+        let (sa, sb) = (self.list_str_profiles(a).await?, self.list_str_profiles(b).await?);
+        if let (Some(x), Some(y)) = (sa.first(), sb.first()) {
+            let (d, c) = strprofile::str_distance(&x.markers, &y.markers);
+            if c > 0 {
+                y_dist = Some(d);
+                y_markers = c;
+            }
+        }
+        Ok(reconciliation::classify_identity(concordance, sites, y_dist, y_markers))
+    }
+
     // ---- queries -----------------------------------------------------------
 
     /// Biosamples belonging to a project.

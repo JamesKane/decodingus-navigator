@@ -184,6 +184,8 @@ pub enum Command {
     CompareIbdConsensus { a: SampleGuid, b: SampleGuid },
     /// Verify two alignments are the same individual (genotype concordance + Y-STR).
     VerifyIdentity { a: i64, b: i64, panel_id: i64, ploidy: u8 },
+    /// Verify two SUBJECTS are the same individual over their pooled autosomal consensus (no panel).
+    VerifyIdentityConsensus { a: SampleGuid, b: SampleGuid },
     /// Federated IBD step 1: fetch the AppView's pseudonymous match suggestions for the
     /// signed-in account (registers the device key on first use).
     LoadIbdSuggestions,
@@ -912,6 +914,10 @@ pub async fn handle(app: &App, cmd: Command) -> Event {
             Err(e) => Event::Error(e.to_string()),
         },
         Command::VerifyIdentity { a, b, panel_id, ploidy } => match app.verify_identity(a, b, panel_id, ploidy).await {
+            Ok(v) => Event::Identity(v),
+            Err(e) => Event::Error(e.to_string()),
+        },
+        Command::VerifyIdentityConsensus { a, b } => match app.verify_identity_consensus(a, b).await {
             Ok(v) => Event::Identity(v),
             Err(e) => Event::Error(e.to_string()),
         },
