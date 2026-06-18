@@ -117,6 +117,7 @@ card.mtSequences=Secuencias ADNmt
 card.mtDenovo=Llamadas SNP de novo ADNmt (chrM)
 card.mtHeteroplasmy=Heteroplasmia ADNmt
 card.donorAncestry=Ascendencia del donante (mejor fuente)
+card.pcaScatter=Proyección PCA (PC1 × PC2)
 card.ancestry=Ascendencia
 card.panelGenotypingIbd=Genotipado de panel e IBD
 card.sequencingRuns=Secuenciaciones

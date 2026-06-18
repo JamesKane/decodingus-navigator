@@ -127,6 +127,7 @@ card.mtSequences=mtDNA sequences
 card.mtDenovo=mtDNA de-novo SNP calls (chrM)
 card.mtHeteroplasmy=mtDNA heteroplasmy
 card.donorAncestry=Donor ancestry (best source)
+card.pcaScatter=PCA projection (PC1 × PC2)
 card.ancestry=Ancestry
 card.panelGenotypingIbd=Panel genotyping & IBD
 card.sequencingRuns=Sequencing Runs

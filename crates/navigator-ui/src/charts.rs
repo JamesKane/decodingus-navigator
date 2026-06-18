@@ -381,6 +381,62 @@ pub(crate) fn draw_ideogram(ui: &mut egui::Ui, regions: &GenomeRegions) {
     }
 }
 
+/// PC1×PC2 ancestry scatter (gap §8): reference population centroids (colored by population) as the
+/// backdrop, the donor's projected coordinate marked as a white diamond. `sample` is the donor's
+/// (PC1, PC2); `reference` is `(population_code, pc1, pc2)`. Hover a point for its population name.
+pub(crate) fn draw_pca_scatter(ui: &mut egui::Ui, sample: Option<(f64, f64)>, reference: &[(String, f64, f64)]) {
+    use egui_plot::{MarkerShape, Plot, PlotPoints, Points};
+    if sample.is_none() && reference.is_empty() {
+        ui.label(egui::RichText::new("PCA coordinates not available for this estimate.").weak());
+        return;
+    }
+    Plot::new("pca_scatter")
+        .height(320.0)
+        .data_aspect(1.0)
+        .x_axis_label("PC1")
+        .y_axis_label("PC2")
+        .show(ui, |plot_ui| {
+            for (code, x, y) in reference {
+                let color = parse_hex_color(&population_color(code));
+                plot_ui.points(
+                    Points::new(PlotPoints::new(vec![[*x, *y]]))
+                        .radius(4.0)
+                        .color(color)
+                        .name(population_name(code)),
+                );
+            }
+            if let Some((x, y)) = sample {
+                plot_ui.points(
+                    Points::new(PlotPoints::new(vec![[x, y]]))
+                        .radius(7.0)
+                        .shape(MarkerShape::Diamond)
+                        .color(egui::Color32::WHITE)
+                        .name("you"),
+                );
+            }
+        });
+    // Compact super-population legend (matches the dot colors via a representative member).
+    let mut seen: Vec<&str> = Vec::new();
+    let mut legend: Vec<(String, egui::Color32)> = Vec::new();
+    for (code, _, _) in reference {
+        let Some(sup) = population_super(code) else { continue };
+        if !seen.contains(&sup) {
+            seen.push(sup);
+            legend.push((population_name(sup), parse_hex_color(&population_color(code))));
+        }
+    }
+    if !legend.is_empty() {
+        ui.horizontal_wrapped(|ui| {
+            for (name, color) in &legend {
+                let (r, _) = ui.allocate_exact_size(egui::vec2(10.0, 10.0), egui::Sense::hover());
+                ui.painter().circle_filled(r.center(), 4.0, *color);
+                ui.label(egui::RichText::new(name.as_str()).small());
+                ui.add_space(6.0);
+            }
+        });
+    }
+}
+
 /// egui_plot bar chart. Shared by the whole-genome and per-contig coverage views.
 pub(crate) fn coverage_histogram_chart(ui: &mut egui::Ui, hist: &[u64], title: &str) {
     use egui_plot::{Bar, BarChart, Plot};

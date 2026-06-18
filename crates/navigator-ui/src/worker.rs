@@ -220,6 +220,8 @@ pub enum Command {
     VerifySourceFiles,
     /// Write the IBD match's segments to a CSV/TSV at `path` (the match-browser export).
     ExportIbdSegments { segments: Vec<navigator_app::IbdSegment>, path: PathBuf },
+    /// Load the reference population PC1/PC2 centroids for an alignment's build (PCA scatter backdrop).
+    LoadPcaReference { alignment_id: i64 },
     /// Export a cached result to `path` (TSV/HTML/BED). `request` carries the kind + source id.
     Export { request: navigator_app::ExportRequest, path: PathBuf },
     /// Manually override the consensus haplogroup for a subject + DNA type.
@@ -466,6 +468,8 @@ pub enum Event {
     PullDone { in_sync: usize, applied: usize, adopted: usize, repushed: usize, conflicts: usize },
     /// Source-file accessibility re-check finished; `missing` files are moved/deleted.
     SourceFilesVerified { missing: usize },
+    /// Reference population PC1/PC2 centroids for the PCA scatter: `(population_code, pc1, pc2)`.
+    PcaReference { alignment_id: i64, points: Vec<(String, f64, f64)> },
     /// How many runs had their sequencing lab filled in by the AppView backfill (`0` ⇒ quiet).
     LabsResolved(usize),
     /// Per-build reference-genome settings + cache status for the Settings dialog.
@@ -1005,6 +1009,10 @@ pub async fn handle(app: &App, cmd: Command) -> Event {
                 Err(e) => Event::Error(format!("write {}: {e}", path.display())),
             }
         }
+        Command::LoadPcaReference { alignment_id } => match app.ancestry_pca_reference(alignment_id).await {
+            Ok(points) => Event::PcaReference { alignment_id, points },
+            Err(e) => Event::Error(e.to_string()),
+        },
         Command::SetHaploOverride { biosample_guid, dna_type, haplogroup, reason } => {
             match app.set_manual_override(biosample_guid, dna_type, &haplogroup, reason.as_deref()).await {
                 Ok(()) => Event::ReconciliationChanged { biosample_guid, dna_type },

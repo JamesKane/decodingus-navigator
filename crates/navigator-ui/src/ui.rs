@@ -17,7 +17,7 @@ use navigator_app::{
 };
 use crate::charts::{
     asset_status_line, coverage_histogram_chart, draw_ancestry_donut, draw_chromosome_painting, draw_composition_bar,
-    draw_ibd_segments, draw_ideogram, draw_population_components, ideogram_legend,
+    draw_ibd_segments, draw_ideogram, draw_pca_scatter, draw_population_components, ideogram_legend,
 };
 use crate::widgets::{
     card, chip, combo, empty_state, fmt_depth, fmt_pct, fmt_reads, opt, provider_abbrev, short_guid, show_assignment,
@@ -272,6 +272,9 @@ impl DataDelete {
     }
 }
 
+/// Reference population PC1/PC2 centroids for the PCA scatter: `(population_code, pc1, pc2)`.
+type PcaCentroids = Vec<(String, f64, f64)>;
+
 pub struct NavigatorApp {
     tx: UnboundedSender<Command>,
     rx: Receiver<Event>,
@@ -374,6 +377,8 @@ pub struct NavigatorApp {
     fine_ancestry: Option<AncestryResult>,
     ancient_ancestry: Option<AncestryResult>,
     nmonte_ancestry: Option<AncestryResult>,
+    /// Reference PC1/PC2 centroids for the PCA scatter, keyed by alignment_id (lazy-loaded).
+    pca_reference: Option<(i64, PcaCentroids)>,
     /// Donor-level private-Y union across the subject's sources.
     donor_private_y: Option<PrivateBucket>,
     /// The selected subject's multi-source Y-variant profile.
@@ -640,6 +645,7 @@ impl NavigatorApp {
             fine_ancestry: None,
             ancient_ancestry: None,
             nmonte_ancestry: None,
+            pca_reference: None,
             donor_private_y: None,
             y_profile: None,
             y_profile_filter: None,
@@ -1307,6 +1313,9 @@ impl NavigatorApp {
                         "Pull: {in_sync} in sync, {applied} applied, {adopted} remote-only, {repushed} to re-publish, {conflicts} conflict(s)"
                     );
                 }
+                Event::PcaReference { alignment_id, points } => {
+                    self.pca_reference = Some((alignment_id, points));
+                }
                 Event::SourceFilesVerified { missing } => {
                     self.status = if missing == 0 {
                         "All source files present".into()
@@ -1353,6 +1362,7 @@ impl NavigatorApp {
         self.fine_ancestry = None;
         self.ancient_ancestry = None;
         self.nmonte_ancestry = None;
+        self.pca_reference = None;
         self.estimating_donor_ancestry = false;
         self.painting = None;
         self.painting_running = false;
@@ -1739,6 +1749,11 @@ impl NavigatorApp {
                             self.publish_row(ui, "Publish ancestry to PDS", Command::PublishAncestry { biosample_guid: guid });
                         }
                     });
+                    // PC1×PC2 projection: the donor against the reference populations.
+                    if self.donor_ancestry.is_some() {
+                        ui.add_space(10.0);
+                        card(ui, self.tr("card.pcaScatter"), |ui| self.pca_scatter_section(ui));
+                    }
                     // Detailed reports from the same consensus estimate (persisted alongside the
                     // super-population ADMIXTURE): modern fine populations + ancient components.
                     if let Some(r) = &self.fine_ancestry {
@@ -3270,6 +3285,35 @@ impl NavigatorApp {
 
     /// Donor-level ancestry headline (Phase 3): the best estimate across the subject's sources,
     /// with which source + method it came from.
+    /// The donor's projected (PC1, PC2), from whichever loaded estimate carries PCA coordinates
+    /// (the PCA / nMonte methods, or ADMIXTURE with PCA attached).
+    fn sample_pca(&self) -> Option<(f64, f64)> {
+        [
+            self.donor_ancestry.as_ref().map(|(_, r)| r),
+            self.ancient_ancestry.as_ref(),
+            self.nmonte_ancestry.as_ref(),
+        ]
+        .into_iter()
+        .flatten()
+        .find_map(|r| {
+            let c = r.pca_coordinates.as_ref()?;
+            (c.len() >= 2).then(|| (c[0], c[1]))
+        })
+    }
+
+    /// PCA scatter: the donor's PC1×PC2 against the reference population centroids (lazy-loaded for the
+    /// selected alignment's build).
+    fn pca_scatter_section(&mut self, ui: &mut egui::Ui) {
+        if let Some(aid) = self.selected_alignment {
+            if !matches!(&self.pca_reference, Some((a, _)) if *a == aid) {
+                let _ = self.tx.send(Command::LoadPcaReference { alignment_id: aid });
+            }
+        }
+        let sample = self.sample_pca();
+        let reference: &[(String, f64, f64)] = self.pca_reference.as_ref().map(|(_, r)| r.as_slice()).unwrap_or(&[]);
+        draw_pca_scatter(ui, sample, reference);
+    }
+
     fn donor_ancestry_summary(&self, ui: &mut egui::Ui) {
         let Some((aln, r)) = &self.donor_ancestry else {
             ui.label(egui::RichText::new("No ancestry estimate for any source yet.").weak());
