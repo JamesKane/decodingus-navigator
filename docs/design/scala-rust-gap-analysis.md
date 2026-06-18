@@ -201,15 +201,14 @@ STR/VCF-workflow enablers).
 | Consensus-driven Y/mt/Autosomal/Ancestry/IBD tabs | — | **DONE** (this arc) |
 | **Batch / project-bundle / vendor-VCF / vendor-FASTA import dialogs** (multi-file, drag-drop, auto-detect) | `{BatchImport,ProjectImport,ImportVendorVcf,ImportVendorFasta}Dialog.scala` | **DONE** (59b5696) — per-subject Add Data is now a multi-file + folder picker; drag-drop routes files+folders through one batch (`add_data_batch`, auto-detect each) → import-summary modal. Project-bundle import (`import_project_dir`) already had a folder picker. *Remaining:* explicit vendor presets (FTDNA Big Y / mtFull labels) are cosmetic — auto-detect already routes those formats |
 | Y-profile management/detail + source-reconciliation dialogs | `YProfile*Dialog.scala`, `SourceReconciliationPanel.scala` | PARTIAL (Y-profile card + consensus block exist; no dedicated management/audit dialog) |
-| IBD match-detail browser — chromosome ideogram with segment painting; segment CSV export | `MatchDetailDialog.scala`, `ChromosomeBrowserPanel.scala` | MISSING (downstream of §4) |
+| IBD match-detail browser — chromosome ideogram with segment painting; segment CSV export | `MatchDetailDialog.scala`, `ChromosomeBrowserPanel.scala` | **DONE** (a6d44cc) — `charts::draw_ibd_segments` per-chromosome segment ideogram (true chr lengths via genome regions, hover cM/SNPs) + "Export segments CSV" (`export::ibd_segments_tsv`) in the IBD Matches tab |
 | **PCA scatter** (PC1×PC2 projection plot) | `ui/…` | **MISSING** (loadings/projection computed; donut + composition + map exist; no scatter widget) |
 | Haplogroup report dialog (scored candidates / lineage / SNPs / private) | `HaplogroupReportDialog.scala` | PARTIAL (Y-DNA tab shows terminal + branches; no full scored-candidate dialog) |
 | Fingerprint-match / merge-sequence-runs dialogs | `{FingerprintMatch,MergeSequenceRuns}Dialog.scala` | MISSING |
 
-**Remaining:** the **import dialogs** are the standout — every backend (batch `import_project_dir`,
-vendor VCF, mtFull FASTA, sidecar/Picard) already exists, so this is pure UX surfacing of shipped
-capability. Plus PCA scatter (small), Y-profile management dialog, IBD match browser (→§4),
-fingerprint/merge dialogs.
+**Remaining:** import dialogs (DONE 59b5696) and the IBD match browser (DONE a6d44cc) have landed.
+Left: **PCA scatter** (small), the **Y-profile management/audit dialog**, the **haplogroup-report
+dialog** (scored candidates), and **fingerprint-match / merge-sequence-runs** dialogs.
 
 ---
 
@@ -225,7 +224,7 @@ fingerprint/merge dialogs.
 | ~~5-p2~~ | ~~Sync conflict detection + PULL + `source_file`~~ | — | — | **DONE e38f0b3** — idempotent publish (sync_state keeps the PDS TID → putRecord), pure reconcile planner + pull_sync, source_file (mig 0027). Live-PDS validation pending (needs did:plc repo) |
 | ~~4-live~~ | ~~IBD live exchange~~ | — | — | **DONE** (1e43f12, 816fcea, 02efee5) — transport + segment payload + attestation + real-data resolver + persistence + Encrypted-exchange UI + did:key bootstrap, validated live (James's 1.23M sites → ParentChild, verified+agreed). Remaining: AppView attestation indexing |
 | 7 | VCF liftover orchestration + reference-download checksums | Low-Med | Medium | STR/VCF-workflow enablers |
-| 8-misc | PCA scatter, Y-profile management dialog, IBD match browser, fingerprint/merge dialogs | Low-Med | Mixed | Several small; IBD browser downstream of §4 |
+| 8-misc | PCA scatter, Y-profile management dialog, haplogroup-report dialog, fingerprint/merge dialogs | Low-Med | Mixed | Several small (IBD match browser DONE a6d44cc) |
 
 **Recently shipped:** import UX (59b5696), checkpoint/resume (192a939), **STR caller foundation**
 (986e00b — the hard, twice-attempted part), **STR vendor bridge fully landed** (b631d79 — 216-kit
