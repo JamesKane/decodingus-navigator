@@ -86,12 +86,18 @@ pub struct PdsClient {
 impl PdsClient {
     /// Build from a logged-in OAuth [`Session`] (DPoP-bound writes).
     pub fn from_session(http: reqwest::Client, session: &Session) -> Result<Self, SyncError> {
-        let key = EcKey::from_base64(&session.dpop_key_b64)?;
+        // OAuth sessions are DPoP-bound; a plain `createSession`/`createAccount` session has no DPoP
+        // key (empty) → fall back to Bearer auth (the same path `bearer()` builds).
+        let auth = if session.dpop_key_b64.is_empty() {
+            Auth::Bearer(session.access_token.clone())
+        } else {
+            Auth::Dpop { token: session.access_token.clone(), key: EcKey::from_base64(&session.dpop_key_b64)? }
+        };
         Ok(PdsClient {
             http,
             pds_base: session.pds.trim_end_matches('/').to_string(),
             did: session.did.clone(),
-            auth: Auth::Dpop { token: session.access_token.clone(), key },
+            auth,
         })
     }
 
