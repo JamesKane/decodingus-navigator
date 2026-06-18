@@ -8224,6 +8224,9 @@ mod outbox_tests {
 
     #[tokio::test]
     async fn publish_while_signed_out_is_not_authenticated_and_queues_nothing() {
+        // Use the in-memory keychain so this never touches the OS keychain (no prompts) and is
+        // hermetic regardless of an ambient session (e.g. a GUI signed in on this machine).
+        navigator_sync::TokenStore::use_in_memory_for_tests();
         let app = App::new(Store::open_in_memory().await.unwrap());
         assert!(matches!(app.publish_coverage(1).await, Err(AppError::NotAuthenticated)));
         // No account → nothing enqueued, and the accessors degrade gracefully.
