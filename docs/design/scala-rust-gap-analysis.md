@@ -185,11 +185,11 @@ that consensus/diploid passes are heavy — avoids recompute); SVG track; multia
 | Full Y-region annotation (PAR/ampliconic/palindrome + quality modifiers) | `refgenome/YRegion*.scala` | **PARTIAL→mostly** (4de7ff8: PAR/palindrome/amplicon/heterochromatin + modifier ladder; XTR/STR/centromere data still thin) |
 | Asset integrity (sha256 manifest verify) for ancestry/IBD assets | — | **DONE** (4ec09be) |
 | Genotype liftover (single-position SNP/STR, strand-flip + rev-comp) | `liftover/GenotypeLiftover.scala` | PARTIAL (haplo placement lifts via du-bio; no general batch API) |
-| **VCF liftover orchestration** (contig UCSC↔NCBI norm, PAR filtering, REF/ALT swap recovery) | `liftover/LiftoverProcessor.scala` | **MISSING** |
-| **Reference download checksum/integrity verification** | `refgenome/ReferenceGateway.scala` | **MISSING** (asset manifests verified; raw reference/chain downloads not) |
+| **VCF liftover orchestration** (contig UCSC↔NCBI norm, PAR filtering, REF/ALT swap recovery) | `liftover/LiftoverProcessor.scala` | **DONE** — `navigator-refgenome/vcf_lift.rs` (`lift_vcf`): raw-line lift (INFO/FORMAT passthrough), chain via `du_bio`, contig normalization, reverse-strand revcomp, REF/ALT-swap recovery against the target FASTA (+ biallelic GT flip), optional chrY-PAR filter, drop-with-stats, coordinate-sorted output. App `lift_vcf` + `navigator lift-vcf` CLI + Settings tool. **Validated live**: 5 real GRCh38 chrY SNPs → CHM13, positions + alleles exact vs the Y-SNP dict (3 inverted-region SNPs reverse-complemented) |
+| **Reference download checksum/integrity verification** | `refgenome/ReferenceGateway.scala` | **DONE** — streaming SHA-256 in `download.rs`; pinned-hash check (publisher, on the downloaded artifact; registry `sha256` slots, `None` until confirmed) + TOFU `.sha256` sidecar on the decompressed `.fa`; `verify_reference` re-hash + Settings "Verify" (✓/•/✗). `RefgenomeError::Integrity` on mismatch (`.part` removed) |
 
-**Remaining (low-medium):** VCF liftover orchestration + reference-download checksums (both mostly
-STR/VCF-workflow enablers).
+**Remaining (low):** authoritative pinned reference/chain hashes (the mechanism ships ready; values fill
+in as publisher checksums are confirmed); a general batch single-position liftover API. **§7 closed.**
 
 ## 8. UI — **PARTIAL** (settings + ideogram + painting + consensus tabs landed)
 
@@ -224,7 +224,7 @@ match — alignment + subject level — 3ca6615 all DONE.)
 | ~~2-match~~ | ~~Cross-subject Y matching~~ | — | — | **DONE e0e44bf** — `ymatch.rs` (shared-SNP/novel ranking, divergence LCA, STR-GD, SNP+STR TMRCA) + app `y_matches` one-vs-all + Y-DNA-tab match card. Local v1; federated surface under §4 |
 | ~~5-p2~~ | ~~Sync conflict detection + PULL + `source_file`~~ | — | — | **DONE e38f0b3** — idempotent publish (sync_state keeps the PDS TID → putRecord), pure reconcile planner + pull_sync, source_file (mig 0027). Live-PDS validation pending (needs did:plc repo) |
 | ~~4-live~~ | ~~IBD live exchange~~ | — | — | **DONE** (1e43f12, 816fcea, 02efee5) — transport + segment payload + attestation + real-data resolver + persistence + Encrypted-exchange UI + did:key bootstrap, validated live (James's 1.23M sites → ParentChild, verified+agreed). Remaining: AppView attestation indexing |
-| 7 | VCF liftover orchestration + reference-download checksums | Low-Med | Medium | STR/VCF-workflow enablers |
+| ~~7~~ | ~~VCF liftover orchestration + reference-download checksums~~ | — | — | **DONE** — `vcf_lift::lift_vcf` (chain + revcomp + REF/ALT-swap recovery, validated live on real chrY SNPs vs the Y-SNP dict) + streaming-SHA-256 download verification (pinned + TOFU sidecar + Settings "Verify"). CLI `lift-vcf` + Settings tool |
 | 8-misc | Y-profile management/audit dialog, merge-sequence-runs dialog | Low | Small | IBD browser (a6d44cc), PCA scatter (92c2cf6), haplogroup report (43e561c), identity/fingerprint match (3ca6615) DONE |
 
 **Recently shipped:** import UX (59b5696), checkpoint/resume (192a939), **STR caller foundation**

@@ -13,6 +13,7 @@ du-bio = { workspace = true }
 thiserror = { workspace = true }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
 flate2 = "1"
+sha2 = "0.10"
 noodles = { version = "0.93.0", features = ["fasta", "core"] }
 tokio = { version = "1", features = ["rt", "fs", "io-util", "sync"] }
 serde = { version = "1", features = ["derive"] }

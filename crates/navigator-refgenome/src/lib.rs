@@ -13,8 +13,10 @@ pub mod gateway;
 pub mod index;
 pub mod regions;
 pub mod registry;
+pub mod vcf_lift;
 
 pub use error::RefgenomeError;
-pub use gateway::{LiftedPos, ReferenceGateway, RefStatus};
+pub use gateway::{LiftedPos, ReferenceGateway, RefStatus, VerifyOutcome};
+pub use vcf_lift::{VcfLiftOpts, VcfLiftStats};
 pub use regions::{ChromosomeRegions, Cytoband, GenomeRegions, RegionAnnotation};
 pub use registry::{canonical_build, Build, BuildOverride, ReferencePolarity, UserConfig};

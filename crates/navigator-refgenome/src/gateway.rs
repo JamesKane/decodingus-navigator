@@ -26,6 +26,20 @@ pub enum RefStatus {
     Unknown,
 }
 
+/// Result of [`ReferenceGateway::verify_reference`] — re-hashing a cached reference against its
+/// integrity sidecar.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum VerifyOutcome {
+    /// The cached file's SHA-256 matches its recorded sidecar.
+    Verified,
+    /// The cached file's hash differs from the sidecar — likely on-disk corruption.
+    Mismatch { expected: String, got: String },
+    /// Cached, but no sidecar to check against (e.g. a user-pinned local FASTA, or pre-dates this).
+    NoSidecar,
+    /// Nothing cached for this build.
+    NotCached,
+}
+
 /// A tree position lifted to another build: the original `tree_pos` plus its `(contig, pos)`
 /// in the target build (all 1-based). `reverse` is true when the target chain is on the minus
 /// strand — the caller must reverse-complement the base it reads there (large tracts of the
@@ -137,12 +151,16 @@ impl ReferenceGateway {
         let src = self.registry().reference_source(build);
         let fa = cache::reference_path(&self.base, build);
         let dl = download_target(&fa, &src.url);
-        download::download(&self.http, &src.url, &dl, progress).await?;
+        let artifact_sha = download::download(&self.http, &src.url, &dl, progress).await?;
+        // Pinned (publisher) verification, on the downloaded artifact exactly as served.
+        verify_pinned(&dl, src.sha256.as_deref(), &artifact_sha)?;
 
         let fa_out = fa.clone();
-        tokio::task::spawn_blocking(move || index::decompress_and_index(&dl, &fa_out))
+        let fa_sha = tokio::task::spawn_blocking(move || index::decompress_and_index(&dl, &fa_out))
             .await
             .map_err(|e| RefgenomeError::Message(format!("indexing join error: {e}")))??;
+        // TOFU sidecar of the decompressed reference (for later offline re-verification).
+        write_sidecar(&fa, &fa_sha);
         Ok(fa)
     }
 
@@ -167,7 +185,9 @@ impl ReferenceGateway {
             .registry()
             .chain_source(from, to)
             .ok_or_else(|| RefgenomeError::NoChain { from: from.as_str().into(), to: to.as_str().into() })?;
-        download::download(&self.http, &src.url, &path, progress).await?;
+        let sha = download::download(&self.http, &src.url, &path, progress).await?;
+        verify_pinned(&path, src.sha256.as_deref(), &sha)?; // a chain is stored as-downloaded
+        write_sidecar(&path, &sha);
         Ok(path)
     }
 
@@ -191,7 +211,9 @@ impl ReferenceGateway {
             .registry()
             .mask_source(name)
             .ok_or_else(|| RefgenomeError::Message(format!("unknown mask {name}")))?;
-        download::download(&self.http, &src.url, &path, progress).await?;
+        let sha = download::download(&self.http, &src.url, &path, progress).await?;
+        verify_pinned(&path, src.sha256.as_deref(), &sha)?; // a mask BED is stored as-downloaded
+        write_sidecar(&path, &sha);
         Ok(path)
     }
 
@@ -422,6 +444,24 @@ impl ReferenceGateway {
         Ok(stats)
     }
 
+    /// Re-hash a cached reference and compare to its integrity sidecar (TOFU, written at download
+    /// time). Detects on-disk corruption of the cached `.fa`. Re-reads the whole FASTA, so call it
+    /// from a blocking context (it's an explicit, user-triggered check, not the hot path). A
+    /// user-pinned local FASTA has no sidecar → [`VerifyOutcome::NoSidecar`].
+    pub fn verify_reference(&self, build_name: &str) -> Result<VerifyOutcome, RefgenomeError> {
+        let fa = match self.reference_status(build_name) {
+            RefStatus::Cached(p) | RefStatus::LocalOverride(p) => p,
+            _ => return Ok(VerifyOutcome::NotCached),
+        };
+        let Some(expected) = read_sidecar(&fa) else { return Ok(VerifyOutcome::NoSidecar) };
+        let got = index::hash_file(&fa)?;
+        Ok(if expected.eq_ignore_ascii_case(&got) {
+            VerifyOutcome::Verified
+        } else {
+            VerifyOutcome::Mismatch { expected, got }
+        })
+    }
+
     /// Resolve a `(from, to)` build-name pair for **chain** purposes, normalized to nuclear
     /// coordinates — so the masked+rCRS variant resolves to (and reuses the cache of) CHM13's
     /// chains rather than a duplicate keyed by its own name.
@@ -453,6 +493,42 @@ fn read_gz_to_string(path: &Path) -> Result<String, RefgenomeError> {
     let mut s = String::new();
     dec.read_to_string(&mut s).map_err(|e| RefgenomeError::io(path, e))?;
     Ok(s)
+}
+
+/// The `<file>.sha256` integrity-sidecar path for a cached artifact.
+fn sidecar_path(file: &Path) -> PathBuf {
+    let mut s: OsString = file.as_os_str().to_os_string();
+    s.push(".sha256");
+    PathBuf::from(s)
+}
+
+/// Write the TOFU integrity sidecar (best-effort: a missing sidecar just means "unverifiable",
+/// never fatal).
+fn write_sidecar(file: &Path, sha_hex: &str) {
+    let _ = std::fs::write(sidecar_path(file), sha_hex);
+}
+
+/// Read the recorded sidecar digest for a cached file, if present (first whitespace-delimited token).
+fn read_sidecar(file: &Path) -> Option<String> {
+    let s = std::fs::read_to_string(sidecar_path(file)).ok()?;
+    s.split_whitespace().next().map(str::to_string)
+}
+
+/// Compare a freshly-downloaded artifact's digest to a pinned (publisher) hash, if one is set.
+/// On mismatch the partial download at `path` is removed and an [`RefgenomeError::Integrity`] is
+/// returned; `None` pinned hash = nothing to check (TOFU only).
+fn verify_pinned(path: &Path, pinned: Option<&str>, got: &str) -> Result<(), RefgenomeError> {
+    if let Some(expected) = pinned {
+        if !expected.eq_ignore_ascii_case(got) {
+            let _ = std::fs::remove_file(path);
+            return Err(RefgenomeError::Integrity {
+                path: path.to_path_buf(),
+                expected: expected.to_string(),
+                got: got.to_string(),
+            });
+        }
+    }
+    Ok(())
 }
 
 /// Where to stream a download before decompression: `<fa>.gz` for gzipped sources, else a

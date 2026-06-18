@@ -307,6 +307,10 @@ pub enum Command {
     LoadReferenceSettings,
     /// Set a build's local-FASTA override + auto-download flag (persists reference_sources.json).
     SetReferenceOverride { build: String, local_path: Option<String>, auto_download: bool },
+    /// Re-hash a cached reference against its integrity sidecar (Settings "Verify").
+    VerifyReference { build: String },
+    /// Lift a VCF from `source` (inferred when `None`) to `target` build, writing `out`.
+    LiftVcf { source: Option<String>, target: String, in_vcf: PathBuf, out_vcf: PathBuf, filter_par: bool },
 }
 
 /// A panel with its site count, for the panel list.
@@ -486,6 +490,10 @@ pub enum Event {
     ReferenceSettings(Vec<RefBuildStatus>),
     /// A reference override was saved; the UI may reload the settings rows.
     ReferenceSettingsChanged,
+    /// Result of a reference integrity check (a short human-readable status per build).
+    ReferenceVerified { build: String, status: String },
+    /// A VCF liftover finished (a human-readable stats summary), for the status line.
+    VcfLifted { summary: String },
     Error(String),
 }
 
@@ -570,6 +578,39 @@ pub async fn handle(app: &App, cmd: Command) -> Event {
             match app.set_reference_override(&build, local_path, auto_download) {
                 Ok(()) => Event::ReferenceSettingsChanged,
                 Err(e) => Event::Error(e.to_string()),
+            }
+        }
+        Command::VerifyReference { build } => match app.verify_reference(&build).await {
+            Ok(outcome) => {
+                let status = match outcome {
+                    navigator_app::VerifyOutcome::Verified => "✓ verified".to_string(),
+                    navigator_app::VerifyOutcome::Mismatch { .. } => "✗ mismatch (corrupted?)".to_string(),
+                    navigator_app::VerifyOutcome::NoSidecar => "• no checksum on record".to_string(),
+                    navigator_app::VerifyOutcome::NotCached => "not cached".to_string(),
+                };
+                Event::ReferenceVerified { build, status }
+            }
+            Err(e) => Event::Error(e.to_string()),
+        },
+        Command::LiftVcf { source, target, in_vcf, out_vcf, filter_par } => {
+            let source = source.or_else(|| navigator_app::infer_vcf_source_build(&in_vcf));
+            match source {
+                None => Event::Error(format!(
+                    "could not infer the source build of {} — set it explicitly",
+                    in_vcf.display()
+                )),
+                Some(src) => {
+                    let opts = navigator_app::VcfLiftOpts { filter_par };
+                    match app.lift_vcf(&src, &target, in_vcf, out_vcf.clone(), opts, &mut |_, _| {}).await {
+                        Ok(s) => Event::VcfLifted {
+                            summary: format!(
+                                "Lifted {}/{} variants ({} unmapped, {} ref-mismatch) → {}",
+                                s.lifted, s.total, s.unmapped, s.ref_mismatch, out_vcf.display()
+                            ),
+                        },
+                        Err(e) => Event::Error(e.to_string()),
+                    }
+                }
             }
         }
         Command::DeleteVariantSet { id, biosample_guid } => match app.delete_variant_set(id).await {

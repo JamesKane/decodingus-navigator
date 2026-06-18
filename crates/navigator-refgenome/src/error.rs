@@ -24,6 +24,9 @@ pub enum RefgenomeError {
     #[error("no liftover chain registered for {from} -> {to}")]
     NoChain { from: String, to: String },
 
+    #[error("integrity check failed for {path}: expected sha256 {expected}, got {got}")]
+    Integrity { path: PathBuf, expected: String, got: String },
+
     #[error("{0}")]
     Message(String),
 }

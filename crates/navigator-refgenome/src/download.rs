@@ -5,6 +5,7 @@
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
+use sha2::{Digest, Sha256};
 use tokio::io::AsyncWriteExt;
 
 use crate::error::RefgenomeError;
@@ -15,17 +16,25 @@ fn part_path(dest: &Path) -> PathBuf {
     PathBuf::from(s)
 }
 
+/// Lowercase hex SHA-256 of `bytes` (shared with the integrity sidecar helpers in `gateway`).
+pub fn sha256_hex(bytes: &[u8]) -> String {
+    let mut h = Sha256::new();
+    h.update(bytes);
+    h.finalize().iter().map(|b| format!("{b:02x}")).collect()
+}
+
 /// Download `url` to `dest`, reporting `(received, total)` as bytes arrive (`total` is the
 /// `Content-Length`, if the server sent one). Streams to `dest.part` and renames on success.
-/// Retries once on a transient error.
+/// Retries once on a transient error. Returns the SHA-256 (lowercase hex) of the **downloaded
+/// bytes** — computed on the fly so callers can verify against a pinned hash without a re-read.
 pub async fn download(
     client: &reqwest::Client,
     url: &str,
     dest: &Path,
     progress: &mut (dyn FnMut(u64, Option<u64>) + Send),
-) -> Result<(), RefgenomeError> {
+) -> Result<String, RefgenomeError> {
     match download_once(client, url, dest, progress).await {
-        Ok(()) => Ok(()),
+        Ok(digest) => Ok(digest),
         Err(_) => download_once(client, url, dest, progress).await, // single retry
     }
 }
@@ -35,7 +44,7 @@ async fn download_once(
     url: &str,
     dest: &Path,
     progress: &mut (dyn FnMut(u64, Option<u64>) + Send),
-) -> Result<(), RefgenomeError> {
+) -> Result<String, RefgenomeError> {
     let http_err = |source: reqwest::Error| RefgenomeError::Http { url: url.to_string(), source };
 
     if let Some(parent) = dest.parent() {
@@ -48,8 +57,10 @@ async fn download_once(
 
     let mut file = tokio::fs::File::create(&part).await.map_err(|e| RefgenomeError::io(&part, e))?;
     let mut received = 0u64;
+    let mut hasher = Sha256::new();
     while let Some(chunk) = resp.chunk().await.map_err(http_err)? {
         file.write_all(&chunk).await.map_err(|e| RefgenomeError::io(&part, e))?;
+        hasher.update(&chunk);
         received += chunk.len() as u64;
         progress(received, total);
     }
@@ -57,5 +68,5 @@ async fn download_once(
     drop(file);
 
     tokio::fs::rename(&part, dest).await.map_err(|e| RefgenomeError::io(dest, e))?;
-    Ok(())
+    Ok(hasher.finalize().iter().map(|b| format!("{b:02x}")).collect())
 }

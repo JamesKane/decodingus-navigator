@@ -105,28 +105,33 @@ pub fn canonical_build(name: &str) -> Option<Build> {
     }
 }
 
-/// Where a reference FASTA is fetched from, with a rough size for the download prompt.
+/// Where a reference FASTA is fetched from, with a rough size for the download prompt and an
+/// optional pinned SHA-256 of the downloaded artifact (publisher's hash, when known) used to
+/// verify the download before it's accepted. `None` = no authoritative hash to pin against yet.
 #[derive(Debug, Clone)]
 pub struct ReferenceSource {
     pub build: Build,
     pub url: String,
     pub est_bytes: u64,
+    pub sha256: Option<String>,
 }
 
-/// Where a liftover chain (UCSC `.chain`, 1:1) is fetched from.
+/// Where a liftover chain (UCSC `.chain`, 1:1) is fetched from, with an optional pinned SHA-256.
 #[derive(Debug, Clone)]
 pub struct ChainSource {
     pub from: Build,
     pub to: Build,
     pub url: String,
+    pub sha256: Option<String>,
 }
 
 /// Where a named annotation-mask BED is fetched from (e.g. the curated CHM13 Y structural
-/// regions). `name` is the cache key / filename stem.
+/// regions). `name` is the cache key / filename stem. Optional pinned SHA-256.
 #[derive(Debug, Clone)]
 pub struct MaskSource {
     pub name: String,
     pub url: String,
+    pub sha256: Option<String>,
 }
 
 /// The curated CHM13v2.0 chrY structural-region BEDs (marbl/CHM13, Rhie et al. 2023) — the
@@ -154,6 +159,17 @@ const CHAIN_BASE: &str = "https://s3-us-west-2.amazonaws.com/human-pangenomics/T
 const ANNOTATION_BASE: &str =
     "https://s3-us-west-2.amazonaws.com/human-pangenomics/T2T/CHM13/assemblies/annotation";
 
+/// Built-in authoritative SHA-256 (lowercase hex) of a reference FASTA's **downloaded artifact**
+/// (the `.fa.gz` / `.fasta` exactly as served), when a publisher checksum has been confirmed.
+/// `None` until verified — the integrity machinery ships ready and pins fill in over time. Add
+/// values here (or via the per-build `sha256` override in `reference_sources.json`).
+fn default_reference_sha(build: Build) -> Option<&'static str> {
+    match build {
+        // Awaiting confirmed publisher checksums (T2T human-pangenomics bucket / Broad references).
+        Build::Grch38 | Build::Grch37 | Build::Chm13v2 | Build::Chm13v2MaskedRcrs => None,
+    }
+}
+
 /// Per-build user override loaded from `reference_sources.json`.
 #[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Eq)]
 pub struct BuildOverride {
@@ -163,6 +179,10 @@ pub struct BuildOverride {
     /// Override the download URL.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub url: Option<String>,
+    /// Pin an authoritative SHA-256 (lowercase hex) of the downloaded artifact; the download is
+    /// rejected if it doesn't match. Lets a user supply a publisher checksum we don't ship.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub sha256: Option<String>,
     /// Whether a missing reference may be auto-downloaded for this build (default `true`).
     #[serde(default = "default_true")]
     pub auto_download: bool,
@@ -228,12 +248,13 @@ impl Registry {
             Build::Chm13v2 => (CHM13_FA, GB),
             Build::Chm13v2MaskedRcrs => (CHM13_MASKED_RCRS_FA, GB),
         };
-        let url = self
-            .config
-            .for_build(build)
-            .and_then(|o| o.url.clone())
-            .unwrap_or_else(|| default_url.to_string());
-        ReferenceSource { build, url, est_bytes }
+        let ov = self.config.for_build(build);
+        let url = ov.and_then(|o| o.url.clone()).unwrap_or_else(|| default_url.to_string());
+        // User-pinned hash wins over the built-in (which is None until a publisher hash is confirmed).
+        let sha256 = ov
+            .and_then(|o| o.sha256.clone())
+            .or_else(|| default_reference_sha(build).map(str::to_string));
+        ReferenceSource { build, url, est_bytes, sha256 }
     }
 
     /// The liftover chain source for a build pair, if one is registered. Builds are
@@ -248,7 +269,7 @@ impl Registry {
             (Build::Chm13v2, Build::Grch37) => "chm13v2-hg19.chain",
             _ => return None,
         };
-        Some(ChainSource { from, to, url: format!("{CHAIN_BASE}/{file}") })
+        Some(ChainSource { from, to, url: format!("{CHAIN_BASE}/{file}"), sha256: None })
     }
 
     /// The UCSC `cytoBand` table URL for a build (gzipped) — the source for genome-region
@@ -273,13 +294,10 @@ impl Registry {
     /// if unknown. A user URL override under `references[name]` is honored.
     pub fn mask_source(&self, name: &str) -> Option<MaskSource> {
         let file = Y_STRUCTURAL_MASKS.iter().find(|(n, _)| *n == name).map(|(_, f)| *f)?;
-        let url = self
-            .config
-            .references
-            .get(name)
-            .and_then(|o| o.url.clone())
-            .unwrap_or_else(|| format!("{ANNOTATION_BASE}/{file}"));
-        Some(MaskSource { name: name.to_string(), url })
+        let ov = self.config.references.get(name);
+        let url = ov.and_then(|o| o.url.clone()).unwrap_or_else(|| format!("{ANNOTATION_BASE}/{file}"));
+        let sha256 = ov.and_then(|o| o.sha256.clone());
+        Some(MaskSource { name: name.to_string(), url, sha256 })
     }
 }
 
@@ -376,7 +394,7 @@ mod tests {
         let mut references = HashMap::new();
         references.insert(
             "chm13v2.0".to_string(),
-            BuildOverride { local_path: Some("/data/chm13.fa".into()), url: None, auto_download: true },
+            BuildOverride { local_path: Some("/data/chm13.fa".into()), url: None, sha256: None, auto_download: true },
         );
         let reg = Registry::new(UserConfig { references });
         assert_eq!(reg.local_override(Build::Chm13v2), Some("/data/chm13.fa"));
@@ -391,7 +409,7 @@ mod tests {
         let mut references = HashMap::new();
         references.insert(
             "GRCh38".to_string(),
-            BuildOverride { local_path: Some("/refs/grch38.fa".into()), url: None, auto_download: false },
+            BuildOverride { local_path: Some("/refs/grch38.fa".into()), url: None, sha256: None, auto_download: false },
         );
         let cfg = UserConfig { references };
         cfg.save(&path).unwrap();

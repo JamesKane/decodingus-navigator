@@ -171,6 +171,8 @@ struct RefRow {
     status: String,
     local_path: String,
     auto_download: bool,
+    /// Last integrity-check result for this build (set by `Event::ReferenceVerified`).
+    verify: String,
 }
 
 /// Editable Settings-dialog state (loaded from `AppSettings`; reference rows arrive via
@@ -184,6 +186,11 @@ struct SettingsForm {
     /// UI scale (egui zoom factor); 1.0 = native.
     ui_scale: f32,
     references: Vec<RefRow>,
+    /// VCF-liftover tool state (input/output paths, target build, PAR filter).
+    lift_in: String,
+    lift_out: String,
+    lift_target: String,
+    lift_filter_par: bool,
 }
 
 impl SettingsForm {
@@ -197,6 +204,10 @@ impl SettingsForm {
             prompt_before_download: s.prompt_before_download.unwrap_or(true),
             ui_scale: s.ui_scale.unwrap_or(1.0),
             references: Vec::new(),
+            lift_in: String::new(),
+            lift_out: String::new(),
+            lift_target: "chm13v2.0".to_string(),
+            lift_filter_par: false,
         }
     }
 }
@@ -1109,12 +1120,21 @@ impl NavigatorApp {
                             status: r.status,
                             local_path: r.local_path.unwrap_or_default(),
                             auto_download: r.auto_download,
+                            verify: String::new(),
                         })
                         .collect();
                 }
                 Event::ReferenceSettingsChanged => {
                     self.status = "Reference settings saved".into();
                     let _ = self.tx.send(Command::LoadReferenceSettings); // refresh statuses
+                }
+                Event::ReferenceVerified { build, status } => {
+                    if let Some(row) = self.settings_form.references.iter_mut().find(|r| r.build == build) {
+                        row.verify = status;
+                    }
+                }
+                Event::VcfLifted { summary } => {
+                    self.status = summary;
                 }
                 Event::DataBatchImported { biosample_guid, summary } => {
                     self.status = format!(
@@ -2221,6 +2241,9 @@ impl NavigatorApp {
         let mut lang = self.lang;
         let prev_lang = self.lang;
         let (mut close, mut save) = (false, false);
+        // Deferred actions (dispatched after the closure, since only `self.tr` is used inside it).
+        let mut verify_build: Option<String> = None;
+        let mut lift_request = false;
 
         egui::Area::new(egui::Id::new("settings_modal"))
             .order(egui::Order::Foreground)
@@ -2282,8 +2305,8 @@ impl NavigatorApp {
                         // --- Reference genomes ---
                         ui.label(egui::RichText::new(self.tr("settings.references")).strong());
                         ui.checkbox(&mut form.prompt_before_download, self.tr("settings.promptDownload"));
-                        egui::Grid::new("settings_refs").striped(true).num_columns(4).show(ui, |ui| {
-                            for h in ["settings.build", "settings.status", "settings.localFasta", "settings.autoDownload"] {
+                        egui::Grid::new("settings_refs").striped(true).num_columns(5).show(ui, |ui| {
+                            for h in ["settings.build", "settings.status", "settings.localFasta", "settings.autoDownload", "settings.integrity"] {
                                 ui.strong(self.tr(h));
                             }
                             ui.end_row();
@@ -2294,7 +2317,7 @@ impl NavigatorApp {
                                     ui.add(
                                         egui::TextEdit::singleline(&mut row.local_path)
                                             .hint_text("(none)")
-                                            .desired_width(200.0),
+                                            .desired_width(180.0),
                                     );
                                     if ui.button("📂").on_hover_text(self.tr("settings.browse")).clicked() {
                                         if let Some(p) = rfd::FileDialog::new()
@@ -2306,11 +2329,55 @@ impl NavigatorApp {
                                     }
                                 });
                                 ui.checkbox(&mut row.auto_download, "");
+                                ui.horizontal(|ui| {
+                                    if ui.small_button(self.tr("settings.verify")).clicked() {
+                                        verify_build = Some(row.build.clone());
+                                    }
+                                    if !row.verify.is_empty() {
+                                        ui.label(egui::RichText::new(&row.verify).small().weak());
+                                    }
+                                });
                                 ui.end_row();
                             }
                         });
                         if form.references.is_empty() {
                             ui.label(egui::RichText::new(self.tr("settings.loadingRefs")).weak());
+                        }
+                        ui.add_space(8.0);
+
+                        // --- Tools: VCF liftover ---
+                        ui.label(egui::RichText::new(self.tr("liftvcf.title")).strong());
+                        ui.label(egui::RichText::new(self.tr("liftvcf.hint")).weak().small());
+                        ui.horizontal(|ui| {
+                            ui.label(self.tr("liftvcf.input"));
+                            ui.add(egui::TextEdit::singleline(&mut form.lift_in).hint_text("input.vcf[.gz]").desired_width(260.0));
+                            if ui.button("📂").clicked() {
+                                if let Some(p) = rfd::FileDialog::new().add_filter("VCF", &["vcf", "gz"]).pick_file() {
+                                    form.lift_in = p.display().to_string();
+                                }
+                            }
+                        });
+                        ui.horizontal(|ui| {
+                            ui.label(self.tr("liftvcf.target"));
+                            egui::ComboBox::from_id_salt("liftvcf_target").selected_text(&form.lift_target).show_ui(ui, |ui| {
+                                for b in ["chm13v2.0", "GRCh38", "GRCh37"] {
+                                    ui.selectable_value(&mut form.lift_target, b.to_string(), b);
+                                }
+                            });
+                            ui.checkbox(&mut form.lift_filter_par, self.tr("liftvcf.filterPar"));
+                        });
+                        ui.horizontal(|ui| {
+                            ui.label(self.tr("liftvcf.output"));
+                            ui.add(egui::TextEdit::singleline(&mut form.lift_out).hint_text("lifted.vcf[.gz]").desired_width(260.0));
+                            if ui.button("📂").clicked() {
+                                if let Some(p) = rfd::FileDialog::new().add_filter("VCF", &["vcf", "gz"]).set_file_name("lifted.vcf").save_file() {
+                                    form.lift_out = p.display().to_string();
+                                }
+                            }
+                        });
+                        let lift_ready = !form.lift_in.trim().is_empty() && !form.lift_out.trim().is_empty();
+                        if ui.add_enabled(lift_ready, egui::Button::new(self.tr("liftvcf.run"))).clicked() {
+                            lift_request = true;
                         }
                         ui.add_space(8.0);
 
@@ -2370,6 +2437,22 @@ impl NavigatorApp {
                     auto_download: row.auto_download,
                 });
             }
+        }
+
+        // Deferred dispatch (only `self.tr` was used inside the closure).
+        if let Some(build) = verify_build {
+            self.status = format!("Verifying {build}…");
+            let _ = self.tx.send(Command::VerifyReference { build });
+        }
+        if lift_request {
+            self.status = "Lifting VCF…".into();
+            let _ = self.tx.send(Command::LiftVcf {
+                source: None, // inferred from the VCF header
+                target: form.lift_target.clone(),
+                in_vcf: std::path::PathBuf::from(form.lift_in.trim()),
+                out_vcf: std::path::PathBuf::from(form.lift_out.trim()),
+                filter_par: form.lift_filter_par,
+            });
         }
 
         if close {

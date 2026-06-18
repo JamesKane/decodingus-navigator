@@ -9,6 +9,7 @@ use std::path::{Path, PathBuf};
 
 use flate2::read::MultiGzDecoder;
 use noodles::fasta;
+use sha2::{Digest, Sha256};
 
 use crate::error::RefgenomeError;
 
@@ -41,32 +42,72 @@ fn read_up_to(r: &mut impl Read, buf: &mut [u8]) -> io::Result<usize> {
     Ok(filled)
 }
 
+/// A writer that tees everything written to it through a SHA-256 hasher while forwarding to the
+/// inner writer — lets us hash the decompressed FASTA for free during the decompress copy.
+struct HashingWriter<W: io::Write> {
+    inner: W,
+    hasher: Sha256,
+}
+impl<W: io::Write> io::Write for HashingWriter<W> {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        let n = self.inner.write(buf)?;
+        self.hasher.update(&buf[..n]);
+        Ok(n)
+    }
+    fn flush(&mut self) -> io::Result<()> {
+        self.inner.flush()
+    }
+}
+
+/// SHA-256 (lowercase hex) of a file, read in a streaming buffer.
+pub(crate) fn hash_file(path: &Path) -> Result<String, RefgenomeError> {
+    let mut f = BufReader::new(File::open(path).map_err(|e| RefgenomeError::io(path, e))?);
+    let mut hasher = Sha256::new();
+    let mut buf = [0u8; 1 << 16];
+    loop {
+        let n = f.read(&mut buf).map_err(|e| RefgenomeError::io(path, e))?;
+        if n == 0 {
+            break;
+        }
+        hasher.update(&buf[..n]);
+    }
+    Ok(hasher.finalize().iter().map(|b| format!("{b:02x}")).collect())
+}
+
 /// Turn `src` (gzip/bgzip or plain FASTA) into a plain FASTA at `fa_out` and write
 /// `fa_out.fai`. On a gzip input, `src` is decompressed then deleted; on a plain input it is
-/// moved into place. The `.fai` is built by indexing the plain FASTA.
-pub fn decompress_and_index(src: &Path, fa_out: &Path) -> Result<(), RefgenomeError> {
+/// moved into place. The `.fai` is built by indexing the plain FASTA. Returns the SHA-256
+/// (lowercase hex) of the final `.fa` — computed for free while decompressing, or via a single
+/// streaming read for a plain (renamed) input — for the integrity sidecar.
+pub fn decompress_and_index(src: &Path, fa_out: &Path) -> Result<String, RefgenomeError> {
     if let Some(parent) = fa_out.parent() {
         std::fs::create_dir_all(parent).map_err(|e| RefgenomeError::io(parent, e))?;
     }
 
+    let fa_sha;
     if is_gzip(src)? {
         let part = with_suffix(fa_out, "part");
         let input = File::open(src).map_err(|e| RefgenomeError::io(src, e))?;
         let mut dec = MultiGzDecoder::new(BufReader::new(input));
-        let mut out = BufWriter::new(File::create(&part).map_err(|e| RefgenomeError::io(&part, e))?);
-        io::copy(&mut dec, &mut out).map_err(|e| RefgenomeError::io(&part, e))?;
-        out.into_inner().map_err(|e| RefgenomeError::io(&part, e.into_error()))?.sync_all().ok();
+        let out = BufWriter::new(File::create(&part).map_err(|e| RefgenomeError::io(&part, e))?);
+        let mut tee = HashingWriter { inner: out, hasher: Sha256::new() };
+        io::copy(&mut dec, &mut tee).map_err(|e| RefgenomeError::io(&part, e))?;
+        fa_sha = tee.hasher.finalize().iter().map(|b| format!("{b:02x}")).collect();
+        tee.inner.into_inner().map_err(|e| RefgenomeError::io(&part, e.into_error()))?.sync_all().ok();
         std::fs::rename(&part, fa_out).map_err(|e| RefgenomeError::io(fa_out, e))?;
         let _ = std::fs::remove_file(src);
-    } else if src != fa_out {
-        std::fs::rename(src, fa_out).map_err(|e| RefgenomeError::io(fa_out, e))?;
+    } else {
+        if src != fa_out {
+            std::fs::rename(src, fa_out).map_err(|e| RefgenomeError::io(fa_out, e))?;
+        }
+        fa_sha = hash_file(fa_out)?;
     }
 
     let index = fasta::fs::index(fa_out).map_err(|e| RefgenomeError::io(fa_out, e))?;
     let fai = with_suffix(fa_out, "fai");
     let mut writer = fasta::fai::Writer::new(BufWriter::new(File::create(&fai).map_err(|e| RefgenomeError::io(&fai, e))?));
     writer.write_index(&index).map_err(|e| RefgenomeError::io(&fai, e))?;
-    Ok(())
+    Ok(fa_sha)
 }
 
 #[cfg(test)]

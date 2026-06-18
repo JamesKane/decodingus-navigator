@@ -35,6 +35,8 @@ pub enum Command {
     Projects(ProbeArgs),
     /// De-novo diploid variant calling → VCF (whole-genome, or a single `--contig`).
     Call(CallArgs),
+    /// Lift a VCF from one reference build to another (chain-based; the GATK LiftoverVcf replacement).
+    LiftVcf(LiftVcfArgs),
 }
 
 #[derive(Args)]
@@ -101,6 +103,28 @@ pub struct CallArgs {
     db: Option<PathBuf>,
 }
 
+#[derive(Args)]
+pub struct LiftVcfArgs {
+    /// Input VCF (`.vcf` or `.vcf.gz`).
+    #[arg(long, short)]
+    r#in: PathBuf,
+    /// Target reference build to lift to (e.g. chm13v2.0, GRCh38, GRCh37).
+    #[arg(long, short)]
+    to: String,
+    /// Source build of the input VCF (e.g. GRCh38). Inferred from the header when omitted.
+    #[arg(long, short)]
+    from: Option<String>,
+    /// Output VCF path (`.vcf` or `.vcf.gz`).
+    #[arg(long, short)]
+    out: PathBuf,
+    /// Drop variants landing in the target chrY PAR.
+    #[arg(long)]
+    filter_par: bool,
+    /// Workspace database path (defaults to the GUI's ~/.decodingus/navigator-rs.db).
+    #[arg(long)]
+    db: Option<PathBuf>,
+}
+
 /// Run a CLI subcommand to completion, returning a process exit code. Spins its own tokio
 /// runtime so `main` (which must keep the GUI on the main thread) stays sync.
 pub fn run(command: Command) -> i32 {
@@ -118,6 +142,7 @@ pub fn run(command: Command) -> i32 {
             Command::Show(a) => show(a).await,
             Command::Projects(a) => projects(a).await,
             Command::Call(a) => call(a).await,
+            Command::LiftVcf(a) => lift_vcf(a).await,
         }
     })
 }
@@ -511,6 +536,41 @@ async fn call(args: CallArgs) -> i32 {
         None => print!("{vcf}"),
     }
     0
+}
+
+async fn lift_vcf(args: LiftVcfArgs) -> i32 {
+    let app = match open(args.db).await {
+        Ok(a) => a,
+        Err(c) => return c,
+    };
+    let source = match args.from.clone().or_else(|| navigator_app::infer_vcf_source_build(&args.r#in)) {
+        Some(s) => s,
+        None => {
+            eprintln!("error: could not infer the source build from {} — pass --from <build>", args.r#in.display());
+            return 1;
+        }
+    };
+    eprintln!("lifting {} : {} → {} …", args.r#in.display(), source, args.to);
+    let opts = navigator_app::VcfLiftOpts { filter_par: args.filter_par };
+    let mut last = 0u64;
+    let mut progress = |received: u64, _total: Option<u64>| {
+        // Coarse byte ticks during any chain/reference download.
+        if received >= last + 50_000_000 {
+            last = received;
+            eprint!(".");
+        }
+    };
+    match app.lift_vcf(&source, &args.to, args.r#in.clone(), args.out.clone(), opts, &mut progress).await {
+        Ok(s) => {
+            eprintln!(
+                "\nlifted {}/{} ({} unmapped, {} split, {} ref-mismatch, {} swap-ambiguous, {} complex-rev, {} PAR) → {}",
+                s.lifted, s.total, s.unmapped, s.split, s.ref_mismatch, s.swap_ambiguous, s.complex_reverse, s.par,
+                args.out.display()
+            );
+            0
+        }
+        Err(e) => report(e),
+    }
 }
 
 async fn projects(args: ProbeArgs) -> i32 {

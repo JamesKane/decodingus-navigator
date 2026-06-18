@@ -125,6 +125,8 @@ use navigator_sync::exchange::{self, ExchangeKey};
 use navigator_refgenome::{cache as refgenome_cache, canonical_build, Build as ReferenceBuild, LiftedPos, ReferenceGateway};
 pub use navigator_refgenome::RefStatus;
 pub use navigator_refgenome::{ChromosomeRegions, Cytoband, GenomeRegions, RegionAnnotation};
+pub use navigator_refgenome::{VcfLiftOpts, VcfLiftStats, VerifyOutcome};
+pub use navigator_refgenome::vcf_lift::infer_source_build as infer_vcf_source_build;
 use navigator_sync::{
     AuditEntryRecord, HaplogroupReconciliationRecord, HeteroplasmyObservationRecord,
     IdentityVerificationRecord, ManualOverrideRecord, ReconciliationStatusRecord,
@@ -7124,6 +7126,56 @@ impl App {
         progress: &mut (dyn FnMut(u64, Option<u64>) + Send),
     ) -> Result<PathBuf, AppError> {
         Ok(self.gateway.resolve_chain(from, to, progress).await?)
+    }
+
+    /// Re-hash a cached reference against its integrity sidecar (gap §7) — detects on-disk
+    /// corruption of the cached `.fa`. Runs on a blocking thread (re-reads the whole FASTA), so it's
+    /// an explicit, user-triggered check (Settings), not the hot path.
+    pub async fn verify_reference(&self, build: &str) -> Result<navigator_refgenome::VerifyOutcome, AppError> {
+        let gw = self.gateway.clone();
+        let build = build.to_string();
+        Ok(tokio::task::spawn_blocking(move || gw.verify_reference(&build)).await??)
+    }
+
+    /// Lift a whole VCF from `source` build to `target` build (gap §7 — the GATK `LiftoverVcf`
+    /// replacement). Ensures the source→target chain and the target reference are resolved
+    /// (downloading on a miss, with progress), then runs the line-level lift on a blocking thread.
+    /// Returns lift/drop counts.
+    pub async fn lift_vcf(
+        &self,
+        source: &str,
+        target: &str,
+        in_vcf: PathBuf,
+        out_vcf: PathBuf,
+        opts: navigator_refgenome::VcfLiftOpts,
+        progress: &mut (dyn FnMut(u64, Option<u64>) + Send),
+    ) -> Result<navigator_refgenome::VcfLiftStats, AppError> {
+        // Resolve the inputs (chain + target FASTA), downloading on a miss.
+        self.gateway.resolve_chain(source, target, progress).await?;
+        let target_fa = self.gateway.resolve_reference(target, progress).await?;
+        let lo = self.gateway.load_liftover(source, target)?;
+
+        // Target chrY PAR intervals (only needed when filtering them out).
+        let target_par: Vec<(i64, i64)> = if opts.filter_par {
+            let regions = self.gateway.genome_regions(target, progress).await?;
+            regions
+                .chromosomes
+                .get("chrY")
+                .or_else(|| regions.chromosomes.get("Y"))
+                .map(|c| c.par.clone())
+                .unwrap_or_default()
+        } else {
+            Vec::new()
+        };
+
+        let (src_label, tgt_label) = (source.to_string(), target.to_string());
+        let stats = tokio::task::spawn_blocking(move || {
+            navigator_refgenome::vcf_lift::lift_vcf(
+                &lo, &target_fa, &target_par, &src_label, &tgt_label, &in_vcf, &out_vcf, opts,
+            )
+        })
+        .await??;
+        Ok(stats)
     }
 
     pub async fn panel_site_count(&self, panel_id: i64) -> Result<i64, AppError> {
