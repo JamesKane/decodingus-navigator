@@ -2731,8 +2731,12 @@ impl NavigatorApp {
                         .desired_width(180.0),
                 );
                 ui.label(self.tr("account.pds"));
-                // Self-certifying did:key identity — works against the AppView with no PDS/OAuth.
-                if ui.add_enabled(!self.logging_in, egui::Button::new(self.tr("account.useLocal"))).clicked() {
+                // Self-certifying did:key identity — a dev/local-stack affordance (federation only, no
+                // PDS repo). Compiled out of distributed (release) builds; opt in for a release dev
+                // build with `--features dev-identity`.
+                if cfg!(any(debug_assertions, feature = "dev-identity"))
+                    && ui.add_enabled(!self.logging_in, egui::Button::new(self.tr("account.useLocal"))).clicked()
+                {
                     let _ = self.tx.send(Command::UseLocalIdentity);
                 }
             }

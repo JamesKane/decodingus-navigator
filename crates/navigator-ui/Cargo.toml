@@ -11,6 +11,11 @@ license.workspace = true
 name = "navigator"
 path = "src/main.rs"
 
+[features]
+# Surface the dev-only "Use local identity" (did:key) button in a RELEASE build. Off by default, so
+# distributed builds never show it; debug builds show it automatically (via `debug_assertions`).
+dev-identity = []
+
 [dependencies]
 clap = { version = "4", features = ["derive"] }
 eframe = "0.30.0"
