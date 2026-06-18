@@ -218,6 +218,8 @@ pub enum Command {
     PullSync,
     /// Re-check tracked source files' accessibility (moved/missing).
     VerifySourceFiles,
+    /// Write the IBD match's segments to a CSV/TSV at `path` (the match-browser export).
+    ExportIbdSegments { segments: Vec<navigator_app::IbdSegment>, path: PathBuf },
     /// Export a cached result to `path` (TSV/HTML/BED). `request` carries the kind + source id.
     Export { request: navigator_app::ExportRequest, path: PathBuf },
     /// Manually override the consensus haplogroup for a subject + DNA type.
@@ -997,6 +999,12 @@ pub async fn handle(app: &App, cmd: Command) -> Event {
             },
             Err(e) => Event::Error(e.to_string()),
         },
+        Command::ExportIbdSegments { segments, path } => {
+            match std::fs::write(&path, navigator_app::export::ibd_segments_tsv(&segments)) {
+                Ok(()) => Event::Exported { label: "IBD segments (CSV)".into(), path },
+                Err(e) => Event::Error(format!("write {}: {e}", path.display())),
+            }
+        }
         Command::SetHaploOverride { biosample_guid, dna_type, haplogroup, reason } => {
             match app.set_manual_override(biosample_guid, dna_type, &haplogroup, reason.as_deref()).await {
                 Ok(()) => Event::ReconciliationChanged { biosample_guid, dna_type },

@@ -19,7 +19,7 @@ use navigator_analysis::heteroplasmy::{self, HeteroplasmyParams};
 use navigator_analysis::scan::SampleSidecars;
 use navigator_analysis::sidecar;
 use navigator_analysis::ibd::{
-    ChromosomeGenotypes, GeneticMap, IbdSegment, MatchSummary, PairwiseIbdDetector,
+    ChromosomeGenotypes, GeneticMap, MatchSummary, PairwiseIbdDetector,
 };
 use navigator_domain::workspace::{Panel, PanelSite};
 use navigator_store::panel;
@@ -107,6 +107,7 @@ impl PrivateBucket {
 pub use navigator_analysis::ibd::{
     IbdDetectorConfig, IbdSegment as Segment, MatchSummary as IbdSummary, RelationshipEstimate,
 };
+pub use navigator_analysis::ibd::IbdSegment;
 // Sync/publish types the command API uses, re-exported so the UI depends only on navigator-app.
 pub use navigator_sync::{
     AlignmentRecord, BiosampleRecord, PdsClient, PopulationBreakdownRecord, PrivateVariantsRecord,

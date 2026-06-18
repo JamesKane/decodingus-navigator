@@ -3,10 +3,87 @@
 //! the view code that calls them.
 
 use eframe::egui;
-use navigator_app::{AncestryResult, AncestrySegment, AssetStatus, ChromosomeRegions, GenomeRegions, SuperPopulationSummary};
+use navigator_app::{AncestryResult, AncestrySegment, AssetStatus, ChromosomeRegions, GenomeRegions, IbdSegment, SuperPopulationSummary};
 use navigator_domain::ancestry::{population_color, population_name, population_super};
 
 use crate::ui::ACCENT;
+
+/// Sort key for chromosome names: autosomes 1–22, then X, Y, M, then anything else.
+fn chrom_sort_key(chr: &str) -> (u8, i64) {
+    let bare = chr.trim_start_matches("chr").to_ascii_uppercase();
+    if let Ok(n) = bare.parse::<i64>() {
+        (0, n)
+    } else {
+        match bare.as_str() {
+            "X" => (1, 0),
+            "Y" => (2, 0),
+            "M" | "MT" => (3, 0),
+            _ => (4, 0),
+        }
+    }
+}
+
+/// Draw a per-chromosome **IBD-segment ideogram** (gap §8): one horizontal bar per chromosome that
+/// carries a shared segment, scaled to the chromosome's true length when `regions` is available (else
+/// to the segments' own span), each IBD segment painted as a teal block (brighter = longer in cM) with
+/// per-segment hover details. Mirrors [`draw_chromosome_painting`]'s painter approach.
+pub(crate) fn draw_ibd_segments(ui: &mut egui::Ui, segments: &[IbdSegment], regions: Option<&GenomeRegions>) {
+    use std::collections::BTreeMap;
+    let mut by_chr: BTreeMap<String, Vec<&IbdSegment>> = BTreeMap::new();
+    for s in segments {
+        by_chr.entry(s.chromosome.clone()).or_default().push(s);
+    }
+    if by_chr.is_empty() {
+        ui.label(egui::RichText::new("No shared IBD segments to paint.").weak());
+        return;
+    }
+    let mut chroms: Vec<String> = by_chr.keys().cloned().collect();
+    chroms.sort_by_key(|c| chrom_sort_key(c));
+
+    let (label_w, bar_w, bar_h, gap) = (48.0f32, 320.0f32, 12.0f32, 4.0f32);
+    for chr in &chroms {
+        let segs = &by_chr[chr];
+        // Scale to the true chromosome length when known, else to the max segment end.
+        let chr_len = regions
+            .and_then(|r| r.chromosomes.get(chr))
+            .map(|c| c.length)
+            .filter(|&l| l > 0)
+            .unwrap_or_else(|| segs.iter().map(|s| s.end_position).max().unwrap_or(1))
+            .max(1) as f32;
+        ui.horizontal(|ui| {
+            ui.allocate_ui(egui::vec2(label_w, bar_h), |ui| ui.label(egui::RichText::new(chr).small()));
+            let (rect, resp) = ui.allocate_exact_size(egui::vec2(bar_w, bar_h), egui::Sense::hover());
+            let painter = ui.painter_at(rect);
+            painter.rect_filled(rect, 2.0, egui::Color32::from_gray(30));
+            let mut hover: Option<String> = None;
+            let hover_x = resp.hover_pos().map(|p| p.x);
+            for &s in segs.iter() {
+                let x0 = rect.left() + (s.start_position.max(0) as f32 / chr_len) * rect.width();
+                let x1 = rect.left() + (s.end_position.max(0) as f32 / chr_len) * rect.width();
+                let seg = egui::Rect::from_min_max(egui::pos2(x0, rect.top()), egui::pos2(x1.max(x0 + 1.5), rect.bottom()));
+                let t = (s.length_cm / 30.0).clamp(0.3, 1.0) as f32;
+                let col = egui::Color32::from_rgb(30, (90.0 + 120.0 * t) as u8, (90.0 + 100.0 * t) as u8);
+                painter.rect_filled(seg, 0.0, col);
+                if let Some(hx) = hover_x {
+                    if hx >= seg.left() && hx <= seg.right() {
+                        hover = Some(format!(
+                            "{}:{}–{} · {:.1} cM{}",
+                            s.chromosome,
+                            s.start_position,
+                            s.end_position,
+                            s.length_cm,
+                            s.snp_count.map(|n| format!(" · {n} SNPs")).unwrap_or_default()
+                        ));
+                    }
+                }
+            }
+            if let Some(t) = hover {
+                resp.on_hover_text(t);
+            }
+        });
+        ui.add_space(gap);
+    }
+}
 
 /// Draw the per-chromosome local-ancestry painting: one horizontal bar per autosome (each
 /// normalized to full width), segments colored by ancestry, plus a legend of the ancestries shown.

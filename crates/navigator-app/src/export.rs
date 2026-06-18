@@ -3,6 +3,7 @@
 //! app layer loads the result and writes the returned `String` to the user-chosen path.
 
 use navigator_analysis::coverage::CoverageResult;
+use navigator_analysis::ibd::IbdSegment;
 use navigator_analysis::mtvariants::MtVariant;
 use navigator_analysis::read_metrics::ReadMetrics;
 use navigator_domain::ancestry::AncestryResult;
@@ -224,6 +225,27 @@ pub fn mtdna_variants_tsv(variants: &[MtVariant]) -> String {
     out
 }
 
+// ---- IBD segments ------------------------------------------------------------
+
+/// IBD segments as TSV (`chromosome  start  end  length_cm  snp_count`), 1-based bp. The match
+/// browser's "Export segments CSV" — a tab-delimited table for downstream analysis / sharing.
+pub fn ibd_segments_tsv(segments: &[IbdSegment]) -> String {
+    let mut out = String::from("# DUNavigator IBD segments export\n");
+    out.push_str("chromosome\tstart_position\tend_position\tlength_cm\tsnp_count\thalf_identical\n");
+    for s in segments {
+        out.push_str(&format!(
+            "{}\t{}\t{}\t{:.2}\t{}\t{}\n",
+            s.chromosome,
+            s.start_position,
+            s.end_position,
+            s.length_cm,
+            s.snp_count.map(|n| n.to_string()).unwrap_or_default(),
+            s.is_half_identical.map(|b| b.to_string()).unwrap_or_default(),
+        ));
+    }
+    out
+}
+
 // ---- callable loci -----------------------------------------------------------
 
 /// Callable intervals as BED4 (`contig  start  end  CALLABLE`), 0-based half-open. `per_contig` is
@@ -340,5 +362,20 @@ mod tests {
         let bed = callable_bed(&[("chr1".into(), vec![(0, 1000), (2000, 2500)])]);
         assert!(bed.lines().any(|l| l == "chr1\t0\t1000\tCALLABLE"));
         assert!(bed.lines().any(|l| l == "chr1\t2000\t2500\tCALLABLE"));
+    }
+
+    #[test]
+    fn ibd_segments_tsv_has_header_and_rows() {
+        let tsv = ibd_segments_tsv(&[IbdSegment {
+            chromosome: "chr1".into(),
+            start_position: 1,
+            end_position: 10_000_000,
+            length_cm: 12.5,
+            snp_count: Some(80),
+            is_half_identical: Some(false),
+        }]);
+        assert!(tsv.lines().next().unwrap().starts_with('#'));
+        assert!(tsv.contains("chromosome\tstart_position\tend_position\tlength_cm\tsnp_count\thalf_identical"));
+        assert!(tsv.lines().any(|l| l == "chr1\t1\t10000000\t12.50\t80\tfalse"));
     }
 }

@@ -17,7 +17,7 @@ use navigator_app::{
 };
 use crate::charts::{
     asset_status_line, coverage_histogram_chart, draw_ancestry_donut, draw_chromosome_painting, draw_composition_bar,
-    draw_ideogram, draw_population_components, ideogram_legend,
+    draw_ibd_segments, draw_ideogram, draw_population_components, ideogram_legend,
 };
 use crate::widgets::{
     card, chip, combo, empty_state, fmt_depth, fmt_pct, fmt_reads, opt, provider_abbrev, short_guid, show_assignment,
@@ -5082,8 +5082,9 @@ impl NavigatorApp {
 
     /// Render the current IBD comparison result (summary line + segment table), if any. Shared by the
     /// per-source picker and the subject-level consensus comparison.
-    fn render_ibd_result(&self, ui: &mut egui::Ui) {
-        let Some(cmp) = &self.ibd_result else { return };
+    fn render_ibd_result(&mut self, ui: &mut egui::Ui) {
+        // Clone out of the borrow so the export button can touch `self.status` / `self.tx` below.
+        let Some(cmp) = self.ibd_result.clone() else { return };
         ui.label(format!(
             "{:?} — total {:.1} cM, {} segment(s), longest {:.1} cM  ·  {} overlapping sites",
             cmp.summary.relationship,
@@ -5092,7 +5093,29 @@ impl NavigatorApp {
             cmp.summary.longest_segment_cm,
             cmp.overlapping_sites,
         ));
-        if !cmp.segments.is_empty() {
+        if cmp.segments.is_empty() {
+            return;
+        }
+        // Per-chromosome segment ideogram (true chr lengths when genome regions are loaded).
+        ui.add_space(6.0);
+        ui.label(egui::RichText::new(self.tr("ibd.segmentMap")).strong().small());
+        let regions = self.genome_regions.as_ref().map(|(_, r)| r.as_ref());
+        draw_ibd_segments(ui, &cmp.segments, regions);
+
+        ui.add_space(4.0);
+        if ui.button(self.tr("ibd.exportSegments")).clicked() {
+            if let Some(path) = rfd::FileDialog::new()
+                .set_file_name("ibd_segments.tsv")
+                .add_filter("TSV", &["tsv"])
+                .save_file()
+            {
+                self.status = format!("Exporting {}…", self.tr("ibd.exportSegments"));
+                let _ = self.tx.send(Command::ExportIbdSegments { segments: cmp.segments.clone(), path });
+            }
+        }
+
+        ui.add_space(4.0);
+        ui.collapsing(self.tr("ibd.segmentTable"), |ui| {
             egui::Grid::new("ibd_segments").striped(true).num_columns(4).show(ui, |ui| {
                 ui.strong(self.tr("table.chr"));
                 ui.strong(self.tr("table.start"));
@@ -5107,7 +5130,7 @@ impl NavigatorApp {
                     ui.end_row();
                 }
             });
-        }
+        });
     }
 
     /// Subject-level IBD: compare this subject's autosomal consensus against another subject's — the
