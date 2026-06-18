@@ -585,10 +585,21 @@ pub(crate) const ACCENT: egui::Color32 = egui::Color32::from_rgb(45, 125, 246);
 #[allow(dead_code)]
 const DANGER: egui::Color32 = egui::Color32::from_rgb(220, 60, 60);
 
-/// Max height (px) for the heavy variant/site tables (Y/mt/autosomal consensus profiles, private-Y,
-/// de-novo SNPs). On a WGS these run thousands of rows; bounding them to a scroll pane keeps the
-/// detail page navigable instead of forcing endless scrolling.
-const PROFILE_TABLE_H: f32 = 360.0;
+/// Rows shown before the heavy variant/site tables (Y/mt/autosomal consensus profiles, private-Y,
+/// de-novo SNPs) scroll internally. On a WGS these run thousands of rows; bounding them keeps the
+/// detail page navigable instead of forcing endless scrolling — but the pane must be tall enough to
+/// be useful (the user wants 20-30 rows, not a 3-row slot).
+const PROFILE_TABLE_ROWS: usize = 26;
+
+/// Explicit height for a scrollable profile table that shows up to [`PROFILE_TABLE_ROWS`] rows of the
+/// given `count`, then scrolls. Sized to the content when there are fewer rows (no empty pane).
+/// Computed (rather than a fixed constant) because a nested `ScrollArea` with vertical `auto_shrink`
+/// collapses to a few rows inside the page scroll — we pair this with `auto_shrink([false, false])`.
+fn profile_pane_height(ui: &egui::Ui, count: usize) -> f32 {
+    let row_h = ui.text_style_height(&egui::TextStyle::Body) + ui.spacing().item_spacing.y + 3.0;
+    let rows = count.clamp(1, PROFILE_TABLE_ROWS) as f32;
+    row_h * (rows + 1.0) // +1 for the header row
+}
 
 /// Apply the Decoding-Us workbench look: a dark (or light) palette with the accent blue,
 /// rounded widgets, and roomier spacing — the visual base that closes most of the gap to the
@@ -3777,7 +3788,8 @@ impl NavigatorApp {
             })
             .collect();
         ui.label(egui::RichText::new(format!("{} shown", matched.len())).weak().small());
-        egui::ScrollArea::vertical().id_salt("donor_privy_scroll").max_height(PROFILE_TABLE_H).auto_shrink([false, true]).show(ui, |ui| {
+        let pane_h = profile_pane_height(ui, matched.len());
+        egui::ScrollArea::vertical().id_salt("donor_privy_scroll").max_height(pane_h).auto_shrink([false, false]).show(ui, |ui| {
             egui::Grid::new("donor_privy").striped(true).num_columns(4).show(ui, |ui| {
                 ui.strong(pos_h);
                 ui.strong(chg_h);
@@ -3880,7 +3892,8 @@ impl NavigatorApp {
                         let _ = self.tx.send(Command::AssignYBisdna { biosample_guid: guid });
                     }
                 });
-                egui::ScrollArea::vertical().id_salt(("vcalls_scroll", s.id)).max_height(PROFILE_TABLE_H).auto_shrink([false, true]).show(ui, |ui| {
+                let pane_h = profile_pane_height(ui, s.calls.len().min(MAX_ROWS));
+                egui::ScrollArea::vertical().id_salt(("vcalls_scroll", s.id)).max_height(pane_h).auto_shrink([false, false]).show(ui, |ui| {
                     egui::Grid::new(("vcalls", s.id)).striped(true).num_columns(4).show(ui, |ui| {
                         for h in ["table.position", "table.change", "table.rsid", "table.genotype"] {
                             ui.strong(self.tr(h));
@@ -5981,7 +5994,8 @@ fn draw_consensus_profile(
     // pathological profile. The header/filter row above stays fixed; only the grid scrolls.
     const CAP: usize = 2000;
     let (mut shown, mut total_match) = (0usize, 0usize);
-    egui::ScrollArea::vertical().id_salt(format!("{id_salt}_scroll")).max_height(PROFILE_TABLE_H).auto_shrink([false, true]).show(ui, |ui| {
+    let pane_h = profile_pane_height(ui, profile.variants.len());
+    egui::ScrollArea::vertical().id_salt(format!("{id_salt}_scroll")).max_height(pane_h).auto_shrink([false, false]).show(ui, |ui| {
         egui::Grid::new(format!("{id_salt}_grid")).striped(true).num_columns(5).show(ui, |ui| {
             for h in [variant_col, "Pos", "State", "Status", "Sources"] {
                 ui.strong(h);
@@ -6135,7 +6149,8 @@ fn draw_diploid_profile(ui: &mut egui::Ui, profile: &navigator_app::DiploidProfi
     // `shown` widgets built per frame, never the full panel; the status/text filters narrow further.
     const CAP: usize = 2000;
     let (mut shown, mut total_match) = (0usize, 0usize);
-    egui::ScrollArea::vertical().id_salt("diploid_profile_scroll").max_height(PROFILE_TABLE_H).auto_shrink([false, true]).show(ui, |ui| {
+    let pane_h = profile_pane_height(ui, profile.variants.len());
+    egui::ScrollArea::vertical().id_salt("diploid_profile_scroll").max_height(pane_h).auto_shrink([false, false]).show(ui, |ui| {
         for v in &profile.variants {
             if !(filter.map_or(true, |f| v.status == f) && matches(v)) {
                 continue;
