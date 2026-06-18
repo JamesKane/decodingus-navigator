@@ -203,12 +203,12 @@ STR/VCF-workflow enablers).
 | Y-profile management/detail + source-reconciliation dialogs | `YProfile*Dialog.scala`, `SourceReconciliationPanel.scala` | PARTIAL (Y-profile card + consensus block exist; no dedicated management/audit dialog) |
 | IBD match-detail browser — chromosome ideogram with segment painting; segment CSV export | `MatchDetailDialog.scala`, `ChromosomeBrowserPanel.scala` | **DONE** (a6d44cc) — `charts::draw_ibd_segments` per-chromosome segment ideogram (true chr lengths via genome regions, hover cM/SNPs) + "Export segments CSV" (`export::ibd_segments_tsv`) in the IBD Matches tab |
 | PCA scatter (PC1×PC2 projection plot) | `ui/…` | **DONE** (92c2cf6) — `charts::draw_pca_scatter` (egui_plot Points: reference centroids + donor diamond, super-pop legend) in the Ancestry tab; reference via `ancestry_pca_reference` |
-| Haplogroup report dialog (scored candidates / lineage / SNPs / private) | `HaplogroupReportDialog.scala` | PARTIAL (Y-DNA tab shows terminal + branches; no full scored-candidate dialog) |
+| Haplogroup report dialog (scored candidates / lineage / SNPs / private) | `HaplogroupReportDialog.scala` | **DONE** (43e561c) — "Full report" in the Y-DNA tab: ranked candidates (score/depth/matched) + lineage SNP evidence (derived/ancestral/no-call) via `y_haplogroup_report`; terminal + branches + private-Y already shown |
 | Fingerprint-match / merge-sequence-runs dialogs | `{FingerprintMatch,MergeSequenceRuns}Dialog.scala` | MISSING |
 
 **Remaining:** import dialogs (DONE 59b5696) and the IBD match browser (DONE a6d44cc) have landed.
-Left: the **Y-profile management/audit dialog**, the **haplogroup-report dialog** (scored candidates),
-and **fingerprint-match / merge-sequence-runs** dialogs. (PCA scatter DONE 92c2cf6.)
+Left: the **Y-profile management/audit dialog** and the **fingerprint-match / merge-sequence-runs**
+dialogs. (PCA scatter DONE 92c2cf6; IBD match browser DONE a6d44cc; haplogroup report DONE 43e561c.)
 
 ---
 
@@ -224,7 +224,7 @@ and **fingerprint-match / merge-sequence-runs** dialogs. (PCA scatter DONE 92c2c
 | ~~5-p2~~ | ~~Sync conflict detection + PULL + `source_file`~~ | — | — | **DONE e38f0b3** — idempotent publish (sync_state keeps the PDS TID → putRecord), pure reconcile planner + pull_sync, source_file (mig 0027). Live-PDS validation pending (needs did:plc repo) |
 | ~~4-live~~ | ~~IBD live exchange~~ | — | — | **DONE** (1e43f12, 816fcea, 02efee5) — transport + segment payload + attestation + real-data resolver + persistence + Encrypted-exchange UI + did:key bootstrap, validated live (James's 1.23M sites → ParentChild, verified+agreed). Remaining: AppView attestation indexing |
 | 7 | VCF liftover orchestration + reference-download checksums | Low-Med | Medium | STR/VCF-workflow enablers |
-| 8-misc | Y-profile management dialog, haplogroup-report dialog, fingerprint/merge dialogs | Low-Med | Mixed | Several small (IBD match browser DONE a6d44cc; PCA scatter DONE 92c2cf6) |
+| 8-misc | Y-profile management/audit dialog, fingerprint/merge-sequence-runs dialogs | Low | Small | IBD browser (a6d44cc), PCA scatter (92c2cf6), haplogroup report (43e561c) DONE |
 
 **Recently shipped:** import UX (59b5696), checkpoint/resume (192a939), **STR caller foundation**
 (986e00b — the hard, twice-attempted part), **STR vendor bridge fully landed** (b631d79 — 216-kit
