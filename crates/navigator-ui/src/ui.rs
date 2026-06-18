@@ -461,6 +461,11 @@ pub struct NavigatorApp {
     auto_profile_query: String,
     private_y_query: String,
     str_seq_query: String,
+    /// Catalogued Y-SNP names at variant positions (`position → name`), used to annotate the two
+    /// Y-SNP tables' position-only / novel calls. Resolved once per subject from the Y-SNP dictionary.
+    y_snp_names: std::collections::HashMap<i64, String>,
+    /// True once we've dispatched the Y-SNP-name resolution for the current subject (avoids re-sending).
+    y_snp_names_requested: bool,
     /// True while the (expensive) Y-variant profile is being built.
     y_profile_loading: bool,
     /// The selected subject's multi-source mtDNA consensus profile.
@@ -736,6 +741,8 @@ impl NavigatorApp {
             auto_profile_query: String::new(),
             private_y_query: String::new(),
             str_seq_query: String::new(),
+            y_snp_names: std::collections::HashMap::new(),
+            y_snp_names_requested: false,
             y_profile_loading: false,
             mt_profile: None,
             mt_profile_filter: None,
@@ -1149,6 +1156,7 @@ impl NavigatorApp {
                 }
                 Event::DonorPrivateY { bucket } => {
                     self.donor_private_y = Some(bucket);
+                    self.y_snp_names_requested = false; // re-resolve names incl. the new positions
                 }
                 Event::YProfile { biosample_guid, profile } => {
                     self.y_profile_loading = false;
@@ -1157,7 +1165,11 @@ impl NavigatorApp {
                             self.status = format!("Y variant profile: {} variants", p.summary.total);
                         }
                         self.y_profile = profile;
+                        self.y_snp_names_requested = false; // re-resolve names incl. the new positions
                     }
+                }
+                Event::YSnpNames { names } => {
+                    self.y_snp_names = names;
                 }
                 Event::MtProfile { biosample_guid, profile } => {
                     self.mt_profile_loading = false;
@@ -1448,6 +1460,8 @@ impl NavigatorApp {
         self.y_snp_sub = YSnpSub::default();
         self.mt_sub = MtSub::default();
         self.auto_sub = AutoSub::default();
+        self.y_snp_names.clear();
+        self.y_snp_names_requested = false;
         self.pending_alignment = None;
         self.donor_ancestry = None;
         self.fine_ancestry = None;
@@ -1802,6 +1816,7 @@ impl NavigatorApp {
                         // The heavy SNP surface: a compact chrY variant track as shared context, then
                         // the heavy tables one at a time (each runs to thousands of rows on a WGS).
                         YSub::Snp => {
+                            self.ensure_y_snp_names(guid);
                             card(ui, self.tr("card.variantTrack"), |ui| self.y_variant_track(ui));
                             ui.add_space(10.0);
                             self.y_snp_sub = self.sub_bar(ui, self.y_snp_sub, &YSnpSub::ALL);
@@ -3548,7 +3563,7 @@ impl NavigatorApp {
         };
         let mut filter = self.y_profile_filter;
         let mut query = std::mem::take(&mut self.y_profile_query);
-        draw_consensus_profile(ui, profile, &mut filter, &mut query, "SNP", "Y variants", "y_variant_profile");
+        draw_consensus_profile(ui, profile, &mut filter, &mut query, "SNP", "Y variants", "y_variant_profile", &self.y_snp_names);
         self.y_profile_filter = filter;
         self.y_profile_query = query;
     }
@@ -3577,7 +3592,8 @@ impl NavigatorApp {
         };
         let mut filter = self.mt_profile_filter;
         let mut query = std::mem::take(&mut self.mt_profile_query);
-        draw_consensus_profile(ui, profile, &mut filter, &mut query, "Mutation", "mtDNA mutations", "mt_variant_profile");
+        // mtDNA mutations are already named (rCRS notation) — no Y-SNP catalogue annotation.
+        draw_consensus_profile(ui, profile, &mut filter, &mut query, "Mutation", "mtDNA mutations", "mt_variant_profile", &std::collections::HashMap::new());
         self.mt_profile_filter = filter;
         self.mt_profile_query = query;
     }
@@ -3742,9 +3758,10 @@ impl NavigatorApp {
         });
         let q = self.private_y_query.to_ascii_lowercase();
         let bucket = self.donor_private_y.as_ref().unwrap();
-        // Filter to matching variants (position or off-path name / "novel"); the table is bounded to a
-        // fixed-height scroll pane (a WGS bucket runs to thousands of rows). A hard cap keeps a
-        // pathological bucket from flooding even the pane.
+        let names = &self.y_snp_names; // catalogued Y-SNP name at a novel call's site, if any
+        // Filter to matching variants (position, off-path name, "novel", or the catalogued name); the
+        // table is bounded to a fixed-height scroll pane (a WGS bucket runs to thousands of rows). A
+        // hard cap keeps a pathological bucket from flooding even the pane.
         const CAP: usize = 1000;
         let matched: Vec<_> = bucket
             .variants
@@ -3752,6 +3769,7 @@ impl NavigatorApp {
             .filter(|v| {
                 q.is_empty()
                     || v.position.to_string().contains(&q)
+                    || names.get(&v.position).is_some_and(|n| n.to_ascii_lowercase().contains(&q))
                     || match &v.class {
                         PrivateClass::OffPathKnown(n) => n.to_ascii_lowercase().contains(&q),
                         PrivateClass::Novel => "novel".contains(q.as_str()),
@@ -3766,12 +3784,20 @@ impl NavigatorApp {
                 ui.strong(dep_h);
                 ui.strong(cls_h);
                 ui.end_row();
+                let teal = egui::Color32::from_rgb(90, 190, 190);
                 for v in matched.iter().take(CAP) {
                     ui.label(v.position.to_string());
                     ui.label(format!("{}>{}", v.reference, v.alternate));
                     ui.label(v.depth.to_string());
                     match &v.class {
-                        PrivateClass::Novel => ui.colored_label(egui::Color32::from_rgb(60, 160, 60), "novel"),
+                        // A "novel" call that lands on a catalogued Y-SNP: surface that name (it's not
+                        // on the placed lineage, but it is a known site, not a brand-new variant).
+                        PrivateClass::Novel => match names.get(&v.position) {
+                            Some(name) => ui
+                                .colored_label(teal, format!("novel · {name}"))
+                                .on_hover_text("catalogued Y-SNP at this site (off the placed lineage)"),
+                            None => ui.colored_label(egui::Color32::from_rgb(60, 160, 60), "novel"),
+                        },
                         PrivateClass::OffPathKnown(name) => ui.label(format!("off-path: {name}")),
                     };
                     ui.end_row();
@@ -4567,6 +4593,30 @@ impl NavigatorApp {
             (ConsensusState::NoCall, _) => return None,
         };
         Some(VariantMark { name: v.name.clone(), position: v.position, color, state })
+    }
+
+    /// Lazily resolve catalogued Y-SNP names for the two Y-SNP tables' position-only / novel calls.
+    /// Gathers every variant position from the Y consensus profile + the private-Y union and asks the
+    /// worker for `position → name` once per subject (re-armed when either source reloads). No-op until
+    /// at least one source is present.
+    fn ensure_y_snp_names(&mut self, guid: SampleGuid) {
+        if self.y_snp_names_requested {
+            return;
+        }
+        let mut positions: Vec<i64> = Vec::new();
+        if let Some(p) = &self.y_profile {
+            positions.extend(p.variants.iter().filter(|v| v.name.is_empty()).map(|v| v.position));
+        }
+        if let Some(b) = &self.donor_private_y {
+            positions.extend(b.variants.iter().map(|v| v.position));
+        }
+        if positions.is_empty() {
+            return; // nothing to annotate yet (sources not loaded)
+        }
+        positions.sort_unstable();
+        positions.dedup();
+        self.y_snp_names_requested = true;
+        let _ = self.tx.send(Command::LoadYSnpNames { biosample_guid: guid, positions });
     }
 
     /// chrY **variant track**: the Y consensus profile's called variants plotted along chromosome Y,
@@ -5881,7 +5931,9 @@ fn consensus_status_badge(status: YVariantStatus) -> (&'static str, egui::Color3
 /// Shared renderer for a multi-source consensus profile (Y or mtDNA — same generic engine): header
 /// (counts + lineage label + provenance), a status filter, and the per-variant grid. `variant_col`
 /// names the identity column ("SNP" / "Mutation"); `kind` labels the empty state; `id_salt` keeps the
-/// two cards' scroll/grid ids distinct.
+/// two cards' scroll/grid ids distinct. `snp_names` annotates a position-only/novel row with the
+/// catalogued Y-SNP name at that site (empty for mtDNA, whose mutations are already named).
+#[allow(clippy::too_many_arguments)]
 fn draw_consensus_profile(
     ui: &mut egui::Ui,
     profile: &navigator_app::ConsensusProfile,
@@ -5890,6 +5942,7 @@ fn draw_consensus_profile(
     variant_col: &str,
     kind: &str,
     id_salt: &str,
+    snp_names: &std::collections::HashMap<i64, String>,
 ) {
     if profile.variants.is_empty() {
         ui.label(egui::RichText::new(format!("No {kind} across sources.")).weak());
@@ -5944,7 +5997,13 @@ fn draw_consensus_profile(
                 if filter.is_some_and(|f| v.status != f) {
                     continue;
                 }
-                if !q.is_empty() && !v.name.to_ascii_lowercase().contains(&q) && !v.position.to_string().contains(&q) {
+                // A catalogued Y-SNP name at this site (for a position-only / novel row).
+                let cataloged = if v.name.is_empty() { snp_names.get(&v.position).map(String::as_str) } else { None };
+                if !q.is_empty()
+                    && !v.name.to_ascii_lowercase().contains(&q)
+                    && !v.position.to_string().contains(&q)
+                    && !cataloged.is_some_and(|n| n.to_ascii_lowercase().contains(&q))
+                {
                     continue;
                 }
                 total_match += 1;
@@ -5954,9 +6013,24 @@ fn draw_consensus_profile(
                 shown += 1;
                 {
                     let conflict = v.status == YVariantStatus::Conflict;
-                    let name = if v.name.is_empty() { format!("novel@{}", v.position) } else { v.name.clone() };
-                    let name_txt = egui::RichText::new(name).strong();
-                    ui.label(if conflict { name_txt.color(amber) } else { name_txt });
+                    // Prefer the consensus name; else the catalogued Y-SNP at this site (teal,
+                    // tooltipped); else a bare position marker.
+                    let teal = egui::Color32::from_rgb(90, 190, 190);
+                    let (display, is_cat) = match (v.name.is_empty(), cataloged) {
+                        (false, _) => (v.name.clone(), false),
+                        (true, Some(c)) => (c.to_string(), true),
+                        (true, None) => (format!("novel@{}", v.position), false),
+                    };
+                    let mut name_txt = egui::RichText::new(display).strong();
+                    if conflict {
+                        name_txt = name_txt.color(amber);
+                    } else if is_cat {
+                        name_txt = name_txt.color(teal);
+                    }
+                    let resp = ui.label(name_txt);
+                    if is_cat {
+                        resp.on_hover_text("catalogued Y-SNP at this site (not on the placed lineage)");
+                    }
                     ui.label(egui::RichText::new(v.position.to_string()).weak());
                     ui.label(state_label(v.consensus));
                     let (label, color) = consensus_status_badge(v.status);

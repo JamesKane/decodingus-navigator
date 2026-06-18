@@ -4141,6 +4141,33 @@ impl App {
         "hs1".to_string()
     }
 
+    /// Annotate position-only Y variants with the catalogued Y-SNP **name** at that site, for the two
+    /// Y-SNP tables (multi-source variant profile + private-Y union). Resolves the subject's Y build
+    /// key (CHM13→`hs1`, else GRCh38/GRCh37 — same rule as the BISDNA importer), loads the Y-SNP
+    /// dictionary (the small chromo2 panel manifest preferred — fast, ~14k SNPs), and returns
+    /// `position → canonical name` for the requested positions only. Best-effort: a missing dictionary
+    /// yields an empty map (not an error), so the tables simply show no extra names. Looking a position
+    /// up against the wrong build just misses — there are no false labels, only possibly-absent ones.
+    pub async fn y_snp_names_at(
+        &self,
+        biosample_guid: SampleGuid,
+        positions: &[i64],
+    ) -> Result<HashMap<i64, String>, AppError> {
+        if positions.is_empty() {
+            return Ok(HashMap::new());
+        }
+        let build = self.bisdna_target_build(biosample_guid).await;
+        let Ok(dict) = YsnpDictionary::load(&ysnp_dict::asset_dir()) else {
+            return Ok(HashMap::new()); // no dictionary installed — degrade gracefully
+        };
+        let idx = dict.position_index(&build);
+        let names = positions
+            .iter()
+            .filter_map(|p| idx.get(p).map(|n| (*p, n.to_string())))
+            .collect();
+        Ok(names)
+    }
+
     /// Import a BISDNA chromo2 Y-SNP export. Each named marker is resolved to a locus via the
     /// Y-SNP dictionary on `build` (when `None`, the subject's alignment build, else `"hs1"`).
     /// Only **positive** (derived) calls become variant calls: a negative is not a variant.

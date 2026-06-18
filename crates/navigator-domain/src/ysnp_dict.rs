@@ -178,6 +178,22 @@ impl YsnpDictionary {
         Some(ResolvedSnp { canonical: &entry.name, coord })
     }
 
+    /// Build a reverse index `position → canonical name` for one reference `build` (the inverse of
+    /// [`resolve`](Self::resolve)). Lets a caller annotate a position-only call (a novel/private Y
+    /// variant) with the catalogued Y-SNP name at that site, if one exists. The first name seen at a
+    /// position wins (deterministic over a sorted asset); positions absent on `build` are omitted.
+    /// All entries are chrY in practice, so the key is position alone — a caller resolving the
+    /// correct build avoids the (vanishingly unlikely) cross-build integer collision.
+    pub fn position_index(&self, build: &str) -> HashMap<i64, &str> {
+        let mut idx = HashMap::new();
+        for entry in self.by_name.values() {
+            if let Some(c) = entry.coordinates.get(build) {
+                idx.entry(c.position).or_insert(entry.name.as_str());
+            }
+        }
+        idx
+    }
+
     /// Number of canonical SNP entries.
     pub fn len(&self) -> usize {
         self.by_name.len()
@@ -266,6 +282,18 @@ M269\tCTS10003
     fn strand_is_captured() {
         let d = dict();
         assert_eq!(d.resolve("M269", "hs1").unwrap().coord.strand, '-');
+    }
+
+    #[test]
+    fn position_index_reverse_lookup_per_build() {
+        let d = dict();
+        let hs1 = d.position_index("hs1");
+        assert_eq!(hs1.get(&14800000).copied(), Some("CTS10003")); // canonical case preserved
+        assert_eq!(hs1.get(&21200000).copied(), Some("M269"));
+        assert_eq!(hs1.get(&15000000), None); // that's the GRCh38 position, not hs1
+        let g38 = d.position_index("GRCh38");
+        assert_eq!(g38.get(&15000000).copied(), Some("CTS10003"));
+        assert_eq!(g38.get(&9999999).copied(), Some("OnlyHg38"));
     }
 
     #[test]

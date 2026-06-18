@@ -147,6 +147,8 @@ pub enum Command {
     LoadYProfile { biosample_guid: SampleGuid },
     /// Recompute the Y-profile from all sources and persist the snapshot (expensive — re-genotypes).
     BuildYProfile { biosample_guid: SampleGuid },
+    /// Resolve catalogued Y-SNP names at the given positions (annotates the Y-SNP tables).
+    LoadYSnpNames { biosample_guid: SampleGuid, positions: Vec<i64> },
     /// Load the persisted mtDNA consensus-profile snapshot (cheap; no genotyping).
     LoadMtProfile { biosample_guid: SampleGuid },
     /// Recompute the mtDNA consensus profile from all sources and persist (expensive — re-places).
@@ -405,6 +407,8 @@ pub enum Event {
     DonorPrivateY { bucket: PrivateBucket },
     /// The subject's multi-source Y-variant profile.
     YProfile { biosample_guid: SampleGuid, profile: Option<navigator_app::YProfile> },
+    /// Catalogued Y-SNP names at requested positions (`position → name`) for the Y-SNP tables.
+    YSnpNames { names: std::collections::HashMap<i64, String> },
     /// The subject's multi-source mtDNA consensus profile.
     MtProfile { biosample_guid: SampleGuid, profile: Option<navigator_app::ConsensusProfile> },
     /// The subject's multi-source autosomal consensus profile (diploid 0/1/2).
@@ -795,6 +799,10 @@ pub async fn handle(app: &App, cmd: Command) -> Event {
         },
         Command::BuildYProfile { biosample_guid } => match app.build_y_profile(biosample_guid).await {
             Ok(profile) => Event::YProfile { biosample_guid, profile: Some(profile) },
+            Err(e) => Event::Error(e.to_string()),
+        },
+        Command::LoadYSnpNames { biosample_guid, positions } => match app.y_snp_names_at(biosample_guid, &positions).await {
+            Ok(names) => Event::YSnpNames { names },
             Err(e) => Event::Error(e.to_string()),
         },
         Command::LoadMtProfile { biosample_guid } => match app.cached_mt_profile(biosample_guid).await {
