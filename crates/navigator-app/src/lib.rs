@@ -708,28 +708,30 @@ fn ancestry_min_snps() -> usize {
         .unwrap_or(3000)
 }
 
+/// Resolve an ancestry/IBD asset path under `<refgenome base>/ancestry/`: an `$<env_var>` override
+/// (when non-empty) wins, else `<base>/ancestry/<stem>_<build>.<ext>`. The per-asset wrappers below
+/// delegate here so the override+join+format pattern lives in one place.
+fn ancestry_asset_path(env_var: &str, stem: &str, build: ReferenceBuild, ext: &str) -> PathBuf {
+    if !env_var.is_empty() {
+        if let Ok(p) = std::env::var(env_var) {
+            return PathBuf::from(p);
+        }
+    }
+    refgenome_cache::base_dir().join("ancestry").join(format!("{stem}_{}.{ext}", build.as_str()))
+}
+
 /// Where the ancestry panel for `build` lives: `$NAVIGATOR_ANCESTRY_PANEL` (override), else
 /// `<refgenome base>/ancestry/ancestry_panel_<build>.bin`. The offline `navigator-panelbuild`
 /// tool writes it; install/ship copies it into the cache dir.
 fn ancestry_panel_path(build: ReferenceBuild) -> PathBuf {
-    if let Ok(p) = std::env::var("NAVIGATOR_ANCESTRY_PANEL") {
-        return PathBuf::from(p);
-    }
-    refgenome_cache::base_dir()
-        .join("ancestry")
-        .join(format!("ancestry_panel_{}.bin", build.as_str()))
+    ancestry_asset_path("NAVIGATOR_ANCESTRY_PANEL", "ancestry_panel", build, "bin")
 }
 
 /// Where the PCA loadings for `build` live: `$NAVIGATOR_ANCESTRY_PCA` (override), else
 /// `<refgenome base>/ancestry/ancestry_pca_<build>.bin`. Optional — absent means the
 /// AF-likelihood estimate runs without PCA coordinates.
 fn ancestry_pca_path(build: ReferenceBuild) -> PathBuf {
-    if let Ok(p) = std::env::var("NAVIGATOR_ANCESTRY_PCA") {
-        return PathBuf::from(p);
-    }
-    refgenome_cache::base_dir()
-        .join("ancestry")
-        .join(format!("ancestry_pca_{}.bin", build.as_str()))
+    ancestry_asset_path("NAVIGATOR_ANCESTRY_PCA", "ancestry_pca", build, "bin")
 }
 
 /// Where the **ancient** PCA loadings for `build` live: `$NAVIGATOR_ANCESTRY_PCA_ANCIENT`
@@ -738,34 +740,19 @@ fn ancestry_pca_path(build: ReferenceBuild) -> PathBuf {
 /// (Steppe/EEF/WHG) instead of the modern super-populations. Must be built over the same panel
 /// sites the AF panel genotypes (so the single genotyping pass covers it).
 fn ancestry_pca_ancient_path(build: ReferenceBuild) -> PathBuf {
-    if let Ok(p) = std::env::var("NAVIGATOR_ANCESTRY_PCA_ANCIENT") {
-        return PathBuf::from(p);
-    }
-    refgenome_cache::base_dir()
-        .join("ancestry")
-        .join(format!("ancestry_pca_ancient_{}.bin", build.as_str()))
+    ancestry_asset_path("NAVIGATOR_ANCESTRY_PCA_ANCIENT", "ancestry_pca_ancient", build, "bin")
 }
 
 /// The fine-population frequency asset path (`$NAVIGATOR_ANCESTRY_FREQ` override, else
 /// `<base>/ancestry/ancestry_freq_global_<build>.bin`). Optional — fine admixture is skipped if absent.
 fn ancestry_freq_global_path(build: ReferenceBuild) -> PathBuf {
-    if let Ok(p) = std::env::var("NAVIGATOR_ANCESTRY_FREQ") {
-        return PathBuf::from(p);
-    }
-    refgenome_cache::base_dir()
-        .join("ancestry")
-        .join(format!("ancestry_freq_global_{}.bin", build.as_str()))
+    ancestry_asset_path("NAVIGATOR_ANCESTRY_FREQ", "ancestry_freq_global", build, "bin")
 }
 
 /// The chip-compatible IBD panel asset path (`$NAVIGATOR_IBD_PANEL` override, else
 /// `<base>/ancestry/ibd_panel_<build>.bin`).
 fn ibd_panel_path(build: ReferenceBuild) -> PathBuf {
-    if let Ok(p) = std::env::var("NAVIGATOR_IBD_PANEL") {
-        return PathBuf::from(p);
-    }
-    refgenome_cache::base_dir()
-        .join("ancestry")
-        .join(format!("ibd_panel_{}.bin", build.as_str()))
+    ancestry_asset_path("NAVIGATOR_IBD_PANEL", "ibd_panel", build, "bin")
 }
 
 /// The ancestry/IBD reference assets for the analysis build (CHM13), each with presence + manifest
@@ -867,7 +854,7 @@ pub fn seed_bundled_assets() -> SeedSummary {
 
 /// The asset integrity manifest path for a build (`<base>/ancestry/ancestry_manifest_<build>.json`).
 fn ancestry_manifest_path(build: ReferenceBuild) -> PathBuf {
-    refgenome_cache::base_dir().join("ancestry").join(format!("ancestry_manifest_{}.json", build.as_str()))
+    ancestry_asset_path("", "ancestry_manifest", build, "json")
 }
 
 /// Load the build's asset manifest, if one is published. `None` (absent / unparseable) ⇒ integrity
@@ -898,12 +885,7 @@ fn read_verified_asset(build: ReferenceBuild, path: &Path) -> Result<Option<Vec<
 /// The genetic-map asset path for a build (`$NAVIGATOR_GENETIC_MAP` override, else
 /// `<base>/ancestry/genetic_map_<build>.bin`). Optional — IBD falls back to a uniform map if absent.
 fn genetic_map_path(build: ReferenceBuild) -> PathBuf {
-    if let Ok(p) = std::env::var("NAVIGATOR_GENETIC_MAP") {
-        return PathBuf::from(p);
-    }
-    refgenome_cache::base_dir()
-        .join("ancestry")
-        .join(format!("genetic_map_{}.bin", build.as_str()))
+    ancestry_asset_path("NAVIGATOR_GENETIC_MAP", "genetic_map", build, "bin")
 }
 
 /// Load the real recombination map for IBD if the asset is present, else fall back to a uniform
