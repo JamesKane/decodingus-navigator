@@ -1,0 +1,327 @@
+//! `impl App` methods extracted from `lib.rs` (the `queries` cluster). Split out in the
+//! 2026-06 simplification round; `use super::*` reaches the crate-root types + free helpers.
+use super::*;
+
+impl App {
+    // ---- queries -----------------------------------------------------------
+
+    /// Biosamples belonging to a project.
+    pub async fn list_biosamples(&self, project_id: i64) -> Result<Vec<Biosample>, AppError> {
+        Ok(biosample::list_for_project(self.store.pool(), project_id).await?)
+    }
+
+    /// Every biosample (subject), regardless of project association.
+    pub async fn list_all_biosamples(&self) -> Result<Vec<Biosample>, AppError> {
+        Ok(biosample::list_all(self.store.pool()).await?)
+    }
+
+    /// Sequence runs for a biosample.
+    pub async fn list_sequence_runs(&self, biosample_guid: SampleGuid) -> Result<Vec<SequenceRun>, AppError> {
+        let mut runs = sequence_run::list_for_biosample(self.store.pool(), biosample_guid).await?;
+        // One-time backfill: runs analyzed before read stats were mirrored onto the run carry no
+        // `total_reads` (and older imports no `library_layout`). Recover them from a cached
+        // `read_metrics` artifact on any of the run's alignments and persist, so the card shows
+        // library stats + PE/SE without a re-walk.
+        for run in &mut runs {
+            if run.total_reads.is_some() && run.library_layout.is_some() {
+                continue;
+            }
+            let alns = alignment::list_for_run(self.store.pool(), run.id).await?;
+            for a in &alns {
+                if let Some(m) = self.cached_read_metrics(a.id).await? {
+                    self.write_back_read_stats(a.id, &m).await?;
+                    run.total_reads = Some(m.total_reads as i64);
+                    run.mean_read_length = (m.mean_read_length > 0.0).then_some(m.mean_read_length);
+                    run.mean_insert_size = (m.mean_insert_size > 0.0).then_some(m.mean_insert_size);
+                    if m.pf_reads_aligned > 0 {
+                        run.library_layout =
+                            Some(if m.reads_aligned_in_pairs > 0 { "PAIRED" } else { "SINGLE" }.into());
+                    }
+                    break;
+                }
+            }
+        }
+        Ok(runs)
+    }
+
+    /// Cached coverage for several alignments at once (Data Sources alignment rows). `None` for any
+    /// alignment without a persisted coverage artifact. No genotyping/walking — pure cache reads.
+    pub async fn cached_coverage_bulk(
+        &self,
+        alignment_ids: &[i64],
+    ) -> Result<Vec<(i64, Option<CoverageResult>)>, AppError> {
+        let mut out = Vec::with_capacity(alignment_ids.len());
+        for &id in alignment_ids {
+            out.push((id, self.cached_coverage(id).await?));
+        }
+        Ok(out)
+    }
+
+    /// Alignments for a sequence run.
+    /// The best alignment to drive a subject's analysis tabs (subject-centric default): the
+    /// highest mean-coverage alignment with a cached coverage result, else the first with a BAM,
+    /// else the first. Returns `(sequence_run_id, alignment_id)` so the UI can select the run then
+    /// the alignment without the user navigating Data Sources.
+    pub async fn default_alignment_for_subject(
+        &self,
+        biosample_guid: SampleGuid,
+    ) -> Result<Option<(i64, i64)>, AppError> {
+        let alignments = alignment::list_for_biosample(self.store.pool(), biosample_guid).await?;
+        if alignments.is_empty() {
+            return Ok(None);
+        }
+        let mut best: Option<(f64, &Alignment)> = None;
+        for a in &alignments {
+            if let Some(c) = self.cached_coverage(a.id).await? {
+                if best.as_ref().map_or(true, |(cov, _)| c.mean_coverage > *cov) {
+                    best = Some((c.mean_coverage, a));
+                }
+            }
+        }
+        let chosen = best
+            .map(|(_, a)| a)
+            .or_else(|| alignments.iter().find(|a| a.bam_path.is_some()))
+            .or_else(|| alignments.first());
+        Ok(chosen.map(|a| (a.sequence_run_id, a.id)))
+    }
+
+    /// Donor-level ancestry: the **consensus** estimate ([`CONSENSUS_SOURCE_ID`]) when present —
+    /// it pools all sources, so it's authoritative — else the best-quality per-alignment estimate
+    /// (most genotyped SNPs) for back-compat with results predating the consensus path.
+    pub async fn donor_ancestry(&self, biosample_guid: SampleGuid) -> Result<Option<(i64, AncestryResult)>, AppError> {
+        let all = ancestry_result::for_biosample(self.store.pool(), biosample_guid).await?;
+        if let Some(c) = all.iter().find(|(id, _)| *id == CONSENSUS_SOURCE_ID) {
+            return Ok(Some(c.clone()));
+        }
+        Ok(all.into_iter().max_by_key(|(_, r)| r.snps_with_genotype))
+    }
+
+    /// A specific persisted consensus ancestry estimate (keyed on the consensus pseudo-source +
+    /// `method`) — e.g. `"FINE_ADMIXTURE"` (detailed modern populations) or `"PCA_PROJECTION_GMM"`
+    /// (ancient components). Filtered per-subject (alignment_id 0 isn't biosample-unique on its own).
+    pub async fn consensus_ancestry(&self, biosample_guid: SampleGuid, method: &str) -> Result<Option<AncestryResult>, AppError> {
+        let all = ancestry_result::for_biosample(self.store.pool(), biosample_guid).await?;
+        Ok(all.into_iter().find(|(id, r)| *id == CONSENSUS_SOURCE_ID && r.method == method).map(|(_, r)| r))
+    }
+
+    /// Donor-level private-Y: the **union** of cached (self-masked) private-Y calls across all of
+    /// the subject's alignments, deduped by position (keeping the deepest observation). The
+    /// terminal is taken from the deepest-covered source bucket.
+    pub async fn donor_private_y(&self, biosample_guid: SampleGuid) -> Result<Option<PrivateBucket>, AppError> {
+        let alignments = alignment::list_for_biosample(self.store.pool(), biosample_guid).await?;
+        let mut by_pos: std::collections::HashMap<i64, PrivateVariant> = std::collections::HashMap::new();
+        let mut terminal: Option<String> = None;
+        let mut any = false;
+        for a in &alignments {
+            let Some(bucket) = self.cached_private_y(a.id).await? else { continue };
+            any = true;
+            terminal.get_or_insert_with(|| bucket.terminal.clone());
+            for v in bucket.variants {
+                by_pos
+                    .entry(v.position)
+                    .and_modify(|cur| {
+                        if v.depth > cur.depth {
+                            *cur = v.clone();
+                        }
+                    })
+                    .or_insert(v);
+            }
+        }
+        if !any {
+            return Ok(None);
+        }
+        let mut variants: Vec<PrivateVariant> = by_pos.into_values().collect();
+        variants.sort_by_key(|v| v.position);
+        Ok(Some(PrivateBucket { terminal: terminal.unwrap_or_default(), variants }))
+    }
+
+    pub async fn list_alignments(&self, sequence_run_id: i64) -> Result<Vec<Alignment>, AppError> {
+        Ok(alignment::list_for_run(self.store.pool(), sequence_run_id).await?)
+    }
+
+    /// Every alignment in the workspace (for cross-sample selection like IBD compare).
+    pub async fn list_all_alignments(&self) -> Result<Vec<Alignment>, AppError> {
+        Ok(alignment::list_all(self.store.pool()).await?)
+    }
+
+    /// Projects with their sample counts, for a dashboard/list view.
+    pub async fn project_overview(&self) -> Result<Vec<ProjectOverview>, AppError> {
+        let mut out = Vec::new();
+        for project in project::list(self.store.pool()).await? {
+            let sample_count = biosample::count_for_project(self.store.pool(), project.id).await?;
+            out.push(ProjectOverview { project, sample_count });
+        }
+        Ok(out)
+    }
+
+    /// Per-sample report for a project: each biosample's alignment count, coverage roll-up
+    /// (the first alignment with cached coverage), and Y/mtDNA haplogroup consensus.
+    /// Composes existing per-subject queries (no new join) — coverage/haplogroup cells are
+    /// `None` until those analyses have run.
+    pub async fn project_report(&self, project_id: i64) -> Result<Vec<ProjectSampleReport>, AppError> {
+        let mut out = Vec::new();
+        for biosample in biosample::list_for_project(self.store.pool(), project_id).await? {
+            let alignments = alignment::list_for_biosample(self.store.pool(), biosample.guid).await?;
+            let mut coverage = None;
+            let mut coverage_aln = None;
+            for a in &alignments {
+                if let Some(c) = self.cached_coverage(a.id).await? {
+                    coverage = Some(c);
+                    coverage_aln = Some(a.id);
+                    break;
+                }
+            }
+            // A lite (sidecar) coverage is flagged so the UI can badge it and offer a deep walk.
+            let coverage_partial = match coverage_aln {
+                Some(id) => matches!(
+                    self.analysis_provenance(id, "coverage", coverage::COVERAGE_VERSION).await?,
+                    Some((_, ref c)) if c == "partial"
+                ),
+                None => false,
+            };
+            // Prefer the coverage-bearing alignment; else fall back to the first.
+            let primary_alignment_id = coverage_aln.or_else(|| alignments.first().map(|a| a.id));
+            let y_haplogroup = self.haplogroup_consensus(biosample.guid, DnaType::Y).await?.map(|c| c.haplogroup);
+            let mt_haplogroup = self.haplogroup_consensus(biosample.guid, DnaType::Mt).await?.map(|c| c.haplogroup);
+            // Sex + read-metrics from whichever alignment has them cached.
+            let mut sex = None;
+            let mut metrics = None;
+            let mut sv_count = None;
+            for a in &alignments {
+                if sex.is_none() {
+                    sex = self.cached_sex(a.id).await?;
+                }
+                if metrics.is_none() {
+                    metrics = self.cached_read_metrics(a.id).await?;
+                }
+                if sv_count.is_none() {
+                    sv_count = self.cached_sv(a.id).await?.map(|s| s.sv_calls.len());
+                }
+            }
+            let sex = sex.map(|s| match s.inferred_sex {
+                navigator_analysis::sex::InferredSex::Male => "M".to_string(),
+                navigator_analysis::sex::InferredSex::Female => "F".to_string(),
+                navigator_analysis::sex::InferredSex::Unknown => "U".to_string(),
+            });
+            out.push(ProjectSampleReport {
+                primary_alignment_id,
+                alignment_count: alignments.len(),
+                mean_coverage: coverage.as_ref().map(|c| c.mean_coverage),
+                median_coverage: coverage.as_ref().map(|c| c.median_coverage),
+                pct_10x: coverage.as_ref().map(|c| c.pct_10x),
+                pct_20x: coverage.as_ref().map(|c| c.pct_20x),
+                callable_bases: coverage.as_ref().map(|c| c.callable_bases),
+                y_haplogroup,
+                mt_haplogroup,
+                sex,
+                mean_read_length: metrics.as_ref().map(|m| m.mean_read_length),
+                pct_aligned: metrics.as_ref().map(|m| m.pct_pf_reads_aligned),
+                median_insert_size: metrics.as_ref().map(|m| m.median_insert_size),
+                sv_count,
+                coverage_partial,
+                biosample,
+            });
+        }
+        Ok(out)
+    }
+
+    /// Analyze every sample in a project: compute coverage and assign the Y haplogroup on each
+    /// sample's primary (first BAM-bearing) alignment, so the project report fills in. Coverage
+    /// already cached and Y already recorded are skipped (idempotent re-run). Best-effort: one
+    /// sample's failure is recorded and the rest continue. mtDNA is intentionally not assigned
+    /// here (provisional on CHM13 — see the reconciliation/liftover notes).
+    pub async fn analyze_project(&self, project_id: i64) -> Result<AnalyzeSummary, AppError> {
+        let mut summary = AnalyzeSummary {
+            project_id,
+            samples: 0,
+            coverage_done: 0,
+            y_done: 0,
+            sex_done: 0,
+            metrics_done: 0,
+            sv_done: 0,
+            errors: Vec::new(),
+        };
+        for biosample in biosample::list_for_project(self.store.pool(), project_id).await? {
+            let o = self.analyze_biosample(&biosample).await?;
+            if !o.had_alignment {
+                continue;
+            }
+            summary.samples += 1;
+            summary.coverage_done += o.coverage_done as usize;
+            summary.y_done += o.y_done as usize;
+            summary.sex_done += o.sex_done as usize;
+            summary.metrics_done += o.metrics_done as usize;
+            summary.sv_done += o.sv_done as usize;
+            summary.errors.extend(o.errors);
+        }
+        Ok(summary)
+    }
+
+    /// Deep-analyze one biosample's primary (first BAM-bearing) alignment: coverage, Y
+    /// haplogroup, sex, read metrics, and SV (≥10× only). Idempotent — a *full* coverage and a
+    /// recorded Y/sex/metrics/SV are skipped; a `partial` (lite sidecar) coverage is upgraded by
+    /// the per-base walk, which overwrites it. Best-effort: a per-step failure is recorded in
+    /// `errors` (prefixed with the donor id) and the remaining steps still run. This is the
+    /// per-sample unit the project pass and the streaming deep-analyze job both drive.
+    pub async fn analyze_biosample(&self, biosample: &Biosample) -> Result<SampleAnalyzeOutcome, AppError> {
+        let mut o = SampleAnalyzeOutcome::default();
+        let alignments = alignment::list_for_biosample(self.store.pool(), biosample.guid).await?;
+        let Some(aln) = alignments.iter().find(|a| a.bam_path.is_some()) else {
+            return Ok(o); // had_alignment stays false
+        };
+        o.had_alignment = true;
+        let label = &biosample.donor_identifier;
+
+        let coverage_full = matches!(
+            self.analysis_provenance(aln.id, "coverage", coverage::COVERAGE_VERSION).await?,
+            Some((_, ref c)) if c == "full"
+        );
+        if coverage_full {
+            o.coverage_done = true;
+        } else {
+            match self.run_coverage_for_alignment(aln.id).await {
+                Ok(_) => o.coverage_done = true,
+                Err(e) => o.errors.push(format!("{label} coverage: {e}")),
+            }
+        }
+
+        if self.haplogroup_consensus(biosample.guid, DnaType::Y).await?.is_some() {
+            o.y_done = true;
+        } else {
+            match self.assign_y_haplogroup(aln.id).await {
+                Ok(_) => o.y_done = true,
+                Err(e) => o.errors.push(format!("{label} Y: {e}")),
+            }
+        }
+
+        if self.cached_sex(aln.id).await?.is_some() {
+            o.sex_done = true;
+        } else {
+            match self.run_sex(aln.id).await {
+                Ok(_) => o.sex_done = true,
+                Err(e) => o.errors.push(format!("{label} sex: {e}")),
+            }
+        }
+
+        if self.cached_read_metrics(aln.id).await?.is_some() {
+            o.metrics_done = true;
+        } else {
+            match self.run_read_metrics(aln.id).await {
+                Ok(_) => o.metrics_done = true,
+                Err(e) => o.errors.push(format!("{label} metrics: {e}")),
+            }
+        }
+
+        // SV needs ≥10× — only attempt when coverage clears the threshold (avoids logging a
+        // "coverage too low" error for every low-coverage sample).
+        if self.cached_sv(aln.id).await?.is_some() {
+            o.sv_done = true;
+        } else if self.cached_coverage(aln.id).await?.map(|c| c.mean_coverage >= 10.0).unwrap_or(false) {
+            match self.run_sv(aln.id).await {
+                Ok(_) => o.sv_done = true,
+                Err(e) => o.errors.push(format!("{label} SV: {e}")),
+            }
+        }
+        Ok(o)
+    }
+}
