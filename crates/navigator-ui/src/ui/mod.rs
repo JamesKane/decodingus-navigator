@@ -619,6 +619,8 @@ pub struct NavigatorApp {
     reference_needs: Vec<BuildNeed>,
     /// In-flight reference download: (build, received, total).
     reference_progress: Option<(String, u64, Option<u64>)>,
+    /// Batch project-import progress: `(done, total, current_sample)` while a directory import runs.
+    import_progress: Option<(usize, usize, String)>,
     /// A project-wide analyze pass is running (disables the report's analyze button).
     analyzing: bool,
     /// Streaming deep-analyze progress: `(done, total, current_sample, fraction)` while running.
@@ -892,6 +894,7 @@ impl NavigatorApp {
             pending_import_dir: None,
             reference_needs: Vec::new(),
             reference_progress: None,
+            import_progress: None,
             analyzing: false,
             deep_progress: None,
             forms: Forms {
@@ -953,6 +956,18 @@ impl eframe::App for NavigatorApp {
                     if self.pulling {
                         ui.spinner();
                     }
+                }
+                // Batch project-import meter: the first tick (total>0, done=0) shows the discovered
+                // sample count; subsequent ticks advance the bar per imported sample.
+                if let Some((done, total, sample)) = self.import_progress.clone() {
+                    ui.separator();
+                    let fraction = if total > 0 { done as f32 / total as f32 } else { 0.0 };
+                    let text = if sample.is_empty() {
+                        format!("{} {total}", self.tr("status.importFound"))
+                    } else {
+                        format!("{} {done}/{total} — {sample}", self.tr("status.importing"))
+                    };
+                    ui.add(egui::ProgressBar::new(fraction).desired_width(220.0).text(text));
                 }
                 ui.separator();
                 ui.label(egui::RichText::new(self.tr("status.label")).weak());

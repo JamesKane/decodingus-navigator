@@ -258,6 +258,7 @@ impl App {
         reference: Option<PathBuf>,
         administrator: String,
         fast_path: bool,
+        progress: impl Fn(usize, usize, &str),
     ) -> Result<ProjectImportSummary, AppError> {
         // An explicit FASTA must exist and be indexed; it applies to every alignment.
         if let Some(path) = &reference {
@@ -340,7 +341,10 @@ impl App {
             fast_path: FastPathSummary::default(),
         };
 
-        for sample in &discovered.samples {
+        // First tick carries the discovered sample count so the UI meter knows the total up front.
+        let total = discovered.samples.len();
+        progress(0, total, "");
+        for (sample_idx, sample) in discovered.samples.iter().enumerate() {
             // Biosample: reuse by donor identifier within the project.
             let biosample = match biosample::list_for_project(self.store.pool(), project.id)
                 .await?
@@ -442,6 +446,7 @@ impl App {
                     }
                 }
             }
+            progress(sample_idx + 1, total, &sample.sample_id);
         }
         Ok(summary)
     }

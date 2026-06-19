@@ -49,6 +49,7 @@ impl NavigatorApp {
                     }
                     self.status = msg;
                     self.importing = false;
+                    self.import_progress = None;
                     self.pending_import_dir = None;
                     self.reference_needs.clear();
                     self.select_project(summary.project.id);
@@ -57,12 +58,16 @@ impl NavigatorApp {
                 }
                 Event::ReferenceNeeded { dir, builds } => {
                     self.importing = false;
+                    self.import_progress = None;
                     self.pending_import_dir = Some(dir);
                     self.status = format!("{} reference build(s) need downloading", builds.len());
                     self.reference_needs = builds;
                 }
                 Event::ReferenceProgress { build, received, total } => {
                     self.reference_progress = Some((build, received, total));
+                }
+                Event::ImportProgress { done, total, label } => {
+                    self.import_progress = Some((done, total, label));
                 }
                 Event::ReferenceReady { build, path } => {
                     self.status = format!("Reference {build} ready ({})", path.display());
@@ -754,6 +759,8 @@ impl NavigatorApp {
                 }
                 Event::Error(e) => {
                     self.status = format!("Error: {e}");
+                    self.importing = false;
+                    self.import_progress = None;
                     self.running = false;
                     self.running_denovo = false;
                     self.running_genotype = false;

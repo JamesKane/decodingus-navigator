@@ -1564,7 +1564,7 @@ async fn import_project_dir_creates_rows_is_idempotent_and_coverage_runs_on_cram
 
     let reference = fx.join("ref.fa");
     let summary = app
-        .import_project_dir(&root, Some(reference.clone()), "tester".into(), false)
+        .import_project_dir(&root, Some(reference.clone()), "tester".into(), false, |_, _, _| {})
         .await
         .unwrap();
     assert_eq!(summary.samples_total, 1);
@@ -1579,7 +1579,7 @@ async fn import_project_dir_creates_rows_is_idempotent_and_coverage_runs_on_cram
 
     // Re-import: project/sample/alignment reused, nothing new created.
     let again = app
-        .import_project_dir(&root, Some(reference), "tester".into(), false)
+        .import_project_dir(&root, Some(reference), "tester".into(), false, |_, _, _| {})
         .await
         .unwrap();
     assert_eq!(again.project.id, summary.project.id);
@@ -1611,7 +1611,7 @@ async fn project_report_rolls_up_coverage_and_csv_round_trips() {
     std::fs::copy(fx.join("coverage.cram.crai"), sample.join("HG00096.chm13.cram.crai")).unwrap();
 
     let summary = app
-        .import_project_dir(&root, Some(fx.join("ref.fa")), "tester".into(), false)
+        .import_project_dir(&root, Some(fx.join("ref.fa")), "tester".into(), false, |_, _, _| {})
         .await
         .unwrap();
     let pid = summary.project.id;
@@ -1674,7 +1674,10 @@ async fn import_without_reference_resolves_from_cache_else_reports_needed() {
     std::fs::copy(fx.join("coverage.cram.crai"), sample.join("HG00096.chm13.cram.crai")).unwrap();
 
     // Empty cache → import (no explicit reference) reports the chm13v2.0 build is needed, no writes.
-    match app.import_project_dir(&root, None, "tester".into(), false).await {
+    match app
+        .import_project_dir(&root, None, "tester".into(), false, |_, _, _| {})
+        .await
+    {
         Err(AppError::ReferenceNeeded(needs)) => {
             assert_eq!(needs.len(), 1);
             assert_eq!(needs[0].build, "chm13v2.0");
@@ -1695,7 +1698,7 @@ async fn import_without_reference_resolves_from_cache_else_reports_needed() {
 
     // Now import (no explicit reference) resolves from the cache and creates rows.
     let summary = app
-        .import_project_dir(&root, None, "tester".into(), false)
+        .import_project_dir(&root, None, "tester".into(), false, |_, _, _| {})
         .await
         .unwrap();
     assert_eq!(summary.alignments_created, 1);

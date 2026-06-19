@@ -541,6 +541,13 @@ pub enum Event {
         received: u64,
         total: Option<u64>,
     },
+    /// Batch project-import progress: `done`/`total` samples, `label` = the sample now importing.
+    /// The first tick (done=0) carries the discovered sample count so the meter shows the total.
+    ImportProgress {
+        done: usize,
+        total: usize,
+        label: String,
+    },
     /// A reference build finished resolving (cached + indexed).
     ReferenceReady {
         build: String,
@@ -885,12 +892,9 @@ pub async fn handle(app: &App, cmd: Command) -> Event {
             Ok(p) => Event::ProjectCreated(p),
             Err(e) => Event::Error(e.to_string()),
         },
-        Command::ImportProjectDir { dir, reference } => {
-            match app.import_project_dir(&dir, reference, "unknown".into(), true).await {
-                Ok(summary) => Event::ProjectImported(summary),
-                Err(AppError::ReferenceNeeded(builds)) => Event::ReferenceNeeded { dir, builds },
-                Err(e) => Event::Error(e.to_string()),
-            }
+        // Routed to import_project_streaming in the spawn loop (it streams ImportProgress).
+        Command::ImportProjectDir { dir, .. } => {
+            Event::Error(format!("internal: unrouted ImportProjectDir {}", dir.display()))
         }
         // ResolveReference is handled in the spawn loop (it streams progress events); reaching
         // here would mean a routing bug.
@@ -1743,6 +1747,37 @@ async fn resolve_reference_streaming(
     wake();
 }
 
+/// Batch-import a project directory, streaming `ImportProgress` per sample (the first tick carries
+/// the discovered sample count), then the final `ProjectImported` / `ReferenceNeeded` / `Error`. Run
+/// from the spawn loop so it can stream — `handle` returns only a single event.
+async fn import_project_streaming(
+    app: &App,
+    dir: PathBuf,
+    reference: Option<PathBuf>,
+    evt_tx: &Sender<Event>,
+    wake: &(dyn Fn() + Send + Sync),
+) {
+    let tx = evt_tx.clone();
+    let progress = |done: usize, total: usize, label: &str| {
+        let _ = tx.send(Event::ImportProgress {
+            done,
+            total,
+            label: label.to_string(),
+        });
+        wake(); // repaint the status meter (per-sample cadence is coarse enough not to flood)
+    };
+    let event = match app
+        .import_project_dir(&dir, reference, "unknown".into(), true, progress)
+        .await
+    {
+        Ok(summary) => Event::ProjectImported(summary),
+        Err(AppError::ReferenceNeeded(builds)) => Event::ReferenceNeeded { dir, builds },
+        Err(e) => Event::Error(e.to_string()),
+    };
+    let _ = evt_tx.send(event);
+    wake();
+}
+
 /// Run the full per-alignment analysis pipeline, emitting `AnalysisProgress` before each step
 /// and forwarding each step's own result event (so the detail tabs fill in live). `cancel` is
 /// checked between steps. Per-step errors are forwarded but don't abort the pipeline (best-effort).
@@ -2039,6 +2074,10 @@ pub fn spawn(db_path: PathBuf, wake: impl Fn() + Send + Sync + 'static) -> (Unbo
                             // Streams ReferenceProgress events as bytes arrive, then a final event.
                             Command::ResolveReference { build } => {
                                 resolve_reference_streaming(&app, build, &evt_tx, &*wake).await;
+                            }
+                            // Streams ImportProgress per sample, then a final ProjectImported / Error.
+                            Command::ImportProjectDir { dir, reference } => {
+                                import_project_streaming(&app, dir, reference, &evt_tx, &*wake).await;
                             }
                             // Streams AnalysisProgress per step (+ each step's result), then AnalysisDone.
                             Command::RunFullAnalysis { alignment_id } => {
