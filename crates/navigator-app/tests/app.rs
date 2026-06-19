@@ -1787,7 +1787,8 @@ async fn assign_y_haplogroup_lifts_grch38_tree_onto_chm13_alignment() {
 async fn analyze_project_runs_coverage_and_attempts_y_per_sample() {
     let _env = TREE_DIR_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     // Seed the Y-tree cache so assign_y is offline; a root-only tree (no loci) means no query
-    // targets and no chain — exercises the orchestration without network.
+    // targets and no chain — exercises the orchestration without network. Force the FTDNA provider
+    // so the seeded tree is used (the default DecodingUs provider would reach out to the AppView).
     let trees = std::env::temp_dir().join(format!("dun-trees-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&trees);
     std::fs::create_dir_all(&trees).unwrap();
@@ -1797,6 +1798,7 @@ async fn analyze_project_runs_coverage_and_attempts_y_per_sample() {
     )
     .unwrap();
     std::env::set_var("NAVIGATOR_TREE_DIR", &trees);
+    std::env::set_var("NAVIGATOR_Y_TREE_PROVIDER", "ftdna");
 
     let app = app().await;
     let dir = fixtures();
@@ -1846,6 +1848,7 @@ async fn analyze_project_runs_coverage_and_attempts_y_per_sample() {
     assert!(report[0].mean_coverage.is_some());
 
     std::env::remove_var("NAVIGATOR_TREE_DIR");
+    std::env::remove_var("NAVIGATOR_Y_TREE_PROVIDER");
     let _ = std::fs::remove_dir_all(&trees);
 }
 
