@@ -1,0 +1,112 @@
+{
+ "allNodes": {
+  "7328": {
+   "haplogroupId": 7328,
+   "name": "H2a",
+   "isRoot": true,
+   "variants": [
+    {
+     "variant": "G4769A",
+     "position": 4769,
+     "ancestral": "G",
+     "derived": "A"
+    }
+   ],
+   "children": [
+    7353
+   ]
+  },
+  "7353": {
+   "haplogroupId": 7353,
+   "name": "H2a2",
+   "isRoot": false,
+   "variants": [
+    {
+     "variant": "G750A",
+     "position": 750,
+     "ancestral": "G",
+     "derived": "A"
+    }
+   ],
+   "children": [
+    7354
+   ]
+  },
+  "7354": {
+   "haplogroupId": 7354,
+   "name": "H2a2a",
+   "isRoot": false,
+   "variants": [
+    {
+     "variant": "G8860A",
+     "position": 8860,
+     "ancestral": "G",
+     "derived": "A"
+    }
+   ],
+   "children": [
+    7355
+   ]
+  },
+  "7355": {
+   "haplogroupId": 7355,
+   "name": "H2a2a1",
+   "isRoot": false,
+   "variants": [
+    {
+     "variant": "G263A",
+     "position": 263,
+     "ancestral": "G",
+     "derived": "A"
+    }
+   ],
+   "children": [
+    7356,
+    7357,
+    7358
+   ]
+  },
+  "7356": {
+   "haplogroupId": 7356,
+   "name": "H2a2a1a",
+   "isRoot": false,
+   "variants": [
+    {
+     "variant": "G15314A",
+     "position": 15314,
+     "ancestral": "G",
+     "derived": "A"
+    }
+   ],
+   "children": []
+  },
+  "7357": {
+   "haplogroupId": 7357,
+   "name": "H2a2a1b",
+   "isRoot": false,
+   "variants": [
+    {
+     "variant": "A9299G",
+     "position": 9299,
+     "ancestral": "A",
+     "derived": "G"
+    }
+   ],
+   "children": []
+  },
+  "7358": {
+   "haplogroupId": 7358,
+   "name": "H2a2a1c",
+   "isRoot": false,
+   "variants": [
+    {
+     "variant": "T6632C",
+     "position": 6632,
+     "ancestral": "T",
+     "derived": "C"
+    }
+   ],
+   "children": []
+  }
+ }
+}

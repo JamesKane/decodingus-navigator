@@ -1800,6 +1800,14 @@ impl App {
     /// Shared by the combined [`assign_y_bisdna`](Self::assign_y_bisdna) placement and the per-panel
     /// Y-profile sources, so the tree is fetched once.
     async fn chip_y_tree(&self, build: &str) -> Result<navigator_analysis::haplo::HaploTree, AppError> {
+        // Honor the configured Y-tree provider (the alignment placement path does too). With the
+        // FTDNA provider, place against the FTDNA tree directly — no DecodingUs call. The default
+        // (DecodingUs) keeps the prior behavior, with an FTDNA fallback for a GRCh38 chip when the
+        // DecodingUs tree is unavailable.
+        if matches!(y_tree_provider(), YTreeProvider::Ftdna) {
+            let json = self.fetch_ftdna_y_tree().await?;
+            return navigator_analysis::haplo::parse_ftdna_json(&json).map_err(AppError::Import);
+        }
         match self.fetch_decodingus_y_tree().await {
             Ok(json) => navigator_analysis::haplo::parse_decodingus_json(&json, build).map_err(AppError::Import),
             Err(e) if build == "GRCh38" => {
