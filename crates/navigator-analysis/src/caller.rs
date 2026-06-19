@@ -246,6 +246,23 @@ pub(crate) fn read_contig_length(bam_path: &Path, contig: &str, reference: Optio
     contig_length(&header, contig).ok_or_else(|| AnalysisError::Message(format!("contig {contig} not in BAM header")))
 }
 
+/// Load a contig's full reference sequence in one indexed-FASTA query (shared read-only across the
+/// caller's chunks — each chunk slices its own window instead of re-querying).
+fn load_contig_sequence(reference_path: &Path, contig: &str, length: usize) -> Result<Vec<u8>, AnalysisError> {
+    let mut fasta_reader = fasta::io::indexed_reader::Builder::default()
+        .build_from_path(reference_path)
+        .map_err(|e| AnalysisError::io(reference_path, e))?;
+    let region: Region = format!("{contig}:1-{length}")
+        .parse()
+        .map_err(|_| AnalysisError::Message(format!("bad region for contig {contig}")))?;
+    Ok(fasta_reader
+        .query(&region)
+        .map_err(|e| AnalysisError::io(reference_path, e))?
+        .sequence()
+        .as_ref()
+        .to_vec())
+}
+
 /// The contig (reference-sequence) names in the alignment header. `reference` is required
 /// for CRAM. Used to skip lifted positions that land on contigs the alignment lacks.
 pub fn header_contig_names(bam_path: &Path, reference: Option<&Path>) -> Result<Vec<String>, AnalysisError> {
@@ -777,22 +794,9 @@ pub fn call_denovo(
 ) -> Result<Vec<VariantCall>, AnalysisError> {
     let length = read_contig_length(bam_path, contig, Some(reference_path))?;
 
-    // Load the contig's reference once (one FASTA query), shared read-only across chunks — each
-    // chunk slices its own window instead of re-querying the FASTA.
-    let ref_seq: Vec<u8> = {
-        let mut fasta_reader = fasta::io::indexed_reader::Builder::default()
-            .build_from_path(reference_path)
-            .map_err(|e| AnalysisError::io(reference_path, e))?;
-        let region: Region = format!("{contig}:1-{length}")
-            .parse()
-            .map_err(|_| AnalysisError::Message(format!("bad region for contig {contig}")))?;
-        fasta_reader
-            .query(&region)
-            .map_err(|e| AnalysisError::io(reference_path, e))?
-            .sequence()
-            .as_ref()
-            .to_vec()
-    };
+    // Load the contig's reference once, shared read-only across chunks — each chunk slices its own
+    // window instead of re-querying the FASTA.
+    let ref_seq = load_contig_sequence(reference_path, contig, length)?;
 
     // Disjoint emit ranges, in order, each processed independently with its own indexed BAM
     // region query. Chunks stay large (`denovo_chunk`, default 8 MB): a CRAM container spans
@@ -908,20 +912,7 @@ pub fn call_denovo_diploid(
     params: &HaploidCallerParams,
 ) -> Result<Vec<SiteGenotype>, AnalysisError> {
     let length = read_contig_length(bam_path, contig, Some(reference_path))?;
-    let ref_seq: Vec<u8> = {
-        let mut fasta_reader = fasta::io::indexed_reader::Builder::default()
-            .build_from_path(reference_path)
-            .map_err(|e| AnalysisError::io(reference_path, e))?;
-        let region: Region = format!("{contig}:1-{length}")
-            .parse()
-            .map_err(|_| AnalysisError::Message(format!("bad region for contig {contig}")))?;
-        fasta_reader
-            .query(&region)
-            .map_err(|e| AnalysisError::io(reference_path, e))?
-            .sequence()
-            .as_ref()
-            .to_vec()
-    };
+    let ref_seq = load_contig_sequence(reference_path, contig, length)?;
 
     let threads = crate::unified::analysis_thread_count();
     let chunk = params.denovo_chunk.max(1);
