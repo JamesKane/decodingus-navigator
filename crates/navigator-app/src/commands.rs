@@ -248,7 +248,9 @@ impl App {
         let runs = sequence_run::list_for_biosample(self.store.pool(), biosample_guid).await?;
         for id in [primary, secondary] {
             if !runs.iter().any(|r| r.id == id) {
-                return Err(AppError::Store(StoreError::NotFound(format!("sequence run {id} for this subject"))));
+                return Err(AppError::Store(StoreError::NotFound(format!(
+                    "sequence run {id} for this subject"
+                ))));
             }
         }
         let moved = alignment::list_for_run(self.store.pool(), secondary).await?;
@@ -366,12 +368,14 @@ impl App {
         kind: &str,
         algorithm_version: &str,
     ) -> Result<Option<(String, String)>, AppError> {
-        Ok(artifact::get(self.store.pool(), alignment_id, kind, algorithm_version).await?.map(|a| {
-            (
-                a.source.unwrap_or_else(|| "navigator-walk".into()),
-                a.completeness.unwrap_or_else(|| "full".into()),
-            )
-        }))
+        Ok(artifact::get(self.store.pool(), alignment_id, kind, algorithm_version)
+            .await?
+            .map(|a| {
+                (
+                    a.source.unwrap_or_else(|| "navigator-walk".into()),
+                    a.completeness.unwrap_or_else(|| "full".into()),
+                )
+            }))
     }
 
     /// Load and deserialize a stored analysis result, if present for this version.
@@ -394,5 +398,4 @@ impl App {
             None => Ok(None),
         }
     }
-
 }

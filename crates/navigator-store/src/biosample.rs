@@ -33,8 +33,7 @@ impl Row {
     }
 }
 
-const COLS: &str =
-    "guid, sample_accession, donor_identifier, description, center_name, sex, project_id";
+const COLS: &str = "guid, sample_accession, donor_identifier, description, center_name, sex, project_id";
 
 /// Insert a biosample (the caller assigns the `SampleGuid`).
 pub async fn create(pool: &SqlitePool, b: &Biosample) -> Result<(), StoreError> {
@@ -122,10 +121,12 @@ pub async fn delete(pool: &SqlitePool, guid: SampleGuid) -> Result<bool, StoreEr
 }
 
 pub async fn list_for_project(pool: &SqlitePool, project_id: i64) -> Result<Vec<Biosample>, StoreError> {
-    let rows: Vec<Row> = sqlx::query_as(&format!("SELECT {COLS} FROM biosample WHERE project_id = ? ORDER BY guid"))
-        .bind(project_id)
-        .fetch_all(pool)
-        .await?;
+    let rows: Vec<Row> = sqlx::query_as(&format!(
+        "SELECT {COLS} FROM biosample WHERE project_id = ? ORDER BY guid"
+    ))
+    .bind(project_id)
+    .fetch_all(pool)
+    .await?;
     rows.into_iter().map(Row::into_domain).collect()
 }
 

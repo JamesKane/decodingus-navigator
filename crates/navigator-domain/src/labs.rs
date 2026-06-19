@@ -31,62 +31,234 @@ pub mod category {
 /// The full catalog (25 labs), ported from `labs.conf`.
 pub const CATALOG: &[Lab] = &[
     // Commercial DNA testing labs
-    Lab { id: "familytreedna", display_name: "FamilyTreeDNA", abbreviation: "FTDNA", category: category::COMMERCIAL_LAB,
+    Lab {
+        id: "familytreedna",
+        display_name: "FamilyTreeDNA",
+        abbreviation: "FTDNA",
+        category: category::COMMERCIAL_LAB,
         capabilities: &["y-dna", "mt-dna", "str", "chip", "vcf-download", "bam-download"],
-        website: Some("https://www.familytreedna.com"), aliases: &["FTDNA", "Family Tree DNA"] },
-    Lab { id: "yseq", display_name: "YSEQ", abbreviation: "YSEQ", category: category::COMMERCIAL_LAB,
+        website: Some("https://www.familytreedna.com"),
+        aliases: &["FTDNA", "Family Tree DNA"],
+    },
+    Lab {
+        id: "yseq",
+        display_name: "YSEQ",
+        abbreviation: "YSEQ",
+        category: category::COMMERCIAL_LAB,
         capabilities: &["wgs", "y-dna", "mt-dna", "str", "vcf-download", "bam-download"],
-        website: Some("https://www.yseq.net"), aliases: &[] },
-    Lab { id: "full-genomes", display_name: "Full Genomes Corporation", abbreviation: "FGC", category: category::COMMERCIAL_LAB,
+        website: Some("https://www.yseq.net"),
+        aliases: &[],
+    },
+    Lab {
+        id: "full-genomes",
+        display_name: "Full Genomes Corporation",
+        abbreviation: "FGC",
+        category: category::COMMERCIAL_LAB,
         capabilities: &["wgs", "y-dna", "mt-dna", "vcf-download"],
-        website: Some("https://www.fullgenomes.com"), aliases: &["Full Genomes", "FGC"] },
-    Lab { id: "nebula", display_name: "Nebula Genomics", abbreviation: "NEBULA", category: category::COMMERCIAL_LAB,
-        capabilities: &["wgs", "vcf-download"], website: Some("https://nebula.org"), aliases: &["Nebula"] },
-    Lab { id: "dante", display_name: "Dante Labs", abbreviation: "DANTE", category: category::COMMERCIAL_LAB,
-        capabilities: &["wgs", "vcf-download"], website: Some("https://www.dantelabs.com"), aliases: &["Dante"] },
-    Lab { id: "sequencing-com", display_name: "Sequencing.com", abbreviation: "SEQ", category: category::COMMERCIAL_LAB,
-        capabilities: &["wgs"], website: Some("https://sequencing.com"), aliases: &["Sequencing"] },
-    Lab { id: "bisdna", display_name: "BISDNA", abbreviation: "BISDNA", category: category::COMMERCIAL_LAB,
-        capabilities: &["y-dna", "chip"], website: None, aliases: &["BIS-DNA", "BIS DNA"] },
-    Lab { id: "yoogene", display_name: "YooGene", abbreviation: "YOOGN", category: category::COMMERCIAL_LAB,
-        capabilities: &["wgs"], website: Some("https://www.yoogene.com"), aliases: &[] },
-    Lab { id: "invitae", display_name: "Invitae", abbreviation: "INVIT", category: category::COMMERCIAL_LAB,
-        capabilities: &["wgs"], website: Some("https://www.invitae.com"), aliases: &[] },
-    Lab { id: "genedx", display_name: "GeneDx", abbreviation: "GENEDX", category: category::COMMERCIAL_LAB,
-        capabilities: &["wgs"], website: Some("https://www.genedx.com"), aliases: &[] },
-    Lab { id: "yfull", display_name: "YFull", abbreviation: "YFULL", category: category::COMMERCIAL_LAB,
-        capabilities: &["y-dna", "mt-dna"], website: Some("https://www.yfull.com"), aliases: &[] },
+        website: Some("https://www.fullgenomes.com"),
+        aliases: &["Full Genomes", "FGC"],
+    },
+    Lab {
+        id: "nebula",
+        display_name: "Nebula Genomics",
+        abbreviation: "NEBULA",
+        category: category::COMMERCIAL_LAB,
+        capabilities: &["wgs", "vcf-download"],
+        website: Some("https://nebula.org"),
+        aliases: &["Nebula"],
+    },
+    Lab {
+        id: "dante",
+        display_name: "Dante Labs",
+        abbreviation: "DANTE",
+        category: category::COMMERCIAL_LAB,
+        capabilities: &["wgs", "vcf-download"],
+        website: Some("https://www.dantelabs.com"),
+        aliases: &["Dante"],
+    },
+    Lab {
+        id: "sequencing-com",
+        display_name: "Sequencing.com",
+        abbreviation: "SEQ",
+        category: category::COMMERCIAL_LAB,
+        capabilities: &["wgs"],
+        website: Some("https://sequencing.com"),
+        aliases: &["Sequencing"],
+    },
+    Lab {
+        id: "bisdna",
+        display_name: "BISDNA",
+        abbreviation: "BISDNA",
+        category: category::COMMERCIAL_LAB,
+        capabilities: &["y-dna", "chip"],
+        website: None,
+        aliases: &["BIS-DNA", "BIS DNA"],
+    },
+    Lab {
+        id: "yoogene",
+        display_name: "YooGene",
+        abbreviation: "YOOGN",
+        category: category::COMMERCIAL_LAB,
+        capabilities: &["wgs"],
+        website: Some("https://www.yoogene.com"),
+        aliases: &[],
+    },
+    Lab {
+        id: "invitae",
+        display_name: "Invitae",
+        abbreviation: "INVIT",
+        category: category::COMMERCIAL_LAB,
+        capabilities: &["wgs"],
+        website: Some("https://www.invitae.com"),
+        aliases: &[],
+    },
+    Lab {
+        id: "genedx",
+        display_name: "GeneDx",
+        abbreviation: "GENEDX",
+        category: category::COMMERCIAL_LAB,
+        capabilities: &["wgs"],
+        website: Some("https://www.genedx.com"),
+        aliases: &[],
+    },
+    Lab {
+        id: "yfull",
+        display_name: "YFull",
+        abbreviation: "YFULL",
+        category: category::COMMERCIAL_LAB,
+        capabilities: &["y-dna", "mt-dna"],
+        website: Some("https://www.yfull.com"),
+        aliases: &[],
+    },
     // Consumer genotyping vendors
-    Lab { id: "23andme", display_name: "23andMe", abbreviation: "23&ME", category: category::CONSUMER_VENDOR,
-        capabilities: &["chip", "y-dna", "mt-dna"], website: Some("https://www.23andme.com"), aliases: &["23 and Me", "23andMe"] },
-    Lab { id: "ancestrydna", display_name: "AncestryDNA", abbreviation: "ANCST", category: category::CONSUMER_VENDOR,
-        capabilities: &["chip", "y-dna", "mt-dna"], website: Some("https://www.ancestry.com/dna"), aliases: &["Ancestry DNA", "AncestryDNA", "Ancestry"] },
-    Lab { id: "myheritage", display_name: "MyHeritage", abbreviation: "MYHRT", category: category::CONSUMER_VENDOR,
-        capabilities: &["chip", "y-dna", "mt-dna"], website: Some("https://www.myheritage.com"), aliases: &["MyHeritage DNA", "My Heritage"] },
-    Lab { id: "livingdna", display_name: "LivingDNA", abbreviation: "LVDNA", category: category::CONSUMER_VENDOR,
-        capabilities: &["chip", "y-dna", "mt-dna"], website: Some("https://livingdna.com"), aliases: &["Living DNA"] },
+    Lab {
+        id: "23andme",
+        display_name: "23andMe",
+        abbreviation: "23&ME",
+        category: category::CONSUMER_VENDOR,
+        capabilities: &["chip", "y-dna", "mt-dna"],
+        website: Some("https://www.23andme.com"),
+        aliases: &["23 and Me", "23andMe"],
+    },
+    Lab {
+        id: "ancestrydna",
+        display_name: "AncestryDNA",
+        abbreviation: "ANCST",
+        category: category::CONSUMER_VENDOR,
+        capabilities: &["chip", "y-dna", "mt-dna"],
+        website: Some("https://www.ancestry.com/dna"),
+        aliases: &["Ancestry DNA", "AncestryDNA", "Ancestry"],
+    },
+    Lab {
+        id: "myheritage",
+        display_name: "MyHeritage",
+        abbreviation: "MYHRT",
+        category: category::CONSUMER_VENDOR,
+        capabilities: &["chip", "y-dna", "mt-dna"],
+        website: Some("https://www.myheritage.com"),
+        aliases: &["MyHeritage DNA", "My Heritage"],
+    },
+    Lab {
+        id: "livingdna",
+        display_name: "LivingDNA",
+        abbreviation: "LVDNA",
+        category: category::CONSUMER_VENDOR,
+        capabilities: &["chip", "y-dna", "mt-dna"],
+        website: Some("https://livingdna.com"),
+        aliases: &["Living DNA"],
+    },
     // Sequencing platform vendors
-    Lab { id: "illumina", display_name: "Illumina", abbreviation: "ILLUM", category: category::SEQUENCING_PLATFORM,
-        capabilities: &["wgs"], website: Some("https://www.illumina.com"), aliases: &[] },
-    Lab { id: "pacbio", display_name: "PacBio", abbreviation: "PACB", category: category::SEQUENCING_PLATFORM,
-        capabilities: &["wgs"], website: Some("https://www.pacb.com"), aliases: &["Pacific Biosciences"] },
-    Lab { id: "oxford-nanopore", display_name: "Oxford Nanopore", abbreviation: "ONT", category: category::SEQUENCING_PLATFORM,
-        capabilities: &["wgs"], website: Some("https://nanoporetech.com"), aliases: &["Nanopore", "ONT"] },
-    Lab { id: "mgi", display_name: "MGI Tech", abbreviation: "MGI", category: category::SEQUENCING_PLATFORM,
-        capabilities: &["wgs"], website: Some("https://www.mgi-tech.com"), aliases: &["MGI", "BGI Genomics"] },
-    Lab { id: "element", display_name: "Element Biosciences", abbreviation: "ELEM", category: category::SEQUENCING_PLATFORM,
-        capabilities: &["wgs"], website: Some("https://www.elementbiosciences.com"), aliases: &["Element"] },
-    Lab { id: "ultima", display_name: "Ultima Genomics", abbreviation: "ULTIMA", category: category::SEQUENCING_PLATFORM,
-        capabilities: &["wgs"], website: Some("https://www.ultimagenomics.com"), aliases: &["Ultima"] },
-    Lab { id: "singular", display_name: "Singular Genomics", abbreviation: "SINGLR", category: category::SEQUENCING_PLATFORM,
-        capabilities: &["wgs"], website: Some("https://singulargenomics.com"), aliases: &[] },
+    Lab {
+        id: "illumina",
+        display_name: "Illumina",
+        abbreviation: "ILLUM",
+        category: category::SEQUENCING_PLATFORM,
+        capabilities: &["wgs"],
+        website: Some("https://www.illumina.com"),
+        aliases: &[],
+    },
+    Lab {
+        id: "pacbio",
+        display_name: "PacBio",
+        abbreviation: "PACB",
+        category: category::SEQUENCING_PLATFORM,
+        capabilities: &["wgs"],
+        website: Some("https://www.pacb.com"),
+        aliases: &["Pacific Biosciences"],
+    },
+    Lab {
+        id: "oxford-nanopore",
+        display_name: "Oxford Nanopore",
+        abbreviation: "ONT",
+        category: category::SEQUENCING_PLATFORM,
+        capabilities: &["wgs"],
+        website: Some("https://nanoporetech.com"),
+        aliases: &["Nanopore", "ONT"],
+    },
+    Lab {
+        id: "mgi",
+        display_name: "MGI Tech",
+        abbreviation: "MGI",
+        category: category::SEQUENCING_PLATFORM,
+        capabilities: &["wgs"],
+        website: Some("https://www.mgi-tech.com"),
+        aliases: &["MGI", "BGI Genomics"],
+    },
+    Lab {
+        id: "element",
+        display_name: "Element Biosciences",
+        abbreviation: "ELEM",
+        category: category::SEQUENCING_PLATFORM,
+        capabilities: &["wgs"],
+        website: Some("https://www.elementbiosciences.com"),
+        aliases: &["Element"],
+    },
+    Lab {
+        id: "ultima",
+        display_name: "Ultima Genomics",
+        abbreviation: "ULTIMA",
+        category: category::SEQUENCING_PLATFORM,
+        capabilities: &["wgs"],
+        website: Some("https://www.ultimagenomics.com"),
+        aliases: &["Ultima"],
+    },
+    Lab {
+        id: "singular",
+        display_name: "Singular Genomics",
+        abbreviation: "SINGLR",
+        category: category::SEQUENCING_PLATFORM,
+        capabilities: &["wgs"],
+        website: Some("https://singulargenomics.com"),
+        aliases: &[],
+    },
     // Academic / research institutions
-    Lab { id: "broad-institute", display_name: "Broad Institute", abbreviation: "BROAD", category: category::ACADEMIC,
-        capabilities: &["wgs"], website: Some("https://www.broadinstitute.org"), aliases: &["Broad"] },
-    Lab { id: "sanger", display_name: "Wellcome Sanger Institute", abbreviation: "SANGR", category: category::ACADEMIC,
-        capabilities: &["wgs"], website: Some("https://www.sanger.ac.uk"), aliases: &["Sanger", "Wellcome Trust Sanger"] },
-    Lab { id: "nhgri", display_name: "NHGRI", abbreviation: "NHGRI", category: category::ACADEMIC,
-        capabilities: &["wgs"], website: Some("https://www.genome.gov"), aliases: &["National Human Genome Research Institute"] },
+    Lab {
+        id: "broad-institute",
+        display_name: "Broad Institute",
+        abbreviation: "BROAD",
+        category: category::ACADEMIC,
+        capabilities: &["wgs"],
+        website: Some("https://www.broadinstitute.org"),
+        aliases: &["Broad"],
+    },
+    Lab {
+        id: "sanger",
+        display_name: "Wellcome Sanger Institute",
+        abbreviation: "SANGR",
+        category: category::ACADEMIC,
+        capabilities: &["wgs"],
+        website: Some("https://www.sanger.ac.uk"),
+        aliases: &["Sanger", "Wellcome Trust Sanger"],
+    },
+    Lab {
+        id: "nhgri",
+        display_name: "NHGRI",
+        abbreviation: "NHGRI",
+        category: category::ACADEMIC,
+        capabilities: &["wgs"],
+        website: Some("https://www.genome.gov"),
+        aliases: &["National Human Genome Research Institute"],
+    },
 ];
 
 /// Find a lab by id, display name, or alias (case-insensitive), then by a fuzzy substring match
@@ -98,10 +270,15 @@ pub fn find(identifier: &str) -> Option<&'static Lab> {
     }
     CATALOG
         .iter()
-        .find(|l| l.id == q || l.display_name.to_ascii_lowercase() == q || l.aliases.iter().any(|a| a.to_ascii_lowercase() == q))
+        .find(|l| {
+            l.id == q
+                || l.display_name.to_ascii_lowercase() == q
+                || l.aliases.iter().any(|a| a.to_ascii_lowercase() == q)
+        })
         .or_else(|| {
             CATALOG.iter().find(|l| {
-                l.display_name.to_ascii_lowercase().contains(&q) || l.aliases.iter().any(|a| a.to_ascii_lowercase().contains(&q))
+                l.display_name.to_ascii_lowercase().contains(&q)
+                    || l.aliases.iter().any(|a| a.to_ascii_lowercase().contains(&q))
             })
         })
 }
@@ -117,7 +294,9 @@ pub fn abbreviation(name: &str, max_chars: usize) -> String {
 
 /// The canonical display name for an identifier (returns the input unchanged if unknown).
 pub fn display_name(identifier: &str) -> String {
-    find(identifier).map(|l| l.display_name.to_string()).unwrap_or_else(|| identifier.to_string())
+    find(identifier)
+        .map(|l| l.display_name.to_string())
+        .unwrap_or_else(|| identifier.to_string())
 }
 
 /// Display names offered in the sequence-run lab dropdown: testing labs + sequencing platforms +
@@ -125,7 +304,12 @@ pub fn display_name(identifier: &str) -> String {
 pub fn sequence_run_lab_names() -> Vec<&'static str> {
     let mut names: Vec<&'static str> = CATALOG
         .iter()
-        .filter(|l| matches!(l.category, category::COMMERCIAL_LAB | category::SEQUENCING_PLATFORM | category::ACADEMIC))
+        .filter(|l| {
+            matches!(
+                l.category,
+                category::COMMERCIAL_LAB | category::SEQUENCING_PLATFORM | category::ACADEMIC
+            )
+        })
         .map(|l| l.display_name)
         .collect();
     names.sort_unstable();
@@ -158,7 +342,10 @@ mod tests {
     fn run_dropdown_excludes_consumer_vendors_and_is_sorted() {
         let names = sequence_run_lab_names();
         assert!(names.contains(&"YSEQ") && names.contains(&"Illumina") && names.contains(&"Broad Institute"));
-        assert!(!names.contains(&"23andMe"), "consumer array vendors aren't sequence-run labs");
+        assert!(
+            !names.contains(&"23andMe"),
+            "consumer array vendors aren't sequence-run labs"
+        );
         assert!(names.windows(2).all(|w| w[0] <= w[1]), "sorted");
     }
 }

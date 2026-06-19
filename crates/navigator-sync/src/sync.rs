@@ -28,7 +28,10 @@ pub struct RetryPolicy {
 
 impl Default for RetryPolicy {
     fn default() -> Self {
-        RetryPolicy { max_retries: 3, base_delay: Duration::from_millis(500) }
+        RetryPolicy {
+            max_retries: 3,
+            base_delay: Duration::from_millis(500),
+        }
     }
 }
 
@@ -62,7 +65,14 @@ impl AsyncSync {
         policy: RetryPolicy,
         online: Arc<AtomicBool>,
     ) -> Self {
-        AsyncSync { http, tokens, did: session.did.clone(), session, policy, online }
+        AsyncSync {
+            http,
+            tokens,
+            did: session.did.clone(),
+            session,
+            policy,
+            online,
+        }
     }
 
     /// Whether the last write reached the server (true until a transport/5xx failure).
@@ -77,11 +87,7 @@ impl AsyncSync {
 
     /// Create a record, transparently refreshing on 401 (once) and retrying transient
     /// failures with backoff. On success the offline flag is cleared.
-    pub async fn push_create(
-        &mut self,
-        collection: &str,
-        record: serde_json::Value,
-    ) -> Result<RecordRef, SyncError> {
+    pub async fn push_create(&mut self, collection: &str, record: serde_json::Value) -> Result<RecordRef, SyncError> {
         self.push_create_inner(collection, record, None).await
     }
 
@@ -214,7 +220,10 @@ mod tests {
 
     #[test]
     fn backoff_is_exponential() {
-        let p = RetryPolicy { max_retries: 4, base_delay: Duration::from_millis(100) };
+        let p = RetryPolicy {
+            max_retries: 4,
+            base_delay: Duration::from_millis(100),
+        };
         assert_eq!(p.backoff(0), Duration::from_millis(100));
         assert_eq!(p.backoff(1), Duration::from_millis(200));
         assert_eq!(p.backoff(2), Duration::from_millis(400));
@@ -247,7 +256,10 @@ mod tests {
             client_id: "http://localhost".into(),
         };
         let online = Arc::new(AtomicBool::new(true));
-        let policy = RetryPolicy { max_retries: 2, base_delay: Duration::from_millis(1) };
+        let policy = RetryPolicy {
+            max_retries: 2,
+            base_delay: Duration::from_millis(1),
+        };
         let mut engine = AsyncSync::new(
             reqwest::Client::new(),
             TokenStore::new("navigator-sync-test-offline"),
@@ -256,10 +268,18 @@ mod tests {
             online.clone(),
         );
 
-        let err = engine.push_create("com.decodingus.test", serde_json::json!({"x": 1})).await;
+        let err = engine
+            .push_create("com.decodingus.test", serde_json::json!({"x": 1}))
+            .await;
         assert!(err.is_err(), "expected the dead endpoint to fail");
         assert!(err.unwrap_err().is_transient(), "connect failure should be transient");
-        assert!(!engine.is_online(), "offline flag should be set after transient failures");
-        assert!(!online.load(Ordering::Relaxed), "shared flag should be visible to the app");
+        assert!(
+            !engine.is_online(),
+            "offline flag should be set after transient failures"
+        );
+        assert!(
+            !online.load(Ordering::Relaxed),
+            "shared flag should be visible to the app"
+        );
     }
 }

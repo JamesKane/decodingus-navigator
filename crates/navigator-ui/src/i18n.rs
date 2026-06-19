@@ -53,12 +53,16 @@ impl Lang {
 /// `~/.decodingus` convention used for the workspace DB.
 fn lang_file() -> std::path::PathBuf {
     let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
-    std::path::PathBuf::from(home).join(".decodingus").join("navigator-lang")
+    std::path::PathBuf::from(home)
+        .join(".decodingus")
+        .join("navigator-lang")
 }
 
 /// The previously chosen UI language, if one was saved.
 pub fn load_lang() -> Option<Lang> {
-    std::fs::read_to_string(lang_file()).ok().and_then(|s| Lang::parse(s.trim()))
+    std::fs::read_to_string(lang_file())
+        .ok()
+        .and_then(|s| Lang::parse(s.trim()))
 }
 
 /// Persist the chosen UI language so it survives a restart (best-effort; I/O errors ignored).

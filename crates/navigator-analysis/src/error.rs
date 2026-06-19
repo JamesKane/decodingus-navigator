@@ -17,6 +17,9 @@ pub enum AnalysisError {
 
 impl AnalysisError {
     pub(crate) fn io(path: impl Into<PathBuf>, source: std::io::Error) -> Self {
-        AnalysisError::Io { path: path.into(), source }
+        AnalysisError::Io {
+            path: path.into(),
+            source,
+        }
     }
 }

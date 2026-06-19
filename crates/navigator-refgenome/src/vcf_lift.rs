@@ -87,7 +87,9 @@ pub fn revcomp(s: &str) -> String {
 
 /// True for a simple single-base ACGT allele (the case we can revcomp + swap-recover precisely).
 fn is_snv_allele(a: &str) -> bool {
-    a.len() == 1 && a.bytes().all(|b| matches!(b.to_ascii_uppercase(), b'A' | b'C' | b'G' | b'T'))
+    a.len() == 1
+        && a.bytes()
+            .all(|b| matches!(b.to_ascii_uppercase(), b'A' | b'C' | b'G' | b'T'))
 }
 
 /// Candidate names for a lifted (chain-query) contig in the **target** FASTA's naming style, in
@@ -115,7 +117,11 @@ fn to_chain_source_name(chrom: &str) -> String {
 
 /// Read the 1-based reference base at `contig:pos` from an indexed FASTA, uppercased. `None` if the
 /// contig/position can't be queried.
-fn ref_base_at(reader: &mut fasta::io::IndexedReader<fasta::io::BufReader<std::fs::File>>, contig: &str, pos: i64) -> Option<u8> {
+fn ref_base_at(
+    reader: &mut fasta::io::IndexedReader<fasta::io::BufReader<std::fs::File>>,
+    contig: &str,
+    pos: i64,
+) -> Option<u8> {
     let region: noodles::core::Region = format!("{contig}:{pos}-{pos}").parse().ok()?;
     let rec = reader.query(&region).ok()?;
     rec.sequence().as_ref().first().map(|b| b.to_ascii_uppercase())
@@ -147,8 +153,7 @@ pub fn lift_vcf(
     // Target contig set + order (from the .fai) for naming normalization, ##contig rewrite, sort.
     let fai = read_fai(target_fa)?;
     let target_names: HashSet<String> = fai.iter().map(|(n, _)| n.clone()).collect();
-    let contig_rank: HashMap<String, usize> =
-        fai.iter().enumerate().map(|(i, (n, _))| (n.clone(), i)).collect();
+    let contig_rank: HashMap<String, usize> = fai.iter().enumerate().map(|(i, (n, _))| (n.clone(), i)).collect();
 
     let mut fasta_reader = fasta::io::indexed_reader::Builder::default()
         .build_from_path(target_fa)
@@ -177,7 +182,16 @@ pub fn lift_vcf(
             continue;
         }
         stats.total += 1;
-        if let Some(rec) = lift_record(&line, lo, &target_names, &contig_rank, &mut fasta_reader, target_par, &opts, &mut stats) {
+        if let Some(rec) = lift_record(
+            &line,
+            lo,
+            &target_names,
+            &contig_rank,
+            &mut fasta_reader,
+            target_par,
+            &opts,
+            &mut stats,
+        ) {
             lifted.push(rec);
         }
     }
@@ -190,8 +204,11 @@ pub fn lift_vcf(
     for h in &header {
         writeln!(out, "{h}").map_err(|e| RefgenomeError::io(out_vcf, e))?;
     }
-    writeln!(out, "##liftover=navigator; source={source_label}; target={target_label}")
-        .map_err(|e| RefgenomeError::io(out_vcf, e))?;
+    writeln!(
+        out,
+        "##liftover=navigator; source={source_label}; target={target_label}"
+    )
+    .map_err(|e| RefgenomeError::io(out_vcf, e))?;
     for (name, len) in &fai {
         writeln!(out, "##contig=<ID={name},length={len}>").map_err(|e| RefgenomeError::io(out_vcf, e))?;
     }
@@ -229,11 +246,10 @@ fn lift_record(
     let src_name = to_chain_source_name(&f[0]);
 
     // Lift the start position; capture the target strand (inverted tracts on the CHM13 Y).
-    let lifted = lo
-        .chains
-        .iter()
-        .filter(|c| c.t_name == src_name)
-        .find_map(|c| c.lift(src_pos - 1).map(|q| (c.q_name.clone(), q + 1, c.q_strand == '-')));
+    let lifted = lo.chains.iter().filter(|c| c.t_name == src_name).find_map(|c| {
+        c.lift(src_pos - 1)
+            .map(|q| (c.q_name.clone(), q + 1, c.q_strand == '-'))
+    });
     let Some((q_name, q_pos, reverse)) = lifted else {
         stats.unmapped += 1; // position fell in a chain gap / non-syntenic region
         return None;
@@ -255,7 +271,12 @@ fn lift_record(
     // A multi-base REF must lift contiguously (both endpoints on the same target contig).
     if ref_allele.len() > 1 {
         let end = src_pos + ref_allele.len() as i64 - 1;
-        match lo.chains.iter().filter(|c| c.t_name == src_name).find_map(|c| c.lift(end - 1)) {
+        match lo
+            .chains
+            .iter()
+            .filter(|c| c.t_name == src_name)
+            .find_map(|c| c.lift(end - 1))
+        {
             Some(_) => {}
             None => {
                 stats.split += 1;
@@ -266,7 +287,10 @@ fn lift_record(
 
     // Reverse-complement simple alleles on an inverted lift.
     let (mut new_ref, mut new_alts) = if reverse && simple {
-        (revcomp(&ref_allele), alts.iter().map(|a| revcomp(a)).collect::<Vec<_>>())
+        (
+            revcomp(&ref_allele),
+            alts.iter().map(|a| revcomp(a)).collect::<Vec<_>>(),
+        )
     } else {
         (ref_allele.clone(), alts.clone())
     };
@@ -376,7 +400,10 @@ fn open_out(path: &Path) -> Result<Box<dyn Write>, RefgenomeError> {
     }
     let file = std::fs::File::create(path).map_err(|e| RefgenomeError::io(path, e))?;
     if path.extension().is_some_and(|e| e == "gz") {
-        Ok(Box::new(flate2::write::GzEncoder::new(file, flate2::Compression::default())))
+        Ok(Box::new(flate2::write::GzEncoder::new(
+            file,
+            flate2::Compression::default(),
+        )))
     } else {
         Ok(Box::new(std::io::BufWriter::new(file)))
     }
@@ -407,12 +434,16 @@ mod tests {
 
     #[test]
     fn flip_gt_biallelic() {
-        let mut f: Vec<String> =
-            "chrY\t100\t.\tA\tG\t.\t.\t.\tGT:DP\t0/0:30".split('\t').map(str::to_string).collect();
+        let mut f: Vec<String> = "chrY\t100\t.\tA\tG\t.\t.\t.\tGT:DP\t0/0:30"
+            .split('\t')
+            .map(str::to_string)
+            .collect();
         flip_biallelic_gt(&mut f);
         assert_eq!(f[9], "1/1:30");
-        let mut het: Vec<String> =
-            "chrY\t100\t.\tA\tG\t.\t.\t.\tGT\t0|1".split('\t').map(str::to_string).collect();
+        let mut het: Vec<String> = "chrY\t100\t.\tA\tG\t.\t.\t.\tGT\t0|1"
+            .split('\t')
+            .map(str::to_string)
+            .collect();
         flip_biallelic_gt(&mut het);
         assert_eq!(het[9], "1|0");
     }
@@ -443,7 +474,17 @@ mod tests {
         .unwrap();
 
         let out_vcf = dir.join("out.vcf");
-        let stats = lift_vcf(&lo, &fa, &[], "GRCh38", "chm13v2.0", &in_vcf, &out_vcf, VcfLiftOpts::default()).unwrap();
+        let stats = lift_vcf(
+            &lo,
+            &fa,
+            &[],
+            "GRCh38",
+            "chm13v2.0",
+            &in_vcf,
+            &out_vcf,
+            VcfLiftOpts::default(),
+        )
+        .unwrap();
         assert_eq!(stats.total, 1);
         assert_eq!(stats.lifted, 1);
 
@@ -455,7 +496,7 @@ mod tests {
         assert_eq!(f[3], "A"); // revcomp(C)=G, then swapped with revcomp(T)=A to match target base A
         assert_eq!(f[4], "G");
         assert_eq!(f[9], "1/1"); // 0/0 flipped on the REF/ALT swap
-        // Regenerated provenance + contig header present.
+                                 // Regenerated provenance + contig header present.
         assert!(out.contains("##liftover=navigator"));
         assert!(out.contains("##contig=<ID=chrY,length=20>"));
 
@@ -474,9 +515,23 @@ mod tests {
         // Chain covers only t[0,5); a record at t=8 (1-based 9) falls in the gap.
         let lo = Liftover::parse("chain 1 chrY 10 + 0 5 chrY 10 + 0 5 1\n5\n").unwrap();
         let in_vcf = dir.join("in.vcf");
-        std::fs::write(&in_vcf, "##fileformat=VCFv4.2\n#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\nchrY\t9\t.\tA\tG\t.\t.\t.\n").unwrap();
+        std::fs::write(
+            &in_vcf,
+            "##fileformat=VCFv4.2\n#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\nchrY\t9\t.\tA\tG\t.\t.\t.\n",
+        )
+        .unwrap();
         let out_vcf = dir.join("out.vcf");
-        let stats = lift_vcf(&lo, &fa, &[], "GRCh38", "chm13v2.0", &in_vcf, &out_vcf, VcfLiftOpts::default()).unwrap();
+        let stats = lift_vcf(
+            &lo,
+            &fa,
+            &[],
+            "GRCh38",
+            "chm13v2.0",
+            &in_vcf,
+            &out_vcf,
+            VcfLiftOpts::default(),
+        )
+        .unwrap();
         assert_eq!((stats.total, stats.lifted, stats.unmapped), (1, 0, 1));
         let _ = std::fs::remove_dir_all(&dir);
     }

@@ -36,7 +36,7 @@ fn coverage_matches_hand_computed_values() {
     // depth sum = 10*4 + 10*2 + 5*5 = 85 over 50 positions
     assert_eq!(result.genome_territory, 50);
     approx(result.mean_coverage, 85.0 / 50.0); // 1.7
-    // histogram: 25 positions @0, 10 @2, 10 @4, 5 @5
+                                               // histogram: 25 positions @0, 10 @2, 10 @4, 5 @5
     assert_eq!(result.coverage_histogram[0], 25);
     assert_eq!(result.coverage_histogram[2], 10);
     assert_eq!(result.coverage_histogram[4], 10);
@@ -72,7 +72,7 @@ fn coverage_matches_hand_computed_values() {
     approx(cs.coverage, 50.0);
     approx(cs.mean_depth, 1.7);
     approx(cs.mean_base_q, 40.0); // all bases Phred 40
-    // map quality per base obs: (60 obs * 60 + 25 obs * 0) / 85
+                                  // map quality per base obs: (60 obs * 60 + 25 obs * 0) / 85
     approx(cs.mean_map_q, 3600.0 / 85.0);
 }
 

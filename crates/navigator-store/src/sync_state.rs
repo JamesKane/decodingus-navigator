@@ -47,7 +47,11 @@ pub async fn upsert(pool: &SqlitePool, s: &StoredSyncState) -> Result<(), StoreE
 }
 
 /// The sync-state for one entity, if it has been published.
-pub async fn get(pool: &SqlitePool, account_did: &str, entity_ref: &str) -> Result<Option<StoredSyncState>, StoreError> {
+pub async fn get(
+    pool: &SqlitePool,
+    account_did: &str,
+    entity_ref: &str,
+) -> Result<Option<StoredSyncState>, StoreError> {
     let row = sqlx::query_as("SELECT * FROM sync_state WHERE account_did = ? AND entity_ref = ?")
         .bind(account_did)
         .bind(entity_ref)
@@ -57,7 +61,11 @@ pub async fn get(pool: &SqlitePool, account_did: &str, entity_ref: &str) -> Resu
 }
 
 /// All published entities for an account in one collection (for a PULL reconcile pass).
-pub async fn list_for_collection(pool: &SqlitePool, account_did: &str, collection: &str) -> Result<Vec<StoredSyncState>, StoreError> {
+pub async fn list_for_collection(
+    pool: &SqlitePool,
+    account_did: &str,
+    collection: &str,
+) -> Result<Vec<StoredSyncState>, StoreError> {
     let rows = sqlx::query_as("SELECT * FROM sync_state WHERE account_did = ? AND collection = ?")
         .bind(account_did)
         .bind(collection)
@@ -109,6 +117,12 @@ mod tests {
         assert_eq!(got.at_cid, "cidB");
         assert_eq!(got.payload_hash, "hash2");
         assert_eq!(list_for_account(store.pool(), "did:plc:abc").await.unwrap().len(), 1);
-        assert_eq!(list_for_collection(store.pool(), "did:plc:abc", "com.decodingus.alignment").await.unwrap().len(), 1);
+        assert_eq!(
+            list_for_collection(store.pool(), "did:plc:abc", "com.decodingus.alignment")
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
     }
 }

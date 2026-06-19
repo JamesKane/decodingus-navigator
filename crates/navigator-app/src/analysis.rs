@@ -20,19 +20,22 @@ impl App {
             coverage::collect_coverage_callable(&bam, &reference, &params, contig_allowlist.as_ref())
         })
         .await??;
-        self.save_analysis(alignment_id, "coverage", coverage::COVERAGE_VERSION, &result).await?;
+        self.save_analysis(alignment_id, "coverage", coverage::COVERAGE_VERSION, &result)
+            .await?;
         Ok(result)
     }
 
     /// Cached `coverage` result for the current algorithm version, if present.
     pub async fn cached_coverage(&self, alignment_id: i64) -> Result<Option<CoverageResult>, AppError> {
-        self.load_analysis(alignment_id, "coverage", coverage::COVERAGE_VERSION).await
+        self.load_analysis(alignment_id, "coverage", coverage::COVERAGE_VERSION)
+            .await
     }
 
     /// Run coverage using the alignment's own stored BAM/reference paths, then persist.
     /// Errors if the alignment is unknown or has no paths recorded.
     pub async fn run_coverage_for_alignment(&self, alignment_id: i64) -> Result<CoverageResult, AppError> {
-        self.run_coverage_for_alignment_with_progress(alignment_id, |_, _| {}).await
+        self.run_coverage_for_alignment_with_progress(alignment_id, |_, _| {})
+            .await
     }
 
     /// Like [`run_coverage_for_alignment`], reporting `progress(contigs_done, contigs_total)` as
@@ -50,7 +53,11 @@ impl App {
         // (cached, else download) when no FASTA was stored.
         let reference = match aln.reference_path {
             Some(p) => PathBuf::from(p),
-            None => self.gateway.resolve_reference(&aln.reference_build, &mut |_, _| {}).await?,
+            None => {
+                self.gateway
+                    .resolve_reference(&aln.reference_build, &mut |_, _| {})
+                    .await?
+            }
         };
         let mut params = CallableLociParams::default();
         let result = tokio::task::spawn_blocking(move || {
@@ -61,7 +68,8 @@ impl App {
             coverage::collect_coverage_callable_with_progress(&bam, &reference, &params, None, &mut progress)
         })
         .await??;
-        self.save_analysis(alignment_id, "coverage", coverage::COVERAGE_VERSION, &result).await?;
+        self.save_analysis(alignment_id, "coverage", coverage::COVERAGE_VERSION, &result)
+            .await?;
         Ok(result)
     }
 
@@ -70,10 +78,9 @@ impl App {
     /// for CRAM decode.
     pub async fn run_sex(&self, alignment_id: i64) -> Result<navigator_analysis::sex::SexInferenceResult, AppError> {
         let (bam, reference) = self.alignment_paths(alignment_id).await?;
-        let result = tokio::task::spawn_blocking(move || {
-            navigator_analysis::sex::infer_from_bam(&bam, reference.as_deref())
-        })
-        .await??;
+        let result =
+            tokio::task::spawn_blocking(move || navigator_analysis::sex::infer_from_bam(&bam, reference.as_deref()))
+                .await??;
         self.save_analysis(alignment_id, "sex", "1", &result).await?;
         self.write_back_inferred_sex(alignment_id, &result).await?;
         Ok(result)
@@ -103,13 +110,19 @@ impl App {
     }
 
     /// Cached `sex` inference, if present.
-    pub async fn cached_sex(&self, alignment_id: i64) -> Result<Option<navigator_analysis::sex::SexInferenceResult>, AppError> {
+    pub async fn cached_sex(
+        &self,
+        alignment_id: i64,
+    ) -> Result<Option<navigator_analysis::sex::SexInferenceResult>, AppError> {
         self.load_analysis(alignment_id, "sex", "1").await
     }
 
     /// Collect read-level QC metrics (alignment summary + read-length/insert-size distributions,
     /// pair orientation, mean MAPQ) and persist as a `read_metrics` artifact.
-    pub async fn run_read_metrics(&self, alignment_id: i64) -> Result<navigator_analysis::read_metrics::ReadMetrics, AppError> {
+    pub async fn run_read_metrics(
+        &self,
+        alignment_id: i64,
+    ) -> Result<navigator_analysis::read_metrics::ReadMetrics, AppError> {
         let (bam, reference) = self.alignment_paths(alignment_id).await?;
         let result = tokio::task::spawn_blocking(move || {
             navigator_analysis::read_metrics::collect_read_metrics(&bam, reference.as_deref())
@@ -133,8 +146,11 @@ impl App {
         if let Some(aln) = alignment::get(self.store.pool(), alignment_id).await? {
             // Paired-end evidence: any reads aligned in pairs ⇒ PAIRED. Only overrides the stored
             // layout when we have aligned reads to judge (else leave the import-time flag value).
-            let layout = (m.pf_reads_aligned > 0)
-                .then_some(if m.reads_aligned_in_pairs > 0 { "PAIRED" } else { "SINGLE" });
+            let layout = (m.pf_reads_aligned > 0).then_some(if m.reads_aligned_in_pairs > 0 {
+                "PAIRED"
+            } else {
+                "SINGLE"
+            });
             sequence_run::set_read_stats(
                 self.store.pool(),
                 aln.sequence_run_id,
@@ -149,7 +165,10 @@ impl App {
     }
 
     /// Cached `read_metrics`, if present.
-    pub async fn cached_read_metrics(&self, alignment_id: i64) -> Result<Option<navigator_analysis::read_metrics::ReadMetrics>, AppError> {
+    pub async fn cached_read_metrics(
+        &self,
+        alignment_id: i64,
+    ) -> Result<Option<navigator_analysis::read_metrics::ReadMetrics>, AppError> {
         self.load_analysis(alignment_id, "read_metrics", "1").await
     }
 
@@ -178,7 +197,11 @@ impl App {
         // build via the gateway when no FASTA was stored at import.
         let reference = match aln.reference_path {
             Some(p) => PathBuf::from(p),
-            None => self.gateway.resolve_reference(&aln.reference_build, &mut |_, _| {}).await?,
+            None => {
+                self.gateway
+                    .resolve_reference(&aln.reference_build, &mut |_, _| {})
+                    .await?
+            }
         };
         let mut params = CallableLociParams::default();
         let result = tokio::task::spawn_blocking(move || {
@@ -187,18 +210,16 @@ impl App {
                 params.min_depth = adaptive_min_depth(params.min_depth, read_len);
             }
             navigator_analysis::unified::collect_unified_metrics_parallel_with_progress(
-                &bam,
-                &reference,
-                &params,
-                None,
-                &progress,
+                &bam, &reference, &params, None, &progress,
             )
         })
         .await??;
 
         // Persist each sub-result under its own existing cache key.
-        self.save_analysis(alignment_id, "coverage", coverage::COVERAGE_VERSION, &result.coverage).await?;
-        self.save_analysis(alignment_id, "read_metrics", "1", &result.read_metrics).await?;
+        self.save_analysis(alignment_id, "coverage", coverage::COVERAGE_VERSION, &result.coverage)
+            .await?;
+        self.save_analysis(alignment_id, "read_metrics", "1", &result.read_metrics)
+            .await?;
         self.write_back_read_stats(alignment_id, &result.read_metrics).await?;
         if let Some(sex) = &result.sex {
             self.save_analysis(alignment_id, "sex", "1", sex).await?;
@@ -228,8 +249,12 @@ impl App {
             Some(m) => m,
             None => self.run_read_metrics(alignment_id).await?,
         };
-        let (mean_cov, mean_ins, sd_ins, mean_rl) =
-            (cov.mean_coverage, rm.mean_insert_size, rm.std_insert_size, rm.mean_read_length);
+        let (mean_cov, mean_ins, sd_ins, mean_rl) = (
+            cov.mean_coverage,
+            rm.mean_insert_size,
+            rm.std_insert_size,
+            rm.mean_read_length,
+        );
 
         let result = tokio::task::spawn_blocking(move || {
             let lengths = caller::header_contig_lengths(&bam, reference.as_deref())?;
@@ -250,7 +275,10 @@ impl App {
     }
 
     /// Cached `sv` result, if present.
-    pub async fn cached_sv(&self, alignment_id: i64) -> Result<Option<navigator_analysis::sv::types::SvAnalysisResult>, AppError> {
+    pub async fn cached_sv(
+        &self,
+        alignment_id: i64,
+    ) -> Result<Option<navigator_analysis::sv::types::SvAnalysisResult>, AppError> {
         self.load_analysis(alignment_id, "sv", "1").await
     }
 
@@ -275,7 +303,11 @@ impl App {
     /// `str:{contig}` artifact (so it's cached + source-invalidated like other analyses). Errors if
     /// no STR reference is configured for the alignment's build (the tracts are build-specific —
     /// CHM13/GRCh37 need their own reference or liftover, not yet wired).
-    pub async fn run_str_calls(&self, alignment_id: i64, contig: String) -> Result<Vec<navigator_analysis::strcaller::StrGenotype>, AppError> {
+    pub async fn run_str_calls(
+        &self,
+        alignment_id: i64,
+        contig: String,
+    ) -> Result<Vec<navigator_analysis::strcaller::StrGenotype>, AppError> {
         let kind = format!("str:{contig}");
         if let Some(c) = self.load_analysis(alignment_id, &kind, "str-1").await? {
             return Ok(c);
@@ -296,12 +328,23 @@ impl App {
         // genotype chrY/chrM haploid and everything else diploid — sex-aware chrX is a refinement.
         let ploidy: u8 = {
             let c = contig.strip_prefix("chr").unwrap_or(&contig).to_ascii_uppercase();
-            if c == "Y" || c == "M" || c == "MT" { 1 } else { 2 }
+            if c == "Y" || c == "M" || c == "MT" {
+                1
+            } else {
+                2
+            }
         };
         let params = navigator_analysis::strcaller::StrCallerParams::default();
         let genos = tokio::task::spawn_blocking(move || {
             let loci = navigator_analysis::strref::load_hipstr_contig(&bed, &contig, 2)?;
-            navigator_analysis::strcaller::genotype_str_loci(&bam, &contig, &loci, ploidy, &params, reference.as_deref())
+            navigator_analysis::strcaller::genotype_str_loci(
+                &bam,
+                &contig,
+                &loci,
+                ploidy,
+                &params,
+                reference.as_deref(),
+            )
         })
         .await??;
         self.save_analysis(alignment_id, &kind, "str-1", &genos).await?;
@@ -333,7 +376,12 @@ impl App {
             .find(|p| p.provider.as_deref().is_some_and(|v| v.eq_ignore_ascii_case("FTDNA")))
             .or_else(|| profiles.first());
         let imported: HashMap<String, String> = chosen
-            .map(|p| p.markers.iter().map(|m| (normalize_marker(&m.marker), m.value.clone())).collect())
+            .map(|p| {
+                p.markers
+                    .iter()
+                    .map(|m| (normalize_marker(&m.marker), m.value.clone()))
+                    .collect()
+            })
             .unwrap_or_default();
 
         let mut rows: HashMap<String, StrConcordanceRow> = HashMap::new();
@@ -366,8 +414,8 @@ impl App {
         let mut out: Vec<StrConcordanceRow> = rows
             .into_values()
             .map(|mut r| {
-                r.agree = r.calibrated
-                    && matches!((&r.called, &r.imported), (Some(c), Some(i)) if i.trim() == c.to_string());
+                r.agree =
+                    r.calibrated && matches!((&r.called, &r.imported), (Some(c), Some(i)) if i.trim() == c.to_string());
                 r
             })
             .collect();
@@ -390,11 +438,20 @@ impl App {
             if Self::str_reference_path(&a.reference_build).is_none() {
                 continue; // no HipSTR reference for this build
             }
-            let is_cram = a.bam_path.as_deref().is_some_and(|p| p.to_ascii_lowercase().ends_with(".cram"));
+            let is_cram = a
+                .bam_path
+                .as_deref()
+                .is_some_and(|p| p.to_ascii_lowercase().ends_with(".cram"));
             if is_cram && a.reference_path.is_none() {
                 continue; // CRAM with no reference can't be decoded
             }
-            let cov = self.cached_coverage(a.id).await.ok().flatten().map(|c| c.mean_coverage).unwrap_or(0.0);
+            let cov = self
+                .cached_coverage(a.id)
+                .await
+                .ok()
+                .flatten()
+                .map(|c| c.mean_coverage)
+                .unwrap_or(0.0);
             if best.as_ref().map_or(true, |(_, bc)| cov > *bc) {
                 best = Some((a.id, cov));
             }
@@ -433,17 +490,17 @@ impl App {
             return Ok(c);
         }
         let kind = denovo_kind(&contig);
-        let calls = tokio::task::spawn_blocking(move || {
-            caller::call_denovo(&bam, &reference, &contig, &params)
-        })
-        .await??;
-        self.save_analysis(alignment_id, &kind, caller::DENOVO_VERSION, &calls).await?;
+        let calls =
+            tokio::task::spawn_blocking(move || caller::call_denovo(&bam, &reference, &contig, &params)).await??;
+        self.save_analysis(alignment_id, &kind, caller::DENOVO_VERSION, &calls)
+            .await?;
         Ok(calls)
     }
 
     /// Cached de-novo calls for `contig` at the current caller version, if present.
     pub async fn cached_denovo(&self, alignment_id: i64, contig: &str) -> Result<Option<Vec<VariantCall>>, AppError> {
-        self.load_analysis(alignment_id, &denovo_kind(contig), caller::DENOVO_VERSION).await
+        self.load_analysis(alignment_id, &denovo_kind(contig), caller::DENOVO_VERSION)
+            .await
     }
 
     /// Whole-contig **de-novo diploid** SNV calling (het 0/1 + hom-alt 1/1) on `contig`, cached per
@@ -451,14 +508,19 @@ impl App {
     /// [`SiteGenotype`]s in position order — feed to [`Self::diploid_vcf`].
     pub async fn run_diploid_calls(&self, alignment_id: i64, contig: String) -> Result<Vec<SiteGenotype>, AppError> {
         let kind = format!("diploid_denovo:{contig}");
-        if let Some(c) = self.load_analysis(alignment_id, &kind, caller::GENOTYPE_VERSION).await? {
+        if let Some(c) = self
+            .load_analysis(alignment_id, &kind, caller::GENOTYPE_VERSION)
+            .await?
+        {
             return Ok(c);
         }
         let (bam, reference) = self.alignment_bam_reference(alignment_id).await?;
         let params = adaptive_haploid_params(&bam, Some(&reference));
-        let calls = tokio::task::spawn_blocking(move || caller::call_denovo_diploid(&bam, &reference, &contig, &params))
-            .await??;
-        self.save_analysis(alignment_id, &kind, caller::GENOTYPE_VERSION, &calls).await?;
+        let calls =
+            tokio::task::spawn_blocking(move || caller::call_denovo_diploid(&bam, &reference, &contig, &params))
+                .await??;
+        self.save_analysis(alignment_id, &kind, caller::GENOTYPE_VERSION, &calls)
+            .await?;
         Ok(calls)
     }
 
@@ -466,7 +528,10 @@ impl App {
     /// (computing + caching them if needed). The sample column is `aln<id>`.
     pub async fn diploid_vcf(&self, alignment_id: i64, contig: String) -> Result<String, AppError> {
         let calls = self.run_diploid_calls(alignment_id, contig).await?;
-        Ok(navigator_analysis::vcf::write_diploid_vcf(&format!("aln{alignment_id}"), &calls))
+        Ok(navigator_analysis::vcf::write_diploid_vcf(
+            &format!("aln{alignment_id}"),
+            &calls,
+        ))
     }
 
     /// A **whole-genome** diploid VCF: de-novo SNV + indel calls over every primary chromosome
@@ -474,13 +539,16 @@ impl App {
     /// caller runs it off the UI thread (the export path).
     pub async fn diploid_vcf_genome(&self, alignment_id: i64) -> Result<String, AppError> {
         let (bam, reference) = self.alignment_bam_reference(alignment_id).await?;
-        let contigs = tokio::task::spawn_blocking(move || caller::header_contig_names(&bam, Some(&reference)))
-            .await??;
+        let contigs =
+            tokio::task::spawn_blocking(move || caller::header_contig_names(&bam, Some(&reference))).await??;
         let mut all = Vec::new();
         for contig in contigs.into_iter().filter(|c| is_primary_contig(c)) {
             all.extend(self.run_diploid_calls(alignment_id, contig).await?);
         }
-        Ok(navigator_analysis::vcf::write_diploid_vcf(&format!("aln{alignment_id}"), &all))
+        Ok(navigator_analysis::vcf::write_diploid_vcf(
+            &format!("aln{alignment_id}"),
+            &all,
+        ))
     }
 
     /// The subject's alignments on the **dominant reference build** (the build the most alignments
@@ -496,7 +564,11 @@ impl App {
         for a in &alns {
             *counts.entry(canonical_build(&a.reference_build)).or_default() += 1;
         }
-        let dominant = counts.into_iter().max_by_key(|(_, n)| *n).map(|(b, _)| b).unwrap_or(None);
+        let dominant = counts
+            .into_iter()
+            .max_by_key(|(_, n)| *n)
+            .map(|(b, _)| b)
+            .unwrap_or(None);
         Ok(alns
             .into_iter()
             .filter(|a| canonical_build(&a.reference_build) == dominant)
@@ -545,7 +617,9 @@ impl App {
             for contig in clist {
                 // Tolerate a contig absent from this alignment's header (heterogeneous inputs) —
                 // skip it for this source rather than aborting the whole consensus.
-                let Ok(variants) = self.run_diploid_calls(*id, contig).await else { continue };
+                let Ok(variants) = self.run_diploid_calls(*id, contig).await else {
+                    continue;
+                };
                 for v in variants {
                     if v.reference_allele.len() == 1 && v.alternate_allele.len() == 1 {
                         union
@@ -601,18 +675,25 @@ impl App {
         let bam = PathBuf::from(aln.bam_path.ok_or(AppError::MissingPaths(alignment_id))?);
         let reference = match aln.reference_path {
             Some(p) => PathBuf::from(p),
-            None => self.gateway.resolve_reference(&aln.reference_build, &mut |_, _| {}).await?,
+            None => {
+                self.gateway
+                    .resolve_reference(&aln.reference_build, &mut |_, _| {})
+                    .await?
+            }
         };
         Ok((bam, reference))
     }
 
-    pub async fn run_denovo_for_alignment(&self, alignment_id: i64, contig: String) -> Result<Vec<VariantCall>, AppError> {
+    pub async fn run_denovo_for_alignment(
+        &self,
+        alignment_id: i64,
+        contig: String,
+    ) -> Result<Vec<VariantCall>, AppError> {
         let (bam, reference) = self.alignment_bam_reference(alignment_id).await?;
         let probe = bam.clone();
         let probe_ref = reference.clone();
-        let params = tokio::task::spawn_blocking(move || adaptive_haploid_params(&probe, Some(&probe_ref)))
-            .await?; // HiFi -> lower min_depth
-        self.run_denovo_caller(alignment_id, bam, reference, contig, params).await
+        let params = tokio::task::spawn_blocking(move || adaptive_haploid_params(&probe, Some(&probe_ref))).await?; // HiFi -> lower min_depth
+        self.run_denovo_caller(alignment_id, bam, reference, contig, params)
+            .await
     }
-
 }

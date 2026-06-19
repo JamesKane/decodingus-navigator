@@ -27,7 +27,11 @@ async fn project_round_trips() {
     let s = store().await;
     let p = project::create(
         s.pool(),
-        &NewProject { name: "Trio".into(), description: Some("HG002 trio".into()), administrator: "jk".into() },
+        &NewProject {
+            name: "Trio".into(),
+            description: Some("HG002 trio".into()),
+            administrator: "jk".into(),
+        },
     )
     .await
     .unwrap();
@@ -42,9 +46,16 @@ async fn project_round_trips() {
 #[tokio::test]
 async fn biosample_links_to_project_and_round_trips() {
     let s = store().await;
-    let p = project::create(s.pool(), &NewProject { name: "P".into(), description: None, administrator: "jk".into() })
-        .await
-        .unwrap();
+    let p = project::create(
+        s.pool(),
+        &NewProject {
+            name: "P".into(),
+            description: None,
+            administrator: "jk".into(),
+        },
+    )
+    .await
+    .unwrap();
     let b = sample(Some(p.id));
     biosample::create(s.pool(), &b).await.unwrap();
 
@@ -98,9 +109,12 @@ async fn run_alignment_chain_persists() {
     )
     .await
     .unwrap();
-    assert_eq!(sequence_run::list_for_biosample(s.pool(), b.guid).await.unwrap()[0], run);
+    assert_eq!(
+        sequence_run::list_for_biosample(s.pool(), b.guid).await.unwrap()[0],
+        run
+    );
     assert_eq!(run.mean_insert_size, Some(580.7)); // flat metric column round-trips
-    // The lab/instrument identity block is None at create, then filled by set_library_stats.
+                                                   // The lab/instrument identity block is None at create, then filled by set_library_stats.
     assert_eq!(run.instrument_id, None);
     sequence_run::set_library_stats(
         s.pool(),
@@ -120,9 +134,16 @@ async fn run_alignment_chain_persists() {
     assert_eq!(reloaded.flowcell_id.as_deref(), Some("H5WLTDMXX"));
 
     // Library-level read stats can be (re)written from an analysis pass / backfill.
-    sequence_run::set_read_stats(s.pool(), run.id, Some(9_000_000), Some(150.0), Some(602.5), Some("PAIRED"))
-        .await
-        .unwrap();
+    sequence_run::set_read_stats(
+        s.pool(),
+        run.id,
+        Some(9_000_000),
+        Some(150.0),
+        Some(602.5),
+        Some("PAIRED"),
+    )
+    .await
+    .unwrap();
     let reloaded = sequence_run::get(s.pool(), run.id).await.unwrap().unwrap();
     assert_eq!(reloaded.total_reads, Some(9_000_000));
     assert_eq!(reloaded.mean_read_length, Some(150.0));
@@ -178,20 +199,67 @@ async fn artifact_upsert_replaces_same_version_and_keeps_distinct_versions() {
     .unwrap();
     let aln = alignment::create(
         s.pool(),
-        &NewAlignment { sequence_run_id: run.id, reference_build: "chm13v2.0".into(), aligner: "bwa".into(), variant_caller: None, bam_path: None, reference_path: None, content_sha256: None },
+        &NewAlignment {
+            sequence_run_id: run.id,
+            reference_build: "chm13v2.0".into(),
+            aligner: "bwa".into(),
+            variant_caller: None,
+            bam_path: None,
+            reference_path: None,
+            content_sha256: None,
+        },
     )
     .await
     .unwrap();
 
     // Same (kind, version) upserts in place.
-    artifact::upsert(s.pool(), aln.id, "coverage", "v1", Utc::now(), r#"{"mean":1.0}"#, "navigator-walk", "full", None).await.unwrap();
-    let updated = artifact::upsert(s.pool(), aln.id, "coverage", "v1", Utc::now(), r#"{"mean":2.0}"#, "navigator-walk", "full", None).await.unwrap();
-    let got = artifact::get(s.pool(), aln.id, "coverage", "v1").await.unwrap().unwrap();
+    artifact::upsert(
+        s.pool(),
+        aln.id,
+        "coverage",
+        "v1",
+        Utc::now(),
+        r#"{"mean":1.0}"#,
+        "navigator-walk",
+        "full",
+        None,
+    )
+    .await
+    .unwrap();
+    let updated = artifact::upsert(
+        s.pool(),
+        aln.id,
+        "coverage",
+        "v1",
+        Utc::now(),
+        r#"{"mean":2.0}"#,
+        "navigator-walk",
+        "full",
+        None,
+    )
+    .await
+    .unwrap();
+    let got = artifact::get(s.pool(), aln.id, "coverage", "v1")
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(got.id, updated.id);
     assert_eq!(got.payload, r#"{"mean":2.0}"#);
 
     // A new algorithm version is a distinct entry.
-    artifact::upsert(s.pool(), aln.id, "coverage", "v2", Utc::now(), r#"{"mean":3.0}"#, "navigator-walk", "full", None).await.unwrap();
+    artifact::upsert(
+        s.pool(),
+        aln.id,
+        "coverage",
+        "v2",
+        Utc::now(),
+        r#"{"mean":3.0}"#,
+        "navigator-walk",
+        "full",
+        None,
+    )
+    .await
+    .unwrap();
     assert_eq!(artifact::list_for_alignment(s.pool(), aln.id).await.unwrap().len(), 2);
 }
 
@@ -218,30 +286,79 @@ async fn delete_cascades_run_to_alignments_and_artifacts() {
     .unwrap();
     let aln = alignment::create(
         s.pool(),
-        &NewAlignment { sequence_run_id: run.id, reference_build: "chm13v2.0".into(), aligner: "bwa".into(), variant_caller: None, bam_path: None, reference_path: None, content_sha256: None },
+        &NewAlignment {
+            sequence_run_id: run.id,
+            reference_build: "chm13v2.0".into(),
+            aligner: "bwa".into(),
+            variant_caller: None,
+            bam_path: None,
+            reference_path: None,
+            content_sha256: None,
+        },
     )
     .await
     .unwrap();
-    artifact::upsert(s.pool(), aln.id, "coverage", "v1", Utc::now(), r#"{"mean":1.0}"#, "navigator-walk", "full", None).await.unwrap();
+    artifact::upsert(
+        s.pool(),
+        aln.id,
+        "coverage",
+        "v1",
+        Utc::now(),
+        r#"{"mean":1.0}"#,
+        "navigator-walk",
+        "full",
+        None,
+    )
+    .await
+    .unwrap();
 
     // Deleting a single alignment removes its artifacts but leaves the run.
     let aln2 = alignment::create(
         s.pool(),
-        &NewAlignment { sequence_run_id: run.id, reference_build: "grch38".into(), aligner: "bwa".into(), variant_caller: None, bam_path: None, reference_path: None, content_sha256: None },
+        &NewAlignment {
+            sequence_run_id: run.id,
+            reference_build: "grch38".into(),
+            aligner: "bwa".into(),
+            variant_caller: None,
+            bam_path: None,
+            reference_path: None,
+            content_sha256: None,
+        },
     )
     .await
     .unwrap();
-    artifact::upsert(s.pool(), aln2.id, "coverage", "v1", Utc::now(), r#"{"mean":2.0}"#, "navigator-walk", "full", None).await.unwrap();
+    artifact::upsert(
+        s.pool(),
+        aln2.id,
+        "coverage",
+        "v1",
+        Utc::now(),
+        r#"{"mean":2.0}"#,
+        "navigator-walk",
+        "full",
+        None,
+    )
+    .await
+    .unwrap();
     assert!(alignment::delete(s.pool(), aln2.id).await.unwrap());
-    assert!(artifact::get(s.pool(), aln2.id, "coverage", "v1").await.unwrap().is_none());
-    assert_eq!(alignment::list_for_run(s.pool(), run.id).await.unwrap(), vec![aln.clone()]);
+    assert!(artifact::get(s.pool(), aln2.id, "coverage", "v1")
+        .await
+        .unwrap()
+        .is_none());
+    assert_eq!(
+        alignment::list_for_run(s.pool(), run.id).await.unwrap(),
+        vec![aln.clone()]
+    );
     assert!(sequence_run::get(s.pool(), run.id).await.unwrap().is_some());
 
     // Deleting the run removes the remaining alignment + artifact (FK-enforced cascade).
     assert!(sequence_run::delete(s.pool(), run.id).await.unwrap());
     assert!(sequence_run::get(s.pool(), run.id).await.unwrap().is_none());
     assert!(alignment::list_for_run(s.pool(), run.id).await.unwrap().is_empty());
-    assert!(artifact::get(s.pool(), aln.id, "coverage", "v1").await.unwrap().is_none());
+    assert!(artifact::get(s.pool(), aln.id, "coverage", "v1")
+        .await
+        .unwrap()
+        .is_none());
 
     // Deleting a non-existent row reports false rather than erroring.
     assert!(!sequence_run::delete(s.pool(), 9999).await.unwrap());
@@ -270,21 +387,47 @@ async fn set_sequence_run_reparents_an_alignment() {
     let secondary = sequence_run::create(s.pool(), &mk_run("B")).await.unwrap();
     let aln = alignment::create(
         s.pool(),
-        &NewAlignment { sequence_run_id: secondary.id, reference_build: "chm13v2.0".into(), aligner: "bwa".into(), variant_caller: None, bam_path: None, reference_path: None, content_sha256: None },
+        &NewAlignment {
+            sequence_run_id: secondary.id,
+            reference_build: "chm13v2.0".into(),
+            aligner: "bwa".into(),
+            variant_caller: None,
+            bam_path: None,
+            reference_path: None,
+            content_sha256: None,
+        },
     )
     .await
     .unwrap();
-    artifact::upsert(s.pool(), aln.id, "coverage", "v1", Utc::now(), r#"{"mean":3.0}"#, "navigator-walk", "full", None).await.unwrap();
+    artifact::upsert(
+        s.pool(),
+        aln.id,
+        "coverage",
+        "v1",
+        Utc::now(),
+        r#"{"mean":3.0}"#,
+        "navigator-walk",
+        "full",
+        None,
+    )
+    .await
+    .unwrap();
 
     // Reparent the alignment onto the primary run.
     assert!(alignment::set_sequence_run(s.pool(), aln.id, primary.id).await.unwrap());
-    assert!(alignment::list_for_run(s.pool(), secondary.id).await.unwrap().is_empty());
+    assert!(alignment::list_for_run(s.pool(), secondary.id)
+        .await
+        .unwrap()
+        .is_empty());
     assert_eq!(alignment::list_for_run(s.pool(), primary.id).await.unwrap().len(), 1);
 
     // Deleting the now-empty secondary leaves the moved alignment + its artifact intact under primary.
     assert!(sequence_run::delete(s.pool(), secondary.id).await.unwrap());
     assert!(alignment::get(s.pool(), aln.id).await.unwrap().is_some());
-    assert!(artifact::get(s.pool(), aln.id, "coverage", "v1").await.unwrap().is_some());
+    assert!(artifact::get(s.pool(), aln.id, "coverage", "v1")
+        .await
+        .unwrap()
+        .is_some());
 
     // Reparenting a non-existent alignment reports false.
     assert!(!alignment::set_sequence_run(s.pool(), 9999, primary.id).await.unwrap());
@@ -308,23 +451,47 @@ async fn haplogroup_call_fingerprint_round_trips() {
         expected: 100,
     };
     // Upsert stamps the fingerprint; stored_fingerprint reads it back.
-    haplogroup_call::upsert(s.pool(), b.guid, DnaType::Y, "aln:1", &call, Some("f:abc|yt:def")).await.unwrap();
+    haplogroup_call::upsert(s.pool(), b.guid, DnaType::Y, "aln:1", &call, Some("f:abc|yt:def"))
+        .await
+        .unwrap();
     assert_eq!(
-        haplogroup_call::stored_fingerprint(s.pool(), b.guid, DnaType::Y, "aln:1").await.unwrap().as_deref(),
+        haplogroup_call::stored_fingerprint(s.pool(), b.guid, DnaType::Y, "aln:1")
+            .await
+            .unwrap()
+            .as_deref(),
         Some("f:abc|yt:def")
     );
-    let got = haplogroup_call::get_one(s.pool(), b.guid, DnaType::Y, "aln:1").await.unwrap().unwrap();
+    let got = haplogroup_call::get_one(s.pool(), b.guid, DnaType::Y, "aln:1")
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(got.haplogroup, "R-FGC29071");
-    assert_eq!(got.lineage, vec!["Y".to_string(), "R".to_string(), "R-FGC29071".to_string()]);
+    assert_eq!(
+        got.lineage,
+        vec!["Y".to_string(), "R".to_string(), "R-FGC29071".to_string()]
+    );
 
     // Re-upsert with a new fingerprint (e.g. the tree changed) replaces it.
-    haplogroup_call::upsert(s.pool(), b.guid, DnaType::Y, "aln:1", &call, Some("f:abc|yt:NEW")).await.unwrap();
+    haplogroup_call::upsert(s.pool(), b.guid, DnaType::Y, "aln:1", &call, Some("f:abc|yt:NEW"))
+        .await
+        .unwrap();
     assert_eq!(
-        haplogroup_call::stored_fingerprint(s.pool(), b.guid, DnaType::Y, "aln:1").await.unwrap().as_deref(),
+        haplogroup_call::stored_fingerprint(s.pool(), b.guid, DnaType::Y, "aln:1")
+            .await
+            .unwrap()
+            .as_deref(),
         Some("f:abc|yt:NEW")
     );
 
     // Unknown source → no fingerprint / no call.
-    assert!(haplogroup_call::stored_fingerprint(s.pool(), b.guid, DnaType::Y, "nope").await.unwrap().is_none());
-    assert!(haplogroup_call::get_one(s.pool(), b.guid, DnaType::Y, "nope").await.unwrap().is_none());
+    assert!(
+        haplogroup_call::stored_fingerprint(s.pool(), b.guid, DnaType::Y, "nope")
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(haplogroup_call::get_one(s.pool(), b.guid, DnaType::Y, "nope")
+        .await
+        .unwrap()
+        .is_none());
 }

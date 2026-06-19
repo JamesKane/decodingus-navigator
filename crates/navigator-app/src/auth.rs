@@ -84,5 +84,4 @@ impl App {
     pub fn is_online(&self) -> bool {
         self.auth.online.load(Ordering::Relaxed)
     }
-
 }

@@ -28,7 +28,14 @@ pub struct VariantCallEntry {
 }
 
 impl VariantCallEntry {
-    pub fn new(position: i64, reference: char, alternate: char, depth: u32, alt_depth: u32, allele_fraction: f64) -> Self {
+    pub fn new(
+        position: i64,
+        reference: char,
+        alternate: char,
+        depth: u32,
+        alt_depth: u32,
+        allele_fraction: f64,
+    ) -> Self {
         VariantCallEntry {
             position,
             reference: reference.to_string(),
@@ -230,7 +237,12 @@ impl HaplogroupReconciliationRecord {
         HaplogroupReconciliationRecord {
             record_type: HAPLOGROUP_RECONCILIATION_COLLECTION.to_string(),
             at_uri: String::new(),
-            meta: RecordMeta { version: 1, created_at: created_at.clone(), updated_at: None, last_modified_field: None },
+            meta: RecordMeta {
+                version: 1,
+                created_at: created_at.clone(),
+                updated_at: None,
+                last_modified_field: None,
+            },
             specimen_donor_ref: specimen_donor_ref.into(),
             dna_type: dna_type.into(),
             status,

@@ -35,12 +35,13 @@ pub async fn get_override(
     biosample_guid: SampleGuid,
     dna_type: DnaType,
 ) -> Result<Option<(String, Option<String>)>, StoreError> {
-    let row: Option<(String, Option<String>)> =
-        sqlx::query_as("SELECT haplogroup, reason FROM reconciliation_override WHERE biosample_guid = ? AND dna_type = ?")
-            .bind(biosample_guid.0.to_string())
-            .bind(dna_type.as_str())
-            .fetch_optional(pool)
-            .await?;
+    let row: Option<(String, Option<String>)> = sqlx::query_as(
+        "SELECT haplogroup, reason FROM reconciliation_override WHERE biosample_guid = ? AND dna_type = ?",
+    )
+    .bind(biosample_guid.0.to_string())
+    .bind(dna_type.as_str())
+    .fetch_optional(pool)
+    .await?;
     Ok(row)
 }
 
@@ -64,7 +65,11 @@ pub async fn list_all_overrides(pool: &SqlitePool) -> Result<Vec<(SampleGuid, Dn
 }
 
 /// Remove a manual override.
-pub async fn clear_override(pool: &SqlitePool, biosample_guid: SampleGuid, dna_type: DnaType) -> Result<(), StoreError> {
+pub async fn clear_override(
+    pool: &SqlitePool,
+    biosample_guid: SampleGuid,
+    dna_type: DnaType,
+) -> Result<(), StoreError> {
     sqlx::query("DELETE FROM reconciliation_override WHERE biosample_guid = ? AND dna_type = ?")
         .bind(biosample_guid.0.to_string())
         .bind(dna_type.as_str())
@@ -104,5 +109,12 @@ pub async fn list_audit(
     .bind(dna_type.as_str())
     .fetch_all(pool)
     .await?;
-    Ok(rows.into_iter().map(|(timestamp, action, note)| AuditEntry { timestamp, action, note }).collect())
+    Ok(rows
+        .into_iter()
+        .map(|(timestamp, action, note)| AuditEntry {
+            timestamp,
+            action,
+            note,
+        })
+        .collect())
 }

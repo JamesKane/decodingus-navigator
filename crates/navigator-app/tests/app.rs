@@ -47,7 +47,13 @@ async fn import_str_profile_from_csv_round_trips() {
     std::fs::write(&path, "Marker,Value\nDYS393,13\nDYS390,24\nDYS385,11-14\n").unwrap();
 
     let profile = app
-        .import_str_profile_from_csv(subject.guid, "Y-37", Some("FTDNA".into()), Some("DIRECT_TEST".into()), &path)
+        .import_str_profile_from_csv(
+            subject.guid,
+            "Y-37",
+            Some("FTDNA".into()),
+            Some("DIRECT_TEST".into()),
+            &path,
+        )
         .await
         .unwrap();
     assert_eq!(profile.panel_name, "Y-37");
@@ -68,7 +74,11 @@ async fn import_variants_from_csv_keeps_only_snps() {
 
     let path = std::env::temp_dir().join(format!("variants-{}.csv", subject.guid.0));
     // header layout; one indel row that must be dropped (SNP-only)
-    std::fs::write(&path, "contig,position,ref,alt,rsid,genotype\nchr1,1000,A,G,rs1,0/1\nchr1,2000,A,AT,rs2,0/1\nchrM,73,G,A,.,1/1\n").unwrap();
+    std::fs::write(
+        &path,
+        "contig,position,ref,alt,rsid,genotype\nchr1,1000,A,G,rs1,0/1\nchr1,2000,A,AT,rs2,0/1\nchrM,73,G,A,.,1/1\n",
+    )
+    .unwrap();
 
     let set = app
         .import_variants_from_file(subject.guid, &path, navigator_app::SourceType::Imported)
@@ -100,7 +110,11 @@ async fn y_profile_build_persists_and_reloads() {
     assert!(built.variants.is_empty());
 
     // The snapshot reloads cheaply and equals the built profile (round-trips through the table).
-    let cached = app.cached_y_profile(subject.guid).await.unwrap().expect("snapshot persisted");
+    let cached = app
+        .cached_y_profile(subject.guid)
+        .await
+        .unwrap()
+        .expect("snapshot persisted");
     assert_eq!(cached, built);
 }
 
@@ -124,10 +138,19 @@ async fn import_vendor_big_y_vcf_is_tagged() {
     .unwrap();
     std::fs::write(dir.join("readme.txt"), "…the BigY raw data files…").unwrap();
 
-    let set =
-        app.import_variants_from_file(subject.guid, &vcf, navigator_app::SourceType::Imported).await.unwrap();
-    assert!(set.source_label.starts_with("FTDNA Big Y"), "label was {}", set.source_label);
-    assert!(set.source_label.contains(&format!("bigy-{}", subject.guid.0)), "label disambiguated by dir");
+    let set = app
+        .import_variants_from_file(subject.guid, &vcf, navigator_app::SourceType::Imported)
+        .await
+        .unwrap();
+    assert!(
+        set.source_label.starts_with("FTDNA Big Y"),
+        "label was {}",
+        set.source_label
+    );
+    assert!(
+        set.source_label.contains(&format!("bigy-{}", subject.guid.0)),
+        "label disambiguated by dir"
+    );
     assert_eq!(set.source_type, navigator_app::SourceType::TargetedNgs);
     assert_eq!(set.reference_build.as_deref(), Some("GRCh38"));
     assert_eq!(set.calls.len(), 1);
@@ -153,9 +176,15 @@ async fn import_mtdna_fasta_derives_variants() {
     // The import derived + persisted an rCRS-relative variant set (haplogroup placement needs the
     // network, so it's best-effort and not asserted here).
     let sets = app.list_variant_sets(subject.guid).await.unwrap();
-    let mt = sets.iter().find(|s| s.source_label.contains("vs rCRS")).expect("mtDNA variant set");
+    let mt = sets
+        .iter()
+        .find(|s| s.source_label.contains("vs rCRS"))
+        .expect("mtDNA variant set");
     assert_eq!(mt.source_type, navigator_app::SourceType::Sanger);
-    assert!(mt.calls.iter().any(|c| c.position == 263), "expected the 263 substitution");
+    assert!(
+        mt.calls.iter().any(|c| c.position == 263),
+        "expected the 263 substitution"
+    );
     assert!(mt.calls.iter().all(|c| c.contig == "rCRS"));
 
     let _ = std::fs::remove_file(&path);
@@ -175,7 +204,10 @@ async fn import_chip_profile_detects_vendor_and_summarizes() {
     .unwrap();
 
     // provider=None -> auto-detect from the header
-    let profile = app.import_chip_profile_from_csv(subject.guid, None, None, &path).await.unwrap();
+    let profile = app
+        .import_chip_profile_from_csv(subject.guid, None, None, &path)
+        .await
+        .unwrap();
     assert_eq!(profile.provider, "23andMe");
     assert_eq!(profile.summary.total_markers_possible, 4);
     assert_eq!(profile.summary.total_markers_called, 3); // "--" no-call
@@ -184,7 +216,10 @@ async fn import_chip_profile_detects_vendor_and_summarizes() {
 
     let listed = app.list_chip_profiles(subject.guid).await.unwrap();
     assert_eq!(listed.len(), 1);
-    assert_eq!(listed[0].source_file_name.as_deref(), Some(path.file_name().unwrap().to_str().unwrap()));
+    assert_eq!(
+        listed[0].source_file_name.as_deref(),
+        Some(path.file_name().unwrap().to_str().unwrap())
+    );
 
     let _ = std::fs::remove_file(&path);
 }
@@ -212,7 +247,10 @@ async fn import_mtdna_fasta_round_trips() {
     // a too-short sequence is rejected
     let bad = std::env::temp_dir().join(format!("mtdna-bad-{}.fasta", subject.guid.0));
     std::fs::write(&bad, ">x\nACGT\n").unwrap();
-    assert!(matches!(app.import_mtdna_from_fasta(subject.guid, &bad).await, Err(AppError::Import(_))));
+    assert!(matches!(
+        app.import_mtdna_from_fasta(subject.guid, &bad).await,
+        Err(AppError::Import(_))
+    ));
 
     let _ = std::fs::remove_file(&path);
     let _ = std::fs::remove_file(&bad);
@@ -240,7 +278,14 @@ async fn derive_mtdna_variants_vs_rcrs() {
     let set = app.derive_mtdna_variants(mt.id, &ref_path).await.unwrap();
     assert_eq!(set.calls.len(), 2);
     assert_eq!(set.calls[0].contig, "rCRS");
-    assert_eq!((set.calls[0].position, set.calls[0].reference.as_str(), set.calls[0].alternate.as_str()), (263, "A", "G"));
+    assert_eq!(
+        (
+            set.calls[0].position,
+            set.calls[0].reference.as_str(),
+            set.calls[0].alternate.as_str()
+        ),
+        (263, "A", "G")
+    );
     assert_eq!((set.calls[1].position, set.calls[1].alternate.as_str()), (750, "C"));
 
     // Two sets now: import auto-derives one vs the bundled rCRS, plus this explicit
@@ -327,7 +372,10 @@ async fn validate_hg002_haplogroups() {
         return;
     };
     let app = app().await;
-    let b = app.add_biosample(None, "HG002", None, Some("male".into())).await.unwrap();
+    let b = app
+        .add_biosample(None, "HG002", None, Some("male".into()))
+        .await
+        .unwrap();
     let run = app
         .record_sequence_run(NewSequenceRun {
             biosample_guid: b.guid,
@@ -356,9 +404,16 @@ async fn validate_hg002_haplogroups() {
         .unwrap()
         .id;
 
-    let mt = app.assign_mtdna_haplogroup_from_alignment(aln).await.expect("mt assign").ranked;
+    let mt = app
+        .assign_mtdna_haplogroup_from_alignment(aln)
+        .await
+        .expect("mt assign")
+        .ranked;
     let top = &mt[0];
-    eprintln!("HG002 mtDNA: {}  ({}/{} mutations, score {:.3})", top.name, top.matched, top.expected, top.score);
+    eprintln!(
+        "HG002 mtDNA: {}  ({}/{} mutations, score {:.3})",
+        top.name, top.matched, top.expected, top.score
+    );
     eprintln!("  lineage: {}", top.lineage.join(" › "));
     for r in mt.iter().skip(1).take(3) {
         eprintln!("  alt: {} ({:.3})", r.name, r.score);
@@ -367,7 +422,10 @@ async fn validate_hg002_haplogroups() {
 
     let y = app.assign_y_haplogroup(aln).await.expect("Y assign");
     let top = &y.ranked[0];
-    eprintln!("HG002 Y: {}  ({}/{} mutations, score {:.3})", top.name, top.matched, top.expected, top.score);
+    eprintln!(
+        "HG002 Y: {}  ({}/{} mutations, score {:.3})",
+        top.name, top.matched, top.expected, top.score
+    );
     eprintln!("  lineage: {}", top.lineage.join(" › "));
     for r in y.ranked.iter().skip(1).take(3) {
         eprintln!("  alt: {} ({:.3})", r.name, r.score);
@@ -392,7 +450,10 @@ async fn validate_hg002_haplogroups() {
         use navigator_app::PrivateClass;
         // Y_MASK_BED=path -> external mask; SELF_MASK set -> self-referential; else none.
         let bucket = if std::env::var("SELF_MASK").is_ok() {
-            let ivs = app.callable_chr_intervals(aln, "chrY").await.expect("callable intervals");
+            let ivs = app
+                .callable_chr_intervals(aln, "chrY")
+                .await
+                .expect("callable intervals");
             let cov: i64 = ivs.iter().map(|(s, e)| e - s).sum();
             eprintln!("Self-referential callable chrY: {} intervals, {} bp", ivs.len(), cov);
             app.private_y_variants_self_masked(aln).await.expect("private Y (self)")
@@ -400,13 +461,31 @@ async fn validate_hg002_haplogroups() {
             let mask = std::env::var("Y_MASK_BED").ok().map(std::path::PathBuf::from);
             app.private_y_variants(aln, mask.as_deref()).await.expect("private Y")
         };
-        eprintln!("Private Y below {}: {} novel, {} off-path", bucket.terminal, bucket.novel(), bucket.off_path());
-        for v in bucket.variants.iter().filter(|v| matches!(v.class, PrivateClass::OffPathKnown(_))).take(12) {
+        eprintln!(
+            "Private Y below {}: {} novel, {} off-path",
+            bucket.terminal,
+            bucket.novel(),
+            bucket.off_path()
+        );
+        for v in bucket
+            .variants
+            .iter()
+            .filter(|v| matches!(v.class, PrivateClass::OffPathKnown(_)))
+            .take(12)
+        {
             if let PrivateClass::OffPathKnown(n) = &v.class {
-                eprintln!("  off-path {} {}>{} d{} -> {}", v.position, v.reference, v.alternate, v.depth, n);
+                eprintln!(
+                    "  off-path {} {}>{} d{} -> {}",
+                    v.position, v.reference, v.alternate, v.depth, n
+                );
             }
         }
-        for v in bucket.variants.iter().filter(|v| v.class == PrivateClass::Novel).take(12) {
+        for v in bucket
+            .variants
+            .iter()
+            .filter(|v| v.class == PrivateClass::Novel)
+            .take(12)
+        {
             eprintln!("  novel    {} {}>{} d{}", v.position, v.reference, v.alternate, v.depth);
         }
         assert!(!bucket.variants.is_empty(), "expected some off-backbone calls");
@@ -428,7 +507,10 @@ async fn validate_gfx_chm13_haplogroups() {
         return;
     };
     let app = app().await; // default ~/.decodingus cache → the chain persists across runs
-    let b = app.add_biosample(None, "GFX0457637", None, Some("male".into())).await.unwrap();
+    let b = app
+        .add_biosample(None, "GFX0457637", None, Some("male".into()))
+        .await
+        .unwrap();
     let run = app
         .record_sequence_run(NewSequenceRun {
             biosample_guid: b.guid,
@@ -470,9 +552,16 @@ async fn validate_gfx_chm13_haplogroups() {
 
     // mtDNA: now lifted via the self-generated rCRS↔CHM13-chrM map — expect the U5a1b1g lineage,
     // matching the GRCh38 result.
-    let mt = app.assign_mtdna_haplogroup_from_alignment(aln).await.expect("mt assign").ranked;
+    let mt = app
+        .assign_mtdna_haplogroup_from_alignment(aln)
+        .await
+        .expect("mt assign")
+        .ranked;
     let top = &mt[0];
-    eprintln!("GFX0457637 mtDNA: {}  ({}/{} mutations, score {:.3})", top.name, top.matched, top.expected, top.score);
+    eprintln!(
+        "GFX0457637 mtDNA: {}  ({}/{} mutations, score {:.3})",
+        top.name, top.matched, top.expected, top.score
+    );
     eprintln!("  lineage: {}", top.lineage.join(" › "));
     assert!(top.matched > 0, "mt should resolve below root");
     assert!(
@@ -484,7 +573,10 @@ async fn validate_gfx_chm13_haplogroups() {
     // Y: lifted GRCh38 tree → CHM13 chrY — expect the R-FGC29071 clade.
     let y = app.assign_y_haplogroup(aln).await.expect("Y assign");
     let top = &y.ranked[0];
-    eprintln!("GFX0457637 Y: {}  ({}/{} mutations, score {:.3})", top.name, top.matched, top.expected, top.score);
+    eprintln!(
+        "GFX0457637 Y: {}  ({}/{} mutations, score {:.3})",
+        top.name, top.matched, top.expected, top.score
+    );
     eprintln!("  lineage: {}", top.lineage.join(" › "));
     for r in y.ranked.iter().skip(1).take(3) {
         eprintln!("  alt: {} ({:.3})", r.name, r.score);
@@ -509,7 +601,10 @@ async fn validate_gfx_chm13_haplogroups() {
             count(YRegionClass::Amplicon), count(YRegionClass::Palindrome), count(YRegionClass::Heterochromatin),
             bucket.novel_in_unique_sequence(),
         );
-        assert!(bucket.in_structural_region() > 0, "expected some calls flagged in CHM13 Y structural regions");
+        assert!(
+            bucket.in_structural_region() > 0,
+            "expected some calls flagged in CHM13 Y structural regions"
+        );
     }
 }
 
@@ -534,7 +629,10 @@ async fn validate_gfx_decodingus_y() {
     std::env::set_var("NAVIGATOR_Y_TREE_PROVIDER", "decodingus");
 
     let app = app().await;
-    let b = app.add_biosample(None, "GFX0457637", None, Some("male".into())).await.unwrap();
+    let b = app
+        .add_biosample(None, "GFX0457637", None, Some("male".into()))
+        .await
+        .unwrap();
     let run = app
         .record_sequence_run(NewSequenceRun {
             biosample_guid: b.guid,
@@ -565,14 +663,23 @@ async fn validate_gfx_decodingus_y() {
 
     let y = app.assign_y_haplogroup(aln).await.expect("Y assign via DecodingUs");
     let top = &y.ranked[0];
-    eprintln!("GFX0457637 Y (DecodingUs): {}  ({}/{} mutations, score {:.3})", top.name, top.matched, top.expected, top.score);
+    eprintln!(
+        "GFX0457637 Y (DecodingUs): {}  ({}/{} mutations, score {:.3})",
+        top.name, top.matched, top.expected, top.score
+    );
     eprintln!("  lineage: {}", top.lineage.join(" › "));
     // Native hs1 coords place GFX deep on the decoding-us backbone (K2b, toward R-FGC29071).
     // Substantial match count + reaching the K backbone confirms the end-to-end provider works;
     // the R tips need AppView hs1 enrichment (see fn docs).
-    assert!(top.matched >= 50, "expected a substantial native-hs1 match count, got {}", top.matched);
     assert!(
-        top.lineage.iter().any(|h| h == "K" || h.starts_with("K2") || h.starts_with("K-")),
+        top.matched >= 50,
+        "expected a substantial native-hs1 match count, got {}",
+        top.matched
+    );
+    assert!(
+        top.lineage
+            .iter()
+            .any(|h| h == "K" || h.starts_with("K2") || h.starts_with("K-")),
         "expected to reach the K backbone via DecodingUs native hs1, got {}",
         top.lineage.join(" › ")
     );
@@ -591,7 +698,10 @@ async fn gvcf_y_placement_smoke() {
     };
     std::env::set_var("NAVIGATOR_Y_TREE_PROVIDER", "decodingus");
     let app = app().await;
-    let b = app.add_biosample(None, "SMOKE", None, Some("male".into())).await.unwrap();
+    let b = app
+        .add_biosample(None, "SMOKE", None, Some("male".into()))
+        .await
+        .unwrap();
     let run = app
         .record_sequence_run(NewSequenceRun {
             biosample_guid: b.guid,
@@ -619,13 +729,23 @@ async fn gvcf_y_placement_smoke() {
         .await
         .unwrap()
         .id;
-    let y = app.assign_y_from_gvcf(aln, std::path::Path::new(&y_gvcf)).await.expect("Y from GVCF");
+    let y = app
+        .assign_y_from_gvcf(aln, std::path::Path::new(&y_gvcf))
+        .await
+        .expect("Y from GVCF");
     let top = &y.ranked[0];
-    eprintln!("HG00096 Y (GVCF): {} ({}/{} mutations, score {:.3})", top.name, top.matched, top.expected, top.score);
+    eprintln!(
+        "HG00096 Y (GVCF): {} ({}/{} mutations, score {:.3})",
+        top.name, top.matched, top.expected, top.score
+    );
     eprintln!("  lineage: {}", top.lineage.join(" › "));
     // HG00096 is a 1000G GBR sample → deep R1b. Confirm the GVCF places it deep on the R
     // backbone (not a shallow veto), with a substantial match count.
-    assert!(top.matched >= 100, "expected a deep match count from the GVCF, got {}", top.matched);
+    assert!(
+        top.matched >= 100,
+        "expected a deep match count from the GVCF, got {}",
+        top.matched
+    );
     assert!(
         top.lineage.iter().any(|h| h == "R" || h.starts_with("R1")),
         "expected HG00096 to place on the R lineage, got {}",
@@ -652,7 +772,10 @@ async fn gvcf_fast_path_matches_cram_walk() {
     std::env::set_var("NAVIGATOR_Y_TREE_PROVIDER", "decodingus");
 
     let app = app().await;
-    let b = app.add_biosample(None, "PARITY", None, Some("male".into())).await.unwrap();
+    let b = app
+        .add_biosample(None, "PARITY", None, Some("male".into()))
+        .await
+        .unwrap();
     let run = app
         .record_sequence_run(NewSequenceRun {
             biosample_guid: b.guid,
@@ -682,10 +805,16 @@ async fn gvcf_fast_path_matches_cram_walk() {
         .id;
 
     // Fast path (reads the ~MB GVCF) vs. the CRAM walk (genotypes the multi-GB CRAM).
-    let fast = app.assign_y_from_gvcf(aln, std::path::Path::new(&y_gvcf)).await.expect("Y from GVCF");
+    let fast = app
+        .assign_y_from_gvcf(aln, std::path::Path::new(&y_gvcf))
+        .await
+        .expect("Y from GVCF");
     let slow = app.assign_y_haplogroup(aln).await.expect("Y from CRAM");
     let (ft, st) = (&fast.ranked[0], &slow.ranked[0]);
-    eprintln!("Y  GVCF: {} ({}/{})   CRAM: {} ({}/{})", ft.name, ft.matched, ft.expected, st.name, st.matched, st.expected);
+    eprintln!(
+        "Y  GVCF: {} ({}/{})   CRAM: {} ({}/{})",
+        ft.name, ft.matched, ft.expected, st.name, st.matched, st.expected
+    );
     // Same-lineage consistency, not exact-terminal equality: the GVCF path uses robust
     // (proportional-top) selection and the CRAM path the strict guard, so they can stop at
     // different depths on the *same* path. The gate is that neither places on a different
@@ -698,8 +827,14 @@ async fn gvcf_fast_path_matches_cram_walk() {
     );
 
     if let Ok(m_gvcf) = std::env::var("GVCF_PARITY_M_GVCF") {
-        let fast_mt = app.assign_mt_from_gvcf(aln, std::path::Path::new(&m_gvcf)).await.expect("mt from GVCF");
-        let slow_mt = app.assign_mtdna_haplogroup_from_alignment(aln).await.expect("mt from CRAM");
+        let fast_mt = app
+            .assign_mt_from_gvcf(aln, std::path::Path::new(&m_gvcf))
+            .await
+            .expect("mt from GVCF");
+        let slow_mt = app
+            .assign_mtdna_haplogroup_from_alignment(aln)
+            .await
+            .expect("mt from CRAM");
         let (fm, sm) = (&fast_mt.ranked[0], &slow_mt.ranked[0]);
         eprintln!("mt GVCF: {}   CRAM: {}", fm.name, sm.name);
         assert!(
@@ -747,16 +882,25 @@ async fn analysis_provenance_roundtrips_and_defaults_full_walk() {
     assert_eq!(app.analysis_provenance(aln, "coverage", "v1").await.unwrap(), None);
 
     // A fast-path sidecar result is partial.
-    app.save_analysis_with_provenance(aln, "coverage", "v1", &serde_json::json!({"m": 1}), "pipeline-sidecar", "partial")
-        .await
-        .unwrap();
+    app.save_analysis_with_provenance(
+        aln,
+        "coverage",
+        "v1",
+        &serde_json::json!({"m": 1}),
+        "pipeline-sidecar",
+        "partial",
+    )
+    .await
+    .unwrap();
     assert_eq!(
         app.analysis_provenance(aln, "coverage", "v1").await.unwrap(),
         Some(("pipeline-sidecar".into(), "partial".into()))
     );
 
     // The deep walk overwrites it → full / navigator-walk (the default save_analysis).
-    app.save_analysis(aln, "coverage", "v1", &serde_json::json!({"m": 2})).await.unwrap();
+    app.save_analysis(aln, "coverage", "v1", &serde_json::json!({"m": 2}))
+        .await
+        .unwrap();
     assert_eq!(
         app.analysis_provenance(aln, "coverage", "v1").await.unwrap(),
         Some(("navigator-walk".into(), "full".into()))
@@ -773,7 +917,13 @@ async fn haplogroup_consensus_combines_recorded_calls() {
     // Two sources on one path: confident short-read at R-FGC29067, tentative deeper HiFi.
     for (key, label, hg, lineage, score) in [
         ("aln:1", "wgs", "R-FGC29067", vec!["root", "R", "R-FGC29067"], 0.75),
-        ("aln:2", "hifi", "R-FGC29071", vec!["root", "R", "R-FGC29067", "R-FGC29071"], 0.54),
+        (
+            "aln:2",
+            "hifi",
+            "R-FGC29071",
+            vec!["root", "R", "R-FGC29067", "R-FGC29071"],
+            0.54,
+        ),
     ] {
         let call = RunHaplogroupCall {
             source_label: label.into(),
@@ -783,10 +933,16 @@ async fn haplogroup_consensus_combines_recorded_calls() {
             matched: 0,
             expected: 0,
         };
-        app.record_haplogroup_call(subject.guid, DnaType::Y, key, &call).await.unwrap();
+        app.record_haplogroup_call(subject.guid, DnaType::Y, key, &call)
+            .await
+            .unwrap();
     }
 
-    let c = app.haplogroup_consensus(subject.guid, DnaType::Y).await.unwrap().unwrap();
+    let c = app
+        .haplogroup_consensus(subject.guid, DnaType::Y)
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(c.haplogroup, "R-FGC29067"); // confident node, not the tentative deeper one
     assert_eq!(c.compatibility, CompatibilityLevel::Compatible);
     assert_eq!(c.run_count, 2);
@@ -796,17 +952,31 @@ async fn haplogroup_consensus_combines_recorded_calls() {
     let calls = app.haplogroup_calls(subject.guid, DnaType::Y).await.unwrap();
     assert_eq!(calls.len(), 2);
     // mt has nothing recorded
-    assert!(app.haplogroup_consensus(subject.guid, DnaType::Mt).await.unwrap().is_none());
+    assert!(app
+        .haplogroup_consensus(subject.guid, DnaType::Mt)
+        .await
+        .unwrap()
+        .is_none());
 
     // manual override replaces the computed consensus and is flagged + audited.
-    app.set_manual_override(subject.guid, DnaType::Y, "R-FGC29071", Some("Sanger-confirmed")).await.unwrap();
-    let o = app.haplogroup_consensus(subject.guid, DnaType::Y).await.unwrap().unwrap();
+    app.set_manual_override(subject.guid, DnaType::Y, "R-FGC29071", Some("Sanger-confirmed"))
+        .await
+        .unwrap();
+    let o = app
+        .haplogroup_consensus(subject.guid, DnaType::Y)
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(o.haplogroup, "R-FGC29071");
     assert!(o.overridden);
     assert!(o.warnings.iter().any(|w| w.contains("Sanger-confirmed")));
 
     app.clear_manual_override(subject.guid, DnaType::Y).await.unwrap();
-    let back = app.haplogroup_consensus(subject.guid, DnaType::Y).await.unwrap().unwrap();
+    let back = app
+        .haplogroup_consensus(subject.guid, DnaType::Y)
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(back.haplogroup, "R-FGC29067"); // back to computed
     assert!(!back.overridden);
 
@@ -859,7 +1029,11 @@ async fn assign_haplogroup_from_alignment_calls_and_ranks() {
         "3":{"haplogroupId":3,"name":"N2","isRoot":false,"variants":[{"variant":"x5A","position":5,"ancestral":"C","derived":"A"}],"children":[]}
     }}"#;
 
-    let ranked = app.assign_haplogroup_from_alignment(aln, "chrM", tree).await.unwrap().ranked;
+    let ranked = app
+        .assign_haplogroup_from_alignment(aln, "chrM", tree)
+        .await
+        .unwrap()
+        .ranked;
     assert_eq!(ranked[0].name, "N2");
     assert_eq!(ranked[0].matched, 2);
     assert!((ranked[0].score - 1.0).abs() < 1e-9);
@@ -875,8 +1049,15 @@ async fn add_data_detects_and_routes() {
 
     // An STR table -> StrProfile, stored under the subject's STR profiles.
     let str_path = dir.join(format!("data-str-{}.csv", subject.guid.0));
-    std::fs::write(&str_path, "Marker,Value\nDYS393,13\nDYS390,24\nDYS19,14\nDYS391,11\nDYS385,11-14\n").unwrap();
-    assert_eq!(app.add_data(subject.guid, &str_path).await.unwrap(), DetectedData::StrProfile);
+    std::fs::write(
+        &str_path,
+        "Marker,Value\nDYS393,13\nDYS390,24\nDYS19,14\nDYS391,11\nDYS385,11-14\n",
+    )
+    .unwrap();
+    assert_eq!(
+        app.add_data(subject.guid, &str_path).await.unwrap(),
+        DetectedData::StrProfile
+    );
     assert_eq!(app.list_str_profiles(subject.guid).await.unwrap().len(), 1);
 
     // A 23andMe-style export -> ChipData.
@@ -886,7 +1067,10 @@ async fn add_data_detects_and_routes() {
         "# 23andMe\nrsid\tchromosome\tposition\tgenotype\nrs4477212\t1\t82154\tAA\nrs3094315\t1\t752566\tAG\n",
     )
     .unwrap();
-    assert_eq!(app.add_data(subject.guid, &chip_path).await.unwrap(), DetectedData::ChipData);
+    assert_eq!(
+        app.add_data(subject.guid, &chip_path).await.unwrap(),
+        DetectedData::ChipData
+    );
     assert_eq!(app.list_chip_profiles(subject.guid).await.unwrap().len(), 1);
 
     // A BAM/CRAM auto-imports: it creates a sequencing run + alignment (header probed
@@ -931,7 +1115,10 @@ async fn alignment_id(app: &App) -> i64 {
         sequence_run_id: run.id,
         reference_build: "chrM-fixture".into(),
         aligner: "synthetic".into(),
-        variant_caller: None, bam_path: None, reference_path: None, content_sha256: None,
+        variant_caller: None,
+        bam_path: None,
+        reference_path: None,
+        content_sha256: None,
     })
     .await
     .unwrap()
@@ -942,12 +1129,21 @@ async fn alignment_id(app: &App) -> i64 {
 async fn command_flow_and_overview() {
     let app = app().await;
     let p = app
-        .create_project(NewProject { name: "Trio".into(), description: None, administrator: "jk".into() })
+        .create_project(NewProject {
+            name: "Trio".into(),
+            description: None,
+            administrator: "jk".into(),
+        })
         .await
         .unwrap();
 
-    let b1 = app.add_biosample(Some(p.id), "HG002", Some("SAMEA1".into()), Some("male".into())).await.unwrap();
-    app.add_biosample(Some(p.id), "HG003", None, Some("female".into())).await.unwrap();
+    let b1 = app
+        .add_biosample(Some(p.id), "HG002", Some("SAMEA1".into()), Some("male".into()))
+        .await
+        .unwrap();
+    app.add_biosample(Some(p.id), "HG003", None, Some("female".into()))
+        .await
+        .unwrap();
 
     let overview = app.project_overview().await.unwrap();
     assert_eq!(overview.len(), 1);
@@ -974,7 +1170,10 @@ async fn command_flow_and_overview() {
             sequence_run_id: run.id,
             reference_build: "chm13v2.0".into(),
             aligner: "bwa".into(),
-            variant_caller: None, bam_path: None, reference_path: None, content_sha256: None,
+            variant_caller: None,
+            bam_path: None,
+            reference_path: None,
+            content_sha256: None,
         })
         .await
         .unwrap();
@@ -985,7 +1184,10 @@ async fn command_flow_and_overview() {
 async fn add_biosample_to_missing_project_is_not_found() {
     let app = app().await;
     let err = app.add_biosample(Some(123), "HG002", None, None).await;
-    assert!(matches!(err, Err(AppError::Store(navigator_store::StoreError::NotFound(_)))), "got {err:?}");
+    assert!(
+        matches!(err, Err(AppError::Store(navigator_store::StoreError::NotFound(_)))),
+        "got {err:?}"
+    );
 }
 
 #[derive(Debug, PartialEq, Serialize, Deserialize)]
@@ -1017,15 +1219,27 @@ async fn typed_analysis_artifact_round_trips_and_versions() {
             sequence_run_id: run.id,
             reference_build: "chm13v2.0".into(),
             aligner: "bwa".into(),
-            variant_caller: None, bam_path: None, reference_path: None, content_sha256: None,
+            variant_caller: None,
+            bam_path: None,
+            reference_path: None,
+            content_sha256: None,
         })
         .await
         .unwrap();
 
-    let summary = CoverageSummary { mean_coverage: 178.81, callable_bases: 16_292 };
-    app.save_analysis(aln.id, "coverage", "walker-v1", &summary).await.unwrap();
+    let summary = CoverageSummary {
+        mean_coverage: 178.81,
+        callable_bases: 16_292,
+    };
+    app.save_analysis(aln.id, "coverage", "walker-v1", &summary)
+        .await
+        .unwrap();
 
-    let loaded: CoverageSummary = app.load_analysis(aln.id, "coverage", "walker-v1").await.unwrap().unwrap();
+    let loaded: CoverageSummary = app
+        .load_analysis(aln.id, "coverage", "walker-v1")
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(loaded, summary);
 
     // a different version is absent until written
@@ -1042,7 +1256,13 @@ async fn run_coverage_persists_and_reads_back_from_cache() {
     assert!(app.cached_coverage(aln).await.unwrap().is_none()); // cold
 
     let result = app
-        .run_coverage(aln, dir.join("coverage.bam"), dir.join("ref.fa"), None, CallableLociParams::default())
+        .run_coverage(
+            aln,
+            dir.join("coverage.bam"),
+            dir.join("ref.fa"),
+            None,
+            CallableLociParams::default(),
+        )
         .await
         .unwrap();
     assert_eq!(result.genome_territory, 50); // chrM fixture
@@ -1059,7 +1279,13 @@ async fn run_coverage_persists_and_reads_back_from_cache() {
 
     // re-running is idempotent (upsert in place; store-layer test covers row count)
     let rerun = app
-        .run_coverage(aln, dir.join("coverage.bam"), dir.join("ref.fa"), None, CallableLociParams::default())
+        .run_coverage(
+            aln,
+            dir.join("coverage.bam"),
+            dir.join("ref.fa"),
+            None,
+            CallableLociParams::default(),
+        )
         .await
         .unwrap();
     assert_eq!(rerun, result);
@@ -1072,11 +1298,20 @@ async fn run_denovo_caller_persists_snp_calls() {
     let dir = fixtures();
 
     let calls = app
-        .run_denovo_caller(aln, dir.join("coverage.bam"), dir.join("ref.fa"), "chrM".into(), HaploidCallerParams::default())
+        .run_denovo_caller(
+            aln,
+            dir.join("coverage.bam"),
+            dir.join("ref.fa"),
+            "chrM".into(),
+            HaploidCallerParams::default(),
+        )
         .await
         .unwrap();
     // fixture: ref ACGT.. with all-A reads -> SNPs where ref != A at depth>=4
-    assert_eq!(calls.iter().map(|c| c.position).collect::<Vec<_>>(), vec![2, 3, 4, 6, 7, 8, 10]);
+    assert_eq!(
+        calls.iter().map(|c| c.position).collect::<Vec<_>>(),
+        vec![2, 3, 4, 6, 7, 8, 10]
+    );
 
     let cached = app.cached_denovo(aln, "chrM").await.unwrap().unwrap();
     assert_eq!(cached, calls);
@@ -1120,11 +1355,14 @@ async fn diploid_alignment(app: &App) -> i64 {
 async fn publish_coverage_summary_requires_cached_coverage() {
     let app = app().await;
     let aln = diploid_alignment(&app).await; // has a BAM but no coverage run
-    // Bearer client is never reached — the missing-coverage check fails first.
+                                             // Bearer client is never reached — the missing-coverage check fails first.
     let client = navigator_app::PdsClient::bearer(reqwest::Client::new(), "http://127.0.0.1:1", "did:plc:x", "tok");
     let err = app.publish_coverage_summary(&client, aln).await;
     assert!(
-        matches!(err, Err(navigator_app::AppError::Store(navigator_store::StoreError::NotFound(_)))),
+        matches!(
+            err,
+            Err(navigator_app::AppError::Store(navigator_store::StoreError::NotFound(_)))
+        ),
         "got {err:?}"
     );
 }
@@ -1142,12 +1380,21 @@ async fn publish_coverage_summary_to_live_pds() {
     let app = app().await;
     let dir = fixtures();
     let aln = alignment_id(&app).await; // bam = coverage.bam, ref = ref.fa, build = chrM-fixture
-    app.run_coverage(aln, dir.join("coverage.bam"), dir.join("ref.fa"), None, CallableLociParams::default())
-        .await
-        .expect("run_coverage");
+    app.run_coverage(
+        aln,
+        dir.join("coverage.bam"),
+        dir.join("ref.fa"),
+        None,
+        CallableLociParams::default(),
+    )
+    .await
+    .expect("run_coverage");
 
     let client = live_bearer_client(&pds).await;
-    let r = app.publish_coverage_summary(&client, aln).await.expect("publish coverage summary");
+    let r = app
+        .publish_coverage_summary(&client, aln)
+        .await
+        .expect("publish coverage summary");
     assert!(r.uri.starts_with("at://"), "uri: {}", r.uri);
     eprintln!("✓ published coverage summary {}", r.uri);
 }
@@ -1155,7 +1402,11 @@ async fn publish_coverage_summary_to_live_pds() {
 /// Create a throwaway PDS account and return a Bearer client for it (live tests).
 async fn live_bearer_client(pds: &str) -> navigator_app::PdsClient {
     let http = reqwest::Client::new();
-    let n = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos() % 1_000_000_000;
+    let n = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos()
+        % 1_000_000_000;
     let acct: serde_json::Value = http
         .post(format!("{pds}/xrpc/com.atproto.server.createAccount"))
         .json(&serde_json::json!({ "handle": format!("navp{n}.pds.test"), "email": format!("navp{n}@example.test"), "password": "navp-pw-123456" }))
@@ -1165,7 +1416,12 @@ async fn live_bearer_client(pds: &str) -> navigator_app::PdsClient {
         .json()
         .await
         .expect("createAccount json");
-    navigator_app::PdsClient::bearer(http, pds, acct["did"].as_str().unwrap(), acct["accessJwt"].as_str().unwrap())
+    navigator_app::PdsClient::bearer(
+        http,
+        pds,
+        acct["did"].as_str().unwrap(),
+        acct["accessJwt"].as_str().unwrap(),
+    )
 }
 
 #[tokio::test]
@@ -1173,7 +1429,10 @@ async fn publish_without_login_is_not_authenticated() {
     let app = app().await;
     assert_eq!(app.current_account(), None);
     // Both convenience publishers refuse before sign-in (no keychain access needed).
-    assert!(matches!(app.publish_coverage(1).await, Err(navigator_app::AppError::NotAuthenticated)));
+    assert!(matches!(
+        app.publish_coverage(1).await,
+        Err(navigator_app::AppError::NotAuthenticated)
+    ));
     assert!(matches!(
         app.publish_variants(1, "chrM").await,
         Err(navigator_app::AppError::NotAuthenticated)
@@ -1187,7 +1446,10 @@ async fn publish_private_variants_requires_cached_calls() {
     let client = navigator_app::PdsClient::bearer(reqwest::Client::new(), "http://127.0.0.1:1", "did:plc:x", "tok");
     let err = app.publish_private_variants(&client, aln, "chrM").await;
     assert!(
-        matches!(err, Err(navigator_app::AppError::Store(navigator_store::StoreError::NotFound(_)))),
+        matches!(
+            err,
+            Err(navigator_app::AppError::Store(navigator_store::StoreError::NotFound(_)))
+        ),
         "got {err:?}"
     );
 }
@@ -1205,15 +1467,27 @@ async fn publish_private_variants_to_live_pds() {
     let app = app().await;
     let dir = fixtures();
     let aln = alignment_id(&app).await;
-    app.run_denovo_caller(aln, dir.join("coverage.bam"), dir.join("ref.fa"), "chrM".into(), HaploidCallerParams::default())
-        .await
-        .expect("run de-novo");
+    app.run_denovo_caller(
+        aln,
+        dir.join("coverage.bam"),
+        dir.join("ref.fa"),
+        "chrM".into(),
+        HaploidCallerParams::default(),
+    )
+    .await
+    .expect("run de-novo");
 
     let client = live_bearer_client(&pds).await;
-    let r = app.publish_private_variants(&client, aln, "chrM").await.expect("publish private variants");
+    let r = app
+        .publish_private_variants(&client, aln, "chrM")
+        .await
+        .expect("publish private variants");
     assert!(r.uri.starts_with("at://"), "uri: {}", r.uri);
 
-    let got = client.get_record(navigator_app::PRIVATE_VARIANTS_COLLECTION, r.rkey()).await.expect("getRecord");
+    let got = client
+        .get_record(navigator_app::PRIVATE_VARIANTS_COLLECTION, r.rkey())
+        .await
+        .expect("getRecord");
     assert_eq!(got["value"]["contig"], "chrM");
     assert_eq!(got["value"]["variants"].as_array().unwrap().len(), 7); // fixture de-novo
     assert!(got["value"]["variants"][0]["alleleFraction"].is_string());
@@ -1234,7 +1508,12 @@ async fn panel_genotyping_then_ibd_compare() {
         name: format!("s{pos}"),
     };
     // The four informative sites in the diploid fixture: hom-ref, het, het, hom-alt.
-    let sites = vec![site(1, "A", "G"), site(2, "C", "G"), site(5, "A", "T"), site(8, "T", "A")];
+    let sites = vec![
+        site(1, "A", "G"),
+        site(2, "C", "G"),
+        site(5, "A", "T"),
+        site(8, "T", "A"),
+    ];
 
     let panel = app.import_panel("test-panel", &sites).await.unwrap();
     assert_eq!(app.panel_site_count(panel.id).await.unwrap(), 4);
@@ -1245,17 +1524,28 @@ async fn panel_genotyping_then_ibd_compare() {
     assert_eq!(dosages, vec![0, 1, 1, 2]);
 
     // cached read-back
-    assert_eq!(app.cached_panel_genotypes(aln, panel.id, 2).await.unwrap().unwrap(), genos);
+    assert_eq!(
+        app.cached_panel_genotypes(aln, panel.id, 2).await.unwrap().unwrap(),
+        genos
+    );
 
     // IBD self-compare with relaxed thresholds (only 4 sites): one fully-shared segment.
-    let cfg = IbdDetectorConfig { min_snp_count: 3, window_size: 3, min_segment_cm: 0.0, ..IbdDetectorConfig::default() };
+    let cfg = IbdDetectorConfig {
+        min_snp_count: 3,
+        window_size: 3,
+        min_segment_cm: 0.0,
+        ..IbdDetectorConfig::default()
+    };
     let cmp = app.compare_ibd(aln, aln, panel.id, 2, cfg).await.unwrap();
     assert_eq!(cmp.segments.len(), 1);
     assert!(cmp.summary.total_shared_cm >= 0.0);
 
     // comparing against an un-genotyped alignment errors clearly.
     let other = diploid_alignment(&app).await;
-    assert!(matches!(app.compare_ibd(aln, other, panel.id, 2, cfg).await, Err(AppError::NotGenotyped(_))));
+    assert!(matches!(
+        app.compare_ibd(aln, other, panel.id, 2, cfg).await,
+        Err(AppError::NotGenotyped(_))
+    ));
 }
 
 #[tokio::test]
@@ -1273,7 +1563,10 @@ async fn import_project_dir_creates_rows_is_idempotent_and_coverage_runs_on_cram
     std::fs::copy(fx.join("coverage.cram.crai"), sample.join("HG00096.chm13.cram.crai")).unwrap();
 
     let reference = fx.join("ref.fa");
-    let summary = app.import_project_dir(&root, Some(reference.clone()), "tester".into(), false).await.unwrap();
+    let summary = app
+        .import_project_dir(&root, Some(reference.clone()), "tester".into(), false)
+        .await
+        .unwrap();
     assert_eq!(summary.samples_total, 1);
     assert_eq!(summary.samples_created, 1);
     assert_eq!(summary.alignments_created, 1);
@@ -1285,7 +1578,10 @@ async fn import_project_dir_creates_rows_is_idempotent_and_coverage_runs_on_cram
     assert_eq!(bios[0].donor_identifier, "HG00096");
 
     // Re-import: project/sample/alignment reused, nothing new created.
-    let again = app.import_project_dir(&root, Some(reference), "tester".into(), false).await.unwrap();
+    let again = app
+        .import_project_dir(&root, Some(reference), "tester".into(), false)
+        .await
+        .unwrap();
     assert_eq!(again.project.id, summary.project.id);
     assert_eq!(again.samples_created, 0);
     assert_eq!(again.alignments_created, 0);
@@ -1314,7 +1610,10 @@ async fn project_report_rolls_up_coverage_and_csv_round_trips() {
     std::fs::copy(fx.join("coverage.cram"), sample.join("HG00096.chm13.cram")).unwrap();
     std::fs::copy(fx.join("coverage.cram.crai"), sample.join("HG00096.chm13.cram.crai")).unwrap();
 
-    let summary = app.import_project_dir(&root, Some(fx.join("ref.fa")), "tester".into(), false).await.unwrap();
+    let summary = app
+        .import_project_dir(&root, Some(fx.join("ref.fa")), "tester".into(), false)
+        .await
+        .unwrap();
     let pid = summary.project.id;
 
     // Before coverage runs: report has the sample, coverage cells empty, haplogroups none.
@@ -1383,7 +1682,10 @@ async fn import_without_reference_resolves_from_cache_else_reports_needed() {
         }
         other => panic!("expected ReferenceNeeded, got {other:?}"),
     }
-    assert!(app.project_overview().await.unwrap().is_empty(), "no writes on ReferenceNeeded");
+    assert!(
+        app.project_overview().await.unwrap().is_empty(),
+        "no writes on ReferenceNeeded"
+    );
 
     // Seed the cache as if a download had completed (reuse the fixture ref as chm13v2.0).
     let refs = cache.join("references");
@@ -1392,10 +1694,16 @@ async fn import_without_reference_resolves_from_cache_else_reports_needed() {
     std::fs::copy(fx.join("ref.fa.fai"), refs.join("chm13v2.0.fa.fai")).unwrap();
 
     // Now import (no explicit reference) resolves from the cache and creates rows.
-    let summary = app.import_project_dir(&root, None, "tester".into(), false).await.unwrap();
+    let summary = app
+        .import_project_dir(&root, None, "tester".into(), false)
+        .await
+        .unwrap();
     assert_eq!(summary.alignments_created, 1);
     let aln = app.list_all_alignments().await.unwrap();
-    assert_eq!(aln[0].reference_path.as_deref(), Some(refs.join("chm13v2.0.fa").to_string_lossy().as_ref()));
+    assert_eq!(
+        aln[0].reference_path.as_deref(),
+        Some(refs.join("chm13v2.0.fa").to_string_lossy().as_ref())
+    );
     // Coverage runs on the CRAM using the cache-resolved reference.
     app.run_coverage_for_alignment(aln[0].id).await.unwrap();
 
@@ -1457,8 +1765,15 @@ async fn assign_y_haplogroup_lifts_grch38_tree_onto_chm13_alignment() {
         "3":{"haplogroupId":3,"name":"N2","isRoot":false,"variants":[{"variant":"y105","position":105,"ancestral":"C","derived":"A"}],"children":[]}
     }}"#;
 
-    let ranked = app.assign_haplogroup_from_alignment(aln, "chrY", tree).await.unwrap().ranked;
-    assert_eq!(ranked[0].name, "N2", "lifted GRCh38 positions found the derived alleles on CHM13 chrY");
+    let ranked = app
+        .assign_haplogroup_from_alignment(aln, "chrY", tree)
+        .await
+        .unwrap()
+        .ranked;
+    assert_eq!(
+        ranked[0].name, "N2",
+        "lifted GRCh38 positions found the derived alleles on CHM13 chrY"
+    );
     assert_eq!(ranked[0].matched, 2);
     assert!((ranked[0].score - 1.0).abs() < 1e-9);
 
@@ -1485,7 +1800,14 @@ async fn analyze_project_runs_coverage_and_attempts_y_per_sample() {
 
     let app = app().await;
     let dir = fixtures();
-    let p = app.create_project(NewProject { name: "Proj".into(), description: None, administrator: "jk".into() }).await.unwrap();
+    let p = app
+        .create_project(NewProject {
+            name: "Proj".into(),
+            description: None,
+            administrator: "jk".into(),
+        })
+        .await
+        .unwrap();
     let b = app.add_biosample(Some(p.id), "S1", None, None).await.unwrap();
     let run = app
         .record_sequence_run(NewSequenceRun {
@@ -1550,9 +1872,15 @@ async fn lookup_lab_by_instrument_resolves_and_normalizes_from_cache() {
 
     let app = app().await;
     // "FTDNA" is a catalog alias → normalized to the canonical display name.
-    assert_eq!(app.lookup_lab_by_instrument("A00182").await.as_deref(), Some("FamilyTreeDNA"));
+    assert_eq!(
+        app.lookup_lab_by_instrument("A00182").await.as_deref(),
+        Some("FamilyTreeDNA")
+    );
     // An unlisted lab passes through unchanged.
-    assert_eq!(app.lookup_lab_by_instrument("m84005").await.as_deref(), Some("Acme Genomics"));
+    assert_eq!(
+        app.lookup_lab_by_instrument("m84005").await.as_deref(),
+        Some("Acme Genomics")
+    );
     // No association → None (best-effort; the caller leaves the facility unset).
     assert_eq!(app.lookup_lab_by_instrument("UNASSOCIATED").await, None);
 
@@ -1618,7 +1946,10 @@ async fn import_23andme_stores_calls_and_places_y_and_mt() {
 
     let app = app().await;
     let b = app.add_biosample(None, "ARRAY1", None, None).await.unwrap();
-    let profile = app.import_chip_profile_from_csv(b.guid, None, None, &path).await.unwrap();
+    let profile = app
+        .import_chip_profile_from_csv(b.guid, None, None, &path)
+        .await
+        .unwrap();
     assert_eq!(profile.provider, "23andMe");
 
     // The haploid Y/MT rows are stored as a Chip variant set on the vendor build (GRCh38 here).
@@ -1626,12 +1957,24 @@ async fn import_23andme_stores_calls_and_places_y_and_mt() {
     assert_eq!(sets.len(), 1);
     assert_eq!(sets[0].source_type, navigator_app::SourceType::Chip);
     assert_eq!(sets[0].reference_build.as_deref(), Some("GRCh38"));
-    assert_eq!(sets[0].calls.len(), 2 + 20, "2 Y + 20 MT haploid calls (autosomal row dropped)");
+    assert_eq!(
+        sets[0].calls.len(),
+        2 + 20,
+        "2 Y + 20 MT haploid calls (autosomal row dropped)"
+    );
 
     // Both haplogroups are placed on import.
-    let y = app.haplogroup_consensus(b.guid, DnaType::Y).await.unwrap().expect("Y placed");
+    let y = app
+        .haplogroup_consensus(b.guid, DnaType::Y)
+        .await
+        .unwrap()
+        .expect("Y placed");
     assert_eq!(y.haplogroup, "B", "derived at both Y backbone SNPs → terminal B");
-    let mt = app.haplogroup_consensus(b.guid, DnaType::Mt).await.unwrap().expect("mt placed");
+    let mt = app
+        .haplogroup_consensus(b.guid, DnaType::Mt)
+        .await
+        .unwrap()
+        .expect("mt placed");
     assert_eq!(mt.haplogroup, "H1", "derived at both MT backbone SNPs → terminal H1");
 
     std::env::remove_var("NAVIGATOR_TREE_DIR");
@@ -1656,7 +1999,10 @@ async fn compare_mt_grch38_vs_chm13() {
     let app = app().await;
 
     async fn aln_for(app: &App, bam: String, build: &str, reference: Option<String>) -> i64 {
-        let b = app.add_biosample(None, "GFX0457637", None, Some("male".into())).await.unwrap();
+        let b = app
+            .add_biosample(None, "GFX0457637", None, Some("male".into()))
+            .await
+            .unwrap();
         let run = app
             .record_sequence_run(NewSequenceRun {
                 biosample_guid: b.guid,
@@ -1690,24 +2036,43 @@ async fn compare_mt_grch38_vs_chm13() {
     // CHM13: needs the reference to self-generate the rCRS↔chrM map.
     let chm_ref = match std::env::var("GFX_CHM13_REF") {
         Ok(p) => p,
-        Err(_) => app.resolve_reference("chm13v2.0", &mut |_, _| {}).await.unwrap().to_string_lossy().into_owned(),
+        Err(_) => app
+            .resolve_reference("chm13v2.0", &mut |_, _| {})
+            .await
+            .unwrap()
+            .to_string_lossy()
+            .into_owned(),
     };
     let a_chm = aln_for(&app, chm13, "chm13v2.0", Some(chm_ref)).await;
 
     let (g, g_lin, g_calls) = app.assign_mtdna_haplogroup_detail(a_b38).await.expect("b38 mt");
     let (c, c_lin, c_calls) = app.assign_mtdna_haplogroup_detail(a_chm).await.expect("chm13 mt");
-    eprintln!("GRCh38 mtDNA: {}  ({}/{} matched)", g.ranked[0].name, g.ranked[0].matched, g.ranked[0].expected);
-    eprintln!("CHM13  mtDNA: {}  ({}/{} matched)", c.ranked[0].name, c.ranked[0].matched, c.ranked[0].expected);
+    eprintln!(
+        "GRCh38 mtDNA: {}  ({}/{} matched)",
+        g.ranked[0].name, g.ranked[0].matched, g.ranked[0].expected
+    );
+    eprintln!(
+        "CHM13  mtDNA: {}  ({}/{} matched)",
+        c.ranked[0].name, c.ranked[0].matched, c.ranked[0].expected
+    );
 
     // Compare the lineage element-wise (same tree + terminal → same ordered path). A position
     // can RECUR with opposite polarity (e.g. C182T then a T182C reversal), so a position-keyed
     // map would falsely diff the two occurrences against each other — match 1:1 by order.
     let _ = (&g_calls, &c_calls);
-    assert_eq!(g_lin.len(), c_lin.len(), "lineage length differs → different terminal/path");
+    assert_eq!(
+        g_lin.len(),
+        c_lin.len(),
+        "lineage length differs → different terminal/path"
+    );
     let mut diffs = 0;
     eprintln!("--- per-SNP lineage differences (GRCh38 vs CHM13), matched 1:1 ---");
     for (gs, cs) in g_lin.iter().zip(c_lin.iter()) {
-        assert_eq!((gs.position, &gs.derived), (cs.position, &cs.derived), "lineage diverged");
+        assert_eq!(
+            (gs.position, &gs.derived),
+            (cs.position, &cs.derived),
+            "lineage diverged"
+        );
         if gs.state != cs.state {
             diffs += 1;
             let gb = g_calls.get(&gs.position).copied().unwrap_or('-');
@@ -1718,8 +2083,14 @@ async fn compare_mt_grch38_vs_chm13() {
             );
         }
     }
-    eprintln!("total TRUE differing lineage SNPs: {diffs}  (lineage length {})", g_lin.len());
-    assert_eq!(diffs, 0, "GRCh38 and CHM13 mtDNA calls should be identical on the same reads");
+    eprintln!(
+        "total TRUE differing lineage SNPs: {diffs}  (lineage length {})",
+        g_lin.len()
+    );
+    assert_eq!(
+        diffs, 0,
+        "GRCh38 and CHM13 mtDNA calls should be identical on the same reads"
+    );
 }
 
 // ---- sex + read metrics ----------------------------------------------------
@@ -1805,7 +2176,10 @@ async fn gfx_sex_is_male() {
         .unwrap()
         .id;
     let s = app.run_sex(aln).await.expect("run_sex");
-    eprintln!("sex={:?} ratio={:.3} conf={:?}", s.inferred_sex, s.x_autosome_ratio, s.confidence);
+    eprintln!(
+        "sex={:?} ratio={:.3} conf={:?}",
+        s.inferred_sex, s.x_autosome_ratio, s.confidence
+    );
     assert_eq!(s.inferred_sex, navigator_app::InferredSex::Male);
 }
 
@@ -1814,7 +2188,10 @@ async fn gfx_sex_is_male() {
 #[tokio::test]
 async fn cached_artifact_invalidated_when_source_file_changes() {
     let app = app().await;
-    let b = app.add_biosample(None, "HG002", None, Some("male".into())).await.unwrap();
+    let b = app
+        .add_biosample(None, "HG002", None, Some("male".into()))
+        .await
+        .unwrap();
     let run = app
         .record_sequence_run(NewSequenceRun {
             biosample_guid: b.guid,
@@ -1848,7 +2225,9 @@ async fn cached_artifact_invalidated_when_source_file_changes() {
         .id;
 
     // Save → load round-trips while the source is unchanged.
-    app.save_analysis(aln, "testkind", "v1", &vec![1u32, 2, 3]).await.unwrap();
+    app.save_analysis(aln, "testkind", "v1", &vec![1u32, 2, 3])
+        .await
+        .unwrap();
     let got: Option<Vec<u32>> = app.load_analysis(aln, "testkind", "v1").await.unwrap();
     assert_eq!(got, Some(vec![1, 2, 3]), "fresh cache is served");
 

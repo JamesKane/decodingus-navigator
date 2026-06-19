@@ -15,14 +15,20 @@ async fn main() {
     eprintln!("resolving {from} -> {to} chain (downloads on miss)…");
     gw.resolve_chain(&from, &to, &mut |d, t| {
         if d % (32 * 1024 * 1024) < 1_048_576 {
-            eprintln!("  chain {} MB{}", d / 1_048_576, t.map(|t| format!(" / {} MB", t / 1_048_576)).unwrap_or_default());
+            eprintln!(
+                "  chain {} MB{}",
+                d / 1_048_576,
+                t.map(|t| format!(" / {} MB", t / 1_048_576)).unwrap_or_default()
+            );
         }
     })
     .await
     .expect("resolve chain");
 
     let t = std::time::Instant::now();
-    let stats = gw.lift_hipstr_bed(&from, &to, &in_bed, &out_bed, contig.as_deref()).expect("lift");
+    let stats = gw
+        .lift_hipstr_bed(&from, &to, &in_bed, &out_bed, contig.as_deref())
+        .expect("lift");
     eprintln!("done in {:.1}s", t.elapsed().as_secs_f32());
     println!(
         "{:?}\n  lifted {}/{} ({:.0}%)  dropped: {} unmapped, {} split, {} span",

@@ -32,5 +32,8 @@ fn print_inferred_test_type() {
     println!("profile: {profile:?}");
     let tt = infer_test_type(profile.as_ref(), platform.as_deref(), vendor.as_deref(), None);
     println!("inferred test_type: {tt:?}");
-    assert!(profile.is_some(), "expected a BAI-derived coverage profile for an indexed BAM");
+    assert!(
+        profile.is_some(),
+        "expected a BAI-derived coverage profile for an indexed BAM"
+    );
 }

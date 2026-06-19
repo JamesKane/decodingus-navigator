@@ -37,7 +37,13 @@ impl AssetManifest {
 
     /// Record `bytes` for `filename`.
     pub fn insert(&mut self, filename: impl Into<String>, bytes: &[u8]) {
-        self.assets.insert(filename.into(), AssetEntry { sha256: sha256_hex(bytes), bytes: bytes.len() as u64 });
+        self.assets.insert(
+            filename.into(),
+            AssetEntry {
+                sha256: sha256_hex(bytes),
+                bytes: bytes.len() as u64,
+            },
+        );
     }
 
     /// Verify `bytes` for `filename`. `Ok` when the manifest has no entry for the file (advisory —
@@ -64,7 +70,11 @@ mod tests {
 
     #[test]
     fn insert_verify_and_json_round_trip() {
-        let mut m = AssetManifest { build: "chm13v2.0".into(), generated_at: String::new(), assets: BTreeMap::new() };
+        let mut m = AssetManifest {
+            build: "chm13v2.0".into(),
+            generated_at: String::new(),
+            assets: BTreeMap::new(),
+        };
         m.insert("ancestry_panel_chm13v2.0.bin", b"hello");
         assert_eq!(m.assets["ancestry_panel_chm13v2.0.bin"].bytes, 5);
         // Matching bytes verify; tampered bytes are rejected; unlisted files pass (advisory).
@@ -78,6 +88,9 @@ mod tests {
     #[test]
     fn sha256_is_stable_hex() {
         // Known SHA-256 of the empty input.
-        assert_eq!(sha256_hex(b""), "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855");
+        assert_eq!(
+            sha256_hex(b""),
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        );
     }
 }

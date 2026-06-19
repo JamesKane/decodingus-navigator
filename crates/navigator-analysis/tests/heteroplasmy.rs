@@ -31,7 +31,11 @@ fn detects_the_two_mixed_sites_on_the_diploid_fixture() {
     for s in &sites {
         assert_eq!(s.depth, 20);
         assert_eq!(s.minor_count, 10);
-        assert!((s.minor_fraction - 0.5).abs() < 1e-9, "50% minor fraction, got {}", s.minor_fraction);
+        assert!(
+            (s.minor_fraction - 0.5).abs() < 1e-9,
+            "50% minor fraction, got {}",
+            s.minor_fraction
+        );
     }
     // pos2: C major (tie broken to the earlier base), G minor.
     assert_eq!(sites[0].major_base, 'C');
@@ -44,7 +48,10 @@ fn detects_the_two_mixed_sites_on_the_diploid_fixture() {
 #[test]
 fn min_minor_count_suppresses_low_support() {
     // Demanding more minor reads than the fixture supplies (10) yields nothing.
-    let strict = HeteroplasmyParams { min_minor_count: 11, ..HeteroplasmyParams::default() };
+    let strict = HeteroplasmyParams {
+        min_minor_count: 11,
+        ..HeteroplasmyParams::default()
+    };
     let sites = detect_heteroplasmy(&fixtures().join("diploid.bam"), "chr1", &strict, None).unwrap();
     assert!(sites.is_empty());
 }

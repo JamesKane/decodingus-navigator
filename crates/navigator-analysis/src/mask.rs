@@ -31,7 +31,9 @@ impl RegionMask {
                 continue;
             }
             let mut f = line.split('\t');
-            let (Some(c), Some(s), Some(e)) = (f.next(), f.next(), f.next()) else { continue };
+            let (Some(c), Some(s), Some(e)) = (f.next(), f.next(), f.next()) else {
+                continue;
+            };
             if c != contig {
                 continue;
             }
@@ -172,8 +174,18 @@ impl YStructuralRegions {
 
     /// Build from explicit masks (the seam the BED loader + unit tests share). XTR/STR/centromere
     /// masks aren't sourced yet — those tiers exist in [`YRegionClass`] for when their data lands.
-    pub fn from_masks(par: RegionMask, palindrome: RegionMask, amplicon: RegionMask, heterochromatin: RegionMask) -> Self {
-        YStructuralRegions { par, palindrome, amplicon, heterochromatin }
+    pub fn from_masks(
+        par: RegionMask,
+        palindrome: RegionMask,
+        amplicon: RegionMask,
+        heterochromatin: RegionMask,
+    ) -> Self {
+        YStructuralRegions {
+            par,
+            palindrome,
+            amplicon,
+            heterochromatin,
+        }
     }
 
     /// The most-impactful (lowest-modifier) structural class containing the 1-based `position`, or
@@ -210,7 +222,7 @@ mod tests {
         // [10,20) and [15,25) coalesce to [10,25); [40,50) separate.
         let m = RegionMask::from_intervals(vec![(40, 50), (10, 20), (15, 25)]);
         assert_eq!(m.covered(), 15 + 10); // [10,25)=15, [40,50)=10
-        // 1-based positions: base0 = pos-1.
+                                          // 1-based positions: base0 = pos-1.
         assert!(!m.contains(10)); // base0 9 < 10
         assert!(m.contains(11)); // base0 10 in [10,25)
         assert!(m.contains(25)); // base0 24 in [10,25)

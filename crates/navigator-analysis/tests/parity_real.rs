@@ -46,7 +46,10 @@ fn hg002_chrm_smoke() {
     eprintln!("mean_coverage    = {:.3}", result.mean_coverage);
     eprintln!("median_coverage  = {}", result.median_coverage);
     eprintln!("sd_coverage      = {:.3}", result.sd_coverage);
-    eprintln!("pct_10x/20x/30x  = {:.4} / {:.4} / {:.4}", result.pct_10x, result.pct_20x, result.pct_30x);
+    eprintln!(
+        "pct_10x/20x/30x  = {:.4} / {:.4} / {:.4}",
+        result.pct_10x, result.pct_20x, result.pct_30x
+    );
     eprintln!("callable_bases   = {}", result.callable_bases);
     eprintln!("callable metrics = {:?}", result.contig_callable);
     eprintln!("coverage stats   = {:?}", result.contig_coverage_stats);
@@ -60,8 +63,8 @@ fn hg002_chrm_smoke() {
     assert!(cs.mean_depth > 50.0, "mean depth {} unexpectedly low", cs.mean_depth);
 
     let cm = &result.contig_callable[0];
-    let total = cm.callable + cm.low_coverage + cm.no_coverage + cm.poor_mapping_quality
-        + cm.ref_n + cm.excessive_coverage;
+    let total =
+        cm.callable + cm.low_coverage + cm.no_coverage + cm.poor_mapping_quality + cm.ref_n + cm.excessive_coverage;
     assert_eq!(total, 16569);
 }
 
@@ -106,8 +109,13 @@ fn hg002_chry_denovo_streams() {
         eprintln!("set HG002_BAM and CHM13_REF to run this test");
         return;
     };
-    let calls = call_denovo(&PathBuf::from(bam), &PathBuf::from(reference), "chrY", &HaploidCallerParams::default())
-        .expect("chrY de-novo should succeed");
+    let calls = call_denovo(
+        &PathBuf::from(bam),
+        &PathBuf::from(reference),
+        "chrY",
+        &HaploidCallerParams::default(),
+    )
+    .expect("chrY de-novo should succeed");
     eprintln!("chrY de-novo calls: {}", calls.len());
     // Shallow single lane -> few high-AF haploid calls; just assert it completed sanely.
     for c in &calls {
@@ -141,7 +149,11 @@ fn hg002_wgs_coverage_streams_all_contigs() {
     );
     // CHM13 main assembly: chr1-22, X, Y, M = 25 contigs, ~3.05 Gb.
     assert_eq!(result.contig_coverage_stats.len(), 25);
-    assert!(result.genome_territory > 3_000_000_000, "territory {}", result.genome_territory);
+    assert!(
+        result.genome_territory > 3_000_000_000,
+        "territory {}",
+        result.genome_territory
+    );
     assert_eq!(result.genome_territory, result.coverage_histogram.iter().sum::<u64>());
     assert!(result.mean_coverage > 0.0);
 }
@@ -174,9 +186,17 @@ fn hg002_read_metrics_smoke() {
     eprintln!(
         "total={} pf_aligned={} ({:.3}) proper={:.3} chimera={:.4} orient={} \
          read_len mean={:.1} median={} insert mean={:.1} median={} mapq={:.1}",
-        m.total_reads, m.pf_reads_aligned, m.pct_pf_reads_aligned, m.pct_proper_pairs,
-        m.pct_chimeras, m.pair_orientation.as_str(), m.mean_read_length, m.median_read_length,
-        m.mean_insert_size, m.median_insert_size, m.mean_mapping_quality
+        m.total_reads,
+        m.pf_reads_aligned,
+        m.pct_pf_reads_aligned,
+        m.pct_proper_pairs,
+        m.pct_chimeras,
+        m.pair_orientation.as_str(),
+        m.mean_read_length,
+        m.median_read_length,
+        m.mean_insert_size,
+        m.median_insert_size,
+        m.mean_mapping_quality
     );
     assert!(m.total_reads > 0);
     assert!(m.pct_pf_reads_aligned > 0.5);
@@ -197,8 +217,7 @@ fn hg002_unified_matches_standalone() {
     let reference = PathBuf::from(reference);
     let params = CallableLociParams::default();
 
-    let unified = collect_unified_metrics(&bam, &reference, &params, None)
-        .expect("unified walker should succeed");
+    let unified = collect_unified_metrics(&bam, &reference, &params, None).expect("unified walker should succeed");
 
     let cov = collect_coverage_callable(&bam, &reference, &params, None).unwrap();
     let rm = collect_read_metrics(&bam, Some(&reference)).unwrap();
@@ -297,7 +316,12 @@ fn hg002_chrm_gatk_parity() {
         report.truth_only.len(),
         report.truth_non_snp_alleles
     );
-    eprintln!("precision={:.3} recall={:.3} f1={:.3}", report.precision(), report.recall(), report.f1());
+    eprintln!(
+        "precision={:.3} recall={:.3} f1={:.3}",
+        report.precision(),
+        report.recall(),
+        report.f1()
+    );
     for fp in &report.rust_only {
         eprintln!("  FP {}:{} {}>{}", fp.chrom, fp.pos, fp.reference, fp.alternate);
     }
@@ -308,12 +332,20 @@ fn hg002_chrm_gatk_parity() {
     // Gate: catch every GATK SNP; allow a few homopolymer-adjacent FPs (the §4b indel
     // risk) until local realignment lands.
     assert!(report.recall() >= 0.95, "recall {:.3} below gate", report.recall());
-    assert!(report.precision() >= 0.80, "precision {:.3} below gate", report.precision());
+    assert!(
+        report.precision() >= 0.80,
+        "precision {:.3} below gate",
+        report.precision()
+    );
 
     // Chunked: a chunk boundary at 16300 splits the 16294 insertion (chunk 1) from the
     // smeared 16302 position (chunk 2). Both-side overlap must keep realignment correct,
     // so the call set is identical to the unchunked run.
-    let chunked = HaploidCallerParams { denovo_chunk: 16_300, denovo_overlap: 500, ..HaploidCallerParams::default() };
+    let chunked = HaploidCallerParams {
+        denovo_chunk: 16_300,
+        denovo_overlap: 500,
+        ..HaploidCallerParams::default()
+    };
     let chunked_calls = call_denovo(&PathBuf::from(&bam), &PathBuf::from(&reference), "chrM", &chunked).unwrap();
     let chunked_report = compare_denovo_snps(&truth, &chunked_calls);
     eprintln!(

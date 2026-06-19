@@ -25,11 +25,18 @@ impl NavigatorApp {
             ui.label(self.tr("form.ploidy"));
             ui.add(egui::TextEdit::singleline(&mut self.forms.ploidy).desired_width(32.0));
             if ui
-                .add_enabled(has_bam && !self.running_genotype, egui::Button::new(format!("Genotype vs {panel_name}")))
+                .add_enabled(
+                    has_bam && !self.running_genotype,
+                    egui::Button::new(format!("Genotype vs {panel_name}")),
+                )
                 .clicked()
             {
                 self.running_genotype = true;
-                let _ = self.tx.send(Command::GenotypePanel { alignment_id, panel_id, ploidy: self.ploidy() });
+                let _ = self.tx.send(Command::GenotypePanel {
+                    alignment_id,
+                    panel_id,
+                    ploidy: self.ploidy(),
+                });
             }
             if self.running_genotype {
                 ui.spinner();
@@ -68,18 +75,27 @@ impl NavigatorApp {
                 .find(|a| Some(a.id) == self.ibd_other)
                 .map(|a| format!("#{} {}", a.id, a.reference_build))
                 .unwrap_or_else(|| "(pick alignment)".into());
-            egui::ComboBox::from_id_salt("ibd_other").selected_text(current).show_ui(ui, |ui| {
-                for a in &self.all_alignments {
-                    if a.id != alignment_id {
-                        ui.selectable_value(&mut self.ibd_other, Some(a.id), format!("#{} {}", a.id, a.reference_build));
+            egui::ComboBox::from_id_salt("ibd_other")
+                .selected_text(current)
+                .show_ui(ui, |ui| {
+                    for a in &self.all_alignments {
+                        if a.id != alignment_id {
+                            ui.selectable_value(
+                                &mut self.ibd_other,
+                                Some(a.id),
+                                format!("#{} {}", a.id, a.reference_build),
+                            );
+                        }
                     }
-                }
-            });
+                });
             let ready = self.ibd_other.is_some() && !self.running_ibd;
-            if ui.add_enabled(ready, egui::Button::new(self.tr("action.compare"))).clicked() {
+            if ui
+                .add_enabled(ready, egui::Button::new(self.tr("action.compare")))
+                .clicked()
+            {
                 self.running_ibd = true;
                 self.ibd_result = None;
-        self.identity = None;
+                self.identity = None;
                 let _ = self.tx.send(Command::CompareIbd {
                     a: alignment_id,
                     b: self.ibd_other.unwrap(),
@@ -87,7 +103,10 @@ impl NavigatorApp {
                     ploidy: self.ploidy(),
                 });
             }
-            if ui.add_enabled(self.ibd_other.is_some(), egui::Button::new(self.tr("ibd.verify"))).clicked() {
+            if ui
+                .add_enabled(self.ibd_other.is_some(), egui::Button::new(self.tr("ibd.verify")))
+                .clicked()
+            {
                 self.identity = None;
                 let _ = self.tx.send(Command::VerifyIdentity {
                     a: alignment_id,
@@ -106,10 +125,16 @@ impl NavigatorApp {
         // `ibd_panel` asset built; a chip source needs its raw file (source_path).
         let mut sources: Vec<(navigator_app::IbdSource, String)> = Vec::new();
         for a in &self.all_alignments {
-            sources.push((navigator_app::IbdSource::Alignment(a.id), format!("WGS #{} {}", a.id, a.reference_build)));
+            sources.push((
+                navigator_app::IbdSource::Alignment(a.id),
+                format!("WGS #{} {}", a.id, a.reference_build),
+            ));
         }
         for c in self.chip_profiles.iter().filter(|c| c.source_path.is_some()) {
-            sources.push((navigator_app::IbdSource::Chip(c.id), format!("{} chip #{}", c.provider, c.id)));
+            sources.push((
+                navigator_app::IbdSource::Chip(c.id),
+                format!("{} chip #{}", c.provider, c.id),
+            ));
         }
         let label_of = |src: Option<navigator_app::IbdSource>| -> String {
             src.and_then(|s| sources.iter().find(|(x, _)| *x == s).map(|(_, l)| l.clone()))
@@ -118,26 +143,36 @@ impl NavigatorApp {
         ui.add_space(8.0);
         ui.horizontal(|ui| {
             ui.label(self.tr("ibd.chipCompatible"));
-            egui::ComboBox::from_id_salt("ibd_src_a").selected_text(label_of(self.ibd_src_a)).show_ui(ui, |ui| {
-                for (s, l) in &sources {
-                    ui.selectable_value(&mut self.ibd_src_a, Some(*s), l);
-                }
-            });
+            egui::ComboBox::from_id_salt("ibd_src_a")
+                .selected_text(label_of(self.ibd_src_a))
+                .show_ui(ui, |ui| {
+                    for (s, l) in &sources {
+                        ui.selectable_value(&mut self.ibd_src_a, Some(*s), l);
+                    }
+                });
             ui.label(self.tr("ibd.vs"));
-            egui::ComboBox::from_id_salt("ibd_src_b").selected_text(label_of(self.ibd_src_b)).show_ui(ui, |ui| {
-                for (s, l) in &sources {
-                    ui.selectable_value(&mut self.ibd_src_b, Some(*s), l);
-                }
-            });
-            let ready =
-                self.ibd_src_a.is_some() && self.ibd_src_b.is_some() && self.ibd_src_a != self.ibd_src_b && !self.running_ibd;
-            if ui.add_enabled(ready, egui::Button::new(self.tr("action.compare"))).clicked() {
+            egui::ComboBox::from_id_salt("ibd_src_b")
+                .selected_text(label_of(self.ibd_src_b))
+                .show_ui(ui, |ui| {
+                    for (s, l) in &sources {
+                        ui.selectable_value(&mut self.ibd_src_b, Some(*s), l);
+                    }
+                });
+            let ready = self.ibd_src_a.is_some()
+                && self.ibd_src_b.is_some()
+                && self.ibd_src_a != self.ibd_src_b
+                && !self.running_ibd;
+            if ui
+                .add_enabled(ready, egui::Button::new(self.tr("action.compare")))
+                .clicked()
+            {
                 self.running_ibd = true;
                 self.ibd_result = None;
                 self.identity = None;
-                let _ = self
-                    .tx
-                    .send(Command::CompareIbdSources { a: self.ibd_src_a.unwrap(), b: self.ibd_src_b.unwrap() });
+                let _ = self.tx.send(Command::CompareIbdSources {
+                    a: self.ibd_src_a.unwrap(),
+                    b: self.ibd_src_b.unwrap(),
+                });
             }
         });
 
@@ -162,7 +197,11 @@ impl NavigatorApp {
                 ui.label(format!("SNP concordance {:.3} over {} sites", c, v.sites_compared));
             }
             if v.y_str_markers > 0 {
-                ui.label(format!("· Y-STR {}/{} differ", v.y_str_distance.unwrap_or(0), v.y_str_markers));
+                ui.label(format!(
+                    "· Y-STR {}/{} differ",
+                    v.y_str_distance.unwrap_or(0),
+                    v.y_str_markers
+                ));
             }
         });
     }
@@ -197,26 +236,32 @@ impl NavigatorApp {
                 .save_file()
             {
                 self.status = format!("Exporting {}…", self.tr("ibd.exportSegments"));
-                let _ = self.tx.send(Command::ExportIbdSegments { segments: cmp.segments.clone(), path });
+                let _ = self.tx.send(Command::ExportIbdSegments {
+                    segments: cmp.segments.clone(),
+                    path,
+                });
             }
         }
 
         ui.add_space(4.0);
         ui.collapsing(self.tr("ibd.segmentTable"), |ui| {
-            egui::Grid::new("ibd_segments").striped(true).num_columns(4).show(ui, |ui| {
-                ui.strong(self.tr("table.chr"));
-                ui.strong(self.tr("table.start"));
-                ui.strong(self.tr("table.end"));
-                ui.strong(self.tr("table.cm"));
-                ui.end_row();
-                for s in &cmp.segments {
-                    ui.label(&s.chromosome);
-                    ui.label(s.start_position.to_string());
-                    ui.label(s.end_position.to_string());
-                    ui.label(format!("{:.1}", s.length_cm));
+            egui::Grid::new("ibd_segments")
+                .striped(true)
+                .num_columns(4)
+                .show(ui, |ui| {
+                    ui.strong(self.tr("table.chr"));
+                    ui.strong(self.tr("table.start"));
+                    ui.strong(self.tr("table.end"));
+                    ui.strong(self.tr("table.cm"));
                     ui.end_row();
-                }
-            });
+                    for s in &cmp.segments {
+                        ui.label(&s.chromosome);
+                        ui.label(s.start_position.to_string());
+                        ui.label(s.end_position.to_string());
+                        ui.label(format!("{:.1}", s.length_cm));
+                        ui.end_row();
+                    }
+                });
         });
     }
 
@@ -240,23 +285,37 @@ impl NavigatorApp {
             .unwrap_or_else(|| "—".to_string());
         ui.horizontal(|ui| {
             ui.label(self.tr("ibd.otherSubject"));
-            egui::ComboBox::from_id_salt("ibd_subject").selected_text(sel).show_ui(ui, |ui| {
-                for (og, l) in &others {
-                    ui.selectable_value(&mut self.ibd_other_subject, Some(*og), l);
-                }
-            });
+            egui::ComboBox::from_id_salt("ibd_subject")
+                .selected_text(sel)
+                .show_ui(ui, |ui| {
+                    for (og, l) in &others {
+                        ui.selectable_value(&mut self.ibd_other_subject, Some(*og), l);
+                    }
+                });
             let ready = self.ibd_other_subject.is_some() && !self.running_ibd;
-            if ui.add_enabled(ready, egui::Button::new(self.tr("ibd.compare"))).clicked() {
+            if ui
+                .add_enabled(ready, egui::Button::new(self.tr("ibd.compare")))
+                .clicked()
+            {
                 self.running_ibd = true;
                 self.ibd_result = None;
                 self.status = "Comparing consensuses…".into();
-                let _ = self.tx.send(Command::CompareIbdConsensus { a: guid, b: self.ibd_other_subject.unwrap() });
+                let _ = self.tx.send(Command::CompareIbdConsensus {
+                    a: guid,
+                    b: self.ibd_other_subject.unwrap(),
+                });
             }
             // Same-individual check (duplicate detection) over the same pooled consensus — no panel.
-            if ui.add_enabled(ready, egui::Button::new(self.tr("ibd.verifyIdentity"))).clicked() {
+            if ui
+                .add_enabled(ready, egui::Button::new(self.tr("ibd.verifyIdentity")))
+                .clicked()
+            {
                 self.identity = None;
                 self.status = "Verifying identity…".into();
-                let _ = self.tx.send(Command::VerifyIdentityConsensus { a: guid, b: self.ibd_other_subject.unwrap() });
+                let _ = self.tx.send(Command::VerifyIdentityConsensus {
+                    a: guid,
+                    b: self.ibd_other_subject.unwrap(),
+                });
             }
             if self.running_ibd {
                 ui.spinner();
@@ -279,7 +338,10 @@ impl NavigatorApp {
         }
         ui.horizontal(|ui| {
             if ui
-                .add_enabled(!self.loading_ibd_suggestions, egui::Button::new(self.tr("network.find")))
+                .add_enabled(
+                    !self.loading_ibd_suggestions,
+                    egui::Button::new(self.tr("network.find")),
+                )
                 .clicked()
             {
                 self.loading_ibd_suggestions = true;
@@ -319,31 +381,36 @@ impl NavigatorApp {
             .collect();
 
         let mut introduce: Option<String> = None;
-        egui::Grid::new("ibd_suggestions").striped(true).num_columns(5).show(ui, |ui| {
-            ui.strong(self.tr("network.col.candidate"));
-            ui.strong(self.tr("network.col.type"));
-            ui.strong(self.tr("network.col.score"));
-            ui.strong(self.tr("network.col.signals"));
-            ui.strong("");
-            ui.end_row();
-            for (guid, ty, score, signals, intro) in &rows {
-                // Pseudonymous guid, shown truncated (it's an opaque AppView handle, not PII).
-                let short: String = guid.chars().take(12).collect();
-                ui.label(short).on_hover_text(guid);
-                ui.label(ty);
-                ui.label(format!("{score:.2}"));
-                ui.label(signals);
-                if let Some(status) = intro {
-                    ui.label(status);
-                } else if ui.button(self.tr("network.introduce")).clicked() {
-                    introduce = Some(guid.clone());
-                }
+        egui::Grid::new("ibd_suggestions")
+            .striped(true)
+            .num_columns(5)
+            .show(ui, |ui| {
+                ui.strong(self.tr("network.col.candidate"));
+                ui.strong(self.tr("network.col.type"));
+                ui.strong(self.tr("network.col.score"));
+                ui.strong(self.tr("network.col.signals"));
+                ui.strong("");
                 ui.end_row();
-            }
-        });
+                for (guid, ty, score, signals, intro) in &rows {
+                    // Pseudonymous guid, shown truncated (it's an opaque AppView handle, not PII).
+                    let short: String = guid.chars().take(12).collect();
+                    ui.label(short).on_hover_text(guid);
+                    ui.label(ty);
+                    ui.label(format!("{score:.2}"));
+                    ui.label(signals);
+                    if let Some(status) = intro {
+                        ui.label(status);
+                    } else if ui.button(self.tr("network.introduce")).clicked() {
+                        introduce = Some(guid.clone());
+                    }
+                    ui.end_row();
+                }
+            });
         if let Some(guid) = introduce {
             self.status = self.tr("network.introducing").to_string();
-            let _ = self.tx.send(Command::IbdIntroduce { suggested_sample_guid: guid });
+            let _ = self.tx.send(Command::IbdIntroduce {
+                suggested_sample_guid: guid,
+            });
         }
     }
 
@@ -356,7 +423,10 @@ impl NavigatorApp {
             return;
         }
         ui.horizontal(|ui| {
-            if ui.add_enabled(!self.exchange_busy, egui::Button::new(self.tr("exchange.refresh"))).clicked() {
+            if ui
+                .add_enabled(!self.exchange_busy, egui::Button::new(self.tr("exchange.refresh")))
+                .clicked()
+            {
                 self.exchange_busy = true;
                 let _ = self.tx.send(Command::ExchangeInbox);
             }
@@ -376,23 +446,27 @@ impl NavigatorApp {
             ui.add_space(6.0);
             ui.label(egui::RichText::new(self.tr("exchange.incoming")).strong());
             let mut consent: Option<(String, bool)> = None;
-            egui::Grid::new(("exchange_incoming", guid)).striped(true).num_columns(4).spacing([12.0, 2.0]).show(ui, |ui| {
-                for (req, purpose, created) in &incoming {
-                    let short: String = req.chars().take(16).collect();
-                    ui.label(short).on_hover_text(req);
-                    ui.label(purpose);
-                    ui.label(egui::RichText::new(created).weak().small());
-                    ui.horizontal(|ui| {
-                        if ui.button(self.tr("exchange.accept")).clicked() {
-                            consent = Some((req.clone(), true));
-                        }
-                        if ui.button(self.tr("exchange.decline")).clicked() {
-                            consent = Some((req.clone(), false));
-                        }
-                    });
-                    ui.end_row();
-                }
-            });
+            egui::Grid::new(("exchange_incoming", guid))
+                .striped(true)
+                .num_columns(4)
+                .spacing([12.0, 2.0])
+                .show(ui, |ui| {
+                    for (req, purpose, created) in &incoming {
+                        let short: String = req.chars().take(16).collect();
+                        ui.label(short).on_hover_text(req);
+                        ui.label(purpose);
+                        ui.label(egui::RichText::new(created).weak().small());
+                        ui.horizontal(|ui| {
+                            if ui.button(self.tr("exchange.accept")).clicked() {
+                                consent = Some((req.clone(), true));
+                            }
+                            if ui.button(self.tr("exchange.decline")).clicked() {
+                                consent = Some((req.clone(), false));
+                            }
+                        });
+                        ui.end_row();
+                    }
+                });
             if let Some((request_uri, given)) = consent {
                 self.exchange_busy = true;
                 let _ = self.tx.send(Command::ExchangeConsent { request_uri, given });
@@ -405,21 +479,31 @@ impl NavigatorApp {
             ui.add_space(6.0);
             ui.label(egui::RichText::new(self.tr("exchange.ready")).strong());
             let mut run: Option<navigator_app::ExchangeSessionInfo> = None;
-            egui::Grid::new(("exchange_ready", guid)).striped(true).num_columns(3).spacing([12.0, 2.0]).show(ui, |ui| {
-                for info in &ready {
-                    let short: String = info.partner_did.chars().take(20).collect();
-                    ui.label(short).on_hover_text(&info.partner_did);
-                    ui.label(&info.purpose);
-                    if ui.add_enabled(!self.exchange_busy, egui::Button::new(self.tr("exchange.run"))).clicked() {
-                        run = Some(info.clone());
+            egui::Grid::new(("exchange_ready", guid))
+                .striped(true)
+                .num_columns(3)
+                .spacing([12.0, 2.0])
+                .show(ui, |ui| {
+                    for info in &ready {
+                        let short: String = info.partner_did.chars().take(20).collect();
+                        ui.label(short).on_hover_text(&info.partner_did);
+                        ui.label(&info.purpose);
+                        if ui
+                            .add_enabled(!self.exchange_busy, egui::Button::new(self.tr("exchange.run")))
+                            .clicked()
+                        {
+                            run = Some(info.clone());
+                        }
+                        ui.end_row();
                     }
-                    ui.end_row();
-                }
-            });
+                });
             if let Some(info) = run {
                 self.exchange_busy = true;
                 self.status = self.tr("exchange.running").to_string();
-                let _ = self.tx.send(Command::RunIbdExchange { info, biosample_guid: guid });
+                let _ = self.tx.send(Command::RunIbdExchange {
+                    info,
+                    biosample_guid: guid,
+                });
             }
         }
 
@@ -429,25 +513,29 @@ impl NavigatorApp {
             ui.weak(self.tr("exchange.noResults"));
         } else {
             ui.label(egui::RichText::new(self.tr("exchange.results")).strong());
-            egui::Grid::new(("exchange_results", guid)).striped(true).num_columns(4).spacing([14.0, 2.0]).show(ui, |ui| {
-                ui.strong(self.tr("exchange.col.partner"));
-                ui.strong(self.tr("exchange.col.shared"));
-                ui.strong(self.tr("exchange.col.relationship"));
-                ui.strong(self.tr("exchange.col.agreed"));
-                ui.end_row();
-                for r in &self.exchange_results {
-                    let short: String = r.partner_did.chars().take(20).collect();
-                    ui.label(short).on_hover_text(&r.partner_did);
-                    ui.label(format!("{:.1} cM · {} seg", r.total_shared_cm, r.segment_count));
-                    ui.label(&r.relationship);
-                    if r.agreed {
-                        ui.colored_label(egui::Color32::from_rgb(60, 160, 60), self.tr("exchange.agreedYes"));
-                    } else {
-                        ui.colored_label(egui::Color32::from_rgb(200, 90, 90), self.tr("exchange.agreedNo"));
-                    }
+            egui::Grid::new(("exchange_results", guid))
+                .striped(true)
+                .num_columns(4)
+                .spacing([14.0, 2.0])
+                .show(ui, |ui| {
+                    ui.strong(self.tr("exchange.col.partner"));
+                    ui.strong(self.tr("exchange.col.shared"));
+                    ui.strong(self.tr("exchange.col.relationship"));
+                    ui.strong(self.tr("exchange.col.agreed"));
                     ui.end_row();
-                }
-            });
+                    for r in &self.exchange_results {
+                        let short: String = r.partner_did.chars().take(20).collect();
+                        ui.label(short).on_hover_text(&r.partner_did);
+                        ui.label(format!("{:.1} cM · {} seg", r.total_shared_cm, r.segment_count));
+                        ui.label(&r.relationship);
+                        if r.agreed {
+                            ui.colored_label(egui::Color32::from_rgb(60, 160, 60), self.tr("exchange.agreedYes"));
+                        } else {
+                            ui.colored_label(egui::Color32::from_rgb(200, 90, 90), self.tr("exchange.agreedNo"));
+                        }
+                        ui.end_row();
+                    }
+                });
         }
     }
 
@@ -461,9 +549,14 @@ impl NavigatorApp {
             .map(|a| a.bam_path.is_some())
             .unwrap_or(false);
         ui.horizontal(|ui| {
-            if ui.add_enabled(has_bam, egui::Button::new(self.tr("btn.assignMt"))).clicked() {
+            if ui
+                .add_enabled(has_bam, egui::Button::new(self.tr("btn.assignMt")))
+                .clicked()
+            {
                 self.status = "Assigning mtDNA haplogroup (fetching FTDNA mt tree)…".into();
-                let _ = self.tx.send(Command::AssignMtdnaHaplogroupFromAlignment { alignment_id });
+                let _ = self
+                    .tx
+                    .send(Command::AssignMtdnaHaplogroupFromAlignment { alignment_id });
             }
             if !has_bam {
                 ui.label(egui::RichText::new("(no BAM/CRAM path recorded)").weak());
@@ -493,7 +586,10 @@ impl NavigatorApp {
                 self.running_denovo = true;
                 self.denovo.remove(contig);
                 self.status = format!("Calling {contig} on alignment #{alignment_id}…");
-                let _ = self.tx.send(Command::RunDenovo { alignment_id, contig: contig.to_string() });
+                let _ = self.tx.send(Command::RunDenovo {
+                    alignment_id,
+                    contig: contig.to_string(),
+                });
             }
             if self.running_denovo {
                 ui.spinner();
@@ -513,25 +609,35 @@ impl NavigatorApp {
             }
             Some(calls) => {
                 ui.label(format!("{} SNP call(s)", calls.len()));
-                egui::Grid::new(("denovo_calls", contig)).striped(true).num_columns(4).show(ui, |ui| {
-                    ui.strong(self.tr("table.position"));
-                    ui.strong(self.tr("table.change"));
-                    ui.strong(self.tr("table.depth"));
-                    ui.strong(self.tr("table.af"));
-                    ui.end_row();
-                    for c in calls {
-                        ui.label(c.position.to_string());
-                        ui.label(format!("{}>{}", c.reference_allele, c.alternate_allele));
-                        ui.label(c.depth.to_string());
-                        ui.label(format!("{:.2}", c.allele_fraction));
+                egui::Grid::new(("denovo_calls", contig))
+                    .striped(true)
+                    .num_columns(4)
+                    .show(ui, |ui| {
+                        ui.strong(self.tr("table.position"));
+                        ui.strong(self.tr("table.change"));
+                        ui.strong(self.tr("table.depth"));
+                        ui.strong(self.tr("table.af"));
                         ui.end_row();
-                    }
-                });
+                        for c in calls {
+                            ui.label(c.position.to_string());
+                            ui.label(format!("{}>{}", c.reference_allele, c.alternate_allele));
+                            ui.label(c.depth.to_string());
+                            ui.label(format!("{:.2}", c.allele_fraction));
+                            ui.end_row();
+                        }
+                    });
             }
         }
 
         if self.denovo.get(contig).map(|c| !c.is_empty()).unwrap_or(false) {
-            self.publish_row(ui, "Publish variants to PDS", Command::PublishVariants { alignment_id, contig: contig.to_string() });
+            self.publish_row(
+                ui,
+                "Publish variants to PDS",
+                Command::PublishVariants {
+                    alignment_id,
+                    contig: contig.to_string(),
+                },
+            );
         }
     }
 }

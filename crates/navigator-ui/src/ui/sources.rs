@@ -12,7 +12,13 @@ impl NavigatorApp {
             .unwrap_or(false);
 
         ui.horizontal(|ui| {
-            if ui.add_enabled(has_paths && !self.running, egui::Button::new(self.tr("btn.runCoverage"))).clicked() {
+            if ui
+                .add_enabled(
+                    has_paths && !self.running,
+                    egui::Button::new(self.tr("btn.runCoverage")),
+                )
+                .clicked()
+            {
                 self.running = true;
                 self.status = format!("Running coverage on alignment #{alignment_id}…");
                 let _ = self.tx.send(Command::RunCoverage(alignment_id));
@@ -34,23 +40,26 @@ impl NavigatorApp {
             }
             None => {}
             Some(c) => {
-                egui::Grid::new("coverage_metrics").striped(true).num_columns(2).show(ui, |ui| {
-                    let row = |ui: &mut egui::Ui, k: &str, v: String| {
-                        ui.label(k);
-                        ui.label(v);
-                        ui.end_row();
-                    };
-                    row(ui, "Genome territory", c.genome_territory.to_string());
-                    row(ui, "Mean coverage", format!("{:.2}", c.mean_coverage));
-                    row(ui, "Median coverage", format!("{:.0}", c.median_coverage));
-                    row(ui, "MAD coverage", format!("{:.0}", c.mad_coverage));
-                    row(ui, "Callable bases", c.callable_bases.to_string());
-                    row(ui, "% ≥10x", format!("{:.1}%", c.pct_10x * 100.0));
-                    row(ui, "% ≥20x", format!("{:.1}%", c.pct_20x * 100.0));
-                    row(ui, "% ≥30x", format!("{:.1}%", c.pct_30x * 100.0));
-                    row(ui, "% excl. low MAPQ", format!("{:.1}%", c.pct_exc_mapq * 100.0));
-                    row(ui, "% excl. low base-Q", format!("{:.1}%", c.pct_exc_baseq * 100.0));
-                });
+                egui::Grid::new("coverage_metrics")
+                    .striped(true)
+                    .num_columns(2)
+                    .show(ui, |ui| {
+                        let row = |ui: &mut egui::Ui, k: &str, v: String| {
+                            ui.label(k);
+                            ui.label(v);
+                            ui.end_row();
+                        };
+                        row(ui, "Genome territory", c.genome_territory.to_string());
+                        row(ui, "Mean coverage", format!("{:.2}", c.mean_coverage));
+                        row(ui, "Median coverage", format!("{:.0}", c.median_coverage));
+                        row(ui, "MAD coverage", format!("{:.0}", c.mad_coverage));
+                        row(ui, "Callable bases", c.callable_bases.to_string());
+                        row(ui, "% ≥10x", format!("{:.1}%", c.pct_10x * 100.0));
+                        row(ui, "% ≥20x", format!("{:.1}%", c.pct_20x * 100.0));
+                        row(ui, "% ≥30x", format!("{:.1}%", c.pct_30x * 100.0));
+                        row(ui, "% excl. low MAPQ", format!("{:.1}%", c.pct_exc_mapq * 100.0));
+                        row(ui, "% excl. low base-Q", format!("{:.1}%", c.pct_exc_baseq * 100.0));
+                    });
 
                 // Drop a stale selection (e.g. fewer contigs than a prior result).
                 if let Some(i) = sel {
@@ -70,44 +79,60 @@ impl NavigatorApp {
                 });
 
                 // Per-contig table: stats joined with the GATK/callable breakdown by header order.
-                egui::ScrollArea::vertical().max_height(240.0).id_salt("cov_contig_table").show(ui, |ui| {
-                    egui::Grid::new("coverage_contig_grid").striped(true).num_columns(12).show(ui, |ui| {
-                        for h in [
-                            "Contig", "Length", "Reads", "Mean depth", "Cov %", "Callable",
-                            "NoCov", "LowCov", "ExcessCov", "PoorMQ", "Mean BQ", "Mean MQ",
-                        ] {
-                            ui.strong(h);
-                        }
-                        ui.end_row();
+                egui::ScrollArea::vertical()
+                    .max_height(240.0)
+                    .id_salt("cov_contig_table")
+                    .show(ui, |ui| {
+                        egui::Grid::new("coverage_contig_grid")
+                            .striped(true)
+                            .num_columns(12)
+                            .show(ui, |ui| {
+                                for h in [
+                                    "Contig",
+                                    "Length",
+                                    "Reads",
+                                    "Mean depth",
+                                    "Cov %",
+                                    "Callable",
+                                    "NoCov",
+                                    "LowCov",
+                                    "ExcessCov",
+                                    "PoorMQ",
+                                    "Mean BQ",
+                                    "Mean MQ",
+                                ] {
+                                    ui.strong(h);
+                                }
+                                ui.end_row();
 
-                        for (i, s) in c.contig_coverage_stats.iter().enumerate() {
-                            if ui.selectable_label(sel == Some(i), &s.contig).clicked() {
-                                sel = Some(i);
-                            }
-                            ui.label(s.end_pos.to_string());
-                            ui.label(s.num_reads.to_string());
-                            ui.label(format!("{:.2}", s.mean_depth));
-                            ui.label(format!("{:.1}%", s.coverage));
-                            match c.contig_callable.get(i) {
-                                Some(cm) => {
-                                    ui.label(cm.callable.to_string());
-                                    ui.label(cm.no_coverage.to_string());
-                                    ui.label(cm.low_coverage.to_string());
-                                    ui.label(cm.excessive_coverage.to_string());
-                                    ui.label(cm.poor_mapping_quality.to_string());
-                                }
-                                None => {
-                                    for _ in 0..5 {
-                                        ui.label("–");
+                                for (i, s) in c.contig_coverage_stats.iter().enumerate() {
+                                    if ui.selectable_label(sel == Some(i), &s.contig).clicked() {
+                                        sel = Some(i);
                                     }
+                                    ui.label(s.end_pos.to_string());
+                                    ui.label(s.num_reads.to_string());
+                                    ui.label(format!("{:.2}", s.mean_depth));
+                                    ui.label(format!("{:.1}%", s.coverage));
+                                    match c.contig_callable.get(i) {
+                                        Some(cm) => {
+                                            ui.label(cm.callable.to_string());
+                                            ui.label(cm.no_coverage.to_string());
+                                            ui.label(cm.low_coverage.to_string());
+                                            ui.label(cm.excessive_coverage.to_string());
+                                            ui.label(cm.poor_mapping_quality.to_string());
+                                        }
+                                        None => {
+                                            for _ in 0..5 {
+                                                ui.label("–");
+                                            }
+                                        }
+                                    }
+                                    ui.label(format!("{:.1}", s.mean_base_q));
+                                    ui.label(format!("{:.1}", s.mean_map_q));
+                                    ui.end_row();
                                 }
-                            }
-                            ui.label(format!("{:.1}", s.mean_base_q));
-                            ui.label(format!("{:.1}", s.mean_map_q));
-                            ui.end_row();
-                        }
+                            });
                     });
-                });
 
                 // Histogram chart for the current selection (whole-genome or a contig).
                 ui.separator();
@@ -157,17 +182,29 @@ impl NavigatorApp {
             .unwrap_or(false);
 
         ui.horizontal(|ui| {
-            if ui.add_enabled(has_bam && !self.running_sex, egui::Button::new(self.tr("btn.inferSex"))).clicked() {
+            if ui
+                .add_enabled(has_bam && !self.running_sex, egui::Button::new(self.tr("btn.inferSex")))
+                .clicked()
+            {
                 self.running_sex = true;
                 self.status = "Inferring sex…".into();
                 let _ = self.tx.send(Command::RunSex(alignment_id));
             }
-            if ui.add_enabled(has_bam && !self.running_metrics, egui::Button::new(self.tr("btn.readMetrics"))).clicked() {
+            if ui
+                .add_enabled(
+                    has_bam && !self.running_metrics,
+                    egui::Button::new(self.tr("btn.readMetrics")),
+                )
+                .clicked()
+            {
                 self.running_metrics = true;
                 self.status = "Collecting read metrics…".into();
                 let _ = self.tx.send(Command::RunReadMetrics(alignment_id));
             }
-            if ui.add_enabled(has_bam && !self.running_sv, egui::Button::new(self.tr("btn.callSv"))).clicked() {
+            if ui
+                .add_enabled(has_bam && !self.running_sv, egui::Button::new(self.tr("btn.callSv")))
+                .clicked()
+            {
                 self.running_sv = true;
                 self.status = "Calling structural variants (needs ≥10× coverage)…".into();
                 let _ = self.tx.send(Command::RunSv(alignment_id));
@@ -192,20 +229,23 @@ impl NavigatorApp {
             ));
         }
         if let Some(m) = &self.read_metrics {
-            egui::Grid::new("read_metrics_grid").striped(true).num_columns(2).show(ui, |ui| {
-                let row = |ui: &mut egui::Ui, k: &str, v: String| {
-                    ui.label(k);
-                    ui.label(v);
-                    ui.end_row();
-                };
-                row(ui, "Total reads", m.total_reads.to_string());
-                row(ui, "% PF aligned", format!("{:.1}%", m.pct_pf_reads_aligned * 100.0));
-                row(ui, "% proper pairs", format!("{:.1}%", m.pct_proper_pairs * 100.0));
-                row(ui, "Mean read length", format!("{:.0}", m.mean_read_length));
-                row(ui, "Median insert size", format!("{:.0}", m.median_insert_size));
-                row(ui, "Pair orientation", m.pair_orientation.as_str().to_string());
-                row(ui, "Mean MAPQ", format!("{:.1}", m.mean_mapping_quality));
-            });
+            egui::Grid::new("read_metrics_grid")
+                .striped(true)
+                .num_columns(2)
+                .show(ui, |ui| {
+                    let row = |ui: &mut egui::Ui, k: &str, v: String| {
+                        ui.label(k);
+                        ui.label(v);
+                        ui.end_row();
+                    };
+                    row(ui, "Total reads", m.total_reads.to_string());
+                    row(ui, "% PF aligned", format!("{:.1}%", m.pct_pf_reads_aligned * 100.0));
+                    row(ui, "% proper pairs", format!("{:.1}%", m.pct_proper_pairs * 100.0));
+                    row(ui, "Mean read length", format!("{:.0}", m.mean_read_length));
+                    row(ui, "Median insert size", format!("{:.0}", m.median_insert_size));
+                    row(ui, "Pair orientation", m.pair_orientation.as_str().to_string());
+                    row(ui, "Mean MAPQ", format!("{:.1}", m.mean_mapping_quality));
+                });
         }
         if let Some(sv) = &self.sv {
             ui.label(format!(
@@ -218,7 +258,12 @@ impl NavigatorApp {
                 ui.label(
                     egui::RichText::new(format!(
                         "  {} {}:{}-{} {}bp q{:.0}",
-                        c.sv_type.as_str(), c.chrom, c.start, c.end, c.sv_len, c.quality
+                        c.sv_type.as_str(),
+                        c.chrom,
+                        c.start,
+                        c.end,
+                        c.sv_len,
+                        c.quality
                     ))
                     .small()
                     .weak(),
@@ -304,12 +349,23 @@ impl NavigatorApp {
         let clear_lbl = self.tr("common.clear");
         let (hg_field, reason_field) = match dna_type {
             DnaType::Y => (&mut self.forms.override_y_haplogroup, &mut self.forms.override_y_reason),
-            DnaType::Mt => (&mut self.forms.override_mt_haplogroup, &mut self.forms.override_mt_reason),
+            DnaType::Mt => (
+                &mut self.forms.override_mt_haplogroup,
+                &mut self.forms.override_mt_reason,
+            ),
         };
         ui.horizontal(|ui| {
             ui.label(override_lbl);
-            ui.add(egui::TextEdit::singleline(hg_field).hint_text("haplogroup").desired_width(140.0));
-            ui.add(egui::TextEdit::singleline(reason_field).hint_text("reason").desired_width(180.0));
+            ui.add(
+                egui::TextEdit::singleline(hg_field)
+                    .hint_text("haplogroup")
+                    .desired_width(140.0),
+            );
+            ui.add(
+                egui::TextEdit::singleline(reason_field)
+                    .hint_text("reason")
+                    .desired_width(180.0),
+            );
             let hg = hg_field.trim().to_string();
             let reason = reason_field.trim().to_string();
             if ui.add_enabled(!hg.is_empty(), egui::Button::new(set_lbl)).clicked() {
@@ -323,7 +379,10 @@ impl NavigatorApp {
             }
             if ui.add_enabled(c.overridden, egui::Button::new(clear_lbl)).clicked() {
                 self.status = format!("Clearing {label} override");
-                let _ = self.tx.send(Command::ClearHaploOverride { biosample_guid: guid, dna_type });
+                let _ = self.tx.send(Command::ClearHaploOverride {
+                    biosample_guid: guid,
+                    dna_type,
+                });
             }
         });
 
@@ -340,7 +399,11 @@ impl NavigatorApp {
                     for h in &het {
                         ui.label(format!(
                             "  pos {}: {}/{} minor {:.1}% (depth {})",
-                            h.position, h.major_base, h.minor_base, h.minor_fraction * 100.0, h.depth
+                            h.position,
+                            h.major_base,
+                            h.minor_base,
+                            h.minor_fraction * 100.0,
+                            h.depth
                         ));
                     }
                 });
@@ -352,20 +415,27 @@ impl NavigatorApp {
             DnaType::Mt => &self.audit_mt,
         };
         if !audit.is_empty() {
-            egui::CollapsingHeader::new(format!("audit log — {} entr{}", audit.len(), if audit.len() == 1 { "y" } else { "ies" }))
-                .id_salt(("audit", label))
-                .show(ui, |ui| {
-                    for e in audit {
-                        ui.label(format!("  {} · {} — {}", e.timestamp, e.action, e.note));
-                    }
-                });
+            egui::CollapsingHeader::new(format!(
+                "audit log — {} entr{}",
+                audit.len(),
+                if audit.len() == 1 { "y" } else { "ies" }
+            ))
+            .id_salt(("audit", label))
+            .show(ui, |ui| {
+                for e in audit {
+                    ui.label(format!("  {} · {} — {}", e.timestamp, e.action, e.note));
+                }
+            });
         }
 
         // Publish the donor-level reconciliation record (gated on sign-in).
         ui.horizontal(|ui| {
             let signed_in = self.account.is_some();
             if ui
-                .add_enabled(signed_in && !self.publishing, egui::Button::new(format!("Publish {label} reconciliation")))
+                .add_enabled(
+                    signed_in && !self.publishing,
+                    egui::Button::new(format!("Publish {label} reconciliation")),
+                )
                 .clicked()
             {
                 self.publishing = true;
@@ -395,7 +465,10 @@ impl NavigatorApp {
             .unwrap_or(false);
 
         ui.horizontal(|ui| {
-            if ui.add_enabled(has_bam, egui::Button::new(self.tr("btn.scanHeteroplasmy"))).clicked() {
+            if ui
+                .add_enabled(has_bam, egui::Button::new(self.tr("btn.scanHeteroplasmy")))
+                .clicked()
+            {
                 self.status = "Scanning chrM pileup for heteroplasmy…".into();
                 let _ = self.tx.send(Command::LoadHeteroplasmy { alignment_id });
             }
@@ -413,7 +486,11 @@ impl NavigatorApp {
                     for h in sites {
                         ui.label(format!(
                             "  pos {}: {} (major) / {} (minor) — minor {:.1}%, depth {}",
-                            h.position, h.major_base, h.minor_base, h.minor_fraction * 100.0, h.depth
+                            h.position,
+                            h.major_base,
+                            h.minor_base,
+                            h.minor_fraction * 100.0,
+                            h.depth
                         ));
                     }
                 }
@@ -431,11 +508,20 @@ impl NavigatorApp {
             .unwrap_or(false);
 
         ui.horizontal(|ui| {
-            if ui.add_enabled(has_bam, egui::Button::new(self.tr("btn.assignY"))).clicked() {
+            if ui
+                .add_enabled(has_bam, egui::Button::new(self.tr("btn.assignY")))
+                .clicked()
+            {
                 self.status = "Assigning Y haplogroup (fetching FTDNA tree)…".into();
                 let _ = self.tx.send(Command::AssignYHaplogroup { alignment_id });
             }
-            if ui.add_enabled(has_bam && !self.y_report_running, egui::Button::new(self.tr("haplo.fullReport"))).clicked() {
+            if ui
+                .add_enabled(
+                    has_bam && !self.y_report_running,
+                    egui::Button::new(self.tr("haplo.fullReport")),
+                )
+                .clicked()
+            {
                 self.y_report_running = true;
                 self.status = "Building haplogroup report…".into();
                 let _ = self.tx.send(Command::YHaploReport { alignment_id });
@@ -498,7 +584,13 @@ impl NavigatorApp {
             });
         }
         ui.horizontal(|ui| {
-            if ui.add_enabled(has_ref && !self.finding_private_y, egui::Button::new(self.tr("btn.findPrivateY"))).clicked() {
+            if ui
+                .add_enabled(
+                    has_ref && !self.finding_private_y,
+                    egui::Button::new(self.tr("btn.findPrivateY")),
+                )
+                .clicked()
+            {
                 self.finding_private_y = true;
                 self.status = "Finding private Y variants (de-novo chrY)…".into();
                 let mask = if self.y_self_mask {
@@ -517,28 +609,40 @@ impl NavigatorApp {
         });
         if let Some((id, bucket)) = &self.private_y {
             if *id == alignment_id {
-                ui.label(format!("{} novel + {} off-path, below {}", bucket.novel(), bucket.off_path(), bucket.terminal));
-                egui::CollapsingHeader::new("Private variants").id_salt(("privy", alignment_id)).show(ui, |ui| {
-                    egui::Grid::new(("privy_grid", alignment_id)).striped(true).num_columns(4).show(ui, |ui| {
-                        for h in ["table.position", "table.change", "table.depth", "table.class"] {
-                            ui.strong(self.tr(h));
-                        }
-                        ui.end_row();
-                        for v in bucket.variants.iter().take(500) {
-                            ui.label(v.position.to_string());
-                            ui.label(format!("{}>{}", v.reference, v.alternate));
-                            ui.label(v.depth.to_string());
-                            match &v.class {
-                                PrivateClass::Novel => ui.colored_label(egui::Color32::from_rgb(60, 160, 60), "novel"),
-                                PrivateClass::OffPathKnown(name) => ui.label(format!("off-path: {name}")),
-                            };
-                            ui.end_row();
+                ui.label(format!(
+                    "{} novel + {} off-path, below {}",
+                    bucket.novel(),
+                    bucket.off_path(),
+                    bucket.terminal
+                ));
+                egui::CollapsingHeader::new("Private variants")
+                    .id_salt(("privy", alignment_id))
+                    .show(ui, |ui| {
+                        egui::Grid::new(("privy_grid", alignment_id))
+                            .striped(true)
+                            .num_columns(4)
+                            .show(ui, |ui| {
+                                for h in ["table.position", "table.change", "table.depth", "table.class"] {
+                                    ui.strong(self.tr(h));
+                                }
+                                ui.end_row();
+                                for v in bucket.variants.iter().take(500) {
+                                    ui.label(v.position.to_string());
+                                    ui.label(format!("{}>{}", v.reference, v.alternate));
+                                    ui.label(v.depth.to_string());
+                                    match &v.class {
+                                        PrivateClass::Novel => {
+                                            ui.colored_label(egui::Color32::from_rgb(60, 160, 60), "novel")
+                                        }
+                                        PrivateClass::OffPathKnown(name) => ui.label(format!("off-path: {name}")),
+                                    };
+                                    ui.end_row();
+                                }
+                            });
+                        if bucket.variants.len() > 500 {
+                            ui.label(format!("…and {} more", bucket.variants.len() - 500));
                         }
                     });
-                    if bucket.variants.len() > 500 {
-                        ui.label(format!("…and {} more", bucket.variants.len() - 500));
-                    }
-                });
             }
         }
     }
@@ -552,37 +656,51 @@ impl NavigatorApp {
             return;
         }
         ui.add_space(4.0);
-        egui::CollapsingHeader::new(self.tr("haplo.report")).id_salt(("haplo_report", alignment_id)).default_open(true).show(ui, |ui| {
-            ui.label(egui::RichText::new(self.tr("haplo.candidates")).strong().small());
-            egui::Grid::new(("haplo_ranked", alignment_id)).striped(true).num_columns(4).spacing([14.0, 2.0]).show(ui, |ui| {
-                for h in ["Haplogroup", "Score", "Depth", "Matched/Expected"] {
-                    ui.label(egui::RichText::new(h).strong().small());
-                }
-                ui.end_row();
-                for c in r.assignment.ranked.iter().take(12) {
-                    ui.label(&c.name);
-                    ui.label(format!("{:.3}", c.score));
-                    ui.label(c.depth.to_string());
-                    ui.label(format!("{}/{}", c.matched, c.expected));
-                    ui.end_row();
-                }
+        egui::CollapsingHeader::new(self.tr("haplo.report"))
+            .id_salt(("haplo_report", alignment_id))
+            .default_open(true)
+            .show(ui, |ui| {
+                ui.label(egui::RichText::new(self.tr("haplo.candidates")).strong().small());
+                egui::Grid::new(("haplo_ranked", alignment_id))
+                    .striped(true)
+                    .num_columns(4)
+                    .spacing([14.0, 2.0])
+                    .show(ui, |ui| {
+                        for h in ["Haplogroup", "Score", "Depth", "Matched/Expected"] {
+                            ui.label(egui::RichText::new(h).strong().small());
+                        }
+                        ui.end_row();
+                        for c in r.assignment.ranked.iter().take(12) {
+                            ui.label(&c.name);
+                            ui.label(format!("{:.3}", c.score));
+                            ui.label(c.depth.to_string());
+                            ui.label(format!("{}/{}", c.matched, c.expected));
+                            ui.end_row();
+                        }
+                    });
+                ui.add_space(6.0);
+                ui.label(
+                    egui::RichText::new(format!("{} ({})", self.tr("haplo.lineageSnps"), r.lineage.len()))
+                        .strong()
+                        .small(),
+                );
+                egui::Grid::new(("haplo_lineage", alignment_id))
+                    .striped(true)
+                    .num_columns(3)
+                    .spacing([14.0, 2.0])
+                    .show(ui, |ui| {
+                        for s in &r.lineage {
+                            ui.label(&s.name);
+                            ui.label(format!("{}{}>{}", s.position, s.ancestral, s.derived));
+                            let (txt, col) = match s.state {
+                                CallState::Derived => ("derived", egui::Color32::from_rgb(60, 160, 60)),
+                                CallState::Ancestral => ("ancestral", egui::Color32::from_rgb(170, 120, 40)),
+                                CallState::NoCall => ("no-call", egui::Color32::GRAY),
+                            };
+                            ui.colored_label(col, txt);
+                            ui.end_row();
+                        }
+                    });
             });
-            ui.add_space(6.0);
-            ui.label(egui::RichText::new(format!("{} ({})", self.tr("haplo.lineageSnps"), r.lineage.len())).strong().small());
-            egui::Grid::new(("haplo_lineage", alignment_id)).striped(true).num_columns(3).spacing([14.0, 2.0]).show(ui, |ui| {
-                for s in &r.lineage {
-                    ui.label(&s.name);
-                    ui.label(format!("{}{}>{}", s.position, s.ancestral, s.derived));
-                    let (txt, col) = match s.state {
-                        CallState::Derived => ("derived", egui::Color32::from_rgb(60, 160, 60)),
-                        CallState::Ancestral => ("ancestral", egui::Color32::from_rgb(170, 120, 40)),
-                        CallState::NoCall => ("no-call", egui::Color32::GRAY),
-                    };
-                    ui.colored_label(col, txt);
-                    ui.end_row();
-                }
-            });
-        });
     }
-
 }

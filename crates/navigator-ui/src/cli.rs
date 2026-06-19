@@ -17,7 +17,11 @@ use navigator_domain::du_domain::ids::SampleGuid;
 use navigator_domain::workspace::NewProject;
 
 #[derive(Parser)]
-#[command(name = "navigator", version, about = "DUNavigator workbench (launches the GUI when run with no subcommand)")]
+#[command(
+    name = "navigator",
+    version,
+    about = "DUNavigator workbench (launches the GUI when run with no subcommand)"
+)]
 pub struct Cli {
     #[command(subcommand)]
     pub command: Option<Command>,
@@ -172,7 +176,11 @@ async fn find_or_create_project(app: &App, name: &str) -> Result<i64, i32> {
         return Ok(o.project.id);
     }
     let p = app
-        .create_project(NewProject { name: name.to_string(), description: None, administrator: "cli".into() })
+        .create_project(NewProject {
+            name: name.to_string(),
+            description: None,
+            administrator: "cli".into(),
+        })
         .await
         .map_err(report)?;
     Ok(p.id)
@@ -196,7 +204,9 @@ fn collect_files(paths: &[PathBuf], recursive: bool) -> Vec<PathBuf> {
 }
 
 fn is_hidden(p: &Path) -> bool {
-    p.file_name().and_then(|n| n.to_str()).is_some_and(|n| n.starts_with('.'))
+    p.file_name()
+        .and_then(|n| n.to_str())
+        .is_some_and(|n| n.starts_with('.'))
 }
 
 fn push_path(p: &Path, recursive: bool, out: &mut Vec<PathBuf>) {
@@ -253,7 +263,10 @@ async fn ingest(args: IngestArgs) -> i32 {
             }
             g
         }
-        Ok(None) => match app.add_biosample(project_id, args.subject.clone(), None, args.sex.clone()).await {
+        Ok(None) => match app
+            .add_biosample(project_id, args.subject.clone(), None, args.sex.clone())
+            .await
+        {
             Ok(b) => {
                 println!("created subject {} ({})", args.subject, b.guid.0);
                 b.guid
@@ -285,7 +298,10 @@ async fn ingest(args: IngestArgs) -> i32 {
             }
         }
     }
-    println!("\ningested {ok} file(s), {failed} failed, into subject \"{}\"", args.subject);
+    println!(
+        "\ningested {ok} file(s), {failed} failed, into subject \"{}\"",
+        args.subject
+    );
 
     // A Y-SNP panel (BISDNA) was imported — place a Y haplogroup from its derived calls and
     // report the terminal (the call is recorded for the donor consensus).
@@ -319,7 +335,12 @@ async fn subjects(args: ProbeArgs) -> i32 {
     };
     let overview = app.project_overview().await.unwrap_or_default();
     let project_name = |id: Option<i64>| -> Option<String> {
-        id.and_then(|pid| overview.iter().find(|o| o.project.id == pid).map(|o| o.project.name.clone()))
+        id.and_then(|pid| {
+            overview
+                .iter()
+                .find(|o| o.project.id == pid)
+                .map(|o| o.project.name.clone())
+        })
     };
 
     let mut rows = Vec::new();
@@ -364,7 +385,12 @@ async fn subjects(args: ProbeArgs) -> i32 {
                 "{:<24} {:<16} {:>4} {:>3} {:>3} {:>3} {:>4} {:>2}",
                 truncate(&b.donor_identifier, 24),
                 truncate(project_name(b.project_id).as_deref().unwrap_or("—"), 16),
-                runs, alns, strs, vars, chips, mt
+                runs,
+                alns,
+                strs,
+                vars,
+                chips,
+                mt
             );
         }
     }
@@ -430,7 +456,13 @@ async fn show(args: ShowArgs) -> i32 {
     }
     println!("\nSequencing runs ({}):", runs.len());
     for r in &runs {
-        println!("  #{} {} · {} · {}", r.id, r.test_type, r.platform_name, r.instrument_model.as_deref().unwrap_or("—"));
+        println!(
+            "  #{} {} · {} · {}",
+            r.id,
+            r.test_type,
+            r.platform_name,
+            r.instrument_model.as_deref().unwrap_or("—")
+        );
         let alns = app.list_alignments(r.id).await.unwrap_or_default();
         for a in &alns {
             println!(
@@ -442,7 +474,13 @@ async fn show(args: ShowArgs) -> i32 {
             );
         }
     }
-    println!("\nProfiles: {} STR, {} variant-set, {} chip, {} mtDNA", strs.len(), vars.len(), chips.len(), mt.len());
+    println!(
+        "\nProfiles: {} STR, {} variant-set, {} chip, {} mtDNA",
+        strs.len(),
+        vars.len(),
+        chips.len(),
+        mt.len()
+    );
     for p in &strs {
         println!("  STR  #{} {} ({} markers)", p.id, p.panel_name, p.markers.len());
     }
@@ -543,15 +581,24 @@ async fn lift_vcf(args: LiftVcfArgs) -> i32 {
         Ok(a) => a,
         Err(c) => return c,
     };
-    let source = match args.from.clone().or_else(|| navigator_app::infer_vcf_source_build(&args.r#in)) {
+    let source = match args
+        .from
+        .clone()
+        .or_else(|| navigator_app::infer_vcf_source_build(&args.r#in))
+    {
         Some(s) => s,
         None => {
-            eprintln!("error: could not infer the source build from {} — pass --from <build>", args.r#in.display());
+            eprintln!(
+                "error: could not infer the source build from {} — pass --from <build>",
+                args.r#in.display()
+            );
             return 1;
         }
     };
     eprintln!("lifting {} : {} → {} …", args.r#in.display(), source, args.to);
-    let opts = navigator_app::VcfLiftOpts { filter_par: args.filter_par };
+    let opts = navigator_app::VcfLiftOpts {
+        filter_par: args.filter_par,
+    };
     let mut last = 0u64;
     let mut progress = |received: u64, _total: Option<u64>| {
         // Coarse byte ticks during any chain/reference download.
@@ -560,7 +607,17 @@ async fn lift_vcf(args: LiftVcfArgs) -> i32 {
             eprint!(".");
         }
     };
-    match app.lift_vcf(&source, &args.to, args.r#in.clone(), args.out.clone(), opts, &mut progress).await {
+    match app
+        .lift_vcf(
+            &source,
+            &args.to,
+            args.r#in.clone(),
+            args.out.clone(),
+            opts,
+            &mut progress,
+        )
+        .await
+    {
         Ok(s) => {
             eprintln!(
                 "\nlifted {}/{} ({} unmapped, {} split, {} ref-mismatch, {} swap-ambiguous, {} complex-rev, {} PAR) → {}",

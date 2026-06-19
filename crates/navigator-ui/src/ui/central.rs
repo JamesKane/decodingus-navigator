@@ -19,7 +19,10 @@ impl NavigatorApp {
         let paths: Vec<std::path::PathBuf> = dropped.into_iter().filter_map(|f| f.path).collect();
         if !paths.is_empty() {
             self.status = format!("Importing {} dropped item(s)…", paths.len());
-            let _ = self.tx.send(Command::AddDataBatch { biosample_guid: guid, paths });
+            let _ = self.tx.send(Command::AddDataBatch {
+                biosample_guid: guid,
+                paths,
+            });
         }
     }
 
@@ -65,7 +68,12 @@ impl NavigatorApp {
                 });
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if ui
-                        .add(egui::Button::new(egui::RichText::new(self.tr("common.delete")).color(egui::Color32::WHITE)).fill(DANGER))
+                        .add(
+                            egui::Button::new(
+                                egui::RichText::new(self.tr("common.delete")).color(egui::Color32::WHITE),
+                            )
+                            .fill(DANGER),
+                        )
                         .clicked()
                     {
                         self.confirm_delete_project = Some((proj.id, proj.name.clone()));
@@ -112,7 +120,10 @@ impl NavigatorApp {
         ui.add_space(6.0);
         ui.horizontal(|ui| {
             for (tab, key) in DetailTab::ALL {
-                if ui.selectable_label(self.detail_tab == tab, egui::RichText::new(self.tr(key)).strong()).clicked() {
+                if ui
+                    .selectable_label(self.detail_tab == tab, egui::RichText::new(self.tr(key)).strong())
+                    .clicked()
+                {
                     self.detail_tab = tab;
                 }
             }
@@ -303,12 +314,20 @@ impl NavigatorApp {
             ui.vertical(|ui| {
                 ui.heading(&bio.donor_identifier);
                 ui.label(
-                    egui::RichText::new(format!("ID: {} • {}", bio.guid.0, bio.sex.as_deref().unwrap_or("Unknown"))).weak(),
+                    egui::RichText::new(format!(
+                        "ID: {} • {}",
+                        bio.guid.0,
+                        bio.sex.as_deref().unwrap_or("Unknown")
+                    ))
+                    .weak(),
                 );
             });
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui
-                    .add(egui::Button::new(egui::RichText::new(self.tr("common.delete")).color(egui::Color32::WHITE)).fill(DANGER))
+                    .add(
+                        egui::Button::new(egui::RichText::new(self.tr("common.delete")).color(egui::Color32::WHITE))
+                            .fill(DANGER),
+                    )
                     .clicked()
                 {
                     self.confirm_delete = Some(guid);
@@ -327,18 +346,29 @@ impl NavigatorApp {
                     if ui.button(self.tr("detail.addFiles")).clicked() {
                         ui.close_menu();
                         if let Some(paths) = rfd::FileDialog::new()
-                            .add_filter("data files", &["vcf", "gz", "csv", "tsv", "txt", "fa", "fasta", "fna", "fas", "bam", "cram"])
+                            .add_filter(
+                                "data files",
+                                &[
+                                    "vcf", "gz", "csv", "tsv", "txt", "fa", "fasta", "fna", "fas", "bam", "cram",
+                                ],
+                            )
                             .pick_files()
                         {
                             self.status = format!("Importing {} file(s)…", paths.len());
-                            let _ = self.tx.send(Command::AddDataBatch { biosample_guid: guid, paths });
+                            let _ = self.tx.send(Command::AddDataBatch {
+                                biosample_guid: guid,
+                                paths,
+                            });
                         }
                     }
                     if ui.button(self.tr("detail.addFolder")).clicked() {
                         ui.close_menu();
                         if let Some(dir) = rfd::FileDialog::new().pick_folder() {
                             self.status = format!("Scanning {}…", dir.display());
-                            let _ = self.tx.send(Command::AddDataBatch { biosample_guid: guid, paths: vec![dir] });
+                            let _ = self.tx.send(Command::AddDataBatch {
+                                biosample_guid: guid,
+                                paths: vec![dir],
+                            });
                         }
                     }
                 });
@@ -351,10 +381,18 @@ impl NavigatorApp {
         ui.add_space(8.0);
         ui.heading(self.tr("dash.title"));
         ui.add_space(12.0);
-        let (projects, subjects, alignments, panels) =
-            (self.overview.len(), self.all_biosamples.len(), self.all_alignments.len(), self.panels.len());
-        let (lp, ls, la, lpn) =
-            (self.tr("dash.projects"), self.tr("dash.subjects"), self.tr("dash.alignments"), self.tr("dash.panels"));
+        let (projects, subjects, alignments, panels) = (
+            self.overview.len(),
+            self.all_biosamples.len(),
+            self.all_alignments.len(),
+            self.panels.len(),
+        );
+        let (lp, ls, la, lpn) = (
+            self.tr("dash.projects"),
+            self.tr("dash.subjects"),
+            self.tr("dash.alignments"),
+            self.tr("dash.panels"),
+        );
         ui.horizontal_wrapped(|ui| {
             stat_card(ui, lp, projects);
             stat_card(ui, ls, subjects);
@@ -379,9 +417,16 @@ impl NavigatorApp {
             ui.add_space(2.0);
             ui.horizontal(|ui| {
                 let selected = self.selected_sample.is_some();
-                ui.label(format!("{} {}", if selected { 1 } else { 0 }, self.tr("action.selected")));
+                ui.label(format!(
+                    "{} {}",
+                    if selected { 1 } else { 0 },
+                    self.tr("action.selected")
+                ));
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui.add_enabled(selected, egui::Button::new(self.tr("action.addToProject"))).clicked() {
+                    if ui
+                        .add_enabled(selected, egui::Button::new(self.tr("action.addToProject")))
+                        .clicked()
+                    {
                         if let Some(guid) = self.selected_sample {
                             let current = self
                                 .all_biosamples
@@ -392,7 +437,10 @@ impl NavigatorApp {
                             self.assign_project = Some((guid, current));
                         }
                     }
-                    if ui.add_enabled(selected, egui::Button::new(self.tr("action.batchAnalyze"))).clicked() {
+                    if ui
+                        .add_enabled(selected, egui::Button::new(self.tr("action.batchAnalyze")))
+                        .clicked()
+                    {
                         if let Some(id) = self.selected_alignment {
                             self.start_full_analysis(id);
                         } else {
@@ -406,5 +454,4 @@ impl NavigatorApp {
             ui.add_space(2.0);
         });
     }
-
 }

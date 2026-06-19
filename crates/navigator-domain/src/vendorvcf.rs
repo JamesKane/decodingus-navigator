@@ -62,12 +62,17 @@ pub fn classify(meta: &str, contigs: &[String], filename: &str, readme: Option<&
 
     // FTDNA: the Arpeggi caller (`aengine`) or an explicit "big y" mention. mtFull if it's chrM-only.
     if hay.contains("aengine") || hay.contains("big y") || hay.contains("bigy") || hay.contains("mtfull") {
-        return if mt_only { VendorVcf::FtdnaMtFull } else { VendorVcf::FtdnaBigY };
+        return if mt_only {
+            VendorVcf::FtdnaMtFull
+        } else {
+            VendorVcf::FtdnaBigY
+        };
     }
     if hay.contains("yseq") {
         return VendorVcf::Yseq;
     }
-    if hay.contains("full genomes") || hay.contains("fullgenomes") || hay.contains("y elite") || hay.contains("yelite") {
+    if hay.contains("full genomes") || hay.contains("fullgenomes") || hay.contains("y elite") || hay.contains("yelite")
+    {
         return VendorVcf::FullGenomes;
     }
     if hay.contains("nebula") {
@@ -85,7 +90,11 @@ pub fn classify(meta: &str, contigs: &[String], filename: &str, readme: Option<&
 }
 
 fn core(name: &str) -> &str {
-    name.strip_prefix("chr").unwrap_or(name).split('_').next().unwrap_or(name)
+    name.strip_prefix("chr")
+        .unwrap_or(name)
+        .split('_')
+        .next()
+        .unwrap_or(name)
 }
 fn is_y_contig(name: &str) -> bool {
     core(name) == "Y"
@@ -112,16 +121,25 @@ mod tests {
     #[test]
     fn ftdna_mtfull_when_chrm_only() {
         let contigs = vec!["chrM".to_string()];
-        assert_eq!(classify("##source=aengine", &contigs, "variants.vcf", None), VendorVcf::FtdnaMtFull);
+        assert_eq!(
+            classify("##source=aengine", &contigs, "variants.vcf", None),
+            VendorVcf::FtdnaMtFull
+        );
         // chrM-only with no vendor token is still recognizably mtFull-shaped.
-        assert_eq!(classify("##source=other", &contigs, "mt.vcf", None), VendorVcf::FtdnaMtFull);
+        assert_eq!(
+            classify("##source=other", &contigs, "mt.vcf", None),
+            VendorVcf::FtdnaMtFull
+        );
     }
 
     #[test]
     fn other_vendors_by_token() {
         let c: Vec<String> = vec![];
         assert_eq!(classify("", &c, "yseq_results.vcf", None), VendorVcf::Yseq);
-        assert_eq!(classify("", &c, "x.vcf", Some("Full Genomes Y Elite")), VendorVcf::FullGenomes);
+        assert_eq!(
+            classify("", &c, "x.vcf", Some("Full Genomes Y Elite")),
+            VendorVcf::FullGenomes
+        );
         assert_eq!(classify("##source=nebula", &c, "x.vcf", None), VendorVcf::Nebula);
         assert_eq!(classify("", &c, "dante_labs.vcf", None), VendorVcf::Dante);
     }

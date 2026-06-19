@@ -93,8 +93,16 @@ pub fn parse_samtools_stats(text: &str) -> ReadMetrics {
     let (rl_mean, rl_median, rl_std, rl_min, rl_max) = summarize(&rl);
     let (is_mean, is_median, is_std, is_min, is_max) = summarize(&is);
     // Prefer samtools' own averages where it reports them (it rounds the histogram anyway).
-    let mean_insert_size = if sn.contains_key("insert size average") { get("insert size average") } else { is_mean };
-    let std_insert_size = if sn.contains_key("insert size standard deviation") { get("insert size standard deviation") } else { is_std };
+    let mean_insert_size = if sn.contains_key("insert size average") {
+        get("insert size average")
+    } else {
+        is_mean
+    };
+    let std_insert_size = if sn.contains_key("insert size standard deviation") {
+        get("insert size standard deviation")
+    } else {
+        is_std
+    };
 
     ReadMetrics {
         total_reads,
@@ -144,7 +152,11 @@ fn summarize(hist: &BTreeMap<u32, u64>) -> (f64, f64, f64, u32, u32) {
     }
     let sum: f64 = hist.iter().map(|(&v, &c)| v as f64 * c as f64).sum();
     let mean = sum / total as f64;
-    let var: f64 = hist.iter().map(|(&v, &c)| c as f64 * (v as f64 - mean).powi(2)).sum::<f64>() / total as f64;
+    let var: f64 = hist
+        .iter()
+        .map(|(&v, &c)| c as f64 * (v as f64 - mean).powi(2))
+        .sum::<f64>()
+        / total as f64;
     let min = *hist.keys().next().unwrap();
     let max = *hist.keys().next_back().unwrap();
     // Median: first bin whose cumulative count crosses the halfway point.
@@ -196,7 +208,11 @@ pub fn parse_samtools_coverage(text: &str) -> (f64, u64, Vec<ContigCoverageStats
             histogram: Vec::new(), // fast-path: samtools coverage has no per-depth histogram
         });
     }
-    let mean_coverage = if territory == 0 { 0.0 } else { weighted_depth / territory as f64 };
+    let mean_coverage = if territory == 0 {
+        0.0
+    } else {
+        weighted_depth / territory as f64
+    };
     (mean_coverage, territory, contigs)
 }
 
@@ -246,7 +262,9 @@ pub fn parse_callable_summary(text: &str) -> (u64, Vec<ContigCallableMetrics>) {
         // `<STATE> <nBases>` rows (whitespace-padded); the `state nBases` header has a
         // non-numeric second token and is skipped by the parse.
         let mut it = t.split_whitespace();
-        let (Some(state), Some(val)) = (it.next(), it.next()) else { continue };
+        let (Some(state), Some(val)) = (it.next(), it.next()) else {
+            continue;
+        };
         let Ok(n) = val.parse::<u64>() else { continue };
         started = true;
         match state {
@@ -271,8 +289,7 @@ pub fn parse_callable_summary(text: &str) -> (u64, Vec<ContigCallableMetrics>) {
 /// left zeroed — the caller records this artifact as `partial` so the deep pass upgrades it.
 pub fn lite_coverage(coverage_txt: &str, callable_summary: Option<&str>) -> CoverageResult {
     let (mean_coverage, genome_territory, contig_coverage_stats) = parse_samtools_coverage(coverage_txt);
-    let (callable_bases, contig_callable) =
-        callable_summary.map(parse_callable_summary).unwrap_or((0, Vec::new()));
+    let (callable_bases, contig_callable) = callable_summary.map(parse_callable_summary).unwrap_or((0, Vec::new()));
     CoverageResult {
         genome_territory,
         mean_coverage,
@@ -307,7 +324,9 @@ pub fn parse_flagstat(text: &str) -> ReadMetrics {
     let mut cats: Vec<(String, u64)> = Vec::new();
     for line in text.lines() {
         // Split on the first '+' (a later '+' appears inside "(QC-passed + QC-failed)").
-        let Some((n_str, rest)) = line.split_once('+') else { continue };
+        let Some((n_str, rest)) = line.split_once('+') else {
+            continue;
+        };
         let Ok(n) = n_str.trim().parse::<u64>() else { continue };
         // rest = "<qc_failed> <category> (pct…)" — drop the qc-failed number, strip the "(…)" tail.
         let category = rest
@@ -362,7 +381,10 @@ fn parse_picard_rows(text: &str, header_key: &str) -> Option<(Vec<String>, Vec<V
 
 /// Zip a header + value row into a name→value lookup.
 fn row_map<'a>(keys: &'a [String], row: &'a [String]) -> HashMap<&'a str, &'a str> {
-    keys.iter().map(String::as_str).zip(row.iter().map(String::as_str)).collect()
+    keys.iter()
+        .map(String::as_str)
+        .zip(row.iter().map(String::as_str))
+        .collect()
 }
 
 /// Parse Picard `CollectWgsMetrics` → the genome-wide depth distribution of a [`CoverageResult`]
@@ -423,7 +445,9 @@ pub fn parse_alignment_summary(text: &str) -> Option<ReadMetrics> {
         pct_pf_reads_aligned: f("PCT_PF_READS_ALIGNED").unwrap_or(0.0) * 100.0,
         pct_reads_aligned_in_pairs: pct100(in_pairs, aligned),
         // Picard reports the *improper* fraction; the proper fraction is its complement.
-        pct_proper_pairs: f("PCT_PF_READS_IMPROPER_PAIRS").map(|i| (1.0 - i) * 100.0).unwrap_or(0.0),
+        pct_proper_pairs: f("PCT_PF_READS_IMPROPER_PAIRS")
+            .map(|i| (1.0 - i) * 100.0)
+            .unwrap_or(0.0),
         mean_read_length: f("MEAN_READ_LENGTH").unwrap_or(0.0),
         pct_chimeras: f("PCT_CHIMERAS").unwrap_or(0.0) * 100.0,
         ..Default::default()
@@ -530,7 +554,10 @@ IS\t500\t200\t0\t5\t195
         assert_eq!(m.median_insert_size, 450.0);
         assert_eq!(m.min_insert_size, 400);
         assert_eq!(m.max_insert_size, 500);
-        assert!((m.mean_insert_size - 430.6).abs() < 1e-9, "uses samtools' reported average");
+        assert!(
+            (m.mean_insert_size - 430.6).abs() < 1e-9,
+            "uses samtools' reported average"
+        );
         assert_eq!(m.insert_size_histogram.get(&450), Some(&500));
     }
 
@@ -618,8 +645,14 @@ chrY\t1\t500\t20\t400\t80.0\t10.0\t29.0\t40.0
         assert!(m.total_reads > 0 && m.pf_reads_aligned > 0);
         assert!(m.mean_read_length > 0.0 && m.median_insert_size > 0.0);
 
-        let c = lite_coverage(&read("coverage.txt"), Some(&read("HG00096.chm13.chrYM.callable.summary.txt")));
-        eprintln!("mean_cov={:.2} territory={} callable={}", c.mean_coverage, c.genome_territory, c.callable_bases);
+        let c = lite_coverage(
+            &read("coverage.txt"),
+            Some(&read("HG00096.chm13.chrYM.callable.summary.txt")),
+        );
+        eprintln!(
+            "mean_cov={:.2} territory={} callable={}",
+            c.mean_coverage, c.genome_territory, c.callable_bases
+        );
         assert!(c.mean_coverage > 0.0 && c.callable_bases > 0);
     }
 }

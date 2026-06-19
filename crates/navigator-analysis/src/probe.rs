@@ -38,7 +38,14 @@ pub fn probe_alignment(path: &Path) -> Result<AlignmentProbe, AnalysisError> {
     let (platform, instrument_model) = detect_platform(&header);
     let test_type = detect_test_type(platform.as_deref(), aligner.as_deref(), &header);
     let vendor_hint = detect_vendor_hint(&header);
-    Ok(AlignmentProbe { reference_build, aligner, platform, instrument_model, test_type, vendor_hint })
+    Ok(AlignmentProbe {
+        reference_build,
+        aligner,
+        platform,
+        instrument_model,
+        test_type,
+        vendor_hint,
+    })
 }
 
 /// Recognizable sequencing-vendor tokens, mapped to a canonical display the test-type catalog
@@ -81,18 +88,25 @@ fn detect_vendor_hint(header: &sam::Header) -> Option<String> {
         hay.push(' ');
     }
     let hay = hay.to_lowercase();
-    VENDOR_TOKENS.iter().find(|(tok, _)| hay.contains(tok)).map(|(_, canon)| (*canon).to_string())
+    VENDOR_TOKENS
+        .iter()
+        .find(|(tok, _)| hay.contains(tok))
+        .map(|(_, canon)| (*canon).to_string())
 }
 
 /// Read just the SAM header from a BAM or CRAM (CRAM's header doesn't need the reference).
 fn read_header_only(path: &Path) -> Result<sam::Header, AnalysisError> {
     match detect_format(path) {
         Format::Bam => {
-            let mut inner = bam::io::reader::Builder.build_from_path(path).map_err(|e| AnalysisError::io(path, e))?;
+            let mut inner = bam::io::reader::Builder
+                .build_from_path(path)
+                .map_err(|e| AnalysisError::io(path, e))?;
             inner.read_header().map_err(|e| AnalysisError::io(path, e))
         }
         Format::Cram => {
-            let mut inner = cram::io::reader::Builder::default().build_from_path(path).map_err(|e| AnalysisError::io(path, e))?;
+            let mut inner = cram::io::reader::Builder::default()
+                .build_from_path(path)
+                .map_err(|e| AnalysisError::io(path, e))?;
             inner.read_header().map_err(|e| AnalysisError::io(path, e))
         }
     }
@@ -188,7 +202,11 @@ const ALIGNERS: &[(&str, &str)] = &[
 fn detect_aligner(header: &sam::Header) -> Option<String> {
     for (id, map) in header.programs().as_ref().iter() {
         let pn = map.other_fields().get(&program::tag::NAME).map(s).unwrap_or_default();
-        let cl = map.other_fields().get(&program::tag::COMMAND_LINE).map(s).unwrap_or_default();
+        let cl = map
+            .other_fields()
+            .get(&program::tag::COMMAND_LINE)
+            .map(s)
+            .unwrap_or_default();
         let hay = format!("{} {} {}", s(id), pn, cl).to_lowercase();
         for (needle, canon) in ALIGNERS {
             if hay.contains(needle) {
@@ -229,7 +247,10 @@ fn normalize_platform(raw: &str) -> Option<String> {
 /// real platform.
 fn detect_platform(header: &sam::Header) -> (Option<String>, Option<String>) {
     for map in header.read_groups().values() {
-        let pl = map.other_fields().get(&read_group::tag::PLATFORM).and_then(|v| normalize_platform(&s(v)));
+        let pl = map
+            .other_fields()
+            .get(&read_group::tag::PLATFORM)
+            .and_then(|v| normalize_platform(&s(v)));
         let pm = map.other_fields().get(&read_group::tag::PLATFORM_MODEL).map(s);
         if pl.is_some() || pm.is_some() {
             return (pl, pm);
@@ -312,9 +333,18 @@ mod tests {
 
     #[test]
     fn test_type_by_platform() {
-        assert_eq!(detect_test_type(Some("PACBIO"), Some("pbmm2"), &sam::Header::default()), Some("WGS_HIFI".into()));
-        assert_eq!(detect_test_type(Some("ILLUMINA"), Some("bwa-mem2"), &sam::Header::default()), Some("WGS".into()));
-        assert_eq!(detect_test_type(None, Some("minimap2"), &sam::Header::default()), Some("WGS".into()));
+        assert_eq!(
+            detect_test_type(Some("PACBIO"), Some("pbmm2"), &sam::Header::default()),
+            Some("WGS_HIFI".into())
+        );
+        assert_eq!(
+            detect_test_type(Some("ILLUMINA"), Some("bwa-mem2"), &sam::Header::default()),
+            Some("WGS".into())
+        );
+        assert_eq!(
+            detect_test_type(None, Some("minimap2"), &sam::Header::default()),
+            Some("WGS".into())
+        );
         assert_eq!(detect_test_type(None, None, &sam::Header::default()), None);
     }
 }

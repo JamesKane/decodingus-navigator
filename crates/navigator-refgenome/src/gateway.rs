@@ -99,7 +99,9 @@ impl ReferenceGateway {
 
     fn lock_for(&self, key: &str) -> Arc<Mutex<()>> {
         let mut m = self.locks.lock().unwrap();
-        m.entry(key.to_string()).or_insert_with(|| Arc::new(Mutex::new(()))).clone()
+        m.entry(key.to_string())
+            .or_insert_with(|| Arc::new(Mutex::new(())))
+            .clone()
     }
 
     /// Cache/override status of a build — no I/O beyond a stat, never downloads.
@@ -119,7 +121,10 @@ impl ReferenceGateway {
             return RefStatus::Cached(fa);
         }
         let src = registry.reference_source(build);
-        RefStatus::NeedsDownload { url: src.url, est_bytes: src.est_bytes }
+        RefStatus::NeedsDownload {
+            url: src.url,
+            est_bytes: src.est_bytes,
+        }
     }
 
     /// The cached/overridden reference path, or `None` if a download would be required.
@@ -184,7 +189,10 @@ impl ReferenceGateway {
         let src = self
             .registry()
             .chain_source(from, to)
-            .ok_or_else(|| RefgenomeError::NoChain { from: from.as_str().into(), to: to.as_str().into() })?;
+            .ok_or_else(|| RefgenomeError::NoChain {
+                from: from.as_str().into(),
+                to: to.as_str().into(),
+            })?;
         let sha = download::download(&self.http, &src.url, &path, progress).await?;
         verify_pinned(&path, src.sha256.as_deref(), &sha)?; // a chain is stored as-downloaded
         write_sidecar(&path, &sha);
@@ -301,7 +309,10 @@ impl ReferenceGateway {
             .registry()
             .cytoband_source(build)
             .ok_or_else(|| RefgenomeError::Message(format!("no cytoBand source for {}", build.as_str())))?;
-        let gz = self.base.join("regions").join(format!("{}.cytoband.txt.gz", build.as_str()));
+        let gz = self
+            .base
+            .join("regions")
+            .join(format!("{}.cytoband.txt.gz", build.as_str()));
         download::download(&self.http, &url, &gz, progress).await?;
         let text = read_gz_to_string(&gz)?;
         Ok(crate::regions::GenomeRegions::from_cytoband(build.as_str(), &text))
@@ -406,7 +417,9 @@ impl ReferenceGateway {
             if f.len() < 5 {
                 continue;
             }
-            let (Ok(start), Ok(end)) = (f[1].parse::<i64>(), f[2].parse::<i64>()) else { continue };
+            let (Ok(start), Ok(end)) = (f[1].parse::<i64>(), f[2].parse::<i64>()) else {
+                continue;
+            };
             let contig = f[0];
             if let Some(w) = &want {
                 if strip(contig) != *w {
@@ -434,10 +447,20 @@ impl ReferenceGateway {
                 stats.dropped_span += 1; // implausible span — likely a bad lift through the repeat
                 continue;
             }
-            let ref_copies = if period_n > 0.0 { dst_span as f64 / period_n } else { 0.0 };
+            let ref_copies = if period_n > 0.0 {
+                dst_span as f64 / period_n
+            } else {
+                0.0
+            };
             // Back to BED (0-based-inclusive [lo-1, hi-1]); bare contig, matching the HipSTR format.
-            writeln!(enc, "{}\t{}\t{}\t{period}\t{ref_copies}\t{name}\t{motif}", strip(&a.0), lo_pos - 1, hi_pos - 1)
-                .map_err(|e| RefgenomeError::io(out_bed_gz, e))?;
+            writeln!(
+                enc,
+                "{}\t{}\t{}\t{period}\t{ref_copies}\t{name}\t{motif}",
+                strip(&a.0),
+                lo_pos - 1,
+                hi_pos - 1
+            )
+            .map_err(|e| RefgenomeError::io(out_bed_gz, e))?;
             stats.lifted += 1;
         }
         enc.finish().map_err(|e| RefgenomeError::io(out_bed_gz, e))?;
@@ -453,7 +476,9 @@ impl ReferenceGateway {
             RefStatus::Cached(p) | RefStatus::LocalOverride(p) => p,
             _ => return Ok(VerifyOutcome::NotCached),
         };
-        let Some(expected) = read_sidecar(&fa) else { return Ok(VerifyOutcome::NoSidecar) };
+        let Some(expected) = read_sidecar(&fa) else {
+            return Ok(VerifyOutcome::NoSidecar);
+        };
         let got = index::hash_file(&fa)?;
         Ok(if expected.eq_ignore_ascii_case(&got) {
             VerifyOutcome::Verified
@@ -562,7 +587,10 @@ mod tests {
         // Unknown build.
         assert!(matches!(g.reference_status("nope"), RefStatus::Unknown));
         // Missing → needs download.
-        assert!(matches!(g.reference_status("chm13v2.0"), RefStatus::NeedsDownload { .. }));
+        assert!(matches!(
+            g.reference_status("chm13v2.0"),
+            RefStatus::NeedsDownload { .. }
+        ));
         assert!(g.cached_reference("chm13v2.0").is_none());
 
         // Seed a cached reference (.fa + .fai).
@@ -623,17 +651,33 @@ mod tests {
         let dir = base.join("liftover");
         std::fs::create_dir_all(&dir).unwrap();
         // chrY t[0,100) -> chrY q[0,100) (identity over the first 100 bp).
-        std::fs::write(dir.join("GRCh38-to-chm13v2.0.chain"), "chain 1 chrY 1000 + 0 100 chrY 1000 + 0 100 1\n100\n").unwrap();
+        std::fs::write(
+            dir.join("GRCh38-to-chm13v2.0.chain"),
+            "chain 1 chrY 1000 + 0 100 chrY 1000 + 0 100 1\n100\n",
+        )
+        .unwrap();
         let g = gw(&base);
 
         // 1-based 101 -> 0-based 100 -> outside the block -> dropped.
         // 1-based 50 -> 0-based 49 -> q 49 -> 1-based 50; 1-based 100 -> 0-based 99 -> 1-based 100.
-        let lifted = g.lift_positions("GRCh38", "chm13v2.0", "chrY", &[50, 100, 101]).unwrap();
+        let lifted = g
+            .lift_positions("GRCh38", "chm13v2.0", "chrY", &[50, 100, 101])
+            .unwrap();
         assert_eq!(
             lifted,
             vec![
-                LiftedPos { tree_pos: 50, contig: "chrY".into(), pos: 50, reverse: false },
-                LiftedPos { tree_pos: 100, contig: "chrY".into(), pos: 100, reverse: false },
+                LiftedPos {
+                    tree_pos: 50,
+                    contig: "chrY".into(),
+                    pos: 50,
+                    reverse: false
+                },
+                LiftedPos {
+                    tree_pos: 100,
+                    contig: "chrY".into(),
+                    pos: 100,
+                    reverse: false
+                },
             ]
         );
         let _ = std::fs::remove_dir_all(&base);
@@ -645,11 +689,23 @@ mod tests {
         let dir = base.join("liftover");
         std::fs::create_dir_all(&dir).unwrap();
         // chrY t[0,10) -> chrY q on the MINUS strand (q_size 100): pos 0 -> 100-1-0 = 99.
-        std::fs::write(dir.join("GRCh38-to-chm13v2.0.chain"), "chain 1 chrY 1000 + 0 10 chrY 100 - 0 10 1\n10\n").unwrap();
+        std::fs::write(
+            dir.join("GRCh38-to-chm13v2.0.chain"),
+            "chain 1 chrY 1000 + 0 10 chrY 100 - 0 10 1\n10\n",
+        )
+        .unwrap();
         let g = gw(&base);
         // 1-based tree 1 -> 0-based 0 -> q 99 -> 1-based 100, flagged reverse.
         let lifted = g.lift_positions("GRCh38", "chm13v2.0", "chrY", &[1]).unwrap();
-        assert_eq!(lifted, vec![LiftedPos { tree_pos: 1, contig: "chrY".into(), pos: 100, reverse: true }]);
+        assert_eq!(
+            lifted,
+            vec![LiftedPos {
+                tree_pos: 1,
+                contig: "chrY".into(),
+                pos: 100,
+                reverse: true
+            }]
+        );
         let _ = std::fs::remove_dir_all(&base);
     }
 
@@ -673,13 +729,17 @@ mod tests {
         // Disk hit (any alias / the masked variant share CHM13's regions).
         let r = g.cached_genome_regions("hs1").expect("disk-cached regions");
         assert!(r.chromosome("chrY").unwrap().par.len() == 2); // PAR overlaid by the parser
-        // Second call is an in-memory hit (same Arc).
+                                                               // Second call is an in-memory hit (same Arc).
         let r2 = g.cached_genome_regions("chm13v2.0_maskedY_rCRS").unwrap();
         assert!(Arc::ptr_eq(&r, &r2));
 
         // A wrong-version JSON is rejected (forces a refetch path), so cold-cache load is None.
         let g2 = gw(&base);
-        std::fs::write(cache::regions_path(&base, Build::Chm13v2), r#"{"build":"chm13v2.0","version":"OLD","chromosomes":{}}"#).unwrap();
+        std::fs::write(
+            cache::regions_path(&base, Build::Chm13v2),
+            r#"{"build":"chm13v2.0","version":"OLD","chromosomes":{}}"#,
+        )
+        .unwrap();
         assert!(g2.cached_genome_regions("chm13v2.0").is_none());
         let _ = std::fs::remove_dir_all(&base);
     }

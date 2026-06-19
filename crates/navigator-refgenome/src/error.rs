@@ -25,7 +25,11 @@ pub enum RefgenomeError {
     NoChain { from: String, to: String },
 
     #[error("integrity check failed for {path}: expected sha256 {expected}, got {got}")]
-    Integrity { path: PathBuf, expected: String, got: String },
+    Integrity {
+        path: PathBuf,
+        expected: String,
+        got: String,
+    },
 
     #[error("{0}")]
     Message(String),
@@ -33,6 +37,9 @@ pub enum RefgenomeError {
 
 impl RefgenomeError {
     pub(crate) fn io(path: impl Into<PathBuf>, source: std::io::Error) -> Self {
-        RefgenomeError::Io { path: path.into(), source }
+        RefgenomeError::Io {
+            path: path.into(),
+            source,
+        }
     }
 }

@@ -85,9 +85,13 @@ impl GenomeRegions {
                 continue;
             }
             let mut f = line.split('\t');
-            let (Some(chrom), Some(s), Some(e), name, stain) =
-                (f.next(), f.next(), f.next(), f.next().unwrap_or(""), f.next().unwrap_or(""))
-            else {
+            let (Some(chrom), Some(s), Some(e), name, stain) = (
+                f.next(),
+                f.next(),
+                f.next(),
+                f.next().unwrap_or(""),
+                f.next().unwrap_or(""),
+            ) else {
                 continue;
             };
             if let (Ok(start), Ok(end)) = (s.parse::<i64>(), e.parse::<i64>()) {
@@ -110,17 +114,31 @@ impl GenomeRegions {
             let centromere = if acen.is_empty() {
                 None
             } else {
-                Some((acen.iter().map(|c| c.start).min().unwrap(), acen.iter().map(|c| c.end).max().unwrap()))
+                Some((
+                    acen.iter().map(|c| c.start).min().unwrap(),
+                    acen.iter().map(|c| c.end).max().unwrap(),
+                ))
             };
             let telomere_p = (length > 0).then_some((0, 10_000.min(length)));
             let telomere_q = (length > 10_000).then_some((length - 10_000, length));
             chromosomes.insert(
                 chrom,
-                ChromosomeRegions { length, centromere, telomere_p, telomere_q, par: Vec::new(), cytobands: cbs },
+                ChromosomeRegions {
+                    length,
+                    centromere,
+                    telomere_p,
+                    telomere_q,
+                    par: Vec::new(),
+                    cytobands: cbs,
+                },
             );
         }
 
-        let mut regions = GenomeRegions { build: build.to_string(), version: REGIONS_VERSION.to_string(), chromosomes };
+        let mut regions = GenomeRegions {
+            build: build.to_string(),
+            version: REGIONS_VERSION.to_string(),
+            chromosomes,
+        };
         regions.overlay_par(build);
         regions
     }
@@ -128,7 +146,9 @@ impl GenomeRegions {
     /// Overlay the chrY pseudoautosomal regions for the build (PAR isn't in cytoBand). Best-known
     /// constants for the builds we resolve; other builds get none.
     fn overlay_par(&mut self, build: &str) {
-        let par = crate::registry::canonical_build(build).map(par_regions).unwrap_or_default();
+        let par = crate::registry::canonical_build(build)
+            .map(par_regions)
+            .unwrap_or_default();
         if par.is_empty() {
             return;
         }
@@ -145,13 +165,18 @@ impl GenomeRegions {
         if let Some(c) = self.chromosomes.get(contig) {
             return Some(c);
         }
-        let alt = contig.strip_prefix("chr").map(str::to_string).unwrap_or_else(|| format!("chr{contig}"));
+        let alt = contig
+            .strip_prefix("chr")
+            .map(str::to_string)
+            .unwrap_or_else(|| format!("chr{contig}"));
         self.chromosomes.get(&alt)
     }
 
     /// Annotate a 1-based `position` on `contig` with its overlapping region context.
     pub fn annotate(&self, contig: &str, position: i64) -> RegionAnnotation {
-        let Some(c) = self.chromosome(contig) else { return RegionAnnotation::default() };
+        let Some(c) = self.chromosome(contig) else {
+            return RegionAnnotation::default();
+        };
         let b = position - 1;
         let within = |iv: &Option<(i64, i64)>| iv.is_some_and(|(s, e)| s <= b && b < e);
         RegionAnnotation {

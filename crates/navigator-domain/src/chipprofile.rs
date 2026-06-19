@@ -48,8 +48,7 @@ pub struct NewChipProfile {
 }
 
 /// Known array vendors (for the import form's dropdown).
-pub const KNOWN_PROVIDERS: &[&str] =
-    &["23andMe", "AncestryDNA", "MyHeritage", "FTDNA", "LivingDNA", "OTHER"];
+pub const KNOWN_PROVIDERS: &[&str] = &["23andMe", "AncestryDNA", "MyHeritage", "FTDNA", "LivingDNA", "OTHER"];
 
 /// A genotype call's zygosity, derived only from the called bases.
 enum Zygosity {
@@ -260,9 +259,18 @@ pub fn haplo_calls(text: &str) -> Vec<ChipHaploCall> {
             _ => continue,
         };
         let Ok(position) = cols[2].parse::<i64>() else { continue };
-        let genotype = if cols.len() >= 5 { format!("{}{}", cols[3], cols[4]) } else { cols[3].to_string() };
+        let genotype = if cols.len() >= 5 {
+            format!("{}{}", cols[3], cols[4])
+        } else {
+            cols[3].to_string()
+        };
         let Some(base) = haploid_base(&genotype) else { continue };
-        out.push(ChipHaploCall { dna, rsid: cols[0].to_string(), position, base });
+        out.push(ChipHaploCall {
+            dna,
+            rsid: cols[0].to_string(),
+            position,
+            base,
+        });
     }
     out
 }
@@ -312,9 +320,20 @@ pub fn autosomal_calls(text: &str) -> Vec<ChipAutosomalCall> {
         let core = cols[1].trim().trim_matches('"').to_ascii_lowercase();
         let core = core.strip_prefix("chr").unwrap_or(&core);
         let Ok(position) = cols[2].parse::<i64>() else { continue };
-        let genotype = if cols.len() >= 5 { format!("{}{}", cols[3], cols[4]) } else { cols[3].to_string() };
-        let Some((a1, a2)) = diploid_bases(&genotype) else { continue };
-        out.push(ChipAutosomalCall { contig: format!("chr{core}"), position, a1, a2 });
+        let genotype = if cols.len() >= 5 {
+            format!("{}{}", cols[3], cols[4])
+        } else {
+            cols[3].to_string()
+        };
+        let Some((a1, a2)) = diploid_bases(&genotype) else {
+            continue;
+        };
+        out.push(ChipAutosomalCall {
+            contig: format!("chr{core}"),
+            position,
+            a1,
+            a2,
+        });
     }
     out
 }
@@ -385,8 +404,24 @@ mod tests {
                  rsI\t2\t700\tII\n";
         let calls = autosomal_calls(f);
         assert_eq!(calls.len(), 2);
-        assert_eq!(calls[0], ChipAutosomalCall { contig: "chr1".into(), position: 100, a1: 'A', a2: 'G' });
-        assert_eq!(calls[1], ChipAutosomalCall { contig: "chr22".into(), position: 200, a1: 'C', a2: 'C' });
+        assert_eq!(
+            calls[0],
+            ChipAutosomalCall {
+                contig: "chr1".into(),
+                position: 100,
+                a1: 'A',
+                a2: 'G'
+            }
+        );
+        assert_eq!(
+            calls[1],
+            ChipAutosomalCall {
+                contig: "chr22".into(),
+                position: 200,
+                a1: 'C',
+                a2: 'C'
+            }
+        );
     }
 
     #[test]
@@ -395,7 +430,15 @@ mod tests {
                  rs1\t5\t1000\tA\tG\nrs2\t5\t2000\t0\t0\n";
         let calls = autosomal_calls(f);
         assert_eq!(calls.len(), 1);
-        assert_eq!(calls[0], ChipAutosomalCall { contig: "chr5".into(), position: 1000, a1: 'A', a2: 'G' });
+        assert_eq!(
+            calls[0],
+            ChipAutosomalCall {
+                contig: "chr5".into(),
+                position: 1000,
+                a1: 'A',
+                a2: 'G'
+            }
+        );
     }
 
     #[test]
@@ -415,10 +458,26 @@ mod tests {
         let ys: Vec<_> = calls.iter().filter(|c| c.dna == ChipDna::Y).collect();
         let mts: Vec<_> = calls.iter().filter(|c| c.dna == ChipDna::Mt).collect();
         assert_eq!(ys.len(), 2, "two valid Y haploid calls (chr Y + chr 24)");
-        assert_eq!(ys[0], &ChipHaploCall { dna: ChipDna::Y, rsid: "rsY1".into(), position: 2_800_000, base: 'G' });
+        assert_eq!(
+            ys[0],
+            &ChipHaploCall {
+                dna: ChipDna::Y,
+                rsid: "rsY1".into(),
+                position: 2_800_000,
+                base: 'G'
+            }
+        );
         assert_eq!(ys[1].base, 'C'); // "CC" homozygous → C
         assert_eq!(mts.len(), 2, "two valid MT haploid calls (chr MT + chr 26)");
-        assert_eq!(mts[0], &ChipHaploCall { dna: ChipDna::Mt, rsid: "rsM1".into(), position: 263, base: 'G' });
+        assert_eq!(
+            mts[0],
+            &ChipHaploCall {
+                dna: ChipDna::Mt,
+                rsid: "rsM1".into(),
+                position: 263,
+                base: 'G'
+            }
+        );
     }
 
     #[test]
@@ -426,13 +485,27 @@ mod tests {
         let f = "#AncestryDNA\nrsid\tchromosome\tposition\tallele1\tallele2\n\
                  rsY\t24\t2800000\tA\tA\nrsX\t23\t100\tC\tT\n";
         let calls = haplo_calls(f);
-        assert_eq!(calls, vec![ChipHaploCall { dna: ChipDna::Y, rsid: "rsY".into(), position: 2_800_000, base: 'A' }]);
+        assert_eq!(
+            calls,
+            vec![ChipHaploCall {
+                dna: ChipDna::Y,
+                rsid: "rsY".into(),
+                position: 2_800_000,
+                base: 'A'
+            }]
+        );
     }
 
     #[test]
     fn detect_build_defaults_grch37_and_honors_header() {
-        assert_eq!(detect_build("# This data file generated by 23andMe\nrsid\t..\n"), "GRCh37");
-        assert_eq!(detect_build("# reference human assembly build 38\nrsid\t..\n"), "GRCh38");
+        assert_eq!(
+            detect_build("# This data file generated by 23andMe\nrsid\t..\n"),
+            "GRCh37"
+        );
+        assert_eq!(
+            detect_build("# reference human assembly build 38\nrsid\t..\n"),
+            "GRCh38"
+        );
         assert_eq!(detect_build("#GRCh38 export\n"), "GRCh38");
     }
 }

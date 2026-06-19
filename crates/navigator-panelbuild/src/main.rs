@@ -139,7 +139,10 @@ fn build_panel(args: PanelArgs) -> Result<()> {
         let (seen, kept) = scan_file(file, args.min_fst, args.max_sites, &mut heap)?;
         total_seen += seen;
         total_kept += kept;
-        eprintln!("  {seen} SNP sites with full population data, {} retained so far", heap.len());
+        eprintln!(
+            "  {seen} SNP sites with full population data, {} retained so far",
+            heap.len()
+        );
     }
 
     let mut sites: Vec<Candidate> = heap.into_iter().map(|Reverse(c)| c).collect();
@@ -174,7 +177,12 @@ fn build_panel(args: PanelArgs) -> Result<()> {
     }
     let bytes = panel.to_bytes().map_err(|e| anyhow::anyhow!("{e}"))?;
     fs::write(&args.out, &bytes).with_context(|| format!("writing {}", args.out.display()))?;
-    eprintln!("wrote {} ({} bytes) with {} sites", args.out.display(), bytes.len(), panel.len());
+    eprintln!(
+        "wrote {} ({} bytes) with {} sites",
+        args.out.display(),
+        bytes.len(),
+        panel.len()
+    );
     Ok(())
 }
 
@@ -272,10 +280,7 @@ fn single_base(s: &str) -> Option<char> {
 /// Per-population alt-allele frequency from `AC_<POP>_unrel`/`AN_<POP>_unrel` in INFO. Returns
 /// `None` unless every population has `AN > 0` and a parseable `AC`.
 fn parse_info_freqs(info: &str, pops: &[&str]) -> Option<Vec<f32>> {
-    let map: HashMap<&str, &str> = info
-        .split(';')
-        .filter_map(|kv| kv.split_once('='))
-        .collect();
+    let map: HashMap<&str, &str> = info.split(';').filter_map(|kv| kv.split_once('=')).collect();
     let mut freqs = Vec::with_capacity(pops.len());
     for pop in pops {
         let ac: f64 = map.get(format!("AC_{pop}_unrel").as_str())?.parse().ok()?;
@@ -367,7 +372,10 @@ mod tests {
                    AC_EAS_unrel=5;AN_EAS_unrel=200;AC_EUR_unrel=2;AN_EUR_unrel=200;\
                    AC_SAS_unrel=20;AN_SAS_unrel=200";
         let c = parse_record(snp).unwrap();
-        assert_eq!((c.contig.as_str(), c.position, c.reference_allele, c.alternate_allele), ("chr1", 1000, 'A', 'G'));
+        assert_eq!(
+            (c.contig.as_str(), c.position, c.reference_allele, c.alternate_allele),
+            ("chr1", 1000, 'A', 'G')
+        );
 
         let indel = "chr1\t1000\t.\tA\tAG\t.\tPASS\tAC_AFR_unrel=1;AN_AFR_unrel=2";
         assert!(parse_record(indel).is_none());

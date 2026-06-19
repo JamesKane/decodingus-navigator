@@ -19,7 +19,6 @@ pub mod walker;
 
 pub use caller::call_structural_variants;
 pub use evidence::{
-    BreakpointCluster, DepthSegment, DiscordantPair, DiscordantReason, SplitRead,
-    SvEvidenceCollection,
+    BreakpointCluster, DepthSegment, DiscordantPair, DiscordantReason, SplitRead, SvEvidenceCollection,
 };
 pub use types::{calculate_confidence, SvAnalysisResult, SvCall, SvCallerConfig, SvType};

@@ -141,7 +141,10 @@ fn str_gd(a: &[StrMarker], b: &[StrMarker]) -> (i64, i64) {
 /// callable coverage between the two subjects.
 fn snp_tmrca(private_a: usize, private_b: usize) -> Tmrca {
     let years = ((private_a + private_b) as f64 / 2.0) * YEARS_PER_SNP;
-    Tmrca { generations: years / YEARS_PER_GEN, years }
+    Tmrca {
+        generations: years / YEARS_PER_GEN,
+        years,
+    }
 }
 
 /// Rough STR TMRCA via a stepwise model: expected differences over two lineages ≈ 2·markers·μ·g, so
@@ -152,7 +155,10 @@ fn str_tmrca(gd: i64, markers: i64) -> Option<Tmrca> {
         return None;
     }
     let generations = gd as f64 / (2.0 * markers as f64 * MU_PER_MARKER_GEN);
-    Some(Tmrca { generations, years: generations * YEARS_PER_GEN })
+    Some(Tmrca {
+        generations,
+        years: generations * YEARS_PER_GEN,
+    })
 }
 
 /// Compare a query subject against one candidate.
@@ -232,7 +238,10 @@ mod tests {
     use super::*;
 
     fn marker(m: &str, v: &str) -> StrMarker {
-        StrMarker { marker: m.into(), value: v.into() }
+        StrMarker {
+            marker: m.into(),
+            value: v.into(),
+        }
     }
 
     /// Deterministic distinct guid per donor name (so self-skip works without a real UUID source).
@@ -258,8 +267,18 @@ mod tests {
 
     #[test]
     fn divergence_is_longest_common_prefix() {
-        let a = vec!["R".to_string(), "R-M269".to_string(), "R-L21".to_string(), "R-CTS4466".to_string()];
-        let b = vec!["R".to_string(), "R-M269".to_string(), "R-L21".to_string(), "R-DF13".to_string()];
+        let a = vec![
+            "R".to_string(),
+            "R-M269".to_string(),
+            "R-L21".to_string(),
+            "R-CTS4466".to_string(),
+        ];
+        let b = vec![
+            "R".to_string(),
+            "R-M269".to_string(),
+            "R-L21".to_string(),
+            "R-DF13".to_string(),
+        ];
         let (hg, depth) = divergence(&a, &b);
         assert_eq!(hg.as_deref(), Some("R-L21"));
         assert_eq!(depth, 3);
@@ -268,16 +287,36 @@ mod tests {
 
     #[test]
     fn str_gd_is_multicopy_order_independent() {
-        let a = [marker("DYS393", "13"), marker("DYS385", "16-17"), marker("DYS390", "24")];
-        let b = [marker("DYS393", "13"), marker("DYS385", "17-16"), marker("DYS390", "25")];
+        let a = [
+            marker("DYS393", "13"),
+            marker("DYS385", "16-17"),
+            marker("DYS390", "24"),
+        ];
+        let b = [
+            marker("DYS393", "13"),
+            marker("DYS385", "17-16"),
+            marker("DYS390", "25"),
+        ];
         // DYS385 16-17 == 17-16 (no diff); DYS390 differs; DYS393 same → gd 1 over 3.
         assert_eq!(str_gd(&a, &b), (1, 3));
     }
 
     #[test]
     fn identical_subjects_diverge_at_terminal_with_zero_gd() {
-        let q = prof("Q", &["R", "R-M269", "R-CTS4466"], &["M269", "CTS4466"], &[], &[("DYS393", "13")]);
-        let c = prof("C", &["R", "R-M269", "R-CTS4466"], &["M269", "CTS4466"], &[], &[("DYS393", "13")]);
+        let q = prof(
+            "Q",
+            &["R", "R-M269", "R-CTS4466"],
+            &["M269", "CTS4466"],
+            &[],
+            &[("DYS393", "13")],
+        );
+        let c = prof(
+            "C",
+            &["R", "R-M269", "R-CTS4466"],
+            &["M269", "CTS4466"],
+            &[],
+            &[("DYS393", "13")],
+        );
         let m = compare_y(&q, &c);
         assert_eq!(m.signal, YSignal::SnpStr);
         assert_eq!(m.divergence.as_deref(), Some("R-CTS4466"));
@@ -287,9 +326,21 @@ mod tests {
 
     #[test]
     fn snp_backed_outranks_str_only_and_more_shared_wins() {
-        let q = prof("Q", &["R", "R-M269", "R-CTS4466"], &["M269", "L21", "CTS4466"], &[], &[("DYS393", "13")]);
+        let q = prof(
+            "Q",
+            &["R", "R-M269", "R-CTS4466"],
+            &["M269", "L21", "CTS4466"],
+            &[],
+            &[("DYS393", "13")],
+        );
         // Close SNP match (shares all 3 derived).
-        let close = prof("Close", &["R", "R-M269", "R-CTS4466"], &["M269", "L21", "CTS4466"], &[], &[("DYS393", "13")]);
+        let close = prof(
+            "Close",
+            &["R", "R-M269", "R-CTS4466"],
+            &["M269", "L21", "CTS4466"],
+            &[],
+            &[("DYS393", "13")],
+        );
         // Distant SNP match (shares only the backbone).
         let distant = prof("Distant", &["R", "R-M269"], &["M269"], &[], &[("DYS393", "14")]);
         // STR-only (no lineage) — must rank below any SNP-backed match.

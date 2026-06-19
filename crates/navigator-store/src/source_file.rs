@@ -60,7 +60,12 @@ pub async fn find_by_checksum(pool: &SqlitePool, content_sha256: &str) -> Result
 }
 
 /// Link a tracked file to the alignment produced from it.
-pub async fn link_to_alignment(pool: &SqlitePool, content_sha256: &str, alignment_id: i64, now: &str) -> Result<(), StoreError> {
+pub async fn link_to_alignment(
+    pool: &SqlitePool,
+    content_sha256: &str,
+    alignment_id: i64,
+    now: &str,
+) -> Result<(), StoreError> {
     sqlx::query("UPDATE source_file SET alignment_id = ?, updated_at = ? WHERE content_sha256 = ?")
         .bind(alignment_id)
         .bind(now)
@@ -84,7 +89,9 @@ pub async fn set_accessible(pool: &SqlitePool, id: i64, accessible: bool, now: &
 
 /// All tracked source files.
 pub async fn list(pool: &SqlitePool) -> Result<Vec<SourceFile>, StoreError> {
-    let rows = sqlx::query_as("SELECT * FROM source_file ORDER BY created_at DESC").fetch_all(pool).await?;
+    let rows = sqlx::query_as("SELECT * FROM source_file ORDER BY created_at DESC")
+        .fetch_all(pool)
+        .await?;
     Ok(rows)
 }
 
@@ -96,17 +103,34 @@ mod tests {
     async fn upsert_moves_path_without_duplicating() {
         let store = crate::Store::open_in_memory().await.unwrap();
         let t = "2026-06-17T00:00:00Z";
-        let a = upsert_by_checksum(store.pool(), "deadbeef", Some("/data/x.bam"), Some(100), Some("BAM"), t).await.unwrap();
+        let a = upsert_by_checksum(store.pool(), "deadbeef", Some("/data/x.bam"), Some(100), Some("BAM"), t)
+            .await
+            .unwrap();
         assert_eq!(a.file_path.as_deref(), Some("/data/x.bam"));
         assert!(a.is_accessible);
         // Same content, new path → same row, path updated (no duplicate).
-        let b = upsert_by_checksum(store.pool(), "deadbeef", Some("/archive/x.bam"), Some(100), Some("BAM"), t).await.unwrap();
+        let b = upsert_by_checksum(
+            store.pool(),
+            "deadbeef",
+            Some("/archive/x.bam"),
+            Some(100),
+            Some("BAM"),
+            t,
+        )
+        .await
+        .unwrap();
         assert_eq!(a.id, b.id);
         assert_eq!(b.file_path.as_deref(), Some("/archive/x.bam"));
         assert_eq!(list(store.pool()).await.unwrap().len(), 1);
         // Dedup probe + accessibility flip.
         assert!(find_by_checksum(store.pool(), "deadbeef").await.unwrap().is_some());
         set_accessible(store.pool(), a.id, false, t).await.unwrap();
-        assert!(!find_by_checksum(store.pool(), "deadbeef").await.unwrap().unwrap().is_accessible);
+        assert!(
+            !find_by_checksum(store.pool(), "deadbeef")
+                .await
+                .unwrap()
+                .unwrap()
+                .is_accessible
+        );
     }
 }

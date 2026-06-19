@@ -36,7 +36,12 @@ pub struct SnpKey {
 fn snp_key(chrom: &str, pos: i64, reference: &str, alternate: &str) -> Option<SnpKey> {
     let r = single_base(reference)?;
     let a = single_base(alternate)?;
-    Some(SnpKey { chrom: chrom.to_string(), pos, reference: r, alternate: a })
+    Some(SnpKey {
+        chrom: chrom.to_string(),
+        pos,
+        reference: r,
+        alternate: a,
+    })
 }
 
 /// Accepts a one-character A/C/G/T allele (case-insensitive); rejects indels/symbolic.
@@ -69,18 +74,30 @@ impl ParityReport {
     /// matched / (matched + rust_only). 1.0 when there are no calls at all.
     pub fn precision(&self) -> f64 {
         let denom = self.matched.len() + self.rust_only.len();
-        if denom == 0 { 1.0 } else { self.matched.len() as f64 / denom as f64 }
+        if denom == 0 {
+            1.0
+        } else {
+            self.matched.len() as f64 / denom as f64
+        }
     }
 
     /// matched / (matched + truth_only). 1.0 when the truth set is empty.
     pub fn recall(&self) -> f64 {
         let denom = self.matched.len() + self.truth_only.len();
-        if denom == 0 { 1.0 } else { self.matched.len() as f64 / denom as f64 }
+        if denom == 0 {
+            1.0
+        } else {
+            self.matched.len() as f64 / denom as f64
+        }
     }
 
     pub fn f1(&self) -> f64 {
         let (p, r) = (self.precision(), self.recall());
-        if p + r == 0.0 { 0.0 } else { 2.0 * p * r / (p + r) }
+        if p + r == 0.0 {
+            0.0
+        } else {
+            2.0 * p * r / (p + r)
+        }
     }
 }
 

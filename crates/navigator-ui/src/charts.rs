@@ -51,7 +51,9 @@ pub(crate) fn draw_ibd_segments(ui: &mut egui::Ui, segments: &[IbdSegment], regi
             .unwrap_or_else(|| segs.iter().map(|s| s.end_position).max().unwrap_or(1))
             .max(1) as f32;
         ui.horizontal(|ui| {
-            ui.allocate_ui(egui::vec2(label_w, bar_h), |ui| ui.label(egui::RichText::new(chr).small()));
+            ui.allocate_ui(egui::vec2(label_w, bar_h), |ui| {
+                ui.label(egui::RichText::new(chr).small())
+            });
             let (rect, resp) = ui.allocate_exact_size(egui::vec2(bar_w, bar_h), egui::Sense::hover());
             let painter = ui.painter_at(rect);
             painter.rect_filled(rect, 2.0, egui::Color32::from_gray(30));
@@ -60,7 +62,8 @@ pub(crate) fn draw_ibd_segments(ui: &mut egui::Ui, segments: &[IbdSegment], regi
             for &s in segs.iter() {
                 let x0 = rect.left() + (s.start_position.max(0) as f32 / chr_len) * rect.width();
                 let x1 = rect.left() + (s.end_position.max(0) as f32 / chr_len) * rect.width();
-                let seg = egui::Rect::from_min_max(egui::pos2(x0, rect.top()), egui::pos2(x1.max(x0 + 1.5), rect.bottom()));
+                let seg =
+                    egui::Rect::from_min_max(egui::pos2(x0, rect.top()), egui::pos2(x1.max(x0 + 1.5), rect.bottom()));
                 let t = (s.length_cm / 30.0).clamp(0.3, 1.0) as f32;
                 let col = egui::Color32::from_rgb(30, (90.0 + 120.0 * t) as u8, (90.0 + 100.0 * t) as u8);
                 painter.rect_filled(seg, 0.0, col);
@@ -93,7 +96,9 @@ pub(crate) fn draw_chromosome_painting(ui: &mut egui::Ui, segments: &[AncestrySe
     // are skipped — this is autosomal local ancestry.
     let mut by_chr: BTreeMap<i64, [Vec<&AncestrySegment>; 2]> = BTreeMap::new();
     for s in segments {
-        let Ok(n) = s.contig.trim_start_matches("chr").parse::<i64>() else { continue };
+        let Ok(n) = s.contig.trim_start_matches("chr").parse::<i64>() else {
+            continue;
+        };
         if !(1..=22).contains(&n) {
             continue;
         }
@@ -106,10 +111,18 @@ pub(crate) fn draw_chromosome_painting(ui: &mut egui::Ui, segments: &[AncestrySe
     for (n, copies) in by_chr {
         // Shared bp span across both copies so the two tracks align.
         let lo = copies.iter().flatten().map(|s| s.start).min().unwrap_or(1);
-        let hi = copies.iter().flatten().map(|s| s.end).max().unwrap_or(lo + 1).max(lo + 1);
+        let hi = copies
+            .iter()
+            .flatten()
+            .map(|s| s.end)
+            .max()
+            .unwrap_or(lo + 1)
+            .max(lo + 1);
         let span = (hi - lo).max(1) as f32;
         ui.horizontal(|ui| {
-            ui.allocate_ui(egui::vec2(label_w, copy_h * 2.0 + gap), |ui| ui.label(format!("chr{n}")));
+            ui.allocate_ui(egui::vec2(label_w, copy_h * 2.0 + gap), |ui| {
+                ui.label(format!("chr{n}"))
+            });
             let (rect, _) = ui.allocate_exact_size(egui::vec2(bar_w, copy_h * 2.0 + gap), egui::Sense::hover());
             let painter = ui.painter_at(rect);
             for (c, segs) in copies.iter().enumerate() {
@@ -119,7 +132,10 @@ pub(crate) fn draw_chromosome_painting(ui: &mut egui::Ui, segments: &[AncestrySe
                 for s in segs {
                     let x0 = track.left() + (s.start - lo) as f32 / span * track.width();
                     let x1 = track.left() + (s.end - lo) as f32 / span * track.width();
-                    let seg_rect = egui::Rect::from_min_max(egui::pos2(x0, track.top()), egui::pos2(x1.max(x0 + 1.0), track.bottom()));
+                    let seg_rect = egui::Rect::from_min_max(
+                        egui::pos2(x0, track.top()),
+                        egui::pos2(x1.max(x0 + 1.0), track.bottom()),
+                    );
                     painter.rect_filled(seg_rect, 0.0, parse_hex_color(&population_color(&s.population_code)));
                 }
             }
@@ -136,7 +152,8 @@ pub(crate) fn draw_chromosome_painting(ui: &mut egui::Ui, segments: &[AncestrySe
     ui.horizontal_wrapped(|ui| {
         for code in seen {
             let (r, _) = ui.allocate_exact_size(egui::vec2(10.0, 10.0), egui::Sense::hover());
-            ui.painter().circle_filled(r.center(), 4.0, parse_hex_color(&population_color(code)));
+            ui.painter()
+                .circle_filled(r.center(), 4.0, parse_hex_color(&population_color(code)));
             ui.label(egui::RichText::new(population_name(code)).small());
             ui.add_space(6.0);
         }
@@ -194,33 +211,46 @@ pub(crate) fn draw_ancestry_donut(ui: &mut egui::Ui, summary: &[SuperPopulationS
 /// estimate's `components`, sorted by share, as a name/percentage grid with a proportion bar, plus a
 /// provenance line (method + SNP count). `id_salt` keeps each report's grid distinct.
 pub(crate) fn draw_population_components(ui: &mut egui::Ui, result: &AncestryResult, id_salt: &str, top_n: usize) {
-    let mut comps: Vec<(&str, f64)> =
-        result.components.iter().filter(|c| c.percentage >= 0.05).map(|c| (c.population_code.as_str(), c.percentage)).collect();
+    let mut comps: Vec<(&str, f64)> = result
+        .components
+        .iter()
+        .filter(|c| c.percentage >= 0.05)
+        .map(|c| (c.population_code.as_str(), c.percentage))
+        .collect();
     comps.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
     if comps.is_empty() {
         ui.label(egui::RichText::new("No components above 0.05%.").weak());
         return;
     }
     let max = comps.first().map(|c| c.1).unwrap_or(1.0).max(1e-6);
-    egui::Grid::new(format!("{id_salt}_grid")).striped(true).num_columns(3).show(ui, |ui| {
-        for (name, pct) in comps.iter().take(top_n) {
-            ui.label(*name);
-            ui.label(egui::RichText::new(format!("{pct:.1}%")).strong());
-            // A small proportion bar (relative to the top component) for at-a-glance ranking.
-            let (rect, _) = ui.allocate_exact_size(egui::vec2(120.0, 10.0), egui::Sense::hover());
-            let p = ui.painter_at(rect);
-            p.rect_filled(rect, 2.0, ui.visuals().faint_bg_color);
-            let mut fill = rect;
-            fill.set_width(rect.width() * (pct / max) as f32);
-            p.rect_filled(fill, 2.0, ACCENT.gamma_multiply(0.7));
-            ui.end_row();
-        }
-    });
+    egui::Grid::new(format!("{id_salt}_grid"))
+        .striped(true)
+        .num_columns(3)
+        .show(ui, |ui| {
+            for (name, pct) in comps.iter().take(top_n) {
+                ui.label(*name);
+                ui.label(egui::RichText::new(format!("{pct:.1}%")).strong());
+                // A small proportion bar (relative to the top component) for at-a-glance ranking.
+                let (rect, _) = ui.allocate_exact_size(egui::vec2(120.0, 10.0), egui::Sense::hover());
+                let p = ui.painter_at(rect);
+                p.rect_filled(rect, 2.0, ui.visuals().faint_bg_color);
+                let mut fill = rect;
+                fill.set_width(rect.width() * (pct / max) as f32);
+                p.rect_filled(fill, 2.0, ACCENT.gamma_multiply(0.7));
+                ui.end_row();
+            }
+        });
     ui.add_space(4.0);
     ui.label(
-        egui::RichText::new(format!("{} · {}/{} SNPs · confidence {:.0}%", result.method, result.snps_with_genotype, result.snps_analyzed, result.confidence_level * 100.0))
-            .weak()
-            .small(),
+        egui::RichText::new(format!(
+            "{} · {}/{} SNPs · confidence {:.0}%",
+            result.method,
+            result.snps_with_genotype,
+            result.snps_analyzed,
+            result.confidence_level * 100.0
+        ))
+        .weak()
+        .small(),
     );
 }
 
@@ -272,7 +302,8 @@ pub(crate) fn asset_status_line(ui: &mut egui::Ui, assets: &[AssetStatus]) {
             } else {
                 ("✗", egui::Color32::from_rgb(170, 90, 90), "not installed")
             };
-            ui.colored_label(col, egui::RichText::new(format!("{} {mark}", a.name)).small()).on_hover_text(hover);
+            ui.colored_label(col, egui::RichText::new(format!("{} {mark}", a.name)).small())
+                .on_hover_text(hover);
             ui.add_space(4.0);
         }
     });
@@ -356,7 +387,15 @@ pub(crate) fn draw_variant_track(
     }
 
     ui.add_space(2.0);
-    ui.label(egui::RichText::new(format!("{chrom_label} · {} variants · {:.0} kb", variants.len(), len / 1000.0)).small().weak());
+    ui.label(
+        egui::RichText::new(format!(
+            "{chrom_label} · {} variants · {:.0} kb",
+            variants.len(),
+            len / 1000.0
+        ))
+        .small()
+        .weak(),
+    );
 
     // Region legend.
     if !regions.is_empty() {

@@ -25,7 +25,9 @@ pub fn write_diploid_vcf(sample: &str, calls: &[SiteGenotype]) -> String {
     out.push_str("##FORMAT=<ID=DP,Number=1,Type=Integer,Description=\"Total read depth\">\n");
     out.push_str("##FORMAT=<ID=GQ,Number=1,Type=Integer,Description=\"Genotype quality\">\n");
     out.push_str("##FORMAT=<ID=PL,Number=G,Type=Integer,Description=\"Phred-scaled genotype likelihoods\">\n");
-    out.push_str(&format!("#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\t{sample}\n"));
+    out.push_str(&format!(
+        "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\t{sample}\n"
+    ));
 
     for c in calls {
         let qual = c.pls.first().map(|p| p.to_string()).unwrap_or_else(|| ".".to_string());
@@ -95,7 +97,10 @@ mod tests {
         c.allele_depths = Some(vec![0, 9, 8]);
         c.depth = 17;
         let vcf = write_diploid_vcf("S", &[c]);
-        assert!(vcf.contains("chr1\t5\t.\tACG\tA,AT\t200\t.\t.\tGT:AD:DP:GQ:PL\t1/2:0,9,8:17:99:200,90,0,95,5,0\n"), "{vcf}");
+        assert!(
+            vcf.contains("chr1\t5\t.\tACG\tA,AT\t200\t.\t.\tGT:AD:DP:GQ:PL\t1/2:0,9,8:17:99:200,90,0,95,5,0\n"),
+            "{vcf}"
+        );
     }
 
     #[test]

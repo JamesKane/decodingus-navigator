@@ -27,24 +27,98 @@ static OFFSETS: &[(&str, i32)] = &[
     // Reliable (offset 0). Most are CHM13 216-kit ≥100% agreement; a few (DYS388, DYS426, DYS445,
     // DYS487, DYS494, DYS505, DYS549, DYS556, DYS565, DYS567, DYS577, DYS578) are GRCh38-corpus
     // retentions for loci the CHM13 lift dropped or under-sampled.
-    ("DYS388", 0), ("DYS390", 0), ("DYS392", 0), ("DYS426", 0), ("DYS434", 0), ("DYS436", 0),
-    ("DYS445", 0), ("DYS446", 0), ("DYS453", 0), ("DYS454", 0), ("DYS455", 0), ("DYS458", 0),
-    ("DYS462", 0), ("DYS472", 0), ("DYS476", 0), ("DYS477", 0), ("DYS480", 0), ("DYS487", 0),
-    ("DYS488", 0), ("DYS490", 0), ("DYS492", 0), ("DYS494", 0), ("DYS497", 0), ("DYS499", 0),
-    ("DYS505", 0), ("DYS508", 0), ("DYS530", 0), ("DYS531", 0), ("DYS533", 0), ("DYS549", 0),
-    ("DYS556", 0), ("DYS561", 0), ("DYS565", 0), ("DYS567", 0), ("DYS568", 0), ("DYS569", 0),
-    ("DYS573", 0), ("DYS574", 0), ("DYS575", 0), ("DYS577", 0), ("DYS578", 0), ("DYS579", 0),
-    ("DYS580", 0), ("DYS581", 0), ("DYS583", 0), ("DYS584", 0), ("DYS590", 0), ("DYS593", 0),
-    ("DYS594", 0), ("DYS595", 0), ("DYS618", 0), ("DYS620", 0), ("DYS621", 0), ("DYS635", 0),
-    ("DYS638", 0), ("DYS640", 0), ("DYS641", 0), ("DYS645", 0), ("DYS714", 0), ("Y-GATA-A10", 0),
+    ("DYS388", 0),
+    ("DYS390", 0),
+    ("DYS392", 0),
+    ("DYS426", 0),
+    ("DYS434", 0),
+    ("DYS436", 0),
+    ("DYS445", 0),
+    ("DYS446", 0),
+    ("DYS453", 0),
+    ("DYS454", 0),
+    ("DYS455", 0),
+    ("DYS458", 0),
+    ("DYS462", 0),
+    ("DYS472", 0),
+    ("DYS476", 0),
+    ("DYS477", 0),
+    ("DYS480", 0),
+    ("DYS487", 0),
+    ("DYS488", 0),
+    ("DYS490", 0),
+    ("DYS492", 0),
+    ("DYS494", 0),
+    ("DYS497", 0),
+    ("DYS499", 0),
+    ("DYS505", 0),
+    ("DYS508", 0),
+    ("DYS530", 0),
+    ("DYS531", 0),
+    ("DYS533", 0),
+    ("DYS549", 0),
+    ("DYS556", 0),
+    ("DYS561", 0),
+    ("DYS565", 0),
+    ("DYS567", 0),
+    ("DYS568", 0),
+    ("DYS569", 0),
+    ("DYS573", 0),
+    ("DYS574", 0),
+    ("DYS575", 0),
+    ("DYS577", 0),
+    ("DYS578", 0),
+    ("DYS579", 0),
+    ("DYS580", 0),
+    ("DYS581", 0),
+    ("DYS583", 0),
+    ("DYS584", 0),
+    ("DYS590", 0),
+    ("DYS593", 0),
+    ("DYS594", 0),
+    ("DYS595", 0),
+    ("DYS618", 0),
+    ("DYS620", 0),
+    ("DYS621", 0),
+    ("DYS635", 0),
+    ("DYS638", 0),
+    ("DYS640", 0),
+    ("DYS641", 0),
+    ("DYS645", 0),
+    ("DYS714", 0),
+    ("Y-GATA-A10", 0),
     // Convention offsets (±1–3). DYS19/DYS391/DYS461/DYS512/DYS589/DYS632 are GRCh38-corpus
     // retentions (dropped by the CHM13 lift); the rest are CHM13 216-kit. DYS460 was previously
     // excluded but the larger corpus resolves it to a clean +1 (n=180, 98%).
-    ("DYS19", -1), ("DYS389I", 1), ("DYS391", -1), ("DYS425", 2), ("DYS435", 2), ("DYS438", 2),
-    ("DYS442", -3), ("DYS456", 1), ("DYS460", 1), ("DYS461", 1), ("DYS463", 2), ("DYS474", -3),
-    ("DYS485", -1), ("DYS512", -3), ("DYS520", -2), ("DYS522", 1), ("DYS525", 1), ("DYS537", 1),
-    ("DYS538", 2), ("DYS539", 1), ("DYS559", 1), ("DYS572", 1), ("DYS585", -3), ("DYS587", 1),
-    ("DYS589", -1), ("DYS615", -2), ("DYS629", -3), ("DYS632", -2), ("DYS642", 1),
+    ("DYS19", -1),
+    ("DYS389I", 1),
+    ("DYS391", -1),
+    ("DYS425", 2),
+    ("DYS435", 2),
+    ("DYS438", 2),
+    ("DYS442", -3),
+    ("DYS456", 1),
+    ("DYS460", 1),
+    ("DYS461", 1),
+    ("DYS463", 2),
+    ("DYS474", -3),
+    ("DYS485", -1),
+    ("DYS512", -3),
+    ("DYS520", -2),
+    ("DYS522", 1),
+    ("DYS525", 1),
+    ("DYS537", 1),
+    ("DYS538", 2),
+    ("DYS539", 1),
+    ("DYS559", 1),
+    ("DYS572", 1),
+    ("DYS585", -3),
+    ("DYS587", 1),
+    ("DYS589", -1),
+    ("DYS615", -2),
+    ("DYS629", -3),
+    ("DYS632", -2),
+    ("DYS642", 1),
 ];
 
 /// Markers whose HipSTR tract can't be mapped to the FTDNA value by a single offset: large tract
@@ -52,12 +126,48 @@ static OFFSETS: &[(&str, i32)] = &[
 /// as `Excluded` — the enclosing-read caller doesn't yield a vendor-comparable value here (yet).
 static EXCLUDE: &[&str] = &[
     // Multi-copy / nested (split sub-loci, never a single vendor-comparable value).
-    "DYS385", "DYS389II", "DYS459", "DYS464", "YCAII", "CDY",
+    "DYS385",
+    "DYS389II",
+    "DYS459",
+    "DYS464",
+    "YCAII",
+    "CDY",
     // Large tract mismatch or variable across the 216-kit corpus (<70% offset agreement).
-    "DYF406S1", "DYS393", "DYS448", "DYS449", "DYS450", "DYS470", "DYS475", "DYS481", "DYS484",
-    "DYS495", "DYS502", "DYS504", "DYS510", "DYS511", "DYS513", "DYS516", "DYS532", "DYS534",
-    "DYS540", "DYS541", "DYS543", "DYS544", "DYS551", "DYS552", "DYS557", "DYS570", "DYS576",
-    "DYS588", "DYS607", "DYS616", "DYS624", "DYS631", "DYS637", "DYS717", "Y-GATA-H4",
+    "DYF406S1",
+    "DYS393",
+    "DYS448",
+    "DYS449",
+    "DYS450",
+    "DYS470",
+    "DYS475",
+    "DYS481",
+    "DYS484",
+    "DYS495",
+    "DYS502",
+    "DYS504",
+    "DYS510",
+    "DYS511",
+    "DYS513",
+    "DYS516",
+    "DYS532",
+    "DYS534",
+    "DYS540",
+    "DYS541",
+    "DYS543",
+    "DYS544",
+    "DYS551",
+    "DYS552",
+    "DYS557",
+    "DYS570",
+    "DYS576",
+    "DYS588",
+    "DYS607",
+    "DYS616",
+    "DYS624",
+    "DYS631",
+    "DYS637",
+    "DYS717",
+    "Y-GATA-H4",
 ];
 
 /// A handful of offsets are **build-dependent**: the CHM13 HipSTR liftover shifted these tract
@@ -67,7 +177,12 @@ static EXCLUDE: &[&str] = &[
 /// CHM13 corpus: DYS389I/DYS456/DYS525/DYS537/DYS539 are +1 on CHM13 but 0 on GRCh38; DYS714 is the
 /// reverse (0 on CHM13, +1 on GRCh38).
 static GRCH38_DELTA: &[(&str, i32)] = &[
-    ("DYS389I", -1), ("DYS456", -1), ("DYS525", -1), ("DYS537", -1), ("DYS539", -1), ("DYS714", 1),
+    ("DYS389I", -1),
+    ("DYS456", -1),
+    ("DYS525", -1),
+    ("DYS537", -1),
+    ("DYS539", -1),
+    ("DYS714", 1),
 ];
 
 /// Which reference build the caller's repeat counts came from — selects the convention offset for the
@@ -148,12 +263,29 @@ pub fn to_ftdna_build(caller_name: &str, caller_copies: i32, build: StrBuild) ->
     let (value, status) = if EXCLUDE.contains(&marker.as_str()) {
         (caller_copies, MarkerStatus::Excluded)
     } else if let Some(base) = offset(&marker) {
-        let off = base + if build == StrBuild::Grch38 { grch38_delta(&marker) } else { 0 };
-        (caller_copies + off, if off == 0 { MarkerStatus::Reliable } else { MarkerStatus::ConventionOffset })
+        let off = base
+            + if build == StrBuild::Grch38 {
+                grch38_delta(&marker)
+            } else {
+                0
+            };
+        (
+            caller_copies + off,
+            if off == 0 {
+                MarkerStatus::Reliable
+            } else {
+                MarkerStatus::ConventionOffset
+            },
+        )
     } else {
         (caller_copies, MarkerStatus::Uncalibrated)
     };
-    CalledMarker { marker, value, status, depth: 0 }
+    CalledMarker {
+        marker,
+        value,
+        status,
+        depth: 0,
+    }
 }
 
 /// Convert the caller's genotypes to FTDNA-convention marker calls against the CHM13 corpus.
@@ -168,7 +300,10 @@ pub fn called_markers(genotypes: &[StrGenotype]) -> Vec<CalledMarker> {
 pub fn called_markers_build(genotypes: &[StrGenotype], build: StrBuild) -> Vec<CalledMarker> {
     use std::collections::HashMap;
     let mut best: HashMap<String, CalledMarker> = HashMap::new();
-    for g in genotypes.iter().filter(|g| g.confidence != StrConfidence::Low && g.alleles.len() == 1) {
+    for g in genotypes
+        .iter()
+        .filter(|g| g.confidence != StrConfidence::Low && g.alleles.len() == 1)
+    {
         let mut cm = to_ftdna_build(&g.name, g.alleles[0], build);
         cm.depth = g.depth;
         best.entry(cm.marker.clone())

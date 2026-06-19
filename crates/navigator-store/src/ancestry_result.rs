@@ -26,8 +26,7 @@ struct Row {
 impl Row {
     fn into_domain(self) -> Result<AncestryResult, StoreError> {
         let components: Vec<PopulationComponent> = serde_json::from_str(&self.components_json)?;
-        let super_population_summary: Vec<SuperPopulationSummary> =
-            serde_json::from_str(&self.super_pop_json)?;
+        let super_population_summary: Vec<SuperPopulationSummary> = serde_json::from_str(&self.super_pop_json)?;
         let pca_coordinates: Option<Vec<f64>> = match self.pca_json {
             Some(s) => serde_json::from_str(&s)?,
             None => None,
@@ -98,10 +97,7 @@ pub async fn upsert(
 }
 
 /// The most recent ancestry estimate recorded for `alignment_id`, if any (any method).
-pub async fn get_for_alignment(
-    pool: &SqlitePool,
-    alignment_id: i64,
-) -> Result<Option<AncestryResult>, StoreError> {
+pub async fn get_for_alignment(pool: &SqlitePool, alignment_id: i64) -> Result<Option<AncestryResult>, StoreError> {
     let row: Option<Row> = sqlx::query_as(&format!(
         "SELECT {SELECT_COLS} FROM ancestry_result WHERE alignment_id = ? ORDER BY id DESC LIMIT 1"
     ))
@@ -128,10 +124,7 @@ pub async fn get_for_alignment_method(
 }
 
 /// Every ancestry estimate recorded for `alignment_id` (one per method), newest first.
-pub async fn list_for_alignment(
-    pool: &SqlitePool,
-    alignment_id: i64,
-) -> Result<Vec<AncestryResult>, StoreError> {
+pub async fn list_for_alignment(pool: &SqlitePool, alignment_id: i64) -> Result<Vec<AncestryResult>, StoreError> {
     let rows: Vec<Row> = sqlx::query_as(&format!(
         "SELECT {SELECT_COLS} FROM ancestry_result WHERE alignment_id = ? ORDER BY id DESC"
     ))

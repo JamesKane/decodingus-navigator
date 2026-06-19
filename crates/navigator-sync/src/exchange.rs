@@ -38,8 +38,13 @@ fn random_32() -> [u8; 32] {
 }
 
 fn decode_pub(b64: &str) -> Result<PublicKey, SyncError> {
-    let bytes = STANDARD.decode(b64.trim()).map_err(|_| SyncError::Crypto("x25519 public-key base64".into()))?;
-    let arr: [u8; 32] = bytes.as_slice().try_into().map_err(|_| SyncError::Crypto("x25519 public key must be 32 bytes".into()))?;
+    let bytes = STANDARD
+        .decode(b64.trim())
+        .map_err(|_| SyncError::Crypto("x25519 public-key base64".into()))?;
+    let arr: [u8; 32] = bytes
+        .as_slice()
+        .try_into()
+        .map_err(|_| SyncError::Crypto("x25519 public key must be 32 bytes".into()))?;
     Ok(PublicKey::from(arr))
 }
 
@@ -53,12 +58,18 @@ pub struct ExchangeKey {
 impl ExchangeKey {
     /// Generate a fresh identity key.
     pub fn generate() -> Self {
-        ExchangeKey { secret: StaticSecret::from(random_32()) }
+        ExchangeKey {
+            secret: StaticSecret::from(random_32()),
+        }
     }
 
     fn from_bytes(b: &[u8]) -> Result<Self, SyncError> {
-        let arr: [u8; 32] = b.try_into().map_err(|_| SyncError::Crypto("x25519 secret must be 32 bytes".into()))?;
-        Ok(ExchangeKey { secret: StaticSecret::from(arr) })
+        let arr: [u8; 32] = b
+            .try_into()
+            .map_err(|_| SyncError::Crypto("x25519 secret must be 32 bytes".into()))?;
+        Ok(ExchangeKey {
+            secret: StaticSecret::from(arr),
+        })
     }
 
     fn entry(service: &str, did: &str) -> Result<Entry, SyncError> {
@@ -69,7 +80,9 @@ impl ExchangeKey {
     pub fn load(service: &str, did: &str) -> Result<Option<Self>, SyncError> {
         match Self::entry(service, did)?.get_password() {
             Ok(b64) => {
-                let bytes = STANDARD.decode(b64.trim()).map_err(|e| SyncError::Crypto(e.to_string()))?;
+                let bytes = STANDARD
+                    .decode(b64.trim())
+                    .map_err(|e| SyncError::Crypto(e.to_string()))?;
                 Ok(Some(Self::from_bytes(&bytes)?))
             }
             Err(keyring::Error::NoEntry) => Ok(None),
@@ -80,7 +93,9 @@ impl ExchangeKey {
     /// Persist this identity key for `did`.
     pub fn save(&self, service: &str, did: &str) -> Result<(), SyncError> {
         let b64 = STANDARD.encode(self.secret.to_bytes());
-        Self::entry(service, did)?.set_password(&b64).map_err(|e| SyncError::Crypto(e.to_string()))
+        Self::entry(service, did)?
+            .set_password(&b64)
+            .map_err(|e| SyncError::Crypto(e.to_string()))
     }
 
     /// Load the identity key for `did`, generating + persisting one on first use.
@@ -112,7 +127,9 @@ impl Default for EphemeralKey {
 
 impl EphemeralKey {
     pub fn generate() -> Self {
-        EphemeralKey { secret: StaticSecret::from(random_32()) }
+        EphemeralKey {
+            secret: StaticSecret::from(random_32()),
+        }
     }
 
     /// The ephemeral public half as STANDARD base64 (sent in the handshake envelope).
@@ -142,10 +159,18 @@ pub fn derive_session_key(
     // The three canonical DH values, computed from whichever halves this edge holds.
     let (d1, d2, d3) = if i_am_a {
         // A holds IK_A, EK_A (mine) and IK_B, EK_B (theirs).
-        (my_ik.secret.diffie_hellman(&their_ek), my_ek.secret.diffie_hellman(&their_ik), my_ek.secret.diffie_hellman(&their_ek))
+        (
+            my_ik.secret.diffie_hellman(&their_ek),
+            my_ek.secret.diffie_hellman(&their_ik),
+            my_ek.secret.diffie_hellman(&their_ek),
+        )
     } else {
         // B holds IK_B, EK_B (mine) and IK_A, EK_A (theirs): same three values, mirrored.
-        (my_ek.secret.diffie_hellman(&their_ik), my_ik.secret.diffie_hellman(&their_ek), my_ek.secret.diffie_hellman(&their_ek))
+        (
+            my_ek.secret.diffie_hellman(&their_ik),
+            my_ik.secret.diffie_hellman(&their_ek),
+            my_ek.secret.diffie_hellman(&their_ek),
+        )
     };
     let mut ikm = Vec::with_capacity(96);
     ikm.extend_from_slice(d1.as_bytes());
@@ -153,7 +178,8 @@ pub fn derive_session_key(
     ikm.extend_from_slice(d3.as_bytes());
     let hk = Hkdf::<Sha256>::new(Some(HKDF_SALT), &ikm);
     let mut key = [0u8; 32];
-    hk.expand(HKDF_INFO, &mut key).map_err(|_| SyncError::Crypto("hkdf expand".into()))?;
+    hk.expand(HKDF_INFO, &mut key)
+        .map_err(|_| SyncError::Crypto("hkdf expand".into()))?;
     Ok(key)
 }
 
@@ -171,7 +197,10 @@ pub enum Envelope {
 impl Envelope {
     /// The handshake envelope advertising `ek`'s public half.
     pub fn handshake(ek: &EphemeralKey) -> Self {
-        Envelope::Handshake { v: EXCHANGE_VERSION, ek: ek.public_b64() }
+        Envelope::Handshake {
+            v: EXCHANGE_VERSION,
+            ek: ek.public_b64(),
+        }
     }
 
     /// The relay `blob`: STANDARD base64 of the JSON-serialized envelope.
@@ -182,7 +211,9 @@ impl Envelope {
 
     /// Parse a relay `blob` back into an envelope.
     pub fn from_blob(blob_b64: &str) -> Result<Self, SyncError> {
-        let bytes = STANDARD.decode(blob_b64.trim()).map_err(|e| SyncError::Crypto(e.to_string()))?;
+        let bytes = STANDARD
+            .decode(blob_b64.trim())
+            .map_err(|e| SyncError::Crypto(e.to_string()))?;
         serde_json::from_slice(&bytes).map_err(|e| SyncError::Crypto(e.to_string()))
     }
 }
@@ -190,7 +221,9 @@ impl Envelope {
 /// The STANDARD-base64 SHA-256 the AppView signs over for a relay (it hashes the *decoded* blob
 /// bytes). Matches the server: `STANDARD(SHA256(STANDARD::decode(blob)))`.
 pub fn blob_sha256_b64(blob_b64: &str) -> Result<String, SyncError> {
-    let bytes = STANDARD.decode(blob_b64.trim()).map_err(|e| SyncError::Crypto(e.to_string()))?;
+    let bytes = STANDARD
+        .decode(blob_b64.trim())
+        .map_err(|e| SyncError::Crypto(e.to_string()))?;
     Ok(STANDARD.encode(Sha256::digest(&bytes)))
 }
 
@@ -210,9 +243,19 @@ pub fn seal(session_key: &[u8; 32], aad: &str, plaintext: &[u8]) -> Result<Envel
     let mut iv = [0u8; 12];
     rand_core::RngCore::fill_bytes(&mut rand_core::OsRng, &mut iv);
     let ct = cipher
-        .encrypt(Nonce::from_slice(&iv), Payload { msg: plaintext, aad: aad.as_bytes() })
+        .encrypt(
+            Nonce::from_slice(&iv),
+            Payload {
+                msg: plaintext,
+                aad: aad.as_bytes(),
+            },
+        )
         .map_err(|_| SyncError::Crypto("aes-gcm seal".into()))?;
-    Ok(Envelope::Data { v: EXCHANGE_VERSION, iv: STANDARD.encode(iv), ct: STANDARD.encode(ct) })
+    Ok(Envelope::Data {
+        v: EXCHANGE_VERSION,
+        iv: STANDARD.encode(iv),
+        ct: STANDARD.encode(ct),
+    })
 }
 
 /// Open a `Data` envelope under `session_key`, checking `aad`. Errors on a non-data envelope or an
@@ -222,11 +265,21 @@ pub fn open(session_key: &[u8; 32], aad: &str, env: &Envelope) -> Result<Vec<u8>
     let Envelope::Data { iv, ct, .. } = env else {
         return Err(SyncError::Crypto("not a data envelope".into()));
     };
-    let iv = STANDARD.decode(iv.trim()).map_err(|e| SyncError::Crypto(e.to_string()))?;
-    let ct = STANDARD.decode(ct.trim()).map_err(|e| SyncError::Crypto(e.to_string()))?;
+    let iv = STANDARD
+        .decode(iv.trim())
+        .map_err(|e| SyncError::Crypto(e.to_string()))?;
+    let ct = STANDARD
+        .decode(ct.trim())
+        .map_err(|e| SyncError::Crypto(e.to_string()))?;
     let cipher = Aes256Gcm::new_from_slice(session_key).map_err(|_| SyncError::Crypto("aes-gcm key".into()))?;
     cipher
-        .decrypt(Nonce::from_slice(&iv), Payload { msg: &ct, aad: aad.as_bytes() })
+        .decrypt(
+            Nonce::from_slice(&iv),
+            Payload {
+                msg: &ct,
+                aad: aad.as_bytes(),
+            },
+        )
         .map_err(|_| SyncError::Crypto("aes-gcm open (auth failed)".into()))
 }
 
@@ -238,8 +291,17 @@ pub mod messages {
         format!("exchange-publickey\n{did}\n{x25519_pub_b64}\n{}", key_uri.unwrap_or(""))
     }
     /// `exchange-request\n{request_uri}\n{initiator_did}\n{partner_did}\n{purpose}\n{scope_or_empty}`
-    pub fn request(request_uri: &str, initiator_did: &str, partner_did: &str, purpose: &str, scope: Option<&str>) -> String {
-        format!("exchange-request\n{request_uri}\n{initiator_did}\n{partner_did}\n{purpose}\n{}", scope.unwrap_or(""))
+    pub fn request(
+        request_uri: &str,
+        initiator_did: &str,
+        partner_did: &str,
+        purpose: &str,
+        scope: Option<&str>,
+    ) -> String {
+        format!(
+            "exchange-request\n{request_uri}\n{initiator_did}\n{partner_did}\n{purpose}\n{}",
+            scope.unwrap_or("")
+        )
     }
     /// `exchange-consent\n{request_uri}\n{consenting_did}\n{given}`
     pub fn consent(request_uri: &str, consenting_did: &str, given: bool) -> String {
@@ -332,15 +394,30 @@ mod tests {
     #[test]
     fn canonical_messages_match_the_appview() {
         // These strings are the cross-repo contract (du_db::exchange::messages).
-        assert_eq!(messages::publickey("did:plc:a", "KEY==", None), "exchange-publickey\ndid:plc:a\nKEY==\n");
-        assert_eq!(messages::publickey("did:plc:a", "KEY==", Some("at://x")), "exchange-publickey\ndid:plc:a\nKEY==\nat://x");
+        assert_eq!(
+            messages::publickey("did:plc:a", "KEY==", None),
+            "exchange-publickey\ndid:plc:a\nKEY==\n"
+        );
+        assert_eq!(
+            messages::publickey("did:plc:a", "KEY==", Some("at://x")),
+            "exchange-publickey\ndid:plc:a\nKEY==\nat://x"
+        );
         assert_eq!(
             messages::request("urn:ibd:h", "did:plc:a", "did:plc:b", "IBD_AUTOSOMAL", None),
             "exchange-request\nurn:ibd:h\ndid:plc:a\ndid:plc:b\nIBD_AUTOSOMAL\n"
         );
-        assert_eq!(messages::consent("urn:ibd:h", "did:plc:b", true), "exchange-consent\nurn:ibd:h\ndid:plc:b\ntrue");
-        assert_eq!(messages::poll("did:plc:a", 1718000000), "exchange-poll\ndid:plc:a\n1718000000");
-        assert_eq!(messages::relay("s1", "did:plc:a", "did:plc:b", 3, "HASH"), "exchange-relay\ns1\ndid:plc:a\ndid:plc:b\n3\nHASH");
+        assert_eq!(
+            messages::consent("urn:ibd:h", "did:plc:b", true),
+            "exchange-consent\nurn:ibd:h\ndid:plc:b\ntrue"
+        );
+        assert_eq!(
+            messages::poll("did:plc:a", 1718000000),
+            "exchange-poll\ndid:plc:a\n1718000000"
+        );
+        assert_eq!(
+            messages::relay("s1", "did:plc:a", "did:plc:b", 3, "HASH"),
+            "exchange-relay\ns1\ndid:plc:a\ndid:plc:b\n3\nHASH"
+        );
         assert_eq!(messages::ack("did:plc:a", 42), "exchange-ack\ndid:plc:a\n42");
     }
 }

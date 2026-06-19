@@ -69,6 +69,9 @@ pub fn build_genetic_map(args: GeneticMapArgs) -> Result<()> {
         fs::create_dir_all(parent).ok();
     }
     File::create(&args.out)?.write_all(&bytes)?;
-    eprintln!("wrote {} ({parsed} markers across {n_chrom} chromosomes)", args.out.display());
+    eprintln!(
+        "wrote {} ({parsed} markers across {n_chrom} chromosomes)",
+        args.out.display()
+    );
     Ok(())
 }

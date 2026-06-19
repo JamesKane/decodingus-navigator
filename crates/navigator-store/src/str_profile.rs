@@ -25,7 +25,10 @@ struct MarkerRow {
 
 impl MarkerRow {
     fn into_domain(self) -> StrMarker {
-        StrMarker { marker: self.marker, value: self.value }
+        StrMarker {
+            marker: self.marker,
+            value: self.value,
+        }
     }
 }
 

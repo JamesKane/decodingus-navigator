@@ -55,8 +55,7 @@ impl Build {
     /// reference allele is a *coordinate system*, never a source of ancestral/derived
     /// polarity. See [`ReferencePolarity`].
     pub fn reference_polarity(self) -> ReferencePolarity {
-        const RCRS_M: &str =
-            "rCRS (NC_012920.1, haplogroup H2a2a1) — itself derived from the RSRS root, not ancestral";
+        const RCRS_M: &str = "rCRS (NC_012920.1, haplogroup H2a2a1) — itself derived from the RSRS root, not ancestral";
         match self {
             Build::Chm13v2 => ReferencePolarity {
                 chr_y: "HG002 Y, haplogroup J — the reference base is the DERIVED allele at many Y-SNP sites",
@@ -98,8 +97,11 @@ pub fn canonical_build(name: &str) -> Option<Build> {
     match n.as_str() {
         "grch38" | "hg38" | "b38" | "grch38.p14" => Some(Build::Grch38),
         "grch37" | "hg19" | "b37" | "grch37.p13" => Some(Build::Grch37),
-        "chm13v2.0_maskedy_rcrs" | "chm13v2_maskedy_rcrs" | "chm13_maskedy_rcrs"
-        | "chm13v2.0-maskedy-rcrs" | "chm13v2.0_masked_rcrs" => Some(Build::Chm13v2MaskedRcrs),
+        "chm13v2.0_maskedy_rcrs"
+        | "chm13v2_maskedy_rcrs"
+        | "chm13_maskedy_rcrs"
+        | "chm13v2.0-maskedy-rcrs"
+        | "chm13v2.0_masked_rcrs" => Some(Build::Chm13v2MaskedRcrs),
         "chm13" | "chm13v2" | "chm13v2.0" | "t2t" | "hs1" | "t2t-chm13v2.0" => Some(Build::Chm13v2),
         _ => None,
     }
@@ -156,8 +158,7 @@ const GRCH38_FA: &str =
 const GRCH37_FA: &str =
     "https://storage.googleapis.com/gcp-public-data--broad-references/hg19/v0/Homo_sapiens_assembly19.fasta";
 const CHAIN_BASE: &str = "https://s3-us-west-2.amazonaws.com/human-pangenomics/T2T/CHM13/assemblies/chain/v1_nflo";
-const ANNOTATION_BASE: &str =
-    "https://s3-us-west-2.amazonaws.com/human-pangenomics/T2T/CHM13/assemblies/annotation";
+const ANNOTATION_BASE: &str = "https://s3-us-west-2.amazonaws.com/human-pangenomics/T2T/CHM13/assemblies/annotation";
 
 /// Built-in authoritative SHA-256 (lowercase hex) of a reference FASTA's **downloaded artifact**
 /// (the `.fa.gz` / `.fasta` exactly as served), when a publisher checksum has been confirmed.
@@ -249,12 +250,19 @@ impl Registry {
             Build::Chm13v2MaskedRcrs => (CHM13_MASKED_RCRS_FA, GB),
         };
         let ov = self.config.for_build(build);
-        let url = ov.and_then(|o| o.url.clone()).unwrap_or_else(|| default_url.to_string());
+        let url = ov
+            .and_then(|o| o.url.clone())
+            .unwrap_or_else(|| default_url.to_string());
         // User-pinned hash wins over the built-in (which is None until a publisher hash is confirmed).
         let sha256 = ov
             .and_then(|o| o.sha256.clone())
             .or_else(|| default_reference_sha(build).map(str::to_string));
-        ReferenceSource { build, url, est_bytes, sha256 }
+        ReferenceSource {
+            build,
+            url,
+            est_bytes,
+            sha256,
+        }
     }
 
     /// The liftover chain source for a build pair, if one is registered. Builds are
@@ -269,7 +277,12 @@ impl Registry {
             (Build::Chm13v2, Build::Grch37) => "chm13v2-hg19.chain",
             _ => return None,
         };
-        Some(ChainSource { from, to, url: format!("{CHAIN_BASE}/{file}"), sha256: None })
+        Some(ChainSource {
+            from,
+            to,
+            url: format!("{CHAIN_BASE}/{file}"),
+            sha256: None,
+        })
     }
 
     /// The UCSC `cytoBand` table URL for a build (gzipped) — the source for genome-region
@@ -295,9 +308,15 @@ impl Registry {
     pub fn mask_source(&self, name: &str) -> Option<MaskSource> {
         let file = Y_STRUCTURAL_MASKS.iter().find(|(n, _)| *n == name).map(|(_, f)| *f)?;
         let ov = self.config.references.get(name);
-        let url = ov.and_then(|o| o.url.clone()).unwrap_or_else(|| format!("{ANNOTATION_BASE}/{file}"));
+        let url = ov
+            .and_then(|o| o.url.clone())
+            .unwrap_or_else(|| format!("{ANNOTATION_BASE}/{file}"));
         let sha256 = ov.and_then(|o| o.sha256.clone());
-        Some(MaskSource { name: name.to_string(), url, sha256 })
+        Some(MaskSource {
+            name: name.to_string(),
+            url,
+            sha256,
+        })
     }
 }
 
@@ -334,12 +353,18 @@ mod tests {
             assert_eq!(canonical_build(alias), Some(Build::Chm13v2MaskedRcrs), "alias {alias}");
         }
         assert_eq!(Build::Chm13v2MaskedRcrs.as_str(), "chm13v2.0_maskedY_rCRS");
-        assert_eq!(canonical_build(Build::Chm13v2MaskedRcrs.as_str()), Some(Build::Chm13v2MaskedRcrs));
+        assert_eq!(
+            canonical_build(Build::Chm13v2MaskedRcrs.as_str()),
+            Some(Build::Chm13v2MaskedRcrs)
+        );
         // Plain chm13 spellings still map to plain chm13.
         assert_eq!(canonical_build("chm13v2.0"), Some(Build::Chm13v2));
 
         let reg = Registry::new(UserConfig::default());
-        assert!(reg.reference_source(Build::Chm13v2MaskedRcrs).url.ends_with("chm13v2.0_maskedY_rCRS.fa.gz"));
+        assert!(reg
+            .reference_source(Build::Chm13v2MaskedRcrs)
+            .url
+            .ends_with("chm13v2.0_maskedY_rCRS.fa.gz"));
     }
 
     #[test]
@@ -348,7 +373,12 @@ mod tests {
         // derived, so the metadata must flag it as not-ancestral.
         for b in [Build::Chm13v2, Build::Chm13v2MaskedRcrs] {
             let p = b.reference_polarity();
-            assert!(p.chr_y.contains("HG002") && p.chr_y.contains('J'), "{}: {}", b.as_str(), p.chr_y);
+            assert!(
+                p.chr_y.contains("HG002") && p.chr_y.contains('J'),
+                "{}: {}",
+                b.as_str(),
+                p.chr_y
+            );
             assert!(p.chr_y.contains("DERIVED"));
         }
         // The masked variant's mito is rCRS; plain CHM13's is its own (not rCRS).
@@ -373,7 +403,11 @@ mod tests {
         let masked = reg.chain_source(Build::Grch38, Build::Chm13v2MaskedRcrs).unwrap();
         assert_eq!(masked.url, direct.url);
         assert_eq!(masked.to, Build::Chm13v2); // normalized for cache-key reuse
-        assert!(reg.chain_source(Build::Chm13v2MaskedRcrs, Build::Grch38).unwrap().url.ends_with("chm13v2-grch38.chain"));
+        assert!(reg
+            .chain_source(Build::Chm13v2MaskedRcrs, Build::Grch38)
+            .unwrap()
+            .url
+            .ends_with("chm13v2-grch38.chain"));
     }
 
     #[test]
@@ -394,7 +428,12 @@ mod tests {
         let mut references = HashMap::new();
         references.insert(
             "chm13v2.0".to_string(),
-            BuildOverride { local_path: Some("/data/chm13.fa".into()), url: None, sha256: None, auto_download: true },
+            BuildOverride {
+                local_path: Some("/data/chm13.fa".into()),
+                url: None,
+                sha256: None,
+                auto_download: true,
+            },
         );
         let reg = Registry::new(UserConfig { references });
         assert_eq!(reg.local_override(Build::Chm13v2), Some("/data/chm13.fa"));
@@ -409,7 +448,12 @@ mod tests {
         let mut references = HashMap::new();
         references.insert(
             "GRCh38".to_string(),
-            BuildOverride { local_path: Some("/refs/grch38.fa".into()), url: None, sha256: None, auto_download: false },
+            BuildOverride {
+                local_path: Some("/refs/grch38.fa".into()),
+                url: None,
+                sha256: None,
+                auto_download: false,
+            },
         );
         let cfg = UserConfig { references };
         cfg.save(&path).unwrap();

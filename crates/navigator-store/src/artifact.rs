@@ -108,9 +108,11 @@ pub async fn get(
 }
 
 pub async fn list_for_alignment(pool: &SqlitePool, alignment_id: i64) -> Result<Vec<AnalysisArtifact>, StoreError> {
-    let rows: Vec<Row> = sqlx::query_as(&format!("SELECT {COLS} FROM analysis_artifact WHERE alignment_id = ? ORDER BY id"))
-        .bind(alignment_id)
-        .fetch_all(pool)
-        .await?;
+    let rows: Vec<Row> = sqlx::query_as(&format!(
+        "SELECT {COLS} FROM analysis_artifact WHERE alignment_id = ? ORDER BY id"
+    ))
+    .bind(alignment_id)
+    .fetch_all(pool)
+    .await?;
     rows.into_iter().map(Row::into_domain).collect()
 }

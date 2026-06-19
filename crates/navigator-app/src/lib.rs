@@ -12,32 +12,30 @@ use std::sync::{Arc, Mutex};
 use chrono::Utc;
 use du_domain::ids::SampleGuid;
 use navigator_analysis::ancestry::{self as ancestry_analysis};
-use navigator_analysis::caller::{self, HaploidCallerParams, SiteGenotype, Site, VariantCall};
+use navigator_analysis::caller::{self, HaploidCallerParams, Site, SiteGenotype, VariantCall};
 use navigator_analysis::coverage::{self, CallableLociParams, CoverageResult};
 use navigator_analysis::gvcf;
 use navigator_analysis::heteroplasmy::{self, HeteroplasmyParams};
+use navigator_analysis::ibd::{ChromosomeGenotypes, GeneticMap, MatchSummary, PairwiseIbdDetector};
 use navigator_analysis::scan::SampleSidecars;
 use navigator_analysis::sidecar;
-use navigator_analysis::ibd::{
-    ChromosomeGenotypes, GeneticMap, MatchSummary, PairwiseIbdDetector,
-};
 use navigator_domain::workspace::{Panel, PanelSite};
 use navigator_store::panel;
 
 // Re-export the analysis result types the command API returns, so the UI depends only
 // on navigator-app (ui -> app), not directly on navigator-analysis.
-pub use navigator_analysis::probe::AlignmentProbe;
 pub use navigator_analysis::caller::SiteGenotype as PanelGenotype;
 pub use navigator_analysis::caller::VariantCall as DenovoCall;
 pub use navigator_analysis::coverage::CoverageResult as Coverage;
+pub use navigator_analysis::haplo::{BranchEvidence, CallState, ScoredHaplogroup, SnpEvidence};
+pub use navigator_analysis::heteroplasmy::HeteroplasmySite;
+pub use navigator_analysis::mask::YRegionClass;
+pub use navigator_analysis::mtvariants::{MtRegion, MtVariant, MtVariantKind};
+pub use navigator_analysis::probe::AlignmentProbe;
 pub use navigator_analysis::read_metrics::{PairOrientation, ReadMetrics};
-pub use navigator_analysis::unified::UnifiedMetricsResult;
 pub use navigator_analysis::sex::{Confidence as SexConfidence, InferredSex, SexInferenceResult};
 pub use navigator_analysis::sv::types::{SvAnalysisResult, SvCall, SvType};
-pub use navigator_analysis::heteroplasmy::HeteroplasmySite;
-pub use navigator_analysis::mtvariants::{MtRegion, MtVariant, MtVariantKind};
-pub use navigator_analysis::haplo::{BranchEvidence, CallState, ScoredHaplogroup, SnpEvidence};
-pub use navigator_analysis::mask::YRegionClass;
+pub use navigator_analysis::unified::UnifiedMetricsResult;
 pub use navigator_domain::ancestry::{
     AncestryResult, AncestrySegment, ConfidenceInterval, PopulationComponent, SuperPopulationSummary,
 };
@@ -96,7 +94,10 @@ impl PrivateBucket {
         self.variants.iter().filter(|v| v.class == PrivateClass::Novel).count()
     }
     pub fn off_path(&self) -> usize {
-        self.variants.iter().filter(|v| matches!(v.class, PrivateClass::OffPathKnown(_))).count()
+        self.variants
+            .iter()
+            .filter(|v| matches!(v.class, PrivateClass::OffPathKnown(_)))
+            .count()
     }
     /// Calls that fall in a curated chrY structural (paralog-prone) region — suspect, to be
     /// down-weighted in reports rather than treated as confident new variants.
@@ -106,32 +107,38 @@ impl PrivateBucket {
     /// Novel calls in *unique* sequence (no structural-region flag) — the high-confidence
     /// new-branch candidates, separated from the paralog-zone noise.
     pub fn novel_in_unique_sequence(&self) -> usize {
-        self.variants.iter().filter(|v| v.class == PrivateClass::Novel && v.region.is_none()).count()
+        self.variants
+            .iter()
+            .filter(|v| v.class == PrivateClass::Novel && v.region.is_none())
+            .count()
     }
 }
+pub use navigator_analysis::ibd::IbdSegment;
 pub use navigator_analysis::ibd::{
     IbdDetectorConfig, IbdSegment as Segment, MatchSummary as IbdSummary, RelationshipEstimate,
 };
-pub use navigator_analysis::ibd::IbdSegment;
 // Sync/publish types the command API uses, re-exported so the UI depends only on navigator-app.
-pub use navigator_sync::{
-    AlignmentRecord, BiosampleRecord, PdsClient, PopulationBreakdownRecord, PrivateVariantsRecord,
-    RecordRef, SequenceRunRecord, VariantCallEntry, NS_ALIGNMENT, NS_BIOSAMPLE,
-    NS_POPULATION_BREAKDOWN, NS_SEQUENCERUN, PRIVATE_VARIANTS_COLLECTION,
-};
-use navigator_sync::{FedPopulationComponent, FedSuperPopulationSummary};
-use navigator_sync::{dev_http_client, login_default, AsyncSync, DeviceKey, OAuthConfig, RetryPolicy, TokenStore, DEVICE_KEY_COLLECTION};
-use navigator_sync::exchange::{self, ExchangeKey};
-use navigator_refgenome::{cache as refgenome_cache, canonical_build, Build as ReferenceBuild, LiftedPos, ReferenceGateway};
+pub use navigator_refgenome::vcf_lift::infer_source_build as infer_vcf_source_build;
 pub use navigator_refgenome::RefStatus;
+use navigator_refgenome::{
+    cache as refgenome_cache, canonical_build, Build as ReferenceBuild, LiftedPos, ReferenceGateway,
+};
 pub use navigator_refgenome::{ChromosomeRegions, Cytoband, GenomeRegions, RegionAnnotation};
 pub use navigator_refgenome::{VcfLiftOpts, VcfLiftStats, VerifyOutcome};
-pub use navigator_refgenome::vcf_lift::infer_source_build as infer_vcf_source_build;
+use navigator_sync::exchange::{self, ExchangeKey};
 use navigator_sync::{
-    AuditEntryRecord, HaplogroupReconciliationRecord, HeteroplasmyObservationRecord,
-    IdentityVerificationRecord, ManualOverrideRecord, ReconciliationStatusRecord,
-    RunHaplogroupCallRecord, HAPLOGROUP_RECONCILIATION_COLLECTION,
+    dev_http_client, login_default, AsyncSync, DeviceKey, OAuthConfig, RetryPolicy, TokenStore, DEVICE_KEY_COLLECTION,
 };
+pub use navigator_sync::{
+    AlignmentRecord, BiosampleRecord, PdsClient, PopulationBreakdownRecord, PrivateVariantsRecord, RecordRef,
+    SequenceRunRecord, VariantCallEntry, NS_ALIGNMENT, NS_BIOSAMPLE, NS_POPULATION_BREAKDOWN, NS_SEQUENCERUN,
+    PRIVATE_VARIANTS_COLLECTION,
+};
+use navigator_sync::{
+    AuditEntryRecord, HaplogroupReconciliationRecord, HeteroplasmyObservationRecord, IdentityVerificationRecord,
+    ManualOverrideRecord, ReconciliationStatusRecord, RunHaplogroupCallRecord, HAPLOGROUP_RECONCILIATION_COLLECTION,
+};
+use navigator_sync::{FedPopulationComponent, FedSuperPopulationSummary};
 
 /// Keychain service namespace for stored sessions (plan §7).
 const KEYCHAIN_SERVICE: &str = "decodingus-navigator";
@@ -280,7 +287,10 @@ fn decimate_for_exchange(sites: Vec<IbdSite>) -> Vec<IbdSite> {
     if sites.len() <= EXCHANGE_SITE_BUDGET {
         return sites;
     }
-    sites.into_iter().filter(|s| s.position % EXCHANGE_DECIMATE == 0).collect()
+    sites
+        .into_iter()
+        .filter(|s| s.position % EXCHANGE_DECIMATE == 0)
+        .collect()
 }
 
 /// Parse the AppView's `/api/v1/ibd/suggestions` body into [`IbdSuggestion`]s. Lenient on
@@ -317,7 +327,12 @@ fn parse_ibd_suggestions(body: &serde_json::Value) -> Vec<IbdSuggestion> {
                 .or_else(|| it.get("signals"))
                 .map(parse_ibd_signals)
                 .unwrap_or_default();
-            Some(IbdSuggestion { suggested_sample_guid, suggestion_type, score, signals })
+            Some(IbdSuggestion {
+                suggested_sample_guid,
+                suggestion_type,
+                score,
+                signals,
+            })
         })
         .collect()
 }
@@ -357,11 +372,10 @@ async fn appview_status_error(api: &str, resp: reqwest::Response) -> AppError {
         _ => AppError::AppView(format!("{api}: {status}: {body}")),
     }
 }
-use navigator_domain::workspace::{
-    Alignment, AnalysisArtifact, Biosample, NewAlignment, NewProject, NewSequenceRun, Project,
-    SequenceRun,
-};
+pub use navigator_analysis::ibd_attest::{IbdAttestation, IbdExchangeMsg, IbdSite};
+use navigator_domain::bisdna;
 use navigator_domain::chipprofile::{self, ChipProfile, NewChipProfile};
+pub use navigator_domain::consensus::{DiploidSourceObs, DiploidVariant};
 use navigator_domain::filetype;
 pub use navigator_domain::filetype::DetectedData;
 use navigator_domain::mtdna::{self, MtdnaSequence, NewMtdnaSequence};
@@ -370,21 +384,21 @@ pub use navigator_domain::reconciliation::{
     AuditEntry, CompatibilityLevel, Consensus, DnaType, IdentityVerification, VerificationStatus,
 };
 use navigator_domain::strprofile::{self, NewStrProfile, StrProfile};
-use navigator_domain::variants::{self, NewVariantSet, VariantSet};
 pub use navigator_domain::variants::SourceType;
+use navigator_domain::variants::{self, NewVariantSet, VariantSet};
+use navigator_domain::workspace::{
+    Alignment, AnalysisArtifact, Biosample, NewAlignment, NewProject, NewSequenceRun, Project, SequenceRun,
+};
+pub use navigator_domain::ymatch::{Tmrca, YMatch, YSignal};
 use navigator_domain::yprofile::{self, YObsInput};
 pub use navigator_domain::yprofile::{YProfileSummary, YProfileVariant, YSourceObs, YState, YVariantStatus};
-pub use navigator_domain::consensus::{DiploidSourceObs, DiploidVariant};
-pub use navigator_domain::ymatch::{Tmrca, YMatch, YSignal};
-pub use navigator_analysis::ibd_attest::{IbdAttestation, IbdExchangeMsg, IbdSite};
+use navigator_domain::ysnp_dict::{self, YsnpDictionary};
 pub use navigator_store::ibd_exchange::StoredIbdExchange;
 pub use navigator_store::source_file::SourceFile;
-use navigator_domain::bisdna;
-use navigator_domain::ysnp_dict::{self, YsnpDictionary};
 use navigator_store::{
-    alignment, ancestry_result, artifact, biosample, chip_profile, consensus_painting, consensus_profile, haplogroup_call,
-    mtdna as mtdna_store, project, reconciliation as recon_store, sequence_run, source_file, str_profile,
-    sync_history, sync_outbox, sync_state, variant_set, Store, StoreError,
+    alignment, ancestry_result, artifact, biosample, chip_profile, consensus_painting, consensus_profile,
+    haplogroup_call, mtdna as mtdna_store, project, reconciliation as recon_store, sequence_run, source_file,
+    str_profile, sync_history, sync_outbox, sync_state, variant_set, Store, StoreError,
 };
 use serde::de::DeserializeOwned;
 use serde::Serialize;
@@ -406,10 +420,13 @@ fn denovo_kind(contig: &str) -> String {
 /// On-disk cache path for a downloaded haplotree, under `$NAVIGATOR_TREE_DIR` (tests/
 /// overrides) or `~/.decodingus/trees`.
 fn tree_cache_path(file: &str) -> PathBuf {
-    let dir = std::env::var("NAVIGATOR_TREE_DIR").ok().map(PathBuf::from).unwrap_or_else(|| {
-        let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
-        PathBuf::from(home).join(".decodingus").join("trees")
-    });
+    let dir = std::env::var("NAVIGATOR_TREE_DIR")
+        .ok()
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+            PathBuf::from(home).join(".decodingus").join("trees")
+        });
     dir.join(file)
 }
 
@@ -493,8 +510,14 @@ fn assemble_assignment(tree: &navigator_analysis::haplo::HaploTree, calls: &Hash
     }
     let top = ranked.first().map(|t| t.id);
     let branches = top.map(|id| haplo::child_evidence(tree, calls, id)).unwrap_or_default();
-    let lineage = top.map(|id| haplo::lineage_evidence(tree, calls, id)).unwrap_or_default();
-    HaploAssignment { ranked, branches, lineage }
+    let lineage = top
+        .map(|id| haplo::lineage_evidence(tree, calls, id))
+        .unwrap_or_default();
+    HaploAssignment {
+        ranked,
+        branches,
+        lineage,
+    }
 }
 
 /// Terminal selection for **named Y-SNP panel** data (BISDNA chip), as opposed to the
@@ -527,8 +550,14 @@ fn assemble_assignment_robust(
     }
     let top = ranked.first().map(|t| t.id);
     let branches = top.map(|id| haplo::child_evidence(tree, calls, id)).unwrap_or_default();
-    let lineage = top.map(|id| haplo::lineage_evidence(tree, calls, id)).unwrap_or_default();
-    HaploAssignment { ranked, branches, lineage }
+    let lineage = top
+        .map(|id| haplo::lineage_evidence(tree, calls, id))
+        .unwrap_or_default();
+    HaploAssignment {
+        ranked,
+        branches,
+        lineage,
+    }
 }
 
 /// The root→`target` path of node ids (inclusive), or empty if `target` isn't reachable.
@@ -634,7 +663,9 @@ fn strand_reconcile_to_tree(
     for node in tree.nodes.values() {
         for l in &node.loci {
             if let (Some(a), Some(d)) = (l.ancestral.chars().next(), l.derived.chars().next()) {
-                allowed.entry(l.position).or_insert((a.to_ascii_uppercase(), d.to_ascii_uppercase()));
+                allowed
+                    .entry(l.position)
+                    .or_insert((a.to_ascii_uppercase(), d.to_ascii_uppercase()));
             }
         }
     }
@@ -643,7 +674,11 @@ fn strand_reconcile_to_tree(
         .map(|(pos, base)| match allowed.get(&pos) {
             Some(&(a, d)) if base != a && base != d => {
                 let c = complement_base(base);
-                if c == a || c == d { (pos, c) } else { (pos, base) }
+                if c == a || c == d {
+                    (pos, c)
+                } else {
+                    (pos, base)
+                }
             }
             _ => (pos, base),
         })
@@ -662,11 +697,13 @@ fn assemble_calls_lifted(
 ) -> HashMap<i64, char> {
     let mut calls = HashMap::new();
     for lp in lifted {
-        let base = called
-            .variant_bases
-            .get(&lp.pos)
-            .copied()
-            .or_else(|| called.callable.contains(&lp.pos).then(|| ref_base.get(&lp.pos).copied()).flatten());
+        let base = called.variant_bases.get(&lp.pos).copied().or_else(|| {
+            called
+                .callable
+                .contains(&lp.pos)
+                .then(|| ref_base.get(&lp.pos).copied())
+                .flatten()
+        });
         if let Some(b) = base {
             calls.insert(lp.tree_pos, if lp.reverse { complement_base(b) } else { b });
         }
@@ -717,7 +754,9 @@ fn ancestry_asset_path(env_var: &str, stem: &str, build: ReferenceBuild, ext: &s
             return PathBuf::from(p);
         }
     }
-    refgenome_cache::base_dir().join("ancestry").join(format!("{stem}_{}.{ext}", build.as_str()))
+    refgenome_cache::base_dir()
+        .join("ancestry")
+        .join(format!("{stem}_{}.{ext}", build.as_str()))
 }
 
 /// Where the ancestry panel for `build` lives: `$NAVIGATOR_ANCESTRY_PANEL` (override), else
@@ -775,7 +814,11 @@ pub fn ancestry_asset_status() -> Vec<AssetStatus> {
             (Some(m), Some(b), Some(fname)) => m.assets.contains_key(fname) && m.verify(fname, b).is_ok(),
             _ => false,
         };
-        AssetStatus { name: name.to_string(), present: bytes.is_some(), verified }
+        AssetStatus {
+            name: name.to_string(),
+            present: bytes.is_some(),
+            verified,
+        }
     })
     .collect()
 }
@@ -832,11 +875,11 @@ fn bundled_assets_dir() -> Option<PathBuf> {
     let exe = std::env::current_exe().ok()?;
     let dir = exe.parent()?;
     [
-        dir.join("../Resources/ancestry"),        // macOS .app/Contents/MacOS → ../Resources
-        dir.join("ancestry"),                     // Windows (alongside) / portable
-        dir.join("../lib/DUNavigator/ancestry"),  // Linux .deb/AppImage usr/bin → usr/lib/<app>
-        dir.join("../share/DUNavigator/ancestry"),// Linux usr/share/<app>
-        dir.join("resources/ancestry"),           // generic
+        dir.join("../Resources/ancestry"),         // macOS .app/Contents/MacOS → ../Resources
+        dir.join("ancestry"),                      // Windows (alongside) / portable
+        dir.join("../lib/DUNavigator/ancestry"),   // Linux .deb/AppImage usr/bin → usr/lib/<app>
+        dir.join("../share/DUNavigator/ancestry"), // Linux usr/share/<app>
+        dir.join("resources/ancestry"),            // generic
     ]
     .into_iter()
     .find(|c| c.is_dir())
@@ -847,7 +890,9 @@ fn bundled_assets_dir() -> Option<PathBuf> {
 /// only the files missing from the cache, so a later manifest-verified CDN download transparently
 /// overrides a bundled asset. Best-effort + non-fatal: no bundle (dev build) ⇒ empty summary.
 pub fn seed_bundled_assets() -> SeedSummary {
-    let Some(src) = bundled_assets_dir() else { return SeedSummary::default() };
+    let Some(src) = bundled_assets_dir() else {
+        return SeedSummary::default();
+    };
     let dest = refgenome_cache::base_dir().join("ancestry");
     seed_assets_from(&src, &dest).unwrap_or_default()
 }
@@ -869,7 +914,9 @@ fn load_asset_manifest(build: ReferenceBuild) -> Option<navigator_analysis::mani
 /// is present. A **checksum mismatch is a hard error** — refuse a corrupt / truncated asset rather
 /// than analyze against it. A missing manifest (or an unlisted file) passes through unverified.
 fn read_verified_asset(build: ReferenceBuild, path: &Path) -> Result<Option<Vec<u8>>, AppError> {
-    let Ok(bytes) = std::fs::read(path) else { return Ok(None) };
+    let Ok(bytes) = std::fs::read(path) else {
+        return Ok(None);
+    };
     if let Some(manifest) = load_asset_manifest(build) {
         if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
             if let Err((expected, got)) = manifest.verify(name, &bytes) {
@@ -1015,7 +1062,12 @@ pub struct BatchImportSummary {
 /// `None` if the file is missing / unstattable.
 fn file_signature(path: &Path) -> Option<String> {
     let meta = std::fs::metadata(path).ok()?;
-    let mtime = meta.modified().ok()?.duration_since(std::time::UNIX_EPOCH).ok()?.as_secs();
+    let mtime = meta
+        .modified()
+        .ok()?
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()?
+        .as_secs();
     Some(format!("{mtime}:{}", meta.len()))
 }
 
@@ -1032,10 +1084,25 @@ fn artifact_is_fresh(stored: Option<&str>, current: Option<&str>) -> bool {
 /// A recognized data-file extension — the pre-filter for directory expansion (a dropped folder is
 /// walked for these). `add_data` re-sniffs text files (csv/tsv/txt) to route chip / STR / variants.
 fn is_recognized_data_file(path: &Path) -> bool {
-    let n = path.file_name().map(|s| s.to_string_lossy().to_ascii_lowercase()).unwrap_or_default();
+    let n = path
+        .file_name()
+        .map(|s| s.to_string_lossy().to_ascii_lowercase())
+        .unwrap_or_default();
     [
-        ".bam", ".cram", ".vcf", ".vcf.gz", ".fasta", ".fa", ".fna", ".fas", ".fasta.gz", ".fa.gz",
-        ".fna.gz", ".csv", ".tsv", ".txt",
+        ".bam",
+        ".cram",
+        ".vcf",
+        ".vcf.gz",
+        ".fasta",
+        ".fa",
+        ".fna",
+        ".fas",
+        ".fasta.gz",
+        ".fa.gz",
+        ".fna.gz",
+        ".csv",
+        ".tsv",
+        ".txt",
     ]
     .iter()
     .any(|e| n.ends_with(e))
@@ -1171,7 +1238,11 @@ fn verification_lexicon(s: VerificationStatus) -> &'static str {
 /// Reference build inferred from an alignment filename (`*.chm13.*` → CHM13v2.0, else
 /// unknown). A best-effort label; the actual decode uses the supplied reference FASTA.
 fn reference_build_for(path: &Path) -> String {
-    let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("").to_ascii_lowercase();
+    let name = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
     if name.contains("chm13") {
         "chm13v2.0".to_string()
     } else {
@@ -1184,7 +1255,9 @@ fn reference_build_for(path: &Path) -> String {
 /// which doesn't decompress either; a gzipped VCF simply yields an empty peek (→ generic).
 fn peek_vcf_header(path: &Path) -> (String, Vec<String>) {
     use std::io::BufRead;
-    let Ok(file) = std::fs::File::open(path) else { return (String::new(), Vec::new()) };
+    let Ok(file) = std::fs::File::open(path) else {
+        return (String::new(), Vec::new());
+    };
     let mut meta = String::new();
     let mut contigs = Vec::new();
     for line in std::io::BufReader::new(file).lines().map_while(Result::ok) {
@@ -1247,7 +1320,10 @@ fn mt_vendor_label(filename: Option<&str>, defline: Option<&str>) -> &'static st
 /// A disambiguating label context for a vendor VCF: the parent directory when the file name is the
 /// generic vendor name (`variants.vcf`), else the file name itself.
 fn vcf_label_context(path: &Path, filename: &str) -> String {
-    let generic = matches!(filename.to_ascii_lowercase().as_str(), "variants.vcf" | "variants.vcf.gz");
+    let generic = matches!(
+        filename.to_ascii_lowercase().as_str(),
+        "variants.vcf" | "variants.vcf.gz"
+    );
     if generic {
         if let Some(parent) = path.parent().and_then(|p| p.file_name()).and_then(|n| n.to_str()) {
             if !parent.is_empty() {
@@ -1284,8 +1360,7 @@ fn sha256_file(path: &Path) -> std::io::Result<String> {
 
 /// SHA-256 of a file's content (hex), computed off the async runtime.
 async fn sha256_file_async(path: PathBuf) -> Result<String, AppError> {
-    let hash = tokio::task::spawn_blocking(move || sha256_file(&path))
-        .await??;
+    let hash = tokio::task::spawn_blocking(move || sha256_file(&path)).await??;
     Ok(hash)
 }
 
@@ -1373,7 +1448,10 @@ fn resolve_appview_url(env: Option<String>, settings: Option<String>) -> String 
 }
 
 fn decodingus_appview_url() -> String {
-    resolve_appview_url(std::env::var("DECODINGUS_APPVIEW_URL").ok(), AppSettings::load().appview_url)
+    resolve_appview_url(
+        std::env::var("DECODINGUS_APPVIEW_URL").ok(),
+        AppSettings::load().appview_url,
+    )
 }
 
 /// A subject's multi-source variant **consensus profile** for one DNA type (Y today; mtDNA /
@@ -1462,7 +1540,14 @@ fn snp_obs_from_assignment(assignment: &HaploAssignment, in_tree: bool) -> Vec<Y
             CallState::NoCall => YState::NoCall,
         };
         by_name.entry(snp.name.clone()).or_insert_with(|| {
-            YObsInput::snp(snp.name.clone(), snp.position, snp.ancestral.clone(), snp.derived.clone(), state, in_tree)
+            YObsInput::snp(
+                snp.name.clone(),
+                snp.position,
+                snp.ancestral.clone(),
+                snp.derived.clone(),
+                state,
+                in_tree,
+            )
         });
     }
     by_name.into_values().collect()
@@ -1481,17 +1566,17 @@ pub struct RefBuildStatus {
     pub auto_download: bool,
 }
 
-mod commands;
 mod analysis;
-mod publish;
 mod auth;
-mod sync;
+mod commands;
+mod fastpath;
+mod haplogroup;
 mod ibd_exchange;
 mod import_profiles;
-mod haplogroup;
-mod fastpath;
 mod import_unified;
+mod publish;
 mod queries;
+mod sync;
 
 impl App {
     /// Reference-genome settings + cache status, one row per supported build.
@@ -1585,9 +1670,10 @@ fn has_sibling_index(aln_path: &Path, index_files: &[PathBuf]) -> bool {
     let Some(aln_name) = aln_path.file_name().and_then(|n| n.to_str()) else {
         return false;
     };
-    index_files.iter().filter_map(|i| i.file_name().and_then(|n| n.to_str())).any(|n| {
-        n == format!("{aln_name}.crai") || n == format!("{aln_name}.bai")
-    })
+    index_files
+        .iter()
+        .filter_map(|i| i.file_name().and_then(|n| n.to_str()))
+        .any(|n| n == format!("{aln_name}.crai") || n == format!("{aln_name}.bai"))
 }
 
 /// Read the first 64 KiB of a file as lossy UTF-8 — enough to fingerprint a text file's
@@ -1617,7 +1703,10 @@ const IBD_PANEL_KIND: &str = "ibd_panel_genotypes";
 /// the bare kind when no manifest is published (genotypes then keyed only by `GENOTYPE_VERSION`).
 fn ibd_panel_cache_kind() -> String {
     let build = ReferenceBuild::Chm13v2;
-    let name = ibd_panel_path(build).file_name().and_then(|n| n.to_str()).map(String::from);
+    let name = ibd_panel_path(build)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .map(String::from);
     match (load_asset_manifest(build), name) {
         (Some(m), Some(n)) => match m.assets.get(&n) {
             Some(e) => format!("{IBD_PANEL_KIND}:{}", &e.sha256[..16.min(e.sha256.len())]),
@@ -1631,8 +1720,11 @@ fn ibd_panel_cache_kind() -> String {
 /// size, surfaced so a sparse chip↔chip / chip↔WGS overlap isn't mistaken for a confident result.
 fn overlapping_called_sites(a: &[SiteGenotype], b: &[SiteGenotype]) -> usize {
     let called = |g: &SiteGenotype| (0..=g.ploidy as i32).contains(&g.dosage);
-    let set: std::collections::HashSet<(&str, i64)> =
-        a.iter().filter(|g| called(g)).map(|g| (g.contig.as_str(), g.position)).collect();
+    let set: std::collections::HashSet<(&str, i64)> = a
+        .iter()
+        .filter(|g| called(g))
+        .map(|g| (g.contig.as_str(), g.position))
+        .collect();
     b.iter()
         .filter(|g| called(g))
         .filter(|g| set.contains(&(g.contig.as_str(), g.position)))
@@ -1641,7 +1733,12 @@ fn overlapping_called_sites(a: &[SiteGenotype], b: &[SiteGenotype]) -> usize {
 
 /// Group two samples' dosages, load the genetic map for `build`, detect IBD segments, and record
 /// the overlapping-site count. Shared by the alignment-pair and chip-or-WGS compare paths.
-fn detect_ibd(ga: &[SiteGenotype], gb: &[SiteGenotype], build: ReferenceBuild, config: IbdDetectorConfig) -> IbdComparison {
+fn detect_ibd(
+    ga: &[SiteGenotype],
+    gb: &[SiteGenotype],
+    build: ReferenceBuild,
+    config: IbdDetectorConfig,
+) -> IbdComparison {
     let overlapping_sites = overlapping_called_sites(ga, gb);
     let sample_a = group_chrom_genotypes(ga);
     let sample_b = group_chrom_genotypes(gb);
@@ -1656,13 +1753,20 @@ fn detect_ibd(ga: &[SiteGenotype], gb: &[SiteGenotype], build: ReferenceBuild, c
     let gmap = load_genetic_map(build, &pairs);
     let segments = PairwiseIbdDetector::new(config).detect_segments(&sample_a, &sample_b, &gmap);
     let summary = MatchSummary::from_segments(&segments);
-    IbdComparison { summary, segments, overlapping_sites }
+    IbdComparison {
+        summary,
+        segments,
+        overlapping_sites,
+    }
 }
 
 fn group_chrom_genotypes(genotypes: &[SiteGenotype]) -> std::collections::HashMap<String, ChromosomeGenotypes> {
     let mut by_contig: BTreeMap<String, Vec<(i64, i32)>> = BTreeMap::new();
     for g in genotypes {
-        by_contig.entry(g.contig.clone()).or_default().push((g.position, g.dosage));
+        by_contig
+            .entry(g.contig.clone())
+            .or_default()
+            .push((g.position, g.dosage));
     }
     by_contig
         .into_iter()
@@ -1670,7 +1774,14 @@ fn group_chrom_genotypes(genotypes: &[SiteGenotype]) -> std::collections::HashMa
             v.sort_by_key(|(p, _)| *p);
             let positions = v.iter().map(|(p, _)| *p as i32).collect();
             let dosages = v.iter().map(|(_, d)| *d as i8).collect();
-            (chrom.clone(), ChromosomeGenotypes { chromosome: chrom, positions, dosages })
+            (
+                chrom.clone(),
+                ChromosomeGenotypes {
+                    chromosome: chrom,
+                    positions,
+                    dosages,
+                },
+            )
         })
         .collect()
 }
@@ -1678,7 +1789,12 @@ fn group_chrom_genotypes(genotypes: &[SiteGenotype]) -> std::collections::HashMa
 /// IBD detection over two [`IbdSite`] dosage vectors (the federated-exchange path — the partner's
 /// dosages arrive as `IbdSite`, not [`SiteGenotype`]). Mirrors [`detect_ibd`] but groups directly
 /// from the compact wire type.
-fn detect_ibd_sites(my: &[IbdSite], partner: &[IbdSite], build: ReferenceBuild, config: IbdDetectorConfig) -> IbdComparison {
+fn detect_ibd_sites(
+    my: &[IbdSite],
+    partner: &[IbdSite],
+    build: ReferenceBuild,
+    config: IbdDetectorConfig,
+) -> IbdComparison {
     let group = |sites: &[IbdSite]| -> std::collections::HashMap<String, ChromosomeGenotypes> {
         let mut by: BTreeMap<String, Vec<(i64, i32)>> = BTreeMap::new();
         for s in sites {
@@ -1689,13 +1805,23 @@ fn detect_ibd_sites(my: &[IbdSite], partner: &[IbdSite], build: ReferenceBuild, 
                 v.sort_by_key(|(p, _)| *p);
                 let positions = v.iter().map(|(p, _)| *p as i32).collect();
                 let dosages = v.iter().map(|(_, d)| *d as i8).collect();
-                (chrom.clone(), ChromosomeGenotypes { chromosome: chrom, positions, dosages })
+                (
+                    chrom.clone(),
+                    ChromosomeGenotypes {
+                        chromosome: chrom,
+                        positions,
+                        dosages,
+                    },
+                )
             })
             .collect()
     };
     // Overlapping called sites (dosage 0..=2 in both).
-    let partner_called: HashMap<(&str, i64), ()> =
-        partner.iter().filter(|s| (0..=2).contains(&s.dosage)).map(|s| ((s.contig.as_str(), s.position), ())).collect();
+    let partner_called: HashMap<(&str, i64), ()> = partner
+        .iter()
+        .filter(|s| (0..=2).contains(&s.dosage))
+        .map(|s| ((s.contig.as_str(), s.position), ()))
+        .collect();
     let overlapping_sites = my
         .iter()
         .filter(|s| (0..=2).contains(&s.dosage) && partner_called.contains_key(&(s.contig.as_str(), s.position)))
@@ -1714,15 +1840,22 @@ fn detect_ibd_sites(my: &[IbdSite], partner: &[IbdSite], build: ReferenceBuild, 
     let gmap = load_genetic_map(build, &pairs);
     let segments = PairwiseIbdDetector::new(config).detect_segments(&sample_a, &sample_b, &gmap);
     let summary = MatchSummary::from_segments(&segments);
-    IbdComparison { summary, segments, overlapping_sites }
+    IbdComparison {
+        summary,
+        segments,
+        overlapping_sites,
+    }
 }
 
 /// Autosomal genotype concordance between two genotyped alignments: (matched, compared)
 /// over sites both called (dosage within ploidy). ~1.0 ⇒ same individual; relatives lower.
 fn genotype_concordance(a: &[SiteGenotype], b: &[SiteGenotype]) -> (i64, i64) {
     let called = |g: &SiteGenotype| (0..=g.ploidy as i32).contains(&g.dosage);
-    let idx: HashMap<(&str, i64), i32> =
-        b.iter().filter(|g| called(g)).map(|g| ((g.contig.as_str(), g.position), g.dosage)).collect();
+    let idx: HashMap<(&str, i64), i32> = b
+        .iter()
+        .filter(|g| called(g))
+        .map(|g| ((g.contig.as_str(), g.position), g.dosage))
+        .collect();
     let (mut matched, mut sites) = (0i64, 0i64);
     for g in a.iter().filter(|g| called(g)) {
         if let Some(&db) = idx.get(&(g.contig.as_str(), g.position)) {
@@ -1918,14 +2051,17 @@ pub struct App {
 impl App {
     pub fn new(store: Store) -> Self {
         let gateway = ReferenceGateway::new(refgenome_cache::base_dir(), dev_http_client());
-        App { store, auth: Auth::new(), gateway }
+        App {
+            store,
+            auth: Auth::new(),
+            gateway,
+        }
     }
 
     /// Open/create the workspace database and build the app.
     pub async fn open(path: &std::path::Path) -> Result<Self, AppError> {
         Ok(App::new(Store::open(path).await?))
     }
-
 }
 
 /// Render a project report as CSV (one header row + one row per sample). Empty cells for
@@ -1982,8 +2118,11 @@ pub fn report_csv(rows: &[ProjectSampleReport]) -> String {
 
 #[cfg(test)]
 mod placement_tests {
-    use super::{assemble_assignment, assemble_assignment_robust, pool_votes, snp_obs_from_assignment, strand_reconcile_to_tree, support_backoff_terminal};
     use super::SourceType;
+    use super::{
+        assemble_assignment, assemble_assignment_robust, pool_votes, snp_obs_from_assignment, strand_reconcile_to_tree,
+        support_backoff_terminal,
+    };
     use navigator_analysis::haplo::parse_ftdna_json;
     use std::collections::HashMap;
 
@@ -2009,11 +2148,18 @@ mod placement_tests {
         let calls: HashMap<i64, char> = [(146, 'G'), (263, 'G'), (750, 'T')].into_iter().collect();
         let assignment = assemble_assignment(&tree, &calls);
         // The lineage carries a,b,c (derived); the child branch D carries d.
-        assert!(assignment.branches.iter().any(|b| b.snps.iter().any(|s| s.name == "d")), "D is a child branch");
+        assert!(
+            assignment.branches.iter().any(|b| b.snps.iter().any(|s| s.name == "d")),
+            "D is a child branch"
+        );
         let obs = snp_obs_from_assignment(&assignment, true);
         let mut names: Vec<&str> = obs.iter().map(|o| o.name.as_str()).collect();
         names.sort_unstable();
-        assert_eq!(names, ["a", "b", "c"], "obs are the lineage mutations, not the untaken child d");
+        assert_eq!(
+            names,
+            ["a", "b", "c"],
+            "obs are the lineage mutations, not the untaken child d"
+        );
     }
 
     /// The parsimony back-off trims a net-contradicted deep tail (the sparse-panel / aDNA
@@ -2024,19 +2170,34 @@ mod placement_tests {
         let tree = parse_ftdna_json(SPINE6).unwrap();
         // Derived A+B (peak at B), then below B: ancestral@750, contradiction@1000 (G≠der A),
         // a lone derived@1100 — tail net −1. Should back off F(6) → B(3).
-        let sparse: HashMap<i64, char> =
-            [(146, 'G'), (263, 'G'), (750, 'C'), (1000, 'G'), (1100, 'T')].into_iter().collect();
-        assert_eq!(support_backoff_terminal(&tree, &sparse, 6), 3, "net-negative tail trimmed to B");
+        let sparse: HashMap<i64, char> = [(146, 'G'), (263, 'G'), (750, 'C'), (1000, 'G'), (1100, 'T')]
+            .into_iter()
+            .collect();
+        assert_eq!(
+            support_backoff_terminal(&tree, &sparse, 6),
+            3,
+            "net-negative tail trimmed to B"
+        );
 
         // A clean fully-derived path keeps the deepest terminal F.
-        let clean: HashMap<i64, char> =
-            [(146, 'G'), (263, 'G'), (750, 'T'), (1000, 'A'), (1100, 'T')].into_iter().collect();
-        assert_eq!(support_backoff_terminal(&tree, &clean, 6), 6, "clean path keeps the terminal");
+        let clean: HashMap<i64, char> = [(146, 'G'), (263, 'G'), (750, 'T'), (1000, 'A'), (1100, 'T')]
+            .into_iter()
+            .collect();
+        assert_eq!(
+            support_backoff_terminal(&tree, &clean, 6),
+            6,
+            "clean path keeps the terminal"
+        );
 
         // A lone contradiction (@750) outweighed by deeper derived calls still reaches F.
-        let recovered: HashMap<i64, char> =
-            [(146, 'G'), (263, 'G'), (750, 'C'), (1000, 'A'), (1100, 'T')].into_iter().collect();
-        assert_eq!(support_backoff_terminal(&tree, &recovered, 6), 6, "deeper support recovers depth");
+        let recovered: HashMap<i64, char> = [(146, 'G'), (263, 'G'), (750, 'C'), (1000, 'A'), (1100, 'T')]
+            .into_iter()
+            .collect();
+        assert_eq!(
+            support_backoff_terminal(&tree, &recovered, 6),
+            6,
+            "deeper support recovers depth"
+        );
     }
 
     /// Genome-level pooling: a sparse source that alone stops shallow, combined with a dense source
@@ -2051,11 +2212,16 @@ mod placement_tests {
         assert_eq!(sparse_only.ranked.first().unwrap().name, "A");
 
         // Dense WGS: every spine SNP derived. Pool the two by position → the deep terminal F(6).
-        let dense: HashMap<i64, char> =
-            [(146, 'G'), (263, 'G'), (750, 'T'), (1000, 'A'), (1100, 'T')].into_iter().collect();
+        let dense: HashMap<i64, char> = [(146, 'G'), (263, 'G'), (750, 'T'), (1000, 'A'), (1100, 'T')]
+            .into_iter()
+            .collect();
         let pooled = pool_votes(&[(SourceType::Chip, sparse), (SourceType::WgsShortRead, dense)]);
         let placed = assemble_assignment(&tree, &pooled);
-        assert_eq!(placed.ranked.first().unwrap().name, "F", "pooled evidence reaches the deep terminal");
+        assert_eq!(
+            placed.ranked.first().unwrap().name,
+            "F",
+            "pooled evidence reaches the deep terminal"
+        );
     }
 
     /// A higher-weight source wins the per-position vote: WGS (0.85) derived outvotes a Chip
@@ -2084,11 +2250,14 @@ mod placement_tests {
 
         // The reconciled calls place to B (derived at 146 + 263), same as forward-strand input.
         assert_eq!(
-            assemble_assignment_robust(&tree, &strand_reconcile_to_tree(&tree, [(146, 'C'), (263, 'G')].into_iter().collect()))
-                .ranked
-                .first()
-                .unwrap()
-                .name,
+            assemble_assignment_robust(
+                &tree,
+                &strand_reconcile_to_tree(&tree, [(146, 'C'), (263, 'G')].into_iter().collect())
+            )
+            .ranked
+            .first()
+            .unwrap()
+            .name,
             "B"
         );
     }
@@ -2126,7 +2295,10 @@ mod placement_tests {
         let tree = parse_ftdna_json(TREE).unwrap();
         let calls: HashMap<i64, char> = [(146, 'G'), (263, 'G'), (750, 'T'), (1000, 'A')].into_iter().collect();
         assert_eq!(assemble_assignment(&tree, &calls).ranked.first().unwrap().name, "D");
-        assert_eq!(assemble_assignment_robust(&tree, &calls).ranked.first().unwrap().name, "D");
+        assert_eq!(
+            assemble_assignment_robust(&tree, &calls).ranked.first().unwrap().name,
+            "D"
+        );
     }
 
     /// The GVCF fast path reconstructs exactly the `calls` a pileup would yield. A fully
@@ -2136,7 +2308,9 @@ mod placement_tests {
         use navigator_analysis::gvcf;
         let tree = parse_ftdna_json(TREE).unwrap();
         let mut called = gvcf::CalledBases::default();
-        called.variant_bases.extend([(146, 'G'), (263, 'G'), (750, 'T'), (1000, 'A')]);
+        called
+            .variant_bases
+            .extend([(146, 'G'), (263, 'G'), (750, 'T'), (1000, 'A')]);
         called.callable.extend([146, 263, 750, 1000]);
         // Reference bases are irrelevant here (every site is a variant).
         let calls = gvcf::assemble_calls(&called, &HashMap::new());
@@ -2156,10 +2330,14 @@ mod placement_tests {
         let mut called = gvcf::CalledBases::default();
         called.variant_bases.extend([(146, 'G'), (263, 'G'), (1000, 'A')]);
         called.callable.extend([146, 263, 750, 1000]); // 750 hom-ref → its reference base
-        // The reference carries the *derived* T at 750 (shared backbone the sample also has).
+                                                       // The reference carries the *derived* T at 750 (shared backbone the sample also has).
         let ref_base: HashMap<i64, char> = [(750, 'T')].into_iter().collect();
         let calls = gvcf::assemble_calls(&called, &ref_base);
-        assert_eq!(calls.get(&750), Some(&'T'), "hom-ref site takes the reference base (derived here)");
+        assert_eq!(
+            calls.get(&750),
+            Some(&'T'),
+            "hom-ref site takes the reference base (derived here)"
+        );
         assert_eq!(assemble_assignment(&tree, &calls).ranked.first().unwrap().name, "D");
     }
 
@@ -2174,8 +2352,18 @@ mod placement_tests {
         called.callable.extend([500, 900]); // 900 hom-ref → reference base, minus strand
         let ref_base: HashMap<i64, char> = [(900, 'C')].into_iter().collect();
         let lifted = vec![
-            LiftedPos { tree_pos: 146, contig: "chrM".into(), pos: 500, reverse: false },
-            LiftedPos { tree_pos: 263, contig: "chrM".into(), pos: 900, reverse: true },
+            LiftedPos {
+                tree_pos: 146,
+                contig: "chrM".into(),
+                pos: 500,
+                reverse: false,
+            },
+            LiftedPos {
+                tree_pos: 263,
+                contig: "chrM".into(),
+                pos: 900,
+                reverse: true,
+            },
         ];
         let calls = super::assemble_calls_lifted(&called, &lifted, &ref_base);
         assert_eq!(calls.get(&146), Some(&'G'));
@@ -2210,9 +2398,17 @@ mod publish_tests {
             })
             .await
             .unwrap();
-        sequence_run::set_library_stats(app.store.pool(), run.id, Some("A00182"), None, None, None, Some("H5WLTDMXX"))
-            .await
-            .unwrap();
+        sequence_run::set_library_stats(
+            app.store.pool(),
+            run.id,
+            Some("A00182"),
+            None,
+            None,
+            None,
+            Some("H5WLTDMXX"),
+        )
+        .await
+        .unwrap();
         let reloaded = sequence_run::get(app.store.pool(), run.id).await.unwrap().unwrap();
 
         let value = app.sequence_run_record(&reloaded).await.unwrap();
@@ -2233,7 +2429,13 @@ mod ymatch_tests {
             panel_name: "Y-37".into(),
             provider: Some("FTDNA".into()),
             source: None,
-            markers: markers.iter().map(|(m, v)| StrMarker { marker: (*m).into(), value: (*v).into() }).collect(),
+            markers: markers
+                .iter()
+                .map(|(m, v)| StrMarker {
+                    marker: (*m).into(),
+                    value: (*v).into(),
+                })
+                .collect(),
         };
         str_profile::create(app.store.pool(), &new).await.unwrap();
     }
@@ -2257,7 +2459,10 @@ mod ymatch_tests {
 
         let matches = app.y_matches(q.guid, None).await.unwrap();
         assert_eq!(matches.len(), 3, "query is excluded; three candidates ranked");
-        assert_eq!(matches.iter().map(|m| m.donor.as_str()).collect::<Vec<_>>(), ["Near", "Mid", "Far"]);
+        assert_eq!(
+            matches.iter().map(|m| m.donor.as_str()).collect::<Vec<_>>(),
+            ["Near", "Mid", "Far"]
+        );
         assert_eq!(matches[0].str_gd, Some(0));
         assert_eq!(matches[2].str_gd, Some(2));
         assert!(matches.iter().all(|m| m.signal == YSignal::Str));
@@ -2295,11 +2500,22 @@ mod sync_pull_tests {
         let app = App::new(Store::open_in_memory().await.unwrap());
         let b = app.add_biosample(None, "S1", None, Some("F".into())).await.unwrap();
         let value = serde_json::json!({ "sex": "M", "center_name": "LabX" });
-        app.apply_remote(NS_BIOSAMPLE, &format!("biosample:{}", b.guid), &value).await.unwrap();
-        let updated = app.list_all_biosamples().await.unwrap().into_iter().find(|x| x.guid == b.guid).unwrap();
+        app.apply_remote(NS_BIOSAMPLE, &format!("biosample:{}", b.guid), &value)
+            .await
+            .unwrap();
+        let updated = app
+            .list_all_biosamples()
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|x| x.guid == b.guid)
+            .unwrap();
         assert_eq!(updated.sex.as_deref(), Some("M"));
         assert_eq!(updated.center_name.as_deref(), Some("LabX"));
-        assert_eq!(updated.donor_identifier, "S1", "identity (donor_identifier) is preserved — not in the PII-free record");
+        assert_eq!(
+            updated.donor_identifier, "S1",
+            "identity (donor_identifier) is preserved — not in the PII-free record"
+        );
     }
 
     /// A derived-summary collection is a no-op on apply (recomputed locally, never overwritten).
@@ -2307,7 +2523,9 @@ mod sync_pull_tests {
     async fn apply_remote_derived_is_noop() {
         let app = App::new(Store::open_in_memory().await.unwrap());
         // No panic / no error for a collection we only track.
-        app.apply_remote(NS_ALIGNMENT, "alignment:1", &serde_json::json!({})).await.unwrap();
+        app.apply_remote(NS_ALIGNMENT, "alignment:1", &serde_json::json!({}))
+            .await
+            .unwrap();
     }
 }
 
@@ -2344,11 +2562,15 @@ mod ibd_attest_tests {
         att.signature = key.sign(&att.canonical());
         att.signing_public_key = key.did_key();
 
-        assert!(du_atproto::verify_did_key(&att.signing_public_key, att.canonical().as_bytes(), &att.signature).is_ok());
+        assert!(
+            du_atproto::verify_did_key(&att.signing_public_key, att.canonical().as_bytes(), &att.signature).is_ok()
+        );
         // Tamper a signed field → canonical changes → verification fails.
         let mut bad = att.clone();
         bad.total_shared_cm = 999.0;
-        assert!(du_atproto::verify_did_key(&bad.signing_public_key, bad.canonical().as_bytes(), &att.signature).is_err());
+        assert!(
+            du_atproto::verify_did_key(&bad.signing_public_key, bad.canonical().as_bytes(), &att.signature).is_err()
+        );
     }
 
     /// Two peers computing the same summary produce the same agreement hash; different summaries don't.
@@ -2365,16 +2587,38 @@ mod ibd_attest_tests {
         use navigator_store::Store;
         let app = App::new(Store::open_in_memory().await.unwrap());
         let b = app.add_biosample(None, "S1", None, None).await.unwrap();
-        let session = EstablishedSession { session_id: "sess-x".into(), partner_did: "did:key:zB".into(), key: [0u8; 32] };
+        let session = EstablishedSession {
+            session_id: "sess-x".into(),
+            partner_did: "did:key:zB".into(),
+            key: [0u8; 32],
+        };
         let result = IbdExchangeResult {
             summary: summary(75.0),
             segments: vec![],
             overlapping_sites: 100,
-            my_attestation: IbdAttestation::unsigned("exchange:r", "sess-x", "did:key:zA", Some(b.guid.to_string()), Some("bio-B".into()), &summary(75.0), "t"),
-            partner_attestation: IbdAttestation::unsigned("exchange:r", "sess-x", "did:key:zB", Some("bio-B".into()), Some(b.guid.to_string()), &summary(75.0), "t"),
+            my_attestation: IbdAttestation::unsigned(
+                "exchange:r",
+                "sess-x",
+                "did:key:zA",
+                Some(b.guid.to_string()),
+                Some("bio-B".into()),
+                &summary(75.0),
+                "t",
+            ),
+            partner_attestation: IbdAttestation::unsigned(
+                "exchange:r",
+                "sess-x",
+                "did:key:zB",
+                Some("bio-B".into()),
+                Some(b.guid.to_string()),
+                &summary(75.0),
+                "t",
+            ),
             agreed: true,
         };
-        app.record_ibd_exchange(b.guid, &session, "exchange:r", &result).await.unwrap();
+        app.record_ibd_exchange(b.guid, &session, "exchange:r", &result)
+            .await
+            .unwrap();
         let rows = app.list_ibd_exchanges_for_subject(b.guid).await.unwrap();
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].total_shared_cm, 75.0);
@@ -2434,7 +2678,10 @@ mod ibd_federated_tests {
         assert_eq!(out[0].suggested_sample_guid, "g1");
         assert_eq!(out[0].suggestion_type, "POPULATION_OVERLAP");
         assert!((out[0].score - 0.82).abs() < 1e-9);
-        assert_eq!(out[0].signals, vec!["POPULATION_OVERLAP".to_string(), "HAPLOGROUP".to_string()]);
+        assert_eq!(
+            out[0].signals,
+            vec!["POPULATION_OVERLAP".to_string(), "HAPLOGROUP".to_string()]
+        );
     }
 
     #[test]
@@ -2470,7 +2717,14 @@ mod export_tests {
         for ok in ["chr1", "1", "chr22", "22", "chrX", "X", "chrY", "Y", "chrM", "MT"] {
             assert!(is_primary_contig(ok), "{ok} should be primary");
         }
-        for no in ["chr23", "chrUn_KI270302v1", "chr1_KI270706v1_random", "HLA-A", "GL000220.1", ""] {
+        for no in [
+            "chr23",
+            "chrUn_KI270302v1",
+            "chr1_KI270706v1_random",
+            "HLA-A",
+            "GL000220.1",
+            "",
+        ] {
             assert!(!is_primary_contig(no), "{no} should not be primary");
         }
     }
@@ -2510,7 +2764,12 @@ mod ibd_tests {
     #[test]
     fn overlapping_sites_counts_both_called_intersection() {
         let a = vec![sg("chr1", 100, 0), sg("chr1", 200, 1), sg("chr1", 300, -1)]; // 300 no-call
-        let b = vec![sg("chr1", 100, 2), sg("chr1", 200, 1), sg("chr1", 300, 0), sg("chr1", 400, 0)];
+        let b = vec![
+            sg("chr1", 100, 2),
+            sg("chr1", 200, 1),
+            sg("chr1", 300, 0),
+            sg("chr1", 400, 0),
+        ];
         // Shared & called in both: 100, 200 (300 is a no-call in a; 400 absent in a).
         assert_eq!(overlapping_called_sites(&a, &b), 2);
         assert_eq!(overlapping_called_sites(&a, &[]), 0);
@@ -2557,20 +2816,35 @@ mod settings_tests {
     #[test]
     fn y_provider_precedence_env_then_settings_then_default() {
         // env wins even when settings disagree
-        assert!(matches!(resolve_y_provider(Some("ftdna"), Some("decodingus")), YTreeProvider::Ftdna));
-        assert!(matches!(resolve_y_provider(Some("decodingus"), Some("ftdna")), YTreeProvider::DecodingUs));
+        assert!(matches!(
+            resolve_y_provider(Some("ftdna"), Some("decodingus")),
+            YTreeProvider::Ftdna
+        ));
+        assert!(matches!(
+            resolve_y_provider(Some("decodingus"), Some("ftdna")),
+            YTreeProvider::DecodingUs
+        ));
         // settings used when env absent
         assert!(matches!(resolve_y_provider(None, Some("ftdna")), YTreeProvider::Ftdna));
         // default when neither
         assert!(matches!(resolve_y_provider(None, None), YTreeProvider::DecodingUs));
         // unrecognized value falls back to default
-        assert!(matches!(resolve_y_provider(Some("bogus"), None), YTreeProvider::DecodingUs));
+        assert!(matches!(
+            resolve_y_provider(Some("bogus"), None),
+            YTreeProvider::DecodingUs
+        ));
     }
 
     #[test]
     fn appview_url_precedence_and_normalization() {
-        assert_eq!(resolve_appview_url(Some("https://av.example/".into()), Some("http://x".into())), "https://av.example");
-        assert_eq!(resolve_appview_url(None, Some("http://host:9000".into())), "http://host:9000");
+        assert_eq!(
+            resolve_appview_url(Some("https://av.example/".into()), Some("http://x".into())),
+            "https://av.example"
+        );
+        assert_eq!(
+            resolve_appview_url(None, Some("http://host:9000".into())),
+            "http://host:9000"
+        );
         assert_eq!(resolve_appview_url(None, None), "http://localhost:9000");
         // blank values are ignored (fall through to default)
         assert_eq!(resolve_appview_url(Some("".into()), None), "http://localhost:9000");
@@ -2593,7 +2867,10 @@ mod settings_tests {
         let partial: AppSettings = serde_json::from_str(r#"{"appview_url":"http://h"}"#).unwrap();
         assert_eq!(partial.appview_url.as_deref(), Some("http://h"));
         assert_eq!(partial.y_tree_provider, None);
-        assert_eq!(AppSettings::default(), serde_json::from_str::<AppSettings>("{}").unwrap());
+        assert_eq!(
+            AppSettings::default(),
+            serde_json::from_str::<AppSettings>("{}").unwrap()
+        );
     }
 }
 
@@ -2605,10 +2882,19 @@ mod import_tests {
     #[test]
     fn artifact_freshness_only_rejects_a_known_mismatch() {
         assert!(artifact_is_fresh(Some("100:5"), Some("100:5")), "matching sig → fresh");
-        assert!(!artifact_is_fresh(Some("100:5"), Some("200:5")), "changed mtime → stale");
+        assert!(
+            !artifact_is_fresh(Some("100:5"), Some("200:5")),
+            "changed mtime → stale"
+        );
         assert!(!artifact_is_fresh(Some("100:5"), Some("100:9")), "changed size → stale");
-        assert!(artifact_is_fresh(None, Some("100:5")), "legacy row (no stored sig) → trusted");
-        assert!(artifact_is_fresh(Some("100:5"), None), "source gone (no current sig) → trusted");
+        assert!(
+            artifact_is_fresh(None, Some("100:5")),
+            "legacy row (no stored sig) → trusted"
+        );
+        assert!(
+            artifact_is_fresh(Some("100:5"), None),
+            "source gone (no current sig) → trusted"
+        );
     }
 
     #[test]
@@ -2625,7 +2911,9 @@ mod import_tests {
 
     #[test]
     fn recognizes_data_extensions() {
-        for ok in ["x.bam", "x.cram", "x.vcf", "x.vcf.gz", "x.fasta", "x.fa", "x.csv", "x.tsv", "x.txt"] {
+        for ok in [
+            "x.bam", "x.cram", "x.vcf", "x.vcf.gz", "x.fasta", "x.fa", "x.csv", "x.tsv", "x.txt",
+        ] {
             assert!(is_recognized_data_file(Path::new(ok)), "{ok} should be recognized");
         }
         for no in ["x.png", "x.pdf", "x", "x.bai", "x.crai"] {
@@ -2647,9 +2935,14 @@ mod import_tests {
 
         let mut out = Vec::new();
         collect_data_files(&dir, &mut out, 0);
-        let names: std::collections::BTreeSet<String> =
-            out.iter().map(|p| p.file_name().unwrap().to_string_lossy().into_owned()).collect();
-        assert_eq!(names, ["a.bam", "b.vcf", "c.txt"].iter().map(|s| s.to_string()).collect());
+        let names: std::collections::BTreeSet<String> = out
+            .iter()
+            .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(
+            names,
+            ["a.bam", "b.vcf", "c.txt"].iter().map(|s| s.to_string()).collect()
+        );
 
         // A single recognized file yields itself; an unrecognized file yields nothing.
         let mut one = Vec::new();

@@ -82,8 +82,17 @@ impl IbdPanel {
     /// resolve time rather than excluding them from the panel here. Returns `(panel, n_palindromic)`
     /// (the retained palindrome count, for the build log).
     pub fn from_sites(build: impl Into<String>, sites: Vec<IbdPanelSite>) -> (Self, usize) {
-        let palindromic = sites.iter().filter(|s| is_palindromic(s.chm13.reference, s.chm13.alternate)).count();
-        (IbdPanel { build: build.into(), sites }, palindromic)
+        let palindromic = sites
+            .iter()
+            .filter(|s| is_palindromic(s.chm13.reference, s.chm13.alternate))
+            .count();
+        (
+            IbdPanel {
+                build: build.into(),
+                sites,
+            },
+            palindromic,
+        )
     }
 
     /// Resolve chip calls (on `build`, as `(contig, pos, a1, a2)`) to canonical CHM13 dosages.
@@ -107,14 +116,18 @@ impl IbdPanel {
         }
         let mut out = Vec::new();
         for (contig, pos, a1, a2) in calls {
-            let Some(site) = index.get(&(contig.as_str(), *pos)) else { continue };
+            let Some(site) = index.get(&(contig.as_str(), *pos)) else {
+                continue;
+            };
             // Strand-ambiguous palindromes (A/T, C/G) can't be oriented from a chip's reported
             // alleles — skip them for the chip path (WGS/ancestry still use them via direct base
             // calls). The probe panel retains them; this is where the chip-only exclusion lives.
             if is_palindromic(site.chm13.reference, site.chm13.alternate) {
                 continue;
             }
-            let Some(dosage) = dosage_from_alleles(*a1, *a2, site.chm13.reference, site.chm13.alternate) else { continue };
+            let Some(dosage) = dosage_from_alleles(*a1, *a2, site.chm13.reference, site.chm13.alternate) else {
+                continue;
+            };
             out.push(SiteGenotype {
                 name: site.rsid.clone(),
                 contig: site.chm13.contig.clone(),
@@ -138,7 +151,10 @@ impl IbdPanel {
     /// The canonical CHM13 `(contig, position)` sites — the targets a WGS caller genotypes so its
     /// dosages line up with the chip path.
     pub fn chm13_sites(&self) -> Vec<(&str, i64)> {
-        self.sites.iter().map(|s| (s.chm13.contig.as_str(), s.chm13.position)).collect()
+        self.sites
+            .iter()
+            .map(|s| (s.chm13.contig.as_str(), s.chm13.position))
+            .collect()
     }
 }
 
@@ -158,8 +174,18 @@ mod tests {
     fn site(rsid: &str, chm13: (i64, char, char), g37: Option<(i64, char, char)>) -> IbdPanelSite {
         IbdPanelSite {
             rsid: rsid.into(),
-            chm13: Locus { contig: "chr1".into(), position: chm13.0, reference: chm13.1, alternate: chm13.2 },
-            grch37: g37.map(|(p, r, a)| Locus { contig: "1".into(), position: p, reference: r, alternate: a }),
+            chm13: Locus {
+                contig: "chr1".into(),
+                position: chm13.0,
+                reference: chm13.1,
+                alternate: chm13.2,
+            },
+            grch37: g37.map(|(p, r, a)| Locus {
+                contig: "1".into(),
+                position: p,
+                reference: r,
+                alternate: a,
+            }),
             grch38: None,
         }
     }
@@ -180,7 +206,11 @@ mod tests {
         // The chip path skips palindromes (can't orient strand) but resolves the non-palindromic one.
         let g = panel.resolve_chip(
             "GRCh37",
-            &[("1".into(), 500, 'A', 'G'), ("1".into(), 600, 'A', 'T'), ("1".into(), 700, 'C', 'G')],
+            &[
+                ("1".into(), 500, 'A', 'G'),
+                ("1".into(), 600, 'A', 'T'),
+                ("1".into(), 700, 'C', 'G'),
+            ],
         );
         assert_eq!(g.len(), 1);
         assert_eq!(g[0].name, "rs1");
@@ -217,13 +247,22 @@ mod tests {
         // The asset's GRCh37 locus is ref/alt-SWAPPED vs CHM13: chm13 chr1:100 G/T (ALT=T) but
         // grch37 1:500 T/G (ALT=G). A chip hom for G is hom-CHM13-REF → dosage 0. Scoring against the
         // build ALT (G) would wrongly give 2; scoring against the CHM13 ALT (T) gives the correct 0.
-        let (panel, _) = IbdPanel::from_sites("chm13v2.0", vec![site("rs_swap", (100, 'G', 'T'), Some((500, 'T', 'G')))]);
+        let (panel, _) = IbdPanel::from_sites(
+            "chm13v2.0",
+            vec![site("rs_swap", (100, 'G', 'T'), Some((500, 'T', 'G')))],
+        );
         let g = panel.resolve_chip("GRCh37", &[("1".to_string(), 500, 'G', 'G')]);
         assert_eq!(g.len(), 1);
         assert_eq!(g[0].dosage, 0); // hom CHM13-ref, not 2
-        assert_eq!((g[0].reference_allele.as_str(), g[0].alternate_allele.as_str()), ("G", "T")); // canonical CHM13 alleles
-        // The other homozygote (T/T) is hom CHM13-ALT → dosage 2.
-        assert_eq!(panel.resolve_chip("GRCh37", &[("1".to_string(), 500, 'T', 'T')])[0].dosage, 2);
+        assert_eq!(
+            (g[0].reference_allele.as_str(), g[0].alternate_allele.as_str()),
+            ("G", "T")
+        ); // canonical CHM13 alleles
+           // The other homozygote (T/T) is hom CHM13-ALT → dosage 2.
+        assert_eq!(
+            panel.resolve_chip("GRCh37", &[("1".to_string(), 500, 'T', 'T')])[0].dosage,
+            2
+        );
     }
 
     #[test]

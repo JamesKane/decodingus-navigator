@@ -13,7 +13,10 @@ use crate::error::SyncError;
 use crate::tokens::Session;
 
 fn now() -> i64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0)
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
 }
 
 /// Build a reqwest client, optionally trusting a dev CA (`NAVIGATOR_DEV_CA`, a PEM path)
@@ -91,7 +94,10 @@ impl PdsClient {
         let auth = if session.dpop_key_b64.is_empty() {
             Auth::Bearer(session.access_token.clone())
         } else {
-            Auth::Dpop { token: session.access_token.clone(), key: EcKey::from_base64(&session.dpop_key_b64)? }
+            Auth::Dpop {
+                token: session.access_token.clone(),
+                key: EcKey::from_base64(&session.dpop_key_b64)?,
+            }
         };
         Ok(PdsClient {
             http,
@@ -228,7 +234,11 @@ impl PdsClient {
                 if resp.status().is_success() {
                     return Ok(resp.json().await?);
                 }
-                let nonce = resp.headers().get("DPoP-Nonce").and_then(|v| v.to_str().ok()).map(String::from);
+                let nonce = resp
+                    .headers()
+                    .get("DPoP-Nonce")
+                    .and_then(|v| v.to_str().ok())
+                    .map(String::from);
                 let Some(nonce) = nonce else {
                     return Err(xrpc_error(nsid, resp).await);
                 };
@@ -300,7 +310,10 @@ mod tests {
 
     #[test]
     fn record_ref_rkey() {
-        let r = RecordRef { uri: "at://did:plc:x/com.decodingus.test.rec/3kabc".into(), cid: "bafy".into() };
+        let r = RecordRef {
+            uri: "at://did:plc:x/com.decodingus.test.rec/3kabc".into(),
+            cid: "bafy".into(),
+        };
         assert_eq!(r.rkey(), "3kabc");
     }
 
@@ -338,7 +351,16 @@ mod tests {
         // Publish the real typed alignment (coverage) record from the shared contract
         // (floats as strings — atproto DAG-CBOR rejects floats).
         let rec = du_domain::fed::AlignmentRecord::new(
-            "chm13v2.0", Some("bwa-mem2".into()), 178.81, 182.0, 28.9, 1.0, 1.0, 1.0, 16569, 16292,
+            "chm13v2.0",
+            Some("bwa-mem2".into()),
+            178.81,
+            182.0,
+            28.9,
+            1.0,
+            1.0,
+            1.0,
+            16569,
+            16292,
             "2026-06-02T00:00:00Z",
         );
         let record = serde_json::to_value(&rec).unwrap();
@@ -348,7 +370,10 @@ mod tests {
             .expect("createRecord");
         assert!(r.uri.starts_with("at://"), "uri: {}", r.uri);
 
-        let got = client.get_record(du_domain::fed::NS_ALIGNMENT, r.rkey()).await.expect("getRecord");
+        let got = client
+            .get_record(du_domain::fed::NS_ALIGNMENT, r.rkey())
+            .await
+            .expect("getRecord");
         assert_eq!(got["value"]["metrics"]["meanCoverage"], "178.81");
         assert_eq!(got["value"]["metrics"]["callableBases"], 16292);
         assert_eq!(got["value"]["referenceBuild"], "chm13v2.0");

@@ -59,7 +59,11 @@ pub async fn upsert(pool: &SqlitePool, p: &StoredConsensusProfile) -> Result<(),
 }
 
 /// Load the snapshot for a (biosample, dna_type), if one has been built.
-pub async fn get(pool: &SqlitePool, guid: SampleGuid, dna_type: &str) -> Result<Option<StoredConsensusProfile>, StoreError> {
+pub async fn get(
+    pool: &SqlitePool,
+    guid: SampleGuid,
+    dna_type: &str,
+) -> Result<Option<StoredConsensusProfile>, StoreError> {
     let row: Option<StoredConsensusProfile> =
         sqlx::query_as("SELECT * FROM consensus_profile WHERE biosample_guid = ? AND dna_type = ?")
             .bind(guid.0.to_string())
@@ -146,7 +150,7 @@ mod tests {
         upsert(pool.pool(), &auto).await.unwrap();
         assert_eq!(get(pool.pool(), g, "Auto").await.unwrap().unwrap().confirmed, 42);
         assert_eq!(get(pool.pool(), g, "Y").await.unwrap().unwrap().confirmed, 8); // Y row untouched
-        // Upsert replaces (same biosample + dna_type).
+                                                                                   // Upsert replaces (same biosample + dna_type).
         let mut updated = sample(&g.0.to_string());
         updated.confirmed = 9;
         upsert(pool.pool(), &updated).await.unwrap();

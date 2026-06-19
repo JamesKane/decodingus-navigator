@@ -35,7 +35,9 @@ impl AppSettings {
     /// `~/.decodingus/config/settings.json` (honoring `NAVIGATOR_REFGENOME_DIR`, same base as the
     /// reference-source overrides).
     pub fn path() -> PathBuf {
-        navigator_refgenome::cache::base_dir().join("config").join("settings.json")
+        navigator_refgenome::cache::base_dir()
+            .join("config")
+            .join("settings.json")
     }
 
     /// Load settings; a missing or unreadable/invalid file yields the empty default.

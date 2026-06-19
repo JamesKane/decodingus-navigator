@@ -47,12 +47,32 @@ pub fn coverage_tsv(cov: &CoverageResult) -> String {
     );
     for s in &cov.contig_coverage_stats {
         let c = cov.contig_callable.iter().find(|m| m.contig == s.contig);
-        let (callable, nocov, low, exc, poor, refn) =
-            c.map_or((0, 0, 0, 0, 0, 0), |m| (m.callable, m.no_coverage, m.low_coverage, m.excessive_coverage, m.poor_mapping_quality, m.ref_n));
+        let (callable, nocov, low, exc, poor, refn) = c.map_or((0, 0, 0, 0, 0, 0), |m| {
+            (
+                m.callable,
+                m.no_coverage,
+                m.low_coverage,
+                m.excessive_coverage,
+                m.poor_mapping_quality,
+                m.ref_n,
+            )
+        });
         out.push_str(&format!(
             "{}\t{}\t{}\t{}\t{:.2}\t{:.2}\t{:.1}\t{:.1}\t{}\t{}\t{}\t{}\t{}\t{}\n",
-            s.contig, s.end_pos, s.num_reads, s.cov_bases, s.coverage, s.mean_depth, s.mean_base_q,
-            s.mean_map_q, callable, nocov, low, exc, poor, refn,
+            s.contig,
+            s.end_pos,
+            s.num_reads,
+            s.cov_bases,
+            s.coverage,
+            s.mean_depth,
+            s.mean_base_q,
+            s.mean_map_q,
+            callable,
+            nocov,
+            low,
+            exc,
+            poor,
+            refn,
         ));
     }
     out
@@ -66,7 +86,12 @@ pub fn coverage_html(cov: &CoverageResult, label: &str) -> String {
         let callable = c.map_or(0, |m| m.callable);
         rows.push_str(&format!(
             "<tr><td>{}</td><td>{}</td><td>{}</td><td>{:.2}</td><td>{:.2}</td><td>{}</td></tr>",
-            esc(&s.contig), s.end_pos, s.num_reads, s.coverage, s.mean_depth, callable,
+            esc(&s.contig),
+            s.end_pos,
+            s.num_reads,
+            s.coverage,
+            s.mean_depth,
+            callable,
         ));
     }
     format!(
@@ -115,7 +140,10 @@ pub fn read_metrics_tsv(m: &ReadMetrics) -> String {
     row("PF_READS_ALIGNED", m.pf_reads_aligned.to_string());
     row("PCT_PF_READS_ALIGNED", format!("{:.4}", m.pct_pf_reads_aligned));
     row("READS_ALIGNED_IN_PAIRS", m.reads_aligned_in_pairs.to_string());
-    row("PCT_READS_ALIGNED_IN_PAIRS", format!("{:.4}", m.pct_reads_aligned_in_pairs));
+    row(
+        "PCT_READS_ALIGNED_IN_PAIRS",
+        format!("{:.4}", m.pct_reads_aligned_in_pairs),
+    );
     row("PROPER_PAIRS", m.proper_pairs.to_string());
     row("PCT_PROPER_PAIRS", format!("{:.4}", m.pct_proper_pairs));
     row("MEDIAN_READ_LENGTH", format!("{:.1}", m.median_read_length));
@@ -151,16 +179,26 @@ pub fn ancestry_tsv(a: &AncestryResult) -> String {
     if let Some(fd) = a.fit_distance {
         out.push_str(&format!("# fit_distance\t{fd:.4}\n"));
     }
-    out.push_str(&format!("# pipeline_version\t{}\treference_version\t{}\n", a.pipeline_version, a.reference_version));
+    out.push_str(&format!(
+        "# pipeline_version\t{}\treference_version\t{}\n",
+        a.pipeline_version, a.reference_version
+    ));
     out.push_str("level\tcode\tname\tpercentage\trank\tci_lower\tci_upper\n");
     for s in &a.super_population_summary {
-        out.push_str(&format!("super\t{}\t{}\t{:.2}\t\t\t\n", s.super_population, s.super_population, s.percentage));
+        out.push_str(&format!(
+            "super\t{}\t{}\t{:.2}\t\t\t\n",
+            s.super_population, s.super_population, s.percentage
+        ));
     }
     for c in &a.components {
         out.push_str(&format!(
             "population\t{}\t{}\t{:.2}\t{}\t{:.2}\t{:.2}\n",
-            c.population_code, c.population_name, c.percentage, c.rank,
-            c.confidence_interval.lower, c.confidence_interval.upper,
+            c.population_code,
+            c.population_name,
+            c.percentage,
+            c.rank,
+            c.confidence_interval.lower,
+            c.confidence_interval.upper,
         ));
     }
     out
@@ -182,8 +220,12 @@ pub fn ancestry_html(a: &AncestryResult) -> String {
     for c in &a.components {
         rows.push_str(&format!(
             "<tr><td>{}</td><td>{}</td><td>{}</td><td>{:.2}</td><td>{:.1} – {:.1}</td></tr>",
-            c.rank, esc(&c.population_code), esc(&c.population_name), c.percentage,
-            c.confidence_interval.lower, c.confidence_interval.upper,
+            c.rank,
+            esc(&c.population_code),
+            esc(&c.population_name),
+            c.percentage,
+            c.confidence_interval.lower,
+            c.confidence_interval.upper,
         ));
     }
     let call_rate = if a.snps_analyzed > 0 {
@@ -219,7 +261,12 @@ pub fn mtdna_variants_tsv(variants: &[MtVariant]) -> String {
     for v in variants {
         out.push_str(&format!(
             "{}\t{}\t{}\t{}\t{}\t{:?}\n",
-            v.position, v.notation(), v.region().label(), v.reference, v.alternate, v.kind,
+            v.position,
+            v.notation(),
+            v.region().label(),
+            v.reference,
+            v.alternate,
+            v.kind,
         ));
     }
     out
@@ -264,9 +311,7 @@ pub fn callable_bed(per_contig: &[(String, Vec<(i64, i64)>)]) -> String {
 mod tests {
     use super::*;
     use navigator_analysis::mtvariants::{MtVariant, MtVariantKind};
-    use navigator_domain::ancestry::{
-        AncestryResult, ConfidenceInterval, PopulationComponent, SuperPopulationSummary,
-    };
+    use navigator_domain::ancestry::{AncestryResult, ConfidenceInterval, PopulationComponent, SuperPopulationSummary};
 
     #[test]
     fn coverage_tsv_has_header_and_joined_contig_rows() {
@@ -302,7 +347,9 @@ mod tests {
         assert!(tsv.contains("# mean_coverage\t28.4000"));
         assert!(tsv.contains("contig\tlength\treads"));
         // contig row joins stats (num_reads=42) with callable (callable=470).
-        assert!(tsv.lines().any(|l| l.starts_with("chr1\t500\t42\t480\t96.00\t30.10\t35.0\t58.0\t470\t10\t15\t0\t0\t5")));
+        assert!(tsv
+            .lines()
+            .any(|l| l.starts_with("chr1\t500\t42\t480\t96.00\t30.10\t35.0\t58.0\t470\t10\t15\t0\t0\t5")));
         // HTML variant renders without panicking and includes the title.
         assert!(coverage_html(&cov, "KANE-0001").contains("Coverage — KANE-0001"));
     }
@@ -318,7 +365,10 @@ mod tests {
                 population_code: "GBR".into(),
                 population_name: "British".into(),
                 percentage: 87.4,
-                confidence_interval: ConfidenceInterval { lower: 85.0, upper: 89.8 },
+                confidence_interval: ConfidenceInterval {
+                    lower: 85.0,
+                    upper: 89.8,
+                },
                 rank: 1,
             }],
             super_population_summary: vec![SuperPopulationSummary {
@@ -339,7 +389,9 @@ mod tests {
         let tsv = ancestry_tsv(&ancestry());
         assert!(tsv.contains("# method\tADMIXTURE"));
         assert!(tsv.lines().any(|l| l.starts_with("super\tEUR\tEUR\t100.00")));
-        assert!(tsv.lines().any(|l| l.starts_with("population\tGBR\tBritish\t87.40\t1\t85.00\t89.80")));
+        assert!(tsv
+            .lines()
+            .any(|l| l.starts_with("population\tGBR\tBritish\t87.40\t1\t85.00\t89.80")));
         // HTML escapes + renders.
         let html = ancestry_html(&ancestry());
         assert!(html.contains("Method ADMIXTURE"));
@@ -349,12 +401,26 @@ mod tests {
     #[test]
     fn mtdna_tsv_uses_notation_and_region() {
         let vs = vec![
-            MtVariant { position: 263, reference: "A".into(), alternate: "G".into(), kind: MtVariantKind::Substitution },
-            MtVariant { position: 16519, reference: "T".into(), alternate: "C".into(), kind: MtVariantKind::Substitution },
+            MtVariant {
+                position: 263,
+                reference: "A".into(),
+                alternate: "G".into(),
+                kind: MtVariantKind::Substitution,
+            },
+            MtVariant {
+                position: 16519,
+                reference: "T".into(),
+                alternate: "C".into(),
+                kind: MtVariantKind::Substitution,
+            },
         ];
         let tsv = mtdna_variants_tsv(&vs);
-        assert!(tsv.lines().any(|l| l.starts_with("263\t263A>G\tHVR2\tA\tG\tSubstitution")));
-        assert!(tsv.lines().any(|l| l.starts_with("16519\t16519T>C\tHVR1\tT\tC\tSubstitution")));
+        assert!(tsv
+            .lines()
+            .any(|l| l.starts_with("263\t263A>G\tHVR2\tA\tG\tSubstitution")));
+        assert!(tsv
+            .lines()
+            .any(|l| l.starts_with("16519\t16519T>C\tHVR1\tT\tC\tSubstitution")));
     }
 
     #[test]

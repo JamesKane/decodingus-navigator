@@ -5,8 +5,8 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 
-use super::{clusterer, segmenter, walker};
 use super::types::{SvAnalysisResult, SvCallerConfig};
+use super::{clusterer, segmenter, walker};
 use crate::error::AnalysisError;
 
 const MERGE_MAX_GAP: i64 = 50_000;
@@ -29,13 +29,7 @@ pub fn call_structural_variants(
         )));
     }
 
-    let evidence = walker::collect_evidence(
-        bam_path,
-        contig_lengths,
-        mean_insert_size,
-        insert_size_sd,
-        config,
-    )?;
+    let evidence = walker::collect_evidence(bam_path, contig_lengths, mean_insert_size, insert_size_sd, config)?;
 
     let raw_segments = segmenter::segment(
         &evidence.depth_bins,

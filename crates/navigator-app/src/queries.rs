@@ -34,8 +34,14 @@ impl App {
                     run.mean_read_length = (m.mean_read_length > 0.0).then_some(m.mean_read_length);
                     run.mean_insert_size = (m.mean_insert_size > 0.0).then_some(m.mean_insert_size);
                     if m.pf_reads_aligned > 0 {
-                        run.library_layout =
-                            Some(if m.reads_aligned_in_pairs > 0 { "PAIRED" } else { "SINGLE" }.into());
+                        run.library_layout = Some(
+                            if m.reads_aligned_in_pairs > 0 {
+                                "PAIRED"
+                            } else {
+                                "SINGLE"
+                            }
+                            .into(),
+                        );
                     }
                     break;
                 }
@@ -99,9 +105,16 @@ impl App {
     /// A specific persisted consensus ancestry estimate (keyed on the consensus pseudo-source +
     /// `method`) — e.g. `"FINE_ADMIXTURE"` (detailed modern populations) or `"PCA_PROJECTION_GMM"`
     /// (ancient components). Filtered per-subject (alignment_id 0 isn't biosample-unique on its own).
-    pub async fn consensus_ancestry(&self, biosample_guid: SampleGuid, method: &str) -> Result<Option<AncestryResult>, AppError> {
+    pub async fn consensus_ancestry(
+        &self,
+        biosample_guid: SampleGuid,
+        method: &str,
+    ) -> Result<Option<AncestryResult>, AppError> {
         let all = ancestry_result::for_biosample(self.store.pool(), biosample_guid).await?;
-        Ok(all.into_iter().find(|(id, r)| *id == CONSENSUS_SOURCE_ID && r.method == method).map(|(_, r)| r))
+        Ok(all
+            .into_iter()
+            .find(|(id, r)| *id == CONSENSUS_SOURCE_ID && r.method == method)
+            .map(|(_, r)| r))
     }
 
     /// Donor-level private-Y: the **union** of cached (self-masked) private-Y calls across all of
@@ -113,7 +126,9 @@ impl App {
         let mut terminal: Option<String> = None;
         let mut any = false;
         for a in &alignments {
-            let Some(bucket) = self.cached_private_y(a.id).await? else { continue };
+            let Some(bucket) = self.cached_private_y(a.id).await? else {
+                continue;
+            };
             any = true;
             terminal.get_or_insert_with(|| bucket.terminal.clone());
             for v in bucket.variants {
@@ -132,7 +147,10 @@ impl App {
         }
         let mut variants: Vec<PrivateVariant> = by_pos.into_values().collect();
         variants.sort_by_key(|v| v.position);
-        Ok(Some(PrivateBucket { terminal: terminal.unwrap_or_default(), variants }))
+        Ok(Some(PrivateBucket {
+            terminal: terminal.unwrap_or_default(),
+            variants,
+        }))
     }
 
     pub async fn list_alignments(&self, sequence_run_id: i64) -> Result<Vec<Alignment>, AppError> {
@@ -181,8 +199,14 @@ impl App {
             };
             // Prefer the coverage-bearing alignment; else fall back to the first.
             let primary_alignment_id = coverage_aln.or_else(|| alignments.first().map(|a| a.id));
-            let y_haplogroup = self.haplogroup_consensus(biosample.guid, DnaType::Y).await?.map(|c| c.haplogroup);
-            let mt_haplogroup = self.haplogroup_consensus(biosample.guid, DnaType::Mt).await?.map(|c| c.haplogroup);
+            let y_haplogroup = self
+                .haplogroup_consensus(biosample.guid, DnaType::Y)
+                .await?
+                .map(|c| c.haplogroup);
+            let mt_haplogroup = self
+                .haplogroup_consensus(biosample.guid, DnaType::Mt)
+                .await?
+                .map(|c| c.haplogroup);
             // Sex + read-metrics from whichever alignment has them cached.
             let mut sex = None;
             let mut metrics = None;
@@ -316,7 +340,12 @@ impl App {
         // "coverage too low" error for every low-coverage sample).
         if self.cached_sv(aln.id).await?.is_some() {
             o.sv_done = true;
-        } else if self.cached_coverage(aln.id).await?.map(|c| c.mean_coverage >= 10.0).unwrap_or(false) {
+        } else if self
+            .cached_coverage(aln.id)
+            .await?
+            .map(|c| c.mean_coverage >= 10.0)
+            .unwrap_or(false)
+        {
             match self.run_sv(aln.id).await {
                 Ok(_) => o.sv_done = true,
                 Err(e) => o.errors.push(format!("{label} SV: {e}")),

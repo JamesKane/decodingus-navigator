@@ -67,7 +67,10 @@ impl NavigatorApp {
                     (Nav::Projects, "📁", "nav.projects"),
                 ] {
                     let label = format!("{icon}  {}", self.tr(key));
-                    if ui.selectable_label(self.nav == nav, egui::RichText::new(label).strong()).clicked() {
+                    if ui
+                        .selectable_label(self.nav == nav, egui::RichText::new(label).strong())
+                        .clicked()
+                    {
                         self.nav = nav;
                     }
                 }
@@ -101,10 +104,15 @@ impl NavigatorApp {
                     ui.spinner();
                 }
                 let ready = !self.forms.login_handle.trim().is_empty() && !self.logging_in;
-                if ui.add_enabled(ready, egui::Button::new(self.tr("account.signIn"))).clicked() {
+                if ui
+                    .add_enabled(ready, egui::Button::new(self.tr("account.signIn")))
+                    .clicked()
+                {
                     self.logging_in = true;
                     self.status = "Opening browser to authorize…".into();
-                    let _ = self.tx.send(Command::Login { handle: self.forms.login_handle.trim().to_string() });
+                    let _ = self.tx.send(Command::Login {
+                        handle: self.forms.login_handle.trim().to_string(),
+                    });
                 }
                 let hint = self.tr("account.handleHint");
                 ui.add(
@@ -117,7 +125,9 @@ impl NavigatorApp {
                 // PDS repo). Compiled out of distributed (release) builds; opt in for a release dev
                 // build with `--features dev-identity`.
                 if cfg!(any(debug_assertions, feature = "dev-identity"))
-                    && ui.add_enabled(!self.logging_in, egui::Button::new(self.tr("account.useLocal"))).clicked()
+                    && ui
+                        .add_enabled(!self.logging_in, egui::Button::new(self.tr("account.useLocal")))
+                        .clicked()
                 {
                     let _ = self.tx.send(Command::UseLocalIdentity);
                 }
@@ -130,17 +140,22 @@ impl NavigatorApp {
         match self.nav {
             Nav::Dashboard => {}
             Nav::Projects => {
-                egui::SidePanel::left("left").min_width(240.0).show(ctx, |ui| self.projects_side(ui));
+                egui::SidePanel::left("left")
+                    .min_width(240.0)
+                    .show(ctx, |ui| self.projects_side(ui));
             }
             Nav::Subjects if self.subjects_collapsed => {
                 // Collapsed: a thin strip with just an expand button, handing the detail panel
                 // the full width for charts/tables.
-                egui::SidePanel::left("left").resizable(false).exact_width(34.0).show(ctx, |ui| {
-                    ui.add_space(6.0);
-                    if ui.button("▶").on_hover_text(self.tr("subjects.expand")).clicked() {
-                        self.subjects_collapsed = false;
-                    }
-                });
+                egui::SidePanel::left("left")
+                    .resizable(false)
+                    .exact_width(34.0)
+                    .show(ctx, |ui| {
+                        ui.add_space(6.0);
+                        if ui.button("▶").on_hover_text(self.tr("subjects.expand")).clicked() {
+                            self.subjects_collapsed = false;
+                        }
+                    });
             }
             Nav::Subjects => {
                 egui::SidePanel::left("left")
@@ -160,7 +175,10 @@ impl NavigatorApp {
         let mut pick = None;
         for ov in &self.overview {
             let label = format!("{}  ({})", ov.project.name, ov.sample_count);
-            if ui.selectable_label(self.selected_project == Some(ov.project.id), label).clicked() {
+            if ui
+                .selectable_label(self.selected_project == Some(ov.project.id), label)
+                .clicked()
+            {
                 pick = Some(ov.project.id);
             }
         }
@@ -174,7 +192,10 @@ impl NavigatorApp {
         ui.add(egui::TextEdit::singleline(&mut self.forms.project_name).hint_text("name"));
         ui.add(egui::TextEdit::singleline(&mut self.forms.project_admin).hint_text("administrator"));
         if ui
-            .add_enabled(!self.forms.project_name.trim().is_empty(), egui::Button::new(self.tr("projects.create")))
+            .add_enabled(
+                !self.forms.project_name.trim().is_empty(),
+                egui::Button::new(self.tr("projects.create")),
+            )
             .clicked()
         {
             let _ = self.tx.send(Command::CreateProject(NewProject {
@@ -188,7 +209,10 @@ impl NavigatorApp {
 
         ui.add_space(8.0);
         ui.label(self.tr("projects.batchImportHint"));
-        if ui.add_enabled(!self.importing, egui::Button::new(self.tr("projects.batchImport"))).clicked() {
+        if ui
+            .add_enabled(!self.importing, egui::Button::new(self.tr("projects.batchImport")))
+            .clicked()
+        {
             if let Some(dir) = rfd::FileDialog::new().pick_folder() {
                 self.importing = true;
                 self.reference_needs.clear();
@@ -219,7 +243,10 @@ impl NavigatorApp {
             );
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui
-                    .add(egui::Button::new(egui::RichText::new(self.tr("subjects.addNew")).color(egui::Color32::WHITE)).fill(ACCENT))
+                    .add(
+                        egui::Button::new(egui::RichText::new(self.tr("subjects.addNew")).color(egui::Color32::WHITE))
+                            .fill(ACCENT),
+                    )
                     .clicked()
                 {
                     self.forms.show_add_subject = !self.forms.show_add_subject;
@@ -305,14 +332,21 @@ impl NavigatorApp {
             ui.add(egui::TextEdit::singleline(&mut self.forms.sample_accession).hint_text("accession (optional)"));
             ui.add(egui::TextEdit::singleline(&mut self.forms.sample_sex).hint_text("sex (optional)"));
             if let Some(pid) = self.selected_project {
-                let name = self.overview.iter().find(|o| o.project.id == pid).map(|o| o.project.name.as_str());
+                let name = self
+                    .overview
+                    .iter()
+                    .find(|o| o.project.id == pid)
+                    .map(|o| o.project.name.as_str());
                 ui.label(format!("→ project: {}", name.unwrap_or("(open)")));
             } else {
                 ui.label(self.tr("projects.noProject"));
             }
             ui.horizontal(|ui| {
                 if ui
-                    .add_enabled(!self.forms.sample_donor.trim().is_empty(), egui::Button::new(self.tr("projects.addSubject")).fill(ACCENT))
+                    .add_enabled(
+                        !self.forms.sample_donor.trim().is_empty(),
+                        egui::Button::new(self.tr("projects.addSubject")).fill(ACCENT),
+                    )
                     .clicked()
                 {
                     let _ = self.tx.send(Command::AddBiosample(NewBiosample {
@@ -332,5 +366,4 @@ impl NavigatorApp {
             });
         });
     }
-
 }

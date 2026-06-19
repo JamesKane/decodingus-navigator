@@ -11,9 +11,10 @@ impl App {
     pub async fn export_content(&self, req: &ExportRequest) -> Result<String, AppError> {
         match req {
             ExportRequest::CoverageTsv(id) => Ok(export::coverage_tsv(&self.require_coverage(*id).await?)),
-            ExportRequest::CoverageHtml(id) => {
-                Ok(export::coverage_html(&self.require_coverage(*id).await?, &format!("alignment {id}")))
-            }
+            ExportRequest::CoverageHtml(id) => Ok(export::coverage_html(
+                &self.require_coverage(*id).await?,
+                &format!("alignment {id}"),
+            )),
             ExportRequest::ReadMetricsTsv(id) => {
                 let m = self
                     .cached_read_metrics(*id)
@@ -109,7 +110,14 @@ impl App {
         let tree_json = self.fetch_ftdna_mt_tree().await?;
         let assignment = self.assign_mtdna_haplogroup_with_tree(mtdna_id, &tree_json).await?;
         if let Some(seq) = mtdna_store::get(self.store.pool(), mtdna_id).await? {
-            self.record_call(seq.biosample_guid, DnaType::Mt, &format!("mtseq:{mtdna_id}"), format!("mtDNA seq #{mtdna_id}"), &assignment).await?;
+            self.record_call(
+                seq.biosample_guid,
+                DnaType::Mt,
+                &format!("mtseq:{mtdna_id}"),
+                format!("mtDNA seq #{mtdna_id}"),
+                &assignment,
+            )
+            .await?;
         }
         Ok(assignment)
     }
@@ -131,7 +139,8 @@ impl App {
         source_key: &str,
         call: &RunHaplogroupCall,
     ) -> Result<(), AppError> {
-        self.record_haplogroup_call_fp(biosample_guid, dna_type, source_key, call, None).await
+        self.record_haplogroup_call_fp(biosample_guid, dna_type, source_key, call, None)
+            .await
     }
 
     /// Like [`record_haplogroup_call`](Self::record_haplogroup_call) but stamps the input
@@ -144,8 +153,22 @@ impl App {
         call: &RunHaplogroupCall,
         fingerprint: Option<&str>,
     ) -> Result<(), AppError> {
-        haplogroup_call::upsert(self.store.pool(), biosample_guid, dna_type, source_key, call, fingerprint).await?;
-        self.audit(biosample_guid, dna_type, "RUN_RECORDED", &format!("{source_key}: {}", call.haplogroup)).await?;
+        haplogroup_call::upsert(
+            self.store.pool(),
+            biosample_guid,
+            dna_type,
+            source_key,
+            call,
+            fingerprint,
+        )
+        .await?;
+        self.audit(
+            biosample_guid,
+            dna_type,
+            "RUN_RECORDED",
+            &format!("{source_key}: {}", call.haplogroup),
+        )
+        .await?;
         Ok(())
     }
 
@@ -158,7 +181,8 @@ impl App {
         source_label: String,
         assignment: &HaploAssignment,
     ) -> Result<(), AppError> {
-        self.record_call_fp(biosample_guid, dna_type, source_key, source_label, assignment, None).await
+        self.record_call_fp(biosample_guid, dna_type, source_key, source_label, assignment, None)
+            .await
     }
 
     /// Like [`record_call`](Self::record_call) but stamps the input fingerprint.
@@ -180,7 +204,8 @@ impl App {
                 matched: top.matched as i64,
                 expected: top.expected as i64,
             };
-            self.record_haplogroup_call_fp(biosample_guid, dna_type, source_key, &call, fingerprint).await?;
+            self.record_haplogroup_call_fp(biosample_guid, dna_type, source_key, &call, fingerprint)
+                .await?;
         }
         Ok(())
     }
@@ -215,9 +240,8 @@ impl App {
                         warnings: Vec::new(),
                     });
                     if c.haplogroup != placed {
-                        c.warnings.push(format!(
-                            "per-run calls vary; genome-consensus placement → {placed}"
-                        ));
+                        c.warnings
+                            .push(format!("per-run calls vary; genome-consensus placement → {placed}"));
                         c.haplogroup = placed;
                     }
                     consensus = Some(c);
@@ -272,7 +296,9 @@ impl App {
         // The genome-level placed terminal (build_{y,mt}_profile) wins over the per-run label vote,
         // so the subjects table matches the detail tab.
         for (guid_s, dna_type_s, label) in navigator_store::consensus_profile::list_labels(self.store.pool()).await? {
-            let Ok(uuid) = guid_s.parse::<uuid::Uuid>() else { continue };
+            let Ok(uuid) = guid_s.parse::<uuid::Uuid>() else {
+                continue;
+            };
             let entry = out.entry(SampleGuid(uuid)).or_default();
             match dna_type_s.as_str() {
                 "Y" => entry.0 = Some(label),
@@ -300,13 +326,20 @@ impl App {
         reason: Option<&str>,
     ) -> Result<(), AppError> {
         recon_store::set_override(self.store.pool(), biosample_guid, dna_type, haplogroup, reason).await?;
-        self.audit(biosample_guid, dna_type, "MANUAL_OVERRIDE", &format!("override to {haplogroup}")).await
+        self.audit(
+            biosample_guid,
+            dna_type,
+            "MANUAL_OVERRIDE",
+            &format!("override to {haplogroup}"),
+        )
+        .await
     }
 
     /// Clear a manual override.
     pub async fn clear_manual_override(&self, biosample_guid: SampleGuid, dna_type: DnaType) -> Result<(), AppError> {
         recon_store::clear_override(self.store.pool(), biosample_guid, dna_type).await?;
-        self.audit(biosample_guid, dna_type, "OVERRIDE_CLEARED", "cleared manual override").await
+        self.audit(biosample_guid, dna_type, "OVERRIDE_CLEARED", "cleared manual override")
+            .await
     }
 
     /// The reconciliation audit log for a subject + DNA type.
@@ -318,8 +351,18 @@ impl App {
         Ok(recon_store::list_audit(self.store.pool(), biosample_guid, dna_type).await?)
     }
 
-    async fn audit(&self, biosample_guid: SampleGuid, dna_type: DnaType, action: &str, note: &str) -> Result<(), AppError> {
-        let entry = AuditEntry { timestamp: Utc::now().to_rfc3339(), action: action.to_string(), note: note.to_string() };
+    async fn audit(
+        &self,
+        biosample_guid: SampleGuid,
+        dna_type: DnaType,
+        action: &str,
+        note: &str,
+    ) -> Result<(), AppError> {
+        let entry = AuditEntry {
+            timestamp: Utc::now().to_rfc3339(),
+            action: action.to_string(),
+            note: note.to_string(),
+        };
         recon_store::append_audit(self.store.pool(), biosample_guid, dna_type, &entry).await?;
         Ok(())
     }
@@ -327,7 +370,11 @@ impl App {
     /// The persisted consensus-profile snapshot for a subject + DNA type, if built — cheap (no
     /// genotyping). The shared loader behind [`cached_y_profile`](Self::cached_y_profile); the future
     /// mtDNA / autosomal tabs reuse it with a different [`DnaType`]. `None` until a build runs.
-    pub async fn cached_consensus_profile(&self, biosample_guid: SampleGuid, dna_type: DnaType) -> Result<Option<ConsensusProfile>, AppError> {
+    pub async fn cached_consensus_profile(
+        &self,
+        biosample_guid: SampleGuid,
+        dna_type: DnaType,
+    ) -> Result<Option<ConsensusProfile>, AppError> {
         match navigator_store::consensus_profile::get(self.store.pool(), biosample_guid, dna_type.as_str()).await? {
             Some(row) => Ok(Some(serde_json::from_str(&row.payload)?)),
             None => Ok(None),
@@ -408,7 +455,9 @@ impl App {
         // on explicit request. Alignments that error / lack chrY are skipped.
         let alignments = alignment::list_for_biosample(self.store.pool(), biosample_guid).await?;
         for a in &alignments {
-            let Ok(assignment) = self.y_assignment_full(a.id).await else { continue };
+            let Ok(assignment) = self.y_assignment_full(a.id).await else {
+                continue;
+            };
             let obs = snp_obs_from_assignment(&assignment, true);
             if !obs.is_empty() {
                 sources.push((format!("aln #{} · {}", a.id, a.aligner), SourceType::WgsShortRead, obs));
@@ -457,7 +506,14 @@ impl App {
                         PrivateClass::OffPathKnown(n) => n.clone(),
                         PrivateClass::Novel => String::new(), // keyed by position
                     };
-                    let mut o = YObsInput::snp(name, v.position, v.reference.to_string(), v.alternate.to_string(), YState::Derived, false);
+                    let mut o = YObsInput::snp(
+                        name,
+                        v.position,
+                        v.reference.to_string(),
+                        v.alternate.to_string(),
+                        YState::Derived,
+                        false,
+                    );
                     // De-novo calls carry read depth; a structural-region (palindrome/amplicon) call
                     // is paralog-suspect → down-weight via the region modifier.
                     o.depth = Some(v.depth);
@@ -475,7 +531,11 @@ impl App {
         // Provenance: one entry per contributing source (label, type, SNP count).
         let source_summaries: Vec<YSourceSummary> = sources
             .iter()
-            .map(|(label, st, obs)| YSourceSummary { label: label.clone(), source_type: *st, variant_count: obs.len() })
+            .map(|(label, st, obs)| YSourceSummary {
+                label: label.clone(),
+                source_type: *st,
+                variant_count: obs.len(),
+            })
             .collect();
 
         let variants = yprofile::reconcile_y(&sources);
@@ -484,16 +544,25 @@ impl App {
         // per-run terminal labels). Falls back to the label reconciliation when nothing places.
         let terminal = match self.place_y_consensus(biosample_guid).await? {
             Some(a) => a.ranked.first().map(|r| r.name.clone()),
-            None => self.haplogroup_consensus(biosample_guid, DnaType::Y).await?.map(|c| c.haplogroup),
+            None => self
+                .haplogroup_consensus(biosample_guid, DnaType::Y)
+                .await?
+                .map(|c| c.haplogroup),
         };
-        let profile = ConsensusProfile { variants, summary, terminal, sources: source_summaries };
+        let profile = ConsensusProfile {
+            variants,
+            summary,
+            terminal,
+            sources: source_summaries,
+        };
 
         // Persist the snapshot (keyed dna_type='Y') so the tab reloads it without re-genotyping.
         let provider = Some(match y_tree_provider() {
             YTreeProvider::DecodingUs => "decodingus".to_string(),
             YTreeProvider::Ftdna => "ftdna".to_string(),
         });
-        self.persist_consensus_profile(biosample_guid, DnaType::Y, &profile, provider).await?;
+        self.persist_consensus_profile(biosample_guid, DnaType::Y, &profile, provider)
+            .await?;
         Ok(profile)
     }
 
@@ -503,7 +572,8 @@ impl App {
     /// cached terminal-only path (which has `branches: []`) so the consensus has per-mutation evidence.
     async fn mt_assignment_full(&self, alignment_id: i64) -> Result<HaploAssignment, AppError> {
         let tree_json = self.fetch_ftdna_mt_tree().await?;
-        self.assign_haplogroup_from_alignment(alignment_id, "chrM", &tree_json).await
+        self.assign_haplogroup_from_alignment(alignment_id, "chrM", &tree_json)
+            .await
     }
 
     /// The persisted mtDNA consensus-profile snapshot for a subject, if one has been built — cheap
@@ -526,7 +596,9 @@ impl App {
         // terminal). Alignments that error / lack chrM are skipped.
         let alignments = alignment::list_for_biosample(self.store.pool(), biosample_guid).await?;
         for a in &alignments {
-            let Ok(assignment) = self.mt_assignment_full(a.id).await else { continue };
+            let Ok(assignment) = self.mt_assignment_full(a.id).await else {
+                continue;
+            };
             let obs = snp_obs_from_assignment(&assignment, true);
             if !obs.is_empty() {
                 sources.push((format!("aln #{} · {}", a.id, a.aligner), SourceType::WgsShortRead, obs));
@@ -537,7 +609,9 @@ impl App {
         // sequence we ingested, so weight it as `Imported` (provenance/method not ours to vouch for).
         let seqs = self.list_mtdna_sequences(biosample_guid).await?;
         for s in &seqs {
-            let Ok(assignment) = self.assign_mtdna_haplogroup(s.id).await else { continue };
+            let Ok(assignment) = self.assign_mtdna_haplogroup(s.id).await else {
+                continue;
+            };
             let obs = snp_obs_from_assignment(&assignment, true);
             if !obs.is_empty() {
                 let vendor = mt_vendor_label(s.source_file_name.as_deref(), s.defline.as_deref());
@@ -557,7 +631,11 @@ impl App {
         // Provenance: one entry per contributing source (label, type, mutation count).
         let source_summaries: Vec<YSourceSummary> = sources
             .iter()
-            .map(|(label, st, obs)| YSourceSummary { label: label.clone(), source_type: *st, variant_count: obs.len() })
+            .map(|(label, st, obs)| YSourceSummary {
+                label: label.clone(),
+                source_type: *st,
+                variant_count: obs.len(),
+            })
             .collect();
 
         let variants = yprofile::reconcile_y(&sources);
@@ -566,12 +644,21 @@ impl App {
         // is the fallback when nothing places.
         let terminal = match self.place_mt_consensus(biosample_guid).await? {
             Some(a) => a.ranked.first().map(|r| r.name.clone()),
-            None => self.haplogroup_consensus(biosample_guid, DnaType::Mt).await?.map(|c| c.haplogroup),
+            None => self
+                .haplogroup_consensus(biosample_guid, DnaType::Mt)
+                .await?
+                .map(|c| c.haplogroup),
         };
-        let profile = ConsensusProfile { variants, summary, terminal, sources: source_summaries };
+        let profile = ConsensusProfile {
+            variants,
+            summary,
+            terminal,
+            sources: source_summaries,
+        };
 
         // Persist (keyed dna_type='Mt'); the mt tree is FTDNA-sourced.
-        self.persist_consensus_profile(biosample_guid, DnaType::Mt, &profile, Some("ftdna".to_string())).await?;
+        self.persist_consensus_profile(biosample_guid, DnaType::Mt, &profile, Some("ftdna".to_string()))
+            .await?;
         Ok(profile)
     }
 
@@ -599,7 +686,9 @@ impl App {
         for a in &alignments {
             // assign_haplogroup_detail returns the GRCh38-coordinate calls (lifted from the
             // alignment's build); sources that lack chrY / a reference are skipped.
-            let Ok((_, _, calls)) = self.assign_haplogroup_detail(a.id, "chrY", &tree_json).await else { continue };
+            let Ok((_, _, calls)) = self.assign_haplogroup_detail(a.id, "chrY", &tree_json).await else {
+                continue;
+            };
             if !calls.is_empty() {
                 sources.push((SourceType::WgsShortRead, calls));
             }
@@ -650,7 +739,12 @@ impl App {
                 }
                 (p.terminal, lineage, derived, novel)
             }
-            None => (None, Vec::new(), std::collections::HashSet::new(), std::collections::HashSet::new()),
+            None => (
+                None,
+                Vec::new(),
+                std::collections::HashSet::new(),
+                std::collections::HashSet::new(),
+            ),
         };
 
         // Nothing matchable: no Y-SNP calls and no STR markers (lineage alone never matches).
@@ -673,11 +767,7 @@ impl App {
     /// One-vs-all over the workspace (or one project when `project_id` is set); local-only. Consumes
     /// **cached** profiles so it's cheap over hundreds of subjects (no re-genotyping). `Ok(vec![])`
     /// when the query subject has no matchable Y data.
-    pub async fn y_matches(
-        &self,
-        query_guid: SampleGuid,
-        project_id: Option<i64>,
-    ) -> Result<Vec<YMatch>, AppError> {
+    pub async fn y_matches(&self, query_guid: SampleGuid, project_id: Option<i64>) -> Result<Vec<YMatch>, AppError> {
         // The tree only supplies the divergence haplogroup; shared-SNP and STR matching work without
         // it, so a fetch failure degrades gracefully rather than failing the whole search.
         let tree = match self.fetch_ftdna_y_tree().await {
@@ -730,7 +820,9 @@ impl App {
         // Each alignment's chrM genotype (rCRS coordinates; base_calls maps a CHM13 chrM back to rCRS).
         let alignments = alignment::list_for_biosample(self.store.pool(), biosample_guid).await?;
         for a in &alignments {
-            let Ok((_, _, calls)) = self.assign_haplogroup_detail(a.id, "chrM", &tree_json).await else { continue };
+            let Ok((_, _, calls)) = self.assign_haplogroup_detail(a.id, "chrM", &tree_json).await else {
+                continue;
+            };
             if !calls.is_empty() {
                 sources.push((SourceType::WgsShortRead, calls));
                 has_wgs = true;
@@ -739,7 +831,9 @@ impl App {
 
         // Each imported mtDNA FASTA — the full sequence sampled at every rCRS position.
         for s in &self.list_mtdna_sequences(biosample_guid).await? {
-            let Some(seq) = mtdna_store::get(self.store.pool(), s.id).await? else { continue };
+            let Some(seq) = mtdna_store::get(self.store.pool(), s.id).await? else {
+                continue;
+            };
             let calls: HashMap<i64, char> = seq
                 .sequence
                 .bytes()
@@ -788,7 +882,10 @@ impl App {
 
     /// The persisted autosomal consensus-profile snapshot for a subject, if built — cheap (no
     /// genotyping). `None` until [`build_autosomal_profile`](Self::build_autosomal_profile) runs.
-    pub async fn cached_autosomal_profile(&self, biosample_guid: SampleGuid) -> Result<Option<DiploidProfile>, AppError> {
+    pub async fn cached_autosomal_profile(
+        &self,
+        biosample_guid: SampleGuid,
+    ) -> Result<Option<DiploidProfile>, AppError> {
         match navigator_store::consensus_profile::get(self.store.pool(), biosample_guid, "Auto").await? {
             Some(row) => Ok(Some(serde_json::from_str(&row.payload)?)),
             None => Ok(None),
@@ -830,7 +927,10 @@ impl App {
         // coordinates) or a future lift, and are skipped here rather than yielding wrong-locus calls.
         let alignments = alignment::list_for_biosample(self.store.pool(), biosample_guid).await?;
         for a in &alignments {
-            if !matches!(canonical_build(&a.reference_build), Some(ReferenceBuild::Chm13v2 | ReferenceBuild::Chm13v2MaskedRcrs)) {
+            if !matches!(
+                canonical_build(&a.reference_build),
+                Some(ReferenceBuild::Chm13v2 | ReferenceBuild::Chm13v2MaskedRcrs)
+            ) {
                 continue;
             }
             match self.ibd_panel_dosages(IbdSource::Alignment(a.id)).await {
@@ -866,15 +966,31 @@ impl App {
 
         let source_summaries: Vec<YSourceSummary> = sources
             .iter()
-            .map(|(label, st, obs)| YSourceSummary { label: label.clone(), source_type: *st, variant_count: obs.len() })
+            .map(|(label, st, obs)| YSourceSummary {
+                label: label.clone(),
+                source_type: *st,
+                variant_count: obs.len(),
+            })
             .collect();
         let variants = reconcile_diploid(&sources);
         let summary = summarize_diploid(&variants);
-        let profile = DiploidProfile { variants, summary, sources: source_summaries };
+        let profile = DiploidProfile {
+            variants,
+            summary,
+            sources: source_summaries,
+        };
 
         // Persist (keyed dna_type='Auto'; no lineage label, no tree provider).
-        self.persist_consensus_row(biosample_guid, "Auto", None, &profile.summary, profile.sources.len(), None, serde_json::to_string(&profile)?)
-            .await?;
+        self.persist_consensus_row(
+            biosample_guid,
+            "Auto",
+            None,
+            &profile.summary,
+            profile.sources.len(),
+            None,
+            serde_json::to_string(&profile)?,
+        )
+        .await?;
         Ok(profile)
     }
 
@@ -889,13 +1005,16 @@ impl App {
         heteroplasmy: &[HeteroplasmySite],
         identity: Option<&IdentityVerification>,
     ) -> Result<serde_json::Value, AppError> {
-        let consensus = self.haplogroup_consensus(biosample_guid, dna_type).await?.ok_or_else(|| {
-            AppError::Store(StoreError::NotFound(format!(
-                "no {} haplogroup calls for {}",
-                dna_type.as_str(),
-                biosample_guid.0
-            )))
-        })?;
+        let consensus = self
+            .haplogroup_consensus(biosample_guid, dna_type)
+            .await?
+            .ok_or_else(|| {
+                AppError::Store(StoreError::NotFound(format!(
+                    "no {} haplogroup calls for {}",
+                    dna_type.as_str(),
+                    biosample_guid.0
+                )))
+            })?;
         let calls = haplogroup_call::list_for(self.store.pool(), biosample_guid, dna_type).await?;
 
         let run_calls = calls
@@ -995,8 +1114,12 @@ impl App {
         heteroplasmy: &[HeteroplasmySite],
         identity: Option<&IdentityVerification>,
     ) -> Result<RecordRef, AppError> {
-        let value = self.reconciliation_record(biosample_guid, dna_type, heteroplasmy, identity).await?;
-        Ok(client.create_record(HAPLOGROUP_RECONCILIATION_COLLECTION, value, None).await?)
+        let value = self
+            .reconciliation_record(biosample_guid, dna_type, heteroplasmy, identity)
+            .await?;
+        Ok(client
+            .create_record(HAPLOGROUP_RECONCILIATION_COLLECTION, value, None)
+            .await?)
     }
 
     /// Publish a subject's haplogroup reconciliation record to the signed-in account's PDS
@@ -1009,9 +1132,18 @@ impl App {
         identity: Option<&IdentityVerification>,
     ) -> Result<(), AppError> {
         self.require_account()?; // auth check before touching the DB
-        let value = self.reconciliation_record(biosample_guid, dna_type, heteroplasmy, identity).await?;
+        let value = self
+            .reconciliation_record(biosample_guid, dna_type, heteroplasmy, identity)
+            .await?;
         let entity_ref = format!("reconciliation:{biosample_guid}:{dna_type:?}");
-        self.enqueue_publish("reconciliation", &entity_ref, HAPLOGROUP_RECONCILIATION_COLLECTION, None, value).await
+        self.enqueue_publish(
+            "reconciliation",
+            &entity_ref,
+            HAPLOGROUP_RECONCILIATION_COLLECTION,
+            None,
+            value,
+        )
+        .await
     }
 
     /// All recorded per-source calls for a subject + DNA type (for display / audit).
@@ -1049,8 +1181,11 @@ impl App {
 
     /// FTDNA mt-DNA haplotree JSON, from the on-disk cache or freshly downloaded + cached.
     pub(crate) async fn fetch_ftdna_mt_tree(&self) -> Result<String, AppError> {
-        self.fetch_tree("https://www.familytreedna.com/public/mt-dna-haplotree/get", "ftdna-mttree.json")
-            .await
+        self.fetch_tree(
+            "https://www.familytreedna.com/public/mt-dna-haplotree/get",
+            "ftdna-mttree.json",
+        )
+        .await
     }
 
     /// DecodingUs Y-DNA tree-with-variants JSON from our AppView (`/api/v1/y-tree/full`),
@@ -1062,8 +1197,11 @@ impl App {
 
     /// FTDNA Y-DNA haplotree JSON, from the on-disk cache or freshly downloaded + cached.
     pub(crate) async fn fetch_ftdna_y_tree(&self) -> Result<String, AppError> {
-        self.fetch_tree("https://www.familytreedna.com/public/y-dna-haplotree/get", "ftdna-ytree.json")
-            .await
+        self.fetch_tree(
+            "https://www.familytreedna.com/public/y-dna-haplotree/get",
+            "ftdna-ytree.json",
+        )
+        .await
     }
 
     /// The AppView's full instrument→lab map (`GET /api/v1/sequencer/lab-instruments`), on-disk
@@ -1085,7 +1223,11 @@ impl App {
         }
         let list = self.fetch_lab_instruments().await.ok()?;
         let raw = list.into_iter().find(|l| l.instrument_id == id)?.lab_name;
-        Some(navigator_domain::labs::find(&raw).map(|l| l.display_name.to_string()).unwrap_or(raw))
+        Some(
+            navigator_domain::labs::find(&raw)
+                .map(|l| l.display_name.to_string())
+                .unwrap_or(raw),
+        )
     }
 
     /// Resolve the sequencing lab for every run that has an inferred `instrument_id` but no facility
@@ -1093,19 +1235,28 @@ impl App {
     /// import and on startup so pre-existing runs pick up newly-seeded associations.
     pub async fn backfill_run_labs(&self) -> Result<usize, AppError> {
         // One network/cache fetch, then resolve locally.
-        let Ok(list) = self.fetch_lab_instruments().await else { return Ok(0) };
-        let by_instrument: HashMap<&str, &str> =
-            list.iter().map(|l| (l.instrument_id.as_str(), l.lab_name.as_str())).collect();
+        let Ok(list) = self.fetch_lab_instruments().await else {
+            return Ok(0);
+        };
+        let by_instrument: HashMap<&str, &str> = list
+            .iter()
+            .map(|l| (l.instrument_id.as_str(), l.lab_name.as_str()))
+            .collect();
         let mut filled = 0usize;
         for biosample in biosample::list_all(self.store.pool()).await? {
             for run in sequence_run::list_for_biosample(self.store.pool(), biosample.guid).await? {
                 if run.sequencing_facility.is_some() {
                     continue;
                 }
-                let Some(inst) = run.instrument_id.as_deref() else { continue };
+                let Some(inst) = run.instrument_id.as_deref() else {
+                    continue;
+                };
                 if let Some(raw) = by_instrument.get(inst.trim()) {
                     let lab = navigator_domain::labs::find(raw).map(|l| l.display_name).unwrap_or(raw);
-                    if sequence_run::set_facility(self.store.pool(), run.id, lab).await.unwrap_or(false) {
+                    if sequence_run::set_facility(self.store.pool(), run.id, lab)
+                        .await
+                        .unwrap_or(false)
+                    {
                         filled += 1;
                     }
                 }
@@ -1139,7 +1290,10 @@ impl App {
             .map_err(|e| AppError::Import(format!("downloading {url}: {e}")));
         match downloaded {
             Ok(resp) => {
-                let body = resp.text().await.map_err(|e| AppError::Import(format!("reading {url}: {e}")))?;
+                let body = resp
+                    .text()
+                    .await
+                    .map_err(|e| AppError::Import(format!("reading {url}: {e}")))?;
                 if let Some(parent) = path.parent() {
                     let _ = std::fs::create_dir_all(parent);
                 }
@@ -1159,10 +1313,7 @@ impl App {
     /// Assign an mtDNA haplogroup directly from an alignment's chrM reads (FTDNA mt tree),
     /// the BAM-based counterpart to [`assign_mtdna_haplogroup`]. Requires a GRCh38/rCRS
     /// chrM (the tree is in rCRS coordinates).
-    pub async fn assign_mtdna_haplogroup_from_alignment(
-        &self,
-        alignment_id: i64,
-    ) -> Result<HaploAssignment, AppError> {
+    pub async fn assign_mtdna_haplogroup_from_alignment(&self, alignment_id: i64) -> Result<HaploAssignment, AppError> {
         let bio = self.biosample_of_alignment(alignment_id).await.ok();
         let source_key = format!("aln:{alignment_id}:mt");
         let tree_json = self.fetch_ftdna_mt_tree().await?;
@@ -1174,7 +1325,9 @@ impl App {
             .ok()
             .map(|file_hash| format!("f:{}|mt:{}", &file_hash[..16], &sha256_str(&tree_json)[..16]));
         if let (Some(bio), Some(fp)) = (bio, fingerprint.as_deref()) {
-            if haplogroup_call::stored_fingerprint(self.store.pool(), bio, DnaType::Mt, &source_key).await?.as_deref()
+            if haplogroup_call::stored_fingerprint(self.store.pool(), bio, DnaType::Mt, &source_key)
+                .await?
+                .as_deref()
                 == Some(fp)
             {
                 if let Some(call) = haplogroup_call::get_one(self.store.pool(), bio, DnaType::Mt, &source_key).await? {
@@ -1183,9 +1336,19 @@ impl App {
             }
         }
 
-        let assignment = self.assign_haplogroup_from_alignment(alignment_id, "chrM", &tree_json).await?;
+        let assignment = self
+            .assign_haplogroup_from_alignment(alignment_id, "chrM", &tree_json)
+            .await?;
         if let Some(bio) = bio {
-            self.record_call_fp(bio, DnaType::Mt, &source_key, format!("aln #{alignment_id} mtDNA"), &assignment, fingerprint.as_deref()).await?;
+            self.record_call_fp(
+                bio,
+                DnaType::Mt,
+                &source_key,
+                format!("aln #{alignment_id} mtDNA"),
+                &assignment,
+                fingerprint.as_deref(),
+            )
+            .await?;
         }
         Ok(assignment)
     }
@@ -1223,21 +1386,28 @@ impl App {
     /// across all WGS + chip sources), bridges it to genotypes, and runs the same estimators as the
     /// per-alignment path used to. Persisted under the consensus pseudo-source
     /// ([`CONSENSUS_SOURCE_ID`]). Errors if the autosomal consensus hasn't been built yet.
-    pub async fn estimate_ancestry_from_consensus(&self, biosample_guid: SampleGuid) -> Result<AncestryResult, AppError> {
-        let profile = self
-            .cached_autosomal_profile(biosample_guid)
-            .await?
-            .ok_or_else(|| AppError::Import("build the autosomal consensus first (Autosomal tab) before estimating ancestry".into()))?;
+    pub async fn estimate_ancestry_from_consensus(
+        &self,
+        biosample_guid: SampleGuid,
+    ) -> Result<AncestryResult, AppError> {
+        let profile = self.cached_autosomal_profile(biosample_guid).await?.ok_or_else(|| {
+            AppError::Import("build the autosomal consensus first (Autosomal tab) before estimating ancestry".into())
+        })?;
         let genotypes = consensus_genotypes(&profile);
 
         // The consensus is canonical CHM13; the AIM freq / PCA assets are keyed by (contig,pos) there.
         let build = ReferenceBuild::Chm13v2;
         let reference_version = "chm13v2.0".to_string();
         let panel_path = ancestry_panel_path(build);
-        let panel_bytes =
-            read_verified_asset(build, &panel_path)?.ok_or_else(|| AppError::AncestryPanelMissing(panel_path.clone()))?;
+        let panel_bytes = read_verified_asset(build, &panel_path)?
+            .ok_or_else(|| AppError::AncestryPanelMissing(panel_path.clone()))?;
         let panel = AncestryPanel::from_bytes(&panel_bytes)?;
-        let optional = |path: PathBuf| read_verified_asset(build, &path).unwrap_or_else(|e| { eprintln!("{e}"); None });
+        let optional = |path: PathBuf| {
+            read_verified_asset(build, &path).unwrap_or_else(|e| {
+                eprintln!("{e}");
+                None
+            })
+        };
         let pca_bytes = optional(ancestry_pca_path(build));
         let ancient_pca_bytes = optional(ancestry_pca_ancient_path(build));
         let fine_bytes = optional(ancestry_freq_global_path(build));
@@ -1267,7 +1437,10 @@ impl App {
 
         let required = ancestry_min_snps();
         if result.snps_with_genotype < required {
-            return Err(AppError::InsufficientAncestryData { genotyped: result.snps_with_genotype, required });
+            return Err(AppError::InsufficientAncestryData {
+                genotyped: result.snps_with_genotype,
+                required,
+            });
         }
         ancestry_result::upsert(self.store.pool(), biosample_guid, CONSENSUS_SOURCE_ID, &result).await?;
         for extra in [pca_gmm.as_ref(), nmonte.as_ref(), fine.as_ref()].into_iter().flatten() {
@@ -1277,20 +1450,14 @@ impl App {
     }
 
     /// The persisted ancestry estimate for an alignment, if one has been computed.
-    pub async fn ancestry_for_alignment(
-        &self,
-        alignment_id: i64,
-    ) -> Result<Option<AncestryResult>, AppError> {
+    pub async fn ancestry_for_alignment(&self, alignment_id: i64) -> Result<Option<AncestryResult>, AppError> {
         Ok(ancestry_result::get_for_alignment(self.store.pool(), alignment_id).await?)
     }
 
     /// The persisted **fine-population** admixture estimate for an alignment, if one was computed
     /// (the `ancestry_freq_global` asset was present at estimation time). Drives the super→fine
     /// hierarchy rows; the super-pop donut keeps using the primary ([`ancestry_for_alignment`]).
-    pub async fn fine_ancestry_for_alignment(
-        &self,
-        alignment_id: i64,
-    ) -> Result<Option<AncestryResult>, AppError> {
+    pub async fn fine_ancestry_for_alignment(&self, alignment_id: i64) -> Result<Option<AncestryResult>, AppError> {
         Ok(ancestry_result::get_for_alignment_method(self.store.pool(), alignment_id, "FINE_ADMIXTURE").await?)
     }
 
@@ -1303,7 +1470,9 @@ impl App {
     /// Returns an empty vec when the asset isn't installed (the caller shows "reference not built").
     pub async fn ancestry_pca_reference(&self) -> Result<Vec<(String, f64, f64)>, AppError> {
         let build = ReferenceBuild::Chm13v2;
-        let Ok(bytes) = std::fs::read(ancestry_pca_path(build)) else { return Ok(Vec::new()) };
+        let Ok(bytes) = std::fs::read(ancestry_pca_path(build)) else {
+            return Ok(Vec::new());
+        };
         let pca = navigator_analysis::ancestry::PcaLoadings::from_bytes(&bytes)?;
         Ok(pca
             .populations
@@ -1311,7 +1480,11 @@ impl App {
             .enumerate()
             .map(|(p, code)| {
                 let c = pca.centroid(p);
-                (code.clone(), c.first().copied().unwrap_or(0.0) as f64, c.get(1).copied().unwrap_or(0.0) as f64)
+                (
+                    code.clone(),
+                    c.first().copied().unwrap_or(0.0) as f64,
+                    c.get(1).copied().unwrap_or(0.0) as f64,
+                )
             })
             .collect())
     }
@@ -1337,10 +1510,15 @@ impl App {
     /// walk. Returns the cached painting when it matches the current consensus signature; otherwise
     /// runs the diploid pair-state HMM over the consensus genotypes (anchored on the admixture prior)
     /// and caches it keyed to the consensus's `last_reconciled_at`.
-    pub async fn paint_local_ancestry_from_consensus(&self, biosample_guid: SampleGuid) -> Result<Vec<AncestrySegment>, AppError> {
+    pub async fn paint_local_ancestry_from_consensus(
+        &self,
+        biosample_guid: SampleGuid,
+    ) -> Result<Vec<AncestrySegment>, AppError> {
         let row = consensus_profile::get(self.store.pool(), biosample_guid, "Auto")
             .await?
-            .ok_or_else(|| AppError::Import("build the autosomal consensus first (Autosomal tab) before painting".into()))?;
+            .ok_or_else(|| {
+                AppError::Import("build the autosomal consensus first (Autosomal tab) before painting".into())
+            })?;
         let sig = row.last_reconciled_at.clone();
 
         // Cache hit (same consensus signature) → return without recomputing.
@@ -1355,19 +1533,34 @@ impl App {
         let build = ReferenceBuild::Chm13v2;
         let reference_version = "chm13v2.0".to_string();
         let panel_path = ancestry_panel_path(build);
-        let panel_bytes =
-            read_verified_asset(build, &panel_path)?.ok_or_else(|| AppError::AncestryPanelMissing(panel_path.clone()))?;
+        let panel_bytes = read_verified_asset(build, &panel_path)?
+            .ok_or_else(|| AppError::AncestryPanelMissing(panel_path.clone()))?;
         let panel = AncestryPanel::from_bytes(&panel_bytes)?;
         let segments = tokio::task::spawn_blocking(move || {
             let composition = ancestry_analysis::estimate_admixture(&genotypes, &panel, &reference_version);
-            let prior: Vec<(String, f64)> =
-                composition.components.iter().map(|c| (c.population_code.clone(), c.percentage / 100.0)).collect();
-            ancestry_analysis::paint_local_ancestry(&genotypes, &panel, &prior, &ancestry_analysis::PaintParams::default())
+            let prior: Vec<(String, f64)> = composition
+                .components
+                .iter()
+                .map(|c| (c.population_code.clone(), c.percentage / 100.0))
+                .collect();
+            ancestry_analysis::paint_local_ancestry(
+                &genotypes,
+                &panel,
+                &prior,
+                &ancestry_analysis::PaintParams::default(),
+            )
         })
         .await?;
 
         // Cache keyed to the consensus signature so it's reused until the consensus is rebuilt.
-        consensus_painting::upsert(self.store.pool(), biosample_guid, &sig, &serde_json::to_string(&segments)?, &Utc::now().to_rfc3339()).await?;
+        consensus_painting::upsert(
+            self.store.pool(),
+            biosample_guid,
+            &sig,
+            &serde_json::to_string(&segments)?,
+            &Utc::now().to_rfc3339(),
+        )
+        .await?;
         Ok(segments)
     }
 
@@ -1391,7 +1584,10 @@ impl App {
         if let Some(path) = bam {
             let size = std::fs::metadata(&path).ok().map(|m| m.len() as i64);
             let now = Utc::now().to_rfc3339();
-            if source_file::upsert_by_checksum(self.store.pool(), &hash, Some(&path), size, Some("BAM"), &now).await.is_ok() {
+            if source_file::upsert_by_checksum(self.store.pool(), &hash, Some(&path), size, Some("BAM"), &now)
+                .await
+                .is_ok()
+            {
                 let _ = source_file::link_to_alignment(self.store.pool(), &hash, alignment_id, &now).await;
             }
         }
@@ -1409,7 +1605,11 @@ impl App {
         let now = Utc::now().to_rfc3339();
         let mut missing = 0;
         for f in source_file::list(self.store.pool()).await? {
-            let ok = f.file_path.as_deref().map(|p| std::path::Path::new(p).exists()).unwrap_or(false);
+            let ok = f
+                .file_path
+                .as_deref()
+                .map(|p| std::path::Path::new(p).exists())
+                .unwrap_or(false);
             if !ok {
                 missing += 1;
             }
@@ -1447,7 +1647,9 @@ impl App {
         // call without re-scoring (the expensive BAM genotyping).
         let fingerprint = self.y_score_fingerprint(alignment_id).await.ok();
         if let (Some(bio), Some(fp)) = (bio, fingerprint.as_deref()) {
-            if haplogroup_call::stored_fingerprint(self.store.pool(), bio, DnaType::Y, &source_key).await?.as_deref()
+            if haplogroup_call::stored_fingerprint(self.store.pool(), bio, DnaType::Y, &source_key)
+                .await?
+                .as_deref()
                 == Some(fp)
             {
                 if let Some(call) = haplogroup_call::get_one(self.store.pool(), bio, DnaType::Y, &source_key).await? {
@@ -1458,7 +1660,15 @@ impl App {
 
         let assignment = self.y_assignment_full(alignment_id).await?;
         if let Some(bio) = bio {
-            self.record_call_fp(bio, DnaType::Y, &source_key, format!("aln #{alignment_id} Y"), &assignment, fingerprint.as_deref()).await?;
+            self.record_call_fp(
+                bio,
+                DnaType::Y,
+                &source_key,
+                format!("aln #{alignment_id} Y"),
+                &assignment,
+                fingerprint.as_deref(),
+            )
+            .await?;
         }
         Ok(assignment)
     }
@@ -1475,12 +1685,14 @@ impl App {
                     // AppView unreachable / build unsupported / parse failure → FTDNA fallback.
                     eprintln!("DecodingUs Y tree unavailable ({e}); falling back to FTDNA");
                     let tree_json = self.fetch_ftdna_y_tree().await?;
-                    self.assign_haplogroup_from_alignment(alignment_id, "chrY", &tree_json).await
+                    self.assign_haplogroup_from_alignment(alignment_id, "chrY", &tree_json)
+                        .await
                 }
             },
             YTreeProvider::Ftdna => {
                 let tree_json = self.fetch_ftdna_y_tree().await?;
-                self.assign_haplogroup_from_alignment(alignment_id, "chrY", &tree_json).await
+                self.assign_haplogroup_from_alignment(alignment_id, "chrY", &tree_json)
+                    .await
             }
         }
     }
@@ -1505,7 +1717,10 @@ impl App {
     ) -> Result<(navigator_analysis::haplo::HaploTree, HashMap<i64, char>), AppError> {
         let aln = self.alignment_or_err(alignment_id).await?;
         let build_key = decodingus_build_key(&aln.reference_build).ok_or_else(|| {
-            AppError::Import(format!("no DecodingUs tree coordinates for build {}", aln.reference_build))
+            AppError::Import(format!(
+                "no DecodingUs tree coordinates for build {}",
+                aln.reference_build
+            ))
         })?;
         let tree_json = self.fetch_decodingus_y_tree().await?;
         let tree = navigator_analysis::haplo::parse_decodingus_json(&tree_json, build_key).map_err(AppError::Import)?;
@@ -1513,7 +1728,6 @@ impl App {
         let calls = self.base_calls(alignment_id, "chrY", &tree, None).await?;
         Ok((tree, calls))
     }
-
 
     /// Assign a Y haplogroup from the subject's imported **BISDNA / Y-SNP-panel** calls — no
     /// alignment required. Builds a derived-allele call map from the subject's `Chip`-sourced
@@ -1535,7 +1749,11 @@ impl App {
         // else (pre-migration sets with no stored build) re-derive from the subject's alignment.
         let build = match build {
             Some(b) => b.to_string(),
-            None => match sets.iter().filter(|s| s.source_type == SourceType::Chip).find_map(|s| s.reference_build.clone()) {
+            None => match sets
+                .iter()
+                .filter(|s| s.source_type == SourceType::Chip)
+                .find_map(|s| s.reference_build.clone())
+            {
                 Some(b) => b,
                 None => self.bisdna_target_build(biosample_guid).await,
             },
@@ -1566,7 +1784,14 @@ impl App {
         // the tree's opposite strand so they score against the right allele. No-op for BISDNA.
         let calls = strand_reconcile_to_tree(&tree, calls);
         let assignment = assemble_assignment_robust(&tree, &calls);
-        self.record_call(biosample_guid, DnaType::Y, "bisdna", "Chip Y-SNP panel".into(), &assignment).await?;
+        self.record_call(
+            biosample_guid,
+            DnaType::Y,
+            "bisdna",
+            "Chip Y-SNP panel".into(),
+            &assignment,
+        )
+        .await?;
         Ok(assignment)
     }
 
@@ -1627,7 +1852,14 @@ impl App {
         let tree = navigator_analysis::haplo::parse_ftdna_json(&tree_json).map_err(AppError::Import)?;
         let calls = strand_reconcile_to_tree(&tree, calls);
         let assignment = assemble_assignment_robust(&tree, &calls);
-        self.record_call(biosample_guid, DnaType::Mt, "chip-mt", "Chip mtDNA panel".into(), &assignment).await?;
+        self.record_call(
+            biosample_guid,
+            DnaType::Mt,
+            "chip-mt",
+            "Chip mtDNA panel".into(),
+            &assignment,
+        )
+        .await?;
         Ok(assignment)
     }
 
@@ -1651,7 +1883,10 @@ impl App {
     /// haplogroups (with score / matched-vs-expected) + the defining-SNP evidence along the reported
     /// lineage (each SNP's derived / ancestral / no-call state). A fresh placement against the
     /// configured provider tree — heavier than the cached terminal label, so it's button-driven.
-    pub async fn y_haplogroup_report(&self, alignment_id: i64) -> Result<(HaploAssignment, Vec<SnpEvidence>), AppError> {
+    pub async fn y_haplogroup_report(
+        &self,
+        alignment_id: i64,
+    ) -> Result<(HaploAssignment, Vec<SnpEvidence>), AppError> {
         let tree_json = match y_tree_provider() {
             YTreeProvider::DecodingUs => self.fetch_decodingus_y_tree().await?,
             YTreeProvider::Ftdna => self.fetch_ftdna_y_tree().await?,
@@ -1705,11 +1940,20 @@ impl App {
         let bam = PathBuf::from(aln.bam_path.ok_or(AppError::MissingPaths(alignment_id))?);
         let reference = aln.reference_path.map(PathBuf::from);
 
-        let targets: HashSet<i64> =
-            tree.nodes.values().flat_map(|n| n.loci.iter().map(|l| l.position)).collect();
+        let targets: HashSet<i64> = tree
+            .nodes
+            .values()
+            .flat_map(|n| n.loci.iter().map(|l| l.position))
+            .collect();
 
         let lifted = self
-            .lifted_targets(&aln.reference_build, reference.as_deref(), contig, &targets, tree_source_build)
+            .lifted_targets(
+                &aln.reference_build,
+                reference.as_deref(),
+                contig,
+                &targets,
+                tree_source_build,
+            )
             .await?;
 
         let calls = match lifted {
@@ -1747,11 +1991,17 @@ impl App {
 
         // chrY: downloaded nuclear chain (when the tree build differs from the alignment).
         if let Some(src) = tree_source_build {
-            let differ = matches!((canonical_build(src), canonical_build(reference_build)), (Some(s), Some(t)) if s != t);
+            let differ =
+                matches!((canonical_build(src), canonical_build(reference_build)), (Some(s), Some(t)) if s != t);
             if differ && self.gateway.chain_available(src, reference_build) {
                 self.gateway.resolve_chain(src, reference_build, &mut |_, _| {}).await?;
                 let targets_vec: Vec<i64> = targets.iter().copied().collect();
-                return Ok(Some(self.gateway.lift_positions(src, reference_build, contig, &targets_vec)?));
+                return Ok(Some(self.gateway.lift_positions(
+                    src,
+                    reference_build,
+                    contig,
+                    &targets_vec,
+                )?));
             }
             return Ok(None);
         }
@@ -1770,11 +2020,18 @@ impl App {
             })
             .await?;
             let Ok(pairs) = map else { return Ok(None) }; // chrM absent/unreadable → direct fallback
-            // rcrs_idx/chrm_idx are 0-based; tree + query positions are 1-based.
+                                                          // rcrs_idx/chrm_idx are 0-based; tree + query positions are 1-based.
             let by_rcrs: HashMap<i64, i64> = pairs.into_iter().map(|(r, c)| (r as i64 + 1, c as i64 + 1)).collect();
             let lifted = targets
                 .iter()
-                .filter_map(|&t| by_rcrs.get(&t).map(|&c| LiftedPos { tree_pos: t, contig: "chrM".to_string(), pos: c, reverse: false }))
+                .filter_map(|&t| {
+                    by_rcrs.get(&t).map(|&c| LiftedPos {
+                        tree_pos: t,
+                        contig: "chrM".to_string(),
+                        pos: c,
+                        reverse: false,
+                    })
+                })
                 .collect();
             return Ok(Some(lifted));
         }
@@ -1834,5 +2091,4 @@ impl App {
         }
         Ok(calls)
     }
-
 }

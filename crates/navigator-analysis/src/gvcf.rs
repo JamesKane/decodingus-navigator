@@ -130,7 +130,9 @@ pub fn read_called_bases_from<R: BufRead>(
                 .or_else(|| format_field(format, sample, "DP"))
                 .and_then(|s| s.parse::<u32>().ok())
                 .unwrap_or(0);
-            let gq = format_field(format, sample, "GQ").and_then(|s| s.parse::<u32>().ok()).unwrap_or(0);
+            let gq = format_field(format, sample, "GQ")
+                .and_then(|s| s.parse::<u32>().ok())
+                .unwrap_or(0);
             if dp < params.min_dp || gq < params.min_gq {
                 continue;
             }
@@ -143,8 +145,12 @@ pub fn read_called_bases_from<R: BufRead>(
             if !targets.contains(&pos) {
                 continue;
             }
-            let dp = format_field(format, sample, "DP").and_then(|s| s.parse::<u32>().ok()).unwrap_or(0);
-            let gq = format_field(format, sample, "GQ").and_then(|s| s.parse::<u32>().ok()).unwrap_or(0);
+            let dp = format_field(format, sample, "DP")
+                .and_then(|s| s.parse::<u32>().ok())
+                .unwrap_or(0);
+            let gq = format_field(format, sample, "GQ")
+                .and_then(|s| s.parse::<u32>().ok())
+                .unwrap_or(0);
             if dp < params.min_dp || gq < params.min_gq {
                 continue;
             }
@@ -202,7 +208,9 @@ fn format_field<'a>(format: &str, sample: &'a str, key: &str) -> Option<&'a str>
 
 /// `END=` value from a GVCF ref block's INFO column, if present.
 fn info_end(info: &str) -> Option<i64> {
-    info.split(';').find_map(|kv| kv.strip_prefix("END=")).and_then(|v| v.parse().ok())
+    info.split(';')
+        .find_map(|kv| kv.strip_prefix("END="))
+        .and_then(|v| v.parse().ok())
 }
 
 /// Slice of `sorted` whose values fall in `[lo, hi]` (inclusive).
@@ -288,11 +296,15 @@ chrM\t100\t.\tC\tT,<NON_REF>\t500\t.\tDP=30\tGT:AD:DP:GQ:PL\t1:0,30,0:30:99:510,
         called.variant_bases.insert(2459921, 'A');
         called.callable.insert(2459921);
         called.callable.insert(2459000); // hom-ref-only → takes the reference base
-        // The reference base at a hom-ref site can be the *derived* allele (CHM13 = J1 Y).
+                                         // The reference base at a hom-ref site can be the *derived* allele (CHM13 = J1 Y).
         let ref_base: HashMap<i64, char> = [(2459921, 'G'), (2459000, 'T'), (700, 'C')].into_iter().collect();
         let calls = assemble_calls(&called, &ref_base);
         assert_eq!(calls.get(&2459921), Some(&'A'), "variant (derived) wins over reference");
-        assert_eq!(calls.get(&2459000), Some(&'T'), "callable hom-ref takes the reference base");
+        assert_eq!(
+            calls.get(&2459000),
+            Some(&'T'),
+            "callable hom-ref takes the reference base"
+        );
         assert!(!calls.contains_key(&700), "no-call position is omitted");
     }
 
@@ -327,7 +339,10 @@ chrM\t100\t.\tC\tT,<NON_REF>\t500\t.\tDP=30\tGT:AD:DP:GQ:PL\t1:0,30,0:30:99:510,
             c.variant_bases.len(),
             c.callable.len()
         );
-        assert!(c.callable.len() > 1000, "expected many callable sites on a real chrY GVCF");
+        assert!(
+            c.callable.len() > 1000,
+            "expected many callable sites on a real chrY GVCF"
+        );
         assert!(c.variant_bases.values().all(|b| matches!(b, 'A' | 'C' | 'G' | 'T')));
     }
 }

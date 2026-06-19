@@ -14,8 +14,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use du_atproto::did::Did;
 use du_atproto::oauth::{
-    authorize_url, discover_auth_server, dpop_proof, par_form_public, random_token,
-    token_form_public, EcKey, Pkce,
+    authorize_url, discover_auth_server, dpop_proof, par_form_public, random_token, token_form_public, EcKey, Pkce,
 };
 use du_atproto::Resolver;
 
@@ -41,11 +40,17 @@ pub struct OAuthConfig {
 
 impl OAuthConfig {
     pub fn hosted(client_id: impl Into<String>, scope: impl Into<String>) -> Self {
-        OAuthConfig { client: ClientId::Hosted(client_id.into()), scope: scope.into() }
+        OAuthConfig {
+            client: ClientId::Hosted(client_id.into()),
+            scope: scope.into(),
+        }
     }
 
     pub fn loopback(scope: impl Into<String>) -> Self {
-        OAuthConfig { client: ClientId::Loopback, scope: scope.into() }
+        OAuthConfig {
+            client: ClientId::Loopback,
+            scope: scope.into(),
+        }
     }
 
     /// The `client_id` to use for a given loopback redirect URI.
@@ -79,7 +84,10 @@ fn percent_encode(s: &str) -> String {
 }
 
 fn now() -> i64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0)
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
 }
 
 /// Parameters parsed from the authorization redirect.
@@ -141,7 +149,9 @@ pub struct LoopbackServer {
 impl LoopbackServer {
     /// Bind an ephemeral `127.0.0.1` port.
     pub fn bind() -> Result<Self, SyncError> {
-        Ok(LoopbackServer { listener: TcpListener::bind("127.0.0.1:0")? })
+        Ok(LoopbackServer {
+            listener: TcpListener::bind("127.0.0.1:0")?,
+        })
     }
 
     pub fn port(&self) -> u16 {
@@ -157,7 +167,8 @@ impl LoopbackServer {
         let target = request_line.split_whitespace().nth(1).unwrap_or("");
         let params = parse_callback_query(target);
 
-        let body = "<html><body><h3>DUNavigator</h3><p>Authentication complete — you can close this window.</p></body></html>";
+        let body =
+            "<html><body><h3>DUNavigator</h3><p>Authentication complete — you can close this window.</p></body></html>";
         let response = format!(
             "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
             body.len(),
@@ -185,7 +196,11 @@ async fn post_with_dpop(
     if resp.status().is_success() {
         return Ok(resp.json().await?);
     }
-    let nonce = resp.headers().get("DPoP-Nonce").and_then(|v| v.to_str().ok()).map(String::from);
+    let nonce = resp
+        .headers()
+        .get("DPoP-Nonce")
+        .and_then(|v| v.to_str().ok())
+        .map(String::from);
     let Some(nonce) = nonce else {
         return Err(SyncError::Oauth(format!("{post_url}: {}", resp.status())));
     };
@@ -218,11 +233,7 @@ fn open_browser(url: &str) {
 
 /// [`login`] with a default [`Resolver`] (PLC directory + HTTPS handle resolution). The
 /// convenience the app layer calls so it needn't depend on `du-atproto` directly.
-pub async fn login_default(
-    http: &reqwest::Client,
-    config: &OAuthConfig,
-    handle: &str,
-) -> Result<Session, SyncError> {
+pub async fn login_default(http: &reqwest::Client, config: &OAuthConfig, handle: &str) -> Result<Session, SyncError> {
     login(http, &Resolver::new(), config, handle).await
 }
 
@@ -256,7 +267,14 @@ pub async fn login(
 
     // Pushed authorization request (PKCE, no client assertion). Over an HTTPS-reachable
     // PDS the transport URL is the canonical endpoint, so post_url == htu here.
-    let par_form = par_form_public(&client_id, &redirect, &config.scope, &state, &pkce.challenge, Some(handle));
+    let par_form = par_form_public(
+        &client_id,
+        &redirect,
+        &config.scope,
+        &state,
+        &pkce.challenge,
+        Some(handle),
+    );
     let par = post_with_dpop(http, &ec, &par_endpoint, &par_endpoint, &par_form).await?;
     let request_uri = par
         .get("request_uri")
@@ -275,7 +293,9 @@ pub async fn login(
     if let Some(err) = params.error {
         return Err(SyncError::Oauth(format!("authorization denied: {err}")));
     }
-    let code = params.code.ok_or_else(|| SyncError::Oauth("callback missing code".into()))?;
+    let code = params
+        .code
+        .ok_or_else(|| SyncError::Oauth("callback missing code".into()))?;
 
     // Exchange the code for tokens (PKCE verifier, DPoP-bound).
     let token_form = token_form_public(&client_id, &redirect, &code, &pkce.verifier);
@@ -285,8 +305,16 @@ pub async fn login(
         .and_then(|v| v.as_str())
         .ok_or_else(|| SyncError::Oauth("token response missing access_token".into()))?
         .to_string();
-    let refresh_token = tok.get("refresh_token").and_then(|v| v.as_str()).unwrap_or("").to_string();
-    let scope = tok.get("scope").and_then(|v| v.as_str()).unwrap_or(&config.scope).to_string();
+    let refresh_token = tok
+        .get("refresh_token")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    let scope = tok
+        .get("scope")
+        .and_then(|v| v.as_str())
+        .unwrap_or(&config.scope)
+        .to_string();
 
     Ok(Session {
         did: did.as_str().to_string(),
@@ -328,7 +356,11 @@ pub async fn refresh(http: &reqwest::Client, session: &Session) -> Result<Sessio
         .filter(|s| !s.is_empty())
         .map(String::from)
         .unwrap_or_else(|| session.refresh_token.clone());
-    let scope = tok.get("scope").and_then(|v| v.as_str()).unwrap_or(&session.scope).to_string();
+    let scope = tok
+        .get("scope")
+        .and_then(|v| v.as_str())
+        .unwrap_or(&session.scope)
+        .to_string();
 
     Ok(Session {
         did: session.did.clone(),
@@ -374,7 +406,10 @@ mod tests {
             id,
             "http://localhost?redirect_uri=http%3A%2F%2F127.0.0.1%3A9000%2Fcallback&scope=atproto"
         );
-        assert_eq!(OAuthConfig::hosted("https://x/cm.json", "s").client_id("ignored"), "https://x/cm.json");
+        assert_eq!(
+            OAuthConfig::hosted("https://x/cm.json", "s").client_id("ignored"),
+            "https://x/cm.json"
+        );
     }
 
     /// Live discovery + public-client PAR (DPoP + use_dpop_nonce) against a local atproto

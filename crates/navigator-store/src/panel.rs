@@ -13,7 +13,10 @@ struct PanelRow {
 
 impl PanelRow {
     fn into_domain(self) -> Panel {
-        Panel { id: self.id, name: self.name }
+        Panel {
+            id: self.id,
+            name: self.name,
+        }
     }
 }
 
@@ -60,7 +63,10 @@ pub async fn create(pool: &SqlitePool, name: &str, sites: &[PanelSite]) -> Resul
         .await?;
     }
     tx.commit().await?;
-    Ok(Panel { id, name: name.to_string() })
+    Ok(Panel {
+        id,
+        name: name.to_string(),
+    })
 }
 
 pub async fn list(pool: &SqlitePool) -> Result<Vec<Panel>, StoreError> {

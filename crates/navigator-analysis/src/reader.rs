@@ -23,7 +23,10 @@ use noodles::{bam, bgzf, cram, fasta, sam};
 /// inflate workers the single consumer thread is the limit. Override with
 /// `NAVIGATOR_BGZF_THREADS` (clamped to >= 1; set to 1 to disable threading).
 fn bgzf_worker_count() -> NonZeroUsize {
-    if let Some(n) = std::env::var("NAVIGATOR_BGZF_THREADS").ok().and_then(|s| s.parse::<usize>().ok()) {
+    if let Some(n) = std::env::var("NAVIGATOR_BGZF_THREADS")
+        .ok()
+        .and_then(|s| s.parse::<usize>().ok())
+    {
         return NonZeroUsize::new(n.max(1)).unwrap();
     }
     let cores = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1);
@@ -54,7 +57,9 @@ pub fn build_repository(reference: &Path) -> Result<fasta::Repository, AnalysisE
     let reader = fasta::io::indexed_reader::Builder::default()
         .build_from_path(reference)
         .map_err(|e| AnalysisError::io(reference, e))?;
-    Ok(fasta::Repository::new(fasta::repository::adapters::IndexedReader::new(reader)))
+    Ok(fasta::Repository::new(fasta::repository::adapters::IndexedReader::new(
+        reader,
+    )))
 }
 
 /// CRAM needs a reference; surface a clear error if one wasn't supplied.
@@ -68,8 +73,14 @@ fn require_reference<'a>(path: &Path, reference: Option<&'a Path>) -> Result<&'a
 /// path uses a multithreaded bgzf reader so block decompression runs on a worker pool while
 /// records are parsed sequentially (see [`bgzf_worker_count`]).
 pub enum SeqReader {
-    Bam { inner: bam::io::Reader<bgzf::MultithreadedReader<File>>, path: PathBuf },
-    Cram { inner: cram::io::Reader<File>, path: PathBuf },
+    Bam {
+        inner: bam::io::Reader<bgzf::MultithreadedReader<File>>,
+        path: PathBuf,
+    },
+    Cram {
+        inner: cram::io::Reader<File>,
+        path: PathBuf,
+    },
 }
 
 /// Open `path` for a sequential pass, returning the header and reader. `reference` is
@@ -81,7 +92,13 @@ pub fn open_seq(path: &Path, reference: Option<&Path>) -> Result<(sam::Header, S
             let mt = bgzf::MultithreadedReader::with_worker_count(bgzf_worker_count(), file);
             let mut inner = bam::io::Reader::from(mt);
             let header = inner.read_header().map_err(|e| AnalysisError::io(path, e))?;
-            Ok((header, SeqReader::Bam { inner, path: path.to_path_buf() }))
+            Ok((
+                header,
+                SeqReader::Bam {
+                    inner,
+                    path: path.to_path_buf(),
+                },
+            ))
         }
         Format::Cram => {
             let repo = build_repository(require_reference(path, reference)?)?;
@@ -90,7 +107,13 @@ pub fn open_seq(path: &Path, reference: Option<&Path>) -> Result<(sam::Header, S
                 .build_from_path(path)
                 .map_err(|e| AnalysisError::io(path, e))?;
             let header = inner.read_header().map_err(|e| AnalysisError::io(path, e))?;
-            Ok((header, SeqReader::Cram { inner, path: path.to_path_buf() }))
+            Ok((
+                header,
+                SeqReader::Cram {
+                    inner,
+                    path: path.to_path_buf(),
+                },
+            ))
         }
     }
 }
@@ -112,7 +135,11 @@ impl SeqReader {
             }
             SeqReader::Cram { inner, path } => {
                 let path = path.clone();
-                Box::new(inner.records(header).map(move |r| r.map_err(|e| AnalysisError::io(&path, e))))
+                Box::new(
+                    inner
+                        .records(header)
+                        .map(move |r| r.map_err(|e| AnalysisError::io(&path, e))),
+                )
             }
         }
     }
@@ -128,11 +155,19 @@ impl SeqReader {
         match self {
             SeqReader::Bam { inner, path } => {
                 let path = path.clone();
-                Box::new(inner.records().map(move |r| r.map(SeqRecord::Bam).map_err(|e| AnalysisError::io(&path, e))))
+                Box::new(
+                    inner
+                        .records()
+                        .map(move |r| r.map(SeqRecord::Bam).map_err(|e| AnalysisError::io(&path, e))),
+                )
             }
             SeqReader::Cram { inner, path } => {
                 let path = path.clone();
-                Box::new(inner.records(header).map(move |r| r.map(SeqRecord::Cram).map_err(|e| AnalysisError::io(&path, e))))
+                Box::new(
+                    inner
+                        .records(header)
+                        .map(move |r| r.map(SeqRecord::Cram).map_err(|e| AnalysisError::io(&path, e))),
+                )
             }
         }
     }
@@ -142,8 +177,15 @@ impl SeqReader {
 
 /// An indexed reader over BAM or CRAM. Hold it and call [`IdxReader::query`].
 pub enum IdxReader {
-    Bam { inner: bam::io::IndexedReader<bgzf::Reader<File>>, path: PathBuf },
-    Cram { inner: cram::io::IndexedReader<File>, repo: fasta::Repository, path: PathBuf },
+    Bam {
+        inner: bam::io::IndexedReader<bgzf::Reader<File>>,
+        path: PathBuf,
+    },
+    Cram {
+        inner: cram::io::IndexedReader<File>,
+        repo: fasta::Repository,
+        path: PathBuf,
+    },
 }
 
 /// Open `path` for indexed region queries (autoloads the `.bai`/`.crai`). `reference` is
@@ -155,7 +197,13 @@ pub fn open_indexed(path: &Path, reference: Option<&Path>) -> Result<(sam::Heade
                 .build_from_path(path)
                 .map_err(|e| AnalysisError::io(path, e))?;
             let header = inner.read_header().map_err(|e| AnalysisError::io(path, e))?;
-            Ok((header, IdxReader::Bam { inner, path: path.to_path_buf() }))
+            Ok((
+                header,
+                IdxReader::Bam {
+                    inner,
+                    path: path.to_path_buf(),
+                },
+            ))
         }
         Format::Cram => {
             let repo = build_repository(require_reference(path, reference)?)?;
@@ -164,7 +212,14 @@ pub fn open_indexed(path: &Path, reference: Option<&Path>) -> Result<(sam::Heade
                 .build_from_path(path)
                 .map_err(|e| AnalysisError::io(path, e))?;
             let header = inner.read_header().map_err(|e| AnalysisError::io(path, e))?;
-            Ok((header, IdxReader::Cram { inner, repo, path: path.to_path_buf() }))
+            Ok((
+                header,
+                IdxReader::Cram {
+                    inner,
+                    repo,
+                    path: path.to_path_buf(),
+                },
+            ))
         }
     }
 }
@@ -297,9 +352,7 @@ impl IdxReader {
                             .map_err(io_err)?;
                         for rec in &records {
                             // Same overlap test noodles' `Query` applies post-decode.
-                            if let (Some(Ok(start)), Some(Ok(end))) =
-                                (rec.alignment_start(), rec.alignment_end())
-                            {
+                            if let (Some(Ok(start)), Some(Ok(end))) = (rec.alignment_start(), rec.alignment_end()) {
                                 if interval.intersects((start..=end).into()) {
                                     sink.accept(&CramRead { rec, header });
                                 }
@@ -408,9 +461,7 @@ mod tests {
     }
 
     fn capture(r: &impl AlnRead) -> Captured {
-        let (quals, cigar) = r.pileup_with(|q, ops| {
-            (q.to_vec(), ops.map(|(k, l)| (k as u8, l)).collect::<Vec<_>>())
-        });
+        let (quals, cigar) = r.pileup_with(|q, ops| (q.to_vec(), ops.map(|(k, l)| (k as u8, l)).collect::<Vec<_>>()));
         Captured {
             flags: r.flags().bits(),
             start: r.alignment_start(),

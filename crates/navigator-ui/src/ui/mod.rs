@@ -5,16 +5,6 @@
 use std::path::PathBuf;
 use std::sync::mpsc::Receiver;
 
-use eframe::egui;
-use navigator_app::{
-    AncestryResult, AncestrySegment, AuditEntry, BuildNeed, CompatibilityLevel, Consensus,
-    CallState, Coverage, DenovoCall, DnaType, HaploAssignment, HeteroplasmySite, IbdComparison, IbdSuggestion, SnpEvidence,
-    IdentityVerification, PanelGenotype, PrivateBucket, PrivateClass, ProjectOverview,
-    AppSettings, BatchImportSummary, MtRegion, MtVariant, ProjectSampleReport, ReadMetrics, RefBuildStatus,
-    StrConcordanceRow,
-    SexInferenceResult, SourceType, SvAnalysisResult,
-    VerificationStatus, YMatch, YProfile, YSignal, YState, YVariantStatus,
-};
 use crate::charts::{
     asset_status_line, coverage_histogram_chart, draw_ancestry_donut, draw_chromosome_painting, draw_composition_bar,
     draw_ibd_segments, draw_pca_scatter, draw_population_components, draw_variant_track, TrackRegion, VariantMark,
@@ -23,8 +13,16 @@ use crate::widgets::{
     card, chip, combo, empty_state, fmt_depth, fmt_pct, fmt_reads, opt, provider_abbrev, short_guid, show_assignment,
     stat_card, table_header, table_row, variant_change,
 };
-use navigator_domain::du_domain::ids::SampleGuid;
+use eframe::egui;
+use navigator_app::{
+    AncestryResult, AncestrySegment, AppSettings, AuditEntry, BatchImportSummary, BuildNeed, CallState,
+    CompatibilityLevel, Consensus, Coverage, DenovoCall, DnaType, HaploAssignment, HeteroplasmySite, IbdComparison,
+    IbdSuggestion, IdentityVerification, MtRegion, MtVariant, PanelGenotype, PrivateBucket, PrivateClass,
+    ProjectOverview, ProjectSampleReport, ReadMetrics, RefBuildStatus, SexInferenceResult, SnpEvidence, SourceType,
+    StrConcordanceRow, SvAnalysisResult, VerificationStatus, YMatch, YProfile, YSignal, YState, YVariantStatus,
+};
 use navigator_domain::chipprofile::{self, ChipProfile};
+use navigator_domain::du_domain::ids::SampleGuid;
 use navigator_domain::mtdna::MtdnaSequence;
 use navigator_domain::strpanel;
 use navigator_domain::strprofile::{self, StrComparison, StrProfile};
@@ -109,8 +107,11 @@ enum YSub {
     Str,
 }
 impl YSub {
-    const ALL: [(YSub, &'static str); 3] =
-        [(YSub::Haplogroup, "detail.sub.haplogroup"), (YSub::Snp, "detail.sub.snp"), (YSub::Str, "detail.sub.str")];
+    const ALL: [(YSub, &'static str); 3] = [
+        (YSub::Haplogroup, "detail.sub.haplogroup"),
+        (YSub::Snp, "detail.sub.snp"),
+        (YSub::Str, "detail.sub.str"),
+    ];
 }
 
 /// Y-DNA → SNP variants nested sub-tabs: the heavy tables, one at a time (each runs to thousands of
@@ -138,7 +139,10 @@ enum MtSub {
     Variants,
 }
 impl MtSub {
-    const ALL: [(MtSub, &'static str); 2] = [(MtSub::Summary, "detail.sub.summary"), (MtSub::Variants, "detail.sub.variants")];
+    const ALL: [(MtSub, &'static str); 2] = [
+        (MtSub::Summary, "detail.sub.summary"),
+        (MtSub::Variants, "detail.sub.variants"),
+    ];
 }
 
 /// Autosomal sub-tabs: compact summary vs the heavy diploid profile table.
@@ -149,7 +153,10 @@ enum AutoSub {
     Profile,
 }
 impl AutoSub {
-    const ALL: [(AutoSub, &'static str); 2] = [(AutoSub::Summary, "detail.sub.summary"), (AutoSub::Profile, "detail.sub.profile")];
+    const ALL: [(AutoSub, &'static str); 2] = [
+        (AutoSub::Summary, "detail.sub.summary"),
+        (AutoSub::Profile, "detail.sub.profile"),
+    ];
 }
 
 /// Which Y-STR report view is shown in the Y-DNA tab.
@@ -200,7 +207,10 @@ impl SettingsForm {
         SettingsForm {
             appview_url: s.appview_url.unwrap_or_default(),
             y_tree_provider: s.y_tree_provider.unwrap_or_else(|| "decodingus".to_string()),
-            tree_ttl_days: s.tree_ttl_days.map(|d| d.to_string()).unwrap_or_else(|| "7".to_string()),
+            tree_ttl_days: s
+                .tree_ttl_days
+                .map(|d| d.to_string())
+                .unwrap_or_else(|| "7".to_string()),
             prompt_before_download: s.prompt_before_download.unwrap_or(true),
             ui_scale: s.ui_scale.unwrap_or(1.0),
             references: Vec::new(),
@@ -334,12 +344,30 @@ impl DataDelete {
 
     fn command(&self) -> Command {
         match *self {
-            DataDelete::Run { id, guid, .. } => Command::DeleteSequenceRun { id, biosample_guid: guid },
-            DataDelete::Alignment { id, run_id, .. } => Command::DeleteAlignment { id, sequence_run_id: run_id },
-            DataDelete::Str { id, guid, .. } => Command::DeleteStrProfile { id, biosample_guid: guid },
-            DataDelete::Variant { id, guid, .. } => Command::DeleteVariantSet { id, biosample_guid: guid },
-            DataDelete::Chip { id, guid, .. } => Command::DeleteChipProfile { id, biosample_guid: guid },
-            DataDelete::Mtdna { id, guid, .. } => Command::DeleteMtdnaSequence { id, biosample_guid: guid },
+            DataDelete::Run { id, guid, .. } => Command::DeleteSequenceRun {
+                id,
+                biosample_guid: guid,
+            },
+            DataDelete::Alignment { id, run_id, .. } => Command::DeleteAlignment {
+                id,
+                sequence_run_id: run_id,
+            },
+            DataDelete::Str { id, guid, .. } => Command::DeleteStrProfile {
+                id,
+                biosample_guid: guid,
+            },
+            DataDelete::Variant { id, guid, .. } => Command::DeleteVariantSet {
+                id,
+                biosample_guid: guid,
+            },
+            DataDelete::Chip { id, guid, .. } => Command::DeleteChipProfile {
+                id,
+                biosample_guid: guid,
+            },
+            DataDelete::Mtdna { id, guid, .. } => Command::DeleteMtdnaSequence {
+                id,
+                biosample_guid: guid,
+            },
         }
     }
 }
@@ -632,9 +660,17 @@ fn apply_theme(ctx: &egui::Context, dark: bool) {
     // Pin the preference so egui stops following the OS theme — otherwise `theme_preference`
     // defaults to `System` and our styled visuals get clobbered by the host (e.g. a light macOS
     // would show light even with Dark selected in Settings).
-    ctx.set_theme(if dark { egui::ThemePreference::Dark } else { egui::ThemePreference::Light });
+    ctx.set_theme(if dark {
+        egui::ThemePreference::Dark
+    } else {
+        egui::ThemePreference::Light
+    });
     let mut style = (*ctx.style()).clone();
-    let mut v = if dark { egui::Visuals::dark() } else { egui::Visuals::light() };
+    let mut v = if dark {
+        egui::Visuals::dark()
+    } else {
+        egui::Visuals::light()
+    };
 
     if dark {
         v.panel_fill = Color32::from_gray(27);
@@ -673,16 +709,23 @@ fn apply_theme(ctx: &egui::Context, dark: bool) {
 }
 
 /// Subjects-table columns: `(header, width)`.
-const SUBJECT_COLS: [(&str, f32); 7] =
-    [("ID", 150.0), ("Name", 150.0), ("Y-DNA", 150.0), ("mtDNA", 110.0), ("Sex", 70.0), ("Center", 130.0), ("Status", 90.0)];
+const SUBJECT_COLS: [(&str, f32); 7] = [
+    ("ID", 150.0),
+    ("Name", 150.0),
+    ("Y-DNA", 150.0),
+    ("mtDNA", 110.0),
+    ("Sex", 70.0),
+    ("Center", 130.0),
+    ("Status", 90.0),
+];
 
-mod events;
 mod central;
-mod modals;
 mod chrome;
 mod detail;
-mod sources;
+mod events;
 mod ibd;
+mod modals;
+mod sources;
 
 impl NavigatorApp {
     pub fn new(cc: &eframe::CreationContext<'_>, db_path: PathBuf) -> Self {
@@ -697,7 +740,7 @@ impl NavigatorApp {
         let _ = tx.send(Command::BackfillLabs); // resolve labs for runs imported before D8 landed
         let _ = tx.send(Command::VerifySourceFiles); // flag any imported file that moved/disappeared
         let _ = tx.send(Command::LoadAssetStatus); // ancestry/IBD "data sources" line
-        // Persisted theme wins; default dark. (Must match `dark_mode` below.)
+                                                   // Persisted theme wins; default dark. (Must match `dark_mode` below.)
         let dark = !matches!(AppSettings::load().theme.as_deref(), Some("light"));
         apply_theme(&cc.egui_ctx, dark);
         // Persisted UI scale (egui zoom) — fixes tiny text on a native-4K display the OS reports at
@@ -942,7 +985,6 @@ impl eframe::App for NavigatorApp {
     }
 }
 
-
 /// Render a depth histogram (`bin d` = bases observed at depth `d`, top bin = ≥255) as an
 const STR_CONFLICT: egui::Color32 = egui::Color32::from_rgb(220, 150, 60);
 
@@ -950,8 +992,11 @@ const STR_CONFLICT: egui::Color32 = egui::Color32::from_rgb(220, 150, 60);
 /// as transposed mini-grids (marker-name row over value row, ≤12 markers wide). Conflicting markers
 /// are amber.
 fn str_by_panel_view(ui: &mut egui::Ui, profile: &StrProfile, provider: &str, comparison: &StrComparison) {
-    let conflicts: std::collections::HashSet<String> =
-        comparison.conflicts.iter().map(|c| c.marker.trim().to_uppercase()).collect();
+    let conflicts: std::collections::HashSet<String> = comparison
+        .conflicts
+        .iter()
+        .map(|c| c.marker.trim().to_uppercase())
+        .collect();
     let groups = strpanel::assign_markers_to_panels(&profile.markers, provider);
     if groups.is_empty() {
         ui.label(egui::RichText::new("No markers.").weak());
@@ -965,20 +1010,22 @@ fn str_by_panel_view(ui: &mut egui::Ui, profile: &StrProfile, provider: &str, co
         ui.add_space(6.0);
         ui.label(egui::RichText::new(format!("{canon} {tier}  ({} markers)", markers.len())).strong());
         for (ci, chunk) in markers.chunks(12).enumerate() {
-            egui::Grid::new(format!("str_tier_{tier}_{ci}")).num_columns(chunk.len()).show(ui, |ui| {
-                for mk in chunk {
-                    let t = egui::RichText::new(&mk.marker).small();
-                    let c = conflicts.contains(&mk.marker.trim().to_uppercase());
-                    ui.label(if c { t.color(STR_CONFLICT) } else { t.weak() });
-                }
-                ui.end_row();
-                for mk in chunk {
-                    let t = egui::RichText::new(&mk.value).monospace().strong();
-                    let c = conflicts.contains(&mk.marker.trim().to_uppercase());
-                    ui.label(if c { t.color(STR_CONFLICT) } else { t });
-                }
-                ui.end_row();
-            });
+            egui::Grid::new(format!("str_tier_{tier}_{ci}"))
+                .num_columns(chunk.len())
+                .show(ui, |ui| {
+                    for mk in chunk {
+                        let t = egui::RichText::new(&mk.marker).small();
+                        let c = conflicts.contains(&mk.marker.trim().to_uppercase());
+                        ui.label(if c { t.color(STR_CONFLICT) } else { t.weak() });
+                    }
+                    ui.end_row();
+                    for mk in chunk {
+                        let t = egui::RichText::new(&mk.value).monospace().strong();
+                        let c = conflicts.contains(&mk.marker.trim().to_uppercase());
+                        ui.label(if c { t.color(STR_CONFLICT) } else { t });
+                    }
+                    ui.end_row();
+                });
         }
     }
 }
@@ -993,8 +1040,11 @@ fn str_all_markers_view(
     filter: &mut String,
 ) {
     use std::collections::HashMap;
-    let conflict_map: HashMap<String, &strprofile::MarkerConflict> =
-        comparison.conflicts.iter().map(|c| (c.marker.trim().to_uppercase(), c)).collect();
+    let conflict_map: HashMap<String, &strprofile::MarkerConflict> = comparison
+        .conflicts
+        .iter()
+        .map(|c| (c.marker.trim().to_uppercase(), c))
+        .collect();
     let mut tier_of: HashMap<String, String> = HashMap::new();
     for (tier, ms) in strpanel::assign_markers_to_panels(&profile.markers, provider) {
         for mk in ms {
@@ -1006,7 +1056,11 @@ fn str_all_markers_view(
 
     ui.horizontal(|ui| {
         ui.label("Filter:");
-        ui.add(egui::TextEdit::singleline(filter).hint_text("marker").desired_width(120.0));
+        ui.add(
+            egui::TextEdit::singleline(filter)
+                .hint_text("marker")
+                .desired_width(120.0),
+        );
         if !filter.is_empty() && ui.button("✕").clicked() {
             filter.clear();
         }
@@ -1015,46 +1069,49 @@ fn str_all_markers_view(
     let cols = if multi { 5 } else { 3 };
     // Flow into the detail panel's outer ScrollArea (no nested vertical scroll — it clips
     // the table and steals the wheel).
-    egui::Grid::new("str_all_grid").striped(true).num_columns(cols).show(ui, |ui| {
-        ui.strong("Marker");
-        ui.strong("Panel");
-        ui.strong("Value");
-        if multi {
-            ui.strong("⚠");
-            ui.strong("Other");
-        }
-        ui.end_row();
-        for mk in &profile.markers {
-            let norm = mk.marker.trim().to_uppercase();
-            if !f.is_empty() && !norm.contains(&f) {
-                continue;
-            }
-            let conflict = conflict_map.get(&norm).copied();
-            ui.label(&mk.marker);
-            ui.label(egui::RichText::new(tier_of.get(&norm).map(|s| s.as_str()).unwrap_or("—")).weak());
-            let v = egui::RichText::new(&mk.value).monospace();
-            ui.label(if conflict.is_some() { v.color(STR_CONFLICT) } else { v });
+    egui::Grid::new("str_all_grid")
+        .striped(true)
+        .num_columns(cols)
+        .show(ui, |ui| {
+            ui.strong("Marker");
+            ui.strong("Panel");
+            ui.strong("Value");
             if multi {
-                match conflict {
-                    Some(c) => {
-                        ui.colored_label(STR_CONFLICT, "⚠");
-                        let others: Vec<String> = c
-                            .by_provider
-                            .iter()
-                            .filter(|(p, _)| p != &this_provider)
-                            .map(|(p, val)| format!("{p}:{val}"))
-                            .collect();
-                        ui.label(egui::RichText::new(others.join(", ")).monospace().weak());
-                    }
-                    None => {
-                        ui.label("");
-                        ui.label("");
-                    }
-                }
+                ui.strong("⚠");
+                ui.strong("Other");
             }
             ui.end_row();
-        }
-    });
+            for mk in &profile.markers {
+                let norm = mk.marker.trim().to_uppercase();
+                if !f.is_empty() && !norm.contains(&f) {
+                    continue;
+                }
+                let conflict = conflict_map.get(&norm).copied();
+                ui.label(&mk.marker);
+                ui.label(egui::RichText::new(tier_of.get(&norm).map(|s| s.as_str()).unwrap_or("—")).weak());
+                let v = egui::RichText::new(&mk.value).monospace();
+                ui.label(if conflict.is_some() { v.color(STR_CONFLICT) } else { v });
+                if multi {
+                    match conflict {
+                        Some(c) => {
+                            ui.colored_label(STR_CONFLICT, "⚠");
+                            let others: Vec<String> = c
+                                .by_provider
+                                .iter()
+                                .filter(|(p, _)| p != &this_provider)
+                                .map(|(p, val)| format!("{p}:{val}"))
+                                .collect();
+                            ui.label(egui::RichText::new(others.join(", ")).monospace().weak());
+                        }
+                        None => {
+                            ui.label("");
+                            ui.label("");
+                        }
+                    }
+                }
+                ui.end_row();
+            }
+        });
 }
 
 /// Canonical short label + badge color for a consensus status, shared by the Y/mt consensus card
@@ -1095,7 +1152,11 @@ fn draw_consensus_profile(
     let s = &profile.summary;
     let mut header = format!(
         "{} confirmed · {} novel · {} conflict · {} single-source · confidence {:.0}%",
-        s.confirmed, s.novel, s.conflict, s.single_source, s.overall_confidence * 100.0
+        s.confirmed,
+        s.novel,
+        s.conflict,
+        s.single_source,
+        s.overall_confidence * 100.0
     );
     if let Some(t) = &profile.terminal {
         header = format!("terminal {t}   —   {header}");
@@ -1103,7 +1164,12 @@ fn draw_consensus_profile(
     ui.label(egui::RichText::new(header).weak());
     // Provenance: which tests contributed (label · count).
     if !profile.sources.is_empty() {
-        let prov = profile.sources.iter().map(|src| format!("{} ({})", src.label, src.variant_count)).collect::<Vec<_>>().join(" · ");
+        let prov = profile
+            .sources
+            .iter()
+            .map(|src| format!("{} ({})", src.label, src.variant_count))
+            .collect::<Vec<_>>()
+            .join(" · ");
         ui.label(egui::RichText::new(format!("sources: {prov}")).weak().small());
     }
 
@@ -1114,7 +1180,11 @@ fn draw_consensus_profile(
         ui.selectable_value(filter, Some(YVariantStatus::Conflict), "Conflicts");
         ui.selectable_value(filter, Some(YVariantStatus::Novel), "Novel");
         ui.selectable_value(filter, Some(YVariantStatus::Confirmed), "Confirmed");
-        ui.add(egui::TextEdit::singleline(query).hint_text("filter SNP / pos").desired_width(140.0));
+        ui.add(
+            egui::TextEdit::singleline(query)
+                .hint_text("filter SNP / pos")
+                .desired_width(140.0),
+        );
         if !query.is_empty() && ui.small_button("✕").clicked() {
             query.clear();
         }
@@ -1132,78 +1202,97 @@ fn draw_consensus_profile(
     const CAP: usize = 2000;
     let (mut shown, mut total_match) = (0usize, 0usize);
     let pane_h = profile_pane_height(ui, profile.variants.len());
-    egui::ScrollArea::vertical().id_salt(format!("{id_salt}_scroll")).max_height(pane_h).auto_shrink([false, false]).show(ui, |ui| {
-        egui::Grid::new(format!("{id_salt}_grid")).striped(true).num_columns(5).show(ui, |ui| {
-            for h in [variant_col, "Pos", "State", "Status", "Sources"] {
-                ui.strong(h);
-            }
-            ui.end_row();
-            for v in &profile.variants {
-                if filter.is_some_and(|f| v.status != f) {
-                    continue;
-                }
-                // A catalogued Y-SNP name at this site (for a position-only / novel row).
-                let cataloged = if v.name.is_empty() { snp_names.get(&v.position).map(String::as_str) } else { None };
-                if !q.is_empty()
-                    && !v.name.to_ascii_lowercase().contains(&q)
-                    && !v.position.to_string().contains(&q)
-                    && !cataloged.is_some_and(|n| n.to_ascii_lowercase().contains(&q))
-                {
-                    continue;
-                }
-                total_match += 1;
-                if shown >= CAP {
-                    continue;
-                }
-                shown += 1;
-                {
-                    let conflict = v.status == YVariantStatus::Conflict;
-                    // Prefer the consensus name; else the catalogued Y-SNP at this site (teal,
-                    // tooltipped); else a bare position marker.
-                    let teal = egui::Color32::from_rgb(90, 190, 190);
-                    let (display, is_cat) = match (v.name.is_empty(), cataloged) {
-                        (false, _) => (v.name.clone(), false),
-                        (true, Some(c)) => (c.to_string(), true),
-                        (true, None) => (format!("novel@{}", v.position), false),
-                    };
-                    let mut name_txt = egui::RichText::new(display).strong();
-                    if conflict {
-                        name_txt = name_txt.color(amber);
-                    } else if is_cat {
-                        name_txt = name_txt.color(teal);
+    egui::ScrollArea::vertical()
+        .id_salt(format!("{id_salt}_scroll"))
+        .max_height(pane_h)
+        .auto_shrink([false, false])
+        .show(ui, |ui| {
+            egui::Grid::new(format!("{id_salt}_grid"))
+                .striped(true)
+                .num_columns(5)
+                .show(ui, |ui| {
+                    for h in [variant_col, "Pos", "State", "Status", "Sources"] {
+                        ui.strong(h);
                     }
-                    let resp = ui.label(name_txt);
-                    if is_cat {
-                        resp.on_hover_text("catalogued Y-SNP at this site (not on the placed lineage)");
-                    }
-                    ui.label(egui::RichText::new(v.position.to_string()).weak());
-                    ui.label(state_label(v.consensus));
-                    let (label, color) = consensus_status_badge(v.status);
-                    ui.colored_label(color, format!("{label} ({}/{})", v.support, v.total));
-                    ui.horizontal(|ui| {
-                        for src in &v.sources {
-                            let short = match src.source_type {
-                                SourceType::Chip => "chip",
-                                SourceType::WgsShortRead | SourceType::WgsLongRead => "WGS",
-                                SourceType::Sanger => "Sanger",
-                                SourceType::Imported => "seq",
-                                _ => "src",
-                            };
-                            let glyph = match src.state {
-                                YState::Derived => "✓",
-                                YState::Ancestral => "·",
-                                YState::NoCall => "?",
-                            };
-                            ui.label(egui::RichText::new(format!("{short}{glyph}")).small().weak())
-                                .on_hover_text(format!("{}: {}", src.label, state_label(src.state)));
-                        }
-                    });
                     ui.end_row();
-                }
-            }
+                    for v in &profile.variants {
+                        if filter.is_some_and(|f| v.status != f) {
+                            continue;
+                        }
+                        // A catalogued Y-SNP name at this site (for a position-only / novel row).
+                        let cataloged = if v.name.is_empty() {
+                            snp_names.get(&v.position).map(String::as_str)
+                        } else {
+                            None
+                        };
+                        if !q.is_empty()
+                            && !v.name.to_ascii_lowercase().contains(&q)
+                            && !v.position.to_string().contains(&q)
+                            && !cataloged.is_some_and(|n| n.to_ascii_lowercase().contains(&q))
+                        {
+                            continue;
+                        }
+                        total_match += 1;
+                        if shown >= CAP {
+                            continue;
+                        }
+                        shown += 1;
+                        {
+                            let conflict = v.status == YVariantStatus::Conflict;
+                            // Prefer the consensus name; else the catalogued Y-SNP at this site (teal,
+                            // tooltipped); else a bare position marker.
+                            let teal = egui::Color32::from_rgb(90, 190, 190);
+                            let (display, is_cat) = match (v.name.is_empty(), cataloged) {
+                                (false, _) => (v.name.clone(), false),
+                                (true, Some(c)) => (c.to_string(), true),
+                                (true, None) => (format!("novel@{}", v.position), false),
+                            };
+                            let mut name_txt = egui::RichText::new(display).strong();
+                            if conflict {
+                                name_txt = name_txt.color(amber);
+                            } else if is_cat {
+                                name_txt = name_txt.color(teal);
+                            }
+                            let resp = ui.label(name_txt);
+                            if is_cat {
+                                resp.on_hover_text("catalogued Y-SNP at this site (not on the placed lineage)");
+                            }
+                            ui.label(egui::RichText::new(v.position.to_string()).weak());
+                            ui.label(state_label(v.consensus));
+                            let (label, color) = consensus_status_badge(v.status);
+                            ui.colored_label(color, format!("{label} ({}/{})", v.support, v.total));
+                            ui.horizontal(|ui| {
+                                for src in &v.sources {
+                                    let short = match src.source_type {
+                                        SourceType::Chip => "chip",
+                                        SourceType::WgsShortRead | SourceType::WgsLongRead => "WGS",
+                                        SourceType::Sanger => "Sanger",
+                                        SourceType::Imported => "seq",
+                                        _ => "src",
+                                    };
+                                    let glyph = match src.state {
+                                        YState::Derived => "✓",
+                                        YState::Ancestral => "·",
+                                        YState::NoCall => "?",
+                                    };
+                                    ui.label(egui::RichText::new(format!("{short}{glyph}")).small().weak())
+                                        .on_hover_text(format!("{}: {}", src.label, state_label(src.state)));
+                                }
+                            });
+                            ui.end_row();
+                        }
+                    }
+                });
         });
-    });
-    ui.label(egui::RichText::new(format!("{} of {} matching variants", shown.min(total_match), total_match)).weak().small());
+    ui.label(
+        egui::RichText::new(format!(
+            "{} of {} matching variants",
+            shown.min(total_match),
+            total_match
+        ))
+        .weak()
+        .small(),
+    );
     if total_match > CAP {
         ui.label(egui::RichText::new(format!("…and {} more — filter to narrow", total_match - CAP)).weak());
     }
@@ -1212,18 +1301,35 @@ fn draw_consensus_profile(
 /// Renderer for the autosomal diploid consensus profile — the 0/1/2 sibling of
 /// [`draw_consensus_profile`]. Header (confirmed/conflict/single + confidence), a status filter, and a
 /// per-site grid `Site (rsID) | GT (0/0,0/1,1/1) | Status | Sources (per-source dosage)`.
-fn draw_diploid_profile(ui: &mut egui::Ui, profile: &navigator_app::DiploidProfile, filter: &mut Option<YVariantStatus>, query: &mut String) {
+fn draw_diploid_profile(
+    ui: &mut egui::Ui,
+    profile: &navigator_app::DiploidProfile,
+    filter: &mut Option<YVariantStatus>,
+    query: &mut String,
+) {
     if profile.variants.is_empty() {
         ui.label(egui::RichText::new("No autosomal sites across sources.").weak());
         return;
     }
     let s = &profile.summary;
-    ui.label(egui::RichText::new(format!(
-        "{} sites · {} confirmed · {} conflict · {} single-source · confidence {:.0}%",
-        s.total, s.confirmed, s.conflict, s.single_source, s.overall_confidence * 100.0
-    )).weak());
+    ui.label(
+        egui::RichText::new(format!(
+            "{} sites · {} confirmed · {} conflict · {} single-source · confidence {:.0}%",
+            s.total,
+            s.confirmed,
+            s.conflict,
+            s.single_source,
+            s.overall_confidence * 100.0
+        ))
+        .weak(),
+    );
     if !profile.sources.is_empty() {
-        let prov = profile.sources.iter().map(|src| format!("{} ({})", src.label, src.variant_count)).collect::<Vec<_>>().join(" · ");
+        let prov = profile
+            .sources
+            .iter()
+            .map(|src| format!("{} ({})", src.label, src.variant_count))
+            .collect::<Vec<_>>()
+            .join(" · ");
         ui.label(egui::RichText::new(format!("sources: {prov}")).weak().small());
     }
 
@@ -1233,7 +1339,11 @@ fn draw_diploid_profile(ui: &mut egui::Ui, profile: &navigator_app::DiploidProfi
         ui.selectable_value(filter, None, "All");
         ui.selectable_value(filter, Some(YVariantStatus::Conflict), "Conflicts");
         ui.selectable_value(filter, Some(YVariantStatus::Confirmed), "Confirmed");
-        ui.add(egui::TextEdit::singleline(query).hint_text("filter rsID / site").desired_width(140.0));
+        ui.add(
+            egui::TextEdit::singleline(query)
+                .hint_text("filter rsID / site")
+                .desired_width(140.0),
+        );
         if !query.is_empty() && ui.small_button("✕").clicked() {
             query.clear();
         }
@@ -1259,18 +1369,31 @@ fn draw_diploid_profile(ui: &mut egui::Ui, profile: &navigator_app::DiploidProfi
     ui.horizontal(|ui| {
         ui.add_sized([W_SITE, row_h], egui::Label::new(egui::RichText::new("Site").strong()));
         ui.add_sized([W_GT, row_h], egui::Label::new(egui::RichText::new("GT").strong()));
-        ui.add_sized([W_STATUS, row_h], egui::Label::new(egui::RichText::new("Status").strong()));
+        ui.add_sized(
+            [W_STATUS, row_h],
+            egui::Label::new(egui::RichText::new("Status").strong()),
+        );
         ui.label(egui::RichText::new("Sources").strong());
     });
     let render_row = |ui: &mut egui::Ui, v: &navigator_app::DiploidVariant| {
         let conflict = v.status == YVariantStatus::Conflict;
-        let name = if v.name.is_empty() { format!("{}:{}", v.contig, v.position) } else { v.name.clone() };
+        let name = if v.name.is_empty() {
+            format!("{}:{}", v.contig, v.position)
+        } else {
+            v.name.clone()
+        };
         let name_txt = egui::RichText::new(name).strong();
         ui.horizontal(|ui| {
-            ui.add_sized([W_SITE, row_h], egui::Label::new(if conflict { name_txt.color(amber) } else { name_txt }).truncate());
+            ui.add_sized(
+                [W_SITE, row_h],
+                egui::Label::new(if conflict { name_txt.color(amber) } else { name_txt }).truncate(),
+            );
             ui.add_sized([W_GT, row_h], egui::Label::new(gt(v.consensus_dosage)));
             let (lbl, color) = consensus_status_badge(v.status);
-            ui.add_sized([W_STATUS, row_h], egui::Label::new(egui::RichText::new(format!("{lbl} ({}/{})", v.support, v.total)).color(color)));
+            ui.add_sized(
+                [W_STATUS, row_h],
+                egui::Label::new(egui::RichText::new(format!("{lbl} ({}/{})", v.support, v.total)).color(color)),
+            );
             for src in &v.sources {
                 let short = match src.source_type {
                     SourceType::Chip => "chip",
@@ -1287,20 +1410,28 @@ fn draw_diploid_profile(ui: &mut egui::Ui, profile: &navigator_app::DiploidProfi
     const CAP: usize = 2000;
     let (mut shown, mut total_match) = (0usize, 0usize);
     let pane_h = profile_pane_height(ui, profile.variants.len());
-    egui::ScrollArea::vertical().id_salt("diploid_profile_scroll").max_height(pane_h).auto_shrink([false, false]).show(ui, |ui| {
-        for v in &profile.variants {
-            if !(filter.map_or(true, |f| v.status == f) && matches(v)) {
-                continue;
+    egui::ScrollArea::vertical()
+        .id_salt("diploid_profile_scroll")
+        .max_height(pane_h)
+        .auto_shrink([false, false])
+        .show(ui, |ui| {
+            for v in &profile.variants {
+                if !(filter.map_or(true, |f| v.status == f) && matches(v)) {
+                    continue;
+                }
+                total_match += 1;
+                if shown >= CAP {
+                    continue;
+                }
+                shown += 1;
+                render_row(ui, v);
             }
-            total_match += 1;
-            if shown >= CAP {
-                continue;
-            }
-            shown += 1;
-            render_row(ui, v);
-        }
-    });
-    ui.label(egui::RichText::new(format!("{} of {} matching sites", shown.min(total_match), total_match)).weak().small());
+        });
+    ui.label(
+        egui::RichText::new(format!("{} of {} matching sites", shown.min(total_match), total_match))
+            .weak()
+            .small(),
+    );
     if total_match > CAP {
         ui.label(egui::RichText::new(format!("…and {} more — filter to narrow", total_match - CAP)).weak());
     }
@@ -1328,24 +1459,30 @@ fn mtdna_mutations_view(ui: &mut egui::Ui, mtdna_id: i64, variants: &[MtVariant]
         ))
         .weak(),
     );
-    egui::ScrollArea::vertical().max_height(300.0).id_salt(("mt_mut", mtdna_id)).show(ui, |ui| {
-        for region in [MtRegion::Hvr2, MtRegion::Coding, MtRegion::Hvr1] {
-            let group: Vec<&MtVariant> = variants.iter().filter(|v| v.region() == region).collect();
-            if group.is_empty() {
-                continue;
-            }
-            ui.add_space(4.0);
-            ui.label(egui::RichText::new(format!("{} ({})", region.label(), group.len())).strong());
-            egui::Grid::new(("mt_mut_grid", mtdna_id, region.label())).striped(true).num_columns(2).show(ui, |ui| {
-                ui.strong("Mutation");
-                ui.strong("Position");
-                ui.end_row();
-                for v in group {
-                    ui.label(egui::RichText::new(v.notation()).monospace());
-                    ui.label(v.position.to_string());
-                    ui.end_row();
+    egui::ScrollArea::vertical()
+        .max_height(300.0)
+        .id_salt(("mt_mut", mtdna_id))
+        .show(ui, |ui| {
+            for region in [MtRegion::Hvr2, MtRegion::Coding, MtRegion::Hvr1] {
+                let group: Vec<&MtVariant> = variants.iter().filter(|v| v.region() == region).collect();
+                if group.is_empty() {
+                    continue;
                 }
-            });
-        }
-    });
+                ui.add_space(4.0);
+                ui.label(egui::RichText::new(format!("{} ({})", region.label(), group.len())).strong());
+                egui::Grid::new(("mt_mut_grid", mtdna_id, region.label()))
+                    .striped(true)
+                    .num_columns(2)
+                    .show(ui, |ui| {
+                        ui.strong("Mutation");
+                        ui.strong("Position");
+                        ui.end_row();
+                        for v in group {
+                            ui.label(egui::RichText::new(v.notation()).monospace());
+                            ui.label(v.position.to_string());
+                            ui.end_row();
+                        }
+                    });
+            }
+        });
 }

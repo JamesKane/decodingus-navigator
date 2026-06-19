@@ -127,7 +127,7 @@ pub struct GenotypeCall {
     pub reference_allele: String,
     pub alternate_allele: String,
     pub called: CalledAllele,
-    pub depth: u32,     // passing depth (all bases)
+    pub depth: u32, // passing depth (all bases)
     pub ref_depth: u32,
     pub alt_depth: u32,
     pub allele_fraction: f64, // alt_depth / depth
@@ -214,8 +214,7 @@ fn is_paralogous(counts: &[u32; 4], depth: u32, params: &HaploidCallerParams) ->
         .map(|(_, &v)| v)
         .max()
         .unwrap_or(0);
-    second >= params.min_paralog_minor_reads
-        && (second as f64 / depth as f64) > params.max_minor_allele_fraction
+    second >= params.min_paralog_minor_reads && (second as f64 / depth as f64) > params.max_minor_allele_fraction
 }
 
 /// Read passes the de-novo/force-call filters (primary, not dup/qc-fail, MAPQ ok).
@@ -241,7 +240,11 @@ pub(crate) fn contig_length(header: &noodles::sam::Header, contig: &str) -> Opti
 
 /// Resolve a contig's length by opening the alignment header at `bam_path`. `reference` is
 /// required for CRAM.
-pub(crate) fn read_contig_length(bam_path: &Path, contig: &str, reference: Option<&Path>) -> Result<usize, AnalysisError> {
+pub(crate) fn read_contig_length(
+    bam_path: &Path,
+    contig: &str,
+    reference: Option<&Path>,
+) -> Result<usize, AnalysisError> {
     let header = reader::read_header(bam_path, reference)?;
     contig_length(&header, contig).ok_or_else(|| AnalysisError::Message(format!("contig {contig} not in BAM header")))
 }
@@ -284,7 +287,10 @@ pub fn header_contig_lengths(
         .reference_sequences()
         .iter()
         .map(|(name, seq)| {
-            (String::from_utf8_lossy(name.as_ref()).into_owned(), seq.length().get() as i64)
+            (
+                String::from_utf8_lossy(name.as_ref()).into_owned(),
+                seq.length().get() as i64,
+            )
         })
         .collect())
 }
@@ -585,7 +591,14 @@ pub fn genotype_sites(
             continue; // SNP-only
         }
         let site_obs = obs.get(&site.position).unwrap_or(&empty);
-        let GenotypeResult { dosage, pls, gq, depth, ref_depth, alt_depth } = genotype::call_genotype(
+        let GenotypeResult {
+            dosage,
+            pls,
+            gq,
+            depth,
+            ref_depth,
+            alt_depth,
+        } = genotype::call_genotype(
             site_obs,
             site.reference_allele.as_bytes()[0],
             site.alternate_allele.as_bytes()[0],
@@ -776,7 +789,11 @@ pub fn force_call_sites(
             depth,
             ref_depth,
             alt_depth,
-            allele_fraction: if depth == 0 { 0.0 } else { alt_depth as f64 / depth as f64 },
+            allele_fraction: if depth == 0 {
+                0.0
+            } else {
+                alt_depth as f64 / depth as f64
+            },
         });
     }
     Ok(out)
@@ -850,7 +867,16 @@ fn denovo_chunk(
 
     let (mut counts, indel) = tally_region(bam_path, contig, params, proc_lo, proc_hi, Some(reference_path))?;
     if params.local_realign {
-        realign_region(bam_path, contig, ref_chunk, proc_lo, &mut counts, &indel, params, Some(reference_path))?;
+        realign_region(
+            bam_path,
+            contig,
+            ref_chunk,
+            proc_lo,
+            &mut counts,
+            &indel,
+            params,
+            Some(reference_path),
+        )?;
     }
 
     let mut out = Vec::new();
@@ -956,7 +982,16 @@ fn denovo_chunk_diploid(
 
     let (mut counts, indel) = tally_region(bam_path, contig, params, proc_lo, proc_hi, Some(reference_path))?;
     if params.local_realign {
-        realign_region(bam_path, contig, ref_chunk, proc_lo, &mut counts, &indel, params, Some(reference_path))?;
+        realign_region(
+            bam_path,
+            contig,
+            ref_chunk,
+            proc_lo,
+            &mut counts,
+            &indel,
+            params,
+            Some(reference_path),
+        )?;
     }
 
     let mut out = Vec::new();
@@ -972,8 +1007,12 @@ fn denovo_chunk_diploid(
         let ref_byte = BASES[ref_bi];
         let ref_count = c[ref_bi];
         // All non-reference bases clearing the support floor are candidate alts (dominant first).
-        let mut alts: Vec<(usize, u32)> =
-            c.iter().enumerate().filter(|&(bi, &n)| bi != ref_bi && n >= DENOVO_MIN_ALT_READS).map(|(bi, &n)| (bi, n)).collect();
+        let mut alts: Vec<(usize, u32)> = c
+            .iter()
+            .enumerate()
+            .filter(|&(bi, &n)| bi != ref_bi && n >= DENOVO_MIN_ALT_READS)
+            .map(|(bi, &n)| (bi, n))
+            .collect();
         if alts.is_empty() {
             continue; // hom-ref (no alt above the floor) — not emitted
         }
@@ -1026,7 +1065,11 @@ fn denovo_chunk_diploid(
             contig: contig.to_string(),
             position: pos as i64,
             reference_allele: (ref_byte as char).to_string(),
-            alternate_allele: alts.iter().map(|&(bi, _)| (BASES[bi] as char).to_string()).collect::<Vec<_>>().join(","),
+            alternate_allele: alts
+                .iter()
+                .map(|&(bi, _)| (BASES[bi] as char).to_string())
+                .collect::<Vec<_>>()
+                .join(","),
             ploidy: 2,
             dosage,
             gq: mg.gq,
@@ -1040,7 +1083,17 @@ fn denovo_chunk_diploid(
     }
 
     // Indel pass over the active (indel-evidence) windows; merge into position order.
-    let mut indels = indels_in_chunk(bam_path, contig, params, proc_lo, ref_chunk, emit_lo, emit_hi, &indel, Some(reference_path))?;
+    let mut indels = indels_in_chunk(
+        bam_path,
+        contig,
+        params,
+        proc_lo,
+        ref_chunk,
+        emit_lo,
+        emit_hi,
+        &indel,
+        Some(reference_path),
+    )?;
     out.append(&mut indels);
     out.sort_by_key(|c| c.position);
     Ok(out)
@@ -1106,11 +1159,17 @@ fn indel_site_genotype(
     let (reference_allele, alternate_allele) = match allele {
         IndelAllele::Ins(seq) => {
             // POS=anchor-1, REF=anchor base, ALT=anchor base + inserted bases.
-            (r.to_string(), format!("{r}{}", String::from_utf8_lossy(seq).to_ascii_uppercase()))
+            (
+                r.to_string(),
+                format!("{r}{}", String::from_utf8_lossy(seq).to_ascii_uppercase()),
+            )
         }
         IndelAllele::Del(_) => {
             // POS=anchor-1, REF=anchor base + deleted bases, ALT=anchor base.
-            (format!("{r}{}", String::from_utf8_lossy(deleted).to_ascii_uppercase()), r.to_string())
+            (
+                format!("{r}{}", String::from_utf8_lossy(deleted).to_ascii_uppercase()),
+                r.to_string(),
+            )
         }
     };
     let mut obs: Vec<(u8, u8)> = Vec::with_capacity((ref_count + alt_count) as usize);
@@ -1170,8 +1229,9 @@ fn indels_in_chunk(
 
     for (w0, w1) in windows {
         let (wlo, whi) = (proc_lo + w0, proc_lo + w1); // 1-based inclusive
-        let region: Region =
-            format!("{contig}:{wlo}-{whi}").parse().map_err(|_| AnalysisError::Message(format!("bad region for {contig}")))?;
+        let region: Region = format!("{contig}:{wlo}-{whi}")
+            .parse()
+            .map_err(|_| AnalysisError::Message(format!("bad region for {contig}")))?;
         let mut reads: Vec<ReadSpan> = Vec::new();
         for result in reader.query(&header, &region)? {
             let record = result?;
@@ -1204,8 +1264,9 @@ fn indels_in_chunk(
                         if kind == Kind::Insertion {
                             let anchor = ref_pos; // insertion precedes this ref position
                             if (wlo as i64) <= anchor && anchor <= (whi as i64) {
-                                let s: Vec<u8> =
-                                    (0..len).filter_map(|i| seq.get(query_off + i).map(|b| b.to_ascii_uppercase())).collect();
+                                let s: Vec<u8> = (0..len)
+                                    .filter_map(|i| seq.get(query_off + i).map(|b| b.to_ascii_uppercase()))
+                                    .collect();
                                 events.push((anchor, IndelAllele::Ins(s), anchor));
                             }
                         }
@@ -1214,7 +1275,11 @@ fn indels_in_chunk(
                     (false, false) => {}
                 }
             }
-            reads.push(ReadSpan { start, ref_end: ref_pos - 1, events });
+            reads.push(ReadSpan {
+                start,
+                ref_end: ref_pos - 1,
+                events,
+            });
         }
 
         // Tally candidate alleles, normalize each, and group by normalized VCF position so that
@@ -1249,7 +1314,13 @@ fn indels_in_chunk(
             if emit_pos < emit_lo as i64 || emit_pos > emit_hi as i64 {
                 continue; // assigned to whichever chunk owns the normalized position (no dup/loss)
             }
-            groups.entry(emit_pos).or_default().push(Cand { anchor: *anchor, allele: al.clone(), nal, locus_end, count });
+            groups.entry(emit_pos).or_default().push(Cand {
+                anchor: *anchor,
+                allele: al.clone(),
+                nal,
+                locus_end,
+                count,
+            });
         }
 
         for (emit_pos, mut cands) in groups {
@@ -1267,13 +1338,19 @@ fn indels_in_chunk(
                 // Biallelic: ref support uses the reads' *actual* indel locus (normalization only
                 // changes the VCF representation, not which reads support the allele).
                 let c = &cands[0];
-                let spanning = reads.iter().filter(|r| r.start < c.anchor && r.ref_end >= c.locus_end).count() as u32;
+                let spanning = reads
+                    .iter()
+                    .filter(|r| r.start < c.anchor && r.ref_end >= c.locus_end)
+                    .count() as u32;
                 let ref_count = spanning.saturating_sub(c.count);
                 if ref_count + c.count < params.min_depth {
                     continue;
                 }
                 let deleted: Vec<u8> = if let IndelAllele::Del(len) = &c.nal {
-                    let (s, e) = ((na - proc_lo as i64).max(0) as usize, (na - proc_lo as i64 + *len as i64).max(0) as usize);
+                    let (s, e) = (
+                        (na - proc_lo as i64).max(0) as usize,
+                        (na - proc_lo as i64 + *len as i64).max(0) as usize,
+                    );
                     if s < e && e <= ref_chunk.len() {
                         ref_chunk[s..e].to_vec()
                     } else {
@@ -1282,7 +1359,9 @@ fn indels_in_chunk(
                 } else {
                     Vec::new()
                 };
-                if let Some(g) = indel_site_genotype(contig, emit_pos, ref_byte, &c.nal, &deleted, ref_count, c.count, params) {
+                if let Some(g) =
+                    indel_site_genotype(contig, emit_pos, ref_byte, &c.nal, &deleted, ref_count, c.count, params)
+                {
                     out.push(g);
                 }
                 continue;
@@ -1292,7 +1371,13 @@ fn indels_in_chunk(
             cands.sort_by(|a, b| b.count.cmp(&a.count).then(a.anchor.cmp(&b.anchor))); // dominant first, deterministic
             let maxdel = cands
                 .iter()
-                .filter_map(|c| if let IndelAllele::Del(l) = &c.nal { Some(*l as usize) } else { None })
+                .filter_map(|c| {
+                    if let IndelAllele::Del(l) = &c.nal {
+                        Some(*l as usize)
+                    } else {
+                        None
+                    }
+                })
                 .max()
                 .unwrap_or(0);
             let ref_lo = idx as usize;
@@ -1323,12 +1408,18 @@ fn indels_in_chunk(
             let locus_end_max = cands.iter().map(|c| c.locus_end).max().unwrap();
             let mut obs: Vec<(usize, u8)> = Vec::new();
             for r in &reads {
-                let carried = r.events.iter().find_map(|(a, al, _)| cands.iter().position(|c| c.anchor == *a && &c.allele == al));
+                let carried = r
+                    .events
+                    .iter()
+                    .find_map(|(a, al, _)| cands.iter().position(|c| c.anchor == *a && &c.allele == al));
                 match carried {
                     Some(k) => obs.push((k + 1, DENOVO_DIPLOID_Q)),
                     None => {
                         // Ref only if it spans the locus and carries no (other) indel here.
-                        let other_indel = r.events.iter().any(|(a, _, le)| *a <= locus_end_max && *le >= anchor_min);
+                        let other_indel = r
+                            .events
+                            .iter()
+                            .any(|(a, _, le)| *a <= locus_end_max && *le >= anchor_min);
                         if !other_indel && r.start < anchor_min && r.ref_end >= locus_end_max {
                             obs.push((0, DENOVO_DIPLOID_Q));
                         }
@@ -1432,7 +1523,13 @@ fn realign_region(
             Some(p) => p.get(),
             None => continue,
         };
-        let ref_span: usize = record.cigar().as_ref().iter().filter(|op| op.kind().consumes_reference()).map(|op| op.len()).sum();
+        let ref_span: usize = record
+            .cigar()
+            .as_ref()
+            .iter()
+            .filter(|op| op.kind().consumes_reference())
+            .map(|op| op.len())
+            .sum();
         let read_end = start + ref_span.saturating_sub(1); // 1-based inclusive
 
         // First window whose end reaches the read's start, then walk while its start is still
@@ -1560,8 +1657,16 @@ mod tests {
         // weighted vote, both deep, equal weight → tie broken by lower dosage = hom-ref → NOT emitted.
         // Site 200: run A het (deep), run B no-call (depth 1 < min 4) → B abstains, A wins → het.
         // Site 300: both hom-alt (1/1) → hom-alt, depths summed.
-        let a = vec![sg("chr1", 100, "G", 1, 30, 50), sg("chr1", 200, "G", 1, 30, 50), sg("chr1", 300, "T", 2, 20, 60)];
-        let b = vec![sg("chr1", 100, "G", 0, 30, 50), sg("chr1", 200, "G", 0, 1, 0), sg("chr1", 300, "T", 2, 25, 55)];
+        let a = vec![
+            sg("chr1", 100, "G", 1, 30, 50),
+            sg("chr1", 200, "G", 1, 30, 50),
+            sg("chr1", 300, "T", 2, 20, 60),
+        ];
+        let b = vec![
+            sg("chr1", 100, "G", 0, 30, 50),
+            sg("chr1", 200, "G", 0, 1, 0),
+            sg("chr1", 300, "T", 2, 25, 55),
+        ];
         let out = reconcile_site_genotypes(&[a, b], 4);
 
         // 100 → hom-ref consensus, not a variant (absent).
@@ -1594,12 +1699,28 @@ mod tests {
     fn indel_site_genotype_builds_left_anchored_alleles() {
         let params = HaploidCallerParams::default();
         // Insertion of "TT" after the anchor base 'C' → REF=C, ALT=CTT; 10/10 → het 0/1.
-        let ins = indel_site_genotype("chr1", 100, b'C', &IndelAllele::Ins(b"TT".to_vec()), &[], 10, 10, &params).unwrap();
-        assert_eq!((ins.reference_allele.as_str(), ins.alternate_allele.as_str()), ("C", "CTT"));
+        let ins = indel_site_genotype(
+            "chr1",
+            100,
+            b'C',
+            &IndelAllele::Ins(b"TT".to_vec()),
+            &[],
+            10,
+            10,
+            &params,
+        )
+        .unwrap();
+        assert_eq!(
+            (ins.reference_allele.as_str(), ins.alternate_allele.as_str()),
+            ("C", "CTT")
+        );
         assert_eq!((ins.position, ins.dosage), (100, 1));
         // Deletion of "CG" after anchor 'A' → REF=ACG, ALT=A; all-alt → hom-alt 1/1.
         let del = indel_site_genotype("chr1", 200, b'A', &IndelAllele::Del(2), b"CG", 0, 20, &params).unwrap();
-        assert_eq!((del.reference_allele.as_str(), del.alternate_allele.as_str()), ("ACG", "A"));
+        assert_eq!(
+            (del.reference_allele.as_str(), del.alternate_allele.as_str()),
+            ("ACG", "A")
+        );
         assert_eq!(del.dosage, 2);
         // No alt support → hom-ref → not emitted.
         assert!(indel_site_genotype("chr1", 300, b'A', &IndelAllele::Del(1), b"C", 20, 0, &params).is_none());
@@ -1634,11 +1755,11 @@ mod tests {
         assert!(!para([11, 0, 0, 0]));
         // One discordant read at low depth — a sequencing error, kept.
         assert!(!para([3, 1, 0, 0])); // second=1 (< 2 reads)
-        // Scattered errors across other bases, none reaching 2 reads — kept.
+                                      // Scattered errors across other bases, none reaching 2 reads — kept.
         assert!(!para([18, 1, 1, 0])); // second=1
-        // Genuine bi-allelic pileup (7 derived / 4 ancestral) — paralog, dropped.
+                                       // Genuine bi-allelic pileup (7 derived / 4 ancestral) — paralog, dropped.
         assert!(para([7, 4, 0, 0])); // second=4, 0.36 > 0.20
-        // Boundary: 2/10 = 0.20 is not strictly above the threshold — kept.
+                                     // Boundary: 2/10 = 0.20 is not strictly above the threshold — kept.
         assert!(!para([8, 2, 0, 0]));
         // 3/10 = 0.30 > 0.20 with 3 reads — dropped.
         assert!(para([7, 3, 0, 0]));
@@ -1648,7 +1769,10 @@ mod tests {
 
     #[test]
     fn paralog_filter_disables_at_fraction_one() {
-        let p = HaploidCallerParams { max_minor_allele_fraction: 1.0, ..Default::default() };
+        let p = HaploidCallerParams {
+            max_minor_allele_fraction: 1.0,
+            ..Default::default()
+        };
         // Even a 50/50 split is not flagged when the filter is disabled.
         assert!(!is_paralogous(&[5, 5, 0, 0], 10, &p));
     }

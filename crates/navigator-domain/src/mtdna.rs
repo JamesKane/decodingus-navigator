@@ -74,10 +74,16 @@ pub fn parse_fasta(text: &str) -> Result<ParsedMtdna, String> {
     }
 
     if sequence.len() < MIN_LEN {
-        return Err(format!("sequence is too short ({} bp); expected ~16,569 bp for mtDNA", sequence.len()));
+        return Err(format!(
+            "sequence is too short ({} bp); expected ~16,569 bp for mtDNA",
+            sequence.len()
+        ));
     }
     if sequence.len() > MAX_LEN {
-        return Err(format!("sequence is too long ({} bp); expected ~16,569 bp for mtDNA", sequence.len()));
+        return Err(format!(
+            "sequence is too long ({} bp); expected ~16,569 bp for mtDNA",
+            sequence.len()
+        ));
     }
     let mut n_count = 0i64;
     for b in sequence.bytes() {
@@ -87,7 +93,11 @@ pub fn parse_fasta(text: &str) -> Result<ParsedMtdna, String> {
             other => return Err(format!("sequence contains an invalid base: {:?}", other as char)),
         }
     }
-    Ok(ParsedMtdna { defline, sequence, n_count })
+    Ok(ParsedMtdna {
+        defline,
+        sequence,
+        n_count,
+    })
 }
 
 #[cfg(test)]
@@ -104,7 +114,11 @@ mod tests {
         let mut body = "A".repeat(16_566);
         body.insert_str(8000, "NNN");
         // wrap into 70-col lines to exercise multi-line concatenation
-        let wrapped: String = body.as_bytes().chunks(70).map(|c| format!("{}\n", std::str::from_utf8(c).unwrap())).collect();
+        let wrapped: String = body
+            .as_bytes()
+            .chunks(70)
+            .map(|c| format!("{}\n", std::str::from_utf8(c).unwrap()))
+            .collect();
         let p = parse_fasta(&fasta(&wrapped)).unwrap();
         assert_eq!(p.defline.as_deref(), Some("rCRS test"));
         assert_eq!(p.sequence.len(), 16_569);

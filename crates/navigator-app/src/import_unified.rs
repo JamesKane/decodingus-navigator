@@ -53,7 +53,10 @@ impl App {
         let probe = self.probe_alignment(path.to_path_buf()).await.unwrap_or_default();
 
         // Resolve the reference first — the read-name scan needs it to decode a CRAM.
-        let reference_build = probe.reference_build.clone().unwrap_or_else(|| reference_build_for(path));
+        let reference_build = probe
+            .reference_build
+            .clone()
+            .unwrap_or_else(|| reference_build_for(path));
         // Store the cached reference path if we have it; otherwise leave it unset (resolved on
         // demand) — never block import on a download.
         let reference_path = self
@@ -74,7 +77,12 @@ impl App {
         let platform_name = probe
             .platform
             .clone()
-            .or_else(|| stats.as_ref().and_then(|s| s.platform.clone()).map(|p| p.to_uppercase()))
+            .or_else(|| {
+                stats
+                    .as_ref()
+                    .and_then(|s| s.platform.clone())
+                    .map(|p| p.to_uppercase())
+            })
             .unwrap_or_else(|| "UNKNOWN".into());
         let instrument_model = probe
             .instrument_model
@@ -87,12 +95,11 @@ impl App {
         // profile and keep the platform-based guess.
         let test_type = {
             let p = path.to_path_buf();
-            let profile = tokio::task::spawn_blocking(move || {
-                navigator_analysis::testtype::coverage_profile_from_bai(&p, None)
-            })
-            .await
-            .ok()
-            .flatten();
+            let profile =
+                tokio::task::spawn_blocking(move || navigator_analysis::testtype::coverage_profile_from_bai(&p, None))
+                    .await
+                    .ok()
+                    .flatten();
             navigator_analysis::testtype::infer_test_type(
                 profile.as_ref(),
                 probe.platform.as_deref(),
@@ -157,30 +164,38 @@ impl App {
     }
 
     pub async fn add_data(&self, biosample_guid: SampleGuid, path: &Path) -> Result<DetectedData, AppError> {
-        let name = path.file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+        let name = path
+            .file_name()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_default();
         let lower = name.to_ascii_lowercase();
         // Binary/structured formats are detected by extension; only text needs a sniff.
         let by_ext = lower.ends_with(".bam")
             || lower.ends_with(".cram")
             || lower.ends_with(".vcf")
             || lower.ends_with(".vcf.gz")
-            || [".fasta", ".fa", ".fna", ".fas", ".fasta.gz", ".fa.gz", ".fna.gz"].iter().any(|e| lower.ends_with(e));
+            || [".fasta", ".fa", ".fna", ".fas", ".fasta.gz", ".fa.gz", ".fna.gz"]
+                .iter()
+                .any(|e| lower.ends_with(e));
         let head = if by_ext { String::new() } else { read_head(path)? };
         let detected = filetype::detect(&name, &head);
 
         match detected {
             DetectedData::Variants => {
-                self.import_variants_from_file(biosample_guid, path, variants::SourceType::Imported).await?;
+                self.import_variants_from_file(biosample_guid, path, variants::SourceType::Imported)
+                    .await?;
             }
             DetectedData::StrProfile => {
-                self.import_str_profile_from_csv(biosample_guid, "CUSTOM", None, Some("IMPORTED".into()), path).await?;
+                self.import_str_profile_from_csv(biosample_guid, "CUSTOM", None, Some("IMPORTED".into()), path)
+                    .await?;
             }
             DetectedData::YSnpPanel => {
                 // Build resolved from the subject's alignment, else "hs1" (project default).
                 self.import_bisdna_from_file(biosample_guid, path, None).await?;
             }
             DetectedData::ChipData => {
-                self.import_chip_profile_from_csv(biosample_guid, None, None, path).await?;
+                self.import_chip_profile_from_csv(biosample_guid, None, None, path)
+                    .await?;
             }
             DetectedData::MtdnaFasta => {
                 self.import_mtdna_from_fasta(biosample_guid, path).await?;
@@ -216,7 +231,10 @@ impl App {
         let mut summary = BatchImportSummary::default();
         for (i, f) in files.iter().enumerate() {
             progress(i, total);
-            let name = f.file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+            let name = f
+                .file_name()
+                .map(|s| s.to_string_lossy().into_owned())
+                .unwrap_or_default();
             match self.add_data(biosample_guid, f).await {
                 Ok(d) => summary.imported.push((name, d.description().to_string())),
                 Err(e) => summary.skipped.push((name, e.to_string())),
@@ -244,17 +262,22 @@ impl App {
         // An explicit FASTA must exist and be indexed; it applies to every alignment.
         if let Some(path) = &reference {
             if !path.exists() {
-                return Err(AppError::Import(format!("reference FASTA not found: {}", path.display())));
+                return Err(AppError::Import(format!(
+                    "reference FASTA not found: {}",
+                    path.display()
+                )));
             }
             let fai = PathBuf::from(format!("{}.fai", path.display()));
             if !fai.exists() {
-                return Err(AppError::Import(format!("reference FASTA index (.fai) not found: {}", fai.display())));
+                return Err(AppError::Import(format!(
+                    "reference FASTA index (.fai) not found: {}",
+                    fai.display()
+                )));
             }
         }
 
         let scan_dir = dir.to_path_buf();
-        let discovered = tokio::task::spawn_blocking(move || navigator_analysis::scan::scan(&scan_dir))
-            .await??;
+        let discovered = tokio::task::spawn_blocking(move || navigator_analysis::scan::scan(&scan_dir)).await??;
 
         // Resolve each alignment's reference build to a path (explicit FASTA, else the cache).
         // Collect any builds that need downloading and bail before writing anything.
@@ -273,9 +296,7 @@ impl App {
                     resolved.insert(build, p.to_string_lossy().into_owned());
                 } else {
                     match self.gateway.reference_status(&build) {
-                        RefStatus::NeedsDownload { url, est_bytes } => {
-                            needs.push(BuildNeed { build, url, est_bytes })
-                        }
+                        RefStatus::NeedsDownload { url, est_bytes } => needs.push(BuildNeed { build, url, est_bytes }),
                         RefStatus::Unknown => {
                             return Err(AppError::Import(format!(
                                 "unknown reference build '{build}' — supply a reference FASTA explicitly"
@@ -293,7 +314,11 @@ impl App {
         }
 
         // Project: reuse an existing one with the same name.
-        let project = match project::list(self.store.pool()).await?.into_iter().find(|p| p.name == discovered.project_id) {
+        let project = match project::list(self.store.pool())
+            .await?
+            .into_iter()
+            .find(|p| p.name == discovered.project_id)
+        {
             Some(p) => p,
             None => {
                 self.create_project(NewProject {
@@ -325,13 +350,22 @@ impl App {
                 Some(b) => b,
                 None => {
                     summary.samples_created += 1;
-                    self.add_biosample(Some(project.id), sample.sample_id.clone(), Some(sample.sample_id.clone()), None)
-                        .await?
+                    self.add_biosample(
+                        Some(project.id),
+                        sample.sample_id.clone(),
+                        Some(sample.sample_id.clone()),
+                        None,
+                    )
+                    .await?
                 }
             };
 
             // SequenceRun: reuse the first existing run, else create one (defaults to WGS).
-            let run = match sequence_run::list_for_biosample(self.store.pool(), biosample.guid).await?.into_iter().next() {
+            let run = match sequence_run::list_for_biosample(self.store.pool(), biosample.guid)
+                .await?
+                .into_iter()
+                .next()
+            {
                 Some(r) => r,
                 None => {
                     self.record_sequence_run(NewSequenceRun {
@@ -352,7 +386,10 @@ impl App {
             let existing = alignment::list_for_run(self.store.pool(), run.id).await?;
             for aln_path in &sample.alignment_files {
                 let path_str = aln_path.to_string_lossy().into_owned();
-                if existing.iter().any(|a| a.bam_path.as_deref() == Some(path_str.as_str())) {
+                if existing
+                    .iter()
+                    .any(|a| a.bam_path.as_deref() == Some(path_str.as_str()))
+                {
                     summary.alignments_skipped += 1;
                     continue;
                 }
@@ -478,7 +515,14 @@ impl App {
         let (src_label, tgt_label) = (source.to_string(), target.to_string());
         let stats = tokio::task::spawn_blocking(move || {
             navigator_refgenome::vcf_lift::lift_vcf(
-                &lo, &target_fa, &target_par, &src_label, &tgt_label, &in_vcf, &out_vcf, opts,
+                &lo,
+                &target_fa,
+                &target_par,
+                &src_label,
+                &tgt_label,
+                &in_vcf,
+                &out_vcf,
+                opts,
             )
         })
         .await??;
@@ -519,7 +563,13 @@ impl App {
         })
         .await??;
 
-        self.save_analysis(alignment_id, &panel_kind(panel_id, ploidy), caller::GENOTYPE_VERSION, &genotypes).await?;
+        self.save_analysis(
+            alignment_id,
+            &panel_kind(panel_id, ploidy),
+            caller::GENOTYPE_VERSION,
+            &genotypes,
+        )
+        .await?;
         Ok(genotypes)
     }
 
@@ -530,7 +580,8 @@ impl App {
         panel_id: i64,
         ploidy: u8,
     ) -> Result<Option<Vec<SiteGenotype>>, AppError> {
-        self.load_analysis(alignment_id, &panel_kind(panel_id, ploidy), caller::GENOTYPE_VERSION).await
+        self.load_analysis(alignment_id, &panel_kind(panel_id, ploidy), caller::GENOTYPE_VERSION)
+            .await
     }
 
     /// Resolve an imported chip's genotypes to canonical CHM13 **IBD-panel** dosages — the chip→IBD
@@ -541,17 +592,19 @@ impl App {
         let chip = chip_profile::get(self.store.pool(), chip_profile_id)
             .await?
             .ok_or_else(|| AppError::Store(StoreError::NotFound(format!("chip profile {chip_profile_id}"))))?;
-        let path = chip
-            .source_path
-            .clone()
-            .ok_or_else(|| AppError::Import("this chip has no stored raw-data file — re-import it to enable IBD".into()))?;
+        let path = chip.source_path.clone().ok_or_else(|| {
+            AppError::Import("this chip has no stored raw-data file — re-import it to enable IBD".into())
+        })?;
         let text = std::fs::read_to_string(&path).map_err(|e| AppError::Import(format!("chip file {path}: {e}")))?;
         let from_build = chipprofile::detect_build(&text);
         let calls = chipprofile::autosomal_calls(&text);
 
         let panel_path = ibd_panel_path(ReferenceBuild::Chm13v2);
         let bytes = read_verified_asset(ReferenceBuild::Chm13v2, &panel_path)?.ok_or_else(|| {
-            AppError::Import(format!("IBD panel asset not found at {} — build it with `panelbuild ibd-panel`", panel_path.display()))
+            AppError::Import(format!(
+                "IBD panel asset not found at {} — build it with `panelbuild ibd-panel`",
+                panel_path.display()
+            ))
         })?;
         let panel = navigator_analysis::ibd_panel::IbdPanel::from_bytes(&bytes)?;
 
@@ -613,14 +666,14 @@ impl App {
         b: SampleGuid,
         config: IbdDetectorConfig,
     ) -> Result<IbdComparison, AppError> {
-        let pa = self
-            .cached_autosomal_profile(a)
-            .await?
-            .ok_or_else(|| AppError::Import("the first subject has no autosomal consensus yet — build it (Autosomal tab) first".into()))?;
-        let pb = self
-            .cached_autosomal_profile(b)
-            .await?
-            .ok_or_else(|| AppError::Import("the second subject has no autosomal consensus yet — build it (Autosomal tab) first".into()))?;
+        let pa = self.cached_autosomal_profile(a).await?.ok_or_else(|| {
+            AppError::Import("the first subject has no autosomal consensus yet — build it (Autosomal tab) first".into())
+        })?;
+        let pb = self.cached_autosomal_profile(b).await?.ok_or_else(|| {
+            AppError::Import(
+                "the second subject has no autosomal consensus yet — build it (Autosomal tab) first".into(),
+            )
+        })?;
         let ga = consensus_genotypes(&pa);
         let gb = consensus_genotypes(&pb);
         Ok(detect_ibd(&ga, &gb, ReferenceBuild::Chm13v2, config))
@@ -645,7 +698,10 @@ impl App {
                 let reference = aln.reference_path.map(PathBuf::from);
                 let panel_path = ibd_panel_path(ReferenceBuild::Chm13v2);
                 let bytes = read_verified_asset(ReferenceBuild::Chm13v2, &panel_path)?.ok_or_else(|| {
-                    AppError::Import(format!("IBD panel asset not found at {} — build it with `panelbuild ibd-panel`", panel_path.display()))
+                    AppError::Import(format!(
+                        "IBD panel asset not found at {} — build it with `panelbuild ibd-panel`",
+                        panel_path.display()
+                    ))
                 })?;
                 let panel = navigator_analysis::ibd_panel::IbdPanel::from_bytes(&bytes)?;
                 let sites: Vec<Site> = panel
@@ -664,7 +720,8 @@ impl App {
                     caller::genotype_sites_all_contigs(&bam, &sites, 2, &params, reference.as_deref())
                 })
                 .await??;
-                self.save_analysis(id, &kind, caller::GENOTYPE_VERSION, &genotypes).await?;
+                self.save_analysis(id, &kind, caller::GENOTYPE_VERSION, &genotypes)
+                    .await?;
                 Ok(genotypes)
             }
         }
@@ -693,7 +750,10 @@ impl App {
 
         // Optional Y-STR corroboration from each subject's first STR profile.
         let (mut y_dist, mut y_markers) = (None, 0i64);
-        if let (Ok(ba), Ok(bb)) = (self.biosample_of_alignment(alignment_a).await, self.biosample_of_alignment(alignment_b).await) {
+        if let (Ok(ba), Ok(bb)) = (
+            self.biosample_of_alignment(alignment_a).await,
+            self.biosample_of_alignment(alignment_b).await,
+        ) {
             let (pa, pb) = (self.list_str_profiles(ba).await?, self.list_str_profiles(bb).await?);
             if let (Some(a), Some(b)) = (pa.first(), pb.first()) {
                 let (d, c) = strprofile::str_distance(&a.markers, &b.markers);
@@ -710,15 +770,19 @@ impl App {
     /// (duplicate detection). The consensus counterpart to [`verify_identity`]: pooled autosomal
     /// consensus genotype concordance (no panel selection), corroborated by Y-STR distance. Both
     /// subjects need a built autosomal consensus.
-    pub async fn verify_identity_consensus(&self, a: SampleGuid, b: SampleGuid) -> Result<IdentityVerification, AppError> {
-        let pa = self
-            .cached_autosomal_profile(a)
-            .await?
-            .ok_or_else(|| AppError::Import("the first subject has no autosomal consensus yet — build it (Autosomal tab) first".into()))?;
-        let pb = self
-            .cached_autosomal_profile(b)
-            .await?
-            .ok_or_else(|| AppError::Import("the second subject has no autosomal consensus yet — build it (Autosomal tab) first".into()))?;
+    pub async fn verify_identity_consensus(
+        &self,
+        a: SampleGuid,
+        b: SampleGuid,
+    ) -> Result<IdentityVerification, AppError> {
+        let pa = self.cached_autosomal_profile(a).await?.ok_or_else(|| {
+            AppError::Import("the first subject has no autosomal consensus yet — build it (Autosomal tab) first".into())
+        })?;
+        let pb = self.cached_autosomal_profile(b).await?.ok_or_else(|| {
+            AppError::Import(
+                "the second subject has no autosomal consensus yet — build it (Autosomal tab) first".into(),
+            )
+        })?;
         let (ga, gb) = (consensus_genotypes(&pa), consensus_genotypes(&pb));
         let (matched, sites) = genotype_concordance(&ga, &gb);
         let concordance = (sites > 0).then(|| matched as f64 / sites as f64);
@@ -735,5 +799,4 @@ impl App {
         }
         Ok(reconciliation::classify_identity(concordance, sites, y_dist, y_markers))
     }
-
 }

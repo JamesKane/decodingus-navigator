@@ -33,9 +33,16 @@ impl App {
     /// method (ADMIXTURE / PCA_PROJECTION_GMM / FINE_ADMIXTURE / G25_NMONTE), newest-first. Ancestry
     /// is estimated from the pooled autosomal consensus (not per alignment), so this is the subject's
     /// authoritative breakdown. Empty until the consensus ancestry has been estimated.
-    pub(crate) async fn consensus_ancestry_results(&self, biosample_guid: SampleGuid) -> Result<Vec<AncestryResult>, AppError> {
+    pub(crate) async fn consensus_ancestry_results(
+        &self,
+        biosample_guid: SampleGuid,
+    ) -> Result<Vec<AncestryResult>, AppError> {
         let all = ancestry_result::for_biosample(self.store.pool(), biosample_guid).await?;
-        Ok(all.into_iter().filter(|(id, _)| *id == CONSENSUS_SOURCE_ID).map(|(_, r)| r).collect())
+        Ok(all
+            .into_iter()
+            .filter(|(id, _)| *id == CONSENSUS_SOURCE_ID)
+            .map(|(_, r)| r)
+            .collect())
     }
 
     /// The populationBreakdown record JSON for each consensus ancestry estimate of a subject (one
@@ -61,8 +68,11 @@ impl App {
         let y = self.consensus_haplogroup(biosample_guid, DnaType::Y).await?;
         let mt = self.consensus_haplogroup(biosample_guid, DnaType::Mt).await?;
         let runs = self.list_sequence_runs(biosample_guid).await?;
-        let record = BiosampleRecord::new(bio.sex, y, mt, bio.center_name, Utc::now().to_rfc3339())
-            .with_refs(runs.iter().map(|r| r.id.to_string()).collect(), None, None);
+        let record = BiosampleRecord::new(bio.sex, y, mt, bio.center_name, Utc::now().to_rfc3339()).with_refs(
+            runs.iter().map(|r| r.id.to_string()).collect(),
+            None,
+            None,
+        );
         Ok(serde_json::to_value(&record)?)
     }
 
@@ -95,18 +105,31 @@ impl App {
         biosample_guid: SampleGuid,
         dna_type: DnaType,
     ) -> Result<Option<String>, AppError> {
-        Ok(self.haplogroup_consensus(biosample_guid, dna_type).await?.map(|c| c.haplogroup))
+        Ok(self
+            .haplogroup_consensus(biosample_guid, dna_type)
+            .await?
+            .map(|c| c.haplogroup))
     }
 
     /// Build the private-variants record JSON for an alignment's cached de-novo calls.
     pub(crate) async fn variants_record(&self, alignment_id: i64, contig: &str) -> Result<serde_json::Value, AppError> {
-        let calls = self
-            .cached_denovo(alignment_id, contig)
-            .await?
-            .ok_or_else(|| AppError::Store(StoreError::NotFound(format!("de-novo calls for alignment {alignment_id} {contig}"))))?;
+        let calls = self.cached_denovo(alignment_id, contig).await?.ok_or_else(|| {
+            AppError::Store(StoreError::NotFound(format!(
+                "de-novo calls for alignment {alignment_id} {contig}"
+            )))
+        })?;
         let variants = calls
             .iter()
-            .map(|c| VariantCallEntry::new(c.position, c.reference_allele, c.alternate_allele, c.depth, c.alt_depth, c.allele_fraction))
+            .map(|c| {
+                VariantCallEntry::new(
+                    c.position,
+                    c.reference_allele,
+                    c.alternate_allele,
+                    c.depth,
+                    c.alt_depth,
+                    c.allele_fraction,
+                )
+            })
             .collect();
         let record = PrivateVariantsRecord::new(contig, caller::DENOVO_VERSION, Utc::now().to_rfc3339(), variants);
         Ok(serde_json::to_value(&record)?)
@@ -114,11 +137,7 @@ impl App {
 
     /// Publish an alignment's cached coverage summary using an explicit `client` (the
     /// testable core; production callers use [`publish_coverage`](Self::publish_coverage)).
-    pub async fn publish_coverage_summary(
-        &self,
-        client: &PdsClient,
-        alignment_id: i64,
-    ) -> Result<RecordRef, AppError> {
+    pub async fn publish_coverage_summary(&self, client: &PdsClient, alignment_id: i64) -> Result<RecordRef, AppError> {
         let value = self.coverage_record(alignment_id).await?;
         Ok(client.create_record(NS_ALIGNMENT, value, None).await?)
     }
@@ -169,5 +188,4 @@ impl App {
         let value = self.variants_record(alignment_id, contig).await?;
         Ok(client.create_record(PRIVATE_VARIANTS_COLLECTION, value, None).await?)
     }
-
 }

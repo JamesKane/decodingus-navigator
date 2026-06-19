@@ -33,19 +33,25 @@ impl App {
     /// Pending (not-yet-published) outbox rows for the signed-in account — drives the UI's
     /// "N pending" indicator. `0` when signed out.
     pub async fn outbox_pending_count(&self) -> Result<i64, AppError> {
-        let Some(did) = self.current_account() else { return Ok(0) };
+        let Some(did) = self.current_account() else {
+            return Ok(0);
+        };
         Ok(sync_outbox::pending_count(self.store.pool(), &did).await?)
     }
 
     /// All non-completed outbox rows (PENDING + FAILED) for the signed-in account — a sync detail view.
     pub async fn outbox_entries(&self) -> Result<Vec<sync_outbox::OutboxEntry>, AppError> {
-        let Some(did) = self.current_account() else { return Ok(Vec::new()) };
+        let Some(did) = self.current_account() else {
+            return Ok(Vec::new());
+        };
         Ok(sync_outbox::list(self.store.pool(), &did).await?)
     }
 
     /// Recent publish outcomes (success/failure) for the signed-in account — the audit trail.
     pub async fn sync_history(&self, limit: i64) -> Result<Vec<sync_history::HistoryEntry>, AppError> {
-        let Some(did) = self.current_account() else { return Ok(Vec::new()) };
+        let Some(did) = self.current_account() else {
+            return Ok(Vec::new());
+        };
         Ok(sync_history::recent(self.store.pool(), &did, limit).await?)
     }
 
@@ -54,7 +60,9 @@ impl App {
     /// and stops the batch (we're likely offline); a non-transient failure marks the row `FAILED`.
     /// A no-op (and `Ok`) when signed out. Safe to call repeatedly (periodically + after a publish).
     pub async fn drain_outbox(&self) -> Result<DrainOutcome, AppError> {
-        let Some(did) = self.current_account() else { return Ok(DrainOutcome::default()) };
+        let Some(did) = self.current_account() else {
+            return Ok(DrainOutcome::default());
+        };
         let mut outcome = DrainOutcome::default();
         // Build the resilient engine once (loads the session). Signed-out / no session → nothing to do.
         let mut engine = match self.sync_engine() {
@@ -111,8 +119,10 @@ impl App {
                 }
                 Err(e) => {
                     // Validation / auth / other terminal error: give up on this row (visible as FAILED).
-                    self.log_history(&entry, "FAILED", None, attempt, Some(&e.to_string())).await?;
-                    sync_outbox::mark_failed(self.store.pool(), entry.id, attempt, &e.to_string(), &now.to_rfc3339()).await?;
+                    self.log_history(&entry, "FAILED", None, attempt, Some(&e.to_string()))
+                        .await?;
+                    sync_outbox::mark_failed(self.store.pool(), entry.id, attempt, &e.to_string(), &now.to_rfc3339())
+                        .await?;
                     outcome.failed += 1;
                 }
             }
@@ -166,7 +176,10 @@ impl App {
             let mut remote = Vec::new();
             let mut cursor: Option<String> = None;
             loop {
-                let (recs, next) = engine.pull_list(collection, cursor.as_deref()).await.map_err(AppError::Sync)?;
+                let (recs, next) = engine
+                    .pull_list(collection, cursor.as_deref())
+                    .await
+                    .map_err(AppError::Sync)?;
                 remote.extend(recs);
                 match next {
                     Some(c) => cursor = Some(c),
@@ -184,7 +197,12 @@ impl App {
                     InSync { .. } => out.in_sync += 1,
                     RePush { .. } => out.repushed += 1,
                     AdoptRemote { .. } => out.adopted += 1,
-                    ApplyRemote { entity_ref, collection, remote, conflict } => {
+                    ApplyRemote {
+                        entity_ref,
+                        collection,
+                        remote,
+                        conflict,
+                    } => {
                         self.apply_remote(&collection, &entity_ref, &remote.value).await?;
                         self.track_remote(&did, &entity_ref, &remote).await?;
                         out.applied += 1;
@@ -202,9 +220,18 @@ impl App {
     /// Apply a remote record onto local state. Only the editable, locally-authoritative bits the
     /// PII-free fed record carries can be applied; derived-summary collections are recomputed locally,
     /// so they're tracked but not overwritten.
-    pub(crate) async fn apply_remote(&self, collection: &str, entity_ref: &str, value: &serde_json::Value) -> Result<(), AppError> {
+    pub(crate) async fn apply_remote(
+        &self,
+        collection: &str,
+        entity_ref: &str,
+        value: &serde_json::Value,
+    ) -> Result<(), AppError> {
         if collection == NS_BIOSAMPLE {
-            if let Some(guid) = entity_ref.strip_prefix("biosample:").and_then(|s| Uuid::parse_str(s).ok()).map(SampleGuid) {
+            if let Some(guid) = entity_ref
+                .strip_prefix("biosample:")
+                .and_then(|s| Uuid::parse_str(s).ok())
+                .map(SampleGuid)
+            {
                 if let Some(bio) = biosample::get(self.store.pool(), guid).await? {
                     let sex = value.get("sex").and_then(|v| v.as_str()).map(String::from).or(bio.sex);
                     let center = value
@@ -213,7 +240,15 @@ impl App {
                         .and_then(|v| v.as_str())
                         .map(String::from)
                         .or(bio.center_name);
-                    self.update_biosample(guid, bio.donor_identifier, bio.sample_accession, bio.description, center, sex).await?;
+                    self.update_biosample(
+                        guid,
+                        bio.donor_identifier,
+                        bio.sample_accession,
+                        bio.description,
+                        center,
+                        sex,
+                    )
+                    .await?;
                 }
             }
         }
@@ -221,7 +256,12 @@ impl App {
     }
 
     /// Re-track a reconciled record's PDS identity so the next PULL sees it in sync.
-    async fn track_remote(&self, did: &str, entity_ref: &str, remote: &navigator_sync::RemoteRecord) -> Result<(), AppError> {
+    async fn track_remote(
+        &self,
+        did: &str,
+        entity_ref: &str,
+        remote: &navigator_sync::RemoteRecord,
+    ) -> Result<(), AppError> {
         if let Some(mut ss) = sync_state::get(self.store.pool(), did, entity_ref).await? {
             ss.at_cid = remote.cid.clone();
             ss.at_uri = remote.uri.clone();
@@ -316,8 +356,10 @@ impl App {
                 .map_err(|e| AppError::Sync(navigator_sync::SyncError::from(e)))?;
             let status = resp.status();
             if status.is_success() {
-                let body: serde_json::Value =
-                    resp.json().await.map_err(|e| AppError::Sync(navigator_sync::SyncError::from(e)))?;
+                let body: serde_json::Value = resp
+                    .json()
+                    .await
+                    .map_err(|e| AppError::Sync(navigator_sync::SyncError::from(e)))?;
                 return Ok(parse_ibd_suggestions(&body));
             }
             if status.as_u16() == 403 && attempt < DEVICE_KEY_INGEST_RETRIES {
@@ -360,16 +402,21 @@ impl App {
         if !resp.status().is_success() {
             return Err(appview_status_error("ibd/introduce", resp).await);
         }
-        let v: serde_json::Value =
-            resp.json().await.map_err(|e| AppError::Sync(navigator_sync::SyncError::from(e)))?;
+        let v: serde_json::Value = resp
+            .json()
+            .await
+            .map_err(|e| AppError::Sync(navigator_sync::SyncError::from(e)))?;
         let request_uri = v
             .get("requestUri")
             .or_else(|| v.get("request_uri"))
             .and_then(|x| x.as_str())
             .unwrap_or_default()
             .to_string();
-        let status = v.get("status").and_then(|x| x.as_str()).unwrap_or("PENDING").to_string();
+        let status = v
+            .get("status")
+            .and_then(|x| x.as_str())
+            .unwrap_or("PENDING")
+            .to_string();
         Ok(IbdIntroResult { request_uri, status })
     }
-
 }

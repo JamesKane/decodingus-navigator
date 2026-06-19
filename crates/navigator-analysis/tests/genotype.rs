@@ -3,8 +3,8 @@
 
 use std::path::PathBuf;
 
-use navigator_analysis::caller::{call_denovo_diploid, genotype_sites, Site, SiteGenotype};
 use navigator_analysis::caller::HaploidCallerParams;
+use navigator_analysis::caller::{call_denovo_diploid, genotype_sites, Site, SiteGenotype};
 use navigator_analysis::vcf::write_diploid_vcf;
 
 fn fixtures() -> PathBuf {
@@ -24,7 +24,13 @@ fn chr1_reference() -> PathBuf {
 }
 
 fn site(name: &str, pos: i64, r: &str, a: &str) -> Site {
-    Site { name: name.into(), contig: "chr1".into(), position: pos, reference_allele: r.into(), alternate_allele: a.into() }
+    Site {
+        name: name.into(),
+        contig: "chr1".into(),
+        position: pos,
+        reference_allele: r.into(),
+        alternate_allele: a.into(),
+    }
 }
 
 fn by_name(calls: &[SiteGenotype], name: &str) -> SiteGenotype {
@@ -41,8 +47,15 @@ fn diploid_panel_genotyping_yields_dosages() {
         site("homalt", 8, "T", "A"),
         site("missing", 9999, "A", "C"), // off-contig -> no coverage -> no-call
     ];
-    let calls = genotype_sites(&dir.join("diploid.bam"), "chr1", &sites, 2, &HaploidCallerParams::default(), None)
-        .expect("genotyping should succeed");
+    let calls = genotype_sites(
+        &dir.join("diploid.bam"),
+        "chr1",
+        &sites,
+        2,
+        &HaploidCallerParams::default(),
+        None,
+    )
+    .expect("genotyping should succeed");
 
     let homref = by_name(&calls, "homref");
     assert_eq!(homref.dosage, 0);
@@ -70,12 +83,22 @@ fn diploid_panel_genotyping_yields_dosages() {
 fn denovo_diploid_calls_het_and_hom_alt_then_writes_vcf() {
     let dir = fixtures();
     let reference = chr1_reference();
-    let calls =
-        call_denovo_diploid(&dir.join("diploid.bam"), &reference, "chr1", &HaploidCallerParams::default()).unwrap();
+    let calls = call_denovo_diploid(
+        &dir.join("diploid.bam"),
+        &reference,
+        "chr1",
+        &HaploidCallerParams::default(),
+    )
+    .unwrap();
 
     // Only the variant sites are emitted (the 7 hom-ref positions are not), in position order.
     let by_pos = |p: i64| calls.iter().find(|c| c.position == p).cloned();
-    assert_eq!(calls.len(), 3, "expected pos 2/5/8 only, got {:?}", calls.iter().map(|c| c.position).collect::<Vec<_>>());
+    assert_eq!(
+        calls.len(),
+        3,
+        "expected pos 2/5/8 only, got {:?}",
+        calls.iter().map(|c| c.position).collect::<Vec<_>>()
+    );
 
     let p2 = by_pos(2).expect("het at pos 2");
     assert_eq!((p2.reference_allele.as_str(), p2.alternate_allele.as_str()), ("C", "G"));
@@ -101,13 +124,21 @@ fn denovo_diploid_calls_a_heterozygous_deletion() {
     // indel.bam (chrM): 10 reads 50M (ref) + 10 reads 5M2D43M (2bp deletion of ref pos 6-7 = C,G).
     // The bundled ref.fa chrM is ACGTACGTAC… so pos5=A, pos6=C, pos7=G → REF=ACG, ALT=A, het 0/1.
     let dir = fixtures();
-    let calls = call_denovo_diploid(&dir.join("indel.bam"), &dir.join("ref.fa"), "chrM", &HaploidCallerParams::default())
-        .unwrap();
+    let calls = call_denovo_diploid(
+        &dir.join("indel.bam"),
+        &dir.join("ref.fa"),
+        "chrM",
+        &HaploidCallerParams::default(),
+    )
+    .unwrap();
     let del = calls
         .iter()
         .find(|c| c.position == 5 && c.reference_allele.len() > c.alternate_allele.len())
         .expect("a deletion call at pos 5");
-    assert_eq!((del.reference_allele.as_str(), del.alternate_allele.as_str()), ("ACG", "A"));
+    assert_eq!(
+        (del.reference_allele.as_str(), del.alternate_allele.as_str()),
+        ("ACG", "A")
+    );
     assert_eq!(del.dosage, 1); // 10 deletion-reads / 10 ref-reads → heterozygous
     assert_eq!(del.alt_depth, 10);
     // It renders as a standard indel VCF record.
@@ -126,9 +157,17 @@ fn denovo_diploid_calls_a_multiallelic_snv() {
     let reference = refdir.join("chr1.fa");
     std::fs::write(&reference, b">chr1\nACGTACGTAC\n").unwrap();
     std::fs::write(refdir.join("chr1.fa.fai"), b"chr1\t10\t6\t10\t11\n").unwrap();
-    let calls =
-        call_denovo_diploid(&dir.join("snv_multi.bam"), &reference, "chr1", &HaploidCallerParams::default()).unwrap();
-    let site = calls.iter().find(|c| c.position == 2).expect("a multiallelic SNV at pos 2");
+    let calls = call_denovo_diploid(
+        &dir.join("snv_multi.bam"),
+        &reference,
+        "chr1",
+        &HaploidCallerParams::default(),
+    )
+    .unwrap();
+    let site = calls
+        .iter()
+        .find(|c| c.position == 2)
+        .expect("a multiallelic SNV at pos 2");
     assert_eq!(site.reference_allele, "C");
     assert_eq!(site.alternate_allele, "G,T"); // equal counts → base order A<C<G<T
     assert_eq!(site.gt.as_deref(), Some("1/2"));
@@ -145,15 +184,22 @@ fn denovo_diploid_calls_a_multiallelic_indel() {
     // both left-normalizing to emit pos 5. ref ACGTAC… → REF=ACGT, ALTs AT (2 bp del) and A (3 bp
     // del), a compound het 1/2.
     let dir = fixtures();
-    let calls =
-        call_denovo_diploid(&dir.join("indel_multi.bam"), &dir.join("ref.fa"), "chrM", &HaploidCallerParams::default())
-            .unwrap();
-    let site = calls.iter().find(|c| c.position == 5).expect("a multiallelic call at pos 5");
+    let calls = call_denovo_diploid(
+        &dir.join("indel_multi.bam"),
+        &dir.join("ref.fa"),
+        "chrM",
+        &HaploidCallerParams::default(),
+    )
+    .unwrap();
+    let site = calls
+        .iter()
+        .find(|c| c.position == 5)
+        .expect("a multiallelic call at pos 5");
     assert_eq!(site.reference_allele, "ACGT");
     assert_eq!(site.alternate_allele, "AT,A"); // dominant (8-read, 2 bp) allele first
     assert_eq!(site.gt.as_deref(), Some("1/2"));
     assert_eq!(site.allele_depths, Some(vec![0, 8, 6])); // ref, AT, A
-    // It renders as a multiallelic VCF record (3-value AD, 1/2 GT).
+                                                         // It renders as a multiallelic VCF record (3-value AD, 1/2 GT).
     let vcf = write_diploid_vcf("FIX", &calls);
     assert!(vcf.contains("chrM\t5\t.\tACGT\tAT,A\t"), "{vcf}");
     assert!(vcf.contains("\t1/2:0,8,6:"), "{vcf}");
@@ -164,7 +210,15 @@ fn haploid_genotyping_calls_zero_or_one() {
     let dir = fixtures();
     // ploidy 1: the hom-alt site reads as the alt allele (dosage 1); hom-ref as 0.
     let sites = vec![site("homref", 1, "A", "G"), site("homalt", 8, "T", "A")];
-    let calls = genotype_sites(&dir.join("diploid.bam"), "chr1", &sites, 1, &HaploidCallerParams::default(), None).unwrap();
+    let calls = genotype_sites(
+        &dir.join("diploid.bam"),
+        "chr1",
+        &sites,
+        1,
+        &HaploidCallerParams::default(),
+        None,
+    )
+    .unwrap();
     assert_eq!(by_name(&calls, "homref").dosage, 0);
     assert_eq!(by_name(&calls, "homalt").dosage, 1);
     assert!(by_name(&calls, "homalt").pls.len() == 2); // ploidy 1 -> 2 genotypes

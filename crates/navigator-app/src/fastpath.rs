@@ -24,17 +24,30 @@ impl App {
         // reference base at every callable tree position (exactly what call_bases_at observes).
         let reference = match aln.reference_path {
             Some(p) => PathBuf::from(p),
-            None => self.gateway.resolve_reference(&aln.reference_build, &mut |_, _| {}).await?,
+            None => {
+                self.gateway
+                    .resolve_reference(&aln.reference_build, &mut |_, _| {})
+                    .await?
+            }
         };
-        let targets: HashSet<i64> =
-            tree.nodes.values().flat_map(|n| n.loci.iter().map(|l| l.position)).collect();
+        let targets: HashSet<i64> = tree
+            .nodes
+            .values()
+            .flat_map(|n| n.loci.iter().map(|l| l.position))
+            .collect();
         if targets.is_empty() {
             return Ok(HashMap::new());
         }
         let params = gvcf::GvcfReadParams::default();
 
         let lifted = self
-            .lifted_targets(&aln.reference_build, Some(&reference), contig, &targets, tree_source_build)
+            .lifted_targets(
+                &aln.reference_build,
+                Some(&reference),
+                contig,
+                &targets,
+                tree_source_build,
+            )
             .await?;
 
         match lifted {
@@ -44,10 +57,9 @@ impl App {
                 let gvcf = gvcf.to_path_buf();
                 let contig_s = contig.to_string();
                 let targets2 = targets.clone();
-                let called = tokio::task::spawn_blocking(move || {
-                    gvcf::read_called_bases(&gvcf, &contig_s, &targets2, &params)
-                })
-                .await??;
+                let called =
+                    tokio::task::spawn_blocking(move || gvcf::read_called_bases(&gvcf, &contig_s, &targets2, &params))
+                        .await??;
                 let ref_base = self.reference_bases(&reference, contig, &called.callable).await?;
                 Ok(gvcf::assemble_calls(&called, &ref_base))
             }
@@ -64,10 +76,9 @@ impl App {
                     let gvcf = gvcf.to_path_buf();
                     let qc = qcontig.clone();
                     let set2 = set.clone();
-                    let called = tokio::task::spawn_blocking(move || {
-                        gvcf::read_called_bases(&gvcf, &qc, &set2, &params)
-                    })
-                    .await??;
+                    let called =
+                        tokio::task::spawn_blocking(move || gvcf::read_called_bases(&gvcf, &qc, &set2, &params))
+                            .await??;
                     ref_base.extend(self.reference_bases(&reference, &qcontig, &called.callable).await?);
                     all.variant_bases.extend(called.variant_bases);
                     all.callable.extend(called.callable);
@@ -92,19 +103,21 @@ impl App {
         let reference = reference.to_path_buf();
         let contig = contig.to_string();
         let positions: Vec<i64> = positions.iter().copied().collect();
-        let map = tokio::task::spawn_blocking(move || -> Result<HashMap<i64, char>, navigator_analysis::AnalysisError> {
-            let seq = navigator_analysis::reader::read_contig_sequence(&reference, &contig)?;
-            let mut m = HashMap::with_capacity(positions.len());
-            for p in positions {
-                if p >= 1 && (p as usize) <= seq.len() {
-                    let b = seq[p as usize - 1].to_ascii_uppercase();
-                    if matches!(b, b'A' | b'C' | b'G' | b'T') {
-                        m.insert(p, b as char);
+        let map = tokio::task::spawn_blocking(
+            move || -> Result<HashMap<i64, char>, navigator_analysis::AnalysisError> {
+                let seq = navigator_analysis::reader::read_contig_sequence(&reference, &contig)?;
+                let mut m = HashMap::with_capacity(positions.len());
+                for p in positions {
+                    if p >= 1 && (p as usize) <= seq.len() {
+                        let b = seq[p as usize - 1].to_ascii_uppercase();
+                        if matches!(b, b'A' | b'C' | b'G' | b'T') {
+                            m.insert(p, b as char);
+                        }
                     }
                 }
-            }
-            Ok(m)
-        })
+                Ok(m)
+            },
+        )
         .await??;
         Ok(map)
     }
@@ -125,7 +138,10 @@ impl App {
     pub async fn assign_y_from_gvcf(&self, alignment_id: i64, gvcf: &Path) -> Result<HaploAssignment, AppError> {
         let aln = self.alignment_or_err(alignment_id).await?;
         let build_key = decodingus_build_key(&aln.reference_build).ok_or_else(|| {
-            AppError::Import(format!("no DecodingUs tree coordinates for build {}", aln.reference_build))
+            AppError::Import(format!(
+                "no DecodingUs tree coordinates for build {}",
+                aln.reference_build
+            ))
         })?;
         let tree_json = self.fetch_decodingus_y_tree().await?;
         let tree = navigator_analysis::haplo::parse_decodingus_json(&tree_json, build_key).map_err(AppError::Import)?;
@@ -161,7 +177,9 @@ impl App {
         let tree_json = self.fetch_ftdna_mt_tree().await?;
         let tree = navigator_analysis::haplo::parse_ftdna_json(&tree_json).map_err(AppError::Import)?;
         let source_build = tree_build_for_contig("chrM"); // None → rCRS-direct / chrM lift
-        let calls = self.gvcf_base_calls(alignment_id, "chrM", gvcf, &tree, source_build).await?;
+        let calls = self
+            .gvcf_base_calls(alignment_id, "chrM", gvcf, &tree, source_build)
+            .await?;
         // Robust selection, as for Y (see assign_y_from_gvcf) — the GVCF's confident calls fit
         // the proportional-top regime better than the strict alignment guard.
         let assignment = assemble_assignment_robust(&tree, &calls);
@@ -230,9 +248,12 @@ impl App {
     }
 
     async fn ingest_sex_sidecar(&self, alignment_id: i64, path: &Path) -> Result<String, AppError> {
-        let text = tokio::fs::read_to_string(path).await.map_err(|e| AppError::Import(format!("{}: {e}", path.display())))?;
+        let text = tokio::fs::read_to_string(path)
+            .await
+            .map_err(|e| AppError::Import(format!("{}: {e}", path.display())))?;
         let result = sidecar::parse_sex(&text);
-        self.save_analysis_with_provenance(alignment_id, "sex", "1", &result, "pipeline-sidecar", "full").await?;
+        self.save_analysis_with_provenance(alignment_id, "sex", "1", &result, "pipeline-sidecar", "full")
+            .await?;
         self.write_back_inferred_sex(alignment_id, &result).await?;
         Ok(match result.inferred_sex {
             InferredSex::Male => "M",
@@ -247,7 +268,11 @@ impl App {
     async fn ingest_read_metrics(&self, alignment_id: i64, sidecars: &SampleSidecars) -> Result<bool, AppError> {
         let read = |p: &Path| {
             let p = p.to_path_buf();
-            async move { tokio::fs::read_to_string(&p).await.map_err(|e| AppError::Import(format!("{}: {e}", p.display()))) }
+            async move {
+                tokio::fs::read_to_string(&p)
+                    .await
+                    .map_err(|e| AppError::Import(format!("{}: {e}", p.display())))
+            }
         };
         // (metrics, completeness): samtools stats is full (carries histograms); the others are
         // counts/scalars only, so `partial` lets a deep read-metrics walk upgrade them later.
@@ -263,14 +288,26 @@ impl App {
         } else {
             return Ok(false);
         };
-        self.save_analysis_with_provenance(alignment_id, "read_metrics", "1", &metrics, "pipeline-sidecar", completeness).await?;
+        self.save_analysis_with_provenance(
+            alignment_id,
+            "read_metrics",
+            "1",
+            &metrics,
+            "pipeline-sidecar",
+            completeness,
+        )
+        .await?;
         Ok(true)
     }
 
     async fn ingest_coverage_sidecar(&self, alignment_id: i64, sidecars: &SampleSidecars) -> Result<(), AppError> {
         let read = |p: &Path| {
             let p = p.to_path_buf();
-            async move { tokio::fs::read_to_string(&p).await.map_err(|e| AppError::Import(format!("{}: {e}", p.display()))) }
+            async move {
+                tokio::fs::read_to_string(&p)
+                    .await
+                    .map_err(|e| AppError::Import(format!("{}: {e}", p.display())))
+            }
         };
         // Per-contig stats + callable counts from samtools coverage (empty base if absent).
         let lite = match &sidecars.coverage {
@@ -306,8 +343,15 @@ impl App {
         };
         // Still `partial`: no per-base depth histogram (only the deep walk produces that), so the
         // deep pass still upgrades this. Stored under the standard coverage key.
-        self.save_analysis_with_provenance(alignment_id, "coverage", coverage::COVERAGE_VERSION, &result, "pipeline-sidecar", "partial")
-            .await?;
+        self.save_analysis_with_provenance(
+            alignment_id,
+            "coverage",
+            coverage::COVERAGE_VERSION,
+            &result,
+            "pipeline-sidecar",
+            "partial",
+        )
+        .await?;
         Ok(())
     }
 
@@ -378,13 +422,27 @@ impl App {
     /// Region annotation for a 1-based `position` on `contig` in `build` (centromere/telomere/PAR
     /// membership + cytoband name). Uses the cached regions only — `None` if not yet fetched.
     pub fn region_annotation(&self, build: &str, contig: &str, position: i64) -> Option<RegionAnnotation> {
-        self.gateway.cached_genome_regions(build).map(|r| r.annotate(contig, position))
+        self.gateway
+            .cached_genome_regions(build)
+            .map(|r| r.annotate(contig, position))
     }
 
     async fn y_structural_regions(&self) -> Option<navigator_analysis::mask::YStructuralRegions> {
-        let amplicon = self.gateway.resolve_mask("chm13v2.0Y_amplicons_v1", &mut |_, _| {}).await.ok()?;
-        let palindrome = self.gateway.resolve_mask("chm13v2.0Y_inverted_repeats_v1", &mut |_, _| {}).await.ok()?;
-        let azf_dyz = self.gateway.resolve_mask("chm13v2.0Y_AZF_DYZ_v1", &mut |_, _| {}).await.ok()?;
+        let amplicon = self
+            .gateway
+            .resolve_mask("chm13v2.0Y_amplicons_v1", &mut |_, _| {})
+            .await
+            .ok()?;
+        let palindrome = self
+            .gateway
+            .resolve_mask("chm13v2.0Y_inverted_repeats_v1", &mut |_, _| {})
+            .await
+            .ok()?;
+        let azf_dyz = self
+            .gateway
+            .resolve_mask("chm13v2.0Y_AZF_DYZ_v1", &mut |_, _| {})
+            .await
+            .ok()?;
         navigator_analysis::mask::YStructuralRegions::from_beds(&amplicon, &palindrome, &azf_dyz).ok()
     }
 
@@ -396,7 +454,9 @@ impl App {
         let tree_json = self.fetch_ftdna_y_tree().await?;
         let tree = navigator_analysis::haplo::parse_ftdna_json(&tree_json).map_err(AppError::Import)?;
 
-        let assignment = self.assign_haplogroup_from_alignment(alignment_id, "chrY", &tree_json).await?;
+        let assignment = self
+            .assign_haplogroup_from_alignment(alignment_id, "chrY", &tree_json)
+            .await?;
         let terminal = assignment
             .ranked
             .first()
@@ -432,7 +492,9 @@ impl App {
             })
             .collect();
         variants.sort_by_key(|v| v.position);
-        Ok(PrivateBucket { terminal: terminal.name.clone(), variants })
+        Ok(PrivateBucket {
+            terminal: terminal.name.clone(),
+            variants,
+        })
     }
-
 }

@@ -165,7 +165,14 @@ struct Globals {
 
 impl Globals {
     fn new() -> Self {
-        Globals { hist: vec![0; HIST_LEN], n: 0, sum_depth: 0, sum_sq: 0, sum_exc_mapq: 0, sum_exc_baseq: 0 }
+        Globals {
+            hist: vec![0; HIST_LEN],
+            n: 0,
+            sum_depth: 0,
+            sum_sq: 0,
+            sum_exc_mapq: 0,
+            sum_exc_baseq: 0,
+        }
     }
 }
 
@@ -323,13 +330,32 @@ impl CurContig {
             end_pos: self.length as u64,
             num_reads: self.read_count,
             cov_bases: self.covered,
-            coverage: if self.length == 0 { 0.0 } else { self.covered as f64 / length * 100.0 },
-            mean_depth: if self.length == 0 { 0.0 } else { self.sum_depth as f64 / length },
-            mean_base_q: if self.total_base_obs == 0 { 0.0 } else { self.base_q_total as f64 / self.total_base_obs as f64 },
-            mean_map_q: if self.total_base_obs == 0 { 0.0 } else { self.map_q_total as f64 / self.total_base_obs as f64 },
+            coverage: if self.length == 0 {
+                0.0
+            } else {
+                self.covered as f64 / length * 100.0
+            },
+            mean_depth: if self.length == 0 {
+                0.0
+            } else {
+                self.sum_depth as f64 / length
+            },
+            mean_base_q: if self.total_base_obs == 0 {
+                0.0
+            } else {
+                self.base_q_total as f64 / self.total_base_obs as f64
+            },
+            mean_map_q: if self.total_base_obs == 0 {
+                0.0
+            } else {
+                self.map_q_total as f64 / self.total_base_obs as f64
+            },
             histogram: std::mem::take(&mut self.hist),
         };
-        ContigOut { callable: self.cm, stats }
+        ContigOut {
+            callable: self.cm,
+            stats,
+        }
     }
 }
 
@@ -395,8 +421,7 @@ impl CoverageState {
             .iter()
             .map(|(name_bytes, map)| {
                 let name = String::from_utf8_lossy(name_bytes.as_ref()).into_owned();
-                let keep = contig::is_main_assembly(&name)
-                    && contig_allowlist.map_or(true, |set| set.contains(&name));
+                let keep = contig::is_main_assembly(&name) && contig_allowlist.map_or(true, |set| set.contains(&name));
                 keep.then(|| (name, map.length().get()))
             })
             .collect();
@@ -480,7 +505,9 @@ impl CoverageState {
         let mut contig_callable = Vec::new();
         let mut contig_stats = Vec::new();
         for ref_id in 0..self.tracked.len() {
-            let Some((name, length)) = self.tracked[ref_id].clone() else { continue };
+            let Some((name, length)) = self.tracked[ref_id].clone() else {
+                continue;
+            };
             if let Some(out) = self.finished.remove(&ref_id) {
                 contig_callable.push(out.callable);
                 contig_stats.push(out.stats);
@@ -616,7 +643,10 @@ fn assemble_coverage_result(
     let (pct_exc_mapq, pct_exc_baseq) = if sum_depth == 0 {
         (0.0, 0.0)
     } else {
-        (sum_exc_mapq as f64 / sum_depth as f64, sum_exc_baseq as f64 / sum_depth as f64)
+        (
+            sum_exc_mapq as f64 / sum_depth as f64,
+            sum_exc_baseq as f64 / sum_depth as f64,
+        )
     };
     let callable_bases = contig_callable.iter().map(|c| c.callable).sum();
     CoverageResult {
@@ -668,7 +698,11 @@ pub(crate) struct ContigCoveragePartial {
 
 impl ContigCoverageAccum {
     pub(crate) fn new(name: String, length: usize, ref_bases: Vec<u8>, params: CallableLociParams) -> Self {
-        ContigCoverageAccum { c: CurContig::new(name, length, ref_bases), g: Globals::new(), params }
+        ContigCoverageAccum {
+            c: CurContig::new(name, length, ref_bases),
+            g: Globals::new(),
+            params,
+        }
     }
 
     /// Feed one record; the coverage read filter is applied internally, so off-filter records
@@ -721,7 +755,16 @@ pub(crate) fn merge_coverage_partials(mut partials: Vec<ContigCoveragePartial>) 
         contig_callable.push(p.callable);
         contig_stats.push(p.stats);
     }
-    assemble_coverage_result(hist, n, sum_depth, sum_sq, sum_exc_mapq, sum_exc_baseq, contig_callable, contig_stats)
+    assemble_coverage_result(
+        hist,
+        n,
+        sum_depth,
+        sum_sq,
+        sum_exc_mapq,
+        sum_exc_baseq,
+        contig_callable,
+        contig_stats,
+    )
 }
 
 /// Mean read length and mean fragment (template) length, sampled from the first ~50k
@@ -762,7 +805,11 @@ pub fn estimate_molecule_lengths(bam_path: &Path, reference: Option<&Path>) -> R
         return Ok((0.0, 0.0));
     }
     let read_len = read_sum as f64 / n as f64;
-    let frag_len = if frag_n > 0 { frag_sum as f64 / frag_n as f64 } else { read_len };
+    let frag_len = if frag_n > 0 {
+        frag_sum as f64 / frag_n as f64
+    } else {
+        read_len
+    };
     Ok((read_len, frag_len))
 }
 
@@ -809,7 +856,12 @@ pub fn callable_intervals(
     for result in query {
         let record = result?;
         let flags = record.flags();
-        if flags.is_unmapped() || flags.is_secondary() || flags.is_supplementary() || flags.is_duplicate() || flags.is_qc_fail() {
+        if flags.is_unmapped()
+            || flags.is_secondary()
+            || flags.is_supplementary()
+            || flags.is_duplicate()
+            || flags.is_qc_fail()
+        {
             continue;
         }
         let start = match record.alignment_start() {
@@ -937,14 +989,15 @@ fn median_from_hist(hist: &[u64], total: u64) -> f64 {
     255.0
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::path::PathBuf;
 
     fn fixture(name: &str) -> PathBuf {
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures").join(name)
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures")
+            .join(name)
     }
 
     #[test]
@@ -957,7 +1010,10 @@ mod tests {
         let ivs = callable_intervals(&bam, "chrM", &params, 1, None).unwrap();
         assert!(!ivs.is_empty(), "expected callable intervals on the fixture");
         let callable_bases: i64 = ivs.iter().map(|(s, e)| e - s).sum();
-        assert!((1..=50).contains(&callable_bases), "callable bases in range: {callable_bases}");
+        assert!(
+            (1..=50).contains(&callable_bases),
+            "callable bases in range: {callable_bases}"
+        );
         for w in ivs.windows(2) {
             assert!(w[0].1 <= w[1].0, "intervals sorted & disjoint");
         }
@@ -993,9 +1049,11 @@ mod tests {
         // chrM-only and a multi-contig (autosomes + chrX) fixture, so the sum invariant is
         // exercised across more than one contig.
         for (bam_name, ref_name) in [("coverage.bam", "ref.fa"), ("sex.bam", "sexref.fa")] {
-            let cov =
-                collect_coverage_callable(&fixture(bam_name), &fixture(ref_name), &params, None).unwrap();
-            assert!(!cov.contig_coverage_stats.is_empty(), "{bam_name}: expected tracked contigs");
+            let cov = collect_coverage_callable(&fixture(bam_name), &fixture(ref_name), &params, None).unwrap();
+            assert!(
+                !cov.contig_coverage_stats.is_empty(),
+                "{bam_name}: expected tracked contigs"
+            );
 
             let width = cov.coverage_histogram.len();
             let mut summed = vec![0u64; width];

@@ -9,7 +9,11 @@
 use std::path::Path;
 
 fn ns_per_read(d: std::time::Duration, n: u64) -> f64 {
-    if n > 0 { d.as_nanos() as f64 / n as f64 } else { 0.0 }
+    if n > 0 {
+        d.as_nanos() as f64 / n as f64
+    } else {
+        0.0
+    }
 }
 
 fn main() {
@@ -53,12 +57,25 @@ fn main() {
     if args[3].contains(',') {
         let contigs: Vec<String> = args[3].split(',').map(|s| s.to_string()).collect();
         let nthreads = rayon::current_num_threads();
-        match navigator_analysis::unified::profile_contigs_parallel(Path::new(&args[1]), Path::new(&args[2]), &contigs, &params) {
+        match navigator_analysis::unified::profile_contigs_parallel(
+            Path::new(&args[1]),
+            Path::new(&args[2]),
+            &contigs,
+            &params,
+        ) {
             Ok((n, dur)) => {
-                let mreads_s = if dur.as_secs_f64() > 0.0 { n as f64 / dur.as_secs_f64() / 1e6 } else { 0.0 };
+                let mreads_s = if dur.as_secs_f64() > 0.0 {
+                    n as f64 / dur.as_secs_f64() / 1e6
+                } else {
+                    0.0
+                };
                 eprintln!(
                     "parallel ({} contigs, {} rayon threads): {} reads in {:.2?}  →  {:.2} M reads/s aggregate",
-                    contigs.len(), nthreads, n, dur, mreads_s
+                    contigs.len(),
+                    nthreads,
+                    n,
+                    dur,
+                    mreads_s
                 );
             }
             Err(e) => {
@@ -73,12 +90,28 @@ fn main() {
         Ok(p) => {
             let n = p.reads;
             eprintln!("contig {} — {} reads\n", args[3], n);
-            eprintln!("  raw decode      {:>8.2?}   {:>6.0} ns/read", p.raw, ns_per_read(p.raw, n));
-            eprintln!("  + RecordBuf     {:>8.2?}   {:>6.0} ns/read   (+{:.0} ns/read for the owned copy)",
-                p.recordbuf, ns_per_read(p.recordbuf, n), ns_per_read(p.recordbuf, n) - ns_per_read(p.raw, n));
-            eprintln!("  + metrics       {:>8.2?}   {:>6.0} ns/read   (+{:.0} ns/read for read-metrics + pileup)",
-                p.full, ns_per_read(p.full, n), ns_per_read(p.full, n) - ns_per_read(p.recordbuf, n));
-            let mreads_s = if p.full.as_secs_f64() > 0.0 { n as f64 / p.full.as_secs_f64() / 1e6 } else { 0.0 };
+            eprintln!(
+                "  raw decode      {:>8.2?}   {:>6.0} ns/read",
+                p.raw,
+                ns_per_read(p.raw, n)
+            );
+            eprintln!(
+                "  + RecordBuf     {:>8.2?}   {:>6.0} ns/read   (+{:.0} ns/read for the owned copy)",
+                p.recordbuf,
+                ns_per_read(p.recordbuf, n),
+                ns_per_read(p.recordbuf, n) - ns_per_read(p.raw, n)
+            );
+            eprintln!(
+                "  + metrics       {:>8.2?}   {:>6.0} ns/read   (+{:.0} ns/read for read-metrics + pileup)",
+                p.full,
+                ns_per_read(p.full, n),
+                ns_per_read(p.full, n) - ns_per_read(p.recordbuf, n)
+            );
+            let mreads_s = if p.full.as_secs_f64() > 0.0 {
+                n as f64 / p.full.as_secs_f64() / 1e6
+            } else {
+                0.0
+            };
             eprintln!("\n  full pass: {:.2} M reads/s single-threaded", mreads_s);
         }
         Err(e) => {

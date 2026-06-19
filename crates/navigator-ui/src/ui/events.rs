@@ -36,8 +36,12 @@ impl NavigatorApp {
                     if fp.samples_with_sidecars > 0 {
                         msg.push_str(&format!(
                             ". Fast path on {} sample(s): {} Y, {} mt, {} sex, {} metrics, {} coverage",
-                            fp.samples_with_sidecars, fp.y_placed, fp.mt_placed, fp.sex_filled,
-                            fp.metrics_filled, fp.coverage_filled,
+                            fp.samples_with_sidecars,
+                            fp.y_placed,
+                            fp.mt_placed,
+                            fp.sex_filled,
+                            fp.metrics_filled,
+                            fp.coverage_filled,
                         ));
                         if !fp.errors.is_empty() {
                             msg.push_str(&format!(" ({} fast-path error(s))", fp.errors.len()));
@@ -83,7 +87,17 @@ impl NavigatorApp {
                         self.project_report = rows;
                     }
                 }
-                Event::ProjectAnalyzed { project_id, samples, coverage_done, y_done, sex_done, metrics_done, sv_done, errors, cancelled } => {
+                Event::ProjectAnalyzed {
+                    project_id,
+                    samples,
+                    coverage_done,
+                    y_done,
+                    sex_done,
+                    metrics_done,
+                    sv_done,
+                    errors,
+                    cancelled,
+                } => {
                     self.analyzing = false;
                     self.deep_progress = None;
                     self.status = format!(
@@ -95,7 +109,13 @@ impl NavigatorApp {
                         let _ = self.tx.send(Command::LoadProjectReport(project_id));
                     }
                 }
-                Event::DeepAnalyzeProgress { project_id, done, total, sample, fraction } => {
+                Event::DeepAnalyzeProgress {
+                    project_id,
+                    done,
+                    total,
+                    sample,
+                    fraction,
+                } => {
                     if self.selected_project == Some(project_id) {
                         self.deep_progress = Some((done, total, sample, fraction));
                     }
@@ -122,7 +142,10 @@ impl NavigatorApp {
                         let _ = self.tx.send(Command::LoadRuns(guid));
                     }
                 }
-                Event::StrProfiles { biosample_guid, profiles } => {
+                Event::StrProfiles {
+                    biosample_guid,
+                    profiles,
+                } => {
                     if self.selected_sample == Some(biosample_guid) {
                         self.str_profiles = profiles;
                         // Reset the report view-state for the new subject's data.
@@ -147,7 +170,10 @@ impl NavigatorApp {
                     }
                     self.status = "Variants imported".into();
                 }
-                Event::ChipProfiles { biosample_guid, profiles } => {
+                Event::ChipProfiles {
+                    biosample_guid,
+                    profiles,
+                } => {
                     if self.selected_sample == Some(biosample_guid) {
                         self.chip_profiles = profiles;
                     }
@@ -162,7 +188,10 @@ impl NavigatorApp {
                     let _ = self.tx.send(Command::LoadHaploSummary); // subjects-list Y/mt columns
                     self.status = "Chip data imported".into();
                 }
-                Event::MtdnaSequences { biosample_guid, sequences } => {
+                Event::MtdnaSequences {
+                    biosample_guid,
+                    sequences,
+                } => {
                     if self.selected_sample == Some(biosample_guid) {
                         self.mtdna_sequences = sequences;
                     }
@@ -187,7 +216,10 @@ impl NavigatorApp {
                         let _ = self.tx.send(Command::LoadConsensus(guid)); // a call was recorded
                     }
                 }
-                Event::YHaplogroup { alignment_id, assignment } => {
+                Event::YHaplogroup {
+                    alignment_id,
+                    assignment,
+                } => {
                     self.status = match assignment.ranked.first() {
                         Some(top) => format!("Y haplogroup: {} (score {:.3})", top.name, top.score),
                         None => "No Y haplogroup match".into(),
@@ -202,12 +234,27 @@ impl NavigatorApp {
                         let _ = self.tx.send(Command::LoadProjectReport(pid));
                     }
                 }
-                Event::YHaploReport { alignment_id, assignment, lineage } => {
+                Event::YHaploReport {
+                    alignment_id,
+                    assignment,
+                    lineage,
+                } => {
                     self.y_report_running = false;
-                    self.status = format!("Haplogroup report: {} candidate(s), {} lineage SNP(s)", assignment.ranked.len(), lineage.len());
-                    self.y_report = Some(YReport { alignment_id, assignment, lineage });
+                    self.status = format!(
+                        "Haplogroup report: {} candidate(s), {} lineage SNP(s)",
+                        assignment.ranked.len(),
+                        lineage.len()
+                    );
+                    self.y_report = Some(YReport {
+                        alignment_id,
+                        assignment,
+                        lineage,
+                    });
                 }
-                Event::YBisdnaHaplogroup { biosample_guid, assignment } => {
+                Event::YBisdnaHaplogroup {
+                    biosample_guid,
+                    assignment,
+                } => {
                     self.status = match assignment.ranked.first() {
                         Some(top) => format!("Y haplogroup (panel): {} (score {:.3})", top.name, top.score),
                         None => "No Y haplogroup match from the panel".into(),
@@ -215,7 +262,10 @@ impl NavigatorApp {
                     // The call was recorded — refresh the donor consensus so the Y-DNA card fills in.
                     let _ = self.tx.send(Command::LoadConsensus(biosample_guid));
                 }
-                Event::MtHaplogroup { alignment_id, assignment } => {
+                Event::MtHaplogroup {
+                    alignment_id,
+                    assignment,
+                } => {
                     self.status = match assignment.ranked.first() {
                         Some(top) => format!("mtDNA haplogroup: {} (score {:.3})", top.name, top.score),
                         None => "No mtDNA haplogroup match".into(),
@@ -236,7 +286,11 @@ impl NavigatorApp {
                         self.consensus_mt = mt;
                     }
                 }
-                Event::Audit { biosample_guid, dna_type, entries } => {
+                Event::Audit {
+                    biosample_guid,
+                    dna_type,
+                    entries,
+                } => {
                     if self.selected_sample == Some(biosample_guid) {
                         match dna_type {
                             DnaType::Y => self.audit_y = entries,
@@ -248,10 +302,16 @@ impl NavigatorApp {
                     self.status = format!("mtDNA heteroplasmy: {} site(s)", sites.len());
                     self.heteroplasmy = Some((alignment_id, sites));
                 }
-                Event::ReconciliationChanged { biosample_guid, dna_type } => {
+                Event::ReconciliationChanged {
+                    biosample_guid,
+                    dna_type,
+                } => {
                     if self.selected_sample == Some(biosample_guid) {
                         let _ = self.tx.send(Command::LoadConsensus(biosample_guid));
-                        let _ = self.tx.send(Command::LoadAudit { biosample_guid, dna_type });
+                        let _ = self.tx.send(Command::LoadAudit {
+                            biosample_guid,
+                            dna_type,
+                        });
                     }
                 }
                 Event::PrivateY { alignment_id, bucket } => {
@@ -296,11 +356,18 @@ impl NavigatorApp {
                 Event::VcfLifted { summary } => {
                     self.status = summary;
                 }
-                Event::DataBatchImported { biosample_guid, summary } => {
+                Event::DataBatchImported {
+                    biosample_guid,
+                    summary,
+                } => {
                     self.status = format!(
                         "Imported {} file(s){}",
                         summary.imported.len(),
-                        if summary.skipped.is_empty() { String::new() } else { format!(", {} skipped", summary.skipped.len()) }
+                        if summary.skipped.is_empty() {
+                            String::new()
+                        } else {
+                            format!(", {} skipped", summary.skipped.len())
+                        }
                     );
                     self.batch_import = Some(summary);
                     if self.selected_sample == Some(biosample_guid) {
@@ -311,14 +378,21 @@ impl NavigatorApp {
                         let _ = self.tx.send(Command::LoadMtdna(biosample_guid));
                     }
                 }
-                Event::StrConcordance { biosample_guid, alignment_id, rows } => {
+                Event::StrConcordance {
+                    biosample_guid,
+                    alignment_id,
+                    rows,
+                } => {
                     self.str_running = false;
                     let calls = rows.iter().filter(|r| r.called.is_some()).count();
                     let agree = rows.iter().filter(|r| r.agree).count();
                     self.status = format!("Y-STR from sequence: {calls} markers called, {agree} agree with vendor");
                     self.str_concordance = Some((biosample_guid, alignment_id, rows));
                 }
-                Event::YMatches { biosample_guid, matches } => {
+                Event::YMatches {
+                    biosample_guid,
+                    matches,
+                } => {
                     self.y_matches_running = false;
                     self.status = format!("Y matches: {} ranked", matches.len());
                     self.y_matches = Some((biosample_guid, matches));
@@ -338,7 +412,12 @@ impl NavigatorApp {
                         let _ = self.tx.send(Command::LoadConsensusAncestryDetail { biosample_guid: g });
                     }
                 }
-                Event::ConsensusAncestryDetail { biosample_guid, fine, ancient, nmonte } => {
+                Event::ConsensusAncestryDetail {
+                    biosample_guid,
+                    fine,
+                    ancient,
+                    nmonte,
+                } => {
                     if self.selected_sample == Some(biosample_guid) {
                         self.fine_ancestry = fine.map(|b| *b);
                         self.ancient_ancestry = ancient.map(|b| *b);
@@ -349,7 +428,10 @@ impl NavigatorApp {
                     self.donor_private_y = Some(bucket);
                     self.y_snp_names_requested = false; // re-resolve names incl. the new positions
                 }
-                Event::YProfile { biosample_guid, profile } => {
+                Event::YProfile {
+                    biosample_guid,
+                    profile,
+                } => {
                     self.y_profile_loading = false;
                     if self.selected_sample == Some(biosample_guid) {
                         if let Some(p) = &profile {
@@ -362,7 +444,10 @@ impl NavigatorApp {
                 Event::YSnpNames { names } => {
                     self.y_snp_names = names;
                 }
-                Event::MtProfile { biosample_guid, profile } => {
+                Event::MtProfile {
+                    biosample_guid,
+                    profile,
+                } => {
                     self.mt_profile_loading = false;
                     if self.selected_sample == Some(biosample_guid) {
                         if let Some(p) = &profile {
@@ -371,7 +456,10 @@ impl NavigatorApp {
                         self.mt_profile = profile;
                     }
                 }
-                Event::AutosomalProfile { biosample_guid, profile } => {
+                Event::AutosomalProfile {
+                    biosample_guid,
+                    profile,
+                } => {
                     self.auto_profile_loading = false;
                     if self.selected_sample == Some(biosample_guid) {
                         if let Some(p) = &profile {
@@ -380,7 +468,10 @@ impl NavigatorApp {
                         self.auto_profile = profile;
                     }
                 }
-                Event::Alignments { sequence_run_id, alignments } => {
+                Event::Alignments {
+                    sequence_run_id,
+                    alignments,
+                } => {
                     if self.selected_run == Some(sequence_run_id) {
                         self.alignments = alignments;
                         // Load cached coverage for every alignment so each Data Sources row shows
@@ -419,7 +510,10 @@ impl NavigatorApp {
                     if let Some(a) = p.aligner {
                         self.forms.aln_aligner = a;
                     }
-                    let bits: Vec<String> = [p.platform, p.instrument_model, p.test_type].into_iter().flatten().collect();
+                    let bits: Vec<String> = [p.platform, p.instrument_model, p.test_type]
+                        .into_iter()
+                        .flatten()
+                        .collect();
                     if !bits.is_empty() {
                         self.status = format!("Detected from header: {}", bits.join(" · "));
                     }
@@ -480,7 +574,11 @@ impl NavigatorApp {
                         let _ = self.tx.send(Command::LoadProjectReport(pid));
                     }
                 }
-                Event::Denovo { alignment_id, contig, result } => {
+                Event::Denovo {
+                    alignment_id,
+                    contig,
+                    result,
+                } => {
                     if self.selected_alignment == Some(alignment_id) {
                         match result {
                             Some(calls) => {
@@ -493,19 +591,35 @@ impl NavigatorApp {
                     }
                     self.running_denovo = false;
                 }
-                Event::AnalysisProgress { step, total, label, detail, fraction } => {
+                Event::AnalysisProgress {
+                    step,
+                    total,
+                    label,
+                    detail,
+                    fraction,
+                } => {
                     // Reset the elapsed timer only when the step changes (sub-progress within a
                     // step keeps the same start time).
                     let started = match &self.analysis {
                         Some(a) if a.step == step => a.started,
                         _ => self.frame_time,
                     };
-                    self.analysis = Some(AnalysisModal { step, total, label, detail, fraction, started });
+                    self.analysis = Some(AnalysisModal {
+                        step,
+                        total,
+                        label,
+                        detail,
+                        fraction,
+                        started,
+                    });
                 }
                 Event::AnalysisDone { cancelled } => {
                     self.analysis = None;
-                    self.status =
-                        if cancelled { "Full analysis cancelled.".into() } else { "Full analysis complete.".into() };
+                    self.status = if cancelled {
+                        "Full analysis cancelled.".into()
+                    } else {
+                        "Full analysis complete.".into()
+                    };
                 }
                 Event::Panels(p) => self.panels = p,
                 Event::PanelImported => {
@@ -513,7 +627,12 @@ impl NavigatorApp {
                     let _ = self.tx.send(Command::LoadPanels);
                 }
                 Event::AllAlignments(a) => self.all_alignments = a,
-                Event::PanelGenotypes { alignment_id, panel_id, ploidy, genotypes } => {
+                Event::PanelGenotypes {
+                    alignment_id,
+                    panel_id,
+                    ploidy,
+                    genotypes,
+                } => {
                     if self.selected_alignment == Some(alignment_id)
                         && self.selected_panel == Some(panel_id)
                         && self.ploidy() == ploidy
@@ -531,7 +650,11 @@ impl NavigatorApp {
                     self.ibd_suggestions = items;
                     self.loading_ibd_suggestions = false;
                 }
-                Event::IbdIntroduced { suggested_sample_guid, request_uri, status } => {
+                Event::IbdIntroduced {
+                    suggested_sample_guid,
+                    request_uri,
+                    status,
+                } => {
                     self.status = format!("Introduction requested: {status} ({request_uri})");
                     let label = if request_uri.is_empty() {
                         status
@@ -542,7 +665,11 @@ impl NavigatorApp {
                 }
                 Event::ExchangeInbox { incoming, ready } => {
                     self.exchange_busy = false;
-                    self.status = format!("Exchange inbox: {} request(s), {} ready session(s)", incoming.len(), ready.len());
+                    self.status = format!(
+                        "Exchange inbox: {} request(s), {} ready session(s)",
+                        incoming.len(),
+                        ready.len()
+                    );
                     self.exchange_incoming = incoming;
                     self.exchange_ready = ready;
                 }
@@ -551,7 +678,13 @@ impl NavigatorApp {
                     self.status = "Consent recorded".into();
                     let _ = self.tx.send(Command::ExchangeInbox); // refresh
                 }
-                Event::IbdExchangeDone { biosample_guid, total_shared_cm, segment_count, relationship, agreed } => {
+                Event::IbdExchangeDone {
+                    biosample_guid,
+                    total_shared_cm,
+                    segment_count,
+                    relationship,
+                    agreed,
+                } => {
                     self.exchange_busy = false;
                     self.status = format!(
                         "IBD exchange: {total_shared_cm:.1} cM, {segment_count} segment(s), {relationship}{}",
@@ -597,7 +730,13 @@ impl NavigatorApp {
                     self.status = format!("Exported {label} → {}", path.display());
                 }
                 Event::SyncOnline(online) => self.online = online,
-                Event::PullDone { in_sync, applied, adopted, repushed, conflicts } => {
+                Event::PullDone {
+                    in_sync,
+                    applied,
+                    adopted,
+                    repushed,
+                    conflicts,
+                } => {
                     self.pulling = false;
                     self.status = format!(
                         "Pull: {in_sync} in sync, {applied} applied, {adopted} remote-only, {repushed} to re-publish, {conflicts} conflict(s)"
@@ -698,8 +837,14 @@ impl NavigatorApp {
         let _ = self.tx.send(Command::LoadConsensus(guid));
         // Refresh the list's Y/mt columns (picks up an assignment made on another row).
         let _ = self.tx.send(Command::LoadHaploSummary);
-        let _ = self.tx.send(Command::LoadAudit { biosample_guid: guid, dna_type: DnaType::Y });
-        let _ = self.tx.send(Command::LoadAudit { biosample_guid: guid, dna_type: DnaType::Mt });
+        let _ = self.tx.send(Command::LoadAudit {
+            biosample_guid: guid,
+            dna_type: DnaType::Y,
+        });
+        let _ = self.tx.send(Command::LoadAudit {
+            biosample_guid: guid,
+            dna_type: DnaType::Mt,
+        });
         let _ = self.tx.send(Command::LoadRuns(guid));
         let _ = self.tx.send(Command::LoadStrProfiles(guid));
         let _ = self.tx.send(Command::LoadVariantSets(guid));
@@ -710,7 +855,9 @@ impl NavigatorApp {
         // private-Y union across all sources).
         let _ = self.tx.send(Command::DefaultAlignment { biosample_guid: guid });
         let _ = self.tx.send(Command::LoadDonorAncestry { biosample_guid: guid });
-        let _ = self.tx.send(Command::LoadConsensusAncestryDetail { biosample_guid: guid });
+        let _ = self
+            .tx
+            .send(Command::LoadConsensusAncestryDetail { biosample_guid: guid });
         // A cached chromosome painting (current for the consensus signature) shows without a click.
         let _ = self.tx.send(Command::LoadPainting { biosample_guid: guid });
         let _ = self.tx.send(Command::LoadDonorPrivateY { biosample_guid: guid });
@@ -762,10 +909,17 @@ impl NavigatorApp {
         let _ = self.tx.send(Command::LoadSv(id));
         // Load cached chrM de-novo (mtDNA tab). chrY variant discovery is the masked private-Y
         // pass, not a raw whole-chrY de-novo, so it isn't loaded here.
-        let _ = self.tx.send(Command::LoadDenovo { alignment_id: id, contig: "chrM".into() });
+        let _ = self.tx.send(Command::LoadDenovo {
+            alignment_id: id,
+            contig: "chrM".into(),
+        });
         let _ = self.tx.send(Command::LoadPrivateY { alignment_id: id }); // reload cached private-Y
         if let Some(panel_id) = self.selected_panel {
-            let _ = self.tx.send(Command::LoadPanelGenotypes { alignment_id: id, panel_id, ploidy: self.ploidy() });
+            let _ = self.tx.send(Command::LoadPanelGenotypes {
+                alignment_id: id,
+                panel_id,
+                ploidy: self.ploidy(),
+            });
         }
     }
 
@@ -775,7 +929,11 @@ impl NavigatorApp {
         self.ibd_result = None;
         self.identity = None;
         if let Some(aln) = self.selected_alignment {
-            let _ = self.tx.send(Command::LoadPanelGenotypes { alignment_id: aln, panel_id, ploidy: self.ploidy() });
+            let _ = self.tx.send(Command::LoadPanelGenotypes {
+                alignment_id: aln,
+                panel_id,
+                ploidy: self.ploidy(),
+            });
         }
     }
 

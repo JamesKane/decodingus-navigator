@@ -57,7 +57,9 @@ pub struct TokenStore {
 
 impl TokenStore {
     pub fn new(service: impl Into<String>) -> Self {
-        TokenStore { service: service.into() }
+        TokenStore {
+            service: service.into(),
+        }
     }
 
     /// Route all token storage to a process-global in-memory map (no OS keychain). For tests/CI —

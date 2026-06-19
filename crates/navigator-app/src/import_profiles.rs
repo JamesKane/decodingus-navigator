@@ -22,7 +22,11 @@ impl App {
                     position: v.pos,
                     reference_allele: v.reference.clone(),
                     alternate_allele: alt.clone(),
-                    name: v.ids.first().cloned().unwrap_or_else(|| format!("{}:{}", v.chrom, v.pos)),
+                    name: v
+                        .ids
+                        .first()
+                        .cloned()
+                        .unwrap_or_else(|| format!("{}:{}", v.chrom, v.pos)),
                 })
             })
             .collect();
@@ -46,7 +50,13 @@ impl App {
     ) -> Result<StrProfile, AppError> {
         let text = std::fs::read_to_string(csv_path)?;
         let markers = strprofile::parse_csv(&text).map_err(AppError::Import)?;
-        let new = NewStrProfile { biosample_guid, panel_name: panel_name.to_string(), provider, source, markers };
+        let new = NewStrProfile {
+            biosample_guid,
+            panel_name: panel_name.to_string(),
+            provider,
+            source,
+            markers,
+        };
         Ok(str_profile::create(self.store.pool(), &new).await?)
     }
 
@@ -67,7 +77,10 @@ impl App {
         path: &Path,
         source_type: SourceType,
     ) -> Result<VariantSet, AppError> {
-        let label = path.file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or_else(|| "variants".into());
+        let label = path
+            .file_name()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "variants".into());
         let is_vcf = path
             .extension()
             .and_then(|e| e.to_str())
@@ -96,10 +109,15 @@ impl App {
         // label/source_type. CSV imports are unchanged.
         let (source_label, source_type, reference_build) = if is_vcf {
             let (meta, contigs) = peek_vcf_header(path);
-            let vendor = navigator_domain::vendorvcf::classify(&meta, &contigs, &label, sibling_readme(path).as_deref());
+            let vendor =
+                navigator_domain::vendorvcf::classify(&meta, &contigs, &label, sibling_readme(path).as_deref());
             let build = detect_vcf_build(&meta);
             if vendor.is_recognized() {
-                (format!("{} ({})", vendor.display(), vcf_label_context(path, &label)), vendor.source_type(), build)
+                (
+                    format!("{} ({})", vendor.display(), vcf_label_context(path, &label)),
+                    vendor.source_type(),
+                    build,
+                )
             } else {
                 (label, source_type, build)
             }
@@ -107,7 +125,13 @@ impl App {
             (label, source_type, None)
         };
 
-        let new = NewVariantSet { biosample_guid, source_label, source_type, reference_build, calls };
+        let new = NewVariantSet {
+            biosample_guid,
+            source_label,
+            source_type,
+            reference_build,
+            calls,
+        };
         Ok(variant_set::create(self.store.pool(), &new).await?)
     }
 
@@ -202,8 +226,10 @@ impl App {
         let outcome = bisdna::resolve_calls(&calls, &dict, &build, UNRESOLVED_SAMPLE_CAP);
 
         let derived_calls = outcome.calls.len();
-        let label =
-            path.file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or_else(|| "BISDNA".into());
+        let label = path
+            .file_name()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "BISDNA".into());
 
         // Also record an array QC summary so the chromo2 chip appears under Data Sources →
         // Chip / Array Profiles (the placeable per-SNP calls live in the variant set below; a
@@ -218,7 +244,11 @@ impl App {
             summary: chipprofile::ChipSummary {
                 total_markers_possible: total,
                 total_markers_called: called,
-                no_call_rate: if total > 0 { outcome.no_call as f64 / total as f64 } else { 0.0 },
+                no_call_rate: if total > 0 {
+                    outcome.no_call as f64 / total as f64
+                } else {
+                    0.0
+                },
                 het_rate: None,
                 y_markers_called: called,
                 mt_markers_called: 0,
@@ -285,7 +315,10 @@ impl App {
         // Record the absolute path so ancestry-from-chip can re-read the autosomal genotypes later
         // (like alignments re-read bam_path). Canonicalize best-effort; fall back to the given path.
         let source_path = Some(
-            std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf()).to_string_lossy().into_owned(),
+            std::fs::canonicalize(path)
+                .unwrap_or_else(|_| path.to_path_buf())
+                .to_string_lossy()
+                .into_owned(),
         );
         let new = NewChipProfile {
             biosample_guid,
@@ -312,7 +345,9 @@ impl App {
                     chipprofile::ChipDna::Mt => ("chrM", false),
                 };
                 let b = c.base.to_string();
-                if let Some(call) = variants::snp_call(contig, c.position, &b, &b, Some(c.rsid.clone()), Some("1".into())) {
+                if let Some(call) =
+                    variants::snp_call(contig, c.position, &b, &b, Some(c.rsid.clone()), Some("1".into()))
+                {
                     if is_y {
                         y_count += 1;
                     } else {
@@ -424,7 +459,9 @@ impl App {
         let seq = mtdna_store::get(self.store.pool(), mtdna_id)
             .await?
             .ok_or_else(|| AppError::Store(StoreError::NotFound(format!("mtDNA sequence {mtdna_id}"))))?;
-        Ok(navigator_analysis::mtvariants::derive(navigator_analysis::mtvariants::rcrs(), &seq.sequence))
+        Ok(navigator_analysis::mtvariants::derive(
+            navigator_analysis::mtvariants::rcrs(),
+            &seq.sequence,
+        ))
     }
-
 }

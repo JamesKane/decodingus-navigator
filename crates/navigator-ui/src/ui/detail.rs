@@ -13,7 +13,11 @@ impl NavigatorApp {
     pub(crate) fn ystr_sequence_section(&mut self, ui: &mut egui::Ui, guid: SampleGuid) {
         ui.horizontal(|ui| {
             let have = matches!(&self.str_concordance, Some((g, _, _)) if *g == guid);
-            let label = if have { self.tr("common.refresh") } else { self.tr("ystr.callFromSequence") };
+            let label = if have {
+                self.tr("common.refresh")
+            } else {
+                self.tr("ystr.callFromSequence")
+            };
             if ui.add_enabled(!self.str_running, egui::Button::new(label)).clicked() {
                 self.str_running = true;
                 self.status = "Calling Y-STRs from sequence (first run scans chrY)…".into();
@@ -28,7 +32,11 @@ impl NavigatorApp {
         let have = matches!(&self.str_concordance, Some((g, _, _)) if *g == guid);
         if have {
             ui.horizontal(|ui| {
-                ui.add(egui::TextEdit::singleline(&mut self.str_seq_query).hint_text("filter marker").desired_width(140.0));
+                ui.add(
+                    egui::TextEdit::singleline(&mut self.str_seq_query)
+                        .hint_text("filter marker")
+                        .desired_width(140.0),
+                );
                 if !self.str_seq_query.is_empty() && ui.small_button("✕").clicked() {
                     self.str_seq_query.clear();
                 }
@@ -36,57 +44,68 @@ impl NavigatorApp {
         }
         let q = self.str_seq_query.to_ascii_lowercase();
 
-        let Some((g, aln, rows)) = &self.str_concordance else { return };
+        let Some((g, aln, rows)) = &self.str_concordance else {
+            return;
+        };
         if *g != guid {
             return;
         }
         let called = rows.iter().filter(|r| r.called.is_some()).count();
         let agree = rows.iter().filter(|r| r.agree).count();
-        let compared = rows.iter().filter(|r| r.called.is_some() && r.imported.is_some() && r.calibrated).count();
+        let compared = rows
+            .iter()
+            .filter(|r| r.called.is_some() && r.imported.is_some() && r.calibrated)
+            .count();
         ui.add_space(4.0);
         ui.label(
-            egui::RichText::new(format!("aln #{aln}: {called} markers called · {agree}/{compared} calibrated agree with vendor"))
-                .weak()
-                .small(),
+            egui::RichText::new(format!(
+                "aln #{aln}: {called} markers called · {agree}/{compared} calibrated agree with vendor"
+            ))
+            .weak()
+            .small(),
         );
         ui.add_space(4.0);
         // No inner ScrollArea — the tab is already one vertical scroll; nesting clips + captures the
         // wheel (see str_by_panel_view). Flow the (filtered) grid into the page; the filter narrows it.
-        egui::Grid::new(("ystr_seq_grid", guid)).num_columns(4).striped(true).spacing([14.0, 2.0]).show(ui, |ui| {
-            for h in ["Marker", "Called", "Vendor", ""] {
-                ui.label(egui::RichText::new(h).strong().small());
-            }
-            ui.end_row();
-            for r in rows
-                .iter()
-                .filter(|r| r.called.is_some() || r.imported.is_some())
-                .filter(|r| q.is_empty() || r.marker.to_ascii_lowercase().contains(&q))
-            {
-                ui.label(&r.marker);
-                // Colour the called value by calibration status.
-                let (txt, col) = match (r.called, r.status.as_str()) {
-                    (Some(v), "Reliable" | "ConventionOffset") => (v.to_string(), None),
-                    (Some(v), _) => (v.to_string(), Some(egui::Color32::from_rgb(150, 150, 150))), // excluded/uncalibrated
-                    (None, _) => ("—".to_string(), Some(egui::Color32::from_rgb(150, 150, 150))),
-                };
-                match col {
-                    Some(c) => ui.colored_label(c, txt),
-                    None => ui.label(txt),
-                };
-                ui.label(r.imported.clone().unwrap_or_else(|| "—".into()));
-                // Agreement marker only for calibrated, comparable rows.
-                if r.calibrated && r.called.is_some() && r.imported.is_some() {
-                    if r.agree {
-                        ui.colored_label(egui::Color32::from_rgb(60, 160, 60), "✓");
-                    } else {
-                        ui.colored_label(egui::Color32::from_rgb(200, 90, 90), "✗");
-                    }
-                } else {
-                    ui.label("");
+        egui::Grid::new(("ystr_seq_grid", guid))
+            .num_columns(4)
+            .striped(true)
+            .spacing([14.0, 2.0])
+            .show(ui, |ui| {
+                for h in ["Marker", "Called", "Vendor", ""] {
+                    ui.label(egui::RichText::new(h).strong().small());
                 }
                 ui.end_row();
-            }
-        });
+                for r in rows
+                    .iter()
+                    .filter(|r| r.called.is_some() || r.imported.is_some())
+                    .filter(|r| q.is_empty() || r.marker.to_ascii_lowercase().contains(&q))
+                {
+                    ui.label(&r.marker);
+                    // Colour the called value by calibration status.
+                    let (txt, col) = match (r.called, r.status.as_str()) {
+                        (Some(v), "Reliable" | "ConventionOffset") => (v.to_string(), None),
+                        (Some(v), _) => (v.to_string(), Some(egui::Color32::from_rgb(150, 150, 150))), // excluded/uncalibrated
+                        (None, _) => ("—".to_string(), Some(egui::Color32::from_rgb(150, 150, 150))),
+                    };
+                    match col {
+                        Some(c) => ui.colored_label(c, txt),
+                        None => ui.label(txt),
+                    };
+                    ui.label(r.imported.clone().unwrap_or_else(|| "—".into()));
+                    // Agreement marker only for calibrated, comparable rows.
+                    if r.calibrated && r.called.is_some() && r.imported.is_some() {
+                        if r.agree {
+                            ui.colored_label(egui::Color32::from_rgb(60, 160, 60), "✓");
+                        } else {
+                            ui.colored_label(egui::Color32::from_rgb(200, 90, 90), "✗");
+                        }
+                    } else {
+                        ui.label("");
+                    }
+                    ui.end_row();
+                }
+            });
     }
 
     /// Cross-subject Y matches (gap §2): rank every other workspace subject by Y relatedness. Button-
@@ -94,11 +113,18 @@ impl NavigatorApp {
     pub(crate) fn ymatch_section(&mut self, ui: &mut egui::Ui, guid: SampleGuid) {
         // Controls: project filter + find button (mirror the assign-project picker's local-copy idiom).
         let whole = self.tr("ymatch.wholeWorkspace").to_string();
-        let projects: Vec<(i64, String)> =
-            self.overview.iter().map(|o| (o.project.id, o.project.name.clone())).collect();
+        let projects: Vec<(i64, String)> = self
+            .overview
+            .iter()
+            .map(|o| (o.project.id, o.project.name.clone()))
+            .collect();
         let mut chosen = self.y_match_project;
         let sel_text = match chosen {
-            Some(pid) => projects.iter().find(|(id, _)| *id == pid).map(|(_, n)| n.clone()).unwrap_or_else(|| format!("project {pid}")),
+            Some(pid) => projects
+                .iter()
+                .find(|(id, _)| *id == pid)
+                .map(|(_, n)| n.clone())
+                .unwrap_or_else(|| format!("project {pid}")),
             None => whole.clone(),
         };
         let find_label = self.tr("ymatch.find").to_string();
@@ -114,7 +140,10 @@ impl NavigatorApp {
                         ui.selectable_value(&mut chosen, Some(*id), name);
                     }
                 });
-            if ui.add_enabled(!self.y_matches_running, egui::Button::new(find_label)).clicked() {
+            if ui
+                .add_enabled(!self.y_matches_running, egui::Button::new(find_label))
+                .clicked()
+            {
                 do_find = true;
             }
             if self.y_matches_running {
@@ -126,13 +155,20 @@ impl NavigatorApp {
         if do_find {
             self.y_matches_running = true;
             self.status = "Finding Y matches across the workspace…".into();
-            let _ = self.tx.send(Command::YMatches { biosample_guid: guid, project_id: chosen });
+            let _ = self.tx.send(Command::YMatches {
+                biosample_guid: guid,
+                project_id: chosen,
+            });
         }
 
         let have = matches!(&self.y_matches, Some((g, _)) if *g == guid);
         if have {
             ui.horizontal(|ui| {
-                ui.add(egui::TextEdit::singleline(&mut self.y_match_query).hint_text("filter").desired_width(140.0));
+                ui.add(
+                    egui::TextEdit::singleline(&mut self.y_match_query)
+                        .hint_text("filter")
+                        .desired_width(140.0),
+                );
                 if !self.y_match_query.is_empty() && ui.small_button("✕").clicked() {
                     self.y_match_query.clear();
                 }
@@ -154,44 +190,59 @@ impl NavigatorApp {
         ui.label(egui::RichText::new(format!("{} matches", matches.len())).weak().small());
         ui.add_space(4.0);
         // No inner ScrollArea — the tab is already one vertical scroll (see str_by_panel_view).
-        egui::Grid::new(("ymatch_grid", guid)).num_columns(7).striped(true).spacing([14.0, 2.0]).show(ui, |ui| {
-            for h in ["Subject", "Shared", "Novel", "Divergence", "STR-GD", "Signal", "TMRCA"] {
-                ui.label(egui::RichText::new(h).strong().small());
-            }
-            ui.end_row();
-            for m in matches.iter().filter(|m| {
-                q.is_empty()
-                    || m.donor.to_ascii_lowercase().contains(&q)
-                    || m.terminal.as_deref().is_some_and(|t| t.to_ascii_lowercase().contains(&q))
-            }) {
-                ui.label(&m.donor);
-                let snp_backed = m.signal != YSignal::Str;
-                ui.label(if snp_backed { m.shared_derived.to_string() } else { "—".into() });
-                ui.label(if snp_backed { m.shared_novel.to_string() } else { "—".into() });
-                ui.label(m.divergence.clone().unwrap_or_else(|| "—".into()));
-                ui.label(match m.str_gd {
-                    Some(gd) => format!("{gd} / {}", m.str_markers),
-                    None => "—".into(),
-                });
-                let sig = match m.signal {
-                    YSignal::SnpStr => "SNP+STR",
-                    YSignal::Snp => "SNP",
-                    YSignal::Str => "STR",
-                    YSignal::None => "—",
-                };
-                ui.label(egui::RichText::new(sig).small());
-                let tmrca = m.snp_tmrca.as_ref().or(m.str_tmrca.as_ref());
-                match tmrca {
-                    Some(t) => {
-                        ui.label(format!("~{:.0} gen / ~{:.0} yr", t.generations, t.years)).on_hover_text(&caveat);
-                    }
-                    None => {
-                        ui.label("—");
-                    }
+        egui::Grid::new(("ymatch_grid", guid))
+            .num_columns(7)
+            .striped(true)
+            .spacing([14.0, 2.0])
+            .show(ui, |ui| {
+                for h in ["Subject", "Shared", "Novel", "Divergence", "STR-GD", "Signal", "TMRCA"] {
+                    ui.label(egui::RichText::new(h).strong().small());
                 }
                 ui.end_row();
-            }
-        });
+                for m in matches.iter().filter(|m| {
+                    q.is_empty()
+                        || m.donor.to_ascii_lowercase().contains(&q)
+                        || m.terminal
+                            .as_deref()
+                            .is_some_and(|t| t.to_ascii_lowercase().contains(&q))
+                }) {
+                    ui.label(&m.donor);
+                    let snp_backed = m.signal != YSignal::Str;
+                    ui.label(if snp_backed {
+                        m.shared_derived.to_string()
+                    } else {
+                        "—".into()
+                    });
+                    ui.label(if snp_backed {
+                        m.shared_novel.to_string()
+                    } else {
+                        "—".into()
+                    });
+                    ui.label(m.divergence.clone().unwrap_or_else(|| "—".into()));
+                    ui.label(match m.str_gd {
+                        Some(gd) => format!("{gd} / {}", m.str_markers),
+                        None => "—".into(),
+                    });
+                    let sig = match m.signal {
+                        YSignal::SnpStr => "SNP+STR",
+                        YSignal::Snp => "SNP",
+                        YSignal::Str => "STR",
+                        YSignal::None => "—",
+                    };
+                    ui.label(egui::RichText::new(sig).small());
+                    let tmrca = m.snp_tmrca.as_ref().or(m.str_tmrca.as_ref());
+                    match tmrca {
+                        Some(t) => {
+                            ui.label(format!("~{:.0} gen / ~{:.0} yr", t.generations, t.years))
+                                .on_hover_text(&caveat);
+                        }
+                        None => {
+                            ui.label("—");
+                        }
+                    }
+                    ui.end_row();
+                }
+            });
     }
 
     pub(crate) fn ystr_report_section(&mut self, ui: &mut egui::Ui) {
@@ -235,7 +286,12 @@ impl NavigatorApp {
             .enumerate()
             .filter(|(_, p)| strpanel::canonical_provider(p.provider.as_deref().unwrap_or("FTDNA")) == canon)
             .max_by_key(|(_, p)| p.markers.len())
-            .or_else(|| self.str_profiles.iter().enumerate().max_by_key(|(_, p)| p.markers.len()))
+            .or_else(|| {
+                self.str_profiles
+                    .iter()
+                    .enumerate()
+                    .max_by_key(|(_, p)| p.markers.len())
+            })
             .map(|(i, _)| i);
         let Some(idx) = profile_idx else { return };
         let marker_count = self.str_profiles[idx].markers.len();
@@ -292,8 +348,12 @@ impl NavigatorApp {
         }
         let consensus = strprofile::consensus_markers(&self.str_profiles);
         ui.label(
-            egui::RichText::new(format!("{} markers from {} panel(s)", consensus.len(), self.str_profiles.len()))
-                .weak(),
+            egui::RichText::new(format!(
+                "{} markers from {} panel(s)",
+                consensus.len(),
+                self.str_profiles.len()
+            ))
+            .weak(),
         );
         let conflicts = consensus.iter().filter(|m| m.conflict).count();
         if conflicts > 0 {
@@ -302,22 +362,25 @@ impl NavigatorApp {
                 format!("⚠ {conflicts} marker(s) disagree across panels"),
             );
         }
-        egui::Grid::new("str_consensus").striped(true).num_columns(3).show(ui, |ui| {
-            ui.strong(self.tr("table.marker"));
-            ui.strong(self.tr("table.value"));
-            ui.strong(self.tr("table.panels"));
-            ui.end_row();
-            for m in &consensus {
-                ui.label(&m.marker);
-                if m.conflict {
-                    ui.colored_label(egui::Color32::from_rgb(220, 150, 60), &m.value);
-                } else {
-                    ui.label(&m.value);
-                }
-                ui.label(m.panels.to_string());
+        egui::Grid::new("str_consensus")
+            .striped(true)
+            .num_columns(3)
+            .show(ui, |ui| {
+                ui.strong(self.tr("table.marker"));
+                ui.strong(self.tr("table.value"));
+                ui.strong(self.tr("table.panels"));
                 ui.end_row();
-            }
-        });
+                for m in &consensus {
+                    ui.label(&m.marker);
+                    if m.conflict {
+                        ui.colored_label(egui::Color32::from_rgb(220, 150, 60), &m.value);
+                    } else {
+                        ui.label(&m.value);
+                    }
+                    ui.label(m.panels.to_string());
+                    ui.end_row();
+                }
+            });
     }
 
     /// Donor-level ancestry headline (Phase 3): the best estimate across the subject's sources,
@@ -349,8 +412,12 @@ impl NavigatorApp {
             self.pca_reference_attempted = Some(key);
             let _ = self.tx.send(Command::LoadPcaReference);
         }
-        let reference: &[(String, f64, f64)] =
-            self.pca_reference.as_ref().filter(|(a, _)| *a == key).map(|(_, r)| r.as_slice()).unwrap_or(&[]);
+        let reference: &[(String, f64, f64)] = self
+            .pca_reference
+            .as_ref()
+            .filter(|(a, _)| *a == key)
+            .map(|(_, r)| r.as_slice())
+            .unwrap_or(&[]);
         // Don't render a degenerate one-point plot: without the reference cloud the scatter
         // auto-zooms onto the donor alone and is meaningless. Surface the missing asset instead.
         if reference.is_empty() {
@@ -379,9 +446,12 @@ impl NavigatorApp {
                     r.confidence_level * 100.0
                 ));
                 ui.label(
-                    egui::RichText::new(format!("best source: alignment #{aln} · {} · {}", r.method, r.reference_version))
-                        .small()
-                        .weak(),
+                    egui::RichText::new(format!(
+                        "best source: alignment #{aln} · {} · {}",
+                        r.method, r.reference_version
+                    ))
+                    .small()
+                    .weak(),
                 );
                 ui.add_space(4.0);
                 draw_composition_bar(ui, &r.super_population_summary);
@@ -406,7 +476,11 @@ impl NavigatorApp {
     ) -> bool {
         let mut clicked = false;
         ui.horizontal(|ui| {
-            let label = if has_profile { self.tr("common.refresh") } else { self.tr(build_label_key) };
+            let label = if has_profile {
+                self.tr("common.refresh")
+            } else {
+                self.tr(build_label_key)
+            };
             if ui.add_enabled(!loading, egui::Button::new(label)).clicked() {
                 self.status = status.into();
                 let _ = self.tx.send(command);
@@ -450,7 +524,16 @@ impl NavigatorApp {
         };
         let mut filter = self.y_profile_filter;
         let mut query = std::mem::take(&mut self.y_profile_query);
-        draw_consensus_profile(ui, profile, &mut filter, &mut query, "SNP", "Y variants", "y_variant_profile", &self.y_snp_names);
+        draw_consensus_profile(
+            ui,
+            profile,
+            &mut filter,
+            &mut query,
+            "SNP",
+            "Y variants",
+            "y_variant_profile",
+            &self.y_snp_names,
+        );
         self.y_profile_filter = filter;
         self.y_profile_query = query;
     }
@@ -480,7 +563,16 @@ impl NavigatorApp {
         let mut filter = self.mt_profile_filter;
         let mut query = std::mem::take(&mut self.mt_profile_query);
         // mtDNA mutations are already named (rCRS notation) — no Y-SNP catalogue annotation.
-        draw_consensus_profile(ui, profile, &mut filter, &mut query, "Mutation", "mtDNA mutations", "mt_variant_profile", &std::collections::HashMap::new());
+        draw_consensus_profile(
+            ui,
+            profile,
+            &mut filter,
+            &mut query,
+            "Mutation",
+            "mtDNA mutations",
+            "mt_variant_profile",
+            &std::collections::HashMap::new(),
+        );
         self.mt_profile_filter = filter;
         self.mt_profile_query = query;
     }
@@ -543,7 +635,11 @@ impl NavigatorApp {
                     match cons {
                         Some(c) => {
                             ui.label(&c.haplogroup);
-                            ui.label(egui::RichText::new(format!("({} source(s), conf {:.2})", c.run_count, c.confidence)).weak().small());
+                            ui.label(
+                                egui::RichText::new(format!("({} source(s), conf {:.2})", c.run_count, c.confidence))
+                                    .weak()
+                                    .small(),
+                            );
                         }
                         None => {
                             ui.label(egui::RichText::new(none).weak());
@@ -555,7 +651,11 @@ impl NavigatorApp {
             line(ui, "mtDNA:", &self.consensus_mt);
             ui.horizontal(|ui| {
                 ui.strong("Ancestry:");
-                match self.donor_ancestry.as_ref().and_then(|(_, r)| r.super_population_summary.first()) {
+                match self
+                    .donor_ancestry
+                    .as_ref()
+                    .and_then(|(_, r)| r.super_population_summary.first())
+                {
                     Some(top) => {
                         ui.label(format!("{} {:.1}%", top.super_population, top.percentage));
                     }
@@ -570,7 +670,10 @@ impl NavigatorApp {
                     Some(p) => {
                         ui.label(format!(
                             "{} sites · {} confirmed · {} conflict · {:.0}% confidence",
-                            p.summary.total, p.summary.confirmed, p.summary.conflict, p.summary.overall_confidence * 100.0
+                            p.summary.total,
+                            p.summary.confirmed,
+                            p.summary.conflict,
+                            p.summary.overall_confidence * 100.0
                         ));
                     }
                     None => {
@@ -606,7 +709,10 @@ impl NavigatorApp {
         ui.strong(self.tr("sources.selectedDetail"));
         ui.add_space(4.0);
         if ui
-            .add(egui::Button::new(egui::RichText::new(self.tr("action.runFullAnalysis")).color(egui::Color32::WHITE)).fill(ACCENT))
+            .add(
+                egui::Button::new(egui::RichText::new(self.tr("action.runFullAnalysis")).color(egui::Color32::WHITE))
+                    .fill(ACCENT),
+            )
             .clicked()
         {
             self.start_full_analysis(id);
@@ -618,27 +724,46 @@ impl NavigatorApp {
         ui.add_space(10.0);
         card(ui, self.tr("card.yHaplogroup"), |ui| self.y_haplogroup_section(ui, id));
         ui.add_space(10.0);
-        card(ui, self.tr("card.mtHaplogroup"), |ui| self.mt_haplogroup_section(ui, id));
+        card(ui, self.tr("card.mtHaplogroup"), |ui| {
+            self.mt_haplogroup_section(ui, id)
+        });
         ui.add_space(10.0);
         card(ui, self.tr("card.mtDenovo"), |ui| self.denovo_section(ui, id, "chrM"));
         ui.add_space(10.0);
-        card(ui, self.tr("card.mtHeteroplasmy"), |ui| self.heteroplasmy_section(ui, id));
+        card(ui, self.tr("card.mtHeteroplasmy"), |ui| {
+            self.heteroplasmy_section(ui, id)
+        });
     }
 
     /// Donor-level private-Y union (Phase 3): off-backbone calls pooled + deduped across the
     /// subject's Y-bearing sources.
     pub(crate) fn donor_private_y_section(&mut self, ui: &mut egui::Ui) {
         if self.donor_private_y.is_none() {
-            ui.label(egui::RichText::new("No private-Y calls across sources yet — run \"Find private Y variants\".").weak());
+            ui.label(
+                egui::RichText::new("No private-Y calls across sources yet — run \"Find private Y variants\".").weak(),
+            );
             return;
         }
-        let (pos_h, chg_h, dep_h, cls_h) =
-            (self.tr("table.position"), self.tr("table.change"), self.tr("table.depth"), self.tr("table.class"));
+        let (pos_h, chg_h, dep_h, cls_h) = (
+            self.tr("table.position"),
+            self.tr("table.change"),
+            self.tr("table.depth"),
+            self.tr("table.class"),
+        );
         if let Some(b) = &self.donor_private_y {
-            ui.label(format!("{} novel + {} off-path  (union across sources, terminal {})", b.novel(), b.off_path(), b.terminal));
+            ui.label(format!(
+                "{} novel + {} off-path  (union across sources, terminal {})",
+                b.novel(),
+                b.off_path(),
+                b.terminal
+            ));
         }
         ui.horizontal(|ui| {
-            ui.add(egui::TextEdit::singleline(&mut self.private_y_query).hint_text("filter pos / name").desired_width(160.0));
+            ui.add(
+                egui::TextEdit::singleline(&mut self.private_y_query)
+                    .hint_text("filter pos / name")
+                    .desired_width(160.0),
+            );
             if !self.private_y_query.is_empty() && ui.small_button("✕").clicked() {
                 self.private_y_query.clear();
             }
@@ -646,9 +771,9 @@ impl NavigatorApp {
         let q = self.private_y_query.to_ascii_lowercase();
         let bucket = self.donor_private_y.as_ref().unwrap();
         let names = &self.y_snp_names; // catalogued Y-SNP name at a novel call's site, if any
-        // Filter to matching variants (position, off-path name, "novel", or the catalogued name); the
-        // table is bounded to a fixed-height scroll pane (a WGS bucket runs to thousands of rows). A
-        // hard cap keeps a pathological bucket from flooding even the pane.
+                                       // Filter to matching variants (position, off-path name, "novel", or the catalogued name); the
+                                       // table is bounded to a fixed-height scroll pane (a WGS bucket runs to thousands of rows). A
+                                       // hard cap keeps a pathological bucket from flooding even the pane.
         const CAP: usize = 1000;
         let matched: Vec<_> = bucket
             .variants
@@ -656,7 +781,9 @@ impl NavigatorApp {
             .filter(|v| {
                 q.is_empty()
                     || v.position.to_string().contains(&q)
-                    || names.get(&v.position).is_some_and(|n| n.to_ascii_lowercase().contains(&q))
+                    || names
+                        .get(&v.position)
+                        .is_some_and(|n| n.to_ascii_lowercase().contains(&q))
                     || match &v.class {
                         PrivateClass::OffPathKnown(n) => n.to_ascii_lowercase().contains(&q),
                         PrivateClass::Novel => "novel".contains(q.as_str()),
@@ -665,33 +792,40 @@ impl NavigatorApp {
             .collect();
         ui.label(egui::RichText::new(format!("{} shown", matched.len())).weak().small());
         let pane_h = profile_pane_height(ui, matched.len());
-        egui::ScrollArea::vertical().id_salt("donor_privy_scroll").max_height(pane_h).auto_shrink([false, false]).show(ui, |ui| {
-            egui::Grid::new("donor_privy").striped(true).num_columns(4).show(ui, |ui| {
-                ui.strong(pos_h);
-                ui.strong(chg_h);
-                ui.strong(dep_h);
-                ui.strong(cls_h);
-                ui.end_row();
-                let teal = egui::Color32::from_rgb(90, 190, 190);
-                for v in matched.iter().take(CAP) {
-                    ui.label(v.position.to_string());
-                    ui.label(format!("{}>{}", v.reference, v.alternate));
-                    ui.label(v.depth.to_string());
-                    match &v.class {
-                        // A "novel" call that lands on a catalogued Y-SNP: surface that name (it's not
-                        // on the placed lineage, but it is a known site, not a brand-new variant).
-                        PrivateClass::Novel => match names.get(&v.position) {
-                            Some(name) => ui
-                                .colored_label(teal, format!("novel · {name}"))
-                                .on_hover_text("catalogued Y-SNP at this site (off the placed lineage)"),
-                            None => ui.colored_label(egui::Color32::from_rgb(60, 160, 60), "novel"),
-                        },
-                        PrivateClass::OffPathKnown(name) => ui.label(format!("off-path: {name}")),
-                    };
-                    ui.end_row();
-                }
+        egui::ScrollArea::vertical()
+            .id_salt("donor_privy_scroll")
+            .max_height(pane_h)
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                egui::Grid::new("donor_privy")
+                    .striped(true)
+                    .num_columns(4)
+                    .show(ui, |ui| {
+                        ui.strong(pos_h);
+                        ui.strong(chg_h);
+                        ui.strong(dep_h);
+                        ui.strong(cls_h);
+                        ui.end_row();
+                        let teal = egui::Color32::from_rgb(90, 190, 190);
+                        for v in matched.iter().take(CAP) {
+                            ui.label(v.position.to_string());
+                            ui.label(format!("{}>{}", v.reference, v.alternate));
+                            ui.label(v.depth.to_string());
+                            match &v.class {
+                                // A "novel" call that lands on a catalogued Y-SNP: surface that name (it's not
+                                // on the placed lineage, but it is a known site, not a brand-new variant).
+                                PrivateClass::Novel => match names.get(&v.position) {
+                                    Some(name) => ui
+                                        .colored_label(teal, format!("novel · {name}"))
+                                        .on_hover_text("catalogued Y-SNP at this site (off the placed lineage)"),
+                                    None => ui.colored_label(egui::Color32::from_rgb(60, 160, 60), "novel"),
+                                },
+                                PrivateClass::OffPathKnown(name) => ui.label(format!("off-path: {name}")),
+                            };
+                            ui.end_row();
+                        }
+                    });
             });
-        });
         if matched.len() > CAP {
             ui.label(egui::RichText::new(format!("…and {} more — filter to narrow", matched.len() - CAP)).weak());
         }
@@ -702,21 +836,30 @@ impl NavigatorApp {
         for p in &self.str_profiles {
             let provider = p.provider.as_deref().unwrap_or("—");
             let header = format!("{} — {} markers  ({provider})", p.panel_name, p.markers.len());
-            egui::CollapsingHeader::new(header).id_salt(("str", p.id)).show(ui, |ui| {
-                if ui.small_button(self.tr("delete.thisProfile")).clicked() {
-                    want_delete = Some(DataDelete::Str { id: p.id, guid, label: format!("STR profile “{}”", p.panel_name) });
-                }
-                egui::Grid::new(("str_markers", p.id)).striped(true).num_columns(2).show(ui, |ui| {
-                    ui.strong(self.tr("table.marker"));
-                    ui.strong(self.tr("table.value"));
-                    ui.end_row();
-                    for m in &p.markers {
-                        ui.label(&m.marker);
-                        ui.label(&m.value);
-                        ui.end_row();
+            egui::CollapsingHeader::new(header)
+                .id_salt(("str", p.id))
+                .show(ui, |ui| {
+                    if ui.small_button(self.tr("delete.thisProfile")).clicked() {
+                        want_delete = Some(DataDelete::Str {
+                            id: p.id,
+                            guid,
+                            label: format!("STR profile “{}”", p.panel_name),
+                        });
                     }
+                    egui::Grid::new(("str_markers", p.id))
+                        .striped(true)
+                        .num_columns(2)
+                        .show(ui, |ui| {
+                            ui.strong(self.tr("table.marker"));
+                            ui.strong(self.tr("table.value"));
+                            ui.end_row();
+                            for m in &p.markers {
+                                ui.label(&m.marker);
+                                ui.label(&m.value);
+                                ui.end_row();
+                            }
+                        });
                 });
-            });
         }
         if want_delete.is_some() {
             self.confirm_data_delete = want_delete;
@@ -728,11 +871,32 @@ impl NavigatorApp {
             // `&mut self.forms.*` below (the i18n borrow gotcha).
             let (panel_lbl, provider_lbl, source_lbl) =
                 (self.tr("form.panel"), self.tr("form.provider"), self.tr("form.source"));
-            combo(ui, panel_lbl, "str_panel", &mut self.forms.str_panel, strprofile::KNOWN_PANELS);
-            combo(ui, provider_lbl, "str_provider", &mut self.forms.str_provider, strprofile::KNOWN_PROVIDERS);
-            combo(ui, source_lbl, "str_source", &mut self.forms.str_source, strprofile::KNOWN_SOURCES);
+            combo(
+                ui,
+                panel_lbl,
+                "str_panel",
+                &mut self.forms.str_panel,
+                strprofile::KNOWN_PANELS,
+            );
+            combo(
+                ui,
+                provider_lbl,
+                "str_provider",
+                &mut self.forms.str_provider,
+                strprofile::KNOWN_PROVIDERS,
+            );
+            combo(
+                ui,
+                source_lbl,
+                "str_source",
+                &mut self.forms.str_source,
+                strprofile::KNOWN_SOURCES,
+            );
             if ui.button(self.tr("str.chooseCsv")).clicked() {
-                if let Some(path) = rfd::FileDialog::new().add_filter("STR table", &["csv", "tsv", "txt"]).pick_file() {
+                if let Some(path) = rfd::FileDialog::new()
+                    .add_filter("STR table", &["csv", "tsv", "txt"])
+                    .pick_file()
+                {
                     let _ = self.tx.send(Command::ImportStrProfile {
                         biosample_guid: guid,
                         panel_name: self.forms.str_panel.clone(),
@@ -754,40 +918,59 @@ impl NavigatorApp {
         const MAX_ROWS: usize = 500;
         let mut want_delete: Option<DataDelete> = None;
         for s in &self.variant_sets {
-            let build = s.reference_build.as_deref().map(|b| format!(" · {b}")).unwrap_or_default();
+            let build = s
+                .reference_build
+                .as_deref()
+                .map(|b| format!(" · {b}"))
+                .unwrap_or_default();
             let header = format!("{} — {} call(s){build}", s.source_label, s.calls.len());
-            egui::CollapsingHeader::new(header).id_salt(("vset", s.id)).show(ui, |ui| {
-                ui.horizontal(|ui| {
-                    if ui.small_button(self.tr("delete.thisProfile")).clicked() {
-                        want_delete = Some(DataDelete::Variant { id: s.id, guid, label: format!("variant set “{}”", s.source_label) });
-                    }
-                    // A Y-SNP panel (BISDNA): place a Y haplogroup from its derived calls.
-                    let is_y_panel = s.source_type == SourceType::Chip
-                        && s.calls.iter().any(|c| c.contig.eq_ignore_ascii_case("chrY") || c.contig.eq_ignore_ascii_case("y"));
-                    if is_y_panel && ui.small_button(self.tr("ysnp.placeHaplogroup")).clicked() {
-                        let _ = self.tx.send(Command::AssignYBisdna { biosample_guid: guid });
-                    }
-                });
-                let pane_h = profile_pane_height(ui, s.calls.len().min(MAX_ROWS));
-                egui::ScrollArea::vertical().id_salt(("vcalls_scroll", s.id)).max_height(pane_h).auto_shrink([false, false]).show(ui, |ui| {
-                    egui::Grid::new(("vcalls", s.id)).striped(true).num_columns(4).show(ui, |ui| {
-                        for h in ["table.position", "table.change", "table.rsid", "table.genotype"] {
-                            ui.strong(self.tr(h));
+            egui::CollapsingHeader::new(header)
+                .id_salt(("vset", s.id))
+                .show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        if ui.small_button(self.tr("delete.thisProfile")).clicked() {
+                            want_delete = Some(DataDelete::Variant {
+                                id: s.id,
+                                guid,
+                                label: format!("variant set “{}”", s.source_label),
+                            });
                         }
-                        ui.end_row();
-                        for c in s.calls.iter().take(MAX_ROWS) {
-                            ui.label(format!("{} {}", c.contig, c.position));
-                            ui.label(variant_change(c));
-                            ui.label(c.rs_id.as_deref().unwrap_or("—"));
-                            ui.label(c.genotype.as_deref().unwrap_or("—"));
-                            ui.end_row();
+                        // A Y-SNP panel (BISDNA): place a Y haplogroup from its derived calls.
+                        let is_y_panel = s.source_type == SourceType::Chip
+                            && s.calls
+                                .iter()
+                                .any(|c| c.contig.eq_ignore_ascii_case("chrY") || c.contig.eq_ignore_ascii_case("y"));
+                        if is_y_panel && ui.small_button(self.tr("ysnp.placeHaplogroup")).clicked() {
+                            let _ = self.tx.send(Command::AssignYBisdna { biosample_guid: guid });
                         }
                     });
+                    let pane_h = profile_pane_height(ui, s.calls.len().min(MAX_ROWS));
+                    egui::ScrollArea::vertical()
+                        .id_salt(("vcalls_scroll", s.id))
+                        .max_height(pane_h)
+                        .auto_shrink([false, false])
+                        .show(ui, |ui| {
+                            egui::Grid::new(("vcalls", s.id))
+                                .striped(true)
+                                .num_columns(4)
+                                .show(ui, |ui| {
+                                    for h in ["table.position", "table.change", "table.rsid", "table.genotype"] {
+                                        ui.strong(self.tr(h));
+                                    }
+                                    ui.end_row();
+                                    for c in s.calls.iter().take(MAX_ROWS) {
+                                        ui.label(format!("{} {}", c.contig, c.position));
+                                        ui.label(variant_change(c));
+                                        ui.label(c.rs_id.as_deref().unwrap_or("—"));
+                                        ui.label(c.genotype.as_deref().unwrap_or("—"));
+                                        ui.end_row();
+                                    }
+                                });
+                        });
+                    if s.calls.len() > MAX_ROWS {
+                        ui.label(format!("…and {} more", s.calls.len() - MAX_ROWS));
+                    }
                 });
-                if s.calls.len() > MAX_ROWS {
-                    ui.label(format!("…and {} more", s.calls.len() - MAX_ROWS));
-                }
-            });
         }
         if want_delete.is_some() {
             self.confirm_data_delete = want_delete;
@@ -797,28 +980,45 @@ impl NavigatorApp {
         ui.collapsing(self.tr("variants.import"), |ui| {
             let labels: Vec<&str> = SourceType::ALL.iter().map(|t| t.as_str()).collect();
             let source_lbl = self.tr("form.source");
-            combo(ui, source_lbl, "variant_source", &mut self.forms.variant_source_type, &labels);
+            combo(
+                ui,
+                source_lbl,
+                "variant_source",
+                &mut self.forms.variant_source_type,
+                &labels,
+            );
             let source_type = SourceType::from_code(&self.forms.variant_source_type);
 
             if ui.button(self.tr("chip.import")).clicked() {
-                if let Some(path) =
-                    rfd::FileDialog::new().add_filter("variants", &["vcf", "csv", "tsv", "txt"]).pick_file()
+                if let Some(path) = rfd::FileDialog::new()
+                    .add_filter("variants", &["vcf", "csv", "tsv", "txt"])
+                    .pick_file()
                 {
-                    let _ = self.tx.send(Command::ImportVariants { biosample_guid: guid, path, source_type });
+                    let _ = self.tx.send(Command::ImportVariants {
+                        biosample_guid: guid,
+                        path,
+                        source_type,
+                    });
                 }
             }
             ui.label(self.tr("chip.formatHint"));
 
             ui.separator();
             ui.label(self.tr("str.pasteCalls"));
-            ui.add(egui::TextEdit::singleline(&mut self.forms.variant_manual_label).hint_text("source label (e.g. YSEQ panel)"));
+            ui.add(
+                egui::TextEdit::singleline(&mut self.forms.variant_manual_label)
+                    .hint_text("source label (e.g. YSEQ panel)"),
+            );
             ui.add(
                 egui::TextEdit::multiline(&mut self.forms.variant_manual_text)
                     .hint_text("contig,position,ref,alt per line")
                     .desired_rows(3),
             );
             let ready = !self.forms.variant_manual_text.trim().is_empty();
-            if ui.add_enabled(ready, egui::Button::new(self.tr("str.addPasted"))).clicked() {
+            if ui
+                .add_enabled(ready, egui::Button::new(self.tr("str.addPasted")))
+                .clicked()
+            {
                 let label = opt(&self.forms.variant_manual_label).unwrap_or_else(|| source_type.as_str().to_string());
                 let _ = self.tx.send(Command::AddVariants {
                     biosample_guid: guid,
@@ -844,29 +1044,47 @@ impl NavigatorApp {
                 0.0
             };
             let ver = p.chip_version.as_deref().map(|v| format!(" {v}")).unwrap_or_default();
-            let header = format!("{}{ver} — {} markers, {:.1}% call rate", p.provider, s.total_markers_possible, call_rate);
-            egui::CollapsingHeader::new(header).id_salt(("chip", p.id)).show(ui, |ui| {
-                if ui.small_button(self.tr("delete.thisProfile")).clicked() {
-                    want_delete = Some(DataDelete::Chip { id: p.id, guid, label: format!("chip profile ({})", p.provider) });
-                }
-                egui::Grid::new(("chip_qc", p.id)).striped(true).num_columns(2).show(ui, |ui| {
-                    let row = |ui: &mut egui::Ui, k: &str, v: String| {
-                        ui.label(k);
-                        ui.label(v);
-                        ui.end_row();
-                    };
-                    row(ui, "Markers possible", s.total_markers_possible.to_string());
-                    row(ui, "Markers called", s.total_markers_called.to_string());
-                    row(ui, "No-call rate", format!("{:.2}%", s.no_call_rate * 100.0));
-                    row(ui, "Het rate (autosomal)", s.het_rate.map(|h| format!("{:.2}%", h * 100.0)).unwrap_or_else(|| "—".into()));
-                    row(ui, "Autosomal called", s.autosomal_markers_called.to_string());
-                    row(ui, "Y called", s.y_markers_called.to_string());
-                    row(ui, "MT called", s.mt_markers_called.to_string());
-                    if let Some(file) = &p.source_file_name {
-                        row(ui, "Source file", file.clone());
+            let header = format!(
+                "{}{ver} — {} markers, {:.1}% call rate",
+                p.provider, s.total_markers_possible, call_rate
+            );
+            egui::CollapsingHeader::new(header)
+                .id_salt(("chip", p.id))
+                .show(ui, |ui| {
+                    if ui.small_button(self.tr("delete.thisProfile")).clicked() {
+                        want_delete = Some(DataDelete::Chip {
+                            id: p.id,
+                            guid,
+                            label: format!("chip profile ({})", p.provider),
+                        });
                     }
+                    egui::Grid::new(("chip_qc", p.id))
+                        .striped(true)
+                        .num_columns(2)
+                        .show(ui, |ui| {
+                            let row = |ui: &mut egui::Ui, k: &str, v: String| {
+                                ui.label(k);
+                                ui.label(v);
+                                ui.end_row();
+                            };
+                            row(ui, "Markers possible", s.total_markers_possible.to_string());
+                            row(ui, "Markers called", s.total_markers_called.to_string());
+                            row(ui, "No-call rate", format!("{:.2}%", s.no_call_rate * 100.0));
+                            row(
+                                ui,
+                                "Het rate (autosomal)",
+                                s.het_rate
+                                    .map(|h| format!("{:.2}%", h * 100.0))
+                                    .unwrap_or_else(|| "—".into()),
+                            );
+                            row(ui, "Autosomal called", s.autosomal_markers_called.to_string());
+                            row(ui, "Y called", s.y_markers_called.to_string());
+                            row(ui, "MT called", s.mt_markers_called.to_string());
+                            if let Some(file) = &p.source_file_name {
+                                row(ui, "Source file", file.clone());
+                            }
+                        });
                 });
-            });
         }
         if want_delete.is_some() {
             self.confirm_data_delete = want_delete;
@@ -886,9 +1104,16 @@ impl NavigatorApp {
                     });
             });
             if ui.button(self.tr("chip.chooseCsv")).clicked() {
-                if let Some(path) = rfd::FileDialog::new().add_filter("array data", &["csv", "txt", "tsv"]).pick_file() {
+                if let Some(path) = rfd::FileDialog::new()
+                    .add_filter("array data", &["csv", "txt", "tsv"])
+                    .pick_file()
+                {
                     let provider = (self.forms.chip_provider != AUTO_DETECT).then(|| self.forms.chip_provider.clone());
-                    let _ = self.tx.send(Command::ImportChipProfile { biosample_guid: guid, provider, path });
+                    let _ = self.tx.send(Command::ImportChipProfile {
+                        biosample_guid: guid,
+                        provider,
+                        path,
+                    });
                 }
             }
             ui.label(self.tr("chip.rawHint"));
@@ -911,7 +1136,11 @@ impl NavigatorApp {
         // Status to apply after the &self loop (the loop borrow blocks &mut self).
         let mut export_status: Option<String> = None;
         for m in &self.mtdna_sequences {
-            let name = m.source_file_name.as_deref().or(m.defline.as_deref()).unwrap_or("mtDNA");
+            let name = m
+                .source_file_name
+                .as_deref()
+                .or(m.defline.as_deref())
+                .unwrap_or("mtDNA");
             ui.horizontal(|ui| {
                 ui.label(format!("{name} — {} bp, {} N", m.length(), m.n_count));
                 if ui.button(mutations_lbl).clicked() {
@@ -922,7 +1151,11 @@ impl NavigatorApp {
                     let _ = self.tx.send(Command::AssignMtdnaHaplogroup { mtdna_id: m.id });
                 }
                 if ui.button(delete_lbl).clicked() {
-                    want_delete = Some(DataDelete::Mtdna { id: m.id, guid, label: format!("mtDNA sequence “{name}”") });
+                    want_delete = Some(DataDelete::Mtdna {
+                        id: m.id,
+                        guid,
+                        label: format!("mtDNA sequence “{name}”"),
+                    });
                 }
             });
             // Show the haplogroup result for this sequence, if any.
@@ -957,10 +1190,14 @@ impl NavigatorApp {
         ui.add_space(6.0);
         ui.collapsing(self.tr("mt.importFasta"), |ui| {
             if ui.button(self.tr("mt.chooseFasta")).clicked() {
-                if let Some(path) =
-                    rfd::FileDialog::new().add_filter("FASTA", &["fa", "fasta", "fna", "fas"]).pick_file()
+                if let Some(path) = rfd::FileDialog::new()
+                    .add_filter("FASTA", &["fa", "fasta", "fna", "fas"])
+                    .pick_file()
                 {
-                    let _ = self.tx.send(Command::ImportMtdna { biosample_guid: guid, path });
+                    let _ = self.tx.send(Command::ImportMtdna {
+                        biosample_guid: guid,
+                        path,
+                    });
                 }
             }
             ui.label(self.tr("mt.fullSeq"));
@@ -972,7 +1209,10 @@ impl NavigatorApp {
         let mut pick = None;
         for info in &self.panels {
             let label = format!("{}  ({} sites)", info.panel.name, info.site_count);
-            if ui.selectable_label(self.selected_panel == Some(info.panel.id), label).clicked() {
+            if ui
+                .selectable_label(self.selected_panel == Some(info.panel.id), label)
+                .clicked()
+            {
                 pick = Some(info.panel.id);
             }
         }
@@ -981,7 +1221,10 @@ impl NavigatorApp {
         }
         ui.add(egui::TextEdit::singleline(&mut self.forms.panel_import_name).hint_text("new panel name"));
         if ui
-            .add_enabled(!self.forms.panel_import_name.trim().is_empty(), egui::Button::new(self.tr("mt.importSitesVcf")))
+            .add_enabled(
+                !self.forms.panel_import_name.trim().is_empty(),
+                egui::Button::new(self.tr("mt.importSitesVcf")),
+            )
             .clicked()
         {
             if let Some(path) = rfd::FileDialog::new().add_filter("VCF", &["vcf"]).pick_file() {
@@ -1008,7 +1251,10 @@ impl NavigatorApp {
                     ui.label(format!("  • {} (~{} MB)", b.build, b.est_bytes / 1_000_000));
                 }
                 if ui
-                    .add_enabled(self.reference_progress.is_none(), egui::Button::new(self.tr("common.downloadContinue")))
+                    .add_enabled(
+                        self.reference_progress.is_none(),
+                        egui::Button::new(self.tr("common.downloadContinue")),
+                    )
                     .clicked()
                 {
                     for build in self.reference_needs.iter().map(|b| b.build.clone()).collect::<Vec<_>>() {
@@ -1048,7 +1294,10 @@ impl NavigatorApp {
         ui.horizontal(|ui| {
             ui.heading(self.tr("projects.report"));
             let busy = self.analyzing || self.running;
-            if ui.add_enabled(!busy, egui::Button::new(self.tr("projects.analyzeAll"))).clicked() {
+            if ui
+                .add_enabled(!busy, egui::Button::new(self.tr("projects.analyzeAll")))
+                .clicked()
+            {
                 if let Some(pid) = self.selected_project {
                     self.analyzing = true;
                     self.deep_progress = None;
@@ -1077,10 +1326,7 @@ impl NavigatorApp {
 
         // Streaming deep-analyze progress (sample N of M, current donor).
         if let Some((done, total, sample, fraction)) = self.deep_progress.clone() {
-            ui.add(
-                egui::ProgressBar::new(fraction)
-                    .text(format!("Analyzing {}/{} — {sample}", done + 1, total)),
-            );
+            ui.add(egui::ProgressBar::new(fraction).text(format!("Analyzing {}/{} — {sample}", done + 1, total)));
         }
 
         let running = self.running || self.analyzing;
@@ -1165,7 +1411,10 @@ impl NavigatorApp {
                 s.sample_accession.as_deref().unwrap_or("—"),
                 s.sex.as_deref().unwrap_or("—"),
             );
-            if ui.selectable_label(self.selected_sample == Some(s.guid), label).clicked() {
+            if ui
+                .selectable_label(self.selected_sample == Some(s.guid), label)
+                .clicked()
+            {
                 pick = Some(s.guid);
             }
         }
@@ -1216,8 +1465,16 @@ impl NavigatorApp {
         for r in &runs {
             let selected = self.selected_run == Some(r.id);
             let frame = egui::Frame::group(ui.style())
-                .fill(if selected { ACCENT.gamma_multiply(0.18) } else { ui.visuals().extreme_bg_color })
-                .stroke(if selected { egui::Stroke::new(1.0, ACCENT) } else { egui::Stroke::NONE })
+                .fill(if selected {
+                    ACCENT.gamma_multiply(0.18)
+                } else {
+                    ui.visuals().extreme_bg_color
+                })
+                .stroke(if selected {
+                    egui::Stroke::new(1.0, ACCENT)
+                } else {
+                    egui::Stroke::NONE
+                })
                 .rounding(egui::Rounding::same(6.0))
                 .inner_margin(egui::Margin::same(10.0));
             let inner = frame.show(ui, |ui| {
@@ -1225,17 +1482,31 @@ impl NavigatorApp {
                 let mut del_btn: Option<egui::Response> = None;
                 let mut merge_btn: Option<egui::Response> = None;
                 ui.horizontal(|ui| {
-                    chip(ui, &provider_abbrev(&r.platform_name), ACCENT.gamma_multiply(0.3), ACCENT);
+                    chip(
+                        ui,
+                        &provider_abbrev(&r.platform_name),
+                        ACCENT.gamma_multiply(0.3),
+                        ACCENT,
+                    );
                     // Lab chip (FGC/FTDNA/YSEQ/Dante/Nebula…) when the sequencing facility is known.
                     if let Some(lab) = r.sequencing_facility.as_deref().filter(|s| !s.is_empty()) {
                         let abbr = navigator_domain::labs::abbreviation(lab, 6);
-                        chip(ui, &abbr, egui::Color32::from_rgb(40, 70, 55), egui::Color32::from_rgb(150, 220, 180))
-                            .on_hover_text(format!("Sequencing lab: {}", navigator_domain::labs::display_name(lab)));
+                        chip(
+                            ui,
+                            &abbr,
+                            egui::Color32::from_rgb(40, 70, 55),
+                            egui::Color32::from_rgb(150, 220, 180),
+                        )
+                        .on_hover_text(format!("Sequencing lab: {}", navigator_domain::labs::display_name(lab)));
                     }
                     ui.add_space(4.0);
                     let tt = testtype::by_code(&r.test_type);
                     ui.vertical(|ui| {
-                        let plat = if r.platform_name.is_empty() { "—" } else { r.platform_name.as_str() };
+                        let plat = if r.platform_name.is_empty() {
+                            "—"
+                        } else {
+                            r.platform_name.as_str()
+                        };
                         let title = format!(
                             "{}  ·  {}  ·  {}",
                             testtype::display_name(&r.test_type),
@@ -1251,8 +1522,14 @@ impl NavigatorApp {
                         };
                         // Library-level metrics: total reads + read/insert length (reads *aligned*
                         // is a per-alignment stat, shown on the alignment row, not here).
-                        let read_len = r.mean_read_length.map(|v| format!("{v:.0} bp")).unwrap_or_else(|| "—".into());
-                        let insert = r.mean_insert_size.map(|v| format!("{v:.0} bp")).unwrap_or_else(|| "—".into());
+                        let read_len = r
+                            .mean_read_length
+                            .map(|v| format!("{v:.0} bp"))
+                            .unwrap_or_else(|| "—".into());
+                        let insert = r
+                            .mean_insert_size
+                            .map(|v| format!("{v:.0} bp"))
+                            .unwrap_or_else(|| "—".into());
                         ui.label(
                             egui::RichText::new(format!(
                                 "Reads: {}   Read len: {}   Insert: {}   {}{}",
@@ -1273,13 +1550,29 @@ impl NavigatorApp {
                             merge_btn = Some(ui.small_button("⤵").on_hover_text("Merge this run into another"));
                         }
                         if let Some(t) = tt {
-                            let mt = matches!(t.target, testtype::TargetType::WholeGenome | testtype::TargetType::MtDna);
-                            let y = matches!(t.target, testtype::TargetType::WholeGenome | testtype::TargetType::YChromosome);
+                            let mt = matches!(
+                                t.target,
+                                testtype::TargetType::WholeGenome | testtype::TargetType::MtDna
+                            );
+                            let y = matches!(
+                                t.target,
+                                testtype::TargetType::WholeGenome | testtype::TargetType::YChromosome
+                            );
                             if mt {
-                                chip(ui, "mt", egui::Color32::from_rgb(70, 60, 90), egui::Color32::from_rgb(200, 180, 230));
+                                chip(
+                                    ui,
+                                    "mt",
+                                    egui::Color32::from_rgb(70, 60, 90),
+                                    egui::Color32::from_rgb(200, 180, 230),
+                                );
                             }
                             if y {
-                                chip(ui, "Y", egui::Color32::from_rgb(40, 70, 55), egui::Color32::from_rgb(150, 220, 180));
+                                chip(
+                                    ui,
+                                    "Y",
+                                    egui::Color32::from_rgb(40, 70, 55),
+                                    egui::Color32::from_rgb(150, 220, 180),
+                                );
                             }
                         }
                     });
@@ -1292,7 +1585,8 @@ impl NavigatorApp {
             // while the pointer was over it.
             let row_clicked = inner.response.interact(egui::Sense::click()).clicked();
             let hit = |b: &Option<egui::Response>| {
-                b.as_ref().is_some_and(|r| r.clicked() || (row_clicked && r.contains_pointer()))
+                b.as_ref()
+                    .is_some_and(|r| r.clicked() || (row_clicked && r.contains_pointer()))
             };
             if hit(&edit_btn) {
                 want_edit_run = Some(EditRun {
@@ -1326,7 +1620,11 @@ impl NavigatorApp {
                             None => ("–".to_string(), "–".to_string()),
                         };
                         let row = egui::Frame::group(ui.style())
-                            .fill(if asel { ACCENT.gamma_multiply(0.14) } else { ui.visuals().widgets.noninteractive.bg_fill })
+                            .fill(if asel {
+                                ACCENT.gamma_multiply(0.14)
+                            } else {
+                                ui.visuals().widgets.noninteractive.bg_fill
+                            })
                             .rounding(egui::Rounding::same(6.0))
                             .inner_margin(egui::Margin::symmetric(10.0, 8.0))
                             .show(ui, |ui| {
@@ -1334,7 +1632,14 @@ impl NavigatorApp {
                                 let mut del_btn: Option<egui::Response> = None;
                                 ui.horizontal(|ui| {
                                     ui.label(egui::RichText::new(&a.reference_build).color(ACCENT).strong());
-                                    ui.label(egui::RichText::new(if a.bam_path.is_some() { a.aligner.as_str() } else { "Unknown" }).weak());
+                                    ui.label(
+                                        egui::RichText::new(if a.bam_path.is_some() {
+                                            a.aligner.as_str()
+                                        } else {
+                                            "Unknown"
+                                        })
+                                        .weak(),
+                                    );
                                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                                         del_btn = Some(ui.small_button("🗑").on_hover_text("Delete alignment"));
                                         edit_btn = Some(ui.small_button("✏").on_hover_text("Edit alignment"));
@@ -1349,7 +1654,8 @@ impl NavigatorApp {
                         let (edit_btn, del_btn) = row.inner;
                         let row_clicked = row.response.interact(egui::Sense::click()).clicked();
                         let hit = |b: &Option<egui::Response>| {
-                            b.as_ref().is_some_and(|r| r.clicked() || (row_clicked && r.contains_pointer()))
+                            b.as_ref()
+                                .is_some_and(|r| r.clicked() || (row_clicked && r.contains_pointer()))
                         };
                         if hit(&edit_btn) {
                             want_edit_aln = Some(EditAlignment {
@@ -1394,7 +1700,11 @@ impl NavigatorApp {
         if let Some(secondary) = want_merge {
             // Default the target (primary) to the first other run; the modal lets the user change it.
             let primary = runs.iter().map(|r| r.id).find(|&id| id != secondary);
-            self.merge_runs = Some(MergeRuns { guid, secondary, primary });
+            self.merge_runs = Some(MergeRuns {
+                guid,
+                secondary,
+                primary,
+            });
         }
         self.add_test_form(ui, guid);
     }
@@ -1405,19 +1715,27 @@ impl NavigatorApp {
             ui.horizontal(|ui| {
                 ui.label(self.tr("form.testType"));
                 let current = testtype::display_name(&self.forms.run_test_type).to_string();
-                egui::ComboBox::from_id_salt("test_type").selected_text(current).show_ui(ui, |ui| {
-                    for t in testtype::CATALOG {
-                        ui.selectable_value(
-                            &mut self.forms.run_test_type,
-                            t.code.to_string(),
-                            format!("{}  ·  {}", t.display_name, t.target.label()),
-                        );
-                    }
-                });
+                egui::ComboBox::from_id_salt("test_type")
+                    .selected_text(current)
+                    .show_ui(ui, |ui| {
+                        for t in testtype::CATALOG {
+                            ui.selectable_value(
+                                &mut self.forms.run_test_type,
+                                t.code.to_string(),
+                                format!("{}  ·  {}", t.display_name, t.target.label()),
+                            );
+                        }
+                    });
             });
-            ui.add(egui::TextEdit::singleline(&mut self.forms.run_platform).hint_text("platform (optional, e.g. ILLUMINA)"));
+            ui.add(
+                egui::TextEdit::singleline(&mut self.forms.run_platform)
+                    .hint_text("platform (optional, e.g. ILLUMINA)"),
+            );
             let ready = testtype::by_code(&self.forms.run_test_type).is_some();
-            if ui.add_enabled(ready, egui::Button::new(self.tr("run.addTest"))).clicked() {
+            if ui
+                .add_enabled(ready, egui::Button::new(self.tr("run.addTest")))
+                .clicked()
+            {
                 let platform = opt(&self.forms.run_platform).unwrap_or_else(|| "UNKNOWN".into());
                 let _ = self.tx.send(Command::AddRun(NewSequenceRun {
                     biosample_guid: guid,
@@ -1441,14 +1759,21 @@ impl NavigatorApp {
         ui.collapsing(self.tr("aln.add"), |ui| {
             ui.horizontal(|ui| {
                 if ui.button(self.tr("common.pickBamCram")).clicked() {
-                    if let Some(p) = rfd::FileDialog::new().add_filter("alignment", &["bam", "cram"]).pick_file() {
+                    if let Some(p) = rfd::FileDialog::new()
+                        .add_filter("alignment", &["bam", "cram"])
+                        .pick_file()
+                    {
                         self.forms.aln_bam = p.to_string_lossy().into_owned();
                         // Probe the header to auto-fill build + aligner.
                         let _ = self.tx.send(Command::ProbeAlignment { path: p });
                         self.status = "Reading header…".into();
                     }
                 }
-                ui.label(if self.forms.aln_bam.is_empty() { "—" } else { self.forms.aln_bam.as_str() });
+                ui.label(if self.forms.aln_bam.is_empty() {
+                    "—"
+                } else {
+                    self.forms.aln_bam.as_str()
+                });
             });
             ui.add(
                 egui::TextEdit::singleline(&mut self.forms.aln_reference_build)
@@ -1457,7 +1782,11 @@ impl NavigatorApp {
             ui.add(
                 egui::TextEdit::singleline(&mut self.forms.aln_aligner).hint_text("aligner (auto-detected; editable)"),
             );
-            ui.label(egui::RichText::new("Reference FASTA is resolved from the build automatically.").weak().small());
+            ui.label(
+                egui::RichText::new("Reference FASTA is resolved from the build automatically.")
+                    .weak()
+                    .small(),
+            );
             let ready = !self.forms.aln_reference_build.trim().is_empty()
                 && !self.forms.aln_aligner.trim().is_empty()
                 && !self.forms.aln_bam.is_empty();
@@ -1487,7 +1816,12 @@ impl NavigatorApp {
             (ConsensusState::Ancestral, _) => (egui::Color32::from_gray(120), "ancestral"),
             (ConsensusState::NoCall, _) => return None,
         };
-        Some(VariantMark { name: v.name.clone(), position: v.position, color, state })
+        Some(VariantMark {
+            name: v.name.clone(),
+            position: v.position,
+            color,
+            state,
+        })
     }
 
     /// Lazily resolve catalogued Y-SNP names for the two Y-SNP tables' position-only / novel calls.
@@ -1511,7 +1845,10 @@ impl NavigatorApp {
         positions.sort_unstable();
         positions.dedup();
         self.y_snp_names_requested = true;
-        let _ = self.tx.send(Command::LoadYSnpNames { biosample_guid: guid, positions });
+        let _ = self.tx.send(Command::LoadYSnpNames {
+            biosample_guid: guid,
+            positions,
+        });
     }
 
     /// chrY **variant track**: the Y consensus profile's called variants plotted along chromosome Y,
@@ -1531,12 +1868,20 @@ impl NavigatorApp {
         // chrY length + PAR shading from the selected alignment's genome regions (lazily fetched).
         let (mut length, mut regions): (i64, Vec<TrackRegion>) = (62_460_029, Vec::new()); // CHM13 chrY fallback
         if let Some(id) = self.selected_alignment {
-            if let Some(build) = self.alignments.iter().find(|a| a.id == id).map(|a| a.reference_build.clone()) {
+            if let Some(build) = self
+                .alignments
+                .iter()
+                .find(|a| a.id == id)
+                .map(|a| a.reference_build.clone())
+            {
                 let loaded = matches!(&self.genome_regions, Some((aid, _)) if *aid == id);
                 if !loaded && self.regions_attempted != Some(id) {
                     self.regions_attempted = Some(id);
                     self.loading_regions = true;
-                    let _ = self.tx.send(Command::LoadGenomeRegions { alignment_id: id, build });
+                    let _ = self.tx.send(Command::LoadGenomeRegions {
+                        alignment_id: id,
+                        build,
+                    });
                 }
             }
             if let Some((aid, gr)) = &self.genome_regions {
@@ -1546,10 +1891,20 @@ impl NavigatorApp {
                             length = chr_y.length;
                         }
                         for (s, e) in &chr_y.par {
-                            regions.push(TrackRegion { start: *s, end: *e, color: egui::Color32::from_rgb(40, 60, 90), label: "PAR".into() });
+                            regions.push(TrackRegion {
+                                start: *s,
+                                end: *e,
+                                color: egui::Color32::from_rgb(40, 60, 90),
+                                label: "PAR".into(),
+                            });
                         }
                         if let Some((s, e)) = chr_y.centromere {
-                            regions.push(TrackRegion { start: s, end: e, color: egui::Color32::from_rgb(90, 45, 45), label: "centromere".into() });
+                            regions.push(TrackRegion {
+                                start: s,
+                                end: e,
+                                color: egui::Color32::from_rgb(90, 45, 45),
+                                label: "centromere".into(),
+                            });
                         }
                     }
                 }
@@ -1573,10 +1928,19 @@ impl NavigatorApp {
             return;
         }
         let regions = vec![
-            TrackRegion { start: 16_024, end: 16_569, color: egui::Color32::from_rgb(50, 70, 50), label: "HVR1".into() },
-            TrackRegion { start: 1, end: 576, color: egui::Color32::from_rgb(50, 70, 50), label: "HVR2".into() },
+            TrackRegion {
+                start: 16_024,
+                end: 16_569,
+                color: egui::Color32::from_rgb(50, 70, 50),
+                label: "HVR1".into(),
+            },
+            TrackRegion {
+                start: 1,
+                end: 576,
+                color: egui::Color32::from_rgb(50, 70, 50),
+                label: "HVR2".into(),
+            },
         ];
         draw_variant_track(ui, "chrM", 16_569, &regions, &marks);
     }
-
 }

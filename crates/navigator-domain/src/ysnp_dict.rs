@@ -110,9 +110,10 @@ impl YsnpDictionary {
                 ancestral: c[5].to_ascii_uppercase(),
                 derived: c[6].to_ascii_uppercase(),
             };
-            let entry = by_name
-                .entry(name.to_ascii_lowercase())
-                .or_insert_with(|| SnpEntry { name: name.to_string(), coordinates: HashMap::new() });
+            let entry = by_name.entry(name.to_ascii_lowercase()).or_insert_with(|| SnpEntry {
+                name: name.to_string(),
+                coordinates: HashMap::new(),
+            });
             entry.coordinates.entry(build.to_string()).or_insert(coord);
         }
 
@@ -137,9 +138,15 @@ impl YsnpDictionary {
         }
 
         if by_name.is_empty() {
-            return Err("Y-SNP dictionary is empty (no `name<TAB>build<TAB>chrom<TAB>pos<TAB>strand<TAB>anc<TAB>der` rows)".into());
+            return Err(
+                "Y-SNP dictionary is empty (no `name<TAB>build<TAB>chrom<TAB>pos<TAB>strand<TAB>anc<TAB>der` rows)"
+                    .into(),
+            );
         }
-        Ok(YsnpDictionary { by_name, alias_to_canonical })
+        Ok(YsnpDictionary {
+            by_name,
+            alias_to_canonical,
+        })
     }
 
     /// Candidate dictionary filenames in `load` preference order: a small per-chip panel
@@ -161,8 +168,8 @@ impl YsnpDictionary {
                     Self::ASSET_FILENAMES.join(", ")
                 )
             })?;
-        let dictionary = std::fs::read_to_string(&dict_path)
-            .map_err(|e| format!("reading {}: {e}", dict_path.display()))?;
+        let dictionary =
+            std::fs::read_to_string(&dict_path).map_err(|e| format!("reading {}: {e}", dict_path.display()))?;
         let aliases = std::fs::read_to_string(dir.join("aliases.tsv")).unwrap_or_default();
         Self::from_text(&dictionary, &aliases)
     }
@@ -175,7 +182,10 @@ impl YsnpDictionary {
         let canonical_key = self.alias_to_canonical.get(&key).map(String::as_str).unwrap_or(&key);
         let entry = self.by_name.get(canonical_key)?;
         let coord = entry.coordinates.get(build)?;
-        Some(ResolvedSnp { canonical: &entry.name, coord })
+        Some(ResolvedSnp {
+            canonical: &entry.name,
+            coord,
+        })
     }
 
     /// Build a reverse index `position → canonical name` for one reference `build` (the inverse of

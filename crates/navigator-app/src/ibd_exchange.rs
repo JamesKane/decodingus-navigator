@@ -41,7 +41,10 @@ impl App {
         if !resp.status().is_success() {
             return Err(appview_status_error("exchange/key", resp).await);
         }
-        let v: serde_json::Value = resp.json().await.map_err(|e| AppError::Sync(navigator_sync::SyncError::from(e)))?;
+        let v: serde_json::Value = resp
+            .json()
+            .await
+            .map_err(|e| AppError::Sync(navigator_sync::SyncError::from(e)))?;
         Ok(v.get("x25519_pub").and_then(|x| x.as_str()).map(str::to_string))
     }
 
@@ -59,7 +62,13 @@ impl App {
         let did = self.current_account().ok_or(AppError::NotAuthenticated)?;
         let dev = self.ensure_device_key().await?;
         let request_uri = format!("exchange:{}", Uuid::new_v4());
-        let sig = dev.sign(&exchange::messages::request(&request_uri, &did, partner_did, purpose, scope));
+        let sig = dev.sign(&exchange::messages::request(
+            &request_uri,
+            &did,
+            partner_did,
+            purpose,
+            scope,
+        ));
         let body = serde_json::json!({
             "request_uri": request_uri,
             "initiator_did": did,
@@ -86,7 +95,11 @@ impl App {
         });
         let v = self.exchange_post("exchange/consent", body).await?;
         Ok(ConsentOutcome {
-            status: v.get("status").and_then(|x| x.as_str()).unwrap_or("PENDING").to_string(),
+            status: v
+                .get("status")
+                .and_then(|x| x.as_str())
+                .unwrap_or("PENDING")
+                .to_string(),
             session_id: v.get("session_id").and_then(|x| x.as_str()).map(str::to_string),
         })
     }
@@ -100,9 +113,21 @@ impl App {
                 items
                     .iter()
                     .map(|i| IncomingRequest {
-                        request_uri: i.get("request_uri").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
-                        purpose: i.get("purpose").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
-                        created_at: i.get("created_at").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
+                        request_uri: i
+                            .get("request_uri")
+                            .and_then(|x| x.as_str())
+                            .unwrap_or_default()
+                            .to_string(),
+                        purpose: i
+                            .get("purpose")
+                            .and_then(|x| x.as_str())
+                            .unwrap_or_default()
+                            .to_string(),
+                        created_at: i
+                            .get("created_at")
+                            .and_then(|x| x.as_str())
+                            .unwrap_or_default()
+                            .to_string(),
                     })
                     .collect()
             })
@@ -118,10 +143,26 @@ impl App {
                 items
                     .iter()
                     .map(|i| ExchangeSessionInfo {
-                        session_id: i.get("session_id").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
-                        request_uri: i.get("request_uri").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
-                        purpose: i.get("purpose").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
-                        partner_did: i.get("partner_did").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
+                        session_id: i
+                            .get("session_id")
+                            .and_then(|x| x.as_str())
+                            .unwrap_or_default()
+                            .to_string(),
+                        request_uri: i
+                            .get("request_uri")
+                            .and_then(|x| x.as_str())
+                            .unwrap_or_default()
+                            .to_string(),
+                        purpose: i
+                            .get("purpose")
+                            .and_then(|x| x.as_str())
+                            .unwrap_or_default()
+                            .to_string(),
+                        partner_did: i
+                            .get("partner_did")
+                            .and_then(|x| x.as_str())
+                            .unwrap_or_default()
+                            .to_string(),
                         partner_key_uri: i.get("partner_key_uri").and_then(|x| x.as_str()).map(str::to_string),
                     })
                     .collect()
@@ -150,7 +191,9 @@ impl App {
 
     /// Pull undelivered relay envelopes for a session (ordered by seq).
     pub async fn exchange_relay_pull(&self, session_id: &str) -> Result<Vec<RelayEnvelope>, AppError> {
-        let v = self.exchange_get_poll("exchange/relay/pull", &[("session_id", session_id)]).await?;
+        let v = self
+            .exchange_get_poll("exchange/relay/pull", &[("session_id", session_id)])
+            .await?;
         Ok(v.get("items")
             .and_then(|x| x.as_array())
             .map(|items| {
@@ -158,7 +201,11 @@ impl App {
                     .iter()
                     .map(|i| RelayEnvelope {
                         id: i.get("id").and_then(|x| x.as_i64()).unwrap_or_default(),
-                        from_did: i.get("from_did").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
+                        from_did: i
+                            .get("from_did")
+                            .and_then(|x| x.as_str())
+                            .unwrap_or_default()
+                            .to_string(),
                         seq: i.get("seq").and_then(|x| x.as_i64()).unwrap_or_default() as i32,
                         blob: i.get("blob").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
                     })
@@ -184,10 +231,9 @@ impl App {
     pub async fn open_exchange_session(&self, info: &ExchangeSessionInfo) -> Result<EstablishedSession, AppError> {
         let did = self.current_account().ok_or(AppError::NotAuthenticated)?;
         let ik = self.ensure_exchange_key().await?;
-        let partner_ik = self
-            .fetch_exchange_key(&info.partner_did)
-            .await?
-            .ok_or_else(|| AppError::AppView(format!("partner {} has not published an X25519 key", info.partner_did)))?;
+        let partner_ik = self.fetch_exchange_key(&info.partner_did).await?.ok_or_else(|| {
+            AppError::AppView(format!("partner {} has not published an X25519 key", info.partner_did))
+        })?;
 
         let ek = exchange::EphemeralKey::generate();
         let hs = exchange::Envelope::handshake(&ek).to_blob().map_err(AppError::Sync)?;
@@ -208,19 +254,38 @@ impl App {
             }
             tokio::time::sleep(std::time::Duration::from_secs(1)).await;
         }
-        let their_ek = their_ek.ok_or_else(|| AppError::AppView("partner handshake not received (peer offline?)".into()))?;
+        let their_ek =
+            their_ek.ok_or_else(|| AppError::AppView("partner handshake not received (peer offline?)".into()))?;
 
-        let key = exchange::derive_session_key(&ik, &ek, &partner_ik, &their_ek, exchange::role_is_a(&did, &info.partner_did))
-            .map_err(AppError::Sync)?;
-        Ok(EstablishedSession { session_id: info.session_id.clone(), partner_did: info.partner_did.clone(), key })
+        let key = exchange::derive_session_key(
+            &ik,
+            &ek,
+            &partner_ik,
+            &their_ek,
+            exchange::role_is_a(&did, &info.partner_did),
+        )
+        .map_err(AppError::Sync)?;
+        Ok(EstablishedSession {
+            session_id: info.session_id.clone(),
+            partner_did: info.partner_did.clone(),
+            key,
+        })
     }
 
     /// Seal `plaintext` and relay it on an established session (data starts at seq 1).
-    pub async fn exchange_send(&self, session: &EstablishedSession, seq: i32, plaintext: &[u8]) -> Result<i64, AppError> {
+    pub async fn exchange_send(
+        &self,
+        session: &EstablishedSession,
+        seq: i32,
+        plaintext: &[u8],
+    ) -> Result<i64, AppError> {
         let did = self.current_account().ok_or(AppError::NotAuthenticated)?;
         let aad = exchange::relay_aad(&session.session_id, &did, &session.partner_did, seq);
-        let blob = exchange::seal(&session.key, &aad, plaintext).and_then(|e| e.to_blob()).map_err(AppError::Sync)?;
-        self.exchange_relay(&session.session_id, &session.partner_did, seq, &blob).await
+        let blob = exchange::seal(&session.key, &aad, plaintext)
+            .and_then(|e| e.to_blob())
+            .map_err(AppError::Sync)?;
+        self.exchange_relay(&session.session_id, &session.partner_did, seq, &blob)
+            .await
     }
 
     /// Pull + decrypt + ack the data payloads waiting on an established session (returns plaintexts
@@ -229,7 +294,9 @@ impl App {
         let did = self.current_account().ok_or(AppError::NotAuthenticated)?;
         let mut out = Vec::new();
         for env in self.exchange_relay_pull(&session.session_id).await? {
-            let Ok(parsed) = exchange::Envelope::from_blob(&env.blob) else { continue };
+            let Ok(parsed) = exchange::Envelope::from_blob(&env.blob) else {
+                continue;
+            };
             // AAD binds the sender's routing: from = the partner (sender), to = us.
             let aad = exchange::relay_aad(&session.session_id, &env.from_did, &did, env.seq);
             if let Ok(pt) = exchange::open(&session.key, &aad, &parsed) {
@@ -258,9 +325,14 @@ impl App {
         let dosages = self.ibd_panel_dosages(my_source).await?;
         let sites = dosages
             .into_iter()
-            .map(|g| IbdSite { contig: g.contig, position: g.position, dosage: g.dosage })
+            .map(|g| IbdSite {
+                contig: g.contig,
+                position: g.position,
+                dosage: g.dosage,
+            })
             .collect();
-        self.exchange_ibd_with_dosages(session, sites, request_uri, my_sample_ref, partner_sample_ref, config).await
+        self.exchange_ibd_with_dosages(session, sites, request_uri, my_sample_ref, partner_sample_ref, config)
+            .await
     }
 
     /// The dosage-level core of [`exchange_ibd`] — takes the panel dosages directly (e.g. from a
@@ -282,8 +354,12 @@ impl App {
         let my_sites = decimate_for_exchange(my_sites);
 
         // 1. Send our dosages (the IBD panel is on CHM13 / hs1).
-        let dos = IbdExchangeMsg::Dosages { build: "hs1".into(), sites: my_sites.clone() };
-        self.exchange_send(session, 1, &dos.to_bytes().map_err(AppError::Import)?).await?;
+        let dos = IbdExchangeMsg::Dosages {
+            build: "hs1".into(),
+            sites: my_sites.clone(),
+        };
+        self.exchange_send(session, 1, &dos.to_bytes().map_err(AppError::Import)?)
+            .await?;
 
         // 2. Receive the partner's dosages (buffering any attestation that arrives early).
         let mut partner_sites: Option<Vec<IbdSite>> = None;
@@ -301,7 +377,8 @@ impl App {
             }
             tokio::time::sleep(std::time::Duration::from_secs(1)).await;
         }
-        let partner_sites = partner_sites.ok_or_else(|| AppError::AppView("partner IBD dosages not received (peer offline?)".into()))?;
+        let partner_sites = partner_sites
+            .ok_or_else(|| AppError::AppView("partner IBD dosages not received (peer offline?)".into()))?;
 
         // 3. Detect IBD locally (symmetric — the partner computes the same summary).
         let comparison = detect_ibd_sites(&my_sites, &partner_sites, ReferenceBuild::Chm13v2, config);
@@ -321,7 +398,8 @@ impl App {
 
         // 5. Send our attestation.
         let att_msg = IbdExchangeMsg::Attest(Box::new(att.clone()));
-        self.exchange_send(session, 2, &att_msg.to_bytes().map_err(AppError::Import)?).await?;
+        self.exchange_send(session, 2, &att_msg.to_bytes().map_err(AppError::Import)?)
+            .await?;
 
         // 6. Receive the partner's attestation.
         for _ in 0..EXCHANGE_POLL_ROUNDS {
@@ -338,7 +416,8 @@ impl App {
             }
             tokio::time::sleep(std::time::Duration::from_secs(1)).await;
         }
-        let partner_att = partner_att.ok_or_else(|| AppError::AppView("partner attestation not received (peer offline?)".into()))?;
+        let partner_att =
+            partner_att.ok_or_else(|| AppError::AppView("partner attestation not received (peer offline?)".into()))?;
 
         // 7. Verify the partner's signature + summary-hash agreement.
         let sig_ok = du_atproto::verify_did_key(
@@ -366,7 +445,13 @@ impl App {
         let alignments = alignment::list_for_biosample(self.store.pool(), guid).await?;
         let mut best: Option<(f64, i64)> = None;
         for a in &alignments {
-            let cov = self.cached_coverage(a.id).await.ok().flatten().map(|c| c.mean_coverage).unwrap_or(0.0);
+            let cov = self
+                .cached_coverage(a.id)
+                .await
+                .ok()
+                .flatten()
+                .map(|c| c.mean_coverage)
+                .unwrap_or(0.0);
             if best.as_ref().map_or(true, |(bc, _)| cov > *bc) {
                 best = Some((cov, a.id));
             }
@@ -374,16 +459,19 @@ impl App {
         if let Some((_, id)) = best {
             return Ok(Some(IbdSource::Alignment(id)));
         }
-        Ok(self.list_chip_profiles(guid).await?.first().map(|c| IbdSource::Chip(c.id)))
+        Ok(self
+            .list_chip_profiles(guid)
+            .await?
+            .first()
+            .map(|c| IbdSource::Chip(c.id)))
     }
 
     /// The subject's IBD-panel dosages from its best source (panel-restricted — only the canonical IBD
     /// sites, not the whole genome, so that's all that can leave the device).
     pub async fn ibd_dosages_for_subject(&self, guid: SampleGuid) -> Result<Vec<SiteGenotype>, AppError> {
-        let source = self
-            .best_ibd_source_for_subject(guid)
-            .await?
-            .ok_or_else(|| AppError::Import("no IBD-capable data for this subject (need an alignment or a chip profile)".into()))?;
+        let source = self.best_ibd_source_for_subject(guid).await?.ok_or_else(|| {
+            AppError::Import("no IBD-capable data for this subject (need an alignment or a chip profile)".into())
+        })?;
         self.ibd_panel_dosages(source).await
     }
 
@@ -400,10 +488,21 @@ impl App {
         let dosages = self.ibd_dosages_for_subject(guid).await?;
         let sites = dosages
             .into_iter()
-            .map(|g| IbdSite { contig: g.contig, position: g.position, dosage: g.dosage })
+            .map(|g| IbdSite {
+                contig: g.contig,
+                position: g.position,
+                dosage: g.dosage,
+            })
             .collect();
         let result = self
-            .exchange_ibd_with_dosages(session, sites, request_uri, Some(guid.to_string()), partner_sample_ref, config)
+            .exchange_ibd_with_dosages(
+                session,
+                sites,
+                request_uri,
+                Some(guid.to_string()),
+                partner_sample_ref,
+                config,
+            )
             .await?;
         self.record_ibd_exchange(guid, session, request_uri, &result).await?;
         // Best-effort: publish our attestation to the PDS (skipped for did:key; never fails the exchange).
@@ -457,10 +556,17 @@ impl App {
         if did.starts_with("did:key:") {
             return Ok(()); // did:key has no PDS repo
         }
-        let rkey: String = att.session_id.chars().filter(|c| c.is_ascii_alphanumeric()).take(64).collect();
+        let rkey: String = att
+            .session_id
+            .chars()
+            .filter(|c| c.is_ascii_alphanumeric())
+            .take(64)
+            .collect();
         let record = serde_json::to_value(att).map_err(|e| AppError::Import(e.to_string()))?;
         let mut engine = self.sync_engine()?;
-        engine.push_create_rkey(IBD_ATTESTATION_COLLECTION, record, &rkey).await?;
+        engine
+            .push_create_rkey(IBD_ATTESTATION_COLLECTION, record, &rkey)
+            .await?;
         Ok(())
     }
 
@@ -478,7 +584,9 @@ impl App {
         if !resp.status().is_success() {
             return Err(appview_status_error(path, resp).await);
         }
-        resp.json().await.map_err(|e| AppError::Sync(navigator_sync::SyncError::from(e)))
+        resp.json()
+            .await
+            .map_err(|e| AppError::Sync(navigator_sync::SyncError::from(e)))
     }
 
     /// Issue a device-key-signed `exchange-poll` GET to an `/api/v1/<path>` endpoint, with `extra`
@@ -503,7 +611,9 @@ impl App {
         if !resp.status().is_success() {
             return Err(appview_status_error(path, resp).await);
         }
-        resp.json().await.map_err(|e| AppError::Sync(navigator_sync::SyncError::from(e)))
+        resp.json()
+            .await
+            .map_err(|e| AppError::Sync(navigator_sync::SyncError::from(e)))
     }
 
     /// Publish the alignment's coverage summary to the signed-in account's PDS (with
@@ -511,7 +621,14 @@ impl App {
     pub async fn publish_coverage(&self, alignment_id: i64) -> Result<(), AppError> {
         self.require_account()?; // auth check before touching the DB
         let value = self.coverage_record(alignment_id).await?;
-        self.enqueue_publish("coverage", &format!("alignment:{alignment_id}"), NS_ALIGNMENT, None, value).await
+        self.enqueue_publish(
+            "coverage",
+            &format!("alignment:{alignment_id}"),
+            NS_ALIGNMENT,
+            None,
+            value,
+        )
+        .await
     }
 
     /// Publish a subject's **consensus** ancestry estimate to the signed-in account's PDS — one
@@ -522,12 +639,14 @@ impl App {
     /// section — anonymized population proportions only.
     pub async fn publish_ancestry(&self, biosample_guid: SampleGuid) -> Result<(), AppError> {
         self.require_account()?; // auth check before touching the DB
-        // One outbox row per method, keyed by subject+method so re-publishing coalesces per estimate.
+                                 // One outbox row per method, keyed by subject+method so re-publishing coalesces per estimate.
         for r in &self.consensus_ancestry_results(biosample_guid).await? {
-            let value =
-                serde_json::to_value(population_breakdown_record(r).with_biosample_ref(Some(biosample_guid.to_string())))?;
+            let value = serde_json::to_value(
+                population_breakdown_record(r).with_biosample_ref(Some(biosample_guid.to_string())),
+            )?;
             let entity_ref = format!("ancestry:{biosample_guid}:{}", r.method);
-            self.enqueue_publish("ancestry", &entity_ref, NS_POPULATION_BREAKDOWN, None, value).await?;
+            self.enqueue_publish("ancestry", &entity_ref, NS_POPULATION_BREAKDOWN, None, value)
+                .await?;
         }
         Ok(())
     }
@@ -536,14 +655,22 @@ impl App {
     pub async fn publish_biosample(&self, biosample_guid: SampleGuid) -> Result<(), AppError> {
         self.require_account()?; // auth check before touching the DB
         let value = self.biosample_record(biosample_guid).await?;
-        self.enqueue_publish("biosample", &format!("biosample:{biosample_guid}"), NS_BIOSAMPLE, None, value).await
+        self.enqueue_publish(
+            "biosample",
+            &format!("biosample:{biosample_guid}"),
+            NS_BIOSAMPLE,
+            None,
+            value,
+        )
+        .await
     }
 
     /// Publish a sequence-run characterization to the signed-in account's PDS.
     pub async fn publish_sequence_run(&self, run: &SequenceRun) -> Result<(), AppError> {
         self.require_account()?; // auth check before touching the DB
         let value = self.sequence_run_record(run).await?;
-        self.enqueue_publish("seqrun", &format!("seqrun:{}", run.id), NS_SEQUENCERUN, None, value).await
+        self.enqueue_publish("seqrun", &format!("seqrun:{}", run.id), NS_SEQUENCERUN, None, value)
+            .await
     }
 
     /// Publish the alignment's de-novo calls for `contig` to the signed-in account's PDS.
@@ -551,7 +678,7 @@ impl App {
         self.require_account()?; // auth check before touching the DB
         let value = self.variants_record(alignment_id, contig).await?;
         let entity_ref = format!("variants:{alignment_id}:{contig}");
-        self.enqueue_publish("variants", &entity_ref, PRIVATE_VARIANTS_COLLECTION, None, value).await
+        self.enqueue_publish("variants", &entity_ref, PRIVATE_VARIANTS_COLLECTION, None, value)
+            .await
     }
-
 }

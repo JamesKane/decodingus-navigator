@@ -25,14 +25,13 @@ impl Row {
 }
 
 pub async fn create(pool: &SqlitePool, p: &NewProject) -> Result<Project, StoreError> {
-    let id: i64 = sqlx::query_scalar(
-        "INSERT INTO project (name, description, administrator) VALUES (?, ?, ?) RETURNING id",
-    )
-    .bind(&p.name)
-    .bind(&p.description)
-    .bind(&p.administrator)
-    .fetch_one(pool)
-    .await?;
+    let id: i64 =
+        sqlx::query_scalar("INSERT INTO project (name, description, administrator) VALUES (?, ?, ?) RETURNING id")
+            .bind(&p.name)
+            .bind(&p.description)
+            .bind(&p.administrator)
+            .fetch_one(pool)
+            .await?;
     Ok(Project {
         id,
         name: p.name.clone(),
