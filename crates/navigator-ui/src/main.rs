@@ -25,6 +25,14 @@ pub(crate) fn default_db_path() -> PathBuf {
 }
 
 fn main() -> eframe::Result<()> {
+    // First-run setup (both GUI and headless): seed bundled ancestry/IBD assets shipped inside the
+    // installer image into ~/.decodingus/ancestry/ if missing. No-op on a dev build (no bundle) and
+    // on later runs. Done before the CLI dispatch so a scripted analysis also gets the assets.
+    let seeded = navigator_app::seed_bundled_assets();
+    if seeded.copied > 0 {
+        eprintln!("seeded {} bundled asset(s) into the cache", seeded.copied);
+    }
+
     // With a subcommand, run headless (ingest/probe) and exit; with none, launch the GUI.
     let parsed = cli::Cli::parse();
     if let Some(command) = parsed.command {

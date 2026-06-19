@@ -793,6 +793,78 @@ pub fn ancestry_asset_status() -> Vec<AssetStatus> {
     .collect()
 }
 
+/// What [`seed_bundled_assets`] copied into the cache on first run.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct SeedSummary {
+    pub copied: usize,
+    pub skipped: usize,
+}
+
+/// Copy every regular file in `src_dir` into `dest_dir` that isn't already present there. Never
+/// overwrites an existing file — a CDN-refreshed asset must win over the bundled one. Creates
+/// `dest_dir`. A missing/unreadable `src_dir` is a no-op (returns the empty summary). Pure over the
+/// two directories (no globals) so it's unit-testable.
+pub fn seed_assets_from(src_dir: &Path, dest_dir: &Path) -> std::io::Result<SeedSummary> {
+    let mut summary = SeedSummary::default();
+    let Ok(entries) = std::fs::read_dir(src_dir) else {
+        return Ok(summary); // no bundle present
+    };
+    std::fs::create_dir_all(dest_dir)?;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+        let Some(name) = path.file_name() else { continue };
+        // Skip hidden files (e.g. the staging `.staged` marker) — only real assets are seeded.
+        if name.to_string_lossy().starts_with('.') {
+            continue;
+        }
+        let dest = dest_dir.join(name);
+        if dest.exists() {
+            summary.skipped += 1;
+        } else {
+            std::fs::copy(&path, &dest)?;
+            summary.copied += 1;
+        }
+    }
+    Ok(summary)
+}
+
+/// Locate the bundled ancestry-asset resource directory shipped inside the installed image:
+/// `$NAVIGATOR_BUNDLED_ASSETS` (override), else candidates relative to the running executable for
+/// each packaged layout (macOS `.app` Resources, Linux `usr/lib|share/<app>`, Windows alongside).
+/// `None` when running from a dev `target/` build with no bundle.
+fn bundled_assets_dir() -> Option<PathBuf> {
+    if let Ok(p) = std::env::var("NAVIGATOR_BUNDLED_ASSETS") {
+        let p = PathBuf::from(p);
+        if p.is_dir() {
+            return Some(p);
+        }
+    }
+    let exe = std::env::current_exe().ok()?;
+    let dir = exe.parent()?;
+    [
+        dir.join("../Resources/ancestry"),        // macOS .app/Contents/MacOS → ../Resources
+        dir.join("ancestry"),                     // Windows (alongside) / portable
+        dir.join("../lib/DUNavigator/ancestry"),  // Linux .deb/AppImage usr/bin → usr/lib/<app>
+        dir.join("../share/DUNavigator/ancestry"),// Linux usr/share/<app>
+        dir.join("resources/ancestry"),           // generic
+    ]
+    .into_iter()
+    .find(|c| c.is_dir())
+}
+
+/// Seed the bundled ancestry/IBD assets into `<cache base>/ancestry/` on first run (the offline
+/// installer ships them as image resources; the runtime read path stays `~/.decodingus/...`). Copies
+/// only the files missing from the cache, so a later manifest-verified CDN download transparently
+/// overrides a bundled asset. Best-effort + non-fatal: no bundle (dev build) ⇒ empty summary.
+pub fn seed_bundled_assets() -> SeedSummary {
+    let Some(src) = bundled_assets_dir() else { return SeedSummary::default() };
+    let dest = refgenome_cache::base_dir().join("ancestry");
+    seed_assets_from(&src, &dest).unwrap_or_default()
+}
+
 /// The asset integrity manifest path for a build (`<base>/ancestry/ancestry_manifest_<build>.json`).
 fn ancestry_manifest_path(build: ReferenceBuild) -> PathBuf {
     refgenome_cache::base_dir().join("ancestry").join(format!("ancestry_manifest_{}.json", build.as_str()))
@@ -8516,5 +8588,40 @@ mod import_tests {
         assert!(none.is_empty());
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+#[cfg(test)]
+mod seed_tests {
+    use super::{seed_assets_from, SeedSummary};
+
+    #[test]
+    fn seeds_missing_files_and_never_overwrites() {
+        let base = std::env::temp_dir().join(format!("dun-seed-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let src = base.join("bundle");
+        let dest = base.join("cache");
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::write(src.join("a.bin"), b"alpha").unwrap();
+        std::fs::write(src.join("b.bin"), b"bravo").unwrap();
+        std::fs::write(src.join("manifest.json"), b"{}").unwrap();
+        // `b.bin` already exists in the cache (e.g. a CDN-refreshed copy) — must be preserved.
+        std::fs::create_dir_all(&dest).unwrap();
+        std::fs::write(dest.join("b.bin"), b"NEWER").unwrap();
+
+        let s = seed_assets_from(&src, &dest).unwrap();
+        assert_eq!(s, SeedSummary { copied: 2, skipped: 1 }); // a.bin + manifest copied; b.bin skipped
+        assert_eq!(std::fs::read(dest.join("a.bin")).unwrap(), b"alpha");
+        assert_eq!(std::fs::read(dest.join("b.bin")).unwrap(), b"NEWER"); // not overwritten
+
+        // Idempotent: a second run copies nothing.
+        let again = seed_assets_from(&src, &dest).unwrap();
+        assert_eq!(again, SeedSummary { copied: 0, skipped: 3 });
+
+        // A missing bundle dir is a harmless no-op.
+        let absent = seed_assets_from(&base.join("nope"), &dest).unwrap();
+        assert_eq!(absent, SeedSummary::default());
+
+        let _ = std::fs::remove_dir_all(&base);
     }
 }

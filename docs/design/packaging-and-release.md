@@ -1,10 +1,39 @@
 # Packaging & Release — Alpha distribution plan
 
-**Status:** Research / proposal. No code changes yet.
-**Date:** 2026-06-16
+**Status:** Foundation IMPLEMENTED (2026-06-18). Local macOS `.dmg` built + validated; CI authored.
+**Date:** 2026-06-16 (design) · 2026-06-18 (implementation)
 **Scope:** How to ship the Rust `navigator` binary as installable images for macOS
 (Apple Silicon + Intel), Linux (x86-64 + ARM), and Windows (x86-64 + ARM), and how to
 handle the bundled ancestry assets.
+
+---
+
+## Implementation status (2026-06-18)
+
+**Landed (committed on rust-rewrite):**
+- Deleted the legacy Scala `jpackage` `release.yml`.
+- `.cargo/config.toml` — `target-cpu=ivybridge` for the three x86-64 triples (ARM untouched).
+- `[package.metadata.packager]` in `crates/navigator-ui/Cargo.toml` (product `DUNavigator`,
+  id `com.decodingus.navigator`, macOS min 11.0, icons, `before-packaging-command` → staging,
+  `resources` → bundled `ancestry/`). Placeholder icon at `crates/navigator-ui/icons/`.
+- `packaging/stage-assets.sh` stages the full Option-A bundle (copies from `~/.decodingus/ancestry`
+  locally; CDN path is a TODO). `packaging/staging/` is git-ignored.
+- First-run **asset seeding**: `navigator_app::seed_bundled_assets` / `seed_assets_from` (copies
+  missing bundled assets → `~/.decodingus/ancestry/`, never overwriting a CDN-refreshed file),
+  called at `main()` startup (both GUI + headless). Unit-tested.
+- New cargo-packager `release.yml` (matrix: macOS aarch64/x86_64, Linux x86_64/aarch64, Windows
+  x86_64; collect + `SHA256SUMS` + gh-release, prerelease for `-alpha`).
+
+**Validated locally (macOS arm64):** `cargo packager --release -p navigator-ui -f dmg` →
+`DUNavigator_0.1.0_aarch64.dmg` with `Contents/Resources/ancestry/` fully populated (incl. the
+102 MB IBD panel), `icon.icns`, `CFBundleIdentifier=com.decodingus.navigator`,
+`LSMinimumSystemVersion=11.0`; the bundled binary runs; seeding into a fresh
+`NAVIGATOR_REFGENOME_DIR` confirmed (11 assets).
+
+**Still CI-time / unverified here (need a tagged run + secrets):** macOS notarization (`APPLE_*`),
+macOS universal2 (lipo — the CI ships per-arch dmgs for now), Linux glibc floor (ubuntu-22.04 =
+2.35; old-glibc container / `cargo-zigbuild` `*.2.28` for broad reach), Windows signing (unsigned
+for Alpha), and the CI asset-staging CDN source (`NAVIGATOR_ASSET_SRC`/CDN).
 
 ---
 

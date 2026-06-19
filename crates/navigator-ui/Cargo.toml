@@ -4,12 +4,34 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
+description = "Decoding-Us Navigator — local bioinformatics analysis of personal genomes (BAM/CRAM, Y/mtDNA haplogroups, ancestry, IBD)."
+homepage = "https://decoding-us.com"
+authors = ["Decoding-Us"]
 
 # egui/eframe desktop front end (thin: render view-state + dispatch commands).
 # Binary is `navigator`. egui/eframe are added in phase 5.
 [[bin]]
 name = "navigator"
 path = "src/main.rs"
+
+# cargo-packager (CrabNebula) config — produces the OS-native installer images. See
+# docs/design/packaging-and-release.md. The ancestry/IBD assets are staged into
+# packaging/staging/ancestry by packaging/stage-assets.sh (run via before-packaging-command) and
+# bundled as image resources under `ancestry/`; the app seeds them to ~/.decodingus/ancestry/ on
+# first run (navigator_app::seed_bundled_assets).
+[package.metadata.packager]
+product-name = "DUNavigator"
+identifier = "com.decodingus.navigator"
+category = "Utility"
+icons = ["icons/icon.icns", "icons/icon.png"]
+before-packaging-command = "bash ../../packaging/stage-assets.sh"
+resources = [{ src = "../../packaging/staging/ancestry", target = "ancestry" }]
+
+[package.metadata.packager.macos]
+minimum-system-version = "11.0"
+
+[package.metadata.packager.nsis]
+# Windows installer (Alpha ships unsigned; Authenticode/Trusted-Signing added before beta).
 
 [features]
 # Surface the dev-only "Use local identity" (did:key) button in a RELEASE build. Off by default, so
