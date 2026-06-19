@@ -2247,3 +2247,121 @@ async fn cached_artifact_invalidated_when_source_file_changes() {
 
     let _ = std::fs::remove_file(&bam);
 }
+
+/// FTDNA project import — the B5163↔GFX merge scenario plus a new subject and an orphan
+/// (ancestry without a roster row). Exercises plan → resolve fuzzy → commit end to end.
+#[tokio::test]
+async fn ftdna_project_import_plans_and_commits_merge_new_and_orphan() {
+    use navigator_app::{DnaType, FtdnaImportOptions, FtdnaResolution, MatchKind};
+    use navigator_domain::reconciliation::RunHaplogroupCall;
+    use std::collections::BTreeMap;
+
+    let ftdna = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/ftdna");
+    let app = app().await;
+    let project = app
+        .create_project(NewProject {
+            name: "R1b-CTS4466Plus".into(),
+            description: None,
+            administrator: "admin".into(),
+        })
+        .await
+        .unwrap();
+
+    // The existing WGS Subject: GFX, already placed at R-FGC29071 — the same person as kit B5163.
+    let gfx = app
+        .add_biosample(Some(project.id), "GFX0457637", None, None)
+        .await
+        .unwrap();
+    let call = RunHaplogroupCall {
+        source_label: "wgs".into(),
+        haplogroup: "R-FGC29071".into(),
+        lineage: vec!["R".into(), "R-FGC29071".into()],
+        score: 0.9,
+        matched: 0,
+        expected: 0,
+    };
+    app.record_haplogroup_call(gfx.guid, DnaType::Y, "aln:1", &call)
+        .await
+        .unwrap();
+
+    // Dry-run plan over the roster + paternal ancestry fixtures (no maternal file).
+    let plan = app
+        .plan_ftdna_import(
+            project.id,
+            Some(ftdna.join("Member_Information.csv")),
+            Some(ftdna.join("Paternal_Ancestry.csv")),
+            None,
+            FtdnaImportOptions::default(),
+        )
+        .await
+        .unwrap();
+
+    // Three kits: B5163 (roster+ancestry), K000002 (roster+ancestry), K000003 (ancestry only = orphan).
+    assert_eq!(plan.rows.len(), 3);
+    let row = |kit: &str| plan.rows.iter().find(|r| r.kit_number == kit).unwrap();
+
+    // B5163 fuzzy-matches GFX on the Y terminal (no auto-merge: GFX had no kit#).
+    let b = row("B5163");
+    assert!(b.in_roster);
+    assert_eq!(b.y_terminal.as_deref(), Some("FGC29071"));
+    match &b.kind {
+        MatchKind::NeedsConfirm { candidates } => {
+            assert!(
+                candidates.iter().any(|c| c.guid == gfx.guid),
+                "GFX offered as a candidate"
+            );
+        }
+        other => panic!("expected B5163 NeedsConfirm, got {other:?}"),
+    }
+    // K000002: free-text Sub Group → no Y terminal → New.
+    assert!(matches!(row("K000002").kind, MatchKind::New));
+    assert!(row("K000002").in_roster);
+    // K000003: ancestry only → New + orphan.
+    assert!(matches!(row("K000003").kind, MatchKind::New));
+    assert!(!row("K000003").in_roster);
+
+    // Resolve B5163 → merge into GFX, then commit.
+    let mut res = BTreeMap::new();
+    res.insert("B5163".to_string(), FtdnaResolution::Merge(gfx.guid));
+    let summary = app.commit_ftdna_import(&plan, &res).await.unwrap();
+    assert_eq!(summary.merged, 1);
+    assert_eq!(summary.created, 2);
+    assert_eq!(summary.orphans, 1);
+    assert!(summary.errors.is_empty(), "{:?}", summary.errors);
+
+    // GFX gained the FTDNA kit identity, member labels, and MDKA — without a duplicate Subject.
+    let ids = app.external_ids(gfx.guid).await.unwrap();
+    assert_eq!(ids.len(), 1);
+    assert_eq!(ids[0].external_id, "B5163");
+    let member = app.ftdna_member(gfx.guid).await.unwrap().unwrap();
+    assert_eq!(member.access_granted.as_deref(), Some("Limited"));
+    assert_eq!(member.publicly_shares, Some(true));
+    let mdkas = app.mdka_for(gfx.guid).await.unwrap();
+    assert_eq!(mdkas.len(), 1);
+    assert_eq!(mdkas[0].lineage, "Y");
+    assert_eq!(mdkas[0].ancestor_name.as_deref(), Some("Thomas Michael Kane"));
+    assert_eq!(mdkas[0].birth_year, Some(1830));
+    assert_eq!(mdkas[0].origin_country.as_deref(), Some("Ireland"));
+    assert_eq!(mdkas[0].latitude, Some(52.75));
+    assert!(app
+        .project_membership_ids(gfx.guid)
+        .await
+        .unwrap()
+        .contains(&project.id));
+
+    // The exact-kit path now auto-merges on a re-plan (the kit# is attached).
+    let replan = app
+        .plan_ftdna_import(
+            project.id,
+            Some(ftdna.join("Member_Information.csv")),
+            Some(ftdna.join("Paternal_Ancestry.csv")),
+            None,
+            FtdnaImportOptions::default(),
+        )
+        .await
+        .unwrap();
+    match &replan.rows.iter().find(|r| r.kit_number == "B5163").unwrap().kind {
+        MatchKind::AutoMerge { guid, .. } => assert_eq!(*guid, gfx.guid),
+        other => panic!("expected B5163 AutoMerge on re-plan, got {other:?}"),
+    }
+}

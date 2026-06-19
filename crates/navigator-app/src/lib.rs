@@ -118,6 +118,10 @@ pub use navigator_analysis::ibd::{
     IbdDetectorConfig, IbdSegment as Segment, MatchSummary as IbdSummary, RelationshipEstimate,
 };
 // Sync/publish types the command API uses, re-exported so the UI depends only on navigator-app.
+pub use ftdna_import::{
+    FtdnaImportOptions, FtdnaImportPlan, FtdnaImportSummary, FtdnaPlanRow, FtdnaResolution, FtdnaSubjectInput,
+    FuzzyCandidate, MatchKind,
+};
 pub use navigator_refgenome::vcf_lift::infer_source_build as infer_vcf_source_build;
 pub use navigator_refgenome::RefStatus;
 use navigator_refgenome::{
@@ -1570,6 +1574,7 @@ mod analysis;
 mod auth;
 mod commands;
 mod fastpath;
+mod ftdna_import;
 mod haplogroup;
 mod ibd_exchange;
 mod import_profiles;
