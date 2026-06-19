@@ -6,8 +6,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use super::evidence::{
-    BreakpointCluster, DepthSegment, DiscordantPair, DiscordantReason, SplitRead,
-    SvEvidenceCollection,
+    BreakpointCluster, DepthSegment, DiscordantPair, DiscordantReason, SplitRead, SvEvidenceCollection,
 };
 use super::segmenter;
 use super::types::{SvCall, SvCallerConfig, SvType};
@@ -45,7 +44,10 @@ pub fn cluster(
     }
     let mut splits_by_chrom: BTreeMap<&str, Vec<SplitRead>> = BTreeMap::new();
     for s in &evidence.split_reads {
-        splits_by_chrom.entry(s.primary_chrom.as_str()).or_default().push(s.clone());
+        splits_by_chrom
+            .entry(s.primary_chrom.as_str())
+            .or_default()
+            .push(s.clone());
     }
     let chroms: BTreeSet<&str> = pairs_by_chrom.keys().chain(splits_by_chrom.keys()).copied().collect();
 
@@ -71,7 +73,10 @@ pub fn cluster(
 fn cluster_translocations(pairs: &[DiscordantPair], config: &SvCallerConfig) -> Vec<BreakpointCluster> {
     let mut by_chrom_pair: BTreeMap<(&str, &str), Vec<DiscordantPair>> = BTreeMap::new();
     for p in pairs {
-        by_chrom_pair.entry((p.chrom1.as_str(), p.chrom2.as_str())).or_default().push(p.clone());
+        by_chrom_pair
+            .entry((p.chrom1.as_str(), p.chrom2.as_str()))
+            .or_default()
+            .push(p.clone());
     }
 
     let mut out = Vec::new();
@@ -195,7 +200,11 @@ fn infer_sv_type(cluster: &BreakpointCluster) -> SvType {
         return SvType::Bnd;
     }
     let n = cluster.discordant_pairs.len();
-    let same_strand = cluster.discordant_pairs.iter().filter(|p| p.strand1 == p.strand2).count();
+    let same_strand = cluster
+        .discordant_pairs
+        .iter()
+        .filter(|p| p.strand1 == p.strand2)
+        .count();
     if same_strand > n / 2 {
         return SvType::Inv;
     }
@@ -228,7 +237,12 @@ fn breakpoint_cluster_to_call(
     let quality = (cluster.total_support() as f64 * 5.0 + cluster.mean_mapq() * 0.5).min(99.0);
 
     let (sv_len, end, mate_chrom, mate_pos) = if sv_type == SvType::Bnd {
-        (0i64, cluster.position, cluster.mate_chrom.clone(), cluster.mate_position)
+        (
+            0i64,
+            cluster.position,
+            cluster.mate_chrom.clone(),
+            cluster.mate_position,
+        )
     } else {
         let mate_positions: Vec<i64> = cluster
             .discordant_pairs

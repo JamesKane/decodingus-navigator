@@ -149,7 +149,14 @@ struct Layout {
 impl Layout {
     /// Default positional layout: contig, position, ref, alt, [rsid], [genotype].
     fn positional() -> Self {
-        Layout { contig: 0, position: 1, reference: 2, alternate: 3, rs_id: Some(4), genotype: Some(5) }
+        Layout {
+            contig: 0,
+            position: 1,
+            reference: 2,
+            alternate: 3,
+            rs_id: Some(4),
+            genotype: Some(5),
+        }
     }
 
     /// Map columns by a recognized header row, or `None` if the row isn't a header.
@@ -180,7 +187,10 @@ impl Layout {
 /// otherwise columns are read positionally as contig,position,ref,alt[,rsid][,genotype].
 /// Non-SNP rows and rows with an unparseable position are skipped. Errors if none parse.
 pub fn parse_csv(text: &str) -> Result<Vec<VariantCall>, String> {
-    let mut rows = text.lines().map(str::trim).filter(|l| !l.is_empty() && !l.starts_with("##"));
+    let mut rows = text
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty() && !l.starts_with("##"));
 
     let Some(first) = rows.next() else {
         return Err("no variant rows found".into());
@@ -210,9 +220,18 @@ pub fn parse_csv(text: &str) -> Result<Vec<VariantCall>, String> {
 
 fn push_row(out: &mut Vec<VariantCall>, cols: &[String], l: &Layout) {
     let get = |i: usize| cols.get(i).map(String::as_str).unwrap_or("");
-    let Ok(position) = get(l.position).parse::<i64>() else { return };
+    let Ok(position) = get(l.position).parse::<i64>() else {
+        return;
+    };
     let opt_at = |idx: Option<usize>| idx.map(|i| get(i).to_string()).filter(|s| !s.is_empty());
-    if let Some(call) = snp_call(get(l.contig), position, get(l.reference), get(l.alternate), opt_at(l.rs_id), opt_at(l.genotype)) {
+    if let Some(call) = snp_call(
+        get(l.contig),
+        position,
+        get(l.reference),
+        get(l.alternate),
+        opt_at(l.rs_id),
+        opt_at(l.genotype),
+    ) {
         out.push(call);
     }
 }
@@ -226,7 +245,17 @@ mod tests {
         let csv = "contig,position,ref,alt,rsid\nchr1,1000,A,G,rs1\nchr1,2000,A,AT,rs2\nchrM,73,G,A,.\n";
         let v = parse_csv(csv).unwrap();
         assert_eq!(v.len(), 2); // the A>AT indel is dropped
-        assert_eq!(v[0], VariantCall { contig: "chr1".into(), position: 1000, reference: "A".into(), alternate: "G".into(), rs_id: Some("rs1".into()), genotype: None });
+        assert_eq!(
+            v[0],
+            VariantCall {
+                contig: "chr1".into(),
+                position: 1000,
+                reference: "A".into(),
+                alternate: "G".into(),
+                rs_id: Some("rs1".into()),
+                genotype: None
+            }
+        );
         assert_eq!(v[1].rs_id, None); // "." normalized away
     }
 

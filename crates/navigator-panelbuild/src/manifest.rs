@@ -25,19 +25,31 @@ pub struct ManifestArgs {
 
 pub fn build_manifest(args: ManifestArgs) -> Result<()> {
     let suffix = format!("_{}.bin", args.build);
-    let mut manifest = AssetManifest { build: args.build.clone(), generated_at: String::new(), assets: Default::default() };
+    let mut manifest = AssetManifest {
+        build: args.build.clone(),
+        generated_at: String::new(),
+        assets: Default::default(),
+    };
     for entry in fs::read_dir(&args.dir).with_context(|| format!("read dir {}", args.dir.display()))? {
         let path = entry?.path();
-        let Some(name) = path.file_name().and_then(|n| n.to_str()) else { continue };
+        let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+            continue;
+        };
         if !name.ends_with(&suffix) {
             continue;
         }
         let bytes = fs::read(&path).with_context(|| format!("read {}", path.display()))?;
         manifest.insert(name.to_string(), &bytes);
     }
-    anyhow::ensure!(!manifest.assets.is_empty(), "no `*{suffix}` assets found in {}", args.dir.display());
+    anyhow::ensure!(
+        !manifest.assets.is_empty(),
+        "no `*{suffix}` assets found in {}",
+        args.dir.display()
+    );
 
-    let out = args.out.unwrap_or_else(|| args.dir.join(format!("ancestry_manifest_{}.json", args.build)));
+    let out = args
+        .out
+        .unwrap_or_else(|| args.dir.join(format!("ancestry_manifest_{}.json", args.build)));
     let json = manifest.to_json().map_err(|e| anyhow::anyhow!(e.to_string()))?;
     File::create(&out)?.write_all(json.as_bytes())?;
     eprintln!("wrote {} ({} assets)", out.display(), manifest.assets.len());

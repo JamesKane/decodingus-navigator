@@ -119,7 +119,10 @@ fn first_base(s: &str) -> char {
 fn load_samples(path: &Path) -> Result<Vec<String>> {
     let mut s = String::new();
     open_maybe_gz(path)?.read_to_string(&mut s)?;
-    Ok(s.lines().map(|l| l.trim().to_string()).filter(|l| !l.is_empty()).collect())
+    Ok(s.lines()
+        .map(|l| l.trim().to_string())
+        .filter(|l| !l.is_empty())
+        .collect())
 }
 
 /// `sample → fine population` (e.g. NA12718 → CEU).
@@ -188,7 +191,10 @@ fn sample_pop_index(samples: &[String], fine: &HashMap<String, String>, pops: &[
 
 /// Split a comma-separated path list (`a.tsv,b.tsv`) into paths.
 fn split_paths(s: &str) -> Vec<PathBuf> {
-    s.split(',').map(|p| PathBuf::from(p.trim())).filter(|p| !p.as_os_str().is_empty()).collect()
+    s.split(',')
+        .map(|p| PathBuf::from(p.trim()))
+        .filter(|p| !p.as_os_str().is_empty())
+        .collect()
 }
 
 /// Parse one matrix into `(contig,pos) → (ref, alt, dosages)`, dedup by position (keep first).
@@ -224,11 +230,7 @@ fn load_one(path: &Path, n_samples: usize) -> Result<SiteMap> {
 /// Load and merge one or more matrices by site: combined samples = concatenation of each file's
 /// samples (in order); sites = those present in **all** matrices with combined call rate ≥
 /// `min_call_rate`; dosages concatenated in the same order. Sorted by (contig, pos).
-fn load_combined(
-    matrices: &[PathBuf],
-    sample_files: &[PathBuf],
-    min_call_rate: f64,
-) -> Result<LoadedMatrix> {
+fn load_combined(matrices: &[PathBuf], sample_files: &[PathBuf], min_call_rate: f64) -> Result<LoadedMatrix> {
     anyhow::ensure!(
         !matrices.is_empty() && matrices.len() == sample_files.len(),
         "need an equal, non-zero number of --matrix and --samples entries"
@@ -257,18 +259,33 @@ fn load_combined(
         if (called as f64) < min_call_rate * total_n as f64 {
             continue;
         }
-        out.push((SiteMeta { contig: key.0.clone(), pos: key.1, ref_allele: *rf, alt_allele: *alt }, combined));
+        out.push((
+            SiteMeta {
+                contig: key.0.clone(),
+                pos: key.1,
+                ref_allele: *rf,
+                alt_allele: *alt,
+            },
+            combined,
+        ));
     }
     out.sort_by(|a, b| (a.0.contig.as_str(), a.0.pos).cmp(&(b.0.contig.as_str(), b.0.pos)));
-    eprintln!("combined: {} samples, {} sites (call rate ≥ {min_call_rate})", total_n, out.len());
+    eprintln!(
+        "combined: {} samples, {} sites (call rate ≥ {min_call_rate})",
+        total_n,
+        out.len()
+    );
     let (metas, rows): (Vec<_>, Vec<_>) = out.into_iter().unzip();
     Ok((all_samples, metas, rows))
 }
 
 pub fn build_pca(args: PcaArgs) -> Result<()> {
     let fine = load_fine_map(&args.pops)?;
-    let (samples, metas, rows) =
-        load_combined(&split_paths(&args.matrix), &split_paths(&args.samples), args.min_call_rate)?;
+    let (samples, metas, rows) = load_combined(
+        &split_paths(&args.matrix),
+        &split_paths(&args.samples),
+        args.min_call_rate,
+    )?;
     let n_samples = samples.len();
     anyhow::ensure!(n_samples > 0, "no samples");
     let pops = distinct_fine_pops(&samples, &fine);
@@ -291,9 +308,15 @@ pub fn build_pca(args: PcaArgs) -> Result<()> {
     };
     let basis_idx: Vec<usize> = (0..n_samples).filter(|&s| is_basis(s)).collect();
     let n_basis = basis_idx.len();
-    anyhow::ensure!(n_basis > 1, "need >1 basis sample (does --basis-pops match the pop labels?)");
+    anyhow::ensure!(
+        n_basis > 1,
+        "need >1 basis sample (does --basis-pops match the pop labels?)"
+    );
     if basis_set.is_some() {
-        eprintln!("projection mode: {n_basis} basis samples, {} projected", n_samples - n_basis);
+        eprintln!(
+            "projection mode: {n_basis} basis samples, {} projected",
+            n_samples - n_basis
+        );
     }
     let k = args.components.min(n_basis - 1).min(n_sites);
 
@@ -393,7 +416,10 @@ pub fn build_pca(args: PcaArgs) -> Result<()> {
         eprintln!("  {code}: PC1={:8.2} PC2={c2:8.2} PC3={c3:8.2}", centroids[p * k]);
     }
 
-    let loadings: Vec<f32> = (0..n_sites).flat_map(|i| (0..k).map(move |c| (i, c))).map(|(i, c)| v[(i, c)] as f32).collect();
+    let loadings: Vec<f32> = (0..n_sites)
+        .flat_map(|i| (0..k).map(move |c| (i, c)))
+        .map(|(i, c)| v[(i, c)] as f32)
+        .collect();
     let pca = PcaLoadings {
         build: "chm13v2.0".to_string(),
         sites: metas.iter().map(|m| (m.contig.clone(), m.pos)).collect(),
@@ -405,14 +431,20 @@ pub fn build_pca(args: PcaArgs) -> Result<()> {
         variances,
     };
     write_bin(&args.out, &pca.to_bytes().map_err(|e| anyhow::anyhow!("{e}"))?)?;
-    eprintln!("wrote {} ({n_sites} sites × {k} components, {n_pops} populations)", args.out.display());
+    eprintln!(
+        "wrote {} ({n_sites} sites × {k} components, {n_pops} populations)",
+        args.out.display()
+    );
     Ok(())
 }
 
 pub fn build_fine_panel(args: FinePanelArgs) -> Result<()> {
     let fine = load_fine_map(&args.pops)?;
-    let (samples, metas, rows) =
-        load_combined(&split_paths(&args.matrix), &split_paths(&args.samples), args.min_call_rate)?;
+    let (samples, metas, rows) = load_combined(
+        &split_paths(&args.matrix),
+        &split_paths(&args.samples),
+        args.min_call_rate,
+    )?;
     let n_samples = samples.len();
     anyhow::ensure!(n_samples > 0, "no samples");
     let pops = distinct_fine_pops(&samples, &fine);
@@ -437,7 +469,13 @@ pub fn build_fine_panel(args: FinePanelArgs) -> Result<()> {
                 }
             }
             let freqs = (0..n_pops)
-                .map(|p| if called[p] > 0 { (alt[p] / (2.0 * called[p] as f64)) as f32 } else { 0.0 })
+                .map(|p| {
+                    if called[p] > 0 {
+                        (alt[p] / (2.0 * called[p] as f64)) as f32
+                    } else {
+                        0.0
+                    }
+                })
                 .collect();
             PanelSite {
                 contig: m.contig.clone(),
@@ -449,9 +487,17 @@ pub fn build_fine_panel(args: FinePanelArgs) -> Result<()> {
         })
         .collect();
 
-    let panel = AncestryPanel { build: "chm13v2.0".to_string(), populations: pops, sites };
+    let panel = AncestryPanel {
+        build: "chm13v2.0".to_string(),
+        populations: pops,
+        sites,
+    };
     write_bin(&args.out, &panel.to_bytes().map_err(|e| anyhow::anyhow!("{e}"))?)?;
-    eprintln!("wrote {} ({} sites × {n_pops} fine populations)", args.out.display(), panel.len());
+    eprintln!(
+        "wrote {} ({} sites × {n_pops} fine populations)",
+        args.out.display(),
+        panel.len()
+    );
     Ok(())
 }
 

@@ -162,7 +162,11 @@ fn detect_rotation(rcrs: &[u8], chrm: &[u8]) -> usize {
         }
         a += step;
     }
-    votes.into_iter().max_by_key(|&(_, v)| v).map(|(off, _)| off).unwrap_or(0)
+    votes
+        .into_iter()
+        .max_by_key(|&(_, v)| v)
+        .map(|(off, _)| off)
+        .unwrap_or(0)
 }
 
 /// Aligned `(reference_index, sample_index)` pairs (0-based) from a banded global alignment —
@@ -365,7 +369,12 @@ mod tests {
     use super::*;
 
     fn sub(pos: i64, r: &str, a: &str) -> MtVariant {
-        MtVariant { position: pos, reference: r.into(), alternate: a.into(), kind: MtVariantKind::Substitution }
+        MtVariant {
+            position: pos,
+            reference: r.into(),
+            alternate: a.into(),
+            kind: MtVariantKind::Substitution,
+        }
     }
 
     #[test]
@@ -490,10 +499,14 @@ mod tests {
     #[test]
     fn mt_position_map_handles_rotation_plus_indel() {
         // A 400 bp pseudo-reference with enough local complexity for unique k-mers.
-        let r: String = (0..400).map(|i| [b'A', b'C', b'G', b'T'][((i * 7 + i / 3) % 4) as usize] as char).collect();
+        let r: String = (0..400)
+            .map(|i| [b'A', b'C', b'G', b'T'][((i * 7 + i / 3) % 4) as usize] as char)
+            .collect();
         // chrM = r rotated so position 120 becomes the origin, plus a 2 bp insertion at 250.
         let rot = 120usize;
-        let mut chrm: String = (0..r.len()).map(|i| r.as_bytes()[(i + rot) % r.len()] as char).collect();
+        let mut chrm: String = (0..r.len())
+            .map(|i| r.as_bytes()[(i + rot) % r.len()] as char)
+            .collect();
         chrm.insert_str(250, "GG");
 
         let map: std::collections::HashMap<usize, usize> = mt_position_map(&r, &chrm).into_iter().collect();

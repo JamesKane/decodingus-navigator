@@ -13,8 +13,8 @@
 use std::collections::{BTreeMap, HashMap};
 
 use navigator_domain::ancestry::{
-    fine_population_codes, population_color, population_name, population_super, AncestryResult,
-    AncestrySegment, ConfidenceInterval, PopulationComponent, SuperPopulationSummary,
+    fine_population_codes, population_color, population_name, population_super, AncestryResult, AncestrySegment,
+    ConfidenceInterval, PopulationComponent, SuperPopulationSummary,
 };
 use serde::{Deserialize, Serialize};
 
@@ -58,8 +58,10 @@ impl AncestryPanel {
     /// per-population frequencies down to the kept columns. Used to run a well-conditioned
     /// admixture EM over a curated subset of a large fine-frequency panel.
     pub fn subset(&self, codes: &[&str]) -> AncestryPanel {
-        let keep: Vec<usize> =
-            codes.iter().filter_map(|c| self.populations.iter().position(|p| p == c)).collect();
+        let keep: Vec<usize> = codes
+            .iter()
+            .filter_map(|c| self.populations.iter().position(|p| p == c))
+            .collect();
         let populations = keep.iter().map(|&i| self.populations[i].clone()).collect();
         let sites = self
             .sites
@@ -72,7 +74,11 @@ impl AncestryPanel {
                 freqs: keep.iter().map(|&i| s.freqs.get(i).copied().unwrap_or(0.0)).collect(),
             })
             .collect();
-        AncestryPanel { build: self.build.clone(), populations, sites }
+        AncestryPanel {
+            build: self.build.clone(),
+            populations,
+            sites,
+        }
     }
 
     pub fn len(&self) -> usize {
@@ -209,7 +215,10 @@ pub struct PaintParams {
 
 impl Default for PaintParams {
     fn default() -> Self {
-        Self { rate: 1.0 / 20_000_000.0, min_segment_sites: 5 }
+        Self {
+            rate: 1.0 / 20_000_000.0,
+            min_segment_sites: 5,
+        }
     }
 }
 
@@ -245,8 +254,11 @@ pub fn paint_local_ancestry(
     params: &PaintParams,
 ) -> Vec<AncestrySegment> {
     // Super-population states present in the panel (stable order), and each panel pop's state.
-    let pop_state: Vec<String> =
-        panel.populations.iter().map(|c| population_super(c).unwrap_or(c).to_string()).collect();
+    let pop_state: Vec<String> = panel
+        .populations
+        .iter()
+        .map(|c| population_super(c).unwrap_or(c).to_string())
+        .collect();
     let mut states: Vec<String> = Vec::new();
     for s in &pop_state {
         if !states.contains(s) {
@@ -286,7 +298,9 @@ pub fn paint_local_ancestry(
         if site.freqs.len() != panel.populations.len() {
             continue;
         }
-        let Some(&g) = dosage.get(&(site.contig.as_str(), site.position)) else { continue };
+        let Some(&g) = dosage.get(&(site.contig.as_str(), site.position)) else {
+            continue;
+        };
         // Mean fine-pop frequency within each super-population state.
         let mut sum = vec![0.0f64; k];
         let mut cnt = vec![0usize; k];
@@ -296,8 +310,13 @@ pub fn paint_local_ancestry(
                 cnt[j] += 1;
             }
         }
-        let af: Vec<f64> = (0..k).map(|j| if cnt[j] > 0 { sum[j] / cnt[j] as f64 } else { 0.5 }).collect();
-        by_contig.entry(site.contig.clone()).or_default().push((site.position, af, g));
+        let af: Vec<f64> = (0..k)
+            .map(|j| if cnt[j] > 0 { sum[j] / cnt[j] as f64 } else { 0.5 })
+            .collect();
+        by_contig
+            .entry(site.contig.clone())
+            .or_default()
+            .push((site.position, af, g));
     }
 
     let mut segments = Vec::new();
@@ -311,8 +330,22 @@ pub fn paint_local_ancestry(
         let pairs = diploid_viterbi(&sites, &pi, params.rate, k);
         let copy0: Vec<usize> = pairs.iter().map(|&(a, b)| a.min(b)).collect();
         let copy1: Vec<usize> = pairs.iter().map(|&(a, b)| a.max(b)).collect();
-        segments.extend(collapse_copy(&contig, &sites, &copy0, &states, params.min_segment_sites, 0));
-        segments.extend(collapse_copy(&contig, &sites, &copy1, &states, params.min_segment_sites, 1));
+        segments.extend(collapse_copy(
+            &contig,
+            &sites,
+            &copy0,
+            &states,
+            params.min_segment_sites,
+            0,
+        ));
+        segments.extend(collapse_copy(
+            &contig,
+            &sites,
+            &copy1,
+            &states,
+            params.min_segment_sites,
+            1,
+        ));
     }
     segments
 }
@@ -365,7 +398,9 @@ fn diploid_viterbi(sites: &[(i64, Vec<f64>, i32)], pi: &[f64], rate: f64, k: usi
             }
         }
     }
-    let mut last = (0..ns).max_by(|&a, &b| v[n - 1][a].total_cmp(&v[n - 1][b])).unwrap_or(0);
+    let mut last = (0..ns)
+        .max_by(|&a, &b| v[n - 1][a].total_cmp(&v[n - 1][b]))
+        .unwrap_or(0);
     let mut path = vec![(0usize, 0usize); n];
     path[n - 1] = (last / k, last % k);
     for i in (1..n).rev() {
@@ -418,16 +453,7 @@ fn collapse_copy(
         .collect()
 }
 
-/// Reverse-complement a single base (for strand reconciliation; non-ACGT passes through).
-fn revcomp_base(b: char) -> char {
-    match b.to_ascii_uppercase() {
-        'A' => 'T',
-        'T' => 'A',
-        'C' => 'G',
-        'G' => 'C',
-        other => other,
-    }
-}
+use navigator_domain::seq::complement_base as revcomp_base;
 
 /// Alt-allele dosage (0/1/2) for a chip diploid call `(a1,a2)` against a panel site's
 /// `ref_allele`/`alt_allele`. When the call's alleles don't both lie in `{ref,alt}`, retry once on
@@ -554,8 +580,7 @@ pub fn estimate_admixture(
                 let alt = *g; // expected alt allele copies
                 let refc = 2.0 - g; // ref allele copies
                 for i in 0..k {
-                    acc[i] += alt * (q[i] * freqs[i] / f)
-                        + refc * (q[i] * (1.0 - freqs[i]) / (1.0 - f));
+                    acc[i] += alt * (q[i] * freqs[i] / f) + refc * (q[i] * (1.0 - freqs[i]) / (1.0 - f));
                 }
             }
             let total: f64 = acc.iter().sum(); // == 2·snps_with_data
@@ -575,7 +600,15 @@ pub fn estimate_admixture(
 
     let probs: Vec<(String, f64)> = panel.populations.iter().cloned().zip(q).collect();
     let confidence = confidence_from_completeness(snps_with_data, panel.sites.len());
-    from_probabilities("ADMIXTURE", "genome-wide", panel.sites.len(), snps_with_data, &probs, confidence, reference_version)
+    from_probabilities(
+        "ADMIXTURE",
+        "genome-wide",
+        panel.sites.len(),
+        snps_with_data,
+        &probs,
+        confidence,
+        reference_version,
+    )
 }
 
 /// Fine-population admixture: the same supervised EM as [`estimate_admixture`], run over a curated
@@ -602,11 +635,7 @@ pub fn estimate_fine_admixture(
 /// population's centroid/variance, so the `pca` asset's `populations` define the components
 /// (modern super-pops, or ancient Steppe/EEF/WHG when an ancient asset is supplied). The projected
 /// coordinates are attached for the scatter plot.
-pub fn estimate_pca_gmm(
-    genotypes: &[SiteGenotype],
-    pca: &PcaLoadings,
-    reference_version: &str,
-) -> AncestryResult {
+pub fn estimate_pca_gmm(genotypes: &[SiteGenotype], pca: &PcaLoadings, reference_version: &str) -> AncestryResult {
     let coords = project_pca(genotypes, pca);
     let probs = classify_pca(&coords, pca);
 
@@ -708,11 +737,7 @@ fn nmonte_fit(target: &[f64], sources: &[Vec<f64>]) -> (Vec<f64>, f64) {
 /// assigns to the nearest cluster), this *decomposes* an admixed sample into source proportions
 /// and reports the fit residual as a quality score (`fit_distance`; lower is better). The `pca`
 /// asset's `populations` are the source library, so a richer/global asset yields wider admixtures.
-pub fn estimate_nmonte(
-    genotypes: &[SiteGenotype],
-    pca: &PcaLoadings,
-    reference_version: &str,
-) -> AncestryResult {
+pub fn estimate_nmonte(genotypes: &[SiteGenotype], pca: &PcaLoadings, reference_version: &str) -> AncestryResult {
     let coords = project_pca(genotypes, pca);
     let sources: Vec<Vec<f64>> = (0..pca.populations.len())
         .map(|p| pca.centroid(p).iter().map(|&x| x as f64).collect())
@@ -802,7 +827,11 @@ fn from_probabilities(
             populations: members,
         })
         .collect();
-    super_population_summary.sort_by(|a, b| b.percentage.partial_cmp(&a.percentage).unwrap_or(std::cmp::Ordering::Equal));
+    super_population_summary.sort_by(|a, b| {
+        b.percentage
+            .partial_cmp(&a.percentage)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
 
     // Touch the catalog color path so the API stays cohesive; color is consumed by the UI.
     debug_assert!(!population_color("EUR").is_empty());
@@ -825,7 +854,11 @@ fn from_probabilities(
 
 /// Binomial-proportion CI half-width (percent), widened for incomplete panels.
 fn ci_width(pct: f64, snps_with_data: usize, total_snps: usize) -> f64 {
-    let completeness = if total_snps == 0 { 0.0 } else { snps_with_data as f64 / total_snps as f64 };
+    let completeness = if total_snps == 0 {
+        0.0
+    } else {
+        snps_with_data as f64 / total_snps as f64
+    };
     let p = pct / 100.0;
     let base = if snps_with_data > 0 {
         1.96 * (p * (1.0 - p) / snps_with_data as f64).sqrt() * 100.0
@@ -924,10 +957,13 @@ mod tests {
                 freqs: vec![0.9, 0.1],
             })
             .collect();
-        let panel = AncestryPanel { build: "t".into(), populations: vec!["A".into(), "B".into()], sites };
+        let panel = AncestryPanel {
+            build: "t".into(),
+            populations: vec!["A".into(), "B".into()],
+            sites,
+        };
         // Half the sites are no-calls (dosage -1).
-        let genotypes: Vec<SiteGenotype> =
-            (1..=10).map(|p| sg("chr1", p, if p <= 5 { 2 } else { -1 })).collect();
+        let genotypes: Vec<SiteGenotype> = (1..=10).map(|p| sg("chr1", p, if p <= 5 { 2 } else { -1 })).collect();
 
         let result = estimate_by_allele_frequency(&genotypes, &panel, "t");
         assert_eq!(result.snps_with_genotype, 5);
@@ -1070,13 +1106,22 @@ mod tests {
                 position: pos,
                 reference_allele: 'A',
                 alternate_allele: 'G',
-                freqs: if pos % 2 == 0 { vec![0.95, 0.05] } else { vec![0.05, 0.95] },
+                freqs: if pos % 2 == 0 {
+                    vec![0.95, 0.05]
+                } else {
+                    vec![0.05, 0.95]
+                },
             })
             .collect();
-        let panel = AncestryPanel { build: "t".into(), populations: vec!["A".into(), "B".into()], sites };
+        let panel = AncestryPanel {
+            build: "t".into(),
+            populations: vec!["A".into(), "B".into()],
+            sites,
+        };
         // Genotype to match A: hom-alt (2) at A-rich even sites, hom-ref (0) at A-poor odd sites.
-        let genos: Vec<SiteGenotype> =
-            (1..=40).map(|p| sg("chr1", p, if p % 2 == 0 { 2 } else { 0 })).collect();
+        let genos: Vec<SiteGenotype> = (1..=40)
+            .map(|p| sg("chr1", p, if p % 2 == 0 { 2 } else { 0 }))
+            .collect();
 
         let r = estimate_admixture(&genos, &panel, "t");
         let a = r.components.iter().find(|c| c.population_code == "A").unwrap();
@@ -1099,10 +1144,19 @@ mod tests {
                 freqs: vec![0.99, 0.01],
             })
             .collect();
-        let panel = AncestryPanel { build: "t".into(), populations: vec!["A".into(), "B".into()], sites };
+        let panel = AncestryPanel {
+            build: "t".into(),
+            populations: vec!["A".into(), "B".into()],
+            sites,
+        };
         let genos: Vec<SiteGenotype> = (1..=60).map(|p| sg("chr1", p, 1)).collect(); // all het
         let r = estimate_admixture(&genos, &panel, "t");
-        let a = r.components.iter().find(|c| c.population_code == "A").unwrap().percentage;
+        let a = r
+            .components
+            .iter()
+            .find(|c| c.population_code == "A")
+            .unwrap()
+            .percentage;
         assert!((40.0..=60.0).contains(&a), "A% = {a} (expected ~50)");
     }
 
@@ -1115,7 +1169,11 @@ mod tests {
             alternate_allele: 'G',
             freqs: vec![0.1, 0.2, 0.3],
         }];
-        let p = AncestryPanel { build: "t".into(), populations: vec!["GBR".into(), "YRI".into(), "Steppe".into()], sites };
+        let p = AncestryPanel {
+            build: "t".into(),
+            populations: vec!["GBR".into(), "YRI".into(), "Steppe".into()],
+            sites,
+        };
         let s = p.subset(&["YRI", "GBR"]); // reorder + drop the absent-from-list "Steppe"
         assert_eq!(s.populations, vec!["YRI".to_string(), "GBR".to_string()]);
         assert_eq!(s.sites[0].freqs, vec![0.2, 0.1]); // columns follow the requested order
@@ -1148,7 +1206,10 @@ mod tests {
         let gbr = r.components.iter().find(|c| c.population_code == "GBR").unwrap();
         assert!(gbr.percentage > 90.0, "GBR% = {}", gbr.percentage);
         // Fine codes roll up to their super-pop (GBR → EUR).
-        assert!(r.super_population_summary.iter().any(|s| s.populations.contains(&"GBR".to_string())));
+        assert!(r
+            .super_population_summary
+            .iter()
+            .any(|s| s.populations.contains(&"GBR".to_string())));
     }
 
     // A 2-pop panel (A alt-rich / B alt-poor) for the diploid painting tests.
@@ -1162,7 +1223,11 @@ mod tests {
                 freqs: vec![0.95, 0.05],
             })
             .collect();
-        AncestryPanel { build: "t".into(), populations: vec!["A".into(), "B".into()], sites }
+        AncestryPanel {
+            build: "t".into(),
+            populations: vec!["A".into(), "B".into()],
+            sites,
+        }
     }
 
     /// Ancestry-HOMOZYGOUS sample: hom-alt (→ both copies A) first half, hom-ref (→ both copies B)
@@ -1171,14 +1236,18 @@ mod tests {
     fn painting_diploid_homozygous_switch() {
         let n = 80;
         let panel = two_pop_panel(n);
-        let genos: Vec<SiteGenotype> =
-            (0..n).map(|i| sg("chr1", 1 + i as i64 * 1_000_000, if i < n / 2 { 2 } else { 0 })).collect();
+        let genos: Vec<SiteGenotype> = (0..n)
+            .map(|i| sg("chr1", 1 + i as i64 * 1_000_000, if i < n / 2 { 2 } else { 0 }))
+            .collect();
         let prior = vec![("A".to_string(), 0.5), ("B".to_string(), 0.5)];
         let segs = paint_local_ancestry(&genos, &panel, &prior, &PaintParams::default());
         for copy in [0u8, 1u8] {
             let c: Vec<&AncestrySegment> = segs.iter().filter(|s| s.copy == copy).collect();
             assert_eq!(c.len(), 2, "copy {copy}: expected A→B switch, got {c:?}");
-            assert_eq!((c[0].population_code.as_str(), c[1].population_code.as_str()), ("A", "B"));
+            assert_eq!(
+                (c[0].population_code.as_str(), c[1].population_code.as_str()),
+                ("A", "B")
+            );
         }
     }
 

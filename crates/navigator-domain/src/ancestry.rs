@@ -108,7 +108,10 @@ pub fn population_super(code: &str) -> Option<&'static str> {
         // Ancient components are their own super-group (rolled up 1:1).
         return Some(c);
     }
-    FINE_POPULATIONS.iter().find(|(c, _, _)| *c == code).map(|(_, _, sp)| *sp)
+    FINE_POPULATIONS
+        .iter()
+        .find(|(c, _, _)| *c == code)
+        .map(|(_, _, sp)| *sp)
 }
 
 const SUPER_CODES: [&str; 8] = ["AFR", "AMR", "EAS", "SAS", "EUR", "MEA", "CAS", "OCE"];

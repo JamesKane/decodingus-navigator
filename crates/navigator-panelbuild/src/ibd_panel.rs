@@ -38,16 +38,28 @@ pub struct IbdPanelArgs {
 /// One ACGT base, or `None` (multiallelic / indel / blank).
 fn base(s: &str) -> Option<char> {
     let c = s.trim().chars().next()?;
-    matches!(c.to_ascii_uppercase(), 'A' | 'C' | 'G' | 'T').then_some(c.to_ascii_uppercase()).filter(|_| s.trim().len() == 1)
+    matches!(c.to_ascii_uppercase(), 'A' | 'C' | 'G' | 'T')
+        .then_some(c.to_ascii_uppercase())
+        .filter(|_| s.trim().len() == 1)
 }
 
 fn locus(cols: &HashMap<String, usize>, f: &[&str], prefix: &str) -> Option<Locus> {
-    let get = |name: &str| cols.get(name).and_then(|&i| f.get(i)).map(|s| s.trim()).filter(|s| !s.is_empty());
+    let get = |name: &str| {
+        cols.get(name)
+            .and_then(|&i| f.get(i))
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+    };
     let contig = get(&format!("{prefix}_contig"))?;
     let position = get(&format!("{prefix}_pos"))?.parse::<i64>().ok()?;
     let reference = base(get(&format!("{prefix}_ref"))?)?;
     let alternate = base(get(&format!("{prefix}_alt"))?)?;
-    Some(Locus { contig: contig.to_string(), position, reference, alternate })
+    Some(Locus {
+        contig: contig.to_string(),
+        position,
+        reference,
+        alternate,
+    })
 }
 
 pub fn build_ibd_panel(args: IbdPanelArgs) -> Result<()> {
@@ -57,8 +69,11 @@ pub fn build_ibd_panel(args: IbdPanelArgs) -> Result<()> {
         .next()
         .transpose()?
         .ok_or_else(|| anyhow::anyhow!("empty input {}", args.input.display()))?;
-    let cols: HashMap<String, usize> =
-        header.split('\t').enumerate().map(|(i, h)| (h.trim().to_ascii_lowercase(), i)).collect();
+    let cols: HashMap<String, usize> = header
+        .split('\t')
+        .enumerate()
+        .map(|(i, h)| (h.trim().to_ascii_lowercase(), i))
+        .collect();
     for required in ["rsid", "chm13_contig", "chm13_pos", "chm13_ref", "chm13_alt"] {
         anyhow::ensure!(cols.contains_key(required), "missing required column `{required}`");
     }
@@ -82,7 +97,11 @@ pub fn build_ibd_panel(args: IbdPanelArgs) -> Result<()> {
             _ => skipped += 1, // missing/indel/multiallelic CHM13 locus or rsid
         }
     }
-    anyhow::ensure!(!sites.is_empty(), "no usable sites parsed from {}", args.input.display());
+    anyhow::ensure!(
+        !sites.is_empty(),
+        "no usable sites parsed from {}",
+        args.input.display()
+    );
 
     let (panel, palindromes) = IbdPanel::from_sites(args.build, sites);
     let bytes = panel.to_bytes().map_err(|e| anyhow::anyhow!(e.to_string()))?;

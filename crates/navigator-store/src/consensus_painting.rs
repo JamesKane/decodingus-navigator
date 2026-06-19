@@ -17,7 +17,13 @@ pub struct StoredPainting {
 }
 
 /// Insert or replace the cached painting for a biosample.
-pub async fn upsert(pool: &SqlitePool, guid: SampleGuid, consensus_sig: &str, segments: &str, painted_at: &str) -> Result<(), StoreError> {
+pub async fn upsert(
+    pool: &SqlitePool,
+    guid: SampleGuid,
+    consensus_sig: &str,
+    segments: &str,
+    painted_at: &str,
+) -> Result<(), StoreError> {
     sqlx::query(
         "INSERT INTO consensus_painting (biosample_guid, consensus_sig, segments, painted_at) \
          VALUES (?, ?, ?, ?) \
@@ -73,11 +79,21 @@ mod tests {
         crate::biosample::create(pool.pool(), &bio).await.unwrap();
 
         assert!(get(pool.pool(), g).await.unwrap().is_none());
-        upsert(pool.pool(), g, "2026-06-15T00:00:00Z", "[]", "2026-06-15T01:00:00Z").await.unwrap();
+        upsert(pool.pool(), g, "2026-06-15T00:00:00Z", "[]", "2026-06-15T01:00:00Z")
+            .await
+            .unwrap();
         let got = get(pool.pool(), g).await.unwrap().unwrap();
         assert_eq!(got.consensus_sig, "2026-06-15T00:00:00Z");
         // Upsert replaces (a re-paint after a consensus rebuild).
-        upsert(pool.pool(), g, "2026-06-16T00:00:00Z", r#"[{"x":1}]"#, "2026-06-16T01:00:00Z").await.unwrap();
+        upsert(
+            pool.pool(),
+            g,
+            "2026-06-16T00:00:00Z",
+            r#"[{"x":1}]"#,
+            "2026-06-16T01:00:00Z",
+        )
+        .await
+        .unwrap();
         let got = get(pool.pool(), g).await.unwrap().unwrap();
         assert_eq!(got.consensus_sig, "2026-06-16T00:00:00Z");
         assert_eq!(got.segments, r#"[{"x":1}]"#);

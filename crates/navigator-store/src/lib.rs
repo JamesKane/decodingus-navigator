@@ -15,10 +15,10 @@ pub mod biosample;
 pub mod chip_profile;
 pub mod consensus_painting;
 pub mod consensus_profile;
+pub mod error;
 pub mod haplogroup_call;
 pub mod ibd_exchange;
 pub mod mtdna;
-pub mod error;
 pub mod panel;
 pub mod project;
 pub mod reconciliation;
@@ -55,10 +55,7 @@ impl Store {
     /// Open an in-memory database (one connection, so all ops share it) for tests.
     pub async fn open_in_memory() -> Result<Self, StoreError> {
         let opts = SqliteConnectOptions::from_str("sqlite::memory:")?.foreign_keys(true);
-        let pool = SqlitePoolOptions::new()
-            .max_connections(1)
-            .connect_with(opts)
-            .await?;
+        let pool = SqlitePoolOptions::new().max_connections(1).connect_with(opts).await?;
         MIGRATOR.run(&pool).await?;
         Ok(Store { pool })
     }

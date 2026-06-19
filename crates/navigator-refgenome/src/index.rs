@@ -90,10 +90,17 @@ pub fn decompress_and_index(src: &Path, fa_out: &Path) -> Result<String, Refgeno
         let input = File::open(src).map_err(|e| RefgenomeError::io(src, e))?;
         let mut dec = MultiGzDecoder::new(BufReader::new(input));
         let out = BufWriter::new(File::create(&part).map_err(|e| RefgenomeError::io(&part, e))?);
-        let mut tee = HashingWriter { inner: out, hasher: Sha256::new() };
+        let mut tee = HashingWriter {
+            inner: out,
+            hasher: Sha256::new(),
+        };
         io::copy(&mut dec, &mut tee).map_err(|e| RefgenomeError::io(&part, e))?;
         fa_sha = tee.hasher.finalize().iter().map(|b| format!("{b:02x}")).collect();
-        tee.inner.into_inner().map_err(|e| RefgenomeError::io(&part, e.into_error()))?.sync_all().ok();
+        tee.inner
+            .into_inner()
+            .map_err(|e| RefgenomeError::io(&part, e.into_error()))?
+            .sync_all()
+            .ok();
         std::fs::rename(&part, fa_out).map_err(|e| RefgenomeError::io(fa_out, e))?;
         let _ = std::fs::remove_file(src);
     } else {
@@ -105,7 +112,9 @@ pub fn decompress_and_index(src: &Path, fa_out: &Path) -> Result<String, Refgeno
 
     let index = fasta::fs::index(fa_out).map_err(|e| RefgenomeError::io(fa_out, e))?;
     let fai = with_suffix(fa_out, "fai");
-    let mut writer = fasta::fai::Writer::new(BufWriter::new(File::create(&fai).map_err(|e| RefgenomeError::io(&fai, e))?));
+    let mut writer = fasta::fai::Writer::new(BufWriter::new(
+        File::create(&fai).map_err(|e| RefgenomeError::io(&fai, e))?,
+    ));
     writer.write_index(&index).map_err(|e| RefgenomeError::io(&fai, e))?;
     Ok(fa_sha)
 }

@@ -32,15 +32,14 @@ fn main() {
             last = done;
         }
     };
-    let standalone = match coverage::collect_coverage_callable_with_progress(
-        bam, reference, &params, None, &mut progress,
-    ) {
-        Ok(r) => r,
-        Err(e) => {
-            eprintln!("standalone coverage error: {e}");
-            std::process::exit(1);
-        }
-    };
+    let standalone =
+        match coverage::collect_coverage_callable_with_progress(bam, reference, &params, None, &mut progress) {
+            Ok(r) => r,
+            Err(e) => {
+                eprintln!("standalone coverage error: {e}");
+                std::process::exit(1);
+            }
+        };
     let standalone_dur = t0.elapsed();
     eprintln!("\nstandalone coverage done in {standalone_dur:.1?}");
     summarize("standalone", &standalone);
@@ -48,15 +47,14 @@ fn main() {
     // 2. The oracle: trusted per-contig parallel walker on the same file.
     let t1 = Instant::now();
     let progress2 = |_done: usize, _total: usize| {};
-    let unified = match unified::collect_unified_metrics_parallel_with_progress(
-        bam, reference, &params, None, &progress2,
-    ) {
-        Ok(r) => r,
-        Err(e) => {
-            eprintln!("parallel walker error: {e}");
-            std::process::exit(1);
-        }
-    };
+    let unified =
+        match unified::collect_unified_metrics_parallel_with_progress(bam, reference, &params, None, &progress2) {
+            Ok(r) => r,
+            Err(e) => {
+                eprintln!("parallel walker error: {e}");
+                std::process::exit(1);
+            }
+        };
     let parallel_dur = t1.elapsed();
     eprintln!("\nparallel walker done in {parallel_dur:.1?}");
     summarize("parallel ", &unified.coverage);

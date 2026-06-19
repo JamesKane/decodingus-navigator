@@ -48,7 +48,14 @@ pub fn detect(file_name: &str, head: &str) -> DetectedData {
     if ends(".vcf") || ends(".vcf.gz") {
         return DetectedData::Variants;
     }
-    if ends(".fasta") || ends(".fa") || ends(".fna") || ends(".fas") || ends(".fasta.gz") || ends(".fa.gz") || ends(".fna.gz") {
+    if ends(".fasta")
+        || ends(".fa")
+        || ends(".fna")
+        || ends(".fas")
+        || ends(".fasta.gz")
+        || ends(".fa.gz")
+        || ends(".fna.gz")
+    {
         return DetectedData::MtdnaFasta;
     }
 
@@ -199,14 +206,27 @@ fn chip_score(lines: &[&str], data_lines: &[&str], file_name: &str) -> i32 {
         .map(|l| l.to_ascii_lowercase())
         .collect::<Vec<_>>()
         .join("\n");
-    for token in ["23andme", "ancestrydna", "ancestry dna", "myheritage", "living dna", "livingdna"] {
+    for token in [
+        "23andme",
+        "ancestrydna",
+        "ancestry dna",
+        "myheritage",
+        "living dna",
+        "livingdna",
+    ] {
         if comments.contains(token) {
             score += 3;
             break;
         }
     }
 
-    let content_lower = data_lines.iter().take(20).copied().collect::<Vec<_>>().join("\n").to_ascii_lowercase();
+    let content_lower = data_lines
+        .iter()
+        .take(20)
+        .copied()
+        .collect::<Vec<_>>()
+        .join("\n")
+        .to_ascii_lowercase();
     let rsid = count_token(&content_lower, "rs", 4, 12);
     score += match rsid {
         d if d >= 10 => 4,
@@ -217,7 +237,17 @@ fn chip_score(lines: &[&str], data_lines: &[&str], file_name: &str) -> i32 {
     };
 
     let header = data_lines.first().map(|l| l.to_ascii_uppercase()).unwrap_or_default();
-    let indicators = ["CHROMOSOME", "CHROM", "CHR", "POSITION", "POS", "GENOTYPE", "ALLELE1", "ALLELE2", "RSID"];
+    let indicators = [
+        "CHROMOSOME",
+        "CHROM",
+        "CHR",
+        "POSITION",
+        "POS",
+        "GENOTYPE",
+        "ALLELE1",
+        "ALLELE2",
+        "RSID",
+    ];
     let header_hits = indicators.iter().filter(|h| header.contains(*h)).count();
     score += match header_hits {
         h if h >= 3 => 3,
@@ -292,6 +322,9 @@ mod tests {
 
     #[test]
     fn junk_is_unknown() {
-        assert_eq!(detect("notes.txt", "hello world\nthis is not genetic data\n"), DetectedData::Unknown);
+        assert_eq!(
+            detect("notes.txt", "hello world\nthis is not genetic data\n"),
+            DetectedData::Unknown
+        );
     }
 }

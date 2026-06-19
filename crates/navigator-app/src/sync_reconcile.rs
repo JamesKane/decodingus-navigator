@@ -16,7 +16,12 @@ pub enum ReconcileAction {
     InSync { entity_ref: String },
     /// Remote changed since our push (or we have a local-only edit) — apply remote→local. `conflict`
     /// ⇒ local *also* changed since the push (both diverged; remote wins, logged).
-    ApplyRemote { entity_ref: String, collection: String, remote: RemoteRecord, conflict: bool },
+    ApplyRemote {
+        entity_ref: String,
+        collection: String,
+        remote: RemoteRecord,
+        conflict: bool,
+    },
     /// Local was published but the record is gone on the PDS — re-publish our copy.
     RePush { entity_ref: String },
     /// A record exists on the PDS we have no local sync-state for — adopt it locally.
@@ -39,9 +44,13 @@ pub fn plan(local: &[(StoredSyncState, Option<String>)], remote: &[RemoteRecord]
                 if r.cid == ss.at_cid {
                     // Remote unchanged since our push.
                     if local_dirty {
-                        actions.push(ReconcileAction::RePush { entity_ref: ss.entity_ref.clone() });
+                        actions.push(ReconcileAction::RePush {
+                            entity_ref: ss.entity_ref.clone(),
+                        });
                     } else {
-                        actions.push(ReconcileAction::InSync { entity_ref: ss.entity_ref.clone() });
+                        actions.push(ReconcileAction::InSync {
+                            entity_ref: ss.entity_ref.clone(),
+                        });
                     }
                 } else {
                     // Remote moved on (edited elsewhere) → apply; conflict if we also have local edits.
@@ -55,7 +64,9 @@ pub fn plan(local: &[(StoredSyncState, Option<String>)], remote: &[RemoteRecord]
             }
             None => {
                 // We published it but it's gone on the PDS — re-publish.
-                actions.push(ReconcileAction::RePush { entity_ref: ss.entity_ref.clone() });
+                actions.push(ReconcileAction::RePush {
+                    entity_ref: ss.entity_ref.clone(),
+                });
             }
         }
     }
@@ -64,7 +75,10 @@ pub fn plan(local: &[(StoredSyncState, Option<String>)], remote: &[RemoteRecord]
         if !matched_rkeys.contains(r.rkey()) {
             // Pick the collection off the at-uri (…/<collection>/<rkey>).
             let collection = r.uri.rsplit('/').nth(1).unwrap_or("").to_string();
-            actions.push(ReconcileAction::AdoptRemote { collection, remote: r.clone() });
+            actions.push(ReconcileAction::AdoptRemote {
+                collection,
+                remote: r.clone(),
+            });
         }
     }
     actions
@@ -99,7 +113,12 @@ mod tests {
     fn in_sync_when_cid_matches_and_local_clean() {
         let local = vec![(ss("biosample:1", "rk1", "cidA", "h1"), Some("h1".to_string()))];
         let remote = vec![rr("rk1", "cidA")];
-        assert_eq!(plan(&local, &remote), vec![ReconcileAction::InSync { entity_ref: "biosample:1".into() }]);
+        assert_eq!(
+            plan(&local, &remote),
+            vec![ReconcileAction::InSync {
+                entity_ref: "biosample:1".into()
+            }]
+        );
     }
 
     #[test]
@@ -113,28 +132,46 @@ mod tests {
     #[test]
     fn conflict_when_both_changed() {
         // remote cid differs AND local hash differs from the push-time hash.
-        let local = vec![(ss("biosample:1", "rk1", "cidA", "h1"), Some("h2-local-edit".to_string()))];
+        let local = vec![(
+            ss("biosample:1", "rk1", "cidA", "h1"),
+            Some("h2-local-edit".to_string()),
+        )];
         let remote = vec![rr("rk1", "cidB")];
         let a = plan(&local, &remote);
-        assert!(matches!(&a[0], ReconcileAction::ApplyRemote { conflict: true, .. }), "both diverged → conflict (remote wins)");
+        assert!(
+            matches!(&a[0], ReconcileAction::ApplyRemote { conflict: true, .. }),
+            "both diverged → conflict (remote wins)"
+        );
     }
 
     #[test]
     fn repush_when_local_dirty_but_remote_unchanged() {
         let local = vec![(ss("biosample:1", "rk1", "cidA", "h1"), Some("h2".to_string()))];
         let remote = vec![rr("rk1", "cidA")];
-        assert_eq!(plan(&local, &remote), vec![ReconcileAction::RePush { entity_ref: "biosample:1".into() }]);
+        assert_eq!(
+            plan(&local, &remote),
+            vec![ReconcileAction::RePush {
+                entity_ref: "biosample:1".into()
+            }]
+        );
     }
 
     #[test]
     fn repush_when_remote_missing() {
         let local = vec![(ss("biosample:1", "rk1", "cidA", "h1"), None)];
-        assert_eq!(plan(&local, &[]), vec![ReconcileAction::RePush { entity_ref: "biosample:1".into() }]);
+        assert_eq!(
+            plan(&local, &[]),
+            vec![ReconcileAction::RePush {
+                entity_ref: "biosample:1".into()
+            }]
+        );
     }
 
     #[test]
     fn adopt_remote_when_unknown_locally() {
         let a = plan(&[], &[rr("rk9", "cidZ")]);
-        assert!(matches!(&a[0], ReconcileAction::AdoptRemote { collection, remote } if collection == "com.decodingus.biosample" && remote.rkey() == "rk9"));
+        assert!(
+            matches!(&a[0], ReconcileAction::AdoptRemote { collection, remote } if collection == "com.decodingus.biosample" && remote.rkey() == "rk9")
+        );
     }
 }

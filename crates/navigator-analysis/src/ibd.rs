@@ -174,24 +174,23 @@ impl ChromosomeMap {
                 let n = self.positions.len();
                 if ins == 0 {
                     if n >= 2 {
-                        let rate = (self.cm[1] - self.cm[0])
-                            / (self.positions[1] - self.positions[0]) as f64;
+                        let rate = (self.cm[1] - self.cm[0]) / (self.positions[1] - self.positions[0]) as f64;
                         self.cm[0] + rate * (position - self.positions[0]) as f64
                     } else {
                         self.cm[0]
                     }
                 } else if ins >= n {
                     if n >= 2 {
-                        let rate = (self.cm[n - 1] - self.cm[n - 2])
-                            / (self.positions[n - 1] - self.positions[n - 2]) as f64;
+                        let rate =
+                            (self.cm[n - 1] - self.cm[n - 2]) / (self.positions[n - 1] - self.positions[n - 2]) as f64;
                         self.cm[n - 1] + rate * (position - self.positions[n - 1]) as f64
                     } else {
                         self.cm[n - 1]
                     }
                 } else {
                     let (lo, hi) = (ins - 1, ins);
-                    let frac = (position - self.positions[lo]) as f64
-                        / (self.positions[hi] - self.positions[lo]) as f64;
+                    let frac =
+                        (position - self.positions[lo]) as f64 / (self.positions[hi] - self.positions[lo]) as f64;
                     self.cm[lo] + frac * (self.cm[hi] - self.cm[lo])
                 }
             }
@@ -228,13 +227,19 @@ impl GeneticMap {
     /// A uniform `cm_per_mb` map over the given `(chromosome, length_bp)` pairs.
     pub fn uniform(cm_per_mb: f64, lengths: &[(&str, i32)]) -> Self {
         let markers = lengths.iter().map(|&(chr, len)| {
-            (chr.to_string(), vec![1, len], vec![0.0, len as f64 / 1_000_000.0 * cm_per_mb])
+            (
+                chr.to_string(),
+                vec![1, len],
+                vec![0.0, len as f64 / 1_000_000.0 * cm_per_mb],
+            )
         });
         GeneticMap::from_markers(markers)
     }
 
     pub fn position_to_cm(&self, chromosome: &str, position: i32) -> Option<f64> {
-        self.maps.get(&normalize_chromosome(chromosome)).map(|m| m.interpolate(position))
+        self.maps
+            .get(&normalize_chromosome(chromosome))
+            .map(|m| m.interpolate(position))
     }
 
     pub fn interval_cm(&self, chromosome: &str, start_bp: i32, end_bp: i32) -> Option<f64> {
@@ -342,8 +347,7 @@ impl PairwiseIbdDetector {
                 local_total += 1;
             }
             let ibs_fraction = if local_total > 0 {
-                (local_ibs2 as f64 + 0.5 * (local_total - local_ibs2 - local_ibs0) as f64)
-                    / local_total as f64
+                (local_ibs2 as f64 + 0.5 * (local_total - local_ibs2 - local_ibs0) as f64) / local_total as f64
             } else {
                 0.0
             };
@@ -533,6 +537,9 @@ mod tests {
         assert_eq!(s.total_shared_cm, 210.0);
         assert_eq!(s.longest_segment_cm, 120.0);
         assert_eq!(s.relationship, RelationshipEstimate::SecondCousin); // 210 >= 200
-        assert_eq!(MatchSummary::from_segments(&[]).relationship, RelationshipEstimate::Unknown);
+        assert_eq!(
+            MatchSummary::from_segments(&[]).relationship,
+            RelationshipEstimate::Unknown
+        );
     }
 }

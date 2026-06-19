@@ -29,9 +29,7 @@ pub fn collect_evidence(
     let mut reader = bam::io::reader::Builder
         .build_from_path(bam_path)
         .map_err(|e| AnalysisError::io(bam_path, e))?;
-    let header = reader
-        .read_header()
-        .map_err(|e| AnalysisError::io(bam_path, e))?;
+    let header = reader.read_header().map_err(|e| AnalysisError::io(bam_path, e))?;
 
     // Reference id -> name (header order).
     let names: Vec<String> = header
@@ -84,9 +82,9 @@ pub fn collect_evidence(
 
         // 2. Discordant pairs (primary, paired only).
         if !secondary_or_supp && flags.is_segmented() {
-            if let Some(dp) = detect_discordant_pair(
-                &record, contig, &names, mapq, insert_min, insert_max, config, bam_path,
-            )? {
+            if let Some(dp) =
+                detect_discordant_pair(&record, contig, &names, mapq, insert_min, insert_max, config, bam_path)?
+            {
                 discordant_pairs.push(dp);
             }
         }
@@ -129,9 +127,7 @@ fn detect_discordant_pair(
 
     let ref_id = opt_usize(record.reference_sequence_id(), path)?;
     let mate_ref_id = opt_usize(record.mate_reference_sequence_id(), path)?;
-    let mate_chrom = mate_ref_id
-        .and_then(|i| names.get(i).cloned())
-        .unwrap_or_default();
+    let mate_chrom = mate_ref_id.and_then(|i| names.get(i).cloned()).unwrap_or_default();
     let mate_pos = record
         .mate_alignment_start()
         .transpose()
@@ -210,11 +206,9 @@ fn extract_split_read(
     if parts.len() < 5 {
         return Ok(None);
     }
-    let (Ok(supp_pos), Some(supp_strand), Ok(supp_mapq)) = (
-        parts[1].parse::<i64>(),
-        parts[2].chars().next(),
-        parts[4].parse::<u8>(),
-    ) else {
+    let (Ok(supp_pos), Some(supp_strand), Ok(supp_mapq)) =
+        (parts[1].parse::<i64>(), parts[2].chars().next(), parts[4].parse::<u8>())
+    else {
         return Ok(None);
     };
 
@@ -237,7 +231,11 @@ fn extract_split_read(
             read_name: record.name().map(|n| n.to_string()).unwrap_or_default(),
             primary_chrom: contig.to_string(),
             primary_pos: pos1,
-            primary_strand: if record.flags().is_reverse_complemented() { '-' } else { '+' },
+            primary_strand: if record.flags().is_reverse_complemented() {
+                '-'
+            } else {
+                '+'
+            },
             supp_chrom: parts[0].to_string(),
             supp_pos,
             supp_strand,
@@ -249,10 +247,7 @@ fn extract_split_read(
     }
 }
 
-fn opt_usize(
-    v: Option<std::io::Result<usize>>,
-    path: &Path,
-) -> Result<Option<usize>, AnalysisError> {
+fn opt_usize(v: Option<std::io::Result<usize>>, path: &Path) -> Result<Option<usize>, AnalysisError> {
     match v {
         Some(r) => Ok(Some(r.map_err(|e| AnalysisError::io(path, e))?)),
         None => Ok(None),

@@ -61,18 +61,22 @@ fn parse_line(line: &str) -> Option<StrLocus> {
     let name = f.next().unwrap_or("").to_string();
     // Motif is optional in the spec; HipSTR's reference includes it. Take the first alternative.
     let motif = f.next().unwrap_or("").split('/').next().unwrap_or("").to_string();
-    Some(StrLocus { contig, start, end, period, ref_copies, name, motif })
+    Some(StrLocus {
+        contig,
+        start,
+        end,
+        period,
+        ref_copies,
+        name,
+        motif,
+    })
 }
 
 /// Read STR loci from a (gzipped) HipSTR reference BED, keeping only those on `contig` (matched
 /// prefix-insensitively) with `period >= min_period`. Filtering while streaming avoids holding the
 /// genome-wide ~1.6M-locus set in memory when only one chromosome is needed. Results are sorted by
 /// start. `min_period` of 2 drops homopolymers (period 1) — noisy and not genealogical markers.
-pub fn load_hipstr_contig(
-    bed_gz: &Path,
-    contig: &str,
-    min_period: u8,
-) -> Result<Vec<StrLocus>, AnalysisError> {
+pub fn load_hipstr_contig(bed_gz: &Path, contig: &str, min_period: u8) -> Result<Vec<StrLocus>, AnalysisError> {
     let file = File::open(bed_gz).map_err(|e| AnalysisError::io(bed_gz, e))?;
     let reader = BufReader::new(MultiGzDecoder::new(file));
     let mut out = Vec::new();

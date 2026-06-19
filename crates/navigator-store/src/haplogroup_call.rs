@@ -155,7 +155,11 @@ pub async fn list_all(pool: &SqlitePool) -> Result<Vec<(SampleGuid, DnaType, Run
             "Mt" => DnaType::Mt,
             other => return Err(StoreError::Decode(format!("haplogroup_call dna_type {other:?}"))),
         };
-        let lineage = if r.lineage.is_empty() { Vec::new() } else { r.lineage.split('\t').map(str::to_string).collect() };
+        let lineage = if r.lineage.is_empty() {
+            Vec::new()
+        } else {
+            r.lineage.split('\t').map(str::to_string).collect()
+        };
         out.push((
             guid,
             dna_type,

@@ -1,0 +1,2 @@
+# Project formatting: the code is written wide; declare it so `cargo fmt` is stable.
+max_width = 120

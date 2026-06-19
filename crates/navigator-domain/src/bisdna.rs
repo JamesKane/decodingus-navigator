@@ -106,7 +106,11 @@ pub fn parse(text: &str) -> Result<Vec<BisdnaCall>, String> {
         if name.is_empty() {
             continue;
         }
-        calls.push(BisdnaCall { name: name.to_string(), genotype: genotype.to_string(), verdict });
+        calls.push(BisdnaCall {
+            name: name.to_string(),
+            genotype: genotype.to_string(),
+            verdict,
+        });
     }
 
     if calls.is_empty() {
@@ -115,26 +119,17 @@ pub fn parse(text: &str) -> Result<Vec<BisdnaCall>, String> {
     Ok(calls)
 }
 
-/// Watson–Crick complement (non-ACGT passes through). Local copy so the resolver stays in
-/// `navigator-domain`; the genotype QC needs it because BISDNA calls the Illumina TOP strand.
-fn complement(b: u8) -> u8 {
-    match b.to_ascii_uppercase() {
-        b'A' => b'T',
-        b'T' => b'A',
-        b'C' => b'G',
-        b'G' => b'C',
-        other => other,
-    }
-}
-
 /// Does `genotype` carry `allele` (or its complement)? QC only — a miss on both strands flags
 /// a likely dictionary/name mismatch, but the verdict (not the genotype) decides the call.
 fn genotype_supports(genotype: &str, allele: &str) -> bool {
     let Some(want) = allele.bytes().next().map(|b| b.to_ascii_uppercase()) else {
         return true;
     };
-    let comp = complement(want);
-    genotype.bytes().map(|b| b.to_ascii_uppercase()).any(|b| b == want || b == comp)
+    let comp = crate::seq::complement_base_u8(want);
+    genotype
+        .bytes()
+        .map(|b| b.to_ascii_uppercase())
+        .any(|b| b == want || b == comp)
 }
 
 /// The result of resolving BISDNA calls against the Y-SNP dictionary on a given build: the
@@ -221,7 +216,11 @@ pub fn placement_calls(calls: &[BisdnaCall], dict: &YsnpDictionary, build: &str)
         let Some(resolved) = dict.resolve(&c.name, build) else {
             continue;
         };
-        let allele = if want_derived { &resolved.coord.derived } else { &resolved.coord.ancestral };
+        let allele = if want_derived {
+            &resolved.coord.derived
+        } else {
+            &resolved.coord.ancestral
+        };
         if let Some(base) = allele.chars().next() {
             map.insert(resolved.coord.position, base.to_ascii_uppercase());
         }
@@ -248,7 +247,14 @@ mod tests {
     fn parses_real_shape_skipping_preamble() {
         let calls = parse(SAMPLE).unwrap();
         assert_eq!(calls.len(), 6);
-        assert_eq!(calls[0], BisdnaCall { name: "Apt".into(), genotype: "GG".into(), verdict: Verdict::Negative });
+        assert_eq!(
+            calls[0],
+            BisdnaCall {
+                name: "Apt".into(),
+                genotype: "GG".into(),
+                verdict: Verdict::Negative
+            }
+        );
         assert_eq!(calls[2].verdict, Verdict::Positive);
     }
 
@@ -267,7 +273,10 @@ mod tests {
         assert_eq!(nc.genotype, "00");
         assert_eq!(nc.verdict, Verdict::NoCall);
         // `(positive)` (back-mutation-prone marker called derived) parses as Positive.
-        assert_eq!(calls.iter().find(|c| c.name == "S163").unwrap().verdict, Verdict::Positive);
+        assert_eq!(
+            calls.iter().find(|c| c.name == "S163").unwrap().verdict,
+            Verdict::Positive
+        );
     }
 
     #[test]
@@ -279,7 +288,14 @@ mod tests {
     #[test]
     fn quoted_and_padded_cells_are_cleaned() {
         let f = "SNPID\tgenotype\tresult\n\" CTS10003 \"\t\" CC \"\t\" negative \"\n";
-        assert_eq!(parse(f).unwrap()[0], BisdnaCall { name: "CTS10003".into(), genotype: "CC".into(), verdict: Verdict::Negative });
+        assert_eq!(
+            parse(f).unwrap()[0],
+            BisdnaCall {
+                name: "CTS10003".into(),
+                genotype: "CC".into(),
+                verdict: Verdict::Negative
+            }
+        );
     }
 
     #[test]
@@ -322,7 +338,7 @@ S163\ths1\tchrY\t15000000\t+\tA\tC
         // Apt + CTS10003 are negative → counted, not emitted; CTS10003 also isn't in the dict.
         assert_eq!(out.ancestral, 2);
         assert_eq!(out.no_call, 1); // CTS3281
-        // Three positives (CTS10149, CTS12633, S163) are all in the dict → three calls.
+                                    // Three positives (CTS10149, CTS12633, S163) are all in the dict → three calls.
         assert_eq!(out.calls.len(), 3);
         assert_eq!(out.unresolved, 0);
 

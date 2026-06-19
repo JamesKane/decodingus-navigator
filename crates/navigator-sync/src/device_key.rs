@@ -39,7 +39,9 @@ impl DeviceKey {
     pub fn generate() -> Self {
         let mut seed = [0u8; 32];
         rand_core::RngCore::fill_bytes(&mut rand_core::OsRng, &mut seed);
-        DeviceKey { signing: SigningKey::from_bytes(&seed) }
+        DeviceKey {
+            signing: SigningKey::from_bytes(&seed),
+        }
     }
 
     /// Reconstruct from a stored 32-byte seed.
@@ -47,7 +49,9 @@ impl DeviceKey {
         let arr: [u8; 32] = seed
             .try_into()
             .map_err(|_| SyncError::Crypto("device key seed must be 32 bytes".into()))?;
-        Ok(DeviceKey { signing: SigningKey::from_bytes(&arr) })
+        Ok(DeviceKey {
+            signing: SigningKey::from_bytes(&arr),
+        })
     }
 
     /// The `did:key:z…` identifier carrying this key's public half — what gets published in
@@ -159,7 +163,10 @@ mod tests {
         // STANDARD alphabet uses '+' '/' '='; URL-safe uses '-' '_'. The AppView decodes
         // with STANDARD, so we must never emit the URL-safe-only characters.
         let sig = DeviceKey::generate().sign("hello\nworld\n42");
-        assert!(!sig.contains('-') && !sig.contains('_'), "must be STANDARD, not URL-safe base64");
+        assert!(
+            !sig.contains('-') && !sig.contains('_'),
+            "must be STANDARD, not URL-safe base64"
+        );
     }
 
     #[test]

@@ -77,9 +77,11 @@ pub async fn delete(pool: &SqlitePool, id: i64) -> Result<bool, StoreError> {
 
 /// All mtDNA sequences for a biosample.
 pub async fn list_for_biosample(pool: &SqlitePool, guid: SampleGuid) -> Result<Vec<MtdnaSequence>, StoreError> {
-    let rows: Vec<Row> = sqlx::query_as(&format!("SELECT {COLS} FROM mtdna_sequence WHERE biosample_guid = ? ORDER BY id"))
-        .bind(guid.0.to_string())
-        .fetch_all(pool)
-        .await?;
+    let rows: Vec<Row> = sqlx::query_as(&format!(
+        "SELECT {COLS} FROM mtdna_sequence WHERE biosample_guid = ? ORDER BY id"
+    ))
+    .bind(guid.0.to_string())
+    .fetch_all(pool)
+    .await?;
     rows.into_iter().map(Row::into_domain).collect()
 }

@@ -1,5 +1,9 @@
 # Decoding-Us Navigator User Guide
 
+> **Alpha release.** Navigator is under active development. The analyses below are usable today, but
+> outputs, file layouts, and the UI may still change between releases. Where a module's output has not
+> yet been independently validated, the guide says so.
+
 Welcome to the **Decoding-Us Navigator**, your private, local companion for advanced genomic analysis. This application lets you explore your DNA data with professional-grade bioinformatics directly on your own computer, keeping your genetic privacy intact while contributing to citizen science.
 
 ## Table of Contents
@@ -10,11 +14,14 @@ Welcome to the **Decoding-Us Navigator**, your private, local companion for adva
 5. [Core Features](#core-features)
    - [Workspace Management](#workspace-management)
    - [Importing Data](#importing-data)
+   - [Project Import (batch)](#project-import-batch-with-the-sidecar-fast-path)
    - [Running Analyses](#running-analyses)
+   - [Exporting & Sharing Results](#exporting--sharing-results)
 6. [The Command Line](#the-command-line)
 7. [Data Management & Privacy](#data-management--privacy)
-8. [Advanced Usage](#advanced-usage)
-9. [Troubleshooting](#troubleshooting)
+8. [Settings](#settings)
+9. [Advanced Usage](#advanced-usage)
+10. [Troubleshooting](#troubleshooting)
 
 ---
 
@@ -57,7 +64,7 @@ The optimized binary is named `navigator` and lands at `target/release/navigator
 ./target/release/navigator
 ```
 
-Running `navigator` with no arguments opens the graphical Workbench. Running it with a subcommand (`ingest`, `subjects`, `show`, `projects`) runs in headless mode against the same workspace — see [The Command Line](#the-command-line).
+Running `navigator` with no arguments opens the graphical Workbench. Running it with a subcommand (`ingest`, `subjects`, `show`, `projects`, `call`, `liftvcf`) runs in headless mode against the same workspace — see [The Command Line](#the-command-line).
 
 ## Getting Started
 
@@ -77,7 +84,14 @@ On first launch, Navigator creates its local workspace database automatically at
 
 ### Workspace Management
 Organize your research:
-- **Subjects (Biosamples):** Create an entry for each individual you study. The subject detail panel has sub-tabs for **Overview**, **Y-DNA**, **mtDNA**, **Ancestry**, **IBD Matches**, and **Data Sources**.
+- **Subjects (Biosamples):** Create an entry for each individual you study. The subject detail panel has sub-tabs for:
+  - **Overview** — identity, summary status, and consensus haplogroup assignments.
+  - **Y-DNA** — split into **Haplogroup** (placement and supporting branch evidence), **SNP** (the full genotyped-variant table, including **Private** off-backbone calls and **Imported** vendor Y-SNPs), and **STR** (Y-STR panel reports).
+  - **mtDNA** — **Summary** (maternal haplogroup consensus) and **Variants** (rCRS-relative mutation list and heteroplasmy).
+  - **Autosomal** — **Summary** plus a **Profile** diploid genotype table from the SNV/indel caller.
+  - **Ancestry** — admixture, PCA, fine-population breakdown, and DNA painting.
+  - **IBD Matches** — shared-segment detection and network match suggestions.
+  - **Sources** — the per-result hub where you add files and see every run, alignment, and profile attached to the subject.
 - **Projects:** Group related subjects (e.g. "Family Study", "Ancient DNA") and assign an administrator.
 
 ### Importing Data
@@ -87,12 +101,12 @@ Navigator auto-detects the type of any file you import and routes it appropriate
 |--------|-----------|
 | **BAM / CRAM** | Aligned sequencing reads (attached to a sequencing run). |
 | **VCF / GVCF** | Variant calls from any caller; GVCF additionally carries callable-region context for a fast haplogroup path. |
-| **mtDNA FASTA** | Mitochondrial sequence (`.fasta`/`.fa`/`.fna`, plain or `.gz`) for maternal-lineage assignment. |
-| **Chip / array raw data** | Consumer genotype files from 23andMe, AncestryDNA, MyHeritage, Living DNA, and FTDNA. Y and mtDNA haplogroups are placed on import. |
-| **Y-STR profiles** | Short-tandem-repeat CSV/TSV exports (e.g. FTDNA/YSEQ), marker name + repeat count. |
+| **mtDNA FASTA** | Mitochondrial sequence (`.fasta`/`.fa`/`.fna`/`.fas`, plain or `.gz`) for maternal-lineage assignment. |
+| **Chip / array raw data** | Consumer genotype files from 23andMe, AncestryDNA, MyHeritage, and Living DNA. Y and mtDNA haplogroups (and autosomal ancestry) are placed on import. |
+| **Y-STR profiles** | Short-tandem-repeat CSV/TSV exports (e.g. FTDNA / YSEQ), marker name + repeat count. |
 | **Y-SNP panels** | BISDNA chromo2 genotyped Y-SNP exports, imported as real variant calls. |
 
-To import in the desktop app: select a subject, open the **Data Sources** tab, and add a file. Navigator computes a checksum, detects the platform/test type, and files the data under the right run, alignment, or profile.
+To import in the desktop app: select a subject, open the **Sources** tab, and add a file. Navigator computes a checksum, detects the platform/test type, and files the data under the right run, alignment, or profile.
 
 ### Project Import (batch, with the sidecar fast path)
 When you have many samples to load — for example a whole sequencing project staged on a NAS — use **Project Import** in the desktop app to ingest an entire directory tree in one pass. Navigator scans the folder, creates the project and one subject per sample, and attaches each sample's files.
@@ -127,8 +141,10 @@ Recognized sidecars (matched by file-name suffix, case-insensitive — the sampl
 | `*.chrY.g.vcf.gz` (+ `.tbi`) | Y-DNA haplogroup | Full |
 | `*.chrM.g.vcf.gz` (+ `.tbi`) | mtDNA haplogroup | Full |
 | `*.sex` (contains `male`/`female`) | Genetic sex | Full |
-| `stats.txt` (`samtools stats` output) | Read metrics (counts, mean read length, insert size) | Full |
+| `stats.txt` (`samtools stats`) / `*.flagstat` | Read metrics (counts, mean read length, insert size) | Full |
 | `coverage.txt` (`samtools coverage`) + `*.callable.summary.txt` | Coverage roll-up (genome-wide mean depth, per-contig stats, callable bases) | Partial ("lite") |
+| `*wgs*metric*` (Picard `CollectWgsMetrics`) | Genome-wide depth distribution | Supplemental |
+| `*alignment_summary*` (Picard `CollectAlignmentSummaryMetrics`) | Read metrics | Supplemental |
 
 Notes and requirements:
 - **GVCFs must be ploidy-1 (haploid) chrY/chrM GVCFs**, and the matching `.tbi` tabix index must sit beside each one so Navigator can read just the needed positions.
@@ -139,7 +155,7 @@ Notes and requirements:
 The lite coverage roll-up is the only **partial** result: median depth, the `pct_Nx` thresholds, and the full depth histogram are not in `coverage.txt` and are filled in later by deep analysis.
 
 #### What the fast path does *not* cover
-Some analyses always need the CRAM and are **not** produced from sidecars: autosomal **ancestry**, the **full coverage histogram** (median, `pct_10x`/`pct_20x`, depth distribution), **structural variants**, and **IBD** panel genotyping. These run only when you trigger **deep analysis** — use **Analyze All** on the project (or run analysis on a subject). Deep analysis is additive: haplogroups, sex, and read metrics already placed by the fast path are **not** recomputed, and the lite coverage is upgraded in place to the full result.
+Some analyses always need the CRAM and are **not** produced from sidecars: autosomal **ancestry**, the **full coverage histogram** (median, `pct_10x`/`pct_20x`, depth distribution), **structural variants**, the **diploid SNV/indel caller**, and **IBD** panel genotyping. These run only when you trigger **deep analysis** — use **Analyze All** on the project (or run analysis on a subject). Deep analysis is additive: haplogroups, sex, and read metrics already placed by the fast path are **not** recomputed, and the lite coverage is upgraded in place to the full result.
 
 > **Where to find it:** Project Import and the sidecar fast path are available in the **desktop app**. The headless `navigator ingest` command imports individual files via auto-detection and does not use the project scanner or the sidecar fast path.
 
@@ -150,22 +166,39 @@ Available analyses:
 
 | Analysis | Status | What it gives you |
 |----------|--------|-------------------|
-| **Coverage / Callable Loci** | Validated | Mean depth, coverage distribution, and which bases are callable per contig (1×–100× thresholds). |
-| **Read Metrics** | Validated | Read-length and insert-size distributions, platform detection, library orientation. |
+| **Coverage / Callable Loci** | Validated | Mean depth, coverage distribution, per-contig depth histograms, and which bases are callable per contig (1×–100× thresholds). |
+| **Read Metrics** | Validated | Read-length and insert-size distributions, platform/instrument detection, library orientation, and sequencing-lab inference. |
 | **Sex Inference** | Validated | Inferred genetic sex with a confidence score. |
-| **Y-DNA Haplogroup** | Validated | Terminal haplogroup plus ranked candidates and supporting branch evidence. Handles GRCh37/GRCh38/CHM13v2 coordinates automatically. |
+| **Y-DNA Haplogroup** | Validated | Terminal haplogroup plus ranked candidates and supporting branch evidence. Handles GRCh37/GRCh38/CHM13v2 coordinates automatically, against either the DecodingUs or FTDNA tree. |
+| **Y-STR Profiles** | Validated | FTDNA/YSEQ-style panel tables (Y-12 … Y-111, YSEQ tiers) with per-marker consensus and conflict detection across sources. |
 | **mtDNA Haplogroup** | Validated | Terminal maternal haplogroup from sequence or alignment, with rCRS↔CHM13 mapping. |
-| **mtDNA Heteroplasmy** | Validated | Site-level heteroplasmy (depth and allele fraction) from alignments. |
-| **Private Y Variants** | Validated | Off-backbone calls — finer branches and novel candidate variants. |
-| **Ancestry** | Validated | Admixture across 26 fine populations / 8 continents, PCA projection, a geographic map, and DNA-painting local ancestry. |
-| **IBD Detection** | Validated (detection) | Pairwise shared-segment detection and relationship estimates. The match-discovery UI is still in progress. |
-| **Structural Variants (SV)** | Built, output unvalidated | Deletions, inversions, and copy-number changes. Reliable output needs ≥10× coverage. |
+| **mtDNA Variants & Heteroplasmy** | Validated (variants); screening (heteroplasmy) | rCRS-relative mutation list (HVR1/HVR2/coding) plus site-level heteroplasmy. Heteroplasmy is a screening pass, not a clinical caller. |
+| **Private Y Variants** | Validated | Off-backbone calls — finer branches and novel candidate variants, reconciled across sources. |
+| **Ancestry** | Validated | Admixture across fine populations / continental groups (ADMIXTURE, PCA projection + GMM, and an nMonte/G25-style estimate), a geographic map, fine-population breakdown, and DNA-painting local ancestry. |
+| **Diploid Variant Calling** | Validated on test data | De-novo **diploid** SNV + indel calls, exportable as a whole-genome VCF (per subject or per alignment). |
+| **IBD Detection** | Validated (detection) | Pairwise shared-segment detection and relationship estimates, using a real recombination map. The match-discovery / network UI is still in progress. |
+| **Structural Variants (SV)** | Built, output unvalidated | Deletions, duplications, inversions, and breakends. Reliable output needs ≥10× coverage. |
 
-Navigator also reconciles Y/mtDNA haplogroups across multiple runs and alignments per subject, producing a single consensus assignment.
+Navigator also reconciles Y/mtDNA haplogroups across multiple runs and alignments per subject into a single genome-level **consensus** assignment, rather than voting on per-run labels.
+
+### Exporting & Sharing Results
+Result cards carry an **Export** action that writes a shareable file via a save dialog. Available formats:
+
+| Result | Formats |
+|--------|---------|
+| Coverage | TSV, self-contained HTML |
+| Read metrics | TSV |
+| Ancestry | TSV, self-contained HTML |
+| mtDNA variants | TSV |
+| Callable loci | BED4 (0-based, half-open) |
+| IBD segments | TSV |
+| Diploid variants | VCF (per alignment, or a subject-level consensus across same-build alignments) |
+
+The same diploid VCF export is also available headlessly via the [`call`](#the-command-line) subcommand.
 
 ## The Command Line
 
-The same `navigator` binary is fully scriptable. With a subcommand it opens the *same* workspace database as the GUI, does its work, and exits. This is ideal for bulk-loading a directory of files or querying results.
+The same `navigator` binary is fully scriptable. With a subcommand it opens the *same* workspace database as the GUI, does its work, and exits. This is ideal for bulk-loading a directory of files, querying results, or producing VCFs in a pipeline.
 
 ```bash
 # Import everything in a folder into a subject (creating the subject/project if needed)
@@ -179,6 +212,13 @@ navigator show --subject "Jane Doe"
 
 # List projects with subject counts
 navigator projects
+
+# Call de-novo diploid SNVs + indels to a VCF (whole genome, or one contig)
+navigator call --subject "Jane Doe" --out jane.vcf
+navigator call --subject "Jane Doe" --contig chr21 --out jane.chr21.vcf
+
+# Lift a VCF from one reference build to another
+navigator liftvcf --in calls.GRCh38.vcf.gz --from GRCh38 --to chm13v2.0 --out calls.chm13.vcf.gz
 ```
 
 Useful flags:
@@ -186,6 +226,10 @@ Useful flags:
 - `--project` / `-p` — project to assign the subject to (found or created).
 - `--sex` — recorded only when a new subject is created (e.g. `male` / `female`).
 - `--recursive` / `-r` — recurse into directories instead of importing only their immediate files.
+- `--alignment` / `-a` — (for `call`) target a specific alignment id from `show --json`; omit to use the subject's sole alignment.
+- `--contig` / `-c` — (for `call`) restrict to a single contig (e.g. `chrM`, `chr21`); default is every primary chromosome.
+- `--out` / `-o` — (for `call` / `liftvcf`) write the VCF to a file instead of stdout.
+- `--in` / `-i`, `--to` / `-t`, `--from` / `-f`, `--filter-par` — (for `liftvcf`) input VCF, target build, optional source build (inferred from the header when omitted), and whether to drop variants landing in the target chrY PAR.
 - `--db` — point at an alternate workspace database (defaults to `~/.decodingus/navigator-rs.db`).
 - `--json` — emit machine-readable JSON instead of a table (on `subjects`, `show`, `projects`).
 
@@ -203,13 +247,13 @@ All application data lives under your home directory in `~/.decodingus/`:
 ```
 ~/.decodingus/
 ├── navigator-rs.db      # Workspace database (SQLite): subjects, projects, runs, alignments, profiles
+├── config/              # settings.json (your saved preferences)
 ├── references/          # Downloaded reference genomes (indexed FASTA)
 ├── liftover/            # Chain files for build-to-build coordinate conversion
 ├── masks/               # Callable-region BED masks
 ├── trees/               # Cached Y-DNA / mtDNA haplotrees (JSON)
 ├── ysnp/                # Y-SNP dictionary assets
-├── ancestry/            # Pre-built ancestry panels and PCA loadings
-└── navigator-lang       # Your saved UI language choice
+└── ancestry/            # Pre-built ancestry panels and PCA loadings
 ```
 
 ### Reference Genomes
@@ -217,8 +261,18 @@ Navigator manages reference genomes for you. It downloads and caches standard bu
 
 ### Cloud Integration (Optional)
 Navigator includes support for the **AT Protocol** to publish summaries to a Personal Data Store (PDS) in the Decoding-Us Federation.
-- **Privacy:** Even with publishing enabled, your raw BAM/CRAM and chip files are **never** uploaded. Only anonymized summaries (haplogroup assignments, coverage QC statistics, ancestry estimates) are shared, with your explicit consent.
-- Configure the AppView endpoint with the `DECODINGUS_APPVIEW_URL` environment variable.
+- **Privacy:** Even with publishing enabled, your raw BAM/CRAM and chip files are **never** uploaded. Only anonymized summaries (haplogroup assignments, coverage QC statistics, ancestry estimates, IBD attestations) are shared, with your explicit consent.
+- Publishing is durable: queued summaries are retried with backoff if the network or PDS is briefly unavailable.
+- Configure the AppView endpoint in [Settings](#settings) or via the `DECODINGUS_APPVIEW_URL` environment variable.
+
+## Settings
+
+Open the **⚙ Settings** dialog from the app bar to configure (saved to `~/.decodingus/config/settings.json`; environment variables take precedence over saved settings):
+
+- **Connection** — the Federation **AppView URL** for haplotree updates and publishing.
+- **Appearance** — light/dark **theme** and **UI scale**.
+- **Reference** — the reference-genome cache directory and whether to **prompt before downloading** large reference files.
+- **Advanced** — the **Y-tree provider** (`decodingus` or `ftdna`) and the haplotree cache **TTL** (days before refetch; `0` = always refetch).
 
 ## Advanced Usage
 
@@ -254,7 +308,10 @@ A: WGS analysis is computationally intensive. Navigator parallelizes across CPU 
 A: Navigator downloads references on demand. If you are offline, run an analysis at least once while online to cache the necessary files.
 
 **Q: A haplogroup result looks out of date or under-placed.**
-A: Haplotrees are cached for `NAVIGATOR_TREE_TTL_DAYS` (default 7). Lower that value or set it to `0` to force a fresh fetch, then re-run the analysis.
+A: Haplotrees are cached for `NAVIGATOR_TREE_TTL_DAYS` (default 7). Lower that value or set it to `0` in [Settings](#settings) (or via the environment) to force a fresh fetch, then re-run the analysis.
 
 **Q: My file wasn't recognized on import.**
 A: Navigator auto-detects by extension and content fingerprint. Confirm the file is one of the [supported formats](#importing-data). Consumer chip exports from less common vendors may not be detected; the file is still recorded but won't be analyzed.
+
+**Q: A sample imported with only haplogroups and basic metrics.**
+A: That's the project-import [fast path](#the-sidecar-hot-path) using sidecar files. Run **Analyze All** (or analyze the subject) to add ancestry, the full coverage histogram, structural variants, the diploid caller, and IBD genotyping from the alignment itself.

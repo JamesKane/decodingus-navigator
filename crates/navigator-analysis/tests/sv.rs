@@ -4,13 +4,9 @@
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
-use navigator_analysis::sv::evidence::{
-    DepthSegment, DiscordantPair, DiscordantReason, SvEvidenceCollection,
-};
+use navigator_analysis::sv::evidence::{DepthSegment, DiscordantPair, DiscordantReason, SvEvidenceCollection};
 use navigator_analysis::sv::types::SvCall;
-use navigator_analysis::sv::{
-    calculate_confidence, clusterer, segmenter, walker, SvCallerConfig, SvType,
-};
+use navigator_analysis::sv::{calculate_confidence, clusterer, segmenter, walker, SvCallerConfig, SvType};
 
 fn fixtures() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures")
@@ -41,7 +37,9 @@ fn walker_extracts_discordant_pairs_split_reads_and_depth() {
         .count();
     assert_eq!(outliers, 2);
     // One inter pair is chr1->chr2 from r_inter.
-    assert!(inter.iter().any(|p| p.chrom1 == "chr1" && p.chrom2 == "chr2" && p.pos1 == 100));
+    assert!(inter
+        .iter()
+        .any(|p| p.chrom1 == "chr1" && p.chrom2 == "chr2" && p.pos1 == 100));
 
     // One split read with 20 bp clip, supplementary on chr1:2000.
     assert_eq!(ev.total_split_reads(), 1);
@@ -111,7 +109,11 @@ fn pair(pos1: i64, pos2: i64, s1: char, s2: char, reason: DiscordantReason) -> D
         chrom1: "chr1".into(),
         pos1,
         strand1: s1,
-        chrom2: if reason == DiscordantReason::InterChromosomal { "chr2".into() } else { "chr1".into() },
+        chrom2: if reason == DiscordantReason::InterChromosomal {
+            "chr2".into()
+        } else {
+            "chr1".into()
+        },
         pos2,
         strand2: s2,
         insert_size: 6000,
@@ -188,8 +190,8 @@ fn confidence_weights_pe_sr_and_depth() {
         ci_pos: (0, 0),
         ci_end: (0, 0),
         quality: 50.0,
-        paired_end_support: 10, // -> 1.0
-        split_read_support: 5,  // -> 1.0
+        paired_end_support: 10,    // -> 1.0
+        split_read_support: 5,     // -> 1.0
         relative_depth: Some(0.5), // deviation 0.5 -> 1.0
         mate_chrom: None,
         mate_pos: None,

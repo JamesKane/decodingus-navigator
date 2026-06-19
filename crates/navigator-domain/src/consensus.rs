@@ -141,7 +141,14 @@ pub struct ConsensusObs {
 impl ConsensusObs {
     /// A SNP/variant observation with no per-call quality data (weight = the source-type weight).
     /// Quality fields can be set afterward for sources that carry them (e.g. sequencing depth).
-    pub fn snp(name: impl Into<String>, position: i64, ancestral: impl Into<String>, derived: impl Into<String>, state: ConsensusState, in_tree: bool) -> Self {
+    pub fn snp(
+        name: impl Into<String>,
+        position: i64,
+        ancestral: impl Into<String>,
+        derived: impl Into<String>,
+        state: ConsensusState,
+        in_tree: bool,
+    ) -> Self {
         ConsensusObs {
             name: name.into(),
             position,
@@ -160,9 +167,18 @@ impl ConsensusObs {
 /// Concordance weight for one observation (Scala `YVariantConcordance.calculateWeight`):
 /// `snp_weight · (1 + min(√depth/10, 1)) · min(MQ/60, 1) · callableWeight · clamp(region, 0.1, 1)`.
 /// Missing depth → no bonus; missing MQ/callable → factor 1.0.
-pub fn obs_weight(source_type: SourceType, depth: Option<u32>, mapq: Option<f64>, callable: Option<CallableState>, region_modifier: f64) -> f64 {
+pub fn obs_weight(
+    source_type: SourceType,
+    depth: Option<u32>,
+    mapq: Option<f64>,
+    callable: Option<CallableState>,
+    region_modifier: f64,
+) -> f64 {
     let method = source_type.snp_weight();
-    let depth_bonus = depth.filter(|&d| d > 0).map(|d| ((d as f64).sqrt() / 10.0).min(1.0)).unwrap_or(0.0);
+    let depth_bonus = depth
+        .filter(|&d| d > 0)
+        .map(|d| ((d as f64).sqrt() / 10.0).min(1.0))
+        .unwrap_or(0.0);
     let mapq_factor = mapq.filter(|&q| q > 0.0).map(|q| (q / 60.0).min(1.0)).unwrap_or(1.0);
     let callable_factor = callable.map(|c| c.weight()).unwrap_or(1.0);
     let region_factor = region_modifier.clamp(0.1, 1.0);
@@ -203,13 +219,21 @@ pub fn reconcile(sources: &[(String, SourceType, Vec<ConsensusObs>)]) -> Vec<Con
     for (label, source_type, observations) in sources {
         for o in observations {
             let key = group_key(o);
-            let acc = groups.entry(key).or_insert_with(|| Acc { repr: o.clone(), obs: Vec::new() });
+            let acc = groups.entry(key).or_insert_with(|| Acc {
+                repr: o.clone(),
+                obs: Vec::new(),
+            });
             // Prefer a named, in-tree representative for display fields.
             if acc.repr.name.trim().is_empty() && !o.name.trim().is_empty() {
                 acc.repr = o.clone();
             }
             let weight = obs_weight(*source_type, o.depth, o.mapq, o.callable, o.region_modifier);
-            acc.obs.push(ObsRec { label: label.clone(), source_type: *source_type, state: o.state, weight });
+            acc.obs.push(ObsRec {
+                label: label.clone(),
+                source_type: *source_type,
+                state: o.state,
+                weight,
+            });
         }
     }
 
@@ -242,11 +266,19 @@ pub fn reconcile(sources: &[(String, SourceType, Vec<ConsensusObs>)]) -> Vec<Con
                 ConsensusState::Ancestral
             };
 
-            let support = acc.obs.iter().filter(|o| o.state == consensus && consensus != ConsensusState::NoCall).count();
+            let support = acc
+                .obs
+                .iter()
+                .filter(|o| o.state == consensus && consensus != ConsensusState::NoCall)
+                .count();
 
             let total_weight = w_derived + w_ancestral;
             // Confidence in the consensus = winning weight / total weight (Scala ConfirmationThreshold).
-            let confidence_score = if total_weight > 0.0 { w_derived.max(w_ancestral) / total_weight } else { 0.0 };
+            let confidence_score = if total_weight > 0.0 {
+                w_derived.max(w_ancestral) / total_weight
+            } else {
+                0.0
+            };
             let minority_fraction = 1.0 - confidence_score;
 
             let status = if total == 0 {
@@ -267,7 +299,11 @@ pub fn reconcile(sources: &[(String, SourceType, Vec<ConsensusObs>)]) -> Vec<Con
             let sources = acc
                 .obs
                 .iter()
-                .map(|o| SourceObs { label: o.label.clone(), source_type: o.source_type, state: o.state })
+                .map(|o| SourceObs {
+                    label: o.label.clone(),
+                    source_type: o.source_type,
+                    state: o.state,
+                })
                 .collect();
 
             ConsensusVariant {
@@ -287,7 +323,11 @@ pub fn reconcile(sources: &[(String, SourceType, Vec<ConsensusObs>)]) -> Vec<Con
         .collect();
 
     // Conflicts first (most actionable), then novel, then by name.
-    out.sort_by(|a, b| status_rank(a.status).cmp(&status_rank(b.status)).then_with(|| a.name.cmp(&b.name)));
+    out.sort_by(|a, b| {
+        status_rank(a.status)
+            .cmp(&status_rank(b.status))
+            .then_with(|| a.name.cmp(&b.name))
+    });
     out
 }
 
@@ -304,7 +344,10 @@ fn status_rank(s: ConsensusStatus) -> u8 {
 
 /// Per-status counts + overall confidence over a reconciled variant list.
 pub fn summarize(variants: &[ConsensusVariant]) -> ConsensusSummary {
-    let mut s = ConsensusSummary { total: variants.len(), ..Default::default() };
+    let mut s = ConsensusSummary {
+        total: variants.len(),
+        ..Default::default()
+    };
     for v in variants {
         match v.status {
             ConsensusStatus::Confirmed => s.confirmed += 1,
@@ -391,10 +434,18 @@ pub fn reconcile_diploid(sources: &[(String, SourceType, Vec<DiploidObs>)]) -> V
     for (label, source_type, observations) in sources {
         for o in observations {
             let key = o.name.trim().to_uppercase(); // rsID — panel sites are always named
-            let acc = groups.entry(key).or_insert_with(|| Acc { repr: o.clone(), obs: Vec::new() });
+            let acc = groups.entry(key).or_insert_with(|| Acc {
+                repr: o.clone(),
+                obs: Vec::new(),
+            });
             // Depth-bonus only (chips have depth 0 → bare method weight; deep WGS earns the bonus).
             let weight = obs_weight(*source_type, o.depth, None, None, 1.0);
-            acc.obs.push(ObsRec { label: label.clone(), source_type: *source_type, dosage: o.dosage, weight });
+            acc.obs.push(ObsRec {
+                label: label.clone(),
+                source_type: *source_type,
+                dosage: o.dosage,
+                weight,
+            });
         }
     }
 
@@ -423,7 +474,11 @@ pub fn reconcile_diploid(sources: &[(String, SourceType, Vec<DiploidObs>)]) -> V
             let consensus_dosage: i8 = if total == 0 { -1 } else { best as i8 };
 
             let total_weight: f64 = w.iter().sum();
-            let confidence_score = if total_weight > 0.0 { w[best] / total_weight } else { 0.0 };
+            let confidence_score = if total_weight > 0.0 {
+                w[best] / total_weight
+            } else {
+                0.0
+            };
             let minority_fraction = 1.0 - confidence_score;
 
             let status = if total == 0 {
@@ -438,11 +493,19 @@ pub fn reconcile_diploid(sources: &[(String, SourceType, Vec<DiploidObs>)]) -> V
                 ConsensusStatus::Pending
             };
 
-            let support = acc.obs.iter().filter(|o| consensus_dosage >= 0 && o.dosage == consensus_dosage).count();
+            let support = acc
+                .obs
+                .iter()
+                .filter(|o| consensus_dosage >= 0 && o.dosage == consensus_dosage)
+                .count();
             let sources = acc
                 .obs
                 .iter()
-                .map(|o| DiploidSourceObs { label: o.label.clone(), source_type: o.source_type, dosage: o.dosage })
+                .map(|o| DiploidSourceObs {
+                    label: o.label.clone(),
+                    source_type: o.source_type,
+                    dosage: o.dosage,
+                })
                 .collect();
 
             DiploidVariant {
@@ -461,14 +524,21 @@ pub fn reconcile_diploid(sources: &[(String, SourceType, Vec<DiploidObs>)]) -> V
         })
         .collect();
 
-    out.sort_by(|a, b| status_rank(a.status).cmp(&status_rank(b.status)).then_with(|| a.name.cmp(&b.name)));
+    out.sort_by(|a, b| {
+        status_rank(a.status)
+            .cmp(&status_rank(b.status))
+            .then_with(|| a.name.cmp(&b.name))
+    });
     out
 }
 
 /// Per-status counts + overall confidence over a reconciled diploid variant list. `Novel` doesn't
 /// apply to autosomal sites, so the confidence is `(confirmed − 0.5·conflict) / total`.
 pub fn summarize_diploid(variants: &[DiploidVariant]) -> ConsensusSummary {
-    let mut s = ConsensusSummary { total: variants.len(), ..Default::default() };
+    let mut s = ConsensusSummary {
+        total: variants.len(),
+        ..Default::default()
+    };
     for v in variants {
         match v.status {
             ConsensusStatus::Confirmed => s.confirmed += 1,
@@ -498,19 +568,52 @@ mod tests {
         // No quality data → bare source-type weight.
         assert!((obs_weight(SourceType::WgsShortRead, None, None, None, 1.0) - 0.85).abs() < 1e-9);
         // depth 100 → bonus min(√100/10,1)=1.0 → ×2; MQ 60 → ×1; callable → ×1.
-        assert!((obs_weight(SourceType::WgsShortRead, Some(100), Some(60.0), Some(CallableState::Callable), 1.0) - 1.7).abs() < 1e-9);
+        assert!(
+            (obs_weight(
+                SourceType::WgsShortRead,
+                Some(100),
+                Some(60.0),
+                Some(CallableState::Callable),
+                1.0
+            ) - 1.7)
+                .abs()
+                < 1e-9
+        );
         // Low coverage halves; a region modifier <1 scales down further.
-        let w = obs_weight(SourceType::WgsShortRead, None, None, Some(CallableState::LowCoverage), 0.5);
+        let w = obs_weight(
+            SourceType::WgsShortRead,
+            None,
+            None,
+            Some(CallableState::LowCoverage),
+            0.5,
+        );
         assert!((w - 0.85 * 0.5 * 0.5).abs() < 1e-9);
         // NoCoverage callability zeroes the weight.
-        assert_eq!(obs_weight(SourceType::Sanger, Some(50), Some(60.0), Some(CallableState::NoCoverage), 1.0), 0.0);
+        assert_eq!(
+            obs_weight(
+                SourceType::Sanger,
+                Some(50),
+                Some(60.0),
+                Some(CallableState::NoCoverage),
+                1.0
+            ),
+            0.0
+        );
     }
 
     #[test]
     fn confidence_score_and_overall() {
         let v = reconcile(&[
-            ("a".into(), SourceType::WgsShortRead, vec![obs("M269", 1, ConsensusState::Derived, true)]),
-            ("b".into(), SourceType::Chip, vec![obs("M269", 1, ConsensusState::Derived, true)]),
+            (
+                "a".into(),
+                SourceType::WgsShortRead,
+                vec![obs("M269", 1, ConsensusState::Derived, true)],
+            ),
+            (
+                "b".into(),
+                SourceType::Chip,
+                vec![obs("M269", 1, ConsensusState::Derived, true)],
+            ),
         ]);
         assert!((v[0].confidence_score - 1.0).abs() < 1e-9); // unanimous → full confidence
         let s = summarize(&v);
@@ -520,8 +623,16 @@ mod tests {
     #[test]
     fn two_sources_agree_in_tree_is_confirmed() {
         let v = reconcile(&[
-            ("aln #1".into(), SourceType::WgsShortRead, vec![obs("M269", 100, ConsensusState::Derived, true)]),
-            ("consumer".into(), SourceType::Chip, vec![obs("M269", 200, ConsensusState::Derived, true)]),
+            (
+                "aln #1".into(),
+                SourceType::WgsShortRead,
+                vec![obs("M269", 100, ConsensusState::Derived, true)],
+            ),
+            (
+                "consumer".into(),
+                SourceType::Chip,
+                vec![obs("M269", 200, ConsensusState::Derived, true)],
+            ),
         ]);
         assert_eq!(v.len(), 1); // grouped by name across differing positions/builds
         assert_eq!(v[0].name, "M269");
@@ -534,8 +645,16 @@ mod tests {
     #[test]
     fn derived_not_in_tree_is_novel() {
         let v = reconcile(&[
-            ("aln #1".into(), SourceType::WgsShortRead, vec![obs("FT1", 100, ConsensusState::Derived, false)]),
-            ("aln #2".into(), SourceType::WgsShortRead, vec![obs("FT1", 100, ConsensusState::Derived, false)]),
+            (
+                "aln #1".into(),
+                SourceType::WgsShortRead,
+                vec![obs("FT1", 100, ConsensusState::Derived, false)],
+            ),
+            (
+                "aln #2".into(),
+                SourceType::WgsShortRead,
+                vec![obs("FT1", 100, ConsensusState::Derived, false)],
+            ),
         ]);
         assert_eq!(v[0].status, ConsensusStatus::Novel);
     }
@@ -544,8 +663,16 @@ mod tests {
     fn comparable_weight_disagreement_is_conflict() {
         // WGS (0.85) derived vs Chip (0.5) ancestral → minority 0.5/1.35 ≈ 0.37 > 0.30 → conflict.
         let v = reconcile(&[
-            ("aln #1".into(), SourceType::WgsShortRead, vec![obs("M269", 100, ConsensusState::Derived, true)]),
-            ("consumer".into(), SourceType::Chip, vec![obs("M269", 100, ConsensusState::Ancestral, true)]),
+            (
+                "aln #1".into(),
+                SourceType::WgsShortRead,
+                vec![obs("M269", 100, ConsensusState::Derived, true)],
+            ),
+            (
+                "consumer".into(),
+                SourceType::Chip,
+                vec![obs("M269", 100, ConsensusState::Ancestral, true)],
+            ),
         ]);
         assert_eq!(v[0].status, ConsensusStatus::Conflict);
         assert_eq!(v[0].consensus, ConsensusState::Derived); // higher weight wins the consensus
@@ -555,8 +682,16 @@ mod tests {
     fn dominant_weight_disagreement_is_not_conflict() {
         // Sanger (1.0) derived vs Manual (0.3) ancestral → minority 0.3/1.3 ≈ 0.23 ≤ 0.30 → confirmed.
         let v = reconcile(&[
-            ("sanger".into(), SourceType::Sanger, vec![obs("M269", 100, ConsensusState::Derived, true)]),
-            ("manual".into(), SourceType::Manual, vec![obs("M269", 100, ConsensusState::Ancestral, true)]),
+            (
+                "sanger".into(),
+                SourceType::Sanger,
+                vec![obs("M269", 100, ConsensusState::Derived, true)],
+            ),
+            (
+                "manual".into(),
+                SourceType::Manual,
+                vec![obs("M269", 100, ConsensusState::Ancestral, true)],
+            ),
         ]);
         assert_eq!(v[0].consensus, ConsensusState::Derived);
         assert_eq!(v[0].status, ConsensusStatus::Confirmed);
@@ -565,15 +700,27 @@ mod tests {
 
     #[test]
     fn single_source_is_single_source() {
-        let v = reconcile(&[("aln #1".into(), SourceType::WgsShortRead, vec![obs("M269", 100, ConsensusState::Derived, true)])]);
+        let v = reconcile(&[(
+            "aln #1".into(),
+            SourceType::WgsShortRead,
+            vec![obs("M269", 100, ConsensusState::Derived, true)],
+        )]);
         assert_eq!(v[0].status, ConsensusStatus::SingleSource);
     }
 
     #[test]
     fn nocall_excluded_from_vote() {
         let v = reconcile(&[
-            ("aln #1".into(), SourceType::WgsShortRead, vec![obs("M269", 100, ConsensusState::Derived, true)]),
-            ("aln #2".into(), SourceType::WgsShortRead, vec![obs("M269", 100, ConsensusState::NoCall, true)]),
+            (
+                "aln #1".into(),
+                SourceType::WgsShortRead,
+                vec![obs("M269", 100, ConsensusState::Derived, true)],
+            ),
+            (
+                "aln #2".into(),
+                SourceType::WgsShortRead,
+                vec![obs("M269", 100, ConsensusState::NoCall, true)],
+            ),
         ]);
         assert_eq!(v[0].total, 1); // NoCall not counted
         assert_eq!(v[0].status, ConsensusStatus::SingleSource);
@@ -583,8 +730,19 @@ mod tests {
     #[test]
     fn summary_counts_by_status() {
         let v = reconcile(&[
-            ("a".into(), SourceType::WgsShortRead, vec![obs("M269", 1, ConsensusState::Derived, true), obs("FT1", 2, ConsensusState::Derived, false)]),
-            ("b".into(), SourceType::Chip, vec![obs("M269", 1, ConsensusState::Derived, true)]),
+            (
+                "a".into(),
+                SourceType::WgsShortRead,
+                vec![
+                    obs("M269", 1, ConsensusState::Derived, true),
+                    obs("FT1", 2, ConsensusState::Derived, false),
+                ],
+            ),
+            (
+                "b".into(),
+                SourceType::Chip,
+                vec![obs("M269", 1, ConsensusState::Derived, true)],
+            ),
         ]);
         let s = summarize(&v);
         assert_eq!(s.total, 2);
@@ -594,13 +752,25 @@ mod tests {
     }
 
     fn dobs(name: &str, dosage: i8, depth: Option<u32>) -> DiploidObs {
-        DiploidObs { name: name.into(), contig: "chr1".into(), position: 100, reference: "A".into(), alternate: "G".into(), dosage, depth }
+        DiploidObs {
+            name: name.into(),
+            contig: "chr1".into(),
+            position: 100,
+            reference: "A".into(),
+            alternate: "G".into(),
+            dosage,
+            depth,
+        }
     }
 
     #[test]
     fn diploid_two_sources_agree_is_confirmed() {
         let v = reconcile_diploid(&[
-            ("aln #1".into(), SourceType::WgsShortRead, vec![dobs("rs1", 1, Some(30))]),
+            (
+                "aln #1".into(),
+                SourceType::WgsShortRead,
+                vec![dobs("rs1", 1, Some(30))],
+            ),
             ("chip".into(), SourceType::Chip, vec![dobs("rs1", 1, None)]),
         ]);
         assert_eq!(v.len(), 1);
@@ -627,7 +797,11 @@ mod tests {
         // One het call + one no-call → counted as a single source (no-call excluded from the vote),
         // but the no-call is still shown for provenance.
         let v = reconcile_diploid(&[
-            ("aln #1".into(), SourceType::WgsShortRead, vec![dobs("rs1", 1, Some(30))]),
+            (
+                "aln #1".into(),
+                SourceType::WgsShortRead,
+                vec![dobs("rs1", 1, Some(30))],
+            ),
             ("chip".into(), SourceType::Chip, vec![dobs("rs1", -1, None)]),
         ]);
         assert_eq!(v[0].total, 1);
@@ -639,14 +813,22 @@ mod tests {
     #[test]
     fn diploid_summary_counts_and_confidence() {
         let v = reconcile_diploid(&[
-            ("a".into(), SourceType::WgsShortRead, vec![dobs("rs1", 2, None), dobs("rs2", 0, None)]),
-            ("b".into(), SourceType::WgsShortRead, vec![dobs("rs1", 2, None), dobs("rs2", 2, None)]),
+            (
+                "a".into(),
+                SourceType::WgsShortRead,
+                vec![dobs("rs1", 2, None), dobs("rs2", 0, None)],
+            ),
+            (
+                "b".into(),
+                SourceType::WgsShortRead,
+                vec![dobs("rs1", 2, None), dobs("rs2", 2, None)],
+            ),
         ]);
         let s = summarize_diploid(&v);
         assert_eq!(s.total, 2);
         assert_eq!(s.confirmed, 1); // rs1 (both hom-alt)
         assert_eq!(s.conflict, 1); // rs2 (0 vs 2)
-        // (1 confirmed − 0.5·1 conflict) / 2 = 0.25
+                                   // (1 confirmed − 0.5·1 conflict) / 2 = 0.25
         assert!((s.overall_confidence - 0.25).abs() < 1e-9);
     }
 }

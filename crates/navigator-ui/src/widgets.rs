@@ -36,12 +36,22 @@ pub(crate) fn table_header(ui: &mut egui::Ui, cols: &[(&str, f32)]) {
         );
         x += w;
     }
-    painter.hline(rect.x_range(), rect.bottom(), egui::Stroke::new(1.0, ui.visuals().widgets.noninteractive.bg_stroke.color));
+    painter.hline(
+        rect.x_range(),
+        rect.bottom(),
+        egui::Stroke::new(1.0, ui.visuals().widgets.noninteractive.bg_stroke.color),
+    );
 }
 
 /// Paint one clickable table row; returns true when clicked. `status_col` (if any) is rendered
 /// as a small accent-coloured badge (the "Status" cell).
-pub(crate) fn table_row(ui: &mut egui::Ui, cols: &[(&str, f32)], cells: &[String], selected: bool, status_col: Option<usize>) -> bool {
+pub(crate) fn table_row(
+    ui: &mut egui::Ui,
+    cols: &[(&str, f32)],
+    cells: &[String],
+    selected: bool,
+    status_col: Option<usize>,
+) -> bool {
     let total_w: f32 = cols.iter().map(|c| c.1).sum();
     let (rect, resp) = ui.allocate_exact_size(egui::vec2(total_w, 28.0), egui::Sense::click());
     let painter = ui.painter_at(rect);
@@ -50,15 +60,26 @@ pub(crate) fn table_row(ui: &mut egui::Ui, cols: &[(&str, f32)], cells: &[String
     } else if resp.hovered() {
         painter.rect_filled(rect, 4.0, ui.visuals().faint_bg_color);
     }
-    let text_color = if selected { egui::Color32::WHITE } else { ui.visuals().text_color() };
+    let text_color = if selected {
+        egui::Color32::WHITE
+    } else {
+        ui.visuals().text_color()
+    };
     let mut x = rect.left() + 8.0;
     for (i, ((_, w), val)) in cols.iter().zip(cells).enumerate() {
         let cy = rect.center().y;
         if Some(i) == status_col && val != "-" {
             // a muted pill behind the status text
-            let galley = painter.layout_no_wrap(val.clone(), egui::FontId::proportional(11.5), egui::Color32::from_rgb(225, 190, 90));
+            let galley = painter.layout_no_wrap(
+                val.clone(),
+                egui::FontId::proportional(11.5),
+                egui::Color32::from_rgb(225, 190, 90),
+            );
             let pad = egui::vec2(7.0, 3.0);
-            let pill = egui::Rect::from_min_size(egui::pos2(x, cy - galley.size().y / 2.0 - pad.y), galley.size() + pad * 2.0);
+            let pill = egui::Rect::from_min_size(
+                egui::pos2(x, cy - galley.size().y / 2.0 - pad.y),
+                galley.size() + pad * 2.0,
+            );
             painter.rect_filled(pill, 8.0, egui::Color32::from_rgb(70, 58, 28));
             painter.galley(pill.min + pad, galley, egui::Color32::PLACEHOLDER);
         } else {
@@ -66,7 +87,11 @@ pub(crate) fn table_row(ui: &mut egui::Ui, cols: &[(&str, f32)], cells: &[String
             // ISOGG-longhand Y haplogroup — can't spill into the next column.
             let mut job = egui::text::LayoutJob::single_section(
                 val.clone(),
-                egui::TextFormat { font_id: egui::FontId::proportional(13.0), color: text_color, ..Default::default() },
+                egui::TextFormat {
+                    font_id: egui::FontId::proportional(13.0),
+                    color: text_color,
+                    ..Default::default()
+                },
             );
             job.wrap = egui::text::TextWrapping {
                 max_width: (w - 12.0).max(0.0),
@@ -169,17 +194,34 @@ pub(crate) fn show_assignment(ui: &mut egui::Ui, a: &HaploAssignment) {
         ui.label("No match."); // free helper (no `self`); i18n when it takes a `lang` param
         return;
     };
-    ui.label(format!("Haplogroup: {}   ({}/{} mutations, score {:.3})", top.name, top.matched, top.expected, top.score));
+    ui.label(format!(
+        "Haplogroup: {}   ({}/{} mutations, score {:.3})",
+        top.name, top.matched, top.expected, top.score
+    ));
     ui.label(format!("Lineage: {}", top.lineage.join(" › ")));
-    let alts: Vec<String> = a.ranked.iter().skip(1).take(3).map(|r| format!("{} ({:.3})", r.name, r.score)).collect();
+    let alts: Vec<String> = a
+        .ranked
+        .iter()
+        .skip(1)
+        .take(3)
+        .map(|r| format!("{} ({:.3})", r.name, r.score))
+        .collect();
     if !alts.is_empty() {
         ui.label(format!("Alternatives: {}", alts.join(", ")));
     }
     for b in &a.branches {
-        egui::CollapsingHeader::new(format!("child {} — {}/{} SNPs derived", b.name, b.derived, b.snps.len()))
-            .id_salt(("branch", &b.name))
-            .show(ui, |ui| {
-                egui::Grid::new(("branch_snps", &b.name)).striped(true).num_columns(3).show(ui, |ui| {
+        egui::CollapsingHeader::new(format!(
+            "child {} — {}/{} SNPs derived",
+            b.name,
+            b.derived,
+            b.snps.len()
+        ))
+        .id_salt(("branch", &b.name))
+        .show(ui, |ui| {
+            egui::Grid::new(("branch_snps", &b.name))
+                .striped(true)
+                .num_columns(3)
+                .show(ui, |ui| {
                     for s in &b.snps {
                         ui.label(&s.name);
                         ui.label(format!("{}{}>{}", s.position, s.ancestral, s.derived));
@@ -192,7 +234,7 @@ pub(crate) fn show_assignment(ui: &mut egui::Ui, a: &HaploAssignment) {
                         ui.end_row();
                     }
                 });
-            });
+        });
     }
 }
 
@@ -218,10 +260,12 @@ pub(crate) fn opt(s: &str) -> Option<String> {
 pub(crate) fn combo(ui: &mut egui::Ui, label: &str, id: &str, value: &mut String, options: &[&str]) {
     ui.horizontal(|ui| {
         ui.label(label);
-        egui::ComboBox::from_id_salt(id).selected_text(value.clone()).show_ui(ui, |ui| {
-            for opt in options {
-                ui.selectable_value(value, opt.to_string(), *opt);
-            }
-        });
+        egui::ComboBox::from_id_salt(id)
+            .selected_text(value.clone())
+            .show_ui(ui, |ui| {
+                for opt in options {
+                    ui.selectable_value(value, opt.to_string(), *opt);
+                }
+            });
     });
 }

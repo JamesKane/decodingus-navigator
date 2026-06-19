@@ -16,7 +16,11 @@ fn kit_pair(dir: &Path) -> Option<(PathBuf, PathBuf)> {
     let mut cram = None;
     let mut bam = None;
     for e in walkdir(dir) {
-        let n = e.file_name().and_then(|s| s.to_str()).unwrap_or("").to_ascii_lowercase();
+        let n = e
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or("")
+            .to_ascii_lowercase();
         if n.ends_with(".csv") && n.contains("dys") {
             csv = Some(e.clone());
         } else if n.ends_with(".cram") {
@@ -47,8 +51,18 @@ fn walkdir(dir: &Path) -> Vec<PathBuf> {
 fn parse_ftdna(csv: &Path) -> HashMap<String, String> {
     let text = std::fs::read_to_string(csv).unwrap_or_default();
     let mut lines = text.lines();
-    let names: Vec<String> = lines.next().unwrap_or("").split(',').map(|s| s.trim().trim_matches('"').trim().to_string()).collect();
-    let vals: Vec<String> = lines.next().unwrap_or("").split(',').map(|s| s.trim().trim_matches('"').trim().to_string()).collect();
+    let names: Vec<String> = lines
+        .next()
+        .unwrap_or("")
+        .split(',')
+        .map(|s| s.trim().trim_matches('"').trim().to_string())
+        .collect();
+    let vals: Vec<String> = lines
+        .next()
+        .unwrap_or("")
+        .split(',')
+        .map(|s| s.trim().trim_matches('"').trim().to_string())
+        .collect();
     names.into_iter().zip(vals).collect()
 }
 
@@ -74,7 +88,12 @@ fn main() {
     // One bad CRAM (an unsupported noodles compression codec, etc.) must not abort the whole corpus.
     std::panic::set_hook(Box::new(|_| {}));
 
-    let mut folders: Vec<PathBuf> = std::fs::read_dir(&kits_dir).unwrap().flatten().map(|e| e.path()).filter(|p| p.is_dir()).collect();
+    let mut folders: Vec<PathBuf> = std::fs::read_dir(&kits_dir)
+        .unwrap()
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.is_dir())
+        .collect();
     folders.sort();
     for folder in folders {
         let Some((csv, aln)) = kit_pair(&folder) else { continue };
@@ -84,7 +103,14 @@ fn main() {
         }
         let kit = folder.file_name().unwrap().to_string_lossy().into_owned();
         let called = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            genotype_str_loci(&aln, "chrY", &loci, 1, &StrCallerParams::default(), reference.as_deref())
+            genotype_str_loci(
+                &aln,
+                "chrY",
+                &loci,
+                1,
+                &StrCallerParams::default(),
+                reference.as_deref(),
+            )
         }));
         let genos = match called {
             Ok(Ok(g)) => g,
@@ -98,7 +124,10 @@ fn main() {
                 continue;
             }
         };
-        let single: Vec<_> = genos.iter().filter(|g| g.confidence != StrConfidence::Low && g.alleles.len() == 1).collect();
+        let single: Vec<_> = genos
+            .iter()
+            .filter(|g| g.confidence != StrConfidence::Low && g.alleles.len() == 1)
+            .collect();
 
         // QC: end-user-provided data may have a swapped BAM↔CSV. Fingerprint the kit on the markers
         // strmarker already calls Reliable (offset 0): if ≥10 are comparable but <70% match this
@@ -122,7 +151,10 @@ fn main() {
         }
 
         n_kits += 1;
-        eprintln!("  [{n_kits}] {kit} -> {} genotypes ({rel_ok}/{rel_tot} reliable ok)", genos.len());
+        eprintln!(
+            "  [{n_kits}] {kit} -> {} genotypes ({rel_ok}/{rel_tot} reliable ok)",
+            genos.len()
+        );
         // Re-derive offsets from RAW caller value vs CSV (independent of strmarker's current table).
         for g in &single {
             let m = base_marker(&g.name);
@@ -160,7 +192,13 @@ fn main() {
             variable += 1;
             "large/exclude"
         };
-        println!("{m:<14} {:>2} {:>13} {:>+12} {:>9.0}%  {class}", o.len(), callable.get(m).copied().unwrap_or(0), modal, agree * 100.0);
+        println!(
+            "{m:<14} {:>2} {:>13} {:>+12} {:>9.0}%  {class}",
+            o.len(),
+            callable.get(m).copied().unwrap_or(0),
+            modal,
+            agree * 100.0
+        );
     }
     println!("\n# {n_kits} kits · {reliable} reliable(offset 0) · {convention} convention-offset(±1-3) · {variable} variable/large(exclude)");
 }

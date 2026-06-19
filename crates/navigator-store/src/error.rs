@@ -21,10 +21,7 @@ pub enum StoreError {
 
 /// Parse a stored GUID string into a [`SampleGuid`], tagging any decode error with `context`
 /// (the originating table/column) so a malformed value is traceable.
-pub(crate) fn parse_sample_guid(
-    guid: &str,
-    context: &str,
-) -> Result<du_domain::ids::SampleGuid, StoreError> {
+pub(crate) fn parse_sample_guid(guid: &str, context: &str) -> Result<du_domain::ids::SampleGuid, StoreError> {
     uuid::Uuid::parse_str(guid)
         .map(du_domain::ids::SampleGuid)
         .map_err(|e| StoreError::Decode(format!("{context} guid {guid:?}: {e}")))

@@ -106,13 +106,23 @@ fn detect_sidecars(files: &[DiscoveredFile]) -> SampleSidecars {
     let by_suffix = |suffix: &str| {
         files
             .iter()
-            .find(|f| f.path.file_name().and_then(|n| n.to_str()).is_some_and(|n| n.to_ascii_lowercase().ends_with(suffix)))
+            .find(|f| {
+                f.path
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .is_some_and(|n| n.to_ascii_lowercase().ends_with(suffix))
+            })
             .map(|f| f.path.clone())
     };
     let by_name = |name: &str| {
         files
             .iter()
-            .find(|f| f.path.file_name().and_then(|n| n.to_str()).is_some_and(|n| n.eq_ignore_ascii_case(name)))
+            .find(|f| {
+                f.path
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .is_some_and(|n| n.eq_ignore_ascii_case(name))
+            })
             .map(|f| f.path.clone())
     };
     // Picard/flagstat outputs have no fixed name — match a substring of the (lower-cased) filename
@@ -120,7 +130,12 @@ fn detect_sidecars(files: &[DiscoveredFile]) -> SampleSidecars {
     let by_pred = |pred: &dyn Fn(&str) -> bool| {
         files
             .iter()
-            .find(|f| f.path.file_name().and_then(|n| n.to_str()).is_some_and(|n| pred(&n.to_ascii_lowercase())))
+            .find(|f| {
+                f.path
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .is_some_and(|n| pred(&n.to_ascii_lowercase()))
+            })
             .map(|f| f.path.clone())
     };
 
@@ -146,7 +161,9 @@ fn detect_sidecars(files: &[DiscoveredFile]) -> SampleSidecars {
 /// The build segment of a GVCF name, e.g. `HG00096.chm13.chrY.g.vcf.gz` → `chm13`.
 fn build_token(gvcf: &Path) -> Option<String> {
     let name = gvcf.file_name()?.to_str()?.to_ascii_lowercase();
-    let stem = name.strip_suffix(".chry.g.vcf.gz").or_else(|| name.strip_suffix(".chrm.g.vcf.gz"))?;
+    let stem = name
+        .strip_suffix(".chry.g.vcf.gz")
+        .or_else(|| name.strip_suffix(".chrm.g.vcf.gz"))?;
     stem.rsplit('.').next().filter(|s| !s.is_empty()).map(|s| s.to_string())
 }
 
@@ -174,7 +191,9 @@ pub struct DiscoveredProject {
 }
 
 fn is_hidden(path: &Path) -> bool {
-    path.file_name().and_then(|n| n.to_str()).is_some_and(|n| n.starts_with('.'))
+    path.file_name()
+        .and_then(|n| n.to_str())
+        .is_some_and(|n| n.starts_with('.'))
 }
 
 /// Recursively collect files under `dir` up to `max_depth`, skipping hidden directories.
@@ -202,13 +221,20 @@ fn scan_sample(dir: &Path) -> DiscoveredSample {
     let all_files: Vec<DiscoveredFile> = files
         .into_iter()
         .map(|path| {
-            let kind = path.file_name().and_then(|n| n.to_str()).map_or(DiscoveredFileType::Other, classify);
+            let kind = path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .map_or(DiscoveredFileType::Other, classify);
             DiscoveredFile { path, kind }
         })
         .collect();
 
     let collect = |k: DiscoveredFileType| {
-        all_files.iter().filter(|f| f.kind == k).map(|f| f.path.clone()).collect::<Vec<_>>()
+        all_files
+            .iter()
+            .filter(|f| f.kind == k)
+            .map(|f| f.path.clone())
+            .collect::<Vec<_>>()
     };
 
     let sidecars = detect_sidecars(&all_files);
@@ -228,12 +254,22 @@ fn scan_sample(dir: &Path) -> DiscoveredSample {
 /// not a directory, has no subdirectories, or yields no samples with data.
 pub fn scan(project_dir: &Path) -> Result<DiscoveredProject, AnalysisError> {
     if !project_dir.exists() {
-        return Err(AnalysisError::Message(format!("directory does not exist: {}", project_dir.display())));
+        return Err(AnalysisError::Message(format!(
+            "directory does not exist: {}",
+            project_dir.display()
+        )));
     }
     if !project_dir.is_dir() {
-        return Err(AnalysisError::Message(format!("not a directory: {}", project_dir.display())));
+        return Err(AnalysisError::Message(format!(
+            "not a directory: {}",
+            project_dir.display()
+        )));
     }
-    let project_id = project_dir.file_name().and_then(|n| n.to_str()).unwrap_or("project").to_string();
+    let project_id = project_dir
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("project")
+        .to_string();
 
     let mut subdirs: Vec<PathBuf> = fs::read_dir(project_dir)
         .map_err(|e| AnalysisError::io(project_dir, e))?
@@ -243,7 +279,10 @@ pub fn scan(project_dir: &Path) -> Result<DiscoveredProject, AnalysisError> {
         .collect();
     subdirs.sort();
     if subdirs.is_empty() {
-        return Err(AnalysisError::Message(format!("no sample subdirectories in {}", project_dir.display())));
+        return Err(AnalysisError::Message(format!(
+            "no sample subdirectories in {}",
+            project_dir.display()
+        )));
     }
 
     let samples: Vec<DiscoveredSample> = subdirs
@@ -252,10 +291,17 @@ pub fn scan(project_dir: &Path) -> Result<DiscoveredProject, AnalysisError> {
         .filter(|s| !s.alignment_files.is_empty() || !s.variant_files.is_empty())
         .collect();
     if samples.is_empty() {
-        return Err(AnalysisError::Message(format!("no samples with data files in {}", project_dir.display())));
+        return Err(AnalysisError::Message(format!(
+            "no samples with data files in {}",
+            project_dir.display()
+        )));
     }
 
-    Ok(DiscoveredProject { project_id, directory: project_dir.to_path_buf(), samples })
+    Ok(DiscoveredProject {
+        project_id,
+        directory: project_dir.to_path_buf(),
+        samples,
+    })
 }
 
 #[cfg(test)]
@@ -346,8 +392,20 @@ mod tests {
         let sc = &project.samples[0].sidecars;
         assert!(sc.has_haplogroup_gvcf());
         // The GVCF is matched, not its .tbi index.
-        assert!(sc.chr_y_gvcf.as_ref().unwrap().to_str().unwrap().ends_with("chrY.g.vcf.gz"));
-        assert!(sc.chr_m_gvcf.as_ref().unwrap().to_str().unwrap().ends_with("chrM.g.vcf.gz"));
+        assert!(sc
+            .chr_y_gvcf
+            .as_ref()
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .ends_with("chrY.g.vcf.gz"));
+        assert!(sc
+            .chr_m_gvcf
+            .as_ref()
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .ends_with("chrM.g.vcf.gz"));
         assert!(sc.callable_bed.is_some());
         assert!(sc.callable_summary.is_some());
         assert!(sc.sex.is_some());

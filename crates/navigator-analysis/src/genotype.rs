@@ -31,7 +31,14 @@ const MAX_PL: f64 = 255.0;
 const MAX_GQ: u8 = 99;
 
 fn no_call(ploidy: u8, depth: u32, ref_depth: u32, alt_depth: u32) -> GenotypeResult {
-    GenotypeResult { dosage: -1, pls: vec![0; ploidy as usize + 1], gq: 0, depth, ref_depth, alt_depth }
+    GenotypeResult {
+        dosage: -1,
+        pls: vec![0; ploidy as usize + 1],
+        gq: 0,
+        depth,
+        ref_depth,
+        alt_depth,
+    }
 }
 
 /// Call a biallelic genotype from passing `(base, phred_qual)` observations.
@@ -80,7 +87,14 @@ pub fn call_genotype(
     sorted.sort_unstable();
     let gq = (*sorted.get(1).unwrap_or(&0)).min(MAX_GQ);
 
-    GenotypeResult { dosage, pls, gq, depth, ref_depth, alt_depth }
+    GenotypeResult {
+        dosage,
+        pls,
+        gq,
+        depth,
+        ref_depth,
+        alt_depth,
+    }
 }
 
 /// A diploid multiallelic genotype call over `n` alleles (index 0 = reference).
@@ -113,7 +127,13 @@ pub fn call_genotype_multi(observations: &[(usize, u8)], n_alleles: usize, min_d
     // Diploid genotypes in VCF order: for j in 0..n, for i in 0..=j.
     let genos: Vec<(usize, usize)> = (0..n).flat_map(|j| (0..=j).map(move |i| (i, j))).collect();
     if depth < min_depth || n < 2 {
-        return MultiGenotype { gt: (0, 0), gq: 0, depth, allele_depths, pls: vec![0; genos.len()] };
+        return MultiGenotype {
+            gt: (0, 0),
+            gq: 0,
+            depth,
+            allele_depths,
+            pls: vec![0; genos.len()],
+        };
     }
     let mut logl = vec![0.0f64; genos.len()];
     for &(a, qual) in observations {
@@ -125,12 +145,21 @@ pub fn call_genotype_multi(observations: &[(usize, u8)], n_alleles: usize, min_d
     }
     let max = logl.iter().cloned().fold(f64::MIN, f64::max);
     let ln10 = std::f64::consts::LN_10;
-    let pls: Vec<u8> = logl.iter().map(|&l| ((-10.0 * (l - max) / ln10).round()).clamp(0.0, MAX_PL) as u8).collect();
+    let pls: Vec<u8> = logl
+        .iter()
+        .map(|&l| ((-10.0 * (l - max) / ln10).round()).clamp(0.0, MAX_PL) as u8)
+        .collect();
     let best = pls.iter().position(|&p| p == 0).unwrap_or(0);
     let mut sorted = pls.clone();
     sorted.sort_unstable();
     let gq = (*sorted.get(1).unwrap_or(&0)).min(MAX_GQ);
-    MultiGenotype { gt: genos[best], gq, depth, allele_depths, pls }
+    MultiGenotype {
+        gt: genos[best],
+        gq,
+        depth,
+        allele_depths,
+        pls,
+    }
 }
 
 #[cfg(test)]
@@ -221,6 +250,11 @@ mod tests {
         let g_hi = call_genotype(&hi, b'C', b'G', 2, 4);
         let g_lo = call_genotype(&lo, b'C', b'G', 2, 4);
         assert_eq!(g_hi.dosage, 1);
-        assert!(g_lo.gq < g_hi.gq, "low-qual gq {} should be < high-qual gq {}", g_lo.gq, g_hi.gq);
+        assert!(
+            g_lo.gq < g_hi.gq,
+            "low-qual gq {} should be < high-qual gq {}",
+            g_lo.gq,
+            g_hi.gq
+        );
     }
 }

@@ -132,7 +132,13 @@ impl SexState {
                 class.push(0u8);
             }
         }
-        SexState { class, autosome_length, x_length, autosome_reads: 0, x_reads: 0 }
+        SexState {
+            class,
+            autosome_length,
+            x_length,
+            autosome_reads: 0,
+            x_reads: 0,
+        }
     }
 
     pub(crate) fn accept(&mut self, record: &impl AlnRead) {
@@ -206,10 +212,18 @@ pub fn determine_sex(ratio: f64, autosome_coverage: f64) -> (InferredSex, Confid
             (InferredSex::Unknown, Confidence::Low)
         }
     } else if ratio < MALE_RATIO_THRESHOLD {
-        let conf = if ratio < 0.55 { Confidence::High } else { Confidence::Medium };
+        let conf = if ratio < 0.55 {
+            Confidence::High
+        } else {
+            Confidence::Medium
+        };
         (InferredSex::Male, conf)
     } else if ratio > FEMALE_RATIO_THRESHOLD {
-        let conf = if ratio > 0.95 { Confidence::High } else { Confidence::Medium };
+        let conf = if ratio > 0.95 {
+            Confidence::High
+        } else {
+            Confidence::Medium
+        };
         (InferredSex::Female, conf)
     } else {
         (InferredSex::Unknown, Confidence::Low)

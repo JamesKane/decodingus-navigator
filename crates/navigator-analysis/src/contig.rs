@@ -39,7 +39,16 @@ mod tests {
         for ok in ["1", "22", "X", "Y", "M", "MT", "chr1", "chr22", "chrX", "chrM"] {
             assert!(is_main_assembly(ok), "{ok} should be main assembly");
         }
-        for no in ["0", "23", "01", "chr0", "chrUn", "chr1_KI270706v1_random", "HLA-A", "M1"] {
+        for no in [
+            "0",
+            "23",
+            "01",
+            "chr0",
+            "chrUn",
+            "chr1_KI270706v1_random",
+            "HLA-A",
+            "M1",
+        ] {
             assert!(!is_main_assembly(no), "{no} should not be main assembly");
         }
         assert!(is_autosome("chr21") && !is_autosome("chrX"));

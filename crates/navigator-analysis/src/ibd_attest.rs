@@ -107,8 +107,14 @@ impl IbdAttestation {
 /// SHA-256 (lowercase hex) of a match summary's salient fields — the cross-peer agreement
 /// fingerprint. Deterministic so both peers, computing the same segments, get the same hash.
 pub fn summary_hash(s: &MatchSummary) -> String {
-    let canon = format!("{:.4}|{}|{:.4}|{:?}", s.total_shared_cm, s.segment_count, s.longest_segment_cm, s.relationship);
-    Sha256::digest(canon.as_bytes()).iter().map(|b| format!("{b:02x}")).collect()
+    let canon = format!(
+        "{:.4}|{}|{:.4}|{:?}",
+        s.total_shared_cm, s.segment_count, s.longest_segment_cm, s.relationship
+    );
+    Sha256::digest(canon.as_bytes())
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
 }
 
 /// A message exchanged inside the encrypted channel during an IBD exchange.
@@ -166,7 +172,15 @@ mod tests {
 
     #[test]
     fn canonical_is_stable_and_excludes_signature() {
-        let mut a = IbdAttestation::unsigned("exchange:r1", "s1", "did:key:zA", None, None, &summary(20.0), "2026-06-17T00:00:00Z");
+        let mut a = IbdAttestation::unsigned(
+            "exchange:r1",
+            "s1",
+            "did:key:zA",
+            None,
+            None,
+            &summary(20.0),
+            "2026-06-17T00:00:00Z",
+        );
         let c1 = a.canonical();
         a.signature = "sig".into();
         a.signing_public_key = "did:key:zA".into();
@@ -178,10 +192,22 @@ mod tests {
     fn exchange_msg_round_trips() {
         let m = IbdExchangeMsg::Dosages {
             build: "hs1".into(),
-            sites: vec![IbdSite { contig: "chr1".into(), position: 100, dosage: 2 }],
+            sites: vec![IbdSite {
+                contig: "chr1".into(),
+                position: 100,
+                dosage: 2,
+            }],
         };
         assert_eq!(IbdExchangeMsg::from_bytes(&m.to_bytes().unwrap()).unwrap(), m);
-        let att = IbdExchangeMsg::Attest(Box::new(IbdAttestation::unsigned("r", "s", "d", None, None, &summary(7.0), "t")));
+        let att = IbdExchangeMsg::Attest(Box::new(IbdAttestation::unsigned(
+            "r",
+            "s",
+            "d",
+            None,
+            None,
+            &summary(7.0),
+            "t",
+        )));
         assert_eq!(IbdExchangeMsg::from_bytes(&att.to_bytes().unwrap()).unwrap(), att);
     }
 }

@@ -160,7 +160,11 @@ pub fn collect_unified_metrics_with_progress(
     // Sex inference is best-effort: `None` (not a hard error) when the input lacks the
     // autosomes/chrX it needs, so coverage + read-metrics still come back.
     let sex = sx.finish().ok();
-    Ok(UnifiedMetricsResult { coverage, read_metrics, sex })
+    Ok(UnifiedMetricsResult {
+        coverage,
+        read_metrics,
+        sex,
+    })
 }
 
 /// Per-contig parallel unified metrics — the same result as [`collect_unified_metrics`] but
@@ -192,7 +196,12 @@ pub(crate) fn analysis_thread_count() -> usize {
     std::env::var("NAVIGATOR_ANALYSIS_THREADS")
         .ok()
         .and_then(|s| s.parse::<usize>().ok())
-        .unwrap_or_else(|| std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1).min(12))
+        .unwrap_or_else(|| {
+            std::thread::available_parallelism()
+                .map(|n| n.get())
+                .unwrap_or(1)
+                .min(12)
+        })
         .max(1)
 }
 
@@ -260,8 +269,7 @@ pub fn collect_unified_metrics_parallel_with_progress(
     for (ref_id, (name_bytes, map)) in header.reference_sequences().iter().enumerate() {
         let name = String::from_utf8_lossy(name_bytes.as_ref()).into_owned();
         let length = map.length().get();
-        let tracked = contig::is_main_assembly(&name)
-            && contig_allowlist.map_or(true, |s| s.contains(&name));
+        let tracked = contig::is_main_assembly(&name) && contig_allowlist.map_or(true, |s| s.contains(&name));
         let class = if contig::is_autosome(&name) {
             autosome_length += length as u64;
             1
@@ -271,7 +279,13 @@ pub fn collect_unified_metrics_parallel_with_progress(
         } else {
             0
         };
-        works.push(Work { ref_id, name, length, tracked, class });
+        works.push(Work {
+            ref_id,
+            name,
+            length,
+            tracked,
+            class,
+        });
     }
 
     // Progress is reported in **megabases of reference walked** rather than contigs finished, so
@@ -336,14 +350,21 @@ pub fn collect_unified_metrics_parallel_with_progress(
         }
 
         let cov = cov_accum.map(|a| a.finish(w.ref_id));
-        Ok(ContigPartial { rm, cov, autosome_reads, x_reads })
+        Ok(ContigPartial {
+            rm,
+            cov,
+            autosome_reads,
+            x_reads,
+        })
     };
 
     // The unmapped tail (no reference position) is invisible to region queries but the
     // sequential read-metrics counts it (total/pf reads, read-length) — sweep it separately.
     let process_unmapped = || -> Result<ReadMetricsState, AnalysisError> {
         let (_h, mut idx) = reader::open_indexed(bam_path, Some(reference_path))?;
-        let mut sink = MetricsSink { rm: ReadMetricsState::default() };
+        let mut sink = MetricsSink {
+            rm: ReadMetricsState::default(),
+        };
         idx.for_each_unmapped(&mut sink)?;
         Ok(sink.rm)
     };
@@ -355,8 +376,19 @@ pub fn collect_unified_metrics_parallel_with_progress(
 
     let (contig_results, unmapped_rm) = pool.install(|| {
         rayon::join(
-            || works.par_iter().map(&process_contig).collect::<Result<Vec<_>, AnalysisError>>(),
-            || if skip_unmapped { Ok(ReadMetricsState::default()) } else { process_unmapped() },
+            || {
+                works
+                    .par_iter()
+                    .map(&process_contig)
+                    .collect::<Result<Vec<_>, AnalysisError>>()
+            },
+            || {
+                if skip_unmapped {
+                    Ok(ReadMetricsState::default())
+                } else {
+                    process_unmapped()
+                }
+            },
         )
     });
     let contig_results = contig_results?;
@@ -381,7 +413,11 @@ pub fn collect_unified_metrics_parallel_with_progress(
     let read_metrics = rm_total.finish();
     let sex = sex::result_from_tally((autosome_reads, autosome_length, x_reads, x_length)).ok();
     progress(total_mb, total_mb);
-    Ok(UnifiedMetricsResult { coverage, read_metrics, sex })
+    Ok(UnifiedMetricsResult {
+        coverage,
+        read_metrics,
+        sex,
+    })
 }
 
 /// Per-pass timings from [`profile_contig`] over one contig.
@@ -419,7 +455,9 @@ pub fn profile_contig(
             .map_err(|e| AnalysisError::io(bam_path, e))?;
         let header = inner.read_header().map_err(|e| AnalysisError::io(bam_path, e))?;
         let start = std::time::Instant::now();
-        let q = inner.query(&header, &region).map_err(|e| AnalysisError::io(bam_path, e))?;
+        let q = inner
+            .query(&header, &region)
+            .map_err(|e| AnalysisError::io(bam_path, e))?;
         for r in q {
             let rec = r.map_err(|e| AnalysisError::io(bam_path, e))?;
             std::hint::black_box(rec.flags());
@@ -463,7 +501,12 @@ pub fn profile_contig(
         start.elapsed()
     };
 
-    Ok(ContigProfile { reads: raw_reads, raw, recordbuf, full })
+    Ok(ContigProfile {
+        reads: raw_reads,
+        raw,
+        recordbuf,
+        full,
+    })
 }
 
 /// Diagnostic: run the full per-read work on each of `contigs` concurrently (mirroring the real
@@ -511,7 +554,9 @@ mod tests {
     use std::path::PathBuf;
 
     fn fixture(name: &str) -> PathBuf {
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures").join(name)
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures")
+            .join(name)
     }
 
     /// The fused walker yields exactly what the three standalone walkers do, field for field.

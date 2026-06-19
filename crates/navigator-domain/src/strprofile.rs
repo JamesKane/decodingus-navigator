@@ -61,7 +61,12 @@ pub fn consensus_markers(profiles: &[StrProfile]) -> Vec<ConsensusStrMarker> {
                 .max_by(|a, b| a.1.cmp(b.1).then_with(|| b.0.cmp(a.0)))
                 .map(|(v, _)| (*v).to_string())
                 .unwrap_or_default();
-            ConsensusStrMarker { marker, value, panels: vals.len(), conflict }
+            ConsensusStrMarker {
+                marker,
+                value,
+                panels: vals.len(),
+                conflict,
+            }
         })
         .collect()
 }
@@ -91,15 +96,29 @@ pub struct NewStrProfile {
 }
 
 /// Common Y-STR panel names (for the import form's dropdown). "CUSTOM" for anything else.
-pub const KNOWN_PANELS: &[&str] =
-    &["Y-12", "Y-25", "Y-37", "Y-67", "Y-111", "Y-500", "Y-700", "YSEQ_ALPHA", "CUSTOM"];
+pub const KNOWN_PANELS: &[&str] = &[
+    "Y-12",
+    "Y-25",
+    "Y-37",
+    "Y-67",
+    "Y-111",
+    "Y-500",
+    "Y-700",
+    "YSEQ_ALPHA",
+    "CUSTOM",
+];
 
 /// Known testing companies / sources.
 pub const KNOWN_PROVIDERS: &[&str] = &["FTDNA", "YSEQ", "NEBULA", "DANTE", "WGS_DERIVED", "OTHER"];
 
 /// How a profile's STRs were obtained.
-pub const KNOWN_SOURCES: &[&str] =
-    &["DIRECT_TEST", "WGS_DERIVED", "BIG_Y_DERIVED", "IMPORTED", "MANUAL_ENTRY"];
+pub const KNOWN_SOURCES: &[&str] = &[
+    "DIRECT_TEST",
+    "WGS_DERIVED",
+    "BIG_Y_DERIVED",
+    "IMPORTED",
+    "MANUAL_ENTRY",
+];
 
 /// Trim whitespace and one layer of surrounding double-quotes from a cell (FTDNA/YSEQ pad
 /// values like `" 13"`), then trim again.
@@ -119,7 +138,10 @@ fn looks_like_names(cells: &[&str]) -> bool {
     if non_empty.is_empty() {
         return false;
     }
-    let with_letter = non_empty.iter().filter(|c| c.bytes().any(|b| b.is_ascii_alphabetic())).count();
+    let with_letter = non_empty
+        .iter()
+        .filter(|c| c.bytes().any(|b| b.is_ascii_alphabetic()))
+        .count();
     with_letter * 10 >= non_empty.len() * 8 // ≥80%
 }
 
@@ -168,7 +190,10 @@ pub fn parse_csv(text: &str) -> Result<Vec<StrMarker>, String> {
                 .iter()
                 .zip(values.iter())
                 .filter(|(name, value)| !name.is_empty() && !is_blank_value(value))
-                .map(|(name, value)| StrMarker { marker: (*name).to_string(), value: (*value).to_string() })
+                .map(|(name, value)| StrMarker {
+                    marker: (*name).to_string(),
+                    value: (*value).to_string(),
+                })
                 .collect();
             if !markers.is_empty() {
                 return Ok(markers);
@@ -199,7 +224,10 @@ pub fn parse_csv(text: &str) -> Result<Vec<StrMarker>, String> {
         if marker.is_empty() || is_blank_value(value) {
             continue;
         }
-        markers.push(StrMarker { marker: marker.to_string(), value: value.to_string() });
+        markers.push(StrMarker {
+            marker: marker.to_string(),
+            value: value.to_string(),
+        });
     }
     if markers.is_empty() {
         return Err("no STR markers found (expected `marker,value` rows or a wide FTDNA/YSEQ table)".into());
@@ -292,12 +320,19 @@ pub fn compare_profiles(profiles: &[StrProfile]) -> StrComparison {
         if entries.iter().all(|(_, v)| values_match(first, v)) {
             agreement_count += 1;
         } else {
-            conflicts.push(MarkerConflict { marker, by_provider: entries });
+            conflicts.push(MarkerConflict {
+                marker,
+                by_provider: entries,
+            });
         }
     }
     conflicts.sort_by(|a, b| a.marker.cmp(&b.marker));
 
-    StrComparison { conflicts, agreement_count, providers }
+    StrComparison {
+        conflicts,
+        agreement_count,
+        providers,
+    }
 }
 
 #[cfg(test)]
@@ -305,7 +340,10 @@ mod tests {
     use super::*;
 
     fn m(marker: &str, value: &str) -> StrMarker {
-        StrMarker { marker: marker.into(), value: value.into() }
+        StrMarker {
+            marker: marker.into(),
+            value: value.into(),
+        }
     }
 
     #[test]
@@ -320,7 +358,13 @@ mod tests {
         let csv = "Marker,Value\nDYS393,13\nDYS390,24\nDYS385,11-14\n";
         let m = parse_csv(csv).unwrap();
         assert_eq!(m.len(), 3);
-        assert_eq!(m[0], StrMarker { marker: "DYS393".into(), value: "13".into() });
+        assert_eq!(
+            m[0],
+            StrMarker {
+                marker: "DYS393".into(),
+                value: "13".into()
+            }
+        );
         assert_eq!(m[2].value, "11-14"); // multi-copy preserved
     }
 
@@ -328,7 +372,10 @@ mod tests {
     fn parses_tsv_without_header_and_skips_blanks_and_nulls() {
         let tsv = "# YSEQ export\nDYS393\t13\n\nDYS438\t-\nDYS439\t11\n";
         let m = parse_csv(tsv).unwrap();
-        assert_eq!(m.iter().map(|x| x.marker.as_str()).collect::<Vec<_>>(), ["DYS393", "DYS439"]);
+        assert_eq!(
+            m.iter().map(|x| x.marker.as_str()).collect::<Vec<_>>(),
+            ["DYS393", "DYS439"]
+        );
     }
 
     #[test]
@@ -343,9 +390,27 @@ mod tests {
         let csv = "DYS393,DYS390,DYS385,DYS459,DYS464\n\" 13\",\" 24\",\" 11-15\",\" \",\" 14-15-17-17\"\n";
         let m = parse_csv(csv).unwrap();
         assert_eq!(m.len(), 4); // DYS459 (blank) skipped
-        assert_eq!(m[0], StrMarker { marker: "DYS393".into(), value: "13".into() });
-        assert_eq!(m[2], StrMarker { marker: "DYS385".into(), value: "11-15".into() });
-        assert_eq!(m[3], StrMarker { marker: "DYS464".into(), value: "14-15-17-17".into() });
+        assert_eq!(
+            m[0],
+            StrMarker {
+                marker: "DYS393".into(),
+                value: "13".into()
+            }
+        );
+        assert_eq!(
+            m[2],
+            StrMarker {
+                marker: "DYS385".into(),
+                value: "11-15".into()
+            }
+        );
+        assert_eq!(
+            m[3],
+            StrMarker {
+                marker: "DYS464".into(),
+                value: "14-15-17-17".into()
+            }
+        );
     }
 
     #[test]
@@ -354,8 +419,20 @@ mod tests {
         let csv = "DYS393,13\nDYS390,24\n";
         let m = parse_csv(csv).unwrap();
         assert_eq!(m.len(), 2);
-        assert_eq!(m[0], StrMarker { marker: "DYS393".into(), value: "13".into() });
-        assert_eq!(m[1], StrMarker { marker: "DYS390".into(), value: "24".into() });
+        assert_eq!(
+            m[0],
+            StrMarker {
+                marker: "DYS393".into(),
+                value: "13".into()
+            }
+        );
+        assert_eq!(
+            m[1],
+            StrMarker {
+                marker: "DYS390".into(),
+                value: "24".into()
+            }
+        );
     }
 
     #[test]
@@ -367,7 +444,13 @@ mod tests {
             panel_name: panel.into(),
             provider: None,
             source: None,
-            markers: pairs.iter().map(|(m, v)| StrMarker { marker: (*m).into(), value: (*v).into() }).collect(),
+            markers: pairs
+                .iter()
+                .map(|(m, v)| StrMarker {
+                    marker: (*m).into(),
+                    value: (*v).into(),
+                })
+                .collect(),
         };
         let profiles = vec![
             mk("Y-37", &[("DYS393", "13"), ("DYS390", "24"), ("DYS385", "-")]),
@@ -408,10 +491,19 @@ mod tests {
             panel_name: "X".into(),
             provider: Some(provider.into()),
             source: None,
-            markers: pairs.iter().map(|(m, v)| StrMarker { marker: (*m).into(), value: (*v).into() }).collect(),
+            markers: pairs
+                .iter()
+                .map(|(m, v)| StrMarker {
+                    marker: (*m).into(),
+                    value: (*v).into(),
+                })
+                .collect(),
         };
         let profiles = vec![
-            mk("FTDNA", &[("DYS393", "13"), ("DYS390", "24"), ("DYS385", "11-15"), ("DYS19", "14")]),
+            mk(
+                "FTDNA",
+                &[("DYS393", "13"), ("DYS390", "24"), ("DYS385", "11-15"), ("DYS19", "14")],
+            ),
             mk("YSEQ", &[("DYS393", "13"), ("DYS390", "25"), ("DYS385", "15-11")]), // DYS390 differs; DYS385 multi-copy reorder
         ];
         let c = compare_profiles(&profiles);
@@ -425,6 +517,6 @@ mod tests {
             vec![("FTDNA".into(), "24".into()), ("YSEQ".into(), "25".into())]
         );
         assert_eq!(c.agreement_count, 2); // DYS393, DYS385
-        // DYS19 is single-provider → neither conflict nor agreement.
+                                          // DYS19 is single-provider → neither conflict nor agreement.
     }
 }

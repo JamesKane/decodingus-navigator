@@ -74,12 +74,10 @@ pub async fn list(pool: &SqlitePool) -> Result<Vec<StoredIbdExchange>, StoreErro
 
 /// Exchange results for one local subject, newest first.
 pub async fn list_for_biosample(pool: &SqlitePool, guid: SampleGuid) -> Result<Vec<StoredIbdExchange>, StoreError> {
-    let rows = sqlx::query_as(
-        "SELECT * FROM ibd_exchange_result WHERE biosample_guid = ? ORDER BY created_at DESC",
-    )
-    .bind(guid.0.to_string())
-    .fetch_all(pool)
-    .await?;
+    let rows = sqlx::query_as("SELECT * FROM ibd_exchange_result WHERE biosample_guid = ? ORDER BY created_at DESC")
+        .bind(guid.0.to_string())
+        .fetch_all(pool)
+        .await?;
     Ok(rows)
 }
 
@@ -124,13 +122,17 @@ mod tests {
         crate::biosample::create(store.pool(), &bio).await.unwrap();
 
         assert!(list_for_biosample(store.pool(), g).await.unwrap().is_empty());
-        upsert(store.pool(), &row("sess-1", &g.0.to_string(), 75.0)).await.unwrap();
+        upsert(store.pool(), &row("sess-1", &g.0.to_string(), 75.0))
+            .await
+            .unwrap();
         let got = list_for_biosample(store.pool(), g).await.unwrap();
         assert_eq!(got.len(), 1);
         assert_eq!(got[0].total_shared_cm, 75.0);
         assert!(got[0].agreed);
         // Upsert on the same session replaces.
-        upsert(store.pool(), &row("sess-1", &g.0.to_string(), 40.0)).await.unwrap();
+        upsert(store.pool(), &row("sess-1", &g.0.to_string(), 40.0))
+            .await
+            .unwrap();
         let got = list_for_biosample(store.pool(), g).await.unwrap();
         assert_eq!(got.len(), 1);
         assert_eq!(got[0].total_shared_cm, 40.0);

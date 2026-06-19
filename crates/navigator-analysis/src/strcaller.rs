@@ -41,7 +41,13 @@ pub struct StrCallerParams {
 
 impl Default for StrCallerParams {
     fn default() -> Self {
-        Self { min_mapping_quality: 20, flank: 5, min_depth: 5, no_stutter: 0.9, stutter_decay: 0.5 }
+        Self {
+            min_mapping_quality: 20,
+            flank: 5,
+            min_depth: 5,
+            no_stutter: 0.9,
+            stutter_decay: 0.5,
+        }
     }
 }
 
@@ -201,7 +207,11 @@ fn genotype_from_counts(locus: &StrLocus, counts: &[i32], ploidy: u8, p: &StrCal
         vec![call_haploid(counts, p)?]
     } else {
         let (a, b) = call_diploid(counts, p)?;
-        if a == b { vec![a] } else { vec![a, b] }
+        if a == b {
+            vec![a]
+        } else {
+            vec![a, b]
+        }
     };
     let matching = counts.iter().filter(|&&c| alleles.contains(&c)).count();
     let concordance = matching as f64 / depth as f64;
@@ -252,9 +262,15 @@ pub fn genotype_str_loci(
         if !read_passes(&record, params.min_mapping_quality) {
             continue;
         }
-        let Some(start) = record.alignment_start().map(|p| p.get() as i64) else { continue };
+        let Some(start) = record.alignment_start().map(|p| p.get() as i64) else {
+            continue;
+        };
         let ops: Vec<(Kind, usize)> = record.cigar().as_ref().iter().map(|op| (op.kind(), op.len())).collect();
-        let ref_span: i64 = ops.iter().filter(|(k, _)| k.consumes_reference()).map(|(_, l)| *l as i64).sum();
+        let ref_span: i64 = ops
+            .iter()
+            .filter(|(k, _)| k.consumes_reference())
+            .map(|(_, l)| *l as i64)
+            .sum();
         let aend = start + ref_span - 1;
 
         // Loci this read could enclose: tract_start (1-based = start+1) anchored >= flank from the
@@ -291,7 +307,15 @@ mod tests {
     fn locus() -> StrLocus {
         // HipSTR end-inclusive: tract bp = end-start+1 = 20, period 4 → 5.0 ref copies, motif GATA.
         // 1-based tract = [101, 120].
-        StrLocus { contig: "Y".into(), start: 100, end: 119, period: 4, ref_copies: 5.0, name: "L".into(), motif: "GATA".into() }
+        StrLocus {
+            contig: "Y".into(),
+            start: 100,
+            end: 119,
+            period: 4,
+            ref_copies: 5.0,
+            name: "L".into(),
+            motif: "GATA".into(),
+        }
     }
 
     #[test]
@@ -316,7 +340,7 @@ mod tests {
     #[test]
     fn observed_copies_reads_indel_off_the_cigar() {
         let l = locus(); // tract 101..120 (20 bp), period 4, flank 5
-        // Read aligned from pos 90, all-match across a wide span → exactly ref (20bp/4 = 5 copies).
+                         // Read aligned from pos 90, all-match across a wide span → exactly ref (20bp/4 = 5 copies).
         let ops = vec![(Kind::Match, 60)];
         assert_eq!(observed_copies(&ops, 90, &l, 5), Some(5));
 

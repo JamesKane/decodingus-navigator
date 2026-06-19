@@ -124,7 +124,11 @@ pub fn classify_identity(
             } else {
                 VerificationStatus::VerifiedDifferent
             };
-            let m = if y_str_markers > 0 { "SNP concordance + Y-STR" } else { "SNP concordance" };
+            let m = if y_str_markers > 0 {
+                "SNP concordance + Y-STR"
+            } else {
+                "SNP concordance"
+            };
             (s, m.to_string())
         }
         // No shared genotypes: Y-STR alone is paternal-line only — never "verified".
@@ -138,7 +142,14 @@ pub fn classify_identity(
         }
         _ => (VerificationStatus::Uncertain, "no shared data".to_string()),
     };
-    IdentityVerification { status, method, snp_concordance: concordance, sites_compared, y_str_distance, y_str_markers }
+    IdentityVerification {
+        status,
+        method,
+        snp_concordance: concordance,
+        sites_compared,
+        y_str_distance,
+        y_str_markers,
+    }
 }
 
 fn is_prefix(short: &[String], long: &[String]) -> bool {
@@ -297,12 +308,27 @@ mod tests {
 
     #[test]
     fn identity_from_concordance() {
-        assert_eq!(classify_identity(Some(0.995), 5000, Some(0), 37).status, VerificationStatus::VerifiedSame);
-        assert_eq!(classify_identity(Some(0.88), 5000, None, 0).status, VerificationStatus::LikelySame);
-        assert_eq!(classify_identity(Some(0.45), 5000, None, 0).status, VerificationStatus::VerifiedDifferent);
+        assert_eq!(
+            classify_identity(Some(0.995), 5000, Some(0), 37).status,
+            VerificationStatus::VerifiedSame
+        );
+        assert_eq!(
+            classify_identity(Some(0.88), 5000, None, 0).status,
+            VerificationStatus::LikelySame
+        );
+        assert_eq!(
+            classify_identity(Some(0.45), 5000, None, 0).status,
+            VerificationStatus::VerifiedDifferent
+        );
         // no autosomal data -> Y-STR only, never "verified"
-        assert_eq!(classify_identity(None, 0, Some(0), 111).status, VerificationStatus::LikelySame);
-        assert_eq!(classify_identity(None, 0, None, 0).status, VerificationStatus::Uncertain);
+        assert_eq!(
+            classify_identity(None, 0, Some(0), 111).status,
+            VerificationStatus::LikelySame
+        );
+        assert_eq!(
+            classify_identity(None, 0, None, 0).status,
+            VerificationStatus::Uncertain
+        );
     }
 
     #[test]

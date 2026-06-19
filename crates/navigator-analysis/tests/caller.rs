@@ -50,8 +50,7 @@ fn denovo_calls_snps_only_where_consensus_differs_from_ref() {
         assert!((c.allele_fraction - 1.0).abs() < 1e-9);
     }
     // Reference bases at the called positions.
-    let by_pos: std::collections::HashMap<i64, char> =
-        calls.iter().map(|c| (c.position, c.reference_allele)).collect();
+    let by_pos: std::collections::HashMap<i64, char> = calls.iter().map(|c| (c.position, c.reference_allele)).collect();
     assert_eq!(by_pos[&2], 'C');
     assert_eq!(by_pos[&3], 'G');
     assert_eq!(by_pos[&4], 'T');
@@ -61,12 +60,12 @@ fn denovo_calls_snps_only_where_consensus_differs_from_ref() {
 fn force_call_genotypes_known_sites() {
     let dir = fixtures();
     let sites = vec![
-        site("ref_match", 1, "A", "G"),  // consensus A == ref      -> Reference
-        site("alt_match", 2, "C", "A"),  // consensus A == alt      -> Alternate
-        site("third", 3, "G", "T"),      // consensus A is neither  -> NoCall
-        site("shallow", 11, "G", "A"),   // depth 2 < min 4         -> NoCall
-        site("filtered", 26, "A", "C"),  // MAPQ-0 reads dropped    -> NoCall
-        site("indel", 5, "AT", "A"),     // not a SNP               -> skipped
+        site("ref_match", 1, "A", "G"),    // consensus A == ref      -> Reference
+        site("alt_match", 2, "C", "A"),    // consensus A == alt      -> Alternate
+        site("third", 3, "G", "T"),        // consensus A is neither  -> NoCall
+        site("shallow", 11, "G", "A"),     // depth 2 < min 4         -> NoCall
+        site("filtered", 26, "A", "C"),    // MAPQ-0 reads dropped    -> NoCall
+        site("indel", 5, "AT", "A"),       // not a SNP               -> skipped
         site("offcontig", 9999, "A", "C"), // beyond contig         -> skipped
     ];
 
@@ -81,8 +80,7 @@ fn force_call_genotypes_known_sites() {
 
     // indel + off-contig are dropped; 5 SNP sites remain.
     assert_eq!(calls.len(), 5);
-    let by_name: std::collections::HashMap<&str, &_> =
-        calls.iter().map(|c| (c.name.as_str(), c)).collect();
+    let by_name: std::collections::HashMap<&str, &_> = calls.iter().map(|c| (c.name.as_str(), c)).collect();
 
     assert_eq!(by_name["ref_match"].called, CalledAllele::Reference);
     assert_eq!(by_name["ref_match"].ref_depth, 4);
@@ -102,13 +100,25 @@ fn force_call_genotypes_known_sites() {
 #[test]
 fn denovo_chunking_matches_unchunked() {
     let dir = fixtures();
-    let base = call_denovo(&dir.join("coverage.bam"), &dir.join("ref.fa"), "chrM", &HaploidCallerParams::default())
-        .unwrap();
+    let base = call_denovo(
+        &dir.join("coverage.bam"),
+        &dir.join("ref.fa"),
+        "chrM",
+        &HaploidCallerParams::default(),
+    )
+    .unwrap();
     // Force many tiny chunks over the 50 bp fixture; result must be identical.
-    let chunked = HaploidCallerParams { denovo_chunk: 8, denovo_overlap: 3, ..HaploidCallerParams::default() };
+    let chunked = HaploidCallerParams {
+        denovo_chunk: 8,
+        denovo_overlap: 3,
+        ..HaploidCallerParams::default()
+    };
     let got = call_denovo(&dir.join("coverage.bam"), &dir.join("ref.fa"), "chrM", &chunked).unwrap();
     assert_eq!(got, base);
-    assert_eq!(got.iter().map(|c| c.position).collect::<Vec<_>>(), vec![2, 3, 4, 6, 7, 8, 10]);
+    assert_eq!(
+        got.iter().map(|c| c.position).collect::<Vec<_>>(),
+        vec![2, 3, 4, 6, 7, 8, 10]
+    );
 }
 
 #[test]

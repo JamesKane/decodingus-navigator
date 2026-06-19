@@ -59,8 +59,7 @@ pub fn segment(
                     break;
                 }
                 let next_z = z_scores[end_bin + 1];
-                let same_side = (is_deletion && next_z < -min_z * 0.5)
-                    || (!is_deletion && next_z > min_z * 0.5);
+                let same_side = (is_deletion && next_z < -min_z * 0.5) || (!is_deletion && next_z > min_z * 0.5);
                 if same_side {
                     count += 1;
                     sum_z += next_z;
@@ -125,14 +124,9 @@ pub fn merge_nearby_segments(segments: &[DepthSegment], max_gap: i64) -> Vec<Dep
     let mut merged: Vec<DepthSegment> = Vec::new();
     let mut current = sorted[0].clone();
     for next in sorted.into_iter().skip(1) {
-        if current.chrom == next.chrom
-            && current.sv_type == next.sv_type
-            && next.start - current.end <= max_gap
-        {
+        if current.chrom == next.chrom && current.sv_type == next.sv_type && next.start - current.end <= max_gap {
             let total = current.num_bins + next.num_bins;
-            let w = |a: f64, b: f64| {
-                (a * current.num_bins as f64 + b * next.num_bins as f64) / total as f64
-            };
+            let w = |a: f64, b: f64| (a * current.num_bins as f64 + b * next.num_bins as f64) / total as f64;
             current = DepthSegment {
                 chrom: current.chrom.clone(),
                 start: current.start,
@@ -185,7 +179,11 @@ pub fn to_sv_calls(segments: &[DepthSegment], config: &SvCallerConfig) -> Vec<Sv
                 relative_depth: Some(2f64.powf(seg.log2_ratio)),
                 mate_chrom: None,
                 mate_pos: None,
-                filter: if quality >= config.min_quality { "PASS".into() } else { "LowQual".into() },
+                filter: if quality >= config.min_quality {
+                    "PASS".into()
+                } else {
+                    "LowQual".into()
+                },
                 genotype: genotype.into(),
             }
         })

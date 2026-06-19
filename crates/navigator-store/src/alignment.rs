@@ -94,10 +94,12 @@ pub async fn get(pool: &SqlitePool, id: i64) -> Result<Option<Alignment>, StoreE
 }
 
 pub async fn list_for_run(pool: &SqlitePool, sequence_run_id: i64) -> Result<Vec<Alignment>, StoreError> {
-    let rows: Vec<Row> = sqlx::query_as(&format!("SELECT {COLS} FROM alignment WHERE sequence_run_id = ? ORDER BY id"))
-        .bind(sequence_run_id)
-        .fetch_all(pool)
-        .await?;
+    let rows: Vec<Row> = sqlx::query_as(&format!(
+        "SELECT {COLS} FROM alignment WHERE sequence_run_id = ? ORDER BY id"
+    ))
+    .bind(sequence_run_id)
+    .fetch_all(pool)
+    .await?;
     Ok(rows.into_iter().map(Row::into_domain).collect())
 }
 
@@ -118,14 +120,15 @@ pub async fn update(
     aligner: &str,
     variant_caller: Option<&str>,
 ) -> Result<bool, StoreError> {
-    let affected = sqlx::query("UPDATE alignment SET reference_build = ?, aligner = ?, variant_caller = ? WHERE id = ?")
-        .bind(reference_build)
-        .bind(aligner)
-        .bind(variant_caller)
-        .bind(id)
-        .execute(pool)
-        .await?
-        .rows_affected();
+    let affected =
+        sqlx::query("UPDATE alignment SET reference_build = ?, aligner = ?, variant_caller = ? WHERE id = ?")
+            .bind(reference_build)
+            .bind(aligner)
+            .bind(variant_caller)
+            .bind(id)
+            .execute(pool)
+            .await?
+            .rows_affected();
     Ok(affected > 0)
 }
 
@@ -151,7 +154,10 @@ pub async fn list_for_biosample(pool: &SqlitePool, guid: SampleGuid) -> Result<V
     let rows: Vec<Row> = sqlx::query_as(&format!(
         "SELECT {} FROM alignment a JOIN sequence_run r ON a.sequence_run_id = r.id \
          WHERE r.biosample_guid = ? ORDER BY a.id",
-        COLS.split(", ").map(|c| format!("a.{c}")).collect::<Vec<_>>().join(", ")
+        COLS.split(", ")
+            .map(|c| format!("a.{c}"))
+            .collect::<Vec<_>>()
+            .join(", ")
     ))
     .bind(guid.0.to_string())
     .fetch_all(pool)

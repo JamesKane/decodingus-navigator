@@ -19,13 +19,12 @@ pub use error::SyncError;
 pub use exchange::{Envelope, EphemeralKey, ExchangeKey};
 pub use oauth::{login, login_default, refresh, OAuthConfig};
 pub use publish::{dev_http_client, PdsClient, RecordRef, RemoteRecord};
-pub use sync::{AsyncSync, RetryPolicy};
 pub use records::{
-    AuditEntryRecord, HaplogroupReconciliationRecord, HeteroplasmyObservationRecord,
-    IdentityVerificationRecord, ManualOverrideRecord, PrivateVariantsRecord, RecordMeta,
-    ReconciliationStatusRecord, RunHaplogroupCallRecord, VariantCallEntry,
-    HAPLOGROUP_RECONCILIATION_COLLECTION, PRIVATE_VARIANTS_COLLECTION,
+    AuditEntryRecord, HaplogroupReconciliationRecord, HeteroplasmyObservationRecord, IdentityVerificationRecord,
+    ManualOverrideRecord, PrivateVariantsRecord, ReconciliationStatusRecord, RecordMeta, RunHaplogroupCallRecord,
+    VariantCallEntry, HAPLOGROUP_RECONCILIATION_COLLECTION, PRIVATE_VARIANTS_COLLECTION,
 };
+pub use sync::{AsyncSync, RetryPolicy};
 pub use tokens::{Session, TokenStore};
 
 // Federated atproto wire records — the single source of truth lives in the shared
@@ -35,6 +34,6 @@ pub use tokens::{Session, TokenStore};
 pub use du_domain::fed::{
     AlignmentRecord, BiosampleRecord, CoverageMetrics, PopulationBreakdownRecord,
     PopulationComponent as FedPopulationComponent, SequenceRunRecord,
-    SuperPopulationSummary as FedSuperPopulationSummary, WireF64, NS_ALIGNMENT, NS_BIOSAMPLE,
-    NS_POPULATION_BREAKDOWN, NS_SEQUENCERUN,
+    SuperPopulationSummary as FedSuperPopulationSummary, WireF64, NS_ALIGNMENT, NS_BIOSAMPLE, NS_POPULATION_BREAKDOWN,
+    NS_SEQUENCERUN,
 };

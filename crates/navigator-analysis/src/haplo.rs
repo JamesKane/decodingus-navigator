@@ -112,13 +112,16 @@ pub fn parse_ftdna_json(data: &str) -> Result<HaploTree, String> {
                     })
                 })
                 .collect();
-            (n.haplogroup_id, HaploNode {
-                id: n.haplogroup_id,
-                name: n.name,
-                is_root: n.is_root,
-                loci,
-                children: n.children.unwrap_or_default(),
-            })
+            (
+                n.haplogroup_id,
+                HaploNode {
+                    id: n.haplogroup_id,
+                    name: n.name,
+                    is_root: n.is_root,
+                    loci,
+                    children: n.children.unwrap_or_default(),
+                },
+            )
         })
         .collect();
     Ok(HaploTree { nodes })
@@ -188,7 +191,16 @@ fn flatten_du_node(n: &DuNode, is_root: bool, build_key: &str, out: &mut HashMap
         })
         .collect();
     let children = n.children.iter().map(|c| c.id).collect();
-    out.insert(n.id, HaploNode { id: n.id, name: n.name.clone(), is_root, loci, children });
+    out.insert(
+        n.id,
+        HaploNode {
+            id: n.id,
+            name: n.name.clone(),
+            is_root,
+            loci,
+            children,
+        },
+    );
     for c in &n.children {
         flatten_du_node(c, false, build_key, out);
     }
@@ -219,7 +231,17 @@ pub fn score(tree: &HaploTree, calls: &HashMap<i64, char>) -> Vec<ScoredHaplogro
     let mut roots: Vec<i64> = tree.nodes.values().filter(|n| n.is_root).map(|n| n.id).collect();
     roots.sort_unstable();
     for r in roots {
-        dfs(tree, r, calls, total_found, &mut on_path, &mut matched, 0, &mut lineage, &mut out);
+        dfs(
+            tree,
+            r,
+            calls,
+            total_found,
+            &mut on_path,
+            &mut matched,
+            0,
+            &mut lineage,
+            &mut out,
+        );
     }
 
     out.sort_by(|a, b| {
@@ -395,7 +417,9 @@ pub struct BranchEvidence {
 /// with `NoCall` SNPs is unresolved for lack of coverage. Children without defining SNPs
 /// are omitted.
 pub fn child_evidence(tree: &HaploTree, calls: &HashMap<i64, char>, node_id: i64) -> Vec<BranchEvidence> {
-    let Some(node) = tree.nodes.get(&node_id) else { return Vec::new() };
+    let Some(node) = tree.nodes.get(&node_id) else {
+        return Vec::new();
+    };
     let mut out = Vec::new();
     let mut children = node.children.clone();
     children.sort_unstable();
@@ -419,7 +443,11 @@ pub fn child_evidence(tree: &HaploTree, calls: &HashMap<i64, char>, node_id: i64
                 state,
             });
         }
-        out.push(BranchEvidence { name: child.name.clone(), snps, derived });
+        out.push(BranchEvidence {
+            name: child.name.clone(),
+            snps,
+            derived,
+        });
     }
     out
 }
@@ -696,7 +724,12 @@ mod tests {
         // The CHM13 trap: at a Y-SNP the tree calls ancestral=A, derived=G, and the analysis
         // reference (CHM13 chrY = HG002, haplogroup J) carries the DERIVED base G. Polarity
         // must come from comparing the SAMPLE's base to the tree — never from the reference.
-        let locus = Locus { position: 146, ancestral: "A".into(), derived: "G".into(), name: "M-test".into() };
+        let locus = Locus {
+            position: 146,
+            ancestral: "A".into(),
+            derived: "G".into(),
+            name: "M-test".into(),
+        };
 
         // Sample carries the ANCESTRAL allele (A). A "reference base = ancestral" assumption
         // (ref here is G) would see A ≠ G and wrongly flip this to Derived. Tree-driven: Ancestral.
@@ -710,7 +743,10 @@ mod tests {
         // descend; tree-driven, H is contradicted and the call stays at root.
         let t = parse_ftdna_json(TREE).unwrap(); // root→H(146 A→G)→H2(263)→H2a(750)
         let c = calls(&[(146, 'A'), (263, 'G'), (750, 'T')]);
-        assert!(!path_admissible(&t, &c, id_of(&t, "H")), "H is contradicted (sample ancestral at 146)");
+        assert!(
+            !path_admissible(&t, &c, id_of(&t, "H")),
+            "H is contradicted (sample ancestral at 146)"
+        );
         assert_eq!(guarded_terminal(&t, &c), "root");
     }
 
@@ -834,7 +870,16 @@ mod tests {
     fn deepen_enters_an_unsplit_node_the_sample_clearly_carries() {
         let t = parse_ftdna_json(UNSPLIT_TREE).unwrap();
         // Derived for P (100,200) and 3 of C's SNPs (300,400,500); ancestral for the other 3.
-        let c = calls(&[(100, 'G'), (200, 'G'), (300, 'G'), (400, 'G'), (500, 'G'), (600, 'A'), (700, 'A'), (800, 'A')]);
+        let c = calls(&[
+            (100, 'G'),
+            (200, 'G'),
+            (300, 'G'),
+            (400, 'G'),
+            (500, 'G'),
+            (600, 'A'),
+            (700, 'A'),
+            (800, 'A'),
+        ]);
         // Deepen enters C from P: it carries 3 derived (≥2) and isn't contradicted (3 anc ≤ 3 der).
         // (The "Kulczynski stops at the parent" condition needs a long backbone — validated on
         // the real WGS229 short-read sample, where the guard stops at R-FGC29067 and deepen
@@ -846,10 +891,28 @@ mod tests {
     fn deepen_does_not_enter_on_a_lone_match_or_a_net_ancestral_child() {
         let t = parse_ftdna_json(UNSPLIT_TREE).unwrap();
         // Only one of C's SNPs derived → below the ≥2 threshold (and net-ancestral): stay at P.
-        let lone = calls(&[(100, 'G'), (200, 'G'), (300, 'G'), (400, 'A'), (500, 'A'), (600, 'A'), (700, 'A'), (800, 'A')]);
+        let lone = calls(&[
+            (100, 'G'),
+            (200, 'G'),
+            (300, 'G'),
+            (400, 'A'),
+            (500, 'A'),
+            (600, 'A'),
+            (700, 'A'),
+            (800, 'A'),
+        ]);
         assert_eq!(deepen_terminal(&t, &lone, id_of(&t, "P")), id_of(&t, "P"));
         // 2 derived but 4 ancestral → contradicted (a > d), don't enter even at ≥2 derived.
-        let net_anc = calls(&[(100, 'G'), (200, 'G'), (300, 'G'), (400, 'G'), (500, 'A'), (600, 'A'), (700, 'A'), (800, 'A')]);
+        let net_anc = calls(&[
+            (100, 'G'),
+            (200, 'G'),
+            (300, 'G'),
+            (400, 'G'),
+            (500, 'A'),
+            (600, 'A'),
+            (700, 'A'),
+            (800, 'A'),
+        ]);
         assert_eq!(deepen_terminal(&t, &net_anc, id_of(&t, "P")), id_of(&t, "P"));
     }
 

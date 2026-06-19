@@ -45,78 +45,279 @@ pub const EXTENDED: &str = "Extended (Y-500/700)";
 // ---- FTDNA cumulative tiers (each lists only markers NEW to that tier) --------------------------
 
 static FTDNA_Y12: &[&str] = &[
-    "DYS393", "DYS390", "DYS19", "DYS391", "DYS385", "DYS426", "DYS388", "DYS439", "DYS389I",
-    "DYS392", "DYS389II",
+    "DYS393", "DYS390", "DYS19", "DYS391", "DYS385", "DYS426", "DYS388", "DYS439", "DYS389I", "DYS392", "DYS389II",
 ];
 static FTDNA_Y25: &[&str] = &[
     "DYS458", "DYS459", "DYS455", "DYS454", "DYS447", "DYS437", "DYS448", "DYS449", "DYS464",
 ];
 static FTDNA_Y37: &[&str] = &[
-    "DYS460", "Y-GATA-H4", "YCAII", "DYS456", "DYS607", "DYS576", "DYS570", "CDY", "DYS442",
+    "DYS460",
+    "Y-GATA-H4",
+    "YCAII",
+    "DYS456",
+    "DYS607",
+    "DYS576",
+    "DYS570",
+    "CDY",
+    "DYS442",
     "DYS438",
 ];
 static FTDNA_Y67: &[&str] = &[
-    "DYS531", "DYS578", "DYF395S1", "DYS590", "DYS537", "DYS641", "DYS472", "DYF406S1", "DYS511",
-    "DYS425", "DYS413", "DYS557", "DYS594", "DYS436", "DYS490", "DYS534", "DYS450", "DYS444",
-    "DYS481", "DYS520", "DYS446", "DYS617", "DYS568", "DYS487", "DYS572", "DYS640", "DYS492",
-    "DYS565",
+    "DYS531", "DYS578", "DYF395S1", "DYS590", "DYS537", "DYS641", "DYS472", "DYF406S1", "DYS511", "DYS425", "DYS413",
+    "DYS557", "DYS594", "DYS436", "DYS490", "DYS534", "DYS450", "DYS444", "DYS481", "DYS520", "DYS446", "DYS617",
+    "DYS568", "DYS487", "DYS572", "DYS640", "DYS492", "DYS565",
 ];
 static FTDNA_Y111: &[&str] = &[
-    "DYS710", "DYS485", "DYS632", "DYS495", "DYS540", "DYS714", "DYS716", "DYS717", "DYS505",
-    "DYS556", "DYS549", "DYS589", "DYS522", "DYS494", "DYS533", "DYS636", "DYS575", "DYS638",
-    "DYS462", "DYS452", "DYS445", "Y-GATA-A10", "DYS463", "DYS441", "Y-GGAAT-1B07", "DYS525",
-    "DYS712", "DYS593", "DYS650", "DYS532", "DYS715", "DYS504", "DYS513", "DYS561", "DYS552",
-    "DYS726", "DYS635", "DYS587", "DYS643", "DYS497", "DYS510", "DYS434", "DYS461", "DYS435",
+    "DYS710",
+    "DYS485",
+    "DYS632",
+    "DYS495",
+    "DYS540",
+    "DYS714",
+    "DYS716",
+    "DYS717",
+    "DYS505",
+    "DYS556",
+    "DYS549",
+    "DYS589",
+    "DYS522",
+    "DYS494",
+    "DYS533",
+    "DYS636",
+    "DYS575",
+    "DYS638",
+    "DYS462",
+    "DYS452",
+    "DYS445",
+    "Y-GATA-A10",
+    "DYS463",
+    "DYS441",
+    "Y-GGAAT-1B07",
+    "DYS525",
+    "DYS712",
+    "DYS593",
+    "DYS650",
+    "DYS532",
+    "DYS715",
+    "DYS504",
+    "DYS513",
+    "DYS561",
+    "DYS552",
+    "DYS726",
+    "DYS635",
+    "DYS587",
+    "DYS643",
+    "DYS497",
+    "DYS510",
+    "DYS434",
+    "DYS461",
+    "DYS435",
 ];
 
 // ---- YSEQ panels --------------------------------------------------------------------------------
 
 static YSEQ_ALPHA: &[&str] = &[
-    "DYS391", "DYS389I", "DYS437", "DYS439", "DYS389II", "DYS438", "DYS426", "DYS393", "YCAII",
-    "DYS390", "DYS385", "Y-GATA-H4", "DYS388", "DYS447", "DYS19", "DYS392",
+    "DYS391",
+    "DYS389I",
+    "DYS437",
+    "DYS439",
+    "DYS389II",
+    "DYS438",
+    "DYS426",
+    "DYS393",
+    "YCAII",
+    "DYS390",
+    "DYS385",
+    "Y-GATA-H4",
+    "DYS388",
+    "DYS447",
+    "DYS19",
+    "DYS392",
 ];
 static YSEQ_BETA: &[&str] = &[
-    "DYS458", "DYS455", "DYS454", "DYS464", "DYS448", "DYS449", "DYS456", "DYS576", "CDY",
-    "DYS460", "DYS459", "DYS570", "DYS607", "DYS442",
+    "DYS458", "DYS455", "DYS454", "DYS464", "DYS448", "DYS449", "DYS456", "DYS576", "CDY", "DYS460", "DYS459",
+    "DYS570", "DYS607", "DYS442",
 ];
 static YSEQ_DELTA: &[&str] = &[
-    "DYR112", "DYS518", "DYS614", "DYS626", "DYS644", "DYS684", "DYS710", "DYS485", "DYS632",
-    "DYS495", "DYS540", "DYS714", "DYS716", "DYS717", "DYS505", "DYS556", "DYS549", "DYS589",
-    "DYS522", "DYS494", "DYS533", "DYS636", "DYS575", "DYS638", "DYS462", "DYS452", "DYS445",
-    "Y-GATA-A10", "DYS463", "DYS441", "Y-GGAAT-1B07", "DYS525", "DYS712", "DYS593", "DYS650",
-    "DYS532", "DYS715", "DYS504", "DYS513", "DYS561", "DYS552", "DYS726", "DYS635", "DYS587",
-    "DYS643", "DYS497", "DYS510", "DYS434", "DYS461", "DYS435",
+    "DYR112",
+    "DYS518",
+    "DYS614",
+    "DYS626",
+    "DYS644",
+    "DYS684",
+    "DYS710",
+    "DYS485",
+    "DYS632",
+    "DYS495",
+    "DYS540",
+    "DYS714",
+    "DYS716",
+    "DYS717",
+    "DYS505",
+    "DYS556",
+    "DYS549",
+    "DYS589",
+    "DYS522",
+    "DYS494",
+    "DYS533",
+    "DYS636",
+    "DYS575",
+    "DYS638",
+    "DYS462",
+    "DYS452",
+    "DYS445",
+    "Y-GATA-A10",
+    "DYS463",
+    "DYS441",
+    "Y-GGAAT-1B07",
+    "DYS525",
+    "DYS712",
+    "DYS593",
+    "DYS650",
+    "DYS532",
+    "DYS715",
+    "DYS504",
+    "DYS513",
+    "DYS561",
+    "DYS552",
+    "DYS726",
+    "DYS635",
+    "DYS587",
+    "DYS643",
+    "DYS497",
+    "DYS510",
+    "DYS434",
+    "DYS461",
+    "DYS435",
 ];
 static YSEQ_GAMMA: &[&str] = &[
-    "DYS728", "DYS723", "DYS711", "DYR76", "DYR33", "DYS727", "DYR157", "DYS713", "DYS531",
-    "DYS578", "DYF395", "DYS590", "DYS537", "DYS641", "DYS472", "DYF406", "DYS511", "DYS557",
-    "DYS490", "DYS446", "DYS481", "DYS413", "DYS534", "DYS450", "DYS425", "DYS594", "DYS444",
-    "DYS520", "DYS436", "DYS565", "DYS572", "DYS617", "DYS568", "DYS487", "DYS640", "DYS492",
+    "DYS728", "DYS723", "DYS711", "DYR76", "DYR33", "DYS727", "DYR157", "DYS713", "DYS531", "DYS578", "DYF395",
+    "DYS590", "DYS537", "DYS641", "DYS472", "DYF406", "DYS511", "DYS557", "DYS490", "DYS446", "DYS481", "DYS413",
+    "DYS534", "DYS450", "DYS425", "DYS594", "DYS444", "DYS520", "DYS436", "DYS565", "DYS572", "DYS617", "DYS568",
+    "DYS487", "DYS640", "DYS492",
 ];
 static YSEQ_EXCLUSIVE: &[&str] = &[
-    "DYS728", "DYS723", "DYR112", "DYS711", "DYR76", "DYR33", "DYS727", "DYR157", "DYS713",
-    "DYS518", "DYS614", "DYS626", "DYS644", "DYS684", "DYF397", "DYF399X", "DYS464X", "DYF408",
+    "DYS728", "DYS723", "DYR112", "DYS711", "DYR76", "DYR33", "DYS727", "DYR157", "DYS713", "DYS518", "DYS614",
+    "DYS626", "DYS644", "DYS684", "DYF397", "DYF399X", "DYS464X", "DYF408",
 ];
 static YSEQ_KITTLER: &[&str] = &["DYS385A(K)", "DYS385B(K)"];
 
 static PANELS: &[StrPanelDef] = &[
-    StrPanelDef { id: "FTDNA_Y12", name: "Y-12", provider: "FTDNA", marketing_count: 12, actual_count: 11, order: 1, markers: FTDNA_Y12 },
-    StrPanelDef { id: "FTDNA_Y25", name: "Y-25", provider: "FTDNA", marketing_count: 25, actual_count: 20, order: 2, markers: FTDNA_Y25 },
-    StrPanelDef { id: "FTDNA_Y37", name: "Y-37", provider: "FTDNA", marketing_count: 37, actual_count: 30, order: 3, markers: FTDNA_Y37 },
-    StrPanelDef { id: "FTDNA_Y67", name: "Y-67", provider: "FTDNA", marketing_count: 67, actual_count: 58, order: 4, markers: FTDNA_Y67 },
-    StrPanelDef { id: "FTDNA_Y111", name: "Y-111", provider: "FTDNA", marketing_count: 111, actual_count: 102, order: 5, markers: FTDNA_Y111 },
-    StrPanelDef { id: "YSEQ_ALPHA", name: "Alpha", provider: "YSEQ", marketing_count: 16, actual_count: 16, order: 1, markers: YSEQ_ALPHA },
-    StrPanelDef { id: "YSEQ_BETA", name: "Beta", provider: "YSEQ", marketing_count: 14, actual_count: 14, order: 2, markers: YSEQ_BETA },
-    StrPanelDef { id: "YSEQ_DELTA", name: "Delta", provider: "YSEQ", marketing_count: 50, actual_count: 50, order: 3, markers: YSEQ_DELTA },
-    StrPanelDef { id: "YSEQ_GAMMA", name: "Gamma", provider: "YSEQ", marketing_count: 36, actual_count: 36, order: 4, markers: YSEQ_GAMMA },
+    StrPanelDef {
+        id: "FTDNA_Y12",
+        name: "Y-12",
+        provider: "FTDNA",
+        marketing_count: 12,
+        actual_count: 11,
+        order: 1,
+        markers: FTDNA_Y12,
+    },
+    StrPanelDef {
+        id: "FTDNA_Y25",
+        name: "Y-25",
+        provider: "FTDNA",
+        marketing_count: 25,
+        actual_count: 20,
+        order: 2,
+        markers: FTDNA_Y25,
+    },
+    StrPanelDef {
+        id: "FTDNA_Y37",
+        name: "Y-37",
+        provider: "FTDNA",
+        marketing_count: 37,
+        actual_count: 30,
+        order: 3,
+        markers: FTDNA_Y37,
+    },
+    StrPanelDef {
+        id: "FTDNA_Y67",
+        name: "Y-67",
+        provider: "FTDNA",
+        marketing_count: 67,
+        actual_count: 58,
+        order: 4,
+        markers: FTDNA_Y67,
+    },
+    StrPanelDef {
+        id: "FTDNA_Y111",
+        name: "Y-111",
+        provider: "FTDNA",
+        marketing_count: 111,
+        actual_count: 102,
+        order: 5,
+        markers: FTDNA_Y111,
+    },
+    StrPanelDef {
+        id: "YSEQ_ALPHA",
+        name: "Alpha",
+        provider: "YSEQ",
+        marketing_count: 16,
+        actual_count: 16,
+        order: 1,
+        markers: YSEQ_ALPHA,
+    },
+    StrPanelDef {
+        id: "YSEQ_BETA",
+        name: "Beta",
+        provider: "YSEQ",
+        marketing_count: 14,
+        actual_count: 14,
+        order: 2,
+        markers: YSEQ_BETA,
+    },
+    StrPanelDef {
+        id: "YSEQ_DELTA",
+        name: "Delta",
+        provider: "YSEQ",
+        marketing_count: 50,
+        actual_count: 50,
+        order: 3,
+        markers: YSEQ_DELTA,
+    },
+    StrPanelDef {
+        id: "YSEQ_GAMMA",
+        name: "Gamma",
+        provider: "YSEQ",
+        marketing_count: 36,
+        actual_count: 36,
+        order: 4,
+        markers: YSEQ_GAMMA,
+    },
     // Detection-only panels (order >= 100): used for grouping/assignment, excluded from tier badges.
-    StrPanelDef { id: "YSEQ_EXCLUSIVE", name: "YSEQ-Exclusive", provider: "YSEQ", marketing_count: 18, actual_count: 18, order: 100, markers: YSEQ_EXCLUSIVE },
-    StrPanelDef { id: "YSEQ_KITTLER", name: "YSEQ-Kittler", provider: "YSEQ", marketing_count: 2, actual_count: 2, order: 101, markers: YSEQ_KITTLER },
+    StrPanelDef {
+        id: "YSEQ_EXCLUSIVE",
+        name: "YSEQ-Exclusive",
+        provider: "YSEQ",
+        marketing_count: 18,
+        actual_count: 18,
+        order: 100,
+        markers: YSEQ_EXCLUSIVE,
+    },
+    StrPanelDef {
+        id: "YSEQ_KITTLER",
+        name: "YSEQ-Kittler",
+        provider: "YSEQ",
+        marketing_count: 2,
+        actual_count: 2,
+        order: 101,
+        markers: YSEQ_KITTLER,
+    },
 ];
 
 static PROVIDERS: &[ProviderDef] = &[
-    ProviderDef { key: "FTDNA", display_name: "FamilyTreeDNA", cumulative: true, exclusive_markers: &[] },
-    ProviderDef { key: "YSEQ", display_name: "YSEQ", cumulative: true, exclusive_markers: YSEQ_EXCLUSIVE },
+    ProviderDef {
+        key: "FTDNA",
+        display_name: "FamilyTreeDNA",
+        cumulative: true,
+        exclusive_markers: &[],
+    },
+    ProviderDef {
+        key: "YSEQ",
+        display_name: "YSEQ",
+        cumulative: true,
+        exclusive_markers: YSEQ_EXCLUSIVE,
+    },
 ];
 
 /// All panel definitions (FTDNA + YSEQ), in declaration order.
@@ -149,9 +350,8 @@ pub fn normalized_set(markers: &[StrMarker]) -> HashSet<String> {
 /// Detect the provider from any present exclusive marker (else `None` → caller defaults to FTDNA).
 pub fn detect_provider(markers: &HashSet<String>) -> Option<&'static str> {
     PROVIDERS.iter().find_map(|p| {
-        (!p.exclusive_markers.is_empty()
-            && p.exclusive_markers.iter().any(|m| markers.contains(&norm(m))))
-        .then_some(p.key)
+        (!p.exclusive_markers.is_empty() && p.exclusive_markers.iter().any(|m| markers.contains(&norm(m))))
+            .then_some(p.key)
     })
 }
 
@@ -196,7 +396,9 @@ pub fn classify_panel(markers: &HashSet<String>, provider: Option<&str>) -> Pane
         for p in &tiers {
             let pset: HashSet<String> = p.markers.iter().map(|m| norm(m)).collect();
             let overlap = markers.iter().filter(|m| pset.contains(*m)).count();
-            if overlap >= (p.markers.len() as f64 * 0.8) as usize && p.order as usize >= best.map_or(0, |b| b.order as usize) {
+            if overlap >= (p.markers.len() as f64 * 0.8) as usize
+                && p.order as usize >= best.map_or(0, |b| b.order as usize)
+            {
                 best = Some(p);
                 best_matched = overlap;
             }
@@ -204,7 +406,12 @@ pub fn classify_panel(markers: &HashSet<String>, provider: Option<&str>) -> Pane
         (best.map(|p| p.name.to_string()), best_matched)
     };
 
-    PanelClassification { panel_name: name, provider: prov, marker_count: markers.len(), matched }
+    PanelClassification {
+        panel_name: name,
+        provider: prov,
+        marker_count: markers.len(),
+        matched,
+    }
 }
 
 /// Per-tier "reached" flags for the summary badges: `(tier name, filled)` where a tier is filled
@@ -214,7 +421,10 @@ pub fn tier_badges(provider: &str, marker_count: usize) -> Vec<(String, bool)> {
     let prov = canonical_provider(provider);
     let mut tiers: Vec<&StrPanelDef> = PANELS.iter().filter(|p| p.provider == prov && p.order < 100).collect();
     tiers.sort_by_key(|p| p.order);
-    tiers.iter().map(|p| (p.name.to_string(), marker_count as u32 >= p.threshold())).collect()
+    tiers
+        .iter()
+        .map(|p| (p.name.to_string(), marker_count as u32 >= p.threshold()))
+        .collect()
 }
 
 /// Group a profile's markers into tiers (FTDNA-style report layout): each marker is assigned to the
@@ -261,7 +471,13 @@ mod tests {
     use crate::strprofile::StrMarker;
 
     fn marks(names: &[&str]) -> Vec<StrMarker> {
-        names.iter().map(|n| StrMarker { marker: n.to_string(), value: "13".to_string() }).collect()
+        names
+            .iter()
+            .map(|n| StrMarker {
+                marker: n.to_string(),
+                value: "13".to_string(),
+            })
+            .collect()
     }
 
     #[test]
@@ -274,7 +490,14 @@ mod tests {
         assert_eq!(c.panel_name.as_deref(), Some("Y-37"));
 
         // Full 102 → Y-111.
-        let full: Vec<&str> = FTDNA_Y12.iter().chain(FTDNA_Y25).chain(FTDNA_Y37).chain(FTDNA_Y67).chain(FTDNA_Y111).copied().collect();
+        let full: Vec<&str> = FTDNA_Y12
+            .iter()
+            .chain(FTDNA_Y25)
+            .chain(FTDNA_Y37)
+            .chain(FTDNA_Y67)
+            .chain(FTDNA_Y111)
+            .copied()
+            .collect();
         let c2 = classify_panel(&normalized_set(&marks(&full)), Some("FTDNA"));
         assert_eq!(c2.panel_name.as_deref(), Some("Y-111"));
 
@@ -311,8 +534,10 @@ mod tests {
         names.push("FTYXYZ"); // unknown → Extended
         let m = marks(&names);
         let groups = assign_markers_to_panels(&m, "FTDNA");
-        let by: HashMap<String, Vec<String>> =
-            groups.iter().map(|(t, ms)| (t.clone(), ms.iter().map(|x| x.marker.clone()).collect())).collect();
+        let by: HashMap<String, Vec<String>> = groups
+            .iter()
+            .map(|(t, ms)| (t.clone(), ms.iter().map(|x| x.marker.clone()).collect()))
+            .collect();
         assert_eq!(by["Y-12"], vec!["DYS393", "DYS390"]);
         assert_eq!(by["Y-25"], vec!["DYS458"]);
         assert_eq!(by[EXTENDED], vec!["FTYXYZ"]);

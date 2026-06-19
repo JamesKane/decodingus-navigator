@@ -66,7 +66,12 @@ pub async fn enqueue(pool: &SqlitePool, e: &NewOutboxEntry, now: &str) -> Result
 
 /// The next batch of ready rows for `account_did`: `PENDING` and due (no backoff, or `next_retry_at`
 /// at/before `now`), oldest first.
-pub async fn ready(pool: &SqlitePool, account_did: &str, now: &str, limit: i64) -> Result<Vec<OutboxEntry>, StoreError> {
+pub async fn ready(
+    pool: &SqlitePool,
+    account_did: &str,
+    now: &str,
+    limit: i64,
+) -> Result<Vec<OutboxEntry>, StoreError> {
     let rows = sqlx::query_as::<_, OutboxEntry>(
         "SELECT * FROM sync_outbox \
          WHERE account_did = ? AND status = 'PENDING' \
@@ -107,30 +112,40 @@ pub async fn reschedule(
 
 /// Mark a row terminally `FAILED` (a non-transient error — e.g. validation/auth). It is not
 /// auto-retried; a manual re-publish (which re-enqueues) resets it.
-pub async fn mark_failed(pool: &SqlitePool, id: i64, attempt_count: i64, last_error: &str, now: &str) -> Result<(), StoreError> {
-    sqlx::query("UPDATE sync_outbox SET status = 'FAILED', attempt_count = ?, last_error = ?, updated_at = ? WHERE id = ?")
-        .bind(attempt_count)
-        .bind(last_error)
-        .bind(now)
+pub async fn mark_failed(
+    pool: &SqlitePool,
+    id: i64,
+    attempt_count: i64,
+    last_error: &str,
+    now: &str,
+) -> Result<(), StoreError> {
+    sqlx::query(
+        "UPDATE sync_outbox SET status = 'FAILED', attempt_count = ?, last_error = ?, updated_at = ? WHERE id = ?",
+    )
+    .bind(attempt_count)
+    .bind(last_error)
+    .bind(now)
+    .bind(id)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+/// Remove a row after a successful push (the outcome lives in `sync_history`).
+pub async fn complete(pool: &SqlitePool, id: i64) -> Result<(), StoreError> {
+    sqlx::query("DELETE FROM sync_outbox WHERE id = ?")
         .bind(id)
         .execute(pool)
         .await?;
     Ok(())
 }
 
-/// Remove a row after a successful push (the outcome lives in `sync_history`).
-pub async fn complete(pool: &SqlitePool, id: i64) -> Result<(), StoreError> {
-    sqlx::query("DELETE FROM sync_outbox WHERE id = ?").bind(id).execute(pool).await?;
-    Ok(())
-}
-
 /// Count of rows still awaiting a successful push for `account_did` (drives the UI indicator).
 pub async fn pending_count(pool: &SqlitePool, account_did: &str) -> Result<i64, StoreError> {
-    let (n,): (i64,) =
-        sqlx::query_as("SELECT COUNT(*) FROM sync_outbox WHERE account_did = ? AND status = 'PENDING'")
-            .bind(account_did)
-            .fetch_one(pool)
-            .await?;
+    let (n,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM sync_outbox WHERE account_did = ? AND status = 'PENDING'")
+        .bind(account_did)
+        .fetch_one(pool)
+        .await?;
     Ok(n)
 }
 
@@ -164,8 +179,12 @@ mod tests {
     async fn enqueue_coalesces_and_drains_in_order() {
         let s = crate::Store::open_in_memory().await.unwrap();
         let p = s.pool();
-        enqueue(p, &entry("did:a", "alignment:1"), "2026-06-13T00:00:00Z").await.unwrap();
-        enqueue(p, &entry("did:a", "alignment:2"), "2026-06-13T00:00:01Z").await.unwrap();
+        enqueue(p, &entry("did:a", "alignment:1"), "2026-06-13T00:00:00Z")
+            .await
+            .unwrap();
+        enqueue(p, &entry("did:a", "alignment:2"), "2026-06-13T00:00:01Z")
+            .await
+            .unwrap();
         // Re-publish alignment:1 with a new payload — coalesces onto the same row.
         let mut again = entry("did:a", "alignment:1");
         again.payload = r#"{"a":2}"#.into();
@@ -176,7 +195,7 @@ mod tests {
         assert_eq!(batch.len(), 2);
         assert_eq!(batch[0].entity_ref, "alignment:1"); // oldest created_at first
         assert_eq!(batch[0].payload, r#"{"a":2}"#); // newest payload won
-        // A different account's queue is isolated.
+                                                    // A different account's queue is isolated.
         assert_eq!(pending_count(p, "did:b").await.unwrap(), 0);
     }
 
@@ -184,10 +203,14 @@ mod tests {
     async fn reschedule_hides_until_due_then_complete_removes() {
         let s = crate::Store::open_in_memory().await.unwrap();
         let p = s.pool();
-        enqueue(p, &entry("did:a", "alignment:1"), "2026-06-13T00:00:00Z").await.unwrap();
+        enqueue(p, &entry("did:a", "alignment:1"), "2026-06-13T00:00:00Z")
+            .await
+            .unwrap();
         let id = ready(p, "did:a", "2026-06-13T00:00:00Z", 10).await.unwrap()[0].id;
 
-        reschedule(p, id, 1, "2026-06-13T02:00:00Z", "timeout", "2026-06-13T00:01:00Z").await.unwrap();
+        reschedule(p, id, 1, "2026-06-13T02:00:00Z", "timeout", "2026-06-13T00:01:00Z")
+            .await
+            .unwrap();
         // Not due yet → not returned, but still counts as pending.
         assert!(ready(p, "did:a", "2026-06-13T01:00:00Z", 10).await.unwrap().is_empty());
         assert_eq!(pending_count(p, "did:a").await.unwrap(), 1);
@@ -203,15 +226,21 @@ mod tests {
     async fn mark_failed_drops_from_ready_but_re_enqueue_revives() {
         let s = crate::Store::open_in_memory().await.unwrap();
         let p = s.pool();
-        enqueue(p, &entry("did:a", "alignment:1"), "2026-06-13T00:00:00Z").await.unwrap();
+        enqueue(p, &entry("did:a", "alignment:1"), "2026-06-13T00:00:00Z")
+            .await
+            .unwrap();
         let id = ready(p, "did:a", "2026-06-13T00:00:00Z", 10).await.unwrap()[0].id;
-        mark_failed(p, id, 1, "invalid record", "2026-06-13T00:01:00Z").await.unwrap();
+        mark_failed(p, id, 1, "invalid record", "2026-06-13T00:01:00Z")
+            .await
+            .unwrap();
         assert!(ready(p, "did:a", "2026-06-13T02:00:00Z", 10).await.unwrap().is_empty());
         assert_eq!(pending_count(p, "did:a").await.unwrap(), 0); // FAILED not counted as pending
         assert_eq!(list(p, "did:a").await.unwrap().len(), 1); // but still visible
 
         // A manual re-publish resets it to PENDING.
-        enqueue(p, &entry("did:a", "alignment:1"), "2026-06-13T03:00:00Z").await.unwrap();
+        enqueue(p, &entry("did:a", "alignment:1"), "2026-06-13T03:00:00Z")
+            .await
+            .unwrap();
         assert_eq!(ready(p, "did:a", "2026-06-13T03:00:00Z", 10).await.unwrap().len(), 1);
     }
 }

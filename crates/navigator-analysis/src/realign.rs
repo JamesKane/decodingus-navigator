@@ -57,7 +57,11 @@ pub fn fitting_align(query: &[u8], target: &[u8]) -> (usize, Vec<Op>) {
 
     for i in 1..=n {
         for j in 1..=m {
-            let s = if query[i - 1].eq_ignore_ascii_case(&target[j - 1]) { MATCH } else { MISMATCH };
+            let s = if query[i - 1].eq_ignore_ascii_case(&target[j - 1]) {
+                MATCH
+            } else {
+                MISMATCH
+            };
             let diag = score[i - 1][j - 1] + s;
             let up = score[i - 1][j] + GAP; // insertion (query base, no target)
             let left = score[i][j - 1] + GAP; // deletion (target base, no query)

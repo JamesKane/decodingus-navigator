@@ -12,8 +12,8 @@ use std::path::Path;
 use serde::{Deserialize, Serialize};
 
 use crate::error::AnalysisError;
-use crate::readview::AlnRead;
 use crate::reader;
+use crate::readview::AlnRead;
 
 const MAX_INSERT_SIZE: i32 = 10_000;
 

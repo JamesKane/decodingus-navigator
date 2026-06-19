@@ -58,7 +58,11 @@ pub fn scan_library_stats(
     for map in header.read_groups().values() {
         let sm = map.other_fields().get(&read_group::tag::SAMPLE).map(val);
         let lb = map.other_fields().get(&read_group::tag::LIBRARY).map(val);
-        let pu = map.other_fields().get(&read_group::tag::PLATFORM_UNIT).map(val).filter(|s| !s.is_empty());
+        let pu = map
+            .other_fields()
+            .get(&read_group::tag::PLATFORM_UNIT)
+            .map(val)
+            .filter(|s| !s.is_empty());
         if sm.is_some() || lb.is_some() || pu.is_some() {
             sample_name = sm;
             library_id = lb;
@@ -87,7 +91,9 @@ pub fn scan_library_stats(
         if flags.is_segmented() {
             segmented_count += 1; // SAM 0x1 = part of a paired/multi-segment template
         }
-        let Some(qname) = record.name().map(|n| n.to_string()) else { continue };
+        let Some(qname) = record.name().map(|n| n.to_string()) else {
+            continue;
+        };
 
         let platform = detect_platform_from_qname(&qname);
         *platform_counts.entry(platform).or_insert(0) += 1;
@@ -109,8 +115,14 @@ pub fn scan_library_stats(
     };
 
     // Majority vote: PAIRED if most scanned reads are segmented (handles a few stray flags).
-    let library_layout = (read_count > 0)
-        .then(|| if segmented_count * 2 >= read_count { "PAIRED" } else { "SINGLE" }.to_string());
+    let library_layout = (read_count > 0).then(|| {
+        if segmented_count * 2 >= read_count {
+            "PAIRED"
+        } else {
+            "SINGLE"
+        }
+        .to_string()
+    });
 
     Ok(LibraryStats {
         read_count,
@@ -141,7 +153,10 @@ fn detect_platform_from_qname(qname: &str) -> &'static str {
     // field starts V/E/CL/G with a flowcell field starting "L".
     if qname.len() > 15 {
         let prefix = qname.get(0..5).unwrap_or("").to_ascii_uppercase();
-        if ["V300", "E100", "CL100", "G400", "G99"].iter().any(|p| prefix.starts_with(p)) {
+        if ["V300", "E100", "CL100", "G400", "G99"]
+            .iter()
+            .any(|p| prefix.starts_with(p))
+        {
             return "MGI";
         }
         if qname.matches(':').count() >= 6 {
@@ -179,9 +194,8 @@ fn is_illumina_qname(q: &str) -> bool {
     }
     // Modern: a window [num, alnum, single-digit, num, num, num] = run:flowcell:lane:tile:x:y.
     let f: Vec<&str> = q.split(':').collect();
-    f.windows(6).any(|w| {
-        num(w[0]) && alnum(w[1]) && w[2].len() == 1 && num(w[2]) && num(w[3]) && num(w[4]) && num(w[5])
-    })
+    f.windows(6)
+        .any(|w| num(w[0]) && alnum(w[1]) && w[2].len() == 1 && num(w[2]) && num(w[3]) && num(w[4]) && num(w[5]))
 }
 
 /// A leading UUID (`8-4-4-4-12` hex) — Oxford Nanopore.
@@ -192,8 +206,15 @@ fn is_nanopore_uuid(q: &str) -> bool {
     }
     let hex = |i: usize| b[i].is_ascii_hexdigit();
     let dash = |i: usize| b[i] == b'-';
-    (0..8).all(hex) && dash(8) && (9..13).all(hex) && dash(13) && (14..18).all(hex) && dash(18)
-        && (19..23).all(hex) && dash(23) && (24..36).all(hex)
+    (0..8).all(hex)
+        && dash(8)
+        && (9..13).all(hex)
+        && dash(13)
+        && (14..18).all(hex)
+        && dash(18)
+        && (19..23).all(hex)
+        && dash(23)
+        && (24..36).all(hex)
 }
 
 /// `m` then ≥5 digits (PacBio movie name, e.g. `m84005_…`).
@@ -218,7 +239,11 @@ fn parse_instrument_and_flowcell(qname: &str, platform: &str) -> (Option<String>
         "PacBio" => {
             let first = qname.split('/').next().unwrap_or("");
             let inst = first.split('_').next().unwrap_or("");
-            if inst.is_empty() { (None, None) } else { (Some(inst.to_string()), None) }
+            if inst.is_empty() {
+                (None, None)
+            } else {
+                (Some(inst.to_string()), None)
+            }
         }
         "MGI" => {
             if qname.matches(':').count() >= 3 {
@@ -301,13 +326,22 @@ mod tests {
     #[test]
     fn classifies_read_names_by_platform() {
         // Modern Illumina: instrument:run:flowcell:lane:tile:x:y
-        assert_eq!(detect_platform_from_qname("A00123:45:H7TJ2DSXX:1:1101:1000:1996"), "Illumina");
+        assert_eq!(
+            detect_platform_from_qname("A00123:45:H7TJ2DSXX:1:1101:1000:1996"),
+            "Illumina"
+        );
         // Old Casava with '#index'
-        assert_eq!(detect_platform_from_qname("HWUSI-EAS100R:6:73:941:1973#0/1"), "Illumina");
+        assert_eq!(
+            detect_platform_from_qname("HWUSI-EAS100R:6:73:941:1973#0/1"),
+            "Illumina"
+        );
         // PacBio movie
         assert_eq!(detect_platform_from_qname("m84005_230101_000000/1234/ccs"), "PacBio");
         // Nanopore UUID
-        assert_eq!(detect_platform_from_qname("abcdef01-2345-6789-abcd-ef0123456789"), "Nanopore");
+        assert_eq!(
+            detect_platform_from_qname("abcdef01-2345-6789-abcd-ef0123456789"),
+            "Nanopore"
+        );
         // MGI
         assert_eq!(detect_platform_from_qname("V300012345L1C001R0010000123"), "MGI");
         assert_eq!(detect_platform_from_qname("totally random name"), "Unknown");

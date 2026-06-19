@@ -27,7 +27,8 @@ pub fn reference_fai(base: &Path, build: Build) -> PathBuf {
 
 /// The cached liftover chain path for a build pair.
 pub fn chain_path(base: &Path, from: Build, to: Build) -> PathBuf {
-    base.join("liftover").join(format!("{}-to-{}.chain", from.as_str(), to.as_str()))
+    base.join("liftover")
+        .join(format!("{}-to-{}.chain", from.as_str(), to.as_str()))
 }
 
 /// The cached annotation-mask BED path for a named mask (e.g. the curated CHM13 Y palindrome /
@@ -61,9 +62,18 @@ mod tests {
     #[test]
     fn paths_are_under_the_base() {
         let base = Path::new("/tmp/dun");
-        assert_eq!(reference_path(base, Build::Chm13v2), Path::new("/tmp/dun/references/chm13v2.0.fa"));
-        assert_eq!(reference_fai(base, Build::Chm13v2), Path::new("/tmp/dun/references/chm13v2.0.fa.fai"));
-        assert_eq!(chain_path(base, Build::Grch38, Build::Chm13v2), Path::new("/tmp/dun/liftover/GRCh38-to-chm13v2.0.chain"));
+        assert_eq!(
+            reference_path(base, Build::Chm13v2),
+            Path::new("/tmp/dun/references/chm13v2.0.fa")
+        );
+        assert_eq!(
+            reference_fai(base, Build::Chm13v2),
+            Path::new("/tmp/dun/references/chm13v2.0.fa.fai")
+        );
+        assert_eq!(
+            chain_path(base, Build::Grch38, Build::Chm13v2),
+            Path::new("/tmp/dun/liftover/GRCh38-to-chm13v2.0.chain")
+        );
     }
 
     #[test]
