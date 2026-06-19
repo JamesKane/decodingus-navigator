@@ -1,6 +1,6 @@
-# DUNavigator — Rust rewrite workspace. Coexists with the legacy Scala build
-# (build.sbt / src) until cutover. Lower crates come from the sibling
-# `decodingus-shared` repo via path deps during local co-development.
+# DUNavigator — Rust workspace (the sole build; the legacy Scala/sbt sources were removed at
+# cutover and live in git history). Lower crates come from the sibling `decodingus-shared` repo
+# via path deps during local co-development.
 # See documents/design/RustRewrite_Plan.md §2 for the topology + dependency rule.
 [workspace]
 resolver = "2"
