@@ -80,7 +80,7 @@ See **[`crates/README.md`](crates/README.md)** for the authoritative crate topol
 ## Getting Started
 
 1.  **Install Rust:** Use [rustup](https://www.rust-lang.org/tools/install).
-2.  **Clone the repository:** `git clone [repository-url]` (work happens on the `rust-rewrite` branch). For co-development of shared crates, also clone `decodingus-shared` as a sibling directory.
+2.  **Clone the repository:** `git clone [repository-url]` (the Rust workspace lives on `main`). For co-development of shared crates, also clone `decodingus-shared` as a sibling directory.
 3.  **Build the workspace:**
     ```bash
     cargo build

@@ -30,7 +30,8 @@ The built binary is named `navigator` (`target/debug/navigator` or `target/relea
 
 Decoding-Us Navigator is a Rust desktop application for local bioinformatics analysis of BAM/CRAM files (and consumer DNA data). It is a single self-contained binary — **no JVM, and no external bioinformatics tools** (no GATK, samtools, or bcftools). The analysis engine is built on [noodles](https://github.com/zaeleus/noodles); the UI is [egui](https://github.com/emilk/egui).
 
-> This is a ground-up Rust rewrite (branch `rust-rewrite`) of an earlier Scala/ScalaFX app. The
+> This is a ground-up Rust rewrite of an earlier Scala/ScalaFX app (the legacy sources were removed
+> at cutover and live in git history). The
 > authoritative crate map is **[`crates/README.md`](crates/README.md)**; the design is in
 > **[`documents/design/RustRewrite_Plan.md`](documents/design/RustRewrite_Plan.md)** and resume notes
 > in **[`documents/design/HANDOFF.md`](documents/design/HANDOFF.md)**.
