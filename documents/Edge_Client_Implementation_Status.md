@@ -204,6 +204,11 @@ Last updated: 2025-12-08
 
 ### Priority 5: AppView Backfeed
 
+> **OAuth note:** "AppView → PDS" writes are no longer implicit. Writing into a user's
+> repo now requires an explicit user-granted scope (`rpc`/service auth). Prefer modeling
+> these as **AppView-owned records the client reads/subscribes to**, rather than the
+> AppView mutating the user's repo. See `documents/atmosphere/11-Auth-and-Permissions.md` §5.
+
 #### Haplogroup Update Notifications (haplogroupUpdate)
 **What it does:** AppView notifies user when haplogroup assignment is refined based on new tree version or network consensus.
 

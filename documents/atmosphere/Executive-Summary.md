@@ -20,6 +20,14 @@ The Atmosphere Lexicon defines decentralized, user-owned genomic records for the
 
 **Status Date:** 2025-12-09
 
+> **⚠️ Superseded by the 2026-06 scope reduction.** The AppView is **no longer a network
+> mirror**. The full-CRUD firehose ingestion and per-collection event handlers described
+> below are being **removed** from the decodingus codebase. The AppView's role narrows to
+> (1) the **known-variant catalog** via direct proposal submission and (2) **on-demand
+> coverage aggregation** from Navigator-published summary records. Per-sample data lives in
+> the researcher's Navigator workspace. See [08-AppView-Lifecycle.md](./08-AppView-Lifecycle.md).
+> The completed-handler status below is retained as historical record.
+
 The DecodingUs AppView backend has reached MVP status for Phases 1 and 2. All core record types are fully implemented with event handlers ready to process inbound firehose events.
 
 | Component | Status | Notes |
@@ -43,7 +51,7 @@ The DecodingUs AppView backend has reached MVP status for Phases 1 and 2. All co
 **Post-MVP (Backlog):**
 - REST API query endpoints (back-flow channels)
 - Integration test suite expansion
-- Phase 3 AT Protocol Firehose subscription
+- OAuth client auth + standard-relay firehose subscription
 
 ---
 
@@ -83,7 +91,7 @@ The DecodingUs AppView backend has reached MVP status for Phases 1 and 2. All co
 | Event Handler Routing | ✅ Complete | `AtmosphereEventHandler` routes all events |
 | **MVP Release** | ✅ **SHIPPABLE** | Ready for Phase 1/2 integration |
 
-**Next Focus:** Integration testing, then Phase 3 AT Protocol Firehose subscription.
+**Next Focus:** Integration testing, then OAuth client auth + standard-relay firehose subscription (see [11-Auth-and-Permissions.md](./11-Auth-and-Permissions.md)).
 
 ---
 
@@ -111,34 +119,45 @@ The DecodingUs AppView backend has reached MVP status for Phases 1 and 2. All co
 | Biosample Sync | ✅ Complete | Push biosample metadata to DecodingUs |
 | Sequence Run Sync | ✅ Complete | Push sequencing metadata to DecodingUs |
 | Alignment Metrics Sync | ✅ Complete | Push coverage/quality metrics |
-| AT Protocol Integration | 📋 Planned | Direct PDS writes (Phase 3) |
+| AT Protocol Integration | 📋 Planned | OAuth-scoped direct PDS writes |
 
-**Current Focus:** Production stability and Phase 2 Kafka integration.
+**Current Focus:** Production stability and OAuth-scoped direct-to-PDS writes (Kafka integration dropped — superseded by OAuth permission sets).
 
 ---
 
 ## Integration Phases
 
-### Phase 1: MVP (Current) - READY
+> **Revised (OAuth/permissions landed).** AT Protocol now supports granular,
+> per-collection write authorization via OAuth permission sets. This removes the reason
+> the REST/Kafka relay existed — a backend holding the user's full-access app password.
+> Clients can now write **directly to the user's PDS** under a narrow scope. The phased
+> relay plan below is collapsed accordingly. See
+> [11-Auth-and-Permissions.md](./11-Auth-and-Permissions.md).
+
+### Phase 1: MVP (Legacy bootstrap) - READY
 
 - BGS Node → REST API → DecodingUs
 - Navigator → REST API → DecodingUs
-- Full Lexicon support for core records
-- No PDS integration yet
+- Retained only as a bootstrap/import path; not the target architecture
+- No PDS integration
 
-### Phase 2: Hybrid (Kafka) - READY
+### ~~Phase 2: Hybrid (Kafka)~~ - CUT
 
-- BGS Node → Kafka → DecodingUs
-- Navigator → Kafka → DecodingUs
-- Same event handler infrastructure
-- Expanded record types (genotype, populationBreakdown, reconciliation)
+- **Removed.** Kafka was a scaled version of the credential-holding relay. With OAuth
+  direct-to-PDS writes, the intermediary is unnecessary and is dropped from the plan.
 
-### Phase 3: Full Atmosphere (AppView) - Planned
+### Phase 2 (was Phase 3): Full Atmosphere (AppView) - Target
 
-- All clients write directly to user's PDS
-- DecodingUs subscribes to AT Protocol Firehose
+- Clients authenticate via **OAuth** and request the `com.decodingus.atmosphere.navigatorCore`
+  permission set (narrow per-collection write scopes) — app passwords deprecated
+- All clients write directly to the user's PDS under that scope
+- DecodingUs ingests via a **standard relay / Jetstream** subscription (no custom relay
+  infrastructure to build)
 - Full record compliance with this Lexicon
-- Requires Bluesky relay infrastructure integration
+
+> **Firehose note:** the permission spec covers *writes* only — reads and subscriptions
+> are explicitly out of scope, so the AppView's firehose ingest path remains required.
+> "Custom firehose" referred to the REST/Kafka relay, which is what we are removing.
 
 ---
 
@@ -150,7 +169,8 @@ The DecodingUs AppView backend has reached MVP status for Phases 1 and 2. All co
 | 1.6 | 2025-12-08 | Enhanced ancestry: 33 populations, 9 super-populations |
 | 1.7 | 2025-12-08 | Multi-test-type: `testTypeCode` taxonomy |
 | 1.8 | 2025-12-09 | AppView implementation complete |
-| **1.9** | **2025-12-09** | **MVP marked shippable** |
+| 1.9 | 2025-12-09 | MVP marked shippable |
+| **2.0** | **2026-06-01** | **OAuth/permissions: direct-to-PDS writes, Kafka relay cut, app passwords deprecated** |
 
 ---
 
@@ -164,6 +184,7 @@ The DecodingUs AppView backend has reached MVP status for Phases 1 and 2. All co
 | Multi-Run Reconciliation | `documents/MultiRunReconciliation.md` | Haplogroup consensus planning |
 | IBD Matching System | `documents/ibd-matching-system.md` | Match system planning |
 | Edge Client Status | `documents/Edge_Client_Implementation_Status.md` | Navigator implementation tracking |
+| Auth & Permissions | `documents/atmosphere/11-Auth-and-Permissions.md` | OAuth migration, permission set, relay removal |
 
 ---
 

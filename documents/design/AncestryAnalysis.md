@@ -268,10 +268,71 @@ The reference panel preparation is an offline process (not part of the applicati
 8. Serialize to binary format
 9. Create GRCh37 and GRCh38 coordinate versions via liftover
 
+## Implementation status (Rust rewrite)
+
+Three estimators are implemented in `navigator-analysis::ancestry`, each stamping the
+`method` field on `AncestryResult` (carried verbatim into the published record's
+`analysisMethod` and the per-`(alignment, method)` store key — never inferred):
+
+| `method`             | fn                          | composition source                              |
+|----------------------|-----------------------------|-------------------------------------------------|
+| `AF_LIKELIHOOD`      | `estimate_by_allele_frequency` | single best-fit population by binomial likelihood |
+| `ADMIXTURE`          | `estimate_admixture`        | supervised ADMIXTURE/frappe EM (100%-summing)   |
+| `PCA_PROJECTION_GMM` | `estimate_pca_gmm`          | `project_pca` → `classify_pca` (diagonal-covariance Gaussian over PC space) |
+| `G25_NMONTE`         | `estimate_nmonte`           | `project_pca` → distance-minimizing mixture fit (`nmonte_fit`) over population centroids |
+
+`estimate_ancestry` computes ADMIXTURE, PCA_PROJECTION_GMM **and** G25_NMONTE per alignment and
+persists each; `publish_ancestry` emits one `populationBreakdown` record per method (the
+"publish both" path).
+
+### nMonte / G25-style distance model (`G25_NMONTE`)
+
+Unlike the GMM (which *assigns* a sample to the nearest cluster), `estimate_nmonte` *decomposes*
+the sample: it solves for the non-negative, sum-to-one mixture of the reference populations'
+PC-space centroids that best reconstructs the sample's projected coordinates, minimizing the
+Euclidean residual. That residual is the **`fit_distance`** quality score (lower is better;
+carried into `AncestryResult.fit_distance`, the store column, and the record's `fitDistance`
+field). This is the model class the inspiration site's "G25 Ancestry Model" uses for wide/global
+admixtures — it's source-flexible and projection-robust, so a richer/global PCA asset (more
+populations) directly yields wider admixtures.
+
+Solved by **Frank–Wolfe** on the simplex (deterministic, monotone, projection-free). The source
+library is the asset's per-population centroids, so widening coverage = a richer asset, no code
+change. NOTE: G25's *own* coordinates are Davidski's (personal-use licensing); replicate the
+*method* over our own PCA basis + reference library rather than depending on G25 data.
+
+### Ancient components (Steppe / EEF / WHG)
+
+The PCA-GMM estimator runs against an **ancient** `PcaLoadings` asset when one exists
+(`ancestry_pca_ancient_<build>.bin`, or `$NAVIGATOR_ANCESTRY_PCA_ANCIENT`); otherwise it uses
+the modern asset. The asset's `populations` become the components, so an ancient asset yields
+ancient labels. Catalog entries (name/color) for `Steppe`/`EEF`/`WHG` live in
+`navigator-domain::ancestry`.
+
+Build the asset with `navigator-panelbuild pca`, which derives its populations from the
+sample→label map. Use **projection mode** (`--basis-pops`) so the sparse/biased ancient
+references are *projected* onto a modern PCA basis rather than shaping the axes:
+
+```
+navigator-panelbuild pca \
+  --matrix     refs.<build>.matrix.gz \   # modern + ancient genotypes, RESTRICTED TO the AF panel sites
+  --samples    refs.samples \
+  --pops       refs.pops \                # sample<TAB>{CEU|...|Steppe|ANF|WHG|EastAsian|...}
+  --basis-pops modern_pops.txt \          # one pop code per line: the basis (everything else is projected)
+  --out        ~/.decodingus/ancestry/ancestry_pca_<build>.bin
+```
+
+`--basis-pops` lists the populations that build the basis (the modern reference set); every other
+labelled sample is projected onto it via the basis loadings, centred by the basis means with the
+same `n_sites/used` un-shrink as the runtime `project_pca` (so a sparse ancient ref and a query
+sample share the basis scale). Omit `--basis-pops` to put all samples in the basis (the original
+behaviour). The matrix **must be restricted to the AF panel's sites** so the app's single
+genotyping pass covers the projection. The `scripts/ancestry-panel/` pipeline wires all of this
+(it derives `modern_pops.txt` as every labelled pop that isn't an ancient component).
+
 ## Future Enhancements
 
 - **Phased haplotype analysis**: Use phased data for improved resolution
 - **Chromosome painting**: Segment-by-segment ancestry assignment
-- **Ancient DNA support**: Reference populations for aDNA samples
 - **Custom reference panels**: User-defined population groups
 - **IBD-based refinement**: Use IBD segments for recent ancestry
