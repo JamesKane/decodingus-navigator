@@ -14,6 +14,7 @@ pub mod bisdna;
 pub mod chipprofile;
 pub mod consensus;
 pub mod filetype;
+pub mod identity;
 pub mod labs;
 pub mod mtdna;
 pub mod reconciliation;
