@@ -2095,6 +2095,38 @@ impl App {
         Ok(())
     }
 
+    /// Merge `secondary` sequence run into `primary` (both must belong to `biosample_guid`):
+    /// reparent the secondary run's alignments onto the primary, then delete the now-empty secondary
+    /// (its analysis artifacts travel with the alignments — they're alignment-keyed). Destructive +
+    /// irreversible. Returns the number of alignments moved.
+    pub async fn merge_sequence_runs(
+        &self,
+        biosample_guid: SampleGuid,
+        primary: i64,
+        secondary: i64,
+    ) -> Result<usize, AppError> {
+        if primary == secondary {
+            return Err(AppError::Import("cannot merge a run into itself".into()));
+        }
+        // Both runs must exist and belong to this subject (guards a cross-subject merge).
+        let runs = sequence_run::list_for_biosample(self.store.pool(), biosample_guid).await?;
+        for id in [primary, secondary] {
+            if !runs.iter().any(|r| r.id == id) {
+                return Err(AppError::Store(StoreError::NotFound(format!("sequence run {id} for this subject"))));
+            }
+        }
+        let moved = alignment::list_for_run(self.store.pool(), secondary).await?;
+        let mut count = 0usize;
+        for a in &moved {
+            if alignment::set_sequence_run(self.store.pool(), a.id, primary).await? {
+                count += 1;
+            }
+        }
+        // The secondary is now empty; delete it (cascade is a no-op for alignments — already moved).
+        sequence_run::delete(self.store.pool(), secondary).await?;
+        Ok(count)
+    }
+
     /// Delete a single alignment and its cached analysis artifacts (the parent run is kept).
     pub async fn delete_alignment(&self, id: i64) -> Result<(), AppError> {
         if !alignment::delete(self.store.pool(), id).await? {

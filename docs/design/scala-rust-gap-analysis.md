@@ -200,16 +200,17 @@ in as publisher checksums are confirmed); a general batch single-position liftov
 | Chromosome painting track (local ancestry) | — | **DONE** diploid two-copy painting (consensus-driven) |
 | Consensus-driven Y/mt/Autosomal/Ancestry/IBD tabs | — | **DONE** (this arc) |
 | **Batch / project-bundle / vendor-VCF / vendor-FASTA import dialogs** (multi-file, drag-drop, auto-detect) | `{BatchImport,ProjectImport,ImportVendorVcf,ImportVendorFasta}Dialog.scala` | **DONE** (59b5696) — per-subject Add Data is now a multi-file + folder picker; drag-drop routes files+folders through one batch (`add_data_batch`, auto-detect each) → import-summary modal. Project-bundle import (`import_project_dir`) already had a folder picker. *Remaining:* explicit vendor presets (FTDNA Big Y / mtFull labels) are cosmetic — auto-detect already routes those formats |
-| Y-profile management/detail + source-reconciliation dialogs | `YProfile*Dialog.scala`, `SourceReconciliationPanel.scala` | PARTIAL (Y-profile card + consensus block exist; no dedicated management/audit dialog) |
+| Y-profile management/detail + source-reconciliation dialogs | `YProfile*Dialog.scala`, `SourceReconciliationPanel.scala` | **DONE** (read-only audit) — "🔍 Audit sources" on the Y-DNA SNP profile opens `y_profile_audit_modal`: per-source provenance (label · type · method-tier weight `SourceType::snp_weight` · variant count) + a per-conflict evidence list (each conflicting variant with every source's call + tier). Pure over the cached profile. Source exclusion/weight-override deferred (needs schema) |
 | IBD match-detail browser — chromosome ideogram with segment painting; segment CSV export | `MatchDetailDialog.scala`, `ChromosomeBrowserPanel.scala` | **DONE** (a6d44cc) — `charts::draw_ibd_segments` per-chromosome segment ideogram (true chr lengths via genome regions, hover cM/SNPs) + "Export segments CSV" (`export::ibd_segments_tsv`) in the IBD Matches tab |
 | PCA scatter (PC1×PC2 projection plot) | `ui/…` | **DONE** (92c2cf6) — `charts::draw_pca_scatter` (egui_plot Points: reference centroids + donor diamond, super-pop legend) in the Ancestry tab; reference via `ancestry_pca_reference` |
 | Haplogroup report dialog (scored candidates / lineage / SNPs / private) | `HaplogroupReportDialog.scala` | **DONE** (43e561c) — "Full report" in the Y-DNA tab: ranked candidates (score/depth/matched) + lineage SNP evidence (derived/ancestral/no-call) via `y_haplogroup_report`; terminal + branches + private-Y already shown |
-| Fingerprint-match / merge-sequence-runs dialogs | `{FingerprintMatch,MergeSequenceRuns}Dialog.scala` | **PARTIAL** — identity verification (fingerprint match) surfaced at the **alignment-pair** (panel) AND **subject** level (3ca6615, `verify_identity_consensus` in the IBD compare card). *Remaining:* the destructive merge-sequence-runs dialog |
+| Fingerprint-match / merge-sequence-runs dialogs | `{FingerprintMatch,MergeSequenceRuns}Dialog.scala` | **DONE** — identity verification (3ca6615, alignment-pair + subject level). **Merge-sequence-runs** (destructive): `⤵` on a run (when ≥2) → `merge_runs_modal` picks a target → reparents the source run's alignments (`alignment::set_sequence_run`, store test) + deletes the empty source (`App::merge_sequence_runs`). Artifacts travel with the alignments |
 
-**Remaining:** import dialogs (DONE 59b5696) and the IBD match browser (DONE a6d44cc) have landed.
-Left: the **Y-profile management/audit dialog** and the **merge-sequence-runs** dialog (destructive).
-(PCA scatter 92c2cf6; IBD match browser a6d44cc; haplogroup report 43e561c; identity/fingerprint
-match — alignment + subject level — 3ca6615 all DONE.)
+**§8 COMPLETE.** All dialogs landed: import (59b5696), IBD match browser (a6d44cc), PCA scatter
+(92c2cf6), haplogroup report (43e561c), identity/fingerprint match (3ca6615), the read-only Y-profile
+**source-audit** modal, and the destructive **merge-sequence-runs** dialog. (Source exclusion /
+per-source weight override on the audit view is a future schema-backed enhancement, not a Scala-parity
+gap — the Scala dialog's exclusion was its own forward feature.)
 
 ---
 
@@ -225,7 +226,7 @@ match — alignment + subject level — 3ca6615 all DONE.)
 | ~~5-p2~~ | ~~Sync conflict detection + PULL + `source_file`~~ | — | — | **DONE e38f0b3** — idempotent publish (sync_state keeps the PDS TID → putRecord), pure reconcile planner + pull_sync, source_file (mig 0027). Live-PDS validation pending (needs did:plc repo) |
 | ~~4-live~~ | ~~IBD live exchange~~ | — | — | **DONE** (1e43f12, 816fcea, 02efee5) — transport + segment payload + attestation + real-data resolver + persistence + Encrypted-exchange UI + did:key bootstrap, validated live (James's 1.23M sites → ParentChild, verified+agreed). Remaining: AppView attestation indexing |
 | ~~7~~ | ~~VCF liftover orchestration + reference-download checksums~~ | — | — | **DONE** — `vcf_lift::lift_vcf` (chain + revcomp + REF/ALT-swap recovery, validated live on real chrY SNPs vs the Y-SNP dict) + streaming-SHA-256 download verification (pinned + TOFU sidecar + Settings "Verify"). CLI `lift-vcf` + Settings tool |
-| 8-misc | Y-profile management/audit dialog, merge-sequence-runs dialog | Low | Small | IBD browser (a6d44cc), PCA scatter (92c2cf6), haplogroup report (43e561c), identity/fingerprint match (3ca6615) DONE |
+| ~~8-misc~~ | ~~Y-profile audit dialog, merge-sequence-runs dialog~~ | — | — | **DONE** — read-only Y-profile source-audit modal (provenance + per-conflict evidence + method-tier weights) + destructive merge-sequence-runs (`⤵` → reparent alignments + delete empty run, `alignment::set_sequence_run`). §8 fully closed |
 
 **Recently shipped:** import UX (59b5696), checkpoint/resume (192a939), **STR caller foundation**
 (986e00b — the hard, twice-attempted part), **STR vendor bridge fully landed** (b631d79 — 216-kit

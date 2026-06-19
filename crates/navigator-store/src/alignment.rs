@@ -73,6 +73,18 @@ pub async fn set_content_hash(pool: &SqlitePool, id: i64, sha256: &str) -> Resul
     Ok(affected > 0)
 }
 
+/// Reparent an alignment to a different sequence run (used by run merge). Just an `UPDATE` of the
+/// FK column — no schema change. Returns whether a row was affected.
+pub async fn set_sequence_run(pool: &SqlitePool, id: i64, sequence_run_id: i64) -> Result<bool, StoreError> {
+    let affected = sqlx::query("UPDATE alignment SET sequence_run_id = ? WHERE id = ?")
+        .bind(sequence_run_id)
+        .bind(id)
+        .execute(pool)
+        .await?
+        .rows_affected();
+    Ok(affected > 0)
+}
+
 pub async fn get(pool: &SqlitePool, id: i64) -> Result<Option<Alignment>, StoreError> {
     let row: Option<Row> = sqlx::query_as(&format!("SELECT {COLS} FROM alignment WHERE id = ?"))
         .bind(id)

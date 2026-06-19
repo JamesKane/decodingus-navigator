@@ -265,6 +265,8 @@ pub enum Command {
     /// Delete a sequence run (cascades to its alignments + artifacts). `biosample_guid` is the
     /// owner, so the UI can refresh that subject's run list.
     DeleteSequenceRun { id: i64, biosample_guid: SampleGuid },
+    /// Merge `secondary` sequence run into `primary` (reparent alignments, delete the empty run).
+    MergeSequenceRuns { biosample_guid: SampleGuid, primary: i64, secondary: i64 },
     /// Delete a single alignment (cascades to its artifacts). `sequence_run_id` is the owner,
     /// so the UI can refresh that run's alignment list.
     DeleteAlignment { id: i64, sequence_run_id: i64 },
@@ -565,6 +567,12 @@ pub async fn handle(app: &App, cmd: Command) -> Event {
             Ok(()) => Event::RunsChanged(biosample_guid),
             Err(e) => Event::Error(e.to_string()),
         },
+        Command::MergeSequenceRuns { biosample_guid, primary, secondary } => {
+            match app.merge_sequence_runs(biosample_guid, primary, secondary).await {
+                Ok(_) => Event::RunsChanged(biosample_guid),
+                Err(e) => Event::Error(e.to_string()),
+            }
+        }
         Command::DeleteAlignment { id, sequence_run_id } => match app.delete_alignment(id).await {
             Ok(()) => Event::AlignmentsChanged(sequence_run_id),
             Err(e) => Event::Error(e.to_string()),

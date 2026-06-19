@@ -278,6 +278,15 @@ struct EditRun {
     sequencing_facility: String,
 }
 
+/// Drives the destructive merge-sequence-runs modal (Some ⇒ shown). `secondary` is the run that
+/// will be emptied + deleted; `primary` is the chosen merge target (its picker default).
+#[derive(Clone)]
+struct MergeRuns {
+    guid: SampleGuid,
+    secondary: i64,
+    primary: Option<i64>,
+}
+
 /// Editable copy of an alignment, driving the alignment Edit modal (Some ⇒ the dialog is shown).
 #[derive(Clone)]
 struct EditAlignment {
@@ -378,6 +387,9 @@ pub struct NavigatorApp {
     confirm_delete_project: Option<(i64, String)>,
     /// Sequence run being edited (Some ⇒ the run Edit modal is shown).
     edit_run: Option<EditRun>,
+    merge_runs: Option<MergeRuns>,
+    /// Whether the read-only Y-profile source-audit modal is open (reads the cached `y_profile`).
+    audit_y_profile: bool,
     /// Alignment being edited (Some ⇒ the alignment Edit modal is shown).
     edit_alignment: Option<EditAlignment>,
     /// Current frame's egui time (seconds), captured at the top of `update`.
@@ -701,6 +713,8 @@ impl NavigatorApp {
             edit_project: None,
             confirm_delete_project: None,
             edit_run: None,
+            merge_runs: None,
+            audit_y_profile: false,
             edit_alignment: None,
             frame_time: 0.0,
             nav: Nav::Subjects,
@@ -1704,6 +1718,8 @@ impl eframe::App for NavigatorApp {
         self.edit_project_modal(ctx);
         self.delete_project_modal(ctx);
         self.edit_run_modal(ctx);
+        self.merge_runs_modal(ctx);
+        self.y_profile_audit_modal(ctx);
         self.edit_alignment_modal(ctx);
         self.settings_modal(ctx);
         self.batch_import_modal(ctx);
@@ -2603,6 +2619,168 @@ impl NavigatorApp {
             });
         if close {
             self.confirm_data_delete = None;
+        }
+    }
+
+    /// Destructive merge-sequence-runs modal: the `secondary` run's alignments are reparented onto a
+    /// chosen `primary` run and the now-empty secondary is deleted. Mirrors the data-delete confirm.
+    fn merge_runs_modal(&mut self, ctx: &egui::Context) {
+        let Some(mut m) = self.merge_runs.clone() else { return };
+        let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Middle, egui::Id::new("merge_runs_dim")));
+        painter.rect_filled(ctx.screen_rect(), 0.0, egui::Color32::from_black_alpha(150));
+
+        // Run label: "WGS · NovaSeq (#id)".
+        let label = |id: i64| -> String {
+            self.runs
+                .iter()
+                .find(|r| r.id == id)
+                .map(|r| format!("{} · {} (#{})", testtype::display_name(&r.test_type), if r.platform_name.is_empty() { "—" } else { &r.platform_name }, r.id))
+                .unwrap_or_else(|| format!("run #{id}"))
+        };
+        let others: Vec<i64> = self.runs.iter().map(|r| r.id).filter(|&id| id != m.secondary).collect();
+
+        let (mut close, mut confirm) = (false, false);
+        egui::Area::new(egui::Id::new("merge_runs_modal"))
+            .order(egui::Order::Foreground)
+            .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+            .show(ctx, |ui| {
+                egui::Frame::window(ui.style()).inner_margin(egui::Margin::same(18.0)).show(ui, |ui| {
+                    ui.set_width(440.0);
+                    ui.label(egui::RichText::new(self.tr("merge.title")).strong().size(16.0));
+                    ui.separator();
+                    ui.add_space(8.0);
+                    ui.label(format!("{}: {}", self.tr("merge.moveFrom"), label(m.secondary)));
+                    ui.add_space(6.0);
+                    ui.horizontal(|ui| {
+                        ui.label(self.tr("merge.into"));
+                        let sel = m.primary.map(label).unwrap_or_else(|| self.tr("merge.pick").to_string());
+                        egui::ComboBox::from_id_salt("merge_primary").selected_text(sel).show_ui(ui, |ui| {
+                            for id in &others {
+                                ui.selectable_value(&mut m.primary, Some(*id), label(*id));
+                            }
+                        });
+                    });
+                    ui.add_space(6.0);
+                    ui.label(egui::RichText::new(self.tr("merge.note")).weak().small());
+                    ui.add_space(12.0);
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        let ready = m.primary.is_some();
+                        if ui
+                            .add_enabled(ready, egui::Button::new(egui::RichText::new(self.tr("merge.run")).color(egui::Color32::WHITE)).fill(DANGER))
+                            .clicked()
+                        {
+                            confirm = true;
+                            close = true;
+                        }
+                        if ui.button(self.tr("common.cancel")).clicked() {
+                            close = true;
+                        }
+                    });
+                });
+            });
+
+        if confirm {
+            if let Some(primary) = m.primary {
+                self.status = self.tr("merge.running").to_string();
+                let _ = self.tx.send(Command::MergeSequenceRuns { biosample_guid: m.guid, primary, secondary: m.secondary });
+            }
+        }
+        if close {
+            self.merge_runs = None;
+        } else {
+            self.merge_runs = Some(m); // keep the picker selection across frames
+        }
+    }
+
+    /// Read-only Y-profile **source audit**: a per-source provenance table (label · type · method
+    /// tier weight · variants contributed) and a per-conflict evidence list (each conflicting variant
+    /// with every source's call), so the user can see what drove — or disagreed with — each consensus
+    /// call. Pure over the cached `y_profile`; no schema change, no re-genotyping.
+    fn y_profile_audit_modal(&mut self, ctx: &egui::Context) {
+        if !self.audit_y_profile {
+            return;
+        }
+        let Some(profile) = self.y_profile.clone() else {
+            self.audit_y_profile = false;
+            return;
+        };
+        let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Middle, egui::Id::new("yaudit_dim")));
+        painter.rect_filled(ctx.screen_rect(), 0.0, egui::Color32::from_black_alpha(150));
+
+        let state_glyph = |s: navigator_domain::consensus::ConsensusState| match s {
+            navigator_domain::consensus::ConsensusState::Derived => "derived",
+            navigator_domain::consensus::ConsensusState::Ancestral => "ancestral",
+            navigator_domain::consensus::ConsensusState::NoCall => "no-call",
+        };
+        let mut close = false;
+        egui::Area::new(egui::Id::new("yaudit_modal"))
+            .order(egui::Order::Foreground)
+            .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+            .show(ctx, |ui| {
+                egui::Frame::window(ui.style()).inner_margin(egui::Margin::same(18.0)).show(ui, |ui| {
+                    ui.set_width(560.0);
+                    ui.label(egui::RichText::new(self.tr("audit.title")).strong().size(16.0));
+                    if let Some(t) = &profile.terminal {
+                        ui.label(egui::RichText::new(format!("terminal {t}")).weak());
+                    }
+                    ui.separator();
+                    egui::ScrollArea::vertical().max_height(440.0).show(ui, |ui| {
+                        // --- Per-source provenance ---
+                        ui.label(egui::RichText::new(self.tr("audit.sources")).strong());
+                        egui::Grid::new("yaudit_sources").striped(true).num_columns(4).show(ui, |ui| {
+                            for h in ["audit.source", "audit.type", "audit.tier", "audit.variants"] {
+                                ui.strong(self.tr(h));
+                            }
+                            ui.end_row();
+                            for s in &profile.sources {
+                                ui.label(&s.label);
+                                ui.label(egui::RichText::new(s.source_type.as_str()).small());
+                                ui.label(format!("{:.2}", s.source_type.snp_weight()));
+                                ui.label(s.variant_count.to_string());
+                                ui.end_row();
+                            }
+                        });
+                        ui.label(egui::RichText::new(self.tr("audit.tierNote")).weak().small());
+                        ui.add_space(10.0);
+
+                        // --- Conflicts: who disagrees, at which variant ---
+                        let conflicts: Vec<_> =
+                            profile.variants.iter().filter(|v| v.status == YVariantStatus::Conflict).collect();
+                        ui.label(egui::RichText::new(format!("{} ({})", self.tr("audit.conflicts"), conflicts.len())).strong());
+                        if conflicts.is_empty() {
+                            ui.label(egui::RichText::new(self.tr("audit.noConflicts")).weak());
+                        } else {
+                            let amber = egui::Color32::from_rgb(220, 150, 60);
+                            for v in conflicts.iter().take(200) {
+                                let name = if v.name.is_empty() { format!("@{}", v.position) } else { v.name.clone() };
+                                ui.label(egui::RichText::new(format!("{name}  ·  {}", v.position)).color(amber).strong());
+                                ui.indent(("yaudit", v.position), |ui| {
+                                    for src in &v.sources {
+                                        ui.label(
+                                            egui::RichText::new(format!(
+                                                "{} ({}, tier {:.2}) → {}",
+                                                src.label,
+                                                src.source_type.as_str(),
+                                                src.source_type.snp_weight(),
+                                                state_glyph(src.state)
+                                            ))
+                                            .small(),
+                                        );
+                                    }
+                                });
+                            }
+                        }
+                    });
+                    ui.separator();
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui.button(self.tr("common.close")).clicked() {
+                            close = true;
+                        }
+                    });
+                });
+            });
+        if close {
+            self.audit_y_profile = false;
         }
     }
 
@@ -3649,6 +3827,12 @@ impl NavigatorApp {
             self.y_profile_loading = true;
         }
 
+        // Read-only source-audit (per-source provenance + per-conflict evidence) — opens a modal
+        // over the cached profile; no re-genotyping.
+        if self.y_profile.is_some() && ui.small_button(self.tr("audit.open")).clicked() {
+            self.audit_y_profile = true;
+        }
+
         let Some(profile) = &self.y_profile else {
             if !self.y_profile_loading {
                 ui.label(egui::RichText::new(self.tr("hint.yProfileBuild")).weak());
@@ -4418,6 +4602,7 @@ impl NavigatorApp {
         let mut want_delete: Option<DataDelete> = None;
         let mut want_edit_run: Option<EditRun> = None;
         let mut want_edit_aln: Option<EditAlignment> = None;
+        let mut want_merge: Option<i64> = None;
 
         for r in &runs {
             let selected = self.selected_run == Some(r.id);
@@ -4429,6 +4614,7 @@ impl NavigatorApp {
             let inner = frame.show(ui, |ui| {
                 let mut edit_btn: Option<egui::Response> = None;
                 let mut del_btn: Option<egui::Response> = None;
+                let mut merge_btn: Option<egui::Response> = None;
                 ui.horizontal(|ui| {
                     chip(ui, &provider_abbrev(&r.platform_name), ACCENT.gamma_multiply(0.3), ACCENT);
                     // Lab chip (FGC/FTDNA/YSEQ/Dante/Nebula…) when the sequencing facility is known.
@@ -4474,6 +4660,9 @@ impl NavigatorApp {
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         del_btn = Some(ui.small_button("🗑").on_hover_text("Delete run + its alignments"));
                         edit_btn = Some(ui.small_button("✏").on_hover_text("Edit run"));
+                        if runs.len() > 1 {
+                            merge_btn = Some(ui.small_button("⤵").on_hover_text("Merge this run into another"));
+                        }
                         if let Some(t) = tt {
                             let mt = matches!(t.target, testtype::TargetType::WholeGenome | testtype::TargetType::MtDna);
                             let y = matches!(t.target, testtype::TargetType::WholeGenome | testtype::TargetType::YChromosome);
@@ -4486,9 +4675,9 @@ impl NavigatorApp {
                         }
                     });
                 });
-                (edit_btn, del_btn)
+                (edit_btn, del_btn, merge_btn)
             });
-            let (edit_btn, del_btn) = inner.inner;
+            let (edit_btn, del_btn, merge_btn) = inner.inner;
             // Row selection is sensed on the whole frame, which can swallow the inner buttons'
             // clicks; treat a button as hit when it was clicked OR the row swallowed the click
             // while the pointer was over it.
@@ -4512,6 +4701,8 @@ impl NavigatorApp {
                     guid,
                     label: format!("run “{}”", testtype::display_name(&r.test_type)),
                 });
+            } else if hit(&merge_btn) {
+                want_merge = Some(r.id);
             } else if row_clicked {
                 pick_run = Some(r.id);
             }
@@ -4590,6 +4781,11 @@ impl NavigatorApp {
         }
         if want_edit_aln.is_some() {
             self.edit_alignment = want_edit_aln;
+        }
+        if let Some(secondary) = want_merge {
+            // Default the target (primary) to the first other run; the modal lets the user change it.
+            let primary = runs.iter().map(|r| r.id).find(|&id| id != secondary);
+            self.merge_runs = Some(MergeRuns { guid, secondary, primary });
         }
         self.add_test_form(ui, guid);
     }

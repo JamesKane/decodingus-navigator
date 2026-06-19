@@ -249,6 +249,48 @@ async fn delete_cascades_run_to_alignments_and_artifacts() {
 }
 
 #[tokio::test]
+async fn set_sequence_run_reparents_an_alignment() {
+    // The merge primitive: an alignment's owning run can be changed (then the empty run deleted),
+    // and its artifacts travel with it (they're alignment-keyed).
+    let s = store().await;
+    let b = sample(None);
+    biosample::create(s.pool(), &b).await.unwrap();
+    let mk_run = |layout: &str| NewSequenceRun {
+        biosample_guid: b.guid,
+        platform_name: "ILLUMINA".into(),
+        instrument_model: None,
+        test_type: "WGS".into(),
+        library_layout: Some(layout.to_string()),
+        total_reads: None,
+        pf_reads_aligned: None,
+        mean_read_length: None,
+        mean_insert_size: None,
+    };
+    let primary = sequence_run::create(s.pool(), &mk_run("A")).await.unwrap();
+    let secondary = sequence_run::create(s.pool(), &mk_run("B")).await.unwrap();
+    let aln = alignment::create(
+        s.pool(),
+        &NewAlignment { sequence_run_id: secondary.id, reference_build: "chm13v2.0".into(), aligner: "bwa".into(), variant_caller: None, bam_path: None, reference_path: None, content_sha256: None },
+    )
+    .await
+    .unwrap();
+    artifact::upsert(s.pool(), aln.id, "coverage", "v1", Utc::now(), r#"{"mean":3.0}"#, "navigator-walk", "full", None).await.unwrap();
+
+    // Reparent the alignment onto the primary run.
+    assert!(alignment::set_sequence_run(s.pool(), aln.id, primary.id).await.unwrap());
+    assert!(alignment::list_for_run(s.pool(), secondary.id).await.unwrap().is_empty());
+    assert_eq!(alignment::list_for_run(s.pool(), primary.id).await.unwrap().len(), 1);
+
+    // Deleting the now-empty secondary leaves the moved alignment + its artifact intact under primary.
+    assert!(sequence_run::delete(s.pool(), secondary.id).await.unwrap());
+    assert!(alignment::get(s.pool(), aln.id).await.unwrap().is_some());
+    assert!(artifact::get(s.pool(), aln.id, "coverage", "v1").await.unwrap().is_some());
+
+    // Reparenting a non-existent alignment reports false.
+    assert!(!alignment::set_sequence_run(s.pool(), 9999, primary.id).await.unwrap());
+}
+
+#[tokio::test]
 async fn haplogroup_call_fingerprint_round_trips() {
     use navigator_domain::reconciliation::{DnaType, RunHaplogroupCall};
     use navigator_store::haplogroup_call;
