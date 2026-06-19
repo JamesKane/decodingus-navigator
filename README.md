@@ -4,8 +4,8 @@ Decoding-Us Navigator is an edge-computing companion application to [decoding-us
 
 Navigator is a **single self-contained Rust application**: a pure-Rust analysis stack ([noodles](https://github.com/zaeleus/noodles)) and an [egui](https://github.com/emilk/egui) desktop UI — **no JVM, no GATK, no samtools/bcftools** to install. The same binary doubles as a scriptable command-line tool.
 
-> **Repository note:** active development is on the `rust-rewrite` branch. The original Scala/ScalaFX
-> implementation is preserved in history; the design of the rewrite is documented in
+> **Repository note:** the Rust rewrite is now the trunk on `main`. The original Scala/ScalaFX
+> implementation is preserved in git history; the design of the rewrite is documented in
 > **[`crates/README.md`](crates/README.md)**,
 > **[`documents/design/RustRewrite_Plan.md`](documents/design/RustRewrite_Plan.md)**, and the resume
 > notes in **[`documents/design/HANDOFF.md`](documents/design/HANDOFF.md)**.
