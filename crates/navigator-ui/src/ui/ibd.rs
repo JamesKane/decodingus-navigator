@@ -4,8 +4,38 @@ use super::*;
 
 impl NavigatorApp {
     pub(crate) fn genotyping_section(&mut self, ui: &mut egui::Ui, alignment_id: i64) {
+        // Panels are managed in Settings; pick which one to genotype against here.
+        if self.panels.is_empty() {
+            ui.label(self.tr("panel.noneImportInSettings"));
+            return;
+        }
+        let sel_name = self
+            .selected_panel
+            .and_then(|id| self.panels.iter().find(|p| p.panel.id == id))
+            .map(|p| p.panel.name.clone())
+            .unwrap_or_else(|| self.tr("panel.choose").to_string());
+        let mut pick: Option<i64> = None;
+        ui.horizontal(|ui| {
+            ui.label(self.tr("panel.label"));
+            egui::ComboBox::from_id_salt("genotype_panel")
+                .selected_text(sel_name)
+                .show_ui(ui, |ui| {
+                    for p in &self.panels {
+                        if ui
+                            .selectable_label(self.selected_panel == Some(p.panel.id), &p.panel.name)
+                            .clicked()
+                        {
+                            pick = Some(p.panel.id);
+                        }
+                    }
+                });
+        });
+        if let Some(id) = pick {
+            if self.selected_panel != Some(id) {
+                self.select_panel(id); // clears stale results + loads cached genotypes for this panel
+            }
+        }
         let Some(panel_id) = self.selected_panel else {
-            ui.label(self.tr("panel.selectInSidebar"));
             return;
         };
         let panel_name = self

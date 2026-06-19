@@ -167,7 +167,8 @@ impl NavigatorApp {
         }
     }
 
-    /// Project management: the projects list, new-project form, batch import, and panels.
+    /// Project management: the projects list, new-project form, and batch import.
+    /// (Genotyping panels are workspace-global, so they live in Settings, not here.)
     fn projects_side(&mut self, ui: &mut egui::Ui) {
         ui.add_space(6.0);
         ui.heading(self.tr("projects.heading"));
@@ -221,10 +222,6 @@ impl NavigatorApp {
             }
         }
         self.reference_prompt(ui);
-
-        ui.add_space(12.0);
-        ui.separator();
-        self.panels_section(ui);
     }
 
     /// Subjects browser: a search box + "Add New Subject" on one row, then the subjects table.

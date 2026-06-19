@@ -139,6 +139,9 @@ impl NavigatorApp {
         // Deferred actions (dispatched after the closure, since only `self.tr` is used inside it).
         let mut verify_build: Option<String> = None;
         let mut lift_request = false;
+        // Genotyping-panel import: edit a local copy of the name + collect a picked VCF, act after.
+        let mut panel_name = self.forms.panel_import_name.clone();
+        let mut panel_import: Option<std::path::PathBuf> = None;
 
         modal_frame(ctx, "settings_modal", 580.0, |ui| {
             ui.label(egui::RichText::new(self.tr("settings.title")).strong().size(16.0));
@@ -309,6 +312,41 @@ impl NavigatorApp {
                 }
                 ui.add_space(8.0);
 
+                // --- Genotyping panels (workspace-global; consumed by the Subjects IBD/genotyping tab) ---
+                ui.label(egui::RichText::new(self.tr("settings.panels")).strong());
+                ui.label(egui::RichText::new(self.tr("panel.importHint")).weak().small());
+                if self.panels.is_empty() {
+                    ui.label(egui::RichText::new(self.tr("panel.none")).weak());
+                } else {
+                    for info in &self.panels {
+                        ui.label(format!(
+                            "• {}  ({} {})",
+                            info.panel.name,
+                            info.site_count,
+                            self.tr("panel.sites")
+                        ));
+                    }
+                }
+                ui.horizontal(|ui| {
+                    ui.add(
+                        egui::TextEdit::singleline(&mut panel_name)
+                            .hint_text(self.tr("panel.newName"))
+                            .desired_width(200.0),
+                    );
+                    if ui
+                        .add_enabled(
+                            !panel_name.trim().is_empty(),
+                            egui::Button::new(self.tr("mt.importSitesVcf")),
+                        )
+                        .clicked()
+                    {
+                        if let Some(p) = rfd::FileDialog::new().add_filter("VCF", &["vcf"]).pick_file() {
+                            panel_import = Some(p);
+                        }
+                    }
+                });
+                ui.add_space(8.0);
+
                 // --- Advanced (read-only) ---
                 ui.label(egui::RichText::new(self.tr("settings.advanced")).strong());
                 ui.label(
@@ -391,6 +429,17 @@ impl NavigatorApp {
                 out_vcf: std::path::PathBuf::from(form.lift_out.trim()),
                 filter_par: form.lift_filter_par,
             });
+        }
+        // Panel import: dispatch on a picked file, else just preserve the in-progress name.
+        match panel_import {
+            Some(path) if !panel_name.trim().is_empty() => {
+                let _ = self.tx.send(Command::ImportPanel {
+                    name: panel_name.trim().to_string(),
+                    path,
+                });
+                self.forms.panel_import_name.clear();
+            }
+            _ => self.forms.panel_import_name = panel_name,
         }
 
         if close {
