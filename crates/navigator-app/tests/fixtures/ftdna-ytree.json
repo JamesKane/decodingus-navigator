@@ -1,0 +1,112 @@
+{
+ "allNodes": {
+  "69335": {
+   "haplogroupId": 69335,
+   "name": "R-L761",
+   "isRoot": true,
+   "variants": [
+    {
+     "variant": "L761",
+     "position": 14661990,
+     "ancestral": "A",
+     "derived": "G"
+    }
+   ],
+   "children": [
+    2639
+   ]
+  },
+  "2639": {
+   "haplogroupId": 2639,
+   "name": "R-L389",
+   "isRoot": false,
+   "variants": [
+    {
+     "variant": "L389",
+     "position": 26586954,
+     "ancestral": "C",
+     "derived": "G"
+    }
+   ],
+   "children": [
+    2077
+   ]
+  },
+  "2077": {
+   "haplogroupId": 2077,
+   "name": "R-P297",
+   "isRoot": false,
+   "variants": [
+    {
+     "variant": "P297",
+     "position": 16544628,
+     "ancestral": "G",
+     "derived": "C"
+    }
+   ],
+   "children": [
+    2078
+   ]
+  },
+  "2078": {
+   "haplogroupId": 2078,
+   "name": "R-M269",
+   "isRoot": false,
+   "variants": [
+    {
+     "variant": "M269",
+     "position": 20577481,
+     "ancestral": "T",
+     "derived": "C"
+    }
+   ],
+   "children": [
+    2705,
+    4234,
+    87179
+   ]
+  },
+  "2705": {
+   "haplogroupId": 2705,
+   "name": "R-L23",
+   "isRoot": false,
+   "variants": [
+    {
+     "variant": "L23",
+     "position": 6885470,
+     "ancestral": "G",
+     "derived": "A"
+    }
+   ],
+   "children": []
+  },
+  "4234": {
+   "haplogroupId": 4234,
+   "name": "R-PF7562",
+   "isRoot": false,
+   "variants": [
+    {
+     "variant": "PF7562",
+     "position": 8084399,
+     "ancestral": "C",
+     "derived": "T"
+    }
+   ],
+   "children": []
+  },
+  "87179": {
+   "haplogroupId": 87179,
+   "name": "R-FTG713",
+   "isRoot": false,
+   "variants": [
+    {
+     "variant": "FTG713",
+     "position": 13274833,
+     "ancestral": "T",
+     "derived": "C"
+    }
+   ],
+   "children": []
+  }
+ }
+}
