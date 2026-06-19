@@ -16,13 +16,6 @@ fn part_path(dest: &Path) -> PathBuf {
     PathBuf::from(s)
 }
 
-/// Lowercase hex SHA-256 of `bytes` (shared with the integrity sidecar helpers in `gateway`).
-pub fn sha256_hex(bytes: &[u8]) -> String {
-    let mut h = Sha256::new();
-    h.update(bytes);
-    h.finalize().iter().map(|b| format!("{b:02x}")).collect()
-}
-
 /// Download `url` to `dest`, reporting `(received, total)` as bytes arrive (`total` is the
 /// `Content-Length`, if the server sent one). Streams to `dest.part` and renames on success.
 /// Retries once on a transient error. Returns the SHA-256 (lowercase hex) of the **downloaded

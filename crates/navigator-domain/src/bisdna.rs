@@ -115,25 +115,13 @@ pub fn parse(text: &str) -> Result<Vec<BisdnaCall>, String> {
     Ok(calls)
 }
 
-/// Watson–Crick complement (non-ACGT passes through). Local copy so the resolver stays in
-/// `navigator-domain`; the genotype QC needs it because BISDNA calls the Illumina TOP strand.
-fn complement(b: u8) -> u8 {
-    match b.to_ascii_uppercase() {
-        b'A' => b'T',
-        b'T' => b'A',
-        b'C' => b'G',
-        b'G' => b'C',
-        other => other,
-    }
-}
-
 /// Does `genotype` carry `allele` (or its complement)? QC only — a miss on both strands flags
 /// a likely dictionary/name mismatch, but the verdict (not the genotype) decides the call.
 fn genotype_supports(genotype: &str, allele: &str) -> bool {
     let Some(want) = allele.bytes().next().map(|b| b.to_ascii_uppercase()) else {
         return true;
     };
-    let comp = complement(want);
+    let comp = crate::seq::complement_base_u8(want);
     genotype.bytes().map(|b| b.to_ascii_uppercase()).any(|b| b == want || b == comp)
 }
 

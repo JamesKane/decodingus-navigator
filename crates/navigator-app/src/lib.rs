@@ -1321,16 +1321,9 @@ fn assignment_from_call(call: &navigator_domain::reconciliation::RunHaplogroupCa
     }
 }
 
-/// Watson–Crick complement of a base (for reverse-strand lifts); non-ACGT passes through.
-fn complement_base(b: char) -> char {
-    match b.to_ascii_uppercase() {
-        'A' => 'T',
-        'T' => 'A',
-        'C' => 'G',
-        'G' => 'C',
-        other => other,
-    }
-}
+// Watson–Crick complement of a base (for reverse-strand lifts) — the shared helper in
+// navigator-domain (also used by the chip dosage + BISDNA QC paths).
+use navigator_domain::seq::complement_base;
 
 /// The build a haplotree's positions are in, by contig: the FTDNA Y tree is GRCh38; mtDNA
 /// (`chrM`) is rCRS and stays a direct query (no chain), so it returns `None`.

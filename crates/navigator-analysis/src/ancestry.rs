@@ -418,16 +418,7 @@ fn collapse_copy(
         .collect()
 }
 
-/// Reverse-complement a single base (for strand reconciliation; non-ACGT passes through).
-fn revcomp_base(b: char) -> char {
-    match b.to_ascii_uppercase() {
-        'A' => 'T',
-        'T' => 'A',
-        'C' => 'G',
-        'G' => 'C',
-        other => other,
-    }
-}
+use navigator_domain::seq::complement_base as revcomp_base;
 
 /// Alt-allele dosage (0/1/2) for a chip diploid call `(a1,a2)` against a panel site's
 /// `ref_allele`/`alt_allele`. When the call's alleles don't both lie in `{ref,alt}`, retry once on
