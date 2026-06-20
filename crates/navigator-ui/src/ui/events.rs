@@ -55,6 +55,36 @@ impl NavigatorApp {
                     let _ = self.tx.send(Command::LoadOverview);
                     let _ = self.tx.send(Command::LoadAllBiosamples);
                 }
+                Event::FtdnaPlan(plan) => {
+                    let (new, merge, confirm) = plan.counts();
+                    self.status = format!("FTDNA plan: {new} new, {merge} auto-merge, {confirm} to confirm");
+                    self.importing = false;
+                    self.ftdna_resolutions.clear();
+                    self.ftdna_plan = Some(plan);
+                }
+                Event::FtdnaImported(summary) => {
+                    self.status = format!(
+                        "FTDNA import: {} merged, {} created, {} Y-STR, {} MDKA{}{}",
+                        summary.merged,
+                        summary.created,
+                        summary.str_profiles,
+                        summary.mdka_written,
+                        if summary.skipped > 0 {
+                            format!(", {} skipped", summary.skipped)
+                        } else {
+                            String::new()
+                        },
+                        if summary.errors.is_empty() {
+                            String::new()
+                        } else {
+                            format!(" ({} error(s))", summary.errors.len())
+                        },
+                    );
+                    self.ftdna_plan = None;
+                    self.ftdna_resolutions.clear();
+                    let _ = self.tx.send(Command::LoadOverview);
+                    let _ = self.tx.send(Command::LoadAllBiosamples);
+                }
                 Event::ReferenceNeeded { dir, builds } => {
                     self.importing = false;
                     self.pending_import_dir = Some(dir);

@@ -15,7 +15,8 @@ use du_domain::ids::SampleGuid;
 use navigator_domain::ftdna::{self, AncestryRow, MemberRow};
 use navigator_domain::identity::{FtdnaMember, IdSource, Lineage, NewMdka};
 use navigator_domain::reconciliation::DnaType;
-use navigator_store::{biosample, biosample_project, external_id, ftdna_member, mdka};
+use navigator_domain::strprofile::{NewStrProfile, StrMarker};
+use navigator_store::{biosample, biosample_project, external_id, ftdna_member, mdka, str_profile};
 
 use crate::{App, AppError};
 
@@ -40,6 +41,8 @@ pub struct FtdnaSubjectInput {
     pub member: Option<MemberRow>,
     pub paternal: Option<AncestryRow>,
     pub maternal: Option<AncestryRow>,
+    /// Y-STR markers from the wide overview (empty if no Y-STR file / no row for this kit).
+    pub ystr_markers: Vec<StrMarker>,
 }
 
 /// A workspace Subject offered as a fuzzy merge candidate, with why.
@@ -74,6 +77,8 @@ pub struct FtdnaPlanRow {
     pub y_terminal: Option<String>,
     /// `false` = ancestry data for a kit absent from the roster (orphan; still importable, flagged).
     pub in_roster: bool,
+    /// Number of Y-STR markers that will attach (from the wide overview).
+    pub ystr_count: usize,
     pub kind: MatchKind,
     pub input: FtdnaSubjectInput,
 }
@@ -107,6 +112,8 @@ pub enum FtdnaResolution {
     Merge(SampleGuid),
     /// Treat as a new Subject.
     New,
+    /// Don't import this kit at all.
+    Skip,
 }
 
 /// What the commit did.
@@ -118,6 +125,10 @@ pub struct FtdnaImportSummary {
     pub mdka_written: usize,
     /// Kits that had ancestry data but no roster row.
     pub orphans: usize,
+    /// Kits the admin chose to skip.
+    pub skipped: usize,
+    /// Y-STR profiles attached (from the wide overview).
+    pub str_profiles: usize,
     pub errors: Vec<String>,
 }
 
@@ -130,6 +141,7 @@ impl App {
         member_path: Option<PathBuf>,
         paternal_path: Option<PathBuf>,
         maternal_path: Option<PathBuf>,
+        ystr_path: Option<PathBuf>,
         options: FtdnaImportOptions,
     ) -> Result<FtdnaImportPlan, AppError> {
         let members = match member_path {
@@ -142,6 +154,10 @@ impl App {
         };
         let maternal = match maternal_path {
             Some(p) => ftdna::parse_ancestry(&std::fs::read_to_string(p)?).map_err(AppError::Import)?,
+            None => Vec::new(),
+        };
+        let ystr = match ystr_path {
+            Some(p) => ftdna::parse_ydna_overview(&std::fs::read_to_string(p)?).map_err(AppError::Import)?,
             None => Vec::new(),
         };
 
@@ -160,6 +176,12 @@ impl App {
         for a in maternal {
             let kit = a.kit_number.clone();
             inputs.entry(kit.clone()).or_insert_with(|| empty_input(&kit)).maternal = Some(a);
+        }
+        for (kit, markers) in ystr {
+            inputs
+                .entry(kit.clone())
+                .or_insert_with(|| empty_input(&kit))
+                .ystr_markers = markers;
         }
 
         // Precompute each workspace Subject's Y terminal once (avoids O(kits × subjects) consensus reads).
@@ -180,6 +202,7 @@ impl App {
                 kit_number: kit,
                 y_terminal,
                 in_roster: roster.contains(&input.kit_number),
+                ystr_count: input.ystr_markers.len(),
                 kind,
                 input,
             });
@@ -198,6 +221,11 @@ impl App {
         let now = Utc::now().to_rfc3339();
 
         for row in &plan.rows {
+            // An explicit Skip (only meaningful for a fuzzy row) drops the kit entirely.
+            if matches!(resolutions.get(&row.kit_number), Some(FtdnaResolution::Skip)) {
+                summary.skipped += 1;
+                continue;
+            }
             // Resolve the effective target: existing guid (merge) or None (create new).
             let target = match &row.kind {
                 MatchKind::AutoMerge { guid, .. } => Some(*guid),
@@ -210,7 +238,7 @@ impl App {
 
             let result = self.commit_one(plan.project_id, row, target, &now).await;
             match result {
-                Ok(wrote_mdka) => {
+                Ok((wrote_mdka, wrote_str)) => {
                     if target.is_some() {
                         summary.merged += 1;
                     } else {
@@ -218,6 +246,7 @@ impl App {
                     }
                     summary.memberships_added += 1;
                     summary.mdka_written += wrote_mdka;
+                    summary.str_profiles += wrote_str as usize;
                     if !row.in_roster {
                         summary.orphans += 1;
                     }
@@ -228,15 +257,15 @@ impl App {
         Ok(summary)
     }
 
-    /// Commit one plan row to `guid` (merge) or a fresh Subject (create). Returns the number of MDKA
-    /// rows written (0–2).
+    /// Commit one plan row to `guid` (merge) or a fresh Subject (create). Returns
+    /// `(mdka_rows_written, str_profile_created)`.
     async fn commit_one(
         &self,
         project_id: i64,
         row: &FtdnaPlanRow,
         target: Option<SampleGuid>,
         now: &str,
-    ) -> Result<usize, AppError> {
+    ) -> Result<(usize, bool), AppError> {
         let pool = self.store.pool();
         let input = &row.input;
 
@@ -288,7 +317,24 @@ impl App {
             .map(subgroup_role);
         biosample_project::add(pool, guid, project_id, role.as_deref(), now).await?;
 
-        Ok(wrote)
+        // Y-STR profile from the wide overview (Phase 2). Append-only as an additional source; the
+        // existing cross-provider reconciliation handles consensus/conflicts.
+        let wrote_str = !input.ystr_markers.is_empty();
+        if wrote_str {
+            str_profile::create(
+                pool,
+                &NewStrProfile {
+                    biosample_guid: guid,
+                    panel_name: panel_name_for_count(input.ystr_markers.len()),
+                    provider: Some(IdSource::FTDNA.to_string()),
+                    source: Some("IMPORTED".to_string()),
+                    markers: input.ystr_markers.clone(),
+                },
+            )
+            .await?;
+        }
+
+        Ok((wrote, wrote_str))
     }
 
     /// Vendor identifiers attached to a Subject.
@@ -406,6 +452,7 @@ fn empty_input(kit: &str) -> FtdnaSubjectInput {
         member: None,
         paternal: None,
         maternal: None,
+        ystr_markers: Vec::new(),
     }
 }
 
@@ -456,6 +503,15 @@ fn mdka_from(a: &AncestryRow, lineage: Lineage) -> Option<NewMdka> {
         source: Some(IdSource::FTDNA.to_string()),
         notes: None,
     })
+}
+
+/// FTDNA Y-STR panel name from the count of populated markers (the standard tier boundaries).
+fn panel_name_for_count(n: usize) -> String {
+    let tier = [12, 25, 37, 67, 111].into_iter().find(|&t| n <= t);
+    match tier {
+        Some(t) => format!("Y-{t}"),
+        None => "Y-700".to_string(),
+    }
 }
 
 /// The clade `Sub Group` value as a membership role: keep it compact (the terminal segment), dropping

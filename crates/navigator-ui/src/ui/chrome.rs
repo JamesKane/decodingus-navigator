@@ -222,9 +222,61 @@ impl NavigatorApp {
         }
         self.reference_prompt(ui);
 
+        // FTDNA project import — needs an open project (the kits join into it).
+        ui.add_space(8.0);
+        ui.label(self.tr("ftdna.importHint"));
+        let can_ftdna = self.selected_project.is_some() && !self.importing;
+        let btn = ui.add_enabled(can_ftdna, egui::Button::new(self.tr("ftdna.import")));
+        let btn = if self.selected_project.is_none() {
+            btn.on_hover_text(self.tr("ftdna.needProject"))
+        } else {
+            btn
+        };
+        if btn.clicked() {
+            if let Some(paths) = rfd::FileDialog::new().add_filter("CSV", &["csv"]).pick_files() {
+                self.start_ftdna_import(paths);
+            }
+        }
+
         ui.add_space(12.0);
         ui.separator();
         self.panels_section(ui);
+    }
+
+    /// Classify the picked files by header sniff, route each to its FTDNA parser slot, and dispatch a
+    /// dry-run plan against the open project. Unrecognized files are ignored (noted in the status).
+    fn start_ftdna_import(&mut self, paths: Vec<PathBuf>) {
+        use navigator_domain::ftdna::{classify, FtdnaFileKind};
+        let Some(project_id) = self.selected_project else {
+            return;
+        };
+        let (mut member, mut paternal, mut maternal, mut ystr) = (None, None, None, None);
+        let mut unrecognized = 0;
+        for p in paths {
+            match std::fs::read_to_string(&p).ok().as_deref().and_then(classify) {
+                Some(FtdnaFileKind::Member) => member = Some(p),
+                Some(FtdnaFileKind::PaternalAncestry) => paternal = Some(p),
+                Some(FtdnaFileKind::MaternalAncestry) => maternal = Some(p),
+                Some(FtdnaFileKind::YdnaOverview) => ystr = Some(p),
+                None => unrecognized += 1,
+            }
+        }
+        if member.is_none() && paternal.is_none() && maternal.is_none() && ystr.is_none() {
+            self.status = self.tr("ftdna.noneRecognized").to_string();
+            return;
+        }
+        self.importing = true;
+        self.status = self.tr("ftdna.planning").to_string();
+        if unrecognized > 0 {
+            self.status = format!("{} ({} {})", self.status, unrecognized, self.tr("ftdna.unrecognized"));
+        }
+        let _ = self.tx.send(Command::PlanFtdnaImport {
+            project_id,
+            member,
+            paternal,
+            maternal,
+            ystr,
+        });
     }
 
     /// Subjects browser: a search box + "Add New Subject" on one row, then the subjects table.

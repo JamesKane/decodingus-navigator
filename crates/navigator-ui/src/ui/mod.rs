@@ -16,10 +16,11 @@ use crate::widgets::{
 use eframe::egui;
 use navigator_app::{
     AncestryResult, AncestrySegment, AppSettings, AuditEntry, BatchImportSummary, BuildNeed, CallState,
-    CompatibilityLevel, Consensus, Coverage, DenovoCall, DnaType, HaploAssignment, HeteroplasmySite, IbdComparison,
-    IbdSuggestion, IdentityVerification, MtRegion, MtVariant, PanelGenotype, PrivateBucket, PrivateClass,
-    ProjectOverview, ProjectSampleReport, ReadMetrics, RefBuildStatus, SexInferenceResult, SnpEvidence, SourceType,
-    StrConcordanceRow, SvAnalysisResult, VerificationStatus, YMatch, YProfile, YSignal, YState, YVariantStatus,
+    CompatibilityLevel, Consensus, Coverage, DenovoCall, DnaType, FtdnaImportPlan, FtdnaResolution, HaploAssignment,
+    HeteroplasmySite, IbdComparison, IbdSuggestion, IdentityVerification, MatchKind, MtRegion, MtVariant,
+    PanelGenotype, PrivateBucket, PrivateClass, ProjectOverview, ProjectSampleReport, ReadMetrics, RefBuildStatus,
+    SexInferenceResult, SnpEvidence, SourceType, StrConcordanceRow, SvAnalysisResult, VerificationStatus, YMatch,
+    YProfile, YSignal, YState, YVariantStatus,
 };
 use navigator_domain::chipprofile::{self, ChipProfile};
 use navigator_domain::du_domain::ids::SampleGuid;
@@ -623,6 +624,10 @@ pub struct NavigatorApp {
     analyzing: bool,
     /// Streaming deep-analyze progress: `(done, total, current_sample, fraction)` while running.
     deep_progress: Option<(usize, usize, String, f32)>,
+    /// The dry-run FTDNA import plan being reviewed (drives the review modal).
+    ftdna_plan: Option<FtdnaImportPlan>,
+    /// The admin's per-kit resolutions for the fuzzy rows in [`Self::ftdna_plan`].
+    ftdna_resolutions: std::collections::BTreeMap<String, FtdnaResolution>,
     forms: Forms,
     status: String,
 }
@@ -894,6 +899,8 @@ impl NavigatorApp {
             reference_progress: None,
             analyzing: false,
             deep_progress: None,
+            ftdna_plan: None,
+            ftdna_resolutions: std::collections::BTreeMap::new(),
             forms: Forms {
                 ploidy: "2".into(),
                 run_test_type: "WGS".into(),
@@ -981,6 +988,7 @@ impl eframe::App for NavigatorApp {
         self.edit_alignment_modal(ctx);
         self.settings_modal(ctx);
         self.batch_import_modal(ctx);
+        self.ftdna_review_modal(ctx);
         self.paint_drop_hint(ctx);
     }
 }

@@ -14,10 +14,11 @@ use std::sync::{Arc, Mutex};
 
 use navigator_app::{
     AlignmentProbe, AncestryResult, AncestrySegment, App, AppError, AuditEntry, BatchImportSummary, BuildNeed,
-    Consensus, Coverage, DenovoCall, DnaType, ExchangeSessionInfo, HaploAssignment, HeteroplasmySite, IbdComparison,
-    IbdDetectorConfig, IbdSuggestion, IdentityVerification, IncomingRequest, PanelGenotype, PrivateBucket,
-    ProjectImportSummary, ProjectOverview, ProjectSampleReport, ReadMetrics, RefBuildStatus, SexInferenceResult,
-    SourceType, StoredIbdExchange, StrConcordanceRow, SvAnalysisResult, YMatch,
+    Consensus, Coverage, DenovoCall, DnaType, ExchangeSessionInfo, FtdnaImportOptions, FtdnaImportPlan,
+    FtdnaImportSummary, FtdnaResolution, HaploAssignment, HeteroplasmySite, IbdComparison, IbdDetectorConfig,
+    IbdSuggestion, IdentityVerification, IncomingRequest, PanelGenotype, PrivateBucket, ProjectImportSummary,
+    ProjectOverview, ProjectSampleReport, ReadMetrics, RefBuildStatus, SexInferenceResult, SourceType,
+    StoredIbdExchange, StrConcordanceRow, SvAnalysisResult, YMatch,
 };
 use navigator_domain::chipprofile::ChipProfile;
 use navigator_domain::du_domain::ids::SampleGuid;
@@ -76,6 +77,20 @@ pub enum Command {
     ImportProjectDir {
         dir: PathBuf,
         reference: Option<PathBuf>,
+    },
+    /// Dry-run an FTDNA project import: parse + match the (already classified) batch files into a
+    /// reviewable plan. Any path may be absent.
+    PlanFtdnaImport {
+        project_id: i64,
+        member: Option<PathBuf>,
+        paternal: Option<PathBuf>,
+        maternal: Option<PathBuf>,
+        ystr: Option<PathBuf>,
+    },
+    /// Commit a reviewed FTDNA import plan with the admin's per-kit resolutions.
+    CommitFtdnaImport {
+        plan: FtdnaImportPlan,
+        resolutions: std::collections::BTreeMap<String, FtdnaResolution>,
     },
     /// Resolve (download + decompress + index) a reference build, streaming progress.
     ResolveReference {
@@ -529,6 +544,10 @@ pub enum Event {
     ProjectsChanged,
     /// A batch project-directory import completed.
     ProjectImported(ProjectImportSummary),
+    /// A dry-run FTDNA import plan, ready for the review modal.
+    FtdnaPlan(FtdnaImportPlan),
+    /// The result of committing an FTDNA import.
+    FtdnaImported(FtdnaImportSummary),
     /// Import needs reference build(s) downloaded first; `dir` lets the UI retry the import
     /// after the user approves and the download finishes.
     ReferenceNeeded {
@@ -892,6 +911,30 @@ pub async fn handle(app: &App, cmd: Command) -> Event {
                 Err(e) => Event::Error(e.to_string()),
             }
         }
+        Command::PlanFtdnaImport {
+            project_id,
+            member,
+            paternal,
+            maternal,
+            ystr,
+        } => match app
+            .plan_ftdna_import(
+                project_id,
+                member,
+                paternal,
+                maternal,
+                ystr,
+                FtdnaImportOptions::default(),
+            )
+            .await
+        {
+            Ok(plan) => Event::FtdnaPlan(plan),
+            Err(e) => Event::Error(e.to_string()),
+        },
+        Command::CommitFtdnaImport { plan, resolutions } => match app.commit_ftdna_import(&plan, &resolutions).await {
+            Ok(summary) => Event::FtdnaImported(summary),
+            Err(e) => Event::Error(e.to_string()),
+        },
         // ResolveReference is handled in the spawn loop (it streams progress events); reaching
         // here would mean a routing bug.
         Command::ResolveReference { build } => Event::Error(format!("internal: unrouted ResolveReference {build}")),

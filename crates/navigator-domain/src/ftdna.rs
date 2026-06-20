@@ -40,6 +40,42 @@ pub struct AncestryRow {
     pub longitude: Option<f64>,
 }
 
+/// The kind of FTDNA batch export a file is, sniffed from its header row (filenames are not
+/// reliable). Used to route a multi-file pick into the right parser.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FtdnaFileKind {
+    /// `Member_Information` — the roster.
+    Member,
+    /// `Paternal_Ancestry` — paternal MDKA.
+    PaternalAncestry,
+    /// `Maternal_Ancestry` — maternal MDKA.
+    MaternalAncestry,
+    /// `YDNA_Results_Overview` — the wide Y-STR chart.
+    YdnaOverview,
+}
+
+/// Classify an FTDNA export from its header row. `None` if it doesn't look like one of ours.
+/// Disambiguators: the marker block (`DYS…`) is unique to the Y-STR overview; the roster has the
+/// `Publicly Share DNA Results` consent column; the ancestry files use `Sub Group` (with a space)
+/// and a `Paternal`/`Maternal Ancestor Name`.
+pub fn classify(text: &str) -> Option<FtdnaFileKind> {
+    let header = text.lines().next()?;
+    let cols: Vec<String> = header.split(',').map(unescape_html).collect();
+    let has = |name: &str| cols.iter().any(|c| c == name);
+
+    if cols.iter().any(|c| c.starts_with("DYS")) {
+        Some(FtdnaFileKind::YdnaOverview)
+    } else if has("Publicly Share DNA Results") {
+        Some(FtdnaFileKind::Member)
+    } else if has("Maternal Ancestor Name") {
+        Some(FtdnaFileKind::MaternalAncestry)
+    } else if has("Paternal Ancestor Name") {
+        Some(FtdnaFileKind::PaternalAncestry)
+    } else {
+        None
+    }
+}
+
 /// Parse a `Member_Information` CSV. Skips rows whose `Kit Number` is blank.
 pub fn parse_member_information(text: &str) -> Result<Vec<MemberRow>, String> {
     let (headers, mut rdr) = open(text)?;
@@ -103,6 +139,56 @@ pub fn parse_ancestry(text: &str) -> Result<Vec<AncestryRow>, String> {
             latitude: lat.and_then(|i| parse_coord(&get(&rec, i))),
             longitude: lon.and_then(|i| parse_coord(&get(&rec, i))),
         });
+    }
+    Ok(out)
+}
+
+/// The 7 fixed identity columns of `YDNA_Results_Overview` (§3.3); everything else is a marker.
+const YDNA_IDENTITY: &[&str] = &[
+    "Kit Number",
+    "Name",
+    "Paternal Ancestor Name",
+    "Country",
+    "Haplogroup",
+    "Test",
+    "Subgroup",
+];
+
+/// Parse the wide `YDNA_Results_Overview` Y-STR chart (§3.3) into `(kit, markers)` per member.
+/// Marker columns are every header not in [`YDNA_IDENTITY`]; multi-copy values stay dash-joined
+/// (`"10-14"`), matching the [`crate::strprofile::StrMarker`] convention. Skips the two leading
+/// non-member rows (panel / `MIN`) via the kit-number guard and drops blank/`0`/`-` marker cells.
+pub fn parse_ydna_overview(text: &str) -> Result<Vec<(String, Vec<crate::strprofile::StrMarker>)>, String> {
+    use crate::strprofile::StrMarker;
+    let (headers, mut rdr) = open(text)?;
+    let kit = col(&headers, "Kit Number").ok_or("YDNA_Results_Overview: missing 'Kit Number' column")?;
+    let marker_cols: Vec<(usize, String)> = headers
+        .iter()
+        .enumerate()
+        .filter(|(_, h)| !YDNA_IDENTITY.contains(&h.as_str()) && !h.is_empty())
+        .map(|(i, h)| (i, h.clone()))
+        .collect();
+
+    let mut out = Vec::new();
+    for rec in rdr.records() {
+        let rec = rec.map_err(|e| e.to_string())?;
+        let kit_number = get(&rec, kit);
+        if !is_real_kit(&kit_number) {
+            continue;
+        }
+        let markers: Vec<StrMarker> = marker_cols
+            .iter()
+            .filter_map(|(i, name)| {
+                let value = rec.get(*i).unwrap_or("").trim();
+                (!value.is_empty() && value != "0" && value != "-").then(|| StrMarker {
+                    marker: name.clone(),
+                    value: value.to_string(),
+                })
+            })
+            .collect();
+        if !markers.is_empty() {
+            out.push((kit_number, markers));
+        }
     }
     Ok(out)
 }
@@ -288,6 +374,45 @@ mod tests {
         assert_eq!(o.latitude, None, "0 sentinel dropped");
         assert_eq!(o.ancestor_name.as_deref(), Some("James Joseph Dinn"));
         assert_eq!(o.birth_year, None);
+    }
+
+    #[test]
+    fn ydna_overview_parses_per_kit_markers_skipping_junk_rows() {
+        // header + the two leading non-member rows (panel / MIN) + B5163, space-padded + multi-copy.
+        let csv =
+            "Kit Number,Name,Paternal Ancestor Name,Country,Haplogroup,Test,Subgroup,DYS393,DYS390,DYS385,DYS459\n\
+                    00000. R-FGC11134,,,,,, 00000. R-FGC11134, 13, 22, 10-14, 9-10\n\
+                    MIN,  ,,,,, 00000., 13, 22, 10-14, 8-9\n\
+                    B5163,REDACTED, Thomas, Ireland, R-FGC29071, DF13, 31050.,  13 , 24, 11-14, 9-10\n";
+        let rows = parse_ydna_overview(csv).unwrap();
+        assert_eq!(rows.len(), 1, "two junk rows skipped");
+        let (kit, markers) = &rows[0];
+        assert_eq!(kit, "B5163");
+        let m = |name: &str| markers.iter().find(|x| x.marker == name).map(|x| x.value.as_str());
+        assert_eq!(m("DYS393"), Some("13"), "space padding trimmed");
+        assert_eq!(m("DYS385"), Some("11-14"), "multi-copy kept dash-joined");
+        assert_eq!(markers.len(), 4);
+    }
+
+    #[test]
+    fn classify_distinguishes_the_four_exports() {
+        assert_eq!(
+            classify("Kit Number,Family Tree,Name,Email,Note,Release,Kit Back,Last Sign In,Access Granted,Allows MyHeritage Connection,Publicly Share DNA Results,Remove From Group"),
+            Some(FtdnaFileKind::Member)
+        );
+        assert_eq!(
+            classify("Kit Number,Name&darr;,Sub Group,Email,Country,Comment,Paternal Ancestor Name,Map Location,Latitude,Longitude,Family Tree,Family Tree,Remove From Group"),
+            Some(FtdnaFileKind::PaternalAncestry)
+        );
+        assert_eq!(
+            classify("Kit Number,Name,Sub Group,Email,Country,Comment,Maternal Ancestor Name,Map Location,Latitude,Longitude,Family Tree,Family Tree,Remove From Group"),
+            Some(FtdnaFileKind::MaternalAncestry)
+        );
+        assert_eq!(
+            classify("Kit Number,Name,Paternal Ancestor Name,Country,Haplogroup,Test,Subgroup,DYS393,DYS390,DYS19"),
+            Some(FtdnaFileKind::YdnaOverview)
+        );
+        assert_eq!(classify("a,b,c\n1,2,3"), None);
     }
 
     #[test]

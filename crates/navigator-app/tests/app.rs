@@ -2291,6 +2291,7 @@ async fn ftdna_project_import_plans_and_commits_merge_new_and_orphan() {
             Some(ftdna.join("Member_Information.csv")),
             Some(ftdna.join("Paternal_Ancestry.csv")),
             None,
+            Some(ftdna.join("YDNA_Results_Overview.csv")),
             FtdnaImportOptions::default(),
         )
         .await
@@ -2304,6 +2305,11 @@ async fn ftdna_project_import_plans_and_commits_merge_new_and_orphan() {
     let b = row("B5163");
     assert!(b.in_roster);
     assert_eq!(b.y_terminal.as_deref(), Some("FGC29071"));
+    assert!(
+        b.ystr_count >= 4,
+        "Y-STR markers joined from the overview (got {})",
+        b.ystr_count
+    );
     match &b.kind {
         MatchKind::NeedsConfirm { candidates } => {
             assert!(
@@ -2327,7 +2333,12 @@ async fn ftdna_project_import_plans_and_commits_merge_new_and_orphan() {
     assert_eq!(summary.merged, 1);
     assert_eq!(summary.created, 2);
     assert_eq!(summary.orphans, 1);
+    assert_eq!(summary.str_profiles, 1, "B5163's Y-STR profile attached to GFX");
     assert!(summary.errors.is_empty(), "{:?}", summary.errors);
+
+    // The Y-STR profile landed on GFX.
+    let profiles = app.list_str_profiles(gfx.guid).await.unwrap();
+    assert!(profiles.iter().any(|p| p.provider.as_deref() == Some("FTDNA")));
 
     // GFX gained the FTDNA kit identity, member labels, and MDKA — without a duplicate Subject.
     let ids = app.external_ids(gfx.guid).await.unwrap();
@@ -2355,6 +2366,7 @@ async fn ftdna_project_import_plans_and_commits_merge_new_and_orphan() {
             project.id,
             Some(ftdna.join("Member_Information.csv")),
             Some(ftdna.join("Paternal_Ancestry.csv")),
+            None,
             None,
             FtdnaImportOptions::default(),
         )
