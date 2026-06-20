@@ -415,9 +415,10 @@ impl App {
             .map(subgroup_role);
         biosample_project::add(pool, guid, project_id, role.as_deref(), now).await?;
 
-        // Y-STR profile from the wide overview (Phase 2). Append-only as an additional source; the
-        // existing cross-provider reconciliation handles consensus/conflicts.
-        let wrote_str = !input.ystr_markers.is_empty();
+        // Y-STR profile from the wide overview (Phase 2). Attached only when CREATING a new Subject;
+        // on a merge the existing Subject already carries its own data sources, so we add the FTDNA
+        // identity/membership/MDKA metadata above but skip duplicating the Y-STR profile.
+        let wrote_str = !input.ystr_markers.is_empty() && target.is_none();
         if wrote_str {
             str_profile::create(
                 pool,

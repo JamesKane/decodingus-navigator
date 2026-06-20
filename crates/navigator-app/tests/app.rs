@@ -2340,12 +2340,17 @@ async fn ftdna_project_import_plans_and_commits_merge_new_and_orphan() {
     assert_eq!(summary.merged, 1);
     assert_eq!(summary.created, 2);
     assert_eq!(summary.orphans, 1);
-    assert_eq!(summary.str_profiles, 1, "B5163's Y-STR profile attached to GFX");
+    assert_eq!(
+        summary.str_profiles, 0,
+        "merge adds metadata only — no duplicate Y-STR profile"
+    );
     assert!(summary.errors.is_empty(), "{:?}", summary.errors);
 
-    // The Y-STR profile landed on GFX.
-    let profiles = app.list_str_profiles(gfx.guid).await.unwrap();
-    assert!(profiles.iter().any(|p| p.provider.as_deref() == Some("FTDNA")));
+    // Merge attaches identity/membership/MDKA but NOT a Y-STR profile (GFX keeps its own sources).
+    assert!(
+        app.list_str_profiles(gfx.guid).await.unwrap().is_empty(),
+        "no Y-STR profile attached on merge"
+    );
 
     // GFX gained the FTDNA kit identity, member labels, and MDKA — without a duplicate Subject.
     let ids = app.external_ids(gfx.guid).await.unwrap();
