@@ -211,6 +211,14 @@ pub async fn delete(pool: &SqlitePool, id: i64) -> Result<bool, StoreError> {
     .bind(id)
     .execute(&mut *tx)
     .await?;
+    // Unlink content-hash file records pointing at this run's alignments (keep the file identity).
+    sqlx::query(
+        "UPDATE source_file SET alignment_id = NULL WHERE alignment_id IN \
+         (SELECT id FROM alignment WHERE sequence_run_id = ?)",
+    )
+    .bind(id)
+    .execute(&mut *tx)
+    .await?;
     sqlx::query("DELETE FROM alignment WHERE sequence_run_id = ?")
         .bind(id)
         .execute(&mut *tx)
