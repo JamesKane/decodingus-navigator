@@ -86,7 +86,11 @@ pub struct FtdnaPlanRow {
 /// The reviewable plan: every kit with its proposed disposition. No writes happen until commit.
 #[derive(Debug, Clone)]
 pub struct FtdnaImportPlan {
-    pub project_id: i64,
+    /// Target project, or `None` to create one named [`Self::project_name`] at commit (so a cancelled
+    /// dry-run leaves no empty project behind).
+    pub project_id: Option<i64>,
+    /// The target/derived project name (shown in the review header).
+    pub project_name: String,
     pub rows: Vec<FtdnaPlanRow>,
 }
 
@@ -119,6 +123,8 @@ pub enum FtdnaResolution {
 /// What the commit did.
 #[derive(Debug, Clone, Default)]
 pub struct FtdnaImportSummary {
+    /// The project the kits were imported into (resolved/created at commit).
+    pub project_id: i64,
     pub created: usize,
     pub merged: usize,
     pub memberships_added: usize,
@@ -161,15 +167,31 @@ impl App {
 
     /// Parse the FTDNA batch files, join by kit, and match against the workspace → a dry-run plan.
     /// Any of the three files may be absent (a roster-only or ancestry-only import is valid).
+    ///
+    /// `project_id` targets an existing project; pass `None` to import into a new project (created at
+    /// commit, named `project_name` or a default). Matching is workspace-global, so no project need
+    /// exist yet for the plan.
+    #[allow(clippy::too_many_arguments)] // distinct optional file paths + target + options
     pub async fn plan_ftdna_import(
         &self,
-        project_id: i64,
+        project_id: Option<i64>,
+        project_name: Option<String>,
         member_path: Option<PathBuf>,
         paternal_path: Option<PathBuf>,
         maternal_path: Option<PathBuf>,
         ystr_path: Option<PathBuf>,
         options: FtdnaImportOptions,
     ) -> Result<FtdnaImportPlan, AppError> {
+        // Resolve a display name: the existing project's name, else the caller's, else a default.
+        let resolved_name = match project_id {
+            Some(id) => navigator_store::project::get(self.store.pool(), id)
+                .await?
+                .map(|p| p.name)
+                .unwrap_or_else(|| "FTDNA Project".to_string()),
+            None => project_name
+                .filter(|n| !n.trim().is_empty())
+                .unwrap_or_else(|| "FTDNA Project".to_string()),
+        };
         let members = match member_path {
             Some(p) => ftdna::parse_member_information(&std::fs::read_to_string(p)?).map_err(AppError::Import)?,
             None => Vec::new(),
@@ -233,7 +255,11 @@ impl App {
                 input,
             });
         }
-        Ok(FtdnaImportPlan { project_id, rows })
+        Ok(FtdnaImportPlan {
+            project_id,
+            project_name: resolved_name,
+            rows,
+        })
     }
 
     /// Apply a plan. `resolutions` carries the admin's choice for each fuzzy (`NeedsConfirm`) kit;
@@ -245,6 +271,21 @@ impl App {
     ) -> Result<FtdnaImportSummary, AppError> {
         let mut summary = FtdnaImportSummary::default();
         let now = Utc::now().to_rfc3339();
+
+        // Resolve the target project, creating it now if the plan targeted a new one.
+        let project_id = match plan.project_id {
+            Some(id) => id,
+            None => {
+                self.create_project(navigator_domain::workspace::NewProject {
+                    name: plan.project_name.clone(),
+                    description: None,
+                    administrator: "unknown".to_string(),
+                })
+                .await?
+                .id
+            }
+        };
+        summary.project_id = project_id;
 
         for row in &plan.rows {
             // An explicit Skip (only meaningful for a fuzzy row) drops the kit entirely.
@@ -262,7 +303,7 @@ impl App {
                 },
             };
 
-            let result = self.commit_one(plan.project_id, row, target, &now).await;
+            let result = self.commit_one(project_id, row, target, &now).await;
             match result {
                 Ok((wrote_mdka, wrote_str)) => {
                     if target.is_some() {

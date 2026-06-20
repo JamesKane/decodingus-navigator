@@ -222,17 +222,20 @@ impl NavigatorApp {
         }
         self.reference_prompt(ui);
 
-        // FTDNA project import — needs an open project (the kits join into it).
+        // FTDNA project import — imports into the selected project, or creates one named from the
+        // exports if none is selected.
         ui.add_space(8.0);
         ui.label(self.tr("ftdna.importHint"));
-        let can_ftdna = self.selected_project.is_some() && !self.importing;
-        let btn = ui.add_enabled(can_ftdna, egui::Button::new(self.tr("ftdna.import")));
-        let btn = if self.selected_project.is_none() {
-            btn.on_hover_text(self.tr("ftdna.needProject"))
+        let hover = if self.selected_project.is_some() {
+            self.tr("ftdna.intoSelected")
         } else {
-            btn
+            self.tr("ftdna.intoNew")
         };
-        if btn.clicked() {
+        if ui
+            .add_enabled(!self.importing, egui::Button::new(self.tr("ftdna.import")))
+            .on_hover_text(hover)
+            .clicked()
+        {
             if let Some(paths) = rfd::FileDialog::new().add_filter("CSV", &["csv"]).pick_files() {
                 self.start_ftdna_import(paths);
             }
@@ -247,9 +250,6 @@ impl NavigatorApp {
     /// dry-run plan against the open project. Unrecognized files are ignored (noted in the status).
     fn start_ftdna_import(&mut self, paths: Vec<PathBuf>) {
         use navigator_domain::ftdna::{classify, FtdnaFileKind};
-        let Some(project_id) = self.selected_project else {
-            return;
-        };
         let (mut member, mut paternal, mut maternal, mut ystr) = (None, None, None, None);
         let mut unrecognized = 0;
         for p in paths {
@@ -265,13 +265,23 @@ impl NavigatorApp {
             self.status = self.tr("ftdna.noneRecognized").to_string();
             return;
         }
+        // No project selected → import into a new one named from the FTDNA filenames (FTDNA prefixes
+        // each export with the project name).
+        let project_name = self.selected_project.is_none().then(|| {
+            [&member, &paternal, &maternal, &ystr]
+                .into_iter()
+                .flatten()
+                .find_map(|p| ftdna_project_name(p))
+                .unwrap_or_else(|| "FTDNA Project".to_string())
+        });
         self.importing = true;
         self.status = self.tr("ftdna.planning").to_string();
         if unrecognized > 0 {
             self.status = format!("{} ({} {})", self.status, unrecognized, self.tr("ftdna.unrecognized"));
         }
         let _ = self.tx.send(Command::PlanFtdnaImport {
-            project_id,
+            project_id: self.selected_project,
+            project_name,
             member,
             paternal,
             maternal,
@@ -418,4 +428,24 @@ impl NavigatorApp {
             });
         });
     }
+}
+
+/// Derive the FTDNA project name from an export filename. FTDNA prefixes each file with the project
+/// name, e.g. `R1b-CTS4466Plus_Member_Information_20260606.csv` → `R1b-CTS4466Plus`.
+fn ftdna_project_name(path: &std::path::Path) -> Option<String> {
+    let stem = path.file_name()?.to_str()?;
+    for marker in [
+        "_Member_Information",
+        "_Paternal_Ancestry",
+        "_Maternal_Ancestry",
+        "_YDNA",
+    ] {
+        if let Some(idx) = stem.find(marker) {
+            let name = stem[..idx].trim();
+            if !name.is_empty() {
+                return Some(name.to_string());
+            }
+        }
+    }
+    None
 }

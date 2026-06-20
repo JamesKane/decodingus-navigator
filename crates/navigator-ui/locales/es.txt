@@ -300,7 +300,8 @@ projects.addSubject=Añadir sujeto
 # Importación de proyecto FTDNA
 ftdna.importHint=Importar un proyecto de grupo FTDNA (CSV de miembros + ascendencia + Y-STR):
 ftdna.import=Importar proyecto FTDNA…
-ftdna.needProject=Seleccione primero un proyecto — los kits se importan en él.
+ftdna.intoSelected=Importar los kits en el proyecto seleccionado.
+ftdna.intoNew=Sin proyecto seleccionado — se creará uno nuevo a partir de los nombres de archivo.
 ftdna.noneRecognized=No se seleccionaron archivos de exportación FTDNA reconocidos.
 ftdna.unrecognized=no reconocido(s)
 ftdna.planning=Planificando la importación FTDNA…

@@ -84,6 +84,10 @@ impl NavigatorApp {
                     self.ftdna_resolutions.clear();
                     let _ = self.tx.send(Command::LoadOverview);
                     let _ = self.tx.send(Command::LoadAllBiosamples);
+                    // Surface the project the kits landed in (created or targeted).
+                    if summary.project_id > 0 {
+                        self.select_project(summary.project_id);
+                    }
                     // Refresh the open subject's genealogy card if a merge/create touched it.
                     if let Some(guid) = self.selected_sample {
                         let _ = self.tx.send(Command::LoadGenealogy(guid));

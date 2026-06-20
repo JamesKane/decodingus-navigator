@@ -81,7 +81,9 @@ pub enum Command {
     /// Dry-run an FTDNA project import: parse + match the (already classified) batch files into a
     /// reviewable plan. Any path may be absent.
     PlanFtdnaImport {
-        project_id: i64,
+        /// Target project, or `None` to import into a new project named `project_name`.
+        project_id: Option<i64>,
+        project_name: Option<String>,
         member: Option<PathBuf>,
         paternal: Option<PathBuf>,
         maternal: Option<PathBuf>,
@@ -920,6 +922,7 @@ pub async fn handle(app: &App, cmd: Command) -> Event {
         }
         Command::PlanFtdnaImport {
             project_id,
+            project_name,
             member,
             paternal,
             maternal,
@@ -927,6 +930,7 @@ pub async fn handle(app: &App, cmd: Command) -> Event {
         } => match app
             .plan_ftdna_import(
                 project_id,
+                project_name,
                 member,
                 paternal,
                 maternal,

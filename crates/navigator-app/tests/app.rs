@@ -2287,7 +2287,8 @@ async fn ftdna_project_import_plans_and_commits_merge_new_and_orphan() {
     // Dry-run plan over the roster + paternal ancestry fixtures (no maternal file).
     let plan = app
         .plan_ftdna_import(
-            project.id,
+            Some(project.id),
+            None,
             Some(ftdna.join("Member_Information.csv")),
             Some(ftdna.join("Paternal_Ancestry.csv")),
             None,
@@ -2370,7 +2371,8 @@ async fn ftdna_project_import_plans_and_commits_merge_new_and_orphan() {
     // The exact-kit path now auto-merges on a re-plan (the kit# is attached).
     let replan = app
         .plan_ftdna_import(
-            project.id,
+            Some(project.id),
+            None,
             Some(ftdna.join("Member_Information.csv")),
             Some(ftdna.join("Paternal_Ancestry.csv")),
             None,
@@ -2383,4 +2385,46 @@ async fn ftdna_project_import_plans_and_commits_merge_new_and_orphan() {
         MatchKind::AutoMerge { guid, .. } => assert_eq!(*guid, gfx.guid),
         other => panic!("expected B5163 AutoMerge on re-plan, got {other:?}"),
     }
+}
+
+/// FTDNA import with no pre-selected project creates one (named from the caller) at commit — the
+/// fix for the "dead Import button". A cancelled dry-run (no commit) creates nothing.
+#[tokio::test]
+async fn ftdna_import_into_new_project_creates_it_at_commit() {
+    use navigator_app::{FtdnaImportOptions, MatchKind};
+    use std::collections::BTreeMap;
+
+    let ftdna = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/ftdna");
+    let app = app().await;
+
+    // Plan into a NEW project (no project_id) — read-only, so nothing is created yet.
+    let plan = app
+        .plan_ftdna_import(
+            None,
+            Some("R1b-CTS4466Plus".into()),
+            Some(ftdna.join("Member_Information.csv")),
+            Some(ftdna.join("Paternal_Ancestry.csv")),
+            None,
+            None,
+            FtdnaImportOptions::default(),
+        )
+        .await
+        .unwrap();
+    assert!(plan.project_id.is_none());
+    assert_eq!(plan.project_name, "R1b-CTS4466Plus");
+    // No GFX in the workspace → every kit is New.
+    assert!(plan.rows.iter().all(|r| matches!(r.kind, MatchKind::New)));
+    assert!(
+        app.project_overview().await.unwrap().is_empty(),
+        "dry-run created no project"
+    );
+
+    // Commit creates the project and imports into it.
+    let summary = app.commit_ftdna_import(&plan, &BTreeMap::new()).await.unwrap();
+    assert!(summary.project_id > 0);
+    assert_eq!(summary.created, 3);
+    let overview = app.project_overview().await.unwrap();
+    assert_eq!(overview.len(), 1);
+    assert_eq!(overview[0].project.name, "R1b-CTS4466Plus");
+    assert_eq!(overview[0].project.id, summary.project_id);
 }
