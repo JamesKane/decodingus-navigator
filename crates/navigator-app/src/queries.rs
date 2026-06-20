@@ -5,9 +5,9 @@ use super::*;
 impl App {
     // ---- queries -----------------------------------------------------------
 
-    /// Biosamples belonging to a project.
+    /// Biosamples belonging to a project (M:N membership ∪ legacy home column).
     pub async fn list_biosamples(&self, project_id: i64) -> Result<Vec<Biosample>, AppError> {
-        Ok(biosample::list_for_project(self.store.pool(), project_id).await?)
+        Ok(biosample::list_members_for_project(self.store.pool(), project_id).await?)
     }
 
     /// Every biosample (subject), regardless of project association.
@@ -166,7 +166,7 @@ impl App {
     pub async fn project_overview(&self) -> Result<Vec<ProjectOverview>, AppError> {
         let mut out = Vec::new();
         for project in project::list(self.store.pool()).await? {
-            let sample_count = biosample::count_for_project(self.store.pool(), project.id).await?;
+            let sample_count = biosample::count_members_for_project(self.store.pool(), project.id).await?;
             out.push(ProjectOverview { project, sample_count });
         }
         Ok(out)
@@ -178,7 +178,7 @@ impl App {
     /// `None` until those analyses have run.
     pub async fn project_report(&self, project_id: i64) -> Result<Vec<ProjectSampleReport>, AppError> {
         let mut out = Vec::new();
-        for biosample in biosample::list_for_project(self.store.pool(), project_id).await? {
+        for biosample in biosample::list_members_for_project(self.store.pool(), project_id).await? {
             let alignments = alignment::list_for_biosample(self.store.pool(), biosample.guid).await?;
             let mut coverage = None;
             let mut coverage_aln = None;
@@ -265,7 +265,7 @@ impl App {
             sv_done: 0,
             errors: Vec::new(),
         };
-        for biosample in biosample::list_for_project(self.store.pool(), project_id).await? {
+        for biosample in biosample::list_members_for_project(self.store.pool(), project_id).await? {
             let o = self.analyze_biosample(&biosample).await?;
             if !o.had_alignment {
                 continue;

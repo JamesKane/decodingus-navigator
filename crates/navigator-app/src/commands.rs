@@ -37,7 +37,7 @@ impl App {
     /// Delete a project. Refused (with a clear message) while subjects still belong to it, so
     /// the user reassigns them first rather than orphaning the rows.
     pub async fn delete_project(&self, id: i64) -> Result<(), AppError> {
-        let members = biosample::count_for_project(self.store.pool(), id).await?;
+        let members = biosample::count_members_for_project(self.store.pool(), id).await?;
         if members > 0 {
             return Err(AppError::Conflict(format!(
                 "cannot delete project: {members} subject(s) still belong to it — reassign them first"
@@ -225,8 +225,21 @@ impl App {
     /// Delete a sequence run and everything beneath it (its alignments + cached analysis
     /// artifacts). This is how a mistaken BAM/CRAM import is undone.
     pub async fn delete_sequence_run(&self, id: i64) -> Result<(), AppError> {
+        // Capture the run's subject + alignments before the cascade so we can purge any derived
+        // haplogroup/consensus data keyed on those alignments (it would otherwise go stale).
+        let biosample = sequence_run::get(self.store.pool(), id)
+            .await?
+            .map(|r| r.biosample_guid);
+        let alignment_ids: Vec<i64> = alignment::list_for_run(self.store.pool(), id)
+            .await?
+            .into_iter()
+            .map(|a| a.id)
+            .collect();
         if !sequence_run::delete(self.store.pool(), id).await? {
             return Err(AppError::Store(StoreError::NotFound(format!("sequence run {id}"))));
+        }
+        if let Some(guid) = biosample {
+            self.purge_alignment_derived(guid, &alignment_ids).await?;
         }
         Ok(())
     }
@@ -267,9 +280,38 @@ impl App {
 
     /// Delete a single alignment and its cached analysis artifacts (the parent run is kept).
     pub async fn delete_alignment(&self, id: i64) -> Result<(), AppError> {
+        // Resolve the subject (via run) before deleting, to purge derived haplogroup/consensus data.
+        let biosample = match alignment::get(self.store.pool(), id).await? {
+            Some(a) => sequence_run::get(self.store.pool(), a.sequence_run_id)
+                .await?
+                .map(|r| r.biosample_guid),
+            None => None,
+        };
         if !alignment::delete(self.store.pool(), id).await? {
             return Err(AppError::Store(StoreError::NotFound(format!("alignment {id}"))));
         }
+        if let Some(guid) = biosample {
+            self.purge_alignment_derived(guid, &[id]).await?;
+        }
+        Ok(())
+    }
+
+    /// Remove derived data keyed on now-deleted alignments: each alignment's Y + mt haplogroup calls
+    /// (`aln:<id>` / `aln:<id>:mt`), and the subject's genome-level consensus profiles + painting
+    /// (Y/mt/Auto), which were pooled from sources that may no longer exist. The consensus is
+    /// recomputable on demand; clearing it makes the displayed haplogroup fall back to reconciling the
+    /// remaining cached calls (or nothing), rather than showing a stale placement. A user manual
+    /// override is left intact.
+    async fn purge_alignment_derived(&self, biosample: SampleGuid, alignment_ids: &[i64]) -> Result<(), AppError> {
+        let pool = self.store.pool();
+        for &aln in alignment_ids {
+            haplogroup_call::delete_one(pool, biosample, DnaType::Y, &format!("aln:{aln}")).await?;
+            haplogroup_call::delete_one(pool, biosample, DnaType::Mt, &format!("aln:{aln}:mt")).await?;
+        }
+        for dna in ["Y", "Mt", "Auto"] {
+            consensus_profile::delete(pool, biosample, dna).await?;
+        }
+        consensus_painting::delete(pool, biosample).await?;
         Ok(())
     }
 

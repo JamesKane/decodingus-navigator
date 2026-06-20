@@ -2247,3 +2247,361 @@ async fn cached_artifact_invalidated_when_source_file_changes() {
 
     let _ = std::fs::remove_file(&bam);
 }
+
+/// FTDNA project import — the B5163↔GFX merge scenario plus a new subject and an orphan
+/// (ancestry without a roster row). Exercises plan → resolve fuzzy → commit end to end.
+#[tokio::test]
+async fn ftdna_project_import_plans_and_commits_merge_new_and_orphan() {
+    use navigator_app::{DnaType, FtdnaImportOptions, FtdnaResolution, MatchKind};
+    use navigator_domain::reconciliation::RunHaplogroupCall;
+    use std::collections::BTreeMap;
+
+    let ftdna = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/ftdna");
+    let app = app().await;
+    let project = app
+        .create_project(NewProject {
+            name: "R1b-CTS4466Plus".into(),
+            description: None,
+            administrator: "admin".into(),
+        })
+        .await
+        .unwrap();
+
+    // The existing WGS Subject: GFX, already placed at R-FGC29071 — the same person as kit B5163.
+    let gfx = app
+        .add_biosample(Some(project.id), "GFX0457637", None, None)
+        .await
+        .unwrap();
+    let call = RunHaplogroupCall {
+        source_label: "wgs".into(),
+        haplogroup: "R-FGC29071".into(),
+        lineage: vec!["R".into(), "R-FGC29071".into()],
+        score: 0.9,
+        matched: 0,
+        expected: 0,
+    };
+    app.record_haplogroup_call(gfx.guid, DnaType::Y, "aln:1", &call)
+        .await
+        .unwrap();
+
+    // Dry-run plan over the roster + paternal ancestry fixtures (no maternal file).
+    let plan = app
+        .plan_ftdna_import(
+            Some(project.id),
+            None,
+            Some(ftdna.join("Member_Information.csv")),
+            Some(ftdna.join("Paternal_Ancestry.csv")),
+            None,
+            Some(ftdna.join("YDNA_Results_Overview.csv")),
+            FtdnaImportOptions::default(),
+        )
+        .await
+        .unwrap();
+
+    // Recognized-input stats: 2 roster rows, 3 paternal, 1 Y-STR, 1 workspace subject scanned (GFX).
+    assert_eq!(plan.stats.roster, 2);
+    assert_eq!(plan.stats.paternal, 3);
+    assert_eq!(plan.stats.ystr, 1);
+    assert_eq!(plan.stats.scanned_subjects, 1);
+
+    // Three kits: B5163 (roster+ancestry), K000002 (roster+ancestry), K000003 (ancestry only = orphan).
+    assert_eq!(plan.rows.len(), 3);
+    let row = |kit: &str| plan.rows.iter().find(|r| r.kit_number == kit).unwrap();
+
+    // B5163 fuzzy-matches GFX on the Y terminal (no auto-merge: GFX had no kit#).
+    let b = row("B5163");
+    assert!(b.in_roster);
+    assert_eq!(b.y_terminal.as_deref(), Some("FGC29071"));
+    assert!(
+        b.ystr_count >= 4,
+        "Y-STR markers joined from the overview (got {})",
+        b.ystr_count
+    );
+    match &b.kind {
+        MatchKind::NeedsConfirm { candidates } => {
+            assert!(
+                candidates.iter().any(|c| c.guid == gfx.guid),
+                "GFX offered as a candidate"
+            );
+        }
+        other => panic!("expected B5163 NeedsConfirm, got {other:?}"),
+    }
+    // K000002: free-text Sub Group → no Y terminal → New.
+    assert!(matches!(row("K000002").kind, MatchKind::New));
+    assert!(row("K000002").in_roster);
+    // K000003: ancestry only → New + orphan.
+    assert!(matches!(row("K000003").kind, MatchKind::New));
+    assert!(!row("K000003").in_roster);
+
+    // Resolve B5163 → merge into GFX, then commit.
+    let mut res = BTreeMap::new();
+    res.insert("B5163".to_string(), FtdnaResolution::Merge(gfx.guid));
+    let summary = app.commit_ftdna_import(&plan, &res).await.unwrap();
+    assert_eq!(summary.merged, 1);
+    assert_eq!(summary.created, 2);
+    assert_eq!(summary.orphans, 1);
+    assert_eq!(
+        summary.str_profiles, 0,
+        "merge adds metadata only — no duplicate Y-STR profile"
+    );
+    assert!(summary.errors.is_empty(), "{:?}", summary.errors);
+
+    // Merge attaches identity/membership/MDKA but NOT a Y-STR profile (GFX keeps its own sources).
+    assert!(
+        app.list_str_profiles(gfx.guid).await.unwrap().is_empty(),
+        "no Y-STR profile attached on merge"
+    );
+
+    // GFX gained the FTDNA kit identity, member labels, and MDKA — without a duplicate Subject.
+    let ids = app.external_ids(gfx.guid).await.unwrap();
+    assert_eq!(ids.len(), 1);
+    assert_eq!(ids[0].external_id, "B5163");
+    let member = app.ftdna_member(gfx.guid).await.unwrap().unwrap();
+    assert_eq!(member.access_granted.as_deref(), Some("Limited"));
+    assert_eq!(member.publicly_shares, Some(true));
+    let mdkas = app.mdka_for(gfx.guid).await.unwrap();
+    assert_eq!(mdkas.len(), 1);
+    assert_eq!(mdkas[0].lineage, "Y");
+    assert_eq!(mdkas[0].ancestor_name.as_deref(), Some("Thomas Michael Kane"));
+    assert_eq!(mdkas[0].birth_year, Some(1830));
+    assert_eq!(mdkas[0].origin_country.as_deref(), Some("Ireland"));
+    assert_eq!(mdkas[0].latitude, Some(52.75));
+
+    // The detail-card bundle composes all three (and a never-imported subject is empty).
+    let bundle = app.subject_genealogy(gfx.guid).await.unwrap();
+    assert!(!bundle.is_empty());
+    assert_eq!(bundle.external_ids.len(), 1);
+    assert!(bundle.member.is_some());
+    assert_eq!(bundle.mdka.len(), 1);
+    assert!(app
+        .project_membership_ids(gfx.guid)
+        .await
+        .unwrap()
+        .contains(&project.id));
+
+    // The exact-kit path now auto-merges on a re-plan (the kit# is attached).
+    let replan = app
+        .plan_ftdna_import(
+            Some(project.id),
+            None,
+            Some(ftdna.join("Member_Information.csv")),
+            Some(ftdna.join("Paternal_Ancestry.csv")),
+            None,
+            None,
+            FtdnaImportOptions::default(),
+        )
+        .await
+        .unwrap();
+    match &replan.rows.iter().find(|r| r.kit_number == "B5163").unwrap().kind {
+        MatchKind::AutoMerge { guid, .. } => assert_eq!(*guid, gfx.guid),
+        other => panic!("expected B5163 AutoMerge on re-plan, got {other:?}"),
+    }
+}
+
+/// FTDNA import with no pre-selected project creates one (named from the caller) at commit — the
+/// fix for the "dead Import button". A cancelled dry-run (no commit) creates nothing.
+#[tokio::test]
+async fn ftdna_import_into_new_project_creates_it_at_commit() {
+    use navigator_app::{FtdnaImportOptions, MatchKind};
+    use std::collections::BTreeMap;
+
+    let ftdna = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/ftdna");
+    let app = app().await;
+
+    // Plan into a NEW project (no project_id) — read-only, so nothing is created yet.
+    let plan = app
+        .plan_ftdna_import(
+            None,
+            Some("R1b-CTS4466Plus".into()),
+            Some(ftdna.join("Member_Information.csv")),
+            Some(ftdna.join("Paternal_Ancestry.csv")),
+            None,
+            None,
+            FtdnaImportOptions::default(),
+        )
+        .await
+        .unwrap();
+    assert!(plan.project_id.is_none());
+    assert_eq!(plan.project_name, "R1b-CTS4466Plus");
+    // No GFX in the workspace → every kit is New.
+    assert!(plan.rows.iter().all(|r| matches!(r.kind, MatchKind::New)));
+    assert!(
+        app.project_overview().await.unwrap().is_empty(),
+        "dry-run created no project"
+    );
+
+    // Commit creates the project and imports into it.
+    let summary = app.commit_ftdna_import(&plan, &BTreeMap::new()).await.unwrap();
+    assert!(summary.project_id > 0);
+    assert_eq!(summary.created, 3);
+    let overview = app.project_overview().await.unwrap();
+    assert_eq!(overview.len(), 1);
+    assert_eq!(overview[0].project.name, "R1b-CTS4466Plus");
+    assert_eq!(overview[0].project.id, summary.project_id);
+}
+
+/// FTDNA matching via Y-STR genetic distance: an existing subject whose Y haplogroup is an ISOGG
+/// long-form label (no SNP terminal to compare) but which carries the same Y-STR profile still
+/// surfaces as a fuzzy candidate (the real KANE-0001 = GFX case).
+#[tokio::test]
+async fn ftdna_matches_existing_subject_by_ystr_distance() {
+    use navigator_app::{DnaType, FtdnaImportOptions, MatchKind};
+    use navigator_domain::reconciliation::RunHaplogroupCall;
+
+    let ftdna = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/ftdna");
+    let app = app().await;
+
+    // Existing subject: ISOGG-form Y label that does NOT reduce to the FGC29071 SNP.
+    let kane = app.add_biosample(None, "KANE-0001", None, None).await.unwrap();
+    let call = RunHaplogroupCall {
+        source_label: "wgs".into(),
+        haplogroup: "R1b1a1b1a1a2c1a3a".into(),
+        lineage: vec!["R".into(), "R1b1a1b1a1a2c1a3a".into()],
+        score: 0.9,
+        matched: 0,
+        expected: 0,
+    };
+    app.record_haplogroup_call(kane.guid, DnaType::Y, "aln:1", &call)
+        .await
+        .unwrap();
+
+    // Give KANE-0001 B5163's Y-STR markers (from the overview fixture) via a tall CSV.
+    let ydna = std::fs::read_to_string(ftdna.join("YDNA_Results_Overview.csv")).unwrap();
+    let per_kit = navigator_domain::ftdna::parse_ydna_overview(&ydna).unwrap();
+    let (_, markers) = per_kit.iter().find(|(k, _)| k == "B5163").unwrap();
+    assert!(
+        markers.len() >= 67,
+        "fixture must carry enough markers for an exact-haplotype match"
+    );
+    let mut tall = String::from("marker,value\n");
+    for m in markers {
+        tall.push_str(&format!("{},{}\n", m.marker, m.value));
+    }
+    let tmp = std::env::temp_dir().join("ftdna_ystr_match_test.csv");
+    std::fs::write(&tmp, tall).unwrap();
+    app.import_str_profile_from_csv(
+        kane.guid,
+        "FTDNA Y-700",
+        Some("FTDNA".into()),
+        Some("IMPORTED".into()),
+        &tmp,
+    )
+    .await
+    .unwrap();
+
+    // Plan with roster + Y-STR. B5163's SNP terminal won't match the ISOGG label, but the Y-STR
+    // genetic distance (GD 0) must surface KANE-0001 as a candidate.
+    let plan = app
+        .plan_ftdna_import(
+            None,
+            Some("R1b-CTS4466Plus".into()),
+            Some(ftdna.join("Member_Information.csv")),
+            None,
+            None,
+            Some(ftdna.join("YDNA_Results_Overview.csv")),
+            FtdnaImportOptions::default(),
+        )
+        .await
+        .unwrap();
+    let b = plan.rows.iter().find(|r| r.kit_number == "B5163").unwrap();
+    match &b.kind {
+        MatchKind::NeedsConfirm { candidates } => {
+            let c = candidates
+                .iter()
+                .find(|c| c.guid == kane.guid)
+                .expect("KANE-0001 candidate");
+            assert!(
+                c.reasons.iter().any(|r| r.contains("Y-STR")),
+                "matched on Y-STR: {:?}",
+                c.reasons
+            );
+        }
+        other => panic!("expected B5163 NeedsConfirm via Y-STR, got {other:?}"),
+    }
+
+    // Commit the merge into the (new) project. KANE-0001 has NO home project (`project_id` is NULL) —
+    // the merge adds an M:N membership row only. The project report must still surface it (regression
+    // for "matched samples don't appear in the Project report" — it reads membership ∪ home column).
+    let mut res = std::collections::BTreeMap::new();
+    res.insert("B5163".to_string(), navigator_app::FtdnaResolution::Merge(kane.guid));
+    let summary = app.commit_ftdna_import(&plan, &res).await.unwrap();
+    assert_eq!(summary.merged, 1, "{:?}", summary.errors);
+    let pid = summary.project_id;
+
+    let report = app.project_report(pid).await.unwrap();
+    assert!(
+        report.iter().any(|r| r.biosample.guid == kane.guid),
+        "merged subject (membership-only, no home project) must appear in the project report"
+    );
+    // The projects-list badge counts membership-only members too.
+    let overview = app.project_overview().await.unwrap();
+    let ov = overview.iter().find(|o| o.project.id == pid).unwrap();
+    assert!(
+        ov.sample_count >= 1,
+        "membership-only member counted in the project badge"
+    );
+
+    let _ = std::fs::remove_file(&tmp);
+}
+
+/// Deleting a sequencing run purges the haplogroup calls + consensus placement derived from its
+/// alignments, so a wrong haplogroup doesn't linger after the run is removed.
+#[tokio::test]
+async fn deleting_run_purges_derived_haplogroup_and_consensus() {
+    use navigator_app::DnaType;
+    use navigator_domain::reconciliation::RunHaplogroupCall;
+
+    let app = app().await;
+    let b = app.add_biosample(None, "103589", None, None).await.unwrap();
+    let run = app
+        .record_sequence_run(NewSequenceRun {
+            biosample_guid: b.guid,
+            platform_name: "ILLUMINA".into(),
+            instrument_model: None,
+            test_type: "Targeted Y".into(),
+            library_layout: None,
+            total_reads: None,
+            pf_reads_aligned: None,
+            mean_read_length: None,
+            mean_insert_size: None,
+        })
+        .await
+        .unwrap();
+    let aln = app
+        .record_alignment(NewAlignment {
+            sequence_run_id: run.id,
+            reference_build: "GRCh38".into(),
+            aligner: "unknown".into(),
+            variant_caller: None,
+            bam_path: None,
+            reference_path: None,
+            content_sha256: None,
+        })
+        .await
+        .unwrap();
+
+    // The alignment-derived Y call (source_key `aln:<id>`) is what placement records.
+    let call = RunHaplogroupCall {
+        source_label: format!("aln #{} unknown", aln.id),
+        haplogroup: "R-BY30544".into(),
+        lineage: vec!["R".into(), "R-BY30544".into()],
+        score: 0.72,
+        matched: 0,
+        expected: 0,
+    };
+    app.record_haplogroup_call(b.guid, DnaType::Y, &format!("aln:{}", aln.id), &call)
+        .await
+        .unwrap();
+    assert!(
+        app.haplogroup_consensus(b.guid, DnaType::Y).await.unwrap().is_some(),
+        "precondition: a Y haplogroup is shown before deletion"
+    );
+
+    // Delete the run → the derived Y call + consensus must be gone.
+    app.delete_sequence_run(run.id).await.unwrap();
+    assert!(
+        app.haplogroup_consensus(b.guid, DnaType::Y).await.unwrap().is_none(),
+        "Y haplogroup must not linger after its only source run is deleted"
+    );
+    assert!(app.haplogroup_calls(b.guid, DnaType::Y).await.unwrap().is_empty());
+}

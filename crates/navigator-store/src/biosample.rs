@@ -130,6 +130,25 @@ pub async fn list_for_project(pool: &SqlitePool, project_id: i64) -> Result<Vec<
     rows.into_iter().map(Row::into_domain).collect()
 }
 
+/// All members of a project — the union of the M:N membership table (the source of truth) and the
+/// legacy `biosample.project_id` home column (older imports never wrote a membership row). A subject
+/// merged into a project by FTDNA import gets a membership row but keeps its original home column, so
+/// the report must read both. Deduped by guid.
+pub async fn list_members_for_project(pool: &SqlitePool, project_id: i64) -> Result<Vec<Biosample>, StoreError> {
+    let rows: Vec<Row> = sqlx::query_as(&format!(
+        "SELECT {COLS} FROM biosample WHERE guid IN ( \
+           SELECT biosample_guid FROM biosample_project WHERE project_id = ? \
+           UNION \
+           SELECT guid FROM biosample WHERE project_id = ? \
+         ) ORDER BY donor_identifier, guid"
+    ))
+    .bind(project_id)
+    .bind(project_id)
+    .fetch_all(pool)
+    .await?;
+    rows.into_iter().map(Row::into_domain).collect()
+}
+
 /// Every biosample, regardless of project (biosamples are first-class — the project link
 /// is optional). Ordered by donor identifier for a stable subjects list.
 pub async fn list_all(pool: &SqlitePool) -> Result<Vec<Biosample>, StoreError> {
@@ -144,5 +163,22 @@ pub async fn count_for_project(pool: &SqlitePool, project_id: i64) -> Result<i64
         .bind(project_id)
         .fetch_one(pool)
         .await?;
+    Ok(n)
+}
+
+/// Count of all project members (M:N membership ∪ legacy home column), deduped by guid — matches
+/// [`list_members_for_project`]. Used for the projects-list sample badge.
+pub async fn count_members_for_project(pool: &SqlitePool, project_id: i64) -> Result<i64, StoreError> {
+    let n: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM biosample WHERE guid IN ( \
+           SELECT biosample_guid FROM biosample_project WHERE project_id = ? \
+           UNION \
+           SELECT guid FROM biosample WHERE project_id = ? \
+         )",
+    )
+    .bind(project_id)
+    .bind(project_id)
+    .fetch_one(pool)
+    .await?;
     Ok(n)
 }

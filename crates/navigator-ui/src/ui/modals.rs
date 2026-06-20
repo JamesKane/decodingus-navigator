@@ -1029,6 +1029,156 @@ impl NavigatorApp {
             self.edit_alignment = Some(edit);
         }
     }
+
+    /// FTDNA import review: a dry-run plan grouped into Needs-confirmation (per-row Merge/New/Skip),
+    /// Auto-merged, and New subjects, with a Commit. Deferred dispatch — only `self.tr` is used inside
+    /// the closure; resolution edits + the commit are applied after.
+    pub(crate) fn ftdna_review_modal(&mut self, ctx: &egui::Context) {
+        let Some(plan) = self.ftdna_plan.clone() else { return };
+        let (n_new, n_merge, n_confirm) = plan.counts();
+        let resolutions = self.ftdna_resolutions.clone();
+        let (mut close, mut commit) = (false, false);
+        let mut set_res: Vec<(String, FtdnaResolution)> = Vec::new();
+
+        modal_frame(ctx, "ftdna_review", 660.0, |ui| {
+            ui.label(egui::RichText::new(self.tr("ftdna.reviewTitle")).strong().size(16.0));
+            ui.label(egui::RichText::new(&plan.project_name).weak());
+            ui.label(
+                egui::RichText::new(format!(
+                    "{n_new} {} · {n_merge} {} · {n_confirm} {}",
+                    self.tr("ftdna.new"),
+                    self.tr("ftdna.autoMerged"),
+                    self.tr("ftdna.needsConfirm"),
+                ))
+                .weak(),
+            );
+            // Recognized-input diagnostics: a missing roster (0) explains all-orphan/no-match results.
+            let s = &plan.stats;
+            let roster_txt = egui::RichText::new(format!(
+                "{}: {} · {}: {} · {}: {} · {}: {}",
+                self.tr("ftdna.statRoster"),
+                s.roster,
+                self.tr("ftdna.statAncestry"),
+                s.paternal + s.maternal,
+                self.tr("ftdna.statYstr"),
+                s.ystr,
+                self.tr("ftdna.statScanned"),
+                s.scanned_subjects,
+            ))
+            .small();
+            // Red when no roster was recognized (likely the Member_Information file was not selected).
+            if s.roster == 0 {
+                ui.label(roster_txt.color(egui::Color32::from_rgb(210, 120, 70)));
+                ui.label(
+                    egui::RichText::new(self.tr("ftdna.noRosterHint"))
+                        .small()
+                        .color(egui::Color32::from_rgb(210, 120, 70)),
+                );
+            } else {
+                ui.label(roster_txt.weak());
+            }
+            ui.separator();
+            egui::ScrollArea::vertical().max_height(420.0).show(ui, |ui| {
+                // Needs confirmation — the only group with per-row actions.
+                if n_confirm > 0 {
+                    ui.label(egui::RichText::new(self.tr("ftdna.needsConfirm")).strong());
+                    for row in plan.rows.iter() {
+                        let MatchKind::NeedsConfirm { candidates } = &row.kind else {
+                            continue;
+                        };
+                        egui::Frame::group(ui.style()).show(ui, |ui| {
+                            ui.label(egui::RichText::new(&row.label).strong());
+                            if let Some(y) = &row.y_terminal {
+                                ui.label(
+                                    egui::RichText::new(format!("Y {y} · {} STR", row.ystr_count))
+                                        .weak()
+                                        .small(),
+                                );
+                            }
+                            // Mutually-exclusive choice per kit: merge into a candidate, new, or skip.
+                            // Radio buttons (not selectable labels) so the active choice is obvious.
+                            let cur = resolutions.get(&row.kit_number);
+                            for c in candidates {
+                                let sel = matches!(cur, Some(FtdnaResolution::Merge(g)) if *g == c.guid);
+                                let label = format!(
+                                    "{} {} ({:.0}% · {})",
+                                    self.tr("ftdna.mergeInto"),
+                                    c.donor_identifier,
+                                    c.score * 100.0,
+                                    c.reasons.join(", ")
+                                );
+                                if ui.radio(sel, label).clicked() {
+                                    set_res.push((row.kit_number.clone(), FtdnaResolution::Merge(c.guid)));
+                                }
+                            }
+                            ui.horizontal(|ui| {
+                                if ui
+                                    .radio(matches!(cur, Some(FtdnaResolution::New)), self.tr("ftdna.itsNew"))
+                                    .clicked()
+                                {
+                                    set_res.push((row.kit_number.clone(), FtdnaResolution::New));
+                                }
+                                if ui
+                                    .radio(matches!(cur, Some(FtdnaResolution::Skip)), self.tr("ftdna.skip"))
+                                    .clicked()
+                                {
+                                    set_res.push((row.kit_number.clone(), FtdnaResolution::Skip));
+                                }
+                            });
+                        });
+                    }
+                }
+
+                // Auto-merged (exact kit#) — informational.
+                if n_merge > 0 {
+                    ui.add_space(4.0);
+                    ui.collapsing(format!("{} ({n_merge})", self.tr("ftdna.autoMerged")), |ui| {
+                        for row in plan.rows.iter() {
+                            if let MatchKind::AutoMerge { donor_identifier, .. } = &row.kind {
+                                ui.label(format!("{} → {donor_identifier}", row.kit_number));
+                            }
+                        }
+                    });
+                }
+
+                // New subjects — informational (orphans flagged).
+                ui.add_space(4.0);
+                ui.collapsing(format!("{} ({n_new})", self.tr("ftdna.new")), |ui| {
+                    for row in plan.rows.iter() {
+                        if matches!(row.kind, MatchKind::New) {
+                            let badge = if row.in_roster { "" } else { " · orphan" };
+                            ui.label(format!("{}{badge}", row.label));
+                        }
+                    }
+                });
+            });
+            ui.separator();
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui
+                    .button(egui::RichText::new(self.tr("ftdna.commit")).strong())
+                    .clicked()
+                {
+                    commit = true;
+                }
+                if ui.button(self.tr("common.cancel")).clicked() {
+                    close = true;
+                }
+            });
+        });
+
+        for (kit, res) in set_res {
+            self.ftdna_resolutions.insert(kit, res);
+        }
+        if commit {
+            let resolutions = self.ftdna_resolutions.clone();
+            self.status = self.tr("ftdna.committing").to_string();
+            let _ = self.tx.send(Command::CommitFtdnaImport { plan, resolutions });
+            self.ftdna_plan = None;
+        } else if close {
+            self.ftdna_plan = None;
+            self.ftdna_resolutions.clear();
+        }
+    }
 }
 
 /// Shared modal scaffold: a dimmed full-screen backdrop + a centered `Frame::window` of `width`.

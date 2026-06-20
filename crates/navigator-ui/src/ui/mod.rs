@@ -16,10 +16,11 @@ use crate::widgets::{
 use eframe::egui;
 use navigator_app::{
     AncestryResult, AncestrySegment, AppSettings, AuditEntry, BatchImportSummary, BuildNeed, CallState,
-    CompatibilityLevel, Consensus, Coverage, DenovoCall, DnaType, HaploAssignment, HeteroplasmySite, IbdComparison,
-    IbdSuggestion, IdentityVerification, MtRegion, MtVariant, PanelGenotype, PrivateBucket, PrivateClass,
-    ProjectOverview, ProjectSampleReport, ReadMetrics, RefBuildStatus, SexInferenceResult, SnpEvidence, SourceType,
-    StrConcordanceRow, SvAnalysisResult, VerificationStatus, YMatch, YProfile, YSignal, YState, YVariantStatus,
+    CompatibilityLevel, Consensus, Coverage, DenovoCall, DnaType, FtdnaGenealogy, FtdnaImportPlan, FtdnaResolution,
+    HaploAssignment, HeteroplasmySite, IbdComparison, IbdSuggestion, IdentityVerification, MatchKind, MtRegion,
+    MtVariant, PanelGenotype, PrivateBucket, PrivateClass, ProjectOverview, ProjectSampleReport, ReadMetrics,
+    RefBuildStatus, SexInferenceResult, SnpEvidence, SourceType, StrConcordanceRow, SvAnalysisResult,
+    VerificationStatus, YMatch, YProfile, YSignal, YState, YVariantStatus, YstrClustering,
 };
 use navigator_domain::chipprofile::{self, ChipProfile};
 use navigator_domain::du_domain::ids::SampleGuid;
@@ -70,6 +71,20 @@ enum Nav {
     Dashboard,
     Subjects,
     Projects,
+}
+
+/// Sub-tabs of the project detail panel (the member list vs the per-sample analysis report).
+#[derive(Clone, Copy, PartialEq, Eq, Default)]
+enum ProjectTab {
+    #[default]
+    Members,
+    Report,
+}
+impl ProjectTab {
+    const ALL: [(ProjectTab, &'static str); 2] = [
+        (ProjectTab::Members, "project.tab.members"),
+        (ProjectTab::Report, "project.tab.report"),
+    ];
 }
 
 /// Sub-tabs of the subject detail panel.
@@ -623,6 +638,23 @@ pub struct NavigatorApp {
     analyzing: bool,
     /// Streaming deep-analyze progress: `(done, total, current_sample, fraction)` while running.
     deep_progress: Option<(usize, usize, String, f32)>,
+    /// The dry-run FTDNA import plan being reviewed (drives the review modal).
+    ftdna_plan: Option<FtdnaImportPlan>,
+    /// The admin's per-kit resolutions for the fuzzy rows in [`Self::ftdna_plan`].
+    ftdna_resolutions: std::collections::BTreeMap<String, FtdnaResolution>,
+    /// The selected subject's imported genealogy (vendor ids + FTDNA member + MDKA), for the
+    /// Overview card. `(guid, data)` so a stale bundle from a prior subject isn't shown.
+    genealogy: Option<(SampleGuid, FtdnaGenealogy)>,
+    /// The current project's Y-STR clustering, keyed by project id (so a stale one isn't shown).
+    project_clustering: Option<(i64, YstrClustering)>,
+    /// True while the project Y-STR clustering is computing.
+    clustering_running: bool,
+    /// Active project detail sub-tab (Members vs Report).
+    project_tab: ProjectTab,
+    /// Filter for the project Members list (kit / name / branch substring).
+    member_filter: String,
+    /// Filter for the project Report table (sample / haplogroup substring).
+    report_filter: String,
     forms: Forms,
     status: String,
 }
@@ -894,6 +926,14 @@ impl NavigatorApp {
             reference_progress: None,
             analyzing: false,
             deep_progress: None,
+            ftdna_plan: None,
+            ftdna_resolutions: std::collections::BTreeMap::new(),
+            genealogy: None,
+            project_clustering: None,
+            clustering_running: false,
+            project_tab: ProjectTab::default(),
+            member_filter: String::new(),
+            report_filter: String::new(),
             forms: Forms {
                 ploidy: "2".into(),
                 run_test_type: "WGS".into(),
@@ -981,6 +1021,7 @@ impl eframe::App for NavigatorApp {
         self.edit_alignment_modal(ctx);
         self.settings_modal(ctx);
         self.batch_import_modal(ctx);
+        self.ftdna_review_modal(ctx);
         self.paint_drop_hint(ctx);
     }
 }

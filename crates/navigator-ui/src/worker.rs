@@ -14,10 +14,11 @@ use std::sync::{Arc, Mutex};
 
 use navigator_app::{
     AlignmentProbe, AncestryResult, AncestrySegment, App, AppError, AuditEntry, BatchImportSummary, BuildNeed,
-    Consensus, Coverage, DenovoCall, DnaType, ExchangeSessionInfo, HaploAssignment, HeteroplasmySite, IbdComparison,
-    IbdDetectorConfig, IbdSuggestion, IdentityVerification, IncomingRequest, PanelGenotype, PrivateBucket,
-    ProjectImportSummary, ProjectOverview, ProjectSampleReport, ReadMetrics, RefBuildStatus, SexInferenceResult,
-    SourceType, StoredIbdExchange, StrConcordanceRow, SvAnalysisResult, YMatch,
+    Consensus, Coverage, DenovoCall, DnaType, ExchangeSessionInfo, FtdnaGenealogy, FtdnaImportOptions, FtdnaImportPlan,
+    FtdnaImportSummary, FtdnaResolution, HaploAssignment, HeteroplasmySite, IbdComparison, IbdDetectorConfig,
+    IbdSuggestion, IdentityVerification, IncomingRequest, PanelGenotype, PrivateBucket, ProjectImportSummary,
+    ProjectOverview, ProjectSampleReport, ReadMetrics, RefBuildStatus, SexInferenceResult, SourceType,
+    StoredIbdExchange, StrConcordanceRow, SvAnalysisResult, YMatch, YstrClustering,
 };
 use navigator_domain::chipprofile::ChipProfile;
 use navigator_domain::du_domain::ids::SampleGuid;
@@ -77,6 +78,26 @@ pub enum Command {
         dir: PathBuf,
         reference: Option<PathBuf>,
     },
+    /// Dry-run an FTDNA project import: parse + match the (already classified) batch files into a
+    /// reviewable plan. Any path may be absent.
+    PlanFtdnaImport {
+        /// Target project, or `None` to import into a new project named `project_name`.
+        project_id: Option<i64>,
+        project_name: Option<String>,
+        member: Option<PathBuf>,
+        paternal: Option<PathBuf>,
+        maternal: Option<PathBuf>,
+        ystr: Option<PathBuf>,
+    },
+    /// Commit a reviewed FTDNA import plan with the admin's per-kit resolutions.
+    CommitFtdnaImport {
+        plan: FtdnaImportPlan,
+        resolutions: std::collections::BTreeMap<String, FtdnaResolution>,
+    },
+    /// Load a subject's imported genealogy (vendor ids + FTDNA member + MDKA) for the detail card.
+    LoadGenealogy(SampleGuid),
+    /// Autocluster a project's members by Y-STR (suggest SNP branches for STR-only members).
+    ClusterProject(i64),
     /// Resolve (download + decompress + index) a reference build, streaming progress.
     ResolveReference {
         build: String,
@@ -529,6 +550,20 @@ pub enum Event {
     ProjectsChanged,
     /// A batch project-directory import completed.
     ProjectImported(ProjectImportSummary),
+    /// A dry-run FTDNA import plan, ready for the review modal.
+    FtdnaPlan(FtdnaImportPlan),
+    /// The result of committing an FTDNA import.
+    FtdnaImported(FtdnaImportSummary),
+    /// A subject's imported genealogy bundle for the detail card.
+    Genealogy {
+        guid: SampleGuid,
+        data: FtdnaGenealogy,
+    },
+    /// A project's Y-STR clustering (members grouped by branch, STR-only suggestions).
+    ProjectClustering {
+        project_id: i64,
+        clustering: YstrClustering,
+    },
     /// Import needs reference build(s) downloaded first; `dir` lets the UI retry the import
     /// after the user approves and the download finishes.
     ReferenceNeeded {
@@ -892,6 +927,40 @@ pub async fn handle(app: &App, cmd: Command) -> Event {
                 Err(e) => Event::Error(e.to_string()),
             }
         }
+        Command::PlanFtdnaImport {
+            project_id,
+            project_name,
+            member,
+            paternal,
+            maternal,
+            ystr,
+        } => match app
+            .plan_ftdna_import(
+                project_id,
+                project_name,
+                member,
+                paternal,
+                maternal,
+                ystr,
+                FtdnaImportOptions::default(),
+            )
+            .await
+        {
+            Ok(plan) => Event::FtdnaPlan(plan),
+            Err(e) => Event::Error(e.to_string()),
+        },
+        Command::CommitFtdnaImport { plan, resolutions } => match app.commit_ftdna_import(&plan, &resolutions).await {
+            Ok(summary) => Event::FtdnaImported(summary),
+            Err(e) => Event::Error(e.to_string()),
+        },
+        Command::LoadGenealogy(guid) => match app.subject_genealogy(guid).await {
+            Ok(data) => Event::Genealogy { guid, data },
+            Err(e) => Event::Error(e.to_string()),
+        },
+        Command::ClusterProject(project_id) => match app.cluster_project_ystr(project_id).await {
+            Ok(clustering) => Event::ProjectClustering { project_id, clustering },
+            Err(e) => Event::Error(e.to_string()),
+        },
         // ResolveReference is handled in the spawn loop (it streams progress events); reaching
         // here would mean a routing bug.
         Command::ResolveReference { build } => Event::Error(format!("internal: unrouted ResolveReference {build}")),

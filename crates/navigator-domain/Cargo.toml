@@ -13,3 +13,5 @@ thiserror = { workspace = true }
 serde = { version = "1", features = ["derive"] }
 chrono = { version = "0.4", features = ["serde"] }
 uuid = { version = "1", features = ["v4", "serde"] }
+# Real RFC4180 CSV parsing for vendor exports (FTDNA roster/ancestry fields embed quoted commas).
+csv = "1"

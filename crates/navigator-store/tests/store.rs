@@ -3,7 +3,7 @@
 use chrono::Utc;
 use du_domain::ids::SampleGuid;
 use navigator_domain::workspace::{Biosample, NewAlignment, NewProject, NewSequenceRun};
-use navigator_store::{alignment, artifact, biosample, project, sequence_run, Store};
+use navigator_store::{alignment, artifact, biosample, project, sequence_run, source_file, Store};
 use uuid::Uuid;
 
 async fn store() -> Store {
@@ -340,19 +340,48 @@ async fn delete_cascades_run_to_alignments_and_artifacts() {
     )
     .await
     .unwrap();
+    // A content-hash source_file linked to aln2 must not block its delete (regression: FK 787).
+    source_file::upsert_by_checksum(s.pool(), "hash-aln2", Some("/data/x.bam"), Some(1), Some("BAM"), "t")
+        .await
+        .unwrap();
+    source_file::link_to_alignment(s.pool(), "hash-aln2", aln2.id, "t")
+        .await
+        .unwrap();
     assert!(alignment::delete(s.pool(), aln2.id).await.unwrap());
     assert!(artifact::get(s.pool(), aln2.id, "coverage", "v1")
         .await
         .unwrap()
         .is_none());
+    // The file record survives but is unlinked from the deleted alignment.
+    let sf = source_file::find_by_checksum(s.pool(), "hash-aln2")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(sf.alignment_id, None, "source_file unlinked, not deleted");
     assert_eq!(
         alignment::list_for_run(s.pool(), run.id).await.unwrap(),
         vec![aln.clone()]
     );
     assert!(sequence_run::get(s.pool(), run.id).await.unwrap().is_some());
 
-    // Deleting the run removes the remaining alignment + artifact (FK-enforced cascade).
+    // Deleting the run removes the remaining alignment + artifact (FK-enforced cascade), and a
+    // source_file linked to that alignment must not block it either.
+    source_file::upsert_by_checksum(s.pool(), "hash-aln1", Some("/data/y.bam"), Some(1), Some("BAM"), "t")
+        .await
+        .unwrap();
+    source_file::link_to_alignment(s.pool(), "hash-aln1", aln.id, "t")
+        .await
+        .unwrap();
     assert!(sequence_run::delete(s.pool(), run.id).await.unwrap());
+    assert_eq!(
+        source_file::find_by_checksum(s.pool(), "hash-aln1")
+            .await
+            .unwrap()
+            .unwrap()
+            .alignment_id,
+        None,
+        "source_file unlinked when its alignment's run is deleted"
+    );
     assert!(sequence_run::get(s.pool(), run.id).await.unwrap().is_none());
     assert!(alignment::list_for_run(s.pool(), run.id).await.unwrap().is_empty());
     assert!(artifact::get(s.pool(), aln.id, "coverage", "v1")

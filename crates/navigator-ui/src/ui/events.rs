@@ -55,6 +55,61 @@ impl NavigatorApp {
                     let _ = self.tx.send(Command::LoadOverview);
                     let _ = self.tx.send(Command::LoadAllBiosamples);
                 }
+                Event::FtdnaPlan(plan) => {
+                    let (new, merge, confirm) = plan.counts();
+                    self.status = format!("FTDNA plan: {new} new, {merge} auto-merge, {confirm} to confirm");
+                    self.importing = false;
+                    self.ftdna_resolutions.clear();
+                    self.ftdna_plan = Some(plan);
+                }
+                Event::FtdnaImported(summary) => {
+                    self.status = format!(
+                        "FTDNA import: {} merged, {} created, {} Y-STR, {} MDKA{}{}",
+                        summary.merged,
+                        summary.created,
+                        summary.str_profiles,
+                        summary.mdka_written,
+                        if summary.skipped > 0 {
+                            format!(", {} skipped", summary.skipped)
+                        } else {
+                            String::new()
+                        },
+                        if summary.errors.is_empty() {
+                            String::new()
+                        } else {
+                            format!(" ({} error(s))", summary.errors.len())
+                        },
+                    );
+                    self.ftdna_plan = None;
+                    self.ftdna_resolutions.clear();
+                    let _ = self.tx.send(Command::LoadOverview);
+                    let _ = self.tx.send(Command::LoadAllBiosamples);
+                    // Surface the project the kits landed in (created or targeted).
+                    if summary.project_id > 0 {
+                        self.select_project(summary.project_id);
+                    }
+                    // Refresh the open subject's genealogy card if a merge/create touched it.
+                    if let Some(guid) = self.selected_sample {
+                        let _ = self.tx.send(Command::LoadGenealogy(guid));
+                    }
+                }
+                Event::Genealogy { guid, data } => {
+                    if self.selected_sample == Some(guid) {
+                        self.genealogy = Some((guid, data));
+                    }
+                }
+                Event::ProjectClustering { project_id, clustering } => {
+                    self.clustering_running = false;
+                    if self.selected_project == Some(project_id) {
+                        let (clusters, suggested) = (
+                            clustering.clusters.len(),
+                            clustering.clusters.iter().map(|c| c.suggested_count()).sum::<usize>(),
+                        );
+                        self.status =
+                            format!("Y-STR clustering: {clusters} cluster(s), {suggested} branch suggestion(s)");
+                        self.project_clustering = Some((project_id, clustering));
+                    }
+                }
                 Event::ReferenceNeeded { dir, builds } => {
                     self.importing = false;
                     self.pending_import_dir = Some(dir);
@@ -779,6 +834,8 @@ impl NavigatorApp {
         self.selected_project = Some(id);
         self.samples.clear();
         self.project_report.clear();
+        self.project_clustering = None; // stale for the new project until recomputed
+        self.clustering_running = false;
         self.clear_sample_selection();
         let _ = self.tx.send(Command::LoadSamples(id));
         let _ = self.tx.send(Command::LoadProjectReport(id));
@@ -809,6 +866,7 @@ impl NavigatorApp {
         self.mt_profile_loading = false;
         self.auto_profile = None;
         self.auto_profile_loading = false;
+        self.genealogy = None;
         self.clear_run_selection();
         self.runs.clear();
         self.str_profiles.clear();
@@ -870,6 +928,8 @@ impl NavigatorApp {
         let _ = self.tx.send(Command::LoadIbdExchanges { biosample_guid: guid });
         // And the autosomal (diploid) consensus snapshot for the Autosomal tab.
         let _ = self.tx.send(Command::LoadAutosomalProfile { biosample_guid: guid });
+        // Imported FTDNA genealogy (vendor ids + member labels + MDKA) for the Overview card.
+        let _ = self.tx.send(Command::LoadGenealogy(guid));
     }
 
     pub(crate) fn select_run(&mut self, id: i64) {
