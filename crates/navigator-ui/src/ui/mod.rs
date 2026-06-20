@@ -80,12 +80,14 @@ enum CommunityTab {
     #[default]
     Support,
     Feed,
+    Messages,
     Notifications,
 }
 impl CommunityTab {
-    const ALL: [(CommunityTab, &'static str); 3] = [
+    const ALL: [(CommunityTab, &'static str); 4] = [
         (CommunityTab::Support, "community.tab.support"),
         (CommunityTab::Feed, "community.tab.feed"),
+        (CommunityTab::Messages, "community.tab.messages"),
         (CommunityTab::Notifications, "community.tab.notifications"),
     ];
 }
@@ -686,6 +688,17 @@ pub struct NavigatorApp {
     notif_unread: i64,
     /// Whether the social tab has fetched at least once this session (lazy first load).
     community_loaded: bool,
+    /// Peer DMs (social 3a). Inbox: inbound DM requests + consent-ready sessions to connect.
+    dm_incoming: Vec<navigator_app::IncomingRequest>,
+    dm_ready: Vec<navigator_app::ExchangeSessionInfo>,
+    /// Persisted conversation list + the opened conversation's `(session_id, transcript)`.
+    dm_conversations: Vec<navigator_app::DmConversationSummary>,
+    open_dm: Option<(String, Vec<navigator_app::DmMessage>)>,
+    /// Composer buffers: start-a-DM partner DID + the open conversation's message draft.
+    dm_partner_did: String,
+    dm_compose: String,
+    /// Whether the Messages sub-tab has loaded at least once this session (lazy first load).
+    dm_loaded: bool,
     /// Composer buffers: new-thread subject/body, open-thread reply, feed post + topic.
     new_thread_subject: String,
     new_thread_body: String,
@@ -983,6 +996,13 @@ impl NavigatorApp {
             notifications: Vec::new(),
             notif_unread: 0,
             community_loaded: false,
+            dm_incoming: Vec::new(),
+            dm_ready: Vec::new(),
+            dm_conversations: Vec::new(),
+            open_dm: None,
+            dm_partner_did: String::new(),
+            dm_compose: String::new(),
+            dm_loaded: false,
             new_thread_subject: String::new(),
             new_thread_body: String::new(),
             thread_reply: String::new(),

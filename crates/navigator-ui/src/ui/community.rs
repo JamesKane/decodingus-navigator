@@ -36,6 +36,7 @@ impl NavigatorApp {
             match self.community_tab {
                 CommunityTab::Support => self.community_support(ui),
                 CommunityTab::Feed => self.community_feed_view(ui),
+                CommunityTab::Messages => self.community_messages(ui),
                 CommunityTab::Notifications => self.community_notifications(ui),
             }
         });
@@ -226,6 +227,134 @@ impl NavigatorApp {
         }
     }
 
+    // ---- Messages: peer DMs over the encrypted D1 relay (social 3a) ---------
+    fn community_messages(&mut self, ui: &mut egui::Ui) {
+        if !self.dm_loaded {
+            self.dm_loaded = true;
+            let _ = self.tx.send(Command::LoadDmInbox);
+            let _ = self.tx.send(Command::LoadDmConversations);
+        }
+
+        // Open conversation: transcript + composer.
+        if let Some((session_id, messages)) = self.open_dm.clone() {
+            ui.horizontal(|ui| {
+                if ui.button(self.tr("community.back")).clicked() {
+                    self.open_dm = None;
+                    self.dm_compose.clear();
+                }
+                if ui.button(self.tr("common.refresh")).clicked() {
+                    let _ = self.tx.send(Command::DmSync {
+                        session_id: session_id.clone(),
+                    });
+                }
+            });
+            if self.open_dm.is_none() {
+                return; // backed out this frame
+            }
+            ui.add_space(6.0);
+            let me = self.account.clone().unwrap_or_default();
+            for m in &messages {
+                let mine = m.from_did == me;
+                let who = if mine {
+                    self.tr("dm.you").to_string()
+                } else {
+                    short_did(&m.from_did)
+                };
+                let color = if mine { egui::Color32::GRAY } else { ACCENT };
+                ui.horizontal(|ui| {
+                    ui.colored_label(color, egui::RichText::new(who).strong());
+                    ui.label(egui::RichText::new(&m.created_at).weak().small());
+                });
+                ui.label(&m.body);
+                ui.add_space(6.0);
+            }
+            ui.separator();
+            let send_label = self.tr("dm.send");
+            ui.add(
+                egui::TextEdit::multiline(&mut self.dm_compose)
+                    .hint_text("message…")
+                    .desired_rows(2)
+                    .desired_width(f32::INFINITY),
+            );
+            let ready = !self.dm_compose.trim().is_empty();
+            if ui.add_enabled(ready, egui::Button::new(send_label)).clicked() {
+                let _ = self.tx.send(Command::DmSend {
+                    session_id,
+                    text: self.dm_compose.trim().to_string(),
+                });
+            }
+            return;
+        }
+
+        // Start a DM by partner DID.
+        ui.group(|ui| {
+            ui.label(egui::RichText::new(self.tr("dm.startTitle")).strong());
+            ui.add(egui::TextEdit::singleline(&mut self.dm_partner_did).hint_text("did:plc:…"));
+            let start_label = self.tr("dm.start");
+            let ready = self.dm_partner_did.trim().starts_with("did:");
+            if ui.add_enabled(ready, egui::Button::new(start_label)).clicked() {
+                let _ = self.tx.send(Command::DmInitiate {
+                    partner_did: self.dm_partner_did.trim().to_string(),
+                });
+            }
+        });
+        ui.add_space(8.0);
+
+        // Inbound requests awaiting our consent (symmetric-blind).
+        if !self.dm_incoming.is_empty() {
+            ui.label(egui::RichText::new(self.tr("dm.incoming")).strong());
+            for r in self.dm_incoming.clone() {
+                ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new(&r.created_at).weak().small());
+                    if ui.button(self.tr("dm.accept")).clicked() {
+                        let _ = self.tx.send(Command::DmConsent {
+                            request_uri: r.request_uri.clone(),
+                            given: true,
+                        });
+                    }
+                    if ui.button(self.tr("dm.decline")).clicked() {
+                        let _ = self.tx.send(Command::DmConsent {
+                            request_uri: r.request_uri.clone(),
+                            given: false,
+                        });
+                    }
+                });
+            }
+            ui.add_space(8.0);
+        }
+
+        // Consent-ready sessions to connect (one-time handshake; both peers must be online).
+        if !self.dm_ready.is_empty() {
+            ui.label(egui::RichText::new(self.tr("dm.ready")).strong());
+            for info in self.dm_ready.clone() {
+                ui.horizontal(|ui| {
+                    ui.label(short_did(&info.partner_did));
+                    if ui.button(self.tr("dm.connect")).clicked() {
+                        let _ = self.tx.send(Command::DmConnect { info: info.clone() });
+                    }
+                });
+            }
+            ui.add_space(8.0);
+        }
+
+        // Conversation list.
+        ui.label(egui::RichText::new(self.tr("dm.conversations")).strong());
+        if self.dm_conversations.is_empty() {
+            ui.label(egui::RichText::new(self.tr("dm.empty")).weak());
+            return;
+        }
+        for c in self.dm_conversations.clone() {
+            let dot = if c.unread > 0 { "● " } else { "" };
+            let preview = c.last_body.as_deref().unwrap_or("");
+            let label = format!("{dot}{}  —  {}", short_did(&c.partner_did), preview);
+            if ui.selectable_label(false, label).clicked() {
+                let _ = self.tx.send(Command::LoadDmMessages {
+                    session_id: c.session_id.clone(),
+                });
+            }
+        }
+    }
+
     // ---- Notifications -----------------------------------------------------
     fn community_notifications(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
@@ -267,6 +396,11 @@ impl NavigatorApp {
             ui.add_space(4.0);
         }
     }
+}
+
+/// A truncated DID for display (pseudonymous handle, not PII) — full value goes in a hover.
+fn short_did(did: &str) -> String {
+    did.chars().take(20).collect()
 }
 
 /// A feed entry's display fields (announcement / community / federated).

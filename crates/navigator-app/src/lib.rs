@@ -402,6 +402,7 @@ pub use navigator_domain::ymatch::{Tmrca, YMatch, YSignal};
 use navigator_domain::yprofile::{self, YObsInput};
 pub use navigator_domain::yprofile::{YProfileSummary, YProfileVariant, YSourceObs, YState, YVariantStatus};
 use navigator_domain::ysnp_dict::{self, YsnpDictionary};
+pub use navigator_store::dm::{DmConversationSummary, DmMessage};
 pub use navigator_store::ibd_exchange::StoredIbdExchange;
 pub use navigator_store::source_file::SourceFile;
 use navigator_store::{
@@ -1562,6 +1563,7 @@ pub struct RefBuildStatus {
 mod analysis;
 mod auth;
 mod commands;
+mod dm;
 mod fastpath;
 mod ftdna_import;
 mod haplogroup;

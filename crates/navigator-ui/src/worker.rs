@@ -14,11 +14,11 @@ use std::sync::{Arc, Mutex};
 
 use navigator_app::{
     AlignmentProbe, AncestryResult, AncestrySegment, App, AppError, AuditEntry, BatchImportSummary, BuildNeed,
-    Consensus, Coverage, DenovoCall, DnaType, ExchangeSessionInfo, FtdnaGenealogy, FtdnaImportOptions, FtdnaImportPlan,
-    FtdnaImportSummary, FtdnaResolution, HaploAssignment, HeteroplasmySite, IbdComparison, IbdDetectorConfig,
-    IbdSuggestion, IdentityVerification, IncomingRequest, PanelGenotype, PrivateBucket, ProjectImportSummary,
-    ProjectOverview, ProjectSampleReport, ReadMetrics, RefBuildStatus, SexInferenceResult, SourceType,
-    StoredIbdExchange, StrConcordanceRow, SvAnalysisResult, YMatch, YstrClustering,
+    Consensus, Coverage, DenovoCall, DmConversationSummary, DmMessage, DnaType, ExchangeSessionInfo, FtdnaGenealogy,
+    FtdnaImportOptions, FtdnaImportPlan, FtdnaImportSummary, FtdnaResolution, HaploAssignment, HeteroplasmySite,
+    IbdComparison, IbdDetectorConfig, IbdSuggestion, IdentityVerification, IncomingRequest, PanelGenotype,
+    PrivateBucket, ProjectImportSummary, ProjectOverview, ProjectSampleReport, ReadMetrics, RefBuildStatus,
+    SexInferenceResult, SourceType, StoredIbdExchange, StrConcordanceRow, SvAnalysisResult, YMatch, YstrClustering,
 };
 use navigator_domain::chipprofile::ChipProfile;
 use navigator_domain::du_domain::ids::SampleGuid;
@@ -348,6 +348,36 @@ pub enum Command {
     /// Load the subject's persisted IBD exchange results.
     LoadIbdExchanges {
         biosample_guid: SampleGuid,
+    },
+    /// Peer DMs (social 3a): open a DM request to a partner DID.
+    DmInitiate {
+        partner_did: String,
+    },
+    /// Poll the DM inbox: inbound DM requests awaiting consent + consent-ready (not-yet-connected) sessions.
+    LoadDmInbox,
+    /// Consent to (or decline) an inbound DM request.
+    DmConsent {
+        request_uri: String,
+        given: bool,
+    },
+    /// Connect a consent-ready DM session (one-time handshake; persists the session key).
+    DmConnect {
+        info: ExchangeSessionInfo,
+    },
+    /// Load the persisted DM conversation list.
+    LoadDmConversations,
+    /// Load (and mark read) one conversation's transcript.
+    LoadDmMessages {
+        session_id: String,
+    },
+    /// Encrypt + relay a message on a conversation.
+    DmSend {
+        session_id: String,
+        text: String,
+    },
+    /// Pull + decrypt + persist any messages waiting on a conversation.
+    DmSync {
+        session_id: String,
     },
     /// Resolve the sequencing lab for runs that have an inferred instrument id but no facility,
     /// via the AppView instrument→lab map (best-effort, cached). Sent on startup + after imports.
@@ -854,6 +884,33 @@ pub enum Event {
     },
     /// A consent was recorded (the UI refreshes the inbox).
     ExchangeConsented,
+    /// A DM request was opened to a partner DID (the UI refreshes the inbox).
+    DmInitiated,
+    /// The DM inbox: inbound DM requests + consent-ready sessions to connect.
+    DmInbox {
+        incoming: Vec<IncomingRequest>,
+        ready: Vec<ExchangeSessionInfo>,
+    },
+    /// A DM consent was recorded (the UI refreshes the inbox).
+    DmConsented,
+    /// A DM session was connected (key persisted); the UI refreshes the conversation list.
+    DmConnected,
+    /// The persisted DM conversation list.
+    DmConversations(Vec<DmConversationSummary>),
+    /// One conversation's transcript.
+    DmMessages {
+        session_id: String,
+        rows: Vec<DmMessage>,
+    },
+    /// A DM was sent (the UI reloads the open transcript).
+    DmSent {
+        session_id: String,
+    },
+    /// A DM sync finished; `new_count` newly-stored messages (the UI reloads if > 0).
+    DmSynced {
+        session_id: String,
+        new_count: usize,
+    },
     /// A full IBD exchange completed for a subject (the UI reloads its results).
     IbdExchangeDone {
         biosample_guid: SampleGuid,
@@ -1722,6 +1779,38 @@ pub async fn handle(app: &App, cmd: Command) -> Event {
                 Err(e) => Event::Error(e.to_string()),
             }
         }
+        Command::DmInitiate { partner_did } => match app.dm_initiate(&partner_did).await {
+            Ok(_) => Event::DmInitiated,
+            Err(e) => Event::Error(e.to_string()),
+        },
+        Command::LoadDmInbox => match (app.dm_incoming().await, app.dm_ready().await) {
+            (Ok(incoming), Ok(ready)) => Event::DmInbox { incoming, ready },
+            (Err(e), _) | (_, Err(e)) => Event::Error(e.to_string()),
+        },
+        Command::DmConsent { request_uri, given } => match app.dm_consent(&request_uri, given).await {
+            Ok(_) => Event::DmConsented,
+            Err(e) => Event::Error(e.to_string()),
+        },
+        Command::DmConnect { info } => match app.dm_connect(&info).await {
+            Ok(()) => Event::DmConnected,
+            Err(e) => Event::Error(e.to_string()),
+        },
+        Command::LoadDmConversations => match app.dm_conversations().await {
+            Ok(rows) => Event::DmConversations(rows),
+            Err(e) => Event::Error(e.to_string()),
+        },
+        Command::LoadDmMessages { session_id } => match app.dm_messages(&session_id).await {
+            Ok(rows) => Event::DmMessages { session_id, rows },
+            Err(e) => Event::Error(e.to_string()),
+        },
+        Command::DmSend { session_id, text } => match app.dm_send(&session_id, &text).await {
+            Ok(_) => Event::DmSent { session_id },
+            Err(e) => Event::Error(e.to_string()),
+        },
+        Command::DmSync { session_id } => match app.dm_sync(&session_id).await {
+            Ok(new_count) => Event::DmSynced { session_id, new_count },
+            Err(e) => Event::Error(e.to_string()),
+        },
         Command::BackfillLabs => match app.backfill_run_labs().await {
             Ok(count) => Event::LabsResolved(count),
             Err(e) => Event::Error(e.to_string()),

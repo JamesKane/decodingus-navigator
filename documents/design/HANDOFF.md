@@ -56,10 +56,25 @@ client. Plan: `~/.claude/plans/jazzy-sniffing-storm.md`; roadmap:
   signed-Edge post still happens, the federated copy mirrors back badged "via Atmosphere". en/es
   i18n + unit tests (shared wire-shape round-trip, app builder). Not yet live-tested against a PDS.
 
-**Deferred** (later slices, all KEPT): peer DMs over the D1 encrypted exchange (3a — crypto exists in
-`navigator-sync::exchange`, needs a DM UI); recruitment signed-Edge (3c); feed voting/report/block
-actions; threaded federated replies (the `FeedPostRecord.reply` block is modelled but the Feed UI
-only publishes top-level posts — replies need at-uri tracking of the parent/root).
+- **3a — peer DMs** (DONE, uncommitted on this branch): end-to-end-encrypted peer DMs over the D1
+  relay, reusing the generic exchange crypto/session driver unchanged. New `navigator-store` mig
+  `0031_dm` (`dm_conversation` persists the derived **session key** + outgoing seq counter so a
+  conversation is async + restart-safe; `dm_message` with `UNIQUE(session_id,from_did,seq)` dedupe)
+  + `store/dm.rs`. New `navigator-app/src/dm.rs`: `dm_initiate`/`dm_incoming`/`dm_ready`/
+  `dm_consent`/`dm_connect` (one-time handshake → persist key)/`dm_conversations`/`dm_messages`/
+  `dm_send`/`dm_sync`, purpose `GENEALOGY_PII` (AppView already titles it — no AppView change). UI:
+  **Messages** sub-tab in Community (start-by-DID + incoming inbox + ready-to-connect + conversation
+  list + transcript/composer) **and** a "Message" button on IBD exchange results that opens a DM +
+  jumps to Messages. en/es i18n + store/app unit tests. **Crux:** the session key is persisted so
+  only the *first* connect needs both peers online; messaging is then fully async. Not yet live-tested
+  (needs AppView + 2 peers, like the IBD exchange).
+
+**Deferred** (later slices, all KEPT): recruitment signed-Edge (3c); feed voting/report/block
+actions; threaded federated replies (`FeedPostRecord.reply` is modelled but the Feed UI only posts
+top-level — needs parent/root at-uri tracking); **DM follow-ups** — truly-async handshake (persisted
+ephemeral → derive-on-arrival, so "Connect" needn't be simultaneous), background auto-poll of
+conversations (MVP syncs on open + manual refresh; request/consent already notify via the bell),
+typing indicators / read receipts, in-DM block/delete.
 
 ### Other work landed this session (on `main`)
 

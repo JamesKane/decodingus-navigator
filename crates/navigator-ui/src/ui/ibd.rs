@@ -513,9 +513,10 @@ impl NavigatorApp {
             ui.weak(self.tr("exchange.noResults"));
         } else {
             ui.label(egui::RichText::new(self.tr("exchange.results")).strong());
+            let mut message_partner: Option<String> = None;
             egui::Grid::new(("exchange_results", guid))
                 .striped(true)
-                .num_columns(4)
+                .num_columns(5)
                 .spacing([14.0, 2.0])
                 .show(ui, |ui| {
                     ui.strong(self.tr("exchange.col.partner"));
@@ -533,9 +534,20 @@ impl NavigatorApp {
                         } else {
                             ui.colored_label(egui::Color32::from_rgb(200, 90, 90), self.tr("exchange.agreedNo"));
                         }
+                        // Open an encrypted DM with this match (social 3a) — sends a DM request and
+                        // jumps to Community → Messages, where the conversation appears once accepted.
+                        if ui.button(self.tr("dm.message")).clicked() {
+                            message_partner = Some(r.partner_did.clone());
+                        }
                         ui.end_row();
                     }
                 });
+            if let Some(partner_did) = message_partner {
+                let _ = self.tx.send(Command::DmInitiate { partner_did });
+                self.nav = Nav::Community;
+                self.community_tab = CommunityTab::Messages;
+                self.dm_loaded = false; // force a fresh inbox/conversation load on entry
+            }
         }
     }
 

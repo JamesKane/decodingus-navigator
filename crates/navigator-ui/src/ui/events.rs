@@ -832,6 +832,45 @@ impl NavigatorApp {
                 Event::NotificationsMarked => {
                     let _ = self.tx.send(Command::LoadNotifications);
                 }
+                Event::DmInitiated => {
+                    self.dm_partner_did.clear();
+                    self.status = self.tr("dm.requestSent").to_string();
+                    let _ = self.tx.send(Command::LoadDmInbox);
+                }
+                Event::DmInbox { incoming, ready } => {
+                    self.dm_incoming = incoming;
+                    self.dm_ready = ready;
+                }
+                Event::DmConsented => {
+                    self.status = self.tr("dm.consentRecorded").to_string();
+                    let _ = self.tx.send(Command::LoadDmInbox);
+                    let _ = self.tx.send(Command::LoadDmConversations);
+                }
+                Event::DmConnected => {
+                    self.status = self.tr("dm.connected").to_string();
+                    let _ = self.tx.send(Command::LoadDmInbox);
+                    let _ = self.tx.send(Command::LoadDmConversations);
+                }
+                Event::DmConversations(rows) => self.dm_conversations = rows,
+                Event::DmMessages { session_id, rows } => {
+                    self.open_dm = Some((session_id, rows));
+                    let _ = self.tx.send(Command::LoadDmConversations); // unread cleared on read
+                }
+                Event::DmSent { session_id } => {
+                    self.dm_compose.clear();
+                    let _ = self.tx.send(Command::LoadDmMessages { session_id });
+                }
+                Event::DmSynced { session_id, new_count } => {
+                    self.status = if new_count > 0 {
+                        format!("{} {}", new_count, self.tr("dm.newMessages"))
+                    } else {
+                        self.tr("dm.upToDate").to_string()
+                    };
+                    if self.open_dm.as_ref().is_some_and(|(s, _)| *s == session_id) {
+                        let _ = self.tx.send(Command::LoadDmMessages { session_id });
+                    }
+                    let _ = self.tx.send(Command::LoadDmConversations);
+                }
                 Event::Error(e) => {
                     self.status = format!("Error: {e}");
                     self.running = false;
