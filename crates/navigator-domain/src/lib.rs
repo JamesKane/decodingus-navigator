@@ -29,3 +29,4 @@ pub mod workspace;
 pub mod ymatch;
 pub mod yprofile;
 pub mod ysnp_dict;
+pub mod ystr_cluster;
