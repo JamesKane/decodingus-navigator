@@ -37,7 +37,7 @@ impl App {
     /// Delete a project. Refused (with a clear message) while subjects still belong to it, so
     /// the user reassigns them first rather than orphaning the rows.
     pub async fn delete_project(&self, id: i64) -> Result<(), AppError> {
-        let members = biosample::count_for_project(self.store.pool(), id).await?;
+        let members = biosample::count_members_for_project(self.store.pool(), id).await?;
         if members > 0 {
             return Err(AppError::Conflict(format!(
                 "cannot delete project: {members} subject(s) still belong to it — reassign them first"

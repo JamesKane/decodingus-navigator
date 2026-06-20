@@ -468,21 +468,12 @@ impl App {
     ) -> Result<navigator_domain::ystr_cluster::YstrClustering, AppError> {
         use navigator_domain::ystr_cluster::{cluster_ystr, ClusterMember, ClusterOpts};
 
-        // Member guids: the M:N membership is the source of truth; fall back to the home-project column.
-        let mut guids = biosample_project::list_biosamples_for(self.store.pool(), project_id).await?;
-        if guids.is_empty() {
-            guids = biosample::list_for_project(self.store.pool(), project_id)
-                .await?
-                .into_iter()
-                .map(|b| b.guid)
-                .collect();
-        }
+        // All project members (M:N membership ∪ legacy home column).
+        let subjects = biosample::list_members_for_project(self.store.pool(), project_id).await?;
 
-        let mut members = Vec::with_capacity(guids.len());
-        for guid in guids {
-            let Some(b) = biosample::get(self.store.pool(), guid).await? else {
-                continue;
-            };
+        let mut members = Vec::with_capacity(subjects.len());
+        for b in subjects {
+            let guid = b.guid;
             let fm = ftdna_member::get(self.store.pool(), guid).await?;
             let label = fm
                 .as_ref()

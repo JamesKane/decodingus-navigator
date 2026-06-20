@@ -2518,6 +2518,29 @@ async fn ftdna_matches_existing_subject_by_ystr_distance() {
         }
         other => panic!("expected B5163 NeedsConfirm via Y-STR, got {other:?}"),
     }
+
+    // Commit the merge into the (new) project. KANE-0001 has NO home project (`project_id` is NULL) —
+    // the merge adds an M:N membership row only. The project report must still surface it (regression
+    // for "matched samples don't appear in the Project report" — it reads membership ∪ home column).
+    let mut res = std::collections::BTreeMap::new();
+    res.insert("B5163".to_string(), navigator_app::FtdnaResolution::Merge(kane.guid));
+    let summary = app.commit_ftdna_import(&plan, &res).await.unwrap();
+    assert_eq!(summary.merged, 1, "{:?}", summary.errors);
+    let pid = summary.project_id;
+
+    let report = app.project_report(pid).await.unwrap();
+    assert!(
+        report.iter().any(|r| r.biosample.guid == kane.guid),
+        "merged subject (membership-only, no home project) must appear in the project report"
+    );
+    // The projects-list badge counts membership-only members too.
+    let overview = app.project_overview().await.unwrap();
+    let ov = overview.iter().find(|o| o.project.id == pid).unwrap();
+    assert!(
+        ov.sample_count >= 1,
+        "membership-only member counted in the project badge"
+    );
+
     let _ = std::fs::remove_file(&tmp);
 }
 
