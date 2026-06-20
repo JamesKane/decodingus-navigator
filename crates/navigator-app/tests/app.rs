@@ -2464,7 +2464,10 @@ async fn ftdna_matches_existing_subject_by_ystr_distance() {
     let ydna = std::fs::read_to_string(ftdna.join("YDNA_Results_Overview.csv")).unwrap();
     let per_kit = navigator_domain::ftdna::parse_ydna_overview(&ydna).unwrap();
     let (_, markers) = per_kit.iter().find(|(k, _)| k == "B5163").unwrap();
-    assert!(markers.len() >= 12, "fixture must carry enough markers to match on");
+    assert!(
+        markers.len() >= 67,
+        "fixture must carry enough markers for an exact-haplotype match"
+    );
     let mut tall = String::from("marker,value\n");
     for m in markers {
         tall.push_str(&format!("{},{}\n", m.marker, m.value));

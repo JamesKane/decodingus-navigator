@@ -524,19 +524,18 @@ impl App {
                     reasons.push(format!("same Y terminal {ex}"));
                 }
             }
-            // Y-STR genetic distance — the most reliable signal when both sides have a profile (and
-            // robust to ISOGG-vs-SNP haplogroup-label mismatches). A small GD over many markers is a
-            // near-certain shared paternal lineage / same person.
+            // Y-STR genetic distance — a SAME-PERSON signal only at (near-)zero GD over many markers.
+            // A loose GD threshold floods inside a single-haplogroup project, where every member is
+            // related and within-project distances of GD 3–11 over 100 markers are normal. Only an
+            // exact (or off-by-one) haplotype uniquely identifies the same person, not a clade cousin.
             if !input.ystr_markers.is_empty() && !e.ystr.is_empty() {
                 let (diff, compared) = navigator_domain::strprofile::str_distance(&input.ystr_markers, &e.ystr);
-                if compared >= 12 {
-                    if diff == 0 {
-                        score += 0.8;
-                        reasons.push(format!("Y-STR exact ({compared} markers)"));
-                    } else if (diff as f32) / (compared as f32) <= 0.10 {
-                        score += 0.6;
-                        reasons.push(format!("Y-STR GD {diff}/{compared}"));
-                    }
+                if compared >= 67 && diff <= 1 {
+                    score += 0.8;
+                    reasons.push(format!("Y-STR GD {diff}/{compared}"));
+                } else if compared >= 37 && diff == 0 {
+                    score += 0.7;
+                    reasons.push(format!("Y-STR exact ({compared} markers)"));
                 }
             }
             if let Some(name) = incoming_name.as_deref() {
