@@ -109,6 +109,25 @@ pub async fn get_one(
     Ok(row.map(Row::into_domain))
 }
 
+/// Delete a single recorded call (one source) for a biosample + DNA type. Returns whether a row was
+/// removed. Used to drop alignment-derived calls when their sequencing run/alignment is deleted.
+pub async fn delete_one(
+    pool: &SqlitePool,
+    biosample_guid: SampleGuid,
+    dna_type: DnaType,
+    source_key: &str,
+) -> Result<bool, StoreError> {
+    let affected =
+        sqlx::query("DELETE FROM haplogroup_call WHERE biosample_guid = ? AND dna_type = ? AND source_key = ?")
+            .bind(biosample_guid.0.to_string())
+            .bind(dna_type.as_str())
+            .bind(source_key)
+            .execute(pool)
+            .await?
+            .rows_affected();
+    Ok(affected > 0)
+}
+
 /// All recorded calls for a biosample + DNA type.
 pub async fn list_for(
     pool: &SqlitePool,

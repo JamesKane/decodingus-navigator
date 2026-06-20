@@ -2520,3 +2520,65 @@ async fn ftdna_matches_existing_subject_by_ystr_distance() {
     }
     let _ = std::fs::remove_file(&tmp);
 }
+
+/// Deleting a sequencing run purges the haplogroup calls + consensus placement derived from its
+/// alignments, so a wrong haplogroup doesn't linger after the run is removed.
+#[tokio::test]
+async fn deleting_run_purges_derived_haplogroup_and_consensus() {
+    use navigator_app::DnaType;
+    use navigator_domain::reconciliation::RunHaplogroupCall;
+
+    let app = app().await;
+    let b = app.add_biosample(None, "103589", None, None).await.unwrap();
+    let run = app
+        .record_sequence_run(NewSequenceRun {
+            biosample_guid: b.guid,
+            platform_name: "ILLUMINA".into(),
+            instrument_model: None,
+            test_type: "Targeted Y".into(),
+            library_layout: None,
+            total_reads: None,
+            pf_reads_aligned: None,
+            mean_read_length: None,
+            mean_insert_size: None,
+        })
+        .await
+        .unwrap();
+    let aln = app
+        .record_alignment(NewAlignment {
+            sequence_run_id: run.id,
+            reference_build: "GRCh38".into(),
+            aligner: "unknown".into(),
+            variant_caller: None,
+            bam_path: None,
+            reference_path: None,
+            content_sha256: None,
+        })
+        .await
+        .unwrap();
+
+    // The alignment-derived Y call (source_key `aln:<id>`) is what placement records.
+    let call = RunHaplogroupCall {
+        source_label: format!("aln #{} unknown", aln.id),
+        haplogroup: "R-BY30544".into(),
+        lineage: vec!["R".into(), "R-BY30544".into()],
+        score: 0.72,
+        matched: 0,
+        expected: 0,
+    };
+    app.record_haplogroup_call(b.guid, DnaType::Y, &format!("aln:{}", aln.id), &call)
+        .await
+        .unwrap();
+    assert!(
+        app.haplogroup_consensus(b.guid, DnaType::Y).await.unwrap().is_some(),
+        "precondition: a Y haplogroup is shown before deletion"
+    );
+
+    // Delete the run → the derived Y call + consensus must be gone.
+    app.delete_sequence_run(run.id).await.unwrap();
+    assert!(
+        app.haplogroup_consensus(b.guid, DnaType::Y).await.unwrap().is_none(),
+        "Y haplogroup must not linger after its only source run is deleted"
+    );
+    assert!(app.haplogroup_calls(b.guid, DnaType::Y).await.unwrap().is_empty());
+}
