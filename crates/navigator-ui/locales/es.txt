@@ -313,6 +313,15 @@ ftdna.needsConfirm=Requiere confirmación
 ftdna.itsNew=Es nuevo
 ftdna.skip=Omitir
 ftdna.mergeInto=Combinar con
+# Vista de agrupación Y-STR
+cluster.byYstr=Agrupar por Y-STR
+cluster.flatList=Lista plana
+cluster.running=Agrupando…
+cluster.hint=Agrupar miembros por distancia genética Y-STR y sugerir ramas SNP para kits solo-STR.
+cluster.confirmed=confirmados
+cluster.suggested=sugeridos
+cluster.unbranched=Grupo sin rama
+cluster.tooFew=Marcadores insuficientes para agrupar
 ftdna.commit=Confirmar importación
 ftdna.statRoster=miembros
 ftdna.statAncestry=ascendencia

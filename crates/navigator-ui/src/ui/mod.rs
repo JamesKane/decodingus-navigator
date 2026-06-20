@@ -20,7 +20,7 @@ use navigator_app::{
     HaploAssignment, HeteroplasmySite, IbdComparison, IbdSuggestion, IdentityVerification, MatchKind, MtRegion,
     MtVariant, PanelGenotype, PrivateBucket, PrivateClass, ProjectOverview, ProjectSampleReport, ReadMetrics,
     RefBuildStatus, SexInferenceResult, SnpEvidence, SourceType, StrConcordanceRow, SvAnalysisResult,
-    VerificationStatus, YMatch, YProfile, YSignal, YState, YVariantStatus,
+    VerificationStatus, YMatch, YProfile, YSignal, YState, YVariantStatus, YstrClustering,
 };
 use navigator_domain::chipprofile::{self, ChipProfile};
 use navigator_domain::du_domain::ids::SampleGuid;
@@ -631,6 +631,10 @@ pub struct NavigatorApp {
     /// The selected subject's imported genealogy (vendor ids + FTDNA member + MDKA), for the
     /// Overview card. `(guid, data)` so a stale bundle from a prior subject isn't shown.
     genealogy: Option<(SampleGuid, FtdnaGenealogy)>,
+    /// The current project's Y-STR clustering, keyed by project id (so a stale one isn't shown).
+    project_clustering: Option<(i64, YstrClustering)>,
+    /// True while the project Y-STR clustering is computing.
+    clustering_running: bool,
     forms: Forms,
     status: String,
 }
@@ -905,6 +909,8 @@ impl NavigatorApp {
             ftdna_plan: None,
             ftdna_resolutions: std::collections::BTreeMap::new(),
             genealogy: None,
+            project_clustering: None,
+            clustering_running: false,
             forms: Forms {
                 ploidy: "2".into(),
                 run_test_type: "WGS".into(),

@@ -1476,8 +1476,40 @@ impl NavigatorApp {
             .find(|o| o.project.id == pid)
             .map(|o| o.project.name.clone())
             .unwrap_or_else(|| "project".into());
-        ui.heading(format!("Samples — {name}"));
+        let clustered = matches!(&self.project_clustering, Some((p, _)) if *p == pid);
+
+        ui.horizontal(|ui| {
+            ui.heading(format!("Samples — {name}"));
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if clustered {
+                    if ui.button(self.tr("cluster.flatList")).clicked() {
+                        self.project_clustering = None;
+                    }
+                } else if self.clustering_running {
+                    ui.add_enabled(false, egui::Button::new(self.tr("cluster.running")));
+                    ui.spinner();
+                } else if ui
+                    .button(self.tr("cluster.byYstr"))
+                    .on_hover_text(self.tr("cluster.hint"))
+                    .clicked()
+                {
+                    self.clustering_running = true;
+                    self.status = self.tr("cluster.running").to_string();
+                    let _ = self.tx.send(Command::ClusterProject(pid));
+                }
+            });
+        });
         ui.separator();
+
+        if clustered {
+            self.samples_clustered(ui);
+        } else {
+            self.samples_flat(ui);
+        }
+    }
+
+    /// Flat list of the project's members (the default view).
+    fn samples_flat(&mut self, ui: &mut egui::Ui) {
         if self.samples.is_empty() {
             ui.label(self.tr("projects.noSamples"));
         }
@@ -1500,6 +1532,91 @@ impl NavigatorApp {
             self.select_sample(guid);
         }
         ui.label(self.tr("projects.addSubjectsHint"));
+    }
+
+    /// Y-STR clusters: members grouped by branch, with confirmed placements and STR-only branch
+    /// suggestions (the "autocluster + propagate" view).
+    fn samples_clustered(&mut self, ui: &mut egui::Ui) {
+        // Clone the lightweight view data so the render closures don't hold a borrow of `self` while
+        // we also call `self.tr` / dispatch a selection.
+        let Some((_, clustering)) = self.project_clustering.clone() else {
+            return;
+        };
+        let confirmed_col = egui::Color32::from_rgb(90, 175, 120);
+        let suggest_col = egui::Color32::from_rgb(210, 175, 90);
+        let mut pick = None;
+
+        egui::ScrollArea::vertical().show(ui, |ui| {
+            for cluster in &clustering.clusters {
+                let title = match &cluster.branch {
+                    Some(b) => b.clone(),
+                    None => self.tr("cluster.unbranched").to_string(),
+                };
+                let header = format!(
+                    "{title}  ·  {} {} · {} {}",
+                    cluster.confirmed_count(),
+                    self.tr("cluster.confirmed"),
+                    cluster.suggested_count(),
+                    self.tr("cluster.suggested"),
+                );
+                egui::CollapsingHeader::new(egui::RichText::new(header).strong())
+                    .default_open(cluster.members.len() <= 30)
+                    .id_salt(("ystr_cluster", title))
+                    .show(ui, |ui| {
+                        for m in &cluster.members {
+                            let selected = self.selected_sample == Some(m.guid);
+                            let resp = ui.selectable_label(selected, &m.label);
+                            // Branch chip after the label.
+                            if let Some(b) = &m.branch {
+                                ui.indent(("c", m.guid), |ui| {
+                                    ui.colored_label(confirmed_col, egui::RichText::new(format!("✓ {b}")).small());
+                                });
+                            } else if let Some(s) = &m.suggested {
+                                ui.indent(("s", m.guid), |ui| {
+                                    ui.colored_label(
+                                        suggest_col,
+                                        egui::RichText::new(format!(
+                                            "→ {} ({:.0}% · GD {}/{})",
+                                            s.branch,
+                                            s.confidence * 100.0,
+                                            s.gd,
+                                            s.compared
+                                        ))
+                                        .small(),
+                                    );
+                                });
+                            }
+                            if resp.clicked() {
+                                pick = Some(m.guid);
+                            }
+                        }
+                    });
+            }
+            if !clustering.unclustered.is_empty() {
+                egui::CollapsingHeader::new(
+                    egui::RichText::new(format!(
+                        "{} ({})",
+                        self.tr("cluster.tooFew"),
+                        clustering.unclustered.len()
+                    ))
+                    .weak(),
+                )
+                .id_salt("ystr_unclustered")
+                .show(ui, |ui| {
+                    for m in &clustering.unclustered {
+                        if ui
+                            .selectable_label(self.selected_sample == Some(m.guid), &m.label)
+                            .clicked()
+                        {
+                            pick = Some(m.guid);
+                        }
+                    }
+                });
+            }
+        });
+        if let Some(guid) = pick {
+            self.select_sample(guid);
+        }
     }
 
     /// The Data Sources tab: sequencing runs (cards with expandable alignments), chip/array,

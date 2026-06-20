@@ -459,6 +459,59 @@ impl App {
         Ok(biosample_project::list_projects_for(self.store.pool(), guid).await?)
     }
 
+    /// Autocluster a project's members by Y-STR and propagate SNP branches to STR-only members
+    /// (the project clustering view). Branch per member = its FTDNA-reported terminal SNP; markers =
+    /// the merged Y-STR profiles. The O(n²) compute runs on a blocking thread.
+    pub async fn cluster_project_ystr(
+        &self,
+        project_id: i64,
+    ) -> Result<navigator_domain::ystr_cluster::YstrClustering, AppError> {
+        use navigator_domain::ystr_cluster::{cluster_ystr, ClusterMember, ClusterOpts};
+
+        // Member guids: the M:N membership is the source of truth; fall back to the home-project column.
+        let mut guids = biosample_project::list_biosamples_for(self.store.pool(), project_id).await?;
+        if guids.is_empty() {
+            guids = biosample::list_for_project(self.store.pool(), project_id)
+                .await?
+                .into_iter()
+                .map(|b| b.guid)
+                .collect();
+        }
+
+        let mut members = Vec::with_capacity(guids.len());
+        for guid in guids {
+            let Some(b) = biosample::get(self.store.pool(), guid).await? else {
+                continue;
+            };
+            let fm = ftdna_member::get(self.store.pool(), guid).await?;
+            let label = fm
+                .as_ref()
+                .and_then(|m| m.member_name.clone())
+                .unwrap_or(b.donor_identifier);
+            let branch = fm.and_then(|m| m.y_haplogroup_ftdna);
+            // Merge the subject's Y-STR markers (dedup by name).
+            let mut markers = Vec::new();
+            let mut seen = std::collections::HashSet::new();
+            for p in self.list_str_profiles(guid).await? {
+                for m in p.markers {
+                    if seen.insert(m.marker.to_ascii_uppercase()) {
+                        markers.push(m);
+                    }
+                }
+            }
+            members.push(ClusterMember {
+                guid,
+                label,
+                branch,
+                markers,
+            });
+        }
+
+        tokio::task::spawn_blocking(move || cluster_ystr(&members, &ClusterOpts::default()))
+            .await
+            .map_err(|e| AppError::Join(e.to_string()))
+    }
+
     /// Build a one-shot index of workspace Subjects with their Y terminal SNP + merged Y-STR markers
     /// (for fuzzy matching). Computed once to avoid O(kits × subjects) DB reads.
     async fn existing_subject_index(&self) -> Result<Vec<ExistingSubject>, AppError> {

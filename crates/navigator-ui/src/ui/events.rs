@@ -98,6 +98,18 @@ impl NavigatorApp {
                         self.genealogy = Some((guid, data));
                     }
                 }
+                Event::ProjectClustering { project_id, clustering } => {
+                    self.clustering_running = false;
+                    if self.selected_project == Some(project_id) {
+                        let (clusters, suggested) = (
+                            clustering.clusters.len(),
+                            clustering.clusters.iter().map(|c| c.suggested_count()).sum::<usize>(),
+                        );
+                        self.status =
+                            format!("Y-STR clustering: {clusters} cluster(s), {suggested} branch suggestion(s)");
+                        self.project_clustering = Some((project_id, clustering));
+                    }
+                }
                 Event::ReferenceNeeded { dir, builds } => {
                     self.importing = false;
                     self.pending_import_dir = Some(dir);
@@ -822,6 +834,8 @@ impl NavigatorApp {
         self.selected_project = Some(id);
         self.samples.clear();
         self.project_report.clear();
+        self.project_clustering = None; // stale for the new project until recomputed
+        self.clustering_running = false;
         self.clear_sample_selection();
         let _ = self.tx.send(Command::LoadSamples(id));
         let _ = self.tx.send(Command::LoadProjectReport(id));

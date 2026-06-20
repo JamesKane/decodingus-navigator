@@ -123,6 +123,7 @@ pub use ftdna_import::{
     FtdnaResolution, FtdnaSubjectInput, FuzzyCandidate, MatchKind,
 };
 pub use navigator_domain::identity::{ExternalId, FtdnaMember, Mdka};
+pub use navigator_domain::ystr_cluster::{BranchSuggestion, ClusteredMember, YstrCluster, YstrClustering};
 pub use navigator_refgenome::vcf_lift::infer_source_build as infer_vcf_source_build;
 pub use navigator_refgenome::RefStatus;
 use navigator_refgenome::{

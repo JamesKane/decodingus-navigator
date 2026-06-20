@@ -326,6 +326,15 @@ ftdna.needsConfirm=Needs confirmation
 ftdna.itsNew=It's new
 ftdna.skip=Skip
 ftdna.mergeInto=Merge into
+# Y-STR clustering view
+cluster.byYstr=Cluster by Y-STR
+cluster.flatList=Flat list
+cluster.running=Clustering…
+cluster.hint=Group members by Y-STR genetic distance and suggest SNP branches for STR-only kits.
+cluster.confirmed=confirmed
+cluster.suggested=suggested
+cluster.unbranched=Unbranched cluster
+cluster.tooFew=Too few markers to cluster
 ftdna.commit=Commit import
 ftdna.statRoster=roster
 ftdna.statAncestry=ancestry

@@ -18,7 +18,7 @@ use navigator_app::{
     FtdnaImportSummary, FtdnaResolution, HaploAssignment, HeteroplasmySite, IbdComparison, IbdDetectorConfig,
     IbdSuggestion, IdentityVerification, IncomingRequest, PanelGenotype, PrivateBucket, ProjectImportSummary,
     ProjectOverview, ProjectSampleReport, ReadMetrics, RefBuildStatus, SexInferenceResult, SourceType,
-    StoredIbdExchange, StrConcordanceRow, SvAnalysisResult, YMatch,
+    StoredIbdExchange, StrConcordanceRow, SvAnalysisResult, YMatch, YstrClustering,
 };
 use navigator_domain::chipprofile::ChipProfile;
 use navigator_domain::du_domain::ids::SampleGuid;
@@ -96,6 +96,8 @@ pub enum Command {
     },
     /// Load a subject's imported genealogy (vendor ids + FTDNA member + MDKA) for the detail card.
     LoadGenealogy(SampleGuid),
+    /// Autocluster a project's members by Y-STR (suggest SNP branches for STR-only members).
+    ClusterProject(i64),
     /// Resolve (download + decompress + index) a reference build, streaming progress.
     ResolveReference {
         build: String,
@@ -557,6 +559,11 @@ pub enum Event {
         guid: SampleGuid,
         data: FtdnaGenealogy,
     },
+    /// A project's Y-STR clustering (members grouped by branch, STR-only suggestions).
+    ProjectClustering {
+        project_id: i64,
+        clustering: YstrClustering,
+    },
     /// Import needs reference build(s) downloaded first; `dir` lets the UI retry the import
     /// after the user approves and the download finishes.
     ReferenceNeeded {
@@ -948,6 +955,10 @@ pub async fn handle(app: &App, cmd: Command) -> Event {
         },
         Command::LoadGenealogy(guid) => match app.subject_genealogy(guid).await {
             Ok(data) => Event::Genealogy { guid, data },
+            Err(e) => Event::Error(e.to_string()),
+        },
+        Command::ClusterProject(project_id) => match app.cluster_project_ystr(project_id).await {
+            Ok(clustering) => Event::ProjectClustering { project_id, clustering },
             Err(e) => Event::Error(e.to_string()),
         },
         // ResolveReference is handled in the spawn loop (it streams progress events); reaching
