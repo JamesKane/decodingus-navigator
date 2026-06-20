@@ -473,6 +473,8 @@ pub enum Command {
     },
     /// Delete a subject. Refused by the app layer if it still has dependent data.
     DeleteBiosample(SampleGuid),
+    /// Clear all sequencing + derived/imported analysis data for a subject, keeping the subject.
+    ClearBiosampleData(SampleGuid),
     /// Delete a sequence run (cascades to its alignments + artifacts). `biosample_guid` is the
     /// owner, so the UI can refresh that subject's run list.
     DeleteSequenceRun {
@@ -693,6 +695,8 @@ pub enum Event {
         runs: Vec<SequenceRun>,
     },
     RunsChanged(SampleGuid),
+    /// A subject's analysis data was cleared (the UI fully reloads that subject + the list columns).
+    BiosampleDataCleared(SampleGuid),
     /// Donor-level haplogroup consensus for a subject (Y, mtDNA).
     Consensus {
         biosample_guid: SampleGuid,
@@ -1135,6 +1139,10 @@ pub async fn handle(app: &App, cmd: Command) -> Event {
         }
         Command::DeleteBiosample(guid) => match app.delete_biosample(guid).await {
             Ok(()) => Event::BiosamplesChanged,
+            Err(e) => Event::Error(e.to_string()),
+        },
+        Command::ClearBiosampleData(guid) => match app.clear_biosample_data(guid).await {
+            Ok(()) => Event::BiosampleDataCleared(guid),
             Err(e) => Event::Error(e.to_string()),
         },
         Command::DeleteSequenceRun { id, biosample_guid } => match app.delete_sequence_run(id).await {

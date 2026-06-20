@@ -445,6 +445,49 @@ impl NavigatorApp {
         }
     }
 
+    /// The Clear-data confirmation modal. Confirm sends a `ClearBiosampleData` command, which resets
+    /// the subject's analysis (runs, alignments, haplogroups, ancestry, profiles…) while keeping the
+    /// subject itself — the recovery tool for a botched import.
+    pub(crate) fn clear_subject_modal(&mut self, ctx: &egui::Context) {
+        let Some(guid) = self.confirm_clear else { return };
+        let name = self
+            .all_biosamples
+            .iter()
+            .chain(self.samples.iter())
+            .find(|b| b.guid == guid)
+            .map(|b| b.donor_identifier.clone())
+            .unwrap_or_else(|| guid.0.to_string());
+
+        let mut close = false;
+        modal_frame(ctx, "clear_subject_modal", 420.0, |ui| {
+            ui.label(egui::RichText::new(self.tr("clear.title")).strong().size(16.0));
+            ui.separator();
+            ui.add_space(8.0);
+            ui.label(format!("{} “{}”?", self.tr("clear.confirm"), name));
+            ui.add_space(6.0);
+            ui.label(egui::RichText::new(self.tr("clear.note")).weak().small());
+            ui.add_space(12.0);
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui
+                    .add(
+                        egui::Button::new(egui::RichText::new(self.tr("common.clearData")).color(egui::Color32::WHITE))
+                            .fill(DANGER),
+                    )
+                    .clicked()
+                {
+                    let _ = self.tx.send(Command::ClearBiosampleData(guid));
+                    close = true;
+                }
+                if ui.button(self.tr("common.cancel")).clicked() {
+                    close = true;
+                }
+            });
+        });
+        if close {
+            self.confirm_clear = None;
+        }
+    }
+
     /// Summary modal after a batch Add Data / drag-and-drop: per-file detected type + any skipped
     /// files with the reason. Dismissed with Close.
     pub(crate) fn batch_import_modal(&mut self, ctx: &egui::Context) {

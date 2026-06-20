@@ -123,6 +123,16 @@ pub async fn get_for_alignment_method(
     row.map(Row::into_domain).transpose()
 }
 
+/// Delete every ancestry estimate recorded for `alignment_id` (all methods). Used when an
+/// alignment is deleted, so its per-alignment ancestry doesn't outlive it.
+pub async fn delete_for_alignment(pool: &SqlitePool, alignment_id: i64) -> Result<(), StoreError> {
+    sqlx::query("DELETE FROM ancestry_result WHERE alignment_id = ?")
+        .bind(alignment_id)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
 /// Every ancestry estimate recorded for `alignment_id` (one per method), newest first.
 pub async fn list_for_alignment(pool: &SqlitePool, alignment_id: i64) -> Result<Vec<AncestryResult>, StoreError> {
     let rows: Vec<Row> = sqlx::query_as(&format!(

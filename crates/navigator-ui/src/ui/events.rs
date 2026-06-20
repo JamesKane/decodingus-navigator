@@ -197,6 +197,14 @@ impl NavigatorApp {
                         let _ = self.tx.send(Command::LoadRuns(guid));
                     }
                 }
+                Event::BiosampleDataCleared(guid) => {
+                    self.status = self.tr("clear.done").to_string();
+                    // Fully reload the subject view from the now-empty DB + refresh the list columns.
+                    if self.selected_sample == Some(guid) {
+                        self.select_sample(guid);
+                    }
+                    let _ = self.tx.send(Command::LoadAllBiosamples);
+                }
                 Event::StrProfiles {
                     biosample_guid,
                     profiles,

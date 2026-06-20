@@ -335,6 +335,13 @@ impl NavigatorApp {
                 {
                     self.confirm_delete = Some(guid);
                 }
+                if ui
+                    .button(self.tr("common.clearData"))
+                    .on_hover_text(self.tr("clear.hint"))
+                    .clicked()
+                {
+                    self.confirm_clear = Some(guid);
+                }
                 if ui.button(self.tr("common.edit")).clicked() {
                     self.edit_subject = Some(EditSubject {
                         guid,

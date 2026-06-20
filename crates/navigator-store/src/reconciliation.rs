@@ -78,6 +78,18 @@ pub async fn clear_override(
     Ok(())
 }
 
+/// Clear the whole reconciliation audit log for a subject + DNA type. Used when the derived
+/// consensus is purged (the audit describes a placement that no longer exists), so a stale
+/// RUN_RECORDED history can't linger after the underlying alignments are gone.
+pub async fn clear_audit(pool: &SqlitePool, biosample_guid: SampleGuid, dna_type: DnaType) -> Result<(), StoreError> {
+    sqlx::query("DELETE FROM reconciliation_audit WHERE biosample_guid = ? AND dna_type = ?")
+        .bind(biosample_guid.0.to_string())
+        .bind(dna_type.as_str())
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
 /// Append an audit-log entry.
 pub async fn append_audit(
     pool: &SqlitePool,

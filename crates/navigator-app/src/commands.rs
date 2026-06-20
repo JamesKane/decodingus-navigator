@@ -141,6 +141,10 @@ impl App {
                  {variants} variant-set, {chips} chip, {mt} mtDNA record(s) — remove its data first"
             )));
         }
+        // The guard above ensures no runs/profiles remain; sweep any derived-only orphans
+        // (stale haplogroup/consensus/reconciliation/ancestry/IBD rows from an earlier
+        // incomplete delete) so removing the subject can never leave dangling rows.
+        biosample::clear_data(self.store.pool(), guid).await?;
         if !biosample::delete(self.store.pool(), guid).await? {
             return Err(AppError::Store(StoreError::NotFound(format!("biosample {}", guid.0))));
         }
@@ -307,11 +311,29 @@ impl App {
         for &aln in alignment_ids {
             haplogroup_call::delete_one(pool, biosample, DnaType::Y, &format!("aln:{aln}")).await?;
             haplogroup_call::delete_one(pool, biosample, DnaType::Mt, &format!("aln:{aln}:mt")).await?;
+            // The per-alignment ancestry estimates die with the alignment.
+            ancestry_result::delete_for_alignment(pool, aln).await?;
         }
         for dna in ["Y", "Mt", "Auto"] {
             consensus_profile::delete(pool, biosample, dna).await?;
         }
         consensus_painting::delete(pool, biosample).await?;
+        // The audit log describes the consensus we just wiped; clear it so deleting the last run
+        // can't leave a stale RUN_RECORDED history pointing at gone alignments. It is re-appended
+        // when the consensus is next rebuilt from any remaining calls.
+        recon_store::clear_audit(pool, biosample, DnaType::Y).await?;
+        recon_store::clear_audit(pool, biosample, DnaType::Mt).await?;
+        Ok(())
+    }
+
+    /// Reset a subject's analysis: clear **all** sequencing + derived/imported data (runs,
+    /// alignments, cached artifacts, Y/mt haplogroups + consensus + reconciliation, ancestry, IBD
+    /// results, and chip/STR/variant/mtDNA profiles) while keeping the subject itself — its
+    /// identity (name/sex/center), vendor IDs, project memberships, and MDKA genealogy. The
+    /// recovery tool for a botched import: clears orphaned/garbage rows so the subject can be
+    /// re-imported cleanly. Atomic ([`biosample::clear_data`] runs in one transaction).
+    pub async fn clear_biosample_data(&self, guid: SampleGuid) -> Result<(), AppError> {
+        biosample::clear_data(self.store.pool(), guid).await?;
         Ok(())
     }
 

@@ -425,6 +425,8 @@ pub struct NavigatorApp {
     edit_subject: Option<EditSubject>,
     /// Subject pending delete confirmation (Some ⇒ the confirm dialog is shown).
     confirm_delete: Option<SampleGuid>,
+    /// Subject pending "clear all data" confirmation (Some ⇒ the confirm dialog is shown).
+    confirm_clear: Option<SampleGuid>,
     /// The last batch-import summary, shown in a modal until dismissed.
     batch_import: Option<BatchImportSummary>,
     /// Y-STR-from-sequence concordance for the selected subject: `(guid, source alignment, rows)`.
@@ -841,6 +843,7 @@ impl NavigatorApp {
             analysis: None,
             edit_subject: None,
             confirm_delete: None,
+            confirm_clear: None,
             batch_import: None,
             str_concordance: None,
             str_running: false,
@@ -1090,6 +1093,7 @@ impl eframe::App for NavigatorApp {
         self.analysis_modal(ctx);
         self.edit_subject_modal(ctx);
         self.delete_subject_modal(ctx);
+        self.clear_subject_modal(ctx);
         self.data_delete_modal(ctx);
         self.assign_project_modal(ctx);
         self.edit_project_modal(ctx);

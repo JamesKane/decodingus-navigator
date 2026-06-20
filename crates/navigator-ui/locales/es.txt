@@ -78,6 +78,7 @@ import.title=Resumen de importación
 import.none=No se encontraron archivos de datos reconocidos.
 common.edit=Editar
 common.delete=Eliminar
+common.clearData=Borrar datos
 common.save=Guardar
 
 # Diálogos de editar / eliminar sujeto
@@ -90,6 +91,11 @@ edit.sex=Sexo
 delete.title=Eliminar sujeto
 delete.confirm=Eliminar
 delete.note=El sujeto no debe tener secuenciaciones ni perfiles importados; elimine sus datos primero.
+clear.title=Borrar datos del sujeto
+clear.confirm=Borrar todos los datos de secuenciación y análisis de
+clear.note=Elimina todas las secuenciaciones, alineamientos, haplogrupos, ascendencia, resultados IBD y perfiles importados. Conserva el sujeto, su nombre/sexo/IDs, las pertenencias a proyectos y la genealogía. No se puede deshacer.
+clear.hint=Restablece los datos de análisis de este sujeto (conserva el sujeto): corrige restos de una importación incorrecta.
+clear.done=Datos del sujeto borrados.
 delete.dataTitle=Eliminar fuente de datos
 delete.dataNote=Esto elimina permanentemente el registro y cualquier resultado de análisis derivado de él.
 merge.title=Combinar ejecuciones de secuenciación

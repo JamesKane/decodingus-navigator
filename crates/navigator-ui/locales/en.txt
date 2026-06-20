@@ -83,6 +83,7 @@ import.title=Import summary
 import.none=No recognized data files found.
 common.edit=Edit
 common.delete=Delete
+common.clearData=Clear data
 common.save=Save
 
 # Edit / delete subject dialogs
@@ -95,6 +96,11 @@ edit.sex=Sex
 delete.title=Delete Subject
 delete.confirm=Delete
 delete.note=The subject must have no sequencing runs or imported profiles; remove its data first.
+clear.title=Clear Subject Data
+clear.confirm=Clear all sequencing & analysis data for
+clear.note=Removes all sequencing runs, alignments, haplogroups, ancestry, IBD results, and imported profiles. Keeps the subject, its name/sex/IDs, project memberships, and genealogy. This cannot be undone.
+clear.hint=Reset this subject's analysis data (keeps the subject) — fixes leftovers from a bad import.
+clear.done=Subject data cleared.
 delete.dataTitle=Delete Data Source
 delete.dataNote=This permanently removes the record and any analysis results derived from it.
 merge.title=Merge sequencing runs

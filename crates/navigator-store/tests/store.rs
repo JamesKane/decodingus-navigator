@@ -177,6 +177,101 @@ async fn run_alignment_chain_persists() {
 }
 
 #[tokio::test]
+async fn clear_data_resets_subject_but_keeps_the_biosample() {
+    use navigator_domain::reconciliation::{AuditEntry, DnaType};
+    use navigator_store::reconciliation;
+
+    let s = store().await;
+    let b = sample(None);
+    biosample::create(s.pool(), &b).await.unwrap();
+    let run = sequence_run::create(
+        s.pool(),
+        &NewSequenceRun {
+            biosample_guid: b.guid,
+            platform_name: "ILLUMINA".into(),
+            instrument_model: None,
+            test_type: "WGS".into(),
+            library_layout: None,
+            total_reads: None,
+            pf_reads_aligned: None,
+            mean_read_length: None,
+            mean_insert_size: None,
+        },
+    )
+    .await
+    .unwrap();
+    let aln = alignment::create(
+        s.pool(),
+        &NewAlignment {
+            sequence_run_id: run.id,
+            reference_build: "chm13v2.0".into(),
+            aligner: "bwa".into(),
+            variant_caller: None,
+            bam_path: None,
+            reference_path: None,
+            content_sha256: None,
+        },
+    )
+    .await
+    .unwrap();
+    artifact::upsert(
+        s.pool(),
+        aln.id,
+        "coverage",
+        "v1",
+        Utc::now(),
+        "{}",
+        "walk",
+        "full",
+        None,
+    )
+    .await
+    .unwrap();
+    // A biosample-keyed derived row (the kind that orphaned subject 103589).
+    reconciliation::append_audit(
+        s.pool(),
+        b.guid,
+        DnaType::Y,
+        &AuditEntry {
+            timestamp: "2026-06-20T00:00:00Z".into(),
+            action: "RUN_RECORDED".into(),
+            note: "aln:1".into(),
+        },
+    )
+    .await
+    .unwrap();
+
+    biosample::clear_data(s.pool(), b.guid).await.unwrap();
+
+    // The subject survives; everything hanging off it is gone.
+    assert!(
+        biosample::get(s.pool(), b.guid).await.unwrap().is_some(),
+        "biosample kept"
+    );
+    assert!(
+        sequence_run::list_for_biosample(s.pool(), b.guid)
+            .await
+            .unwrap()
+            .is_empty(),
+        "runs cleared"
+    );
+    assert!(
+        alignment::list_for_run(s.pool(), run.id).await.unwrap().is_empty(),
+        "alignments cleared"
+    );
+    assert!(
+        reconciliation::list_audit(s.pool(), b.guid, DnaType::Y)
+            .await
+            .unwrap()
+            .is_empty(),
+        "audit cleared"
+    );
+
+    // Idempotent: a second clear is a no-op (no error).
+    biosample::clear_data(s.pool(), b.guid).await.unwrap();
+}
+
+#[tokio::test]
 async fn artifact_upsert_replaces_same_version_and_keeps_distinct_versions() {
     let s = store().await;
     let b = sample(None);

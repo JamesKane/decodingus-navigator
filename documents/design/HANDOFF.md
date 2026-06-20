@@ -28,12 +28,25 @@ Workspace builds clean (`cargo clippy --all-targets -- -D warnings`); `cargo tes
 green except a **known parallel-isolation flake** (`y_profile_build_persists_and_reloads`,
 `import_23andme_*`) that passes in isolation. `cargo fmt` clean is a per-commit gate.
 
-### Active work — social layer (Navigator/Edge side)
+### Social layer (Navigator/Edge side) — DONE, on `main` (not pushed)
 
-Branch **`feat/social-community-tab`** (2 commits, off `main`, not yet pushed). Implements the
-"communication core" consumer of the AppView's signed social API — the alpha/beta testers' real
-client. Plan: `~/.claude/plans/jazzy-sniffing-storm.md`; roadmap:
-`decodingus/documents/planning/social-layer-roadmap.md`.
+All social Edge tiers shipped and **merged to `main`** (the `feat/social-community-tab` branch was
+fast-forwarded into `main` and deleted; nothing pushed yet). Roadmap:
+`decodingus/documents/planning/social-layer-roadmap.md`. Per-feature memory:
+[[social-feedpost-publish]] (3b), [[social-peer-dms]] (3a), [[social-recruitment-3c]] (3c).
+Commits: `96b8577` signed Edge client · `5a0cb5e` Community tab · `06a754c` 3b feed.post ·
+`a142081` 3a peer DMs · `3e943e7` 3c recruitment. (AppView `decodingus` `main`: `c4cc15c` recruitment
+Edge — plus the user's own follow-on extending it to full create+respond.)
+
+A later **maintenance feature** also landed on `main`: **Clear subject data** — a "Clear data" button
+(subject header, next to Delete) + confirm modal that resets a subject's analysis (runs/alignments/
+artifacts, Y/mt haplogroups + consensus + reconciliation audit/overrides, ancestry, IBD results,
+chip/STR/variant/mtDNA profiles) while keeping the subject (name/sex/IDs, project memberships, MDKA).
+`biosample::clear_data` (one transaction). Also closed the orphan root-cause: `purge_alignment_derived`
+now clears the reconciliation audit + per-alignment ancestry, and `delete_biosample` sweeps via
+`clear_data` so a delete can't leave dangling rows (fixed subject 103589's stale Y consensus).
+
+Below is the original communication-core build log (kept for reference):
 
 - `96b8577` — **signed Edge client**: `navigator-sync::social::messages` (canonical signing strings
   mirroring `du_db::social::messages` byte-for-byte) + `navigator-app::social` (device-key-signed

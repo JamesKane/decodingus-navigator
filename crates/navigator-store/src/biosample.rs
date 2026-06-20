@@ -109,6 +109,75 @@ pub async fn set_project(pool: &SqlitePool, guid: SampleGuid, project_id: Option
     Ok(affected > 0)
 }
 
+/// Clear **all sequencing + derived/imported analysis data** for a subject in one transaction,
+/// leaving the biosample row itself (and its identity: name/sex/center, vendor external IDs,
+/// project memberships, and MDKA genealogy) intact. The "reset this subject" maintenance op —
+/// used both by the explicit *Clear data* action and as the pre-step of [`delete`] (so a delete
+/// can never orphan rows). Removes: sequencing runs → alignments → cached analysis artifacts
+/// (and unlinks source files); Y/mt haplogroup calls + genome consensus + chromosome painting;
+/// reconciliation overrides + audit log; ancestry results; IBD exchange results; mtDNA sequences;
+/// and chip / STR / variant profiles (with their child rows). Idempotent.
+pub async fn clear_data(pool: &SqlitePool, guid: SampleGuid) -> Result<(), StoreError> {
+    let g = guid.0.to_string();
+    let mut tx = pool.begin().await?;
+    // The alignments that belong to this subject (via its runs) — drives the alignment-keyed deletes.
+    const ALN: &str =
+        "SELECT id FROM alignment WHERE sequence_run_id IN (SELECT id FROM sequence_run WHERE biosample_guid = ?)";
+    // Alignment-keyed children first (artifacts, then unlink source files so the file identity survives).
+    sqlx::query(&format!("DELETE FROM analysis_artifact WHERE alignment_id IN ({ALN})"))
+        .bind(&g)
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query(&format!(
+        "UPDATE source_file SET alignment_id = NULL WHERE alignment_id IN ({ALN})"
+    ))
+    .bind(&g)
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query(
+        "DELETE FROM alignment WHERE sequence_run_id IN (SELECT id FROM sequence_run WHERE biosample_guid = ?)",
+    )
+    .bind(&g)
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query("DELETE FROM sequence_run WHERE biosample_guid = ?")
+        .bind(&g)
+        .execute(&mut *tx)
+        .await?;
+    // Profile children (markers/calls) before their parents.
+    sqlx::query("DELETE FROM str_marker WHERE str_profile_id IN (SELECT id FROM str_profile WHERE biosample_guid = ?)")
+        .bind(&g)
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query(
+        "DELETE FROM variant_call WHERE variant_set_id IN (SELECT id FROM variant_set WHERE biosample_guid = ?)",
+    )
+    .bind(&g)
+    .execute(&mut *tx)
+    .await?;
+    // Biosample-keyed derived + imported tables (the biosample row itself is kept).
+    for table in [
+        "haplogroup_call",
+        "consensus_profile",
+        "consensus_painting",
+        "reconciliation_override",
+        "reconciliation_audit",
+        "ancestry_result",
+        "ibd_exchange_result",
+        "mtdna_sequence",
+        "str_profile",
+        "variant_set",
+        "chip_profile",
+    ] {
+        sqlx::query(&format!("DELETE FROM {table} WHERE biosample_guid = ?"))
+            .bind(&g)
+            .execute(&mut *tx)
+            .await?;
+    }
+    tx.commit().await?;
+    Ok(())
+}
+
 /// Delete a biosample row. Returns whether a row was removed. Callers must ensure no
 /// dependent rows reference it (sequence runs, profiles, etc.) — the app layer guards this.
 pub async fn delete(pool: &SqlitePool, guid: SampleGuid) -> Result<bool, StoreError> {
