@@ -458,7 +458,8 @@ impl App {
         Ok(biosample_project::list_projects_for(self.store.pool(), guid).await?)
     }
 
-    /// Build a one-shot index of workspace Subjects with their Y terminal SNP (for fuzzy matching).
+    /// Build a one-shot index of workspace Subjects with their Y terminal SNP + merged Y-STR markers
+    /// (for fuzzy matching). Computed once to avoid O(kits × subjects) DB reads.
     async fn existing_subject_index(&self) -> Result<Vec<ExistingSubject>, AppError> {
         let mut out = Vec::new();
         for b in biosample::list_all(self.store.pool()).await? {
@@ -468,10 +469,21 @@ impl App {
                 .map(|c| c.haplogroup)
                 .as_deref()
                 .and_then(terminal_snp);
+            // Merge all of the subject's Y-STR profiles into one marker set (dedup by name).
+            let mut ystr: Vec<StrMarker> = Vec::new();
+            let mut seen = std::collections::HashSet::new();
+            for p in self.list_str_profiles(b.guid).await? {
+                for m in p.markers {
+                    if seen.insert(m.marker.to_ascii_uppercase()) {
+                        ystr.push(m);
+                    }
+                }
+            }
             out.push(ExistingSubject {
                 guid: b.guid,
                 donor_identifier: b.donor_identifier,
                 y_terminal,
+                ystr,
             });
         }
         Ok(out)
@@ -512,6 +524,21 @@ impl App {
                     reasons.push(format!("same Y terminal {ex}"));
                 }
             }
+            // Y-STR genetic distance — the most reliable signal when both sides have a profile (and
+            // robust to ISOGG-vs-SNP haplogroup-label mismatches). A small GD over many markers is a
+            // near-certain shared paternal lineage / same person.
+            if !input.ystr_markers.is_empty() && !e.ystr.is_empty() {
+                let (diff, compared) = navigator_domain::strprofile::str_distance(&input.ystr_markers, &e.ystr);
+                if compared >= 12 {
+                    if diff == 0 {
+                        score += 0.8;
+                        reasons.push(format!("Y-STR exact ({compared} markers)"));
+                    } else if (diff as f32) / (compared as f32) <= 0.10 {
+                        score += 0.6;
+                        reasons.push(format!("Y-STR GD {diff}/{compared}"));
+                    }
+                }
+            }
             if let Some(name) = incoming_name.as_deref() {
                 let sim = name_similarity(name, &e.donor_identifier);
                 if sim > 0.0 {
@@ -541,7 +568,11 @@ impl App {
 struct ExistingSubject {
     guid: SampleGuid,
     donor_identifier: String,
+    /// Terminal SNP of the subject's computed Y consensus (may be an ISOGG long-form label that
+    /// doesn't reduce to an SNP — then Y-STR is the reliable signal).
     y_terminal: Option<String>,
+    /// The subject's merged Y-STR markers (across all imported profiles), for genetic-distance match.
+    ystr: Vec<StrMarker>,
 }
 
 fn empty_input(kit: &str) -> FtdnaSubjectInput {

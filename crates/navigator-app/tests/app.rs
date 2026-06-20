@@ -2434,3 +2434,81 @@ async fn ftdna_import_into_new_project_creates_it_at_commit() {
     assert_eq!(overview[0].project.name, "R1b-CTS4466Plus");
     assert_eq!(overview[0].project.id, summary.project_id);
 }
+
+/// FTDNA matching via Y-STR genetic distance: an existing subject whose Y haplogroup is an ISOGG
+/// long-form label (no SNP terminal to compare) but which carries the same Y-STR profile still
+/// surfaces as a fuzzy candidate (the real KANE-0001 = GFX case).
+#[tokio::test]
+async fn ftdna_matches_existing_subject_by_ystr_distance() {
+    use navigator_app::{DnaType, FtdnaImportOptions, MatchKind};
+    use navigator_domain::reconciliation::RunHaplogroupCall;
+
+    let ftdna = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/ftdna");
+    let app = app().await;
+
+    // Existing subject: ISOGG-form Y label that does NOT reduce to the FGC29071 SNP.
+    let kane = app.add_biosample(None, "KANE-0001", None, None).await.unwrap();
+    let call = RunHaplogroupCall {
+        source_label: "wgs".into(),
+        haplogroup: "R1b1a1b1a1a2c1a3a".into(),
+        lineage: vec!["R".into(), "R1b1a1b1a1a2c1a3a".into()],
+        score: 0.9,
+        matched: 0,
+        expected: 0,
+    };
+    app.record_haplogroup_call(kane.guid, DnaType::Y, "aln:1", &call)
+        .await
+        .unwrap();
+
+    // Give KANE-0001 B5163's Y-STR markers (from the overview fixture) via a tall CSV.
+    let ydna = std::fs::read_to_string(ftdna.join("YDNA_Results_Overview.csv")).unwrap();
+    let per_kit = navigator_domain::ftdna::parse_ydna_overview(&ydna).unwrap();
+    let (_, markers) = per_kit.iter().find(|(k, _)| k == "B5163").unwrap();
+    assert!(markers.len() >= 12, "fixture must carry enough markers to match on");
+    let mut tall = String::from("marker,value\n");
+    for m in markers {
+        tall.push_str(&format!("{},{}\n", m.marker, m.value));
+    }
+    let tmp = std::env::temp_dir().join("ftdna_ystr_match_test.csv");
+    std::fs::write(&tmp, tall).unwrap();
+    app.import_str_profile_from_csv(
+        kane.guid,
+        "FTDNA Y-700",
+        Some("FTDNA".into()),
+        Some("IMPORTED".into()),
+        &tmp,
+    )
+    .await
+    .unwrap();
+
+    // Plan with roster + Y-STR. B5163's SNP terminal won't match the ISOGG label, but the Y-STR
+    // genetic distance (GD 0) must surface KANE-0001 as a candidate.
+    let plan = app
+        .plan_ftdna_import(
+            None,
+            Some("R1b-CTS4466Plus".into()),
+            Some(ftdna.join("Member_Information.csv")),
+            None,
+            None,
+            Some(ftdna.join("YDNA_Results_Overview.csv")),
+            FtdnaImportOptions::default(),
+        )
+        .await
+        .unwrap();
+    let b = plan.rows.iter().find(|r| r.kit_number == "B5163").unwrap();
+    match &b.kind {
+        MatchKind::NeedsConfirm { candidates } => {
+            let c = candidates
+                .iter()
+                .find(|c| c.guid == kane.guid)
+                .expect("KANE-0001 candidate");
+            assert!(
+                c.reasons.iter().any(|r| r.contains("Y-STR")),
+                "matched on Y-STR: {:?}",
+                c.reasons
+            );
+        }
+        other => panic!("expected B5163 NeedsConfirm via Y-STR, got {other:?}"),
+    }
+    let _ = std::fs::remove_file(&tmp);
+}
