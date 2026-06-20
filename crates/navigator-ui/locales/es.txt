@@ -397,6 +397,16 @@ card.mtVariantProfile=Perfil de consenso ADNmt
 card.autosomalConsensus=Perfil de consenso autosómico
 card.consensusSummary=Resumen de consenso
 card.sourceInventory=Inventario de fuentes
+# Tarjeta de genealogía (importación FTDNA)
+card.genealogy=Genealogía (FTDNA)
+geneal.ids=Kit / IDs:
+geneal.reportedY=Y reportado:
+geneal.access=acceso
+geneal.sharesYes=· comparte públicamente
+geneal.sharesNo=· no compartido públicamente
+geneal.paternal=MDKA paterno:
+geneal.maternal=MDKA materno:
+geneal.ancestor=MDKA:
 hint.noConsensusYet=Sin consenso aún — asigna un haplogrupo desde una fuente en Fuentes.
 hint.ancestryNoData=Sin ascendencia aún — estímala para una fuente en Fuentes, o importa un chip.
 hint.sourcesTabHint=Abre la pestaña Fuentes para inspeccionar la calidad y ubicación de cada resultado.

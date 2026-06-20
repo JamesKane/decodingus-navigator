@@ -410,6 +410,16 @@ card.mtVariantProfile=mtDNA consensus profile
 card.autosomalConsensus=Autosomal consensus profile
 card.consensusSummary=Consensus summary
 card.sourceInventory=Source inventory
+# Genealogy (FTDNA import) card
+card.genealogy=Genealogy (FTDNA)
+geneal.ids=Kit / IDs:
+geneal.reportedY=Reported Y:
+geneal.access=access
+geneal.sharesYes=· shares publicly
+geneal.sharesNo=· not shared publicly
+geneal.paternal=Paternal MDKA:
+geneal.maternal=Maternal MDKA:
+geneal.ancestor=MDKA:
 hint.noConsensusYet=No consensus yet — assign a haplogroup from a source under Sources.
 hint.ancestryNoData=No ancestry yet — estimate it for a source under Sources, or import a chip.
 hint.sourcesTabHint=Open the Sources tab to inspect each sequencing result's quality + placement.

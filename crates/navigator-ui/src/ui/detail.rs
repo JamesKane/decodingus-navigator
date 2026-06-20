@@ -691,6 +691,84 @@ impl NavigatorApp {
             ui.add_space(4.0);
             ui.label(egui::RichText::new(self.tr("hint.sourcesTabHint")).weak().small());
         });
+        self.genealogy_card(ui, _guid);
+    }
+
+    /// Imported FTDNA genealogy for the open subject: vendor ids, FTDNA member labels, and the MDKA
+    /// per lineage. PII — shown locally only (never federated). Hidden when nothing was imported.
+    fn genealogy_card(&mut self, ui: &mut egui::Ui, guid: SampleGuid) {
+        let Some((g, data)) = self.genealogy.as_ref().filter(|(g, d)| *g == guid && !d.is_empty()) else {
+            return;
+        };
+        let _ = g;
+        ui.add_space(10.0);
+        card(ui, self.tr("card.genealogy"), |ui| {
+            // Vendor identifiers (kit numbers, etc.).
+            if !data.external_ids.is_empty() {
+                let ids = data
+                    .external_ids
+                    .iter()
+                    .map(|e| format!("{}: {}", e.source, e.external_id))
+                    .collect::<Vec<_>>()
+                    .join("  ·  ");
+                ui.horizontal(|ui| {
+                    ui.strong(self.tr("geneal.ids"));
+                    ui.label(ids);
+                });
+            }
+            // FTDNA member labels (reported haplogroups + access/consent).
+            if let Some(m) = &data.member {
+                if let Some(y) = &m.y_haplogroup_ftdna {
+                    ui.horizontal(|ui| {
+                        ui.strong(self.tr("geneal.reportedY"));
+                        ui.label(y);
+                    });
+                }
+                ui.horizontal(|ui| {
+                    if let Some(a) = &m.access_granted {
+                        ui.label(
+                            egui::RichText::new(format!("{}: {a}", self.tr("geneal.access")))
+                                .weak()
+                                .small(),
+                        );
+                    }
+                    if let Some(s) = m.publicly_shares {
+                        let txt = if s {
+                            self.tr("geneal.sharesYes")
+                        } else {
+                            self.tr("geneal.sharesNo")
+                        };
+                        ui.label(egui::RichText::new(txt).weak().small());
+                    }
+                });
+            }
+            // MDKA per lineage.
+            for mk in &data.mdka {
+                ui.add_space(2.0);
+                let lineage = match mk.lineage.as_str() {
+                    "Y" => self.tr("geneal.paternal"),
+                    "Mt" => self.tr("geneal.maternal"),
+                    _ => self.tr("geneal.ancestor"),
+                };
+                ui.horizontal(|ui| {
+                    ui.strong(lineage);
+                    ui.label(mk.ancestor_name.as_deref().unwrap_or("—"));
+                    let mut bits = Vec::new();
+                    match (mk.birth_year, mk.death_year) {
+                        (Some(b), Some(d)) => bits.push(format!("{b}–{d}")),
+                        (Some(b), None) => bits.push(format!("b. {b}")),
+                        (None, Some(d)) => bits.push(format!("d. {d}")),
+                        (None, None) => {}
+                    }
+                    if let Some(place) = mk.origin_place.as_deref().or(mk.origin_country.as_deref()) {
+                        bits.push(place.to_string());
+                    }
+                    if !bits.is_empty() {
+                        ui.label(egui::RichText::new(bits.join(" · ")).weak().small());
+                    }
+                });
+            }
+        });
     }
 
     /// The per-sequencing-result hub: the source lists (runs/alignments/chips/STR/mtDNA) plus, for the

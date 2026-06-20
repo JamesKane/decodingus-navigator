@@ -2354,6 +2354,13 @@ async fn ftdna_project_import_plans_and_commits_merge_new_and_orphan() {
     assert_eq!(mdkas[0].birth_year, Some(1830));
     assert_eq!(mdkas[0].origin_country.as_deref(), Some("Ireland"));
     assert_eq!(mdkas[0].latitude, Some(52.75));
+
+    // The detail-card bundle composes all three (and a never-imported subject is empty).
+    let bundle = app.subject_genealogy(gfx.guid).await.unwrap();
+    assert!(!bundle.is_empty());
+    assert_eq!(bundle.external_ids.len(), 1);
+    assert!(bundle.member.is_some());
+    assert_eq!(bundle.mdka.len(), 1);
     assert!(app
         .project_membership_ids(gfx.guid)
         .await

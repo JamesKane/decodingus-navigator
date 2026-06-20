@@ -132,7 +132,33 @@ pub struct FtdnaImportSummary {
     pub errors: Vec<String>,
 }
 
+/// A Subject's imported genealogy bundle: vendor ids, FTDNA member labels, and MDKA rows. PII —
+/// for local display only (never federated). Empty when nothing was imported for the Subject.
+#[derive(Debug, Clone, Default)]
+pub struct FtdnaGenealogy {
+    pub external_ids: Vec<navigator_domain::identity::ExternalId>,
+    pub member: Option<navigator_domain::identity::FtdnaMember>,
+    pub mdka: Vec<navigator_domain::identity::Mdka>,
+}
+
+impl FtdnaGenealogy {
+    /// Nothing imported → the detail card can be skipped.
+    pub fn is_empty(&self) -> bool {
+        self.external_ids.is_empty() && self.member.is_none() && self.mdka.is_empty()
+    }
+}
+
 impl App {
+    /// One-shot read of a Subject's imported genealogy (vendor ids + FTDNA member + MDKA) for the
+    /// subject-detail card.
+    pub async fn subject_genealogy(&self, guid: SampleGuid) -> Result<FtdnaGenealogy, AppError> {
+        Ok(FtdnaGenealogy {
+            external_ids: self.external_ids(guid).await?,
+            member: self.ftdna_member(guid).await?,
+            mdka: self.mdka_for(guid).await?,
+        })
+    }
+
     /// Parse the FTDNA batch files, join by kit, and match against the workspace → a dry-run plan.
     /// Any of the three files may be absent (a roster-only or ancestry-only import is valid).
     pub async fn plan_ftdna_import(

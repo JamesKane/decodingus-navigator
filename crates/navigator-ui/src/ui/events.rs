@@ -84,6 +84,15 @@ impl NavigatorApp {
                     self.ftdna_resolutions.clear();
                     let _ = self.tx.send(Command::LoadOverview);
                     let _ = self.tx.send(Command::LoadAllBiosamples);
+                    // Refresh the open subject's genealogy card if a merge/create touched it.
+                    if let Some(guid) = self.selected_sample {
+                        let _ = self.tx.send(Command::LoadGenealogy(guid));
+                    }
+                }
+                Event::Genealogy { guid, data } => {
+                    if self.selected_sample == Some(guid) {
+                        self.genealogy = Some((guid, data));
+                    }
                 }
                 Event::ReferenceNeeded { dir, builds } => {
                     self.importing = false;
@@ -839,6 +848,7 @@ impl NavigatorApp {
         self.mt_profile_loading = false;
         self.auto_profile = None;
         self.auto_profile_loading = false;
+        self.genealogy = None;
         self.clear_run_selection();
         self.runs.clear();
         self.str_profiles.clear();
@@ -900,6 +910,8 @@ impl NavigatorApp {
         let _ = self.tx.send(Command::LoadIbdExchanges { biosample_guid: guid });
         // And the autosomal (diploid) consensus snapshot for the Autosomal tab.
         let _ = self.tx.send(Command::LoadAutosomalProfile { biosample_guid: guid });
+        // Imported FTDNA genealogy (vendor ids + member labels + MDKA) for the Overview card.
+        let _ = self.tx.send(Command::LoadGenealogy(guid));
     }
 
     pub(crate) fn select_run(&mut self, id: i64) {

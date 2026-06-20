@@ -16,11 +16,11 @@ use crate::widgets::{
 use eframe::egui;
 use navigator_app::{
     AncestryResult, AncestrySegment, AppSettings, AuditEntry, BatchImportSummary, BuildNeed, CallState,
-    CompatibilityLevel, Consensus, Coverage, DenovoCall, DnaType, FtdnaImportPlan, FtdnaResolution, HaploAssignment,
-    HeteroplasmySite, IbdComparison, IbdSuggestion, IdentityVerification, MatchKind, MtRegion, MtVariant,
-    PanelGenotype, PrivateBucket, PrivateClass, ProjectOverview, ProjectSampleReport, ReadMetrics, RefBuildStatus,
-    SexInferenceResult, SnpEvidence, SourceType, StrConcordanceRow, SvAnalysisResult, VerificationStatus, YMatch,
-    YProfile, YSignal, YState, YVariantStatus,
+    CompatibilityLevel, Consensus, Coverage, DenovoCall, DnaType, FtdnaGenealogy, FtdnaImportPlan, FtdnaResolution,
+    HaploAssignment, HeteroplasmySite, IbdComparison, IbdSuggestion, IdentityVerification, MatchKind, MtRegion,
+    MtVariant, PanelGenotype, PrivateBucket, PrivateClass, ProjectOverview, ProjectSampleReport, ReadMetrics,
+    RefBuildStatus, SexInferenceResult, SnpEvidence, SourceType, StrConcordanceRow, SvAnalysisResult,
+    VerificationStatus, YMatch, YProfile, YSignal, YState, YVariantStatus,
 };
 use navigator_domain::chipprofile::{self, ChipProfile};
 use navigator_domain::du_domain::ids::SampleGuid;
@@ -628,6 +628,9 @@ pub struct NavigatorApp {
     ftdna_plan: Option<FtdnaImportPlan>,
     /// The admin's per-kit resolutions for the fuzzy rows in [`Self::ftdna_plan`].
     ftdna_resolutions: std::collections::BTreeMap<String, FtdnaResolution>,
+    /// The selected subject's imported genealogy (vendor ids + FTDNA member + MDKA), for the
+    /// Overview card. `(guid, data)` so a stale bundle from a prior subject isn't shown.
+    genealogy: Option<(SampleGuid, FtdnaGenealogy)>,
     forms: Forms,
     status: String,
 }
@@ -901,6 +904,7 @@ impl NavigatorApp {
             deep_progress: None,
             ftdna_plan: None,
             ftdna_resolutions: std::collections::BTreeMap::new(),
+            genealogy: None,
             forms: Forms {
                 ploidy: "2".into(),
                 run_test_type: "WGS".into(),

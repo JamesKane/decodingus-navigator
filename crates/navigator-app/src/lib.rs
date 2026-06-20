@@ -119,9 +119,10 @@ pub use navigator_analysis::ibd::{
 };
 // Sync/publish types the command API uses, re-exported so the UI depends only on navigator-app.
 pub use ftdna_import::{
-    FtdnaImportOptions, FtdnaImportPlan, FtdnaImportSummary, FtdnaPlanRow, FtdnaResolution, FtdnaSubjectInput,
-    FuzzyCandidate, MatchKind,
+    FtdnaGenealogy, FtdnaImportOptions, FtdnaImportPlan, FtdnaImportSummary, FtdnaPlanRow, FtdnaResolution,
+    FtdnaSubjectInput, FuzzyCandidate, MatchKind,
 };
+pub use navigator_domain::identity::{ExternalId, FtdnaMember, Mdka};
 pub use navigator_refgenome::vcf_lift::infer_source_build as infer_vcf_source_build;
 pub use navigator_refgenome::RefStatus;
 use navigator_refgenome::{

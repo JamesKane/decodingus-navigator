@@ -14,7 +14,7 @@ use std::sync::{Arc, Mutex};
 
 use navigator_app::{
     AlignmentProbe, AncestryResult, AncestrySegment, App, AppError, AuditEntry, BatchImportSummary, BuildNeed,
-    Consensus, Coverage, DenovoCall, DnaType, ExchangeSessionInfo, FtdnaImportOptions, FtdnaImportPlan,
+    Consensus, Coverage, DenovoCall, DnaType, ExchangeSessionInfo, FtdnaGenealogy, FtdnaImportOptions, FtdnaImportPlan,
     FtdnaImportSummary, FtdnaResolution, HaploAssignment, HeteroplasmySite, IbdComparison, IbdDetectorConfig,
     IbdSuggestion, IdentityVerification, IncomingRequest, PanelGenotype, PrivateBucket, ProjectImportSummary,
     ProjectOverview, ProjectSampleReport, ReadMetrics, RefBuildStatus, SexInferenceResult, SourceType,
@@ -92,6 +92,8 @@ pub enum Command {
         plan: FtdnaImportPlan,
         resolutions: std::collections::BTreeMap<String, FtdnaResolution>,
     },
+    /// Load a subject's imported genealogy (vendor ids + FTDNA member + MDKA) for the detail card.
+    LoadGenealogy(SampleGuid),
     /// Resolve (download + decompress + index) a reference build, streaming progress.
     ResolveReference {
         build: String,
@@ -548,6 +550,11 @@ pub enum Event {
     FtdnaPlan(FtdnaImportPlan),
     /// The result of committing an FTDNA import.
     FtdnaImported(FtdnaImportSummary),
+    /// A subject's imported genealogy bundle for the detail card.
+    Genealogy {
+        guid: SampleGuid,
+        data: FtdnaGenealogy,
+    },
     /// Import needs reference build(s) downloaded first; `dir` lets the UI retry the import
     /// after the user approves and the download finishes.
     ReferenceNeeded {
@@ -933,6 +940,10 @@ pub async fn handle(app: &App, cmd: Command) -> Event {
         },
         Command::CommitFtdnaImport { plan, resolutions } => match app.commit_ftdna_import(&plan, &resolutions).await {
             Ok(summary) => Event::FtdnaImported(summary),
+            Err(e) => Event::Error(e.to_string()),
+        },
+        Command::LoadGenealogy(guid) => match app.subject_genealogy(guid).await {
+            Ok(data) => Event::Genealogy { guid, data },
             Err(e) => Event::Error(e.to_string()),
         },
         // ResolveReference is handled in the spawn loop (it streams progress events); reaching
