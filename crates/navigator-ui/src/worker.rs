@@ -17,8 +17,9 @@ use navigator_app::{
     Consensus, Coverage, DenovoCall, DmConversationSummary, DmMessage, DnaType, ExchangeSessionInfo, FtdnaGenealogy,
     FtdnaImportOptions, FtdnaImportPlan, FtdnaImportSummary, FtdnaResolution, HaploAssignment, HeteroplasmySite,
     IbdComparison, IbdDetectorConfig, IbdSuggestion, IdentityVerification, IncomingRequest, PanelGenotype,
-    PrivateBucket, ProjectImportSummary, ProjectOverview, ProjectSampleReport, ReadMetrics, RefBuildStatus,
-    SexInferenceResult, SourceType, StoredIbdExchange, StrConcordanceRow, SvAnalysisResult, YMatch, YstrClustering,
+    PrivateBucket, ProjectImportSummary, ProjectOverview, ProjectSampleReport, ReadMetrics, RecruitmentInvitation,
+    RefBuildStatus, SexInferenceResult, SourceType, StoredIbdExchange, StrConcordanceRow, SvAnalysisResult, YMatch,
+    YstrClustering,
 };
 use navigator_domain::chipprofile::ChipProfile;
 use navigator_domain::du_domain::ids::SampleGuid;
@@ -378,6 +379,13 @@ pub enum Command {
     /// Pull + decrypt + persist any messages waiting on a conversation.
     DmSync {
         session_id: String,
+    },
+    /// Recruitment 3c: poll the signed-in account's open recruitment invitations.
+    LoadRecruitmentInvitations,
+    /// Accept (`true`) or decline (`false`) a recruitment invitation.
+    RespondRecruitment {
+        campaign_id: i64,
+        accept: bool,
     },
     /// Resolve the sequencing lab for runs that have an inferred instrument id but no facility,
     /// via the AppView instrument→lab map (best-effort, cached). Sent on startup + after imports.
@@ -911,6 +919,10 @@ pub enum Event {
         session_id: String,
         new_count: usize,
     },
+    /// The signed-in account's open recruitment invitations.
+    RecruitmentInvitations(Vec<RecruitmentInvitation>),
+    /// A recruitment invitation response was recorded (the UI refreshes invitations + notifications).
+    RecruitmentResponded,
     /// A full IBD exchange completed for a subject (the UI reloads its results).
     IbdExchangeDone {
         biosample_guid: SampleGuid,
@@ -1811,6 +1823,16 @@ pub async fn handle(app: &App, cmd: Command) -> Event {
             Ok(new_count) => Event::DmSynced { session_id, new_count },
             Err(e) => Event::Error(e.to_string()),
         },
+        Command::LoadRecruitmentInvitations => match app.recruitment_invitations().await {
+            Ok(items) => Event::RecruitmentInvitations(items),
+            Err(e) => Event::Error(e.to_string()),
+        },
+        Command::RespondRecruitment { campaign_id, accept } => {
+            match app.recruitment_respond(campaign_id, accept).await {
+                Ok(_) => Event::RecruitmentResponded,
+                Err(e) => Event::Error(e.to_string()),
+            }
+        }
         Command::BackfillLabs => match app.backfill_run_labs().await {
             Ok(count) => Event::LabsResolved(count),
             Err(e) => Event::Error(e.to_string()),

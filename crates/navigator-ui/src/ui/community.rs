@@ -42,11 +42,12 @@ impl NavigatorApp {
         });
     }
 
-    /// Re-poll all three sections (also drives the app-bar bell via the Notifications event).
+    /// Re-poll all sections (also drives the app-bar bell via the Notifications event).
     fn refresh_community(&self) {
         let _ = self.tx.send(Command::LoadSupportThreads);
         let _ = self.tx.send(Command::LoadCommunityFeed);
         let _ = self.tx.send(Command::LoadNotifications);
+        let _ = self.tx.send(Command::LoadRecruitmentInvitations);
     }
 
     // ---- Support: team↔tester threads --------------------------------------
@@ -355,8 +356,47 @@ impl NavigatorApp {
         }
     }
 
+    // ---- Recruitment invitations (3c, respond-only) ------------------------
+    /// Open recruitment invitations the user can accept/decline (they also arrive as SYSTEM
+    /// notifications below; this is the actionable view). Hidden when there are none.
+    fn recruitment_invitations_section(&mut self, ui: &mut egui::Ui) {
+        if self.recruitment_invitations.is_empty() {
+            return;
+        }
+        ui.label(egui::RichText::new(self.tr("recruit.title")).strong());
+        let accept_label = self.tr("recruit.accept");
+        let decline_label = self.tr("recruit.decline");
+        for inv in self.recruitment_invitations.clone() {
+            ui.group(|ui| {
+                ui.horizontal(|ui| {
+                    ui.colored_label(ACCENT, egui::RichText::new(&inv.title).strong());
+                    ui.label(egui::RichText::new(&inv.project_name).weak().small());
+                });
+                ui.label(&inv.message);
+                ui.horizontal(|ui| {
+                    if ui.button(accept_label).clicked() {
+                        let _ = self.tx.send(Command::RespondRecruitment {
+                            campaign_id: inv.campaign_id,
+                            accept: true,
+                        });
+                    }
+                    if ui.button(decline_label).clicked() {
+                        let _ = self.tx.send(Command::RespondRecruitment {
+                            campaign_id: inv.campaign_id,
+                            accept: false,
+                        });
+                    }
+                });
+            });
+            ui.add_space(4.0);
+        }
+        ui.separator();
+        ui.add_space(4.0);
+    }
+
     // ---- Notifications -----------------------------------------------------
     fn community_notifications(&mut self, ui: &mut egui::Ui) {
+        self.recruitment_invitations_section(ui);
         ui.horizontal(|ui| {
             ui.label(egui::RichText::new(format!("{}: {}", self.tr("community.unread"), self.notif_unread)).weak());
             if ui.button(self.tr("community.markAllRead")).clicked() {

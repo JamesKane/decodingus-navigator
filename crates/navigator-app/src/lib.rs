@@ -145,6 +145,7 @@ use navigator_sync::{
     ManualOverrideRecord, ReconciliationStatusRecord, RunHaplogroupCallRecord, HAPLOGROUP_RECONCILIATION_COLLECTION,
 };
 use navigator_sync::{FedPopulationComponent, FedSuperPopulationSummary};
+pub use recruitment::RecruitmentInvitation;
 pub use social::{
     FederatedItem, FeedItem, FeedView, NotificationList, SocialMessage, SocialNotification, SocialThreadSummary,
 };
@@ -1572,6 +1573,7 @@ mod import_profiles;
 mod import_unified;
 mod publish;
 mod queries;
+mod recruitment;
 mod social;
 mod sync;
 

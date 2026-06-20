@@ -871,6 +871,12 @@ impl NavigatorApp {
                     }
                     let _ = self.tx.send(Command::LoadDmConversations);
                 }
+                Event::RecruitmentInvitations(items) => self.recruitment_invitations = items,
+                Event::RecruitmentResponded => {
+                    self.status = self.tr("recruit.responded").to_string();
+                    let _ = self.tx.send(Command::LoadRecruitmentInvitations);
+                    let _ = self.tx.send(Command::LoadNotifications);
+                }
                 Event::Error(e) => {
                     self.status = format!("Error: {e}");
                     self.running = false;

@@ -69,7 +69,22 @@ client. Plan: `~/.claude/plans/jazzy-sniffing-storm.md`; roadmap:
   only the *first* connect needs both peers online; messaging is then fully async. Not yet live-tested
   (needs AppView + 2 peers, like the IBD exchange).
 
-**Deferred** (later slices, all KEPT): recruitment signed-Edge (3c); feed voting/report/block
+- **3c — recruitment invitations** (DONE, respond-only; **cross-repo**, uncommitted on both branches):
+  testers can view + accept/decline recruitment invitations from Navigator. The AppView recruitment
+  engine + web UI existed but had **no signed-Edge API** — so this ADDED endpoints on the AppView
+  (`decodingus`, on `main`): `du_db::recruitment::messages` (poll/respond) + `routes/recruitment_edge.rs`
+  (`GET /api/v1/recruitment/invitations`, `POST /api/v1/recruitment/respond` — notifies the researcher
+  on accept) + router registration; DB-gated test **passes against the real DB**. Navigator side:
+  `navigator-sync::recruitment::messages` mirror, `navigator-app/src/recruitment.rs`
+  (`recruitment_invitations`/`recruitment_respond`, reusing `social_get`/`social_post` now `pub(crate)`),
+  worker Commands/Events, and a "Recruitment invitations" section atop the Community → **Notifications**
+  sub-tab (Accept/Decline). en/es i18n. **Scope = respond-only** (user-confirmed): campaign *creation*
+  is gated to an AppView group_project admin, which Navigator can't act as until the groupProject-PDS
+  project bridge exists. NB: `decodingus` `main` has pre-existing clippy debt in `du-db/src/ystr.rs`
+  (a `0..=10` index loop) unrelated to 3c — my files are clippy-clean.
+
+**Deferred** (later slices, all KEPT): Navigator-native campaign **creation** (needs a "list my
+recruitable group_projects" Edge endpoint + the groupProject-PDS project bridge); feed voting/report/block
 actions; threaded federated replies (`FeedPostRecord.reply` is modelled but the Feed UI only posts
 top-level — needs parent/root at-uri tracking); **DM follow-ups** — truly-async handshake (persisted
 ephemeral → derive-on-arrival, so "Connect" needn't be simultaneous), background auto-poll of

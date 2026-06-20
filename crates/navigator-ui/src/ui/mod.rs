@@ -699,6 +699,8 @@ pub struct NavigatorApp {
     dm_compose: String,
     /// Whether the Messages sub-tab has loaded at least once this session (lazy first load).
     dm_loaded: bool,
+    /// Recruitment 3c: the signed-in account's open recruitment invitations (shown in Notifications).
+    recruitment_invitations: Vec<navigator_app::RecruitmentInvitation>,
     /// Composer buffers: new-thread subject/body, open-thread reply, feed post + topic.
     new_thread_subject: String,
     new_thread_body: String,
@@ -1003,6 +1005,7 @@ impl NavigatorApp {
             dm_partner_did: String::new(),
             dm_compose: String::new(),
             dm_loaded: false,
+            recruitment_invitations: Vec::new(),
             new_thread_subject: String::new(),
             new_thread_body: String::new(),
             thread_reply: String::new(),

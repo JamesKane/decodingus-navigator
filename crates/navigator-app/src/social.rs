@@ -264,8 +264,9 @@ impl App {
 
     // ---- transport helpers (mirror the IBD exchange client) ----------------
 
-    /// POST a JSON body to a `/api/v1/social/<…>` endpoint, mapping non-2xx to an AppView error.
-    async fn social_post(&self, path: &str, body: serde_json::Value) -> Result<serde_json::Value, AppError> {
+    /// POST a JSON body to a `/api/v1/<…>` endpoint, mapping non-2xx to an AppView error. Shared by
+    /// the social client and the recruitment Edge client (`recruitment.rs`).
+    pub(crate) async fn social_post(&self, path: &str, body: serde_json::Value) -> Result<serde_json::Value, AppError> {
         let url = format!("{}/api/v1/{path}", decodingus_appview_url());
         let resp = self
             .auth
@@ -283,9 +284,10 @@ impl App {
             .map_err(|e| AppError::Sync(navigator_sync::SyncError::from(e)))
     }
 
-    /// Device-key-signed GET to a `/api/v1/social/<…>` endpoint. `build_msg(did, ts)` produces the
+    /// Device-key-signed GET to a `/api/v1/<…>` endpoint. `build_msg(did, ts)` produces the
     /// canonical string to sign (poll or thread-read); `did`/`ts`/`sig` + `extra` go on the query.
-    async fn social_get<T, F>(&self, path: &str, build_msg: F, extra: &[(&str, &str)]) -> Result<T, AppError>
+    /// Shared by the social client and the recruitment Edge client (`recruitment.rs`).
+    pub(crate) async fn social_get<T, F>(&self, path: &str, build_msg: F, extra: &[(&str, &str)]) -> Result<T, AppError>
     where
         T: serde::de::DeserializeOwned,
         F: Fn(&str, i64) -> String,
