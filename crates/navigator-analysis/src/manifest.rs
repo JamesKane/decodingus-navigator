@@ -5,9 +5,12 @@
 use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 
 use crate::error::AnalysisError;
+
+/// Lowercase-hex SHA-256 of `bytes`. Re-exported from the shared `du-bio` helper so existing
+/// `manifest::sha256_hex` callers (e.g. `navigator-panelbuild`) keep working.
+pub use du_bio::hash::sha256_hex;
 
 /// One asset's integrity record.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -59,11 +62,6 @@ impl AssetManifest {
     }
 }
 
-/// Lowercase hex SHA-256 of `bytes`.
-pub fn sha256_hex(bytes: &[u8]) -> String {
-    Sha256::digest(bytes).iter().map(|b| format!("{b:02x}")).collect()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -83,14 +81,5 @@ mod tests {
         assert!(m.verify("not_listed.bin", b"anything").is_ok());
         let back = AssetManifest::from_json(&m.to_json().unwrap()).unwrap();
         assert_eq!(back, m);
-    }
-
-    #[test]
-    fn sha256_is_stable_hex() {
-        // Known SHA-256 of the empty input.
-        assert_eq!(
-            sha256_hex(b""),
-            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
-        );
     }
 }

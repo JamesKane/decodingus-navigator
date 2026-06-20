@@ -1340,46 +1340,16 @@ fn vcf_label_context(path: &Path, filename: &str) -> String {
     filename.to_string()
 }
 
-/// Stream a file through SHA-256 and return the lowercase hex digest. Blocking (reads the
-/// whole file in 1 MiB chunks) — call via [`sha256_file_async`] for large alignments.
-fn sha256_file(path: &Path) -> std::io::Result<String> {
-    use sha2::{Digest, Sha256};
-    use std::io::Read;
-    let mut file = std::fs::File::open(path)?;
-    let mut hasher = Sha256::new();
-    let mut buf = vec![0u8; 1 << 20];
-    loop {
-        let n = file.read(&mut buf)?;
-        if n == 0 {
-            break;
-        }
-        hasher.update(&buf[..n]);
-    }
-    let digest = hasher.finalize();
-    let mut hex = String::with_capacity(digest.len() * 2);
-    for b in digest {
-        use std::fmt::Write;
-        let _ = write!(hex, "{b:02x}");
-    }
-    Ok(hex)
-}
-
-/// SHA-256 of a file's content (hex), computed off the async runtime.
+/// SHA-256 of a file's content (hex), computed off the async runtime (streamed — safe for large
+/// alignments).
 async fn sha256_file_async(path: PathBuf) -> Result<String, AppError> {
-    let hash = tokio::task::spawn_blocking(move || sha256_file(&path)).await??;
+    let hash = tokio::task::spawn_blocking(move || du_bio::hash::sha256_file(&path)).await??;
     Ok(hash)
 }
 
 /// SHA-256 of an in-memory string (hex) — for hashing tree JSON / small content.
 fn sha256_str(s: &str) -> String {
-    use sha2::{Digest, Sha256};
-    let digest = Sha256::digest(s.as_bytes());
-    let mut hex = String::with_capacity(digest.len() * 2);
-    for b in digest {
-        use std::fmt::Write;
-        let _ = write!(hex, "{b:02x}");
-    }
-    hex
+    du_bio::hash::sha256_hex(s.as_bytes())
 }
 
 /// Reconstruct a minimal [`HaploAssignment`] from a recorded call — the terminal + lineage,

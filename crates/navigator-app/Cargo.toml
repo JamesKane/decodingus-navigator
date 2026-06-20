@@ -16,14 +16,14 @@ navigator-refgenome = { workspace = true }
 du-domain = { workspace = true }
 # Verify peer device-key (did:key) signatures on IBD attestations — same code the AppView runs.
 du-atproto = { workspace = true }
+# Shared SHA-256 helpers (content hashing of imported files + tree/payload fingerprints).
+du-bio = { workspace = true }
 thiserror = { workspace = true }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 chrono = { version = "0.4", features = ["serde"] }
 uuid = { version = "1", features = ["v4"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
-# Content hashing of imported files (SHA-256, matching the legacy Scala import + AppView).
-sha2 = "0.10"
 # Holds the auth HTTP client (built by navigator-sync::dev_http_client). Pinned to 0.12
 # with rustls to match du-atproto / navigator-sync.
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }

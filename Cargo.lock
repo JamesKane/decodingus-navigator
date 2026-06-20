@@ -1367,6 +1367,7 @@ name = "du-bio"
 version = "0.1.0"
 dependencies = [
  "du-domain",
+ "sha2",
  "thiserror 2.0.18",
 ]
 
@@ -2980,6 +2981,7 @@ version = "0.1.0"
 dependencies = [
  "chrono",
  "du-atproto",
+ "du-bio",
  "du-domain",
  "navigator-analysis",
  "navigator-domain",
@@ -2989,7 +2991,6 @@ dependencies = [
  "reqwest",
  "serde",
  "serde_json",
- "sha2",
  "thiserror 2.0.18",
  "tokio",
  "uuid",
