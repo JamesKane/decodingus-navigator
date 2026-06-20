@@ -2298,6 +2298,12 @@ async fn ftdna_project_import_plans_and_commits_merge_new_and_orphan() {
         .await
         .unwrap();
 
+    // Recognized-input stats: 2 roster rows, 3 paternal, 1 Y-STR, 1 workspace subject scanned (GFX).
+    assert_eq!(plan.stats.roster, 2);
+    assert_eq!(plan.stats.paternal, 3);
+    assert_eq!(plan.stats.ystr, 1);
+    assert_eq!(plan.stats.scanned_subjects, 1);
+
     // Three kits: B5163 (roster+ancestry), K000002 (roster+ancestry), K000003 (ancestry only = orphan).
     assert_eq!(plan.rows.len(), 3);
     let row = |kit: &str| plan.rows.iter().find(|r| r.kit_number == kit).unwrap();

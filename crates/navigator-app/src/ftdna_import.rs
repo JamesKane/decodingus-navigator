@@ -83,6 +83,22 @@ pub struct FtdnaPlanRow {
     pub input: FtdnaSubjectInput,
 }
 
+/// Recognized-input + scan counts for the review header — so a missing/misclassified file (e.g. no
+/// roster) is immediately visible rather than silently producing all-orphan rows.
+#[derive(Debug, Clone, Default)]
+pub struct FtdnaPlanStats {
+    /// Roster rows parsed from `Member_Information`.
+    pub roster: usize,
+    /// Rows parsed from the paternal ancestry file.
+    pub paternal: usize,
+    /// Rows parsed from the maternal ancestry file.
+    pub maternal: usize,
+    /// Kits with Y-STR markers from the wide overview.
+    pub ystr: usize,
+    /// Workspace Subjects scanned for matches.
+    pub scanned_subjects: usize,
+}
+
 /// The reviewable plan: every kit with its proposed disposition. No writes happen until commit.
 #[derive(Debug, Clone)]
 pub struct FtdnaImportPlan {
@@ -91,6 +107,8 @@ pub struct FtdnaImportPlan {
     pub project_id: Option<i64>,
     /// The target/derived project name (shown in the review header).
     pub project_name: String,
+    /// Recognized-input counts (header diagnostics).
+    pub stats: FtdnaPlanStats,
     pub rows: Vec<FtdnaPlanRow>,
 }
 
@@ -208,6 +226,16 @@ impl App {
             Some(p) => ftdna::parse_ydna_overview(&std::fs::read_to_string(p)?).map_err(AppError::Import)?,
             None => Vec::new(),
         };
+        let mut stats = FtdnaPlanStats {
+            roster: members.len(),
+            paternal: paternal.len(),
+            maternal: maternal.len(),
+            ystr: ystr.len(),
+            scanned_subjects: 0,
+        };
+        // A roster was provided iff there are member rows — only then is "orphan" (data without a
+        // roster row) a meaningful flag.
+        let roster_provided = !members.is_empty();
 
         // Join by kit number (BTreeMap → stable, kit-sorted plan).
         let mut inputs: BTreeMap<String, FtdnaSubjectInput> = BTreeMap::new();
@@ -234,6 +262,7 @@ impl App {
 
         // Precompute each workspace Subject's Y terminal once (avoids O(kits × subjects) consensus reads).
         let existing = self.existing_subject_index().await?;
+        stats.scanned_subjects = existing.len();
 
         let mut rows = Vec::with_capacity(inputs.len());
         for (kit, input) in inputs {
@@ -249,7 +278,8 @@ impl App {
                 label: display_label(&kit, &input),
                 kit_number: kit,
                 y_terminal,
-                in_roster: roster.contains(&input.kit_number),
+                // Orphan only when a roster was provided but this kit isn't in it.
+                in_roster: !roster_provided || roster.contains(&input.kit_number),
                 ystr_count: input.ystr_markers.len(),
                 kind,
                 input,
@@ -258,6 +288,7 @@ impl App {
         Ok(FtdnaImportPlan {
             project_id,
             project_name: resolved_name,
+            stats,
             rows,
         })
     }

@@ -1042,6 +1042,7 @@ impl NavigatorApp {
 
         modal_frame(ctx, "ftdna_review", 660.0, |ui| {
             ui.label(egui::RichText::new(self.tr("ftdna.reviewTitle")).strong().size(16.0));
+            ui.label(egui::RichText::new(&plan.project_name).weak());
             ui.label(
                 egui::RichText::new(format!(
                     "{n_new} {} · {n_merge} {} · {n_confirm} {}",
@@ -1051,6 +1052,31 @@ impl NavigatorApp {
                 ))
                 .weak(),
             );
+            // Recognized-input diagnostics: a missing roster (0) explains all-orphan/no-match results.
+            let s = &plan.stats;
+            let roster_txt = egui::RichText::new(format!(
+                "{}: {} · {}: {} · {}: {} · {}: {}",
+                self.tr("ftdna.statRoster"),
+                s.roster,
+                self.tr("ftdna.statAncestry"),
+                s.paternal + s.maternal,
+                self.tr("ftdna.statYstr"),
+                s.ystr,
+                self.tr("ftdna.statScanned"),
+                s.scanned_subjects,
+            ))
+            .small();
+            // Red when no roster was recognized (likely the Member_Information file was not selected).
+            if s.roster == 0 {
+                ui.label(roster_txt.color(egui::Color32::from_rgb(210, 120, 70)));
+                ui.label(
+                    egui::RichText::new(self.tr("ftdna.noRosterHint"))
+                        .small()
+                        .color(egui::Color32::from_rgb(210, 120, 70)),
+                );
+            } else {
+                ui.label(roster_txt.weak());
+            }
             ui.separator();
             egui::ScrollArea::vertical().max_height(420.0).show(ui, |ui| {
                 // Needs confirmation — the only group with per-row actions.
