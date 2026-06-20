@@ -136,9 +136,9 @@ use navigator_sync::{
     dev_http_client, login_default, AsyncSync, DeviceKey, OAuthConfig, RetryPolicy, TokenStore, DEVICE_KEY_COLLECTION,
 };
 pub use navigator_sync::{
-    AlignmentRecord, BiosampleRecord, PdsClient, PopulationBreakdownRecord, PrivateVariantsRecord, RecordRef,
-    SequenceRunRecord, VariantCallEntry, NS_ALIGNMENT, NS_BIOSAMPLE, NS_POPULATION_BREAKDOWN, NS_SEQUENCERUN,
-    PRIVATE_VARIANTS_COLLECTION,
+    AlignmentRecord, BiosampleRecord, FeedPostRecord, PdsClient, PopulationBreakdownRecord, PrivateVariantsRecord,
+    RecordRef, SequenceRunRecord, VariantCallEntry, NS_ALIGNMENT, NS_BIOSAMPLE, NS_FEED_POST, NS_POPULATION_BREAKDOWN,
+    NS_SEQUENCERUN, PRIVATE_VARIANTS_COLLECTION,
 };
 use navigator_sync::{
     AuditEntryRecord, HaplogroupReconciliationRecord, HeteroplasmyObservationRecord, IdentityVerificationRecord,
@@ -1213,6 +1213,20 @@ fn population_breakdown_record(result: &AncestryResult) -> PopulationBreakdownRe
         Utc::now().to_rfc3339(),
     )
     .with_fit_distance(result.fit_distance)
+}
+
+/// Build a community feed-post record — the shared `com.decodingus.atmosphere.feed.post`
+/// contract the AppView mirrors into its feed (top-level `createdAt`, optional topic /
+/// reply pointers). PII-free beyond the text the user chose to publish. `reply` is the
+/// `(root_uri, parent_uri)` pair on a threaded reply (`None` for a top-level post).
+fn feed_post_record(content: &str, topic: Option<&str>, reply: Option<(&str, &str)>) -> serde_json::Value {
+    let mut rec = FeedPostRecord::new(content, Utc::now().to_rfc3339()).with_topic(topic.map(str::to_string));
+    if let Some((root, parent)) = reply {
+        rec = rec.with_reply(root, parent);
+    }
+    // A struct of plain strings always serializes; surface a build bug loudly rather than
+    // silently dropping the post.
+    serde_json::to_value(&rec).expect("feed-post record serializes")
 }
 
 /// The lexicon's UPPER_SNAKE compatibility level (matches the AppView's knownValues).

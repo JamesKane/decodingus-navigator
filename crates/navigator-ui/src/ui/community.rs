@@ -156,11 +156,23 @@ impl NavigatorApp {
                     let _ = self.tx.send(Command::PostCommunity {
                         content: self.feed_content.trim().to_string(),
                         topic: (!topic.is_empty()).then(|| topic.to_string()),
+                        publish_pds: self.feed_publish_pds,
                     });
                     self.feed_content.clear();
                     self.feed_topic.clear();
                 }
             });
+            // Opt-in federation: publishing to your own PDS makes the post a portable, public
+            // `feed.post` record (mirrored back as a "via Atmosphere" entry). Only a real PDS
+            // account has a repo to write to — a local did:key identity can't federate.
+            let can_federate = self.account.as_deref().is_some_and(|d| !d.starts_with("did:key:"));
+            if can_federate {
+                // Bind the labels first: `tr()` borrows `&self`, which would clash with the
+                // `&mut self.feed_publish_pds` checkbox binding (the i18n borrow gotcha).
+                let label = self.tr("community.publishPds");
+                let hint = self.tr("community.publishPds.hint");
+                ui.checkbox(&mut self.feed_publish_pds, label).on_hover_text(hint);
+            }
         });
         ui.add_space(8.0);
 

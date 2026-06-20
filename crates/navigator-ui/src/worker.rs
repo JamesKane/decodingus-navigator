@@ -547,10 +547,12 @@ pub enum Command {
     },
     /// Read the community feed (announcements + community + federated).
     LoadCommunityFeed,
-    /// Post to the community feed (optionally tagged with a topic).
+    /// Post to the community feed (optionally tagged with a topic). When `publish_pds` is set, the
+    /// post is *also* published to the signed-in PDS as a federated `feed.post` record (roadmap 3b).
     PostCommunity {
         content: String,
         topic: Option<String>,
+        publish_pds: bool,
     },
     /// Fetch notifications + unread count (also drives the app-bar bell).
     LoadNotifications,
@@ -1855,8 +1857,23 @@ pub async fn handle(app: &App, cmd: Command) -> Event {
             Ok(feed) => Event::CommunityFeed(feed),
             Err(e) => Event::Error(e.to_string()),
         },
-        Command::PostCommunity { content, topic } => match app.post_community(&content, topic.as_deref(), None).await {
-            Ok(_) => Event::CommunityPosted,
+        Command::PostCommunity {
+            content,
+            topic,
+            publish_pds,
+        } => match app.post_community(&content, topic.as_deref(), None).await {
+            // The native post landed. If the user opted into federation, also publish the durable
+            // `feed.post` record; a publish failure is surfaced but the post itself is not lost.
+            Ok(_) => {
+                if publish_pds {
+                    match app.publish_feed_post(&content, topic.as_deref()).await {
+                        Ok(()) => Event::CommunityPosted,
+                        Err(e) => Event::Error(e.to_string()),
+                    }
+                } else {
+                    Event::CommunityPosted
+                }
+            }
             Err(e) => Event::Error(e.to_string()),
         },
         Command::LoadNotifications => match app.notifications().await {

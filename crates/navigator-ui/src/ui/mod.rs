@@ -692,6 +692,10 @@ pub struct NavigatorApp {
     thread_reply: String,
     feed_content: String,
     feed_topic: String,
+    /// Opt-in: also publish the next community post to the signed-in PDS as a federated
+    /// `feed.post` record (roadmap 3b). Off by default — publishing to your own repo is an
+    /// explicit, portable public act.
+    feed_publish_pds: bool,
     forms: Forms,
     status: String,
 }
@@ -984,6 +988,7 @@ impl NavigatorApp {
             thread_reply: String::new(),
             feed_content: String::new(),
             feed_topic: String::new(),
+            feed_publish_pds: false,
             forms: Forms {
                 ploidy: "2".into(),
                 run_test_type: "WGS".into(),

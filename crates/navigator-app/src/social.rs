@@ -212,6 +212,35 @@ impl App {
         Ok(v.get("id").and_then(|x| x.as_str()).unwrap_or_default().to_string())
     }
 
+    /// Publish a community post to the signed-in account's PDS as a federated
+    /// `com.decodingus.atmosphere.feed.post` record (roadmap 3b). The AppView mirrors it into the
+    /// community feed via its Jetstream consumer (the read-only "via Atmosphere" entries), so this
+    /// is the portable, federated counterpart to the AppView-native [`post_community`](Self::post_community).
+    ///
+    /// Durable: the record goes through the sync **outbox**, so the publish survives restart and
+    /// retries with backoff on a transient/offline failure. Each post is a **distinct** record — the
+    /// outbox `entity_ref` is a fresh id (posts are append-only, never coalesced like the per-entity
+    /// summary records), and `rkey: None` lets the PDS assign the TID. Federated posts are
+    /// deliberately **not** in `PUBLISHED_COLLECTIONS`: a PULL reconcile must never resurrect a post
+    /// the user deleted on their PDS.
+    ///
+    /// Errors when signed out, and for a local `did:key` identity (self-certifying, no PDS repo to
+    /// write to) — the federated feed needs a real OAuth/PDS account. The UI gates the opt-in
+    /// accordingly and surfaces the error as a hint.
+    pub async fn publish_feed_post(&self, content: &str, topic: Option<&str>) -> Result<(), AppError> {
+        let did = self.require_account()?;
+        if did.starts_with("did:key:") {
+            return Err(AppError::Import(
+                "publishing to the federated feed needs a signed-in PDS account — the local identity has no repo"
+                    .into(),
+            ));
+        }
+        let value = feed_post_record(content, topic, None);
+        let entity_ref = format!("feed_post:{}", Uuid::new_v4());
+        self.enqueue_publish("feed_post", &entity_ref, NS_FEED_POST, None, value)
+            .await
+    }
+
     // ---- notifications -----------------------------------------------------
 
     /// The signed-in account's notifications + unread count.
@@ -343,5 +372,22 @@ mod tests {
         // An empty feed (all sections defaulted) is valid.
         let empty: FeedView = serde_json::from_value(serde_json::json!({})).unwrap();
         assert!(empty.community.is_empty());
+    }
+
+    /// The feed-post record we publish matches the `com.decodingus.atmosphere.feed.post` contract
+    /// the AppView's Jetstream consumer reads: `$type`, top-level `text` + `createdAt`, optional
+    /// `topic` dropped when blank.
+    #[test]
+    fn feed_post_record_wire_shape() {
+        let v = crate::feed_post_record("hello community", Some("haplogroup:R-M269"), None);
+        assert_eq!(v["$type"], crate::NS_FEED_POST);
+        assert_eq!(v["text"], "hello community");
+        assert_eq!(v["topic"], "haplogroup:R-M269");
+        assert!(v.get("createdAt").and_then(|c| c.as_str()).is_some());
+        assert!(v.get("meta").is_none() && v.get("reply").is_none());
+
+        // A blank topic is omitted entirely.
+        let v2 = crate::feed_post_record("no topic", Some("   "), None);
+        assert!(v2.get("topic").is_none());
     }
 }

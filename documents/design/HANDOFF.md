@@ -1,61 +1,77 @@
 # Rust rewrite — handoff / resume notes
 
-Last updated: 2026-06-07. Branch: `rust-rewrite`. Pick up here next session.
+Last updated: 2026-06-20. The rewrite is now **trunk on `main`** (the legacy ScalaFX app was
+removed at cutover and lives in git history only). Pick up here next session.
+
+> The detailed running record is **agent memory** (`~/.claude/projects/.../memory/`, indexed by
+> `MEMORY.md`) — it is more current and granular than this file. This doc is the orientation +
+> active-work pointer; the per-topic memory files carry the specifics. The pre-06-07 theme list that
+> used to live here is superseded; see memory for ancestry, UQMW, tree-provider, etc.
 
 ## Three-repo topology
 
-- **DUNavigator** (this repo, `rust-rewrite`) — the desktop edge app (egui). Pulls the shared
-  crates from the sibling repo by **path**, so working-tree changes are picked up immediately.
-- **decodingus-shared** (`/Development/decodingus-shared`, branch `feat/fed-report-records`,
-  pushed) — `du-domain` / `du-atproto` / `du-bio`. The federated record contracts live in
-  `du-domain::fed`.
-- **decodingus** (`/Development/decodingus`, the AppView, branch `rust-rewrite-foundation`) — the
-  PostgreSQL hub + web (`rust/` is the Rust rewrite of the Play app). Pulls the shared crates by
-  pinned **git rev** (`du-domain` currently pinned at `f975a08`). **Bump the rev (or add a local
-  `[patch]`) to pick up newer shared changes** — e.g. the `fitDistance` field added after f975a08
-  is NOT yet visible to the AppView.
+- **DUNavigator** (this repo) — the desktop edge app (egui). Pulls the shared crates from the
+  sibling repo by **path**, so working-tree changes build immediately (no rev bump needed).
+- **decodingus-shared** (`/Development/decodingus-shared`) — `du-domain` / `du-atproto` / `du-bio`.
+  Federated record contracts live in `du-domain::fed`; shared SHA-256 helpers in `du-bio::hash`
+  (added + merged to its `main` 2026-06-20). NB its working tree often carries WIP on a feature
+  branch — stage only your own files when committing here.
+- **decodingus** (`/Development/decodingus`, the AppView) — the PostgreSQL hub + web (`rust/`).
+  Pulls the shared crates by pinned **git rev**; **bump the rev (or add a local `[patch]`) to pick
+  up newer shared changes**. The social layer (all three roadmap tiers) is built here on branch
+  `feat/social-layer-orchestration` — signed `/api/v1/social/*` Edge endpoints, `du_db::social` +
+  `du_db::notification`, web inbox/feed.
 
 ## State
 
-Workspace builds clean (no warnings); `cargo test` green. Major work since 2026-06-04, by theme
-(newest first; all on `rust-rewrite` unless noted):
+Workspace builds clean (`cargo clippy --all-targets -- -D warnings`); `cargo test --workspace`
+green except a **known parallel-isolation flake** (`y_profile_build_persists_and_reloads`,
+`import_23andme_*`) that passes in isolation. `cargo fmt` clean is a per-commit gate.
 
-- **i18n** — `0bb19e9` scaffolding (Lang En/Es, `key=value` catalogs in `crates/navigator-ui/
-  locales/`, `tr()` with active→En→key fallback, app-bar language switcher); `0cf412b` migrated
-  card titles, dashboard, empty states, primary buttons. Deeper forms/headers/status still English
-  (fall back fine). See `memory/navigator-i18n.md`.
-- **Subject-centric model** (`documents/design/SubjectCentricModel.md`, P1–P3 done) — `ba6ffc2`
-  auto-select default alignment; `9259f7a` donor STR consensus + ancestry provenance; `d928af8`
-  donor ancestry (best-of) + private-Y union. Tabs now present the **donor**, per-run detail in
-  Data Sources. Remaining: true genotype-level ancestry pooling.
-- **Analysis QoL / fixes** — `463e938` per-contig de-novo (Y-DNA=chrY / mtDNA=chrM), mtDNA
-  haplogroup in full analysis, inferred-sex write-back, table Y/mt/sex; `4d54a8d` standalone
-  "Assign mtDNA haplogroup"; `046b654` dropped the UNMASKED raw chrY de-novo (use "Find private Y
-  variants" instead) + Y card shows persisted consensus; `f258636` full analysis reuses cached
-  coverage+ancestry, private-Y persisted.
-- **Header auto-detect** — `9a2062b` `navigator-analysis::probe` reads BAM/CRAM headers → build /
-  aligner / platform / test-type; `add_data` auto-imports a BAM (creates run+alignment, no
-  questions); reference resolved from the build via the gateway (never asked).
-- **Full Analysis** — `e94f8ec` modal + `RunFullAnalysis` pipeline (8 steps, cancellable);
-  `dc48f98` per-contig coverage progress + alive modal (it was slow, not hung).
-- **UI Workbench redesign** — `c64cd50` dark theme + nav tabs + subjects table + detail sub-tabs;
-  `133dfdf` Data Sources cards; later all detail tabs carded. See `memory/ui-workbench-redesign.md`.
-- **Ancestry methods** — `7a67c22` `estimate_pca_gmm` + `estimate_nmonte` (Frank-Wolfe distance
-  fit, `fit_distance`); `method` field captured not inferred; estimate_ancestry computes+persists+
-  publishes 3 methods (ADMIXTURE / PCA_PROJECTION_GMM / G25_NMONTE). `e5b502f` projection-mode PCA
-  (`--basis-pops`). See `memory/ancestry-pca-gmm.md` + `documents/design/AncestryAnalysis.md`.
-- **Federated report records** — `du-domain::fed` (shared) defines the atproto wire contracts
-  (WireF64 strings + numeric storage projections); Navigator publishes alignment/biosample/
-  sequencerun/populationBreakdown (`7a67c22`/`dca5b5c`); AppView `du-jobs` ingests (`83bfc0f`).
-  Shared: `f975a08` + `0aa960c` (fitDistance). See `memory/fed-report-records.md`.
-- **Global ancestry panel pipeline** — `scripts/ancestry-panel/` (`67a5185`): fetch AADR/HGDP/
-  SGDP/1000G-CHM13 → liftover → 1240k-restricted AIMs → matrices → PCA+freq assets → CDN. Decoupled
-  from raw alignments (needs genotypes, not reads). URLs/scale verified (see
-  `memory/ancestry-panel-pipeline.md`): a naive pull is ~5 TB — slice panel sites, don't bulk-DL.
+### Active work — social layer (Navigator/Edge side)
 
-Uncommitted of note: none. Untracked: `CLAUDE.md`, `GEMINI.md` (leave). A stray
-`crates/.claude/settings.local.json` is recreated by the environment and would break the cargo
-glob — handled by `exclude = ["crates/.claude"]` in the root `Cargo.toml`.
+Branch **`feat/social-community-tab`** (2 commits, off `main`, not yet pushed). Implements the
+"communication core" consumer of the AppView's signed social API — the alpha/beta testers' real
+client. Plan: `~/.claude/plans/jazzy-sniffing-storm.md`; roadmap:
+`decodingus/documents/planning/social-layer-roadmap.md`.
+
+- `96b8577` — **signed Edge client**: `navigator-sync::social::messages` (canonical signing strings
+  mirroring `du_db::social::messages` byte-for-byte) + `navigator-app::social` (device-key-signed
+  POST/GET helpers like the IBD `exchange` client, + response DTOs). Methods: `support_threads` /
+  `support_thread` / `open_support_thread` / `reply_support_thread` / `community_feed` /
+  `post_community` / `notifications` / `mark_notification_read`. Unit-tested (canonical strings +
+  DTO wire-shape round-trip).
+- `5a0cb5e` — **Community tab UI**: top-level `Nav::Community` (Support / Feed / Notifications
+  sub-tabs) + app-bar unread **🔔** bell; `ui/community.rs`; worker Commands/Events; en/es i18n.
+  Sign-in gated.
+
+- **3b — publish `feed.post`** (DONE, uncommitted on this branch): Navigator now publishes
+  `com.decodingus.atmosphere.feed.post` to the signed-in PDS via the durable sync outbox, completing
+  the federated feed loop the AppView already ingests. `FeedPostRecord` lives in shared
+  `du-domain::fed` (top-level `createdAt`, optional `topic` + `reply.{root,parent}.uri`; PII-free,
+  no `WireF64`); `App::publish_feed_post` enqueues under `NS_FEED_POST` with a fresh per-post
+  `entity_ref` (append-only — never coalesced, deliberately **not** in `PUBLISHED_COLLECTIONS` so a
+  PULL can't resurrect a deleted post; errors for a `did:key` identity). Wired as an **opt-in
+  checkbox** ("Publish publicly to my PDS") on the Feed composer, gated to PDS accounts; the native
+  signed-Edge post still happens, the federated copy mirrors back badged "via Atmosphere". en/es
+  i18n + unit tests (shared wire-shape round-trip, app builder). Not yet live-tested against a PDS.
+
+**Deferred** (later slices, all KEPT): peer DMs over the D1 encrypted exchange (3a — crypto exists in
+`navigator-sync::exchange`, needs a DM UI); recruitment signed-Edge (3c); feed voting/report/block
+actions; threaded federated replies (the `FeedPostRecord.reply` block is modelled but the Feed UI
+only publishes top-level posts — replies need at-uri tracking of the parent/root).
+
+### Other work landed this session (on `main`)
+
+- **FTDNA project import** (PR #6, merged) — roster/ancestry/Y-STR CSV import, match/dedup,
+  review→commit, Y-STR autoclustering. See `memory/ftdna-import-platform.md`.
+- **Project report membership fix** (`fb0f186`) — `project_report`/members/count now read the M:N
+  `biosample_project` table ∪ legacy home column, so an FTDNA-merged subject shows in the report.
+- **sha256 dedup** (`383d6d5` + shared) — consolidated scattered SHA-256 impls onto `du_bio::hash`.
+- **Run-delete derived purge** (`0c252cd`) + **source_file FK unlink** (`9f974bf`).
+
+Untracked: `CLAUDE.md`, `GEMINI.md` (leave). A stray `crates/.claude/settings.local.json` is
+recreated by the environment — handled by `exclude = ["crates/.claude"]` in the root `Cargo.toml`.
 
 ## Build / validate
 
@@ -127,54 +143,46 @@ matrices are already pulled; re-extraction only needed to add reference samples.
 - `documents/design/SubjectCentricModel.md` — donor-centric tab model (P1–P3 implemented).
 - `documents/design/AncestryAnalysis.md` — the 3 estimators + ancient-asset build + nMonte/G25.
 - `documents/atmosphere/` — the lexicon spec; `du-domain::fed` is the implemented write subset.
+- `decodingus/documents/planning/social-layer-roadmap.md` — the social-layer build plan (AppView
+  side built; Navigator/Edge side is the active work, communication core done).
+- `docs/design/` — the design backlog (FTDNA import, BISDNA, realignment, packaging, SIMD,
+  pangenome-GAM, scala-rust-gap-analysis, …).
 - `documents/BACKLOG.md` — **Scala-era** feature inventory (March 2026, pre-rewrite); use as the
   master feature list, not current status.
 - Agent memory (`~/.claude/projects/.../memory/`) is the most current running record.
 
-## Remaining gaps (from the 2026-06-07 audit)
+## Remaining gaps
 
-**Unported from Scala**: i18n (en/es at full parity, 173 keys, language persisted — remaining:
-`self.status` transient messages, `format!` dynamic strings, the `show_assignment` free helper),
-feature toggles/config, haplogroup/comparison report export (CSV only), full Y-STR concordance subsystem.
-**Designed, not built**: IBD **network** matching (local detector + UI tab exist; consent/match-
-discovery/chromosome-browser/relationship records do not — the biggest remaining feature), Genome
-Regions API, sequence-run fingerprinting, academic-ENA / FTDNA-project / pangenome-GAM imports,
-imputation, instrument-observation + ancestral-STR records, interactive tree viz.
+The 06-07 audit is superseded — most of it shipped over 06-10 → 06-13 (UQMW + parallel walker,
+DecodingUs Y-tree provider, BISDNA + chip-haplogroup import, vendor/mtDNA import, diploid SNV+indel
+caller, settings UI, Y-STR reporting, report exports, genome-region/ideogram, federated IBD phases
+1–2 + the encrypted exchange channel, sync durability, FTDNA project import). Per-feature status
+lives in agent memory (`MEMORY.md` index) — treat that as authoritative, not this file.
 
-**Done since this audit**: **Unified Quality Metrics Walker** (2026-06-10, committed 842b2bb) —
-fused coverage + read-metrics + sex into one record-loop pass (`navigator-analysis::unified`); BAM
-2→1 / CRAM 3→1 file reads; full-analysis steps 8→6. Shared `pub(crate)` `*State` accept/finish
-helpers in coverage/read_metrics/sex → byte-identical numbers (standalone fns are now wrappers).
-**Threaded** (committed 900381d + 7a9d7f2): MT bgzf decompression (~8% — decode isn't the
-bottleneck), then a **per-contig parallel walker** (rayon) — **5.15× on the GFX BAM (64.7s→12.6s),
-peak 2.8 GB, byte-identical** to sequential. Reference N-mask (1 bit/base) + a load semaphore bound
-memory; `NAVIGATOR_ANALYSIS_THREADS` / `NAVIGATOR_BGZF_THREADS` tune it. BAM+indexed uses the
-parallel path; CRAM / unindexed BAM fall back to sequential. Live parity + perf-smoke tests in
-`tests/parity_real.rs`. See `documents/design/UnifiedQualityMetricsWalker_RustPort.md` +
-`memory/uqmw-rust-port.md`.
-**Done since this audit (cont.)**: **DecodingUs Y-tree provider** (2026-06-10, Navigator 114e450
-+ AppView cd97864) — Y placement against our AppView's new `/api/v1/y-tree/full` (native CHM13
-`hs1` coords → no liftover), default with FTDNA fallback; env-configurable host/provider. Y-only;
-private-Y still FTDNA. Live e2e (`validate_gfx_decodingus_y`) pending a locally-running AppView. See
-`documents/design/DecodingUsTreeProvider.md` + `memory/decodingus-tree-provider.md`.
-
-**AppView side**: pick which ancestry method to surface; ingest `fitDistance` (needs rev bump);
-IBD-matching AppView backlog; AppView backfeed.
-**Small**: Edit/Delete + Add-to-Project UI stubs; Compare needs multi-select; table Y/mt only fills
-the selected subject; ancestry genotype-pooling deferred; global panel asset needs data.
-**Perf backlog** (unified walker, 2026-06-10): the per-contig parallel walker plateaus at ~5×
-(knee ~12 threads) because the serial **unmapped-tail sweep** and the **single largest contig**
-(chr1) floor the wall time. To push further: split big contigs into sub-regions with a per-region
-coverage merge, and/or parallelize the unmapped sweep. Lower priority than functional gaps. See the
-"Further headroom" note in `documents/design/UnifiedQualityMetricsWalker_RustPort.md`.
+Still open, broadly:
+- **Social layer (Edge)** — communication core done (this branch); 3b publish-`feed.post` / 3a peer-DM
+  UI / 3c recruitment still to build (AppView side ready).
+- **IBD network matching** — detection, identity math, and the encrypted exchange channel are built;
+  the consent/discovery/chromosome-browser UX is the remaining surface.
+- **Design backlog** in `docs/design/` — realignment module, packaging/release, SIMD targets,
+  pangenome-GAM, academic-ENA import (all design-only).
+- **Smaller** — i18n `self.status`/`format!` tails; Compare multi-select; ancestry genotype-level
+  pooling; the unified-walker perf plateau (~5×: serial unmapped-tail sweep + the single largest
+  contig floor wall time — split big contigs / parallelize the sweep to push further).
+- **AppView side** — `fitDistance` ingest (needs a shared rev bump); IBD-matching backlog.
 
 ## Recommended next steps (pick one)
 
-1. ~~**Unified Quality Metrics Walker**~~ — DONE 2026-06-10 (committed, incl. per-contig
-   parallelism — 5.15× on the GFX BAM); see "Done since this audit" above.
-2. ~~**i18n**~~ — big pass done 2026-06-10 (203f91f): 72→173 keys, en/es parity, language persisted,
-   forms/grid-headers/buttons migrated. Remaining: `self.status` transient strings + `format!` dynamics.
-3. **DecodingUs tree provider** — you control that tree; FTDNA-only is a real limitation for Y work.
-4. **IBD network matching** — biggest user-facing feature; detection + identity math built, the
-   consent/discovery/browser UI + records are not (needs AppView work too).
-5. **Edit/Delete + Add-to-Project** — small but visible UI stubs that need backend commands.
+1. **Social layer — push + PR `feat/social-community-tab`**, then continue the deferred slices in
+   roadmap order: **3b publish `feed.post`** (smallest, completes the federated feed loop — pairs
+   with the Feed UI already built), then **3a peer DMs** (DM UI over the existing `exchange` crypto),
+   then **3c recruitment** signed-Edge. All AppView-side pieces already exist.
+2. **IBD network matching** — detection + identity math + the encrypted exchange channel are built;
+   the consent/discovery/chromosome-browser UX is the remaining user-facing surface (overlaps 3a).
+3. **Drain the design backlog** in `docs/design/` — realignment module, packaging/release, SIMD
+   targets, pangenome-GAM, academic-ENA import.
+4. **i18n tail** — `self.status` transient strings + `format!` dynamics are still English (the
+   key-based UI is at en/es parity).
+
+For the broader unported-from-Scala inventory and per-feature status, the authoritative source is
+agent memory (`MEMORY.md` index) — not this file.

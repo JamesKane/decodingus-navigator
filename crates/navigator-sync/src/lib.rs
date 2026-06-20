@@ -33,8 +33,8 @@ pub use tokens::{Session, TokenStore};
 // (Its `RecordMeta` is intentionally not re-exported to avoid colliding with the
 // reconciliation record's `RecordMeta`; `::new` builds it internally.)
 pub use du_domain::fed::{
-    AlignmentRecord, BiosampleRecord, CoverageMetrics, PopulationBreakdownRecord,
-    PopulationComponent as FedPopulationComponent, SequenceRunRecord,
-    SuperPopulationSummary as FedSuperPopulationSummary, WireF64, NS_ALIGNMENT, NS_BIOSAMPLE, NS_POPULATION_BREAKDOWN,
-    NS_SEQUENCERUN,
+    AlignmentRecord, BiosampleRecord, CoverageMetrics, FeedPostRecord, PopulationBreakdownRecord,
+    PopulationComponent as FedPopulationComponent, PostRef, ReplyRef, SequenceRunRecord,
+    SuperPopulationSummary as FedSuperPopulationSummary, WireF64, NS_ALIGNMENT, NS_BIOSAMPLE, NS_FEED_POST,
+    NS_POPULATION_BREAKDOWN, NS_SEQUENCERUN,
 };
