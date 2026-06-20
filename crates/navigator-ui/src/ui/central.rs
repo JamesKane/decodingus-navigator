@@ -90,10 +90,13 @@ impl NavigatorApp {
             });
             ui.separator();
         }
-        egui::ScrollArea::vertical().show(ui, |ui| {
-            self.samples_section(ui);
-            self.project_report_section(ui);
-        });
+        // Members vs Report on tabs — both can run to thousands of rows, so they don't stack.
+        ui.add_space(4.0);
+        self.project_tab = self.sub_bar(ui, self.project_tab, &ProjectTab::ALL);
+        match self.project_tab {
+            ProjectTab::Members => self.samples_section(ui),
+            ProjectTab::Report => self.project_report_section(ui),
+        }
     }
 
     /// The Subjects work area: the selected subject's detail — header + sub-tabs.

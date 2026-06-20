@@ -73,6 +73,20 @@ enum Nav {
     Projects,
 }
 
+/// Sub-tabs of the project detail panel (the member list vs the per-sample analysis report).
+#[derive(Clone, Copy, PartialEq, Eq, Default)]
+enum ProjectTab {
+    #[default]
+    Members,
+    Report,
+}
+impl ProjectTab {
+    const ALL: [(ProjectTab, &'static str); 2] = [
+        (ProjectTab::Members, "project.tab.members"),
+        (ProjectTab::Report, "project.tab.report"),
+    ];
+}
+
 /// Sub-tabs of the subject detail panel.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum DetailTab {
@@ -635,6 +649,12 @@ pub struct NavigatorApp {
     project_clustering: Option<(i64, YstrClustering)>,
     /// True while the project Y-STR clustering is computing.
     clustering_running: bool,
+    /// Active project detail sub-tab (Members vs Report).
+    project_tab: ProjectTab,
+    /// Filter for the project Members list (kit / name / branch substring).
+    member_filter: String,
+    /// Filter for the project Report table (sample / haplogroup substring).
+    report_filter: String,
     forms: Forms,
     status: String,
 }
@@ -911,6 +931,9 @@ impl NavigatorApp {
             genealogy: None,
             project_clustering: None,
             clustering_running: false,
+            project_tab: ProjectTab::default(),
+            member_filter: String::new(),
+            report_filter: String::new(),
             forms: Forms {
                 ploidy: "2".into(),
                 run_test_type: "WGS".into(),

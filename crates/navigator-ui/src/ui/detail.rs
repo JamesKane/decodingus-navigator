@@ -1365,12 +1365,21 @@ impl NavigatorApp {
     /// recompute and a CSV export. Coverage/haplogroup cells show "—" until computed.
     pub(crate) fn project_report_section(&mut self, ui: &mut egui::Ui) {
         if self.project_report.is_empty() {
+            ui.add_space(8.0);
+            ui.label(egui::RichText::new(self.tr("report.empty")).weak());
             return;
         }
-        ui.add_space(12.0);
-        ui.separator();
+        ui.add_space(4.0);
+        let report_hint = self.tr("project.filterReport");
         ui.horizontal(|ui| {
-            ui.heading(self.tr("projects.report"));
+            ui.add(
+                egui::TextEdit::singleline(&mut self.report_filter)
+                    .hint_text(report_hint)
+                    .desired_width(220.0),
+            );
+            if !self.report_filter.is_empty() && ui.button("✕").clicked() {
+                self.report_filter.clear();
+            }
             let busy = self.analyzing || self.running;
             if ui
                 .add_enabled(!busy, egui::Button::new(self.tr("projects.analyzeAll")))
@@ -1410,12 +1419,30 @@ impl NavigatorApp {
         let running = self.running || self.analyzing;
         let mut recompute: Option<i64> = None;
         let mut assign_y: Option<i64> = None;
+        let filter = self.report_filter.to_ascii_lowercase();
+        // A row matches on its sample id or its Y / mt haplogroup label.
+        let row_matches = |r: &navigator_app::ProjectSampleReport| -> bool {
+            filter.is_empty()
+                || r.biosample.donor_identifier.to_ascii_lowercase().contains(&filter)
+                || r.y_haplogroup
+                    .as_deref()
+                    .unwrap_or("")
+                    .to_ascii_lowercase()
+                    .contains(&filter)
+                || r.mt_haplogroup
+                    .as_deref()
+                    .unwrap_or("")
+                    .to_ascii_lowercase()
+                    .contains(&filter)
+        };
+        let shown = self.project_report.iter().filter(|r| row_matches(r)).count();
+        egui::ScrollArea::both().id_salt("project_report_scroll").show(ui, |ui| {
         egui::Grid::new("project_report_grid").striped(true).num_columns(15).show(ui, |ui| {
             for h in ["report.sample", "report.alns", "report.meanCov", "report.median", "report.cov10x", "report.cov20x", "report.callable", "report.y", "report.mtdna", "report.sex", "report.readLen", "report.pctAln", "report.insert", "report.sv", "report.actions"] {
                 ui.strong(self.tr(h));
             }
             ui.end_row();
-            for r in &self.project_report {
+            for r in self.project_report.iter().filter(|r| row_matches(r)) {
                 ui.label(&r.biosample.donor_identifier);
                 ui.label(r.alignment_count.to_string());
                 // Mean coverage, with a "lite" badge when it's a partial sidecar estimate that a
@@ -1457,6 +1484,10 @@ impl NavigatorApp {
                 ui.end_row();
             }
         });
+        if shown == 0 {
+            ui.label(egui::RichText::new(self.tr("project.noMatch")).weak());
+        }
+        });
         if let Some(aln) = recompute {
             self.running = true;
             self.status = "Recomputing coverage…".into();
@@ -1470,16 +1501,19 @@ impl NavigatorApp {
 
     pub(crate) fn samples_section(&mut self, ui: &mut egui::Ui) {
         let pid = self.selected_project.unwrap();
-        let name = self
-            .overview
-            .iter()
-            .find(|o| o.project.id == pid)
-            .map(|o| o.project.name.clone())
-            .unwrap_or_else(|| "project".into());
         let clustered = matches!(&self.project_clustering, Some((p, _)) if *p == pid);
 
+        // Action row: filter box + cluster toggle.
+        let member_hint = self.tr("project.filterMembers");
         ui.horizontal(|ui| {
-            ui.heading(format!("Samples — {name}"));
+            ui.add(
+                egui::TextEdit::singleline(&mut self.member_filter)
+                    .hint_text(member_hint)
+                    .desired_width(260.0),
+            );
+            if !self.member_filter.is_empty() && ui.button("✕").clicked() {
+                self.member_filter.clear();
+            }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if clustered {
                     if ui.button(self.tr("cluster.flatList")).clicked() {
@@ -1501,11 +1535,15 @@ impl NavigatorApp {
         });
         ui.separator();
 
-        if clustered {
-            self.samples_clustered(ui);
-        } else {
-            self.samples_flat(ui);
-        }
+        egui::ScrollArea::vertical()
+            .id_salt("project_members_scroll")
+            .show(ui, |ui| {
+                if clustered {
+                    self.samples_clustered(ui);
+                } else {
+                    self.samples_flat(ui);
+                }
+            });
     }
 
     /// Flat list of the project's members (the default view).
@@ -1513,8 +1551,22 @@ impl NavigatorApp {
         if self.samples.is_empty() {
             ui.label(self.tr("projects.noSamples"));
         }
+        let filter = self.member_filter.to_ascii_lowercase();
         let mut pick = None;
+        let mut shown = 0;
         for s in &self.samples {
+            if !filter.is_empty()
+                && !s.donor_identifier.to_ascii_lowercase().contains(&filter)
+                && !s
+                    .sample_accession
+                    .as_deref()
+                    .unwrap_or("")
+                    .to_ascii_lowercase()
+                    .contains(&filter)
+            {
+                continue;
+            }
+            shown += 1;
             let label = format!(
                 "{}  ({}, {})",
                 s.donor_identifier,
@@ -1527,6 +1579,9 @@ impl NavigatorApp {
             {
                 pick = Some(s.guid);
             }
+        }
+        if shown == 0 && !self.samples.is_empty() {
+            ui.label(egui::RichText::new(self.tr("project.noMatch")).weak());
         }
         if let Some(guid) = pick {
             self.select_sample(guid);
@@ -1544,76 +1599,99 @@ impl NavigatorApp {
         };
         let confirmed_col = egui::Color32::from_rgb(90, 175, 120);
         let suggest_col = egui::Color32::from_rgb(210, 175, 90);
+        let filter = self.member_filter.to_ascii_lowercase();
+        // A member matches the filter on its label or its (confirmed/suggested) branch.
+        let member_matches = |m: &navigator_app::ClusteredMember| -> bool {
+            filter.is_empty()
+                || m.label.to_ascii_lowercase().contains(&filter)
+                || m.effective_branch()
+                    .map(|b| b.to_ascii_lowercase().contains(&filter))
+                    .unwrap_or(false)
+        };
         let mut pick = None;
 
-        egui::ScrollArea::vertical().show(ui, |ui| {
-            for cluster in &clustering.clusters {
-                let title = match &cluster.branch {
-                    Some(b) => b.clone(),
-                    None => self.tr("cluster.unbranched").to_string(),
-                };
-                let header = format!(
-                    "{title}  ·  {} {} · {} {}",
-                    cluster.confirmed_count(),
-                    self.tr("cluster.confirmed"),
-                    cluster.suggested_count(),
-                    self.tr("cluster.suggested"),
-                );
-                egui::CollapsingHeader::new(egui::RichText::new(header).strong())
-                    .default_open(cluster.members.len() <= 30)
-                    .id_salt(("ystr_cluster", title))
-                    .show(ui, |ui| {
-                        for m in &cluster.members {
-                            let selected = self.selected_sample == Some(m.guid);
-                            let resp = ui.selectable_label(selected, &m.label);
-                            // Branch chip after the label.
-                            if let Some(b) = &m.branch {
-                                ui.indent(("c", m.guid), |ui| {
-                                    ui.colored_label(confirmed_col, egui::RichText::new(format!("✓ {b}")).small());
-                                });
-                            } else if let Some(s) = &m.suggested {
-                                ui.indent(("s", m.guid), |ui| {
-                                    ui.colored_label(
-                                        suggest_col,
-                                        egui::RichText::new(format!(
-                                            "→ {} ({:.0}% · GD {}/{})",
-                                            s.branch,
-                                            s.confidence * 100.0,
-                                            s.gd,
-                                            s.compared
-                                        ))
-                                        .small(),
-                                    );
-                                });
-                            }
-                            if resp.clicked() {
-                                pick = Some(m.guid);
-                            }
-                        }
-                    });
+        // The parent (samples_section) owns the scroll area — no nested one here (that's the widget-ID
+        // clash and double-scrollbar). Render clusters directly.
+        for cluster in &clustering.clusters {
+            // A cluster shows if its branch matches the filter (→ all members) or any member matches.
+            let branch_hit = !filter.is_empty()
+                && cluster
+                    .branch
+                    .as_deref()
+                    .map(|b| b.to_ascii_lowercase().contains(&filter))
+                    .unwrap_or(false);
+            let matching: Vec<&navigator_app::ClusteredMember> = cluster
+                .members
+                .iter()
+                .filter(|m| branch_hit || member_matches(m))
+                .collect();
+            if matching.is_empty() {
+                continue;
             }
-            if !clustering.unclustered.is_empty() {
-                egui::CollapsingHeader::new(
-                    egui::RichText::new(format!(
-                        "{} ({})",
-                        self.tr("cluster.tooFew"),
-                        clustering.unclustered.len()
-                    ))
-                    .weak(),
-                )
-                .id_salt("ystr_unclustered")
+            let title = match &cluster.branch {
+                Some(b) => b.clone(),
+                None => self.tr("cluster.unbranched").to_string(),
+            };
+            let header = format!(
+                "{title}  ·  {} {} · {} {}",
+                cluster.confirmed_count(),
+                self.tr("cluster.confirmed"),
+                cluster.suggested_count(),
+                self.tr("cluster.suggested"),
+            );
+            // Auto-open when filtering (so matches are visible) or for small clusters.
+            let open = !filter.is_empty() || cluster.members.len() <= 30;
+            egui::CollapsingHeader::new(egui::RichText::new(header).strong())
+                .default_open(open)
+                .open((!filter.is_empty()).then_some(true))
+                .id_salt(("ystr_cluster", title))
                 .show(ui, |ui| {
-                    for m in &clustering.unclustered {
-                        if ui
-                            .selectable_label(self.selected_sample == Some(m.guid), &m.label)
-                            .clicked()
-                        {
+                    for m in matching {
+                        let selected = self.selected_sample == Some(m.guid);
+                        let resp = ui.selectable_label(selected, &m.label);
+                        if let Some(b) = &m.branch {
+                            ui.indent(("c", m.guid), |ui| {
+                                ui.colored_label(confirmed_col, egui::RichText::new(format!("✓ {b}")).small());
+                            });
+                        } else if let Some(s) = &m.suggested {
+                            ui.indent(("s", m.guid), |ui| {
+                                ui.colored_label(
+                                    suggest_col,
+                                    egui::RichText::new(format!(
+                                        "→ {} ({:.0}% · GD {}/{})",
+                                        s.branch,
+                                        s.confidence * 100.0,
+                                        s.gd,
+                                        s.compared
+                                    ))
+                                    .small(),
+                                );
+                            });
+                        }
+                        if resp.clicked() {
                             pick = Some(m.guid);
                         }
                     }
                 });
-            }
-        });
+        }
+        let unmatched: Vec<&navigator_app::ClusteredMember> =
+            clustering.unclustered.iter().filter(|m| member_matches(m)).collect();
+        if !unmatched.is_empty() {
+            egui::CollapsingHeader::new(
+                egui::RichText::new(format!("{} ({})", self.tr("cluster.tooFew"), unmatched.len())).weak(),
+            )
+            .id_salt("ystr_unclustered")
+            .show(ui, |ui| {
+                for m in unmatched {
+                    if ui
+                        .selectable_label(self.selected_sample == Some(m.guid), &m.label)
+                        .clicked()
+                    {
+                        pick = Some(m.guid);
+                    }
+                }
+            });
+        }
         if let Some(guid) = pick {
             self.select_sample(guid);
         }

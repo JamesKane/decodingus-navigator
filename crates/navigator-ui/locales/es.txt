@@ -322,6 +322,13 @@ cluster.confirmed=confirmados
 cluster.suggested=sugeridos
 cluster.unbranched=Grupo sin rama
 cluster.tooFew=Marcadores insuficientes para agrupar
+# Pestañas y filtros del detalle de proyecto
+project.tab.members=Miembros
+project.tab.report=Informe
+project.filterMembers=Filtrar miembros (kit, nombre, rama)…
+project.filterReport=Filtrar (muestra, haplogrupo)…
+project.noMatch=Ningún miembro coincide con el filtro.
+report.empty=Aún no hay informe de análisis — ejecute el análisis sobre los miembros.
 ftdna.commit=Confirmar importación
 ftdna.statRoster=miembros
 ftdna.statAncestry=ascendencia
