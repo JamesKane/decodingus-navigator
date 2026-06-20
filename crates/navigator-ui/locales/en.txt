@@ -325,6 +325,7 @@ ftdna.autoMerged=Auto-merged
 ftdna.needsConfirm=Needs confirmation
 ftdna.itsNew=It's new
 ftdna.skip=Skip
+ftdna.mergeInto=Merge into
 ftdna.commit=Commit import
 ftdna.statRoster=roster
 ftdna.statAncestry=ancestry

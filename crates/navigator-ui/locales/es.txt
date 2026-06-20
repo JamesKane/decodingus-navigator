@@ -312,6 +312,7 @@ ftdna.autoMerged=Combinados automáticamente
 ftdna.needsConfirm=Requiere confirmación
 ftdna.itsNew=Es nuevo
 ftdna.skip=Omitir
+ftdna.mergeInto=Combinar con
 ftdna.commit=Confirmar importación
 ftdna.statRoster=miembros
 ftdna.statAncestry=ascendencia

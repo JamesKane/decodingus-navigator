@@ -1095,31 +1095,31 @@ impl NavigatorApp {
                                         .small(),
                                 );
                             }
+                            // Mutually-exclusive choice per kit: merge into a candidate, new, or skip.
+                            // Radio buttons (not selectable labels) so the active choice is obvious.
                             let cur = resolutions.get(&row.kit_number);
                             for c in candidates {
                                 let sel = matches!(cur, Some(FtdnaResolution::Merge(g)) if *g == c.guid);
                                 let label = format!(
-                                    "→ {} ({:.0}% · {})",
+                                    "{} {} ({:.0}% · {})",
+                                    self.tr("ftdna.mergeInto"),
                                     c.donor_identifier,
                                     c.score * 100.0,
                                     c.reasons.join(", ")
                                 );
-                                if ui.selectable_label(sel, label).clicked() {
+                                if ui.radio(sel, label).clicked() {
                                     set_res.push((row.kit_number.clone(), FtdnaResolution::Merge(c.guid)));
                                 }
                             }
                             ui.horizontal(|ui| {
                                 if ui
-                                    .selectable_label(
-                                        matches!(cur, Some(FtdnaResolution::New)),
-                                        self.tr("ftdna.itsNew"),
-                                    )
+                                    .radio(matches!(cur, Some(FtdnaResolution::New)), self.tr("ftdna.itsNew"))
                                     .clicked()
                                 {
                                     set_res.push((row.kit_number.clone(), FtdnaResolution::New));
                                 }
                                 if ui
-                                    .selectable_label(matches!(cur, Some(FtdnaResolution::Skip)), self.tr("ftdna.skip"))
+                                    .radio(matches!(cur, Some(FtdnaResolution::Skip)), self.tr("ftdna.skip"))
                                     .clicked()
                                 {
                                     set_res.push((row.kit_number.clone(), FtdnaResolution::Skip));
