@@ -11,6 +11,7 @@ pub mod exchange;
 pub mod oauth;
 pub mod publish;
 pub mod records;
+pub mod social;
 pub mod sync;
 pub mod tokens;
 
