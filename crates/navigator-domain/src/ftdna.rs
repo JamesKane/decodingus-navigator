@@ -59,8 +59,10 @@ pub enum FtdnaFileKind {
 /// `Publicly Share DNA Results` consent column; the ancestry files use `Sub Group` (with a space)
 /// and a `Paternal`/`Maternal Ancestor Name`.
 pub fn classify(text: &str) -> Option<FtdnaFileKind> {
-    let header = text.lines().next()?;
-    let cols: Vec<String> = header.split(',').map(unescape_html).collect();
+    // Read the header through the CSV reader so fully-quoted headers (`"Kit Number",…`, which fresh
+    // FTDNA exports use) are de-quoted/trimmed like the parsers do — a naive comma split would keep
+    // the quotes and miss every column.
+    let (cols, _) = open(text).ok()?;
     let has = |name: &str| cols.iter().any(|c| c == name);
 
     if cols.iter().any(|c| c.starts_with("DYS")) {
@@ -398,6 +400,11 @@ mod tests {
     fn classify_distinguishes_the_four_exports() {
         assert_eq!(
             classify("Kit Number,Family Tree,Name,Email,Note,Release,Kit Back,Last Sign In,Access Granted,Allows MyHeritage Connection,Publicly Share DNA Results,Remove From Group"),
+            Some(FtdnaFileKind::Member)
+        );
+        // Fully-quoted header (fresh FTDNA exports quote every field) must classify the same.
+        assert_eq!(
+            classify("\"Kit Number\",\"Family Tree\",\"Name\",\"Email\",\"Note\",\"Release\",\"Kit Back\",\"Last Sign In\",\"Access Granted\",\"Allows MyHeritage Connection\",\"Publicly Share DNA Results\",\"Remove From Group\""),
             Some(FtdnaFileKind::Member)
         );
         assert_eq!(
