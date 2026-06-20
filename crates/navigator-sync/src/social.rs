@@ -47,10 +47,19 @@ mod tests {
         assert_eq!(messages::thread("did:k", None), "social-thread\ndid:k\n");
         assert_eq!(messages::thread("did:k", Some("c1")), "social-thread\ndid:k\nc1");
         assert_eq!(messages::poll("did:k", 42), "social-poll\ndid:k\n42");
-        assert_eq!(messages::thread_read("did:k", "c1", 42), "social-thread-read\ndid:k\nc1\n42");
+        assert_eq!(
+            messages::thread_read("did:k", "c1", 42),
+            "social-thread-read\ndid:k\nc1\n42"
+        );
         assert_eq!(messages::post("did:k", None), "social-post\ndid:k\n");
         assert_eq!(messages::post("did:k", Some("p1")), "social-post\ndid:k\np1");
-        assert_eq!(messages::notif_read("did:k", None, 42), "social-notif-read\ndid:k\n\n42");
-        assert_eq!(messages::notif_read("did:k", Some("n1"), 42), "social-notif-read\ndid:k\nn1\n42");
+        assert_eq!(
+            messages::notif_read("did:k", None, 42),
+            "social-notif-read\ndid:k\n\n42"
+        );
+        assert_eq!(
+            messages::notif_read("did:k", Some("n1"), 42),
+            "social-notif-read\ndid:k\nn1\n42"
+        );
     }
 }

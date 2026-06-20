@@ -71,6 +71,23 @@ enum Nav {
     Dashboard,
     Subjects,
     Projects,
+    Community,
+}
+
+/// Sub-tabs of the Community panel (the signed-in account's social surface).
+#[derive(Clone, Copy, PartialEq, Eq, Default)]
+enum CommunityTab {
+    #[default]
+    Support,
+    Feed,
+    Notifications,
+}
+impl CommunityTab {
+    const ALL: [(CommunityTab, &'static str); 3] = [
+        (CommunityTab::Support, "community.tab.support"),
+        (CommunityTab::Feed, "community.tab.feed"),
+        (CommunityTab::Notifications, "community.tab.notifications"),
+    ];
 }
 
 /// Sub-tabs of the project detail panel (the member list vs the per-sample analysis report).
@@ -655,6 +672,26 @@ pub struct NavigatorApp {
     member_filter: String,
     /// Filter for the project Report table (sample / haplogroup substring).
     report_filter: String,
+    // ---- Community (social) ------------------------------------------------
+    /// Active Community sub-tab (Support / Feed / Notifications).
+    community_tab: CommunityTab,
+    /// The signed-in account's support threads.
+    support_threads: Vec<navigator_app::SocialThreadSummary>,
+    /// The opened thread's `(conversation_id, messages)` — `None` when viewing the list.
+    open_thread: Option<(String, Vec<navigator_app::SocialMessage>)>,
+    /// The loaded community feed.
+    feed: Option<navigator_app::FeedView>,
+    /// Loaded notifications + the server's unread count (the app-bar bell badge).
+    notifications: Vec<navigator_app::SocialNotification>,
+    notif_unread: i64,
+    /// Whether the social tab has fetched at least once this session (lazy first load).
+    community_loaded: bool,
+    /// Composer buffers: new-thread subject/body, open-thread reply, feed post + topic.
+    new_thread_subject: String,
+    new_thread_body: String,
+    thread_reply: String,
+    feed_content: String,
+    feed_topic: String,
     forms: Forms,
     status: String,
 }
@@ -753,6 +790,7 @@ const SUBJECT_COLS: [(&str, f32); 7] = [
 
 mod central;
 mod chrome;
+mod community;
 mod detail;
 mod events;
 mod ibd;
@@ -934,6 +972,18 @@ impl NavigatorApp {
             project_tab: ProjectTab::default(),
             member_filter: String::new(),
             report_filter: String::new(),
+            community_tab: CommunityTab::default(),
+            support_threads: Vec::new(),
+            open_thread: None,
+            feed: None,
+            notifications: Vec::new(),
+            notif_unread: 0,
+            community_loaded: false,
+            new_thread_subject: String::new(),
+            new_thread_body: String::new(),
+            thread_reply: String::new(),
+            feed_content: String::new(),
+            feed_topic: String::new(),
             forms: Forms {
                 ploidy: "2".into(),
                 run_test_type: "WGS".into(),
@@ -1007,6 +1057,7 @@ impl eframe::App for NavigatorApp {
             Nav::Dashboard => self.dashboard_central(ui),
             Nav::Subjects => self.subjects_central(ui),
             Nav::Projects => self.projects_central(ui),
+            Nav::Community => self.community_central(ui),
         });
         self.analysis_modal(ctx);
         self.edit_subject_modal(ctx);

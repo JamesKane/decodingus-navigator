@@ -124,9 +124,6 @@ pub use ftdna_import::{
 };
 pub use navigator_domain::identity::{ExternalId, FtdnaMember, Mdka};
 pub use navigator_domain::ystr_cluster::{BranchSuggestion, ClusteredMember, YstrCluster, YstrClustering};
-pub use social::{
-    FederatedItem, FeedItem, FeedView, NotificationList, SocialMessage, SocialNotification, SocialThreadSummary,
-};
 pub use navigator_refgenome::vcf_lift::infer_source_build as infer_vcf_source_build;
 pub use navigator_refgenome::RefStatus;
 use navigator_refgenome::{
@@ -148,6 +145,9 @@ use navigator_sync::{
     ManualOverrideRecord, ReconciliationStatusRecord, RunHaplogroupCallRecord, HAPLOGROUP_RECONCILIATION_COLLECTION,
 };
 use navigator_sync::{FedPopulationComponent, FedSuperPopulationSummary};
+pub use social::{
+    FederatedItem, FeedItem, FeedView, NotificationList, SocialMessage, SocialNotification, SocialThreadSummary,
+};
 
 /// Keychain service namespace for stored sessions (plan §7).
 const KEYCHAIN_SERVICE: &str = "decodingus-navigator";

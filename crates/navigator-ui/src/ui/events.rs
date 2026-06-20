@@ -807,6 +807,31 @@ impl NavigatorApp {
                         format!("{missing} source file(s) moved or missing")
                     };
                 }
+                // ---- social (Community tab) --------------------------------
+                Event::SupportThreads(items) => self.support_threads = items,
+                Event::SupportThread {
+                    conversation_id,
+                    messages,
+                } => {
+                    self.open_thread = Some((conversation_id, messages));
+                }
+                Event::SupportThreadPosted { conversation_id } => {
+                    // Reload the list, and refresh the open thread (a reply) or open the new one.
+                    let _ = self.tx.send(Command::LoadSupportThreads);
+                    let _ = self.tx.send(Command::LoadSupportThread { conversation_id });
+                }
+                Event::CommunityFeed(feed) => self.feed = Some(feed),
+                Event::CommunityPosted => {
+                    self.status = self.tr("community.posted").to_string();
+                    let _ = self.tx.send(Command::LoadCommunityFeed);
+                }
+                Event::Notifications { items, unread } => {
+                    self.notifications = items;
+                    self.notif_unread = unread;
+                }
+                Event::NotificationsMarked => {
+                    let _ = self.tx.send(Command::LoadNotifications);
+                }
                 Event::Error(e) => {
                     self.status = format!("Error: {e}");
                     self.running = false;

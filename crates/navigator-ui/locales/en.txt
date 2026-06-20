@@ -8,6 +8,31 @@ app.name=Decoding-Us Navigator
 nav.dashboard=Dashboard
 nav.subjects=Subjects
 nav.projects=Projects
+nav.community=Community
+
+# Community (social) tab
+community.tab.support=Support
+community.tab.feed=Feed
+community.tab.notifications=Notifications
+community.signedout.title=Sign in to use Community
+community.signedout.hint=Support threads, the community feed, and notifications need a signed-in identity.
+community.team=Team
+community.back=← Back to threads
+community.reply=Reply
+community.send=Send
+community.newThread=Message the team
+community.noThreads=No support threads yet.
+community.postToFeed=Post to the community feed
+community.post=Post
+community.loading=Loading…
+community.emptyFeed=No posts yet.
+community.viaAtmosphere=via Atmosphere
+community.notifications=Notifications
+community.unread=Unread
+community.markAllRead=Mark all read
+community.markRead=Mark read
+community.noNotifications=No notifications.
+community.posted=Posted to the community feed.
 
 # Subject detail sub-tabs
 detail.overview=Overview

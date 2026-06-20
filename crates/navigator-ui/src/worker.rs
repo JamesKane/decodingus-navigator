@@ -528,6 +528,36 @@ pub enum Command {
         out_vcf: PathBuf,
         filter_par: bool,
     },
+    // ---- social (Community tab — signed AppView Edge API) -------------------
+    /// List the signed-in account's support threads (team↔tester).
+    LoadSupportThreads,
+    /// Read one support thread's messages (marks it read server-side).
+    LoadSupportThread {
+        conversation_id: String,
+    },
+    /// Open a new support thread to the team.
+    OpenSupportThread {
+        subject: String,
+        body: String,
+    },
+    /// Reply to an existing support thread.
+    ReplySupportThread {
+        conversation_id: String,
+        body: String,
+    },
+    /// Read the community feed (announcements + community + federated).
+    LoadCommunityFeed,
+    /// Post to the community feed (optionally tagged with a topic).
+    PostCommunity {
+        content: String,
+        topic: Option<String>,
+    },
+    /// Fetch notifications + unread count (also drives the app-bar bell).
+    LoadNotifications,
+    /// Mark one notification read (`Some`) or all (`None`).
+    MarkNotificationRead {
+        id: Option<String>,
+    },
 }
 
 /// A panel with its site count, for the panel list.
@@ -905,6 +935,29 @@ pub enum Event {
     VcfLifted {
         summary: String,
     },
+    // ---- social (Community tab) --------------------------------------------
+    /// The signed-in account's support threads.
+    SupportThreads(Vec<navigator_app::SocialThreadSummary>),
+    /// One support thread's messages (with its conversation id).
+    SupportThread {
+        conversation_id: String,
+        messages: Vec<navigator_app::SocialMessage>,
+    },
+    /// A support thread was opened/replied; reload the list (+ the open thread).
+    SupportThreadPosted {
+        conversation_id: String,
+    },
+    /// The community feed.
+    CommunityFeed(navigator_app::FeedView),
+    /// A community post succeeded; reload the feed.
+    CommunityPosted,
+    /// Notifications + unread count (drives the app-bar bell badge).
+    Notifications {
+        items: Vec<navigator_app::SocialNotification>,
+        unread: i64,
+    },
+    /// Notifications were marked read; reload them.
+    NotificationsMarked,
     Error(String),
 }
 
@@ -1776,6 +1829,47 @@ pub async fn handle(app: &App, cmd: Command) -> Event {
         Command::PublishReconciliation { biosample_guid, .. } => {
             Event::Error(format!("internal: unrouted PublishReconciliation {biosample_guid:?}"))
         }
+        // ---- social (Community tab) ----------------------------------------
+        Command::LoadSupportThreads => match app.support_threads().await {
+            Ok(items) => Event::SupportThreads(items),
+            Err(e) => Event::Error(e.to_string()),
+        },
+        Command::LoadSupportThread { conversation_id } => match app.support_thread(&conversation_id).await {
+            Ok(messages) => Event::SupportThread {
+                conversation_id,
+                messages,
+            },
+            Err(e) => Event::Error(e.to_string()),
+        },
+        Command::OpenSupportThread { subject, body } => match app.open_support_thread(&subject, &body).await {
+            Ok(conversation_id) => Event::SupportThreadPosted { conversation_id },
+            Err(e) => Event::Error(e.to_string()),
+        },
+        Command::ReplySupportThread { conversation_id, body } => {
+            match app.reply_support_thread(&conversation_id, &body).await {
+                Ok(conversation_id) => Event::SupportThreadPosted { conversation_id },
+                Err(e) => Event::Error(e.to_string()),
+            }
+        }
+        Command::LoadCommunityFeed => match app.community_feed().await {
+            Ok(feed) => Event::CommunityFeed(feed),
+            Err(e) => Event::Error(e.to_string()),
+        },
+        Command::PostCommunity { content, topic } => match app.post_community(&content, topic.as_deref(), None).await {
+            Ok(_) => Event::CommunityPosted,
+            Err(e) => Event::Error(e.to_string()),
+        },
+        Command::LoadNotifications => match app.notifications().await {
+            Ok(n) => Event::Notifications {
+                items: n.items,
+                unread: n.unread,
+            },
+            Err(e) => Event::Error(e.to_string()),
+        },
+        Command::MarkNotificationRead { id } => match app.mark_notification_read(id.as_deref()).await {
+            Ok(_) => Event::NotificationsMarked,
+            Err(e) => Event::Error(e.to_string()),
+        },
     }
 }
 

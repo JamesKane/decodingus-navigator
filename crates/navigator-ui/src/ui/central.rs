@@ -103,7 +103,7 @@ impl NavigatorApp {
     /// A segmented sub-tab bar (one row of selectable labels + a separator). Takes the current
     /// selection by value and returns the new one, so callers avoid a `&mut self.field` borrow clash
     /// with `self.tr` inside the row.
-    fn sub_bar<T: Copy + PartialEq>(&self, ui: &mut egui::Ui, current: T, items: &[(T, &'static str)]) -> T {
+    pub(crate) fn sub_bar<T: Copy + PartialEq>(&self, ui: &mut egui::Ui, current: T, items: &[(T, &'static str)]) -> T {
         let mut sel = current;
         ui.horizontal(|ui| {
             for (variant, key) in items {

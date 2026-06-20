@@ -36,6 +36,21 @@ impl NavigatorApp {
                         let _ = self.tx.send(Command::LoadReferenceSettings);
                     }
                     ui.separator();
+                    // Notification bell → Community / Notifications. Only meaningful when signed in.
+                    if self.account.is_some() {
+                        let bell = if self.notif_unread > 0 {
+                            format!("🔔 {}", self.notif_unread)
+                        } else {
+                            "🔔".to_string()
+                        };
+                        let resp = ui.button(bell).on_hover_text(self.tr("community.notifications"));
+                        if resp.clicked() {
+                            self.nav = Nav::Community;
+                            self.community_tab = CommunityTab::Notifications;
+                            let _ = self.tx.send(Command::LoadNotifications);
+                        }
+                        ui.separator();
+                    }
                     // Theme toggle lives in Settings → Appearance (no duplicate app-bar control).
                     let prev_lang = self.lang;
                     egui::ComboBox::from_id_salt("lang")
@@ -65,6 +80,7 @@ impl NavigatorApp {
                     (Nav::Dashboard, "📊", "nav.dashboard"),
                     (Nav::Subjects, "👥", "nav.subjects"),
                     (Nav::Projects, "📁", "nav.projects"),
+                    (Nav::Community, "💬", "nav.community"),
                 ] {
                     let label = format!("{icon}  {}", self.tr(key));
                     if ui
@@ -138,7 +154,8 @@ impl NavigatorApp {
     /// The left panel, routed by the active nav tab. Hidden on the Dashboard.
     pub(crate) fn left_panel(&mut self, ctx: &egui::Context) {
         match self.nav {
-            Nav::Dashboard => {}
+            // Dashboard + Community are full-width (no side panel).
+            Nav::Dashboard | Nav::Community => {}
             Nav::Projects => {
                 egui::SidePanel::left("left")
                     .min_width(240.0)

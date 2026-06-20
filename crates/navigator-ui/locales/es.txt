@@ -6,6 +6,31 @@ app.name=Decoding-Us Navigator
 nav.dashboard=Panel
 nav.subjects=Sujetos
 nav.projects=Proyectos
+nav.community=Comunidad
+
+# Pestaña Comunidad (social)
+community.tab.support=Soporte
+community.tab.feed=Muro
+community.tab.notifications=Notificaciones
+community.signedout.title=Inicia sesión para usar Comunidad
+community.signedout.hint=Los hilos de soporte, el muro y las notificaciones requieren una identidad con sesión iniciada.
+community.team=Equipo
+community.back=← Volver a los hilos
+community.reply=Responder
+community.send=Enviar
+community.newThread=Escribir al equipo
+community.noThreads=Aún no hay hilos de soporte.
+community.postToFeed=Publicar en el muro de la comunidad
+community.post=Publicar
+community.loading=Cargando…
+community.emptyFeed=Aún no hay publicaciones.
+community.viaAtmosphere=vía Atmosphere
+community.notifications=Notificaciones
+community.unread=Sin leer
+community.markAllRead=Marcar todo como leído
+community.markRead=Marcar leído
+community.noNotifications=No hay notificaciones.
+community.posted=Publicado en el muro de la comunidad.
 
 detail.overview=Resumen
 detail.ydna=ADN-Y

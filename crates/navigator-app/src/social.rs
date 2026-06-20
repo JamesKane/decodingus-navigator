@@ -131,9 +131,7 @@ impl App {
             #[serde(default)]
             items: Vec<SocialThreadSummary>,
         }
-        let r: Resp = self
-            .social_get("social/threads", messages::poll, &[])
-            .await?;
+        let r: Resp = self.social_get("social/threads", messages::poll, &[]).await?;
         Ok(r.items)
     }
 
@@ -178,7 +176,10 @@ impl App {
             b["subject"] = serde_json::json!(s);
         }
         let v = self.social_post("social/thread", b).await?;
-        Ok(v.get("conversation_id").and_then(|x| x.as_str()).unwrap_or_default().to_string())
+        Ok(v.get("conversation_id")
+            .and_then(|x| x.as_str())
+            .unwrap_or_default()
+            .to_string())
     }
 
     // ---- community feed ----------------------------------------------------
