@@ -133,8 +133,8 @@ impl App {
         Ok(assignment)
     }
 
-    /// The biosample a alignment belongs to (alignment → sequencing run → biosample).
-    pub(crate) async fn biosample_of_alignment(&self, alignment_id: i64) -> Result<SampleGuid, AppError> {
+    /// The biosample an alignment belongs to (alignment → sequencing run → biosample).
+    pub async fn biosample_of_alignment(&self, alignment_id: i64) -> Result<SampleGuid, AppError> {
         let aln = self.alignment_or_err(alignment_id).await?;
         let run = sequence_run::get(self.store.pool(), aln.sequence_run_id)
             .await?
@@ -1271,16 +1271,17 @@ impl App {
 
     /// [`Self::refine_big_y_generation`] keyed off an alignment's freshly computed (or cached)
     /// coverage — the callable-chrY base count is the discriminator. Called after coverage runs.
+    /// Returns the new code when the generation changed (so the caller can refresh the run card).
     pub async fn refine_big_y_generation_for_alignment(
         &self,
         alignment_id: i64,
         coverage: &Coverage,
-    ) -> Result<(), AppError> {
+    ) -> Result<Option<&'static str>, AppError> {
         let aln = self.alignment_or_err(alignment_id).await?;
         if let Some(run) = sequence_run::get(self.store.pool(), aln.sequence_run_id).await? {
-            self.refine_big_y_generation(&run, callable_chr_y_bases(coverage)).await;
+            return Ok(self.refine_big_y_generation(&run, callable_chr_y_bases(coverage)).await);
         }
-        Ok(())
+        Ok(None)
     }
 
     /// Resolve the sequencing lab for every run that has an inferred `instrument_id` but no facility

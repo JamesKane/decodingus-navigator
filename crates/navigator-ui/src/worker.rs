@@ -2127,6 +2127,15 @@ async fn run_full_analysis_streaming<W: Fn() + Send + Sync + 'static>(
                 // check above ran before this coverage existed). Adjusts the remaining-step total.
                 has_mtdna = chrm_has_reads(&cov);
                 total = if has_mtdna { 5 } else { 3 };
+                // Pin a generic FTDNA Targeted-Y to Big Y-500 vs -700 from its callable-chrY
+                // footprint. Done here (not only inside the metrics walker) so it also fires on the
+                // cached fast-path above, where the walker — and its in-method refine — is skipped.
+                // When the generation changed, reload the run card so it shows the new label.
+                if let Ok(Some(_)) = app.refine_big_y_generation_for_alignment(alignment_id, &cov).await {
+                    if let Ok(guid) = app.biosample_of_alignment(alignment_id).await {
+                        let _ = evt_tx.send(Event::RunsChanged(guid));
+                    }
+                }
                 let _ = evt_tx.send(Event::Coverage {
                     alignment_id,
                     result: Some(cov),
