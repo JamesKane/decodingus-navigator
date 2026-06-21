@@ -2086,9 +2086,11 @@ async fn run_full_analysis_streaming<W: Fn() + Send + Sync + 'static>(
         });
         wake();
         // Reuse cached sub-results instead of re-scanning the whole genome (minutes) — only when
-        // all three are present, since they're persisted together by the unified walker.
+        // all three are present, since they're persisted together by the unified walker. The
+        // coverage must also be at the right scope (a stale whole-genome result for a targeted-Y
+        // test reads as a miss) so it's recomputed restricted to the target contigs.
         let cached = match (
-            app.cached_coverage(alignment_id).await,
+            app.cached_coverage_for_analysis(alignment_id).await,
             app.cached_read_metrics(alignment_id).await,
             app.cached_sex(alignment_id).await,
         ) {

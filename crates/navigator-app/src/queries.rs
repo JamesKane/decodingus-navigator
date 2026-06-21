@@ -296,10 +296,15 @@ impl App {
         o.had_alignment = true;
         let label = &biosample.donor_identifier;
 
+        // "Done" only when a full walk exists AND it was computed at the right scope — a stale
+        // whole-genome coverage for a targeted-Y test (diluted headline depth) is recomputed.
         let coverage_full = matches!(
             self.analysis_provenance(aln.id, "coverage", coverage::COVERAGE_VERSION).await?,
             Some((_, ref c)) if c == "full"
-        );
+        ) && match self.cached_coverage(aln.id).await? {
+            Some(cov) => self.coverage_is_correctly_scoped(aln.id, &cov).await?,
+            None => false,
+        };
         if coverage_full {
             o.coverage_done = true;
         } else {

@@ -104,6 +104,31 @@ impl App {
         Ok(Some(contigs.iter().map(|s| s.to_string()).collect()))
     }
 
+    /// Whether a cached coverage result was computed at the right scope for the alignment's test.
+    /// A targeted test (Big Y, mtFull) must cover only its target contig(s); a whole-genome cached
+    /// result for it is stale — the headline depth was diluted across the empty genome — and must
+    /// be recomputed. Whole-genome tests (no allowlist) are always in scope.
+    pub(crate) async fn coverage_is_correctly_scoped(
+        &self,
+        alignment_id: i64,
+        cov: &CoverageResult,
+    ) -> Result<bool, AppError> {
+        match self.coverage_target_allowlist(alignment_id).await? {
+            None => Ok(true),
+            Some(allow) => Ok(cov.contig_coverage_stats.iter().all(|s| allow.contains(&s.contig))),
+        }
+    }
+
+    /// Cached coverage for analysis reuse: the stored result, but only when it was computed at the
+    /// right scope for the test (see [`Self::coverage_is_correctly_scoped`]). A stale whole-genome
+    /// result for a targeted test reads as a cache miss so the caller recomputes it correctly.
+    pub async fn cached_coverage_for_analysis(&self, alignment_id: i64) -> Result<Option<CoverageResult>, AppError> {
+        match self.cached_coverage(alignment_id).await? {
+            Some(cov) if self.coverage_is_correctly_scoped(alignment_id, &cov).await? => Ok(Some(cov)),
+            _ => Ok(None),
+        }
+    }
+
     /// Infer biological sex from the alignment's chrX:autosome read-density ratio, persisting
     /// the result as a `sex` artifact. Cheap (BAI fast-path for BAM). `reference` is used only
     /// for CRAM decode.
@@ -234,6 +259,10 @@ impl App {
                     .await?
             }
         };
+        // Restrict a targeted test (Big Y, mtFull) to its target contig(s), exactly like the
+        // standalone coverage walker — otherwise the headline depth is diluted across the empty
+        // genome (a Big Y reads as ~0.2× instead of ~50× on chrY). WGS keeps the whole-genome walk.
+        let allowlist = self.coverage_target_allowlist(alignment_id).await?;
         let mut params = CallableLociParams::default();
         let result = tokio::task::spawn_blocking(move || {
             // Adapt the callable threshold to read tech (HiFi → 1×; see adaptive_min_depth).
@@ -241,7 +270,11 @@ impl App {
                 params.min_depth = adaptive_min_depth(params.min_depth, read_len);
             }
             navigator_analysis::unified::collect_unified_metrics_parallel_with_progress(
-                &bam, &reference, &params, None, &progress,
+                &bam,
+                &reference,
+                &params,
+                allowlist.as_ref(),
+                &progress,
             )
         })
         .await??;
