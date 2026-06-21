@@ -502,6 +502,9 @@ impl NavigatorApp {
                         }
                         self.y_profile = profile;
                         self.y_snp_names_requested = false; // re-resolve names incl. the new positions
+                                                            // A rebuild re-places the genome consensus (consensus_label); refresh the
+                                                            // Overview's cached Y/mt consensus so it doesn't lag until the next reload.
+                        let _ = self.tx.send(Command::LoadConsensus(biosample_guid));
                     }
                 }
                 Event::YSnpNames { names } => {
@@ -517,6 +520,8 @@ impl NavigatorApp {
                             self.status = format!("mtDNA consensus profile: {} mutations", p.summary.total);
                         }
                         self.mt_profile = profile;
+                        // A rebuild re-places the mt genome consensus; refresh the Overview's cache.
+                        let _ = self.tx.send(Command::LoadConsensus(biosample_guid));
                     }
                 }
                 Event::AutosomalProfile {
