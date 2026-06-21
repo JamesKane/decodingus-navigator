@@ -80,7 +80,7 @@ impl NavigatorApp {
 
                 // Per-contig table: stats joined with the GATK/callable breakdown by header order.
                 egui::ScrollArea::vertical()
-                    .max_height(240.0)
+                    .max_height(520.0)
                     .id_salt("cov_contig_table")
                     .show(ui, |ui| {
                         egui::Grid::new("coverage_contig_grid")
@@ -106,6 +106,11 @@ impl NavigatorApp {
                                 ui.end_row();
 
                                 for (i, s) in c.contig_coverage_stats.iter().enumerate() {
+                                    // Skip contigs with no reads (e.g. the empty rest of the genome on
+                                    // a targeted-Y test, or chrM on a Big Y without mtDNA).
+                                    if s.num_reads == 0 {
+                                        continue;
+                                    }
                                     if ui.selectable_label(sel == Some(i), &s.contig).clicked() {
                                         sel = Some(i);
                                     }

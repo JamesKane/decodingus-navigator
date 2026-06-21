@@ -50,6 +50,23 @@ impl App {
     ) -> Result<StrProfile, AppError> {
         let text = std::fs::read_to_string(csv_path)?;
         let markers = strprofile::parse_csv(&text).map_err(AppError::Import)?;
+        // Merge into an existing same-panel profile rather than creating a duplicate — e.g. a Big Y
+        // CUSTOM (700/500) panel re-imported after the FTDNA project import already made one. Union
+        // the markers, the freshly-imported value winning on a conflict.
+        if let Some(existing) = str_profile::find_by_panel(self.store.pool(), biosample_guid, panel_name).await? {
+            let mut merged = existing.markers.clone();
+            for m in markers {
+                match merged.iter_mut().find(|e| e.marker == m.marker) {
+                    Some(e) => e.value = m.value,
+                    None => merged.push(m),
+                }
+            }
+            str_profile::replace_markers(self.store.pool(), existing.id, &merged).await?;
+            return Ok(StrProfile {
+                markers: merged,
+                ..existing
+            });
+        }
         let new = NewStrProfile {
             biosample_guid,
             panel_name: panel_name.to_string(),

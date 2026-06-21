@@ -59,18 +59,46 @@ impl App {
                     .await?
             }
         };
+        // For a targeted test (Big Y, etc.) restrict the walk to the target chromosome(s) so the
+        // headline depth reflects the target rather than being diluted to ~0 by the empty genome.
+        let allowlist = self.coverage_target_allowlist(alignment_id).await?;
         let mut params = CallableLociParams::default();
         let result = tokio::task::spawn_blocking(move || {
             // Adapt the callable threshold to read tech (HiFi → 1×; see adaptive_min_depth).
             if let Ok((read_len, _)) = coverage::estimate_molecule_lengths(&bam, Some(&reference)) {
                 params.min_depth = adaptive_min_depth(params.min_depth, read_len);
             }
-            coverage::collect_coverage_callable_with_progress(&bam, &reference, &params, None, &mut progress)
+            coverage::collect_coverage_callable_with_progress(
+                &bam,
+                &reference,
+                &params,
+                allowlist.as_ref(),
+                &mut progress,
+            )
         })
         .await??;
         self.save_analysis(alignment_id, "coverage", coverage::COVERAGE_VERSION, &result)
             .await?;
         Ok(result)
+    }
+
+    /// The coverage contig allowlist for a targeted test, or `None` (whole genome) for WGS/autosomal.
+    /// A Y-targeted test (FTDNA Big Y, Y Elite, …) walks chrY only — plus chrM so the "has mtDNA
+    /// reads" signal survives for the few Big Ys that retained mitochondrial reads (the UI hides the
+    /// mtDNA sections when chrM has none). An mtDNA-targeted test walks chrM only. Build-agnostic
+    /// (both `chr`-prefixed and bare contig names are listed).
+    async fn coverage_target_allowlist(&self, alignment_id: i64) -> Result<Option<HashSet<String>>, AppError> {
+        use navigator_domain::testtype::TargetType;
+        let aln = self.alignment_or_err(alignment_id).await?;
+        let Some(run) = sequence_run::get(self.store.pool(), aln.sequence_run_id).await? else {
+            return Ok(None);
+        };
+        let contigs: &[&str] = match navigator_domain::testtype::by_code(&run.test_type).map(|t| t.target) {
+            Some(TargetType::YChromosome) => &["chrY", "Y", "chrM", "chrMT", "M", "MT"],
+            Some(TargetType::MtDna) => &["chrM", "chrMT", "M", "MT"],
+            _ => return Ok(None),
+        };
+        Ok(Some(contigs.iter().map(|s| s.to_string()).collect()))
     }
 
     /// Infer biological sex from the alignment's chrX:autosome read-density ratio, persisting

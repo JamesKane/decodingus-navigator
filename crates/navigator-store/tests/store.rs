@@ -177,6 +177,56 @@ async fn run_alignment_chain_persists() {
 }
 
 #[tokio::test]
+async fn str_find_by_panel_and_replace_markers() {
+    use navigator_domain::strprofile::{NewStrProfile, StrMarker};
+    use navigator_store::str_profile;
+
+    let s = store().await;
+    let b = sample(None);
+    biosample::create(s.pool(), &b).await.unwrap();
+    let mk = |m: &str, v: &str| StrMarker {
+        marker: m.into(),
+        value: v.into(),
+    };
+
+    str_profile::create(
+        s.pool(),
+        &NewStrProfile {
+            biosample_guid: b.guid,
+            panel_name: "CUSTOM".into(),
+            provider: None,
+            source: Some("IMPORTED".into()),
+            markers: vec![mk("DYS393", "13"), mk("DYS390", "24")],
+        },
+    )
+    .await
+    .unwrap();
+
+    // Find by panel resolves the profile with its markers; a different panel is absent.
+    let found = str_profile::find_by_panel(s.pool(), b.guid, "CUSTOM")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(found.markers.len(), 2);
+    assert!(str_profile::find_by_panel(s.pool(), b.guid, "Y-111")
+        .await
+        .unwrap()
+        .is_none());
+
+    // Replace markers (merge result: one updated value + one new marker).
+    str_profile::replace_markers(s.pool(), found.id, &[mk("DYS393", "14"), mk("DYS19", "15")])
+        .await
+        .unwrap();
+    let after = str_profile::find_by_panel(s.pool(), b.guid, "CUSTOM")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(after.id, found.id, "same profile (no duplicate)");
+    assert_eq!(after.markers.len(), 2);
+    assert_eq!(after.markers.iter().find(|m| m.marker == "DYS393").unwrap().value, "14");
+}
+
+#[tokio::test]
 async fn clear_data_resets_subject_but_keeps_the_biosample() {
     use navigator_domain::reconciliation::{AuditEntry, DnaType};
     use navigator_store::reconciliation;

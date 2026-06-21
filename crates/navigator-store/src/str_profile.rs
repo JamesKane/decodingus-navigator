@@ -73,6 +73,55 @@ async fn markers_for(pool: &SqlitePool, profile_id: i64) -> Result<Vec<StrMarker
     Ok(rows.into_iter().map(MarkerRow::into_domain).collect())
 }
 
+/// The first STR profile for a biosample matching `panel_name` (with markers), if any. Used to
+/// merge a re-imported panel (e.g. a Big Y CUSTOM set) into the existing profile instead of
+/// adding a duplicate.
+pub async fn find_by_panel(
+    pool: &SqlitePool,
+    guid: SampleGuid,
+    panel_name: &str,
+) -> Result<Option<StrProfile>, StoreError> {
+    let row: Option<ProfileRow> = sqlx::query_as(
+        "SELECT id, biosample_guid, panel_name, provider, source FROM str_profile \
+         WHERE biosample_guid = ? AND panel_name = ? ORDER BY id LIMIT 1",
+    )
+    .bind(guid.0.to_string())
+    .bind(panel_name)
+    .fetch_optional(pool)
+    .await?;
+    let Some(r) = row else { return Ok(None) };
+    let biosample_guid = parse_sample_guid(&r.biosample_guid, "str_profile")?;
+    let markers = markers_for(pool, r.id).await?;
+    Ok(Some(StrProfile {
+        id: r.id,
+        biosample_guid,
+        panel_name: r.panel_name,
+        provider: r.provider,
+        source: r.source,
+        markers,
+    }))
+}
+
+/// Replace all of a profile's markers (delete-then-insert) in one transaction — used when merging
+/// a re-imported panel into an existing profile.
+pub async fn replace_markers(pool: &SqlitePool, profile_id: i64, markers: &[StrMarker]) -> Result<(), StoreError> {
+    let mut tx = pool.begin().await?;
+    sqlx::query("DELETE FROM str_marker WHERE str_profile_id = ?")
+        .bind(profile_id)
+        .execute(&mut *tx)
+        .await?;
+    for m in markers {
+        sqlx::query("INSERT INTO str_marker (str_profile_id, marker, value) VALUES (?, ?, ?)")
+            .bind(profile_id)
+            .bind(&m.marker)
+            .bind(&m.value)
+            .execute(&mut *tx)
+            .await?;
+    }
+    tx.commit().await?;
+    Ok(())
+}
+
 /// Delete an STR profile and its markers (children-first; FKs are enforced). Returns whether
 /// the profile row was removed.
 pub async fn delete(pool: &SqlitePool, id: i64) -> Result<bool, StoreError> {

@@ -801,16 +801,25 @@ impl NavigatorApp {
         card(ui, self.tr("card.sexMetrics"), |ui| self.sex_metrics_section(ui, id));
         ui.add_space(10.0);
         card(ui, self.tr("card.yHaplogroup"), |ui| self.y_haplogroup_section(ui, id));
-        ui.add_space(10.0);
-        card(ui, self.tr("card.mtHaplogroup"), |ui| {
-            self.mt_haplogroup_section(ui, id)
+        // Hide the mtDNA sections when the selected alignment's coverage shows no chrM reads (a
+        // targeted-Y test without mitochondrial reads). Shown when coverage hasn't been run yet.
+        let no_mtdna = self.coverage.as_ref().is_some_and(|c| {
+            !c.contig_coverage_stats
+                .iter()
+                .any(|s| matches!(s.contig.as_str(), "chrM" | "chrMT" | "M" | "MT") && s.num_reads > 0)
         });
-        ui.add_space(10.0);
-        card(ui, self.tr("card.mtDenovo"), |ui| self.denovo_section(ui, id, "chrM"));
-        ui.add_space(10.0);
-        card(ui, self.tr("card.mtHeteroplasmy"), |ui| {
-            self.heteroplasmy_section(ui, id)
-        });
+        if !no_mtdna {
+            ui.add_space(10.0);
+            card(ui, self.tr("card.mtHaplogroup"), |ui| {
+                self.mt_haplogroup_section(ui, id)
+            });
+            ui.add_space(10.0);
+            card(ui, self.tr("card.mtDenovo"), |ui| self.denovo_section(ui, id, "chrM"));
+            ui.add_space(10.0);
+            card(ui, self.tr("card.mtHeteroplasmy"), |ui| {
+                self.heteroplasmy_section(ui, id)
+            });
+        }
     }
 
     /// Donor-level private-Y union (Phase 3): off-backbone calls pooled + deduped across the
