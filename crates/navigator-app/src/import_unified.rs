@@ -228,7 +228,26 @@ impl App {
     ) -> Result<BatchImportSummary, AppError> {
         let mut files = Vec::new();
         for p in &paths {
-            collect_data_files(p, &mut files, 0);
+            // Guard against a single picked folder that's really a *parent* of several per-sample
+            // folders (e.g. an FTDNA download root): recursing it would silently merge sibling
+            // samples into this one subject. Refuse with guidance rather than import the wrong data.
+            if p.is_dir() {
+                let mut these = Vec::new();
+                collect_data_files(p, &mut these, 0);
+                let subdirs = contributing_subdirs(p, &these);
+                if subdirs.len() >= 2 {
+                    let sample = subdirs.iter().take(3).cloned().collect::<Vec<_>>().join(", ");
+                    return Err(AppError::Import(format!(
+                        "{} holds data for {} separate samples ({sample}…) — import one sample's \
+                         folder at a time, or use Project Import for a multi-sample directory.",
+                        p.display(),
+                        subdirs.len(),
+                    )));
+                }
+                files.extend(these);
+            } else {
+                collect_data_files(p, &mut files, 0);
+            }
         }
         files.dedup();
         let total = files.len();

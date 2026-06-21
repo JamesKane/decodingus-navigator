@@ -1146,6 +1146,29 @@ fn collect_data_files(path: &Path, out: &mut Vec<PathBuf>, depth: usize) {
     }
 }
 
+/// Immediate child directories of `root` that contributed at least one collected file — the
+/// "this folder holds several samples" signal. A single sample's folder fans data into at most one
+/// subdirectory (e.g. FTDNA `<sample>/<kit>/<uuid>.bam` plus a top-level results CSV → just the kit
+/// dir); a *parent* of many per-sample folders spreads it across several. Files sitting directly in
+/// `root` aren't counted (they belong to the picked folder itself).
+fn contributing_subdirs(root: &std::path::Path, files: &[PathBuf]) -> std::collections::BTreeSet<String> {
+    use std::path::Component;
+    let mut set = std::collections::BTreeSet::new();
+    for f in files {
+        if let Ok(rel) = f.strip_prefix(root) {
+            let mut comps = rel.components();
+            if let Some(Component::Normal(first)) = comps.next() {
+                // Count it only when the file lives *inside* this child dir (a further component
+                // follows), not when it sits directly at the root level.
+                if comps.next().is_some() {
+                    set.insert(first.to_string_lossy().into_owned());
+                }
+            }
+        }
+    }
+    set
+}
+
 /// Whether `name` is a primary chromosome (1–22, X, Y, M/MT), with or without a `chr` prefix —
 /// the contigs the whole-genome diploid caller runs over (skipping alts / decoys / unplaced).
 fn is_primary_contig(name: &str) -> bool {
@@ -2119,11 +2142,39 @@ pub fn report_csv(rows: &[ProjectSampleReport]) -> String {
 mod placement_tests {
     use super::SourceType;
     use super::{
-        assemble_assignment, assemble_assignment_robust, pool_votes, snp_obs_from_assignment, strand_reconcile_to_tree,
-        support_backoff_terminal,
+        assemble_assignment, assemble_assignment_robust, contributing_subdirs, pool_votes, snp_obs_from_assignment,
+        strand_reconcile_to_tree, support_backoff_terminal,
     };
     use navigator_analysis::haplo::parse_ftdna_json;
     use std::collections::HashMap;
+    use std::path::PathBuf;
+
+    #[test]
+    fn contributing_subdirs_flags_multi_sample_folders() {
+        let root = std::path::Path::new("/data/FTDNA");
+        // A single sample's folder: a top-level results CSV + one kit subdir with the BAM.
+        let one_sample = [
+            PathBuf::from("/data/FTDNA/42048/42048_YDNA_DYS_Results.csv"),
+            PathBuf::from("/data/FTDNA/42048/2691/abc.bam"),
+        ];
+        // Relative to the *sample* folder, only the kit dir contributes → not multi-sample.
+        let sample_root = std::path::Path::new("/data/FTDNA/42048");
+        assert_eq!(contributing_subdirs(sample_root, &one_sample).len(), 1);
+
+        // Relative to the parent download root, each sample folder contributes → multi-sample.
+        let many = [
+            PathBuf::from("/data/FTDNA/42048/42048_YDNA.csv"),
+            PathBuf::from("/data/FTDNA/166433/166433_YDNA.csv"),
+            PathBuf::from("/data/FTDNA/166433/9369/x.bam"),
+        ];
+        let dirs = contributing_subdirs(root, &many);
+        assert_eq!(dirs.len(), 2);
+        assert!(dirs.contains("42048") && dirs.contains("166433"));
+
+        // Files sitting directly in the picked folder don't count as a subdir.
+        let flat = [PathBuf::from("/data/FTDNA/a.csv"), PathBuf::from("/data/FTDNA/b.bam")];
+        assert!(contributing_subdirs(root, &flat).is_empty());
+    }
 
     // A six-node spine for the back-off tests: root(1) → A(2,@146) → B(3,@263) → C(4,@750)
     // → D(5,@1000) → F(6,@1100), one defining SNP per node.
