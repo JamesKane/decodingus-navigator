@@ -1234,10 +1234,9 @@ impl App {
     /// yet, via the AppView (one cached fetch). Best-effort; returns how many were filled. Run after
     /// import and on startup so pre-existing runs pick up newly-seeded associations.
     pub async fn backfill_run_labs(&self) -> Result<usize, AppError> {
-        // One network/cache fetch, then resolve locally.
-        let Ok(list) = self.fetch_lab_instruments().await else {
-            return Ok(0);
-        };
+        // One network/cache fetch (empty when offline — the FTDNA test-type normalization below is
+        // local and still runs for runs whose facility was resolved earlier, e.g. subject 103589).
+        let list = self.fetch_lab_instruments().await.unwrap_or_default();
         let by_instrument: HashMap<&str, &str> = list
             .iter()
             .map(|l| (l.instrument_id.as_str(), l.lab_name.as_str()))
@@ -1245,20 +1244,33 @@ impl App {
         let mut filled = 0usize;
         for biosample in biosample::list_all(self.store.pool()).await? {
             for run in sequence_run::list_for_biosample(self.store.pool(), biosample.guid).await? {
-                if run.sequencing_facility.is_some() {
-                    continue;
-                }
-                let Some(inst) = run.instrument_id.as_deref() else {
-                    continue;
+                // Resolve + record the facility from the instrument→lab map when not already known.
+                let facility = match run.sequencing_facility.clone() {
+                    Some(f) => Some(f),
+                    None => match run.instrument_id.as_deref().and_then(|i| by_instrument.get(i.trim())) {
+                        Some(raw) => {
+                            let lab = navigator_domain::labs::find(raw).map(|l| l.display_name).unwrap_or(raw);
+                            if sequence_run::set_facility(self.store.pool(), run.id, lab)
+                                .await
+                                .unwrap_or(false)
+                            {
+                                filled += 1;
+                            }
+                            Some(lab.to_string())
+                        }
+                        None => None,
+                    },
                 };
-                if let Some(raw) = by_instrument.get(inst.trim()) {
-                    let lab = navigator_domain::labs::find(raw).map(|l| l.display_name).unwrap_or(raw);
-                    if sequence_run::set_facility(self.store.pool(), run.id, lab)
-                        .await
-                        .unwrap_or(false)
-                    {
-                        filled += 1;
-                    }
+                // FTDNA only sells Big Y, so a run we now know is FTDNA but typed as the generic
+                // "Targeted Y (vendor unknown)" is a Big Y — promote it (drives the right label + the
+                // Y-only coverage). Idempotent; leaves already-specific Big Y / Y-Elite codes alone.
+                let is_ftdna = facility
+                    .as_deref()
+                    .and_then(navigator_domain::labs::find)
+                    .map(|l| l.abbreviation)
+                    == Some("FTDNA");
+                if is_ftdna && run.test_type == "TARGETED_Y" {
+                    let _ = sequence_run::set_test_type(self.store.pool(), run.id, "BIG_Y_700").await;
                 }
             }
         }

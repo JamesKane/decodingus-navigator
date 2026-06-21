@@ -172,6 +172,18 @@ pub async fn set_facility(pool: &SqlitePool, id: i64, facility: &str) -> Result<
     Ok(affected > 0)
 }
 
+/// Set a run's test-type code (e.g. normalizing a generic `TARGETED_Y` to `BIG_Y_700` once the
+/// run's vendor is known to be FTDNA, which only sells Big Y). Returns whether a row was affected.
+pub async fn set_test_type(pool: &SqlitePool, id: i64, test_type: &str) -> Result<bool, StoreError> {
+    let affected = sqlx::query("UPDATE sequence_run SET test_type = ? WHERE id = ?")
+        .bind(test_type)
+        .bind(id)
+        .execute(pool)
+        .await?
+        .rows_affected();
+    Ok(affected > 0)
+}
+
 /// Update a run's descriptive fields. The analysis-derived read-metric columns (total_reads,
 /// pf_reads_aligned, mean_read_length, mean_insert_size) are left untouched. Returns whether a
 /// row was affected.
