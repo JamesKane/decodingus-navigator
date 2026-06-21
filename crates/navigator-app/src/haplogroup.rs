@@ -2,6 +2,17 @@
 //! 2026-06 simplification round; `use super::*` reaches the crate-root types + free helpers.
 use super::*;
 
+/// Callable chrY bases from a coverage result — the FTDNA Big Y generation discriminator (see
+/// [`App::refine_big_y_generation`]). A Big Y has reads only on chrY, so this is its whole callable
+/// footprint. Build-agnostic (`chrY`/`Y`).
+fn callable_chr_y_bases(cov: &Coverage) -> u64 {
+    cov.contig_callable
+        .iter()
+        .filter(|c| matches!(c.contig.as_str(), "chrY" | "Y"))
+        .map(|c| c.callable)
+        .sum()
+}
+
 impl App {
     // ---- result exports (gap §6) -------------------------------------------
 
@@ -1230,19 +1241,46 @@ impl App {
         )
     }
 
-    /// FTDNA only sells Big Y, so a run whose sequencing facility resolves to FTDNA but is still
-    /// typed as the generic "Targeted Y (vendor unknown)" (TARGETED_Y) is a Big Y — promote it to
-    /// BIG_Y_700 (drives the right label + Y-only coverage). Idempotent; a no-op for other labs or
-    /// already-specific Y codes (Big Y / Y-Elite). Called both at import (once the facility is
-    /// resolved) and from the startup [`Self::backfill_run_labs`] sweep.
-    pub(crate) async fn promote_ftdna_big_y(&self, run_id: i64, test_type: &str, facility: Option<&str>) -> bool {
-        let is_ftdna = facility.and_then(navigator_domain::labs::find).map(|l| l.abbreviation) == Some("FTDNA");
-        if is_ftdna && test_type == "TARGETED_Y" {
-            return sequence_run::set_test_type(self.store.pool(), run_id, "BIG_Y_700")
-                .await
-                .unwrap_or(false);
+    /// Resolve the FTDNA Big Y **generation** for a generic Targeted-Y run from its callable chrY
+    /// footprint: a Big Y-500 covers ≤ ~10 Mb of callable chrY, and only the newer Big Y-700
+    /// consistently exceeds it. Only acts on an FTDNA `TARGETED_Y` run — a header `@RG LB` label
+    /// already pins the generation at import (those are `BIG_Y_500`/`BIG_Y_700`, never `TARGETED_Y`,
+    /// so they're never second-guessed here), and a non-FTDNA targeted-Y stays generic. Idempotent.
+    pub(crate) async fn refine_big_y_generation(&self, run: &SequenceRun, callable_chr_y: u64) -> Option<&'static str> {
+        const BIG_Y_500_MAX_CALLABLE: u64 = 10_000_000;
+        if run.test_type != "TARGETED_Y" {
+            return None;
         }
-        false
+        let is_ftdna = run
+            .sequencing_facility
+            .as_deref()
+            .and_then(navigator_domain::labs::find)
+            .map(|l| l.abbreviation)
+            == Some("FTDNA");
+        if !is_ftdna {
+            return None;
+        }
+        let code = if callable_chr_y > BIG_Y_500_MAX_CALLABLE {
+            "BIG_Y_700"
+        } else {
+            "BIG_Y_500"
+        };
+        let _ = sequence_run::set_test_type(self.store.pool(), run.id, code).await;
+        Some(code)
+    }
+
+    /// [`Self::refine_big_y_generation`] keyed off an alignment's freshly computed (or cached)
+    /// coverage — the callable-chrY base count is the discriminator. Called after coverage runs.
+    pub async fn refine_big_y_generation_for_alignment(
+        &self,
+        alignment_id: i64,
+        coverage: &Coverage,
+    ) -> Result<(), AppError> {
+        let aln = self.alignment_or_err(alignment_id).await?;
+        if let Some(run) = sequence_run::get(self.store.pool(), aln.sequence_run_id).await? {
+            self.refine_big_y_generation(&run, callable_chr_y_bases(coverage)).await;
+        }
+        Ok(())
     }
 
     /// Resolve the sequencing lab for every run that has an inferred `instrument_id` but no facility
@@ -1276,12 +1314,32 @@ impl App {
                         None => None,
                     },
                 };
-                // A run we now know is FTDNA but typed as the generic TARGETED_Y is a Big Y.
-                self.promote_ftdna_big_y(run.id, &run.test_type, facility.as_deref())
-                    .await;
+                // A run we now know is FTDNA but typed as the generic TARGETED_Y is a Big Y — pick
+                // its generation (500/700) from cached coverage when it's already been analyzed, so
+                // pre-existing runs get corrected on startup without a re-analysis.
+                let _ = facility; // (resolved above; the refine reads facility off the run record)
+                if run.test_type == "TARGETED_Y" {
+                    if let Ok(Some(cov)) = self.cached_coverage_for_run(run.id).await {
+                        // Re-read the run so the just-set facility is visible to the FTDNA gate.
+                        if let Ok(Some(fresh)) = sequence_run::get(self.store.pool(), run.id).await {
+                            self.refine_big_y_generation(&fresh, callable_chr_y_bases(&cov)).await;
+                        }
+                    }
+                }
             }
         }
         Ok(filled)
+    }
+
+    /// Cached coverage for a run, via its first alignment that has one (Big Y runs have a single
+    /// alignment). `None` when the run hasn't been analyzed yet.
+    async fn cached_coverage_for_run(&self, run_id: i64) -> Result<Option<Coverage>, AppError> {
+        for aln in alignment::list_for_run(self.store.pool(), run_id).await? {
+            if let Some(cov) = self.cached_coverage(aln.id).await? {
+                return Ok(Some(cov));
+            }
+        }
+        Ok(None)
     }
 
     /// A cached-or-downloaded haplotree JSON. The on-disk cache has a **7-day life** (see

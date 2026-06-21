@@ -105,6 +105,7 @@ impl App {
                 probe.platform.as_deref(),
                 probe.vendor_hint.as_deref(),
                 None,
+                probe.big_y_code.as_deref(),
             )
             .or_else(|| probe.test_type.clone())
             .unwrap_or_else(|| "WGS".into())
@@ -138,13 +139,13 @@ impl App {
                 s.flowcell_id.as_deref(),
             )
             .await;
-            // Resolve the lab from the instrument id via the AppView (best-effort, cached), then
-            // promote a generic Targeted-Y run to Big Y when that lab is FTDNA (FTDNA only sells
-            // Big Y) — so a fresh import shows the right test type without waiting for a restart.
+            // Resolve the lab from the instrument id via the AppView (best-effort, cached). The
+            // FTDNA Big Y generation comes from the header `@RG LB` label (already in `test_type`
+            // above) or, on older headers that omit it, from the callable-chrY footprint after
+            // analysis ([`Self::refine_big_y_generation`]) — not guessed from the lab here.
             if let Some(inst) = s.instrument_id.as_deref() {
                 if let Some(lab) = self.lookup_lab_by_instrument(inst).await {
                     let _ = sequence_run::set_facility(self.store.pool(), run.id, &lab).await;
-                    self.promote_ftdna_big_y(run.id, &run.test_type, Some(&lab)).await;
                 }
             }
         }
