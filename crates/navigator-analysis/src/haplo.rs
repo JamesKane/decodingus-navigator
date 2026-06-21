@@ -520,28 +520,54 @@ fn node_counts(node: &HaploNode, calls: &HashMap<i64, char>) -> (usize, usize, u
 /// node's defining SNPs than the derived allele — it confidently does **not** belong to this
 /// branch. A no-evidence node (all no-call, `d == a == 0`) is *not* contradicted: it is a
 /// pass-through, so low coverage never blocks a lineage. A stray ancestral at an otherwise
-/// well-supported node (`d > a`) is tolerated for the same reason.
+/// well-supported node (`d >= a`) is tolerated for the same reason.
 fn is_contradicted(node: &HaploNode, calls: &HashMap<i64, char>) -> bool {
     let (d, a, _) = node_counts(node, calls);
     a > d
 }
 
-/// Is the root→`node_id` lineage free of any contradicted branch? An off-path paralog
-/// artifact sits below a branch the sample is ancestral for, so it fails this guard; the
-/// genuine lineage (derived or merely no-call along its length) passes. Used to veto
-/// otherwise high-scoring tunnel artifacts from the [`score`] ranking.
+/// Derived defining-SNPs that must appear *below* a contradicted ancestor (on the path toward the
+/// candidate) before that contradiction stops vetoing the lineage. A lone ancestral at a sparse
+/// intermediate node is usually a genotyping artifact — common on targeted-Y data (FTDNA Big Y),
+/// whose coverage gaps turn most intermediate SNPs into no-calls — and would otherwise veto an
+/// entire deep lineage that the terminal overwhelmingly supports (one stray ancestral at R-Z16250
+/// blocking R-CTS4466 with 10 derived / 0 ancestral). A real off-branch *tunnel* artifact, by
+/// contrast, carries only a coincidental hit or two below the contradicted branch-point, so it
+/// stays vetoed. The threshold sits above the coincidental noise and well below a genuine clade's
+/// derived count.
+const REDEEM_DERIVED: usize = 4;
+
+/// Is the root→`node_id` lineage free of any *unredeemed* contradicted branch? An off-path paralog
+/// artifact sits below a branch the sample is ancestral for, so it fails this guard; the genuine
+/// lineage (derived or merely no-call along its length) passes. Used to veto otherwise high-scoring
+/// tunnel artifacts from the [`score`] ranking.
+///
+/// A contradicted ancestor only vetoes when it isn't *redeemed* by derived support further down the
+/// path: a single stray ancestral at a sparse intermediate node (a Big Y miscall) is overridden
+/// when ≥[`REDEEM_DERIVED`] derived SNPs below it confirm the branch, while a coincidental tunnel —
+/// a contradicted branch-point with only a hit or two beneath it — stays vetoed.
 pub fn path_admissible(tree: &HaploTree, calls: &HashMap<i64, char>, node_id: i64) -> bool {
     let parent = build_parent_map(tree);
+    // Root→node path (root first), with each node's derived-call count.
+    let mut path: Vec<i64> = Vec::new();
     let mut cur = Some(node_id);
     while let Some(id) = cur {
-        match tree.nodes.get(&id) {
-            Some(node) => {
-                if is_contradicted(node, calls) {
-                    return false;
-                }
-                cur = parent.get(&id).copied();
+        path.push(id);
+        cur = parent.get(&id).copied();
+    }
+    path.reverse();
+    let derived: Vec<usize> = path
+        .iter()
+        .map(|id| tree.nodes.get(id).map_or(0, |n| node_counts(n, calls).0))
+        .collect();
+    for (i, id) in path.iter().enumerate() {
+        let Some(node) = tree.nodes.get(id) else { continue };
+        if is_contradicted(node, calls) {
+            // Derived SNPs strictly below this contradicted node, toward the candidate.
+            let derived_below: usize = derived[i + 1..].iter().sum();
+            if derived_below < REDEEM_DERIVED {
+                return false;
             }
-            None => break,
         }
     }
     true
