@@ -1379,16 +1379,7 @@ impl NavigatorApp {
             return;
         }
         ui.add_space(4.0);
-        let report_hint = self.tr("project.filterReport");
         ui.horizontal(|ui| {
-            ui.add(
-                egui::TextEdit::singleline(&mut self.report_filter)
-                    .hint_text(report_hint)
-                    .desired_width(220.0),
-            );
-            if !self.report_filter.is_empty() && ui.button("✕").clicked() {
-                self.report_filter.clear();
-            }
             let busy = self.analyzing || self.running;
             if ui
                 .add_enabled(!busy, egui::Button::new(self.tr("projects.analyzeAll")))
@@ -1425,78 +1416,181 @@ impl NavigatorApp {
             ui.add(egui::ProgressBar::new(fraction).text(format!("Analyzing {}/{} — {sample}", done + 1, total)));
         }
 
+        use egui_extras::{Column, TableBuilder};
         let running = self.running || self.analyzing;
         let mut recompute: Option<i64> = None;
         let mut assign_y: Option<i64> = None;
-        let filter = self.report_filter.to_ascii_lowercase();
-        // A row matches on its sample id or its Y / mt haplogroup label.
-        let row_matches = |r: &navigator_app::ProjectSampleReport| -> bool {
-            filter.is_empty()
-                || r.biosample.donor_identifier.to_ascii_lowercase().contains(&filter)
-                || r.y_haplogroup
-                    .as_deref()
-                    .unwrap_or("")
-                    .to_ascii_lowercase()
-                    .contains(&filter)
-                || r.mt_haplogroup
-                    .as_deref()
-                    .unwrap_or("")
-                    .to_ascii_lowercase()
-                    .contains(&filter)
+
+        // Column widths, mirroring the old Grid order. The trailing "actions" column (index 14)
+        // is neither sortable nor filterable.
+        const REPORT_COLS: [(&str, f32); 15] = [
+            ("report.sample", 150.0),
+            ("report.alns", 48.0),
+            ("report.meanCov", 70.0),
+            ("report.median", 70.0),
+            ("report.cov10x", 60.0),
+            ("report.cov20x", 60.0),
+            ("report.callable", 90.0),
+            ("report.y", 130.0),
+            ("report.mtdna", 110.0),
+            ("report.sex", 58.0),
+            ("report.readLen", 70.0),
+            ("report.pctAln", 60.0),
+            ("report.insert", 62.0),
+            ("report.sv", 48.0),
+            ("report.actions", 110.0),
+        ];
+        const ACTIONS_COL: usize = 14;
+        let labels: [&str; 15] = REPORT_COLS.map(|(k, _)| self.tr(k));
+
+        // Display text per cell — the basis for inline filtering and natural sort (the body below
+        // renders from the live report rows so the lite badge + action buttons stay rich).
+        let cell_text = |r: &navigator_app::ProjectSampleReport| -> [String; 15] {
+            [
+                r.biosample.donor_identifier.clone(),
+                r.alignment_count.to_string(),
+                fmt_depth(r.mean_coverage),
+                fmt_depth(r.median_coverage),
+                fmt_pct(r.pct_10x),
+                fmt_pct(r.pct_20x),
+                r.callable_bases.map(|v| v.to_string()).unwrap_or_else(|| "—".into()),
+                r.y_haplogroup.clone().unwrap_or_else(|| "—".into()),
+                r.mt_haplogroup.clone().unwrap_or_else(|| "—".into()),
+                r.sex.clone().unwrap_or_else(|| "—".into()),
+                fmt_depth(r.mean_read_length),
+                fmt_pct(r.pct_aligned),
+                fmt_depth(r.median_insert_size),
+                r.sv_count.map(|v| v.to_string()).unwrap_or_else(|| "—".into()),
+                String::new(),
+            ]
         };
-        let shown = self.project_report.iter().filter(|r| row_matches(r)).count();
-        egui::ScrollArea::both().id_salt("project_report_scroll").show(ui, |ui| {
-        egui::Grid::new("project_report_grid").striped(true).num_columns(15).show(ui, |ui| {
-            for h in ["report.sample", "report.alns", "report.meanCov", "report.median", "report.cov10x", "report.cov20x", "report.callable", "report.y", "report.mtdna", "report.sex", "report.readLen", "report.pctAln", "report.insert", "report.sv", "report.actions"] {
-                ui.strong(self.tr(h));
+        let texts: Vec<[String; 15]> = self.project_report.iter().map(cell_text).collect();
+
+        // Filter (AND across columns) then natural-sort the row order.
+        let mut order: Vec<usize> = (0..self.project_report.len()).collect();
+        let active_filters: Vec<(usize, String)> = (0..ACTIONS_COL)
+            .filter_map(|c| {
+                let f = self.report_table_ctl.filter_norm(c);
+                (!f.is_empty()).then_some((c, f))
+            })
+            .collect();
+        if !active_filters.is_empty() {
+            order.retain(|&i| {
+                active_filters
+                    .iter()
+                    .all(|(c, f)| texts[i][*c].to_lowercase().contains(f))
+            });
+        }
+        if let Some(c) = self.report_table_ctl.sort_col() {
+            if c < ACTIONS_COL {
+                let asc = self.report_table_ctl.ascending();
+                order.sort_by(|&a, &b| {
+                    let o = natural_cmp(&texts[a][c], &texts[b][c]);
+                    if asc {
+                        o
+                    } else {
+                        o.reverse()
+                    }
+                });
             }
-            ui.end_row();
-            for r in self.project_report.iter().filter(|r| row_matches(r)) {
-                ui.label(&r.biosample.donor_identifier);
-                ui.label(r.alignment_count.to_string());
+        }
+        let shown = order.len();
+
+        let cov_label = self.tr("btn.cov");
+        let y_label = self.tr("report.y");
+        let report = &self.project_report;
+        let ctl = &mut self.report_table_ctl;
+
+        let mut tb = TableBuilder::new(ui)
+            .striped(true)
+            .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
+            .auto_shrink([false, false]);
+        for (_, w) in REPORT_COLS {
+            tb = tb.column(Column::initial(w).at_least(40.0).clip(true).resizable(true));
+        }
+        tb.header(46.0, |mut header| {
+            for (i, label) in labels.into_iter().enumerate() {
+                header.col(|ui| {
+                    if i == ACTIONS_COL {
+                        ui.strong(label);
+                    } else {
+                        sortable_header(ui, ctl, i, label, true);
+                    }
+                });
+            }
+        })
+        .body(|body| {
+            body.rows(24.0, order.len(), |mut row| {
+                let r = &report[order[row.index()]];
+                row.col(|ui| {
+                    ui.label(&r.biosample.donor_identifier);
+                });
+                row.col(|ui| {
+                    ui.label(r.alignment_count.to_string());
+                });
                 // Mean coverage, with a "lite" badge when it's a partial sidecar estimate that a
                 // deep walk (the per-row coverage button) would upgrade.
-                if r.coverage_partial {
-                    ui.horizontal(|ui| {
+                row.col(|ui| {
+                    if r.coverage_partial {
                         ui.label(fmt_depth(r.mean_coverage));
                         ui.add(egui::Label::new(
                             egui::RichText::new("lite").small().color(egui::Color32::from_rgb(180, 140, 40)),
                         ))
                         .on_hover_text("Lite coverage from the pipeline sidecar — run coverage to compute the full per-base distribution.");
-                    });
-                } else {
-                    ui.label(fmt_depth(r.mean_coverage));
-                }
-                ui.label(fmt_depth(r.median_coverage));
-                ui.label(fmt_pct(r.pct_10x));
-                ui.label(fmt_pct(r.pct_20x));
-                ui.label(r.callable_bases.map(|v| v.to_string()).unwrap_or_else(|| "—".into()));
-                ui.label(r.y_haplogroup.clone().unwrap_or_else(|| "—".into()));
-                ui.label(r.mt_haplogroup.clone().unwrap_or_else(|| "—".into()));
-                ui.label(r.sex.clone().unwrap_or_else(|| "—".into()));
-                ui.label(fmt_depth(r.mean_read_length));
-                ui.label(fmt_pct(r.pct_aligned));
-                ui.label(fmt_depth(r.median_insert_size));
-                ui.label(r.sv_count.map(|v| v.to_string()).unwrap_or_else(|| "—".into()));
-                if let Some(aln) = r.primary_alignment_id {
-                    ui.horizontal(|ui| {
-                        if ui.add_enabled(!running, egui::Button::new(self.tr("btn.cov"))).clicked() {
+                    } else {
+                        ui.label(fmt_depth(r.mean_coverage));
+                    }
+                });
+                row.col(|ui| {
+                    ui.label(fmt_depth(r.median_coverage));
+                });
+                row.col(|ui| {
+                    ui.label(fmt_pct(r.pct_10x));
+                });
+                row.col(|ui| {
+                    ui.label(fmt_pct(r.pct_20x));
+                });
+                row.col(|ui| {
+                    ui.label(r.callable_bases.map(|v| v.to_string()).unwrap_or_else(|| "—".into()));
+                });
+                row.col(|ui| {
+                    ui.label(r.y_haplogroup.clone().unwrap_or_else(|| "—".into()));
+                });
+                row.col(|ui| {
+                    ui.label(r.mt_haplogroup.clone().unwrap_or_else(|| "—".into()));
+                });
+                row.col(|ui| {
+                    ui.label(r.sex.clone().unwrap_or_else(|| "—".into()));
+                });
+                row.col(|ui| {
+                    ui.label(fmt_depth(r.mean_read_length));
+                });
+                row.col(|ui| {
+                    ui.label(fmt_pct(r.pct_aligned));
+                });
+                row.col(|ui| {
+                    ui.label(fmt_depth(r.median_insert_size));
+                });
+                row.col(|ui| {
+                    ui.label(r.sv_count.map(|v| v.to_string()).unwrap_or_else(|| "—".into()));
+                });
+                row.col(|ui| {
+                    if let Some(aln) = r.primary_alignment_id {
+                        if ui.add_enabled(!running, egui::Button::new(cov_label)).clicked() {
                             recompute = Some(aln);
                         }
-                        if ui.add_enabled(!running, egui::Button::new(self.tr("report.y"))).clicked() {
+                        if ui.add_enabled(!running, egui::Button::new(y_label)).clicked() {
                             assign_y = Some(aln);
                         }
-                    });
-                } else {
-                    ui.label("—");
-                }
-                ui.end_row();
-            }
+                    } else {
+                        ui.label("—");
+                    }
+                });
+            });
         });
         if shown == 0 {
             ui.label(egui::RichText::new(self.tr("project.noMatch")).weak());
         }
-        });
         if let Some(aln) = recompute {
             self.running = true;
             self.status = "Recomputing coverage…".into();

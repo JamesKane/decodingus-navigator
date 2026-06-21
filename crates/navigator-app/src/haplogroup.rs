@@ -1230,6 +1230,21 @@ impl App {
         )
     }
 
+    /// FTDNA only sells Big Y, so a run whose sequencing facility resolves to FTDNA but is still
+    /// typed as the generic "Targeted Y (vendor unknown)" (TARGETED_Y) is a Big Y — promote it to
+    /// BIG_Y_700 (drives the right label + Y-only coverage). Idempotent; a no-op for other labs or
+    /// already-specific Y codes (Big Y / Y-Elite). Called both at import (once the facility is
+    /// resolved) and from the startup [`Self::backfill_run_labs`] sweep.
+    pub(crate) async fn promote_ftdna_big_y(&self, run_id: i64, test_type: &str, facility: Option<&str>) -> bool {
+        let is_ftdna = facility.and_then(navigator_domain::labs::find).map(|l| l.abbreviation) == Some("FTDNA");
+        if is_ftdna && test_type == "TARGETED_Y" {
+            return sequence_run::set_test_type(self.store.pool(), run_id, "BIG_Y_700")
+                .await
+                .unwrap_or(false);
+        }
+        false
+    }
+
     /// Resolve the sequencing lab for every run that has an inferred `instrument_id` but no facility
     /// yet, via the AppView (one cached fetch). Best-effort; returns how many were filled. Run after
     /// import and on startup so pre-existing runs pick up newly-seeded associations.
@@ -1261,17 +1276,9 @@ impl App {
                         None => None,
                     },
                 };
-                // FTDNA only sells Big Y, so a run we now know is FTDNA but typed as the generic
-                // "Targeted Y (vendor unknown)" is a Big Y — promote it (drives the right label + the
-                // Y-only coverage). Idempotent; leaves already-specific Big Y / Y-Elite codes alone.
-                let is_ftdna = facility
-                    .as_deref()
-                    .and_then(navigator_domain::labs::find)
-                    .map(|l| l.abbreviation)
-                    == Some("FTDNA");
-                if is_ftdna && run.test_type == "TARGETED_Y" {
-                    let _ = sequence_run::set_test_type(self.store.pool(), run.id, "BIG_Y_700").await;
-                }
+                // A run we now know is FTDNA but typed as the generic TARGETED_Y is a Big Y.
+                self.promote_ftdna_big_y(run.id, &run.test_type, facility.as_deref())
+                    .await;
             }
         }
         Ok(filled)

@@ -2056,18 +2056,21 @@ async fn run_full_analysis_streaming<W: Fn() + Send + Sync + 'static>(
     // Skip the mtDNA steps (chrM de-novo + mt-tree placement) when the alignment has no
     // mitochondrial reads (e.g. an FTDNA Big Y) — scoring zero chrM data just records a meaningless
     // RSRS root. Unknown coverage (never run) → keep them rather than silently skipping.
-    let has_mtdna = app
+    let chrm_has_reads = |c: &navigator_app::Coverage| {
+        c.contig_coverage_stats
+            .iter()
+            .any(|s| matches!(s.contig.as_str(), "chrM" | "chrMT" | "M" | "MT") && s.num_reads > 0)
+    };
+    // Best-effort pre-flight from any cached coverage (empty on a first analysis → assume present,
+    // so the progress total is right for a WGS). Re-checked authoritatively after step 1 below.
+    let mut has_mtdna = app
         .cached_coverage(alignment_id)
         .await
         .ok()
         .flatten()
-        .map(|c| {
-            c.contig_coverage_stats
-                .iter()
-                .any(|s| matches!(s.contig.as_str(), "chrM" | "chrMT" | "M" | "MT") && s.num_reads > 0)
-        })
+        .map(|c| chrm_has_reads(&c))
         .unwrap_or(true);
-    let total = if has_mtdna { 5 } else { 3 }; // step 1 + SV + Y (+ chrM de-novo + mt when present)
+    let mut total = if has_mtdna { 5 } else { 3 }; // step 1 + SV + Y (+ chrM de-novo + mt when present)
 
     // Step 1: unified quality metrics — coverage + callable, read-level QC, and sex inference in
     // ONE pass over the alignment (was three separate steps reading the file 2–3×). The slow
@@ -2119,6 +2122,11 @@ async fn run_full_analysis_streaming<W: Fn() + Send + Sync + 'static>(
         // Emit the same per-result events the old separate steps did, so the UI updates identically.
         match outcome {
             Ok((cov, rm, sex)) => {
+                // Authoritative mtDNA decision from the just-computed coverage: a Big Y with zero
+                // chrM reads now correctly skips the chrM de-novo + mt-placement steps (the pre-flight
+                // check above ran before this coverage existed). Adjusts the remaining-step total.
+                has_mtdna = chrm_has_reads(&cov);
+                total = if has_mtdna { 5 } else { 3 };
                 let _ = evt_tx.send(Event::Coverage {
                     alignment_id,
                     result: Some(cov),

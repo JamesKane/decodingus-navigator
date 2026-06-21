@@ -10,8 +10,8 @@ use crate::charts::{
     draw_ibd_segments, draw_pca_scatter, draw_population_components, draw_variant_track, TrackRegion, VariantMark,
 };
 use crate::widgets::{
-    card, chip, combo, empty_state, fmt_depth, fmt_pct, fmt_reads, opt, provider_abbrev, short_guid, show_assignment,
-    stat_card, table_header, table_row, variant_change,
+    card, chip, combo, empty_state, fmt_depth, fmt_pct, fmt_reads, natural_cmp, opt, provider_abbrev, show_assignment,
+    sortable_header, stat_card, variant_change, TableControls,
 };
 use eframe::egui;
 use navigator_app::{
@@ -471,8 +471,8 @@ pub struct NavigatorApp {
     /// Settings dialog open + its editable form.
     show_settings: bool,
     settings_form: SettingsForm,
-    /// Subjects-list filter text.
-    subject_search: String,
+    /// Sort + inline per-column filter state for the subjects table.
+    subjects_table_ctl: TableControls,
     /// Collapse the subjects side panel to a thin strip so the detail panel (charts/tables)
     /// gets the full width.
     subjects_collapsed: bool,
@@ -674,8 +674,8 @@ pub struct NavigatorApp {
     project_tab: ProjectTab,
     /// Filter for the project Members list (kit / name / branch substring).
     member_filter: String,
-    /// Filter for the project Report table (sample / haplogroup substring).
-    report_filter: String,
+    /// Sort + inline per-column filter state for the project Report table.
+    report_table_ctl: TableControls,
     // ---- Community (social) ------------------------------------------------
     /// Active Community sub-tab (Support / Feed / Notifications).
     community_tab: CommunityTab,
@@ -799,9 +799,8 @@ fn apply_theme(ctx: &egui::Context, dark: bool) {
 }
 
 /// Subjects-table columns: `(header, width)`.
-const SUBJECT_COLS: [(&str, f32); 7] = [
-    ("ID", 150.0),
-    ("Name", 150.0),
+const SUBJECT_COLS: [(&str, f32); 6] = [
+    ("Name", 180.0),
     ("Y-DNA", 150.0),
     ("mtDNA", 110.0),
     ("Sex", 70.0),
@@ -873,7 +872,7 @@ impl NavigatorApp {
             scale_probed: AppSettings::load().ui_scale.is_some(),
             show_settings: false,
             settings_form: SettingsForm::from_settings(),
-            subject_search: String::new(),
+            subjects_table_ctl: TableControls::sorted_by(0),
             subjects_collapsed: false,
             overview: Vec::new(),
             selected_project: None,
@@ -993,7 +992,7 @@ impl NavigatorApp {
             clustering_running: false,
             project_tab: ProjectTab::default(),
             member_filter: String::new(),
-            report_filter: String::new(),
+            report_table_ctl: TableControls::sorted_by(0),
             community_tab: CommunityTab::default(),
             support_threads: Vec::new(),
             open_thread: None,

@@ -138,10 +138,13 @@ impl App {
                 s.flowcell_id.as_deref(),
             )
             .await;
-            // Resolve the lab from the instrument id via the AppView (best-effort, cached).
+            // Resolve the lab from the instrument id via the AppView (best-effort, cached), then
+            // promote a generic Targeted-Y run to Big Y when that lab is FTDNA (FTDNA only sells
+            // Big Y) — so a fresh import shows the right test type without waiting for a restart.
             if let Some(inst) = s.instrument_id.as_deref() {
                 if let Some(lab) = self.lookup_lab_by_instrument(inst).await {
                     let _ = sequence_run::set_facility(self.store.pool(), run.id, &lab).await;
+                    self.promote_ftdna_big_y(run.id, &run.test_type, Some(&lab)).await;
                 }
             }
         }

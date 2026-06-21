@@ -5,106 +5,149 @@
 use eframe::egui;
 use navigator_app::{CallState, HaploAssignment};
 use navigator_domain::variants::VariantCall;
-use navigator_domain::workspace::Biosample;
 
-use crate::ui::ACCENT;
-
-/// Short, stable subject id for the table's ID column (first 8 chars of the guid + ellipsis).
-pub(crate) fn short_guid(b: &Biosample) -> String {
-    let s = b.guid.0.to_string();
-    if s.len() > 9 {
-        format!("{}…", &s[..9])
-    } else {
-        s
-    }
+/// Click-to-sort + inline per-column filter state for one sticky-header table. Persisted on the
+/// `App` so the chosen sort column/direction and the typed filters survive across frames.
+#[derive(Default)]
+pub(crate) struct TableControls {
+    sort_col: Option<usize>,
+    ascending: bool,
+    /// Per-column filter text, indexed by column. Grown on demand; empty entries are ignored.
+    filters: Vec<String>,
 }
 
-/// Paint a table header row at the column offsets used by [`table_row`].
-pub(crate) fn table_header(ui: &mut egui::Ui, cols: &[(&str, f32)]) {
-    let total_w: f32 = cols.iter().map(|c| c.1).sum();
-    let (rect, _) = ui.allocate_exact_size(egui::vec2(total_w, 24.0), egui::Sense::hover());
-    let painter = ui.painter_at(rect);
-    let mut x = rect.left() + 8.0;
-    let color = ui.visuals().weak_text_color();
-    for (name, w) in cols {
-        painter.text(
-            egui::pos2(x, rect.center().y),
-            egui::Align2::LEFT_CENTER,
-            name,
-            egui::FontId::proportional(12.5),
-            color,
-        );
-        x += w;
-    }
-    painter.hline(
-        rect.x_range(),
-        rect.bottom(),
-        egui::Stroke::new(1.0, ui.visuals().widgets.noninteractive.bg_stroke.color),
-    );
-}
-
-/// Paint one clickable table row; returns true when clicked. `status_col` (if any) is rendered
-/// as a small accent-coloured badge (the "Status" cell).
-pub(crate) fn table_row(
-    ui: &mut egui::Ui,
-    cols: &[(&str, f32)],
-    cells: &[String],
-    selected: bool,
-    status_col: Option<usize>,
-) -> bool {
-    let total_w: f32 = cols.iter().map(|c| c.1).sum();
-    let (rect, resp) = ui.allocate_exact_size(egui::vec2(total_w, 28.0), egui::Sense::click());
-    let painter = ui.painter_at(rect);
-    if selected {
-        painter.rect_filled(rect, 4.0, ACCENT.gamma_multiply(0.6));
-    } else if resp.hovered() {
-        painter.rect_filled(rect, 4.0, ui.visuals().faint_bg_color);
-    }
-    let text_color = if selected {
-        egui::Color32::WHITE
-    } else {
-        ui.visuals().text_color()
-    };
-    let mut x = rect.left() + 8.0;
-    for (i, ((_, w), val)) in cols.iter().zip(cells).enumerate() {
-        let cy = rect.center().y;
-        if Some(i) == status_col && val != "-" {
-            // a muted pill behind the status text
-            let galley = painter.layout_no_wrap(
-                val.clone(),
-                egui::FontId::proportional(11.5),
-                egui::Color32::from_rgb(225, 190, 90),
-            );
-            let pad = egui::vec2(7.0, 3.0);
-            let pill = egui::Rect::from_min_size(
-                egui::pos2(x, cy - galley.size().y / 2.0 - pad.y),
-                galley.size() + pad * 2.0,
-            );
-            painter.rect_filled(pill, 8.0, egui::Color32::from_rgb(70, 58, 28));
-            painter.galley(pill.min + pad, galley, egui::Color32::PLACEHOLDER);
-        } else {
-            // Elide to the column width (single line, trailing …) so long values — e.g. an
-            // ISOGG-longhand Y haplogroup — can't spill into the next column.
-            let mut job = egui::text::LayoutJob::single_section(
-                val.clone(),
-                egui::TextFormat {
-                    font_id: egui::FontId::proportional(13.0),
-                    color: text_color,
-                    ..Default::default()
-                },
-            );
-            job.wrap = egui::text::TextWrapping {
-                max_width: (w - 12.0).max(0.0),
-                max_rows: 1,
-                overflow_character: Some('…'),
-                ..Default::default()
-            };
-            let galley = ui.fonts(|f| f.layout_job(job));
-            painter.galley(egui::pos2(x, cy - galley.size().y / 2.0), galley, text_color);
+impl TableControls {
+    /// Start sorted by `col` ascending (natural order) before the user clicks any header, so the
+    /// table opens in a sensible order (e.g. numbered FTDNA kits flow 1, 2, 10, 100).
+    pub(crate) fn sorted_by(col: usize) -> Self {
+        Self {
+            sort_col: Some(col),
+            ascending: true,
+            filters: Vec::new(),
         }
-        x += w;
     }
-    resp.clicked()
+
+    /// Mutable handle to column `col`'s filter text (growing the backing store as needed).
+    pub(crate) fn filter_mut(&mut self, col: usize) -> &mut String {
+        if self.filters.len() <= col {
+            self.filters.resize(col + 1, String::new());
+        }
+        &mut self.filters[col]
+    }
+
+    /// Trimmed, lower-cased filter text for `col` (empty when unset) — ready for `contains`.
+    pub(crate) fn filter_norm(&self, col: usize) -> String {
+        self.filters
+            .get(col)
+            .map(|s| s.trim().to_lowercase())
+            .unwrap_or_default()
+    }
+
+    pub(crate) fn sort_col(&self) -> Option<usize> {
+        self.sort_col
+    }
+
+    pub(crate) fn ascending(&self) -> bool {
+        self.ascending
+    }
+
+    /// First click on a column sorts it ascending; clicking the active column flips direction.
+    pub(crate) fn toggle_sort(&mut self, col: usize) {
+        if self.sort_col == Some(col) {
+            self.ascending = !self.ascending;
+        } else {
+            self.sort_col = Some(col);
+            self.ascending = true;
+        }
+    }
+
+    fn arrow(&self, col: usize) -> &'static str {
+        match self.sort_col {
+            Some(c) if c == col => {
+                if self.ascending {
+                    " ▲"
+                } else {
+                    " ▼"
+                }
+            }
+            _ => "",
+        }
+    }
+}
+
+/// Render one sticky-header cell: a clickable sort label (click to sort, click again to flip) over
+/// an inline per-column filter input. Pass `filterable = false` for columns that can't be filtered
+/// (e.g. an actions column) to draw the label only.
+pub(crate) fn sortable_header(ui: &mut egui::Ui, ctl: &mut TableControls, col: usize, label: &str, filterable: bool) {
+    ui.vertical(|ui| {
+        let title = format!("{label}{}", ctl.arrow(col));
+        if ui
+            .add(egui::Label::new(egui::RichText::new(title).strong()).sense(egui::Sense::click()))
+            .on_hover_text("Click to sort")
+            .clicked()
+        {
+            ctl.toggle_sort(col);
+        }
+        if filterable {
+            ui.add(
+                egui::TextEdit::singleline(ctl.filter_mut(col))
+                    .hint_text("filter")
+                    .desired_width(f32::INFINITY)
+                    .font(egui::TextStyle::Small),
+            );
+        }
+    });
+}
+
+/// Natural ("human") ordering: compare strings so embedded digit runs sort by numeric value, not
+/// lexically — e.g. `Kit-2` < `Kit-10` < `Kit-100`. Non-digit runs compare case-insensitively.
+/// Numeric runs are compared by trimmed length then digits, so arbitrarily long numbers are safe.
+pub(crate) fn natural_cmp(a: &str, b: &str) -> std::cmp::Ordering {
+    use std::cmp::Ordering;
+    let mut ai = a.chars().peekable();
+    let mut bi = b.chars().peekable();
+    loop {
+        match (ai.peek().copied(), bi.peek().copied()) {
+            (None, None) => return Ordering::Equal,
+            (None, Some(_)) => return Ordering::Less,
+            (Some(_), None) => return Ordering::Greater,
+            (Some(ca), Some(cb)) if ca.is_ascii_digit() && cb.is_ascii_digit() => {
+                let na = take_digits(&mut ai);
+                let nb = take_digits(&mut bi);
+                let ta = na.trim_start_matches('0');
+                let tb = nb.trim_start_matches('0');
+                let ord = ta.len().cmp(&tb.len()).then_with(|| ta.cmp(tb));
+                if ord != Ordering::Equal {
+                    return ord;
+                }
+                // Equal value — keep ordering stable by leading-zero count (e.g. `01` before `1`).
+                let ord = (na.len() - ta.len()).cmp(&(nb.len() - tb.len()));
+                if ord != Ordering::Equal {
+                    return ord;
+                }
+            }
+            (Some(ca), Some(cb)) => {
+                let ord = ca.to_ascii_lowercase().cmp(&cb.to_ascii_lowercase());
+                if ord != Ordering::Equal {
+                    return ord;
+                }
+                ai.next();
+                bi.next();
+            }
+        }
+    }
+}
+
+fn take_digits(it: &mut std::iter::Peekable<std::str::Chars>) -> String {
+    let mut s = String::new();
+    while let Some(&c) = it.peek() {
+        if !c.is_ascii_digit() {
+            break;
+        }
+        s.push(c);
+        it.next();
+    }
+    s
 }
 
 /// A rounded section card with an optional bold title (the Data Sources look).
@@ -268,4 +311,39 @@ pub(crate) fn combo(ui: &mut egui::Ui, label: &str, id: &str, value: &mut String
                 }
             });
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::natural_cmp;
+    use std::cmp::Ordering;
+
+    #[test]
+    fn numbered_kits_sort_by_value_not_lexically() {
+        let mut kits = vec!["Kit-100", "Kit-2", "Kit-10", "Kit-1"];
+        kits.sort_by(|a, b| natural_cmp(a, b));
+        assert_eq!(kits, vec!["Kit-1", "Kit-2", "Kit-10", "Kit-100"]);
+    }
+
+    #[test]
+    fn pure_numbers_and_long_numbers() {
+        assert_eq!(natural_cmp("9", "10"), Ordering::Less);
+        // Longer-than-u64 digit runs still compare by value (length then digits), no overflow.
+        assert_eq!(
+            natural_cmp("99999999999999999999", "100000000000000000000"),
+            Ordering::Less
+        );
+    }
+
+    #[test]
+    fn case_insensitive_and_mixed() {
+        assert_eq!(natural_cmp("alpha", "ALPHA"), Ordering::Equal);
+        assert_eq!(natural_cmp("file2", "file10"), Ordering::Less);
+        assert_eq!(natural_cmp("b", "a10"), Ordering::Greater);
+    }
+
+    #[test]
+    fn prefix_is_less() {
+        assert_eq!(natural_cmp("Kit", "Kit-1"), Ordering::Less);
+    }
 }

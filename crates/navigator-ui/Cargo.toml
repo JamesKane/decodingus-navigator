@@ -41,6 +41,7 @@ dev-identity = []
 [dependencies]
 clap = { version = "4", features = ["derive"] }
 eframe = "0.30.0"
+egui_extras = "0.30.0"
 egui_plot = "0.30.0"
 navigator-app = { workspace = true }
 navigator-domain = { workspace = true }
