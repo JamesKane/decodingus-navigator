@@ -23,14 +23,21 @@ fn print_inferred_test_type() {
     let probe = navigator_analysis::probe::probe_alignment(std::path::Path::new(&bam)).ok();
     let probe_platform = probe.as_ref().and_then(|p| p.platform.clone());
     let probe_vendor = probe.as_ref().and_then(|p| p.vendor_hint.clone());
+    let big_y_code = probe.as_ref().and_then(|p| p.big_y_code.clone());
     println!("BAM: {bam}");
-    println!("probe platform={probe_platform:?} vendor_hint={probe_vendor:?}");
+    println!("probe platform={probe_platform:?} vendor_hint={probe_vendor:?} big_y_code={big_y_code:?}");
 
     let platform = platform.or(probe_platform);
     let vendor = vendor.or(probe_vendor);
     let profile = coverage_profile_from_bai(std::path::Path::new(&bam), None);
     println!("profile: {profile:?}");
-    let tt = infer_test_type(profile.as_ref(), platform.as_deref(), vendor.as_deref(), None);
+    let tt = infer_test_type(
+        profile.as_ref(),
+        platform.as_deref(),
+        vendor.as_deref(),
+        None,
+        big_y_code.as_deref(),
+    );
     println!("inferred test_type: {tt:?}");
     assert!(
         profile.is_some(),

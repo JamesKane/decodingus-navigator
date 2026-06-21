@@ -433,6 +433,9 @@ impl App {
             .await?;
         }
 
+        // A Y-STR profile (or any Y-targeted run) means the subject is male.
+        self.assign_male_for_y_evidence(guid).await?;
+
         Ok((wrote, wrote_str))
     }
 

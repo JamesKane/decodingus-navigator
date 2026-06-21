@@ -306,20 +306,14 @@ impl NavigatorApp {
         });
     }
 
-    /// Subjects browser: a search box + "Add New Subject" on one row, then the subjects table.
+    /// Subjects browser: a collapse toggle + "Add New Subject" on one row, then the subjects table
+    /// (sort + filter live in the table's sticky header).
     fn subjects_side(&mut self, ui: &mut egui::Ui) {
         ui.add_space(6.0);
         ui.horizontal(|ui| {
             if ui.button("◀").on_hover_text(self.tr("subjects.collapse")).clicked() {
                 self.subjects_collapsed = true;
             }
-            let btn_w = 160.0;
-            let hint = self.tr("subjects.search");
-            ui.add(
-                egui::TextEdit::singleline(&mut self.subject_search)
-                    .hint_text(hint)
-                    .desired_width((ui.available_width() - btn_w).max(120.0)),
-            );
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui
                     .add(
@@ -345,29 +339,23 @@ impl NavigatorApp {
     /// The subjects table: columns ID / Name / Y-DNA / mtDNA / Sex / Center / Status, with the
     /// selected row highlighted. Clicking a row selects the subject.
     fn subjects_table(&mut self, ui: &mut egui::Ui) {
+        use egui_extras::{Column, TableBuilder};
+
         if self.all_biosamples.is_empty() {
             ui.label(egui::RichText::new(self.tr("subjects.none")).weak());
             return;
         }
-        let total_w: f32 = SUBJECT_COLS.iter().map(|c| c.1).sum();
-        let needle = self.subject_search.trim().to_lowercase();
-        let mut pick = None;
-        let mut shown = 0;
-        egui::ScrollArea::both().show(ui, |ui| {
-            ui.set_min_width(total_w);
-            table_header(ui, &SUBJECT_COLS);
-            for s in &self.all_biosamples {
-                if !needle.is_empty() {
-                    let hay = format!(
-                        "{} {}",
-                        s.donor_identifier.to_lowercase(),
-                        s.sample_accession.as_deref().unwrap_or("").to_lowercase()
-                    );
-                    if !hay.contains(&needle) {
-                        continue;
-                    }
-                }
-                shown += 1;
+
+        // Build the display rows from immutable `self` reads first, so the render closures below
+        // can borrow only the table-control field (and locals) without conflicting.
+        struct Row {
+            guid: SampleGuid,
+            cells: [String; 6],
+        }
+        let mut rows: Vec<Row> = self
+            .all_biosamples
+            .iter()
+            .map(|s| {
                 // Y/mt from the bulk per-subject summary; the selected row prefers the freshly
                 // loaded consensus (reflects a just-run assignment before the summary reloads).
                 let sel = self.selected_sample == Some(s.guid);
@@ -382,23 +370,85 @@ impl NavigatorApp {
                     .flatten()
                     .or_else(|| summary.and_then(|(_, m)| m.clone()))
                     .unwrap_or_else(|| "-".into());
-                let cells = [
-                    short_guid(s),
-                    s.donor_identifier.clone(),
-                    y,
-                    mt,
-                    s.sex.clone().unwrap_or_else(|| "-".into()),
-                    s.center_name.clone().unwrap_or_else(|| "-".into()),
-                    "Pending".to_string(),
-                ];
-                if table_row(ui, &SUBJECT_COLS, &cells, self.selected_sample == Some(s.guid), Some(6)) {
-                    pick = Some(s.guid);
+                Row {
+                    guid: s.guid,
+                    cells: [
+                        s.donor_identifier.clone(),
+                        y,
+                        mt,
+                        s.sex.clone().unwrap_or_else(|| "-".into()),
+                        s.center_name.clone().unwrap_or_else(|| "-".into()),
+                        "Pending".to_string(),
+                    ],
                 }
+            })
+            .collect();
+
+        // Inline per-column filters (AND across columns), then natural-sort by the active column.
+        for col in 0..SUBJECT_COLS.len() {
+            let f = self.subjects_table_ctl.filter_norm(col);
+            if !f.is_empty() {
+                rows.retain(|r| r.cells[col].to_lowercase().contains(&f));
             }
-            if shown == 0 {
-                ui.label(egui::RichText::new(self.tr("subjects.noMatch")).weak());
+        }
+        if let Some(c) = self.subjects_table_ctl.sort_col() {
+            let asc = self.subjects_table_ctl.ascending();
+            rows.sort_by(|a, b| {
+                let o = natural_cmp(&a.cells[c], &b.cells[c]);
+                if asc {
+                    o
+                } else {
+                    o.reverse()
+                }
+            });
+        }
+
+        let selected = self.selected_sample;
+        let labels = SUBJECT_COLS.map(|(l, _)| l);
+        let ctl = &mut self.subjects_table_ctl;
+        let mut pick: Option<SampleGuid> = None;
+
+        let mut tb = TableBuilder::new(ui)
+            .striped(true)
+            .sense(egui::Sense::click())
+            .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
+            .auto_shrink([false, false]);
+        for (_, w) in SUBJECT_COLS {
+            tb = tb.column(Column::initial(w).at_least(56.0).clip(true).resizable(true));
+        }
+        tb.header(44.0, |mut header| {
+            for (i, label) in labels.into_iter().enumerate() {
+                header.col(|ui| sortable_header(ui, ctl, i, label, true));
             }
+        })
+        .body(|body| {
+            body.rows(26.0, rows.len(), |mut row| {
+                let r = &rows[row.index()];
+                row.set_selected(Some(r.guid) == selected);
+                for (ci, cell) in r.cells.iter().enumerate() {
+                    row.col(|ui| {
+                        // The "Status" column is rendered as a muted accent badge.
+                        if ci == 5 && cell != "-" {
+                            chip(
+                                ui,
+                                cell,
+                                egui::Color32::from_rgb(70, 58, 28),
+                                egui::Color32::from_rgb(225, 190, 90),
+                            );
+                        } else {
+                            ui.label(cell);
+                        }
+                    });
+                }
+                if row.response().clicked() {
+                    pick = Some(r.guid);
+                }
+            });
         });
+
+        if rows.is_empty() {
+            ui.label(egui::RichText::new(self.tr("subjects.noMatch")).weak());
+        }
         if let Some(guid) = pick {
             self.select_sample(guid);
         }

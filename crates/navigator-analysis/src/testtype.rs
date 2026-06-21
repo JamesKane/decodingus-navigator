@@ -100,10 +100,14 @@ pub fn coverage_profile_from_bai(bam_path: &Path, mean_read_length: Option<u64>)
 /// Map a free-text vendor hint to a specific targeted-Y test code (else the honest generic).
 fn targeted_y_for_vendor(vendor_hint: Option<&str>) -> &'static str {
     match vendor_hint.map(|v| v.to_lowercase()) {
-        Some(v) if v.contains("ftdna") || v.contains("familytreedna") => "BIG_Y_700",
+        // FTDNA only sells Big Y, but the *generation* (500 vs 700) isn't in the vendor token —
+        // it comes from the `@RG LB` label ([`crate::probe`], passed as `big_y_label`) or, on older
+        // headers that omit it, from the callable-chrY footprint resolved after analysis. Stay
+        // generic here so neither generation is guessed from the vendor name alone.
+        Some(v) if v.contains("ftdna") || v.contains("familytreedna") => "TARGETED_Y",
         Some(v) if v.contains("full genomes") || v.contains("fullgenomes") => "Y_ELITE",
         Some(v) if v.contains("yseq") => "Y_PRIME",
-        // Scala defaulted to BIG_Y_700; we return TARGETED_Y so an unknown vendor isn't mislabeled.
+        // An unknown vendor isn't mislabeled to a specific product.
         _ => "TARGETED_Y",
     }
 }
@@ -133,7 +137,13 @@ pub fn infer_test_type(
     platform: Option<&str>,
     vendor_hint: Option<&str>,
     mean_read_length: Option<u64>,
+    big_y_label: Option<&str>,
 ) -> Option<String> {
+    // An explicit FTDNA Big Y generation from the header (`@RG LB`) is authoritative — it's FTDNA's
+    // own product label, so it overrides the coverage-shape guess entirely.
+    if let Some(code) = big_y_label {
+        return Some(code.to_string());
+    }
     let Some(p) = profile else {
         // No coverage shape available: platform-only, matching the old probe.
         return platform.map(|_| wgs_for_platform(platform, mean_read_length).to_string());
@@ -187,22 +197,46 @@ mod tests {
     fn targeted_y_maps_vendor_or_generic() {
         // Y-only reference (no autosomes) — clean targeted-Y.
         let p = prof(0.0, 35.0, 0.0, false);
+        // FTDNA without a generation label stays generic — 500 vs 700 isn't in the vendor token
+        // (the header `@RG LB` or the callable-chrY footprint decides it).
         assert_eq!(
-            infer_test_type(Some(&p), Some("ILLUMINA"), Some("FamilyTreeDNA"), None).as_deref(),
-            Some("BIG_Y_700")
+            infer_test_type(Some(&p), Some("ILLUMINA"), Some("FamilyTreeDNA"), None, None).as_deref(),
+            Some("TARGETED_Y")
+        );
+        // An explicit header generation label is authoritative.
+        assert_eq!(
+            infer_test_type(
+                Some(&p),
+                Some("ILLUMINA"),
+                Some("FamilyTreeDNA"),
+                None,
+                Some("BIG_Y_500")
+            )
+            .as_deref(),
+            Some("BIG_Y_500")
         );
         assert_eq!(
-            infer_test_type(Some(&p), Some("ILLUMINA"), Some("Full Genomes"), None).as_deref(),
+            infer_test_type(Some(&p), Some("ILLUMINA"), Some("Full Genomes"), None, None).as_deref(),
             Some("Y_ELITE")
         );
         assert_eq!(
-            infer_test_type(Some(&p), Some("ILLUMINA"), Some("YSEQ"), None).as_deref(),
+            infer_test_type(Some(&p), Some("ILLUMINA"), Some("YSEQ"), None, None).as_deref(),
             Some("Y_PRIME")
         );
         // Unknown vendor → TARGETED_Y, not a mislabeled Big Y.
         assert_eq!(
-            infer_test_type(Some(&p), Some("ILLUMINA"), None, None).as_deref(),
+            infer_test_type(Some(&p), Some("ILLUMINA"), None, None, None).as_deref(),
             Some("TARGETED_Y")
+        );
+    }
+
+    #[test]
+    fn explicit_big_y_label_overrides_coverage_shape() {
+        // Even a WGS-looking coverage shape yields the header's Big Y generation when @RG LB said so.
+        let wgs_shape = prof(30.0, 15.0, 1000.0, true);
+        assert_eq!(
+            infer_test_type(Some(&wgs_shape), Some("ILLUMINA"), None, None, Some("BIG_Y_700")).as_deref(),
+            Some("BIG_Y_700")
         );
     }
 
@@ -212,11 +246,11 @@ mod tests {
         // absolute "autosome<1" would mislabel this WGS_LOW_PASS; the 28× enrichment marks it.
         let p = prof(1.84, 51.0, 7.0, true);
         assert_eq!(
-            infer_test_type(Some(&p), None, Some("Full Genomes"), None).as_deref(),
+            infer_test_type(Some(&p), None, Some("Full Genomes"), None, None).as_deref(),
             Some("Y_ELITE")
         );
         assert_eq!(
-            infer_test_type(Some(&p), None, None, None).as_deref(),
+            infer_test_type(Some(&p), None, None, None, None).as_deref(),
             Some("TARGETED_Y")
         );
     }
@@ -225,7 +259,7 @@ mod tests {
     fn targeted_mt_only_when_autosomes_absent() {
         let p = prof(0.0, 0.0, 800.0, false);
         assert_eq!(
-            infer_test_type(Some(&p), Some("ILLUMINA"), None, None).as_deref(),
+            infer_test_type(Some(&p), Some("ILLUMINA"), None, None, None).as_deref(),
             Some("MT_FULL_SEQUENCE")
         );
     }
@@ -236,13 +270,13 @@ mod tests {
         // not targeted-MT (Y present + autosomes present), not targeted-Y (ratio 0.29) → WGS.
         let male = prof(29.4, 8.5, 1155.0, true);
         assert_eq!(
-            infer_test_type(Some(&male), Some("ILLUMINA"), None, None).as_deref(),
+            infer_test_type(Some(&male), Some("ILLUMINA"), None, None, None).as_deref(),
             Some("WGS")
         );
         // Female WGS: y≈0, mt high — the autosome-present guard keeps it WGS, not targeted-MT.
         let female = prof(30.0, 0.02, 1200.0, true);
         assert_eq!(
-            infer_test_type(Some(&female), Some("ILLUMINA"), None, None).as_deref(),
+            infer_test_type(Some(&female), Some("ILLUMINA"), None, None, None).as_deref(),
             Some("WGS")
         );
     }
@@ -252,12 +286,12 @@ mod tests {
         // Balanced coverage (GFX-like): autosome ≈ Y depth → WGS by platform, not targeted.
         let hifi = prof(8.0, 6.0, 40.0, true);
         assert_eq!(
-            infer_test_type(Some(&hifi), Some("PACBIO"), None, None).as_deref(),
+            infer_test_type(Some(&hifi), Some("PACBIO"), None, None, None).as_deref(),
             Some("WGS_HIFI")
         );
         // Long read by length, no platform string.
         assert_eq!(
-            infer_test_type(Some(&hifi), None, None, Some(15000)).as_deref(),
+            infer_test_type(Some(&hifi), None, None, Some(15000), None).as_deref(),
             Some("WGS_HIFI")
         );
     }
@@ -266,12 +300,12 @@ mod tests {
     fn low_pass_and_exome() {
         // Low autosomal depth, no enriched Y → low-pass WGS.
         assert_eq!(
-            infer_test_type(Some(&prof(2.0, 0.5, 4.0, true)), Some("ILLUMINA"), None, None).as_deref(),
+            infer_test_type(Some(&prof(2.0, 0.5, 4.0, true)), Some("ILLUMINA"), None, None, None).as_deref(),
             Some("WGS_LOW_PASS")
         );
         // High autosomal, no Y/MT contigs → exome.
         assert_eq!(
-            infer_test_type(Some(&prof(80.0, 0.0, 0.0, true)), Some("ILLUMINA"), None, None).as_deref(),
+            infer_test_type(Some(&prof(80.0, 0.0, 0.0, true)), Some("ILLUMINA"), None, None, None).as_deref(),
             Some("WES")
         );
     }
@@ -291,14 +325,14 @@ mod tests {
             (prof(80.0, 0.0, 0.0, true), None),
         ];
         for (p, vendor) in shapes {
-            let code = infer_test_type(Some(&p), Some("ILLUMINA"), vendor, None).unwrap();
+            let code = infer_test_type(Some(&p), Some("ILLUMINA"), vendor, None, None).unwrap();
             assert!(
                 navigator_domain::testtype::by_code(&code).is_some(),
                 "code {code} not in catalog"
             );
         }
         for plat in ["PACBIO", "ILLUMINA", "NANOPORE"] {
-            let code = infer_test_type(None, Some(plat), None, None).unwrap();
+            let code = infer_test_type(None, Some(plat), None, None, None).unwrap();
             assert!(
                 navigator_domain::testtype::by_code(&code).is_some(),
                 "code {code} not in catalog"
@@ -309,13 +343,13 @@ mod tests {
     #[test]
     fn no_profile_falls_back_to_platform() {
         assert_eq!(
-            infer_test_type(None, Some("PACBIO"), None, None).as_deref(),
+            infer_test_type(None, Some("PACBIO"), None, None, None).as_deref(),
             Some("WGS_HIFI")
         );
         assert_eq!(
-            infer_test_type(None, Some("ILLUMINA"), None, None).as_deref(),
+            infer_test_type(None, Some("ILLUMINA"), None, None, None).as_deref(),
             Some("WGS")
         );
-        assert_eq!(infer_test_type(None, None, None, None), None);
+        assert_eq!(infer_test_type(None, None, None, None, None), None);
     }
 }

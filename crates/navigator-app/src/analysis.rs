@@ -79,6 +79,9 @@ impl App {
         .await??;
         self.save_analysis(alignment_id, "coverage", coverage::COVERAGE_VERSION, &result)
             .await?;
+        // A generic FTDNA Targeted-Y run now has a callable footprint → pin Big Y-500 vs -700.
+        self.refine_big_y_generation_for_alignment(alignment_id, &result)
+            .await?;
         Ok(result)
     }
 
@@ -245,6 +248,9 @@ impl App {
 
         // Persist each sub-result under its own existing cache key.
         self.save_analysis(alignment_id, "coverage", coverage::COVERAGE_VERSION, &result.coverage)
+            .await?;
+        // A generic FTDNA Targeted-Y run now has a callable footprint → pin Big Y-500 vs -700.
+        self.refine_big_y_generation_for_alignment(alignment_id, &result.coverage)
             .await?;
         self.save_analysis(alignment_id, "read_metrics", "1", &result.read_metrics)
             .await?;

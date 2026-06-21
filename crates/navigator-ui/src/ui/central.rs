@@ -316,14 +316,7 @@ impl NavigatorApp {
         ui.horizontal(|ui| {
             ui.vertical(|ui| {
                 ui.heading(&bio.donor_identifier);
-                ui.label(
-                    egui::RichText::new(format!(
-                        "ID: {} • {}",
-                        bio.guid.0,
-                        bio.sex.as_deref().unwrap_or("Unknown")
-                    ))
-                    .weak(),
-                );
+                ui.label(egui::RichText::new(bio.sex.as_deref().unwrap_or("Unknown")).weak());
             });
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui

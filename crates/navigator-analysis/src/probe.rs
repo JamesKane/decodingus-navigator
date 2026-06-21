@@ -24,10 +24,14 @@ pub struct AlignmentProbe {
     pub instrument_model: Option<String>,
     /// Best-guess test type code from the catalog, e.g. `"WGS_HIFI"`, `"WGS"`.
     pub test_type: Option<String>,
-    /// Vendor hint scraped from the header (`@RG CN` center / `@PG` / `@CO`), e.g. `"FamilyTreeDNA"`,
-    /// `"Full Genomes"`, `"YSEQ"` — refines a coverage-detected targeted-Y test into the specific
-    /// vendor product. `None` when no recognizable vendor token appears.
+    /// Vendor hint scraped from the header (`@RG CN` center / `@RG LB` library / `@PG` / `@CO`),
+    /// e.g. `"FamilyTreeDNA"`, `"Full Genomes"`, `"YSEQ"` — refines a coverage-detected targeted-Y
+    /// test into the specific vendor product. `None` when no recognizable vendor token appears.
     pub vendor_hint: Option<String>,
+    /// FTDNA Big Y generation code (`"BIG_Y_700"` / `"BIG_Y_500"`) when the recent FTDNA pipeline
+    /// stamped it into the `@RG LB` library label (e.g. `unknown-library-Big Y-700`). Authoritative
+    /// — overrides the coverage-shape guess. `None` on older headers that omit the generation.
+    pub big_y_code: Option<String>,
 }
 
 /// Probe `path`'s header. Reads only the SAM header (no records / no reference needed).
@@ -38,6 +42,7 @@ pub fn probe_alignment(path: &Path) -> Result<AlignmentProbe, AnalysisError> {
     let (platform, instrument_model) = detect_platform(&header);
     let test_type = detect_test_type(platform.as_deref(), aligner.as_deref(), &header);
     let vendor_hint = detect_vendor_hint(&header);
+    let big_y_code = detect_big_y_code(&header).map(str::to_string);
     Ok(AlignmentProbe {
         reference_build,
         aligner,
@@ -45,7 +50,26 @@ pub fn probe_alignment(path: &Path) -> Result<AlignmentProbe, AnalysisError> {
         instrument_model,
         test_type,
         vendor_hint,
+        big_y_code,
     })
+}
+
+/// FTDNA stamps the Big Y generation into the `@RG LB` (library) label on recent pipeline output —
+/// `unknown-library-Big Y-700` / `…-Big Y-500`. Map that to the catalog code. `None` when no such
+/// label is present (older 2019-era headers just carry `unknown-library`).
+fn detect_big_y_code(header: &sam::Header) -> Option<&'static str> {
+    for map in header.read_groups().values() {
+        if let Some(lb) = map.other_fields().get(&read_group::tag::LIBRARY) {
+            let l = s(lb).to_lowercase();
+            if l.contains("big y-700") || l.contains("big y 700") || l.contains("bigy-700") {
+                return Some("BIG_Y_700");
+            }
+            if l.contains("big y-500") || l.contains("big y 500") || l.contains("bigy-500") {
+                return Some("BIG_Y_500");
+            }
+        }
+    }
+    None
 }
 
 /// Recognizable sequencing-vendor tokens, mapped to a canonical display the test-type catalog
@@ -68,6 +92,12 @@ fn detect_vendor_hint(header: &sam::Header) -> Option<String> {
     for map in header.read_groups().values() {
         if let Some(cn) = map.other_fields().get(&read_group::tag::SEQUENCING_CENTER) {
             hay.push_str(&s(cn));
+            hay.push(' ');
+        }
+        // The library label carries the product on recent FTDNA output (`…-Big Y-700`), where the
+        // `@PG` path no longer mentions FTDNA — so scan it too (the "big y" token marks FTDNA).
+        if let Some(lb) = map.other_fields().get(&read_group::tag::LIBRARY) {
+            hay.push_str(&s(lb));
             hay.push(' ');
         }
     }
@@ -317,6 +347,24 @@ mod tests {
         // No vendor token.
         let plain = header_from_sam("@HD\tVN:1.6\n@SQ\tSN:chr1\tLN:248387328\n@RG\tID:r1\tPL:PACBIO\n");
         assert_eq!(detect_vendor_hint(&plain), None);
+    }
+
+    #[test]
+    fn big_y_generation_from_library_label() {
+        // Recent FTDNA pipeline: generation in @RG LB; @PG path no longer says FTDNA.
+        let by700 =
+            header_from_sam("@HD\tVN:1.4\n@SQ\tSN:chrY\tLN:57227415\n@RG\tID:r\tLB:unknown-library-Big Y-700\tSM:s\n");
+        assert_eq!(detect_big_y_code(&by700), Some("BIG_Y_700"));
+        // The library label also marks the vendor (via the "big y" token) when @PG/@CN don't.
+        assert_eq!(detect_vendor_hint(&by700).as_deref(), Some("FamilyTreeDNA"));
+
+        let by500 =
+            header_from_sam("@HD\tVN:1.4\n@SQ\tSN:chrY\tLN:57227415\n@RG\tID:r\tLB:unknown-library-Big Y-500\tSM:s\n");
+        assert_eq!(detect_big_y_code(&by500), Some("BIG_Y_500"));
+
+        // Older header: no generation label → None (callable bases will discriminate later).
+        let old = header_from_sam("@HD\tVN:1.4\n@SQ\tSN:chrY\tLN:57227415\n@RG\tID:r\tLB:unknown-library\tSM:s\n");
+        assert_eq!(detect_big_y_code(&old), None);
     }
 
     #[test]

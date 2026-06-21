@@ -62,6 +62,7 @@ impl App {
                 }
             }
             str_profile::replace_markers(self.store.pool(), existing.id, &merged).await?;
+            self.assign_male_for_y_evidence(biosample_guid).await?;
             return Ok(StrProfile {
                 markers: merged,
                 ..existing
@@ -74,7 +75,9 @@ impl App {
             source,
             markers,
         };
-        Ok(str_profile::create(self.store.pool(), &new).await?)
+        let created = str_profile::create(self.store.pool(), &new).await?;
+        self.assign_male_for_y_evidence(biosample_guid).await?;
+        Ok(created)
     }
 
     /// All STR profiles for a subject.

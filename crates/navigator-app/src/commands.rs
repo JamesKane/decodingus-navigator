@@ -152,7 +152,35 @@ impl App {
     }
 
     pub async fn record_sequence_run(&self, run: NewSequenceRun) -> Result<SequenceRun, AppError> {
-        Ok(sequence_run::create(self.store.pool(), &run).await?)
+        let guid = run.biosample_guid;
+        let created = sequence_run::create(self.store.pool(), &run).await?;
+        self.assign_male_for_y_evidence(guid).await?;
+        Ok(created)
+    }
+
+    /// A Y-targeted test (Big Y, Targeted Y, a Y-SNP pack, …) or any Y-STR profile is definitive
+    /// evidence of a male subject. Set the biosample's sex to "Male" when such data is present and
+    /// it isn't already recorded as male. Best-effort and idempotent — safe to call after any run
+    /// or STR-profile import (it re-derives the verdict from the stored data each time).
+    pub(crate) async fn assign_male_for_y_evidence(&self, guid: SampleGuid) -> Result<(), AppError> {
+        use navigator_domain::testtype::{by_code, TargetType};
+        let has_y_test = self
+            .list_sequence_runs(guid)
+            .await?
+            .iter()
+            .any(|r| by_code(&r.test_type).map(|t| t.target) == Some(TargetType::YChromosome));
+        let has_ystr = !self.list_str_profiles(guid).await?.is_empty();
+        if !(has_y_test || has_ystr) {
+            return Ok(());
+        }
+        let already_male = biosample::get(self.store.pool(), guid)
+            .await?
+            .and_then(|b| b.sex)
+            .is_some_and(|s| s.trim().eq_ignore_ascii_case("male"));
+        if !already_male {
+            biosample::set_sex(self.store.pool(), guid, "Male").await?;
+        }
+        Ok(())
     }
 
     pub async fn record_alignment(&self, aln: NewAlignment) -> Result<Alignment, AppError> {
