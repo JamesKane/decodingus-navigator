@@ -2053,7 +2053,21 @@ async fn run_full_analysis_streaming<W: Fn() + Send + Sync + 'static>(
     wake: Arc<W>,
 ) {
     cancel.store(false, Ordering::Relaxed);
-    let total = 5; // unified metrics + 4 command steps
+    // Skip the mtDNA steps (chrM de-novo + mt-tree placement) when the alignment has no
+    // mitochondrial reads (e.g. an FTDNA Big Y) — scoring zero chrM data just records a meaningless
+    // RSRS root. Unknown coverage (never run) → keep them rather than silently skipping.
+    let has_mtdna = app
+        .cached_coverage(alignment_id)
+        .await
+        .ok()
+        .flatten()
+        .map(|c| {
+            c.contig_coverage_stats
+                .iter()
+                .any(|s| matches!(s.contig.as_str(), "chrM" | "chrMT" | "M" | "MT") && s.num_reads > 0)
+        })
+        .unwrap_or(true);
+    let total = if has_mtdna { 5 } else { 3 }; // step 1 + SV + Y (+ chrM de-novo + mt when present)
 
     // Step 1: unified quality metrics — coverage + callable, read-level QC, and sex inference in
     // ONE pass over the alignment (was three separate steps reading the file 2–3×). The slow
@@ -2128,34 +2142,46 @@ async fn run_full_analysis_streaming<W: Fn() + Send + Sync + 'static>(
     // Steps 2–5: the cheaper command-driven steps (run via `handle`, which forwards their events).
     // Y variant discovery is the callable-masked "private Y" pass, NOT a raw whole-chrY de-novo
     // (which is enormous + mostly artifacts); chrM de-novo is fine (small, fully callable).
-    let steps: [(&str, &str); 4] = [
-        ("Structural variants", "CNV + discordant pairs (needs ≥10×)"),
-        ("Variant calling", "chrM de-novo (haploid)"),
-        ("Y haplogroup", "placing on the Y tree"),
-        ("mtDNA haplogroup", "placing on the mt tree"),
-    ];
-    for (i, (label, detail)) in steps.iter().enumerate() {
-        if cancel.load(Ordering::Relaxed) {
-            break;
-        }
-        let step = i + 2; // steps 2..=5
-        let _ = evt_tx.send(Event::AnalysisProgress {
-            step,
-            total,
-            label: (*label).to_string(),
-            detail: (*detail).to_string(),
-            fraction: (step as f32 - 1.0) / total as f32,
-        });
-        wake();
-        let cmd = match i {
-            0 => Command::RunSv(alignment_id),
-            1 => Command::RunDenovo {
+    let mut steps: Vec<(&str, &str, Command)> = vec![(
+        "Structural variants",
+        "CNV + discordant pairs (needs ≥10×)",
+        Command::RunSv(alignment_id),
+    )];
+    if has_mtdna {
+        steps.push((
+            "Variant calling",
+            "chrM de-novo (haploid)",
+            Command::RunDenovo {
                 alignment_id,
                 contig: "chrM".into(),
             },
-            2 => Command::AssignYHaplogroup { alignment_id },
-            _ => Command::AssignMtdnaHaplogroupFromAlignment { alignment_id },
-        };
+        ));
+    }
+    steps.push((
+        "Y haplogroup",
+        "placing on the Y tree",
+        Command::AssignYHaplogroup { alignment_id },
+    ));
+    if has_mtdna {
+        steps.push((
+            "mtDNA haplogroup",
+            "placing on the mt tree",
+            Command::AssignMtdnaHaplogroupFromAlignment { alignment_id },
+        ));
+    }
+    for (i, (label, detail, cmd)) in steps.into_iter().enumerate() {
+        if cancel.load(Ordering::Relaxed) {
+            break;
+        }
+        let step = i + 2; // steps 2..=total
+        let _ = evt_tx.send(Event::AnalysisProgress {
+            step,
+            total,
+            label: label.to_string(),
+            detail: detail.to_string(),
+            fraction: (step as f32 - 1.0) / total as f32,
+        });
+        wake();
         let ev = handle(app, cmd).await; // runs to completion; we may cancel before the next step
         let _ = evt_tx.send(ev);
         wake();
