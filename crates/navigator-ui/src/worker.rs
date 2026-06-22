@@ -556,6 +556,10 @@ pub enum Command {
     },
     /// Load per-build reference-genome settings + cache status for the Settings dialog.
     LoadReferenceSettings,
+    /// Health-check a local-LLM server at `base_url` (Settings "Test connection"): lists its models.
+    TestLlmConnection {
+        base_url: String,
+    },
     /// Set a build's local-FASTA override + auto-download flag (persists reference_sources.json).
     SetReferenceOverride {
         build: String,
@@ -1015,6 +1019,8 @@ pub enum Event {
     },
     /// How many runs had their sequencing lab filled in by the AppView backfill (`0` ⇒ quiet).
     LabsResolved(usize),
+    /// Local-LLM "Test connection" result: the models the server reports, or a plain-language error.
+    LlmConnection(Result<Vec<String>, String>),
     /// Per-build reference-genome settings + cache status for the Settings dialog.
     ReferenceSettings(Vec<RefBuildStatus>),
     /// A reference override was saved; the UI may reload the settings rows.
@@ -1199,6 +1205,9 @@ pub async fn handle(app: &App, cmd: Command) -> Event {
             Err(e) => Event::Error(e.to_string()),
         },
         Command::LoadReferenceSettings => Event::ReferenceSettings(app.reference_settings()),
+        Command::TestLlmConnection { base_url } => {
+            Event::LlmConnection(app.llm_models_at(&base_url).await.map_err(|e| e.to_string()))
+        }
         Command::SetReferenceOverride {
             build,
             local_path,

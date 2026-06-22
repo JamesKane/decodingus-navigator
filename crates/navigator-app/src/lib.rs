@@ -1728,6 +1728,7 @@ mod haplogroup;
 mod ibd_exchange;
 mod import_profiles;
 mod import_unified;
+pub mod llm;
 mod publish;
 mod queries;
 mod recruitment;
@@ -3125,6 +3126,9 @@ mod settings_tests {
             prompt_before_download: Some(false),
             ui_scale: Some(1.5),
             ui_mode: Some("simple".into()),
+            llm_enabled: Some(true),
+            llm_base_url: Some("http://localhost:1234/v1".into()),
+            llm_model: Some("llama-3.1-8b-instruct".into()),
         };
         let json = serde_json::to_string(&s).unwrap();
         assert_eq!(serde_json::from_str::<AppSettings>(&json).unwrap(), s);

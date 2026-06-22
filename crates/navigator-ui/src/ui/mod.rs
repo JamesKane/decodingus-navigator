@@ -230,6 +230,10 @@ struct SettingsForm {
     prompt_before_download: bool,
     /// UI scale (egui zoom factor); 1.0 = native.
     ui_scale: f32,
+    /// Local-LLM (AI assistant) settings.
+    llm_enabled: bool,
+    llm_base_url: String,
+    llm_model: String,
     references: Vec<RefRow>,
     /// VCF-liftover tool state (input/output paths, target build, PAR filter).
     lift_in: String,
@@ -251,6 +255,11 @@ impl SettingsForm {
                 .unwrap_or_else(|| "7".to_string()),
             prompt_before_download: s.prompt_before_download.unwrap_or(true),
             ui_scale: s.ui_scale.unwrap_or(1.0),
+            llm_enabled: s.llm_enabled.unwrap_or(false),
+            llm_base_url: s
+                .llm_base_url
+                .unwrap_or_else(|| navigator_app::llm::DEFAULT_LLM_BASE_URL.to_string()),
+            llm_model: s.llm_model.unwrap_or_default(),
             references: Vec::new(),
             lift_in: String::new(),
             lift_out: String::new(),
@@ -488,6 +497,11 @@ pub struct NavigatorApp {
     /// Settings dialog open + its editable form.
     show_settings: bool,
     settings_form: SettingsForm,
+    /// Local-LLM "Test connection" state (Settings → AI assistant): discovered models, an in-flight
+    /// flag, and the last plain-language status/error line.
+    llm_models: Vec<String>,
+    llm_testing: bool,
+    llm_test_msg: Option<String>,
     /// Sort + inline per-column filter state for the subjects table.
     subjects_table_ctl: TableControls,
     /// Collapse the subjects side panel to a thin strip so the detail panel (charts/tables)
@@ -904,6 +918,9 @@ impl NavigatorApp {
             scale_probed: AppSettings::load().ui_scale.is_some(),
             show_settings: false,
             settings_form: SettingsForm::from_settings(),
+            llm_models: Vec::new(),
+            llm_testing: false,
+            llm_test_msg: None,
             subjects_table_ctl: TableControls::sorted_by(0),
             subjects_collapsed: false,
             projects_collapsed: false,

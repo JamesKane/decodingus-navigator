@@ -33,6 +33,15 @@ pub struct AppSettings {
     /// `None` = the user has never pinned a mode, so the UI applies its first-run heuristic.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ui_mode: Option<String>,
+    /// Enable local-LLM assisted narration / chat. Off until the user opts in.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub llm_enabled: Option<bool>,
+    /// OpenAI-compatible base URL of the *local* model server, e.g. "http://localhost:1234/v1".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub llm_base_url: Option<String>,
+    /// Model id to request (as reported by `GET /models`), e.g. "llama-3.1-8b-instruct".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub llm_model: Option<String>,
 }
 
 impl AppSettings {

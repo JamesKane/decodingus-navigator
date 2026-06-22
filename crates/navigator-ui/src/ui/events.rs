@@ -438,6 +438,24 @@ impl NavigatorApp {
                         })
                         .collect();
                 }
+                Event::LlmConnection(result) => {
+                    self.llm_testing = false;
+                    match result {
+                        Ok(models) => {
+                            let n = models.len();
+                            // Prefill the model field with the server's single loaded model.
+                            if self.settings_form.llm_model.trim().is_empty() && models.len() == 1 {
+                                self.settings_form.llm_model = models[0].clone();
+                            }
+                            self.llm_models = models;
+                            self.llm_test_msg = Some(format!("{} {}", self.tr("settings.ai.ok"), n));
+                        }
+                        Err(msg) => {
+                            self.llm_models.clear();
+                            self.llm_test_msg = Some(msg);
+                        }
+                    }
+                }
                 Event::ReferenceSettingsChanged => {
                     self.status = "Reference settings saved".into();
                     let _ = self.tx.send(Command::LoadReferenceSettings); // refresh statuses
