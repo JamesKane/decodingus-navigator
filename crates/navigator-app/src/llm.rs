@@ -108,12 +108,34 @@ struct ChatResponse {
 #[derive(Deserialize)]
 struct ChatChoice {
     message: ChatChoiceMessage,
+    /// `"stop"` | `"length"` | … — `"length"` on a reasoning model means it never reached the answer.
+    #[serde(default)]
+    finish_reason: Option<String>,
 }
 
 #[derive(Deserialize)]
 struct ChatChoiceMessage {
     #[serde(default)]
     content: String,
+}
+
+/// Strip a reasoning model's chain-of-thought from the visible answer: drop any `<think>…</think>`
+/// blocks (some servers inline reasoning in `content` this way) and anything before a closing
+/// `</think>`. Returns the trimmed final answer.
+fn strip_reasoning(content: &str) -> String {
+    // Reasoning models emit a leading `<think>…</think>` block then the answer; keep only what
+    // follows the last close tag.
+    let after = match content.rfind("</think>") {
+        Some(pos) => &content[pos + "</think>".len()..],
+        None => content,
+    };
+    // A remaining opening tag means reasoning was truncated with no answer (it ran out of budget) →
+    // drop it so the result is empty and the caller reports the reasoning-ran-out error.
+    let answer = match after.find("<think>") {
+        Some(open) => &after[..open],
+        None => after,
+    };
+    answer.trim().to_string()
 }
 
 /// An AI-assisted narration of a [`SubjectBrief`], with the model that produced it (for labelling).
@@ -220,7 +242,9 @@ impl App {
                 },
             ],
             temperature: 0.3,
-            max_tokens: 700,
+            // Generous so a reasoning model has room for its chain-of-thought *and* the final answer
+            // (a small cap is consumed entirely by reasoning and `content` comes back empty).
+            max_tokens: 2048,
             stream: false,
         };
 
@@ -242,12 +266,17 @@ impl App {
             .await
             .map_err(|e| AppError::Llm(format!("Unexpected response from the server: {e}")))?;
 
-        let prose = parsed
-            .choices
-            .first()
-            .map(|c| c.message.content.trim().to_string())
-            .filter(|s| !s.is_empty())
-            .ok_or_else(|| AppError::Llm("The model returned an empty response.".into()))?;
+        let choice = parsed.choices.first();
+        let prose = choice.map(|c| strip_reasoning(&c.message.content)).unwrap_or_default();
+        if prose.is_empty() {
+            // A reasoning model that hit the token cap mid-thought returns empty content.
+            let truncated = choice.and_then(|c| c.finish_reason.as_deref()) == Some("length");
+            return Err(AppError::Llm(if truncated {
+                "The model ran out of room before answering — it spent its budget reasoning. Try a smaller or non-reasoning model.".into()
+            } else {
+                "The model returned an empty response.".into()
+            }));
+        }
 
         // Post-generation guardrail: reject anything that strays into health/clinical language.
         if llm_prompt::mentions_health(&prose) {
@@ -296,6 +325,16 @@ mod tests {
             resolve_base_url(Some("http://a/v1".into()), Some("http://b/v1".into())),
             "http://a/v1"
         );
+    }
+
+    #[test]
+    fn strip_reasoning_keeps_final_answer() {
+        assert_eq!(strip_reasoning("<think>pondering…</think>The answer."), "The answer.");
+        assert_eq!(strip_reasoning("  plain answer  "), "plain answer");
+        // Reasoning closed, then a stray re-open with no answer.
+        assert_eq!(strip_reasoning("<think>a</think>answer <think>b"), "answer");
+        // Unterminated reasoning (hit the cap) → nothing usable.
+        assert_eq!(strip_reasoning("<think>still thinking"), "");
     }
 
     #[test]
