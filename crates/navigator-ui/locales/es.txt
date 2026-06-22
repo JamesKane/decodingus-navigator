@@ -38,6 +38,7 @@ brief.packLive=Descripciones en vivo, actualizadas en línea
 brief.packCached=Descripciones de tu última actualización en línea
 brief.packOffline=Descripciones sin conexión — conéctate a internet para lo más reciente
 brief.packUnavailable=Descripciones no disponibles
+brief.enriched=datos de haplogrupo en vivo
 
 # Pestaña Comunidad (social)
 community.tab.support=Soporte

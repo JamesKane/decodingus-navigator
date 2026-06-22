@@ -128,6 +128,11 @@ impl NavigatorApp {
             egui::ScrollArea::vertical().show(ui, |ui| {
                 ui.add_space(4.0);
                 self.subject_brief_view(ui, guid);
+                // Export the brief as a shareable "DNA Story" once it's built.
+                if matches!(&self.subject_brief, Some((g, _)) if *g == guid) {
+                    ui.add_space(8.0);
+                    self.export_row(ui, &[navigator_app::ExportRequest::SubjectBriefHtml(guid)]);
+                }
                 ui.add_space(10.0);
                 // Relatives are live/online, so they render outside the precomputed brief.
                 self.simple_relatives_section(ui);

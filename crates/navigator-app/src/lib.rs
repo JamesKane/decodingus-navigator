@@ -1014,13 +1014,17 @@ pub enum ExportRequest {
     /// The subject-level **consensus** diploid VCF — the joint genotype across the subject's
     /// same-build alignments. Heavy (call + force-call per alignment).
     ConsensusDiploidVcf(SampleGuid),
+    /// The plain-language "DNA Story" brief for a subject, as a self-contained HTML document.
+    SubjectBriefHtml(SampleGuid),
 }
 
 impl ExportRequest {
     /// File extension (no dot) for the save dialog + filter.
     pub fn extension(&self) -> &'static str {
         match self {
-            ExportRequest::CoverageHtml(_) | ExportRequest::AncestryHtml(_) => "html",
+            ExportRequest::CoverageHtml(_) | ExportRequest::AncestryHtml(_) | ExportRequest::SubjectBriefHtml(_) => {
+                "html"
+            }
             ExportRequest::CallableBed(_) => "bed",
             ExportRequest::DiploidVcf(_) | ExportRequest::ConsensusDiploidVcf(_) => "vcf",
             _ => "tsv",
@@ -1039,6 +1043,7 @@ impl ExportRequest {
             ExportRequest::MtdnaTsv(_) => "mtDNA variants (TSV)",
             ExportRequest::DiploidVcf(_) => "diploid variants (VCF)",
             ExportRequest::ConsensusDiploidVcf(_) => "consensus diploid (VCF)",
+            ExportRequest::SubjectBriefHtml(_) => "DNA story (HTML)",
         }
     }
 
@@ -1052,6 +1057,7 @@ impl ExportRequest {
             ExportRequest::MtdnaTsv(id) => ("mtdna_variants", id),
             ExportRequest::DiploidVcf(id) => ("diploid_variants", id),
             ExportRequest::ConsensusDiploidVcf(_) => return format!("consensus_diploid.{}", self.extension()),
+            ExportRequest::SubjectBriefHtml(_) => return format!("dna_story.{}", self.extension()),
         };
         format!("{stem}_{id}.{}", self.extension())
     }

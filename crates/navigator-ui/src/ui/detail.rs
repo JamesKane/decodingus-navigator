@@ -789,6 +789,9 @@ impl NavigatorApp {
         if let Some(v) = &brief.pack_version {
             footer = format!("{footer} · {v}");
         }
+        if brief.enriched {
+            footer = format!("{footer} · {}", self.tr("brief.enriched"));
+        }
         ui.label(egui::RichText::new(footer).weak().small());
     }
 

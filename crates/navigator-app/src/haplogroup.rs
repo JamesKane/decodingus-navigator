@@ -42,6 +42,7 @@ impl App {
             }
             ExportRequest::DiploidVcf(id) => self.diploid_vcf_genome(*id).await,
             ExportRequest::ConsensusDiploidVcf(guid) => self.consensus_diploid_vcf(*guid).await,
+            ExportRequest::SubjectBriefHtml(guid) => Ok(export::subject_brief_html(&self.subject_brief(*guid).await?)),
         }
     }
 

@@ -249,6 +249,8 @@ pub struct SubjectBrief {
     /// Loaded pack version (for display), if any.
     pub pack_version: Option<String>,
     pub pack_status: PackStatus,
+    /// True when live AppView/DecodingUs content (haplogroup ages/provenance) was folded in.
+    pub enriched: bool,
 }
 
 // ---------------------------------------------------------------------------------------------

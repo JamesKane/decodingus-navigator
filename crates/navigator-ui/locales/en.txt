@@ -40,6 +40,7 @@ brief.packLive=Live descriptions, updated online
 brief.packCached=Descriptions from your last online update
 brief.packOffline=Offline descriptions — connect to the internet for the latest
 brief.packUnavailable=Descriptions unavailable
+brief.enriched=live haplogroup data
 
 # Community (social) tab
 community.tab.support=Support

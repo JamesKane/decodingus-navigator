@@ -8,7 +8,7 @@
 //! structured facts the analysis already provides, and [`SubjectBrief::pack_status`] records how
 //! fresh the narrative is.
 
-use crate::{App, AppError};
+use crate::{decodingus_appview_url, App, AppError};
 use navigator_domain::ancestry::AncestryResult;
 use navigator_domain::brief::{
     self, AncestryBrief, BriefPack, Headline, LineageBrief, LineageKind, PackStatus, SubjectBrief, TestBrief,
@@ -40,15 +40,60 @@ fn brief_pack_cache_path() -> std::path::PathBuf {
     refgenome_cache::base_dir().join("briefs").join("brief-pack.json")
 }
 
-/// Is the cached pack within its TTL? Unknown/unreadable mtime → not fresh (forces a refresh try).
-fn brief_pack_is_fresh(path: &std::path::Path) -> bool {
-    let ttl = std::time::Duration::from_secs(BRIEF_PACK_TTL_DAYS * 24 * 3600);
+/// Is the cached file within `ttl_days`? Unknown/unreadable mtime → not fresh (forces a refresh try).
+fn cache_is_fresh(path: &std::path::Path, ttl_days: u64) -> bool {
+    let ttl = std::time::Duration::from_secs(ttl_days * 24 * 3600);
     std::fs::metadata(path)
         .and_then(|m| m.modified())
         .ok()
         .and_then(|mtime| std::time::SystemTime::now().duration_since(mtime).ok())
         .map(|age| age < ttl)
         .unwrap_or(false)
+}
+
+/// How long a per-haplogroup enrichment record is trusted before a refresh is attempted (days).
+const HAPLO_ENRICH_TTL_DAYS: u64 = 30;
+
+/// Live haplogroup content fetched from the AppView, cached per (dna-type, name). `found = false` is
+/// a negative-cache marker (the endpoint answered but had nothing) so a definitively-absent
+/// haplogroup isn't re-requested every rebuild.
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+struct HaploEnrichment {
+    found: bool,
+    #[serde(default)]
+    formed_ybp: Option<i32>,
+    #[serde(default)]
+    tmrca_ybp: Option<i32>,
+    #[serde(default)]
+    origin: Option<String>,
+    #[serde(default)]
+    story: Option<String>,
+}
+
+impl HaploEnrichment {
+    /// Does this carry any narrative/age content worth folding in?
+    fn has_content(&self) -> bool {
+        self.found && (self.formed_ybp.is_some() || self.origin.is_some() || self.story.is_some())
+    }
+}
+
+fn haplo_enrich_cache_path(dna_type: DnaType, name: &str) -> std::path::PathBuf {
+    // Sanitize the name for a filename (haplogroup names are SNP-ish but be defensive).
+    let safe: String = name
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    refgenome_cache::base_dir()
+        .join("briefs")
+        .join("haplo")
+        .join(dna_type.as_str())
+        .join(format!("{safe}.json"))
 }
 
 impl App {
@@ -74,15 +119,26 @@ impl App {
 
         let (pack, pack_status) = self.load_brief_pack().await;
 
-        // Consensus lineages (None when not placed yet, or N/A for the test).
+        // Consensus lineages (None when not placed yet, or N/A for the test). Each terminal is
+        // enriched best-effort from the live haplogroup endpoint (cached); pack values stand offline.
         let cons_y = self.haplogroup_consensus(biosample_guid, DnaType::Y).await?;
         let cons_mt = self.haplogroup_consensus(biosample_guid, DnaType::Mt).await?;
+        let mut enriched = false;
+        let y_enrich = match &cons_y {
+            Some(c) => self.enrich_haplogroup(&c.haplogroup, DnaType::Y).await,
+            None => None,
+        };
+        let mt_enrich = match &cons_mt {
+            Some(c) => self.enrich_haplogroup(&c.haplogroup, DnaType::Mt).await,
+            None => None,
+        };
+        enriched |= y_enrich.is_some() || mt_enrich.is_some();
         let paternal = cons_y
             .as_ref()
-            .map(|c| build_lineage(LineageKind::Paternal, c, &pack, true));
+            .map(|c| build_lineage(LineageKind::Paternal, c, &pack, true, y_enrich.as_ref()));
         let maternal = cons_mt
             .as_ref()
-            .map(|c| build_lineage(LineageKind::Maternal, c, &pack, false));
+            .map(|c| build_lineage(LineageKind::Maternal, c, &pack, false, mt_enrich.as_ref()));
 
         let test = build_test(test_code.as_deref(), coverage.as_ref(), &pack);
 
@@ -131,6 +187,7 @@ impl App {
             caveats,
             pack_version: (!pack.version.trim().is_empty()).then(|| pack.version.clone()),
             pack_status,
+            enriched,
         })
     }
 
@@ -153,7 +210,7 @@ impl App {
 
         // Fresh cache → use it without touching the network.
         if let Some(cp) = &cached {
-            if brief_pack_is_fresh(&cache_path) {
+            if cache_is_fresh(&cache_path, BRIEF_PACK_TTL_DAYS) {
                 pack.merge(cp.clone());
                 return (pack, PackStatus::Cached);
             }
@@ -201,11 +258,101 @@ impl App {
         }
         (pack, status)
     }
+
+    /// Best-effort live enrichment for one haplogroup: cache-first (30-day TTL), else a short-timeout
+    /// `GET {appview}/api/v1/haplogroup/{name}`. A definitive answer (200 / 404) is cached — including
+    /// "not found" — so it isn't re-requested each rebuild; a transient network error is *not* cached,
+    /// so enrichment self-heals once connectivity returns. Returns content only when there's something
+    /// worth folding in (an age or narrative).
+    async fn enrich_haplogroup(&self, name: &str, dna_type: DnaType) -> Option<HaploEnrichment> {
+        if name.trim().is_empty() {
+            return None;
+        }
+        let path = haplo_enrich_cache_path(dna_type, name);
+        if cache_is_fresh(&path, HAPLO_ENRICH_TTL_DAYS) {
+            if let Some(e) = std::fs::read_to_string(&path)
+                .ok()
+                .and_then(|s| serde_json::from_str::<HaploEnrichment>(&s).ok())
+            {
+                return e.has_content().then_some(e);
+            }
+        }
+
+        let base = decodingus_appview_url();
+        let url = format!("{base}/api/v1/haplogroup/{name}");
+        let resp = self
+            .auth
+            .http
+            .get(&url)
+            .timeout(std::time::Duration::from_secs(4))
+            .send()
+            .await;
+
+        let entry = match resp {
+            Ok(r) if r.status().is_success() => {
+                let body = r.text().await.unwrap_or_default();
+                parse_haplo_enrichment(&body)
+            }
+            // The endpoint answered but had nothing (404 etc.) → cache a negative result.
+            Ok(_) => HaploEnrichment::default(),
+            // Network/timeout error → don't cache (retry next time).
+            Err(_) => return None,
+        };
+
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        if let Ok(json) = serde_json::to_string(&entry) {
+            let _ = std::fs::write(&path, json);
+        }
+        entry.has_content().then_some(entry)
+    }
 }
 
-/// Assemble a lineage section from the consensus + pack content. `is_paternal` only chooses the
-/// Y vs mt lookup.
-fn build_lineage(kind: LineageKind, c: &Consensus, pack: &BriefPack, is_paternal: bool) -> LineageBrief {
+/// Parse the AppView haplogroup response into the enrichment subset. Tolerant of camelCase /
+/// snake_case keys and a nested `provenance` blob; absent fields stay `None`.
+fn parse_haplo_enrichment(body: &str) -> HaploEnrichment {
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(body) else {
+        return HaploEnrichment::default();
+    };
+    let int = |keys: &[&str]| -> Option<i32> {
+        keys.iter()
+            .find_map(|k| v.get(*k).and_then(|x| x.as_i64()))
+            .map(|n| n as i32)
+    };
+    let text = |keys: &[&str]| -> Option<String> {
+        keys.iter()
+            .find_map(|k| v.get(*k).and_then(|x| x.as_str()))
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+    };
+    let formed_ybp = int(&["formed_ybp", "formedYbp"]);
+    let tmrca_ybp = int(&["tmrca_ybp", "tmrcaYbp"]);
+    let origin = text(&["origin"]).or_else(|| {
+        v.get("provenance")
+            .and_then(|p| p.get("origin"))
+            .and_then(|x| x.as_str())
+            .map(|s| s.to_string())
+    });
+    let story = text(&["story", "description", "summary"]);
+    HaploEnrichment {
+        found: true,
+        formed_ybp,
+        tmrca_ybp,
+        origin,
+        story,
+    }
+}
+
+/// Assemble a lineage section from the consensus + pack content, overlaying live `enrich`ment when
+/// present (it wins over pack values for age/origin/story). `is_paternal` only chooses the lookup.
+fn build_lineage(
+    kind: LineageKind,
+    c: &Consensus,
+    pack: &BriefPack,
+    is_paternal: bool,
+    enrich: Option<&HaploEnrichment>,
+) -> LineageBrief {
     let matched = if is_paternal {
         pack.y_lookup(&c.haplogroup, &c.lineage)
     } else {
@@ -223,16 +370,31 @@ fn build_lineage(kind: LineageKind, c: &Consensus, pack: &BriefPack, is_paternal
         CompatibilityLevel::MajorDivergence | CompatibilityLevel::Incompatible
     );
 
+    // Live enrichment wins over pack content for age/origin/story; pack fills the rest.
+    let formed_ybp = enrich
+        .and_then(|e| e.formed_ybp)
+        .or_else(|| entry.and_then(|e| e.formed_ybp));
+    let origin = enrich
+        .and_then(|e| e.origin.clone())
+        .or_else(|| entry.and_then(|e| e.origin.clone()));
+    let story = enrich
+        .and_then(|e| e.story.clone())
+        .or_else(|| entry.and_then(|e| e.story.clone()));
+    let mut sources = entry.map(|e| e.sources.clone()).unwrap_or_default();
+    if enrich.is_some_and(|e| e.has_content()) {
+        sources.push("DecodingUs (live)".to_string());
+    }
+
     LineageBrief {
         kind,
         haplogroup: c.haplogroup.clone(),
         lineage_path: c.lineage.clone(),
         matched_ancestor,
-        age_phrase: brief::age_phrase(entry.and_then(|e| e.formed_ybp)),
-        origin_phrase: brief::origin_phrase(entry.and_then(|e| e.origin.as_deref())),
-        story: entry.and_then(|e| e.story.clone()),
+        age_phrase: brief::age_phrase(formed_ybp),
+        origin_phrase: brief::origin_phrase(origin.as_deref()),
+        story,
         confidence_phrase: brief::confidence_phrase(c.confidence, c.run_count, conflict),
-        sources: entry.map(|e| e.sources.clone()).unwrap_or_default(),
+        sources,
     }
 }
 
