@@ -38,6 +38,18 @@ impl NavigatorApp {
         self.normalize_for_mode();
     }
 
+    /// Switch from Simple to Advanced (the "See the data →" bridge), pinning + persisting the choice.
+    /// The selected subject and its Overview carry over; the app-bar toggle flips back.
+    pub(crate) fn enter_advanced_mode(&mut self) {
+        if self.ui_mode != UiMode::Advanced {
+            self.ui_mode = UiMode::Advanced;
+            self.ui_mode_pinned = true;
+            if let Err(e) = navigator_app::persist_ui_mode(self.ui_mode) {
+                self.status = format!("Could not save interface mode: {e}");
+            }
+        }
+    }
+
     /// First-run default: until the user pins a mode, derive it from the workspace — a casual user
     /// (no projects, at most one subject) gets Simple; anyone with projects or multiple subjects
     /// gets Advanced. Re-evaluated as subjects/projects load; a no-op once pinned.

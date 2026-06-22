@@ -136,6 +136,17 @@ impl NavigatorApp {
                 ui.add_space(10.0);
                 // Relatives are live/online, so they render outside the precomputed brief.
                 self.simple_relatives_section(ui);
+                // A discreet bridge to the full power-user view for the curious.
+                ui.add_space(14.0);
+                ui.separator();
+                ui.add_space(4.0);
+                if ui
+                    .link(self.tr("brief.seeData"))
+                    .on_hover_text(self.tr("brief.seeDataHint"))
+                    .clicked()
+                {
+                    self.enter_advanced_mode();
+                }
             });
             return;
         }

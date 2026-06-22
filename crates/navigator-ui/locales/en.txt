@@ -41,6 +41,11 @@ brief.packCached=Descriptions from your last online update
 brief.packOffline=Offline descriptions — connect to the internet for the latest
 brief.packUnavailable=Descriptions unavailable
 brief.enriched=live haplogroup data
+brief.seeData=See the data →
+brief.seeDataHint=Switch to Advanced mode to explore the full analysis for this person.
+glossary.haplogroup=A haplogroup is a label for your branch of the human family tree — shared by everyone who descends from one ancestor on this line.
+glossary.ancient=An estimate of how much of your DNA traces to long-ago source populations, modelled from ancient and modern reference groups.
+glossary.ancestry=Ancestry composition estimates which world populations your DNA most resembles. It reflects deep population history, not nationality.
 
 # Community (social) tab
 community.tab.support=Support

@@ -1,5 +1,5 @@
 {
-  "version": "2026.06-seed",
+  "version": "2026.06-seed.2",
   "y_haplogroups": {
     "R-M269": {
       "formed_ybp": 6400,
@@ -90,6 +90,72 @@
       "origin": "the Near East",
       "story": "T-M184 is an uncommon lineage with Near Eastern origins, scattered today around the Mediterranean, East Africa and South Asia.",
       "sources": ["YFull"]
+    },
+    "R-L23": {
+      "formed_ybp": 6100,
+      "origin": "the Eurasian steppe and Near East frontier",
+      "story": "R-L23 is an early branch of R-M269 ancestral to most of the R1b lineages that later expanded across Europe and the Near East.",
+      "sources": ["YFull"]
+    },
+    "R-L21": {
+      "formed_ybp": 4500,
+      "origin": "Atlantic Western Europe",
+      "story": "R-L21 is the dominant paternal branch of the British Isles and Ireland, a major subclade of R-P312 spread by Bronze Age populations.",
+      "sources": ["YFull"]
+    },
+    "R-U152": {
+      "formed_ybp": 4500,
+      "origin": "Alpine and Central Europe",
+      "story": "R-U152 is a branch of R-P312 common in the Alps, Italy and Central Europe, often linked to later Celtic and Italic populations.",
+      "sources": ["YFull"]
+    },
+    "R-DF27": {
+      "formed_ybp": 4500,
+      "origin": "Southwestern Europe",
+      "story": "R-DF27 is the principal R-P312 branch of Iberia, very common in Spain, Portugal and southern France.",
+      "sources": ["YFull"]
+    },
+    "R-Z283": {
+      "formed_ybp": 5000,
+      "origin": "Eastern and Northern Europe",
+      "story": "R-Z283 is the main European branch of R1a, widespread among Slavic, Baltic and Scandinavian populations.",
+      "sources": ["YFull"]
+    },
+    "I-M438": {
+      "formed_ybp": 27000,
+      "origin": "Ice Age Europe",
+      "story": "I-M438 (I2) is a deep European lineage with roots among the continent's hunter-gatherers, with branches across the Balkans, Sardinia and Northwestern Europe.",
+      "sources": ["YFull"]
+    },
+    "E-M78": {
+      "formed_ybp": 20000,
+      "origin": "Northeast Africa",
+      "story": "E-M78 arose in Northeast Africa and spread into the Mediterranean and Europe; its E-V13 branch is common in the Balkans.",
+      "sources": ["YFull"]
+    },
+    "O-M175": {
+      "formed_ybp": 30000,
+      "origin": "East Asia",
+      "story": "O-M175 is the most common paternal lineage in East and Southeast Asia, carried by the great majority of men in China, Korea, Japan and mainland Southeast Asia.",
+      "sources": ["YFull"]
+    },
+    "C-M217": {
+      "formed_ybp": 32000,
+      "origin": "Central and East Asia",
+      "story": "C-M217 spread across Central and East Asia and into the Americas; it is famously associated with the Mongol expansions.",
+      "sources": ["YFull"]
+    },
+    "Q-M3": {
+      "formed_ybp": 14000,
+      "origin": "the Americas after the Beringian crossing",
+      "story": "Q-M3 is the principal paternal lineage of Indigenous peoples of the Americas, arising shortly after the first peoples crossed from Siberia into the Americas.",
+      "sources": ["YFull"]
+    },
+    "L-M20": {
+      "formed_ybp": 25000,
+      "origin": "South Asia and the Near East",
+      "story": "L-M20 is found across South Asia, the Near East and the Caucasus, with deep roots in the region's early populations.",
+      "sources": ["YFull"]
     }
   },
   "mt_haplogroups": {
@@ -175,6 +241,60 @@
       "formed_ybp": 70000,
       "origin": "East Africa",
       "story": "Haplogroup L3 arose in East Africa and is the lineage from which all non-African maternal haplogroups descend, carried by the populations that left Africa.",
+      "sources": ["PhyloTree"]
+    },
+    "L0": {
+      "formed_ybp": 150000,
+      "origin": "Southern and Eastern Africa",
+      "story": "Haplogroup L0 is the deepest branch of the human maternal tree, associated with the Khoisan and other ancient populations of Southern and Eastern Africa.",
+      "sources": ["PhyloTree"]
+    },
+    "L1": {
+      "formed_ybp": 150000,
+      "origin": "Central and Western Africa",
+      "story": "Haplogroup L1 is one of the oldest maternal lineages, found among Central and West African populations.",
+      "sources": ["PhyloTree"]
+    },
+    "L2": {
+      "formed_ybp": 90000,
+      "origin": "Western and Central Africa",
+      "story": "Haplogroup L2 is widespread across Africa and, through the transatlantic slave trade, common among people of African descent in the Americas.",
+      "sources": ["PhyloTree"]
+    },
+    "M": {
+      "formed_ybp": 60000,
+      "origin": "early out-of-Africa Asia",
+      "story": "Haplogroup M is one of the two great macro-lineages that arose as modern humans spread out of Africa, ancestral to many lineages across Asia, Oceania and the Americas.",
+      "sources": ["PhyloTree"]
+    },
+    "A": {
+      "formed_ybp": 30000,
+      "origin": "East Asia, later the Americas",
+      "story": "Haplogroup A is found across East Asia and is one of the founding maternal lineages of Indigenous peoples of the Americas.",
+      "sources": ["PhyloTree"]
+    },
+    "B": {
+      "formed_ybp": 30000,
+      "origin": "East and Southeast Asia, the Pacific and the Americas",
+      "story": "Haplogroup B is a widespread lineage in East Asia and the Pacific and one of the founding maternal lineages of the Americas.",
+      "sources": ["PhyloTree"]
+    },
+    "C": {
+      "formed_ybp": 30000,
+      "origin": "Siberia and the Americas",
+      "story": "Haplogroup C spread across Siberia and is one of the founding maternal lineages of Indigenous peoples of the Americas.",
+      "sources": ["PhyloTree"]
+    },
+    "D": {
+      "formed_ybp": 30000,
+      "origin": "East Asia, Siberia and the Americas",
+      "story": "Haplogroup D is common across East Asia and Siberia and is one of the founding maternal lineages of the Americas.",
+      "sources": ["PhyloTree"]
+    },
+    "M1": {
+      "formed_ybp": 30000,
+      "origin": "Northeast Africa and the Near East",
+      "story": "Haplogroup M1 is the main branch of macro-haplogroup M found in Africa, concentrated in Northeast Africa and the Horn.",
       "sources": ["PhyloTree"]
     }
   },

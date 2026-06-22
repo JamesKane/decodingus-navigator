@@ -670,8 +670,9 @@ impl NavigatorApp {
             let detail_label = self.tr("brief.ancestryDetail");
             let ancient_title = self.tr("brief.ancient");
             let ancient_intro = self.tr("brief.ancientIntro");
+            let ancestry_gloss = self.tr("glossary.ancestry");
             card(ui, self.tr("brief.ancestry"), |ui| {
-                ui.heading(&a.summary_phrase);
+                ui.heading(&a.summary_phrase).on_hover_text(ancestry_gloss);
                 ui.add_space(6.0);
                 ui.horizontal(|ui| {
                     draw_ancestry_donut(ui, &a.super_populations);
@@ -703,7 +704,7 @@ impl NavigatorApp {
                 if !a.ancient_pops.is_empty() {
                     ui.add_space(8.0);
                     ui.separator();
-                    ui.strong(ancient_title);
+                    ui.strong(ancient_title).on_hover_text(self.tr("glossary.ancient"));
                     ui.label(egui::RichText::new(ancient_intro).weak().small());
                     ui.add_space(6.0);
                     let slices: Vec<(f64, egui::Color32)> = a
@@ -798,7 +799,7 @@ impl NavigatorApp {
     /// One lineage (paternal/maternal) card body: the haplogroup, age & origin phrases, the curated
     /// story, a confidence chip, and an expandable root→tip lineage trail.
     fn brief_lineage_card(&self, ui: &mut egui::Ui, lb: &LineageBrief) {
-        ui.heading(&lb.haplogroup);
+        ui.heading(&lb.haplogroup).on_hover_text(self.tr("glossary.haplogroup"));
         if let Some(anc) = &lb.matched_ancestor {
             ui.label(
                 egui::RichText::new(format!("{} {anc}", self.tr("brief.ancestorNote")))

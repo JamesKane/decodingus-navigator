@@ -39,6 +39,11 @@ brief.packCached=Descripciones de tu última actualización en línea
 brief.packOffline=Descripciones sin conexión — conéctate a internet para lo más reciente
 brief.packUnavailable=Descripciones no disponibles
 brief.enriched=datos de haplogrupo en vivo
+brief.seeData=Ver los datos →
+brief.seeDataHint=Cambia al modo Avanzado para explorar el análisis completo de esta persona.
+glossary.haplogroup=Un haplogrupo es una etiqueta para tu rama del árbol genealógico humano, compartida por todos los que descienden de un ancestro en esta línea.
+glossary.ancient=Una estimación de qué parte de tu ADN procede de poblaciones de origen lejano, modelada a partir de grupos de referencia antiguos y modernos.
+glossary.ancestry=La composición de ascendencia estima a qué poblaciones del mundo se parece más tu ADN. Refleja la historia profunda de las poblaciones, no la nacionalidad.
 
 # Pestaña Comunidad (social)
 community.tab.support=Soporte
