@@ -272,11 +272,20 @@ casual user can share/print a "DNA Story" report. In Advanced Mode the whole bri
 
 ---
 
+## Decisions made during implementation (M1, 2026-06-22)
+
+- **Reference-pack distribution = CDN download**, manifest-verified (like the ancestry/IBD assets),
+  so narrative content can update without an app release. **Graceful fallback is required** when the
+  asset can't be retrieved (offline, CDN down, checksum mismatch): the brief must still render from
+  whatever is cached, and degrade per-section (no origin story → show lineage only; no pack at all →
+  show the structured facts the queries already provide with a quiet "descriptions unavailable
+  offline" note). Pack **content is TBD** — wire the fetch/cache/verify plumbing first with a tiny
+  seed/stub pack; author breadth later (M5).
+- **First-run mode default heuristic** = "0 projects & ≤1 subject ⇒ Simple" (implemented in M1,
+  re-evaluated until the user pins a mode). No explicit welcome dialog for now.
+
 ## Open questions
 
-- First-run mode default heuristic — purely "0 projects & ≤1 subject", or an explicit welcome choice?
-- Reference-pack distribution: in-binary `include_str!` vs a CDN-downloaded, manifest-verified asset
-  (lets content update without an app release, at the cost of a first-run fetch).
 - Relatives in Simple Mode: show only when the user is signed in to the network, or always with a
   "connect to find matches" prompt?
 - Does Simple Mode need a maternal/paternal **migration map** (PCA/`population_lonlat` already exists)
