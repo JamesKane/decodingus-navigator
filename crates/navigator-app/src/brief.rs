@@ -430,15 +430,22 @@ fn build_ancestry(
                 .components
                 .iter()
                 .filter(|c| c.percentage >= 0.5)
-                .map(|c| AncientComponent {
-                    code: c.population_code.clone(),
-                    name: c.population_name.clone(),
-                    percentage: c.percentage,
-                    color: population_color(&c.population_code),
-                    blurb: pack
+                .map(|c| {
+                    // Pack content (by code, then display name) supplies an optional friendlier name
+                    // and the explanation — so a bare code like "ANF" reads as "Anatolian Farmer".
+                    let entry = pack
                         .population(&c.population_code)
-                        .or_else(|| pack.population(&c.population_name))
-                        .and_then(|p| p.blurb.clone()),
+                        .or_else(|| pack.population(&c.population_name));
+                    let name = entry
+                        .and_then(|p| p.name.clone())
+                        .unwrap_or_else(|| c.population_name.clone());
+                    AncientComponent {
+                        code: c.population_code.clone(),
+                        name,
+                        percentage: c.percentage,
+                        color: population_color(&c.population_code),
+                        blurb: entry.and_then(|p| p.blurb.clone()),
+                    }
                 })
                 .collect();
             comps.sort_by(|x, y| y.percentage.total_cmp(&x.percentage));

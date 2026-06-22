@@ -215,7 +215,8 @@
     "Central Asian & Siberian": { "blurb": "Central Asian and Siberian ancestry spans the vast Eurasian interior, from the steppe to the northern forests, with a long history of pastoralist and hunter movements." },
     "Oceanian": { "blurb": "Oceanian ancestry is associated with the Indigenous populations of New Guinea, Melanesia and the wider Pacific." },
     "Steppe": { "blurb": "Steppe pastoralists (Yamnaya and related groups) spread out of the Pontic-Caspian grasslands in the Bronze Age, carrying Indo-European languages and reshaping European ancestry roughly 5,000 years ago." },
-    "EEF": { "blurb": "Early European Farmers brought agriculture from Anatolia and the Near East into Europe during the Neolithic, around 8,000 years ago, largely replacing the earlier hunter-gatherers." },
+    "EEF": { "name": "Early European Farmer", "blurb": "Early European Farmers brought agriculture from Anatolia and the Near East into Europe during the Neolithic, around 8,000 years ago, largely replacing the earlier hunter-gatherers." },
+    "ANF": { "name": "Anatolian Farmer", "blurb": "Anatolian Neolithic Farmers were the first farming populations of Anatolia (modern Turkey). Their descendants carried agriculture into Europe during the Neolithic around 8,000 years ago, making them the main 'Early European Farmer' source in most Europeans' ancestry." },
     "WHG": { "blurb": "Western Hunter-Gatherers were the dark-skinned, blue-eyed foragers who inhabited Europe before farming arrived — the continent's oldest deep ancestry layer." }
   }
 }
