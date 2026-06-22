@@ -1,8 +1,11 @@
 # Local LLM integration (LM Studio / Ollama) — design
 
-Status: **M0 implemented** (2026-06-22, branch `feature/simple-mode`, commit dd2af0c). Pilot.
-M0 = client config + resolvers + health/model discovery + the Settings "AI assistant" section
-(no generation yet). M1–M3 not started.
+Status: **M0+M1 implemented** (2026-06-22, branch `feature/simple-mode`). Pilot.
+M0 (dd2af0c) = client config + resolvers + health/model discovery + Settings "AI assistant" section.
+M1 (3967be4) = brief narration: pure `llm_prompt` builders + guardrails, `narrate_brief` (blocking,
+grounded, cached, health-guarded), "Polish with AI" button + labelled additive "DNA Story
+(AI-assisted)" card. Streaming was deferred to M3 (pilot uses a blocking call + spinner). M2 (Q&A
+chat) and M3 (polish) not started.
 
 ## Goal
 
