@@ -42,6 +42,10 @@ pub struct AppSettings {
     /// Model id to request (as reported by `GET /models`), e.g. "llama-3.1-8b-instruct".
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub llm_model: Option<String>,
+    /// Max response (completion) tokens to request. Reasoning models spend most of this on their
+    /// chain-of-thought, so it must be large enough for the thinking *and* the answer. `None` = default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub llm_max_tokens: Option<u32>,
 }
 
 impl AppSettings {

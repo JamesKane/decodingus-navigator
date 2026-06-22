@@ -1,5 +1,5 @@
-//! Local-LLM client (OpenAI-compatible) — **M0**: configuration, resolvers, and health/model
-//! discovery only. No generation yet (that is M1).
+//! Local-LLM client (OpenAI-compatible): configuration + resolvers, health/model discovery (M0),
+//! and brief narration via chat completions (M1).
 //!
 //! The entire feature is **local-only** by design (see `docs/design/local-llm-integration.md`):
 //! Navigator is a *client* of a model server the user runs (LM Studio / Ollama / llama.cpp). There is
@@ -16,6 +16,11 @@ use serde::{Deserialize, Serialize};
 /// LM Studio's default OpenAI-compatible base URL — the happy-path local server.
 pub const DEFAULT_LLM_BASE_URL: &str = "http://localhost:1234/v1";
 
+/// Default max response tokens. Generous so a reasoning model has room for its full chain-of-thought
+/// plus the answer (a small cap is consumed entirely by reasoning and `content` comes back empty).
+/// It is a ceiling, not a target — non-reasoning models stop well before it.
+pub const DEFAULT_LLM_MAX_TOKENS: u32 = 8192;
+
 /// Resolved local-LLM configuration (env → settings → default, like the other resolvers).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LlmConfig {
@@ -24,6 +29,8 @@ pub struct LlmConfig {
     pub base_url: String,
     /// Model id to request, or `None` to let the server use its single loaded model.
     pub model: Option<String>,
+    /// Max response (completion) tokens.
+    pub max_tokens: u32,
 }
 
 fn resolve_enabled(env: Option<&str>, settings: Option<bool>) -> bool {
@@ -44,6 +51,13 @@ fn resolve_model(env: Option<String>, settings: Option<String>) -> Option<String
     env.or(settings).map(|s| s.trim().to_string()).filter(|s| !s.is_empty())
 }
 
+fn resolve_max_tokens(env: Option<String>, settings: Option<u32>) -> u32 {
+    env.and_then(|v| v.trim().parse::<u32>().ok())
+        .or(settings)
+        .filter(|n| *n > 0)
+        .unwrap_or(DEFAULT_LLM_MAX_TOKENS)
+}
+
 /// The configured local-LLM settings, honoring `NAVIGATOR_LLM_*` over the persisted values.
 pub fn llm_config() -> LlmConfig {
     let s = AppSettings::load();
@@ -51,6 +65,7 @@ pub fn llm_config() -> LlmConfig {
         enabled: resolve_enabled(std::env::var("NAVIGATOR_LLM_ENABLED").ok().as_deref(), s.llm_enabled),
         base_url: resolve_base_url(std::env::var("NAVIGATOR_LLM_BASE_URL").ok(), s.llm_base_url),
         model: resolve_model(std::env::var("NAVIGATOR_LLM_MODEL").ok(), s.llm_model),
+        max_tokens: resolve_max_tokens(std::env::var("NAVIGATOR_LLM_MAX_TOKENS").ok(), s.llm_max_tokens),
     }
 }
 
@@ -242,9 +257,7 @@ impl App {
                 },
             ],
             temperature: 0.3,
-            // Generous so a reasoning model has room for its chain-of-thought *and* the final answer
-            // (a small cap is consumed entirely by reasoning and `content` comes back empty).
-            max_tokens: 2048,
+            max_tokens: cfg.max_tokens,
             stream: false,
         };
 
@@ -254,7 +267,8 @@ impl App {
             .http
             .post(&url)
             .json(&req)
-            .timeout(std::time::Duration::from_secs(120))
+            // Generous — a reasoning model on a large local model can take minutes to think + answer.
+            .timeout(std::time::Duration::from_secs(300))
             .send()
             .await
             .map_err(|e| AppError::Llm(format!("Could not reach the local model server: {e}")))?;
@@ -272,7 +286,9 @@ impl App {
             // A reasoning model that hit the token cap mid-thought returns empty content.
             let truncated = choice.and_then(|c| c.finish_reason.as_deref()) == Some("length");
             return Err(AppError::Llm(if truncated {
-                "The model ran out of room before answering — it spent its budget reasoning. Try a smaller or non-reasoning model.".into()
+                "The model ran out of room before answering — it spent its budget reasoning. Raise \
+                 'Max response tokens' in Settings, or use a smaller / non-reasoning model."
+                    .into()
             } else {
                 "The model returned an empty response.".into()
             }));

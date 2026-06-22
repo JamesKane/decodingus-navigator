@@ -234,6 +234,7 @@ struct SettingsForm {
     llm_enabled: bool,
     llm_base_url: String,
     llm_model: String,
+    llm_max_tokens: String,
     references: Vec<RefRow>,
     /// VCF-liftover tool state (input/output paths, target build, PAR filter).
     lift_in: String,
@@ -260,6 +261,10 @@ impl SettingsForm {
                 .llm_base_url
                 .unwrap_or_else(|| navigator_app::llm::DEFAULT_LLM_BASE_URL.to_string()),
             llm_model: s.llm_model.unwrap_or_default(),
+            llm_max_tokens: s
+                .llm_max_tokens
+                .unwrap_or(navigator_app::llm::DEFAULT_LLM_MAX_TOKENS)
+                .to_string(),
             references: Vec::new(),
             lift_in: String::new(),
             lift_out: String::new(),

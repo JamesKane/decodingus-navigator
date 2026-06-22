@@ -265,6 +265,11 @@ impl NavigatorApp {
                                 }
                             });
                     });
+                    ui.horizontal(|ui| {
+                        ui.label(self.tr("settings.ai.maxTokens"));
+                        ui.add(egui::TextEdit::singleline(&mut form.llm_max_tokens).desired_width(80.0));
+                        ui.label(egui::RichText::new(self.tr("settings.ai.maxTokensHint")).weak().small());
+                    });
                     // Privacy line — turns to a warning for a non-loopback URL.
                     if navigator_app::llm::is_loopback_url(&form.llm_base_url) {
                         ui.label(egui::RichText::new(self.tr("settings.ai.local")).weak().small());
@@ -447,6 +452,7 @@ impl NavigatorApp {
                     let m = form.llm_model.trim().to_string();
                     (!m.is_empty()).then_some(m)
                 },
+                llm_max_tokens: form.llm_max_tokens.trim().parse::<u32>().ok().filter(|n| *n > 0),
             };
             match settings.save() {
                 Ok(()) => self.status = self.tr("settings.saved").to_string(),
