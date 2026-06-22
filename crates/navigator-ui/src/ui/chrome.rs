@@ -156,8 +156,23 @@ impl NavigatorApp {
         match self.nav {
             // Dashboard + Community are full-width (no side panel).
             Nav::Dashboard | Nav::Community => {}
+            Nav::Projects if self.projects_collapsed => {
+                // Collapsed: a thin strip with just an expand button, handing the detail panel
+                // the full width for the wide Y-STR chart.
+                egui::SidePanel::left("left")
+                    .resizable(false)
+                    .exact_width(34.0)
+                    .show(ctx, |ui| {
+                        ui.add_space(6.0);
+                        if ui.button("▶").on_hover_text(self.tr("projects.expand")).clicked() {
+                            self.projects_collapsed = false;
+                        }
+                    });
+            }
             Nav::Projects => {
                 egui::SidePanel::left("left")
+                    .resizable(true)
+                    .default_width(300.0)
                     .min_width(240.0)
                     .show(ctx, |ui| self.projects_side(ui));
             }
@@ -187,7 +202,12 @@ impl NavigatorApp {
     /// Project management: the projects list, new-project form, batch import, and panels.
     fn projects_side(&mut self, ui: &mut egui::Ui) {
         ui.add_space(6.0);
-        ui.heading(self.tr("projects.heading"));
+        ui.horizontal(|ui| {
+            if ui.button("◀").on_hover_text(self.tr("projects.collapse")).clicked() {
+                self.projects_collapsed = true;
+            }
+            ui.heading(self.tr("projects.heading"));
+        });
         ui.separator();
         let mut pick = None;
         for ov in &self.overview {

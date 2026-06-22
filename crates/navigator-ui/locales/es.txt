@@ -238,6 +238,8 @@ btn.scanHeteroplasmy=Escanear heteroplasmia chrM
 
 # Section content (migrated 2026-06-10)
 projects.heading=Proyectos
+projects.collapse=Contraer la lista de proyectos
+projects.expand=Mostrar la lista de proyectos
 projects.new=Nuevo proyecto
 projects.batchImportHint=Importar por lotes una carpeta de proyecto (subcarpetas BAM/CRAM por muestra):
 projects.noProject=→ sin proyecto

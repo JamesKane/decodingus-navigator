@@ -478,6 +478,8 @@ pub struct NavigatorApp {
     /// Collapse the subjects side panel to a thin strip so the detail panel (charts/tables)
     /// gets the full width.
     subjects_collapsed: bool,
+    /// Collapse the projects side panel to a thin strip, handing the detail panel the full width.
+    projects_collapsed: bool,
     overview: Vec<ProjectOverview>,
     selected_project: Option<i64>,
     /// Per-sample coverage/haplogroup report rows for the selected project.
@@ -878,6 +880,7 @@ impl NavigatorApp {
             settings_form: SettingsForm::from_settings(),
             subjects_table_ctl: TableControls::sorted_by(0),
             subjects_collapsed: false,
+            projects_collapsed: false,
             overview: Vec::new(),
             selected_project: None,
             project_report: Vec::new(),

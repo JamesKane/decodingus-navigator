@@ -251,6 +251,8 @@ btn.scanHeteroplasmy=Scan chrM heteroplasmy
 
 # Section content (migrated 2026-06-10)
 projects.heading=Projects
+projects.collapse=Collapse the projects list
+projects.expand=Show the projects list
 projects.new=New project
 projects.batchImportHint=Batch import a project folder (per-sample subdirs of BAM/CRAM):
 projects.noProject=→ no project
