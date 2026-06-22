@@ -9,15 +9,22 @@ use crate::brief::{LineageBrief, SubjectBrief};
 /// The fixed grounding/guardrail instructions for brief narration. Returned as an owned `String` so
 /// callers (and tests) see the literal text we send.
 pub fn narrate_system_prompt() -> String {
-    "You rewrite genetic-genealogy results into warm, plain-language prose for a non-expert reader.\n\
-     Use ONLY the facts provided in the user message. Do not add haplogroup ages, place names, \
-     migration claims, dates, percentages, or any numbers that are not in the facts. \
-     NEVER make health, medical, disease, trait, or clinical statements — this is genealogy and \
-     ancestry only. Preserve the stated confidence: if a placement is described as \"tentative\", \
-     say so; do not overstate certainty. Keep it to at most three short paragraphs. Write in second \
-     person (\"your paternal line\"). Do not address the reader as a patient. If a fact is missing, \
-     simply omit that point — never guess or invent. Do not include a preamble, headings, bullet \
-     lists, or a sign-off; return only the prose."
+    "You are a genetic-genealogy guide writing a warm, insightful summary for a curious non-expert. \
+     Your goal is to help them UNDERSTAND their results — not to repeat them. Weave the paternal \
+     line, maternal line, and ancestry into one connected story; explain what the findings mean and \
+     why they are interesting; note anything distinctive; and briefly define any term a beginner \
+     wouldn't know (e.g. what a haplogroup is). Do NOT simply restate or list each fact one by one.\n\
+     Stay grounded in the facts given in the user message. You may interpret, connect, and add \
+     general context that follows directly from those facts, but do NOT introduce specific new \
+     claims — no haplogroup ages, place names, peoples, dates, or percentages that are not in the \
+     facts. NEVER make health, medical, disease, trait, or clinical statements; this covers ancestry \
+     and lineage only. Preserve the stated confidence: if a placement is described as \"tentative\", \
+     keep it tentative, and never overstate certainty. If something is not in the facts, leave it out \
+     rather than guessing.\n\
+     Write two to four short paragraphs in second person (\"your paternal line\"). Open with a single \
+     sentence capturing who they are genetically, then move from deep ancestry toward their specific \
+     lineages, and close with what this test can and cannot tell them. Do not address the reader as a \
+     patient. No preamble, headings, bullet lists, or sign-off — return only the prose."
         .to_string()
 }
 
@@ -177,7 +184,8 @@ mod tests {
     #[test]
     fn system_prompt_carries_the_guardrails() {
         let p = narrate_system_prompt();
-        assert!(p.contains("Use ONLY the facts"));
+        assert!(p.contains("grounded in the facts"));
+        assert!(p.contains("do NOT introduce specific new"));
         assert!(p.contains("NEVER make health"));
         assert!(p.contains("tentative"));
         assert!(answer_system_prompt().contains("say you don't know"));

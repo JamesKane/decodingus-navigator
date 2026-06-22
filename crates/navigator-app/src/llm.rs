@@ -234,8 +234,11 @@ impl App {
                 .ok_or_else(|| AppError::Llm("No model is loaded on the server.".into()))?,
         };
 
+        let system = llm_prompt::narrate_system_prompt();
         let facts = llm_prompt::narrate_fact_sheet(brief);
-        let key = crate::sha256_str(&format!("{model}\n{facts}"));
+        // Key on model + system prompt + facts, so changing the prompt (or facts/model) regenerates
+        // rather than serving a stale narration written under the old instructions.
+        let key = crate::sha256_str(&format!("{model}\n{system}\n{facts}"));
         let cache_path = narration_cache_path(&key);
         if let Some(cached) = std::fs::read_to_string(&cache_path)
             .ok()
@@ -249,14 +252,14 @@ impl App {
             messages: vec![
                 ChatMessage {
                     role: "system",
-                    content: llm_prompt::narrate_system_prompt(),
+                    content: system,
                 },
                 ChatMessage {
                     role: "user",
                     content: facts,
                 },
             ],
-            temperature: 0.3,
+            temperature: 0.4,
             max_tokens: cfg.max_tokens,
             stream: false,
         };
