@@ -380,6 +380,13 @@ cluster.tooFew=Marcadores insuficientes para agrupar
 # Pestañas y filtros del detalle de proyecto
 project.tab.members=Miembros
 project.tab.report=Informe
+project.tab.ystr=Y-STR
+ystr.project.empty=Ningún miembro de este proyecto tiene resultados Y-STR todavía.
+ystr.project.ungrouped=Sin asignar
+ystr.col.name=Nombre
+ystr.col.kit=Kit
+ystr.col.haplogroup=Haplogrupo
+ystr.col.test=Prueba
 project.filterMembers=Filtrar miembros (kit, nombre, rama)…
 project.filterReport=Filtrar (muestra, haplogrupo)…
 project.noMatch=Ningún miembro coincide con el filtro.

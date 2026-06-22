@@ -17,9 +17,9 @@ use navigator_app::{
     Consensus, Coverage, DenovoCall, DmConversationSummary, DmMessage, DnaType, ExchangeSessionInfo, FtdnaGenealogy,
     FtdnaImportOptions, FtdnaImportPlan, FtdnaImportSummary, FtdnaResolution, HaploAssignment, HeteroplasmySite,
     IbdComparison, IbdDetectorConfig, IbdSuggestion, IdentityVerification, IncomingRequest, PanelGenotype,
-    PrivateBucket, ProjectImportSummary, ProjectOverview, ProjectSampleReport, ReadMetrics, RecruitmentInvitation,
-    RefBuildStatus, SexInferenceResult, SourceType, StoredIbdExchange, StrConcordanceRow, SvAnalysisResult, YMatch,
-    YstrClustering,
+    PrivateBucket, ProjectImportSummary, ProjectOverview, ProjectSampleReport, ProjectStrMember, ReadMetrics,
+    RecruitmentInvitation, RefBuildStatus, SexInferenceResult, SourceType, StoredIbdExchange, StrConcordanceRow,
+    SvAnalysisResult, YMatch, YstrClustering,
 };
 use navigator_domain::chipprofile::ChipProfile;
 use navigator_domain::du_domain::ids::SampleGuid;
@@ -62,6 +62,8 @@ pub enum Command {
     LoadSamples(i64),
     /// Load the per-sample coverage/haplogroup report for a project.
     LoadProjectReport(i64),
+    /// Load the per-member Y-STR overview (FTDNA-style chart) for a project.
+    LoadProjectStrOverview(i64),
     /// Deep-analyze every sample in a project as a cancellable background job, streaming
     /// per-sample `DeepAnalyzeProgress` and yielding between samples so the UI stays responsive.
     /// Skips what the fast path already filled; cancelled via [`Command::CancelAnalysis`].
@@ -658,6 +660,11 @@ pub enum Event {
         project_id: i64,
         rows: Vec<ProjectSampleReport>,
     },
+    /// Per-member Y-STR overview (FTDNA-style chart) for a project.
+    ProjectStrOverview {
+        project_id: i64,
+        members: Vec<ProjectStrMember>,
+    },
     /// A project-wide analyze pass finished (coverage + Y per sample). `cancelled` is true when a
     /// streaming deep-analyze was stopped early (counts reflect what completed before the stop).
     ProjectAnalyzed {
@@ -1098,6 +1105,10 @@ pub async fn handle(app: &App, cmd: Command) -> Event {
         },
         Command::LoadProjectReport(project_id) => match app.project_report(project_id).await {
             Ok(rows) => Event::ProjectReport { project_id, rows },
+            Err(e) => Event::Error(e.to_string()),
+        },
+        Command::LoadProjectStrOverview(project_id) => match app.project_str_overview(project_id).await {
+            Ok(members) => Event::ProjectStrOverview { project_id, members },
             Err(e) => Event::Error(e.to_string()),
         },
         // DeepAnalyzeProject streams DeepAnalyzeProgress from the spawn loop; reaching here is a bug.

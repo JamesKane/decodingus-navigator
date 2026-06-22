@@ -325,6 +325,17 @@ pub fn panels() -> &'static [StrPanelDef] {
     PANELS
 }
 
+/// The canonical FTDNA marker column order (Y-12 → Y-25 → Y-37 → Y-67 → Y-111), as used by the
+/// FTDNA "Y-DNA Results Overview" chart. Each tier's markers follow, in tier order. This is the
+/// stable left-to-right column order for the project-level STR overview.
+pub fn ftdna_marker_order() -> Vec<&'static str> {
+    let mut out: Vec<&'static str> = Vec::new();
+    for tier in [FTDNA_Y12, FTDNA_Y25, FTDNA_Y37, FTDNA_Y67, FTDNA_Y111] {
+        out.extend_from_slice(tier);
+    }
+    out
+}
+
 fn provider_def(key: &str) -> Option<&'static ProviderDef> {
     PROVIDERS.iter().find(|p| p.key == key)
 }

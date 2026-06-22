@@ -18,8 +18,8 @@ use navigator_app::{
     AncestryResult, AncestrySegment, AppSettings, AuditEntry, BatchImportSummary, BuildNeed, CallState,
     CompatibilityLevel, Consensus, Coverage, DenovoCall, DnaType, FtdnaGenealogy, FtdnaImportPlan, FtdnaResolution,
     HaploAssignment, HeteroplasmySite, IbdComparison, IbdSuggestion, IdentityVerification, MatchKind, MtRegion,
-    MtVariant, PanelGenotype, PrivateBucket, PrivateClass, ProjectOverview, ProjectSampleReport, ReadMetrics,
-    RefBuildStatus, SexInferenceResult, SnpEvidence, SourceType, StrConcordanceRow, SvAnalysisResult,
+    MtVariant, PanelGenotype, PrivateBucket, PrivateClass, ProjectOverview, ProjectSampleReport, ProjectStrMember,
+    ReadMetrics, RefBuildStatus, SexInferenceResult, SnpEvidence, SourceType, StrConcordanceRow, SvAnalysisResult,
     VerificationStatus, YMatch, YProfile, YSignal, YState, YVariantStatus, YstrClustering,
 };
 use navigator_domain::chipprofile::{self, ChipProfile};
@@ -98,11 +98,13 @@ enum ProjectTab {
     #[default]
     Members,
     Report,
+    Ystr,
 }
 impl ProjectTab {
-    const ALL: [(ProjectTab, &'static str); 2] = [
+    const ALL: [(ProjectTab, &'static str); 3] = [
         (ProjectTab::Members, "project.tab.members"),
         (ProjectTab::Report, "project.tab.report"),
+        (ProjectTab::Ystr, "project.tab.ystr"),
     ];
 }
 
@@ -480,6 +482,8 @@ pub struct NavigatorApp {
     selected_project: Option<i64>,
     /// Per-sample coverage/haplogroup report rows for the selected project.
     project_report: Vec<ProjectSampleReport>,
+    /// Per-member Y-STR overview rows (FTDNA-style chart) for the selected project.
+    project_str: Vec<ProjectStrMember>,
     samples: Vec<Biosample>,
     /// Every biosample (the project-independent subjects list).
     all_biosamples: Vec<Biosample>,
@@ -877,6 +881,7 @@ impl NavigatorApp {
             overview: Vec::new(),
             selected_project: None,
             project_report: Vec::new(),
+            project_str: Vec::new(),
             samples: Vec::new(),
             all_biosamples: Vec::new(),
             haplo_summary: std::collections::HashMap::new(),

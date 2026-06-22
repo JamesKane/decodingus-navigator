@@ -249,6 +249,54 @@ impl App {
         Ok(out)
     }
 
+    /// Per-member Y-STR overview for a project (the FTDNA-style "Y-DNA Results Overview"): each
+    /// member that has at least one STR profile, with identity columns, terminal Y haplogroup, the
+    /// reached STR panel/tier, and the consensus marker values (uppercase marker → value). Members
+    /// with no STR data are omitted. Composes existing per-subject queries (no new join).
+    pub async fn project_str_overview(&self, project_id: i64) -> Result<Vec<ProjectStrMember>, AppError> {
+        use navigator_domain::{strpanel, strprofile};
+        let mut out = Vec::new();
+        for biosample in biosample::list_members_for_project(self.store.pool(), project_id).await? {
+            let profiles = self.list_str_profiles(biosample.guid).await?;
+            if profiles.is_empty() {
+                continue;
+            }
+            // Consensus marker map, keyed by normalized (uppercase) marker name.
+            let mut markers = std::collections::HashMap::new();
+            for cm in strprofile::consensus_markers(&profiles) {
+                if !cm.value.trim().is_empty() && cm.value.trim() != "-" {
+                    markers.insert(strpanel::norm(&cm.marker), cm.value);
+                }
+            }
+            // Reached panel/tier across all of the subject's markers (the "Test" column).
+            let all_markers: Vec<navigator_domain::strprofile::StrMarker> =
+                profiles.iter().flat_map(|p| p.markers.clone()).collect();
+            let normed = strpanel::normalized_set(&all_markers);
+            let provider = profiles
+                .iter()
+                .find_map(|p| p.provider.as_deref().filter(|s| !s.is_empty()))
+                .unwrap_or("FTDNA");
+            let test = strpanel::classify_panel(&normed, Some(provider)).panel_name;
+
+            let consensus = self.haplogroup_consensus(biosample.guid, DnaType::Y).await?;
+            let y_confirmed = consensus.is_some();
+            let y_haplogroup = consensus.map(|c| c.haplogroup);
+
+            out.push(ProjectStrMember {
+                guid: biosample.guid,
+                name: biosample.donor_identifier.clone(),
+                kit: biosample.sample_accession.clone(),
+                origin: biosample.center_name.clone(),
+                ancestor: biosample.description.clone(),
+                y_haplogroup,
+                y_confirmed,
+                test,
+                markers,
+            });
+        }
+        Ok(out)
+    }
+
     /// Analyze every sample in a project: compute coverage and assign the Y haplogroup on each
     /// sample's primary (first BAM-bearing) alignment, so the project report fills in. Coverage
     /// already cached and Y already recorded are skipped (idempotent re-run). Best-effort: one

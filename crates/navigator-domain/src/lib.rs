@@ -20,6 +20,7 @@ pub mod labs;
 pub mod mtdna;
 pub mod reconciliation;
 pub mod seq;
+pub mod strchart;
 pub mod strpanel;
 pub mod strprofile;
 pub mod testtype;

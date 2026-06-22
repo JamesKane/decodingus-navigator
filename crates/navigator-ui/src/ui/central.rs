@@ -96,6 +96,7 @@ impl NavigatorApp {
         match self.project_tab {
             ProjectTab::Members => self.samples_section(ui),
             ProjectTab::Report => self.project_report_section(ui),
+            ProjectTab::Ystr => self.project_ystr_section(ui),
         }
     }
 

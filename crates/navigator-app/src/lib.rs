@@ -2003,6 +2003,31 @@ pub struct ProjectSampleReport {
     pub coverage_partial: bool,
 }
 
+/// One member row of a project's FTDNA-style Y-DNA STR overview: identity columns + the subject's
+/// consensus STR marker values (normalized marker name → value) + terminal Y haplogroup. Members
+/// without any STR profile are omitted by the query.
+#[derive(Debug, Clone)]
+pub struct ProjectStrMember {
+    pub guid: SampleGuid,
+    /// Display name (donor identifier).
+    pub name: String,
+    /// Kit / accession identifier, if recorded.
+    pub kit: Option<String>,
+    /// Loose origin (center name), if recorded.
+    pub origin: Option<String>,
+    /// Paternal-ancestor / free-text note (biosample description), if recorded.
+    pub ancestor: Option<String>,
+    /// Terminal Y haplogroup from the genome-level consensus, if placed.
+    pub y_haplogroup: Option<String>,
+    /// True when the haplogroup is SNP-backed (we only place from SNP evidence, so any placed
+    /// haplogroup is confirmed); `false` leaves room for future STR-predicted labels.
+    pub y_confirmed: bool,
+    /// Highest STR panel/tier reached (e.g. "Y-111", "Alpha") — the "Test" column.
+    pub test: Option<String>,
+    /// Consensus STR values keyed by uppercase marker name (DYS393 → "13", DYS385 → "11-15").
+    pub markers: std::collections::HashMap<String, String>,
+}
+
 /// A reference build an import needs but doesn't have cached — surfaced so the UI can
 /// prompt and download it before retrying.
 #[derive(Debug, Clone)]

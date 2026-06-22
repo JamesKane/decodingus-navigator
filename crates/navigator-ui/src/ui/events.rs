@@ -142,6 +142,11 @@ impl NavigatorApp {
                         self.project_report = rows;
                     }
                 }
+                Event::ProjectStrOverview { project_id, members } => {
+                    if self.selected_project == Some(project_id) {
+                        self.project_str = members;
+                    }
+                }
                 Event::ProjectAnalyzed {
                     project_id,
                     samples,
@@ -917,11 +922,13 @@ impl NavigatorApp {
         self.selected_project = Some(id);
         self.samples.clear();
         self.project_report.clear();
+        self.project_str.clear();
         self.project_clustering = None; // stale for the new project until recomputed
         self.clustering_running = false;
         self.clear_sample_selection();
         let _ = self.tx.send(Command::LoadSamples(id));
         let _ = self.tx.send(Command::LoadProjectReport(id));
+        let _ = self.tx.send(Command::LoadProjectStrOverview(id));
     }
 
     pub(crate) fn select_sample(&mut self, guid: SampleGuid) {

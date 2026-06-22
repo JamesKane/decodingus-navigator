@@ -1602,6 +1602,167 @@ impl NavigatorApp {
         }
     }
 
+    /// The FTDNA-style "Y-DNA Results Overview" for the open project: members grouped by terminal Y
+    /// haplogroup, each subgroup prefixed by MIN/MAX/MODE rows, and member cells coloured when they
+    /// differ from the subgroup's modal value (blue below, red above, purple multi-copy). Only
+    /// markers reported by at least one member are shown, in canonical FTDNA column order.
+    pub(crate) fn project_ystr_section(&mut self, ui: &mut egui::Ui) {
+        use navigator_domain::{strchart, strpanel};
+        use std::collections::{BTreeMap, HashMap, HashSet};
+
+        if self.project_str.is_empty() {
+            ui.add_space(8.0);
+            ui.label(egui::RichText::new(self.tr("ystr.project.empty")).weak());
+            return;
+        }
+
+        // Marker columns: canonical FTDNA order restricted to markers anyone reported, then any
+        // extras (Big-Y bonus / YSEQ-only markers) appended alphabetically.
+        let mut present: HashSet<String> = HashSet::new();
+        for m in &self.project_str {
+            present.extend(m.markers.keys().cloned());
+        }
+        let mut columns: Vec<String> = Vec::new();
+        for name in strpanel::ftdna_marker_order() {
+            let n = strpanel::norm(name);
+            if present.remove(&n) {
+                columns.push(n);
+            }
+        }
+        let mut extras: Vec<String> = present.into_iter().collect();
+        extras.sort();
+        columns.extend(extras);
+
+        // Group members by terminal Y haplogroup (unplaced members share a bucket, sorted last).
+        let ungrouped = self.tr("ystr.project.ungrouped").to_string();
+        let mut groups: BTreeMap<String, Vec<&ProjectStrMember>> = BTreeMap::new();
+        for m in &self.project_str {
+            let key = m.y_haplogroup.clone().unwrap_or_else(|| format!("~{ungrouped}"));
+            groups.entry(key).or_default().push(m);
+        }
+
+        // Pre-fetch header labels so the grid closure doesn't re-borrow `self` for `tr`.
+        let (h_name, h_kit, h_hap, h_test) = (
+            self.tr("ystr.col.name").to_string(),
+            self.tr("ystr.col.kit").to_string(),
+            self.tr("ystr.col.haplogroup").to_string(),
+            self.tr("ystr.col.test").to_string(),
+        );
+
+        ui.add_space(4.0);
+        ui.label(
+            egui::RichText::new(format!(
+                "{} members · {} markers · {} subgroups",
+                self.project_str.len(),
+                columns.len(),
+                groups.len()
+            ))
+            .weak(),
+        );
+        ui.add_space(4.0);
+
+        // Deviation → cell text colour (FTDNA-style: below blue, above red, multi-copy purple).
+        let dev_color = |d: strchart::Deviation| -> Option<egui::Color32> {
+            match d {
+                strchart::Deviation::None => None,
+                strchart::Deviation::Below => Some(egui::Color32::from_rgb(120, 170, 255)),
+                strchart::Deviation::Above => Some(egui::Color32::from_rgb(235, 120, 110)),
+                strchart::Deviation::Differs => Some(egui::Color32::from_rgb(205, 140, 230)),
+            }
+        };
+        let confirmed_color = egui::Color32::from_rgb(120, 200, 140);
+
+        egui::ScrollArea::both().auto_shrink([false; 2]).show(ui, |ui| {
+            egui::Grid::new("project_ystr_grid")
+                .striped(true)
+                .spacing(egui::vec2(8.0, 3.0))
+                .show(ui, |ui| {
+                    // Header.
+                    for h in [&h_name, &h_kit, &h_hap, &h_test] {
+                        ui.label(egui::RichText::new(h).strong());
+                    }
+                    for c in &columns {
+                        ui.label(egui::RichText::new(c).strong().small());
+                    }
+                    ui.end_row();
+
+                    for (key, members) in &groups {
+                        let hg = key.strip_prefix('~').unwrap_or(key);
+                        // Per-marker MIN/MAX/MODE for this subgroup.
+                        let mut stats: HashMap<&str, strchart::MarkerStats> = HashMap::new();
+                        for c in &columns {
+                            let vals: Vec<&str> = members
+                                .iter()
+                                .filter_map(|m| m.markers.get(c).map(String::as_str))
+                                .collect();
+                            stats.insert(c.as_str(), strchart::marker_stats(vals));
+                        }
+
+                        // Subgroup banner row.
+                        ui.label(
+                            egui::RichText::new(format!("▸ {hg}  ({})", members.len()))
+                                .strong()
+                                .color(ACCENT),
+                        );
+                        for _ in 0..3 + columns.len() {
+                            ui.label("");
+                        }
+                        ui.end_row();
+
+                        // MIN / MAX / MODE rows.
+                        for (label, pick) in [("MIN", 0u8), ("MAX", 1u8), ("MODE", 2u8)] {
+                            ui.label(egui::RichText::new(label).weak().small());
+                            for _ in 0..3 {
+                                ui.label("");
+                            }
+                            for c in &columns {
+                                let s = &stats[c.as_str()];
+                                let v = match pick {
+                                    0 => s.min.as_deref(),
+                                    1 => s.max.as_deref(),
+                                    _ => s.mode.as_deref(),
+                                };
+                                ui.label(egui::RichText::new(v.unwrap_or("")).weak().small().monospace());
+                            }
+                            ui.end_row();
+                        }
+
+                        // Member rows.
+                        for m in members {
+                            ui.label(&m.name);
+                            ui.label(egui::RichText::new(m.kit.as_deref().unwrap_or("")).small());
+                            match &m.y_haplogroup {
+                                Some(h) => {
+                                    let col = if m.y_confirmed { confirmed_color } else { DANGER };
+                                    ui.label(egui::RichText::new(h).color(col).small());
+                                }
+                                None => {
+                                    ui.label(egui::RichText::new("—").weak().small());
+                                }
+                            }
+                            ui.label(egui::RichText::new(m.test.as_deref().unwrap_or("—")).small());
+                            for c in &columns {
+                                match m.markers.get(c) {
+                                    Some(v) => {
+                                        let dev = strchart::deviation(v, &stats[c.as_str()].mode);
+                                        let mut txt = egui::RichText::new(v).monospace();
+                                        if let Some(col) = dev_color(dev) {
+                                            txt = txt.color(col).strong();
+                                        }
+                                        ui.label(txt);
+                                    }
+                                    None => {
+                                        ui.label("");
+                                    }
+                                }
+                            }
+                            ui.end_row();
+                        }
+                    }
+                });
+        });
+    }
+
     pub(crate) fn samples_section(&mut self, ui: &mut egui::Ui) {
         let pid = self.selected_project.unwrap();
         let clustered = matches!(&self.project_clustering, Some((p, _)) if *p == pid);
