@@ -481,6 +481,19 @@ fn tree_cache_is_fresh(path: &Path) -> bool {
 /// matches the variant reconcile's [`navigator_domain::consensus::obs_weight`] `SourceType` term;
 /// the highest-weight value wins per key. The pooled set is placed on the tree **once** (genome-
 /// level placement) instead of voting among per-run terminal labels.
+/// Is a variant set's stored build GRCh38 (the FTDNA tree's native Y coordinate space)? `None`
+/// (unknown build) is treated as GRCh38, matching the import default for a vendor Y VCF. Used to
+/// gate which variant sets may pool into the GRCh38 genome consensus without liftover.
+fn is_grch38_build(build: &Option<String>) -> bool {
+    match build {
+        None => true,
+        Some(b) => {
+            let b = b.to_ascii_lowercase();
+            b.contains("grch38") || b.contains("hg38") || b == "38" || b == "b38"
+        }
+    }
+}
+
 fn pool_votes<K, V>(sources: &[(SourceType, HashMap<K, V>)]) -> HashMap<K, V>
 where
     K: std::hash::Hash + Eq + Clone,
@@ -1326,6 +1339,67 @@ fn peek_vcf_header(path: &Path) -> (String, Vec<String>) {
         }
     }
     (meta, contigs)
+}
+
+/// Parse a VCF into the **subject's** SNP calls, honoring the genotype.
+///
+/// A vendor VCF (FTDNA Big Y, YSEQ, …) lists a site's REF/ALT even where the sample is
+/// homozygous-reference (`GT 0/0`) — e.g. `chrY 2781955 C T … 0/0`, where the sample is C, not T.
+/// Taking `ALT[0]` blindly (as a sites-only VCF parser does) records that T as a derived call, and
+/// a Big Y export carries thousands of such reference sites → the placement deepens into branches
+/// the sample doesn't actually carry. So when a genotyped sample column is present we read its `GT`
+/// and keep a single-base ALT only when the genotype selects it (the first non-zero allele,
+/// multi-allelic-aware); `0/0` and `./.` rows are dropped. A VCF with no FORMAT/sample column
+/// (a sites-only list) keeps its old meaning: every listed ALT is one of the subject's variants.
+fn parse_vcf_subject_snps(path: &Path) -> Result<Vec<variants::VariantCall>, AppError> {
+    let text = std::fs::read_to_string(path)?;
+    let mut out = Vec::new();
+    for line in text.lines() {
+        if line.starts_with('#') || line.trim().is_empty() {
+            continue;
+        }
+        let f: Vec<&str> = line.split('\t').collect();
+        if f.len() < 5 {
+            continue;
+        }
+        let Ok(pos) = f[1].parse::<i64>() else { continue };
+        let (chrom, id, reference, alt_field) = (f[0], f[2], f[3], f[4]);
+        if alt_field == "." {
+            continue; // no ALT listed → nothing to call
+        }
+        let alts: Vec<&str> = alt_field.split(',').collect();
+
+        // Genotyped (FORMAT + ≥1 sample, with a GT key) → honor the call; else sites-only.
+        let gt = (f.len() >= 10)
+            .then(|| {
+                f[8].split(':')
+                    .position(|k| k == "GT")
+                    .and_then(|i| f[9].split(':').nth(i))
+            })
+            .flatten();
+        let (alt, genotype) = match gt {
+            Some(gt) => {
+                // First non-zero allele index selects the carried ALT; all-zero (0/0) or no-call
+                // (./.) means the subject is reference here — skip it.
+                match gt
+                    .split(['/', '|'])
+                    .filter_map(|a| a.parse::<usize>().ok())
+                    .find(|&a| a > 0)
+                {
+                    Some(idx) => match alts.get(idx - 1) {
+                        Some(&a) => (a, Some(gt.to_string())),
+                        None => continue,
+                    },
+                    None => continue,
+                }
+            }
+            None => (alts[0], None), // sites-only VCF: the listed variant is the subject's
+        };
+        if let Some(call) = variants::snp_call(chrom, pos, reference, alt, Some(id.to_string()), genotype) {
+            out.push(call);
+        }
+    }
+    Ok(out)
 }
 
 /// Detect the reference build from VCF meta lines (`##reference=…`, `##contig assembly=…`).

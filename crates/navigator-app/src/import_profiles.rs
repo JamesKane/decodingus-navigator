@@ -108,13 +108,10 @@ impl App {
             .unwrap_or(false);
 
         let calls = if is_vcf {
-            navigator_analysis::parity::parse_truth_vcf(path)?
-                .into_iter()
-                .filter_map(|v| {
-                    let alt = v.alternate.first()?;
-                    variants::snp_call(&v.chrom, v.pos, &v.reference, alt, v.ids.first().cloned(), None)
-                })
-                .collect()
+            // Genotype-aware: a vendor VCF (FTDNA Big Y / YSEQ) reports reference sites too, so only
+            // the genotype-selected ALT is kept (see parse_vcf_subject_snps). Sites-only VCFs keep
+            // every listed variant.
+            parse_vcf_subject_snps(path)?
         } else {
             let text = std::fs::read_to_string(path)?;
             variants::parse_csv(&text).map_err(AppError::Import)?
@@ -152,7 +149,21 @@ impl App {
             reference_build,
             calls,
         };
-        Ok(variant_set::create(self.store.pool(), &new).await?)
+        let set = variant_set::create(self.store.pool(), &new).await?;
+
+        // Place a vendor Y-NGS VCF (FTDNA Big Y / YSEQ / Full Genomes / …) on import so it lands a
+        // Y haplogroup without a manual Refresh — the VCF *is* the called Y-SNP set. Best-effort: an
+        // offline tree or an autosomal/mt-only VCF just leaves the calls (no chrY → no-op).
+        let has_chr_y = set
+            .calls
+            .iter()
+            .any(|c| c.contig.eq_ignore_ascii_case("chrY") || c.contig.eq_ignore_ascii_case("y"));
+        if has_chr_y {
+            if let Err(e) = self.assign_y_vendor_vcfs(biosample_guid).await {
+                eprintln!("vendor Y-VCF placement deferred ({e})");
+            }
+        }
+        Ok(set)
     }
 
     /// Add a manually-entered variant set — paste `contig,position,ref,alt` rows (e.g.

@@ -507,6 +507,35 @@ impl App {
             }
         }
 
+        // One source *per vendor Y-NGS VCF* (FTDNA Big Y / YSEQ / Full Genomes / Nebula / Dante —
+        // every non-chip VariantSet with chrY calls). Placed against each set's stored build so a
+        // GRCh38 Big Y reconciles alongside any WGS alignment; tagged with the set's real source
+        // type (TargetedNgs / WgsShortRead / …) so it carries the right concordance weight.
+        let ngs_sets: Vec<&VariantSet> = vsets.iter().filter(|s| s.source_type != SourceType::Chip).collect();
+        if !ngs_sets.is_empty() {
+            let mut tree_cache: HashMap<String, navigator_analysis::haplo::HaploTree> = HashMap::new();
+            for set in &ngs_sets {
+                let calls = Self::vset_chr_y_calls(set);
+                if calls.is_empty() {
+                    continue;
+                }
+                let build = set.reference_build.clone().unwrap_or_else(|| "GRCh38".to_string());
+                if !tree_cache.contains_key(&build) {
+                    match self.chip_y_tree(&build).await {
+                        Ok(t) => {
+                            tree_cache.insert(build.clone(), t);
+                        }
+                        Err(_) => continue,
+                    }
+                }
+                let assignment = Self::place_chip_panel(&tree_cache[&build], calls);
+                let obs = snp_obs_from_assignment(&assignment, true);
+                if !obs.is_empty() {
+                    sources.push((set.source_label.clone(), set.source_type, obs));
+                }
+            }
+        }
+
         // Private-Y union: off-path / novel calls (not in the tree).
         if let Some(bucket) = self.donor_private_y(biosample_guid).await? {
             let obs: Vec<YObsInput> = bucket
@@ -702,6 +731,22 @@ impl App {
             };
             if !calls.is_empty() {
                 sources.push((SourceType::WgsShortRead, calls));
+            }
+        }
+
+        // Vendor Y-NGS VCFs (FTDNA Big Y / YSEQ / Full Genomes / Nebula) are dense, direct Y-SNP
+        // calls on GRCh38 — the FTDNA tree's native coordinate space — so pool them into the genome
+        // consensus alongside the WGS alignments, weighted by their source type. Chips stay out
+        // (sparse, various builds; they live in the variant profile + label reconciliation). A
+        // non-GRCh38 set is skipped here (its positions wouldn't match the GRCh38 tree).
+        let vsets = variant_set::list_for_biosample(self.store.pool(), biosample_guid).await?;
+        for set in &vsets {
+            if set.source_type == SourceType::Chip || !is_grch38_build(&set.reference_build) {
+                continue;
+            }
+            let calls = Self::vset_chr_y_calls(set);
+            if !calls.is_empty() {
+                sources.push((set.source_type, strand_reconcile_to_tree(&tree, calls)));
             }
         }
 
@@ -1871,6 +1916,62 @@ impl App {
         )
         .await?;
         Ok(assignment)
+    }
+
+    /// chrY genotype calls (`position → uppercase ALT base`) from a variant set — the shared
+    /// extractor behind the chip / vendor-VCF Y placements.
+    fn vset_chr_y_calls(set: &VariantSet) -> HashMap<i64, char> {
+        set.calls
+            .iter()
+            .filter(|c| c.contig.eq_ignore_ascii_case("chrY") || c.contig.eq_ignore_ascii_case("y"))
+            .filter_map(|c| c.alternate.chars().next().map(|b| (c.position, b.to_ascii_uppercase())))
+            .collect()
+    }
+
+    /// Place the subject's vendor **Y-NGS VCF** variant sets — FTDNA Big Y / Full Genomes Y Elite /
+    /// YSEQ / Nebula / Dante, i.e. anything imported as a non-[`Chip`](SourceType::Chip)
+    /// [`VariantSet`] carrying chrY calls — and record a per-source donor call for each. These are
+    /// direct Y-SNP genotype calls (the gold-standard placement input), placed against the configured
+    /// tree on each set's stored build (FTDNA Big Y is GRCh38, the FTDNA tree's native build → no
+    /// liftover). Best-effort per set: one that errors or lacks chrY calls is skipped. Returns the
+    /// number of sets placed. Called on import (so a Big Y VCF places without a manual Refresh) and
+    /// re-runnable. The vendor-VCF counterpart to [`assign_y_bisdna`](Self::assign_y_bisdna).
+    pub async fn assign_y_vendor_vcfs(&self, biosample_guid: SampleGuid) -> Result<usize, AppError> {
+        let sets = variant_set::list_for_biosample(self.store.pool(), biosample_guid).await?;
+        let mut tree_cache: HashMap<String, navigator_analysis::haplo::HaploTree> = HashMap::new();
+        let mut placed = 0;
+        for set in &sets {
+            if set.source_type == SourceType::Chip {
+                continue; // chips place via assign_y_bisdna / the chip-panel path
+            }
+            let calls = Self::vset_chr_y_calls(set);
+            if calls.is_empty() {
+                continue;
+            }
+            let build = set.reference_build.clone().unwrap_or_else(|| "GRCh38".to_string());
+            if !tree_cache.contains_key(&build) {
+                match self.chip_y_tree(&build).await {
+                    Ok(t) => {
+                        tree_cache.insert(build.clone(), t);
+                    }
+                    Err(e) => {
+                        eprintln!("vendor Y-VCF placement deferred for build {build} ({e})");
+                        continue;
+                    }
+                }
+            }
+            let assignment = Self::place_chip_panel(&tree_cache[&build], calls);
+            self.record_call(
+                biosample_guid,
+                DnaType::Y,
+                &format!("vcf#{}", set.id),
+                set.source_label.clone(),
+                &assignment,
+            )
+            .await?;
+            placed += 1;
+        }
+        Ok(placed)
     }
 
     /// Fetch + parse the Y haplotree for a chip placement on `build`. DecodingUs is native multi-build
