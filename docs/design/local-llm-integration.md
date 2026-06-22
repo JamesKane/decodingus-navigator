@@ -1,6 +1,8 @@
 # Local LLM integration (LM Studio / Ollama) — design
 
-Status: **design** (2026-06-22). Implementation not started. Pilot.
+Status: **M0 implemented** (2026-06-22, branch `feature/simple-mode`, commit dd2af0c). Pilot.
+M0 = client config + resolvers + health/model discovery + the Settings "AI assistant" section
+(no generation yet). M1–M3 not started.
 
 ## Goal
 
