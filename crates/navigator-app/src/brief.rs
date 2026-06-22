@@ -406,7 +406,7 @@ fn build_ancestry(
     ancient: Option<&AncestryResult>,
     pack: &BriefPack,
 ) -> AncestryBrief {
-    use navigator_domain::ancestry::population_color;
+    use navigator_domain::ancestry::{population_color, population_name, population_super};
     use navigator_domain::brief::AncientComponent;
 
     let super_populations = result.super_population_summary.clone();
@@ -433,18 +433,27 @@ fn build_ancestry(
                 .map(|c| {
                     // Pack content (by code, then display name) supplies an optional friendlier name
                     // and the explanation — so a bare code like "ANF" reads as "Anatolian Farmer".
-                    let entry = pack
+                    let direct = pack
                         .population(&c.population_code)
                         .or_else(|| pack.population(&c.population_name));
-                    let name = entry
+                    let name = direct
                         .and_then(|p| p.name.clone())
                         .unwrap_or_else(|| c.population_name.clone());
+                    // The model's reference set mixes ancient and *modern* populations; the modern
+                    // ones (e.g. Colombian/Puerto Rican standing in for Native American ancestry)
+                    // rarely have their own blurb, so fall back to the continental description rather
+                    // than leaving real non-European signal unexplained.
+                    let blurb = direct.and_then(|p| p.blurb.clone()).or_else(|| {
+                        population_super(&c.population_code)
+                            .map(population_name)
+                            .and_then(|sp| pack.population(&sp).and_then(|p| p.blurb.clone()))
+                    });
                     AncientComponent {
                         code: c.population_code.clone(),
                         name,
                         percentage: c.percentage,
                         color: population_color(&c.population_code),
-                        blurb: entry.and_then(|p| p.blurb.clone()),
+                        blurb,
                     }
                 })
                 .collect();
