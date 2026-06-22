@@ -16,7 +16,7 @@ use crate::widgets::{
 };
 use eframe::egui;
 use navigator_app::{
-    AncestryResult, AncestrySegment, AppSettings, AuditEntry, BatchImportSummary, BuildNeed, CallState,
+    AncestryResult, AncestrySegment, AppSettings, AuditEntry, BatchImportSummary, BuildNeed, CallState, ChatTurn,
     CompatibilityLevel, Consensus, Coverage, DenovoCall, DnaType, FtdnaGenealogy, FtdnaImportPlan, FtdnaResolution,
     HaploAssignment, HeteroplasmySite, IbdComparison, IbdSuggestion, IdentityVerification, LineageBrief, LineageKind,
     MatchKind, MtRegion, MtVariant, NarratedBrief, PackStatus, PanelGenotype, PrivateBucket, PrivateClass,
@@ -497,6 +497,11 @@ pub struct NavigatorApp {
     brief_narration: Option<(SampleGuid, NarratedBrief)>,
     /// Whether a brief narration request is in flight.
     narrating: bool,
+    /// "Ask my results" chat history for the selected subject (cleared on subject switch).
+    chat_history: Vec<ChatTurn>,
+    /// The chat input box + whether an answer is in flight.
+    chat_input: String,
+    chat_pending: bool,
     /// Selected subject-detail sub-tab.
     detail_tab: DetailTab,
     /// Active UI language.
@@ -920,6 +925,9 @@ impl NavigatorApp {
             ai_enabled: navigator_app::llm::llm_config().enabled,
             brief_narration: None,
             narrating: false,
+            chat_history: Vec::new(),
+            chat_input: String::new(),
+            chat_pending: false,
             detail_tab: DetailTab::Overview,
             // Persisted choice wins; else honor $LANG (e.g. "es_ES.UTF-8") when it names a
             // supported locale; else English.

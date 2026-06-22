@@ -670,6 +670,74 @@ impl NavigatorApp {
         ui.add_space(10.0);
     }
 
+    /// "Ask about your results" chat (M2): a subject-scoped Q&A grounded in the brief. Sign-in is not
+    /// required (it's local), but the AI assistant must be enabled. Answers are AI-generated from the
+    /// results, so a persistent banner says to verify against the data.
+    pub(crate) fn simple_chat_section(&mut self, ui: &mut egui::Ui, guid: SampleGuid) {
+        if !self.ai_enabled {
+            return;
+        }
+        let banner = self.tr("brief.chatBanner");
+        let hint = self.tr("brief.chatHint");
+        card(ui, self.tr("brief.chatTitle"), |ui| {
+            ui.label(egui::RichText::new(banner).weak().small());
+            ui.add_space(6.0);
+
+            // Conversation so far.
+            for turn in &self.chat_history {
+                let (who, color) = if turn.from_user {
+                    (self.tr("brief.chatYou"), egui::Color32::from_rgb(150, 190, 240))
+                } else {
+                    (self.tr("brief.chatAi"), egui::Color32::from_rgb(150, 200, 160))
+                };
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(egui::RichText::new(format!("{who}:")).strong().color(color));
+                    ui.label(&turn.text);
+                });
+                ui.add_space(4.0);
+            }
+            if self.chat_pending {
+                ui.horizontal(|ui| {
+                    ui.spinner();
+                    ui.label(egui::RichText::new(self.tr("brief.chatThinking")).weak().small());
+                });
+            }
+
+            // Input row.
+            ui.add_space(4.0);
+            let mut submit = None;
+            ui.horizontal(|ui| {
+                let resp = ui.add_enabled(
+                    !self.chat_pending,
+                    egui::TextEdit::singleline(&mut self.chat_input)
+                        .hint_text(hint)
+                        .desired_width(ui.available_width() - 80.0),
+                );
+                let enter = resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                let send = ui
+                    .add_enabled(!self.chat_pending, egui::Button::new(self.tr("brief.chatSend")))
+                    .clicked();
+                if (enter || send) && !self.chat_input.trim().is_empty() {
+                    submit = Some(self.chat_input.trim().to_string());
+                }
+            });
+            if let Some(question) = submit {
+                self.chat_input.clear();
+                let history = self.chat_history.clone();
+                self.chat_history.push(navigator_app::ChatTurn {
+                    from_user: true,
+                    text: question.clone(),
+                });
+                self.chat_pending = true;
+                let _ = self.tx.send(Command::AskQuestion {
+                    guid,
+                    history,
+                    question,
+                });
+            }
+        });
+    }
+
     /// Simple-mode subject view: the plain-language brief (precomputed off the UI thread). Renders a
     /// card stack — headline, paternal & maternal lines, your test — degrading per-section when data
     /// or reference content is missing. A discreet pack-status footer shows how fresh the narrative is.

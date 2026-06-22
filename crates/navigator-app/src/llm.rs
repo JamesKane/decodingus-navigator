@@ -99,8 +99,15 @@ struct ModelEntry {
 
 #[derive(Serialize)]
 struct ChatMessage {
-    role: &'static str,
+    role: String,
     content: String,
+}
+
+/// One prior turn of an "ask my results" conversation, carried by the UI and replayed as context.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ChatTurn {
+    pub from_user: bool,
+    pub text: String,
 }
 
 #[derive(Serialize)]
@@ -222,17 +229,7 @@ impl App {
             return Err(AppError::Llm("The AI assistant is turned off.".into()));
         }
 
-        // Resolve a concrete model id (servers like Ollama require one); fall back to the single
-        // loaded model when the user left it on "server default".
-        let model = match cfg.model.clone() {
-            Some(m) => m,
-            None => self
-                .llm_models_at(&cfg.base_url)
-                .await?
-                .into_iter()
-                .next()
-                .ok_or_else(|| AppError::Llm("No model is loaded on the server.".into()))?,
-        };
+        let model = self.resolve_model_id(&cfg).await?;
 
         let system = llm_prompt::narrate_system_prompt();
         let facts = llm_prompt::narrate_fact_sheet(brief);
@@ -247,23 +244,121 @@ impl App {
             return Ok(cached);
         }
 
+        let messages = vec![
+            ChatMessage {
+                role: "system".into(),
+                content: system,
+            },
+            ChatMessage {
+                role: "user".into(),
+                content: facts,
+            },
+        ];
+        let (prose, used_model) = self.chat_complete(&cfg, &model, messages).await?;
+
+        // Post-generation guardrail: reject anything that strays into health/clinical language.
+        if llm_prompt::mentions_health(&prose) {
+            return Err(AppError::Llm(
+                "The AI response was withheld (it strayed outside ancestry).".into(),
+            ));
+        }
+
+        let result = NarratedBrief {
+            prose,
+            model: used_model,
+        };
+        if let Some(parent) = cache_path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        if let Ok(json) = serde_json::to_string(&result) {
+            let _ = std::fs::write(&cache_path, json);
+        }
+        Ok(result)
+    }
+
+    /// Answer one "ask my results" question, grounded in the subject's brief (M2). The brief's fact
+    /// sheet is the only source of facts; chat `history` is replayed for continuity. Off / unreachable
+    /// / bad output → `Err`. A clearly health/medical question (in or out) is met with a fixed
+    /// ancestry-only deflection instead of a model answer.
+    pub async fn answer_question(
+        &self,
+        guid: SampleGuid,
+        history: Vec<ChatTurn>,
+        question: String,
+    ) -> Result<String, AppError> {
+        let cfg = llm_config();
+        if !cfg.enabled {
+            return Err(AppError::Llm("The AI assistant is turned off.".into()));
+        }
+        // Incoming scope guard: don't even ask the model a medical question.
+        if llm_prompt::mentions_health(&question) {
+            return Ok(llm_prompt::health_deflection().to_string());
+        }
+
+        let model = self.resolve_model_id(&cfg).await?;
+        let brief = self.subject_brief(guid).await?;
+        let facts = llm_prompt::narrate_fact_sheet(&brief);
+        // One system message carries the guardrails + the results (the only allowed facts).
+        let system = format!(
+            "{}\n\nRESULTS (your only source of facts):\n{}",
+            llm_prompt::answer_system_prompt(),
+            facts
+        );
+
+        let mut messages = vec![ChatMessage {
+            role: "system".into(),
+            content: system,
+        }];
+        // Replay the recent conversation (bounded) for continuity.
+        for turn in history.iter().rev().take(12).collect::<Vec<_>>().into_iter().rev() {
+            messages.push(ChatMessage {
+                role: if turn.from_user { "user" } else { "assistant" }.into(),
+                content: turn.text.clone(),
+            });
+        }
+        messages.push(ChatMessage {
+            role: "user".into(),
+            content: question,
+        });
+
+        let (answer, _) = self.chat_complete(&cfg, &model, messages).await?;
+        // Outgoing scope guard: a strayed answer is replaced by the deflection, not shown.
+        if llm_prompt::mentions_health(&answer) {
+            return Ok(llm_prompt::health_deflection().to_string());
+        }
+        Ok(answer)
+    }
+
+    /// Resolve a concrete model id for a request — `cfg.model` if set, else the server's single
+    /// loaded model (servers like Ollama require a name).
+    async fn resolve_model_id(&self, cfg: &LlmConfig) -> Result<String, AppError> {
+        match cfg.model.clone() {
+            Some(m) => Ok(m),
+            None => self
+                .llm_models_at(&cfg.base_url)
+                .await?
+                .into_iter()
+                .next()
+                .ok_or_else(|| AppError::Llm("No model is loaded on the server.".into())),
+        }
+    }
+
+    /// POST a chat completion and return `(answer, model)` with reasoning stripped. Shared by
+    /// narration and Q&A. Errors on unreachable server, bad response, or empty/reasoning-truncated
+    /// output (callers apply their own health guard).
+    async fn chat_complete(
+        &self,
+        cfg: &LlmConfig,
+        model: &str,
+        messages: Vec<ChatMessage>,
+    ) -> Result<(String, String), AppError> {
         let req = ChatRequest {
-            model: model.clone(),
-            messages: vec![
-                ChatMessage {
-                    role: "system",
-                    content: system,
-                },
-                ChatMessage {
-                    role: "user",
-                    content: facts,
-                },
-            ],
+            model: model.to_string(),
+            messages,
             temperature: 0.4,
             max_tokens: cfg.max_tokens,
             stream: false,
         };
-
         let url = format!("{}/chat/completions", cfg.base_url.trim_end_matches('/'));
         let resp = self
             .auth
@@ -284,9 +379,8 @@ impl App {
             .map_err(|e| AppError::Llm(format!("Unexpected response from the server: {e}")))?;
 
         let choice = parsed.choices.first();
-        let prose = choice.map(|c| strip_reasoning(&c.message.content)).unwrap_or_default();
-        if prose.is_empty() {
-            // A reasoning model that hit the token cap mid-thought returns empty content.
+        let answer = choice.map(|c| strip_reasoning(&c.message.content)).unwrap_or_default();
+        if answer.is_empty() {
             let truncated = choice.and_then(|c| c.finish_reason.as_deref()) == Some("length");
             return Err(AppError::Llm(if truncated {
                 "The model ran out of room before answering — it spent its budget reasoning. Raise \
@@ -296,25 +390,7 @@ impl App {
                 "The model returned an empty response.".into()
             }));
         }
-
-        // Post-generation guardrail: reject anything that strays into health/clinical language.
-        if llm_prompt::mentions_health(&prose) {
-            return Err(AppError::Llm(
-                "The AI response was withheld (it strayed outside ancestry).".into(),
-            ));
-        }
-
-        let result = NarratedBrief {
-            prose,
-            model: parsed.model.unwrap_or(model),
-        };
-        if let Some(parent) = cache_path.parent() {
-            let _ = std::fs::create_dir_all(parent);
-        }
-        if let Ok(json) = serde_json::to_string(&result) {
-            let _ = std::fs::write(&cache_path, json);
-        }
-        Ok(result)
+        Ok((answer, parsed.model.unwrap_or_else(|| model.to_string())))
     }
 }
 

@@ -138,6 +138,9 @@ impl NavigatorApp {
                 ui.add_space(10.0);
                 // Relatives are live/online, so they render outside the precomputed brief.
                 self.simple_relatives_section(ui);
+                // Ask-my-results chat (local AI; enabled-gated).
+                ui.add_space(10.0);
+                self.simple_chat_section(ui, guid);
                 // A discreet bridge to the full power-user view for the curious.
                 ui.add_space(14.0);
                 ui.separator();

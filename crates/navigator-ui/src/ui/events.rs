@@ -167,6 +167,21 @@ impl NavigatorApp {
                         }
                     }
                 }
+                Event::ChatAnswer { guid, result } => {
+                    if self.selected_sample == Some(guid) {
+                        self.chat_pending = false;
+                        match result {
+                            Ok(answer) => self.chat_history.push(ChatTurn {
+                                from_user: false,
+                                text: answer,
+                            }),
+                            Err(msg) => self.chat_history.push(ChatTurn {
+                                from_user: false,
+                                text: format!("{} {msg}", self.tr("brief.aiUnavailable")),
+                            }),
+                        }
+                    }
+                }
                 Event::ProjectAnalyzed {
                     project_id,
                     samples,
@@ -1065,6 +1080,9 @@ impl NavigatorApp {
         self.subject_brief = None;
         self.brief_narration = None;
         self.narrating = false;
+        self.chat_history.clear();
+        self.chat_input.clear();
+        self.chat_pending = false;
         // The Simple-mode brief is (re)built from the Consensus event below (always fired by
         // LoadConsensus), so a later analysis refreshes it too. Show the spinner meanwhile.
         self.subject_brief_loading = self.ui_mode == UiMode::Simple;

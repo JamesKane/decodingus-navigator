@@ -99,6 +99,13 @@ pub fn narrate_fact_sheet(b: &SubjectBrief) -> String {
     s
 }
 
+/// The fixed reply for a health/medical question (the M2 scope guard) — keeps the assistant in the
+/// ancestry/lineage lane instead of attempting a clinical answer.
+pub fn health_deflection() -> &'static str {
+    "I can only help with ancestry and lineage — Navigator doesn't provide health, medical, or \
+     clinical interpretation. Ask me about your paternal or maternal line, your ancestry, or your test."
+}
+
 /// Conservative post-generation guard: does `text` contain clearly health/clinical language? Used to
 /// reject (and fall back from) any model output that strays out of the genealogy/ancestry lane.
 pub fn mentions_health(text: &str) -> bool {

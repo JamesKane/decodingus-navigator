@@ -1729,7 +1729,7 @@ mod ibd_exchange;
 mod import_profiles;
 mod import_unified;
 pub mod llm;
-pub use llm::NarratedBrief;
+pub use llm::{ChatTurn, NarratedBrief};
 mod publish;
 mod queries;
 mod recruitment;

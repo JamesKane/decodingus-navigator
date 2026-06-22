@@ -14,12 +14,12 @@ use std::sync::{Arc, Mutex};
 
 use navigator_app::{
     AlignmentProbe, AncestryResult, AncestrySegment, App, AppError, AuditEntry, BatchImportSummary, BuildNeed,
-    Consensus, Coverage, DenovoCall, DmConversationSummary, DmMessage, DnaType, ExchangeSessionInfo, FtdnaGenealogy,
-    FtdnaImportOptions, FtdnaImportPlan, FtdnaImportSummary, FtdnaResolution, HaploAssignment, HeteroplasmySite,
-    IbdComparison, IbdDetectorConfig, IbdSuggestion, IdentityVerification, IncomingRequest, NarratedBrief,
-    PanelGenotype, PrivateBucket, ProjectImportSummary, ProjectOverview, ProjectSampleReport, ProjectStrChart,
-    ReadMetrics, RecruitmentInvitation, RefBuildStatus, SexInferenceResult, SourceType, StoredIbdExchange,
-    StrConcordanceRow, SubjectBrief, SvAnalysisResult, YMatch, YstrClustering,
+    ChatTurn, Consensus, Coverage, DenovoCall, DmConversationSummary, DmMessage, DnaType, ExchangeSessionInfo,
+    FtdnaGenealogy, FtdnaImportOptions, FtdnaImportPlan, FtdnaImportSummary, FtdnaResolution, HaploAssignment,
+    HeteroplasmySite, IbdComparison, IbdDetectorConfig, IbdSuggestion, IdentityVerification, IncomingRequest,
+    NarratedBrief, PanelGenotype, PrivateBucket, ProjectImportSummary, ProjectOverview, ProjectSampleReport,
+    ProjectStrChart, ReadMetrics, RecruitmentInvitation, RefBuildStatus, SexInferenceResult, SourceType,
+    StoredIbdExchange, StrConcordanceRow, SubjectBrief, SvAnalysisResult, YMatch, YstrClustering,
 };
 use navigator_domain::chipprofile::ChipProfile;
 use navigator_domain::du_domain::ids::SampleGuid;
@@ -68,6 +68,12 @@ pub enum Command {
     LoadSubjectBrief(SampleGuid),
     /// Narrate a subject's brief via the local LLM ("Polish with AI"); falls back on any failure.
     NarrateBrief(SampleGuid),
+    /// Ask the local LLM a question about a subject's results (grounded in the brief).
+    AskQuestion {
+        guid: SampleGuid,
+        history: Vec<ChatTurn>,
+        question: String,
+    },
     /// Deep-analyze every sample in a project as a cancellable background job, streaming
     /// per-sample `DeepAnalyzeProgress` and yielding between samples so the UI stays responsive.
     /// Skips what the fast path already filled; cancelled via [`Command::CancelAnalysis`].
@@ -685,6 +691,11 @@ pub enum Event {
         guid: SampleGuid,
         result: Result<NarratedBrief, String>,
     },
+    /// Answer to an "ask my results" question (or a plain-language reason it's unavailable).
+    ChatAnswer {
+        guid: SampleGuid,
+        result: Result<String, String>,
+    },
     /// A project-wide analyze pass finished (coverage + Y per sample). `cancelled` is true when a
     /// streaming deep-analyze was stopped early (counts reflect what completed before the stop).
     ProjectAnalyzed {
@@ -1145,6 +1156,17 @@ pub async fn handle(app: &App, cmd: Command) -> Event {
         Command::NarrateBrief(guid) => Event::BriefNarration {
             guid,
             result: app.narrate_subject(guid).await.map_err(|e| e.to_string()),
+        },
+        Command::AskQuestion {
+            guid,
+            history,
+            question,
+        } => Event::ChatAnswer {
+            guid,
+            result: app
+                .answer_question(guid, history, question)
+                .await
+                .map_err(|e| e.to_string()),
         },
         // DeepAnalyzeProject streams DeepAnalyzeProgress from the spawn loop; reaching here is a bug.
         Command::DeepAnalyzeProject(project_id) => {
