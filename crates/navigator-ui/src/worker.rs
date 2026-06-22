@@ -479,6 +479,8 @@ pub enum Command {
     DeleteBiosample(SampleGuid),
     /// Clear all sequencing + derived/imported analysis data for a subject, keeping the subject.
     ClearBiosampleData(SampleGuid),
+    /// Reset only the subject's haplogroup placement (stale-lineage cleanup), keeping other data.
+    ClearHaplogroupData(SampleGuid),
     /// Delete a sequence run (cascades to its alignments + artifacts). `biosample_guid` is the
     /// owner, so the UI can refresh that subject's run list.
     DeleteSequenceRun {
@@ -711,6 +713,8 @@ pub enum Event {
     RunsChanged(SampleGuid),
     /// A subject's analysis data was cleared (the UI fully reloads that subject + the list columns).
     BiosampleDataCleared(SampleGuid),
+    /// A subject's haplogroup placement was reset (the UI reloads that subject; other data stays).
+    HaplogroupDataReset(SampleGuid),
     /// Donor-level haplogroup consensus for a subject (Y, mtDNA).
     Consensus {
         biosample_guid: SampleGuid,
@@ -1168,6 +1172,10 @@ pub async fn handle(app: &App, cmd: Command) -> Event {
         },
         Command::ClearBiosampleData(guid) => match app.clear_biosample_data(guid).await {
             Ok(()) => Event::BiosampleDataCleared(guid),
+            Err(e) => Event::Error(e.to_string()),
+        },
+        Command::ClearHaplogroupData(guid) => match app.clear_haplogroup_data(guid).await {
+            Ok(()) => Event::HaplogroupDataReset(guid),
             Err(e) => Event::Error(e.to_string()),
         },
         Command::DeleteSequenceRun { id, biosample_guid } => match app.delete_sequence_run(id).await {

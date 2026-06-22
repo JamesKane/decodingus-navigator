@@ -219,6 +219,14 @@ impl NavigatorApp {
                     }
                     let _ = self.tx.send(Command::LoadAllBiosamples);
                 }
+                Event::HaplogroupDataReset(guid) => {
+                    self.status = self.tr("resetHaplo.done").to_string();
+                    // Reload the subject (re-reads the now-empty placement → brief refreshes).
+                    if self.selected_sample == Some(guid) {
+                        self.select_sample(guid);
+                    }
+                    let _ = self.tx.send(Command::LoadAllBiosamples);
+                }
                 Event::StrProfiles {
                     biosample_guid,
                     profiles,

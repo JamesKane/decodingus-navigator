@@ -358,13 +358,25 @@ impl NavigatorApp {
                 {
                     self.confirm_delete = Some(guid);
                 }
-                if ui
-                    .button(self.tr("common.clearData"))
-                    .on_hover_text(self.tr("clear.hint"))
-                    .clicked()
-                {
-                    self.confirm_clear = Some(guid);
-                }
+                ui.menu_button(self.tr("common.clearData"), |ui| {
+                    if ui
+                        .button(self.tr("resetHaplo.action"))
+                        .on_hover_text(self.tr("resetHaplo.hint"))
+                        .clicked()
+                    {
+                        self.confirm_reset_haplo = Some(guid);
+                        ui.close_menu();
+                    }
+                    ui.separator();
+                    if ui
+                        .button(self.tr("clear.allData"))
+                        .on_hover_text(self.tr("clear.hint"))
+                        .clicked()
+                    {
+                        self.confirm_clear = Some(guid);
+                        ui.close_menu();
+                    }
+                });
                 if ui.button(self.tr("common.edit")).clicked() {
                     self.edit_subject = Some(EditSubject {
                         guid,
