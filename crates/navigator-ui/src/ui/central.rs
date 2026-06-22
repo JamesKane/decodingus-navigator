@@ -128,6 +128,9 @@ impl NavigatorApp {
             egui::ScrollArea::vertical().show(ui, |ui| {
                 ui.add_space(4.0);
                 self.subject_brief_view(ui, guid);
+                ui.add_space(10.0);
+                // Relatives are live/online, so they render outside the precomputed brief.
+                self.simple_relatives_section(ui);
             });
             return;
         }

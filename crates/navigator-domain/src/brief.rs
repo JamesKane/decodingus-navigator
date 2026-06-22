@@ -10,6 +10,7 @@
 //! CDN asset. Lookups fall back up the lineage path so a compact pack still tells a useful story for
 //! a rare terminal haplogroup (see [`BriefPack::lineage_lookup`]).
 
+use crate::ancestry::SuperPopulationSummary;
 use crate::testtype::TargetType;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -47,7 +48,20 @@ pub struct TestEntry {
     pub limits: Option<String>,
 }
 
-/// The bundled/downloaded reference pack. Maps are keyed by haplogroup name / test-type code.
+/// One population's plain-language content, keyed by the (super-)population code or name the
+/// ancestry estimate reports (e.g. "EUR", "European").
+#[derive(Debug, Clone, Default, PartialEq, Deserialize, Serialize)]
+pub struct PopEntry {
+    /// Friendly display name, when the estimate reports a bare code.
+    #[serde(default)]
+    pub name: Option<String>,
+    /// A short plain-language note about the population.
+    #[serde(default)]
+    pub blurb: Option<String>,
+}
+
+/// The bundled/downloaded reference pack. Maps are keyed by haplogroup name / test-type code /
+/// population code.
 #[derive(Debug, Clone, Default, PartialEq, Deserialize, Serialize)]
 pub struct BriefPack {
     pub version: String,
@@ -57,6 +71,8 @@ pub struct BriefPack {
     pub mt_haplogroups: HashMap<String, HaploEntry>,
     #[serde(default)]
     pub test_types: HashMap<String, TestEntry>,
+    #[serde(default)]
+    pub populations: HashMap<String, PopEntry>,
 }
 
 impl BriefPack {
@@ -69,6 +85,12 @@ impl BriefPack {
         self.y_haplogroups.extend(other.y_haplogroups);
         self.mt_haplogroups.extend(other.mt_haplogroups);
         self.test_types.extend(other.test_types);
+        self.populations.extend(other.populations);
+    }
+
+    /// Population content by code/name.
+    pub fn population(&self, code: &str) -> Option<&PopEntry> {
+        self.populations.get(code)
     }
 
     /// Y lookup with ancestor fallback (see [`Self::lineage_lookup`]).
@@ -171,6 +193,21 @@ pub struct LineageBrief {
     pub sources: Vec<String>,
 }
 
+/// The ancestry-composition section.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AncestryBrief {
+    /// One-line framing, e.g. "Predominantly European".
+    pub summary_phrase: String,
+    /// Continental breakdown (carried whole so the UI can reuse the existing donut).
+    pub super_populations: Vec<SuperPopulationSummary>,
+    /// Fine-grained populations `(name, percentage)`, when a detailed estimate exists.
+    pub fine_pops: Vec<(String, f64)>,
+    /// Optional plain-language note about the mix (from the reference pack).
+    pub interpretation: Option<String>,
+    /// How the estimate was made, e.g. "estimated from 412,000 genome-wide markers".
+    pub method_note: String,
+}
+
 /// The "your test & quality" section — always present.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TestBrief {
@@ -189,6 +226,7 @@ pub struct SubjectBrief {
     pub headline: Headline,
     pub paternal: Option<LineageBrief>,
     pub maternal: Option<LineageBrief>,
+    pub ancestry: Option<AncestryBrief>,
     pub test: TestBrief,
     /// Global uncertainty notes.
     pub caveats: Vec<String>,
@@ -305,6 +343,42 @@ pub fn quality_phrase(mean_coverage: f64, target: TargetType) -> (String, bool) 
     (format!("{label} ({depth})"), ok)
 }
 
+/// One-line framing of an ancestry mix from the continental breakdown. Sorts a copy by share so the
+/// caller needn't pre-sort. Empty input → a neutral phrase.
+pub fn ancestry_summary(super_pops: &[SuperPopulationSummary]) -> String {
+    let mut sorted: Vec<&SuperPopulationSummary> = super_pops.iter().collect();
+    sorted.sort_by(|a, b| b.percentage.total_cmp(&a.percentage));
+    match sorted.as_slice() {
+        [] => "Ancestry composition not yet estimated".to_string(),
+        [top, rest @ ..] => {
+            let name = &top.super_population;
+            if top.percentage >= 85.0 {
+                format!("Predominantly {name}")
+            } else if top.percentage >= 55.0 {
+                match rest.first().filter(|s| s.percentage >= 10.0) {
+                    Some(second) => format!("Mostly {name}, with some {}", second.super_population),
+                    None => format!("Mostly {name}"),
+                }
+            } else {
+                match rest.first() {
+                    Some(second) => format!("A mix of {name} and {}", second.super_population),
+                    None => format!("Mostly {name}"),
+                }
+            }
+        }
+    }
+}
+
+/// "estimated from 412,000 genome-wide markers" / "estimated from 220 ancestry-informative markers".
+pub fn ancestry_method_note(snps_with_genotype: usize, panel_type: &str) -> String {
+    let kind = if panel_type.eq_ignore_ascii_case("aims") {
+        "ancestry-informative markers"
+    } else {
+        "genome-wide markers"
+    };
+    format!("estimated from {} {kind}", group_thousands(snps_with_genotype as i64))
+}
+
 /// Quality phrasing for a genotyping array (chip) test, which has no sequencing depth — judged on
 /// the number of markers genotyped.
 pub fn chip_quality_phrase(markers: usize) -> (String, bool) {
@@ -403,6 +477,46 @@ mod tests {
         assert_eq!(matched, "R-M269");
         // Nothing on the lineage is covered.
         assert!(pack.y_lookup("Q-M3", &["Q".into(), "Q-M242".into()]).is_none());
+    }
+
+    fn sp(name: &str, pct: f64) -> SuperPopulationSummary {
+        SuperPopulationSummary {
+            super_population: name.to_string(),
+            percentage: pct,
+            populations: vec![],
+        }
+    }
+
+    #[test]
+    fn ancestry_summary_framing() {
+        assert_eq!(ancestry_summary(&[]), "Ancestry composition not yet estimated");
+        assert_eq!(ancestry_summary(&[sp("European", 92.0)]), "Predominantly European");
+        // Unsorted input is sorted by share.
+        assert_eq!(
+            ancestry_summary(&[sp("African", 30.0), sp("European", 70.0)]),
+            "Mostly European, with some African"
+        );
+        assert_eq!(
+            ancestry_summary(&[sp("European", 45.0), sp("East Asian", 40.0)]),
+            "A mix of European and East Asian"
+        );
+        // Dominant but lone.
+        assert_eq!(
+            ancestry_summary(&[sp("European", 60.0), sp("African", 3.0)]),
+            "Mostly European"
+        );
+    }
+
+    #[test]
+    fn ancestry_method_note_kind() {
+        assert_eq!(
+            ancestry_method_note(412000, "genome-wide"),
+            "estimated from 412,000 genome-wide markers"
+        );
+        assert_eq!(
+            ancestry_method_note(220, "aims"),
+            "estimated from 220 ancestry-informative markers"
+        );
     }
 
     #[test]

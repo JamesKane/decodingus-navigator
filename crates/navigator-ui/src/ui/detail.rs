@@ -666,6 +666,42 @@ impl NavigatorApp {
             ui.add_space(10.0);
         }
 
+        if let Some(a) = &brief.ancestry {
+            let detail_label = self.tr("brief.ancestryDetail");
+            card(ui, self.tr("brief.ancestry"), |ui| {
+                ui.heading(&a.summary_phrase);
+                ui.add_space(6.0);
+                ui.horizontal(|ui| {
+                    draw_ancestry_donut(ui, &a.super_populations);
+                    ui.add_space(8.0);
+                    ui.vertical(|ui| {
+                        for sp in &a.super_populations {
+                            if sp.percentage >= 0.5 {
+                                ui.label(format!("{}  —  {:.1}%", sp.super_population, sp.percentage));
+                            }
+                        }
+                    });
+                });
+                if !a.fine_pops.is_empty() {
+                    ui.add_space(4.0);
+                    egui::CollapsingHeader::new(detail_label)
+                        .id_salt("brief_fine_pops")
+                        .show(ui, |ui| {
+                            for (name, pct) in a.fine_pops.iter().filter(|(_, p)| *p >= 0.5) {
+                                ui.label(format!("{name}  —  {pct:.1}%"));
+                            }
+                        });
+                }
+                if let Some(interp) = &a.interpretation {
+                    ui.add_space(6.0);
+                    ui.label(interp);
+                }
+                ui.add_space(4.0);
+                ui.label(egui::RichText::new(&a.method_note).weak().small());
+            });
+            ui.add_space(10.0);
+        }
+
         // Your test & quality.
         let test = &brief.test;
         card(ui, self.tr("brief.yourTest"), |ui| {

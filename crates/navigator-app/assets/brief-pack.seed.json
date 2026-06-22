@@ -204,5 +204,15 @@
     "ARRAY_FTDNA_FF": { "what": "Genotypes markers across your genome for ancestry and relative matching.", "limits": "Reads selected positions, not your whole genome." },
     "ARRAY_MYHERITAGE": { "what": "Genotypes markers across your genome for ancestry composition and relative matching.", "limits": "Reads selected positions, not your whole genome." },
     "ARRAY_LIVINGDNA": { "what": "Genotypes markers across your genome for ancestry composition and a broad read of your lineages.", "limits": "Reads selected positions, not your whole genome." }
+  },
+  "populations": {
+    "European": { "blurb": "European ancestry spans the continent from Iberia and the British Isles to Scandinavia, the Balkans and the East European plain — shaped by ancient hunter-gatherers, Near Eastern farmers and Bronze Age steppe migrations." },
+    "African": { "blurb": "African ancestry is the most genetically diverse on Earth, reflecting the deep history of human populations across West, East, Central and Southern Africa." },
+    "East Asian": { "blurb": "East Asian ancestry centers on China, Japan, Korea and mainland Southeast Asia, with deep roots in the populations of the region." },
+    "South Asian": { "blurb": "South Asian ancestry covers the Indian subcontinent — India, Pakistan, Bangladesh and Sri Lanka — blending ancient indigenous, Iranian-farmer and steppe components." },
+    "Admixed American": { "blurb": "Admixed American ancestry reflects the blending of Indigenous American, European and African populations across the Americas." },
+    "Middle Eastern": { "blurb": "Middle Eastern ancestry is associated with the Levant, Arabia, Anatolia and the wider Near East — a crossroads of early farming and later population movements." },
+    "Central Asian & Siberian": { "blurb": "Central Asian and Siberian ancestry spans the vast Eurasian interior, from the steppe to the northern forests, with a long history of pastoralist and hunter movements." },
+    "Oceanian": { "blurb": "Oceanian ancestry is associated with the Indigenous populations of New Guinea, Melanesia and the wider Pacific." }
   }
 }

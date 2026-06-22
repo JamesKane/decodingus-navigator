@@ -384,7 +384,9 @@ async fn appview_status_error(api: &str, resp: reqwest::Response) -> AppError {
 }
 pub use navigator_analysis::ibd_attest::{IbdAttestation, IbdExchangeMsg, IbdSite};
 use navigator_domain::bisdna;
-pub use navigator_domain::brief::{Headline, LineageBrief, LineageKind, PackStatus, SubjectBrief, TestBrief};
+pub use navigator_domain::brief::{
+    AncestryBrief, Headline, LineageBrief, LineageKind, PackStatus, SubjectBrief, TestBrief,
+};
 use navigator_domain::chipprofile::{self, ChipProfile, NewChipProfile};
 pub use navigator_domain::consensus::{DiploidSourceObs, DiploidVariant};
 use navigator_domain::filetype;

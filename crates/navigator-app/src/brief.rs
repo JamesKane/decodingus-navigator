@@ -9,8 +9,9 @@
 //! fresh the narrative is.
 
 use crate::{App, AppError};
+use navigator_domain::ancestry::AncestryResult;
 use navigator_domain::brief::{
-    self, BriefPack, Headline, LineageBrief, LineageKind, PackStatus, SubjectBrief, TestBrief,
+    self, AncestryBrief, BriefPack, Headline, LineageBrief, LineageKind, PackStatus, SubjectBrief, TestBrief,
 };
 use navigator_domain::du_domain::ids::SampleGuid;
 use navigator_domain::reconciliation::{CompatibilityLevel, Consensus, DnaType};
@@ -85,6 +86,19 @@ impl App {
 
         let test = build_test(test_code.as_deref(), coverage.as_ref(), &pack);
 
+        // Ancestry composition (from the persisted consensus estimate; None for Y/mt-only tests).
+        let ancestry = match self.donor_ancestry(biosample_guid).await? {
+            Some((_, result)) if !result.super_population_summary.is_empty() => {
+                let fine = self
+                    .consensus_ancestry(biosample_guid, "FINE_ADMIXTURE")
+                    .await
+                    .ok()
+                    .flatten();
+                Some(build_ancestry(&result, fine.as_ref(), &pack))
+            }
+            _ => None,
+        };
+
         // Global caveats.
         let mut caveats = Vec::new();
         if matches!(pack_status, PackStatus::Bundled | PackStatus::Unavailable) {
@@ -107,6 +121,7 @@ impl App {
             headline,
             paternal,
             maternal,
+            ancestry,
             test,
             caveats,
             pack_version: (!pack.version.trim().is_empty()).then(|| pack.version.clone()),
@@ -216,6 +231,36 @@ fn build_lineage(kind: LineageKind, c: &Consensus, pack: &BriefPack, is_paternal
     }
 }
 
+/// Assemble the ancestry section from the consensus estimate (+ optional fine-grained estimate).
+fn build_ancestry(result: &AncestryResult, fine: Option<&AncestryResult>, pack: &BriefPack) -> AncestryBrief {
+    let super_populations = result.super_population_summary.clone();
+    let summary_phrase = brief::ancestry_summary(&super_populations);
+    let method_note = brief::ancestry_method_note(result.snps_with_genotype, &result.panel_type);
+
+    let fine_pops = fine
+        .map(|f| {
+            f.components
+                .iter()
+                .map(|c| (c.population_name.clone(), c.percentage))
+                .collect()
+        })
+        .unwrap_or_default();
+
+    // Optional plain-language note for the dominant population (pack-supplied; tries code then name).
+    let interpretation = super_populations
+        .iter()
+        .max_by(|a, b| a.percentage.total_cmp(&b.percentage))
+        .and_then(|top| pack.population(&top.super_population).and_then(|p| p.blurb.clone()));
+
+    AncestryBrief {
+        summary_phrase,
+        super_populations,
+        fine_pops,
+        interpretation,
+        method_note,
+    }
+}
+
 /// Assemble the test & quality section.
 fn build_test(test_code: Option<&str>, coverage: Option<&crate::CoverageResult>, pack: &BriefPack) -> TestBrief {
     let code = test_code.unwrap_or("");
@@ -287,5 +332,23 @@ fn headline_summary(name: &str, paternal: Option<&LineageBrief>, maternal: Optio
         (Some(p), None) => format!("Your data places {name}'s paternal line at {}.", p.haplogroup),
         (None, Some(m)) => format!("Your data places {name}'s maternal line at {}.", m.haplogroup),
         (None, None) => "Import or analyze this person's DNA to reveal their paternal and maternal lines.".to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bundled_seed_pack_parses_and_has_content() {
+        let pack: BriefPack = serde_json::from_str(SEED_PACK).expect("seed pack must be valid JSON");
+        assert!(!pack.version.trim().is_empty());
+        assert!(
+            pack.y_haplogroups.contains_key("R-M269"),
+            "expected a common Y haplogroup"
+        );
+        assert!(pack.mt_haplogroups.contains_key("H"), "expected a common mt haplogroup");
+        assert!(pack.test_types.contains_key("WGS"), "expected the WGS test type");
+        assert!(pack.populations.contains_key("European"), "expected a population blurb");
     }
 }

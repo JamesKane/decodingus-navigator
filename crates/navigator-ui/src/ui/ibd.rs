@@ -331,6 +331,116 @@ impl NavigatorApp {
     /// these are network candidates we haven't exchanged any genotypes with. Requesting an
     /// introduction opens a PENDING request; the consent round-trip + actual segment detection
     /// are a later phase (the AppView's symmetric counterpart-discovery is still being speced).
+    /// Simple-mode "Genetic relatives" card: the live network match suggestions, framed in plain
+    /// language (strength + shared-signal summary, pseudonymous handles), with a privacy note and a
+    /// per-match Connect action. Sign-in gated. Kept separate from the precomputed brief because
+    /// matches are live/online; the brief itself stays local.
+    pub(crate) fn simple_relatives_section(&mut self, ui: &mut egui::Ui) {
+        let title = self.tr("brief.relatives");
+        if self.account.is_none() {
+            card(ui, title, |ui| {
+                ui.label(self.tr("brief.relativesSignIn"));
+            });
+            return;
+        }
+
+        // Pre-build rows (owned) so the card body can mutate self (button) without a borrow clash.
+        let rows: Vec<(String, String, String, Option<String>)> = self
+            .ibd_suggestions
+            .iter()
+            .map(|s| {
+                let handle: String = s.suggested_sample_guid.chars().take(12).collect();
+                let strength = self.tr(match s.score {
+                    x if x >= 0.8 => "brief.matchStrong",
+                    x if x >= 0.5 => "brief.matchLikely",
+                    _ => "brief.matchPossible",
+                });
+                let why = if s.signals.is_empty() {
+                    String::new()
+                } else {
+                    format!("{} {}", self.tr("brief.relativesWhy"), s.signals.join(", "))
+                };
+                (
+                    handle,
+                    strength.to_string(),
+                    why,
+                    self.ibd_intros.get(&s.suggested_sample_guid).cloned(),
+                )
+            })
+            .collect();
+        let loading = self.loading_ibd_suggestions;
+        let guids: Vec<String> = self
+            .ibd_suggestions
+            .iter()
+            .map(|s| s.suggested_sample_guid.clone())
+            .collect();
+
+        let mut do_find = false;
+        let mut introduce: Option<String> = None;
+        card(ui, title, |ui| {
+            ui.horizontal(|ui| {
+                if ui
+                    .add_enabled(!loading, egui::Button::new(self.tr("brief.relativesFind")))
+                    .clicked()
+                {
+                    do_find = true;
+                }
+                if loading {
+                    ui.spinner();
+                }
+            });
+            ui.label(egui::RichText::new(self.tr("brief.relativesNote")).weak().small());
+            ui.add_space(6.0);
+
+            if rows.is_empty() {
+                if !loading {
+                    ui.label(egui::RichText::new(self.tr("brief.relativesEmpty")).weak());
+                }
+                return;
+            }
+            for (i, (handle, strength, why, intro)) in rows.iter().enumerate() {
+                egui::Frame::group(ui.style()).show(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    ui.horizontal(|ui| {
+                        chip(
+                            ui,
+                            strength,
+                            egui::Color32::from_rgb(40, 52, 70),
+                            egui::Color32::from_rgb(150, 190, 240),
+                        );
+                        ui.label(egui::RichText::new(handle).monospace())
+                            .on_hover_text(&guids[i]);
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| match intro {
+                            Some(status) => {
+                                ui.label(egui::RichText::new(status).weak().small());
+                            }
+                            None => {
+                                if ui.button(self.tr("brief.relativesConnect")).clicked() {
+                                    introduce = Some(guids[i].clone());
+                                }
+                            }
+                        });
+                    });
+                    if !why.is_empty() {
+                        ui.label(egui::RichText::new(why).weak().small());
+                    }
+                });
+            }
+        });
+
+        if do_find {
+            self.loading_ibd_suggestions = true;
+            self.status = self.tr("network.finding").to_string();
+            let _ = self.tx.send(Command::LoadIbdSuggestions);
+        }
+        if let Some(guid) = introduce {
+            self.status = self.tr("network.introducing").to_string();
+            let _ = self.tx.send(Command::IbdIntroduce {
+                suggested_sample_guid: guid,
+            });
+        }
+    }
+
     pub(crate) fn network_suggestions_section(&mut self, ui: &mut egui::Ui) {
         if self.account.is_none() {
             ui.label(self.tr("network.signInRequired"));
