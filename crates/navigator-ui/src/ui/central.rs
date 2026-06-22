@@ -122,17 +122,23 @@ impl NavigatorApp {
         };
         self.subject_detail_header(ui, guid);
         ui.add_space(6.0);
-        ui.horizontal(|ui| {
-            for (tab, key) in DetailTab::ALL {
-                if ui
-                    .selectable_label(self.detail_tab == tab, egui::RichText::new(self.tr(key)).strong())
-                    .clicked()
-                {
-                    self.detail_tab = tab;
+        // Simple mode hides the per-DNA-type tabs — the subject view *is* the Overview (the brief,
+        // once M2 lands). Advanced shows the full tab strip.
+        if self.ui_mode == UiMode::Advanced {
+            ui.horizontal(|ui| {
+                for (tab, key) in DetailTab::ALL {
+                    if ui
+                        .selectable_label(self.detail_tab == tab, egui::RichText::new(self.tr(key)).strong())
+                        .clicked()
+                    {
+                        self.detail_tab = tab;
+                    }
                 }
-            }
-        });
-        ui.separator();
+            });
+            ui.separator();
+        } else {
+            self.detail_tab = DetailTab::Overview;
+        }
         egui::ScrollArea::vertical().show(ui, |ui| {
             ui.add_space(4.0);
             match self.detail_tab {

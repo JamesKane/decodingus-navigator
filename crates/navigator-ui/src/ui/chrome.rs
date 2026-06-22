@@ -23,6 +23,53 @@ impl NavigatorApp {
         crate::i18n::tr(self.lang, key)
     }
 
+    /// Flip the interface mode (Simple ⇄ Advanced), pin it (so the first-run heuristic stops
+    /// overriding), and persist the choice. Leaving Advanced for Simple snaps the nav back to a
+    /// Simple-visible tab.
+    pub(crate) fn toggle_ui_mode(&mut self) {
+        self.ui_mode = match self.ui_mode {
+            UiMode::Simple => UiMode::Advanced,
+            UiMode::Advanced => UiMode::Simple,
+        };
+        self.ui_mode_pinned = true;
+        if let Err(e) = navigator_app::persist_ui_mode(self.ui_mode) {
+            self.status = format!("Could not save interface mode: {e}");
+        }
+        self.normalize_for_mode();
+    }
+
+    /// First-run default: until the user pins a mode, derive it from the workspace — a casual user
+    /// (no projects, at most one subject) gets Simple; anyone with projects or multiple subjects
+    /// gets Advanced. Re-evaluated as subjects/projects load; a no-op once pinned.
+    pub(crate) fn apply_ui_mode_heuristic(&mut self) {
+        if self.ui_mode_pinned {
+            return;
+        }
+        self.ui_mode = if self.overview.is_empty() && self.all_biosamples.len() <= 1 {
+            UiMode::Simple
+        } else {
+            UiMode::Advanced
+        };
+        self.normalize_for_mode();
+    }
+
+    /// Keep nav consistent with the mode: Simple hides Projects/Community, so snap off them.
+    pub(crate) fn normalize_for_mode(&mut self) {
+        if self.ui_mode == UiMode::Simple && matches!(self.nav, Nav::Projects | Nav::Community) {
+            self.nav = Nav::Subjects;
+        }
+    }
+
+    /// In Simple mode, the casual user has (usually) one subject — select it automatically so the
+    /// brief/overview appears without a list interaction. Fires once per load (guarded by the
+    /// existing selection).
+    pub(crate) fn auto_select_single_subject(&mut self) {
+        if self.ui_mode == UiMode::Simple && self.selected_sample.is_none() && self.all_biosamples.len() == 1 {
+            let guid = self.all_biosamples[0].guid;
+            self.select_sample(guid);
+        }
+    }
+
     /// The top app bar: product title (left), settings + language + account controls (right).
     pub(crate) fn app_bar(&mut self, ctx: &egui::Context) {
         egui::TopBottomPanel::top("appbar").show(ctx, |ui| {
@@ -34,6 +81,15 @@ impl NavigatorApp {
                         self.settings_form = SettingsForm::from_settings();
                         self.show_settings = true;
                         let _ = self.tx.send(Command::LoadReferenceSettings);
+                    }
+                    ui.separator();
+                    // Interface-mode toggle: Simple (casual briefs) ⇄ Advanced (full UI).
+                    let (label, hover) = match self.ui_mode {
+                        UiMode::Simple => (self.tr("mode.simple"), self.tr("mode.toAdvanced")),
+                        UiMode::Advanced => (self.tr("mode.advanced"), self.tr("mode.toSimple")),
+                    };
+                    if ui.button(label).on_hover_text(hover).clicked() {
+                        self.toggle_ui_mode();
                     }
                     ui.separator();
                     // Notification bell → Community / Notifications. Only meaningful when signed in.
@@ -76,12 +132,21 @@ impl NavigatorApp {
         egui::TopBottomPanel::top("nav").show(ctx, |ui| {
             ui.add_space(2.0);
             ui.horizontal(|ui| {
-                for (nav, icon, key) in [
-                    (Nav::Dashboard, "📊", "nav.dashboard"),
-                    (Nav::Subjects, "👥", "nav.subjects"),
-                    (Nav::Projects, "📁", "nav.projects"),
-                    (Nav::Community, "💬", "nav.community"),
-                ] {
+                // Simple mode is a single-person experience: only Dashboard + the subject view
+                // ("My DNA"). Advanced exposes the full workspace.
+                let tabs: &[(Nav, &str, &str)] = match self.ui_mode {
+                    UiMode::Simple => &[
+                        (Nav::Dashboard, "📊", "nav.dashboard"),
+                        (Nav::Subjects, "🧬", "nav.myDna"),
+                    ],
+                    UiMode::Advanced => &[
+                        (Nav::Dashboard, "📊", "nav.dashboard"),
+                        (Nav::Subjects, "👥", "nav.subjects"),
+                        (Nav::Projects, "📁", "nav.projects"),
+                        (Nav::Community, "💬", "nav.community"),
+                    ],
+                };
+                for &(nav, icon, key) in tabs {
                     let label = format!("{icon}  {}", self.tr(key));
                     if ui
                         .selectable_label(self.nav == nav, egui::RichText::new(label).strong())
@@ -175,6 +240,18 @@ impl NavigatorApp {
                     .default_width(300.0)
                     .min_width(240.0)
                     .show(ctx, |ui| self.projects_side(ui));
+            }
+            // Simple mode: a single-subject experience. With one subject (the common case) the
+            // side panel is hidden entirely — the brief/overview fills the window; with several,
+            // a minimal "who am I looking at" selector.
+            Nav::Subjects if self.ui_mode == UiMode::Simple => {
+                if self.all_biosamples.len() > 1 {
+                    egui::SidePanel::left("left")
+                        .resizable(true)
+                        .default_width(260.0)
+                        .min_width(200.0)
+                        .show(ctx, |ui| self.simple_subjects_side(ui));
+                }
             }
             Nav::Subjects if self.subjects_collapsed => {
                 // Collapsed: a thin strip with just an expand button, handing the detail panel
@@ -324,6 +401,41 @@ impl NavigatorApp {
             maternal,
             ystr,
         });
+    }
+
+    /// Simple-mode subject selector: a plain "who am I looking at" list (no power-user table /
+    /// filters), plus the same Add-New affordance. Only shown when more than one subject exists.
+    fn simple_subjects_side(&mut self, ui: &mut egui::Ui) {
+        ui.add_space(8.0);
+        ui.heading(self.tr("nav.myDna"));
+        ui.separator();
+        let mut pick = None;
+        for b in &self.all_biosamples {
+            let label = format!("👤  {}", b.donor_identifier);
+            if ui
+                .selectable_label(self.selected_sample == Some(b.guid), label)
+                .clicked()
+            {
+                pick = Some(b.guid);
+            }
+        }
+        if let Some(guid) = pick {
+            self.select_sample(guid);
+        }
+        ui.add_space(12.0);
+        ui.separator();
+        if ui
+            .add(
+                egui::Button::new(egui::RichText::new(self.tr("subjects.addNew")).color(egui::Color32::WHITE))
+                    .fill(ACCENT),
+            )
+            .clicked()
+        {
+            self.forms.show_add_subject = !self.forms.show_add_subject;
+        }
+        if self.forms.show_add_subject {
+            self.add_subject_form(ui);
+        }
     }
 
     /// Subjects browser: a collapse toggle + "Add New Subject" on one row, then the subjects table

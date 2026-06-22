@@ -1528,6 +1528,57 @@ fn y_tree_provider() -> YTreeProvider {
     resolve_y_provider(env.as_deref(), settings.as_deref())
 }
 
+/// Application interface mode: a casual, single-person experience with plain-language briefs
+/// (`Simple`) vs. the full power-user UI with projects and per-source analysis (`Advanced`). This is
+/// app-level UI state, persisted in [`AppSettings`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UiMode {
+    Simple,
+    Advanced,
+}
+
+impl UiMode {
+    /// The settings-file token (`"simple"` / `"advanced"`).
+    pub fn as_str(self) -> &'static str {
+        match self {
+            UiMode::Simple => "simple",
+            UiMode::Advanced => "advanced",
+        }
+    }
+
+    /// Parse a settings/env token; unrecognized values yield `None`.
+    pub fn parse(s: &str) -> Option<UiMode> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "simple" => Some(UiMode::Simple),
+            "advanced" => Some(UiMode::Advanced),
+            _ => None,
+        }
+    }
+}
+
+/// Resolve an explicitly-configured UI mode (pure; env wins → settings → `None`). `None` means the
+/// user has never pinned a mode, so the UI applies its first-run heuristic.
+fn resolve_ui_mode(env: Option<&str>, settings: Option<&str>) -> Option<UiMode> {
+    // A recognized env value wins; an unrecognized one is ignored and falls through to settings.
+    env.and_then(UiMode::parse)
+        .or_else(|| settings.and_then(UiMode::parse))
+}
+
+/// The configured UI mode, honoring `NAVIGATOR_UI_MODE` over the persisted setting. `None` when
+/// neither is set (first run → the UI defaults from a workspace heuristic).
+pub fn configured_ui_mode() -> Option<UiMode> {
+    let env = std::env::var("NAVIGATOR_UI_MODE").ok();
+    let settings = AppSettings::load().ui_mode;
+    resolve_ui_mode(env.as_deref(), settings.as_deref())
+}
+
+/// Persist the chosen UI mode, preserving all other settings.
+pub fn persist_ui_mode(mode: UiMode) -> std::io::Result<()> {
+    let mut s = AppSettings::load();
+    s.ui_mode = Some(mode.as_str().to_string());
+    s.save()
+}
+
 /// Base URL of the DecodingUs AppView serving the tree API. Local by default for testing;
 /// switch with `DECODINGUS_APPVIEW_URL` (e.g. the production host at cutover).
 /// Resolve the AppView base URL (pure; env wins → settings → default localhost; trailing slash
@@ -3064,6 +3115,7 @@ mod settings_tests {
             theme: Some("light".into()),
             prompt_before_download: Some(false),
             ui_scale: Some(1.5),
+            ui_mode: Some("simple".into()),
         };
         let json = serde_json::to_string(&s).unwrap();
         assert_eq!(serde_json::from_str::<AppSettings>(&json).unwrap(), s);
@@ -3076,6 +3128,23 @@ mod settings_tests {
             AppSettings::default(),
             serde_json::from_str::<AppSettings>("{}").unwrap()
         );
+    }
+
+    #[test]
+    fn ui_mode_resolution_env_over_settings() {
+        use super::{resolve_ui_mode, UiMode};
+        // env wins
+        assert_eq!(
+            resolve_ui_mode(Some("advanced"), Some("simple")),
+            Some(UiMode::Advanced)
+        );
+        // settings used when no env
+        assert_eq!(resolve_ui_mode(None, Some("Simple")), Some(UiMode::Simple));
+        // neither set → None (UI applies its heuristic)
+        assert_eq!(resolve_ui_mode(None, None), None);
+        // unrecognized tokens are ignored
+        assert_eq!(resolve_ui_mode(Some("expert"), Some("simple")), Some(UiMode::Simple));
+        assert_eq!(resolve_ui_mode(Some("expert"), None), None);
     }
 }
 

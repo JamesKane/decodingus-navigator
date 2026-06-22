@@ -362,6 +362,8 @@ impl NavigatorApp {
                 }),
                 prompt_before_download: Some(form.prompt_before_download),
                 ui_scale: Some(form.ui_scale),
+                // Interface mode is toggled from the app bar, not this dialog — preserve it.
+                ui_mode: AppSettings::load().ui_mode,
             };
             match settings.save() {
                 Ok(()) => self.status = self.tr("settings.saved").to_string(),

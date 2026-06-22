@@ -9,6 +9,11 @@ nav.dashboard=Dashboard
 nav.subjects=Subjects
 nav.projects=Projects
 nav.community=Community
+nav.myDna=My DNA
+mode.simple=Simple ▾
+mode.advanced=Advanced ▾
+mode.toAdvanced=Switch to Advanced mode (full power-user interface)
+mode.toSimple=Switch to Simple mode (plain-language single-person view)
 
 # Community (social) tab
 community.tab.support=Support

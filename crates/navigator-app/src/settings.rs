@@ -29,6 +29,10 @@ pub struct AppSettings {
     /// 1.0 scale factor and the default text is tiny. `None` = 1.0.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ui_scale: Option<f32>,
+    /// Interface mode: `"simple"` (casual single-person briefs) or `"advanced"` (full power-user UI).
+    /// `None` = the user has never pinned a mode, so the UI applies its first-run heuristic.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ui_mode: Option<String>,
 }
 
 impl AppSettings {

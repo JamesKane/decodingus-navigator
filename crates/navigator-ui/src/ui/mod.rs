@@ -20,7 +20,7 @@ use navigator_app::{
     HaploAssignment, HeteroplasmySite, IbdComparison, IbdSuggestion, IdentityVerification, MatchKind, MtRegion,
     MtVariant, PanelGenotype, PrivateBucket, PrivateClass, ProjectOverview, ProjectSampleReport, ProjectStrChart,
     ReadMetrics, RefBuildStatus, SexInferenceResult, SnpEvidence, SourceType, StrConcordanceRow, SvAnalysisResult,
-    VerificationStatus, YMatch, YProfile, YSignal, YState, YVariantStatus, YstrClustering,
+    UiMode, VerificationStatus, YMatch, YProfile, YSignal, YState, YVariantStatus, YstrClustering,
 };
 use navigator_domain::chipprofile::{self, ChipProfile};
 use navigator_domain::du_domain::ids::SampleGuid;
@@ -462,6 +462,11 @@ pub struct NavigatorApp {
     frame_time: f64,
     /// Selected primary navigation tab.
     nav: Nav,
+    /// Interface mode: Simple (casual single-person briefs) vs. Advanced (full power-user UI).
+    ui_mode: UiMode,
+    /// Whether the mode was explicitly pinned (env / settings / user toggle). When `false` the
+    /// first-run workspace heuristic may still adjust it as data loads.
+    ui_mode_pinned: bool,
     /// Selected subject-detail sub-tab.
     detail_tab: DetailTab,
     /// Active UI language.
@@ -868,6 +873,11 @@ impl NavigatorApp {
             edit_alignment: None,
             frame_time: 0.0,
             nav: Nav::Subjects,
+            // Pinned mode (env / settings) wins; else default Simple provisionally and let the
+            // first-run workspace heuristic adjust once subjects/projects load (see
+            // `apply_ui_mode_heuristic`).
+            ui_mode: navigator_app::configured_ui_mode().unwrap_or(UiMode::Simple),
+            ui_mode_pinned: navigator_app::configured_ui_mode().is_some(),
             detail_tab: DetailTab::Overview,
             // Persisted choice wins; else honor $LANG (e.g. "es_ES.UTF-8") when it names a
             // supported locale; else English.
@@ -1050,6 +1060,9 @@ impl eframe::App for NavigatorApp {
             ctx.request_repaint_after(std::time::Duration::from_millis(120));
         }
         self.drain_events();
+        // Mode upkeep: first-run heuristic (until pinned) + auto-select the sole subject in Simple.
+        self.apply_ui_mode_heuristic();
+        self.auto_select_single_subject();
         self.handle_file_drops(ctx);
         self.app_bar(ctx);
         self.nav_bar(ctx);
@@ -1090,7 +1103,9 @@ impl eframe::App for NavigatorApp {
                 ui.label(&self.status);
             });
         });
-        if self.nav == Nav::Subjects {
+        // The action bar's batch/compare/add-to-project affordances are power-user features —
+        // Advanced only.
+        if self.nav == Nav::Subjects && self.ui_mode == UiMode::Advanced {
             self.action_bar(ctx);
         }
         self.left_panel(ctx);

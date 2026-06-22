@@ -7,6 +7,11 @@ nav.dashboard=Panel
 nav.subjects=Sujetos
 nav.projects=Proyectos
 nav.community=Comunidad
+nav.myDna=Mi ADN
+mode.simple=Simple ▾
+mode.advanced=Avanzado ▾
+mode.toAdvanced=Cambiar al modo Avanzado (interfaz completa para usuarios expertos)
+mode.toSimple=Cambiar al modo Simple (vista individual en lenguaje sencillo)
 
 # Pestaña Comunidad (social)
 community.tab.support=Soporte
