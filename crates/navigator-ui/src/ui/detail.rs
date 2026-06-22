@@ -1819,6 +1819,10 @@ impl NavigatorApp {
             }
             self.str_section(ui, guid);
         });
+        ui.add_space(10.0);
+        card(ui, self.tr("card.snpVariants"), |ui| {
+            self.variants_section(ui, guid);
+        });
     }
 
     /// The sequencing-runs body: one card per run (provider chip, title, read meta, Y/mt
