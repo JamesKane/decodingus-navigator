@@ -19,10 +19,10 @@ use navigator_app::{
     AncestryResult, AncestrySegment, AppSettings, AuditEntry, BatchImportSummary, BuildNeed, CallState,
     CompatibilityLevel, Consensus, Coverage, DenovoCall, DnaType, FtdnaGenealogy, FtdnaImportPlan, FtdnaResolution,
     HaploAssignment, HeteroplasmySite, IbdComparison, IbdSuggestion, IdentityVerification, LineageBrief, LineageKind,
-    MatchKind, MtRegion, MtVariant, PackStatus, PanelGenotype, PrivateBucket, PrivateClass, ProjectOverview,
-    ProjectSampleReport, ProjectStrChart, ReadMetrics, RefBuildStatus, SexInferenceResult, SnpEvidence, SourceType,
-    StrConcordanceRow, SubjectBrief, SvAnalysisResult, UiMode, VerificationStatus, YMatch, YProfile, YSignal, YState,
-    YVariantStatus, YstrClustering,
+    MatchKind, MtRegion, MtVariant, NarratedBrief, PackStatus, PanelGenotype, PrivateBucket, PrivateClass,
+    ProjectOverview, ProjectSampleReport, ProjectStrChart, ReadMetrics, RefBuildStatus, SexInferenceResult,
+    SnpEvidence, SourceType, StrConcordanceRow, SubjectBrief, SvAnalysisResult, UiMode, VerificationStatus, YMatch,
+    YProfile, YSignal, YState, YVariantStatus, YstrClustering,
 };
 use navigator_domain::chipprofile::{self, ChipProfile};
 use navigator_domain::du_domain::ids::SampleGuid;
@@ -486,6 +486,12 @@ pub struct NavigatorApp {
     subject_brief_loading: bool,
     /// Free-text filter over the Simple-mode "My DNA" subject selector (matches the donor name).
     simple_subject_filter: String,
+    /// Whether the local-LLM "AI assistant" is enabled (cached from settings; gates "Polish with AI").
+    ai_enabled: bool,
+    /// AI-assisted narration of the selected subject's brief `(guid, narration)`; `None` until run.
+    brief_narration: Option<(SampleGuid, NarratedBrief)>,
+    /// Whether a brief narration request is in flight.
+    narrating: bool,
     /// Selected subject-detail sub-tab.
     detail_tab: DetailTab,
     /// Active UI language.
@@ -906,6 +912,9 @@ impl NavigatorApp {
             subject_brief: None,
             subject_brief_loading: false,
             simple_subject_filter: String::new(),
+            ai_enabled: navigator_app::llm::llm_config().enabled,
+            brief_narration: None,
+            narrating: false,
             detail_tab: DetailTab::Overview,
             // Persisted choice wins; else honor $LANG (e.g. "es_ES.UTF-8") when it names a
             // supported locale; else English.

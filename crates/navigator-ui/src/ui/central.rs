@@ -127,6 +127,8 @@ impl NavigatorApp {
             ui.separator();
             egui::ScrollArea::vertical().show(ui, |ui| {
                 ui.add_space(4.0);
+                // Optional AI-assisted narration sits above the facts (additive, clearly labelled).
+                self.simple_ai_narration(ui, guid);
                 self.subject_brief_view(ui, guid);
                 // Export the brief as a shareable "DNA Story" once it's built.
                 if matches!(&self.subject_brief, Some((g, _)) if *g == guid) {

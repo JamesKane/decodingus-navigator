@@ -452,6 +452,8 @@ impl NavigatorApp {
                 Ok(()) => self.status = self.tr("settings.saved").to_string(),
                 Err(e) => self.status = format!("Could not save settings: {e}"),
             }
+            // Reflect the AI toggle immediately (gates the "Polish with AI" affordance).
+            self.ai_enabled = form.llm_enabled;
             for row in &form.references {
                 let local = row.local_path.trim().to_string();
                 let _ = self.tx.send(Command::SetReferenceOverride {

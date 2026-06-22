@@ -154,6 +154,19 @@ impl NavigatorApp {
                         self.subject_brief_loading = false;
                     }
                 }
+                Event::BriefNarration { guid, result } => {
+                    if self.selected_sample == Some(guid) {
+                        self.narrating = false;
+                        match result {
+                            Ok(narration) => self.brief_narration = Some((guid, narration)),
+                            // Fallback: keep the deterministic brief; surface why in the status line.
+                            Err(msg) => {
+                                self.brief_narration = None;
+                                self.status = format!("{} {msg}", self.tr("brief.aiUnavailable"));
+                            }
+                        }
+                    }
+                }
                 Event::ProjectAnalyzed {
                     project_id,
                     samples,
@@ -1050,6 +1063,8 @@ impl NavigatorApp {
         self.audit_mt.clear();
         self.heteroplasmy = None;
         self.subject_brief = None;
+        self.brief_narration = None;
+        self.narrating = false;
         // The Simple-mode brief is (re)built from the Consensus event below (always fired by
         // LoadConsensus), so a later analysis refreshes it too. Show the spinner meanwhile.
         self.subject_brief_loading = self.ui_mode == UiMode::Simple;

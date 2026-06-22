@@ -624,6 +624,52 @@ impl NavigatorApp {
         self.auto_profile_query = query;
     }
 
+    /// The AI-assisted narration affordance for the Simple-mode brief: a "Polish with AI" /
+    /// regenerate button (only when the local AI assistant is enabled) and, once produced, a clearly-
+    /// labelled "DNA Story (AI-assisted)" block shown *above* the structured facts. The facts (the
+    /// brief cards) always render below, so the model output is never the only thing the user sees.
+    pub(crate) fn simple_ai_narration(&mut self, ui: &mut egui::Ui, guid: SampleGuid) {
+        if !self.ai_enabled {
+            return;
+        }
+        let have = matches!(&self.brief_narration, Some((g, _)) if *g == guid);
+        ui.horizontal(|ui| {
+            let label = if have {
+                self.tr("brief.aiRegenerate")
+            } else {
+                self.tr("brief.polishAi")
+            };
+            if ui.add_enabled(!self.narrating, egui::Button::new(label)).clicked() {
+                self.narrating = true;
+                if have {
+                    self.brief_narration = None;
+                }
+                let _ = self.tx.send(Command::NarrateBrief(guid));
+            }
+            if self.narrating {
+                ui.spinner();
+                ui.label(egui::RichText::new(self.tr("brief.aiWorking")).weak().small());
+            }
+        });
+
+        if let Some((g, narration)) = &self.brief_narration {
+            if *g == guid {
+                ui.add_space(8.0);
+                let note = format!("{} {}", self.tr("brief.aiModel"), narration.model);
+                card(ui, self.tr("brief.aiStory"), |ui| {
+                    for para in narration.prose.split("\n\n").filter(|p| !p.trim().is_empty()) {
+                        ui.label(para.trim());
+                        ui.add_space(6.0);
+                    }
+                    ui.separator();
+                    ui.label(egui::RichText::new(self.tr("brief.aiDisclaimer")).weak().small());
+                    ui.label(egui::RichText::new(note).weak().small());
+                });
+            }
+        }
+        ui.add_space(10.0);
+    }
+
     /// Simple-mode subject view: the plain-language brief (precomputed off the UI thread). Renders a
     /// card stack — headline, paternal & maternal lines, your test — degrading per-section when data
     /// or reference content is missing. A discreet pack-status footer shows how fresh the narrative is.
@@ -836,7 +882,9 @@ impl NavigatorApp {
             egui::CollapsingHeader::new(self.tr("brief.lineageTrail"))
                 .id_salt(("brief_trail", matches!(lb.kind, LineageKind::Paternal)))
                 .show(ui, |ui| {
-                    ui.label(egui::RichText::new(lb.lineage_path.join("  →  ")).small());
+                    // egui's default font renders no arrow glyph (→ shows as tofu); the middle dot
+                    // is safe and the path reads root→tip left-to-right.
+                    ui.label(egui::RichText::new(lb.lineage_path.join("  ·  ")).small());
                 });
         }
     }

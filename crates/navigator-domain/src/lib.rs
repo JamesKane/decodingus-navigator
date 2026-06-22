@@ -18,6 +18,7 @@ pub mod filetype;
 pub mod ftdna;
 pub mod identity;
 pub mod labs;
+pub mod llm_prompt;
 pub mod mtdna;
 pub mod reconciliation;
 pub mod seq;
