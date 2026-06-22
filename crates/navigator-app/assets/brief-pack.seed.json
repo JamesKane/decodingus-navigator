@@ -213,6 +213,9 @@
     "Admixed American": { "blurb": "Admixed American ancestry reflects the blending of Indigenous American, European and African populations across the Americas." },
     "Middle Eastern": { "blurb": "Middle Eastern ancestry is associated with the Levant, Arabia, Anatolia and the wider Near East — a crossroads of early farming and later population movements." },
     "Central Asian & Siberian": { "blurb": "Central Asian and Siberian ancestry spans the vast Eurasian interior, from the steppe to the northern forests, with a long history of pastoralist and hunter movements." },
-    "Oceanian": { "blurb": "Oceanian ancestry is associated with the Indigenous populations of New Guinea, Melanesia and the wider Pacific." }
+    "Oceanian": { "blurb": "Oceanian ancestry is associated with the Indigenous populations of New Guinea, Melanesia and the wider Pacific." },
+    "Steppe": { "blurb": "Steppe pastoralists (Yamnaya and related groups) spread out of the Pontic-Caspian grasslands in the Bronze Age, carrying Indo-European languages and reshaping European ancestry roughly 5,000 years ago." },
+    "EEF": { "blurb": "Early European Farmers brought agriculture from Anatolia and the Near East into Europe during the Neolithic, around 8,000 years ago, largely replacing the earlier hunter-gatherers." },
+    "WHG": { "blurb": "Western Hunter-Gatherers were the dark-skinned, blue-eyed foragers who inhabited Europe before farming arrived — the continent's oldest deep ancestry layer." }
   }
 }

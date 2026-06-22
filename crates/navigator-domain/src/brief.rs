@@ -193,6 +193,20 @@ pub struct LineageBrief {
     pub sources: Vec<String>,
 }
 
+/// One ancient-ancestry component (a prehistoric source population, e.g. "Steppe pastoralist"),
+/// with its share, display color, and an optional plain-language explanation from the pack.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AncientComponent {
+    pub code: String,
+    pub name: String,
+    /// 0.0–100.0
+    pub percentage: f64,
+    /// Display color (hex), so the UI pie matches the rest of the ancestry palette.
+    pub color: String,
+    /// Plain-language explanation of this ancient source (from the reference pack).
+    pub blurb: Option<String>,
+}
+
 /// The ancestry-composition section.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AncestryBrief {
@@ -202,6 +216,8 @@ pub struct AncestryBrief {
     pub super_populations: Vec<SuperPopulationSummary>,
     /// Fine-grained populations `(name, percentage)`, when a detailed estimate exists.
     pub fine_pops: Vec<(String, f64)>,
+    /// Ancient-ancestry components (prehistoric source populations), when that estimate exists.
+    pub ancient_pops: Vec<AncientComponent>,
     /// Optional plain-language note about the mix (from the reference pack).
     pub interpretation: Option<String>,
     /// How the estimate was made, e.g. "estimated from 412,000 genome-wide markers".

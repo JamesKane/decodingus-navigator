@@ -6,8 +6,9 @@ use std::path::PathBuf;
 use std::sync::mpsc::Receiver;
 
 use crate::charts::{
-    asset_status_line, coverage_histogram_chart, draw_ancestry_donut, draw_chromosome_painting, draw_composition_bar,
-    draw_ibd_segments, draw_pca_scatter, draw_population_components, draw_variant_track, TrackRegion, VariantMark,
+    asset_status_line, coverage_histogram_chart, draw_ancestry_donut, draw_chromosome_painting, draw_color_donut,
+    draw_composition_bar, draw_ibd_segments, draw_pca_scatter, draw_population_components, draw_variant_track,
+    parse_hex_color, TrackRegion, VariantMark,
 };
 use crate::widgets::{
     capitalize_first, card, chip, combo, empty_state, fmt_depth, fmt_pct, fmt_reads, natural_cmp, opt, provider_abbrev,

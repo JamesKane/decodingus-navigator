@@ -668,6 +668,8 @@ impl NavigatorApp {
 
         if let Some(a) = &brief.ancestry {
             let detail_label = self.tr("brief.ancestryDetail");
+            let ancient_title = self.tr("brief.ancient");
+            let ancient_intro = self.tr("brief.ancientIntro");
             card(ui, self.tr("brief.ancestry"), |ui| {
                 ui.heading(&a.summary_phrase);
                 ui.add_space(6.0);
@@ -696,6 +698,44 @@ impl NavigatorApp {
                     ui.add_space(6.0);
                     ui.label(interp);
                 }
+
+                // Ancient-ancestry pie + per-component explanations (prehistoric source populations).
+                if !a.ancient_pops.is_empty() {
+                    ui.add_space(8.0);
+                    ui.separator();
+                    ui.strong(ancient_title);
+                    ui.label(egui::RichText::new(ancient_intro).weak().small());
+                    ui.add_space(6.0);
+                    let slices: Vec<(f64, egui::Color32)> = a
+                        .ancient_pops
+                        .iter()
+                        .map(|c| (c.percentage, parse_hex_color(&c.color)))
+                        .collect();
+                    let top_pct = a.ancient_pops.first().map(|c| c.percentage);
+                    ui.horizontal(|ui| {
+                        draw_color_donut(ui, &slices, top_pct);
+                        ui.add_space(8.0);
+                        ui.vertical(|ui| {
+                            for c in &a.ancient_pops {
+                                ui.horizontal(|ui| {
+                                    let (rect, _) =
+                                        ui.allocate_exact_size(egui::vec2(11.0, 11.0), egui::Sense::hover());
+                                    ui.painter().rect_filled(rect, 2.0, parse_hex_color(&c.color));
+                                    ui.label(format!("{}  —  {:.1}%", c.name, c.percentage));
+                                });
+                            }
+                        });
+                    });
+                    // Explanations, one per ancient source that has pack content.
+                    for c in &a.ancient_pops {
+                        if let Some(blurb) = &c.blurb {
+                            ui.add_space(4.0);
+                            ui.label(egui::RichText::new(&c.name).strong().small());
+                            ui.label(egui::RichText::new(blurb).small());
+                        }
+                    }
+                }
+
                 ui.add_space(4.0);
                 ui.label(egui::RichText::new(&a.method_note).weak().small());
             });

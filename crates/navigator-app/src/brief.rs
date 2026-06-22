@@ -94,7 +94,12 @@ impl App {
                     .await
                     .ok()
                     .flatten();
-                Some(build_ancestry(&result, fine.as_ref(), &pack))
+                let ancient = self
+                    .consensus_ancestry(biosample_guid, "PCA_PROJECTION_GMM")
+                    .await
+                    .ok()
+                    .flatten();
+                Some(build_ancestry(&result, fine.as_ref(), ancient.as_ref(), &pack))
             }
             _ => None,
         };
@@ -231,8 +236,17 @@ fn build_lineage(kind: LineageKind, c: &Consensus, pack: &BriefPack, is_paternal
     }
 }
 
-/// Assemble the ancestry section from the consensus estimate (+ optional fine-grained estimate).
-fn build_ancestry(result: &AncestryResult, fine: Option<&AncestryResult>, pack: &BriefPack) -> AncestryBrief {
+/// Assemble the ancestry section from the consensus estimate (+ optional fine-grained and ancient
+/// estimates).
+fn build_ancestry(
+    result: &AncestryResult,
+    fine: Option<&AncestryResult>,
+    ancient: Option<&AncestryResult>,
+    pack: &BriefPack,
+) -> AncestryBrief {
+    use navigator_domain::ancestry::population_color;
+    use navigator_domain::brief::AncientComponent;
+
     let super_populations = result.super_population_summary.clone();
     let summary_phrase = brief::ancestry_summary(&super_populations);
     let method_note = brief::ancestry_method_note(result.snps_with_genotype, &result.panel_type);
@@ -246,6 +260,30 @@ fn build_ancestry(result: &AncestryResult, fine: Option<&AncestryResult>, pack: 
         })
         .unwrap_or_default();
 
+    // Ancient components, biggest first, each with its palette color + a pack explanation (by code,
+    // then display name).
+    let ancient_pops: Vec<AncientComponent> = ancient
+        .map(|a| {
+            let mut comps: Vec<AncientComponent> = a
+                .components
+                .iter()
+                .filter(|c| c.percentage >= 0.5)
+                .map(|c| AncientComponent {
+                    code: c.population_code.clone(),
+                    name: c.population_name.clone(),
+                    percentage: c.percentage,
+                    color: population_color(&c.population_code),
+                    blurb: pack
+                        .population(&c.population_code)
+                        .or_else(|| pack.population(&c.population_name))
+                        .and_then(|p| p.blurb.clone()),
+                })
+                .collect();
+            comps.sort_by(|x, y| y.percentage.total_cmp(&x.percentage));
+            comps
+        })
+        .unwrap_or_default();
+
     // Optional plain-language note for the dominant population (pack-supplied; tries code then name).
     let interpretation = super_populations
         .iter()
@@ -256,6 +294,7 @@ fn build_ancestry(result: &AncestryResult, fine: Option<&AncestryResult>, pack: 
         summary_phrase,
         super_populations,
         fine_pops,
+        ancient_pops,
         interpretation,
         method_note,
     }

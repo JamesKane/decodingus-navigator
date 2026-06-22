@@ -207,6 +207,43 @@ pub(crate) fn draw_ancestry_donut(ui: &mut egui::Ui, summary: &[SuperPopulationS
     }
 }
 
+/// A generic donut from pre-colored `(percentage, color)` slices (used by the Simple-mode brief for
+/// the ancient-ancestry pie, whose components carry their own palette colors). Optionally labels the
+/// hole with the largest slice's share.
+pub(crate) fn draw_color_donut(ui: &mut egui::Ui, slices: &[(f64, egui::Color32)], center_pct: Option<f64>) {
+    let size = 120.0;
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(size, size), egui::Sense::hover());
+    let painter = ui.painter_at(rect);
+    let c = rect.center();
+    let (r_out, r_in) = (size * 0.46, size * 0.28);
+    let total: f32 = slices.iter().map(|(p, _)| *p as f32).sum::<f32>().max(1.0);
+    let mut a0 = -std::f32::consts::FRAC_PI_2;
+    for (pct, color) in slices {
+        if *pct < 0.5 {
+            continue;
+        }
+        let a1 = a0 + (*pct as f32 / total) * std::f32::consts::TAU;
+        let mut pts = arc_points(c, r_out, a0, a1, 32);
+        pts.extend(arc_points(c, r_in, a1, a0, 32));
+        painter.add(egui::epaint::PathShape {
+            points: pts,
+            closed: true,
+            fill: *color,
+            stroke: egui::epaint::PathStroke::NONE,
+        });
+        a0 = a1;
+    }
+    if let Some(p) = center_pct {
+        painter.text(
+            c,
+            egui::Align2::CENTER_CENTER,
+            format!("{p:.0}%"),
+            egui::FontId::proportional(18.0),
+            egui::Color32::WHITE,
+        );
+    }
+}
+
 /// Draw a detailed ancestry breakdown (the fine-population or ancient-component report): the
 /// estimate's `components`, sorted by share, as a name/percentage grid with a proportion bar, plus a
 /// provenance line (method + SNP count). `id_salt` keeps each report's grid distinct.
@@ -272,7 +309,7 @@ pub(crate) fn draw_composition_bar(ui: &mut egui::Ui, summary: &[SuperPopulation
 }
 
 /// Parse a `#RRGGBB` hex color, falling back to grey on a malformed string.
-fn parse_hex_color(hex: &str) -> egui::Color32 {
+pub(crate) fn parse_hex_color(hex: &str) -> egui::Color32 {
     let h = hex.trim_start_matches('#');
     if h.len() == 6 {
         if let (Ok(r), Ok(g), Ok(b)) = (
