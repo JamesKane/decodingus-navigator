@@ -10,17 +10,18 @@ use crate::charts::{
     draw_ibd_segments, draw_pca_scatter, draw_population_components, draw_variant_track, TrackRegion, VariantMark,
 };
 use crate::widgets::{
-    card, chip, combo, empty_state, fmt_depth, fmt_pct, fmt_reads, natural_cmp, opt, provider_abbrev, show_assignment,
-    sortable_header, stat_card, variant_change, TableControls,
+    capitalize_first, card, chip, combo, empty_state, fmt_depth, fmt_pct, fmt_reads, natural_cmp, opt, provider_abbrev,
+    show_assignment, sortable_header, stat_card, variant_change, TableControls,
 };
 use eframe::egui;
 use navigator_app::{
     AncestryResult, AncestrySegment, AppSettings, AuditEntry, BatchImportSummary, BuildNeed, CallState,
     CompatibilityLevel, Consensus, Coverage, DenovoCall, DnaType, FtdnaGenealogy, FtdnaImportPlan, FtdnaResolution,
-    HaploAssignment, HeteroplasmySite, IbdComparison, IbdSuggestion, IdentityVerification, MatchKind, MtRegion,
-    MtVariant, PanelGenotype, PrivateBucket, PrivateClass, ProjectOverview, ProjectSampleReport, ProjectStrChart,
-    ReadMetrics, RefBuildStatus, SexInferenceResult, SnpEvidence, SourceType, StrConcordanceRow, SvAnalysisResult,
-    UiMode, VerificationStatus, YMatch, YProfile, YSignal, YState, YVariantStatus, YstrClustering,
+    HaploAssignment, HeteroplasmySite, IbdComparison, IbdSuggestion, IdentityVerification, LineageBrief, LineageKind,
+    MatchKind, MtRegion, MtVariant, PackStatus, PanelGenotype, PrivateBucket, PrivateClass, ProjectOverview,
+    ProjectSampleReport, ProjectStrChart, ReadMetrics, RefBuildStatus, SexInferenceResult, SnpEvidence, SourceType,
+    StrConcordanceRow, SubjectBrief, SvAnalysisResult, UiMode, VerificationStatus, YMatch, YProfile, YSignal, YState,
+    YVariantStatus, YstrClustering,
 };
 use navigator_domain::chipprofile::{self, ChipProfile};
 use navigator_domain::du_domain::ids::SampleGuid;
@@ -467,6 +468,10 @@ pub struct NavigatorApp {
     /// Whether the mode was explicitly pinned (env / settings / user toggle). When `false` the
     /// first-run workspace heuristic may still adjust it as data loads.
     ui_mode_pinned: bool,
+    /// Precomputed Simple-mode brief for the selected subject `(guid, brief)`; `None` until built.
+    subject_brief: Option<(SampleGuid, SubjectBrief)>,
+    /// Whether a Subject Brief build is in flight.
+    subject_brief_loading: bool,
     /// Selected subject-detail sub-tab.
     detail_tab: DetailTab,
     /// Active UI language.
@@ -878,6 +883,8 @@ impl NavigatorApp {
             // `apply_ui_mode_heuristic`).
             ui_mode: navigator_app::configured_ui_mode().unwrap_or(UiMode::Simple),
             ui_mode_pinned: navigator_app::configured_ui_mode().is_some(),
+            subject_brief: None,
+            subject_brief_loading: false,
             detail_tab: DetailTab::Overview,
             // Persisted choice wins; else honor $LANG (e.g. "es_ES.UTF-8") when it names a
             // supported locale; else English.

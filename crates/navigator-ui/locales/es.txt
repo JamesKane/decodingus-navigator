@@ -12,6 +12,18 @@ mode.simple=Simple ▾
 mode.advanced=Avanzado ▾
 mode.toAdvanced=Cambiar al modo Avanzado (interfaz completa para usuarios expertos)
 mode.toSimple=Cambiar al modo Simple (vista individual en lenguaje sencillo)
+brief.building=Generando tu resumen…
+brief.empty=Aún no hay resumen — importa o analiza el ADN de esta persona.
+brief.paternalLine=Tu línea paterna (ADN-Y)
+brief.maternalLine=Tu línea materna (ADNmt)
+brief.yourTest=Tu prueba
+brief.lineageTrail=Recorrido del linaje
+brief.ancestorNote=La historia siguiente describe a un ancestro de esta línea:
+brief.source=Fuente:
+brief.packLive=Descripciones en vivo, actualizadas en línea
+brief.packCached=Descripciones de tu última actualización en línea
+brief.packOffline=Descripciones sin conexión — conéctate a internet para lo más reciente
+brief.packUnavailable=Descripciones no disponibles
 
 # Pestaña Comunidad (social)
 community.tab.support=Soporte

@@ -148,6 +148,12 @@ impl NavigatorApp {
                         self.project_str_loading = false;
                     }
                 }
+                Event::SubjectBrief { guid, brief } => {
+                    if self.selected_sample == Some(guid) {
+                        self.subject_brief = Some((guid, *brief));
+                        self.subject_brief_loading = false;
+                    }
+                }
                 Event::ProjectAnalyzed {
                     project_id,
                     samples,
@@ -358,6 +364,8 @@ impl NavigatorApp {
                     if self.selected_sample == Some(biosample_guid) {
                         self.consensus_y = y;
                         self.consensus_mt = mt;
+                        // Consensus drives the Simple-mode brief — (re)build it now (no-op in Advanced).
+                        self.reload_subject_brief();
                     }
                 }
                 Event::Audit {
@@ -951,6 +959,19 @@ impl NavigatorApp {
         }
     }
 
+    /// (Re)build the Simple-mode Subject Brief off the UI thread. Only meaningful in Simple mode;
+    /// called on subject select and whenever the subject's haplogroups/coverage change. No-op when
+    /// no subject is selected. Cheap (cache reads + pack lookups).
+    pub(crate) fn reload_subject_brief(&mut self) {
+        if self.ui_mode != UiMode::Simple {
+            return;
+        }
+        if let Some(guid) = self.selected_sample {
+            self.subject_brief_loading = true;
+            let _ = self.tx.send(Command::LoadSubjectBrief(guid));
+        }
+    }
+
     pub(crate) fn select_sample(&mut self, guid: SampleGuid) {
         self.selected_sample = Some(guid);
         self.y_sub = YSub::default();
@@ -1002,6 +1023,10 @@ impl NavigatorApp {
         self.audit_y.clear();
         self.audit_mt.clear();
         self.heteroplasmy = None;
+        self.subject_brief = None;
+        // The Simple-mode brief is (re)built from the Consensus event below (always fired by
+        // LoadConsensus), so a later analysis refreshes it too. Show the spinner meanwhile.
+        self.subject_brief_loading = self.ui_mode == UiMode::Simple;
         let _ = self.tx.send(Command::LoadConsensus(guid));
         // Refresh the list's Y/mt columns (picks up an assignment made on another row).
         let _ = self.tx.send(Command::LoadHaploSummary);

@@ -19,7 +19,7 @@ use navigator_app::{
     IbdComparison, IbdDetectorConfig, IbdSuggestion, IdentityVerification, IncomingRequest, PanelGenotype,
     PrivateBucket, ProjectImportSummary, ProjectOverview, ProjectSampleReport, ProjectStrChart, ReadMetrics,
     RecruitmentInvitation, RefBuildStatus, SexInferenceResult, SourceType, StoredIbdExchange, StrConcordanceRow,
-    SvAnalysisResult, YMatch, YstrClustering,
+    SubjectBrief, SvAnalysisResult, YMatch, YstrClustering,
 };
 use navigator_domain::chipprofile::ChipProfile;
 use navigator_domain::du_domain::ids::SampleGuid;
@@ -64,6 +64,8 @@ pub enum Command {
     LoadProjectReport(i64),
     /// Load (precompute) the per-member Y-STR overview (FTDNA-style chart) for a project.
     LoadProjectStrChart(i64),
+    /// Build (off the UI thread) the plain-language Subject Brief for a subject (Simple mode).
+    LoadSubjectBrief(SampleGuid),
     /// Deep-analyze every sample in a project as a cancellable background job, streaming
     /// per-sample `DeepAnalyzeProgress` and yielding between samples so the UI stays responsive.
     /// Skips what the fast path already filled; cancelled via [`Command::CancelAnalysis`].
@@ -665,6 +667,11 @@ pub enum Event {
         project_id: i64,
         chart: ProjectStrChart,
     },
+    /// The plain-language Subject Brief for a subject (Simple mode).
+    SubjectBrief {
+        guid: SampleGuid,
+        brief: Box<SubjectBrief>,
+    },
     /// A project-wide analyze pass finished (coverage + Y per sample). `cancelled` is true when a
     /// streaming deep-analyze was stopped early (counts reflect what completed before the stop).
     ProjectAnalyzed {
@@ -1109,6 +1116,13 @@ pub async fn handle(app: &App, cmd: Command) -> Event {
         },
         Command::LoadProjectStrChart(project_id) => match app.project_str_chart(project_id).await {
             Ok(chart) => Event::ProjectStrChart { project_id, chart },
+            Err(e) => Event::Error(e.to_string()),
+        },
+        Command::LoadSubjectBrief(guid) => match app.subject_brief(guid).await {
+            Ok(brief) => Event::SubjectBrief {
+                guid,
+                brief: Box::new(brief),
+            },
             Err(e) => Event::Error(e.to_string()),
         },
         // DeepAnalyzeProject streams DeepAnalyzeProgress from the spawn loop; reaching here is a bug.

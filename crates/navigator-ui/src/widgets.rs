@@ -166,6 +166,15 @@ pub(crate) fn card(ui: &mut egui::Ui, title: &str, body: impl FnOnce(&mut egui::
         });
 }
 
+/// Capitalize the first character of a string (for sentence-casing a generated lowercase phrase).
+pub(crate) fn capitalize_first(s: &str) -> String {
+    let mut chars = s.chars();
+    match chars.next() {
+        Some(c) => c.to_uppercase().collect::<String>() + chars.as_str(),
+        None => String::new(),
+    }
+}
+
 /// A small rounded chip/badge (provider tag, Y/mt badge).
 pub(crate) fn chip(ui: &mut egui::Ui, text: &str, bg: egui::Color32, fg: egui::Color32) -> egui::Response {
     let font = egui::FontId::proportional(11.5);

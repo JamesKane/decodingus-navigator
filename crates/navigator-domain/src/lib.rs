@@ -11,6 +11,7 @@ pub use du_domain;
 
 pub mod ancestry;
 pub mod bisdna;
+pub mod brief;
 pub mod chipprofile;
 pub mod consensus;
 pub mod filetype;

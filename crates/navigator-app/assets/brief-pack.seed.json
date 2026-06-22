@@ -1,0 +1,208 @@
+{
+  "version": "2026.06-seed",
+  "y_haplogroups": {
+    "R-M269": {
+      "formed_ybp": 6400,
+      "origin": "the Pontic-Caspian steppe and early Bronze Age Europe",
+      "story": "R-M269 is the most common paternal lineage in Western Europe. It expanded rapidly during the Bronze Age, carried by the steppe-ancestry migrations that reshaped European populations roughly 4,000–5,000 years ago.",
+      "sources": ["YFull", "ISOGG"]
+    },
+    "R-P312": {
+      "formed_ybp": 4500,
+      "origin": "Bronze Age Western Europe",
+      "story": "R-P312 is a major Western European branch of R-M269, strongly associated with the Bell Beaker culture. It is especially frequent today in Iberia, France, Britain and Ireland.",
+      "sources": ["YFull", "ISOGG"]
+    },
+    "R-U106": {
+      "formed_ybp": 4900,
+      "origin": "Bronze Age Northern Europe",
+      "story": "R-U106 is the principal Germanic branch of R-M269, common across the Low Countries, Germany, Scandinavia and the British Isles. It spread with the same steppe-derived populations that carried R-P312 westward.",
+      "sources": ["YFull", "ISOGG"]
+    },
+    "R-M173": {
+      "formed_ybp": 22000,
+      "origin": "the Eurasian steppe after the last Ice Age",
+      "story": "R-M173 (R1b) is one of the great paternal lineages of Western Eurasia. Its descendant branches came to dominate Western Europe in the Bronze Age.",
+      "sources": ["YFull"]
+    },
+    "R-M198": {
+      "formed_ybp": 8500,
+      "origin": "Eastern Europe and the Eurasian steppe",
+      "story": "R-M198 (R1a) is widespread from Scandinavia and Eastern Europe through Central and South Asia. It expanded with steppe pastoralists and is closely tied to the spread of Indo-European languages.",
+      "sources": ["YFull"]
+    },
+    "I-M170": {
+      "formed_ybp": 27000,
+      "origin": "Ice Age Europe",
+      "story": "I-M170 is among the oldest paternal lineages native to Europe, present among the continent's hunter-gatherers before the arrival of farming and steppe ancestry.",
+      "sources": ["YFull"]
+    },
+    "I-M253": {
+      "formed_ybp": 4600,
+      "origin": "Northern Europe",
+      "story": "I-M253 (I1) is a characteristically Northern European lineage, common in Scandinavia and areas touched by later Germanic and Norse expansions.",
+      "sources": ["YFull"]
+    },
+    "I-M223": {
+      "formed_ybp": 14000,
+      "origin": "Northwestern Europe",
+      "story": "I-M223 is a branch of I2 found across Northwestern and Central Europe, with deep roots among European hunter-gatherer populations.",
+      "sources": ["YFull"]
+    },
+    "E-M35": {
+      "formed_ybp": 24000,
+      "origin": "Northeast Africa",
+      "story": "E-M35 arose in Northeast Africa and its branches spread into the Mediterranean, the Near East and Europe over many millennia. The European branch E-V13 is associated with Neolithic and later expansions in the Balkans.",
+      "sources": ["YFull"]
+    },
+    "J-M267": {
+      "formed_ybp": 20000,
+      "origin": "the Near East",
+      "story": "J-M267 (J1) is a Near Eastern lineage common across the Arabian Peninsula, the Levant and the Caucasus, with links to both early farmers and later pastoralist populations.",
+      "sources": ["YFull"]
+    },
+    "J-M172": {
+      "formed_ybp": 21000,
+      "origin": "the Fertile Crescent",
+      "story": "J-M172 (J2) is tied to the early farming populations of the Fertile Crescent and spread into the Mediterranean, Europe and South Asia with the expansion of agriculture.",
+      "sources": ["YFull"]
+    },
+    "G-M201": {
+      "formed_ybp": 26000,
+      "origin": "the Near East and Caucasus",
+      "story": "G-M201 is strongly associated with the first farmers of Anatolia and the Near East who brought agriculture into Europe during the Neolithic.",
+      "sources": ["YFull"]
+    },
+    "N-M231": {
+      "formed_ybp": 20000,
+      "origin": "East Asia, later spreading across northern Eurasia",
+      "story": "N-M231 spread across northern Eurasia and is common today among Uralic-speaking and northern European and Siberian populations, especially in Finland and the Baltic.",
+      "sources": ["YFull"]
+    },
+    "Q-M242": {
+      "formed_ybp": 30000,
+      "origin": "Central Asia and Siberia",
+      "story": "Q-M242 is the principal paternal lineage of Indigenous peoples of the Americas, carried across Beringia, and is also found across Central Asia and Siberia.",
+      "sources": ["YFull"]
+    },
+    "T-M184": {
+      "formed_ybp": 25000,
+      "origin": "the Near East",
+      "story": "T-M184 is an uncommon lineage with Near Eastern origins, scattered today around the Mediterranean, East Africa and South Asia.",
+      "sources": ["YFull"]
+    }
+  },
+  "mt_haplogroups": {
+    "H": {
+      "formed_ybp": 20000,
+      "origin": "the Near East, then much of Europe",
+      "story": "Haplogroup H is the most common maternal lineage in Europe, carried by roughly half of people of European descent. It expanded across the continent after the last Ice Age.",
+      "sources": ["PhyloTree"]
+    },
+    "HV": {
+      "formed_ybp": 24000,
+      "origin": "the Near East",
+      "story": "HV is the ancestral lineage to haplogroup H, with deep roots in the Near East before its descendants spread into Europe.",
+      "sources": ["PhyloTree"]
+    },
+    "V": {
+      "formed_ybp": 14000,
+      "origin": "Southwestern Europe",
+      "story": "Haplogroup V re-expanded from a refuge in Southwestern Europe after the Ice Age and reaches its highest frequencies among the Saami and in Iberia.",
+      "sources": ["PhyloTree"]
+    },
+    "J": {
+      "formed_ybp": 23000,
+      "origin": "the Near East",
+      "story": "Haplogroup J spread into Europe with early farmers from the Near East and is found across Europe, the Near East and North Africa.",
+      "sources": ["PhyloTree"]
+    },
+    "T": {
+      "formed_ybp": 25000,
+      "origin": "the Near East",
+      "story": "Haplogroup T is associated with the spread of agriculture from the Near East into Europe and is common around the Mediterranean.",
+      "sources": ["PhyloTree"]
+    },
+    "K": {
+      "formed_ybp": 22000,
+      "origin": "the Near East",
+      "story": "Haplogroup K, a branch of U8, is common in Europe and the Near East and was carried by some of Europe's earliest farming communities.",
+      "sources": ["PhyloTree"]
+    },
+    "U": {
+      "formed_ybp": 43000,
+      "origin": "Western Eurasia",
+      "story": "Haplogroup U is one of the oldest maternal lineages in Western Eurasia, present among European hunter-gatherers tens of thousands of years ago.",
+      "sources": ["PhyloTree"]
+    },
+    "U5": {
+      "formed_ybp": 30000,
+      "origin": "Ice Age Europe",
+      "story": "Haplogroup U5 is the characteristic maternal lineage of Europe's ancient hunter-gatherers, found in the continent long before farming arrived.",
+      "sources": ["PhyloTree"]
+    },
+    "X": {
+      "formed_ybp": 30000,
+      "origin": "the Near East, with a wide later distribution",
+      "story": "Haplogroup X has an unusually broad distribution, found in Europe, the Near East, North Africa and among some Indigenous peoples of North America.",
+      "sources": ["PhyloTree"]
+    },
+    "I": {
+      "formed_ybp": 21000,
+      "origin": "the Near East and Europe",
+      "story": "Haplogroup I is a relatively uncommon maternal lineage spread across Europe and the Near East.",
+      "sources": ["PhyloTree"]
+    },
+    "W": {
+      "formed_ybp": 22000,
+      "origin": "the Near East and South Asia",
+      "story": "Haplogroup W is found from Europe through the Near East to South Asia, reflecting ancient west-Eurasian dispersals.",
+      "sources": ["PhyloTree"]
+    },
+    "N": {
+      "formed_ybp": 60000,
+      "origin": "out of Africa",
+      "story": "Haplogroup N is one of the two great macro-lineages that arose as modern humans expanded out of Africa, ancestral to most non-African maternal lineages.",
+      "sources": ["PhyloTree"]
+    },
+    "R": {
+      "formed_ybp": 55000,
+      "origin": "early out-of-Africa Eurasia",
+      "story": "Haplogroup R is a major early branch within macro-haplogroup N and the ancestor of many of the most common maternal lineages across Eurasia.",
+      "sources": ["PhyloTree"]
+    },
+    "L3": {
+      "formed_ybp": 70000,
+      "origin": "East Africa",
+      "story": "Haplogroup L3 arose in East Africa and is the lineage from which all non-African maternal haplogroups descend, carried by the populations that left Africa.",
+      "sources": ["PhyloTree"]
+    }
+  },
+  "test_types": {
+    "WGS": { "what": "Reads your whole genome, so it covers every part of your DNA — paternal line, maternal line and ancestry.", "limits": null },
+    "WGS_LOW_PASS": { "what": "Reads your whole genome at low depth — broad coverage of every region, with less certainty at any single position.", "limits": "Shallow depth means some fine details are less certain." },
+    "WGS_HIFI": { "what": "Reads your whole genome with long, highly accurate reads — excellent for resolving your paternal line and hard-to-read regions.", "limits": null },
+    "WGS_NANOPORE": { "what": "Reads your whole genome with long reads — good genome-wide coverage including difficult regions.", "limits": null },
+    "WGS_CLR": { "what": "Reads your whole genome with long reads — broad coverage across every region.", "limits": null },
+    "WES": { "what": "Reads the protein-coding parts of your genome (the exome).", "limits": "Targets coding regions, so it is not used for lineage or ancestry results here." },
+    "BIG_Y_500": { "what": "Reads your Y chromosome in depth to place your paternal line precisely.", "limits": "Covers only the Y chromosome — no maternal line or ancestry composition." },
+    "BIG_Y_700": { "what": "Reads your Y chromosome in depth to place your paternal line very precisely, including rare recent branches.", "limits": "Covers only the Y chromosome — no maternal line or ancestry composition." },
+    "Y_ELITE": { "what": "Sequences your Y chromosome to place your paternal line in detail.", "limits": "Covers only the Y chromosome — no maternal line or ancestry composition." },
+    "Y_PRIME": { "what": "Sequences your Y chromosome to place your paternal line.", "limits": "Covers only the Y chromosome — no maternal line or ancestry composition." },
+    "TARGETED_Y": { "what": "Targets your Y chromosome to determine your paternal line.", "limits": "Covers only the Y chromosome — no maternal line or ancestry composition." },
+    "TARGETED_MT": { "what": "Targets your mitochondrial DNA to determine your maternal line.", "limits": "Covers only mitochondrial DNA — no paternal line or ancestry composition." },
+    "MT_FULL_SEQUENCE": { "what": "Reads your complete mitochondrial genome to place your maternal line precisely.", "limits": "Covers only mitochondrial DNA — no paternal line or ancestry composition." },
+    "MT_PLUS": { "what": "Reads key regions of your mitochondrial DNA to estimate your maternal line.", "limits": "Covers only mitochondrial DNA, and at lower resolution than a full sequence." },
+    "MT_CR_ONLY": { "what": "Reads the control region of your mitochondrial DNA for a broad maternal-line estimate.", "limits": "Low-resolution maternal line only — no paternal line or ancestry." },
+    "YDNA_SNP_PACK_FTDNA": { "what": "Tests a targeted set of Y-chromosome markers to refine your paternal line.", "limits": "Covers only selected Y markers — no maternal line or ancestry." },
+    "YDNA_PANEL_YSEQ": { "what": "Tests a panel of Y-chromosome markers to refine your paternal line.", "limits": "Covers only selected Y markers — no maternal line or ancestry." },
+    "YDNA_SNP_PANEL": { "what": "Tests a panel of Y-chromosome markers to place your paternal line.", "limits": "Covers only selected Y markers — no maternal line or ancestry." },
+    "ARRAY_BISDNA": { "what": "Genotypes a set of Y-chromosome markers to place your paternal line.", "limits": "Covers selected Y markers — no maternal line or ancestry composition." },
+    "ARRAY_23ANDME_V5": { "what": "Genotypes hundreds of thousands of markers across your genome — enough for ancestry composition and a broad read of your paternal and maternal lines.", "limits": "Reads selected positions, not your whole genome, so lineage detail is limited compared with sequencing." },
+    "ARRAY_23ANDME_V4": { "what": "Genotypes markers across your genome for ancestry composition and a broad read of your lineages.", "limits": "Reads selected positions, not your whole genome." },
+    "ARRAY_ANCESTRY_V2": { "what": "Genotypes markers across your genome for ancestry composition and a broad read of your lineages.", "limits": "Reads selected positions, not your whole genome." },
+    "ARRAY_FTDNA_FF": { "what": "Genotypes markers across your genome for ancestry and relative matching.", "limits": "Reads selected positions, not your whole genome." },
+    "ARRAY_MYHERITAGE": { "what": "Genotypes markers across your genome for ancestry composition and relative matching.", "limits": "Reads selected positions, not your whole genome." },
+    "ARRAY_LIVINGDNA": { "what": "Genotypes markers across your genome for ancestry composition and a broad read of your lineages.", "limits": "Reads selected positions, not your whole genome." }
+  }
+}

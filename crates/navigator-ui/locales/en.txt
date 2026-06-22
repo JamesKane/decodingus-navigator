@@ -14,6 +14,18 @@ mode.simple=Simple ▾
 mode.advanced=Advanced ▾
 mode.toAdvanced=Switch to Advanced mode (full power-user interface)
 mode.toSimple=Switch to Simple mode (plain-language single-person view)
+brief.building=Building your brief…
+brief.empty=No brief yet — import or analyze this person's DNA.
+brief.paternalLine=Your paternal line (Y-DNA)
+brief.maternalLine=Your maternal line (mtDNA)
+brief.yourTest=Your test
+brief.lineageTrail=Lineage trail
+brief.ancestorNote=The story below describes an ancestor on this line:
+brief.source=Source:
+brief.packLive=Live descriptions, updated online
+brief.packCached=Descriptions from your last online update
+brief.packOffline=Offline descriptions — connect to the internet for the latest
+brief.packUnavailable=Descriptions unavailable
 
 # Community (social) tab
 community.tab.support=Support

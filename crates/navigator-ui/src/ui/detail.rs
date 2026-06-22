@@ -624,6 +624,143 @@ impl NavigatorApp {
         self.auto_profile_query = query;
     }
 
+    /// Simple-mode subject view: the plain-language brief (precomputed off the UI thread). Renders a
+    /// card stack — headline, paternal & maternal lines, your test — degrading per-section when data
+    /// or reference content is missing. A discreet pack-status footer shows how fresh the narrative is.
+    pub(crate) fn subject_brief_view(&mut self, ui: &mut egui::Ui, guid: SampleGuid) {
+        let brief = match self.subject_brief.as_ref() {
+            Some((g, b)) if *g == guid => b,
+            _ => {
+                if self.subject_brief_loading {
+                    ui.horizontal(|ui| {
+                        ui.spinner();
+                        ui.label(egui::RichText::new(self.tr("brief.building")).weak());
+                    });
+                } else {
+                    ui.label(egui::RichText::new(self.tr("brief.empty")).weak());
+                }
+                return;
+            }
+        };
+
+        // Headline: name, friendly test chip, one-line "who you are".
+        ui.heading(&brief.headline.name);
+        ui.horizontal(|ui| {
+            chip(
+                ui,
+                &brief.headline.test_chip,
+                egui::Color32::from_rgb(40, 52, 70),
+                egui::Color32::from_rgb(150, 190, 240),
+            );
+        });
+        ui.add_space(4.0);
+        ui.label(&brief.headline.summary);
+        ui.add_space(12.0);
+
+        if let Some(p) = &brief.paternal {
+            card(ui, self.tr("brief.paternalLine"), |ui| self.brief_lineage_card(ui, p));
+            ui.add_space(10.0);
+        }
+        if let Some(m) = &brief.maternal {
+            card(ui, self.tr("brief.maternalLine"), |ui| self.brief_lineage_card(ui, m));
+            ui.add_space(10.0);
+        }
+
+        // Your test & quality.
+        let test = &brief.test;
+        card(ui, self.tr("brief.yourTest"), |ui| {
+            ui.strong(&test.test_name);
+            ui.add_space(2.0);
+            ui.label(&test.what_it_tells);
+            if let Some(lim) = &test.limitations {
+                ui.add_space(2.0);
+                ui.label(egui::RichText::new(lim).weak().small());
+            }
+            ui.add_space(6.0);
+            let (bg, fg, mark) = if test.quality_ok {
+                (
+                    egui::Color32::from_rgb(28, 56, 36),
+                    egui::Color32::from_rgb(120, 200, 140),
+                    "✓",
+                )
+            } else {
+                (
+                    egui::Color32::from_rgb(64, 50, 24),
+                    egui::Color32::from_rgb(230, 180, 90),
+                    "⚠",
+                )
+            };
+            chip(ui, &format!("{mark}  {}", test.quality_phrase), bg, fg);
+        });
+
+        // Global caveats.
+        if !brief.caveats.is_empty() {
+            ui.add_space(10.0);
+            for c in &brief.caveats {
+                ui.label(egui::RichText::new(format!("• {c}")).weak().small());
+            }
+        }
+
+        // Pack-status footer (how fresh the descriptions are).
+        ui.add_space(10.0);
+        let pack_key = match brief.pack_status {
+            PackStatus::Downloaded => "brief.packLive",
+            PackStatus::Cached => "brief.packCached",
+            PackStatus::Bundled => "brief.packOffline",
+            PackStatus::Unavailable => "brief.packUnavailable",
+        };
+        let mut footer = self.tr(pack_key).to_string();
+        if let Some(v) = &brief.pack_version {
+            footer = format!("{footer} · {v}");
+        }
+        ui.label(egui::RichText::new(footer).weak().small());
+    }
+
+    /// One lineage (paternal/maternal) card body: the haplogroup, age & origin phrases, the curated
+    /// story, a confidence chip, and an expandable root→tip lineage trail.
+    fn brief_lineage_card(&self, ui: &mut egui::Ui, lb: &LineageBrief) {
+        ui.heading(&lb.haplogroup);
+        if let Some(anc) = &lb.matched_ancestor {
+            ui.label(
+                egui::RichText::new(format!("{} {anc}", self.tr("brief.ancestorNote")))
+                    .weak()
+                    .small(),
+            );
+        }
+        if let Some(age) = &lb.age_phrase {
+            ui.label(egui::RichText::new(capitalize_first(age)).italics());
+        }
+        if let Some(origin) = &lb.origin_phrase {
+            ui.label(capitalize_first(origin));
+        }
+        if let Some(story) = &lb.story {
+            ui.add_space(4.0);
+            ui.label(story);
+        }
+        ui.add_space(6.0);
+        chip(
+            ui,
+            &lb.confidence_phrase,
+            egui::Color32::from_rgb(44, 48, 58),
+            egui::Color32::from_rgb(180, 190, 210),
+        );
+        if !lb.sources.is_empty() {
+            ui.label(
+                egui::RichText::new(format!("{} {}", self.tr("brief.source"), lb.sources.join(", ")))
+                    .weak()
+                    .small(),
+            );
+        }
+        if lb.lineage_path.len() > 1 {
+            ui.add_space(2.0);
+            egui::CollapsingHeader::new(self.tr("brief.lineageTrail"))
+                .id_salt(("brief_trail", matches!(lb.kind, LineageKind::Paternal)))
+                .show(ui, |ui| {
+                    ui.label(egui::RichText::new(lb.lineage_path.join("  →  ")).small());
+                });
+        }
+    }
+
     /// Consensus dashboard (Overview): the subject's source-of-truth at a glance — consensus Y/mt
     /// haplogroups, top ancestry, the autosomal concordance one-liner, and a source inventory.
     pub(crate) fn overview_dashboard(&mut self, ui: &mut egui::Ui, _guid: SampleGuid) {

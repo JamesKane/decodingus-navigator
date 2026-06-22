@@ -384,6 +384,7 @@ async fn appview_status_error(api: &str, resp: reqwest::Response) -> AppError {
 }
 pub use navigator_analysis::ibd_attest::{IbdAttestation, IbdExchangeMsg, IbdSite};
 use navigator_domain::bisdna;
+pub use navigator_domain::brief::{Headline, LineageBrief, LineageKind, PackStatus, SubjectBrief, TestBrief};
 use navigator_domain::chipprofile::{self, ChipProfile, NewChipProfile};
 pub use navigator_domain::consensus::{DiploidSourceObs, DiploidVariant};
 use navigator_domain::filetype;
@@ -1560,8 +1561,7 @@ impl UiMode {
 /// user has never pinned a mode, so the UI applies its first-run heuristic.
 fn resolve_ui_mode(env: Option<&str>, settings: Option<&str>) -> Option<UiMode> {
     // A recognized env value wins; an unrecognized one is ignored and falls through to settings.
-    env.and_then(UiMode::parse)
-        .or_else(|| settings.and_then(UiMode::parse))
+    env.and_then(UiMode::parse).or_else(|| settings.and_then(UiMode::parse))
 }
 
 /// The configured UI mode, honoring `NAVIGATOR_UI_MODE` over the persisted setting. `None` when
@@ -1711,6 +1711,7 @@ pub struct RefBuildStatus {
 
 mod analysis;
 mod auth;
+mod brief;
 mod commands;
 mod dm;
 mod fastpath;
