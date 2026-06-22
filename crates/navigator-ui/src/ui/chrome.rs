@@ -403,27 +403,15 @@ impl NavigatorApp {
         });
     }
 
-    /// Simple-mode subject selector: a plain "who am I looking at" list (no power-user table /
-    /// filters), plus the same Add-New affordance. Only shown when more than one subject exists.
+    /// Simple-mode subject selector: a "who am I looking at" list with a free-text filter and a
+    /// scrollable, row-virtualized body (a research surface can hold thousands of subjects), plus the
+    /// Add-New affordance. Only shown when more than one subject exists.
     fn simple_subjects_side(&mut self, ui: &mut egui::Ui) {
         ui.add_space(8.0);
         ui.heading(self.tr("nav.myDna"));
         ui.separator();
-        let mut pick = None;
-        for b in &self.all_biosamples {
-            let label = format!("👤  {}", b.donor_identifier);
-            if ui
-                .selectable_label(self.selected_sample == Some(b.guid), label)
-                .clicked()
-            {
-                pick = Some(b.guid);
-            }
-        }
-        if let Some(guid) = pick {
-            self.select_sample(guid);
-        }
-        ui.add_space(12.0);
-        ui.separator();
+
+        // Add New (kept above the scroll body so it's always reachable).
         if ui
             .add(
                 egui::Button::new(egui::RichText::new(self.tr("subjects.addNew")).color(egui::Color32::WHITE))
@@ -435,6 +423,49 @@ impl NavigatorApp {
         }
         if self.forms.show_add_subject {
             self.add_subject_form(ui);
+        }
+
+        ui.add_space(6.0);
+        let filter_hint = self.tr("subjects.filter");
+        ui.add(
+            egui::TextEdit::singleline(&mut self.simple_subject_filter)
+                .hint_text(filter_hint)
+                .desired_width(f32::INFINITY),
+        );
+
+        // Filtered view built from immutable reads first, so the scroll closure borrows only locals.
+        let needle = self.simple_subject_filter.trim().to_lowercase();
+        let rows: Vec<(SampleGuid, String)> = self
+            .all_biosamples
+            .iter()
+            .filter(|b| needle.is_empty() || b.donor_identifier.to_lowercase().contains(&needle))
+            .map(|b| (b.guid, format!("👤  {}", b.donor_identifier)))
+            .collect();
+
+        ui.add_space(4.0);
+        ui.label(egui::RichText::new(format!("{}", rows.len())).weak().small());
+        ui.separator();
+
+        if rows.is_empty() {
+            ui.label(egui::RichText::new(self.tr("subjects.noMatch")).weak());
+            return;
+        }
+
+        let selected = self.selected_sample;
+        let mut pick = None;
+        let row_h = ui.spacing().interact_size.y;
+        egui::ScrollArea::vertical()
+            .auto_shrink([false, false])
+            .show_rows(ui, row_h, rows.len(), |ui, range| {
+                for i in range {
+                    let (guid, label) = &rows[i];
+                    if ui.selectable_label(selected == Some(*guid), label).clicked() {
+                        pick = Some(*guid);
+                    }
+                }
+            });
+        if let Some(guid) = pick {
+            self.select_sample(guid);
         }
     }
 

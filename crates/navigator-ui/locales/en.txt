@@ -91,6 +91,7 @@ subjects.collapse=Collapse the subjects list
 subjects.expand=Show the subjects list
 subjects.none=No subjects yet.
 subjects.noMatch=No subjects match the search.
+subjects.filter=Filter by name…
 
 # Subject detail header
 detail.addData=➕  Add Data

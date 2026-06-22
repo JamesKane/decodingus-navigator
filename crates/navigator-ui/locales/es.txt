@@ -87,6 +87,7 @@ subjects.collapse=Contraer la lista de sujetos
 subjects.expand=Mostrar la lista de sujetos
 subjects.none=Aún no hay sujetos.
 subjects.noMatch=Ningún sujeto coincide con la búsqueda.
+subjects.filter=Filtrar por nombre…
 
 detail.addData=➕  Añadir datos
 detail.addFiles=Añadir archivos…

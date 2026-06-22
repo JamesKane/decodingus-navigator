@@ -472,6 +472,8 @@ pub struct NavigatorApp {
     subject_brief: Option<(SampleGuid, SubjectBrief)>,
     /// Whether a Subject Brief build is in flight.
     subject_brief_loading: bool,
+    /// Free-text filter over the Simple-mode "My DNA" subject selector (matches the donor name).
+    simple_subject_filter: String,
     /// Selected subject-detail sub-tab.
     detail_tab: DetailTab,
     /// Active UI language.
@@ -885,6 +887,7 @@ impl NavigatorApp {
             ui_mode_pinned: navigator_app::configured_ui_mode().is_some(),
             subject_brief: None,
             subject_brief_loading: false,
+            simple_subject_filter: String::new(),
             detail_tab: DetailTab::Overview,
             // Persisted choice wins; else honor $LANG (e.g. "es_ES.UTF-8") when it names a
             // supported locale; else English.
