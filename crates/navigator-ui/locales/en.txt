@@ -397,6 +397,7 @@ project.tab.members=Members
 project.tab.report=Report
 project.tab.ystr=Y-STR
 ystr.project.empty=No members in this project have Y-STR results yet.
+ystr.project.building=Building Y-STR overview…
 ystr.project.ungrouped=Unassigned
 ystr.col.name=Name
 ystr.col.kit=Kit

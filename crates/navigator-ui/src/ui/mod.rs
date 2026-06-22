@@ -18,7 +18,7 @@ use navigator_app::{
     AncestryResult, AncestrySegment, AppSettings, AuditEntry, BatchImportSummary, BuildNeed, CallState,
     CompatibilityLevel, Consensus, Coverage, DenovoCall, DnaType, FtdnaGenealogy, FtdnaImportPlan, FtdnaResolution,
     HaploAssignment, HeteroplasmySite, IbdComparison, IbdSuggestion, IdentityVerification, MatchKind, MtRegion,
-    MtVariant, PanelGenotype, PrivateBucket, PrivateClass, ProjectOverview, ProjectSampleReport, ProjectStrMember,
+    MtVariant, PanelGenotype, PrivateBucket, PrivateClass, ProjectOverview, ProjectSampleReport, ProjectStrChart,
     ReadMetrics, RefBuildStatus, SexInferenceResult, SnpEvidence, SourceType, StrConcordanceRow, SvAnalysisResult,
     VerificationStatus, YMatch, YProfile, YSignal, YState, YVariantStatus, YstrClustering,
 };
@@ -484,8 +484,10 @@ pub struct NavigatorApp {
     selected_project: Option<i64>,
     /// Per-sample coverage/haplogroup report rows for the selected project.
     project_report: Vec<ProjectSampleReport>,
-    /// Per-member Y-STR overview rows (FTDNA-style chart) for the selected project.
-    project_str: Vec<ProjectStrMember>,
+    /// Precomputed Y-STR overview (FTDNA-style chart) for the selected project; `None` until the
+    /// background build returns. A boolean tracks the in-flight build so the UI can show a spinner.
+    project_str_chart: Option<ProjectStrChart>,
+    project_str_loading: bool,
     samples: Vec<Biosample>,
     /// Every biosample (the project-independent subjects list).
     all_biosamples: Vec<Biosample>,
@@ -884,7 +886,8 @@ impl NavigatorApp {
             overview: Vec::new(),
             selected_project: None,
             project_report: Vec::new(),
-            project_str: Vec::new(),
+            project_str_chart: None,
+            project_str_loading: false,
             samples: Vec::new(),
             all_biosamples: Vec::new(),
             haplo_summary: std::collections::HashMap::new(),

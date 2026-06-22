@@ -2028,6 +2028,62 @@ pub struct ProjectStrMember {
     pub markers: std::collections::HashMap<String, String>,
 }
 
+/// One rendered cell of the project Y-STR chart: the marker value text plus its deviation from the
+/// subgroup's modal value (the colour coding), precomputed so the UI does no per-frame work.
+#[derive(Debug, Clone)]
+pub struct StrChartCell {
+    pub text: String,
+    pub dev: navigator_domain::strchart::Deviation,
+}
+
+/// What a [`StrChartRow`] represents — drives how the UI styles it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StrRowKind {
+    /// A subgroup banner (haplogroup heading); `cells` are empty.
+    Group,
+    /// The subgroup's per-marker MIN row.
+    Min,
+    /// The subgroup's per-marker MAX row.
+    Max,
+    /// The subgroup's per-marker MODE row.
+    Mode,
+    /// One member's marker values.
+    Member,
+}
+
+/// One fully-prepared row of the project Y-STR overview, in display order. The whole table is
+/// computed once off the UI thread; the renderer only iterates these.
+#[derive(Debug, Clone)]
+pub struct StrChartRow {
+    pub kind: StrRowKind,
+    /// Nesting depth for indentation (subgroups nest under their tree ancestors).
+    pub depth: usize,
+    /// Group banner text, member name, or the MIN/MAX/MODE label.
+    pub label: String,
+    /// Member kit/accession (member rows only).
+    pub kit: String,
+    /// Member terminal haplogroup (member rows only).
+    pub haplogroup: String,
+    /// True when the member's haplogroup is SNP-backed (drives green/red).
+    pub confirmed: bool,
+    /// Member's reached STR panel/tier (member rows only).
+    pub test: String,
+    /// Per-marker cells, aligned to [`ProjectStrChart::markers`]; empty for non-member rows that
+    /// don't fill every column.
+    pub cells: Vec<StrChartCell>,
+}
+
+/// The precomputed FTDNA-style project Y-DNA STR overview: marker column order + a flat, ordered
+/// list of render-ready rows (subgroup banners, MIN/MAX/MODE, members), grouped by assigned Y
+/// haplogroup and ordered by tree topology (basal → derived, children nested under parents).
+#[derive(Debug, Clone, Default)]
+pub struct ProjectStrChart {
+    pub markers: Vec<String>,
+    pub rows: Vec<StrChartRow>,
+    pub member_count: usize,
+    pub group_count: usize,
+}
+
 /// A reference build an import needs but doesn't have cached — surfaced so the UI can
 /// prompt and download it before retrying.
 #[derive(Debug, Clone)]

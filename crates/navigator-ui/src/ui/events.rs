@@ -142,9 +142,10 @@ impl NavigatorApp {
                         self.project_report = rows;
                     }
                 }
-                Event::ProjectStrOverview { project_id, members } => {
+                Event::ProjectStrChart { project_id, chart } => {
                     if self.selected_project == Some(project_id) {
-                        self.project_str = members;
+                        self.project_str_chart = Some(chart);
+                        self.project_str_loading = false;
                     }
                 }
                 Event::ProjectAnalyzed {
@@ -167,6 +168,8 @@ impl NavigatorApp {
                     );
                     if self.selected_project == Some(project_id) {
                         let _ = self.tx.send(Command::LoadProjectReport(project_id));
+                        // Haplogroups may have been assigned — regroup the STR chart.
+                        self.reload_project_str();
                     }
                 }
                 Event::DeepAnalyzeProgress {
@@ -225,6 +228,9 @@ impl NavigatorApp {
                     if self.selected_sample == Some(guid) {
                         let _ = self.tx.send(Command::LoadStrProfiles(guid));
                     }
+                    // A member's STR data changed — refresh the project chart (best-effort; the
+                    // builder only includes members of the open project).
+                    self.reload_project_str();
                     self.status = "STR profile imported".into();
                 }
                 Event::VariantSets { biosample_guid, sets } => {
@@ -380,6 +386,10 @@ impl NavigatorApp {
                             biosample_guid,
                             dna_type,
                         });
+                    }
+                    // An assigned haplogroup changed — regroup the project STR chart.
+                    if matches!(dna_type, DnaType::Y) {
+                        self.reload_project_str();
                     }
                 }
                 Event::PrivateY { alignment_id, bucket } => {
@@ -922,13 +932,23 @@ impl NavigatorApp {
         self.selected_project = Some(id);
         self.samples.clear();
         self.project_report.clear();
-        self.project_str.clear();
+        self.project_str_chart = None;
         self.project_clustering = None; // stale for the new project until recomputed
         self.clustering_running = false;
         self.clear_sample_selection();
         let _ = self.tx.send(Command::LoadSamples(id));
         let _ = self.tx.send(Command::LoadProjectReport(id));
-        let _ = self.tx.send(Command::LoadProjectStrOverview(id));
+        self.reload_project_str();
+    }
+
+    /// (Re)build the Y-STR overview chart for the open project off the UI thread. Called on project
+    /// select and whenever a member's STR data or assigned haplogroup changes (so the grouping stays
+    /// in sync). No-op when no project is open.
+    pub(crate) fn reload_project_str(&mut self) {
+        if let Some(id) = self.selected_project {
+            self.project_str_loading = true;
+            let _ = self.tx.send(Command::LoadProjectStrChart(id));
+        }
     }
 
     pub(crate) fn select_sample(&mut self, guid: SampleGuid) {

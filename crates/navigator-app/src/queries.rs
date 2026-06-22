@@ -297,6 +297,180 @@ impl App {
         Ok(out)
     }
 
+    /// Build the precomputed FTDNA-style Y-STR overview for a project: members grouped by their
+    /// **assigned** (consensus) Y haplogroup, ordered by tree topology (basal → derived, children
+    /// nested under their ancestor subgroups), with per-subgroup MIN/MAX/MODE and per-cell deviation
+    /// from the modal value precomputed. Members without a SNP haplogroup fall into an "Unassigned"
+    /// bucket at the base. All heavy work happens here (off the UI thread); the renderer just
+    /// iterates [`ProjectStrChart::rows`].
+    pub async fn project_str_chart(&self, project_id: i64) -> Result<ProjectStrChart, AppError> {
+        use navigator_domain::{strchart, strpanel};
+        use std::collections::{BTreeMap, HashMap, HashSet};
+
+        let members = self.project_str_overview(project_id).await?;
+        if members.is_empty() {
+            return Ok(ProjectStrChart::default());
+        }
+
+        // Marker columns: canonical FTDNA order restricted to markers anyone reported, then extras.
+        let mut present: HashSet<String> = HashSet::new();
+        for m in &members {
+            present.extend(m.markers.keys().cloned());
+        }
+        let mut markers: Vec<String> = Vec::new();
+        for name in strpanel::ftdna_marker_order() {
+            let n = strpanel::norm(name);
+            if present.remove(&n) {
+                markers.push(n);
+            }
+        }
+        let mut extras: Vec<String> = present.into_iter().collect();
+        extras.sort();
+        markers.extend(extras);
+
+        // Group members by assigned Y haplogroup; the unplaced share a bucket keyed by None.
+        let mut groups: HashMap<Option<String>, Vec<&ProjectStrMember>> = HashMap::new();
+        for m in &members {
+            groups.entry(m.y_haplogroup.clone()).or_default().push(m);
+        }
+
+        // Tree topology for ordering (best-effort; alphabetical fallback when unavailable).
+        let tree = self.chip_y_tree("GRCh38").await.ok();
+        let (preorder, name_idx, parents) = match &tree {
+            Some(t) => {
+                let names = tree_name_index(t);
+                (tree_preorder(t), names, tree_parent_map(t))
+            }
+            None => (HashMap::new(), HashMap::new(), HashMap::new()),
+        };
+        let group_keys: HashSet<String> = groups.keys().flatten().map(|h| norm_hg(h)).collect();
+        let node_of = |hg: &str| -> Option<i64> { name_idx.get(&norm_hg(hg)).copied() };
+
+        // Order the placed groups by tree pre-order (basal → derived); unmatched names sort after,
+        // alphabetically. Depth = count of ancestor haplogroups that are themselves groups here.
+        let mut placed: Vec<(String, usize, i64)> = Vec::new(); // (haplogroup, depth, sort_rank)
+        for hg in groups.keys().flatten() {
+            let depth = match node_of(hg) {
+                Some(id) => {
+                    let mut d = 0usize;
+                    let mut cur = parents.get(&id).copied();
+                    while let Some(p) = cur {
+                        if let Some(node) = tree.as_ref().and_then(|t| t.nodes.get(&p)) {
+                            if group_keys.contains(&norm_hg(&node.name)) {
+                                d += 1;
+                            }
+                        }
+                        cur = parents.get(&p).copied();
+                    }
+                    d
+                }
+                None => 0,
+            };
+            let rank = node_of(hg)
+                .and_then(|id| preorder.get(&id))
+                .map(|r| *r as i64)
+                .unwrap_or(i64::MAX);
+            placed.push((hg.clone(), depth, rank));
+        }
+        // Sort: matched (rank < MAX) by pre-order; unmatched by name.
+        placed.sort_by(|a, b| a.2.cmp(&b.2).then_with(|| a.0.cmp(&b.0)));
+
+        let dev_cells = |m: &ProjectStrMember, stats: &BTreeMap<&str, strchart::MarkerStats>| -> Vec<StrChartCell> {
+            markers
+                .iter()
+                .map(|c| match m.markers.get(c) {
+                    Some(v) => StrChartCell {
+                        dev: strchart::deviation(v, &stats[c.as_str()].mode),
+                        text: v.clone(),
+                    },
+                    None => StrChartCell {
+                        text: String::new(),
+                        dev: strchart::Deviation::None,
+                    },
+                })
+                .collect()
+        };
+
+        let mut rows: Vec<StrChartRow> = Vec::new();
+
+        // Emit one subgroup: banner + MIN/MAX/MODE + members (members sorted by name).
+        let emit_group =
+            |rows: &mut Vec<StrChartRow>, label: String, depth: usize, mut members: Vec<&ProjectStrMember>| {
+                members.sort_by(|a, b| a.name.cmp(&b.name));
+                let mut stats: BTreeMap<&str, strchart::MarkerStats> = BTreeMap::new();
+                for c in &markers {
+                    let vals = members.iter().filter_map(|m| m.markers.get(c).map(String::as_str));
+                    stats.insert(c.as_str(), strchart::marker_stats(vals));
+                }
+                rows.push(StrChartRow {
+                    kind: StrRowKind::Group,
+                    depth,
+                    label: format!("{label}  ({})", members.len()),
+                    kit: String::new(),
+                    haplogroup: String::new(),
+                    confirmed: false,
+                    test: String::new(),
+                    cells: Vec::new(),
+                });
+                for (kind, pick) in [(StrRowKind::Min, 0u8), (StrRowKind::Max, 1u8), (StrRowKind::Mode, 2u8)] {
+                    let cells = markers
+                        .iter()
+                        .map(|c| {
+                            let s = &stats[c.as_str()];
+                            let t = match pick {
+                                0 => s.min.clone(),
+                                1 => s.max.clone(),
+                                _ => s.mode.clone(),
+                            };
+                            StrChartCell {
+                                text: t.unwrap_or_default(),
+                                dev: strchart::Deviation::None,
+                            }
+                        })
+                        .collect();
+                    rows.push(StrChartRow {
+                        kind,
+                        depth,
+                        label: String::new(),
+                        kit: String::new(),
+                        haplogroup: String::new(),
+                        confirmed: false,
+                        test: String::new(),
+                        cells,
+                    });
+                }
+                for m in &members {
+                    rows.push(StrChartRow {
+                        kind: StrRowKind::Member,
+                        depth,
+                        label: m.name.clone(),
+                        kit: m.kit.clone().unwrap_or_default(),
+                        haplogroup: m.y_haplogroup.clone().unwrap_or_default(),
+                        confirmed: m.y_confirmed,
+                        test: m.test.clone().unwrap_or_default(),
+                        cells: dev_cells(m, &stats),
+                    });
+                }
+            };
+
+        // Unassigned bucket first (the base), then the placed clades in tree order.
+        if let Some(unplaced) = groups.get(&None) {
+            emit_group(&mut rows, "Unassigned".to_string(), 0, unplaced.clone());
+        }
+        for (hg, depth, _) in &placed {
+            if let Some(ms) = groups.get(&Some(hg.clone())) {
+                emit_group(&mut rows, hg.clone(), *depth, ms.clone());
+            }
+        }
+
+        Ok(ProjectStrChart {
+            markers,
+            rows,
+            member_count: members.len(),
+            group_count: placed.len() + usize::from(groups.contains_key(&None)),
+        })
+    }
+
     /// Analyze every sample in a project: compute coverage and assign the Y haplogroup on each
     /// sample's primary (first BAM-bearing) alignment, so the project report fills in. Coverage
     /// already cached and Y already recorded are skipped (idempotent re-run). Best-effort: one
@@ -406,4 +580,71 @@ impl App {
         }
         Ok(o)
     }
+}
+
+// ---- Y-tree topology helpers for the project STR chart ordering --------------------------------
+
+/// Normalize a haplogroup / node name for matching: uppercase, and (since our consensus labels and
+/// the tree nodes both use the "R-CTS4466" convention) keep the full name. Tolerates a bare SNP by
+/// also being comparable to the suffix after the last '-' (callers index both forms).
+fn norm_hg(name: &str) -> String {
+    name.trim().to_ascii_uppercase()
+}
+
+/// Map every tree node name (and its bare-SNP suffix) to a node id, for resolving haplogroup labels.
+/// Full names win over suffix aliases on collision.
+fn tree_name_index(tree: &navigator_analysis::haplo::HaploTree) -> std::collections::HashMap<String, i64> {
+    let mut idx = std::collections::HashMap::new();
+    // Pass 1: suffix aliases (lower priority).
+    for (id, node) in &tree.nodes {
+        if let Some(suffix) = node.name.rsplit('-').next() {
+            idx.entry(norm_hg(suffix)).or_insert(*id);
+        }
+    }
+    // Pass 2: full names (override).
+    for (id, node) in &tree.nodes {
+        idx.insert(norm_hg(&node.name), *id);
+    }
+    idx
+}
+
+/// child → parent map over the tree.
+fn tree_parent_map(tree: &navigator_analysis::haplo::HaploTree) -> std::collections::HashMap<i64, i64> {
+    let mut parent = std::collections::HashMap::new();
+    for (id, node) in &tree.nodes {
+        for c in &node.children {
+            parent.insert(*c, *id);
+        }
+    }
+    parent
+}
+
+/// Pre-order DFS rank for every node (basal → derived; children follow their parent, siblings in
+/// stored order) so groups can be ordered to mirror the tree.
+fn tree_preorder(tree: &navigator_analysis::haplo::HaploTree) -> std::collections::HashMap<i64, usize> {
+    let mut rank = std::collections::HashMap::new();
+    let mut next = 0usize;
+    // Roots: explicit is_root flag, else nodes with no parent.
+    let parents = tree_parent_map(tree);
+    let mut roots: Vec<i64> = tree
+        .nodes
+        .values()
+        .filter(|n| n.is_root || !parents.contains_key(&n.id))
+        .map(|n| n.id)
+        .collect();
+    roots.sort_unstable();
+    let mut stack: Vec<i64> = roots.into_iter().rev().collect();
+    while let Some(id) = stack.pop() {
+        if rank.contains_key(&id) {
+            continue;
+        }
+        rank.insert(id, next);
+        next += 1;
+        if let Some(node) = tree.nodes.get(&id) {
+            for c in node.children.iter().rev() {
+                stack.push(*c);
+            }
+        }
+    }
+    rank
 }

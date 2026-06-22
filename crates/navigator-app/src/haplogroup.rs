@@ -1978,7 +1978,7 @@ impl App {
     /// (no liftover); the FTDNA tree is GRCh38-only, so it's a fallback only when the calls are GRCh38.
     /// Shared by the combined [`assign_y_bisdna`](Self::assign_y_bisdna) placement and the per-panel
     /// Y-profile sources, so the tree is fetched once.
-    async fn chip_y_tree(&self, build: &str) -> Result<navigator_analysis::haplo::HaploTree, AppError> {
+    pub(crate) async fn chip_y_tree(&self, build: &str) -> Result<navigator_analysis::haplo::HaploTree, AppError> {
         // Honor the configured Y-tree provider (the alignment placement path does too). With the
         // FTDNA provider, place against the FTDNA tree directly — no DecodingUs call. The default
         // (DecodingUs) keeps the prior behavior, with an FTDNA fallback for a GRCh38 chip when the
