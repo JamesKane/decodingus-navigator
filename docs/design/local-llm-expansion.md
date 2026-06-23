@@ -1,8 +1,13 @@
 # Local-LLM expansion — design
 
-Status: **Proposed** (2026-06-22). Follows on from the shipped pilot in
-[local-llm-integration.md](local-llm-integration.md) (M0–M3, on `main`). No code yet — this is the
-plan for where the integration goes next.
+Status: **M4–M5 implemented** (2026-06-23, branch `feature/llm-results-context`); M6 proposed.
+Follows on from the shipped pilot in [local-llm-integration.md](local-llm-integration.md) (M0–M3).
+M4 = broadened chat grounding (`ResultsContext` + `results_fact_sheet` over sex/Y-STR/private-Y/
+mtDNA/IBD; chat grounds in it). M5 = per-tab "Explain this" narration (`signal_section` +
+`narrate_signal_streaming`, "Explain this" buttons on the Y-STR, private-Y, and IBD sections). Both
+verified live on huF98AFD against gemma-4-31b-qat. M4 also split `llm_prompt` into a shared
+`grounding_rules()` core + separate narration vs Q&A formatting (the chat was narrating instead of
+answering, and the model's own "not medical" disclaimers tripped the outgoing health guard).
 
 ## Where the pilot left us
 
