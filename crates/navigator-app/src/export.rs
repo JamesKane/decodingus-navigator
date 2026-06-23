@@ -339,12 +339,25 @@ fn lineage_html(lb: &LineageBrief, title: &str) -> String {
 }
 
 /// The subject brief as a self-contained "DNA Story" HTML document — the casual-reader report a user
-/// can save or print. Mirrors the Simple-mode card stack.
-pub fn subject_brief_html(b: &SubjectBrief) -> String {
+/// can save or print. Mirrors the Simple-mode card stack. When an AI narration is provided (a cached
+/// "Polish with AI" result), it leads the document as a clearly-labelled, additive section above the
+/// structured facts.
+pub fn subject_brief_html(b: &SubjectBrief, narration: Option<&crate::NarratedBrief>) -> String {
     let mut body = String::new();
     body.push_str(&format!("<h1>{} — Your DNA Story</h1>\n", esc(&b.headline.name)));
     body.push_str(&format!("<p class=\"meta\">{}</p>\n", esc(&b.headline.test_chip)));
     body.push_str(&format!("<p>{}</p>\n", esc(&b.headline.summary)));
+
+    if let Some(n) = narration {
+        body.push_str("<h2>Your DNA Story (AI-assisted)</h2>\n");
+        for para in n.prose.split("\n\n").filter(|p| !p.trim().is_empty()) {
+            body.push_str(&format!("<p>{}</p>\n", esc(para.trim())));
+        }
+        body.push_str(&format!(
+            "<p class=\"meta\">AI-assisted from your results (model: {}) — the verified facts follow below.</p>\n",
+            esc(&n.model)
+        ));
+    }
 
     if let Some(p) = &b.paternal {
         body.push_str(&lineage_html(p, "Your paternal line (Y-DNA)"));
@@ -493,12 +506,20 @@ mod tests {
             pack_status: PackStatus::Bundled,
             enriched: true,
         };
-        let html = subject_brief_html(&brief);
+        let narration = crate::NarratedBrief {
+            prose: "You are mostly European.".into(),
+            model: "test-model".into(),
+        };
+        let html = subject_brief_html(&brief, Some(&narration));
         assert!(html.starts_with("<!doctype html>"));
         assert!(html.contains("Your DNA Story"));
+        assert!(html.contains("AI-assisted"));
+        assert!(html.contains("You are mostly European."));
         assert!(html.contains("R-FGC29071"));
         assert!(html.contains("Steppe pastoralist"));
         assert!(html.contains("Predominantly European"));
+        // No narration → no AI section.
+        assert!(!subject_brief_html(&brief, None).contains("AI-assisted"));
         assert!(html.contains("live haplogroup data"));
     }
 

@@ -189,6 +189,20 @@ impl App {
         self.llm_models_at(&cfg.base_url).await
     }
 
+    /// The on-disk cached narration for a brief, if one exists for the currently-configured model —
+    /// a **no-network** lookup (only when a model is explicitly set) used to fold the AI story into
+    /// the exported "DNA Story" without triggering generation.
+    pub fn cached_narration(&self, brief: &SubjectBrief) -> Option<NarratedBrief> {
+        let cfg = llm_config();
+        let model = cfg.model?; // explicit only — avoid resolving the loaded model (a network call)
+        let system = llm_prompt::narrate_system_prompt();
+        let facts = llm_prompt::narrate_fact_sheet(brief);
+        let key = crate::sha256_str(&format!("{model}\n{system}\n{facts}"));
+        std::fs::read_to_string(narration_cache_path(&key))
+            .ok()
+            .and_then(|s| serde_json::from_str(&s).ok())
+    }
+
     /// Health check + model discovery against an explicit base URL — used by the Settings
     /// "Test connection" button so the user can verify a URL *before* saving it. `GET {base}/models`
     /// (the OpenAI-compatible discovery endpoint). Errors are plain-language for the UI.
