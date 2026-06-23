@@ -955,13 +955,19 @@ impl App {
     ) -> Result<Option<DescentReport>, AppError> {
         use navigator_domain::consensus::ConsensusState;
 
-        let (profile, tree_json) = match dna {
-            DnaType::Y => (self.cached_y_profile(biosample_guid).await?, self.fetch_ftdna_y_tree().await?),
-            DnaType::Mt => (self.cached_mt_profile(biosample_guid).await?, self.fetch_ftdna_mt_tree().await?),
+        // Cheap first: the persisted profile. No profile / no terminal → nothing to draw, and we
+        // skip the (multi-MB) tree fetch + parse entirely.
+        let profile = match dna {
+            DnaType::Y => self.cached_y_profile(biosample_guid).await?,
+            DnaType::Mt => self.cached_mt_profile(biosample_guid).await?,
         };
         let Some(profile) = profile else { return Ok(None) };
         let Some(terminal) = profile.terminal.clone() else { return Ok(None) };
 
+        let tree_json = match dna {
+            DnaType::Y => self.fetch_ftdna_y_tree().await?,
+            DnaType::Mt => self.fetch_ftdna_mt_tree().await?,
+        };
         let tree = navigator_analysis::haplo::parse_ftdna_json(&tree_json).map_err(AppError::Import)?;
         let Some(terminal_id) = tree.nodes.iter().find(|(_, n)| n.name == terminal).map(|(id, _)| *id) else {
             return Ok(None); // terminal not in this tree (provider/build skew) — nothing to draw

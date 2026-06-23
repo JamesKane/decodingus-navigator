@@ -80,9 +80,39 @@ impl NavigatorApp {
         }
     }
 
+    /// Inline replacement for the Simple-view brief's lineage trail: the compact, call-coloured
+    /// descent path when the variant profile is built, otherwise the plain root→tip name trail (so
+    /// the brief card is never empty and Simple mode never triggers an expensive build). Render-only;
+    /// `subject_brief_view` pre-fires [`ensure_descent`] so the report loads.
+    pub(crate) fn brief_descent_trail(&self, ui: &mut egui::Ui, guid: SampleGuid, lb: &LineageBrief) {
+        let dna = match lb.kind {
+            LineageKind::Paternal => DnaType::Y,
+            LineageKind::Maternal => DnaType::Mt,
+        };
+        let report = self
+            .descent_reports
+            .iter()
+            .find(|(g, d, _)| *g == guid && *d == dna)
+            .and_then(|(_, _, r)| r.as_ref());
+        if let Some(report) = report {
+            ui.add_space(4.0);
+            self.render_descent_compact(ui, report);
+            return;
+        }
+        // Fallback until the profile is built: the plain collapsible root→tip trail.
+        if lb.lineage_path.len() > 1 {
+            ui.add_space(2.0);
+            egui::CollapsingHeader::new(self.tr("brief.lineageTrail"))
+                .id_salt(("brief_trail", matches!(lb.kind, LineageKind::Paternal)))
+                .show(ui, |ui| {
+                    ui.label(egui::RichText::new(lb.lineage_path.join("  ·  ")).small());
+                });
+        }
+    }
+
     /// Fire a `LoadDescentReport` command if this (subject, DNA) report isn't already loaded or in
     /// flight. Idempotent — safe to call every frame.
-    fn ensure_descent(&mut self, guid: SampleGuid, dna: DnaType) {
+    pub(crate) fn ensure_descent(&mut self, guid: SampleGuid, dna: DnaType) {
         let loaded = self.descent_reports.iter().any(|(g, d, _)| *g == guid && *d == dna);
         let loading = self.descent_loading.iter().any(|(g, d)| *g == guid && *d == dna);
         if !loaded && !loading {

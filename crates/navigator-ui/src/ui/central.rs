@@ -129,24 +129,9 @@ impl NavigatorApp {
                 ui.add_space(4.0);
                 // Optional AI-assisted narration sits above the facts (additive, clearly labelled).
                 self.simple_ai_narration(ui, guid);
+                // The brief's paternal/maternal cards now render the compact descent path in place of
+                // the old lineage trail (see brief_descent_trail).
                 self.subject_brief_view(ui, guid);
-                // Compact descent paths for whichever lineages the brief placed (additive).
-                let (has_pat, has_mat) = match &self.subject_brief {
-                    Some((g, b)) if *g == guid => (b.paternal.is_some(), b.maternal.is_some()),
-                    _ => (false, false),
-                };
-                if has_pat {
-                    ui.add_space(8.0);
-                    card(ui, self.tr("descent.paternalTitle"), |ui| {
-                        self.descent_card(ui, guid, DnaType::Y, true);
-                    });
-                }
-                if has_mat {
-                    ui.add_space(8.0);
-                    card(ui, self.tr("descent.maternalTitle"), |ui| {
-                        self.descent_card(ui, guid, DnaType::Mt, true);
-                    });
-                }
                 // Export the brief as a shareable "DNA Story" once it's built.
                 if matches!(&self.subject_brief, Some((g, _)) if *g == guid) {
                     ui.add_space(8.0);
