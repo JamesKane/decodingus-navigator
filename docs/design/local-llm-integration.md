@@ -9,7 +9,11 @@ M1 (3967be4, refined 01d295d) = brief narration: pure `llm_prompt` builders + gu
 M2 (5a641d4) = ask-my-results chat: `answer_question` (grounded in the brief fact sheet, bounded
 history, scope guard both ways via `health_deflection`), "Ask about your results" chat card in the
 Simple view. Built in **Simple mode** (not Advanced-first as the doc sketched — the casual results
-surface is the natural home). Streaming still deferred to M3 (blocking + spinner). M3 (polish) not started.
+surface is the natural home).
+M3 = polish: **token streaming** (4ae9fd3) for narration + chat over `Response::chunk()` SSE (no new
+dep; reasoning suppressed live until `</think>`), and the **AI story in the DNA Story export**
+(ae6a25c, no-network cached lookup). Remaining M3 nice-to-haves: optional default-on narration when
+enabled, per-model prompt tuning.
 
 ## Goal
 
