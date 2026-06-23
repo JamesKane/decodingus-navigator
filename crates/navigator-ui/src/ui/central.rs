@@ -130,6 +130,23 @@ impl NavigatorApp {
                 // Optional AI-assisted narration sits above the facts (additive, clearly labelled).
                 self.simple_ai_narration(ui, guid);
                 self.subject_brief_view(ui, guid);
+                // Compact descent paths for whichever lineages the brief placed (additive).
+                let (has_pat, has_mat) = match &self.subject_brief {
+                    Some((g, b)) if *g == guid => (b.paternal.is_some(), b.maternal.is_some()),
+                    _ => (false, false),
+                };
+                if has_pat {
+                    ui.add_space(8.0);
+                    card(ui, self.tr("descent.paternalTitle"), |ui| {
+                        self.descent_card(ui, guid, DnaType::Y, true);
+                    });
+                }
+                if has_mat {
+                    ui.add_space(8.0);
+                    card(ui, self.tr("descent.maternalTitle"), |ui| {
+                        self.descent_card(ui, guid, DnaType::Mt, true);
+                    });
+                }
                 // Export the brief as a shareable "DNA Story" once it's built.
                 if matches!(&self.subject_brief, Some((g, _)) if *g == guid) {
                     ui.add_space(8.0);
@@ -183,6 +200,12 @@ impl NavigatorApp {
                                     ui.label(egui::RichText::new(self.tr("hint.noConsensusYet")).weak());
                                 }
                             });
+                            if self.consensus_y.is_some() {
+                                ui.add_space(10.0);
+                                card(ui, self.tr("card.descentReport"), |ui| {
+                                    self.descent_card(ui, guid, DnaType::Y, false);
+                                });
+                            }
                         }
                         // The heavy SNP surface: a compact chrY variant track as shared context, then
                         // the heavy tables one at a time (each runs to thousands of rows on a WGS).
@@ -224,6 +247,12 @@ impl NavigatorApp {
                                     ui.label(egui::RichText::new(self.tr("hint.noConsensusYet")).weak());
                                 }
                             });
+                            if self.consensus_mt.is_some() {
+                                ui.add_space(10.0);
+                                card(ui, self.tr("card.descentReport"), |ui| {
+                                    self.descent_card(ui, guid, DnaType::Mt, false);
+                                });
+                            }
                         }
                         MtSub::Variants => {
                             card(ui, self.tr("card.variantTrack"), |ui| self.mt_variant_track(ui));

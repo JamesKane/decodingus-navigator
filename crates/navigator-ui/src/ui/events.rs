@@ -154,6 +154,15 @@ impl NavigatorApp {
                         self.subject_brief_loading = false;
                     }
                 }
+                Event::DescentReportLoaded { guid, dna, result } => {
+                    self.descent_loading.retain(|(g, d)| !(*g == guid && *d == dna));
+                    if self.selected_sample == Some(guid) {
+                        match result {
+                            Ok(report) => self.descent_reports.push((guid, dna, report)),
+                            Err(msg) => self.status = format!("{} {msg}", self.tr("descent.failed")),
+                        }
+                    }
+                }
                 Event::BriefNarrationChunk { guid, text } => {
                     if self.selected_sample == Some(guid) {
                         match &mut self.narration_stream {
@@ -1079,6 +1088,8 @@ impl NavigatorApp {
         self.mtdna_haplogroup = None;
         self.consensus_y = None;
         self.consensus_mt = None;
+        self.descent_reports.clear();
+        self.descent_loading.clear();
         self.str_concordance = None;
         self.str_running = false;
         self.y_matches = None;

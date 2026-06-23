@@ -452,6 +452,54 @@ pub fn child_evidence(tree: &HaploTree, calls: &HashMap<i64, char>, node_id: i64
     out
 }
 
+/// One node on the root→terminal path with its defining SNPs and the sample's per-SNP state — the
+/// grouped form of [`lineage_evidence`], used to draw a YFull-style per-node descent report.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NodeEvidence {
+    pub name: String,
+    /// True for the reported terminal (the deepest node on the path).
+    pub is_terminal: bool,
+    pub snps: Vec<SnpEvidence>,
+}
+
+/// Group the root→`terminal_id` path into per-node defining-SNP evidence (root→terminal order):
+/// walk the tree from the terminal up to the root, and for each node attach its loci with the
+/// sample's state taken from `lineage` (matched by position; `NoCall` for an equivalent not present
+/// in `lineage`). `lineage` is typically the flat [`lineage_evidence`] / `HaploAssignment.lineage`.
+pub fn group_lineage_by_node(tree: &HaploTree, terminal_id: i64, lineage: &[SnpEvidence]) -> Vec<NodeEvidence> {
+    let state_by_pos: HashMap<i64, CallState> = lineage.iter().map(|e| (e.position, e.state)).collect();
+    let parent = build_parent_map(tree);
+    let mut ids = Vec::new();
+    let mut cur = Some(terminal_id);
+    while let Some(id) = cur {
+        ids.push(id);
+        cur = parent.get(&id).copied();
+    }
+    ids.reverse();
+
+    ids.iter()
+        .filter_map(|id| {
+            let node = tree.nodes.get(id)?;
+            let snps = node
+                .loci
+                .iter()
+                .map(|l| SnpEvidence {
+                    name: l.name.clone(),
+                    position: l.position,
+                    ancestral: l.ancestral.clone(),
+                    derived: l.derived.clone(),
+                    state: state_by_pos.get(&l.position).copied().unwrap_or(CallState::NoCall),
+                })
+                .collect();
+            Some(NodeEvidence {
+                name: node.name.clone(),
+                is_terminal: *id == terminal_id,
+                snps,
+            })
+        })
+        .collect()
+}
+
 /// Per-SNP evidence along the lineage root→`terminal_id`: every defining SNP of every node on
 /// the path, with the sample's `Derived`/`Ancestral`/`NoCall` state. Used to compare exactly
 /// which defining mutations a sample carries (e.g. GRCh38 vs a lifted CHM13 call).
@@ -644,6 +692,27 @@ mod tests {
         assert_eq!(t.nodes.len(), 4);
         assert_eq!(t.nodes[&2].loci[0].position, 146);
         assert_eq!(t.nodes[&2].loci[0].derived, "G");
+    }
+
+    #[test]
+    fn group_lineage_by_node_buckets_path_with_state() {
+        let t = parse_ftdna_json(TREE).unwrap();
+        // Sample is derived at H (146) and H2 (263), no call at H2a (750).
+        let c = calls(&[(146, 'G'), (263, 'G')]);
+        let lineage = lineage_evidence(&t, &c, 4); // terminal H2a
+        let grouped = group_lineage_by_node(&t, 4, &lineage);
+
+        // root → H → H2 → H2a, root carries no defining loci.
+        let names: Vec<&str> = grouped.iter().map(|n| n.name.as_str()).collect();
+        assert_eq!(names, vec!["root", "H", "H2", "H2a"]);
+        assert!(grouped[0].snps.is_empty()); // root has no loci
+        assert!(!grouped[0].is_terminal && grouped[3].is_terminal);
+
+        assert_eq!(grouped[1].snps[0].name, "A146G");
+        assert_eq!(grouped[1].snps[0].state, CallState::Derived);
+        assert_eq!(grouped[2].snps[0].state, CallState::Derived);
+        // H2a's defining SNP was never called → NoCall (drawn grey).
+        assert_eq!(grouped[3].snps[0].state, CallState::NoCall);
     }
 
     // The DecodingUs AppView `/api/v1/y-tree/full` shape (snake_case, nested children,

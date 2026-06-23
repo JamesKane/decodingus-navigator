@@ -27,7 +27,7 @@ use navigator_store::panel;
 pub use navigator_analysis::caller::SiteGenotype as PanelGenotype;
 pub use navigator_analysis::caller::VariantCall as DenovoCall;
 pub use navigator_analysis::coverage::CoverageResult as Coverage;
-pub use navigator_analysis::haplo::{BranchEvidence, CallState, ScoredHaplogroup, SnpEvidence};
+pub use navigator_analysis::haplo::{BranchEvidence, CallState, NodeEvidence, ScoredHaplogroup, SnpEvidence};
 pub use navigator_analysis::heteroplasmy::HeteroplasmySite;
 pub use navigator_analysis::mask::YRegionClass;
 pub use navigator_analysis::mtvariants::{MtRegion, MtVariant, MtVariantKind};
@@ -54,6 +54,34 @@ pub struct HaploAssignment {
     /// variant/mutation **profile** reconciles — distinct from `branches`, which is the *untaken*
     /// child branches (explaining why descent stopped, hence largely ancestral/no-call).
     pub lineage: Vec<SnpEvidence>,
+}
+
+/// A YFull-YReport-style descent report for one lineage (Y or mtDNA): the root→terminal path, each
+/// node carrying its defining SNPs with the subject's per-SNP call state. Generic over [`DnaType`]
+/// so the Y-DNA and mtDNA tabs share one model + renderer. Built by [`App::descent_report`].
+#[derive(Debug, Clone)]
+pub struct DescentReport {
+    pub dna: DnaType,
+    /// The reported terminal haplogroup name (e.g. "R-FGC29071", "U5a1b1g").
+    pub terminal: String,
+    /// Nodes root→terminal, each with its defining SNPs + the sample's state (`NodeEvidence`).
+    pub nodes: Vec<NodeEvidence>,
+}
+
+impl DescentReport {
+    /// Total defining SNPs across the path the sample carries (derived).
+    pub fn derived(&self) -> usize {
+        self.nodes
+            .iter()
+            .flat_map(|n| &n.snps)
+            .filter(|s| s.state == CallState::Derived)
+            .count()
+    }
+
+    /// Total defining SNPs across the path (all states).
+    pub fn total(&self) -> usize {
+        self.nodes.iter().map(|n| n.snps.len()).sum()
+    }
 }
 
 /// How a private (off-backbone) variant relates to the tree.
