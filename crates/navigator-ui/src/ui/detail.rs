@@ -339,6 +339,12 @@ impl NavigatorApp {
         self.str_report_view = view;
         self.str_provider = Some(sel_provider);
         self.str_marker_filter = filter;
+
+        // Per-tab AI explanation of the Y-STR panels (M5) — additive, below the structured report.
+        if let Some(guid) = self.selected_sample {
+            ui.add_space(8.0);
+            self.ai_explain(ui, guid, SignalKind::YStr);
+        }
     }
 
     fn str_consensus_section(&mut self, ui: &mut egui::Ui) {
@@ -683,6 +689,68 @@ impl NavigatorApp {
             }
         }
         ui.add_space(10.0);
+    }
+
+    /// A per-tab "Explain this" affordance (M5): a small button that asks the local model to explain
+    /// just one signal (`kind`) for the selected subject in plain language, plus the streamed/finalized
+    /// explanation rendered below it. Additive — the structured facts in the tab always remain, and
+    /// it's a no-op when the AI assistant is off. Only one explanation runs at a time (one worker).
+    pub(crate) fn ai_explain(&mut self, ui: &mut egui::Ui, guid: SampleGuid, kind: SignalKind) {
+        if !self.ai_enabled {
+            return;
+        }
+        let have = self.signal_narration.iter().any(|(g, k, _)| *g == guid && *k == kind);
+        let in_flight = self.signal_narrating == Some((guid, kind));
+        let busy = self.signal_narrating.is_some();
+        ui.horizontal(|ui| {
+            let label = if have {
+                self.tr("brief.aiRegenerate")
+            } else {
+                self.tr("signal.explain")
+            };
+            if ui.add_enabled(!busy, egui::Button::new(label).small()).clicked() {
+                self.signal_narrating = Some((guid, kind));
+                self.signal_narration.retain(|(g, k, _)| !(*g == guid && *k == kind));
+                self.signal_stream = Some((guid, kind, String::new())); // live buffer
+                let _ = self.tx.send(Command::NarrateSignal { guid, kind });
+            }
+            if in_flight {
+                ui.spinner();
+                ui.label(egui::RichText::new(self.tr("brief.aiWorking")).weak().small());
+            }
+        });
+
+        // Prefer the live stream while generating; fall back to the finalized explanation.
+        let live = self
+            .signal_stream
+            .as_ref()
+            .filter(|(g, k, _)| *g == guid && *k == kind)
+            .map(|(_, _, t)| (t.as_str(), None));
+        let finalized = self
+            .signal_narration
+            .iter()
+            .find(|(g, k, _)| *g == guid && *k == kind)
+            .map(|(_, _, n)| (n.prose.as_str(), Some(n.model.as_str())));
+        if let Some((prose, model)) = live.or(finalized) {
+            if !prose.trim().is_empty() {
+                ui.add_space(6.0);
+                card(ui, self.tr("signal.explainTitle"), |ui| {
+                    for para in prose.split("\n\n").filter(|p| !p.trim().is_empty()) {
+                        ui.label(para.trim());
+                        ui.add_space(6.0);
+                    }
+                    ui.separator();
+                    ui.label(egui::RichText::new(self.tr("brief.aiDisclaimer")).weak().small());
+                    if let Some(model) = model {
+                        ui.label(
+                            egui::RichText::new(format!("{} {model}", self.tr("brief.aiModel")))
+                                .weak()
+                                .small(),
+                        );
+                    }
+                });
+            }
+        }
     }
 
     /// "Ask about your results" chat (M2): a subject-scoped Q&A grounded in the brief. Sign-in is not
@@ -1198,6 +1266,10 @@ impl NavigatorApp {
                 b.off_path(),
                 b.terminal
             ));
+        }
+        // Per-tab AI explanation of the private-Y picture (M5) — additive, alongside the table below.
+        if let Some(guid) = self.selected_sample {
+            self.ai_explain(ui, guid, SignalKind::PrivateY);
         }
         ui.horizontal(|ui| {
             ui.add(

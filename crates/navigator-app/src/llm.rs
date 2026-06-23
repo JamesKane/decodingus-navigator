@@ -183,11 +183,15 @@ pub struct NarratedBrief {
     pub model: String,
 }
 
-fn narration_cache_path(key: &str) -> std::path::PathBuf {
+fn narration_cache_path_in(subdir: &str, key: &str) -> std::path::PathBuf {
     refgenome_cache::base_dir()
         .join("briefs")
-        .join("narration")
+        .join(subdir)
         .join(format!("{key}.json"))
+}
+
+fn narration_cache_path(key: &str) -> std::path::PathBuf {
+    narration_cache_path_in("narration", key)
 }
 
 impl App {
@@ -272,7 +276,7 @@ impl App {
     pub async fn narrate_brief_streaming(
         &self,
         brief: &SubjectBrief,
-        mut on_chunk: impl FnMut(&str),
+        on_chunk: impl FnMut(&str),
     ) -> Result<NarratedBrief, AppError> {
         let cfg = llm_config();
         if !cfg.enabled {
@@ -280,13 +284,54 @@ impl App {
         }
 
         let model = self.resolve_model_id(&cfg).await?;
-
         let system = llm_prompt::narrate_system_prompt();
         let facts = llm_prompt::narrate_fact_sheet(brief);
-        // Key on model + system prompt + facts, so changing the prompt (or facts/model) regenerates
-        // rather than serving a stale narration written under the old instructions.
+        self.run_cached_narration(&cfg, &model, system, facts, "narration", on_chunk)
+            .await
+    }
+
+    /// Explain a single result signal (M5 per-tab "Explain this") in plain language, streaming the
+    /// prose to `on_chunk`. Grounded in only that signal's curated section (see
+    /// [`navigator_domain::results_context::signal_section`]); cached and health-guarded like brief
+    /// narration. `Err` when the assistant is off / unreachable / the subject has nothing for that
+    /// signal — the UI then just doesn't show an explanation.
+    pub async fn narrate_signal_streaming(
+        &self,
+        guid: SampleGuid,
+        kind: navigator_domain::results_context::SignalKind,
+        on_chunk: impl FnMut(&str),
+    ) -> Result<NarratedBrief, AppError> {
+        use navigator_domain::results_context as rc;
+        let cfg = llm_config();
+        if !cfg.enabled {
+            return Err(AppError::Llm("The AI assistant is turned off.".into()));
+        }
+        let model = self.resolve_model_id(&cfg).await?;
+        let ctx = self.results_context(guid).await?;
+        let section = rc::signal_section(&ctx, kind)
+            .ok_or_else(|| AppError::Llm("There's nothing to explain here yet.".into()))?;
+        let system = llm_prompt::narrate_signal_system_prompt(kind.label());
+        self.run_cached_narration(&cfg, &model, system, section, "signals", on_chunk)
+            .await
+    }
+
+    /// Shared cached-streaming narration core for [`narrate_brief_streaming`] and
+    /// [`narrate_signal_streaming`]: cache-first (a hit replays the cached prose through `on_chunk`),
+    /// else stream a completion, reject health-straying output, and cache. The cache key is
+    /// `model + system + facts`, so changing the prompt, the facts, or the model regenerates rather
+    /// than serving a stale narration written under the old instructions. `subdir` separates brief
+    /// vs per-signal caches under `briefs/`.
+    async fn run_cached_narration(
+        &self,
+        cfg: &LlmConfig,
+        model: &str,
+        system: String,
+        facts: String,
+        subdir: &str,
+        mut on_chunk: impl FnMut(&str),
+    ) -> Result<NarratedBrief, AppError> {
         let key = crate::sha256_str(&format!("{model}\n{system}\n{facts}"));
-        let cache_path = narration_cache_path(&key);
+        let cache_path = narration_cache_path_in(subdir, &key);
         if let Some(cached) = std::fs::read_to_string(&cache_path)
             .ok()
             .and_then(|s| serde_json::from_str::<NarratedBrief>(&s).ok())
@@ -306,7 +351,7 @@ impl App {
             },
         ];
         let (prose, used_model) = self
-            .chat_complete_streaming(&cfg, &model, messages, &mut on_chunk)
+            .chat_complete_streaming(cfg, model, messages, &mut on_chunk)
             .await?;
 
         // Post-generation guardrail: reject anything that strays into health/clinical language.

@@ -61,6 +61,22 @@ pub fn answer_system_prompt() -> String {
     )
 }
 
+/// The system prompt for a per-tab "Explain this" narration (M5): the shared grounding rules, focused
+/// on explaining a *single* signal (`signal_label`, e.g. "Y-STR markers") in plain language. Like the
+/// Q&A prompt it carries no narration story-arc formatting — it explains just this one aspect.
+pub fn narrate_signal_system_prompt(signal_label: &str) -> String {
+    format!(
+        "You are a genetic-genealogy guide helping a curious non-expert understand one part of their \
+         results: their {signal_label}. Using only the facts in the user message, explain in plain \
+         language what this shows and why it is interesting, and briefly define any term a beginner \
+         wouldn't know.\n{}\n\
+         Write one or two short paragraphs in second person, about this aspect only — do not bring in \
+         their other results. No preamble, headings, bullet lists, or sign-off — return only the \
+         prose.",
+        grounding_rules()
+    )
+}
+
 fn lineage_lines(out: &mut String, label: &str, lb: &LineageBrief) {
     out.push_str(&format!("\n{label}:\n"));
     out.push_str(&format!("- haplogroup: {}\n", lb.haplogroup));

@@ -658,6 +658,9 @@ impl NavigatorApp {
                 self.community_tab = CommunityTab::Messages;
                 self.dm_loaded = false; // force a fresh inbox/conversation load on entry
             }
+            // Per-tab AI explanation of these matches (M5) — additive, below the structured table.
+            ui.add_space(6.0);
+            self.ai_explain(ui, guid, SignalKind::Ibd);
         }
     }
 

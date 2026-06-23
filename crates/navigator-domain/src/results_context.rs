@@ -82,73 +82,137 @@ pub struct ResultsContext {
     pub ibd: Option<IbdFact>,
 }
 
+/// Which result signal a per-tab "Explain this" narration (M5) targets — also the key used to pull a
+/// single signal's section out of a [`ResultsContext`] via [`signal_section`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+pub enum SignalKind {
+    Sex,
+    YStr,
+    PrivateY,
+    MtMutations,
+    Ibd,
+}
+
+impl SignalKind {
+    /// Human label for the signal (used in the focused narration prompt and as a display heading).
+    pub fn label(self) -> &'static str {
+        match self {
+            SignalKind::Sex => "genetic sex",
+            SignalKind::YStr => "Y-STR markers",
+            SignalKind::PrivateY => "private Y variants",
+            SignalKind::MtMutations => "mtDNA mutations",
+            SignalKind::Ibd => "DNA relatives (IBD matches)",
+        }
+    }
+}
+
+// --- Per-signal section builders -----------------------------------------------------------------
+// Each returns the labelled, summary-level block for one signal (leading `\n`, so they concatenate
+// cleanly after the brief's fact sheet), or `None` when the subject has nothing for that signal. The
+// blocks are shared verbatim between the M4 chat grounding ([`results_fact_sheet`]) and the M5
+// per-tab narration ([`signal_section`]).
+
+fn sex_section(sex: &Option<SexFact>) -> Option<String> {
+    let sex = sex.as_ref()?;
+    Some(format!("\nGenetic sex:\n- {} ({} confidence)\n", sex.label, sex.confidence))
+}
+
+fn ystr_section(ystr: &[YStrPanelFact]) -> Option<String> {
+    if ystr.is_empty() {
+        return None;
+    }
+    let mut s = String::from("\nY-STR panels:\n");
+    for p in ystr {
+        s.push_str(&format!("- {} ({} markers)\n", p.panel, p.markers));
+    }
+    s.push_str(
+        "- note: STR markers describe the paternal-lineage pattern only; they are not trait or \
+         health information.\n",
+    );
+    Some(s)
+}
+
+fn private_y_section(private_y: &Option<PrivateYFact>) -> Option<String> {
+    let p = private_y.as_ref()?;
+    let mut s = String::from("\nPrivate Y variants (relative to the known tree):\n");
+    s.push_str(&format!(
+        "- {} novel variant(s) in unique sequence — candidates for a new branch\n",
+        p.novel_unique
+    ));
+    s.push_str(&format!(
+        "- {} variant(s) off known branches — suggest previously-unknown branch depth\n",
+        p.off_path
+    ));
+    if p.structural > 0 {
+        s.push_str(&format!(
+            "- {} call(s) in structural/paralog-prone regions — uncertain, not confident new variants\n",
+            p.structural
+        ));
+    }
+    Some(s)
+}
+
+fn mt_section(mt: &Option<MtMutationsFact>) -> Option<String> {
+    let m = mt.as_ref()?;
+    let mut s = format!(
+        "\nmtDNA mutations (differences from the rCRS reference): {} total — HVR1 {}, HVR2 {}, coding {}\n",
+        m.total, m.hvr1, m.hvr2, m.coding
+    );
+    if !m.examples.is_empty() {
+        s.push_str(&format!("- examples: {}\n", m.examples.join(", ")));
+    }
+    s.push_str("- note: these are maternal-lineage markers, not trait or health information.\n");
+    Some(s)
+}
+
+fn ibd_section(ibd: &Option<IbdFact>) -> Option<String> {
+    let ibd = ibd.as_ref()?;
+    let mut s = format!(
+        "\nGenetic relatives (IBD matches in this workspace): {}\n",
+        ibd.match_count
+    );
+    if let Some(c) = &ibd.closest {
+        s.push_str(&format!(
+            "- closest: about {:.0} cM shared across {} segment(s), consistent with {}\n",
+            c.total_shared_cm, c.segment_count, c.relationship
+        ));
+    }
+    s.push_str(
+        "- note: these are relationships inferred from shared DNA, not genealogically verified, \
+         and are described without identifying the other person.\n",
+    );
+    Some(s)
+}
+
+/// The labelled section for a single signal, or `None` when the subject has nothing for it — the
+/// grounding for an M5 per-tab "Explain this" narration of just that signal.
+pub fn signal_section(ctx: &ResultsContext, kind: SignalKind) -> Option<String> {
+    match kind {
+        SignalKind::Sex => sex_section(&ctx.sex),
+        SignalKind::YStr => ystr_section(&ctx.ystr),
+        SignalKind::PrivateY => private_y_section(&ctx.private_y),
+        SignalKind::MtMutations => mt_section(&ctx.mt_mutations),
+        SignalKind::Ibd => ibd_section(&ctx.ibd),
+    }
+}
+
 /// Build the chat's grounding fact sheet: the brief's fact sheet (unchanged from narration) plus a
 /// labelled, summary-level block per present signal. Pure and unit-tested — this is the exact text
 /// that goes in the chat system message as "your only source of facts".
 pub fn results_fact_sheet(ctx: &ResultsContext) -> String {
     let mut s = narrate_fact_sheet(&ctx.brief);
-
-    if let Some(sex) = &ctx.sex {
-        s.push_str(&format!("\nGenetic sex:\n- {} ({} confidence)\n", sex.label, sex.confidence));
+    for section in [
+        sex_section(&ctx.sex),
+        ystr_section(&ctx.ystr),
+        private_y_section(&ctx.private_y),
+        mt_section(&ctx.mt_mutations),
+        ibd_section(&ctx.ibd),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        s.push_str(&section);
     }
-
-    if !ctx.ystr.is_empty() {
-        s.push_str("\nY-STR panels:\n");
-        for p in &ctx.ystr {
-            s.push_str(&format!("- {} ({} markers)\n", p.panel, p.markers));
-        }
-        s.push_str(
-            "- note: STR markers describe the paternal-lineage pattern only; they are not trait or \
-             health information.\n",
-        );
-    }
-
-    if let Some(p) = &ctx.private_y {
-        s.push_str("\nPrivate Y variants (relative to the known tree):\n");
-        s.push_str(&format!(
-            "- {} novel variant(s) in unique sequence — candidates for a new branch\n",
-            p.novel_unique
-        ));
-        s.push_str(&format!(
-            "- {} variant(s) off known branches — suggest previously-unknown branch depth\n",
-            p.off_path
-        ));
-        if p.structural > 0 {
-            s.push_str(&format!(
-                "- {} call(s) in structural/paralog-prone regions — uncertain, not confident new variants\n",
-                p.structural
-            ));
-        }
-    }
-
-    if let Some(m) = &ctx.mt_mutations {
-        s.push_str(&format!(
-            "\nmtDNA mutations (differences from the rCRS reference): {} total — HVR1 {}, HVR2 {}, coding {}\n",
-            m.total, m.hvr1, m.hvr2, m.coding
-        ));
-        if !m.examples.is_empty() {
-            s.push_str(&format!("- examples: {}\n", m.examples.join(", ")));
-        }
-        s.push_str("- note: these are maternal-lineage markers, not trait or health information.\n");
-    }
-
-    if let Some(ibd) = &ctx.ibd {
-        s.push_str(&format!(
-            "\nGenetic relatives (IBD matches in this workspace): {}\n",
-            ibd.match_count
-        ));
-        if let Some(c) = &ibd.closest {
-            s.push_str(&format!(
-                "- closest: about {:.0} cM shared across {} segment(s), consistent with {}\n",
-                c.total_shared_cm, c.segment_count, c.relationship
-            ));
-        }
-        s.push_str(
-            "- note: these are relationships inferred from shared DNA, not genealogically verified, \
-             and are described without identifying the other person.\n",
-        );
-    }
-
     s
 }
 
@@ -285,5 +349,31 @@ mod tests {
     fn full_sheet_stays_clear_of_health_language() {
         // The curated grounding itself must not trip the post-generation health guard.
         assert!(!mentions_health(&results_fact_sheet(&full_context())));
+    }
+
+    #[test]
+    fn signal_section_returns_one_signal_or_none() {
+        let ctx = full_context();
+        let ystr = signal_section(&ctx, SignalKind::YStr).unwrap();
+        assert!(ystr.contains("Y-111 (111 markers)"));
+        // It is just that signal — not the private-Y or sex blocks.
+        assert!(!ystr.contains("Private Y variants"));
+        assert!(!ystr.contains("Genetic sex"));
+
+        let pvt = signal_section(&ctx, SignalKind::PrivateY).unwrap();
+        assert!(pvt.contains("12 novel variant(s) in unique sequence"));
+        assert!(!pvt.contains("Y-STR panels"));
+
+        // Absent signal → None (this context has no IBD-less variant; build one).
+        let empty = ResultsContext {
+            brief: base_brief(),
+            sex: None,
+            ystr: vec![],
+            private_y: None,
+            mt_mutations: None,
+            ibd: None,
+        };
+        assert!(signal_section(&empty, SignalKind::YStr).is_none());
+        assert!(signal_section(&empty, SignalKind::Ibd).is_none());
     }
 }

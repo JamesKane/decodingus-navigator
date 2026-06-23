@@ -18,8 +18,8 @@ use navigator_app::{
     FtdnaGenealogy, FtdnaImportOptions, FtdnaImportPlan, FtdnaImportSummary, FtdnaResolution, HaploAssignment,
     HeteroplasmySite, IbdComparison, IbdDetectorConfig, IbdSuggestion, IdentityVerification, IncomingRequest,
     NarratedBrief, PanelGenotype, PrivateBucket, ProjectImportSummary, ProjectOverview, ProjectSampleReport,
-    ProjectStrChart, ReadMetrics, RecruitmentInvitation, RefBuildStatus, SexInferenceResult, SourceType,
-    StoredIbdExchange, StrConcordanceRow, SubjectBrief, SvAnalysisResult, YMatch, YstrClustering,
+    ProjectStrChart, ReadMetrics, RecruitmentInvitation, RefBuildStatus, SexInferenceResult, SignalKind,
+    SourceType, StoredIbdExchange, StrConcordanceRow, SubjectBrief, SvAnalysisResult, YMatch, YstrClustering,
 };
 use navigator_domain::chipprofile::ChipProfile;
 use navigator_domain::du_domain::ids::SampleGuid;
@@ -74,6 +74,8 @@ pub enum Command {
         history: Vec<ChatTurn>,
         question: String,
     },
+    /// Explain a single result signal in plain language (per-tab "Explain this", M5).
+    NarrateSignal { guid: SampleGuid, kind: SignalKind },
     /// Deep-analyze every sample in a project as a cancellable background job, streaming
     /// per-sample `DeepAnalyzeProgress` and yielding between samples so the UI stays responsive.
     /// Skips what the fast path already filled; cancelled via [`Command::CancelAnalysis`].
@@ -707,6 +709,18 @@ pub enum Event {
         guid: SampleGuid,
         result: Result<String, String>,
     },
+    /// A streamed slice of a per-signal "Explain this" narration (live preview).
+    SignalNarrationChunk {
+        guid: SampleGuid,
+        kind: SignalKind,
+        text: String,
+    },
+    /// AI-assisted explanation of one result signal (or a plain-language reason it's unavailable).
+    SignalNarration {
+        guid: SampleGuid,
+        kind: SignalKind,
+        result: Result<NarratedBrief, String>,
+    },
     /// A project-wide analyze pass finished (coverage + Y per sample). `cancelled` is true when a
     /// streaming deep-analyze was stopped early (counts reflect what completed before the stop).
     ProjectAnalyzed {
@@ -1167,6 +1181,7 @@ pub async fn handle(app: &App, cmd: Command) -> Event {
         // NarrateBrief / AskQuestion stream from the spawn loop; reaching here is a bug.
         Command::NarrateBrief(guid) => Event::Error(format!("internal: unrouted NarrateBrief {guid}")),
         Command::AskQuestion { guid, .. } => Event::Error(format!("internal: unrouted AskQuestion {guid}")),
+        Command::NarrateSignal { guid, .. } => Event::Error(format!("internal: unrouted NarrateSignal {guid}")),
         // DeepAnalyzeProject streams DeepAnalyzeProgress from the spawn loop; reaching here is a bug.
         Command::DeepAnalyzeProject(project_id) => {
             Event::Error(format!("internal: unrouted DeepAnalyzeProject {project_id}"))
@@ -2420,6 +2435,30 @@ async fn ask_question_streaming(
     wake();
 }
 
+/// Explain a single result signal, streaming `SignalNarrationChunk`s as text arrives, then a final
+/// `SignalNarration` (the authoritative result, or a plain-language failure reason).
+async fn narrate_signal_streaming(
+    app: &App,
+    guid: SampleGuid,
+    kind: SignalKind,
+    evt_tx: &Sender<Event>,
+    wake: &(dyn Fn() + Send + Sync),
+) {
+    let result = app
+        .narrate_signal_streaming(guid, kind, |text| {
+            let _ = evt_tx.send(Event::SignalNarrationChunk {
+                guid,
+                kind,
+                text: text.to_string(),
+            });
+            wake();
+        })
+        .await
+        .map_err(|e| e.to_string());
+    let _ = evt_tx.send(Event::SignalNarration { guid, kind, result });
+    wake();
+}
+
 /// Drain the outbox once and emit the outcome: a `Published` per sent row, the online flag, and the
 /// remaining pending count.
 async fn emit_drain(app: &App, evt_tx: &Sender<Event>, wake: &(dyn Fn() + Send + Sync)) {
@@ -2564,6 +2603,10 @@ pub fn spawn(db_path: PathBuf, wake: impl Fn() + Send + Sync + 'static) -> (Unbo
                                 question,
                             } => {
                                 ask_question_streaming(&app, guid, history, question, &evt_tx, &*wake).await;
+                            }
+                            // Streams a per-signal explanation as it's generated, then a final SignalNarration.
+                            Command::NarrateSignal { guid, kind } => {
+                                narrate_signal_streaming(&app, guid, kind, &evt_tx, &*wake).await;
                             }
                             other => {
                                 let event = handle(&app, other).await;
