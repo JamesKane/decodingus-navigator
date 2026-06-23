@@ -495,6 +495,9 @@ pub struct NavigatorApp {
     ai_enabled: bool,
     /// AI-assisted narration of the selected subject's brief `(guid, narration)`; `None` until run.
     brief_narration: Option<(SampleGuid, NarratedBrief)>,
+    /// Live narration text accumulating while it streams `(guid, text)`; cleared when the final
+    /// narration arrives.
+    narration_stream: Option<(SampleGuid, String)>,
     /// Whether a brief narration request is in flight.
     narrating: bool,
     /// "Ask my results" chat history for the selected subject (cleared on subject switch).
@@ -924,6 +927,7 @@ impl NavigatorApp {
             simple_subject_filter: String::new(),
             ai_enabled: navigator_app::llm::llm_config().enabled,
             brief_narration: None,
+            narration_stream: None,
             narrating: false,
             chat_history: Vec::new(),
             chat_input: String::new(),

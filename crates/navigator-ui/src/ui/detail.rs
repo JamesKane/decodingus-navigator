@@ -641,9 +641,8 @@ impl NavigatorApp {
             };
             if ui.add_enabled(!self.narrating, egui::Button::new(label)).clicked() {
                 self.narrating = true;
-                if have {
-                    self.brief_narration = None;
-                }
+                self.brief_narration = None;
+                self.narration_stream = Some((guid, String::new())); // live buffer
                 let _ = self.tx.send(Command::NarrateBrief(guid));
             }
             if self.narrating {
@@ -652,18 +651,34 @@ impl NavigatorApp {
             }
         });
 
-        if let Some((g, narration)) = &self.brief_narration {
-            if *g == guid {
+        // Prefer the live stream while generating; fall back to the finalized narration.
+        let live = self
+            .narration_stream
+            .as_ref()
+            .filter(|(g, _)| *g == guid)
+            .map(|(_, t)| (t.as_str(), None));
+        let finalized = self
+            .brief_narration
+            .as_ref()
+            .filter(|(g, _)| *g == guid)
+            .map(|(_, n)| (n.prose.as_str(), Some(n.model.as_str())));
+        if let Some((prose, model)) = live.or(finalized) {
+            if !prose.trim().is_empty() {
                 ui.add_space(8.0);
-                let note = format!("{} {}", self.tr("brief.aiModel"), narration.model);
                 card(ui, self.tr("brief.aiStory"), |ui| {
-                    for para in narration.prose.split("\n\n").filter(|p| !p.trim().is_empty()) {
+                    for para in prose.split("\n\n").filter(|p| !p.trim().is_empty()) {
                         ui.label(para.trim());
                         ui.add_space(6.0);
                     }
                     ui.separator();
                     ui.label(egui::RichText::new(self.tr("brief.aiDisclaimer")).weak().small());
-                    ui.label(egui::RichText::new(note).weak().small());
+                    if let Some(model) = model {
+                        ui.label(
+                            egui::RichText::new(format!("{} {model}", self.tr("brief.aiModel")))
+                                .weak()
+                                .small(),
+                        );
+                    }
                 });
             }
         }
@@ -723,10 +738,16 @@ impl NavigatorApp {
             });
             if let Some(question) = submit {
                 self.chat_input.clear();
+                // `history` is the prior conversation (before this turn).
                 let history = self.chat_history.clone();
                 self.chat_history.push(navigator_app::ChatTurn {
                     from_user: true,
                     text: question.clone(),
+                });
+                // Empty assistant turn the streamed chunks fill in.
+                self.chat_history.push(navigator_app::ChatTurn {
+                    from_user: false,
+                    text: String::new(),
                 });
                 self.chat_pending = true;
                 let _ = self.tx.send(Command::AskQuestion {

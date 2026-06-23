@@ -686,10 +686,21 @@ pub enum Event {
         guid: SampleGuid,
         brief: Box<SubjectBrief>,
     },
+    /// A streamed slice of narration text as it's generated (live preview; the final BriefNarration
+    /// is authoritative).
+    BriefNarrationChunk {
+        guid: SampleGuid,
+        text: String,
+    },
     /// AI-assisted narration of a subject's brief (or a plain-language reason it's unavailable).
     BriefNarration {
         guid: SampleGuid,
         result: Result<NarratedBrief, String>,
+    },
+    /// A streamed slice of a chat answer as it's generated (live preview).
+    ChatAnswerChunk {
+        guid: SampleGuid,
+        text: String,
     },
     /// Answer to an "ask my results" question (or a plain-language reason it's unavailable).
     ChatAnswer {
@@ -1153,21 +1164,9 @@ pub async fn handle(app: &App, cmd: Command) -> Event {
             },
             Err(e) => Event::Error(e.to_string()),
         },
-        Command::NarrateBrief(guid) => Event::BriefNarration {
-            guid,
-            result: app.narrate_subject(guid).await.map_err(|e| e.to_string()),
-        },
-        Command::AskQuestion {
-            guid,
-            history,
-            question,
-        } => Event::ChatAnswer {
-            guid,
-            result: app
-                .answer_question(guid, history, question)
-                .await
-                .map_err(|e| e.to_string()),
-        },
+        // NarrateBrief / AskQuestion stream from the spawn loop; reaching here is a bug.
+        Command::NarrateBrief(guid) => Event::Error(format!("internal: unrouted NarrateBrief {guid}")),
+        Command::AskQuestion { guid, .. } => Event::Error(format!("internal: unrouted AskQuestion {guid}")),
         // DeepAnalyzeProject streams DeepAnalyzeProgress from the spawn loop; reaching here is a bug.
         Command::DeepAnalyzeProject(project_id) => {
             Event::Error(format!("internal: unrouted DeepAnalyzeProject {project_id}"))
@@ -2380,6 +2379,47 @@ async fn publish_then_drain(
     }
 }
 
+/// Narrate a subject's brief, streaming `BriefNarrationChunk`s as text arrives, then a final
+/// `BriefNarration` (the authoritative result, or a plain-language failure reason).
+async fn narrate_brief_streaming(app: &App, guid: SampleGuid, evt_tx: &Sender<Event>, wake: &(dyn Fn() + Send + Sync)) {
+    let result = app
+        .narrate_subject_streaming(guid, |text| {
+            let _ = evt_tx.send(Event::BriefNarrationChunk {
+                guid,
+                text: text.to_string(),
+            });
+            wake();
+        })
+        .await
+        .map_err(|e| e.to_string());
+    let _ = evt_tx.send(Event::BriefNarration { guid, result });
+    wake();
+}
+
+/// Answer a question about a subject's results, streaming `ChatAnswerChunk`s, then a final
+/// `ChatAnswer`.
+async fn ask_question_streaming(
+    app: &App,
+    guid: SampleGuid,
+    history: Vec<ChatTurn>,
+    question: String,
+    evt_tx: &Sender<Event>,
+    wake: &(dyn Fn() + Send + Sync),
+) {
+    let result = app
+        .answer_question_streaming(guid, history, question, |text| {
+            let _ = evt_tx.send(Event::ChatAnswerChunk {
+                guid,
+                text: text.to_string(),
+            });
+            wake();
+        })
+        .await
+        .map_err(|e| e.to_string());
+    let _ = evt_tx.send(Event::ChatAnswer { guid, result });
+    wake();
+}
+
 /// Drain the outbox once and emit the outcome: a `Published` per sent row, the online flag, and the
 /// remaining pending count.
 async fn emit_drain(app: &App, evt_tx: &Sender<Event>, wake: &(dyn Fn() + Send + Sync)) {
@@ -2512,6 +2552,18 @@ pub fn spawn(db_path: PathBuf, wake: impl Fn() + Send + Sync + 'static) -> (Unbo
                             // Periodic / on-reconnect drain of the outbox.
                             Command::DrainOutbox => {
                                 emit_drain(&app, &evt_tx, &*wake).await;
+                            }
+                            // Streams narration text as it's generated, then a final BriefNarration.
+                            Command::NarrateBrief(guid) => {
+                                narrate_brief_streaming(&app, guid, &evt_tx, &*wake).await;
+                            }
+                            // Streams a chat answer as it's generated, then a final ChatAnswer.
+                            Command::AskQuestion {
+                                guid,
+                                history,
+                                question,
+                            } => {
+                                ask_question_streaming(&app, guid, history, question, &evt_tx, &*wake).await;
                             }
                             other => {
                                 let event = handle(&app, other).await;

@@ -119,26 +119,33 @@ struct ChatRequest {
     stream: bool,
 }
 
-#[derive(Deserialize)]
-struct ChatResponse {
-    #[serde(default)]
-    model: Option<String>,
-    #[serde(default)]
-    choices: Vec<ChatChoice>,
-}
-
-#[derive(Deserialize)]
-struct ChatChoice {
-    message: ChatChoiceMessage,
+/// One parsed SSE `data:` chunk from a streamed chat completion.
+struct StreamDelta {
+    content: Option<String>,
     /// `"stop"` | `"length"` | … — `"length"` on a reasoning model means it never reached the answer.
-    #[serde(default)]
     finish_reason: Option<String>,
+    model: Option<String>,
 }
 
-#[derive(Deserialize)]
-struct ChatChoiceMessage {
-    #[serde(default)]
-    content: String,
+/// Parse one SSE payload (already stripped of the `data:` prefix). `None` for `[DONE]` / unparseable.
+fn parse_stream_event(data: &str) -> Option<StreamDelta> {
+    if data == "[DONE]" {
+        return None;
+    }
+    let v: serde_json::Value = serde_json::from_str(data).ok()?;
+    let choice = v.get("choices").and_then(|c| c.get(0));
+    Some(StreamDelta {
+        content: choice
+            .and_then(|c| c.get("delta"))
+            .and_then(|d| d.get("content"))
+            .and_then(|x| x.as_str())
+            .map(String::from),
+        finish_reason: choice
+            .and_then(|c| c.get("finish_reason"))
+            .and_then(|x| x.as_str())
+            .map(String::from),
+        model: v.get("model").and_then(|x| x.as_str()).map(String::from),
+    })
 }
 
 /// Strip a reasoning model's chain-of-thought from the visible answer: drop any `<think>…</think>`
@@ -224,6 +231,27 @@ impl App {
     /// `Err(AppError::Llm)` on disabled / unreachable / bad / unsafe output — the UI then keeps the
     /// deterministic brief unchanged. Never the *only* output the user sees.
     pub async fn narrate_brief(&self, brief: &SubjectBrief) -> Result<NarratedBrief, AppError> {
+        self.narrate_brief_streaming(brief, |_| {}).await
+    }
+
+    /// Build the subject's brief and narrate it, streaming visible answer text to `on_chunk` as it
+    /// arrives (M3). The final return value is authoritative; chunks are a live preview.
+    pub async fn narrate_subject_streaming(
+        &self,
+        guid: SampleGuid,
+        on_chunk: impl FnMut(&str),
+    ) -> Result<NarratedBrief, AppError> {
+        let brief = self.subject_brief(guid).await?;
+        self.narrate_brief_streaming(&brief, on_chunk).await
+    }
+
+    /// Streaming core for narration: cache-first (a hit replays the cached prose through `on_chunk`),
+    /// else stream a completion, health-guard, and cache.
+    pub async fn narrate_brief_streaming(
+        &self,
+        brief: &SubjectBrief,
+        mut on_chunk: impl FnMut(&str),
+    ) -> Result<NarratedBrief, AppError> {
         let cfg = llm_config();
         if !cfg.enabled {
             return Err(AppError::Llm("The AI assistant is turned off.".into()));
@@ -241,6 +269,7 @@ impl App {
             .ok()
             .and_then(|s| serde_json::from_str::<NarratedBrief>(&s).ok())
         {
+            on_chunk(&cached.prose);
             return Ok(cached);
         }
 
@@ -254,7 +283,9 @@ impl App {
                 content: facts,
             },
         ];
-        let (prose, used_model) = self.chat_complete(&cfg, &model, messages).await?;
+        let (prose, used_model) = self
+            .chat_complete_streaming(&cfg, &model, messages, &mut on_chunk)
+            .await?;
 
         // Post-generation guardrail: reject anything that strays into health/clinical language.
         if llm_prompt::mentions_health(&prose) {
@@ -285,6 +316,18 @@ impl App {
         guid: SampleGuid,
         history: Vec<ChatTurn>,
         question: String,
+    ) -> Result<String, AppError> {
+        self.answer_question_streaming(guid, history, question, |_| {}).await
+    }
+
+    /// Streaming variant of [`answer_question`]: visible answer text is sent to `on_chunk` as it
+    /// arrives (the final return value is authoritative). The scope-guard deflections do not stream.
+    pub async fn answer_question_streaming(
+        &self,
+        guid: SampleGuid,
+        history: Vec<ChatTurn>,
+        question: String,
+        mut on_chunk: impl FnMut(&str),
     ) -> Result<String, AppError> {
         let cfg = llm_config();
         if !cfg.enabled {
@@ -321,7 +364,9 @@ impl App {
             content: question,
         });
 
-        let (answer, _) = self.chat_complete(&cfg, &model, messages).await?;
+        let (answer, _) = self
+            .chat_complete_streaming(&cfg, &model, messages, &mut on_chunk)
+            .await?;
         // Outgoing scope guard: a strayed answer is replaced by the deflection, not shown.
         if llm_prompt::mentions_health(&answer) {
             return Ok(llm_prompt::health_deflection().to_string());
@@ -343,21 +388,24 @@ impl App {
         }
     }
 
-    /// POST a chat completion and return `(answer, model)` with reasoning stripped. Shared by
-    /// narration and Q&A. Errors on unreachable server, bad response, or empty/reasoning-truncated
-    /// output (callers apply their own health guard).
-    async fn chat_complete(
+    /// Stream a chat completion (`stream: true`), forwarding visible answer text to `on_chunk` as it
+    /// arrives and returning the final `(answer, model)` with reasoning stripped. Reasoning is
+    /// suppressed live: only the post-`</think>` answer streams (so a thinking model shows nothing
+    /// until it starts answering). Uses `Response::chunk()` (no extra dependency). Shared by
+    /// narration and Q&A; callers apply their own health guard.
+    async fn chat_complete_streaming(
         &self,
         cfg: &LlmConfig,
         model: &str,
         messages: Vec<ChatMessage>,
+        mut on_chunk: impl FnMut(&str),
     ) -> Result<(String, String), AppError> {
         let req = ChatRequest {
             model: model.to_string(),
             messages,
             temperature: 0.4,
             max_tokens: cfg.max_tokens,
-            stream: false,
+            stream: true,
         };
         let url = format!("{}/chat/completions", cfg.base_url.trim_end_matches('/'));
         let resp = self
@@ -370,18 +418,53 @@ impl App {
             .send()
             .await
             .map_err(|e| AppError::Llm(format!("Could not reach the local model server: {e}")))?;
-        let resp = resp
+        let mut resp = resp
             .error_for_status()
             .map_err(|e| AppError::Llm(format!("The model server returned an error: {e}")))?;
-        let parsed: ChatResponse = resp
-            .json()
-            .await
-            .map_err(|e| AppError::Llm(format!("Unexpected response from the server: {e}")))?;
 
-        let choice = parsed.choices.first();
-        let answer = choice.map(|c| strip_reasoning(&c.message.content)).unwrap_or_default();
+        let mut buf: Vec<u8> = Vec::new();
+        let mut full = String::new();
+        let mut prev_visible = String::new();
+        let mut finish_reason: Option<String> = None;
+        let mut used_model: Option<String> = None;
+
+        while let Some(bytes) = resp
+            .chunk()
+            .await
+            .map_err(|e| AppError::Llm(format!("The connection to the model was interrupted: {e}")))?
+        {
+            buf.extend_from_slice(&bytes);
+            // Process every complete `\n`-terminated SSE line (decoded only once whole, so a
+            // multibyte char split across network chunks stays intact).
+            while let Some(pos) = buf.iter().position(|&b| b == b'\n') {
+                let line_bytes: Vec<u8> = buf.drain(..=pos).collect();
+                let line = String::from_utf8_lossy(&line_bytes);
+                let Some(data) = line.trim().strip_prefix("data:") else {
+                    continue;
+                };
+                let Some(ev) = parse_stream_event(data.trim()) else {
+                    continue;
+                };
+                if used_model.is_none() {
+                    used_model = ev.model;
+                }
+                if ev.finish_reason.is_some() {
+                    finish_reason = ev.finish_reason;
+                }
+                if let Some(c) = ev.content {
+                    full.push_str(&c);
+                    let visible = strip_reasoning(&full);
+                    if visible.len() > prev_visible.len() && visible.starts_with(&prev_visible) {
+                        on_chunk(&visible[prev_visible.len()..]);
+                        prev_visible = visible;
+                    }
+                }
+            }
+        }
+
+        let answer = strip_reasoning(&full);
         if answer.is_empty() {
-            let truncated = choice.and_then(|c| c.finish_reason.as_deref()) == Some("length");
+            let truncated = finish_reason.as_deref() == Some("length");
             return Err(AppError::Llm(if truncated {
                 "The model ran out of room before answering — it spent its budget reasoning. Raise \
                  'Max response tokens' in Settings, or use a smaller / non-reasoning model."
@@ -390,7 +473,7 @@ impl App {
                 "The model returned an empty response.".into()
             }));
         }
-        Ok((answer, parsed.model.unwrap_or_else(|| model.to_string())))
+        Ok((answer, used_model.unwrap_or_else(|| model.to_string())))
     }
 }
 
@@ -430,6 +513,18 @@ mod tests {
         assert_eq!(strip_reasoning("<think>a</think>answer <think>b"), "answer");
         // Unterminated reasoning (hit the cap) → nothing usable.
         assert_eq!(strip_reasoning("<think>still thinking"), "");
+    }
+
+    #[test]
+    fn stream_event_parsing() {
+        let e = parse_stream_event(r#"{"model":"m","choices":[{"delta":{"content":"Hi"}}]}"#).unwrap();
+        assert_eq!(e.content.as_deref(), Some("Hi"));
+        assert_eq!(e.model.as_deref(), Some("m"));
+        let e = parse_stream_event(r#"{"choices":[{"delta":{},"finish_reason":"length"}]}"#).unwrap();
+        assert_eq!(e.content, None);
+        assert_eq!(e.finish_reason.as_deref(), Some("length"));
+        assert!(parse_stream_event("[DONE]").is_none());
+        assert!(parse_stream_event("not json").is_none());
     }
 
     #[test]
