@@ -148,6 +148,57 @@ impl NavigatorApp {
                         self.project_str_loading = false;
                     }
                 }
+                Event::SubjectBrief { guid, brief } => {
+                    if self.selected_sample == Some(guid) {
+                        self.subject_brief = Some((guid, *brief));
+                        self.subject_brief_loading = false;
+                    }
+                }
+                Event::BriefNarrationChunk { guid, text } => {
+                    if self.selected_sample == Some(guid) {
+                        match &mut self.narration_stream {
+                            Some((g, buf)) if *g == guid => buf.push_str(&text),
+                            _ => self.narration_stream = Some((guid, text)),
+                        }
+                    }
+                }
+                Event::BriefNarration { guid, result } => {
+                    if self.selected_sample == Some(guid) {
+                        self.narrating = false;
+                        self.narration_stream = None; // the final result is authoritative
+                        match result {
+                            Ok(narration) => self.brief_narration = Some((guid, narration)),
+                            // Fallback: keep the deterministic brief; surface why in the status line.
+                            Err(msg) => {
+                                self.brief_narration = None;
+                                self.status = format!("{} {msg}", self.tr("brief.aiUnavailable"));
+                            }
+                        }
+                    }
+                }
+                Event::ChatAnswerChunk { guid, text } => {
+                    if self.selected_sample == Some(guid) {
+                        // Append to the pending (last) assistant turn.
+                        if let Some(turn) = self.chat_history.last_mut().filter(|t| !t.from_user) {
+                            turn.text.push_str(&text);
+                        }
+                    }
+                }
+                Event::ChatAnswer { guid, result } => {
+                    if self.selected_sample == Some(guid) {
+                        self.chat_pending = false;
+                        let text = match result {
+                            Ok(answer) => answer,
+                            Err(msg) => format!("{} {msg}", self.tr("brief.aiUnavailable")),
+                        };
+                        // Set the authoritative answer on the pending assistant turn (pre-pushed on
+                        // send); fall back to appending one if it's missing.
+                        match self.chat_history.last_mut().filter(|t| !t.from_user) {
+                            Some(turn) => turn.text = text,
+                            None => self.chat_history.push(ChatTurn { from_user: false, text }),
+                        }
+                    }
+                }
                 Event::ProjectAnalyzed {
                     project_id,
                     samples,
@@ -208,6 +259,14 @@ impl NavigatorApp {
                 Event::BiosampleDataCleared(guid) => {
                     self.status = self.tr("clear.done").to_string();
                     // Fully reload the subject view from the now-empty DB + refresh the list columns.
+                    if self.selected_sample == Some(guid) {
+                        self.select_sample(guid);
+                    }
+                    let _ = self.tx.send(Command::LoadAllBiosamples);
+                }
+                Event::HaplogroupDataReset(guid) => {
+                    self.status = self.tr("resetHaplo.done").to_string();
+                    // Reload the subject (re-reads the now-empty placement → brief refreshes).
                     if self.selected_sample == Some(guid) {
                         self.select_sample(guid);
                     }
@@ -358,6 +417,8 @@ impl NavigatorApp {
                     if self.selected_sample == Some(biosample_guid) {
                         self.consensus_y = y;
                         self.consensus_mt = mt;
+                        // Consensus drives the Simple-mode brief — (re)build it now (no-op in Advanced).
+                        self.reload_subject_brief();
                     }
                 }
                 Event::Audit {
@@ -421,6 +482,24 @@ impl NavigatorApp {
                             verify: String::new(),
                         })
                         .collect();
+                }
+                Event::LlmConnection(result) => {
+                    self.llm_testing = false;
+                    match result {
+                        Ok(models) => {
+                            let n = models.len();
+                            // Prefill the model field with the server's single loaded model.
+                            if self.settings_form.llm_model.trim().is_empty() && models.len() == 1 {
+                                self.settings_form.llm_model = models[0].clone();
+                            }
+                            self.llm_models = models;
+                            self.llm_test_msg = Some(format!("{} {}", self.tr("settings.ai.ok"), n));
+                        }
+                        Err(msg) => {
+                            self.llm_models.clear();
+                            self.llm_test_msg = Some(msg);
+                        }
+                    }
                 }
                 Event::ReferenceSettingsChanged => {
                     self.status = "Reference settings saved".into();
@@ -951,6 +1030,19 @@ impl NavigatorApp {
         }
     }
 
+    /// (Re)build the Simple-mode Subject Brief off the UI thread. Only meaningful in Simple mode;
+    /// called on subject select and whenever the subject's haplogroups/coverage change. No-op when
+    /// no subject is selected. Cheap (cache reads + pack lookups).
+    pub(crate) fn reload_subject_brief(&mut self) {
+        if self.ui_mode != UiMode::Simple {
+            return;
+        }
+        if let Some(guid) = self.selected_sample {
+            self.subject_brief_loading = true;
+            let _ = self.tx.send(Command::LoadSubjectBrief(guid));
+        }
+    }
+
     pub(crate) fn select_sample(&mut self, guid: SampleGuid) {
         self.selected_sample = Some(guid);
         self.y_sub = YSub::default();
@@ -1002,6 +1094,16 @@ impl NavigatorApp {
         self.audit_y.clear();
         self.audit_mt.clear();
         self.heteroplasmy = None;
+        self.subject_brief = None;
+        self.brief_narration = None;
+        self.narration_stream = None;
+        self.narrating = false;
+        self.chat_history.clear();
+        self.chat_input.clear();
+        self.chat_pending = false;
+        // The Simple-mode brief is (re)built from the Consensus event below (always fired by
+        // LoadConsensus), so a later analysis refreshes it too. Show the spinner meanwhile.
+        self.subject_brief_loading = self.ui_mode == UiMode::Simple;
         let _ = self.tx.send(Command::LoadConsensus(guid));
         // Refresh the list's Y/mt columns (picks up an assignment made on another row).
         let _ = self.tx.send(Command::LoadHaploSummary);

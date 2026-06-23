@@ -139,6 +139,7 @@ impl NavigatorApp {
         // Deferred actions (dispatched after the closure, since only `self.tr` is used inside it).
         let mut verify_build: Option<String> = None;
         let mut lift_request = false;
+        let mut test_llm: Option<String> = None;
 
         modal_frame(ctx, "settings_modal", 580.0, |ui| {
             ui.label(egui::RichText::new(self.tr("settings.title")).strong().size(16.0));
@@ -201,6 +202,84 @@ impl NavigatorApp {
                 ui.horizontal(|ui| {
                     ui.label(self.tr("settings.treeTtl"));
                     ui.add(egui::TextEdit::singleline(&mut form.tree_ttl_days).desired_width(60.0));
+                });
+                ui.add_space(8.0);
+
+                // --- AI assistant (local LLM) ---
+                ui.label(egui::RichText::new(self.tr("settings.ai")).strong());
+                ui.checkbox(&mut form.llm_enabled, self.tr("settings.ai.enable"));
+                ui.add_enabled_ui(form.llm_enabled, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.label(self.tr("settings.ai.baseUrl"));
+                        ui.add(
+                            egui::TextEdit::singleline(&mut form.llm_base_url)
+                                .hint_text(navigator_app::llm::DEFAULT_LLM_BASE_URL)
+                                .desired_width(300.0),
+                        );
+                    });
+                    // Quick-pick host ports.
+                    ui.horizontal(|ui| {
+                        ui.label(self.tr("settings.ai.presets"));
+                        if ui.small_button("LM Studio").clicked() {
+                            form.llm_base_url = "http://localhost:1234/v1".into();
+                        }
+                        if ui.small_button("Ollama").clicked() {
+                            form.llm_base_url = "http://localhost:11434/v1".into();
+                        }
+                        if ui.small_button("llama.cpp").clicked() {
+                            form.llm_base_url = "http://localhost:8080/v1".into();
+                        }
+                    });
+                    ui.horizontal(|ui| {
+                        if ui
+                            .add_enabled(!self.llm_testing, egui::Button::new(self.tr("settings.ai.test")))
+                            .clicked()
+                        {
+                            test_llm = Some(form.llm_base_url.trim().to_string());
+                        }
+                        if self.llm_testing {
+                            ui.spinner();
+                        }
+                        if let Some(msg) = &self.llm_test_msg {
+                            ui.label(egui::RichText::new(msg).weak().small());
+                        }
+                    });
+                    // Model picker — populated by a successful Test connection.
+                    ui.horizontal(|ui| {
+                        ui.label(self.tr("settings.ai.model"));
+                        let current = if form.llm_model.is_empty() {
+                            self.tr("settings.ai.modelAuto").to_string()
+                        } else {
+                            form.llm_model.clone()
+                        };
+                        egui::ComboBox::from_id_salt("settings_llm_model")
+                            .selected_text(current)
+                            .show_ui(ui, |ui| {
+                                ui.selectable_value(
+                                    &mut form.llm_model,
+                                    String::new(),
+                                    self.tr("settings.ai.modelAuto"),
+                                );
+                                for m in &self.llm_models {
+                                    ui.selectable_value(&mut form.llm_model, m.clone(), m);
+                                }
+                            });
+                    });
+                    ui.horizontal(|ui| {
+                        ui.label(self.tr("settings.ai.maxTokens"));
+                        ui.add(egui::TextEdit::singleline(&mut form.llm_max_tokens).desired_width(80.0));
+                        ui.label(egui::RichText::new(self.tr("settings.ai.maxTokensHint")).weak().small());
+                    });
+                    // Privacy line — turns to a warning for a non-loopback URL.
+                    if navigator_app::llm::is_loopback_url(&form.llm_base_url) {
+                        ui.label(egui::RichText::new(self.tr("settings.ai.local")).weak().small());
+                    } else {
+                        ui.label(
+                            egui::RichText::new(self.tr("settings.ai.remoteWarn"))
+                                .small()
+                                .color(egui::Color32::from_rgb(230, 170, 80)),
+                        );
+                    }
                 });
                 ui.add_space(8.0);
 
@@ -362,11 +441,25 @@ impl NavigatorApp {
                 }),
                 prompt_before_download: Some(form.prompt_before_download),
                 ui_scale: Some(form.ui_scale),
+                // Interface mode is toggled from the app bar, not this dialog — preserve it.
+                ui_mode: AppSettings::load().ui_mode,
+                llm_enabled: Some(form.llm_enabled),
+                llm_base_url: {
+                    let u = form.llm_base_url.trim().to_string();
+                    (!u.is_empty()).then_some(u)
+                },
+                llm_model: {
+                    let m = form.llm_model.trim().to_string();
+                    (!m.is_empty()).then_some(m)
+                },
+                llm_max_tokens: form.llm_max_tokens.trim().parse::<u32>().ok().filter(|n| *n > 0),
             };
             match settings.save() {
                 Ok(()) => self.status = self.tr("settings.saved").to_string(),
                 Err(e) => self.status = format!("Could not save settings: {e}"),
             }
+            // Reflect the AI toggle immediately (gates the "Polish with AI" affordance).
+            self.ai_enabled = form.llm_enabled;
             for row in &form.references {
                 let local = row.local_path.trim().to_string();
                 let _ = self.tx.send(Command::SetReferenceOverride {
@@ -381,6 +474,11 @@ impl NavigatorApp {
         if let Some(build) = verify_build {
             self.status = format!("Verifying {build}…");
             let _ = self.tx.send(Command::VerifyReference { build });
+        }
+        if let Some(base_url) = test_llm {
+            self.llm_testing = true;
+            self.llm_test_msg = Some(self.tr("settings.ai.testing").to_string());
+            let _ = self.tx.send(Command::TestLlmConnection { base_url });
         }
         if lift_request {
             self.status = "Lifting VCF…".into();
@@ -485,6 +583,50 @@ impl NavigatorApp {
         });
         if close {
             self.confirm_clear = None;
+        }
+    }
+
+    /// Confirm resetting only the subject's haplogroup placement (stale-lineage cleanup) — keeps
+    /// coverage/ancestry/imported data; the placement re-derives on the next full analysis / re-import.
+    pub(crate) fn reset_haplo_modal(&mut self, ctx: &egui::Context) {
+        let Some(guid) = self.confirm_reset_haplo else { return };
+        let name = self
+            .all_biosamples
+            .iter()
+            .chain(self.samples.iter())
+            .find(|b| b.guid == guid)
+            .map(|b| b.donor_identifier.clone())
+            .unwrap_or_else(|| guid.0.to_string());
+
+        let mut close = false;
+        modal_frame(ctx, "reset_haplo_modal", 440.0, |ui| {
+            ui.label(egui::RichText::new(self.tr("resetHaplo.title")).strong().size(16.0));
+            ui.separator();
+            ui.add_space(8.0);
+            ui.label(format!("{} “{}”?", self.tr("resetHaplo.confirm"), name));
+            ui.add_space(6.0);
+            ui.label(egui::RichText::new(self.tr("resetHaplo.note")).weak().small());
+            ui.add_space(12.0);
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui
+                    .add(
+                        egui::Button::new(
+                            egui::RichText::new(self.tr("resetHaplo.action")).color(egui::Color32::WHITE),
+                        )
+                        .fill(DANGER),
+                    )
+                    .clicked()
+                {
+                    let _ = self.tx.send(Command::ClearHaplogroupData(guid));
+                    close = true;
+                }
+                if ui.button(self.tr("common.cancel")).clicked() {
+                    close = true;
+                }
+            });
+        });
+        if close {
+            self.confirm_reset_haplo = None;
         }
     }
 

@@ -384,6 +384,9 @@ async fn appview_status_error(api: &str, resp: reqwest::Response) -> AppError {
 }
 pub use navigator_analysis::ibd_attest::{IbdAttestation, IbdExchangeMsg, IbdSite};
 use navigator_domain::bisdna;
+pub use navigator_domain::brief::{
+    AncestryBrief, AncientComponent, Headline, LineageBrief, LineageKind, PackStatus, SubjectBrief, TestBrief,
+};
 use navigator_domain::chipprofile::{self, ChipProfile, NewChipProfile};
 pub use navigator_domain::consensus::{DiploidSourceObs, DiploidVariant};
 use navigator_domain::filetype;
@@ -1011,13 +1014,17 @@ pub enum ExportRequest {
     /// The subject-level **consensus** diploid VCF — the joint genotype across the subject's
     /// same-build alignments. Heavy (call + force-call per alignment).
     ConsensusDiploidVcf(SampleGuid),
+    /// The plain-language "DNA Story" brief for a subject, as a self-contained HTML document.
+    SubjectBriefHtml(SampleGuid),
 }
 
 impl ExportRequest {
     /// File extension (no dot) for the save dialog + filter.
     pub fn extension(&self) -> &'static str {
         match self {
-            ExportRequest::CoverageHtml(_) | ExportRequest::AncestryHtml(_) => "html",
+            ExportRequest::CoverageHtml(_) | ExportRequest::AncestryHtml(_) | ExportRequest::SubjectBriefHtml(_) => {
+                "html"
+            }
             ExportRequest::CallableBed(_) => "bed",
             ExportRequest::DiploidVcf(_) | ExportRequest::ConsensusDiploidVcf(_) => "vcf",
             _ => "tsv",
@@ -1036,6 +1043,7 @@ impl ExportRequest {
             ExportRequest::MtdnaTsv(_) => "mtDNA variants (TSV)",
             ExportRequest::DiploidVcf(_) => "diploid variants (VCF)",
             ExportRequest::ConsensusDiploidVcf(_) => "consensus diploid (VCF)",
+            ExportRequest::SubjectBriefHtml(_) => "DNA story (HTML)",
         }
     }
 
@@ -1049,6 +1057,7 @@ impl ExportRequest {
             ExportRequest::MtdnaTsv(id) => ("mtdna_variants", id),
             ExportRequest::DiploidVcf(id) => ("diploid_variants", id),
             ExportRequest::ConsensusDiploidVcf(_) => return format!("consensus_diploid.{}", self.extension()),
+            ExportRequest::SubjectBriefHtml(_) => return format!("dna_story.{}", self.extension()),
         };
         format!("{stem}_{id}.{}", self.extension())
     }
@@ -1528,6 +1537,56 @@ fn y_tree_provider() -> YTreeProvider {
     resolve_y_provider(env.as_deref(), settings.as_deref())
 }
 
+/// Application interface mode: a casual, single-person experience with plain-language briefs
+/// (`Simple`) vs. the full power-user UI with projects and per-source analysis (`Advanced`). This is
+/// app-level UI state, persisted in [`AppSettings`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UiMode {
+    Simple,
+    Advanced,
+}
+
+impl UiMode {
+    /// The settings-file token (`"simple"` / `"advanced"`).
+    pub fn as_str(self) -> &'static str {
+        match self {
+            UiMode::Simple => "simple",
+            UiMode::Advanced => "advanced",
+        }
+    }
+
+    /// Parse a settings/env token; unrecognized values yield `None`.
+    pub fn parse(s: &str) -> Option<UiMode> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "simple" => Some(UiMode::Simple),
+            "advanced" => Some(UiMode::Advanced),
+            _ => None,
+        }
+    }
+}
+
+/// Resolve an explicitly-configured UI mode (pure; env wins → settings → `None`). `None` means the
+/// user has never pinned a mode, so the UI applies its first-run heuristic.
+fn resolve_ui_mode(env: Option<&str>, settings: Option<&str>) -> Option<UiMode> {
+    // A recognized env value wins; an unrecognized one is ignored and falls through to settings.
+    env.and_then(UiMode::parse).or_else(|| settings.and_then(UiMode::parse))
+}
+
+/// The configured UI mode, honoring `NAVIGATOR_UI_MODE` over the persisted setting. `None` when
+/// neither is set (first run → the UI defaults from a workspace heuristic).
+pub fn configured_ui_mode() -> Option<UiMode> {
+    let env = std::env::var("NAVIGATOR_UI_MODE").ok();
+    let settings = AppSettings::load().ui_mode;
+    resolve_ui_mode(env.as_deref(), settings.as_deref())
+}
+
+/// Persist the chosen UI mode, preserving all other settings.
+pub fn persist_ui_mode(mode: UiMode) -> std::io::Result<()> {
+    let mut s = AppSettings::load();
+    s.ui_mode = Some(mode.as_str().to_string());
+    s.save()
+}
+
 /// Base URL of the DecodingUs AppView serving the tree API. Local by default for testing;
 /// switch with `DECODINGUS_APPVIEW_URL` (e.g. the production host at cutover).
 /// Resolve the AppView base URL (pure; env wins → settings → default localhost; trailing slash
@@ -1660,6 +1719,7 @@ pub struct RefBuildStatus {
 
 mod analysis;
 mod auth;
+mod brief;
 mod commands;
 mod dm;
 mod fastpath;
@@ -1668,6 +1728,8 @@ mod haplogroup;
 mod ibd_exchange;
 mod import_profiles;
 mod import_unified;
+pub mod llm;
+pub use llm::{ChatTurn, NarratedBrief};
 mod publish;
 mod queries;
 mod recruitment;
@@ -3064,6 +3126,11 @@ mod settings_tests {
             theme: Some("light".into()),
             prompt_before_download: Some(false),
             ui_scale: Some(1.5),
+            ui_mode: Some("simple".into()),
+            llm_enabled: Some(true),
+            llm_base_url: Some("http://localhost:1234/v1".into()),
+            llm_model: Some("llama-3.1-8b-instruct".into()),
+            llm_max_tokens: Some(8192),
         };
         let json = serde_json::to_string(&s).unwrap();
         assert_eq!(serde_json::from_str::<AppSettings>(&json).unwrap(), s);
@@ -3076,6 +3143,23 @@ mod settings_tests {
             AppSettings::default(),
             serde_json::from_str::<AppSettings>("{}").unwrap()
         );
+    }
+
+    #[test]
+    fn ui_mode_resolution_env_over_settings() {
+        use super::{resolve_ui_mode, UiMode};
+        // env wins
+        assert_eq!(
+            resolve_ui_mode(Some("advanced"), Some("simple")),
+            Some(UiMode::Advanced)
+        );
+        // settings used when no env
+        assert_eq!(resolve_ui_mode(None, Some("Simple")), Some(UiMode::Simple));
+        // neither set → None (UI applies its heuristic)
+        assert_eq!(resolve_ui_mode(None, None), None);
+        // unrecognized tokens are ignored
+        assert_eq!(resolve_ui_mode(Some("expert"), Some("simple")), Some(UiMode::Simple));
+        assert_eq!(resolve_ui_mode(Some("expert"), None), None);
     }
 }
 

@@ -624,6 +624,360 @@ impl NavigatorApp {
         self.auto_profile_query = query;
     }
 
+    /// The AI-assisted narration affordance for the Simple-mode brief: a "Polish with AI" /
+    /// regenerate button (only when the local AI assistant is enabled) and, once produced, a clearly-
+    /// labelled "DNA Story (AI-assisted)" block shown *above* the structured facts. The facts (the
+    /// brief cards) always render below, so the model output is never the only thing the user sees.
+    pub(crate) fn simple_ai_narration(&mut self, ui: &mut egui::Ui, guid: SampleGuid) {
+        if !self.ai_enabled {
+            return;
+        }
+        let have = matches!(&self.brief_narration, Some((g, _)) if *g == guid);
+        ui.horizontal(|ui| {
+            let label = if have {
+                self.tr("brief.aiRegenerate")
+            } else {
+                self.tr("brief.polishAi")
+            };
+            if ui.add_enabled(!self.narrating, egui::Button::new(label)).clicked() {
+                self.narrating = true;
+                self.brief_narration = None;
+                self.narration_stream = Some((guid, String::new())); // live buffer
+                let _ = self.tx.send(Command::NarrateBrief(guid));
+            }
+            if self.narrating {
+                ui.spinner();
+                ui.label(egui::RichText::new(self.tr("brief.aiWorking")).weak().small());
+            }
+        });
+
+        // Prefer the live stream while generating; fall back to the finalized narration.
+        let live = self
+            .narration_stream
+            .as_ref()
+            .filter(|(g, _)| *g == guid)
+            .map(|(_, t)| (t.as_str(), None));
+        let finalized = self
+            .brief_narration
+            .as_ref()
+            .filter(|(g, _)| *g == guid)
+            .map(|(_, n)| (n.prose.as_str(), Some(n.model.as_str())));
+        if let Some((prose, model)) = live.or(finalized) {
+            if !prose.trim().is_empty() {
+                ui.add_space(8.0);
+                card(ui, self.tr("brief.aiStory"), |ui| {
+                    for para in prose.split("\n\n").filter(|p| !p.trim().is_empty()) {
+                        ui.label(para.trim());
+                        ui.add_space(6.0);
+                    }
+                    ui.separator();
+                    ui.label(egui::RichText::new(self.tr("brief.aiDisclaimer")).weak().small());
+                    if let Some(model) = model {
+                        ui.label(
+                            egui::RichText::new(format!("{} {model}", self.tr("brief.aiModel")))
+                                .weak()
+                                .small(),
+                        );
+                    }
+                });
+            }
+        }
+        ui.add_space(10.0);
+    }
+
+    /// "Ask about your results" chat (M2): a subject-scoped Q&A grounded in the brief. Sign-in is not
+    /// required (it's local), but the AI assistant must be enabled. Answers are AI-generated from the
+    /// results, so a persistent banner says to verify against the data.
+    pub(crate) fn simple_chat_section(&mut self, ui: &mut egui::Ui, guid: SampleGuid) {
+        if !self.ai_enabled {
+            return;
+        }
+        let banner = self.tr("brief.chatBanner");
+        let hint = self.tr("brief.chatHint");
+        card(ui, self.tr("brief.chatTitle"), |ui| {
+            ui.label(egui::RichText::new(banner).weak().small());
+            ui.add_space(6.0);
+
+            // Conversation so far.
+            for turn in &self.chat_history {
+                let (who, color) = if turn.from_user {
+                    (self.tr("brief.chatYou"), egui::Color32::from_rgb(150, 190, 240))
+                } else {
+                    (self.tr("brief.chatAi"), egui::Color32::from_rgb(150, 200, 160))
+                };
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(egui::RichText::new(format!("{who}:")).strong().color(color));
+                    ui.label(&turn.text);
+                });
+                ui.add_space(4.0);
+            }
+            if self.chat_pending {
+                ui.horizontal(|ui| {
+                    ui.spinner();
+                    ui.label(egui::RichText::new(self.tr("brief.chatThinking")).weak().small());
+                });
+            }
+
+            // Input row.
+            ui.add_space(4.0);
+            let mut submit = None;
+            ui.horizontal(|ui| {
+                let resp = ui.add_enabled(
+                    !self.chat_pending,
+                    egui::TextEdit::singleline(&mut self.chat_input)
+                        .hint_text(hint)
+                        .desired_width(ui.available_width() - 80.0),
+                );
+                let enter = resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                let send = ui
+                    .add_enabled(!self.chat_pending, egui::Button::new(self.tr("brief.chatSend")))
+                    .clicked();
+                if (enter || send) && !self.chat_input.trim().is_empty() {
+                    submit = Some(self.chat_input.trim().to_string());
+                }
+            });
+            if let Some(question) = submit {
+                self.chat_input.clear();
+                // `history` is the prior conversation (before this turn).
+                let history = self.chat_history.clone();
+                self.chat_history.push(navigator_app::ChatTurn {
+                    from_user: true,
+                    text: question.clone(),
+                });
+                // Empty assistant turn the streamed chunks fill in.
+                self.chat_history.push(navigator_app::ChatTurn {
+                    from_user: false,
+                    text: String::new(),
+                });
+                self.chat_pending = true;
+                let _ = self.tx.send(Command::AskQuestion {
+                    guid,
+                    history,
+                    question,
+                });
+            }
+        });
+    }
+
+    /// Simple-mode subject view: the plain-language brief (precomputed off the UI thread). Renders a
+    /// card stack — headline, paternal & maternal lines, your test — degrading per-section when data
+    /// or reference content is missing. A discreet pack-status footer shows how fresh the narrative is.
+    pub(crate) fn subject_brief_view(&mut self, ui: &mut egui::Ui, guid: SampleGuid) {
+        let brief = match self.subject_brief.as_ref() {
+            Some((g, b)) if *g == guid => b,
+            _ => {
+                if self.subject_brief_loading {
+                    ui.horizontal(|ui| {
+                        ui.spinner();
+                        ui.label(egui::RichText::new(self.tr("brief.building")).weak());
+                    });
+                } else {
+                    ui.label(egui::RichText::new(self.tr("brief.empty")).weak());
+                }
+                return;
+            }
+        };
+
+        // Headline: name, friendly test chip, one-line "who you are".
+        ui.heading(&brief.headline.name);
+        ui.horizontal(|ui| {
+            chip(
+                ui,
+                &brief.headline.test_chip,
+                egui::Color32::from_rgb(40, 52, 70),
+                egui::Color32::from_rgb(150, 190, 240),
+            );
+        });
+        ui.add_space(4.0);
+        ui.label(&brief.headline.summary);
+        ui.add_space(12.0);
+
+        if let Some(p) = &brief.paternal {
+            card(ui, self.tr("brief.paternalLine"), |ui| self.brief_lineage_card(ui, p));
+            ui.add_space(10.0);
+        }
+        if let Some(m) = &brief.maternal {
+            card(ui, self.tr("brief.maternalLine"), |ui| self.brief_lineage_card(ui, m));
+            ui.add_space(10.0);
+        }
+
+        if let Some(a) = &brief.ancestry {
+            let detail_label = self.tr("brief.ancestryDetail");
+            let ancient_title = self.tr("brief.ancient");
+            let ancient_intro = self.tr("brief.ancientIntro");
+            let ancestry_gloss = self.tr("glossary.ancestry");
+            card(ui, self.tr("brief.ancestry"), |ui| {
+                ui.heading(&a.summary_phrase).on_hover_text(ancestry_gloss);
+                ui.add_space(6.0);
+                ui.horizontal(|ui| {
+                    draw_ancestry_donut(ui, &a.super_populations);
+                    ui.add_space(8.0);
+                    ui.vertical(|ui| {
+                        for sp in &a.super_populations {
+                            if sp.percentage >= 0.5 {
+                                ui.label(format!("{}  —  {:.1}%", sp.super_population, sp.percentage));
+                            }
+                        }
+                    });
+                });
+                if !a.fine_pops.is_empty() {
+                    ui.add_space(4.0);
+                    egui::CollapsingHeader::new(detail_label)
+                        .id_salt("brief_fine_pops")
+                        .show(ui, |ui| {
+                            for (name, pct) in a.fine_pops.iter().filter(|(_, p)| *p >= 0.5) {
+                                ui.label(format!("{name}  —  {pct:.1}%"));
+                            }
+                        });
+                }
+                if let Some(interp) = &a.interpretation {
+                    ui.add_space(6.0);
+                    ui.label(interp);
+                }
+
+                // Ancient-ancestry pie + per-component explanations (prehistoric source populations).
+                if !a.ancient_pops.is_empty() {
+                    ui.add_space(8.0);
+                    ui.separator();
+                    ui.strong(ancient_title).on_hover_text(self.tr("glossary.ancient"));
+                    ui.label(egui::RichText::new(ancient_intro).weak().small());
+                    ui.add_space(6.0);
+                    let slices: Vec<(f64, egui::Color32)> = a
+                        .ancient_pops
+                        .iter()
+                        .map(|c| (c.percentage, parse_hex_color(&c.color)))
+                        .collect();
+                    let top_pct = a.ancient_pops.first().map(|c| c.percentage);
+                    ui.horizontal(|ui| {
+                        draw_color_donut(ui, &slices, top_pct);
+                        ui.add_space(8.0);
+                        ui.vertical(|ui| {
+                            for c in &a.ancient_pops {
+                                ui.horizontal(|ui| {
+                                    let (rect, _) =
+                                        ui.allocate_exact_size(egui::vec2(11.0, 11.0), egui::Sense::hover());
+                                    ui.painter().rect_filled(rect, 2.0, parse_hex_color(&c.color));
+                                    ui.label(format!("{}  —  {:.1}%", c.name, c.percentage));
+                                });
+                            }
+                        });
+                    });
+                    // Explanations, one per ancient source that has pack content.
+                    for c in &a.ancient_pops {
+                        if let Some(blurb) = &c.blurb {
+                            ui.add_space(4.0);
+                            ui.label(egui::RichText::new(&c.name).strong().small());
+                            ui.label(egui::RichText::new(blurb).small());
+                        }
+                    }
+                }
+
+                ui.add_space(4.0);
+                ui.label(egui::RichText::new(&a.method_note).weak().small());
+            });
+            ui.add_space(10.0);
+        }
+
+        // Your test & quality.
+        let test = &brief.test;
+        card(ui, self.tr("brief.yourTest"), |ui| {
+            ui.strong(&test.test_name);
+            ui.add_space(2.0);
+            ui.label(&test.what_it_tells);
+            if let Some(lim) = &test.limitations {
+                ui.add_space(2.0);
+                ui.label(egui::RichText::new(lim).weak().small());
+            }
+            ui.add_space(6.0);
+            let (bg, fg, mark) = if test.quality_ok {
+                (
+                    egui::Color32::from_rgb(28, 56, 36),
+                    egui::Color32::from_rgb(120, 200, 140),
+                    "✓",
+                )
+            } else {
+                (
+                    egui::Color32::from_rgb(64, 50, 24),
+                    egui::Color32::from_rgb(230, 180, 90),
+                    "⚠",
+                )
+            };
+            chip(ui, &format!("{mark}  {}", test.quality_phrase), bg, fg);
+        });
+
+        // Global caveats.
+        if !brief.caveats.is_empty() {
+            ui.add_space(10.0);
+            for c in &brief.caveats {
+                ui.label(egui::RichText::new(format!("• {c}")).weak().small());
+            }
+        }
+
+        // Pack-status footer (how fresh the descriptions are).
+        ui.add_space(10.0);
+        let pack_key = match brief.pack_status {
+            PackStatus::Downloaded => "brief.packLive",
+            PackStatus::Cached => "brief.packCached",
+            PackStatus::Bundled => "brief.packOffline",
+            PackStatus::Unavailable => "brief.packUnavailable",
+        };
+        let mut footer = self.tr(pack_key).to_string();
+        if let Some(v) = &brief.pack_version {
+            footer = format!("{footer} · {v}");
+        }
+        if brief.enriched {
+            footer = format!("{footer} · {}", self.tr("brief.enriched"));
+        }
+        ui.label(egui::RichText::new(footer).weak().small());
+    }
+
+    /// One lineage (paternal/maternal) card body: the haplogroup, age & origin phrases, the curated
+    /// story, a confidence chip, and an expandable root→tip lineage trail.
+    fn brief_lineage_card(&self, ui: &mut egui::Ui, lb: &LineageBrief) {
+        ui.heading(&lb.haplogroup).on_hover_text(self.tr("glossary.haplogroup"));
+        if let Some(anc) = &lb.matched_ancestor {
+            ui.label(
+                egui::RichText::new(format!("{} {anc}", self.tr("brief.ancestorNote")))
+                    .weak()
+                    .small(),
+            );
+        }
+        if let Some(age) = &lb.age_phrase {
+            ui.label(egui::RichText::new(capitalize_first(age)).italics());
+        }
+        if let Some(origin) = &lb.origin_phrase {
+            ui.label(capitalize_first(origin));
+        }
+        if let Some(story) = &lb.story {
+            ui.add_space(4.0);
+            ui.label(story);
+        }
+        ui.add_space(6.0);
+        chip(
+            ui,
+            &lb.confidence_phrase,
+            egui::Color32::from_rgb(44, 48, 58),
+            egui::Color32::from_rgb(180, 190, 210),
+        );
+        if !lb.sources.is_empty() {
+            ui.label(
+                egui::RichText::new(format!("{} {}", self.tr("brief.source"), lb.sources.join(", ")))
+                    .weak()
+                    .small(),
+            );
+        }
+        if lb.lineage_path.len() > 1 {
+            ui.add_space(2.0);
+            egui::CollapsingHeader::new(self.tr("brief.lineageTrail"))
+                .id_salt(("brief_trail", matches!(lb.kind, LineageKind::Paternal)))
+                .show(ui, |ui| {
+                    // egui's default font renders no arrow glyph (→ shows as tofu); the middle dot
+                    // is safe and the path reads root→tip left-to-right.
+                    ui.label(egui::RichText::new(lb.lineage_path.join("  ·  ")).small());
+                });
+        }
+    }
+
     /// Consensus dashboard (Overview): the subject's source-of-truth at a glance — consensus Y/mt
     /// haplogroups, top ancestry, the autosomal concordance one-liner, and a source inventory.
     pub(crate) fn overview_dashboard(&mut self, ui: &mut egui::Ui, _guid: SampleGuid) {

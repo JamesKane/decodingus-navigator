@@ -42,6 +42,12 @@ impl App {
             }
             ExportRequest::DiploidVcf(id) => self.diploid_vcf_genome(*id).await,
             ExportRequest::ConsensusDiploidVcf(guid) => self.consensus_diploid_vcf(*guid).await,
+            ExportRequest::SubjectBriefHtml(guid) => {
+                let brief = self.subject_brief(*guid).await?;
+                // Fold in the AI story if one is already cached (no generation during an export).
+                let narration = self.cached_narration(&brief);
+                Ok(export::subject_brief_html(&brief, narration.as_ref()))
+            }
         }
     }
 

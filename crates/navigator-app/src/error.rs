@@ -63,6 +63,11 @@ pub enum AppError {
     /// still has sequencing data or profiles).
     #[error("{0}")]
     Conflict(String),
+
+    /// A local-LLM operation failed (server unreachable, bad response, etc.). The message is
+    /// plain-language for the Settings "Test connection" UI.
+    #[error("{0}")]
+    Llm(String),
 }
 
 impl From<tokio::task::JoinError> for AppError {

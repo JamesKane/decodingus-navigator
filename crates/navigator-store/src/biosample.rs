@@ -178,6 +178,28 @@ pub async fn clear_data(pool: &SqlitePool, guid: SampleGuid) -> Result<(), Store
     Ok(())
 }
 
+/// Clear *only* a subject's haplogroup placement state — the per-source calls, the pooled
+/// consensus snapshot, and the reconciliation override/audit — for both Y and mtDNA. Coverage,
+/// ancestry, imported profiles, runs and alignments are untouched. Used to drop a stale legacy
+/// lineage (e.g. an old ISOGG-named trail) so the next analysis re-places it consistently.
+pub async fn clear_haplogroup_data(pool: &SqlitePool, guid: SampleGuid) -> Result<(), StoreError> {
+    let g = guid.0.to_string();
+    let mut tx = pool.begin().await?;
+    for table in [
+        "haplogroup_call",
+        "consensus_profile",
+        "reconciliation_override",
+        "reconciliation_audit",
+    ] {
+        sqlx::query(&format!("DELETE FROM {table} WHERE biosample_guid = ?"))
+            .bind(&g)
+            .execute(&mut *tx)
+            .await?;
+    }
+    tx.commit().await?;
+    Ok(())
+}
+
 /// Delete a biosample row. Returns whether a row was removed. Callers must ensure no
 /// dependent rows reference it (sequence runs, profiles, etc.) — the app layer guards this.
 pub async fn delete(pool: &SqlitePool, guid: SampleGuid) -> Result<bool, StoreError> {

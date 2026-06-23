@@ -6,21 +6,23 @@ use std::path::PathBuf;
 use std::sync::mpsc::Receiver;
 
 use crate::charts::{
-    asset_status_line, coverage_histogram_chart, draw_ancestry_donut, draw_chromosome_painting, draw_composition_bar,
-    draw_ibd_segments, draw_pca_scatter, draw_population_components, draw_variant_track, TrackRegion, VariantMark,
+    asset_status_line, coverage_histogram_chart, draw_ancestry_donut, draw_chromosome_painting, draw_color_donut,
+    draw_composition_bar, draw_ibd_segments, draw_pca_scatter, draw_population_components, draw_variant_track,
+    parse_hex_color, TrackRegion, VariantMark,
 };
 use crate::widgets::{
-    card, chip, combo, empty_state, fmt_depth, fmt_pct, fmt_reads, natural_cmp, opt, provider_abbrev, show_assignment,
-    sortable_header, stat_card, variant_change, TableControls,
+    capitalize_first, card, chip, combo, empty_state, fmt_depth, fmt_pct, fmt_reads, natural_cmp, opt, provider_abbrev,
+    show_assignment, sortable_header, stat_card, variant_change, TableControls,
 };
 use eframe::egui;
 use navigator_app::{
-    AncestryResult, AncestrySegment, AppSettings, AuditEntry, BatchImportSummary, BuildNeed, CallState,
+    AncestryResult, AncestrySegment, AppSettings, AuditEntry, BatchImportSummary, BuildNeed, CallState, ChatTurn,
     CompatibilityLevel, Consensus, Coverage, DenovoCall, DnaType, FtdnaGenealogy, FtdnaImportPlan, FtdnaResolution,
-    HaploAssignment, HeteroplasmySite, IbdComparison, IbdSuggestion, IdentityVerification, MatchKind, MtRegion,
-    MtVariant, PanelGenotype, PrivateBucket, PrivateClass, ProjectOverview, ProjectSampleReport, ProjectStrChart,
-    ReadMetrics, RefBuildStatus, SexInferenceResult, SnpEvidence, SourceType, StrConcordanceRow, SvAnalysisResult,
-    VerificationStatus, YMatch, YProfile, YSignal, YState, YVariantStatus, YstrClustering,
+    HaploAssignment, HeteroplasmySite, IbdComparison, IbdSuggestion, IdentityVerification, LineageBrief, LineageKind,
+    MatchKind, MtRegion, MtVariant, NarratedBrief, PackStatus, PanelGenotype, PrivateBucket, PrivateClass,
+    ProjectOverview, ProjectSampleReport, ProjectStrChart, ReadMetrics, RefBuildStatus, SexInferenceResult,
+    SnpEvidence, SourceType, StrConcordanceRow, SubjectBrief, SvAnalysisResult, UiMode, VerificationStatus, YMatch,
+    YProfile, YSignal, YState, YVariantStatus, YstrClustering,
 };
 use navigator_domain::chipprofile::{self, ChipProfile};
 use navigator_domain::du_domain::ids::SampleGuid;
@@ -228,6 +230,11 @@ struct SettingsForm {
     prompt_before_download: bool,
     /// UI scale (egui zoom factor); 1.0 = native.
     ui_scale: f32,
+    /// Local-LLM (AI assistant) settings.
+    llm_enabled: bool,
+    llm_base_url: String,
+    llm_model: String,
+    llm_max_tokens: String,
     references: Vec<RefRow>,
     /// VCF-liftover tool state (input/output paths, target build, PAR filter).
     lift_in: String,
@@ -249,6 +256,15 @@ impl SettingsForm {
                 .unwrap_or_else(|| "7".to_string()),
             prompt_before_download: s.prompt_before_download.unwrap_or(true),
             ui_scale: s.ui_scale.unwrap_or(1.0),
+            llm_enabled: s.llm_enabled.unwrap_or(false),
+            llm_base_url: s
+                .llm_base_url
+                .unwrap_or_else(|| navigator_app::llm::DEFAULT_LLM_BASE_URL.to_string()),
+            llm_model: s.llm_model.unwrap_or_default(),
+            llm_max_tokens: s
+                .llm_max_tokens
+                .unwrap_or(navigator_app::llm::DEFAULT_LLM_MAX_TOKENS)
+                .to_string(),
             references: Vec::new(),
             lift_in: String::new(),
             lift_out: String::new(),
@@ -429,6 +445,8 @@ pub struct NavigatorApp {
     confirm_delete: Option<SampleGuid>,
     /// Subject pending "clear all data" confirmation (Some ⇒ the confirm dialog is shown).
     confirm_clear: Option<SampleGuid>,
+    /// Subject pending "reset haplogroup placement" confirmation (Some ⇒ the confirm dialog is shown).
+    confirm_reset_haplo: Option<SampleGuid>,
     /// The last batch-import summary, shown in a modal until dismissed.
     batch_import: Option<BatchImportSummary>,
     /// Y-STR-from-sequence concordance for the selected subject: `(guid, source alignment, rows)`.
@@ -462,6 +480,31 @@ pub struct NavigatorApp {
     frame_time: f64,
     /// Selected primary navigation tab.
     nav: Nav,
+    /// Interface mode: Simple (casual single-person briefs) vs. Advanced (full power-user UI).
+    ui_mode: UiMode,
+    /// Whether the mode was explicitly pinned (env / settings / user toggle). When `false` the
+    /// first-run workspace heuristic may still adjust it as data loads.
+    ui_mode_pinned: bool,
+    /// Precomputed Simple-mode brief for the selected subject `(guid, brief)`; `None` until built.
+    subject_brief: Option<(SampleGuid, SubjectBrief)>,
+    /// Whether a Subject Brief build is in flight.
+    subject_brief_loading: bool,
+    /// Free-text filter over the Simple-mode "My DNA" subject selector (matches the donor name).
+    simple_subject_filter: String,
+    /// Whether the local-LLM "AI assistant" is enabled (cached from settings; gates "Polish with AI").
+    ai_enabled: bool,
+    /// AI-assisted narration of the selected subject's brief `(guid, narration)`; `None` until run.
+    brief_narration: Option<(SampleGuid, NarratedBrief)>,
+    /// Live narration text accumulating while it streams `(guid, text)`; cleared when the final
+    /// narration arrives.
+    narration_stream: Option<(SampleGuid, String)>,
+    /// Whether a brief narration request is in flight.
+    narrating: bool,
+    /// "Ask my results" chat history for the selected subject (cleared on subject switch).
+    chat_history: Vec<ChatTurn>,
+    /// The chat input box + whether an answer is in flight.
+    chat_input: String,
+    chat_pending: bool,
     /// Selected subject-detail sub-tab.
     detail_tab: DetailTab,
     /// Active UI language.
@@ -473,6 +516,11 @@ pub struct NavigatorApp {
     /// Settings dialog open + its editable form.
     show_settings: bool,
     settings_form: SettingsForm,
+    /// Local-LLM "Test connection" state (Settings → AI assistant): discovered models, an in-flight
+    /// flag, and the last plain-language status/error line.
+    llm_models: Vec<String>,
+    llm_testing: bool,
+    llm_test_msg: Option<String>,
     /// Sort + inline per-column filter state for the subjects table.
     subjects_table_ctl: TableControls,
     /// Collapse the subjects side panel to a thin strip so the detail panel (charts/tables)
@@ -851,6 +899,7 @@ impl NavigatorApp {
             edit_subject: None,
             confirm_delete: None,
             confirm_clear: None,
+            confirm_reset_haplo: None,
             batch_import: None,
             str_concordance: None,
             str_running: false,
@@ -868,6 +917,21 @@ impl NavigatorApp {
             edit_alignment: None,
             frame_time: 0.0,
             nav: Nav::Subjects,
+            // Pinned mode (env / settings) wins; else default Simple provisionally and let the
+            // first-run workspace heuristic adjust once subjects/projects load (see
+            // `apply_ui_mode_heuristic`).
+            ui_mode: navigator_app::configured_ui_mode().unwrap_or(UiMode::Simple),
+            ui_mode_pinned: navigator_app::configured_ui_mode().is_some(),
+            subject_brief: None,
+            subject_brief_loading: false,
+            simple_subject_filter: String::new(),
+            ai_enabled: navigator_app::llm::llm_config().enabled,
+            brief_narration: None,
+            narration_stream: None,
+            narrating: false,
+            chat_history: Vec::new(),
+            chat_input: String::new(),
+            chat_pending: false,
             detail_tab: DetailTab::Overview,
             // Persisted choice wins; else honor $LANG (e.g. "es_ES.UTF-8") when it names a
             // supported locale; else English.
@@ -880,6 +944,9 @@ impl NavigatorApp {
             scale_probed: AppSettings::load().ui_scale.is_some(),
             show_settings: false,
             settings_form: SettingsForm::from_settings(),
+            llm_models: Vec::new(),
+            llm_testing: false,
+            llm_test_msg: None,
             subjects_table_ctl: TableControls::sorted_by(0),
             subjects_collapsed: false,
             projects_collapsed: false,
@@ -1050,6 +1117,9 @@ impl eframe::App for NavigatorApp {
             ctx.request_repaint_after(std::time::Duration::from_millis(120));
         }
         self.drain_events();
+        // Mode upkeep: first-run heuristic (until pinned) + auto-select the sole subject in Simple.
+        self.apply_ui_mode_heuristic();
+        self.auto_select_single_subject();
         self.handle_file_drops(ctx);
         self.app_bar(ctx);
         self.nav_bar(ctx);
@@ -1090,7 +1160,9 @@ impl eframe::App for NavigatorApp {
                 ui.label(&self.status);
             });
         });
-        if self.nav == Nav::Subjects {
+        // The action bar's batch/compare/add-to-project affordances are power-user features —
+        // Advanced only.
+        if self.nav == Nav::Subjects && self.ui_mode == UiMode::Advanced {
             self.action_bar(ctx);
         }
         self.left_panel(ctx);
@@ -1104,6 +1176,7 @@ impl eframe::App for NavigatorApp {
         self.edit_subject_modal(ctx);
         self.delete_subject_modal(ctx);
         self.clear_subject_modal(ctx);
+        self.reset_haplo_modal(ctx);
         self.data_delete_modal(ctx);
         self.assign_project_modal(ctx);
         self.edit_project_modal(ctx);

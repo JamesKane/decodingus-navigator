@@ -365,6 +365,14 @@ impl App {
         Ok(())
     }
 
+    /// Reset only the subject's haplogroup placement (calls + consensus + override/audit, Y & mt),
+    /// keeping coverage/ancestry/imported data. Drops a stale legacy lineage so re-analysis re-places
+    /// it; the placement repopulates on the next full analysis (WGS) or re-import (vendor data).
+    pub async fn clear_haplogroup_data(&self, guid: SampleGuid) -> Result<(), AppError> {
+        biosample::clear_haplogroup_data(self.store.pool(), guid).await?;
+        Ok(())
+    }
+
     /// Delete an imported STR profile (and its markers).
     pub async fn delete_str_profile(&self, id: i64) -> Result<(), AppError> {
         if !str_profile::delete(self.store.pool(), id).await? {

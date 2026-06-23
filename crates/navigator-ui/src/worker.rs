@@ -14,12 +14,12 @@ use std::sync::{Arc, Mutex};
 
 use navigator_app::{
     AlignmentProbe, AncestryResult, AncestrySegment, App, AppError, AuditEntry, BatchImportSummary, BuildNeed,
-    Consensus, Coverage, DenovoCall, DmConversationSummary, DmMessage, DnaType, ExchangeSessionInfo, FtdnaGenealogy,
-    FtdnaImportOptions, FtdnaImportPlan, FtdnaImportSummary, FtdnaResolution, HaploAssignment, HeteroplasmySite,
-    IbdComparison, IbdDetectorConfig, IbdSuggestion, IdentityVerification, IncomingRequest, PanelGenotype,
-    PrivateBucket, ProjectImportSummary, ProjectOverview, ProjectSampleReport, ProjectStrChart, ReadMetrics,
-    RecruitmentInvitation, RefBuildStatus, SexInferenceResult, SourceType, StoredIbdExchange, StrConcordanceRow,
-    SvAnalysisResult, YMatch, YstrClustering,
+    ChatTurn, Consensus, Coverage, DenovoCall, DmConversationSummary, DmMessage, DnaType, ExchangeSessionInfo,
+    FtdnaGenealogy, FtdnaImportOptions, FtdnaImportPlan, FtdnaImportSummary, FtdnaResolution, HaploAssignment,
+    HeteroplasmySite, IbdComparison, IbdDetectorConfig, IbdSuggestion, IdentityVerification, IncomingRequest,
+    NarratedBrief, PanelGenotype, PrivateBucket, ProjectImportSummary, ProjectOverview, ProjectSampleReport,
+    ProjectStrChart, ReadMetrics, RecruitmentInvitation, RefBuildStatus, SexInferenceResult, SourceType,
+    StoredIbdExchange, StrConcordanceRow, SubjectBrief, SvAnalysisResult, YMatch, YstrClustering,
 };
 use navigator_domain::chipprofile::ChipProfile;
 use navigator_domain::du_domain::ids::SampleGuid;
@@ -64,6 +64,16 @@ pub enum Command {
     LoadProjectReport(i64),
     /// Load (precompute) the per-member Y-STR overview (FTDNA-style chart) for a project.
     LoadProjectStrChart(i64),
+    /// Build (off the UI thread) the plain-language Subject Brief for a subject (Simple mode).
+    LoadSubjectBrief(SampleGuid),
+    /// Narrate a subject's brief via the local LLM ("Polish with AI"); falls back on any failure.
+    NarrateBrief(SampleGuid),
+    /// Ask the local LLM a question about a subject's results (grounded in the brief).
+    AskQuestion {
+        guid: SampleGuid,
+        history: Vec<ChatTurn>,
+        question: String,
+    },
     /// Deep-analyze every sample in a project as a cancellable background job, streaming
     /// per-sample `DeepAnalyzeProgress` and yielding between samples so the UI stays responsive.
     /// Skips what the fast path already filled; cancelled via [`Command::CancelAnalysis`].
@@ -477,6 +487,8 @@ pub enum Command {
     DeleteBiosample(SampleGuid),
     /// Clear all sequencing + derived/imported analysis data for a subject, keeping the subject.
     ClearBiosampleData(SampleGuid),
+    /// Reset only the subject's haplogroup placement (stale-lineage cleanup), keeping other data.
+    ClearHaplogroupData(SampleGuid),
     /// Delete a sequence run (cascades to its alignments + artifacts). `biosample_guid` is the
     /// owner, so the UI can refresh that subject's run list.
     DeleteSequenceRun {
@@ -552,6 +564,10 @@ pub enum Command {
     },
     /// Load per-build reference-genome settings + cache status for the Settings dialog.
     LoadReferenceSettings,
+    /// Health-check a local-LLM server at `base_url` (Settings "Test connection"): lists its models.
+    TestLlmConnection {
+        base_url: String,
+    },
     /// Set a build's local-FASTA override + auto-download flag (persists reference_sources.json).
     SetReferenceOverride {
         build: String,
@@ -665,6 +681,32 @@ pub enum Event {
         project_id: i64,
         chart: ProjectStrChart,
     },
+    /// The plain-language Subject Brief for a subject (Simple mode).
+    SubjectBrief {
+        guid: SampleGuid,
+        brief: Box<SubjectBrief>,
+    },
+    /// A streamed slice of narration text as it's generated (live preview; the final BriefNarration
+    /// is authoritative).
+    BriefNarrationChunk {
+        guid: SampleGuid,
+        text: String,
+    },
+    /// AI-assisted narration of a subject's brief (or a plain-language reason it's unavailable).
+    BriefNarration {
+        guid: SampleGuid,
+        result: Result<NarratedBrief, String>,
+    },
+    /// A streamed slice of a chat answer as it's generated (live preview).
+    ChatAnswerChunk {
+        guid: SampleGuid,
+        text: String,
+    },
+    /// Answer to an "ask my results" question (or a plain-language reason it's unavailable).
+    ChatAnswer {
+        guid: SampleGuid,
+        result: Result<String, String>,
+    },
     /// A project-wide analyze pass finished (coverage + Y per sample). `cancelled` is true when a
     /// streaming deep-analyze was stopped early (counts reflect what completed before the stop).
     ProjectAnalyzed {
@@ -704,6 +746,8 @@ pub enum Event {
     RunsChanged(SampleGuid),
     /// A subject's analysis data was cleared (the UI fully reloads that subject + the list columns).
     BiosampleDataCleared(SampleGuid),
+    /// A subject's haplogroup placement was reset (the UI reloads that subject; other data stays).
+    HaplogroupDataReset(SampleGuid),
     /// Donor-level haplogroup consensus for a subject (Y, mtDNA).
     Consensus {
         biosample_guid: SampleGuid,
@@ -1004,6 +1048,8 @@ pub enum Event {
     },
     /// How many runs had their sequencing lab filled in by the AppView backfill (`0` ⇒ quiet).
     LabsResolved(usize),
+    /// Local-LLM "Test connection" result: the models the server reports, or a plain-language error.
+    LlmConnection(Result<Vec<String>, String>),
     /// Per-build reference-genome settings + cache status for the Settings dialog.
     ReferenceSettings(Vec<RefBuildStatus>),
     /// A reference override was saved; the UI may reload the settings rows.
@@ -1111,6 +1157,16 @@ pub async fn handle(app: &App, cmd: Command) -> Event {
             Ok(chart) => Event::ProjectStrChart { project_id, chart },
             Err(e) => Event::Error(e.to_string()),
         },
+        Command::LoadSubjectBrief(guid) => match app.subject_brief(guid).await {
+            Ok(brief) => Event::SubjectBrief {
+                guid,
+                brief: Box::new(brief),
+            },
+            Err(e) => Event::Error(e.to_string()),
+        },
+        // NarrateBrief / AskQuestion stream from the spawn loop; reaching here is a bug.
+        Command::NarrateBrief(guid) => Event::Error(format!("internal: unrouted NarrateBrief {guid}")),
+        Command::AskQuestion { guid, .. } => Event::Error(format!("internal: unrouted AskQuestion {guid}")),
         // DeepAnalyzeProject streams DeepAnalyzeProgress from the spawn loop; reaching here is a bug.
         Command::DeepAnalyzeProject(project_id) => {
             Event::Error(format!("internal: unrouted DeepAnalyzeProject {project_id}"))
@@ -1156,6 +1212,10 @@ pub async fn handle(app: &App, cmd: Command) -> Event {
             Ok(()) => Event::BiosampleDataCleared(guid),
             Err(e) => Event::Error(e.to_string()),
         },
+        Command::ClearHaplogroupData(guid) => match app.clear_haplogroup_data(guid).await {
+            Ok(()) => Event::HaplogroupDataReset(guid),
+            Err(e) => Event::Error(e.to_string()),
+        },
         Command::DeleteSequenceRun { id, biosample_guid } => match app.delete_sequence_run(id).await {
             Ok(()) => Event::RunsChanged(biosample_guid),
             Err(e) => Event::Error(e.to_string()),
@@ -1177,6 +1237,9 @@ pub async fn handle(app: &App, cmd: Command) -> Event {
             Err(e) => Event::Error(e.to_string()),
         },
         Command::LoadReferenceSettings => Event::ReferenceSettings(app.reference_settings()),
+        Command::TestLlmConnection { base_url } => {
+            Event::LlmConnection(app.llm_models_at(&base_url).await.map_err(|e| e.to_string()))
+        }
         Command::SetReferenceOverride {
             build,
             local_path,
@@ -2316,6 +2379,47 @@ async fn publish_then_drain(
     }
 }
 
+/// Narrate a subject's brief, streaming `BriefNarrationChunk`s as text arrives, then a final
+/// `BriefNarration` (the authoritative result, or a plain-language failure reason).
+async fn narrate_brief_streaming(app: &App, guid: SampleGuid, evt_tx: &Sender<Event>, wake: &(dyn Fn() + Send + Sync)) {
+    let result = app
+        .narrate_subject_streaming(guid, |text| {
+            let _ = evt_tx.send(Event::BriefNarrationChunk {
+                guid,
+                text: text.to_string(),
+            });
+            wake();
+        })
+        .await
+        .map_err(|e| e.to_string());
+    let _ = evt_tx.send(Event::BriefNarration { guid, result });
+    wake();
+}
+
+/// Answer a question about a subject's results, streaming `ChatAnswerChunk`s, then a final
+/// `ChatAnswer`.
+async fn ask_question_streaming(
+    app: &App,
+    guid: SampleGuid,
+    history: Vec<ChatTurn>,
+    question: String,
+    evt_tx: &Sender<Event>,
+    wake: &(dyn Fn() + Send + Sync),
+) {
+    let result = app
+        .answer_question_streaming(guid, history, question, |text| {
+            let _ = evt_tx.send(Event::ChatAnswerChunk {
+                guid,
+                text: text.to_string(),
+            });
+            wake();
+        })
+        .await
+        .map_err(|e| e.to_string());
+    let _ = evt_tx.send(Event::ChatAnswer { guid, result });
+    wake();
+}
+
 /// Drain the outbox once and emit the outcome: a `Published` per sent row, the online flag, and the
 /// remaining pending count.
 async fn emit_drain(app: &App, evt_tx: &Sender<Event>, wake: &(dyn Fn() + Send + Sync)) {
@@ -2448,6 +2552,18 @@ pub fn spawn(db_path: PathBuf, wake: impl Fn() + Send + Sync + 'static) -> (Unbo
                             // Periodic / on-reconnect drain of the outbox.
                             Command::DrainOutbox => {
                                 emit_drain(&app, &evt_tx, &*wake).await;
+                            }
+                            // Streams narration text as it's generated, then a final BriefNarration.
+                            Command::NarrateBrief(guid) => {
+                                narrate_brief_streaming(&app, guid, &evt_tx, &*wake).await;
+                            }
+                            // Streams a chat answer as it's generated, then a final ChatAnswer.
+                            Command::AskQuestion {
+                                guid,
+                                history,
+                                question,
+                            } => {
+                                ask_question_streaming(&app, guid, history, question, &evt_tx, &*wake).await;
                             }
                             other => {
                                 let event = handle(&app, other).await;

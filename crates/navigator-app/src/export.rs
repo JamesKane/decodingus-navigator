@@ -7,6 +7,7 @@ use navigator_analysis::ibd::IbdSegment;
 use navigator_analysis::mtvariants::MtVariant;
 use navigator_analysis::read_metrics::ReadMetrics;
 use navigator_domain::ancestry::AncestryResult;
+use navigator_domain::brief::{LineageBrief, SubjectBrief};
 
 /// Minimal HTML text escaping for the small, controlled strings we embed (population names etc.).
 fn esc(s: &str) -> String {
@@ -307,11 +308,220 @@ pub fn callable_bed(per_contig: &[(String, Vec<(i64, i64)>)]) -> String {
     out
 }
 
+// ---- subject brief ("DNA Story") ---------------------------------------------
+
+/// One lineage block of the brief HTML.
+fn lineage_html(lb: &LineageBrief, title: &str) -> String {
+    let mut s = format!("<h2>{}</h2>\n<p class=\"hg\">{}</p>\n", esc(title), esc(&lb.haplogroup));
+    if let Some(anc) = &lb.matched_ancestor {
+        s.push_str(&format!(
+            "<p class=\"meta\">The description below is for {}, an ancestor on this line.</p>\n",
+            esc(anc)
+        ));
+    }
+    if let Some(age) = &lb.age_phrase {
+        s.push_str(&format!("<p><em>{}</em></p>\n", esc(age)));
+    }
+    if let Some(origin) = &lb.origin_phrase {
+        s.push_str(&format!("<p>{}</p>\n", esc(origin)));
+    }
+    if let Some(story) = &lb.story {
+        s.push_str(&format!("<p>{}</p>\n", esc(story)));
+    }
+    s.push_str(&format!("<p class=\"meta\">{}</p>\n", esc(&lb.confidence_phrase)));
+    if !lb.sources.is_empty() {
+        s.push_str(&format!(
+            "<p class=\"meta\">Source: {}</p>\n",
+            esc(&lb.sources.join(", "))
+        ));
+    }
+    s
+}
+
+/// The subject brief as a self-contained "DNA Story" HTML document — the casual-reader report a user
+/// can save or print. Mirrors the Simple-mode card stack. When an AI narration is provided (a cached
+/// "Polish with AI" result), it leads the document as a clearly-labelled, additive section above the
+/// structured facts.
+pub fn subject_brief_html(b: &SubjectBrief, narration: Option<&crate::NarratedBrief>) -> String {
+    let mut body = String::new();
+    body.push_str(&format!("<h1>{} — Your DNA Story</h1>\n", esc(&b.headline.name)));
+    body.push_str(&format!("<p class=\"meta\">{}</p>\n", esc(&b.headline.test_chip)));
+    body.push_str(&format!("<p>{}</p>\n", esc(&b.headline.summary)));
+
+    if let Some(n) = narration {
+        body.push_str("<h2>Your DNA Story (AI-assisted)</h2>\n");
+        for para in n.prose.split("\n\n").filter(|p| !p.trim().is_empty()) {
+            body.push_str(&format!("<p>{}</p>\n", esc(para.trim())));
+        }
+        body.push_str(&format!(
+            "<p class=\"meta\">AI-assisted from your results (model: {}) — the verified facts follow below.</p>\n",
+            esc(&n.model)
+        ));
+    }
+
+    if let Some(p) = &b.paternal {
+        body.push_str(&lineage_html(p, "Your paternal line (Y-DNA)"));
+    }
+    if let Some(m) = &b.maternal {
+        body.push_str(&lineage_html(m, "Your maternal line (mtDNA)"));
+    }
+
+    if let Some(a) = &b.ancestry {
+        body.push_str("<h2>Your ancestry</h2>\n");
+        body.push_str(&format!("<p class=\"hg\">{}</p>\n", esc(&a.summary_phrase)));
+        body.push_str("<table><tr><th>Population</th><th>Share</th></tr>\n");
+        for sp in a.super_populations.iter().filter(|s| s.percentage >= 0.5) {
+            body.push_str(&format!(
+                "<tr><td>{}</td><td>{:.1}%</td></tr>\n",
+                esc(&sp.super_population),
+                sp.percentage
+            ));
+        }
+        body.push_str("</table>\n");
+        if let Some(interp) = &a.interpretation {
+            body.push_str(&format!("<p>{}</p>\n", esc(interp)));
+        }
+        if !a.fine_pops.is_empty() {
+            body.push_str("<h3>Detailed populations</h3>\n<table><tr><th>Population</th><th>Share</th></tr>\n");
+            for (name, pct) in a.fine_pops.iter().filter(|(_, p)| *p >= 0.5) {
+                body.push_str(&format!("<tr><td>{}</td><td>{:.1}%</td></tr>\n", esc(name), pct));
+            }
+            body.push_str("</table>\n");
+        }
+        if !a.ancient_pops.is_empty() {
+            body.push_str("<h3>Ancient ancestry</h3>\n");
+            body.push_str("<table><tr><th>Component</th><th>Share</th></tr>\n");
+            for c in &a.ancient_pops {
+                body.push_str(&format!(
+                    "<tr><td>{}</td><td>{:.1}%</td></tr>\n",
+                    esc(&c.name),
+                    c.percentage
+                ));
+            }
+            body.push_str("</table>\n");
+            for c in &a.ancient_pops {
+                if let Some(blurb) = &c.blurb {
+                    body.push_str(&format!("<p><strong>{}.</strong> {}</p>\n", esc(&c.name), esc(blurb)));
+                }
+            }
+        }
+        body.push_str(&format!("<p class=\"meta\">{}</p>\n", esc(&a.method_note)));
+    }
+
+    body.push_str("<h2>Your test</h2>\n");
+    body.push_str(&format!("<p class=\"hg\">{}</p>\n", esc(&b.test.test_name)));
+    body.push_str(&format!("<p>{}</p>\n", esc(&b.test.what_it_tells)));
+    if let Some(lim) = &b.test.limitations {
+        body.push_str(&format!("<p class=\"meta\">{}</p>\n", esc(lim)));
+    }
+    let mark = if b.test.quality_ok { "✓" } else { "⚠" };
+    body.push_str(&format!("<p>{mark} {}</p>\n", esc(&b.test.quality_phrase)));
+
+    if !b.caveats.is_empty() {
+        body.push_str("<h2>Notes</h2>\n<ul>\n");
+        for c in &b.caveats {
+            body.push_str(&format!("<li>{}</li>\n", esc(c)));
+        }
+        body.push_str("</ul>\n");
+    }
+
+    let mut footer = match b.pack_status {
+        navigator_domain::brief::PackStatus::Downloaded => "Descriptions updated online".to_string(),
+        navigator_domain::brief::PackStatus::Cached => "Descriptions from your last online update".to_string(),
+        navigator_domain::brief::PackStatus::Bundled => "Offline descriptions".to_string(),
+        navigator_domain::brief::PackStatus::Unavailable => "Descriptions unavailable".to_string(),
+    };
+    if let Some(v) = &b.pack_version {
+        footer.push_str(&format!(" · {v}"));
+    }
+    if b.enriched {
+        footer.push_str(" · live haplogroup data");
+    }
+    body.push_str(&format!("<p class=\"meta\">{}</p>\n", esc(&footer)));
+
+    format!(
+        "<!doctype html><html><head><meta charset=\"utf-8\"><title>{} — DNA Story</title>\
+<style>{HTML_STYLE}\nh3{{font-size:.95rem;margin-top:1rem}}.hg{{font-size:1.1rem;font-weight:600;margin:.2rem 0}}\
+td,th{{text-align:left}}</style></head><body>\n{body}</body></html>",
+        esc(&b.headline.name)
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use navigator_analysis::mtvariants::{MtVariant, MtVariantKind};
     use navigator_domain::ancestry::{AncestryResult, ConfidenceInterval, PopulationComponent, SuperPopulationSummary};
+
+    #[test]
+    fn subject_brief_html_renders_sections() {
+        use navigator_domain::brief::{
+            AncestryBrief, AncientComponent, Headline, LineageBrief, LineageKind, PackStatus, SubjectBrief, TestBrief,
+        };
+        let brief = SubjectBrief {
+            headline: Headline {
+                name: "James".into(),
+                test_chip: "Whole Genome Sequencing".into(),
+                summary: "Your data places James's paternal line at R-FGC29071.".into(),
+            },
+            paternal: Some(LineageBrief {
+                kind: LineageKind::Paternal,
+                haplogroup: "R-FGC29071".into(),
+                lineage_path: vec!["R".into(), "R-M269".into(), "R-FGC29071".into()],
+                matched_ancestor: Some("R-M269".into()),
+                age_phrase: Some("formed roughly 6,400 years ago".into()),
+                origin_phrase: Some("associated with the steppe".into()),
+                story: Some("A common Western European lineage.".into()),
+                confidence_phrase: "strong placement, confirmed across multiple tests".into(),
+                sources: vec!["YFull".into()],
+            }),
+            maternal: None,
+            ancestry: Some(AncestryBrief {
+                summary_phrase: "Predominantly European".into(),
+                super_populations: vec![SuperPopulationSummary {
+                    super_population: "European".into(),
+                    percentage: 98.0,
+                    populations: vec![],
+                }],
+                fine_pops: vec![("British".into(), 60.0)],
+                ancient_pops: vec![AncientComponent {
+                    code: "Steppe".into(),
+                    name: "Steppe pastoralist".into(),
+                    percentage: 50.0,
+                    color: "#4e79a7".into(),
+                    blurb: Some("Bronze Age steppe migrants.".into()),
+                }],
+                interpretation: Some("European ancestry spans the continent.".into()),
+                method_note: "estimated from 400,000 genome-wide markers".into(),
+            }),
+            test: TestBrief {
+                test_name: "Whole Genome Sequencing".into(),
+                what_it_tells: "Reads your whole genome.".into(),
+                limitations: None,
+                quality_phrase: "high-quality (30× average depth)".into(),
+                quality_ok: true,
+            },
+            caveats: vec![],
+            pack_version: Some("2026.06-seed".into()),
+            pack_status: PackStatus::Bundled,
+            enriched: true,
+        };
+        let narration = crate::NarratedBrief {
+            prose: "You are mostly European.".into(),
+            model: "test-model".into(),
+        };
+        let html = subject_brief_html(&brief, Some(&narration));
+        assert!(html.starts_with("<!doctype html>"));
+        assert!(html.contains("Your DNA Story"));
+        assert!(html.contains("AI-assisted"));
+        assert!(html.contains("You are mostly European."));
+        assert!(html.contains("R-FGC29071"));
+        assert!(html.contains("Steppe pastoralist"));
+        assert!(html.contains("Predominantly European"));
+        // No narration → no AI section.
+        assert!(!subject_brief_html(&brief, None).contains("AI-assisted"));
+        assert!(html.contains("live haplogroup data"));
+    }
 
     #[test]
     fn coverage_tsv_has_header_and_joined_contig_rows() {

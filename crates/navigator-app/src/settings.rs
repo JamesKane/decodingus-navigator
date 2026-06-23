@@ -29,6 +29,23 @@ pub struct AppSettings {
     /// 1.0 scale factor and the default text is tiny. `None` = 1.0.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ui_scale: Option<f32>,
+    /// Interface mode: `"simple"` (casual single-person briefs) or `"advanced"` (full power-user UI).
+    /// `None` = the user has never pinned a mode, so the UI applies its first-run heuristic.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ui_mode: Option<String>,
+    /// Enable local-LLM assisted narration / chat. Off until the user opts in.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub llm_enabled: Option<bool>,
+    /// OpenAI-compatible base URL of the *local* model server, e.g. "http://localhost:1234/v1".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub llm_base_url: Option<String>,
+    /// Model id to request (as reported by `GET /models`), e.g. "llama-3.1-8b-instruct".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub llm_model: Option<String>,
+    /// Max response (completion) tokens to request. Reasoning models spend most of this on their
+    /// chain-of-thought, so it must be large enough for the thinking *and* the answer. `None` = default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub llm_max_tokens: Option<u32>,
 }
 
 impl AppSettings {
