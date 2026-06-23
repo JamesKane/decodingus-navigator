@@ -21,6 +21,7 @@ pub mod labs;
 pub mod llm_prompt;
 pub mod mtdna;
 pub mod reconciliation;
+pub mod results_context;
 pub mod seq;
 pub mod strchart;
 pub mod strpanel;

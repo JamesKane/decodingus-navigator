@@ -10,6 +10,9 @@ use crate::{App, AppError, AppSettings};
 use navigator_domain::brief::SubjectBrief;
 use navigator_domain::du_domain::ids::SampleGuid;
 use navigator_domain::llm_prompt;
+use navigator_domain::results_context::{
+    IbdFact, IbdMatchFact, MtMutationsFact, PrivateYFact, ResultsContext, SexFact, YStrPanelFact,
+};
 use navigator_refgenome::cache as refgenome_cache;
 use serde::{Deserialize, Serialize};
 
@@ -180,11 +183,15 @@ pub struct NarratedBrief {
     pub model: String,
 }
 
-fn narration_cache_path(key: &str) -> std::path::PathBuf {
+fn narration_cache_path_in(subdir: &str, key: &str) -> std::path::PathBuf {
     refgenome_cache::base_dir()
         .join("briefs")
-        .join("narration")
+        .join(subdir)
         .join(format!("{key}.json"))
+}
+
+fn narration_cache_path(key: &str) -> std::path::PathBuf {
+    narration_cache_path_in("narration", key)
 }
 
 impl App {
@@ -269,7 +276,7 @@ impl App {
     pub async fn narrate_brief_streaming(
         &self,
         brief: &SubjectBrief,
-        mut on_chunk: impl FnMut(&str),
+        on_chunk: impl FnMut(&str),
     ) -> Result<NarratedBrief, AppError> {
         let cfg = llm_config();
         if !cfg.enabled {
@@ -277,13 +284,54 @@ impl App {
         }
 
         let model = self.resolve_model_id(&cfg).await?;
-
         let system = llm_prompt::narrate_system_prompt();
         let facts = llm_prompt::narrate_fact_sheet(brief);
-        // Key on model + system prompt + facts, so changing the prompt (or facts/model) regenerates
-        // rather than serving a stale narration written under the old instructions.
+        self.run_cached_narration(&cfg, &model, system, facts, "narration", on_chunk)
+            .await
+    }
+
+    /// Explain a single result signal (M5 per-tab "Explain this") in plain language, streaming the
+    /// prose to `on_chunk`. Grounded in only that signal's curated section (see
+    /// [`navigator_domain::results_context::signal_section`]); cached and health-guarded like brief
+    /// narration. `Err` when the assistant is off / unreachable / the subject has nothing for that
+    /// signal — the UI then just doesn't show an explanation.
+    pub async fn narrate_signal_streaming(
+        &self,
+        guid: SampleGuid,
+        kind: navigator_domain::results_context::SignalKind,
+        on_chunk: impl FnMut(&str),
+    ) -> Result<NarratedBrief, AppError> {
+        use navigator_domain::results_context as rc;
+        let cfg = llm_config();
+        if !cfg.enabled {
+            return Err(AppError::Llm("The AI assistant is turned off.".into()));
+        }
+        let model = self.resolve_model_id(&cfg).await?;
+        let ctx = self.results_context(guid).await?;
+        let section = rc::signal_section(&ctx, kind)
+            .ok_or_else(|| AppError::Llm("There's nothing to explain here yet.".into()))?;
+        let system = llm_prompt::narrate_signal_system_prompt(kind.label());
+        self.run_cached_narration(&cfg, &model, system, section, "signals", on_chunk)
+            .await
+    }
+
+    /// Shared cached-streaming narration core for [`narrate_brief_streaming`] and
+    /// [`narrate_signal_streaming`]: cache-first (a hit replays the cached prose through `on_chunk`),
+    /// else stream a completion, reject health-straying output, and cache. The cache key is
+    /// `model + system + facts`, so changing the prompt, the facts, or the model regenerates rather
+    /// than serving a stale narration written under the old instructions. `subdir` separates brief
+    /// vs per-signal caches under `briefs/`.
+    async fn run_cached_narration(
+        &self,
+        cfg: &LlmConfig,
+        model: &str,
+        system: String,
+        facts: String,
+        subdir: &str,
+        mut on_chunk: impl FnMut(&str),
+    ) -> Result<NarratedBrief, AppError> {
         let key = crate::sha256_str(&format!("{model}\n{system}\n{facts}"));
-        let cache_path = narration_cache_path(&key);
+        let cache_path = narration_cache_path_in(subdir, &key);
         if let Some(cached) = std::fs::read_to_string(&cache_path)
             .ok()
             .and_then(|s| serde_json::from_str::<NarratedBrief>(&s).ok())
@@ -303,7 +351,7 @@ impl App {
             },
         ];
         let (prose, used_model) = self
-            .chat_complete_streaming(&cfg, &model, messages, &mut on_chunk)
+            .chat_complete_streaming(cfg, model, messages, &mut on_chunk)
             .await?;
 
         // Post-generation guardrail: reject anything that strays into health/clinical language.
@@ -358,8 +406,8 @@ impl App {
         }
 
         let model = self.resolve_model_id(&cfg).await?;
-        let brief = self.subject_brief(guid).await?;
-        let facts = llm_prompt::narrate_fact_sheet(&brief);
+        let ctx = self.results_context(guid).await?;
+        let facts = navigator_domain::results_context::results_fact_sheet(&ctx);
         // One system message carries the guardrails + the results (the only allowed facts).
         let system = format!(
             "{}\n\nRESULTS (your only source of facts):\n{}",
@@ -391,6 +439,118 @@ impl App {
             return Ok(llm_prompt::health_deflection().to_string());
         }
         Ok(answer)
+    }
+
+    /// Assemble the broader grounding context for the M4 chat: the subject brief plus curated,
+    /// summary-level facts for the other signals (genetic sex, Y-STR panels, private-Y variants,
+    /// mtDNA mutations, IBD matches). Every signal is best-effort — a missing or un-run one is simply
+    /// omitted, so the chat grounds in whatever the subject actually has without erroring out.
+    pub async fn results_context(&self, guid: SampleGuid) -> Result<ResultsContext, AppError> {
+        use navigator_analysis::mtvariants::MtRegion;
+        use navigator_analysis::sex::{Confidence, InferredSex};
+
+        let brief = self.subject_brief(guid).await?;
+
+        // Genetic sex (needs an alignment; only a definite call is grounded).
+        let sex = match self.default_alignment_for_subject(guid).await? {
+            Some((_, aln_id)) => self.cached_sex(aln_id).await?.and_then(|r| {
+                let label = match r.inferred_sex {
+                    InferredSex::Male => "Male (XY)",
+                    InferredSex::Female => "Female (XX)",
+                    InferredSex::Unknown => return None,
+                };
+                let confidence = match r.confidence {
+                    Confidence::High => "high",
+                    Confidence::Medium => "medium",
+                    Confidence::Low => "low",
+                };
+                Some(SexFact {
+                    label: label.into(),
+                    confidence: confidence.into(),
+                })
+            }),
+            None => None,
+        };
+
+        // Y-STR panels — name + marker count only (never the raw values: token cost, no answerable
+        // gain, and they're lineage patterns not facts to recite).
+        let ystr: Vec<YStrPanelFact> = self
+            .list_str_profiles(guid)
+            .await
+            .unwrap_or_default()
+            .into_iter()
+            .map(|p| YStrPanelFact {
+                panel: p.panel_name,
+                markers: p.markers.len(),
+            })
+            .collect();
+
+        // Private Y variants — the PrivateBucket confidence split.
+        let private_y = self.donor_private_y(guid).await?.map(|b| PrivateYFact {
+            novel_unique: b.novel_in_unique_sequence(),
+            off_path: b.off_path(),
+            structural: b.in_structural_region(),
+        });
+
+        // mtDNA mutations relative to rCRS, bucketed by region with a few example notations.
+        let mt_mutations = match self.list_mtdna_sequences(guid).await?.first() {
+            Some(seq) => {
+                let vars = self.mtdna_variants(seq.id).await?;
+                if vars.is_empty() {
+                    None
+                } else {
+                    let (mut hvr1, mut hvr2, mut coding) = (0usize, 0usize, 0usize);
+                    for v in &vars {
+                        match v.region() {
+                            MtRegion::Hvr1 => hvr1 += 1,
+                            MtRegion::Hvr2 => hvr2 += 1,
+                            MtRegion::Coding => coding += 1,
+                        }
+                    }
+                    let examples = vars.iter().take(8).map(|v| v.notation()).collect();
+                    Some(MtMutationsFact {
+                        total: vars.len(),
+                        hvr1,
+                        hvr2,
+                        coding,
+                        examples,
+                    })
+                }
+            }
+            None => None,
+        };
+
+        // IBD matches (completed exchanges): count + closest by shared cM, partner identity withheld.
+        let exchanges = self.list_ibd_exchanges_for_subject(guid).await.unwrap_or_default();
+        let ibd = if exchanges.is_empty() {
+            None
+        } else {
+            let closest = exchanges
+                .iter()
+                .max_by(|a, b| {
+                    a.total_shared_cm
+                        .partial_cmp(&b.total_shared_cm)
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                })
+                .map(|e| IbdMatchFact {
+                    relationship: e.relationship.clone(),
+                    total_shared_cm: e.total_shared_cm,
+                    segment_count: e.segment_count,
+                });
+            Some(IbdFact {
+                match_count: exchanges.len(),
+                closest,
+            })
+        };
+
+        Ok(ResultsContext {
+            brief,
+            sex,
+            ystr,
+            private_y,
+            mt_mutations,
+            ibd,
+        })
     }
 
     /// Resolve a concrete model id for a request — `cfg.model` if set, else the server's single

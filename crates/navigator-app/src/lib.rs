@@ -1730,6 +1730,7 @@ mod import_profiles;
 mod import_unified;
 pub mod llm;
 pub use llm::{ChatTurn, NarratedBrief};
+pub use navigator_domain::results_context::SignalKind;
 mod publish;
 mod queries;
 mod recruitment;

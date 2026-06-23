@@ -199,6 +199,30 @@ impl NavigatorApp {
                         }
                     }
                 }
+                Event::SignalNarrationChunk { guid, kind, text } => {
+                    if self.selected_sample == Some(guid) {
+                        match &mut self.signal_stream {
+                            Some((g, k, buf)) if *g == guid && *k == kind => buf.push_str(&text),
+                            _ => self.signal_stream = Some((guid, kind, text)),
+                        }
+                    }
+                }
+                Event::SignalNarration { guid, kind, result } => {
+                    if self.selected_sample == Some(guid) {
+                        if self.signal_narrating == Some((guid, kind)) {
+                            self.signal_narrating = None;
+                        }
+                        self.signal_stream = None; // the final result is authoritative
+                        match result {
+                            Ok(narration) => {
+                                self.signal_narration.retain(|(g, k, _)| !(*g == guid && *k == kind));
+                                self.signal_narration.push((guid, kind, narration));
+                            }
+                            // Fallback: keep the structured facts; surface why in the status line.
+                            Err(msg) => self.status = format!("{} {msg}", self.tr("brief.aiUnavailable")),
+                        }
+                    }
+                }
                 Event::ProjectAnalyzed {
                     project_id,
                     samples,
@@ -1101,6 +1125,9 @@ impl NavigatorApp {
         self.chat_history.clear();
         self.chat_input.clear();
         self.chat_pending = false;
+        self.signal_narration.clear();
+        self.signal_stream = None;
+        self.signal_narrating = None;
         // The Simple-mode brief is (re)built from the Consensus event below (always fired by
         // LoadConsensus), so a later analysis refreshes it too. Show the spinner meanwhile.
         self.subject_brief_loading = self.ui_mode == UiMode::Simple;

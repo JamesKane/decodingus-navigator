@@ -21,8 +21,8 @@ use navigator_app::{
     HaploAssignment, HeteroplasmySite, IbdComparison, IbdSuggestion, IdentityVerification, LineageBrief, LineageKind,
     MatchKind, MtRegion, MtVariant, NarratedBrief, PackStatus, PanelGenotype, PrivateBucket, PrivateClass,
     ProjectOverview, ProjectSampleReport, ProjectStrChart, ReadMetrics, RefBuildStatus, SexInferenceResult,
-    SnpEvidence, SourceType, StrConcordanceRow, SubjectBrief, SvAnalysisResult, UiMode, VerificationStatus, YMatch,
-    YProfile, YSignal, YState, YVariantStatus, YstrClustering,
+    SignalKind, SnpEvidence, SourceType, StrConcordanceRow, SubjectBrief, SvAnalysisResult, UiMode,
+    VerificationStatus, YMatch, YProfile, YSignal, YState, YVariantStatus, YstrClustering,
 };
 use navigator_domain::chipprofile::{self, ChipProfile};
 use navigator_domain::du_domain::ids::SampleGuid;
@@ -505,6 +505,13 @@ pub struct NavigatorApp {
     /// The chat input box + whether an answer is in flight.
     chat_input: String,
     chat_pending: bool,
+    /// Per-tab "Explain this" (M5) state for the selected subject, all cleared on subject switch:
+    /// the finalized explanations keyed by `(guid, signal)`, the live stream buffer for the one in
+    /// flight, and which `(guid, signal)` is currently being narrated (`None` = idle; only one runs
+    /// at a time, sharing the single worker).
+    signal_narration: Vec<(SampleGuid, SignalKind, NarratedBrief)>,
+    signal_stream: Option<(SampleGuid, SignalKind, String)>,
+    signal_narrating: Option<(SampleGuid, SignalKind)>,
     /// Selected subject-detail sub-tab.
     detail_tab: DetailTab,
     /// Active UI language.
@@ -932,6 +939,9 @@ impl NavigatorApp {
             chat_history: Vec::new(),
             chat_input: String::new(),
             chat_pending: false,
+            signal_narration: Vec::new(),
+            signal_stream: None,
+            signal_narrating: None,
             detail_tab: DetailTab::Overview,
             // Persisted choice wins; else honor $LANG (e.g. "es_ES.UTF-8") when it names a
             // supported locale; else English.
