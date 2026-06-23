@@ -10,6 +10,9 @@ use crate::{App, AppError, AppSettings};
 use navigator_domain::brief::SubjectBrief;
 use navigator_domain::du_domain::ids::SampleGuid;
 use navigator_domain::llm_prompt;
+use navigator_domain::results_context::{
+    IbdFact, IbdMatchFact, MtMutationsFact, PrivateYFact, ResultsContext, SexFact, YStrPanelFact,
+};
 use navigator_refgenome::cache as refgenome_cache;
 use serde::{Deserialize, Serialize};
 
@@ -358,8 +361,8 @@ impl App {
         }
 
         let model = self.resolve_model_id(&cfg).await?;
-        let brief = self.subject_brief(guid).await?;
-        let facts = llm_prompt::narrate_fact_sheet(&brief);
+        let ctx = self.results_context(guid).await?;
+        let facts = navigator_domain::results_context::results_fact_sheet(&ctx);
         // One system message carries the guardrails + the results (the only allowed facts).
         let system = format!(
             "{}\n\nRESULTS (your only source of facts):\n{}",
@@ -391,6 +394,118 @@ impl App {
             return Ok(llm_prompt::health_deflection().to_string());
         }
         Ok(answer)
+    }
+
+    /// Assemble the broader grounding context for the M4 chat: the subject brief plus curated,
+    /// summary-level facts for the other signals (genetic sex, Y-STR panels, private-Y variants,
+    /// mtDNA mutations, IBD matches). Every signal is best-effort — a missing or un-run one is simply
+    /// omitted, so the chat grounds in whatever the subject actually has without erroring out.
+    pub async fn results_context(&self, guid: SampleGuid) -> Result<ResultsContext, AppError> {
+        use navigator_analysis::mtvariants::MtRegion;
+        use navigator_analysis::sex::{Confidence, InferredSex};
+
+        let brief = self.subject_brief(guid).await?;
+
+        // Genetic sex (needs an alignment; only a definite call is grounded).
+        let sex = match self.default_alignment_for_subject(guid).await? {
+            Some((_, aln_id)) => self.cached_sex(aln_id).await?.and_then(|r| {
+                let label = match r.inferred_sex {
+                    InferredSex::Male => "Male (XY)",
+                    InferredSex::Female => "Female (XX)",
+                    InferredSex::Unknown => return None,
+                };
+                let confidence = match r.confidence {
+                    Confidence::High => "high",
+                    Confidence::Medium => "medium",
+                    Confidence::Low => "low",
+                };
+                Some(SexFact {
+                    label: label.into(),
+                    confidence: confidence.into(),
+                })
+            }),
+            None => None,
+        };
+
+        // Y-STR panels — name + marker count only (never the raw values: token cost, no answerable
+        // gain, and they're lineage patterns not facts to recite).
+        let ystr: Vec<YStrPanelFact> = self
+            .list_str_profiles(guid)
+            .await
+            .unwrap_or_default()
+            .into_iter()
+            .map(|p| YStrPanelFact {
+                panel: p.panel_name,
+                markers: p.markers.len(),
+            })
+            .collect();
+
+        // Private Y variants — the PrivateBucket confidence split.
+        let private_y = self.donor_private_y(guid).await?.map(|b| PrivateYFact {
+            novel_unique: b.novel_in_unique_sequence(),
+            off_path: b.off_path(),
+            structural: b.in_structural_region(),
+        });
+
+        // mtDNA mutations relative to rCRS, bucketed by region with a few example notations.
+        let mt_mutations = match self.list_mtdna_sequences(guid).await?.first() {
+            Some(seq) => {
+                let vars = self.mtdna_variants(seq.id).await?;
+                if vars.is_empty() {
+                    None
+                } else {
+                    let (mut hvr1, mut hvr2, mut coding) = (0usize, 0usize, 0usize);
+                    for v in &vars {
+                        match v.region() {
+                            MtRegion::Hvr1 => hvr1 += 1,
+                            MtRegion::Hvr2 => hvr2 += 1,
+                            MtRegion::Coding => coding += 1,
+                        }
+                    }
+                    let examples = vars.iter().take(8).map(|v| v.notation()).collect();
+                    Some(MtMutationsFact {
+                        total: vars.len(),
+                        hvr1,
+                        hvr2,
+                        coding,
+                        examples,
+                    })
+                }
+            }
+            None => None,
+        };
+
+        // IBD matches (completed exchanges): count + closest by shared cM, partner identity withheld.
+        let exchanges = self.list_ibd_exchanges_for_subject(guid).await.unwrap_or_default();
+        let ibd = if exchanges.is_empty() {
+            None
+        } else {
+            let closest = exchanges
+                .iter()
+                .max_by(|a, b| {
+                    a.total_shared_cm
+                        .partial_cmp(&b.total_shared_cm)
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                })
+                .map(|e| IbdMatchFact {
+                    relationship: e.relationship.clone(),
+                    total_shared_cm: e.total_shared_cm,
+                    segment_count: e.segment_count,
+                });
+            Some(IbdFact {
+                match_count: exchanges.len(),
+                closest,
+            })
+        };
+
+        Ok(ResultsContext {
+            brief,
+            sex,
+            ystr,
+            private_y,
+            mt_mutations,
+            ibd,
+        })
     }
 
     /// Resolve a concrete model id for a request — `cfg.model` if set, else the server's single
