@@ -117,6 +117,11 @@ struct ChatRequest {
     temperature: f32,
     max_tokens: u32,
     stream: bool,
+    /// llama.cpp/LM Studio Jinja-template kwargs. We pass `{"enable_thinking": false}` so reasoning
+    /// models (Gemma 4, Qwen, DeepSeek-R1) never emit a thinking channel — saving the tokens/latency
+    /// `strip_reasoning` would otherwise discard. Skipped from the body when unset.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    chat_template_kwargs: Option<serde_json::Value>,
 }
 
 /// One parsed SSE `data:` chunk from a streamed chat completion.
@@ -420,6 +425,9 @@ impl App {
             temperature: 0.4,
             max_tokens: cfg.max_tokens,
             stream: true,
+            // Grounded "explain my results" never needs chain-of-thought — disable it at the server
+            // so Gemma 4 et al. don't waste tokens/latency on a reasoning channel we'd discard.
+            chat_template_kwargs: Some(serde_json::json!({ "enable_thinking": false })),
         };
         let url = format!("{}/chat/completions", cfg.base_url.trim_end_matches('/'));
         let resp = self
