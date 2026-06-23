@@ -942,26 +942,45 @@ impl App {
         Ok(Some(assignment))
     }
 
-    /// Build a YFull-style [`DescentReport`] for a subject's Y or mtDNA lineage: place once on the
-    /// FTDNA tree (pooling all sources), then group the root→terminal path into per-node defining
-    /// SNPs with the sample's per-SNP call state. `Ok(None)` when the lineage isn't placed (no
-    /// sources) or `dna` isn't a lineage type. Expensive (re-genotypes), so callers load it off the
-    /// UI thread and cache the result.
+    /// Build a YFull-style [`DescentReport`] for a subject's Y or mtDNA lineage from the **already
+    /// persisted** variant profile — no re-genotyping. Reads the cached profile for its terminal +
+    /// per-SNP states (keyed by build-independent SNP name), then walks the FTDNA tree from the
+    /// terminal to the root, attaching each node's defining SNPs with the sample's call (`NoCall` for
+    /// an untested equivalent). `Ok(None)` when the profile isn't built yet or has no terminal — the
+    /// UI then offers to build it (one expensive, persisted step that also powers the variant tabs).
     pub async fn descent_report(
         &self,
         biosample_guid: SampleGuid,
         dna: DnaType,
     ) -> Result<Option<DescentReport>, AppError> {
-        let (assignment, tree_json) = match dna {
-            DnaType::Y => (self.place_y_consensus(biosample_guid).await?, self.fetch_ftdna_y_tree().await?),
-            DnaType::Mt => (self.place_mt_consensus(biosample_guid).await?, self.fetch_ftdna_mt_tree().await?),
+        use navigator_domain::consensus::ConsensusState;
+
+        let (profile, tree_json) = match dna {
+            DnaType::Y => (self.cached_y_profile(biosample_guid).await?, self.fetch_ftdna_y_tree().await?),
+            DnaType::Mt => (self.cached_mt_profile(biosample_guid).await?, self.fetch_ftdna_mt_tree().await?),
         };
-        let Some(assignment) = assignment else { return Ok(None) };
-        let Some(top) = assignment.ranked.first() else { return Ok(None) };
-        let terminal_id = top.id;
-        let terminal = top.name.clone();
+        let Some(profile) = profile else { return Ok(None) };
+        let Some(terminal) = profile.terminal.clone() else { return Ok(None) };
+
         let tree = navigator_analysis::haplo::parse_ftdna_json(&tree_json).map_err(AppError::Import)?;
-        let nodes = navigator_analysis::haplo::group_lineage_by_node(&tree, terminal_id, &assignment.lineage);
+        let Some(terminal_id) = tree.nodes.iter().find(|(_, n)| n.name == terminal).map(|(id, _)| *id) else {
+            return Ok(None); // terminal not in this tree (provider/build skew) — nothing to draw
+        };
+
+        let state_by_name: std::collections::HashMap<String, CallState> = profile
+            .variants
+            .iter()
+            .map(|v| {
+                let state = match v.consensus {
+                    ConsensusState::Derived => CallState::Derived,
+                    ConsensusState::Ancestral => CallState::Ancestral,
+                    ConsensusState::NoCall => CallState::NoCall,
+                };
+                (v.name.clone(), state)
+            })
+            .collect();
+
+        let nodes = navigator_analysis::haplo::descent_by_node(&tree, terminal_id, &state_by_name);
         Ok(Some(DescentReport { dna, terminal, nodes }))
     }
 

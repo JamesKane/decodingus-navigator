@@ -464,10 +464,14 @@ pub struct NodeEvidence {
 
 /// Group the root→`terminal_id` path into per-node defining-SNP evidence (root→terminal order):
 /// walk the tree from the terminal up to the root, and for each node attach its loci with the
-/// sample's state taken from `lineage` (matched by position; `NoCall` for an equivalent not present
-/// in `lineage`). `lineage` is typically the flat [`lineage_evidence`] / `HaploAssignment.lineage`.
-pub fn group_lineage_by_node(tree: &HaploTree, terminal_id: i64, lineage: &[SnpEvidence]) -> Vec<NodeEvidence> {
-    let state_by_pos: HashMap<i64, CallState> = lineage.iter().map(|e| (e.position, e.state)).collect();
+/// sample's state taken from `state_by_name` (`NoCall` for an equivalent the sample didn't call).
+/// Keyed by **SNP name** (build-independent: a name like `M269` is the same across coordinate
+/// systems), so a cached variant profile placed under any build can colour an FTDNA-tree path.
+pub fn descent_by_node(
+    tree: &HaploTree,
+    terminal_id: i64,
+    state_by_name: &HashMap<String, CallState>,
+) -> Vec<NodeEvidence> {
     let parent = build_parent_map(tree);
     let mut ids = Vec::new();
     let mut cur = Some(terminal_id);
@@ -488,7 +492,7 @@ pub fn group_lineage_by_node(tree: &HaploTree, terminal_id: i64, lineage: &[SnpE
                     position: l.position,
                     ancestral: l.ancestral.clone(),
                     derived: l.derived.clone(),
-                    state: state_by_pos.get(&l.position).copied().unwrap_or(CallState::NoCall),
+                    state: state_by_name.get(&l.name).copied().unwrap_or(CallState::NoCall),
                 })
                 .collect();
             Some(NodeEvidence {
@@ -695,12 +699,14 @@ mod tests {
     }
 
     #[test]
-    fn group_lineage_by_node_buckets_path_with_state() {
+    fn descent_by_node_buckets_path_with_state() {
         let t = parse_ftdna_json(TREE).unwrap();
-        // Sample is derived at H (146) and H2 (263), no call at H2a (750).
-        let c = calls(&[(146, 'G'), (263, 'G')]);
-        let lineage = lineage_evidence(&t, &c, 4); // terminal H2a
-        let grouped = group_lineage_by_node(&t, 4, &lineage);
+        // Sample is derived at H (A146G) and H2 (A263G); H2a's SNP (C750T) was never called.
+        let state: HashMap<String, CallState> =
+            [("A146G".to_string(), CallState::Derived), ("A263G".to_string(), CallState::Derived)]
+                .into_iter()
+                .collect();
+        let grouped = descent_by_node(&t, 4, &state); // terminal H2a
 
         // root → H → H2 → H2a, root carries no defining loci.
         let names: Vec<&str> = grouped.iter().map(|n| n.name.as_str()).collect();

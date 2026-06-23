@@ -608,6 +608,8 @@ impl NavigatorApp {
                                                             // A rebuild re-places the genome consensus (consensus_label); refresh the
                                                             // Overview's cached Y/mt consensus so it doesn't lag until the next reload.
                         let _ = self.tx.send(Command::LoadConsensus(biosample_guid));
+                        // The descent report is drawn from this profile — drop its cache so it rebuilds.
+                        self.descent_reports.retain(|(g, d, _)| !(*g == biosample_guid && *d == DnaType::Y));
                     }
                 }
                 Event::YSnpNames { names } => {
@@ -625,6 +627,8 @@ impl NavigatorApp {
                         self.mt_profile = profile;
                         // A rebuild re-places the mt genome consensus; refresh the Overview's cache.
                         let _ = self.tx.send(Command::LoadConsensus(biosample_guid));
+                        // The descent report is drawn from this profile — drop its cache so it rebuilds.
+                        self.descent_reports.retain(|(g, d, _)| !(*g == biosample_guid && *d == DnaType::Mt));
                     }
                 }
                 Event::AutosomalProfile {

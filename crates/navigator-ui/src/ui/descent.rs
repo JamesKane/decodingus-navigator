@@ -19,16 +19,63 @@ impl NavigatorApp {
     /// placement, so it's safe to drop into any tab.
     pub(crate) fn descent_card(&mut self, ui: &mut egui::Ui, guid: SampleGuid, dna: DnaType, compact: bool) {
         self.ensure_descent(guid, dna);
-        match self.descent_reports.iter().find(|(g, d, _)| *g == guid && *d == dna) {
-            Some((_, _, Some(report))) => self.render_descent(ui, report, compact),
-            Some((_, _, None)) => {
-                ui.label(egui::RichText::new(self.tr("descent.none")).weak());
+        let entry = self
+            .descent_reports
+            .iter()
+            .find(|(g, d, _)| *g == guid && *d == dna)
+            .map(|(_, _, r)| r.is_some());
+        match entry {
+            Some(true) => {
+                let report = self
+                    .descent_reports
+                    .iter()
+                    .find(|(g, d, _)| *g == guid && *d == dna)
+                    .and_then(|(_, _, r)| r.as_ref())
+                    .unwrap();
+                self.render_descent(ui, report, compact);
             }
+            // Loaded but empty → the variant profile isn't built yet (or has no placement). Offer the
+            // one-time build, which persists and then feeds this report instantly.
+            Some(false) => self.descent_build_prompt(ui, guid, dna),
             None => {
                 ui.horizontal(|ui| {
                     ui.spinner();
                     ui.label(egui::RichText::new(self.tr("descent.loading")).weak());
                 });
+            }
+        }
+    }
+
+    /// Shown when there's no cached report: a one-time "Build" affordance that runs (and persists)
+    /// the variant profile this report is drawn from, or a plain note if it's built but unplaced.
+    fn descent_build_prompt(&mut self, ui: &mut egui::Ui, guid: SampleGuid, dna: DnaType) {
+        let (built, loading) = match dna {
+            DnaType::Y => (self.y_profile.is_some(), self.y_profile_loading),
+            DnaType::Mt => (self.mt_profile.is_some(), self.mt_profile_loading),
+        };
+        if loading {
+            ui.horizontal(|ui| {
+                ui.spinner();
+                ui.label(egui::RichText::new(self.tr("descent.building")).weak());
+            });
+            return;
+        }
+        if built {
+            // Profile exists but yielded no terminal placement → nothing to draw.
+            ui.label(egui::RichText::new(self.tr("descent.none")).weak());
+            return;
+        }
+        ui.label(egui::RichText::new(self.tr("descent.buildHint")).weak());
+        if ui.button(self.tr("descent.build")).clicked() {
+            match dna {
+                DnaType::Y => {
+                    self.y_profile_loading = true;
+                    let _ = self.tx.send(Command::BuildYProfile { biosample_guid: guid });
+                }
+                DnaType::Mt => {
+                    self.mt_profile_loading = true;
+                    let _ = self.tx.send(Command::BuildMtProfile { biosample_guid: guid });
+                }
             }
         }
     }
