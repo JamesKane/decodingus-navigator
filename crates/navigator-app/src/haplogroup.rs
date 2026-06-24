@@ -2039,7 +2039,12 @@ impl App {
         // DecodingUs tree is unavailable.
         if matches!(y_tree_provider(), YTreeProvider::Ftdna) {
             let json = self.fetch_ftdna_y_tree().await?;
-            return navigator_analysis::haplo::parse_ftdna_json(&json).map_err(AppError::Import);
+            let mut tree = navigator_analysis::haplo::parse_ftdna_json(&json).map_err(AppError::Import)?;
+            // Repair FTDNA's reference-as-ancestral polarity against DecodingUs (best effort).
+            if let Some(pol) = self.decodingus_y_polarity().await {
+                navigator_analysis::haplo::normalize_polarity(&mut tree, &pol);
+            }
+            return Ok(tree);
         }
         match self.fetch_decodingus_y_tree().await {
             Ok(json) => navigator_analysis::haplo::parse_decodingus_json(&json, build).map_err(AppError::Import),
@@ -2159,11 +2164,62 @@ impl App {
         contig: &str,
         tree_json: &str,
     ) -> Result<(navigator_analysis::haplo::HaploTree, HashMap<i64, char>), AppError> {
-        let tree = navigator_analysis::haplo::parse_ftdna_json(tree_json).map_err(AppError::Import)?;
+        let mut tree = navigator_analysis::haplo::parse_ftdna_json(tree_json).map_err(AppError::Import)?;
+        // Harden the FTDNA tree: it records the GRCh38 *reference* base as "ancestral", so at the
+        // sites where the reference carries the derived allele its polarity is inverted (the
+        // CT-M168 amber artifact). Normalize against the DecodingUs tree's true polarity (best
+        // effort — offline FTDNA mode keeps the raw FTDNA polarity). Y only (no mt polarity source).
+        if contig.eq_ignore_ascii_case("chrY") {
+            if let Some(pol) = self.decodingus_y_polarity().await {
+                let flipped = navigator_analysis::haplo::normalize_polarity(&mut tree, &pol);
+                if flipped > 0 {
+                    eprintln!("normalized {flipped} FTDNA Y loci to DecodingUs (true) polarity");
+                }
+            }
+        }
         // FTDNA tree positions are in the tree's own build (Y → GRCh38, mt → rCRS/direct).
         let source_build = tree_build_for_contig(contig);
         let calls = self.base_calls(alignment_id, contig, &tree, source_build).await?;
         Ok((tree, calls))
+    }
+
+    /// Best-effort true-polarity map (SNP name → ancestral/derived) from the DecodingUs Y tree,
+    /// used to repair an FTDNA tree's reference-as-ancestral polarity ([`normalize_polarity`]).
+    /// `None` when the DecodingUs tree is unavailable (offline FTDNA mode keeps raw FTDNA polarity).
+    async fn decodingus_y_polarity(&self) -> Option<HashMap<String, (String, String)>> {
+        let json = self.fetch_decodingus_y_tree().await.ok()?;
+        navigator_analysis::haplo::decodingus_polarity_map(&json).ok()
+    }
+
+    /// Resolve a canonical contig name (`chrY`, `chrM`) to the name actually present in the
+    /// alignment header, tolerating naming conventions: the `chr` prefix (GRCh37/hg19 drop it)
+    /// and the `M`/`MT` mitochondrial spelling. Returns `None` when no equivalent contig is in
+    /// the header (the caller then queries the requested name and surfaces the original error).
+    async fn resolve_header_contig(
+        &self,
+        bam: &Path,
+        reference: Option<&Path>,
+        contig: &str,
+    ) -> Result<Option<String>, AppError> {
+        let bam = bam.to_path_buf();
+        let reference = reference.map(|p| p.to_path_buf());
+        let names = tokio::task::spawn_blocking(move || caller::header_contig_names(&bam, reference.as_deref()))
+            .await??;
+        // Candidate spellings for the requested contig, in preference order.
+        let bare = contig.strip_prefix("chr").unwrap_or(contig);
+        let mut candidates: Vec<String> = vec![contig.to_string(), bare.to_string()];
+        if bare.eq_ignore_ascii_case("M") || bare.eq_ignore_ascii_case("MT") {
+            for alt in ["chrM", "chrMT", "M", "MT"] {
+                candidates.push(alt.to_string());
+            }
+        }
+        Ok(candidates
+            .into_iter()
+            .find(|cand| names.iter().any(|n| n.eq_ignore_ascii_case(cand)))
+            .and_then(|cand| {
+                // Return the header's exact casing/spelling so the region query matches.
+                names.iter().find(|n| n.eq_ignore_ascii_case(&cand)).cloned()
+            }))
     }
 
     /// Base-call an alignment at a parsed tree's positions on `contig`. `tree_source_build` is
@@ -2179,7 +2235,21 @@ impl App {
     ) -> Result<HashMap<i64, char>, AppError> {
         let aln = self.alignment_or_err(alignment_id).await?;
         let bam = PathBuf::from(aln.bam_path.ok_or(AppError::MissingPaths(alignment_id))?);
-        let reference = aln.reference_path.map(PathBuf::from);
+        // Resolve the reference even when none was stored at import. A CRAM can't be decoded
+        // without it, so resolve (download on a miss) via the gateway from the alignment's build —
+        // e.g. the already-cached `chm13v2.0.fa` for a CHM13 CRAM. A BAM needs no reference to
+        // read reads, so only adopt a *cached* FASTA (never force a multi-GB download just to
+        // supply the chrM liftover map).
+        let is_cram = bam.extension().is_some_and(|e| e.eq_ignore_ascii_case("cram"));
+        let reference = match aln.reference_path {
+            Some(p) => Some(PathBuf::from(p)),
+            None if is_cram => Some(
+                self.gateway
+                    .resolve_reference(&aln.reference_build, &mut |_, _| {})
+                    .await?,
+            ),
+            None => self.gateway.cached_reference(&aln.reference_build),
+        };
 
         let targets: HashSet<i64> = tree
             .nodes
@@ -2200,13 +2270,20 @@ impl App {
         let calls = match lifted {
             Some(lifted) => self.build_calls_from_lifted(&bam, reference.as_deref(), lifted).await?,
             None => {
+                // Match the requested contig to the header's naming convention: GRCh37/hg19
+                // (still the medical-space default) use bare `Y`/`MT`; CHM13/GRCh38 use
+                // `chrY`/`chrM`. Without this a `chrY` query against a `Y`-named header errors
+                // out and the placement falls back to a worse tree.
+                let resolved = self
+                    .resolve_header_contig(&bam, reference.as_deref(), contig)
+                    .await?
+                    .unwrap_or_else(|| contig.to_string());
                 let bam = bam.clone();
                 let reference = reference.clone();
                 let targets = targets.clone();
-                let contig_owned = contig.to_string();
                 tokio::task::spawn_blocking(move || {
                     let params = adaptive_haploid_params(&bam, reference.as_deref()); // HiFi -> lower min_depth
-                    caller::call_bases_at(&bam, &contig_owned, &targets, &params, reference.as_deref())
+                    caller::call_bases_at(&bam, &resolved, &targets, &params, reference.as_deref())
                 })
                 .await??
             }
@@ -2311,12 +2388,19 @@ impl App {
 
         let mut calls: HashMap<i64, char> = HashMap::new();
         for (qcontig, set) in by_contig {
-            if !header_contigs.contains(&qcontig) {
-                continue;
-            }
+            // Tolerate naming conventions between the lift target and the header (e.g. a `chrY`
+            // lift against a GRCh37 `Y`-named header): query the header's actual spelling.
+            let bare = qcontig.strip_prefix("chr").unwrap_or(&qcontig);
+            let Some(query_contig) = header_contigs
+                .iter()
+                .find(|n| n.eq_ignore_ascii_case(&qcontig) || n.eq_ignore_ascii_case(bare))
+                .cloned()
+            else {
+                continue; // off-target lift the alignment lacks
+            };
             let bam = bam.to_path_buf();
             let reference = reference.map(|p| p.to_path_buf());
-            let qc = qcontig.clone();
+            let qc = query_contig;
             let lifted_calls = tokio::task::spawn_blocking(move || {
                 let params = adaptive_haploid_params(&bam, reference.as_deref());
                 caller::call_bases_at(&bam, &qc, &set, &params, reference.as_deref())
