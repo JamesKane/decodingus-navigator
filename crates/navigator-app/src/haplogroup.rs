@@ -2,6 +2,35 @@
 //! 2026-06 simplification round; `use super::*` reaches the crate-root types + free helpers.
 use super::*;
 
+/// Analysis-artifact `kind` for cached per-alignment tree-genotype base calls (see
+/// [`App::base_calls`]). The `algorithm_version` carries the site-set hash, so distinct trees /
+/// contigs / lift paths get distinct cache rows.
+const GENOTYPE_KIND: &str = "tree-genotype";
+
+/// A stable cache key (used as the artifact `algorithm_version`) for a tree-genotype base call:
+/// the queried `contig`, the lift source build, and an FNV-1a hash of the **sorted target
+/// positions** + their count. A changed tree (added/removed/moved positions) changes the hash →
+/// cache miss → fresh walk; the BAM `source_sig` handles a changed alignment file separately.
+fn genotype_cache_key(contig: &str, source_build: Option<&str>, targets: &HashSet<i64>) -> String {
+    let mut sorted: Vec<i64> = targets.iter().copied().collect();
+    sorted.sort_unstable();
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    let mut feed = |bytes: &[u8]| {
+        for &b in bytes {
+            h ^= b as u64;
+            h = h.wrapping_mul(0x100_0000_01b3);
+        }
+    };
+    feed(contig.as_bytes());
+    feed(b"|");
+    feed(source_build.unwrap_or("native").as_bytes());
+    feed(b"|");
+    for p in &sorted {
+        feed(&p.to_le_bytes());
+    }
+    format!("g1:{contig}:{}:{h:016x}", sorted.len())
+}
+
 /// Callable chrY bases from a coverage result — the FTDNA Big Y generation discriminator (see
 /// [`App::refine_big_y_generation`]). A Big Y has reads only on chrY, so this is its whole callable
 /// footprint. Build-agnostic (`chrY`/`Y`).
@@ -2255,6 +2284,13 @@ impl App {
     /// the build the tree's positions are in: when it differs from the alignment build the
     /// positions are lifted (chrY chain), queried there, and mapped back; `None` (e.g. a
     /// DecodingUs tree already in the alignment's build, or mt/rCRS-direct) queries directly.
+    ///
+    /// The result (tree-position → base) is cached as a versioned analysis artifact keyed by the
+    /// queried **site set** (a hash of the tree's positions) + contig + lift source, and
+    /// invalidated by the alignment's `source_sig` (BAM/CRAM mtime:size). This is the BAM-walk
+    /// chokepoint for *every* genotyping path (Y/mt placement, the variant profile, genome
+    /// consensus), so a profile **rebuild** reuses the cached genotypes instead of re-walking the
+    /// reads — only a changed file or a changed tree site set forces a fresh walk.
     async fn base_calls(
         &self,
         alignment_id: i64,
@@ -2262,6 +2298,25 @@ impl App {
         tree: &navigator_analysis::haplo::HaploTree,
         tree_source_build: Option<&str>,
     ) -> Result<HashMap<i64, char>, AppError> {
+        let targets: HashSet<i64> = tree
+            .nodes
+            .values()
+            .flat_map(|n| n.loci.iter().map(|l| l.position))
+            .collect();
+        if targets.is_empty() {
+            return Ok(HashMap::new());
+        }
+
+        // Cache hit → skip both the reference resolution (a CRAM would otherwise download) and the
+        // read walk entirely.
+        let cache_key = genotype_cache_key(contig, tree_source_build, &targets);
+        if let Some(pairs) = self
+            .load_analysis::<Vec<(i64, char)>>(alignment_id, GENOTYPE_KIND, &cache_key)
+            .await?
+        {
+            return Ok(pairs.into_iter().collect());
+        }
+
         let aln = self.alignment_or_err(alignment_id).await?;
         let bam = PathBuf::from(aln.bam_path.ok_or(AppError::MissingPaths(alignment_id))?);
         // Resolve the reference even when none was stored at import. A CRAM can't be decoded
@@ -2279,12 +2334,6 @@ impl App {
             ),
             None => self.gateway.cached_reference(&aln.reference_build),
         };
-
-        let targets: HashSet<i64> = tree
-            .nodes
-            .values()
-            .flat_map(|n| n.loci.iter().map(|l| l.position))
-            .collect();
 
         let lifted = self
             .lifted_targets(
@@ -2309,7 +2358,6 @@ impl App {
                     .unwrap_or_else(|| contig.to_string());
                 let bam = bam.clone();
                 let reference = reference.clone();
-                let targets = targets.clone();
                 tokio::task::spawn_blocking(move || {
                     let params = adaptive_haploid_params(&bam, reference.as_deref()); // HiFi -> lower min_depth
                     caller::call_bases_at(&bam, &resolved, &targets, &params, reference.as_deref())
@@ -2317,6 +2365,10 @@ impl App {
                 .await??
             }
         };
+
+        // Cache the genotypes (stamped with the BAM source_sig) so a rebuild skips the walk.
+        let pairs: Vec<(i64, char)> = calls.iter().map(|(&p, &b)| (p, b)).collect();
+        self.save_analysis(alignment_id, GENOTYPE_KIND, &cache_key, &pairs).await?;
         Ok(calls)
     }
 

@@ -215,19 +215,31 @@ fn flatten_du_node(n: &DuNode, is_root: bool, build_key: &str, out: &mut HashMap
 pub fn decodingus_polarity_map(data: &str) -> Result<HashMap<String, (String, String)>, String> {
     let raw: DuTreeJson = serde_json::from_str(data).map_err(|e| e.to_string())?;
     let mut out = HashMap::new();
+    // Pick a variant's alleles from a **deterministic** preferred build (hs1 is the DecodingUs
+    // native/authoritative build), then any remaining build by sorted key. Iterating
+    // `coordinates.values()` (HashMap order) is non-deterministic and, where builds record a SNP
+    // with swapped polarity, would pick a different orientation per run.
+    fn pick_polarity(coords: &HashMap<String, DuCoord>) -> Option<(String, String)> {
+        let alleles = |c: &DuCoord| match (c.ancestral.as_deref(), c.derived.as_deref()) {
+            (Some(a), Some(d)) if !a.is_empty() && !d.is_empty() => Some((a.to_string(), d.to_string())),
+            _ => None,
+        };
+        for b in ["hs1", "GRCh38", "GRCh37"] {
+            if let Some(p) = coords.get(b).and_then(alleles) {
+                return Some(p);
+            }
+        }
+        let mut keys: Vec<&String> = coords.keys().collect();
+        keys.sort_unstable();
+        keys.into_iter().find_map(|k| coords.get(k).and_then(alleles))
+    }
     fn walk(n: &DuNode, out: &mut HashMap<String, (String, String)>) {
         for v in &n.variants {
             if v.canonical_name.is_empty() {
                 continue;
             }
-            for c in v.coordinates.values() {
-                if let (Some(a), Some(d)) = (c.ancestral.as_deref(), c.derived.as_deref()) {
-                    if !a.is_empty() && !d.is_empty() {
-                        out.entry(v.canonical_name.clone())
-                            .or_insert_with(|| (a.to_string(), d.to_string()));
-                        break;
-                    }
-                }
+            if let Some(p) = pick_polarity(&v.coordinates) {
+                out.entry(v.canonical_name.clone()).or_insert(p);
             }
         }
         for c in &n.children {
@@ -863,6 +875,27 @@ mod tests {
              "children": []}]}
       ]
     }"#;
+
+    #[test]
+    fn decodingus_polarity_map_prefers_hs1_deterministically() {
+        // A SNP whose hs1 and GRCh38 coords record *swapped* polarity: the map must always pick the
+        // hs1 (native/authoritative) orientation, never a HashMap-order-dependent one. A second SNP
+        // has only a GRCh38 coord → falls back to it.
+        let json = r#"{
+          "roots": [
+            {"id": 1, "name": "R", "variants": [
+                {"canonical_name": "A2627", "coordinates": {
+                    "hs1": {"contig":"chrY","position":100,"ancestral":"C","derived":"T"},
+                    "GRCh38": {"contig":"chrY","position":200,"ancestral":"T","derived":"C"}}},
+                {"canonical_name": "GRCh38only", "coordinates": {
+                    "GRCh38": {"contig":"chrY","position":300,"ancestral":"G","derived":"A"}}}],
+             "children": []}
+          ]
+        }"#;
+        let pol = decodingus_polarity_map(json).unwrap();
+        assert_eq!(pol["A2627"], ("C".to_string(), "T".to_string())); // hs1 wins, every run
+        assert_eq!(pol["GRCh38only"], ("G".to_string(), "A".to_string())); // fallback build
+    }
 
     #[test]
     fn parse_decodingus_picks_target_build_and_flattens() {

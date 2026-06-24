@@ -528,7 +528,7 @@ fn is_grch38_build(build: &Option<String>) -> bool {
 fn pool_votes<K, V>(sources: &[(SourceType, HashMap<K, V>)]) -> HashMap<K, V>
 where
     K: std::hash::Hash + Eq + Clone,
-    V: std::hash::Hash + Eq + Clone,
+    V: std::hash::Hash + Eq + Clone + Ord,
 {
     let mut tally: HashMap<K, HashMap<V, f64>> = HashMap::new();
     for (st, calls) in sources {
@@ -542,7 +542,10 @@ where
         .filter_map(|(k, votes)| {
             votes
                 .into_iter()
-                .max_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
+                // Highest weight wins; on a tie break by the allele itself so the pooled call is
+                // deterministic (a `HashMap` iteration order otherwise picked the winner at random,
+                // which flipped the placed terminal between runs over identical genotypes).
+                .max_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal).then(a.0.cmp(&b.0)))
                 .map(|(v, _)| (k, v))
         })
         .collect()
