@@ -39,10 +39,25 @@ the bundled `Contents/MacOS/navigator` is a fat `x86_64 arm64` binary with `mino
 `CFBundleIdentifier=com.decodingus.navigator`. The Intel slice gets `target-cpu=ivybridge` from
 `.cargo/config.toml`.
 
+**Linux glibc floor (2026-06-24, decided = 2.28 via container; CI authored, NOT yet run):** the
+`package-linux` job builds **and packages inside `quay.io/pypa/manylinux_2_28_*`** (AlmaLinux 8,
+glibc 2.28) for both x86_64 and aarch64, so the binary *and* the AppImage-bundled GTK/D-Bus libs all
+target 2.28 (Ubuntu 20.04+/Debian 10+/RHEL 8+). `cargo-zigbuild` was evaluated and rejected: it only
+pins *our* binary's glibc, not the libs linuxdeploy bundles into the AppImage, so it gives no real
+floor benefit for a GUI app (a local macOS cross-build also confirmed the Rust + vendored-C deps —
+sqlite/bzip2/lzma/ring/noodles — cross-compile cleanly; only the GUI system libs need the container).
+manylinux_2_28 is chosen because it runs GitHub's node20 actions (2.28 is node20's floor); AppImage
+FUSE is bypassed with `APPIMAGE_EXTRACT_AND_RUN=1`. **Unverified — no local Linux/Docker here; needs
+a CI run to settle the exact `dnf` package set + AppImage tooling.**
+
+**General CI fix (2026-06-24):** cargo-packager 0.11.8 only *packages* a pre-built binary — it does
+**not** build with `--target` (verified locally: it errors "No such file" instead of compiling). So
+every job now runs an explicit `cargo build`/`lipo` before `cargo packager`; the original matrix
+(which called `cargo packager --target …` with no prior build) would have failed.
+
 **Still CI-time / unverified here (need a tagged run + secrets):** macOS notarization (`APPLE_*`),
-Linux glibc floor (ubuntu-22.04 = 2.35; old-glibc container / `cargo-zigbuild` `*.2.28` for broad
-reach), Windows signing (unsigned for Alpha), and the CI asset-staging CDN source
-(`NAVIGATOR_ASSET_SRC`/CDN).
+the Linux container job (above — needs a CI run), Windows signing (unsigned for Alpha), and the CI
+asset-staging CDN source (`NAVIGATOR_ASSET_SRC`/CDN).
 
 ---
 
