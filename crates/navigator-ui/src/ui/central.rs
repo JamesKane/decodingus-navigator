@@ -129,6 +129,8 @@ impl NavigatorApp {
                 ui.add_space(4.0);
                 // Optional AI-assisted narration sits above the facts (additive, clearly labelled).
                 self.simple_ai_narration(ui, guid);
+                // The brief's paternal/maternal cards now render the compact descent path in place of
+                // the old lineage trail (see brief_descent_trail).
                 self.subject_brief_view(ui, guid);
                 // Export the brief as a shareable "DNA Story" once it's built.
                 if matches!(&self.subject_brief, Some((g, _)) if *g == guid) {
@@ -183,6 +185,12 @@ impl NavigatorApp {
                                     ui.label(egui::RichText::new(self.tr("hint.noConsensusYet")).weak());
                                 }
                             });
+                            if self.consensus_y.is_some() {
+                                ui.add_space(10.0);
+                                card(ui, self.tr("card.descentReport"), |ui| {
+                                    self.descent_card(ui, guid, DnaType::Y, false);
+                                });
+                            }
                         }
                         // The heavy SNP surface: a compact chrY variant track as shared context, then
                         // the heavy tables one at a time (each runs to thousands of rows on a WGS).
@@ -224,6 +232,12 @@ impl NavigatorApp {
                                     ui.label(egui::RichText::new(self.tr("hint.noConsensusYet")).weak());
                                 }
                             });
+                            if self.consensus_mt.is_some() {
+                                ui.add_space(10.0);
+                                card(ui, self.tr("card.descentReport"), |ui| {
+                                    self.descent_card(ui, guid, DnaType::Mt, false);
+                                });
+                            }
                         }
                         MtSub::Variants => {
                             card(ui, self.tr("card.variantTrack"), |ui| self.mt_variant_track(ui));

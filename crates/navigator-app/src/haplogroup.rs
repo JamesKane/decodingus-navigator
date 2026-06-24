@@ -2,6 +2,35 @@
 //! 2026-06 simplification round; `use super::*` reaches the crate-root types + free helpers.
 use super::*;
 
+/// Analysis-artifact `kind` for cached per-alignment tree-genotype base calls (see
+/// [`App::base_calls`]). The `algorithm_version` carries the site-set hash, so distinct trees /
+/// contigs / lift paths get distinct cache rows.
+const GENOTYPE_KIND: &str = "tree-genotype";
+
+/// A stable cache key (used as the artifact `algorithm_version`) for a tree-genotype base call:
+/// the queried `contig`, the lift source build, and an FNV-1a hash of the **sorted target
+/// positions** + their count. A changed tree (added/removed/moved positions) changes the hash →
+/// cache miss → fresh walk; the BAM `source_sig` handles a changed alignment file separately.
+fn genotype_cache_key(contig: &str, source_build: Option<&str>, targets: &HashSet<i64>) -> String {
+    let mut sorted: Vec<i64> = targets.iter().copied().collect();
+    sorted.sort_unstable();
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    let mut feed = |bytes: &[u8]| {
+        for &b in bytes {
+            h ^= b as u64;
+            h = h.wrapping_mul(0x100_0000_01b3);
+        }
+    };
+    feed(contig.as_bytes());
+    feed(b"|");
+    feed(source_build.unwrap_or("native").as_bytes());
+    feed(b"|");
+    for p in &sorted {
+        feed(&p.to_le_bytes());
+    }
+    format!("g1:{contig}:{}:{h:016x}", sorted.len())
+}
+
 /// Callable chrY bases from a coverage result — the FTDNA Big Y generation discriminator (see
 /// [`App::refine_big_y_generation`]). A Big Y has reads only on chrY, so this is its whole callable
 /// footprint. Build-agnostic (`chrY`/`Y`).
@@ -453,8 +482,29 @@ impl App {
 
     /// The persisted Y-profile snapshot for a subject, if one has been built — cheap (no
     /// genotyping). `None` until [`build_y_profile`](Self::build_y_profile) runs.
+    ///
+    /// Re-imputed against the current DecodingUs polarity from each source's stored base before
+    /// returning (best effort, no BAM): a profile built under a different tree/provider, or before a
+    /// polarity correction, self-heals on read without a rebuild. Profiles persisted before bases
+    /// were stored (no `base`) are returned as-is — they need one rebuild to gain re-imputation.
     pub async fn cached_y_profile(&self, biosample_guid: SampleGuid) -> Result<Option<YProfile>, AppError> {
-        self.cached_consensus_profile(biosample_guid, DnaType::Y).await
+        let Some(mut profile) = self.cached_consensus_profile(biosample_guid, DnaType::Y).await? else {
+            return Ok(None);
+        };
+        let has_bases = profile
+            .variants
+            .iter()
+            .any(|v| v.sources.iter().any(|s| s.base.is_some()));
+        if has_bases {
+            if let Some(pol) = self.decodingus_y_polarity().await {
+                let pol: std::collections::BTreeMap<String, (String, String)> = pol.into_iter().collect();
+                let changed = navigator_domain::consensus::reproject(&mut profile.variants, &pol);
+                if changed > 0 {
+                    profile.summary = navigator_domain::consensus::summarize(&profile.variants);
+                }
+            }
+        }
+        Ok(Some(profile))
     }
 
     /// Build (and persist) the multi-source Y-variant profile: reconcile each Y-bearing source's
@@ -584,7 +634,15 @@ impl App {
             })
             .collect();
 
-        let variants = yprofile::reconcile_y(&sources);
+        let mut variants = yprofile::reconcile_y(&sources);
+        // Re-impute each SNP's state from the stored observed base against the **true** (DecodingUs)
+        // polarity, keyed by SNP name — so a profile built against any tree (incl. an FTDNA tree
+        // whose reference-as-ancestral polarity is inverted at some sites) displays correct
+        // derived/ancestral states, no BAM re-read. Best effort: skipped if DecodingUs is offline.
+        if let Some(pol) = self.decodingus_y_polarity().await {
+            let pol: std::collections::BTreeMap<String, (String, String)> = pol.into_iter().collect();
+            navigator_domain::consensus::reproject(&mut variants, &pol);
+        }
         let summary = yprofile::summarize(&variants);
         // Genome-level placement: place the pooled call set on the tree once (not a vote among the
         // per-run terminal labels). Falls back to the label reconciliation when nothing places.
@@ -940,6 +998,54 @@ impl App {
             assemble_assignment_robust(&tree, &pooled)
         };
         Ok(Some(assignment))
+    }
+
+    /// Build a YFull-style [`DescentReport`] for a subject's Y or mtDNA lineage from the **already
+    /// persisted** variant profile — no re-genotyping. Reads the cached profile for its terminal +
+    /// per-SNP states (keyed by build-independent SNP name), then walks the FTDNA tree from the
+    /// terminal to the root, attaching each node's defining SNPs with the sample's call (`NoCall` for
+    /// an untested equivalent). `Ok(None)` when the profile isn't built yet or has no terminal — the
+    /// UI then offers to build it (one expensive, persisted step that also powers the variant tabs).
+    pub async fn descent_report(
+        &self,
+        biosample_guid: SampleGuid,
+        dna: DnaType,
+    ) -> Result<Option<DescentReport>, AppError> {
+        use navigator_domain::consensus::ConsensusState;
+
+        // Cheap first: the persisted profile. No profile / no terminal → nothing to draw, and we
+        // skip the (multi-MB) tree fetch + parse entirely.
+        let profile = match dna {
+            DnaType::Y => self.cached_y_profile(biosample_guid).await?,
+            DnaType::Mt => self.cached_mt_profile(biosample_guid).await?,
+        };
+        let Some(profile) = profile else { return Ok(None) };
+        let Some(terminal) = profile.terminal.clone() else { return Ok(None) };
+
+        let tree_json = match dna {
+            DnaType::Y => self.fetch_ftdna_y_tree().await?,
+            DnaType::Mt => self.fetch_ftdna_mt_tree().await?,
+        };
+        let tree = navigator_analysis::haplo::parse_ftdna_json(&tree_json).map_err(AppError::Import)?;
+        let Some(terminal_id) = tree.nodes.iter().find(|(_, n)| n.name == terminal).map(|(id, _)| *id) else {
+            return Ok(None); // terminal not in this tree (provider/build skew) — nothing to draw
+        };
+
+        let state_by_name: std::collections::HashMap<String, CallState> = profile
+            .variants
+            .iter()
+            .map(|v| {
+                let state = match v.consensus {
+                    ConsensusState::Derived => CallState::Derived,
+                    ConsensusState::Ancestral => CallState::Ancestral,
+                    ConsensusState::NoCall => CallState::NoCall,
+                };
+                (v.name.clone(), state)
+            })
+            .collect();
+
+        let nodes = navigator_analysis::haplo::descent_by_node(&tree, terminal_id, &state_by_name);
+        Ok(Some(DescentReport { dna, terminal, nodes }))
     }
 
     /// The persisted autosomal consensus-profile snapshot for a subject, if built — cheap (no
@@ -1991,7 +2097,12 @@ impl App {
         // DecodingUs tree is unavailable.
         if matches!(y_tree_provider(), YTreeProvider::Ftdna) {
             let json = self.fetch_ftdna_y_tree().await?;
-            return navigator_analysis::haplo::parse_ftdna_json(&json).map_err(AppError::Import);
+            let mut tree = navigator_analysis::haplo::parse_ftdna_json(&json).map_err(AppError::Import)?;
+            // Repair FTDNA's reference-as-ancestral polarity against DecodingUs (best effort).
+            if let Some(pol) = self.decodingus_y_polarity().await {
+                navigator_analysis::haplo::normalize_polarity(&mut tree, &pol);
+            }
+            return Ok(tree);
         }
         match self.fetch_decodingus_y_tree().await {
             Ok(json) => navigator_analysis::haplo::parse_decodingus_json(&json, build).map_err(AppError::Import),
@@ -2111,17 +2222,75 @@ impl App {
         contig: &str,
         tree_json: &str,
     ) -> Result<(navigator_analysis::haplo::HaploTree, HashMap<i64, char>), AppError> {
-        let tree = navigator_analysis::haplo::parse_ftdna_json(tree_json).map_err(AppError::Import)?;
+        let mut tree = navigator_analysis::haplo::parse_ftdna_json(tree_json).map_err(AppError::Import)?;
+        // Harden the FTDNA tree: it records the GRCh38 *reference* base as "ancestral", so at the
+        // sites where the reference carries the derived allele its polarity is inverted (the
+        // CT-M168 amber artifact). Normalize against the DecodingUs tree's true polarity (best
+        // effort — offline FTDNA mode keeps the raw FTDNA polarity). Y only (no mt polarity source).
+        if contig.eq_ignore_ascii_case("chrY") {
+            if let Some(pol) = self.decodingus_y_polarity().await {
+                let flipped = navigator_analysis::haplo::normalize_polarity(&mut tree, &pol);
+                if flipped > 0 {
+                    eprintln!("normalized {flipped} FTDNA Y loci to DecodingUs (true) polarity");
+                }
+            }
+        }
         // FTDNA tree positions are in the tree's own build (Y → GRCh38, mt → rCRS/direct).
         let source_build = tree_build_for_contig(contig);
         let calls = self.base_calls(alignment_id, contig, &tree, source_build).await?;
         Ok((tree, calls))
     }
 
+    /// Best-effort true-polarity map (SNP name → ancestral/derived) from the DecodingUs Y tree,
+    /// used to repair an FTDNA tree's reference-as-ancestral polarity ([`normalize_polarity`]).
+    /// `None` when the DecodingUs tree is unavailable (offline FTDNA mode keeps raw FTDNA polarity).
+    async fn decodingus_y_polarity(&self) -> Option<HashMap<String, (String, String)>> {
+        let json = self.fetch_decodingus_y_tree().await.ok()?;
+        navigator_analysis::haplo::decodingus_polarity_map(&json).ok()
+    }
+
+    /// Resolve a canonical contig name (`chrY`, `chrM`) to the name actually present in the
+    /// alignment header, tolerating naming conventions: the `chr` prefix (GRCh37/hg19 drop it)
+    /// and the `M`/`MT` mitochondrial spelling. Returns `None` when no equivalent contig is in
+    /// the header (the caller then queries the requested name and surfaces the original error).
+    async fn resolve_header_contig(
+        &self,
+        bam: &Path,
+        reference: Option<&Path>,
+        contig: &str,
+    ) -> Result<Option<String>, AppError> {
+        let bam = bam.to_path_buf();
+        let reference = reference.map(|p| p.to_path_buf());
+        let names = tokio::task::spawn_blocking(move || caller::header_contig_names(&bam, reference.as_deref()))
+            .await??;
+        // Candidate spellings for the requested contig, in preference order.
+        let bare = contig.strip_prefix("chr").unwrap_or(contig);
+        let mut candidates: Vec<String> = vec![contig.to_string(), bare.to_string()];
+        if bare.eq_ignore_ascii_case("M") || bare.eq_ignore_ascii_case("MT") {
+            for alt in ["chrM", "chrMT", "M", "MT"] {
+                candidates.push(alt.to_string());
+            }
+        }
+        Ok(candidates
+            .into_iter()
+            .find(|cand| names.iter().any(|n| n.eq_ignore_ascii_case(cand)))
+            .and_then(|cand| {
+                // Return the header's exact casing/spelling so the region query matches.
+                names.iter().find(|n| n.eq_ignore_ascii_case(&cand)).cloned()
+            }))
+    }
+
     /// Base-call an alignment at a parsed tree's positions on `contig`. `tree_source_build` is
     /// the build the tree's positions are in: when it differs from the alignment build the
     /// positions are lifted (chrY chain), queried there, and mapped back; `None` (e.g. a
     /// DecodingUs tree already in the alignment's build, or mt/rCRS-direct) queries directly.
+    ///
+    /// The result (tree-position → base) is cached as a versioned analysis artifact keyed by the
+    /// queried **site set** (a hash of the tree's positions) + contig + lift source, and
+    /// invalidated by the alignment's `source_sig` (BAM/CRAM mtime:size). This is the BAM-walk
+    /// chokepoint for *every* genotyping path (Y/mt placement, the variant profile, genome
+    /// consensus), so a profile **rebuild** reuses the cached genotypes instead of re-walking the
+    /// reads — only a changed file or a changed tree site set forces a fresh walk.
     async fn base_calls(
         &self,
         alignment_id: i64,
@@ -2129,15 +2298,42 @@ impl App {
         tree: &navigator_analysis::haplo::HaploTree,
         tree_source_build: Option<&str>,
     ) -> Result<HashMap<i64, char>, AppError> {
-        let aln = self.alignment_or_err(alignment_id).await?;
-        let bam = PathBuf::from(aln.bam_path.ok_or(AppError::MissingPaths(alignment_id))?);
-        let reference = aln.reference_path.map(PathBuf::from);
-
         let targets: HashSet<i64> = tree
             .nodes
             .values()
             .flat_map(|n| n.loci.iter().map(|l| l.position))
             .collect();
+        if targets.is_empty() {
+            return Ok(HashMap::new());
+        }
+
+        // Cache hit → skip both the reference resolution (a CRAM would otherwise download) and the
+        // read walk entirely.
+        let cache_key = genotype_cache_key(contig, tree_source_build, &targets);
+        if let Some(pairs) = self
+            .load_analysis::<Vec<(i64, char)>>(alignment_id, GENOTYPE_KIND, &cache_key)
+            .await?
+        {
+            return Ok(pairs.into_iter().collect());
+        }
+
+        let aln = self.alignment_or_err(alignment_id).await?;
+        let bam = PathBuf::from(aln.bam_path.ok_or(AppError::MissingPaths(alignment_id))?);
+        // Resolve the reference even when none was stored at import. A CRAM can't be decoded
+        // without it, so resolve (download on a miss) via the gateway from the alignment's build —
+        // e.g. the already-cached `chm13v2.0.fa` for a CHM13 CRAM. A BAM needs no reference to
+        // read reads, so only adopt a *cached* FASTA (never force a multi-GB download just to
+        // supply the chrM liftover map).
+        let is_cram = bam.extension().is_some_and(|e| e.eq_ignore_ascii_case("cram"));
+        let reference = match aln.reference_path {
+            Some(p) => Some(PathBuf::from(p)),
+            None if is_cram => Some(
+                self.gateway
+                    .resolve_reference(&aln.reference_build, &mut |_, _| {})
+                    .await?,
+            ),
+            None => self.gateway.cached_reference(&aln.reference_build),
+        };
 
         let lifted = self
             .lifted_targets(
@@ -2152,17 +2348,27 @@ impl App {
         let calls = match lifted {
             Some(lifted) => self.build_calls_from_lifted(&bam, reference.as_deref(), lifted).await?,
             None => {
+                // Match the requested contig to the header's naming convention: GRCh37/hg19
+                // (still the medical-space default) use bare `Y`/`MT`; CHM13/GRCh38 use
+                // `chrY`/`chrM`. Without this a `chrY` query against a `Y`-named header errors
+                // out and the placement falls back to a worse tree.
+                let resolved = self
+                    .resolve_header_contig(&bam, reference.as_deref(), contig)
+                    .await?
+                    .unwrap_or_else(|| contig.to_string());
                 let bam = bam.clone();
                 let reference = reference.clone();
-                let targets = targets.clone();
-                let contig_owned = contig.to_string();
                 tokio::task::spawn_blocking(move || {
                     let params = adaptive_haploid_params(&bam, reference.as_deref()); // HiFi -> lower min_depth
-                    caller::call_bases_at(&bam, &contig_owned, &targets, &params, reference.as_deref())
+                    caller::call_bases_at(&bam, &resolved, &targets, &params, reference.as_deref())
                 })
                 .await??
             }
         };
+
+        // Cache the genotypes (stamped with the BAM source_sig) so a rebuild skips the walk.
+        let pairs: Vec<(i64, char)> = calls.iter().map(|(&p, &b)| (p, b)).collect();
+        self.save_analysis(alignment_id, GENOTYPE_KIND, &cache_key, &pairs).await?;
         Ok(calls)
     }
 
@@ -2263,12 +2469,19 @@ impl App {
 
         let mut calls: HashMap<i64, char> = HashMap::new();
         for (qcontig, set) in by_contig {
-            if !header_contigs.contains(&qcontig) {
-                continue;
-            }
+            // Tolerate naming conventions between the lift target and the header (e.g. a `chrY`
+            // lift against a GRCh37 `Y`-named header): query the header's actual spelling.
+            let bare = qcontig.strip_prefix("chr").unwrap_or(&qcontig);
+            let Some(query_contig) = header_contigs
+                .iter()
+                .find(|n| n.eq_ignore_ascii_case(&qcontig) || n.eq_ignore_ascii_case(bare))
+                .cloned()
+            else {
+                continue; // off-target lift the alignment lacks
+            };
             let bam = bam.to_path_buf();
             let reference = reference.map(|p| p.to_path_buf());
-            let qc = qcontig.clone();
+            let qc = query_contig;
             let lifted_calls = tokio::task::spawn_blocking(move || {
                 let params = adaptive_haploid_params(&bam, reference.as_deref());
                 caller::call_bases_at(&bam, &qc, &set, &params, reference.as_deref())

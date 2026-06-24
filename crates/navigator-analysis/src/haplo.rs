@@ -206,6 +206,80 @@ fn flatten_du_node(n: &DuNode, is_root: bool, build_key: &str, out: &mut HashMap
     }
 }
 
+/// Build-independent **ancestral/derived polarity** per SNP **name** from the DecodingUs tree
+/// JSON: `name → (ancestral, derived)`. The DecodingUs tree carries true phylogenetic polarity,
+/// whereas FTDNA records the GRCh38 *reference* base as "ancestral" — so at sites where the
+/// reference carries the derived allele FTDNA's polarity is inverted. This map drives
+/// [`normalize_polarity`] to repair an FTDNA tree. Alleles are taken from any one build's
+/// coordinate (the mutation's alleles are the same across builds); names are universal.
+pub fn decodingus_polarity_map(data: &str) -> Result<HashMap<String, (String, String)>, String> {
+    let raw: DuTreeJson = serde_json::from_str(data).map_err(|e| e.to_string())?;
+    let mut out = HashMap::new();
+    // Pick a variant's alleles from a **deterministic** preferred build (hs1 is the DecodingUs
+    // native/authoritative build), then any remaining build by sorted key. Iterating
+    // `coordinates.values()` (HashMap order) is non-deterministic and, where builds record a SNP
+    // with swapped polarity, would pick a different orientation per run.
+    fn pick_polarity(coords: &HashMap<String, DuCoord>) -> Option<(String, String)> {
+        let alleles = |c: &DuCoord| match (c.ancestral.as_deref(), c.derived.as_deref()) {
+            (Some(a), Some(d)) if !a.is_empty() && !d.is_empty() => Some((a.to_string(), d.to_string())),
+            _ => None,
+        };
+        for b in ["hs1", "GRCh38", "GRCh37"] {
+            if let Some(p) = coords.get(b).and_then(alleles) {
+                return Some(p);
+            }
+        }
+        let mut keys: Vec<&String> = coords.keys().collect();
+        keys.sort_unstable();
+        keys.into_iter().find_map(|k| coords.get(k).and_then(alleles))
+    }
+    fn walk(n: &DuNode, out: &mut HashMap<String, (String, String)>) {
+        for v in &n.variants {
+            if v.canonical_name.is_empty() {
+                continue;
+            }
+            if let Some(p) = pick_polarity(&v.coordinates) {
+                out.entry(v.canonical_name.clone()).or_insert(p);
+            }
+        }
+        for c in &n.children {
+            walk(c, out);
+        }
+    }
+    for r in &raw.roots {
+        walk(r, &mut out);
+    }
+    Ok(out)
+}
+
+/// Repair an FTDNA tree's polarity in place against a `reference` polarity map (from
+/// [`decodingus_polarity_map`]): for any locus whose alleles are the **same two nucleotides** as
+/// the reference but in swapped roles (FTDNA's reference-as-ancestral inversion), swap its
+/// ancestral/derived back to the reference orientation. Strand-differing loci (different
+/// nucleotides) are left untouched — the lift path already complements those. Returns how many
+/// loci were flipped.
+pub fn normalize_polarity(tree: &mut HaploTree, reference: &HashMap<String, (String, String)>) -> usize {
+    let mut flipped = 0;
+    for node in tree.nodes.values_mut() {
+        for l in &mut node.loci {
+            if l.name.is_empty() {
+                continue;
+            }
+            let Some((ra, rd)) = reference.get(&l.name) else { continue };
+            let la = l.ancestral.to_ascii_uppercase();
+            let ld = l.derived.to_ascii_uppercase();
+            let ra = ra.to_ascii_uppercase();
+            let rd = rd.to_ascii_uppercase();
+            // Same two nucleotides, opposite polarity → flip to the reference orientation.
+            if la != ld && la == rd && ld == ra {
+                std::mem::swap(&mut l.ancestral, &mut l.derived);
+                flipped += 1;
+            }
+        }
+    }
+    flipped
+}
+
 /// Rank every haplogroup in `tree` by the Kulczynski measure, given the sample's base at
 /// each position (`calls`: 1-based position → uppercase base, from the full sequence).
 /// `found` is the set of tree sites where the sample carries the derived allele; expected
@@ -253,29 +327,86 @@ pub fn score(tree: &HaploTree, calls: &HashMap<i64, char>) -> Vec<ScoredHaplogro
     out
 }
 
-/// Does the sample carry this locus's derived allele?
-fn locus_carried(locus: &Locus, calls: &HashMap<i64, char>) -> bool {
-    match locus.derived.chars().next() {
-        Some(d) => calls.get(&locus.position).is_some_and(|b| b.eq_ignore_ascii_case(&d)),
-        None => false,
+/// Watson-Crick complement of a single base (non-ACGT passes through unchanged).
+fn complement_base(b: char) -> char {
+    match b.to_ascii_uppercase() {
+        'A' => 'T',
+        'T' => 'A',
+        'C' => 'G',
+        'G' => 'C',
+        other => other,
     }
 }
 
-/// The sample's state at one defining SNP: carries the derived allele, carries the
-/// ancestral allele (or any non-derived base — a contradiction of the branch), or has no
-/// confident call. A locus with no derived allele (indel-only / marker-less) is `NoCall`.
+/// Whether a SNP's two alleles are strand-ambiguous (an `A↔T` or `C↔G` transversion): the
+/// complement of one allele equals the other, so the strand can't be inferred from the observed
+/// base. Complement-matching must be skipped for these.
+fn strand_ambiguous(a: char, d: char) -> bool {
+    let mut pair = [a.to_ascii_uppercase(), d.to_ascii_uppercase()];
+    pair.sort_unstable();
+    pair == ['A', 'T'] || pair == ['C', 'G']
+}
+
+/// Does the sample carry this locus's derived allele? Accepts the strand-complement of the
+/// derived base (some tree variants record alleles on the opposite strand from the reference the
+/// alignment was called against — see [`locus_state`]), except for strand-ambiguous SNPs.
+fn locus_carried(locus: &Locus, calls: &HashMap<i64, char>) -> bool {
+    let Some(d) = locus.derived.chars().next().map(|c| c.to_ascii_uppercase()) else {
+        return false;
+    };
+    let Some(b) = calls.get(&locus.position).map(|c| c.to_ascii_uppercase()) else {
+        return false;
+    };
+    if b == d {
+        return true;
+    }
+    let ambiguous = locus
+        .ancestral
+        .chars()
+        .next()
+        .is_some_and(|a| strand_ambiguous(a, d));
+    !ambiguous && complement_base(b) == d
+}
+
+/// The sample's state at one defining SNP: carries the derived allele, carries the ancestral
+/// allele, or has no confident call. A locus with no derived allele (indel-only / marker-less)
+/// is `NoCall`.
+///
+/// Some haplotree variants record their ancestral/derived alleles on the **opposite strand** from
+/// the reference the alignment was genotyped against (FTDNA/YBrowse report on the SNP's discovery
+/// strand). A clean read then shows the complement of both tree alleles — neither the literal
+/// ancestral nor derived — so we also accept a strand-complement match, mirroring the chip
+/// reconciliation. The exception is strand-ambiguous (`A↔T` / `C↔G`) SNPs, where the complement of
+/// one allele *is* the other and strand can't be inferred; those keep strict literal matching. A
+/// base that matches neither strand of either allele is a genuine third allele → `NoCall` (not a
+/// branch contradiction).
 fn locus_state(locus: &Locus, calls: &HashMap<i64, char>) -> CallState {
-    let d = locus.derived.chars().next().map(|c| c.to_ascii_uppercase());
-    let a = locus.ancestral.chars().next().map(|c| c.to_ascii_uppercase());
-    if d.is_none() {
+    let Some(d) = locus.derived.chars().next().map(|c| c.to_ascii_uppercase()) else {
         return CallState::NoCall;
+    };
+    let a = locus.ancestral.chars().next().map(|c| c.to_ascii_uppercase());
+    let Some(b) = calls.get(&locus.position).map(|c| c.to_ascii_uppercase()) else {
+        return CallState::NoCall;
+    };
+    // Reference-strand match first.
+    if b == d {
+        return CallState::Derived;
     }
-    match calls.get(&locus.position).map(|c| c.to_ascii_uppercase()) {
-        Some(b) if Some(b) == d => CallState::Derived,
-        Some(b) if Some(b) == a => CallState::Ancestral,
-        Some(_) => CallState::Ancestral, // a third allele — not this branch's derived
-        None => CallState::NoCall,
+    if Some(b) == a {
+        return CallState::Ancestral;
     }
+    // Opposite-strand match (non-ambiguous SNPs only).
+    let ambiguous = a.is_some_and(|a| strand_ambiguous(a, d));
+    if !ambiguous {
+        let bc = complement_base(b);
+        if bc == d {
+            return CallState::Derived;
+        }
+        if Some(bc) == a {
+            return CallState::Ancestral;
+        }
+    }
+    CallState::NoCall // a genuine third allele — not a confident call for this branch
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -399,6 +530,9 @@ pub struct SnpEvidence {
     pub ancestral: String,
     pub derived: String,
     pub state: CallState,
+    /// The sample's **observed base** at this position (`None` = no call). Carried alongside the
+    /// imputed `state` so downstream consumers can persist the raw base and re-impute later.
+    pub base: Option<char>,
 }
 
 /// A child branch below the reported terminal, with the per-SNP evidence that explains why
@@ -441,6 +575,7 @@ pub fn child_evidence(tree: &HaploTree, calls: &HashMap<i64, char>, node_id: i64
                 ancestral: l.ancestral.clone(),
                 derived: l.derived.clone(),
                 state,
+                base: calls.get(&l.position).copied(),
             });
         }
         out.push(BranchEvidence {
@@ -450,6 +585,59 @@ pub fn child_evidence(tree: &HaploTree, calls: &HashMap<i64, char>, node_id: i64
         });
     }
     out
+}
+
+/// One node on the root→terminal path with its defining SNPs and the sample's per-SNP state — the
+/// grouped form of [`lineage_evidence`], used to draw a YFull-style per-node descent report.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NodeEvidence {
+    pub name: String,
+    /// True for the reported terminal (the deepest node on the path).
+    pub is_terminal: bool,
+    pub snps: Vec<SnpEvidence>,
+}
+
+/// Group the root→`terminal_id` path into per-node defining-SNP evidence (root→terminal order):
+/// walk the tree from the terminal up to the root, and for each node attach its loci with the
+/// sample's state taken from `state_by_name` (`NoCall` for an equivalent the sample didn't call).
+/// Keyed by **SNP name** (build-independent: a name like `M269` is the same across coordinate
+/// systems), so a cached variant profile placed under any build can colour an FTDNA-tree path.
+pub fn descent_by_node(
+    tree: &HaploTree,
+    terminal_id: i64,
+    state_by_name: &HashMap<String, CallState>,
+) -> Vec<NodeEvidence> {
+    let parent = build_parent_map(tree);
+    let mut ids = Vec::new();
+    let mut cur = Some(terminal_id);
+    while let Some(id) = cur {
+        ids.push(id);
+        cur = parent.get(&id).copied();
+    }
+    ids.reverse();
+
+    ids.iter()
+        .filter_map(|id| {
+            let node = tree.nodes.get(id)?;
+            let snps = node
+                .loci
+                .iter()
+                .map(|l| SnpEvidence {
+                    name: l.name.clone(),
+                    position: l.position,
+                    ancestral: l.ancestral.clone(),
+                    derived: l.derived.clone(),
+                    state: state_by_name.get(&l.name).copied().unwrap_or(CallState::NoCall),
+                    base: None, // name-keyed (from a cached profile) — no raw call available here
+                })
+                .collect();
+            Some(NodeEvidence {
+                name: node.name.clone(),
+                is_terminal: *id == terminal_id,
+                snps,
+            })
+        })
+        .collect()
 }
 
 /// Per-SNP evidence along the lineage root→`terminal_id`: every defining SNP of every node on
@@ -477,6 +665,7 @@ pub fn lineage_evidence(tree: &HaploTree, calls: &HashMap<i64, char>, terminal_i
                 ancestral: l.ancestral.clone(),
                 derived: l.derived.clone(),
                 state,
+                base: calls.get(&l.position).copied(),
             });
         }
     }
@@ -646,6 +835,29 @@ mod tests {
         assert_eq!(t.nodes[&2].loci[0].derived, "G");
     }
 
+    #[test]
+    fn descent_by_node_buckets_path_with_state() {
+        let t = parse_ftdna_json(TREE).unwrap();
+        // Sample is derived at H (A146G) and H2 (A263G); H2a's SNP (C750T) was never called.
+        let state: HashMap<String, CallState> =
+            [("A146G".to_string(), CallState::Derived), ("A263G".to_string(), CallState::Derived)]
+                .into_iter()
+                .collect();
+        let grouped = descent_by_node(&t, 4, &state); // terminal H2a
+
+        // root → H → H2 → H2a, root carries no defining loci.
+        let names: Vec<&str> = grouped.iter().map(|n| n.name.as_str()).collect();
+        assert_eq!(names, vec!["root", "H", "H2", "H2a"]);
+        assert!(grouped[0].snps.is_empty()); // root has no loci
+        assert!(!grouped[0].is_terminal && grouped[3].is_terminal);
+
+        assert_eq!(grouped[1].snps[0].name, "A146G");
+        assert_eq!(grouped[1].snps[0].state, CallState::Derived);
+        assert_eq!(grouped[2].snps[0].state, CallState::Derived);
+        // H2a's defining SNP was never called → NoCall (drawn grey).
+        assert_eq!(grouped[3].snps[0].state, CallState::NoCall);
+    }
+
     // The DecodingUs AppView `/api/v1/y-tree/full` shape (snake_case, nested children,
     // multi-build coordinates). R-M207 → R1 with an `hs1` (CHM13) and a GRCh38 coordinate.
     const DU_TREE: &str = r#"{
@@ -663,6 +875,27 @@ mod tests {
              "children": []}]}
       ]
     }"#;
+
+    #[test]
+    fn decodingus_polarity_map_prefers_hs1_deterministically() {
+        // A SNP whose hs1 and GRCh38 coords record *swapped* polarity: the map must always pick the
+        // hs1 (native/authoritative) orientation, never a HashMap-order-dependent one. A second SNP
+        // has only a GRCh38 coord → falls back to it.
+        let json = r#"{
+          "roots": [
+            {"id": 1, "name": "R", "variants": [
+                {"canonical_name": "A2627", "coordinates": {
+                    "hs1": {"contig":"chrY","position":100,"ancestral":"C","derived":"T"},
+                    "GRCh38": {"contig":"chrY","position":200,"ancestral":"T","derived":"C"}}},
+                {"canonical_name": "GRCh38only", "coordinates": {
+                    "GRCh38": {"contig":"chrY","position":300,"ancestral":"G","derived":"A"}}}],
+             "children": []}
+          ]
+        }"#;
+        let pol = decodingus_polarity_map(json).unwrap();
+        assert_eq!(pol["A2627"], ("C".to_string(), "T".to_string())); // hs1 wins, every run
+        assert_eq!(pol["GRCh38only"], ("G".to_string(), "A".to_string())); // fallback build
+    }
 
     #[test]
     fn parse_decodingus_picks_target_build_and_flattens() {
@@ -774,6 +1007,77 @@ mod tests {
             "H is contradicted (sample ancestral at 146)"
         );
         assert_eq!(guarded_terminal(&t, &c), "root");
+    }
+
+    #[test]
+    fn opposite_strand_reads_match_via_the_complement() {
+        // A non-ambiguous SNP whose tree alleles are recorded on the opposite strand from the
+        // reference the alignment was genotyped against: ancestral=A, derived=C. A derived sample
+        // read on the reference strand shows G (complement of C); an ancestral one shows T
+        // (complement of A). Neither matches a tree allele literally — the strand-complement does.
+        let locus = Locus {
+            position: 146,
+            ancestral: "A".into(),
+            derived: "C".into(),
+            name: "CTS-test".into(),
+        };
+        assert_eq!(locus_state(&locus, &calls(&[(146, 'G')])), CallState::Derived);
+        assert_eq!(locus_state(&locus, &calls(&[(146, 'T')])), CallState::Ancestral);
+        assert!(locus_carried(&locus, &calls(&[(146, 'G')])));
+        assert!(!locus_carried(&locus, &calls(&[(146, 'T')])));
+
+        // Strand-ambiguous SNP (C↔G): the complement of derived G is the ancestral C, so strand
+        // can't be inferred — keep strict literal matching and don't complement-flip.
+        let palindrome = Locus {
+            position: 200,
+            ancestral: "C".into(),
+            derived: "G".into(),
+            name: "PF-pal".into(),
+        };
+        assert_eq!(locus_state(&palindrome, &calls(&[(200, 'C')])), CallState::Ancestral);
+        assert_eq!(locus_state(&palindrome, &calls(&[(200, 'G')])), CallState::Derived);
+        // A genuine third allele (A/T at a C/G site) is unresolvable → NoCall, not Ancestral.
+        assert_eq!(locus_state(&palindrome, &calls(&[(200, 'A')])), CallState::NoCall);
+    }
+
+    #[test]
+    fn normalize_polarity_flips_ftdna_reference_as_ancestral_inversion() {
+        // FTDNA records the GRCh38 reference base as "ancestral"; at PF1016 the reference carries
+        // the derived allele, so FTDNA lists T>C where the true polarity (DecodingUs) is C>T.
+        let mut tree = HaploTree { nodes: HashMap::new() };
+        tree.nodes.insert(
+            1,
+            HaploNode {
+                id: 1,
+                name: "CT".into(),
+                is_root: false,
+                loci: vec![
+                    Locus { position: 100, ancestral: "T".into(), derived: "C".into(), name: "PF1016".into() },
+                    // Already-aligned SNP — must be left untouched.
+                    Locus { position: 200, ancestral: "A".into(), derived: "G".into(), name: "M168".into() },
+                    // Strand-different alleles (G>A vs C>T) — not a pure swap, left untouched.
+                    Locus { position: 300, ancestral: "G".into(), derived: "A".into(), name: "S3".into() },
+                ],
+                children: vec![],
+            },
+        );
+        let reference: HashMap<String, (String, String)> = [
+            ("PF1016".to_string(), ("C".to_string(), "T".to_string())),
+            ("M168".to_string(), ("A".to_string(), "G".to_string())),
+            ("S3".to_string(), ("C".to_string(), "T".to_string())),
+        ]
+        .into_iter()
+        .collect();
+
+        let flipped = normalize_polarity(&mut tree, &reference);
+        assert_eq!(flipped, 1, "only the swapped PF1016 should flip");
+        let loci = &tree.nodes[&1].loci;
+        let pf = loci.iter().find(|l| l.name == "PF1016").unwrap();
+        assert_eq!((pf.ancestral.as_str(), pf.derived.as_str()), ("C", "T"));
+        let m168 = loci.iter().find(|l| l.name == "M168").unwrap();
+        assert_eq!((m168.ancestral.as_str(), m168.derived.as_str()), ("A", "G"));
+        let s3 = loci.iter().find(|l| l.name == "S3").unwrap();
+        assert_eq!((s3.ancestral.as_str(), s3.derived.as_str()), ("G", "A"));
     }
 
     #[test]

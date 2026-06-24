@@ -154,6 +154,15 @@ impl NavigatorApp {
                         self.subject_brief_loading = false;
                     }
                 }
+                Event::DescentReportLoaded { guid, dna, result } => {
+                    self.descent_loading.retain(|(g, d)| !(*g == guid && *d == dna));
+                    if self.selected_sample == Some(guid) {
+                        match result {
+                            Ok(report) => self.descent_reports.push((guid, dna, report)),
+                            Err(msg) => self.status = format!("{} {msg}", self.tr("descent.failed")),
+                        }
+                    }
+                }
                 Event::BriefNarrationChunk { guid, text } => {
                     if self.selected_sample == Some(guid) {
                         match &mut self.narration_stream {
@@ -623,6 +632,8 @@ impl NavigatorApp {
                                                             // A rebuild re-places the genome consensus (consensus_label); refresh the
                                                             // Overview's cached Y/mt consensus so it doesn't lag until the next reload.
                         let _ = self.tx.send(Command::LoadConsensus(biosample_guid));
+                        // The descent report is drawn from this profile — drop its cache so it rebuilds.
+                        self.descent_reports.retain(|(g, d, _)| !(*g == biosample_guid && *d == DnaType::Y));
                     }
                 }
                 Event::YSnpNames { names } => {
@@ -640,6 +651,8 @@ impl NavigatorApp {
                         self.mt_profile = profile;
                         // A rebuild re-places the mt genome consensus; refresh the Overview's cache.
                         let _ = self.tx.send(Command::LoadConsensus(biosample_guid));
+                        // The descent report is drawn from this profile — drop its cache so it rebuilds.
+                        self.descent_reports.retain(|(g, d, _)| !(*g == biosample_guid && *d == DnaType::Mt));
                     }
                 }
                 Event::AutosomalProfile {
@@ -1103,6 +1116,8 @@ impl NavigatorApp {
         self.mtdna_haplogroup = None;
         self.consensus_y = None;
         self.consensus_mt = None;
+        self.descent_reports.clear();
+        self.descent_loading.clear();
         self.str_concordance = None;
         self.str_running = false;
         self.y_matches = None;

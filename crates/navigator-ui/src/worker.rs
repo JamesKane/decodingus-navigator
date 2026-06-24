@@ -14,7 +14,8 @@ use std::sync::{Arc, Mutex};
 
 use navigator_app::{
     AlignmentProbe, AncestryResult, AncestrySegment, App, AppError, AuditEntry, BatchImportSummary, BuildNeed,
-    ChatTurn, Consensus, Coverage, DenovoCall, DmConversationSummary, DmMessage, DnaType, ExchangeSessionInfo,
+    ChatTurn, Consensus, Coverage, DenovoCall, DescentReport, DmConversationSummary, DmMessage, DnaType,
+    ExchangeSessionInfo,
     FtdnaGenealogy, FtdnaImportOptions, FtdnaImportPlan, FtdnaImportSummary, FtdnaResolution, HaploAssignment,
     HeteroplasmySite, IbdComparison, IbdDetectorConfig, IbdSuggestion, IdentityVerification, IncomingRequest,
     NarratedBrief, PanelGenotype, PrivateBucket, ProjectImportSummary, ProjectOverview, ProjectSampleReport,
@@ -66,6 +67,8 @@ pub enum Command {
     LoadProjectStrChart(i64),
     /// Build (off the UI thread) the plain-language Subject Brief for a subject (Simple mode).
     LoadSubjectBrief(SampleGuid),
+    /// Build (off the UI thread) a YFull-style Y/mtDNA descent report for a subject.
+    LoadDescentReport { guid: SampleGuid, dna: DnaType },
     /// Narrate a subject's brief via the local LLM ("Polish with AI"); falls back on any failure.
     NarrateBrief(SampleGuid),
     /// Ask the local LLM a question about a subject's results (grounded in the brief).
@@ -688,6 +691,13 @@ pub enum Event {
         guid: SampleGuid,
         brief: Box<SubjectBrief>,
     },
+    /// A YFull-style descent report for a subject's Y or mtDNA lineage (`None` = placed but empty /
+    /// not placed; `Err` = a load failure surfaced to the status line).
+    DescentReportLoaded {
+        guid: SampleGuid,
+        dna: DnaType,
+        result: Result<Option<DescentReport>, String>,
+    },
     /// A streamed slice of narration text as it's generated (live preview; the final BriefNarration
     /// is authoritative).
     BriefNarrationChunk {
@@ -1177,6 +1187,11 @@ pub async fn handle(app: &App, cmd: Command) -> Event {
                 brief: Box::new(brief),
             },
             Err(e) => Event::Error(e.to_string()),
+        },
+        Command::LoadDescentReport { guid, dna } => Event::DescentReportLoaded {
+            guid,
+            dna,
+            result: app.descent_report(guid, dna).await.map_err(|e| e.to_string()),
         },
         // NarrateBrief / AskQuestion stream from the spawn loop; reaching here is a bug.
         Command::NarrateBrief(guid) => Event::Error(format!("internal: unrouted NarrateBrief {guid}")),

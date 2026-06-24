@@ -17,7 +17,8 @@ use crate::widgets::{
 use eframe::egui;
 use navigator_app::{
     AncestryResult, AncestrySegment, AppSettings, AuditEntry, BatchImportSummary, BuildNeed, CallState, ChatTurn,
-    CompatibilityLevel, Consensus, Coverage, DenovoCall, DnaType, FtdnaGenealogy, FtdnaImportPlan, FtdnaResolution,
+    CompatibilityLevel, Consensus, Coverage, DenovoCall, DescentReport, DnaType, FtdnaGenealogy, FtdnaImportPlan,
+    FtdnaResolution,
     HaploAssignment, HeteroplasmySite, IbdComparison, IbdSuggestion, IdentityVerification, LineageBrief, LineageKind,
     MatchKind, MtRegion, MtVariant, NarratedBrief, PackStatus, PanelGenotype, PrivateBucket, PrivateClass,
     ProjectOverview, ProjectSampleReport, ProjectStrChart, ReadMetrics, RefBuildStatus, SexInferenceResult,
@@ -553,6 +554,11 @@ pub struct NavigatorApp {
     /// Donor-level haplogroup consensus for the selected subject (Y, mtDNA).
     consensus_y: Option<Consensus>,
     consensus_mt: Option<Consensus>,
+    /// YFull-style descent reports for the selected subject, loaded lazily per `DnaType` and cached
+    /// as `Some(report)` / `None` (placed-but-empty), so a built-once result isn't re-fetched; plus
+    /// the (guid, dna) pairs currently loading. All cleared on subject switch.
+    descent_reports: Vec<(SampleGuid, DnaType, Option<DescentReport>)>,
+    descent_loading: Vec<(SampleGuid, DnaType)>,
     /// Reconciliation audit log for the selected subject (Y, mtDNA).
     audit_y: Vec<AuditEntry>,
     audit_mt: Vec<AuditEntry>,
@@ -874,6 +880,7 @@ const SUBJECT_COLS: [(&str, f32); 6] = [
 mod central;
 mod chrome;
 mod community;
+mod descent;
 mod detail;
 mod events;
 mod ibd;
@@ -972,6 +979,8 @@ impl NavigatorApp {
             runs: Vec::new(),
             consensus_y: None,
             consensus_mt: None,
+            descent_reports: Vec::new(),
+            descent_loading: Vec::new(),
             audit_y: Vec::new(),
             audit_mt: Vec::new(),
             heteroplasmy: None,

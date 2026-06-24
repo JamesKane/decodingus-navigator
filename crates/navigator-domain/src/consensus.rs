@@ -77,6 +77,12 @@ pub struct SourceObs {
     pub label: String,
     pub source_type: SourceType,
     pub state: ConsensusState,
+    /// The **observed base** (allele) this source called at the variant — `None` for a no-call, or
+    /// for sources/legacy profiles that carry only a state. Persisting the base (not just the
+    /// derived/ancestral interpretation) lets the state be re-[`impute_state`]d against a corrected
+    /// or different tree polarity via [`reproject`] — without re-reading the BAM/CRAM.
+    #[serde(default)]
+    pub base: Option<String>,
 }
 
 /// A reconciled variant across the subject's sources.
@@ -125,6 +131,10 @@ pub struct ConsensusObs {
     pub ancestral: String,
     pub derived: String,
     pub state: ConsensusState,
+    /// The observed base (allele) this source called, when known. Carried through to
+    /// [`SourceObs::base`] so the state can be re-imputed later without the BAM. `None` keeps the
+    /// supplied `state` authoritative (sources that carry only a state, e.g. private calls).
+    pub base: Option<String>,
     /// Whether this variant is a known tree/reference variant (true for placement SNPs, false for
     /// private calls).
     pub in_tree: bool,
@@ -141,6 +151,8 @@ pub struct ConsensusObs {
 impl ConsensusObs {
     /// A SNP/variant observation with no per-call quality data (weight = the source-type weight).
     /// Quality fields can be set afterward for sources that carry them (e.g. sequencing depth).
+    /// `base` is left `None`; for an observation that carries its called allele use
+    /// [`ConsensusObs::observed`].
     pub fn snp(
         name: impl Into<String>,
         position: i64,
@@ -155,6 +167,7 @@ impl ConsensusObs {
             ancestral: ancestral.into(),
             derived: derived.into(),
             state,
+            base: None,
             in_tree,
             depth: None,
             mapq: None,
@@ -162,6 +175,90 @@ impl ConsensusObs {
             region_modifier: 1.0,
         }
     }
+
+    /// A SNP/variant observation carrying the **observed base**; the state is imputed from the base
+    /// against the variant's polarity ([`impute_state`]) and the base is retained for later
+    /// re-imputation ([`reproject`]). `base = None` means a no-call (`NoCall`).
+    pub fn observed(
+        name: impl Into<String>,
+        position: i64,
+        ancestral: impl Into<String>,
+        derived: impl Into<String>,
+        base: Option<char>,
+        in_tree: bool,
+    ) -> Self {
+        let ancestral = ancestral.into();
+        let derived = derived.into();
+        let state = impute_state(base, &ancestral, &derived);
+        ConsensusObs {
+            name: name.into(),
+            position,
+            ancestral,
+            derived,
+            state,
+            base: base.map(|b| b.to_string()),
+            in_tree,
+            depth: None,
+            mapq: None,
+            callable: None,
+            region_modifier: 1.0,
+        }
+    }
+}
+
+/// Watson-Crick complement of a single base (non-ACGT passes through unchanged).
+fn complement_base(b: char) -> char {
+    match b.to_ascii_uppercase() {
+        'A' => 'T',
+        'T' => 'A',
+        'C' => 'G',
+        'G' => 'C',
+        other => other,
+    }
+}
+
+/// Whether a SNP's two alleles are strand-ambiguous (`A↔T` / `C↔G`): the complement of one allele
+/// equals the other, so strand can't be inferred from the observed base.
+fn strand_ambiguous(a: char, d: char) -> bool {
+    let mut pair = [a.to_ascii_uppercase(), d.to_ascii_uppercase()];
+    pair.sort_unstable();
+    pair == ['A', 'T'] || pair == ['C', 'G']
+}
+
+/// Impute a [`ConsensusState`] from an observed `base` against a variant's `ancestral`/`derived`
+/// alleles. The canonical projection that turns a stored base back into derived/ancestral — applied
+/// at genotyping time ([`ConsensusObs::observed`]) and re-applied against corrected polarity by
+/// [`reproject`]. Accepts the strand-complement of the alleles (some trees record a SNP on the
+/// opposite strand from the reference) except for strand-ambiguous SNPs, where literal matching is
+/// kept. A base matching neither strand of either allele, or no base, is `NoCall`.
+///
+/// Mirrors `navigator_analysis::haplo::locus_state` (which operates on the analysis `CallState` /
+/// `Locus` types); keep the two in step.
+pub fn impute_state(base: Option<char>, ancestral: &str, derived: &str) -> ConsensusState {
+    let Some(d) = derived.chars().next().map(|c| c.to_ascii_uppercase()) else {
+        return ConsensusState::NoCall;
+    };
+    let a = ancestral.chars().next().map(|c| c.to_ascii_uppercase());
+    let Some(b) = base.map(|c| c.to_ascii_uppercase()) else {
+        return ConsensusState::NoCall;
+    };
+    if b == d {
+        return ConsensusState::Derived;
+    }
+    if Some(b) == a {
+        return ConsensusState::Ancestral;
+    }
+    let ambiguous = a.is_some_and(|a| strand_ambiguous(a, d));
+    if !ambiguous {
+        let bc = complement_base(b);
+        if bc == d {
+            return ConsensusState::Derived;
+        }
+        if Some(bc) == a {
+            return ConsensusState::Ancestral;
+        }
+    }
+    ConsensusState::NoCall
 }
 
 /// Concordance weight for one observation (Scala `YVariantConcordance.calculateWeight`):
@@ -200,19 +297,124 @@ fn group_key(obs: &ConsensusObs) -> String {
     }
 }
 
+/// The voted outcome over one variant's per-source `(state, weight)` observations.
+struct Tally {
+    consensus: ConsensusState,
+    support: usize,
+    total: usize,
+    confidence_score: f64,
+    status: ConsensusStatus,
+}
+
+/// Weight-vote a variant's per-source states into a consensus + status. Shared by [`reconcile`]
+/// (fresh genotyping) and [`reproject`] (re-imputation against corrected polarity).
+fn tally_states(obs: &[(ConsensusState, f64)], in_tree: bool) -> Tally {
+    let (mut w_derived, mut w_ancestral) = (0.0f64, 0.0f64);
+    let mut total = 0usize;
+    for (state, weight) in obs {
+        match state {
+            ConsensusState::Derived => {
+                w_derived += weight;
+                total += 1;
+            }
+            ConsensusState::Ancestral => {
+                w_ancestral += weight;
+                total += 1;
+            }
+            ConsensusState::NoCall => {}
+        }
+    }
+    let consensus = if total == 0 {
+        ConsensusState::NoCall
+    } else if w_derived >= w_ancestral {
+        ConsensusState::Derived
+    } else {
+        ConsensusState::Ancestral
+    };
+    let support = obs
+        .iter()
+        .filter(|(s, _)| *s == consensus && consensus != ConsensusState::NoCall)
+        .count();
+    let total_weight = w_derived + w_ancestral;
+    // Confidence in the consensus = winning weight / total weight (Scala ConfirmationThreshold).
+    let confidence_score = if total_weight > 0.0 {
+        w_derived.max(w_ancestral) / total_weight
+    } else {
+        0.0
+    };
+    let minority_fraction = 1.0 - confidence_score;
+    let status = if total == 0 {
+        ConsensusStatus::NoCoverage
+    } else if minority_fraction > CONFLICT_FRACTION {
+        ConsensusStatus::Conflict
+    } else if consensus == ConsensusState::Derived && !in_tree {
+        // Derived off-tree call is novel/private — even from a single source (the common case).
+        ConsensusStatus::Novel
+    } else if total == 1 {
+        ConsensusStatus::SingleSource
+    } else if confidence_score >= CONFIRMATION_FRACTION {
+        ConsensusStatus::Confirmed
+    } else {
+        ConsensusStatus::Pending
+    };
+    Tally {
+        consensus,
+        support,
+        total,
+        confidence_score,
+        status,
+    }
+}
+
+/// Re-impute a reconciled profile **in place** against a corrected/true `polarity` map
+/// (`SNP name → (ancestral, derived)`, e.g. from the DecodingUs tree), recomputing each variant's
+/// consensus, status, and confidence from each source's **stored observed base** — **without
+/// re-reading any BAM/CRAM**. This is the payoff of persisting bases: a tree-polarity fix or a
+/// provider switch becomes a cheap projection over the cached genotype matrix.
+///
+/// For each variant whose name appears in `polarity` (case-insensitive), the variant's alleles are
+/// set to the true polarity and every source with a stored base is re-[`impute_state`]d against it;
+/// sources without a base keep their prior state. Variants absent from the map are left as-is.
+/// Re-voting uses the source-type weight (the per-call depth/MQ bonuses aren't persisted), so
+/// confidence may shift slightly from the freshly-genotyped value while the states are exact.
+/// Returns the number of source observations whose state changed.
+pub fn reproject(variants: &mut [ConsensusVariant], polarity: &BTreeMap<String, (String, String)>) -> usize {
+    let upper: BTreeMap<String, &(String, String)> =
+        polarity.iter().map(|(k, v)| (k.trim().to_uppercase(), v)).collect();
+    let mut changed = 0usize;
+    for v in variants.iter_mut() {
+        if let Some((anc, der)) = upper.get(v.name.trim().to_uppercase().as_str()) {
+            v.ancestral = (*anc).clone();
+            v.derived = (*der).clone();
+        }
+        let mut states: Vec<(ConsensusState, f64)> = Vec::with_capacity(v.sources.len());
+        for s in v.sources.iter_mut() {
+            if let Some(base) = s.base.as_deref().and_then(|b| b.chars().next()) {
+                let new_state = impute_state(Some(base), &v.ancestral, &v.derived);
+                if new_state != s.state {
+                    changed += 1;
+                }
+                s.state = new_state;
+            }
+            states.push((s.state, obs_weight(s.source_type, None, None, None, 1.0)));
+        }
+        let t = tally_states(&states, v.in_tree);
+        v.consensus = t.consensus;
+        v.status = t.status;
+        v.support = t.support;
+        v.total = t.total;
+        v.confidence_score = t.confidence_score;
+    }
+    changed
+}
+
 /// Reconcile per-source variant observations into one profile. `sources` is `(label, source_type,
 /// observations)`; a source contributes at most one observation per variant (the last wins on dup).
 pub fn reconcile(sources: &[(String, SourceType, Vec<ConsensusObs>)]) -> Vec<ConsensusVariant> {
-    // Group all observations by variant key, preserving the source they came from + its weight.
-    struct ObsRec {
-        label: String,
-        source_type: SourceType,
-        state: ConsensusState,
-        weight: f64,
-    }
     struct Acc {
         repr: ConsensusObs,
-        obs: Vec<ObsRec>,
+        obs: Vec<SourceObs>,
+        weights: Vec<f64>,
     }
     let mut groups: BTreeMap<String, Acc> = BTreeMap::new();
 
@@ -222,17 +424,19 @@ pub fn reconcile(sources: &[(String, SourceType, Vec<ConsensusObs>)]) -> Vec<Con
             let acc = groups.entry(key).or_insert_with(|| Acc {
                 repr: o.clone(),
                 obs: Vec::new(),
+                weights: Vec::new(),
             });
             // Prefer a named, in-tree representative for display fields.
             if acc.repr.name.trim().is_empty() && !o.name.trim().is_empty() {
                 acc.repr = o.clone();
             }
-            let weight = obs_weight(*source_type, o.depth, o.mapq, o.callable, o.region_modifier);
-            acc.obs.push(ObsRec {
+            acc.weights
+                .push(obs_weight(*source_type, o.depth, o.mapq, o.callable, o.region_modifier));
+            acc.obs.push(SourceObs {
                 label: label.clone(),
                 source_type: *source_type,
                 state: o.state,
-                weight,
+                base: o.base.clone(),
             });
         }
     }
@@ -241,83 +445,25 @@ pub fn reconcile(sources: &[(String, SourceType, Vec<ConsensusObs>)]) -> Vec<Con
         .into_values()
         .map(|acc| {
             let repr = acc.repr;
-            // Weighted vote over non-NoCall observations (quality-weighted per observation).
-            let (mut w_derived, mut w_ancestral) = (0.0f64, 0.0f64);
-            let mut total = 0usize;
-            for o in &acc.obs {
-                match o.state {
-                    ConsensusState::Derived => {
-                        w_derived += o.weight;
-                        total += 1;
-                    }
-                    ConsensusState::Ancestral => {
-                        w_ancestral += o.weight;
-                        total += 1;
-                    }
-                    ConsensusState::NoCall => {}
-                }
-            }
-
-            let consensus = if total == 0 {
-                ConsensusState::NoCall
-            } else if w_derived >= w_ancestral {
-                ConsensusState::Derived
-            } else {
-                ConsensusState::Ancestral
-            };
-
-            let support = acc
+            let states: Vec<(ConsensusState, f64)> = acc
                 .obs
                 .iter()
-                .filter(|o| o.state == consensus && consensus != ConsensusState::NoCall)
-                .count();
-
-            let total_weight = w_derived + w_ancestral;
-            // Confidence in the consensus = winning weight / total weight (Scala ConfirmationThreshold).
-            let confidence_score = if total_weight > 0.0 {
-                w_derived.max(w_ancestral) / total_weight
-            } else {
-                0.0
-            };
-            let minority_fraction = 1.0 - confidence_score;
-
-            let status = if total == 0 {
-                ConsensusStatus::NoCoverage
-            } else if minority_fraction > CONFLICT_FRACTION {
-                ConsensusStatus::Conflict
-            } else if consensus == ConsensusState::Derived && !repr.in_tree {
-                // Derived off-tree call is novel/private — even from a single source (the common case).
-                ConsensusStatus::Novel
-            } else if total == 1 {
-                ConsensusStatus::SingleSource
-            } else if confidence_score >= CONFIRMATION_FRACTION {
-                ConsensusStatus::Confirmed
-            } else {
-                ConsensusStatus::Pending
-            };
-
-            let sources = acc
-                .obs
-                .iter()
-                .map(|o| SourceObs {
-                    label: o.label.clone(),
-                    source_type: o.source_type,
-                    state: o.state,
-                })
+                .zip(&acc.weights)
+                .map(|(o, &w)| (o.state, w))
                 .collect();
-
+            let t = tally_states(&states, repr.in_tree);
             ConsensusVariant {
                 name: repr.name,
                 position: repr.position,
                 ancestral: repr.ancestral,
                 derived: repr.derived,
-                consensus,
-                status,
-                support,
-                total,
+                consensus: t.consensus,
+                status: t.status,
+                support: t.support,
+                total: t.total,
                 in_tree: repr.in_tree,
-                confidence_score,
-                sources,
+                confidence_score: t.confidence_score,
+                sources: acc.obs,
             }
         })
         .collect();
@@ -561,6 +707,51 @@ mod tests {
 
     fn obs(name: &str, pos: i64, state: ConsensusState, in_tree: bool) -> ConsensusObs {
         ConsensusObs::snp(name, pos, "A", "G", state, in_tree)
+    }
+
+    #[test]
+    fn impute_state_literal_complement_and_palindrome() {
+        // Literal matches.
+        assert_eq!(impute_state(Some('G'), "A", "G"), ConsensusState::Derived);
+        assert_eq!(impute_state(Some('A'), "A", "G"), ConsensusState::Ancestral);
+        // Opposite-strand reads match via the complement (non-ambiguous A>C: comp T/G).
+        assert_eq!(impute_state(Some('G'), "A", "C"), ConsensusState::Derived); // comp(G)=C=derived
+        assert_eq!(impute_state(Some('T'), "A", "C"), ConsensusState::Ancestral); // comp(T)=A=ancestral
+        // Strand-ambiguous C/G: complement of derived G is ancestral C → keep literal only.
+        assert_eq!(impute_state(Some('C'), "C", "G"), ConsensusState::Ancestral);
+        assert_eq!(impute_state(Some('A'), "C", "G"), ConsensusState::NoCall); // genuine third allele
+        // No base → no call.
+        assert_eq!(impute_state(None, "A", "G"), ConsensusState::NoCall);
+    }
+
+    #[test]
+    fn observed_constructor_imputes_and_keeps_base() {
+        let o = ConsensusObs::observed("PF1016", 100, "C", "T", Some('T'), true);
+        assert_eq!(o.state, ConsensusState::Derived);
+        assert_eq!(o.base.as_deref(), Some("T"));
+    }
+
+    #[test]
+    fn reproject_reimputes_against_corrected_polarity_without_bam() {
+        // A profile built against an FTDNA-style inverted polarity (T>C): the observed derived base
+        // T was imputed Ancestral. Reproject against the true DecodingUs polarity (C>T) flips it to
+        // Derived from the *stored base* alone — no re-genotyping.
+        let mut variants = reconcile(&[(
+            "aln #1".into(),
+            SourceType::WgsShortRead,
+            vec![ConsensusObs::observed("PF1016", 100, "T", "C", Some('T'), true)],
+        )]);
+        assert_eq!(variants[0].consensus, ConsensusState::Ancestral); // inverted at build time
+        assert_eq!(variants[0].sources[0].base.as_deref(), Some("T"));
+
+        let polarity: BTreeMap<String, (String, String)> =
+            [("PF1016".to_string(), ("C".to_string(), "T".to_string()))].into_iter().collect();
+        let changed = reproject(&mut variants, &polarity);
+        assert_eq!(changed, 1);
+        assert_eq!(variants[0].consensus, ConsensusState::Derived);
+        assert_eq!(variants[0].ancestral, "C");
+        assert_eq!(variants[0].derived, "T");
+        assert_eq!(variants[0].sources[0].state, ConsensusState::Derived);
     }
 
     #[test]

@@ -27,7 +27,7 @@ use navigator_store::panel;
 pub use navigator_analysis::caller::SiteGenotype as PanelGenotype;
 pub use navigator_analysis::caller::VariantCall as DenovoCall;
 pub use navigator_analysis::coverage::CoverageResult as Coverage;
-pub use navigator_analysis::haplo::{BranchEvidence, CallState, ScoredHaplogroup, SnpEvidence};
+pub use navigator_analysis::haplo::{BranchEvidence, CallState, NodeEvidence, ScoredHaplogroup, SnpEvidence};
 pub use navigator_analysis::heteroplasmy::HeteroplasmySite;
 pub use navigator_analysis::mask::YRegionClass;
 pub use navigator_analysis::mtvariants::{MtRegion, MtVariant, MtVariantKind};
@@ -54,6 +54,34 @@ pub struct HaploAssignment {
     /// variant/mutation **profile** reconciles — distinct from `branches`, which is the *untaken*
     /// child branches (explaining why descent stopped, hence largely ancestral/no-call).
     pub lineage: Vec<SnpEvidence>,
+}
+
+/// A YFull-YReport-style descent report for one lineage (Y or mtDNA): the root→terminal path, each
+/// node carrying its defining SNPs with the subject's per-SNP call state. Generic over [`DnaType`]
+/// so the Y-DNA and mtDNA tabs share one model + renderer. Built by [`App::descent_report`].
+#[derive(Debug, Clone)]
+pub struct DescentReport {
+    pub dna: DnaType,
+    /// The reported terminal haplogroup name (e.g. "R-FGC29071", "U5a1b1g").
+    pub terminal: String,
+    /// Nodes root→terminal, each with its defining SNPs + the sample's state (`NodeEvidence`).
+    pub nodes: Vec<NodeEvidence>,
+}
+
+impl DescentReport {
+    /// Total defining SNPs across the path the sample carries (derived).
+    pub fn derived(&self) -> usize {
+        self.nodes
+            .iter()
+            .flat_map(|n| &n.snps)
+            .filter(|s| s.state == CallState::Derived)
+            .count()
+    }
+
+    /// Total defining SNPs across the path (all states).
+    pub fn total(&self) -> usize {
+        self.nodes.iter().map(|n| n.snps.len()).sum()
+    }
 }
 
 /// How a private (off-backbone) variant relates to the tree.
@@ -500,7 +528,7 @@ fn is_grch38_build(build: &Option<String>) -> bool {
 fn pool_votes<K, V>(sources: &[(SourceType, HashMap<K, V>)]) -> HashMap<K, V>
 where
     K: std::hash::Hash + Eq + Clone,
-    V: std::hash::Hash + Eq + Clone,
+    V: std::hash::Hash + Eq + Clone + Ord,
 {
     let mut tally: HashMap<K, HashMap<V, f64>> = HashMap::new();
     for (st, calls) in sources {
@@ -514,7 +542,10 @@ where
         .filter_map(|(k, votes)| {
             votes
                 .into_iter()
-                .max_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
+                // Highest weight wins; on a tie break by the allele itself so the pooled call is
+                // deterministic (a `HashMap` iteration order otherwise picked the winner at random,
+                // which flipped the placed terminal between runs over identical genotypes).
+                .max_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal).then(a.0.cmp(&b.0)))
                 .map(|(v, _)| (k, v))
         })
         .collect()
@@ -1685,18 +1716,16 @@ pub fn consensus_genotypes(profile: &DiploidProfile) -> Vec<SiteGenotype> {
 fn snp_obs_from_assignment(assignment: &HaploAssignment, in_tree: bool) -> Vec<YObsInput> {
     let mut by_name: std::collections::HashMap<String, YObsInput> = std::collections::HashMap::new();
     for snp in &assignment.lineage {
-        let state = match snp.state {
-            CallState::Derived => YState::Derived,
-            CallState::Ancestral => YState::Ancestral,
-            CallState::NoCall => YState::NoCall,
-        };
         by_name.entry(snp.name.clone()).or_insert_with(|| {
-            YObsInput::snp(
+            // Carry the observed base (not just the state): the state is imputed from it, and the
+            // base is retained so the profile can be re-imputed against corrected polarity without
+            // re-genotyping (see `consensus::reproject`).
+            YObsInput::observed(
                 snp.name.clone(),
                 snp.position,
                 snp.ancestral.clone(),
                 snp.derived.clone(),
-                state,
+                snp.base,
                 in_tree,
             )
         });

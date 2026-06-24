@@ -831,6 +831,19 @@ impl NavigatorApp {
     /// card stack — headline, paternal & maternal lines, your test — degrading per-section when data
     /// or reference content is missing. A discreet pack-status footer shows how fresh the narrative is.
     pub(crate) fn subject_brief_view(&mut self, ui: &mut egui::Ui, guid: SampleGuid) {
+        // Pre-fire the compact descent loads (cheap: cached profile, no genotyping) before borrowing
+        // the brief, so the paternal/maternal cards can render the call-coloured path read-only.
+        let (has_pat, has_mat) = match self.subject_brief.as_ref() {
+            Some((g, b)) if *g == guid => (b.paternal.is_some(), b.maternal.is_some()),
+            _ => (false, false),
+        };
+        if has_pat {
+            self.ensure_descent(guid, DnaType::Y);
+        }
+        if has_mat {
+            self.ensure_descent(guid, DnaType::Mt);
+        }
+
         let brief = match self.subject_brief.as_ref() {
             Some((g, b)) if *g == guid => b,
             _ => {
@@ -861,11 +874,11 @@ impl NavigatorApp {
         ui.add_space(12.0);
 
         if let Some(p) = &brief.paternal {
-            card(ui, self.tr("brief.paternalLine"), |ui| self.brief_lineage_card(ui, p));
+            card(ui, self.tr("brief.paternalLine"), |ui| self.brief_lineage_card(ui, guid, p));
             ui.add_space(10.0);
         }
         if let Some(m) = &brief.maternal {
-            card(ui, self.tr("brief.maternalLine"), |ui| self.brief_lineage_card(ui, m));
+            card(ui, self.tr("brief.maternalLine"), |ui| self.brief_lineage_card(ui, guid, m));
             ui.add_space(10.0);
         }
 
@@ -1001,7 +1014,7 @@ impl NavigatorApp {
 
     /// One lineage (paternal/maternal) card body: the haplogroup, age & origin phrases, the curated
     /// story, a confidence chip, and an expandable root→tip lineage trail.
-    fn brief_lineage_card(&self, ui: &mut egui::Ui, lb: &LineageBrief) {
+    fn brief_lineage_card(&self, ui: &mut egui::Ui, guid: SampleGuid, lb: &LineageBrief) {
         ui.heading(&lb.haplogroup).on_hover_text(self.tr("glossary.haplogroup"));
         if let Some(anc) = &lb.matched_ancestor {
             ui.label(
@@ -1034,16 +1047,10 @@ impl NavigatorApp {
                     .small(),
             );
         }
-        if lb.lineage_path.len() > 1 {
-            ui.add_space(2.0);
-            egui::CollapsingHeader::new(self.tr("brief.lineageTrail"))
-                .id_salt(("brief_trail", matches!(lb.kind, LineageKind::Paternal)))
-                .show(ui, |ui| {
-                    // egui's default font renders no arrow glyph (→ shows as tofu); the middle dot
-                    // is safe and the path reads root→tip left-to-right.
-                    ui.label(egui::RichText::new(lb.lineage_path.join("  ·  ")).small());
-                });
-        }
+        // The lineage trail, upgraded in place to the call-coloured descent path when the variant
+        // profile is built (else the plain root→tip names). egui's default font renders no arrow
+        // glyph, so the fallback uses a middle dot; the path reads root→tip left-to-right.
+        self.brief_descent_trail(ui, guid, lb);
     }
 
     /// Consensus dashboard (Overview): the subject's source-of-truth at a glance — consensus Y/mt
