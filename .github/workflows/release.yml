@@ -27,12 +27,6 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - label: macos-aarch64
-            os: macos-14
-            target: aarch64-apple-darwin
-          - label: macos-x86_64
-            os: macos-13 # Intel runner; target-cpu=ivybridge via .cargo/config.toml
-            target: x86_64-apple-darwin
           - label: linux-x86_64
             os: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
@@ -97,9 +91,72 @@ jobs:
           path: out/*
           if-no-files-found: warn
 
+  # macOS ships a single universal2 (.dmg) that runs on both Apple Silicon and Intel. cargo-packager
+  # only *packages* a binary — it doesn't build a universal one — so we build both slices and `lipo`
+  # them into target/universal-apple-darwin/release/navigator (where the packager looks), then
+  # package. The Intel slice picks up target-cpu=ivybridge from .cargo/config.toml.
+  package-macos:
+    name: package (macos-universal)
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: macos-universal
+
+      - name: Install cargo-packager
+        run: cargo install cargo-packager --locked
+
+      # Stage the bundled ancestry assets. TODO(CI): point NAVIGATOR_ASSET_SRC at a CDN mirror or a
+      # cached artifact; without it the bundle is empty and first run has no offline assets.
+      - name: Stage assets
+        run: bash packaging/stage-assets.sh
+
+      - name: Build + lipo universal binary
+        env:
+          MACOSX_DEPLOYMENT_TARGET: "11.0"
+        run: |
+          cargo build --release --target aarch64-apple-darwin -p navigator-ui
+          cargo build --release --target x86_64-apple-darwin -p navigator-ui
+          mkdir -p target/universal-apple-darwin/release
+          lipo -create -output target/universal-apple-darwin/release/navigator \
+            target/aarch64-apple-darwin/release/navigator \
+            target/x86_64-apple-darwin/release/navigator
+          lipo -info target/universal-apple-darwin/release/navigator
+
+      - name: Package (universal dmg)
+        run: cargo packager --release --target universal-apple-darwin --formats dmg -p navigator-ui
+        # macOS signing/notarization (set the APPLE_* secrets to enable; left off until provisioned):
+        env:
+          MACOSX_DEPLOYMENT_TARGET: "11.0"
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+
+      - name: Collect images
+        shell: bash
+        run: |
+          mkdir -p out
+          find target/universal-apple-darwin/release -maxdepth 1 -name '*.dmg' -exec cp {} out/ \; || true
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos-universal
+          path: out/*
+          if-no-files-found: warn
+
   release:
     name: collect + release
-    needs: package
+    needs: [package, package-macos]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4

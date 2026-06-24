@@ -30,10 +30,19 @@ handle the bundled ancestry assets.
 `LSMinimumSystemVersion=11.0`; the bundled binary runs; seeding into a fresh
 `NAVIGATOR_REFGENOME_DIR` confirmed (11 assets).
 
+**macOS universal2 (2026-06-24, DONE in CI + validated locally):** the CI now ships **one
+universal `.dmg`** instead of per-arch ones. cargo-packager only *packages* a binary (it does not
+build a universal one), so the `package-macos` job builds both slices, `lipo`s them into
+`target/universal-apple-darwin/release/navigator`, then `cargo packager --target
+universal-apple-darwin -f dmg`. Validated locally on macos-14: `DUNavigator_0.1.0_universal.dmg`,
+the bundled `Contents/MacOS/navigator` is a fat `x86_64 arm64` binary with `minos 11.0` and
+`CFBundleIdentifier=com.decodingus.navigator`. The Intel slice gets `target-cpu=ivybridge` from
+`.cargo/config.toml`.
+
 **Still CI-time / unverified here (need a tagged run + secrets):** macOS notarization (`APPLE_*`),
-macOS universal2 (lipo — the CI ships per-arch dmgs for now), Linux glibc floor (ubuntu-22.04 =
-2.35; old-glibc container / `cargo-zigbuild` `*.2.28` for broad reach), Windows signing (unsigned
-for Alpha), and the CI asset-staging CDN source (`NAVIGATOR_ASSET_SRC`/CDN).
+Linux glibc floor (ubuntu-22.04 = 2.35; old-glibc container / `cargo-zigbuild` `*.2.28` for broad
+reach), Windows signing (unsigned for Alpha), and the CI asset-staging CDN source
+(`NAVIGATOR_ASSET_SRC`/CDN).
 
 ---
 
