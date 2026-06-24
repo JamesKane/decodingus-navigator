@@ -2191,11 +2191,12 @@ impl App {
         &self,
         alignment_id: i64,
     ) -> Result<(HaploAssignment, Vec<SnpEvidence>), AppError> {
-        let tree_json = match y_tree_provider() {
-            YTreeProvider::DecodingUs => self.fetch_decodingus_y_tree().await?,
-            YTreeProvider::Ftdna => self.fetch_ftdna_y_tree().await?,
-        };
-        let (assignment, lineage, _calls) = self.assign_haplogroup_detail(alignment_id, "chrY", &tree_json).await?;
+        // Route through the provider-correct placement (DecodingUs native multi-build, FTDNA
+        // fallback with polarity normalization) — not a raw `parse_ftdna_json` of whatever tree the
+        // provider returns, which fails on the DecodingUs schema. The assignment already carries the
+        // root→terminal lineage evidence.
+        let assignment = self.y_assignment_full(alignment_id).await?;
+        let lineage = assignment.lineage.clone();
         Ok((assignment, lineage))
     }
 
