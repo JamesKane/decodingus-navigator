@@ -518,6 +518,9 @@ pub struct SnpEvidence {
     pub ancestral: String,
     pub derived: String,
     pub state: CallState,
+    /// The sample's **observed base** at this position (`None` = no call). Carried alongside the
+    /// imputed `state` so downstream consumers can persist the raw base and re-impute later.
+    pub base: Option<char>,
 }
 
 /// A child branch below the reported terminal, with the per-SNP evidence that explains why
@@ -560,6 +563,7 @@ pub fn child_evidence(tree: &HaploTree, calls: &HashMap<i64, char>, node_id: i64
                 ancestral: l.ancestral.clone(),
                 derived: l.derived.clone(),
                 state,
+                base: calls.get(&l.position).copied(),
             });
         }
         out.push(BranchEvidence {
@@ -612,6 +616,7 @@ pub fn descent_by_node(
                     ancestral: l.ancestral.clone(),
                     derived: l.derived.clone(),
                     state: state_by_name.get(&l.name).copied().unwrap_or(CallState::NoCall),
+                    base: None, // name-keyed (from a cached profile) — no raw call available here
                 })
                 .collect();
             Some(NodeEvidence {
@@ -648,6 +653,7 @@ pub fn lineage_evidence(tree: &HaploTree, calls: &HashMap<i64, char>, terminal_i
                 ancestral: l.ancestral.clone(),
                 derived: l.derived.clone(),
                 state,
+                base: calls.get(&l.position).copied(),
             });
         }
     }

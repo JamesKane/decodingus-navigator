@@ -453,8 +453,29 @@ impl App {
 
     /// The persisted Y-profile snapshot for a subject, if one has been built — cheap (no
     /// genotyping). `None` until [`build_y_profile`](Self::build_y_profile) runs.
+    ///
+    /// Re-imputed against the current DecodingUs polarity from each source's stored base before
+    /// returning (best effort, no BAM): a profile built under a different tree/provider, or before a
+    /// polarity correction, self-heals on read without a rebuild. Profiles persisted before bases
+    /// were stored (no `base`) are returned as-is — they need one rebuild to gain re-imputation.
     pub async fn cached_y_profile(&self, biosample_guid: SampleGuid) -> Result<Option<YProfile>, AppError> {
-        self.cached_consensus_profile(biosample_guid, DnaType::Y).await
+        let Some(mut profile) = self.cached_consensus_profile(biosample_guid, DnaType::Y).await? else {
+            return Ok(None);
+        };
+        let has_bases = profile
+            .variants
+            .iter()
+            .any(|v| v.sources.iter().any(|s| s.base.is_some()));
+        if has_bases {
+            if let Some(pol) = self.decodingus_y_polarity().await {
+                let pol: std::collections::BTreeMap<String, (String, String)> = pol.into_iter().collect();
+                let changed = navigator_domain::consensus::reproject(&mut profile.variants, &pol);
+                if changed > 0 {
+                    profile.summary = navigator_domain::consensus::summarize(&profile.variants);
+                }
+            }
+        }
+        Ok(Some(profile))
     }
 
     /// Build (and persist) the multi-source Y-variant profile: reconcile each Y-bearing source's
@@ -584,7 +605,15 @@ impl App {
             })
             .collect();
 
-        let variants = yprofile::reconcile_y(&sources);
+        let mut variants = yprofile::reconcile_y(&sources);
+        // Re-impute each SNP's state from the stored observed base against the **true** (DecodingUs)
+        // polarity, keyed by SNP name — so a profile built against any tree (incl. an FTDNA tree
+        // whose reference-as-ancestral polarity is inverted at some sites) displays correct
+        // derived/ancestral states, no BAM re-read. Best effort: skipped if DecodingUs is offline.
+        if let Some(pol) = self.decodingus_y_polarity().await {
+            let pol: std::collections::BTreeMap<String, (String, String)> = pol.into_iter().collect();
+            navigator_domain::consensus::reproject(&mut variants, &pol);
+        }
         let summary = yprofile::summarize(&variants);
         // Genome-level placement: place the pooled call set on the tree once (not a vote among the
         // per-run terminal labels). Falls back to the label reconciliation when nothing places.

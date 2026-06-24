@@ -1713,18 +1713,16 @@ pub fn consensus_genotypes(profile: &DiploidProfile) -> Vec<SiteGenotype> {
 fn snp_obs_from_assignment(assignment: &HaploAssignment, in_tree: bool) -> Vec<YObsInput> {
     let mut by_name: std::collections::HashMap<String, YObsInput> = std::collections::HashMap::new();
     for snp in &assignment.lineage {
-        let state = match snp.state {
-            CallState::Derived => YState::Derived,
-            CallState::Ancestral => YState::Ancestral,
-            CallState::NoCall => YState::NoCall,
-        };
         by_name.entry(snp.name.clone()).or_insert_with(|| {
-            YObsInput::snp(
+            // Carry the observed base (not just the state): the state is imputed from it, and the
+            // base is retained so the profile can be re-imputed against corrected polarity without
+            // re-genotyping (see `consensus::reproject`).
+            YObsInput::observed(
                 snp.name.clone(),
                 snp.position,
                 snp.ancestral.clone(),
                 snp.derived.clone(),
-                state,
+                snp.base,
                 in_tree,
             )
         });
