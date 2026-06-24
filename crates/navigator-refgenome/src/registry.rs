@@ -270,19 +270,22 @@ impl Registry {
     /// CHM13's chains (its nuclear coordinates are identical).
     pub fn chain_source(&self, from: Build, to: Build) -> Option<ChainSource> {
         let (from, to) = (from.nuclear(), to.nuclear());
-        let file = match (from, to) {
-            (Build::Grch38, Build::Chm13v2) => "grch38-chm13v2.chain",
-            (Build::Chm13v2, Build::Grch38) => "chm13v2-grch38.chain",
-            (Build::Grch37, Build::Chm13v2) => "hg19-chm13v2.chain",
-            (Build::Chm13v2, Build::Grch37) => "chm13v2-hg19.chain",
+        // GRCh38↔GRCh37 use UCSC's gzipped over.chain (decompressed on download); the CHM13 pairs
+        // are the curated uncompressed chains in the T2T bucket.
+        let url = match (from, to) {
+            (Build::Grch38, Build::Chm13v2) => format!("{CHAIN_BASE}/grch38-chm13v2.chain"),
+            (Build::Chm13v2, Build::Grch38) => format!("{CHAIN_BASE}/chm13v2-grch38.chain"),
+            (Build::Grch37, Build::Chm13v2) => format!("{CHAIN_BASE}/hg19-chm13v2.chain"),
+            (Build::Chm13v2, Build::Grch37) => format!("{CHAIN_BASE}/chm13v2-hg19.chain"),
+            (Build::Grch38, Build::Grch37) => {
+                "https://hgdownload.soe.ucsc.edu/goldenPath/hg38/liftOver/hg38ToHg19.over.chain.gz".to_string()
+            }
+            (Build::Grch37, Build::Grch38) => {
+                "https://hgdownload.soe.ucsc.edu/goldenPath/hg19/liftOver/hg19ToHg38.over.chain.gz".to_string()
+            }
             _ => return None,
         };
-        Some(ChainSource {
-            from,
-            to,
-            url: format!("{CHAIN_BASE}/{file}"),
-            sha256: None,
-        })
+        Some(ChainSource { from, to, url, sha256: None })
     }
 
     /// The UCSC `cytoBand` table URL for a build (gzipped) — the source for genome-region
@@ -342,7 +345,14 @@ mod tests {
         assert!(reg.local_override(Build::Chm13v2).is_none());
         let chain = reg.chain_source(Build::Grch38, Build::Chm13v2).unwrap();
         assert!(chain.url.ends_with("grch38-chm13v2.chain"));
-        assert!(reg.chain_source(Build::Grch38, Build::Grch37).is_none());
+        // GRCh38↔GRCh37 lift via UCSC's gzipped over.chain (decompressed on download).
+        let g38_g37 = reg.chain_source(Build::Grch38, Build::Grch37).unwrap();
+        assert!(g38_g37.url.ends_with("hg38ToHg19.over.chain.gz"));
+        assert!(reg
+            .chain_source(Build::Grch37, Build::Grch38)
+            .unwrap()
+            .url
+            .ends_with("hg19ToHg38.over.chain.gz"));
     }
 
     #[test]

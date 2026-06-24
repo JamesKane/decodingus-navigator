@@ -194,7 +194,12 @@ impl ReferenceGateway {
                 to: to.as_str().into(),
             })?;
         let sha = download::download(&self.http, &src.url, &path, progress).await?;
-        verify_pinned(&path, src.sha256.as_deref(), &sha)?; // a chain is stored as-downloaded
+        verify_pinned(&path, src.sha256.as_deref(), &sha)?; // verify the artifact exactly as served
+        // The cache stores chains as plain text (`load_liftover` reads them with `read_to_string`).
+        // Every chain flows through the same path: if the downloaded artifact is gzipped (UCSC
+        // serves `.over.chain.gz`; the curated bucket serves plain `.chain`), decompress it in place
+        // — detected by the gzip magic bytes, so the source URL/extension doesn't matter.
+        maybe_gunzip_in_place(&path)?;
         write_sidecar(&path, &sha);
         Ok(path)
     }
@@ -518,6 +523,18 @@ fn read_gz_to_string(path: &Path) -> Result<String, RefgenomeError> {
     let mut s = String::new();
     dec.read_to_string(&mut s).map_err(|e| RefgenomeError::io(path, e))?;
     Ok(s)
+}
+
+/// If `path` holds gzip-compressed data (detected by the `1f 8b` magic bytes), decompress it to
+/// plain text in place; otherwise leave it untouched. Lets every cached chain be stored as plain
+/// text regardless of whether its source served `.chain` or `.chain.gz`.
+fn maybe_gunzip_in_place(path: &Path) -> Result<(), RefgenomeError> {
+    let bytes = std::fs::read(path).map_err(|e| RefgenomeError::io(path, e))?;
+    if bytes.len() < 2 || bytes[0] != 0x1f || bytes[1] != 0x8b {
+        return Ok(()); // not gzipped — already plain text
+    }
+    let text = read_gz_to_string(path)?;
+    std::fs::write(path, text).map_err(|e| RefgenomeError::io(path, e))
 }
 
 /// The `<file>.sha256` integrity-sidecar path for a cached artifact.
