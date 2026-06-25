@@ -47,8 +47,15 @@ pins *our* binary's glibc, not the libs linuxdeploy bundles into the AppImage, s
 floor benefit for a GUI app (a local macOS cross-build also confirmed the Rust + vendored-C deps —
 sqlite/bzip2/lzma/ring/noodles — cross-compile cleanly; only the GUI system libs need the container).
 manylinux_2_28 is chosen because it runs GitHub's node20 actions (2.28 is node20's floor); AppImage
-FUSE is bypassed with `APPIMAGE_EXTRACT_AND_RUN=1`. **Unverified — no local Linux/Docker here; needs
-a CI run to settle the exact `dnf` package set + AppImage tooling.**
+FUSE is bypassed with `APPIMAGE_EXTRACT_AND_RUN=1`.
+
+**Validated (2026-06-25) via Apple `container`** (Docker-compatible, runs Linux on macOS): the CI
+recipe was reproduced end-to-end in `quay.io/pypa/manylinux_2_28_aarch64` — the `dnf` set
+(`gtk3-devel dbus-devel libxkbcommon-devel cairo-gobject-devel pango-devel gdk-pixbuf2-devel
+atk-devel file which`) resolves on AlmaLinux 8, the workspace builds for
+`aarch64-unknown-linux-gnu`, and cargo-packager produced **both** a `.AppImage` (linuxdeploy ran
+fine under `APPIMAGE_EXTRACT_AND_RUN=1`) and a `.deb`. x86_64 uses the identical recipe (+ ivybridge
+from `.cargo/config.toml`); only the asset-staging CDN source remains before the bundle is non-empty.
 
 **General CI fix (2026-06-24):** cargo-packager 0.11.8 only *packages* a pre-built binary — it does
 **not** build with `--target` (verified locally: it errors "No such file" instead of compiling). So
