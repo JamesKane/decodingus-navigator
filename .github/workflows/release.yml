@@ -5,11 +5,10 @@
 # The Ivy Bridge CPU floor for the x86-64 slices comes from .cargo/config.toml (per-target
 # rustflags), so no per-job RUSTFLAGS are needed; ARM slices stay at the NEON baseline.
 #
-# AUTHORED BUT NOT YET RUN END-TO-END — items flagged TODO need a real tagged CI run / secrets:
-#   - macOS notarization (APPLE_* secrets) and the universal2 (lipo) build.
-#   - Linux glibc floor (ubuntu-22.04 = glibc 2.35; use an old-glibc container or cargo-zigbuild
-#     `*.2.28` for "Ivy Bridge or newer" reach — see design §1).
-#   - Windows is shipped UNSIGNED for Alpha (documented SmartScreen work-around).
+# Each platform's build+package was validated locally (macOS universal2 via cargo-packager, Windows
+# NSIS via cargo-xwin, Linux AppImage/.deb in the manylinux_2_28 container via Apple `container`).
+# Still needs a real tagged run for: macOS notarization (APPLE_* secrets) and Windows code signing
+# (unsigned for Alpha; documented SmartScreen work-around).
 name: Release
 
 on:
@@ -19,61 +18,173 @@ on:
 permissions:
   contents: write
 
+# The bundled ancestry/IBD assets live on a dedicated public GitHub release; stage-assets.sh
+# downloads them by manifest (no token — public repo). Bump this tag when the assets are
+# regenerated. Override per-run with the same env var if needed.
+env:
+  NAVIGATOR_ASSET_RELEASE: assets-chm13v2.0
+
 jobs:
-  package:
-    name: package (${{ matrix.label }})
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - label: macos-aarch64
-            os: macos-14
-            target: aarch64-apple-darwin
-          - label: macos-x86_64
-            os: macos-13 # Intel runner; target-cpu=ivybridge via .cargo/config.toml
-            target: x86_64-apple-darwin
-          - label: linux-x86_64
-            os: ubuntu-22.04
-            target: x86_64-unknown-linux-gnu
-          - label: linux-aarch64
-            os: ubuntu-24.04-arm
-            target: aarch64-unknown-linux-gnu
-          - label: windows-x86_64
-            os: windows-latest
-            target: x86_64-pc-windows-msvc
+  package-windows:
+    name: package (windows-x86_64)
+    runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: ${{ matrix.target }}
+          targets: x86_64-pc-windows-msvc
 
       - uses: Swatinem/rust-cache@v2
         with:
-          key: ${{ matrix.target }}
-
-      # AppImage/.deb tooling for the Linux slices.
-      - name: Linux packaging deps
-        if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libgtk-3-dev libxdo-dev libayatana-appindicator3-dev librsvg2-dev file
+          key: x86_64-pc-windows-msvc
 
       - name: Install cargo-packager
         run: cargo install cargo-packager --locked
 
-      # Stage the bundled ancestry assets. TODO(CI): point NAVIGATOR_ASSET_SRC at a CDN mirror or a
-      # cached artifact; without it the bundle is empty and first run has no offline assets.
+      # Stage the bundled ancestry assets from the GitHub release (NAVIGATOR_ASSET_RELEASE).
       - name: Stage assets
         shell: bash
         run: bash packaging/stage-assets.sh
 
-      - name: Package
-        run: cargo packager --release --target ${{ matrix.target }} --formats default -p navigator-ui
+      # cargo-packager only *packages* a pre-built binary (it does not build with --target), so build
+      # first. The ivybridge floor comes from .cargo/config.toml. Alpha ships unsigned (NSIS).
+      - name: Build
+        run: cargo build --release --target x86_64-pc-windows-msvc -p navigator-ui
+
+      - name: Package (NSIS)
+        run: cargo packager --release --target x86_64-pc-windows-msvc --formats nsis -p navigator-ui
+
+      - name: Collect images
+        shell: bash
+        run: |
+          mkdir -p out
+          # Only the installer — not the raw navigator.exe that sits beside it in release/.
+          find target/x86_64-pc-windows-msvc/release -maxdepth 1 \
+            \( -name '*-setup.exe' -o -name '*.msi' \) -exec cp {} out/ \; || true
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-x86_64
+          path: out/*
+          if-no-files-found: warn
+
+  # Linux ships AppImage + .deb built inside a glibc-2.28 container (manylinux_2_28 = AlmaLinux 8) so
+  # the binary AND the AppImage-bundled GTK/D-Bus libs all target glibc 2.28 — broad "Ivy Bridge or
+  # newer" reach (Ubuntu 20.04+/Debian 10+/RHEL 8+). manylinux_2_28 runs GitHub's node20 actions
+  # (2.28 is node20's glibc floor); AppImage's FUSE requirement is bypassed with
+  # APPIMAGE_EXTRACT_AND_RUN=1.
+  #
+  # Validated locally (aarch64) in manylinux_2_28 via Apple `container`: the dnf set resolves, the
+  # build + AppImage (linuxdeploy under APPIMAGE_EXTRACT_AND_RUN=1) + .deb all succeed. x86_64 uses
+  # the same recipe; its ivybridge floor comes from .cargo/config.toml. cargo-packager only
+  # packages, so the binary is built first.
+  package-linux:
+    name: package (${{ matrix.label }})
+    runs-on: ${{ matrix.runs_on }}
+    container:
+      image: ${{ matrix.container }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: linux-x86_64
+            runs_on: ubuntu-latest
+            container: quay.io/pypa/manylinux_2_28_x86_64
+            target: x86_64-unknown-linux-gnu
+          - label: linux-aarch64
+            runs_on: ubuntu-24.04-arm
+            container: quay.io/pypa/manylinux_2_28_aarch64
+            target: aarch64-unknown-linux-gnu
+    steps:
+      - uses: actions/checkout@v4
+
+      # GUI build deps on AlmaLinux 8: GTK3 (rfd file dialogs), D-Bus (zbus), xkbcommon (winit).
+      - name: System deps
+        run: |
+          dnf install -y --allowerasing \
+            gtk3-devel dbus-devel libxkbcommon-devel \
+            cairo-gobject-devel pango-devel gdk-pixbuf2-devel atk-devel \
+            file which
+
+      - name: Install Rust
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+            | sh -s -- -y --default-toolchain stable --target ${{ matrix.target }}
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+
+      - name: Install cargo-packager
+        run: cargo install cargo-packager --locked
+
+      # Stage the bundled ancestry assets from the GitHub release (NAVIGATOR_ASSET_RELEASE).
+      - name: Stage assets
+        run: bash packaging/stage-assets.sh
+
+      # cargo-packager only packages a pre-built binary; ivybridge (x86_64) is in .cargo/config.toml.
+      - name: Build
+        run: cargo build --release --target ${{ matrix.target }} -p navigator-ui
+
+      - name: Package (AppImage + deb)
+        env:
+          APPIMAGE_EXTRACT_AND_RUN: "1"
+        run: cargo packager --release --target ${{ matrix.target }} --formats appimage,deb -p navigator-ui
+
+      - name: Collect images
+        run: |
+          mkdir -p out
+          find target/${{ matrix.target }}/release -maxdepth 1 \
+            \( -name '*.AppImage' -o -name '*.deb' \) -exec cp {} out/ \; || true
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.label }}
+          path: out/*
+          if-no-files-found: warn
+
+  # macOS ships a single universal2 (.dmg) that runs on both Apple Silicon and Intel. cargo-packager
+  # only *packages* a binary — it doesn't build a universal one — so we build both slices and `lipo`
+  # them into target/universal-apple-darwin/release/navigator (where the packager looks), then
+  # package. The Intel slice picks up target-cpu=ivybridge from .cargo/config.toml.
+  package-macos:
+    name: package (macos-universal)
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: macos-universal
+
+      - name: Install cargo-packager
+        run: cargo install cargo-packager --locked
+
+      # Stage the bundled ancestry assets from the GitHub release (NAVIGATOR_ASSET_RELEASE).
+      - name: Stage assets
+        run: bash packaging/stage-assets.sh
+
+      - name: Build + lipo universal binary
+        env:
+          MACOSX_DEPLOYMENT_TARGET: "11.0"
+        run: |
+          cargo build --release --target aarch64-apple-darwin -p navigator-ui
+          cargo build --release --target x86_64-apple-darwin -p navigator-ui
+          mkdir -p target/universal-apple-darwin/release
+          lipo -create -output target/universal-apple-darwin/release/navigator \
+            target/aarch64-apple-darwin/release/navigator \
+            target/x86_64-apple-darwin/release/navigator
+          lipo -info target/universal-apple-darwin/release/navigator
+
+      - name: Package (universal dmg)
+        run: cargo packager --release --target universal-apple-darwin --formats dmg -p navigator-ui
         # macOS signing/notarization (set the APPLE_* secrets to enable; left off until provisioned):
         env:
+          MACOSX_DEPLOYMENT_TARGET: "11.0"
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
           APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
@@ -85,21 +196,17 @@ jobs:
         shell: bash
         run: |
           mkdir -p out
-          # cargo-packager writes images under target/<target>/release (dmg/AppImage/deb/nsis/zip).
-          find target/${{ matrix.target }}/release -maxdepth 1 \
-            \( -name '*.dmg' -o -name '*.AppImage' -o -name '*.deb' -o -name '*.rpm' \
-               -o -name '*.exe' -o -name '*.msi' -o -name '*.zip' -o -name '*.tar.gz' \) \
-            -exec cp {} out/ \; || true
+          find target/universal-apple-darwin/release -maxdepth 1 -name '*.dmg' -exec cp {} out/ \; || true
 
       - uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.label }}
+          name: macos-universal
           path: out/*
           if-no-files-found: warn
 
   release:
     name: collect + release
-    needs: package
+    needs: [package-windows, package-macos, package-linux]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4

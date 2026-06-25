@@ -30,10 +30,60 @@ handle the bundled ancestry assets.
 `LSMinimumSystemVersion=11.0`; the bundled binary runs; seeding into a fresh
 `NAVIGATOR_REFGENOME_DIR` confirmed (11 assets).
 
-**Still CI-time / unverified here (need a tagged run + secrets):** macOS notarization (`APPLE_*`),
-macOS universal2 (lipo — the CI ships per-arch dmgs for now), Linux glibc floor (ubuntu-22.04 =
-2.35; old-glibc container / `cargo-zigbuild` `*.2.28` for broad reach), Windows signing (unsigned
-for Alpha), and the CI asset-staging CDN source (`NAVIGATOR_ASSET_SRC`/CDN).
+**macOS universal2 (2026-06-24, DONE in CI + validated locally):** the CI now ships **one
+universal `.dmg`** instead of per-arch ones. cargo-packager only *packages* a binary (it does not
+build a universal one), so the `package-macos` job builds both slices, `lipo`s them into
+`target/universal-apple-darwin/release/navigator`, then `cargo packager --target
+universal-apple-darwin -f dmg`. Validated locally on macos-14: `DUNavigator_0.1.0_universal.dmg`,
+the bundled `Contents/MacOS/navigator` is a fat `x86_64 arm64` binary with `minos 11.0` and
+`CFBundleIdentifier=com.decodingus.navigator`. The Intel slice gets `target-cpu=ivybridge` from
+`.cargo/config.toml`.
+
+**Linux glibc floor (2026-06-24, decided = 2.28 via container; CI authored, NOT yet run):** the
+`package-linux` job builds **and packages inside `quay.io/pypa/manylinux_2_28_*`** (AlmaLinux 8,
+glibc 2.28) for both x86_64 and aarch64, so the binary *and* the AppImage-bundled GTK/D-Bus libs all
+target 2.28 (Ubuntu 20.04+/Debian 10+/RHEL 8+). `cargo-zigbuild` was evaluated and rejected: it only
+pins *our* binary's glibc, not the libs linuxdeploy bundles into the AppImage, so it gives no real
+floor benefit for a GUI app (a local macOS cross-build also confirmed the Rust + vendored-C deps —
+sqlite/bzip2/lzma/ring/noodles — cross-compile cleanly; only the GUI system libs need the container).
+manylinux_2_28 is chosen because it runs GitHub's node20 actions (2.28 is node20's floor); AppImage
+FUSE is bypassed with `APPIMAGE_EXTRACT_AND_RUN=1`.
+
+**Validated (2026-06-25) via Apple `container`** (Docker-compatible, runs Linux on macOS): the CI
+recipe was reproduced end-to-end in `quay.io/pypa/manylinux_2_28_aarch64` — the `dnf` set
+(`gtk3-devel dbus-devel libxkbcommon-devel cairo-gobject-devel pango-devel gdk-pixbuf2-devel
+atk-devel file which`) resolves on AlmaLinux 8, the workspace builds for
+`aarch64-unknown-linux-gnu`, and cargo-packager produced **both** a `.AppImage` (linuxdeploy ran
+fine under `APPIMAGE_EXTRACT_AND_RUN=1`) and a `.deb`. x86_64 uses the identical recipe (+ ivybridge
+from `.cargo/config.toml`); only the asset-staging CDN source remains before the bundle is non-empty.
+
+**General CI fix (2026-06-24):** cargo-packager 0.11.8 only *packages* a pre-built binary — it does
+**not** build with `--target` (verified locally: it errors "No such file" instead of compiling). So
+every job now runs an explicit `cargo build`/`lipo` before `cargo packager`; the original matrix
+(which called `cargo packager --target …` with no prior build) would have failed.
+
+**Windows (2026-06-24, validated via cross-build):** the `package-windows` job builds the
+`x86_64-pc-windows-msvc` binary then `cargo packager … --formats nsis` → `*_x64-setup.exe`. Validated
+locally from macOS with `cargo-xwin` (clang-cl + Windows SDK + nasm for `ring`): the full
+workspace + all vendored-C deps (sqlite/bzip2/lzma/ring) and the egui/eframe/rfd/keyring GUI stack
+compile clean, and `cargo packager` produced a working NSIS self-extracting installer (PE32, ~40 MB,
+the ~190 MB binary+assets compressed) using a host `makensis`. The CI uses native `windows-latest`
+(MSVC) — even closer to target — so this is a strong proxy. ivybridge floor comes from
+`.cargo/config.toml`; the collect step ships only `*-setup.exe`, not the bare `navigator.exe`. Alpha
+is **unsigned** (cargo-packager warns + skips signing off-Windows); Authenticode / Azure Trusted
+Signing comes before beta.
+
+**Asset staging via GitHub release (2026-06-25, wired):** the bundled assets live on a dedicated
+**public GitHub release** (tag `assets-<build>`, e.g. `assets-chm13v2.0`). `packaging/stage-assets.sh`
+now: local `~/.decodingus/ancestry` if present (dev), else download from the release by manifest
+(public repo → plain `curl`, no token, works in the manylinux container too), with a sha256
+corruption guard; else an empty bundle (non-fatal). The workflow sets `NAVIGATOR_ASSET_RELEASE`.
+`packaging/publish-assets.sh [build]` creates/refreshes that release from `~/.decodingus/ancestry`
+via `gh`. **One manual step remains: run `publish-assets.sh` once to populate the release** (the
+download path is validated end-to-end except the success leg, which 404s until the release exists).
+
+**Still CI-time / unverified here (need a tagged run + secrets):** macOS notarization (`APPLE_*`)
+and Windows signing (unsigned for Alpha). All three platforms' build+package are locally validated.
 
 ---
 
