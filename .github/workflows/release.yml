@@ -56,8 +56,9 @@ jobs:
         shell: bash
         run: |
           mkdir -p out
+          # Only the installer — not the raw navigator.exe that sits beside it in release/.
           find target/x86_64-pc-windows-msvc/release -maxdepth 1 \
-            \( -name '*.exe' -o -name '*.msi' -o -name '*.zip' \) -exec cp {} out/ \; || true
+            \( -name '*-setup.exe' -o -name '*.msi' \) -exec cp {} out/ \; || true
 
       - uses: actions/upload-artifact@v4
         with:

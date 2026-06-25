@@ -55,6 +55,17 @@ a CI run to settle the exact `dnf` package set + AppImage tooling.**
 every job now runs an explicit `cargo build`/`lipo` before `cargo packager`; the original matrix
 (which called `cargo packager --target …` with no prior build) would have failed.
 
+**Windows (2026-06-24, validated via cross-build):** the `package-windows` job builds the
+`x86_64-pc-windows-msvc` binary then `cargo packager … --formats nsis` → `*_x64-setup.exe`. Validated
+locally from macOS with `cargo-xwin` (clang-cl + Windows SDK + nasm for `ring`): the full
+workspace + all vendored-C deps (sqlite/bzip2/lzma/ring) and the egui/eframe/rfd/keyring GUI stack
+compile clean, and `cargo packager` produced a working NSIS self-extracting installer (PE32, ~40 MB,
+the ~190 MB binary+assets compressed) using a host `makensis`. The CI uses native `windows-latest`
+(MSVC) — even closer to target — so this is a strong proxy. ivybridge floor comes from
+`.cargo/config.toml`; the collect step ships only `*-setup.exe`, not the bare `navigator.exe`. Alpha
+is **unsigned** (cargo-packager warns + skips signing off-Windows); Authenticode / Azure Trusted
+Signing comes before beta.
+
 **Still CI-time / unverified here (need a tagged run + secrets):** macOS notarization (`APPLE_*`),
 the Linux container job (above — needs a CI run), Windows signing (unsigned for Alpha), and the CI
 asset-staging CDN source (`NAVIGATOR_ASSET_SRC`/CDN).
