@@ -5,11 +5,10 @@
 # The Ivy Bridge CPU floor for the x86-64 slices comes from .cargo/config.toml (per-target
 # rustflags), so no per-job RUSTFLAGS are needed; ARM slices stay at the NEON baseline.
 #
-# AUTHORED BUT NOT YET RUN END-TO-END — items flagged TODO need a real tagged CI run / secrets:
-#   - macOS notarization (APPLE_* secrets) and the universal2 (lipo) build.
-#   - Linux glibc floor (ubuntu-22.04 = glibc 2.35; use an old-glibc container or cargo-zigbuild
-#     `*.2.28` for "Ivy Bridge or newer" reach — see design §1).
-#   - Windows is shipped UNSIGNED for Alpha (documented SmartScreen work-around).
+# Each platform's build+package was validated locally (macOS universal2 via cargo-packager, Windows
+# NSIS via cargo-xwin, Linux AppImage/.deb in the manylinux_2_28 container via Apple `container`).
+# Still needs a real tagged run for: macOS notarization (APPLE_* secrets) and Windows code signing
+# (unsigned for Alpha; documented SmartScreen work-around).
 name: Release
 
 on:
@@ -18,6 +17,12 @@ on:
 
 permissions:
   contents: write
+
+# The bundled ancestry/IBD assets live on a dedicated public GitHub release; stage-assets.sh
+# downloads them by manifest (no token — public repo). Bump this tag when the assets are
+# regenerated. Override per-run with the same env var if needed.
+env:
+  NAVIGATOR_ASSET_RELEASE: assets-chm13v2.0
 
 jobs:
   package-windows:
@@ -38,8 +43,7 @@ jobs:
       - name: Install cargo-packager
         run: cargo install cargo-packager --locked
 
-      # Stage the bundled ancestry assets. TODO(CI): point NAVIGATOR_ASSET_SRC at a CDN mirror or a
-      # cached artifact; without it the bundle is empty and first run has no offline assets.
+      # Stage the bundled ancestry assets from the GitHub release (NAVIGATOR_ASSET_RELEASE).
       - name: Stage assets
         shell: bash
         run: bash packaging/stage-assets.sh
@@ -72,9 +76,10 @@ jobs:
   # (2.28 is node20's glibc floor); AppImage's FUSE requirement is bypassed with
   # APPIMAGE_EXTRACT_AND_RUN=1.
   #
-  # UNVALIDATED HERE (no local Linux/Docker): expect a CI iteration or two on the exact dnf package
-  # set and the AppImage tooling. The x86_64 ivybridge floor comes from .cargo/config.toml;
-  # cargo-packager only packages, so the binary is built first.
+  # Validated locally (aarch64) in manylinux_2_28 via Apple `container`: the dnf set resolves, the
+  # build + AppImage (linuxdeploy under APPIMAGE_EXTRACT_AND_RUN=1) + .deb all succeed. x86_64 uses
+  # the same recipe; its ivybridge floor comes from .cargo/config.toml. cargo-packager only
+  # packages, so the binary is built first.
   package-linux:
     name: package (${{ matrix.label }})
     runs-on: ${{ matrix.runs_on }}
@@ -112,7 +117,7 @@ jobs:
       - name: Install cargo-packager
         run: cargo install cargo-packager --locked
 
-      # TODO(CI): point NAVIGATOR_ASSET_SRC at a CDN mirror; without it the bundle is empty.
+      # Stage the bundled ancestry assets from the GitHub release (NAVIGATOR_ASSET_RELEASE).
       - name: Stage assets
         run: bash packaging/stage-assets.sh
 
@@ -159,8 +164,7 @@ jobs:
       - name: Install cargo-packager
         run: cargo install cargo-packager --locked
 
-      # Stage the bundled ancestry assets. TODO(CI): point NAVIGATOR_ASSET_SRC at a CDN mirror or a
-      # cached artifact; without it the bundle is empty and first run has no offline assets.
+      # Stage the bundled ancestry assets from the GitHub release (NAVIGATOR_ASSET_RELEASE).
       - name: Stage assets
         run: bash packaging/stage-assets.sh
 

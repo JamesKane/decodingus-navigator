@@ -73,9 +73,17 @@ the ~190 MB binary+assets compressed) using a host `makensis`. The CI uses nativ
 is **unsigned** (cargo-packager warns + skips signing off-Windows); Authenticode / Azure Trusted
 Signing comes before beta.
 
-**Still CI-time / unverified here (need a tagged run + secrets):** macOS notarization (`APPLE_*`),
-the Linux container job (above — needs a CI run), Windows signing (unsigned for Alpha), and the CI
-asset-staging CDN source (`NAVIGATOR_ASSET_SRC`/CDN).
+**Asset staging via GitHub release (2026-06-25, wired):** the bundled assets live on a dedicated
+**public GitHub release** (tag `assets-<build>`, e.g. `assets-chm13v2.0`). `packaging/stage-assets.sh`
+now: local `~/.decodingus/ancestry` if present (dev), else download from the release by manifest
+(public repo → plain `curl`, no token, works in the manylinux container too), with a sha256
+corruption guard; else an empty bundle (non-fatal). The workflow sets `NAVIGATOR_ASSET_RELEASE`.
+`packaging/publish-assets.sh [build]` creates/refreshes that release from `~/.decodingus/ancestry`
+via `gh`. **One manual step remains: run `publish-assets.sh` once to populate the release** (the
+download path is validated end-to-end except the success leg, which 404s until the release exists).
+
+**Still CI-time / unverified here (need a tagged run + secrets):** macOS notarization (`APPLE_*`)
+and Windows signing (unsigned for Alpha). All three platforms' build+package are locally validated.
 
 ---
 
