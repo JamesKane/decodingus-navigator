@@ -45,9 +45,26 @@ pub enum Command {
 
 #[derive(Args)]
 pub struct IngestArgs {
-    /// Subject donor identifier (found by exact match, or created if absent).
-    #[arg(long, short)]
-    subject: String,
+    /// Subject donor identifier (found by exact match, or created if absent). Mutually exclusive
+    /// with --external-id; one of the two is required.
+    #[arg(long, short, required_unless_present = "external_id")]
+    subject: Option<String>,
+    /// Resolve the subject by a vendor id `(--id-source, ID)` instead of a donor identifier — e.g.
+    /// an FTDNA kit number. The subject must already exist (never created); pair with
+    /// --skip-unmatched to skip unknown ids quietly.
+    #[arg(long, conflicts_with = "subject")]
+    external_id: Option<String>,
+    /// Vendor source for --external-id (default FTDNA).
+    #[arg(long, default_value = navigator_domain::identity::IdSource::FTDNA)]
+    id_source: String,
+    /// With --external-id: if no subject matches the id, skip quietly (exit 0) instead of erroring.
+    #[arg(long)]
+    skip_unmatched: bool,
+    /// Force the sequencing-run test type for alignment files (e.g. "Big Y") instead of inferring
+    /// it. Useful for bulk imports where the directory layout names the test; CRAMs have no `.bai`
+    /// for the coverage-shape detector, so they otherwise fall back to WGS. Ignored for non-BAM/CRAM.
+    #[arg(long)]
+    test_type: Option<String>,
     /// Optional project name to assign the subject to (found or created).
     #[arg(long, short)]
     project: Option<String>,
@@ -253,28 +270,48 @@ async fn ingest(args: IngestArgs) -> i32 {
         None => None,
     };
 
-    // Find-or-create the subject; assign to the project if one was named.
-    let guid = match find_subject(&app, &args.subject).await {
-        Ok(Some(g)) => {
-            if let Some(pid) = project_id {
-                if let Err(e) = app.add_biosample_to_project(g, Some(pid)).await {
-                    return report(e);
+    // Resolve the target subject. Two modes:
+    //   --external-id : match an existing subject by vendor id; NEVER create (skip or error).
+    //   --subject     : find-or-create by donor identifier (the original behaviour).
+    // `label` is the human identifier used in the summary line.
+    let (guid, label) = if let Some(ext) = &args.external_id {
+        match app.find_biosample_by_external_id(&args.id_source, ext).await {
+            Ok(Some(g)) => (g, format!("{}:{ext}", args.id_source)),
+            Ok(None) => {
+                if args.skip_unmatched {
+                    println!("SKIP no subject for {}:{ext}", args.id_source);
+                    return 0;
                 }
-            }
-            g
-        }
-        Ok(None) => match app
-            .add_biosample(project_id, args.subject.clone(), None, args.sex.clone())
-            .await
-        {
-            Ok(b) => {
-                println!("created subject {} ({})", args.subject, b.guid.0);
-                b.guid
+                eprintln!("error: no subject with {} id \"{ext}\"", args.id_source);
+                return 1;
             }
             Err(e) => return report(e),
-        },
-        Err(c) => return c,
+        }
+    } else {
+        // --subject is required-unless-present(external_id), so it is Some here.
+        let subject = args.subject.clone().unwrap_or_default();
+        match find_subject(&app, &subject).await {
+            Ok(Some(g)) => (g, subject),
+            Ok(None) => match app
+                .add_biosample(project_id, subject.clone(), None, args.sex.clone())
+                .await
+            {
+                Ok(b) => {
+                    println!("created subject {subject} ({})", b.guid.0);
+                    (b.guid, subject)
+                }
+                Err(e) => return report(e),
+            },
+            Err(c) => return c,
+        }
     };
+
+    // Assign to the named project (applies to both resolution modes).
+    if let Some(pid) = project_id {
+        if let Err(e) = app.add_biosample_to_project(guid, Some(pid)).await {
+            return report(e);
+        }
+    }
 
     let files = collect_files(&args.paths, args.recursive);
     if files.is_empty() {
@@ -284,7 +321,7 @@ async fn ingest(args: IngestArgs) -> i32 {
 
     let (mut ok, mut failed, mut ysnp_panels) = (0usize, 0usize, 0usize);
     for path in &files {
-        match app.add_data(guid, path).await {
+        match app.add_data_with_test_type(guid, path, args.test_type.as_deref()).await {
             Ok(detected) => {
                 ok += 1;
                 if detected == navigator_app::DetectedData::YSnpPanel {
@@ -298,10 +335,7 @@ async fn ingest(args: IngestArgs) -> i32 {
             }
         }
     }
-    println!(
-        "\ningested {ok} file(s), {failed} failed, into subject \"{}\"",
-        args.subject
-    );
+    println!("\ningested {ok} file(s), {failed} failed, into subject \"{label}\"");
 
     // A Y-SNP panel (BISDNA) was imported — place a Y haplogroup from its derived calls and
     // report the terminal (the call is recorded for the donor consensus).
