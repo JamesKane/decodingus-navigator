@@ -39,7 +39,12 @@ impl App {
     /// platform, instrument) and the alignment (reference build + aligner) with no questions
     /// asked. The reference FASTA is **not** required — it's resolved from the build on demand;
     /// if already cached it's stored so every analysis step has it immediately.
-    async fn import_alignment_file(&self, biosample_guid: SampleGuid, path: &Path) -> Result<(), AppError> {
+    async fn import_alignment_file(
+        &self,
+        biosample_guid: SampleGuid,
+        path: &Path,
+        test_type_override: Option<&str>,
+    ) -> Result<(), AppError> {
         // Idempotent: skip if this exact BAM/CRAM is already recorded as an alignment.
         let path_str = path.to_string_lossy().into_owned();
         if alignment::list_all(self.store.pool())
@@ -93,22 +98,29 @@ impl App {
         // a targeted-Y pile-up (autosomes empty) → Big Y / Y Elite / YSEQ; an mtDNA pile-up →
         // mtFull. Best-effort and cheap (O(contigs), no read scan); CRAM / unindexed BAMs have no
         // profile and keep the platform-based guess.
-        let test_type = {
-            let p = path.to_path_buf();
-            let profile =
-                tokio::task::spawn_blocking(move || navigator_analysis::testtype::coverage_profile_from_bai(&p, None))
-                    .await
-                    .ok()
-                    .flatten();
-            navigator_analysis::testtype::infer_test_type(
-                profile.as_ref(),
-                probe.platform.as_deref(),
-                probe.vendor_hint.as_deref(),
-                None,
-                probe.big_y_code.as_deref(),
-            )
-            .or_else(|| probe.test_type.clone())
-            .unwrap_or_else(|| "WGS".into())
+        // An explicit override (e.g. a Big_Y-700/500 directory the caller recognized) wins over
+        // inference — CRAMs ship no `.bai`, so the coverage-shape detector below can't see the
+        // targeted-Y pile-up and would otherwise fall back to the platform default (WGS).
+        let test_type = match test_type_override {
+            Some(t) => t.to_string(),
+            None => {
+                let p = path.to_path_buf();
+                let profile = tokio::task::spawn_blocking(move || {
+                    navigator_analysis::testtype::coverage_profile_from_bai(&p, None)
+                })
+                .await
+                .ok()
+                .flatten();
+                navigator_analysis::testtype::infer_test_type(
+                    profile.as_ref(),
+                    probe.platform.as_deref(),
+                    probe.vendor_hint.as_deref(),
+                    None,
+                    probe.big_y_code.as_deref(),
+                )
+                .or_else(|| probe.test_type.clone())
+                .unwrap_or_else(|| "WGS".into())
+            }
         };
 
         let run = self
@@ -168,6 +180,18 @@ impl App {
     }
 
     pub async fn add_data(&self, biosample_guid: SampleGuid, path: &Path) -> Result<DetectedData, AppError> {
+        self.add_data_with_test_type(biosample_guid, path, None).await
+    }
+
+    /// Like [`add_data`], but forces the sequencing-run `test_type` for an alignment file instead
+    /// of inferring it (e.g. a bulk Big Y import where the directory layout names the test). The
+    /// override is ignored for non-alignment inputs (their type is intrinsic to the file).
+    pub async fn add_data_with_test_type(
+        &self,
+        biosample_guid: SampleGuid,
+        path: &Path,
+        test_type: Option<&str>,
+    ) -> Result<DetectedData, AppError> {
         let name = path
             .file_name()
             .map(|s| s.to_string_lossy().into_owned())
@@ -205,7 +229,7 @@ impl App {
                 self.import_mtdna_from_fasta(biosample_guid, path).await?;
             }
             DetectedData::Alignment => {
-                self.import_alignment_file(biosample_guid, path).await?;
+                self.import_alignment_file(biosample_guid, path, test_type).await?;
             }
             DetectedData::Unknown => {
                 return Err(AppError::Import(format!("could not recognize the data in {name}")));

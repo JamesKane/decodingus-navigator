@@ -447,6 +447,19 @@ impl App {
         Ok(external_id::list_for(self.store.pool(), guid).await?)
     }
 
+    /// Reverse of [`external_ids`]: the Subject bound to a `(source, external_id)` vendor id, if any.
+    /// This is the exact-match dedup anchor (design §5.1) — e.g. resolve an FTDNA kit number to the
+    /// biosample it was imported under. Returns `None` when the id is unknown to the workspace.
+    pub async fn find_biosample_by_external_id(
+        &self,
+        source: &str,
+        external_id: &str,
+    ) -> Result<Option<SampleGuid>, AppError> {
+        Ok(navigator_store::external_id::find(self.store.pool(), source, external_id)
+            .await?
+            .map(|e| e.biosample_guid))
+    }
+
     /// FTDNA-reported member labels for a Subject, if imported.
     pub async fn ftdna_member(&self, guid: SampleGuid) -> Result<Option<FtdnaMember>, AppError> {
         Ok(ftdna_member::get(self.store.pool(), guid).await?)
