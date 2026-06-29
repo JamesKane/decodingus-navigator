@@ -74,7 +74,7 @@ fn require_reference<'a>(path: &Path, reference: Option<&'a Path>) -> Result<&'a
 /// records are parsed sequentially (see [`bgzf_worker_count`]).
 pub enum SeqReader {
     Bam {
-        inner: bam::io::Reader<bgzf::MultithreadedReader<File>>,
+        inner: bam::io::Reader<bgzf::io::MultithreadedReader<File>>,
         path: PathBuf,
     },
     Cram {
@@ -89,7 +89,7 @@ pub fn open_seq(path: &Path, reference: Option<&Path>) -> Result<(sam::Header, S
     match detect_format(path) {
         Format::Bam => {
             let file = File::open(path).map_err(|e| AnalysisError::io(path, e))?;
-            let mt = bgzf::MultithreadedReader::with_worker_count(bgzf_worker_count(), file);
+            let mt = bgzf::io::MultithreadedReader::with_worker_count(bgzf_worker_count(), file);
             let mut inner = bam::io::Reader::from(mt);
             let header = inner.read_header().map_err(|e| AnalysisError::io(path, e))?;
             Ok((
@@ -178,7 +178,7 @@ impl SeqReader {
 /// An indexed reader over BAM or CRAM. Hold it and call [`IdxReader::query`].
 pub enum IdxReader {
     Bam {
-        inner: bam::io::IndexedReader<bgzf::Reader<File>>,
+        inner: bam::io::IndexedReader<bgzf::io::Reader<File>>,
         path: PathBuf,
     },
     Cram {
@@ -235,7 +235,7 @@ impl IdxReader {
             IdxReader::Bam { inner, path } => {
                 let path = path.clone();
                 let q = inner.query(header, region).map_err(|e| AnalysisError::io(&path, e))?;
-                Ok(Box::new(q.map(move |r| {
+                Ok(Box::new(q.records().map(move |r| {
                     let rec = r.map_err(|e| AnalysisError::io(&path, e))?;
                     RecordBuf::try_from_alignment_record(header, &rec).map_err(|e| AnalysisError::io(&path, e))
                 })))
@@ -294,7 +294,7 @@ impl IdxReader {
             IdxReader::Bam { inner, path } => {
                 let path = path.clone();
                 let q = inner.query(header, region).map_err(|e| AnalysisError::io(&path, e))?;
-                for r in q {
+                for r in q.records() {
                     sink.accept(&r.map_err(|e| AnalysisError::io(&path, e))?);
                 }
                 Ok(())

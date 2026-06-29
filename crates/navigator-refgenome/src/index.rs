@@ -112,7 +112,7 @@ pub fn decompress_and_index(src: &Path, fa_out: &Path) -> Result<String, Refgeno
 
     let index = fasta::fs::index(fa_out).map_err(|e| RefgenomeError::io(fa_out, e))?;
     let fai = with_suffix(fa_out, "fai");
-    let mut writer = fasta::fai::Writer::new(BufWriter::new(
+    let mut writer = fasta::fai::io::Writer::new(BufWriter::new(
         File::create(&fai).map_err(|e| RefgenomeError::io(&fai, e))?,
     ));
     writer.write_index(&index).map_err(|e| RefgenomeError::io(&fai, e))?;

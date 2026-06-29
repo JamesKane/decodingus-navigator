@@ -54,7 +54,7 @@ const LOW_PASS_AUTOSOME_DEPTH: f64 = 5.0;
 pub fn coverage_profile_from_bai(bam_path: &Path, mean_read_length: Option<u64>) -> Option<CoverageProfile> {
     let header = crate::reader::read_header(bam_path, None).ok()?;
     let bai_path = bam_path.with_extension("bam.bai");
-    let index = bam::bai::read(&bai_path).ok()?;
+    let index = bam::bai::fs::read(&bai_path).ok()?;
     let counts: Vec<u64> = index
         .reference_sequences()
         .iter()
