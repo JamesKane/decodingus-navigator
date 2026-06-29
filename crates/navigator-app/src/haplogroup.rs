@@ -2321,7 +2321,11 @@ impl App {
         }
 
         let aln = self.alignment_or_err(alignment_id).await?;
-        let bam = PathBuf::from(aln.bam_path.ok_or(AppError::MissingPaths(alignment_id))?);
+        // Copy off a slow/removable volume to local disk first — the per-locus genotyping read is a
+        // network round-trip per record otherwise (see App::localize).
+        let bam = self
+            .localize(Path::new(&aln.bam_path.ok_or(AppError::MissingPaths(alignment_id))?))
+            .await;
         // Resolve the reference even when none was stored at import. A CRAM can't be decoded
         // without it, so resolve (download on a miss) via the gateway from the alignment's build —
         // e.g. the already-cached `chm13v2.0.fa` for a CHM13 CRAM. A BAM needs no reference to

@@ -539,9 +539,15 @@ impl App {
         };
         o.had_alignment = true;
         let label = &biosample.donor_identifier;
+        // Drop any prior subject's local alignment copy so the batch holds at most one file's worth
+        // of cache; this subject's passes share the single copy `localize` makes below.
+        Self::clear_align_cache();
 
-        // "Done" only when a full walk exists AND it was computed at the right scope — a stale
-        // whole-genome coverage for a targeted-Y test (diluted headline depth) is recomputed.
+        // Coverage + read-metrics + sex in ONE pass (the unified walker) instead of three separate
+        // reads of the BAM/CRAM — a 3x I/O cut per subject, which dominates the batch on a slow /
+        // network volume (the single-subject Full Analysis already does this; the batch path didn't).
+        // Walk only when something's missing: a full, correctly-scoped coverage (a stale whole-genome
+        // result for a targeted-Y test is recomputed) plus cached read-metrics and sex = all done.
         let coverage_full = matches!(
             self.analysis_provenance(aln.id, "coverage", coverage::COVERAGE_VERSION).await?,
             Some((_, ref c)) if c == "full"
@@ -549,12 +555,21 @@ impl App {
             Some(cov) => self.coverage_is_correctly_scoped(aln.id, &cov).await?,
             None => false,
         };
-        if coverage_full {
+        if coverage_full
+            && self.cached_read_metrics(aln.id).await?.is_some()
+            && self.cached_sex(aln.id).await?.is_some()
+        {
             o.coverage_done = true;
+            o.metrics_done = true;
+            o.sex_done = true;
         } else {
-            match self.run_coverage_for_alignment(aln.id).await {
-                Ok(_) => o.coverage_done = true,
-                Err(e) => o.errors.push(format!("{label} coverage: {e}")),
+            match self.run_unified_metrics(aln.id).await {
+                Ok(_) => {
+                    o.coverage_done = true;
+                    o.metrics_done = true;
+                    o.sex_done = true;
+                }
+                Err(e) => o.errors.push(format!("{label} metrics: {e}")),
             }
         }
 
@@ -564,24 +579,6 @@ impl App {
             match self.assign_y_haplogroup(aln.id).await {
                 Ok(_) => o.y_done = true,
                 Err(e) => o.errors.push(format!("{label} Y: {e}")),
-            }
-        }
-
-        if self.cached_sex(aln.id).await?.is_some() {
-            o.sex_done = true;
-        } else {
-            match self.run_sex(aln.id).await {
-                Ok(_) => o.sex_done = true,
-                Err(e) => o.errors.push(format!("{label} sex: {e}")),
-            }
-        }
-
-        if self.cached_read_metrics(aln.id).await?.is_some() {
-            o.metrics_done = true;
-        } else {
-            match self.run_read_metrics(aln.id).await {
-                Ok(_) => o.metrics_done = true,
-                Err(e) => o.errors.push(format!("{label} metrics: {e}")),
             }
         }
 
