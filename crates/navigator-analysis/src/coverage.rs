@@ -226,6 +226,10 @@ struct CurContig {
     base_q_total: u64,
     map_q_total: u64,
     sum_depth: u128,
+    /// Count of bases dropped because they mapped *before* the finalize frontier — only possible
+    /// when the input isn't strictly coordinate-sorted (see [`CurContig::add`]). Surfaced as a
+    /// warning in [`CurContig::finish`]; stays 0 for the standard sorted layout.
+    dropped_unsorted: u64,
 }
 
 impl CurContig {
@@ -255,6 +259,7 @@ impl CurContig {
             base_q_total: 0,
             map_q_total: 0,
             sum_depth: 0,
+            dropped_unsorted: 0,
         }
     }
 
@@ -297,8 +302,18 @@ impl CurContig {
         }
     }
 
-    /// Add one covered base at 1-based `pos` (>= `emit_cursor`) to the window.
+    /// Add one covered base at 1-based `pos` to the window. The window only holds positions at or
+    /// after the finalize frontier, so a base *before* it (`pos < emit_cursor`) belongs to an
+    /// already-emitted column and is dropped rather than underflowing `pos - emit_cursor`. This can
+    /// only happen when the input isn't strictly coordinate-sorted (some vendor CRAMs, e.g. FTDNA
+    /// Big Y): the streaming pileup fundamentally assumes sorted input, so the few out-of-order
+    /// bases are counted as dropped (surfaced in `finish`) instead of crashing the walk. For the
+    /// standard sorted layout `pos >= emit_cursor` always holds and this guard never fires.
     fn add(&mut self, pos: usize, base_q: u8, mapq: u8, params: &CallableLociParams) {
+        if pos < self.emit_cursor {
+            self.dropped_unsorted += 1;
+            return;
+        }
         let idx = pos - self.emit_cursor;
         while self.window.len() <= idx {
             self.window.push_back(Col::default());
@@ -323,6 +338,14 @@ impl CurContig {
     /// Flush the remaining window + uncovered tail, then produce the contig output.
     fn finish(mut self, params: &CallableLociParams, g: &mut Globals) -> ContigOut {
         self.advance_to(self.length + 1, params, g);
+        if self.dropped_unsorted > 0 {
+            eprintln!(
+                "warning: coverage on {}: dropped {} base(s) that mapped before the finalize \
+                 frontier — the input is not strictly coordinate-sorted, so this contig's depth \
+                 may be slightly under-counted",
+                self.name, self.dropped_unsorted
+            );
+        }
         let length = self.length as f64;
         let stats = ContigCoverageStats {
             contig: self.name.clone(),
@@ -998,6 +1021,29 @@ mod tests {
         PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("tests/fixtures")
             .join(name)
+    }
+
+    #[test]
+    fn add_tolerates_a_base_before_the_finalize_frontier() {
+        // A non-coordinate-sorted input can present a base whose position is *behind* the window's
+        // finalize frontier. That must be dropped (and counted), not underflow `pos - emit_cursor`
+        // (the regression: coverage.rs panicked "attempt to subtract with overflow").
+        let params = CallableLociParams::default();
+        let mut g = Globals::new();
+        let mut c = CurContig::new("chrT".into(), 100, vec![b'A'; 100]);
+
+        // Advance the frontier to 50 (positions 1..50 finalize at depth 0).
+        c.advance_to(50, &params, &mut g);
+        // A base at pos 30 is behind the frontier → dropped, no panic.
+        c.add(30, 30, 60, &params);
+        assert_eq!(c.dropped_unsorted, 1, "the stale base is counted as dropped");
+        // A base at/after the frontier is still recorded normally.
+        c.add(60, 30, 60, &params);
+        assert_eq!(c.dropped_unsorted, 1, "an in-order base is not dropped");
+
+        // Finishing completes without panicking and yields the contig's stats.
+        let out = c.finish(&params, &mut g);
+        assert_eq!(out.stats.end_pos, 100);
     }
 
     #[test]
