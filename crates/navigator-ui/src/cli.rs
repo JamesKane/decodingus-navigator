@@ -319,13 +319,16 @@ async fn ingest(args: IngestArgs) -> i32 {
         return 1;
     }
 
-    let (mut ok, mut failed, mut ysnp_panels) = (0usize, 0usize, 0usize);
+    let (mut ok, mut failed, mut ysnp_panels, mut ftdna_csv) = (0usize, 0usize, 0usize, 0usize);
     for path in &files {
         match app.add_data_with_test_type(guid, path, args.test_type.as_deref()).await {
             Ok(detected) => {
                 ok += 1;
                 if detected == navigator_app::DetectedData::YSnpPanel {
                     ysnp_panels += 1;
+                }
+                if detected == navigator_app::DetectedData::FtdnaCsvVariants {
+                    ftdna_csv += 1;
                 }
                 println!("OK   {:<18} {}", detected.description(), path.display());
             }
@@ -349,6 +352,16 @@ async fn ingest(args: IngestArgs) -> i32 {
                 None => println!("Y-DNA (panel): no haplogroup match"),
             },
             Err(e) => eprintln!("warning: Y-SNP panel placement failed: {e}"),
+        }
+    }
+
+    // FTDNA Big Y CSV variant report(s) imported — the importer placed Y from the named (on-tree)
+    // calls; report the donor's reconciled Y terminal so the admin sees it land.
+    if ftdna_csv > 0 {
+        match app.haplogroup_consensus(guid, DnaType::Y).await {
+            Ok(Some(c)) => println!("Y-DNA (FTDNA CSV): {}", c.haplogroup),
+            Ok(None) => println!("Y-DNA (FTDNA CSV): no haplogroup placed"),
+            Err(e) => eprintln!("warning: reading Y consensus failed: {e}"),
         }
     }
     if failed > 0 {

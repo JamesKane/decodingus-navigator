@@ -213,6 +213,9 @@ impl App {
                 self.import_variants_from_file(biosample_guid, path, variants::SourceType::Imported)
                     .await?;
             }
+            DetectedData::FtdnaCsvVariants => {
+                self.import_ftdna_csv_variants(biosample_guid, path).await?;
+            }
             DetectedData::StrProfile => {
                 self.import_str_profile_from_csv(biosample_guid, "CUSTOM", None, Some("IMPORTED".into()), path)
                     .await?;

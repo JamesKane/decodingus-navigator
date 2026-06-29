@@ -2075,6 +2075,13 @@ impl App {
                 }
             }
             let assignment = Self::place_chip_panel(&tree_cache[&build], calls);
+            // A set with no tree-defining SNP matched carries no Y signal — e.g. an off-haplotree
+            // FTDNA "Private Variants" report (novel loci only), or an autosomal/mt VCF that slipped
+            // through. Recording its placeholder placement would conflict with a real per-source
+            // call and collapse the donor consensus to root, so skip it.
+            if assignment.ranked.first().map_or(true, |t| t.matched == 0) {
+                continue;
+            }
             self.record_call(
                 biosample_guid,
                 DnaType::Y,

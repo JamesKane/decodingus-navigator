@@ -31,7 +31,13 @@ use crate::readview::AlnRead;
 
 /// Algorithm version for the coverage artifact cache key; bump on any change that
 /// alters output (plan §6 cache versioning).
-pub const COVERAGE_VERSION: &str = "coverage-1";
+///
+/// `coverage-2`: the parallel walker now attributes records by reference id, fixing under-counted
+/// coverage on multi-reference-slice CRAMs (FTDNA Big Y). The bump invalidates every cached
+/// `coverage-1` result — which contig sort/slice layout it was computed from is unknown per file —
+/// so each alignment recomputes correctly on its next analysis (the re-run also overwrites the
+/// stale read-metrics/sex from the same fused walk).
+pub const COVERAGE_VERSION: &str = "coverage-2";
 
 /// Callable-loci parameters. Defaults match GATK `CallableLoci` (and the Scala walker).
 #[derive(Debug, Clone, Copy, PartialEq)]

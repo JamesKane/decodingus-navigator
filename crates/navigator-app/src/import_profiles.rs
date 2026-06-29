@@ -166,6 +166,34 @@ impl App {
         Ok(set)
     }
 
+    /// Import an FTDNA Big Y CSV variant report (Named or Private Variants) — the data a project
+    /// admin gets when their access tier exposes the browser CSVs but not the BAM/CRAM/VCF. The
+    /// rows are GRCh38 chrY derived-allele calls, so they're stored as a `TargetedNgs` variant set
+    /// on GRCh38 (FTDNA's native Y-tree build) and placed via the vendor path on import — the Named
+    /// report lands a Y haplogroup directly (positions match the tree, no liftover). Private
+    /// Variants are stored too (novel loci, off-tree) for the record.
+    pub async fn import_ftdna_csv_variants(
+        &self,
+        biosample_guid: SampleGuid,
+        path: &Path,
+    ) -> Result<VariantSet, AppError> {
+        let text = std::fs::read_to_string(path)?;
+        let (report, calls) = navigator_domain::ftdna_csv::parse(&text).map_err(AppError::Import)?;
+        let new = NewVariantSet {
+            biosample_guid,
+            source_label: report.label().to_string(),
+            source_type: SourceType::TargetedNgs,
+            reference_build: Some("GRCh38".to_string()),
+            calls,
+        };
+        let set = variant_set::create(self.store.pool(), &new).await?;
+        // Place Y from the vendor (non-Chip) sets — the Named report carries the tree-defining SNPs.
+        if let Err(e) = self.assign_y_vendor_vcfs(biosample_guid).await {
+            eprintln!("FTDNA CSV Y placement deferred ({e})");
+        }
+        Ok(set)
+    }
+
     /// Add a manually-entered variant set — paste `contig,position,ref,alt` rows (e.g.
     /// Sanger/YSEQ confirmations). `source_type` sets the weight (Sanger = 1.0).
     pub async fn add_variants(

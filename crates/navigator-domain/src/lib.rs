@@ -15,6 +15,7 @@ pub mod brief;
 pub mod chipprofile;
 pub mod consensus;
 pub mod filetype;
+pub mod ftdna_csv;
 pub mod ftdna;
 pub mod identity;
 pub mod labs;
