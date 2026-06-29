@@ -176,6 +176,31 @@ pub fn by_code(code: &str) -> Option<&'static TestType> {
     CATALOG.iter().find(|t| t.code == code)
 }
 
+/// Classify a stored `test_type` into its [`TargetType`] — tolerant of values that aren't a
+/// canonical [`by_code`] code. A bulk import or a `--test-type` override may store a human label
+/// like `"Big Y"` rather than `BIG_Y_500`/`BIG_Y_700`; without recognizing it the targeted-Y
+/// scoping is lost and coverage walks the whole genome (slow on a targeted multi-reference CRAM).
+/// Matches, in order: exact code, exact display name, then a small set of well-known vendor labels.
+/// Returns `None` when nothing matches (caller treats that as whole-genome/unknown).
+pub fn target_of(test_type: &str) -> Option<TargetType> {
+    if let Some(t) = by_code(test_type) {
+        return Some(t.target);
+    }
+    if let Some(t) = CATALOG.iter().find(|t| t.display_name.eq_ignore_ascii_case(test_type)) {
+        return Some(t.target);
+    }
+    let s = test_type.trim().to_ascii_lowercase();
+    const Y: &[&str] = &["big y", "big-y", "bigy", "y elite", "y-elite", "y prime", "y-prime", "targeted y"];
+    const MT: &[&str] = &["mt full", "mtfull", "mt-full", "full mtdna", "full mitochondrial", "mtdna", "targeted mt"];
+    if Y.iter().any(|p| s.contains(p)) {
+        Some(TargetType::YChromosome)
+    } else if MT.iter().any(|p| s.contains(p)) {
+        Some(TargetType::MtDna)
+    } else {
+        None
+    }
+}
+
 /// The display name for a code, falling back to the code itself if unknown.
 pub fn display_name(code: &str) -> &str {
     by_code(code).map(|t| t.display_name).unwrap_or(code)
@@ -190,6 +215,19 @@ mod tests {
         assert_eq!(by_code("BIG_Y_700").unwrap().target, YChromosome);
         assert_eq!(display_name("WGS"), "Whole Genome Sequencing");
         assert_eq!(display_name("NOPE"), "NOPE"); // unknown falls back to the code
+    }
+
+    #[test]
+    fn target_of_tolerates_labels() {
+        // Canonical code + display name.
+        assert_eq!(target_of("BIG_Y_700"), Some(YChromosome));
+        assert_eq!(target_of("FTDNA Big Y-500"), Some(YChromosome));
+        assert_eq!(target_of("WGS"), Some(WholeGenome));
+        // Human label a bulk import / --test-type override may have stored.
+        assert_eq!(target_of("Big Y"), Some(YChromosome));
+        assert_eq!(target_of("mtFull"), Some(MtDna));
+        // Unknown → None (treated as whole-genome/unknown by callers).
+        assert_eq!(target_of("Sanger panel"), None);
     }
 
     #[test]

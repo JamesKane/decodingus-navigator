@@ -100,7 +100,11 @@ impl App {
         let Some(run) = sequence_run::get(self.store.pool(), aln.sequence_run_id).await? else {
             return Ok(None);
         };
-        let contigs: &[&str] = match navigator_domain::testtype::by_code(&run.test_type).map(|t| t.target) {
+        // `target_of` (not bare `by_code`) so a stored human label like "Big Y" — which a bulk
+        // import / --test-type override writes instead of BIG_Y_500/700 — still scopes the walk to
+        // chrY+chrM. Otherwise coverage walks the whole genome, which on a targeted multi-reference
+        // CRAM is the ~1-hour batch-analysis stall.
+        let contigs: &[&str] = match navigator_domain::testtype::target_of(&run.test_type) {
             Some(TargetType::YChromosome) => &["chrY", "Y", "chrM", "chrMT", "M", "MT"],
             Some(TargetType::MtDna) => &["chrM", "chrMT", "M", "MT"],
             _ => return Ok(None),
@@ -614,15 +618,20 @@ impl App {
         ))
     }
 
-    /// A **whole-genome** diploid VCF: de-novo SNV + indel calls over every primary chromosome
-    /// (1–22, X, Y, M) of the alignment, per-contig cached. Heavy (a real WGS calling pass); the
-    /// caller runs it off the UI thread (the export path).
+    /// A **whole-genome** diploid VCF: de-novo SNV + indel calls over the diploid primary
+    /// chromosomes (1–22, X) of the alignment, per-contig cached. chrY and chrM are **excluded** —
+    /// they're haploid, so the diploid (het 0/1) model is wrong for them; their variants come from
+    /// the haploid caller and the Y/mt haplogroup + mtDNA-mutation features. Heavy (a real WGS
+    /// calling pass); the caller runs it off the UI thread (the export path).
     pub async fn diploid_vcf_genome(&self, alignment_id: i64) -> Result<String, AppError> {
         let (bam, reference) = self.alignment_bam_reference(alignment_id).await?;
         let contigs =
             tokio::task::spawn_blocking(move || caller::header_contig_names(&bam, Some(&reference))).await??;
         let mut all = Vec::new();
-        for contig in contigs.into_iter().filter(|c| is_primary_contig(c)) {
+        for contig in contigs
+            .into_iter()
+            .filter(|c| is_primary_contig(c) && !is_haploid_contig(c))
+        {
             all.extend(self.run_diploid_calls(alignment_id, contig).await?);
         }
         Ok(navigator_analysis::vcf::write_diploid_vcf(

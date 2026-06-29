@@ -1223,10 +1223,18 @@ fn contributing_subdirs(root: &std::path::Path, files: &[PathBuf]) -> std::colle
 }
 
 /// Whether `name` is a primary chromosome (1–22, X, Y, M/MT), with or without a `chr` prefix —
-/// the contigs the whole-genome diploid caller runs over (skipping alts / decoys / unplaced).
+/// the contigs the whole-genome caller considers (skipping alts / decoys / unplaced).
 fn is_primary_contig(name: &str) -> bool {
     let s = name.strip_prefix("chr").unwrap_or(name).to_ascii_uppercase();
     matches!(s.as_str(), "X" | "Y" | "M" | "MT") || s.parse::<u32>().map(|n| (1..=22).contains(&n)).unwrap_or(false)
+}
+
+/// Whether `name` is a **haploid** contig — chrY and chrM/MT carry a single allele, so the diploid
+/// (het 0/1 + hom-alt 1/1) model doesn't apply; the haploid caller + Y/mt haplogroup placement own
+/// them. (chrX is haploid only in a male — left to the sex-aware refinement, not treated here.)
+fn is_haploid_contig(name: &str) -> bool {
+    let s = name.strip_prefix("chr").unwrap_or(name).to_ascii_uppercase();
+    matches!(s.as_str(), "Y" | "M" | "MT")
 }
 
 /// The result of one [`App::drain_outbox`] pass — what the UI reports / shows in its indicator.

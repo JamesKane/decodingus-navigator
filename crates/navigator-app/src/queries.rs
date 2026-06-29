@@ -585,15 +585,26 @@ impl App {
             }
         }
 
-        // SV needs ≥10× — only attempt when coverage clears the threshold (avoids logging a
+        // SV is a whole-genome analysis that walks every read in the file. Skip it for targeted
+        // tests (Big Y / Y Elite / mtFull): SV is meaningless there, and over a targeted CRAM's
+        // millions of off-target reads the whole-file walk is pathologically slow. Gate on the
+        // run's target being whole-genome, plus the existing ≥10× depth threshold (avoids logging a
         // "coverage too low" error for every low-coverage sample).
+        let is_wgs = match sequence_run::get(self.store.pool(), aln.sequence_run_id).await? {
+            Some(run) => matches!(
+                navigator_domain::testtype::target_of(&run.test_type),
+                Some(navigator_domain::testtype::TargetType::WholeGenome)
+            ),
+            None => false,
+        };
         if self.cached_sv(aln.id).await?.is_some() {
             o.sv_done = true;
-        } else if self
-            .cached_coverage(aln.id)
-            .await?
-            .map(|c| c.mean_coverage >= 10.0)
-            .unwrap_or(false)
+        } else if is_wgs
+            && self
+                .cached_coverage(aln.id)
+                .await?
+                .map(|c| c.mean_coverage >= 10.0)
+                .unwrap_or(false)
         {
             match self.run_sv(aln.id).await {
                 Ok(_) => o.sv_done = true,
