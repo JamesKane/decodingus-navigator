@@ -9,6 +9,9 @@ pub enum DetectedData {
     Alignment,
     /// VCF variant calls.
     Variants,
+    /// FTDNA Big Y CSV variant report (Named/Private Variants) — chrY derived calls, the
+    /// "lesser access" substitute for the BAM/CRAM/VCF.
+    FtdnaCsvVariants,
     /// Y-STR profile table.
     StrProfile,
     /// Named Y-SNP panel (e.g. BISDNA chromo2) — name + genotype + positive/negative verdict.
@@ -26,6 +29,7 @@ impl DetectedData {
         match self {
             DetectedData::Alignment => "Alignment file",
             DetectedData::Variants => "VCF variants",
+            DetectedData::FtdnaCsvVariants => "FTDNA Big Y variant CSV",
             DetectedData::StrProfile => "Y-STR profile",
             DetectedData::YSnpPanel => "Y-SNP panel",
             DetectedData::ChipData => "Chip / array data",
@@ -68,6 +72,12 @@ pub fn detect(file_name: &str, head: &str) -> DetectedData {
         .collect();
     if data_lines.is_empty() {
         return DetectedData::Unknown;
+    }
+
+    // FTDNA Big Y Named/Private Variants CSV — an exact header signature, checked before the
+    // STR/chip scorer (which would otherwise mis-score the named report as chip).
+    if crate::ftdna_csv::looks_like_ftdna_variant_csv(head) {
+        return DetectedData::FtdnaCsvVariants;
     }
 
     // A named Y-SNP panel (BISDNA chromo2) is unambiguous — check it before the STR/chip
