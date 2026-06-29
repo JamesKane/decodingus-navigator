@@ -52,6 +52,13 @@ const PROGRESS_FLUSH_BP: u64 = 2_000_000;
 /// callback) every [`PROGRESS_FLUSH_BP`], so the bar advances continuously *within* a contig
 /// instead of only when one finishes (the big autosomes otherwise sit frozen for minutes).
 struct ContigSink<'a> {
+    /// Header index of the contig this sink is walking. A record is processed only when its own
+    /// `reference_sequence_id` matches: a CRAM multi-reference slice surfaces in the region query
+    /// of *every* contig it overlaps, so without this gate its records would be misattributed to
+    /// the wrong contig (coverage) and counted once per overlapping contig (read-metrics). Each
+    /// record is processed exactly once — by the query of the contig it actually belongs to —
+    /// matching the sequential walker's single binned pass. A no-op for single-reference slices.
+    ref_id: usize,
     rm: &'a mut ReadMetricsState,
     cov: &'a mut Option<ContigCoverageAccum>,
     class: u8,
@@ -67,6 +74,11 @@ struct ContigSink<'a> {
 
 impl RecordSink for ContigSink<'_> {
     fn accept(&mut self, record: &impl AlnRead) {
+        // Only this contig's own records (drop a multi-reference slice's foreign records — they're
+        // processed by their own contig's query). Keeps every per-record tally counted exactly once.
+        if record.reference_sequence_id() != Some(self.ref_id) {
+            return;
+        }
         self.rm.accept(record);
         if let Some(acc) = self.cov.as_mut() {
             acc.accept(record);
@@ -329,6 +341,7 @@ pub fn collect_unified_metrics_parallel_with_progress(
         // Drive the records through a sink over the lazy (zero-copy on BAM) record path.
         let (autosome_reads, x_reads, leftover_bp) = {
             let mut sink = ContigSink {
+                ref_id: w.ref_id,
                 rm: &mut rm,
                 cov: &mut cov_accum,
                 class: w.class,
