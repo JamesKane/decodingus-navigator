@@ -1606,7 +1606,9 @@ impl App {
         let bam = PathBuf::from(aln.bam_path.ok_or(AppError::MissingPaths(alignment_id))?);
         let reference = aln.reference_path.map(PathBuf::from);
         tokio::task::spawn_blocking(move || {
-            heteroplasmy::detect_heteroplasmy(&bam, "chrM", &HeteroplasmyParams::default(), reference.as_deref())
+            navigator_analysis::guard_walk("heteroplasmy", || {
+                heteroplasmy::detect_heteroplasmy(&bam, "chrM", &HeteroplasmyParams::default(), reference.as_deref())
+            })
         })
         .await?
         .map_err(Into::into)
@@ -2361,7 +2363,9 @@ impl App {
                 let reference = reference.clone();
                 tokio::task::spawn_blocking(move || {
                     let params = adaptive_haploid_params(&bam, reference.as_deref()); // HiFi -> lower min_depth
-                    caller::call_bases_at(&bam, &resolved, &targets, &params, reference.as_deref())
+                    navigator_analysis::guard_walk("haplogroup genotyping", || {
+                        caller::call_bases_at(&bam, &resolved, &targets, &params, reference.as_deref())
+                    })
                 })
                 .await??
             }
@@ -2485,7 +2489,9 @@ impl App {
             let qc = query_contig;
             let lifted_calls = tokio::task::spawn_blocking(move || {
                 let params = adaptive_haploid_params(&bam, reference.as_deref());
-                caller::call_bases_at(&bam, &qc, &set, &params, reference.as_deref())
+                navigator_analysis::guard_walk("haplogroup genotyping", || {
+                    caller::call_bases_at(&bam, &qc, &set, &params, reference.as_deref())
+                })
             })
             .await??;
             for (lpos, base) in lifted_calls {

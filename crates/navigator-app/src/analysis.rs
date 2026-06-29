@@ -17,7 +17,9 @@ impl App {
         params: CallableLociParams,
     ) -> Result<CoverageResult, AppError> {
         let result = tokio::task::spawn_blocking(move || {
-            coverage::collect_coverage_callable(&bam, &reference, &params, contig_allowlist.as_ref())
+            navigator_analysis::guard_walk("coverage", || {
+                coverage::collect_coverage_callable(&bam, &reference, &params, contig_allowlist.as_ref())
+            })
         })
         .await??;
         self.save_analysis(alignment_id, "coverage", coverage::COVERAGE_VERSION, &result)
@@ -68,13 +70,15 @@ impl App {
             if let Ok((read_len, _)) = coverage::estimate_molecule_lengths(&bam, Some(&reference)) {
                 params.min_depth = adaptive_min_depth(params.min_depth, read_len);
             }
-            coverage::collect_coverage_callable_with_progress(
-                &bam,
-                &reference,
-                &params,
-                allowlist.as_ref(),
-                &mut progress,
-            )
+            navigator_analysis::guard_walk("coverage", || {
+                coverage::collect_coverage_callable_with_progress(
+                    &bam,
+                    &reference,
+                    &params,
+                    allowlist.as_ref(),
+                    &mut progress,
+                )
+            })
         })
         .await??;
         self.save_analysis(alignment_id, "coverage", coverage::COVERAGE_VERSION, &result)
@@ -269,13 +273,15 @@ impl App {
             if let Ok((read_len, _)) = coverage::estimate_molecule_lengths(&bam, Some(&reference)) {
                 params.min_depth = adaptive_min_depth(params.min_depth, read_len);
             }
-            navigator_analysis::unified::collect_unified_metrics_parallel_with_progress(
-                &bam,
-                &reference,
-                &params,
-                allowlist.as_ref(),
-                &progress,
-            )
+            navigator_analysis::guard_walk("metrics", || {
+                navigator_analysis::unified::collect_unified_metrics_parallel_with_progress(
+                    &bam,
+                    &reference,
+                    &params,
+                    allowlist.as_ref(),
+                    &progress,
+                )
+            })
         })
         .await??;
 
@@ -325,16 +331,18 @@ impl App {
 
         let result = tokio::task::spawn_blocking(move || {
             let lengths = caller::header_contig_lengths(&bam, reference.as_deref())?;
-            navigator_analysis::sv::caller::call_structural_variants(
-                &bam,
-                &lengths,
-                &reference_build,
-                mean_cov,
-                mean_ins,
-                sd_ins,
-                mean_rl,
-                &navigator_analysis::sv::types::SvCallerConfig::default(),
-            )
+            navigator_analysis::guard_walk("structural variants", || {
+                navigator_analysis::sv::caller::call_structural_variants(
+                    &bam,
+                    &lengths,
+                    &reference_build,
+                    mean_cov,
+                    mean_ins,
+                    sd_ins,
+                    mean_rl,
+                    &navigator_analysis::sv::types::SvCallerConfig::default(),
+                )
+            })
         })
         .await??;
         self.save_analysis(alignment_id, "sv", "1", &result).await?;
@@ -557,8 +565,10 @@ impl App {
             return Ok(c);
         }
         let kind = denovo_kind(&contig);
-        let calls =
-            tokio::task::spawn_blocking(move || caller::call_denovo(&bam, &reference, &contig, &params)).await??;
+        let calls = tokio::task::spawn_blocking(move || {
+            navigator_analysis::guard_walk("de-novo calling", || caller::call_denovo(&bam, &reference, &contig, &params))
+        })
+        .await??;
         self.save_analysis(alignment_id, &kind, caller::DENOVO_VERSION, &calls)
             .await?;
         Ok(calls)
@@ -583,9 +593,12 @@ impl App {
         }
         let (bam, reference) = self.alignment_bam_reference(alignment_id).await?;
         let params = adaptive_haploid_params(&bam, Some(&reference));
-        let calls =
-            tokio::task::spawn_blocking(move || caller::call_denovo_diploid(&bam, &reference, &contig, &params))
-                .await??;
+        let calls = tokio::task::spawn_blocking(move || {
+            navigator_analysis::guard_walk("diploid calling", || {
+                caller::call_denovo_diploid(&bam, &reference, &contig, &params)
+            })
+        })
+        .await??;
         self.save_analysis(alignment_id, &kind, caller::GENOTYPE_VERSION, &calls)
             .await?;
         Ok(calls)

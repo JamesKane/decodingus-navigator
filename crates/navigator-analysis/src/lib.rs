@@ -42,4 +42,4 @@ pub mod testtype;
 pub mod unified;
 pub mod vcf;
 
-pub use error::AnalysisError;
+pub use error::{guard_walk, AnalysisError};
