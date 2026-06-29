@@ -20,7 +20,8 @@ use navigator_app::{
     HeteroplasmySite, IbdComparison, IbdDetectorConfig, IbdSuggestion, IdentityVerification, IncomingRequest,
     NarratedBrief, PanelGenotype, PrivateBucket, ProjectImportSummary, ProjectOverview, ProjectSampleReport,
     ProjectStrChart, ReadMetrics, RecruitmentInvitation, RefBuildStatus, SexInferenceResult, SignalKind,
-    SourceType, StoredIbdExchange, StrConcordanceRow, SubjectBrief, SvAnalysisResult, YMatch, YstrClustering,
+    SourceType, StoredIbdExchange, StrConcordanceRow, SubjectAnalysisStatus, SubjectBrief, SvAnalysisResult, YMatch,
+    YstrClustering,
 };
 use navigator_domain::chipprofile::ChipProfile;
 use navigator_domain::du_domain::ids::SampleGuid;
@@ -89,6 +90,8 @@ pub enum Command {
     LoadAllBiosamples,
     /// Load donor-level Y/mt terminal haplogroups for every subject (fills the list columns).
     LoadHaploSummary,
+    /// Load per-subject analysis status (Pending/Complete) for the subjects-list Status column.
+    LoadSubjectStatus,
     AddBiosample(NewBiosample),
     /// Batch-import a NAS project directory (scan → Project/Biosample/Run/Alignment).
     /// `reference` is optional: `None` lets the gateway resolve each build from the cache
@@ -785,6 +788,8 @@ pub enum Event {
     AllBiosamples(Vec<Biosample>),
     /// Per-subject Y/mt terminal haplogroups for the subjects list (`guid → (Y, mt)`).
     HaploSummary(std::collections::HashMap<SampleGuid, (Option<String>, Option<String>)>),
+    /// Per-subject analysis status (Pending/Complete) for the subjects-list Status column.
+    SubjectStatus(std::collections::HashMap<SampleGuid, SubjectAnalysisStatus>),
     /// A biosample was added/changed; reload the subjects list (and any open project view).
     BiosamplesChanged,
     Runs {
@@ -1235,6 +1240,10 @@ pub async fn handle(app: &App, cmd: Command) -> Event {
         Command::DeepAnalyzeProject(project_id) => {
             Event::Error(format!("internal: unrouted DeepAnalyzeProject {project_id}"))
         }
+        Command::LoadSubjectStatus => match app.subject_analysis_status().await {
+            Ok(map) => Event::SubjectStatus(map),
+            Err(e) => Event::Error(e.to_string()),
+        },
         Command::LoadHaploSummary => match app.haplogroup_terminals().await {
             Ok(map) => Event::HaploSummary(map),
             Err(e) => Event::Error(e.to_string()),

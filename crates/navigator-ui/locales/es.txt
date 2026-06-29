@@ -124,6 +124,9 @@ subjects.expand=Mostrar la lista de sujetos
 subjects.none=Aún no hay sujetos.
 subjects.noMatch=Ningún sujeto coincide con la búsqueda.
 subjects.filter=Filtrar por nombre…
+# Columna de estado de análisis en la lista de sujetos
+subjectStatus.pending=Pendiente
+subjectStatus.complete=Completo
 
 detail.addData=➕  Añadir datos
 detail.addFiles=Añadir archivos…

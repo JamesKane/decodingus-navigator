@@ -255,6 +255,8 @@ impl NavigatorApp {
                         // Haplogroups may have been assigned — regroup the STR chart.
                         self.reload_project_str();
                     }
+                    // Coverage was (re)computed — refresh the subjects-list Status column.
+                    let _ = self.tx.send(Command::LoadSubjectStatus);
                 }
                 Event::DeepAnalyzeProgress {
                     project_id,
@@ -270,8 +272,10 @@ impl NavigatorApp {
                 Event::AllBiosamples(v) => {
                     self.all_biosamples = v;
                     let _ = self.tx.send(Command::LoadHaploSummary); // fill the Y/mt columns
+                    let _ = self.tx.send(Command::LoadSubjectStatus); // fill the Status column
                 }
                 Event::HaploSummary(map) => self.haplo_summary = map,
+                Event::SubjectStatus(map) => self.subject_status = map,
                 Event::BiosamplesChanged => {
                     let _ = self.tx.send(Command::LoadAllBiosamples);
                     if let Some(pid) = self.selected_project {
@@ -819,6 +823,8 @@ impl NavigatorApp {
                     } else {
                         "Full analysis complete.".into()
                     };
+                    // The subject's coverage just changed — refresh the Status column.
+                    let _ = self.tx.send(Command::LoadSubjectStatus);
                 }
                 Event::Panels(p) => self.panels = p,
                 Event::PanelImported => {

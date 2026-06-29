@@ -15,6 +15,28 @@ impl App {
         Ok(biosample::list_all(self.store.pool()).await?)
     }
 
+    /// Bulk per-subject analysis status for the Subjects list, in one query (mirrors
+    /// [`haplogroup_terminals`](Self::haplogroup_terminals)). A subject is `Complete` once every
+    /// alignment it owns has a full `coverage` artifact at the current version; otherwise `Pending`.
+    /// Subjects with no alignments are omitted (the list shows no status for them).
+    pub async fn subject_analysis_status(
+        &self,
+    ) -> Result<HashMap<SampleGuid, SubjectAnalysisStatus>, AppError> {
+        let census =
+            artifact::analyzed_census(self.store.pool(), "coverage", coverage::COVERAGE_VERSION).await?;
+        Ok(census
+            .into_iter()
+            .map(|(guid, total, analyzed)| {
+                let status = if total > 0 && analyzed >= total {
+                    SubjectAnalysisStatus::Complete
+                } else {
+                    SubjectAnalysisStatus::Pending
+                };
+                (guid, status)
+            })
+            .collect())
+    }
+
     /// Sequence runs for a biosample.
     pub async fn list_sequence_runs(&self, biosample_guid: SampleGuid) -> Result<Vec<SequenceRun>, AppError> {
         let mut runs = sequence_run::list_for_biosample(self.store.pool(), biosample_guid).await?;

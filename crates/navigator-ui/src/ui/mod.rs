@@ -22,8 +22,8 @@ use navigator_app::{
     HaploAssignment, HeteroplasmySite, IbdComparison, IbdSuggestion, IdentityVerification, LineageBrief, LineageKind,
     MatchKind, MtRegion, MtVariant, NarratedBrief, PackStatus, PanelGenotype, PrivateBucket, PrivateClass,
     ProjectOverview, ProjectSampleReport, ProjectStrChart, ReadMetrics, RefBuildStatus, SexInferenceResult,
-    SignalKind, SnpEvidence, SourceType, StrConcordanceRow, SubjectBrief, SvAnalysisResult, UiMode,
-    VerificationStatus, YMatch, YProfile, YSignal, YState, YVariantStatus, YstrClustering,
+    SignalKind, SnpEvidence, SourceType, StrConcordanceRow, SubjectAnalysisStatus, SubjectBrief, SvAnalysisResult,
+    UiMode, VerificationStatus, YMatch, YProfile, YSignal, YState, YVariantStatus, YstrClustering,
 };
 use navigator_domain::chipprofile::{self, ChipProfile};
 use navigator_domain::du_domain::ids::SampleGuid;
@@ -579,6 +579,9 @@ pub struct NavigatorApp {
     all_biosamples: Vec<Biosample>,
     /// Per-subject Y/mt terminal haplogroups for the list columns (`guid → (Y, mt)`).
     haplo_summary: std::collections::HashMap<SampleGuid, (Option<String>, Option<String>)>,
+    /// Per-subject analysis status (Pending/Complete) for the subjects-list Status column. A subject
+    /// absent from the map has no alignments to analyze (shown with no status).
+    subject_status: std::collections::HashMap<SampleGuid, SubjectAnalysisStatus>,
     selected_sample: Option<SampleGuid>,
     runs: Vec<SequenceRun>,
     /// Donor-level haplogroup consensus for the selected subject (Y, mtDNA).
@@ -1007,6 +1010,7 @@ impl NavigatorApp {
             samples: Vec::new(),
             all_biosamples: Vec::new(),
             haplo_summary: std::collections::HashMap::new(),
+            subject_status: std::collections::HashMap::new(),
             selected_sample: None,
             runs: Vec::new(),
             consensus_y: None,

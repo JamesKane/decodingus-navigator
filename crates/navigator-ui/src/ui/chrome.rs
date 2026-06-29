@@ -545,6 +545,13 @@ impl NavigatorApp {
                     .flatten()
                     .or_else(|| summary.and_then(|(_, m)| m.clone()))
                     .unwrap_or_else(|| "-".into());
+                // Analysis status: Complete once every alignment is analyzed, Pending while any is
+                // not (e.g. a just-imported file); a subject with no alignments has no status.
+                let status = match self.subject_status.get(&s.guid) {
+                    Some(SubjectAnalysisStatus::Complete) => self.tr("subjectStatus.complete"),
+                    Some(SubjectAnalysisStatus::Pending) => self.tr("subjectStatus.pending"),
+                    None => "-",
+                };
                 Row {
                     guid: s.guid,
                     cells: [
@@ -553,7 +560,7 @@ impl NavigatorApp {
                         mt,
                         s.sex.clone().unwrap_or_else(|| "-".into()),
                         s.center_name.clone().unwrap_or_else(|| "-".into()),
-                        "Pending".to_string(),
+                        status.to_string(),
                     ],
                 }
             })

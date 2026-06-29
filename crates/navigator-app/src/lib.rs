@@ -2063,6 +2063,16 @@ pub struct ProjectOverview {
     pub sample_count: i64,
 }
 
+/// Coarse per-subject analysis state for the Subjects list. `Pending` = at least one of the
+/// subject's alignments has no full `coverage` artifact (e.g. a freshly imported file not yet
+/// analyzed); `Complete` = every alignment has been analyzed. Subjects with no alignments at all
+/// are absent from the status map (the list shows them with no status).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SubjectAnalysisStatus {
+    Pending,
+    Complete,
+}
+
 /// One row of a project's per-sample report: coverage roll-up + haplogroup consensus.
 /// Coverage fields are `None` when no coverage has been computed yet; haplogroup fields
 /// are `None` until calls are recorded (deferred this slice).

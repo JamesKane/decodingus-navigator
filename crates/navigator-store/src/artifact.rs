@@ -3,9 +3,11 @@
 //! changed algorithm version supersedes the old payload (plan §6 cache versioning).
 
 use chrono::{DateTime, Utc};
+use du_domain::ids::SampleGuid;
 use navigator_domain::workspace::AnalysisArtifact;
 use sqlx::SqlitePool;
 
+use crate::error::parse_sample_guid;
 use crate::StoreError;
 
 #[derive(sqlx::FromRow)]
@@ -115,4 +117,142 @@ pub async fn list_for_alignment(pool: &SqlitePool, alignment_id: i64) -> Result<
     .fetch_all(pool)
     .await?;
     rows.into_iter().map(Row::into_domain).collect()
+}
+
+/// Per-subject analysis coverage census, in one pass over the whole workspace: for each biosample
+/// that owns ≥1 alignment, `(total alignments, alignments with a present `(kind, version)` artifact)`.
+/// A NULL `completeness` counts as complete (legacy rows predate the column; the app treats absent
+/// provenance as a full walk). Drives the Subjects-list Pending/Complete column — subjects with no
+/// alignments are simply absent from the result. `kind`/`version` are passed in so the store stays
+/// independent of the analysis crate (e.g. `"coverage"` / `coverage::COVERAGE_VERSION`).
+pub async fn analyzed_census(
+    pool: &SqlitePool,
+    kind: &str,
+    version: &str,
+) -> Result<Vec<(SampleGuid, i64, i64)>, StoreError> {
+    let rows: Vec<(String, i64, i64)> = sqlx::query_as(
+        "SELECT sr.biosample_guid, \
+                COUNT(DISTINCT a.id) AS total, \
+                COUNT(DISTINCT CASE WHEN aa.alignment_id IS NOT NULL THEN a.id END) AS analyzed \
+         FROM sequence_run sr \
+         JOIN alignment a ON a.sequence_run_id = sr.id \
+         LEFT JOIN analysis_artifact aa \
+              ON aa.alignment_id = a.id \
+             AND aa.kind = ? \
+             AND aa.algorithm_version = ? \
+             AND (aa.completeness = 'full' OR aa.completeness IS NULL) \
+         GROUP BY sr.biosample_guid",
+    )
+    .bind(kind)
+    .bind(version)
+    .fetch_all(pool)
+    .await?;
+    rows.into_iter()
+        .map(|(g, total, analyzed)| Ok((parse_sample_guid(&g, "analysis_artifact")?, total, analyzed)))
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::Utc;
+    use navigator_domain::workspace::{Biosample, NewAlignment, NewSequenceRun};
+
+    async fn subject(pool: &SqlitePool, donor: &str) -> SampleGuid {
+        let guid = SampleGuid(uuid::Uuid::new_v4());
+        crate::biosample::create(
+            pool,
+            &Biosample {
+                guid,
+                sample_accession: None,
+                donor_identifier: donor.into(),
+                description: None,
+                center_name: None,
+                sex: None,
+                project_id: None,
+            },
+        )
+        .await
+        .unwrap();
+        guid
+    }
+
+    async fn alignment(pool: &SqlitePool, guid: SampleGuid) -> i64 {
+        let run = crate::sequence_run::create(
+            pool,
+            &NewSequenceRun {
+                biosample_guid: guid,
+                platform_name: "ILLUMINA".into(),
+                instrument_model: None,
+                test_type: "WGS".into(),
+                library_layout: None,
+                total_reads: None,
+                pf_reads_aligned: None,
+                mean_read_length: None,
+                mean_insert_size: None,
+            },
+        )
+        .await
+        .unwrap();
+        crate::alignment::create(
+            pool,
+            &NewAlignment {
+                sequence_run_id: run.id,
+                reference_build: "chm13v2.0".into(),
+                aligner: "bwa".into(),
+                variant_caller: None,
+                bam_path: None,
+                reference_path: None,
+                content_sha256: None,
+            },
+        )
+        .await
+        .unwrap()
+        .id
+    }
+
+    async fn full_coverage(pool: &SqlitePool, aln: i64) {
+        upsert(pool, aln, "coverage", "coverage-1", Utc::now(), "{}", "navigator-walk", "full", None)
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn census_counts_full_coverage_per_subject() {
+        let store = crate::Store::open_in_memory().await.unwrap();
+        let pool = store.pool();
+
+        // A: one alignment, fully analyzed → Complete.
+        let a = subject(pool, "A").await;
+        let a_aln = alignment(pool, a).await;
+        full_coverage(pool, a_aln).await;
+
+        // B: two alignments, only one analyzed → Pending.
+        let b = subject(pool, "B").await;
+        let b1 = alignment(pool, b).await;
+        let _b2 = alignment(pool, b).await;
+        full_coverage(pool, b1).await;
+
+        // C: one alignment with only a *partial* (sidecar) coverage → does not count → Pending.
+        let c = subject(pool, "C").await;
+        let c_aln = alignment(pool, c).await;
+        upsert(pool, c_aln, "coverage", "coverage-1", Utc::now(), "{}", "pipeline-sidecar", "partial", None)
+            .await
+            .unwrap();
+
+        // D: a subject with no alignments → absent from the census.
+        let _d = subject(pool, "D").await;
+
+        let census: std::collections::HashMap<_, _> = analyzed_census(pool, "coverage", "coverage-1")
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|(g, total, analyzed)| (g, (total, analyzed)))
+            .collect();
+
+        assert_eq!(census.get(&a), Some(&(1, 1)), "A complete");
+        assert_eq!(census.get(&b), Some(&(2, 1)), "B partially analyzed");
+        assert_eq!(census.get(&c), Some(&(1, 0)), "partial coverage does not count");
+        assert!(!census.contains_key(&_d), "no-alignment subject is absent");
+    }
 }

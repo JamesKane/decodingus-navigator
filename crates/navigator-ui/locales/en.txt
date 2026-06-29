@@ -128,6 +128,9 @@ subjects.expand=Show the subjects list
 subjects.none=No subjects yet.
 subjects.noMatch=No subjects match the search.
 subjects.filter=Filter by name…
+# Subjects-list analysis status column
+subjectStatus.pending=Pending
+subjectStatus.complete=Complete
 
 # Subject detail header
 detail.addData=➕  Add Data
