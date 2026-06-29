@@ -183,6 +183,49 @@ impl App {
         })
     }
 
+    /// Attach a vendor id (kit number) to a Subject from the subject editor. Rejects a blank
+    /// source/id, and refuses to bind a `(source, external_id)` that already belongs to a *different*
+    /// Subject (the `(source, external_id)` uniqueness is the dedup anchor — never silently re-point
+    /// it; the caller resolves the conflict). Idempotent for the same Subject.
+    pub async fn add_external_id(
+        &self,
+        guid: SampleGuid,
+        source: &str,
+        external_id: &str,
+    ) -> Result<navigator_domain::identity::ExternalId, AppError> {
+        let (source, external_id) = (source.trim(), external_id.trim());
+        if source.is_empty() || external_id.is_empty() {
+            return Err(AppError::Import("vendor source and id are both required".into()));
+        }
+        let row = external_id::add(self.store.pool(), guid, source, external_id).await?;
+        if row.biosample_guid != guid {
+            return Err(AppError::Import(format!(
+                "{source} id \"{external_id}\" is already linked to another subject"
+            )));
+        }
+        Ok(row)
+    }
+
+    /// Detach a vendor id (by row id) from a Subject.
+    pub async fn delete_external_id(&self, id: i64) -> Result<(), AppError> {
+        external_id::delete(self.store.pool(), id).await?;
+        Ok(())
+    }
+
+    /// Insert or update a Subject's MDKA for one lineage from the subject editor (one row per
+    /// lineage; stamps `updated_at`). Pass a `source` of `MANUAL` for hand-entered rows.
+    pub async fn upsert_mdka(&self, guid: SampleGuid, mdka: NewMdka) -> Result<(), AppError> {
+        let now = Utc::now().to_rfc3339();
+        mdka::upsert(self.store.pool(), guid, &mdka, &now).await?;
+        Ok(())
+    }
+
+    /// Remove a Subject's MDKA for one lineage.
+    pub async fn delete_mdka(&self, guid: SampleGuid, lineage: &str) -> Result<(), AppError> {
+        mdka::delete(self.store.pool(), guid, lineage).await?;
+        Ok(())
+    }
+
     /// Parse the FTDNA batch files, join by kit, and match against the workspace → a dry-run plan.
     /// Any of the three files may be absent (a roster-only or ancestry-only import is valid).
     ///

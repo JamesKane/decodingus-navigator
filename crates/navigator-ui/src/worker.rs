@@ -24,6 +24,7 @@ use navigator_app::{
 };
 use navigator_domain::chipprofile::ChipProfile;
 use navigator_domain::du_domain::ids::SampleGuid;
+use navigator_domain::identity::NewMdka;
 use navigator_domain::mtdna::MtdnaSequence;
 use navigator_domain::strprofile::StrProfile;
 use navigator_domain::variants::VariantSet;
@@ -487,6 +488,29 @@ pub enum Command {
         description: Option<String>,
         center_name: Option<String>,
         sex: Option<String>,
+    },
+    /// Attach a vendor id (kit number) to a subject from the subject editor. `(source, external_id)`
+    /// is the dedup anchor; the app layer refuses an id already bound to another subject.
+    AddExternalId {
+        guid: SampleGuid,
+        source: String,
+        external_id: String,
+    },
+    /// Detach a vendor id (by row id) from a subject. `guid` is the owner, so the UI can refresh
+    /// that subject's genealogy card.
+    DeleteExternalId {
+        guid: SampleGuid,
+        id: i64,
+    },
+    /// Insert or update a subject's MDKA (most distant known ancestor) for one lineage.
+    UpsertMdka {
+        guid: SampleGuid,
+        mdka: NewMdka,
+    },
+    /// Remove a subject's MDKA for one lineage (`Y` | `Mt` | `Auto`).
+    DeleteMdka {
+        guid: SampleGuid,
+        lineage: String,
     },
     /// Delete a subject. Refused by the app layer if it still has dependent data.
     DeleteBiosample(SampleGuid),
@@ -1114,6 +1138,16 @@ pub enum Event {
 }
 
 /// Execute one command against the app, mapping success/failure to an [`Event`].
+/// Re-read a subject's genealogy bundle (vendor ids + FTDNA member + MDKA) and wrap it as a
+/// [`Event::Genealogy`] — the refresh emitted after any genealogy mutation so the detail card
+/// reflects the new state without a separate "changed" round-trip.
+async fn reload_genealogy(app: &App, guid: SampleGuid) -> Event {
+    match app.subject_genealogy(guid).await {
+        Ok(data) => Event::Genealogy { guid, data },
+        Err(e) => Event::Error(e.to_string()),
+    }
+}
+
 pub async fn handle(app: &App, cmd: Command) -> Event {
     match cmd {
         Command::LoadOverview => match app.project_overview().await {
@@ -1234,6 +1268,24 @@ pub async fn handle(app: &App, cmd: Command) -> Event {
                 Err(e) => Event::Error(e.to_string()),
             }
         }
+        Command::AddExternalId { guid, source, external_id } => {
+            match app.add_external_id(guid, &source, &external_id).await {
+                Ok(_) => reload_genealogy(app, guid).await,
+                Err(e) => Event::Error(e.to_string()),
+            }
+        }
+        Command::DeleteExternalId { guid, id } => match app.delete_external_id(id).await {
+            Ok(()) => reload_genealogy(app, guid).await,
+            Err(e) => Event::Error(e.to_string()),
+        },
+        Command::UpsertMdka { guid, mdka } => match app.upsert_mdka(guid, mdka).await {
+            Ok(()) => reload_genealogy(app, guid).await,
+            Err(e) => Event::Error(e.to_string()),
+        },
+        Command::DeleteMdka { guid, lineage } => match app.delete_mdka(guid, &lineage).await {
+            Ok(()) => reload_genealogy(app, guid).await,
+            Err(e) => Event::Error(e.to_string()),
+        },
         Command::DeleteBiosample(guid) => match app.delete_biosample(guid).await {
             Ok(()) => Event::BiosamplesChanged,
             Err(e) => Event::Error(e.to_string()),
@@ -2645,6 +2697,75 @@ mod tests {
 
     async fn app() -> App {
         App::new(Store::open_in_memory().await.unwrap())
+    }
+
+    #[tokio::test]
+    async fn handle_edits_genealogy_and_refreshes() {
+        let app = app().await;
+        let b = app.add_biosample(None, "GFX", None, None).await.unwrap();
+        let guid = b.guid;
+
+        // Add a vendor kit → the refreshed genealogy carries it.
+        let ev = handle(
+            &app,
+            Command::AddExternalId {
+                guid,
+                source: "FTDNA".into(),
+                external_id: "B5163".into(),
+            },
+        )
+        .await;
+        let data = match ev {
+            Event::Genealogy { guid: g, data } if g == guid => data,
+            other => panic!("expected Genealogy, got {other:?}"),
+        };
+        assert_eq!(data.external_ids.len(), 1);
+        assert_eq!(data.external_ids[0].external_id, "B5163");
+        let kit_id = data.external_ids[0].id;
+
+        // Upsert a paternal MDKA → present in the refresh.
+        let ev = handle(
+            &app,
+            Command::UpsertMdka {
+                guid,
+                mdka: NewMdka {
+                    lineage: "Y".into(),
+                    ancestor_name: Some("Thomas Kane".into()),
+                    birth_year: Some(1830),
+                    ..Default::default()
+                },
+            },
+        )
+        .await;
+        match ev {
+            Event::Genealogy { data, .. } => {
+                let y = data.mdka.iter().find(|m| m.lineage == "Y").expect("Y mdka");
+                assert_eq!(y.ancestor_name.as_deref(), Some("Thomas Kane"));
+            }
+            other => panic!("expected Genealogy, got {other:?}"),
+        }
+
+        // Delete both → empty genealogy.
+        let _ = handle(&app, Command::DeleteMdka { guid, lineage: "Y".into() }).await;
+        let ev = handle(&app, Command::DeleteExternalId { guid, id: kit_id }).await;
+        match ev {
+            Event::Genealogy { data, .. } => assert!(data.is_empty(), "all genealogy removed"),
+            other => panic!("expected Genealogy, got {other:?}"),
+        }
+
+        // Binding a kit already owned by another subject is reported as an error.
+        let c = app.add_biosample(None, "OTHER", None, None).await.unwrap();
+        app.add_external_id(c.guid, "FTDNA", "B9999").await.unwrap();
+        let ev = handle(
+            &app,
+            Command::AddExternalId {
+                guid,
+                source: "FTDNA".into(),
+                external_id: "B9999".into(),
+            },
+        )
+        .await;
+        assert!(matches!(ev, Event::Error(_)), "conflicting id → Error, got {ev:?}");
     }
 
     #[tokio::test]

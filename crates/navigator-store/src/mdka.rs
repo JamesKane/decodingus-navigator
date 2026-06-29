@@ -87,6 +87,16 @@ pub async fn upsert(pool: &SqlitePool, guid: SampleGuid, m: &NewMdka, updated_at
     Ok(())
 }
 
+/// Remove a Subject's MDKA for one lineage. Returns `true` if a row was removed.
+pub async fn delete(pool: &SqlitePool, guid: SampleGuid, lineage: &str) -> Result<bool, StoreError> {
+    let res = sqlx::query("DELETE FROM mdka WHERE biosample_guid = ? AND lineage = ?")
+        .bind(guid.0.to_string())
+        .bind(lineage)
+        .execute(pool)
+        .await?;
+    Ok(res.rows_affected() > 0)
+}
+
 pub async fn list_for(pool: &SqlitePool, guid: SampleGuid) -> Result<Vec<Mdka>, StoreError> {
     let rows: Vec<Row> = sqlx::query_as(&format!(
         "SELECT {COLS} FROM mdka WHERE biosample_guid = ? ORDER BY lineage"
@@ -188,5 +198,12 @@ mod tests {
         let y = rows.iter().find(|m| m.lineage == "Y").unwrap();
         assert_eq!(y.ancestor_name.as_deref(), Some("Thomas M. Kane"));
         assert_eq!(y.birth_year, None, "replaced, not merged");
+
+        // Delete removes only the named lineage; a second delete is a no-op.
+        assert!(delete(pool, g, "Y").await.unwrap(), "Y removed");
+        assert!(!delete(pool, g, "Y").await.unwrap(), "second delete is a no-op");
+        let rows = list_for(pool, g).await.unwrap();
+        assert_eq!(rows.len(), 1, "only Mt remains");
+        assert_eq!(rows[0].lineage, "Mt");
     }
 }

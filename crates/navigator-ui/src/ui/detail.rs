@@ -1123,29 +1123,75 @@ impl NavigatorApp {
         self.genealogy_card(ui, _guid);
     }
 
-    /// Imported FTDNA genealogy for the open subject: vendor ids, FTDNA member labels, and the MDKA
-    /// per lineage. PII — shown locally only (never federated). Hidden when nothing was imported.
+    /// Genealogy for the open subject: vendor ids (kit numbers), FTDNA member labels, and the MDKA
+    /// per lineage — all editable here (add/remove kits, edit/add/remove MDKA). PII: shown locally
+    /// only, never federated. Rendered once the subject's genealogy has loaded (even when empty, so
+    /// the Add affordances are reachable). Edits are collected in locals and dispatched after the
+    /// render closure (which borrows `self.tr` immutably).
     fn genealogy_card(&mut self, ui: &mut egui::Ui, guid: SampleGuid) {
-        let Some((g, data)) = self.genealogy.as_ref().filter(|(g, d)| *g == guid && !d.is_empty()) else {
+        // Clone the loaded bundle for this subject so the closure doesn't hold a borrow of `self`.
+        let Some(data) = self
+            .genealogy
+            .as_ref()
+            .filter(|(g, _)| *g == guid)
+            .map(|(_, d)| d.clone())
+        else {
             return;
         };
-        let _ = g;
+
+        let mut want_add_kit = false;
+        let mut want_del_kit: Option<i64> = None;
+        let mut want_edit_mdka: Option<EditMdka> = None;
+        let mut want_del_mdka: Option<String> = None;
+
+        // Build an editable MDKA copy from a stored row, or a blank one for a lineage to add.
+        let edit_from = |m: &navigator_domain::identity::Mdka| EditMdka {
+            guid,
+            lineage: m.lineage.clone(),
+            ancestor_name: m.ancestor_name.clone().unwrap_or_default(),
+            birth_year: m.birth_year.map(|y| y.to_string()).unwrap_or_default(),
+            death_year: m.death_year.map(|y| y.to_string()).unwrap_or_default(),
+            origin_place: m.origin_place.clone().unwrap_or_default(),
+            origin_country: m.origin_country.clone().unwrap_or_default(),
+            latitude: m.latitude.map(|v| v.to_string()).unwrap_or_default(),
+            longitude: m.longitude.map(|v| v.to_string()).unwrap_or_default(),
+            notes: m.notes.clone().unwrap_or_default(),
+        };
+        let blank = |lineage: &str| EditMdka {
+            guid,
+            lineage: lineage.to_string(),
+            ancestor_name: String::new(),
+            birth_year: String::new(),
+            death_year: String::new(),
+            origin_place: String::new(),
+            origin_country: String::new(),
+            latitude: String::new(),
+            longitude: String::new(),
+            notes: String::new(),
+        };
+
         ui.add_space(10.0);
         card(ui, self.tr("card.genealogy"), |ui| {
-            // Vendor identifiers (kit numbers, etc.).
-            if !data.external_ids.is_empty() {
-                let ids = data
-                    .external_ids
-                    .iter()
-                    .map(|e| format!("{}: {}", e.source, e.external_id))
-                    .collect::<Vec<_>>()
-                    .join("  ·  ");
+            // Vendor identifiers (kit numbers, etc.) — each removable; add a new one.
+            ui.horizontal(|ui| {
+                ui.strong(self.tr("geneal.ids"));
+                if ui.small_button(self.tr("geneal.addKit")).clicked() {
+                    want_add_kit = true;
+                }
+            });
+            for e in &data.external_ids {
                 ui.horizontal(|ui| {
-                    ui.strong(self.tr("geneal.ids"));
-                    ui.label(ids);
+                    ui.label(format!("{}: {}", e.source, e.external_id));
+                    if ui
+                        .small_button("✕")
+                        .on_hover_text(self.tr("geneal.removeKit"))
+                        .clicked()
+                    {
+                        want_del_kit = Some(e.id);
+                    }
                 });
             }
-            // FTDNA member labels (reported haplogroups + access/consent).
+            // FTDNA member labels (reported haplogroups + access/consent) — read-only (imported).
             if let Some(m) = &data.member {
                 if let Some(y) = &m.y_haplogroup_ftdna {
                     ui.horizontal(|ui| {
@@ -1171,33 +1217,63 @@ impl NavigatorApp {
                     }
                 });
             }
-            // MDKA per lineage.
-            for mk in &data.mdka {
+            // MDKA — paternal (Y) then maternal (Mt): edit/remove when present, add when absent.
+            for (lineage, label_key, add_key) in [
+                ("Y", "geneal.paternal", "geneal.addPaternal"),
+                ("Mt", "geneal.maternal", "geneal.addMaternal"),
+            ] {
                 ui.add_space(2.0);
-                let lineage = match mk.lineage.as_str() {
-                    "Y" => self.tr("geneal.paternal"),
-                    "Mt" => self.tr("geneal.maternal"),
-                    _ => self.tr("geneal.ancestor"),
-                };
-                ui.horizontal(|ui| {
-                    ui.strong(lineage);
-                    ui.label(mk.ancestor_name.as_deref().unwrap_or("—"));
-                    let mut bits = Vec::new();
-                    match (mk.birth_year, mk.death_year) {
-                        (Some(b), Some(d)) => bits.push(format!("{b}–{d}")),
-                        (Some(b), None) => bits.push(format!("b. {b}")),
-                        (None, Some(d)) => bits.push(format!("d. {d}")),
-                        (None, None) => {}
-                    }
-                    if let Some(place) = mk.origin_place.as_deref().or(mk.origin_country.as_deref()) {
-                        bits.push(place.to_string());
-                    }
-                    if !bits.is_empty() {
-                        ui.label(egui::RichText::new(bits.join(" · ")).weak().small());
-                    }
-                });
+                if let Some(mk) = data.mdka.iter().find(|m| m.lineage == lineage) {
+                    ui.horizontal(|ui| {
+                        ui.strong(self.tr(label_key));
+                        ui.label(mk.ancestor_name.as_deref().unwrap_or("—"));
+                        let mut bits = Vec::new();
+                        match (mk.birth_year, mk.death_year) {
+                            (Some(b), Some(d)) => bits.push(format!("{b}–{d}")),
+                            (Some(b), None) => bits.push(format!("b. {b}")),
+                            (None, Some(d)) => bits.push(format!("d. {d}")),
+                            (None, None) => {}
+                        }
+                        if let Some(place) = mk.origin_place.as_deref().or(mk.origin_country.as_deref()) {
+                            bits.push(place.to_string());
+                        }
+                        if !bits.is_empty() {
+                            ui.label(egui::RichText::new(bits.join(" · ")).weak().small());
+                        }
+                        if ui.small_button("✎").on_hover_text(self.tr("geneal.editMdka")).clicked() {
+                            want_edit_mdka = Some(edit_from(mk));
+                        }
+                        if ui.small_button("✕").on_hover_text(self.tr("geneal.removeMdka")).clicked() {
+                            want_del_mdka = Some(lineage.to_string());
+                        }
+                    });
+                } else {
+                    ui.horizontal(|ui| {
+                        if ui.small_button(self.tr(add_key)).clicked() {
+                            want_edit_mdka = Some(blank(lineage));
+                        }
+                    });
+                }
             }
         });
+
+        // Deferred dispatch (the closure borrowed `self.tr` immutably).
+        if want_add_kit {
+            self.edit_kit = Some(EditKit {
+                guid,
+                source: navigator_domain::identity::IdSource::FTDNA.to_string(),
+                external_id: String::new(),
+            });
+        }
+        if let Some(id) = want_del_kit {
+            let _ = self.tx.send(Command::DeleteExternalId { guid, id });
+        }
+        if let Some(e) = want_edit_mdka {
+            self.edit_mdka = Some(e);
+        }
+        if let Some(lineage) = want_del_mdka {
+            let _ = self.tx.send(Command::DeleteMdka { guid, lineage });
+        }
     }
 
     /// The per-sequencing-result hub: the source lists (runs/alignments/chips/STR/mtDNA) plus, for the

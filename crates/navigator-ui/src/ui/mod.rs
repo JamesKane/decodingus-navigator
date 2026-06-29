@@ -371,6 +371,32 @@ struct EditSubject {
     sex: String,
 }
 
+/// Drives the "add vendor id" modal (Some ⇒ shown). A new kit association for `guid`; `source` is
+/// a well-known vendor (FTDNA/YSEQ/…) or free text, `external_id` is the kit number.
+#[derive(Clone)]
+struct EditKit {
+    guid: SampleGuid,
+    source: String,
+    external_id: String,
+}
+
+/// Editable copy of an MDKA (most distant known ancestor), driving the MDKA edit modal (Some ⇒
+/// shown). All fields are strings for editing; years/coords are parsed on save (blank ⇒ cleared).
+/// `lineage` is fixed when the modal opens (Y/Mt/Auto). Upsert is keyed on `(guid, lineage)`.
+#[derive(Clone)]
+struct EditMdka {
+    guid: SampleGuid,
+    lineage: String,
+    ancestor_name: String,
+    birth_year: String,
+    death_year: String,
+    origin_place: String,
+    origin_country: String,
+    latitude: String,
+    longitude: String,
+    notes: String,
+}
+
 /// A data-source row pending delete confirmation. The `label` is shown in the confirm dialog;
 /// the variant carries the ids the worker command needs (and the parent id to refresh).
 #[derive(Clone)]
@@ -442,6 +468,10 @@ pub struct NavigatorApp {
     analysis: Option<AnalysisModal>,
     /// Subject being edited (Some ⇒ the Edit modal is shown).
     edit_subject: Option<EditSubject>,
+    /// Vendor-id (kit) association being added (Some ⇒ the add-kit modal is shown).
+    edit_kit: Option<EditKit>,
+    /// MDKA being edited/added (Some ⇒ the MDKA modal is shown).
+    edit_mdka: Option<EditMdka>,
     /// Subject pending delete confirmation (Some ⇒ the confirm dialog is shown).
     confirm_delete: Option<SampleGuid>,
     /// Subject pending "clear all data" confirmation (Some ⇒ the confirm dialog is shown).
@@ -911,6 +941,8 @@ impl NavigatorApp {
             rx,
             analysis: None,
             edit_subject: None,
+            edit_kit: None,
+            edit_mdka: None,
             confirm_delete: None,
             confirm_clear: None,
             confirm_reset_haplo: None,
@@ -1193,6 +1225,8 @@ impl eframe::App for NavigatorApp {
         });
         self.analysis_modal(ctx);
         self.edit_subject_modal(ctx);
+        self.add_kit_modal(ctx);
+        self.edit_mdka_modal(ctx);
         self.delete_subject_modal(ctx);
         self.clear_subject_modal(ctx);
         self.reset_haplo_modal(ctx);

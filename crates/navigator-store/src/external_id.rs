@@ -56,6 +56,16 @@ pub async fn add(
         .ok_or_else(|| StoreError::NotFound(format!("external_id {source}:{external_id}")))
 }
 
+/// Detach a vendor id by its row id. Returns `true` if a row was removed. Used by the subject
+/// editor to drop a kit association (the row is workspace-local PII, so a hard delete is fine).
+pub async fn delete(pool: &SqlitePool, id: i64) -> Result<bool, StoreError> {
+    let res = sqlx::query("DELETE FROM external_id WHERE id = ?")
+        .bind(id)
+        .execute(pool)
+        .await?;
+    Ok(res.rows_affected() > 0)
+}
+
 /// Look up the Subject bound to a `(source, external_id)` — the exact-match step of dedup (§5.1).
 pub async fn find(pool: &SqlitePool, source: &str, external_id: &str) -> Result<Option<ExternalId>, StoreError> {
     let row: Option<Row> = sqlx::query_as(&format!(
@@ -144,5 +154,13 @@ mod tests {
             b
         );
         assert_eq!(list_for(pool, a).await.unwrap().len(), 1);
+
+        // Delete by row id detaches it (and frees the (source, id) for re-binding).
+        let row = find(pool, IdSource::FTDNA, "B5163").await.unwrap().unwrap();
+        assert!(delete(pool, row.id).await.unwrap(), "row removed");
+        assert!(!delete(pool, row.id).await.unwrap(), "second delete is a no-op");
+        assert!(find(pool, IdSource::FTDNA, "B5163").await.unwrap().is_none());
+        let rebound = add(pool, b, IdSource::FTDNA, "B5163").await.unwrap();
+        assert_eq!(rebound.biosample_guid, b, "freed id rebinds to the new owner");
     }
 }

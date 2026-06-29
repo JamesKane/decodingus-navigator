@@ -122,6 +122,175 @@ impl NavigatorApp {
         }
     }
 
+    /// Add a vendor-id (kit) association to the open subject. Source is a well-known vendor or free
+    /// text; the kit id is required. The app layer enforces `(source, id)` uniqueness and reports a
+    /// conflict via `Event::Error`. Deferred dispatch (only `self.tr` is touched inside the closure).
+    pub(crate) fn add_kit_modal(&mut self, ctx: &egui::Context) {
+        use navigator_domain::identity::IdSource;
+        let Some(mut edit) = self.edit_kit.clone() else { return };
+
+        const SOURCES: &[&str] = &[
+            IdSource::FTDNA,
+            IdSource::YSEQ,
+            IdSource::NEBULA,
+            IdSource::WGS,
+            IdSource::MANUAL,
+        ];
+        let mut close = false;
+        let mut save = false;
+        modal_frame(ctx, "add_kit_modal", 380.0, |ui| {
+            ui.label(egui::RichText::new(self.tr("kit.addTitle")).strong().size(16.0));
+            ui.separator();
+            ui.add_space(6.0);
+            ui.label(self.tr("kit.source"));
+            egui::ComboBox::from_id_salt("add_kit_source")
+                .selected_text(edit.source.clone())
+                .width(340.0)
+                .show_ui(ui, |ui| {
+                    for s in SOURCES {
+                        ui.selectable_value(&mut edit.source, (*s).to_string(), *s);
+                    }
+                });
+            ui.add_space(4.0);
+            ui.label(self.tr("kit.id"));
+            let resp = ui.add(
+                egui::TextEdit::singleline(&mut edit.external_id)
+                    .hint_text("kit number / vendor id")
+                    .desired_width(f32::INFINITY),
+            );
+            let entered = resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+            ui.add_space(10.0);
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                let ready = !edit.source.trim().is_empty() && !edit.external_id.trim().is_empty();
+                if ui
+                    .add_enabled(ready, egui::Button::new(self.tr("common.save")).fill(ACCENT))
+                    .clicked()
+                    || (entered && ready)
+                {
+                    save = true;
+                }
+                if ui.button(self.tr("common.cancel")).clicked() {
+                    close = true;
+                }
+            });
+        });
+        if save {
+            let _ = self.tx.send(Command::AddExternalId {
+                guid: edit.guid,
+                source: edit.source.trim().to_string(),
+                external_id: edit.external_id.trim().to_string(),
+            });
+            self.edit_kit = None;
+        } else if close {
+            self.edit_kit = None;
+        } else {
+            self.edit_kit = Some(edit);
+        }
+    }
+
+    /// Edit (or add) the open subject's MDKA for one lineage. Years/coords are free-text and parsed
+    /// on save — a blank or unparseable field clears that column. Deferred dispatch.
+    pub(crate) fn edit_mdka_modal(&mut self, ctx: &egui::Context) {
+        let Some(mut edit) = self.edit_mdka.clone() else { return };
+
+        let title = match edit.lineage.as_str() {
+            "Y" => self.tr("mdka.titlePaternal"),
+            "Mt" => self.tr("mdka.titleMaternal"),
+            _ => self.tr("mdka.title"),
+        };
+        let mut close = false;
+        let mut save = false;
+        modal_frame(ctx, "edit_mdka_modal", 440.0, |ui| {
+            ui.label(egui::RichText::new(title).strong().size(16.0));
+            ui.separator();
+            ui.add_space(6.0);
+            let field = |ui: &mut egui::Ui, label: &str, value: &mut String, hint: &str| {
+                ui.label(label);
+                ui.add(
+                    egui::TextEdit::singleline(value)
+                        .hint_text(hint)
+                        .desired_width(f32::INFINITY),
+                );
+                ui.add_space(4.0);
+            };
+            field(ui, self.tr("mdka.ancestor"), &mut edit.ancestor_name, "ancestor name");
+            ui.horizontal(|ui| {
+                ui.vertical(|ui| {
+                    ui.label(self.tr("mdka.birth"));
+                    ui.add(egui::TextEdit::singleline(&mut edit.birth_year).hint_text("e.g. 1830").desired_width(150.0));
+                });
+                ui.vertical(|ui| {
+                    ui.label(self.tr("mdka.death"));
+                    ui.add(egui::TextEdit::singleline(&mut edit.death_year).hint_text("e.g. 1908").desired_width(150.0));
+                });
+            });
+            ui.add_space(4.0);
+            field(ui, self.tr("mdka.place"), &mut edit.origin_place, "place of origin");
+            field(ui, self.tr("mdka.country"), &mut edit.origin_country, "country");
+            ui.horizontal(|ui| {
+                ui.vertical(|ui| {
+                    ui.label(self.tr("mdka.lat"));
+                    ui.add(egui::TextEdit::singleline(&mut edit.latitude).hint_text("e.g. 52.75").desired_width(150.0));
+                });
+                ui.vertical(|ui| {
+                    ui.label(self.tr("mdka.lon"));
+                    ui.add(egui::TextEdit::singleline(&mut edit.longitude).hint_text("e.g. -9.43").desired_width(150.0));
+                });
+            });
+            ui.add_space(4.0);
+            field(ui, self.tr("mdka.notes"), &mut edit.notes, "notes (optional)");
+            ui.add_space(10.0);
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                // At least one field must be filled — an all-blank MDKA is meaningless.
+                let ready = [
+                    &edit.ancestor_name,
+                    &edit.birth_year,
+                    &edit.death_year,
+                    &edit.origin_place,
+                    &edit.origin_country,
+                    &edit.latitude,
+                    &edit.longitude,
+                    &edit.notes,
+                ]
+                .iter()
+                .any(|s| !s.trim().is_empty());
+                if ui
+                    .add_enabled(ready, egui::Button::new(self.tr("common.save")).fill(ACCENT))
+                    .clicked()
+                {
+                    save = true;
+                }
+                if ui.button(self.tr("common.cancel")).clicked() {
+                    close = true;
+                }
+            });
+        });
+        if save {
+            let year = |s: &str| s.trim().parse::<i32>().ok();
+            let coord = |s: &str| s.trim().parse::<f64>().ok();
+            let _ = self.tx.send(Command::UpsertMdka {
+                guid: edit.guid,
+                mdka: navigator_domain::identity::NewMdka {
+                    lineage: edit.lineage.clone(),
+                    ancestor_name: opt(&edit.ancestor_name),
+                    birth_year: year(&edit.birth_year),
+                    death_year: year(&edit.death_year),
+                    origin_place: opt(&edit.origin_place),
+                    origin_country: opt(&edit.origin_country),
+                    latitude: coord(&edit.latitude),
+                    longitude: coord(&edit.longitude),
+                    source: Some(navigator_domain::identity::IdSource::MANUAL.to_string()),
+                    notes: opt(&edit.notes),
+                },
+            });
+            self.edit_mdka = None;
+        } else if close {
+            self.edit_mdka = None;
+        } else {
+            self.edit_mdka = Some(edit);
+        }
+    }
+
     /// The Settings / Preferences modal: connection (AppView URL, Y-tree provider), appearance
     /// (theme, language, tree-cache TTL), reference genomes (local FASTA + auto-download per build),
     /// and a read-only advanced section. Self-mutation/dispatch is deferred until after the closure
