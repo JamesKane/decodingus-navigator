@@ -165,6 +165,7 @@ impl NavigatorApp {
                         .clicked()
                     {
                         self.nav = nav;
+                        self.return_to_project = None; // a direct nav is not a project drill-down
                     }
                 }
             });
