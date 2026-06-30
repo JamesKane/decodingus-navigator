@@ -297,6 +297,7 @@ impl App {
         progress: impl Fn(usize, usize) + Send + Sync + 'static,
     ) -> Result<UnifiedMetricsResult, AppError> {
         let aln = self.alignment_or_err(alignment_id).await?;
+        let run_id = aln.sequence_run_id;
         // Copy off a slow/removable volume to local disk first — the walker's random-access record
         // iteration is far slower over a network/USB mount than a one-shot bulk copy.
         let bam = self
@@ -343,9 +344,39 @@ impl App {
         self.save_analysis(alignment_id, "read_metrics", "1", &result.read_metrics)
             .await?;
         self.write_back_read_stats(alignment_id, &result.read_metrics).await?;
-        if let Some(sex) = &result.sex {
+        // Sex: a Y-targeted test (Big Y, Y Elite, …) sequences the donor's Y chromosome — he is male
+        // by definition. The chrX/autosome ratio the inference needs isn't present in a chrY-scoped
+        // walk, and is unreliable even whole-genome (a Big Y's off-target chrX ≈ autosome ≈ 0.4×
+        // reads as *female*). So force Male for a Y-targeted test, overriding the inference + any
+        // prior auto-assignment; WGS / mt-targeted keep the walk's result.
+        let y_targeted = matches!(
+            sequence_run::get(self.store.pool(), run_id)
+                .await?
+                .as_ref()
+                .and_then(|r| navigator_domain::testtype::target_of(&r.test_type)),
+            Some(navigator_domain::testtype::TargetType::YChromosome)
+        );
+        let sex = if y_targeted {
+            Some(navigator_analysis::sex::SexInferenceResult {
+                inferred_sex: navigator_analysis::sex::InferredSex::Male,
+                x_autosome_ratio: 0.0,
+                autosome_mean_coverage: 0.0,
+                x_coverage: 0.0,
+                confidence: navigator_analysis::sex::Confidence::High,
+            })
+        } else {
+            result.sex
+        };
+        if let Some(sex) = &sex {
             self.save_analysis(alignment_id, "sex", "1", sex).await?;
-            self.write_back_inferred_sex(alignment_id, sex).await?;
+            if y_targeted {
+                // Definitive (Y test ⇒ male): override any prior auto-inferred sex, not write-if-empty.
+                if let Ok(guid) = self.biosample_of_alignment(alignment_id).await {
+                    biosample::set_sex(self.store.pool(), guid, "Male").await?;
+                }
+            } else {
+                self.write_back_inferred_sex(alignment_id, sex).await?;
+            }
         }
         Ok(result)
     }
