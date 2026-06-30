@@ -410,6 +410,7 @@ table.status=Estado
 table.sources=Fuentes
 report.sample=Muestra
 report.openSubject=Abrir los detalles de este sujeto
+report.failed=Falló
 detail.backToProject=←  Volver al proyecto
 report.alns=Alin.
 report.meanCov=Cob. media

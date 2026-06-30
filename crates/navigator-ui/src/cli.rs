@@ -200,13 +200,19 @@ async fn analyze(args: AnalyzeArgs) -> i32 {
 
     let t = Instant::now();
     match app.run_unified_metrics(id).await {
-        Ok(r) => eprintln!(
-            "  [{:>8.1?}]  Step 1: unified metrics (coverage + sex + read-metrics, incl. localize copy) — coverage mean {:.2}x",
-            t.elapsed(),
-            r.coverage.mean_coverage
-        ),
+        Ok(r) => {
+            eprintln!(
+                "  [{:>8.1?}]  Step 1: unified metrics (coverage + sex + read-metrics, incl. localize copy) — coverage mean {:.2}x",
+                t.elapsed(),
+                r.coverage.mean_coverage
+            );
+            // Mirror the batch path: clear any stale failure marker now that the walk succeeded.
+            app.clear_analysis_error(id).await;
+        }
         Err(e) => {
             eprintln!("  Step 1 (unified metrics) FAILED: {e}");
+            // Persist the failure (corrupt/undecodable file) so the project report surfaces it.
+            app.record_analysis_error(id, "metrics", &e.to_string()).await;
             return 1;
         }
     }

@@ -109,6 +109,23 @@ pub async fn get(
     row.map(Row::into_domain).transpose()
 }
 
+/// Remove a single `(alignment, kind, version)` artifact if present (no-op when absent). Used to
+/// clear a transient marker — e.g. the `error` artifact — once a later run succeeds.
+pub async fn delete(
+    pool: &SqlitePool,
+    alignment_id: i64,
+    kind: &str,
+    algorithm_version: &str,
+) -> Result<(), StoreError> {
+    sqlx::query("DELETE FROM analysis_artifact WHERE alignment_id = ? AND kind = ? AND algorithm_version = ?")
+        .bind(alignment_id)
+        .bind(kind)
+        .bind(algorithm_version)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
 pub async fn list_for_alignment(pool: &SqlitePool, alignment_id: i64) -> Result<Vec<AnalysisArtifact>, StoreError> {
     let rows: Vec<Row> = sqlx::query_as(&format!(
         "SELECT {COLS} FROM analysis_artifact WHERE alignment_id = ? ORDER BY id"

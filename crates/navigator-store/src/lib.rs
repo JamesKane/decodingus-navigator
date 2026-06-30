@@ -51,7 +51,14 @@ impl Store {
         let opts = SqliteConnectOptions::new()
             .filename(path)
             .create_if_missing(true)
-            .foreign_keys(true);
+            .foreign_keys(true)
+            // WAL + a generous busy timeout so the GUI and a concurrent CLI (`navigator analyze`)
+            // can share the one workspace file without immediate "database is locked" failures:
+            // WAL lets readers run alongside a single writer, and the timeout makes a contended
+            // writer wait for the other to finish instead of erroring out.
+            .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal)
+            .synchronous(sqlx::sqlite::SqliteSynchronous::Normal)
+            .busy_timeout(std::time::Duration::from_secs(30));
         let pool = SqlitePoolOptions::new().connect_with(opts).await?;
         MIGRATOR.run(&pool).await?;
         Ok(Store { pool })

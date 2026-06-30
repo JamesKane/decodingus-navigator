@@ -423,6 +423,7 @@ table.status=Status
 table.sources=Sources
 report.sample=Sample
 report.openSubject=Open this subject's details
+report.failed=Failed
 detail.backToProject=←  Back to project
 report.alns=Alns
 report.meanCov=Mean cov

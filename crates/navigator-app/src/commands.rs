@@ -451,6 +451,31 @@ impl App {
         .await?)
     }
 
+    /// Persist a marker that a Navigator walk failed for this alignment (e.g. an undecodable /
+    /// corrupt CRAM). Stored as the `error`/`"1"` artifact so the project report can surface a
+    /// "Failed" cell instead of a silent blank; cleared by [`clear_analysis_error`] on the next
+    /// successful walk. Best-effort — a failure to record the marker is swallowed (it's diagnostic).
+    pub async fn record_analysis_error(&self, alignment_id: i64, step: &str, message: &str) {
+        let mut message = message.to_string();
+        message.truncate(500); // keep the payload small; the head carries the cause
+        let marker = AnalysisError { step: step.to_string(), message };
+        let _ = self.save_analysis(alignment_id, ERROR_KIND, ERROR_VERSION, &marker).await;
+    }
+
+    /// Clear any persisted [`record_analysis_error`] marker for this alignment (no-op when absent).
+    pub async fn clear_analysis_error(&self, alignment_id: i64) {
+        let _ = artifact::delete(self.store.pool(), alignment_id, ERROR_KIND, ERROR_VERSION).await;
+    }
+
+    /// The persisted analysis-failure marker for this alignment, if any. Read directly (no
+    /// source-mtime freshness check) so the marker shows until an explicit success clears it.
+    pub async fn analysis_error(&self, alignment_id: i64) -> Result<Option<AnalysisError>, AppError> {
+        match artifact::get(self.store.pool(), alignment_id, ERROR_KIND, ERROR_VERSION).await? {
+            Some(a) => Ok(serde_json::from_str(&a.payload).ok()),
+            None => Ok(None),
+        }
+    }
+
     /// The alignment's source-file signature (`mtime:size`) for cache staleness. `None` when the
     /// alignment / its path is gone or unstattable — then the cache is trusted (nothing to
     /// recompute against). Cheap: a metadata stat, no file read (content hashing is the separate,

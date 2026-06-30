@@ -2009,6 +2009,7 @@ impl NavigatorApp {
         let cov_label = self.tr("btn.cov");
         let y_label = self.tr("report.y");
         let open_hint = self.tr("report.openSubject");
+        let failed_label = self.tr("report.failed");
         let report = &self.project_report;
         let ctl = &mut self.report_table_ctl;
 
@@ -2045,7 +2046,14 @@ impl NavigatorApp {
                 // Mean coverage, with a "lite" badge when it's a partial sidecar estimate that a
                 // deep walk (the per-row coverage button) would upgrade.
                 row.col(|ui| {
-                    if r.coverage_partial {
+                    if let Some(err) = &r.decode_error {
+                        // The last walk failed (corrupt/undecodable file) — show it instead of a
+                        // silent "—" so the sample reads as failed, not merely un-analyzed.
+                        ui.add(egui::Label::new(
+                            egui::RichText::new(failed_label).small().color(egui::Color32::from_rgb(200, 80, 80)),
+                        ))
+                        .on_hover_text(err.as_str());
+                    } else if r.coverage_partial {
                         ui.label(fmt_depth(r.mean_coverage));
                         ui.add(egui::Label::new(
                             egui::RichText::new("lite").small().color(egui::Color32::from_rgb(180, 140, 40)),

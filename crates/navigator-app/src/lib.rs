@@ -2111,7 +2111,26 @@ pub struct ProjectSampleReport {
     /// The coverage shown is a `partial` (lite sidecar) result — upgradeable by a deep walk.
     /// `false` when full (or no coverage yet).
     pub coverage_partial: bool,
+    /// The last analysis attempt on the primary alignment failed (e.g. a corrupt/undecodable CRAM),
+    /// carrying the failure message. `Some` distinguishes a genuinely-failed sample from one that's
+    /// merely un-analyzed, so the report shows "Failed" rather than a silent blank.
+    pub decode_error: Option<String>,
 }
+
+/// A persisted marker that a Navigator walk failed for an alignment (e.g. an undecodable / corrupt
+/// CRAM). Stored as the `error`/`"1"` artifact (see [`App::record_analysis_error`]) so failures are
+/// visible in the report instead of looking identical to un-analyzed samples.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct AnalysisError {
+    /// Which step failed (`metrics`, `Y`, …).
+    pub step: String,
+    /// The (truncated) error message.
+    pub message: String,
+}
+
+/// Artifact key for [`AnalysisError`] markers.
+pub(crate) const ERROR_KIND: &str = "error";
+pub(crate) const ERROR_VERSION: &str = "1";
 
 /// One member row of a project's FTDNA-style Y-DNA STR overview: identity columns + the subject's
 /// consensus STR marker values (normalized marker name → value) + terminal Y haplogroup. Members

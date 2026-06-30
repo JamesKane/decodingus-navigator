@@ -265,6 +265,12 @@ impl App {
                 median_insert_size: metrics.as_ref().map(|m| m.median_insert_size),
                 sv_count,
                 coverage_partial,
+                // Surface a persisted failure (corrupt/undecodable file) only when there's no
+                // coverage to show — a successful re-walk clears the marker anyway.
+                decode_error: match (coverage.is_none(), primary_alignment_id) {
+                    (true, Some(id)) => self.analysis_error(id).await?.map(|e| e.message),
+                    _ => None,
+                },
                 biosample,
             });
         }
@@ -568,8 +574,15 @@ impl App {
                     o.coverage_done = true;
                     o.metrics_done = true;
                     o.sex_done = true;
+                    // A prior run may have left a failure marker (corrupt file since replaced); clear it.
+                    self.clear_analysis_error(aln.id).await;
                 }
-                Err(e) => o.errors.push(format!("{label} metrics: {e}")),
+                Err(e) => {
+                    // Persist the failure so the report can show "Failed" instead of a silent blank
+                    // (a corrupt/undecodable CRAM otherwise looks identical to an un-analyzed one).
+                    self.record_analysis_error(aln.id, "metrics", &e.to_string()).await;
+                    o.errors.push(format!("{label} metrics: {e}"));
+                }
             }
         }
 
