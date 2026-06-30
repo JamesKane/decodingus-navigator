@@ -41,6 +41,9 @@ pub enum Command {
     Call(CallArgs),
     /// Lift a VCF from one reference build to another (chain-based; the GATK LiftoverVcf replacement).
     LiftVcf(LiftVcfArgs),
+    /// Run the per-alignment analysis steps with per-step wall-clock timing (the GUI Full Analysis
+    /// path), to profile where time goes. Mutates the workspace (caches results).
+    Analyze(AnalyzeArgs),
 }
 
 #[derive(Args)]
@@ -125,6 +128,16 @@ pub struct CallArgs {
 }
 
 #[derive(Args)]
+pub struct AnalyzeArgs {
+    /// Alignment id to analyze (from `show --json`).
+    #[arg(long, short)]
+    alignment: i64,
+    /// Workspace database path (defaults to the GUI's ~/.decodingus/navigator-rs.db).
+    #[arg(long)]
+    db: Option<PathBuf>,
+}
+
+#[derive(Args)]
 pub struct LiftVcfArgs {
     /// Input VCF (`.vcf` or `.vcf.gz`).
     #[arg(long, short)]
@@ -164,8 +177,45 @@ pub fn run(command: Command) -> i32 {
             Command::Projects(a) => projects(a).await,
             Command::Call(a) => call(a).await,
             Command::LiftVcf(a) => lift_vcf(a).await,
+            Command::Analyze(a) => analyze(a).await,
         }
     })
+}
+
+/// Time the per-alignment analysis steps (the GUI Full Analysis path) to profile where time goes.
+async fn analyze(args: AnalyzeArgs) -> i32 {
+    use std::time::Instant;
+    let app = match open(args.db).await {
+        Ok(a) => a,
+        Err(c) => return c,
+    };
+    let id = args.alignment;
+    eprintln!("analyzing alignment #{id} (cold — run_* recompute, exercising localize + scoping)…");
+
+    let t = Instant::now();
+    match app.run_unified_metrics(id).await {
+        Ok(r) => eprintln!(
+            "  [{:>8.1?}]  Step 1: unified metrics (coverage + sex + read-metrics, incl. localize copy) — coverage mean {:.2}x",
+            t.elapsed(),
+            r.coverage.mean_coverage
+        ),
+        Err(e) => {
+            eprintln!("  Step 1 (unified metrics) FAILED: {e}");
+            return 1;
+        }
+    }
+
+    let t = Instant::now();
+    match app.assign_y_haplogroup(id).await {
+        Ok(a) => eprintln!(
+            "  [{:>8.1?}]  Step 3: Y haplogroup placement — {}",
+            t.elapsed(),
+            a.ranked.first().map(|h| h.name.as_str()).unwrap_or("(none)")
+        ),
+        Err(e) => eprintln!("  Step 3 (Y placement) FAILED: {e}"),
+    }
+    eprintln!("done.");
+    0
 }
 
 fn db_path(over: Option<PathBuf>) -> PathBuf {
