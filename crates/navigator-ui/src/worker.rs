@@ -2565,7 +2565,14 @@ pub fn spawn(db_path: PathBuf, wake: impl Fn() + Send + Sync + 'static) -> (Unbo
     std::thread::Builder::new()
         .name("navigator-worker".into())
         .spawn(move || {
-            let rt = match tokio::runtime::Runtime::new() {
+            // 16 MiB stacks: the Y/mt tree parse + placement recurse to the haplotree's depth
+            // (`flatten_du_node`, descent traversal), which overflows tokio's default 2 MiB worker
+            // stack on deep lineages / the large FTDNA tree — crashing bulk analysis mid-run.
+            let rt = match tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .thread_stack_size(16 * 1024 * 1024)
+                .build()
+            {
                 Ok(rt) => rt,
                 Err(e) => {
                     let _ = evt_tx.send(Event::Error(format!("runtime: {e}")));

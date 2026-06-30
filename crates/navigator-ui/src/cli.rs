@@ -162,7 +162,13 @@ pub struct LiftVcfArgs {
 /// Run a CLI subcommand to completion, returning a process exit code. Spins its own tokio
 /// runtime so `main` (which must keep the GUI on the main thread) stays sync.
 pub fn run(command: Command) -> i32 {
-    let rt = match tokio::runtime::Runtime::new() {
+    // 16 MiB stacks: Y/mt tree parse + placement recurse to the haplotree depth and overflow
+    // tokio's default 2 MiB worker stack on deep lineages (matches the GUI worker runtime).
+    let rt = match tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .thread_stack_size(16 * 1024 * 1024)
+        .build()
+    {
         Ok(rt) => rt,
         Err(e) => {
             eprintln!("error: could not start runtime: {e}");
