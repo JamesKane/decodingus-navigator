@@ -680,16 +680,6 @@ impl App {
         Ok(profile)
     }
 
-    /// Fresh mtDNA placement against the FTDNA mt tree (chrM) with full branch evidence — the mt
-    /// counterpart to [`y_assignment_full`](Self::y_assignment_full). Bypasses
-    /// [`assign_mtdna_haplogroup_from_alignment`](Self::assign_mtdna_haplogroup_from_alignment)'s
-    /// cached terminal-only path (which has `branches: []`) so the consensus has per-mutation evidence.
-    async fn mt_assignment_full(&self, alignment_id: i64) -> Result<HaploAssignment, AppError> {
-        let tree_json = self.fetch_ftdna_mt_tree().await?;
-        self.assign_haplogroup_from_alignment(alignment_id, "chrM", &tree_json)
-            .await
-    }
-
     /// The persisted mtDNA consensus-profile snapshot for a subject, if one has been built — cheap
     /// (no genotyping). `None` until [`build_mt_profile`](Self::build_mt_profile) runs.
     pub async fn cached_mt_profile(&self, biosample_guid: SampleGuid) -> Result<Option<ConsensusProfile>, AppError> {
@@ -704,41 +694,26 @@ impl App {
     /// `dna_type='Mt'` so [`cached_mt_profile`](Self::cached_mt_profile) reloads it instantly.
     /// Expensive (re-places each alignment's chrM), so it's an explicit action; mt-less sources skip.
     pub async fn build_mt_profile(&self, biosample_guid: SampleGuid) -> Result<ConsensusProfile, AppError> {
+        // One mt tree in rCRS coordinates (DecodingUs remapped from hs1, FTDNA fallback), shared by
+        // the per-source placements below and the pooled terminal — so the variants and the terminal
+        // sit on the same tree + coordinate space (the Y-profile fix, applied to mtDNA).
+        let (tree, provider) = self.mt_tree_rcrs().await?;
+        let source_calls = self.mt_source_calls(biosample_guid, &tree).await?;
+
+        // One source per contributing test — each alignment's chrM, each imported FASTA, the chip mt
+        // panel — placed individually on the shared tree so the profile shows which test confirmed
+        // each mutation (name-keyed reconcile across sources). Sparse sources (chip) use the robust
+        // assembler; dense ones (WGS/FASTA) the exact one.
         let mut sources: Vec<(String, SourceType, Vec<YObsInput>)> = Vec::new();
-
-        // One source per alignment with chrM — a fresh placement (branch evidence, not the cached
-        // terminal). Alignments that error / lack chrM are skipped.
-        let alignments = alignment::list_for_biosample(self.store.pool(), biosample_guid).await?;
-        for a in &alignments {
-            let Ok(assignment) = self.mt_assignment_full(a.id).await else {
-                continue;
+        for (label, st, calls) in &source_calls {
+            let assignment = if *st == SourceType::Chip {
+                assemble_assignment_robust(&tree, calls)
+            } else {
+                assemble_assignment(&tree, calls)
             };
             let obs = snp_obs_from_assignment(&assignment, true);
             if !obs.is_empty() {
-                sources.push((format!("aln #{} · {}", a.id, a.aligner), SourceType::WgsShortRead, obs));
-            }
-        }
-
-        // One source per imported mtDNA FASTA sequence (FTDNA mtFull / YSEQ) — a finished consensus
-        // sequence we ingested, so weight it as `Imported` (provenance/method not ours to vouch for).
-        let seqs = self.list_mtdna_sequences(biosample_guid).await?;
-        for s in &seqs {
-            let Ok(assignment) = self.assign_mtdna_haplogroup(s.id).await else {
-                continue;
-            };
-            let obs = snp_obs_from_assignment(&assignment, true);
-            if !obs.is_empty() {
-                let vendor = mt_vendor_label(s.source_file_name.as_deref(), s.defline.as_deref());
-                sources.push((format!("{vendor} (mt seq #{})", s.id), SourceType::Imported, obs));
-            }
-        }
-
-        // The combined chip mtDNA panel (23andMe carries a sparse mt panel). One source — the
-        // per-panel split is a deferred follow-on (same as the Y profile).
-        if let Ok(assignment) = self.assign_mt_chip(biosample_guid).await {
-            let obs = snp_obs_from_assignment(&assignment, true);
-            if !obs.is_empty() {
-                sources.push(("Chip mtDNA panel".to_string(), SourceType::Chip, obs));
+                sources.push((label.clone(), *st, obs));
             }
         }
 
@@ -754,14 +729,27 @@ impl App {
 
         let variants = yprofile::reconcile_y(&sources);
         let summary = yprofile::summarize(&variants);
-        // Genome-level placement of the pooled chrM call set (see place_mt_consensus); label vote
-        // is the fallback when nothing places.
-        let terminal = match self.place_mt_consensus(biosample_guid).await? {
-            Some(a) => a.ranked.first().map(|r| r.name.clone()),
-            None => self
-                .haplogroup_consensus(biosample_guid, DnaType::Mt)
-                .await?
-                .map(|c| c.haplogroup),
+        // Genome-level placement of the pooled chrM call set on the same tree. A subject with no
+        // derived mutations carries no real placement — an alignment with a handful of off-target
+        // chrM reads (a Big Y) genotypes to nothing below the root. Report no terminal rather than a
+        // root label, and never resurrect a stale persisted root call (the old "very few mt reads →
+        // RSRS" artifact); the profile is meaningful only once some mutation is derived.
+        let terminal = if variants
+            .iter()
+            .all(|v| v.consensus != navigator_domain::consensus::ConsensusState::Derived)
+        {
+            None
+        } else {
+            let has_wgs = source_calls.iter().any(|(_, st, _)| *st == SourceType::WgsShortRead);
+            let pooled_input: Vec<(SourceType, HashMap<i64, char>)> =
+                source_calls.iter().map(|(_, st, calls)| (*st, calls.clone())).collect();
+            let pooled = pool_votes(&pooled_input);
+            let assignment = if has_wgs {
+                assemble_assignment(&tree, &pooled)
+            } else {
+                assemble_assignment_robust(&tree, &pooled)
+            };
+            assignment.ranked.first().map(|r| r.name.clone())
         };
         let profile = ConsensusProfile {
             variants,
@@ -770,8 +758,8 @@ impl App {
             sources: source_summaries,
         };
 
-        // Persist (keyed dna_type='Mt'); the mt tree is FTDNA-sourced.
-        self.persist_consensus_profile(biosample_guid, DnaType::Mt, &profile, Some("ftdna".to_string()))
+        // Persist (keyed dna_type='Mt') with the tree provider actually used.
+        self.persist_consensus_profile(biosample_guid, DnaType::Mt, &profile, Some(provider.to_string()))
             .await?;
         Ok(profile)
     }
@@ -970,27 +958,27 @@ impl App {
         Ok(ranked)
     }
 
-    /// **Genome-level mtDNA placement**: the mt counterpart to [`place_y_consensus`]. Pools every
-    /// source's rCRS-coordinate genotype (each alignment's chrM placement calls, each imported mtDNA
-    /// FASTA sequence, the chip mt panel) by [`pool_bases`] vote keyed by **position** (rCRS is the
-    /// only mt coordinate system → no name indirection), then places the pooled set on the FTDNA mt
-    /// tree once. `Ok(None)` when the subject has no mt-bearing source.
-    pub async fn place_mt_consensus(&self, biosample_guid: SampleGuid) -> Result<Option<HaploAssignment>, AppError> {
-        let tree_json = self.fetch_ftdna_mt_tree().await?;
-        let tree = navigator_analysis::haplo::parse_ftdna_json(&tree_json).map_err(AppError::Import)?;
+    /// Per-source rCRS-coordinate mtDNA calls for a subject — `(label, type, calls)` keyed by rCRS
+    /// position — shared by [`place_mt_consensus`] (pooled placement) and [`build_mt_profile`]
+    /// (per-source concordance). `tree` must be in rCRS coordinates: each alignment's `chrM` is
+    /// genotyped against it (cached; `base_calls` maps a CHM13 `chrM` back to rCRS, GRCh38/rCRS
+    /// direct), each imported FASTA is sampled at every rCRS position, and the chip mt panel is
+    /// strand-reconciled to it.
+    async fn mt_source_calls(
+        &self,
+        biosample_guid: SampleGuid,
+        tree: &navigator_analysis::haplo::HaploTree,
+    ) -> Result<Vec<(String, SourceType, HashMap<i64, char>)>, AppError> {
+        let mut sources: Vec<(String, SourceType, HashMap<i64, char>)> = Vec::new();
 
-        let mut sources: Vec<(SourceType, HashMap<i64, char>)> = Vec::new();
-        let mut has_wgs = false;
-
-        // Each alignment's chrM genotype (rCRS coordinates; base_calls maps a CHM13 chrM back to rCRS).
+        // Each alignment's chrM genotype. `None` source-build → rCRS-direct / CHM13-chrM lift.
         let alignments = alignment::list_for_biosample(self.store.pool(), biosample_guid).await?;
         for a in &alignments {
-            let Ok((_, _, calls)) = self.assign_haplogroup_detail(a.id, "chrM", &tree_json).await else {
+            let Ok(calls) = self.base_calls(a.id, "chrM", tree, None).await else {
                 continue;
             };
             if !calls.is_empty() {
-                sources.push((SourceType::WgsShortRead, calls));
-                has_wgs = true;
+                sources.push((format!("aln #{} · {}", a.id, a.aligner), SourceType::WgsShortRead, calls));
             }
         }
 
@@ -1009,7 +997,8 @@ impl App {
                 })
                 .collect();
             if !calls.is_empty() {
-                sources.push((SourceType::Imported, calls));
+                let vendor = mt_vendor_label(s.source_file_name.as_deref(), s.defline.as_deref());
+                sources.push((format!("{vendor} (mt seq #{})", s.id), SourceType::Imported, calls));
             }
         }
 
@@ -1028,15 +1017,29 @@ impl App {
             .filter_map(|c| c.alternate.chars().next().map(|b| (c.position, b.to_ascii_uppercase())))
             .collect();
         if !chip_mt.is_empty() {
-            sources.push((SourceType::Chip, strand_reconcile_to_tree(&tree, chip_mt)));
+            sources.push(("Chip mtDNA panel".to_string(), SourceType::Chip, strand_reconcile_to_tree(tree, chip_mt)));
         }
 
+        Ok(sources)
+    }
+
+    /// **Genome-level mtDNA placement**: the mt counterpart to [`place_y_consensus`]. Pools every
+    /// source's rCRS-coordinate genotype ([`mt_source_calls`]) by [`pool_votes`] vote keyed by
+    /// **position** (rCRS is the only mt coordinate system → no name indirection), then places the
+    /// pooled set on the mt tree once. The tree is the **DecodingUs** mt tree (the configured
+    /// provider) remapped onto rCRS, with the FTDNA mt tree as fallback ([`mt_tree_rcrs`]). `Ok(None)`
+    /// when the subject has no mt-bearing source.
+    pub async fn place_mt_consensus(&self, biosample_guid: SampleGuid) -> Result<Option<HaploAssignment>, AppError> {
+        let (tree, _provider) = self.mt_tree_rcrs().await?;
+        let sources = self.mt_source_calls(biosample_guid, &tree).await?;
         if sources.is_empty() {
             return Ok(None);
         }
-
+        let has_wgs = sources.iter().any(|(_, st, _)| *st == SourceType::WgsShortRead);
         // mt is single-coordinate (rCRS) across all sources, so a base vote is strand-safe here.
-        let pooled = pool_votes(&sources);
+        let pooled_input: Vec<(SourceType, HashMap<i64, char>)> =
+            sources.into_iter().map(|(_, st, calls)| (st, calls)).collect();
+        let pooled = pool_votes(&pooled_input);
         let assignment = if has_wgs {
             assemble_assignment(&tree, &pooled)
         } else {
@@ -1067,19 +1070,16 @@ impl App {
         let Some(profile) = profile else { return Ok(None) };
         let Some(terminal) = profile.terminal.clone() else { return Ok(None) };
 
-        // Y renders on the **DecodingUs** tree (the configured provider, local cache) in the subject's
-        // native build, so the node names + defining SNPs line up with the profile's DecodingUs
-        // placement. mtDNA has no DecodingUs tree, so it stays on the FTDNA mt tree.
+        // Both DNA types render on the **DecodingUs** tree (the configured provider, local cache) so
+        // the node names + defining SNPs line up with the profile's DecodingUs placement — Y in the
+        // subject's native build, mtDNA remapped from its native hs1 onto rCRS (FTDNA fallback).
         let tree = match dna {
             DnaType::Y => {
                 let json = self.fetch_decodingus_y_tree().await?;
                 let build_key = self.subject_y_build_key(biosample_guid).await;
                 navigator_analysis::haplo::parse_decodingus_json(&json, build_key).map_err(AppError::Import)?
             }
-            DnaType::Mt => {
-                let json = self.fetch_ftdna_mt_tree().await?;
-                navigator_analysis::haplo::parse_ftdna_json(&json).map_err(AppError::Import)?
-            }
+            DnaType::Mt => self.mt_tree_rcrs().await?.0,
         };
         let Some(terminal_id) = tree.nodes.iter().find(|(_, n)| n.name == terminal).map(|(id, _)| *id) else {
             return Ok(None); // terminal not in this tree (provider/build skew) — nothing to draw
@@ -1415,6 +1415,74 @@ impl App {
     pub(crate) async fn fetch_decodingus_y_tree(&self) -> Result<String, AppError> {
         let url = format!("{}/api/v1/y-tree/full", decodingus_appview_url());
         self.fetch_tree(&url, "decodingus-ytree.json").await
+    }
+
+    /// DecodingUs mtDNA tree-with-variants JSON from our AppView (`/api/v1/mt-tree/full`), host
+    /// from [`decodingus_appview_url`]. Same schema as the Y tree; coordinates are keyed by build,
+    /// but the mt tree currently carries only `hs1` (CHM13 `chrM`) positions — a *rotation* of rCRS
+    /// (~577, plus local indels), so callers must remap onto rCRS via [`mt_tree_rcrs`]. On-disk
+    /// cached like the other trees.
+    pub(crate) async fn fetch_decodingus_mt_tree(&self) -> Result<String, AppError> {
+        let url = format!("{}/api/v1/mt-tree/full", decodingus_appview_url());
+        self.fetch_tree(&url, "decodingus-mttree.json").await
+    }
+
+    /// The **mtDNA placement tree in rCRS coordinates**, with the provider tag. Prefers the
+    /// DecodingUs mt tree (the configured provider) remapped from its native `hs1` (CHM13 `chrM`)
+    /// positions onto rCRS, so it drops straight into the existing rCRS mt pipeline (FASTA/chip
+    /// sources and the `chrM` genotyper all speak rCRS). Falls back to the FTDNA mt tree (already
+    /// rCRS) when the DecodingUs tree or the CHM13 `chrM` needed to build the map is unavailable.
+    async fn mt_tree_rcrs(&self) -> Result<(navigator_analysis::haplo::HaploTree, &'static str), AppError> {
+        if let Some(tree) = self.decodingus_mt_tree_rcrs().await {
+            return Ok((tree, "decodingus"));
+        }
+        let json = self.fetch_ftdna_mt_tree().await?;
+        let tree = navigator_analysis::haplo::parse_ftdna_json(&json).map_err(AppError::Import)?;
+        Ok((tree, "ftdna"))
+    }
+
+    /// The DecodingUs mt tree parsed and remapped from `hs1` (CHM13 `chrM`) coordinates onto rCRS.
+    /// `None` (→ FTDNA fallback) when the tree can't be fetched, or the CHM13 reference isn't cached
+    /// to build the `hs1`↔rCRS map. Best-effort so an offline / reference-less workspace still works.
+    async fn decodingus_mt_tree_rcrs(&self) -> Option<navigator_analysis::haplo::HaploTree> {
+        let json = self.fetch_decodingus_mt_tree().await.ok()?;
+        let mut tree = navigator_analysis::haplo::parse_decodingus_json(&json, "hs1").ok()?;
+        let hs1_to_rcrs = self.hs1_to_rcrs_mt_map().await?;
+        // Remap each defining locus from hs1 (CHM13 chrM) to rCRS; drop any that don't map (indel
+        // regions near the rotation wrap). An emptied node still exists in the topology.
+        for node in tree.nodes.values_mut() {
+            node.loci.retain_mut(|l| match hs1_to_rcrs.get(&l.position) {
+                Some(&r) => {
+                    l.position = r;
+                    true
+                }
+                None => false,
+            });
+        }
+        Some(tree)
+    }
+
+    /// The `hs1` (CHM13 `chrM`, 1-based) → rCRS (1-based) position map, memoized for the process.
+    /// Built by aligning the bundled rCRS to the cached CHM13 reference's `chrM` (rotation-aware).
+    /// `None` when the CHM13 reference isn't cached (never forces a multi-GB download for this).
+    async fn hs1_to_rcrs_mt_map(&self) -> Option<HashMap<i64, i64>> {
+        static MAP: std::sync::OnceLock<Option<HashMap<i64, i64>>> = std::sync::OnceLock::new();
+        if let Some(m) = MAP.get() {
+            return m.clone();
+        }
+        let reference = self.gateway.cached_reference("chm13v2.0")?;
+        let pairs = tokio::task::spawn_blocking(move || {
+            navigator_analysis::reader::read_contig_sequence(&reference, "chrM").ok().map(|chrm| {
+                let chrm = String::from_utf8_lossy(&chrm).into_owned();
+                navigator_analysis::mtvariants::mt_position_map(navigator_analysis::mtvariants::rcrs(), &chrm)
+            })
+        })
+        .await
+        .ok()
+        .flatten();
+        // Invert to hs1(chrM)→rCRS; both stored 1-based (mt_position_map yields 0-based pairs).
+        let map = pairs.map(|p| p.into_iter().map(|(r, c)| (c as i64 + 1, r as i64 + 1)).collect());
+        MAP.get_or_init(|| map).clone()
     }
 
     /// FTDNA Y-DNA haplotree JSON, from the on-disk cache or freshly downloaded + cached.

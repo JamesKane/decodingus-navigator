@@ -44,10 +44,10 @@ pub enum Command {
     /// Run the per-alignment analysis steps with per-step wall-clock timing (the GUI Full Analysis
     /// path), to profile where time goes. Mutates the workspace (caches results).
     Analyze(AnalyzeArgs),
-    /// Rebuild the genome-consensus Y signature (variant profile + descent) for subjects, e.g. to
-    /// re-place existing profiles on the current tree provider. Reuses cached genotypes, so it is
-    /// cheap for already-analyzed subjects. By default only subjects that already have a Y profile
-    /// are rebuilt (`--all` rebuilds every subject).
+    /// Rebuild the genome-consensus Y and mtDNA signatures (variant profile + descent) for subjects,
+    /// e.g. to re-place existing profiles on the current tree provider. Reuses cached genotypes, so it
+    /// is cheap for already-analyzed subjects. By default only subjects that already have a Y or mt
+    /// profile are rebuilt (`--all` rebuilds every subject).
     RebuildSignatures(RebuildArgs),
 }
 
@@ -144,8 +144,8 @@ pub struct AnalyzeArgs {
 
 #[derive(Args)]
 pub struct RebuildArgs {
-    /// Rebuild every subject's Y signature, including those without one yet (default: only subjects
-    /// that already have a Y profile — the ones a placement change leaves stale).
+    /// Rebuild every subject's signatures, including those without one yet (default: only subjects
+    /// that already have a Y or mt profile — the ones a placement change leaves stale).
     #[arg(long)]
     all: bool,
     /// Restrict to subjects in this project (by exact name).
@@ -208,9 +208,10 @@ pub fn run(command: Command) -> i32 {
     })
 }
 
-/// Rebuild the genome-consensus Y signature for a set of subjects. Used to re-place existing
-/// profiles after a placement/tree-provider change: the batch analyzer only *creates* a signature
-/// when one is missing, so profiles built on an older tree stay stale until rebuilt here.
+/// Rebuild the genome-consensus Y **and** mtDNA signatures for a set of subjects. Used to re-place
+/// existing profiles after a placement/tree-provider change (e.g. the FTDNA→DecodingUs switch): the
+/// batch analyzer only *creates* a signature when one is missing, so profiles built on an older tree
+/// stay stale until rebuilt here.
 async fn rebuild_signatures(args: RebuildArgs) -> i32 {
     use std::time::Instant;
     let app = match open(args.db).await {
@@ -245,41 +246,40 @@ async fn rebuild_signatures(args: RebuildArgs) -> i32 {
                 continue;
             }
         }
-        // Default: only refresh subjects that already carry a Y profile (the stale ones). With
-        // --all, build for every subject (skips those with no Y evidence, which just yield empty).
+        let label = truncate(&b.donor_identifier, 24);
+        // Default: only refresh subjects that already carry a Y or mt profile (the stale ones). With
+        // --all, build for every subject (those with no evidence just yield an empty profile).
         if !args.all {
-            match app.cached_y_profile(b.guid).await {
-                Ok(Some(_)) => {}
-                Ok(None) => {
-                    skipped += 1;
-                    continue;
-                }
-                Err(e) => {
-                    eprintln!("FAIL {:<24} reading profile: {e}", truncate(&b.donor_identifier, 24));
-                    failed += 1;
-                    continue;
-                }
+            let has_y = matches!(app.cached_y_profile(b.guid).await, Ok(Some(_)));
+            let has_mt = matches!(app.cached_mt_profile(b.guid).await, Ok(Some(_)));
+            if !has_y && !has_mt {
+                skipped += 1;
+                continue;
             }
         }
+        // Rebuild both signatures; a source-less DNA type just produces an empty profile.
         let t = Instant::now();
-        match app.build_y_profile(b.guid).await {
-            Ok(p) => {
+        let y = app.build_y_profile(b.guid).await;
+        let m = app.build_mt_profile(b.guid).await;
+        match (&y, &m) {
+            (Err(e), _) | (_, Err(e)) => {
+                failed += 1;
+                eprintln!("FAIL {label:<24} {e}");
+            }
+            (Ok(yp), Ok(mp)) => {
                 rebuilt += 1;
                 println!(
-                    "OK   {:<24} {:<12} {:>3} variants  [{:.1?}]",
-                    truncate(&b.donor_identifier, 24),
-                    p.terminal.as_deref().unwrap_or("(none)"),
-                    p.variants.len(),
+                    "OK   {label:<24} Y {:<12} mt {:<10} ({}Y/{}mt variants) [{:.1?}]",
+                    yp.terminal.as_deref().unwrap_or("(none)"),
+                    mp.terminal.as_deref().unwrap_or("(none)"),
+                    yp.variants.len(),
+                    mp.variants.len(),
                     t.elapsed()
                 );
             }
-            Err(e) => {
-                failed += 1;
-                eprintln!("FAIL {:<24} {e}", truncate(&b.donor_identifier, 24));
-            }
         }
     }
-    println!("\nrebuilt {rebuilt} signature(s), {skipped} skipped (no profile), {failed} failed");
+    println!("\nrebuilt {rebuilt} subject(s), {skipped} skipped (no profile), {failed} failed");
     if failed > 0 {
         1
     } else {
