@@ -36,6 +36,33 @@ fn bgzf_worker_count() -> NonZeroUsize {
 use crate::error::AnalysisError;
 use crate::readview::{AlnRead, SeqRecord};
 
+/// Per-thread stack size (bytes) for any thread that decodes a BAM/**CRAM** record. noodles' CRAM
+/// decoder recurses proportionally to the data — notably the CRAM **3.1** codecs (range/arithmetic
+/// coder, fqzcomp, name tokenizer), which older 3.0 files never exercise — and can recurse deep
+/// enough to blow a default thread stack (2 MiB) or even rayon's pools. A stack overflow **aborts
+/// the process** (it is not a catchable panic), so a single deeply-encoded file would otherwise take
+/// down the whole app/batch. Give decode threads a generous stack. Override with
+/// `NAVIGATOR_DECODE_STACK_MB` (whole MiB; clamped to >= 8).
+pub fn decode_stack_size() -> usize {
+    let mb = std::env::var("NAVIGATOR_DECODE_STACK_MB")
+        .ok()
+        .and_then(|s| s.parse::<usize>().ok())
+        .unwrap_or(64)
+        .max(8);
+    mb * 1024 * 1024
+}
+
+/// Build a rayon pool whose worker threads have a decode-safe stack ([`decode_stack_size`]).
+/// Use this for any parallel work that decodes CRAM/BAM records — the rayon default (2 MiB) and
+/// even a modest fixed bump are not enough for deeply-encoded CRAM 3.1 files.
+pub fn decode_pool(threads: usize) -> Result<rayon::ThreadPool, AnalysisError> {
+    rayon::ThreadPoolBuilder::new()
+        .num_threads(threads)
+        .stack_size(decode_stack_size())
+        .build()
+        .map_err(|e| AnalysisError::Message(format!("thread pool: {e}")))
+}
+
 /// On-disk alignment container, by extension.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Format {
@@ -74,7 +101,7 @@ fn require_reference<'a>(path: &Path, reference: Option<&'a Path>) -> Result<&'a
 /// records are parsed sequentially (see [`bgzf_worker_count`]).
 pub enum SeqReader {
     Bam {
-        inner: bam::io::Reader<bgzf::MultithreadedReader<File>>,
+        inner: bam::io::Reader<bgzf::io::MultithreadedReader<File>>,
         path: PathBuf,
     },
     Cram {
@@ -89,7 +116,7 @@ pub fn open_seq(path: &Path, reference: Option<&Path>) -> Result<(sam::Header, S
     match detect_format(path) {
         Format::Bam => {
             let file = File::open(path).map_err(|e| AnalysisError::io(path, e))?;
-            let mt = bgzf::MultithreadedReader::with_worker_count(bgzf_worker_count(), file);
+            let mt = bgzf::io::MultithreadedReader::with_worker_count(bgzf_worker_count(), file);
             let mut inner = bam::io::Reader::from(mt);
             let header = inner.read_header().map_err(|e| AnalysisError::io(path, e))?;
             Ok((
@@ -178,7 +205,7 @@ impl SeqReader {
 /// An indexed reader over BAM or CRAM. Hold it and call [`IdxReader::query`].
 pub enum IdxReader {
     Bam {
-        inner: bam::io::IndexedReader<bgzf::Reader<File>>,
+        inner: bam::io::IndexedReader<bgzf::io::Reader<File>>,
         path: PathBuf,
     },
     Cram {
@@ -235,7 +262,7 @@ impl IdxReader {
             IdxReader::Bam { inner, path } => {
                 let path = path.clone();
                 let q = inner.query(header, region).map_err(|e| AnalysisError::io(&path, e))?;
-                Ok(Box::new(q.map(move |r| {
+                Ok(Box::new(q.records().map(move |r| {
                     let rec = r.map_err(|e| AnalysisError::io(&path, e))?;
                     RecordBuf::try_from_alignment_record(header, &rec).map_err(|e| AnalysisError::io(&path, e))
                 })))
@@ -294,7 +321,7 @@ impl IdxReader {
             IdxReader::Bam { inner, path } => {
                 let path = path.clone();
                 let q = inner.query(header, region).map_err(|e| AnalysisError::io(&path, e))?;
-                for r in q {
+                for r in q.records() {
                     sink.accept(&r.map_err(|e| AnalysisError::io(&path, e))?);
                 }
                 Ok(())

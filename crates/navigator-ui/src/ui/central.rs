@@ -362,6 +362,16 @@ impl NavigatorApp {
             .cloned();
         let Some(bio) = bio else { return };
         ui.add_space(6.0);
+        // When the subject was opened from a project's report, offer a way back to that project.
+        if let Some(pid) = self.return_to_project {
+            if ui.button(self.tr("detail.backToProject")).clicked() {
+                self.nav = Nav::Projects;
+                self.selected_project = Some(pid);
+                self.project_tab = ProjectTab::Report;
+                self.return_to_project = None;
+            }
+            ui.add_space(2.0);
+        }
         ui.horizontal(|ui| {
             ui.vertical(|ui| {
                 ui.heading(&bio.donor_identifier);

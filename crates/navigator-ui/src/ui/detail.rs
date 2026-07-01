@@ -1929,6 +1929,7 @@ impl NavigatorApp {
         let running = self.running || self.analyzing;
         let mut recompute: Option<i64> = None;
         let mut assign_y: Option<i64> = None;
+        let mut open_sample: Option<SampleGuid> = None;
 
         // Column widths, mirroring the old Grid order. The trailing "actions" column (index 14)
         // is neither sortable nor filterable.
@@ -2007,6 +2008,8 @@ impl NavigatorApp {
 
         let cov_label = self.tr("btn.cov");
         let y_label = self.tr("report.y");
+        let open_hint = self.tr("report.openSubject");
+        let failed_label = self.tr("report.failed");
         let report = &self.project_report;
         let ctl = &mut self.report_table_ctl;
 
@@ -2032,7 +2035,10 @@ impl NavigatorApp {
             body.rows(24.0, order.len(), |mut row| {
                 let r = &report[order[row.index()]];
                 row.col(|ui| {
-                    ui.label(&r.biosample.donor_identifier);
+                    // The sample name is a link into that subject's detail view (back-navigable).
+                    if ui.link(&r.biosample.donor_identifier).on_hover_text(open_hint).clicked() {
+                        open_sample = Some(r.biosample.guid);
+                    }
                 });
                 row.col(|ui| {
                     ui.label(r.alignment_count.to_string());
@@ -2040,7 +2046,14 @@ impl NavigatorApp {
                 // Mean coverage, with a "lite" badge when it's a partial sidecar estimate that a
                 // deep walk (the per-row coverage button) would upgrade.
                 row.col(|ui| {
-                    if r.coverage_partial {
+                    if let Some(err) = &r.decode_error {
+                        // The last walk failed (corrupt/undecodable file) — show it instead of a
+                        // silent "—" so the sample reads as failed, not merely un-analyzed.
+                        ui.add(egui::Label::new(
+                            egui::RichText::new(failed_label).small().color(egui::Color32::from_rgb(200, 80, 80)),
+                        ))
+                        .on_hover_text(err.as_str());
+                    } else if r.coverage_partial {
                         ui.label(fmt_depth(r.mean_coverage));
                         ui.add(egui::Label::new(
                             egui::RichText::new("lite").small().color(egui::Color32::from_rgb(180, 140, 40)),
@@ -2099,6 +2112,9 @@ impl NavigatorApp {
         });
         if shown == 0 {
             ui.label(egui::RichText::new(self.tr("project.noMatch")).weak());
+        }
+        if let Some(guid) = open_sample {
+            self.open_sample_from_project(guid);
         }
         if let Some(aln) = recompute {
             self.running = true;

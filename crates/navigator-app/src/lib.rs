@@ -512,19 +512,6 @@ fn tree_cache_is_fresh(path: &Path) -> bool {
 /// matches the variant reconcile's [`navigator_domain::consensus::obs_weight`] `SourceType` term;
 /// the highest-weight value wins per key. The pooled set is placed on the tree **once** (genome-
 /// level placement) instead of voting among per-run terminal labels.
-/// Is a variant set's stored build GRCh38 (the FTDNA tree's native Y coordinate space)? `None`
-/// (unknown build) is treated as GRCh38, matching the import default for a vendor Y VCF. Used to
-/// gate which variant sets may pool into the GRCh38 genome consensus without liftover.
-fn is_grch38_build(build: &Option<String>) -> bool {
-    match build {
-        None => true,
-        Some(b) => {
-            let b = b.to_ascii_lowercase();
-            b.contains("grch38") || b.contains("hg38") || b == "38" || b == "b38"
-        }
-    }
-}
-
 fn pool_votes<K, V>(sources: &[(SourceType, HashMap<K, V>)]) -> HashMap<K, V>
 where
     K: std::hash::Hash + Eq + Clone,
@@ -1223,10 +1210,18 @@ fn contributing_subdirs(root: &std::path::Path, files: &[PathBuf]) -> std::colle
 }
 
 /// Whether `name` is a primary chromosome (1–22, X, Y, M/MT), with or without a `chr` prefix —
-/// the contigs the whole-genome diploid caller runs over (skipping alts / decoys / unplaced).
+/// the contigs the whole-genome caller considers (skipping alts / decoys / unplaced).
 fn is_primary_contig(name: &str) -> bool {
     let s = name.strip_prefix("chr").unwrap_or(name).to_ascii_uppercase();
     matches!(s.as_str(), "X" | "Y" | "M" | "MT") || s.parse::<u32>().map(|n| (1..=22).contains(&n)).unwrap_or(false)
+}
+
+/// Whether `name` is a **haploid** contig — chrY and chrM/MT carry a single allele, so the diploid
+/// (het 0/1 + hom-alt 1/1) model doesn't apply; the haploid caller + Y/mt haplogroup placement own
+/// them. (chrX is haploid only in a male — left to the sex-aware refinement, not treated here.)
+fn is_haploid_contig(name: &str) -> bool {
+    let s = name.strip_prefix("chr").unwrap_or(name).to_ascii_uppercase();
+    matches!(s.as_str(), "Y" | "M" | "MT")
 }
 
 /// The result of one [`App::drain_outbox`] pass — what the UI reports / shows in its indicator.
@@ -1534,6 +1529,19 @@ use navigator_domain::seq::complement_base;
 
 /// The build a haplotree's positions are in, by contig: the FTDNA Y tree is GRCh38; mtDNA
 /// (`chrM`) is rCRS and stays a direct query (no chain), so it returns `None`.
+/// Whether a stored reference-build string denotes GRCh38 (the FTDNA Y tree's native coordinate
+/// space). `None` → assumed GRCh38 (the vendor-Y-VCF import default). Used by the FTDNA-provider Y
+/// consensus to admit only GRCh38 vendor sets (others wouldn't match the GRCh38 tree positions).
+fn is_grch38_build(build: &Option<String>) -> bool {
+    match build {
+        None => true,
+        Some(b) => {
+            let b = b.to_ascii_lowercase();
+            b.contains("grch38") || b.contains("hg38") || b == "38" || b == "b38"
+        }
+    }
+}
+
 fn tree_build_for_contig(contig: &str) -> Option<&'static str> {
     if contig.eq_ignore_ascii_case("chrY") {
         Some("GRCh38")
@@ -2103,7 +2111,26 @@ pub struct ProjectSampleReport {
     /// The coverage shown is a `partial` (lite sidecar) result — upgradeable by a deep walk.
     /// `false` when full (or no coverage yet).
     pub coverage_partial: bool,
+    /// The last analysis attempt on the primary alignment failed (e.g. a corrupt/undecodable CRAM),
+    /// carrying the failure message. `Some` distinguishes a genuinely-failed sample from one that's
+    /// merely un-analyzed, so the report shows "Failed" rather than a silent blank.
+    pub decode_error: Option<String>,
 }
+
+/// A persisted marker that a Navigator walk failed for an alignment (e.g. an undecodable / corrupt
+/// CRAM). Stored as the `error`/`"1"` artifact (see [`App::record_analysis_error`]) so failures are
+/// visible in the report instead of looking identical to un-analyzed samples.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct AnalysisError {
+    /// Which step failed (`metrics`, `Y`, …).
+    pub step: String,
+    /// The (truncated) error message.
+    pub message: String,
+}
+
+/// Artifact key for [`AnalysisError`] markers.
+pub(crate) const ERROR_KIND: &str = "error";
+pub(crate) const ERROR_VERSION: &str = "1";
 
 /// One member row of a project's FTDNA-style Y-DNA STR overview: identity columns + the subject's
 /// consensus STR marker values (normalized marker name → value) + terminal Y haplogroup. Members

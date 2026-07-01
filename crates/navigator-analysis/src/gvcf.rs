@@ -63,7 +63,7 @@ pub fn read_called_bases(
     params: &GvcfReadParams,
 ) -> Result<CalledBases, AnalysisError> {
     let file = std::fs::File::open(gvcf).map_err(|e| AnalysisError::io(gvcf, e))?;
-    read_called_bases_from(bgzf::Reader::new(file), contig, targets, params)
+    read_called_bases_from(bgzf::io::Reader::new(file), contig, targets, params)
 }
 
 /// Decode core over any `BufRead` (plain-text VCF in tests). Streams the whole file —

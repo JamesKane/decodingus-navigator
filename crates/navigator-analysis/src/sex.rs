@@ -167,7 +167,7 @@ impl SexState {
 fn tally_via_bai(bam_path: &Path) -> Result<Tally, AnalysisError> {
     let header = reader::read_header(bam_path, None)?;
     let bai_path = bam_path.with_extension("bam.bai");
-    let index = bam::bai::read(&bai_path).map_err(|e| AnalysisError::io(&bai_path, e))?;
+    let index = bam::bai::fs::read(&bai_path).map_err(|e| AnalysisError::io(&bai_path, e))?;
     let counts: Vec<u64> = index
         .reference_sequences()
         .iter()

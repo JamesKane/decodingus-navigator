@@ -2565,7 +2565,18 @@ pub fn spawn(db_path: PathBuf, wake: impl Fn() + Send + Sync + 'static) -> (Unbo
     std::thread::Builder::new()
         .name("navigator-worker".into())
         .spawn(move || {
-            let rt = match tokio::runtime::Runtime::new() {
+            // 64 MiB stacks. Two independent deep-recursion sources overflow tokio's default 2 MiB
+            // worker/blocking stack and abort the whole app mid-batch: (1) the Y/mt tree parse +
+            // placement recurse to the haplotree's depth (`flatten_du_node`, descent traversal) on
+            // deep lineages / the large FTDNA tree; (2) noodles' CRAM decoder recurses on
+            // `spawn_blocking` decode paths, deepest on CRAM 3.1 files (new range/fqzcomp/tokenizer
+            // codecs). Whole-genome record decode runs on `reader::decode_pool` instead; this covers
+            // the targeted decodes. See `NAVIGATOR_DECODE_STACK_MB`.
+            let rt = match tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .thread_stack_size(64 * 1024 * 1024)
+                .build()
+            {
                 Ok(rt) => rt,
                 Err(e) => {
                     let _ = evt_tx.send(Event::Error(format!("runtime: {e}")));

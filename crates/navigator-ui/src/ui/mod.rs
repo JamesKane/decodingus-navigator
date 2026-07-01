@@ -568,6 +568,9 @@ pub struct NavigatorApp {
     projects_collapsed: bool,
     overview: Vec<ProjectOverview>,
     selected_project: Option<i64>,
+    /// When a subject was opened from a project's report row, the project id to return to (drives
+    /// the detail header's "back to project" button). Cleared on any other navigation.
+    return_to_project: Option<i64>,
     /// Per-sample coverage/haplogroup report rows for the selected project.
     project_report: Vec<ProjectSampleReport>,
     /// Precomputed Y-STR overview (FTDNA-style chart) for the selected project; `None` until the
@@ -1004,6 +1007,7 @@ impl NavigatorApp {
             projects_collapsed: false,
             overview: Vec::new(),
             selected_project: None,
+            return_to_project: None,
             project_report: Vec::new(),
             project_str_chart: None,
             project_str_loading: false,

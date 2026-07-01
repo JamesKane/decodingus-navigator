@@ -1086,8 +1086,19 @@ impl NavigatorApp {
         }
     }
 
+    /// Open a subject from a project's report row: select it, switch to the Subjects view, and
+    /// remember the project so the detail header's "back to project" button can return there.
+    pub(crate) fn open_sample_from_project(&mut self, guid: SampleGuid) {
+        let pid = self.selected_project;
+        self.select_sample(guid); // clears return_to_project
+        self.return_to_project = pid;
+        self.nav = Nav::Subjects;
+    }
+
     pub(crate) fn select_sample(&mut self, guid: SampleGuid) {
         self.selected_sample = Some(guid);
+        // A plain selection isn't "from a project" — the project opener re-sets this after.
+        self.return_to_project = None;
         self.y_sub = YSub::default();
         self.y_snp_sub = YSnpSub::default();
         self.mt_sub = MtSub::default();

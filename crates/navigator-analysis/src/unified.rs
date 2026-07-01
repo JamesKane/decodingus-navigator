@@ -382,10 +382,12 @@ pub fn collect_unified_metrics_parallel_with_progress(
         Ok(sink.rm)
     };
 
-    let pool = rayon::ThreadPoolBuilder::new()
-        .num_threads(n_threads)
-        .build()
-        .map_err(|e| AnalysisError::Message(format!("thread pool: {e}")))?;
+    // noodles' CRAM decoder can recurse deeply enough to blow rayon's default 2 MiB worker stack
+    // (the main thread's larger stack handles the same file in the sequential walker). CRAM 3.1
+    // files (new range/arithmetic + fqzcomp + name-tokenizer codecs) recurse deeper still. Give the
+    // workers a generous decode-safe stack so the per-contig CRAM decode doesn't overflow — an
+    // overflow aborts the whole process, so this must not be marginal.
+    let pool = reader::decode_pool(n_threads)?;
 
     let (contig_results, unmapped_rm) = pool.install(|| {
         rayon::join(
@@ -471,7 +473,7 @@ pub fn profile_contig(
         let q = inner
             .query(&header, &region)
             .map_err(|e| AnalysisError::io(bam_path, e))?;
-        for r in q {
+        for r in q.records() {
             let rec = r.map_err(|e| AnalysisError::io(bam_path, e))?;
             std::hint::black_box(rec.flags());
             std::hint::black_box(rec.sequence().len());

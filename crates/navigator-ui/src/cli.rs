@@ -41,6 +41,14 @@ pub enum Command {
     Call(CallArgs),
     /// Lift a VCF from one reference build to another (chain-based; the GATK LiftoverVcf replacement).
     LiftVcf(LiftVcfArgs),
+    /// Run the per-alignment analysis steps with per-step wall-clock timing (the GUI Full Analysis
+    /// path), to profile where time goes. Mutates the workspace (caches results).
+    Analyze(AnalyzeArgs),
+    /// Rebuild the genome-consensus Y and mtDNA signatures (variant profile + descent) for subjects,
+    /// e.g. to re-place existing profiles on the current tree provider. Reuses cached genotypes, so it
+    /// is cheap for already-analyzed subjects. By default only subjects that already have a Y or mt
+    /// profile are rebuilt (`--all` rebuilds every subject).
+    RebuildSignatures(RebuildArgs),
 }
 
 #[derive(Args)]
@@ -125,6 +133,30 @@ pub struct CallArgs {
 }
 
 #[derive(Args)]
+pub struct AnalyzeArgs {
+    /// Alignment id to analyze (from `show --json`).
+    #[arg(long, short)]
+    alignment: i64,
+    /// Workspace database path (defaults to the GUI's ~/.decodingus/navigator-rs.db).
+    #[arg(long)]
+    db: Option<PathBuf>,
+}
+
+#[derive(Args)]
+pub struct RebuildArgs {
+    /// Rebuild every subject's signatures, including those without one yet (default: only subjects
+    /// that already have a Y or mt profile — the ones a placement change leaves stale).
+    #[arg(long)]
+    all: bool,
+    /// Restrict to subjects in this project (by exact name).
+    #[arg(long, short)]
+    project: Option<String>,
+    /// Workspace database path (defaults to the GUI's ~/.decodingus/navigator-rs.db).
+    #[arg(long)]
+    db: Option<PathBuf>,
+}
+
+#[derive(Args)]
 pub struct LiftVcfArgs {
     /// Input VCF (`.vcf` or `.vcf.gz`).
     #[arg(long, short)]
@@ -149,7 +181,15 @@ pub struct LiftVcfArgs {
 /// Run a CLI subcommand to completion, returning a process exit code. Spins its own tokio
 /// runtime so `main` (which must keep the GUI on the main thread) stays sync.
 pub fn run(command: Command) -> i32 {
-    let rt = match tokio::runtime::Runtime::new() {
+    // 64 MiB stacks: Y/mt tree parse + placement recurse to the haplotree depth, and noodles' CRAM
+    // decoder recurses on `spawn_blocking` decode paths (deepest on CRAM 3.1) — either overflows
+    // tokio's default 2 MiB stack and aborts the process (matches the GUI worker runtime). See
+    // `NAVIGATOR_DECODE_STACK_MB`.
+    let rt = match tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .thread_stack_size(64 * 1024 * 1024)
+        .build()
+    {
         Ok(rt) => rt,
         Err(e) => {
             eprintln!("error: could not start runtime: {e}");
@@ -164,8 +204,146 @@ pub fn run(command: Command) -> i32 {
             Command::Projects(a) => projects(a).await,
             Command::Call(a) => call(a).await,
             Command::LiftVcf(a) => lift_vcf(a).await,
+            Command::Analyze(a) => analyze(a).await,
+            Command::RebuildSignatures(a) => rebuild_signatures(a).await,
         }
     })
+}
+
+/// Rebuild the genome-consensus Y **and** mtDNA signatures for a set of subjects. Used to re-place
+/// existing profiles after a placement/tree-provider change (e.g. the FTDNA→DecodingUs switch): the
+/// batch analyzer only *creates* a signature when one is missing, so profiles built on an older tree
+/// stay stale until rebuilt here.
+async fn rebuild_signatures(args: RebuildArgs) -> i32 {
+    use std::time::Instant;
+    let app = match open(args.db).await {
+        Ok(a) => a,
+        Err(c) => return c,
+    };
+
+    // Resolve the optional project filter to an id.
+    let project_id = match &args.project {
+        Some(name) => {
+            let overview = app.project_overview().await.unwrap_or_default();
+            match overview.iter().find(|o| o.project.name == *name) {
+                Some(o) => Some(o.project.id),
+                None => {
+                    eprintln!("error: no project named \"{name}\"");
+                    return 1;
+                }
+            }
+        }
+        None => None,
+    };
+
+    let bios = match app.list_all_biosamples().await {
+        Ok(v) => v,
+        Err(e) => return report(e),
+    };
+
+    let (mut rebuilt, mut skipped, mut failed) = (0usize, 0usize, 0usize);
+    for b in &bios {
+        if let Some(pid) = project_id {
+            if b.project_id != Some(pid) {
+                continue;
+            }
+        }
+        let label = truncate(&b.donor_identifier, 24);
+        // Default: only refresh subjects that already carry a Y or mt profile (the stale ones). With
+        // --all, build for every subject (those with no evidence just yield an empty profile).
+        if !args.all {
+            let has_y = matches!(app.cached_y_profile(b.guid).await, Ok(Some(_)));
+            let has_mt = matches!(app.cached_mt_profile(b.guid).await, Ok(Some(_)));
+            if !has_y && !has_mt {
+                skipped += 1;
+                continue;
+            }
+        }
+        // Rebuild both signatures; a source-less DNA type just produces an empty profile.
+        let t = Instant::now();
+        let y = app.build_y_profile(b.guid).await;
+        let m = app.build_mt_profile(b.guid).await;
+        match (&y, &m) {
+            (Err(e), _) | (_, Err(e)) => {
+                failed += 1;
+                eprintln!("FAIL {label:<24} {e}");
+            }
+            (Ok(yp), Ok(mp)) => {
+                rebuilt += 1;
+                println!(
+                    "OK   {label:<24} Y {:<12} mt {:<10} ({}Y/{}mt variants) [{:.1?}]",
+                    yp.terminal.as_deref().unwrap_or("(none)"),
+                    mp.terminal.as_deref().unwrap_or("(none)"),
+                    yp.variants.len(),
+                    mp.variants.len(),
+                    t.elapsed()
+                );
+            }
+        }
+    }
+    println!("\nrebuilt {rebuilt} subject(s), {skipped} skipped (no profile), {failed} failed");
+    if failed > 0 {
+        1
+    } else {
+        0
+    }
+}
+
+/// Time the per-alignment analysis steps (the GUI Full Analysis path) to profile where time goes.
+async fn analyze(args: AnalyzeArgs) -> i32 {
+    use std::time::Instant;
+    let app = match open(args.db).await {
+        Ok(a) => a,
+        Err(c) => return c,
+    };
+    let id = args.alignment;
+    eprintln!("analyzing alignment #{id} (cold — run_* recompute, exercising localize + scoping)…");
+
+    let t = Instant::now();
+    match app.run_unified_metrics(id).await {
+        Ok(r) => {
+            eprintln!(
+                "  [{:>8.1?}]  Step 1: unified metrics (coverage + sex + read-metrics, incl. localize copy) — coverage mean {:.2}x",
+                t.elapsed(),
+                r.coverage.mean_coverage
+            );
+            // Mirror the batch path: clear any stale failure marker now that the walk succeeded.
+            app.clear_analysis_error(id).await;
+        }
+        Err(e) => {
+            eprintln!("  Step 1 (unified metrics) FAILED: {e}");
+            // Persist the failure (corrupt/undecodable file) so the project report surfaces it.
+            app.record_analysis_error(id, "metrics", &e.to_string()).await;
+            return 1;
+        }
+    }
+
+    let t = Instant::now();
+    match app.assign_y_haplogroup(id).await {
+        Ok(a) => eprintln!(
+            "  [{:>8.1?}]  Step 3: Y haplogroup placement — {}",
+            t.elapsed(),
+            a.ranked.first().map(|h| h.name.as_str()).unwrap_or("(none)")
+        ),
+        Err(e) => eprintln!("  Step 3 (Y placement) FAILED: {e}"),
+    }
+
+    // Step 4: build the genome-consensus Y signature (deep placement + variant profile → descent
+    // report), mirroring batch analysis so the descent report is ready without an explicit click.
+    if let Ok(bio) = app.biosample_of_alignment(id).await {
+        let t = Instant::now();
+        match app.build_y_profile(bio).await {
+            Ok(p) => eprintln!(
+                "  [{:>8.1?}]  Step 4: Y signature — terminal {} · {} variants",
+                t.elapsed(),
+                p.terminal.as_deref().unwrap_or("(none)"),
+                p.variants.len()
+            ),
+            Err(e) => eprintln!("  Step 4 (Y signature) FAILED: {e}"),
+        }
+    }
+    eprintln!("done.");
+    0
 }
 
 fn db_path(over: Option<PathBuf>) -> PathBuf {

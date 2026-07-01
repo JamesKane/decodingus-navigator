@@ -100,7 +100,11 @@ impl App {
         let Some(run) = sequence_run::get(self.store.pool(), aln.sequence_run_id).await? else {
             return Ok(None);
         };
-        let contigs: &[&str] = match navigator_domain::testtype::by_code(&run.test_type).map(|t| t.target) {
+        // `target_of` (not bare `by_code`) so a stored human label like "Big Y" — which a bulk
+        // import / --test-type override writes instead of BIG_Y_500/700 — still scopes the walk to
+        // chrY+chrM. Otherwise coverage walks the whole genome, which on a targeted multi-reference
+        // CRAM is the ~1-hour batch-analysis stall.
+        let contigs: &[&str] = match navigator_domain::testtype::target_of(&run.test_type) {
             Some(TargetType::YChromosome) => &["chrY", "Y", "chrM", "chrMT", "M", "MT"],
             Some(TargetType::MtDna) => &["chrM", "chrMT", "M", "MT"],
             _ => return Ok(None),
@@ -232,6 +236,47 @@ impl App {
         self.load_analysis(alignment_id, "read_metrics", "1").await
     }
 
+    /// Local on-disk cache for alignments copied off a slow/removable volume (see [`localize`]).
+    pub(crate) fn align_cache_dir() -> std::path::PathBuf {
+        navigator_refgenome::cache::base_dir().join("cache").join("aln")
+    }
+
+    /// If `remote` lives on a slow/removable volume (a `/Volumes/…` mount), copy it — and its `.crai`
+    /// / `.bai` index — into the local cache and return the *local* path; otherwise return `remote`
+    /// unchanged. The analysis walkers do random-access record iteration (region seeks, per-read
+    /// decode), which is pathologically slow over a network/USB mount even though a plain sequential
+    /// **copy** of the same file is fast — so we pay one fast bulk copy up front and let every
+    /// subsequent pass read from local disk. The copy is reused across a subject's passes and cleared
+    /// per subject by [`clear_align_cache`]. A copy failure falls back to the remote path (slow, but
+    /// still works).
+    pub(crate) async fn localize(&self, remote: &Path) -> PathBuf {
+        if std::env::var_os("NAVIGATOR_NO_LOCALIZE").is_some() || !is_removable_volume(remote) {
+            return remote.to_path_buf();
+        }
+        let cache = Self::align_cache_dir();
+        let local = cache.join(local_cache_name(remote));
+        if local.is_file() {
+            return local;
+        }
+        let (remote_owned, local2) = (remote.to_path_buf(), local.clone());
+        match tokio::task::spawn_blocking(move || copy_with_index(&remote_owned, &local2)).await {
+            Ok(Ok(())) => local,
+            Ok(Err(e)) => {
+                eprintln!("localize: copy failed ({e}); reading from the original (slow)");
+                remote.to_path_buf()
+            }
+            Err(e) => {
+                eprintln!("localize: copy task failed ({e}); reading from the original (slow)");
+                remote.to_path_buf()
+            }
+        }
+    }
+
+    /// Drop the local alignment cache (called per subject so the batch holds at most one file).
+    pub(crate) fn clear_align_cache() {
+        let _ = std::fs::remove_dir_all(Self::align_cache_dir());
+    }
+
     /// Run the unified quality-metrics walker — coverage + callable, read-level QC metrics, and
     /// sex inference in **one pass** over the alignment's BAM/CRAM (vs. the separate passes
     /// `run_coverage` + `run_read_metrics` + `run_sex` cost: 2 reads for BAM, 3 for CRAM). All
@@ -252,7 +297,12 @@ impl App {
         progress: impl Fn(usize, usize) + Send + Sync + 'static,
     ) -> Result<UnifiedMetricsResult, AppError> {
         let aln = self.alignment_or_err(alignment_id).await?;
-        let bam = PathBuf::from(aln.bam_path.ok_or(AppError::MissingPaths(alignment_id))?);
+        let run_id = aln.sequence_run_id;
+        // Copy off a slow/removable volume to local disk first — the walker's random-access record
+        // iteration is far slower over a network/USB mount than a one-shot bulk copy.
+        let bam = self
+            .localize(Path::new(&aln.bam_path.ok_or(AppError::MissingPaths(alignment_id))?))
+            .await;
         // The walker requires a reference (CRAM decode + reference-N detection); resolve the
         // build via the gateway when no FASTA was stored at import.
         let reference = match aln.reference_path {
@@ -294,9 +344,39 @@ impl App {
         self.save_analysis(alignment_id, "read_metrics", "1", &result.read_metrics)
             .await?;
         self.write_back_read_stats(alignment_id, &result.read_metrics).await?;
-        if let Some(sex) = &result.sex {
+        // Sex: a Y-targeted test (Big Y, Y Elite, …) sequences the donor's Y chromosome — he is male
+        // by definition. The chrX/autosome ratio the inference needs isn't present in a chrY-scoped
+        // walk, and is unreliable even whole-genome (a Big Y's off-target chrX ≈ autosome ≈ 0.4×
+        // reads as *female*). So force Male for a Y-targeted test, overriding the inference + any
+        // prior auto-assignment; WGS / mt-targeted keep the walk's result.
+        let y_targeted = matches!(
+            sequence_run::get(self.store.pool(), run_id)
+                .await?
+                .as_ref()
+                .and_then(|r| navigator_domain::testtype::target_of(&r.test_type)),
+            Some(navigator_domain::testtype::TargetType::YChromosome)
+        );
+        let sex = if y_targeted {
+            Some(navigator_analysis::sex::SexInferenceResult {
+                inferred_sex: navigator_analysis::sex::InferredSex::Male,
+                x_autosome_ratio: 0.0,
+                autosome_mean_coverage: 0.0,
+                x_coverage: 0.0,
+                confidence: navigator_analysis::sex::Confidence::High,
+            })
+        } else {
+            result.sex
+        };
+        if let Some(sex) = &sex {
             self.save_analysis(alignment_id, "sex", "1", sex).await?;
-            self.write_back_inferred_sex(alignment_id, sex).await?;
+            if y_targeted {
+                // Definitive (Y test ⇒ male): override any prior auto-inferred sex, not write-if-empty.
+                if let Ok(guid) = self.biosample_of_alignment(alignment_id).await {
+                    biosample::set_sex(self.store.pool(), guid, "Male").await?;
+                }
+            } else {
+                self.write_back_inferred_sex(alignment_id, sex).await?;
+            }
         }
         Ok(result)
     }
@@ -614,15 +694,20 @@ impl App {
         ))
     }
 
-    /// A **whole-genome** diploid VCF: de-novo SNV + indel calls over every primary chromosome
-    /// (1–22, X, Y, M) of the alignment, per-contig cached. Heavy (a real WGS calling pass); the
-    /// caller runs it off the UI thread (the export path).
+    /// A **whole-genome** diploid VCF: de-novo SNV + indel calls over the diploid primary
+    /// chromosomes (1–22, X) of the alignment, per-contig cached. chrY and chrM are **excluded** —
+    /// they're haploid, so the diploid (het 0/1) model is wrong for them; their variants come from
+    /// the haploid caller and the Y/mt haplogroup + mtDNA-mutation features. Heavy (a real WGS
+    /// calling pass); the caller runs it off the UI thread (the export path).
     pub async fn diploid_vcf_genome(&self, alignment_id: i64) -> Result<String, AppError> {
         let (bam, reference) = self.alignment_bam_reference(alignment_id).await?;
         let contigs =
             tokio::task::spawn_blocking(move || caller::header_contig_names(&bam, Some(&reference))).await??;
         let mut all = Vec::new();
-        for contig in contigs.into_iter().filter(|c| is_primary_contig(c)) {
+        for contig in contigs
+            .into_iter()
+            .filter(|c| is_primary_contig(c) && !is_haploid_contig(c))
+        {
             all.extend(self.run_diploid_calls(alignment_id, contig).await?);
         }
         Ok(navigator_analysis::vcf::write_diploid_vcf(
@@ -776,4 +861,46 @@ impl App {
         self.run_denovo_caller(alignment_id, bam, reference, contig, params)
             .await
     }
+}
+
+/// True for a path on a removable/network mount (macOS `/Volumes/…`), where per-record random access
+/// is slow but a bulk sequential copy is fast — the case [`App::localize`] copies to local disk.
+fn is_removable_volume(p: &Path) -> bool {
+    p.starts_with("/Volumes/")
+}
+
+/// A collision-free local filename for a remote alignment. Every kit's file is named `chrYM.cram`,
+/// so the basename alone collides; hash the full remote path and keep the extension so the reader
+/// still finds the sibling index at `<local>.crai` / `<local>.bai`.
+fn local_cache_name(remote: &Path) -> String {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    remote.to_string_lossy().hash(&mut h);
+    let ext = remote.extension().and_then(|e| e.to_str()).unwrap_or("bam");
+    format!("{:016x}.{ext}", h.finish())
+}
+
+/// Copy `remote` → `local` plus its index sibling. The index is copied **first** and the main file
+/// last (via a temp + rename), so a present `local` always implies its index is present too — the
+/// `is_file` cache check in [`App::localize`] can't see a half-copied pair.
+fn copy_with_index(remote: &Path, local: &Path) -> std::io::Result<()> {
+    if let Some(parent) = local.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let (rstr, lstr) = (remote.to_string_lossy(), local.to_string_lossy());
+    for suffix in [".crai", ".bai"] {
+        let ri = PathBuf::from(format!("{rstr}{suffix}"));
+        if ri.is_file() {
+            std::fs::copy(&ri, PathBuf::from(format!("{lstr}{suffix}")))?;
+        }
+    }
+    // BAM index sometimes drops the .bam: `<stem>.bai`.
+    let ri = remote.with_extension("bai");
+    if ri.is_file() {
+        std::fs::copy(&ri, local.with_extension("bai"))?;
+    }
+    let tmp = local.with_extension("partial");
+    std::fs::copy(remote, &tmp)?;
+    std::fs::rename(&tmp, local)?;
+    Ok(())
 }
