@@ -181,11 +181,13 @@ pub struct LiftVcfArgs {
 /// Run a CLI subcommand to completion, returning a process exit code. Spins its own tokio
 /// runtime so `main` (which must keep the GUI on the main thread) stays sync.
 pub fn run(command: Command) -> i32 {
-    // 16 MiB stacks: Y/mt tree parse + placement recurse to the haplotree depth and overflow
-    // tokio's default 2 MiB worker stack on deep lineages (matches the GUI worker runtime).
+    // 64 MiB stacks: Y/mt tree parse + placement recurse to the haplotree depth, and noodles' CRAM
+    // decoder recurses on `spawn_blocking` decode paths (deepest on CRAM 3.1) — either overflows
+    // tokio's default 2 MiB stack and aborts the process (matches the GUI worker runtime). See
+    // `NAVIGATOR_DECODE_STACK_MB`.
     let rt = match tokio::runtime::Builder::new_multi_thread()
         .enable_all()
-        .thread_stack_size(16 * 1024 * 1024)
+        .thread_stack_size(64 * 1024 * 1024)
         .build()
     {
         Ok(rt) => rt,

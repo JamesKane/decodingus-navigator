@@ -36,6 +36,33 @@ fn bgzf_worker_count() -> NonZeroUsize {
 use crate::error::AnalysisError;
 use crate::readview::{AlnRead, SeqRecord};
 
+/// Per-thread stack size (bytes) for any thread that decodes a BAM/**CRAM** record. noodles' CRAM
+/// decoder recurses proportionally to the data — notably the CRAM **3.1** codecs (range/arithmetic
+/// coder, fqzcomp, name tokenizer), which older 3.0 files never exercise — and can recurse deep
+/// enough to blow a default thread stack (2 MiB) or even rayon's pools. A stack overflow **aborts
+/// the process** (it is not a catchable panic), so a single deeply-encoded file would otherwise take
+/// down the whole app/batch. Give decode threads a generous stack. Override with
+/// `NAVIGATOR_DECODE_STACK_MB` (whole MiB; clamped to >= 8).
+pub fn decode_stack_size() -> usize {
+    let mb = std::env::var("NAVIGATOR_DECODE_STACK_MB")
+        .ok()
+        .and_then(|s| s.parse::<usize>().ok())
+        .unwrap_or(64)
+        .max(8);
+    mb * 1024 * 1024
+}
+
+/// Build a rayon pool whose worker threads have a decode-safe stack ([`decode_stack_size`]).
+/// Use this for any parallel work that decodes CRAM/BAM records — the rayon default (2 MiB) and
+/// even a modest fixed bump are not enough for deeply-encoded CRAM 3.1 files.
+pub fn decode_pool(threads: usize) -> Result<rayon::ThreadPool, AnalysisError> {
+    rayon::ThreadPoolBuilder::new()
+        .num_threads(threads)
+        .stack_size(decode_stack_size())
+        .build()
+        .map_err(|e| AnalysisError::Message(format!("thread pool: {e}")))
+}
+
 /// On-disk alignment container, by extension.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Format {

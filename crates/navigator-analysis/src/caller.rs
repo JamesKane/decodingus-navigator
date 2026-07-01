@@ -636,13 +636,22 @@ pub fn genotype_sites_all_contigs(
     params: &HaploidCallerParams,
     reference: Option<&Path>,
 ) -> Result<Vec<SiteGenotype>, AnalysisError> {
-    let contigs: std::collections::BTreeSet<&str> = sites.iter().map(|s| s.contig.as_str()).collect();
-    let per_contig: Result<Vec<Vec<SiteGenotype>>, AnalysisError> = contigs
+    let contigs: Vec<&str> = sites
+        .iter()
+        .map(|s| s.contig.as_str())
+        .collect::<std::collections::BTreeSet<&str>>()
         .into_iter()
-        .collect::<Vec<_>>()
-        .into_par_iter()
-        .map(|contig| genotype_sites(bam_path, contig, sites, ploidy, params, reference))
         .collect();
+    // Run on a decode-safe pool rather than rayon's global pool (2 MiB stacks): each task decodes
+    // CRAM records, which recurse deeply on CRAM 3.1 and would otherwise overflow + abort. See
+    // [`reader::decode_pool`].
+    let pool = crate::reader::decode_pool(contigs.len().max(1).min(crate::unified::analysis_thread_count()))?;
+    let per_contig: Result<Vec<Vec<SiteGenotype>>, AnalysisError> = pool.install(|| {
+        contigs
+            .into_par_iter()
+            .map(|contig| genotype_sites(bam_path, contig, sites, ploidy, params, reference))
+            .collect()
+    });
     Ok(per_contig?.into_iter().flatten().collect())
 }
 
@@ -829,10 +838,9 @@ pub fn call_denovo(
         emit_lo = emit_hi + 1;
     }
 
-    let pool = rayon::ThreadPoolBuilder::new()
-        .num_threads(threads)
-        .build()
-        .map_err(|e| AnalysisError::Message(format!("rayon pool: {e}")))?;
+    // Decode-safe worker stack: these tasks decode CRAM records, which recurse deeply on CRAM 3.1
+    // (an overflow aborts the process). See [`reader::decode_pool`].
+    let pool = crate::reader::decode_pool(threads)?;
     let nested: Vec<Vec<VariantCall>> = pool.install(|| {
         ranges
             .par_iter()
@@ -950,10 +958,8 @@ pub fn call_denovo_diploid(
         emit_lo = emit_hi + 1;
     }
 
-    let pool = rayon::ThreadPoolBuilder::new()
-        .num_threads(threads)
-        .build()
-        .map_err(|e| AnalysisError::Message(format!("rayon pool: {e}")))?;
+    // Decode-safe worker stack (CRAM 3.1 decode recursion — see [`reader::decode_pool`]).
+    let pool = crate::reader::decode_pool(threads)?;
     let nested: Vec<Vec<SiteGenotype>> = pool.install(|| {
         ranges
             .par_iter()

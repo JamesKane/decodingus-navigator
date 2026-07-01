@@ -383,13 +383,11 @@ pub fn collect_unified_metrics_parallel_with_progress(
     };
 
     // noodles' CRAM decoder can recurse deeply enough to blow rayon's default 2 MiB worker stack
-    // (the main thread's larger stack handles the same file in the sequential walker). Give the
-    // workers an 16 MiB stack so the per-contig CRAM decode doesn't overflow.
-    let pool = rayon::ThreadPoolBuilder::new()
-        .num_threads(n_threads)
-        .stack_size(16 * 1024 * 1024)
-        .build()
-        .map_err(|e| AnalysisError::Message(format!("thread pool: {e}")))?;
+    // (the main thread's larger stack handles the same file in the sequential walker). CRAM 3.1
+    // files (new range/arithmetic + fqzcomp + name-tokenizer codecs) recurse deeper still. Give the
+    // workers a generous decode-safe stack so the per-contig CRAM decode doesn't overflow — an
+    // overflow aborts the whole process, so this must not be marginal.
+    let pool = reader::decode_pool(n_threads)?;
 
     let (contig_results, unmapped_rm) = pool.install(|| {
         rayon::join(
