@@ -1599,6 +1599,43 @@ async fn import_project_dir_creates_rows_is_idempotent_and_coverage_runs_on_cram
 }
 
 #[tokio::test]
+async fn reimport_under_different_project_name_reuses_subject() {
+    // A person is one subject across projects: re-importing the same sample folder under a
+    // different project name must reuse the subject (join it to the new project), not duplicate it.
+    let app = app().await;
+    let fx = fixtures();
+    let reference = fx.join("ref.fa");
+
+    let stage = |tag: &str| {
+        let root = std::env::temp_dir().join(format!("dun-reimport-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let sample = root.join("HG00096");
+        std::fs::create_dir_all(&sample).unwrap();
+        std::fs::copy(fx.join("coverage.cram"), sample.join("HG00096.chm13.cram")).unwrap();
+        std::fs::copy(fx.join("coverage.cram.crai"), sample.join("HG00096.chm13.cram.crai")).unwrap();
+        root
+    };
+
+    let a = stage("a");
+    let s1 = app.import_project_dir(&a, Some(reference.clone()), "t".into(), false).await.unwrap();
+    assert_eq!(s1.samples_created, 1);
+
+    // Same sample, different folder name → a distinct project, but the SAME person.
+    let b = stage("b");
+    let s2 = app.import_project_dir(&b, Some(reference), "t".into(), false).await.unwrap();
+    assert_ne!(s2.project.id, s1.project.id, "a different folder name is a different project");
+    assert_eq!(s2.samples_created, 0, "the subject is reused, not duplicated");
+
+    // Exactly one subject in the workspace, and it's a roster member of BOTH projects.
+    assert_eq!(app.list_all_biosamples().await.unwrap().len(), 1);
+    assert_eq!(app.list_biosamples(s1.project.id).await.unwrap().len(), 1);
+    assert_eq!(app.list_biosamples(s2.project.id).await.unwrap().len(), 1);
+
+    let _ = std::fs::remove_dir_all(&a);
+    let _ = std::fs::remove_dir_all(&b);
+}
+
+#[tokio::test]
 async fn project_report_rolls_up_coverage_and_csv_round_trips() {
     let app = app().await;
     let fx = fixtures();

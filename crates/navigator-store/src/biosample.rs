@@ -61,6 +61,19 @@ pub async fn get(pool: &SqlitePool, guid: SampleGuid) -> Result<Option<Biosample
     row.map(Row::into_domain).transpose()
 }
 
+/// Find an existing subject by its donor identifier — a person is one subject across projects, so
+/// importers reuse it rather than duplicating. Deterministic (`guid` order) when several share an
+/// identifier. Case-sensitive, matching how identifiers are stored.
+pub async fn find_by_donor(pool: &SqlitePool, donor_identifier: &str) -> Result<Option<Biosample>, StoreError> {
+    let row: Option<Row> = sqlx::query_as(&format!(
+        "SELECT {COLS} FROM biosample WHERE donor_identifier = ? ORDER BY guid LIMIT 1"
+    ))
+    .bind(donor_identifier)
+    .fetch_optional(pool)
+    .await?;
+    row.map(Row::into_domain).transpose()
+}
+
 /// Set the biosample's recorded sex (e.g. write back an inferred sex when the user left it blank).
 pub async fn set_sex(pool: &SqlitePool, guid: SampleGuid, sex: &str) -> Result<(), StoreError> {
     sqlx::query("UPDATE biosample SET sex = ? WHERE guid = ?")

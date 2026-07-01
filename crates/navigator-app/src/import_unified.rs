@@ -391,12 +391,11 @@ impl App {
         };
 
         for sample in &discovered.samples {
-            // Biosample: reuse by donor identifier within the project.
-            let biosample = match biosample::list_for_project(self.store.pool(), project.id)
-                .await?
-                .into_iter()
-                .find(|b| b.donor_identifier == sample.sample_id)
-            {
+            // Biosample: reuse an existing subject with this donor identifier **anywhere in the
+            // workspace** — a person is one subject across projects. Scoping the lookup to the target
+            // project duplicated everyone when the same folder was re-imported under a different
+            // project name (a person then existed once per project). Create only when truly new.
+            let biosample = match biosample::find_by_donor(self.store.pool(), &sample.sample_id).await? {
                 Some(b) => b,
                 None => {
                     summary.samples_created += 1;
@@ -409,6 +408,10 @@ impl App {
                     .await?
                 }
             };
+            // Ensure the subject is a member of this project (idempotent on the (guid, project) PK).
+            // A reused subject whose *home* project is another one still joins this project's roster.
+            biosample_project::add(self.store.pool(), biosample.guid, project.id, None, &Utc::now().to_rfc3339())
+                .await?;
 
             // SequenceRun: reuse the first existing run, else create one (defaults to WGS).
             let run = match sequence_run::list_for_biosample(self.store.pool(), biosample.guid)

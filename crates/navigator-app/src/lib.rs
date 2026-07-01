@@ -438,9 +438,9 @@ pub use navigator_store::dm::{DmConversationSummary, DmMessage};
 pub use navigator_store::ibd_exchange::StoredIbdExchange;
 pub use navigator_store::source_file::SourceFile;
 use navigator_store::{
-    alignment, ancestry_result, artifact, biosample, chip_profile, consensus_painting, consensus_profile,
-    haplogroup_call, mtdna as mtdna_store, project, reconciliation as recon_store, sequence_run, source_file,
-    str_profile, sync_history, sync_outbox, sync_state, variant_set, Store, StoreError,
+    alignment, ancestry_result, artifact, biosample, biosample_project, chip_profile, consensus_painting,
+    consensus_profile, haplogroup_call, mtdna as mtdna_store, project, reconciliation as recon_store, sequence_run,
+    source_file, str_profile, sync_history, sync_outbox, sync_state, variant_set, Store, StoreError,
 };
 use serde::de::DeserializeOwned;
 use serde::Serialize;
