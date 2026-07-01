@@ -517,17 +517,23 @@ impl App {
     pub async fn build_y_profile(&self, biosample_guid: SampleGuid) -> Result<YProfile, AppError> {
         let mut sources: Vec<(String, SourceType, Vec<YObsInput>)> = Vec::new();
 
-        // One source per alignment — a *fresh* placement (the cached terminal-only path lacks the
-        // per-SNP branch evidence we reconcile here). Expensive; this is why the profile is built
-        // on explicit request. Alignments that error / lack chrY are skipped.
-        let alignments = alignment::list_for_biosample(self.store.pool(), biosample_guid).await?;
-        for a in &alignments {
-            let Ok(assignment) = self.y_assignment_full(a.id).await else {
-                continue;
-            };
-            let obs = snp_obs_from_assignment(&assignment, true);
+        // WGS / Y-NGS evidence: the **genome-consensus** deep placement — every alignment's chrY
+        // calls pooled on ONE tree+coordinate space and placed once ([`place_y_consensus`]). Its
+        // root→terminal lineage is the SNP set the sample carries all the way down to the deep
+        // terminal, so the descent report renders a populated backbone.
+        //
+        // Previously this looped each alignment through `y_assignment_full`, whose *per-alignment*
+        // placement is shallow on lifted CHM13 Big Y data (it stops a few clades down): the profile
+        // then carried only the root→shallow-terminal SNPs while the profile's terminal came from
+        // the deeper pooled consensus — so the descent walked terminal→root over SNPs the profile
+        // never recorded, rendering every node below the shallow terminal as no-call (the "all
+        // no-call below F / reversed SNPs" bug). Pooling first keeps the variants and the terminal
+        // on the same deep placement. Genotypes are cached, so this reuses the Y walk already paid.
+        let consensus_assignment = self.place_y_consensus(biosample_guid).await?;
+        if let Some(asg) = &consensus_assignment {
+            let obs = snp_obs_from_assignment(asg, true);
             if !obs.is_empty() {
-                sources.push((format!("aln #{} · {}", a.id, a.aligner), SourceType::WgsShortRead, obs));
+                sources.push(("genome consensus".to_string(), SourceType::WgsShortRead, obs));
             }
         }
 
@@ -644,9 +650,9 @@ impl App {
             navigator_domain::consensus::reproject(&mut variants, &pol);
         }
         let summary = yprofile::summarize(&variants);
-        // Genome-level placement: place the pooled call set on the tree once (not a vote among the
-        // per-run terminal labels). Falls back to the label reconciliation when nothing places.
-        let terminal = match self.place_y_consensus(biosample_guid).await? {
+        // Genome-level placement: the pooled call set placed once (computed above — not a vote among
+        // the per-run terminal labels). Falls back to the label reconciliation when nothing places.
+        let terminal = match &consensus_assignment {
             Some(a) => a.ranked.first().map(|r| r.name.clone()),
             None => self
                 .haplogroup_consensus(biosample_guid, DnaType::Y)
@@ -1507,42 +1513,59 @@ impl App {
     /// app keeps working offline, just on an older tree. (A server-side ETag/version would let us
     /// revalidate without a full re-download; tracked as an AppView backlog item.)
     async fn fetch_tree(&self, url: &str, cache_file: &str) -> Result<String, AppError> {
+        // Session memo: the Y/mt haplotrees are 4–121 MB and each placement consults them several
+        // times (per alignment, per vendor set, and for the polarity map). A single genome-consensus
+        // build alone would otherwise re-read/re-validate them repeatedly, and a *stale*-cache refresh
+        // blocks on the network. Resolve each tree at most once per process and serve every later call
+        // from memory — trees are effectively static within a session, so this is the batch's biggest
+        // win (a project pass was spending minutes per subject re-fetching the 121 MB FTDNA tree).
+        static MEMO: std::sync::OnceLock<std::sync::Mutex<HashMap<String, String>>> = std::sync::OnceLock::new();
+        let memo = MEMO.get_or_init(|| std::sync::Mutex::new(HashMap::new()));
+        if let Some(hit) = memo.lock().unwrap().get(cache_file).cloned() {
+            return Ok(hit);
+        }
+
         let path = tree_cache_path(cache_file);
         let cached = std::fs::read_to_string(&path).ok().filter(|c| !c.trim().is_empty());
-        if let Some(cached) = &cached {
-            if tree_cache_is_fresh(&path) {
-                return Ok(cached.clone());
-            }
-        }
-        // Stale or absent → (re)download, falling back to a stale copy on network failure.
-        let downloaded = self
-            .auth
-            .http
-            .get(url)
-            .send()
-            .await
-            .and_then(|r| r.error_for_status())
-            .map_err(|e| AppError::Import(format!("downloading {url}: {e}")));
-        match downloaded {
-            Ok(resp) => {
-                let body = resp
-                    .text()
-                    .await
-                    .map_err(|e| AppError::Import(format!("reading {url}: {e}")))?;
-                if let Some(parent) = path.parent() {
-                    let _ = std::fs::create_dir_all(parent);
+        // A fresh (within-TTL) on-disk cache short-circuits the network entirely.
+        let fresh = cached.is_some() && tree_cache_is_fresh(&path);
+        let json = if fresh {
+            cached.expect("fresh implies present")
+        } else {
+            // Stale or absent → try a *time-bounded* refresh, falling back to any present (stale) copy
+            // on failure/timeout so a slow or unreachable endpoint can't stall a batch for minutes.
+            let downloaded = self
+                .auth
+                .http
+                .get(url)
+                .timeout(std::time::Duration::from_secs(20))
+                .send()
+                .await
+                .and_then(|r| r.error_for_status())
+                .map_err(|e| AppError::Import(format!("downloading {url}: {e}")));
+            match downloaded {
+                Ok(resp) => {
+                    let body = resp
+                        .text()
+                        .await
+                        .map_err(|e| AppError::Import(format!("reading {url}: {e}")))?;
+                    if let Some(parent) = path.parent() {
+                        let _ = std::fs::create_dir_all(parent);
+                    }
+                    let _ = std::fs::write(&path, &body);
+                    body
                 }
-                let _ = std::fs::write(&path, &body);
-                Ok(body)
+                Err(e) => match cached {
+                    Some(stale) => {
+                        eprintln!("tree refresh failed ({e}); using the cached copy at {}", path.display());
+                        stale
+                    }
+                    None => return Err(e),
+                },
             }
-            Err(e) => match cached {
-                Some(stale) => {
-                    eprintln!("tree refresh failed ({e}); using the cached copy at {}", path.display());
-                    Ok(stale)
-                }
-                None => Err(e),
-            },
-        }
+        };
+        memo.lock().unwrap().insert(cache_file.to_string(), json.clone());
+        Ok(json)
     }
 
     /// Assign an mtDNA haplogroup directly from an alignment's chrM reads (FTDNA mt tree),

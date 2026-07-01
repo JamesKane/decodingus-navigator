@@ -226,6 +226,21 @@ async fn analyze(args: AnalyzeArgs) -> i32 {
         ),
         Err(e) => eprintln!("  Step 3 (Y placement) FAILED: {e}"),
     }
+
+    // Step 4: build the genome-consensus Y signature (deep placement + variant profile → descent
+    // report), mirroring batch analysis so the descent report is ready without an explicit click.
+    if let Ok(bio) = app.biosample_of_alignment(id).await {
+        let t = Instant::now();
+        match app.build_y_profile(bio).await {
+            Ok(p) => eprintln!(
+                "  [{:>8.1?}]  Step 4: Y signature — terminal {} · {} variants",
+                t.elapsed(),
+                p.terminal.as_deref().unwrap_or("(none)"),
+                p.variants.len()
+            ),
+            Err(e) => eprintln!("  Step 4 (Y signature) FAILED: {e}"),
+        }
+    }
     eprintln!("done.");
     0
 }

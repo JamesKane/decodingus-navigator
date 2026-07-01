@@ -595,6 +595,17 @@ impl App {
             }
         }
 
+        // Build the genome-consensus Y signature (deep placement + variant profile → descent report)
+        // here, so the Y-DNA descent report is populated by batch analysis rather than requiring an
+        // explicit "Build descent report" click (that button stays for an on-demand rebuild). Built
+        // once — skipped when a profile already exists — and best-effort. The chrY genotypes it needs
+        // were just cached by the Y assignment above, so this adds no extra read of the file.
+        if o.y_done && self.cached_y_profile(biosample.guid).await?.is_none() {
+            if let Err(e) = self.build_y_profile(biosample.guid).await {
+                o.errors.push(format!("{label} Y signature: {e}"));
+            }
+        }
+
         // SV is a whole-genome analysis that walks every read in the file. Skip it for targeted
         // tests (Big Y / Y Elite / mtFull): SV is meaningless there, and over a targeted CRAM's
         // millions of off-target reads the whole-file walk is pathologically slow. Gate on the
