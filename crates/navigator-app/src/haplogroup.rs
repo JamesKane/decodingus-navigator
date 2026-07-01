@@ -7,6 +7,10 @@ use super::*;
 /// contigs / lift paths get distinct cache rows.
 const GENOTYPE_KIND: &str = "tree-genotype";
 
+/// Per-source weighted genotype calls (position → base) for one build's pooling group in
+/// [`App::place_y_consensus`]: one `(source type, position→base)` entry per contributing source.
+type YSourceCalls = Vec<(SourceType, HashMap<i64, char>)>;
+
 /// A stable cache key (used as the artifact `algorithm_version`) for a tree-genotype base call:
 /// the queried `contig`, the lift source build, and an FNV-1a hash of the **sorted target
 /// positions** + their count. A changed tree (added/removed/moved positions) changes the hash →
@@ -781,50 +785,85 @@ impl App {
     /// subject has no Y-bearing source. Re-genotypes each source (like [`build_y_profile`]), so it's
     /// only run as part of that explicit action.
     pub async fn place_y_consensus(&self, biosample_guid: SampleGuid) -> Result<Option<HaploAssignment>, AppError> {
-        // Genotype every WGS alignment against **one** tree in **one** coordinate system — the FTDNA
-        // GRCh38 Y tree, with the existing base_calls liftover for CHM13/GRCh37 sources — then pool
-        // by **position** and place once. A single tree+coordinate space keeps allele polarity and
-        // coverage consistent across sources; pooling across the DecodingUs hs1 and GRCh38 trees (which
-        // can disagree on a SNP's polarity / hs1 coverage) corrupts the backbone and the parsimony
-        // guard then vetoes the true deep clade. Chips (sparse, various builds) stay in the variant
-        // profile + label reconciliation; the genome placement pools the dense WGS evidence.
-        let tree_json = self.fetch_ftdna_y_tree().await?;
-        let tree = navigator_analysis::haplo::parse_ftdna_json(&tree_json).map_err(AppError::Import)?;
-
-        let mut sources: Vec<(SourceType, HashMap<i64, char>)> = Vec::new();
+        // Genotype every WGS alignment against the **DecodingUs** Y tree — the workspace's configured
+        // provider, served from the local cache — in each source's *native* build (`hs1` for CHM13,
+        // `GRCh38`, `GRCh37`). No liftover and no FTDNA dependency: the per-alignment genotype is
+        // exactly the one the Y assignment already cached, so this reuses that walk rather than paying
+        // a second, FTDNA-coordinate one. Sources are grouped by build and pooled by **position**
+        // within one coordinate space (a single build per subject is the norm); the build carrying the
+        // most evidence is placed once. Pooling across builds by position would mix coordinate systems
+        // — cross-build merging lives in the variant profile's name-keyed reconcile, not here.
+        let tree_json = self.fetch_decodingus_y_tree().await?;
         let alignments = alignment::list_for_biosample(self.store.pool(), biosample_guid).await?;
-        for a in &alignments {
-            // assign_haplogroup_detail returns the GRCh38-coordinate calls (lifted from the
-            // alignment's build); sources that lack chrY / a reference are skipped.
-            let Ok((_, _, calls)) = self.assign_haplogroup_detail(a.id, "chrY", &tree_json).await else {
-                continue;
-            };
-            if !calls.is_empty() {
-                sources.push((SourceType::WgsShortRead, calls));
+        let vsets = variant_set::list_for_biosample(self.store.pool(), biosample_guid).await?;
+
+        // Parse the DecodingUs tree once per distinct build the sources use (cheap — the JSON is
+        // memoized). Built up front so the async genotyping loop holds only shared borrows of `trees`.
+        let mut builds: std::collections::HashSet<&'static str> =
+            alignments.iter().filter_map(|a| decodingus_build_key(&a.reference_build)).collect();
+        for set in &vsets {
+            if set.source_type != SourceType::Chip {
+                // Unknown vendor build → GRCh38 (the vendor-Y-VCF import default).
+                if let Some(bk) = set.reference_build.as_deref().map_or(Some("GRCh38"), decodingus_build_key) {
+                    builds.insert(bk);
+                }
+            }
+        }
+        let mut trees: HashMap<&'static str, navigator_analysis::haplo::HaploTree> = HashMap::new();
+        for bk in builds {
+            if let Ok(t) = navigator_analysis::haplo::parse_decodingus_json(&tree_json, bk) {
+                trees.insert(bk, t);
             }
         }
 
-        // Vendor Y-NGS VCFs (FTDNA Big Y / YSEQ / Full Genomes / Nebula) are dense, direct Y-SNP
-        // calls on GRCh38 — the FTDNA tree's native coordinate space — so pool them into the genome
-        // consensus alongside the WGS alignments, weighted by their source type. Chips stay out
-        // (sparse, various builds; they live in the variant profile + label reconciliation). A
-        // non-GRCh38 set is skipped here (its positions wouldn't match the GRCh38 tree).
-        let vsets = variant_set::list_for_biosample(self.store.pool(), biosample_guid).await?;
+        let mut by_build: HashMap<&'static str, YSourceCalls> = HashMap::new();
+        for a in &alignments {
+            let Some(bk) = decodingus_build_key(&a.reference_build) else { continue };
+            let Some(tree) = trees.get(bk) else { continue };
+            // Native build → no liftover; this cache-key matches the Y assignment's, so it's a hit.
+            let Ok(calls) = self.base_calls(a.id, "chrY", tree, None).await else { continue };
+            if !calls.is_empty() {
+                by_build.entry(bk).or_default().push((SourceType::WgsShortRead, calls));
+            }
+        }
+
+        // Vendor Y-NGS VCFs (FTDNA Big Y / YSEQ / Full Genomes / Nebula) are dense direct Y-SNP calls;
+        // fold each into its own build's group (strand-reconciled to that build's tree). Chips stay in
+        // the variant profile's name-keyed reconcile.
         for set in &vsets {
-            if set.source_type == SourceType::Chip || !is_grch38_build(&set.reference_build) {
+            if set.source_type == SourceType::Chip {
                 continue;
             }
+            let Some(bk) = set.reference_build.as_deref().map_or(Some("GRCh38"), decodingus_build_key) else { continue };
+            let Some(tree) = trees.get(bk) else { continue };
             let calls = Self::vset_chr_y_calls(set);
             if !calls.is_empty() {
-                sources.push((set.source_type, strand_reconcile_to_tree(&tree, calls)));
+                by_build.entry(bk).or_default().push((set.source_type, strand_reconcile_to_tree(tree, calls)));
             }
         }
 
-        if sources.is_empty() {
+        // Place on the build carrying the most evidence (the subject's primary coordinate space).
+        let Some(bk) = by_build
+            .iter()
+            .max_by_key(|(_, s)| s.iter().map(|(_, c)| c.len()).sum::<usize>())
+            .map(|(bk, _)| *bk)
+        else {
             return Ok(None);
-        }
-        let pooled = pool_votes(&sources);
-        Ok(Some(assemble_assignment(&tree, &pooled)))
+        };
+        let pooled = pool_votes(&by_build[bk]);
+        Ok(Some(assemble_assignment(&trees[bk], &pooled)))
+    }
+
+    /// The DecodingUs coordinate key (`hs1` / `GRCh38` / `GRCh37`) for a subject's Y data, taken from
+    /// its first alignment's reference build. Defaults to `hs1` (CHM13, the DecodingUs native build)
+    /// when the subject has no build-resolvable alignment. Used to parse the DecodingUs tree in the
+    /// subject's own coordinate space for the descent report.
+    async fn subject_y_build_key(&self, biosample_guid: SampleGuid) -> &'static str {
+        alignment::list_for_biosample(self.store.pool(), biosample_guid)
+            .await
+            .ok()
+            .and_then(|alns| alns.iter().find_map(|a| decodingus_build_key(&a.reference_build)))
+            .unwrap_or("hs1")
     }
 
     /// Assemble a subject's lightweight [`YMatchProfile`] from **cached** data only (no re-genotyping):
@@ -1028,11 +1067,20 @@ impl App {
         let Some(profile) = profile else { return Ok(None) };
         let Some(terminal) = profile.terminal.clone() else { return Ok(None) };
 
-        let tree_json = match dna {
-            DnaType::Y => self.fetch_ftdna_y_tree().await?,
-            DnaType::Mt => self.fetch_ftdna_mt_tree().await?,
+        // Y renders on the **DecodingUs** tree (the configured provider, local cache) in the subject's
+        // native build, so the node names + defining SNPs line up with the profile's DecodingUs
+        // placement. mtDNA has no DecodingUs tree, so it stays on the FTDNA mt tree.
+        let tree = match dna {
+            DnaType::Y => {
+                let json = self.fetch_decodingus_y_tree().await?;
+                let build_key = self.subject_y_build_key(biosample_guid).await;
+                navigator_analysis::haplo::parse_decodingus_json(&json, build_key).map_err(AppError::Import)?
+            }
+            DnaType::Mt => {
+                let json = self.fetch_ftdna_mt_tree().await?;
+                navigator_analysis::haplo::parse_ftdna_json(&json).map_err(AppError::Import)?
+            }
         };
-        let tree = navigator_analysis::haplo::parse_ftdna_json(&tree_json).map_err(AppError::Import)?;
         let Some(terminal_id) = tree.nodes.iter().find(|(_, n)| n.name == terminal).map(|(id, _)| *id) else {
             return Ok(None); // terminal not in this tree (provider/build skew) — nothing to draw
         };

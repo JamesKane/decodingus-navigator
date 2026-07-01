@@ -512,19 +512,6 @@ fn tree_cache_is_fresh(path: &Path) -> bool {
 /// matches the variant reconcile's [`navigator_domain::consensus::obs_weight`] `SourceType` term;
 /// the highest-weight value wins per key. The pooled set is placed on the tree **once** (genome-
 /// level placement) instead of voting among per-run terminal labels.
-/// Is a variant set's stored build GRCh38 (the FTDNA tree's native Y coordinate space)? `None`
-/// (unknown build) is treated as GRCh38, matching the import default for a vendor Y VCF. Used to
-/// gate which variant sets may pool into the GRCh38 genome consensus without liftover.
-fn is_grch38_build(build: &Option<String>) -> bool {
-    match build {
-        None => true,
-        Some(b) => {
-            let b = b.to_ascii_lowercase();
-            b.contains("grch38") || b.contains("hg38") || b == "38" || b == "b38"
-        }
-    }
-}
-
 fn pool_votes<K, V>(sources: &[(SourceType, HashMap<K, V>)]) -> HashMap<K, V>
 where
     K: std::hash::Hash + Eq + Clone,
