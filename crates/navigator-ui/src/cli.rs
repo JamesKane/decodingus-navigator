@@ -44,6 +44,11 @@ pub enum Command {
     /// Run the per-alignment analysis steps with per-step wall-clock timing (the GUI Full Analysis
     /// path), to profile where time goes. Mutates the workspace (caches results).
     Analyze(AnalyzeArgs),
+    /// Rebuild the genome-consensus Y signature (variant profile + descent) for subjects, e.g. to
+    /// re-place existing profiles on the current tree provider. Reuses cached genotypes, so it is
+    /// cheap for already-analyzed subjects. By default only subjects that already have a Y profile
+    /// are rebuilt (`--all` rebuilds every subject).
+    RebuildSignatures(RebuildArgs),
 }
 
 #[derive(Args)]
@@ -138,6 +143,20 @@ pub struct AnalyzeArgs {
 }
 
 #[derive(Args)]
+pub struct RebuildArgs {
+    /// Rebuild every subject's Y signature, including those without one yet (default: only subjects
+    /// that already have a Y profile — the ones a placement change leaves stale).
+    #[arg(long)]
+    all: bool,
+    /// Restrict to subjects in this project (by exact name).
+    #[arg(long, short)]
+    project: Option<String>,
+    /// Workspace database path (defaults to the GUI's ~/.decodingus/navigator-rs.db).
+    #[arg(long)]
+    db: Option<PathBuf>,
+}
+
+#[derive(Args)]
 pub struct LiftVcfArgs {
     /// Input VCF (`.vcf` or `.vcf.gz`).
     #[arg(long, short)]
@@ -184,8 +203,88 @@ pub fn run(command: Command) -> i32 {
             Command::Call(a) => call(a).await,
             Command::LiftVcf(a) => lift_vcf(a).await,
             Command::Analyze(a) => analyze(a).await,
+            Command::RebuildSignatures(a) => rebuild_signatures(a).await,
         }
     })
+}
+
+/// Rebuild the genome-consensus Y signature for a set of subjects. Used to re-place existing
+/// profiles after a placement/tree-provider change: the batch analyzer only *creates* a signature
+/// when one is missing, so profiles built on an older tree stay stale until rebuilt here.
+async fn rebuild_signatures(args: RebuildArgs) -> i32 {
+    use std::time::Instant;
+    let app = match open(args.db).await {
+        Ok(a) => a,
+        Err(c) => return c,
+    };
+
+    // Resolve the optional project filter to an id.
+    let project_id = match &args.project {
+        Some(name) => {
+            let overview = app.project_overview().await.unwrap_or_default();
+            match overview.iter().find(|o| o.project.name == *name) {
+                Some(o) => Some(o.project.id),
+                None => {
+                    eprintln!("error: no project named \"{name}\"");
+                    return 1;
+                }
+            }
+        }
+        None => None,
+    };
+
+    let bios = match app.list_all_biosamples().await {
+        Ok(v) => v,
+        Err(e) => return report(e),
+    };
+
+    let (mut rebuilt, mut skipped, mut failed) = (0usize, 0usize, 0usize);
+    for b in &bios {
+        if let Some(pid) = project_id {
+            if b.project_id != Some(pid) {
+                continue;
+            }
+        }
+        // Default: only refresh subjects that already carry a Y profile (the stale ones). With
+        // --all, build for every subject (skips those with no Y evidence, which just yield empty).
+        if !args.all {
+            match app.cached_y_profile(b.guid).await {
+                Ok(Some(_)) => {}
+                Ok(None) => {
+                    skipped += 1;
+                    continue;
+                }
+                Err(e) => {
+                    eprintln!("FAIL {:<24} reading profile: {e}", truncate(&b.donor_identifier, 24));
+                    failed += 1;
+                    continue;
+                }
+            }
+        }
+        let t = Instant::now();
+        match app.build_y_profile(b.guid).await {
+            Ok(p) => {
+                rebuilt += 1;
+                println!(
+                    "OK   {:<24} {:<12} {:>3} variants  [{:.1?}]",
+                    truncate(&b.donor_identifier, 24),
+                    p.terminal.as_deref().unwrap_or("(none)"),
+                    p.variants.len(),
+                    t.elapsed()
+                );
+            }
+            Err(e) => {
+                failed += 1;
+                eprintln!("FAIL {:<24} {e}", truncate(&b.donor_identifier, 24));
+            }
+        }
+    }
+    println!("\nrebuilt {rebuilt} signature(s), {skipped} skipped (no profile), {failed} failed");
+    if failed > 0 {
+        1
+    } else {
+        0
+    }
 }
 
 /// Time the per-alignment analysis steps (the GUI Full Analysis path) to profile where time goes.
