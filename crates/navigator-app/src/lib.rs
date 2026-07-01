@@ -1529,6 +1529,19 @@ use navigator_domain::seq::complement_base;
 
 /// The build a haplotree's positions are in, by contig: the FTDNA Y tree is GRCh38; mtDNA
 /// (`chrM`) is rCRS and stays a direct query (no chain), so it returns `None`.
+/// Whether a stored reference-build string denotes GRCh38 (the FTDNA Y tree's native coordinate
+/// space). `None` → assumed GRCh38 (the vendor-Y-VCF import default). Used by the FTDNA-provider Y
+/// consensus to admit only GRCh38 vendor sets (others wouldn't match the GRCh38 tree positions).
+fn is_grch38_build(build: &Option<String>) -> bool {
+    match build {
+        None => true,
+        Some(b) => {
+            let b = b.to_ascii_lowercase();
+            b.contains("grch38") || b.contains("hg38") || b == "38" || b == "b38"
+        }
+    }
+}
+
 fn tree_build_for_contig(contig: &str) -> Option<&'static str> {
     if contig.eq_ignore_ascii_case("chrY") {
         Some("GRCh38")

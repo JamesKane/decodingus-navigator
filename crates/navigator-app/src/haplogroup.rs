@@ -773,6 +773,55 @@ impl App {
     /// subject has no Y-bearing source. Re-genotypes each source (like [`build_y_profile`]), so it's
     /// only run as part of that explicit action.
     pub async fn place_y_consensus(&self, biosample_guid: SampleGuid) -> Result<Option<HaploAssignment>, AppError> {
+        // The consensus follows the user's configured tree provider (Preferences /
+        // NAVIGATOR_Y_TREE_PROVIDER), same as the per-alignment placement.
+        match y_tree_provider() {
+            YTreeProvider::DecodingUs => self.place_y_consensus_decodingus(biosample_guid).await,
+            YTreeProvider::Ftdna => self.place_y_consensus_ftdna(biosample_guid).await,
+        }
+    }
+
+    /// FTDNA-provider genome consensus: pool every WGS alignment + GRCh38 vendor Y-VCF on the FTDNA
+    /// GRCh38 tree (`base_calls` lifts CHM13/GRCh37 sources into GRCh38) and place once. One tree +
+    /// one coordinate space keeps polarity/coverage consistent; chips (sparse, various builds) stay in
+    /// the variant profile's name-keyed reconcile.
+    async fn place_y_consensus_ftdna(&self, biosample_guid: SampleGuid) -> Result<Option<HaploAssignment>, AppError> {
+        let tree_json = self.fetch_ftdna_y_tree().await?;
+        let tree = navigator_analysis::haplo::parse_ftdna_json(&tree_json).map_err(AppError::Import)?;
+
+        let mut sources: Vec<(SourceType, HashMap<i64, char>)> = Vec::new();
+        let alignments = alignment::list_for_biosample(self.store.pool(), biosample_guid).await?;
+        for a in &alignments {
+            // Lifted GRCh38-coordinate calls; sources lacking chrY / a reference are skipped.
+            let Ok((_, _, calls)) = self.assign_haplogroup_detail(a.id, "chrY", &tree_json).await else {
+                continue;
+            };
+            if !calls.is_empty() {
+                sources.push((SourceType::WgsShortRead, calls));
+            }
+        }
+        // Dense GRCh38 vendor Y-NGS VCFs pool alongside the WGS; non-GRCh38 sets wouldn't match.
+        let vsets = variant_set::list_for_biosample(self.store.pool(), biosample_guid).await?;
+        for set in &vsets {
+            if set.source_type == SourceType::Chip || !is_grch38_build(&set.reference_build) {
+                continue;
+            }
+            let calls = Self::vset_chr_y_calls(set);
+            if !calls.is_empty() {
+                sources.push((set.source_type, strand_reconcile_to_tree(&tree, calls)));
+            }
+        }
+        if sources.is_empty() {
+            return Ok(None);
+        }
+        let pooled = pool_votes(&sources);
+        Ok(Some(assemble_assignment(&tree, &pooled)))
+    }
+
+    /// DecodingUs-provider genome consensus (the default): genotype every WGS alignment against the
+    /// DecodingUs Y tree in each source's *native* build, group by build, pool by position, and place
+    /// on the build carrying the most evidence.
+    async fn place_y_consensus_decodingus(&self, biosample_guid: SampleGuid) -> Result<Option<HaploAssignment>, AppError> {
         // Genotype every WGS alignment against the **DecodingUs** Y tree — the workspace's configured
         // provider, served from the local cache — in each source's *native* build (`hs1` for CHM13,
         // `GRCh38`, `GRCh37`). No liftover and no FTDNA dependency: the per-alignment genotype is
@@ -1070,15 +1119,22 @@ impl App {
         let Some(profile) = profile else { return Ok(None) };
         let Some(terminal) = profile.terminal.clone() else { return Ok(None) };
 
-        // Both DNA types render on the **DecodingUs** tree (the configured provider, local cache) so
-        // the node names + defining SNPs line up with the profile's DecodingUs placement — Y in the
-        // subject's native build, mtDNA remapped from its native hs1 onto rCRS (FTDNA fallback).
+        // Render on the configured provider's tree so the node names + defining SNPs line up with the
+        // profile's placement (which followed the same provider). Y: DecodingUs in the subject's
+        // native build, or the FTDNA GRCh38 tree; mtDNA: DecodingUs remapped hs1→rCRS, or FTDNA — via
+        // `mt_tree_rcrs`, which already honors the provider.
         let tree = match dna {
-            DnaType::Y => {
-                let json = self.fetch_decodingus_y_tree().await?;
-                let build_key = self.subject_y_build_key(biosample_guid).await;
-                navigator_analysis::haplo::parse_decodingus_json(&json, build_key).map_err(AppError::Import)?
-            }
+            DnaType::Y => match y_tree_provider() {
+                YTreeProvider::DecodingUs => {
+                    let json = self.fetch_decodingus_y_tree().await?;
+                    let build_key = self.subject_y_build_key(biosample_guid).await;
+                    navigator_analysis::haplo::parse_decodingus_json(&json, build_key).map_err(AppError::Import)?
+                }
+                YTreeProvider::Ftdna => {
+                    let json = self.fetch_ftdna_y_tree().await?;
+                    navigator_analysis::haplo::parse_ftdna_json(&json).map_err(AppError::Import)?
+                }
+            },
             DnaType::Mt => self.mt_tree_rcrs().await?.0,
         };
         let Some(terminal_id) = tree.nodes.iter().find(|(_, n)| n.name == terminal).map(|(id, _)| *id) else {
@@ -1427,14 +1483,18 @@ impl App {
         self.fetch_tree(&url, "decodingus-mttree.json").await
     }
 
-    /// The **mtDNA placement tree in rCRS coordinates**, with the provider tag. Prefers the
-    /// DecodingUs mt tree (the configured provider) remapped from its native `hs1` (CHM13 `chrM`)
-    /// positions onto rCRS, so it drops straight into the existing rCRS mt pipeline (FASTA/chip
-    /// sources and the `chrM` genotyper all speak rCRS). Falls back to the FTDNA mt tree (already
-    /// rCRS) when the DecodingUs tree or the CHM13 `chrM` needed to build the map is unavailable.
+    /// The **mtDNA placement tree in rCRS coordinates**, with the provider tag. Honors the
+    /// configured Y-tree provider (the Preferences toggle / `NAVIGATOR_Y_TREE_PROVIDER`): when it's
+    /// set to FTDNA, use the FTDNA mt tree (already rCRS) directly. Otherwise prefer the DecodingUs
+    /// mt tree remapped from its native `hs1` (CHM13 `chrM`) positions onto rCRS — so it drops
+    /// straight into the existing rCRS mt pipeline (FASTA/chip sources and the `chrM` genotyper all
+    /// speak rCRS) — and still fall back to FTDNA when the DecodingUs tree or the CHM13 `chrM` needed
+    /// to build the remap is unavailable.
     async fn mt_tree_rcrs(&self) -> Result<(navigator_analysis::haplo::HaploTree, &'static str), AppError> {
-        if let Some(tree) = self.decodingus_mt_tree_rcrs().await {
-            return Ok((tree, "decodingus"));
+        if !matches!(y_tree_provider(), YTreeProvider::Ftdna) {
+            if let Some(tree) = self.decodingus_mt_tree_rcrs().await {
+                return Ok((tree, "decodingus"));
+            }
         }
         let json = self.fetch_ftdna_mt_tree().await?;
         let tree = navigator_analysis::haplo::parse_ftdna_json(&json).map_err(AppError::Import)?;
