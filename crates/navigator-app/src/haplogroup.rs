@@ -519,6 +519,16 @@ impl App {
     /// so [`cached_y_profile`](Self::cached_y_profile) reloads it instantly. Sources without Y data
     /// are skipped.
     pub async fn build_y_profile(&self, biosample_guid: SampleGuid) -> Result<YProfile, AppError> {
+        // Females have no Y chromosome — don't build or persist a Y variant profile for them.
+        if !self.subject_has_y_dna(biosample_guid).await? {
+            return Ok(YProfile {
+                variants: Vec::new(),
+                summary: yprofile::summarize(&[]),
+                terminal: None,
+                sources: Vec::new(),
+            });
+        }
+
         let mut sources: Vec<(String, SourceType, Vec<YObsInput>)> = Vec::new();
 
         // WGS / Y-NGS evidence: the **genome-consensus** deep placement — every alignment's chrY
@@ -773,6 +783,10 @@ impl App {
     /// subject has no Y-bearing source. Re-genotypes each source (like [`build_y_profile`]), so it's
     /// only run as part of that explicit action.
     pub async fn place_y_consensus(&self, biosample_guid: SampleGuid) -> Result<Option<HaploAssignment>, AppError> {
+        // Females have no Y chromosome — no genome consensus to place.
+        if !self.subject_has_y_dna(biosample_guid).await? {
+            return Ok(None);
+        }
         // The consensus follows the user's configured tree provider (Preferences /
         // NAVIGATOR_Y_TREE_PROVIDER), same as the per-alignment placement.
         match y_tree_provider() {
@@ -2074,9 +2088,32 @@ impl App {
     /// FTDNA if the AppView is unreachable), call the sample's base at each tree position on
     /// chrY, and rank by Kulczynski. Requires a recorded BAM/CRAM path. Skips re-scoring when
     /// the alignment file and tree are unchanged since the last run (see [`Self::y_score_fingerprint`]).
+    /// Whether a subject should be scored for Y-DNA. Females have no Y chromosome, so Y placement,
+    /// consensus, and the Y variant profile only produce an empty/degenerate call from mismapped
+    /// chrY reads — skip them. Sex comes from `biosample.sex` (user-provided, or written back by the
+    /// sex walker, which runs before the Y step). Male / Unknown / unrecorded → scored (`true`), so a
+    /// low-confidence or missing inference, or an XXY subject, is never silently dropped.
+    pub(crate) async fn subject_has_y_dna(&self, biosample_guid: SampleGuid) -> Result<bool, AppError> {
+        let sex = biosample::get(self.store.pool(), biosample_guid)
+            .await?
+            .and_then(|b| b.sex);
+        Ok(!matches!(sex.as_deref().map(str::trim), Some(s) if s.eq_ignore_ascii_case("female")))
+    }
+
     pub async fn assign_y_haplogroup(&self, alignment_id: i64) -> Result<HaploAssignment, AppError> {
         let bio = self.biosample_of_alignment(alignment_id).await.ok();
         let source_key = format!("aln:{alignment_id}");
+
+        // Females have no Y chromosome — don't genotype chrY or record a Y call for them.
+        if let Some(guid) = bio {
+            if !self.subject_has_y_dna(guid).await? {
+                return Ok(HaploAssignment {
+                    ranked: Vec::new(),
+                    branches: Vec::new(),
+                    lineage: Vec::new(),
+                });
+            }
+        }
 
         // Input fingerprint = alignment content hash + active Y-tree content hash. If it matches
         // the recorded call's stamp, neither the file nor the tree changed → return the recorded
