@@ -145,6 +145,32 @@ struct DuVariant {
     /// Coordinates keyed by build label (`"hs1"`, `"GRCh38"`, `"GRCh37"`).
     #[serde(default)]
     coordinates: HashMap<String, DuCoord>,
+    /// Variant-level **authoritative** phylogenetic polarity, build-independent. Present on every
+    /// variant; ~1.4% of variants carry a *swapped* per-build `coordinates.ancestral/derived` (a
+    /// clean role swap), so this — not the coordinate alleles — is the polarity to trust.
+    #[serde(default)]
+    link_ancestral: Option<String>,
+    #[serde(default)]
+    link_derived: Option<String>,
+}
+
+impl DuVariant {
+    /// The trustworthy `(ancestral, derived)` alleles from `link_*`, or `None` when absent/empty.
+    fn link_alleles(&self) -> Option<(String, String)> {
+        match (self.link_ancestral.as_deref(), self.link_derived.as_deref()) {
+            (Some(a), Some(d)) if !a.is_empty() && !d.is_empty() => Some((a.to_string(), d.to_string())),
+            _ => None,
+        }
+    }
+
+    /// Polarity for a locus: `link_*` (authoritative) with the build coordinate's alleles as a
+    /// last-resort fallback if `link_*` is somehow missing.
+    fn polarity(&self, coord: &DuCoord) -> (String, String) {
+        if let Some(p) = self.link_alleles() {
+            return p;
+        }
+        (coord.ancestral.clone().unwrap_or_default(), coord.derived.clone().unwrap_or_default())
+    }
 }
 
 #[derive(Deserialize)]
@@ -182,10 +208,13 @@ fn flatten_du_node(n: &DuNode, is_root: bool, build_key: &str, out: &mut HashMap
         .iter()
         .filter_map(|v| {
             let c = v.coordinates.get(build_key)?;
+            // Position/contig come from the build coordinate; polarity from the authoritative
+            // `link_*` (the coordinate's own ancestral/derived is swapped on ~1.4% of variants).
+            let (ancestral, derived) = v.polarity(c);
             Some(Locus {
                 position: c.position.abs(),
-                ancestral: c.ancestral.clone().unwrap_or_default(),
-                derived: c.derived.clone().unwrap_or_default(),
+                ancestral,
+                derived,
                 name: v.canonical_name.clone(),
             })
         })
@@ -215,15 +244,20 @@ fn flatten_du_node(n: &DuNode, is_root: bool, build_key: &str, out: &mut HashMap
 pub fn decodingus_polarity_map(data: &str) -> Result<HashMap<String, (String, String)>, String> {
     let raw: DuTreeJson = serde_json::from_str(data).map_err(|e| e.to_string())?;
     let mut out = HashMap::new();
-    // Pick a variant's alleles from a **deterministic** preferred build (hs1 is the DecodingUs
-    // native/authoritative build), then any remaining build by sorted key. Iterating
-    // `coordinates.values()` (HashMap order) is non-deterministic and, where builds record a SNP
-    // with swapped polarity, would pick a different orientation per run.
-    fn pick_polarity(coords: &HashMap<String, DuCoord>) -> Option<(String, String)> {
+    // The variant-level `link_*` is the authoritative, build-independent polarity — use it directly.
+    // Only if it is somehow absent do we fall back to a **deterministic** build coordinate (hs1
+    // preferred, then sorted keys); iterating `coordinates.values()` (HashMap order) is
+    // non-deterministic and, where a build records swapped polarity, would pick a different
+    // orientation per run.
+    fn pick_polarity(v: &DuVariant) -> Option<(String, String)> {
+        if let Some(p) = v.link_alleles() {
+            return Some(p);
+        }
         let alleles = |c: &DuCoord| match (c.ancestral.as_deref(), c.derived.as_deref()) {
             (Some(a), Some(d)) if !a.is_empty() && !d.is_empty() => Some((a.to_string(), d.to_string())),
             _ => None,
         };
+        let coords = &v.coordinates;
         for b in ["hs1", "GRCh38", "GRCh37"] {
             if let Some(p) = coords.get(b).and_then(alleles) {
                 return Some(p);
@@ -238,7 +272,7 @@ pub fn decodingus_polarity_map(data: &str) -> Result<HashMap<String, (String, St
             if v.canonical_name.is_empty() {
                 continue;
             }
-            if let Some(p) = pick_polarity(&v.coordinates) {
+            if let Some(p) = pick_polarity(v) {
                 out.entry(v.canonical_name.clone()).or_insert(p);
             }
         }
@@ -950,6 +984,36 @@ mod tests {
         let pol = decodingus_polarity_map(json).unwrap();
         assert_eq!(pol["A2627"], ("C".to_string(), "T".to_string())); // hs1 wins, every run
         assert_eq!(pol["GRCh38only"], ("G".to_string(), "A".to_string())); // fallback build
+    }
+
+    #[test]
+    fn decodingus_link_polarity_overrides_swapped_coordinate() {
+        // Real DecodingUs quirk: ~1.4% of variants carry a per-build `coordinates.ancestral/derived`
+        // that is the *swap* of the authoritative variant-level `link_ancestral/link_derived`. Both
+        // the tree parse and the polarity map must trust `link_*` — otherwise a backbone SNP the
+        // sample carries (derived) reads as ancestral (the huF98AFD "peppered ancestral" bug).
+        let json = r#"{
+          "roots": [
+            {"id": 1, "name": "A0-T", "variants": [
+                {"canonical_name": "A2614",
+                 "link_ancestral": "G", "link_derived": "A",
+                 "coordinates": {
+                    "hs1": {"contig":"chrY","position":6964116,"ancestral":"A","derived":"G"},
+                    "GRCh38": {"contig":"chrY","position":7311793,"ancestral":"A","derived":"G"}}}],
+             "children": []}
+          ]
+        }"#;
+        // parse: position from the build coord, polarity from link_* (G>A, not the coord's A>G).
+        let t = parse_decodingus_json(json, "hs1").unwrap();
+        let locus = &t.nodes[&1].loci[0];
+        assert_eq!(locus.position, 6964116);
+        assert_eq!((locus.ancestral.as_str(), locus.derived.as_str()), ("G", "A"));
+        // A sample carrying the derived allele A now genotypes as Derived (was Ancestral pre-fix).
+        let calls: HashMap<i64, char> = [(6964116, 'A')].into_iter().collect();
+        assert_eq!(locus_state(locus, &calls), CallState::Derived);
+        // The polarity map agrees.
+        let pol = decodingus_polarity_map(json).unwrap();
+        assert_eq!(pol["A2614"], ("G".to_string(), "A".to_string()));
     }
 
     #[test]
