@@ -317,6 +317,13 @@ fn strand_ambiguous(a: char, d: char) -> bool {
 /// Mirrors `navigator_analysis::haplo::locus_state` (which operates on the analysis `CallState` /
 /// `Locus` types); keep the two in step.
 pub fn impute_state(base: Option<char>, ancestral: &str, derived: &str) -> ConsensusState {
+    // Indel / MNP (multi-character allele): a single observed base can't evaluate it — an insertion
+    // or deletion shares its anchor base between the alleles, so a first-base compare would read
+    // every sample as derived. No-call until real indel genotyping exists. Mirror of
+    // `navigator_analysis::haplo::locus_state`.
+    if ancestral.chars().count() > 1 || derived.chars().count() > 1 {
+        return ConsensusState::NoCall;
+    }
     let Some(d) = derived.chars().next().map(|c| c.to_ascii_uppercase()) else {
         return ConsensusState::NoCall;
     };
@@ -882,6 +889,15 @@ mod tests {
         assert_eq!(impute_state(Some('A'), "C", "G"), ConsensusState::NoCall); // genuine third allele
         // No base → no call.
         assert_eq!(impute_state(None, "A", "G"), ConsensusState::NoCall);
+    }
+
+    #[test]
+    fn impute_state_indel_is_nocall() {
+        // An indel shares its anchor base between the alleles (G vs GAGC), so a single observed base
+        // can't evaluate it — must be no-call, not a false derived.
+        assert_eq!(impute_state(Some('G'), "G", "GAGC"), ConsensusState::NoCall); // insertion
+        assert_eq!(impute_state(Some('G'), "GAGC", "G"), ConsensusState::NoCall); // deletion
+        assert_eq!(impute_state(Some('A'), "AT", "GC"), ConsensusState::NoCall); // MNP
     }
 
     #[test]

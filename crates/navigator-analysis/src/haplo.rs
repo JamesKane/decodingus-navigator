@@ -350,7 +350,20 @@ fn strand_ambiguous(a: char, d: char) -> bool {
 /// Does the sample carry this locus's derived allele? Accepts the strand-complement of the
 /// derived base (some tree variants record alleles on the opposite strand from the reference the
 /// alignment was called against — see [`locus_state`]), except for strand-ambiguous SNPs.
+/// Whether a locus is a single-base SNP a base-level genotype can evaluate — i.e. NOT an indel / MNP
+/// (a multi-character allele). An insertion (`G`→`GAGC…`) or deletion (`GAGC`→`G`) shares its anchor
+/// base between the two alleles, so a base-vs-allele compare can't tell them apart and reads every
+/// sample as derived. The DecodingUs Y tree carries ~12.7k such indel loci, all with a shared anchor;
+/// counting them turned indel-heavy nodes into homoplasy magnets that captured the placement. They
+/// need real indel genotyping; until then they don't vote.
+fn is_snp_locus(locus: &Locus) -> bool {
+    locus.derived.chars().count() == 1 && locus.ancestral.chars().count() <= 1
+}
+
 fn locus_carried(locus: &Locus, calls: &HashMap<i64, char>) -> bool {
+    if !is_snp_locus(locus) {
+        return false;
+    }
     let Some(d) = locus.derived.chars().next().map(|c| c.to_ascii_uppercase()) else {
         return false;
     };
@@ -381,6 +394,10 @@ fn locus_carried(locus: &Locus, calls: &HashMap<i64, char>) -> bool {
 /// base that matches neither strand of either allele is a genuine third allele → `NoCall` (not a
 /// branch contradiction).
 fn locus_state(locus: &Locus, calls: &HashMap<i64, char>) -> CallState {
+    // Indel / MNP loci can't be evaluated by a single-base genotype (see `is_snp_locus`).
+    if !is_snp_locus(locus) {
+        return CallState::NoCall;
+    }
     let Some(d) = locus.derived.chars().next().map(|c| c.to_ascii_uppercase()) else {
         return CallState::NoCall;
     };
@@ -427,7 +444,9 @@ fn dfs(
     // Add this node's loci to the path (skip positions already seen on the path).
     let mut added: Vec<(i64, bool)> = Vec::new();
     for locus in &node.loci {
-        if locus.derived.is_empty() || !on_path.insert(locus.position) {
+        // Skip indel/MNP loci — a base genotype can't evaluate them, so they must not inflate a
+        // node's expected/matched set (see `is_snp_locus`).
+        if !is_snp_locus(locus) || !on_path.insert(locus.position) {
             continue;
         }
         let carried = locus_carried(locus, calls);
@@ -1168,6 +1187,32 @@ mod tests {
         assert_eq!(score(&t, &c)[0].name, "Bdeep");
         // ...but Bdeep tunnels through the contradicted B, so the guard reports H.
         assert!(!path_admissible(&t, &c, id_of(&t, "Bdeep")));
+        assert_eq!(guarded_terminal(&t, &c), "H");
+    }
+
+    // root -> H(146) -> Ins(an insertion G->GAGC at 200). A single-base genotype can't evaluate the
+    // insertion, so the sample must never place onto the indel-defined node.
+    const INDEL_TREE: &str = r#"{
+      "allNodes": {
+        "1": {"haplogroupId": 1, "name": "root", "isRoot": true, "variants": [], "children": [2]},
+        "2": {"haplogroupId": 2, "name": "H", "isRoot": false,
+              "variants": [{"variant":"A146G","position":146,"ancestral":"A","derived":"G"}], "children": [3]},
+        "3": {"haplogroupId": 3, "name": "Ins", "isRoot": false,
+              "variants": [{"variant":"ins200","position":200,"ancestral":"G","derived":"GAGC"}], "children": []}
+      }
+    }"#;
+
+    #[test]
+    fn indel_locus_is_not_evaluable_and_never_places() {
+        let t = parse_ftdna_json(INDEL_TREE).unwrap();
+        // Derived at H(146); at the insertion position the sample carries the anchor base G — which a
+        // naive first-base compare reads as the insertion's derived allele. It must NOT place onto the
+        // indel-defined node, and the indel locus counts as neither carried nor a state.
+        let c = calls(&[(146, 'G'), (200, 'G')]);
+        assert!(!locus_carried(&t.nodes[&3].loci[0], &c));
+        assert_eq!(locus_state(&t.nodes[&3].loci[0], &c), CallState::NoCall);
+        assert_eq!(node_call_counts(&t, &c, 3), (0, 0, 1)); // the sole locus is an un-evaluable indel (no-call)
+        assert_eq!(score(&t, &c)[0].name, "H");
         assert_eq!(guarded_terminal(&t, &c), "H");
     }
 
