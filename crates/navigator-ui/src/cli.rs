@@ -37,6 +37,10 @@ pub enum Command {
     Show(ShowArgs),
     /// Diagnostic: trace the genome-consensus Y placement for one subject (candidates + lineage tally).
     DebugPlace(ShowArgs),
+    /// Diagnostic: dump the Y descent SNP-by-SNP — state + observed base vs the tree's per-build polarity.
+    DebugDescent(ShowArgs),
+    /// Diagnostic: dump the raw read pileup (ref + A/C/G/T) behind each lineage call for one alignment.
+    DebugCalls(DebugCallsArgs),
     /// List projects with their subject counts.
     Projects(ProbeArgs),
     /// De-novo diploid variant calling → VCF (whole-genome, or a single `--contig`).
@@ -113,6 +117,20 @@ pub struct ShowArgs {
     /// Emit JSON instead of a human-readable summary.
     #[arg(long)]
     json: bool,
+}
+
+#[derive(Args)]
+pub struct DebugCallsArgs {
+    /// Subject donor identifier (used to pick an alignment when `--alignment` is omitted — prefers a
+    /// CHM13/HiFi alignment, else the first).
+    #[arg(long, short)]
+    subject: Option<String>,
+    /// Alignment id to genotype (from `show --json`). Takes precedence over `--subject`.
+    #[arg(long, short)]
+    alignment: Option<i64>,
+    /// Workspace database path (defaults to the GUI's ~/.decodingus/navigator-rs.db).
+    #[arg(long)]
+    db: Option<PathBuf>,
 }
 
 #[derive(Args)]
@@ -204,6 +222,8 @@ pub fn run(command: Command) -> i32 {
             Command::Subjects(a) => subjects(a).await,
             Command::Show(a) => show(a).await,
             Command::DebugPlace(a) => debug_place(a).await,
+            Command::DebugDescent(a) => debug_descent(a).await,
+            Command::DebugCalls(a) => debug_calls(a).await,
             Command::Projects(a) => projects(a).await,
             Command::Call(a) => call(a).await,
             Command::LiftVcf(a) => lift_vcf(a).await,
@@ -639,6 +659,78 @@ async fn debug_place(args: ShowArgs) -> i32 {
         Err(c) => return c,
     };
     match app.debug_y_placement(guid).await {
+        Ok(trace) => {
+            println!("{trace}");
+            0
+        }
+        Err(e) => {
+            eprintln!("error: {e}");
+            1
+        }
+    }
+}
+
+async fn debug_descent(args: ShowArgs) -> i32 {
+    let app = match open(args.db).await {
+        Ok(a) => a,
+        Err(c) => return c,
+    };
+    let guid = match find_subject(&app, &args.subject).await {
+        Ok(Some(g)) => g,
+        Ok(None) => {
+            eprintln!("error: no subject with identifier \"{}\"", args.subject);
+            return 1;
+        }
+        Err(c) => return c,
+    };
+    match app.debug_y_descent(guid).await {
+        Ok(trace) => {
+            println!("{trace}");
+            0
+        }
+        Err(e) => {
+            eprintln!("error: {e}");
+            1
+        }
+    }
+}
+
+async fn debug_calls(args: DebugCallsArgs) -> i32 {
+    let app = match open(args.db).await {
+        Ok(a) => a,
+        Err(c) => return c,
+    };
+    // Resolve the target alignment: explicit --alignment wins; otherwise pick from the subject
+    // (prefer a CHM13/HiFi alignment, else the first).
+    let alignment_id = match args.alignment {
+        Some(id) => id,
+        None => {
+            let Some(subject) = args.subject.as_deref() else {
+                eprintln!("error: provide --alignment <id> or --subject <id>");
+                return 2;
+            };
+            let guid = match find_subject(&app, subject).await {
+                Ok(Some(g)) => g,
+                Ok(None) => {
+                    eprintln!("error: no subject with identifier \"{subject}\"");
+                    return 1;
+                }
+                Err(c) => return c,
+            };
+            match app.pick_y_debug_alignment(guid).await {
+                Ok(Some(id)) => id,
+                Ok(None) => {
+                    eprintln!("error: subject \"{subject}\" has no alignments");
+                    return 1;
+                }
+                Err(e) => {
+                    eprintln!("error: {e}");
+                    return 1;
+                }
+            }
+        }
+    };
+    match app.debug_y_calls(alignment_id).await {
         Ok(trace) => {
             println!("{trace}");
             0

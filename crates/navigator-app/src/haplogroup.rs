@@ -938,6 +938,173 @@ impl App {
         Ok(Some(assemble_assignment(&trees[bk], &pooled)))
     }
 
+    /// Diagnostic: dump the Y **descent** for one subject SNP-by-SNP — the reported state + observed
+    /// base against the **incoming tree's** polarity in every DecodingUs build (hs1 / GRCh38 / GRCh37).
+    /// This is the "compare the tree vs the calls" log: a backbone SNP the sample must carry that reads
+    /// ancestral shows here as `state=Ancestral base=<der allele>` with a build whose polarity is
+    /// flipped (`hs1: A>G  GRCh38: G>A`), pinpointing a tree-polarity problem vs a genotyping one.
+    /// Read-only. TSV: `node  snp  pos  state  base  hs1  GRCh38  GRCh37`.
+    pub async fn debug_y_descent(&self, biosample_guid: SampleGuid) -> Result<String, AppError> {
+        use navigator_analysis::haplo;
+        let Some(report) = self.descent_report(biosample_guid, DnaType::Y).await? else {
+            return Ok("no Y descent (build the variant profile first)".into());
+        };
+        let json = self.fetch_decodingus_y_tree().await?;
+        let pol = |bk: &str| -> std::collections::BTreeMap<String, (String, String)> {
+            haplo::parse_decodingus_json(&json, bk)
+                .ok()
+                .map(|t| haplo::polarity_from_tree(&t))
+                .unwrap_or_default()
+        };
+        let (hs1, g38, g37) = (pol("hs1"), pol("GRCh38"), pol("GRCh37"));
+        let show = |m: &std::collections::BTreeMap<String, (String, String)>, name: &str| -> String {
+            m.get(&name.trim().to_uppercase())
+                .map(|(a, d)| format!("{a}>{d}"))
+                .unwrap_or_else(|| "-".into())
+        };
+        let mut out = format!(
+            "descent terminal: {}  nodes-on-path: {}\nnode\tsnp\tpos\tstate\tbase\ths1\tGRCh38\tGRCh37\n",
+            report.terminal,
+            report.nodes.len()
+        );
+        let (mut derived, mut ancestral, mut nocall) = (0usize, 0usize, 0usize);
+        for node in &report.nodes {
+            for snp in &node.snps {
+                match snp.state {
+                    navigator_analysis::haplo::CallState::Derived => derived += 1,
+                    navigator_analysis::haplo::CallState::Ancestral => ancestral += 1,
+                    navigator_analysis::haplo::CallState::NoCall => nocall += 1,
+                }
+                out.push_str(&format!(
+                    "{}\t{}\t{}\t{:?}\t{}\t{}\t{}\t{}\n",
+                    node.name,
+                    snp.name,
+                    snp.position,
+                    snp.state,
+                    snp.base.map(|c| c.to_string()).unwrap_or_else(|| "-".into()),
+                    show(&hs1, &snp.name),
+                    show(&g38, &snp.name),
+                    show(&g37, &snp.name),
+                ));
+            }
+        }
+        out.push_str(&format!("\ntotals: derived={derived} ancestral={ancestral} nocall={nocall}\n"));
+        Ok(out)
+    }
+
+    /// Diagnostic: genotype a **single alignment** against the DecodingUs Y tree in its native build
+    /// and dump, per SNP down the placed lineage, the raw read pileup **behind** each call — the
+    /// reference base, the A/C/G/T passing-read tally, the consensus base, the tree's ancestral/derived
+    /// alleles, and the resulting state. This is the "calls generated" log: it shows whether a backbone
+    /// SNP that reads ancestral is (a) genuinely ancestral in the reads, (b) a coordinate/position
+    /// mismatch (reads a different base than the tree allele), or (c) a low-depth artifact. Read-only.
+    /// TSV: `node  snp  pos  tree(anc>der)  ref  A  C  G  T  depth  called  state`.
+    pub async fn debug_y_calls(&self, alignment_id: i64) -> Result<String, AppError> {
+        use navigator_analysis::{caller, haplo, reader};
+        let aln = self.alignment_or_err(alignment_id).await?;
+        let Some(bk) = decodingus_build_key(&aln.reference_build) else {
+            return Ok(format!(
+                "alignment {alignment_id}: build {} has no DecodingUs tree key",
+                aln.reference_build
+            ));
+        };
+        let json = self.fetch_decodingus_y_tree().await?;
+        let tree = haplo::parse_decodingus_json(&json, bk).map_err(AppError::Import)?;
+        // Native-build genotyping (no liftover) — the same walk place_y_consensus uses; the cache hit
+        // means `base_calls` returns the identical winning bases we're auditing here.
+        let calls = self.base_calls(alignment_id, "chrY", &tree, None).await?;
+        let assignment = assemble_assignment(&tree, &calls);
+        if assignment.lineage.is_empty() {
+            return Ok(format!("alignment {alignment_id} ({bk}): no Y placement\n"));
+        }
+
+        // Localize the BAM/CRAM and resolve its reference exactly as `base_calls` does, then tally the
+        // raw reads at the lineage positions and read the reference base there.
+        let bam = self
+            .localize(Path::new(&aln.bam_path.clone().ok_or(AppError::MissingPaths(alignment_id))?))
+            .await;
+        let is_cram = bam.extension().is_some_and(|e| e.eq_ignore_ascii_case("cram"));
+        let reference = match aln.reference_path.clone() {
+            Some(p) => Some(PathBuf::from(p)),
+            None if is_cram => Some(self.gateway.resolve_reference(&aln.reference_build, &mut |_, _| {}).await?),
+            None => self.gateway.cached_reference(&aln.reference_build),
+        };
+        let targets: HashSet<i64> = assignment.lineage.iter().map(|e| e.position).collect();
+        let resolved = self
+            .resolve_header_contig(&bam, reference.as_deref(), "chrY")
+            .await?
+            .unwrap_or_else(|| "chrY".to_string());
+        let (bam2, ref2, contig2, targets2) = (bam.clone(), reference.clone(), resolved.clone(), targets.clone());
+        let counts = tokio::task::spawn_blocking(move || {
+            let params = adaptive_haploid_params(&bam2, ref2.as_deref());
+            caller::tally_at(&bam2, &contig2, &targets2, &params, ref2.as_deref())
+        })
+        .await??;
+        // Reference base per lineage position (0-based index into the contig), best-effort.
+        let refseq: Option<Vec<u8>> = match reference.as_deref() {
+            Some(r) => {
+                let (r, c) = (r.to_path_buf(), resolved.clone());
+                tokio::task::spawn_blocking(move || reader::read_contig_sequence(&r, &c).ok()).await?
+            }
+            None => None,
+        };
+        let ref_at = |pos: i64| -> char {
+            refseq
+                .as_ref()
+                .and_then(|s| s.get((pos - 1) as usize))
+                .map(|b| (*b as char).to_ascii_uppercase())
+                .unwrap_or('?')
+        };
+
+        let mut out = format!(
+            "alignment {alignment_id}  build {bk}  contig {resolved}  terminal {}\nsnp\tpos\ttree\tref\tA\tC\tG\tT\tdepth\tcalled\tstate\n",
+            assignment.ranked.first().map(|r| r.name.as_str()).unwrap_or("?"),
+        );
+        let (mut derived, mut ancestral, mut nocall) = (0usize, 0usize, 0usize);
+        for e in &assignment.lineage {
+            match e.state {
+                navigator_analysis::haplo::CallState::Derived => derived += 1,
+                navigator_analysis::haplo::CallState::Ancestral => ancestral += 1,
+                navigator_analysis::haplo::CallState::NoCall => nocall += 1,
+            }
+            let c = counts.get(&e.position).copied().unwrap_or([0; 4]);
+            let depth: u32 = c.iter().sum();
+            out.push_str(&format!(
+                "{}\t{}\t{}>{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{:?}\n",
+                e.name,
+                e.position,
+                e.ancestral,
+                e.derived,
+                ref_at(e.position),
+                c[0],
+                c[1],
+                c[2],
+                c[3],
+                depth,
+                e.base.map(|b| b.to_string()).unwrap_or_else(|| "-".into()),
+                e.state,
+            ));
+        }
+        out.push_str(&format!("\ntotals: derived={derived} ancestral={ancestral} nocall={nocall}\n"));
+        Ok(out)
+    }
+
+    /// Pick a single alignment to target for [`Self::debug_y_calls`] when only a subject is given:
+    /// prefer a CHM13/HiFi alignment (native tree, no liftover — the cleanest to audit), else the
+    /// first. Returns `None` when the subject has no alignments.
+    pub async fn pick_y_debug_alignment(&self, biosample_guid: SampleGuid) -> Result<Option<i64>, AppError> {
+        let alignments = alignment::list_for_biosample(self.store.pool(), biosample_guid).await?;
+        let pick = alignments
+            .iter()
+            .find(|a| {
+                decodingus_build_key(&a.reference_build) == Some("hs1")
+                    && a.aligner.to_ascii_lowercase().contains("pbmm2")
+            })
+            .or_else(|| alignments.iter().find(|a| decodingus_build_key(&a.reference_build) == Some("hs1")))
+            .or_else(|| alignments.first());
+        Ok(pick.map(|a| a.id))
+    }
+
     /// Diagnostic: trace the DecodingUs genome-consensus Y placement for one subject — the pooled
     /// build, the Kulczynski top candidates + admissibility, the assembled terminal, a strict
     /// root→tip descent, and the per-node derived/ancestral tally down the assembled lineage (so an

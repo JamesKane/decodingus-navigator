@@ -385,6 +385,21 @@ pub fn call_bases_at(
     Ok(calls)
 }
 
+/// Diagnostic: the raw passing A/C/G/T read tally at each `target` (1-based) — the evidence
+/// **behind** [`call_bases_at`]'s consensus pick, before the depth / allele-fraction / paralog
+/// filters. Returns 1-based position → `[A, C, G, T]` counts (absent = no passing read covered it).
+/// For "what do the reads actually show at this tree SNP" logging.
+pub fn tally_at(
+    bam_path: &Path,
+    contig: &str,
+    targets: &HashSet<i64>,
+    params: &HaploidCallerParams,
+    reference: Option<&Path>,
+) -> Result<HashMap<i64, [u32; 4]>, AnalysisError> {
+    let (_len, counts) = tally_targets(bam_path, contig, params, targets, reference)?;
+    Ok(counts.into_iter().map(|(pos0, c)| ((pos0 + 1) as i64, c)).collect())
+}
+
 /// Dense A/C/G/T tally + per-position indel evidence for the 1-based inclusive region
 /// `[lo, hi]`, indexed by `pos - lo` (the chunked de-novo path).
 pub(crate) fn tally_region(
