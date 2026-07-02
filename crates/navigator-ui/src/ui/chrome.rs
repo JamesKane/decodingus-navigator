@@ -23,16 +23,16 @@ impl NavigatorApp {
         crate::i18n::tr(self.lang, key)
     }
 
-    /// Flip the interface mode (Simple ⇄ Advanced), pin it (so the first-run heuristic stops
-    /// overriding), and persist the choice. Leaving Advanced for Simple snaps the nav back to a
-    /// Simple-visible tab.
-    pub(crate) fn toggle_ui_mode(&mut self) {
-        self.ui_mode = match self.ui_mode {
-            UiMode::Simple => UiMode::Advanced,
-            UiMode::Advanced => UiMode::Simple,
-        };
+    /// Set the interface mode (Simple ⇄ Advanced), pin it (so the first-run heuristic stops
+    /// overriding), persist the choice, and keep the nav consistent (Simple hides
+    /// Projects/Community). Chosen from Settings → Appearance.
+    pub(crate) fn set_ui_mode(&mut self, mode: UiMode) {
+        if self.ui_mode == mode && self.ui_mode_pinned {
+            return;
+        }
+        self.ui_mode = mode;
         self.ui_mode_pinned = true;
-        if let Err(e) = navigator_app::persist_ui_mode(self.ui_mode) {
+        if let Err(e) = navigator_app::persist_ui_mode(mode) {
             self.status = format!("Could not save interface mode: {e}");
         }
         self.normalize_for_mode();
@@ -95,15 +95,8 @@ impl NavigatorApp {
                         let _ = self.tx.send(Command::LoadReferenceSettings);
                     }
                     ui.separator();
-                    // Interface-mode toggle: Simple (casual briefs) ⇄ Advanced (full UI).
-                    let (label, hover) = match self.ui_mode {
-                        UiMode::Simple => (self.tr("mode.simple"), self.tr("mode.toAdvanced")),
-                        UiMode::Advanced => (self.tr("mode.advanced"), self.tr("mode.toSimple")),
-                    };
-                    if ui.button(label).on_hover_text(hover).clicked() {
-                        self.toggle_ui_mode();
-                    }
-                    ui.separator();
+                    // Interface mode, language, and theme all live in Settings (⚙) → Appearance now,
+                    // to keep the app bar uncluttered.
                     // Notification bell → Community / Notifications. Only meaningful when signed in.
                     if self.account.is_some() {
                         let bell = if self.notif_unread > 0 {
@@ -119,19 +112,6 @@ impl NavigatorApp {
                         }
                         ui.separator();
                     }
-                    // Theme toggle lives in Settings → Appearance (no duplicate app-bar control).
-                    let prev_lang = self.lang;
-                    egui::ComboBox::from_id_salt("lang")
-                        .selected_text(self.lang.label())
-                        .show_ui(ui, |ui| {
-                            for &l in crate::i18n::Lang::all() {
-                                ui.selectable_value(&mut self.lang, l, l.label());
-                            }
-                        });
-                    if self.lang != prev_lang {
-                        crate::i18n::save_lang(self.lang); // persist across restarts
-                    }
-                    ui.separator();
                     self.account_controls(ui);
                 });
             });
@@ -367,10 +347,8 @@ impl NavigatorApp {
                 self.start_ftdna_import(paths);
             }
         }
-
-        ui.add_space(12.0);
-        ui.separator();
-        self.panels_section(ui);
+        // Panels (import sites VCF) moved to Settings (⚙) → they're a workspace-wide asset, not a
+        // per-project action.
     }
 
     /// Classify the picked files by header sniff, route each to its FTDNA parser slot, and dispatch a

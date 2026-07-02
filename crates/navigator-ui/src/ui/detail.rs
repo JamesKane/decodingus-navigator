@@ -1801,7 +1801,7 @@ impl NavigatorApp {
     }
 
     pub(crate) fn panels_section(&mut self, ui: &mut egui::Ui) {
-        ui.label(self.tr("table.panels"));
+        ui.label(egui::RichText::new(self.tr("table.panels")).strong());
         let mut pick = None;
         for info in &self.panels {
             let label = format!("{}  ({} sites)", info.panel.name, info.site_count);

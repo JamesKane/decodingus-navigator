@@ -304,6 +304,7 @@ impl NavigatorApp {
         let mut theme_dark = self.dark_mode;
         let mut lang = self.lang;
         let prev_lang = self.lang;
+        let mut ui_mode = self.ui_mode;
         let (mut close, mut save) = (false, false);
         // Deferred actions (dispatched after the closure, since only `self.tr` is used inside it).
         let mut verify_build: Option<String> = None;
@@ -367,6 +368,11 @@ impl NavigatorApp {
                                 ui.selectable_value(&mut lang, l, l.label());
                             }
                         });
+                });
+                ui.horizontal(|ui| {
+                    ui.label(self.tr("settings.interfaceMode"));
+                    ui.selectable_value(&mut ui_mode, UiMode::Simple, self.tr("settings.modeSimple"));
+                    ui.selectable_value(&mut ui_mode, UiMode::Advanced, self.tr("settings.modeAdvanced"));
                 });
                 ui.horizontal(|ui| {
                     ui.label(self.tr("settings.treeTtl"));
@@ -557,6 +563,10 @@ impl NavigatorApp {
                 }
                 ui.add_space(8.0);
 
+                // --- Panels (genotyping site sets) ---
+                self.panels_section(ui);
+                ui.add_space(8.0);
+
                 // --- Advanced (read-only) ---
                 ui.label(egui::RichText::new(self.tr("settings.advanced")).strong());
                 ui.label(
@@ -595,6 +605,9 @@ impl NavigatorApp {
         if lang != prev_lang {
             self.lang = lang;
             crate::i18n::save_lang(lang);
+        }
+        if ui_mode != self.ui_mode {
+            self.set_ui_mode(ui_mode); // pins + persists + keeps nav consistent
         }
 
         if save {

@@ -3304,7 +3304,8 @@ mod tests {
             other => panic!("got {other:?}"),
         }
 
-        // a project with members refuses delete
+        // A project with members can now be deleted — its members are detached (the subjects
+        // survive), rather than the delete being refused.
         match handle(
             &app,
             Command::AddBiosample(NewBiosample {
@@ -3319,25 +3320,24 @@ mod tests {
             Event::BiosamplesChanged => {}
             other => panic!("got {other:?}"),
         }
-        match handle(&app, Command::DeleteProject(pid)).await {
-            Event::Error(msg) => assert!(msg.contains("subject"), "unexpected message: {msg}"),
-            other => panic!("expected conflict Error, got {other:?}"),
-        }
-
-        // reassigning the member away clears the conflict, so delete succeeds
         let guid = match handle(&app, Command::LoadSamples(pid)).await {
             Event::Samples { samples, .. } => samples[0].guid,
             other => panic!("got {other:?}"),
         };
-        let _ = handle(&app, Command::AssignBiosampleProject { guid, project_id: None }).await;
         match handle(&app, Command::DeleteProject(pid)).await {
             Event::ProjectsChanged => {}
             other => panic!("expected clean delete, got {other:?}"),
         }
+        // Project gone…
         match handle(&app, Command::LoadOverview).await {
             Event::Overview(v) => assert!(v.iter().all(|o| o.project.id != pid)),
             other => panic!("got {other:?}"),
         }
+        // …but the detached subject still exists in the workspace.
+        assert!(
+            app.list_all_biosamples().await.unwrap().iter().any(|b| b.guid == guid),
+            "subject should survive its project's deletion"
+        );
     }
 
     #[tokio::test]
