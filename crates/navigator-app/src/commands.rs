@@ -34,15 +34,17 @@ impl App {
             .ok_or_else(|| AppError::Store(StoreError::NotFound(format!("project {id}"))))
     }
 
-    /// Delete a project. Refused (with a clear message) while subjects still belong to it, so
-    /// the user reassigns them first rather than orphaning the rows.
+    /// Delete a project, detaching its members first. Subjects are first-class and shared across
+    /// projects, so deleting the grouping keeps the subjects — it only removes their membership in
+    /// this project (and clears the legacy home column for subjects homed here).
     pub async fn delete_project(&self, id: i64) -> Result<(), AppError> {
-        let members = biosample::count_members_for_project(self.store.pool(), id).await?;
-        if members > 0 {
-            return Err(AppError::Conflict(format!(
-                "cannot delete project: {members} subject(s) still belong to it — reassign them first"
-            )));
-        }
+        // A project is only a grouping — subjects are first-class and shared across projects. Deleting
+        // it detaches its members (drops the M:N memberships + clears the legacy home column for
+        // subjects homed here) and removes the project; the subjects themselves remain in the
+        // workspace. This lets a mis-targeted import be undone: delete the project and re-import
+        // cleanly, rather than being stuck because "N subjects still belong to it".
+        biosample_project::remove_all_for_project(self.store.pool(), id).await?;
+        biosample::clear_home_project(self.store.pool(), id).await?;
         if !project::delete(self.store.pool(), id).await? {
             return Err(AppError::Store(StoreError::NotFound(format!("project {id}"))));
         }

@@ -392,23 +392,28 @@ impl NavigatorApp {
             self.status = self.tr("ftdna.noneRecognized").to_string();
             return;
         }
-        // No project selected → import into a new one named from the FTDNA filenames (FTDNA prefixes
-        // each export with the project name).
-        let project_name = self.selected_project.is_none().then(|| {
-            [&member, &paternal, &maternal, &ystr]
-                .into_iter()
-                .flatten()
-                .find_map(|p| ftdna_project_name(p))
-                .unwrap_or_else(|| "FTDNA Project".to_string())
-        });
+        // FTDNA prefixes each export file with its own project name — target THAT project, not
+        // whatever happens to be selected. (Importing one project's files while another was open
+        // used to misfile the kits into the open project, with no easy way to separate them after.)
+        // Reuse an existing project of the same name; otherwise the plan/commit creates it.
+        let derived_name = [&member, &paternal, &maternal, &ystr]
+            .into_iter()
+            .flatten()
+            .find_map(|p| ftdna_project_name(p))
+            .unwrap_or_else(|| "FTDNA Project".to_string());
+        let project_id = self
+            .overview
+            .iter()
+            .find(|o| o.project.name == derived_name)
+            .map(|o| o.project.id);
         self.importing = true;
         self.status = self.tr("ftdna.planning").to_string();
         if unrecognized > 0 {
             self.status = format!("{} ({} {})", self.status, unrecognized, self.tr("ftdna.unrecognized"));
         }
         let _ = self.tx.send(Command::PlanFtdnaImport {
-            project_id: self.selected_project,
-            project_name,
+            project_id,
+            project_name: Some(derived_name),
             member,
             paternal,
             maternal,

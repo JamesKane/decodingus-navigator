@@ -1636,6 +1636,27 @@ async fn reimport_under_different_project_name_reuses_subject() {
 }
 
 #[tokio::test]
+async fn delete_project_detaches_members_and_keeps_subjects() {
+    // A project is a grouping — deleting a non-empty one must succeed by detaching its members,
+    // not refuse ("N subjects still belong to it"). The subjects themselves survive.
+    let app = app().await;
+    let p = app
+        .create_project(NewProject { name: "P".into(), description: None, administrator: "t".into() })
+        .await
+        .unwrap();
+    let b = app.add_biosample(Some(p.id), "S1", None, None).await.unwrap();
+    app.add_biosample_to_project(b.guid, Some(p.id)).await.unwrap();
+
+    app.delete_project(p.id).await.unwrap();
+
+    assert!(app.project_overview().await.unwrap().iter().all(|o| o.project.id != p.id), "project removed");
+    assert!(
+        app.list_all_biosamples().await.unwrap().iter().any(|x| x.guid == b.guid),
+        "subject survives the project deletion"
+    );
+}
+
+#[tokio::test]
 async fn project_report_rolls_up_coverage_and_csv_round_trips() {
     let app = app().await;
     let fx = fixtures();

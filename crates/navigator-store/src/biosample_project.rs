@@ -60,6 +60,17 @@ pub async fn remove(pool: &SqlitePool, guid: SampleGuid, project_id: i64) -> Res
     Ok(affected > 0)
 }
 
+/// Detach every subject from a project (used when deleting the project — the subjects themselves
+/// are first-class and survive). Returns the number of memberships removed.
+pub async fn remove_all_for_project(pool: &SqlitePool, project_id: i64) -> Result<u64, StoreError> {
+    let affected = sqlx::query("DELETE FROM biosample_project WHERE project_id = ?")
+        .bind(project_id)
+        .execute(pool)
+        .await?
+        .rows_affected();
+    Ok(affected)
+}
+
 /// Project ids a Subject belongs to.
 pub async fn list_projects_for(pool: &SqlitePool, guid: SampleGuid) -> Result<Vec<i64>, StoreError> {
     let ids: Vec<i64> =

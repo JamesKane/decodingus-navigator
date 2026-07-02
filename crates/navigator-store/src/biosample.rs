@@ -122,6 +122,17 @@ pub async fn set_project(pool: &SqlitePool, guid: SampleGuid, project_id: Option
     Ok(affected > 0)
 }
 
+/// Clear the legacy home-project column for every subject homed in `project_id` (used when deleting
+/// a project — the subjects survive, unhomed). Returns the number cleared.
+pub async fn clear_home_project(pool: &SqlitePool, project_id: i64) -> Result<u64, StoreError> {
+    let affected = sqlx::query("UPDATE biosample SET project_id = NULL WHERE project_id = ?")
+        .bind(project_id)
+        .execute(pool)
+        .await?
+        .rows_affected();
+    Ok(affected)
+}
+
 /// Clear **all sequencing + derived/imported analysis data** for a subject in one transaction,
 /// leaving the biosample row itself (and its identity: name/sex/center, vendor external IDs,
 /// project memberships, and MDKA genealogy) intact. The "reset this subject" maintenance op —
