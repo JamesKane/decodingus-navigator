@@ -262,6 +262,7 @@ descent.build=Build descent report
 descent.none=No placement to draw yet.
 descent.failed=Couldn't build the descent report:
 descent.derived=derived
+descent.export=Export descent (TSV)…
 descent.ancestral=ancestral
 descent.nocall=no call
 descent.derivedShort=derived

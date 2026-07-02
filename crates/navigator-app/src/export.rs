@@ -3,11 +3,15 @@
 //! app layer loads the result and writes the returned `String` to the user-chosen path.
 
 use navigator_analysis::coverage::CoverageResult;
+use navigator_analysis::haplo::CallState;
 use navigator_analysis::ibd::IbdSegment;
 use navigator_analysis::mtvariants::MtVariant;
 use navigator_analysis::read_metrics::ReadMetrics;
 use navigator_domain::ancestry::AncestryResult;
 use navigator_domain::brief::{LineageBrief, SubjectBrief};
+use navigator_domain::reconciliation::DnaType;
+
+use crate::DescentReport;
 
 /// Minimal HTML text escaping for the small, controlled strings we embed (population names etc.).
 fn esc(s: &str) -> String {
@@ -256,6 +260,39 @@ pub fn ancestry_html(a: &AncestryResult) -> String {
 // ---- mtDNA variants ----------------------------------------------------------
 
 /// mtDNA variants (vs rCRS) as TSV: position, compact notation, region, ref/alt, type.
+/// The Y-DNA / mtDNA **descent report** (root→terminal lineage) as TSV: one row per defining SNP of
+/// each node on the path, with the subject's call state and observed base. Mirrors the on-screen
+/// per-node descent grid so it can be shared / diffed outside the app.
+pub fn descent_tsv(report: &DescentReport) -> String {
+    let dna = match report.dna {
+        DnaType::Y => "Y-DNA",
+        DnaType::Mt => "mtDNA",
+    };
+    let state = |s: CallState| match s {
+        CallState::Derived => "derived",
+        CallState::Ancestral => "ancestral",
+        CallState::NoCall => "nocall",
+    };
+    let mut out = format!("# DUNavigator {dna} descent report — terminal {}\n", report.terminal);
+    out.push_str("haplogroup\tterminal\tsnp\tposition\tancestral\tderived\tstate\tobserved_base\n");
+    for node in &report.nodes {
+        for snp in &node.snps {
+            out.push_str(&format!(
+                "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\n",
+                node.name,
+                if node.is_terminal { "yes" } else { "" },
+                snp.name,
+                snp.position,
+                snp.ancestral,
+                snp.derived,
+                state(snp.state),
+                snp.base.map(|c| c.to_string()).unwrap_or_default(),
+            ));
+        }
+    }
+    out
+}
+
 pub fn mtdna_variants_tsv(variants: &[MtVariant]) -> String {
     let mut out = String::from("# DUNavigator mtDNA variants vs rCRS (NC_012920.1)\n");
     out.push_str("position\tnotation\tregion\tref\talt\ttype\n");
@@ -653,5 +690,41 @@ mod tests {
         assert!(tsv.lines().next().unwrap().starts_with('#'));
         assert!(tsv.contains("chromosome\tstart_position\tend_position\tlength_cm\tsnp_count\thalf_identical"));
         assert!(tsv.lines().any(|l| l == "chr1\t1\t10000000\t12.50\t80\tfalse"));
+    }
+
+    #[test]
+    fn descent_tsv_has_header_and_per_snp_rows() {
+        use navigator_analysis::haplo::{NodeEvidence, SnpEvidence};
+        let report = DescentReport {
+            dna: DnaType::Y,
+            terminal: "R-FGC29071".into(),
+            nodes: vec![NodeEvidence {
+                name: "R-M269".into(),
+                is_terminal: false,
+                snps: vec![
+                    SnpEvidence {
+                        name: "M269".into(),
+                        position: 22739367,
+                        ancestral: "T".into(),
+                        derived: "C".into(),
+                        state: CallState::Derived,
+                        base: Some('C'),
+                    },
+                    SnpEvidence {
+                        name: "L23".into(),
+                        position: 6753511,
+                        ancestral: "G".into(),
+                        derived: "A".into(),
+                        state: CallState::NoCall,
+                        base: None,
+                    },
+                ],
+            }],
+        };
+        let tsv = descent_tsv(&report);
+        assert!(tsv.lines().next().unwrap().starts_with("# DUNavigator Y-DNA"));
+        assert!(tsv.contains("haplogroup\tterminal\tsnp\tposition\tancestral\tderived\tstate\tobserved_base"));
+        assert!(tsv.lines().any(|l| l == "R-M269\t\tM269\t22739367\tT\tC\tderived\tC"));
+        assert!(tsv.lines().any(|l| l == "R-M269\t\tL23\t6753511\tG\tA\tnocall\t"));
     }
 }

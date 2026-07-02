@@ -1034,6 +1034,8 @@ pub enum ExportRequest {
     ConsensusDiploidVcf(SampleGuid),
     /// The plain-language "DNA Story" brief for a subject, as a self-contained HTML document.
     SubjectBriefHtml(SampleGuid),
+    /// The Y-DNA / mtDNA descent report (root→terminal lineage with per-SNP call state) as TSV.
+    DescentTsv(SampleGuid, DnaType),
 }
 
 impl ExportRequest {
@@ -1062,6 +1064,7 @@ impl ExportRequest {
             ExportRequest::DiploidVcf(_) => "diploid variants (VCF)",
             ExportRequest::ConsensusDiploidVcf(_) => "consensus diploid (VCF)",
             ExportRequest::SubjectBriefHtml(_) => "DNA story (HTML)",
+            ExportRequest::DescentTsv(_, _) => "descent report (TSV)",
         }
     }
 
@@ -1076,6 +1079,13 @@ impl ExportRequest {
             ExportRequest::DiploidVcf(id) => ("diploid_variants", id),
             ExportRequest::ConsensusDiploidVcf(_) => return format!("consensus_diploid.{}", self.extension()),
             ExportRequest::SubjectBriefHtml(_) => return format!("dna_story.{}", self.extension()),
+            ExportRequest::DescentTsv(_, dna) => {
+                let kind = match dna {
+                    DnaType::Y => "y",
+                    DnaType::Mt => "mt",
+                };
+                return format!("{kind}_descent.{}", self.extension());
+            }
         };
         format!("{stem}_{id}.{}", self.extension())
     }

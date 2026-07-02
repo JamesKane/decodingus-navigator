@@ -26,13 +26,32 @@ impl NavigatorApp {
             .map(|(_, _, r)| r.is_some());
         match entry {
             Some(true) => {
-                let report = self
-                    .descent_reports
-                    .iter()
-                    .find(|(g, d, _)| *g == guid && *d == dna)
-                    .and_then(|(_, _, r)| r.as_ref())
-                    .unwrap();
-                self.render_descent(ui, report, compact);
+                // Render inside a block so the report borrow ends before the (mutating) export button.
+                let has_snps = {
+                    let report = self
+                        .descent_reports
+                        .iter()
+                        .find(|(g, d, _)| *g == guid && *d == dna)
+                        .and_then(|(_, _, r)| r.as_ref())
+                        .unwrap();
+                    self.render_descent(ui, report, compact);
+                    report.nodes.iter().any(|n| !n.snps.is_empty())
+                };
+                // Export the descent report (mirrors the on-screen grid) to TSV — full view only.
+                if !compact && has_snps {
+                    ui.add_space(6.0);
+                    if ui.button(self.tr("descent.export")).clicked() {
+                        let req = navigator_app::ExportRequest::DescentTsv(guid, dna);
+                        if let Some(path) = rfd::FileDialog::new()
+                            .set_file_name(req.default_filename())
+                            .add_filter("TSV", &["tsv"])
+                            .save_file()
+                        {
+                            let _ = self.tx.send(Command::Export { request: req, path });
+                            self.status = format!("Exporting {}…", req.label());
+                        }
+                    }
+                }
             }
             // Loaded but empty → the variant profile isn't built yet (or has no placement). Offer the
             // one-time build, which persists and then feeds this report instantly.

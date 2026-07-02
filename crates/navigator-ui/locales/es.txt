@@ -252,6 +252,7 @@ descent.build=Generar informe de descendencia
 descent.none=Aún no hay una ubicación que dibujar.
 descent.failed=No se pudo generar el informe de descendencia:
 descent.derived=derivado
+descent.export=Exportar descendencia (TSV)…
 descent.ancestral=ancestral
 descent.nocall=sin llamada
 descent.derivedShort=derivados

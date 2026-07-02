@@ -81,6 +81,14 @@ impl App {
                 let narration = self.cached_narration(&brief);
                 Ok(export::subject_brief_html(&brief, narration.as_ref()))
             }
+            ExportRequest::DescentTsv(guid, dna) => {
+                let report = self.descent_report(*guid, *dna).await?.ok_or_else(|| {
+                    AppError::Store(StoreError::NotFound(
+                        "no descent report yet — build the variant profile first".into(),
+                    ))
+                })?;
+                Ok(export::descent_tsv(&report))
+            }
         }
     }
 
