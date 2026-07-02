@@ -596,6 +596,9 @@ pub enum Command {
     },
     /// Load per-build reference-genome settings + cache status for the Settings dialog.
     LoadReferenceSettings,
+    /// Force-refresh the cached haplotrees (clear the session memo + on-disk cache) so a corrected
+    /// AppView tree is picked up without an app restart; profiles re-interpret against it on reload.
+    RefreshTrees,
     /// Health-check a local-LLM server at `base_url` (Settings "Test connection"): lists its models.
     TestLlmConnection {
         base_url: String,
@@ -667,6 +670,8 @@ pub enum Event {
     Overview(Vec<ProjectOverview>),
     /// Ancestry/IBD asset presence + integrity (the "data sources" transparency line).
     AssetStatus(Vec<navigator_app::AssetStatus>),
+    /// Haplotrees were force-refreshed (N cached files cleared); the UI re-loads open profiles.
+    TreesRefreshed(usize),
     ProjectCreated(Project),
     /// A project was updated or deleted; reload the overview.
     ProjectsChanged,
@@ -1160,6 +1165,10 @@ pub async fn handle(app: &App, cmd: Command) -> Event {
             Err(e) => Event::Error(e.to_string()),
         },
         Command::LoadAssetStatus => Event::AssetStatus(navigator_app::ancestry_asset_status()),
+        Command::RefreshTrees => match app.refresh_trees().await {
+            Ok(n) => Event::TreesRefreshed(n),
+            Err(e) => Event::Error(e.to_string()),
+        },
         Command::CreateProject(new) => match app.create_project(new).await {
             Ok(p) => Event::ProjectCreated(p),
             Err(e) => Event::Error(e.to_string()),

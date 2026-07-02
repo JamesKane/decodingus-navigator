@@ -1526,7 +1526,11 @@ fn draw_consensus_profile(
                                 resp.on_hover_text("catalogued Y-SNP at this site (not on the placed lineage)");
                             }
                             ui.label(egui::RichText::new(v.position.to_string()).weak());
-                            ui.label(state_label(v.consensus));
+                            // Show the actual consensus base alongside its derived/ancestral reading.
+                            match v.consensus_base.as_deref().filter(|b| !b.is_empty()) {
+                                Some(base) => ui.label(format!("{base}  {}", state_label(v.consensus))),
+                                None => ui.label(state_label(v.consensus)),
+                            };
                             let (label, color) = consensus_status_badge(v.status);
                             ui.colored_label(color, format!("{label} ({}/{})", v.support, v.total));
                             ui.horizontal(|ui| {

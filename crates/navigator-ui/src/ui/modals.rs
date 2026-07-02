@@ -310,6 +310,7 @@ impl NavigatorApp {
         let mut verify_build: Option<String> = None;
         let mut lift_request = false;
         let mut test_llm: Option<String> = None;
+        let mut refresh_trees = false;
 
         modal_frame(ctx, "settings_modal", 580.0, |ui| {
             ui.label(egui::RichText::new(self.tr("settings.title")).strong().size(16.0));
@@ -338,6 +339,12 @@ impl NavigatorApp {
                             ui.selectable_value(&mut form.y_tree_provider, "decodingus".to_string(), "Decoding-Us");
                             ui.selectable_value(&mut form.y_tree_provider, "ftdna".to_string(), "FTDNA");
                         });
+                });
+                ui.horizontal(|ui| {
+                    if ui.button(self.tr("settings.refreshTrees")).clicked() {
+                        refresh_trees = true;
+                    }
+                    ui.label(egui::RichText::new(self.tr("settings.refreshTreesHint")).weak().small());
                 });
                 ui.add_space(8.0);
 
@@ -661,6 +668,10 @@ impl NavigatorApp {
             self.llm_testing = true;
             self.llm_test_msg = Some(self.tr("settings.ai.testing").to_string());
             let _ = self.tx.send(Command::TestLlmConnection { base_url });
+        }
+        if refresh_trees {
+            self.status = self.tr("settings.refreshingTrees").to_string();
+            let _ = self.tx.send(Command::RefreshTrees);
         }
         if lift_request {
             self.status = "Lifting VCF…".into();

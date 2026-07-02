@@ -1027,6 +1027,19 @@ impl NavigatorApp {
                     let _ = self.tx.send(Command::LoadRecruitmentInvitations);
                     let _ = self.tx.send(Command::LoadNotifications);
                 }
+                Event::TreesRefreshed(n) => {
+                    // Drop the interpreted caches so open profiles/descent re-interpret against the
+                    // freshly-pulled tree (observation-first: no re-genotyping needed).
+                    self.status = format!("Refreshed haplotrees ({n} cached file(s) cleared) — re-interpreting");
+                    self.descent_reports.clear();
+                    self.descent_loading.clear();
+                    self.y_profile = None;
+                    self.mt_profile = None;
+                    if let Some(guid) = self.selected_sample {
+                        let _ = self.tx.send(Command::LoadYProfile { biosample_guid: guid });
+                        let _ = self.tx.send(Command::LoadMtProfile { biosample_guid: guid });
+                    }
+                }
                 Event::Error(e) => {
                     self.status = format!("Error: {e}");
                     self.running = false;

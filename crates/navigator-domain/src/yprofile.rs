@@ -11,7 +11,8 @@
 //! The Y-flavored aliases below keep call sites read as Y-specific while sharing one implementation.
 
 pub use crate::consensus::{
-    obs_weight, reconcile as reconcile_y, summarize, CallableState as YCallableState, ConsensusObs as YObsInput,
-    ConsensusState as YState, ConsensusStatus as YVariantStatus, ConsensusSummary as YProfileSummary,
-    ConsensusVariant as YProfileVariant, SourceObs as YSourceObs,
+    interpret, obs_weight, reconcile as reconcile_y, summarize, to_observed, CallableState as YCallableState,
+    ConsensusObs as YObsInput, ConsensusState as YState, ConsensusStatus as YVariantStatus,
+    ConsensusSummary as YProfileSummary, ConsensusVariant as YProfileVariant, ObservedProfile, ObservedSource,
+    ObservedVariant, SourceObs as YSourceObs, SourceSummary,
 };

@@ -7,6 +7,15 @@ use super::*;
 /// contigs / lift paths get distinct cache rows.
 const GENOTYPE_KIND: &str = "tree-genotype";
 
+/// Session memo of fetched haplotree JSON (`cache_file → body`), shared by [`App::fetch_tree`] and
+/// cleared by [`App::refresh_trees`]. Trees are 4–121 MB and consulted many times per placement, so
+/// they're resolved at most once per process; a corrected AppView tree is picked up by clearing this
+/// + the on-disk cache and re-fetching.
+static TREE_MEMO: std::sync::OnceLock<std::sync::Mutex<HashMap<String, String>>> = std::sync::OnceLock::new();
+fn tree_memo() -> &'static std::sync::Mutex<HashMap<String, String>> {
+    TREE_MEMO.get_or_init(|| std::sync::Mutex::new(HashMap::new()))
+}
+
 /// Per-source weighted genotype calls (position → base) for one build's pooling group in
 /// [`App::place_y_consensus`]: one `(source type, position→base)` entry per contributing source.
 type YSourceCalls = Vec<(SourceType, HashMap<i64, char>)>;
@@ -425,17 +434,30 @@ impl App {
         Ok(())
     }
 
-    /// The persisted consensus-profile snapshot for a subject + DNA type, if built — cheap (no
-    /// genotyping). The shared loader behind [`cached_y_profile`](Self::cached_y_profile); the future
-    /// mtDNA / autosomal tabs reuse it with a different [`DnaType`]. `None` until a build runs.
-    pub async fn cached_consensus_profile(
+    /// Load the persisted **observations** for a subject + DNA type — the raw genotype snapshot with
+    /// no interpretation. Cheap (no genotyping). The shared loader behind [`cached_y_profile`] /
+    /// [`cached_mt_profile`]; those interpret it against the current tree. `None` until a build runs.
+    ///
+    /// Backward-compat: a payload written before the observation-first switch is a baked
+    /// [`ConsensusProfile`] (no `schema_version`); it is normalized to an [`ObservedProfile`] using
+    /// its stored per-source bases (a source with no base becomes a no-call until the next rebuild).
+    async fn load_observed_profile(
         &self,
         biosample_guid: SampleGuid,
         dna_type: DnaType,
-    ) -> Result<Option<ConsensusProfile>, AppError> {
-        match navigator_store::consensus_profile::get(self.store.pool(), biosample_guid, dna_type.as_str()).await? {
-            Some(row) => Ok(Some(serde_json::from_str(&row.payload)?)),
-            None => Ok(None),
+    ) -> Result<Option<navigator_domain::consensus::ObservedProfile>, AppError> {
+        let Some(row) =
+            navigator_store::consensus_profile::get(self.store.pool(), biosample_guid, dna_type.as_str()).await?
+        else {
+            return Ok(None);
+        };
+        let value: serde_json::Value = serde_json::from_str(&row.payload)?;
+        // New payloads carry `schema_version`; legacy baked profiles don't.
+        if value.get("schema_version").is_some() {
+            Ok(Some(serde_json::from_value(value)?))
+        } else {
+            let legacy: ConsensusProfile = serde_json::from_value(value)?;
+            Ok(Some(observed_from_legacy(legacy)))
         }
     }
 
@@ -472,51 +494,78 @@ impl App {
         Ok(())
     }
 
-    /// Persist a Y/mt [`ConsensusProfile`] snapshot via [`persist_consensus_row`].
-    async fn persist_consensus_profile(
+    /// Persist a Y/mt **observation** snapshot (the payload) plus the interpreted `summary` header for
+    /// quick listing. Only observations are stored; state/status are re-derived on load by
+    /// [`interpret_y_profile`](Self::interpret_y_profile) / [`interpret_mt_profile`].
+    async fn persist_observed_profile(
         &self,
         biosample_guid: SampleGuid,
         dna_type: DnaType,
-        profile: &ConsensusProfile,
+        observed: &navigator_domain::consensus::ObservedProfile,
+        summary: &navigator_domain::consensus::ConsensusSummary,
         tree_provider: Option<String>,
     ) -> Result<(), AppError> {
         self.persist_consensus_row(
             biosample_guid,
             dna_type.as_str(),
-            profile.terminal.clone(),
-            &profile.summary,
-            profile.sources.len(),
+            observed.terminal_hint.clone(),
+            summary,
+            observed.sources.len(),
             tree_provider,
-            serde_json::to_string(profile)?,
+            serde_json::to_string(observed)?,
         )
         .await
     }
 
-    /// The persisted Y-profile snapshot for a subject, if one has been built — cheap (no
-    /// genotyping). `None` until [`build_y_profile`](Self::build_y_profile) runs.
-    ///
-    /// Re-imputed against the current DecodingUs polarity from each source's stored base before
-    /// returning (best effort, no BAM): a profile built under a different tree/provider, or before a
-    /// polarity correction, self-heals on read without a rebuild. Profiles persisted before bases
-    /// were stored (no `base`) are returned as-is — they need one rebuild to gain re-imputation.
-    pub async fn cached_y_profile(&self, biosample_guid: SampleGuid) -> Result<Option<YProfile>, AppError> {
-        let Some(mut profile) = self.cached_consensus_profile(biosample_guid, DnaType::Y).await? else {
-            return Ok(None);
-        };
-        let has_bases = profile
-            .variants
-            .iter()
-            .any(|v| v.sources.iter().any(|s| s.base.is_some()));
-        if has_bases {
-            if let Some(pol) = self.decodingus_y_polarity().await {
-                let pol: std::collections::BTreeMap<String, (String, String)> = pol.into_iter().collect();
-                let changed = navigator_domain::consensus::reproject(&mut profile.variants, &pol);
-                if changed > 0 {
-                    profile.summary = navigator_domain::consensus::summarize(&profile.variants);
-                }
-            }
+    /// The Y/mt polarity map (SNP name → ancestral/derived) from the **current** tree for the
+    /// configured provider — the input to [`navigator_domain::consensus::interpret`]. DecodingUs uses
+    /// the tree's true phylogenetic polarity; FTDNA the parsed FTDNA tree's polarity. Empty when the
+    /// tree is unavailable (interpret then falls back to each variant's stored ref/alt).
+    async fn current_y_polarity(&self) -> std::collections::BTreeMap<String, (String, String)> {
+        match y_tree_provider() {
+            YTreeProvider::DecodingUs => self.decodingus_y_polarity().await.unwrap_or_default().into_iter().collect(),
+            YTreeProvider::Ftdna => self
+                .fetch_ftdna_y_tree()
+                .await
+                .ok()
+                .and_then(|j| navigator_analysis::haplo::parse_ftdna_json(&j).ok())
+                .map(|tree| navigator_analysis::haplo::polarity_from_tree(&tree))
+                .unwrap_or_default(),
         }
-        Ok(Some(profile))
+    }
+
+    /// The mtDNA polarity map from the current rCRS tree (DecodingUs remapped, FTDNA fallback).
+    async fn current_mt_polarity(&self) -> std::collections::BTreeMap<String, (String, String)> {
+        match self.mt_tree_rcrs().await {
+            Ok((tree, _)) => navigator_analysis::haplo::polarity_from_tree(&tree),
+            Err(_) => std::collections::BTreeMap::new(),
+        }
+    }
+
+    /// Interpret stored Y observations against the current Y tree polarity into the display profile.
+    async fn interpret_y_profile(&self, observed: navigator_domain::consensus::ObservedProfile) -> ConsensusProfile {
+        let pol = self.current_y_polarity().await;
+        interpret_observed(observed, &pol)
+    }
+
+    /// Interpret stored mtDNA observations against the current rCRS tree polarity.
+    async fn interpret_mt_profile(&self, observed: navigator_domain::consensus::ObservedProfile) -> ConsensusProfile {
+        let pol = self.current_mt_polarity().await;
+        interpret_observed(observed, &pol)
+    }
+
+    /// The Y-profile for a subject, if one has been built — cheap (no genotyping). `None` until
+    /// [`build_y_profile`](Self::build_y_profile) runs.
+    ///
+    /// Loads the stored **observations** and interprets them against the **current** Y tree polarity
+    /// on every read — so a corrected/updated tree (or a provider switch) flips the derived/ancestral
+    /// states with no rebuild and no BAM re-read. Legacy profiles are normalized to observations on
+    /// load; those persisted before bases were stored show no-calls until one rebuild.
+    pub async fn cached_y_profile(&self, biosample_guid: SampleGuid) -> Result<Option<YProfile>, AppError> {
+        match self.load_observed_profile(biosample_guid, DnaType::Y).await? {
+            Some(observed) => Ok(Some(self.interpret_y_profile(observed).await)),
+            None => Ok(None),
+        }
     }
 
     /// Build (and persist) the multi-source Y-variant profile: reconcile each Y-bearing source's
@@ -630,12 +679,14 @@ impl App {
                         PrivateClass::OffPathKnown(n) => n.clone(),
                         PrivateClass::Novel => String::new(), // keyed by position
                     };
-                    let mut o = YObsInput::snp(
+                    // Carry the observed base (= the called alt) so interpret re-derives Derived from
+                    // the call's own ref/alt — no baked state, consistent with every other source.
+                    let mut o = YObsInput::observed(
                         name,
                         v.position,
                         v.reference.to_string(),
                         v.alternate.to_string(),
-                        YState::Derived,
+                        Some(v.alternate),
                         false,
                     );
                     // De-novo calls carry read depth; a structural-region (palindrome/amplicon) call
@@ -652,56 +703,40 @@ impl App {
             }
         }
 
-        // Provenance: one entry per contributing source (label, type, SNP count).
-        let source_summaries: Vec<YSourceSummary> = sources
-            .iter()
-            .map(|(label, st, obs)| YSourceSummary {
-                label: label.clone(),
-                source_type: *st,
-                variant_count: obs.len(),
-            })
-            .collect();
-
-        let mut variants = yprofile::reconcile_y(&sources);
-        // Re-impute each SNP's state from the stored observed base against the **true** (DecodingUs)
-        // polarity, keyed by SNP name — so a profile built against any tree (incl. an FTDNA tree
-        // whose reference-as-ancestral polarity is inverted at some sites) displays correct
-        // derived/ancestral states, no BAM re-read. Best effort: skipped if DecodingUs is offline.
-        if let Some(pol) = self.decodingus_y_polarity().await {
-            let pol: std::collections::BTreeMap<String, (String, String)> = pol.into_iter().collect();
-            navigator_domain::consensus::reproject(&mut variants, &pol);
-        }
-        let summary = yprofile::summarize(&variants);
+        // Group the sources into an observation-only snapshot — no baked state. State/status are
+        // interpreted against the current tree on read (`interpret_y_profile`), so a corrected tree
+        // (incl. an FTDNA tree whose reference-as-ancestral polarity is inverted at some sites) flips
+        // the display without a rebuild.
+        let mut observed = yprofile::to_observed(&sources);
         // Genome-level placement: the pooled call set placed once (computed above — not a vote among
         // the per-run terminal labels). Falls back to the label reconciliation when nothing places.
-        let terminal = match &consensus_assignment {
+        observed.terminal_hint = match &consensus_assignment {
             Some(a) => a.ranked.first().map(|r| r.name.clone()),
             None => self
                 .haplogroup_consensus(biosample_guid, DnaType::Y)
                 .await?
                 .map(|c| c.haplogroup),
         };
-        let profile = ConsensusProfile {
-            variants,
-            summary,
-            terminal,
-            sources: source_summaries,
-        };
 
-        // Persist the snapshot (keyed dna_type='Y') so the tab reloads it without re-genotyping.
+        // Interpret once for the return value + the persisted summary header.
+        let profile = self.interpret_y_profile(observed.clone()).await;
         let provider = Some(match y_tree_provider() {
             YTreeProvider::DecodingUs => "decodingus".to_string(),
             YTreeProvider::Ftdna => "ftdna".to_string(),
         });
-        self.persist_consensus_profile(biosample_guid, DnaType::Y, &profile, provider)
+        self.persist_observed_profile(biosample_guid, DnaType::Y, &observed, &profile.summary, provider)
             .await?;
         Ok(profile)
     }
 
-    /// The persisted mtDNA consensus-profile snapshot for a subject, if one has been built — cheap
-    /// (no genotyping). `None` until [`build_mt_profile`](Self::build_mt_profile) runs.
+    /// The mtDNA consensus profile for a subject, if built — cheap (no genotyping). Loads stored
+    /// observations and interprets them against the current rCRS tree polarity on every read (the
+    /// mtDNA half of the observation-first fix — previously mt states could not re-interpret at all).
     pub async fn cached_mt_profile(&self, biosample_guid: SampleGuid) -> Result<Option<ConsensusProfile>, AppError> {
-        self.cached_consensus_profile(biosample_guid, DnaType::Mt).await
+        match self.load_observed_profile(biosample_guid, DnaType::Mt).await? {
+            Some(observed) => Ok(Some(self.interpret_mt_profile(observed).await)),
+            None => Ok(None),
+        }
     }
 
     /// Build (and persist) the multi-source mtDNA consensus profile — the mtDNA adapter over the
@@ -735,24 +770,18 @@ impl App {
             }
         }
 
-        // Provenance: one entry per contributing source (label, type, mutation count).
-        let source_summaries: Vec<YSourceSummary> = sources
-            .iter()
-            .map(|(label, st, obs)| YSourceSummary {
-                label: label.clone(),
-                source_type: *st,
-                variant_count: obs.len(),
-            })
-            .collect();
-
-        let variants = yprofile::reconcile_y(&sources);
-        let summary = yprofile::summarize(&variants);
+        // Observation-only snapshot; state/status interpreted against the rCRS tree polarity on read.
+        let mut observed = yprofile::to_observed(&sources);
+        // Interpret once (against the current mt polarity) for the return value + summary header.
+        let mut profile = self.interpret_mt_profile(observed.clone()).await;
         // Genome-level placement of the pooled chrM call set on the same tree. A subject with no
         // derived mutations carries no real placement — an alignment with a handful of off-target
         // chrM reads (a Big Y) genotypes to nothing below the root. Report no terminal rather than a
         // root label, and never resurrect a stale persisted root call (the old "very few mt reads →
-        // RSRS" artifact); the profile is meaningful only once some mutation is derived.
-        let terminal = if variants
+        // RSRS" artifact); the profile is meaningful only once some mutation is derived (checked on
+        // the *interpreted* variants).
+        let terminal = if profile
+            .variants
             .iter()
             .all(|v| v.consensus != navigator_domain::consensus::ConsensusState::Derived)
         {
@@ -769,15 +798,11 @@ impl App {
             };
             assignment.ranked.first().map(|r| r.name.clone())
         };
-        let profile = ConsensusProfile {
-            variants,
-            summary,
-            terminal,
-            sources: source_summaries,
-        };
+        observed.terminal_hint = terminal.clone();
+        profile.terminal = terminal;
 
-        // Persist (keyed dna_type='Mt') with the tree provider actually used.
-        self.persist_consensus_profile(biosample_guid, DnaType::Mt, &profile, Some(provider.to_string()))
+        // Persist observations (keyed dna_type='Mt') with the tree provider actually used.
+        self.persist_observed_profile(biosample_guid, DnaType::Mt, &observed, &profile.summary, Some(provider.to_string()))
             .await?;
         Ok(profile)
     }
@@ -1175,8 +1200,26 @@ impl App {
                 (v.name.clone(), state)
             })
             .collect();
+        // The actual consensus nucleotide per SNP, so the descent shows/exports the observed allele.
+        let base_by_name: std::collections::HashMap<String, char> = profile
+            .variants
+            .iter()
+            .filter_map(|v| {
+                v.consensus_base
+                    .as_deref()
+                    .and_then(|b| b.chars().next())
+                    .map(|c| (v.name.clone(), c))
+            })
+            .collect();
 
-        let nodes = navigator_analysis::haplo::descent_by_node(&tree, terminal_id, &state_by_name);
+        let mut nodes = navigator_analysis::haplo::descent_by_node(&tree, terminal_id, &state_by_name);
+        for node in &mut nodes {
+            for snp in &mut node.snps {
+                if snp.base.is_none() {
+                    snp.base = base_by_name.get(&snp.name).copied();
+                }
+            }
+        }
         Ok(Some(DescentReport { dna, terminal, nodes }))
     }
 
@@ -1710,6 +1753,28 @@ impl App {
     /// unreachable) but a stale copy exists, the stale copy is used rather than failing — so the
     /// app keeps working offline, just on an older tree. (A server-side ETag/version would let us
     /// revalidate without a full re-download; tracked as an AppView backlog item.)
+    /// Force a fresh pull of the haplotrees on the next placement: clear the session memo AND delete
+    /// the on-disk tree caches, so a corrected AppView tree (e.g. a polarity fix) is picked up without
+    /// an app restart. Observation-first profiles then re-interpret against the new tree on read — no
+    /// re-genotyping. Returns the number of cache files removed.
+    pub async fn refresh_trees(&self) -> Result<usize, AppError> {
+        tree_memo().lock().unwrap().clear();
+        let mut removed = 0usize;
+        if let Some(dir) = tree_cache_path("_").parent().map(|p| p.to_path_buf()) {
+            if let Ok(entries) = std::fs::read_dir(&dir) {
+                for e in entries.flatten() {
+                    let p = e.path();
+                    if p.extension().and_then(|x| x.to_str()) == Some("json")
+                        && std::fs::remove_file(&p).is_ok()
+                    {
+                        removed += 1;
+                    }
+                }
+            }
+        }
+        Ok(removed)
+    }
+
     async fn fetch_tree(&self, url: &str, cache_file: &str) -> Result<String, AppError> {
         // Session memo: the Y/mt haplotrees are 4–121 MB and each placement consults them several
         // times (per alignment, per vendor set, and for the polarity map). A single genome-consensus
@@ -1717,8 +1782,7 @@ impl App {
         // blocks on the network. Resolve each tree at most once per process and serve every later call
         // from memory — trees are effectively static within a session, so this is the batch's biggest
         // win (a project pass was spending minutes per subject re-fetching the 121 MB FTDNA tree).
-        static MEMO: std::sync::OnceLock<std::sync::Mutex<HashMap<String, String>>> = std::sync::OnceLock::new();
-        let memo = MEMO.get_or_init(|| std::sync::Mutex::new(HashMap::new()));
+        let memo = tree_memo();
         if let Some(hit) = memo.lock().unwrap().get(cache_file).cloned() {
             return Ok(hit);
         }
@@ -2758,5 +2822,74 @@ impl App {
             }
         }
         Ok(calls)
+    }
+}
+
+/// Interpret an [`navigator_domain::consensus::ObservedProfile`] against a polarity map into the
+/// app's display [`ConsensusProfile`] (carrying provenance + terminal). The single place observations
+/// become the interpreted view.
+fn interpret_observed(
+    observed: navigator_domain::consensus::ObservedProfile,
+    polarity: &std::collections::BTreeMap<String, (String, String)>,
+) -> ConsensusProfile {
+    let (variants, summary) = navigator_domain::consensus::interpret(&observed, polarity);
+    ConsensusProfile {
+        variants,
+        summary,
+        terminal: observed.terminal_hint,
+        sources: observed
+            .sources
+            .into_iter()
+            .map(|s| YSourceSummary {
+                label: s.label,
+                source_type: s.source_type,
+                variant_count: s.variant_count,
+            })
+            .collect(),
+    }
+}
+
+/// Normalize a legacy baked [`ConsensusProfile`] payload into an
+/// [`navigator_domain::consensus::ObservedProfile`], preserving each source's stored observed base (a
+/// base-less legacy source becomes a no-call on interpret until the next rebuild). Load-time
+/// backward-compat only.
+fn observed_from_legacy(legacy: ConsensusProfile) -> navigator_domain::consensus::ObservedProfile {
+    use navigator_domain::consensus::{ObservedProfile, ObservedSource, ObservedVariant, SourceSummary};
+    ObservedProfile {
+        schema_version: 1,
+        variants: legacy
+            .variants
+            .into_iter()
+            .map(|v| ObservedVariant {
+                name: v.name,
+                position: v.position,
+                in_tree: v.in_tree,
+                ref_allele: Some(v.ancestral),
+                alt_allele: Some(v.derived),
+                sources: v
+                    .sources
+                    .into_iter()
+                    .map(|s| ObservedSource {
+                        label: s.label,
+                        source_type: s.source_type,
+                        base: s.base,
+                        depth: None,
+                        mapq: None,
+                        callable: None,
+                        region_modifier: 1.0,
+                    })
+                    .collect(),
+            })
+            .collect(),
+        sources: legacy
+            .sources
+            .into_iter()
+            .map(|s| SourceSummary {
+                label: s.label,
+                source_type: s.source_type,
+                variant_count: s.variant_count,
+            })
+            .collect(),
+        terminal_hint: legacy.terminal,
     }
 }

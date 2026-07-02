@@ -483,6 +483,26 @@ pub fn tree_positions(tree: &HaploTree) -> HashMap<i64, String> {
     m
 }
 
+/// Polarity map for the consensus interpreter: **SNP name → (ancestral, derived)** over every
+/// defining locus in the tree. This is the tree-of-record's per-SNP polarity, applied at read time by
+/// `navigator_domain::consensus::interpret` so a corrected tree flips states with no re-genotyping.
+/// Use for any parsed [`HaploTree`] (mtDNA rCRS, FTDNA) where a JSON polarity map isn't available;
+/// for the DecodingUs Y JSON prefer [`decodingus_polarity_map`] (true phylogenetic polarity). Loci
+/// without a name or derived allele are skipped; a recurrent name keeps its first-seen polarity.
+pub fn polarity_from_tree(tree: &HaploTree) -> std::collections::BTreeMap<String, (String, String)> {
+    let mut m: std::collections::BTreeMap<String, (String, String)> = std::collections::BTreeMap::new();
+    for n in tree.nodes.values() {
+        for l in &n.loci {
+            if l.name.trim().is_empty() || l.derived.is_empty() {
+                continue;
+            }
+            m.entry(l.name.trim().to_uppercase())
+                .or_insert_with(|| (l.ancestral.clone(), l.derived.clone()));
+        }
+    }
+    m
+}
+
 /// child → parent map, used to walk any node back to the root.
 fn build_parent_map(tree: &HaploTree) -> HashMap<i64, i64> {
     let mut parent: HashMap<i64, i64> = HashMap::new();
