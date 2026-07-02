@@ -725,6 +725,12 @@ fn node_counts(node: &HaploNode, calls: &HashMap<i64, char>) -> (usize, usize, u
     (d, a, n)
 }
 
+/// Public view of a node's `(derived, ancestral, no-call)` defining-SNP tally against `calls` — for
+/// diagnostics / tracing a placement path.
+pub fn node_call_counts(tree: &HaploTree, calls: &HashMap<i64, char>, node_id: i64) -> (usize, usize, usize) {
+    tree.nodes.get(&node_id).map(|n| node_counts(n, calls)).unwrap_or((0, 0, 0))
+}
+
 /// A node is *contradicted* when the sample carries the ancestral allele at more of the
 /// node's defining SNPs than the derived allele — it confidently does **not** belong to this
 /// branch. A no-evidence node (all no-call, `d == a == 0`) is *not* contradicted: it is a
@@ -772,6 +778,16 @@ pub fn path_admissible(tree: &HaploTree, calls: &HashMap<i64, char>, node_id: i6
     for (i, id) in path.iter().enumerate() {
         let Some(node) = tree.nodes.get(id) else { continue };
         if is_contradicted(node, calls) {
+            // A **confident divergence** — the sample carries the ancestral allele here and *none* of
+            // the node's derived SNPs — is never redeemable: the sample left the lineage above this
+            // node, so anything below is a different branch (a sibling clade, or a homoplasy / indel
+            // block that happens to score). Redeeming it is what lets a big spurious-derived block on a
+            // parallel branch tunnel into an unreachable terminal. Only a *mixed block* (`d > 0`: the
+            // sample carries some of the node's derived SNPs, and the ancestral ones are an unresolved
+            // downstream split) can be redeemed by strong derived support below.
+            if derived[i] == 0 {
+                return false;
+            }
             // Derived SNPs strictly below this contradicted node, toward the candidate.
             let derived_below: usize = derived[i + 1..].iter().sum();
             if derived_below < REDEEM_DERIVED {
@@ -1151,6 +1167,41 @@ mod tests {
         // Kulczynski alone is lured deeper by the coincidental match...
         assert_eq!(score(&t, &c)[0].name, "Bdeep");
         // ...but Bdeep tunnels through the contradicted B, so the guard reports H.
+        assert!(!path_admissible(&t, &c, id_of(&t, "Bdeep")));
+        assert_eq!(guarded_terminal(&t, &c), "H");
+    }
+
+    // root -> H(146) -> B(500) -> Bdeep(five derived SNPs). The sample is ANCESTRAL at B (carries NONE
+    // of B's derived) yet coincidentally matches all five of Bdeep's SNPs — a big homoplasy / indel
+    // block on a diverged sibling. The redeem clause (>= REDEEM_DERIVED derived below) would tunnel to
+    // Bdeep; a *confident* divergence (d == 0) must never be redeemed.
+    const CONFIDENT_DIVERGENCE_TREE: &str = r#"{
+      "allNodes": {
+        "1": {"haplogroupId": 1, "name": "root", "isRoot": true, "variants": [], "children": [2]},
+        "2": {"haplogroupId": 2, "name": "H", "isRoot": false,
+              "variants": [{"variant":"A146G","position":146,"ancestral":"A","derived":"G"}], "children": [3]},
+        "3": {"haplogroupId": 3, "name": "B", "isRoot": false,
+              "variants": [{"variant":"C500T","position":500,"ancestral":"C","derived":"T"}], "children": [4]},
+        "4": {"haplogroupId": 4, "name": "Bdeep", "isRoot": false, "variants": [
+                {"variant":"G900A","position":900,"ancestral":"G","derived":"A"},
+                {"variant":"G901A","position":901,"ancestral":"G","derived":"A"},
+                {"variant":"G902A","position":902,"ancestral":"G","derived":"A"},
+                {"variant":"G903A","position":903,"ancestral":"G","derived":"A"},
+                {"variant":"G904A","position":904,"ancestral":"G","derived":"A"}
+              ], "children": []}
+      }
+    }"#;
+
+    #[test]
+    fn guard_never_redeems_a_confident_divergence() {
+        let t = parse_ftdna_json(CONFIDENT_DIVERGENCE_TREE).unwrap();
+        // Derived at H(146); ancestral at B(500) → carries none of B's derived (d == 0); but matches
+        // all five of Bdeep's SNPs (a homoplasy block → 5 derived below B, past REDEEM_DERIVED).
+        let c = calls(&[(146, 'G'), (500, 'C'), (900, 'A'), (901, 'A'), (902, 'A'), (903, 'A'), (904, 'A')]);
+        // Kulczynski is lured to Bdeep by the five coincidental matches...
+        assert_eq!(score(&t, &c)[0].name, "Bdeep");
+        // ...but B is a confident divergence (zero derived), never redeemed despite the derived block
+        // below it. The terminal is H, not Bdeep — the fix that stops a parallel-branch indel tunnel.
         assert!(!path_admissible(&t, &c, id_of(&t, "Bdeep")));
         assert_eq!(guarded_terminal(&t, &c), "H");
     }

@@ -938,6 +938,103 @@ impl App {
         Ok(Some(assemble_assignment(&trees[bk], &pooled)))
     }
 
+    /// Diagnostic: trace the DecodingUs genome-consensus Y placement for one subject — the pooled
+    /// build, the Kulczynski top candidates + admissibility, the assembled terminal, a strict
+    /// root→tip descent, and the per-node derived/ancestral tally down the assembled lineage (so an
+    /// over-deepening tunnel through ancestral branches is visible). Read-only.
+    pub async fn debug_y_placement(&self, biosample_guid: SampleGuid) -> Result<String, AppError> {
+        use navigator_analysis::haplo;
+        let tree_json = self.fetch_decodingus_y_tree().await?;
+        let alignments = alignment::list_for_biosample(self.store.pool(), biosample_guid).await?;
+        let vsets = variant_set::list_for_biosample(self.store.pool(), biosample_guid).await?;
+        let mut builds: std::collections::HashSet<&'static str> =
+            alignments.iter().filter_map(|a| decodingus_build_key(&a.reference_build)).collect();
+        for set in &vsets {
+            if set.source_type != SourceType::Chip {
+                if let Some(bk) = set.reference_build.as_deref().map_or(Some("GRCh38"), decodingus_build_key) {
+                    builds.insert(bk);
+                }
+            }
+        }
+        let mut trees: HashMap<&'static str, haplo::HaploTree> = HashMap::new();
+        for bk in builds {
+            if let Ok(t) = haplo::parse_decodingus_json(&tree_json, bk) {
+                trees.insert(bk, t);
+            }
+        }
+        let mut by_build: HashMap<&'static str, YSourceCalls> = HashMap::new();
+        for a in &alignments {
+            let Some(bk) = decodingus_build_key(&a.reference_build) else { continue };
+            let Some(tree) = trees.get(bk) else { continue };
+            if let Ok(calls) = self.base_calls(a.id, "chrY", tree, None).await {
+                if !calls.is_empty() {
+                    by_build.entry(bk).or_default().push((SourceType::WgsShortRead, calls));
+                }
+            }
+        }
+        for set in &vsets {
+            if set.source_type == SourceType::Chip {
+                continue;
+            }
+            let Some(bk) = set.reference_build.as_deref().map_or(Some("GRCh38"), decodingus_build_key) else {
+                continue;
+            };
+            let Some(tree) = trees.get(bk) else { continue };
+            let calls = Self::vset_chr_y_calls(set);
+            if !calls.is_empty() {
+                by_build.entry(bk).or_default().push((set.source_type, strand_reconcile_to_tree(tree, calls)));
+            }
+        }
+        let Some(bk) = by_build
+            .iter()
+            .max_by_key(|(_, s)| s.iter().map(|(_, c)| c.len()).sum::<usize>())
+            .map(|(bk, _)| *bk)
+        else {
+            return Ok("no Y calls".into());
+        };
+        let pooled = pool_votes(&by_build[bk]);
+        let tree = &trees[bk];
+
+        let mut out = format!("build={bk} pooled_calls={}\n", pooled.len());
+        let ranked = haplo::score(tree, &pooled);
+        out.push_str("Kulczynski top-10 (name score matched/expected admissible):\n");
+        for r in ranked.iter().take(10) {
+            out.push_str(&format!(
+                "  {:<28} {:.3} {}/{} adm={}\n",
+                r.name,
+                r.score,
+                r.matched,
+                r.expected,
+                haplo::path_admissible(tree, &pooled, r.id)
+            ));
+        }
+        let asg = assemble_assignment(tree, &pooled);
+        let asm_id = asg.ranked.first().map(|r| r.id);
+        out.push_str(&format!(
+            "assemble_assignment terminal: {}\n",
+            asg.ranked.first().map(|r| r.name.as_str()).unwrap_or("?")
+        ));
+        let mut roots: Vec<i64> = tree.nodes.values().filter(|n| n.is_root).map(|n| n.id).collect();
+        roots.sort_unstable();
+        for &r in &roots {
+            let term = haplo::deepen_terminal(tree, &pooled, r);
+            out.push_str(&format!(
+                "deepen_terminal(root={}) -> {}\n",
+                tree.nodes.get(&r).map(|n| n.name.as_str()).unwrap_or("?"),
+                tree.nodes.get(&term).map(|n| n.name.as_str()).unwrap_or("?")
+            ));
+        }
+        if let Some(tid) = asm_id {
+            out.push_str("assembled lineage (root->terminal) per-node (derived/ancestral/nocall):\n");
+            for id in lineage_ids(tree, tid) {
+                let (d, a, n) = haplo::node_call_counts(tree, &pooled, id);
+                let name = tree.nodes.get(&id).map(|x| x.name.clone()).unwrap_or_default();
+                out.push_str(&format!("  {:<32} d={d} a={a} n={n}\n", name));
+            }
+        }
+        Ok(out)
+    }
+
     /// The DecodingUs coordinate key (`hs1` / `GRCh38` / `GRCh37`) for a subject's Y data, taken from
     /// its first alignment's reference build. Defaults to `hs1` (CHM13, the DecodingUs native build)
     /// when the subject has no build-resolvable alignment. Used to parse the DecodingUs tree in the

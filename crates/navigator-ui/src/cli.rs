@@ -35,6 +35,8 @@ pub enum Command {
     Subjects(ProbeArgs),
     /// Show one subject's runs, alignments, profiles, and haplogroup consensus.
     Show(ShowArgs),
+    /// Diagnostic: trace the genome-consensus Y placement for one subject (candidates + lineage tally).
+    DebugPlace(ShowArgs),
     /// List projects with their subject counts.
     Projects(ProbeArgs),
     /// De-novo diploid variant calling → VCF (whole-genome, or a single `--contig`).
@@ -201,6 +203,7 @@ pub fn run(command: Command) -> i32 {
             Command::Ingest(a) => ingest(a).await,
             Command::Subjects(a) => subjects(a).await,
             Command::Show(a) => show(a).await,
+            Command::DebugPlace(a) => debug_place(a).await,
             Command::Projects(a) => projects(a).await,
             Command::Call(a) => call(a).await,
             Command::LiftVcf(a) => lift_vcf(a).await,
@@ -620,6 +623,31 @@ async fn subjects(args: ProbeArgs) -> i32 {
         }
     }
     0
+}
+
+async fn debug_place(args: ShowArgs) -> i32 {
+    let app = match open(args.db).await {
+        Ok(a) => a,
+        Err(c) => return c,
+    };
+    let guid = match find_subject(&app, &args.subject).await {
+        Ok(Some(g)) => g,
+        Ok(None) => {
+            eprintln!("error: no subject with identifier \"{}\"", args.subject);
+            return 1;
+        }
+        Err(c) => return c,
+    };
+    match app.debug_y_placement(guid).await {
+        Ok(trace) => {
+            println!("{trace}");
+            0
+        }
+        Err(e) => {
+            eprintln!("error: {e}");
+            1
+        }
+    }
 }
 
 async fn show(args: ShowArgs) -> i32 {
