@@ -388,15 +388,25 @@ fn strand_ambiguous(a: char, d: char) -> bool {
 /// (a multi-character allele). An insertion (`G`→`GAGC…`) or deletion (`GAGC`→`G`) shares its anchor
 /// base between the two alleles, so a base-vs-allele compare can't tell them apart and reads every
 /// sample as derived. The DecodingUs Y tree carries ~12.7k such indel loci, all with a shared anchor;
-/// counting them turned indel-heavy nodes into homoplasy magnets that captured the placement. They
-/// need real indel genotyping; until then they don't vote.
+/// counting them by base turned indel-heavy nodes into homoplasy magnets that captured the placement.
+/// Indel loci are instead genotyped by [`crate::caller::call_indels_at`], which writes a resolved
+/// **sentinel** into the genotype map ([`INDEL_DERIVED`] / [`INDEL_ANCESTRAL`]); `locus_state` /
+/// `locus_carried` read that sentinel for a non-SNP locus.
 fn is_snp_locus(locus: &Locus) -> bool {
     locus.derived.chars().count() == 1 && locus.ancestral.chars().count() <= 1
 }
 
+/// Sentinel written at an indel locus's anchor position when the sample **carries** the derived
+/// insertion/deletion. Not a nucleotide, so it never collides with a SNP base-call (and a rare
+/// indel/SNP position collision degrades both to no-call, never a wrong call).
+pub const INDEL_DERIVED: char = '+';
+/// Sentinel written at an indel locus the sample does **not** carry (reference-spanning / ancestral).
+pub const INDEL_ANCESTRAL: char = '-';
+
 fn locus_carried(locus: &Locus, calls: &HashMap<i64, char>) -> bool {
     if !is_snp_locus(locus) {
-        return false;
+        // Indel locus: carried iff the indel genotyper resolved it to the derived sentinel.
+        return calls.get(&locus.position) == Some(&INDEL_DERIVED);
     }
     let Some(d) = locus.derived.chars().next().map(|c| c.to_ascii_uppercase()) else {
         return false;
@@ -428,9 +438,14 @@ fn locus_carried(locus: &Locus, calls: &HashMap<i64, char>) -> bool {
 /// base that matches neither strand of either allele is a genuine third allele → `NoCall` (not a
 /// branch contradiction).
 fn locus_state(locus: &Locus, calls: &HashMap<i64, char>) -> CallState {
-    // Indel / MNP loci can't be evaluated by a single-base genotype (see `is_snp_locus`).
+    // Indel / MNP loci can't be read as a single base — they are genotyped separately and their
+    // resolved state arrives as a sentinel ([`INDEL_DERIVED`]/[`INDEL_ANCESTRAL`]) at the anchor.
     if !is_snp_locus(locus) {
-        return CallState::NoCall;
+        return match calls.get(&locus.position) {
+            Some(&INDEL_DERIVED) => CallState::Derived,
+            Some(&INDEL_ANCESTRAL) => CallState::Ancestral,
+            _ => CallState::NoCall,
+        };
     }
     let Some(d) = locus.derived.chars().next().map(|c| c.to_ascii_uppercase()) else {
         return CallState::NoCall;
@@ -478,9 +493,16 @@ fn dfs(
     // Add this node's loci to the path (skip positions already seen on the path).
     let mut added: Vec<(i64, bool)> = Vec::new();
     for locus in &node.loci {
-        // Skip indel/MNP loci — a base genotype can't evaluate them, so they must not inflate a
-        // node's expected/matched set (see `is_snp_locus`).
-        if !is_snp_locus(locus) || !on_path.insert(locus.position) {
+        // Indel/MNP loci participate only when the indel genotyper resolved them (a sentinel is
+        // present); an un-called indel must not inflate a node's expected/matched set. SNP loci
+        // count as before (a no-call SNP still contributes to `expected`).
+        if !is_snp_locus(locus) {
+            match calls.get(&locus.position) {
+                Some(&INDEL_DERIVED) | Some(&INDEL_ANCESTRAL) => {}
+                _ => continue,
+            }
+        }
+        if !on_path.insert(locus.position) {
             continue;
         }
         let carried = locus_carried(locus, calls);
@@ -1267,17 +1289,40 @@ mod tests {
     }"#;
 
     #[test]
-    fn indel_locus_is_not_evaluable_and_never_places() {
+    fn indel_locus_is_not_evaluable_from_a_raw_base() {
         let t = parse_ftdna_json(INDEL_TREE).unwrap();
         // Derived at H(146); at the insertion position the sample carries the anchor base G — which a
-        // naive first-base compare reads as the insertion's derived allele. It must NOT place onto the
-        // indel-defined node, and the indel locus counts as neither carried nor a state.
+        // naive first-base compare reads as the insertion's derived allele. A *raw base* (not the indel
+        // sentinel) at an indel position must NOT place onto the indel-defined node.
         let c = calls(&[(146, 'G'), (200, 'G')]);
         assert!(!locus_carried(&t.nodes[&3].loci[0], &c));
         assert_eq!(locus_state(&t.nodes[&3].loci[0], &c), CallState::NoCall);
-        assert_eq!(node_call_counts(&t, &c, 3), (0, 0, 1)); // the sole locus is an un-evaluable indel (no-call)
+        assert_eq!(node_call_counts(&t, &c, 3), (0, 0, 1)); // the sole locus is an un-called indel (no-call)
         assert_eq!(score(&t, &c)[0].name, "H");
         assert_eq!(guarded_terminal(&t, &c), "H");
+    }
+
+    #[test]
+    fn indel_sentinel_drives_placement_and_state() {
+        let t = parse_ftdna_json(INDEL_TREE).unwrap();
+        let indel = &t.nodes[&3].loci[0];
+        // Genotyper resolved the insertion as PRESENT: the derived sentinel places onto Ins.
+        let derived = calls(&[(146, 'G'), (200, INDEL_DERIVED)]);
+        assert!(locus_carried(indel, &derived));
+        assert_eq!(locus_state(indel, &derived), CallState::Derived);
+        assert_eq!(node_call_counts(&t, &derived, 3), (1, 0, 0));
+        assert_eq!(guarded_terminal(&t, &derived), "Ins");
+
+        // Resolved as ABSENT: the ancestral sentinel keeps the terminal at H (Ins is contradicted).
+        let ancestral = calls(&[(146, 'G'), (200, INDEL_ANCESTRAL)]);
+        assert!(!locus_carried(indel, &ancestral));
+        assert_eq!(locus_state(indel, &ancestral), CallState::Ancestral);
+        assert_eq!(node_call_counts(&t, &ancestral, 3), (0, 1, 0));
+        assert_eq!(guarded_terminal(&t, &ancestral), "H");
+
+        // No sentinel (un-called indel): does not inflate Ins's expected set → terminal stays H.
+        let uncalled = calls(&[(146, 'G')]);
+        assert_eq!(guarded_terminal(&t, &uncalled), "H");
     }
 
     // root -> H(146) -> B(500) -> Bdeep(five derived SNPs). The sample is ANCESTRAL at B (carries NONE

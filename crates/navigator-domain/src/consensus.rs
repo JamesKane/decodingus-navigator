@@ -316,11 +316,23 @@ fn strand_ambiguous(a: char, d: char) -> bool {
 ///
 /// Mirrors `navigator_analysis::haplo::locus_state` (which operates on the analysis `CallState` /
 /// `Locus` types); keep the two in step.
+/// Sentinel observed "base" for an indel locus the sample **carries** (derived), written by the
+/// indel genotyper (`navigator_analysis::caller::call_indels_at`). Mirrors
+/// `navigator_analysis::haplo::INDEL_DERIVED`.
+pub const INDEL_DERIVED: char = '+';
+/// Sentinel for an indel locus the sample does not carry (ancestral). Mirrors `haplo::INDEL_ANCESTRAL`.
+pub const INDEL_ANCESTRAL: char = '-';
+
 pub fn impute_state(base: Option<char>, ancestral: &str, derived: &str) -> ConsensusState {
-    // Indel / MNP (multi-character allele): a single observed base can't evaluate it — an insertion
-    // or deletion shares its anchor base between the alleles, so a first-base compare would read
-    // every sample as derived. No-call until real indel genotyping exists. Mirror of
-    // `navigator_analysis::haplo::locus_state`.
+    // Indel / MNP (multi-character allele): a single *base* can't evaluate it, but the indel
+    // genotyper resolves it and passes its verdict as a sentinel — honor that first.
+    match base {
+        Some(INDEL_DERIVED) => return ConsensusState::Derived,
+        Some(INDEL_ANCESTRAL) => return ConsensusState::Ancestral,
+        _ => {}
+    }
+    // Otherwise a multi-base allele with a raw base observation can't be evaluated (an insertion or
+    // deletion shares its anchor base, so a first-base compare would read every sample as derived).
     if ancestral.chars().count() > 1 || derived.chars().count() > 1 {
         return ConsensusState::NoCall;
     }

@@ -4,7 +4,8 @@
 use std::path::PathBuf;
 
 use navigator_analysis::caller::HaploidCallerParams;
-use navigator_analysis::caller::{call_denovo_diploid, genotype_sites, Site, SiteGenotype};
+use navigator_analysis::caller::{call_denovo_diploid, call_indels_at, genotype_sites, Site, SiteGenotype};
+use navigator_analysis::haplo;
 use navigator_analysis::vcf::write_diploid_vcf;
 
 fn fixtures() -> PathBuf {
@@ -145,6 +146,55 @@ fn denovo_diploid_calls_a_heterozygous_deletion() {
     let vcf = write_diploid_vcf("FIX", &calls);
     assert!(vcf.contains("chrM\t5\t.\tACG\tA\t"));
     assert!(vcf.contains("\t0/1:"));
+}
+
+#[test]
+fn call_indels_at_confirms_a_present_deletion() {
+    // indel_multi.bam (chrM): 8 reads carry the 2 bp deletion at anchor pos 5 (VCF REF=ACG, ALT=A),
+    // 6 carry a 3 bp deletion, and there are NO reference-spanning reads. Targeting the 2 bp deletion
+    // as a tree indel locus, the sample clearly carries it → the derived sentinel.
+    let dir = fixtures();
+    let calls = call_indels_at(
+        &dir.join("indel_multi.bam"),
+        "chrM",
+        &[(5, "ACG".into(), "A".into())],
+        &HaploidCallerParams::default(),
+        Some(&dir.join("ref.fa")),
+    )
+    .unwrap();
+    assert_eq!(calls.get(&5), Some(&haplo::INDEL_DERIVED));
+}
+
+#[test]
+fn call_indels_at_is_additive_only_no_ancestral_call() {
+    // indel.bam (chrM): 10 reference reads + 10 deletion reads at pos 5 (a 50/50 het). For a haploid,
+    // additive-only caller that is not a clear derived majority → NO call (never an ancestral
+    // sentinel that could contradict a sparse node).
+    let dir = fixtures();
+    let calls = call_indels_at(
+        &dir.join("indel.bam"),
+        "chrM",
+        &[(5, "ACG".into(), "A".into())],
+        &HaploidCallerParams::default(),
+        Some(&dir.join("ref.fa")),
+    )
+    .unwrap();
+    assert_eq!(calls.get(&5), None);
+}
+
+#[test]
+fn call_indels_at_without_reference_is_empty() {
+    // No reference → can't left-normalize or know deleted bases → indels are skipped (SNPs unaffected).
+    let dir = fixtures();
+    let calls = call_indels_at(
+        &dir.join("indel_multi.bam"),
+        "chrM",
+        &[(5, "ACG".into(), "A".into())],
+        &HaploidCallerParams::default(),
+        None,
+    )
+    .unwrap();
+    assert!(calls.is_empty());
 }
 
 #[test]

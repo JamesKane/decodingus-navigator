@@ -41,7 +41,10 @@ fn genotype_cache_key(contig: &str, source_build: Option<&str>, targets: &HashSe
     for p in &sorted {
         feed(&p.to_le_bytes());
     }
-    format!("g1:{contig}:{}:{h:016x}", sorted.len())
+    // `g3`: chrY native genotyping now also resolves indel loci (additive derived sentinels), so the
+    // cached result differs from the SNP-only `g1` payload — bump on any genotyping-logic change so a
+    // stale payload isn't reused (the site-set hash alone doesn't capture logic changes).
+    format!("g3:{contig}:{}:{h:016x}", sorted.len())
 }
 
 /// Callable chrY bases from a coverage result — the FTDNA Big Y generation discriminator (see
@@ -2931,6 +2934,21 @@ impl App {
             )
             .await?;
 
+        // Indel loci (multi-base ancestral/derived) on the tree — genotyped separately on the native
+        // chrY path (VCF left-anchored; needs the reference to normalize + know deleted bases). Their
+        // resolved sentinel overlays the (meaningless) base call at the anchor. Liftover of indel
+        // coordinates isn't handled, so only the native path (no lift) contributes them.
+        let indel_targets: Vec<(i64, String, String)> = if contig.eq_ignore_ascii_case("chrY") {
+            tree.nodes
+                .values()
+                .flat_map(|n| n.loci.iter())
+                .filter(|l| l.derived.chars().count() > 1 || l.ancestral.chars().count() > 1)
+                .map(|l| (l.position, l.ancestral.clone(), l.derived.clone()))
+                .collect()
+        } else {
+            Vec::new()
+        };
+
         let calls = match lifted {
             Some(lifted) => self.build_calls_from_lifted(&bam, reference.as_deref(), lifted).await?,
             None => {
@@ -2947,7 +2965,19 @@ impl App {
                 tokio::task::spawn_blocking(move || {
                     let params = adaptive_haploid_params(&bam, reference.as_deref()); // HiFi -> lower min_depth
                     navigator_analysis::guard_walk("haplogroup genotyping", || {
-                        caller::call_bases_at(&bam, &resolved, &targets, &params, reference.as_deref())
+                        let mut calls =
+                            caller::call_bases_at(&bam, &resolved, &targets, &params, reference.as_deref())?;
+                        if !indel_targets.is_empty() {
+                            let indels = caller::call_indels_at(
+                                &bam,
+                                &resolved,
+                                &indel_targets,
+                                &params,
+                                reference.as_deref(),
+                            )?;
+                            calls.extend(indels); // sentinel overlays the anchor's base call
+                        }
+                        Ok(calls)
                     })
                 })
                 .await??

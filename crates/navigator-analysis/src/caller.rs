@@ -400,6 +400,161 @@ pub fn tally_at(
     Ok(counts.into_iter().map(|(pos0, c)| ((pos0 + 1) as i64, c)).collect())
 }
 
+/// The expected indel allele for a tree locus given its (VCF left-anchored) ancestral/derived
+/// alleles: an insertion of the trailing bases (`A`→`ATT` ⇒ Ins("TT")) or a deletion of the length
+/// difference (`TA`→`T` ⇒ Del(1)). `None` for a SNP or a complex/non-left-anchored allele.
+fn expected_indel_allele(ancestral: &str, derived: &str) -> Option<IndelAllele> {
+    let (a, d) = (ancestral.as_bytes(), derived.as_bytes());
+    if d.len() > a.len() && d.starts_with(a) {
+        Some(IndelAllele::Ins(d[a.len()..].to_ascii_uppercase()))
+    } else if a.len() > d.len() && a.starts_with(d) {
+        Some(IndelAllele::Del((a.len() - d.len()) as u32))
+    } else {
+        None
+    }
+}
+
+/// Walk one read's CIGAR from `start` (1-based), collecting each indel event as
+/// `(anchor 1-based, allele)` — deletion anchor = first deleted ref base; insertion anchor = the ref
+/// base the insertion precedes. Returns the events plus the read's inclusive reference end.
+fn read_indel_events(record: &RecordBuf, start: i64) -> (Vec<(i64, IndelAllele)>, i64) {
+    let seq = record.sequence();
+    let mut ref_pos = start;
+    let mut query_off = 0usize;
+    let mut events = Vec::new();
+    for op in record.cigar().as_ref() {
+        let (kind, len) = (op.kind(), op.len());
+        match (kind.consumes_reference(), kind.consumes_read()) {
+            (true, true) => {
+                ref_pos += len as i64;
+                query_off += len;
+            }
+            (true, false) => {
+                events.push((ref_pos, IndelAllele::Del(len as u32)));
+                ref_pos += len as i64;
+            }
+            (false, true) => {
+                if kind == Kind::Insertion {
+                    let s: Vec<u8> = (0..len)
+                        .filter_map(|i| seq.get(query_off + i).map(|b| b.to_ascii_uppercase()))
+                        .collect();
+                    events.push((ref_pos, IndelAllele::Ins(s)));
+                }
+                query_off += len;
+            }
+            (false, false) => {}
+        }
+    }
+    (events, ref_pos - 1)
+}
+
+/// Targeted genotyping of tree **indel** loci. Each target is `(pos, ancestral, derived)` in VCF
+/// left-anchored form (`pos` = the anchor base; e.g. `A`→`ATT` insertion, `TA`→`T` deletion). For
+/// each locus, reads spanning it are examined: a read carrying the matching insertion/deletion
+/// (after left-normalization into the reference repeat) supports the derived allele.
+///
+/// **Additive-only**: a locus with a clear derived majority over `min_depth` is emitted as
+/// [`haplo::INDEL_DERIVED`] at `pos`; everything else — no indel support, low depth, or reads that
+/// merely *span* the site cleanly — is left as **no-call**, never an ancestral contradiction. Indel
+/// genotyping around homopolymers/STRs is noisy enough that a "clean-spanning" read is often just the
+/// aligner's alternate representation of the same indel; calling those ancestral would spuriously
+/// contradict sparse nodes (a d==0 node picking up one false ancestral trips the confident-divergence
+/// guard and vetoes the whole lineage). So indels only ever *confirm* a branch, matching the intent:
+/// cover the many indel-defined DecodingUs branches when the sample carries them. Requires a
+/// `reference` (to left-normalize + know deleted bases); returns empty without one, or when the
+/// contig isn't in the FASTA.
+pub fn call_indels_at(
+    bam_path: &Path,
+    contig: &str,
+    targets: &[(i64, String, String)],
+    params: &HaploidCallerParams,
+    reference: Option<&Path>,
+) -> Result<HashMap<i64, char>, AnalysisError> {
+    let Some(reference) = reference else {
+        return Ok(HashMap::new());
+    };
+    let Ok(refbytes) = reader::read_contig_sequence(reference, contig) else {
+        return Ok(HashMap::new()); // contig naming mismatch with the FASTA — skip indels, keep SNPs
+    };
+
+    // Parse + left-normalize each target's expected allele. proc_lo = 1 (full-contig reference).
+    struct PTarget {
+        pos: i64,        // VCF POS (anchor), 1-based
+        n_anchor: i64,   // normalized CIGAR anchor (= pos+1 canonically)
+        n_allele: IndelAllele,
+        span_end: i64,   // last ref base the ref-spanning read must cover
+    }
+    let mut ptargets: Vec<PTarget> = Vec::new();
+    for (pos, anc, der) in targets {
+        let Some(al) = expected_indel_allele(anc, der) else { continue };
+        let (n_anchor, n_allele) = left_normalize(pos + 1, &al, &refbytes, 1);
+        let del_len = match &al {
+            IndelAllele::Del(l) => *l as i64,
+            IndelAllele::Ins(_) => 0,
+        };
+        ptargets.push(PTarget {
+            pos: *pos,
+            n_anchor,
+            n_allele,
+            span_end: pos + del_len.max(1),
+        });
+    }
+    if ptargets.is_empty() {
+        return Ok(HashMap::new());
+    }
+    ptargets.sort_by_key(|t| t.pos);
+    let positions: Vec<i64> = ptargets.iter().map(|t| t.pos).collect();
+
+    // Single contig-wide pass (as the SNP tally does): walk every read once, and for each target the
+    // read spans, accumulate matched (carries the indel) vs ref-spanning (spans it cleanly) support.
+    let (header, mut reader) = reader::open_indexed(bam_path, Some(reference))?;
+    let region: Region = contig
+        .parse()
+        .map_err(|_| AnalysisError::Message(format!("bad region for contig {contig}")))?;
+    let mut matched = vec![0u32; ptargets.len()];
+    let mut refspan = vec![0u32; ptargets.len()];
+
+    for result in reader.query(&header, &region)? {
+        let record = result?;
+        if !passes(&record, params) {
+            continue;
+        }
+        let Some(start) = record.alignment_start().map(|p| p.get() as i64) else { continue };
+        let (raw, ref_end) = read_indel_events(&record, start);
+        let events: Vec<(i64, IndelAllele)> =
+            raw.into_iter().map(|(a, al)| left_normalize(a, &al, &refbytes, 1)).collect();
+        // Targets whose anchor this read could inform: pos in [start, ref_end].
+        let lo = positions.partition_point(|&p| p < start);
+        let hi = positions.partition_point(|&p| p <= ref_end);
+        for i in lo..hi {
+            let t = &ptargets[i];
+            if events.iter().any(|(a, al)| *a == t.n_anchor && *al == t.n_allele) {
+                matched[i] += 1;
+            } else if start <= t.pos
+                && ref_end >= t.span_end
+                && !events.iter().any(|(a, _)| *a == t.n_anchor)
+            {
+                refspan[i] += 1;
+            }
+        }
+    }
+
+    let frac = params.min_allele_fraction;
+    let mut out = HashMap::new();
+    for (i, t) in ptargets.iter().enumerate() {
+        let (m, r) = (matched[i], refspan[i]);
+        let depth = m + r;
+        if depth < params.min_depth {
+            continue; // no-call
+        }
+        if m > r && m as f64 >= frac * depth as f64 {
+            out.insert(t.pos, crate::haplo::INDEL_DERIVED);
+        }
+        // Not a clear derived majority → no-call (additive-only: never an ancestral contradiction).
+    }
+    Ok(out)
+}
+
 /// Dense A/C/G/T tally + per-position indel evidence for the 1-based inclusive region
 /// `[lo, hi]`, indexed by `pos - lo` (the chunked de-novo path).
 pub(crate) fn tally_region(
