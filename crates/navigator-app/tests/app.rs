@@ -908,6 +908,65 @@ async fn analysis_provenance_roundtrips_and_defaults_full_walk() {
 }
 
 #[tokio::test]
+async fn save_analysis_no_downgrade_keeps_the_fuller_result() {
+    let app = app().await;
+    let b = app.add_biosample(None, "NODG", None, None).await.unwrap();
+    let run = app
+        .record_sequence_run(NewSequenceRun {
+            biosample_guid: b.guid,
+            platform_name: "ILLUMINA".into(),
+            instrument_model: None,
+            test_type: "WGS".into(),
+            library_layout: None,
+            total_reads: None,
+            pf_reads_aligned: None,
+            mean_read_length: None,
+            mean_insert_size: None,
+        })
+        .await
+        .unwrap();
+    let aln = app
+        .record_alignment(NewAlignment {
+            sequence_run_id: run.id,
+            reference_build: "chm13v2.0".into(),
+            aligner: "x".into(),
+            variant_caller: None,
+            bam_path: Some("/x.cram".into()),
+            reference_path: None,
+            content_sha256: None,
+        })
+        .await
+        .unwrap()
+        .id;
+
+    // No artifact yet → the sidecar write goes through.
+    let wrote = app
+        .save_analysis_no_downgrade(aln, "coverage", "v1", &serde_json::json!({"m": 1}), "pipeline-sidecar", "partial")
+        .await
+        .unwrap();
+    assert!(wrote, "first sidecar write with nothing present");
+
+    // A deep walk upgrades partial → full.
+    app.save_analysis(aln, "coverage", "v1", &serde_json::json!({"m": 2}))
+        .await
+        .unwrap();
+
+    // Reimport: a partial sidecar must NOT clobber the full deep walk.
+    let wrote = app
+        .save_analysis_no_downgrade(aln, "coverage", "v1", &serde_json::json!({"m": 3}), "pipeline-sidecar", "partial")
+        .await
+        .unwrap();
+    assert!(!wrote, "partial must not downgrade a full result");
+    assert_eq!(
+        app.analysis_provenance(aln, "coverage", "v1").await.unwrap(),
+        Some(("navigator-walk".into(), "full".into())),
+        "the full deep-walk result is preserved"
+    );
+    let kept: serde_json::Value = app.load_analysis(aln, "coverage", "v1").await.unwrap().unwrap();
+    assert_eq!(kept["m"], 2, "payload is still the deep walk's, not the sidecar's");
+}
+
+#[tokio::test]
 async fn haplogroup_consensus_combines_recorded_calls() {
     use navigator_app::{CompatibilityLevel, DnaType};
     use navigator_domain::reconciliation::RunHaplogroupCall;

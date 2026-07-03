@@ -1356,6 +1356,17 @@ fn reference_build_for(path: &Path) -> String {
     }
 }
 
+/// Ordinal rank of an artifact's `completeness` for downgrade checks: `full` (2) beats `partial`
+/// (1) beats anything else (0). Used by [`App::save_analysis_no_downgrade`] so a fast-path sidecar
+/// result never overwrites an equal-or-fuller stored one.
+fn completeness_rank(completeness: &str) -> u8 {
+    match completeness {
+        "full" => 2,
+        "partial" => 1,
+        _ => 0,
+    }
+}
+
 /// Fallback reference build for a batch import when neither the header nor the filename
 /// identifies one. This app's analysis reference is CHM13v2.0, so an unlabeled file is
 /// bound to it rather than left unresolved (project folders on the NAS are CHM13v2.0).

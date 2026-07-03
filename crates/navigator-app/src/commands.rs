@@ -453,6 +453,31 @@ impl App {
         .await?)
     }
 
+    /// Like [`save_analysis_with_provenance`] but refuses to **downgrade** an existing artifact:
+    /// if a result is already stored for this `(kind, version)` whose completeness is at least the
+    /// incoming one (e.g. a full `navigator-walk` scan vs an incoming `partial` sidecar), the
+    /// existing artifact is kept untouched. The fast-path sidecar ingest uses this so re-importing
+    /// a project folder can't clobber real deep scans with lite sidecar stats. Returns whether the
+    /// write actually happened (`false` = kept the existing, equal-or-fuller result).
+    pub async fn save_analysis_no_downgrade<T: Serialize>(
+        &self,
+        alignment_id: i64,
+        kind: &str,
+        algorithm_version: &str,
+        result: &T,
+        source: &str,
+        completeness: &str,
+    ) -> Result<bool, AppError> {
+        if let Some((_src, existing)) = self.analysis_provenance(alignment_id, kind, algorithm_version).await? {
+            if completeness_rank(&existing) >= completeness_rank(completeness) {
+                return Ok(false);
+            }
+        }
+        self.save_analysis_with_provenance(alignment_id, kind, algorithm_version, result, source, completeness)
+            .await?;
+        Ok(true)
+    }
+
     /// Persist a marker that a Navigator walk failed for this alignment (e.g. an undecodable /
     /// corrupt CRAM). Stored as the `error`/`"1"` artifact so the project report can surface a
     /// "Failed" cell instead of a silent blank; cleared by [`clear_analysis_error`] on the next

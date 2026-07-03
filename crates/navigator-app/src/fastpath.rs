@@ -224,7 +224,8 @@ impl App {
         }
         if let Some(path) = &sidecars.sex {
             match self.ingest_sex_sidecar(alignment_id, path).await {
-                Ok(s) => out.sex = Some(s),
+                Ok(Some(s)) => out.sex = Some(s),
+                Ok(None) => {} // kept an existing full result (reimport) — not overwritten
                 Err(e) => out.errors.push(format!("sex: {e}")),
             }
         }
@@ -240,27 +241,35 @@ impl App {
         // are present, overlaying the distribution onto the per-contig breakdown.
         if sidecars.coverage.is_some() || sidecars.wgs_metrics.is_some() {
             match self.ingest_coverage_sidecar(alignment_id, sidecars).await {
-                Ok(()) => out.lite_coverage = true,
+                Ok(wrote) => out.lite_coverage = wrote,
                 Err(e) => out.errors.push(format!("coverage: {e}")),
             }
         }
         Ok(out)
     }
 
-    async fn ingest_sex_sidecar(&self, alignment_id: i64, path: &Path) -> Result<String, AppError> {
+    /// Ingest inferred sex from the sidecar. `Ok(None)` when an equal-or-fuller result is already
+    /// stored (reimport) so we neither overwrite the artifact nor re-stamp the sequence run.
+    async fn ingest_sex_sidecar(&self, alignment_id: i64, path: &Path) -> Result<Option<String>, AppError> {
         let text = tokio::fs::read_to_string(path)
             .await
             .map_err(|e| AppError::Import(format!("{}: {e}", path.display())))?;
         let result = sidecar::parse_sex(&text);
-        self.save_analysis_with_provenance(alignment_id, "sex", "1", &result, "pipeline-sidecar", "full")
+        let wrote = self
+            .save_analysis_no_downgrade(alignment_id, "sex", "1", &result, "pipeline-sidecar", "full")
             .await?;
-        self.write_back_inferred_sex(alignment_id, &result).await?;
-        Ok(match result.inferred_sex {
-            InferredSex::Male => "M",
-            InferredSex::Female => "F",
-            InferredSex::Unknown => "U",
+        if !wrote {
+            return Ok(None);
         }
-        .to_string())
+        self.write_back_inferred_sex(alignment_id, &result).await?;
+        Ok(Some(
+            match result.inferred_sex {
+                InferredSex::Male => "M",
+                InferredSex::Female => "F",
+                InferredSex::Unknown => "U",
+            }
+            .to_string(),
+        ))
     }
 
     /// Ingest read metrics from the best available sidecar (priority: samtools `stats` →
@@ -288,19 +297,16 @@ impl App {
         } else {
             return Ok(false);
         };
-        self.save_analysis_with_provenance(
-            alignment_id,
-            "read_metrics",
-            "1",
-            &metrics,
-            "pipeline-sidecar",
-            completeness,
-        )
-        .await?;
-        Ok(true)
+        // Don't downgrade a full deep walk on reimport — keep it if it's already equal-or-fuller.
+        let wrote = self
+            .save_analysis_no_downgrade(alignment_id, "read_metrics", "1", &metrics, "pipeline-sidecar", completeness)
+            .await?;
+        Ok(wrote)
     }
 
-    async fn ingest_coverage_sidecar(&self, alignment_id: i64, sidecars: &SampleSidecars) -> Result<(), AppError> {
+    /// Ingest lite coverage from the sidecar(s). Returns whether it was written (`false` = an
+    /// equal-or-fuller coverage artifact already exists, e.g. a deep walk on reimport).
+    async fn ingest_coverage_sidecar(&self, alignment_id: i64, sidecars: &SampleSidecars) -> Result<bool, AppError> {
         let read = |p: &Path| {
             let p = p.to_path_buf();
             async move {
@@ -342,17 +348,19 @@ impl App {
             None => lite,
         };
         // Still `partial`: no per-base depth histogram (only the deep walk produces that), so the
-        // deep pass still upgrades this. Stored under the standard coverage key.
-        self.save_analysis_with_provenance(
-            alignment_id,
-            "coverage",
-            coverage::COVERAGE_VERSION,
-            &result,
-            "pipeline-sidecar",
-            "partial",
-        )
-        .await?;
-        Ok(())
+        // deep pass still upgrades this. Stored under the standard coverage key. Never downgrade a
+        // full deep-walk coverage on reimport — keep it if one is already present.
+        let wrote = self
+            .save_analysis_no_downgrade(
+                alignment_id,
+                "coverage",
+                coverage::COVERAGE_VERSION,
+                &result,
+                "pipeline-sidecar",
+                "partial",
+            )
+            .await?;
+        Ok(wrote)
     }
 
     /// Self-referential callable intervals (BED 0-based half-open) for `contig` from the
