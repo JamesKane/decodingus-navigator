@@ -31,6 +31,18 @@ impl NavigatorApp {
                     if !summary.missing_index.is_empty() {
                         msg.push_str(&format!("; {} sample(s) missing an index", summary.missing_index.len()));
                     }
+                    // Per-sample failures that were skipped so the rest could import (recoverable).
+                    if !summary.sample_errors.is_empty() {
+                        msg.push_str(&format!(
+                            "; {} sample(s) skipped on error: {}",
+                            summary.sample_errors.len(),
+                            summary.sample_errors.join(" | ")
+                        ));
+                    }
+                    // Which reference each build resolved to (so a wrong/defaulted build is visible).
+                    if !summary.reference_notes.is_empty() {
+                        msg.push_str(&format!(". References: {}", summary.reference_notes.join("; ")));
+                    }
                     // Fast path: what the pipeline sidecars filled without walking the CRAM.
                     let fp = &summary.fast_path;
                     if fp.samples_with_sidecars > 0 {
@@ -268,6 +280,16 @@ impl NavigatorApp {
                     if self.selected_project == Some(project_id) {
                         self.deep_progress = Some((done, total, sample, fraction));
                     }
+                }
+                Event::ImportProgress {
+                    done,
+                    total,
+                    sample,
+                    fraction,
+                } => {
+                    self.importing = true;
+                    let pct = (fraction * 100.0).round() as u32;
+                    self.status = format!("Importing: {done}/{total} ({pct}%) — {sample}…");
                 }
                 Event::AllBiosamples(v) => {
                     self.all_biosamples = v;
@@ -951,11 +973,15 @@ impl NavigatorApp {
                     self.pca_reference = Some((alignment_id, points));
                 }
                 Event::SourceFilesVerified { missing } => {
-                    self.status = if missing == 0 {
-                        "All source files present".into()
-                    } else {
-                        format!("{missing} source file(s) moved or missing")
-                    };
+                    // Don't clobber a live import's progress status with this workspace-wide sweep
+                    // (the sweep and the import are unrelated; overwriting made imports look stalled).
+                    if !self.importing {
+                        self.status = if missing == 0 {
+                            "All source files present".into()
+                        } else {
+                            format!("{missing} source file(s) moved or missing")
+                        };
+                    }
                 }
                 // ---- social (Community tab) --------------------------------
                 Event::SupportThreads(items) => self.support_threads = items,

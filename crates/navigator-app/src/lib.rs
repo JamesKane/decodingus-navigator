@@ -1356,6 +1356,32 @@ fn reference_build_for(path: &Path) -> String {
     }
 }
 
+/// Fallback reference build for a batch import when neither the header nor the filename
+/// identifies one. This app's analysis reference is CHM13v2.0, so an unlabeled file is
+/// bound to it rather than left unresolved (project folders on the NAS are CHM13v2.0).
+const DEFAULT_IMPORT_BUILD: &str = "chm13v2.0";
+
+/// Detect an alignment's reference build for batch import: read the BAM/CRAM **header**
+/// (only the header — cheap, no reference FASTA needed) and prefer its `@SQ`/`@PG` signal,
+/// falling back to the filename heuristic. Returns `"unknown"` only when both are silent.
+/// Blocking IO — call inside `spawn_blocking`. Returns `(build, source)` where `source`
+/// names how the build was decided (for the import diagnostics).
+fn detect_build_for(path: &Path) -> (String, &'static str) {
+    match navigator_analysis::probe::probe_alignment(path) {
+        Ok(probe) => match probe.reference_build {
+            Some(b) => (b, "header probe"),
+            None => (reference_build_for(path), "filename"),
+        },
+        Err(e) => {
+            eprintln!(
+                "project import: header probe failed for {} ({e}); falling back to the filename",
+                path.display()
+            );
+            (reference_build_for(path), "filename (probe failed)")
+        }
+    }
+}
+
 /// Cheap VCF header peek: the `##` meta block (joined) + the contig names from `##contig=<ID=…>`.
 /// Reads only the header (stops at the first data line). Plain text — matches the import parser,
 /// which doesn't decompress either; a gzipped VCF simply yields an empty peek (→ generic).
@@ -2297,6 +2323,13 @@ pub struct ProjectImportSummary {
     pub alignments_skipped: usize,
     /// Sample ids whose alignment had no sibling index (.crai/.bai) — coverage needs one.
     pub missing_index: Vec<String>,
+    /// Per-sample failures that were skipped so the rest of the batch could import
+    /// (`"<sample>: <detail>"`). A non-empty list means the import completed *partially*.
+    pub sample_errors: Vec<String>,
+    /// Human-readable per-build reference-resolution notes (one line per distinct build the
+    /// batch encountered), e.g. `"chm13v2.0: 27 alignment(s) → …/chm13v2.0.fa (header probe)"`.
+    /// Surfaced so the user can see exactly which reference every file was bound to.
+    pub reference_notes: Vec<String>,
     /// Roll-up of the fast-path sidecar ingest across the imported samples.
     pub fast_path: FastPathSummary,
 }

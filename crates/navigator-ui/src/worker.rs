@@ -785,6 +785,14 @@ pub enum Event {
         sample: String,
         fraction: f32,
     },
+    /// Per-sample progress of a streaming project-directory import: `done` of `total` samples
+    /// written, `sample` is the sample id currently being imported, `fraction` drives the bar.
+    ImportProgress {
+        done: usize,
+        total: usize,
+        sample: String,
+        fraction: f32,
+    },
     Samples {
         project_id: i64,
         samples: Vec<Biosample>,
@@ -1173,12 +1181,9 @@ pub async fn handle(app: &App, cmd: Command) -> Event {
             Ok(p) => Event::ProjectCreated(p),
             Err(e) => Event::Error(e.to_string()),
         },
-        Command::ImportProjectDir { dir, reference } => {
-            match app.import_project_dir(&dir, reference, "unknown".into(), true).await {
-                Ok(summary) => Event::ProjectImported(summary),
-                Err(AppError::ReferenceNeeded(builds)) => Event::ReferenceNeeded { dir, builds },
-                Err(e) => Event::Error(e.to_string()),
-            }
+        // ImportProjectDir streams ImportProgress from the spawn loop; reaching here is a bug.
+        Command::ImportProjectDir { .. } => {
+            Event::Error("internal: unrouted ImportProjectDir".into())
         }
         Command::PlanFtdnaImport {
             project_id,
@@ -2457,6 +2462,41 @@ async fn deep_analyze_project_streaming(
     wake();
 }
 
+/// Import a NAS project directory, emitting `ImportProgress` per sample (so a 1000-sample import
+/// shows a live status instead of appearing frozen), then a final `ProjectImported`. A missing
+/// reference build surfaces as `ReferenceNeeded` (download prompt); other failures as `Error`.
+async fn import_project_dir_streaming(
+    app: &App,
+    dir: PathBuf,
+    reference: Option<PathBuf>,
+    evt_tx: &Sender<Event>,
+    wake: Arc<dyn Fn() + Send + Sync>,
+) {
+    let progress = {
+        let evt_tx = evt_tx.clone();
+        let wake = wake.clone();
+        move |done: usize, total: usize, sample: &str| {
+            let _ = evt_tx.send(Event::ImportProgress {
+                done,
+                total,
+                sample: sample.to_string(),
+                fraction: if total > 0 { done as f32 / total as f32 } else { 0.0 },
+            });
+            wake();
+        }
+    };
+    let event = match app
+        .import_project_dir_with_progress(&dir, reference, "unknown".into(), true, progress)
+        .await
+    {
+        Ok(summary) => Event::ProjectImported(summary),
+        Err(AppError::ReferenceNeeded(builds)) => Event::ReferenceNeeded { dir, builds },
+        Err(e) => Event::Error(e.to_string()),
+    };
+    let _ = evt_tx.send(event);
+    wake();
+}
+
 /// Report an enqueue result (`Queued`/`Error`), then drain the outbox so an online publish sends
 /// immediately. `kind` is the human label for the queued feedback.
 async fn publish_then_drain(
@@ -2641,6 +2681,12 @@ pub fn spawn(db_path: PathBuf, wake: impl Fn() + Send + Sync + 'static) -> (Unbo
                             // Streams DeepAnalyzeProgress per sample, then a final ProjectAnalyzed.
                             Command::DeepAnalyzeProject(project_id) => {
                                 deep_analyze_project_streaming(&app, project_id, cancel, &evt_tx, wake.clone()).await;
+                            }
+                            // Streams ImportProgress per sample, then a final ProjectImported (or
+                            // ReferenceNeeded / Error). Large NAS imports (1000s of samples) otherwise
+                            // appear frozen until the whole batch completes.
+                            Command::ImportProjectDir { dir, reference } => {
+                                import_project_dir_streaming(&app, dir, reference, &evt_tx, wake.clone()).await;
                             }
                             // Signals the in-flight full analysis / deep-analyze to stop between steps.
                             Command::CancelAnalysis => {

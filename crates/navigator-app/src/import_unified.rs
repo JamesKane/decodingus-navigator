@@ -309,6 +309,22 @@ impl App {
         administrator: String,
         fast_path: bool,
     ) -> Result<ProjectImportSummary, AppError> {
+        self.import_project_dir_with_progress(dir, reference, administrator, fast_path, |_, _, _| {})
+            .await
+    }
+
+    /// [`Self::import_project_dir`] with a per-sample progress callback `progress(done, total,
+    /// sample_id)`, invoked before each sample so a large NAS import (thousands of samples) can
+    /// stream a status bar instead of appearing frozen. `done` is the 0-based index about to
+    /// process; the first call fires only after the (potentially slow) header-probe pre-flight.
+    pub async fn import_project_dir_with_progress(
+        &self,
+        dir: &Path,
+        reference: Option<PathBuf>,
+        administrator: String,
+        fast_path: bool,
+        mut progress: impl FnMut(usize, usize, &str),
+    ) -> Result<ProjectImportSummary, AppError> {
         // An explicit FASTA must exist and be indexed; it applies to every alignment.
         if let Some(path) = &reference {
             if !path.exists() {
@@ -329,35 +345,90 @@ impl App {
         let scan_dir = dir.to_path_buf();
         let discovered = tokio::task::spawn_blocking(move || navigator_analysis::scan::scan(&scan_dir)).await??;
 
-        // Resolve each alignment's reference build to a path (explicit FASTA, else the cache).
-        // Collect any builds that need downloading and bail before writing anything.
+        // Detect each alignment's reference build from its **header** (only the header, so it's
+        // cheap and needs no reference FASTA). The filename is an unreliable signal — most NAS
+        // project layouts don't put the build in the name — so probe first, fall back to the
+        // filename, and record how each build was decided for the import diagnostics.
+        let all_paths: Vec<PathBuf> = discovered
+            .samples
+            .iter()
+            .flat_map(|s| s.alignment_files.iter().cloned())
+            .collect();
+        let detected: HashMap<PathBuf, (String, &'static str)> = tokio::task::spawn_blocking(move || {
+            all_paths.into_iter().map(|p| { let d = detect_build_for(&p); (p, d) }).collect()
+        })
+        .await?;
+
+        // Resolve each *distinct* detected build to a reference path. A build the gateway can't
+        // canonicalize falls back to the CHM13v2.0 default rather than aborting the whole batch;
+        // a known build that isn't cached is surfaced as a recoverable download need. `effective_of`
+        // maps a detected build to the one actually stored on the alignment (after any fallback).
         let explicit = reference.as_ref().map(|p| p.to_string_lossy().into_owned());
-        let mut resolved: HashMap<String, String> = HashMap::new();
+        let mut resolved: HashMap<String, String> = HashMap::new(); // effective build -> FASTA path
+        let mut effective_of: HashMap<String, String> = HashMap::new(); // detected build -> effective build
         let mut needs: Vec<BuildNeed> = Vec::new();
-        for sample in &discovered.samples {
-            for aln_path in &sample.alignment_files {
-                let build = reference_build_for(aln_path);
-                if resolved.contains_key(&build) || needs.iter().any(|n| n.build == build) {
-                    continue;
-                }
-                if let Some(ref path) = explicit {
-                    resolved.insert(build, path.clone());
-                } else if let Some(p) = self.gateway.cached_reference(&build) {
-                    resolved.insert(build, p.to_string_lossy().into_owned());
-                } else {
-                    match self.gateway.reference_status(&build) {
-                        RefStatus::NeedsDownload { url, est_bytes } => needs.push(BuildNeed { build, url, est_bytes }),
-                        RefStatus::Unknown => {
-                            return Err(AppError::Import(format!(
-                                "unknown reference build '{build}' — supply a reference FASTA explicitly"
-                            )))
+        let mut reference_notes: Vec<String> = Vec::new();
+
+        // Alignment count + a representative detection source, per distinct detected build.
+        let mut per_build: BTreeMap<String, (usize, &'static str)> = BTreeMap::new();
+        for (build, source) in detected.values() {
+            let e = per_build.entry(build.clone()).or_insert((0, *source));
+            e.0 += 1;
+        }
+
+        for (detected_build, (count, source)) in &per_build {
+            let count = *count;
+            // Effective build: keep the detected one when the gateway recognizes it (or an explicit
+            // FASTA overrides everything); otherwise fall back to the default so unlabeled files
+            // still import instead of killing the batch.
+            let (effective, defaulted) = if explicit.is_some()
+                || !matches!(self.gateway.reference_status(detected_build), RefStatus::Unknown)
+            {
+                (detected_build.clone(), false)
+            } else {
+                (DEFAULT_IMPORT_BUILD.to_string(), true)
+            };
+            effective_of.insert(detected_build.clone(), effective.clone());
+
+            // Resolve the effective build to a FASTA once (explicit > already-resolved > cache >
+            // gateway status). A download need is collected; an unresolvable build is recorded
+            // without a FASTA (resolved on demand at analysis time) rather than aborting.
+            let path: Option<String> = if let Some(ref p) = explicit {
+                Some(p.clone())
+            } else if let Some(p) = resolved.get(&effective) {
+                Some(p.clone())
+            } else if let Some(p) = self.gateway.cached_reference(&effective) {
+                Some(p.to_string_lossy().into_owned())
+            } else {
+                match self.gateway.reference_status(&effective) {
+                    RefStatus::Cached(p) | RefStatus::LocalOverride(p) => Some(p.to_string_lossy().into_owned()),
+                    RefStatus::NeedsDownload { url, est_bytes } => {
+                        if !needs.iter().any(|n| n.build == effective) {
+                            needs.push(BuildNeed { build: effective.clone(), url, est_bytes });
                         }
-                        RefStatus::Cached(p) | RefStatus::LocalOverride(p) => {
-                            resolved.insert(build, p.to_string_lossy().into_owned());
-                        }
+                        None
                     }
+                    RefStatus::Unknown => None,
                 }
+            };
+            if let Some(ref p) = path {
+                resolved.entry(effective.clone()).or_insert_with(|| p.clone());
             }
+
+            let note = match (&path, defaulted) {
+                (Some(p), false) => format!("{detected_build}: {count} alignment(s) → {p} ({source})"),
+                (Some(p), true) => format!(
+                    "{detected_build}: {count} alignment(s) → {effective} default → {p} ({source}; build undetectable from header/filename)"
+                ),
+                (None, _) if needs.iter().any(|n| n.build == effective) => {
+                    format!("{detected_build}: {count} alignment(s) → {effective} (needs download)")
+                }
+                (None, _) => format!(
+                    "{detected_build}: {count} alignment(s) → {effective} (no reference available; resolved on demand)"
+                ),
+            };
+            eprintln!("project import: {note}");
+            reference_notes.push(note);
         }
         if !needs.is_empty() {
             return Err(AppError::ReferenceNeeded(needs));
@@ -387,116 +458,157 @@ impl App {
             alignments_created: 0,
             alignments_skipped: 0,
             missing_index: Vec::new(),
+            sample_errors: Vec::new(),
+            reference_notes,
             fast_path: FastPathSummary::default(),
         };
 
-        for sample in &discovered.samples {
-            // Biosample: reuse an existing subject with this donor identifier **anywhere in the
-            // workspace** — a person is one subject across projects. Scoping the lookup to the target
-            // project duplicated everyone when the same folder was re-imported under a different
-            // project name (a person then existed once per project). Create only when truly new.
-            let biosample = match biosample::find_by_donor(self.store.pool(), &sample.sample_id).await? {
-                Some(b) => b,
-                None => {
-                    summary.samples_created += 1;
-                    self.add_biosample(
-                        Some(project.id),
-                        sample.sample_id.clone(),
-                        Some(sample.sample_id.clone()),
-                        None,
-                    )
-                    .await?
-                }
-            };
-            // Ensure the subject is a member of this project (idempotent on the (guid, project) PK).
-            // A reused subject whose *home* project is another one still joins this project's roster.
-            biosample_project::add(self.store.pool(), biosample.guid, project.id, None, &Utc::now().to_rfc3339())
-                .await?;
-
-            // SequenceRun: reuse the first existing run, else create one (defaults to WGS).
-            let run = match sequence_run::list_for_biosample(self.store.pool(), biosample.guid)
-                .await?
-                .into_iter()
-                .next()
+        // Import each sample independently: a single sample's failure (unreadable file, DB hiccup)
+        // is logged + tallied into `sample_errors` and the batch continues with the rest, rather
+        // than one bad sample aborting the whole import.
+        let total = discovered.samples.len();
+        for (i, sample) in discovered.samples.iter().enumerate() {
+            progress(i, total, &sample.sample_id);
+            if let Err(e) = self
+                .import_project_sample(sample, &project, fast_path, &detected, &effective_of, &resolved, &mut summary)
+                .await
             {
-                Some(r) => r,
-                None => {
-                    self.record_sequence_run(NewSequenceRun {
-                        biosample_guid: biosample.guid,
-                        platform_name: "UNKNOWN".into(),
-                        instrument_model: None,
-                        test_type: "WGS".into(),
-                        library_layout: None,
-                        total_reads: None,
-                        pf_reads_aligned: None,
-                        mean_read_length: None,
-                        mean_insert_size: None,
-                    })
-                    .await?
-                }
-            };
-
-            let existing = alignment::list_for_run(self.store.pool(), run.id).await?;
-            for aln_path in &sample.alignment_files {
-                let path_str = aln_path.to_string_lossy().into_owned();
-                if existing
-                    .iter()
-                    .any(|a| a.bam_path.as_deref() == Some(path_str.as_str()))
-                {
-                    summary.alignments_skipped += 1;
-                    continue;
-                }
-                if !has_sibling_index(aln_path, &sample.index_files) {
-                    summary.missing_index.push(sample.sample_id.clone());
-                }
-                let build = reference_build_for(aln_path);
-                let reference_path = resolved.get(&build).cloned();
-                self.record_alignment(NewAlignment {
-                    sequence_run_id: run.id,
-                    reference_build: build,
-                    aligner: "unknown".into(),
-                    variant_caller: None,
-                    bam_path: Some(path_str),
-                    reference_path,
-                    // Batch import: hash lazily on first analysis (don't stall a bulk NAS import
-                    // hashing every multi-GB file up front).
-                    content_sha256: None,
-                })
-                .await?;
-                summary.alignments_created += 1;
-            }
-
-            // Fast path: ingest the pipeline sidecars onto the build-matching alignment —
-            // places Y + mt from the GVCFs and fills sex/metrics/lite-coverage from the text
-            // sidecars, no CRAM walk. Best-effort; a failure is tallied and import continues.
-            if fast_path && sample.sidecars.has_haplogroup_gvcf() {
-                let alns = alignment::list_for_run(self.store.pool(), run.id).await?;
-                let chosen = sample
-                    .sidecars
-                    .build_hint
-                    .as_deref()
-                    .and_then(|hint| alns.iter().find(|a| build_hint_matches(&a.reference_build, hint)))
-                    .or_else(|| alns.iter().find(|a| a.bam_path.is_some()))
-                    .or_else(|| alns.first());
-                if let Some(a) = chosen {
-                    summary.fast_path.samples_with_sidecars += 1;
-                    match self.ingest_sidecars(a.id, &sample.sidecars).await {
-                        Ok(ing) => {
-                            summary.fast_path.y_placed += ing.y_haplogroup.is_some() as usize;
-                            summary.fast_path.mt_placed += ing.mt_haplogroup.is_some() as usize;
-                            summary.fast_path.sex_filled += ing.sex.is_some() as usize;
-                            summary.fast_path.metrics_filled += ing.read_metrics as usize;
-                            summary.fast_path.coverage_filled += ing.lite_coverage as usize;
-                            for e in ing.errors {
-                                summary.fast_path.errors.push(format!("{}: {e}", sample.sample_id));
-                            }
-                        }
-                        Err(e) => summary.fast_path.errors.push(format!("{}: {e}", sample.sample_id)),
-                    }
-                }
+                eprintln!(
+                    "project import: sample {} failed ({e}); skipping and continuing with the rest",
+                    sample.sample_id
+                );
+                summary.sample_errors.push(format!("{}: {e}", sample.sample_id));
             }
         }
         Ok(summary)
+    }
+
+    /// Import one sample's subject, run, alignments, and fast-path sidecars. Extracted so a failure
+    /// here bubbles up as this sample's error (caught by [`Self::import_project_dir`]) instead of
+    /// aborting the whole batch. `detected`/`effective_of`/`resolved` are the pre-flight reference
+    /// maps from the caller; `summary` is updated in place with what this sample contributed.
+    #[allow(clippy::too_many_arguments)]
+    async fn import_project_sample(
+        &self,
+        sample: &navigator_analysis::scan::DiscoveredSample,
+        project: &Project,
+        fast_path: bool,
+        detected: &HashMap<PathBuf, (String, &'static str)>,
+        effective_of: &HashMap<String, String>,
+        resolved: &HashMap<String, String>,
+        summary: &mut ProjectImportSummary,
+    ) -> Result<(), AppError> {
+        // Biosample: reuse an existing subject with this donor identifier **anywhere in the
+        // workspace** — a person is one subject across projects. Scoping the lookup to the target
+        // project duplicated everyone when the same folder was re-imported under a different
+        // project name (a person then existed once per project). Create only when truly new.
+        let biosample = match biosample::find_by_donor(self.store.pool(), &sample.sample_id).await? {
+            Some(b) => b,
+            None => {
+                summary.samples_created += 1;
+                self.add_biosample(
+                    Some(project.id),
+                    sample.sample_id.clone(),
+                    Some(sample.sample_id.clone()),
+                    None,
+                )
+                .await?
+            }
+        };
+        // Ensure the subject is a member of this project (idempotent on the (guid, project) PK).
+        // A reused subject whose *home* project is another one still joins this project's roster.
+        biosample_project::add(self.store.pool(), biosample.guid, project.id, None, &Utc::now().to_rfc3339())
+            .await?;
+
+        // SequenceRun: reuse the first existing run, else create one (defaults to WGS).
+        let run = match sequence_run::list_for_biosample(self.store.pool(), biosample.guid)
+            .await?
+            .into_iter()
+            .next()
+        {
+            Some(r) => r,
+            None => {
+                self.record_sequence_run(NewSequenceRun {
+                    biosample_guid: biosample.guid,
+                    platform_name: "UNKNOWN".into(),
+                    instrument_model: None,
+                    test_type: "WGS".into(),
+                    library_layout: None,
+                    total_reads: None,
+                    pf_reads_aligned: None,
+                    mean_read_length: None,
+                    mean_insert_size: None,
+                })
+                .await?
+            }
+        };
+
+        let existing = alignment::list_for_run(self.store.pool(), run.id).await?;
+        for aln_path in &sample.alignment_files {
+            let path_str = aln_path.to_string_lossy().into_owned();
+            if existing
+                .iter()
+                .any(|a| a.bam_path.as_deref() == Some(path_str.as_str()))
+            {
+                summary.alignments_skipped += 1;
+                continue;
+            }
+            if !has_sibling_index(aln_path, &sample.index_files) {
+                summary.missing_index.push(sample.sample_id.clone());
+            }
+            // Store the *effective* build (the detected one, or the CHM13v2.0 fallback) so every
+            // downstream analysis step reads the same reference the pre-flight resolved.
+            let detected_build = detected
+                .get(aln_path)
+                .map(|(b, _)| b.clone())
+                .unwrap_or_else(|| reference_build_for(aln_path));
+            let build = effective_of.get(&detected_build).cloned().unwrap_or(detected_build);
+            let reference_path = resolved.get(&build).cloned();
+            self.record_alignment(NewAlignment {
+                sequence_run_id: run.id,
+                reference_build: build,
+                aligner: "unknown".into(),
+                variant_caller: None,
+                bam_path: Some(path_str),
+                reference_path,
+                // Batch import: hash lazily on first analysis (don't stall a bulk NAS import
+                // hashing every multi-GB file up front).
+                content_sha256: None,
+            })
+            .await?;
+            summary.alignments_created += 1;
+        }
+
+        // Fast path: ingest the pipeline sidecars onto the build-matching alignment —
+        // places Y + mt from the GVCFs and fills sex/metrics/lite-coverage from the text
+        // sidecars, no CRAM walk. Best-effort; a failure is tallied and import continues.
+        if fast_path && sample.sidecars.has_haplogroup_gvcf() {
+            let alns = alignment::list_for_run(self.store.pool(), run.id).await?;
+            let chosen = sample
+                .sidecars
+                .build_hint
+                .as_deref()
+                .and_then(|hint| alns.iter().find(|a| build_hint_matches(&a.reference_build, hint)))
+                .or_else(|| alns.iter().find(|a| a.bam_path.is_some()))
+                .or_else(|| alns.first());
+            if let Some(a) = chosen {
+                summary.fast_path.samples_with_sidecars += 1;
+                match self.ingest_sidecars(a.id, &sample.sidecars).await {
+                    Ok(ing) => {
+                        summary.fast_path.y_placed += ing.y_haplogroup.is_some() as usize;
+                        summary.fast_path.mt_placed += ing.mt_haplogroup.is_some() as usize;
+                        summary.fast_path.sex_filled += ing.sex.is_some() as usize;
+                        summary.fast_path.metrics_filled += ing.read_metrics as usize;
+                        summary.fast_path.coverage_filled += ing.lite_coverage as usize;
+                        for e in ing.errors {
+                            summary.fast_path.errors.push(format!("{}: {e}", sample.sample_id));
+                        }
+                    }
+                    Err(e) => summary.fast_path.errors.push(format!("{}: {e}", sample.sample_id)),
+                }
+            }
+        }
+        Ok(())
     }
 
     /// Cache/override status of a reference build (no network).
