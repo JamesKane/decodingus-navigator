@@ -24,7 +24,10 @@ pub mod ibd_panel;
 pub mod library_stats;
 pub mod manifest;
 pub mod mask;
-pub mod mtvariants;
+/// mtDNA variant derivation + CHM13 `chrM`↔rCRS liftover. Moved to the shared `du-bio` crate
+/// so the AppView and Navigator share one implementation; re-exported here under the original
+/// path so existing `navigator_analysis::mtvariants::…` call sites are unchanged.
+pub use du_bio::mt as mtvariants;
 pub mod parity;
 pub mod probe;
 pub mod read_metrics;
