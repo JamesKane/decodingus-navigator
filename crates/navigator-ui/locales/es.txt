@@ -501,6 +501,7 @@ dash.addPinned=Añadir sujeto fijado
 settings.title=Configuración
 settings.connection=Conexión
 settings.appviewUrl=URL de AppView
+settings.appviewUrlHint=Déjelo en blanco para usar el servicio de producción (https://decoding-us.org). Configúrelo solo para un backend de desarrollo local.
 settings.yTreeProvider=Proveedor de árbol Y
 settings.appearance=Apariencia
 settings.theme=Tema

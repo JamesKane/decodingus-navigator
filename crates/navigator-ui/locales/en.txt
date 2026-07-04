@@ -514,6 +514,7 @@ dash.addPinned=Add pinned subject
 settings.title=Settings
 settings.connection=Connection
 settings.appviewUrl=AppView URL
+settings.appviewUrlHint=Leave blank to use the production service (https://decoding-us.org). Set only for a local dev backend.
 settings.yTreeProvider=Y-tree provider
 settings.appearance=Appearance
 settings.theme=Theme

@@ -322,10 +322,15 @@ impl NavigatorApp {
                     ui.label(self.tr("settings.appviewUrl"));
                     ui.add(
                         egui::TextEdit::singleline(&mut form.appview_url)
-                            .hint_text("http://localhost:9000")
+                            .hint_text("https://decoding-us.org")
                             .desired_width(320.0),
                     );
                 });
+                ui.label(
+                    egui::RichText::new(self.tr("settings.appviewUrlHint"))
+                        .weak()
+                        .small(),
+                );
                 ui.horizontal(|ui| {
                     ui.label(self.tr("settings.yTreeProvider"));
                     let cur = if form.y_tree_provider.eq_ignore_ascii_case("ftdna") {

@@ -1673,15 +1673,18 @@ pub fn persist_ui_mode(mode: UiMode) -> std::io::Result<()> {
     s.save()
 }
 
-/// Base URL of the DecodingUs AppView serving the tree API. Local by default for testing;
-/// switch with `DECODINGUS_APPVIEW_URL` (e.g. the production host at cutover).
-/// Resolve the AppView base URL (pure; env wins → settings → default localhost; trailing slash
+/// Production DecodingUs AppView (the `/api/v1/*` backend: trees, lab lookup, IBD, exchange,
+/// social). The default when neither `DECODINGUS_APPVIEW_URL` nor the `appview_url` setting is
+/// set; override either for a local dev backend.
+const DEFAULT_APPVIEW_URL: &str = "https://decoding-us.org";
+
+/// Resolve the AppView base URL (pure; env wins → settings → production default; trailing slash
 /// trimmed; blank values ignored).
 fn resolve_appview_url(env: Option<String>, settings: Option<String>) -> String {
     env.or(settings)
         .map(|s| s.trim_end_matches('/').to_string())
         .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| "http://localhost:9000".to_string())
+        .unwrap_or_else(|| DEFAULT_APPVIEW_URL.to_string())
 }
 
 fn decodingus_appview_url() -> String {
@@ -3233,9 +3236,9 @@ mod settings_tests {
             resolve_appview_url(None, Some("http://host:9000".into())),
             "http://host:9000"
         );
-        assert_eq!(resolve_appview_url(None, None), "http://localhost:9000");
+        assert_eq!(resolve_appview_url(None, None), DEFAULT_APPVIEW_URL);
         // blank values are ignored (fall through to default)
-        assert_eq!(resolve_appview_url(Some("".into()), None), "http://localhost:9000");
+        assert_eq!(resolve_appview_url(Some("".into()), None), DEFAULT_APPVIEW_URL);
     }
 
     #[test]
