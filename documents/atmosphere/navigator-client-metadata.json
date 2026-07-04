@@ -1,0 +1,21 @@
+{
+  "client_id": "https://decoding-us.org/oauth/navigator-client-metadata.json",
+  "client_name": "Decoding Us Navigator",
+  "client_uri": "https://decoding-us.org",
+  "tos_uri": "https://decoding-us.org/terms",
+  "policy_uri": "https://decoding-us.org/privacy",
+  "redirect_uris": [
+    "http://127.0.0.1/callback"
+  ],
+  "grant_types": [
+    "authorization_code",
+    "refresh_token"
+  ],
+  "response_types": [
+    "code"
+  ],
+  "scope": "atproto transition:generic",
+  "token_endpoint_auth_method": "none",
+  "application_type": "native",
+  "dpop_bound_access_tokens": true
+}

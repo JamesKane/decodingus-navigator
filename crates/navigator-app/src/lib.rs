@@ -1694,6 +1694,33 @@ fn decodingus_appview_url() -> String {
     )
 }
 
+/// Production OAuth client identity: the URL of Navigator's **native/public** client-metadata
+/// document published at decoding-us.org (loopback redirect, PKCE, `token_endpoint_auth_method:
+/// none`). Distinct from the confidential *web* client at `/oauth/client-metadata.json` — a
+/// desktop app can't hold a signing key or receive a server-side redirect.
+const DEFAULT_OAUTH_CLIENT_ID: &str = "https://decoding-us.org/oauth/navigator-client-metadata.json";
+
+/// OAuth scope Navigator requests: identity (`atproto`) **plus** transitional generic write access
+/// (`transition:generic`). Publishing federated records to the user's PDS needs write scope, not
+/// just identity — and this must match the `scope` in the published client-metadata document.
+const OAUTH_SCOPE: &str = "atproto transition:generic";
+
+/// Resolve Navigator's OAuth client config (pure). `DECODINGUS_OAUTH_CLIENT_ID` overrides the
+/// hosted default: the literal `loopback` selects the atproto dev loopback client (for logging in
+/// against a local / test PDS that hasn't registered the production document); any other non-blank
+/// value is treated as a hosted client-metadata URL.
+fn resolve_oauth_config(env_client_id: Option<String>) -> OAuthConfig {
+    match env_client_id.map(|s| s.trim().to_string()).filter(|s| !s.is_empty()) {
+        Some(v) if v.eq_ignore_ascii_case("loopback") => OAuthConfig::loopback(OAUTH_SCOPE),
+        Some(url) => OAuthConfig::hosted(url, OAUTH_SCOPE),
+        None => OAuthConfig::hosted(DEFAULT_OAUTH_CLIENT_ID, OAUTH_SCOPE),
+    }
+}
+
+fn decodingus_oauth_config() -> OAuthConfig {
+    resolve_oauth_config(std::env::var("DECODINGUS_OAUTH_CLIENT_ID").ok())
+}
+
 /// A subject's multi-source variant **consensus profile** for one DNA type (Y today; mtDNA /
 /// autosomal adapters reuse this aggregate + the generic engine). Persisted as a snapshot (serialized
 /// to the `consensus_profile` table's payload, keyed by `(biosample, dna_type)`) so
@@ -2395,7 +2422,7 @@ impl Auth {
         let active = tokens.active().ok().flatten();
         Auth {
             tokens,
-            config: OAuthConfig::loopback("atproto"),
+            config: decodingus_oauth_config(),
             http: dev_http_client(),
             active: Arc::new(Mutex::new(active)),
             online: Arc::new(AtomicBool::new(true)),
@@ -3239,6 +3266,30 @@ mod settings_tests {
         assert_eq!(resolve_appview_url(None, None), DEFAULT_APPVIEW_URL);
         // blank values are ignored (fall through to default)
         assert_eq!(resolve_appview_url(Some("".into()), None), DEFAULT_APPVIEW_URL);
+    }
+
+    #[test]
+    fn oauth_config_defaults_hosted_and_env_overrides() {
+        let redirect = "http://127.0.0.1:5001/callback";
+
+        // No override → the hosted production native client + write scope.
+        let prod = resolve_oauth_config(None);
+        assert_eq!(prod.client_id(redirect), DEFAULT_OAUTH_CLIENT_ID);
+        assert_eq!(prod.scope, OAUTH_SCOPE);
+        assert!(prod.scope.contains("transition:generic"), "publishing needs write scope");
+
+        // Blank is ignored → still the hosted default.
+        assert_eq!(resolve_oauth_config(Some("  ".into())).client_id(redirect), DEFAULT_OAUTH_CLIENT_ID);
+
+        // `loopback` selects the dev client (client_id derived from the loopback redirect).
+        let dev = resolve_oauth_config(Some("loopback".into()));
+        assert!(dev.client_id(redirect).starts_with("http://localhost?redirect_uri="));
+
+        // Any other value is a hosted client-metadata URL (e.g. a local dev document).
+        assert_eq!(
+            resolve_oauth_config(Some("https://dev.example/cm.json".into())).client_id(redirect),
+            "https://dev.example/cm.json"
+        );
     }
 
     #[test]
