@@ -116,7 +116,10 @@ impl App {
             run.mean_read_length.map(|l| l.round() as i32),
             run.mean_insert_size,
             Utc::now().to_rfc3339(),
-        );
+        )
+        // Publish the known lab so the AppView can display it (and learn the instrument→lab map —
+        // many serials, e.g. PacBio, aren't in its dataset). See [`SequenceRun::sequencing_facility`].
+        .with_facility(run.sequencing_facility.clone());
         Ok(serde_json::to_value(&record)?)
     }
 

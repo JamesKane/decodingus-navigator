@@ -2851,10 +2851,16 @@ mod publish_tests {
         )
         .await
         .unwrap();
+        sequence_run::set_facility(app.store.pool(), run.id, "Dante Labs")
+            .await
+            .unwrap();
         let reloaded = sequence_run::get(app.store.pool(), run.id).await.unwrap().unwrap();
 
         let value = app.sequence_run_record("did:plc:test", &reloaded).await.unwrap();
         assert_eq!(value.get("instrumentId").and_then(|v| v.as_str()), Some("A00182"));
+        // The known sequencing lab is published so the AppView can display it (its instrument→lab
+        // map doesn't cover every serial, e.g. PacBio).
+        assert_eq!(value.get("sequencingFacility").and_then(|v| v.as_str()), Some("Dante Labs"));
         assert_eq!(value.get("$type").and_then(|v| v.as_str()), Some(NS_SEQUENCERUN));
         // Links back to its subject's biosample record via the deterministic at:// URI.
         assert_eq!(
