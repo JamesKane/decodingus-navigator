@@ -124,6 +124,7 @@ async fn run_alignment_chain_persists() {
         Some("WGS229_Lib1"),
         Some("CeGaT_NovaSeq"),
         Some("H5WLTDMXX"),
+        Some("SHORT"),
     )
     .await
     .unwrap();
@@ -132,6 +133,7 @@ async fn run_alignment_chain_persists() {
     assert_eq!(reloaded.sample_name.as_deref(), Some("WGS229"));
     assert_eq!(reloaded.platform_unit.as_deref(), Some("CeGaT_NovaSeq"));
     assert_eq!(reloaded.flowcell_id.as_deref(), Some("H5WLTDMXX"));
+    assert_eq!(reloaded.read_type.as_deref(), Some("SHORT"));
 
     // Library-level read stats can be (re)written from an analysis pass / backfill.
     sequence_run::set_read_stats(
@@ -141,6 +143,7 @@ async fn run_alignment_chain_persists() {
         Some(150.0),
         Some(602.5),
         Some("PAIRED"),
+        Some(1_365_000_000),
     )
     .await
     .unwrap();
@@ -149,13 +152,15 @@ async fn run_alignment_chain_persists() {
     assert_eq!(reloaded.mean_read_length, Some(150.0));
     assert_eq!(reloaded.mean_insert_size, Some(602.5));
     assert_eq!(reloaded.library_layout.as_deref(), Some("PAIRED"));
-    // A `None` layout preserves the stored value (COALESCE), other columns still update.
-    sequence_run::set_read_stats(s.pool(), run.id, Some(9_100_000), Some(150.0), Some(602.5), None)
+    assert_eq!(reloaded.total_bases, Some(1_365_000_000));
+    // A `None` layout / total_bases preserves the stored value (COALESCE), other columns still update.
+    sequence_run::set_read_stats(s.pool(), run.id, Some(9_100_000), Some(150.0), Some(602.5), None, None)
         .await
         .unwrap();
     let reloaded = sequence_run::get(s.pool(), run.id).await.unwrap().unwrap();
     assert_eq!(reloaded.total_reads, Some(9_100_000));
     assert_eq!(reloaded.library_layout.as_deref(), Some("PAIRED"));
+    assert_eq!(reloaded.total_bases, Some(1_365_000_000)); // preserved by COALESCE
     // The descriptive + identity columns are untouched by the read-stats write.
     assert_eq!(reloaded.instrument_id.as_deref(), Some("A00182"));
 

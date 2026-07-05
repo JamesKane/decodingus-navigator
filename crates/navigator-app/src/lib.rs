@@ -1381,6 +1381,15 @@ fn seqrun_rkey(run_id: i64) -> String {
     format!("run-{run_id}")
 }
 
+/// Deterministic PDS record key for an alignment (coverage-summary) record. Stable per alignment so
+/// re-publishing overwrites in place instead of creating a duplicate — without it the record took
+/// the `create` path (fresh PDS-assigned TID each time), and two concurrent drains of the same
+/// alignment raced into two records (the federated "2 samples" duplicate). Mirrors the deterministic
+/// rkeys the biosample/sequence-run records already use.
+fn alignment_rkey(alignment_id: i64) -> String {
+    format!("aln-{alignment_id}")
+}
+
 /// The at:// URI a published biosample record has in `did`'s repo — the anchor child records link to.
 fn biosample_at_uri(did: &str, guid: SampleGuid) -> String {
     format!("at://{did}/{NS_BIOSAMPLE}/{}", biosample_rkey(guid))
@@ -2182,6 +2191,35 @@ pub enum SubjectAnalysisStatus {
     Complete,
 }
 
+/// Per-field counts from [`App::backfill_read_profiles`] — the CLI `backfill-profiles` summary.
+#[derive(Debug, Clone, Default, serde::Serialize)]
+pub struct ReadProfileBackfill {
+    /// Runs looked at.
+    pub runs_examined: usize,
+    /// Runs that gained `total_bases` from a cached read-metrics artifact.
+    pub total_bases_filled: usize,
+    /// Runs that gained `read_type` without file I/O — cheap platform/test-type inference or the
+    /// cached mean-read-length evidence.
+    pub read_type_filled: usize,
+    /// Runs that gained `read_type` from a bounded read-name rescan (`--rescan`).
+    pub read_type_rescanned: usize,
+    /// Runs still missing `read_type` (generic-WGS PacBio without `--rescan`, or no readable file).
+    pub read_type_unresolved: usize,
+}
+
+/// Outcome of [`App::prune_orphan_alignments`] — the CLI `prune-orphans` summary.
+#[derive(Debug, Clone, Default, serde::Serialize)]
+pub struct PruneReport {
+    /// Whether deletes were actually applied (`false` = dry run).
+    pub applied: bool,
+    /// Alignment records seen in the PDS repo.
+    pub examined: usize,
+    /// Orphan records deleted (0 on a dry run).
+    pub deleted: usize,
+    /// The orphan rkeys — deleted when `applied`, else the dry-run list of what would be removed.
+    pub orphans: Vec<String>,
+}
+
 /// One row of a project's per-sample report: coverage roll-up + haplogroup consensus.
 /// Coverage fields are `None` when no coverage has been computed yet; haplogroup fields
 /// are `None` until calls are recorded (deferred this slice).
@@ -2848,9 +2886,14 @@ mod publish_tests {
             None,
             None,
             Some("H5WLTDMXX"),
+            Some("SHORT"),
         )
         .await
         .unwrap();
+        // Exact yield → the standardized label's Gbases figure.
+        sequence_run::set_read_stats(app.store.pool(), run.id, Some(300_000_000), Some(150.0), None, None, Some(45_000_000_000))
+            .await
+            .unwrap();
         sequence_run::set_facility(app.store.pool(), run.id, "Dante Labs")
             .await
             .unwrap();
@@ -2861,6 +2904,9 @@ mod publish_tests {
         // The known sequencing lab is published so the AppView can display it (its instrument→lab
         // map doesn't cover every serial, e.g. PacBio).
         assert_eq!(value.get("sequencingFacility").and_then(|v| v.as_str()), Some("Dante Labs"));
+        // Read-profile fields backing the standardized label are published.
+        assert_eq!(value.get("totalBases").and_then(|v| v.as_i64()), Some(45_000_000_000));
+        assert_eq!(value.get("readType").and_then(|v| v.as_str()), Some("SHORT"));
         assert_eq!(value.get("$type").and_then(|v| v.as_str()), Some(NS_SEQUENCERUN));
         // Links back to its subject's biosample record via the deterministic at:// URI.
         assert_eq!(

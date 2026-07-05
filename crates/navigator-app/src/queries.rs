@@ -45,7 +45,7 @@ impl App {
         // `read_metrics` artifact on any of the run's alignments and persist, so the card shows
         // library stats + PE/SE without a re-walk.
         for run in &mut runs {
-            if run.total_reads.is_some() && run.library_layout.is_some() {
+            if run.total_reads.is_some() && run.library_layout.is_some() && run.total_bases.is_some() {
                 continue;
             }
             let alns = alignment::list_for_run(self.store.pool(), run.id).await?;
@@ -53,6 +53,7 @@ impl App {
                 if let Some(m) = self.cached_read_metrics(a.id).await? {
                     self.write_back_read_stats(a.id, &m).await?;
                     run.total_reads = Some(m.total_reads as i64);
+                    run.total_bases = m.total_bases().or(run.total_bases);
                     run.mean_read_length = (m.mean_read_length > 0.0).then_some(m.mean_read_length);
                     run.mean_insert_size = (m.mean_insert_size > 0.0).then_some(m.mean_insert_size);
                     if m.pf_reads_aligned > 0 {
@@ -70,6 +71,103 @@ impl App {
             }
         }
         Ok(runs)
+    }
+
+    /// Batch-populate the read-profile fields backing the standardized test label
+    /// ([`du_domain::testprofile`]) on runs imported before those fields existed — for the CLI
+    /// `backfill-profiles` command. Idempotent; only fills what's missing.
+    ///
+    /// - **`total_bases`** — recovered for free from a cached `read_metrics` artifact on any of the
+    ///   run's alignments (`Σ read_length_histogram`), no file walk.
+    /// - **`read_type`** — inferred cheaply from `platform_name` / `test_type` (`SHORT`, `ONT_SIMPLEX`,
+    ///   or `HIFI`/`CLR` when the code already says so), falling back to the cached mean read length
+    ///   as evidence (a short mean ⇒ `SHORT`, which resolves sidecar-imported `UNKNOWN`-platform
+    ///   runs). When `rescan` is set, runs still missing it (long reads — HiFi vs CLR needs the read
+    ///   names) get a bounded [`library_stats`](Self::library_stats) scan of a primary alignment file.
+    ///
+    /// `project_id` restricts to a project's subjects (legacy home column, matching
+    /// `rebuild_signatures`). Returns per-field counts.
+    pub async fn backfill_read_profiles(
+        &self,
+        project_id: Option<i64>,
+        rescan: bool,
+    ) -> Result<ReadProfileBackfill, AppError> {
+        let mut out = ReadProfileBackfill::default();
+        for b in self.list_all_biosamples().await? {
+            if let Some(pid) = project_id {
+                if b.project_id != Some(pid) {
+                    continue;
+                }
+            }
+            let runs = sequence_run::list_for_biosample(self.store.pool(), b.guid).await?;
+            for run in &runs {
+                out.runs_examined += 1;
+                let alns = alignment::list_for_run(self.store.pool(), run.id).await?;
+
+                // One representative cached read-metrics artifact for the run — reused for both the
+                // yield and the read-length evidence below (no re-read).
+                let mut metrics = None;
+                for a in &alns {
+                    if let Some(m) = self.cached_read_metrics(a.id).await? {
+                        metrics = Some((a.id, m));
+                        break;
+                    }
+                }
+
+                // total_bases: recovered from the cached metrics (write_back persists it).
+                if run.total_bases.is_none() {
+                    if let Some((aid, m)) = &metrics {
+                        if m.total_bases().is_some() {
+                            self.write_back_read_stats(*aid, m).await?;
+                            out.total_bases_filled += 1;
+                        }
+                    }
+                }
+
+                // read_type: cheap platform/test-type inference, then the cached mean read length as
+                // evidence (resolves sidecar-imported UNKNOWN-platform runs), then an optional file
+                // rescan for long reads that need the read names to tell HiFi from CLR.
+                if run.read_type.is_none() {
+                    let inferred = infer_read_type_cheap(&run.platform_name, &run.test_type)
+                        .or_else(|| metrics.as_ref().and_then(|(_, m)| read_type_from_mean_len(m.mean_read_length)));
+                    match inferred {
+                        Some(rt) => {
+                            sequence_run::set_read_type(self.store.pool(), run.id, rt).await?;
+                            out.read_type_filled += 1;
+                        }
+                        None if rescan => match self.rescan_read_type(&alns).await {
+                            Some(rt) => {
+                                sequence_run::set_read_type(self.store.pool(), run.id, &rt).await?;
+                                out.read_type_rescanned += 1;
+                            }
+                            None => out.read_type_unresolved += 1,
+                        },
+                        None => out.read_type_unresolved += 1,
+                    }
+                }
+            }
+        }
+        Ok(out)
+    }
+
+    /// Bounded library-stats scan of the first readable alignment file in `alns`, returning its
+    /// inferred `read_type` (HiFi vs CLR from the read names). `None` when no file is accessible or
+    /// nothing decodable was found.
+    async fn rescan_read_type(&self, alns: &[navigator_domain::workspace::Alignment]) -> Option<String> {
+        for a in alns {
+            let Some(bam) = a.bam_path.as_deref() else { continue };
+            let path = std::path::PathBuf::from(bam);
+            if !path.exists() {
+                continue;
+            }
+            let reference = a.reference_path.as_deref().map(std::path::PathBuf::from);
+            if let Ok(stats) = self.library_stats(path, reference).await {
+                if stats.read_type.is_some() {
+                    return stats.read_type;
+                }
+            }
+        }
+        None
     }
 
     /// Cached coverage for several alignments at once (Data Sources alignment rows). `None` for any
@@ -701,4 +799,69 @@ fn tree_preorder(tree: &navigator_analysis::haplo::HaploTree) -> std::collection
         }
     }
     rank
+}
+
+/// Infer a run's `read_type` without touching the alignment file — from the `test_type` code (which
+/// may already name the chemistry) then the platform. Returns `None` for generic-WGS PacBio, where
+/// HiFi vs CLR genuinely needs the read names (a file rescan).
+fn infer_read_type_cheap(platform_name: &str, test_type: &str) -> Option<&'static str> {
+    let tt = test_type.to_ascii_uppercase();
+    if tt.contains("HIFI") {
+        return Some("HIFI");
+    }
+    if tt.contains("CLR") {
+        return Some("CLR");
+    }
+    if tt.contains("NANOPORE") {
+        return Some("ONT_SIMPLEX");
+    }
+    let p = platform_name.to_ascii_uppercase();
+    if p.contains("ILLUMINA") || p.contains("MGI") || p.contains("BGI") || p.contains("DNBSEQ") {
+        Some("SHORT")
+    } else if p.contains("NANOPORE") || p == "ONT" {
+        Some("ONT_SIMPLEX")
+    } else {
+        // PacBio (or an unrecognized platform) — can't tell HiFi from CLR here.
+        None
+    }
+}
+
+/// Evidence-based `read_type` from a run's mean read length, for when the platform is uninformative
+/// (e.g. sidecar-imported runs with `UNKNOWN` platform): a short mean ⇒ `SHORT`. Long reads
+/// (> 1000 bp) can't be split into HiFi vs CLR by length alone, so they stay unresolved until a
+/// rescan reads the names. `None` for a non-positive mean (no metrics).
+fn read_type_from_mean_len(mean: f64) -> Option<&'static str> {
+    (mean > 0.0 && mean <= 1000.0).then_some("SHORT")
+}
+
+#[cfg(test)]
+mod read_profile_tests {
+    use super::infer_read_type_cheap;
+
+    #[test]
+    fn cheap_read_type_inference() {
+        // test_type code names the chemistry.
+        assert_eq!(infer_read_type_cheap("PACBIO", "WGS_HIFI"), Some("HIFI"));
+        assert_eq!(infer_read_type_cheap("PACBIO", "WGS_CLR"), Some("CLR"));
+        assert_eq!(infer_read_type_cheap("NANOPORE", "WGS_NANOPORE"), Some("ONT_SIMPLEX"));
+        // Short-read platforms.
+        assert_eq!(infer_read_type_cheap("ILLUMINA", "WGS"), Some("SHORT"));
+        assert_eq!(infer_read_type_cheap("MGI", "WGS"), Some("SHORT"));
+        // Nanopore by platform alone.
+        assert_eq!(infer_read_type_cheap("NANOPORE", "WGS"), Some("ONT_SIMPLEX"));
+        // Generic-WGS PacBio — unresolved without a rescan.
+        assert_eq!(infer_read_type_cheap("PACBIO", "WGS"), None);
+    }
+
+    #[test]
+    fn read_type_from_mean_len_resolves_short() {
+        use super::read_type_from_mean_len;
+        // Sidecar-imported short-read WGS (mean 62–150 bp) → SHORT.
+        assert_eq!(read_type_from_mean_len(150.0), Some("SHORT"));
+        assert_eq!(read_type_from_mean_len(62.5), Some("SHORT"));
+        // Long reads can't be split HiFi/CLR by length — unresolved.
+        assert_eq!(read_type_from_mean_len(21_563.0), None);
+        // No metrics.
+        assert_eq!(read_type_from_mean_len(0.0), None);
+    }
 }

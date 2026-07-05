@@ -222,6 +222,9 @@ impl App {
                 (m.mean_read_length > 0.0).then_some(m.mean_read_length),
                 (m.mean_insert_size > 0.0).then_some(m.mean_insert_size),
                 layout,
+                // Exact sequenced yield (Σ read_length_histogram) → the "Gbases" figure of the
+                // standardized test label. `None` (empty histogram, no fallback) leaves the column.
+                m.total_bases(),
             )
             .await?;
         }

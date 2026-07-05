@@ -200,6 +200,14 @@ impl PdsClient {
         Ok((records, next))
     }
 
+    /// `com.atproto.repo.deleteRecord` — remove the record at `rkey` from `collection`. Idempotent
+    /// on the server (deleting an absent record is a no-op). Used to prune orphaned duplicates.
+    pub async fn delete_record(&self, collection: &str, rkey: &str) -> Result<(), SyncError> {
+        let body = serde_json::json!({ "repo": self.did, "collection": collection, "rkey": rkey });
+        self.post("com.atproto.repo.deleteRecord", &body).await?;
+        Ok(())
+    }
+
     /// `com.atproto.repo.getRecord` — read a record's value (public read).
     pub async fn get_record(&self, collection: &str, rkey: &str) -> Result<serde_json::Value, SyncError> {
         let url = format!("{}/xrpc/com.atproto.repo.getRecord", self.pds_base);

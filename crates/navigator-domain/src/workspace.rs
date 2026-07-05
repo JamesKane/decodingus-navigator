@@ -56,6 +56,12 @@ pub struct SequenceRun {
     pub pf_reads_aligned: Option<i64>,
     pub mean_read_length: Option<f64>,
     pub mean_insert_size: Option<f64>,
+    /// Exact total sequenced yield in base pairs (Σ read_length_histogram) — the "Gbases" figure of
+    /// the standardized test label. Populated post-analysis; `None` until a read-metrics pass runs.
+    pub total_bases: Option<i64>,
+    /// Read chemistry/mode inferred at import (`SHORT`/`HIFI`/`CLR`/`ONT_SIMPLEX`/`ONT_DUPLEX`) — the
+    /// long-read arm of the standardized test label. `None` until a library-stats scan runs.
+    pub read_type: Option<String>,
     /// The sequencing laboratory (a [`crate::labs`] display name), e.g. "YSEQ", "Dante Labs".
     pub sequencing_facility: Option<String>,
     /// Most-frequent instrument serial from the read names / `@RG` (e.g. `A00123`, `m84…`).
@@ -68,6 +74,21 @@ pub struct SequenceRun {
     pub platform_unit: Option<String>,
     /// Most-frequent flowcell id from the read names.
     pub flowcell_id: Option<String>,
+}
+
+impl SequenceRun {
+    /// The standardized, vendor-neutral test label (`WGS150 45Gbases`, `HiFi 90Gbases`, `BigY-700`),
+    /// or `None` when this isn't a yield/product test we standardize (chips, panels) — the caller
+    /// falls back to the raw `test_type`. See [`du_domain::testprofile`].
+    pub fn standardized_label(&self) -> Option<String> {
+        du_domain::testprofile::standardized_label(&du_domain::testprofile::RunProfile {
+            test_type: Some(self.test_type.as_str()),
+            platform: Some(self.platform_name.as_str()),
+            read_type: self.read_type.as_deref(),
+            mean_read_len: self.mean_read_length,
+            total_bases: self.total_bases,
+        })
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

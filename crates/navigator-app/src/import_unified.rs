@@ -149,6 +149,7 @@ impl App {
                 s.library_id.as_deref(),
                 s.platform_unit.as_deref(),
                 s.flowcell_id.as_deref(),
+                s.read_type.as_deref(),
             )
             .await;
             // Resolve the lab from the instrument id via the AppView (best-effort, cached). The

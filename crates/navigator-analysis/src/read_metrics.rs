@@ -69,6 +69,28 @@ pub struct ReadMetrics {
     pub mean_mapping_quality: f64,
 }
 
+impl ReadMetrics {
+    /// Exact total sequenced yield in base pairs — `Σ length × count` over the read-length
+    /// histogram. This is the DTC "Gbases" figure (`/ 1e9`) for the standardized test label. Falls
+    /// back to `total_reads × mean_read_length` when the histogram is empty (e.g. a flagstat sidecar
+    /// carries no distribution), which is exact only for fixed-length short reads. `None` when
+    /// neither is available.
+    pub fn total_bases(&self) -> Option<i64> {
+        if !self.read_length_histogram.is_empty() {
+            let sum: u128 = self
+                .read_length_histogram
+                .iter()
+                .map(|(&len, &count)| len as u128 * count as u128)
+                .sum();
+            return (sum > 0).then_some(sum as i64);
+        }
+        if self.total_reads > 0 && self.mean_read_length > 0.0 {
+            return Some((self.total_reads as f64 * self.mean_read_length).round() as i64);
+        }
+        None
+    }
+}
+
 /// Online accumulators for a distribution summarized by a histogram.
 #[derive(Default)]
 struct DistAccum {

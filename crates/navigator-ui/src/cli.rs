@@ -55,6 +55,15 @@ pub enum Command {
     /// is cheap for already-analyzed subjects. By default only subjects that already have a Y or mt
     /// profile are rebuilt (`--all` rebuilds every subject).
     RebuildSignatures(RebuildArgs),
+    /// Backfill the standardized-test-label read-profile fields (`total_bases`, `read_type`) on runs
+    /// imported before those fields existed. `total_bases` is recovered for free from cached
+    /// read-metrics; `read_type` is inferred from platform/test-type, with `--rescan` reading a
+    /// bounded prefix of the alignment to tell HiFi from CLR on generic-WGS PacBio runs.
+    BackfillProfiles(BackfillArgs),
+    /// Delete orphaned alignment (coverage-summary) records from the signed-in account's PDS — the
+    /// duplicates left by the old create-race (two records for one alignment). Dry-run by default;
+    /// pass `--apply` to actually delete. Requires being signed in.
+    PruneOrphans(PruneArgs),
 }
 
 #[derive(Args)]
@@ -177,6 +186,37 @@ pub struct RebuildArgs {
 }
 
 #[derive(Args)]
+pub struct BackfillArgs {
+    /// Also read a bounded prefix of the alignment file to resolve `read_type` on runs the cheap
+    /// platform/test-type inference can't (generic-`WGS` PacBio: HiFi vs CLR). Touches the files.
+    #[arg(long)]
+    rescan: bool,
+    /// Restrict to subjects in this project (by exact name).
+    #[arg(long, short)]
+    project: Option<String>,
+    /// Emit the per-field counts as JSON.
+    #[arg(long)]
+    json: bool,
+    /// Workspace database path (defaults to the GUI's ~/.decodingus/navigator-rs.db).
+    #[arg(long)]
+    db: Option<PathBuf>,
+}
+
+#[derive(Args)]
+pub struct PruneArgs {
+    /// Actually delete the orphans. Without this flag the command is a dry run (lists what it would
+    /// remove and touches nothing) — a PDS delete is irreversible, so it's opt-in.
+    #[arg(long)]
+    apply: bool,
+    /// Emit the outcome as JSON.
+    #[arg(long)]
+    json: bool,
+    /// Workspace database path (defaults to the GUI's ~/.decodingus/navigator-rs.db).
+    #[arg(long)]
+    db: Option<PathBuf>,
+}
+
+#[derive(Args)]
 pub struct LiftVcfArgs {
     /// Input VCF (`.vcf` or `.vcf.gz`).
     #[arg(long, short)]
@@ -229,8 +269,92 @@ pub fn run(command: Command) -> i32 {
             Command::LiftVcf(a) => lift_vcf(a).await,
             Command::Analyze(a) => analyze(a).await,
             Command::RebuildSignatures(a) => rebuild_signatures(a).await,
+            Command::BackfillProfiles(a) => backfill_profiles(a).await,
+            Command::PruneOrphans(a) => prune_orphans(a).await,
         }
     })
+}
+
+/// Delete orphaned alignment records from the signed-in account's PDS (dry-run unless `--apply`).
+async fn prune_orphans(args: PruneArgs) -> i32 {
+    let app = match open(args.db).await {
+        Ok(a) => a,
+        Err(c) => return c,
+    };
+    let report = match app.prune_orphan_alignments(args.apply).await {
+        Ok(r) => r,
+        Err(navigator_app::AppError::NotAuthenticated) => {
+            eprintln!("error: not signed in — run the GUI and sign in first (the session is reused here)");
+            return 1;
+        }
+        Err(e) => return report(e),
+    };
+
+    if args.json {
+        println!("{}", serde_json::to_string_pretty(&report).unwrap_or_default());
+    } else if report.applied {
+        println!("Examined {} alignment record(s); deleted {} orphan(s).", report.examined, report.deleted);
+        for rk in &report.orphans {
+            println!("  deleted {rk}");
+        }
+    } else {
+        println!(
+            "Examined {} alignment record(s); {} orphan(s) would be deleted (dry run — pass --apply):",
+            report.examined,
+            report.orphans.len()
+        );
+        for rk in &report.orphans {
+            println!("  {rk}");
+        }
+    }
+    0
+}
+
+/// Backfill the standardized-test-label read-profile fields across the workspace (or one project).
+async fn backfill_profiles(args: BackfillArgs) -> i32 {
+    let app = match open(args.db).await {
+        Ok(a) => a,
+        Err(c) => return c,
+    };
+    let project_id = match &args.project {
+        Some(name) => {
+            let overview = app.project_overview().await.unwrap_or_default();
+            match overview.iter().find(|o| o.project.name == *name) {
+                Some(o) => Some(o.project.id),
+                None => {
+                    eprintln!("error: no project named \"{name}\"");
+                    return 1;
+                }
+            }
+        }
+        None => None,
+    };
+
+    let r = match app.backfill_read_profiles(project_id, args.rescan).await {
+        Ok(r) => r,
+        Err(e) => return report(e),
+    };
+
+    if args.json {
+        println!("{}", serde_json::to_string_pretty(&r).unwrap_or_default());
+    } else {
+        println!("Examined {} run(s):", r.runs_examined);
+        println!("  total_bases filled:   {}", r.total_bases_filled);
+        println!("  read_type inferred:   {}", r.read_type_filled);
+        if args.rescan {
+            println!("  read_type rescanned:  {}", r.read_type_rescanned);
+        }
+        println!(
+            "  read_type unresolved: {}{}",
+            r.read_type_unresolved,
+            if !args.rescan && r.read_type_unresolved > 0 {
+                "  (retry with --rescan to resolve PacBio HiFi/CLR)"
+            } else {
+                ""
+            }
+        );
+    }
+    0
 }
 
 /// Rebuild the genome-consensus Y **and** mtDNA signatures for a set of subjects. Used to re-place

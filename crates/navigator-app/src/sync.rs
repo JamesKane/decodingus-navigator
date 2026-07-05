@@ -55,6 +55,54 @@ impl App {
         Ok(sync_history::recent(self.store.pool(), &did, limit).await?)
     }
 
+    /// Prune orphaned alignment (coverage-summary) records from the signed-in account's PDS repo —
+    /// the duplicates left by the pre-deterministic-rkey `create` race (two records for one
+    /// alignment, only one tracked in `sync_state`). Lists every alignment record in the repo and
+    /// removes any whose rkey is **not accounted for** — i.e. neither a `sync_state`-tracked rkey nor
+    /// the deterministic `aln-{id}` of a live local alignment. With `apply == false` it's a dry run
+    /// (reports what it would delete, touches nothing). Returns the outcome.
+    pub async fn prune_orphan_alignments(&self, apply: bool) -> Result<PruneReport, AppError> {
+        let did = self.require_account()?;
+        // Accounted-for rkeys: everything tracked in sync_state for the alignment collection, plus
+        // the deterministic key for every live local alignment (so a not-yet-drained one isn't culled).
+        let mut keep: std::collections::HashSet<String> = sync_state::list_for_collection(self.store.pool(), &did, NS_ALIGNMENT)
+            .await?
+            .into_iter()
+            .map(|s| s.rkey)
+            .collect();
+        for a in alignment::list_all(self.store.pool()).await? {
+            keep.insert(alignment_rkey(a.id));
+        }
+
+        let mut engine = self.sync_engine()?;
+        let mut report = PruneReport {
+            applied: apply,
+            ..PruneReport::default()
+        };
+        let mut cursor: Option<String> = None;
+        loop {
+            let (records, next) = engine.pull_list(NS_ALIGNMENT, cursor.as_deref()).await?;
+            for r in &records {
+                report.examined += 1;
+                // rkey is the last path segment of at://did/collection/rkey.
+                let rkey = r.uri.rsplit('/').next().unwrap_or_default().to_string();
+                if rkey.is_empty() || keep.contains(&rkey) {
+                    continue;
+                }
+                report.orphans.push(rkey.clone());
+                if apply {
+                    engine.push_delete(NS_ALIGNMENT, &rkey).await?;
+                    report.deleted += 1;
+                }
+            }
+            match next {
+                Some(c) => cursor = Some(c),
+                None => break,
+            }
+        }
+        Ok(report)
+    }
+
     /// Attempt to publish the ready outbox rows for the signed-in account. Each success is logged to
     /// history and its row removed; a transient failure reschedules the row with exponential backoff
     /// and stops the batch (we're likely offline); a non-transient failure marks the row `FAILED`.

@@ -140,6 +140,38 @@ impl AsyncSync {
         }
     }
 
+    /// Delete a record at `rkey` (`deleteRecord`) — the orphan-prune path. Same refresh-on-401 +
+    /// transient backoff discipline as [`push_put`](Self::push_put).
+    pub async fn push_delete(&mut self, collection: &str, rkey: &str) -> Result<(), SyncError> {
+        let mut refreshed = false;
+        let mut attempt = 0u32;
+        loop {
+            let client = PdsClient::from_session(self.http.clone(), &self.session)?;
+            match client.delete_record(collection, rkey).await {
+                Ok(()) => {
+                    self.online.store(true, Ordering::Relaxed);
+                    return Ok(());
+                }
+                Err(SyncError::Unauthorized) if !refreshed => {
+                    self.session = refresh(&self.http, &self.session).await?;
+                    self.tokens.save(&self.did, &self.session)?;
+                    refreshed = true;
+                }
+                Err(e) if e.is_transient() && attempt < self.policy.max_retries => {
+                    self.online.store(false, Ordering::Relaxed);
+                    tokio::time::sleep(self.policy.backoff(attempt)).await;
+                    attempt += 1;
+                }
+                Err(e) => {
+                    if e.is_transient() {
+                        self.online.store(false, Ordering::Relaxed);
+                    }
+                    return Err(e);
+                }
+            }
+        }
+    }
+
     /// Fetch one page of the account's own records in `collection` (`listRecords`, for a PULL). Same
     /// refresh/backoff discipline. Returns the records + the next cursor.
     pub async fn pull_list(

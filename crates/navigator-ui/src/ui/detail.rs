@@ -2602,6 +2602,11 @@ impl NavigatorApp {
                             r.instrument_model.as_deref().unwrap_or("—")
                         );
                         ui.label(egui::RichText::new(title).strong());
+                        // Standardized, vendor-neutral test label (WGS150 45Gbases / HiFi 90Gbases /
+                        // BigY-700) when this is a yield/product test — the cohort-comparable label.
+                        if let Some(std) = r.standardized_label() {
+                            ui.label(egui::RichText::new(std).monospace().small().color(ACCENT));
+                        }
                         // Instrument serial (the lab crowd-source key) + flowcell, when inferred.
                         let inst = match (r.instrument_id.as_deref(), r.flowcell_id.as_deref()) {
                             (Some(i), Some(f)) => format!("   Instr: {i} · FC: {f}"),

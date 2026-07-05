@@ -19,6 +19,8 @@ struct Row {
     pf_reads_aligned: Option<i64>,
     mean_read_length: Option<f64>,
     mean_insert_size: Option<f64>,
+    total_bases: Option<i64>,
+    read_type: Option<String>,
     sequencing_facility: Option<String>,
     instrument_id: Option<String>,
     sample_name: Option<String>,
@@ -41,6 +43,8 @@ impl Row {
             pf_reads_aligned: self.pf_reads_aligned,
             mean_read_length: self.mean_read_length,
             mean_insert_size: self.mean_insert_size,
+            total_bases: self.total_bases,
+            read_type: self.read_type,
             sequencing_facility: self.sequencing_facility,
             instrument_id: self.instrument_id,
             sample_name: self.sample_name,
@@ -53,6 +57,7 @@ impl Row {
 
 const COLS: &str = "id, biosample_guid, platform_name, instrument_model, test_type, \
     library_layout, total_reads, pf_reads_aligned, mean_read_length, mean_insert_size, \
+    total_bases, read_type, \
     sequencing_facility, instrument_id, sample_name, library_id, platform_unit, flowcell_id";
 
 /// Fetch one sequence run by id.
@@ -92,6 +97,10 @@ pub async fn create(pool: &SqlitePool, r: &NewSequenceRun) -> Result<SequenceRun
         pf_reads_aligned: r.pf_reads_aligned,
         mean_read_length: r.mean_read_length,
         mean_insert_size: r.mean_insert_size,
+        // `read_type` is filled in post-create by `set_library_stats` (import scan), `total_bases`
+        // by `set_read_stats` (read-metrics pass) — both back the standardized test label.
+        total_bases: None,
+        read_type: None,
         // The lab/instrument identity block is filled in post-create by `set_library_stats`.
         sequencing_facility: None,
         instrument_id: None,
@@ -114,16 +123,18 @@ pub async fn set_library_stats(
     library_id: Option<&str>,
     platform_unit: Option<&str>,
     flowcell_id: Option<&str>,
+    read_type: Option<&str>,
 ) -> Result<bool, StoreError> {
     let affected = sqlx::query(
         "UPDATE sequence_run SET instrument_id = ?, sample_name = ?, library_id = ?, \
-         platform_unit = ?, flowcell_id = ? WHERE id = ?",
+         platform_unit = ?, flowcell_id = ?, read_type = COALESCE(?, read_type) WHERE id = ?",
     )
     .bind(instrument_id)
     .bind(sample_name)
     .bind(library_id)
     .bind(platform_unit)
     .bind(flowcell_id)
+    .bind(read_type)
     .bind(id)
     .execute(pool)
     .await?
@@ -132,8 +143,9 @@ pub async fn set_library_stats(
 }
 
 /// Set the library-level read stats (`total_reads`, `mean_read_length`, `mean_insert_size`,
-/// `library_layout`) — populated after a read-metrics / unified-walker pass (or backfilled from a
-/// cached artifact). These describe the run's library; per-alignment counts (e.g. reads aligned)
+/// `library_layout`, `total_bases`) — populated after a read-metrics / unified-walker pass (or
+/// backfilled from a cached artifact). A `None` `total_bases` leaves the existing value. These
+/// describe the run's library; per-alignment counts (e.g. reads aligned)
 /// live on the alignment. A `None` `library_layout` leaves the existing value (set at import from
 /// the BAM flags). Leaves the descriptive + lab columns untouched. Returns whether a row was
 /// affected.
@@ -144,15 +156,18 @@ pub async fn set_read_stats(
     mean_read_length: Option<f64>,
     mean_insert_size: Option<f64>,
     library_layout: Option<&str>,
+    total_bases: Option<i64>,
 ) -> Result<bool, StoreError> {
     let affected = sqlx::query(
         "UPDATE sequence_run SET total_reads = ?, mean_read_length = ?, mean_insert_size = ?, \
-         library_layout = COALESCE(?, library_layout) WHERE id = ?",
+         library_layout = COALESCE(?, library_layout), total_bases = COALESCE(?, total_bases) \
+         WHERE id = ?",
     )
     .bind(total_reads)
     .bind(mean_read_length)
     .bind(mean_insert_size)
     .bind(library_layout)
+    .bind(total_bases)
     .bind(id)
     .execute(pool)
     .await?
@@ -165,6 +180,20 @@ pub async fn set_read_stats(
 pub async fn set_facility(pool: &SqlitePool, id: i64, facility: &str) -> Result<bool, StoreError> {
     let affected = sqlx::query("UPDATE sequence_run SET sequencing_facility = ? WHERE id = ?")
         .bind(facility)
+        .bind(id)
+        .execute(pool)
+        .await?
+        .rows_affected();
+    Ok(affected > 0)
+}
+
+/// Set a run's read chemistry/mode (`SHORT`/`HIFI`/`CLR`/`ONT_*`) — the long-read arm of the
+/// standardized test label. Used by the backfill to populate the field on runs imported before it
+/// existed, without disturbing the rest of the library-stats block. Returns whether a row was
+/// affected.
+pub async fn set_read_type(pool: &SqlitePool, id: i64, read_type: &str) -> Result<bool, StoreError> {
+    let affected = sqlx::query("UPDATE sequence_run SET read_type = ? WHERE id = ?")
+        .bind(read_type)
         .bind(id)
         .execute(pool)
         .await?

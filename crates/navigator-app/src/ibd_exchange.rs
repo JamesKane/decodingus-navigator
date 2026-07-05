@@ -656,7 +656,9 @@ impl App {
             "coverage",
             &format!("alignment:{alignment_id}"),
             NS_ALIGNMENT,
-            None,
+            // Deterministic rkey → the idempotent put path (never a fresh create), so re-publishing
+            // or two concurrent drains converge on one record instead of duplicating.
+            Some(&alignment_rkey(alignment_id)),
             value,
         )
         .await

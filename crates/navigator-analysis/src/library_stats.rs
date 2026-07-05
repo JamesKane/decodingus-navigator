@@ -42,6 +42,10 @@ pub struct LibraryStats {
     /// `PAIRED` if the scanned reads carry the SAM segmented (0x1) flag, else `SINGLE`; `None`
     /// when no primary reads were scanned.
     pub library_layout: Option<String>,
+    /// Most-frequent read chemistry/mode inferred from the read names: `SHORT` / `HIFI` / `CLR` /
+    /// `ONT_SIMPLEX` / `ONT_DUPLEX`. The only edge signal that tells HiFi from CLR (both PacBio);
+    /// backs the long-read arm of the standardized test label. `None` when nothing was decodable.
+    pub read_type: Option<String>,
 }
 
 /// Scan up to `max_reads` records of `path` (CRAM needs `reference`) and infer library/instrument
@@ -74,6 +78,7 @@ pub fn scan_library_stats(
     let mut read_count = 0usize;
     let mut segmented_count = 0usize;
     let mut platform_counts: HashMap<&'static str, usize> = HashMap::new();
+    let mut read_type_counts: HashMap<&'static str, usize> = HashMap::new();
     let mut instruments: HashMap<String, usize> = HashMap::new();
     let mut flowcells: HashMap<String, usize> = HashMap::new();
 
@@ -97,6 +102,9 @@ pub fn scan_library_stats(
 
         let platform = detect_platform_from_qname(&qname);
         *platform_counts.entry(platform).or_insert(0) += 1;
+        if let Some(rt) = detect_read_type_from_qname(&qname, platform) {
+            *read_type_counts.entry(rt).or_insert(0) += 1;
+        }
         let (instrument, flowcell) = parse_instrument_and_flowcell(&qname, platform);
         if let Some(i) = instrument {
             *instruments.entry(i).or_insert(0) += 1;
@@ -107,6 +115,7 @@ pub fn scan_library_stats(
     }
 
     let primary_platform = most_frequent(&platform_counts).map(|p| p.to_string());
+    let read_type = most_frequent(&read_type_counts).map(|r| r.to_string());
     let instrument_id = most_frequent(&instruments);
     let flowcell_id = most_frequent(&flowcells);
     let instrument_model = match (primary_platform.as_deref(), instrument_id.as_deref()) {
@@ -134,7 +143,21 @@ pub fn scan_library_stats(
         instrument_model,
         flowcell_id,
         library_layout,
+        read_type,
     })
+}
+
+/// Classify a read's chemistry/mode from its name + already-detected platform. PacBio splits on the
+/// movie-name suffix — a `/ccs` segment **is** HiFi (CCS), anything else is CLR (continuous/subread).
+/// Nanopore is simplex unless the name is a dorado duplex pair (two read ids joined by `;`). Short-
+/// read platforms are `SHORT`. `None` when the platform is unknown (contributes no vote).
+fn detect_read_type_from_qname(qname: &str, platform: &str) -> Option<&'static str> {
+    match platform {
+        "PacBio" => Some(if qname.rsplit('/').next() == Some("ccs") { "HIFI" } else { "CLR" }),
+        "Nanopore" => Some(if qname.contains(';') { "ONT_DUPLEX" } else { "ONT_SIMPLEX" }),
+        "Illumina" | "MGI" => Some("SHORT"),
+        _ => None,
+    }
 }
 
 /// The key with the highest count (ties → arbitrary stable pick).
@@ -345,6 +368,33 @@ mod tests {
         // MGI
         assert_eq!(detect_platform_from_qname("V300012345L1C001R0010000123"), "MGI");
         assert_eq!(detect_platform_from_qname("totally random name"), "Unknown");
+    }
+
+    #[test]
+    fn classifies_read_type_from_qname() {
+        // PacBio CCS suffix ⇒ HiFi; a subread/CLR movie name ⇒ CLR.
+        assert_eq!(
+            detect_read_type_from_qname("m84005_230101_000000/1234/ccs", "PacBio"),
+            Some("HIFI")
+        );
+        assert_eq!(
+            detect_read_type_from_qname("m64012_200101_000000/1234/0_15000", "PacBio"),
+            Some("CLR")
+        );
+        // Nanopore: a plain UUID is simplex; a dorado duplex pair (joined by ';') is duplex.
+        assert_eq!(
+            detect_read_type_from_qname("abcdef01-2345-6789-abcd-ef0123456789", "Nanopore"),
+            Some("ONT_SIMPLEX")
+        );
+        assert_eq!(
+            detect_read_type_from_qname("abcdef01-2345-6789-abcd-ef0123456789;01234567-89ab-cdef-0123-456789abcdef", "Nanopore"),
+            Some("ONT_DUPLEX")
+        );
+        // Short-read platforms.
+        assert_eq!(detect_read_type_from_qname("A00123:45:H7TJ2DSXX:1:1101:1000:1996", "Illumina"), Some("SHORT"));
+        assert_eq!(detect_read_type_from_qname("V300012345L1C001R0010000123", "MGI"), Some("SHORT"));
+        // Unknown platform ⇒ no vote.
+        assert_eq!(detect_read_type_from_qname("totally random name", "Unknown"), None);
     }
 
     #[test]

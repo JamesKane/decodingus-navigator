@@ -119,7 +119,10 @@ impl App {
         )
         // Publish the known lab so the AppView can display it (and learn the instrument→lab map —
         // many serials, e.g. PacBio, aren't in its dataset). See [`SequenceRun::sequencing_facility`].
-        .with_facility(run.sequencing_facility.clone());
+        .with_facility(run.sequencing_facility.clone())
+        // Exact sequenced yield + read chemistry back the standardized DTC test label the AppView
+        // renders/groups by (`du_domain::testprofile`). Both `Option`al — older records omit them.
+        .with_read_profile(run.total_bases, run.read_type.clone());
         Ok(serde_json::to_value(&record)?)
     }
 
