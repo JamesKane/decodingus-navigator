@@ -64,6 +64,9 @@ pub enum Command {
     /// duplicates left by the old create-race (two records for one alignment). Dry-run by default;
     /// pass `--apply` to actually delete. Requires being signed in.
     PruneOrphans(PruneArgs),
+    /// Sign in to a PDS account via OAuth (opens a browser, waits for the loopback callback) and
+    /// persist the session so the other subcommands (publish, prune-orphans) can authenticate.
+    Login(LoginArgs),
 }
 
 #[derive(Args)]
@@ -203,6 +206,16 @@ pub struct BackfillArgs {
 }
 
 #[derive(Args)]
+pub struct LoginArgs {
+    /// Account handle or DID (e.g. `jameskane.blog`).
+    #[arg(required = true)]
+    handle: String,
+    /// Workspace database path (defaults to the GUI's ~/.decodingus/navigator-rs.db).
+    #[arg(long)]
+    db: Option<PathBuf>,
+}
+
+#[derive(Args)]
 pub struct PruneArgs {
     /// Actually delete the orphans. Without this flag the command is a dry run (lists what it would
     /// remove and touches nothing) — a PDS delete is irreversible, so it's opt-in.
@@ -271,8 +284,25 @@ pub fn run(command: Command) -> i32 {
             Command::RebuildSignatures(a) => rebuild_signatures(a).await,
             Command::BackfillProfiles(a) => backfill_profiles(a).await,
             Command::PruneOrphans(a) => prune_orphans(a).await,
+            Command::Login(a) => login(a).await,
         }
     })
+}
+
+/// Sign in via OAuth (browser + loopback callback) and persist the session for later subcommands.
+async fn login(args: LoginArgs) -> i32 {
+    let app = match open(args.db).await {
+        Ok(a) => a,
+        Err(c) => return c,
+    };
+    eprintln!("Opening browser to sign in as {}…", args.handle);
+    match app.login(&args.handle).await {
+        Ok(did) => {
+            println!("Signed in: {did}");
+            0
+        }
+        Err(e) => report(e),
+    }
 }
 
 /// Delete orphaned alignment records from the signed-in account's PDS (dry-run unless `--apply`).

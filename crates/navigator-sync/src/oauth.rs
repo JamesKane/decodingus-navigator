@@ -202,14 +202,29 @@ async fn post_with_dpop(
         .and_then(|v| v.to_str().ok())
         .map(String::from);
     let Some(nonce) = nonce else {
-        return Err(SyncError::Oauth(format!("{post_url}: {}", resp.status())));
+        let status = resp.status();
+        let body = resp.text().await.unwrap_or_default();
+        return Err(SyncError::Oauth(format!("{post_url}: {status} {}", truncate_body(&body))));
     };
     let proof = dpop_proof(key, "POST", htu, now(), Some(&nonce), None);
     let retry = http.post(post_url).header("DPoP", proof).form(form).send().await?;
     if retry.status().is_success() {
         Ok(retry.json().await?)
     } else {
-        Err(SyncError::Oauth(format!("{post_url}: {}", retry.status())))
+        let status = retry.status();
+        let body = retry.text().await.unwrap_or_default();
+        Err(SyncError::Oauth(format!("{post_url}: {status} {}", truncate_body(&body))))
+    }
+}
+
+/// The server's error body (usually `{"error":"invalid_grant",...}`), trimmed to keep the message
+/// readable — it's the difference between "your session expired, re-sign-in" and a real fault.
+fn truncate_body(body: &str) -> String {
+    let b = body.trim();
+    if b.len() > 200 {
+        format!("{}…", &b[..200])
+    } else {
+        b.to_string()
     }
 }
 
