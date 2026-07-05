@@ -429,6 +429,11 @@ pub enum Command {
     PublishAncestry {
         biosample_guid: SampleGuid,
     },
+    /// Publish the subject anchor — the anonymized biosample summary + its sequence runs — to the
+    /// signed-in PDS. The record every derived record (coverage/ancestry) ties back to.
+    PublishBiosample {
+        biosample_guid: SampleGuid,
+    },
     /// Attempt to push the ready outbox rows now (also runs periodically + after a publish).
     DrainOutbox,
     /// PULL reconcile: fetch the account's PDS records and reconcile against local (gap §5-p2).
@@ -2057,6 +2062,9 @@ pub async fn handle(app: &App, cmd: Command) -> Event {
         Command::PublishAncestry { biosample_guid } => {
             Event::Error(format!("internal: unrouted PublishAncestry {biosample_guid}"))
         }
+        Command::PublishBiosample { biosample_guid } => {
+            Event::Error(format!("internal: unrouted PublishBiosample {biosample_guid}"))
+        }
         Command::DrainOutbox => Event::Error("internal: unrouted DrainOutbox".into()),
         Command::Export { request, path } => match app.export_content(&request).await {
             Ok(content) => match std::fs::write(&path, content) {
@@ -2711,6 +2719,10 @@ pub fn spawn(db_path: PathBuf, wake: impl Fn() + Send + Sync + 'static) -> (Unbo
                             Command::PublishAncestry { biosample_guid } => {
                                 let r = app.publish_ancestry(biosample_guid).await;
                                 publish_then_drain(&app, r, "ancestry breakdown", &evt_tx, &*wake).await;
+                            }
+                            Command::PublishBiosample { biosample_guid } => {
+                                let r = app.publish_biosample(biosample_guid).await;
+                                publish_then_drain(&app, r, "biosample summary", &evt_tx, &*wake).await;
                             }
                             Command::PublishReconciliation {
                                 biosample_guid,

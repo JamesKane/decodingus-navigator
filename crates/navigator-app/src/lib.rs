@@ -164,7 +164,7 @@ use navigator_sync::{
     dev_http_client, login_default, AsyncSync, DeviceKey, OAuthConfig, RetryPolicy, TokenStore, DEVICE_KEY_COLLECTION,
 };
 pub use navigator_sync::{
-    AlignmentRecord, BiosampleRecord, FeedPostRecord, PdsClient, PopulationBreakdownRecord, PrivateVariantsRecord,
+    AlignmentRecord, BiosampleRecord, ContigMetrics, FeedPostRecord, PdsClient, PopulationBreakdownRecord, PrivateVariantsRecord,
     RecordRef, SequenceRunRecord, VariantCallEntry, NS_ALIGNMENT, NS_BIOSAMPLE, NS_FEED_POST, NS_POPULATION_BREAKDOWN,
     NS_SEQUENCERUN, PRIVATE_VARIANTS_COLLECTION,
 };
@@ -1365,6 +1365,30 @@ fn completeness_rank(completeness: &str) -> u8 {
         "partial" => 1,
         _ => 0,
     }
+}
+
+/// Deterministic PDS record key for a subject's biosample record. Derived from the subject GUID
+/// (a random local UUID — no donor PII) so the record's at:// URI is knowable *before* publishing:
+/// every child record (coverage / ancestry / sequence-run) can reference it, and re-publishing
+/// overwrites in place rather than duplicating (the same deterministic-rkey pattern the device-key
+/// record uses).
+fn biosample_rkey(guid: SampleGuid) -> String {
+    format!("bio-{}", guid.0.simple())
+}
+
+/// Deterministic PDS record key for a sequence-run record (stable within the account's repo).
+fn seqrun_rkey(run_id: i64) -> String {
+    format!("run-{run_id}")
+}
+
+/// The at:// URI a published biosample record has in `did`'s repo — the anchor child records link to.
+fn biosample_at_uri(did: &str, guid: SampleGuid) -> String {
+    format!("at://{did}/{NS_BIOSAMPLE}/{}", biosample_rkey(guid))
+}
+
+/// The at:// URI a published sequence-run record has in `did`'s repo.
+fn seqrun_at_uri(did: &str, run_id: i64) -> String {
+    format!("at://{did}/{NS_SEQUENCERUN}/{}", seqrun_rkey(run_id))
 }
 
 /// Fallback reference build for a batch import when neither the header nor the filename
@@ -2829,9 +2853,14 @@ mod publish_tests {
         .unwrap();
         let reloaded = sequence_run::get(app.store.pool(), run.id).await.unwrap().unwrap();
 
-        let value = app.sequence_run_record(&reloaded).await.unwrap();
+        let value = app.sequence_run_record("did:plc:test", &reloaded).await.unwrap();
         assert_eq!(value.get("instrumentId").and_then(|v| v.as_str()), Some("A00182"));
         assert_eq!(value.get("$type").and_then(|v| v.as_str()), Some(NS_SEQUENCERUN));
+        // Links back to its subject's biosample record via the deterministic at:// URI.
+        assert_eq!(
+            value.get("biosampleRef").and_then(|v| v.as_str()),
+            Some(biosample_at_uri("did:plc:test", reloaded.biosample_guid).as_str())
+        );
     }
 }
 
@@ -3266,6 +3295,23 @@ mod settings_tests {
         assert_eq!(resolve_appview_url(None, None), DEFAULT_APPVIEW_URL);
         // blank values are ignored (fall through to default)
         assert_eq!(resolve_appview_url(Some("".into()), None), DEFAULT_APPVIEW_URL);
+    }
+
+    #[test]
+    fn deterministic_pds_refs_are_stable() {
+        let g = SampleGuid(Uuid::nil());
+        // Deterministic rkeys → the biosample's at:// URI is knowable before publishing, so child
+        // records can reference it and a re-publish overwrites rather than duplicating.
+        assert_eq!(biosample_rkey(g), "bio-00000000000000000000000000000000");
+        assert_eq!(seqrun_rkey(7), "run-7");
+        assert_eq!(
+            biosample_at_uri("did:plc:abc", g),
+            "at://did:plc:abc/com.decodingus.atmosphere.biosample/bio-00000000000000000000000000000000"
+        );
+        assert_eq!(
+            seqrun_at_uri("did:plc:abc", 7),
+            "at://did:plc:abc/com.decodingus.atmosphere.sequencerun/run-7"
+        );
     }
 
     #[test]

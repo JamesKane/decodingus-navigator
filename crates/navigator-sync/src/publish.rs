@@ -107,6 +107,12 @@ impl PdsClient {
         })
     }
 
+    /// The account DID these records are written under (the repo owner) — used to build the
+    /// deterministic at:// URIs child records reference.
+    pub fn did(&self) -> &str {
+        &self.did
+    }
+
     /// Bearer-auth client (no DPoP) — for repo CRUD against a `createAccount` session.
     pub fn bearer(http: reqwest::Client, pds_base: &str, did: &str, token: &str) -> Self {
         PdsClient {

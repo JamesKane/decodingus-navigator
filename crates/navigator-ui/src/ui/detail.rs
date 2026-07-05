@@ -1055,7 +1055,7 @@ impl NavigatorApp {
 
     /// Consensus dashboard (Overview): the subject's source-of-truth at a glance — consensus Y/mt
     /// haplogroups, top ancestry, the autosomal concordance one-liner, and a source inventory.
-    pub(crate) fn overview_dashboard(&mut self, ui: &mut egui::Ui, _guid: SampleGuid) {
+    pub(crate) fn overview_dashboard(&mut self, ui: &mut egui::Ui, guid: SampleGuid) {
         let none = self.tr("hint.noConsensusYet");
         card(ui, self.tr("card.consensusSummary"), |ui| {
             let line = |ui: &mut egui::Ui, label: &str, cons: &Option<navigator_app::Consensus>| {
@@ -1120,7 +1120,22 @@ impl NavigatorApp {
             ui.add_space(4.0);
             ui.label(egui::RichText::new(self.tr("hint.sourcesTabHint")).weak().small());
         });
-        self.genealogy_card(ui, _guid);
+        ui.add_space(10.0);
+        // The subject anchor: publish the anonymized biosample summary + its sequence runs to the
+        // signed-in PDS. Every derived record (coverage / ancestry) links back to this, so it's the
+        // one to publish first.
+        card(ui, "Publish to PDS", |ui| {
+            ui.label(
+                egui::RichText::new(
+                    "Publish this subject's anonymized summary — sex, Y/mt haplogroups, and sequencing \
+                     runs — to your PDS. Coverage, ancestry, and other records reference it.",
+                )
+                .weak()
+                .small(),
+            );
+            self.publish_row(ui, "Publish subject to PDS", Command::PublishBiosample { biosample_guid: guid });
+        });
+        self.genealogy_card(ui, guid);
     }
 
     /// Genealogy for the open subject: vendor ids (kit numbers), FTDNA member labels, and the MDKA

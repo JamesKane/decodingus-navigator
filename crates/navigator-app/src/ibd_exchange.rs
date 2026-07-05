@@ -616,11 +616,42 @@ impl App {
             .map_err(|e| AppError::Sync(navigator_sync::SyncError::from(e)))
     }
 
+    /// Enqueue the anchor records every child record references: the subject's biosample summary
+    /// and each of its sequence runs, at their **deterministic** rkeys so the at:// URIs resolve.
+    /// Idempotent — the outbox coalesces per `entity_ref` and re-publishing overwrites in place — so
+    /// child publishes call this freely to guarantee there's always a biosample to tie back to.
+    async fn ensure_subject_anchor(&self, did: &str, biosample_guid: SampleGuid) -> Result<(), AppError> {
+        // Sequence runs first (the biosample record links to them).
+        for run in self.list_sequence_runs(biosample_guid).await? {
+            let value = self.sequence_run_record(did, &run).await?;
+            self.enqueue_publish(
+                "seqrun",
+                &format!("seqrun:{}", run.id),
+                NS_SEQUENCERUN,
+                Some(&seqrun_rkey(run.id)),
+                value,
+            )
+            .await?;
+        }
+        let value = self.biosample_record(did, biosample_guid).await?;
+        self.enqueue_publish(
+            "biosample",
+            &format!("biosample:{biosample_guid}"),
+            NS_BIOSAMPLE,
+            Some(&biosample_rkey(biosample_guid)),
+            value,
+        )
+        .await
+    }
+
     /// Publish the alignment's coverage summary to the signed-in account's PDS (with
-    /// refresh-on-expiry and retry/backoff via [`AsyncSync`]).
+    /// refresh-on-expiry and retry/backoff via [`AsyncSync`]). Anchors the subject first so the
+    /// record's biosample/sequence-run refs resolve.
     pub async fn publish_coverage(&self, alignment_id: i64) -> Result<(), AppError> {
-        self.require_account()?; // auth check before touching the DB
-        let value = self.coverage_record(alignment_id).await?;
+        let did = self.require_account()?; // auth check before touching the DB
+        let guid = self.biosample_of_alignment(alignment_id).await?;
+        self.ensure_subject_anchor(&did, guid).await?;
+        let value = self.coverage_record(&did, alignment_id).await?;
         self.enqueue_publish(
             "coverage",
             &format!("alignment:{alignment_id}"),
@@ -638,12 +669,13 @@ impl App {
     /// rather than a conflicting set per sequencing run. The researcher opt-in act for the ancestry
     /// section — anonymized population proportions only.
     pub async fn publish_ancestry(&self, biosample_guid: SampleGuid) -> Result<(), AppError> {
-        self.require_account()?; // auth check before touching the DB
-                                 // One outbox row per method, keyed by subject+method so re-publishing coalesces per estimate.
+        let did = self.require_account()?; // auth check before touching the DB
+        self.ensure_subject_anchor(&did, biosample_guid).await?; // the breakdown links back to it
+        let biosample_ref = biosample_at_uri(&did, biosample_guid);
+        // One outbox row per method, keyed by subject+method so re-publishing coalesces per estimate.
         for r in &self.consensus_ancestry_results(biosample_guid).await? {
-            let value = serde_json::to_value(
-                population_breakdown_record(r).with_biosample_ref(Some(biosample_guid.to_string())),
-            )?;
+            let value =
+                serde_json::to_value(population_breakdown_record(r).with_biosample_ref(Some(biosample_ref.clone())))?;
             let entity_ref = format!("ancestry:{biosample_guid}:{}", r.method);
             self.enqueue_publish("ancestry", &entity_ref, NS_POPULATION_BREAKDOWN, None, value)
                 .await?;
@@ -651,26 +683,26 @@ impl App {
         Ok(())
     }
 
-    /// Publish the anonymized biosample summary to the signed-in account's PDS.
+    /// Publish the anonymized biosample summary (sex, haplogroups) **and its sequence runs** to the
+    /// signed-in account's PDS — the subject anchor every derived record ties back to. Deterministic
+    /// rkeys make it idempotent (a re-publish overwrites rather than duplicating).
     pub async fn publish_biosample(&self, biosample_guid: SampleGuid) -> Result<(), AppError> {
-        self.require_account()?; // auth check before touching the DB
-        let value = self.biosample_record(biosample_guid).await?;
+        let did = self.require_account()?; // auth check before touching the DB
+        self.ensure_subject_anchor(&did, biosample_guid).await
+    }
+
+    /// Publish a single sequence-run characterization to the signed-in account's PDS.
+    pub async fn publish_sequence_run(&self, run: &SequenceRun) -> Result<(), AppError> {
+        let did = self.require_account()?; // auth check before touching the DB
+        let value = self.sequence_run_record(&did, run).await?;
         self.enqueue_publish(
-            "biosample",
-            &format!("biosample:{biosample_guid}"),
-            NS_BIOSAMPLE,
-            None,
+            "seqrun",
+            &format!("seqrun:{}", run.id),
+            NS_SEQUENCERUN,
+            Some(&seqrun_rkey(run.id)),
             value,
         )
         .await
-    }
-
-    /// Publish a sequence-run characterization to the signed-in account's PDS.
-    pub async fn publish_sequence_run(&self, run: &SequenceRun) -> Result<(), AppError> {
-        self.require_account()?; // auth check before touching the DB
-        let value = self.sequence_run_record(run).await?;
-        self.enqueue_publish("seqrun", &format!("seqrun:{}", run.id), NS_SEQUENCERUN, None, value)
-            .await
     }
 
     /// Publish the alignment's de-novo calls for `contig` to the signed-in account's PDS.
