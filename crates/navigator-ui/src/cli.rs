@@ -67,6 +67,15 @@ pub enum Command {
     /// Sign in to a PDS account via OAuth (opens a browser, waits for the loopback callback) and
     /// persist the session so the other subcommands (publish, prune-orphans) can authenticate.
     Login(LoginArgs),
+    /// Attach public-catalog external ids (IGSR/HGDP/INSDC) derivable from each subject's local
+    /// provenance, so bulk-imported public datasets publish ids that match their AppView catalog
+    /// rows. Dry-run by default; pass `--apply` to write. Local-only (no PDS writes).
+    BackfillCatalogIds(CatalogArgs),
+    /// Resolve subjects against the AppView samples API and attach, in one pass, the catalog name id
+    /// (IGSR/HGDP) plus the authoritative INSDC accession it returns (`SAMN…`→BIOSAMPLE, `ERS…`→ENA,
+    /// `SRS…`→SRA), correcting the local placeholder. Dry-run by default; `--apply` to write. Only
+    /// queries recognizable catalog aliases unless `--all`. Local writes only (no PDS).
+    BackfillAccessions(AccessionArgs),
 }
 
 #[derive(Args)]
@@ -206,6 +215,46 @@ pub struct BackfillArgs {
 }
 
 #[derive(Args)]
+pub struct AccessionArgs {
+    /// Actually attach the accessions and correct the local `sample_accession`. Without this it's a
+    /// dry run (queries the API read-only, writes nothing).
+    #[arg(long)]
+    apply: bool,
+    /// Query every subject, not just those whose name is a recognizable catalog alias (IGSR/HGDP).
+    #[arg(long)]
+    all: bool,
+    /// Restrict to subjects in this project (by exact name).
+    #[arg(long, short)]
+    project: Option<String>,
+    /// Cap how many subjects are queried (for a bounded test run).
+    #[arg(long)]
+    limit: Option<usize>,
+    /// Emit the outcome as JSON.
+    #[arg(long)]
+    json: bool,
+    /// Workspace database path (defaults to the GUI's ~/.decodingus/navigator-rs.db).
+    #[arg(long)]
+    db: Option<PathBuf>,
+}
+
+#[derive(Args)]
+pub struct CatalogArgs {
+    /// Actually write the derived ids. Without this flag the command is a dry run (reports counts,
+    /// writes nothing).
+    #[arg(long)]
+    apply: bool,
+    /// Restrict to subjects in this project (by exact name).
+    #[arg(long, short)]
+    project: Option<String>,
+    /// Emit the outcome as JSON.
+    #[arg(long)]
+    json: bool,
+    /// Workspace database path (defaults to the GUI's ~/.decodingus/navigator-rs.db).
+    #[arg(long)]
+    db: Option<PathBuf>,
+}
+
+#[derive(Args)]
 pub struct LoginArgs {
     /// Account handle or DID (e.g. `jameskane.blog`).
     #[arg(required = true)]
@@ -285,8 +334,98 @@ pub fn run(command: Command) -> i32 {
             Command::BackfillProfiles(a) => backfill_profiles(a).await,
             Command::PruneOrphans(a) => prune_orphans(a).await,
             Command::Login(a) => login(a).await,
+            Command::BackfillCatalogIds(a) => backfill_catalog_ids(a).await,
+            Command::BackfillAccessions(a) => backfill_accessions(a).await,
         }
     })
+}
+
+/// Resolve subjects against the AppView samples API and attach the authoritative INSDC accessions.
+async fn backfill_accessions(args: AccessionArgs) -> i32 {
+    let app = match open(args.db).await {
+        Ok(a) => a,
+        Err(c) => return c,
+    };
+    let project_id = match &args.project {
+        Some(name) => {
+            let overview = app.project_overview().await.unwrap_or_default();
+            match overview.iter().find(|o| o.project.name == *name) {
+                Some(o) => Some(o.project.id),
+                None => {
+                    eprintln!("error: no project named \"{name}\"");
+                    return 1;
+                }
+            }
+        }
+        None => None,
+    };
+    let r = match app.backfill_accessions(project_id, args.apply, args.all, args.limit).await {
+        Ok(r) => r,
+        Err(e) => return report(e),
+    };
+    if args.json {
+        println!("{}", serde_json::to_string_pretty(&r).unwrap_or_default());
+    } else {
+        println!(
+            "Queried {} subject(s): {} resolved, {} not found, {} error(s).",
+            r.examined, r.resolved, r.not_found, r.errors
+        );
+        if r.applied {
+            println!("  ids attached (name + accession): {}", r.ids_added);
+            println!("  local accession fixed:           {}", r.accession_updated);
+            if r.conflicts > 0 {
+                println!("  conflicts:                       {} (id already owned by another subject)", r.conflicts);
+            }
+        } else {
+            println!("  ids to attach (name + accession): {} (dry run — pass --apply)", r.ids_to_add);
+        }
+        for ex in &r.examples {
+            println!("  e.g. {ex}");
+        }
+    }
+    0
+}
+
+/// Attach public-catalog external ids derivable from provenance across the workspace (or a project).
+async fn backfill_catalog_ids(args: CatalogArgs) -> i32 {
+    let app = match open(args.db).await {
+        Ok(a) => a,
+        Err(c) => return c,
+    };
+    let project_id = match &args.project {
+        Some(name) => {
+            let overview = app.project_overview().await.unwrap_or_default();
+            match overview.iter().find(|o| o.project.name == *name) {
+                Some(o) => Some(o.project.id),
+                None => {
+                    eprintln!("error: no project named \"{name}\"");
+                    return 1;
+                }
+            }
+        }
+        None => None,
+    };
+    let r = match app.backfill_catalog_ids(project_id, args.apply).await {
+        Ok(r) => r,
+        Err(e) => return report(e),
+    };
+    if args.json {
+        println!("{}", serde_json::to_string_pretty(&r).unwrap_or_default());
+    } else {
+        println!(
+            "Examined {} subject(s); {} have derivable catalog ids.",
+            r.subjects_examined, r.subjects_matched
+        );
+        if r.applied {
+            println!("  ids added:     {}", r.ids_added);
+            if r.conflicts > 0 {
+                println!("  conflicts:     {} (id already owned by another subject — skipped)", r.conflicts);
+            }
+        } else {
+            println!("  ids to add:    {} (dry run — pass --apply)", r.ids_to_add);
+        }
+    }
+    0
 }
 
 /// Sign in via OAuth (browser + loopback callback) and persist the session for later subcommands.

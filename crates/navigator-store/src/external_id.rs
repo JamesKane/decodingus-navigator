@@ -66,6 +66,16 @@ pub async fn delete(pool: &SqlitePool, id: i64) -> Result<bool, StoreError> {
     Ok(res.rows_affected() > 0)
 }
 
+/// Fetch one vendor-id row by its id — used to recover the owning Subject before a delete (so the
+/// biosample anchor can be re-published with the updated id set).
+pub async fn get(pool: &SqlitePool, id: i64) -> Result<Option<ExternalId>, StoreError> {
+    let row: Option<Row> = sqlx::query_as(&format!("SELECT {COLS} FROM external_id WHERE id = ?"))
+        .bind(id)
+        .fetch_optional(pool)
+        .await?;
+    row.map(Row::into_domain).transpose()
+}
+
 /// Look up the Subject bound to a `(source, external_id)` — the exact-match step of dedup (§5.1).
 pub async fn find(pool: &SqlitePool, source: &str, external_id: &str) -> Result<Option<ExternalId>, StoreError> {
     let row: Option<Row> = sqlx::query_as(&format!(

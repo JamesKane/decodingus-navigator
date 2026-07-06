@@ -16,9 +16,17 @@ use navigator_domain::ftdna::{self, AncestryRow, MemberRow};
 use navigator_domain::identity::{FtdnaMember, IdSource, Lineage, NewMdka};
 use navigator_domain::reconciliation::DnaType;
 use navigator_domain::strprofile::{NewStrProfile, StrMarker};
-use navigator_store::{biosample, biosample_project, external_id, ftdna_member, mdka, str_profile};
+use navigator_store::{biosample, biosample_project, external_id, ftdna_member, mdka, str_profile, sync_state};
 
-use crate::{App, AppError};
+use crate::{decodingus_appview_url, AccessionBackfill, App, AppError, CatalogBackfill};
+
+/// The subset of the AppView `/api/v1/samples/{alias}` response the accession backfill reads. The
+/// full record carries haplogroups/publications/etc.; we only need the authoritative accession.
+#[derive(serde::Deserialize)]
+struct CatalogSample {
+    #[serde(default)]
+    accession: Option<String>,
+}
 
 /// Tuning for the matching engine.
 #[derive(Debug, Clone)]
@@ -203,13 +211,212 @@ impl App {
                 "{source} id \"{external_id}\" is already linked to another subject"
             )));
         }
+        // The published dedup anchor changed → refresh the biosample record (best-effort).
+        let _ = self.republish_biosample_ids(guid).await;
         Ok(row)
     }
 
     /// Detach a vendor id (by row id) from a Subject.
     pub async fn delete_external_id(&self, id: i64) -> Result<(), AppError> {
+        // Recover the owning subject before the row is gone, so we can refresh its published record.
+        let guid = external_id::get(self.store.pool(), id).await?.map(|e| e.biosample_guid);
         external_id::delete(self.store.pool(), id).await?;
+        if let Some(guid) = guid {
+            let _ = self.republish_biosample_ids(guid).await;
+        }
         Ok(())
+    }
+
+    /// Backfill public-catalog external ids (`IGSR`/`HGDP`/INSDC) derivable from each subject's local
+    /// provenance ([`navigator_domain::identity::catalog_ids_from_provenance`]) — so bulk-imported
+    /// public datasets publish ids that match their existing AppView catalog rows. Deterministic and
+    /// network-free; a friendly-name-only sample contributes nothing. Idempotent (skips ids already
+    /// present); a `(namespace, value)` already owned by a *different* subject is counted as a
+    /// conflict and left untouched (never silently re-pointed). `apply == false` is a dry run.
+    /// Adds via the store directly (no per-id re-publish); re-publish the affected subjects after.
+    pub async fn backfill_catalog_ids(
+        &self,
+        project_id: Option<i64>,
+        apply: bool,
+    ) -> Result<CatalogBackfill, AppError> {
+        let mut out = CatalogBackfill {
+            applied: apply,
+            ..CatalogBackfill::default()
+        };
+        for b in self.list_all_biosamples().await? {
+            if let Some(pid) = project_id {
+                if b.project_id != Some(pid) {
+                    continue;
+                }
+            }
+            out.subjects_examined += 1;
+            let derived =
+                navigator_domain::identity::catalog_ids_from_provenance(&b.donor_identifier, b.sample_accession.as_deref());
+            if derived.is_empty() {
+                continue;
+            }
+            out.subjects_matched += 1;
+            let existing: std::collections::HashSet<(String, String)> = external_id::list_for(self.store.pool(), b.guid)
+                .await?
+                .into_iter()
+                .map(|e| (e.source, e.external_id))
+                .collect();
+            for (ns, val) in derived {
+                if existing.contains(&(ns.clone(), val.clone())) {
+                    continue;
+                }
+                out.ids_to_add += 1;
+                if apply {
+                    let row = external_id::add(self.store.pool(), b.guid, &ns, &val).await?;
+                    if row.biosample_guid == b.guid {
+                        out.ids_added += 1;
+                    } else {
+                        // (namespace,value) already belongs to another subject — a dup import; leave it.
+                        out.conflicts += 1;
+                    }
+                }
+            }
+        }
+        Ok(out)
+    }
+
+    /// Fetch one public-catalog sample record from the AppView samples API (`/api/v1/samples/{alias}`,
+    /// public read) by its alias (= our `donor_identifier`). `Ok(None)` for a 404 (alias unknown to
+    /// the catalog — expected while server-side corrections are pending). The authoritative
+    /// `accession` it returns is the datum our local `sample_accession` lacks.
+    async fn fetch_catalog_sample(&self, base: &str, alias: &str) -> Result<Option<CatalogSample>, AppError> {
+        let url = format!("{}/api/v1/samples/{alias}", base.trim_end_matches('/'));
+        let resp = self
+            .auth
+            .http
+            .get(&url)
+            .send()
+            .await
+            .map_err(|e| AppError::Import(format!("catalog API {alias}: {e}")))?;
+        if resp.status() == reqwest::StatusCode::NOT_FOUND {
+            return Ok(None);
+        }
+        if !resp.status().is_success() {
+            return Err(AppError::Import(format!("catalog API {alias}: HTTP {}", resp.status())));
+        }
+        let s = resp
+            .json::<CatalogSample>()
+            .await
+            .map_err(|e| AppError::Import(format!("catalog API {alias}: {e}")))?;
+        Ok(Some(s))
+    }
+
+    /// Resolve each subject against the AppView samples API and attach, **in one pass**, the full set
+    /// of public-catalog ids: the catalog *name* id (IGSR/HGDP, derived from the donor id) **and** the
+    /// authoritative INSDC *accession* the API returns (`SAMN…` → BIOSAMPLE, `ERS…` → ENA, `SRS…` →
+    /// SRA) — plus correcting the local `sample_accession` placeholder. A superset of
+    /// [`backfill_catalog_ids`](Self::backfill_catalog_ids) (the offline name-only path); use that one
+    /// when the API is unavailable. By default only subjects whose `donor_identifier` looks like a
+    /// catalog alias (IGSR/HGDP) are queried (`all` overrides), to avoid hammering the API with
+    /// friendly-name 404s. `apply == false` is a dry run. `limit` caps how many are queried.
+    pub async fn backfill_accessions(
+        &self,
+        project_id: Option<i64>,
+        apply: bool,
+        all: bool,
+        limit: Option<usize>,
+    ) -> Result<AccessionBackfill, AppError> {
+        let base = decodingus_appview_url();
+        let mut out = AccessionBackfill {
+            applied: apply,
+            ..AccessionBackfill::default()
+        };
+        for b in self.list_all_biosamples().await? {
+            if let Some(pid) = project_id {
+                if b.project_id != Some(pid) {
+                    continue;
+                }
+            }
+            // Skip samples whose name isn't a recognizable catalog alias unless `--all`.
+            if !all
+                && navigator_domain::identity::catalog_ids_from_provenance(&b.donor_identifier, None).is_empty()
+            {
+                continue;
+            }
+            if limit.is_some_and(|n| out.examined >= n) {
+                break;
+            }
+            out.examined += 1;
+            let sample = match self.fetch_catalog_sample(&base, &b.donor_identifier).await {
+                Ok(Some(s)) => s,
+                Ok(None) => {
+                    out.not_found += 1;
+                    continue;
+                }
+                Err(_) => {
+                    out.errors += 1;
+                    continue;
+                }
+            };
+            out.resolved += 1;
+            let fetched_acc = sample.accession.as_deref().map(str::trim).filter(|a| !a.is_empty());
+            // One pass: the catalog *name* id (from the donor id) + the authoritative INSDC *accession*
+            // (from the API, when it's a real one) — the union of both sources via the shared helper.
+            let ids = navigator_domain::identity::catalog_ids_from_provenance(&b.donor_identifier, fetched_acc);
+            if ids.is_empty() {
+                continue;
+            }
+            // Surface the accession resolution (the API's contribution) in the examples.
+            if let Some(acc) = fetched_acc {
+                if navigator_domain::identity::insdc_sample_namespace(acc).is_some() && out.examples.len() < 10 {
+                    out.examples.push(format!("{} → {acc}", b.donor_identifier));
+                }
+            }
+            let existing: std::collections::HashSet<(String, String)> = external_id::list_for(self.store.pool(), b.guid)
+                .await?
+                .into_iter()
+                .map(|e| (e.source, e.external_id))
+                .collect();
+            for (ns, val) in &ids {
+                if existing.contains(&(ns.clone(), val.clone())) {
+                    continue;
+                }
+                out.ids_to_add += 1;
+                if apply {
+                    let row = external_id::add(self.store.pool(), b.guid, ns, val).await?;
+                    if row.biosample_guid == b.guid {
+                        out.ids_added += 1;
+                    } else {
+                        out.conflicts += 1;
+                    }
+                }
+            }
+            // Correct the local placeholder accession to the authoritative INSDC one.
+            if apply {
+                if let Some(acc) = fetched_acc {
+                    if navigator_domain::identity::insdc_sample_namespace(acc).is_some()
+                        && b.sample_accession.as_deref() != Some(acc)
+                    {
+                        biosample::set_accession(self.store.pool(), b.guid, acc).await?;
+                        out.accession_updated += 1;
+                    }
+                }
+            }
+        }
+        Ok(out)
+    }
+
+    /// Re-publish a subject's biosample anchor after its identifier set changed, so the AppView's
+    /// mirror (which full-replaces `external_ids`) honors the add/remove. Deterministic rkey → the
+    /// re-publish overwrites in place. **Only for a subject already federated** and while signed in —
+    /// signed out, or a never-published subject, is a no-op (we don't newly federate a donor just
+    /// because a local id was attached).
+    async fn republish_biosample_ids(&self, guid: SampleGuid) -> Result<(), AppError> {
+        let Some(did) = self.current_account() else {
+            return Ok(());
+        };
+        if sync_state::get(self.store.pool(), &did, &format!("biosample:{guid}"))
+            .await?
+            .is_none()
+        {
+            return Ok(());
+        }
+        self.publish_biosample(guid).await
     }
 
     /// Insert or update a Subject's MDKA for one lineage from the subject editor (one row per

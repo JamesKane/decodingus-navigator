@@ -85,13 +85,24 @@ impl App {
         let y = self.consensus_haplogroup(biosample_guid, DnaType::Y).await?;
         let mt = self.consensus_haplogroup(biosample_guid, DnaType::Mt).await?;
         let runs = self.list_sequence_runs(biosample_guid).await?;
+        // External identifiers (vendor kits + public catalog ids), a pure field rename onto the wire
+        // shape. Published plaintext — the AppView keeps vendor ids off every public surface via its
+        // `is_public` namespace policy; catalog ids (PGP/IGSR/ENA…) are already public. This is the
+        // deterministic dedup anchor the AppView keys a re-published donor on.
+        let external_ids = self
+            .external_ids(biosample_guid)
+            .await?
+            .into_iter()
+            .map(|e| du_domain::fed::ExternalId {
+                namespace: e.source,
+                value: e.external_id,
+            })
+            .collect();
         // Sequence-run refs are the runs' deterministic at:// URIs (not local ids), so the AppView
         // can follow them to the published sequence-run records.
-        let record = BiosampleRecord::new(bio.sex, y, mt, bio.center_name, Utc::now().to_rfc3339()).with_refs(
-            runs.iter().map(|r| seqrun_at_uri(did, r.id)).collect(),
-            None,
-            None,
-        );
+        let record = BiosampleRecord::new(bio.sex, y, mt, bio.center_name, Utc::now().to_rfc3339())
+            .with_refs(runs.iter().map(|r| seqrun_at_uri(did, r.id)).collect(), None, None)
+            .with_external_ids(external_ids);
         Ok(serde_json::to_value(&record)?)
     }
 

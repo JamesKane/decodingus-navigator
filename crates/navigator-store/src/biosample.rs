@@ -111,6 +111,19 @@ pub async fn update(
     Ok(affected > 0)
 }
 
+/// Set only the biosample's `sample_accession` (e.g. correcting a friendly-name placeholder to the
+/// authoritative catalog accession fetched from the AppView). Leaves every other field untouched.
+/// Returns whether a row was affected.
+pub async fn set_accession(pool: &SqlitePool, guid: SampleGuid, accession: &str) -> Result<bool, StoreError> {
+    let affected = sqlx::query("UPDATE biosample SET sample_accession = ? WHERE guid = ?")
+        .bind(accession)
+        .bind(guid.0.to_string())
+        .execute(pool)
+        .await?
+        .rows_affected();
+    Ok(affected > 0)
+}
+
 /// Assign (or clear, with `None`) the biosample's project. Returns whether a row was affected.
 pub async fn set_project(pool: &SqlitePool, guid: SampleGuid, project_id: Option<i64>) -> Result<bool, StoreError> {
     let affected = sqlx::query("UPDATE biosample SET project_id = ? WHERE guid = ?")

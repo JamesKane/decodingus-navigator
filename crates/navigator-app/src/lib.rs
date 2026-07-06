@@ -2207,6 +2207,49 @@ pub struct ReadProfileBackfill {
     pub read_type_unresolved: usize,
 }
 
+/// Outcome of [`App::backfill_catalog_ids`] — the CLI `backfill-catalog-ids` summary.
+#[derive(Debug, Clone, Default, serde::Serialize)]
+pub struct CatalogBackfill {
+    /// Whether ids were actually written (`false` = dry run).
+    pub applied: bool,
+    /// Subjects scanned.
+    pub subjects_examined: usize,
+    /// Subjects with at least one derivable public-catalog id.
+    pub subjects_matched: usize,
+    /// Derivable ids not already present (the dry-run "would add" count).
+    pub ids_to_add: usize,
+    /// Ids actually added (0 on a dry run).
+    pub ids_added: usize,
+    /// Ids whose `(namespace, value)` already belongs to a different subject (dup import) — skipped.
+    pub conflicts: usize,
+}
+
+/// Outcome of [`App::backfill_accessions`] — the CLI `backfill-accessions` summary.
+#[derive(Debug, Clone, Default, serde::Serialize)]
+pub struct AccessionBackfill {
+    /// Whether accessions were actually written (`false` = dry run).
+    pub applied: bool,
+    /// Subjects queried against the samples API.
+    pub examined: usize,
+    /// Subjects the API returned a record for.
+    pub resolved: usize,
+    /// Subjects the API had no record for (404 — alias not yet in the catalog).
+    pub not_found: usize,
+    /// Network/parse failures (counted, not fatal).
+    pub errors: usize,
+    /// External ids available to attach — the catalog **name** id (IGSR/HGDP) plus the authoritative
+    /// INSDC **accession** — not already present (the dry-run "would add" count).
+    pub ids_to_add: usize,
+    /// External ids actually attached (0 on a dry run).
+    pub ids_added: usize,
+    /// Local `sample_accession` placeholders corrected to the authoritative value.
+    pub accession_updated: usize,
+    /// Ids whose `(namespace, value)` already belongs to another subject — skipped.
+    pub conflicts: usize,
+    /// A few `alias → accession` examples for the report.
+    pub examples: Vec<String>,
+}
+
 /// Outcome of [`App::prune_orphan_alignments`] — the CLI `prune-orphans` summary.
 #[derive(Debug, Clone, Default, serde::Serialize)]
 pub struct PruneReport {
@@ -2912,6 +2955,35 @@ mod publish_tests {
         assert_eq!(
             value.get("biosampleRef").and_then(|v| v.as_str()),
             Some(biosample_at_uri("did:plc:test", reloaded.biosample_guid).as_str())
+        );
+    }
+
+    /// The published biosample record carries the subject's external identifiers as
+    /// `externalIds[{namespace,value}]` — the deterministic dedup anchor the AppView keys on. Both
+    /// vendor kits and public catalog ids ride plaintext (the AppView gates visibility by namespace).
+    #[tokio::test]
+    async fn biosample_record_publishes_external_ids() {
+        let app = App::new(Store::open_in_memory().await.unwrap());
+        let b = app.add_biosample(None, "huF98AFD", None, None).await.unwrap();
+        app.add_external_id(b.guid, "YSEQ", "229").await.unwrap();
+        app.add_external_id(b.guid, "PGP", "huF98AFD").await.unwrap();
+
+        let value = app.biosample_record("did:plc:test", b.guid).await.unwrap();
+        let ids = value.get("externalIds").and_then(|v| v.as_array()).expect("externalIds present");
+        let mut pairs: Vec<(String, String)> = ids
+            .iter()
+            .map(|e| {
+                (
+                    e.get("namespace").and_then(|v| v.as_str()).unwrap_or_default().to_string(),
+                    e.get("value").and_then(|v| v.as_str()).unwrap_or_default().to_string(),
+                )
+            })
+            .collect();
+        pairs.sort();
+        // Pure field rename source→namespace, external_id→value; both a vendor kit and a public id.
+        assert_eq!(
+            pairs,
+            vec![("PGP".into(), "huF98AFD".into()), ("YSEQ".into(), "229".into())]
         );
     }
 }
