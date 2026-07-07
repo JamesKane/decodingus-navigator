@@ -115,17 +115,19 @@ raw de-novo chrY calls
 
 ### 4.2 Bundled assets (env-overridable; live under `<cache base>/masks/`, CHM13-only)
 
-| Asset (env override) | Source | Purpose |
-|-------|--------|---------|
-| `chrY_callable_mask.chm13v2.bed` (14.96 Mbp) — `NAVIGATOR_Y_CALLABLE_MASK` | ytree `results/chrY.callable_mask.chm13v2.bed` | L2 cohort callable mask |
-| `chrY_cohort_shared_sites.chm13v2.bed` (~323k positions) — `NAVIGATOR_Y_COHORT_SHARED` | joint-VCF positions with `AC≥2` ∪ ytree `branch_recurrent_exclude` homoplasy hotspots | L3 cohort-shared exclude (the distilled carrier filter) |
+Committed (gzipped) under repo `assets/masks/`, seeded to `<cache base>/masks/` on first run:
 
-Both are loaded best-effort (absent ⇒ that filter is skipped) and gated to **CHM13v2 (hs1)**
-alignments — they are in hs1 coordinates, matching the existing `YStructuralRegions` CHM13 gate.
-GRCh38/GRCh37 samples fall back to DecodingUs-tree classification + self-callable + region-class only.
-The `AC≥2` list is regenerated from the ytree joint VCF with
-`bcftools query -f '%CHROM\t%POS\t%INFO/AC\n' chrY.joint.vcf.gz` (keep max-AC ≥ 2). **Follow-up:** ship
-via the offline packaging bundle + a sha256 `AssetManifest` entry (same as ancestry/IBD assets).
+| Asset (env override) | Build | Source | Purpose |
+|-------|-------|--------|---------|
+| `chrY_callable_mask.{chm13v2,grch38}.bed.gz` — `NAVIGATOR_Y_CALLABLE_MASK` | CHM13 native / GRCh38 lifted | ytree `results/chrY.callable_mask.chm13v2.bed` | L2 cohort callable mask |
+| `chrY_cohort_shared_sites.{chm13v2,grch38}.bed.gz` — `NAVIGATOR_Y_COHORT_SHARED` | CHM13 native / GRCh38 lifted | joint-VCF `AC≥2` ∪ ytree `branch_recurrent_exclude` homoplasy | L3 cohort-shared exclude (the distilled carrier filter) |
+
+Loaded best-effort per build via `y_mask_build_token` (CHM13 → `chm13v2`, GRCh38 → `grch38`, else none);
+absent ⇒ that filter is skipped. **Regeneration:** the `AC≥2` list comes from the ytree joint VCF
+(`bcftools query -f '%CHROM\t%POS\t%INFO/AC\n' chrY.joint.vcf.gz`, keep max-AC ≥ 2 ∪ homoplasy). The
+**GRCh38** files are the two CHM13 BEDs lifted with CrossMap and the UCSC `hs1ToHg38.over.chain`
+(`CrossMap bed <chain> in.bed out.bed`, then chrY-only + sort/merge). See `assets/masks/README.md`.
+**Follow-up:** sha256 `AssetManifest` entries for the masks (they currently seed unverified).
 
 ### 4.3 Code changes — IMPLEMENTED
 
@@ -143,9 +145,15 @@ via the offline packaging bundle + a sha256 `AssetManifest` entry (same as ances
 5. **`callable_chr_intervals` hardened** to resolve the reference via the gateway (CRAMs with no stored
    `reference_path` previously errored on the self-masked path).
 6. **`private-y` CLI** diagnostic (`navigator private-y --alignment N`) reports DISPLAY vs PUBLISH counts.
+7. **QC banner** (`private_y_qc_banner`, threshold `PRIVATE_Y_QC_WARN = 50`) in the report section +
+   `PrivateBucket::qc_banner()` + CLI. **Publishing is skipped entirely when it fires** (an
+   artifact-laden sample federates zero candidates; DISPLAY still shows them under the banner).
+8. **Masks bundled as committed repo assets** (`assets/masks/`, gzipped; `RegionMask::from_bed` gunzips
+   transparently), seeded on first run (`seed_bundled_masks`) + staged for packaging.
+9. **GRCh38 lifted masks** (CrossMap `hs1ToHg38`), selected per build by `y_mask_build_token`.
 
-**Still open:** QC banner (warn when novel-in-unique ≫ ~50); AssetManifest entries + packaging-bundle
-staging for the two masks; GRCh38 lifted callable mask.
+**Still open:** sha256 `AssetManifest` entries for the masks (they currently seed unverified);
+GRCh37 masks (bare-`Y` naming + the de-novo path is chrY-only).
 
 ### 4.4 AppView-side (F4/F7 — out of Navigator's scope, stated for completeness)
 
@@ -171,13 +179,24 @@ exclude → **4**. This tracks the ytree "dozens, not thousands" target and sing
 - Both same-person alignments stay at R-FGC29071; the HiFi DISPLAY is higher only because HiFi reads
   reach further into ampliconic/structural zones — those are flagged `structural` and excluded from
   PUBLISH, so publishable stays at 2.
-- Follow-up: cross-check the 4/2 surviving positions against ytree node `WGS229`'s 12 defining
-  variants; confirm a GRCh38 alignment degrades gracefully (DecodingUs GRCh38 coords, no CHM13 masks).
+
+**GRCh38 (aln 5, same person, WGS229.b38.bam) — the lifted masks help but GRCh38 stays noisier:**
+without masks PUBLISH **190** / DISPLAY 441; with the lifted GRCh38 masks PUBLISH **148** / DISPLAY 337.
+It does *not* reach CHM13's cleanliness — GRCh38's chrY reference is intrinsically noisier, and the
+DecodingUs tree's de-novo cohort nodes carry hs1 coords, so shared-R leaks as novel (off-path-known is
+only ~25 vs CHM13's 553). Two things make this safe rather than a regression: (1) the **QC banner fires**
+(318 novel ≥ 50), and (2) **publishing is skipped entirely when the banner fires** — a GRCh38 sample
+flagged as artifact-laden federates *zero* candidates, though the calls still appear in the in-app
+DISPLAY under the banner. Practical guidance: **use a CHM13 alignment for private-Y**; GRCh38 is
+filtered best-effort and honestly flagged.
 
 ## 6. Limitations
 
 - Single-sample Navigator **cannot** do the cohort carrier filter (F4) or the ≥3-carrier rule (F7) — it
   ships the cohort's precomputed mask/blocklist instead and defers corroboration to AppView.
-- Bundled masks are **CHM13v2-only** today; GRCh38/GRCh37 need a lifted callable mask (future).
+- **GRCh38 private-Y is intrinsically noisier than CHM13** and the lifted masks only partly close the gap
+  (its chrY reference is worse, and the tree's de-novo cohort nodes are hs1-native so shared-R leaks as
+  novel). The QC banner + publish-skip make this safe, but CHM13 is the recommended reference.
+- Masks ship for **CHM13v2 + GRCh38**; GRCh37 has none (bare-`Y` naming and the de-novo path is chrY-only).
 - The mask reflects the ytree cohort as of its build; refreshing it means re-running stage 3 and
   bumping the asset manifest (same cadence as the tree/ancestry assets).

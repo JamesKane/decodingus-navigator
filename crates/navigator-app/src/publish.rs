@@ -164,21 +164,31 @@ impl App {
     pub(crate) async fn variants_record(&self, alignment_id: i64, contig: &str) -> Result<serde_json::Value, AppError> {
         let variants = if navigator_analysis::contig::is_chr_y(contig) {
             let bucket = self.private_y_variants_self_masked(alignment_id).await?;
-            let gate = self.publish_gate_for_alignment(alignment_id).await?;
-            bucket
-                .publishable(gate)
-                .into_iter()
-                .map(|v| {
-                    VariantCallEntry::new(
-                        v.position,
-                        v.reference,
-                        v.alternate,
-                        v.depth,
-                        v.alt_depth.min(v.depth),
-                        v.allele_fraction,
-                    )
-                })
-                .collect()
+            // QC gate: if the filtered novel count is implausibly high (contamination / low coverage /
+            // reference-build mismatch — e.g. a GRCh38 alignment, whose chrY reference is far noisier
+            // and whose shared-lineage variants the hs1-native tree can't fully resolve), the whole
+            // set is suspect. Publish nothing rather than flood curators with candidates from a sample
+            // we've already flagged; the variants still show in the in-app DISPLAY under the banner.
+            if let Some(warn) = bucket.qc_banner() {
+                eprintln!("private-variants publish skipped for alignment {alignment_id}: {warn}");
+                Vec::new()
+            } else {
+                let gate = self.publish_gate_for_alignment(alignment_id).await?;
+                bucket
+                    .publishable(gate)
+                    .into_iter()
+                    .map(|v| {
+                        VariantCallEntry::new(
+                            v.position,
+                            v.reference,
+                            v.alternate,
+                            v.depth,
+                            v.alt_depth.min(v.depth),
+                            v.allele_fraction,
+                        )
+                    })
+                    .collect()
+            }
         } else {
             let calls = self.cached_denovo(alignment_id, contig).await?.ok_or_else(|| {
                 AppError::Store(StoreError::NotFound(format!(

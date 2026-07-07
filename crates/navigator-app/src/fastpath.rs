@@ -2,15 +2,16 @@
 //! 2026-06 simplification round; `use super::*` reaches the crate-root types + free helpers.
 use super::*;
 
-/// Load a bundled chrY position mask/blocklist BED (best-effort). `env_var` overrides the path;
-/// otherwise the seeded `<cache base>/masks/<file>`, trying the gzipped `<file>.gz` first (how the
-/// bundled assets ship) then a plain `<file>`. Returns `None` if absent, unparseable, or empty — so a
-/// missing cohort asset simply skips that filter rather than blocking the analysis.
-fn load_y_position_bed(env_var: &str, file: &str) -> Option<navigator_analysis::mask::RegionMask> {
+/// Load a bundled chrY position mask/blocklist BED for a build (best-effort). `env_var` overrides the
+/// path; otherwise the seeded `<cache base>/masks/<stem>.<build_token>.bed`, trying the gzipped
+/// `.bed.gz` first (how the bundled assets ship) then a plain `.bed`. Returns `None` if absent,
+/// unparseable, or empty — so a missing cohort asset simply skips that filter rather than blocking.
+fn load_y_position_bed(env_var: &str, stem: &str, build_token: &str) -> Option<navigator_analysis::mask::RegionMask> {
     let candidates: Vec<PathBuf> = if let Ok(p) = std::env::var(env_var) {
         vec![PathBuf::from(p)]
     } else {
         let dir = refgenome_cache::base_dir().join("masks");
+        let file = format!("{stem}.{build_token}.bed");
         vec![dir.join(format!("{file}.gz")), dir.join(file)]
     };
     candidates.into_iter().find_map(|path| {
@@ -18,6 +19,17 @@ fn load_y_position_bed(env_var: &str, file: &str) -> Option<navigator_analysis::
             .ok()
             .filter(|m| !m.is_empty())
     })
+}
+
+/// The bundled-mask filename token for an alignment's reference build, or `None` when no chrY masks
+/// ship for it. CHM13 masks are native (hs1); the GRCh38 masks are lifted from them (CrossMap
+/// hs1→hg38). GRCh37 has no masks yet (bare-`Y` contig naming + no lifted set).
+fn y_mask_build_token(build: &str) -> Option<&'static str> {
+    match canonical_build(build) {
+        Some(ReferenceBuild::Chm13v2 | ReferenceBuild::Chm13v2MaskedRcrs) => Some("chm13v2"),
+        Some(ReferenceBuild::Grch38) => Some("grch38"),
+        _ => None,
+    }
 }
 
 impl App {
@@ -502,29 +514,27 @@ impl App {
         let path = navigator_analysis::haplo::path_positions(&tree, terminal.id);
         let known = navigator_analysis::haplo::tree_positions(&tree);
 
-        // The structural BEDs + cohort masks are in CHM13 chrY coordinates, so they only apply to a
-        // CHM13 alignment (the de-novo positions are in the alignment's build). Best-effort.
+        // The structural BEDs are in CHM13 chrY coordinates, so they only annotate a CHM13 alignment.
+        // The cohort masks apply per build: native for CHM13, CrossMap-lifted (hs1→hg38) for GRCh38.
         let aln = self.alignment_or_err(alignment_id).await?;
         let is_chm13 = matches!(
             canonical_build(&aln.reference_build),
             Some(ReferenceBuild::Chm13v2 | ReferenceBuild::Chm13v2MaskedRcrs)
         );
         let regions = if is_chm13 { self.y_structural_regions().await } else { None };
-        // L3: the cohort **callable mask** (Poznik-style, CALLABLE in ≥90% of a ~3k-male cohort) —
-        // only ~25% of non-PAR chrY is reliably callable cohort-wide. L4: a **cohort-shared-sites**
+        // L2: the cohort **callable mask** (Poznik-style, CALLABLE in ≥90% of a ~3k-male cohort) —
+        // only ~25% of non-PAR chrY is reliably callable cohort-wide. L3: a **cohort-shared-sites**
         // blocklist — every position that varies with ≥2 carriers across the cohort (plus homoplasy
         // hotspots). A real shared lineage variant belongs in the DecodingUs tree (and so classifies
         // as off-path-known above); one that is cohort-shared yet *absent* from the tree is a suspect
         // recurrent artifact, not a private SNP. A truly private variant has a single cohort carrier,
         // so it survives this filter. This is the single-sample stand-in for the de-novo pipeline's
-        // cohort carrier filter. Both bundled, CHM13-only; absent ⇒ that filter is skipped.
+        // cohort carrier filter. Bundled per build (CHM13 native, GRCh38 lifted); absent ⇒ skipped.
+        let mask_token = y_mask_build_token(&aln.reference_build);
         let cohort_mask =
-            if is_chm13 { load_y_position_bed("NAVIGATOR_Y_CALLABLE_MASK", "chrY_callable_mask.chm13v2.bed") } else { None };
-        let cohort_shared = if is_chm13 {
-            load_y_position_bed("NAVIGATOR_Y_COHORT_SHARED", "chrY_cohort_shared_sites.chm13v2.bed")
-        } else {
-            None
-        };
+            mask_token.and_then(|t| load_y_position_bed("NAVIGATOR_Y_CALLABLE_MASK", "chrY_callable_mask", t));
+        let cohort_shared =
+            mask_token.and_then(|t| load_y_position_bed("NAVIGATOR_Y_COHORT_SHARED", "chrY_cohort_shared_sites", t));
 
         // De-novo chrY (cached as an artifact), then keep only off-backbone, callable, non-shared calls.
         let denovo = self.run_denovo_for_alignment(alignment_id, "chrY".to_string()).await?;
