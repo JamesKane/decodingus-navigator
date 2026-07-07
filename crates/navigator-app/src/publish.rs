@@ -151,26 +151,54 @@ impl App {
             .map(|c| c.haplogroup))
     }
 
-    /// Build the private-variants record JSON for an alignment's cached de-novo calls.
+    /// Build the private-variants record JSON to publish for an alignment/contig.
+    ///
+    /// **chrY** publishes only the *filtered, publishable* private-Y set — the whole-chrY de-novo
+    /// calls after backbone subtraction, callable masking, structural-region filtering, and the
+    /// strict novel-marker [`PublishGate`] — tagged as unverified singleton candidates. It never
+    /// publishes the raw de-novo flood (CHM13's Y is haplogroup J; an R sample's J-vs-R divergence
+    /// plus paralog mismaps would otherwise drown AppView curators in non-viable SNPs).
+    ///
+    /// Other contigs (chrM) publish their raw de-novo calls — a small, well-behaved rCRS-relative
+    /// set that needs no tree-relative filtering.
     pub(crate) async fn variants_record(&self, alignment_id: i64, contig: &str) -> Result<serde_json::Value, AppError> {
-        let calls = self.cached_denovo(alignment_id, contig).await?.ok_or_else(|| {
-            AppError::Store(StoreError::NotFound(format!(
-                "de-novo calls for alignment {alignment_id} {contig}"
-            )))
-        })?;
-        let variants = calls
-            .iter()
-            .map(|c| {
-                VariantCallEntry::new(
-                    c.position,
-                    c.reference_allele,
-                    c.alternate_allele,
-                    c.depth,
-                    c.alt_depth,
-                    c.allele_fraction,
-                )
-            })
-            .collect();
+        let variants = if navigator_analysis::contig::is_chr_y(contig) {
+            let bucket = self.private_y_variants_self_masked(alignment_id).await?;
+            let gate = self.publish_gate_for_alignment(alignment_id).await?;
+            bucket
+                .publishable(gate)
+                .into_iter()
+                .map(|v| {
+                    VariantCallEntry::new(
+                        v.position,
+                        v.reference,
+                        v.alternate,
+                        v.depth,
+                        v.alt_depth.min(v.depth),
+                        v.allele_fraction,
+                    )
+                })
+                .collect()
+        } else {
+            let calls = self.cached_denovo(alignment_id, contig).await?.ok_or_else(|| {
+                AppError::Store(StoreError::NotFound(format!(
+                    "de-novo calls for alignment {alignment_id} {contig}"
+                )))
+            })?;
+            calls
+                .iter()
+                .map(|c| {
+                    VariantCallEntry::new(
+                        c.position,
+                        c.reference_allele,
+                        c.alternate_allele,
+                        c.depth,
+                        c.alt_depth,
+                        c.allele_fraction,
+                    )
+                })
+                .collect()
+        };
         let record = PrivateVariantsRecord::new(contig, caller::DENOVO_VERSION, Utc::now().to_rfc3339(), variants);
         Ok(serde_json::to_value(&record)?)
     }

@@ -2,6 +2,18 @@
 //! 2026-06 simplification round; `use super::*` reaches the crate-root types + free helpers.
 use super::*;
 
+/// Load a bundled chrY position mask/blocklist BED (best-effort). `env_var` overrides the path;
+/// otherwise `<cache base>/masks/<file>`. Returns `None` if the file is absent, unparseable, or
+/// empty — so a missing cohort asset simply skips that filter rather than blocking the analysis.
+fn load_y_position_bed(env_var: &str, file: &str) -> Option<navigator_analysis::mask::RegionMask> {
+    let path = std::env::var(env_var)
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| refgenome_cache::base_dir().join("masks").join(file));
+    navigator_analysis::mask::RegionMask::from_bed(&path, "chrY")
+        .ok()
+        .filter(|m| !m.is_empty())
+}
+
 impl App {
     // ---- fast path: place haplogroups from precomputed pipeline GVCFs ---------
 
@@ -368,9 +380,11 @@ impl App {
     /// callability at lower depth, and the CALLABLE-run gate scales with molecule length
     /// (`f`·fragment), so long molecules clear it over far more of chrY. Requires the BAM.
     pub async fn callable_chr_intervals(&self, alignment_id: i64, contig: &str) -> Result<Vec<(i64, i64)>, AppError> {
-        let aln = self.alignment_or_err(alignment_id).await?;
-        let bam = PathBuf::from(aln.bam_path.ok_or(AppError::MissingPaths(alignment_id))?);
-        let reference = aln.reference_path.map(PathBuf::from);
+        // Resolve the reference via the gateway when the alignment has no stored path — a CRAM can't
+        // be decoded without one, and most imported alignments leave `reference_path` null (the build
+        // alone is recorded). Same resolution the de-novo caller uses.
+        let (bam, reference) = self.alignment_bam_reference(alignment_id).await?;
+        let reference = Some(reference);
         let contig = contig.to_string();
         tokio::task::spawn_blocking(move || {
             let (read_len, frag_len) = coverage::estimate_molecule_lengths(&bam, reference.as_deref())?;
@@ -407,14 +421,16 @@ impl App {
         let intervals = self.callable_chr_intervals(alignment_id, "chrY").await?;
         let mask = navigator_analysis::mask::RegionMask::from_intervals(intervals);
         let bucket = self.private_y_core(alignment_id, Some(mask)).await?;
-        // Persist the self-masked bucket so it reloads instead of recomputing next session.
-        self.save_analysis(alignment_id, "private_y", "1", &bucket).await?;
+        // Persist the self-masked bucket so it reloads instead of recomputing next session. Version
+        // "2": adds `alt_depth` + the cohort callable-mask / recurrent-exclude filters, so v1 blobs
+        // (unfiltered, no alt_depth) must recompute rather than reload.
+        self.save_analysis(alignment_id, "private_y", "2", &bucket).await?;
         Ok(bucket)
     }
 
     /// Cached self-masked private-Y bucket for an alignment, if previously computed.
     pub async fn cached_private_y(&self, alignment_id: i64) -> Result<Option<PrivateBucket>, AppError> {
-        self.load_analysis(alignment_id, "private_y", "1").await
+        self.load_analysis(alignment_id, "private_y", "2").await
     }
 
     /// Shared core: assign Y, de-novo chrY, subtract the backbone, optionally mask, classify.
@@ -459,12 +475,20 @@ impl App {
         alignment_id: i64,
         mask: Option<navigator_analysis::mask::RegionMask>,
     ) -> Result<PrivateBucket, AppError> {
-        let tree_json = self.fetch_ftdna_y_tree().await?;
-        let tree = navigator_analysis::haplo::parse_ftdna_json(&tree_json).map_err(AppError::Import)?;
-
-        let assignment = self
-            .assign_haplogroup_from_alignment(alignment_id, "chrY", &tree_json)
-            .await?;
+        // Classify novels against the **DecodingUs** tree — the app's placement authority, which
+        // folds in the cohort-derived branches (from the de-novo tree pipeline). A shared lineage
+        // variant is named there, so it reads as OffPathKnown, not a false "novel"; a variant absent
+        // from this tree yet shared across the cohort is genuinely suspect. FTDNA fallback keeps the
+        // report working when the AppView tree is unavailable or the build has no DecodingUs coords.
+        let (tree, tree_calls) = match self.y_decodingus_tree_calls(alignment_id).await {
+            Ok(tc) => tc,
+            Err(e) => {
+                eprintln!("DecodingUs Y tree unavailable ({e}); private-Y classifying against FTDNA");
+                let tree_json = self.fetch_ftdna_y_tree().await?;
+                self.tree_base_calls(alignment_id, "chrY", &tree_json).await?
+            }
+        };
+        let assignment = assemble_assignment(&tree, &tree_calls);
         let terminal = assignment
             .ranked
             .first()
@@ -472,25 +496,44 @@ impl App {
         let path = navigator_analysis::haplo::path_positions(&tree, terminal.id);
         let known = navigator_analysis::haplo::tree_positions(&tree);
 
-        // The structural BEDs are in CHM13 chrY coordinates, so they only apply to a CHM13
-        // alignment (the de-novo positions are in the alignment's build). Best-effort.
+        // The structural BEDs + cohort masks are in CHM13 chrY coordinates, so they only apply to a
+        // CHM13 alignment (the de-novo positions are in the alignment's build). Best-effort.
         let aln = self.alignment_or_err(alignment_id).await?;
-        let regions = match canonical_build(&aln.reference_build) {
-            Some(ReferenceBuild::Chm13v2 | ReferenceBuild::Chm13v2MaskedRcrs) => self.y_structural_regions().await,
-            _ => None,
+        let is_chm13 = matches!(
+            canonical_build(&aln.reference_build),
+            Some(ReferenceBuild::Chm13v2 | ReferenceBuild::Chm13v2MaskedRcrs)
+        );
+        let regions = if is_chm13 { self.y_structural_regions().await } else { None };
+        // L3: the cohort **callable mask** (Poznik-style, CALLABLE in ≥90% of a ~3k-male cohort) —
+        // only ~25% of non-PAR chrY is reliably callable cohort-wide. L4: a **cohort-shared-sites**
+        // blocklist — every position that varies with ≥2 carriers across the cohort (plus homoplasy
+        // hotspots). A real shared lineage variant belongs in the DecodingUs tree (and so classifies
+        // as off-path-known above); one that is cohort-shared yet *absent* from the tree is a suspect
+        // recurrent artifact, not a private SNP. A truly private variant has a single cohort carrier,
+        // so it survives this filter. This is the single-sample stand-in for the de-novo pipeline's
+        // cohort carrier filter. Both bundled, CHM13-only; absent ⇒ that filter is skipped.
+        let cohort_mask =
+            if is_chm13 { load_y_position_bed("NAVIGATOR_Y_CALLABLE_MASK", "chrY_callable_mask.chm13v2.bed") } else { None };
+        let cohort_shared = if is_chm13 {
+            load_y_position_bed("NAVIGATOR_Y_COHORT_SHARED", "chrY_cohort_shared_sites.chm13v2.bed")
+        } else {
+            None
         };
 
-        // De-novo chrY (cached as an artifact), then keep only off-backbone, callable calls.
+        // De-novo chrY (cached as an artifact), then keep only off-backbone, callable, non-shared calls.
         let denovo = self.run_denovo_for_alignment(alignment_id, "chrY".to_string()).await?;
         let mut variants: Vec<PrivateVariant> = denovo
             .iter()
             .filter(|c| !path.contains(&c.position))
-            .filter(|c| mask.as_ref().map_or(true, |m| m.contains(c.position)))
+            .filter(|c| mask.as_ref().map_or(true, |m| m.contains(c.position))) // self-callable
+            .filter(|c| cohort_mask.as_ref().map_or(true, |m| m.contains(c.position))) // L3 cohort callable mask
+            .filter(|c| cohort_shared.as_ref().map_or(true, |m| !m.contains(c.position))) // L4 cohort-shared exclude
             .map(|c| PrivateVariant {
                 position: c.position,
                 reference: c.reference_allele,
                 alternate: c.alternate_allele,
                 depth: c.depth,
+                alt_depth: c.alt_depth,
                 allele_fraction: c.allele_fraction,
                 class: match known.get(&c.position) {
                     Some(name) => PrivateClass::OffPathKnown(name.clone()),

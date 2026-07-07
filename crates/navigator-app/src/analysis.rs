@@ -838,7 +838,7 @@ impl App {
     /// alignment's build via the gateway (cached, else downloaded). Errors only if no BAM is
     /// recorded. Use this in steps that *require* the reference, so the user never has to supply
     /// one (it follows from the header-detected build).
-    async fn alignment_bam_reference(&self, alignment_id: i64) -> Result<(PathBuf, PathBuf), AppError> {
+    pub(crate) async fn alignment_bam_reference(&self, alignment_id: i64) -> Result<(PathBuf, PathBuf), AppError> {
         let aln = self.alignment_or_err(alignment_id).await?;
         let bam = PathBuf::from(aln.bam_path.ok_or(AppError::MissingPaths(alignment_id))?);
         let reference = match aln.reference_path {
@@ -863,6 +863,20 @@ impl App {
         let params = tokio::task::spawn_blocking(move || adaptive_haploid_params(&probe, Some(&probe_ref))).await?; // HiFi -> lower min_depth
         self.run_denovo_caller(alignment_id, bam, reference, contig, params)
             .await
+    }
+
+    /// The [`PublishGate`] for an alignment, adapted to its mean read length (HiFi relaxes the
+    /// supporting-read floor — see [`PublishGate::for_read_len`]). Samples the BAM head; any error
+    /// falls back to the short-read default.
+    pub async fn publish_gate_for_alignment(&self, alignment_id: i64) -> Result<PublishGate, AppError> {
+        let (bam, reference) = self.alignment_bam_reference(alignment_id).await?;
+        let read_len = tokio::task::spawn_blocking(move || {
+            navigator_analysis::coverage::estimate_molecule_lengths(&bam, Some(&reference))
+                .map(|(rl, _)| rl)
+                .unwrap_or(0.0)
+        })
+        .await?;
+        Ok(PublishGate::for_read_len(read_len))
     }
 }
 

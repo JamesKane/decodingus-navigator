@@ -100,6 +100,11 @@ pub struct PrivateVariant {
     pub reference: char,
     pub alternate: char,
     pub depth: u32,
+    /// Reads supporting the derived (alternate) allele. `alt_depth / depth` ≈ `allele_fraction`;
+    /// carried explicitly so the publish gate can require a minimum supporting-read count. Old
+    /// cached buckets predate this field → `serde(default)` reads them as 0 (they recompute).
+    #[serde(default)]
+    pub alt_depth: u32,
     pub allele_fraction: f64,
     pub class: PrivateClass,
     /// Curated CHM13 chrY structural class at this position (palindrome / amplicon / AZF-DYZ),
@@ -139,6 +144,122 @@ impl PrivateBucket {
             .iter()
             .filter(|v| v.class == PrivateClass::Novel && v.region.is_none())
             .count()
+    }
+
+    /// The **publishable** subset: novel, unique-sequence calls that also clear the strict
+    /// novel-marker `gate` (near-homozygous allele fraction + a supporting-read floor). This is the
+    /// set we federate to the AppView as unverified singleton candidates — far stricter than the
+    /// caller's placement gates, so a paralog/contamination/low-evidence call never becomes a claim.
+    pub fn publishable(&self, gate: PublishGate) -> Vec<&PrivateVariant> {
+        self.variants.iter().filter(|v| gate.admits(v)).collect()
+    }
+
+    /// Count of [`publishable`](Self::publishable) variants under `gate`.
+    pub fn publishable_count(&self, gate: PublishGate) -> usize {
+        self.variants.iter().filter(|v| gate.admits(v)).count()
+    }
+}
+
+/// Thresholds gating which private variants are confident enough to **publish** to the AppView as
+/// novel-branch candidates. Haploid chrY should be effectively homozygous, so a mixed/paralog
+/// allele fraction (0.5–0.9, which the placement caller still accepts) is rejected here, as is a
+/// call with too few supporting reads to trust as a real singleton.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PublishGate {
+    /// Minimum derived-allele fraction (haploid → expect ≈1.0).
+    pub min_allele_fraction: f64,
+    /// Minimum reads supporting the derived allele.
+    pub min_alt_depth: u32,
+}
+
+impl Default for PublishGate {
+    /// Short-read WGS defaults: near-homozygous and ≥10 supporting reads.
+    fn default() -> Self {
+        Self {
+            min_allele_fraction: 0.9,
+            min_alt_depth: 10,
+        }
+    }
+}
+
+impl PublishGate {
+    /// Gate adapted to the sample's mean read length: HiFi/long reads make a confident haploid
+    /// observation from far fewer reads (same rationale as [`adaptive_min_depth`]), so the
+    /// supporting-read floor drops to 3. The allele-fraction requirement is unchanged.
+    pub fn for_read_len(read_len: f64) -> Self {
+        let mut g = Self::default();
+        if read_len > 1000.0 {
+            g.min_alt_depth = 3;
+        }
+        g
+    }
+
+    /// Whether a variant clears the gate: it must be an unnamed novel in unique sequence, with a
+    /// near-homozygous derived fraction and enough supporting reads.
+    pub fn admits(&self, v: &PrivateVariant) -> bool {
+        v.class == PrivateClass::Novel
+            && v.region.is_none()
+            && v.allele_fraction >= self.min_allele_fraction
+            && v.alt_depth >= self.min_alt_depth
+    }
+}
+
+#[cfg(test)]
+mod publish_gate_tests {
+    use super::*;
+    use navigator_analysis::mask::YRegionClass;
+
+    fn var(class: PrivateClass, region: Option<YRegionClass>, alt_depth: u32, af: f64) -> PrivateVariant {
+        PrivateVariant {
+            position: 1_000,
+            reference: 'A',
+            alternate: 'G',
+            depth: alt_depth + 1,
+            alt_depth,
+            allele_fraction: af,
+            class,
+            region,
+        }
+    }
+
+    #[test]
+    fn publish_gate_admits_only_confident_unique_novels() {
+        let g = PublishGate::default(); // af >= 0.9, alt_depth >= 10
+        // The one that should publish: novel, unique, homozygous, deep.
+        assert!(g.admits(&var(PrivateClass::Novel, None, 30, 1.0)));
+        // Off-path-known is informational, never a novel-branch claim.
+        assert!(!g.admits(&var(PrivateClass::OffPathKnown("M269".into()), None, 30, 1.0)));
+        // Paralog-prone structural region → rejected even when deep/homozygous.
+        assert!(!g.admits(&var(PrivateClass::Novel, Some(YRegionClass::Palindrome), 30, 1.0)));
+        // Mixed allele fraction (the placement caller accepts 0.5, publishing must not).
+        assert!(!g.admits(&var(PrivateClass::Novel, None, 30, 0.6)));
+        // Too few supporting reads for short-read.
+        assert!(!g.admits(&var(PrivateClass::Novel, None, 4, 1.0)));
+    }
+
+    #[test]
+    fn hifi_gate_relaxes_depth_not_fraction() {
+        let g = PublishGate::for_read_len(15_000.0); // HiFi
+        assert_eq!(g.min_alt_depth, 3);
+        assert!(g.admits(&var(PrivateClass::Novel, None, 3, 1.0))); // 3 reads OK for HiFi
+        assert!(!g.admits(&var(PrivateClass::Novel, None, 3, 0.7))); // fraction still enforced
+    }
+
+    #[test]
+    fn publishable_subset_and_count_agree() {
+        let bucket = PrivateBucket {
+            terminal: "R-FGC29071".into(),
+            variants: vec![
+                var(PrivateClass::Novel, None, 30, 1.0),                        // publishable
+                var(PrivateClass::Novel, Some(YRegionClass::Amplicon), 30, 1.0), // structural → no
+                var(PrivateClass::OffPathKnown("Z".into()), None, 30, 1.0),      // off-path → no
+                var(PrivateClass::Novel, None, 2, 1.0),                          // shallow → no
+            ],
+        };
+        let g = PublishGate::default();
+        assert_eq!(bucket.publishable_count(g), 1);
+        assert_eq!(bucket.publishable(g).len(), 1);
+        assert_eq!(bucket.novel_in_unique_sequence(), 2); // DISPLAY keeps the shallow one
     }
 }
 pub use navigator_analysis::ibd::IbdSegment;
