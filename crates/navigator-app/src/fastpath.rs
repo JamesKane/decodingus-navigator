@@ -3,15 +3,21 @@
 use super::*;
 
 /// Load a bundled chrY position mask/blocklist BED (best-effort). `env_var` overrides the path;
-/// otherwise `<cache base>/masks/<file>`. Returns `None` if the file is absent, unparseable, or
-/// empty — so a missing cohort asset simply skips that filter rather than blocking the analysis.
+/// otherwise the seeded `<cache base>/masks/<file>`, trying the gzipped `<file>.gz` first (how the
+/// bundled assets ship) then a plain `<file>`. Returns `None` if absent, unparseable, or empty — so a
+/// missing cohort asset simply skips that filter rather than blocking the analysis.
 fn load_y_position_bed(env_var: &str, file: &str) -> Option<navigator_analysis::mask::RegionMask> {
-    let path = std::env::var(env_var)
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| refgenome_cache::base_dir().join("masks").join(file));
-    navigator_analysis::mask::RegionMask::from_bed(&path, "chrY")
-        .ok()
-        .filter(|m| !m.is_empty())
+    let candidates: Vec<PathBuf> = if let Ok(p) = std::env::var(env_var) {
+        vec![PathBuf::from(p)]
+    } else {
+        let dir = refgenome_cache::base_dir().join("masks");
+        vec![dir.join(format!("{file}.gz")), dir.join(file)]
+    };
+    candidates.into_iter().find_map(|path| {
+        navigator_analysis::mask::RegionMask::from_bed(&path, "chrY")
+            .ok()
+            .filter(|m| !m.is_empty())
+    })
 }
 
 impl App {

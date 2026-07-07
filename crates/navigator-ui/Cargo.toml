@@ -25,7 +25,10 @@ identifier = "com.decodingus.navigator"
 category = "Utility"
 icons = ["icons/icon.icns", "icons/icon.png"]
 before-packaging-command = "bash ../../packaging/stage-assets.sh"
-resources = [{ src = "../../packaging/staging/ancestry", target = "ancestry" }]
+resources = [
+    { src = "../../packaging/staging/ancestry", target = "ancestry" },
+    { src = "../../packaging/staging/masks", target = "masks" },
+]
 
 [package.metadata.packager.macos]
 minimum-system-version = "11.0"

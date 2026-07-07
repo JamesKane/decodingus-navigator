@@ -20,11 +20,17 @@ pub struct RegionMask {
 }
 
 impl RegionMask {
-    /// Load the intervals for `contig` from a BED file (other contigs ignored).
+    /// Load the intervals for `contig` from a BED file (other contigs ignored). A `.gz` path is
+    /// transparently gunzipped, so large bundled masks can ship compressed.
     pub fn from_bed(path: &Path, contig: &str) -> Result<Self, AnalysisError> {
         let file = std::fs::File::open(path).map_err(|e| AnalysisError::io(path, e))?;
+        let reader: Box<dyn BufRead> = if path.extension().and_then(|e| e.to_str()) == Some("gz") {
+            Box::new(BufReader::new(flate2::read::GzDecoder::new(file)))
+        } else {
+            Box::new(BufReader::new(file))
+        };
         let mut intervals = Vec::new();
-        for line in BufReader::new(file).lines() {
+        for line in reader.lines() {
             let line = line.map_err(|e| AnalysisError::io(path, e))?;
             let line = line.trim();
             if line.is_empty() || line.starts_with('#') || line.starts_with("track") || line.starts_with("browser") {
@@ -230,6 +236,25 @@ mod tests {
         assert!(!m.contains(40)); // base0 39 < 40
         assert!(m.contains(41)); // base0 40 in [40,50)
         assert!(!m.contains(60));
+    }
+
+    #[test]
+    fn reads_gzipped_bed_transparently() {
+        use std::io::Write;
+        let dir = std::env::temp_dir().join(format!("dun-maskgz-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("m.bed.gz");
+        let mut enc = flate2::write::GzEncoder::new(
+            std::fs::File::create(&path).unwrap(),
+            flate2::Compression::default(),
+        );
+        // chrX ignored; two chrY intervals, one of them coalescing.
+        enc.write_all(b"chrY\t100\t200\nchrX\t0\t50\nchrY\t150\t260\n").unwrap();
+        enc.finish().unwrap();
+        let m = RegionMask::from_bed(&path, "chrY").unwrap();
+        assert_eq!(m.covered(), 160); // [100,260) after coalescing
+        assert!(m.contains(101) && m.contains(260) && !m.contains(261));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

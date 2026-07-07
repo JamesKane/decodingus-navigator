@@ -1012,8 +1012,9 @@ pub fn seed_assets_from(src_dir: &Path, dest_dir: &Path) -> std::io::Result<Seed
             continue;
         }
         let Some(name) = path.file_name() else { continue };
-        // Skip hidden files (e.g. the staging `.staged` marker) — only real assets are seeded.
-        if name.to_string_lossy().starts_with('.') {
+        // Skip hidden files (e.g. the staging `.staged` marker) and docs (a bundled README) — only
+        // real data assets are seeded.
+        if name.to_string_lossy().starts_with('.') || path.extension().and_then(|e| e.to_str()) == Some("md") {
             continue;
         }
         let dest = dest_dir.join(name);
@@ -1060,6 +1061,47 @@ pub fn seed_bundled_assets() -> SeedSummary {
         return SeedSummary::default();
     };
     let dest = refgenome_cache::base_dir().join("ancestry");
+    seed_assets_from(&src, &dest).unwrap_or_default()
+}
+
+/// Locate the bundled chrY-mask resource directory (`masks/`) — the private-Y filtering assets
+/// (callable mask + cohort-shared exclude). Same resolution as [`bundled_assets_dir`], plus a
+/// compile-time repo path so a `cargo run` dev build seeds straight from the checked-in
+/// `assets/masks/` (these masks are small enough to live in the git repo, unlike the ancestry `.bin`s).
+fn bundled_masks_dir() -> Option<PathBuf> {
+    if let Ok(p) = std::env::var("NAVIGATOR_BUNDLED_MASKS") {
+        let p = PathBuf::from(p);
+        if p.is_dir() {
+            return Some(p);
+        }
+    }
+    // Dev build: the checked-in repo assets (exists on a developer's machine, not in a package).
+    let repo_assets = PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/masks"));
+    if repo_assets.is_dir() {
+        return Some(repo_assets);
+    }
+    let exe = std::env::current_exe().ok()?;
+    let dir = exe.parent()?;
+    [
+        dir.join("../Resources/masks"),         // macOS .app/Contents/MacOS → ../Resources
+        dir.join("masks"),                       // Windows (alongside) / portable
+        dir.join("../lib/DUNavigator/masks"),    // Linux .deb/AppImage usr/bin → usr/lib/<app>
+        dir.join("../share/DUNavigator/masks"),  // Linux usr/share/<app>
+        dir.join("resources/masks"),             // generic
+    ]
+    .into_iter()
+    .find(|c| c.is_dir())
+}
+
+/// Seed the bundled chrY private-Y masks into `<cache base>/masks/` on first run (gzipped BEDs;
+/// [`RegionMask::from_bed`](navigator_analysis::mask::RegionMask::from_bed) reads them transparently).
+/// Never overwrites, so a user's own uncompressed override wins. Best-effort ⇒ empty summary when no
+/// source is present.
+pub fn seed_bundled_masks() -> SeedSummary {
+    let Some(src) = bundled_masks_dir() else {
+        return SeedSummary::default();
+    };
+    let dest = refgenome_cache::base_dir().join("masks");
     seed_assets_from(&src, &dest).unwrap_or_default()
 }
 

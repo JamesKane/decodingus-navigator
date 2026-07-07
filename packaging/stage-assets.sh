@@ -18,6 +18,24 @@ mkdir -p "$STAGE"
 
 SRC="${NAVIGATOR_ASSET_SRC:-$HOME/.decodingus/ancestry}"
 
+# Copy files matching any of the given glob patterns from a source dir into a stage dir, when missing
+# or size-differs (a cheap freshness check; the app re-verifies via sha256). Echoes the copied count.
+stage_from_dir() {  # src_dir  stage_dir  pattern...
+  local src="$1" stage="$2"; shift 2
+  local copied=0 pat f name
+  for pat in "$@"; do
+    for f in "$src"/$pat; do
+      [ -e "$f" ] || continue
+      name="$(basename "$f")"
+      if [ ! -f "$stage/$name" ] || [ "$(stat -f%z "$f" 2>/dev/null || stat -c%s "$f")" != "$(stat -f%z "$stage/$name" 2>/dev/null || stat -c%s "$stage/$name")" ]; then
+        cp "$f" "$stage/$name"
+        copied=$((copied + 1))
+      fi
+    done
+  done
+  echo "$copied"
+}
+
 # GitHub-release source (CI). The repo is public, so release assets download over plain HTTPS with
 # no token — works on every runner and inside the manylinux build container alike.
 ASSET_RELEASE="${NAVIGATOR_ASSET_RELEASE:-}"
@@ -42,18 +60,7 @@ sha256_of() {
 
 if [ -d "$SRC" ]; then
   echo "stage-assets: copying bundled assets from $SRC"
-  copied=0
-  for pat in "${PATTERNS[@]}"; do
-    for f in "$SRC"/$pat; do
-      [ -e "$f" ] || continue
-      name="$(basename "$f")"
-      # Copy when missing or size-differs (cheap freshness check; the app re-verifies via sha256).
-      if [ ! -f "$STAGE/$name" ] || [ "$(stat -f%z "$f" 2>/dev/null || stat -c%s "$f")" != "$(stat -f%z "$STAGE/$name" 2>/dev/null || stat -c%s "$STAGE/$name")" ]; then
-        cp "$f" "$STAGE/$name"
-        copied=$((copied + 1))
-      fi
-    done
-  done
+  copied="$(stage_from_dir "$SRC" "$STAGE" "${PATTERNS[@]}")"
   echo "stage-assets: staged $copied file(s) into $STAGE"
 elif [ -n "$ASSET_RELEASE" ]; then
   base="https://github.com/$ASSET_REPO/releases/download/$ASSET_RELEASE"
@@ -83,5 +90,19 @@ else
   echo "stage-assets: WARNING — no asset source (NAVIGATOR_ASSET_SRC dir or NAVIGATOR_ASSET_RELEASE tag); bundling an empty asset set." >&2
 fi
 
-# cargo-packager requires the resource dir to exist even if empty.
-touch "$STAGE/.staged"
+# --- chrY private-Y filtering masks (CHM13) -------------------------------------------------------
+# Bundled like the ancestry panels, but the SOURCE is the checked-in repo `assets/masks/` (gzipped
+# BEDs, small enough to live in git) rather than ~/.decodingus — so packaging is reproducible from a
+# clean checkout. Seeded to ~/.decodingus/masks/ on first run (navigator_app::seed_bundled_masks).
+MASK_STAGE="$SCRIPT_DIR/staging/masks"
+mkdir -p "$MASK_STAGE"
+MASK_SRC="${NAVIGATOR_MASK_SRC:-$SCRIPT_DIR/../assets/masks}"
+if [ -d "$MASK_SRC" ]; then
+  mask_copied="$(stage_from_dir "$MASK_SRC" "$MASK_STAGE" "chrY_"*.bed.gz "chrY_"*.bed)"
+  echo "stage-assets: staged $mask_copied mask file(s) into $MASK_STAGE"
+else
+  echo "stage-assets: WARNING — no mask source at $MASK_SRC; bundling no chrY masks." >&2
+fi
+
+# cargo-packager requires the resource dirs to exist even if empty.
+touch "$STAGE/.staged" "$MASK_STAGE/.staged"
