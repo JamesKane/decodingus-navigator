@@ -158,6 +158,12 @@ impl PrivateBucket {
     pub fn publishable_count(&self, gate: PublishGate) -> usize {
         self.variants.iter().filter(|v| gate.admits(v)).count()
     }
+
+    /// A QC banner when the novel-in-unique count is implausibly high for one sample (contamination /
+    /// low coverage / reference mismatch), else `None`. See [`private_y_qc_banner`].
+    pub fn qc_banner(&self) -> Option<String> {
+        navigator_domain::results_context::private_y_qc_banner(self.novel_in_unique_sequence())
+    }
 }
 
 /// Thresholds gating which private variants are confident enough to **publish** to the AppView as

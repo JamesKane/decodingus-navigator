@@ -1094,6 +1094,9 @@ async fn private_y(args: DebugCallsArgs) -> i32 {
         gate.min_alt_depth,
         bucket.publishable_count(gate)
     );
+    if let Some(warn) = bucket.qc_banner() {
+        println!("  {warn}");
+    }
     0
 }
 
