@@ -34,6 +34,7 @@ pub mod read_metrics;
 pub mod reader;
 pub mod readview;
 pub mod realign;
+pub mod reassembly;
 pub mod scan;
 pub mod sex;
 pub mod sidecar;
