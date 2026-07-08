@@ -1071,6 +1071,21 @@ async fn private_y(args: DebugCallsArgs) -> i32 {
             }
         }
     };
+    if std::env::var("NAVIGATOR_DUMP_DENOVO").is_ok() {
+        match app.run_denovo_for_alignment(alignment_id, "chrY".to_string()).await {
+            Ok(calls) => {
+                eprintln!("raw de-novo chrY calls: {}", calls.len());
+                for c in &calls {
+                    println!("DENOVO\t{}\t{}\t{}\t{}\t{:.2}", c.position, c.depth, c.alt_depth, c.alternate_allele, c.allele_fraction);
+                }
+                return 0;
+            }
+            Err(e) => {
+                eprintln!("error: {e}");
+                return 1;
+            }
+        }
+    }
     let bucket = match app.private_y_variants_self_masked(alignment_id).await {
         Ok(b) => b,
         Err(e) => {
@@ -1096,6 +1111,25 @@ async fn private_y(args: DebugCallsArgs) -> i32 {
     );
     if let Some(warn) = bucket.qc_banner() {
         println!("  {warn}");
+    }
+    // Per-variant detail (pos class region depth altDepth af publishable) for diagnosis.
+    println!("  pos\tclass\tregion\tdepth\talt\taf\tpublish");
+    for v in &bucket.variants {
+        let class = match &v.class {
+            navigator_app::PrivateClass::Novel => "novel".to_string(),
+            navigator_app::PrivateClass::OffPathKnown(n) => format!("known:{n}"),
+        };
+        let region = v.region.map(|r| r.as_str()).unwrap_or("-");
+        println!(
+            "  {}\t{}\t{}\t{}\t{}\t{:.2}\t{}",
+            v.position,
+            class,
+            region,
+            v.depth,
+            v.alt_depth,
+            v.allele_fraction,
+            gate.admits(v)
+        );
     }
     0
 }
