@@ -175,6 +175,111 @@ pub fn read_called_bases_from<R: BufRead>(
     Ok(out)
 }
 
+/// A confident derived single-base SNV read from a ploidy-1 GVCF variant record (`GT` carries a
+/// real ALT). Depths come from `AD` (ref,alt,…); `allele_fraction = alt_depth / depth`.
+#[derive(Debug, Clone)]
+pub struct GvcfSnv {
+    pub position: i64,
+    pub reference: char,
+    pub alternate: char,
+    pub depth: u32,
+    pub alt_depth: u32,
+    pub allele_fraction: f64,
+    pub gq: u32,
+}
+
+/// Stream **every** confident derived single-base SNV on `contig` from a ploidy-1 GVCF — the whole
+/// chrY variant set, not just tree targets. GATK's HaplotypeCaller does local haplotype reassembly,
+/// which resolves sites a pileup caller can't (misaligned ref reads → false ~50/50), so reading the
+/// GVCF recovers private SNVs the de-novo pileup caller drops. Ref blocks, hom-ref, and indel records
+/// are skipped; records are gated on `params.min_dp` / `params.min_gq`.
+pub fn read_derived_snvs(
+    gvcf: &Path,
+    contig: &str,
+    params: &GvcfReadParams,
+) -> Result<Vec<GvcfSnv>, AnalysisError> {
+    let file = std::fs::File::open(gvcf).map_err(|e| AnalysisError::io(gvcf, e))?;
+    read_derived_snvs_from(bgzf::io::Reader::new(file), contig, params)
+}
+
+/// Decode core over any `BufRead` (plain-text VCF in tests).
+pub fn read_derived_snvs_from<R: BufRead>(
+    mut reader: R,
+    contig: &str,
+    params: &GvcfReadParams,
+) -> Result<Vec<GvcfSnv>, AnalysisError> {
+    let mut out = Vec::new();
+    let mut line = String::new();
+    loop {
+        line.clear();
+        let n = reader
+            .read_line(&mut line)
+            .map_err(|e| AnalysisError::Message(format!("reading gvcf: {e}")))?;
+        if n == 0 {
+            break;
+        }
+        let l = line.trim_end_matches(['\n', '\r']);
+        if l.is_empty() || l.starts_with('#') {
+            continue;
+        }
+        let mut col = l.split('\t');
+        let chrom = col.next().unwrap_or("");
+        if chrom != contig {
+            continue;
+        }
+        let pos: i64 = match col.next().and_then(|s| s.parse().ok()) {
+            Some(p) => p,
+            None => continue,
+        };
+        let _id = col.next();
+        let refa = col.next().unwrap_or("");
+        let alt = col.next().unwrap_or("");
+        let (_qual, _filter, _info) = (col.next(), col.next(), col.next());
+        let format = col.next().unwrap_or("");
+        let sample = col.next().unwrap_or("");
+
+        if alt == "<NON_REF>" || refa.len() != 1 {
+            continue; // ref block or non-SNV anchor
+        }
+        // Haploid GT → the carried allele index; 0 (hom-ref) / '.' (no-call) are not derived.
+        let gt = format_field(format, sample, "GT").unwrap_or("");
+        let allele = gt.split(['/', '|']).next().unwrap_or(gt);
+        let alt_idx: usize = match allele.parse() {
+            Ok(i) if i >= 1 => i,
+            _ => continue,
+        };
+        // GT allele k selects the k-th ALT (1-based over the comma list, which includes <NON_REF>).
+        let alt_allele = alt.split(',').nth(alt_idx - 1).unwrap_or("");
+        if alt_allele.len() != 1 || !matches!(alt_allele.as_bytes()[0], b'A' | b'C' | b'G' | b'T') {
+            continue; // <NON_REF> or an indel/MNV — not a usable SNV
+        }
+        let gq = format_field(format, sample, "GQ")
+            .and_then(|s| s.parse::<u32>().ok())
+            .unwrap_or(0);
+        let dp = format_field(format, sample, "DP")
+            .and_then(|s| s.parse::<u32>().ok())
+            .unwrap_or(0);
+        if dp < params.min_dp || gq < params.min_gq {
+            continue;
+        }
+        // AD = ref,alt1,alt2,…,<NON_REF>; the carried allele's depth is AD[alt_idx].
+        let alt_depth = format_field(format, sample, "AD")
+            .and_then(|s| s.split(',').nth(alt_idx).and_then(|d| d.parse::<u32>().ok()))
+            .unwrap_or(0);
+        let depth = dp.max(alt_depth);
+        out.push(GvcfSnv {
+            position: pos,
+            reference: refa.as_bytes()[0].to_ascii_uppercase() as char,
+            alternate: alt_allele.as_bytes()[0].to_ascii_uppercase() as char,
+            depth,
+            alt_depth,
+            allele_fraction: if depth > 0 { alt_depth as f64 / depth as f64 } else { 0.0 },
+            gq,
+        });
+    }
+    Ok(out)
+}
+
 /// Assemble the `position → observed base` map [`crate::haplo::score`] consumes from the
 /// decoded GVCF facts. A variant (derived) base wins; otherwise a callable hom-ref site takes
 /// the **reference genome base** at that position (`ref_base`); otherwise the position is a
@@ -237,6 +342,18 @@ chrY\t2477255\t.\tC\tT,<NON_REF>\t685\t.\tDP=22\tGT:AD:DP:GQ:PL\t1:0,20,0:20:99:
 chrY\t2481534\t.\tA\tAT,<NON_REF>\t379\t.\tDP=18\tGT:AD:DP:GQ:PL\t1:0,15,0:15:99:389,0,389
 chrM\t100\t.\tC\tT,<NON_REF>\t500\t.\tDP=30\tGT:AD:DP:GQ:PL\t1:0,30,0:30:99:510,0,510
 ";
+
+    #[test]
+    fn derived_snvs_streams_snps_skips_blocks_indels_and_other_contigs() {
+        let v = read_derived_snvs_from(SAMPLE_GVCF.as_bytes(), "chrY", &GvcfReadParams::default()).unwrap();
+        // The two chrY SNVs, in order; the ref block, the A>AT indel, and the chrM SNV are skipped.
+        let got: Vec<(i64, char, char)> = v.iter().map(|s| (s.position, s.reference, s.alternate)).collect();
+        assert_eq!(got, vec![(2459921, 'G', 'A'), (2477255, 'C', 'T')]);
+        // AD = 0,18,0 → alt-depth 18, af 1.0.
+        assert_eq!(v[0].alt_depth, 18);
+        assert!((v[0].allele_fraction - 1.0).abs() < 1e-9);
+        assert_eq!(v[0].gq, 99);
+    }
 
     #[test]
     fn snp_variant_yields_derived_base_and_callable() {
