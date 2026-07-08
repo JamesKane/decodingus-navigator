@@ -149,6 +149,7 @@ mod tests {
             depth: 100,
             alt_depth: 100,
             allele_fraction: 1.0,
+            quality: None,
         }
     }
 

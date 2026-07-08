@@ -39,10 +39,11 @@ use crate::error::AnalysisError;
 use crate::genotype::{self, GenotypeResult};
 use crate::reader;
 use crate::realign;
+use crate::reassembly;
 
 /// Algorithm version for de-novo caller artifacts; bump on output-affecting changes
-/// (e.g. the local-realignment addition bumped this to -2).
-pub const DENOVO_VERSION: &str = "haploid-denovo-2";
+/// (e.g. the local-realignment addition bumped this to -2; the local-reassembly resolver to -3).
+pub const DENOVO_VERSION: &str = "haploid-denovo-3";
 
 /// Algorithm version for site-genotype (panel) artifacts.
 pub const GENOTYPE_VERSION: &str = "genotype-1";
@@ -79,6 +80,13 @@ pub struct HaploidCallerParams {
     /// Context overlap (bp) processed on each side of a chunk, so realignment windows
     /// straddling a chunk boundary are still fully seen. Must exceed `realign_pad`.
     pub denovo_overlap: usize,
+    /// Escalate positions the paralog gate would drop to the local-reassembly resolver
+    /// ([`crate::reassembly`]) instead of discarding them — recovers misaligned-ref haploid SNVs
+    /// (private-Y Option B). Off leaves the pileup-only behaviour unchanged.
+    pub reassembly: bool,
+    /// Half-width (bp) of the window extracted around a reassembly candidate. Must be ≤
+    /// `denovo_overlap` so a boundary window stays inside the processed chunk.
+    pub reassembly_window: i64,
 }
 
 impl Default for HaploidCallerParams {
@@ -95,6 +103,8 @@ impl Default for HaploidCallerParams {
             realign_pad: 15,
             denovo_chunk: 8_000_000,
             denovo_overlap: 500,
+            reassembly: true,
+            reassembly_window: 40,
         }
     }
 }
@@ -170,6 +180,11 @@ pub struct VariantCall {
     pub depth: u32,     // passing depth
     pub alt_depth: u32, // reads supporting the consensus alt
     pub allele_fraction: f64,
+    /// Phred-scaled confidence, set by the local-reassembly resolver ([`crate::reassembly`]) for
+    /// calls it recovered; `None` for the plain pileup/gVCF paths. Additive — old cached blobs
+    /// decode to `None`.
+    #[serde(default)]
+    pub quality: Option<f64>,
 }
 
 const BASES: [u8; 4] = [b'A', b'C', b'G', b'T'];
@@ -1021,6 +1036,28 @@ pub fn call_denovo(
     Ok(nested.into_iter().flatten().collect())
 }
 
+/// De-novo SNP calls restricted to `[region_lo, region_hi]` (1-based inclusive) on `contig` — the
+/// same tally/realign/reassembly path as [`call_denovo`] over a single bounded emit range. Loads the
+/// whole contig reference once (cheap) but only queries the region. Intended for debug/validation
+/// tooling (e.g. checking recovery at specific positions) without walking the whole contig.
+pub fn call_denovo_region(
+    bam_path: &Path,
+    reference_path: &Path,
+    contig: &str,
+    region_lo: usize,
+    region_hi: usize,
+    params: &HaploidCallerParams,
+) -> Result<Vec<VariantCall>, AnalysisError> {
+    let length = read_contig_length(bam_path, contig, Some(reference_path))?;
+    let ref_seq = load_contig_sequence(reference_path, contig, length)?;
+    let lo = region_lo.max(1);
+    let hi = region_hi.min(length);
+    if lo > hi {
+        return Ok(Vec::new());
+    }
+    denovo_chunk(bam_path, reference_path, contig, params, &ref_seq, length, lo, hi)
+}
+
 /// De-novo SNP calls for one emit range `[emit_lo, emit_hi]` (1-based inclusive). Tallies a
 /// `denovo_overlap`-padded window so realignment windows straddling the boundary are fully
 /// seen, but emits only `[emit_lo, emit_hi]`. `ref_seq` is the full contig reference (index 0 =
@@ -1058,6 +1095,9 @@ fn denovo_chunk(
     }
 
     let mut out = Vec::new();
+    // Stage A — positions the paralog gate would drop but that carry a real non-reference allele
+    // are escalated to the local-reassembly resolver instead of discarded (private-Y Option B).
+    let mut active: Vec<reassembly::Candidate> = Vec::new();
     for pos in emit_lo..=emit_hi {
         let r = pos - proc_lo; // index into the chunk arrays
         let c = counts[r];
@@ -1069,14 +1109,21 @@ fn denovo_chunk(
         if top_count == 0 {
             continue;
         }
+        let ref_base = ref_chunk.get(r).copied().unwrap_or(b'N');
+        if is_paralogous(&c, depth, params) {
+            // bi-allelic at a haploid site — the pileup can't tell a true derived SNV from a
+            // paralog artifact. Hand it to reassembly (Stage B–E below) rather than dropping it.
+            if params.reassembly {
+                if let Some(cand) = active_candidate(pos as i64, &c, ref_base, params) {
+                    active.push(cand);
+                }
+            }
+            continue;
+        }
         let frac = top_count as f64 / depth as f64;
         if frac < params.min_allele_fraction {
             continue;
         }
-        if is_paralogous(&c, depth, params) {
-            continue; // bi-allelic at a haploid site — paralog/mismapping, not a private call
-        }
-        let ref_base = ref_chunk.get(r).copied().unwrap_or(b'N');
         if base_index(ref_base) == Some(top_bi) || base_index(ref_base).is_none() {
             continue; // matches reference, or reference is N/ambiguous
         }
@@ -1088,9 +1135,176 @@ fn denovo_chunk(
             depth,
             alt_depth: top_count,
             allele_fraction: frac,
+            quality: None,
         });
     }
+
+    // Stages B–F — reassemble the escalated windows and append the recovered DERIVED calls.
+    if params.reassembly && !active.is_empty() {
+        let recovered = resolve_active(bam_path, contig, ref_seq, length, &active, params, Some(reference_path))?;
+        out.extend(recovered);
+        out.sort_by_key(|v| v.position); // keep the chunk's calls in ascending position order
+    }
     Ok(out)
+}
+
+/// A reassembly candidate for a paralog-gated position: the top **non-reference** base, kept only if
+/// it carries at least `min_paralog_minor_reads` reads (a real alternate, not a lone error).
+fn active_candidate(pos: i64, counts: &[u32; 4], ref_base: u8, params: &HaploidCallerParams) -> Option<reassembly::Candidate> {
+    let ref_bi = base_index(ref_base)?;
+    let (alt_bi, &alt_count) = counts
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| *i != ref_bi)
+        .max_by_key(|(_, &v)| v)?;
+    if alt_count < params.min_paralog_minor_reads {
+        return None;
+    }
+    Some(reassembly::Candidate {
+        position: pos,
+        ref_base: ref_base.to_ascii_uppercase(),
+        alt_base: BASES[alt_bi],
+    })
+}
+
+/// Stages B–F for a chunk's escalated candidates: group them into windows, extract the spanning
+/// reads (projected onto each window's reference frame), genotype with the reassembly resolver, and
+/// return the DERIVED recoveries as `VariantCall`s (paralog artifacts stay dropped).
+fn resolve_active(
+    bam_path: &Path,
+    contig: &str,
+    ref_seq: &[u8],
+    length: usize,
+    active: &[reassembly::Candidate],
+    params: &HaploidCallerParams,
+    reference: Option<&Path>,
+) -> Result<Vec<VariantCall>, AnalysisError> {
+    let (header, mut reader) = reader::open_indexed(bam_path, reference)?;
+    let rparams = reassembly::ReassemblyParams {
+        min_mapping_quality: params.min_mapping_quality,
+        ..reassembly::ReassemblyParams::default()
+    };
+    let w = params.reassembly_window.max(1);
+
+    // Merge candidates whose windows overlap into one extraction window (candidates arrive in
+    // ascending position order from the emit loop).
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < active.len() {
+        let mut j = i + 1;
+        while j < active.len() && active[j].position - active[j - 1].position <= 2 * w {
+            j += 1;
+        }
+        let group = &active[i..j];
+        let win_lo = (group[0].position - w).max(1);
+        let win_hi = (group[group.len() - 1].position + w).min(length as i64);
+
+        let ref_window: Vec<u8> = ref_seq[(win_lo - 1) as usize..win_hi as usize]
+            .iter()
+            .map(|b| b.to_ascii_uppercase())
+            .collect();
+        let reads = extract_window_reads(&header, &mut reader, contig, win_lo, win_hi, group, params)?;
+        for call in reassembly::genotype_window(&ref_window, win_lo, group, &reads, &rparams) {
+            if call.genotype == reassembly::Zygosity::Derived {
+                out.push(VariantCall {
+                    contig: contig.to_string(),
+                    position: call.position,
+                    reference_allele: call.ref_base as char,
+                    alternate_allele: call.alt_base as char,
+                    depth: call.depth,
+                    alt_depth: call.alt_depth,
+                    allele_fraction: call.allele_fraction,
+                    quality: Some(call.quality),
+                });
+            }
+        }
+        i = j;
+    }
+    Ok(out)
+}
+
+/// Project every spanning read in `[win_lo, win_hi]` onto the window's reference frame: the
+/// window-frame sequence + per-base qualities (for the PairHMM) and the base/quality each read
+/// carries at each candidate (for depth + dedup). One CIGAR walk per read; insertions inside the
+/// window are kept so an indel haplotype survives (matching the pileup's realignment intent).
+fn extract_window_reads(
+    header: &noodles::sam::Header,
+    reader: &mut reader::IdxReader,
+    contig: &str,
+    win_lo: i64,
+    win_hi: i64,
+    candidates: &[reassembly::Candidate],
+    params: &HaploidCallerParams,
+) -> Result<Vec<reassembly::WindowRead>, AnalysisError> {
+    let region: Region = format!("{contig}:{win_lo}-{win_hi}")
+        .parse()
+        .map_err(|_| AnalysisError::Message(format!("bad region for {contig}")))?;
+    let mut reads = Vec::new();
+    for result in reader.query(header, &region)? {
+        let record = result?;
+        if !passes(&record, params) {
+            continue;
+        }
+        let Some(start) = record.alignment_start().map(|p| p.get() as i64) else {
+            continue;
+        };
+        let mapq = record.mapping_quality().map_or(255u8, |m| m.get());
+        let name = record.name().map(|n| n.to_vec()).unwrap_or_default();
+        let seq = record.sequence();
+        let quals = record.quality_scores();
+        let qualb = quals.as_ref();
+
+        let mut ref_pos = start;
+        let mut qoff = 0usize;
+        let mut wseq: Vec<u8> = Vec::new();
+        let mut wq: Vec<u8> = Vec::new();
+        let mut site_obs: Vec<Option<reassembly::SiteObs>> = vec![None; candidates.len()];
+        for op in record.cigar().as_ref() {
+            let kind = op.kind();
+            let len = op.len();
+            match (kind.consumes_reference(), kind.consumes_read()) {
+                (true, true) => {
+                    for i in 0..len {
+                        let rp = ref_pos + i as i64;
+                        if rp >= win_lo && rp <= win_hi {
+                            if let Some(b) = seq.get(qoff + i) {
+                                let q = qualb.get(qoff + i).copied().unwrap_or(0);
+                                wseq.push(b.to_ascii_uppercase());
+                                wq.push(q);
+                                if q >= params.min_base_quality {
+                                    if let Some(ci) = candidates.iter().position(|c| c.position == rp) {
+                                        site_obs[ci] = Some(reassembly::SiteObs {
+                                            base: b.to_ascii_uppercase(),
+                                            qual: q,
+                                        });
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    ref_pos += len as i64;
+                    qoff += len;
+                }
+                (true, false) => ref_pos += len as i64,
+                (false, true) => {
+                    if kind == Kind::Insertion && ref_pos > win_lo && ref_pos <= win_hi {
+                        for i in 0..len {
+                            if let Some(b) = seq.get(qoff + i) {
+                                wseq.push(b.to_ascii_uppercase());
+                                wq.push(qualb.get(qoff + i).copied().unwrap_or(0));
+                            }
+                        }
+                    }
+                    qoff += len;
+                }
+                (false, false) => {}
+            }
+        }
+        if wseq.len() >= 30 {
+            reads.push(reassembly::WindowRead { name, seq: wseq, quals: wq, mapq, site_obs });
+        }
+    }
+    Ok(reads)
 }
 
 /// Nominal base quality for the de-novo **diploid** genotype likelihood. The chunked pileup keeps
@@ -1963,6 +2177,7 @@ mod tests {
             depth: 4,
             alt_depth: 4,
             allele_fraction: 1.0,
+            quality: None,
         };
         let calls = vec![v(2), v(3), v(4)];
         let known: HashSet<i64> = [2, 3].into_iter().collect();

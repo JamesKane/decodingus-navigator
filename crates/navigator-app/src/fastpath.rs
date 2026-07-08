@@ -541,6 +541,7 @@ impl App {
                 depth: s.depth,
                 alt_depth: s.alt_depth,
                 allele_fraction: s.allele_fraction,
+                quality: None,
             })
             .collect())
     }

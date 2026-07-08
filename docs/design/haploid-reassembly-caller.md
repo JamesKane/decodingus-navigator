@@ -310,16 +310,37 @@ Findings that shaped this design:
 
 1. **`reassembly.rs` core (Stages B–E, per-SNV / v1)** + unit tests on synthetic windows — pure,
    backend-agnostic, no `caller.rs` wiring yet. This is the algorithm, proven in isolation.
+   **DONE** (commit `eb4270c`).
 2. **Active-region detection + `caller.rs` wiring (Stage A/F)** behind a `HaploidCallerParams`
-   toggle; `DENOVO_VERSION` bump; end-to-end on the WGS229 CRAM → validate 10/12 + no-regression.
+   toggle; `DENOVO_VERSION` bump; end-to-end on the WGS229 CRAM. **DONE** — see the measured result
+   below.
 3. **Windows CI on the branch** — confirm the pure-Rust claim under MSVC before merge.
 4. **POA multi-haplotype (v2)** — linked variants + short indels via `bio::alignment::poa`; extends
-   coverage beyond isolated SNVs.
+   coverage beyond isolated SNVs. **This is also what closes `20973395`** (active-region read
+   selection beyond the MQ gate — see the measured result).
 5. **mtDNA (v3)** — apply to chrM, but heteroplasmy needs *fractional* genotyping (not the haploid
    argmax), so it's a genuine extension, not a config flip.
 
 Phases 1–3 deliver the private-Y driver (misaligned-ref SNV recovery for BAM-only samples) and are
 the merge target; 4–5 are follow-ons.
+
+### Measured phase-2 result (WGS229 CHM13 CRAM, BAM-only, reassembly OFF vs ON)
+
+`examples/reassembly_validate.rs` runs the bounded de-novo caller with reassembly off (pileup) vs on:
+
+| truth private | pileup | reassembly | GATK gVCF | outcome |
+|---|---|---|---|---|
+| 3318203 · 16652092 (+ 4665675 · 7062156) | called | called | GQ99 | no regression |
+| **4284195** | dropped | **C>T 10/20 GQ16** | GQ44 | ✅ recovered |
+| **11191589** | dropped | **C>T 2/4 GQ40** | GQ25 | ✅ recovered |
+| 20973395 | dropped | dropped | GQ41 | deferred to v2 (paralog reads clear MQ≥20; needs active-region read selection — logodds −4.4) |
+| 21149865 | dropped | dropped | **GQ8 / QUAL 0.18** | marginal even for GATK (3-allele 4T/4A/1G) |
+| 11008394 · 11913711 | dropped | dropped | (low) | out of scope (q20 depth 3 < min-depth 4) |
+
+v1 recovers the two misaligned-ref sites resolvable by the MQ gate + base-quality PairHMM (matching
+the POC exactly), with **no regression** on the clean calls — which is structural: reassembly only
+*escalates positions the paralog gate already dropped* and *appends* recoveries, so it can never
+remove an existing pileup call. `20973395` is the concrete v2 driver; `21149865` is GATK-marginal.
 
 ## Open questions
 
