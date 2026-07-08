@@ -4,14 +4,19 @@
 //! the resolver actually needs. It builds a reference and an alternate haplotype over a window around
 //! `pos`, realigns every spanning read to both (`bio::alignment::pairwise`), drops reads that align
 //! poorly to both (misaligned paralog junk), POA-assembles the survivors as a check
-//! (`bio::alignment::poa`), and reports ref-vs-alt support.
+//! (`bio::alignment::poa`), and — the load-bearing step — scores each spanning read against both
+//! haplotypes with a **base-quality-aware PairHMM** (`bio::stats::pairhmm`) and genotypes by the
+//! aggregate log-likelihood ratio.
 //!
-//! Finding: plain realignment resolves the *clean* cases (controls) but NOT the marginal misaligned-ref
-//! ~50/50 sites Navigator's pileup caller misses — those stay balanced (e.g. 10/10). GATK's own gVCF
-//! calls them only marginally (AD 9,10 / GQ 44), so the tie-breaker is **base-quality-aware PairHMM
-//! likelihood** (`bio::stats::pairhmm`), not the crude alignment score. So the full Option B caller =
-//! active-region detection + POA assembly + **read-vs-haplotype PairHMM** + genotyping. This probe
-//! proves the stack compiles/runs and pinpoints PairHMM as the load-bearing piece to add next.
+//! Finding (validated on the real WGS229 CHM13 CRAM vs GATK's own gVCF, which calls all five DERIVED):
+//! plain realignment resolves the *clean* controls but TIES the marginal misaligned-ref sites the pileup
+//! caller misses (e.g. 4284195: crude score 10/10). The base-quality-aware PairHMM breaks those ties and
+//! recovers **4 of 5** — 3318203/16652092 (controls), 4284195 (GATK AD 9,10 / GQ44 / MQRankSum -3.55, the
+//! textbook misaligned-ref case) and 11191589 all → DERIVED, matching GATK. The one miss (20973395) has
+//! paralog reference reads that pass the MQ≥20 gate; GATK drops them via active-region fragment/read
+//! selection (its own DP falls 7→5 there) — the remaining ingredient the full caller needs. So the Option
+//! B caller = active-region detection + POA assembly + **read-vs-haplotype PairHMM** + genotyping; this
+//! probe proves the whole pure-Rust stack compiles/runs on a real CRAM and that PairHMM is the tie-breaker.
 //!
 //!   cargo run --release --example reassembly_probe -p navigator-analysis -- \
 //!       <cram> <ref.fa> chrY <pos[,pos,...]> [window=40]
@@ -21,6 +26,10 @@ use std::path::Path;
 use bio::alignment::pairwise::{Aligner as PwAligner, Scoring};
 use bio::alignment::poa::Aligner as PoaAligner;
 use bio::alignment::AlignmentOperation;
+use bio::stats::pairhmm::{
+    EmissionParameters, GapParameters, PairHMM, StartEndGapParameters, XYEmission,
+};
+use bio::stats::{LogProb, Prob};
 use navigator_analysis::reader::{open_indexed, read_contig_sequence};
 use noodles::core::Region;
 
@@ -34,12 +43,24 @@ fn base_index(b: u8) -> Option<usize> {
     }
 }
 
-/// Reads overlapping `[lo, hi]` as `(window_bases, covers_pos)`, plus the raw A/C/G/T pileup at `pos`.
-fn window_reads(cram: &Path, refp: &Path, contig: &str, pos: i64, lo: i64, hi: i64) -> (Vec<(Vec<u8>, bool)>, [u32; 4]) {
+/// GATK-default minimum mapping quality: excludes ambiguously-placed paralog reads, which at Y
+/// segmental-duplication / ampliconic loci masquerade as high-base-quality reference support.
+const MIN_MAPQ: u8 = 20;
+
+/// A spanning read's window sequence, its per-base Phred qualities, mapping quality, and site cover.
+struct WinRead {
+    bases: Vec<u8>,
+    quals: Vec<u8>,
+    mapq: u8,
+    covers_pos: bool,
+}
+
+/// Reads overlapping `[lo, hi]` as [`WinRead`]s, plus the raw A/C/G/T pileup at `pos`.
+fn window_reads(cram: &Path, refp: &Path, contig: &str, pos: i64, lo: i64, hi: i64) -> (Vec<WinRead>, [u32; 4]) {
     let (header, mut reader) = open_indexed(cram, Some(refp)).expect("open cram");
     let region: Region = format!("{contig}:{lo}-{hi}").parse().expect("region");
     let mut pile = [0u32; 4];
-    let mut reads: Vec<(Vec<u8>, bool)> = Vec::new();
+    let mut reads: Vec<WinRead> = Vec::new();
     for result in reader.query(&header, &region).expect("query") {
         let record = result.expect("record");
         let flags = record.flags();
@@ -49,11 +70,15 @@ fn window_reads(cram: &Path, refp: &Path, contig: &str, pos: i64, lo: i64, hi: i
         let Some(start) = record.alignment_start().map(|p| p.get() as i64) else {
             continue;
         };
+        let mapq = record.mapping_quality().map(|m| m.get()).unwrap_or(0);
         let seq = record.sequence();
         let seqb = seq.as_ref();
+        let quals = record.quality_scores();
+        let qualb = quals.as_ref();
         let mut ref_pos = start;
         let mut qoff = 0usize;
         let mut win: Vec<u8> = Vec::new();
+        let mut winq: Vec<u8> = Vec::new();
         let mut covers_pos = false;
         for op in record.cigar().as_ref() {
             let kind = op.kind();
@@ -65,6 +90,7 @@ fn window_reads(cram: &Path, refp: &Path, contig: &str, pos: i64, lo: i64, hi: i
                         if rp >= lo && rp <= hi {
                             if let Some(&b) = seqb.get(qoff + i) {
                                 win.push(b.to_ascii_uppercase());
+                                winq.push(qualb.get(qoff + i).copied().unwrap_or(30));
                                 if rp == pos {
                                     covers_pos = true;
                                     if let Some(bi) = base_index(b) {
@@ -87,6 +113,7 @@ fn window_reads(cram: &Path, refp: &Path, contig: &str, pos: i64, lo: i64, hi: i
                         for i in 0..len {
                             if let Some(&b) = seqb.get(qoff + i) {
                                 win.push(b.to_ascii_uppercase());
+                                winq.push(qualb.get(qoff + i).copied().unwrap_or(30));
                             }
                         }
                     }
@@ -97,7 +124,7 @@ fn window_reads(cram: &Path, refp: &Path, contig: &str, pos: i64, lo: i64, hi: i
         }
         // Keep reads that carry enough window sequence to anchor a realignment.
         if win.len() >= 30 {
-            reads.push((win, covers_pos));
+            reads.push(WinRead { bases: win, quals: winq, mapq, covers_pos });
         }
     }
     (reads, pile)
@@ -154,6 +181,82 @@ fn consensus_base_at(consensus: &[u8], win_ref: &[u8], win_start: i64, pos: i64)
     '?'
 }
 
+// ---- base-quality-aware PairHMM: P(read | haplotype) ------------------------------------------
+//
+// This is the tie-breaker the crude alignment score lacks. Each read base votes for ref-vs-alt at
+// `pos` weighted by its Phred quality: a Q40 base mismatching a haplotype costs ~10^-4, a Q10 base
+// costs only ~10^-1, so noisy bases can't outvote clean ones. Aggregating the log-likelihood ratio
+// over all spanning reads is exactly how GATK's HaplotypeCaller resolves the misaligned-ref pileups.
+
+/// Phred score → error probability, clamped to a sane band (Q>0, and never a certain match/mismatch).
+fn phred_err(q: u8) -> f64 {
+    let q = q.clamp(2, 60) as f64;
+    10f64.powf(-q / 10.0)
+}
+
+/// Emission: `x` = read (carries per-base quality), `y` = candidate haplotype.
+struct ReadHapEmission<'a> {
+    read: &'a [u8],
+    quals: &'a [u8],
+    hap: &'a [u8],
+}
+
+impl EmissionParameters for ReadHapEmission<'_> {
+    fn prob_emit_xy(&self, i: usize, j: usize) -> XYEmission {
+        let err = phred_err(self.quals[i]);
+        if self.read[i] == self.hap[j] {
+            XYEmission::Match(LogProb::from(Prob(1.0 - err)))
+        } else {
+            XYEmission::Mismatch(LogProb::from(Prob(err / 3.0)))
+        }
+    }
+    fn prob_emit_x(&self, _i: usize) -> LogProb {
+        LogProb::ln_one() // insertion in read: the base is real; cost is in the gap-open prob
+    }
+    fn prob_emit_y(&self, _j: usize) -> LogProb {
+        LogProb::ln_one() // deletion (gap in read): hap base emitted against a gap
+    }
+    fn len_x(&self) -> usize {
+        self.read.len()
+    }
+    fn len_y(&self) -> usize {
+        self.hap.len()
+    }
+}
+
+/// GATK-ish affine gap model (indels rare relative to substitutions).
+struct GapParams;
+impl GapParameters for GapParams {
+    fn prob_gap_x(&self) -> LogProb {
+        LogProb::from(Prob(1e-4))
+    }
+    fn prob_gap_y(&self) -> LogProb {
+        LogProb::from(Prob(1e-4))
+    }
+    fn prob_gap_x_extend(&self) -> LogProb {
+        LogProb::from(Prob(0.1))
+    }
+    fn prob_gap_y_extend(&self) -> LogProb {
+        LogProb::from(Prob(0.1))
+    }
+}
+
+/// Semiglobal in the read: free leading/trailing offset so window-edge trimming isn't penalised.
+struct Semiglobal;
+impl StartEndGapParameters for Semiglobal {
+    fn free_start_gap_x(&self) -> bool {
+        true
+    }
+    fn free_end_gap_x(&self) -> bool {
+        true
+    }
+}
+
+/// Log-probability that `read` (with `quals`) was produced by `hap`, marginalised over alignments.
+fn hap_likelihood(hmm: &mut PairHMM, read: &[u8], quals: &[u8], hap: &[u8]) -> LogProb {
+    hmm.prob_related(&ReadHapEmission { read, quals, hap }, &Semiglobal, None)
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     if args.len() < 5 {
@@ -171,9 +274,11 @@ fn main() {
     refseq.iter_mut().for_each(|b| *b = b.to_ascii_uppercase()); // FASTA may be soft-masked (lowercase)
 
     let charb = |i: usize| ['A', 'C', 'G', 'T'][i];
+    // realign = crude match/mismatch vote (ref/alt/dropped); pairHMM = base-quality vote (ref/alt) +
+    // aggregate log-odds. The pairHMM column is the one that resolves the marginal sites.
     println!(
-        "{:>10} {:>3} {:>15}   pileup(alt)   -> reassembly (ref-supp/alt-supp/dropped)   verdict",
-        "pos", "ref", "A/C/G/T"
+        "{:>10} {:>3} {:>13}  {:>8}   {:>7}   {:>11}   verdict",
+        "pos", "ref", "A/C/G/T", "alt@frac", "realign", "pairHMM lo"
     );
     for &pos in &positions {
         let lo = (pos - window).max(1);
@@ -200,12 +305,22 @@ fn main() {
 
         // Realign each spanning read to both haplotypes; drop reads that align poorly to *both*
         // (they carry mismatches beyond the site → misaligned paralog / junk, not from this locus).
+        // For the survivors, also score P(read|ref-hap) vs P(read|alt-hap) with the PairHMM.
+        let mut hmm = PairHMM::new(&GapParams);
         let (mut ref_supp, mut alt_supp, mut dropped) = (0u32, 0u32, 0u32);
+        let (mut hmm_ref, mut hmm_alt) = (0u32, 0u32);
+        let mut lowmq = 0u32;
+        let mut logodds = 0.0f64; // Σ ln P(read|alt) − ln P(read|ref); >0 ⇒ alt haplotype favoured
         let mut kept: Vec<Vec<u8>> = Vec::new();
-        for (win, covers) in &reads {
-            if !covers {
+        for r in &reads {
+            if !r.covers_pos {
                 continue; // can't distinguish ref from alt without the site
             }
+            if r.mapq < MIN_MAPQ {
+                lowmq += 1; // ambiguously-placed paralog read — excluded like GATK does
+                continue;
+            }
+            let win = &r.bases;
             let s_ref = realign_score(win, &win_ref);
             let s_alt = realign_score(win, &win_alt);
             let best = s_ref.max(s_alt);
@@ -221,25 +336,36 @@ fn main() {
                 std::cmp::Ordering::Less => ref_supp += 1,
                 std::cmp::Ordering::Equal => {}
             }
+            // Base-quality-aware likelihood ratio (the load-bearing tie-breaker).
+            let lp_ref = hap_likelihood(&mut hmm, win, &r.quals, &win_ref);
+            let lp_alt = hap_likelihood(&mut hmm, win, &r.quals, &win_alt);
+            logodds += *lp_alt - *lp_ref;
+            match lp_alt.partial_cmp(&lp_ref) {
+                Some(std::cmp::Ordering::Greater) => hmm_alt += 1,
+                Some(std::cmp::Ordering::Less) => hmm_ref += 1,
+                _ => {}
+            }
         }
         // POA consensus of the surviving reads as a cross-check (informational).
         let cons_note = if kept.len() >= 2 {
             let cons = poa_consensus(&kept);
             let cb = consensus_base_at(&cons, &win_ref, lo, pos);
-            format!("  [POA={cb}]")
+            format!(" [POA={cb}]")
         } else {
             String::new()
         };
 
-        let verdict = if alt_supp > ref_supp && alt_supp >= 2 {
+        // Genotype from the aggregate PairHMM log-odds: the haploid site is DERIVED when the alt
+        // haplotype is the more likely explanation of the reads overall.
+        let verdict = if logodds > 2.0 {
             format!("DERIVED {ref_base}>{alt_base}{cons_note}")
-        } else if ref_supp >= alt_supp && ref_supp > 0 {
+        } else if logodds < -2.0 {
             format!("ancestral{cons_note}")
         } else {
-            format!("no-call{cons_note}")
+            format!("ambiguous{cons_note}")
         };
         println!(
-            "{pos:>10} {ref_base:>3} {:>15}   {alt_base}@{alt_frac:.2}       -> {ref_supp:>2}/{alt_supp:>2}/{dropped:<2}                       {verdict}",
+            "{pos:>10} {ref_base:>3} {:>13}  {alt_base}@{alt_frac:.2}   {ref_supp:>2}/{alt_supp:>2}/{dropped:<2}   {hmm_ref:>2}/{hmm_alt:<2} {logodds:>+7.1}  mq-{lowmq:<2} {verdict}",
             format!("{}/{}/{}/{}", pile[0], pile[1], pile[2], pile[3])
         );
     }
