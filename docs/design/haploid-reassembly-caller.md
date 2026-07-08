@@ -289,10 +289,16 @@ Findings that shaped this design:
 
 ## Validation plan
 
-- **Truth set:** WGS229's 12 ytree privates at R-FGC29071. Target = recover the 4 misaligned-ref
-  sites (4284195, 11191589, 20973395, 21149865) that the pileup gate drops, matching GATK's
-  single-sample gVCF; the 2 q20-depth-3 sites (11008394, 11913711) stay out of scope (genuinely
-  sub-threshold). Success = **10/12** from a BAM-only run, parity with the Option-A gVCF path.
+- **Truth set:** WGS229's 12 ytree privates at R-FGC29071. Achievable single-sample-from-pileup =
+  recover the misaligned-ref sites where the true reads are the **majority** and resolvable by the MQ
+  gate + base-quality PairHMM: **4284195 and 11191589** (done, v1). The other two "~50/50" sites are
+  **not** single-sample recoverable and are out of scope for this caller: `20973395` is minority-truth
+  paralog contamination (see the phase-2 result — 2 true vs 4 reference-clean paralog reads) and
+  `21149865` is GATK-marginal (GQ8 / QUAL 0.18); the 2 q20-depth-3 sites (11008394, 11913711) are
+  genuinely sub-threshold. So the realistic BAM-only caller target is **8/12** raw calls (4 clean + 2
+  gate/region-filtered + 2 reassembly-recovered), with the residual gap to the gVCF path's 9/12
+  covered by the cohort mask + AppView corroboration (§6). Parity with Option-A is a *batch-import*
+  goal (gVCF present), not a single-sample-pileup goal.
 - **No-regression:** the clean sites (3318203 · 4665675 · 7062156 · 16652092) and every currently
   correct call must be unchanged; run the pileup-only baseline vs reassembly and diff.
 - **Specificity:** reassembly must not *add* false privates — the whole point is to reject paralog
@@ -316,8 +322,11 @@ Findings that shaped this design:
    below.
 3. **Windows CI on the branch** — confirm the pure-Rust claim under MSVC before merge.
 4. **POA multi-haplotype (v2)** — linked variants + short indels via `bio::alignment::poa`; extends
-   coverage beyond isolated SNVs. **This is also what closes `20973395`** (active-region read
-   selection beyond the MQ gate — see the measured result).
+   coverage beyond isolated SNVs, plus absolute-likelihood read filtering (drop reads matching no
+   local haplotype). **Correction:** an earlier draft claimed v2 "closes `20973395`." The read-level
+   evidence (below) refutes that — `20973395` is a *minority-truth paralog* site that single-sample
+   haplotype likelihood cannot resolve at any assembly sophistication short of full HaplotypeCaller
+   read-filtering. v2's real value is general linked-variant recall + specificity, **not** that site.
 5. **mtDNA (v3)** — apply to chrM, but heteroplasmy needs *fractional* genotyping (not the haploid
    argmax), so it's a genuine extension, not a config flip.
 
@@ -340,7 +349,33 @@ the merge target; 4–5 are follow-ons.
 v1 recovers the two misaligned-ref sites resolvable by the MQ gate + base-quality PairHMM (matching
 the POC exactly), with **no regression** on the clean calls — which is structural: reassembly only
 *escalates positions the paralog gate already dropped* and *appends* recoveries, so it can never
-remove an existing pileup call. `20973395` is the concrete v2 driver; `21149865` is GATK-marginal.
+remove an existing pileup call. `21149865` is GATK-marginal (GQ8 / QUAL 0.18).
+
+### Why `20973395` is not single-sample-recoverable (read-level, `examples/site_reads.rs`)
+
+Dumping the seven spanning reads (base, MAPQ, and mismatch offsets vs the reference window) inverts
+the assumption that reassembly closes this site:
+
+| read | site | MAPQ | mismatches vs ref (offsets) |
+|---|---|---|---|
+| ×4 fragments | **G (ref)** | 60 | clean — 0–1 mismatches |
+| 12726 | **A (truth)** | 33 | 3 linked — `[-29,-26,-7]` |
+| 24279 (mate pair) | **A (truth)** | 60 | 3 linked — `[10,18,25]` |
+
+The **truth reads are the messy ones** (derived allele + linked R-haplotype variants that diverge
+from the J-reference); the **clean reference reads are the paralogs** (mismapped from a J-like
+paralogous locus, so they match the J-reference perfectly). This is the founding "CHM13-Y is
+haplogroup J, sample is R" flood mechanism at read level.
+
+The decisive constraint: **2 true fragments vs 4 reference-clean paralog fragments.** Worked both
+ways, haploid `argmax P(reads | H)` picks reference even with a perfectly POA-assembled true
+R-haplotype — more reads diverge from the assembled haplotype than from reference, and the paralogs
+match reference with ~0 mismatches so no likelihood floor excludes them. GATK's gVCF recovers it only
+by *dropping* specific paralog reads via active-region/mate machinery that spans a wider region than
+this pileup and is not reproducible without approaching full-HaplotypeCaller complexity ("Octopus in
+Rust"). So `20973395` belongs to the **documented single-sample limitation** (§6): the cohort mask +
+AppView corroboration cover it, and the gVCF fast-path (Option A) already calls it for batch imports.
+It is explicitly **not** a v2 target.
 
 ## Open questions
 
