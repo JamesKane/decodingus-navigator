@@ -190,10 +190,41 @@ flagged as artifact-laden federates *zero* candidates, though the calls still ap
 DISPLAY under the banner. Practical guidance: **use a CHM13 alignment for private-Y**; GRCh38 is
 filtered best-effort and honestly flagged.
 
+## 5a. Recall ceiling — why WGS229 shows fewer than its 12 ytree privates (measured 2026-07-07)
+
+Checked all 12 of WGS229's ytree-truth privates against every stage (`navigator private-y` +
+`NAVIGATOR_DUMP_DENOVO`). Result: the mask/tree/cohort **post-filters keep 100 % of what the caller
+emits** — the shortfall is entirely upstream, in single-sample calling:
+
+| ytree private | raw de-novo? | reason |
+|---|---|---|
+| 3318203 · 4665675 · 7062156 · 16652092 | called | clean af 1.0, depth 11–19 → **published** |
+| 14650090 | called | af 1.0, alt-depth 8 → dropped by the publish gate (≥10) |
+| 21626529 | called | af 1.0, but AZF/amplicon region → region-excluded |
+| 11008394 · 11913711 | **not called** | q20 depth **3** (< caller min-depth 4) |
+| 4284195 · 11191589 · 20973395 · 21149865 | **not called** | **~50 % alt fraction** → paralog/allele-balance gate |
+
+The ytree "12" is a **joint-genotyping** result (GATK `GenotypeGVCFs` over ~3,000 samples): cohort allele
+frequencies confidently call low-depth / ~50-%-alt sites a single sample can't. No post-filter can add a
+variant the caller never called. And at the margin (af ≈ 1.0, ~8–9 reads) a real private (`14650090`) and
+an artifact (`14725731`) are **indistinguishable single-sample** — relaxing the publish gate recovers one
+real *and* admits one artifact — so the strict gate is the right precision choice; this is a genuine
+single-sample ceiling, not a filter bug.
+
+**Root-cause fix (the only way to surface all 12 in Navigator):** get them from the **tree**, where the
+joint result already lives. off-path-known was **0** for WGS229, i.e. the served DecodingUs tree is missing
+its folded-in cohort branches / private leaves (the ytree `chrY.ftdna.refined.ingest.json`, 19,975 nodes
+incl. node `WGS229`'s 12). If the AppView served the complete refined tree, those 12 (and every cohort
+sample's) would classify as off-path-known, shared-R would be recognised natively, and the AC≥2
+cohort-shared filter could shrink to a backstop. This is AppView-side (tree ingest), not Navigator code.
+
 ## 6. Limitations
 
 - Single-sample Navigator **cannot** do the cohort carrier filter (F4) or the ≥3-carrier rule (F7) — it
   ships the cohort's precomputed mask/blocklist instead and defers corroboration to AppView.
+- **Recall is bounded by single-sample calling** (§5a): 6/12 of WGS229's joint-genotyped privates are
+  uncallable single-sample. Surfacing all of them means completing the served DecodingUs tree, not
+  re-calling — Navigator's post-filters are already lossless over the caller's output.
 - **GRCh38 private-Y is intrinsically noisier than CHM13** and the lifted masks only partly close the gap
   (its chrY reference is worse, and the tree's de-novo cohort nodes are hs1-native so shared-R leaks as
   novel). The QC banner + publish-skip make this safe, but CHM13 is the recommended reference.
