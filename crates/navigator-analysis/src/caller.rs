@@ -1182,6 +1182,14 @@ fn resolve_active(
     let (header, mut reader) = reader::open_indexed(bam_path, reference)?;
     let rparams = reassembly::ReassemblyParams {
         min_mapping_quality: params.min_mapping_quality,
+        // Debug hooks for A/B-ing the v2 levers on real data (unset → the ReassemblyParams default).
+        assemble_alt: std::env::var("NAVIGATOR_REASSEMBLY_ASSEMBLE")
+            .map(|v| v != "0")
+            .unwrap_or(reassembly::ReassemblyParams::default().assemble_alt),
+        min_read_loglik: std::env::var("NAVIGATOR_REASSEMBLY_FLOOR")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(reassembly::ReassemblyParams::default().min_read_loglik),
         ..reassembly::ReassemblyParams::default()
     };
     let w = params.reassembly_window.max(1);

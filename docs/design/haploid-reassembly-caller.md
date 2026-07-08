@@ -321,12 +321,25 @@ Findings that shaped this design:
    toggle; `DENOVO_VERSION` bump; end-to-end on the WGS229 CRAM. **DONE** — see the measured result
    below.
 3. **Windows CI on the branch** — confirm the pure-Rust claim under MSVC before merge.
-4. **POA multi-haplotype (v2)** — linked variants + short indels via `bio::alignment::poa`; extends
-   coverage beyond isolated SNVs, plus absolute-likelihood read filtering (drop reads matching no
-   local haplotype). **Correction:** an earlier draft claimed v2 "closes `20973395`." The read-level
-   evidence (below) refutes that — `20973395` is a *minority-truth paralog* site that single-sample
-   haplotype likelihood cannot resolve at any assembly sophistication short of full HaplotypeCaller
-   read-filtering. v2's real value is general linked-variant recall + specificity, **not** that site.
+4. **v2 — absolute-likelihood read filtering (default on) + assembled alt haplotype (opt-in).**
+   **DONE** — see the measured v2 result below. Two levers landed:
+   - **Read-likelihood floor (default on):** drop a read whose best ref-or-alt haplotype
+     log-likelihood is below `min_read_loglik` (−90 nats ≈ >9–10 mismatches) — it matches *neither*
+     local haplotype, i.e. paralog/junk from another locus. Monotonic (only removes reads), so it can
+     never add a false call. On WGS229 it *improved* `4284195` (GQ 16→57 by dropping one paralog read)
+     with no regression — the validated v2 win.
+   - **Assembled alt haplotype (opt-in, off by default):** build the alt haplotype from the
+     alt-supporting reads by **majority consensus over the reference frame** (not raw POA — POA over
+     ragged partial reads produced a noisy consensus that *regressed* `4284195`). It helps the
+     synthetic linked-variant case and reduces to reference+SNV when there is no concordant linked
+     variant, but on real WGS229 it still perturbs marginal ~50/50 sites and there is no real
+     linked-variant truth site yet to validate the benefit — so it ships unit-tested and opt-in
+     (`assemble_alt` / `NAVIGATOR_REASSEMBLY_ASSEMBLE=1`) pending that validation.
+   **Correction:** an earlier draft claimed v2 "closes `20973395`." The read-level evidence (below)
+   refutes that — `20973395` is a *minority-truth paralog* site that single-sample haplotype
+   likelihood cannot resolve at any assembly sophistication short of full HaplotypeCaller
+   read-filtering. v2's real value is general specificity (the floor), **not** that site.
+   Short indels (POA over the confirmed alt reads) remain a v2b follow-on.
 5. **mtDNA (v3)** — apply to chrM, but heteroplasmy needs *fractional* genotyping (not the haploid
    argmax), so it's a genuine extension, not a config flip.
 
@@ -350,6 +363,24 @@ v1 recovers the two misaligned-ref sites resolvable by the MQ gate + base-qualit
 the POC exactly), with **no regression** on the clean calls — which is structural: reassembly only
 *escalates positions the paralog gate already dropped* and *appends* recoveries, so it can never
 remove an existing pileup call. `21149865` is GATK-marginal (GQ8 / QUAL 0.18).
+
+### Measured v2 result (read-likelihood floor default-on)
+
+Same harness, comparing v1 (floor off) → v2 default (floor on, assembly off):
+
+| truth private | v1 | v2 (floor on) | change |
+|---|---|---|---|
+| 3318203 · 16652092 | called | called | none (no regression) |
+| **4284195** | C>T 10/20 **GQ16** | C>T 10/19 **GQ57** | floor drops one paralog read → higher confidence |
+| **11191589** | C>T 2/4 GQ40 | C>T 2/4 GQ40 | none |
+| 20973395 · 21149865 | dropped | dropped | none (minority-truth paralog / GATK-marginal) |
+
+The floor is a strict improvement: same recoveries, `4284195` confidence up GQ16→57, no regression,
+and monotonic (it only removes reads, so it cannot manufacture a call). The **assembled alt
+haplotype**, A/B-tested via `NAVIGATOR_REASSEMBLY_ASSEMBLE=1`, *regressed* `4284195` (raw POA lost it;
+majority-consensus still perturbed it), so it is off by default pending a real linked-variant truth
+site — the honest, evidence-driven call. `NAVIGATOR_REASSEMBLY_FLOOR` / `NAVIGATOR_REASSEMBLY_ASSEMBLE`
+are the A/B hooks.
 
 ### Why `20973395` is not single-sample-recoverable (read-level, `examples/site_reads.rs`)
 
