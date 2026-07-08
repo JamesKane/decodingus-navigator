@@ -151,9 +151,12 @@ absent ⇒ that filter is skipped. **Regeneration:** the `AC≥2` list comes fro
 8. **Masks bundled as committed repo assets** (`assets/masks/`, gzipped; `RegionMask::from_bed` gunzips
    transparently), seeded on first run (`seed_bundled_masks`) + staged for packaging.
 9. **GRCh38 lifted masks** (CrossMap `hs1ToHg38`), selected per build by `y_mask_build_token`.
+10. **GVCF-sourced calls** (§5a): `private_y_core` prefers a per-sample chrY gVCF sidecar
+    (`gvcf::read_derived_snvs`) over the pileup caller — GATK's reassembly recovers SNVs the pileup
+    caller misses. Self-mask skipped on this path; cache v2→v3.
 
-**Still open:** sha256 `AssetManifest` entries for the masks (they currently seed unverified);
-GRCh37 masks (bare-`Y` naming + the de-novo path is chrY-only).
+**Still open:** Option B — SNV local reassembly in Navigator's pileup caller (for samples with only a
+BAM, no gVCF); sha256 `AssetManifest` entries for the masks; GRCh37 masks.
 
 ### 4.4 AppView-side (F4/F7 — out of Navigator's scope, stated for completeness)
 
@@ -204,27 +207,31 @@ emits** — the shortfall is entirely upstream, in single-sample calling:
 | 11008394 · 11913711 | **not called** | q20 depth **3** (< caller min-depth 4) |
 | 4284195 · 11191589 · 20973395 · 21149865 | **not called** | **~50 % alt fraction** → paralog/allele-balance gate |
 
-The ytree "12" is a **joint-genotyping** result (GATK `GenotypeGVCFs` over ~3,000 samples): cohort allele
-frequencies confidently call low-depth / ~50-%-alt sites a single sample can't. No post-filter can add a
-variant the caller never called. And at the margin (af ≈ 1.0, ~8–9 reads) a real private (`14650090`) and
-an artifact (`14725731`) are **indistinguishable single-sample** — relaxing the publish gate recovers one
-real *and* admits one artifact — so the strict gate is the right precision choice; this is a genuine
-single-sample ceiling, not a filter bug.
+**This was first (wrongly) attributed to a single-sample-vs-joint ceiling. The test below refuted that.**
+Tested against GATK's *per-sample* `WGS229.chm13.chrY.g.vcf.gz` (HaplotypeCaller ploidy-1, **pre-joint**):
+GATK single-sample calls **all 12 derived** — including the 6 Navigator missed (`4284195` DP19/GQ44; the
+low-depth DP4–5 ones). So the 6 are single-sample-callable; the gap is **Navigator's pileup caller**, which
+has no SNV haplotype reassembly (`local_realign` is indel-only, caller.rs:7) and so rejects the misaligned-ref
+~50/50 pileup that GATK's reassembly resolves. (The served tree is *not* the issue — it is complete; per-sample
+private leaves are correctly not served, so off-path-known = 0 for a sample's own privates is by design.)
 
-**Root-cause fix (the only way to surface all 12 in Navigator):** get them from the **tree**, where the
-joint result already lives. off-path-known was **0** for WGS229, i.e. the served DecodingUs tree is missing
-its folded-in cohort branches / private leaves (the ytree `chrY.ftdna.refined.ingest.json`, 19,975 nodes
-incl. node `WGS229`'s 12). If the AppView served the complete refined tree, those 12 (and every cohort
-sample's) would classify as off-path-known, shared-R would be recognised natively, and the AC≥2
-cohort-shared filter could shrink to a backstop. This is AppView-side (tree ingest), not Navigator code.
+**Fix — Option A (implemented): source chrY calls from a per-sample GVCF when present** (§4.3 #10). GATK's
+gVCF already did the reassembly, so `private_y_core` reads its derived SNVs instead of the pileup caller;
+downstream filters are identical. `gvcf::read_derived_snvs` (min_dp 4, min_gq 20) + `chr_y_gvcf_for_alignment`
+(`NAVIGATOR_Y_GVCF` override or a `*.chry.g.vcf.gz` sibling). The self-mask is skipped on this path (the gVCF
+is the callable evidence; also avoids a CRAM walk). **Result: 9/12 recovered** (was 6/12), DISPLAY 15, PUBLISH
+4/4 truth; the min_dp-4 floor drops the misaligned DP2–3 artifact clusters without touching the DP≥4 truth.
+The 3 still missing (GQ 6/8/12) are the ones GATK's own single-sample GQ flags as needing cohort confirmation.
+Option B (SNV local reassembly in Navigator's caller, for samples with only a BAM) remains the general fix.
 
 ## 6. Limitations
 
 - Single-sample Navigator **cannot** do the cohort carrier filter (F4) or the ≥3-carrier rule (F7) — it
   ships the cohort's precomputed mask/blocklist instead and defers corroboration to AppView.
-- **Recall is bounded by single-sample calling** (§5a): 6/12 of WGS229's joint-genotyped privates are
-  uncallable single-sample. Surfacing all of them means completing the served DecodingUs tree, not
-  re-calling — Navigator's post-filters are already lossless over the caller's output.
+- **Recall is bounded by the caller, not by single-sample data** (§5a): GATK's single-sample gVCF calls all
+  12; Navigator's pileup caller (no SNV reassembly) gets 6. A gVCF sidecar closes most of the gap (9/12);
+  the general fix for BAM-only samples is SNV local reassembly (Option B). Post-filters are lossless over
+  whatever the source emits.
 - **GRCh38 private-Y is intrinsically noisier than CHM13** and the lifted masks only partly close the gap
   (its chrY reference is worse, and the tree's de-novo cohort nodes are hs1-native so shared-R leaks as
   novel). The QC banner + publish-skip make this safe, but CHM13 is the recommended reference.
