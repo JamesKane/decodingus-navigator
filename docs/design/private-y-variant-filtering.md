@@ -222,7 +222,9 @@ downstream filters are identical. `gvcf::read_derived_snvs` (min_dp 4, min_gq 20
 is the callable evidence; also avoids a CRAM walk). **Result: 9/12 recovered** (was 6/12), DISPLAY 15, PUBLISH
 4/4 truth; the min_dp-4 floor drops the misaligned DP2–3 artifact clusters without touching the DP≥4 truth.
 The 3 still missing (GQ 6/8/12) are the ones GATK's own single-sample GQ flags as needing cohort confirmation.
-Option B (SNV local reassembly in Navigator's caller, for samples with only a BAM) remains the general fix.
+Option B (SNV local reassembly in Navigator's caller, for samples with only a BAM) remains the general
+fix — specified in [`haploid-reassembly-caller.md`](haploid-reassembly-caller.md) (prove-out done: a
+pure-Rust base-quality PairHMM recovers 4/5 of the diagnostic misaligned-ref sites on WGS229).
 
 ## 6. Limitations
 
