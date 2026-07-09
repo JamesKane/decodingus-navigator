@@ -2523,7 +2523,7 @@ impl App {
     /// The (DecodingUs tree at the alignment's **native** build, full tree-locus base calls) for one
     /// alignment — the genotype [`assign_y_decodingus`] scores. Factored so the consensus pool can
     /// re-key it by SNP name and merge it with other sources.
-    async fn y_decodingus_tree_calls(
+    pub(crate) async fn y_decodingus_tree_calls(
         &self,
         alignment_id: i64,
     ) -> Result<(navigator_analysis::haplo::HaploTree, HashMap<i64, char>), AppError> {
@@ -2801,7 +2801,7 @@ impl App {
 
     /// Parse the tree, build the per-position base calls (lifting onto the alignment's build
     /// when needed), and return both. Shared by the assignment + detail entry points.
-    async fn tree_base_calls(
+    pub(crate) async fn tree_base_calls(
         &self,
         alignment_id: i64,
         contig: &str,

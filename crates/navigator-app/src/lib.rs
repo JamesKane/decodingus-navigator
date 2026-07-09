@@ -100,6 +100,11 @@ pub struct PrivateVariant {
     pub reference: char,
     pub alternate: char,
     pub depth: u32,
+    /// Reads supporting the derived (alternate) allele. `alt_depth / depth` ≈ `allele_fraction`;
+    /// carried explicitly so the publish gate can require a minimum supporting-read count. Old
+    /// cached buckets predate this field → `serde(default)` reads them as 0 (they recompute).
+    #[serde(default)]
+    pub alt_depth: u32,
     pub allele_fraction: f64,
     pub class: PrivateClass,
     /// Curated CHM13 chrY structural class at this position (palindrome / amplicon / AZF-DYZ),
@@ -139,6 +144,128 @@ impl PrivateBucket {
             .iter()
             .filter(|v| v.class == PrivateClass::Novel && v.region.is_none())
             .count()
+    }
+
+    /// The **publishable** subset: novel, unique-sequence calls that also clear the strict
+    /// novel-marker `gate` (near-homozygous allele fraction + a supporting-read floor). This is the
+    /// set we federate to the AppView as unverified singleton candidates — far stricter than the
+    /// caller's placement gates, so a paralog/contamination/low-evidence call never becomes a claim.
+    pub fn publishable(&self, gate: PublishGate) -> Vec<&PrivateVariant> {
+        self.variants.iter().filter(|v| gate.admits(v)).collect()
+    }
+
+    /// Count of [`publishable`](Self::publishable) variants under `gate`.
+    pub fn publishable_count(&self, gate: PublishGate) -> usize {
+        self.variants.iter().filter(|v| gate.admits(v)).count()
+    }
+
+    /// A QC banner when the novel-in-unique count is implausibly high for one sample (contamination /
+    /// low coverage / reference mismatch), else `None`. See [`private_y_qc_banner`].
+    pub fn qc_banner(&self) -> Option<String> {
+        navigator_domain::results_context::private_y_qc_banner(self.novel_in_unique_sequence())
+    }
+}
+
+/// Thresholds gating which private variants are confident enough to **publish** to the AppView as
+/// novel-branch candidates. Haploid chrY should be effectively homozygous, so a mixed/paralog
+/// allele fraction (0.5–0.9, which the placement caller still accepts) is rejected here, as is a
+/// call with too few supporting reads to trust as a real singleton.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PublishGate {
+    /// Minimum derived-allele fraction (haploid → expect ≈1.0).
+    pub min_allele_fraction: f64,
+    /// Minimum reads supporting the derived allele.
+    pub min_alt_depth: u32,
+}
+
+impl Default for PublishGate {
+    /// Short-read WGS defaults: near-homozygous and ≥10 supporting reads.
+    fn default() -> Self {
+        Self {
+            min_allele_fraction: 0.9,
+            min_alt_depth: 10,
+        }
+    }
+}
+
+impl PublishGate {
+    /// Gate adapted to the sample's mean read length: HiFi/long reads make a confident haploid
+    /// observation from far fewer reads (same rationale as [`adaptive_min_depth`]), so the
+    /// supporting-read floor drops to 3. The allele-fraction requirement is unchanged.
+    pub fn for_read_len(read_len: f64) -> Self {
+        let mut g = Self::default();
+        if read_len > 1000.0 {
+            g.min_alt_depth = 3;
+        }
+        g
+    }
+
+    /// Whether a variant clears the gate: it must be an unnamed novel in unique sequence, with a
+    /// near-homozygous derived fraction and enough supporting reads.
+    pub fn admits(&self, v: &PrivateVariant) -> bool {
+        v.class == PrivateClass::Novel
+            && v.region.is_none()
+            && v.allele_fraction >= self.min_allele_fraction
+            && v.alt_depth >= self.min_alt_depth
+    }
+}
+
+#[cfg(test)]
+mod publish_gate_tests {
+    use super::*;
+    use navigator_analysis::mask::YRegionClass;
+
+    fn var(class: PrivateClass, region: Option<YRegionClass>, alt_depth: u32, af: f64) -> PrivateVariant {
+        PrivateVariant {
+            position: 1_000,
+            reference: 'A',
+            alternate: 'G',
+            depth: alt_depth + 1,
+            alt_depth,
+            allele_fraction: af,
+            class,
+            region,
+        }
+    }
+
+    #[test]
+    fn publish_gate_admits_only_confident_unique_novels() {
+        let g = PublishGate::default(); // af >= 0.9, alt_depth >= 10
+        // The one that should publish: novel, unique, homozygous, deep.
+        assert!(g.admits(&var(PrivateClass::Novel, None, 30, 1.0)));
+        // Off-path-known is informational, never a novel-branch claim.
+        assert!(!g.admits(&var(PrivateClass::OffPathKnown("M269".into()), None, 30, 1.0)));
+        // Paralog-prone structural region → rejected even when deep/homozygous.
+        assert!(!g.admits(&var(PrivateClass::Novel, Some(YRegionClass::Palindrome), 30, 1.0)));
+        // Mixed allele fraction (the placement caller accepts 0.5, publishing must not).
+        assert!(!g.admits(&var(PrivateClass::Novel, None, 30, 0.6)));
+        // Too few supporting reads for short-read.
+        assert!(!g.admits(&var(PrivateClass::Novel, None, 4, 1.0)));
+    }
+
+    #[test]
+    fn hifi_gate_relaxes_depth_not_fraction() {
+        let g = PublishGate::for_read_len(15_000.0); // HiFi
+        assert_eq!(g.min_alt_depth, 3);
+        assert!(g.admits(&var(PrivateClass::Novel, None, 3, 1.0))); // 3 reads OK for HiFi
+        assert!(!g.admits(&var(PrivateClass::Novel, None, 3, 0.7))); // fraction still enforced
+    }
+
+    #[test]
+    fn publishable_subset_and_count_agree() {
+        let bucket = PrivateBucket {
+            terminal: "R-FGC29071".into(),
+            variants: vec![
+                var(PrivateClass::Novel, None, 30, 1.0),                        // publishable
+                var(PrivateClass::Novel, Some(YRegionClass::Amplicon), 30, 1.0), // structural → no
+                var(PrivateClass::OffPathKnown("Z".into()), None, 30, 1.0),      // off-path → no
+                var(PrivateClass::Novel, None, 2, 1.0),                          // shallow → no
+            ],
+        };
+        let g = PublishGate::default();
+        assert_eq!(bucket.publishable_count(g), 1);
+        assert_eq!(bucket.publishable(g).len(), 1);
+        assert_eq!(bucket.novel_in_unique_sequence(), 2); // DISPLAY keeps the shallow one
     }
 }
 pub use navigator_analysis::ibd::IbdSegment;
@@ -891,8 +1018,9 @@ pub fn seed_assets_from(src_dir: &Path, dest_dir: &Path) -> std::io::Result<Seed
             continue;
         }
         let Some(name) = path.file_name() else { continue };
-        // Skip hidden files (e.g. the staging `.staged` marker) — only real assets are seeded.
-        if name.to_string_lossy().starts_with('.') {
+        // Skip hidden files (e.g. the staging `.staged` marker) and docs (a bundled README) — only
+        // real data assets are seeded.
+        if name.to_string_lossy().starts_with('.') || path.extension().and_then(|e| e.to_str()) == Some("md") {
             continue;
         }
         let dest = dest_dir.join(name);
@@ -939,6 +1067,47 @@ pub fn seed_bundled_assets() -> SeedSummary {
         return SeedSummary::default();
     };
     let dest = refgenome_cache::base_dir().join("ancestry");
+    seed_assets_from(&src, &dest).unwrap_or_default()
+}
+
+/// Locate the bundled chrY-mask resource directory (`masks/`) — the private-Y filtering assets
+/// (callable mask + cohort-shared exclude). Same resolution as [`bundled_assets_dir`], plus a
+/// compile-time repo path so a `cargo run` dev build seeds straight from the checked-in
+/// `assets/masks/` (these masks are small enough to live in the git repo, unlike the ancestry `.bin`s).
+fn bundled_masks_dir() -> Option<PathBuf> {
+    if let Ok(p) = std::env::var("NAVIGATOR_BUNDLED_MASKS") {
+        let p = PathBuf::from(p);
+        if p.is_dir() {
+            return Some(p);
+        }
+    }
+    // Dev build: the checked-in repo assets (exists on a developer's machine, not in a package).
+    let repo_assets = PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/masks"));
+    if repo_assets.is_dir() {
+        return Some(repo_assets);
+    }
+    let exe = std::env::current_exe().ok()?;
+    let dir = exe.parent()?;
+    [
+        dir.join("../Resources/masks"),         // macOS .app/Contents/MacOS → ../Resources
+        dir.join("masks"),                       // Windows (alongside) / portable
+        dir.join("../lib/DUNavigator/masks"),    // Linux .deb/AppImage usr/bin → usr/lib/<app>
+        dir.join("../share/DUNavigator/masks"),  // Linux usr/share/<app>
+        dir.join("resources/masks"),             // generic
+    ]
+    .into_iter()
+    .find(|c| c.is_dir())
+}
+
+/// Seed the bundled chrY private-Y masks into `<cache base>/masks/` on first run (gzipped BEDs;
+/// [`RegionMask::from_bed`](navigator_analysis::mask::RegionMask::from_bed) reads them transparently).
+/// Never overwrites, so a user's own uncompressed override wins. Best-effort ⇒ empty summary when no
+/// source is present.
+pub fn seed_bundled_masks() -> SeedSummary {
+    let Some(src) = bundled_masks_dir() else {
+        return SeedSummary::default();
+    };
+    let dest = refgenome_cache::base_dir().join("masks");
     seed_assets_from(&src, &dest).unwrap_or_default()
 }
 

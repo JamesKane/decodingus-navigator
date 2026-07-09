@@ -41,6 +41,25 @@ pub struct PrivateYFact {
     pub structural: usize,
 }
 
+/// Above this many novel-in-unique private-Y calls, a single sample is almost certainly reporting
+/// artifacts rather than real new-branch candidates. The de-novo tree pipeline's per-WGS-sample novel
+/// count runs ~3–39 (median), so a count in the dozens is normal and the low hundreds is a red flag —
+/// typically contamination, shallow/uneven coverage, or a reference-build mismatch.
+pub const PRIVATE_Y_QC_WARN: usize = 50;
+
+/// A one-line QC banner when the novel-in-unique private-Y count is implausibly high for one sample
+/// (see [`PRIVATE_Y_QC_WARN`]), else `None`. Surfaced in reports and the `private-y` CLI so an
+/// elevated count reads as "check this sample" rather than "you have this many new branches".
+pub fn private_y_qc_banner(novel_unique: usize) -> Option<String> {
+    (novel_unique >= PRIVATE_Y_QC_WARN).then(|| {
+        format!(
+            "⚠ elevated private-Y count ({novel_unique} novel in unique sequence) — unusually high for \
+             one sample; check for contamination, low/uneven coverage, or a reference-build mismatch \
+             before treating these as real new branches"
+        )
+    })
+}
+
 /// mtDNA differences from rCRS, summarized by region with a few example notations.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MtMutationsFact {
@@ -149,6 +168,10 @@ fn private_y_section(private_y: &Option<PrivateYFact>) -> Option<String> {
             p.structural
         ));
     }
+    if let Some(warn) = private_y_qc_banner(p.novel_unique) {
+        s.push_str(&warn);
+        s.push('\n');
+    }
     Some(s)
 }
 
@@ -222,6 +245,24 @@ mod tests {
     use crate::ancestry::SuperPopulationSummary;
     use crate::brief::{AncestryBrief, Headline, LineageBrief, LineageKind, PackStatus, SubjectBrief, TestBrief};
     use crate::llm_prompt::mentions_health;
+
+    #[test]
+    fn qc_banner_only_fires_above_threshold() {
+        // A normal WGS sample (single-/low-double-digit novels) is silent.
+        assert!(private_y_qc_banner(7).is_none());
+        assert!(private_y_qc_banner(PRIVATE_Y_QC_WARN - 1).is_none());
+        // At/above the threshold, warn and name the count + the likely causes.
+        let w = private_y_qc_banner(PRIVATE_Y_QC_WARN).expect("should warn at threshold");
+        assert!(w.contains(&PRIVATE_Y_QC_WARN.to_string()) && w.contains("contamination"));
+        // And it appears in the rendered section.
+        let fact = PrivateYFact {
+            novel_unique: 400,
+            off_path: 3,
+            structural: 10,
+        };
+        let section = private_y_section(&Some(fact)).unwrap();
+        assert!(section.contains("elevated private-Y count (400"));
+    }
 
     fn base_brief() -> SubjectBrief {
         SubjectBrief {

@@ -41,6 +41,8 @@ pub enum Command {
     DebugDescent(ShowArgs),
     /// Diagnostic: dump the raw read pileup (ref + A/C/G/T) behind each lineage call for one alignment.
     DebugCalls(DebugCallsArgs),
+    /// Diagnostic: the filtered private-Y bucket for an alignment — DISPLAY vs PUBLISH counts.
+    PrivateY(DebugCallsArgs),
     /// List projects with their subject counts.
     Projects(ProbeArgs),
     /// De-novo diploid variant calling → VCF (whole-genome, or a single `--contig`).
@@ -326,6 +328,7 @@ pub fn run(command: Command) -> i32 {
             Command::DebugPlace(a) => debug_place(a).await,
             Command::DebugDescent(a) => debug_descent(a).await,
             Command::DebugCalls(a) => debug_calls(a).await,
+            Command::PrivateY(a) => private_y(a).await,
             Command::Projects(a) => projects(a).await,
             Command::Call(a) => call(a).await,
             Command::LiftVcf(a) => lift_vcf(a).await,
@@ -1033,6 +1036,102 @@ async fn debug_calls(args: DebugCallsArgs) -> i32 {
             1
         }
     }
+}
+
+async fn private_y(args: DebugCallsArgs) -> i32 {
+    let app = match open(args.db).await {
+        Ok(a) => a,
+        Err(c) => return c,
+    };
+    let alignment_id = match args.alignment {
+        Some(id) => id,
+        None => {
+            let Some(subject) = args.subject.as_deref() else {
+                eprintln!("error: provide --alignment <id> or --subject <id>");
+                return 2;
+            };
+            let guid = match find_subject(&app, subject).await {
+                Ok(Some(g)) => g,
+                Ok(None) => {
+                    eprintln!("error: no subject with identifier \"{subject}\"");
+                    return 1;
+                }
+                Err(c) => return c,
+            };
+            match app.pick_y_debug_alignment(guid).await {
+                Ok(Some(id)) => id,
+                Ok(None) => {
+                    eprintln!("error: subject \"{subject}\" has no alignments");
+                    return 1;
+                }
+                Err(e) => {
+                    eprintln!("error: {e}");
+                    return 1;
+                }
+            }
+        }
+    };
+    if std::env::var("NAVIGATOR_DUMP_DENOVO").is_ok() {
+        match app.run_denovo_for_alignment(alignment_id, "chrY".to_string()).await {
+            Ok(calls) => {
+                eprintln!("raw de-novo chrY calls: {}", calls.len());
+                for c in &calls {
+                    println!("DENOVO\t{}\t{}\t{}\t{}\t{:.2}", c.position, c.depth, c.alt_depth, c.alternate_allele, c.allele_fraction);
+                }
+                return 0;
+            }
+            Err(e) => {
+                eprintln!("error: {e}");
+                return 1;
+            }
+        }
+    }
+    let bucket = match app.private_y_variants_self_masked(alignment_id).await {
+        Ok(b) => b,
+        Err(e) => {
+            eprintln!("error: {e}");
+            return 1;
+        }
+    };
+    let gate = app
+        .publish_gate_for_alignment(alignment_id)
+        .await
+        .unwrap_or_default();
+    println!("alignment {alignment_id} — terminal {}", bucket.terminal);
+    println!("  DISPLAY (filtered) total: {}", bucket.variants.len());
+    println!("    off-path known:          {}", bucket.off_path());
+    println!("    novel:                   {}", bucket.novel());
+    println!("    novel in structural zone:{}", bucket.in_structural_region());
+    println!("    novel in unique seq:     {}", bucket.novel_in_unique_sequence());
+    println!(
+        "  PUBLISH (gate af>={}, alt>={}): {}",
+        gate.min_allele_fraction,
+        gate.min_alt_depth,
+        bucket.publishable_count(gate)
+    );
+    if let Some(warn) = bucket.qc_banner() {
+        println!("  {warn}");
+    }
+    // Per-variant detail (pos class region depth altDepth af publishable) for diagnosis.
+    println!("  pos\tclass\tregion\tdepth\talt\taf\tpublish");
+    for v in &bucket.variants {
+        let class = match &v.class {
+            navigator_app::PrivateClass::Novel => "novel".to_string(),
+            navigator_app::PrivateClass::OffPathKnown(n) => format!("known:{n}"),
+        };
+        let region = v.region.map(|r| r.as_str()).unwrap_or("-");
+        println!(
+            "  {}\t{}\t{}\t{}\t{}\t{:.2}\t{}",
+            v.position,
+            class,
+            region,
+            v.depth,
+            v.alt_depth,
+            v.allele_fraction,
+            gate.admits(v)
+        );
+    }
+    0
 }
 
 async fn show(args: ShowArgs) -> i32 {

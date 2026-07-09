@@ -2,6 +2,56 @@
 //! 2026-06 simplification round; `use super::*` reaches the crate-root types + free helpers.
 use super::*;
 
+/// Load a bundled chrY position mask/blocklist BED for a build (best-effort). `env_var` overrides the
+/// path; otherwise the seeded `<cache base>/masks/<stem>.<build_token>.bed`, trying the gzipped
+/// `.bed.gz` first (how the bundled assets ship) then a plain `.bed`. Returns `None` if absent,
+/// unparseable, or empty — so a missing cohort asset simply skips that filter rather than blocking.
+fn load_y_position_bed(env_var: &str, stem: &str, build_token: &str) -> Option<navigator_analysis::mask::RegionMask> {
+    let candidates: Vec<PathBuf> = if let Ok(p) = std::env::var(env_var) {
+        vec![PathBuf::from(p)]
+    } else {
+        let dir = refgenome_cache::base_dir().join("masks");
+        let file = format!("{stem}.{build_token}.bed");
+        vec![dir.join(format!("{file}.gz")), dir.join(file)]
+    };
+    candidates.into_iter().find_map(|path| {
+        navigator_analysis::mask::RegionMask::from_bed(&path, "chrY")
+            .ok()
+            .filter(|m| !m.is_empty())
+    })
+}
+
+/// Locate a per-sample chrY GVCF for an alignment (the ytree `*.chrY.g.vcf.gz` sidecar): the
+/// `NAVIGATOR_Y_GVCF` path override, else a sibling of the alignment's BAM/CRAM whose name ends
+/// `.chry.g.vcf.gz`. `None` when absent — the private-Y path then falls back to the pileup caller.
+fn chr_y_gvcf_for_alignment(aln: &Alignment) -> Option<PathBuf> {
+    if let Ok(p) = std::env::var("NAVIGATOR_Y_GVCF") {
+        let p = PathBuf::from(p);
+        if p.is_file() {
+            return Some(p);
+        }
+    }
+    let dir = Path::new(aln.bam_path.as_ref()?).parent()?;
+    std::fs::read_dir(dir).ok()?.flatten().find_map(|e| {
+        let name = e.file_name();
+        name.to_string_lossy()
+            .to_ascii_lowercase()
+            .ends_with(".chry.g.vcf.gz")
+            .then(|| e.path())
+    })
+}
+
+/// The bundled-mask filename token for an alignment's reference build, or `None` when no chrY masks
+/// ship for it. CHM13 masks are native (hs1); the GRCh38 masks are lifted from them (CrossMap
+/// hs1→hg38). GRCh37 has no masks yet (bare-`Y` contig naming + no lifted set).
+fn y_mask_build_token(build: &str) -> Option<&'static str> {
+    match canonical_build(build) {
+        Some(ReferenceBuild::Chm13v2 | ReferenceBuild::Chm13v2MaskedRcrs) => Some("chm13v2"),
+        Some(ReferenceBuild::Grch38) => Some("grch38"),
+        _ => None,
+    }
+}
+
 impl App {
     // ---- fast path: place haplogroups from precomputed pipeline GVCFs ---------
 
@@ -368,9 +418,11 @@ impl App {
     /// callability at lower depth, and the CALLABLE-run gate scales with molecule length
     /// (`f`·fragment), so long molecules clear it over far more of chrY. Requires the BAM.
     pub async fn callable_chr_intervals(&self, alignment_id: i64, contig: &str) -> Result<Vec<(i64, i64)>, AppError> {
-        let aln = self.alignment_or_err(alignment_id).await?;
-        let bam = PathBuf::from(aln.bam_path.ok_or(AppError::MissingPaths(alignment_id))?);
-        let reference = aln.reference_path.map(PathBuf::from);
+        // Resolve the reference via the gateway when the alignment has no stored path — a CRAM can't
+        // be decoded without one, and most imported alignments leave `reference_path` null (the build
+        // alone is recorded). Same resolution the de-novo caller uses.
+        let (bam, reference) = self.alignment_bam_reference(alignment_id).await?;
+        let reference = Some(reference);
         let contig = contig.to_string();
         tokio::task::spawn_blocking(move || {
             let (read_len, frag_len) = coverage::estimate_molecule_lengths(&bam, reference.as_deref())?;
@@ -403,18 +455,30 @@ impl App {
 
     /// [`private_y_variants`] using the sample's **own** callable-Y BED as the mask
     /// (self-referential — adapts to the sample's depth and read tech; no external file).
+    ///
+    /// With a per-sample GVCF sidecar the self-mask is **skipped**: the GVCF's own confidence
+    /// gating is the callable evidence (re-imposing Navigator's callable-loci depth threshold would
+    /// discard GATK calls the whole point is to trust), and skipping it avoids a CRAM walk — so the
+    /// GVCF fast path stays fast. Reliability then comes from the cohort callable mask + GVCF GQ.
     pub async fn private_y_variants_self_masked(&self, alignment_id: i64) -> Result<PrivateBucket, AppError> {
-        let intervals = self.callable_chr_intervals(alignment_id, "chrY").await?;
-        let mask = navigator_analysis::mask::RegionMask::from_intervals(intervals);
-        let bucket = self.private_y_core(alignment_id, Some(mask)).await?;
-        // Persist the self-masked bucket so it reloads instead of recomputing next session.
-        self.save_analysis(alignment_id, "private_y", "1", &bucket).await?;
+        let aln = self.alignment_or_err(alignment_id).await?;
+        let mask = if chr_y_gvcf_for_alignment(&aln).is_some() {
+            None
+        } else {
+            let intervals = self.callable_chr_intervals(alignment_id, "chrY").await?;
+            Some(navigator_analysis::mask::RegionMask::from_intervals(intervals))
+        };
+        let bucket = self.private_y_core(alignment_id, mask).await?;
+        // Persist the self-masked bucket so it reloads instead of recomputing next session. Version
+        // "3": prefers a per-sample GVCF sidecar as the derived-call source (was pileup-only in v2),
+        // so v2 blobs must recompute rather than reload.
+        self.save_analysis(alignment_id, "private_y", "3", &bucket).await?;
         Ok(bucket)
     }
 
     /// Cached self-masked private-Y bucket for an alignment, if previously computed.
     pub async fn cached_private_y(&self, alignment_id: i64) -> Result<Option<PrivateBucket>, AppError> {
-        self.load_analysis(alignment_id, "private_y", "1").await
+        self.load_analysis(alignment_id, "private_y", "3").await
     }
 
     /// Shared core: assign Y, de-novo chrY, subtract the backbone, optionally mask, classify.
@@ -454,17 +518,53 @@ impl App {
         navigator_analysis::mask::YStructuralRegions::from_beds(&amplicon, &palindrome, &azf_dyz).ok()
     }
 
+    /// Derive chrY private-variant candidates from a per-sample GVCF, returning the same
+    /// [`VariantCall`] shape the pileup de-novo path produces so `private_y_core`'s downstream
+    /// classification is identical. GATK's reassembly recovers SNVs the pileup caller misses.
+    async fn run_denovo_from_gvcf(&self, gvcf: &Path) -> Result<Vec<VariantCall>, AppError> {
+        let gvcf = gvcf.to_path_buf();
+        let snvs = tokio::task::spawn_blocking(move || {
+            // min_dp 4 (over the reader's permissive default 2): a real private SNV is covered by ≥4
+            // reads, whereas a misaligned-read cluster smears 2–3 reads across many nearby false SNVs
+            // — so the depth floor removes those artifact clusters without touching the (DP≥4) truth.
+            let params = navigator_analysis::gvcf::GvcfReadParams { min_dp: 4, min_gq: 20 };
+            navigator_analysis::gvcf::read_derived_snvs(&gvcf, "chrY", &params)
+        })
+        .await??;
+        Ok(snvs
+            .into_iter()
+            .map(|s| VariantCall {
+                contig: "chrY".to_string(),
+                position: s.position,
+                reference_allele: s.reference,
+                alternate_allele: s.alternate,
+                depth: s.depth,
+                alt_depth: s.alt_depth,
+                allele_fraction: s.allele_fraction,
+                quality: None,
+            })
+            .collect())
+    }
+
     async fn private_y_core(
         &self,
         alignment_id: i64,
         mask: Option<navigator_analysis::mask::RegionMask>,
     ) -> Result<PrivateBucket, AppError> {
-        let tree_json = self.fetch_ftdna_y_tree().await?;
-        let tree = navigator_analysis::haplo::parse_ftdna_json(&tree_json).map_err(AppError::Import)?;
-
-        let assignment = self
-            .assign_haplogroup_from_alignment(alignment_id, "chrY", &tree_json)
-            .await?;
+        // Classify novels against the **DecodingUs** tree — the app's placement authority, which
+        // folds in the cohort-derived branches (from the de-novo tree pipeline). A shared lineage
+        // variant is named there, so it reads as OffPathKnown, not a false "novel"; a variant absent
+        // from this tree yet shared across the cohort is genuinely suspect. FTDNA fallback keeps the
+        // report working when the AppView tree is unavailable or the build has no DecodingUs coords.
+        let (tree, tree_calls) = match self.y_decodingus_tree_calls(alignment_id).await {
+            Ok(tc) => tc,
+            Err(e) => {
+                eprintln!("DecodingUs Y tree unavailable ({e}); private-Y classifying against FTDNA");
+                let tree_json = self.fetch_ftdna_y_tree().await?;
+                self.tree_base_calls(alignment_id, "chrY", &tree_json).await?
+            }
+        };
+        let assignment = assemble_assignment(&tree, &tree_calls);
         let terminal = assignment
             .ranked
             .first()
@@ -472,25 +572,51 @@ impl App {
         let path = navigator_analysis::haplo::path_positions(&tree, terminal.id);
         let known = navigator_analysis::haplo::tree_positions(&tree);
 
-        // The structural BEDs are in CHM13 chrY coordinates, so they only apply to a CHM13
-        // alignment (the de-novo positions are in the alignment's build). Best-effort.
+        // The structural BEDs are in CHM13 chrY coordinates, so they only annotate a CHM13 alignment.
+        // The cohort masks apply per build: native for CHM13, CrossMap-lifted (hs1→hg38) for GRCh38.
         let aln = self.alignment_or_err(alignment_id).await?;
-        let regions = match canonical_build(&aln.reference_build) {
-            Some(ReferenceBuild::Chm13v2 | ReferenceBuild::Chm13v2MaskedRcrs) => self.y_structural_regions().await,
-            _ => None,
-        };
+        let is_chm13 = matches!(
+            canonical_build(&aln.reference_build),
+            Some(ReferenceBuild::Chm13v2 | ReferenceBuild::Chm13v2MaskedRcrs)
+        );
+        let regions = if is_chm13 { self.y_structural_regions().await } else { None };
+        // L2: the cohort **callable mask** (Poznik-style, CALLABLE in ≥90% of a ~3k-male cohort) —
+        // only ~25% of non-PAR chrY is reliably callable cohort-wide. L3: a **cohort-shared-sites**
+        // blocklist — every position that varies with ≥2 carriers across the cohort (plus homoplasy
+        // hotspots). A real shared lineage variant belongs in the DecodingUs tree (and so classifies
+        // as off-path-known above); one that is cohort-shared yet *absent* from the tree is a suspect
+        // recurrent artifact, not a private SNP. A truly private variant has a single cohort carrier,
+        // so it survives this filter. This is the single-sample stand-in for the de-novo pipeline's
+        // cohort carrier filter. Bundled per build (CHM13 native, GRCh38 lifted); absent ⇒ skipped.
+        let mask_token = y_mask_build_token(&aln.reference_build);
+        let cohort_mask =
+            mask_token.and_then(|t| load_y_position_bed("NAVIGATOR_Y_CALLABLE_MASK", "chrY_callable_mask", t));
+        let cohort_shared =
+            mask_token.and_then(|t| load_y_position_bed("NAVIGATOR_Y_COHORT_SHARED", "chrY_cohort_shared_sites", t));
 
-        // De-novo chrY (cached as an artifact), then keep only off-backbone, callable calls.
-        let denovo = self.run_denovo_for_alignment(alignment_id, "chrY".to_string()).await?;
+        // Derived-call source. Prefer a per-sample chrY GVCF (GATK HaplotypeCaller's local haplotype
+        // reassembly resolves misaligned-ref ~50/50 sites the pileup caller drops — see the WGS229
+        // recall gap); fall back to Navigator's de-novo pileup caller when no sidecar is present.
+        let denovo = match chr_y_gvcf_for_alignment(&aln) {
+            Some(gvcf) => {
+                eprintln!("private-Y: sourcing chrY calls from GVCF sidecar {}", gvcf.display());
+                self.run_denovo_from_gvcf(&gvcf).await?
+            }
+            None => self.run_denovo_for_alignment(alignment_id, "chrY".to_string()).await?,
+        };
+        // Then keep only off-backbone, callable, non-shared calls.
         let mut variants: Vec<PrivateVariant> = denovo
             .iter()
             .filter(|c| !path.contains(&c.position))
-            .filter(|c| mask.as_ref().map_or(true, |m| m.contains(c.position)))
+            .filter(|c| mask.as_ref().map_or(true, |m| m.contains(c.position))) // self-callable
+            .filter(|c| cohort_mask.as_ref().map_or(true, |m| m.contains(c.position))) // L3 cohort callable mask
+            .filter(|c| cohort_shared.as_ref().map_or(true, |m| !m.contains(c.position))) // L4 cohort-shared exclude
             .map(|c| PrivateVariant {
                 position: c.position,
                 reference: c.reference_allele,
                 alternate: c.alternate_allele,
                 depth: c.depth,
+                alt_depth: c.alt_depth,
                 allele_fraction: c.allele_fraction,
                 class: match known.get(&c.position) {
                     Some(name) => PrivateClass::OffPathKnown(name.clone()),

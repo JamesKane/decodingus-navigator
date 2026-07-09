@@ -18,3 +18,7 @@ bincode = "1.3"
 sha2 = "0.10"
 rayon = "1"
 flate2 = "1"
+# Pure-Rust POA assembly + pairwise (SW/affine) + PairHMM genotyping for the reassembly caller
+# (Option B). Chosen over C-binding POA/WFA crates and htslib-based lorikeet because those lean on
+# autotools/Make/POSIX and don't build under MSVC — bio and its deps are pure Rust, Windows-clean.
+bio = "4"

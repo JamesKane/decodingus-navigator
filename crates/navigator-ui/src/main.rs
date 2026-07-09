@@ -32,6 +32,12 @@ fn main() -> eframe::Result<()> {
     if seeded.copied > 0 {
         eprintln!("seeded {} bundled asset(s) into the cache", seeded.copied);
     }
+    // Likewise seed the chrY private-Y filtering masks (callable mask + cohort-shared exclude) into
+    // ~/.decodingus/masks/. These ship gzipped in the repo `assets/masks/`, so a dev build seeds too.
+    let seeded_masks = navigator_app::seed_bundled_masks();
+    if seeded_masks.copied > 0 {
+        eprintln!("seeded {} bundled mask(s) into the cache", seeded_masks.copied);
+    }
 
     // With a subcommand, run headless (ingest/probe) and exit; with none, launch the GUI.
     let parsed = cli::Cli::parse();
