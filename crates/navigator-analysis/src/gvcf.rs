@@ -591,6 +591,6 @@ chrM\t100\t.\tC\tT,<NON_REF>\t500\t.\tDP=30\tGT:AD:DP:GQ:PL\t1:0,30,0:30:99:510,
         assert_eq!(var.ad, Some((0, 18))); // (ref, carried-alt)
         assert_eq!(var.gq, Some(99));
 
-        assert!(ev.get(&3000000).is_none()); // uncovered → no-call
+        assert!(!ev.contains_key(&3000000)); // uncovered → no-call
     }
 }
