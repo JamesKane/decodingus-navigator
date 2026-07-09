@@ -7,7 +7,7 @@ use super::*;
 /// contigs / lift paths get distinct cache rows.
 const GENOTYPE_KIND: &str = "tree-genotype";
 
-/// Session memo of fetched haplotree JSON (`cache_file → body`), shared by [`App::fetch_tree`] and
+/// Session memo of fetched haplotree JSON (resolved cache path → body), shared by [`App::fetch_tree`] and
 /// cleared by [`App::refresh_trees`]. Trees are 4–121 MB and consulted many times per placement, so
 /// they're resolved at most once per process; a corrected AppView tree is picked up by clearing this
 /// + the on-disk cache and re-fetching.
@@ -2049,12 +2049,16 @@ impl App {
         // blocks on the network. Resolve each tree at most once per process and serve every later call
         // from memory — trees are effectively static within a session, so this is the batch's biggest
         // win (a project pass was spending minutes per subject re-fetching the 121 MB FTDNA tree).
+        // Keyed by the *resolved* path, not the bare file name: `NAVIGATOR_TREE_DIR` can point the
+        // same `cache_file` at different trees, and a name-keyed memo would serve the first one for
+        // the rest of the process.
+        let path = tree_cache_path(cache_file);
+        let key = path.to_string_lossy().into_owned();
         let memo = tree_memo();
-        if let Some(hit) = memo.lock().unwrap().get(cache_file).cloned() {
+        if let Some(hit) = memo.lock().unwrap().get(&key).cloned() {
             return Ok(hit);
         }
 
-        let path = tree_cache_path(cache_file);
         let cached = std::fs::read_to_string(&path).ok().filter(|c| !c.trim().is_empty());
         // A fresh (within-TTL) on-disk cache short-circuits the network entirely.
         let fresh = cached.is_some() && tree_cache_is_fresh(&path);
@@ -2093,7 +2097,7 @@ impl App {
                 },
             }
         };
-        memo.lock().unwrap().insert(cache_file.to_string(), json.clone());
+        memo.lock().unwrap().insert(key, json.clone());
         Ok(json)
     }
 
