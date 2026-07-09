@@ -280,6 +280,113 @@ pub fn read_derived_snvs_from<R: BufRead>(
     Ok(out)
 }
 
+/// Per-target genotype evidence for the branch-report tool. Unlike [`read_called_bases`] /
+/// [`read_derived_snvs`] this is **not gated** on depth/quality — a spot-check report wants to show
+/// low-confidence evidence too (the *call* comes from a separate, gated pass). A target covered by a
+/// confident `<NON_REF>` ref block reports `refblock: true` with the block `GQ` (DP/AD omitted — those
+/// are the "full" MIN_DP columns); a variant record reports `DP`, `AD = (ref, carried-alt)`, and `GQ`.
+/// A variant record overrides a ref block at the same position; positions with no covering record are
+/// absent from the map (no-call).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct GvcfSiteEvidence {
+    /// Carried GVCF allele index: `0` = hom-ref/ancestral, `≥1` = a derived ALT, `None` = missing GT.
+    pub allele: Option<u32>,
+    pub dp: Option<u32>,
+    pub ad: Option<(u32, u32)>,
+    pub gq: Option<u32>,
+    pub refblock: bool,
+}
+
+/// Read per-target [`GvcfSiteEvidence`] from a ploidy-1 GVCF (ungated). See [`GvcfSiteEvidence`].
+pub fn read_site_evidence(
+    gvcf: &Path,
+    contig: &str,
+    targets: &HashSet<i64>,
+) -> Result<HashMap<i64, GvcfSiteEvidence>, AnalysisError> {
+    let file = std::fs::File::open(gvcf).map_err(|e| AnalysisError::io(gvcf, e))?;
+    read_site_evidence_from(bgzf::io::Reader::new(file), contig, targets)
+}
+
+/// Decode core over any `BufRead` (plain-text VCF in tests).
+pub fn read_site_evidence_from<R: BufRead>(
+    mut reader: R,
+    contig: &str,
+    targets: &HashSet<i64>,
+) -> Result<HashMap<i64, GvcfSiteEvidence>, AnalysisError> {
+    let mut sorted: Vec<i64> = targets.iter().copied().collect();
+    sorted.sort_unstable();
+
+    let mut out: HashMap<i64, GvcfSiteEvidence> = HashMap::new();
+    let mut line = String::new();
+    loop {
+        line.clear();
+        let n = reader
+            .read_line(&mut line)
+            .map_err(|e| AnalysisError::Message(format!("reading gvcf: {e}")))?;
+        if n == 0 {
+            break;
+        }
+        let l = line.trim_end_matches(['\n', '\r']);
+        if l.is_empty() || l.starts_with('#') {
+            continue;
+        }
+        let mut col = l.split('\t');
+        let chrom = col.next().unwrap_or("");
+        if chrom != contig {
+            continue;
+        }
+        let pos: i64 = match col.next().and_then(|s| s.parse().ok()) {
+            Some(p) => p,
+            None => continue,
+        };
+        let _id = col.next();
+        let _refa = col.next().unwrap_or("");
+        let alt = col.next().unwrap_or("");
+        let (_qual, _filter) = (col.next(), col.next());
+        let info = col.next().unwrap_or("");
+        let format = col.next().unwrap_or("");
+        let sample = col.next().unwrap_or("");
+
+        let allele = format_field(format, sample, "GT")
+            .and_then(|gt| gt.split(['/', '|']).next().unwrap_or(gt).parse::<u32>().ok());
+        let gq = format_field(format, sample, "GQ").and_then(|s| s.parse::<u32>().ok());
+
+        if alt == "<NON_REF>" {
+            // Confident hom-ref ref block over [POS, END] → ancestral observation at each target.
+            if allele != Some(0) {
+                continue;
+            }
+            let end = info_end(info).unwrap_or(pos);
+            for &t in targets_in_range(&sorted, pos, end) {
+                out.entry(t).or_insert(GvcfSiteEvidence {
+                    allele: Some(0),
+                    dp: None,
+                    ad: None,
+                    gq,
+                    refblock: true,
+                });
+            }
+        } else {
+            if !targets.contains(&pos) {
+                continue;
+            }
+            let dp = format_field(format, sample, "DP").and_then(|s| s.parse::<u32>().ok());
+            let ad_vec: Vec<u32> = format_field(format, sample, "AD")
+                .map(|s| s.split(',').filter_map(|d| d.parse::<u32>().ok()).collect())
+                .unwrap_or_default();
+            let ad = if ad_vec.is_empty() {
+                None
+            } else {
+                let alt_idx = allele.filter(|&a| a >= 1).unwrap_or(1) as usize;
+                Some((ad_vec[0], ad_vec.get(alt_idx).copied().unwrap_or(0)))
+            };
+            // A variant record is more specific than any ref block at the same site → override.
+            out.insert(pos, GvcfSiteEvidence { allele, dp, ad, gq, refblock: false });
+        }
+    }
+    Ok(out)
+}
+
 /// Assemble the `position → observed base` map [`crate::haplo::score`] consumes from the
 /// decoded GVCF facts. A variant (derived) base wins; otherwise a callable hom-ref site takes
 /// the **reference genome base** at that position (`ref_base`); otherwise the position is a
@@ -461,5 +568,29 @@ chrM\t100\t.\tC\tT,<NON_REF>\t500\t.\tDP=30\tGT:AD:DP:GQ:PL\t1:0,30,0:30:99:510,
             "expected many callable sites on a real chrY GVCF"
         );
         assert!(c.variant_bases.values().all(|b| matches!(b, 'A' | 'C' | 'G' | 'T')));
+    }
+
+    #[test]
+    fn site_evidence_surfaces_dp_ad_gq_for_variants_and_gq_for_ref_blocks() {
+        // 2459000: inside the 2458321–2459920 ref block. 2459921: the G>A variant (AD 0,18,0 / DP18 /
+        // GQ99). 3000000: not covered by any record.
+        let t = targets(&[2459000, 2459921, 3000000]);
+        let ev = read_site_evidence_from(SAMPLE_GVCF.as_bytes(), "chrY", &t).unwrap();
+
+        let block = ev.get(&2459000).expect("ref-block target present");
+        assert!(block.refblock);
+        assert_eq!(block.allele, Some(0)); // hom-ref / ancestral
+        assert_eq!(block.gq, Some(99));
+        assert_eq!(block.dp, None); // MIN_DP is a "full" column, omitted in core
+        assert_eq!(block.ad, None);
+
+        let var = ev.get(&2459921).expect("variant target present");
+        assert!(!var.refblock);
+        assert_eq!(var.allele, Some(1)); // derived
+        assert_eq!(var.dp, Some(18));
+        assert_eq!(var.ad, Some((0, 18))); // (ref, carried-alt)
+        assert_eq!(var.gq, Some(99));
+
+        assert!(ev.get(&3000000).is_none()); // uncovered → no-call
     }
 }
