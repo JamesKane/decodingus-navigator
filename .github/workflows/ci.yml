@@ -1,0 +1,147 @@
+# Pre-merge CI: build + test + lint on every branch push and PR. The load-bearing job is
+# `windows-msvc` — it enforces the project's hard constraint that the whole workspace (notably the
+# rust-bio `bio` dependency behind the haploid reassembly caller) compiles and tests clean under the
+# MSVC toolchain, since Windows is ~90% of the user base. See docs/design/haploid-reassembly-caller.md.
+#
+# The workspace has path dependencies on the sibling `decodingus-shared` repo (du-domain / du-atproto
+# / du-bio at ../decodingus-shared), so every job checks out BOTH repos as siblings and runs cargo
+# from the navigator checkout. decodingus-shared is pinned to `main` (co-developed; kept in sync).
+name: CI
+
+on:
+  push:
+    branches: [main, "feat/**"]
+  pull_request:
+
+# A newer push to the same ref supersedes an in-flight run.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # Fast feedback on Linux: the clippy lint gate + the full test suite (ignored live-BAM/network
+  # tests are skipped by default) — the same gates developers run locally, in CI.
+  check-linux:
+    name: check (linux)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout navigator
+        uses: actions/checkout@v4
+        with:
+          path: decodingus-navigator
+
+      # Sibling shared crates. If decodingus-shared is private, add a SHARED_REPO_TOKEN secret
+      # (a PAT with repo:read); for a public repo the default job token suffices.
+      - name: Checkout shared crates
+        uses: actions/checkout@v4
+        with:
+          repository: JamesKane/decodingus-shared
+          ref: main
+          path: decodingus-shared
+          token: ${{ secrets.SHARED_REPO_TOKEN || github.token }}
+
+      # navigator-ui (egui/eframe + rfd file dialogs + zbus) needs GUI dev libraries on Linux;
+      # Windows/macOS use native frameworks and need none. Mirrors the release workflow's Linux deps.
+      - name: System deps (GUI)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libgtk-3-dev libxkbcommon-dev libxcb-render0-dev libxcb-shape0-dev \
+            libxcb-xfixes0-dev libdbus-1-dev libssl-dev
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: decodingus-navigator
+
+      - name: Clippy (deny warnings)
+        working-directory: decodingus-navigator
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Test
+        working-directory: decodingus-navigator
+        run: cargo test --workspace
+
+  # The Phase-3 gate: prove the pure-Rust stack (bio + the reassembly caller) builds and tests clean
+  # under x86_64-pc-windows-msvc before merge — not only at release time (release.yml runs on tags).
+  windows-msvc:
+    name: build + test (windows-msvc)
+    runs-on: windows-latest
+    steps:
+      - name: Checkout navigator
+        uses: actions/checkout@v4
+        with:
+          path: decodingus-navigator
+
+      - name: Checkout shared crates
+        uses: actions/checkout@v4
+        with:
+          repository: JamesKane/decodingus-shared
+          ref: main
+          path: decodingus-shared
+          token: ${{ secrets.SHARED_REPO_TOKEN || github.token }}
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+          components: clippy
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: decodingus-navigator
+          key: x86_64-pc-windows-msvc
+
+      # Whole-workspace build under MSVC — this is what compiles `bio` and everything downstream.
+      - name: Build (workspace)
+        working-directory: decodingus-navigator
+        run: cargo build --workspace
+
+      # Run the tests, with emphasis on the analysis crate (reassembly + bio PairHMM/pairwise) so the
+      # pure-Rust claim is exercised, not just compiled, on Windows.
+      - name: Test (workspace)
+        working-directory: decodingus-navigator
+        run: cargo test --workspace
+
+      - name: Clippy (deny warnings)
+        working-directory: decodingus-navigator
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+  # macOS parity (Apple Silicon runner). Local dev already covers darwin, but a cold CI build catches
+  # environment drift; kept to build + test to hold wall-clock down.
+  macos:
+    name: build + test (macos)
+    runs-on: macos-14
+    steps:
+      - name: Checkout navigator
+        uses: actions/checkout@v4
+        with:
+          path: decodingus-navigator
+
+      - name: Checkout shared crates
+        uses: actions/checkout@v4
+        with:
+          repository: JamesKane/decodingus-shared
+          ref: main
+          path: decodingus-shared
+          token: ${{ secrets.SHARED_REPO_TOKEN || github.token }}
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: decodingus-navigator
+          key: macos-14
+
+      - name: Build (workspace)
+        working-directory: decodingus-navigator
+        run: cargo build --workspace
+
+      - name: Test (workspace)
+        working-directory: decodingus-navigator
+        run: cargo test --workspace
