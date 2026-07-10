@@ -806,6 +806,92 @@ pub fn node_call_counts(tree: &HaploTree, calls: &HashMap<i64, char>, node_id: i
     tree.nodes.get(&node_id).map(|n| node_counts(n, calls)).unwrap_or((0, 0, 0))
 }
 
+/// Find a node by name for the branch-report tool: matches a **haplogroup name** (e.g. `R-FGC29071`)
+/// or any of the node's **defining-marker names** (e.g. `FGC29071`), case-insensitively. Returns the
+/// node id. A marker-name match wins over none; among several nodes the first in a stable id order is
+/// returned (defining markers are node-unique in practice, so this is deterministic in practice).
+pub fn find_node(tree: &HaploTree, query: &str) -> Option<i64> {
+    let q = query.trim().to_ascii_uppercase();
+    let mut ids: Vec<i64> = tree.nodes.keys().copied().collect();
+    ids.sort_unstable();
+    // Haplogroup-name match first, then marker-name match — both over the stable id order.
+    ids.iter()
+        .find(|&&id| tree.nodes.get(&id).is_some_and(|n| n.name.to_ascii_uppercase() == q))
+        .or_else(|| {
+            ids.iter().find(|&&id| {
+                tree.nodes
+                    .get(&id)
+                    .is_some_and(|n| n.loci.iter().any(|l| l.name.to_ascii_uppercase() == q))
+            })
+        })
+        .copied()
+}
+
+/// One row of a branch report: a defining marker of some node within a reported subtree, with the
+/// sample's state. `node`/`parent` are haplogroup names; `snp` carries the marker + observed base +
+/// derived/ancestral/no-call state (via [`locus_state`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BranchReportRow {
+    pub node: String,
+    pub parent: String,
+    pub snp: SnpEvidence,
+}
+
+/// Every defining marker in the subtree rooted at `root_id`, in **pre-order** (a node's own markers
+/// before its descendants'), each scored against `calls`. Children are visited in a stable
+/// name-then-id order so the report is deterministic. `max_depth` bounds descent from the root
+/// (`None` = unbounded; `Some(0)` = the root node's markers only). This is the descendant-subtree
+/// counterpart to [`lineage_evidence`] (which walks root→node ancestors).
+pub fn subtree_report(
+    tree: &HaploTree,
+    calls: &HashMap<i64, char>,
+    root_id: i64,
+    max_depth: Option<usize>,
+) -> Vec<BranchReportRow> {
+    let parent = build_parent_map(tree);
+    let mut out = Vec::new();
+    let mut stack = vec![(root_id, 0usize)];
+    while let Some((id, depth)) = stack.pop() {
+        let Some(node) = tree.nodes.get(&id) else { continue };
+        let parent_name = parent
+            .get(&id)
+            .and_then(|p| tree.nodes.get(p))
+            .map(|p| p.name.clone())
+            .unwrap_or_default();
+        for locus in &node.loci {
+            out.push(BranchReportRow {
+                node: node.name.clone(),
+                parent: parent_name.clone(),
+                snp: SnpEvidence {
+                    name: locus.name.clone(),
+                    position: locus.position,
+                    ancestral: locus.ancestral.clone(),
+                    derived: locus.derived.clone(),
+                    state: locus_state(locus, calls),
+                    base: calls.get(&locus.position).copied(),
+                },
+            });
+        }
+        let descend = match max_depth {
+            Some(m) => depth < m,
+            None => true,
+        };
+        if descend {
+            // Push children in reverse stable order so they pop in ascending (pre-order) order.
+            let mut kids = node.children.clone();
+            kids.sort_by(|a, b| {
+                let na = tree.nodes.get(a).map(|n| n.name.as_str()).unwrap_or("");
+                let nb = tree.nodes.get(b).map(|n| n.name.as_str()).unwrap_or("");
+                na.cmp(nb).then(a.cmp(b))
+            });
+            for c in kids.into_iter().rev() {
+                stack.push((c, depth + 1));
+            }
+        }
+    }
+    out
+}
+
 /// A node is *contradicted* when the sample carries the ancestral allele at more of the
 /// node's defining SNPs than the derived allele — it confidently does **not** belong to this
 /// branch. A no-evidence node (all no-call, `d == a == 0`) is *not* contradicted: it is a
@@ -967,6 +1053,48 @@ mod tests {
         assert_eq!(grouped[2].snps[0].state, CallState::Derived);
         // H2a's defining SNP was never called → NoCall (drawn grey).
         assert_eq!(grouped[3].snps[0].state, CallState::NoCall);
+    }
+
+    #[test]
+    fn find_node_matches_haplogroup_or_marker_name_case_insensitively() {
+        let t = parse_ftdna_json(TREE).unwrap();
+        assert_eq!(find_node(&t, "H2"), Some(3)); // haplogroup name
+        assert_eq!(find_node(&t, "h2"), Some(3)); // case-insensitive
+        assert_eq!(find_node(&t, "A263G"), Some(3)); // defining-marker name → owning node
+        assert_eq!(find_node(&t, "c750t"), Some(4)); // marker, case-insensitive
+        assert_eq!(find_node(&t, "nope"), None);
+    }
+
+    #[test]
+    fn subtree_report_walks_descendants_preorder_with_state() {
+        let t = parse_ftdna_json(TREE).unwrap();
+        // Derived at H(146) and H2(263); H2a(750) never called.
+        let c = calls(&[(146, 'G'), (263, 'G')]);
+        let rows = subtree_report(&t, &c, 2, None); // subtree rooted at H
+
+        let seen: Vec<(&str, &str, &str, CallState)> = rows
+            .iter()
+            .map(|r| (r.node.as_str(), r.parent.as_str(), r.snp.name.as_str(), r.snp.state))
+            .collect();
+        assert_eq!(
+            seen,
+            vec![
+                ("H", "root", "A146G", CallState::Derived),
+                ("H2", "H", "A263G", CallState::Derived),
+                ("H2a", "H2", "C750T", CallState::NoCall),
+            ]
+        );
+        assert_eq!(rows[0].snp.base, Some('G'));
+        assert_eq!(rows[2].snp.base, None);
+    }
+
+    #[test]
+    fn subtree_report_depth_zero_is_root_node_only() {
+        let t = parse_ftdna_json(TREE).unwrap();
+        let rows = subtree_report(&t, &calls(&[]), 2, Some(0));
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].node, "H");
+        assert_eq!(rows[0].snp.name, "A146G");
     }
 
     // The DecodingUs AppView `/api/v1/y-tree/full` shape (snake_case, nested children,

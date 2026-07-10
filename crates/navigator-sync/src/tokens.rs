@@ -1,31 +1,17 @@
-//! Authenticated session + OS-keychain token storage.
+//! Authenticated session + keychain token storage.
 //!
-//! A [`Session`] (access/refresh tokens, the DPoP key, DID, PDS) is stored as JSON in the
-//! OS keychain under `(service, account)` so it survives restarts and never touches the
-//! H2/SQLite workspace. The DPoP key is persisted because DPoP-bound tokens are only
-//! usable with the same key that minted them.
+//! A [`Session`] (access/refresh tokens, the DPoP key, DID, PDS) is stored as JSON under
+//! `(service, account)` so it survives restarts and never touches the H2/SQLite workspace.
+//! The DPoP key is persisted because DPoP-bound tokens are only usable with the same key
+//! that minted them.
+//!
+//! Storage goes through [`crate::secret_store`], which is in-memory unless the production
+//! binary opted into the OS keychain — so tests never reach the real one.
 
-use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Mutex, OnceLock};
-
-use keyring::Entry;
 use serde::{Deserialize, Serialize};
 
 use crate::error::SyncError;
-
-/// When set, [`TokenStore`] uses a process-global in-memory map instead of the OS keychain — so tests
-/// (and CI) never touch the real keychain (no prompts) and stay hermetic regardless of any ambient
-/// session. Set once via [`TokenStore::use_in_memory_for_tests`]; never enabled in production.
-static IN_MEMORY: AtomicBool = AtomicBool::new(false);
-
-fn mem() -> &'static Mutex<HashMap<(String, String), String>> {
-    static M: OnceLock<Mutex<HashMap<(String, String), String>>> = OnceLock::new();
-    M.get_or_init(|| Mutex::new(HashMap::new()))
-}
-fn in_memory() -> bool {
-    IN_MEMORY.load(Ordering::Relaxed)
-}
+use crate::secret_store;
 
 /// An authenticated AT Proto session for one account.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -49,7 +35,7 @@ pub struct Session {
 /// can't collide with one.
 const ACTIVE_MARKER: &str = "__active__";
 
-/// Stores [`Session`]s in the OS keychain, keyed by account (typically the DID).
+/// Stores [`Session`]s in the keychain, keyed by account (typically the DID).
 #[derive(Clone)]
 pub struct TokenStore {
     service: String,
@@ -62,86 +48,35 @@ impl TokenStore {
         }
     }
 
-    /// Route all token storage to a process-global in-memory map (no OS keychain). For tests/CI —
-    /// call once before constructing anything that reads the keychain. Idempotent; never used in prod.
-    pub fn use_in_memory_for_tests() {
-        IN_MEMORY.store(true, Ordering::Relaxed);
-    }
-
-    fn key(&self, account: &str) -> (String, String) {
-        (self.service.clone(), account.to_string())
-    }
-
     /// Remember `did` as the active account (so the next launch reloads its session).
     pub fn set_active(&self, did: &str) -> Result<(), SyncError> {
-        if in_memory() {
-            mem().lock().unwrap().insert(self.key(ACTIVE_MARKER), did.to_string());
-            return Ok(());
-        }
-        Entry::new(&self.service, ACTIVE_MARKER)?.set_password(did)?;
-        Ok(())
+        secret_store::set(&self.service, ACTIVE_MARKER, did)
     }
 
     /// The active account's DID, or `None` if no one is signed in.
     pub fn active(&self) -> Result<Option<String>, SyncError> {
-        if in_memory() {
-            return Ok(mem().lock().unwrap().get(&self.key(ACTIVE_MARKER)).cloned());
-        }
-        match Entry::new(&self.service, ACTIVE_MARKER)?.get_password() {
-            Ok(did) => Ok(Some(did)),
-            Err(keyring::Error::NoEntry) => Ok(None),
-            Err(e) => Err(e.into()),
-        }
+        secret_store::get(&self.service, ACTIVE_MARKER)
     }
 
     /// Forget the active account (sign-out); leaves any stored session untouched.
     pub fn clear_active(&self) -> Result<(), SyncError> {
-        if in_memory() {
-            mem().lock().unwrap().remove(&self.key(ACTIVE_MARKER));
-            return Ok(());
-        }
-        match Entry::new(&self.service, ACTIVE_MARKER)?.delete_credential() {
-            Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
-            Err(e) => Err(e.into()),
-        }
+        secret_store::delete(&self.service, ACTIVE_MARKER)
     }
 
     pub fn save(&self, account: &str, session: &Session) -> Result<(), SyncError> {
-        let json = serde_json::to_string(session)?;
-        if in_memory() {
-            mem().lock().unwrap().insert(self.key(account), json);
-            return Ok(());
-        }
-        Entry::new(&self.service, account)?.set_password(&json)?;
-        Ok(())
+        secret_store::set(&self.service, account, &serde_json::to_string(session)?)
     }
 
     /// Load a session, or `None` if no entry exists for `account`.
     pub fn load(&self, account: &str) -> Result<Option<Session>, SyncError> {
-        if in_memory() {
-            return match mem().lock().unwrap().get(&self.key(account)) {
-                Some(json) => Ok(Some(serde_json::from_str(json)?)),
-                None => Ok(None),
-            };
-        }
-        let entry = Entry::new(&self.service, account)?;
-        match entry.get_password() {
-            Ok(json) => Ok(Some(serde_json::from_str(&json)?)),
-            Err(keyring::Error::NoEntry) => Ok(None),
-            Err(e) => Err(e.into()),
+        match secret_store::get(&self.service, account)? {
+            Some(json) => Ok(Some(serde_json::from_str(&json)?)),
+            None => Ok(None),
         }
     }
 
     pub fn delete(&self, account: &str) -> Result<(), SyncError> {
-        if in_memory() {
-            mem().lock().unwrap().remove(&self.key(account));
-            return Ok(());
-        }
-        let entry = Entry::new(&self.service, account)?;
-        match entry.delete_credential() {
-            Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
-            Err(e) => Err(e.into()),
-        }
+        secret_store::delete(&self.service, account)
     }
 }
 
@@ -171,12 +106,34 @@ mod tests {
 
     #[test]
     fn loading_an_absent_account_is_none_not_an_error() {
-        // Read-only lookup of a guaranteed-absent account: exercises the NoEntry -> None
-        // mapping against the real backend without writing (no keychain prompt). The
-        // backend is unavailable in some sandboxes, so only assert when the lookup works.
         let store = TokenStore::new("navigator-sync-absent-account-test");
-        if let Ok(found) = store.load("did:plc:definitely-not-present") {
-            assert!(found.is_none());
-        }
+        assert!(store.load("did:plc:definitely-not-present").unwrap().is_none());
+    }
+
+    #[test]
+    fn session_survives_a_save_load_round_trip() {
+        let store = TokenStore::new("navigator-sync-round-trip-test");
+        store.save("did:plc:abc123", &session()).unwrap();
+        assert_eq!(store.load("did:plc:abc123").unwrap(), Some(session()));
+
+        store.delete("did:plc:abc123").unwrap();
+        assert!(store.load("did:plc:abc123").unwrap().is_none());
+    }
+
+    /// The active marker is a separate account name, so it can't be clobbered by — or clobber —
+    /// a session stored under a DID.
+    #[test]
+    fn active_marker_is_independent_of_the_stored_session() {
+        let store = TokenStore::new("navigator-sync-active-marker-test");
+        assert!(store.active().unwrap().is_none(), "nobody signed in initially");
+
+        store.save("did:plc:abc123", &session()).unwrap();
+        store.set_active("did:plc:abc123").unwrap();
+        assert_eq!(store.active().unwrap().as_deref(), Some("did:plc:abc123"));
+
+        // Sign-out forgets who was active but leaves the session recoverable.
+        store.clear_active().unwrap();
+        assert!(store.active().unwrap().is_none());
+        assert_eq!(store.load("did:plc:abc123").unwrap(), Some(session()));
     }
 }

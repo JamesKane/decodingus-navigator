@@ -190,6 +190,10 @@ impl NavigatorApp {
                                 card(ui, self.tr("card.descentReport"), |ui| {
                                     self.descent_card(ui, guid, DnaType::Y, false);
                                 });
+                                ui.add_space(10.0);
+                                card(ui, self.tr("card.branchReport"), |ui| {
+                                    self.branch_card(ui, guid, DnaType::Y);
+                                });
                             }
                         }
                         // The heavy SNP surface: a compact chrY variant track as shared context, then
@@ -236,6 +240,10 @@ impl NavigatorApp {
                                 ui.add_space(10.0);
                                 card(ui, self.tr("card.descentReport"), |ui| {
                                     self.descent_card(ui, guid, DnaType::Mt, false);
+                                });
+                                ui.add_space(10.0);
+                                card(ui, self.tr("card.branchReport"), |ui| {
+                                    self.branch_card(ui, guid, DnaType::Mt);
                                 });
                             }
                         }

@@ -15,9 +15,9 @@
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
 use ed25519_dalek::{Signer, SigningKey};
-use keyring::Entry;
 
 use crate::error::SyncError;
+use crate::secret_store;
 
 /// Keychain account-name prefix for the device-key seed, namespaced so it can't collide
 /// with a session entry (those are keyed by bare DID) or the active-account marker.
@@ -83,33 +83,25 @@ impl DeviceKey {
 
     /// Load this account's device key, or `None` if none has been generated yet.
     pub fn load(service: &str, did: &str) -> Result<Option<Self>, SyncError> {
-        let entry = Entry::new(service, &Self::account(did))?;
-        match entry.get_password() {
-            Ok(seed_b64) => {
+        match secret_store::get(service, &Self::account(did))? {
+            Some(seed_b64) => {
                 let seed = STANDARD
                     .decode(seed_b64.trim())
                     .map_err(|e| SyncError::Crypto(format!("device key seed base64: {e}")))?;
                 Ok(Some(Self::from_seed(&seed)?))
             }
-            Err(keyring::Error::NoEntry) => Ok(None),
-            Err(e) => Err(e.into()),
+            None => Ok(None),
         }
     }
 
     /// Persist this key's 32-byte seed for `did` (base64 in the keychain).
     pub fn save(&self, service: &str, did: &str) -> Result<(), SyncError> {
-        let seed_b64 = STANDARD.encode(self.signing.to_bytes());
-        Entry::new(service, &Self::account(did))?.set_password(&seed_b64)?;
-        Ok(())
+        secret_store::set(service, &Self::account(did), &STANDARD.encode(self.signing.to_bytes()))
     }
 
     /// Forget this account's device key (revocation companion: also delete the PDS record).
     pub fn delete(service: &str, did: &str) -> Result<(), SyncError> {
-        let entry = Entry::new(service, &Self::account(did))?;
-        match entry.delete_credential() {
-            Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
-            Err(e) => Err(e.into()),
-        }
+        secret_store::delete(service, &Self::account(did))
     }
 
     /// Load the device key for `did`, generating + persisting one on first use.
@@ -172,6 +164,40 @@ mod tests {
     #[test]
     fn from_seed_rejects_wrong_length() {
         assert!(matches!(DeviceKey::from_seed(&[0u8; 16]), Err(SyncError::Crypto(_))));
+    }
+
+    /// First call generates + persists; every later call must return the *same* identity, or the
+    /// AppView would reject signatures made by the regenerated key.
+    #[test]
+    fn load_or_generate_persists_and_is_stable() {
+        let (svc, did) = ("device-key-stable-test", "did:plc:abc123");
+        assert!(DeviceKey::load(svc, did).unwrap().is_none(), "nothing stored yet");
+
+        let first = DeviceKey::load_or_generate(svc, did).unwrap();
+        let second = DeviceKey::load_or_generate(svc, did).unwrap();
+        assert_eq!(first.did_key(), second.did_key(), "must reuse the persisted seed");
+        assert_eq!(first.sign("m"), second.sign("m"));
+
+        DeviceKey::delete(svc, did).unwrap();
+        assert!(DeviceKey::load(svc, did).unwrap().is_none(), "revoked");
+        // A key generated after revocation is a genuinely new identity.
+        assert_ne!(
+            DeviceKey::load_or_generate(svc, did).unwrap().did_key(),
+            first.did_key()
+        );
+    }
+
+    /// Keys are namespaced by account, so two identities on one install don't collide.
+    #[test]
+    fn device_keys_are_per_account() {
+        let svc = "device-key-per-account-test";
+        let a = DeviceKey::load_or_generate(svc, "did:plc:aaa").unwrap();
+        let b = DeviceKey::load_or_generate(svc, "did:plc:bbb").unwrap();
+        assert_ne!(a.did_key(), b.did_key());
+        assert_eq!(
+            DeviceKey::load(svc, "did:plc:aaa").unwrap().unwrap().did_key(),
+            a.did_key()
+        );
     }
 
     #[test]

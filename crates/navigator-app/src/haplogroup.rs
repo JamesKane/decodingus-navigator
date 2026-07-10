@@ -1108,6 +1108,41 @@ impl App {
         Ok(pick.map(|a| a.id))
     }
 
+    /// Pick a single alignment to genotype **mtDNA** against: skip Y-only runs (an FTDNA Big-Y
+    /// carries no `chrM` reads, so it would yield an all-no-call report while a usable WGS
+    /// alignment sat unselected), then prefer CHM13, else the first survivor. If *every* run is
+    /// Y-only, fall back to the first alignment rather than reporting "no alignment".
+    pub async fn pick_mt_alignment(&self, biosample_guid: SampleGuid) -> Result<Option<i64>, AppError> {
+        let alignments = alignment::list_for_biosample(self.store.pool(), biosample_guid).await?;
+        let mut mt_capable: Vec<&Alignment> = Vec::new();
+        for a in &alignments {
+            let y_only = match sequence_run::get(self.store.pool(), a.sequence_run_id).await? {
+                // `target_of` is tolerant of unknown codes (→ None), which stay eligible.
+                Some(run) => navigator_domain::testtype::target_of(&run.test_type)
+                    == Some(navigator_domain::testtype::TargetType::YChromosome),
+                None => false,
+            };
+            if !y_only {
+                mt_capable.push(a);
+            }
+        }
+        let pick = mt_capable
+            .iter()
+            .copied()
+            .find(|a| decodingus_build_key(&a.reference_build) == Some("hs1"))
+            .or_else(|| mt_capable.first().copied())
+            .or_else(|| alignments.first());
+        Ok(pick.map(|a| a.id))
+    }
+
+    /// The alignment to genotype `dna` against for a subject-keyed query.
+    pub async fn pick_alignment_for(&self, guid: SampleGuid, dna: DnaType) -> Result<Option<i64>, AppError> {
+        match dna {
+            DnaType::Y => self.pick_y_debug_alignment(guid).await,
+            DnaType::Mt => self.pick_mt_alignment(guid).await,
+        }
+    }
+
     /// Diagnostic: trace the DecodingUs genome-consensus Y placement for one subject — the pooled
     /// build, the Kulczynski top candidates + admissibility, the assembled terminal, a strict
     /// root→tip descent, and the per-node derived/ancestral tally down the assembled lineage (so an
@@ -1488,6 +1523,151 @@ impl App {
             }
         }
         Ok(Some(DescentReport { dna, terminal, nodes }))
+    }
+
+    /// Build a [`BranchReport`]: the sample's genotype at every defining marker of `node_query`'s
+    /// descendant subtree (Y or mtDNA), with per-marker evidence — for spot-checking placement and
+    /// exchanging observations. `node_query` matches a haplogroup name (`R-FGC29071`) or a defining
+    /// marker (`FGC29071`); `max_depth` bounds descent (`None` = the whole subtree).
+    ///
+    /// Genotypes the subtree **fresh** over the tree's loci (not the placement profile), so branches
+    /// the sample is *ancestral* for are reported too. Observed bases + evidence come from a per-
+    /// sample chrY GVCF sidecar when present (rich DP/AD/GQ, ref blocks), else the pileup caller.
+    pub async fn branch_report(
+        &self,
+        alignment_id: i64,
+        dna: DnaType,
+        node_query: &str,
+        max_depth: Option<usize>,
+    ) -> Result<BranchReport, AppError> {
+        use std::collections::HashSet;
+
+        let aln = self.alignment_or_err(alignment_id).await?;
+
+        // Tree + observed base calls over ALL tree loci (covers off-path descendant branches).
+        let (tree, calls, contig, gvcf) = match dna {
+            DnaType::Y => {
+                // Probe the sidecar *before* genotyping: with one present the tree comes straight
+                // from JSON and the calls from the GVCF, so the per-locus pileup walk is skipped
+                // entirely (the point of the fast path — cf. `assign_y_from_gvcf`).
+                match crate::fastpath::chr_y_gvcf_for_alignment(&aln) {
+                    Some(gvcf) => {
+                        let build_key = decodingus_build_key(&aln.reference_build).ok_or_else(|| {
+                            AppError::Import(format!(
+                                "no DecodingUs tree coordinates for build {}",
+                                aln.reference_build
+                            ))
+                        })?;
+                        let tree_json = self.fetch_decodingus_y_tree().await?;
+                        let tree = navigator_analysis::haplo::parse_decodingus_json(&tree_json, build_key)
+                            .map_err(AppError::Import)?;
+                        let calls = self.gvcf_base_calls(alignment_id, "chrY", &gvcf, &tree, None).await?;
+                        (tree, calls, "chrY", Some(gvcf))
+                    }
+                    None => {
+                        let (tree, calls) = self.y_decodingus_tree_calls(alignment_id).await?;
+                        (tree, calls, "chrY", None)
+                    }
+                }
+            }
+            DnaType::Mt => {
+                // `mt_tree_rcrs` hands back the *provider* (decodingus/ftdna), not a reference
+                // build. `tree_source_build` must stay `None`: a non-build string there makes
+                // `lifted_targets` return early, skipping the rCRS↔chrM map a CHM13 alignment
+                // needs (its chrM is a circular permutation of rCRS).
+                let (tree, _provider) = self.mt_tree_rcrs().await?;
+                let calls = self.base_calls(alignment_id, "chrM", &tree, None).await?;
+                (tree, calls, "chrM", None)
+            }
+        };
+        let gvcf_backed = gvcf.is_some();
+
+        let root_id = navigator_analysis::haplo::find_node(&tree, node_query).ok_or_else(|| {
+            let t = match dna {
+                DnaType::Y => "Y",
+                DnaType::Mt => "mtDNA",
+            };
+            AppError::Import(format!("node '{node_query}' not found in the {t} tree"))
+        })?;
+        let root = tree.nodes.get(&root_id).map(|n| n.name.clone()).unwrap_or_default();
+        let subtree = navigator_analysis::haplo::subtree_report(&tree, &calls, root_id, max_depth);
+
+        // GVCF per-marker evidence (Y with a sidecar): ungated DP/AD/GQ, off-thread.
+        let evidence = match gvcf {
+            Some(gvcf) => {
+                let positions: HashSet<i64> = subtree.iter().map(|r| r.snp.position).collect();
+                let c = contig.to_string();
+                tokio::task::spawn_blocking(move || navigator_analysis::gvcf::read_site_evidence(&gvcf, &c, &positions))
+                    .await??
+            }
+            None => HashMap::new(),
+        };
+
+        let rows = subtree
+            .into_iter()
+            .map(|r| {
+                let pos = r.snp.position;
+                // Either allele being multi-base (or empty) means this isn't a clean SNV.
+                let is_indel = r.snp.derived.chars().count() != 1 || r.snp.ancestral.chars().count() != 1;
+                let (source, dp, ad, gq) = match evidence.get(&pos).copied() {
+                    Some(e) if e.refblock => ("gvcf_refblock", None, None, e.gq),
+                    Some(e) => ("gvcf_variant", e.dp, e.ad, e.gq),
+                    None if gvcf_backed => ("gvcf", None, None, None),
+                    None => ("pileup", None, None, None),
+                };
+                // The conditions are orthogonal — an uncalled indel is both — so compose the tags
+                // rather than report only the first. Picking one let "indel/MNV" hide a no-call.
+                let mut tags: Vec<&str> = Vec::new();
+                if is_indel {
+                    tags.push("indel/MNV");
+                }
+                if source == "gvcf_refblock" {
+                    tags.push("hom-ref block");
+                }
+                if r.snp.state == CallState::NoCall {
+                    tags.push("no call");
+                }
+                let note = tags.join("; ");
+                BranchRow {
+                    node: r.node,
+                    parent: r.parent,
+                    marker: r.snp.name,
+                    position: pos,
+                    ancestral: r.snp.ancestral,
+                    derived: r.snp.derived,
+                    observed_base: r.snp.base,
+                    state: r.snp.state,
+                    ad,
+                    dp,
+                    gq,
+                    source,
+                    note,
+                }
+            })
+            .collect();
+
+        Ok(BranchReport {
+            dna,
+            root,
+            contig: contig.to_string(),
+            gvcf_backed,
+            rows,
+        })
+    }
+
+    /// Subject-keyed [`branch_report`](Self::branch_report) for the UI: resolves the alignment to
+    /// genotype `dna` against, then builds the report. `Ok(None)` when the subject has no alignment.
+    pub async fn branch_report_for_subject(
+        &self,
+        guid: SampleGuid,
+        dna: DnaType,
+        node_query: &str,
+        max_depth: Option<usize>,
+    ) -> Result<Option<BranchReport>, AppError> {
+        let Some(alignment_id) = self.pick_alignment_for(guid, dna).await? else {
+            return Ok(None);
+        };
+        Ok(Some(self.branch_report(alignment_id, dna, node_query, max_depth).await?))
     }
 
     /// The persisted autosomal consensus-profile snapshot for a subject, if built — cheap (no
@@ -2065,23 +2245,29 @@ impl App {
         let json = if fresh {
             cached.expect("fresh implies present")
         } else {
-            // Stale or absent → try a *time-bounded* refresh, falling back to any present (stale) copy
-            // on failure/timeout so a slow or unreachable endpoint can't stall a batch for minutes.
-            let downloaded = self
-                .auth
-                .http
-                .get(url)
-                .timeout(std::time::Duration::from_secs(20))
-                .send()
-                .await
-                .and_then(|r| r.error_for_status())
-                .map_err(|e| AppError::Import(format!("downloading {url}: {e}")));
-            match downloaded {
-                Ok(resp) => {
-                    let body = resp
-                        .text()
-                        .await
-                        .map_err(|e| AppError::Import(format!("reading {url}: {e}")))?;
+            // Stale or absent → try a *time-bounded* refresh, falling back to any present (stale)
+            // copy on ANY failure: connect/timeout, a non-2xx status, OR a body read cut short
+            // (the whole-request timeout also covers streaming the ~60–127 MB body — see
+            // [`TREE_DOWNLOAD_TIMEOUT`]). The body-read case matters: on a slow link it surfaces as
+            // "error decoding response body", and failing there would drop a placement that the
+            // cached tree on disk could have served. Only a first-ever fetch with no cache errors.
+            let fetched = async {
+                let resp = self
+                    .auth
+                    .http
+                    .get(url)
+                    .timeout(TREE_DOWNLOAD_TIMEOUT)
+                    .send()
+                    .await
+                    .and_then(|r| r.error_for_status())
+                    .map_err(|e| AppError::Import(format!("downloading {url}: {e}")))?;
+                resp.text()
+                    .await
+                    .map_err(|e| AppError::Import(format!("reading {url}: {e}")))
+            }
+            .await;
+            match fetched {
+                Ok(body) => {
                     if let Some(parent) = path.parent() {
                         let _ = std::fs::create_dir_all(parent);
                     }
@@ -3012,8 +3198,17 @@ impl App {
 
         // chrY: downloaded nuclear chain (when the tree build differs from the alignment).
         if let Some(src) = tree_source_build {
-            let differ =
-                matches!((canonical_build(src), canonical_build(reference_build)), (Some(s), Some(t)) if s != t);
+            // `src` must name a reference build. A tree *provider* ("decodingus"/"ftdna") would
+            // fall through the `differ` test to the `return Ok(None)` below, silently disabling
+            // liftover — for chrM that skips the rCRS↔chrM map and miscalls every marker. Refuse
+            // it here rather than answer with wrong coordinates.
+            let Some(src_build) = canonical_build(src) else {
+                return Err(AppError::Import(format!(
+                    "lifted_targets: tree_source_build {src:?} is not a reference build \
+                     (pass None when the tree is already in the query coordinate space)"
+                )));
+            };
+            let differ = matches!(canonical_build(reference_build), Some(t) if src_build != t);
             if differ && self.gateway.chain_available(src, reference_build) {
                 self.gateway.resolve_chain(src, reference_build, &mut |_, _| {}).await?;
                 let targets_vec: Vec<i64> = targets.iter().copied().collect();
@@ -3189,5 +3384,102 @@ fn observed_from_legacy(legacy: ConsensusProfile) -> navigator_domain::consensus
             })
             .collect(),
         terminal_hint: legacy.terminal,
+    }
+}
+
+#[cfg(test)]
+mod lifted_targets_tests {
+    use super::*;
+    use navigator_store::Store;
+
+    /// CHM13's `chrM` is a circular permutation of rCRS with its origin near rCRS 577. Build one
+    /// synthetically: `chrm[i] = rcrs[(i + K) % n]`, i.e. `rcrs[K..] ++ rcrs[..K]`.
+    const K: usize = 576;
+
+    /// Write a one-line `chrM` FASTA + its `.fai` (noodles' indexed reader needs the index).
+    fn rotated_chrm_fasta(dir: &Path) -> PathBuf {
+        let rcrs = navigator_analysis::mtvariants::rcrs();
+        let n = rcrs.len();
+        let chrm: String = format!("{}{}", &rcrs[K..], &rcrs[..K]);
+        assert_eq!(chrm.len(), n);
+
+        let fa = dir.join("rotated-chrM.fa");
+        std::fs::write(&fa, format!(">chrM\n{chrm}\n")).unwrap();
+        // name, length, offset-of-first-base, bases-per-line, bytes-per-line
+        std::fs::write(fa.with_extension("fa.fai"), format!("chrM\t{n}\t6\t{n}\t{}\n", n + 1)).unwrap();
+        fa
+    }
+
+    /// rCRS 1-based `p` sits at chrM 1-based `((p - 1 - K) mod n) + 1`.
+    fn expected_chrm_pos(p: i64, n: i64) -> i64 {
+        (p - 1 - K as i64).rem_euclid(n) + 1
+    }
+
+    /// The mt regression: with `tree_source_build = None`, `lifted_targets` reaches the rCRS↔chrM
+    /// map and rewrites rCRS tree positions into this reference's rotated `chrM` frame. Covers the
+    /// wrap (263 lands past the origin) and a plain interior site (750).
+    #[tokio::test]
+    async fn mt_targets_lift_onto_a_rotated_chm13_chrm() {
+        let app = App::new(Store::open_in_memory().await.unwrap());
+        let dir = std::env::temp_dir().join("nav-lifted-targets-mt");
+        std::fs::create_dir_all(&dir).unwrap();
+        let fa = rotated_chrm_fasta(&dir);
+        let n = navigator_analysis::mtvariants::rcrs().len() as i64;
+
+        let targets: HashSet<i64> = [263, 750].into_iter().collect();
+        let lifted = app
+            .lifted_targets("chm13v2.0", Some(&fa), "chrM", &targets, None)
+            .await
+            .expect("lift must succeed")
+            .expect("a CHM13 chrM reference must produce a map");
+
+        for want in [263, 750] {
+            let got = lifted
+                .iter()
+                .find(|l| l.tree_pos == want)
+                .unwrap_or_else(|| panic!("tree position {want} was not lifted"));
+            assert_eq!(
+                got.pos,
+                expected_chrm_pos(want, n),
+                "rCRS {want} must land at its rotated chrM coordinate"
+            );
+        }
+        // 263 is before the rotation origin, so it wraps to the tail of chrM.
+        assert!(lifted.iter().any(|l| l.tree_pos == 263 && l.pos > 16_000));
+    }
+
+    /// The bug this guards: `mt_tree_rcrs` returns a tree *provider*, not a build. Passing it as
+    /// `tree_source_build` used to fall through to `Ok(None)`, silently skipping the chrM map above
+    /// and miscalling every marker. It must be refused instead.
+    #[tokio::test]
+    async fn a_tree_provider_is_refused_as_a_reference_build() {
+        let app = App::new(Store::open_in_memory().await.unwrap());
+        let dir = std::env::temp_dir().join("nav-lifted-targets-provider");
+        std::fs::create_dir_all(&dir).unwrap();
+        let fa = rotated_chrm_fasta(&dir);
+        let targets: HashSet<i64> = [263, 750].into_iter().collect();
+
+        for provider in ["decodingus", "ftdna"] {
+            let err = app
+                .lifted_targets("chm13v2.0", Some(&fa), "chrM", &targets, Some(provider))
+                .await
+                .expect_err("a provider name is not a reference build");
+            let msg = err.to_string();
+            assert!(msg.contains(provider), "error must name the offender: {msg}");
+            assert!(msg.contains("not a reference build"), "{msg}");
+        }
+    }
+
+    /// A real build that matches the alignment's build needs no lift — still `Ok(None)`, not an
+    /// error. Pins that the new guard didn't narrow the chrY path.
+    #[tokio::test]
+    async fn a_matching_reference_build_still_means_no_lift() {
+        let app = App::new(Store::open_in_memory().await.unwrap());
+        let targets: HashSet<i64> = [2_781_000].into_iter().collect();
+        let lifted = app
+            .lifted_targets("GRCh38", None, "chrY", &targets, Some("GRCh38"))
+            .await
+            .expect("same build is not an error");
+        assert!(lifted.is_none(), "no chain needed when the builds agree");
     }
 }

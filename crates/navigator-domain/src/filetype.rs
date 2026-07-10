@@ -49,7 +49,7 @@ pub fn detect(file_name: &str, head: &str) -> DetectedData {
     if ends(".bam") || ends(".cram") {
         return DetectedData::Alignment;
     }
-    if ends(".vcf") || ends(".vcf.gz") {
+    if ends(".vcf") || ends(".vcf.gz") || ends(".vcf.bgz") {
         return DetectedData::Variants;
     }
     if ends(".fasta")
@@ -291,6 +291,8 @@ mod tests {
         assert_eq!(detect("HG002.bam", ""), DetectedData::Alignment);
         assert_eq!(detect("x.cram", ""), DetectedData::Alignment);
         assert_eq!(detect("calls.vcf", ""), DetectedData::Variants);
+        assert_eq!(detect("calls.vcf.gz", ""), DetectedData::Variants);
+        assert_eq!(detect("calls.vcf.bgz", ""), DetectedData::Variants);
         assert_eq!(detect("seq.fasta", ""), DetectedData::MtdnaFasta);
         assert_eq!(detect("seq.fa", ""), DetectedData::MtdnaFasta);
     }

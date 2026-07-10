@@ -68,6 +68,59 @@ pub struct DescentReport {
     pub nodes: Vec<NodeEvidence>,
 }
 
+/// A per-marker branch report: the sample's genotype at every defining marker of a chosen tree
+/// node's **descendant subtree** (Y or mtDNA), for spot-checking placement accuracy and exchanging
+/// observations with other researchers. Built by [`App::branch_report`]; exported by
+/// [`crate::export::branch_report_tsv`]. Unlike [`DescentReport`] (which walks the placement's
+/// root→terminal ancestors from the persisted profile) this genotypes the subtree fresh, so
+/// off-path branches the sample is *ancestral* for are reported too.
+#[derive(Debug, Clone)]
+pub struct BranchReport {
+    pub dna: DnaType,
+    /// The queried root node's haplogroup name (e.g. `R-FGC29071`).
+    pub root: String,
+    pub contig: String,
+    /// True when the observed bases + evidence came from a per-sample GVCF sidecar (else pileup).
+    pub gvcf_backed: bool,
+    pub rows: Vec<BranchRow>,
+}
+
+/// One defining marker of a branch in a [`BranchReport`], with the sample's call + evidence.
+#[derive(Debug, Clone)]
+pub struct BranchRow {
+    pub node: String,
+    pub parent: String,
+    pub marker: String,
+    pub position: i64,
+    pub ancestral: String,
+    pub derived: String,
+    pub observed_base: Option<char>,
+    pub state: CallState,
+    /// `(ref, alt)` allele depths — `None` on ref blocks / the pileup path.
+    pub ad: Option<(u32, u32)>,
+    pub dp: Option<u32>,
+    pub gq: Option<u32>,
+    /// Evidence origin: `gvcf_variant` | `gvcf_refblock` | `gvcf` (uncovered) | `pileup`.
+    pub source: &'static str,
+    /// Human note (indel/MNV, hom-ref block, no call, …); empty for a clean call.
+    pub note: String,
+}
+
+impl BranchReport {
+    /// `(derived, ancestral, no-call)` marker tallies over the subtree.
+    pub fn counts(&self) -> (usize, usize, usize) {
+        let (mut d, mut a, mut n) = (0, 0, 0);
+        for r in &self.rows {
+            match r.state {
+                CallState::Derived => d += 1,
+                CallState::Ancestral => a += 1,
+                CallState::NoCall => n += 1,
+            }
+        }
+        (d, a, n)
+    }
+}
+
 impl DescentReport {
     /// Total defining SNPs across the path the sample carries (derived).
     pub fn derived(&self) -> usize {
@@ -290,6 +343,12 @@ use navigator_sync::exchange::{self, ExchangeKey};
 use navigator_sync::{
     dev_http_client, login_default, AsyncSync, DeviceKey, OAuthConfig, RetryPolicy, TokenStore, DEVICE_KEY_COLLECTION,
 };
+/// [`use_os_keychain`] opts this process into the real OS keychain. The shipped binary calls it once
+/// at the top of `main`; nothing else may. Without it every secret lives in an in-memory map, which
+/// is what keeps the test suite off the developer's login keychain (see
+/// `navigator_sync::secret_store`). [`os_keychain_enabled`] reports the current state, so tests can
+/// assert they are *not* on the real keychain.
+pub use navigator_sync::{os_keychain_enabled, use_os_keychain};
 pub use navigator_sync::{
     AlignmentRecord, BiosampleRecord, ContigMetrics, FeedPostRecord, PdsClient, PopulationBreakdownRecord, PrivateVariantsRecord,
     RecordRef, SequenceRunRecord, VariantCallEntry, NS_ALIGNMENT, NS_BIOSAMPLE, NS_FEED_POST, NS_POPULATION_BREAKDOWN,
@@ -604,6 +663,14 @@ fn tree_cache_path(file: &str) -> PathBuf {
 /// refresh keeps placements current without hitting the network on every run. Override with
 /// `NAVIGATOR_TREE_TTL_DAYS` (0 = always refetch).
 const TREE_CACHE_TTL_DAYS_DEFAULT: u64 = 7;
+
+/// Whole-request timeout for a haplotree download. reqwest's `.timeout()` bounds the *entire*
+/// request, streaming the body included — and the trees are large (the DecodingUs Y tree is ~60 MB,
+/// the FTDNA Y tree ~127 MB), so a short cap aborts the body read partway (surfacing as reqwest's
+/// "error decoding response body") and a refresh can then *never* complete, leaving the cache
+/// permanently stale. Generous on purpose: a present cache makes any failure fall back instantly
+/// (see [`App::fetch_tree`]), so only a first-ever fetch with no cache can wait this long.
+const TREE_DOWNLOAD_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
 
 /// Is the cached tree at `path` still within its TTL (default 7 days; `NAVIGATOR_TREE_TTL_DAYS`
 /// overrides)? Unknown mtime / unreadable metadata → not fresh (forces a refresh attempt).
@@ -1288,6 +1355,37 @@ pub struct BatchImportSummary {
     pub skipped: Vec<(String, String)>,
 }
 
+/// Outcome of ingesting one staged **sample directory** via [`App::add_sample_dir`] — the CLI
+/// `ingest` fast path for the D2C bulk side-load (alignment recorded from the header, then Y/mt +
+/// sex/metrics/coverage placed from the pipeline sidecars, no CRAM decode).
+#[derive(Debug, Clone, Default)]
+pub struct SampleDirSummary {
+    /// Alignment records created (BAM/CRAM newly recorded onto the subject's run).
+    pub alignments_created: usize,
+    /// Alignment files already recorded (idempotent re-ingest).
+    pub alignments_skipped: usize,
+    /// Variant files (VCFs) imported from the directory.
+    pub variants_imported: usize,
+    /// Whether the sidecar fast path ran (a haplogroup GVCF was present and attached).
+    pub sidecars_ingested: bool,
+    /// Y haplogroup placed from the chrY GVCF, if any.
+    pub y_haplogroup: Option<String>,
+    /// mt haplogroup placed from the chrM GVCF, if any.
+    pub mt_haplogroup: Option<String>,
+    /// Sex filled from the `.sex` sidecar (`M`/`F`/`U`), if any.
+    pub sex: Option<String>,
+    /// Read metrics filled from a `stats.txt`/flagstat/Picard sidecar.
+    pub read_metrics: bool,
+    /// Lite coverage filled from a `coverage.txt`/Picard WGS-metrics sidecar.
+    pub lite_coverage: bool,
+    /// Loose-bundle fallback (no alignment/variant/GVCF): `(filename, description)` per import.
+    pub imported: Vec<(String, String)>,
+    /// Loose-bundle fallback skips, plus any files that failed: `(filename, reason)`.
+    pub skipped: Vec<(String, String)>,
+    /// Non-fatal fast-path errors (a sidecar that failed while the rest proceeded).
+    pub errors: Vec<String>,
+}
+
 /// A file's cheap signature (`mtime_secs:size`) for analysis-cache staleness — no content read.
 /// `None` if the file is missing / unstattable.
 fn file_signature(path: &Path) -> Option<String> {
@@ -1596,16 +1694,16 @@ fn detect_build_for(path: &Path) -> (String, &'static str) {
 }
 
 /// Cheap VCF header peek: the `##` meta block (joined) + the contig names from `##contig=<ID=…>`.
-/// Reads only the header (stops at the first data line). Plain text — matches the import parser,
-/// which doesn't decompress either; a gzipped VCF simply yields an empty peek (→ generic).
+/// Reads only the header (stops at the first data line). Transparently decompresses a gzip/BGZF
+/// (`.vcf.gz`) input — matching the import parser — so a bgzipped vendor VCF is classified too.
 fn peek_vcf_header(path: &Path) -> (String, Vec<String>) {
     use std::io::BufRead;
-    let Ok(file) = std::fs::File::open(path) else {
+    let Ok(reader) = navigator_analysis::gzio::open_maybe_gz(path) else {
         return (String::new(), Vec::new());
     };
     let mut meta = String::new();
     let mut contigs = Vec::new();
-    for line in std::io::BufReader::new(file).lines().map_while(Result::ok) {
+    for line in reader.lines().map_while(Result::ok) {
         if let Some(rest) = line.strip_prefix("##") {
             meta.push_str(&line);
             meta.push('\n');
@@ -1636,9 +1734,11 @@ fn peek_vcf_header(path: &Path) -> (String, Vec<String>) {
 /// multi-allelic-aware); `0/0` and `./.` rows are dropped. A VCF with no FORMAT/sample column
 /// (a sites-only list) keeps its old meaning: every listed ALT is one of the subject's variants.
 fn parse_vcf_subject_snps(path: &Path) -> Result<Vec<variants::VariantCall>, AppError> {
-    let text = std::fs::read_to_string(path)?;
+    use std::io::BufRead;
+    let reader = navigator_analysis::gzio::open_maybe_gz(path)?;
     let mut out = Vec::new();
-    for line in text.lines() {
+    for line in reader.lines() {
+        let line = line?;
         if line.starts_with('#') || line.trim().is_empty() {
             continue;
         }
@@ -3533,9 +3633,6 @@ mod outbox_tests {
 
     #[tokio::test]
     async fn publish_while_signed_out_is_not_authenticated_and_queues_nothing() {
-        // Use the in-memory keychain so this never touches the OS keychain (no prompts) and is
-        // hermetic regardless of an ambient session (e.g. a GUI signed in on this machine).
-        navigator_sync::TokenStore::use_in_memory_for_tests();
         let app = App::new(Store::open_in_memory().await.unwrap());
         assert!(matches!(app.publish_coverage(1).await, Err(AppError::NotAuthenticated)));
         // No account → nothing enqueued, and the accessors degrade gracefully.

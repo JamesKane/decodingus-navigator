@@ -203,6 +203,7 @@ impl App {
             || lower.ends_with(".cram")
             || lower.ends_with(".vcf")
             || lower.ends_with(".vcf.gz")
+            || lower.ends_with(".vcf.bgz")
             || [".fasta", ".fa", ".fna", ".fas", ".fasta.gz", ".fa.gz", ".fna.gz"]
                 .iter()
                 .any(|e| lower.ends_with(e));
@@ -292,6 +293,153 @@ impl App {
             }
         }
         progress(total, total);
+        Ok(summary)
+    }
+
+    /// Ingest one staged **sample directory** onto an existing subject (the CLI `ingest` fast path
+    /// for the D2C bulk side-load). Scans `dir` into a single sample, records its alignment(s) onto
+    /// `biosample_guid` from the **header only** (no read decode / library scan), imports any variant
+    /// files, then — when `fast_path` and a haplogroup GVCF is present — runs [`Self::ingest_sidecars`]
+    /// to place Y + mt from the BGZF GVCFs and fill sex / read-metrics / lite-coverage from the text
+    /// sidecars, still **without decoding the CRAM**. Per-file [`Self::add_data`] can't do this: it
+    /// can't group `*.callable.bed` / `coverage.txt` / `stats.txt` to their alignment, and it would
+    /// route a `*.g.vcf.gz` through the plain-VCF importer instead of the GVCF haplogroup fast path.
+    ///
+    /// A directory that holds no alignment, variant, or haplogroup GVCF falls back to a best-effort
+    /// per-file [`Self::add_data`] of its contents — so a plain folder of chip/STR/mtDNA exports
+    /// still imports as before.
+    pub async fn add_sample_dir(
+        &self,
+        biosample_guid: SampleGuid,
+        dir: &Path,
+        fast_path: bool,
+    ) -> Result<SampleDirSummary, AppError> {
+        let scan_dir = dir.to_path_buf();
+        let sample = tokio::task::spawn_blocking(move || navigator_analysis::scan::scan_sample(&scan_dir)).await?;
+        let mut summary = SampleDirSummary::default();
+
+        // No primary sequencing data (no alignment, no variant, no haplogroup GVCF): treat the
+        // directory as a loose bundle of subject files and import each as add_data would.
+        let has_primary = !sample.alignment_files.is_empty()
+            || !sample.variant_files.is_empty()
+            || sample.sidecars.has_haplogroup_gvcf();
+        if !has_primary {
+            for f in sample
+                .all_files
+                .iter()
+                .filter(|f| f.kind != navigator_analysis::scan::DiscoveredFileType::Index)
+            {
+                let name = f.path.file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+                match self.add_data(biosample_guid, &f.path).await {
+                    Ok(d) => summary.imported.push((name, d.description().to_string())),
+                    Err(e) => summary.skipped.push((name, e.to_string())),
+                }
+            }
+            return Ok(summary);
+        }
+
+        // Sequence run: reuse the subject's first run, else create one (WGS default).
+        let run = match sequence_run::list_for_biosample(self.store.pool(), biosample_guid)
+            .await?
+            .into_iter()
+            .next()
+        {
+            Some(r) => r,
+            None => {
+                self.record_sequence_run(NewSequenceRun {
+                    biosample_guid,
+                    platform_name: "UNKNOWN".into(),
+                    instrument_model: None,
+                    test_type: "WGS".into(),
+                    library_layout: None,
+                    total_reads: None,
+                    pf_reads_aligned: None,
+                    mean_read_length: None,
+                    mean_insert_size: None,
+                })
+                .await?
+            }
+        };
+
+        // Record each alignment from the header only — cheap, no read decode (the whole point of the
+        // fast path). Idempotent on the alignment's stored path.
+        let existing = alignment::list_for_run(self.store.pool(), run.id).await?;
+        for aln_path in &sample.alignment_files {
+            let path_str = aln_path.to_string_lossy().into_owned();
+            if existing.iter().any(|a| a.bam_path.as_deref() == Some(path_str.as_str())) {
+                summary.alignments_skipped += 1;
+                continue;
+            }
+            let probe_path = aln_path.clone();
+            let (build, _source) = tokio::task::spawn_blocking(move || detect_build_for(&probe_path)).await?;
+            let reference_path = self.gateway.cached_reference(&build).map(|p| p.to_string_lossy().into_owned());
+            self.record_alignment(NewAlignment {
+                sequence_run_id: run.id,
+                reference_build: build,
+                aligner: "unknown".into(),
+                variant_caller: None,
+                bam_path: Some(path_str),
+                reference_path,
+                content_sha256: None,
+            })
+            .await?;
+            summary.alignments_created += 1;
+        }
+
+        // Import bundled variant files ONLY when there is no haplogroup GVCF. When a GVCF is present
+        // the fast path below is the authoritative Y/mt source, so a called `chrY.vcf.gz` sitting
+        // beside it (the GATK repo layout ships both) is redundant — importing it would fire a second
+        // Y placement and, because variant-set import isn't content-idempotent, would duplicate the
+        // set on a resumable re-run. Non-GVCF tiers (e.g. the b38 aengine `variants.vcf.gz`) still
+        // import here: there the VCF *is* the Y source. GVCFs themselves are `.g.vcf.gz`, which `scan`
+        // also lists as variant files — the guard keeps them out of this loop too.
+        if !sample.sidecars.has_haplogroup_gvcf() {
+            for vcf in &sample.variant_files {
+                let name = vcf.file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+                match self
+                    .import_variants_from_file(biosample_guid, vcf, variants::SourceType::Imported)
+                    .await
+                {
+                    Ok(_) => {
+                        summary.variants_imported += 1;
+                        summary.imported.push((name, DetectedData::Variants.description().to_string()));
+                    }
+                    Err(e) => summary.skipped.push((name, e.to_string())),
+                }
+            }
+        }
+
+        // Fast path: place Y + mt from the GVCFs and fill sex / read-metrics / lite-coverage from the
+        // text sidecars onto the build-matching alignment — no CRAM walk. Best-effort (mirrors the
+        // project-import chooser at import_project_sample).
+        if fast_path && sample.sidecars.has_haplogroup_gvcf() {
+            let alns = alignment::list_for_run(self.store.pool(), run.id).await?;
+            let chosen = sample
+                .sidecars
+                .build_hint
+                .as_deref()
+                .and_then(|hint| alns.iter().find(|a| build_hint_matches(&a.reference_build, hint)))
+                .or_else(|| alns.iter().find(|a| a.bam_path.is_some()))
+                .or_else(|| alns.first());
+            match chosen {
+                Some(a) => match self.ingest_sidecars(a.id, &sample.sidecars).await {
+                    Ok(ing) => {
+                        summary.sidecars_ingested = true;
+                        summary.y_haplogroup = ing.y_haplogroup;
+                        summary.mt_haplogroup = ing.mt_haplogroup;
+                        summary.sex = ing.sex;
+                        summary.read_metrics = ing.read_metrics;
+                        summary.lite_coverage = ing.lite_coverage;
+                        summary.errors.extend(ing.errors);
+                    }
+                    Err(e) => summary.errors.push(format!("sidecar ingest: {e}")),
+                },
+                None => summary
+                    .errors
+                    .push("haplogroup GVCF present but no alignment to attach it to".into()),
+            }
+        }
+
         Ok(summary)
     }
 

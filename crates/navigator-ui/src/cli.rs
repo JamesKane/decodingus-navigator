@@ -9,7 +9,7 @@
 //!   navigator ingest --subject "James Kane" --project mine /Volumes/nas/Genomics/mine/*
 //!   navigator show --subject "James Kane" --json
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use clap::{Args, Parser, Subcommand};
 use navigator_app::{App, DnaType};
@@ -43,6 +43,10 @@ pub enum Command {
     DebugCalls(DebugCallsArgs),
     /// Diagnostic: the filtered private-Y bucket for an alignment — DISPLAY vs PUBLISH counts.
     PrivateY(DebugCallsArgs),
+    /// Per-marker branch report: the sample's genotype at every defining marker of a Y/mtDNA tree
+    /// node's descendant subtree (observed base + derived/ancestral status + evidence). For
+    /// spot-checking placement and exchanging observations. Table by default; `--tsv` / `--json`.
+    BranchReport(BranchReportArgs),
     /// List projects with their subject counts.
     Projects(ProbeArgs),
     /// De-novo diploid variant calling → VCF (whole-genome, or a single `--contig`).
@@ -108,13 +112,11 @@ pub struct IngestArgs {
     /// Sex recorded only when the subject is created (e.g. male / female).
     #[arg(long)]
     sex: Option<String>,
-    /// Recurse into directories (default: only their immediate files).
-    #[arg(long, short)]
-    recursive: bool,
     /// Workspace database path (defaults to the GUI's ~/.decodingus/navigator-rs.db).
     #[arg(long)]
     db: Option<PathBuf>,
-    /// Files and/or directories to ingest.
+    /// Files and/or directories to ingest. A directory is one staged sample (sidecar fast path);
+    /// a file is imported on its own.
     #[arg(required = true)]
     paths: Vec<PathBuf>,
 }
@@ -151,6 +153,36 @@ pub struct DebugCallsArgs {
     /// Alignment id to genotype (from `show --json`). Takes precedence over `--subject`.
     #[arg(long, short)]
     alignment: Option<i64>,
+    /// Workspace database path (defaults to the GUI's ~/.decodingus/navigator-rs.db).
+    #[arg(long)]
+    db: Option<PathBuf>,
+}
+
+#[derive(Args)]
+pub struct BranchReportArgs {
+    /// Subject donor identifier (used to pick a Y/mt alignment when `--alignment` is omitted —
+    /// prefers a CHM13/HiFi alignment, else the first).
+    #[arg(long, short)]
+    subject: Option<String>,
+    /// Alignment id to genotype (from `show --json`). Takes precedence over `--subject`.
+    #[arg(long, short)]
+    alignment: Option<i64>,
+    /// Node to report: a haplogroup name (`R-FGC29071`) or a defining marker (`FGC29071`). The
+    /// report covers this node's descendant subtree.
+    #[arg(long, short)]
+    node: String,
+    /// Which tree to read: `y` or `mt`.
+    #[arg(long, short, default_value = "y")]
+    tree: String,
+    /// Limit descent to this many levels below the node (default: the whole subtree).
+    #[arg(long)]
+    depth: Option<usize>,
+    /// Write the TSV here instead of printing a table.
+    #[arg(long)]
+    tsv: Option<PathBuf>,
+    /// Emit JSON instead of a table. Mutually exclusive with `--tsv`.
+    #[arg(long, conflicts_with = "tsv")]
+    json: bool,
     /// Workspace database path (defaults to the GUI's ~/.decodingus/navigator-rs.db).
     #[arg(long)]
     db: Option<PathBuf>,
@@ -329,6 +361,7 @@ pub fn run(command: Command) -> i32 {
             Command::DebugDescent(a) => debug_descent(a).await,
             Command::DebugCalls(a) => debug_calls(a).await,
             Command::PrivateY(a) => private_y(a).await,
+            Command::BranchReport(a) => branch_report(a).await,
             Command::Projects(a) => projects(a).await,
             Command::Call(a) => call(a).await,
             Command::LiftVcf(a) => lift_vcf(a).await,
@@ -705,53 +738,6 @@ fn report(e: navigator_app::AppError) -> i32 {
     1
 }
 
-/// Expand the path list into a sorted file list, descending into directories (one level, or
-/// fully with `recursive`). Hidden dotfiles are skipped.
-fn collect_files(paths: &[PathBuf], recursive: bool) -> Vec<PathBuf> {
-    let mut out = Vec::new();
-    for p in paths {
-        push_path(p, recursive, &mut out);
-    }
-    out.sort();
-    out.dedup();
-    out
-}
-
-fn is_hidden(p: &Path) -> bool {
-    p.file_name()
-        .and_then(|n| n.to_str())
-        .is_some_and(|n| n.starts_with('.'))
-}
-
-fn push_path(p: &Path, recursive: bool, out: &mut Vec<PathBuf>) {
-    if is_hidden(p) {
-        return;
-    }
-    if p.is_dir() {
-        let Ok(entries) = std::fs::read_dir(p) else {
-            eprintln!("warning: cannot read directory {}", p.display());
-            return;
-        };
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if is_hidden(&path) {
-                continue;
-            }
-            if path.is_dir() {
-                if recursive {
-                    push_path(&path, recursive, out);
-                }
-            } else {
-                out.push(path);
-            }
-        }
-    } else if p.is_file() {
-        out.push(p.to_path_buf());
-    } else {
-        eprintln!("warning: skipping {} (not a file or directory)", p.display());
-    }
-}
-
 async fn ingest(args: IngestArgs) -> i32 {
     let app = match open(args.db).await {
         Ok(a) => a,
@@ -810,13 +796,78 @@ async fn ingest(args: IngestArgs) -> i32 {
         }
     }
 
-    let files = collect_files(&args.paths, args.recursive);
-    if files.is_empty() {
-        eprintln!("error: no files found in the given paths");
+    // Partition the top-level inputs. A **directory** is one staged sample: it takes the sidecar
+    // fast path (Y/mt haplogroup from the GVCF + sex/read-metrics/coverage from text sidecars, no
+    // CRAM decode) via `add_sample_dir`, which groups the sidecars to their alignment — something
+    // per-file `add_data` can't do (and it would mis-route a `*.g.vcf.gz` through the plain-VCF
+    // reader). Individual **files** keep the per-file detect-and-import path.
+    let mut sample_dirs: Vec<PathBuf> = Vec::new();
+    let mut files: Vec<PathBuf> = Vec::new();
+    for p in &args.paths {
+        if p.is_dir() {
+            sample_dirs.push(p.clone());
+        } else if p.is_file() {
+            files.push(p.clone());
+        } else {
+            eprintln!("warning: skipping {} (not a file or directory)", p.display());
+        }
+    }
+    if sample_dirs.is_empty() && files.is_empty() {
+        eprintln!("error: no files or directories found in the given paths");
         return 1;
     }
 
     let (mut ok, mut failed, mut ysnp_panels, mut ftdna_csv) = (0usize, 0usize, 0usize, 0usize);
+
+    // Directories: the fast-path sidecar ingest onto the resolved subject.
+    for dir in &sample_dirs {
+        match app.add_sample_dir(guid, dir, true).await {
+            Ok(s) => {
+                ok += 1;
+                println!(
+                    "OK   {:<18} {} ({} new, {} existing alignment(s))",
+                    "sample dir",
+                    dir.display(),
+                    s.alignments_created,
+                    s.alignments_skipped
+                );
+                if let Some(y) = &s.y_haplogroup {
+                    println!("     Y-DNA (GVCF): {y}");
+                }
+                if let Some(mt) = &s.mt_haplogroup {
+                    println!("     mtDNA (GVCF): {mt}");
+                }
+                let mut filled = Vec::new();
+                if s.sex.is_some() {
+                    filled.push("sex");
+                }
+                if s.read_metrics {
+                    filled.push("read-metrics");
+                }
+                if s.lite_coverage {
+                    filled.push("coverage");
+                }
+                if !filled.is_empty() {
+                    println!("     sidecars: {}", filled.join(", "));
+                }
+                for (name, desc) in &s.imported {
+                    println!("     imported {desc}: {name}");
+                }
+                for (name, why) in &s.skipped {
+                    eprintln!("     skip {name}: {why}");
+                }
+                for e in &s.errors {
+                    eprintln!("     warning: {e}");
+                }
+            }
+            Err(e) => {
+                failed += 1;
+                eprintln!("FAIL {:<18} {}: {e}", "sample dir", dir.display());
+            }
+        }
+    }
+
+    // Files: per-file detect + import.
     for path in &files {
         match app.add_data_with_test_type(guid, path, args.test_type.as_deref()).await {
             Ok(detected) => {
@@ -835,7 +886,7 @@ async fn ingest(args: IngestArgs) -> i32 {
             }
         }
     }
-    println!("\ningested {ok} file(s), {failed} failed, into subject \"{label}\"");
+    println!("\ningested {ok} item(s), {failed} failed, into subject \"{label}\"");
 
     // A Y-SNP panel (BISDNA) was imported — place a Y haplogroup from its derived calls and
     // report the terminal (the call is recorded for the donor consensus).
@@ -1129,6 +1180,138 @@ async fn private_y(args: DebugCallsArgs) -> i32 {
             v.alt_depth,
             v.allele_fraction,
             gate.admits(v)
+        );
+    }
+    0
+}
+
+/// Per-marker branch report over a Y/mtDNA node's descendant subtree — table / `--tsv` / `--json`.
+async fn branch_report(args: BranchReportArgs) -> i32 {
+    let app = match open(args.db).await {
+        Ok(a) => a,
+        Err(c) => return c,
+    };
+    let dna = match args.tree.to_ascii_lowercase().as_str() {
+        "y" | "ydna" | "y-dna" => DnaType::Y,
+        "mt" | "mtdna" | "mt-dna" => DnaType::Mt,
+        other => {
+            eprintln!("error: unknown --tree \"{other}\" (use \"y\" or \"mt\")");
+            return 2;
+        }
+    };
+    let alignment_id = match args.alignment {
+        Some(id) => id,
+        None => {
+            let Some(subject) = args.subject.as_deref() else {
+                eprintln!("error: provide --alignment <id> or --subject <id>");
+                return 2;
+            };
+            let guid = match find_subject(&app, subject).await {
+                Ok(Some(g)) => g,
+                Ok(None) => {
+                    eprintln!("error: no subject with identifier \"{subject}\"");
+                    return 1;
+                }
+                Err(c) => return c,
+            };
+            // Y and mt want different alignments — a Big-Y run carries no chrM reads.
+            match app.pick_alignment_for(guid, dna).await {
+                Ok(Some(id)) => id,
+                Ok(None) => {
+                    eprintln!("error: subject \"{subject}\" has no alignments");
+                    return 1;
+                }
+                Err(e) => {
+                    eprintln!("error: {e}");
+                    return 1;
+                }
+            }
+        }
+    };
+
+    let report = match app.branch_report(alignment_id, dna, &args.node, args.depth).await {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("error: {e}");
+            return 1;
+        }
+    };
+
+    if let Some(path) = args.tsv {
+        let body = navigator_app::export::branch_report_tsv(&report);
+        if let Err(e) = std::fs::write(&path, body) {
+            eprintln!("error: writing {}: {e}", path.display());
+            return 1;
+        }
+        eprintln!("wrote {} ({} markers)", path.display(), report.rows.len());
+        return 0;
+    }
+
+    let status = |s: navigator_app::CallState| match s {
+        navigator_app::CallState::Derived => "derived",
+        navigator_app::CallState::Ancestral => "ancestral",
+        navigator_app::CallState::NoCall => "nocall",
+    };
+    let gt = |s: navigator_app::CallState| match s {
+        navigator_app::CallState::Derived => "1",
+        navigator_app::CallState::Ancestral => "0",
+        navigator_app::CallState::NoCall => ".",
+    };
+    let (d, a, n) = report.counts();
+
+    if args.json {
+        let markers: Vec<_> = report
+            .rows
+            .iter()
+            .map(|r| {
+                serde_json::json!({
+                    "node": r.node, "parent": r.parent, "marker": r.marker,
+                    "chrom": report.contig, "pos": r.position,
+                    "ancestral": r.ancestral, "derived": r.derived,
+                    "observed_base": r.observed_base.map(|c| c.to_string()),
+                    "status": status(r.state),
+                    "ad": r.ad.map(|(rf, al)| format!("{rf},{al}")),
+                    "dp": r.dp, "gq": r.gq, "source": r.source, "note": r.note,
+                })
+            })
+            .collect();
+        let out = serde_json::json!({
+            "node": report.root, "contig": report.contig,
+            "dna": match dna { DnaType::Y => "Y", DnaType::Mt => "mt" },
+            "gvcf_backed": report.gvcf_backed,
+            "derived": d, "ancestral": a, "nocall": n,
+            "markers": markers,
+        });
+        println!("{}", serde_json::to_string_pretty(&out).unwrap_or_default());
+        return 0;
+    }
+
+    println!(
+        "branch report: node {} ({}, {}) — {} markers: {d} derived / {a} ancestral / {n} no-call",
+        report.root,
+        report.contig,
+        if report.gvcf_backed { "gVCF" } else { "pileup" },
+        report.rows.len(),
+    );
+    println!("  node\tparent\tmarker\tpos\tanc>der\tobs\tstatus\tGT\tAD\tDP\tGQ\tsource\tnote");
+    for r in &report.rows {
+        let opt = |o: Option<u32>| o.map(|v| v.to_string()).unwrap_or_else(|| ".".to_string());
+        println!(
+            "  {}\t{}\t{}\t{}\t{}>{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
+            r.node,
+            r.parent,
+            r.marker,
+            r.position,
+            r.ancestral,
+            r.derived,
+            r.observed_base.map(|c| c.to_string()).unwrap_or_else(|| ".".to_string()),
+            status(r.state),
+            gt(r.state),
+            r.ad.map(|(rf, al)| format!("{rf},{al}")).unwrap_or_else(|| ".".to_string()),
+            opt(r.dp),
+            opt(r.gq),
+            r.source,
+            r.note,
         );
     }
     0

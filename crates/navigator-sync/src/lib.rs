@@ -12,6 +12,7 @@ pub mod oauth;
 pub mod publish;
 pub mod records;
 pub mod recruitment;
+pub mod secret_store;
 pub mod social;
 pub mod sync;
 pub mod tokens;
@@ -26,6 +27,7 @@ pub use records::{
     ManualOverrideRecord, PrivateVariantsRecord, ReconciliationStatusRecord, RecordMeta, RunHaplogroupCallRecord,
     VariantCallEntry, HAPLOGROUP_RECONCILIATION_COLLECTION, PRIVATE_VARIANTS_COLLECTION,
 };
+pub use secret_store::{os_keychain_enabled, use_os_keychain};
 pub use sync::{AsyncSync, RetryPolicy};
 pub use tokens::{Session, TokenStore};
 
