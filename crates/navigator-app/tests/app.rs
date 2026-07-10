@@ -2989,3 +2989,30 @@ async fn add_sample_dir_falls_back_to_per_file_for_a_loose_bundle() {
 
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[tokio::test]
+async fn add_sample_dir_skips_called_vcf_when_gvcf_present() {
+    // GATK repo layout: a bare `chrY.g.vcf.gz` (the Y source → fast path) sits beside the called
+    // `chrY.vcf.gz`. With the GVCF present the called VCF must NOT be imported — it's redundant and
+    // (variant-set import not being content-idempotent) would duplicate on a resumable re-run. The
+    // GVCF is a stub here, so the placement itself is a best-effort no-op; this pins the routing.
+    let app = app().await;
+    let fx = fixtures();
+    let dir = std::env::temp_dir().join(format!("dun-gvcf-skip-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("gatk4")).unwrap();
+    std::fs::copy(fx.join("coverage.cram"), dir.join("chrYM.cram")).unwrap();
+    std::fs::copy(fx.join("coverage.cram.crai"), dir.join("chrYM.cram.crai")).unwrap();
+    std::fs::write(dir.join("gatk4/chrY.g.vcf.gz"), b"not-a-real-gvcf").unwrap();
+    std::fs::write(dir.join("gatk4/chrY.vcf.gz"), b"##fileformat=VCFv4.2\n").unwrap();
+
+    let subject = app.add_biosample(None, "S-GVCF", None, Some("male".into())).await.unwrap();
+    let s = app.add_sample_dir(subject.guid, &dir, true).await.unwrap();
+
+    assert_eq!(s.alignments_created, 1);
+    assert_eq!(s.variants_imported, 0, "called chrY.vcf.gz must be skipped when a GVCF is present");
+    assert!(s.sidecars_ingested, "the GVCF fast path was attempted");
+    assert_eq!(app.list_variant_sets(subject.guid).await.unwrap().len(), 0);
+
+    let _ = std::fs::remove_dir_all(&dir);
+}

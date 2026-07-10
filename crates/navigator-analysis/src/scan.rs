@@ -139,14 +139,20 @@ fn detect_sidecars(files: &[DiscoveredFile]) -> SampleSidecars {
             .map(|f| f.path.clone())
     };
 
-    let chr_y_gvcf = by_suffix(".chry.g.vcf.gz");
-    let chr_m_gvcf = by_suffix(".chrm.g.vcf.gz");
+    // Match the GVCF whether it carries a sample prefix (`HG00096.chm13.chrY.g.vcf.gz`, the ytree
+    // flat/staging name) or is a bare per-analysis file (`chrY.g.vcf.gz`, the in-repo GATK layout).
+    // No leading dot, so both match; `chrY.vcf.gz` (called variants, not a GVCF) and the `.tbi`
+    // index are still excluded.
+    let chr_y_gvcf = by_suffix("chry.g.vcf.gz");
+    let chr_m_gvcf = by_suffix("chrm.g.vcf.gz");
     let build_hint = chr_y_gvcf.as_ref().or(chr_m_gvcf.as_ref()).and_then(|p| build_token(p));
 
     SampleSidecars {
         chr_y_gvcf,
         chr_m_gvcf,
-        callable_bed: by_suffix(".callable.bed"),
+        // CallableLoci output is named `*.callable.bed` in staging but `callable_status.bed` in the
+        // GATK repo layout — match any `.bed` whose name mentions "callable".
+        callable_bed: by_pred(&|n| n.ends_with(".bed") && n.contains("callable")),
         callable_summary: by_suffix(".callable.summary.txt"),
         sex: by_suffix(".sex"),
         coverage: by_name("coverage.txt"),
@@ -417,6 +423,36 @@ mod tests {
         assert_eq!(sc.build_hint.as_deref(), Some("chm13"));
 
         let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn detects_bare_named_gatk_repo_sidecars() {
+        // The real D2C repo layout: a sample dir with a `CP086569.2/` analysis subtree holding
+        // bare-named files (`chrY.g.vcf.gz`, `callable_status.bed`) two levels down — not the
+        // `<sample>.chrY.g.vcf.gz` staging names. scan_sample must still find them.
+        let dir = scratch("bare-repo").join("1aceb711");
+        for f in [
+            "CP086569.2/chrYM.cram",
+            "CP086569.2/chrYM.cram.crai",
+            "CP086569.2/coverage.txt",
+            "CP086569.2/stats.txt",
+            "CP086569.2/gatk3/callable_status.bed",
+            "CP086569.2/gatk4/chrY.g.vcf.gz",
+            "CP086569.2/gatk4/chrY.g.vcf.gz.tbi",
+            "CP086569.2/gatk4/chrY.vcf.gz", // called variants (not a GVCF) — must NOT be the sidecar
+        ] {
+            touch(dir.join(f));
+        }
+
+        let sample = scan_sample(&dir);
+        let sc = &sample.sidecars;
+        assert!(sc.has_haplogroup_gvcf(), "bare chrY.g.vcf.gz must be detected as the Y GVCF");
+        assert!(sc.chr_y_gvcf.as_ref().unwrap().ends_with("chrY.g.vcf.gz"));
+        assert!(sc.callable_bed.as_ref().is_some_and(|p| p.ends_with("callable_status.bed")));
+        assert!(sc.coverage.is_some() && sc.stats.is_some());
+        assert_eq!(sample.alignment_files.len(), 1, "the chrYM.cram");
+
+        let _ = fs::remove_dir_all(dir.parent().unwrap());
     }
 
     #[test]

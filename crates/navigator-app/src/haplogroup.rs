@@ -2245,23 +2245,29 @@ impl App {
         let json = if fresh {
             cached.expect("fresh implies present")
         } else {
-            // Stale or absent → try a *time-bounded* refresh, falling back to any present (stale) copy
-            // on failure/timeout so a slow or unreachable endpoint can't stall a batch for minutes.
-            let downloaded = self
-                .auth
-                .http
-                .get(url)
-                .timeout(std::time::Duration::from_secs(20))
-                .send()
-                .await
-                .and_then(|r| r.error_for_status())
-                .map_err(|e| AppError::Import(format!("downloading {url}: {e}")));
-            match downloaded {
-                Ok(resp) => {
-                    let body = resp
-                        .text()
-                        .await
-                        .map_err(|e| AppError::Import(format!("reading {url}: {e}")))?;
+            // Stale or absent → try a *time-bounded* refresh, falling back to any present (stale)
+            // copy on ANY failure: connect/timeout, a non-2xx status, OR a body read cut short
+            // (the whole-request timeout also covers streaming the ~60–127 MB body — see
+            // [`TREE_DOWNLOAD_TIMEOUT`]). The body-read case matters: on a slow link it surfaces as
+            // "error decoding response body", and failing there would drop a placement that the
+            // cached tree on disk could have served. Only a first-ever fetch with no cache errors.
+            let fetched = async {
+                let resp = self
+                    .auth
+                    .http
+                    .get(url)
+                    .timeout(TREE_DOWNLOAD_TIMEOUT)
+                    .send()
+                    .await
+                    .and_then(|r| r.error_for_status())
+                    .map_err(|e| AppError::Import(format!("downloading {url}: {e}")))?;
+                resp.text()
+                    .await
+                    .map_err(|e| AppError::Import(format!("reading {url}: {e}")))
+            }
+            .await;
+            match fetched {
+                Ok(body) => {
                     if let Some(parent) = path.parent() {
                         let _ = std::fs::create_dir_all(parent);
                     }

@@ -664,6 +664,14 @@ fn tree_cache_path(file: &str) -> PathBuf {
 /// `NAVIGATOR_TREE_TTL_DAYS` (0 = always refetch).
 const TREE_CACHE_TTL_DAYS_DEFAULT: u64 = 7;
 
+/// Whole-request timeout for a haplotree download. reqwest's `.timeout()` bounds the *entire*
+/// request, streaming the body included — and the trees are large (the DecodingUs Y tree is ~60 MB,
+/// the FTDNA Y tree ~127 MB), so a short cap aborts the body read partway (surfacing as reqwest's
+/// "error decoding response body") and a refresh can then *never* complete, leaving the cache
+/// permanently stale. Generous on purpose: a present cache makes any failure fall back instantly
+/// (see [`App::fetch_tree`]), so only a first-ever fetch with no cache can wait this long.
+const TREE_DOWNLOAD_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
+
 /// Is the cached tree at `path` still within its TTL (default 7 days; `NAVIGATOR_TREE_TTL_DAYS`
 /// overrides)? Unknown mtime / unreadable metadata → not fresh (forces a refresh attempt).
 fn tree_cache_is_fresh(path: &Path) -> bool {

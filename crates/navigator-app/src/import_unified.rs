@@ -386,24 +386,26 @@ impl App {
             summary.alignments_created += 1;
         }
 
-        // Import any bundled variant files (e.g. a sites/vendor VCF beside the alignment), but NOT
-        // the haplogroup GVCF sidecars — those are `.g.vcf.gz` (so `scan` also lists them as variant
-        // files), and the fast path below places them via the GVCF reader. Importing them here as
-        // plain subject SNP calls would double-count and fight the haplogroup placement.
-        for vcf in sample.variant_files.iter().filter(|v| {
-            Some(v.as_path()) != sample.sidecars.chr_y_gvcf.as_deref()
-                && Some(v.as_path()) != sample.sidecars.chr_m_gvcf.as_deref()
-        }) {
-            let name = vcf.file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
-            match self
-                .import_variants_from_file(biosample_guid, vcf, variants::SourceType::Imported)
-                .await
-            {
-                Ok(_) => {
-                    summary.variants_imported += 1;
-                    summary.imported.push((name, DetectedData::Variants.description().to_string()));
+        // Import bundled variant files ONLY when there is no haplogroup GVCF. When a GVCF is present
+        // the fast path below is the authoritative Y/mt source, so a called `chrY.vcf.gz` sitting
+        // beside it (the GATK repo layout ships both) is redundant — importing it would fire a second
+        // Y placement and, because variant-set import isn't content-idempotent, would duplicate the
+        // set on a resumable re-run. Non-GVCF tiers (e.g. the b38 aengine `variants.vcf.gz`) still
+        // import here: there the VCF *is* the Y source. GVCFs themselves are `.g.vcf.gz`, which `scan`
+        // also lists as variant files — the guard keeps them out of this loop too.
+        if !sample.sidecars.has_haplogroup_gvcf() {
+            for vcf in &sample.variant_files {
+                let name = vcf.file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+                match self
+                    .import_variants_from_file(biosample_guid, vcf, variants::SourceType::Imported)
+                    .await
+                {
+                    Ok(_) => {
+                        summary.variants_imported += 1;
+                        summary.imported.push((name, DetectedData::Variants.description().to_string()));
+                    }
+                    Err(e) => summary.skipped.push((name, e.to_string())),
                 }
-                Err(e) => summary.skipped.push((name, e.to_string())),
             }
         }
 
