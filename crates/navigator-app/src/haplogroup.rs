@@ -2245,33 +2245,76 @@ impl App {
         let json = if fresh {
             cached.expect("fresh implies present")
         } else {
-            // Stale or absent → try a *time-bounded* refresh, falling back to any present (stale)
-            // copy on ANY failure: connect/timeout, a non-2xx status, OR a body read cut short
-            // (the whole-request timeout also covers streaming the ~60–127 MB body — see
-            // [`TREE_DOWNLOAD_TIMEOUT`]). The body-read case matters: on a slow link it surfaces as
-            // "error decoding response body", and failing there would drop a placement that the
-            // cached tree on disk could have served. Only a first-ever fetch with no cache errors.
+            // Stale or absent → *conditional*, time-bounded refresh. When we have a cached copy and
+            // its stored ETag we send `If-None-Match`: an unchanged tree comes back as a tiny `304`
+            // (a few bytes) instead of re-streaming the full ~60–127 MB body — the curated tree
+            // changes only every week or so, so most refreshes are 304s. Any failure (connect/
+            // timeout, a non-2xx/304 status, or a body read cut short — the whole-request timeout
+            // also covers streaming the body, see [`TREE_DOWNLOAD_TIMEOUT`]) falls back to the cached
+            // copy when present; only a first-ever fetch with no cache errors.
+            enum TreeFetch {
+                NotModified,
+                Modified { body: String, etag: Option<String> },
+            }
+            let etag_path = tree_etag_path(&path);
+            let prior_etag = cached
+                .as_ref()
+                .and_then(|_| std::fs::read_to_string(&etag_path).ok())
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty());
+
             let fetched = async {
-                let resp = self
-                    .auth
-                    .http
-                    .get(url)
-                    .timeout(TREE_DOWNLOAD_TIMEOUT)
+                let mut req = self.auth.http.get(url).timeout(TREE_DOWNLOAD_TIMEOUT);
+                if let Some(etag) = &prior_etag {
+                    req = req.header(reqwest::header::IF_NONE_MATCH, etag.as_str());
+                }
+                let resp = req
                     .send()
                     .await
-                    .and_then(|r| r.error_for_status())
                     .map_err(|e| AppError::Import(format!("downloading {url}: {e}")))?;
-                resp.text()
+                if resp.status() == reqwest::StatusCode::NOT_MODIFIED {
+                    return Ok(TreeFetch::NotModified);
+                }
+                let resp = resp
+                    .error_for_status()
+                    .map_err(|e| AppError::Import(format!("downloading {url}: {e}")))?;
+                let etag = resp
+                    .headers()
+                    .get(reqwest::header::ETAG)
+                    .and_then(|v| v.to_str().ok())
+                    .map(str::to_owned);
+                let body = resp
+                    .text()
                     .await
-                    .map_err(|e| AppError::Import(format!("reading {url}: {e}")))
+                    .map_err(|e| AppError::Import(format!("reading {url}: {e}")))?;
+                Ok(TreeFetch::Modified { body, etag })
             }
             .await;
+
             match fetched {
-                Ok(body) => {
+                Ok(TreeFetch::NotModified) => match cached {
+                    // Still current. Re-write the identical bytes to bump the cache mtime so the TTL
+                    // resets and later runs short-circuit without even a conditional request.
+                    Some(body) => {
+                        let _ = std::fs::write(&path, &body);
+                        body
+                    }
+                    None => return Err(AppError::Import(format!("{url}: 304 with no cached tree"))),
+                },
+                Ok(TreeFetch::Modified { body, etag }) => {
                     if let Some(parent) = path.parent() {
                         let _ = std::fs::create_dir_all(parent);
                     }
                     let _ = std::fs::write(&path, &body);
+                    // Persist the new ETag (or clear a stale one) for the next conditional refresh.
+                    match etag {
+                        Some(e) => {
+                            let _ = std::fs::write(&etag_path, e);
+                        }
+                        None => {
+                            let _ = std::fs::remove_file(&etag_path);
+                        }
+                    }
                     body
                 }
                 Err(e) => match cached {

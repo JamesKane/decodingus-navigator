@@ -658,6 +658,15 @@ fn tree_cache_path(file: &str) -> PathBuf {
     dir.join(file)
 }
 
+/// Sidecar path holding the HTTP `ETag` of a cached haplotree (`<cache>.etag`). [`App::fetch_tree`]
+/// sends it back as `If-None-Match` on a refresh, so an unchanged tree returns a tiny `304` instead
+/// of re-streaming the full ~60–127 MB body.
+fn tree_etag_path(cache_path: &Path) -> PathBuf {
+    let mut p = cache_path.as_os_str().to_owned();
+    p.push(".etag");
+    PathBuf::from(p)
+}
+
 /// How long a cached haplotree is trusted before [`App::fetch_tree`] re-downloads it. The
 /// AppView's curated tree changes slowly (curator review, periodic builds), so a weekly
 /// refresh keeps placements current without hitting the network on every run. Override with
@@ -3858,7 +3867,18 @@ mod import_tests {
 
 #[cfg(test)]
 mod seed_tests {
-    use super::{seed_assets_from, SeedSummary};
+    use super::{seed_assets_from, tree_etag_path, SeedSummary};
+    use std::path::Path;
+
+    #[test]
+    fn etag_sidecar_appends_not_replaces_extension() {
+        // `<cache>.etag` — append, so the tree's own `.json` extension is kept (a `with_extension`
+        // would drop it and could collide across trees sharing a stem).
+        assert_eq!(
+            tree_etag_path(Path::new("/t/decodingus-ytree.json")),
+            Path::new("/t/decodingus-ytree.json.etag")
+        );
+    }
 
     #[test]
     fn seeds_missing_files_and_never_overwrites() {
