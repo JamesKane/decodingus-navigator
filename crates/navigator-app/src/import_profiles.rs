@@ -2,6 +2,33 @@
 //! 2026-06 simplification round; `use super::*` reaches the crate-root types + free helpers.
 use super::*;
 
+/// Process-wide memo of the parsed Y-SNP dictionary. Now that [`YsnpDictionary`] prefers the full
+/// ~2M-row catalog, parsing it per resolve/annotate call (`y_snp_names_at` runs on every Y-SNP-table
+/// view) would re-read ~200 MB each time; this parses once and reuses it. Keyed by the resolved
+/// dictionary file's path + signature (mtime:size), so a refreshed dictionary is picked up.
+type YsnpMemo = Mutex<Option<(String, Arc<YsnpDictionary>)>>;
+static YSNP_MEMO: std::sync::OnceLock<YsnpMemo> = std::sync::OnceLock::new();
+
+/// Load the Y-SNP dictionary from its asset dir, memoized process-wide (see [`YSNP_MEMO`]).
+fn load_ysnp_dictionary_cached() -> Result<Arc<YsnpDictionary>, String> {
+    let dir = ysnp_dict::asset_dir();
+    let dict_path = YsnpDictionary::ASSET_FILENAMES
+        .iter()
+        .map(|f| dir.join(f))
+        .find(|p| p.is_file())
+        .ok_or_else(|| format!("no Y-SNP dictionary in {}", dir.display()))?;
+    let key = format!("{}|{}", dict_path.display(), file_signature(&dict_path).unwrap_or_default());
+    let memo = YSNP_MEMO.get_or_init(|| Mutex::new(None));
+    if let Some((k, d)) = memo.lock().unwrap().as_ref() {
+        if *k == key {
+            return Ok(d.clone());
+        }
+    }
+    let dict = Arc::new(YsnpDictionary::load(&dir)?);
+    *memo.lock().unwrap() = Some((key, dict.clone()));
+    Ok(dict)
+}
+
 impl App {
     // ---- panels + IBD ------------------------------------------------------
 
@@ -232,10 +259,10 @@ impl App {
     /// Annotate position-only Y variants with the catalogued Y-SNP **name** at that site, for the two
     /// Y-SNP tables (multi-source variant profile + private-Y union). Resolves the subject's Y build
     /// key (CHM13→`hs1`, else GRCh38/GRCh37 — same rule as the BISDNA importer), loads the Y-SNP
-    /// dictionary (the small chromo2 panel manifest preferred — fast, ~14k SNPs), and returns
-    /// `position → canonical name` for the requested positions only. Best-effort: a missing dictionary
-    /// yields an empty map (not an error), so the tables simply show no extra names. Looking a position
-    /// up against the wrong build just misses — there are no false labels, only possibly-absent ones.
+    /// dictionary (the full catalog, memoized), and returns `position → canonical name` for the
+    /// requested positions only. Best-effort: a missing dictionary yields an empty map (not an error),
+    /// so the tables simply show no extra names. Looking a position up against the wrong build just
+    /// misses — there are no false labels, only possibly-absent ones.
     pub async fn y_snp_names_at(
         &self,
         biosample_guid: SampleGuid,
@@ -245,7 +272,7 @@ impl App {
             return Ok(HashMap::new());
         }
         let build = self.bisdna_target_build(biosample_guid).await;
-        let Ok(dict) = YsnpDictionary::load(&ysnp_dict::asset_dir()) else {
+        let Ok(dict) = load_ysnp_dictionary_cached() else {
             return Ok(HashMap::new()); // no dictionary installed — degrade gracefully
         };
         let idx = dict.position_index(&build);
@@ -254,6 +281,61 @@ impl App {
             .filter_map(|p| idx.get(p).map(|n| (*p, n.to_string())))
             .collect();
         Ok(names)
+    }
+
+    /// Ensure a Y-SNP dictionary is present, downloading the full catalog (`dictionary.tsv`,
+    /// ~208 MB) from the asset release on first use — it's too big and too volatile (~weekly YBrowse
+    /// refresh) to bundle in the installer. No-op when a dictionary (the chromo2 panel or the full
+    /// catalog) is already installed, or the user pointed `NAVIGATOR_YSNP_DIR` at one. The download
+    /// is verified against a small published manifest (`ysnp_manifest.json`, the ancestry
+    /// [`AssetManifest`](navigator_analysis::manifest::AssetManifest) shape) so a rebuild is a
+    /// re-publish, not a client change. Best-effort — the caller then loads, degrading clearly if the
+    /// dictionary is still absent. Publish with `packaging/publish-assets.sh ysnp`.
+    pub async fn ensure_ysnp_dictionary(&self) -> Result<(), AppError> {
+        const YSNP_ASSET_BASE: &str =
+            "https://github.com/JamesKane/decodingus-navigator/releases/download/assets-ysnp";
+
+        let dir = ysnp_dict::asset_dir();
+        if YsnpDictionary::ASSET_FILENAMES.iter().any(|f| dir.join(f).is_file()) {
+            return Ok(());
+        }
+        std::fs::create_dir_all(&dir)?;
+
+        let manifest_json = self
+            .auth
+            .http
+            .get(format!("{YSNP_ASSET_BASE}/ysnp_manifest.json"))
+            .send()
+            .await
+            .and_then(|r| r.error_for_status())
+            .map_err(|e| AppError::Import(format!("fetching Y-SNP dictionary manifest: {e}")))?
+            .text()
+            .await
+            .map_err(|e| AppError::Import(format!("reading Y-SNP dictionary manifest: {e}")))?;
+        let manifest = navigator_analysis::manifest::AssetManifest::from_json(&manifest_json)
+            .map_err(|e| AppError::Import(format!("parsing Y-SNP dictionary manifest: {e}")))?;
+
+        let dest = dir.join("dictionary.tsv");
+        let mut noop = |_: u64, _: Option<u64>| {};
+        let got = navigator_refgenome::download::download(
+            &self.auth.http,
+            &format!("{YSNP_ASSET_BASE}/dictionary.tsv"),
+            &dest,
+            &mut noop,
+        )
+        .await?;
+        // Verify the streamed digest against the manifest (no 208 MB re-read). A manifest without an
+        // entry passes through advisory, matching `AssetManifest::verify`.
+        if let Some(entry) = manifest.assets.get("dictionary.tsv") {
+            if !got.eq_ignore_ascii_case(&entry.sha256) {
+                let _ = std::fs::remove_file(&dest);
+                return Err(AppError::Import(format!(
+                    "Y-SNP dictionary failed its integrity check (manifest {}, download {got}) — re-try",
+                    entry.sha256
+                )));
+            }
+        }
+        Ok(())
     }
 
     /// Import a BISDNA chromo2 Y-SNP export. Each named marker is resolved to a locus via the
@@ -275,10 +357,15 @@ impl App {
             None => self.bisdna_target_build(biosample_guid).await,
         };
 
+        // Fetch the full Y-SNP dictionary on first use (best-effort); the load below then finds it.
+        if let Err(e) = self.ensure_ysnp_dictionary().await {
+            eprintln!("Y-SNP dictionary download failed ({e}); trying any local copy");
+        }
         let dict_dir = ysnp_dict::asset_dir();
-        let dict = YsnpDictionary::load(&dict_dir).map_err(|e| {
+        let dict = load_ysnp_dictionary_cached().map_err(|e| {
             AppError::Import(format!(
-                "{e}. Build the Y-SNP dictionary with scripts/ysnp-dictionary (expected under {})",
+                "{e}. The Y-SNP dictionary downloads automatically on first import, or build it with \
+                 scripts/ysnp-dictionary (expected under {})",
                 dict_dir.display()
             ))
         })?;

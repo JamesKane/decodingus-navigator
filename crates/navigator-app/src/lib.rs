@@ -1187,6 +1187,41 @@ pub fn seed_bundled_masks() -> SeedSummary {
     seed_assets_from(&src, &dest).unwrap_or_default()
 }
 
+/// Locate the bundled STR-reference resource directory (`str/`) — the HipSTR reference BEDs. Same
+/// resolution as [`bundled_masks_dir`], but with **no** compile-time repo fallback: the GRCh38
+/// HipSTR BED is ~20 MB, too large to check into git, so it ships in the installer image (staged
+/// there from `~/.decodingus/str/` or the asset release) rather than from the repo.
+fn bundled_str_dir() -> Option<PathBuf> {
+    if let Ok(p) = std::env::var("NAVIGATOR_BUNDLED_STR") {
+        let p = PathBuf::from(p);
+        if p.is_dir() {
+            return Some(p);
+        }
+    }
+    let exe = std::env::current_exe().ok()?;
+    let dir = exe.parent()?;
+    [
+        dir.join("../Resources/str"),        // macOS .app/Contents/MacOS → ../Resources
+        dir.join("str"),                     // Windows (alongside) / portable
+        dir.join("../lib/DUNavigator/str"),  // Linux .deb/AppImage usr/bin → usr/lib/<app>
+        dir.join("../share/DUNavigator/str"),
+        dir.join("resources/str"),
+    ]
+    .into_iter()
+    .find(|c| c.is_dir())
+}
+
+/// Seed the bundled HipSTR reference BEDs into `<cache base>/str/` on first run, so STR calling
+/// works out of the box for the shipped build(s). Never overwrites (a user's own override wins);
+/// best-effort ⇒ empty summary when no bundle is present (e.g. a lean dev build).
+pub fn seed_bundled_str() -> SeedSummary {
+    let Some(src) = bundled_str_dir() else {
+        return SeedSummary::default();
+    };
+    let dest = refgenome_cache::base_dir().join("str");
+    seed_assets_from(&src, &dest).unwrap_or_default()
+}
+
 /// The asset integrity manifest path for a build (`<base>/ancestry/ancestry_manifest_<build>.json`).
 fn ancestry_manifest_path(build: ReferenceBuild) -> PathBuf {
     ancestry_asset_path("", "ancestry_manifest", build, "json")

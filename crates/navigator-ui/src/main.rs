@@ -44,6 +44,11 @@ fn main() -> eframe::Result<()> {
     if seeded_masks.copied > 0 {
         eprintln!("seeded {} bundled mask(s) into the cache", seeded_masks.copied);
     }
+    // And the bundled HipSTR reference BEDs into ~/.decodingus/str/ so STR calling works offline.
+    let seeded_str = navigator_app::seed_bundled_str();
+    if seeded_str.copied > 0 {
+        eprintln!("seeded {} bundled STR reference(s) into the cache", seeded_str.copied);
+    }
 
     // With a subcommand, run headless (ingest/probe) and exit; with none, launch the GUI.
     let parsed = cli::Cli::parse();

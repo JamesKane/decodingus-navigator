@@ -104,5 +104,27 @@ else
   echo "stage-assets: WARNING — no mask source at $MASK_SRC; bundling no chrY masks." >&2
 fi
 
+# --- STR reference (HipSTR BEDs) ------------------------------------------------------------------
+# Bundled like the ancestry panels (too big for git): sourced from the dev's ~/.decodingus/str (or
+# NAVIGATOR_STR_SRC), else fetched from the asset release by known name. Seeded to ~/.decodingus/str/
+# on first run (navigator_app::seed_bundled_str).
+STR_STAGE="$SCRIPT_DIR/staging/str"
+mkdir -p "$STR_STAGE"
+STR_SRC="${NAVIGATOR_STR_SRC:-$HOME/.decodingus/str}"
+if [ -d "$STR_SRC" ]; then
+  str_copied="$(stage_from_dir "$STR_SRC" "$STR_STAGE" "*.hipstr_reference.bed.gz")"
+  echo "stage-assets: staged $str_copied STR reference(s) into $STR_STAGE"
+elif [ -n "$ASSET_RELEASE" ]; then
+  base="https://github.com/$ASSET_REPO/releases/download/$ASSET_RELEASE"
+  for name in "${ASSET_BUILD}.hipstr_reference.bed.gz" "GRCh38.hipstr_reference.bed.gz"; do
+    if [ ! -f "$STR_STAGE/$name" ]; then
+      curl -fSL --retry 3 --retry-delay 2 -o "$STR_STAGE/$name" "$base/$name" \
+        && echo "  downloaded $name" || echo "  (no $name in release; skipping)"
+    fi
+  done
+else
+  echo "stage-assets: WARNING — no STR source at $STR_SRC; bundling no STR reference." >&2
+fi
+
 # cargo-packager requires the resource dirs to exist even if empty.
-touch "$STAGE/.staged" "$MASK_STAGE/.staged"
+touch "$STAGE/.staged" "$MASK_STAGE/.staged" "$STR_STAGE/.staged"

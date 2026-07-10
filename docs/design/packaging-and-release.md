@@ -217,6 +217,45 @@ against the existing `AssetManifest` sha256 (the app already has `read_verified_
 
 ---
 
+## 4b. Other pipeline assets — STR reference & Y-SNP dictionary (2026-07-10)
+
+The ancestry review above only covered the ancestry/IBD `.bin`. A full audit of every analysis-
+pipeline asset (sizes measured on disk) split the rest by size × volatility:
+
+| Asset | Size | Volatility | Delivery | Rationale |
+|---|---|---|---|---|
+| Reference FASTAs (CHM13/GRCh37/38) | ~3 GB each | Immutable | **Public host on demand** (human-pangenomics S3, Broad GCS, UCSC) | Free egress, canonical; re-hosting would be the one real cost. Add sha256 pins. |
+| Liftover chains, Y structural masks | ≤31 MB | Immutable | **Public host on demand** | Same. |
+| Y/mt haplotrees | 60–127 MB | High (~weekly) | **Runtime fetch + conditional GET** | ETag/`If-None-Match` → 304 (implemented 2026-07-10); optionally Cloudflare-free in front of the AppView. **Not** the paid S3 CDN. |
+| chrY callable/cohort masks | ~1.8 MB | Rare | **Installer bundle** (git `assets/masks/` → seed) | Small, done. |
+| Ancestry/IBD `.bin` | ~160 MB | Rare | **Installer bundle** (GitHub release → stage → seed) | Decision A, done. |
+| **STR HipSTR reference** | 20 MB (GRCh38) / 0.2 MB (CHM13) | Static | **Installer bundle → seed** | Small, static; had *no* delivery path. |
+| **Y-SNP dictionary** (`dictionary.tsv`) | ~208 MB | Medium (~weekly YBrowse) | **Lazy download from GitHub release, sha256-verified** | Too big to bundle, too volatile; had *no* delivery path. |
+
+**Cost stance (creative GitHub):** GitHub **Releases** is the free asset host for app-built data
+(ancestry `.bin`, STR ref, Y-SNP dict) — public repo, tokenless HTTPS, no egress bill. Do **not**
+wire the designed-but-unused S3/CloudFront path (`scripts/ancestry-panel/06_publish_cdn.sh`); it's
+redundant cost.
+
+**STR (bundle + seed) — implemented 2026-07-10:** `packaging/staging/str` is a packager resource
+(`bundled_str_dir` / `seed_bundled_str` mirror the masks path; staged from `~/.decodingus/str` or the
+asset release by `stage-assets.sh`). `str_reference_path` now reads from the shared cache base
+(honors `NAVIGATOR_REFGENOME_DIR`), so seed target == read path.
+
+**Y-SNP dictionary (lazy download) — implemented 2026-07-10:** `App::ensure_ysnp_dictionary`
+downloads `dictionary.tsv` from the `assets-ysnp` GitHub release on first Y-SNP/BISDNA import,
+verified against a small `ysnp_manifest.json` (the ancestry `AssetManifest` shape — so a weekly
+rebuild is a re-publish, not a client change). The parsed dictionary is memoized process-wide. Note:
+`YsnpDictionary::load` now **prefers the full `dictionary.tsv`** over the stale ~14k-name
+`chromo2-panel.tsv` (which would shadow current names). **Manual step (like the ancestry release):**
+run `packaging/publish-assets.sh ysnp` once to populate the `assets-ysnp` release; until then the
+first-import download 404s and the importer surfaces the "build it with scripts/ysnp-dictionary" hint.
+
+**Still open:** sha256 pins for the reference FASTAs (`default_reference_sha` is all `None`); extend
+the manifest pattern to trees/masks/chains for uniform integrity.
+
+---
+
 ## 5. Code signing & notarization (the operational crux)
 
 | OS | Without signing | For Alpha | Cost |

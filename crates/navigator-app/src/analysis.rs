@@ -448,9 +448,9 @@ impl App {
             let p = PathBuf::from(p);
             return p.exists().then_some(p);
         }
-        let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
-        let p = PathBuf::from(home)
-            .join(".decodingus")
+        // Use the shared cache base (honors `NAVIGATOR_REFGENOME_DIR`) so this matches where
+        // `seed_bundled_str` places the bundled reference.
+        let p = navigator_refgenome::cache::base_dir()
             .join("str")
             .join(format!("{reference_build}.hipstr_reference.bed.gz"));
         p.exists().then_some(p)

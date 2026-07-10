@@ -149,13 +149,15 @@ impl YsnpDictionary {
         })
     }
 
-    /// Candidate dictionary filenames in `load` preference order: a small per-chip panel
-    /// manifest (the lightweight, committable asset) before the full ~200 MB catalog.
-    pub const ASSET_FILENAMES: &'static [&'static str] = &["chromo2-panel.tsv", "dictionary.tsv"];
+    /// Candidate dictionary filenames in `load` preference order: the full ~200 MB / ~2M-name
+    /// catalog first, then the small per-chip panel only as a fallback. The chromo2 chip panel is a
+    /// stale ~14k-name subset that would shadow current names present in the full catalog, so the
+    /// catalog wins whenever it's installed (it's the one downloaded on first use).
+    pub const ASSET_FILENAMES: &'static [&'static str] = &["dictionary.tsv", "chromo2-panel.tsv"];
 
     /// Read the asset from `dir`: the first of [`Self::ASSET_FILENAMES`] that exists, plus an
-    /// optional sibling `aliases.tsv`. Preferring the panel manifest keeps the common case
-    /// (a ~14k-name chip) to a ~1 MB load instead of the full multi-million-row catalog.
+    /// optional sibling `aliases.tsv`. Prefers the full catalog for the widest, current name
+    /// coverage; the chromo2 panel is only used when the catalog isn't present.
     pub fn load(dir: &Path) -> Result<Self, String> {
         let dict_path = Self::ASSET_FILENAMES
             .iter()
@@ -253,6 +255,28 @@ M269\tCTS10003
         let d = dict();
         let r = d.resolve("cts10003", "hs1").unwrap();
         assert_eq!(r.canonical, "CTS10003"); // original case preserved
+    }
+
+    #[test]
+    fn load_prefers_full_dictionary_over_chromo2_panel() {
+        // Both present → the full `dictionary.tsv` wins; the stale ~14k-name chromo2 chip panel must
+        // not shadow current names in the full catalog. With only the panel, it's the fallback.
+        let dir = std::env::temp_dir().join(format!("dun-ysnp-pref-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let hdr = "name\tbuild\tchrom\tposition\tstrand\tancestral\tderived\n";
+        std::fs::write(dir.join("dictionary.tsv"), format!("{hdr}FullOnlySnp\ths1\tchrY\t123\t+\tA\tG\n")).unwrap();
+        std::fs::write(dir.join("chromo2-panel.tsv"), format!("{hdr}PanelOnlySnp\ths1\tchrY\t456\t+\tA\tG\n")).unwrap();
+
+        let d = YsnpDictionary::load(&dir).unwrap();
+        assert!(d.resolve("FullOnlySnp", "hs1").is_some(), "loaded the full catalog");
+        assert!(d.resolve("PanelOnlySnp", "hs1").is_none(), "did not load the chromo2 panel");
+
+        std::fs::remove_file(dir.join("dictionary.tsv")).unwrap();
+        let d2 = YsnpDictionary::load(&dir).unwrap();
+        assert!(d2.resolve("PanelOnlySnp", "hs1").is_some(), "fell back to the chromo2 panel");
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

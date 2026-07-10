@@ -28,6 +28,7 @@ before-packaging-command = "bash ../../packaging/stage-assets.sh"
 resources = [
     { src = "../../packaging/staging/ancestry", target = "ancestry" },
     { src = "../../packaging/staging/masks", target = "masks" },
+    { src = "../../packaging/staging/str", target = "str" },
 ]
 
 [package.metadata.packager.macos]
