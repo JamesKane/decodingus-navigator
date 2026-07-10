@@ -9,7 +9,7 @@
 //!   navigator ingest --subject "James Kane" --project mine /Volumes/nas/Genomics/mine/*
 //!   navigator show --subject "James Kane" --json
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use clap::{Args, Parser, Subcommand};
 use navigator_app::{App, DnaType};
@@ -112,13 +112,11 @@ pub struct IngestArgs {
     /// Sex recorded only when the subject is created (e.g. male / female).
     #[arg(long)]
     sex: Option<String>,
-    /// Recurse into directories (default: only their immediate files).
-    #[arg(long, short)]
-    recursive: bool,
     /// Workspace database path (defaults to the GUI's ~/.decodingus/navigator-rs.db).
     #[arg(long)]
     db: Option<PathBuf>,
-    /// Files and/or directories to ingest.
+    /// Files and/or directories to ingest. A directory is one staged sample (sidecar fast path);
+    /// a file is imported on its own.
     #[arg(required = true)]
     paths: Vec<PathBuf>,
 }
@@ -740,53 +738,6 @@ fn report(e: navigator_app::AppError) -> i32 {
     1
 }
 
-/// Expand the path list into a sorted file list, descending into directories (one level, or
-/// fully with `recursive`). Hidden dotfiles are skipped.
-fn collect_files(paths: &[PathBuf], recursive: bool) -> Vec<PathBuf> {
-    let mut out = Vec::new();
-    for p in paths {
-        push_path(p, recursive, &mut out);
-    }
-    out.sort();
-    out.dedup();
-    out
-}
-
-fn is_hidden(p: &Path) -> bool {
-    p.file_name()
-        .and_then(|n| n.to_str())
-        .is_some_and(|n| n.starts_with('.'))
-}
-
-fn push_path(p: &Path, recursive: bool, out: &mut Vec<PathBuf>) {
-    if is_hidden(p) {
-        return;
-    }
-    if p.is_dir() {
-        let Ok(entries) = std::fs::read_dir(p) else {
-            eprintln!("warning: cannot read directory {}", p.display());
-            return;
-        };
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if is_hidden(&path) {
-                continue;
-            }
-            if path.is_dir() {
-                if recursive {
-                    push_path(&path, recursive, out);
-                }
-            } else {
-                out.push(path);
-            }
-        }
-    } else if p.is_file() {
-        out.push(p.to_path_buf());
-    } else {
-        eprintln!("warning: skipping {} (not a file or directory)", p.display());
-    }
-}
-
 async fn ingest(args: IngestArgs) -> i32 {
     let app = match open(args.db).await {
         Ok(a) => a,
@@ -845,13 +796,78 @@ async fn ingest(args: IngestArgs) -> i32 {
         }
     }
 
-    let files = collect_files(&args.paths, args.recursive);
-    if files.is_empty() {
-        eprintln!("error: no files found in the given paths");
+    // Partition the top-level inputs. A **directory** is one staged sample: it takes the sidecar
+    // fast path (Y/mt haplogroup from the GVCF + sex/read-metrics/coverage from text sidecars, no
+    // CRAM decode) via `add_sample_dir`, which groups the sidecars to their alignment — something
+    // per-file `add_data` can't do (and it would mis-route a `*.g.vcf.gz` through the plain-VCF
+    // reader). Individual **files** keep the per-file detect-and-import path.
+    let mut sample_dirs: Vec<PathBuf> = Vec::new();
+    let mut files: Vec<PathBuf> = Vec::new();
+    for p in &args.paths {
+        if p.is_dir() {
+            sample_dirs.push(p.clone());
+        } else if p.is_file() {
+            files.push(p.clone());
+        } else {
+            eprintln!("warning: skipping {} (not a file or directory)", p.display());
+        }
+    }
+    if sample_dirs.is_empty() && files.is_empty() {
+        eprintln!("error: no files or directories found in the given paths");
         return 1;
     }
 
     let (mut ok, mut failed, mut ysnp_panels, mut ftdna_csv) = (0usize, 0usize, 0usize, 0usize);
+
+    // Directories: the fast-path sidecar ingest onto the resolved subject.
+    for dir in &sample_dirs {
+        match app.add_sample_dir(guid, dir, true).await {
+            Ok(s) => {
+                ok += 1;
+                println!(
+                    "OK   {:<18} {} ({} new, {} existing alignment(s))",
+                    "sample dir",
+                    dir.display(),
+                    s.alignments_created,
+                    s.alignments_skipped
+                );
+                if let Some(y) = &s.y_haplogroup {
+                    println!("     Y-DNA (GVCF): {y}");
+                }
+                if let Some(mt) = &s.mt_haplogroup {
+                    println!("     mtDNA (GVCF): {mt}");
+                }
+                let mut filled = Vec::new();
+                if s.sex.is_some() {
+                    filled.push("sex");
+                }
+                if s.read_metrics {
+                    filled.push("read-metrics");
+                }
+                if s.lite_coverage {
+                    filled.push("coverage");
+                }
+                if !filled.is_empty() {
+                    println!("     sidecars: {}", filled.join(", "));
+                }
+                for (name, desc) in &s.imported {
+                    println!("     imported {desc}: {name}");
+                }
+                for (name, why) in &s.skipped {
+                    eprintln!("     skip {name}: {why}");
+                }
+                for e in &s.errors {
+                    eprintln!("     warning: {e}");
+                }
+            }
+            Err(e) => {
+                failed += 1;
+                eprintln!("FAIL {:<18} {}: {e}", "sample dir", dir.display());
+            }
+        }
+    }
+
+    // Files: per-file detect + import.
     for path in &files {
         match app.add_data_with_test_type(guid, path, args.test_type.as_deref()).await {
             Ok(detected) => {
@@ -870,7 +886,7 @@ async fn ingest(args: IngestArgs) -> i32 {
             }
         }
     }
-    println!("\ningested {ok} file(s), {failed} failed, into subject \"{label}\"");
+    println!("\ningested {ok} item(s), {failed} failed, into subject \"{label}\"");
 
     // A Y-SNP panel (BISDNA) was imported — place a Y haplogroup from its derived calls and
     // report the terminal (the call is recorded for the donor consensus).

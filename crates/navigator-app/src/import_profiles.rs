@@ -101,16 +101,18 @@ impl App {
             .file_name()
             .map(|s| s.to_string_lossy().into_owned())
             .unwrap_or_else(|| "variants".into());
+        // Match `.vcf`, plus bgzipped/gzipped `.vcf.gz` / `.vcf.bgz` (extension() alone sees only
+        // the trailing `.gz`, which would mis-route a compressed VCF to the CSV branch).
         let is_vcf = path
-            .extension()
-            .and_then(|e| e.to_str())
-            .map(|e| e.eq_ignore_ascii_case("vcf"))
-            .unwrap_or(false);
+            .file_name()
+            .and_then(|n| n.to_str())
+            .map(|n| n.to_ascii_lowercase())
+            .is_some_and(|n| n.ends_with(".vcf") || n.ends_with(".vcf.gz") || n.ends_with(".vcf.bgz"));
 
         let calls = if is_vcf {
             // Genotype-aware: a vendor VCF (FTDNA Big Y / YSEQ) reports reference sites too, so only
             // the genotype-selected ALT is kept (see parse_vcf_subject_snps). Sites-only VCFs keep
-            // every listed variant.
+            // every listed variant. Handles a bgzipped `.vcf.gz` transparently.
             parse_vcf_subject_snps(path)?
         } else {
             let text = std::fs::read_to_string(path)?;

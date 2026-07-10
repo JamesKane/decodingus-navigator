@@ -1347,6 +1347,37 @@ pub struct BatchImportSummary {
     pub skipped: Vec<(String, String)>,
 }
 
+/// Outcome of ingesting one staged **sample directory** via [`App::add_sample_dir`] — the CLI
+/// `ingest` fast path for the D2C bulk side-load (alignment recorded from the header, then Y/mt +
+/// sex/metrics/coverage placed from the pipeline sidecars, no CRAM decode).
+#[derive(Debug, Clone, Default)]
+pub struct SampleDirSummary {
+    /// Alignment records created (BAM/CRAM newly recorded onto the subject's run).
+    pub alignments_created: usize,
+    /// Alignment files already recorded (idempotent re-ingest).
+    pub alignments_skipped: usize,
+    /// Variant files (VCFs) imported from the directory.
+    pub variants_imported: usize,
+    /// Whether the sidecar fast path ran (a haplogroup GVCF was present and attached).
+    pub sidecars_ingested: bool,
+    /// Y haplogroup placed from the chrY GVCF, if any.
+    pub y_haplogroup: Option<String>,
+    /// mt haplogroup placed from the chrM GVCF, if any.
+    pub mt_haplogroup: Option<String>,
+    /// Sex filled from the `.sex` sidecar (`M`/`F`/`U`), if any.
+    pub sex: Option<String>,
+    /// Read metrics filled from a `stats.txt`/flagstat/Picard sidecar.
+    pub read_metrics: bool,
+    /// Lite coverage filled from a `coverage.txt`/Picard WGS-metrics sidecar.
+    pub lite_coverage: bool,
+    /// Loose-bundle fallback (no alignment/variant/GVCF): `(filename, description)` per import.
+    pub imported: Vec<(String, String)>,
+    /// Loose-bundle fallback skips, plus any files that failed: `(filename, reason)`.
+    pub skipped: Vec<(String, String)>,
+    /// Non-fatal fast-path errors (a sidecar that failed while the rest proceeded).
+    pub errors: Vec<String>,
+}
+
 /// A file's cheap signature (`mtime_secs:size`) for analysis-cache staleness — no content read.
 /// `None` if the file is missing / unstattable.
 fn file_signature(path: &Path) -> Option<String> {
@@ -1655,16 +1686,16 @@ fn detect_build_for(path: &Path) -> (String, &'static str) {
 }
 
 /// Cheap VCF header peek: the `##` meta block (joined) + the contig names from `##contig=<ID=…>`.
-/// Reads only the header (stops at the first data line). Plain text — matches the import parser,
-/// which doesn't decompress either; a gzipped VCF simply yields an empty peek (→ generic).
+/// Reads only the header (stops at the first data line). Transparently decompresses a gzip/BGZF
+/// (`.vcf.gz`) input — matching the import parser — so a bgzipped vendor VCF is classified too.
 fn peek_vcf_header(path: &Path) -> (String, Vec<String>) {
     use std::io::BufRead;
-    let Ok(file) = std::fs::File::open(path) else {
+    let Ok(reader) = navigator_analysis::gzio::open_maybe_gz(path) else {
         return (String::new(), Vec::new());
     };
     let mut meta = String::new();
     let mut contigs = Vec::new();
-    for line in std::io::BufReader::new(file).lines().map_while(Result::ok) {
+    for line in reader.lines().map_while(Result::ok) {
         if let Some(rest) = line.strip_prefix("##") {
             meta.push_str(&line);
             meta.push('\n');
@@ -1695,9 +1726,11 @@ fn peek_vcf_header(path: &Path) -> (String, Vec<String>) {
 /// multi-allelic-aware); `0/0` and `./.` rows are dropped. A VCF with no FORMAT/sample column
 /// (a sites-only list) keeps its old meaning: every listed ALT is one of the subject's variants.
 fn parse_vcf_subject_snps(path: &Path) -> Result<Vec<variants::VariantCall>, AppError> {
-    let text = std::fs::read_to_string(path)?;
+    use std::io::BufRead;
+    let reader = navigator_analysis::gzio::open_maybe_gz(path)?;
     let mut out = Vec::new();
-    for line in text.lines() {
+    for line in reader.lines() {
+        let line = line?;
         if line.starts_with('#') || line.trim().is_empty() {
             continue;
         }

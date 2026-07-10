@@ -212,8 +212,11 @@ fn list_files_recursive(dir: &Path, max_depth: usize, depth: usize, out: &mut Ve
     }
 }
 
-/// Scan one sample subdirectory; `None` if it holds no alignment or variant files.
-fn scan_sample(dir: &Path) -> DiscoveredSample {
+/// Scan one sample directory into a [`DiscoveredSample`] (alignment/index/variant files + pipeline
+/// sidecars). Always returns a sample; the caller decides whether it holds usable data ([`scan`]
+/// drops samples with neither an alignment nor a variant file). Used directly by the app to ingest
+/// a single staged sample directory onto an existing subject.
+pub fn scan_sample(dir: &Path) -> DiscoveredSample {
     let mut files = Vec::new();
     list_files_recursive(dir, 2, 0, &mut files);
     files.sort();

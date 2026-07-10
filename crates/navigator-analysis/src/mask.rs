@@ -6,7 +6,7 @@
 //! requested contig are loaded, sorted, and coalesced so [`RegionMask::contains`] is a
 //! binary search.
 
-use std::io::{BufRead, BufReader};
+use std::io::BufRead;
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
@@ -20,15 +20,11 @@ pub struct RegionMask {
 }
 
 impl RegionMask {
-    /// Load the intervals for `contig` from a BED file (other contigs ignored). A `.gz` path is
-    /// transparently gunzipped, so large bundled masks can ship compressed.
+    /// Load the intervals for `contig` from a BED file (other contigs ignored). A gzip- or
+    /// BGZF-compressed BED is transparently decompressed (detected by content), so large bundled
+    /// masks can ship compressed — including multi-block bgzipped files.
     pub fn from_bed(path: &Path, contig: &str) -> Result<Self, AnalysisError> {
-        let file = std::fs::File::open(path).map_err(|e| AnalysisError::io(path, e))?;
-        let reader: Box<dyn BufRead> = if path.extension().and_then(|e| e.to_str()) == Some("gz") {
-            Box::new(BufReader::new(flate2::read::GzDecoder::new(file)))
-        } else {
-            Box::new(BufReader::new(file))
-        };
+        let reader = crate::gzio::open_maybe_gz(path).map_err(|e| AnalysisError::io(path, e))?;
         let mut intervals = Vec::new();
         for line in reader.lines() {
             let line = line.map_err(|e| AnalysisError::io(path, e))?;
@@ -254,6 +250,29 @@ mod tests {
         let m = RegionMask::from_bed(&path, "chrY").unwrap();
         assert_eq!(m.covered(), 160); // [100,260) after coalescing
         assert!(m.contains(101) && m.contains(260) && !m.contains(261));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn reads_multiblock_bgzf_bed_without_truncation() {
+        // A bgzipped BED is a concatenation of independent gzip members. The old GzDecoder
+        // path stopped after the first member and silently dropped every later interval;
+        // this guards that all members are read (via MultiGzDecoder in gzio::open_maybe_gz).
+        use std::io::Write;
+        let dir = std::env::temp_dir().join(format!("dun-maskbgzf-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("m.bed.gz");
+        let member = |bytes: &[u8]| {
+            let mut enc = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+            enc.write_all(bytes).unwrap();
+            enc.finish().unwrap()
+        };
+        let mut blob = member(b"chrY\t100\t200\n"); // first block
+        blob.extend(member(b"chrY\t300\t400\n")); // second block — dropped by a single-member decoder
+        std::fs::write(&path, &blob).unwrap();
+        let m = RegionMask::from_bed(&path, "chrY").unwrap();
+        assert_eq!(m.covered(), 200); // [100,200) + [300,400); would be 100 if truncated
+        assert!(m.contains(350));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
