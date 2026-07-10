@@ -16,8 +16,9 @@ impl App {
         let dev = self.ensure_device_key().await?;
         let ik = ExchangeKey::load_or_generate(KEYCHAIN_SERVICE, &did)?;
         let pub_b64 = ik.public_b64();
-        let sig = dev.sign(&exchange::messages::publickey(&did, &pub_b64, None));
-        let body = serde_json::json!({ "did": did, "x25519_pub": pub_b64, "signature": sig });
+        let ts = Utc::now().timestamp();
+        let sig = dev.sign_fresh(ts, &exchange::messages::publickey(&did, &pub_b64, None));
+        let body = serde_json::json!({ "did": did, "x25519_pub": pub_b64, "ts": ts, "signature": sig });
         let v = self.exchange_post("exchange/key", body).await?;
         let _ = v; // { did, status: "published" }
         Ok(ik)
@@ -62,7 +63,8 @@ impl App {
         let did = self.current_account().ok_or(AppError::NotAuthenticated)?;
         let dev = self.ensure_device_key().await?;
         let request_uri = format!("exchange:{}", Uuid::new_v4());
-        let sig = dev.sign(&exchange::messages::request(
+        let ts = Utc::now().timestamp();
+        let sig = dev.sign_fresh(ts, &exchange::messages::request(
             &request_uri,
             &did,
             partner_did,
@@ -75,6 +77,7 @@ impl App {
             "partner_did": partner_did,
             "purpose": purpose,
             "scope": scope,
+            "ts": ts,
             "signature": sig,
         });
         self.exchange_post("exchange/request", body).await?;
@@ -86,11 +89,13 @@ impl App {
     pub async fn exchange_consent(&self, request_uri: &str, given: bool) -> Result<ConsentOutcome, AppError> {
         let did = self.current_account().ok_or(AppError::NotAuthenticated)?;
         let dev = self.ensure_device_key().await?;
-        let sig = dev.sign(&exchange::messages::consent(request_uri, &did, given));
+        let ts = Utc::now().timestamp();
+        let sig = dev.sign_fresh(ts, &exchange::messages::consent(request_uri, &did, given));
         let body = serde_json::json!({
             "request_uri": request_uri,
             "consenting_did": did,
             "consent_given": given,
+            "ts": ts,
             "signature": sig,
         });
         let v = self.exchange_post("exchange/consent", body).await?;
@@ -176,13 +181,15 @@ impl App {
         let did = self.current_account().ok_or(AppError::NotAuthenticated)?;
         let dev = self.ensure_device_key().await?;
         let hash = exchange::blob_sha256_b64(blob).map_err(AppError::Sync)?;
-        let sig = dev.sign(&exchange::messages::relay(session_id, &did, to_did, seq, &hash));
+        let ts = Utc::now().timestamp();
+        let sig = dev.sign_fresh(ts, &exchange::messages::relay(session_id, &did, to_did, seq, &hash));
         let body = serde_json::json!({
             "session_id": session_id,
             "from_did": did,
             "to_did": to_did,
             "seq": seq,
             "blob": blob,
+            "ts": ts,
             "signature": sig,
         });
         let v = self.exchange_post("exchange/relay", body).await?;
@@ -218,8 +225,9 @@ impl App {
     pub async fn exchange_relay_ack(&self, envelope_id: i64) -> Result<(), AppError> {
         let did = self.current_account().ok_or(AppError::NotAuthenticated)?;
         let dev = self.ensure_device_key().await?;
-        let sig = dev.sign(&exchange::messages::ack(&did, envelope_id));
-        let body = serde_json::json!({ "envelope_id": envelope_id, "did": did, "signature": sig });
+        let ts = Utc::now().timestamp();
+        let sig = dev.sign_fresh(ts, &exchange::messages::ack(&did, envelope_id));
+        let body = serde_json::json!({ "envelope_id": envelope_id, "did": did, "ts": ts, "signature": sig });
         self.exchange_post("exchange/ack", body).await.map(|_| ())
     }
 

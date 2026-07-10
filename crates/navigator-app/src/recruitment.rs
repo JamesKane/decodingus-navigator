@@ -34,11 +34,13 @@ impl App {
     pub async fn recruitment_respond(&self, campaign_id: i64, accept: bool) -> Result<bool, AppError> {
         let did = self.current_account().ok_or(AppError::NotAuthenticated)?;
         let dev = self.ensure_device_key().await?;
-        let sig = dev.sign(&messages::respond(&did, campaign_id, accept));
+        let ts = chrono::Utc::now().timestamp();
+        let sig = dev.sign_fresh(ts, &messages::respond(&did, campaign_id, accept));
         let body = serde_json::json!({
             "did": did,
             "campaign_id": campaign_id,
             "accept": accept,
+            "ts": ts,
             "signature": sig,
         });
         let v = self.social_post("recruitment/respond", body).await?;

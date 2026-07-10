@@ -167,8 +167,9 @@ impl App {
     ) -> Result<String, AppError> {
         let did = self.current_account().ok_or(AppError::NotAuthenticated)?;
         let dev = self.ensure_device_key().await?;
-        let sig = dev.sign(&messages::thread(&did, conversation_id));
-        let mut b = serde_json::json!({ "did": did, "body": body, "signature": sig });
+        let ts = Utc::now().timestamp();
+        let sig = dev.sign_fresh(ts, &messages::thread(&did, conversation_id));
+        let mut b = serde_json::json!({ "did": did, "body": body, "ts": ts, "signature": sig });
         if let Some(c) = conversation_id {
             b["conversation_id"] = serde_json::json!(c);
         }
@@ -200,8 +201,9 @@ impl App {
     ) -> Result<String, AppError> {
         let did = self.current_account().ok_or(AppError::NotAuthenticated)?;
         let dev = self.ensure_device_key().await?;
-        let sig = dev.sign(&messages::post(&did, parent));
-        let mut b = serde_json::json!({ "did": did, "content": content, "signature": sig });
+        let ts = Utc::now().timestamp();
+        let sig = dev.sign_fresh(ts, &messages::post(&did, parent));
+        let mut b = serde_json::json!({ "did": did, "content": content, "ts": ts, "signature": sig });
         if let Some(t) = topic {
             b["topic"] = serde_json::json!(t);
         }

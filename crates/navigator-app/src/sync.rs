@@ -431,12 +431,14 @@ impl App {
         let did = self.current_account().ok_or(AppError::NotAuthenticated)?;
         let key = self.ensure_device_key().await?;
         let url = format!("{}/api/v1/ibd/introduce", decodingus_appview_url());
-        let sig = key.sign(&format!("ibd-introduce\n{did}\n{suggested_sample_guid}"));
+        let ts = Utc::now().timestamp();
+        let sig = key.sign_fresh(ts, &format!("ibd-introduce\n{did}\n{suggested_sample_guid}"));
         // The AppView's IntroduceBody deserializes plain snake_case (no serde rename), and
         // parses the guid as a UUID — send it verbatim from the suggestion.
         let body = serde_json::json!({
             "did": did,
             "suggested_sample_guid": suggested_sample_guid,
+            "ts": ts,
             "signature": sig,
         });
         let resp = self

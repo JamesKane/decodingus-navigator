@@ -67,6 +67,15 @@ impl DeviceKey {
         STANDARD.encode(self.signing.sign(message.as_bytes()).to_bytes())
     }
 
+    /// Sign a **mutating** Edge request with the replay-guarded framing the AppView
+    /// requires: the base message prefixed with the caller's timestamp (`{ts}\n{base}`).
+    /// Mirrors `du_web::sig::fresh_message` byte-for-byte — the AppView rejects a stale
+    /// `ts` and burns the signature so it is single-use. The caller sends `ts` alongside
+    /// `did` + `signature` in the request, and re-signs with a fresh `ts` on retry.
+    pub fn sign_fresh(&self, ts: i64, base_message: &str) -> String {
+        self.sign(&format!("{ts}\n{base_message}"))
+    }
+
     /// Deterministic PDS record key for this key's published record: the `did:key` multibase
     /// body (`z…`, base58btc — a valid record-key alphabet) with the `did:key:` scheme
     /// stripped. Stable per key, so re-publishing overwrites the same record (idempotent) and
@@ -138,6 +147,27 @@ mod tests {
             du_atproto::signature::verify_did_key(&did, b"tampered", &sig).is_err(),
             "verifier must reject a tampered message"
         );
+    }
+
+    #[test]
+    fn sign_fresh_frames_ts_and_verifies() {
+        // `sign_fresh(ts, base)` signs exactly `{ts}\n{base}` — the framing the AppView's
+        // `verify_signed_fresh` reconstructs. Prove it both ways: identical to signing the
+        // framed string by hand, and accepted by the AppView verifier over that framing.
+        let key = DeviceKey::generate();
+        let did = key.did_key();
+        let ts = 1_718_000_000_i64;
+        let base = "exchange-consent\nurn:x\ndid:key:zA\ntrue";
+        let framed = format!("{ts}\n{base}");
+        let sig = key.sign_fresh(ts, base);
+        assert_eq!(sig, key.sign(&framed), "sign_fresh must frame as {{ts}}\\n{{base}}");
+        assert!(
+            du_atproto::signature::verify_did_key(&did, framed.as_bytes(), &sig).is_ok(),
+            "AppView verifier must accept the framed signature"
+        );
+        // A signature over the bare (unframed) base must NOT verify against the framed bytes.
+        let bare = key.sign(base);
+        assert!(du_atproto::signature::verify_did_key(&did, framed.as_bytes(), &bare).is_err());
     }
 
     #[test]
