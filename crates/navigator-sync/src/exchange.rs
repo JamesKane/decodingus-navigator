@@ -15,12 +15,12 @@ use aes_gcm::{Aes256Gcm, Nonce};
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
 use hkdf::Hkdf;
-use keyring::Entry;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use x25519_dalek::{PublicKey, StaticSecret};
 
 use crate::error::SyncError;
+use crate::secret_store;
 
 /// Edge-convention version for the envelope + key derivation (bump on any change to either).
 pub const EXCHANGE_VERSION: u8 = 1;
@@ -72,30 +72,26 @@ impl ExchangeKey {
         })
     }
 
-    fn entry(service: &str, did: &str) -> Result<Entry, SyncError> {
-        Entry::new(service, &format!("{X25519_PREFIX}{did}")).map_err(|e| SyncError::Crypto(e.to_string()))
+    fn account(did: &str) -> String {
+        format!("{X25519_PREFIX}{did}")
     }
 
     /// Load the stored identity key for `did`, if present.
     pub fn load(service: &str, did: &str) -> Result<Option<Self>, SyncError> {
-        match Self::entry(service, did)?.get_password() {
-            Ok(b64) => {
+        match secret_store::get(service, &Self::account(did))? {
+            Some(b64) => {
                 let bytes = STANDARD
                     .decode(b64.trim())
                     .map_err(|e| SyncError::Crypto(e.to_string()))?;
                 Ok(Some(Self::from_bytes(&bytes)?))
             }
-            Err(keyring::Error::NoEntry) => Ok(None),
-            Err(e) => Err(SyncError::Crypto(e.to_string())),
+            None => Ok(None),
         }
     }
 
     /// Persist this identity key for `did`.
     pub fn save(&self, service: &str, did: &str) -> Result<(), SyncError> {
-        let b64 = STANDARD.encode(self.secret.to_bytes());
-        Self::entry(service, did)?
-            .set_password(&b64)
-            .map_err(|e| SyncError::Crypto(e.to_string()))
+        secret_store::set(service, &Self::account(did), &STANDARD.encode(self.secret.to_bytes()))
     }
 
     /// Load the identity key for `did`, generating + persisting one on first use.

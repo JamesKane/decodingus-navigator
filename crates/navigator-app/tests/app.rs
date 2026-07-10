@@ -13,6 +13,17 @@ async fn app() -> App {
     App::new(Store::open_in_memory().await.unwrap())
 }
 
+/// `App::new` reloads the active account, so every `app()` above would read the *production*
+/// keychain service if the OS backend were ever switched on in a test process. Only the shipped
+/// binary's `main` may switch it on; assert this test binary never did.
+#[test]
+fn tests_never_touch_the_os_keychain() {
+    assert!(
+        !navigator_app::os_keychain_enabled(),
+        "a test enabled the OS keychain — App::new would read the user's real credentials"
+    );
+}
+
 /// Serializes tests that mutate the process-global `NAVIGATOR_TREE_DIR`: one test's `remove_var`
 /// would otherwise yank the seeded tree dir out from under another running concurrently. Held for
 /// the whole test body; ignores poisoning so a panicking test doesn't wedge the rest.

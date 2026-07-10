@@ -290,6 +290,12 @@ use navigator_sync::exchange::{self, ExchangeKey};
 use navigator_sync::{
     dev_http_client, login_default, AsyncSync, DeviceKey, OAuthConfig, RetryPolicy, TokenStore, DEVICE_KEY_COLLECTION,
 };
+/// [`use_os_keychain`] opts this process into the real OS keychain. The shipped binary calls it once
+/// at the top of `main`; nothing else may. Without it every secret lives in an in-memory map, which
+/// is what keeps the test suite off the developer's login keychain (see
+/// `navigator_sync::secret_store`). [`os_keychain_enabled`] reports the current state, so tests can
+/// assert they are *not* on the real keychain.
+pub use navigator_sync::{os_keychain_enabled, use_os_keychain};
 pub use navigator_sync::{
     AlignmentRecord, BiosampleRecord, ContigMetrics, FeedPostRecord, PdsClient, PopulationBreakdownRecord, PrivateVariantsRecord,
     RecordRef, SequenceRunRecord, VariantCallEntry, NS_ALIGNMENT, NS_BIOSAMPLE, NS_FEED_POST, NS_POPULATION_BREAKDOWN,
@@ -3533,9 +3539,6 @@ mod outbox_tests {
 
     #[tokio::test]
     async fn publish_while_signed_out_is_not_authenticated_and_queues_nothing() {
-        // Use the in-memory keychain so this never touches the OS keychain (no prompts) and is
-        // hermetic regardless of an ambient session (e.g. a GUI signed in on this machine).
-        navigator_sync::TokenStore::use_in_memory_for_tests();
         let app = App::new(Store::open_in_memory().await.unwrap());
         assert!(matches!(app.publish_coverage(1).await, Err(AppError::NotAuthenticated)));
         // No account → nothing enqueued, and the accessors degrade gracefully.

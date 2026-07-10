@@ -25,6 +25,12 @@ pub(crate) fn default_db_path() -> PathBuf {
 }
 
 fn main() -> eframe::Result<()> {
+    // Opt this process into the OS keychain — sessions and device keys must survive a restart.
+    // This is the *only* place it may be called: everything else (tests, CI, examples) keeps the
+    // in-memory default and so can never read or write the user's real credentials. Must run
+    // before any `App` is built, since `App::new` reloads the active account.
+    navigator_app::use_os_keychain();
+
     // First-run setup (both GUI and headless): seed bundled ancestry/IBD assets shipped inside the
     // installer image into ~/.decodingus/ancestry/ if missing. No-op on a dev build (no bundle) and
     // on later runs. Done before the CLI dispatch so a scripted analysis also gets the assets.
