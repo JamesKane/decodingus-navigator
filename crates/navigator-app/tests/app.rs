@@ -2733,3 +2733,194 @@ async fn deleting_run_purges_derived_haplogroup_and_consensus() {
     );
     assert!(app.haplogroup_calls(b.guid, DnaType::Y).await.unwrap().is_empty());
 }
+
+/// End-to-end `branch_report` over the mtDNA path (finding: nothing drove the query before this).
+/// Seeds a tiny FTDNA-schema mt tree offline and genotypes the committed `coverage.bam` fixture
+/// (all-`A` reads, callable chrM 1-10, ref `ACGT…`). Loci are placed so the report exercises all
+/// three states at once: pos 2 (ref C, reads A → derived), pos 1 (ref A, reads A → ancestral off
+/// this branch), pos 40 (no coverage → no-call).
+#[tokio::test]
+// Holds TREE_DIR_ENV_LOCK across awaits: it serializes the process-global NAVIGATOR_TREE_DIR write.
+#[allow(clippy::await_holding_lock)]
+async fn branch_report_genotypes_the_mt_subtree_end_to_end() {
+    use navigator_app::{CallState, DnaType};
+
+    let _env = TREE_DIR_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let trees = std::env::temp_dir().join(format!("dun-branch-trees-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&trees);
+    std::fs::create_dir_all(&trees).unwrap();
+    // FTDNA mt schema; positions pass through to chrM unremapped. `mt-root` → A-der(pos2) →
+    // {A-anc(pos1), A-nocov(pos40), ins(pos41, an insertion at no coverage)}.
+    std::fs::write(
+        trees.join("ftdna-mttree.json"),
+        r#"{"allNodes":{
+            "1":{"haplogroupId":1,"name":"mt-root","isRoot":true,"variants":[],"children":[2]},
+            "2":{"haplogroupId":2,"name":"A-der","isRoot":false,"variants":[{"variant":"C2A","position":2,"ancestral":"C","derived":"A"}],"children":[3,4,5]},
+            "3":{"haplogroupId":3,"name":"A-anc","isRoot":false,"variants":[{"variant":"A1T","position":1,"ancestral":"A","derived":"T"}],"children":[]},
+            "4":{"haplogroupId":4,"name":"A-nocov","isRoot":false,"variants":[{"variant":"C40A","position":40,"ancestral":"C","derived":"A"}],"children":[]},
+            "5":{"haplogroupId":5,"name":"A-ins","isRoot":false,"variants":[{"variant":"41.1A","position":41,"ancestral":"","derived":"A"}],"children":[]}
+        }}"#,
+    )
+    .unwrap();
+    std::env::set_var("NAVIGATOR_TREE_DIR", &trees);
+    std::env::set_var("NAVIGATOR_Y_TREE_PROVIDER", "ftdna"); // skip the DecodingUs (network) mt tree
+
+    let app = app().await;
+    let dir = fixtures();
+    let b = app.add_biosample(None, "S-mt", None, None).await.unwrap();
+    let run = app
+        .record_sequence_run(NewSequenceRun {
+            biosample_guid: b.guid,
+            platform_name: "ILLUMINA".into(),
+            instrument_model: None,
+            test_type: "WGS".into(),
+            library_layout: None,
+            total_reads: None,
+            pf_reads_aligned: None,
+            mean_read_length: None,
+            mean_insert_size: None,
+        })
+        .await
+        .unwrap();
+    // GRCh38 build → chrM is rCRS-direct (no liftover), so tree positions query chrM as-is.
+    let aln = app
+        .record_alignment(NewAlignment {
+            sequence_run_id: run.id,
+            reference_build: "GRCh38".into(),
+            aligner: "bwa-mem".into(),
+            variant_caller: None,
+            bam_path: Some(dir.join("coverage.bam").to_string_lossy().into_owned()),
+            reference_path: Some(dir.join("ref.fa").to_string_lossy().into_owned()),
+            content_sha256: None,
+        })
+        .await
+        .unwrap()
+        .id;
+
+    let report = app.branch_report(aln, DnaType::Mt, "mt-root", None).await.unwrap();
+    assert_eq!(report.root, "mt-root");
+    assert_eq!(report.contig, "chrM");
+    assert!(!report.gvcf_backed, "no GVCF sidecar → pileup path");
+
+    let row = |marker: &str| {
+        report
+            .rows
+            .iter()
+            .find(|r| r.marker == marker)
+            .unwrap_or_else(|| panic!("marker {marker} missing from report"))
+            .clone()
+    };
+    // Root carries no loci; the four descendant markers each appear once.
+    assert_eq!(report.rows.len(), 4, "one row per defining marker in the subtree");
+
+    let der = row("C2A"); // ref C, reads A → carries the derived allele
+    assert_eq!(der.observed_base, Some('A'));
+    assert_eq!(der.state, CallState::Derived);
+    assert_eq!(der.parent, "mt-root");
+
+    let anc = row("A1T"); // ref A, reads A → ancestral (off this branch)
+    assert_eq!(anc.observed_base, Some('A'));
+    assert_eq!(anc.state, CallState::Ancestral);
+
+    let nc = row("C40A"); // depth 0 → no confident base
+    assert_eq!(nc.observed_base, None);
+    assert_eq!(nc.state, CallState::NoCall);
+    assert!(nc.note.contains("no call"), "no-call note, got {:?}", nc.note);
+
+    // An insertion (empty ancestral allele) at a no-coverage site is BOTH an indel and a no-call.
+    // The note must carry both tags — picking only the first would let "indel/MNV" mask the
+    // no-call, and the asymmetric SNV test would have mislabeled the empty allele as a clean SNV.
+    let ins = row("41.1A");
+    assert_eq!(ins.state, CallState::NoCall);
+    assert!(ins.note.contains("indel/MNV"), "insertion must be flagged as an indel: {:?}", ins.note);
+    assert!(ins.note.contains("no call"), "and still surface the no-call: {:?}", ins.note);
+
+    // The tallies match the rows (the insertion is a no-call).
+    let (d, a, n) = report.counts();
+    assert_eq!((d, a, n), (1, 1, 2));
+
+    std::env::remove_var("NAVIGATOR_Y_TREE_PROVIDER");
+    let _ = std::fs::remove_dir_all(&trees);
+}
+
+/// `pick_mt_alignment` skips a Y-only run so the mtDNA report isn't genotyped against an
+/// alignment that carries no chrM reads, while `pick_y_debug_alignment` still targets it.
+#[tokio::test]
+async fn mt_alignment_pick_skips_a_y_only_run() {
+    use navigator_app::DnaType;
+
+    let app = app().await;
+    let b = app.add_biosample(None, "S-pick", None, Some("male".into())).await.unwrap();
+
+    // A Big-Y (Y-only) run, recorded first so it's a candidate for both pickers.
+    let y_run = app
+        .record_sequence_run(NewSequenceRun {
+            biosample_guid: b.guid,
+            platform_name: "ILLUMINA".into(),
+            instrument_model: None,
+            test_type: "BIG_Y_700".into(),
+            library_layout: None,
+            total_reads: None,
+            pf_reads_aligned: None,
+            mean_read_length: None,
+            mean_insert_size: None,
+        })
+        .await
+        .unwrap();
+    let y_aln = app
+        .record_alignment(NewAlignment {
+            sequence_run_id: y_run.id,
+            reference_build: "chm13v2.0".into(),
+            aligner: "pbmm2".into(), // the exact combo pick_y_debug_alignment prefers
+            variant_caller: None,
+            bam_path: Some("/nonexistent.bam".into()),
+            reference_path: None,
+            content_sha256: None,
+        })
+        .await
+        .unwrap()
+        .id;
+
+    // A whole-genome run that does carry chrM.
+    let wgs_run = app
+        .record_sequence_run(NewSequenceRun {
+            biosample_guid: b.guid,
+            platform_name: "ILLUMINA".into(),
+            instrument_model: None,
+            test_type: "WGS".into(),
+            library_layout: None,
+            total_reads: None,
+            pf_reads_aligned: None,
+            mean_read_length: None,
+            mean_insert_size: None,
+        })
+        .await
+        .unwrap();
+    let wgs_aln = app
+        .record_alignment(NewAlignment {
+            sequence_run_id: wgs_run.id,
+            reference_build: "GRCh38".into(),
+            aligner: "bwa-mem".into(),
+            variant_caller: None,
+            bam_path: Some("/nonexistent.bam".into()),
+            reference_path: None,
+            content_sha256: None,
+        })
+        .await
+        .unwrap()
+        .id;
+
+    assert_eq!(
+        app.pick_mt_alignment(b.guid).await.unwrap(),
+        Some(wgs_aln),
+        "mt must skip the Y-only Big-Y run and land on the WGS alignment"
+    );
+    assert_eq!(
+        app.pick_y_debug_alignment(b.guid).await.unwrap(),
+        Some(y_aln),
+        "Y still prefers the CHM13/pbmm2 Big-Y alignment"
+    );
+    // Dispatch helper routes each DNA type to its picker.
+    assert_eq!(app.pick_alignment_for(b.guid, DnaType::Mt).await.unwrap(), Some(wgs_aln));
+    assert_eq!(app.pick_alignment_for(b.guid, DnaType::Y).await.unwrap(), Some(y_aln));
+}

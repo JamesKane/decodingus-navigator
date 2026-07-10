@@ -71,6 +71,13 @@ pub enum Command {
     LoadSubjectBrief(SampleGuid),
     /// Build (off the UI thread) a YFull-style Y/mtDNA descent report for a subject.
     LoadDescentReport { guid: SampleGuid, dna: DnaType },
+    /// Build (off the UI thread) a per-marker branch report over `node`'s subtree for a subject.
+    LoadBranchReport {
+        guid: SampleGuid,
+        dna: DnaType,
+        node: String,
+        depth: Option<usize>,
+    },
     /// Narrate a subject's brief via the local LLM ("Polish with AI"); falls back on any failure.
     NarrateBrief(SampleGuid),
     /// Ask the local LLM a question about a subject's results (grounded in the brief).
@@ -735,6 +742,13 @@ pub enum Event {
         dna: DnaType,
         result: Result<Option<DescentReport>, String>,
     },
+    /// A per-marker branch report for a subject's Y/mtDNA subtree (`None` = no alignment; `Err` = a
+    /// load/lookup failure, e.g. node not found, surfaced to the status line).
+    BranchReportLoaded {
+        guid: SampleGuid,
+        dna: DnaType,
+        result: Result<Option<navigator_app::BranchReport>, String>,
+    },
     /// A streamed slice of narration text as it's generated (live preview; the final BriefNarration
     /// is authoritative).
     BriefNarrationChunk {
@@ -1250,6 +1264,14 @@ pub async fn handle(app: &App, cmd: Command) -> Event {
             guid,
             dna,
             result: app.descent_report(guid, dna).await.map_err(|e| e.to_string()),
+        },
+        Command::LoadBranchReport { guid, dna, node, depth } => Event::BranchReportLoaded {
+            guid,
+            dna,
+            result: app
+                .branch_report_for_subject(guid, dna, &node, depth)
+                .await
+                .map_err(|e| e.to_string()),
         },
         // NarrateBrief / AskQuestion stream from the spawn loop; reaching here is a bug.
         Command::NarrateBrief(guid) => Event::Error(format!("internal: unrouted NarrateBrief {guid}")),

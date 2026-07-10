@@ -11,7 +11,7 @@ use navigator_domain::ancestry::AncestryResult;
 use navigator_domain::brief::{LineageBrief, SubjectBrief};
 use navigator_domain::reconciliation::DnaType;
 
-use crate::DescentReport;
+use crate::{BranchReport, DescentReport};
 
 /// Minimal HTML text escaping for the small, controlled strings we embed (population names etc.).
 fn esc(s: &str) -> String {
@@ -263,6 +263,57 @@ pub fn ancestry_html(a: &AncestryResult) -> String {
 /// The Y-DNA / mtDNA **descent report** (root→terminal lineage) as TSV: one row per defining SNP of
 /// each node on the path, with the subject's call state and observed base. Mirrors the on-screen
 /// per-node descent grid so it can be shared / diffed outside the app.
+/// TSV for a [`BranchReport`] — one row per defining marker in the reported subtree, with the
+/// sample's observed base + call state + evidence. Shareable for placement spot-checks / researcher
+/// exchange. Missing evidence renders as `.` (VCF convention).
+pub fn branch_report_tsv(report: &BranchReport) -> String {
+    let dna = match report.dna {
+        DnaType::Y => "Y-DNA",
+        DnaType::Mt => "mtDNA",
+    };
+    let state = |s: CallState| match s {
+        CallState::Derived => "derived",
+        CallState::Ancestral => "ancestral",
+        CallState::NoCall => "nocall",
+    };
+    let gt = |s: CallState| match s {
+        CallState::Derived => "1",
+        CallState::Ancestral => "0",
+        CallState::NoCall => ".",
+    };
+    let u = |o: Option<u32>| o.map(|v| v.to_string()).unwrap_or_else(|| ".".to_string());
+    let ad = |o: Option<(u32, u32)>| o.map(|(r, a)| format!("{r},{a}")).unwrap_or_else(|| ".".to_string());
+    let base = |o: Option<char>| o.map(|c| c.to_string()).unwrap_or_else(|| ".".to_string());
+
+    let (d, a, n) = report.counts();
+    let mut out = format!(
+        "# DUNavigator {dna} branch report — node {} ({}); {d} derived / {a} ancestral / {n} no-call\n",
+        report.root, report.contig
+    );
+    out.push_str("node\tparent\tmarker\tchrom\tpos\tancestral\tderived\tobserved_base\tstatus\tGT\tAD\tDP\tGQ\tsource\tnote\n");
+    for r in &report.rows {
+        out.push_str(&format!(
+            "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\n",
+            r.node,
+            r.parent,
+            r.marker,
+            report.contig,
+            r.position,
+            r.ancestral,
+            r.derived,
+            base(r.observed_base),
+            state(r.state),
+            gt(r.state),
+            ad(r.ad),
+            u(r.dp),
+            u(r.gq),
+            r.source,
+            r.note,
+        ));
+    }
+    out
+}
+
 pub fn descent_tsv(report: &DescentReport) -> String {
     let dna = match report.dna {
         DnaType::Y => "Y-DNA",
@@ -726,5 +777,58 @@ mod tests {
         assert!(tsv.contains("haplogroup\tterminal\tsnp\tposition\tancestral\tderived\tstate\tobserved_base"));
         assert!(tsv.lines().any(|l| l == "R-M269\t\tM269\t22739367\tT\tC\tderived\tC"));
         assert!(tsv.lines().any(|l| l == "R-M269\t\tL23\t6753511\tG\tA\tnocall\t"));
+    }
+
+    #[test]
+    fn branch_report_tsv_has_header_and_evidence_rows() {
+        use crate::BranchRow;
+        let report = BranchReport {
+            dna: DnaType::Y,
+            root: "R-FGC29071".into(),
+            contig: "chrY".into(),
+            gvcf_backed: true,
+            rows: vec![
+                BranchRow {
+                    node: "R-FGC29071".into(),
+                    parent: "R-FGC29067".into(),
+                    marker: "FGC29069".into(),
+                    position: 14583465,
+                    ancestral: "G".into(),
+                    derived: "T".into(),
+                    observed_base: Some('T'),
+                    state: CallState::Derived,
+                    ad: Some((0, 11)),
+                    dp: Some(11),
+                    gq: Some(99),
+                    source: "gvcf_variant",
+                    note: String::new(),
+                },
+                BranchRow {
+                    node: "R-MF41134".into(),
+                    parent: "R-FGC29071".into(),
+                    marker: "MF41134".into(),
+                    position: 12803849,
+                    ancestral: "C".into(),
+                    derived: "T".into(),
+                    observed_base: Some('C'),
+                    state: CallState::Ancestral,
+                    ad: None,
+                    dp: None,
+                    gq: Some(99),
+                    source: "gvcf_refblock",
+                    note: "hom-ref block".into(),
+                },
+            ],
+        };
+        let tsv = branch_report_tsv(&report);
+        assert!(tsv.lines().next().unwrap().starts_with("# DUNavigator Y-DNA branch report — node R-FGC29071"));
+        assert!(tsv.contains("node\tparent\tmarker\tchrom\tpos\tancestral\tderived\tobserved_base\tstatus\tGT\tAD\tDP\tGQ\tsource\tnote"));
+        assert!(tsv
+            .lines()
+            .any(|l| l == "R-FGC29071\tR-FGC29067\tFGC29069\tchrY\t14583465\tG\tT\tT\tderived\t1\t0,11\t11\t99\tgvcf_variant\t"));
+        // Ref-block row: AD/DP omitted (.), GQ kept, ancestral, hom-ref note.
+        assert!(tsv
+            .lines()
+            .any(|l| l == "R-MF41134\tR-FGC29071\tMF41134\tchrY\t12803849\tC\tT\tC\tancestral\t0\t.\t.\t99\tgvcf_refblock\thom-ref block"));
     }
 }

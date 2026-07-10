@@ -595,6 +595,13 @@ pub struct NavigatorApp {
     /// the (guid, dna) pairs currently loading. All cleared on subject switch.
     descent_reports: Vec<(SampleGuid, DnaType, Option<DescentReport>)>,
     descent_loading: Vec<(SampleGuid, DnaType)>,
+    /// Per-marker branch report for the selected subject: the node-name text inputs (Y / mt), the
+    /// last-loaded report cached as `Some(report)` / `None` (no alignment), and the (guid, dna) pairs
+    /// currently loading. Cleared on subject switch. Node-triggered (a Load button), not lazy.
+    branch_node_y: String,
+    branch_node_mt: String,
+    branch_reports: Vec<(SampleGuid, DnaType, Option<navigator_app::BranchReport>)>,
+    branch_loading: Vec<(SampleGuid, DnaType)>,
     /// Reconciliation audit log for the selected subject (Y, mtDNA).
     audit_y: Vec<AuditEntry>,
     audit_mt: Vec<AuditEntry>,
@@ -913,6 +920,7 @@ const SUBJECT_COLS: [(&str, f32); 6] = [
     ("Status", 90.0),
 ];
 
+mod branch;
 mod central;
 mod chrome;
 mod community;
@@ -1021,6 +1029,10 @@ impl NavigatorApp {
             consensus_mt: None,
             descent_reports: Vec::new(),
             descent_loading: Vec::new(),
+            branch_node_y: String::new(),
+            branch_node_mt: String::new(),
+            branch_reports: Vec::new(),
+            branch_loading: Vec::new(),
             audit_y: Vec::new(),
             audit_mt: Vec::new(),
             heteroplasmy: None,

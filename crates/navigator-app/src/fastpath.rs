@@ -24,7 +24,7 @@ fn load_y_position_bed(env_var: &str, stem: &str, build_token: &str) -> Option<n
 /// Locate a per-sample chrY GVCF for an alignment (the ytree `*.chrY.g.vcf.gz` sidecar): the
 /// `NAVIGATOR_Y_GVCF` path override, else a sibling of the alignment's BAM/CRAM whose name ends
 /// `.chry.g.vcf.gz`. `None` when absent — the private-Y path then falls back to the pileup caller.
-fn chr_y_gvcf_for_alignment(aln: &Alignment) -> Option<PathBuf> {
+pub(crate) fn chr_y_gvcf_for_alignment(aln: &Alignment) -> Option<PathBuf> {
     if let Ok(p) = std::env::var("NAVIGATOR_Y_GVCF") {
         let p = PathBuf::from(p);
         if p.is_file() {
@@ -59,7 +59,7 @@ impl App {
     /// (the fast path — no CRAM pileup). Lifts tree positions onto the GVCF's build when the
     /// tree's coordinates differ (mt rCRS-tree vs CHM13 `chrM`), exactly as the CRAM path does,
     /// then reads the GVCF instead of walking reads.
-    async fn gvcf_base_calls(
+    pub(crate) async fn gvcf_base_calls(
         &self,
         alignment_id: i64,
         contig: &str,

@@ -43,6 +43,10 @@ pub enum Command {
     DebugCalls(DebugCallsArgs),
     /// Diagnostic: the filtered private-Y bucket for an alignment — DISPLAY vs PUBLISH counts.
     PrivateY(DebugCallsArgs),
+    /// Per-marker branch report: the sample's genotype at every defining marker of a Y/mtDNA tree
+    /// node's descendant subtree (observed base + derived/ancestral status + evidence). For
+    /// spot-checking placement and exchanging observations. Table by default; `--tsv` / `--json`.
+    BranchReport(BranchReportArgs),
     /// List projects with their subject counts.
     Projects(ProbeArgs),
     /// De-novo diploid variant calling → VCF (whole-genome, or a single `--contig`).
@@ -151,6 +155,36 @@ pub struct DebugCallsArgs {
     /// Alignment id to genotype (from `show --json`). Takes precedence over `--subject`.
     #[arg(long, short)]
     alignment: Option<i64>,
+    /// Workspace database path (defaults to the GUI's ~/.decodingus/navigator-rs.db).
+    #[arg(long)]
+    db: Option<PathBuf>,
+}
+
+#[derive(Args)]
+pub struct BranchReportArgs {
+    /// Subject donor identifier (used to pick a Y/mt alignment when `--alignment` is omitted —
+    /// prefers a CHM13/HiFi alignment, else the first).
+    #[arg(long, short)]
+    subject: Option<String>,
+    /// Alignment id to genotype (from `show --json`). Takes precedence over `--subject`.
+    #[arg(long, short)]
+    alignment: Option<i64>,
+    /// Node to report: a haplogroup name (`R-FGC29071`) or a defining marker (`FGC29071`). The
+    /// report covers this node's descendant subtree.
+    #[arg(long, short)]
+    node: String,
+    /// Which tree to read: `y` or `mt`.
+    #[arg(long, short, default_value = "y")]
+    tree: String,
+    /// Limit descent to this many levels below the node (default: the whole subtree).
+    #[arg(long)]
+    depth: Option<usize>,
+    /// Write the TSV here instead of printing a table.
+    #[arg(long)]
+    tsv: Option<PathBuf>,
+    /// Emit JSON instead of a table. Mutually exclusive with `--tsv`.
+    #[arg(long, conflicts_with = "tsv")]
+    json: bool,
     /// Workspace database path (defaults to the GUI's ~/.decodingus/navigator-rs.db).
     #[arg(long)]
     db: Option<PathBuf>,
@@ -329,6 +363,7 @@ pub fn run(command: Command) -> i32 {
             Command::DebugDescent(a) => debug_descent(a).await,
             Command::DebugCalls(a) => debug_calls(a).await,
             Command::PrivateY(a) => private_y(a).await,
+            Command::BranchReport(a) => branch_report(a).await,
             Command::Projects(a) => projects(a).await,
             Command::Call(a) => call(a).await,
             Command::LiftVcf(a) => lift_vcf(a).await,
@@ -1129,6 +1164,138 @@ async fn private_y(args: DebugCallsArgs) -> i32 {
             v.alt_depth,
             v.allele_fraction,
             gate.admits(v)
+        );
+    }
+    0
+}
+
+/// Per-marker branch report over a Y/mtDNA node's descendant subtree — table / `--tsv` / `--json`.
+async fn branch_report(args: BranchReportArgs) -> i32 {
+    let app = match open(args.db).await {
+        Ok(a) => a,
+        Err(c) => return c,
+    };
+    let dna = match args.tree.to_ascii_lowercase().as_str() {
+        "y" | "ydna" | "y-dna" => DnaType::Y,
+        "mt" | "mtdna" | "mt-dna" => DnaType::Mt,
+        other => {
+            eprintln!("error: unknown --tree \"{other}\" (use \"y\" or \"mt\")");
+            return 2;
+        }
+    };
+    let alignment_id = match args.alignment {
+        Some(id) => id,
+        None => {
+            let Some(subject) = args.subject.as_deref() else {
+                eprintln!("error: provide --alignment <id> or --subject <id>");
+                return 2;
+            };
+            let guid = match find_subject(&app, subject).await {
+                Ok(Some(g)) => g,
+                Ok(None) => {
+                    eprintln!("error: no subject with identifier \"{subject}\"");
+                    return 1;
+                }
+                Err(c) => return c,
+            };
+            // Y and mt want different alignments — a Big-Y run carries no chrM reads.
+            match app.pick_alignment_for(guid, dna).await {
+                Ok(Some(id)) => id,
+                Ok(None) => {
+                    eprintln!("error: subject \"{subject}\" has no alignments");
+                    return 1;
+                }
+                Err(e) => {
+                    eprintln!("error: {e}");
+                    return 1;
+                }
+            }
+        }
+    };
+
+    let report = match app.branch_report(alignment_id, dna, &args.node, args.depth).await {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("error: {e}");
+            return 1;
+        }
+    };
+
+    if let Some(path) = args.tsv {
+        let body = navigator_app::export::branch_report_tsv(&report);
+        if let Err(e) = std::fs::write(&path, body) {
+            eprintln!("error: writing {}: {e}", path.display());
+            return 1;
+        }
+        eprintln!("wrote {} ({} markers)", path.display(), report.rows.len());
+        return 0;
+    }
+
+    let status = |s: navigator_app::CallState| match s {
+        navigator_app::CallState::Derived => "derived",
+        navigator_app::CallState::Ancestral => "ancestral",
+        navigator_app::CallState::NoCall => "nocall",
+    };
+    let gt = |s: navigator_app::CallState| match s {
+        navigator_app::CallState::Derived => "1",
+        navigator_app::CallState::Ancestral => "0",
+        navigator_app::CallState::NoCall => ".",
+    };
+    let (d, a, n) = report.counts();
+
+    if args.json {
+        let markers: Vec<_> = report
+            .rows
+            .iter()
+            .map(|r| {
+                serde_json::json!({
+                    "node": r.node, "parent": r.parent, "marker": r.marker,
+                    "chrom": report.contig, "pos": r.position,
+                    "ancestral": r.ancestral, "derived": r.derived,
+                    "observed_base": r.observed_base.map(|c| c.to_string()),
+                    "status": status(r.state),
+                    "ad": r.ad.map(|(rf, al)| format!("{rf},{al}")),
+                    "dp": r.dp, "gq": r.gq, "source": r.source, "note": r.note,
+                })
+            })
+            .collect();
+        let out = serde_json::json!({
+            "node": report.root, "contig": report.contig,
+            "dna": match dna { DnaType::Y => "Y", DnaType::Mt => "mt" },
+            "gvcf_backed": report.gvcf_backed,
+            "derived": d, "ancestral": a, "nocall": n,
+            "markers": markers,
+        });
+        println!("{}", serde_json::to_string_pretty(&out).unwrap_or_default());
+        return 0;
+    }
+
+    println!(
+        "branch report: node {} ({}, {}) — {} markers: {d} derived / {a} ancestral / {n} no-call",
+        report.root,
+        report.contig,
+        if report.gvcf_backed { "gVCF" } else { "pileup" },
+        report.rows.len(),
+    );
+    println!("  node\tparent\tmarker\tpos\tanc>der\tobs\tstatus\tGT\tAD\tDP\tGQ\tsource\tnote");
+    for r in &report.rows {
+        let opt = |o: Option<u32>| o.map(|v| v.to_string()).unwrap_or_else(|| ".".to_string());
+        println!(
+            "  {}\t{}\t{}\t{}\t{}>{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
+            r.node,
+            r.parent,
+            r.marker,
+            r.position,
+            r.ancestral,
+            r.derived,
+            r.observed_base.map(|c| c.to_string()).unwrap_or_else(|| ".".to_string()),
+            status(r.state),
+            gt(r.state),
+            r.ad.map(|(rf, al)| format!("{rf},{al}")).unwrap_or_else(|| ".".to_string()),
+            opt(r.dp),
+            opt(r.gq),
+            r.source,
+            r.note,
         );
     }
     0

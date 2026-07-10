@@ -175,6 +175,17 @@ impl NavigatorApp {
                         }
                     }
                 }
+                Event::BranchReportLoaded { guid, dna, result } => {
+                    self.branch_loading.retain(|(g, d)| !(*g == guid && *d == dna));
+                    if self.selected_sample == Some(guid) {
+                        // Replace any prior report for this (guid, dna) — a new node was queried.
+                        self.branch_reports.retain(|(g, d, _)| !(*g == guid && *d == dna));
+                        match result {
+                            Ok(report) => self.branch_reports.push((guid, dna, report)),
+                            Err(msg) => self.status = format!("{} {msg}", self.tr("branch.failed")),
+                        }
+                    }
+                }
                 Event::BriefNarrationChunk { guid, text } => {
                     if self.selected_sample == Some(guid) {
                         match &mut self.narration_stream {
@@ -1059,6 +1070,8 @@ impl NavigatorApp {
                     self.status = format!("Refreshed haplotrees ({n} cached file(s) cleared) — re-interpreting");
                     self.descent_reports.clear();
                     self.descent_loading.clear();
+                    self.branch_reports.clear();
+                    self.branch_loading.clear();
                     self.y_profile = None;
                     self.mt_profile = None;
                     if let Some(guid) = self.selected_sample {
@@ -1174,6 +1187,10 @@ impl NavigatorApp {
         self.consensus_mt = None;
         self.descent_reports.clear();
         self.descent_loading.clear();
+        self.branch_reports.clear();
+        self.branch_loading.clear();
+        self.branch_node_y.clear();
+        self.branch_node_mt.clear();
         self.str_concordance = None;
         self.str_running = false;
         self.y_matches = None;

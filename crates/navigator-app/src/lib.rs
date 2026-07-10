@@ -68,6 +68,59 @@ pub struct DescentReport {
     pub nodes: Vec<NodeEvidence>,
 }
 
+/// A per-marker branch report: the sample's genotype at every defining marker of a chosen tree
+/// node's **descendant subtree** (Y or mtDNA), for spot-checking placement accuracy and exchanging
+/// observations with other researchers. Built by [`App::branch_report`]; exported by
+/// [`crate::export::branch_report_tsv`]. Unlike [`DescentReport`] (which walks the placement's
+/// root→terminal ancestors from the persisted profile) this genotypes the subtree fresh, so
+/// off-path branches the sample is *ancestral* for are reported too.
+#[derive(Debug, Clone)]
+pub struct BranchReport {
+    pub dna: DnaType,
+    /// The queried root node's haplogroup name (e.g. `R-FGC29071`).
+    pub root: String,
+    pub contig: String,
+    /// True when the observed bases + evidence came from a per-sample GVCF sidecar (else pileup).
+    pub gvcf_backed: bool,
+    pub rows: Vec<BranchRow>,
+}
+
+/// One defining marker of a branch in a [`BranchReport`], with the sample's call + evidence.
+#[derive(Debug, Clone)]
+pub struct BranchRow {
+    pub node: String,
+    pub parent: String,
+    pub marker: String,
+    pub position: i64,
+    pub ancestral: String,
+    pub derived: String,
+    pub observed_base: Option<char>,
+    pub state: CallState,
+    /// `(ref, alt)` allele depths — `None` on ref blocks / the pileup path.
+    pub ad: Option<(u32, u32)>,
+    pub dp: Option<u32>,
+    pub gq: Option<u32>,
+    /// Evidence origin: `gvcf_variant` | `gvcf_refblock` | `gvcf` (uncovered) | `pileup`.
+    pub source: &'static str,
+    /// Human note (indel/MNV, hom-ref block, no call, …); empty for a clean call.
+    pub note: String,
+}
+
+impl BranchReport {
+    /// `(derived, ancestral, no-call)` marker tallies over the subtree.
+    pub fn counts(&self) -> (usize, usize, usize) {
+        let (mut d, mut a, mut n) = (0, 0, 0);
+        for r in &self.rows {
+            match r.state {
+                CallState::Derived => d += 1,
+                CallState::Ancestral => a += 1,
+                CallState::NoCall => n += 1,
+            }
+        }
+        (d, a, n)
+    }
+}
+
 impl DescentReport {
     /// Total defining SNPs across the path the sample carries (derived).
     pub fn derived(&self) -> usize {
