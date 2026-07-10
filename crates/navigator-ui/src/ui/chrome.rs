@@ -621,7 +621,7 @@ impl NavigatorApp {
     }
 
     /// The inline new-subject form (toggled by the "Add New Subject" button).
-    fn add_subject_form(&mut self, ui: &mut egui::Ui) {
+    pub(crate) fn add_subject_form(&mut self, ui: &mut egui::Ui) {
         egui::Frame::group(ui.style()).show(ui, |ui| {
             ui.add(egui::TextEdit::singleline(&mut self.forms.sample_donor).hint_text("donor identifier"));
             ui.add(egui::TextEdit::singleline(&mut self.forms.sample_accession).hint_text("accession (optional)"));

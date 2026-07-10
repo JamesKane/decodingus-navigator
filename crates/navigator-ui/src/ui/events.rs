@@ -605,6 +605,19 @@ impl NavigatorApp {
                         let _ = self.tx.send(Command::LoadMtdna(biosample_guid));
                     }
                 }
+                Event::SubjectCreatedAndImported {
+                    biosample_guid,
+                    summary,
+                } => {
+                    self.status = format!("Created subject and imported {} file(s)", summary.imported.len());
+                    self.batch_import = Some(summary);
+                    // Refresh the list so the new subject appears, then select it — `select_sample`
+                    // loads its runs/profiles and (in Simple mode) triggers the brief build.
+                    let _ = self.tx.send(Command::LoadAllBiosamples);
+                    let _ = self.tx.send(Command::LoadOverview);
+                    self.forms.show_add_subject = false;
+                    self.select_sample(biosample_guid);
+                }
                 Event::StrConcordance {
                     biosample_guid,
                     alignment_id,

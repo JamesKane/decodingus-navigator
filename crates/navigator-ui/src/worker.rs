@@ -236,6 +236,14 @@ pub enum Command {
         biosample_guid: SampleGuid,
         paths: Vec<PathBuf>,
     },
+    /// First-run convenience: create a subject and import `paths` into it in one step, so the
+    /// Simple-mode empty state can go from nothing to a populated brief with a single file pick.
+    /// Returns [`Event::SubjectCreatedAndImported`] (the new guid + the import summary).
+    CreateSubjectAndImport {
+        donor_identifier: String,
+        sex: Option<String>,
+        paths: Vec<PathBuf>,
+    },
     LoadAlignments(i64),
     AddAlignment(NewAlignment),
     /// Resolve the subject's default analysis alignment (highest-coverage, else first).
@@ -879,6 +887,12 @@ pub enum Event {
     /// A batch import finished; the summary lists per-file imported/skipped outcomes. The UI
     /// shows it in a modal and reloads the subject's data sections.
     DataBatchImported {
+        biosample_guid: SampleGuid,
+        summary: BatchImportSummary,
+    },
+    /// A first-run "Import DNA" created a subject and imported into it. The UI selects the new
+    /// subject (so its brief appears) and shows the import summary.
+    SubjectCreatedAndImported {
         biosample_guid: SampleGuid,
         summary: BatchImportSummary,
     },
@@ -1730,6 +1744,20 @@ pub async fn handle(app: &App, cmd: Command) -> Event {
                 Err(e) => Event::Error(e.to_string()),
             }
         }
+        Command::CreateSubjectAndImport {
+            donor_identifier,
+            sex,
+            paths,
+        } => match app.add_biosample(None, donor_identifier, None, sex).await {
+            Ok(bio) => match app.add_data_batch(bio.guid, paths, |_, _| {}).await {
+                Ok(summary) => Event::SubjectCreatedAndImported {
+                    biosample_guid: bio.guid,
+                    summary,
+                },
+                Err(e) => Event::Error(e.to_string()),
+            },
+            Err(e) => Event::Error(e.to_string()),
+        },
         Command::LoadAlignments(sequence_run_id) => match app.list_alignments(sequence_run_id).await {
             Ok(alignments) => Event::Alignments {
                 sequence_run_id,

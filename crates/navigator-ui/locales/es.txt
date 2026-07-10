@@ -301,6 +301,12 @@ empty.projects.hint=Cree o seleccione un proyecto a la izquierda.
 empty.subjects.title=Sujetos
 empty.subjects.hint=Seleccione un sujeto a la izquierda o añada uno nuevo.
 hint.pickAlignment=Aún no hay alineamiento de secuenciación para este sujeto — añada un BAM/CRAM en Fuentes de datos.
+# Primer inicio (modo Simple, espacio vacío)
+firstRun.title=Bienvenido — veamos algo de ADN
+firstRun.hint=Importe un archivo de ADN para empezar, o añada un sujeto para completar más tarde.
+firstRun.importDna=📥  Importar ADN
+firstRun.importDnaHint=Elija un archivo BAM/CRAM, VCF o de datos en bruto — crearemos un sujeto y lo importaremos.
+firstRun.defaultName=Mi ADN
 
 btn.assignY=Asignar haplogrupo Y
 haplo.fullReport=Informe completo

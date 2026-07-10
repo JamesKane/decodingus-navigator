@@ -115,9 +115,69 @@ impl NavigatorApp {
         sel
     }
 
+    /// First-run call-to-action for the Simple-mode empty workspace: an "Import DNA" primary action
+    /// (pick file(s) → create a subject + import in one step) and a secondary "Add New Subject" that
+    /// reveals the inline name form. Without this the empty state told the user to add a subject but
+    /// offered no control to do so (Simple mode hides the left panel until a subject exists).
+    fn simple_first_run(&mut self, ui: &mut egui::Ui) {
+        ui.vertical_centered(|ui| {
+            ui.add_space(56.0);
+            ui.heading(self.tr("firstRun.title"));
+            ui.add_space(6.0);
+            ui.label(egui::RichText::new(self.tr("firstRun.hint")).weak());
+            ui.add_space(20.0);
+
+            // Import DNA (primary): create a subject named from the file and import in one step.
+            if ui
+                .add(
+                    egui::Button::new(egui::RichText::new(self.tr("firstRun.importDna")).color(egui::Color32::WHITE))
+                        .fill(ACCENT)
+                        .min_size(egui::vec2(240.0, 34.0)),
+                )
+                .on_hover_text(self.tr("firstRun.importDnaHint"))
+                .clicked()
+            {
+                if let Some(paths) = rfd::FileDialog::new()
+                    .add_filter(
+                        "data files",
+                        &[
+                            "vcf", "gz", "bgz", "csv", "tsv", "txt", "fa", "fasta", "fna", "fas", "bam", "cram",
+                        ],
+                    )
+                    .pick_files()
+                {
+                    let donor =
+                        first_run_subject_name(&paths).unwrap_or_else(|| self.tr("firstRun.defaultName").to_string());
+                    self.status = format!("Importing {} file(s) into a new subject…", paths.len());
+                    let _ = self.tx.send(Command::CreateSubjectAndImport {
+                        donor_identifier: donor,
+                        sex: None,
+                        paths,
+                    });
+                }
+            }
+
+            ui.add_space(10.0);
+            // Add New Subject (secondary): name a subject now, add data later.
+            if ui.button(self.tr("subjects.addNew")).clicked() {
+                self.forms.show_add_subject = !self.forms.show_add_subject;
+            }
+            if self.forms.show_add_subject {
+                ui.add_space(8.0);
+                self.add_subject_form(ui);
+            }
+        });
+    }
+
     pub(crate) fn subjects_central(&mut self, ui: &mut egui::Ui) {
         let Some(guid) = self.selected_sample else {
-            empty_state(ui, self.tr("empty.subjects.title"), self.tr("empty.subjects.hint"));
+            // First launch (Simple mode, empty workspace) has no left panel and so no reachable
+            // Add-Subject button — give it a real call-to-action instead of a dead-end hint.
+            if self.ui_mode == UiMode::Simple && self.all_biosamples.is_empty() {
+                self.simple_first_run(ui);
+            } else {
+                empty_state(ui, self.tr("empty.subjects.title"), self.tr("empty.subjects.hint"));
+            }
             return;
         };
         self.subject_detail_header(ui, guid);
@@ -535,5 +595,45 @@ impl NavigatorApp {
             });
             ui.add_space(2.0);
         });
+    }
+}
+
+/// A friendly default subject name derived from the first picked file's stem, stripping the known
+/// data-file extensions (including double extensions like `.vcf.gz`). `None` if nothing usable is
+/// left, so the caller can fall back to a localized default. The user can rename later.
+fn first_run_subject_name(paths: &[std::path::PathBuf]) -> Option<String> {
+    const EXTS: [&str; 18] = [
+        ".g.vcf.gz", ".vcf.gz", ".vcf.bgz", ".fasta.gz", ".fa.gz", ".fna.gz", ".bam", ".cram", ".vcf", ".fasta",
+        ".fa", ".fna", ".fas", ".csv", ".tsv", ".txt", ".gz", ".bgz",
+    ];
+    let name = paths.first()?.file_name()?.to_str()?;
+    let lower = name.to_ascii_lowercase();
+    let stem = EXTS
+        .iter()
+        .find_map(|ext| lower.strip_suffix(ext).map(|s| &name[..s.len()]))
+        .unwrap_or(name);
+    let stem = stem.trim();
+    (!stem.is_empty()).then(|| stem.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::first_run_subject_name;
+    use std::path::PathBuf;
+
+    fn name(p: &str) -> Option<String> {
+        first_run_subject_name(&[PathBuf::from(p)])
+    }
+
+    #[test]
+    fn derives_subject_name_from_file_stem() {
+        assert_eq!(name("/data/HG002.bam").as_deref(), Some("HG002"));
+        assert_eq!(name("HG00096.chm13.chrY.g.vcf.gz").as_deref(), Some("HG00096.chm13.chrY"));
+        assert_eq!(name("MyKit.vcf.gz").as_deref(), Some("MyKit"));
+        assert_eq!(name("genome_Full.CRAM").as_deref(), Some("genome_Full")); // extension match is case-insensitive
+        assert_eq!(name("relative.fasta").as_deref(), Some("relative"));
+        // No recognized extension → keep the whole name; empty/none → fall back handled by caller.
+        assert_eq!(name("plainname").as_deref(), Some("plainname"));
+        assert_eq!(first_run_subject_name(&[]), None);
     }
 }

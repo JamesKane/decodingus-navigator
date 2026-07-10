@@ -313,6 +313,12 @@ empty.projects.hint=Create or select a project from the left.
 empty.subjects.title=Subjects
 empty.subjects.hint=Select a subject from the left, or add a new one.
 hint.pickAlignment=No sequencing alignment for this subject yet — add a BAM/CRAM under Data Sources.
+# First-run call-to-action (Simple mode, empty workspace)
+firstRun.title=Welcome — let's look at some DNA
+firstRun.hint=Import a DNA file to get started, or add a subject to fill in later.
+firstRun.importDna=📥  Import DNA
+firstRun.importDnaHint=Pick a BAM/CRAM, VCF, or raw-data file — we'll create a subject and import it.
+firstRun.defaultName=My DNA
 
 # Primary analysis actions
 btn.assignY=Assign Y haplogroup
