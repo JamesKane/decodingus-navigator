@@ -385,6 +385,9 @@ pub struct IbdComparison {
 pub enum IbdSource {
     Alignment(i64),
     Chip(i64),
+    /// A genome-wide imported variant set (a WGS VCF / CompleteGenomics masterVar), resolved to
+    /// panel dosages with unlisted sites taken as homozygous reference.
+    VariantSet(i64),
 }
 
 /// The outcome of a federated IBD exchange over the encrypted channel (gap §4): the locally computed

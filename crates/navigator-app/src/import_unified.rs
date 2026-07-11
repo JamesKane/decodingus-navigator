@@ -1002,6 +1002,12 @@ impl App {
     pub async fn ibd_panel_dosages(&self, source: IbdSource) -> Result<Vec<SiteGenotype>, AppError> {
         match source {
             IbdSource::Chip(id) => self.chip_ibd_dosages(id).await,
+            IbdSource::VariantSet(id) => {
+                let set = variant_set::get(self.store.pool(), id)
+                    .await?
+                    .ok_or_else(|| AppError::Store(StoreError::NotFound(format!("variant set {id}"))))?;
+                self.variant_set_panel_dosages(&set).await
+            }
             IbdSource::Alignment(id) => {
                 // Salt the cache key with the panel asset's manifest hash, so regenerating the panel
                 // (e.g. the probe superset) auto-invalidates stale per-alignment genotypes instead of
