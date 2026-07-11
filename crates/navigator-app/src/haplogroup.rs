@@ -1400,8 +1400,30 @@ impl App {
             }
         }
 
-        // The chip mt panel (consumer arrays carry a sparse rCRS MT panel), strand-reconciled.
         let sets = variant_set::list_for_biosample(self.store.pool(), biosample_guid).await?;
+
+        // Each imported **non-chip** variant set carrying chrM SNPs — a whole-genome VCF or a
+        // CompleteGenomics masterVar. These report forward-strand ref/alt on rCRS coordinates
+        // (GRCh37/GRCh38 chrM = rCRS), so the alt base is used raw like an alignment's chrM call
+        // (no TOP-strand reconciliation, unlike the chip panel below).
+        for set in sets.iter().filter(|s| s.source_type != SourceType::Chip) {
+            let calls: HashMap<i64, char> = set
+                .calls
+                .iter()
+                .filter(|c| {
+                    c.contig.eq_ignore_ascii_case("chrM")
+                        || c.contig.eq_ignore_ascii_case("chrMT")
+                        || c.contig.eq_ignore_ascii_case("mt")
+                        || c.contig.eq_ignore_ascii_case("m")
+                })
+                .filter_map(|c| c.alternate.chars().next().map(|b| (c.position, b.to_ascii_uppercase())))
+                .collect();
+            if !calls.is_empty() {
+                sources.push((set.source_label.clone(), set.source_type, calls));
+            }
+        }
+
+        // The chip mt panel (consumer arrays carry a sparse rCRS MT panel), strand-reconciled.
         let chip_mt: HashMap<i64, char> = sets
             .iter()
             .filter(|s| s.source_type == SourceType::Chip)

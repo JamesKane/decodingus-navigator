@@ -215,6 +215,9 @@ impl App {
                 self.import_variants_from_file(biosample_guid, path, variants::SourceType::Imported)
                     .await?;
             }
+            DetectedData::CompleteGenomicsVar => {
+                self.import_mastervar_from_file(biosample_guid, path).await?;
+            }
             DetectedData::FtdnaCsvVariants => {
                 self.import_ftdna_csv_variants(biosample_guid, path).await?;
             }

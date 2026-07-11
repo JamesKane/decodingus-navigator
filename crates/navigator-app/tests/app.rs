@@ -1164,6 +1164,52 @@ async fn add_data_detects_and_routes() {
     }
 }
 
+/// A CompleteGenomics masterVar (`.tsv`) auto-detects and imports as a GRCh37 WGS variant set,
+/// with the two-allele rows collapsed into genotyped SNP calls.
+#[tokio::test]
+async fn add_data_imports_completegenomics_master_var() {
+    use navigator_app::DetectedData;
+    let app = app().await;
+    let subject = app.add_biosample(None, "GS00253", None, None).await.unwrap();
+    let dir = std::env::temp_dir();
+
+    let path = dir.join(format!("var-{}-ASM.tsv", subject.guid.0));
+    std::fs::write(
+        &path,
+        "#GENOME_REFERENCE\tNCBI build 37\n\
+         #SAMPLE\tGS00253-DNA_A01\n\
+         #GENERATED_BY\tcgatools\n\
+         #TYPE\tVAR-ANNOTATION\n\
+         >locus\tploidy\tallele\tchromosome\tbegin\tend\tvarType\treference\talleleSeq\tvarScoreVAF\tvarScoreEAF\tvarQuality\thapLink\txRef\n\
+         1\t2\tall\tchr1\t0\t10000\tno-ref\t=\t?\t\t\t\t\t\n\
+         272\t2\t1\tchr1\t21579\t21580\tsnp\tC\tT\t100\t100\tVQHIGH\t\tdbsnp.83:rs526642\n\
+         272\t2\t2\tchr1\t21579\t21580\tsnp\tC\tT\t135\t135\tVQHIGH\t\tdbsnp.83:rs526642\n\
+         896\t2\t1\tchr1\t46669\t46670\tref\tA\tA\t45\t45\tVQHIGH\t\t\n\
+         896\t2\t2\tchr1\t46669\t46670\tsnp\tA\tG\t45\t45\tVQHIGH\t\tdbsnp.100:rs2548905\n\
+         21316594\t1\t1\tchrY\t2661693\t2661694\tsnp\tA\tG\t342\t342\tVQHIGH\t\tdbsnp.100:rs2253109\n",
+    )
+    .unwrap();
+
+    assert_eq!(
+        app.add_data(subject.guid, &path).await.unwrap(),
+        DetectedData::CompleteGenomicsVar
+    );
+    let sets = app.list_variant_sets(subject.guid).await.unwrap();
+    assert_eq!(sets.len(), 1);
+    let set = &sets[0];
+    assert_eq!(set.reference_build.as_deref(), Some("GRCh37"));
+    assert_eq!(set.calls.len(), 3, "two SNP loci on chr1 + one on chrY; the no-ref span is dropped");
+    let hom = set.calls.iter().find(|c| c.position == 21580).unwrap();
+    assert_eq!((hom.reference.as_str(), hom.alternate.as_str()), ("C", "T"));
+    assert_eq!(hom.genotype.as_deref(), Some("1/1"));
+    let het = set.calls.iter().find(|c| c.position == 46670).unwrap();
+    assert_eq!(het.genotype.as_deref(), Some("0/1"));
+    let y = set.calls.iter().find(|c| c.contig == "chrY").unwrap();
+    assert_eq!(y.genotype.as_deref(), Some("1"));
+
+    let _ = std::fs::remove_file(path);
+}
+
 /// Create a sample → run → alignment chain and return the alignment id.
 async fn alignment_id(app: &App) -> i64 {
     let b = app.add_biosample(None, "HG002", None, None).await.unwrap();

@@ -195,6 +195,56 @@ impl App {
         Ok(set)
     }
 
+    /// Import a CompleteGenomics **masterVar** whole-genome variant table (`var-*-ASM.tsv[.bz2]`,
+    /// the old CG sequencing service's `cgatools` output). The file is streamed and decompressed
+    /// off-thread ([`navigator_analysis::mastervar`]) into SNP calls — each diploid het becomes a
+    /// `0/1`, a homozygous/haploid call a `1/1` / `1`, indels and `ref`/`no-call` spans dropped
+    /// (SNP-only, matching the VCF/CSV importer). Stored as a `WgsShortRead` set on GRCh37 (CG's
+    /// only build; chrM = rCRS), then Y-placed on import like a vendor Y-NGS VCF. mtDNA falls out
+    /// via the multi-source mt consensus (a non-chip set's chrM feeds `mt_source_calls`).
+    pub async fn import_mastervar_from_file(
+        &self,
+        biosample_guid: SampleGuid,
+        path: &Path,
+    ) -> Result<VariantSet, AppError> {
+        let label = path
+            .file_name()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "masterVar".into());
+        let file = path.to_path_buf();
+        let parsed = tokio::task::spawn_blocking(move || navigator_analysis::mastervar::parse_file(&file))
+            .await?
+            .map_err(|e| AppError::Import(format!("reading masterVar {label}: {e}")))?;
+        if parsed.calls.is_empty() {
+            return Err(AppError::Import(format!(
+                "no SNP variants found in masterVar {label} ({} loci scanned)",
+                parsed.loci_seen
+            )));
+        }
+
+        let new = NewVariantSet {
+            biosample_guid,
+            source_label: format!("CompleteGenomics masterVar ({label})"),
+            source_type: SourceType::WgsShortRead,
+            reference_build: Some(parsed.reference_build),
+            calls: parsed.calls,
+        };
+        let set = variant_set::create(self.store.pool(), &new).await?;
+
+        // Place Y from the derived chrY calls on import (the vendor-VCF path), so the haplogroup
+        // lands without a manual Refresh. Best-effort: an offline tree just leaves the calls.
+        let has_chr_y = set
+            .calls
+            .iter()
+            .any(|c| c.contig.eq_ignore_ascii_case("chrY") || c.contig.eq_ignore_ascii_case("y"));
+        if has_chr_y {
+            if let Err(e) = self.assign_y_vendor_vcfs(biosample_guid).await {
+                eprintln!("masterVar Y placement deferred ({e})");
+            }
+        }
+        Ok(set)
+    }
+
     /// Import an FTDNA Big Y CSV variant report (Named or Private Variants) — the data a project
     /// admin gets when their access tier exposes the browser CSVs but not the BAM/CRAM/VCF. The
     /// rows are GRCh38 chrY derived-allele calls, so they're stored as a `TargetedNgs` variant set
