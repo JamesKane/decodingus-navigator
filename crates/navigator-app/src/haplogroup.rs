@@ -1400,8 +1400,30 @@ impl App {
             }
         }
 
-        // The chip mt panel (consumer arrays carry a sparse rCRS MT panel), strand-reconciled.
         let sets = variant_set::list_for_biosample(self.store.pool(), biosample_guid).await?;
+
+        // Each imported **non-chip** variant set carrying chrM SNPs — a whole-genome VCF or a
+        // CompleteGenomics masterVar. These report forward-strand ref/alt on rCRS coordinates
+        // (GRCh37/GRCh38 chrM = rCRS), so the alt base is used raw like an alignment's chrM call
+        // (no TOP-strand reconciliation, unlike the chip panel below).
+        for set in sets.iter().filter(|s| s.source_type != SourceType::Chip) {
+            let calls: HashMap<i64, char> = set
+                .calls
+                .iter()
+                .filter(|c| {
+                    c.contig.eq_ignore_ascii_case("chrM")
+                        || c.contig.eq_ignore_ascii_case("chrMT")
+                        || c.contig.eq_ignore_ascii_case("mt")
+                        || c.contig.eq_ignore_ascii_case("m")
+                })
+                .filter_map(|c| c.alternate.chars().next().map(|b| (c.position, b.to_ascii_uppercase())))
+                .collect();
+            if !calls.is_empty() {
+                sources.push((set.source_label.clone(), set.source_type, calls));
+            }
+        }
+
+        // The chip mt panel (consumer arrays carry a sparse rCRS MT panel), strand-reconciled.
         let chip_mt: HashMap<i64, char> = sets
             .iter()
             .filter(|s| s.source_type == SourceType::Chip)
@@ -1742,6 +1764,27 @@ impl App {
                     let obs = to_obs(gts);
                     if !obs.is_empty() {
                         sources.push((format!("{} (chip #{})", c.provider, c.id), SourceType::Chip, obs));
+                    }
+                }
+                Err(e) => last_err = Some(e),
+            }
+        }
+
+        // One source per **genome-wide** imported variant set — a WGS VCF or a CompleteGenomics
+        // masterVar (no alignment needed; resolved to panel dosages with unlisted sites taken as
+        // hom-reference). Only `WgsShortRead`/`WgsLongRead`: that hom-ref default is valid solely
+        // for a source that genotyped the whole genome — a targeted Big Y (`TargetedNgs`) or Sanger
+        // panel lists only a handful of sites and must NOT imply hom-ref everywhere else.
+        let vsets = variant_set::list_for_biosample(self.store.pool(), biosample_guid).await?;
+        for set in &vsets {
+            if !matches!(set.source_type, SourceType::WgsShortRead | SourceType::WgsLongRead) {
+                continue;
+            }
+            match self.variant_set_panel_dosages(set).await {
+                Ok(gts) => {
+                    let obs = to_obs(gts);
+                    if !obs.is_empty() {
+                        sources.push((set.source_label.clone(), set.source_type, obs));
                     }
                 }
                 Err(e) => last_err = Some(e),
@@ -2840,6 +2883,58 @@ impl App {
         Ok(assignment)
     }
 
+    /// Autosomal variant sites of a set as `(bare-contig, position, a1, a2)` reference-forward
+    /// allele pairs — the input to the whole-genome IBD-panel resolve. Only chr1–chr22 (the panel
+    /// is autosomal). The genotype string is turned back into an allele pair: `1/1` → `(alt, alt)`;
+    /// het (`0/1`, `1/.`, or an absent genotype — one listed alt means at least one copy) →
+    /// `(ref, alt)`; tri-allelic `1/2` and haploid `1` (Y/mt, never autosomal) are dropped as
+    /// ambiguous for a diploid dosage.
+    fn vset_autosomal_calls(set: &VariantSet) -> Vec<(String, i64, char, char)> {
+        set.calls
+            .iter()
+            .filter_map(|c| {
+                let bare = c.contig.strip_prefix("chr").unwrap_or(&c.contig);
+                let n: u32 = bare.parse().ok()?;
+                if !(1..=22).contains(&n) {
+                    return None;
+                }
+                let r = c.reference.chars().next()?;
+                let a = c.alternate.chars().next()?;
+                let gt = c.genotype.as_deref().unwrap_or("");
+                let (a1, a2) = if gt == "1/1" || gt == "1|1" {
+                    (a, a)
+                } else if matches!(gt, "0/1" | "1/0" | "0|1" | "1|0" | "1/." | "./1") || gt.is_empty() {
+                    (r, a)
+                } else {
+                    return None; // 1/2 tri-allelic, haploid "1", or an unrecognized genotype
+                };
+                Some((bare.to_string(), c.position, a1, a2))
+            })
+            .collect()
+    }
+
+    /// Resolve a **genome-wide** variant set to canonical CHM13 IBD-panel dosages (unlisted panel
+    /// sites ⇒ hom-reference — see [`IbdPanel::resolve_whole_genome`]). Needs the IBD panel asset.
+    /// Returns an empty vec for a set with no autosomal calls (e.g. a Y-only VCF). Not cached — the
+    /// resolve is cheap and, like the chip path, recomputed when the autosomal consensus is rebuilt.
+    pub(crate) async fn variant_set_panel_dosages(&self, set: &VariantSet) -> Result<Vec<SiteGenotype>, AppError> {
+        let calls = Self::vset_autosomal_calls(set);
+        if calls.is_empty() {
+            return Ok(Vec::new());
+        }
+        let build = set.reference_build.clone().unwrap_or_else(|| "GRCh37".to_string());
+        let panel_path = ibd_panel_path(ReferenceBuild::Chm13v2);
+        let bytes = read_verified_asset(ReferenceBuild::Chm13v2, &panel_path)?.ok_or_else(|| {
+            AppError::Import(format!(
+                "IBD panel asset not found at {} — build it with `panelbuild ibd-panel`",
+                panel_path.display()
+            ))
+        })?;
+        let panel = navigator_analysis::ibd_panel::IbdPanel::from_bytes(&bytes)?;
+        let dosages = tokio::task::spawn_blocking(move || panel.resolve_whole_genome(&build, &calls)).await?;
+        Ok(dosages)
+    }
+
     /// chrY genotype calls (`position → uppercase ALT base`) from a variant set — the shared
     /// extractor behind the chip / vendor-VCF Y placements.
     fn vset_chr_y_calls(set: &VariantSet) -> HashMap<i64, char> {
@@ -3524,5 +3619,57 @@ mod lifted_targets_tests {
             .await
             .expect("same build is not an error");
         assert!(lifted.is_none(), "no chain needed when the builds agree");
+    }
+}
+
+#[cfg(test)]
+mod vset_autosomal_calls_tests {
+    use super::*;
+    use navigator_domain::variants::{SourceType, VariantCall, VariantSet};
+
+    fn call(contig: &str, pos: i64, r: &str, a: &str, gt: &str) -> VariantCall {
+        VariantCall {
+            contig: contig.into(),
+            position: pos,
+            reference: r.into(),
+            alternate: a.into(),
+            rs_id: None,
+            genotype: (!gt.is_empty()).then(|| gt.to_string()),
+        }
+    }
+
+    fn set(calls: Vec<VariantCall>) -> VariantSet {
+        VariantSet {
+            id: 1,
+            biosample_guid: du_domain::ids::SampleGuid(uuid::Uuid::nil()),
+            source_label: "cg".into(),
+            source_type: SourceType::WgsShortRead,
+            reference_build: Some("GRCh37".into()),
+            calls,
+        }
+    }
+
+    #[test]
+    fn genotype_becomes_reference_forward_allele_pair() {
+        let s = set(vec![
+            call("chr1", 100, "C", "T", "1/1"),  // hom-alt → (T, T)
+            call("chr1", 200, "A", "G", "0/1"),  // het → (A, G)
+            call("chr1", 300, "G", "A", "1/."),  // het w/ no-call partner → (G, A)
+            call("chr7", 400, "A", "C", ""),     // no genotype → assume het → (A, C)
+            call("chr2", 500, "A", "G", "1/2"),  // tri-allelic → dropped
+            call("chrY", 600, "A", "G", "1"),    // not autosomal → dropped
+            call("chrM", 700, "A", "G", "1"),    // not autosomal → dropped
+        ]);
+        let mut got = App::vset_autosomal_calls(&s);
+        got.sort_by_key(|(_, p, _, _)| *p);
+        assert_eq!(
+            got,
+            vec![
+                ("1".to_string(), 100, 'T', 'T'),
+                ("1".to_string(), 200, 'A', 'G'),
+                ("1".to_string(), 300, 'G', 'A'),
+                ("7".to_string(), 400, 'A', 'C'),
+            ]
+        );
     }
 }

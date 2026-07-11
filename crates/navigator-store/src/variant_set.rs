@@ -79,6 +79,29 @@ pub async fn create(pool: &SqlitePool, new: &NewVariantSet) -> Result<VariantSet
     })
 }
 
+/// One variant set (with its calls) by id, or `None` if it doesn't exist.
+pub async fn get(pool: &SqlitePool, id: i64) -> Result<Option<VariantSet>, StoreError> {
+    let Some(r) = sqlx::query_as::<_, SetRow>(
+        "SELECT id, biosample_guid, source_label, source_type, reference_build FROM variant_set WHERE id = ?",
+    )
+    .bind(id)
+    .fetch_optional(pool)
+    .await?
+    else {
+        return Ok(None);
+    };
+    let biosample_guid = parse_sample_guid(&r.biosample_guid, "variant_set")?;
+    let calls = calls_for(pool, r.id).await?;
+    Ok(Some(VariantSet {
+        id: r.id,
+        biosample_guid,
+        source_label: r.source_label,
+        source_type: SourceType::from_code(&r.source_type),
+        reference_build: r.reference_build,
+        calls,
+    }))
+}
+
 async fn calls_for(pool: &SqlitePool, set_id: i64) -> Result<Vec<VariantCall>, StoreError> {
     let rows: Vec<CallRow> = sqlx::query_as(
         "SELECT contig, position, reference, alternate, rs_id, genotype FROM variant_call \

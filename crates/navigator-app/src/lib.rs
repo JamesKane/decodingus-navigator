@@ -385,6 +385,9 @@ pub struct IbdComparison {
 pub enum IbdSource {
     Alignment(i64),
     Chip(i64),
+    /// A genome-wide imported variant set (a WGS VCF / CompleteGenomics masterVar), resolved to
+    /// panel dosages with unlisted sites taken as homozygous reference.
+    VariantSet(i64),
 }
 
 /// The outcome of a federated IBD exchange over the encrypted channel (gap §4): the locally computed
@@ -1475,6 +1478,9 @@ fn is_recognized_data_file(path: &Path) -> bool {
         ".csv",
         ".tsv",
         ".txt",
+        // CompleteGenomics masterVar dumps ship gzip/bzip2-compressed TSV.
+        ".tsv.gz",
+        ".tsv.bz2",
     ]
     .iter()
     .any(|e| n.ends_with(e))
@@ -2299,10 +2305,21 @@ fn has_sibling_index(aln_path: &Path, index_files: &[PathBuf]) -> bool {
 /// type without slurping a multi-MB chip export.
 fn read_head(path: &Path) -> Result<String, AppError> {
     use std::io::Read;
-    let mut f = std::fs::File::open(path)?;
+    // Transparently decompress gzip/BGZF/bzip2 so the fingerprint sees text even for a compressed
+    // dump (e.g. a CompleteGenomics `var-*.tsv.bz2`). Plain files read straight through.
+    let mut reader = navigator_analysis::gzio::open_maybe_compressed(path)?;
     let mut buf = vec![0u8; 64 * 1024];
-    let n = f.read(&mut buf)?;
-    buf.truncate(n);
+    let mut filled = 0;
+    // Decoders satisfy a read in small chunks; loop until the head buffer is full or EOF.
+    while filled < buf.len() {
+        match reader.read(&mut buf[filled..]) {
+            Ok(0) => break,
+            Ok(n) => filled += n,
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(e) => return Err(e.into()),
+        }
+    }
+    buf.truncate(filled);
     Ok(String::from_utf8_lossy(&buf).into_owned())
 }
 
