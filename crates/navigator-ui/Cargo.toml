@@ -33,6 +33,11 @@ resources = [
 
 [package.metadata.packager.macos]
 minimum-system-version = "11.0"
+# Gates cargo-packager's sign+notarize path (it's read only from config, never an env var). The cert
+# (APPLE_CERTIFICATE/_PASSWORD) and notary auth (APPLE_ID/_PASSWORD/_TEAM_ID) come from CI env vars;
+# hardened runtime + timestamp are applied automatically. Identity is public (embedded in every
+# signed artifact), so committing it is fine. Team ID here (5DKX9P6769) must match APPLE_TEAM_ID.
+signing-identity = "Developer ID Application: James Kane (5DKX9P6769)"
 
 [package.metadata.packager.nsis]
 # Windows installer (Alpha ships unsigned; Authenticode/Trusted-Signing added before beta).
