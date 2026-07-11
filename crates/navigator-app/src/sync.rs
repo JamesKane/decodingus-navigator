@@ -424,9 +424,9 @@ impl App {
     ///
     /// Signs `"ibd-introduce\n<DID>\n<suggested_sample_guid>"` and posts
     /// `{ did, suggestedSampleGuid, signature }`. Returns the AppView's `request_uri` and
-    /// status (`PENDING`). The downstream consent round-trip + key exchange are deferred
-    /// (gated on the AppView's symmetric-blind counterpart discovery), so this only opens the
-    /// request — it does not exchange any genetic data.
+    /// status (`PENDING`). This endpoint only opens the request — it exchanges no genetic data.
+    /// The downstream consent round-trip and encrypted segment exchange run over the separate edge
+    /// channel in `ibd_exchange` once both parties consent.
     pub async fn ibd_introduce(&self, suggested_sample_guid: &str) -> Result<IbdIntroResult, AppError> {
         let did = self.current_account().ok_or(AppError::NotAuthenticated)?;
         let key = self.ensure_device_key().await?;

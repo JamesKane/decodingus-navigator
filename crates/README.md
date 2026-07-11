@@ -3,7 +3,8 @@
 A ground-up Rust port of the Scala/ScalaFX Navigator. Replaces GATK/HTSJDK with a pure-Rust
 analysis stack ([noodles](https://github.com/zaeleus/noodles)) and ScalaFX with an
 [egui](https://github.com/emilk/egui) desktop UI — **no JVM, no GATK/samtools/bcftools at
-runtime**. Lives on branch `rust-rewrite`; coexists with the legacy Scala build until cutover.
+runtime**. The Rust rewrite is the trunk on `main`; the legacy Scala implementation was removed at
+cutover and survives in git history only.
 
 Design: [`documents/design/RustRewrite_Plan.md`](../documents/design/RustRewrite_Plan.md).
 Resume notes: [`documents/design/HANDOFF.md`](../documents/design/HANDOFF.md).
@@ -15,7 +16,7 @@ Dependency rule: `ui → app → {analysis, store, sync, refgenome} → {domain,
 | Crate | Role |
 |-------|------|
 | `navigator-domain` | Pure desktop-only aggregate types (re-exports shared `du-domain`). |
-| `navigator-analysis` | The htsjdk/GATK replacement: noodles BAM/CRAM/FASTA I/O, coverage, caller, haplogroups, mtDNA, IBD, **sex**, **read_metrics**, **sv**, **ancestry** (admixture/PCA/painting). |
+| `navigator-analysis` | The htsjdk/GATK replacement: noodles BAM/CRAM/FASTA/VCF I/O, coverage/callable, haploid + **diploid SNV/indel** callers, Y & mtDNA haplogroups, IBD, **sex**, **read_metrics**, **sv**, **ancestry** (admixture/PCA/painting), CompleteGenomics masterVar. |
 | `navigator-store` | SQLite (`sqlx`) persistence, versioned migrations. |
 | `navigator-refgenome` | Reference/chain retrieval + on-disk cache + liftover gateway. |
 | `navigator-sync` | AT-Proto OAuth (PKCE/DPoP) + PDS record publishing. |
@@ -39,17 +40,23 @@ Some integration tests are `#[ignore]` and gated on env vars (real BAMs / networ
 
 ## Feature status (high level)
 
-**Built + validated:** workspace/import, BAM/CRAM reader, coverage/callable, haploid caller,
-Y & mtDNA haplogroups incl. CHM13 liftover (chain rev-comp + rotation-aware rCRS↔chrM map),
-multi-source reconciliation (6 phases), IBD detection + identity, panel genotyping, refgenome
-gateway, OAuth + publishing, batch import + project report, **ancestry** (admixture composition,
-26 fine pops across 8 continents, PCA scatter, geographic map, DNA-painting local ancestry), and
-**sex / read-metrics / SV** wired into both single-alignment and the bulk `analyze_project` flow.
+**Built + validated:** workspace/import (incl. chip, Y-STR, BISDNA Y-SNP, CompleteGenomics
+masterVar, batch project import + sidecar fast path), BAM/CRAM reader, coverage/callable, haploid
+caller, **diploid SNV/indel caller** + whole-genome VCF export, Y & mtDNA haplogroups incl. CHM13
+liftover (chain rev-comp + rotation-aware rCRS↔chrM map), multi-source reconciliation into a
+genome-level consensus, IBD detection + identity + per-chromosome segment browser, panel genotyping,
+refgenome gateway, OAuth + durable publishing, **ancestry** (admixture composition, 26 fine pops
+across 8 continents, PCA scatter, geographic map, DNA-painting local ancestry), and **sex /
+read-metrics / SV** wired into both single-alignment and the bulk `analyze_project` flow. Federated
+IBD is live: device-key-signed records, an encrypted edge exchange channel, signed attestations, and
+AppView-mined network match suggestions surfaced in the UI.
 
-**Pending:** parity-harness automation (GATK-vs-Rust golden gate — tests exist but `#[ignore]`);
-IBD **matching** system (consent/match-discovery/chromosome-browser UI; detection math is done);
-granular per-record sync (publish paths exist). `navigator-migrate` (H2→SQLite) is **dropped** (no
-pre-beta data continuity needed). SV *output* is unvalidated (needs a ≥10× sample; gate works).
+**Pending:** live-network validation of federated IBD exchange (the encrypted channel, consent
+round-trip, signed attestations, and UI inbox are implemented and unit-tested, but the full edge-to-
+edge round-trip needs a running AppView broker + a partner edge online, and the AppView's symmetric
+counterpart-discovery is still being speced); parity-harness automation (GATK-vs-Rust golden gate —
+tests exist but `#[ignore]`). SV *output* is unvalidated (needs a ≥10× sample; the coverage gate
+works). `navigator-migrate` (H2→SQLite) is **dropped** — no pre-beta data continuity needed.
 
 ## Offline-built assets (not committed; regenerable)
 

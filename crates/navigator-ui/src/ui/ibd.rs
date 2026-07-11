@@ -329,8 +329,8 @@ impl NavigatorApp {
     /// Federated IBD: the AppView's pseudonymous "people who may share DNA with you" list,
     /// mined from the records we've published. Distinct from the local 1:1 compare above —
     /// these are network candidates we haven't exchanged any genotypes with. Requesting an
-    /// introduction opens a PENDING request; the consent round-trip + actual segment detection
-    /// are a later phase (the AppView's symmetric counterpart-discovery is still being speced).
+    /// introduction opens a PENDING request; the consent round-trip and encrypted segment exchange
+    /// then run over the edge channel (see the exchange section and `App::exchange_*`).
     /// Simple-mode "Genetic relatives" card: the live network match suggestions, framed in plain
     /// language (strength + shared-signal summary, pseudonymous handles), with a privacy note and a
     /// per-match Connect action. Sign-in gated. Kept separate from the precomputed brief because
