@@ -187,7 +187,7 @@ pub struct VariantCall {
     pub quality: Option<f64>,
 }
 
-const BASES: [u8; 4] = [b'A', b'C', b'G', b'T'];
+const BASES: [u8; 4] = *b"ACGT";
 
 pub(crate) fn base_index(b: u8) -> Option<usize> {
     match b.to_ascii_uppercase() {

@@ -301,7 +301,7 @@ fn assemble_alt_haplotype(
     Some(hap)
 }
 
-const BASES: [u8; 4] = [b'A', b'C', b'G', b'T'];
+const BASES: [u8; 4] = *b"ACGT";
 
 fn base_index(b: u8) -> Option<usize> {
     match b.to_ascii_uppercase() {

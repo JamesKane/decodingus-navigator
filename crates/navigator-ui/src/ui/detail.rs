@@ -2559,7 +2559,7 @@ impl NavigatorApp {
                     ui.visuals().extreme_bg_color
                 })
                 .stroke(if selected {
-                    egui::Stroke::new(1.0, ACCENT)
+                    egui::Stroke::new(1.0_f32, ACCENT)
                 } else {
                     egui::Stroke::NONE
                 })

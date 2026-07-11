@@ -394,7 +394,7 @@ pub(crate) fn draw_variant_track(
         let seg = egui::Rect::from_min_max(egui::pos2(x0, rect.top()), egui::pos2(x1.max(x0 + 1.0), rect.bottom()));
         painter.rect_filled(seg, 0.0, r.color);
     }
-    painter.rect_stroke(rect, 3.0, egui::Stroke::new(1.0, egui::Color32::from_gray(70)));
+    painter.rect_stroke(rect, 3.0, egui::Stroke::new(1.0_f32, egui::Color32::from_gray(70)));
 
     // Variant ticks.
     let hover_x = resp.hover_pos().map(|p| p.x);
@@ -403,7 +403,7 @@ pub(crate) fn draw_variant_track(
         let x = rect.left() + (v.position.max(0) as f32 / len).clamp(0.0, 1.0) * rect.width();
         painter.line_segment(
             [egui::pos2(x, rect.top() + 1.0), egui::pos2(x, rect.bottom() - 1.0)],
-            egui::Stroke::new(1.5, v.color),
+            egui::Stroke::new(1.5_f32, v.color),
         );
         if let Some(hx) = hover_x {
             let d = (hx - x).abs();
@@ -471,7 +471,7 @@ pub(crate) fn draw_pca_scatter(ui: &mut egui::Ui, sample: Option<(f64, f64)>, re
                 let color = parse_hex_color(&population_color(code));
                 plot_ui.points(
                     Points::new(PlotPoints::new(vec![[*x, *y]]))
-                        .radius(4.0)
+                        .radius(4.0_f32)
                         .color(color)
                         .name(population_name(code)),
                 );
@@ -479,7 +479,7 @@ pub(crate) fn draw_pca_scatter(ui: &mut egui::Ui, sample: Option<(f64, f64)>, re
             if let Some((x, y)) = sample {
                 plot_ui.points(
                     Points::new(PlotPoints::new(vec![[x, y]]))
-                        .radius(7.0)
+                        .radius(7.0_f32)
                         .shape(MarkerShape::Diamond)
                         .color(egui::Color32::WHITE)
                         .name("you"),

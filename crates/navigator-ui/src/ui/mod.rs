@@ -885,11 +885,11 @@ fn apply_theme(ctx: &egui::Context, dark: bool) {
         v.widgets.inactive.weak_bg_fill = Color32::from_gray(44);
         v.widgets.hovered.bg_fill = Color32::from_gray(64);
         v.widgets.active.bg_fill = ACCENT;
-        v.window_stroke = Stroke::new(1.0, Color32::from_gray(48));
+        v.window_stroke = Stroke::new(1.0_f32, Color32::from_gray(48));
     }
     v.hyperlink_color = ACCENT;
     v.selection.bg_fill = ACCENT.gamma_multiply(0.55);
-    v.selection.stroke = Stroke::new(1.0, ACCENT);
+    v.selection.stroke = Stroke::new(1.0_f32, ACCENT);
 
     let r = Rounding::same(6.0);
     for w in [
