@@ -1,0 +1,4 @@
+# Bioinformatics test fixtures are byte-exact — CRAM stores an MD5 of the reference sequence, and
+# BAM/CRAM/FASTA indexes are binary. Never EOL-convert them, or Windows (core.autocrlf=true)
+# rewrites the FASTA to CRLF on checkout and CRAM reference-checksum verification fails.
+**/tests/fixtures/** -text
