@@ -7,8 +7,9 @@
 #   ./packaging/publish-assets.sh [build]      # build defaults to chm13v2.0 → release tag assets-<build>
 #   ./packaging/publish-assets.sh ysnp         # the full Y-SNP dictionary → release tag assets-ysnp
 #
-# The release is a data store, not a source release: it holds the 10 `*_<build>.bin` files plus
-# `ancestry_manifest_<build>.json`. `stage-assets.sh` downloads them by manifest at package time.
+# The release is a data store, not a source release: it holds the 10 `*_<build>.bin` files,
+# `ancestry_manifest_<build>.json`, and the HipSTR references (`<build>.hipstr_reference.bed.gz` +
+# `GRCh38.hipstr_reference.bed.gz`). `stage-assets.sh` downloads them at package time.
 set -euo pipefail
 
 REPO="${NAVIGATOR_ASSET_REPO:-JamesKane/decodingus-navigator}"
@@ -51,12 +52,22 @@ fi
 
 BUILD="${1:-chm13v2.0}"
 SRC="${NAVIGATOR_ASSET_SRC:-$HOME/.decodingus/ancestry}"
+STR_SRC="${NAVIGATOR_STR_SRC:-$HOME/.decodingus/str}"
 TAG="assets-${BUILD}"
 
 # The bundle: every per-build .bin + the manifest. Match stage-assets.sh's expectations.
 files=()
 for f in "$SRC"/*"${BUILD}".bin "$SRC/ancestry_manifest_${BUILD}.json"; do
   [ -e "$f" ] || { echo "publish-assets: missing $f" >&2; exit 1; }
+  files+=("$f")
+done
+
+# STR HipSTR references: the build-specific one + the shared GRCh38 one, by the exact names
+# stage-assets.sh downloads from this release ("${BUILD}.hipstr_reference.bed.gz" and
+# "GRCh38.hipstr_reference.bed.gz"). Without these in the release, a clean CI runner (no local
+# ~/.decodingus/str) silently bundles no STR reference and fresh installs can't do STR calling.
+for f in "$STR_SRC/${BUILD}.hipstr_reference.bed.gz" "$STR_SRC/GRCh38.hipstr_reference.bed.gz"; do
+  [ -e "$f" ] || { echo "publish-assets: missing $f (build it into $STR_SRC, or set NAVIGATOR_STR_SRC)" >&2; exit 1; }
   files+=("$f")
 done
 
@@ -67,7 +78,7 @@ if gh release view "$TAG" --repo "$REPO" >/dev/null 2>&1; then
 else
   echo "publish-assets: creating release"
   gh release create "$TAG" "${files[@]}" --repo "$REPO" \
-    --title "Ancestry/IBD assets ($BUILD)" \
-    --notes "Reference assets bundled into the offline installer; consumed by \`packaging/stage-assets.sh\`. Regenerable — not source."
+    --title "Ancestry/IBD + STR assets ($BUILD)" \
+    --notes "Reference assets bundled into the offline installer; consumed by \`packaging/stage-assets.sh\` (ancestry/IBD .bin + manifest, plus HipSTR references). Regenerable — not source."
 fi
 echo "publish-assets: done. Set NAVIGATOR_ASSET_RELEASE=$TAG in the release workflow."

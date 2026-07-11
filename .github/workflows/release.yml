@@ -31,6 +31,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # du-domain/du-atproto/du-bio come from the sibling `decodingus-shared` repo via path deps
+      # (../decodingus-shared/...); CI only checks out this repo, so clone the sibling beside it so the
+      # path resolves. Public repo → no token. (Follow-up: switch these to git deps — root Cargo.toml TODO.)
+      - name: Fetch shared crates (path-dep sibling)
+        shell: bash
+        run: git clone --depth 1 https://github.com/JamesKane/decodingus-shared.git "$GITHUB_WORKSPACE/../decodingus-shared"
+
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
         with:
@@ -100,6 +107,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # du-domain/du-atproto/du-bio come from the sibling `decodingus-shared` repo via path deps
+      # (../decodingus-shared/...); CI only checks out this repo, so clone the sibling beside it so the
+      # path resolves. Public repo → no token. (Follow-up: switch these to git deps — root Cargo.toml TODO.)
+      - name: Fetch shared crates (path-dep sibling)
+        shell: bash
+        run: git clone --depth 1 https://github.com/JamesKane/decodingus-shared.git "$GITHUB_WORKSPACE/../decodingus-shared"
+
       # GUI build deps on AlmaLinux 8: GTK3 (rfd file dialogs), D-Bus (zbus), xkbcommon (winit).
       - name: System deps
         run: |
@@ -151,6 +165,13 @@ jobs:
     runs-on: macos-14
     steps:
       - uses: actions/checkout@v4
+
+      # du-domain/du-atproto/du-bio come from the sibling `decodingus-shared` repo via path deps
+      # (../decodingus-shared/...); CI only checks out this repo, so clone the sibling beside it so the
+      # path resolves. Public repo → no token. (Follow-up: switch these to git deps — root Cargo.toml TODO.)
+      - name: Fetch shared crates (path-dep sibling)
+        shell: bash
+        run: git clone --depth 1 https://github.com/JamesKane/decodingus-shared.git "$GITHUB_WORKSPACE/../decodingus-shared"
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable

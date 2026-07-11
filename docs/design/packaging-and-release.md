@@ -229,7 +229,7 @@ pipeline asset (sizes measured on disk) split the rest by size × volatility:
 | Y/mt haplotrees | 60–127 MB | High (~weekly) | **Runtime fetch + conditional GET** | ETag/`If-None-Match` → 304 (implemented 2026-07-10); optionally Cloudflare-free in front of the AppView. **Not** the paid S3 CDN. |
 | chrY callable/cohort masks | ~1.8 MB | Rare | **Installer bundle** (git `assets/masks/` → seed) | Small, done. |
 | Ancestry/IBD `.bin` | ~160 MB | Rare | **Installer bundle** (GitHub release → stage → seed) | Decision A, done. |
-| **STR HipSTR reference** | 20 MB (GRCh38) / 0.2 MB (CHM13) | Static | **Installer bundle → seed** | Small, static; had *no* delivery path. |
+| **STR HipSTR reference** | 20 MB (GRCh38) / 0.2 MB (CHM13) | Static | **Installer bundle → seed** (release-hosted, wired 2026-07-11) | Small, static; delivery path added below. |
 | **Y-SNP dictionary** (`dictionary.tsv`) | ~208 MB | Medium (~weekly YBrowse) | **Lazy download from GitHub release, sha256-verified** | Too big to bundle, too volatile; had *no* delivery path. |
 
 **Cost stance (creative GitHub):** GitHub **Releases** is the free asset host for app-built data
@@ -240,7 +240,13 @@ redundant cost.
 **STR (bundle + seed) — implemented 2026-07-10:** `packaging/staging/str` is a packager resource
 (`bundled_str_dir` / `seed_bundled_str` mirror the masks path; staged from `~/.decodingus/str` or the
 asset release by `stage-assets.sh`). `str_reference_path` now reads from the shared cache base
-(honors `NAVIGATOR_REFGENOME_DIR`), so seed target == read path.
+(honors `NAVIGATOR_REFGENOME_DIR`), so seed target == read path. **Delivery path wired 2026-07-11:**
+`stage-assets.sh` downloads the two HipSTR beds (`<build>.hipstr_reference.bed.gz` +
+`GRCh38.hipstr_reference.bed.gz`) from the `assets-<build>` release by exact name (direct `curl`, not
+manifest-verified — the sha256 manifest covers only the ancestry `.bin`s), and `publish-assets.sh
+<build>` now uploads those beds alongside the ancestry `.bin`s (required, not best-effort — a missing
+bed fails the publish rather than shipping a half-bundle). So on a clean CI runner (no local
+`~/.decodingus/str`) STR calling now works out of the box.
 
 **Y-SNP dictionary (lazy download) — implemented 2026-07-10:** `App::ensure_ysnp_dictionary`
 downloads `dictionary.tsv` from the `assets-ysnp` GitHub release on first Y-SNP/BISDNA import,
