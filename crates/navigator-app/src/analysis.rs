@@ -359,7 +359,21 @@ impl App {
                 .and_then(|r| navigator_domain::testtype::target_of(&r.test_type)),
             Some(navigator_domain::testtype::TargetType::YChromosome)
         );
-        let sex = if y_targeted {
+        // A Y-scoped alignment reads as male the same way a Y-targeted test does — chrY carries
+        // essentially all the reads while the autosomes hold only a few dozen mismapped ones (a
+        // Y-only extract, e.g. GRCh38 chrY reads realigned to hs1, or a Y-Elite/Big Y capture that
+        // came in mislabeled WGS). The ratio walk can then read it as *female*, which silently
+        // disables the whole Y pipeline (assign_y_haplogroup skips females before it ever fetches
+        // the tree). Detect it from the per-contig read counts and force male, exactly like a Y test.
+        let y_scoped = navigator_analysis::sex::is_y_scoped(
+            result
+                .coverage
+                .contig_coverage_stats
+                .iter()
+                .map(|s| (s.contig.as_str(), s.num_reads)),
+        );
+        let male_by_scope = y_targeted || y_scoped;
+        let sex = if male_by_scope {
             Some(navigator_analysis::sex::SexInferenceResult {
                 inferred_sex: navigator_analysis::sex::InferredSex::Male,
                 x_autosome_ratio: 0.0,
@@ -372,8 +386,9 @@ impl App {
         };
         if let Some(sex) = &sex {
             self.save_analysis(alignment_id, "sex", "1", sex).await?;
-            if y_targeted {
-                // Definitive (Y test ⇒ male): override any prior auto-inferred sex, not write-if-empty.
+            if male_by_scope {
+                // Definitive (Y test / Y-scoped ⇒ male): override any prior auto-inferred sex —
+                // including a stale false "Female" — rather than write-if-empty.
                 if let Ok(guid) = self.biosample_of_alignment(alignment_id).await {
                     biosample::set_sex(self.store.pool(), guid, "Male").await?;
                 }

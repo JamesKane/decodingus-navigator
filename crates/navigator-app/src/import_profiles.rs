@@ -466,6 +466,16 @@ impl App {
         };
         let variant_set = variant_set::create(self.store.pool(), &new).await?;
 
+        // Compute the Y haplogroup on import (best-effort; an offline tree just leaves the calls),
+        // mirroring the array path in `import_chip_profile_from_csv`. Without this a chromo2/BISDNA
+        // panel imports its calls but never auto-places — it has no cached alignment genotypes, so
+        // `rebuild-signatures` can't place it later either, leaving the subject's Y at <none>.
+        if derived_calls > 0 {
+            if let Err(e) = self.assign_y_bisdna(biosample_guid, Some(&build)).await {
+                eprintln!("BISDNA Y placement deferred ({e})");
+            }
+        }
+
         Ok(BisdnaImportSummary {
             variant_set,
             build,

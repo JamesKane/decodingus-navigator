@@ -230,6 +230,37 @@ pub fn determine_sex(ratio: f64, autosome_coverage: f64) -> (InferredSex, Confid
     }
 }
 
+/// Minimum chrY reads before an alignment can be judged Y-scoped — guards against calling a
+/// near-empty file "male" off a handful of stray reads.
+const Y_SCOPED_MIN_Y_READS: u64 = 1_000;
+/// chrY reads must exceed this multiple of the autosome + chrX read count for an alignment to
+/// count as Y-scoped. A whole-genome male carries ~100× MORE autosome than chrY reads (the
+/// autosomes are ~40× the sequence and diploid), so a genuine Y-only extract — chrY in the
+/// millions, autosomes a few dozen mismapped reads — clears this by orders of magnitude while
+/// WGS and genuine females never approach it.
+const Y_SCOPED_DOMINANCE: u64 = 8;
+
+/// Does this alignment's per-contig read distribution look **Y-scoped** — chrY carrying
+/// essentially all the reads while the autosomes and chrX hold only a trace of mismapped ones?
+/// That is the shape of a Y-only extract (e.g. GRCh38 chrY reads realigned to hs1) or a Y-Elite /
+/// Big Y capture. The chrX:autosome ratio [`determine_sex`] relies on is meaningless for such data
+/// and can read as **female** — which would silently disable the entire Y pipeline (the Y
+/// haplogroup step skips females *before* it ever downloads the tree). A `true` here means the
+/// donor sequenced his Y, so callers should treat him as male regardless of the ratio.
+///
+/// The discriminator is read *counts*, not depth: pass `(contig_name, mapped_reads)` per contig.
+pub fn is_y_scoped<'a>(per_contig_reads: impl IntoIterator<Item = (&'a str, u64)>) -> bool {
+    let (mut y_reads, mut other_reads) = (0u64, 0u64);
+    for (name, reads) in per_contig_reads {
+        if contig::is_chr_y(name) {
+            y_reads += reads;
+        } else if contig::is_autosome(name) || contig::is_chr_x(name) {
+            other_reads += reads;
+        }
+    }
+    y_reads >= Y_SCOPED_MIN_Y_READS && y_reads > other_reads.saturating_mul(Y_SCOPED_DOMINANCE)
+}
+
 /// Ploidy for a contig given inferred sex; `None` means skip the contig (chrY in
 /// females). Mirrors the Scala `ploidyForContig`.
 pub fn ploidy_for_contig(contig_name: &str, sex: InferredSex) -> Option<u32> {
@@ -268,6 +299,26 @@ mod tests {
         assert_eq!(determine_sex(0.50, 2.0), (InferredSex::Male, Confidence::Low));
         assert_eq!(determine_sex(1.00, 2.0), (InferredSex::Female, Confidence::Low));
         assert_eq!(determine_sex(0.75, 2.0), (InferredSex::Unknown, Confidence::Low));
+    }
+
+    #[test]
+    fn y_scoped_detects_y_only_extracts() {
+        // chrY in the millions, autosomes only a few dozen mismapped reads, no chrX → Y-scoped.
+        assert!(is_y_scoped([("chrY", 3_000_000), ("chr1", 30), ("chr2", 24), ("chr7", 12)]));
+        // A pure chrY-only alignment (nothing elsewhere) → Y-scoped.
+        assert!(is_y_scoped([("chrY", 2_000_000)]));
+        // chrY + chrM only (the chrYM.cram shape) → Y-scoped (chrM is neither autosome nor chrX).
+        assert!(is_y_scoped([("chrY", 2_000_000), ("chrM", 50_000)]));
+    }
+
+    #[test]
+    fn y_scoped_rejects_wgs_and_females() {
+        // Male WGS: autosomes dwarf chrY → not Y-scoped (the ratio walk handles these).
+        assert!(!is_y_scoped([("chr1", 200_000_000), ("chrX", 5_000_000), ("chrY", 3_000_000)]));
+        // Female WGS: chrY only a trace of mismapping → not Y-scoped.
+        assert!(!is_y_scoped([("chr1", 200_000_000), ("chrX", 10_000_000), ("chrY", 300)]));
+        // Near-empty alignment: a handful of chrY reads is not enough to judge.
+        assert!(!is_y_scoped([("chrY", 50)]));
     }
 
     #[test]

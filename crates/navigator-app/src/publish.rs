@@ -15,6 +15,29 @@ impl App {
             .await?
             .ok_or_else(|| AppError::Store(StoreError::NotFound(format!("coverage for alignment {alignment_id}"))))?;
         let aln = self.alignment_or_err(alignment_id).await?;
+        // A whole-genome-labeled alignment whose reads are actually Y-scoped — a chrY-only extract,
+        // or a Y test (Big Y / Y Elite) that came in mislabeled WGS — must not publish a coverage
+        // summary. The AppView files an `alignment` record under whole-genome statistics, so its
+        // near-zero autosomal depth and callable footprint would skew the aggregate WGS coverage
+        // distributions. Genuine Y-targeted tests are exempt: their test type is published, so the
+        // AppView cohorts their Y coverage separately from WGS.
+        let is_wgs = matches!(
+            sequence_run::get(self.store.pool(), aln.sequence_run_id)
+                .await?
+                .as_ref()
+                .and_then(|r| navigator_domain::testtype::target_of(&r.test_type)),
+            Some(navigator_domain::testtype::TargetType::WholeGenome)
+        );
+        if is_wgs
+            && navigator_analysis::sex::is_y_scoped(
+                cov.contig_coverage_stats.iter().map(|s| (s.contig.as_str(), s.num_reads)),
+            )
+        {
+            return Err(AppError::Conflict(format!(
+                "alignment {alignment_id} is a Y-scoped file labeled whole-genome — its coverage \
+                 summary is withheld from the PDS so it can't skew AppView whole-genome statistics"
+            )));
+        }
         let guid = self.biosample_of_alignment(alignment_id).await?;
         let record = AlignmentRecord::new(
             aln.reference_build,
@@ -294,4 +317,111 @@ fn contig_metrics(cov: &CoverageResult) -> Vec<ContigMetrics> {
             }
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use navigator_analysis::coverage::{ContigCoverageStats, CoverageResult, COVERAGE_VERSION};
+    use navigator_store::Store;
+
+    fn cstat(contig: &str, num_reads: u64) -> ContigCoverageStats {
+        ContigCoverageStats {
+            contig: contig.into(),
+            start_pos: 1,
+            end_pos: 1,
+            num_reads,
+            cov_bases: 0,
+            coverage: 0.0,
+            mean_depth: 0.0,
+            mean_base_q: 0.0,
+            mean_map_q: 0.0,
+            histogram: Vec::new(),
+        }
+    }
+
+    /// chrY carrying millions of reads, autosomes/chrX only a trace of mismapped ones — the
+    /// Y-only-extract shape.
+    fn y_scoped_coverage() -> CoverageResult {
+        CoverageResult {
+            contig_coverage_stats: vec![cstat("chrY", 3_000_000), cstat("chr1", 30), cstat("chrX", 12)],
+            ..Default::default()
+        }
+    }
+
+    async fn alignment_with_test_type(app: &App, test_type: &str) -> i64 {
+        let b = app.add_biosample(None, "yscoped", None, None).await.unwrap();
+        let run = app
+            .record_sequence_run(NewSequenceRun {
+                biosample_guid: b.guid,
+                platform_name: "ILLUMINA".into(),
+                instrument_model: None,
+                test_type: test_type.into(),
+                library_layout: None,
+                total_reads: None,
+                pf_reads_aligned: None,
+                mean_read_length: None,
+                mean_insert_size: None,
+            })
+            .await
+            .unwrap();
+        app.record_alignment(NewAlignment {
+            sequence_run_id: run.id,
+            reference_build: "chm13v2.0".into(),
+            aligner: "synthetic".into(),
+            variant_caller: None,
+            bam_path: Some("/nonexistent.cram".into()),
+            reference_path: None,
+            content_sha256: None,
+        })
+        .await
+        .unwrap()
+        .id
+    }
+
+    /// A WGS-labeled but Y-scoped alignment must not publish a coverage summary — it would poison
+    /// the AppView's whole-genome statistics.
+    #[tokio::test]
+    async fn wgs_y_scoped_coverage_is_withheld() {
+        let app = App::new(Store::open_in_memory().await.unwrap());
+        let aln = alignment_with_test_type(&app, "WGS").await;
+        app.save_analysis(aln, "coverage", COVERAGE_VERSION, &y_scoped_coverage())
+            .await
+            .unwrap();
+        let err = app.coverage_record("did:plc:test", aln).await.unwrap_err();
+        assert!(matches!(err, AppError::Conflict(_)), "expected Conflict, got {err:?}");
+    }
+
+    /// A Y-targeted test (Big Y) with the *same* Y-scoped shape publishes normally — its Y coverage
+    /// is expected and the AppView cohorts it apart from WGS.
+    #[tokio::test]
+    async fn y_targeted_coverage_still_publishes() {
+        let app = App::new(Store::open_in_memory().await.unwrap());
+        let aln = alignment_with_test_type(&app, "BIG_Y_700").await;
+        app.save_analysis(aln, "coverage", COVERAGE_VERSION, &y_scoped_coverage())
+            .await
+            .unwrap();
+        app.coverage_record("did:plc:test", aln)
+            .await
+            .expect("a Y test's Y coverage must still publish");
+    }
+
+    /// A genuine whole-genome distribution publishes fine (the guard is specific to the Y-only shape).
+    #[tokio::test]
+    async fn normal_wgs_coverage_publishes() {
+        let app = App::new(Store::open_in_memory().await.unwrap());
+        let aln = alignment_with_test_type(&app, "WGS").await;
+        let wgs = CoverageResult {
+            contig_coverage_stats: vec![
+                cstat("chr1", 200_000_000),
+                cstat("chrX", 5_000_000),
+                cstat("chrY", 3_000_000),
+            ],
+            ..Default::default()
+        };
+        app.save_analysis(aln, "coverage", COVERAGE_VERSION, &wgs).await.unwrap();
+        app.coverage_record("did:plc:test", aln)
+            .await
+            .expect("normal WGS coverage should publish");
+    }
 }
