@@ -203,15 +203,36 @@ jobs:
 
       - name: Package (universal dmg)
         run: cargo packager --release --target universal-apple-darwin --formats dmg -p navigator-ui
-        # macOS signing/notarization (set the APPLE_* secrets to enable; left off until provisioned):
+        # The signing identity comes from [package.metadata.packager.macos] signing-identity in
+        # Cargo.toml (cargo-packager reads it from config, never from env). These secrets feed the
+        # cert import (APPLE_CERTIFICATE/_PASSWORD → temp keychain) and notary auth
+        # (APPLE_ID/_PASSWORD/_TEAM_ID); cargo-packager then signs + notarizes + staples the .app.
         env:
           MACOSX_DEPLOYMENT_TARGET: "11.0"
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+
+      # cargo-packager notarizes + staples the .app, but only *signs* the outer .dmg — it never
+      # submits the dmg to the notary service. Without a stapled ticket on the dmg, a downloaded dmg
+      # still trips Gatekeeper ("Apple cannot check it for malicious software") when opened, even
+      # though the app inside is notarized. Submit + staple the dmg itself so the download-and-open
+      # step is clean offline too. The dmg is already Developer-ID-signed, so notary accepts it.
+      - name: Notarize + staple the dmg
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          dmg=$(ls target/universal-apple-darwin/release/*.dmg)
+          echo "Notarizing $dmg"
+          xcrun notarytool submit "$dmg" \
+            --apple-id "$APPLE_ID" --password "$APPLE_PASSWORD" --team-id "$APPLE_TEAM_ID" --wait
+          xcrun stapler staple "$dmg"
+          xcrun stapler validate "$dmg"
+          spctl -a -vvv -t open --context context:primary-signature "$dmg" || true
 
       - name: Collect images
         shell: bash
