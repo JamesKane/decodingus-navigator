@@ -11,10 +11,12 @@ Welcome to the **Decoding-Us Navigator**, your private, local companion for adva
 2. [System Requirements](#system-requirements)
 3. [Installation & Setup](#installation--setup)
 4. [Getting Started](#getting-started)
+   - [First-Time Setup: Bringing Your Own Reference Genomes](#first-time-setup-bringing-your-own-reference-genomes)
 5. [Core Features](#core-features)
    - [Workspace Management](#workspace-management)
    - [Importing Data](#importing-data)
    - [Project Import (batch)](#project-import-batch-with-the-sidecar-fast-path)
+   - [Batch import strategies for existing data collections](#batch-import-strategies-for-existing-data-collections)
    - [Running Analyses](#running-analyses)
    - [Exporting & Sharing Results](#exporting--sharing-results)
 6. [The Command Line](#the-command-line)
@@ -79,6 +81,45 @@ The Subjects table shows each subject's ID, name, Y-DNA and mtDNA haplogroups, s
 
 ### First Launch
 On first launch, Navigator creates its local workspace database automatically at `~/.decodingus/navigator-rs.db`. No manual configuration is required.
+
+### First-Time Setup: Bringing Your Own Reference Genomes
+By default Navigator downloads and caches the reference builds it needs (GRCh38, GRCh37, CHM13v2) on first use, so most people never touch a reference file. But if you already run a bioinformatics toolchain, you almost certainly have the **exact** reference FASTAs your alignments were built against. Pointing Navigator at those files instead of letting it download its own copy has three benefits: it guarantees the coordinate space matches your data bit-for-bit (same contig names, same sequence), it saves the download and the several GB of duplicate cache per build, and it lets you work fully offline.
+
+Register your references once, before you start importing, from **⚙ Settings → Reference genomes**. That panel shows one row per build with these columns:
+
+| Column | What it does |
+|--------|--------------|
+| **Build** | The build key Navigator resolves against: `GRCh38`, `GRCh37`, `chm13v2.0`, or `chm13v2.0_maskedY_rCRS`. |
+| **Status** | Whether that build is currently cached, overridden, or absent. |
+| **Local FASTA** | Path to *your* reference FASTA. Type it or use 📂 to browse. When set, Navigator uses this file as-is and never downloads that build. |
+| **Auto-download** | Untick to forbid Navigator from ever fetching that build — useful when you want to guarantee only your file is used, or you are offline. |
+| **Integrity** | **Verify** hashes the file (and checks it against a pinned SHA-256, if you set one). |
+
+Requirements for a reference you supply:
+
+- **It must be decompressed** (a plain `.fa` / `.fasta` / `.fna`), and it **must be `faidx`-indexed** — a `.fai` file has to sit next to it (e.g. `chm13v2.0.fa` + `chm13v2.0.fa.fai`). If you have the FASTA but not the index, create it with any faidx tool from your existing toolchain (`samtools faidx chm13v2.0.fa`).
+- **Match the row to the build your alignments declare.** Point the `chm13v2.0` row at your CHM13v2 FASTA, the `GRCh38` row at your GRCh38 FASTA, and so on. Navigator picks the reference per alignment from the build it detects in each file's header, then uses the FASTA you registered for that build. (`chm13`, `chm13v2`, and `hs1` are all treated as the same `chm13v2.0` build.)
+- **Contig names must agree** with your alignments. This is automatic when it is literally the same FASTA your aligner used — which is the whole point of bringing your own.
+
+Overrides are stored in `~/.decodingus/config/reference_sources.json`, which you can also hand-edit (the Settings panel just writes this file). Each key is a build; per build you may set `local_path` (use this exact FASTA, never download), `url` (an alternate download mirror), `sha256` (a pinned integrity hash — a download that doesn't match is rejected), and `auto_download` (`false` to hard-forbid fetching that build):
+
+```json
+{
+  "references": {
+    "chm13v2.0": {
+      "local_path": "/Volumes/Refs/chm13v2.0.fa",
+      "auto_download": false
+    },
+    "GRCh38": {
+      "url": "https://my-mirror.example/GRCh38.fa",
+      "sha256": "…",
+      "auto_download": true
+    }
+  }
+}
+```
+
+These overrides are global (per build, applied to every alignment and analysis on that build), so registering them once at first-time setup covers every subject you import afterward.
 
 ## Core Features
 
@@ -157,7 +198,86 @@ The lite coverage roll-up is the only **partial** result: median depth, the `pct
 #### What the fast path does *not* cover
 Some analyses always need the CRAM and are **not** produced from sidecars: autosomal **ancestry**, the **full coverage histogram** (median, `pct_10x`/`pct_20x`, depth distribution), **structural variants**, the **diploid SNV/indel caller**, and **IBD** panel genotyping. These run only when you trigger **deep analysis** — use **Analyze All** on the project (or run analysis on a subject). Deep analysis is additive: haplogroups, sex, and read metrics already placed by the fast path are **not** recomputed, and the lite coverage is upgraded in place to the full result.
 
-> **Where to find it:** Project Import and the sidecar fast path are available in the **desktop app**. The headless `navigator ingest` command imports individual files via auto-detection and does not use the project scanner or the sidecar fast path.
+> **Where to find it:** Project Import and the sidecar fast path are available in the **desktop app**. The headless `navigator ingest` command imports files and directories via auto-detection; a directory argument is treated as one staged sample, so the sidecar fast path applies to it too.
+
+### Batch import strategies for existing data collections
+Real-world collections come in two shapes, and each has its own best path in. The dividing question is simple: **is the on-disk layout already `{project}/{sample}/files…`, with folder names you're happy to use as subject names?** If yes, use the desktop **Project Import** directly. If the layout is deeper, uses opaque identifiers, or keeps its human-readable names in a separate manifest, script the CLI instead.
+
+#### Strategy A — a clean project tree (use Project Import as-is)
+This is the layout Project Import was built for. For example, a PGP-style collection where each sample is a top-level folder named for the donor:
+
+```
+PGP_Harvard/                                     ← project
+├── hu46DD40/                                    ← subject (named "hu46DD40")
+│   ├── hu46DD40.chm13_HG002Y.cram (+ .crai)     ← alignment
+│   ├── hu46DD40.chm13.chrY.g.vcf.gz (+ .tbi)    ← Y sidecar
+│   ├── hu46DD40.chm13.chrM.g.vcf.gz (+ .tbi)    ← mtDNA sidecar
+│   ├── hu46DD40.chm13.chrYM.callable.summary.txt
+│   ├── hu46DD40.chm13.sex
+│   ├── coverage.txt
+│   └── stats.txt
+├── hu0F18A8/
+└── …
+```
+
+Point Project Import at `/Volumes/Genomics/PGP_Harvard`, leave the fast path on, and go. Each `hu…` folder becomes a subject named after the folder, the sidecars place Y/mtDNA/sex/read-metrics in seconds, and you run **Analyze All** afterward for the deep results (ancestry, full coverage, SV, diploid calls, IBD). No scripting required.
+
+#### Strategy B — a deep tree with an external map (script the CLI)
+Pipelines that key everything by UUID and record the human-readable identity in a side manifest do **not** fit the two-level scanner. A D2C-style repository is the canonical example:
+
+```
+D2C/
+├── _manifests/
+│   └── biosample_map.tsv                         ← subject → name/lab/kit + file paths
+├── 0a0e8267-dc23-4be4-b86f-4190e59de02b/         ← biosample (opaque UUID)
+│   └── 1aceb711-b601-44f5-8835-b361aa95c6e3/     ← analysis run (UUID)
+│       ├── b38/          chrYM.cram, gatk3/, gatk4/, coverage.txt, stats.txt
+│       └── CP086569.2/   chrYM.cram, gatk3/, gatk4/, coverage.txt, stats.txt
+└── …
+```
+
+Handing this tree to Project Import goes wrong in three ways: subjects would be named by **opaque UUIDs** instead of the friendly `Dante-23823` names; the **lab and kit** metadata lives only in `biosample_map.tsv`, which the scanner does not read; and each biosample holds **multiple reference builds** (`b38` and `CP086569.2`) with the callable BEDs a directory deeper (`…/CP086569.2/gatk3/callable_status.bed`) than the scanner descends. So the manifest — not the directory names — is the source of truth, and you drive the import from it.
+
+The map has one row per subject, tab-separated, with the columns Navigator cares about:
+
+```
+subject   name             lab    kit           y_tier         y_artifact   cram   callable   coverage   stats
+```
+
+`name` is the friendly subject label; `cram`/`callable`/`coverage`/`stats` are absolute paths **as the producing pipeline saw them** (e.g. `/mnt/md0/Repo/…`), so on your machine you remap that prefix onto your local mount. Loop the rows and call `navigator ingest` once per subject, taking `name` for `--subject` and pointing at the one reference directory you want per run:
+
+```bash
+#!/usr/bin/env bash
+set -euo pipefail
+ROOT=/Volumes/Genomics/D2C            # local mount
+NAV=./target/release/navigator
+
+# Skip the header row; read only the columns we use.
+tail -n +2 "$ROOT/_manifests/biosample_map.tsv" |
+while IFS=$'\t' read -r subject name lab kit y_tier y_artifact cram callable coverage stats; do
+  # Remap the pipeline path (/mnt/md0/Repo/…) onto the local mount, then take its directory —
+  # that folder (…/CP086569.2) holds the CRAM plus its coverage.txt / stats.txt sidecars.
+  local_cram="${cram/\/mnt\/md0\/Repo/$ROOT}"
+  sample_dir="$(dirname "$local_cram")"
+  [ -d "$sample_dir" ] || { echo "skip $name — $sample_dir missing"; continue; }
+
+  "$NAV" ingest \
+    --subject "$name" \
+    --project "D2C" \
+    --test-type "Big Y" \
+    "$sample_dir"
+done
+```
+
+Notes on this pattern:
+
+- **One reference build per run.** Point each `ingest` at a specific reference subdirectory (`CP086569.2` for the Y/T2T build, or `b38` for GRCh38) rather than the biosample root, so you don't fold two builds into a single sequencing run. Run the loop twice against different subdirs if you want both.
+- **A directory argument is one staged sample**, so the fast path applies: the CRAM's neighboring `coverage.txt` / `stats.txt` are picked up automatically. If a per-subject artifact lives in a *different* tree (the map's `y_artifact` column often points a Y GVCF at a separate `…/ytree/flat/…` path), add its remapped path as an extra argument to the same `ingest` call — `ingest` accepts multiple files and directories at once.
+- **`--test-type`** forces the sequencing-run type when the folder layout tells you what it is (these `chrYM.cram` files are Y-focused), which is more reliable than letting a CRAM without a `.bai` fall back to generic WGS.
+- **Idempotent and resumable.** `ingest` finds-or-creates the subject and project and skips already-imported paths, so you can re-run the loop after adding kits, or after fixing a few `skip` lines, without creating duplicates.
+- The map's `lab`/`kit` columns aren't consumed by `ingest` directly; sequencing-lab and instrument are inferred from each alignment's header during analysis. Use `name` for the subject label, and keep the map alongside your collection as the record of provenance.
+
+After the loop, run deep analysis (**Analyze All** on the `D2C` project in the desktop app, or `navigator` analysis per subject) to add everything beyond the fast-path haplogroups.
 
 ### Running Analyses
 Open a subject's detail panel and run any module from the relevant tab, or use **Full Analyze** to run a complete pass over all of a subject's data. Results are cached, so re-running is instant when nothing has changed.
@@ -257,7 +377,7 @@ All application data lives under your home directory in `~/.decodingus/`:
 ```
 
 ### Reference Genomes
-Navigator manages reference genomes for you. It downloads and caches standard builds (GRCh38, GRCh37, CHM13v2) as needed and converts coordinates between builds automatically — you don't need to hunt for reference files.
+Navigator manages reference genomes for you. It downloads and caches standard builds (GRCh38, GRCh37, CHM13v2) as needed and converts coordinates between builds automatically — you don't need to hunt for reference files. If you already have the exact FASTAs from your own toolchain, you can register them so Navigator uses yours instead of downloading — see [First-Time Setup: Bringing Your Own Reference Genomes](#first-time-setup-bringing-your-own-reference-genomes).
 
 ### Cloud Integration (Optional)
 Navigator includes support for the **AT Protocol** to publish summaries to a Personal Data Store (PDS) in the Decoding-Us Federation.
