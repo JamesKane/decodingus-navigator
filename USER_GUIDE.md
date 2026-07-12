@@ -37,8 +37,9 @@ That's the single-sample path, and for most people it's the entire app. Everythi
 6. [The Command Line](#the-command-line)
 7. [Data Management & Privacy](#data-management--privacy)
 8. [Settings](#settings)
-9. [Advanced Usage](#advanced-usage)
-10. [Troubleshooting](#troubleshooting)
+9. [The Local AI Assistant (Optional)](#the-local-ai-assistant-optional)
+10. [Advanced Usage](#advanced-usage)
+11. [Troubleshooting](#troubleshooting)
 
 ---
 
@@ -509,6 +510,58 @@ Open the **⚙ Settings** dialog from the app bar to configure (saved to `~/.dec
 - **Appearance** — light/dark **theme** and **UI scale**.
 - **Reference** — the reference-genome cache directory and whether to **prompt before downloading** large reference files.
 - **Advanced** — the **Y-tree provider** (`decodingus` or `ftdna`) and the haplotree cache **TTL** (days before refetch; `0` = always refetch).
+- **AI assistant (local)** — turn the optional local AI helper on/off and point it at your model server. See [The Local AI Assistant](#the-local-ai-assistant-optional) below for the full setup.
+
+## The Local AI Assistant (Optional)
+
+Navigator can connect to a **local** AI model to turn your results into plain-language explanations — narrating a subject's report, answering "what does this chart mean?" in a chat, and explaining what each tab is showing. It exists to help **beginners and novices** get more out of the basic reports; it is not part of the analysis and adds no new results of its own.
+
+Three things to be clear about up front:
+
+- **It is entirely optional.** Nothing in the analysis depends on it. If you never set it up, you lose only the conversational help — every haplogroup, coverage, and ancestry result is produced exactly the same way without it. Experienced users can skip this section entirely.
+- **It is local.** The model runs on *your* machine, through a server *you* run. Navigator is only a client of it — there is no hosted AI service and no API key. Your prompts and results are sent only to your local address and never leave your computer. (If you point it at a non-local address, Navigator warns you, because then results *would* leave your machine.)
+- **It only rephrases what's already there.** The assistant explains and summarizes the results Navigator already computed. It does not call variants, place haplogroups, or change any number in your reports.
+
+### Step 1 — Install a local model server
+Navigator talks to any server that speaks the OpenAI chat API — the common denominator across local runtimes. The two easiest choices:
+
+- **[LM Studio](https://lmstudio.ai)** — a friendly desktop app with a model browser and a one-click local server. **Recommended for beginners.** Its server listens on `http://localhost:1234/v1`.
+- **[Ollama](https://ollama.com)** — a lightweight command-line runner (`ollama run …`). Its server listens on `http://localhost:11434/v1`.
+
+Either one downloads and runs the model for you; you do not need to understand the internals.
+
+### Step 2 — Download a model (recommended: Gemma, 4B size)
+For the hardware most people have, a good default is **Google's Gemma at the ~4-billion-parameter (4B) size**. It is small enough to be responsive on a modest GPU yet capable enough to explain a genomics report clearly. At the usual 4-bit quantization a 4B model is roughly a **2.5–3.5 GB** download and needs a similar amount of memory to run.
+
+Sizing it to your hardware:
+
+| Your hardware | Recommendation |
+|---------------|----------------|
+| **8 GB GPU** (VRAM) | Gemma 4B at 4-bit — comfortable, leaves headroom for your desktop. This is the sweet spot. |
+| **16 GB GPU** | Gemma 4B for the snappiest responses, or step up to a larger model (e.g. a 12B) if you'd rather trade a little speed for richer explanations. |
+| **Apple Silicon (M-series)** with 8–16 GB unified memory | Gemma 4B runs well on the integrated GPU/APU — the unified memory is shared with the rest of the system, so 4B keeps a comfortable margin. LM Studio uses Apple's Metal/MLX backend automatically. |
+
+In LM Studio, search for a Gemma 4B build and download it. In Ollama, `ollama pull gemma3:4b` (any current Gemma 4B tag) does the same. Larger models give marginally nicer prose but are slower and need more memory; for expanding basic reports, 4B is plenty.
+
+### Step 3 — Start the server and connect Navigator
+1. Start the local server: click **Start Server** in LM Studio (or just leave `ollama` running after a `run`/`pull`).
+2. In Navigator, open **⚙ Settings** and find **AI assistant (local)**.
+3. Tick **Use a local AI model**.
+4. Set the **Server URL**. Use the **Presets** buttons for LM Studio (`:1234`), Ollama (`:11434`), or llama.cpp (`:8080`) so you don't have to type it.
+5. Click **Test connection**. On success Navigator lists the models the server has loaded.
+6. Pick your Gemma model from the **Model** dropdown (or leave it on *(server default)* to use whatever the server has loaded), optionally adjust **Max response tokens**, and save.
+
+If the address you entered isn't local, Navigator shows a warning — that is the guardrail that keeps your results on your machine.
+
+### Step 4 — Use it
+Once connected, the AI help appears where it's useful:
+
+- **Explain this** buttons on result tabs — a plain-language walkthrough of what that panel is showing.
+- **Narration** in the subject's report/brief — a readable summary of the key findings.
+- An **ask-my-results chat** — type questions like *"what does my ancestry breakdown mean?"* and get answers grounded in your own computed results.
+
+### For power users
+The same settings are available as environment variables (which take precedence over the saved settings), handy for a scripted or headless setup: `NAVIGATOR_LLM_ENABLED` (`1`/`true`), `NAVIGATOR_LLM_BASE_URL`, `NAVIGATOR_LLM_MODEL`, and `NAVIGATOR_LLM_MAX_TOKENS`.
 
 ## Advanced Usage
 
