@@ -17,6 +17,7 @@ Welcome to the **Decoding-Us Navigator**, your private, local companion for adva
    - [Importing Data](#importing-data)
    - [Project Import (batch)](#project-import-batch-with-the-sidecar-fast-path)
    - [Batch import strategies for existing data collections](#batch-import-strategies-for-existing-data-collections)
+   - [Importing an FTDNA group project](#importing-an-ftdna-group-project)
    - [Running Analyses](#running-analyses)
    - [Exporting & Sharing Results](#exporting--sharing-results)
 6. [The Command Line](#the-command-line)
@@ -296,6 +297,42 @@ Notes on this pattern:
 - The map's `lab`/`kit` columns aren't consumed by `ingest` directly; sequencing-lab and instrument are inferred from each alignment's header during analysis. Use `name` for the subject label, and keep the map alongside your collection as the record of provenance.
 
 After the loop, run deep analysis (**Analyze All** on the `D2C` project in the desktop app, or `navigator` analysis per subject) to add everything beyond the fast-path haplogroups.
+
+### Importing an FTDNA group project
+If you administer a FamilyTreeDNA **group project** (a surname or haplogroup project), Navigator can ingest the project's roster, genealogy, and Y-STR chart in one pass. This is a different importer from [Project Import](#project-import-batch-with-the-sidecar-fast-path) above: Project Import walks a folder of *sequencing files*; this reads the four **CSV exports** that FamilyTreeDNA's Group Administration Pages (GAP) produce. It creates one subject per kit, records each member's paternal/maternal most-distant-known-ancestor and vendor kit number, attaches the Y-STR panel from the results chart, and files everyone into the project — without any BAM/CRAM.
+
+> These CSVs are the **administrator** exports. Only a project's admin or co-admin can download them, from the project's GAP pages. This importer is for running your own project's data; it is not a way to pull another project's members.
+
+#### Recommended structure
+Keep one project's four exports together in a single folder named for the project. Downloading all four "Download to Excel" exports from GAP gives you exactly these files, each already prefixed with the project name:
+
+```
+R1b-CTS4466Plus/                                       ← one folder per project
+├── R1b-CTS4466Plus_Member_Information_20260619.csv    ← roster (kits, names, consent flags)
+├── R1b-CTS4466Plus_Paternal_Ancestry_20260619.csv     ← paternal ancestor + Y clade subgroup
+├── R1b-CTS4466Plus_Maternal_Ancestry_20260619.csv     ← maternal ancestor + mtDNA subgroup
+└── R1b-CTS4466Plus_YDNA_Results_Overview.csv          ← wide Y-STR marker chart (DYS…)
+```
+
+| Export | What it contributes |
+|--------|---------------------|
+| **Member Information** | The roster: kit number, member name, and the FTDNA consent flags (`Access Granted`, `Publicly Share DNA Results`). Provides the kit → identity spine. |
+| **Paternal Ancestry** | Each kit's paternal most-distant-known ancestor (name, place, country, map coordinates) plus the paternal-clade **Sub Group** path, which supplies a provisional Y terminal and the project subgroup label. |
+| **Maternal Ancestry** | The maternal most-distant-known ancestor and the mtDNA subgroup, in the same layout. |
+| **YDNA Results Overview** | The wide Y-STR marker table (DYS-prefixed columns). Attaches a Y-STR panel profile (Y-12 … Y-700, sized to the populated markers) to each kit. |
+
+All four are optional — a roster-only or ancestry-only import is valid — but the full set gives the richest result. Files are recognized by their **header content, not their names**, so a renamed export still routes correctly; the filename's project-name prefix is used only to name/target the project.
+
+#### How to import
+In the desktop app's **Projects** area, use **Import FTDNA project** and select the CSVs together in the file picker (pick all four at once). Navigator then:
+
+1. **Classifies** each file, joins all rows **by kit number**, and matches every kit against your existing workspace.
+2. Shows a **dry-run plan** — nothing is written yet. Each kit is marked **New** (create a subject), **Auto-merge** (an exact FTDNA kit number already in the workspace — locked, always reused), or **Needs confirm** (a fuzzy candidate matched on shared Y-terminal SNP, near-zero Y-STR genetic distance, or overlapping names — you confirm or reject each).
+3. On **commit**, applies your resolutions. For each kit it creates or reuses a subject, attaches the FTDNA kit number as a vendor id, stores the member name and paternal/maternal ancestor (MDKA) rows, adds project membership tagged with the clade subgroup, and — for newly created subjects — saves the Y-STR profile. An unresolved fuzzy row defaults to **New**, so it never silently merges.
+
+The project name comes from the export filename prefix (`R1b-CTS4466Plus`): if a project of that name is already open or exists, the kits go into it; otherwise Navigator creates it on commit. Re-running the import later is safe — kits already imported under their FTDNA kit number auto-merge rather than duplicating.
+
+> **What this does *not* import:** sequencing reads or variant calls. It brings in roster, genealogy, and Y-STR only. To add a member's BAM/CRAM, Big Y variant CSV, or VCF, open that subject's **Sources** tab (or use Project Import) and add the file there; it attaches to the same subject the group import created.
 
 ### Running Analyses
 Open a subject's detail panel and run any module from the relevant tab, or use **Full Analyze** to run a complete pass over all of a subject's data. Results are cached, so re-running is instant when nothing has changed.
