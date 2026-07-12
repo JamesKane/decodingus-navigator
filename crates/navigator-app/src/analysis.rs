@@ -408,9 +408,13 @@ impl App {
             return Ok(c);
         }
         let aln = self.alignment_or_err(alignment_id).await?;
-        let bam = PathBuf::from(aln.bam_path.ok_or(AppError::MissingPaths(alignment_id))?);
-        let reference = aln.reference_path.clone().map(PathBuf::from);
         let reference_build = aln.reference_build.clone();
+        // Resolve the reference (see alignment_paths): a CRAM needs it to decode, and SV/indel
+        // reasoning needs it even for a BAM — never trust the possibly-NULL stored column.
+        let (bam, reference) = {
+            let (b, r) = self.alignment_bam_reference(alignment_id).await?;
+            (b, Some(r))
+        };
 
         let cov = match self.cached_coverage(alignment_id).await? {
             Some(c) => c,
@@ -493,10 +497,12 @@ impl App {
                  or place it at ~/.decodingus/str/{build}.hipstr_reference.bed.gz"
             ))
         })?;
-        // Region queries need the reference only for CRAM; use the stored paths directly (don't
-        // trigger a gateway reference download for a BAM).
-        let bam = PathBuf::from(aln.bam_path.clone().ok_or(AppError::MissingPaths(alignment_id))?);
-        let reference = aln.reference_path.clone().map(PathBuf::from);
+        // Resolve the reference (see alignment_paths): decoding a CRAM needs it, and it's used to
+        // left-normalize repeat alleles — the stored column is often NULL for a single-imported CRAM.
+        let (bam, reference) = {
+            let (b, r) = self.alignment_bam_reference(alignment_id).await?;
+            (b, Some(r))
+        };
         // chrY / chrM are haploid (one allele); autosomes + chrX (in a female) are diploid. We
         // genotype chrY/chrM haploid and everything else diploid — sex-aware chrX is a refinement.
         let ploidy: u8 = {
@@ -598,9 +604,9 @@ impl App {
 
     /// Pick the subject's best STR-capable alignment and run the Y-STR concordance on chrY — the
     /// entry point the UI calls. "STR-capable" = an alignment whose reference build has a HipSTR
-    /// reference present ([`str_reference_path`](Self::str_reference_path)) and that's readable
-    /// (a BAM, or a CRAM with a stored reference for decode); highest mean coverage wins. Errors
-    /// with guidance when none qualifies (no reference / no suitable alignment).
+    /// reference present ([`str_reference_path`](Self::str_reference_path)); highest mean coverage
+    /// wins. A CRAM needs no stored reference here — [`run_str_calls`](Self::run_str_calls) resolves
+    /// it for decode. Errors with guidance when none qualifies (no HipSTR reference / no alignment).
     pub async fn str_concordance_for_subject(
         &self,
         biosample_guid: SampleGuid,
@@ -611,13 +617,7 @@ impl App {
             if Self::str_reference_path(&a.reference_build).is_none() {
                 continue; // no HipSTR reference for this build
             }
-            let is_cram = a
-                .bam_path
-                .as_deref()
-                .is_some_and(|p| p.to_ascii_lowercase().ends_with(".cram"));
-            if is_cram && a.reference_path.is_none() {
-                continue; // CRAM with no reference can't be decoded
-            }
+            // A CRAM with no stored reference is fine — run_str_calls resolves it via the gateway.
             let cov = self
                 .cached_coverage(a.id)
                 .await
@@ -631,8 +631,8 @@ impl App {
         }
         let (aln_id, _) = best.ok_or_else(|| {
             AppError::Import(
-                "no STR-capable alignment — need a GRCh38/CHM13 BAM (or CRAM with reference) and the \
-                 HipSTR reference at ~/.decodingus/str/{build}.hipstr_reference.bed.gz (or \
+                "no STR-capable alignment — need a GRCh38/CHM13 BAM or CRAM and the HipSTR \
+                 reference at ~/.decodingus/str/{build}.hipstr_reference.bed.gz (or \
                  NAVIGATOR_STR_REFERENCE)"
                     .into(),
             )
@@ -641,11 +641,16 @@ impl App {
         Ok((aln_id, rows))
     }
 
-    /// The alignment's BAM (required) + reference (optional; required only for CRAM).
+    /// The alignment's BAM (required) + its reference, **resolved** so it's always present: the
+    /// stored path, else resolved from the alignment's build via the gateway (cache-first). The
+    /// reference is a required artifact for any alignment — a CRAM can't be decoded without it, and
+    /// calling paths silently drop indels ([`caller::call_indels_at`] returns empty when handed
+    /// `None`) — so we never trust the (often-NULL) stored column here. The `Option` is retained only
+    /// to stay drop-in for the reader/caller signatures (which take `Option<&Path>`); it's always
+    /// `Some`. Delegates to [`alignment_bam_reference`](Self::alignment_bam_reference).
     pub(crate) async fn alignment_paths(&self, alignment_id: i64) -> Result<(PathBuf, Option<PathBuf>), AppError> {
-        let aln = self.alignment_or_err(alignment_id).await?;
-        let bam = PathBuf::from(aln.bam_path.ok_or(AppError::MissingPaths(alignment_id))?);
-        Ok((bam, aln.reference_path.map(PathBuf::from)))
+        let (bam, reference) = self.alignment_bam_reference(alignment_id).await?;
+        Ok((bam, Some(reference)))
     }
 
     /// Run de-novo haploid calling on a contig and persist the SNP calls as a versioned

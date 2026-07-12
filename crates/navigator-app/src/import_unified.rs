@@ -873,7 +873,9 @@ impl App {
             .collect();
 
         let bam_pb = PathBuf::from(bam);
-        let reference = aln.reference_path.map(PathBuf::from);
+        // Resolve the reference (see alignment_paths) — genotyping decodes the CRAM and calls indels,
+        // both of which need the FASTA; the stored column is often NULL for a single-imported CRAM.
+        let reference = Some(self.alignment_bam_reference(alignment_id).await?.1);
         let params = HaploidCallerParams::default();
         let genotypes = tokio::task::spawn_blocking(move || {
             caller::genotype_sites_all_contigs(&bam_pb, &sites, ploidy, &params, reference.as_deref())
@@ -1016,9 +1018,10 @@ impl App {
                 if let Some(g) = self.load_analysis(id, &kind, caller::GENOTYPE_VERSION).await? {
                     return Ok(g);
                 }
-                let aln = self.alignment_or_err(id).await?;
-                let bam = PathBuf::from(aln.bam_path.ok_or(AppError::MissingPaths(id))?);
-                let reference = aln.reference_path.map(PathBuf::from);
+                // Resolve the reference (stored path, else from the alignment's build via the
+                // gateway) rather than trusting the stored column — a CRAM imported without a
+                // reference_path still needs one to decode. See alignment_bam_reference.
+                let (bam, reference) = self.alignment_bam_reference(id).await?;
                 let panel_path = ibd_panel_path(ReferenceBuild::Chm13v2);
                 let bytes = read_verified_asset(ReferenceBuild::Chm13v2, &panel_path)?.ok_or_else(|| {
                     AppError::Import(format!(
@@ -1040,7 +1043,7 @@ impl App {
                     .collect();
                 let genotypes = tokio::task::spawn_blocking(move || {
                     let params = HaploidCallerParams::default();
-                    caller::genotype_sites_all_contigs(&bam, &sites, 2, &params, reference.as_deref())
+                    caller::genotype_sites_all_contigs(&bam, &sites, 2, &params, Some(&reference))
                 })
                 .await??;
                 self.save_analysis(id, &kind, caller::GENOTYPE_VERSION, &genotypes)

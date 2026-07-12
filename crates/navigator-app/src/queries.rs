@@ -155,13 +155,18 @@ impl App {
     /// nothing decodable was found.
     async fn rescan_read_type(&self, alns: &[navigator_domain::workspace::Alignment]) -> Option<String> {
         for a in alns {
-            let Some(bam) = a.bam_path.as_deref() else { continue };
-            let path = std::path::PathBuf::from(bam);
+            if a.bam_path.is_none() {
+                continue;
+            }
+            // Resolve the reference so a CRAM can be decoded (see alignment_paths); best-effort —
+            // skip an alignment whose file/reference can't be resolved rather than failing the rescan.
+            let Ok((path, reference)) = self.alignment_bam_reference(a.id).await else {
+                continue;
+            };
             if !path.exists() {
                 continue;
             }
-            let reference = a.reference_path.as_deref().map(std::path::PathBuf::from);
-            if let Ok(stats) = self.library_stats(path, reference).await {
+            if let Ok(stats) = self.library_stats(path, Some(reference)).await {
                 if stats.read_type.is_some() {
                     return stats.read_type;
                 }
