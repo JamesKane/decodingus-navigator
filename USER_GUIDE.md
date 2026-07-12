@@ -369,7 +369,24 @@ That "any node, subtree-wide" behavior is what makes it a checking tool rather t
 
 **What each row shows.** One row per defining marker in the subtree, columns: `node` / `parent` (where the marker sits on the tree), `marker`, `pos`, `anc>der` (ancestral→derived alleles), `obs` (the observed base), `status` (**derived** = the sample carries it, **ancestral** = it doesn't, **no-call** = no confident base), then `AD` / `DP` / `GQ` read evidence and a `note` (flags like `indel/MNV`, `hom-ref block`, or `no call`). The card header summarizes the tally — *N markers: d derived / a ancestral / n no-call* — and whether the evidence came from a **gVCF** sidecar (rich DP/AD/GQ) or a live **pileup**.
 
-**Sharing it.** The **Export** button writes the report as a TSV (with a VCF-style `GT` column: `1` derived, `0` ancestral, `.` no-call), which is the format to hand another researcher when you are cross-checking placements between labs — they can load the same node on their own sample and diff the two files marker for marker.
+**Reading it — a worked example.** Here is the TSV a subject placed at `R-FGC29071` produces when you query that node (evidence columns shown as `.` here because this run came from a pileup rather than a gVCF sidecar):
+
+```
+# DUNavigator Y-DNA branch report — node R-FGC29071 (chrY); 4 derived / 2 ancestral / 2 no-call
+node        parent      marker              chrom  pos       ancestral  derived  observed_base  status     GT  AD  DP  GQ  source  note
+R-FGC29071  R-FGC29067  FGC29071            chrY   15570629  A          C        C              derived    1   .   .   .   pileup
+R-FGC29071  R-FGC29067  FGC29076            chrY   20512639  G          T        T              derived    1   .   .   .   pileup
+R-FGC29071  R-FGC29067  chrY:14583465G>T    chrY   14583465  G          T        T              derived    1   .   .   .   pileup
+R-FGC29071  R-FGC29067  chrY:3332132A>T     chrY   3332132   A          T        T              derived    1   .   .   .   pileup
+R-MF41134   R-FGC29071  BY74966             chrY   8442212   T          G        .              nocall     .   .   .   .   pileup  no call
+R-MF41134   R-FGC29071  chrY:12803849C>T    chrY   12803849  C          T        .              nocall     .   .   .   .   pileup  no call
+R-MF41134   R-FGC29071  chrY:3464631C>T     chrY   3464631   C          T        C              ancestral  0   .   .   .   pileup
+R-Y178014   R-MF41134   chrY:11687241T>C    chrY   11687241  T          C        T              ancestral  0   .   .   .   pileup
+```
+
+Read top to bottom it tells a clear story: the four markers that define `R-FGC29071` itself are all **derived** (the sample observes the derived base — `C`, `T`, `T`, `T`), which is what puts the sample on this branch. The rows below belong to the **descendant** subtree — the child branch `R-MF41134` and its child `R-Y178014` — and there the sample is **ancestral** or **no-call**, meaning it does *not* descend into them. That contrast is the whole point: it confirms the placement terminates at `R-FGC29071` and does not belong on the deeper branches. If a collaborator's sample were a true match on a deeper branch, their report at the same node would show those `R-MF41134` markers flipping to **derived** instead — and if a variant were mis-mapped, the two reports would disagree at exactly that row.
+
+**Sharing it.** The **Export** button writes this TSV (the `GT` column is VCF-style: `1` derived, `0` ancestral, `.` no-call), which is the format to hand another researcher when you are cross-checking placements between labs — they load the same node on their own sample and diff the two files marker for marker.
 
 ### Exporting & Sharing Results
 Result cards carry an **Export** action that writes a shareable file via a save dialog. Available formats:
