@@ -201,19 +201,26 @@ impl App {
         if alignments.is_empty() {
             return Ok(None);
         }
-        let mut best: Option<(f64, &Alignment)> = None;
+        // Rank by (breadth, then depth, then file-present): a whole-genome test (WGS/HiFi) is the
+        // subject's representative test over a targeted Y/mt test **even when the targeted test is
+        // deeper**. A Y-only test's mean depth is a chrY-only number (coverage is scoped to the
+        // target contigs), so ranking on depth alone lets a deep Y Elite outscore a genome-wide
+        // WGS — and surfacing it as "your test" contradicts the autosomal ancestry the brief shows
+        // beside it. Depth and file presence only break ties within a breadth class.
+        let mut best: Option<(u8, f64, bool, &Alignment)> = None;
         for a in &alignments {
-            if let Some(c) = self.cached_coverage(a.id).await? {
-                if best.as_ref().map_or(true, |(cov, _)| c.mean_coverage > *cov) {
-                    best = Some((c.mean_coverage, a));
-                }
+            let target = match navigator_store::sequence_run::get(self.store.pool(), a.sequence_run_id).await? {
+                Some(run) => navigator_domain::testtype::target_of(&run.test_type),
+                None => None,
+            };
+            let breadth = test_breadth_rank(target);
+            let depth = self.cached_coverage(a.id).await?.map_or(0.0, |c| c.mean_coverage);
+            let key = (breadth, depth, a.bam_path.is_some());
+            if best.as_ref().map_or(true, |(b, d, f, _)| key > (*b, *d, *f)) {
+                best = Some((breadth, depth, a.bam_path.is_some(), a));
             }
         }
-        let chosen = best
-            .map(|(_, a)| a)
-            .or_else(|| alignments.iter().find(|a| a.bam_path.is_some()))
-            .or_else(|| alignments.first());
-        Ok(chosen.map(|a| (a.sequence_run_id, a.id)))
+        Ok(best.map(|(_, _, _, a)| (a.sequence_run_id, a.id)))
     }
 
     /// Donor-level ancestry: the **consensus** estimate ([`CONSENSUS_SOURCE_ID`]) when present —
@@ -837,6 +844,55 @@ fn infer_read_type_cheap(platform_name: &str, test_type: &str) -> Option<&'stati
 /// rescan reads the names. `None` for a non-positive mean (no metrics).
 fn read_type_from_mean_len(mean: f64) -> Option<&'static str> {
     (mean > 0.0 && mean <= 1000.0).then_some("SHORT")
+}
+
+/// How well a test represents a whole person, for picking a subject's default/representative
+/// alignment (see [`App::default_alignment_for_subject`]). Higher is broader: a whole-genome test
+/// carries paternal, maternal *and* autosomal ancestry; an autosomal/chip test carries the ancestry
+/// composition the brief leads with; a Y/mt/X test is a single-lineage close-up. `None` is an
+/// unrecognized test type — ranked above targeted (it may be a broad test whose label we didn't
+/// recognize) but below anything we know is genome-wide.
+fn test_breadth_rank(target: Option<navigator_domain::testtype::TargetType>) -> u8 {
+    use navigator_domain::testtype::TargetType::*;
+    match target {
+        Some(WholeGenome) => 4,
+        Some(Autosomal) | Some(Mixed) => 3,
+        None => 2,
+        Some(XChromosome) => 1,
+        Some(YChromosome) | Some(MtDna) => 0,
+    }
+}
+
+#[cfg(test)]
+mod breadth_tests {
+    use super::test_breadth_rank;
+    use navigator_domain::testtype::{target_of, TargetType};
+
+    #[test]
+    fn whole_genome_outranks_targeted_regardless_of_depth() {
+        // The reported quirk: a deep Y Elite must not outrank a genome-wide WGS/HiFi as the
+        // representative test, because a Y-only test can't produce the ancestry shown beside it.
+        let wgs = test_breadth_rank(target_of("WGS"));
+        let hifi = test_breadth_rank(target_of("WGS_HIFI"));
+        let y_elite = test_breadth_rank(target_of("Y_ELITE"));
+        assert!(wgs > y_elite, "WGS should outrank Y Elite");
+        assert!(hifi > y_elite, "even the shallow HiFi should outrank Y Elite");
+        // Y/mt targeted tests sit at the bottom.
+        assert_eq!(y_elite, 0);
+        assert_eq!(test_breadth_rank(target_of("MT_FULL_SEQUENCE")), 0);
+        assert_eq!(test_breadth_rank(target_of("BIG_Y_700")), 0);
+    }
+
+    #[test]
+    fn ancestry_bearing_and_unknown_tiers() {
+        // Chips / exomes carry the autosomal ancestry the brief leads with — above targeted, below WGS.
+        assert!(test_breadth_rank(Some(TargetType::WholeGenome)) > test_breadth_rank(target_of("ARRAY_23ANDME_V5")));
+        assert!(test_breadth_rank(target_of("ARRAY_23ANDME_V5")) > test_breadth_rank(target_of("Y_ELITE")));
+        // An unrecognized test type ranks above targeted but below a known genome-wide test.
+        let unknown = test_breadth_rank(None);
+        assert!(unknown > test_breadth_rank(target_of("Y_ELITE")));
+        assert!(unknown < test_breadth_rank(target_of("WGS")));
+    }
 }
 
 #[cfg(test)]
