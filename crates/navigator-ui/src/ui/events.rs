@@ -129,6 +129,18 @@ impl NavigatorApp {
                     self.reference_needs = builds;
                 }
                 Event::ReferenceProgress { build, received, total } => {
+                    // Mirror the download into the always-visible status bar. The progress bar is only
+                    // drawn in a couple of views (and none in Simple mode), so without this a slow
+                    // multi-GB reference pull — kicked off in the background after import — looks like
+                    // the app is stuck. The status line is the one surface visible in every view.
+                    let recv_mb = received / 1_000_000;
+                    self.status = match total {
+                        Some(t) if t > 0 => format!(
+                            "Downloading {build} reference in the background — {recv_mb} / {} MB…",
+                            t / 1_000_000
+                        ),
+                        _ => format!("Downloading {build} reference in the background — {recv_mb} MB…"),
+                    };
                     self.reference_progress = Some((build, received, total));
                 }
                 Event::ReferenceReady { build, path } => {
@@ -320,6 +332,19 @@ impl NavigatorApp {
                     self.status = format!("Importing: {done}/{total} ({pct}%) — {sample}…");
                 }
                 Event::AllBiosamples(v) => {
+                    // Drop a dangling selection: after deleting the last subject the async list reload
+                    // lands here empty, but `selected_sample` may still point at the deleted (or any
+                    // now-removed) subject. Left set, the per-frame auto-select and brief-load keep
+                    // re-fetching a brief that errors — never clearing `subject_brief_loading` — so the
+                    // Simple view spins on "Building your brief…" forever. Clear it so the empty-state
+                    // (or a valid re-selection) renders instead.
+                    if let Some(sel) = self.selected_sample {
+                        if !v.iter().any(|b| b.guid == sel) {
+                            self.selected_sample = None;
+                            self.subject_brief = None;
+                            self.subject_brief_loading = false;
+                        }
+                    }
                     self.all_biosamples = v;
                     let _ = self.tx.send(Command::LoadHaploSummary); // fill the Y/mt columns
                     let _ = self.tx.send(Command::LoadSubjectStatus); // fill the Status column
@@ -888,6 +913,9 @@ impl NavigatorApp {
                     };
                     // The subject's coverage just changed — refresh the Status column.
                     let _ = self.tx.send(Command::LoadSubjectStatus);
+                    // In Simple mode, rebuild the brief so the just-computed lineages/ancestry replace
+                    // the "not analyzed yet" prompt (no-op in Advanced / when nothing is selected).
+                    self.reload_subject_brief();
                 }
                 Event::Panels(p) => self.panels = p,
                 Event::PanelImported => {

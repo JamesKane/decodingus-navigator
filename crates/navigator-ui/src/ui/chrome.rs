@@ -17,6 +17,22 @@ impl NavigatorApp {
         let _ = self.tx.send(Command::RunFullAnalysis { alignment_id });
     }
 
+    /// Kick off the full-analysis pipeline for a subject (its representative alignment is resolved on
+    /// the worker) and show the modal immediately. The Simple "My DNA" view uses this so a casual
+    /// user can analyze without hunting for an alignment id in the Advanced sources table.
+    pub(crate) fn start_analysis_for_subject(&mut self, guid: SampleGuid) {
+        self.analysis = Some(AnalysisModal {
+            step: 1,
+            total: 8,
+            label: "Starting".into(),
+            detail: "preparing pipeline".into(),
+            fraction: 0.0,
+            started: self.frame_time,
+        });
+        self.status = "Analyzing your DNA…".into();
+        let _ = self.tx.send(Command::AnalyzeSubject { biosample_guid: guid });
+    }
+
     /// Translate a catalog key for the active language. Returns `&'static str` (catalogs are
     /// embedded), so it never borrows `self` — convenient inside egui closures.
     pub(crate) fn tr(&self, key: &'static str) -> &'static str {
@@ -91,6 +107,11 @@ impl NavigatorApp {
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if ui.button("⚙").on_hover_text(self.tr("settings.title")).clicked() {
                         self.settings_form = SettingsForm::from_settings();
+                        // Seed the scale slider from the *applied* zoom, not the (often unpersisted)
+                        // setting: the HiDPI auto-probe applies a zoom it never persists, so
+                        // from_settings would otherwise snap the slider — and thus the live scale —
+                        // back to 1.0 the instant Settings opens.
+                        self.settings_form.ui_scale = ui.ctx().zoom_factor();
                         self.show_settings = true;
                         let _ = self.tx.send(Command::LoadReferenceSettings);
                     }

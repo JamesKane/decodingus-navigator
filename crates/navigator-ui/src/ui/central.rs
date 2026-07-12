@@ -169,6 +169,35 @@ impl NavigatorApp {
         });
     }
 
+    /// When the selected subject has imported data that hasn't been analyzed yet, show a prominent
+    /// call-to-action to run the analysis pipeline — the brief stays empty until it runs. Shown only
+    /// in the `Pending` state (has alignments, coverage not yet computed); hidden once analysis
+    /// completes (→ `Complete`) or when the subject has nothing to analyze (no status row).
+    pub(crate) fn simple_analyze_prompt(&mut self, ui: &mut egui::Ui, guid: SampleGuid) {
+        if !matches!(self.subject_status.get(&guid), Some(SubjectAnalysisStatus::Pending)) {
+            return;
+        }
+        let running = self.analysis.is_some();
+        egui::Frame::group(ui.style()).show(ui, |ui| {
+            ui.label(egui::RichText::new(self.tr("brief.analyzeTitle")).strong());
+            ui.add_space(2.0);
+            ui.label(egui::RichText::new(self.tr("brief.analyzeHint")).weak().small());
+            ui.add_space(8.0);
+            if ui
+                .add_enabled(
+                    !running,
+                    egui::Button::new(egui::RichText::new(self.tr("brief.analyzeAction")).color(egui::Color32::WHITE))
+                        .fill(ACCENT)
+                        .min_size(egui::vec2(200.0, 32.0)),
+                )
+                .clicked()
+            {
+                self.start_analysis_for_subject(guid);
+            }
+        });
+        ui.add_space(6.0);
+    }
+
     pub(crate) fn subjects_central(&mut self, ui: &mut egui::Ui) {
         let Some(guid) = self.selected_sample else {
             // First launch (Simple mode, empty workspace) has no left panel and so no reachable
@@ -187,6 +216,14 @@ impl NavigatorApp {
             ui.separator();
             egui::ScrollArea::vertical().show(ui, |ui| {
                 ui.add_space(4.0);
+                // A background reference-genome download (kicked off after import) only otherwise
+                // renders in the Advanced Projects panel — surface its progress bar here too so a
+                // Simple-mode user on a slow connection sees why the app is busy. No-ops when idle.
+                self.reference_prompt(ui);
+                // When this subject has data but hasn't been analyzed yet, offer a prominent Analyze
+                // action right at the top — the pipeline (coverage → haplogroups → ancestry) must run
+                // before the brief has anything to show.
+                self.simple_analyze_prompt(ui, guid);
                 // Optional AI-assisted narration sits above the facts (additive, clearly labelled).
                 self.simple_ai_narration(ui, guid);
                 // The brief's paternal/maternal cards now render the compact descent path in place of

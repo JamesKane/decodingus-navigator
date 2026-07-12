@@ -503,6 +503,12 @@ pub enum Command {
     RunFullAnalysis {
         alignment_id: i64,
     },
+    /// Run the full analysis on a subject's representative alignment, resolving it from the guid
+    /// (see `default_alignment_for_subject`). The Simple "My DNA" view uses this so a casual user can
+    /// analyze without first drilling into the Advanced sources table to find an alignment id.
+    AnalyzeSubject {
+        biosample_guid: SampleGuid,
+    },
     /// Request cancellation of the in-flight full analysis (checked between steps).
     CancelAnalysis,
     /// Update a subject's editable fields. Empty optional values clear the column.
@@ -1740,6 +1746,9 @@ pub async fn handle(app: &App, cmd: Command) -> Event {
         Command::RunFullAnalysis { alignment_id } => {
             Event::Error(format!("internal: unrouted RunFullAnalysis {alignment_id}"))
         }
+        Command::AnalyzeSubject { biosample_guid } => {
+            Event::Error(format!("internal: unrouted AnalyzeSubject {biosample_guid}"))
+        }
         Command::CancelAnalysis => Event::Error("internal: unrouted CancelAnalysis".into()),
         Command::FindPrivateY { alignment_id, mask } => {
             let result = match mask {
@@ -2914,6 +2923,30 @@ pub fn spawn(db_path: PathBuf, wake: impl Fn() + Send + Sync + 'static) -> (Unbo
                             Command::RunFullAnalysis { alignment_id } => {
                                 ensure_index_streaming(&app, alignment_id, &evt_tx, &*wake).await;
                                 run_full_analysis_streaming(&app, alignment_id, cancel, &evt_tx, wake.clone()).await;
+                            }
+                            // Resolve the subject's representative alignment, then run the same pipeline
+                            // as RunFullAnalysis. Lets the Simple view analyze from a subject guid alone.
+                            Command::AnalyzeSubject { biosample_guid } => {
+                                match app.default_alignment_for_subject(biosample_guid).await {
+                                    Ok(Some((_run_id, alignment_id))) => {
+                                        ensure_index_streaming(&app, alignment_id, &evt_tx, &*wake).await;
+                                        run_full_analysis_streaming(&app, alignment_id, cancel, &evt_tx, wake.clone())
+                                            .await;
+                                    }
+                                    Ok(None) => {
+                                        let _ = evt_tx.send(Event::Error(
+                                            "No sequencing data to analyze — import a BAM/CRAM for this person first."
+                                                .into(),
+                                        ));
+                                        let _ = evt_tx.send(Event::AnalysisDone { cancelled: false });
+                                        wake();
+                                    }
+                                    Err(e) => {
+                                        let _ = evt_tx.send(Event::Error(e.to_string()));
+                                        let _ = evt_tx.send(Event::AnalysisDone { cancelled: false });
+                                        wake();
+                                    }
+                                }
                             }
                             // Streams DeepAnalyzeProgress per sample, then a final ProjectAnalyzed.
                             Command::DeepAnalyzeProject(project_id) => {

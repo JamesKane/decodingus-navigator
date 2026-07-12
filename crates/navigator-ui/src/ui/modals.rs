@@ -311,6 +311,10 @@ impl NavigatorApp {
         let mut lift_request = false;
         let mut test_llm: Option<String> = None;
         let mut refresh_trees = false;
+        // While the scale slider is being dragged, DON'T live-apply the zoom (see the live-apply
+        // block below): changing the zoom factor rescales the slider's own rail mid-drag, so the
+        // cursor maps to a runaway value that collapses to a bound. Apply only once the drag ends.
+        let mut scale_dragging = false;
 
         modal_frame(ctx, "settings_modal", 580.0, |ui| {
             ui.label(egui::RichText::new(self.tr("settings.title")).strong().size(16.0));
@@ -362,11 +366,12 @@ impl NavigatorApp {
                 });
                 ui.horizontal(|ui| {
                     ui.label(self.tr("settings.uiScale"));
-                    ui.add(
+                    let scale_resp = ui.add(
                         egui::Slider::new(&mut form.ui_scale, 0.8..=2.5)
                             .step_by(0.05)
                             .fixed_decimals(2),
                     );
+                    scale_dragging = scale_resp.dragged();
                     if ui.small_button("100%").clicked() {
                         form.ui_scale = 1.0;
                     }
@@ -611,7 +616,10 @@ impl NavigatorApp {
             self.dark_mode = theme_dark;
             apply_theme(ctx, self.dark_mode);
         }
-        if (ctx.zoom_factor() - form.ui_scale).abs() > f32::EPSILON {
+        // Apply the zoom only when the slider isn't mid-drag (typed/committed/button changes still
+        // apply immediately). Applying during a drag would rescale the rail and make the value run
+        // away to a bound — the reported "only 0.8 or 2.5" symptom.
+        if !scale_dragging && (ctx.zoom_factor() - form.ui_scale).abs() > f32::EPSILON {
             ctx.set_zoom_factor(form.ui_scale.clamp(0.5, 3.0));
         }
         if lang != prev_lang {

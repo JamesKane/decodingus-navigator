@@ -150,13 +150,18 @@ const CHM13_FA: &str =
     "https://s3-us-west-2.amazonaws.com/human-pangenomics/T2T/CHM13/assemblies/analysis_set/chm13v2.0.fa.gz";
 const CHM13_MASKED_RCRS_FA: &str =
     "https://s3-us-west-2.amazonaws.com/human-pangenomics/T2T/CHM13/assemblies/analysis_set/chm13v2.0_maskedY_rCRS.fa.gz";
-// Broad's public reference bucket. The older `genomics-public-data` bucket now 403s; this
-// `gcp-public-data--broad-references` bucket is the current canonical home and serves the same
-// assemblies as plain (uncompressed) FASTA — there is no `.gz` variant there.
-const GRCH38_FA: &str =
-    "https://storage.googleapis.com/gcp-public-data--broad-references/hg38/v0/Homo_sapiens_assembly38.fasta";
-const GRCH37_FA: &str =
-    "https://storage.googleapis.com/gcp-public-data--broad-references/hg19/v0/Homo_sapiens_assembly19.fasta";
+// GRCh38: the community-standard "no-ALT analysis set" (Heng Li,
+// https://lh3.github.io/2017/11/13/which-human-reference-genome-to-use), served bgzipped by NCBI's
+// HTTPS mirror. ~873 MB compressed vs. ~3.25 GB for the Broad plain FASTA we used before — a ~3.7x
+// win on a slow/cellular connection (the `.gz` is decompressed + indexed locally by
+// `decompress_and_index`). `chr`-prefixed contig names, rCRS chrM — matches the app's GRCh38
+// convention. No ALT/decoy/HLA (Heng Li's recommended analysis set); a CRAM aligned to a
+// Broad-specific decoy/ALT contig would need a `reference_sources.json` URL override.
+const GRCH38_FA: &str = "https://ftp.ncbi.nlm.nih.gov/genomes/all/GCA/000/001/405/GCA_000001405.15_GRCh38/seqs_for_alignment_pipelines.ucsc_ids/GCA_000001405.15_GRCh38_no_alt_analysis_set.fna.gz";
+// GRCh37: hs37-1kg (1000 Genomes phase-1 reference, Heng Li's recommendation), gzipped on the EBI
+// 1000genomes HTTPS mirror. ~892 MB compressed vs. ~3.14 GB for the Broad plain FASTA. Bare contig
+// names (1/X/MT), rCRS MT — matches the app's GRCh37 convention.
+const GRCH37_FA: &str = "https://ftp.1000genomes.ebi.ac.uk/vol1/ftp/technical/reference/human_g1k_v37.fasta.gz";
 const CHAIN_BASE: &str = "https://s3-us-west-2.amazonaws.com/human-pangenomics/T2T/CHM13/assemblies/chain/v1_nflo";
 const ANNOTATION_BASE: &str = "https://s3-us-west-2.amazonaws.com/human-pangenomics/T2T/CHM13/assemblies/annotation";
 
@@ -244,8 +249,8 @@ impl Registry {
     /// The download source for a build (user URL override else the built-in default).
     pub fn reference_source(&self, build: Build) -> ReferenceSource {
         let (default_url, est_bytes) = match build {
-            Build::Grch38 => (GRCH38_FA, 3 * GB + GB / 4), // ~3.25 GB plain FASTA
-            Build::Grch37 => (GRCH37_FA, 3 * GB + GB / 7), // ~3.14 GB plain FASTA (was gzipped)
+            Build::Grch38 => (GRCH38_FA, 873 * GB / 1000), // ~873 MB bgzipped no-ALT analysis set
+            Build::Grch37 => (GRCH37_FA, 892 * GB / 1000), // ~892 MB gzipped hs37-1kg
             Build::Chm13v2 => (CHM13_FA, GB),
             Build::Chm13v2MaskedRcrs => (CHM13_MASKED_RCRS_FA, GB),
         };
