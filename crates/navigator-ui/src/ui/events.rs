@@ -639,12 +639,20 @@ impl NavigatorApp {
                         }
                     );
                     self.batch_import = Some(summary);
+                    // The import may have added an alignment — refresh the analysis-status map so the
+                    // Subjects Status column and the Simple-mode "Analyze" prompt (`Pending` = has data,
+                    // not analyzed) pick it up. Without this, adding data to an existing subject leaves
+                    // both stale, so the analyze prompt never appears.
+                    let _ = self.tx.send(Command::LoadSubjectStatus);
                     if self.selected_sample == Some(biosample_guid) {
                         let _ = self.tx.send(Command::LoadRuns(biosample_guid));
                         let _ = self.tx.send(Command::LoadStrProfiles(biosample_guid));
                         let _ = self.tx.send(Command::LoadVariantSets(biosample_guid));
                         let _ = self.tx.send(Command::LoadChipProfiles(biosample_guid));
                         let _ = self.tx.send(Command::LoadMtdna(biosample_guid));
+                        // Rebuild the brief so the "Your test" card + not-analyzed state reflect the
+                        // new file (Simple mode was showing the stale empty-subject brief).
+                        self.reload_subject_brief();
                     }
                 }
                 Event::SubjectCreatedAndImported {
