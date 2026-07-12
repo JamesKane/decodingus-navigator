@@ -2279,6 +2279,26 @@ async fn resolve_reference_streaming(
     wake();
 }
 
+/// Resolve each not-yet-cached build with a visible `ReferenceProgress` bar (via
+/// [`resolve_reference_streaming`]). Cached builds are skipped silently. The reference FASTA is a
+/// required artifact for any BAM/CRAM analysis and is fetched on demand (cache-first, else a
+/// multi-GB download) — without this the download runs deep inside a pure `App` method with a no-op
+/// callback, so the UI shows nothing and a first import looks like it "didn't register". Call this
+/// from the worker after an import and before a reference-needing analysis so the pull is visible.
+async fn ensure_references_streaming(
+    app: &App,
+    builds: &[String],
+    evt_tx: &Sender<Event>,
+    wake: &(dyn Fn() + Send + Sync),
+) {
+    for build in builds {
+        if app.reference_cached(build) {
+            continue;
+        }
+        resolve_reference_streaming(app, build.clone(), evt_tx, wake).await;
+    }
+}
+
 /// Run the full per-alignment analysis pipeline, emitting `AnalysisProgress` before each step
 /// and forwarding each step's own result event (so the detail tabs fill in live). `cancel` is
 /// checked between steps. Per-step errors are forwarded but don't abort the pipeline (best-effort).
@@ -2731,6 +2751,80 @@ pub fn spawn(db_path: PathBuf, wake: impl Fn() + Send + Sync + 'static) -> (Unbo
                             // Streams ReferenceProgress events as bytes arrive, then a final event.
                             Command::ResolveReference { build } => {
                                 resolve_reference_streaming(&app, build, &evt_tx, &*wake).await;
+                            }
+                            // Import, then eagerly resolve the imported alignments' reference(s) with a
+                            // visible progress bar — a first CRAM/BAM that needs a multi-GB reference
+                            // download otherwise looks like it didn't register (§ ensure_references_streaming).
+                            Command::AddDataBatch { biosample_guid, paths } => {
+                                let event = handle(&app, Command::AddDataBatch { biosample_guid, paths }).await;
+                                let imported = matches!(event, Event::DataBatchImported { .. });
+                                let _ = evt_tx.send(event);
+                                wake();
+                                if imported {
+                                    if let Ok(builds) = app.reference_builds_for_subject(biosample_guid).await {
+                                        ensure_references_streaming(&app, &builds, &evt_tx, &*wake).await;
+                                    }
+                                }
+                            }
+                            Command::CreateSubjectAndImport {
+                                donor_identifier,
+                                sex,
+                                paths,
+                            } => {
+                                let event = handle(
+                                    &app,
+                                    Command::CreateSubjectAndImport {
+                                        donor_identifier,
+                                        sex,
+                                        paths,
+                                    },
+                                )
+                                .await;
+                                let guid = match &event {
+                                    Event::SubjectCreatedAndImported { biosample_guid, .. } => Some(*biosample_guid),
+                                    _ => None,
+                                };
+                                let _ = evt_tx.send(event);
+                                wake();
+                                if let Some(guid) = guid {
+                                    if let Ok(builds) = app.reference_builds_for_subject(guid).await {
+                                        ensure_references_streaming(&app, &builds, &evt_tx, &*wake).await;
+                                    }
+                                }
+                            }
+                            // Pre-resolve the subject's / alignment's reference (with a progress bar) so a
+                            // reference-needing analysis doesn't trigger a silent on-demand download.
+                            Command::BuildAutosomalProfile { biosample_guid } => {
+                                if let Ok(builds) = app.reference_builds_for_subject(biosample_guid).await {
+                                    ensure_references_streaming(&app, &builds, &evt_tx, &*wake).await;
+                                }
+                                let event = handle(&app, Command::BuildAutosomalProfile { biosample_guid }).await;
+                                let _ = evt_tx.send(event);
+                                wake();
+                            }
+                            Command::StrConcordance { biosample_guid } => {
+                                if let Ok(builds) = app.reference_builds_for_subject(biosample_guid).await {
+                                    ensure_references_streaming(&app, &builds, &evt_tx, &*wake).await;
+                                }
+                                let event = handle(&app, Command::StrConcordance { biosample_guid }).await;
+                                let _ = evt_tx.send(event);
+                                wake();
+                            }
+                            Command::RunSv(alignment_id) => {
+                                if let Ok(Some(build)) = app.reference_build_of_alignment(alignment_id).await {
+                                    ensure_references_streaming(&app, std::slice::from_ref(&build), &evt_tx, &*wake).await;
+                                }
+                                let event = handle(&app, Command::RunSv(alignment_id)).await;
+                                let _ = evt_tx.send(event);
+                                wake();
+                            }
+                            Command::LoadHeteroplasmy { alignment_id } => {
+                                if let Ok(Some(build)) = app.reference_build_of_alignment(alignment_id).await {
+                                    ensure_references_streaming(&app, std::slice::from_ref(&build), &evt_tx, &*wake).await;
+                                }
+                                let event = handle(&app, Command::LoadHeteroplasmy { alignment_id }).await;
+                                let _ = evt_tx.send(event);
+                                wake();
                             }
                             // Streams AnalysisProgress per step (+ each step's result), then AnalysisDone.
                             Command::RunFullAnalysis { alignment_id } => {

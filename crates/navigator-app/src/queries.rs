@@ -158,15 +158,15 @@ impl App {
             if a.bam_path.is_none() {
                 continue;
             }
-            // Resolve the reference so a CRAM can be decoded (see alignment_paths); best-effort —
-            // skip an alignment whose file/reference can't be resolved rather than failing the rescan.
-            let Ok((path, reference)) = self.alignment_bam_reference(a.id).await else {
+            // Resolve the reference for decode (see alignment_reference_for_decode): required for a
+            // CRAM, None for a BAM. Best-effort — skip an alignment that can't be resolved.
+            let Ok((path, reference)) = self.alignment_reference_for_decode(a.id).await else {
                 continue;
             };
             if !path.exists() {
                 continue;
             }
-            if let Ok(stats) = self.library_stats(path, Some(reference)).await {
+            if let Ok(stats) = self.library_stats(path, reference).await {
                 if stats.read_type.is_some() {
                     return stats.read_type;
                 }

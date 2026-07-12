@@ -409,12 +409,9 @@ impl App {
         }
         let aln = self.alignment_or_err(alignment_id).await?;
         let reference_build = aln.reference_build.clone();
-        // Resolve the reference (see alignment_paths): a CRAM needs it to decode, and SV/indel
-        // reasoning needs it even for a BAM — never trust the possibly-NULL stored column.
-        let (bam, reference) = {
-            let (b, r) = self.alignment_bam_reference(alignment_id).await?;
-            (b, Some(r))
-        };
+        // Resolve the reference for decode (see alignment_reference_for_decode): required for a CRAM,
+        // None for a BAM. SV reads records + header lengths; it doesn't consult reference bases.
+        let (bam, reference) = self.alignment_reference_for_decode(alignment_id).await?;
 
         let cov = match self.cached_coverage(alignment_id).await? {
             Some(c) => c,
@@ -497,12 +494,9 @@ impl App {
                  or place it at ~/.decodingus/str/{build}.hipstr_reference.bed.gz"
             ))
         })?;
-        // Resolve the reference (see alignment_paths): decoding a CRAM needs it, and it's used to
-        // left-normalize repeat alleles — the stored column is often NULL for a single-imported CRAM.
-        let (bam, reference) = {
-            let (b, r) = self.alignment_bam_reference(alignment_id).await?;
-            (b, Some(r))
-        };
+        // Resolve the reference for decode (see alignment_reference_for_decode): required for a CRAM,
+        // None for a BAM. STR region-genotyping reads the alignment; it doesn't consult reference bases.
+        let (bam, reference) = self.alignment_reference_for_decode(alignment_id).await?;
         // chrY / chrM are haploid (one allele); autosomes + chrX (in a female) are diploid. We
         // genotype chrY/chrM haploid and everything else diploid — sex-aware chrX is a refinement.
         let ploidy: u8 = {
@@ -641,16 +635,12 @@ impl App {
         Ok((aln_id, rows))
     }
 
-    /// The alignment's BAM (required) + its reference, **resolved** so it's always present: the
-    /// stored path, else resolved from the alignment's build via the gateway (cache-first). The
-    /// reference is a required artifact for any alignment — a CRAM can't be decoded without it, and
-    /// calling paths silently drop indels ([`caller::call_indels_at`] returns empty when handed
-    /// `None`) — so we never trust the (often-NULL) stored column here. The `Option` is retained only
-    /// to stay drop-in for the reader/caller signatures (which take `Option<&Path>`); it's always
-    /// `Some`. Delegates to [`alignment_bam_reference`](Self::alignment_bam_reference).
+    /// The alignment's BAM (required) + a reference for decoding it (see
+    /// [`alignment_reference_for_decode`](Self::alignment_reference_for_decode)): resolved for a CRAM,
+    /// `None` for a BAM. Coverage / read-metrics / callable read records but never consult reference
+    /// bases, so a BAM needs none.
     pub(crate) async fn alignment_paths(&self, alignment_id: i64) -> Result<(PathBuf, Option<PathBuf>), AppError> {
-        let (bam, reference) = self.alignment_bam_reference(alignment_id).await?;
-        Ok((bam, Some(reference)))
+        self.alignment_reference_for_decode(alignment_id).await
     }
 
     /// Run de-novo haploid calling on a contig and persist the SNP calls as a versioned
@@ -870,6 +860,56 @@ impl App {
             }
         };
         Ok((bam, reference))
+    }
+
+    /// The alignment's path and a reference suitable for **decoding** it: a CRAM can't be read
+    /// without the reference, so resolve it (stored path, else from the build via the gateway,
+    /// cache-first); a BAM decodes without one, so return the stored path as-is (usually `None`) and
+    /// never force a reference download. Use this for record/pileup reads and SNP-site genotyping
+    /// that don't consult reference bases; use [`alignment_bam_reference`](Self::alignment_bam_reference)
+    /// for calling paths (de-novo SNV/indel) that need the reference even on a BAM.
+    pub(crate) async fn alignment_reference_for_decode(
+        &self,
+        alignment_id: i64,
+    ) -> Result<(PathBuf, Option<PathBuf>), AppError> {
+        let aln = self.alignment_or_err(alignment_id).await?;
+        let bam = PathBuf::from(aln.bam_path.ok_or(AppError::MissingPaths(alignment_id))?);
+        let is_cram = bam.extension().is_some_and(|e| e.eq_ignore_ascii_case("cram"));
+        let reference = match aln.reference_path {
+            Some(p) => Some(PathBuf::from(p)),
+            None if is_cram => Some(
+                self.gateway
+                    .resolve_reference(&aln.reference_build, &mut |_, _| {})
+                    .await?,
+            ),
+            None => None,
+        };
+        Ok((bam, reference))
+    }
+
+    /// Whether the reference FASTA for `build` is already on disk (no download needed). Lets the UI
+    /// worker decide when a reference resolution would trigger a visible download vs. a cache hit.
+    pub fn reference_cached(&self, build: &str) -> bool {
+        self.gateway.cached_reference(build).is_some()
+    }
+
+    /// The distinct reference builds across a subject's alignments — the builds whose FASTA an
+    /// analysis of this subject may need. Used to pre-resolve references (with a progress bar) after
+    /// import and before a subject-level analysis, so on-demand downloads aren't silent.
+    pub async fn reference_builds_for_subject(&self, biosample_guid: SampleGuid) -> Result<Vec<String>, AppError> {
+        let alns = alignment::list_for_biosample(self.store.pool(), biosample_guid).await?;
+        let mut builds: Vec<String> = alns.into_iter().map(|a| a.reference_build).collect();
+        builds.sort();
+        builds.dedup();
+        Ok(builds)
+    }
+
+    /// The reference build of a single alignment (`None` if it no longer exists) — for pre-resolving
+    /// that alignment's reference before a per-alignment analysis.
+    pub async fn reference_build_of_alignment(&self, alignment_id: i64) -> Result<Option<String>, AppError> {
+        Ok(alignment::get(self.store.pool(), alignment_id)
+            .await?
+            .map(|a| a.reference_build))
     }
 
     pub async fn run_denovo_for_alignment(

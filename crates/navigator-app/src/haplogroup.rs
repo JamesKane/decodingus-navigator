@@ -2430,11 +2430,9 @@ impl App {
     /// reconciliation view (a curator judges real heteroplasmy vs. artefacts); ascending
     /// by position. Requires a chrM-bearing BAM.
     pub async fn mtdna_heteroplasmy(&self, alignment_id: i64) -> Result<Vec<HeteroplasmySite>, AppError> {
-        let aln = self.alignment_or_err(alignment_id).await?;
-        let bam = PathBuf::from(aln.bam_path.ok_or(AppError::MissingPaths(alignment_id))?);
-        // Resolve the reference (see alignment_paths): the chrM pileup decodes the CRAM and compares
-        // to the reference base, so the FASTA is required even though the stored column may be NULL.
-        let reference = Some(self.alignment_bam_reference(alignment_id).await?.1);
+        // Resolve the reference for decode (see alignment_reference_for_decode): required for a CRAM,
+        // None for a BAM. The chrM pileup finds a second allele from reads; it needs no reference base.
+        let (bam, reference) = self.alignment_reference_for_decode(alignment_id).await?;
         tokio::task::spawn_blocking(move || {
             navigator_analysis::guard_walk("heteroplasmy", || {
                 heteroplasmy::detect_heteroplasmy(&bam, "chrM", &HeteroplasmyParams::default(), reference.as_deref())
