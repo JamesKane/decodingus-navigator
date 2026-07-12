@@ -19,6 +19,7 @@ Welcome to the **Decoding-Us Navigator**, your private, local companion for adva
    - [Batch import strategies for existing data collections](#batch-import-strategies-for-existing-data-collections)
    - [Importing an FTDNA group project](#importing-an-ftdna-group-project)
    - [Running Analyses](#running-analyses)
+   - [The Branch Report tool](#the-branch-report-tool)
    - [Exporting & Sharing Results](#exporting--sharing-results)
 6. [The Command Line](#the-command-line)
 7. [Data Management & Privacy](#data-management--privacy)
@@ -85,7 +86,7 @@ The optimized binary is named `navigator` and lands at `target/release/navigator
 
 ### Running it
 
-Running `navigator` with no arguments opens the graphical Workbench. Running it with a subcommand (`ingest`, `subjects`, `show`, `projects`, `call`, `liftvcf`) runs in headless mode against the same workspace — see [The Command Line](#the-command-line).
+Running `navigator` with no arguments opens the graphical Workbench. Running it with a subcommand (`ingest`, `subjects`, `show`, `projects`, `call`, `branch-report`, `liftvcf`) runs in headless mode against the same workspace — see [The Command Line](#the-command-line).
 
 ## Getting Started
 
@@ -356,6 +357,20 @@ Available analyses:
 
 Navigator also reconciles Y/mtDNA haplogroups across multiple runs and alignments per subject into a single genome-level **consensus** assignment, rather than voting on per-run labels.
 
+### The Branch Report tool
+The **Branch Report** answers a narrow, practical question: *for an arbitrary branch of the tree, how does this sample genotype at every marker that defines it and its descendants?* You give it any Y or mtDNA node — not just the one the sample was placed on — and it genotypes that node's whole **descendant subtree** fresh, marker by marker, showing the observed base, the derived/ancestral call, and the supporting read evidence for each.
+
+That "any node, subtree-wide" behavior is what makes it a checking tool rather than a placement view. The normal haplogroup card walks the sample's *assigned* path from root to terminal. The Branch Report instead genotypes the subtree you name, so **sibling branches the sample is *ancestral* for are reported too** — which is exactly what you need to confirm a variant sits where it should. Point two researchers' samples at the same parent node and you can see, side by side, that the SNP defining one sibling branch is derived in the sample that belongs there and ancestral (absent) in the one that doesn't. If a variant were mis-mapped or placed on the wrong branch, the two reports would disagree at that marker, and you would catch it before it propagated into the shared tree.
+
+**Where to find it.** Open a subject's detail panel and go to the **Y-DNA** tab (for the Y tree) or the **mtDNA** tab (for the mtDNA tree). The Branch Report card has a node text box and a **Load** button. Type a node and load it:
+
+- The node can be a **haplogroup name** (`R-M269`, `R-FGC29071`, `H2a`) or a **defining marker** (`FGC29071`) — either resolves to the same subtree.
+- Loading a **shallow** node (say `R-M269`, or the tree root) pulls in tens of thousands of markers, so it can take a moment; a terminal or near-terminal branch is near-instant. There is an optional depth limit (see the CLI below) if you only want the top few levels.
+
+**What each row shows.** One row per defining marker in the subtree, columns: `node` / `parent` (where the marker sits on the tree), `marker`, `pos`, `anc>der` (ancestral→derived alleles), `obs` (the observed base), `status` (**derived** = the sample carries it, **ancestral** = it doesn't, **no-call** = no confident base), then `AD` / `DP` / `GQ` read evidence and a `note` (flags like `indel/MNV`, `hom-ref block`, or `no call`). The card header summarizes the tally — *N markers: d derived / a ancestral / n no-call* — and whether the evidence came from a **gVCF** sidecar (rich DP/AD/GQ) or a live **pileup**.
+
+**Sharing it.** The **Export** button writes the report as a TSV (with a VCF-style `GT` column: `1` derived, `0` ancestral, `.` no-call), which is the format to hand another researcher when you are cross-checking placements between labs — they can load the same node on their own sample and diff the two files marker for marker.
+
 ### Exporting & Sharing Results
 Result cards carry an **Export** action that writes a shareable file via a save dialog. Available formats:
 
@@ -392,6 +407,10 @@ navigator projects
 navigator call --subject "Jane Doe" --out jane.vcf
 navigator call --subject "Jane Doe" --contig chr21 --out jane.chr21.vcf
 
+# Branch report: genotype a subject at every defining marker of a Y (or mtDNA) node's subtree
+navigator branch-report --subject "Jane Doe" --node R-FGC29071 --tree y
+navigator branch-report --subject "Jane Doe" --node H2a --tree mt --tsv jane.mt.branch.tsv
+
 # Lift a VCF from one reference build to another
 navigator liftvcf --in calls.GRCh38.vcf.gz --from GRCh38 --to chm13v2.0 --out calls.chm13.vcf.gz
 ```
@@ -401,12 +420,14 @@ Useful flags:
 - `--project` / `-p` — project to assign the subject to (found or created).
 - `--sex` — recorded only when a new subject is created (e.g. `male` / `female`).
 - `--recursive` / `-r` — recurse into directories instead of importing only their immediate files.
-- `--alignment` / `-a` — (for `call`) target a specific alignment id from `show --json`; omit to use the subject's sole alignment.
+- `--alignment` / `-a` — (for `call` / `branch-report`) target a specific alignment id from `show --json`; omit to use the subject's sole alignment (`branch-report` prefers a CHM13/HiFi alignment when the subject has several).
 - `--contig` / `-c` — (for `call`) restrict to a single contig (e.g. `chrM`, `chr21`); default is every primary chromosome.
+- `--node` / `-n`, `--tree` / `-t`, `--depth` — (for `branch-report`) the node to report (a haplogroup name like `R-FGC29071` or a defining marker like `FGC29071`), which tree to read (`y` or `mt`), and an optional cap on how many levels below the node to descend (default: the whole subtree).
+- `--tsv` — (for `branch-report`) write the report as TSV to a file instead of printing a table; `--json` emits JSON instead (the two are mutually exclusive).
 - `--out` / `-o` — (for `call` / `liftvcf`) write the VCF to a file instead of stdout.
 - `--in` / `-i`, `--to` / `-t`, `--from` / `-f`, `--filter-par` — (for `liftvcf`) input VCF, target build, optional source build (inferred from the header when omitted), and whether to drop variants landing in the target chrY PAR.
 - `--db` — point at an alternate workspace database (defaults to `~/.decodingus/navigator-rs.db`).
-- `--json` — emit machine-readable JSON instead of a table (on `subjects`, `show`, `projects`).
+- `--json` — emit machine-readable JSON instead of a table (on `subjects`, `show`, `projects`, `branch-report`).
 
 If you're running from source without an installed binary, prefix with `cargo run -p navigator-ui --`:
 
