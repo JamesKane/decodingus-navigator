@@ -613,7 +613,7 @@ card.autosomalConsensus=Autosomal consensus profile
 card.consensusSummary=Consensus summary
 card.sourceInventory=Source inventory
 # Genealogy (FTDNA import) card
-card.genealogy=Genealogy (FTDNA)
+card.genealogy=Genealogy
 geneal.ids=Kit / IDs:
 geneal.reportedY=Reported Y:
 geneal.access=access
