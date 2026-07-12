@@ -6,7 +6,20 @@
 
 Welcome to the **Decoding-Us Navigator**, your private, local companion for advanced genomic analysis. This application lets you explore your DNA data with professional-grade bioinformatics directly on your own computer, keeping your genetic privacy intact while contributing to citizen science.
 
+## Quick Start (TL;DR)
+
+In a hurry? Here's the whole thing in five steps — the rest of this guide is detail you can come back to.
+
+1. **Download** the installer for your platform from the [latest GitHub release](https://github.com/JamesKane/decodingus-navigator/releases/latest): the `.dmg` for macOS, the `.exe` for Windows, or a `.deb` / `.AppImage` for Linux. It's one self-contained file (~60–85 MB); there is nothing else to install — no Java, no GATK, no samtools.
+2. **Install and launch it.** On first run Navigator creates its workspace at `~/.decodingus/` automatically. No configuration needed.
+3. **Add your DNA file.** Click **Add New Subject**, select it, open the **Sources** tab, and add your file — a BAM/CRAM, a VCF, a consumer chip export (23andMe/AncestryDNA), an mtDNA FASTA, or a Y-SNP/STR export. Navigator auto-detects the type and, on first use, downloads the reference genome it needs.
+4. **Let it run.** Import places what it can immediately; use **Full Analyze** on the subject for the complete pass (coverage, Y/mtDNA haplogroups, ancestry, and more). Results are cached, so re-running is instant.
+5. **Read your results** in the subject's tabs (Overview, Y-DNA, mtDNA, Autosomal, Ancestry, IBD). Each result card has an **Export** button for TSV/HTML/VCF/BED output.
+
+That's the single-sample path, and for most people it's the entire app. Everything below expands on each step — bringing your own reference genomes, batch-importing whole projects, the command line, and sharing results to the federated tree.
+
 ## Table of Contents
+0. [Quick Start (TL;DR)](#quick-start-tldr)
 1. [Introduction](#introduction)
 2. [System Requirements](#system-requirements)
 3. [Installation & Setup](#installation--setup)
