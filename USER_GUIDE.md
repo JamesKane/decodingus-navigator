@@ -48,11 +48,27 @@ Decoding-Us Navigator runs a complete bioinformatics stack on your desktop. Unli
 
 ## Installation & Setup
 
-Navigator is built from source with [Cargo](https://www.rust-lang.org/tools/install) (the Rust toolchain). Install Rust first if you don't have it, then:
+### Prebuilt installers (recommended)
 
-### Build and run the desktop app
+For most people the simplest path is to grab a prebuilt installer from the [GitHub Releases page](https://github.com/JamesKane/decodingus-navigator/releases/latest) — download, install, and launch. There is a package for every common desktop:
+
+| Platform | Package |
+|----------|---------|
+| **macOS** (Apple Silicon + Intel, universal) | signed, notarized `.dmg` |
+| **Windows** (x64) | `.exe` setup installer |
+| **Linux** (Debian/Ubuntu family, x86_64 / ARM64) | `.deb` |
+| **Linux** (any distro, x86_64 / ARM64) | self-contained `.AppImage` |
+
+On Linux, take the `.deb` if you are on a Debian/Ubuntu-family distribution and the AppImage if you would rather have a single self-contained executable. Each release also ships a `SHA256SUMS` file so you can verify your download. Because these are Alpha builds, newer tags land as bugs are fixed; the [latest release page](https://github.com/JamesKane/decodingus-navigator/releases/latest) always points at the freshest packages.
+
+### Building from source
+
+Because Navigator is one self-contained Rust binary with no external tools, building from source is genuinely easy — this is the path if you are on a platform without a prebuilt installer (FreeBSD, or a less common Linux setup), or if you simply prefer to build your own. Install [Cargo](https://www.rust-lang.org/tools/install) (the Rust toolchain) first if you don't have it, then:
 
 ```bash
+git clone https://github.com/JamesKane/decodingus-navigator
+cd decodingus-navigator
+
 # Build the whole workspace (use --release for an optimized build)
 cargo build --release
 
@@ -65,6 +81,8 @@ The optimized binary is named `navigator` and lands at `target/release/navigator
 ```bash
 ./target/release/navigator
 ```
+
+### Running it
 
 Running `navigator` with no arguments opens the graphical Workbench. Running it with a subcommand (`ingest`, `subjects`, `show`, `projects`, `call`, `liftvcf`) runs in headless mode against the same workspace — see [The Command Line](#the-command-line).
 
@@ -380,10 +398,20 @@ All application data lives under your home directory in `~/.decodingus/`:
 Navigator manages reference genomes for you. It downloads and caches standard builds (GRCh38, GRCh37, CHM13v2) as needed and converts coordinates between builds automatically — you don't need to hunt for reference files. If you already have the exact FASTAs from your own toolchain, you can register them so Navigator uses yours instead of downloading — see [First-Time Setup: Bringing Your Own Reference Genomes](#first-time-setup-bringing-your-own-reference-genomes).
 
 ### Cloud Integration (Optional)
-Navigator includes support for the **AT Protocol** to publish summaries to a Personal Data Store (PDS) in the Decoding-Us Federation.
+Navigator includes support for the **AT Protocol** — the same federated network behind [Bluesky](https://bsky.app) — to publish summaries to a Personal Data Store (PDS) in the Decoding-Us Federation. Everything else in Navigator works fully offline; contributing your results back is opt-in, and it's how the shared, community-built haplogroup tree grows denser.
+
+To contribute, you sign in with AT Protocol credentials, and Navigator publishes your *results* (haplogroup placements and variant observations, not your raw genome) to your own data store on the network.
+
 - **Privacy:** Even with publishing enabled, your raw BAM/CRAM and chip files are **never** uploaded. Only anonymized summaries (haplogroup assignments, coverage QC statistics, ancestry estimates, IBD attestations) are shared, with your explicit consent.
 - Publishing is durable: queued summaries are retried with backoff if the network or PDS is briefly unavailable.
 - Configure the AppView endpoint in [Settings](#settings) or via the `DECODINGUS_APPVIEW_URL` environment variable.
+
+Two recommendations for signing in comfortably:
+
+- **Use a dedicated profile, not your main Bluesky account.** Make a separate handle for your genomics contributions and sign Navigator in with that. It keeps your genealogy activity cleanly separated from your personal social account, and if you ever want to hand off or retire the contributing identity, you can do it without touching your everyday presence.
+- **A private PDS is nice to have, not required.** In AT Protocol terms your data lives in a Personal Data Store. Running your own PDS gives you the fullest ownership, but self-hosting one is genuinely a homelab project. If that's not your thing, use a hosted PDS (the default Bluesky one is fine) and you still keep control of your records and can move them later. Self-hosting is the enthusiast option, not the price of admission.
+
+If you never sign in at all, Navigator remains a complete local analysis tool — contributing is a choice, not a toggle you have to flip to get value.
 
 ## Settings
 
