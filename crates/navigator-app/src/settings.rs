@@ -46,6 +46,14 @@ pub struct AppSettings {
     /// chain-of-thought, so it must be large enough for the thinking *and* the answer. `None` = default.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub llm_max_tokens: Option<u32>,
+    /// Check GitHub Releases for a newer installer at startup and notify. `None` = the built-in
+    /// default (enabled); set `Some(false)` to opt out. Never auto-installs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub check_for_updates: Option<bool>,
+    /// A version the user asked not to be reminded about (the exact `latest_version` string). A
+    /// *newer* release than this still notifies.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub skip_update_version: Option<String>,
 }
 
 impl AppSettings {

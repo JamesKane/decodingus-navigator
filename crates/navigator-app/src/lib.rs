@@ -641,6 +641,7 @@ pub mod export;
 pub mod settings;
 pub mod sync_reconcile;
 pub use settings::AppSettings;
+pub use update::UpdateInfo;
 
 /// Artifact kind for de-novo calls, keyed per contig so different contigs don't
 /// overwrite each other in the cache.
@@ -2202,6 +2203,7 @@ mod queries;
 mod recruitment;
 mod social;
 mod sync;
+pub mod update;
 
 impl App {
     /// Reference-genome settings + cache status, one row per supported build.
@@ -3803,6 +3805,8 @@ mod settings_tests {
             llm_base_url: Some("http://localhost:1234/v1".into()),
             llm_model: Some("llama-3.1-8b-instruct".into()),
             llm_max_tokens: Some(8192),
+            check_for_updates: Some(false),
+            skip_update_version: Some("0.2.0-alpha".into()),
         };
         let json = serde_json::to_string(&s).unwrap();
         assert_eq!(serde_json::from_str::<AppSettings>(&json).unwrap(), s);

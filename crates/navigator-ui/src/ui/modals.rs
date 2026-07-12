@@ -647,6 +647,9 @@ impl NavigatorApp {
                     (!m.is_empty()).then_some(m)
                 },
                 llm_max_tokens: form.llm_max_tokens.trim().parse::<u32>().ok().filter(|n| *n > 0),
+                // Update-check preferences are managed from the update dialog, not this one — preserve.
+                check_for_updates: AppSettings::load().check_for_updates,
+                skip_update_version: AppSettings::load().skip_update_version,
             };
             match settings.save() {
                 Ok(()) => self.status = self.tr("settings.saved").to_string(),
@@ -825,6 +828,75 @@ impl NavigatorApp {
         });
         if close {
             self.confirm_reset_haplo = None;
+        }
+    }
+
+    /// Notify the user that a newer installer is available (set by the startup `CheckForUpdate`).
+    /// Purely informational — offers to open the download in a browser, skip this version, or
+    /// dismiss. The app never auto-updates.
+    pub(crate) fn update_modal(&mut self, ctx: &egui::Context) {
+        let Some(info) = self.update_info.clone() else {
+            return;
+        };
+        let mut close = false;
+        let mut skip = false;
+        modal_frame(ctx, "update_modal", 480.0, |ui| {
+            ui.label(egui::RichText::new(self.tr("update.title")).strong().size(16.0));
+            ui.separator();
+            ui.add_space(8.0);
+            ui.label(self.tr("update.body"));
+            ui.add_space(6.0);
+            egui::Grid::new("update_versions").num_columns(2).show(ui, |ui| {
+                ui.label(egui::RichText::new(self.tr("update.installed")).weak());
+                ui.label(&info.current_version);
+                ui.end_row();
+                ui.label(egui::RichText::new(self.tr("update.latest")).weak());
+                let latest = if info.prerelease {
+                    format!("{} {}", info.latest_version, self.tr("update.prerelease"))
+                } else {
+                    info.latest_version.clone()
+                };
+                ui.label(egui::RichText::new(latest).strong());
+                ui.end_row();
+            });
+            if !info.notes.trim().is_empty() {
+                ui.add_space(8.0);
+                ui.label(egui::RichText::new(self.tr("update.notes")).weak().small());
+                egui::ScrollArea::vertical().max_height(180.0).show(ui, |ui| {
+                    // Release notes are Markdown; show as plain, wrapped text (no Markdown renderer here).
+                    ui.label(info.notes.trim());
+                });
+            }
+            ui.add_space(12.0);
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui
+                    .add(egui::Button::new(egui::RichText::new(self.tr("update.download")).color(egui::Color32::WHITE)).fill(ACCENT))
+                    .clicked()
+                {
+                    let url = info.download_url.clone().unwrap_or_else(|| info.release_url.clone());
+                    ui.ctx().open_url(egui::OpenUrl::new_tab(url));
+                    close = true;
+                }
+                if ui.button(self.tr("update.later")).clicked() {
+                    close = true;
+                }
+                if ui.button(self.tr("update.skip")).clicked() {
+                    skip = true;
+                    close = true;
+                }
+            });
+        });
+        if skip {
+            // Persist the skip so this exact version doesn't notify again (a newer one still will).
+            let mut settings = AppSettings::load();
+            settings.skip_update_version = Some(info.latest_version.clone());
+            match settings.save() {
+                Ok(()) => self.status = format!("Skipping updates for {}", info.latest_version),
+                Err(e) => self.status = format!("Could not save setting: {e}"),
+            }
+        }
+        if close {
+            self.update_info = None;
         }
     }
 

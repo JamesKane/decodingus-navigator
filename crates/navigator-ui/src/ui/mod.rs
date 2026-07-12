@@ -767,6 +767,11 @@ pub struct NavigatorApp {
     reference_needs: Vec<BuildNeed>,
     /// In-flight reference download: (build, received, total).
     reference_progress: Option<(String, u64, Option<u64>)>,
+    /// In-flight coordinate-index build: (file label, done bytes, total bytes / `None` = indeterminate).
+    index_progress: Option<(String, u64, Option<u64>)>,
+    /// A newer installer is available (drives the update-notification modal). Set once by the
+    /// startup `CheckForUpdate`; cleared when the user dismisses it.
+    update_info: Option<navigator_app::UpdateInfo>,
     /// A project-wide analyze pass is running (disables the report's analyze button).
     analyzing: bool,
     /// Streaming deep-analyze progress: `(done, total, current_sample, fraction)` while running.
@@ -944,6 +949,11 @@ impl NavigatorApp {
         let _ = tx.send(Command::BackfillLabs); // resolve labs for runs imported before D8 landed
         let _ = tx.send(Command::VerifySourceFiles); // flag any imported file that moved/disappeared
         let _ = tx.send(Command::LoadAssetStatus); // ancestry/IBD "data sources" line
+        // Check for a newer installer at startup (unless the user opted out). Non-fatal — a failed
+        // check just logs to the status line; the app never auto-updates.
+        if AppSettings::load().check_for_updates != Some(false) {
+            let _ = tx.send(Command::CheckForUpdate);
+        }
                                                    // Persisted theme wins; default dark. (Must match `dark_mode` below.)
         let dark = !matches!(AppSettings::load().theme.as_deref(), Some("light"));
         apply_theme(&cc.egui_ctx, dark);
@@ -1132,6 +1142,8 @@ impl NavigatorApp {
             pending_import_dir: None,
             reference_needs: Vec::new(),
             reference_progress: None,
+            index_progress: None,
+            update_info: None,
             analyzing: false,
             deep_progress: None,
             ftdna_plan: None,
@@ -1244,6 +1256,7 @@ impl eframe::App for NavigatorApp {
             Nav::Community => self.community_central(ui),
         });
         self.analysis_modal(ctx);
+        self.update_modal(ctx);
         self.edit_subject_modal(ctx);
         self.add_kit_modal(ctx);
         self.edit_mdka_modal(ctx);

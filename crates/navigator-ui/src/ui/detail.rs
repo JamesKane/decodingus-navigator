@@ -1850,12 +1850,28 @@ impl NavigatorApp {
 
     /// When an import is blocked on uncached reference builds, prompt to download them (with
     /// a progress bar); on completion the import auto-retries (see the `ReferenceReady` event).
+    /// Also surfaces an in-flight coordinate-index build (`.bai`/`.crai`) so the user sees why a
+    /// freshly imported file is busy before its first analysis.
     pub(crate) fn reference_prompt(&mut self, ui: &mut egui::Ui) {
-        if self.reference_needs.is_empty() && self.reference_progress.is_none() {
+        if self.reference_needs.is_empty() && self.reference_progress.is_none() && self.index_progress.is_none() {
             return;
         }
         ui.add_space(6.0);
         egui::Frame::group(ui.style()).show(ui, |ui| {
+            if let Some((file, done, total)) = self.index_progress.clone() {
+                match total {
+                    Some(t) if t > 0 => {
+                        let text = format!("Building index for {file}: {} / {} MB", done / 1_000_000, t / 1_000_000);
+                        ui.add(egui::ProgressBar::new(done as f32 / t as f32).text(text));
+                    }
+                    _ => {
+                        ui.horizontal(|ui| {
+                            ui.spinner();
+                            ui.label(format!("Building index for {file}…"));
+                        });
+                    }
+                }
+            }
             if !self.reference_needs.is_empty() {
                 ui.label(self.tr("refdl.required"));
                 for b in &self.reference_needs {

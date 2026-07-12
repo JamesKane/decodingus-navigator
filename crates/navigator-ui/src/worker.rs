@@ -61,6 +61,8 @@ pub enum Command {
     LoadOverview,
     /// Load the ancestry/IBD asset presence + integrity status (the "data sources" line).
     LoadAssetStatus,
+    /// Check GitHub Releases for a newer installer and notify (no auto-update).
+    CheckForUpdate,
     CreateProject(NewProject),
     LoadSamples(i64),
     /// Load the per-sample coverage/haplogroup report for a project.
@@ -728,6 +730,21 @@ pub enum Event {
         build: String,
         path: PathBuf,
     },
+    /// Building a BAM/CRAM coordinate index (`.bai`/`.crai`) so region queries work. `total` is the
+    /// compressed file size for a BAM (byte fraction) and `None` for a CRAM (indeterminate spinner).
+    IndexProgress {
+        file: String,
+        done: u64,
+        total: Option<u64>,
+    },
+    /// A coordinate index finished building (or none was needed — `built` is the written path, if any).
+    IndexReady {
+        built: Option<PathBuf>,
+    },
+    /// A newer installer is available on GitHub Releases (the user is notified; no auto-update).
+    UpdateAvailable(Box<navigator_app::UpdateInfo>),
+    /// The installer-update check ran and the app is already current (or the check was skipped).
+    UpToDate,
     /// Per-sample coverage/haplogroup report for a project.
     ProjectReport {
         project_id: i64,
@@ -1206,6 +1223,11 @@ pub async fn handle(app: &App, cmd: Command) -> Event {
             Err(e) => Event::Error(e.to_string()),
         },
         Command::LoadAssetStatus => Event::AssetStatus(navigator_app::ancestry_asset_status()),
+        Command::CheckForUpdate => match app.check_for_update().await {
+            Ok(Some(info)) => Event::UpdateAvailable(Box::new(info)),
+            Ok(None) => Event::UpToDate,
+            Err(e) => Event::Error(e.to_string()),
+        },
         Command::RefreshTrees => match app.refresh_trees().await {
             Ok(n) => Event::TreesRefreshed(n),
             Err(e) => Event::Error(e.to_string()),
@@ -2299,6 +2321,60 @@ async fn ensure_references_streaming(
     }
 }
 
+/// Build the alignment's coordinate index (`.bai`/`.crai`) if missing, emitting throttled
+/// `IndexProgress` then a final `IndexReady`. Query-driven analyses need the index to seek by region
+/// (else they error or degrade to a whole-file scan); building it eagerly — with a visible bar —
+/// keeps a freshly imported file from looking stuck on its first analysis. A file that already has
+/// an index returns instantly with `built: None` (no progress noise).
+async fn ensure_index_streaming(
+    app: &App,
+    alignment_id: i64,
+    evt_tx: &Sender<Event>,
+    wake: &(dyn Fn() + Send + Sync),
+) {
+    // Progress runs on a blocking thread, so the callback must be Send — capture owned clones, not
+    // borrows. Throttling already happens in the analysis layer (per ~32 MB); forward each tick.
+    let tx = evt_tx.clone();
+    let label = app
+        .reference_build_of_alignment(alignment_id)
+        .await
+        .ok()
+        .flatten()
+        .map(|b| format!("alignment {alignment_id} ({b})"))
+        .unwrap_or_else(|| format!("alignment {alignment_id}"));
+    let progress = move |done: u64, total: Option<u64>| {
+        let _ = tx.send(Event::IndexProgress {
+            file: label.clone(),
+            done,
+            total,
+        });
+    };
+    let event = match app.ensure_alignment_index(alignment_id, progress).await {
+        Ok(built) => Event::IndexReady { built },
+        Err(e) => Event::Error(e.to_string()),
+    };
+    // Wake once at the start (the first progress tick may lag on a small file) and after completion.
+    wake();
+    let _ = evt_tx.send(event);
+    wake();
+}
+
+/// Build the missing coordinate index for each of a subject's alignments (see
+/// [`ensure_index_streaming`]). Used after an import and before a subject-level analysis so every
+/// query path is ready.
+async fn ensure_indexes_for_subject_streaming(
+    app: &App,
+    biosample_guid: SampleGuid,
+    evt_tx: &Sender<Event>,
+    wake: &(dyn Fn() + Send + Sync),
+) {
+    if let Ok(ids) = app.alignment_ids_for_subject(biosample_guid).await {
+        for id in ids {
+            ensure_index_streaming(app, id, evt_tx, wake).await;
+        }
+    }
+}
+
 /// Run the full per-alignment analysis pipeline, emitting `AnalysisProgress` before each step
 /// and forwarding each step's own result event (so the detail tabs fill in live). `cancel` is
 /// checked between steps. Per-step errors are forwarded but don't abort the pipeline (best-effort).
@@ -2764,6 +2840,7 @@ pub fn spawn(db_path: PathBuf, wake: impl Fn() + Send + Sync + 'static) -> (Unbo
                                     if let Ok(builds) = app.reference_builds_for_subject(biosample_guid).await {
                                         ensure_references_streaming(&app, &builds, &evt_tx, &*wake).await;
                                     }
+                                    ensure_indexes_for_subject_streaming(&app, biosample_guid, &evt_tx, &*wake).await;
                                 }
                             }
                             Command::CreateSubjectAndImport {
@@ -2790,14 +2867,17 @@ pub fn spawn(db_path: PathBuf, wake: impl Fn() + Send + Sync + 'static) -> (Unbo
                                     if let Ok(builds) = app.reference_builds_for_subject(guid).await {
                                         ensure_references_streaming(&app, &builds, &evt_tx, &*wake).await;
                                     }
+                                    ensure_indexes_for_subject_streaming(&app, guid, &evt_tx, &*wake).await;
                                 }
                             }
-                            // Pre-resolve the subject's / alignment's reference (with a progress bar) so a
-                            // reference-needing analysis doesn't trigger a silent on-demand download.
+                            // Pre-resolve the subject's / alignment's reference and coordinate index (with a
+                            // progress bar) so a query-driven analysis doesn't trigger a silent download or
+                            // index build partway through.
                             Command::BuildAutosomalProfile { biosample_guid } => {
                                 if let Ok(builds) = app.reference_builds_for_subject(biosample_guid).await {
                                     ensure_references_streaming(&app, &builds, &evt_tx, &*wake).await;
                                 }
+                                ensure_indexes_for_subject_streaming(&app, biosample_guid, &evt_tx, &*wake).await;
                                 let event = handle(&app, Command::BuildAutosomalProfile { biosample_guid }).await;
                                 let _ = evt_tx.send(event);
                                 wake();
@@ -2806,6 +2886,7 @@ pub fn spawn(db_path: PathBuf, wake: impl Fn() + Send + Sync + 'static) -> (Unbo
                                 if let Ok(builds) = app.reference_builds_for_subject(biosample_guid).await {
                                     ensure_references_streaming(&app, &builds, &evt_tx, &*wake).await;
                                 }
+                                ensure_indexes_for_subject_streaming(&app, biosample_guid, &evt_tx, &*wake).await;
                                 let event = handle(&app, Command::StrConcordance { biosample_guid }).await;
                                 let _ = evt_tx.send(event);
                                 wake();
@@ -2814,6 +2895,7 @@ pub fn spawn(db_path: PathBuf, wake: impl Fn() + Send + Sync + 'static) -> (Unbo
                                 if let Ok(Some(build)) = app.reference_build_of_alignment(alignment_id).await {
                                     ensure_references_streaming(&app, std::slice::from_ref(&build), &evt_tx, &*wake).await;
                                 }
+                                ensure_index_streaming(&app, alignment_id, &evt_tx, &*wake).await;
                                 let event = handle(&app, Command::RunSv(alignment_id)).await;
                                 let _ = evt_tx.send(event);
                                 wake();
@@ -2822,12 +2904,15 @@ pub fn spawn(db_path: PathBuf, wake: impl Fn() + Send + Sync + 'static) -> (Unbo
                                 if let Ok(Some(build)) = app.reference_build_of_alignment(alignment_id).await {
                                     ensure_references_streaming(&app, std::slice::from_ref(&build), &evt_tx, &*wake).await;
                                 }
+                                ensure_index_streaming(&app, alignment_id, &evt_tx, &*wake).await;
                                 let event = handle(&app, Command::LoadHeteroplasmy { alignment_id }).await;
                                 let _ = evt_tx.send(event);
                                 wake();
                             }
                             // Streams AnalysisProgress per step (+ each step's result), then AnalysisDone.
+                            // Ensure the coordinate index first (step 1's per-contig walker seeks by region).
                             Command::RunFullAnalysis { alignment_id } => {
+                                ensure_index_streaming(&app, alignment_id, &evt_tx, &*wake).await;
                                 run_full_analysis_streaming(&app, alignment_id, cancel, &evt_tx, wake.clone()).await;
                             }
                             // Streams DeepAnalyzeProgress per sample, then a final ProjectAnalyzed.

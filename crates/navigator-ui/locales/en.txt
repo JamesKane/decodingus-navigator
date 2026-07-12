@@ -650,3 +650,14 @@ hint.sourcesTabHint=Open the Sources tab to inspect each sequencing result's qua
 sources.selectedDetail=Selected source
 sources.pickHint=Pick a sequencing result above to see its coverage, metrics, and placement.
 btn.showMtMutations=Show mutations
+
+# Installer update notification
+update.title=Update available
+update.body=A newer version of Decoding-Us Navigator is available.
+update.installed=Installed
+update.latest=Latest
+update.prerelease=(prerelease)
+update.notes=Release notes
+update.download=Download…
+update.skip=Skip this version
+update.later=Later

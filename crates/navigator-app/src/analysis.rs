@@ -912,6 +912,38 @@ impl App {
             .map(|a| a.reference_build))
     }
 
+    /// The alignment IDs (BAM/CRAM only) across a subject's alignments — for pre-building each one's
+    /// coordinate index (with a progress bar) after import and before a subject-level analysis.
+    pub async fn alignment_ids_for_subject(&self, biosample_guid: SampleGuid) -> Result<Vec<i64>, AppError> {
+        let alns = alignment::list_for_biosample(self.store.pool(), biosample_guid).await?;
+        Ok(alns
+            .into_iter()
+            .filter(|a| a.bam_path.is_some())
+            .map(|a| a.id)
+            .collect())
+    }
+
+    /// Ensure the alignment's coordinate index (`.bai`/`.crai`) exists, **building it if missing** so
+    /// the query-driven analyses (the per-contig walker, callable intervals, the de-novo / STR
+    /// callers) can seek by region instead of erroring or degrading to a whole-file linear scan.
+    /// Returns the index path if one was built, `None` if it was already present. `progress(done,
+    /// total)` reports a byte fraction for a BAM and indeterminate progress (`total = None`) for a
+    /// CRAM. The build is a single sequential pass, run on a decode-safe blocking thread.
+    pub async fn ensure_alignment_index(
+        &self,
+        alignment_id: i64,
+        mut progress: impl FnMut(u64, Option<u64>) + Send + 'static,
+    ) -> Result<Option<PathBuf>, AppError> {
+        let (bam, reference) = self.alignment_reference_for_decode(alignment_id).await?;
+        let built = tokio::task::spawn_blocking(move || {
+            navigator_analysis::guard_walk("build index", || {
+                navigator_analysis::index::ensure_index(&bam, reference.as_deref(), &mut progress)
+            })
+        })
+        .await??;
+        Ok(built)
+    }
+
     pub async fn run_denovo_for_alignment(
         &self,
         alignment_id: i64,

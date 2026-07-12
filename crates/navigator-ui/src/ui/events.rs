@@ -144,6 +144,23 @@ impl NavigatorApp {
                         }
                     }
                 }
+                Event::IndexProgress { file, done, total } => {
+                    self.status = format!("Building index for {file}…");
+                    self.index_progress = Some((file, done, total));
+                }
+                Event::IndexReady { built } => {
+                    self.index_progress = None;
+                    if built.is_some() {
+                        self.status = "Index built.".into();
+                    }
+                }
+                Event::UpdateAvailable(info) => {
+                    self.status = format!("Update available: {} → {}", info.current_version, info.latest_version);
+                    self.update_info = Some(*info);
+                }
+                Event::UpToDate => {
+                    // Quietly current — no nagging. (A failed check surfaces via Event::Error.)
+                }
                 Event::Samples { project_id, samples } => {
                     if self.selected_project == Some(project_id) {
                         self.samples = samples;

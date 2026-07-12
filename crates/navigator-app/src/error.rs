@@ -68,6 +68,11 @@ pub enum AppError {
     /// plain-language for the Settings "Test connection" UI.
     #[error("{0}")]
     Llm(String),
+
+    /// An installer-update check failed (GitHub Releases unreachable, bad response, etc.). Surfaced
+    /// as a plain-language status line; a failed check is non-fatal (the app runs regardless).
+    #[error("update check failed: {0}")]
+    Update(String),
 }
 
 impl From<tokio::task::JoinError> for AppError {

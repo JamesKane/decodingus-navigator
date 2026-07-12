@@ -637,3 +637,14 @@ hint.sourcesTabHint=Abre la pestaña Fuentes para inspeccionar la calidad y ubic
 sources.selectedDetail=Fuente seleccionada
 sources.pickHint=Elige un resultado de secuenciación arriba para ver su cobertura, métricas y ubicación.
 btn.showMtMutations=Mostrar mutaciones
+
+# Notificación de actualización del instalador
+update.title=Actualización disponible
+update.body=Hay una versión más reciente de Decoding-Us Navigator disponible.
+update.installed=Instalada
+update.latest=Última
+update.prerelease=(versión preliminar)
+update.notes=Notas de la versión
+update.download=Descargar…
+update.skip=Omitir esta versión
+update.later=Más tarde
