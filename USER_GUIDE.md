@@ -35,7 +35,7 @@ Decoding-Us Navigator runs a complete bioinformatics stack on your desktop. Unli
 
 - **Privacy First:** Your raw genomic files (BAM/CRAM, chip raw data, etc.) never leave your machine.
 - **Data Sovereignty:** You own your data. Only optional, anonymized summaries are shared if you choose to connect to the Decoding-Us Federation.
-- **No external tooling:** Navigator is a single self-contained Rust application. There is **no Java runtime, no GATK, no samtools/bcftools** to install — the analysis engine ([noodles](https://github.com/zaeleus/noodles)) is built in.
+- **No external tooling:** Navigator is a single self-contained Rust application. There is **no Java runtime, no GATK, no samtools/bcftools** to install — the analysis engine ([noodles](https://github.com/zaeleus/noodles)) is built in. That keeps the download tiny: each installer is one file of roughly **60–85 MB** (Windows ≈ 62 MB, the Linux `.deb`/AppImage packages ≈ 74–78 MB, the universal macOS `.dmg` ≈ 83 MB because it bundles both Apple Silicon and Intel), and that single file *is* the whole application. A conventional stack has to install a Java runtime — which by itself is larger than any of these — and then GATK, samtools, and bcftools on top of it.
 - **Accessibility:** Complex command-line bioinformatics is wrapped in an easy-to-use desktop interface, with an optional scriptable CLI for power users.
 
 ## System Requirements
