@@ -589,6 +589,7 @@ mod tests {
                 quality_phrase: "high-quality (30× average depth)".into(),
                 quality_ok: true,
             },
+            needs_analysis: false,
             caveats: vec![],
             pack_version: Some("2026.06-seed".into()),
             pack_status: PackStatus::Bundled,

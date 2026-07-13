@@ -174,7 +174,11 @@ impl NavigatorApp {
     /// in the `Pending` state (has alignments, coverage not yet computed); hidden once analysis
     /// completes (→ `Complete`) or when the subject has nothing to analyze (no status row).
     pub(crate) fn simple_analyze_prompt(&mut self, ui: &mut egui::Ui, guid: SampleGuid) {
-        if !matches!(self.subject_status.get(&guid), Some(SubjectAnalysisStatus::Pending)) {
+        // Gate on the brief itself (rebuilt whenever the subject's data changes — import, clear,
+        // delete+re-add) rather than the separate `subject_status` census map, whose async refresh
+        // lagged behind those flows and left the prompt missing.
+        let needs_analysis = matches!(&self.subject_brief, Some((g, b)) if *g == guid && b.needs_analysis);
+        if !needs_analysis {
             return;
         }
         let running = self.analysis.is_some();

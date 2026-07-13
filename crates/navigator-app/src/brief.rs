@@ -184,6 +184,8 @@ impl App {
             maternal,
             ancestry,
             test,
+            // Has a sequencing alignment but no coverage computed → offer the one-click Analyze.
+            needs_analysis: default_aln.is_some() && coverage.is_none(),
             caveats,
             pack_version: (!pack.version.trim().is_empty()).then(|| pack.version.clone()),
             pack_status,

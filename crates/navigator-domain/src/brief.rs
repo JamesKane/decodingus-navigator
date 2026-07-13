@@ -244,6 +244,11 @@ pub struct SubjectBrief {
     pub maternal: Option<LineageBrief>,
     pub ancestry: Option<AncestryBrief>,
     pub test: TestBrief,
+    /// True when the subject has a sequencing alignment that hasn't been analyzed yet (data present,
+    /// no coverage computed) — the signal for the Simple-mode one-click "Analyze" prompt. False for
+    /// an already-analyzed subject or one with no alignment (chip/VCF-only, nothing to analyze).
+    #[serde(default)]
+    pub needs_analysis: bool,
     /// Global uncertainty notes.
     pub caveats: Vec<String>,
     /// Loaded pack version (for display), if any.

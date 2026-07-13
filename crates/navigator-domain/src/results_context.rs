@@ -302,6 +302,7 @@ mod tests {
                 quality_phrase: "high-quality (30× average depth)".into(),
                 quality_ok: true,
             },
+            needs_analysis: false,
             caveats: vec![],
             pack_version: None,
             pack_status: PackStatus::Bundled,
