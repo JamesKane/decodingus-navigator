@@ -239,6 +239,8 @@ mod tests {
 
     #[test]
     fn picks_platform_asset() {
+        // Include an asset for every platform so the test is meaningful on any CI runner (macOS,
+        // Windows, and Linux — where the picker looks for .AppImage/.deb).
         let assets = vec![
             GhAsset {
                 name: "DUNavigator_0.2.0_universal.dmg".into(),
@@ -247,6 +249,14 @@ mod tests {
             GhAsset {
                 name: "DUNavigator_0.2.0_x64-setup.exe".into(),
                 browser_download_url: "https://example/exe".into(),
+            },
+            GhAsset {
+                name: "DUNavigator_0.2.0_x86_64.AppImage".into(),
+                browser_download_url: "https://example/appimage".into(),
+            },
+            GhAsset {
+                name: "DUNavigator_0.2.0_amd64.deb".into(),
+                browser_download_url: "https://example/deb".into(),
             },
             GhAsset {
                 name: "SHA256SUMS".into(),
@@ -259,6 +269,13 @@ mod tests {
             assert_eq!(picked.as_deref(), Some("https://example/dmg"));
         } else if cfg!(target_os = "windows") {
             assert_eq!(picked.as_deref(), Some("https://example/exe"));
+        } else {
+            // Linux: an .AppImage or .deb (the picker prefers an arch/universal-tagged asset — the
+            // x86_64 AppImage on an x86_64 runner — else the first extension match).
+            assert!(matches!(
+                picked.as_deref(),
+                Some("https://example/appimage") | Some("https://example/deb")
+            ));
         }
     }
 }
