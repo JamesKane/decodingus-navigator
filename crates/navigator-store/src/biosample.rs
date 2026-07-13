@@ -160,17 +160,19 @@ pub async fn clear_data(pool: &SqlitePool, guid: SampleGuid) -> Result<(), Store
     // The alignments that belong to this subject (via its runs) — drives the alignment-keyed deletes.
     const ALN: &str =
         "SELECT id FROM alignment WHERE sequence_run_id IN (SELECT id FROM sequence_run WHERE biosample_guid = ?)";
-    // Alignment-keyed children first (artifacts, then unlink source files so the file identity survives).
+    // Alignment-keyed children first (artifacts, then the source-file rows). We DELETE the source
+    // files, not just unlink them: clearing removes the subject's sequencing data, so the file
+    // identity must go too. A left-behind `source_file` keeps a `UNIQUE content_sha256` that later
+    // makes a re-import of the same file dedup to a dead row — an orphan that silently blocks
+    // re-importing after a delete (delete requires clearing the data first).
     sqlx::query(&format!("DELETE FROM analysis_artifact WHERE alignment_id IN ({ALN})"))
         .bind(&g)
         .execute(&mut *tx)
         .await?;
-    sqlx::query(&format!(
-        "UPDATE source_file SET alignment_id = NULL WHERE alignment_id IN ({ALN})"
-    ))
-    .bind(&g)
-    .execute(&mut *tx)
-    .await?;
+    sqlx::query(&format!("DELETE FROM source_file WHERE alignment_id IN ({ALN})"))
+        .bind(&g)
+        .execute(&mut *tx)
+        .await?;
     sqlx::query(
         "DELETE FROM alignment WHERE sequence_run_id IN (SELECT id FROM sequence_run WHERE biosample_guid = ?)",
     )

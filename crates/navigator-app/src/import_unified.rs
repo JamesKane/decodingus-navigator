@@ -45,9 +45,12 @@ impl App {
         path: &Path,
         test_type_override: Option<&str>,
     ) -> Result<(), AppError> {
-        // Idempotent: skip if this exact BAM/CRAM is already recorded as an alignment.
+        // Idempotent per subject: skip only if *this* subject already has the alignment. Dedup used
+        // to be global (any subject), which silently skipped importing a file into a new subject when
+        // another subject already had it — leaving an empty subject and a misleading "imported" toast
+        // (e.g. re-importing a file after deleting its old subject, when a sibling subject also has it).
         let path_str = path.to_string_lossy().into_owned();
-        if alignment::list_all(self.store.pool())
+        if alignment::list_for_biosample(self.store.pool(), biosample_guid)
             .await?
             .iter()
             .any(|a| a.bam_path.as_deref() == Some(path_str.as_str()))
