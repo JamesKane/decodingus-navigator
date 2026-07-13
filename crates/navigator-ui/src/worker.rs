@@ -2390,11 +2390,23 @@ async fn ensure_indexes_for_subject_streaming(
 async fn run_full_analysis_streaming<W: Fn() + Send + Sync + 'static>(
     app: &App,
     alignment_id: i64,
+    include_ancestry: bool,
     cancel: Arc<AtomicBool>,
     evt_tx: &Sender<Event>,
     wake: Arc<W>,
 ) {
     cancel.store(false, Ordering::Relaxed);
+    // Simple ("My DNA") is one-click: fold the autosomal ancestry estimate into the pipeline as a
+    // final step. Advanced runs it as a separate deliberate action, so it passes `false`. Ancestry is
+    // subject-level, so resolve the subject once; skip it if the alignment isn't attached to one.
+    let ancestry_guid = if include_ancestry {
+        app.biosample_of_alignment(alignment_id).await.ok()
+    } else {
+        None
+    };
+    // Ancestry is two ordered commands: build the autosomal consensus (panel-genotype), then estimate
+    // admixture/PCA *from* it (`estimate_ancestry_from_consensus` requires the profile to exist).
+    let ancestry_steps = if ancestry_guid.is_some() { 2 } else { 0 };
     // Skip the mtDNA steps (chrM de-novo + mt-tree placement) when the alignment has no
     // mitochondrial reads (e.g. an FTDNA Big Y) — scoring zero chrM data just records a meaningless
     // RSRS root. Unknown coverage (never run) → keep them rather than silently skipping.
@@ -2412,7 +2424,8 @@ async fn run_full_analysis_streaming<W: Fn() + Send + Sync + 'static>(
         .flatten()
         .map(|c| chrm_has_reads(&c))
         .unwrap_or(true);
-    let mut total = if has_mtdna { 5 } else { 3 }; // step 1 + SV + Y (+ chrM de-novo + mt when present)
+    // step 1 + SV + Y (+ chrM de-novo + mt when present) (+ ancestry in the one-click Simple flow)
+    let mut total = (if has_mtdna { 5 } else { 3 }) + ancestry_steps;
 
     // Step 1: unified quality metrics — coverage + callable, read-level QC, and sex inference in
     // ONE pass over the alignment (was three separate steps reading the file 2–3×). The slow
@@ -2470,7 +2483,7 @@ async fn run_full_analysis_streaming<W: Fn() + Send + Sync + 'static>(
                 // chrM reads now correctly skips the chrM de-novo + mt-placement steps (the pre-flight
                 // check above ran before this coverage existed). Adjusts the remaining-step total.
                 has_mtdna = chrm_has_reads(&cov);
-                total = if has_mtdna { 5 } else { 3 };
+                total = (if has_mtdna { 5 } else { 3 }) + ancestry_steps;
                 // Pin a generic FTDNA Targeted-Y to Big Y-500 vs -700 from its callable-chrY
                 // footprint. Done here (not only inside the metrics walker) so it also fires on the
                 // cached fast-path above, where the walker — and its in-method refine — is skipped.
@@ -2528,6 +2541,21 @@ async fn run_full_analysis_streaming<W: Fn() + Send + Sync + 'static>(
             "mtDNA haplogroup",
             "placing on the mt tree",
             Command::AssignMtdnaHaplogroupFromAlignment { alignment_id },
+        ));
+    }
+    // Final steps for the one-click Simple flow: the autosomal ancestry that drives the "Your
+    // ancestry" section. Two ordered commands (profile → estimate), run last (heaviest) and before
+    // AnalysisDone, so the brief reload on completion picks up the persisted consensus estimate.
+    if let Some(guid) = ancestry_guid {
+        steps.push((
+            "Autosomal profile",
+            "genotyping ancestry markers",
+            Command::BuildAutosomalProfile { biosample_guid: guid },
+        ));
+        steps.push((
+            "Ancestry",
+            "estimating admixture + ancient components",
+            Command::EstimateAncestryFromConsensus { biosample_guid: guid },
         ));
     }
     for (i, (label, detail, cmd)) in steps.into_iter().enumerate() {
@@ -2922,7 +2950,9 @@ pub fn spawn(db_path: PathBuf, wake: impl Fn() + Send + Sync + 'static) -> (Unbo
                             // Ensure the coordinate index first (step 1's per-contig walker seeks by region).
                             Command::RunFullAnalysis { alignment_id } => {
                                 ensure_index_streaming(&app, alignment_id, &evt_tx, &*wake).await;
-                                run_full_analysis_streaming(&app, alignment_id, cancel, &evt_tx, wake.clone()).await;
+                                // Advanced: haplogroups/coverage only; ancestry is a separate action.
+                                run_full_analysis_streaming(&app, alignment_id, false, cancel, &evt_tx, wake.clone())
+                                    .await;
                             }
                             // Resolve the subject's representative alignment, then run the same pipeline
                             // as RunFullAnalysis. Lets the Simple view analyze from a subject guid alone.
@@ -2930,7 +2960,8 @@ pub fn spawn(db_path: PathBuf, wake: impl Fn() + Send + Sync + 'static) -> (Unbo
                                 match app.default_alignment_for_subject(biosample_guid).await {
                                     Ok(Some((_run_id, alignment_id))) => {
                                         ensure_index_streaming(&app, alignment_id, &evt_tx, &*wake).await;
-                                        run_full_analysis_streaming(&app, alignment_id, cancel, &evt_tx, wake.clone())
+                                        // Simple one-click: include the autosomal ancestry step.
+                                        run_full_analysis_streaming(&app, alignment_id, true, cancel, &evt_tx, wake.clone())
                                             .await;
                                     }
                                     Ok(None) => {
