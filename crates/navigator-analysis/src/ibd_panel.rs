@@ -172,6 +172,67 @@ impl IbdPanel {
         out
     }
 
+    /// Re-key genotypes taken at **this build's** loci back to canonical CHM13 dosages. The caller
+    /// genotypes a non-CHM13 alignment's BAM at each site's `locus(build)` (that build's
+    /// contig/pos/REF/ALT); the resulting `dosage` counts the *build* ALT. Because the per-build
+    /// REF/ALT are often swapped relative to CHM13 (see [`resolve_chip`]), we reconstruct the observed
+    /// alleles from that dosage and re-score them against the **CHM13** REF/ALT (direct or
+    /// reverse-complement), emitting each at its CHM13 locus with the alignment's depth/GQ preserved.
+    /// Palindromes (A/T, C/G) are skipped — strand-ambiguous across builds, exactly as the chip and
+    /// whole-genome resolvers. This is the alignment analogue of [`resolve_chip`], and it lets a
+    /// GRCh37/GRCh38 WGS reach the CHM13-coordinate ancestry panel without a runtime liftover (the
+    /// panel already carries every build's coordinates).
+    pub fn resolve_alignment(&self, build: &str, genotypes: &[SiteGenotype]) -> Vec<SiteGenotype> {
+        let norm = |c: &str| c.strip_prefix("chr").unwrap_or(c).to_ascii_uppercase();
+        let mut index: HashMap<(String, i64), &IbdPanelSite> = HashMap::new();
+        for s in &self.sites {
+            if let Some(l) = s.locus(build) {
+                index.insert((norm(&l.contig), l.position), s);
+            }
+        }
+        let mut out = Vec::new();
+        for g in genotypes {
+            if g.dosage < 0 {
+                continue; // no-call
+            }
+            let Some(site) = index.get(&(norm(&g.contig), g.position)) else {
+                continue;
+            };
+            if is_palindromic(site.chm13.reference, site.chm13.alternate) {
+                continue;
+            }
+            // The genotype was called against the build REF/ALT (g.reference_allele/g.alternate_allele).
+            // Reconstruct the observed diploid alleles from the dosage, then re-score vs the CHM13 alleles.
+            let br = g.reference_allele.chars().next().unwrap_or('N');
+            let ba = g.alternate_allele.chars().next().unwrap_or('N');
+            let (a1, a2) = match g.dosage {
+                0 => (br, br),
+                1 => (br, ba),
+                _ => (ba, ba),
+            };
+            let Some(dosage) = dosage_from_alleles(a1, a2, site.chm13.reference, site.chm13.alternate) else {
+                continue;
+            };
+            out.push(SiteGenotype {
+                name: site.rsid.clone(),
+                contig: site.chm13.contig.clone(),
+                position: site.chm13.position,
+                reference_allele: site.chm13.reference.to_string(),
+                alternate_allele: site.chm13.alternate.to_string(),
+                ploidy: 2,
+                dosage,
+                gq: g.gq,
+                depth: g.depth,
+                ref_depth: 0,
+                alt_depth: 0,
+                pls: Vec::new(),
+                gt: None,
+                allele_depths: None,
+            });
+        }
+        out
+    }
+
     /// The canonical CHM13 `(contig, position)` sites — the targets a WGS caller genotypes so its
     /// dosages line up with the chip path.
     pub fn chm13_sites(&self) -> Vec<(&str, i64)> {
@@ -358,6 +419,94 @@ mod tests {
         let by_pos: std::collections::HashMap<i64, i32> = g.iter().map(|s| (s.position, s.dosage)).collect();
         assert_eq!(by_pos.get(&100), Some(&2));
         assert_eq!(by_pos.get(&200), None); // non-reconciling variant dropped, not hom-ref
+    }
+
+    // A panel site with an explicit build-locus contig (e.g. "chr1" for the b38 column vs bare "1").
+    fn site_b(
+        rsid: &str,
+        chm13: (i64, char, char),
+        build: (&str, i64, char, char),
+        which: &str,
+    ) -> IbdPanelSite {
+        let locus = Locus {
+            contig: build.0.into(),
+            position: build.1,
+            reference: build.2,
+            alternate: build.3,
+        };
+        IbdPanelSite {
+            rsid: rsid.into(),
+            chm13: Locus {
+                contig: "chr1".into(),
+                position: chm13.0,
+                reference: chm13.1,
+                alternate: chm13.2,
+            },
+            grch37: (which == "37").then(|| locus.clone()),
+            grch38: (which == "38").then_some(locus),
+        }
+    }
+
+    // A SiteGenotype as `caller::genotype_sites_all_contigs` would produce it at a build locus.
+    fn geno(name: &str, contig: &str, pos: i64, r: &str, a: &str, dosage: i32) -> SiteGenotype {
+        SiteGenotype {
+            name: name.into(),
+            contig: contig.into(),
+            position: pos,
+            reference_allele: r.into(),
+            alternate_allele: a.into(),
+            ploidy: 2,
+            dosage,
+            gq: 30,
+            depth: 20,
+            ref_depth: 0,
+            alt_depth: 0,
+            pls: Vec::new(),
+            gt: None,
+            allele_depths: None,
+        }
+    }
+
+    #[test]
+    fn resolve_alignment_rekeys_swap_strand_and_skips_palindrome() {
+        // rs1: same orientation; rs_swap: grch38 REF/ALT swapped vs CHM13; rs_pal: palindrome.
+        let sites = vec![
+            site_b("rs1", (100, 'A', 'G'), ("chr1", 500, 'A', 'G'), "38"),
+            site_b("rs_swap", (200, 'G', 'T'), ("chr1", 600, 'T', 'G'), "38"),
+            site_b("rs_pal", (300, 'A', 'T'), ("chr1", 700, 'A', 'T'), "38"),
+        ];
+        let (panel, _) = IbdPanel::from_sites("chm13v2.0", sites);
+        // Genotypes at the grch38 loci (build-oriented dosage):
+        // rs1 het → chm13 dosage 1; rs_swap hom grch38-ALT (G/G) — G is the CHM13 REF → chm13 dosage 0.
+        let raw = vec![
+            geno("rs1", "chr1", 500, "A", "G", 1),
+            geno("rs_swap", "chr1", 600, "T", "G", 2),
+            geno("rs_pal", "chr1", 700, "A", "T", 1),
+        ];
+        let out = panel.resolve_alignment("GRCh38", &raw);
+        let by_pos: HashMap<i64, i32> = out.iter().map(|s| (s.position, s.dosage)).collect();
+        assert_eq!(by_pos.get(&100), Some(&1));
+        assert_eq!(by_pos.get(&200), Some(&0), "grch38 G/G == CHM13 hom-ref, not hom-alt");
+        assert!(!by_pos.contains_key(&300), "palindrome skipped");
+        // Emitted at CHM13 loci with CHM13 alleles; depth preserved.
+        let swap = out.iter().find(|s| s.position == 200).unwrap();
+        assert_eq!((swap.reference_allele.as_str(), swap.alternate_allele.as_str()), ("G", "T"));
+        assert_eq!(swap.depth, 20);
+        assert!(out.iter().all(|s| s.contig == "chr1"));
+    }
+
+    #[test]
+    fn resolve_alignment_matches_contig_chr_insensitively() {
+        // Panel grch37 locus stored as "chr1"; a b37 BAM genotyped with bare "1" still resolves.
+        let sites = vec![site_b("rs1", (100, 'A', 'G'), ("chr1", 500, 'A', 'G'), "37")];
+        let (panel, _) = IbdPanel::from_sites("chm13v2.0", sites);
+        let out = panel.resolve_alignment("GRCh37", &[geno("rs1", "1", 500, "A", "G", 2)]);
+        assert_eq!(out.len(), 1);
+        assert_eq!((out[0].position, out[0].dosage, out[0].contig.as_str()), (100, 2, "chr1"));
+        // A no-call (dosage < 0) is dropped.
+        assert!(panel
+            .resolve_alignment("GRCh37", &[geno("rs1", "1", 500, "A", "G", -1)])
+            .is_empty());
     }
 
     #[test]

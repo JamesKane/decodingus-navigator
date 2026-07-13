@@ -1733,18 +1733,12 @@ impl App {
         // (a chip with no stored raw file, an alignment lacking a BAM) is just skipped.
         let mut last_err: Option<AppError> = None;
 
-        // One source per WGS alignment (panel-genotyped, cached per alignment). The IBD panel is
-        // CHM13-coordinate and the alignment path has no liftover, so only CHM13 alignments can be
-        // genotyped directly — non-CHM13 builds reach the panel via the chip path (multi-build
-        // coordinates) or a future lift, and are skipped here rather than yielding wrong-locus calls.
+        // One source per WGS alignment (panel-genotyped, cached per alignment). The IBD panel carries
+        // every build's coordinates, so `ibd_panel_dosages` genotypes a CHM13 alignment at its native
+        // loci and a GRCh37/GRCh38 alignment at that build's loci, re-keying the result to canonical
+        // CHM13. A build the panel doesn't cover yields no genotypes and is skipped downstream.
         let alignments = alignment::list_for_biosample(self.store.pool(), biosample_guid).await?;
         for a in &alignments {
-            if !matches!(
-                canonical_build(&a.reference_build),
-                Some(ReferenceBuild::Chm13v2 | ReferenceBuild::Chm13v2MaskedRcrs)
-            ) {
-                continue;
-            }
             match self.ibd_panel_dosages(IbdSource::Alignment(a.id)).await {
                 Ok(gts) => {
                     let obs = to_obs(gts);

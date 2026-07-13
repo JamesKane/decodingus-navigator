@@ -447,6 +447,18 @@ pub fn read_header(path: &Path, reference: Option<&Path>) -> Result<sam::Header,
     open_seq(path, reference).map(|(header, _)| header)
 }
 
+/// The alignment's reference-sequence (contig) names, in header order. `reference` is required for
+/// a CRAM. Used to reconcile a panel/site contig against the file's naming convention — a GRCh37
+/// alignment may use bare `1` where a panel locus stores `chr1` (or vice versa).
+pub fn contig_names(path: &Path, reference: Option<&Path>) -> Result<Vec<String>, AnalysisError> {
+    let header = read_header(path, reference)?;
+    Ok(header
+        .reference_sequences()
+        .keys()
+        .map(|k| String::from_utf8_lossy(k.as_ref()).into_owned())
+        .collect())
+}
+
 /// Read one contig's full sequence from an indexed FASTA (needs a `.fai`). Used to pull
 /// `chrM` out of a reference for the rCRS↔chrM mtDNA coordinate map.
 pub fn read_contig_sequence(reference: &Path, contig: &str) -> Result<Vec<u8>, AnalysisError> {

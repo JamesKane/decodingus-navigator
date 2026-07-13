@@ -1024,6 +1024,7 @@ impl App {
                 // Resolve the reference for decode (see alignment_reference_for_decode): required for
                 // a CRAM, None for a BAM. Panel genotyping tallies SNP sites (ref/alt come from the
                 // panel), so a BAM consults no reference bases — don't force a download for it.
+                let build = self.alignment_or_err(id).await?.reference_build;
                 let (bam, reference) = self.alignment_reference_for_decode(id).await?;
                 let panel_path = ibd_panel_path(ReferenceBuild::Chm13v2);
                 let bytes = read_verified_asset(ReferenceBuild::Chm13v2, &panel_path)?.ok_or_else(|| {
@@ -1033,22 +1034,74 @@ impl App {
                     ))
                 })?;
                 let panel = navigator_analysis::ibd_panel::IbdPanel::from_bytes(&bytes)?;
-                let sites: Vec<Site> = panel
-                    .sites
-                    .iter()
-                    .map(|s| Site {
-                        name: s.rsid.clone(),
-                        contig: s.chm13.contig.clone(),
-                        position: s.chm13.position,
-                        reference_allele: s.chm13.reference.to_string(),
-                        alternate_allele: s.chm13.alternate.to_string(),
+                let is_chm13 = matches!(
+                    canonical_build(&build),
+                    Some(ReferenceBuild::Chm13v2 | ReferenceBuild::Chm13v2MaskedRcrs)
+                );
+
+                let genotypes = if is_chm13 {
+                    // Native CHM13: genotype directly at the panel's canonical CHM13 loci — the dosage
+                    // is already CHM13-oriented, no re-keying.
+                    let sites: Vec<Site> = panel
+                        .sites
+                        .iter()
+                        .map(|s| Site {
+                            name: s.rsid.clone(),
+                            contig: s.chm13.contig.clone(),
+                            position: s.chm13.position,
+                            reference_allele: s.chm13.reference.to_string(),
+                            alternate_allele: s.chm13.alternate.to_string(),
+                        })
+                        .collect();
+                    tokio::task::spawn_blocking(move || {
+                        let params = HaploidCallerParams::default();
+                        caller::genotype_sites_all_contigs(&bam, &sites, 2, &params, reference.as_deref())
                     })
-                    .collect();
-                let genotypes = tokio::task::spawn_blocking(move || {
-                    let params = HaploidCallerParams::default();
-                    caller::genotype_sites_all_contigs(&bam, &sites, 2, &params, reference.as_deref())
-                })
-                .await??;
+                    .await??
+                } else if panel.sites.iter().any(|s| s.locus(&build).is_some()) {
+                    // GRCh37/GRCh38: the panel already carries this build's coordinates (offline
+                    // allele-aware liftover). Genotype at the build's loci, then re-key the dosages to
+                    // canonical CHM13 ([`IbdPanel::resolve_alignment`]) — no runtime liftover needed.
+                    // Match the panel's per-build contig names to the file's naming (`chr1` vs `1`).
+                    let (bam_h, ref_h) = (bam.clone(), reference.clone());
+                    let file_contigs = tokio::task::spawn_blocking(move || {
+                        navigator_analysis::reader::contig_names(&bam_h, ref_h.as_deref())
+                    })
+                    .await??;
+                    let index: HashMap<String, String> = file_contigs
+                        .into_iter()
+                        .map(|c| {
+                            let key = c.strip_prefix("chr").unwrap_or(&c).to_ascii_uppercase();
+                            (key, c)
+                        })
+                        .collect();
+                    let sites: Vec<Site> = panel
+                        .sites
+                        .iter()
+                        .filter_map(|s| {
+                            let l = s.locus(&build)?;
+                            let norm = l.contig.strip_prefix("chr").unwrap_or(&l.contig).to_ascii_uppercase();
+                            let contig = index.get(&norm)?.clone();
+                            Some(Site {
+                                name: s.rsid.clone(),
+                                contig,
+                                position: l.position,
+                                reference_allele: l.reference.to_string(),
+                                alternate_allele: l.alternate.to_string(),
+                            })
+                        })
+                        .collect();
+                    let raw = tokio::task::spawn_blocking(move || {
+                        let params = HaploidCallerParams::default();
+                        caller::genotype_sites_all_contigs(&bam, &sites, 2, &params, reference.as_deref())
+                    })
+                    .await??;
+                    panel.resolve_alignment(&build, &raw)
+                } else {
+                    // A build the panel doesn't carry — nothing to genotype (degrade gracefully rather
+                    // than probe the wrong loci).
+                    Vec::new()
+                };
                 self.save_analysis(id, &kind, caller::GENOTYPE_VERSION, &genotypes)
                     .await?;
                 Ok(genotypes)
