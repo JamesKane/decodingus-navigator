@@ -150,11 +150,17 @@ impl App {
                     .await
                     .ok()
                     .flatten();
-                let ancient = self
-                    .consensus_ancestry(biosample_guid, "PCA_PROJECTION_GMM")
-                    .await
-                    .ok()
-                    .flatten();
+                // Ancient components are gated off (degenerate reference asset — see
+                // [`crate::ANCIENT_ANCESTRY_ENABLED`]). Read nothing, so a *stale* row persisted by an
+                // earlier build can't resurface in the brief, the DNA-story HTML export, or the LLM facts.
+                let ancient = if crate::ANCIENT_ANCESTRY_ENABLED {
+                    self.consensus_ancestry(biosample_guid, "PCA_PROJECTION_GMM")
+                        .await
+                        .ok()
+                        .flatten()
+                } else {
+                    None
+                };
                 Some(build_ancestry(&result, fine.as_ref(), ancient.as_ref(), &pack))
             }
             _ => None,

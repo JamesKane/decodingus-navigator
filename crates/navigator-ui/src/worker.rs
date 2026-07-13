@@ -1724,16 +1724,22 @@ pub async fn handle(app: &App, cmd: Command) -> Event {
                 .await
                 .unwrap_or(None)
                 .map(Box::new);
-            let ancient = app
-                .consensus_ancestry(biosample_guid, "PCA_PROJECTION_GMM")
-                .await
-                .unwrap_or(None)
-                .map(Box::new);
-            let nmonte = app
-                .consensus_ancestry(biosample_guid, "G25_NMONTE")
-                .await
-                .unwrap_or(None)
-                .map(Box::new);
+            // Ancient breakdowns are gated off (degenerate reference asset — see
+            // navigator_app::ANCIENT_ANCESTRY_ENABLED). Don't surface stale rows from an earlier build.
+            let (ancient, nmonte) = if navigator_app::ANCIENT_ANCESTRY_ENABLED {
+                (
+                    app.consensus_ancestry(biosample_guid, "PCA_PROJECTION_GMM")
+                        .await
+                        .unwrap_or(None)
+                        .map(Box::new),
+                    app.consensus_ancestry(biosample_guid, "G25_NMONTE")
+                        .await
+                        .unwrap_or(None)
+                        .map(Box::new),
+                )
+            } else {
+                (None, None)
+            };
             Event::ConsensusAncestryDetail {
                 biosample_guid,
                 fine,

@@ -2480,15 +2480,24 @@ impl App {
             if let Some(pca) = &modern_pca {
                 result.pca_coordinates = Some(ancestry_analysis::project_pca(&genotypes, pca));
             }
-            let gmm_pca = ancient_pca_bytes
-                .and_then(|b| ancestry_analysis::PcaLoadings::from_bytes(&b).ok())
-                .or(modern_pca);
-            let (pca_gmm, nmonte) = match &gmm_pca {
-                Some(pca) => (
-                    Some(ancestry_analysis::estimate_pca_gmm(&genotypes, pca, &reference_version)),
-                    Some(ancestry_analysis::estimate_nmonte(&genotypes, pca, &reference_version)),
-                ),
-                None => (None, None),
+            // Ancient-ancestry (PCA_PROJECTION_GMM + G25_NMONTE) is gated off: the ancient reference
+            // centroids are degenerate, so both estimators return fabricated numbers. See
+            // [`crate::ANCIENT_ANCESTRY_ENABLED`]. Computing nothing also keeps invalid breakdowns out
+            // of the PDS (publish federates every persisted consensus method).
+            let (pca_gmm, nmonte) = if crate::ANCIENT_ANCESTRY_ENABLED {
+                let gmm_pca = ancient_pca_bytes
+                    .and_then(|b| ancestry_analysis::PcaLoadings::from_bytes(&b).ok())
+                    .or(modern_pca);
+                match &gmm_pca {
+                    Some(pca) => (
+                        Some(ancestry_analysis::estimate_pca_gmm(&genotypes, pca, &reference_version)),
+                        Some(ancestry_analysis::estimate_nmonte(&genotypes, pca, &reference_version)),
+                    ),
+                    None => (None, None),
+                }
+            } else {
+                let _ = (&ancient_pca_bytes, &modern_pca);
+                (None, None)
             };
             (result, pca_gmm, nmonte, fine)
         })

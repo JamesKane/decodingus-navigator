@@ -61,18 +61,26 @@ impl App {
     }
 
     /// The subject's persisted **consensus** ancestry estimates ([`CONSENSUS_SOURCE_ID`]) — one per
-    /// method (ADMIXTURE / PCA_PROJECTION_GMM / FINE_ADMIXTURE / G25_NMONTE), newest-first. Ancestry
-    /// is estimated from the pooled autosomal consensus (not per alignment), so this is the subject's
-    /// authoritative breakdown. Empty until the consensus ancestry has been estimated.
+    /// method (ADMIXTURE / FINE_ADMIXTURE), newest-first. Ancestry is estimated from the pooled
+    /// autosomal consensus (not per alignment), so this is the subject's authoritative breakdown.
+    /// Empty until the consensus ancestry has been estimated.
+    ///
+    /// The ancient methods (`PCA_PROJECTION_GMM`, `G25_NMONTE`) are **excluded while ancient ancestry
+    /// is gated off** ([`crate::ANCIENT_ANCESTRY_ENABLED`]) — their reference asset is degenerate, and
+    /// federating fabricated breakdowns to the PDS is far worse than showing them locally. The filter
+    /// (not just the compute gate) is what keeps a *stale* row persisted by an earlier build from being
+    /// published.
     pub(crate) async fn consensus_ancestry_results(
         &self,
         biosample_guid: SampleGuid,
     ) -> Result<Vec<AncestryResult>, AppError> {
+        const ANCIENT_METHODS: [&str; 2] = ["PCA_PROJECTION_GMM", "G25_NMONTE"];
         let all = ancestry_result::for_biosample(self.store.pool(), biosample_guid).await?;
         Ok(all
             .into_iter()
             .filter(|(id, _)| *id == CONSENSUS_SOURCE_ID)
             .map(|(_, r)| r)
+            .filter(|r| crate::ANCIENT_ANCESTRY_ENABLED || !ANCIENT_METHODS.contains(&r.method.as_str()))
             .collect())
     }
 

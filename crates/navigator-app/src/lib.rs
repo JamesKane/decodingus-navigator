@@ -2118,6 +2118,23 @@ pub struct DiploidProfile {
 /// **consensus** (pooled across all sources) rather than a single sequencing alignment.
 pub const CONSENSUS_SOURCE_ID: i64 = 0;
 
+/// **Ancient-ancestry is disabled** — we compute, display and publish nothing rather than fabricate.
+///
+/// The shipped `ancestry_pca_ancient_<build>.bin` asset is unusable. It carries the 168 *modern*
+/// reference populations plus only 5 ancient ones (WHG / EHG / ANF / Iran_N / Steppe) — so a mixture
+/// model just reconstructs a Briton as "English + British" (those are in the reference set), and the
+/// GMM we shipped is a *membership classifier*, not an admixture model. Fatally, the 5 ancient
+/// centroids sit **on top of** the modern European ones (WHG ≈ English, ANF ≈ Sardinian) — the classic
+/// shrinkage artifact of projecting ancient samples onto a PCA built from modern variation. They carry
+/// no ancient signal, so every model over them is ill-conditioned and arbitrary: a British sample gets
+/// WHG 72.6% (impossible), and even an ancient-only simplex mixture returns Anatolian-Farmer ~3% where
+/// ~30% is expected. No code change rescues this; the reference must be rebuilt from real ancient
+/// genomes with a sound method (supervised admixture over allele frequencies / qpAdm-style
+/// f-statistics — not PCA-centroid distance). Flip this back on once that asset lands.
+///
+/// See `docs/design/ancient-ancestry-rebuild.md`.
+pub const ANCIENT_ANCESTRY_ENABLED: bool = false;
+
 /// Bridge the autosomal consensus to the genotype carrier the ancestry estimators + IBD detector
 /// consume. Each reconciled site becomes a [`SiteGenotype`] with the consensus dosage (count of the
 /// CHM13 ALT — the canonical orientation the AIM freq / PCA assets are keyed against). No-calls
