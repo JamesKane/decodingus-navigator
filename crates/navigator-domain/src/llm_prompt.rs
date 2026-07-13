@@ -35,8 +35,10 @@ pub fn narrate_system_prompt() -> String {
          any term a beginner wouldn't know (e.g. what a haplogroup is). Do NOT simply restate or \
          list each fact one by one.\n{}\n\
          Write two to four short paragraphs in second person (\"your paternal line\"). Open with a \
-         single sentence capturing who they are genetically, then move from deep ancestry toward \
-         their specific lineages, and close with what this test can and cannot tell them. Do not \
+         single sentence capturing who they are genetically, then move from deep/ancient ancestry \
+         through the present-day populations and regions they most resemble (the modern ancestry \
+         layer — cover it, don't dwell only on the ancient sources) toward their specific paternal \
+         and maternal lineages, and close with what this test can and cannot tell them. Do not \
          address the reader as a patient. No preamble, headings, bullet lists, or sign-off — return \
          only the prose.",
         grounding_rules()
@@ -113,7 +115,12 @@ pub fn narrate_fact_sheet(b: &SubjectBrief) -> String {
         s.push_str("\nAncestry:\n");
         s.push_str(&format!("- summary: {}\n", a.summary_phrase));
         for sp in a.super_populations.iter().filter(|p| p.percentage >= 0.5) {
-            s.push_str(&format!("- {}: {:.1}%\n", sp.super_population, sp.percentage));
+            s.push_str(&format!("- continental: {}: {:.1}%\n", sp.super_population, sp.percentage));
+        }
+        // Fine/modern populations (present-day reference groups the person most resembles). Without
+        // these the story leans entirely on the ancient components — this is the recent-ancestry layer.
+        for (name, pct) in a.fine_pops.iter().filter(|(_, pct)| *pct >= 0.5) {
+            s.push_str(&format!("- closest modern population: {name} ({pct:.1}%)\n"));
         }
         if let Some(interp) = &a.interpretation {
             s.push_str(&format!("- note: {interp}\n"));
@@ -201,7 +208,7 @@ mod tests {
                     percentage: 98.0,
                     populations: vec![],
                 }],
-                fine_pops: vec![],
+                fine_pops: vec![("British".into(), 55.0), ("Iberian".into(), 12.0)],
                 ancient_pops: vec![AncientComponent {
                     code: "WHG".into(),
                     name: "Western Hunter-Gatherer".into(),
@@ -247,7 +254,16 @@ mod tests {
         assert!(s.contains("tentative placement"), "confidence must survive");
         assert!(s.contains("Predominantly European"));
         assert!(s.contains("Western Hunter-Gatherer"));
+        // Modern/fine populations must reach the model too — not only the ancient sources.
+        assert!(s.contains("closest modern population: British (55.0%)"), "fine pops missing: {s}");
+        assert!(s.contains("Iberian (12.0%)"));
         assert!(s.contains("high-quality (30× average depth)"));
+    }
+
+    #[test]
+    fn system_prompt_directs_modern_ancestry_layer() {
+        // The narration arc must ask for the present-day/modern populations, not only ancient sources.
+        assert!(narrate_system_prompt().contains("modern ancestry layer"));
     }
 
     #[test]
