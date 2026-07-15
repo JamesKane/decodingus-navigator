@@ -2952,6 +2952,113 @@ pub fn spawn(db_path: PathBuf, wake: impl Fn() + Send + Sync + 'static) -> (Unbo
                                 let _ = evt_tx.send(event);
                                 wake();
                             }
+                            Command::AssignYHaplogroup { alignment_id } => {
+                                if let Ok(Some(build)) = app.reference_build_of_alignment(alignment_id).await {
+                                    ensure_references_streaming(&app, std::slice::from_ref(&build), &evt_tx, &*wake).await;
+                                }
+                                ensure_index_streaming(&app, alignment_id, &evt_tx, &*wake).await;
+                                let event = handle(&app, Command::AssignYHaplogroup { alignment_id }).await;
+                                let _ = evt_tx.send(event);
+                                wake();
+                            }
+                            Command::YHaploReport { alignment_id } => {
+                                if let Ok(Some(build)) = app.reference_build_of_alignment(alignment_id).await {
+                                    ensure_references_streaming(&app, std::slice::from_ref(&build), &evt_tx, &*wake).await;
+                                }
+                                ensure_index_streaming(&app, alignment_id, &evt_tx, &*wake).await;
+                                let event = handle(&app, Command::YHaploReport { alignment_id }).await;
+                                let _ = evt_tx.send(event);
+                                wake();
+                            }
+                            Command::AssignMtdnaHaplogroupFromAlignment { alignment_id } => {
+                                if let Ok(Some(build)) = app.reference_build_of_alignment(alignment_id).await {
+                                    ensure_references_streaming(&app, std::slice::from_ref(&build), &evt_tx, &*wake).await;
+                                }
+                                ensure_index_streaming(&app, alignment_id, &evt_tx, &*wake).await;
+                                let event = handle(&app, Command::AssignMtdnaHaplogroupFromAlignment { alignment_id }).await;
+                                let _ = evt_tx.send(event);
+                                wake();
+                            }
+                            Command::FindPrivateY { alignment_id, mask } => {
+                                if let Ok(Some(build)) = app.reference_build_of_alignment(alignment_id).await {
+                                    ensure_references_streaming(&app, std::slice::from_ref(&build), &evt_tx, &*wake).await;
+                                }
+                                ensure_index_streaming(&app, alignment_id, &evt_tx, &*wake).await;
+                                let event = handle(&app, Command::FindPrivateY { alignment_id, mask }).await;
+                                let _ = evt_tx.send(event);
+                                wake();
+                            }
+                            Command::RunDenovo { alignment_id, contig } => {
+                                if let Ok(Some(build)) = app.reference_build_of_alignment(alignment_id).await {
+                                    ensure_references_streaming(&app, std::slice::from_ref(&build), &evt_tx, &*wake).await;
+                                }
+                                ensure_index_streaming(&app, alignment_id, &evt_tx, &*wake).await;
+                                let event = handle(&app, Command::RunDenovo { alignment_id, contig }).await;
+                                let _ = evt_tx.send(event);
+                                wake();
+                            }
+                            Command::GenotypePanel { alignment_id, panel_id, ploidy } => {
+                                if let Ok(Some(build)) = app.reference_build_of_alignment(alignment_id).await {
+                                    ensure_references_streaming(&app, std::slice::from_ref(&build), &evt_tx, &*wake).await;
+                                }
+                                ensure_index_streaming(&app, alignment_id, &evt_tx, &*wake).await;
+                                let event = handle(&app, Command::GenotypePanel { alignment_id, panel_id, ploidy }).await;
+                                let _ = evt_tx.send(event);
+                                wake();
+                            }
+                            Command::CompareIbd { a, b, panel_id, ploidy } => {
+                                for aln in [a, b] {
+                                    if let Ok(Some(build)) = app.reference_build_of_alignment(aln).await {
+                                        ensure_references_streaming(&app, std::slice::from_ref(&build), &evt_tx, &*wake).await;
+                                    }
+                                    ensure_index_streaming(&app, aln, &evt_tx, &*wake).await;
+                                }
+                                let event = handle(&app, Command::CompareIbd { a, b, panel_id, ploidy }).await;
+                                let _ = evt_tx.send(event);
+                                wake();
+                            }
+                            Command::VerifyIdentity { a, b, panel_id, ploidy } => {
+                                for aln in [a, b] {
+                                    if let Ok(Some(build)) = app.reference_build_of_alignment(aln).await {
+                                        ensure_references_streaming(&app, std::slice::from_ref(&build), &evt_tx, &*wake).await;
+                                    }
+                                    ensure_index_streaming(&app, aln, &evt_tx, &*wake).await;
+                                }
+                                let event = handle(&app, Command::VerifyIdentity { a, b, panel_id, ploidy }).await;
+                                let _ = evt_tx.send(event);
+                                wake();
+                            }
+                            Command::CompareIbdSources { a, b } => {
+                                for src in [a, b] {
+                                    if let navigator_app::IbdSource::Alignment(aln) = src {
+                                        if let Ok(Some(build)) = app.reference_build_of_alignment(aln).await {
+                                            ensure_references_streaming(&app, std::slice::from_ref(&build), &evt_tx, &*wake).await;
+                                        }
+                                        ensure_index_streaming(&app, aln, &evt_tx, &*wake).await;
+                                    }
+                                }
+                                let event = handle(&app, Command::CompareIbdSources { a, b }).await;
+                                let _ = evt_tx.send(event);
+                                wake();
+                            }
+                            Command::BuildYProfile { biosample_guid } => {
+                                if let Ok(builds) = app.reference_builds_for_subject(biosample_guid).await {
+                                    ensure_references_streaming(&app, &builds, &evt_tx, &*wake).await;
+                                }
+                                ensure_indexes_for_subject_streaming(&app, biosample_guid, &evt_tx, &*wake).await;
+                                let event = handle(&app, Command::BuildYProfile { biosample_guid }).await;
+                                let _ = evt_tx.send(event);
+                                wake();
+                            }
+                            Command::BuildMtProfile { biosample_guid } => {
+                                if let Ok(builds) = app.reference_builds_for_subject(biosample_guid).await {
+                                    ensure_references_streaming(&app, &builds, &evt_tx, &*wake).await;
+                                }
+                                ensure_indexes_for_subject_streaming(&app, biosample_guid, &evt_tx, &*wake).await;
+                                let event = handle(&app, Command::BuildMtProfile { biosample_guid }).await;
+                                let _ = evt_tx.send(event);
+                                wake();
+                            }
                             // Streams AnalysisProgress per step (+ each step's result), then AnalysisDone.
                             // Ensure the coordinate index first (step 1's per-contig walker seeks by region).
                             Command::RunFullAnalysis { alignment_id } => {
