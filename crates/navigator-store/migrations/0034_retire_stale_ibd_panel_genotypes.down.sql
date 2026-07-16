@@ -1,0 +1,2 @@
+-- Irreversible: the purged rows were a regenerable (and corrupt) genotype cache, not source data.
+-- Re-genotyping repopulates the current-stem cache on demand; there is nothing to restore.

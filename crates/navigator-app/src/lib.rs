@@ -2349,9 +2349,15 @@ fn panel_kind(panel_id: i64, ploidy: u8) -> String {
 
 /// Group per-site genotypes into per-chromosome dosage arrays (sorted by position) for
 /// the IBD detector.
-/// Artifact kind for an alignment's cached IBD-panel genotypes (distinct from the store-panel
-/// genotype cache, which is keyed by `panel_kind(panel_id, ploidy)`).
-const IBD_PANEL_KIND: &str = "ibd_panel_genotypes";
+/// Artifact kind for an alignment's cached IBD-panel genotypes.
+///
+/// The `2` suffix retires every genotype cached before GRCh37/GRCh38 support landed (`3cf4956`,
+/// 2026-07-13). Those builds were previously genotyped at the *CHM13* panel coordinates on a
+/// non-CHM13 BAM — wrong positions, so the calls were near-random and never heterozygous — yet the
+/// cache key (panel-manifest salt + `GENOTYPE_VERSION`) was unchanged by the code fix, so the
+/// corrupt dosages kept feeding the autosomal consensus (IBD / ancestry / identity). Bumping the
+/// stem forces a one-time re-genotype with the build-aware path.
+const IBD_PANEL_KIND: &str = "ibd_panel_genotypes2";
 
 /// The IBD-panel genotype cache kind, salted with the CHM13 panel asset's manifest sha256 (first 16
 /// hex chars) so regenerating the panel auto-invalidates stale per-alignment genotypes. Falls back to
