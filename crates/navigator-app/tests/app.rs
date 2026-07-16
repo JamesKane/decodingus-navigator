@@ -1611,60 +1611,6 @@ async fn publish_private_variants_to_live_pds() {
 }
 
 #[tokio::test]
-async fn panel_genotyping_then_ibd_compare() {
-    use navigator_analysis::ibd::IbdDetectorConfig;
-    use navigator_domain::workspace::PanelSite;
-
-    let app = app().await;
-    let site = |pos, r: &str, a: &str| PanelSite {
-        chrom: "chr1".into(),
-        position: pos,
-        reference_allele: r.into(),
-        alternate_allele: a.into(),
-        name: format!("s{pos}"),
-    };
-    // The four informative sites in the diploid fixture: hom-ref, het, het, hom-alt.
-    let sites = vec![
-        site(1, "A", "G"),
-        site(2, "C", "G"),
-        site(5, "A", "T"),
-        site(8, "T", "A"),
-    ];
-
-    let panel = app.import_panel("test-panel", &sites).await.unwrap();
-    assert_eq!(app.panel_site_count(panel.id).await.unwrap(), 4);
-
-    let aln = diploid_alignment(&app).await;
-    let genos = app.genotype_panel(aln, panel.id, 2).await.unwrap();
-    let dosages: Vec<i32> = genos.iter().map(|g| g.dosage).collect();
-    assert_eq!(dosages, vec![0, 1, 1, 2]);
-
-    // cached read-back
-    assert_eq!(
-        app.cached_panel_genotypes(aln, panel.id, 2).await.unwrap().unwrap(),
-        genos
-    );
-
-    // IBD self-compare with relaxed thresholds (only 4 sites): one fully-shared segment.
-    let cfg = IbdDetectorConfig {
-        min_snp_count: 3,
-        window_size: 3,
-        min_segment_cm: 0.0,
-        ..IbdDetectorConfig::default()
-    };
-    let cmp = app.compare_ibd(aln, aln, panel.id, 2, cfg).await.unwrap();
-    assert_eq!(cmp.segments.len(), 1);
-    assert!(cmp.summary.total_shared_cm >= 0.0);
-
-    // comparing against an un-genotyped alignment errors clearly.
-    let other = diploid_alignment(&app).await;
-    assert!(matches!(
-        app.compare_ibd(aln, other, panel.id, 2, cfg).await,
-        Err(AppError::NotGenotyped(_))
-    ));
-}
-
-#[tokio::test]
 async fn import_project_dir_creates_rows_is_idempotent_and_coverage_runs_on_cram() {
     let app = app().await;
     let fx = fixtures();

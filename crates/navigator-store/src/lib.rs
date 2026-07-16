@@ -24,7 +24,6 @@ pub mod haplogroup_call;
 pub mod ibd_exchange;
 pub mod mdka;
 pub mod mtdna;
-pub mod panel;
 pub mod project;
 pub mod reconciliation;
 pub mod sequence_run;

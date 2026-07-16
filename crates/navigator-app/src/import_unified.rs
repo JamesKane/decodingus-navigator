@@ -849,63 +849,6 @@ impl App {
         Ok(stats)
     }
 
-    pub async fn panel_site_count(&self, panel_id: i64) -> Result<i64, AppError> {
-        Ok(panel::site_count(self.store.pool(), panel_id).await?)
-    }
-
-    /// Genotype an alignment against a panel at the given ploidy and persist the dosages
-    /// (one artifact per alignment+panel+ploidy). Runs the blocking caller off-thread.
-    pub async fn genotype_panel(
-        &self,
-        alignment_id: i64,
-        panel_id: i64,
-        ploidy: u8,
-    ) -> Result<Vec<SiteGenotype>, AppError> {
-        let aln = self.alignment_or_err(alignment_id).await?;
-        let bam = aln.bam_path.ok_or(AppError::MissingPaths(alignment_id))?;
-        let sites: Vec<Site> = panel::sites(self.store.pool(), panel_id)
-            .await?
-            .into_iter()
-            .map(|s| Site {
-                name: s.name,
-                contig: s.chrom,
-                position: s.position,
-                reference_allele: s.reference_allele,
-                alternate_allele: s.alternate_allele,
-            })
-            .collect();
-
-        let bam_pb = PathBuf::from(bam);
-        // Resolve the reference for decode (see alignment_reference_for_decode): required for a CRAM,
-        // None for a BAM. Panel genotyping tallies SNP sites, so a BAM consults no reference bases.
-        let reference = self.alignment_reference_for_decode(alignment_id).await?.1;
-        let params = HaploidCallerParams::default();
-        let genotypes = tokio::task::spawn_blocking(move || {
-            caller::genotype_sites_all_contigs(&bam_pb, &sites, ploidy, &params, reference.as_deref())
-        })
-        .await??;
-
-        self.save_analysis(
-            alignment_id,
-            &panel_kind(panel_id, ploidy),
-            caller::GENOTYPE_VERSION,
-            &genotypes,
-        )
-        .await?;
-        Ok(genotypes)
-    }
-
-    /// Cached panel genotypes for an alignment, if present.
-    pub async fn cached_panel_genotypes(
-        &self,
-        alignment_id: i64,
-        panel_id: i64,
-        ploidy: u8,
-    ) -> Result<Option<Vec<SiteGenotype>>, AppError> {
-        self.load_analysis(alignment_id, &panel_kind(panel_id, ploidy), caller::GENOTYPE_VERSION)
-            .await
-    }
-
     /// Resolve an imported chip's genotypes to canonical CHM13 **IBD-panel** dosages — the chip→IBD
     /// path (no alignment, no runtime liftover: the multi-build panel pre-computes coordinates). The
     /// output [`SiteGenotype`]s are over the same CHM13 sites a WGS caller would hit, so a chip and a
@@ -933,32 +876,6 @@ impl App {
         let tuples: Vec<(String, i64, char, char)> =
             calls.into_iter().map(|c| (c.contig, c.position, c.a1, c.a2)).collect();
         Ok(panel.resolve_chip(&from_build, &tuples))
-    }
-
-    /// Compare two alignments for IBD, using each one's cached panel genotypes. Both must
-    /// have been genotyped against `panel_id` at `ploidy` first.
-    pub async fn compare_ibd(
-        &self,
-        alignment_a: i64,
-        alignment_b: i64,
-        panel_id: i64,
-        ploidy: u8,
-        config: IbdDetectorConfig,
-    ) -> Result<IbdComparison, AppError> {
-        let ga = self
-            .cached_panel_genotypes(alignment_a, panel_id, ploidy)
-            .await?
-            .ok_or_else(|| AppError::NotGenotyped(alignment_a))?;
-        let gb = self
-            .cached_panel_genotypes(alignment_b, panel_id, ploidy)
-            .await?
-            .ok_or_else(|| AppError::NotGenotyped(alignment_b))?;
-
-        let build = alignment::get(self.store.pool(), alignment_a)
-            .await?
-            .and_then(|a| canonical_build(&a.reference_build))
-            .unwrap_or(ReferenceBuild::Chm13v2);
-        Ok(detect_ibd(&ga, &gb, build, config))
     }
 
     /// IBD comparison over the **chip-compatible IBD panel** for two samples that may each be a
@@ -1109,49 +1026,9 @@ impl App {
         }
     }
 
-    /// Identity verification — are two alignments the same individual? Autosomal genotype
-    /// concordance at the panel sites (primary), corroborated by Y-STR distance when both
-    /// subjects have an STR profile. Both alignments must be genotyped against the panel.
-    pub async fn verify_identity(
-        &self,
-        alignment_a: i64,
-        alignment_b: i64,
-        panel_id: i64,
-        ploidy: u8,
-    ) -> Result<IdentityVerification, AppError> {
-        let ga = self
-            .cached_panel_genotypes(alignment_a, panel_id, ploidy)
-            .await?
-            .ok_or(AppError::NotGenotyped(alignment_a))?;
-        let gb = self
-            .cached_panel_genotypes(alignment_b, panel_id, ploidy)
-            .await?
-            .ok_or(AppError::NotGenotyped(alignment_b))?;
-        let (matched, sites) = genotype_concordance(&ga, &gb);
-        let concordance = (sites > 0).then(|| matched as f64 / sites as f64);
-
-        // Optional Y-STR corroboration from each subject's first STR profile.
-        let (mut y_dist, mut y_markers) = (None, 0i64);
-        if let (Ok(ba), Ok(bb)) = (
-            self.biosample_of_alignment(alignment_a).await,
-            self.biosample_of_alignment(alignment_b).await,
-        ) {
-            let (pa, pb) = (self.list_str_profiles(ba).await?, self.list_str_profiles(bb).await?);
-            if let (Some(a), Some(b)) = (pa.first(), pb.first()) {
-                let (d, c) = strprofile::str_distance(&a.markers, &b.markers);
-                if c > 0 {
-                    y_dist = Some(d);
-                    y_markers = c;
-                }
-            }
-        }
-        Ok(reconciliation::classify_identity(concordance, sites, y_dist, y_markers))
-    }
-
     /// Subject-level identity verification (gap §8) — "are these two subjects the same individual?"
-    /// (duplicate detection). The consensus counterpart to [`verify_identity`]: pooled autosomal
-    /// consensus genotype concordance (no panel selection), corroborated by Y-STR distance. Both
-    /// subjects need a built autosomal consensus.
+    /// (duplicate detection). Pooled autosomal consensus genotype concordance (no panel selection),
+    /// corroborated by Y-STR distance. Both subjects need a built autosomal consensus.
     pub async fn verify_identity_consensus(
         &self,
         a: SampleGuid,

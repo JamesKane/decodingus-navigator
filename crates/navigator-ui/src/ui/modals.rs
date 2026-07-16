@@ -580,10 +580,6 @@ impl NavigatorApp {
                 }
                 ui.add_space(8.0);
 
-                // --- Panels (genotyping site sets) ---
-                self.panels_section(ui);
-                ui.add_space(8.0);
-
                 // --- Advanced (read-only) ---
                 ui.label(egui::RichText::new(self.tr("settings.advanced")).strong());
                 ui.label(

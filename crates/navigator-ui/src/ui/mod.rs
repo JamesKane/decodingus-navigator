@@ -20,7 +20,7 @@ use navigator_app::{
     CompatibilityLevel, Consensus, Coverage, DenovoCall, DescentReport, DnaType, FtdnaGenealogy, FtdnaImportPlan,
     FtdnaResolution,
     HaploAssignment, HeteroplasmySite, IbdComparison, IbdSuggestion, IdentityVerification, LineageBrief, LineageKind,
-    MatchKind, MtRegion, MtVariant, NarratedBrief, PackStatus, PanelGenotype, PrivateBucket, PrivateClass,
+    MatchKind, MtRegion, MtVariant, NarratedBrief, PackStatus, PrivateBucket, PrivateClass,
     ProjectOverview, ProjectSampleReport, ProjectStrChart, ReadMetrics, RefBuildStatus, SexInferenceResult,
     SignalKind, SnpEvidence, SourceType, StrConcordanceRow, SubjectAnalysisStatus, SubjectBrief, SvAnalysisResult,
     UiMode, VerificationStatus, YMatch, YProfile, YSignal, YState, YVariantStatus, YstrClustering,
@@ -35,7 +35,7 @@ use navigator_domain::variants::VariantSet;
 use navigator_domain::workspace::{Alignment, Biosample, NewAlignment, NewProject, NewSequenceRun, SequenceRun};
 use tokio::sync::mpsc::UnboundedSender;
 
-use crate::worker::{self, Command, Event, NewBiosample, PanelInfo, YMask};
+use crate::worker::{self, Command, Event, NewBiosample, YMask};
 
 #[derive(Default)]
 struct Forms {
@@ -51,8 +51,6 @@ struct Forms {
     aln_reference_build: String,
     aln_aligner: String,
     aln_bam: String,
-    ploidy: String,
-    panel_import_name: String,
     login_handle: String,
     str_panel: String,
     str_provider: String,
@@ -721,12 +719,7 @@ pub struct NavigatorApp {
     /// De-novo haploid SNP calls keyed by contig (chrY on the Y-DNA tab, chrM on the mtDNA tab).
     denovo: std::collections::HashMap<String, Vec<DenovoCall>>,
     running_denovo: bool,
-    panels: Vec<PanelInfo>,
-    selected_panel: Option<i64>,
     all_alignments: Vec<Alignment>,
-    panel_genotypes: Option<Vec<PanelGenotype>>,
-    running_genotype: bool,
-    ibd_other: Option<i64>,
     /// Chip-compatible IBD compare: the two picked sources (each a WGS alignment or an imported chip).
     ibd_src_a: Option<navigator_app::IbdSource>,
     ibd_src_b: Option<navigator_app::IbdSource>,
@@ -942,7 +935,6 @@ impl NavigatorApp {
         let (tx, rx) = worker::spawn(db_path, move || ctx.request_repaint());
         let _ = tx.send(Command::LoadOverview);
         let _ = tx.send(Command::LoadAllBiosamples);
-        let _ = tx.send(Command::LoadPanels);
         let _ = tx.send(Command::LoadAllAlignments);
         let _ = tx.send(Command::AuthStatus);
         let _ = tx.send(Command::SyncStatus);
@@ -1113,12 +1105,7 @@ impl NavigatorApp {
             running: false,
             denovo: std::collections::HashMap::new(),
             running_denovo: false,
-            panels: Vec::new(),
-            selected_panel: None,
             all_alignments: Vec::new(),
-            panel_genotypes: None,
-            running_genotype: false,
-            ibd_other: None,
             ibd_src_a: None,
             ibd_src_b: None,
             ibd_other_subject: None,
@@ -1176,7 +1163,6 @@ impl NavigatorApp {
             feed_topic: String::new(),
             feed_publish_pds: false,
             forms: Forms {
-                ploidy: "2".into(),
                 run_test_type: "WGS".into(),
                 str_panel: "Y-37".into(),
                 str_provider: "FTDNA".into(),

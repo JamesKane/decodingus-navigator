@@ -19,12 +19,9 @@ use navigator_analysis::heteroplasmy::{self, HeteroplasmyParams};
 use navigator_analysis::ibd::{ChromosomeGenotypes, GeneticMap, MatchSummary, PairwiseIbdDetector};
 use navigator_analysis::scan::SampleSidecars;
 use navigator_analysis::sidecar;
-use navigator_domain::workspace::{Panel, PanelSite};
-use navigator_store::panel;
 
 // Re-export the analysis result types the command API returns, so the UI depends only
 // on navigator-app (ui -> app), not directly on navigator-analysis.
-pub use navigator_analysis::caller::SiteGenotype as PanelGenotype;
 pub use navigator_analysis::caller::VariantCall as DenovoCall;
 pub use navigator_analysis::coverage::CoverageResult as Coverage;
 pub use navigator_analysis::haplo::{BranchEvidence, CallState, NodeEvidence, ScoredHaplogroup, SnpEvidence};
@@ -2340,11 +2337,6 @@ fn read_head(path: &Path) -> Result<String, AppError> {
     }
     buf.truncate(filled);
     Ok(String::from_utf8_lossy(&buf).into_owned())
-}
-
-/// Artifact kind for panel genotypes, keyed by panel + ploidy.
-fn panel_kind(panel_id: i64, ploidy: u8) -> String {
-    format!("panel:{panel_id}:p{ploidy}")
 }
 
 /// Group per-site genotypes into per-chromosome dosage arrays (sorted by position) for

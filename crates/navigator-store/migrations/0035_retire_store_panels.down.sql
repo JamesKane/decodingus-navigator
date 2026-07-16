@@ -1,0 +1,3 @@
+-- Irreversible: the retired store-panel path is legacy/regenerable. The dropped `panel` and
+-- `panel_site` tables held only locally-imported genotyping site sets (no analysis results), which
+-- are re-created by re-importing a panel VCF under the old code — there is nothing to restore here.

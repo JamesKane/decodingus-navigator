@@ -18,7 +18,7 @@ use navigator_app::{
     ExchangeSessionInfo,
     FtdnaGenealogy, FtdnaImportOptions, FtdnaImportPlan, FtdnaImportSummary, FtdnaResolution, HaploAssignment,
     HeteroplasmySite, IbdComparison, IbdDetectorConfig, IbdSuggestion, IdentityVerification, IncomingRequest,
-    NarratedBrief, PanelGenotype, PrivateBucket, ProjectImportSummary, ProjectOverview, ProjectSampleReport,
+    NarratedBrief, PrivateBucket, ProjectImportSummary, ProjectOverview, ProjectSampleReport,
     ProjectStrChart, ReadMetrics, RecruitmentInvitation, RefBuildStatus, SexInferenceResult, SignalKind,
     SourceType, StoredIbdExchange, StrConcordanceRow, SubjectAnalysisStatus, SubjectBrief, SvAnalysisResult, YMatch,
     YstrClustering,
@@ -30,7 +30,7 @@ use navigator_domain::mtdna::MtdnaSequence;
 use navigator_domain::strprofile::StrProfile;
 use navigator_domain::variants::VariantSet;
 use navigator_domain::workspace::{
-    Alignment, Biosample, NewAlignment, NewProject, NewSequenceRun, Panel, Project, SequenceRun,
+    Alignment, Biosample, NewAlignment, NewProject, NewSequenceRun, Project, SequenceRun,
 };
 use tokio::sync::mpsc::{unbounded_channel, UnboundedSender};
 
@@ -317,28 +317,7 @@ pub enum Command {
         alignment_id: i64,
         contig: String,
     },
-    LoadPanels,
-    ImportPanel {
-        name: String,
-        path: PathBuf,
-    },
     LoadAllAlignments,
-    GenotypePanel {
-        alignment_id: i64,
-        panel_id: i64,
-        ploidy: u8,
-    },
-    LoadPanelGenotypes {
-        alignment_id: i64,
-        panel_id: i64,
-        ploidy: u8,
-    },
-    CompareIbd {
-        a: i64,
-        b: i64,
-        panel_id: i64,
-        ploidy: u8,
-    },
     /// Compare two samples (each a WGS alignment or an imported chip) over the chip-compatible IBD
     /// panel — the volume-case path (chip↔chip / chip↔WGS).
     CompareIbdSources {
@@ -349,13 +328,6 @@ pub enum Command {
     CompareIbdConsensus {
         a: SampleGuid,
         b: SampleGuid,
-    },
-    /// Verify two alignments are the same individual (genotype concordance + Y-STR).
-    VerifyIdentity {
-        a: i64,
-        b: i64,
-        panel_id: i64,
-        ploidy: u8,
     },
     /// Verify two SUBJECTS are the same individual over their pooled autosomal consensus (no panel).
     VerifyIdentityConsensus {
@@ -681,13 +653,6 @@ pub enum Command {
     MarkNotificationRead {
         id: Option<String>,
     },
-}
-
-/// A panel with its site count, for the panel list.
-#[derive(Debug, Clone)]
-pub struct PanelInfo {
-    pub panel: Panel,
-    pub site_count: i64,
 }
 
 /// A result/notification from the worker to the UI.
@@ -1044,15 +1009,7 @@ pub enum Event {
     AnalysisDone {
         cancelled: bool,
     },
-    Panels(Vec<PanelInfo>),
-    PanelImported,
     AllAlignments(Vec<Alignment>),
-    PanelGenotypes {
-        alignment_id: i64,
-        panel_id: i64,
-        ploidy: u8,
-        genotypes: Vec<PanelGenotype>,
-    },
     Ibd(IbdComparison),
     /// Federated IBD match suggestions from the AppView (may be empty in a single-user dev AppView).
     IbdSuggestions(Vec<IbdSuggestion>),
@@ -1947,60 +1904,10 @@ pub async fn handle(app: &App, cmd: Command) -> Event {
                 Err(e) => Event::Error(e.to_string()),
             }
         }
-        Command::LoadPanels => match app.list_panels().await {
-            Ok(panels) => {
-                let mut infos = Vec::with_capacity(panels.len());
-                for panel in panels {
-                    let site_count = app.panel_site_count(panel.id).await.unwrap_or(0);
-                    infos.push(PanelInfo { panel, site_count });
-                }
-                Event::Panels(infos)
-            }
-            Err(e) => Event::Error(e.to_string()),
-        },
-        Command::ImportPanel { name, path } => match app.import_panel_from_vcf(&name, &path).await {
-            Ok(_) => Event::PanelImported,
-            Err(e) => Event::Error(e.to_string()),
-        },
         Command::LoadAllAlignments => match app.list_all_alignments().await {
             Ok(alns) => Event::AllAlignments(alns),
             Err(e) => Event::Error(e.to_string()),
         },
-        Command::GenotypePanel {
-            alignment_id,
-            panel_id,
-            ploidy,
-        } => match app.genotype_panel(alignment_id, panel_id, ploidy).await {
-            Ok(genotypes) => Event::PanelGenotypes {
-                alignment_id,
-                panel_id,
-                ploidy,
-                genotypes,
-            },
-            Err(e) => Event::Error(e.to_string()),
-        },
-        Command::LoadPanelGenotypes {
-            alignment_id,
-            panel_id,
-            ploidy,
-        } => match app.cached_panel_genotypes(alignment_id, panel_id, ploidy).await {
-            Ok(genotypes) => Event::PanelGenotypes {
-                alignment_id,
-                panel_id,
-                ploidy,
-                genotypes: genotypes.unwrap_or_default(),
-            },
-            Err(e) => Event::Error(e.to_string()),
-        },
-        Command::CompareIbd { a, b, panel_id, ploidy } => {
-            match app
-                .compare_ibd(a, b, panel_id, ploidy, IbdDetectorConfig::default())
-                .await
-            {
-                Ok(cmp) => Event::Ibd(cmp),
-                Err(e) => Event::Error(e.to_string()),
-            }
-        }
         Command::CompareIbdConsensus { a, b } => {
             match app.compare_ibd_consensus(a, b, IbdDetectorConfig::default()).await {
                 Ok(cmp) => Event::Ibd(cmp),
@@ -2013,10 +1920,6 @@ pub async fn handle(app: &App, cmd: Command) -> Event {
                 Err(e) => Event::Error(e.to_string()),
             }
         }
-        Command::VerifyIdentity { a, b, panel_id, ploidy } => match app.verify_identity(a, b, panel_id, ploidy).await {
-            Ok(v) => Event::Identity(v),
-            Err(e) => Event::Error(e.to_string()),
-        },
         Command::VerifyIdentityConsensus { a, b } => match app.verify_identity_consensus(a, b).await {
             Ok(v) => Event::Identity(v),
             Err(e) => Event::Error(e.to_string()),

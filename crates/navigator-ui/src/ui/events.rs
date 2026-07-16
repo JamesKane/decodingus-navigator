@@ -925,26 +925,7 @@ impl NavigatorApp {
                     // the "not analyzed yet" prompt (no-op in Advanced / when nothing is selected).
                     self.reload_subject_brief();
                 }
-                Event::Panels(p) => self.panels = p,
-                Event::PanelImported => {
-                    self.status = "Panel imported".into();
-                    let _ = self.tx.send(Command::LoadPanels);
-                }
                 Event::AllAlignments(a) => self.all_alignments = a,
-                Event::PanelGenotypes {
-                    alignment_id,
-                    panel_id,
-                    ploidy,
-                    genotypes,
-                } => {
-                    if self.selected_alignment == Some(alignment_id)
-                        && self.selected_panel == Some(panel_id)
-                        && self.ploidy() == ploidy
-                    {
-                        self.panel_genotypes = (!genotypes.is_empty()).then_some(genotypes);
-                    }
-                    self.running_genotype = false;
-                }
                 Event::Ibd(cmp) => {
                     self.ibd_result = Some(cmp);
                     self.running_ibd = false;
@@ -1149,7 +1130,6 @@ impl NavigatorApp {
                     self.status = format!("Error: {e}");
                     self.running = false;
                     self.running_denovo = false;
-                    self.running_genotype = false;
                     self.running_ibd = false;
                     self.loading_ibd_suggestions = false;
                     self.logging_in = false;
@@ -1348,7 +1328,6 @@ impl NavigatorApp {
         self.running_metrics = false;
         self.running_sv = false;
         self.denovo.clear();
-        self.panel_genotypes = None;
         self.ibd_result = None;
         self.identity = None;
         self.y_haplogroup = None;
@@ -1367,31 +1346,6 @@ impl NavigatorApp {
             contig: "chrM".into(),
         });
         let _ = self.tx.send(Command::LoadPrivateY { alignment_id: id }); // reload cached private-Y
-        if let Some(panel_id) = self.selected_panel {
-            let _ = self.tx.send(Command::LoadPanelGenotypes {
-                alignment_id: id,
-                panel_id,
-                ploidy: self.ploidy(),
-            });
-        }
-    }
-
-    pub(crate) fn select_panel(&mut self, panel_id: i64) {
-        self.selected_panel = Some(panel_id);
-        self.panel_genotypes = None;
-        self.ibd_result = None;
-        self.identity = None;
-        if let Some(aln) = self.selected_alignment {
-            let _ = self.tx.send(Command::LoadPanelGenotypes {
-                alignment_id: aln,
-                panel_id,
-                ploidy: self.ploidy(),
-            });
-        }
-    }
-
-    pub(crate) fn ploidy(&self) -> u8 {
-        self.forms.ploidy.trim().parse().unwrap_or(2)
     }
 
     fn clear_sample_selection(&mut self) {

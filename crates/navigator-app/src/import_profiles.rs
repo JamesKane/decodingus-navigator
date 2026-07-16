@@ -30,40 +30,6 @@ fn load_ysnp_dictionary_cached() -> Result<Arc<YsnpDictionary>, String> {
 }
 
 impl App {
-    // ---- panels + IBD ------------------------------------------------------
-
-    /// Create a genotyping panel from explicit sites.
-    pub async fn import_panel(&self, name: &str, sites: &[PanelSite]) -> Result<Panel, AppError> {
-        Ok(panel::create(self.store.pool(), name, sites).await?)
-    }
-
-    /// Create a panel from a (plain-text) sites VCF — biallelic SNP rows only.
-    pub async fn import_panel_from_vcf(&self, name: &str, vcf_path: &Path) -> Result<Panel, AppError> {
-        let variants = navigator_analysis::parity::parse_truth_vcf(vcf_path)?;
-        let sites: Vec<PanelSite> = variants
-            .iter()
-            .filter_map(|v| {
-                let alt = v.alternate.first()?;
-                (v.reference.len() == 1 && alt.len() == 1).then(|| PanelSite {
-                    chrom: v.chrom.clone(),
-                    position: v.pos,
-                    reference_allele: v.reference.clone(),
-                    alternate_allele: alt.clone(),
-                    name: v
-                        .ids
-                        .first()
-                        .cloned()
-                        .unwrap_or_else(|| format!("{}:{}", v.chrom, v.pos)),
-                })
-            })
-            .collect();
-        self.import_panel(name, &sites).await
-    }
-
-    pub async fn list_panels(&self) -> Result<Vec<Panel>, AppError> {
-        Ok(panel::list(self.store.pool()).await?)
-    }
-
     // ---- STR profiles ------------------------------------------------------
 
     /// Import a Y-STR profile for a subject from an exported marker table (CSV/TSV).

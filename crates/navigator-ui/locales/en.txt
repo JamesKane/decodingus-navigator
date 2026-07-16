@@ -308,7 +308,6 @@ dash.title=Dashboard
 dash.projects=Projects
 dash.subjects=Subjects
 dash.alignments=Alignments
-dash.panels=Panels
 
 # Empty states / hints
 empty.projects.title=Projects
@@ -362,7 +361,6 @@ common.assignHaplogroup=Assign haplogroup
 common.pickBamCram=Pick BAM/CRAM…
 common.noMatch=No match.
 form.testType=Test type:
-form.ploidy=Ploidy:
 form.override=Override:
 form.callableMask=Callable mask:
 form.chooseBed=Choose BED…
@@ -425,8 +423,6 @@ mt.noHeteroplasmy=No heteroplasmic positions above the noise floor.
 mt.chooseFasta=Choose FASTA…
 mt.chooseRcrs=Choose rCRS…
 mt.rcrsRef=rCRS reference:
-panel.selectInSidebar=Select a panel in the sidebar.
-panel.notGenotyped=Not genotyped against this panel.
 refdl.required=Reference download required before import:
 denovo.noCalls=0 SNP calls.
 hint.noBamPath=(no BAM/CRAM path recorded)
@@ -516,7 +512,6 @@ str.addPasted=Add pasted calls
 chip.section=Import chip data
 mt.deriveVariants=Derive variants vs rCRS
 mt.importFasta=Import mtDNA FASTA
-mt.importSitesVcf=Import sites VCF…
 common.downloadContinue=Download & continue
 projects.analyzeAll=Analyze all (coverage + Y)
 btn.cov=Cov
@@ -525,7 +520,6 @@ aln.add=Add alignment
 common.set=Set
 common.clear=Clear
 ancestry.paint=Paint chromosomes
-ibd.verify=Verify same donor
 dash.addPinned=Add pinned subject
 
 # Settings dialog
