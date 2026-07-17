@@ -136,13 +136,14 @@ ANCIENT_COMPONENTS="${ANCIENT_COMPONENTS:-WHG,ANF,Steppe}"
 # what the fine-panel builder does) would feed the mixture fake evidence. See pca::build_ancient_panel.
 ANCIENT_MIN_CALLED="${ANCIENT_MIN_CALLED:-8}"
 # ASCERTAINMENT FLOOR (Option A′). A consumer-array manifest: one assayed rsID per line (a 23andMe /
-# AncestryDNA / Illumina-GSA export or manifest; extra columns ignored, first token taken as the id).
-# When set, the deep panel is restricted to the array-assayed sites (mapped to CHM13 via the 1240k
-# liftover). Allele-frequency admixture is only valid when sample and reference share ascertainment;
-# without this the deep estimate is unstable across data sources (WGS ~90% vs the same person's chip
-# ~58% Steppe). REQUIRED for a shippable deep panel — see docs/design/ancient-ancestry-rebuild.md §4.
-# Leave empty to build the full (unascertained) panel, which does NOT pass the §3.4 stability gate.
-CHIP_MANIFEST="${CHIP_MANIFEST:-}"
+# AncestryDNA / Illumina-GSA export or manifest; extra columns ignored, first token taken as the id;
+# plain or .gz). The deep panel is restricted to the array-assayed sites (mapped to CHM13 via the
+# 1240k liftover). Allele-frequency admixture is only valid when sample and reference share
+# ascertainment; without this the deep estimate is unstable across data sources (WGS ~90% vs the same
+# person's chip ~58% Steppe). REQUIRED for a shippable deep panel — docs/design/ancient-ancestry-rebuild.md §4.
+# Defaults to the committed consumer-array manifest (manifests/README.md); set to "" to build the
+# full (unascertained) panel, which does NOT pass the §3.4 stability gate.
+CHIP_MANIFEST="${CHIP_MANIFEST-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/manifests/consumer_array_1240k_rsids.txt.gz}"
 ASCERTAIN_SITES="$TMP/ascertain_sites.${BUILD}.tsv"        # generated: CHM13 contig<TAB>pos of array sites
 
 # NOTE: `ancestry_pca_ancient_<build>.bin` is RETIRED and no longer built or published. Projecting

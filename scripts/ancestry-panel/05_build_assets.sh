@@ -43,7 +43,8 @@ ASCERTAIN_ARG=()
 if [[ -n "$CHIP_MANIFEST" ]]; then
   [[ -s "$CHIP_MANIFEST" ]] || die "CHIP_MANIFEST=$CHIP_MANIFEST not found"
   [[ -s "$BED_1240K" ]] || die "missing $BED_1240K (run 02_liftover_panel_sites.sh)"
-  awk 'BEGIN{FS="[ \t,]"} $0 !~ /^#/ && $1 ~ /^rs/ {print $1}' "$CHIP_MANIFEST" | sort -u > "$TMP/chip_rsids.txt"
+  case "$CHIP_MANIFEST" in *.gz) rd=(gzip -dc) ;; *) rd=(cat) ;; esac
+  "${rd[@]}" "$CHIP_MANIFEST" | awk 'BEGIN{FS="[ \t,]"} $0 !~ /^#/ && $1 ~ /^rs/ {print $1}' | sort -u > "$TMP/chip_rsids.txt"
   awk -F'\t' 'NR==FNR{keep[$1]=1; next} { split($4,a,"|"); if (a[1] in keep) print $1"\t"$3 }' \
     "$TMP/chip_rsids.txt" "$BED_1240K" | sort -k1,1 -k2,2n -u > "$ASCERTAIN_SITES"
   [[ -s "$ASCERTAIN_SITES" ]] || die "no array rsIDs matched the 1240k panel — is CHIP_MANIFEST an rsID list?"

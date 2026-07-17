@@ -263,9 +263,14 @@ fallback if A′ cannot hold the sanity band as real samples accumulate.
     than the full panel (IBS 2.60 vs 3.02).
   - *Density:* GBR 50.0 → 51.8 at half the sites.
 
-**Remaining before re-enabling** (`ANCIENT_ANCESTRY_ENABLED` stays `false`): (1) choose and commit a
-canonical consumer-array manifest for the shipped build (the validation above used one subject's chip
-files as a stand-in — generic array sites, but it should be a versioned artifact); (2) rebuild and
-re-publish `ancestry_freq_ancient_<build>.bin` from the AADR through the ascertainment floor; (3)
-re-run §3.4 on the shipped asset. The non-European sanity band remains simulation-only until more real
-dual-source samples exist.
+**Manifest (done).** `scripts/ancestry-panel/manifests/consumer_array_1240k_rsids.txt.gz` — the
+23andMe v5 ∪ AncestryDNA v2 probe sets ∩ AADR 1240k (649,478 rsIDs; array *design*, not genotypes).
+`config.sh` defaults `$CHIP_MANIFEST` to it, so a pipeline build is ascertained out of the box; the
+whole path is verified (`.gz` → 05 rsID/1240k join → 9,971 ancient sites, the validated panel).
+
+**Remaining before re-enabling** (`ANCIENT_ANCESTRY_ENABLED` stays `false`): (1) rebuild and
+re-publish `ancestry_freq_ancient_<build>.bin` from the AADR through the ascertainment floor (the
+current shipped `.bin` is still the full, unascertained panel); (2) re-run §3.4 on that rebuilt asset;
+(3) flip the flag. The non-European sanity band remains simulation-only until more real dual-source
+samples exist; a broader/vendor-neutral ascertainment (e.g. the AADR Human Origins array) is the
+natural follow-up if wanted — see `manifests/README.md`.
