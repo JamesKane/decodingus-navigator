@@ -706,12 +706,10 @@ impl NavigatorApp {
                     biosample_guid,
                     fine,
                     ancient,
-                    nmonte,
                 } => {
                     if self.selected_sample == Some(biosample_guid) {
                         self.fine_ancestry = fine.map(|b| *b);
                         self.ancient_ancestry = ancient.map(|b| *b);
-                        self.nmonte_ancestry = nmonte.map(|b| *b);
                     }
                 }
                 Event::DonorPrivateY { bucket } => {
@@ -1207,7 +1205,6 @@ impl NavigatorApp {
         self.donor_ancestry = None;
         self.fine_ancestry = None;
         self.ancient_ancestry = None;
-        self.nmonte_ancestry = None;
         // pca_reference is the global CHM13 centroid cloud (subject-independent) — keep it loaded
         // across subject switches rather than re-fetching the asset each time.
         self.estimating_donor_ancestry = false;

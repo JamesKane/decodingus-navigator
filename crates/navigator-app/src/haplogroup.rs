@@ -2468,38 +2468,34 @@ impl App {
             })
         };
         let pca_bytes = optional(ancestry_pca_path(build));
-        let ancient_pca_bytes = optional(ancestry_pca_ancient_path(build));
         let fine_bytes = optional(ancestry_freq_global_path(build));
+        let ancient_bytes = optional(ancestry_freq_ancient_path(build));
 
-        let (result, pca_gmm, nmonte, fine) = tokio::task::spawn_blocking(move || {
+        let (result, ancient, fine) = tokio::task::spawn_blocking(move || {
             let mut result = ancestry_analysis::estimate_admixture(&genotypes, &panel, &reference_version);
             let fine = fine_bytes
                 .and_then(|b| ancestry_analysis::AncestryPanel::from_bytes(&b).ok())
                 .map(|fp| ancestry_analysis::estimate_fine_admixture(&genotypes, &fp, &reference_version));
-            let modern_pca = pca_bytes.and_then(|b| ancestry_analysis::PcaLoadings::from_bytes(&b).ok());
-            if let Some(pca) = &modern_pca {
-                result.pca_coordinates = Some(ancestry_analysis::project_pca(&genotypes, pca));
+            if let Some(pca) = pca_bytes.and_then(|b| ancestry_analysis::PcaLoadings::from_bytes(&b).ok()) {
+                result.pca_coordinates = Some(ancestry_analysis::project_pca(&genotypes, &pca));
             }
-            // Ancient-ancestry (PCA_PROJECTION_GMM + G25_NMONTE) is gated off: the ancient reference
-            // centroids are degenerate, so both estimators return fabricated numbers. See
-            // [`crate::ANCIENT_ANCESTRY_ENABLED`]. Computing nothing also keeps invalid breakdowns out
-            // of the PDS (publish federates every persisted consensus method).
-            let (pca_gmm, nmonte) = if crate::ANCIENT_ANCESTRY_ENABLED {
-                let gmm_pca = ancient_pca_bytes
-                    .and_then(|b| ancestry_analysis::PcaLoadings::from_bytes(&b).ok())
-                    .or(modern_pca);
-                match &gmm_pca {
-                    Some(pca) => (
-                        Some(ancestry_analysis::estimate_pca_gmm(&genotypes, pca, &reference_version)),
-                        Some(ancestry_analysis::estimate_nmonte(&genotypes, pca, &reference_version)),
-                    ),
-                    None => (None, None),
-                }
+            // Deep (ancient) ancestry: a supervised frequency-mixture EM over the WHG/ANF/Steppe
+            // panel, scoped by the modern estimate we just computed (it is a West-Eurasian model —
+            // see `ANCIENT_MIN_WEST_EURASIAN`). `estimate_ancient_admixture` returns None when the
+            // three sources cannot express this sample's ancestry, and None must stay None all the
+            // way out — persisting nothing is what keeps an inapplicable breakdown off the UI *and*
+            // out of the PDS (publish federates every persisted consensus method).
+            let ancient = if crate::ANCIENT_ANCESTRY_ENABLED {
+                ancient_bytes
+                    .and_then(|b| ancestry_analysis::AncestryPanel::from_bytes(&b).ok())
+                    .and_then(|ap| {
+                        ancestry_analysis::estimate_ancient_admixture(&genotypes, &ap, &result, &reference_version)
+                    })
             } else {
-                let _ = (&ancient_pca_bytes, &modern_pca);
-                (None, None)
+                let _ = &ancient_bytes;
+                None
             };
-            (result, pca_gmm, nmonte, fine)
+            (result, ancient, fine)
         })
         .await?;
 
@@ -2511,10 +2507,204 @@ impl App {
             });
         }
         ancestry_result::upsert(self.store.pool(), biosample_guid, CONSENSUS_SOURCE_ID, &result).await?;
-        for extra in [pca_gmm.as_ref(), nmonte.as_ref(), fine.as_ref()].into_iter().flatten() {
+        for extra in [ancient.as_ref(), fine.as_ref()].into_iter().flatten() {
             ancestry_result::upsert(self.store.pool(), biosample_guid, CONSENSUS_SOURCE_ID, extra).await?;
         }
         Ok(result)
+    }
+
+    /// **Deep-ancestry stability diagnostic** — the §3.4 validation gates, on a real subject.
+    ///
+    /// Fits the ancient mixture repeatedly over different *views* of the same person: the pooled
+    /// consensus, each contributing source on its own (a 30× WGS and a consumer chip are genotyped
+    /// by completely different means, so agreeing across them is the strongest evidence the estimate
+    /// tracks the donor and not the assay), and random subsets of the sites.
+    ///
+    /// This is the test the previous implementation failed most spectacularly — the same person came
+    /// out WHG 72.6% from the consensus and WHG 7.4% from their own 28× BAM — so it is the one worth
+    /// being able to re-run on demand. Rows are diagnostics, never persisted or published; the
+    /// `reported` flag records whether the shipping estimator would have accepted that fit.
+    ///
+    /// Every row reports its dispersion even when the applicability gate rejects it, so a rejection
+    /// can be read as a magnitude rather than taken on faith.
+    pub async fn ancient_ancestry_stability(
+        &self,
+        biosample_guid: SampleGuid,
+    ) -> Result<Vec<AncientFitRow>, AppError> {
+        // Build the consensus on demand — this is a diagnostic, and requiring the caller to have
+        // clicked through the GUI first would make it useless from the CLI.
+        let profile = match self.cached_autosomal_profile(biosample_guid).await? {
+            Some(p) => p,
+            None => self.build_autosomal_profile(biosample_guid).await?,
+        };
+        let build = ReferenceBuild::Chm13v2;
+        let path = ancestry_freq_ancient_path(build);
+        let bytes =
+            read_verified_asset(build, &path)?.ok_or_else(|| AppError::AncestryPanelMissing(path.clone()))?;
+        let panel = AncestryPanel::from_bytes(&bytes)?;
+        // The super-pop panel too: deep ancestry is scoped by the modern estimate, so each view has
+        // to be scored by both models or the diagnostic wouldn't be reproducing the shipped policy.
+        let super_path = ancestry_panel_path(build);
+        let super_bytes = read_verified_asset(build, &super_path)?
+            .ok_or_else(|| AppError::AncestryPanelMissing(super_path.clone()))?;
+        let super_panel = AncestryPanel::from_bytes(&super_bytes)?;
+
+        // The distinct sources that contributed a call anywhere in the consensus.
+        let mut source_labels: Vec<String> = profile
+            .variants
+            .iter()
+            .flat_map(|v| v.sources.iter().map(|s| s.label.clone()))
+            .collect();
+        source_labels.sort();
+        source_labels.dedup();
+
+        tokio::task::spawn_blocking(move || {
+            let mut rows = Vec::new();
+            let mut fit = |label: String, genotypes: &[SiteGenotype]| {
+                let modern = ancestry_analysis::estimate_admixture(genotypes, &super_panel, "chm13v2.0");
+                if let Some(r) = ancestry_analysis::ancient_admixture_fit(genotypes, &panel, "chm13v2.0") {
+                    rows.push(AncientFitRow {
+                        label,
+                        sites: r.snps_with_genotype,
+                        dispersion: r.fit_distance.unwrap_or(f64::NAN),
+                        european: ancestry_analysis::west_eurasian_share(&modern),
+                        // The shipping estimator's own verdict — not a re-derivation of it.
+                        reported: ancestry_analysis::estimate_ancient_admixture(
+                            genotypes,
+                            &panel,
+                            &modern,
+                            "chm13v2.0",
+                        )
+                        .is_some(),
+                        components: r
+                            .components
+                            .iter()
+                            .map(|c| (c.population_code.clone(), c.percentage))
+                            .collect(),
+                    });
+                }
+            };
+
+            let consensus = consensus_genotypes(&profile);
+            fit("consensus (pooled)".to_string(), &consensus);
+
+            // Sites a chip actually called — the intersection target for the refit below. The
+            // stability failure has WGS reporting ~80% Steppe where the chips report ~58%; this asks
+            // whether the split is *which sites* each technology reaches (WGS scores ~19.7k, a chip
+            // ~5–8k) or the calls themselves. If a WGS source restricted to chip-covered sites moves
+            // toward the chip answer, the extra WGS-only sites carry the bias; if it stays put, the
+            // WGS dosages do.
+            let chip_sites: std::collections::HashSet<String> = profile
+                .variants
+                .iter()
+                .filter(|v| {
+                    v.sources
+                        .iter()
+                        .any(|s| matches!(s.source_type, SourceType::Chip) && s.dosage >= 0)
+                })
+                .map(|v| v.name.clone())
+                .collect();
+
+            // Diagnostic dump (NAVIGATOR_ANCIENT_DUMP=<path>): per consensus site, whether a chip
+            // covers it, the pooled dosage, and the three source frequencies. Lets us see directly
+            // what makes the non-chip sites favour Steppe once every intrinsic site property
+            // (MAF/strand/polarity/ts-tv) has been ruled out.
+            if let Ok(dump_path) = std::env::var("NAVIGATOR_ANCIENT_DUMP") {
+                let want = std::env::var("NAVIGATOR_ANCIENT_ALN").unwrap_or_else(|_| "#9".into());
+                let freq: std::collections::HashMap<(&str, i64), &Vec<f32>> =
+                    panel.sites.iter().map(|s| ((s.contig.as_str(), s.position), &s.freqs)).collect();
+                let mut out = String::from("chip\taln_dosage\twhg\tanf\tsteppe\n");
+                for v in &profile.variants {
+                    let Some(f) = freq.get(&(v.contig.as_str(), v.position)) else { continue };
+                    if f.len() != 3 {
+                        continue;
+                    }
+                    // One clean alignment's own genotype at this ancient-panel site.
+                    let d = v
+                        .sources
+                        .iter()
+                        .find(|s| {
+                            matches!(s.source_type, SourceType::WgsShortRead | SourceType::WgsLongRead)
+                                && s.dosage >= 0
+                                && s.label.contains(&want)
+                        })
+                        .map_or(-1, |s| s.dosage as i32);
+                    let chip = u8::from(chip_sites.contains(&v.name));
+                    out.push_str(&format!("{}\t{}\t{:.4}\t{:.4}\t{:.4}\n", chip, d, f[0], f[1], f[2]));
+                }
+                let _ = std::fs::write(&dump_path, out);
+            }
+
+            // Strand-ambiguous SNPs (A/T, C/G): ref and alt are Watson–Crick complements, so which
+            // allele the panel counted as "alt" can't be recovered from the alleles alone. When a
+            // panel built from one dataset is genotyped against reads oriented by another, these are
+            // the sites that silently invert — the classic merge bias, and one chips routinely drop.
+            let is_ambiguous = |v: &navigator_domain::consensus::DiploidVariant| -> bool {
+                matches!(
+                    (v.reference.as_str(), v.alternate.as_str()),
+                    ("A", "T") | ("T", "A") | ("C", "G") | ("G", "C")
+                )
+            };
+
+            // One source's own observed dosages, restricted to the variants the predicate keeps.
+            let build_single =
+                |label: &str, keep: &dyn Fn(&navigator_domain::consensus::DiploidVariant) -> bool| -> Vec<SiteGenotype> {
+                    profile
+                        .variants
+                        .iter()
+                        .filter(|v| keep(v))
+                        .filter_map(|v| {
+                            let obs = v.sources.iter().find(|s| s.label.as_str() == label)?;
+                            (obs.dosage >= 0).then(|| SiteGenotype {
+                                name: v.name.clone(),
+                                contig: v.contig.clone(),
+                                position: v.position,
+                                reference_allele: v.reference.clone(),
+                                alternate_allele: v.alternate.clone(),
+                                ploidy: 2,
+                                dosage: obs.dosage as i32,
+                                gq: 0,
+                                depth: 0,
+                                ref_depth: 0,
+                                alt_depth: 0,
+                                pls: Vec::new(),
+                                gt: None,
+                                allele_depths: None,
+                            })
+                        })
+                        .collect()
+                };
+
+            // Each source alone: take that source's own observed dosage at each site. For a WGS
+            // source, also refit it three ways to localize the stability bias:
+            //   ∩chip   — sites the chips cover (does WGS match the chip answer there?)
+            //   ∁chip   — the WGS-only complement (do those sites carry the bias?)
+            //   ¬ambig  — all sites minus strand-ambiguous A/T,C/G (does dropping them fix it?)
+            for label in &source_labels {
+                let is_chip = profile.variants.iter().any(|v| {
+                    v.sources
+                        .iter()
+                        .any(|s| s.label.as_str() == label && matches!(s.source_type, SourceType::Chip))
+                });
+                fit(format!("source: {label}"), &build_single(label, &|_| true));
+                if !is_chip {
+                    fit(format!("source: {label} ∩chip"), &build_single(label, &|v| chip_sites.contains(&v.name)));
+                    fit(format!("source: {label} ∁chip"), &build_single(label, &|v| !chip_sites.contains(&v.name)));
+                    fit(format!("source: {label} ¬ambig"), &build_single(label, &|v| !is_ambiguous(v)));
+                }
+            }
+
+            // Density: deterministic thinning of the pooled consensus. A well-conditioned fit barely
+            // moves when half the evidence is removed; an over-fit one lurches.
+            for (keep, label) in [(2usize, "consensus ÷2 sites"), (4, "consensus ÷4 sites")] {
+                let thinned: Vec<SiteGenotype> =
+                    consensus.iter().step_by(keep).cloned().collect();
+                fit(label.to_string(), &thinned);
+            }
+            rows
+        })
+        .await
+        .map_err(AppError::from)
     }
 
     /// The persisted ancestry estimate for an alignment, if one has been computed.

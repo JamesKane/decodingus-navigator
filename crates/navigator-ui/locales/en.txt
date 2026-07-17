@@ -590,7 +590,6 @@ hint.chromosomePainting=diploid: two sorted copies per chromosome (unphased); ca
 hint.consensusVcf=Joint genotype across the subject's same-build WGS alignments. Heavy — calls + force-calls each alignment genome-wide.
 card.ancestryModern=Detailed populations (modern)
 card.ancestryAncient=Ancient ancestry components
-card.ancestryNmonte=Mixture model (G25 / nMonte)
 card.consensusIbd=IBD — subject comparison (consensus)
 ibd.otherSubject=Compare against:
 ibd.compare=Compare

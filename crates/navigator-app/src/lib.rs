@@ -1022,19 +1022,21 @@ fn ancestry_pca_path(build: ReferenceBuild) -> PathBuf {
     ancestry_asset_path("NAVIGATOR_ANCESTRY_PCA", "ancestry_pca", build, "bin")
 }
 
-/// Where the **ancient** PCA loadings for `build` live: `$NAVIGATOR_ANCESTRY_PCA_ANCIENT`
-/// (override), else `<refgenome base>/ancestry/ancestry_pca_ancient_<build>.bin`. Optional —
-/// present means the PCA-projection GMM runs against ancient reference components
-/// (Steppe/EEF/WHG) instead of the modern super-populations. Must be built over the same panel
-/// sites the AF panel genotypes (so the single genotyping pass covers it).
-fn ancestry_pca_ancient_path(build: ReferenceBuild) -> PathBuf {
-    ancestry_asset_path("NAVIGATOR_ANCESTRY_PCA_ANCIENT", "ancestry_pca_ancient", build, "bin")
-}
-
 /// The fine-population frequency asset path (`$NAVIGATOR_ANCESTRY_FREQ` override, else
 /// `<base>/ancestry/ancestry_freq_global_<build>.bin`). Optional — fine admixture is skipped if absent.
 fn ancestry_freq_global_path(build: ReferenceBuild) -> PathBuf {
     ancestry_asset_path("NAVIGATOR_ANCESTRY_FREQ", "ancestry_freq_global", build, "bin")
+}
+
+/// The **ancient** deep-source frequency asset (`$NAVIGATOR_ANCESTRY_FREQ_ANCIENT` override, else
+/// `<base>/ancestry/ancestry_freq_ancient_<build>.bin`): per-site WHG/ANF/Steppe alt-allele
+/// frequencies, built by `panelbuild ancient-panel` from the AADR. Optional — deep ancestry is
+/// skipped if absent. Built over the AIM panel's own sites, so the single genotyping pass covers it.
+///
+/// This supersedes the old `ancestry_pca_ancient_<build>.bin`, which is no longer read by anything:
+/// PCA-projected ancient centroids collapse onto the modern cloud and carry no ancient signal.
+fn ancestry_freq_ancient_path(build: ReferenceBuild) -> PathBuf {
+    ancestry_asset_path("NAVIGATOR_ANCESTRY_FREQ_ANCIENT", "ancestry_freq_ancient", build, "bin")
 }
 
 /// The chip-compatible IBD panel asset path (`$NAVIGATOR_IBD_PANEL` override, else
@@ -1051,8 +1053,8 @@ pub fn ancestry_asset_status() -> Vec<AssetStatus> {
     [
         ("super-pop panel", ancestry_panel_path(build)),
         ("PCA (modern)", ancestry_pca_path(build)),
-        ("PCA (ancient)", ancestry_pca_ancient_path(build)),
         ("fine frequencies", ancestry_freq_global_path(build)),
+        ("ancient frequencies", ancestry_freq_ancient_path(build)),
         ("genetic map", genetic_map_path(build)),
         ("IBD panel", ibd_panel_path(build)),
     ]
@@ -2115,22 +2117,59 @@ pub struct DiploidProfile {
 /// **consensus** (pooled across all sources) rather than a single sequencing alignment.
 pub const CONSENSUS_SOURCE_ID: i64 = 0;
 
-/// **Ancient-ancestry is disabled** — we compute, display and publish nothing rather than fabricate.
+/// One row of the deep-ancestry stability diagnostic ([`App::ancient_ancestry_stability`]): the
+/// ancient mixture fitted over one *view* of a subject (pooled consensus, one source alone, or a
+/// thinned site set). Diagnostic only — never persisted, never published.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct AncientFitRow {
+    /// Which view of the subject this fit came from.
+    pub label: String,
+    /// Panel sites with a genotype in this view.
+    pub sites: usize,
+    /// `(population_code, percentage)`, ranked.
+    pub components: Vec<(String, f64)>,
+    /// Model dispersion (≈1 at the noise floor; grows as the sample leaves the sources' span).
+    pub dispersion: f64,
+    /// European share (%) by the modern super-pop estimate — the deep model's scope check.
+    pub european: f64,
+    /// Whether the shipping estimator would report this fit, or suppress it as inapplicable.
+    pub reported: bool,
+}
+
+/// Ancient (deep) ancestry — **rebuilt, but still OFF: it fails the stability gate.**
 ///
-/// The shipped `ancestry_pca_ancient_<build>.bin` asset is unusable. It carries the 168 *modern*
-/// reference populations plus only 5 ancient ones (WHG / EHG / ANF / Iran_N / Steppe) — so a mixture
-/// model just reconstructs a Briton as "English + British" (those are in the reference set), and the
-/// GMM we shipped is a *membership classifier*, not an admixture model. Fatally, the 5 ancient
-/// centroids sit **on top of** the modern European ones (WHG ≈ English, ANF ≈ Sardinian) — the classic
-/// shrinkage artifact of projecting ancient samples onto a PCA built from modern variation. They carry
-/// no ancient signal, so every model over them is ill-conditioned and arbitrary: a British sample gets
-/// WHG 72.6% (impossible), and even an ancient-only simplex mixture returns Anatolian-Farmer ~3% where
-/// ~30% is expected. No code change rescues this; the reference must be rebuilt from real ancient
-/// genomes with a sound method (supervised admixture over allele frequencies / qpAdm-style
-/// f-statistics — not PCA-centroid distance). Flip this back on once that asset lands.
+/// The original implementation was disabled for fabricating numbers, and that cause is fixed. It
+/// had classified the sample against *PCA centroids* of ancient populations that projection had
+/// shrunk on top of the modern European cloud (WHG ≈ English, ANF ≈ Sardinian), so they carried no
+/// ancient signal — and it asked "which ancient population **is** this sample?" where the question
+/// is "what **mixture** of ancient sources is it?". The replacement discards the PCA path entirely
+/// and runs a supervised allele-frequency admixture EM
+/// ([`navigator_analysis::ancestry::estimate_ancient_admixture`]) over a dedicated ancient
+/// frequency panel built from the AADR ([`ancestry_freq_ancient_path`]). In frequency space the
+/// sources stay genuinely distinct (WHG↔ANF Fst ≈ 0.07 where the projected PCA had them on top of
+/// each other), and on *simulated* individuals drawn from known frequencies it round-trips mixtures
+/// exactly, lands GBR at Steppe 50 / ANF 34 / WHG 16, and rejects samples the three sources cannot
+/// express.
+///
+/// It nevertheless stays off, because it fails §3.4's **stability** gate on real data — the one the
+/// design doc calls the single most diagnostic test. Subject `huF98AFD`, genotyped by both means,
+/// comes out **Steppe 58% / ANF 31% / WHG 10% from his chips** and **Steppe 81% / ANF 15% / WHG 4%
+/// from his WGS alignments**. Same person, ~22 points apart. The chip figures are the plausible
+/// ones; the WGS figures are systematically Steppe-inflated, and WGS dispersion is consistently
+/// worse (2.1–2.3 vs 1.2–1.4), so the bias is in the WGS *dosages*, not in the panel or the
+/// estimator. It is not a site-count effect: pbmm2 scores a chip-like 8.7k sites and still returns
+/// 76% Steppe, and downsampling the consensus barely moves it. Suspect reference bias in panel
+/// genotyping — that is the next thing to chase.
+///
+/// While off, this disables computing, displaying **and** publishing — the read paths are gated
+/// too, so a stale row from an earlier build can never resurface.
 ///
 /// See `docs/design/ancient-ancestry-rebuild.md`.
 pub const ANCIENT_ANCESTRY_ENABLED: bool = false;
+
+/// The persisted method name of the deep-ancestry breakdown — re-exported so the UI reads the
+/// rebuilt method by name and can never fall back to a retired one.
+pub use navigator_analysis::ancestry::ANCIENT_ADMIXTURE;
 
 /// Bridge the autosomal consensus to the genotype carrier the ancestry estimators + IBD detector
 /// consume. Each reconciled site becomes a [`SiteGenotype`] with the consensus dosage (count of the

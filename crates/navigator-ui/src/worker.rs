@@ -959,12 +959,12 @@ pub enum Event {
         profile: Option<navigator_app::DiploidProfile>,
     },
     /// Detailed consensus ancestry reports: modern fine-population + ancient-component breakdowns.
+    /// `ancient` is absent when the deep sources can't express this sample's ancestry.
     ConsensusAncestryDetail {
         biosample_guid: SampleGuid,
-        // Boxed: AncestryResult is large, and three of them would bloat the Event enum's size.
+        // Boxed: AncestryResult is large, and two of them would bloat the Event enum's size.
         fine: Option<Box<navigator_app::AncestryResult>>,
         ancient: Option<Box<navigator_app::AncestryResult>>,
-        nmonte: Option<Box<navigator_app::AncestryResult>>,
     },
     /// Header-probe result for the add-alignment form (build/aligner/platform/test-type).
     AlignmentProbe(AlignmentProbe),
@@ -1681,27 +1681,20 @@ pub async fn handle(app: &App, cmd: Command) -> Event {
                 .await
                 .unwrap_or(None)
                 .map(Box::new);
-            // Ancient breakdowns are gated off (degenerate reference asset — see
-            // navigator_app::ANCIENT_ANCESTRY_ENABLED). Don't surface stale rows from an earlier build.
-            let (ancient, nmonte) = if navigator_app::ANCIENT_ANCESTRY_ENABLED {
-                (
-                    app.consensus_ancestry(biosample_guid, "PCA_PROJECTION_GMM")
-                        .await
-                        .unwrap_or(None)
-                        .map(Box::new),
-                    app.consensus_ancestry(biosample_guid, "G25_NMONTE")
-                        .await
-                        .unwrap_or(None)
-                        .map(Box::new),
-                )
+            // Only ANCIENT_ADMIXTURE is read: the retired PCA_PROJECTION_GMM / G25_NMONTE rows may
+            // still exist in databases written before the rebuild, and must never be shown again.
+            let ancient = if navigator_app::ANCIENT_ANCESTRY_ENABLED {
+                app.consensus_ancestry(biosample_guid, navigator_app::ANCIENT_ADMIXTURE)
+                    .await
+                    .unwrap_or(None)
+                    .map(Box::new)
             } else {
-                (None, None)
+                None
             };
             Event::ConsensusAncestryDetail {
                 biosample_guid,
                 fine,
                 ancient,
-                nmonte,
             }
         }
         // RunFullAnalysis streams AnalysisProgress from the spawn loop; CancelAnalysis sets the

@@ -164,45 +164,6 @@ pub fn project_pca(genotypes: &[SiteGenotype], pca: &PcaLoadings) -> Vec<f64> {
     coords
 }
 
-/// Squared Mahalanobis distance (diagonal covariance) from `coords` to a population centroid.
-fn mahalanobis_sq(coords: &[f64], centroid: &[f32], variance: &[f32]) -> f64 {
-    coords
-        .iter()
-        .zip(centroid)
-        .zip(variance)
-        .map(|((&x, &mu), &v)| {
-            let d = x - mu as f64;
-            let v = v as f64;
-            if v > 1e-9 {
-                d * d / v
-            } else {
-                0.0
-            }
-        })
-        .sum()
-}
-
-/// Per-population probability that the sample's PCA `coords` belong to each population, by a
-/// diagonal-covariance Gaussian (`exp(-½ d²)`), normalized to sum 1. Useful as a PCA-based
-/// cross-check of the allele-frequency estimate.
-pub fn classify_pca(coords: &[f64], pca: &PcaLoadings) -> Vec<(String, f64)> {
-    let raw: Vec<(String, f64)> = pca
-        .populations
-        .iter()
-        .enumerate()
-        .map(|(p, code)| {
-            let d2 = mahalanobis_sq(coords, pca.centroid(p), pca.variance(p));
-            (code.clone(), (-0.5 * d2).exp())
-        })
-        .collect();
-    let total: f64 = raw.iter().map(|(_, p)| p).sum();
-    if total > 0.0 {
-        raw.into_iter().map(|(c, p)| (c, p / total)).collect()
-    } else {
-        raw
-    }
-}
-
 /// Parameters for [`paint_local_ancestry`].
 #[derive(Debug, Clone)]
 pub struct PaintParams {
@@ -628,148 +589,166 @@ pub fn estimate_fine_admixture(
     result
 }
 
-/// Estimate ancestry by **PCA projection + a diagonal-covariance Gaussian mixture**: project the
-/// sample onto the reference PCA space ([`project_pca`]) and assign per-population responsibilities
-/// ([`classify_pca`]) — the `PCA_PROJECTION_GMM` method. Unlike the allele-frequency estimators,
-/// the composition comes entirely from the sample's position in PC space relative to each
-/// population's centroid/variance, so the `pca` asset's `populations` define the components
-/// (modern super-pops, or ancient Steppe/EEF/WHG when an ancient asset is supplied). The projected
-/// coordinates are attached for the scatter plot.
-pub fn estimate_pca_gmm(genotypes: &[SiteGenotype], pca: &PcaLoadings, reference_version: &str) -> AncestryResult {
-    let coords = project_pca(genotypes, pca);
-    let probs = classify_pca(&coords, pca);
+/// The `ANCIENT_ADMIXTURE` method label — deep (pre-historic) source proportions.
+pub const ANCIENT_ADMIXTURE: &str = "ANCIENT_ADMIXTURE";
 
-    // Coverage: how many of the PCA asset's sites this sample has a genotype for.
-    let genotyped: std::collections::HashSet<(&str, i64)> = genotypes
-        .iter()
-        .filter(|g| g.dosage >= 0)
-        .map(|g| (g.contig.as_str(), g.position))
-        .collect();
-    let snps_with_genotype = pca
-        .sites
-        .iter()
-        .filter(|(c, p)| genotyped.contains(&(c.as_str(), *p)))
-        .count();
-    let confidence = confidence_from_completeness(snps_with_genotype, pca.sites.len());
+/// Below this many genotyped panel sites the three-way fit is too noisy to report at all.
+const ANCIENT_MIN_SITES: usize = 500;
 
-    let mut result = from_probabilities(
-        "PCA_PROJECTION_GMM",
-        "genome-wide",
-        pca.sites.len(),
-        snps_with_genotype,
-        &probs,
-        confidence,
-        reference_version,
-    );
-    result.pca_coordinates = Some(coords);
-    result
-}
-
-/// Squared Euclidean distance between two equal-length coordinate vectors.
-fn euclid_sq(a: &[f64], b: &[f64]) -> f64 {
-    a.iter().zip(b).map(|(&x, &y)| (x - y) * (x - y)).sum()
-}
-
-/// Non-negative, sum-to-one mixture of `sources` (each a coordinate vector) that best
-/// reconstructs `target` in the Euclidean (least-squares) sense — the nMonte/Vahaduo
-/// "distance" model. Returns `(weights, fit_distance)` where `fit_distance` is the residual
-/// `‖target − Σ wᵢ·sourceᵢ‖`.
+/// Dispersion above which the sample is **outside the span of the ancient sources** and we report
+/// nothing. Under a correct model the dispersion is ≈1 by construction (see [`ancient_dispersion`]).
 ///
-/// Solved by **Frank–Wolfe** (conditional gradient) on the probability simplex: start at the
-/// nearest single source, then repeatedly move toward the vertex (population) that most reduces
-/// the residual, with an exact line search. Deterministic, monotone, and projection-free — it
-/// stays on the simplex by construction, so weights are always valid proportions.
-fn nmonte_fit(target: &[f64], sources: &[Vec<f64>]) -> (Vec<f64>, f64) {
-    let k = sources.len();
-    if k == 0 {
-        return (Vec::new(), f64::INFINITY);
+/// Calibrated on simulated reference individuals (`panelbuild validate-ancient`), worst case per
+/// population: GBR 1.65 · CEU 1.58 · FIN 1.78 · TSI 2.38 · **IBS 3.65** ‖ CHB 13.1 · JPT 12.4 ·
+/// YRI 175 · LWK 158. So 4.0 sits in the wide, empty gap between "every European individual" and
+/// "the closest East Asian" — it is not a knob tuned to taste, it is the middle of a real gap.
+///
+/// It deliberately does **not** try to separate South Asians (PJL 3.3–4.0), who overlap the European
+/// tail: no dispersion threshold can do that, which is why there is a second guard,
+/// [`ANCIENT_MIN_WEST_EURASIAN`].
+const ANCIENT_MAX_DISPERSION: f64 = 4.0;
+
+/// Minimum European share (by the modern super-population admixture) for the deep three-way model to
+/// apply at all.
+///
+/// WHG / Anatolian Farmer / Steppe is a **West-Eurasian** model: those three sources are the ones
+/// that actually compose modern Europeans. It has no term for Ancestral South Indian, no term for
+/// East Asian, and no term for Sub-Saharan African, so for a person who carries a lot of any of
+/// those, a three-way decomposition of their *whole genome* is not an approximation — it is a
+/// category error. A Punjabi fits at Steppe 67% here; their real Steppe ancestry is nearer 20–30%,
+/// with the rest Iranian-Neolithic and AASI that this model simply cannot see, so it piles the
+/// unexplained ancestry onto whichever source is least unlike it.
+///
+/// Dispersion alone cannot catch that (South Asians overlap the European tail), but the *modern*
+/// estimate — which is well validated and independent of this panel — separates them cleanly. So
+/// deep ancestry only runs for samples the modern model already calls predominantly European.
+const ANCIENT_MIN_WEST_EURASIAN: f64 = 50.0;
+
+/// Estimate **deep ancestral (ancient) source proportions** — the Western Hunter-Gatherer /
+/// Anatolian Farmer / Steppe pastoralist decomposition — by the same supervised allele-frequency
+/// admixture EM as [`estimate_admixture`], over the dedicated ancient frequency panel
+/// (`ancestry_freq_ancient_<build>.bin`, built by `panelbuild ancient-panel` from the AADR).
+///
+/// This *replaces* an earlier PCA-centroid classifier, which was wrong twice over: it asked "which
+/// ancient population **is** this sample?" (a membership posterior) where the question is "what
+/// **mixture** of ancient sources is this sample?", and it ran against centroids that had been
+/// shrunk on top of the modern European cloud by projection, so they carried no ancient signal at
+/// all. A modern European is not a *member* of WHG; they are a *mixture*. Allele frequencies keep
+/// the sources genuinely distinct (WHG↔ANF Fst ≈ 0.07) where the projected PCA did not.
+///
+/// `modern` is the sample's **modern** super-population admixture ([`estimate_admixture`] over the
+/// super-pop panel) — an independent, already-validated estimate, used only to decide whether this
+/// West-Eurasian model applies to this person at all (see [`ANCIENT_MIN_WEST_EURASIAN`]).
+///
+/// Returns `None` whenever the model does not apply: too few genotyped sites, too little European
+/// ancestry for a WHG/ANF/Steppe decomposition to mean anything, or a fit dispersion above
+/// [`ANCIENT_MAX_DISPERSION`] (the sample's ancestry lies outside the span of the three sources — a
+/// Yoruba is not *any* mixture of them). Reporting nothing is the entire point: the EM will always
+/// return *some* simplex vector, and presenting that vector for a sample the model cannot express is
+/// precisely the failure this rebuild exists to prevent.
+pub fn estimate_ancient_admixture(
+    genotypes: &[SiteGenotype],
+    ancient_panel: &AncestryPanel,
+    modern: &AncestryResult,
+    reference_version: &str,
+) -> Option<AncestryResult> {
+    if west_eurasian_share(modern) < ANCIENT_MIN_WEST_EURASIAN {
+        return None;
     }
-    let dim = target.len();
-
-    // Initialize at the single nearest source vertex.
-    let (start, _) = sources
-        .iter()
-        .enumerate()
-        .map(|(i, s)| (i, euclid_sq(target, s)))
-        .min_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
-        .unwrap();
-    let mut w = vec![0.0f64; k];
-    w[start] = 1.0;
-    let mut mix = sources[start].clone(); // current mixture Σ wᵢ·sourceᵢ
-
-    for _ in 0..1000 {
-        // residual r = mix − target; gradient of ½‖r‖² wrt wⱼ is r·sourceⱼ.
-        let resid: Vec<f64> = (0..dim).map(|c| mix[c] - target[c]).collect();
-        // Pick the vertex j minimizing the linear approximation (steepest descent on simplex).
-        let (j, _) = sources
-            .iter()
-            .enumerate()
-            .map(|(i, s)| (i, resid.iter().zip(s).map(|(&r, &x)| r * x).sum::<f64>()))
-            .min_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
-            .unwrap();
-        // Direction d = sourceⱼ − mix; exact step γ = clamp(−r·d / ‖d‖², 0, 1).
-        let dvec: Vec<f64> = (0..dim).map(|c| sources[j][c] - mix[c]).collect();
-        let num = -resid.iter().zip(&dvec).map(|(&r, &d)| r * d).sum::<f64>();
-        let den = dvec.iter().map(|&d| d * d).sum::<f64>();
-        if den < 1e-12 {
-            break;
-        }
-        let gamma = (num / den).clamp(0.0, 1.0);
-        if gamma < 1e-9 {
-            break; // converged (no improving direction)
-        }
-        for x in w.iter_mut() {
-            *x *= 1.0 - gamma;
-        }
-        w[j] += gamma;
-        for c in 0..dim {
-            mix[c] += gamma * dvec[c];
-        }
-    }
-
-    (w, euclid_sq(&mix, target).sqrt())
+    let result = ancient_admixture_fit(genotypes, ancient_panel, reference_version)?;
+    let dispersion = result.fit_distance.unwrap_or(f64::INFINITY);
+    (dispersion.is_finite() && dispersion <= ANCIENT_MAX_DISPERSION).then_some(result)
 }
 
-/// Estimate ancestry by **PCA projection + a distance-minimizing mixture fit** (the
-/// nMonte/G25-style model) — the `G25_NMONTE` method. Projects the sample into PC space
-/// ([`project_pca`]) and fits the non-negative, sum-to-one mixture of the reference populations'
-/// centroids that best reconstructs that point ([`nmonte_fit`]). Unlike the GMM classifier (which
-/// assigns to the nearest cluster), this *decomposes* an admixed sample into source proportions
-/// and reports the fit residual as a quality score (`fit_distance`; lower is better). The `pca`
-/// asset's `populations` are the source library, so a richer/global asset yields wider admixtures.
-pub fn estimate_nmonte(genotypes: &[SiteGenotype], pca: &PcaLoadings, reference_version: &str) -> AncestryResult {
-    let coords = project_pca(genotypes, pca);
-    let sources: Vec<Vec<f64>> = (0..pca.populations.len())
-        .map(|p| pca.centroid(p).iter().map(|&x| x as f64).collect())
-        .collect();
-    let (weights, distance) = nmonte_fit(&coords, &sources);
-    let probs: Vec<(String, f64)> = pca.populations.iter().cloned().zip(weights).collect();
+/// The sample's European share (%) according to a modern super-population estimate — the scope
+/// check for the deep three-way model. Reads the `EUR` rollup, so it works whether `modern` came
+/// from the 5-way super-pop panel or a finer panel that rolls up to it.
+///
+/// `SuperPopulationSummary::super_population` carries the *display name*, not the code, so the
+/// lookup goes through the catalog rather than hard-coding either spelling.
+pub fn west_eurasian_share(modern: &AncestryResult) -> f64 {
+    let eur = population_name("EUR");
+    modern
+        .super_population_summary
+        .iter()
+        .find(|s| s.super_population == eur || s.super_population == "EUR")
+        .map_or(0.0, |s| s.percentage)
+}
 
-    // Coverage: how many of the PCA asset's sites this sample has a genotype for.
-    let genotyped: std::collections::HashSet<(&str, i64)> = genotypes
+/// The ancient mixture fit **without** the applicability threshold: the EM result with its
+/// dispersion attached as `fit_distance`, for any sample with enough genotyped sites.
+///
+/// [`estimate_ancient_admixture`] is this plus the [`ANCIENT_MAX_DISPERSION`] gate, and is what the
+/// app calls. This variant exists so the offline validator can *report* the dispersion of samples
+/// that the gate rejects — the threshold is only defensible if you can see the separation it rests
+/// on. Do not use it on a user's data: its components are exactly the numbers the gate exists to
+/// suppress.
+pub fn ancient_admixture_fit(
+    genotypes: &[SiteGenotype],
+    ancient_panel: &AncestryPanel,
+    reference_version: &str,
+) -> Option<AncestryResult> {
+    let mut result = estimate_admixture(genotypes, ancient_panel, reference_version);
+    if result.snps_with_genotype < ANCIENT_MIN_SITES {
+        return None;
+    }
+
+    // Recover the fitted mixture on the panel's axis order (`components` are sorted by percentage).
+    let q: Vec<f64> = ancient_panel
+        .populations
+        .iter()
+        .map(|code| {
+            result
+                .components
+                .iter()
+                .find(|c| &c.population_code == code)
+                .map_or(0.0, |c| c.percentage / 100.0)
+        })
+        .collect();
+
+    result.method = ANCIENT_ADMIXTURE.to_string();
+    result.panel_type = "ancient".to_string();
+    result.fit_distance = Some(ancient_dispersion(genotypes, ancient_panel, &q));
+    Some(result)
+}
+
+/// Goodness of fit of a fitted ancient mixture `q`, as a **variance-ratio dispersion**.
+///
+/// At each genotyped site the mixture predicts an alt-allele frequency `f = Σ q_k·p_k`, so under
+/// the model's own HWE assumption the observed dosage `g` has mean `2f` and variance `2f(1-f)`.
+/// Averaging `(g − 2f)² / 2f(1-f)` over sites therefore gives ≈1 **when the model is right**, and
+/// grows without bound as the sample's true ancestry moves outside the span of the sources — the
+/// mixture is then forced to predict frequencies the genotypes keep contradicting.
+///
+/// It is a *ratio*, so it does not drift with panel size or the sample's coverage — which is what
+/// makes it usable as a fixed applicability threshold rather than a tuned magic number.
+fn ancient_dispersion(genotypes: &[SiteGenotype], panel: &AncestryPanel, q: &[f64]) -> f64 {
+    let dosage: HashMap<(&str, i64), i32> = genotypes
         .iter()
         .filter(|g| g.dosage >= 0)
-        .map(|g| (g.contig.as_str(), g.position))
+        .map(|g| ((g.contig.as_str(), g.position), g.dosage))
         .collect();
-    let snps_with_genotype = pca
-        .sites
-        .iter()
-        .filter(|(c, p)| genotyped.contains(&(c.as_str(), *p)))
-        .count();
-    let confidence = confidence_from_completeness(snps_with_genotype, pca.sites.len());
 
-    let mut result = from_probabilities(
-        "G25_NMONTE",
-        "genome-wide",
-        pca.sites.len(),
-        snps_with_genotype,
-        &probs,
-        confidence,
-        reference_version,
-    );
-    result.pca_coordinates = Some(coords);
-    result.fit_distance = Some(distance);
-    result
+    let k = panel.populations.len();
+    let mut sum = 0.0f64;
+    let mut n = 0usize;
+    for site in panel.sites.iter().filter(|s| s.freqs.len() == k) {
+        let Some(&g) = dosage.get(&(site.contig.as_str(), site.position)) else {
+            continue;
+        };
+        let f: f64 = (0..k)
+            .map(|i| q[i] * (site.freqs[i] as f64).clamp(0.001, 0.999))
+            .sum::<f64>()
+            .clamp(1e-6, 1.0 - 1e-6);
+        let expected_var = 2.0 * f * (1.0 - f);
+        let resid = g as f64 - 2.0 * f;
+        sum += resid * resid / expected_var;
+        n += 1;
+    }
+    if n == 0 {
+        return f64::INFINITY;
+    }
+    sum / n as f64
 }
 
 /// Build an [`AncestryResult`] from raw per-population probabilities (need not be normalized).
@@ -1008,96 +987,8 @@ mod tests {
         let coords = project_pca(&hom_alt, &pca);
         assert_eq!(coords.len(), 1);
         assert!((coords[0] - 4.0).abs() < 1e-9, "coord = {}", coords[0]); // (2-1)*1 × 4 sites
-
-        // …and the Gaussian classifier places it with the HI population.
-        let probs = classify_pca(&coords, &pca);
-        let hi = probs.iter().find(|(c, _)| c == "HI").unwrap().1;
-        assert!(hi > 0.99, "HI prob = {hi}");
     }
 
-    /// estimate_pca_gmm: stamps the method, builds a 100%-summing composition from the GMM
-    /// responsibilities, attaches the projected coordinates, and counts covered sites.
-    #[test]
-    fn pca_gmm_estimate_labels_and_composes() {
-        let sites: Vec<(String, i64)> = (1..=4).map(|p| ("chr1".to_string(), p)).collect();
-        let pca = PcaLoadings {
-            build: "t".into(),
-            sites,
-            means: vec![1.0; 4],
-            n_components: 1,
-            loadings: vec![1.0; 4],
-            populations: vec!["LO".into(), "HI".into()],
-            centroids: vec![-4.0, 4.0],
-            variances: vec![1.0, 1.0],
-        };
-        let hom_alt: Vec<SiteGenotype> = (1..=4).map(|p| sg("chr1", p, 2)).collect();
-        let r = estimate_pca_gmm(&hom_alt, &pca, "t");
-
-        assert_eq!(r.method, "PCA_PROJECTION_GMM");
-        assert_eq!(r.panel_type, "genome-wide");
-        assert_eq!(r.snps_with_genotype, 4); // all PCA sites covered
-        assert!(r.pca_coordinates.is_some());
-        let hi = r.components.iter().find(|c| c.population_code == "HI").unwrap();
-        assert!(hi.percentage > 99.0, "HI% = {}", hi.percentage);
-        let sum: f64 = r.components.iter().map(|c| c.percentage).sum();
-        assert!((sum - 100.0).abs() < 1e-6, "sum = {sum}");
-    }
-
-    /// nMonte fit: a target on a source vertex resolves to ~100% that source (distance ~0);
-    /// a target at the midpoint of two sources resolves to ~50/50.
-    #[test]
-    fn nmonte_fit_recovers_mixtures() {
-        let a = vec![0.0, 0.0];
-        let b = vec![10.0, 0.0];
-        let c = vec![0.0, 10.0];
-        let sources = vec![a.clone(), b.clone(), c.clone()];
-
-        // On a vertex → that source, ~zero distance.
-        let (w, d) = nmonte_fit(&b, &sources);
-        assert!(w[1] > 0.999, "w_b = {}", w[1]);
-        assert!(d < 1e-6, "distance = {d}");
-
-        // Midpoint of A and B → ~50/50, ~zero distance (it's in the convex hull).
-        let mid = vec![5.0, 0.0];
-        let (w, d) = nmonte_fit(&mid, &sources);
-        assert!((w[0] - 0.5).abs() < 1e-3 && (w[1] - 0.5).abs() < 1e-3, "w = {w:?}");
-        assert!(d < 1e-6, "distance = {d}");
-
-        // A point outside the hull → best projection, with a non-zero residual distance.
-        let outside = vec![-3.0, -3.0];
-        let (_w, d) = nmonte_fit(&outside, &sources);
-        assert!(d > 1.0, "distance = {d}");
-    }
-
-    /// estimate_nmonte: labels the method, attaches coords + a fit distance, and (for a sample
-    /// projecting onto a population centroid) puts ~all the weight there.
-    #[test]
-    fn nmonte_estimate_labels_and_fits() {
-        let sites: Vec<(String, i64)> = (1..=4).map(|p| ("chr1".to_string(), p)).collect();
-        let pca = PcaLoadings {
-            build: "t".into(),
-            sites,
-            means: vec![1.0; 4],
-            n_components: 1,
-            loadings: vec![1.0; 4],
-            populations: vec!["LO".into(), "HI".into()],
-            centroids: vec![-4.0, 4.0], // LO at -4, HI at +4 on PC1
-            variances: vec![1.0, 1.0],
-        };
-        // hom-alt projects to +4 → exactly the HI centroid.
-        let hom_alt: Vec<SiteGenotype> = (1..=4).map(|p| sg("chr1", p, 2)).collect();
-        let r = estimate_nmonte(&hom_alt, &pca, "t");
-
-        assert_eq!(r.method, "G25_NMONTE");
-        assert!(r.pca_coordinates.is_some());
-        let dist = r.fit_distance.expect("fit_distance set");
-        assert!(dist < 1e-6, "distance = {dist}");
-        let hi = r.components.iter().find(|c| c.population_code == "HI").unwrap();
-        assert!(hi.percentage > 99.0, "HI% = {}", hi.percentage);
-    }
-
-    /// Supervised admixture: a sample homozygous-alt where pop A is alt-rich and hom-ref where A
-    /// is alt-poor must resolve to ~100% A; the proportions sum to 100%.
     #[test]
     fn admixture_resolves_pure_population() {
         let sites: Vec<PanelSite> = (1..=40)
@@ -1286,5 +1177,175 @@ mod tests {
         assert_eq!(pca, back);
         assert_eq!(back.loading(1, 0), 0.3);
         assert_eq!(back.centroid(1), &[3.0, 4.0]);
+    }
+
+    // ── deep (ancient) ancestry ─────────────────────────────────────────────────────────────────
+    //
+    // The three-source model is the one that previously shipped fabricated numbers, so these tests
+    // pin the two properties whose absence made that possible: it must recover a mixture it was
+    // never told, and it must refuse a sample its sources cannot express.
+
+    /// A deterministic LCG — the simulations below must give the same answer on every run.
+    struct Lcg(u64);
+    impl Lcg {
+        fn next_f64(&mut self) -> f64 {
+            self.0 = self.0.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            (self.0 >> 11) as f64 / (1u64 << 53) as f64
+        }
+        /// A diploid dosage drawn under HWE at alt-frequency `f`.
+        fn dosage(&mut self, f: f64) -> i32 {
+            (self.next_f64() < f) as i32 + (self.next_f64() < f) as i32
+        }
+    }
+
+    /// A 3-source panel over `n` sites whose frequencies differ sharply between sources (so the
+    /// mixture is well-conditioned), plus an "outsider" frequency track standing in for a sample
+    /// from outside the sources' span (a Yoruba against WHG/ANF/Steppe).
+    ///
+    /// What makes the outsider genuinely unreachable is the last site pattern, where **all three
+    /// sources agree** at 0.10: a mixture can only ever predict a value inside the convex hull of
+    /// its sources, so at those sites every possible `q` predicts 0.10 while the outsider carries the
+    /// allele at 0.95. No mixture can absorb that, which is exactly the situation the applicability
+    /// gate exists to detect. Without such sites, a near-pure single source approximates the outsider
+    /// well enough to slip under the threshold.
+    fn ancient_panel(n: i64) -> (AncestryPanel, Vec<f64>) {
+        let mut sites = Vec::new();
+        let mut outsider = Vec::new();
+        for pos in 1..=n {
+            // Cycle through contrasting frequency patterns so every source is identifiable.
+            let (a, b, c, out) = match pos % 6 {
+                0 => (0.90, 0.10, 0.50, 0.02),
+                1 => (0.10, 0.90, 0.50, 0.98),
+                2 => (0.50, 0.10, 0.90, 0.02),
+                3 => (0.10, 0.50, 0.10, 0.95),
+                // All three sources agree → every mixture predicts the same value, and the outsider
+                // carries the opposite allele. Unreachable by ANY `q`.
+                4 => (0.05, 0.05, 0.05, 0.98),
+                _ => (0.95, 0.95, 0.95, 0.02),
+            };
+            sites.push(PanelSite {
+                contig: "chr1".to_string(),
+                position: pos,
+                reference_allele: 'A',
+                alternate_allele: 'G',
+                freqs: vec![a, b, c],
+            });
+            outsider.push(out);
+        }
+        (
+            AncestryPanel {
+                build: "t".into(),
+                populations: vec!["WHG".into(), "ANF".into(), "Steppe".into()],
+                sites,
+            },
+            outsider,
+        )
+    }
+
+    fn pct(r: &AncestryResult, code: &str) -> f64 {
+        r.components
+            .iter()
+            .find(|c| c.population_code == code)
+            .map_or(0.0, |c| c.percentage)
+    }
+
+    /// A stand-in modern super-population estimate that is `eur`% European — the scope input the
+    /// deep model gates on.
+    fn modern_eur(eur: f64) -> AncestryResult {
+        let probs = [("EUR".to_string(), eur), ("AFR".to_string(), 100.0 - eur)];
+        from_probabilities("ADMIXTURE", "aims", 1000, 1000, &probs, 0.9, "t")
+    }
+
+    /// The estimator recovers a mixture it was never given: simulate a 20/30/50 individual from the
+    /// panel's own source frequencies and the EM must return ~20/30/50, with a dispersion near the
+    /// model's noise floor of 1. This is the property the PCA-centroid classifier never had — it
+    /// answered "which source *is* this?", so a genuine mixture came back as a single population.
+    #[test]
+    fn ancient_admixture_recovers_a_known_mixture() {
+        let (panel, _) = ancient_panel(4000);
+        let truth = [0.20, 0.30, 0.50];
+        let mut rng = Lcg(12345);
+        let genos: Vec<SiteGenotype> = panel
+            .sites
+            .iter()
+            .map(|s| {
+                let f: f64 = (0..3).map(|k| truth[k] * s.freqs[k] as f64).sum();
+                sg("chr1", s.position, rng.dosage(f))
+            })
+            .collect();
+
+        let r = estimate_ancient_admixture(&genos, &panel, &modern_eur(95.0), "t")
+            .expect("a simulated mixture must be reportable");
+        assert_eq!(r.method, ANCIENT_ADMIXTURE);
+        assert_eq!(r.panel_type, "ancient");
+        for (code, want) in [("WHG", 20.0), ("ANF", 30.0), ("Steppe", 50.0)] {
+            let got = pct(&r, code);
+            assert!((got - want).abs() < 4.0, "{code}: got {got:.1}, want ~{want}");
+        }
+        let d = r.fit_distance.expect("dispersion attached");
+        assert!(d > 0.5 && d < 1.5, "dispersion of a well-specified sample = {d}");
+    }
+
+    /// A sample from outside the sources' span is **rejected**, not decomposed. The EM will always
+    /// return *some* simplex vector — that vector is exactly what the old implementation printed as
+    /// a result — so the applicability gate, not the EM, is what makes this safe.
+    #[test]
+    fn ancient_admixture_rejects_a_sample_outside_the_sources() {
+        let (panel, outsider) = ancient_panel(4000);
+        let mut rng = Lcg(99);
+        let genos: Vec<SiteGenotype> = panel
+            .sites
+            .iter()
+            .zip(&outsider)
+            .map(|(s, &f)| sg("chr1", s.position, rng.dosage(f)))
+            .collect();
+
+        // The raw fit still produces a confident-looking breakdown …
+        let raw = ancient_admixture_fit(&genos, &panel, "t").expect("enough sites to fit");
+        let total: f64 = raw.components.iter().map(|c| c.percentage).sum();
+        assert!((total - 100.0).abs() < 1e-6, "the EM always returns a full simplex");
+        assert!(
+            raw.fit_distance.unwrap() > ANCIENT_MAX_DISPERSION,
+            "an out-of-span sample must be driven above the dispersion threshold"
+        );
+        // … and the shipping estimator refuses to report it, even for a sample the modern model
+        // calls European (so this is the dispersion gate doing the work, not the scope gate).
+        assert!(estimate_ancient_admixture(&genos, &panel, &modern_eur(95.0), "t").is_none());
+    }
+
+    /// Too few genotyped sites → no estimate at all, rather than a noisy one.
+    #[test]
+    fn ancient_admixture_needs_enough_sites() {
+        let (panel, _) = ancient_panel(4000);
+        let mut rng = Lcg(7);
+        let genos: Vec<SiteGenotype> = panel
+            .sites
+            .iter()
+            .take(ANCIENT_MIN_SITES - 1)
+            .map(|s| sg("chr1", s.position, rng.dosage(s.freqs[0] as f64)))
+            .collect();
+        assert!(estimate_ancient_admixture(&genos, &panel, &modern_eur(95.0), "t").is_none());
+    }
+
+    /// A WHG/ANF/Steppe decomposition is a *West-Eurasian* model. A sample the modern estimate calls
+    /// mostly non-European is out of scope and gets nothing — even if its genotypes happen to fit the
+    /// three sources well, because "fits the arithmetic" is not the same as "means anything".
+    #[test]
+    fn ancient_admixture_is_scoped_to_european_samples() {
+        let (panel, _) = ancient_panel(4000);
+        let truth = [0.20, 0.30, 0.50];
+        let mut rng = Lcg(12345);
+        let genos: Vec<SiteGenotype> = panel
+            .sites
+            .iter()
+            .map(|s| {
+                let f: f64 = (0..3).map(|k| truth[k] * s.freqs[k] as f64).sum();
+                sg("chr1", s.position, rng.dosage(f))
+            })
+            .collect();
+
+        // Same genotypes, same perfect fit — only the scope differs.
+        assert!(estimate_ancient_admixture(&genos, &panel, &modern_eur(95.0), "t").is_some());
+        assert!(estimate_ancient_admixture(&genos, &panel, &modern_eur(20.0), "t").is_none());
     }
 }

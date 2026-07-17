@@ -1,0 +1,15 @@
+-- Delete the ancient-ancestry rows produced by the retired PCA-centroid estimators.
+--
+-- `PCA_PROJECTION_GMM` and `G25_NMONTE` classified the sample against ancient population centroids
+-- that PCA projection had shrunk on top of the modern European cloud (WHG ≈ English, ANF ≈
+-- Sardinian). Those centroids carry no ancient signal, so the breakdowns they produced were
+-- fabricated — no property of the input data produced them. Both estimators are gone, replaced by
+-- `ANCIENT_ADMIXTURE` (a supervised allele-frequency mixture over a real AADR-derived panel).
+--
+-- The read paths already ignore these methods by name, but ignoring them leaves fabricated numbers
+-- sitting in the user's database, one query away from any future feature that iterates methods
+-- generically. Delete them. Nothing is lost that can't be recomputed correctly: re-running the
+-- consensus ancestry estimate repopulates deep ancestry with the rebuilt method.
+--
+-- See docs/design/ancient-ancestry-rebuild.md.
+DELETE FROM ancestry_result WHERE method IN ('PCA_PROJECTION_GMM', 'G25_NMONTE');

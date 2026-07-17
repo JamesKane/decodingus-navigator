@@ -3321,6 +3321,7 @@ dependencies = [
  "flate2",
  "nalgebra",
  "navigator-analysis",
+ "noodles",
 ]
 
 [[package]]

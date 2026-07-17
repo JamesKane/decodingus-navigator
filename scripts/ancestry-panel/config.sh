@@ -125,8 +125,31 @@ ASSET_VERSION="${ASSET_VERSION:-1}"   # bump per published asset revision
 # ── outputs (asset filenames the app/CDN expect) ────────────────────────────────
 PANEL_OUT="$ASSETS/ancestry_panel_${BUILD}.bin"            # AF panel (genotyping + admixture)
 PCA_OUT="$ASSETS/ancestry_pca_${BUILD}.bin"                # modern PCA loadings + centroids (scatter)
-PCA_ANCIENT_OUT="$ASSETS/ancestry_pca_ancient_${BUILD}.bin" # PCA w/ ancient deep components (GMM/nMonte)
 FINE_OUT="$ASSETS/ancestry_freq_global_${BUILD}.bin"       # global per-pop AF (fine admixture)
+ANCIENT_OUT="$ASSETS/ancestry_freq_ancient_${BUILD}.bin"   # deep-source AF: WHG/ANF/Steppe (deep ancestry)
+
+# Deep (ancient) source components, in panel-axis order. Keep them non-collinear — Steppe ≈ EHG+CHG,
+# so adding EHG/CHG alongside Steppe makes the mixture ill-conditioned.
+ANCIENT_COMPONENTS="${ANCIENT_COMPONENTS:-WHG,ANF,Steppe}"
+# Minimum called ancient samples per component at a site, or the site is dropped. Ancient genomes are
+# sparse; a source with no call at a site has no frequency there, and recording that as 0.0 (which is
+# what the fine-panel builder does) would feed the mixture fake evidence. See pca::build_ancient_panel.
+ANCIENT_MIN_CALLED="${ANCIENT_MIN_CALLED:-8}"
+# ASCERTAINMENT FLOOR (Option A′). A consumer-array manifest: one assayed rsID per line (a 23andMe /
+# AncestryDNA / Illumina-GSA export or manifest; extra columns ignored, first token taken as the id).
+# When set, the deep panel is restricted to the array-assayed sites (mapped to CHM13 via the 1240k
+# liftover). Allele-frequency admixture is only valid when sample and reference share ascertainment;
+# without this the deep estimate is unstable across data sources (WGS ~90% vs the same person's chip
+# ~58% Steppe). REQUIRED for a shippable deep panel — see docs/design/ancient-ancestry-rebuild.md §4.
+# Leave empty to build the full (unascertained) panel, which does NOT pass the §3.4 stability gate.
+CHIP_MANIFEST="${CHIP_MANIFEST:-}"
+ASCERTAIN_SITES="$TMP/ascertain_sites.${BUILD}.tsv"        # generated: CHM13 contig<TAB>pos of array sites
+
+# NOTE: `ancestry_pca_ancient_<build>.bin` is RETIRED and no longer built or published. Projecting
+# ancient samples onto a modern PCA collapses them onto the modern cloud (WHG landed on top of
+# English, ANF on top of Sardinian), so the centroids carried no ancient signal and every model over
+# them was fabrication. Deep ancestry is now a frequency mixture over $ANCIENT_OUT.
+# See docs/design/ancient-ancestry-rebuild.md.
 GMAP_OUT="$ASSETS/genetic_map_${BUILD}.bin"               # IBD recombination map (bp->cM)
 IBD_PANEL_OUT="$ASSETS/ibd_panel_${BUILD}.bin"            # chip-compatible multi-build IBD SNP panel
 MANIFEST="$ASSETS/ancestry_manifest_${BUILD}.json"         # provenance + checksums

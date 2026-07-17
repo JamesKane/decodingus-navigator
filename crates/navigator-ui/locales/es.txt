@@ -577,7 +577,6 @@ hint.chromosomePainting=diploide: dos copias ordenadas por cromosoma (sin fase);
 hint.consensusVcf=Genotipo conjunto entre las alineaciones WGS del mismo ensamblaje del sujeto. Pesado — llama y fuerza-llama cada alineación en todo el genoma.
 card.ancestryModern=Poblaciones detalladas (modernas)
 card.ancestryAncient=Componentes de ascendencia antigua
-card.ancestryNmonte=Modelo de mezcla (G25 / nMonte)
 card.consensusIbd=IBD — comparación de sujetos (consenso)
 ibd.otherSubject=Comparar con:
 ibd.compare=Comparar

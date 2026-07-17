@@ -641,7 +641,6 @@ pub struct NavigatorApp {
     /// Detailed consensus ancestry reports: modern fine-population + ancient-component breakdowns.
     fine_ancestry: Option<AncestryResult>,
     ancient_ancestry: Option<AncestryResult>,
-    nmonte_ancestry: Option<AncestryResult>,
     /// Reference PC1/PC2 centroids for the PCA scatter, keyed by alignment_id (lazy-loaded).
     pca_reference: Option<(i64, PcaCentroids)>,
     /// Which PCA-reference key we've already dispatched a load for (avoids re-sending every frame).
@@ -1059,7 +1058,6 @@ impl NavigatorApp {
             donor_ancestry: None,
             fine_ancestry: None,
             ancient_ancestry: None,
-            nmonte_ancestry: None,
             pca_reference: None,
             pca_reference_attempted: None,
             donor_private_y: None,

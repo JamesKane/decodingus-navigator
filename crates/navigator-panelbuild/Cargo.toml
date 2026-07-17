@@ -19,3 +19,7 @@ nalgebra = "0.33"
 [[bin]]
 name = "navigator-panelbuild"
 path = "src/main.rs"
+
+# Diagnostic examples only (not the shipped tool).
+[dev-dependencies]
+noodles = { version = "0.111.0", features = ["fasta", "core", "bgzf"] }

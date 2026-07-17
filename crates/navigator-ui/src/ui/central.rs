@@ -414,10 +414,6 @@ impl NavigatorApp {
                         ui.add_space(10.0);
                         card(ui, self.tr("card.ancestryAncient"), |ui| draw_population_components(ui, r, "anc_ancient", 18));
                     }
-                    if let Some(r) = &self.nmonte_ancestry {
-                        ui.add_space(10.0);
-                        card(ui, self.tr("card.ancestryNmonte"), |ui| draw_population_components(ui, r, "anc_nmonte", 18));
-                    }
                     // Chromosome painting (diploid local ancestry) — its own section, from the consensus.
                     ui.add_space(10.0);
                     card(ui, self.tr("card.chromosomePainting"), |ui| {

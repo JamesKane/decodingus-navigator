@@ -391,14 +391,10 @@ impl NavigatorApp {
 
     /// Donor-level ancestry headline (Phase 3): the best estimate across the subject's sources,
     /// with which source + method it came from.
-    /// The donor's projected (PC1, PC2), from whichever loaded estimate carries PCA coordinates
-    /// (the PCA / nMonte methods, or ADMIXTURE with PCA attached).
+    /// The donor's projected (PC1, PC2). Only ADMIXTURE carries PCA coordinates now — the deep
+    /// (ancient) breakdown is a frequency model and has no position in PC space.
     fn sample_pca(&self) -> Option<(f64, f64)> {
-        [
-            self.donor_ancestry.as_ref().map(|(_, r)| r),
-            self.ancient_ancestry.as_ref(),
-            self.nmonte_ancestry.as_ref(),
-        ]
+        [self.donor_ancestry.as_ref().map(|(_, r)| r)]
         .into_iter()
         .flatten()
         .find_map(|r| {
