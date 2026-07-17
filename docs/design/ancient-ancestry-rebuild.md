@@ -300,11 +300,14 @@ on his own chips (§3.2).
 
 `ANCIENT_ANCESTRY_ENABLED = false`. The shipped `ancestry_freq_ancient_<build>.bin` is the full,
 unascertained panel (the A′ publish was rolled back). Modern/fine admixture stays enabled and is
-unaffected. Three approaches have now failed the real-data stability gate: raw frequency-admixture
-(§3.1), consumer-array ascertainment (§3.2), and target pseudo-haploidization (§5.1). The gate to
-re-enable is §5.4 gate 1 passing end-to-end. Next concrete step: **§5.6 step 2 — the f4/qpAdm
-estimator (Lever 2)**, the only remaining approach the literature supports, or the chip-only fallback.
-The implementation scope for Lever 2 is **§7**.
+unaffected. **Four** approaches have now failed on real data: raw frequency-admixture (§3.1),
+consumer-array ascertainment (§3.2), target pseudo-haploidization (§5.1), and the **qpAdm f4 estimator
+(Lever 2)** — built, tested, and sound in isolation, but the real WGS returns *negative WHG*, and the
+caller (GATK4 vs ours) and read technology (short-read vs PacBio) are both ruled out (**§7.9**). The
+residual is a structural **capture (ancient sources) vs shotgun (modern target/outgroups) batch
+effect** that runs between sources and target, which no target-side method or outgroup projection can
+cancel. Remaining levers (§7.9): ancient-*shotgun* sources, chip-only (unproven), or accept deep
+ancestry as not deliverable. The Lever-2 scope and results are **§7**.
 
 ---
 
@@ -431,3 +434,46 @@ setup). If, after step 5, `huF98AFD` still splits WGS-vs-chip beyond a few point
 exhausted for our data and the decision is **chip-only deep ancestry** (§5.6 fallback) — which needs a
 second dual-source subject to validate non-circularly. Steps 1–2 are the real cost (a correct,
 tested f4/covariance core); 3–4 are largely wiring over machinery that exists.
+
+### 7.9 Empirical result (2026-07) — built, tested, and the WGS still won't fit
+
+Steps 1–3 are done and committed. The estimator is **sound in isolation** and the caller is **ruled
+out**, but the real WGS target does **not** fit the model. The evidence, in order:
+
+- **The estimator recovers known mixtures.** `qpadm_selftest` draws a target from the panel's own
+  `Σ wᵢ·sourceᵢ` frequencies and fits it back: NW-European 20/30/50 → WHG 23 / ANF 22 / Steppe 54
+  (feasible), pure-WHG → 97% (feasible). Adding an **ANE outgroup** (MA1 + AfontovaGora + Yana, n≈5 —
+  recovered by fixing the stale `Russia_MA1_HG.SG` group-ID to v66.p1's `Russia_Malta_UP` /
+  `Russia_AfontovaGora_UP`) tightens the WHG/Steppe axis exactly as intended (WHG SE 21→14). The f4
+  core, the GLS solve, the p-value, and the outgroup set all work.
+- **The real WGS gives an infeasible fit.** `huF98AFD`'s WGS (aln 3713) → **WHG −34% to −68%**, ANF
+  ~54–66, Steppe **80–102%** — a *negative* hunter-gatherer weight. The model is accepted by the
+  p-value (p≈0.16) but the weights are outside [0,1]: the sources cannot express this genome.
+- **Not the read technology.** Short-read (bwa/markdup) and **PacBio HiFi** (pbmm2, minimal reference
+  bias) both give negative WHG (−68% / −46%). Long reads don't fix it.
+- **Not our caller.** Re-genotyped the same WGS at the same 17 k sites with **GATK4 HaplotypeCaller**
+  (force-called, local reassembly) → **WHG −34.2 / ANF 53.7 / Steppe 80.5**, concordant with our
+  native caller (−34.1 / 53.7 / 80.4) to 0.1%. Two independent callers agree; the genotypes are right.
+
+**Diagnosis.** The genotypes are correct and the estimator is correct, yet a real NW-European WGS
+needs *negative WHG*. The remaining structural difference is the one the literature names (§4.2–4.3):
+our **sources are 1240k-capture ancient pseudo-haploid** data while the **target and outgroups are
+modern shotgun**. That capture-vs-shotgun / ancient-vs-modern batch line runs *between the sources and
+the target*, so f4-against-outgroups cannot cancel it — the outgroups sit on the target's side of the
+line. The self-test doesn't see it only because it draws the target from the capture-derived source
+frequencies (same side of the line). This is consistent with every prior failure: frequency-EM (§3.1),
+target pseudo-haploidization (§5.1), and now qpAdm all fail on the same WGS, because none removes a
+source-vs-target batch effect.
+
+**What this rules out / leaves open.**
+- Ruled out: the estimator, the outgroup set, the read technology, and the variant caller.
+- Open, and the only remaining levers: (a) **match data types** — rebuild the sources from ancient
+  *shotgun* (`.SG`/`.DG`) genomes so sources and target are the same assay class (literature-consistent,
+  but few shotgun WHG/ANF/Steppe genomes exist — data-limited); (b) **chip-only deep ancestry** (§5.6),
+  though the chip is still modern-vs-ancient and its ~58% was only ever measured through the retired
+  frequency-EM, never qpAdm, so it is unproven and possibly circular; (c) accept that deep ancestry is
+  **not deliverable** on this data and keep it disabled, shipping only the sound modern/fine admixture.
+
+`ANCIENT_ANCESTRY_ENABLED` stays `false`. Tasks 4–5 (wire the estimator into the app + flip the flag)
+are **not** started: there is no point wiring an estimator that returns infeasible weights on real
+data. The decision above is a genuine fork and is left to the maintainer.
