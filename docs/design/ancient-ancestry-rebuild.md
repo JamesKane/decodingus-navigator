@@ -300,14 +300,15 @@ on his own chips (§3.2).
 
 `ANCIENT_ANCESTRY_ENABLED = false`. The shipped `ancestry_freq_ancient_<build>.bin` is the full,
 unascertained panel (the A′ publish was rolled back). Modern/fine admixture stays enabled and is
-unaffected. **Four** approaches have now failed on real data: raw frequency-admixture (§3.1),
-consumer-array ascertainment (§3.2), target pseudo-haploidization (§5.1), and the **qpAdm f4 estimator
-(Lever 2)** — built, tested, and sound in isolation, but the real WGS returns *negative WHG*, and the
-caller (GATK4 vs ours) and read technology (short-read vs PacBio) are both ruled out (**§7.9**). The
-residual is a structural **capture (ancient sources) vs shotgun (modern target/outgroups) batch
-effect** that runs between sources and target, which no target-side method or outgroup projection can
-cancel. Remaining levers (§7.9): ancient-*shotgun* sources, chip-only (unproven), or accept deep
-ancestry as not deliverable. The Lever-2 scope and results are **§7**.
+unaffected. The earlier attempts failed on real data — raw frequency-admixture (§3.1), consumer-array
+ascertainment (§3.2), target pseudo-haploidization (§5.1) — but the **qpAdm f4 estimator (Lever 2)** is
+now **built and validated**: on the same data, real `admixtools2` reproduces our estimator's answer
+(WHG ≈ 0 with SE ≈ 40%, model accepted — **§7.11**). Two false trails were cleared along the way: it
+is **not** the caller (GATK4 ≈ ours, §7.9) and **not** a structural batch effect (that was our
+outgroup *sourcing* — fixed by using AADR-native outgroups, §7.10). The real and final blocker is
+**SNP count**: we run on ~16 k AIM sites where a real 1240k qpAdm uses ~1.15 M, so WHG SE is ~8× too
+large. The fix is a full-1240k rebuild of the ancient asset (§7.11) — bounded, not a dead-end. Lever-2
+scope + results are **§7**.
 
 ---
 
@@ -528,3 +529,43 @@ implementation-vs-data locally: no `ADMIXTOOLS` / R / conda is installed.
 
 The committed `pops/qpadm_rightpops.txt` is updated to the AADR-native set (the methodologically
 correct choice regardless of the precision question). `ANCIENT_ANCESTRY_ENABLED` remains `false`.
+
+### 7.11 Decisive: real `admixtools2` gives the SAME huge SE — it's the SNP count, not our code
+
+To settle implementation-vs-data (§7.10), installed **`admixtools2` 2.0.10** (R) and ran genuine
+`qpadm` on the *identical* data: built an EIGENSTRAT of the 446 AADR source+outgroup individuals plus
+the `huF98AFD` target (CHM13, our ~20 k panel sites, GATK genotypes; 15 961 SNPs after admixtools'
+own filtering), same left (WHG/ANF/Steppe) and right (Han/Papuan/Yoruba/Karitiana/Mbuti/UPEuro/ANE).
+
+Result — real qpAdm:
+
+| left | weight | SE | z |
+|---|---|---|---|
+| WHG | 0.4% | **±43%** | 0.01 |
+| ANF | 60.1% | ±28% | 2.17 |
+| Steppe | 39.5% | ±40% | 1.00 |
+
+Model **accepted** (χ²=2.66, p=0.62). **This is our own estimator's answer** (WHG ≈ 0 with SE ≈ 40%,
+model accepted; ours gave WHG −17 ± 33 on the pooled panel). ADMIXTOOLS is marginally better-behaved
+(feasible weights vs our slightly-negative point estimate) but its **SEs are just as large**. So:
+
+- **Our f4/qpAdm implementation is validated** — it reproduces ADMIXTOOLS on the same input. Tasks 1–2
+  were built correctly. The "per-individual machinery" lever (§7.10a) is **not** the fix — the pooled-
+  frequency approximation is not what limits precision.
+- **The precision limit is the SNP count.** We ran on **~16 k SNPs** — our high-Fst *AIM panel* subset.
+  A real 1240k qpAdm uses **~1.15 M SNPs**, ~70× more. SE scales ≈ 1/√(n_SNP), so full 1240k is a
+  ~8× SE reduction: WHG ≈ ±5% instead of ±43% — enough to resolve a Briton's ~15% WHG (the published
+  studies get ±2–3% precisely this way). Our whole asset pipeline was built on a 20 k AIM panel
+  (sized for the modern super-pop AF work); deep ancestry needs the full 1240k.
+
+**Revised path — bounded and hopeful.** Deep ancestry is achievable with our validated estimator; it
+needs the **full-1240k SNP set**, not the 20 k AIM subset:
+1. Re-extract the AADR sources + AADR-native outgroups at the **full 1240k** (the AADR `.geno` already
+   is 1240k; the pipeline currently down-selects to 20 k AIMs — build a *separate* dense ancient asset
+   instead of subsetting).
+2. Genotype the target at those ~1.15 M sites (CHM13), not just the AIM panel.
+3. Re-run the (validated) `qpadm_fit`; expect WHG SE ≈ ±5%. Then §5.4 gates + flip.
+
+This is a data-volume task, not a research dead-end. `ANCIENT_ANCESTRY_ENABLED` stays `false` until the
+full-1240k rebuild passes the stability gate. The `admixtools2` cross-check (`examples`-adjacent R
+script in the build scratch) is the reusable oracle for validating our estimator on any future asset.
