@@ -1,21 +1,31 @@
 # qpAdm RIGHT populations — the outgroups the target's allele-sharing is measured against.
 # One population code per line (blank lines and #-comments ignored). Appended to the panel axis
 # after the left/source populations. This is the one expertise-driven artifact of the method
-# (docs/design/ancient-ancestry-rebuild.md §7.4): outgroups must be *differentially* related to the
-# three sources (so the f4 matrix has rank) and must NOT be downstream of the mixture (no gene flow
-# FROM the sources into an outgroup after the sources diverged).
+# (docs/design/ancient-ancestry-rebuild.md §7.4, §7.10).
 #
-# Sourced from the modern reference panels already extracted at the CHM13 panel sites
-# (1000G = PRJEB31736/PRJEB36890, SGDP = PRJEB9586). Strong 1000G anchors pin the major continental
-# axes at n≈100; the thin SGDP deep lineages supply the ANE / Oceanian / Andamanese differential
-# relatedness that actually separates Steppe / ANF / WHG. n≈2–3 is normal for qpAdm outgroups (the
-# textbook Lazaridis rightpops use Mbuti/Papuan/Onge/Karitiana at single-digit n); the f4 block
-# jackknife accounts for the frequency noise. They get the lower --outgroup-min-called floor.
+# CRITICAL (learned the hard way — §7.10): the right set MUST come from the SAME genotype callset as
+# the sources (the AADR 1240k EIGENSTRAT), NOT from a separate modern panel. Our first attempt sourced
+# these from 1000G/SGDP shotgun while the sources were AADR capture, which ran a capture-vs-shotgun
+# batch line straight through the f4 matrix and produced wildly infeasible weights (WHG −68%). Using
+# AADR-native outgroups (below) fixed most of it (WHG −68% → −8%, model p 0.16 → 0.87).
 #
-# code        lineage / role                                    approx n at panel sites
-YRI         # Yoruba (West African) — basal-Eurasian axis (ANF)      ~108
-CHB         # Han Chinese (East Asian)                                ~103
-GIH         # Gujarati (South Asian)                                  ~103
-Karitiana   # Amazonian (Native American) — ANE axis (Steppe)          ~3   (SGDP)
-Papuan      # New Guinea (Oceanian) — deep non-African split           ~15  (SGDP)
-Onge        # Andamanese (AASI) — deep South-Eurasian split            ~2   (SGDP)
+# Requirements: differentially related to the three sources (so the f4 matrix has rank), NOT downstream
+# of the mixture, and — for a frequency-based fit — DENSE ENOUGH that no single genome's idiosyncratic
+# allele-sharing dominates. Single-genome anchors (Ust'-Ishim n=1) bias the fit, so the deep
+# basal-Eurasian / ANE anchors are POOLED into denser groups (UPEuro, ANE) via aadr_component_map.tsv.
+#
+# All labels below are AADR Group-ID pools defined in aadr_component_map.tsv (present-day continental
+# references + pooled deep anchors), so they share the sources' callset.
+#
+# code        lineage / role                                               approx n
+Han         # Han Chinese (East Asian)                                       ~46
+Papuan      # New Guinea (Oceanian) — deep non-African split                 ~32
+Yoruba      # West African                                                    ~24
+Karitiana   # Amazonian (Native American)                                     ~16
+Mbuti       # Central African (basal African)                                 ~15
+UPEuro      # Upper-Paleolithic Eurasian POOL: Ust'-Ishim + Kostenki + Sunghir ~8  — basal anchor
+ANE         # Ancient North Eurasian POOL: MA1 + AfontovaGora + Yana          ~5  — Steppe (ANE) axis
+#
+# NOTE (§7.10): with these, huF98AFD's WGS is statistically consistent with NW-European ancestry but
+# WHG SE is still ~40% (vs ~2–3% for real qpAdm). Precision — not the outgroups — is the open blocker;
+# likely the pooled-frequency approximation + sparse sources vs per-individual ADMIXTOOLS machinery.

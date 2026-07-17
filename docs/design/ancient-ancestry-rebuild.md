@@ -477,3 +477,54 @@ source-vs-target batch effect.
 `ANCIENT_ANCESTRY_ENABLED` stays `false`. Tasks 4–5 (wire the estimator into the app + flip the flag)
 are **not** started: there is no point wiring an estimator that returns infeasible weights on real
 data. The decision above is a genuine fork and is left to the maintainer.
+
+### 7.10 Correction — the batch line was our *outgroup sourcing*, and it is largely fixable
+
+§7.9 called the batch effect "structural." That was **too pessimistic**: comparing our build to the
+standard qpAdm workflow (Reich-lab `ADMIXTOOLS`) exposed a real construction error, and fixing it
+moved the real WGS most of the way back.
+
+**The error.** In qpAdm the *right* (outgroup) set must live in the **same genotype callset as the
+left (source) set**, so `f4(Left, Left; Right, Right)` is measured in one consistent space and only the
+single target is "foreign." We instead sourced outgroups from **modern 1000G/SGDP shotgun** (a separate
+download→CHM13-liftover→calling pipeline) while the sources were **AADR 1240k capture** — putting a
+capture-vs-shotgun batch line straight through the middle of the f4 matrix. The "strengthen the thin
+AADR outgroups from the workspace DB" move was backwards: a thin AADR outgroup (Mbuti n≈15) is
+*correct* because it shares the callset; strengthening it from a foreign pipeline breaks qpAdm's core
+assumption. We had also never used the canonical deep anchors **Ust'-Ishim** and **Kostenki14** (both
+present in our AADR matrix) that resolve the West-Eurasian structure.
+
+**The fix and its effect on `huF98AFD`'s WGS (GATK genotypes):**
+
+| Outgroup set | WHG | ANF | Steppe | model p |
+|---|---|---|---|---|
+| Wrong-pipeline (1000G/SGDP + ANE) | −34% | 54 | 80 | 0.16 |
+| **All-AADR** (Han/Papuan/Yoruba/Karitiana/Mbuti + Ust'-Ishim/Kostenki, deep anchors **pooled** for density) | **−8% (±42)** | 42 | 65 | **0.87** |
+
+From *confidently wrong* (−34 to −68% WHG) to *statistically consistent with the truth* (−8% ± 42
+includes the true ≈15%), with a near-perfect fit (p=0.87). Notes from the tuning: single-genome
+anchors (Ust'-Ishim n=1) **bias** the frequency-based fit — their idiosyncratic allele-sharing doesn't
+average out — so the deep anchors must be *pooled* (UP-Eurasian, ANE) for density; dropping them
+entirely leaves the sources unresolved (SE 90%). Pseudo-haploidizing the target did **not** help
+(again), so target representation is not the lever.
+
+**What now blocks it: precision, not bias.** WHG comes back with **SE ≈ 40%**, where a real qpAdm run
+resolves a Briton to **±2–3%**. ~10× too imprecise, so the point estimate wanders slightly negative
+though it is consistent with the true value. The prime suspect is our **pooled-frequency + block-
+jackknife-over-sites** approximation with **sparse ancient sources** (WHG ≈ 28 calls/site), versus
+ADMIXTOOLS' **per-individual genotypes** with a per-sample jackknife. We could not settle
+implementation-vs-data locally: no `ADMIXTOOLS` / R / conda is installed.
+
+**Revised remaining levers.**
+- (a) **Per-individual f4 machinery** — persist per-sample ancient genotypes (not just pooled `freqs`)
+  and do the ADMIXTOOLS-style per-individual block jackknife. Most likely to recover the precision;
+  the bigger lift.
+- (b) **Validate against real `qpAdm`/`admixtools2`** (offline) on the same EIGENSTRAT to learn whether
+  ±2–3% is even achievable with our sparse sources, or whether it is a data limit. Decisive, needs a
+  C/R install.
+- (c) **Denser sources** — the WHG source at ~28 calls/site is the sparse bottleneck; higher-coverage
+  WHG genomes would tighten the SE.
+- (d) Accept "directionally right, imprecise," keep disabled.
+
+The committed `pops/qpadm_rightpops.txt` is updated to the AADR-native set (the methodologically
+correct choice regardless of the precision question). `ANCIENT_ANCESTRY_ENABLED` remains `false`.

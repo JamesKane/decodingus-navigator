@@ -89,3 +89,24 @@ Iran_HajjiFiruz_N	Iran_N
 # ANE: only single genomes (n=1, e.g. Russia_MA1_HG.SG) — too sparse for a stable centroid.
 # Natufian / Levant_N: Israel_Natufian (n=17), Jordan_PPNB (n=17) are strong deep refs but need a
 #   new component code added to navigator-domain::ancestry before mapping here.
+
+# ════════════════════════════════════════════════════════════════════════════════
+# qpAdm RIGHT populations (outgroups) — docs/design/ancient-ancestry-rebuild.md §7.4, §7.10.
+# These MUST come from the AADR callset (same pipeline as the sources above); do NOT source outgroups
+# from a separate modern panel (1000G/SGDP) — that runs a capture-vs-shotgun batch line through the f4
+# matrix (§7.10). Present-day continental references + POOLED deep anchors (single genomes bias a
+# frequency-based fit, so Ust'-Ishim/Kostenki/Sunghir pool into UPEuro and MA1/AfontovaGora/Yana into
+# ANE). Consumed as --outgroups (qpadm_rightpops.txt), NOT as source --components.
+Han	Han
+Papuan	Papuan
+Yoruba	Yoruba
+Karitiana	Karitiana
+Mbuti	Mbuti
+# UPEuro — Upper-Paleolithic Eurasian basal anchor (pooled for density)
+Russia_UstIshim_IUP	UPEuro
+Russia_Kostenki_UP	UPEuro
+Russia_Sunghir_UP	UPEuro
+# ANE — Ancient North Eurasian (Steppe axis; pooled for density)
+Russia_Malta_UP	ANE
+Russia_AfontovaGora_UP	ANE
+Russia_YanaRiver_UP	ANE
