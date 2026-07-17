@@ -1,11 +1,11 @@
 # Ancient ancestry — why it's disabled, and what a correct rebuild takes
 
 **Status:** feature gated off (`navigator_app::ANCIENT_ANCESTRY_ENABLED = false`). The original PCA
-implementation was disabled 2026-07-13 for fabricating numbers (§1–§2). Two rebuild attempts in
-2026-07 — supervised allele-frequency admixture, then the same with a consumer-array ascertainment
-floor — both **fail the real-data stability gate** (§3). The literature explains why and points at the
-right method (§4); the design that follows from it is §5. The feature stays off until §5 is built and
-passes §5.3.
+implementation was disabled 2026-07-13 for fabricating numbers (§1–§2). Three approaches have since
+**failed the real-data stability gate**: raw allele-frequency admixture and a consumer-array
+ascertainment floor (§3), and — prototyped and refuted — target pseudo-haploidization (§5.1). The
+literature explains why and names the method that should work (§4); the design and the remaining path
+(an f4/qpAdm estimator) are §5. The feature stays off until that is built and passes §5.4.
 
 **Scope:** the evidence that the original is unsound (§1–2), what the rebuild attempts established and
 why they fail (§3–4), and the design for a correct rebuild (§5–6).
@@ -207,17 +207,21 @@ to the same representation as the AADR ancient references:
 
 - **Pseudo-haploidize the target.** Sample a single allele (one read for WGS; one of the two reported
   alleles for a chip) per site, instead of feeding diploid dosages against pseudo-haploid references.
-  Removes the diploid-vs-pseudo-haploid attraction. *Untested so far — this is the lever §3 never
-  pulled, and the one the literature points at most directly.*
+  Removes the diploid-vs-pseudo-haploid attraction.
 - **Transversions only.** Drop A↔G, C↔T so post-mortem C→T/G→A damage in the references can't create
-  attraction. (Tested in isolation it didn't fix Attempt 1, but it is necessary in combination.)
+  attraction.
 - **One fixed, orientation-checked site set**, identical for target and references, on CHM13.
 
-Then run the estimator on the harmonized genotypes. The **first experiment** is to pseudo-haploidize
-`huF98AFD`'s WGS over transversion sites and re-run the stability diagnostic: if WGS collapses from
-~75 onto the chip's ~58, harmonization is the fix and Lever 2 may be unnecessary.
+**Prototype result (2026-07): Lever 1 is refuted.** `panelbuild --example phaploid_fit` genotyped a
+clean CHM13 alignment at the ancient sites with allele depths and fit it read-level pseudo-haploid
+(one allele per site, P(alt)=alt_depth/depth). It does **not** move the WGS estimate:
+diploid 80.5% Steppe → pseudo-haploid **79.9%** (the transform changed the genotypes — dispersion
+2.15 → 3.31 — but not the answer), still nowhere near the chip's ~58%. Transversions make it *worse*
+(86–87%). So the split is **not** a target-ploidy batch effect: with the target now processed
+identically to the pseudo-haploid references, it persists. What remains is the capture-vs-shotgun /
+reference-side effect (§4.2/§4.4), which target-side transforms cannot touch — it points at Lever 2.
 
-### 5.2 Lever 2 — estimator: qpAdm-style f4 (if harmonization alone isn't enough)
+### 5.2 Lever 2 — estimator: qpAdm-style f4 (now the primary path, Lever 1 having failed)
 
 Replace the frequency-mixture EM with an **f4-statistics** estimator (the qpAdm approach):
 
@@ -278,11 +282,14 @@ on his own chips (§3.2).
 
 ### 5.6 Effort and sequencing
 
-1. **Cheap, next:** implement pseudo-haploidization of the target (Lever 1) and re-run the stability
-   diagnostic on `huF98AFD`. This is a small change to the genotype path and could resolve the split
-   on its own.
-2. **If needed:** build the f4/qpAdm estimator (Lever 2) with a curated outgroup set.
-3. Re-run §5.3 gates on real data end-to-end; only then flip `ANCIENT_ANCESTRY_ENABLED`.
+1. ~~Pseudo-haploidize the target (Lever 1)~~ — **done, refuted** (§5.1): it doesn't move the WGS
+   estimate, so target harmonization is not the fix.
+2. **Next:** build the f4/qpAdm estimator (Lever 2) with a curated outgroup set — the ascertainment-
+   robust method the diagnosis and the prototype both point to. Larger lift (an f4/covariance solver +
+   outgroups). If that is judged too heavy for a consumer three-way, the fallback is **chip-only deep
+   ancestry** — compute it from a chip-resolved site set for *every* source, WGS included, accepting
+   the smaller site count, and validate non-circularly once a second dual-source subject exists.
+3. Re-run §5.4 gates on real data end-to-end; only then flip `ANCIENT_ANCESTRY_ENABLED`.
 
 ---
 
@@ -290,5 +297,7 @@ on his own chips (§3.2).
 
 `ANCIENT_ANCESTRY_ENABLED = false`. The shipped `ancestry_freq_ancient_<build>.bin` is the full,
 unascertained panel (the A′ publish was rolled back). Modern/fine admixture stays enabled and is
-unaffected. The gate to re-enable is §5.4 gate 1 (real-data stability) passing end-to-end — which no
-attempt has yet achieved. Next concrete step: §5.6 step 1.
+unaffected. Three approaches have now failed the real-data stability gate: raw frequency-admixture
+(§3.1), consumer-array ascertainment (§3.2), and target pseudo-haploidization (§5.1). The gate to
+re-enable is §5.4 gate 1 passing end-to-end. Next concrete step: **§5.6 step 2 — the f4/qpAdm
+estimator (Lever 2)**, the only remaining approach the literature supports, or the chip-only fallback.
