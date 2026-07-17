@@ -5,7 +5,8 @@ implementation was disabled 2026-07-13 for fabricating numbers (§1–§2). Thre
 **failed the real-data stability gate**: raw allele-frequency admixture and a consumer-array
 ascertainment floor (§3), and — prototyped and refuted — target pseudo-haploidization (§5.1). The
 literature explains why and names the method that should work (§4); the design and the remaining path
-(an f4/qpAdm estimator) are §5. The feature stays off until that is built and passes §5.4.
+(an f4/qpAdm estimator) are §5, and its concrete implementation scope is §7. The feature stays off
+until that is built and passes §5.4.
 
 **Scope:** the evidence that the original is unsound (§1–2), what the rebuild attempts established and
 why they fail (§3–4), and the design for a correct rebuild (§5–6).
@@ -286,9 +287,11 @@ on his own chips (§3.2).
    estimate, so target harmonization is not the fix.
 2. **Next:** build the f4/qpAdm estimator (Lever 2) with a curated outgroup set — the ascertainment-
    robust method the diagnosis and the prototype both point to. Larger lift (an f4/covariance solver +
-   outgroups). If that is judged too heavy for a consumer three-way, the fallback is **chip-only deep
-   ancestry** — compute it from a chip-resolved site set for *every* source, WGS included, accepting
-   the smaller site count, and validate non-circularly once a second dual-source subject exists.
+   outgroups); **full scope in §7** (the panel already stores the frequencies f4 needs and the
+   outgroups are already extracted, so the real cost is the f4/covariance core, not the plumbing). If
+   that is judged too heavy for a consumer three-way, the fallback is **chip-only deep ancestry** —
+   compute it from a chip-resolved site set for *every* source, WGS included, accepting the smaller
+   site count, and validate non-circularly once a second dual-source subject exists.
 3. Re-run §5.4 gates on real data end-to-end; only then flip `ANCIENT_ANCESTRY_ENABLED`.
 
 ---
@@ -301,3 +304,130 @@ unaffected. Three approaches have now failed the real-data stability gate: raw f
 (§3.1), consumer-array ascertainment (§3.2), and target pseudo-haploidization (§5.1). The gate to
 re-enable is §5.4 gate 1 passing end-to-end. Next concrete step: **§5.6 step 2 — the f4/qpAdm
 estimator (Lever 2)**, the only remaining approach the literature supports, or the chip-only fallback.
+The implementation scope for Lever 2 is **§7**.
+
+---
+
+## 7. Lever 2 implementation scope (f4 / qpAdm)
+
+The good news the scoping surfaced: **most of the machinery already exists**, because f4 consumes
+exactly what the panel already stores.
+
+### 7.1 What we already have (and why f4 fits the existing asset)
+
+- **The panel format is already the right shape.** `AncestryPanel` carries, per site, a `freqs:
+  Vec<f32>` of per-population alt-allele frequencies. f4 is defined on population *frequencies*:
+  `f4(A,B;C,D) = mean_site (a−b)(c−d)`. Crucially f4 is **unbiased from pooled frequencies** — the
+  estimation noise in each population's `â` is independent across the four slots, so the cross-terms
+  vanish in expectation. (This is unlike f2/f3, which need a sample-size hzcorr.) So **no new
+  per-genotype asset format is required** — the stored frequencies are sufficient for the f4 point
+  estimates. The target contributes its own frequency `g/2 ∈ {0, 0.5, 1}` in one slot.
+- **The outgroups are already extracted.** `pops/aadr_component_map.tsv` already maps AADR groups to
+  `African` (Mbuti, Yoruba), `EastAsian` (Han, DevilsCave_N), `Oceanian` (Papuan), `AASI` (Onge),
+  `NativeAmerican` (Karitiana, Anzick), `ANE` (MA1), plus `CHG`, `Iran_N`, `EHG`. These are the
+  classic Lazaridis/Harney "right" set. Today the ancient-panel builder keeps only `WHG,ANF,Steppe`
+  and drops the rest; Lever 2 just stops dropping them.
+- **The builder already parameterizes the population set.** `ancient-panel --components` takes an
+  arbitrary ordered list with a per-source `--min-called` floor. Building the f4 asset is, at the
+  matrix level, `--components WHG,ANF,Steppe,Mbuti,Yoruba,Han,Papuan,Onge,Karitiana,MA1,...`.
+- **The gate harness exists.** `validate-ancient` (simulated recovery/band/density) and
+  `App::ancient_ancestry_stability` / `debug-ancient` (real-data WGS-vs-chip) carry straight over as
+  the acceptance tests — they just wrap the new estimator.
+
+### 7.2 The estimand and the solve
+
+qpAdm expresses the target as a weighted mix of the sources, using only allele-sharing measured
+*against outgroups* (which is what cancels ascertainment/drift). Sources `S_1..S_n` (n=3:
+WHG/ANF/Steppe), outgroups `R_1..R_m`, target `T`. Fix a base source `S_1` and a base outgroup `R_1`.
+The admixture identity `T = Σ w_i S_i` implies, for every outgroup `R_j`:
+
+```
+  y[j]    = f4(T,   S_1; R_1, R_j)              j = 2..m         (target vs base source)
+  A[i][j] = f4(S_i, S_1; R_1, R_j)              i = 2..n         (each source vs base source)
+  model:  y = Σ_{i=2}^{n} w_i · A[i][·],   w_1 = 1 − Σ_{i≥2} w_i
+```
+
+Solve `(w_2..w_n)` by **GLS** with the block-jackknife covariance of `y` (§7.3), recover `w_1`, and
+read the model-fit **χ²/p-value** from the weighted residual with `(m−1)−(n−1)` dof. Accept only when
+the model is *not* rejected (p ≳ 0.05) **and** all `w_i ∈ [0,1]`. This is qpWave-rank-1-of-residual /
+qpAdm; the exact ADMIXTOOLS index convention will be pinned against Harney et al. 2021 during
+implementation, but the substance above is what gets built.
+
+### 7.3 Covariance — the frequency block-jackknife (and its honest caveat)
+
+The GLS weights, the standard errors, and the p-value all need `Cov(y)`. Compute it by **block
+jackknife**: partition the genome into ~5 cM (or ~5 Mb) blocks by each site's `(contig,pos)` — data we
+already have — recompute the full f4 vector leaving out one block at a time, and form the jackknife
+covariance. This is pure arithmetic over the panel frequencies + target dosages; no new asset field.
+
+**Caveat to document, not hide:** textbook ADMIXTOOLS jackknifes over *per-individual* genotypes; we
+only retain *pooled* per-population frequencies, so ours is a frequency-level block jackknife — a
+legitimate, lighter approximation that gets the point estimates exactly right and the covariance
+approximately right. For a consumer three-way estimate this is the right tradeoff, but the SEs it
+produces are approximate and the p-value gate must be treated as a screen, backstopped by the
+empirical stability gate (§5.4 gate 1), which is the one that actually caught §3.
+
+### 7.4 The outgroup set — the one expertise-driven artifact
+
+As with `aadr_component_map.tsv`, outgroup choice is the judgment call that makes or breaks the
+method. Requirements: outgroups must be **differentially related** to the three sources (so `A` has
+full rank) and must **not** be downstream of the mixture (no gene flow *from* the sources after they
+diverged). Safe distal starting set: **Mbuti, Yoruba, Han, Papuan, Onge, Karitiana, MA1** (+ ancient
+Kostenki/Ust'-Ishim if we can source them). `EHG`/`CHG`/`Iran_N` are *ancestral inputs to Steppe* and
+are the tempting-but-dangerous case — they can sharpen rank but risk violating the no-downstream-flow
+assumption; **hold them out of the initial set** and add only if the stability gate improves with
+them. Ship the chosen set as a committed, commented `rightpops`/`leftpops` file, parallel to the
+component map. Verify each outgroup clears the `--min-called` floor with enough samples for a usable
+frequency (several of the `.DG` groups may be thin — a build-time count check).
+
+### 7.5 Build-pipeline changes
+
+- Extend the ancient asset (or add `f4-panel`, likely just a thin wrapper over `ancient-panel`) so the
+  built `AncestryPanel` carries **sources + outgroups** as its `populations`, each with the call
+  floor. Source vs outgroup roles live in the **estimator inputs** (two code lists, like
+  `AncestryPanel::subset`), not baked into the asset, so the asset stays a plain frequency panel.
+- New committed artifact: `pops/qpadm_rightpops.txt` (+ `leftpops`) with provenance comments.
+- Asset name: reuse `ancestry_freq_ancient_<build>.bin` (now carrying the extra populations) or mint
+  `ancestry_f4_ancient_<build>.bin`; either way add it to the manifest/sha256 set.
+
+### 7.6 Estimator API and integration
+
+- New `navigator_analysis::ancestry::estimate_qpadm(genotypes, panel, sources, outgroups,
+  reference_version) -> Option<AncestryResult>`, plus a raw `qpadm_fit` that also returns the
+  p-value/SEs (mirroring the `estimate_ancient_admixture` / `ancient_admixture_fit` split so
+  `validate-ancient` can report rejected fits).
+- **Gate swap:** the acceptance test changes from `fit_distance ≤ ANCIENT_MAX_DISPERSION` to
+  `p ≥ P_MIN` **and** `w_i ∈ [0,1]`; carry the p-value in `fit_distance` (or add a field) so the UI's
+  "we can't model this ancestry" path still fires on a rejected model. Keep the `west_eurasian_share ≥
+  50%` scope guard unchanged.
+- **5 call sites, unchanged shape.** `haplogroup.rs` (×2), `brief.rs`, `worker.rs`,
+  `validate_ancient.rs` all call `estimate_ancient_admixture(...) -> Option<AncestryResult>`. Point
+  them at `estimate_qpadm` (extra `sources`/`outgroups` args from the committed files); the return
+  type is identical, so the UI/brief/publish paths need no change. `ANCIENT_ANCESTRY_ENABLED` stays
+  the kill switch and stays `false` until §5.4 passes.
+
+### 7.7 Validation (unchanged bar; add the qpAdm-native screens)
+
+Reuse every §5.4 gate. Add: **(a)** model-rejection behaves — Yoruba/non-European rejected by
+*p-value* (not just dispersion); **(b)** weights land in `[0,1]` without truncation for a real NW
+European; **(c)** stability gate 1 measured **end-to-end through the app consensus**, not `∩chip`
+(the §3.2 circularity). Gate 1 remains the single most diagnostic and the only one that failed all
+three prior attempts — a green simulation is necessary, never sufficient.
+
+### 7.8 Task breakdown, effort, risk
+
+1. **f4 core + block jackknife** (`ancestry.rs`, pure fn over frequencies + dosages; unit-tested on a
+   synthetic admixture graph with known f4). ~The load-bearing piece.
+2. **qpAdm GLS solve + rank/p-value** (nalgebra; sources/outgroups as code lists).
+3. **Outgroup file + build wiring** (`qpadm_rightpops.txt`, extend `ancient-panel` components, rebuild
+   asset, count-check outgroup coverage).
+4. **Estimator API + swap the 5 call sites + gate swap** (p-value/weights replace dispersion).
+5. **Validation**: `validate-ancient` over the new estimator + the real-data stability gate on
+   `huF98AFD` end-to-end. **Only then** flip the flag.
+
+**Risk / kill criteria.** The honest failure mode: even qpAdm can reject or destabilize on a single
+diploid present-day target against pseudo-haploid ancient sources (§4.3 warns against exactly this
+setup). If, after step 5, `huF98AFD` still splits WGS-vs-chip beyond a few points, the method is
+exhausted for our data and the decision is **chip-only deep ancestry** (§5.6 fallback) — which needs a
+second dual-source subject to validate non-circularly. Steps 1–2 are the real cost (a correct,
+tested f4/covariance core); 3–4 are largely wiring over machinery that exists.
