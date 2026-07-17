@@ -129,12 +129,23 @@ FINE_OUT="$ASSETS/ancestry_freq_global_${BUILD}.bin"       # global per-pop AF (
 ANCIENT_OUT="$ASSETS/ancestry_freq_ancient_${BUILD}.bin"   # deep-source AF: WHG/ANF/Steppe (deep ancestry)
 
 # Deep (ancient) source components, in panel-axis order. Keep them non-collinear — Steppe ≈ EHG+CHG,
-# so adding EHG/CHG alongside Steppe makes the mixture ill-conditioned.
-ANCIENT_COMPONENTS="${ANCIENT_COMPONENTS:-WHG,ANF,Steppe}"
-# Minimum called ancient samples per component at a site, or the site is dropped. Ancient genomes are
+# so adding EHG/CHG alongside Steppe makes the mixture ill-conditioned. Default = the committed
+# qpadm_leftpops.txt (comment/blank lines stripped, joined with commas).
+POPS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/pops"
+ANCIENT_COMPONENTS="${ANCIENT_COMPONENTS:-$(sed 's/#.*//' "$POPS_DIR/qpadm_leftpops.txt" | awk 'NF{print}' | paste -sd, -)}"
+# qpAdm OUTGROUPS (right populations), appended to the panel axis after the sources. Deep ancestry is
+# estimated by f4 allele-sharing against these — the ascertainment-robust method (docs §7); they carry
+# no weight but must be differentially related to the sources. Default = the committed
+# qpadm_rightpops.txt. Sourced from the modern reference panels (1000G + SGDP). Set to "" to build the
+# old sources-only frequency-EM asset (which fails the §3.4/§5.4 stability gate — do not ship it).
+ANCIENT_OUTGROUPS="${ANCIENT_OUTGROUPS-$(sed 's/#.*//' "$POPS_DIR/qpadm_rightpops.txt" | awk 'NF{print}' | paste -sd, -)}"
+# Minimum called ancient samples per SOURCE at a site, or the site is dropped. Ancient genomes are
 # sparse; a source with no call at a site has no frequency there, and recording that as 0.0 (which is
 # what the fine-panel builder does) would feed the mixture fake evidence. See pca::build_ancient_panel.
 ANCIENT_MIN_CALLED="${ANCIENT_MIN_CALLED:-8}"
+# Call floor for OUTGROUPS, separate + lower: qpAdm outgroups are legitimately small (a handful of
+# present-day genomes per lineage, e.g. Onge n≈2); the f4 jackknife accounts for the frequency noise.
+ANCIENT_OUTGROUP_MIN_CALLED="${ANCIENT_OUTGROUP_MIN_CALLED:-2}"
 # ASCERTAINMENT FLOOR (Option A′). A consumer-array manifest: one assayed rsID per line (a 23andMe /
 # AncestryDNA / Illumina-GSA export or manifest; extra columns ignored, first token taken as the id;
 # plain or .gz). The deep panel is restricted to the array-assayed sites (mapped to CHM13 via the

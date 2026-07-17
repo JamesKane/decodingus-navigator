@@ -1,0 +1,10 @@
+# qpAdm LEFT populations — the deep sources the target is modelled as a mixture of.
+# One component code per line (blank lines and #-comments ignored). Panel-axis order.
+# These are AADR ancient references; their sample sets are defined by the Group-ID → component
+# map in aadr_component_map.tsv. Keep them non-collinear: Steppe ≈ EHG+CHG, so do NOT add EHG/CHG
+# alongside Steppe. See docs/design/ancient-ancestry-rebuild.md §5.3, §7.
+#
+# The classic West-Eurasian three-way (maps 1:1 onto FTDNA's HG / Farmer / Metal-Age-Invader):
+WHG        # Western Hunter-Gatherer (Villabruna cluster; strengthened to n≈75)
+ANF        # Anatolian Neolithic Farmer (Turkey_N, n≈68)
+Steppe     # Yamnaya / Bronze-Age steppe (n≈157)

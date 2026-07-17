@@ -33,40 +33,27 @@ cargo run --release -q -p navigator-panelbuild -- pca \
   --matrix "$MATRICES" --samples "$SAMPLES" --pops "$MODERN_POPS" \
   --out "$PCA_OUT" --components "$PCA_COMPONENTS" --min-call-rate "$MIN_CALL_RATE"
 
-# (2a) Ascertainment manifest (Option A′): the consumer-array-assayed sites, on CHM13. Allele-freq
-#      admixture is only valid where sample and reference share ascertainment; the AADR/1240k universe
-#      includes capture sites arrays don't assay, and on those the deep estimate is unstable across
-#      data sources. Map the array's rsIDs to CHM13 via the stage-02 1240k liftover BED (name field is
-#      "rsid|ref|alt", CHM13 pos is the BED end). See docs/design/ancient-ancestry-rebuild.md §4.
-BED_1240K="$TMP/1240k_sites.${BUILD}.bed"
-ASCERTAIN_ARG=()
-if [[ -n "$CHIP_MANIFEST" ]]; then
-  [[ -s "$CHIP_MANIFEST" ]] || die "CHIP_MANIFEST=$CHIP_MANIFEST not found"
-  [[ -s "$BED_1240K" ]] || die "missing $BED_1240K (run 02_liftover_panel_sites.sh)"
-  case "$CHIP_MANIFEST" in *.gz) rd=(gzip -dc) ;; *) rd=(cat) ;; esac
-  "${rd[@]}" "$CHIP_MANIFEST" | awk 'BEGIN{FS="[ \t,]"} $0 !~ /^#/ && $1 ~ /^rs/ {print $1}' | sort -u > "$TMP/chip_rsids.txt"
-  awk -F'\t' 'NR==FNR{keep[$1]=1; next} { split($4,a,"|"); if (a[1] in keep) print $1"\t"$3 }' \
-    "$TMP/chip_rsids.txt" "$BED_1240K" | sort -k1,1 -k2,2n -u > "$ASCERTAIN_SITES"
-  [[ -s "$ASCERTAIN_SITES" ]] || die "no array rsIDs matched the 1240k panel — is CHIP_MANIFEST an rsID list?"
-  log "ascertainment: $(wc -l < "$TMP/chip_rsids.txt") array rsIDs -> $(wc -l < "$ASCERTAIN_SITES") CHM13 sites -> $ASCERTAIN_SITES"
-  ASCERTAIN_ARG=(--ascertain-sites "$ASCERTAIN_SITES")
-else
-  log "WARN: CHIP_MANIFEST unset — building the FULL (unascertained) ancient panel. It will NOT pass the"
-  log "WARN: §3.4 stability gate; step (6) below is expected to fail. Set CHIP_MANIFEST to ship deep ancestry."
-fi
-
-# (2) Ancient deep-source AF panel (WHG/ANF/Steppe) — the deep-ancestry asset.
-#     Its own builder, NOT a column subset of the fine panel: the fine-panel builder writes 0.0 for a
-#     population with no called sample at a site, which is indistinguishable from a real "alt absent".
-#     The 1000G pops are called nearly everywhere so that barely hurts them, but ancient genomes are
-#     sparse — most sites would enter the mixture as fake zero-frequency evidence and the fit would
-#     track missingness instead of ancestry. Here a site survives only if EVERY source has
-#     >= $ANCIENT_MIN_CALLED real calls, and (with A′) only if the site is on the array manifest.
-log "panelbuild ancient-panel ($ANCIENT_COMPONENTS, >=$ANCIENT_MIN_CALLED calls/source) -> $ANCIENT_OUT"
+# (2) Ancient deep-source AF panel (WHG/ANF/Steppe sources + qpAdm outgroups) — the deep-ancestry
+#     asset. Its own builder, NOT a column subset of the fine panel: the fine-panel builder writes 0.0
+#     for a population with no called sample at a site, indistinguishable from a real "alt absent". The
+#     1000G pops are called nearly everywhere so that barely hurts them, but ancient genomes are sparse
+#     — most sites would enter as fake zero-frequency evidence and the fit would track missingness
+#     instead of ancestry. Here a site survives only if EVERY source has >= $ANCIENT_MIN_CALLED real
+#     calls and EVERY outgroup >= $ANCIENT_OUTGROUP_MIN_CALLED.
+#
+#     Deep ancestry is estimated by **qpAdm f4** (docs/design/ancient-ancestry-rebuild.md §7): the
+#     target's allele-sharing is measured *against the outgroups*, which cancels drift and SNP
+#     ascertainment. So — unlike the retired Option A′ (§3.2) — the panel is NOT restricted to
+#     consumer-array sites: qpAdm is ascertainment-robust, and the array floor only threw away power.
+#     $POPMAP (stage 04) must carry the strengthened WHG *and* the outgroup modern pops (1000G+SGDP);
+#     the builder ignores any sample whose label is neither a source nor an outgroup.
+OG_ARG=()
+[[ -n "$ANCIENT_OUTGROUPS" ]] && OG_ARG=(--outgroups "$ANCIENT_OUTGROUPS" --outgroup-min-called "$ANCIENT_OUTGROUP_MIN_CALLED")
+log "panelbuild ancient-panel (src $ANCIENT_COMPONENTS >=$ANCIENT_MIN_CALLED; out ${ANCIENT_OUTGROUPS:-none} >=$ANCIENT_OUTGROUP_MIN_CALLED) -> $ANCIENT_OUT"
 cargo run --release -q -p navigator-panelbuild -- ancient-panel \
   --matrix "$MATRICES" --samples "$SAMPLES" --pops "$POPMAP" \
   --components "$ANCIENT_COMPONENTS" --min-called "$ANCIENT_MIN_CALLED" \
-  "${ASCERTAIN_ARG[@]}" \
+  "${OG_ARG[@]}" \
   --out "$ANCIENT_OUT" --sites-tsv "$TMP/ancient_sites.tsv"
 
 # (3) Fine-population AF panel (fine admixture over the full labelled pop set).

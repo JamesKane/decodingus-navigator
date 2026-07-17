@@ -65,19 +65,33 @@ pub struct AncientPanelArgs {
     /// samples whose population isn't in `--components` are ignored).
     #[arg(long)]
     pops: PathBuf,
-    /// The deep source populations, comma-separated and **in panel-axis order**
+    /// The deep source (**left**) populations, comma-separated and **in panel-axis order**
     /// (e.g. `WHG,ANF,Steppe`). Keep them non-collinear: `Steppe ≈ EHG+CHG`, so listing Steppe
     /// alongside EHG and CHG makes the mixture ill-conditioned.
     #[arg(long, default_value = "WHG,ANF,Steppe")]
     components: String,
+    /// The qpAdm **outgroup (right)** populations, comma-separated, appended to the panel axis after
+    /// the sources (e.g. `YRI,CHB,GIH,Karitiana,Papuan,Onge`). f4 admixture measures the target's
+    /// allele-sharing *against* these; they carry no weight but must be differentially related to the
+    /// sources. They get their own, lower call floor (`--outgroup-min-called`) because good outgroups
+    /// are often single high-quality genomes (Onge n≈2 is standard). Empty → a sources-only panel
+    /// (the old frequency-EM asset). See docs/design/ancient-ancestry-rebuild.md §7.4.
+    #[arg(long, default_value = "")]
+    outgroups: String,
     /// Output AncestryPanel (bincode).
     #[arg(long)]
     out: PathBuf,
-    /// Keep a site only if **every** component has at least this many called samples there.
-    /// This is the point of a separate ancient asset: ancient genomes are sparse, and a site with
-    /// no calls in a source has no frequency — it must be dropped, not silently recorded as 0.0.
+    /// Keep a site only if **every source** has at least this many called samples there. This is the
+    /// point of a separate ancient asset: ancient genomes are sparse, and a site with no calls in a
+    /// source has no frequency — it must be dropped, not silently recorded as 0.0.
     #[arg(long, default_value_t = 8)]
     min_called: usize,
+    /// The call floor for **outgroups** (see `--outgroups`), separate from the source `--min-called`.
+    /// Lower because qpAdm outgroups are legitimately small (a handful of present-day genomes per
+    /// lineage); the f4 jackknife accounts for the frequency noise. A site survives only if every
+    /// source clears `--min-called` **and** every outgroup clears this.
+    #[arg(long, default_value_t = 2)]
+    outgroup_min_called: usize,
     /// **Ascertainment floor (Option A′).** Restrict the panel to the CHM13 `contig<TAB>pos` sites in
     /// this file — a consumer-array manifest. Allele-frequency admixture is only valid when the
     /// sample and the reference share ascertainment; the AADR/1240k universe includes capture sites
@@ -559,13 +573,24 @@ pub fn build_fine_panel(args: FinePanelArgs) -> Result<()> {
 /// an unbiased frequency: `E[dosage/2] = f`. Only the *variance* is inflated, which is why the call
 /// floor — not the diploid coding — is what matters.
 pub fn build_ancient_panel(args: AncientPanelArgs) -> Result<()> {
-    let comps: Vec<String> = args
-        .components
-        .split(',')
-        .map(|c| c.trim().to_string())
-        .filter(|c| !c.is_empty())
+    let parse_list = |s: &str| -> Vec<String> {
+        s.split(',').map(|c| c.trim().to_string()).filter(|c| !c.is_empty()).collect()
+    };
+    let sources: Vec<String> = parse_list(&args.components);
+    let outgroup_comps: Vec<String> = parse_list(&args.outgroups);
+    anyhow::ensure!(sources.len() >= 2, "need at least two source components");
+    // Panel axis = sources first, then outgroups. The estimator designates roles by index (the
+    // committed qpadm_leftpops / rightpops); the asset is just a plain frequency panel over both.
+    let comps: Vec<String> = sources.iter().chain(&outgroup_comps).cloned().collect();
+    let n_src = sources.len();
+    anyhow::ensure!(
+        comps.iter().collect::<std::collections::HashSet<_>>().len() == comps.len(),
+        "a population appears in both --components and --outgroups"
+    );
+    // Per-population call floor: sources use --min-called, outgroups the lower --outgroup-min-called.
+    let floor: Vec<usize> = (0..comps.len())
+        .map(|i| if i < n_src { args.min_called } else { args.outgroup_min_called })
         .collect();
-    anyhow::ensure!(comps.len() >= 2, "need at least two source components");
 
     let pop_of = load_fine_map(&args.pops)?;
     // No global call-rate filter: the AADR matrix is mostly individuals we don't reference, so a
@@ -582,7 +607,8 @@ pub fn build_ancient_panel(args: AncientPanelArgs) -> Result<()> {
         n_ref[*c] += 1;
     }
     for (i, c) in comps.iter().enumerate() {
-        anyhow::ensure!(n_ref[i] > 0, "component {c} has no samples in --pops");
+        let role = if i < n_src { "source" } else { "outgroup" };
+        anyhow::ensure!(n_ref[i] > 0, "{role} component {c} has no samples in --pops");
     }
 
     // Optional ascertainment floor (Option A′): the CHM13 (contig, pos) a consumer array assays.
@@ -645,7 +671,7 @@ pub fn build_ancient_panel(args: AncientPanelArgs) -> Result<()> {
                 called[c] += 1;
             }
         }
-        if called.iter().any(|&n| n < args.min_called) {
+        if (0..k).any(|c| called[c] < floor[c]) {
             continue;
         }
         let freqs: Vec<f32> = (0..k).map(|c| (alt[c] / (2.0 * called[c] as f64)) as f32).collect();
@@ -674,8 +700,7 @@ pub fn build_ancient_panel(args: AncientPanelArgs) -> Result<()> {
     }
     anyhow::ensure!(
         !sites.is_empty(),
-        "no site had ≥{} calls in every component — lower --min-called or widen the source groups",
-        args.min_called
+        "no site cleared every population's call floor — lower --min-called/--outgroup-min-called or widen the groups",
     );
 
     let panel = AncestryPanel {
@@ -686,10 +711,12 @@ pub fn build_ancient_panel(args: AncientPanelArgs) -> Result<()> {
     write_bin(&args.out, &panel.to_bytes().map_err(|e| anyhow::anyhow!("{e}"))?)?;
     let n = panel.len();
     eprintln!(
-        "wrote {} ({n} of {} sites survived the ≥{}-call floor in all {k} sources{})",
+        "wrote {} ({n} of {} sites cleared the floor in all {n_src} sources (≥{}) + {} outgroups (≥{}){})",
         args.out.display(),
         metas.len(),
         args.min_called,
+        outgroup_comps.len(),
+        args.outgroup_min_called,
         if ascertained.is_some() {
             format!("; {dropped_unascertained} dropped off the ascertainment manifest")
         } else {
@@ -697,8 +724,9 @@ pub fn build_ancient_panel(args: AncientPanelArgs) -> Result<()> {
         }
     );
     for (i, c) in comps.iter().enumerate() {
+        let role = if i < n_src { "src" } else { "out" };
         eprintln!(
-            "  {c:<8} n={:<4} mean called/site {:.1}",
+            "  [{role}] {c:<12} n={:<4} mean called/site {:.1}",
             n_ref[i],
             called_total[i] as f64 / n as f64
         );
