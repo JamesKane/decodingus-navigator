@@ -3269,6 +3269,7 @@ dependencies = [
  "bzip2",
  "du-bio",
  "flate2",
+ "nalgebra",
  "navigator-domain",
  "noodles",
  "rayon",

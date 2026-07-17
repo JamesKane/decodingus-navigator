@@ -12,6 +12,7 @@
 
 use std::collections::{BTreeMap, HashMap};
 
+use nalgebra::{DMatrix, DVector};
 use navigator_domain::ancestry::{
     fine_population_codes, population_color, population_name, population_super, AncestryResult, AncestrySegment,
     ConfidenceInterval, PopulationComponent, SuperPopulationSummary,
@@ -930,6 +931,251 @@ pub fn f4_vector(
     })
 }
 
+/// Result of a qpAdm-style f4 fit: the source weights, their standard errors, and the model-fit
+/// test. See [`qpadm_fit`] and docs/design/ancient-ancestry-rebuild.md §7.2.
+#[derive(Clone, Debug)]
+pub struct QpAdmFit {
+    /// Weights over the sources, **in the order they were passed** (sums to 1). `weights[0]` is the
+    /// base source's weight, recovered as `1 − Σ others`.
+    pub weights: Vec<f64>,
+    /// Standard error of each weight (from the GLS normal-equations covariance).
+    pub std_errors: Vec<f64>,
+    /// Model-fit χ² — the minimized GLS objective (residual not explained by the source span).
+    pub chi2: f64,
+    /// Degrees of freedom `= (#outgroups − 1) − (#sources − 1) = #outgroups − #sources`.
+    pub dof: usize,
+    /// Tail probability `P(χ²_dof ≥ chi2)`. The model is **rejected** when this is small (< ~0.05):
+    /// the sources can't express the target's allele-sharing with the outgroups.
+    pub p_value: f64,
+    pub n_sites: usize,
+    pub n_blocks: usize,
+}
+
+impl QpAdmFit {
+    /// Whether every weight is a valid proportion (within `tol` of `[0,1]`). qpAdm accepts a model
+    /// only when it is not rejected **and** the weights are feasible.
+    pub fn weights_feasible(&self, tol: f64) -> bool {
+        self.weights.iter().all(|&w| w >= -tol && w <= 1.0 + tol)
+    }
+}
+
+/// Residual covariance `Σ(w) = Σ_{b,b'} c_b c_{b'} Ω_block(b,b')` with `c = (1, −w₁, …, −w_{n-1})`,
+/// plus a tiny ridge for invertibility. `cov` is the joint f4 covariance from [`f4_vector`], laid
+/// out as `n` groups of `l` statistics (group 0 = target, groups 1.. = the non-base sources).
+fn qpadm_residual_cov(cov: &[Vec<f64>], n: usize, l: usize, w: &[f64]) -> DMatrix<f64> {
+    let mut c = vec![0.0f64; n];
+    c[0] = 1.0;
+    for i in 0..n - 1 {
+        c[i + 1] = -w[i];
+    }
+    let mut sigma = DMatrix::<f64>::zeros(l, l);
+    for b in 0..n {
+        for bp in 0..n {
+            let cc = c[b] * c[bp];
+            if cc == 0.0 {
+                continue;
+            }
+            for p in 0..l {
+                for q in 0..l {
+                    sigma[(p, q)] += cc * cov[b * l + p][bp * l + q];
+                }
+            }
+        }
+    }
+    let tr: f64 = (0..l).map(|p| sigma[(p, p)].abs()).sum();
+    let ridge = (1e-12 * tr / l.max(1) as f64).max(1e-18);
+    for p in 0..l {
+        sigma[(p, p)] += ridge;
+    }
+    sigma
+}
+
+/// Fit `target = Σ wᵢ · sourcesᵢ` by the qpAdm f4 method (docs §7.2). The weights are estimated from
+/// the target's *allele-sharing against outgroups* — differences-of-differences that cancel drift
+/// and SNP ascertainment — not from its raw frequencies, which is the property §3's frequency-EM
+/// lacked. `sources` and `outgroups` are indices into `panel.populations`; the target enters through
+/// `genotypes` (dosage/2 per site).
+///
+/// Method: for each left population `X ∈ {target, S₂..Sₙ}` form the vector
+/// `φ_X = [f4(X, S₁; R₁, Rⱼ)]_{j=2..m}`; the admixture identity is `φ_target = Σ_{i≥2} wᵢ φ_{Sᵢ}`.
+/// Solve the weights by iteratively-reweighted GLS against the block-jackknife covariance (the
+/// residual covariance depends on the weights, since the sources are themselves estimated), then
+/// read the model-fit χ²/p-value from the weighted residual.
+///
+/// Returns `None` when `sources.len() < 2`, `outgroups.len() < sources.len()`, the f4 vector can't be
+/// formed (too few blocks/sites), or the GLS system is singular.
+pub fn qpadm_fit(
+    genotypes: &[SiteGenotype],
+    panel: &AncestryPanel,
+    sources: &[usize],
+    outgroups: &[usize],
+    block_bp: i64,
+) -> Option<QpAdmFit> {
+    let n = sources.len();
+    let m = outgroups.len();
+    let k = panel.populations.len();
+    if n < 2 || m < n || sources.iter().chain(outgroups).any(|&i| i >= k) {
+        return None;
+    }
+    let l = m - 1; // statistics per left population (outgroups R₂..R_m differenced vs the base R₁)
+    let s1 = Pop::Ref(sources[0]);
+    let r1 = outgroups[0];
+
+    // Left populations relative to the base source: target, then S₂..Sₙ. Group order in the f4
+    // vector is [target, S₂, …, Sₙ], each contributing `l` statistics over the non-base outgroups.
+    let lefts: Vec<Pop> = std::iter::once(Pop::Target)
+        .chain(sources[1..].iter().map(|&i| Pop::Ref(i)))
+        .collect();
+    let mut quartets = Vec::with_capacity(n * l);
+    for &x in &lefts {
+        for &rj in &outgroups[1..] {
+            quartets.push(Quartet::new(x, s1, Pop::Ref(r1), Pop::Ref(rj)));
+        }
+    }
+    let est = f4_vector(genotypes, panel, &quartets, block_bp)?;
+
+    // y = φ_target (group 0); A[:, i] = φ_{S_{i+2}} (group i+1). Ω = est.cov, block-structured.
+    let y = DVector::from_row_slice(&est.values[0..l]);
+    let a = DMatrix::from_fn(l, n - 1, |p, i| est.values[(i + 1) * l + p]);
+
+    // Iteratively-reweighted GLS: recompute Σ(w) and re-solve w = (AᵀΣ⁻¹A)⁻¹ AᵀΣ⁻¹ y until settled.
+    let mut w = DVector::from_element(n - 1, 1.0 / n as f64);
+    for _ in 0..100 {
+        let sigma = qpadm_residual_cov(&est.cov, n, l, w.as_slice());
+        let inv = sigma.try_inverse()?;
+        let at_si = a.transpose() * &inv;
+        let normal = (&at_si * &a).try_inverse()?;
+        let new_w = &normal * (&at_si * &y);
+        let delta = (&new_w - &w).amax();
+        w = new_w;
+        if delta < 1e-10 {
+            break;
+        }
+    }
+
+    // Final objective, dof, p-value, and weight SEs at the converged weights.
+    let sigma_inv = qpadm_residual_cov(&est.cov, n, l, w.as_slice()).try_inverse()?;
+    let r = &y - &a * &w;
+    let chi2 = (r.transpose() * &sigma_inv * &r)[(0, 0)];
+    let dof = l - (n - 1); // = m − n
+    let p_value = chi2_sf(chi2, dof);
+
+    let wcov = (a.transpose() * &sigma_inv * &a).try_inverse()?;
+    let mut weights = Vec::with_capacity(n);
+    weights.push(1.0 - w.iter().sum::<f64>()); // base source
+    weights.extend(w.iter().copied());
+    let mut std_errors = vec![0.0f64; n];
+    for i in 0..n - 1 {
+        std_errors[i + 1] = wcov[(i, i)].max(0.0).sqrt();
+    }
+    // Var(w_base) = Var(Σ wᵢ) = 1ᵀ Cov(w) 1.
+    let ones = DVector::from_element(n - 1, 1.0);
+    std_errors[0] = (ones.transpose() * &wcov * &ones)[(0, 0)].max(0.0).sqrt();
+
+    Some(QpAdmFit {
+        weights,
+        std_errors,
+        chi2,
+        dof,
+        p_value,
+        n_sites: est.n_sites,
+        n_blocks: est.n_blocks,
+    })
+}
+
+/// Upper tail of the χ² distribution, `P(χ²_k ≥ x)`, via the regularized upper incomplete gamma
+/// `Q(k/2, x/2)`. Used for the qpAdm model-fit p-value.
+fn chi2_sf(x: f64, k: usize) -> f64 {
+    if k == 0 {
+        return if x <= 0.0 { 1.0 } else { 0.0 };
+    }
+    if x <= 0.0 {
+        return 1.0;
+    }
+    gammq(k as f64 / 2.0, x / 2.0)
+}
+
+/// `ln Γ(x)` via the Lanczos approximation (g=7), with the reflection formula for `x < 0.5`.
+fn ln_gamma(x: f64) -> f64 {
+    const C: [f64; 9] = [
+        0.999_999_999_999_809_9,
+        676.520_368_121_885_1,
+        -1_259.139_216_722_402_8,
+        771.323_428_777_653_1,
+        -176.615_029_162_140_6,
+        12.507_343_278_686_905,
+        -0.138_571_095_265_720_1,
+        9.984_369_578_019_572e-6,
+        1.505_632_735_149_311_6e-7,
+    ];
+    if x < 0.5 {
+        std::f64::consts::PI.ln() - (std::f64::consts::PI * x).sin().ln() - ln_gamma(1.0 - x)
+    } else {
+        let x = x - 1.0;
+        let t = x + 7.5;
+        let a = C[0] + (1..9).map(|i| C[i] / (x + i as f64)).sum::<f64>();
+        0.5 * (2.0 * std::f64::consts::PI).ln() + (x + 0.5) * t.ln() - t + a.ln()
+    }
+}
+
+/// Lower regularized incomplete gamma `P(a,x)` by series expansion (converges fast for `x < a+1`).
+fn gser(a: f64, x: f64) -> f64 {
+    let gln = ln_gamma(a);
+    let mut ap = a;
+    let mut del = 1.0 / a;
+    let mut sum = del;
+    for _ in 0..1000 {
+        ap += 1.0;
+        del *= x / ap;
+        sum += del;
+        if del.abs() < sum.abs() * 1e-15 {
+            break;
+        }
+    }
+    sum * (-x + a * x.ln() - gln).exp()
+}
+
+/// Upper regularized incomplete gamma `Q(a,x)` by the Lentz continued fraction (for `x ≥ a+1`).
+fn gcf(a: f64, x: f64) -> f64 {
+    let gln = ln_gamma(a);
+    let tiny = 1e-30;
+    let mut b = x + 1.0 - a;
+    let mut c = 1.0 / tiny;
+    let mut d = 1.0 / b;
+    let mut h = d;
+    for i in 1..1000 {
+        let an = -(i as f64) * (i as f64 - a);
+        b += 2.0;
+        d = an * d + b;
+        if d.abs() < tiny {
+            d = tiny;
+        }
+        c = b + an / c;
+        if c.abs() < tiny {
+            c = tiny;
+        }
+        d = 1.0 / d;
+        let del = d * c;
+        h *= del;
+        if (del - 1.0).abs() < 1e-15 {
+            break;
+        }
+    }
+    (-x + a * x.ln() - gln).exp() * h
+}
+
+/// `Q(a,x) = 1 − P(a,x)`, the regularized upper incomplete gamma.
+fn gammq(a: f64, x: f64) -> f64 {
+    if x < 0.0 || a <= 0.0 {
+        return f64::NAN;
+    }
+    if x < a + 1.0 {
+        1.0 - gser(a, x)
+    } else {
+        gcf(a, x)
+    }
+}
+
 /// Build an [`AncestryResult`] from raw per-population probabilities (need not be normalized).
 /// With the phase-1 super-population panel each component *is* a super-population, so the
 /// super-population summary is 1:1 with the components.
@@ -1655,6 +1901,98 @@ mod tests {
         assert!(
             est.values[0].abs() * 5.0 < est.values[1].abs(),
             "the null statistic must be far smaller than the real edge"
+        );
+    }
+
+    /// The χ² upper tail against textbook critical points — the model-fit p-value depends on it.
+    #[test]
+    fn chi2_sf_matches_known_critical_values() {
+        assert!((chi2_sf(3.841, 1) - 0.05).abs() < 2e-3);
+        assert!((chi2_sf(5.991, 2) - 0.05).abs() < 2e-3);
+        assert!((chi2_sf(7.815, 3) - 0.05).abs() < 2e-3);
+        assert!((chi2_sf(0.455, 1) - 0.50).abs() < 5e-3);
+        assert!((chi2_sf(11.345, 3) - 0.01).abs() < 2e-3);
+        assert_eq!(chi2_sf(0.0, 3), 1.0);
+        assert!(chi2_sf(100.0, 1) < 1e-10);
+    }
+
+    /// A Gaussian increment (Box-Muller) for the drift simulation.
+    fn gauss(rng: &mut Lcg, sd: f64) -> f64 {
+        let u1 = rng.next_f64().max(1e-12);
+        let u2 = rng.next_f64();
+        sd * (-2.0 * u1.ln()).sqrt() * (2.0 * std::f64::consts::PI * u2).cos()
+    }
+
+    /// Simulate frequencies on a small admixture graph: three sources S1/S2/S3, each carrying a
+    /// distinct deep component (iA/iB/iC); six outgroups differentially related to those components
+    /// (R0 pure near-root; R1,R4→A; R2,R5→B; R3→C); and a target that is an exact per-site frequency
+    /// mixture of the three sources, drawn as one diploid genome. Under Brownian drift the f4
+    /// tree-identities hold, so this is a graph qpAdm is entitled to decompose.
+    fn qpadm_graph(n_sites: usize, weights: [f64; 3], seed: u64) -> (AncestryPanel, Vec<SiteGenotype>) {
+        let mut rng = Lcg(seed);
+        let clamp = |x: f64| x.clamp(0.02, 0.98);
+        let pops = ["S1", "S2", "S3", "R0", "R1", "R2", "R3", "R4", "R5"];
+        let mut sites = Vec::with_capacity(n_sites);
+        let mut genos = Vec::with_capacity(n_sites);
+        for s in 0..n_sites {
+            let pos = (s as i64 + 1) * 100_000;
+            let p0 = 0.3 + 0.4 * rng.next_f64();
+            let (ia, ib, ic) = (gauss(&mut rng, 0.06), gauss(&mut rng, 0.06), gauss(&mut rng, 0.06));
+            let pv = |rng: &mut Lcg| gauss(rng, 0.04);
+            let f_s1 = clamp(p0 + ia + pv(&mut rng));
+            let f_s2 = clamp(p0 + ib + pv(&mut rng));
+            let f_s3 = clamp(p0 + ic + pv(&mut rng));
+            let f_r0 = clamp(p0 + pv(&mut rng));
+            let f_r1 = clamp(p0 + ia + pv(&mut rng));
+            let f_r2 = clamp(p0 + ib + pv(&mut rng));
+            let f_r3 = clamp(p0 + ic + pv(&mut rng));
+            let f_r4 = clamp(p0 + ia + pv(&mut rng));
+            let f_r5 = clamp(p0 + ib + pv(&mut rng));
+            let row = [f_s1, f_s2, f_s3, f_r0, f_r1, f_r2, f_r3, f_r4, f_r5];
+            // Target = exact frequency mixture of the three sources, drawn as a diploid genome.
+            let f_t = clamp(weights[0] * f_s1 + weights[1] * f_s2 + weights[2] * f_s3);
+            genos.push(sg("chr1", pos, rng.dosage(f_t)));
+            sites.push(PanelSite {
+                contig: "chr1".into(),
+                position: pos,
+                reference_allele: 'A',
+                alternate_allele: 'G',
+                freqs: row.iter().map(|&x| x as f32).collect(),
+            });
+        }
+        let panel = AncestryPanel {
+            build: "t".into(),
+            populations: pops.iter().map(|s| s.to_string()).collect(),
+            sites,
+        };
+        (panel, genos)
+    }
+
+    /// qpAdm recovers the true mixture weights from allele-sharing against the outgroups, accepts the
+    /// well-specified model, and **rejects** a model missing a needed source — the property §3's
+    /// frequency-EM never had (it always returned a confident simplex).
+    #[test]
+    fn qpadm_recovers_a_known_mixture_and_rejects_a_deficient_model() {
+        let truth = [0.5, 0.3, 0.2];
+        let (panel, genos) = qpadm_graph(20_000, truth, 20_240_717);
+        let outgroups = [3usize, 4, 5, 6, 7, 8]; // R0 base, then R1..R5
+
+        let fit = qpadm_fit(&genos, &panel, &[0, 1, 2], &outgroups, F4_BLOCK_BP).expect("3-source fit");
+        assert_eq!(fit.dof, 3, "dof = #outgroups − #sources = 6 − 3");
+        for (i, &want) in truth.iter().enumerate() {
+            assert!((fit.weights[i] - want).abs() < 0.08, "w{i} = {:.3}, want {want}", fit.weights[i]);
+        }
+        assert!(fit.weights_feasible(0.02), "weights must be valid proportions: {:?}", fit.weights);
+        assert!(fit.p_value > 0.01, "well-specified model must not be rejected, p = {:.4}", fit.p_value);
+
+        // Drop a needed source (S3): the 2-source model can't express the target's cladeC affinity,
+        // so its f4 residual with the cladeC outgroup is large → rejected.
+        let deficient = qpadm_fit(&genos, &panel, &[0, 1], &outgroups, F4_BLOCK_BP).expect("2-source fit");
+        assert_eq!(deficient.dof, 4);
+        assert!(
+            deficient.p_value < 0.01,
+            "deficient model must be rejected, p = {:.4}",
+            deficient.p_value
         );
     }
 }
