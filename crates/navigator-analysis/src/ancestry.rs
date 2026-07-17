@@ -751,6 +751,185 @@ fn ancient_dispersion(genotypes: &[SiteGenotype], panel: &AncestryPanel, q: &[f6
     sum / n as f64
 }
 
+// ── f-statistics core (Lever 2 / qpAdm) ─────────────────────────────────────────────────────────
+//
+// `f4(A,B;C,D) = mean_site (a−b)(c−d)` over per-population alt-allele frequencies. It is the
+// ascertainment-robust primitive qpAdm is built on (docs/design/ancient-ancestry-rebuild.md §7): a
+// difference-of-differences against outgroups that cancels drift shared across the whole set, and is
+// **unbiased from *pooled* frequencies** — the estimation noise in each of the four slots is
+// independent, so the cross-terms vanish in expectation (no per-sample hzcorr, unlike f2/f3). The
+// genotyped sample enters as its own "population" with frequency `dosage/2 ∈ {0, 0.5, 1}`.
+//
+// This module is the primitive: a jointly-estimated **vector** of f4 statistics with its
+// block-jackknife covariance. The qpAdm GLS solve (§7.2) is assembled on top of it in a later step.
+
+/// Genome block size (bp) for the f-statistic block jackknife. ~5 Mb ≫ the LD range, so blocks are
+/// effectively independent — the assumption the jackknife variance rests on.
+pub const F4_BLOCK_BP: i64 = 5_000_000;
+
+/// A population slot in an f-statistic: either a reference population (index into
+/// [`AncestryPanel::populations`]) or the genotyped sample.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Pop {
+    /// Reference population `i` (its per-site frequency is `PanelSite::freqs[i]`).
+    Ref(usize),
+    /// The sample being placed (per-site frequency `dosage/2`).
+    Target,
+}
+
+/// One f4 quartet `f4(a,b;c,d) = mean_site (a−b)(c−d)`.
+#[derive(Clone, Copy, Debug)]
+pub struct Quartet {
+    pub a: Pop,
+    pub b: Pop,
+    pub c: Pop,
+    pub d: Pop,
+}
+
+impl Quartet {
+    pub fn new(a: Pop, b: Pop, c: Pop, d: Pop) -> Self {
+        Self { a, b, c, d }
+    }
+}
+
+/// A jointly-estimated vector of f4 statistics with its block-jackknife covariance — the input the
+/// qpAdm GLS solve consumes.
+#[derive(Clone, Debug)]
+pub struct F4Estimate {
+    /// Full-sample f4 point estimates, parallel to the requested quartets (ADMIXTOOLS reports the
+    /// full-sample estimate as the statistic; the jackknife supplies only the covariance).
+    pub values: Vec<f64>,
+    /// `d×d` delete-one-block jackknife covariance of `values` (Busing et al. 1999, unequal blocks).
+    pub cov: Vec<Vec<f64>>,
+    /// Sites contributing (target genotyped ∧ every referenced population present).
+    pub n_sites: usize,
+    /// Genome blocks with ≥1 contributing site.
+    pub n_blocks: usize,
+}
+
+impl F4Estimate {
+    /// Standard error of statistic `i` from the jackknife covariance diagonal.
+    pub fn se(&self, i: usize) -> f64 {
+        self.cov.get(i).and_then(|r| r.get(i)).copied().unwrap_or(0.0).max(0.0).sqrt()
+    }
+}
+
+/// Point estimate of a single `f4(a,b;c,d)` over the genotyped sites (no covariance) — a thin
+/// convenience over [`f4_vector`]. `None` if fewer than two genome blocks carry a contributing site.
+pub fn f4(genotypes: &[SiteGenotype], panel: &AncestryPanel, q: Quartet, block_bp: i64) -> Option<f64> {
+    f4_vector(genotypes, panel, &[q], block_bp).map(|e| e.values[0])
+}
+
+/// A jointly-estimated f4 vector over `quartets`, with the Busing et al. (1999) unequal-block
+/// jackknife covariance. Every statistic is measured over the **same** informative site set (target
+/// genotyped ∧ all referenced populations present at the site), which is what makes the covariance a
+/// valid joint covariance for a downstream GLS. `None` if any quartet references a non-existent
+/// population, or fewer than two blocks carry a site (a jackknife needs ≥2 blocks).
+pub fn f4_vector(
+    genotypes: &[SiteGenotype],
+    panel: &AncestryPanel,
+    quartets: &[Quartet],
+    block_bp: i64,
+) -> Option<F4Estimate> {
+    let d = quartets.len();
+    let k = panel.populations.len();
+    if d == 0 || block_bp <= 0 {
+        return None;
+    }
+    // Reject out-of-range population indices up front — a mis-built quartet must not panic mid-scan.
+    let ref_ok = |p: Pop| matches!(p, Pop::Target) || matches!(p, Pop::Ref(i) if i < k);
+    if !quartets.iter().all(|q| ref_ok(q.a) && ref_ok(q.b) && ref_ok(q.c) && ref_ok(q.d)) {
+        return None;
+    }
+
+    let dosage: HashMap<(&str, i64), i32> = genotypes
+        .iter()
+        .filter(|g| g.dosage >= 0)
+        .map(|g| ((g.contig.as_str(), g.position), g.dosage))
+        .collect();
+
+    // Accumulate per genome block over the informative sites: Σ x and site count, plus the totals.
+    let mut block_index: HashMap<(&str, i64), usize> = HashMap::new();
+    let mut block_sum: Vec<Vec<f64>> = Vec::new();
+    let mut block_n: Vec<usize> = Vec::new();
+    let mut total = vec![0.0f64; d];
+    let mut n_sites = 0usize;
+
+    for site in panel.sites.iter().filter(|s| s.freqs.len() == k) {
+        let Some(&g) = dosage.get(&(site.contig.as_str(), site.position)) else {
+            continue;
+        };
+        let tf = g as f64 / 2.0;
+        let freq = |p: Pop| -> f64 {
+            match p {
+                Pop::Ref(i) => site.freqs[i] as f64,
+                Pop::Target => tf,
+            }
+        };
+        let bkey = (site.contig.as_str(), site.position / block_bp);
+        let bi = *block_index.entry(bkey).or_insert_with(|| {
+            block_sum.push(vec![0.0; d]);
+            block_n.push(0);
+            block_sum.len() - 1
+        });
+        for (qi, q) in quartets.iter().enumerate() {
+            let x = (freq(q.a) - freq(q.b)) * (freq(q.c) - freq(q.d));
+            total[qi] += x;
+            block_sum[bi][qi] += x;
+        }
+        block_n[bi] += 1;
+        n_sites += 1;
+    }
+
+    let g = block_sum.len();
+    if g < 2 || n_sites < 2 {
+        return None;
+    }
+    let n = n_sites as f64;
+    let theta: Vec<f64> = total.iter().map(|&s| s / n).collect();
+
+    // Delete-one-block estimates θ̂_(j) and per-block weights h_j = n/m_j (Busing et al. 1999, for
+    // unequal block sizes). With g ≥ 2 and every block non-empty, n − m_j ≥ 1 and h_j > 1.
+    let h: Vec<f64> = block_n.iter().map(|&m| n / m as f64).collect();
+    let theta_j: Vec<Vec<f64>> = (0..g)
+        .map(|j| {
+            let denom = n - block_n[j] as f64;
+            (0..d).map(|i| (total[i] - block_sum[j][i]) / denom).collect()
+        })
+        .collect();
+
+    // Bias-corrected jackknife mean θ̃_J = g·θ̂ − Σ_j (h_j−1)/h_j · θ̂_(j).
+    let theta_tilde: Vec<f64> = (0..d)
+        .map(|i| g as f64 * theta[i] - (0..g).map(|j| (h[j] - 1.0) / h[j] * theta_j[j][i]).sum::<f64>())
+        .collect();
+
+    // Covariance = (1/g) Σ_j d_j d_jᵀ / (h_j − 1), with d_j = h_j·θ̂ − (h_j−1)·θ̂_(j) − θ̃_J.
+    let mut cov = vec![vec![0.0f64; d]; d];
+    for j in 0..g {
+        let dj: Vec<f64> = (0..d)
+            .map(|i| h[j] * theta[i] - (h[j] - 1.0) * theta_j[j][i] - theta_tilde[i])
+            .collect();
+        let w = 1.0 / (h[j] - 1.0);
+        for i in 0..d {
+            for l in 0..d {
+                cov[i][l] += w * dj[i] * dj[l];
+            }
+        }
+    }
+    for row in cov.iter_mut() {
+        for c in row.iter_mut() {
+            *c /= g as f64;
+        }
+    }
+
+    Some(F4Estimate {
+        values: theta,
+        cov,
+        n_sites,
+        n_blocks: g,
+    })
+}
+
 /// Build an [`AncestryResult`] from raw per-population probabilities (need not be normalized).
 /// With the phase-1 super-population panel each component *is* a super-population, so the
 /// super-population summary is 1:1 with the components.
@@ -1347,5 +1526,135 @@ mod tests {
         // Same genotypes, same perfect fit — only the scope differs.
         assert!(estimate_ancient_admixture(&genos, &panel, &modern_eur(95.0), "t").is_some());
         assert!(estimate_ancient_admixture(&genos, &panel, &modern_eur(20.0), "t").is_none());
+    }
+
+    // ── f-statistics core (Lever 2 / qpAdm) ─────────────────────────────────────────────────────
+    //
+    // Three properties pin the f4 primitive against known-value graphs: the exact f4-ratio algebra
+    // qpAdm rests on, the antisymmetries of f4, and a *calibrated* block-jackknife SE (a symmetric
+    // tree reads f4 ≈ 0 within noise, while a real internal edge reads many SE from zero).
+
+    /// A panel over `pops` whose per-site frequency rows are `freqs[site][pop]`, laid out one site
+    /// per 100 kb so the 5 Mb block jackknife sees ~50 sites/block. Plus a target genotyped
+    /// (dosage 0) at every site, so every site is informative for reference-only quartets.
+    fn f4_panel(pops: &[&str], freqs: &[Vec<f32>]) -> (AncestryPanel, Vec<SiteGenotype>) {
+        let sites: Vec<PanelSite> = freqs
+            .iter()
+            .enumerate()
+            .map(|(i, row)| PanelSite {
+                contig: "chr1".into(),
+                position: (i as i64 + 1) * 100_000,
+                reference_allele: 'A',
+                alternate_allele: 'G',
+                freqs: row.clone(),
+            })
+            .collect();
+        let genos = sites.iter().map(|s| sg("chr1", s.position, 0)).collect();
+        let panel = AncestryPanel {
+            build: "t".into(),
+            populations: pops.iter().map(|s| s.to_string()).collect(),
+            sites,
+        };
+        (panel, genos)
+    }
+
+    /// The f4-ratio identity qpAdm generalizes: if `X = α·P + (1−α)·Q` (a frequency mixture), then
+    /// `f4(X,P;O1,O2) = (1−α)·f4(Q,P;O1,O2)` **exactly** — per site the two are proportional. So the
+    /// ratio recovers `1−α` regardless of the outgroups. This is the core arithmetic the whole method
+    /// stands on; a wrong sign or a transposed index would blow the recovered α far past f32 noise.
+    #[test]
+    fn f4_ratio_recovers_the_mixture_weight() {
+        let alpha = 0.3_f64;
+        let mut rng = Lcg(42);
+        let freqs: Vec<Vec<f32>> = (0..4000)
+            .map(|_| {
+                let (r1, r2) = (rng.next_f64(), rng.next_f64());
+                let p = 0.1 + 0.8 * r1;
+                let q = 0.1 + 0.8 * r2;
+                // Outgroups tied to the sources so f4(Q,P;O1,O2) is large and clean (no small-denom
+                // amplification): O1−O2 = 0.7(r1−r2) tracks −(Q−P), giving a firmly non-zero f4.
+                let o1 = 0.15 + 0.7 * r1;
+                let o2 = 0.15 + 0.7 * r2;
+                let x = alpha * p + (1.0 - alpha) * q;
+                vec![x as f32, p as f32, q as f32, o1 as f32, o2 as f32]
+            })
+            .collect();
+        let (panel, genos) = f4_panel(&["X", "P", "Q", "O1", "O2"], &freqs);
+        let (x, p, q, o1, o2) = (Pop::Ref(0), Pop::Ref(1), Pop::Ref(2), Pop::Ref(3), Pop::Ref(4));
+        let est = f4_vector(
+            &genos,
+            &panel,
+            &[Quartet::new(x, p, o1, o2), Quartet::new(q, p, o1, o2)],
+            F4_BLOCK_BP,
+        )
+        .expect("f4 vector");
+        assert!(est.values[1].abs() > 0.02, "denominator f4 must be firmly non-degenerate");
+        let recovered = 1.0 - est.values[0] / est.values[1];
+        assert!((recovered - alpha).abs() < 1e-4, "f4-ratio recovered α={recovered:.6}, want {alpha}");
+    }
+
+    /// f4's exact symmetries (pure f64 arithmetic over one fixed site set): swapping either pair
+    /// negates it, and swapping the two pairs leaves it unchanged.
+    #[test]
+    fn f4_obeys_its_antisymmetries() {
+        let mut rng = Lcg(7);
+        let freqs: Vec<Vec<f32>> = (0..2000)
+            .map(|_| (0..4).map(|_| (0.05 + 0.9 * rng.next_f64()) as f32).collect())
+            .collect();
+        let (panel, genos) = f4_panel(&["A", "B", "C", "D"], &freqs);
+        let (a, b, c, d) = (Pop::Ref(0), Pop::Ref(1), Pop::Ref(2), Pop::Ref(3));
+        let est = f4_vector(
+            &genos,
+            &panel,
+            &[
+                Quartet::new(a, b, c, d),
+                Quartet::new(b, a, c, d),
+                Quartet::new(a, b, d, c),
+                Quartet::new(c, d, a, b),
+            ],
+            F4_BLOCK_BP,
+        )
+        .expect("f4 vector");
+        let base = est.values[0];
+        assert!(base.abs() > 1e-9, "pick a non-degenerate base statistic");
+        assert!((est.values[1] + base).abs() < 1e-12, "f4(b,a;c,d) = −f4(a,b;c,d)");
+        assert!((est.values[2] + base).abs() < 1e-12, "f4(a,b;d,c) = −f4(a,b;c,d)");
+        assert!((est.values[3] - base).abs() < 1e-12, "f4(c,d;a,b) = f4(a,b;c,d)");
+        assert!(est.se(0) >= 0.0);
+    }
+
+    /// A symmetric tree `((A,B),(C,D))` has `f4(A,B;C,D) = 0` in expectation (the A–B and C–D drift
+    /// paths don't overlap), while `f4(A,C;B,D)` sits on the shared internal edge and is non-zero.
+    /// Simulate exactly that and require the jackknife SE to *tell them apart*: the null within a few
+    /// SE of zero, the real edge many SE away. This is the test that the covariance is calibrated —
+    /// the property §5.4 needs and simulation-of-frequencies alone can't fake.
+    #[test]
+    fn f4_jackknife_se_separates_a_null_from_a_real_edge() {
+        let mut rng = Lcg(2024);
+        let freqs: Vec<Vec<f32>> = (0..5000)
+            .map(|_| {
+                let cab = 0.5 + 0.3 * (rng.next_f64() - 0.5); // drift shared by A,B
+                let ccd = 0.5 + 0.3 * (rng.next_f64() - 0.5); // drift shared by C,D
+                let tip = |rng: &mut Lcg, c: f64| (c + 0.15 * (rng.next_f64() - 0.5)) as f32;
+                vec![tip(&mut rng, cab), tip(&mut rng, cab), tip(&mut rng, ccd), tip(&mut rng, ccd)]
+            })
+            .collect();
+        let (panel, genos) = f4_panel(&["A", "B", "C", "D"], &freqs);
+        let (a, b, c, d) = (Pop::Ref(0), Pop::Ref(1), Pop::Ref(2), Pop::Ref(3));
+        let est = f4_vector(
+            &genos,
+            &panel,
+            &[Quartet::new(a, b, c, d), Quartet::new(a, c, b, d)],
+            F4_BLOCK_BP,
+        )
+        .expect("f4 vector");
+        let z_null = est.values[0] / est.se(0);
+        let z_edge = est.values[1] / est.se(1);
+        assert!(z_null.abs() < 4.0, "symmetric tree: f4(A,B;C,D) must sit near 0, z={z_null:.2}");
+        assert!(z_edge.abs() > 8.0, "real internal edge: f4(A,C;B,D) must be many SE from 0, z={z_edge:.2}");
+        assert!(
+            est.values[0].abs() * 5.0 < est.values[1].abs(),
+            "the null statistic must be far smaller than the real edge"
+        );
     }
 }
