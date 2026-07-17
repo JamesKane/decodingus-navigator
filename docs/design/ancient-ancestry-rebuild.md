@@ -1,11 +1,14 @@
 # Ancient ancestry — why it's disabled, and what a correct rebuild takes
 
-**Status:** feature gated off (`navigator_app::ANCIENT_ANCESTRY_ENABLED = false`). Original PCA
-implementation disabled 2026-07-13 (§1–§2). Option-A rebuild (§3) built and tested 2026-07;
-**it fails the §3.4 stability gate — see §4** — so the feature stays off pending the §4 fix.
-**Scope of this doc:** the evidence that the original implementation is unsound (§1–2), the rebuild
-design (§3), and what the rebuild attempt found — including a reconsideration of the §3.1 method
-choice (§4).
+**Status:** feature gated off (`navigator_app::ANCIENT_ANCESTRY_ENABLED = false`). The original PCA
+implementation was disabled 2026-07-13 for fabricating numbers (§1–§2). Two rebuild attempts in
+2026-07 — supervised allele-frequency admixture, then the same with a consumer-array ascertainment
+floor — both **fail the real-data stability gate** (§3). The literature explains why and points at the
+right method (§4); the design that follows from it is §5. The feature stays off until §5 is built and
+passes §5.3.
+
+**Scope:** the evidence that the original is unsound (§1–2), what the rebuild attempts established and
+why they fail (§3–4), and the design for a correct rebuild (§5–6).
 
 ---
 
@@ -97,180 +100,195 @@ The publish filter matters most: fabricated breakdowns must not reach the networ
 
 ---
 
-## 3. Rebuild design
+## 3. What the rebuild attempts established (2026-07)
 
-### 3.1 Choose the model first — drop PCA-centroid distance
+Both attempts were built end to end and tested; both fail. The failures are informative, so they are
+the evidence base for the §5 design.
 
-Distance-to-centroid in a modern PCA is the wrong tool. Two defensible replacements:
+### 3.1 Attempt 1 — supervised allele-frequency admixture
 
-**Option A — Supervised admixture over allele frequencies (recommended).**
-Model the sample's genotype at each AIM as drawn from a mixture of *K* ancient source populations
-with known allele frequencies `f_k(site)`. Fit mixture weights `w` (non-negative, sum to 1) by
-maximising the likelihood
-`Σ_sites log Σ_k w_k · P(genotype | f_k(site))`
-via EM or projected gradient. This is exactly the shape of the existing
-`estimate_by_allele_frequency` / `estimate_admixture` code that already works for the super-population
-estimate — so the machinery and its validation exist. **It needs ancient *allele frequencies*, not PCA
-centroids.**
+The design originally chosen (the "Option A" of earlier drafts): model the sample's genotype at each
+AIM as a mixture of source allele frequencies `f_k(site)` and fit simplex weights by EM — the same
+machinery as the working super-population estimate, over a dedicated ancient frequency panel built
+from the AADR (WHG / ANF / Steppe, per-source ≥8-called floor, no no-data-as-zero). Implemented as
+`estimate_ancient_admixture`; asset built by `panelbuild ancient-panel`; gates by `validate-ancient`.
 
-**Option B — qpAdm-style f4/f-statistics.** Rigorous and the field standard, but it needs outgroups,
-a much heavier reference set, and a substantially larger implementation. Not warranted for a
-consumer-facing three-way breakdown.
+It **passes in simulation** — draw individuals from known frequencies and it recovers mixtures
+exactly (20/30/50 → 19.5/30.2/50.3), lands a simulated GBR at Steppe ≈ 50, rejects non-Europeans. But
+simulation draws genotypes from the same frequency space it fits against, so it is **blind to the
+failure that matters**:
 
-**Recommendation: Option A.** It reuses proven code, needs only a frequency table, and yields genuine
-mixture proportions with a residual/fit statistic we can surface as a confidence.
+**It fails the stability gate on real data.** Subject `huF98AFD`, genotyped by both means, comes out
+**Steppe 58 / ANF 31 / WHG 10 from his chips** but **Steppe 80–90 / ANF 15 / WHG 4 from his WGS**.
+Same person, ~25 points apart. The chip figures sit in the expected band; the WGS figures do not.
 
-### 3.2 Source populations
+The split tracks exactly one thing — the *data type* of the genotypes — and everything intrinsic was
+ruled out with direct evidence:
 
-Target the classic three-way model, which maps 1:1 onto how the feature is already labelled (and onto
-FTDNA's Hunter-Gatherer / Farmer / Metal Age Invader):
+- **Not genotyping.** Clean CHM13 alignments genotype at **99.9%** concordance with the chips at
+  shared sites (99.9% of hets preserved) yet still read ~90% Steppe on non-chip sites. (A separate
+  never-het corruption turned up on one GRCh38 alignment; it was a stale pre-`3cf4956` genotype cache,
+  fixed by bumping `IBD_PANEL_KIND` — re-genotyped it returns to 99.9% and the split remains.)
+- **Not strand-ambiguity.** Dropping A/T + C/G sites moves Steppe < 3 points.
+- **Not ref/alt polarity.** 0 of 19,727 sites swapped vs the correctly-oriented super panel.
+- **Not aDNA transition damage.** Transversion-only sites still read ~86% Steppe.
+- **Not low-MAF / the panel's differential zero-rate.** A modern-MAF floor makes it *worse* (MAF ≥
+  0.10 → 89% Steppe), so it is not the sparse-source zero-frequency artifact.
 
-- **WHG** — Western Hunter-Gatherer
-- **EEF / ANF** — Anatolian Neolithic Farmer
-- **Steppe** — Yamnaya / Bronze Age steppe
+### 3.2 Attempt 2 — restrict the panel to consumer-array sites (A′)
 
-Optionally a 4th (**CHG** or **Iran_N**) for non-European subjects. Avoid including both `Steppe` and
-`EHG`+`CHG`: Steppe *is* approximately EHG+CHG, so they are collinear and the fit becomes
-ill-conditioned — one of the failure modes we just diagnosed.
+Reasoning: allele-frequency admixture is only valid where sample and reference share ascertainment, so
+restrict the panel to sites consumer arrays actually assay. Built as `ancient-panel --ascertain-sites`
++ a committed manifest (`manifests/consumer_array_1240k_rsids.txt.gz`, 23andMe v5 ∪ AncestryDNA v2 ∩
+AADR 1240k). This looked like it worked, and **the "pass" was a mistake worth recording**: it rested
+on the `∩chip` figure — WGS restricted to the subject's *own resolved chip calls* — which trivially
+equals the chip because they are the same sites genotyped two ways.
 
-### 3.3 Building the frequency table (the real work)
+The **end-to-end smoke test refutes it**: rebuild the ascertained asset (9,971 sites), publish it,
+re-genotype the subject, fit the *actual app consensus* → **consensus 75.2% Steppe vs chips ~58%**.
+The gate still fails. Restricting further to *called* (non-no-call) array sites barely moves it
+(75 → 71). The residual bias is the array-manifest sites the chip path drops but a WGS caller
+genotypes anyway (`∁chip`: 99% Steppe at dispersion 8.6 — the model fits them terribly). A coarse
+site filter cannot isolate the well-behaved sites, and the only set that gives 58% for WGS is the
+subject's own chip set, so validating it on our one dual-source subject is circular.
 
-1. **Source genomes.** Published ancient genomes (Allen Ancient DNA Resource / Reich Lab dataset is
-   the standard source). Select the sample sets defining each source population.
-2. **Genotypes.** Ancient data is pseudo-haploid and low coverage. Use the published pseudo-haploid
-   calls; do **not** attempt diploid calling.
-3. **Restrict to our AIM panel sites**, lifted to CHM13 (the panel already carries per-build
-   coordinates, so this is a lookup, not a liftover — see `ibd_panel.rs`).
-4. **Compute per-site alt-allele frequency per source population**, in the **canonical CHM13
-   orientation** (reuse `dosage_from_alleles` so ref/alt swaps and strand flips are handled — the same
-   orientation logic already validated for chips and for the b37/b38 alignment path).
-5. **Emit** `ancestry_freq_ancient_<build>.bin` in the existing `AncestryPanel` shape
-   (`PanelSite { contig, position, reference_allele, alternate_allele, freqs: Vec<f32> }`), with
-   `populations = [WHG, ANF, Steppe]`. This is the *same* container the working super/fine panels use.
-6. **Drop the ancient PCA asset entirely** — nothing should consume it again.
-
-Build step lives in `navigator-panelbuild` alongside the existing panel builders; publish as a versioned
-asset like the others.
-
-### 3.4 Validation gates (do not ship without these)
-
-Empirical, on real data — the diagnosis above only surfaced because we checked real numbers:
-
-1. **Sanity band per region.** A NW-European sample must land roughly in
-   Steppe 40–55%, ANF 25–40%, WHG 10–25%. A Sardinian must be ANF-dominant (>60%) with near-zero
-   Steppe. A Yoruba must not fit the model at all (large residual → we report "not applicable"
-   rather than a number).
-2. **Stability.** The same subject genotyped from two different sources (e.g. 28× WGS vs. a chip)
-   must agree within a few percent. The current implementation fails this badly (WHG 72.6% vs 7.4%);
-   it is the single most diagnostic test.
-3. **Density.** Results must be stable as sites are randomly downsampled (say 50%). If they are not,
-   the model is over-fit or ill-conditioned.
-4. **Fit residual.** Surface it. A poor fit must present as "we can't model this ancestry" rather than
-   as confident percentages.
-
-### 3.5 Effort
-
-The code is the small part (a frequency-mixture estimator ≈ the existing `estimate_admixture`, plus a
-panelbuild step). **The work is assembling and validating the ancient reference frequencies** —
-sourcing the Reich dataset, selecting sample sets, and running the validation gates above.
-
-Until that asset exists and passes §3.4, the feature stays off.
+**Takeaway:** this is not a data-sourcing problem and not a site-filter problem. It is the method.
 
 ---
 
-## 4. Rebuild attempt (2026-07): Option A built, and where it fails
+## 4. Why it fails — the literature
 
-§3 was implemented in full: the PCA-centroid classifier and the nMonte estimator were deleted;
-`estimate_ancient_admixture` (the supervised frequency EM) and a dedicated `ancient-panel` builder
-were added; the ancient AF asset `ancestry_freq_ancient_chm13v2.0.bin` was built from the AADR over
-WHG (Villabruna-cluster Mesolithic, n≈75) / ANF / Steppe, with a per-source ≥8-called floor. Three of
-the four §3.4 gates pass. **Gate 2 (stability) fails**, and the failure is diagnostic of a
-method-level problem, not a data-sourcing one.
+The instability is a known, named phenomenon, and the field long ago moved off the class of method we
+were using. Four load-bearing findings:
 
-### 4.1 What passes, what fails
+1. **Frequency-mixture ADMIXTURE is ascertainment-sensitive by construction; f4/qpAdm is the
+   standard because it is not.** The field estimates ancient-source proportions with **qpAdm**, which
+   works on **f4-statistics** — allele-sharing measured *against a panel of outgroups* — not on the
+   sample's raw frequencies. Differences-of-differences against outgroups cancel drift and are robust
+   to SNP ascertainment (Harney et al. 2021; f4/admixture-graph reviews). This is exactly the property
+   Attempts 1–2 lack.
 
-- **Recovery, sanity band, density** — pass *in simulation*. `validate-ancient` draws individuals from
-  known reference frequencies and recovers mixtures exactly (20/30/50 → 19.5/30.2/50.3); a simulated
-  GBR lands Steppe 50 / ANF 34 / WHG 16; Yoruba/East-Asian are rejected by the dispersion + European
-  scope guards.
-- **Stability (real data) — FAILS.** Subject `huF98AFD`, genotyped by both means, comes out
-  **Steppe 58 / ANF 31 / WHG 10 from his two consumer chips** but **Steppe 80–90 / ANF 15 / WHG 4 from
-  his WGS alignments** — a ~25-point disagreement on one person. The chip figures sit in the §3.4
-  band; the WGS figures do not. Note the simulated gates cannot catch this: they draw genotypes from
-  the same frequency space they fit against, so they are blind to a *mismatch between the sample's
-  ascertainment and the panel's*.
+2. **Our WGS-vs-chip split is a documented capture-vs-shotgun batch effect.** "Capture samples had
+   higher attraction to the Anatolian Neolithic than shotgun samples," and that attraction shifts with
+   hunter-gatherer admixture (*Testing times*, Genetics 2024). A subject's ANF/Steppe split moving
+   with the data type — rather than with their ancestry — is precisely this.
 
-### 4.2 The cause is ascertainment, established by elimination
+3. **Do not co-analyze present-day and ancient data.** Harney et al. state it directly, and warn
+   against mixing capture and shotgun in one model. Our feature does exactly this (a present-day
+   individual against ancient sources), so even the gold-standard method flags the setup as hazardous.
 
-The split tracks exactly one property: whether a site is on the subject's consumer chip. Restricting
-either WGS alignment to chip-covered sites reproduces the chip answer (aln #9 full 80.6% Steppe →
-∩chip 57.9%, dispersion 2.25 → 1.18); the WGS-only complement carries all the bias (∁chip ≈ 91%).
-Everything else was ruled out with direct evidence:
+4. **Reference bias + pseudo-haploid processing create spurious allele-sharing.** Ancient pseudo-
+   haploid calls carry reference bias that "systematically creates spurious signals of allele sharing"
+   in D/f-statistics (Günther & Nettelblad 2019). Our ancient references are pseudo-haploid-with-
+   damage; our modern target is diploid-called — that mismatch is a documented source of "attraction."
 
-- **Not genotyping.** The clean CHM13 alignments genotype at **99.9%** concordance with the chips at
-  shared sites (and keep 99.9% of heterozygotes); they still read ~90% Steppe on the non-chip sites.
-  (An *un*clean case turned up here — a GRCh38 alignment served corrupt never-het genotypes — but that
-  was a stale pre-`3cf4956` genotype cache, fixed separately by bumping `IBD_PANEL_KIND`; re-genotyped
-  it returns to 99.9% and still shows the chip/non-chip split.)
-- **Not strand-ambiguity.** Dropping A/T + C/G sites moves Steppe < 3 points.
-- **Not ref/alt polarity.** 0 of 19,727 ancient sites are swapped vs the (correctly-oriented) super
-  panel.
-- **Not aDNA transition damage.** Transversion-only sites still read ~86% Steppe.
-- **Not low-MAF noise / the panel's differential zero-rate.** This is the decisive one: a modern-MAF
-  floor makes the bias **worse**, not better (MAF ≥ 0.10 → full-WGS 89% Steppe). The bias lives at
-  moderate-and-high-MAF non-chip sites, so it is not the sparse-source zero-frequency artifact.
+And the original PCA/`nMonte` approach (§1) is a community distance method (Global25 + nMonte) known
+to overfit and "not ideal for recent ancestry" — abandoning it was correct.
 
-What remains is that the estimate depends on **which ascertainment the sites came from** — the
-consumer-chip ascertainment gives the correct, stable, in-band answer (two different chips agree to
-2 points, dispersion ~1.2), and the AADR/1240k non-chip ascertainment does not. That dependence is the
-textbook failure mode of allele-frequency ADMIXTURE, and it is precisely the problem qpAdm/f-statistics
-(the §3.1 "Option B" we dismissed) were designed to be robust against. **§3.1's recommendation was made
-without anticipating this; the diagnosis overturns it.**
+Sources: Harney et al., *Assessing the performance of qpAdm* (Genetics 2021,
+`academic.oup.com/genetics/article/217/4/iyaa045`); *Testing times…* (Genetics 2024,
+`.../228/1/iyae110`); Soraggi et al., f-statistics biased under all ascertainment schemes (PLOS Gen
+2023, `journals.plos.org/plosgenetics/article?id=10.1371/journal.pgen.1010931`); Günther & Nettelblad,
+reference bias (PLOS Gen 2019, `.../journal.pgen.1008302`); MetaGLIMPSE imputation
+(`pmc.ncbi.nlm.nih.gov/articles/PMC12262289/`).
 
-### 4.3 Two fixes
+---
 
-**Option A′ — restrict the ancient panel to consumer-chip-ascertained sites.** Allele-frequency
-admixture is only valid when the sample and the reference share ascertainment; forcing that match is
-the *correct* way to run Option A, not a workaround. It already clears the stability gate on real data
-(WGS-on-chip-sites = chips = ~58%, in band). Small change: a build-time site filter in `ancient-panel`
-intersecting with a canonical consumer-chip manifest. Limits: it drops ~half the panel's sites, needs
-that manifest, and — because `huF98AFD` is our only real dual-source subject — the non-European sanity
-band can still only be checked in (ascertainment-blind) simulation until more real samples exist.
+## 5. The rebuild design
 
-**Option B — implement qpAdm-style f4/f-statistics.** The principled, ascertainment-robust method,
-now justified by the diagnosis despite §3.1's dismissal. Works on the full panel. Larger lift: an
-outgroup reference set and an f4 solver.
+Two levers, applied **in order**. The first is cheap, method-agnostic, and attacks the root cause the
+literature identifies; the second is the correct estimator if the first is not sufficient.
 
-**Decision (2026-07): pursue A′** as the near-term ship — it is a legitimate fix, it is small, and it
-already passes the gate §3.4 calls the single most diagnostic — keeping Option B as the documented
-fallback if A′ cannot hold the sanity band as real samples accumulate.
+### 5.1 Lever 1 — harmonize the target to the references (do this first)
 
-### 4.4 A′ implemented and validated
+Every finding in §4 reduces to one rule: **put the target and the references through one identical
+pipeline**, so no data-type batch effect can exist. Concretely, reduce *every* subject — WGS or chip —
+to the same representation as the AADR ancient references:
 
-- **Builder.** `panelbuild ancient-panel` gained `--ascertain-sites <contig\tpos>`: it restricts the
-  panel to a consumer-array manifest (mapped to CHM13). Off by default (builds the full panel);
-  supplied by the pipeline when a manifest is configured.
-- **Pipeline.** `05_build_assets.sh` maps `$CHIP_MANIFEST` (an array's rsID export) to CHM13 via the
-  stage-02 1240k liftover and passes the result to the builder; the §3.4 validation step is a hard
-  gate. Building without a manifest logs that the deep panel will fail stability.
-- **Validation.** A chip-ascertained panel — the AADR ancient panel intersected with the 23andMe v5 +
-  AncestryDNA v2 sites (9,971 of 19,727 sites) — clears every gate:
-  - *Stability:* met by construction, and already measured — `huF98AFD`'s WGS restricted to array
-    sites is 57.9% Steppe vs his chips at 56–58%.
-  - *Recovery:* 20/30/50 → 20.2/29.2/50.6.
-  - *Sanity band:* GBR 50.0 / CEU 49.6 / FIN 55.1 Steppe, TSI/IBS ANF-shifted, all in band; PJL by
-    EUR-scope and CHB/JPT/YRI/LWK by dispersion all **rejected**. Dispersion is if anything *tighter*
-    than the full panel (IBS 2.60 vs 3.02).
-  - *Density:* GBR 50.0 → 51.8 at half the sites.
+- **Pseudo-haploidize the target.** Sample a single allele (one read for WGS; one of the two reported
+  alleles for a chip) per site, instead of feeding diploid dosages against pseudo-haploid references.
+  Removes the diploid-vs-pseudo-haploid attraction. *Untested so far — this is the lever §3 never
+  pulled, and the one the literature points at most directly.*
+- **Transversions only.** Drop A↔G, C↔T so post-mortem C→T/G→A damage in the references can't create
+  attraction. (Tested in isolation it didn't fix Attempt 1, but it is necessary in combination.)
+- **One fixed, orientation-checked site set**, identical for target and references, on CHM13.
 
-**Manifest (done).** `scripts/ancestry-panel/manifests/consumer_array_1240k_rsids.txt.gz` — the
-23andMe v5 ∪ AncestryDNA v2 probe sets ∩ AADR 1240k (649,478 rsIDs; array *design*, not genotypes).
-`config.sh` defaults `$CHIP_MANIFEST` to it, so a pipeline build is ascertained out of the box; the
-whole path is verified (`.gz` → 05 rsID/1240k join → 9,971 ancient sites, the validated panel).
+Then run the estimator on the harmonized genotypes. The **first experiment** is to pseudo-haploidize
+`huF98AFD`'s WGS over transversion sites and re-run the stability diagnostic: if WGS collapses from
+~75 onto the chip's ~58, harmonization is the fix and Lever 2 may be unnecessary.
 
-**Remaining before re-enabling** (`ANCIENT_ANCESTRY_ENABLED` stays `false`): (1) rebuild and
-re-publish `ancestry_freq_ancient_<build>.bin` from the AADR through the ascertainment floor (the
-current shipped `.bin` is still the full, unascertained panel); (2) re-run §3.4 on that rebuilt asset;
-(3) flip the flag. The non-European sanity band remains simulation-only until more real dual-source
-samples exist; a broader/vendor-neutral ascertainment (e.g. the AADR Human Origins array) is the
-natural follow-up if wanted — see `manifests/README.md`.
+### 5.2 Lever 2 — estimator: qpAdm-style f4 (if harmonization alone isn't enough)
+
+Replace the frequency-mixture EM with an **f4-statistics** estimator (the qpAdm approach):
+
+- **Left (sources):** the WHG / ANF / Steppe references. **Right (outgroups):** a diverse panel that
+  is differentially related to the sources (e.g. an African outgroup such as Mbuti plus a spread of
+  Eurasian/other populations) — the reference already carries enough populations to seed this.
+- Estimate weights from the f4 covariance; accept by the standard criteria (model not rejected at
+  p ≈ 5%, weights in [0,1]); use **rotating outgroups** rather than p-value ranking to choose among
+  models.
+- Robustness the literature documents and we need: works down to ~10k SNPs, tolerates high missing
+  data and pseudo-haploid genotypes, and is ascertainment-robust — the property §3 lacked.
+
+This is the larger lift (an f4/covariance solver + a curated outgroup set) and a genuine departure
+from the "reuse `estimate_admixture`" plan, but it is the method the field actually trusts.
+
+### 5.3 Source populations
+
+The classic three-way model, which maps 1:1 onto the existing labels (and FTDNA's
+Hunter-Gatherer / Farmer / Metal-Age-Invader):
+
+- **WHG** — Western Hunter-Gatherer (Villabruna cluster; strengthened to n ≈ 75)
+- **ANF / EEF** — Anatolian Neolithic Farmer
+- **Steppe** — Yamnaya / Bronze-Age steppe
+
+Optionally a 4th (**CHG** or **Iran_N**) for non-European subjects. Do **not** list `Steppe` alongside
+`EHG`+`CHG`: Steppe ≈ EHG+CHG, so they are collinear and the fit becomes ill-conditioned.
+
+### 5.4 Validation gates (do not ship without these)
+
+Empirical, on real data — §3 only surfaced because we checked real numbers, and simulation is blind
+to the failure that matters.
+
+1. **Stability — the single most diagnostic test.** The same subject from two sources (WGS vs chip)
+   must agree within a few percent. This is what both attempts fail. Measure it end-to-end through the
+   app consensus (`debug-ancient`), **not** via a `∩chip` restriction — that restriction is circular
+   and produced the false "pass" in §3.2.
+2. **Pseudo-haploid consistency.** With Lever 1 in place, the diploid and pseudo-haploidized fits of
+   the same WGS must agree — if they don't, the harmonization is incomplete.
+3. **Sanity band per region.** NW-European ≈ Steppe 40–55 / ANF 25–40 / WHG 10–25; Sardinian
+   ANF-dominant, near-zero Steppe; Yoruba does not fit (large residual → "not applicable").
+4. **Density.** Stable under 50% site downsampling.
+5. **Fit residual surfaced.** A poor fit presents as "we can't model this ancestry," never as
+   confident percentages.
+
+Non-European sanity remains simulation-only until more real dual-source subjects exist; `huF98AFD` is
+currently the only one, which is also why the stability gate cannot be self-validated by ascertaining
+on his own chips (§3.2).
+
+### 5.5 What's already built and reusable
+
+- `panelbuild ancient-panel` (+ `--ascertain-sites`) and the committed array manifest — the panel
+  builder and site-restriction machinery, reusable for the harmonized site set.
+- `panelbuild validate-ancient` — the simulated gates (recovery / band / density); keep, but treat as
+  necessary-not-sufficient (it passed on both failed attempts).
+- `debug-ancient` + `App::ancient_ancestry_stability` — the real-data stability diagnostic with the
+  ∩chip/∁chip/density probes; this is the harness for gate 1 and the Lever-1 experiment.
+- The AADR component map (`scripts/ancestry-panel/pops/aadr_component_map.tsv`) and WHG strengthening.
+
+### 5.6 Effort and sequencing
+
+1. **Cheap, next:** implement pseudo-haploidization of the target (Lever 1) and re-run the stability
+   diagnostic on `huF98AFD`. This is a small change to the genotype path and could resolve the split
+   on its own.
+2. **If needed:** build the f4/qpAdm estimator (Lever 2) with a curated outgroup set.
+3. Re-run §5.3 gates on real data end-to-end; only then flip `ANCIENT_ANCESTRY_ENABLED`.
+
+---
+
+## 6. Current status
+
+`ANCIENT_ANCESTRY_ENABLED = false`. The shipped `ancestry_freq_ancient_<build>.bin` is the full,
+unascertained panel (the A′ publish was rolled back). Modern/fine admixture stays enabled and is
+unaffected. The gate to re-enable is §5.4 gate 1 (real-data stability) passing end-to-end — which no
+attempt has yet achieved. Next concrete step: §5.6 step 1.
