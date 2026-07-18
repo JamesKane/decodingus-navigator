@@ -1891,6 +1891,13 @@ impl NavigatorApp {
                 }
             }
             if let Some((build, received, total)) = self.reference_progress.clone() {
+                // The bar alone reads as an unexplained multi-GB download, so name it and say why
+                // it is happening — the pull is usually kicked off automatically by an import, not
+                // by anything the user clicked.
+                ui.label(egui::RichText::new(self.tr("refdl.progressTitle")).strong());
+                ui.add_space(2.0);
+                ui.label(egui::RichText::new(self.tr("refdl.why")).weak().small());
+                ui.add_space(6.0);
                 let text = match total {
                     Some(t) => format!("{build}: {} / {} MB", received / 1_000_000, t / 1_000_000),
                     None => format!("{build}: {} MB", received / 1_000_000),
