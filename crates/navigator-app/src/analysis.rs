@@ -410,7 +410,8 @@ impl App {
         let aln = self.alignment_or_err(alignment_id).await?;
         let reference_build = aln.reference_build.clone();
         // Resolve the reference for decode (see alignment_reference_for_decode): required for a CRAM,
-        // None for a BAM. SV reads records + header lengths; it doesn't consult reference bases.
+        // None for a BAM. SV never consults reference *bases* — but decoding a CRAM record does, so
+        // the walker needs it too, not just the header-lengths probe.
         let (bam, reference) = self.alignment_reference_for_decode(alignment_id).await?;
 
         let cov = match self.cached_coverage(alignment_id).await? {
@@ -433,6 +434,7 @@ impl App {
             navigator_analysis::guard_walk("structural variants", || {
                 navigator_analysis::sv::caller::call_structural_variants(
                     &bam,
+                    reference.as_deref(),
                     &lengths,
                     &reference_build,
                     mean_cov,
