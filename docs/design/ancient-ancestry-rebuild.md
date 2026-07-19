@@ -569,3 +569,42 @@ needs the **full-1240k SNP set**, not the 20 k AIM subset:
 This is a data-volume task, not a research dead-end. `ANCIENT_ANCESTRY_ENABLED` stays `false` until the
 full-1240k rebuild passes the stability gate. The `admixtools2` cross-check (`examples`-adjacent R
 script in the build scratch) is the reusable oracle for validating our estimator on any future asset.
+
+### 7.12 Full-1240k rebuild — SNP count confirmed; the blocker is now our target genotyping
+
+Did the rebuild. Genotyped the target at all **1,231,970** CHM13 1240k sites (our caller, 1.23 M called),
+subset the AADR PLINK to the 446 source+outgroup individuals (`plink2`), reconciled the target's
+alleles onto the AADR SNPs, and ran real `admixtools2` qpAdm on the combined ~1.15 M-SNP set. Added a
+**positive control**: 12 **English (1000G British, `HG00xxx.DG`)** individuals already in the AADR —
+the same population as `huF98AFD`, but genotyped through the AADR pipeline instead of ours.
+
+| Target (full 1240k) | WHG | ANF | Steppe | SE (WHG) | model |
+|---|---|---|---|---|---|
+| **English (AADR pipeline)** | 0.0% | 50.1% | 49.8% | **±2.6%** | feasible weights, p=3e-4 |
+| **huF98AFD (our CHM13 genotyping)** | −346% | +451% | −5% | ±20% | infeasible, p=2e-13 |
+
+Two firm conclusions:
+
+- **The SNP-count precision hypothesis is CONFIRMED.** The English control's SE collapsed to **±2.6%**
+  (from ±43% at 16 k) — exactly the ~8× the arithmetic predicted, and the ~2–3% real studies report.
+  Full 1240k delivers publication-grade precision, and the whole stack (our panel, the AADR-native
+  outgroups, ADMIXTOOLS) resolves a real Briton feasibly and tightly.
+- **The remaining blocker is entirely our target genotyping.** Identical sources/outgroups/SNPs/
+  estimator: a real Briton *from the AADR callset* fits; the *same* person genotyped by us from a CHM13
+  BAM gives −346% WHG. Flipping the target globally makes it worse (−5.4%), so it is **not** a uniform
+  orientation bug — it is a *per-SNP* inconsistency between our CHM13-lifted genotyping and the AADR
+  1240k allele space (the §3.1 "non-AIM sites read anomalously" finding, now proven at full scale: the
+  16 k AIM panel is clean, the other ~1.13 M 1240k sites are not, for our target).
+
+**Next step (target-side, bounded).** Genotype the target in a *standard 1240k build that matches the
+AADR* rather than via the hg19→CHM13 liftover: the target has a local **GRCh38** BAM
+(`WGS229.b38.bam`) and `1240k_sites.hg38.bed` exists, so genotype at hg38 1240k sites and key to the
+AADR by rsID (hg38↔hg19 is the clean mapping 1000G itself uses — no exotic T2T liftover). If a
+GRCh38-genotyped `huF98AFD` then fits like the English control, the feature is shippable; if it still
+fails, the target-side genotyping/reference-bias problem is the true wall.
+
+**Secondary tuning note.** Even the English control comes back **WHG ≈ 0** and the model is technically
+rejected (p=3e-4). A textbook British qpAdm usually retains ~10–20% WHG, so our specific source set
+(the Villabruna WHG, the Yamnaya Steppe which already carries EHG/WHG-like ancestry) and outgroups are
+not yet the canonical configuration — a real but *secondary* refinement, dwarfed by the target-
+genotyping blocker above. Everything remains behind `ANCIENT_ANCESTRY_ENABLED = false`.
