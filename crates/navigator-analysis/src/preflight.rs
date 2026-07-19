@@ -58,10 +58,59 @@ impl Status {
     }
 }
 
+/// Which check this is. Callers branch on the identity, not the display string — a batch deciding
+/// whether to skip a sample must not depend on prose that can be reworded or translated.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CheckId {
+    Format,
+    AlignmentFile,
+    CoordinateIndex,
+    ReferenceFasta,
+    ReferenceIndex,
+    ReadHeader,
+    OpenIndexed,
+    RegionQuery,
+}
+
+impl CheckId {
+    /// The human label. Single source of truth, so a check's name and its identity cannot drift.
+    pub fn label(self) -> &'static str {
+        match self {
+            CheckId::Format => "format",
+            CheckId::AlignmentFile => "alignment file",
+            CheckId::CoordinateIndex => "coordinate index",
+            CheckId::ReferenceFasta => "reference FASTA",
+            CheckId::ReferenceIndex => "reference index (.fai)",
+            CheckId::ReadHeader => "read header",
+            CheckId::OpenIndexed => "open indexed",
+            CheckId::RegionQuery => "region query",
+        }
+    }
+
+    /// Whether failing this check makes the file unreadable *entirely*, sequential passes included.
+    ///
+    /// The distinction drives what a caller may skip. A broken index (or anything built on it)
+    /// blocks only region queries — read metrics, coverage and sex fall back to a sequential walk
+    /// and still succeed — so treating that as "this sample is unanalyzable" would throw away
+    /// results that do work.
+    ///
+    /// Deliberately narrow: only opening the file and reading its header qualify, because they are
+    /// the minimum every sequential path performs. A reference problem is *not* listed even though
+    /// several steps need one — how much it matters depends on the format and the step, and since
+    /// reading a CRAM's header already requires the reference, a genuinely unusable reference fails
+    /// [`CheckId::ReadHeader`] anyway. Since skipping discards work that might have succeeded, it
+    /// should follow only from a failure that leaves nothing to try.
+    pub fn blocks_sequential_reads(self) -> bool {
+        matches!(self, CheckId::AlignmentFile | CheckId::ReadHeader)
+    }
+}
+
 /// One named check against one named file. `path` is the file *this* check actually touched — the
 /// point of the whole module — so a failure is never attributed to a file that was merely nearby.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct Check {
+    pub id: CheckId,
     pub name: String,
     pub path: Option<PathBuf>,
     pub status: Status,
@@ -72,19 +121,14 @@ pub struct Check {
 }
 
 impl Check {
-    fn ok(name: impl Into<String>, path: Option<PathBuf>, detail: impl Into<String>) -> Self {
-        Self {
-            name: name.into(),
-            path,
-            status: Status::Ok,
-            detail: detail.into(),
-            errno: None,
-        }
+    fn ok(id: CheckId, path: Option<PathBuf>, detail: impl Into<String>) -> Self {
+        Self::new(id, path, Status::Ok, detail)
     }
 
-    fn new(name: impl Into<String>, path: Option<PathBuf>, status: Status, detail: impl Into<String>) -> Self {
+    fn new(id: CheckId, path: Option<PathBuf>, status: Status, detail: impl Into<String>) -> Self {
         Self {
-            name: name.into(),
+            id,
+            name: id.label().to_string(),
             path,
             status,
             detail: detail.into(),
@@ -111,6 +155,18 @@ impl Report {
     /// earlier ones succeeding.
     pub fn first_failure(&self) -> Option<&Check> {
         self.checks.iter().find(|c| c.status == Status::Fail)
+    }
+
+    /// Whether the file cannot be read *at all* — not even by a sequential pass.
+    ///
+    /// This is the question a batch has to answer before deciding to skip a sample. A failure that
+    /// only blocks region queries (a missing or unreadable index) must not skip it: read metrics,
+    /// coverage and sex still complete via the sequential fallback, and discarding those because
+    /// the Y step can't run would lose results the user would otherwise get.
+    pub fn blocks_sequential_reads(&self) -> bool {
+        self.checks
+            .iter()
+            .any(|c| c.status == Status::Fail && c.id.blocks_sequential_reads())
     }
 
     fn push(&mut self, c: Check) {
@@ -179,11 +235,11 @@ fn explain(path: &Path, e: &std::io::Error) -> (Status, String, Option<i32>) {
 /// Both halves are necessary. `metadata` alone answers a different question than `open` on macOS —
 /// a privacy denial can let `stat` through and refuse the `open`, or refuse both — so the check
 /// that matters is the one the reader will actually perform, which is opening it.
-fn probe_file(name: &str, path: &Path) -> Check {
+fn probe_file(id: CheckId, path: &Path) -> Check {
     match File::open(path) {
         Ok(_) => {
             let size = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
-            Check::ok(name, Some(path.to_path_buf()), format!("readable, {size} bytes"))
+            Check::ok(id, Some(path.to_path_buf()), format!("readable, {size} bytes"))
         }
         Err(e) => {
             let (status, mut detail, errno) = explain(path, &e);
@@ -197,7 +253,8 @@ fn probe_file(name: &str, path: &Path) -> Check {
                 );
             }
             Check {
-                name: name.to_string(),
+                id,
+                name: id.label().to_string(),
                 path: Some(path.to_path_buf()),
                 status,
                 detail,
@@ -242,7 +299,7 @@ pub fn diagnose(alignment: &Path, reference: Option<&Path>) -> Report {
     };
     let format = detect_format(alignment);
     report.push(Check::ok(
-        "format",
+        CheckId::Format,
         None,
         match format {
             Format::Bam => "BAM (detected from the extension)",
@@ -250,7 +307,7 @@ pub fn diagnose(alignment: &Path, reference: Option<&Path>) -> Report {
         },
     ));
 
-    let file = probe_file("alignment file", alignment);
+    let file = probe_file(CheckId::AlignmentFile, alignment);
     let alignment_ok = file.status == Status::Ok;
     report.push(file);
     if !alignment_ok {
@@ -266,7 +323,7 @@ pub fn diagnose(alignment: &Path, reference: Option<&Path>) -> Report {
     let has_index = found.is_some();
     match found {
         None => report.push(Check::new(
-            "coordinate index",
+            CheckId::CoordinateIndex,
             None,
             Status::Warn,
             format!(
@@ -282,7 +339,7 @@ pub fn diagnose(alignment: &Path, reference: Option<&Path>) -> Report {
             ),
         )),
         Some(idx) => {
-            let probe = probe_file("coordinate index", idx);
+            let probe = probe_file(CheckId::CoordinateIndex, idx);
             let index_ok = probe.status == Status::Ok;
             report.push(probe);
             if !index_ok {
@@ -296,7 +353,7 @@ pub fn diagnose(alignment: &Path, reference: Option<&Path>) -> Report {
     let reference = match (format, reference) {
         (Format::Cram, None) => {
             report.push(Check::new(
-                "reference FASTA",
+                CheckId::ReferenceFasta,
                 None,
                 Status::Fail,
                 "a CRAM cannot be decoded without its reference FASTA, and none was supplied or \
@@ -307,7 +364,7 @@ pub fn diagnose(alignment: &Path, reference: Option<&Path>) -> Report {
         (_, r) => r,
     };
     if let Some(r) = reference {
-        let probe = probe_file("reference FASTA", r);
+        let probe = probe_file(CheckId::ReferenceFasta, r);
         let reference_ok = probe.status == Status::Ok;
         report.push(probe);
         if !reference_ok {
@@ -316,7 +373,7 @@ pub fn diagnose(alignment: &Path, reference: Option<&Path>) -> Report {
         // CRAM decode goes through an *indexed* FASTA reader, so a missing `.fai` fails the open
         // just as hard as a missing FASTA — and reports the FASTA's path when it does.
         let fai = PathBuf::from(format!("{}.fai", r.display()));
-        let probe = probe_file("reference index (.fai)", &fai);
+        let probe = probe_file(CheckId::ReferenceIndex, &fai);
         let fai_ok = probe.status == Status::Ok;
         report.push(probe);
         if !fai_ok {
@@ -327,13 +384,13 @@ pub fn diagnose(alignment: &Path, reference: Option<&Path>) -> Report {
     // Now the composite operations, in the order the analysis paths perform them.
     match reader::read_header(alignment, reference) {
         Ok(h) => report.push(Check::ok(
-            "read header",
+            CheckId::ReadHeader,
             Some(alignment.to_path_buf()),
             format!("{} reference sequences", h.reference_sequences().len()),
         )),
         Err(e) => {
             report.push(Check::new(
-                "read header",
+                CheckId::ReadHeader,
                 Some(alignment.to_path_buf()),
                 Status::Fail,
                 e.to_string(),
@@ -345,7 +402,7 @@ pub fn diagnose(alignment: &Path, reference: Option<&Path>) -> Report {
     let (header, mut idx) = match reader::open_indexed(alignment, reference) {
         Ok(v) => {
             report.push(Check::ok(
-                "open indexed",
+                CheckId::OpenIndexed,
                 Some(alignment.to_path_buf()),
                 "the index loaded and the file is ready for region queries",
             ));
@@ -358,7 +415,7 @@ pub fn diagnose(alignment: &Path, reference: Option<&Path>) -> Report {
             // sibling index, not that the CRAM went missing between two reads of it.
             let check = if has_index {
                 Check::new(
-                    "open indexed",
+                    CheckId::OpenIndexed,
                     Some(alignment.to_path_buf()),
                     Status::Fail,
                     format!(
@@ -368,7 +425,7 @@ pub fn diagnose(alignment: &Path, reference: Option<&Path>) -> Report {
                 )
             } else {
                 Check::new(
-                    "open indexed",
+                    CheckId::OpenIndexed,
                     Some(alignment.to_path_buf()),
                     Status::Fail,
                     format!(
@@ -393,7 +450,7 @@ pub fn diagnose(alignment: &Path, reference: Option<&Path>) -> Report {
         .map(|k| String::from_utf8_lossy(k.as_ref()).into_owned())
     else {
         report.push(Check::new(
-            "region query",
+            CheckId::RegionQuery,
             None,
             Status::Fail,
             "the header declares no reference sequences",
@@ -404,25 +461,25 @@ pub fn diagnose(alignment: &Path, reference: Option<&Path>) -> Report {
     let probe = match idx.query(&header, &region) {
         Ok(mut records) => match records.next() {
             Some(Err(e)) => Check::new(
-                "region query",
+                CheckId::RegionQuery,
                 Some(alignment.to_path_buf()),
                 Status::Fail,
                 format!("decoding the first record of {contig} failed: {e}"),
             ),
             Some(Ok(_)) => Check::ok(
-                "region query",
+                CheckId::RegionQuery,
                 None,
                 format!("seeked to {contig} and decoded a record"),
             ),
             None => Check::new(
-                "region query",
+                CheckId::RegionQuery,
                 None,
                 Status::Warn,
                 format!("seeked to {contig} but it holds no records"),
             ),
         },
         Err(e) => Check::new(
-            "region query",
+            CheckId::RegionQuery,
             Some(alignment.to_path_buf()),
             Status::Fail,
             format!("querying {contig} failed: {e}"),
@@ -482,7 +539,7 @@ mod tests {
         let index = report
             .checks
             .iter()
-            .find(|c| c.name == "coordinate index")
+            .find(|c| c.id == CheckId::CoordinateIndex)
             .expect("index is always checked");
         assert_eq!(index.status, Status::Warn, "a missing index has a sequential fallback");
         assert!(index.detail.contains("sample.bam.bai"), "{}", index.detail);
@@ -492,20 +549,62 @@ mod tests {
         let file = report
             .checks
             .iter()
-            .find(|c| c.name == "alignment file")
+            .find(|c| c.id == CheckId::AlignmentFile)
             .expect("file is always checked");
         assert_eq!(file.status, Status::Ok, "{report}");
 
         std::fs::remove_dir_all(&dir).ok();
     }
 
+    /// The invariant the batch depends on. A file with no index still analyzes fine sequentially
+    /// (coverage, read metrics, sex), so the missing index — and the `open indexed` failure that
+    /// follows from it — must not read as "this sample is unanalyzable". Getting this backwards
+    /// would silently drop results for every un-indexed CRAM in a project.
+    #[test]
+    fn a_missing_index_does_not_block_sequential_reads() {
+        let dir = std::env::temp_dir().join("navigator-preflight-blocking");
+        std::fs::create_dir_all(&dir).unwrap();
+        let bam = dir.join("sample.bam");
+        std::fs::write(&bam, b"not really a bam").unwrap();
+
+        let report = diagnose(&bam, None);
+        assert!(report.failed(), "a garbage BAM fails somewhere: {report}");
+        assert!(
+            !report
+                .checks
+                .iter()
+                .any(|c| c.status == Status::Fail && c.id == CheckId::CoordinateIndex),
+            "a missing index is a warning, never a failure: {report}"
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+
+        // An index-only failure is not a sequential blocker; an unreadable file is.
+        assert!(!CheckId::CoordinateIndex.blocks_sequential_reads());
+        assert!(!CheckId::OpenIndexed.blocks_sequential_reads());
+        assert!(!CheckId::RegionQuery.blocks_sequential_reads());
+        // A reference problem does not skip the sample on its own — a BAM reads without one, and a
+        // CRAM that truly cannot use it fails the header read, which does.
+        assert!(!CheckId::ReferenceFasta.blocks_sequential_reads());
+        assert!(!CheckId::ReferenceIndex.blocks_sequential_reads());
+        assert!(CheckId::AlignmentFile.blocks_sequential_reads());
+        assert!(CheckId::ReadHeader.blocks_sequential_reads());
+    }
+
+    /// An unreadable alignment blocks everything, so a batch may skip the sample outright.
+    #[test]
+    fn an_unreadable_alignment_blocks_sequential_reads() {
+        let report = diagnose(Path::new("/nonexistent/sample.cram"), None);
+        assert!(report.blocks_sequential_reads(), "{report}");
+    }
+
     #[test]
     fn missing_alignment_fails_fast_and_names_itself() {
         let report = diagnose(Path::new("/nonexistent/sample.cram"), None);
         let first = report.first_failure().expect("missing file must fail");
-        assert_eq!(first.name, "alignment file");
+        assert_eq!(first.id, CheckId::AlignmentFile);
         assert_eq!(first.errno, Some(2));
         // The reference check must not run — the report stops at the first real blocker.
-        assert!(!report.checks.iter().any(|c| c.name == "reference FASTA"), "{report}");
+        assert!(!report.checks.iter().any(|c| c.id == CheckId::ReferenceFasta), "{report}");
     }
 }

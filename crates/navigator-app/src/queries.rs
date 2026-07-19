@@ -659,6 +659,40 @@ impl App {
         // of cache; this subject's passes share the single copy `localize` makes below.
         Self::clear_align_cache();
 
+        // Preflight before spending any I/O on the steps below. A batch is the worst place to
+        // discover a file problem the slow way: without this, an unreadable alignment produces one
+        // near-identical `io error on <the alignment>` per step — each after a walk that had to
+        // fail first — and none of them names the file actually at fault.
+        //
+        // What it does *not* do is skip the sample on any failure. A broken index blocks only the
+        // region-query steps; the unified metrics walk falls back to a sequential pass and still
+        // produces coverage, read metrics and sex. Skipping on that would throw away results the
+        // user would otherwise get, so only a failure that blocks sequential reads short-circuits.
+        //
+        // Both sinks get the *first failure*, not the whole report: `o.errors` renders as one line
+        // per entry, and `record_analysis_error` truncates to 500 chars keeping the head — which
+        // for a full report is the path preamble and the checks that passed, so the diagnosis
+        // itself would be the part cut off. The full report stays available via `navigator doctor`.
+        match self.diagnose_alignment(aln.id).await {
+            Ok(report) if report.failed() => {
+                let cause = report
+                    .first_failure()
+                    .map(|c| match &c.path {
+                        Some(p) => format!("{} ({}): {}", c.name, p.display(), c.detail),
+                        None => format!("{}: {}", c.name, c.detail),
+                    })
+                    .unwrap_or_else(|| "failed".to_string());
+                o.errors.push(format!("{label} preflight: {cause}"));
+                if report.blocks_sequential_reads() {
+                    self.record_analysis_error(aln.id, "preflight", &cause).await;
+                    return Ok(o);
+                }
+            }
+            // A preflight that itself failed to run is not evidence about the alignment — fall
+            // through and let the real steps report whatever they hit.
+            Ok(_) | Err(_) => {}
+        }
+
         // Coverage + read-metrics + sex in ONE pass (the unified walker) instead of three separate
         // reads of the BAM/CRAM — a 3x I/O cut per subject, which dominates the batch on a slow /
         // network volume (the single-subject Full Analysis already does this; the batch path didn't).
