@@ -603,6 +603,31 @@ AADR by rsID (hg38↔hg19 is the clean mapping 1000G itself uses — no exotic T
 GRCh38-genotyped `huF98AFD` then fits like the English control, the feature is shippable; if it still
 fails, the target-side genotyping/reference-bias problem is the true wall.
 
+**Done — and GRCh38 fails identically. It is not the reference build.** Genotyped the target from the
+**GRCh38** BAM at the hg38 1240k sites (1.15 M autosomal, 1.15 M called) and re-ran the same qpAdm:
+**WHG −3.44, ANF +4.48, Steppe −0.04, model rejected (p=3e-13)** — essentially the CHM13 result
+(−3.46 / +4.48 / −0.05) to two decimals. So the failure is **build-independent**: neither the T2T
+liftover nor a strand/orientation bug (a global flip made it worse). The reconciliation is sound (the
+same pipeline on the 16 k AIM subset gives the feasible-but-imprecise fit of §7.11, and the English
+control on the *same* full-1240k SNPs fits at ±2.6 %). What is left is intrinsic: **our externally
+genotyped modern WGS is systematically inconsistent with the AADR 1240 k data at the ~1.13 M non-AIM
+sites, however we call it** — the high-Fst AIM sites we curated are clean, the rest are not. This is
+the core "do not co-analyze data from different pipelines" wall (§4.3–4.4): the English control fits
+*only because it lives inside the AADR callset*, processed identically to the sources. Any target we
+genotype ourselves sits on the other side of that line.
+
+**Where deep ancestry stands.** Every component is now proven: estimator (matches ADMIXTOOLS), sources,
+AADR-native outgroups, and SNP-count precision (±2.6 % on a real Briton). The one unsolved piece is
+target harmonization — making an externally sequenced genome statistically indistinguishable from an
+AADR-processed one at all 1240k sites, not just the curated AIMs. That is a genuine research problem
+(reference-bias correction / imputation onto the 1240k in the AADR's own representation), not a wiring
+task. Absent it, the honest options are: **(a)** ship deep ancestry only for samples we can place on
+the AADR's side of the line (none, currently), **(b)** accept the AIM-only fit (precise to ±40 %,
+i.e. not shippable), or **(c)** keep it disabled. The decisive same-sample test — genotype a 1000G
+individual that *is* in the AADR (`PRJEB36890`/`PRJEB31736` CRAMs) through our pipeline and diff
+against its AADR genotypes — needs the NAS mounted; it would quantify exactly how far our calling
+drifts from theirs. `ANCIENT_ANCESTRY_ENABLED` stays `false`.
+
 **Secondary tuning note.** Even the English control comes back **WHG ≈ 0** and the model is technically
 rejected (p=3e-4). A textbook British qpAdm usually retains ~10–20% WHG, so our specific source set
 (the Villabruna WHG, the Yamnaya Steppe which already carries EHG/WHG-like ancestry) and outgroups are
